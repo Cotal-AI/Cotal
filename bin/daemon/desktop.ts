@@ -15,6 +15,7 @@ import { encode, isAgentLifecycleUid, isDaemonSpaceName, type AgentRowRequest, t
 import { runSetup } from "./setup.js";
 import { discoverDesktopApplicationPath } from "./desktop-path.js";
 import { assertDesktopSetupComplete } from "./desktop-setup.js";
+import { agentAppRequest, type AgentAppRequest } from "./desktop-agent-apps.js";
 
 export type DesktopRequest =
   | AgentRowRequest
@@ -30,7 +31,8 @@ export type DesktopRequest =
   | { readonly op: "login"; readonly idp: string }
   | { readonly op: "logout"; readonly idp: string }
   | { readonly op: "setup"; readonly space: string; readonly idp: string }
-  | { readonly op: "connect-check" | "register" | "service-connect" | "service-disconnect" | "service-status"; readonly space: string };
+  | { readonly op: "connect-check" | "register" | "service-connect" | "service-disconnect" | "service-status"; readonly space: string }
+  | AgentAppRequest;
 
 /** No renderer-supplied command, path, credentials or arbitrary arguments cross this boundary. */
 export function parseDesktopRequest(value: unknown): DesktopRequest {
@@ -42,7 +44,7 @@ export function parseDesktopRequest(value: unknown): DesktopRequest {
   }
   const simple = ["about", "status", "status-watch", "install", "log", "remove-service", "update-check"].includes(String(o.op));
   const scoped = ["connect-check", "register", "service-connect", "service-disconnect", "service-status"].includes(String(o.op));
-  const fields = o.op === "update-policy" ? ["op", "auto"] : o.op === "update-release" ? ["op", "version"] : o.op === "update-settings" ? ["op", "auto", "notify"] : o.op === "name" ? ["op", "name"] : o.op === "space-recover" ? ["op", "space", "candidate", "holder"] : o.op === "space-intent" ? ["op", "space", "enabled"] : simple ? ["op"] : scoped ? ["op", "space"] : o.op === "setup" ? ["op", "space", "idp"] : (o.op === "login" || o.op === "logout") ? ["op", "idp"] : o.op === "spaces" ? ["op", "refresh"] : [];
+  const fields = o.op === "update-policy" ? ["op", "auto"] : o.op === "update-release" ? ["op", "version"] : o.op === "update-settings" ? ["op", "auto", "notify"] : o.op === "name" ? ["op", "name"] : o.op === "space-recover" ? ["op", "space", "candidate", "holder"] : o.op === "space-intent" ? ["op", "space", "enabled"] : simple ? ["op"] : scoped ? ["op", "space"] : o.op === "setup" ? ["op", "space", "idp"] : (o.op === "login" || o.op === "logout") ? ["op", "idp"] : o.op === "spaces" || o.op === "agent-apps" ? ["op", "refresh"] : o.op === "agent-app-install" || o.op === "agent-app-sign-in" ? ["op", "name"] : [];
   if (!fields.length || Object.keys(o).some((key) => !fields.includes(key))) throw new Error("unknown operation or field");
   if (o.op === "update-policy") {
     if (o.auto !== undefined && typeof o.auto !== "boolean") throw new Error("invalid update preference");
@@ -65,6 +67,14 @@ export function parseDesktopRequest(value: unknown): DesktopRequest {
     return { op: "space-intent", space: o.space, enabled: o.enabled };
   }
   if (o.op === "name") return { op: "name", ...(o.name !== undefined ? { name: computerName(o.name) } : {}) };
+  if (o.op === "agent-apps") {
+    if (o.refresh !== undefined && typeof o.refresh !== "boolean") throw new Error("invalid refresh");
+    return { op: "agent-apps", ...(o.refresh ? { refresh: true } : {}) };
+  }
+  if (o.op === "agent-app-install" || o.op === "agent-app-sign-in") {
+    if (typeof o.name !== "string" || !/^[a-z0-9][a-z0-9-]{0,63}$/.test(o.name)) throw new Error("invalid application name");
+    return { op: o.op, name: o.name };
+  }
   if (simple) return { op: o.op as "about" | "status" | "status-watch" | "install" | "log" | "remove-service" | "update-check" };
   if (scoped) {
     if (!isDaemonSpaceName(o.space)) throw new Error("invalid space");
@@ -230,6 +240,7 @@ export async function runDesktopBridge(opts: DesktopBridgeOptions): Promise<void
     target = opts.resolveTarget();
     const { paths, home } = target;
     if (req.op === "log") { emit({ v: 1, event: "result", ok: true, result: readServiceLogTail(paths.state) }); return; }
+    if (req.op === "agent-apps" || req.op === "agent-app-install" || req.op === "agent-app-sign-in") { emit({ v: 1, event: "result", ok: true, result: await agentAppRequest(req, { paths, daemonHome: home, peerUid: opts.peerUid, peerPid: opts.peerPid, version: opts.version }, emit) }); return; }
     if (req.op === "remove-service") { emit({ v: 1, event: "result", ok: true, result: await removeDesktopService(paths, home) }); return; }
     const client = { paths, peerUid: opts.peerUid, peerPid: opts.peerPid };
     if (req.op === "install" || req.op === "setup") {
@@ -439,7 +450,7 @@ export async function runDesktopBridge(opts: DesktopBridgeOptions): Promise<void
     const rawWait = notAnswering && e.native?.detail && typeof e.native.detail === "object" ? (e.native.detail as { waitSeconds?: unknown }).waitSeconds : undefined;
     const waitSeconds = typeof rawWait === "number" && Number.isInteger(rawWait) && rawWait > 0 ? rawWait : undefined;
     const baseMessage = notAnswering ? `Cotal asked the background service on this computer to start, and it ${waitSeconds !== undefined ? `did not answer within ${waitSeconds} seconds.` : "has not answered."}${refusal ? ` It refused to start: ${refusal}` : ""}`
-      : e instanceof CommandFailure && (e.code === "CONFLICT" || req.op === "setup" || req.op === "install" || req.op === "remove-service") ? e.message
+      : e instanceof CommandFailure && (e.code === "CONFLICT" || req.op === "setup" || req.op === "install" || req.op === "remove-service" || req.op.startsWith("agent-app")) ? e.message
       : code === "NOT_RUNNING" ? (stoppedService
         ? "The background service is installed but stopped. Choose Start service to start it."
         : "The daemon is not running. Install its background service first.")
@@ -452,7 +463,7 @@ export async function runDesktopBridge(opts: DesktopBridgeOptions): Promise<void
       ? `${baseMessage}${baseMessage.endsWith(".") ? "" : "."} Left out relative PATH entries: ${omittedRelativePathEntries.join(", ")}.`
       : baseMessage;
     emit({ v: 1, event: "result", ok: false, error: { code, message, ...(stoppedService ? { detail: { installed: true } } : {}),
-      ...(e instanceof CommandFailure && (req.op === "setup" || req.op === "install") ? { remedy: notAnswering ? "choose Check status." : e.remedy, native: e.native } : {}),
+      ...(e instanceof CommandFailure && (req.op === "setup" || req.op === "install" || req.op.startsWith("agent-app")) ? { remedy: notAnswering ? "choose Check status." : e.remedy, native: e.native } : {}),
     } });
   }
 }

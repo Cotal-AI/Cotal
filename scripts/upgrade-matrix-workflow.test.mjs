@@ -15,7 +15,7 @@ const program = summary.split("<<'NODE'\n")[1].split('\nNODE')[0];
 test('all required release coordinates fit in the concurrency budget without waiting for macOS', () => {
   const plan = planRelease({ inputs: { phase: 'candidate', source_sha: 'a'.repeat(40), target_version: '0.164.9', profile: 'bounded' } }, { eventName: 'workflow_dispatch', sourceVersion: '0.164.8' });
   const cells = workflow.jobs['release-cells'];
-  assert.equal(plan.matrix.include.length, 46);
+  assert.equal(plan.matrix.include.length, 47);
   assert.equal(cells.strategy['max-parallel'], plan.matrix.include.length);
   assert.deepEqual(cells.needs, ['select', 'release-pack', 'release-next']);
   assert.equal(cells.strategy['fail-fast'], false);
@@ -39,7 +39,7 @@ test('paired next-hop builders are explicit in both phases and stamp B and C bef
   assert(!next.steps.some(step => step.run?.includes('pnpm --workspace-concurrency 3 build')));
   assert(next.steps.some(step => step.run?.includes('node scripts/pack-candidate-next.mjs --source-root')));
   assert(next.steps.some(step => step.run?.includes('--offset 2000')));
-  assert.equal(workflow.jobs['release-cells'].strategy['max-parallel'], 46);
+  assert.equal(workflow.jobs['release-cells'].strategy['max-parallel'], 47);
   for (const job of ['release-native', 'release-pack', 'release-next']) assert(workflow.jobs[job]);
 });
 test('Corepack Node fallback runs on the frozen source independently of the upgrade coordinates', () => {
@@ -220,6 +220,16 @@ test('paired recovery summary requires foreign snapshot retention without a nati
     }, { scenario: 'candidate-next-foreign-config-recovery', phase });
     assert.equal(result.exit, retained ? 0 : 1, result.stderr);
     if (!retained) assert.match(readFileSync(join(result.root, 'summary.md'), 'utf8'), /foreign-snapshot-retained/);
+  }
+});
+test('interrupted snapshot summary requires cleanup and preservation evidence', () => {
+  const assertions = ['interrupted snapshot is reclaimed by the selected updater', 'unrelated snapshot-shaped directory stays intact'];
+  for (const missing of [undefined, ...assertions]) {
+    const result = fixture(data => {
+      for (const name of assertions) if (name !== missing) data.report.assertions.push({ name, passed: true });
+    }, { scenario: 'interrupted-snapshot-copy' });
+    assert.equal(result.exit, missing ? 1 : 0, result.stderr);
+    if (missing) assert.match(readFileSync(join(result.root, 'summary.md'), 'utf8'), /interrupted-snapshot-reclaimed/);
   }
 });
 function followOnEvidence(data, directory, route = 'in-place') {
