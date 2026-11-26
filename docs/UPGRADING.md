@@ -46,10 +46,14 @@ one that starts with a letter, digit or `_`, for example `cotal personas new rev
 When editing a persona, change its `name:` to `reviewer` rather than `-reviewer`.
 The same name rule applies when defining a persona through `cotal_persona`.
 
-`cotal team check` and `cotal team deploy` refuse a manifest with an `agents:` key starting with `-`.
+`cotal team check`, `cotal team boot`, `cotal team deploy`, `cotal up -f` and
+`cotal topology view -f` refuse a manifest with an `agents:` key starting with `-`.
+`cotal down -f <file> --dry-run` applies the same check when it previews a stack started by `cotal up`.
 Rename the key from `-reviewer` to `reviewer` and change the corresponding channel `subscribe`,
 `allowSubscribe` and `allowPublish` entries, then run `cotal team check cotal.yaml` before deploying.
-A refused manifest creates no channels or agents.
+An updated CLI refuses the name before creating channels or agents. The Manager also refuses to
+launch that name before writing the launch spec or persona. Update the CLI as well as the Manager:
+an older CLI can create declared channels before it asks the Manager to launch an agent.
 
 If you call the tmux, herdr, cmux or Orca runtime directly, pass `reviewer` instead of `-reviewer`
 as the first argument to `spawn`.

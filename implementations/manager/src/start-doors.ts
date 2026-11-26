@@ -1,4 +1,4 @@
-import { MAX_SCHEDULE_MS, parsePrincipalKey, rejectionText } from "@cotal-ai/core";
+import { MAX_SCHEDULE_MS, parsePrincipalKey, rejectionText, spawnNameError } from "@cotal-ai/core";
 import type { ControlReply, EpCaller, FirstCommand, InlinePersona } from "@cotal-ai/core";
 import { authorizeLaunch } from "./authorize.js";
 import { launchAgentToStartOpts, launchSpecForRun, materializePersona, parseLaunchSpec, persistLaunchSpec } from "./launch.js";
@@ -166,8 +166,6 @@ export class StartDoors {
         spec = parseLaunchSpec(args.spec, `inline launch spec (run ${runId})`);
         if (spec.runId !== runId)
           return { ok: false, error: `inline launch spec runId "${spec.runId}" does not match requested "${runId}"` };
-        hooks?.onEffect?.();
-        persistLaunchSpec(this.config.workspaceRoot, spec);
       } catch (e) {
         return { ok: false, error: rejectionText(e) };
       }
@@ -191,9 +189,12 @@ export class StartDoors {
       const denied = authorizeLaunch({ specOwner: spec.owner, caller, admin, runId });
       if (denied) return { ok: false, error: denied };
     }
+    const nameError = spawnNameError(la.name, { userMode: this.userMode });
+    if (nameError) return { ok: false, error: `launch agent: ${nameError}` };
     let configPath: string;
     try {
       hooks?.onEffect?.();
+      if (args.spec !== undefined) persistLaunchSpec(this.config.workspaceRoot, spec);
       configPath = materializePersona(this.config.workspaceRoot, runId, la);
     } catch (e) {
       return { ok: false, error: rejectionText(e) };
