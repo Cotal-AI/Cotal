@@ -391,6 +391,14 @@ export class MeshAgent extends EventEmitter {
     this._storedCopiesFull = Math.max(0, this._storedCopiesFull - seen);
   }
 
+  get omittedChannelPosts(): number {
+    return this.inboxState.omittedChannelPosts;
+  }
+
+  clearOmittedChannelPosts(seen: number): void {
+    this.inboxState.clearOmittedChannelPosts(seen);
+  }
+
   /** Session-local channel degradation, independent of transport liveness. */
   get channelDeliveryIssue(): string | undefined {
     return this.inboxState.channelDeliveryIssue;
