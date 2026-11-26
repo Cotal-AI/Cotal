@@ -223,9 +223,14 @@ export class PersonaCatalog {
           ? "define-persona: this manager's user authority is hosted, so it cannot read the definer's grant and its persona can grant no capabilities or channels. Pass `capabilities: []` to remove all capabilities."
           : undefined;
     const p = parsePrincipalKey(caller);
-    const held = p ? await resolveAuthProvider().actorGrant({ dir: userAuthStateDir(this.config.workspaceRoot, this.config.space), owner: p.owner, actor: p.actor }) : undefined;
+    const provider = p ? resolveAuthProvider() : undefined;
+    const held = p && typeof provider?.actorGrant === "function"
+      ? await provider.actorGrant({ dir: userAuthStateDir(this.config.workspaceRoot, this.config.space), owner: p.owner, actor: p.actor })
+      : undefined;
     return ({ capabilities, namesEndpoints, allowSubscribe, allowPublish }) => {
       if (namesEndpoints) return userMeshEndpointsRefusal("define-persona");
+      if (provider && typeof provider.actorGrant !== "function")
+        return "define-persona: this manager's auth provider does not implement `actorGrant`. Update the provider on the manager host before saving a persona with capabilities or channels.";
       if (held?.scope.includes("admin")) return undefined;
       const overCaps = capabilities.filter((c) => !capabilityWithin(held?.scope ?? [], c));
       const overSub = allowSubscribe.filter((ch) => !patternInAllow(held?.allowSubscribe ?? [], ch));

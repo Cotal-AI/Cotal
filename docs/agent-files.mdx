@@ -142,11 +142,13 @@ Explicit `model`, `role` and `agent` arguments must be nonblank strings. Empty o
 Malformed leading frontmatter is refused with `prompt-frontmatter`.
 A definition the manager could not load back is refused and nothing is written, for example one whose `subscribe` names a channel or family that no `allowSubscribe` entry contains.
 `capabilities` and `endpoints` are policy: only an explicit argument sets each one, and the manager's `define-persona` command checks it against the definer before it writes.
+A redefine that omits either field keeps the saved list and the manager checks that list against the definer too.
 The manager also checks the persona's effective read and post lists, whether they come from arguments, prompt frontmatter, or a saved definition.
 A definer can grant only channels, capabilities and endpoint commands it holds. A later spawn is checked again against its spawner.
 On a redefine, pass lists within your grant to replace saved lists. To clear all reads, pass both `subscribe: []` and `allowSubscribe: []`. To clear all posts, pass `allowPublish: []`.
 An open mesh does not check grants. A static operator's control credential and a local user-auth definer with `admin` are exempt from the bound. A manager whose user authority is hosted refuses any channel or capability grant in the definition.
 A wire save drops `launchOptions` from both the prompt and the saved definition. Set options on the spawn, or have an operator set them in a local persona file on the manager host.
+An owner who redefines a locally edited persona over the wire removes those options without a warning in the reply.
 A per-user auth mesh refuses a definition that names `endpoints`, `[]` included.
 `owner` has no tool argument, and prompt frontmatter cannot grant capabilities or endpoint commands or claim ownership.
 A new definition records a signed-in creator or one of the manager's own seats as owner. Other static-space definitions remain operator-owned.
