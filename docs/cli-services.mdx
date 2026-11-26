@@ -339,8 +339,8 @@ are not publisher signatures or a proof of every executable file. No remote sche
 `service show <name>` reads declared policy, not live state. Public reports omit argument bodies,
 adapter option values and credential contents. Missing launch paths do not prevent reading the
 saved declaration. Records live under the workstation store's case-safe per-space service path.
-If no definition has that name, `show` refuses with `TARGET_NOT_FOUND` (exit 2) and suggests
-`cotal service --space <space>` for the space it checked.
+If no definition has that name, `show` and `remove` refuse with `TARGET_NOT_FOUND` (exit 2) and suggest
+`cotal service --space <space>` for the space each checked.
 
 `service remove <name> --yes` removes the unchanged definition and its stopped instances' records
 and sidecar receipts, and deletes each removed instance's log file and rotated `<log>.1` file.

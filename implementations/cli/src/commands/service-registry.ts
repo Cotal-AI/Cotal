@@ -230,7 +230,7 @@ export async function service(args: ParsedArgs, commandName = "service"): Promis
   }
   if (mode === "remove") {
     const row = savedService(suppliedName!);
-    if (!row) throw new CommandFailure("refused", "TARGET_NOT_FOUND", "no saved service definition has this full name in the selected space", { target: { ...target, name: suppliedName }, remedy: "see the saved definitions with `cotal service`" });
+    if (!row) throw new CommandFailure("refused", "TARGET_NOT_FOUND", "no saved service definition has this full name in the selected space", { target: { ...target, name: suppliedName }, remedy: `see the saved definitions with ${codeSpan(`cotal service${targetWords({ space })}`)}` });
     if (args.values.instance !== undefined) {
       // One stopped instance record goes; the definition, its other instances and the logs stay.
       const id = String(args.values.instance), at = { ...target, name: row.name, instanceId: id };
