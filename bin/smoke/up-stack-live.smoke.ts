@@ -80,7 +80,10 @@ const anchors = new Map([
   [warningRoot, recordSmokeSandbox({ root: warningRoot, cotalHome: home, xdgConfigHome: configDir })],
   [clonedRoot, recordSmokeSandbox({ root: clonedRoot, cotalHome: home, xdgConfigHome: configDir })],
 ]);
-const env = { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: configDir, COTAL_SKIP_CONNECTOR_SEED: "1" };
+const env = {
+  ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_"))),
+  COTAL_HOME: home, XDG_CONFIG_HOME: configDir, COTAL_SKIP_CONNECTOR_SEED: "1",
+};
 
 let pass = 0;
 const ok = (name: string, cond: boolean, extra?: unknown) => {

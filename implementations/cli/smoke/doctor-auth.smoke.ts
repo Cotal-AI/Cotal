@@ -18,7 +18,7 @@
  * Run: pnpm smoke:doctor-auth
  */
 import { strict as nodeAssert } from "node:assert";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -99,7 +99,7 @@ interface Envelope {
   result: {
     findings: number;
     items: Item[];
-    exported: { path: string; state: string; repair: string | null }[];
+    exported: { path: string; state: string; issuedAt: number | null; repair: string | null }[];
     repair: { attempted: boolean; authority: string | null; results: { file: string; ok: boolean; reminted: boolean; reason: string | null }[] };
     renewal: { authority: string | null };
   };
@@ -335,6 +335,34 @@ try {
     const plainEmptyExport = await runDoctor({ plain: true });
     assert.equal(plainEmptyExport.code, 0, "the plain report leaves exit 0");
     assert.ok(plainEmptyExport.text.includes(`exported: ${emptyRow?.repair}`), "plain output includes the same export guidance");
+
+    if (process.platform !== "win32") {
+      const movedPath = join(exported, "moved.creds");
+      const movedTarget = join(exported, "moved-real.creds");
+      const movedId = newIdentity();
+      writeFileSync(movedPath, await mintCreds(auth, movedId, "agent", { lifecycleUid: mintLifecycleUid(), expiresInSeconds: 3600 }), { mode: 0o600 });
+      recordCredentialExport(SPACE, { label: "moved", profile: "agent", path: movedPath, root, identity: movedId.id });
+      renameSync(movedPath, movedTarget);
+      symlinkSync("moved-real.creds", movedPath);
+
+      const linked = await runDoctor({ json: true });
+      const row = linked.envelope!.result.exported.find((entry) => entry.path === movedPath);
+      assert.equal(row?.state, "unreadable", "the protected read does not follow a symlink to a healthy export");
+      assert.equal(row?.issuedAt, null, "no claims are read through the link");
+      assert.match(row?.repair ?? "", /symbolic link.*Restore the original private regular file at the recorded path/);
+      assert.doesNotMatch(row?.repair ?? "", /auth mint/, "a symlink does not require re-minting");
+      assert.equal(linked.envelope!.result.findings, 0, "the linked export is informational");
+      assert.equal(linked.code, 0, "the linked export does not change the JSON exit code");
+      const linkedPlain = await runDoctor({ plain: true });
+      assert.equal(linkedPlain.code, 0, "the linked export does not change the plain exit code");
+      assert.ok(linkedPlain.text.includes(`moved: ${row?.repair}`), "plain output includes the same guidance");
+
+      unlinkSync(movedPath);
+      renameSync(movedTarget, movedPath);
+      const restored = (await runDoctor({ json: true })).envelope!.result.exported.find((entry) => entry.path === movedPath);
+      assert.equal(restored?.state, "healthy", "restoring the original file resolves the diagnostic");
+      assert.equal(restored?.repair, null, "a restored export needs no repair");
+    }
 
     // #7542: if a root is registered as open even while leftover .cotal/auth files exist on disk,
     // doctor auth (with or without --fix) reports the open-space no-op rather than Mode: static or CONFLICT.

@@ -2242,7 +2242,7 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) {
         {
           encoding: "utf8",
           env: {
-            ...process.env,
+            ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_"))),
             COTAL_SKIP_CONNECTOR_SEED: "1",
             [EXT_UPDATE_PARENT_ENV]: String(process.pid),
           },

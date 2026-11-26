@@ -249,7 +249,10 @@ try {
     writeFileSync(prepared, "not a directory");
     const status = spawnSync(process.execPath, [cliEntry, "status", "--json"], {
       cwd, encoding: "utf8", timeout: 30_000,
-      env: { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: join(home, "config"), COTAL_TELEMETRY: "off", COTAL_SKIP_CONNECTOR_SEED: "1", COTAL_NO_UPDATE_CHECK: "1" },
+      env: {
+        ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_"))),
+        COTAL_HOME: home, XDG_CONFIG_HOME: join(home, "config"), COTAL_TELEMETRY: "off", COTAL_SKIP_CONNECTOR_SEED: "1", COTAL_NO_UPDATE_CHECK: "1",
+      },
     });
     const output = status.stdout ? JSON.parse(status.stdout) : undefined;
     check("an unexpected trust seed error leaves status free to report the partial registry in JSON",

@@ -39,6 +39,7 @@ const awaitExit = (p: ChildProcess, ms = 5000): Promise<void> =>
 // finds its folder by walking up to the nearest one, and a home holding `.cotal` would answer.
 const scratch = makeScratch("cotal-detach-");
 const home = mkdtempSync(join(tmpdir(), "cotal-detach-home-"));
+for (const key of Object.keys(process.env)) if (key.startsWith("COTAL_")) delete process.env[key];
 process.env.COTAL_HOME = home;
 
 const { parseCommandArgs, probeConnect, registry, CotalEndpoint, openSessionRail, EpEnvelopeError, eventChannel } = await import("@cotal-ai/core");
@@ -630,7 +631,10 @@ try {
   // validation under test is ever reached. The seed stays skipped so nothing npm-installs into
   // the sandbox either. Customers never see this state (the lockstep release publishes core +
   // connectors together).
-  const subEnv = { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: join(home, "xdg"), COTAL_SKIP_CONNECTOR_SEED: "1" };
+  const subEnv = {
+    ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_"))),
+    COTAL_HOME: home, XDG_CONFIG_HOME: join(home, "xdg"), COTAL_SKIP_CONNECTOR_SEED: "1",
+  };
 
   {
     const retryConnector: Connector = { ...e2eCon, name: "retry-e2e", eventChannel };

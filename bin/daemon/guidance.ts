@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { codeSpan, CommandFailure, homeCotalDir, resolveOnPath, shellPath } from "@cotal-ai/workspace";
+import { codeSpan, CommandFailure, homeCotalDir, resolveOnPath, shellPath, windowsShellWord } from "@cotal-ai/workspace";
 
 /** An unavailable systemd installation is different from an unreachable systemd user manager. */
 export function daemonServiceRequirement(home?: string): CommandFailure | undefined {
@@ -17,10 +17,10 @@ export function foreignDaemonUpdateReport(entry: string): string {
 }
 
 /** A copyable command for this daemon. Tuples keep option values distinct from boolean flags;
- *  leading-hyphen values need `=` even when shell-quoted. Windows copy targets PowerShell. */
+ *  leading-hyphen values need `=` even when shell-quoted. */
 export function daemonCommandCopy(op: string, home?: string, args: readonly (string | readonly [string, string])[] = []): string {
   const quote = process.platform === "win32"
-    ? (value: string) => /^[A-Za-z0-9_./:-]+$/.test(value) ? value : `'${value.replaceAll("'", "''")}'`
+    ? (value: string) => windowsShellWord(value) ?? `'${value.replaceAll("'", "''")}'`
     : shellPath;
   const words: (string | readonly [string, string])[] = ["cotal", "daemon", op, ...args];
   if (home !== undefined && home !== homeCotalDir()) words.push(["--daemon-home", home]);

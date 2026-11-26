@@ -55,7 +55,7 @@ else if (args === "plugin add cotal@cotal-mesh") {
 } else process.exit(1);
 `, { mode: 0o755 });
 const env = {
-  ...process.env,
+  ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_"))),
   COTAL_HOME: home,
   CODEX_HOME: join(home, ".codex"),
   XDG_CONFIG_HOME: configHome,

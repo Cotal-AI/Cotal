@@ -8,10 +8,11 @@ import { credsAuthenticator, type NatsConnection } from "@nats-io/transport-node
 import { JetStreamApiCodes, JetStreamApiError, jetstreamManager } from "@nats-io/jetstream";
 import { Kvm } from "@nats-io/kv";
 import { DEFAULT_SERVER, dialerFor } from "./endpoint.js";
-import { parseSubject, isTransferStream, mintLifecycleUid } from "./subjects.js";
+import { parseSubject, isTransferStream, mintLifecycleUid, isPresenceRow } from "./subjects.js";
 import { spaceDeletionStreams } from "./space-deletion-targets.js";
 import { idFromCreds, newIdentity } from "./identity.js";
 import { mintCreds, type SpaceAuth } from "./provision.js";
+import { lastKvEntries } from "./kv-scan.js";
 
 /** Connect opts for a possibly-scoped cred: an authenticator plus the per-id `inboxPrefix` a scoped
  *  cred needs (its `sub.allow` is `_INBOX_<id>.>`, so JS API replies must land there, not the default
@@ -27,7 +28,7 @@ function scopedConnectOpts(creds?: string): Record<string, unknown> {
 /** One row of the space overview. */
 export interface SpaceInfo {
   space: string;
-  agents: number; // presence KV entries (≈ agents currently present)
+  agents: number; // agent presence records, excluding endpoints
   channels: number; // distinct chat channels with backlog
   messages: number; // total chat messages
 }
@@ -78,11 +79,26 @@ export async function listSpaces(opts: ListSpacesOptions = {}): Promise<SpaceInf
       }
     }
 
-    // Presence KV per space → agents present.
+    // Presence KV per space → count agents using the roster's card kind.
+    const kvm = new Kvm(nc);
     try {
-      for await (const st of new Kvm(nc).list()) {
+      for await (const st of kvm.list()) {
         const m = /^cotal_presence_(.+)$/.exec(st.bucket);
-        if (m) get(m[1]).agents = st.values;
+        if (!m) continue;
+        const s = get(m[1]);
+        try {
+          for (const entry of await lastKvEntries(await kvm.open(st.bucket))) {
+            if (entry.operation !== "PUT") continue;
+            try {
+              const row = entry.json<unknown>();
+              if (isPresenceRow(row, entry.key) && row.card.kind === "agent") s.agents++;
+            } catch {
+              /* skip malformed JSON without discarding other presence rows */
+            }
+          }
+        } catch {
+          /* leave agent count at 0 if this bucket can't be inspected */
+        }
       }
     } catch {
       /* no KV access (restricted creds) — leave agent counts at 0 */

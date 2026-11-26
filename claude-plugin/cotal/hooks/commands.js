@@ -73,6 +73,12 @@ const COMPLETE_MS = 2000;
 
 const described = new Map();
 let turnId;
+// The owner's model switch (SPEC 13.22): `{ model, effort? }`, which every step of each main turn
+// that starts after it goes out on. It lives in this session alone, because Claude Code's own
+// /model and /effort save the person's settings.
+let wanted;
+// The switch the running main turn started under: a turn already running keeps its model.
+let running;
 // Resolvers for interrupts waiting on a main turn's completion, by turn id.
 const completions = new Map();
 
@@ -204,6 +210,13 @@ async function usage($) {
   };
 }
 
+// The model the session runs from its next main turn: the one named, else the one in force.
+async function switchModel($, { model, effort }) {
+  const name = model ?? wanted?.model ?? (await $.session.model());
+  wanted = { model: name, ...(effort !== undefined ? { effort } : {}) };
+  return { op: 'model', ...wanted };
+}
+
 async function answerFor($, request) {
   try {
     if (request.op === 'list') return await list($);
@@ -211,6 +224,7 @@ async function answerFor($, request) {
     if (request.op === 'interrupt') return await interrupt($);
     if (request.op === 'prompt') return await prompt($, request);
     if (request.op === 'usage') return await usage($);
+    if (request.op === 'model') return await switchModel($, request);
     return { op: 'error', reason: `unknown request op ${JSON.stringify(request.op)}` };
   } catch (error) {
     return { op: 'error', reason: messageOf(error) };
@@ -257,8 +271,25 @@ export function register(on) {
     return shown;
   });
   on('turn.start', { turnId: /./ }, async ($, e, next) => {
-    if (e.agentId === undefined) turnId = e.turnId;
+    if (e.agentId === undefined) {
+      turnId = e.turnId;
+      running = wanted;
+    }
     return next(e);
+  });
+  // A rewrite lasts one step, so each of the main turn's steps carries the switch. A subagent's
+  // steps keep the model Claude Code picks for them.
+  on('turn.step', { turnId: /./ }, async function* ($, e, next) {
+    if (e.agentId !== undefined || running === undefined || e.turnId !== turnId) return yield* next(e);
+    return yield* next({ ...e, ...running });
+  });
+  // A /model or /effort run at the seat wins from the next turn: Claude Code shows the person its own
+  // setting, which a switch leaves unchanged. This mod never runs either.
+  on('command.run', { command: /^(model|effort)$/ }, async ($, e, next) => {
+    const ran = await next(e);
+    if (e.command === 'model') wanted = undefined;
+    else if (wanted) wanted = { model: wanted.model };
+    return ran;
   });
   on('turn.complete', { turnId: /./ }, async ($, e, next) => {
     const completed = await next(e);
