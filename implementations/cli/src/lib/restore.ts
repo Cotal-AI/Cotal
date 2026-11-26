@@ -505,16 +505,20 @@ const USER_MODE_NO_RUNS = "A user-mode backup holds no workflow runs, because th
 const OLDER_FORMAT_NO_RUNS = "This backup was made before full backups held workflow runs, so it holds none; the workflow run stores were recreated empty.";
 
 /** The step that moves a restore attempt on from `state`. A committed or degraded attempt goes
- *  forward through bare `up`. Cleanup needs history consent only for data held in a retained store.
+ *  forward through bare `up`. A preview can carry an explicit discard flag without deleting data.
  *  `cleanupRoot` is the project to enter when an active restore was started from another root. */
-export function restoreNextStep(state: string, attemptId: string, journal?: Parameters<typeof restoreLeftOut>[0], cleanupRoot?: string, cmd = "cotal"): string {
+export function restoreNextStep(state: string, attemptId: string, journal?: Parameters<typeof restoreLeftOut>[0], { cleanupRoot, cmd = "cotal", previewDiscard = false }: { cleanupRoot?: string | undefined; cmd?: string; previewDiscard?: boolean } = {}): string {
   if (state === "restore-ready") return `roll the pre-commit attempt back with ${codeSpan(`${cmd} backup recover ${attemptId} --yes`)}; preview it first with --dry-run`;
   if (state === "active") {
     const leftOut = journal?.restore.previousSource ? restoreLeftOut(journal) : undefined;
-    const cleanup = codeSpan(`${cleanupRoot ? `cd ${shellPath(cleanupRoot)} && ` : ""}${cmd} backup cleanup-fallback ${attemptId} --yes${leftOut ? " --discard-history" : ""}`);
-    if (leftOut) return `the restore completed: ${cleanup} retires its journal and deletes the previous store, the only copy of the ${leftOut} it left out; preview it first with --dry-run`;
+    const cleanup = `${cleanupRoot ? `cd ${shellPath(cleanupRoot)} && ` : ""}${cmd} backup cleanup-fallback ${attemptId}`;
+    if (leftOut || previewDiscard) {
+      const preview = codeSpan(`${cleanup} --dry-run${previewDiscard ? " --discard-history" : ""}`);
+      const history = leftOut ? `. Deleting the previous store requires --discard-history and removes the only copy of the ${leftOut} it left out.` : "";
+      return `the restore completed: preview cleanup with ${preview}${history}`;
+    }
     const note = journal?.restore.selection === "registry" ? ". Chat and DM history and workflow runs start empty after a registry-only restore." : "";
-    return `the restore completed: retire its journal with ${cleanup}; preview it first with --dry-run${note}`;
+    return `the restore completed: retire its journal with ${codeSpan(`${cleanup} --yes`)}; preview it first with --dry-run${note}`;
   }
   return `recover forward with bare ${codeSpan(`${cmd} up`)} from this root, which continues attempt ${attemptId}; fallback cleanup follows once it is active`;
 }
