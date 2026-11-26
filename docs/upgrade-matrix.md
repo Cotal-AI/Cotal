@@ -47,6 +47,11 @@ cancellation, so one new head or publication cannot evict an older qualification
 
 ## Required release set
 
+The separate Linux Corepack check runs the frozen release's own `cotal update --self` against a
+loopback registry with no newer version. The npm launcher's recorded Node can run Corepack but not
+the npm it selects. The update must reach the registry through a later Node on `PATH` twice and
+leave the Node running Cotal unchanged. The check uploads its own transcript.
+
 At plan time both phases read public npm metadata and freeze the newest stable published version
 strictly below the target. The plan records that source and its registry observation. Missing registry
 metadata or a missing predecessor fails without a fixed-version fallback. Each phase runs 42 isolated
