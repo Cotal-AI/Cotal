@@ -57,7 +57,7 @@ export async function claudeInitialize(o: InitializeProbe): Promise<InitializeAn
   const failed = (why: string): InitializeAnswer => ({ failed: why });
   try {
     return await new Promise<InitializeAnswer>((settle) => {
-      const claude = (child = spawn(o.bin, PROBE_ARGS, { cwd: o.cwd, env: o.env, stdio: ["pipe", "pipe", "ignore"] }));
+      const claude = (child = spawn(o.bin, PROBE_ARGS, { cwd: o.cwd, env: o.env, stdio: ["pipe", "pipe", "ignore"], windowsHide: true }));
       // The bound also cuts short stopClaude's grace, so the whole read ends within it.
       timer = setTimeout(() => {
         settle(failed(`claude did not list ${o.what} within ${o.boundMs / 1000}s`));

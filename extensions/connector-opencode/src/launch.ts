@@ -105,7 +105,7 @@ function processCommand(pid: number): string | undefined {
         "-NonInteractive",
         "-Command",
         `(Get-CimInstance Win32_Process -Filter 'ProcessId = ${pid}').CommandLine`,
-      ], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+      ], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], windowsHide: true }).trim();
     }
     return execFileSync("ps", ["-p", String(pid), "-o", "command="], {
       encoding: "utf8",
@@ -210,7 +210,7 @@ export async function launch(tuiArgv: TuiArgv, serveEnv?: ServeEnv): Promise<voi
   // plugin and the viewer below can each act on it without probing anything themselves.
   let versionRaw: string;
   try {
-    versionRaw = execFileSync(BIN, ["--version"], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+    versionRaw = execFileSync(BIN, ["--version"], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], windowsHide: true }).trim();
   } catch (error) {
     const stderr = String((error as { stderr?: string | Buffer }).stderr ?? "").trim();
     process.stderr.write(`[cotal-connector] OpenCode version probe failed${stderr ? `: ${stderr.split(/\r?\n/).slice(-2).join(" | ")}` : ""}\n`);
@@ -247,7 +247,7 @@ export async function launch(tuiArgv: TuiArgv, serveEnv?: ServeEnv): Promise<voi
       OPENCODE_SERVER_PASSWORD: SECRET,
       OPENCODE_DB: dbPath,
     },
-    stdio: ["ignore", "pipe", "pipe"],
+    stdio: ["ignore", "pipe", "pipe"], windowsHide: true,
   });
   if (process.platform === "win32") writeFileSync(pidFile, String(serve.pid));
   serve.on("exit", () => rmSync(pidFile, { force: true }));

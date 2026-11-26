@@ -60,7 +60,7 @@ function invocation(cotal: string, args: readonly string[]): { file: string; arg
 /** Whether this Cotal runs `cotal acp`: its ACP extension is added. */
 function hasAcp(cotal: string): boolean {
   const run = invocation(cotal, ["acp", "--help"]);
-  return spawnSync(run.file, run.args, { stdio: "ignore", windowsVerbatimArguments: run.windowsVerbatimArguments }).status === 0;
+  return spawnSync(run.file, run.args, { stdio: "ignore", windowsVerbatimArguments: run.windowsVerbatimArguments, windowsHide: true }).status === 0;
 }
 
 /** Run `cotal <args>` in this terminal and return its exit status. */
@@ -74,7 +74,7 @@ function runSync(cotal: string, args: readonly string[]): number {
 /** Run `cotal <args>` with this process's standard streams, and resolve with its exit status. */
 function runCotal(cotal: string, args: readonly string[]): Promise<number> {
   const run = invocation(cotal, args);
-  const child = spawn(run.file, run.args, { stdio: "inherit", windowsVerbatimArguments: run.windowsVerbatimArguments });
+  const child = spawn(run.file, run.args, { stdio: "inherit", windowsVerbatimArguments: run.windowsVerbatimArguments, windowsHide: !args.includes("--auth") });
   for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) process.on(signal, () => child.kill(signal));
   return new Promise((resolve, reject) => {
     child.on("error", reject);

@@ -14,7 +14,7 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { readFileSync } from "node:fs";
 import { registry, type ExtensionRef } from "@cotal-ai/core";
-import { bindExtensionPeers, CorruptExtensionPackageError, extensionPackageDir, extensionsDir, hostPackageDir, importExtensionEntry, importInstalledExtension, installedExtensionPackage, installedExtensionVersion, resolveExtensionEntry, type InstalledExtension } from "@cotal-ai/workspace";
+import { bindExtensionPeers, CorruptExtensionPackageError, extensionPackageDir, extensionsDir, extensionsManifestPath, hostPackageDir, importExtensionEntry, importInstalledExtension, installedExtensionPackage, installedExtensionVersion, materializeFromManifest, resolveExtensionEntry, type InstalledExtension } from "@cotal-ai/workspace";
 // Not on the package's public surface: the same module instance the entry point above loads.
 import { upgradeRemedy } from "../dist/import-diagnosis.js";
 
@@ -199,6 +199,27 @@ try {
     check("no declared range: is not reported as damaged metadata", !m.includes("is corrupt or unreadable"), m);
   }
   check("all import-remedy assertions ran", passed + failed === 40, { passed, failed });
+
+  for (const name of ["no-spec-load", "no-spec-failure"]) {
+    const pkg = `@third/${name}`;
+    const version = "1.0.0";
+    const dir = extensionPackageDir(pkg);
+    const ref = { kind: "command", name };
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "package.json"), JSON.stringify({ name: pkg, version, main: "index.mjs", peerDependencies: { "@cotal-ai/core": "*" } }));
+    writeFileSync(extensionsManifestPath(), JSON.stringify({ extensions: [{ pkg, version, commands: [], provides: [ref] }] }));
+    const broken = name === "no-spec-failure";
+    writeFileSync(join(dir, "index.mjs"), broken ? 'throw new Error("broken extension entry");\n' :
+      `import { registry } from "@cotal-ai/core";\nregistry.register({ ...${JSON.stringify(ref)}, summary: "Fixture", run() {} });\n`);
+    let error: unknown;
+    try { await materializeFromManifest(ref); } catch (e) { error = e; }
+    if (broken) {
+      check("no manifest spec: a failed import keeps its cause and names the package to remove",
+        error instanceof Error && error.message.includes("broken extension entry") && error.message.includes(`cotal ext remove '${pkg}'`), error);
+    } else {
+      check("no manifest spec: the installed extension loads and registers", !error && registry.has(ref.kind, ref.name), error);
+    }
+  }
 
   {
     const dir = extensionPackageDir("@third/entry-precedence");
