@@ -13,6 +13,13 @@ export interface WindowsHost {
   listenOwnerPipe: ListenBridgePipe;
 }
 
+/** The CLI preloads these functions in the launcher process, where the gateway job must live. */
+export function windowsHostFromPreload(): WindowsHost | undefined {
+  const host: Partial<WindowsHost> | undefined = Object.getOwnPropertyDescriptor(globalThis, Symbol.for("cotal.hermes.windows-host.v1"))?.value;
+  if (typeof host?.startProcess !== "function" || typeof host.listenOwnerPipe !== "function") return;
+  return { startProcess: host.startProcess, listenOwnerPipe: host.listenOwnerPipe };
+}
+
 const STOP_SIGNALS = ["SIGINT", "SIGHUP", "SIGBREAK", "SIGTERM"] as const;
 
 export async function runWindowsGateway(pkgDir: string, env: NodeJS.ProcessEnv, root: string, startProcess: WindowsHost["startProcess"], start: (onShutdown: () => void) => ReturnType<typeof startSidecar>, reclaim: () => void): Promise<void> {

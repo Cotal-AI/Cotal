@@ -2,7 +2,6 @@ import { spawn as spawnProcess } from "node:child_process";
 import { realpathSync, rmSync, statSync } from "node:fs";
 import { constants as osConstants } from "node:os";
 import { resolve as resolvePath } from "node:path";
-import { fileURLToPath } from "node:url";
 import {
   assertValidRole,
   connectorServers,
@@ -1023,10 +1022,9 @@ export async function spawn(args: ParsedArgs): Promise<void> {
     // The child's watcher removes the launch's private files once it is gone, even if this process
     // is killed first (core launch-artifacts).
     const launched = reclaimWithChild(spec);
-    // The Windows Hermes launcher loads its host services in-process. Pass the built CLI's own
-    // path, not an environment setting or a dependency the extension must resolve.
+    // Node loads our private host services in the child, before the Hermes entry starts.
     const childArgs = process.platform === "win32" && agentType === "hermes"
-      ? [...launched.args, fileURLToPath(new URL(import.meta.url.endsWith(".ts") ? "../../dist/lib/hermes-windows-host.js" : "../lib/hermes-windows-host.js", import.meta.url))]
+      ? ["--import", new URL(import.meta.url.endsWith(".ts") ? "../../dist/lib/hermes-windows-preload.js" : "../lib/hermes-windows-preload.js", import.meta.url).href, ...launched.args]
       : launched.args;
     child = spawnProcess(launched.command, childArgs, {
       stdio: "inherit",

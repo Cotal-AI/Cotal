@@ -13,11 +13,11 @@ export { HERMES_PROVIDER_KEYS };
 
 /** The launcher owns the mesh endpoint and supervises the Hermes gateway as a child — see launch.ts.
  *  From the BUILD, `launch.js` is a self-contained ESM bundle (core + connector-core inlined): run it with
- *  this same node, so an installed plugin needs no `tsx` on disk. From SOURCE (dev, the package's
- *  `import` resolves to src/), run the `.ts` entry through tsx. */
+ *  this same node, so an installed plugin needs no `tsx` on disk. Windows also uses the built
+ *  launcher in a checkout so the CLI can preload host services in that same Node process. */
 const FROM_BUILD = import.meta.url.includes("/dist/");
-const LAUNCH_ENTRY = fileURLToPath(new URL(`./launch.${FROM_BUILD ? "js" : "ts"}`, import.meta.url));
-const LAUNCH_COMMAND = FROM_BUILD
+const LAUNCH_ENTRY = fileURLToPath(new URL(FROM_BUILD ? "./launch.js" : process.platform === "win32" ? "../dist/launch.js" : "./launch.ts", import.meta.url));
+const LAUNCH_COMMAND = FROM_BUILD || process.platform === "win32"
   ? process.execPath
   : fileURLToPath(new URL("../node_modules/.bin/tsx", import.meta.url));
 

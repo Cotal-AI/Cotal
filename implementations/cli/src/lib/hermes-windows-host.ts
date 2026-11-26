@@ -4,8 +4,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { listenPipe, windowsUserSid } from "@cotal-ai/seat";
 import { win32ProcessBinding, windowsCommandLine, windowsEnvironmentBlock } from "@cotal-ai/workspace";
 
-/** Private host for the Windows foreground Hermes launcher. The launcher imports this into its own
- *  process so the job still dies with the launcher. No native package is linked into the extension. */
+/** Start the gateway job in the launcher so its lifetime is bounded by the launcher's process. */
 export function startProcess(program: string, args: string[], env: NodeJS.ProcessEnv, log: string): {
   exited: Promise<number>;
   stop(): Promise<void>;
