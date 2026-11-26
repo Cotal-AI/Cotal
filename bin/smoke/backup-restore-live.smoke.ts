@@ -1009,13 +1009,13 @@ async function missingPidfileListenerScenario(): Promise<void> {
     assert.match(refusedBackup.stderr, /recorded NATS endpoint .* no listener; a process there may still be changing the preserved store, so nothing was copied/);
     assert.match(refusedBackup.stderr, /CONFLICT/, "it is a CONFLICT, as restore and resume refuse it");
     assert.ok(refusedBackup.stderr.includes(`stop the process that listens on ${server}, then run`), refusedBackup.stderr);
-    const retry = /then run (`{2,})(cotal backup create .+?)\1 again/.exec(refusedBackup.stderr)?.[2];
+    const retry = /then run (`{2,})((?:pnpm )?cotal backup create .+?)\1 again/.exec(refusedBackup.stderr)?.[2];
     assert.ok(retry, `its Next encloses the whole command, including the path's backticks\n${refusedBackup.stderr}`);
     assert.equal(existsSync(join(root, artifact)), false, "listener refusal happens before artifact creation");
     assert.equal(readMaintenanceJournal(root)?.state, "ready");
     await closeServer(foreign);
     foreign = undefined;
-    const copied = spawnSync("sh", ["-c", `cotal() { "$COTAL_TEST_TSX" "$COTAL_TEST_CLI" "$@"; }\n${retry}`], {
+    const copied = spawnSync("sh", ["-c", `cotal() { "$COTAL_TEST_TSX" "$COTAL_TEST_CLI" "$@"; }; pnpm() { "$@"; }\n${retry}`], {
       cwd: root, env: { ...env, COTAL_TEST_TSX: tsx, COTAL_TEST_CLI: cliPath }, encoding: "utf8", timeout: 240_000,
     });
     assert.equal(copied.status, 0, `the printed retry publishes the backup\n${copied.stdout}${copied.stderr}`);
