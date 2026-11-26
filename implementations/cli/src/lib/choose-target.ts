@@ -11,7 +11,7 @@ export function spaceChoiceRemedy(error: unknown, command: string, args: ParsedA
   const remove = command === "endpoint" && args.positionals[0] === "remove";
   const describe = command === "describe" || command === "endpoint" && args.positionals[0] === "describe";
   const endpointRead = command === "endpoint" && ["list", "show"].includes(args.positionals[0] ?? "list");
-  const brokerRead = error.details.server !== undefined && (command === "ps" ||
+  const brokerRead = error.details.server !== undefined && (command === "ps" || command === "whoami" ||
     command === "history" && !["clear", "limit"].includes(args.positionals[0] ?? ""));
   if (args.values.creds !== undefined && !endpointRead) return undefined;
   if (!show && !endpointRead && !remove && !describe && !brokerRead && command !== "who") return undefined;

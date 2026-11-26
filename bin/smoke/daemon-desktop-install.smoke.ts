@@ -390,4 +390,25 @@ try {
   setupHeld.release();
   await oldDaemon.close();
 }
+// The app's uninstallers send remove-service: nothing recorded is left alone, and this installation's
+// recorded service is removed through the shipped uninstall. Another installation's is kept (Windows setup proof).
+{
+  const none = isolated("remove-absent");
+  const absentRemoval = await request(none, "remove-service");
+  assert.equal(absentRemoval.ok, true, JSON.stringify(absentRemoval));
+  assert.equal((absentRemoval.result as { state?: string } | undefined)?.state, "absent");
+  assert.deepEqual(operations(none.calls), [], "with no recorded service, removal runs no native step");
+  checkInstallation(control);
+  const before = operations(control.calls).length;
+  const removal = await request(control, "remove-service", 150_000);
+  assert.equal(removal.ok, true, JSON.stringify(removal));
+  assert.equal((removal.result as { state?: string } | undefined)?.state, "removed");
+  const steps = operations(control.calls).slice(before);
+  assert.ok(steps.includes("stop") && steps.includes("disable"), `removal stops and disables the recorded unit: ${steps.join(",")}`);
+  assert.ok(!existsSync(control.receipt) && !existsSync(control.unit), "removal deletes the receipt and the unit");
+  const again = await request(control, "remove-service");
+  assert.equal((again.result as { state?: string } | undefined)?.state, "absent", "a second removal finds nothing");
+  console.log("remove-service: nothing recorded is left alone; this installation's service is removed");
+}
+
 console.log(`daemon-desktop-install: passed; isolated evidence retained at ${root}`);

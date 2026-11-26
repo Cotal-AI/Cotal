@@ -29,6 +29,7 @@ import { nextHeartbeat } from "./presence-heartbeat.js";
 import { PRESENCE_STORAGE } from "./streams.js";
 import { presenceBucket, dmStream, dmDurable, parseSubject } from "./subjects.js";
 import { isFromSubjectSender, authenticatedMessage, isReadableMessagePart } from "./endpoint-messages.js";
+import { hasStoredOrigin } from "./endpoint-provenance.js";
 import type { CotalMessage } from "./types.js";
 import { type ConsumerInfo, jetstream, jetstreamManager } from "@nats-io/jetstream";
 import { type KV, Kvm } from "@nats-io/kv";
@@ -457,6 +458,7 @@ export class EndpointConnection {
     this.delivery.subs.push(sub);
     void (async () => {
       for await (const m of sub) {
+        if (hasStoredOrigin(m.headers)) continue;
         let decoded: CotalMessage | undefined;
         try {
           decoded = m.json<CotalMessage>();
