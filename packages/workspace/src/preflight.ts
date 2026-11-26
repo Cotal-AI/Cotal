@@ -114,10 +114,12 @@ function addressHolder(target: MeshTarget): string | undefined {
 /** Probe a resolved target and, on failure, classify it — WITHOUT touching the registry. Returns the
  *  decision (incl. whether the caller SHOULD prune); the caller owns the `removeMesh` + message +
  *  exit. Probes with `probeCreds` when given (the caller's `--creds`/minted creds); otherwise mints
- *  a throwaway identity from the target's own trust material to test mere liveness. */
+ *  a throwaway identity from the target's own trust material to test mere liveness. If the caller
+ *  handles denied PID reads, keep probing the address without inferring local process state. */
 export async function preflightTarget(
   target: MeshTarget,
   probeCreds?: string,
+  onUnreadablePidfile?: (path: string, error: Error) => void,
 ): Promise<{ ok: true } | { ok: false; kind: PreflightFailure; prune: boolean; pid?: number; heldBy?: string }> {
   // A user-mode target has no probe credential by design (its auth is a per-connect bearer) — a
   // credless probe would be DENIED by the callout and misclassified as a stale registry entry
@@ -145,12 +147,23 @@ export async function preflightTarget(
         // status reports the journal's read failure separately as a warning.
       }
     } else if (projectRootProblem(target.root) !== "not-directory") {
-      const rawPid = readPidfile(localProcessPath(NATS_PIDFILE, { root: target.root, space: target.space }));
-      const pid = rawPid === undefined ? undefined : parsePid(rawPid);
-      brokerGone = rawPid === undefined || pid !== undefined && probeLiveness(pid) === "dead";
-      const record = rawPid === undefined ? undefined : parseRecord(rawPid);
-      const registered = loadMeshes().find(mesh => mesh.space === target.space && mesh.root === target.root);
-      ownBroker = record?.kind === "record" && assertRecordIdentity(record.record).kind === "match" && registered !== undefined && brokerAddressKey(registered.server) === brokerAddressKey(target.server);
+      const path = localProcessPath(NATS_PIDFILE, { root: target.root, space: target.space });
+      let rawPid: string | undefined | null = null;
+      try {
+        rawPid = readPidfile(path);
+      } catch (error) {
+        if (!onUnreadablePidfile || !(error instanceof Error)) throw error;
+        const code = (error.cause as NodeJS.ErrnoException | undefined)?.code;
+        if (code !== "EACCES" && code !== "EPERM") throw error;
+        onUnreadablePidfile(path, error);
+      }
+      if (rawPid !== null) {
+        const pid = rawPid === undefined ? undefined : parsePid(rawPid);
+        brokerGone = rawPid === undefined || pid !== undefined && probeLiveness(pid) === "dead";
+        const record = rawPid === undefined ? undefined : parseRecord(rawPid);
+        const registered = loadMeshes().find(mesh => mesh.space === target.space && mesh.root === target.root);
+        ownBroker = record?.kind === "record" && assertRecordIdentity(record.record).kind === "match" && registered !== undefined && brokerAddressKey(registered.server) === brokerAddressKey(target.server);
+      }
     }
     const host = new URL(target.server).hostname;
     const loopback = host === "127.0.0.1" || host === "localhost" || host === "[::1]";

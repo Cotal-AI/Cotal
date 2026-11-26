@@ -380,6 +380,16 @@ try {
   check("completion: send --channel offers the MESH's declared channels", sorted(sendComplete(["--channel", ""])).join(",") === "mesh-alpha,mesh-beta", sorted(sendComplete(["--channel", ""])));
   check("completion: personas show offers the MESH's persona names", sorted(personasComplete(["show", ""])).join(",") === "mesh-default,mesh-lead", sorted(personasComplete(["show", ""])));
   check("completion: personas show --space alpha offers ALPHA's names", sorted(personasComplete(["--space", "alpha", "show", ""])).join(",") === "alpha-only", sorted(personasComplete(["--space", "alpha", "show", ""])));
+  if (process.platform !== "win32") {
+    const path = join(MESH, ".cotal", "agents", "outbound-back\\slash.md");
+    writeFileSync(path, "---\nname: backslash\n---\nFixture.\n");
+    try {
+      const names = sorted(spawnComplete([""]));
+      check("completion: spawn omits the backslash selector and retains ordinary names", names.join(",") === "mesh-default,mesh-lead", names);
+    } finally {
+      rmSync(path, { force: true });
+    }
+  }
 
   // POSITIVE CONTROL for every "the cwd's names are absent" claim above. Those are all zeroes, and
   // a zero fuses two claims: "the instrument looked" and "there was nothing". This proves the
@@ -527,6 +537,18 @@ try {
   check("a planned server still lists the named prepared project's local catalog",
     offline.status === 0 && plannedServer.status === 0 && /offline-audit .* local persona files/.test(plannedServer.stdout) &&
     /\bdefault\b/.test(plannedServer.stdout), plannedServer.stdout + plannedServer.stderr);
+  if (process.platform !== "win32") {
+    const link = agentFilePath(realpathSync(offlineRoot), "shared");
+    symlinkSync("../../shared.md", link);
+    try {
+      const legacy = native(["personas", "list", "--space", "offline-audit"], CWD);
+      check("legacy list keeps readable personas and explains how to fix a missing link target",
+        legacy.status === 4 && /^default\s+default$/m.test(legacy.stdout) &&
+        /^shared\s+⨯ missing link target /m.test(legacy.stdout) &&
+        legacy.stdout.includes(`${link} is a link to ../../shared.md. Restore the target or replace the link with a regular persona file.`) &&
+        !legacy.stdout.includes("unparseable"), legacy.stdout + legacy.stderr);
+    } finally { unlinkSync(link); }
+  }
   const only = "offline-only";
   writeFileSync(agentFilePath(offlineRoot, only), `---\nname: ${only}\n---\nOnly in the other catalog.\n`);
   const listReceipt = native(args, CWD);

@@ -9,7 +9,8 @@ import React, { act, StrictMode } from "react";
 import { render, Text, useInput } from "ink";
 import { connect, type NatsConnection } from "@nats-io/transport-node";
 import { jetstreamManager } from "@nats-io/jetstream";
-import type { Presence } from "@cotal-ai/core";
+import { Kvm } from "@nats-io/kv";
+import { presenceBucket, type Presence } from "@cotal-ai/core";
 import { awaitBrokerReady, countedAssert, emitSentinel, freePort, killAndAwaitExit, SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { useListCursor } from "../dist/console/ui/useListCursor.js";
 import { CommandPalette } from "../dist/console/ui/CommandPalette.js";
@@ -204,11 +205,20 @@ try {
     for (const space of ["alpha", "beta", "gamma"]) {
       await jsm.streams.add({ name: `CHAT_${space}`, subjects: [`cursor.${space}`] });
     }
-    await term.key("r"); await term.screen("▸ alpha");
+    const presence = await new Kvm(nc).create(presenceBucket("alpha"));
+    await presence.put("local.manager", JSON.stringify({
+      card: { id: "local.manager", name: "manager", kind: "endpoint" }, status: "idle", ts: Date.now(),
+    } satisfies Presence));
+    await term.key("r"); await term.screen("▸ alpha   0 agents · 0 ch · 0 msgs");
+    await act(async () => { await pause(); });
     await term.key("\r"); assert.equal(selected, "alpha", "Picker refills with its first space selected");
     await term.key("j"); await term.key("\r"); assert.equal(selected, "beta");
     await term.key("\x1b[A"); await term.key("\r"); assert.equal(selected, "alpha");
     console.log("PASS space picker native listSpaces refresh after empty-list navigation");
+
+    await presence.put(peers[0].card.id, JSON.stringify(peers[0]));
+    await term.key("r"); await term.screen("▸ alpha   1 agents · 0 ch · 0 msgs");
+    console.log("PASS space picker counts agents and excludes endpoints");
   } finally { await term.close(); }
 } finally {
   await nc?.close();

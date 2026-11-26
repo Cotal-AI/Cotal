@@ -445,6 +445,11 @@ const personaTool = cotalToolSpecs(cfg).find((s) => s.name === "cotal_persona") 
   | { schema: { shape: Record<string, unknown> }; run: (agent: MeshAgent, config: AgentConfig, args: Record<string, unknown>) => Promise<{ text: string; isError?: boolean }> }
   | undefined;
 check("cotal_persona schema exposes capabilities", personaTool !== undefined && "capabilities" in personaTool.schema.shape);
+const personaName = personaTool?.schema.shape.name as { safeParse: (name: string) => { success: boolean; error?: Error } } | undefined;
+const invalidPersonaName = personaName?.safeParse("-reviewer");
+check("cotal_persona refuses a leading hyphen and accepts a corrected name",
+  invalidPersonaName?.success === false && invalidPersonaName.error?.message.includes("starting with a letter, digit or _") === true &&
+  personaName?.safeParse("reviewer").success === true, invalidPersonaName);
 const definer = new MeshAgent(cfg);
 const callsDefine = record(definer);
 await personaTool?.run(definer, cfg, { name: "probe", prompt: "You probe.", capabilities: ["spawn"] });
@@ -494,7 +499,7 @@ check(
   onceOn.text,
 );
 
-const EXPECTED_CHECKS = 81;
+const EXPECTED_CHECKS = 82;
 if (checks !== EXPECTED_CHECKS) {
   failures++;
   console.log(`SUITE INCOMPLETE: ${checks} of ${EXPECTED_CHECKS} checks`);

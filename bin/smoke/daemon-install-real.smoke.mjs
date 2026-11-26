@@ -219,6 +219,20 @@ try {
       && (replacement.pid !== second.pid || afterBirth !== beforeBirth) && processStartTime(second.pid) !== beforeBirth);
     check("restart retains the exact task source and receipt", readFileSync(plan.unitPath).equals(sourceBefore) && readFileSync(receipt).equals(receiptBefore));
   }
+  {
+    // Nothing here starts the daemon again: only the OS's own supervisor may bring it back.
+    const killed = (await statusUntil(true)).body.result;
+    process.kill(killed.pid, "SIGKILL");
+    const killedAt = Date.now();
+    let revived;
+    while (Date.now() - killedAt < 100_000) {
+      const r = call("status");
+      if (r.exit === 0 && r.body.result?.state === "ready" && r.body.result.pid !== killed.pid) { revived = r.body.result; break; }
+      await delay(1000);
+    }
+    report.revivedAfterMs = revived ? Date.now() - killedAt : null;
+    check("the service manager starts a killed daemon again by itself", revived !== undefined);
+  }
   if (process.platform === "linux") {
     rmSync(home, { recursive: true });
     const missingStatus = call("status");

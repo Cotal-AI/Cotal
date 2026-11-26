@@ -63,7 +63,6 @@ const { ConnectRefusal, authDir, connectOrThrow, recordMesh } = await import("@c
 await import("@cotal-ai/cli"); // register the same built CLI graph the assertions inspect
 const { Manager } = await import("@cotal-ai/manager");
 import type { Command, Connector, LaunchOpts, SpaceAuth } from "@cotal-ai/core";
-const TSX = join(import.meta.dirname, "..", "..", "node_modules", ".bin", "tsx");
 
 /** The redeem decision under test, described structurally rather than imported as a type. A tree
  *  that predates the fix exports neither the function nor its types; naming them here is what lets
@@ -211,7 +210,7 @@ const cliEnv = { ...cleanEnv, COTAL_HOME: home, XDG_CONFIG_HOME: join(home, "xdg
 
 /** Run the CLI's `attach` and stop at the session banner, exit or deadline. */
 async function attachFrom(cwd: string, args: string[], ms = 25_000): Promise<string> {
-  const p = spawnProc(TSX, [BIN, "attach", ...args], {
+  const p = spawnProc(process.execPath, ["--import", import.meta.resolve("tsx"), BIN, "attach", ...args], {
     cwd,
     env: cliEnv,
     stdio: ["ignore", "pipe", "pipe"],
@@ -228,13 +227,53 @@ async function attachFrom(cwd: string, args: string[], ms = 25_000): Promise<str
   return out.replace(/\x1b\[[0-9;]*m/g, "");
 }
 
-async function checkPinnedRetries(): Promise<void> {
-  const route = ["--space", SPACE, "--server", OPEN_SERVER];
-  const options = { cwd: rootOpen, env: cliEnv, encoding: "utf8" as const, timeout: 20_000 };
-  const run = (args: string[]) => new Promise<{ status: number | string | null | undefined; stdout: string; stderr: string }>((resolve) => {
-    execFile(process.execPath, ["--import", import.meta.resolve("tsx"), BIN, ...args], options, (error, stdout, stderr) =>
+function runFrom(cwd: string, args: string[]) {
+  return new Promise<{ status: number | string | null | undefined; stdout: string; stderr: string }>((resolve) => {
+    execFile(process.execPath, ["--import", import.meta.resolve("tsx"), BIN, ...args],
+      { cwd, env: cliEnv, encoding: "utf8", timeout: 30_000 }, (error, stdout, stderr) =>
       resolve({ status: error ? error.code : 0, stdout, stderr }));
   });
+}
+
+async function checkScopedSeatHints(manager: InstanceType<typeof Manager>): Promise<void> {
+  const name = "scoped-seat";
+  const other = mkdtempSync(join(tmpdir(), "cotal-openattach-other-"));
+  const offline = `nats://127.0.0.1:${await freePort()}`;
+  must("an offline mesh is registered and selected in the other project",
+    (await runFrom(other, ["meshes", "add", "offlinefixture", "--root", ".", "--mode", "open", "--server", offline, "--force"])).status === 0
+    && (await runFrom(other, ["use", "offlinefixture"])).status === 0);
+  const seat = await manager.startAgent({ name: "seat", identity: name, agent: "e2e", cwd: rootOpen, events: false });
+  must("the scoped hint fixture has a managed seat", seat.ok, seat);
+
+  const route = ["--space", SPACE, "--server", OPEN_SERVER];
+  const listing = await runFrom(other, ["ps", ...route, "--plain"]);
+  const attach = /^\s+((?:pnpm )?cotal attach <name>.*?) {2,}Return to an agent's terminal$/m.exec(listing.stdout)?.[1];
+  const stop = /^\s+((?:pnpm )?cotal stop <name>.*?) {2,}Stop one agent$/m.exec(listing.stdout)?.[1];
+  must("ps from the other project lists the seat and prints both action hints",
+    listing.status === 0 && listing.stdout.includes(`Mesh: ${SPACE}`) && listing.stdout.includes(name) && Boolean(attach && stop), listing);
+  ok("both ps action hints keep the explicit space and broker", [attach, stop].every((hint) => hint?.endsWith(`<name> ${route.join(" ")}`)), listing);
+  const instance = /instance:\s+([a-z0-9]{26,32})\b/.exec(listing.stdout)?.[1];
+  must("ps prints the manager instance for the displayed seat", Boolean(instance), listing);
+  const pinned = await runFrom(other, ["ps", "--on", instance!, ...route, "--plain"]);
+  ok("ps action hints keep an explicit manager pin", pinned.status === 0 && ["attach", "stop"].every((verb) =>
+    ["cotal", "pnpm cotal"].some((cli) => pinned.stdout.includes(`  ${cli} ${verb} <name> --on ${instance} ${route.join(" ")}`))), pinned);
+  for (const selector of [route.slice(0, 2), route.slice(2)]) {
+    const single = await runFrom(other, ["ps", ...selector, "--plain"]);
+    ok(`both ps action hints keep ${selector.join(" ")} on its own`, single.status === 0 && ["attach", "stop"].every((verb) =>
+      ["cotal", "pnpm cotal"].some((cli) => single.stdout.includes(`  ${cli} ${verb} <name> ${selector.join(" ")}  `))), single);
+  }
+  const hintArgs = (hint: string) => hint.replace("<name>", name).split(" ").slice(hint.startsWith("pnpm cotal ") ? 2 : 1);
+  const attached = await attachFrom(other, hintArgs(attach!).slice(1));
+  ok("the printed attach reaches the displayed mesh instead of the offline selection",
+    attached.includes(`attached to ${name}`) && attached.includes(SPACE), attached);
+  const stopped = await runFrom(other, hintArgs(stop!));
+  ok("the printed stop reaches the displayed mesh instead of the offline selection",
+    stopped.status === 0 && stopped.stdout.includes("Agent stop acknowledged") && stopped.stdout.includes(`Mesh: ${SPACE}`), stopped);
+}
+
+async function checkPinnedRetries(): Promise<void> {
+  const route = ["--space", SPACE, "--server", OPEN_SERVER];
+  const run = (args: string[]) => runFrom(rootOpen, args);
   const roster = await run(["ps", ...route]);
   const instance = /instance:\s+([a-z0-9]{26,32})\b/.exec(roster.stdout ?? "")?.[1];
   must("ps lists the managed seat and its manager instance on the open mesh",
@@ -568,6 +607,7 @@ try {
     fromOpen.slice(-900),
   );
   await checkPinnedRetries();
+  await checkScopedSeatHints(mgr);
 
   console.log(`\nattach open-mode: ${pass} passed, ${fail} failed`);
   if (!fail) exitCode = 0;
