@@ -266,8 +266,10 @@ start fails, the stop still runs before the start failure is printed. A hangup, 
 terminal, leaves the stack running and exits 129. The notice gives two commands that change to the
 project folder: `cotal down --dry-run` to inspect the stack and `cotal down --yes` to stop it.
 If the folder was moved or deleted, the notice gives a stop command to run from another folder.
-Each command includes the launching `COTAL_HOME` when it differs
-from the default. Copy the full command. If the launching Cotal, its Node runtime or its loader
+Each command includes the launching `COTAL_HOME` when it differs from the default.
+On Windows, the commands use a child PowerShell and set the launching home there. Paste the full
+command into PowerShell or Command Prompt. It does not change your terminal's folder or environment.
+If the launching Cotal, its Node runtime or its loader
 cannot run from another folder, use a Cotal installation outside the project to run the printed
 command there. A hangup while the stack is still
 starting lets the start settle, prints the stop command and exits 129, and leaves what the start left.
