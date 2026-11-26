@@ -138,6 +138,7 @@ export const cotal: Plugin = async () => {
     markInterrupt: markInterruptIntent,
     firstTurnSystem: () => firstTurnSystem(),
     primed: () => { primed = true; },
+    launch: { model: config.model, variant: config.variant },
     warn: log,
   });
   const agent = new MeshAgent(config, undefined, { commands: commands.dispatcher });
@@ -902,10 +903,10 @@ export const cotal: Plugin = async () => {
       const brief = briefed ? undefined : agent.channelBriefing();
       if (brief) parts.unshift({ type: "text", text: brief });
       if (parts.length === 0 && !turnPeek) return;
-      const body: { parts: typeof parts; system?: string } = { parts };
       // persona once, as system (no --append-system-prompt), with the shared briefing after it —
-      // gated on persona so we never replace OpenCode's default system.
-      body.system = firstTurnSystem();
+      // gated on persona so we never replace OpenCode's default system. The model an owner switched
+      // to rides every prompt, since 1.x has no route that sets a session's model.
+      const body = { parts, ...commands.promptModel(), system: firstTurnSystem() };
       // The surface opens the batch, which arms the turn end BEFORE the await: a turn-end signal can
       // land before the server request resolves, and completeTurn bails unless armed — arming after
       // would drop it and wedge the agent.

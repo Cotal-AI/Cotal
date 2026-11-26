@@ -280,7 +280,8 @@ Each is one Harness request and starts no model turn. The host runs queued comma
 runs, before the next inbox turn. A call whose arguments Jcode cannot take ends `refused` with
 `failed-precondition` before Jcode sees it. `clear` is not offered: Jcode answers it with a session
 status the host reads as busy, so the seat would stop taking messages. Model and reasoning effort
-are set through [model selection](#model-selection), not as commands.
+are set at launch through [model selection](#model-selection), and on a running seat through
+[`set-model`](#switching-the-model).
 
 `interrupt` sends Jcode's cancel for the running turn and answers `interrupted`, or `idle` when no
 turn runs. Jcode ends a cancelled turn as it ends
@@ -342,9 +343,9 @@ Jcode reports no reasoning efforts per model, so the catalog offers no variants.
 list, for example before `jcode login`, the read fails and names the error Jcode printed. Each read
 runs `jcode model list` again, so `--refresh` changes nothing.
 
-The Harness API can set a requested effort but cannot read an effective effort back. Its runtime
-identity reports provider, model, and routes only; no reply or event carries the applied tier. Cotal
-therefore records the accepted request and does not relabel it as an observed effect.
+At launch the connector reads Jcode's runtime identity through the SDK, which reports provider,
+model, and routes and drops the effort. Cotal therefore records the accepted request and does not
+relabel it as an observed effect. A [switch](#switching-the-model) reads the effort Jcode reports.
 
 `--variant` is the session's **reasoning effort**, applied after the model and before the seat's
 first turn, so a seat never serves a turn at an effort nobody chose. A persona's `variant:` is the
@@ -394,6 +395,31 @@ or at connector launch as a backstop:
   subset can be safely merged.
 - **Launch options:** the connector does not map arbitrary flags/config into the Harness API.
 - **Containers:** the current deploy image does not bundle Jcode, so there is no containerized Jcode connector today.
+
+### Switching the model
+
+On a per-user mesh the owner switches the agent's model with the `agent` endpoint's `set-model`
+command. The host sends Jcode's Harness `set_model` with the model, then `set_reasoning_effort`
+with the variant. The effort goes second because a model switch can change or clear it. Without a
+variant no effort is sent, and the model runs at the effort Jcode leaves it. Without a model only
+the effort changes. The answer names the model and effort that Jcode's runtime info reports after
+the switch, and no variant when Jcode reports no effort.
+
+Jcode takes a bare model id, so a `provider/model` id is refused as `failed-precondition` with the
+bare id to pass. Jcode answers an unknown model and a model its provider refuses alike, with
+`invalid_request`, so both are refused as `failed-precondition`. So is an effort Jcode refuses when
+no model was asked for. A refusal changes nothing. An effort Jcode refuses after it switched the
+model ends `internal` with the outcome unknown, and its message names both. The seat then runs the
+new model at the effort Jcode kept.
+
+A switch applies from the next turn. Jcode holds a switch asked for during a turn until that turn
+ends, and answers only then, which can be after the SDK's request timeout. So a switch while a turn
+runs, or while the host is starting one, is refused as `failed-precondition`, and the owner asks
+again when the turn ends. A switch before the session exists or while the host replaces its Jcode
+connection is refused the same way. The switch belongs to the session, so turns typed in the
+attached TUI run on it too. Jcode saves it with the session and leaves the operator's own Jcode
+defaults as they were. When the Manager starts the seat again, it launches Jcode on the switched
+model and variant.
 
 ## Event plane
 

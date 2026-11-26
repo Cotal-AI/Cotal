@@ -26,7 +26,7 @@ import { spawnSync } from "node:child_process";
 import { basename, dirname, isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { registry, type Command, type FlagSpec, type ParsedArgs } from "@cotal-ai/core";
-import { CommandFailure, logicalExecutionEntry, codeSpan, homeCotalDir, keptCatalogCredentials, jsonFlag, plainFlag, presentationOf, recordOperationContext, renderReport, writeResult, type Report } from "@cotal-ai/workspace";
+import { CommandFailure, logicalExecutionEntry, codeSpan, homeCotalDir, keptCatalogCredentials, jsonFlag, plainFlag, presentationOf, recordOperationContext, renderReport, windowsShellWord, writeResult, type Report } from "@cotal-ai/workspace";
 import { cloudAuthUrl, isCotalCloudIdp, openLoginBrowser, isDiscoveryName, resolveDiscoveryLogin } from "@cotal-ai/workspace";
 import { chooseAccountChoice, IdpConfigurationError, normalizeIdpUrl } from "@cotal-ai/auth";
 import { EndpointRefusal, defaultPeerUid, defaultPeerPid, checkDir, daemonPaths, daemonPathsFor, type DaemonPaths, type EndpointProblemCode } from "./endpoint.js";
@@ -189,8 +189,10 @@ async function status(args: ParsedArgs): Promise<void> {
       });
     }
     if (process.platform === "win32" && e instanceof EndpointRefusal && e.code === "NOT_RUNNING") {
+      const start = codeSpan(daemonCommandCopy("start", home));
+      const shell = home !== undefined && home !== homeCotalDir() && windowsShellWord(home) === undefined ? " in PowerShell" : "";
       throw new CommandFailure("refused", "TARGET_UNAVAILABLE", e.message, {
-        remedy: `start the owned task with ${daemonCommandCopy("start", home)}; read ${nativeDaemonLog(paths.state)} for its last launch output, and inspect the task's state and last result in Task Scheduler if no log was created`,
+        remedy: `start the owned task with ${start}${shell}; read ${nativeDaemonLog(paths.state)} for its last launch output, and inspect the task's state and last result in Task Scheduler if no log was created`,
         native: { code: e.code },
       });
     }

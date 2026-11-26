@@ -171,6 +171,19 @@ export interface CodexSkill {
   enabled: boolean;
 }
 
+/** One model as `model/list` reports it, with only the fields the model switch reads. */
+export interface CodexModel {
+  model?: string;
+  supportedReasoningEfforts?: { reasoningEffort?: string }[];
+  defaultReasoningEffort?: string;
+}
+
+/** The model and reasoning effort a thread runs from its next turn. */
+export interface ModelSelection {
+  model: string;
+  effort: string;
+}
+
 /** One decoded line off the app-server: a response, a notification, or a server→client request. */
 interface RpcMessage {
   id?: number | string;
@@ -496,6 +509,7 @@ export class AppServerDriver extends EventEmitter {
     this.threadId = id;
     this.context = undefined;
     this.startedModel = started.model;
+    await this.reapplyModel(id);
     // Materialize the thread's rollout file. `thread/start` alone writes NOTHING to disk, and
     // `thread/resume` (how the TUI attaches) fails with "no rollout found" until something does
     // — so without this the TUI could not attach until after the agent's first mesh turn.
@@ -538,11 +552,55 @@ export class AppServerDriver extends EventEmitter {
     });
   }
 
-  /** The model the thread actually started with (config default or `-c model` override). */
+  /** The model the thread runs: the one it started with (config default or `-c model` override), or
+   *  the owner's switch once Codex took it. */
   private startedModel?: string;
 
   get model(): string | undefined {
     return this.startedModel;
+  }
+
+  /** The owner's last model switch, which outlives the app-server. */
+  private selection?: ModelSelection;
+
+  /** Every model this app-server runs, hidden ones included, read page by page from `model/list`. */
+  async listModels(): Promise<CodexModel[]> {
+    const models: CodexModel[] = [];
+    let cursor: string | undefined;
+    do {
+      const page = (await this.request("model/list", { includeHidden: true, ...(cursor ? { cursor } : {}) })) as { data?: CodexModel[]; nextCursor?: string | null } | undefined;
+      if (!Array.isArray(page?.data)) throw new Error("model/list answered with no data list");
+      models.push(...page.data);
+      cursor = page.nextCursor ?? undefined;
+    } while (cursor);
+    return models;
+  }
+
+  /** Run the thread on `selection` from its next turn. `thread/settings/update` leaves a running turn
+   *  as it is and tells every attached client, so the TUI's own turns follow. Model and effort both
+   *  go, because an omitted effort keeps the previous one. */
+  async switchModel(selection: ModelSelection): Promise<void> {
+    if (!this.threadId) throw new Error("thread not started");
+    await this.applyModel(this.threadId, selection);
+    this.selection = selection;
+  }
+
+  private async applyModel(threadId: string, { model, effort }: ModelSelection): Promise<void> {
+    await this.request("thread/settings/update", { threadId, model, effort });
+    this.startedModel = model;
+  }
+
+  /** A restarted app-server starts its thread on the launch config, so the owner's switch is applied
+   *  again before the thread runs a turn. A thread that cannot take it fails the start, because it
+   *  would otherwise run a model the agent's card does not show. */
+  private async reapplyModel(threadId: string): Promise<void> {
+    const selection = this.selection;
+    if (!selection) return;
+    try {
+      await this.applyModel(threadId, selection);
+    } catch (e) {
+      throw new Error(`could not switch the new thread to ${selection.model} at ${selection.effort} effort again: ${(e as Error).message}`);
+    }
   }
 
   /** Begin a new user turn — wakes the session. The active turn id is adopted from the

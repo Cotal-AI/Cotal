@@ -253,8 +253,9 @@ import ts from "typescript";
 import { parse as parseMarkdown, postprocess, preprocess } from "micromark";
 import { gfm } from "micromark-extension-gfm";
 import { mdxjs } from "micromark-extension-mdxjs";
-import { existsSync, readFileSync, readdirSync } from "node:fs";
-import { join, dirname, relative, sep } from "node:path";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { basename, join, dirname, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
@@ -579,7 +580,8 @@ const SEAMS: Seam[] = [
   // states `tls: false` for the suite's loopback broker.
   // 470/377 -> 471/378: spawn-auto-name adds one admin control connection to the Manager it
   // drives. It states `tls: false` for the suite's loopback broker.
-  { fn: "standaloneConnectOpts", key: "tls", sites: 471, untypecheckedSites: 378 },
+  // The terminal session suites add twelve loopback broker connections with explicit TLS policy.
+  { fn: "standaloneConnectOpts", key: "tls", sites: 484, untypecheckedSites: 391 },
 ];
 
 const SITE_COUNTS = JSON.parse(readFileSync(new URL("./required-arg-sites.json", import.meta.url), "utf8")) as Record<string, number>;
@@ -606,6 +608,8 @@ const censusDrift = (expected: Record<string, number>, actual: Record<string, nu
  * directory ever holds vendored code, add it here, so that the skip is a decision on the record.
  */
 const SKIP_DIRS = new Set(["node_modules", "dist", ".git", ".internal", "build", "coverage", ".next", "out"]);
+// TypeDoc and the site's published copy display API names as reference text, not as source.
+const TYPEDOC_DIRS = new Set([join("website", "typedoc"), join("website", "public", "api", "typescript")]);
 const EXTS = [".ts", ".tsx", ".mts", ".cts", ".mjs", ".cjs", ".js", ".jsx"];
 
 /**
@@ -691,20 +695,18 @@ function frontmatter(text: string): { code: string; restAt: number } | undefined
 }
 
 /**
- * Another checkout parked inside this one is not part of this tree, and its copy of a source file
- * answers to its own commit. `.git` marks one whether it is a clone (a directory) or a worktree (a
- * file holding `gitdir:`), so `existsSync` covers both without caring which. This is deliberately a
- * structural test rather than another SKIP_DIRS name: a name list cannot know where someone parks a
- * worktree, and the counts below are exact numbers that a second copy multiplies.
+ * Both walks share the same tree boundary. A nested checkout belongs to its own tree, whether
+ * `.git` is a directory (a clone) or a file (a worktree).
  */
-const isNestedCheckout = (path: string): boolean => existsSync(join(path, ".git"));
+const skipDirectory = (root: string, path: string): boolean =>
+  SKIP_DIRS.has(basename(path)) || TYPEDOC_DIRS.has(relative(root, path)) || existsSync(join(path, ".git"));
 
-function sources(dir: string, acc: string[] = []): string[] {
+function sources(root: string, dir = root, acc: string[] = []): string[] {
   for (const e of readdirSync(dir, { withFileTypes: true })) {
     const p = join(dir, e.name);
     if (e.isDirectory()) {
-      if (SKIP_DIRS.has(e.name) || isNestedCheckout(p)) continue;
-      sources(p, acc);
+      if (skipDirectory(root, p)) continue;
+      sources(root, p, acc);
     } else if (EXTS.some((x) => e.name.endsWith(x)) || scanned(extOf(e.name))) acc.push(p);
   }
   return acc;
@@ -1852,11 +1854,11 @@ function classify(arg: ts.Expression | undefined, key: string, src: ts.SourceFil
 /** Every call of the seam in one file, classified, plus every escape of its name. */
 /** Every file extension present in the walked tree, so the reach claim can be checked against the
  *  repository rather than against memory. */
-function extensionsPresent(dir: string, acc: Set<string> = new Set()): Set<string> {
+function extensionsPresent(root: string, dir = root, acc: Set<string> = new Set()): Set<string> {
   for (const e of readdirSync(dir, { withFileTypes: true })) {
     if (e.isDirectory()) {
       const p = join(dir, e.name);
-      if (!SKIP_DIRS.has(e.name) && !isNestedCheckout(p)) extensionsPresent(p, acc);
+      if (!skipDirectory(root, p)) extensionsPresent(root, p, acc);
     }
     else acc.add(extOf(e.name));
   }
@@ -2761,6 +2763,21 @@ console.log("A. the reader itself, on fixtures whose verdicts are known");
 }
 
 console.log("\nB. the seam, across every source the compiler may or may not read");
+{
+  const root = mkdtempSync(join(tmpdir(), "required-arg-seam-"));
+  try {
+    const authored = join(root, "website", "public", "api", "reference", "index.html");
+    for (const file of [authored, join(root, "website", "typedoc", "index.html"),
+      join(root, "website", "public", "api", "typescript", "index.html")]) {
+      mkdirSync(dirname(file), { recursive: true });
+      writeFileSync(file, "");
+    }
+    const walked = sources(root);
+    check("the walk skips both TypeDoc output trees but still reads authored HTML", walked.length === 1 && walked[0] === authored, walked);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}
 {
   const call = "standaloneConnectOpts({ tls: false });";
   const scan = (file: string, text: string) => summarize(sitesIn(file, text, SEAMS[0])).sites;

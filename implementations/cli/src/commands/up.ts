@@ -1454,12 +1454,12 @@ async function runUp(args: ParsedArgs, invokedFrom: string, inheritedLock?: Main
       // exit 0. A service unit relying on `--foreground` read that exit as the stack ending, stopped
       // it, and restarted into the same branch. Refuse and name the remedy.
       if (values.foreground) {
-        console.error(
-          c.red(
-            `✗ mesh "${held.space}" is already running at ${server} - \`cotal up --foreground\` starts nothing here, so it can't keep it in this terminal; \`cotal down\` it first, then \`cotal up --foreground\``,
-          ),
-        );
-        process.exit(1);
+        const stop = held.origin === "up"
+          ? `from ${shellWord(held.root)}, inspect the stack with ${codeSpan(`${displayCmd()} down --dry-run`)} and stop it with ${codeSpan(`${displayCmd()} down --yes`)}`
+          : "stop the broker with the launcher that started it";
+        throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `mesh "${held.space}" is already running and this request starts nothing, so it can't keep it in this terminal`, {
+          target: { root, space: held.space }, remedy: `${stop}; then retry the original foreground command unchanged from its original folder`,
+        });
       }
       // A running broker cannot change its transport either, and for exactly the reason it cannot
       // change its auth mode: the listener's TLS config was fixed when nats-server read its config

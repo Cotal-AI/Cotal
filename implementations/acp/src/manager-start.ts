@@ -34,24 +34,45 @@ export function startLine(space: string, stdout: string): string {
   return startResult(stdout)?.outcome === "no-op" ? `This machine's manager for ${space} is running. ${idle}` : `Started this machine's manager for ${space}. ${idle}`;
 }
 
-/** Run `cotal manager start --space <space> --idle-exit 600` with the node and cotal entry this
- *  process runs from, as `cotal acp --auth` runs `cotal login`. It returns once the manager serves
- *  its endpoint, and the manager runs detached from this process. Rejects with
- *  {@link NoLaunchManager} naming the start's reason. */
-export async function startManager(space: string): Promise<string> {
-  const args = [...process.execArgv, process.argv[1]!, "manager", "start", "--space", space, "--idle-exit", String(IDLE_EXIT_SECONDS), "--json"];
-  const child = spawn(process.execPath, args, { stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
+/** Run `cotal <args>` with the node and cotal entry this process runs from, as `cotal acp --auth`
+ *  runs `cotal login`. Rejects only when the process could not be started. */
+async function runCotal(args: readonly string[]): Promise<{ code: number | null; stdout: string; stderr: string }> {
+  const child = spawn(process.execPath, [...process.execArgv, process.argv[1]!, ...args], { stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
   let stdout = "";
   let stderr = "";
   child.stdout.on("data", (b: Buffer) => (stdout += b));
   child.stderr.on("data", (b: Buffer) => (stderr += b));
-  const failed = (why: string) => new NoLaunchManager(`Could not start this machine's manager for ${space}: ${why}`);
   const code = await new Promise<number | null>((resolve, reject) => {
-    child.once("error", (e) => reject(failed(e.message)));
+    child.once("error", reject);
     child.once("close", resolve);
   });
+  return { code, stdout, stderr };
+}
+
+/** Run `cotal manager start --space <space> --idle-exit 600`. It returns once the manager serves its
+ *  endpoint, and the manager runs detached from this process. Rejects with {@link NoLaunchManager}
+ *  naming the start's reason. */
+export async function startManager(space: string): Promise<string> {
+  const failed = (why: string) => new NoLaunchManager(`Could not start this machine's manager for ${space}: ${why}`);
+  const { code, stdout, stderr } = await runCotal(["manager", "start", "--space", space, "--idle-exit", String(IDLE_EXIT_SECONDS), "--json"]).catch((e: Error) => Promise.reject(failed(e.message)));
   if (code !== 0) throw failed(startFailure(code, stdout, stderr));
   return startLine(space, stdout);
+}
+
+/** The manager instance a `cotal manager status --json` result names as running on this machine, or
+ *  undefined when it names none, as when no manager service is recorded here or it is not running.
+ *  The service record is this machine's own: its process check refuses another machine's or boot's. */
+export function recordedInstance(stdout: string): string | undefined {
+  const result = (startResult(stdout) as { result?: { kind?: unknown; observedProcess?: unknown; nativeEndpoint?: { instanceId?: unknown } | null } } | undefined)?.result;
+  const id = result?.nativeEndpoint?.instanceId;
+  return result?.kind === "service-status" && result.observedProcess === "running" && typeof id === "string" ? id : undefined;
+}
+
+/** The manager instance this machine's manager service for `space` runs, from `cotal manager status`,
+ *  or undefined when none runs here. A manager that an older release started names no machine, and
+ *  this is how the bridge knows it runs here. */
+export async function recordedManager(space: string): Promise<string | undefined> {
+  return recordedInstance((await runCotal(["manager", "status", "--space", space, "--json"])).stdout);
 }
 
 /** The managers a new agent may start on. When none of them is this machine's, as when none may or

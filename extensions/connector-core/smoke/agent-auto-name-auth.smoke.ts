@@ -9,7 +9,9 @@
  * name and an `@mention` of it in a channel still reach it, and the label resolves to no one; an
  * owner `set-name` after labelling sets the name and drops the label in one record; a failed hook
  * shows no label and removes the mark; an owner `set-name` while the hook is out removes the mark at
- * once, and the hook's later reply sets no label; a `set-name` with the agent's current name drops its
+ * once, and the hook's later reply sets no label; an owner `set-label` while the hook is out shows the
+ * owner's label and keeps the launch name, removes the mark at once, and neither the end of naming nor
+ * the hook's later reply replaces that label; a `set-name` with the agent's current name drops its
  * label; the owner's watch reports each change of the label and the mark; a label equal to another
  * live agent's name is shown, and that name still resolves to the other agent; a direct message from
  * another owner's member neither labels the agent nor ends naming, and the owner's next one still
@@ -66,7 +68,7 @@ interface Who { owner: string; actor: string; kind: "interactive" | "managed-age
 const who = (actor: string, kind: Who["kind"] = "managed-agent", owner = A): Who => ({ owner, actor, kind, uid: mintLifecycleUid() });
 const W = {
   web: who("web", "interactive"), sender: who("sender"), rival: who("rival"), bob: who("bob", "managed-agent", B), caller: who("caller"),
-  named: who("named"), guarded: who("guarded"), failer: who("failer"), raced: who("raced"), taker: who("taker"), launcher: who("launcher"), plain: who("plain"), stopper: who("stopper"),
+  named: who("named"), guarded: who("guarded"), failer: who("failer"), raced: who("raced"), labeller: who("labeller"), taker: who("taker"), launcher: who("launcher"), plain: who("plain"), stopper: who("stopper"),
 };
 const ledger = new Map(Object.values(W).map((w) => [w.uid, w]));
 const resolveAcl: AclResolver = (t) => {
@@ -244,6 +246,27 @@ try {
     await wait(800);
     check("the model's later reply sets no label over the owner's name", agent.ep.card.name === "Owner pick" && card(W.raced)?.card.name === "Owner pick" && label(W.raced) === undefined
       && records(W.raced).every((x) => x.label === undefined), { card: agent.ep.card.name, shown: card(W.raced)?.card.name, label: label(W.raced) });
+  }
+
+  console.log("\nan owner label while the request is out");
+  {
+    const h = hook();
+    const agent = await seat(W.labeller, { hook: h.fn });
+    await agent.start();
+    await until(() => mark(W.labeller) === "pending");
+    await dm(W.labeller, "migrate the billing tables");
+    await until(() => h.calls.length === 1);
+    const r = await webEp.callPrincipal({ endpoint: AGENT_ENDPOINT, principal: { owner: A, actor: "labeller", uid: W.labeller.uid, runtimeId: processRuntime(W.labeller.uid).id },
+      command: "set-label", authority: "owner", args: { label: "Billing work" }, deadlineMs: 15_000 });
+    check("the owner's set-label answers ok while the request is out", r.ok, r);
+    check("the mark goes at once, and the owner's label shows with the launch name", await until(() => label(W.labeller) === "Billing work" && mark(W.labeller) === undefined)
+      && card(W.labeller)?.card.name === "labeller", { name: card(W.labeller)?.card.name, mark: mark(W.labeller), label: label(W.labeller) });
+    check("the request is aborted", h.calls[0]!.signal.aborted);
+    h.answer("Billing table migration");
+    await wait(800);
+    check("neither the end of naming nor the model's later reply replaces the owner's label",
+      agent.ep.card.meta?.[AGENT_LABEL_META_KEY] === "Billing work" && label(W.labeller) === "Billing work" && records(W.labeller).at(-1)?.label === "Billing work",
+      { card: agent.ep.card.meta, label: label(W.labeller), last: records(W.labeller).at(-1) });
   }
 
   console.log("\na label that is another live agent's name");
