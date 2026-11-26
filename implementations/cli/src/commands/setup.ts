@@ -655,7 +655,7 @@ async function prepare(plan: SetupPlan, opts: { demo: boolean; interactive: bool
 
   let spaceState: SetupResult["spaceState"];
   if (plan.space.kind === "add") {
-    const added = await addFromBundle(inputs.space, { file: plan.space.file, root: inputs.project, yes: !opts.interactive }, opts.interactive);
+    const added = await addFromBundle(inputs.space, { file: plan.space.file, root: inputs.project, yes: !opts.interactive }, opts.interactive, opts.presentation, "--connection-file");
     if (added === undefined) return cancelled(opts.presentation, inputs.space);
     warnings.push(...added.warnings);
     written.push({ what: "space registration", path: meshFile(inputs.space) });
