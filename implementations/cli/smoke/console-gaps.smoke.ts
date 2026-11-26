@@ -83,6 +83,40 @@ async function checkNarrowNeedsYouPalette(): Promise<void> {
   }
 }
 
+async function checkSpaceOverviewPalette(): Promise<void> {
+  const overview = "Enter open · r refresh";
+  const action = "back to the space overview";
+  for (const pinned of [true, false]) {
+    const args = pinned ? ["--space", space] : [];
+    const s = new ConsoleSession([...args, "--server", SERVERS], home);
+    try {
+      if (!pinned) {
+        if (!(await s.waitFor(`▸ ${space}`, 40_000))) throw new Error("The space overview did not list the space");
+        s.write("\r");
+      }
+      if (!(await s.waitFor(`${space} · all`, 40_000))) throw new Error("The console did not open the all feed");
+      const opened = s.mark();
+      s.write("\x10");
+      if (!(await s.waitFor("Commands", 8_000, opened))) throw new Error("The command palette did not open");
+      const typed = s.mark();
+      s.write("spaces");
+      if (pinned) {
+        const empty = await s.waitFor("No matching commands", 8_000, typed);
+        check("the pinned console does not suggest Spaces", empty && !clean(s.out.slice(typed)).includes(action), clean(s.out.slice(typed)).slice(-500));
+        s.write("\x1b");
+      } else {
+        const offered = await s.waitFor(action, 8_000, typed);
+        check("the console opened from the overview suggests Spaces", offered, clean(s.out.slice(typed)).slice(-500));
+        const submitted = s.mark();
+        s.write("\r");
+        check("Spaces returns to the overview", await s.waitFor(overview, 8_000, submitted), clean(s.out.slice(submitted)).slice(-500));
+      }
+    } finally {
+      await s.close();
+    }
+  }
+}
+
 async function checkDisconnectedQuit(): Promise<void> {
   const nc = await connect({ servers: SERVERS });
   let s: ConsoleSession | undefined;
@@ -288,6 +322,8 @@ try {
   await Promise.all([reader.stop(), stub.stop(), poster.stop()]);
   console.log("6. command palette over full-screen Needs You");
   await checkNarrowNeedsYouPalette();
+  console.log("7. space overview action in the command palette");
+  await checkSpaceOverviewPalette();
   await checkDisconnectedQuit();
 } catch (e) {
   fail++;
