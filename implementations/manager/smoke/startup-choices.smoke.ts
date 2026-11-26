@@ -84,6 +84,11 @@ try {
       } else if (test.mode === "unknown") {
         assert.equal(test.handle.status(), "exited", `${test.name}: an unknown dialog fails bounded`);
         assert.deepEqual(observed, [], `${test.name}: an unknown dialog gets no key`);
+        if (test.name.startsWith("pty-")) {
+          assert.match(test.handle.exitInfo?.()?.diagnostic ?? "",
+            /Last visible lines: WARNING: Claude Code running in Bypass Permissions mode \| ❯ 1\. No, exit \| 2\. Yes, I accept/,
+            `${test.name}: the timeout carries the visible dialog, not only the missing prompt`);
+        }
       } else if (test.mode.startsWith("ready")) {
         assert.equal(test.handle.status(), "running", `${test.name}: the ready screen disarms the deadline`);
         assert.deepEqual(observed, test.mode === "ready" ? [{ key: "Down", phase: "trust" }, { key: "Enter", phase: "trust" }] : [],
