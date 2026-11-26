@@ -25,11 +25,10 @@ import {
 import { createHermesApprovals } from "./approvals.js";
 import { createHermesClarify } from "./clarify.js";
 import { gatewayIdle, hermesHookHandle } from "./hermes-hooks.js";
-import { startBridgeServer, type BridgeServer } from "./bridge.js";
+import { startBridgeServer, type BridgeServer, type ListenBridgePipe } from "./bridge.js";
 import { drainWhileIdle, hermesCommands } from "./commands.js";
 import { startHermesEvents, type HermesEvents } from "./events.js";
 import { hermesToolDescriptors } from "./tool-schema.js";
-import type { startOwnerPipe } from "./owner-pipe.js";
 
 interface Sidecar {
   agent: MeshAgent;
@@ -47,7 +46,7 @@ function need(name: string): string {
 /** Start the mesh agent, the control + bridge servers, and emit the tool descriptors file.
  *  Reads `COTAL_CONTROL_SOCKET`, `COTAL_BRIDGE_SOCKET`, and `COTAL_TOOLS_FILE` from the env, and the
  *  control key and version from the launch material (see controlFromEnv). */
-export function startSidecar(windows?: { onShutdown(): void; listenPipe: typeof startOwnerPipe }): Sidecar {
+export function startSidecar(windows?: { onShutdown(): void; listenPipe: ListenBridgePipe }): Sidecar {
   const config = configFromEnv();
   config.connector = "hermes"; // advertise the host harness on our AgentCard (meta.connector)
   // The gateway posts every turn's output, and its own busy notices, back to the channel as a reply

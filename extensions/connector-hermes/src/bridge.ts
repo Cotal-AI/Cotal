@@ -69,7 +69,6 @@ import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import { CONTROL_SERVER_AUTH_DEADLINE_MS, MAX_CONTROL_REQUEST_BYTES, assertControlSocketDir, serverExchange, type ControlEndpoint } from "@cotal-ai/core";
 import type { TurnImage } from "@cotal-ai/core";
 import { createTurnDesk } from "./bridge-turns.js";
-import type { startOwnerPipe } from "./owner-pipe.js";
 import {
   CommandRefused,
   cotalToolSpecs,
@@ -81,6 +80,8 @@ import {
   type InboxItem,
   type CotalToolSpec,
 } from "@cotal-ai/connector-core";
+
+export type ListenBridgePipe = (path: string, accept: (socket: Socket) => void, failed: (error: Error) => void) => () => Promise<void>;
 
 /** Reply routing target the adapter derives from a turn's session/chat id. */
 interface ReplyTarget {
@@ -275,7 +276,7 @@ function deskFrame(frame: Record<string, unknown>, desk: ReturnType<typeof creat
 
 /** Start the adapter bridge. Returns a handle whose `close()` stops the server. `control` is the
  *  launch's control endpoint; the first frame must carry {@link bridgeToken} of its key. */
-export function startBridgeServer(agent: MeshAgent, config: AgentConfig, socketPath: string, control: ControlEndpoint, events: BridgeEvents = {}, listenPipe?: typeof startOwnerPipe): BridgeServer {
+export function startBridgeServer(agent: MeshAgent, config: AgentConfig, socketPath: string, control: ControlEndpoint, events: BridgeEvents = {}, listenPipe?: ListenBridgePipe): BridgeServer {
   const digest = createHash("sha256").update(bridgeToken(control)).digest();
   assertControlSocketDir(socketPath);
 

@@ -68,6 +68,7 @@
   },
   "dependencies": {
     "@cotal-ai/core": "workspace:*",
+    "@cotal-ai/seat": "workspace:*",
     "@cotal-ai/workspace": "workspace:*",
     "@nats-io/jetstream": "3.4.0",
     "@nats-io/jwt": "0.0.10-5",

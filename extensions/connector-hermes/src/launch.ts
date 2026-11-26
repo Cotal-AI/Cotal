@@ -19,15 +19,14 @@ import { randomUUID } from "node:crypto";
 import { mkdirSync, writeFileSync, cpSync, rmSync, existsSync, readFileSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { LAUNCH_MATERIAL_ENV, discardLaunchArtifacts, discardLaunchMaterial, loadAgentFile, peerLabel, readLaunchMaterial, writeLaunchMaterial, hardenPrivate } from "@cotal-ai/core";
 import { hasIdentity, configFromEnv, controlEndpoint, controlFromEnv, eventPlaneArmed, SUN_PATH_MAX_BYTES, briefing, type AgentConfig } from "@cotal-ai/connector-core";
 import { hermesUvCommand, spawnHermesGateway } from "./binary.js";
 import { hermesEfforts } from "./models.js";
 import { startSidecar } from "./sidecar.js";
 import { HERMES_FORK_RECORD, hermesSeatHome, moveLegacyHermesFork } from "./seat-home.js";
-import { runWindowsGateway } from "./windows-gateway.js";
-import { startOwnerPipe } from "./owner-pipe.js";
+import { runWindowsGateway, type WindowsHost } from "./windows-gateway.js";
 
 /** Hermes API range this connector is written against (keep in sync with pyproject.toml).
  *
@@ -351,12 +350,23 @@ function createTurnJournal(home: string): string {
   return path;
 }
 
+async function loadWindowsHost(path: string | undefined): Promise<WindowsHost> {
+  const remedy = "The Windows Hermes launcher needs its matching Cotal CLI. Update Cotal and retry the foreground launch.";
+  if (!path || !isAbsolute(path)) throw new LaunchRefused(remedy);
+  const host: Partial<WindowsHost> = await import(pathToFileURL(path).href).catch((error: unknown) => {
+    throw new LaunchRefused(`${remedy} ${error instanceof Error ? error.message : String(error)}`);
+  });
+  if (typeof host.startProcess !== "function" || typeof host.listenOwnerPipe !== "function") throw new LaunchRefused(remedy);
+  return { startProcess: host.startProcess, listenOwnerPipe: host.listenOwnerPipe };
+}
+
 async function main(): Promise<void> {
   // No identity → a plain run, not a launcher-spawned agent. Stay off the mesh.
   if (!hasIdentity()) {
     log("no COTAL_NAME — not a managed session; staying off the mesh");
     process.exit(0);
   }
+  const windows = process.platform === "win32" ? await loadWindowsHost(process.argv[2]) : undefined;
   const config = configFromEnv();
 
   const adopt = adoptedHome();
@@ -450,10 +460,10 @@ async function main(): Promise<void> {
   };
 
   log(`launching hermes gateway as ${peerLabel(config)} (HERMES_HOME=${home})`);
-  if (process.platform === "win32") {
+  if (windows) {
     for (const key of Object.keys(childEnv)) if (/^temp$|^tmp$/i.test(key)) delete childEnv[key];
     childEnv.TEMP = childEnv.TMP = gatewayTmp;
-    await runWindowsGateway(PKG_DIR, childEnv, managed!.root, (onShutdown) => startSidecar({ onShutdown, listenPipe: startOwnerPipe }));
+    await runWindowsGateway(PKG_DIR, childEnv, managed!.root, windows.startProcess, (onShutdown) => startSidecar({ onShutdown, listenPipe: windows.listenOwnerPipe }));
     return;
   }
   runUnixGateway(childEnv, unixSidecar!, { managed, home, journal, controlPath: control.path, material, inherited: !!(suppliedControl && inherited) });

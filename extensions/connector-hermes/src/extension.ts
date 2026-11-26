@@ -4,7 +4,7 @@ import { basename, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { discardLaunchArtifacts, registry, type Connector, type LaunchOpts, type LaunchSpec } from "@cotal-ai/core";
 import { aclEnv, nameEnv, controlEndpoint, eventChannel, launchArmsEvents, launchEnv, materialEnv } from "@cotal-ai/connector-core";
-import { resolveOnPath } from "@cotal-ai/workspace";
+import { findWindowsUv } from "./binary.js";
 import { HERMES_PROVIDER_KEYS, listHermesModels } from "./models.js";
 import { HERMES_FORK_RECORD, hermesSeatHome } from "./seat-home.js";
 
@@ -30,7 +30,7 @@ export function hermesLaunchUnavailable(opts: Pick<LaunchOpts, "cwd" | "resume">
   const mode = opts.cwd !== undefined ? "detached or manager-attached launches" : opts.resume !== undefined ? "session resume" : process.env.COTAL_HERMES_ADOPT_HOME?.trim() ? "adopted profiles" : undefined;
   if (mode) return `Hermes on Windows does not support ${mode}. Use a foreground launch with a managed profile. Leave COTAL_HERMES_ADOPT_HOME unset and run \`cotal spawn --foreground --harness hermes --model <model>\`.`;
   if (process.arch !== "x64" && process.arch !== "arm64") return "Hermes on Windows needs a 64-bit Node.js installation.";
-  if (!resolveOnPath("uv.exe")) return "Hermes on Windows needs uv.exe on PATH. Install uv, then retry the foreground launch.";
+  if (!findWindowsUv()) return "Hermes on Windows needs uv.exe on PATH. Install uv, then retry the foreground launch.";
   return undefined;
 }
 
@@ -102,7 +102,7 @@ export const hermesConnector: Connector = {
       ...nameEnv(opts),
     };
     if (prompt) env.COTAL_HERMES_PROMPT = prompt;
-    const uv = process.platform === "win32" ? resolveOnPath("uv.exe") : opts.resolvedBinaries?.uv;
+    const uv = process.platform === "win32" ? findWindowsUv() : opts.resolvedBinaries?.uv;
     if (uv) env.COTAL_HERMES_UV_BIN = uv;
     // Adopt-home is a machine-wide operator decision ("put MY Hermes on the mesh"), not a
     // per-session value the manager assigns, so it crosses from this process like the other
