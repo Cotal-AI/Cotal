@@ -2,7 +2,7 @@ import { createConnection } from "node:net";
 import { existsSync } from "node:fs";
 import { dialerFor, mintCreds, newIdentity, probeConnect, isReachable, token } from "@cotal-ai/core";
 import { jetstreamManager } from "@nats-io/jetstream";
-import { brokerAddressKey, brokerUrlKey, readCurrent, loadMeshes } from "./mesh-registry.js";
+import { brokerAddressKey, brokerUrlKey, canonicalRoot, readCurrentSelection, loadMeshes } from "./mesh-registry.js";
 import { isGenuineSpace, type MeshTarget } from "./mesh-target.js";
 import { stoppedLoopbackListener, hasNonNatsExecutable, parsePid, parseRecord, probeLiveness, readPidfile, assertRecordIdentity } from "./pid.js";
 import { localProcessPath, NATS_PIDFILE } from "./local-process.js";
@@ -364,7 +364,11 @@ export async function brokerAnswers(server: string): Promise<boolean> {
  *  command resolves with, only the records at that address are probed: that resolve reads no other
  *  record's liveness. Other explicitly requested checks, such as status --all, have their own scope. */
 export async function pruneStaleMeshes(server?: string, scope: "brokers" | "targets" = "brokers"): Promise<MeshSweep> {
-  const useInventory = scope === "targets" && server === undefined && readCurrent() === undefined && !isGenuineSpace(findCotalRoot());
+  const resolveTargets = scope === "targets" && server === undefined;
+  const selection = resolveTargets ? readCurrentSelection() : undefined;
+  const root = resolveTargets && selection?.source !== "explicit" ? findCotalRoot() : undefined;
+  const project = root !== undefined && isGenuineSpace(root) ? canonicalRoot(root) : undefined;
+  const useFallbackInventory = resolveTargets && selection === undefined && project === undefined;
   const sweep: MeshSweep = { offline: [] };
   const entries = loadMeshes().filter((m) => server === undefined || m.server === server);
   await Promise.all(
@@ -378,12 +382,14 @@ export async function pruneStaleMeshes(server?: string, scope: "brokers" | "targ
       sweep.offline.push(m.space);
     }),
   );
-  if (useInventory) {
-    const candidates = entries.filter((m) => !sweep.offline.includes(m.space));
+  const folder = selection?.source === "adopted" && project !== undefined
+    ? entries.filter((m) => canonicalRoot(m.root) === project) : [];
+  if (useFallbackInventory || (folder.length > 0 && !folder.some((m) => m.space === selection?.space))) {
+    const candidates = (useFallbackInventory ? entries : folder).filter((m) => !sweep.offline.includes(m.space));
     const inventories = new Map<string, Promise<string[] | undefined>>();
     const openInventory = { served: [] as string[], unserved: [] as string[] };
-    // Inventory can disambiguate a choice, but a lone registration does not need a tie-breaker.
-    if (candidates.length > 1) await Promise.all(candidates.map(async (m) => {
+    // Even one folder registration competes with the adopted selection. A lone fallback does not.
+    if (!useFallbackInventory || candidates.length > 1) await Promise.all(candidates.map(async (m) => {
       if (m.origin === "catalog" || m.mode !== "open" || !m.unchecked) return;
       const tls = m.tlsRequired === true;
       const key = `${tls}:${brokerUrlKey(m.server)}`;
