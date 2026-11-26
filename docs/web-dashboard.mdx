@@ -89,6 +89,8 @@ A foreground start prints the path in its terminal. A repeat start for that loop
 Read the file and open its single-use link in the browser profile you intend to use.
 The dashboard creates the file for the full service instance and launch request. Output contains only the file path, not the link.
 
+Restarting the dashboard service invalidates its existing browser sessions. If **Disconnected** says your session is invalid, open the new private link instead of reloading the old tab. For a background service, use `cotal service logs web --space main` to find the new session file, substituting your service and space names if they differ. For a foreground service, look in the terminal where the dashboard is running.
+
 <Callout type="warn" title="Keep the session file private">
 
 Do not upload the session file or paste its contents into logs.

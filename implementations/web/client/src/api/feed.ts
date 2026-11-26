@@ -7,9 +7,8 @@ export interface FeedHandlers {
   open(): void;
   /** The connection failed and the browser is retrying it. */
   error(): void;
-  /** The browser failed the connection for good (a non-200 answer, such as the gate's 401 after a
-   *  restart or an expired session) and will not retry. */
-  closed(): void;
+  /** The browser failed the connection for good and will not retry. */
+  closed(sessionCheck?: Promise<boolean>): void;
   roster(r: RosterEntry[]): void;
   presenceView(v: PresenceView): void;
   membership(m: MembershipSnapshot): void;
@@ -44,13 +43,32 @@ const CLOSED = 2;
  *  property types differ and TypeScript will not see it as a `FeedSource` without the cast. */
 const nativeSource = (url: string): FeedSource => new EventSource(url) as unknown as FeedSource;
 
+/** EventSource does not expose the HTTP status. Check the same session gate on a short JSON read. */
+async function sessionInvalid(): Promise<boolean> {
+  try {
+    const options = { cache: "no-store" as const, signal: AbortSignal.timeout(3000) };
+    const response = await fetch("/api/meta", options);
+    if (response.status !== 401) return false;
+    const body = await response.json() as { error?: unknown } | null;
+    return body?.error === "unauthenticated";
+  } catch {
+    return false;
+  }
+}
+
 /** Open the feed and return the function that closes it. */
-export function openFeed(handlers: FeedHandlers, make: (url: string) => FeedSource = nativeSource): () => void {
+export function openFeed(handlers: FeedHandlers, make: (url: string) => FeedSource = nativeSource, checkSession = sessionInvalid): () => void {
   const es = make("/feed");
+  let checking = false;
   es.onopen = () => handlers.open();
   // The same `error` event covers both outcomes, and only `readyState` tells them apart: a network
   // drop leaves it at CONNECTING because the browser retries, a refused answer leaves it CLOSED.
-  es.onerror = () => (es.readyState === CLOSED ? handlers.closed() : handlers.error());
+  es.onerror = () => {
+    if (checking) return;
+    if (es.readyState !== CLOSED) return handlers.error();
+    checking = true;
+    handlers.closed(checkSession());
+  };
   const on = <T>(type: string, fn: (data: T) => void) => es.addEventListener(type, (e) => fn(JSON.parse(e.data) as T));
   on<RosterEntry[]>("roster", (d) => handlers.roster(d));
   on<PresenceView>("presence-view", (d) => handlers.presenceView(d));
@@ -59,5 +77,8 @@ export function openFeed(handlers: FeedHandlers, make: (url: string) => FeedSour
   on<FeedMessage>("message", (d) => handlers.message(d));
   on<{ feed: string }>("hello", (d) => handlers.hello(d.feed));
   on<AgentFrame>("agent-frame", (d) => handlers.agentFrame(d));
-  return () => es.close();
+  return () => {
+    es.onerror = null;
+    es.close();
+  };
 }
