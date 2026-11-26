@@ -193,7 +193,8 @@
 import { randomUUID } from "node:crypto";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { createServer } from "node:net";
-import { appendFileSync, chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, watch, writeFileSync } from "node:fs";
+import fs, { appendFileSync, chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, watch, writeFileSync, type Stats } from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join, resolve } from "node:path";
 import { assertSmokeSandboxDown, assertSmokeSandboxTargetDown, createSuite, freePort, listenOn, recordSmokeSandbox, type SmokeSandboxAnchor } from "@cotal-ai/smoke-kit";
@@ -220,7 +221,7 @@ for (const key of Object.keys(process.env)) if (key.startsWith("COTAL_")) delete
 process.env.COTAL_HOME = home;
 const env = { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: configDir, COTAL_SKIP_CONNECTOR_SEED: "1", DO_NOT_TRACK: "1" };
 const { observeServiceProcess, serviceInstances, serviceInstanceStore } = await import("../src/lib/service-instances.js");
-const { readStackJournal } = await import("../src/lib/stack-journal.js");
+const { readStackJournal, stackJournalPath } = await import("../src/lib/stack-journal.js");
 const { serviceDefinitionStore } = await import("../src/lib/service-definitions.js");
 // Registers the broker adapter, which a definition saved from this process is checked against.
 await import("../src/lib/broker-service.js");
@@ -269,6 +270,38 @@ const until = async (cond: () => boolean, ms: number) => {
   while (Date.now() < end) { if (cond()) return true; await sleep(20); }
   return cond();
 };
+const pollLocalRecord = (ready: () => boolean): boolean => {
+  try { return ready(); }
+  catch (error) {
+    if (isCommandFailure(error) && error.code === "CONFLICT" && error.message === "the local record source changed while it was read") return false;
+    throw error;
+  }
+};
+
+async function pollAcrossJournalReplacement(journal: Stats | undefined, poll: () => Promise<boolean>): Promise<boolean> {
+  if (!journal) return poll();
+  const fstat = fs.fstatSync;
+  const restore = () => { fs.fstatSync = fstat; syncBuiltinESMExports(); };
+  const tick = new Int32Array(new SharedArrayBuffer(4));
+  let overlapped = false;
+  fs.fstatSync = ((fd: number, ...options: unknown[]) => {
+    const before = Reflect.apply(fstat, fs, [fd, ...options]);
+    if (before?.dev !== journal.dev || before.ino !== journal.ino) return before;
+    restore();
+    // Keep the real descriptor open until the foreground child replaces its directory entry.
+    const deadline = Date.now() + 15_000;
+    while (fstat(fd).nlink !== 0 && Date.now() < deadline) Atomics.wait(tick, 0, 0, 1);
+    overlapped = fstat(fd).nlink === 0;
+    return before;
+  }) as typeof fstat;
+  syncBuiltinESMExports();
+  try {
+    const ready = await poll();
+    check("the foreground restart poll reaches completion after an overlapping journal write", overlapped && ready);
+    return ready;
+  } finally { restore(); }
+}
+
 /** The pinned pid of a stack definition's single instance, read from its own record. */
 const pidOf = (space: string, definition: string): number | null => {
   try { return serviceInstances(space, definition)[0]?.record.value.process?.pid ?? null; } catch { return null; }
@@ -334,8 +367,8 @@ async function checkStoppedReservation(): Promise<void> {
   if (!retry || Number(retry[2]) === port) return;
 
   const retried = cliAsync(root, ...retry[1]!.split(" "));
-  const ready = await until(() => runningPidOf(space, "stack-broker") !== null && runningPidOf(space, "stack-manager") !== null
-    && readStackJournal(root)?.journal.operation.phase === "completed", 60_000);
+  const ready = await until(() => pollLocalRecord(() => runningPidOf(space, "stack-broker") !== null && runningPidOf(space, "stack-manager") !== null
+    && readStackJournal(root)?.journal.operation.phase === "completed"), 60_000);
   track(space);
   const startedAt = findMesh(space)?.server;
   const down = cli(root, "down", "--yes", "--json");
@@ -798,11 +831,13 @@ try {
     const free = cli(second, "history", "--space", other, "general", "--json");
     check("history goes back to ordinary stopped-stack guidance when the address is clear", free.status === 2 && free.env?.error?.remedy?.startsWith("start it again with `cotal up --no-manager` in ") === true, shown(free));
     if (launcher !== undefined && foregroundRetry === `${launcher} up --foreground --no-manager`) {
+      const previousOperation = readStackJournal(second)?.journal.operation.id;
+      const journalBefore = process.platform === "linux" ? statSync(stackJournalPath(second)) : undefined;
       const started = cliAsync(second, ...execWords(foregroundRetry.slice(launcher.length + 1)));
-      const ready = await until(() => {
-        const journal = readStackJournal(second)?.journal;
-        return journal?.operation.kind === "up" && journal.operation.phase === "completed";
-      }, 30_000);
+      const ready = await pollAcrossJournalReplacement(journalBefore, () => until(() => pollLocalRecord(() => {
+        const operation = readStackJournal(second)?.journal.operation;
+        return operation?.kind === "up" && operation.phase === "completed" && operation.id !== previousOperation;
+      }), 30_000));
       track(other);
       check("the printed foreground retry starts only the broker at its recorded address", ready
         && readStackJournal(second)?.journal.server === `nats://127.0.0.1:${movedPort}`
@@ -2292,7 +2327,7 @@ try {
     let downErr = "";
     stopping.stderr!.on("data", (chunk: Buffer) => { downErr += chunk.toString(); });
     const record = () => serviceInstances(space, "stack-delivery")[0]?.record.value;
-    const signalled = await until(() => record()?.state === "stopping", 60_000);
+    const signalled = await until(() => pollLocalRecord(() => record()?.state === "stopping"), 60_000);
     const request = record()?.requestId;
     stopping.kill("SIGINT");
     await exited(stopping);
@@ -2357,7 +2392,7 @@ try {
     let downErr = "";
     stopping.stderr!.on("data", (chunk: Buffer) => { downErr += chunk.toString(); });
     const record = () => serviceInstances(space, "stack-broker")[0]?.record.value;
-    const held = await until(() => record()?.state === "stopping" && gone(space, "stack-broker"), 60_000);
+    const held = await until(() => pollLocalRecord(() => record()?.state === "stopping" && gone(space, "stack-broker")), 60_000);
     const request = record()?.requestId;
     stopping.kill("SIGINT");
     await exited(stopping);

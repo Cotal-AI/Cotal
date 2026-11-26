@@ -9,6 +9,8 @@ mod native_presence;
 #[cfg(feature = "desktop")]
 pub mod updater;
 pub mod app_activity;
+#[cfg(any(feature = "desktop", test))]
+mod terminal;
 pub mod update_receipt;
 pub mod presence;
 pub mod first_paint;
@@ -67,6 +69,10 @@ pub enum DesktopRequest {
     SpaceRecover { space: String, candidate: String, holder: String },
     #[serde(rename = "space-intent")]
     SpaceIntent { space: String, enabled: bool },
+    #[serde(rename = "agent-stop", rename_all = "camelCase")]
+    AgentStop { space: String, lifecycle_uid: String },
+    #[serde(rename = "agent-terminal", rename_all = "camelCase")]
+    AgentTerminal { space: String, lifecycle_uid: String },
     #[serde(rename = "connect-check")]
     ConnectCheck { space: String },
     #[serde(rename = "register")]
@@ -102,6 +108,8 @@ impl DesktopRequest {
                 }
             }
             Self::SpaceIntent { space, .. }
+            | Self::AgentStop { space, .. }
+            | Self::AgentTerminal { space, .. }
             | Self::ConnectCheck { space }
             | Self::Register { space }
             | Self::Connect { space }

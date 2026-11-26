@@ -199,7 +199,9 @@ older `meshes rm --force` dropped it, or an older `meshes add --force` replaced 
 hand at the stack's own root and broker, `down` rebuilds it from the stack journal for the stop and
 says so with a `REGISTRATION_REBUILT` warning, as `--dry-run` does. It does that only while the
 stack's broker is the launch the journal records at that root and address, and otherwise refuses
-`CONFLICT`, exit 2, before any member stops. A registration added by hand at another address or
+`CONFLICT`, exit 2, before any member stops. The refusal points to the project's
+`.cotal/stack-controller.json`, where you can read the recorded roles and instance IDs even if
+there is no registration. A registration added by hand at another address or
 folder is not replaced: `down` refuses `CONFLICT` and names `cotal space forget <space>`, after
 which `down` stops the stack through its journal. While another registered space names this
 stack's exact broker address, bare `down` refuses `LIFECYCLE_BLOCKED`, exit 2, and stops nothing,
@@ -873,7 +875,10 @@ In a folder whose `.cotal` is a link, every target but `history`, and both dry r
 anything reads through it: `CONFLICT`, exit 2, naming the link and where it leads, or
 `TARGET_NOT_FOUND` for a link that leads nowhere, which is not passed over to the records of a
 folder above it. When the link leads to this folder's own records, moved away and linked back, the
-Next names moving them back, as [up](cli-startup.mdx#up) does.
+Next names moving them back, as [up](cli-startup.mdx#up) does. When the link leads to another
+project's `.cotal`, the Next gives the command to run in that project with the requested target
+and flags, including `--dry-run`. It prints a relative `--store-dir` as an absolute path so the
+retry selects the same directory.
 
 In a copy, in a folder moved away from its recorded path, and in the folder a later `up` took its
 space's name over from, the store may hold that space's only history. There `store` and `all`, and

@@ -1,6 +1,6 @@
 import { renderAppUpdate, appUpdateNotice, appliedUpdateSummary, type AppUpdate, type AppUpdateReceipt } from "./app-update";
 import { listen } from "@tauri-apps/api/event";
-import { agentInventory, renderAgents, shownAgentName } from "./agents";
+import { agentInventory, renderAgents, shownAgentName, type AgentAction, type LocalAgent } from "./agents";
 import { updateScrollThumb } from "./scrollbars";
 import { computerName } from "./computer-name";
 import { updateNotice, updatePolicy, updateSummary, newerVersion, releaseUrl, installerLink, lastChecked, accountHost, type UpdateStatus } from "./updates";
@@ -392,18 +392,25 @@ function notice(message: string, error = false): void {
   el("notice").classList.toggle("error", error);
   if (message) announce(message);
 }
+let agentActionProblem = false;
 function clearDetails(): void {
   problem = undefined;
   statusProblem = false;
+  agentActionProblem = false;
   text("refusal-detail", ""); el("setup-lines").replaceChildren(); el("details").hidden = true;
   el<HTMLDetailsElement>("details").open = false;
+}
+function showRefusalDetail(error: unknown): void {
+  const exact = error instanceof Error ? error.message : String(error);
+  text("refusal-detail", error instanceof DaemonRefusal ? `${error.code}${error.native ? ` (${error.native})` : ""}\n${exact}` : exact);
+  el("details").hidden = false;
+  el<HTMLDetailsElement>("details").open = true;
 }
 /** `fromStatus` marks an error the background status check raised, which the next good check clears.
  *  Any other error stays until the person acts on it. */
 function refusal(error: unknown, fromStatus = false): void {
-  const exact = error instanceof Error ? error.message : String(error);
-  text("refusal-detail", error instanceof DaemonRefusal ? `${error.code}${error.native ? ` (${error.native})` : ""}\n${exact}` : exact); el("details").hidden = false;
-  el<HTMLDetailsElement>("details").open = true;
+  agentActionProblem = false;
+  showRefusalDetail(error);
   problem = error instanceof DaemonRefusal ? error.native ?? error.code : "OPERATION_FAILED";
   statusProblem = fromStatus;
   notice("", true);
@@ -497,7 +504,7 @@ function showStage(next: Stage, focus = false): void {
   el("service-explanation").hidden = loginActive;
   text("step-caption", finished ? "Ready for your next agent" : `Step ${["welcome", "sign-in", "connect", "finished"].indexOf(next) + 1} of 4`);
   el("step-caption").hidden = finished;
-  if (finished && !problem) el("details").hidden = true;
+  if (finished && !problem && !agentActionProblem) el("details").hidden = true;
   let title: string, description: string;
   if (next === "welcome") { title = "Welcome to Cotal"; description = welcome; }
   else if (next === "sign-in") { title = loginActive ? approval ? "Approve sign-in in your browser" : "Preparing your sign-in" : "Sign in to Cotal"; description = "Approve this computer in your browser. We will continue here automatically."; }
@@ -658,9 +665,10 @@ function sizeSpaceList(): void {
     rule.maxHeight = '108px';
     const actions = el("another-space");
     const overflow = actions.getBoundingClientRect().bottom - panel.getBoundingClientRect().bottom;
-    if (overflow > 0 && agentList.children.length) {
-      const rows = Math.max(1, Math.floor((agentList.clientHeight - overflow) / 36));
-      rule.maxHeight = `${rows * 36}px`;
+    if (overflow > 0 && agentList.firstElementChild) {
+      const rowHeight = parseFloat(getComputedStyle(agentList.firstElementChild).height);
+      const rows = Math.max(1, Math.floor((agentList.clientHeight - overflow) / rowHeight));
+      rule.maxHeight = `${rows * rowHeight}px`;
     }
   }
   const list = el("connected-spaces");
@@ -851,6 +859,40 @@ function state(value: string, space = selectedSpace()): void {
   else showStage(stage);
   if (isTauri()) void refreshPresence(verified).catch(refusal);
 }
+const pendingAgentActions = new Map<string, AgentAction>();
+function renderAgentRows(status: Record<string, unknown>): void {
+  renderAgents(status, el("running-agents"), { pending: pendingAgentActions, act: (agent, op) => void actOnLocalAgent(agent, op) });
+}
+async function actOnLocalAgent(agent: LocalAgent, op: AgentAction): Promise<void> {
+  if (!agent.lifecycleUid) return;
+  const key = JSON.stringify([agent.space, agent.name, agent.lifecycleUid]);
+  if (pendingAgentActions.has(key)) return;
+  if (agentActionProblem) clearDetails();
+  pendingAgentActions.set(key, op);
+  if (serviceStatus) renderAgentRows(serviceStatus);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const result = await Promise.race([
+      request({ op, space: agent.space, lifecycleUid: agent.lifecycleUid }),
+      new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error(op === "agent-stop" ? "Stop did not finish within 30 seconds. Check whether the agent is still running before trying again." : "Opening the terminal did not finish within 30 seconds. Check your terminal before trying again.")), 30_000); }),
+    ]);
+    if (op === "agent-terminal") {
+      if (result.started !== true) throw new Error("The app did not confirm that it opened the terminal.");
+      notice(`Terminal opened for ${agent.name}.`);
+    }
+  } catch (error) {
+    agentActionProblem = true;
+    showRefusalDetail(error);
+    notice("", true);
+    showStage(stage);
+  }
+  finally {
+    if (timer) clearTimeout(timer);
+    pendingAgentActions.delete(key);
+    if (serviceStatus) renderAgentRows(serviceStatus);
+    if (op === "agent-stop") void refresh();
+  }
+}
 async function applyStatus(status: Record<string, unknown>, current: () => boolean): Promise<void> {
   await showStatus(status, current);
   if (current()) updateService();
@@ -893,7 +935,7 @@ async function showStatus(status: Record<string, unknown>, current: () => boolea
   daemonVersion = String(status.version);
   upgradeNeeded = appVersion !== undefined && status.version !== appVersion;
   if ((statusProblem && !upgradeNeeded) || (ready && (problem === "NOT_ANSWERING" || problem === "DAEMON_LOST" || (!upgradeNeeded && el("refusal-detail").textContent?.startsWith("App version:"))))) clearDetails();
-  renderAgents(status, el("running-agents"));
+  renderAgentRows(status);
   requestAnimationFrame(sizeSpaceList);
   updateStatus = status.update as UpdateStatus | undefined;
   renderSettings();

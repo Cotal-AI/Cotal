@@ -34,7 +34,7 @@ export function noteModelSet(a: ManagedAgent, seen: Presence, o: { workspaceRoot
   try {
     why = markRefusal(a, mark, o.workspaceRoot);
   } catch (e) {
-    why = `the cotal config did not read: ${rejectionText(e)}`;
+    why = `could not read the Cotal configuration: ${rejectionText(e)}`;
   }
   if (why !== undefined) {
     const key = JSON.stringify(mark);

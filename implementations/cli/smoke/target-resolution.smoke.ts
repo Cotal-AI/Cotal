@@ -47,7 +47,7 @@ const { observeServiceProcess, serviceInstances } = await import("../src/lib/ser
 const { check, finish } = createSuite();
 const env: Record<string, string> = {};
 for (const [key, value] of Object.entries(process.env)) if (value !== undefined && !key.startsWith("COTAL_") && key !== "FORCE_COLOR" && key !== "NO_COLOR") env[key] = value;
-Object.assign(env, { HOME: home, USERPROFILE: home, COTAL_HOME: process.env.COTAL_HOME, XDG_CONFIG_HOME: join(home, ".config"), COTAL_SKIP_CONNECTOR_SEED: "1", TERM: "xterm-256color" });
+Object.assign(env, { HOME: home, USERPROFILE: home, COTAL_HOME: process.env.COTAL_HOME, XDG_CONFIG_HOME: join(home, ".config"), COTAL_SKIP_CONNECTOR_SEED: "1", DO_NOT_TRACK: "1", TERM: "xterm-256color" });
 const launcher = resolveOnPath("cotal", env) ? "cotal" : "pnpm cotal";
 const COTAL = join(repoRoot, "bin", "cotal.ts");
 const TSX = join(repoRoot, "node_modules", ".bin", process.platform === "win32" ? "tsx.cmd" : "tsx");

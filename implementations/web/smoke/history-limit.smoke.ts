@@ -46,6 +46,7 @@ import net from "node:net";
 import { CotalEndpoint, isReachable, newIdentity, setupSpaceStreams } from "@cotal-ai/core";
 import { SMOKE_BROKER_TOKEN, freePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { AGGREGATION_DEADLINE_MS, MAX_HISTORY_LIMIT } from "../src/web.js";
+import { httpApi } from "../client/src/api/http.js";
 import type { CotalMessage } from "../client/src/api/types.js";
 import { bootWeb } from "./boot-web.js";
 import { bootReads, harness, page } from "./controller-harness.js";
@@ -250,6 +251,30 @@ try {
   const limits = Object.values(asked).flat();
   ok("4.1 the activity, DM and channel reads each ask for a limit, and none above the ceiling",
     Object.values(asked).every((l) => l.length > 0) && limits.every((n) => Number.isInteger(n) && n > 0 && n <= MAX_HISTORY_LIMIT), { asked, ceiling: MAX_HISTORY_LIMIT });
+
+  console.log("5. an extra retained channel post proves the dashboard history is partial");
+  const backlog = new CotalEndpoint({ space: SPACE, servers: SERVER, channels: ["backlog"], consume: false,
+    registerPresence: false, card: { id: newIdentity().id, name: "backlog", kind: "endpoint" } });
+  backlog.on("error", () => {});
+  const api = httpApi((path) => fetch(`${F}${path}`, { headers: { cookie: fast.cookie } }));
+  const dashboard = harness({ history: api.history });
+  try {
+    await backlog.start();
+    const posts: string[] = [];
+    const send = (i: number) => backlog.multicast(`Backlog fixture ${i}`, { channel: "backlog" });
+    for (let i = 1; i < 200; i++) posts.push((await send(i)).id);
+    for (const i of [200, 201]) {
+      posts.push((await send(i)).id);
+      await dashboard.ctl.open("backlog");
+      const open = dashboard.store.get().open;
+      const expected = posts.slice(-200);
+      ok(`5.${i - 199} ${i} retained posts: the dashboard keeps the newest 200 and flags only proven older history`,
+        open?.olderRetained === (i === 201) && open.messages.length === 200 && open.messages.every((m, index) => m.msg.id === expected[index]),
+        { length: open?.messages.length, olderRetained: open?.olderRetained });
+    }
+  } finally {
+    await backlog.stop();
+  }
 } finally {
   fastWeb?.kill("SIGKILL"); slowWeb?.kill("SIGKILL");
   link?.close(); release(); broker.kill("SIGKILL");
