@@ -33,8 +33,12 @@ try {
   console.log("PASS interrupted setup blocks service start and admission, ready and unrelated installations remain available");
 } finally { rmSync(home, { recursive: true, force: true }); }
 
-const workflow = readFileSync(new URL("../../.github/workflows/windows-setup-proof.yml", import.meta.url), "utf8");
-const verdict = workflow.split("\n  verdict:\n")[1].split("          script: |\n")[1].replace(/^ {12}/gm, "");
+const workflow = readFileSync(new URL("../../.github/workflows/windows-setup-proof.yml", import.meta.url), "utf8").replace(/\r\n/g, "\n");
+const verdictJob = workflow.split("\n  verdict:\n")[1];
+assert.ok(verdictJob, "windows-setup-proof.yml is missing the `verdict:` marker");
+const verdictScript = verdictJob.split("          script: |\n")[1];
+assert.ok(verdictScript, "windows-setup-proof.yml verdict job is missing the `script: |` marker");
+const verdict = verdictScript.replace(/^ {12}/gm, "");
 const probe = "native (0, path-probe)";
 const expected = ["build", "stock-ui-control", probe, ...["running", "stopped", "absent", "fresh", "occupied"].map(name => `native (0, ${name})`)];
 const completed = (name: string, attempt: number, conclusion = "success") => ({ name, run_attempt: attempt, status: "completed", conclusion });
