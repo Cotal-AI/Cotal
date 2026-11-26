@@ -395,7 +395,9 @@ the controller members and requested topology. Agent joins are not checked, so t
 partial. A manifest that requests no agents leaves no join unchecked, so its receipt is `ok`. The fresh attempt and summary are launch records, not stop authority. No additive
 ownership ledger is created; `cotal down` uses the stack journal and each member's native lifecycle.
 The text receipt offers `cotal team show <id> --space <space>` to read the launch summary in the
-booted space without changing your saved selection.
+booted space without changing your saved selection. Its stop preview changes to the booted project's
+root before running `cotal down --space <space> --dry-run`, so you can copy the command from the
+folder where you ran the boot.
 
 Before writes it checks the selected root, auth mode, broker address, runtime, connectors and
 retained ownership records. A journal, legacy PID record, possibly live component, service instance,
