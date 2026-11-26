@@ -13,7 +13,7 @@ import { isAbsolute, join, relative } from "node:path";
 import { DEV_OWNER, epCall, isReachable, mintLifecycleUid, newIdentity, registry, type Connector, type LaunchOpts } from "@cotal-ai/core";
 import { connect } from "@nats-io/transport-node";
 import { MANAGER_CONTRACTS, type ManagerStatus } from "../src/manager-service-contract.js";
-import { connectorMetadataStale, extensionsDir, saveExtensionsManifest } from "@cotal-ai/workspace";
+import { connectorMetadataStale, extensionsDir, saveExtensionsManifest, trustProject } from "@cotal-ai/workspace";
 import { Manager } from "../src/manager.js";
 import { SMOKE_BROKER_TOKEN, freePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
@@ -25,6 +25,7 @@ const check = (name: string, condition: boolean, actual?: unknown): void => {
   console.log(`  ✓ ${name}`);
 };
 
+for (const key of Object.keys(process.env)) if (key.startsWith("COTAL_")) delete process.env[key];
 const root = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
 const workspaceRoot = join(root, "ws");
 const binDir = join(root, "bin");
@@ -172,6 +173,10 @@ try {
   // The catalog reads the environment a launch gets, so it lists the models that launch reaches.
   const spawnEnv = (names: string[]) => writeFileSync(join(workspaceRoot, ".cotal", "config.json"), JSON.stringify({ spawn: { env: names } }));
   spawnEnv(["CATALOG_PROBE_PROVIDER"]);
+  const untrusted = await opModels({ agent: "boot-present" }) as { ok?: boolean; error?: string };
+  check("model catalog refuses an untrusted project's spawn.env before calling the connector",
+    untrusted.ok === false && untrusted.error?.includes("is not trusted") === true && catalogEnvAllow === undefined, untrusted);
+  trustProject(workspaceRoot);
   await manager.startAgent({ name: "pin-probe", agent: "boot-present", events: false });
   await opModels({ agent: "boot-present" });
   check("model catalog receives the spawn.env names a launch receives",

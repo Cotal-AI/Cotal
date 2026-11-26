@@ -2,11 +2,12 @@ import { existsSync, writeSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join, parse, resolve } from "node:path";
 import { parseArgs } from "node:util";
-import { commandDeclarationProblems, findCommand, findSubcommand, parseCommandArgs, type Command, type FlagSpec, type ParsedArgs, type Registry, type Subcommand } from "@cotal-ai/core";
+import { commandDeclarationProblems, findCommand, findSubcommand, parseCommandArgs, rejectionText, type Command, type FlagSpec, type ParsedArgs, type Registry, type Subcommand } from "@cotal-ai/core";
 import {
   CommandFailure,
   commandFailureReport,
   cachedPreferences,
+  seedTrustedProjects,
   CorruptExtensionsManifestError,
   cotalDirProblem,
   cotalHomeProblem,
@@ -78,7 +79,7 @@ import { workingFolderRemoved } from "./lib/paths.js";
 import { npmProjectDirectory, preserveUpdatePath } from "./lib/npm-invocation.js";
 import { reportLostOutput, writeAllSync } from "./lib/stdout-owner.js";
 import { shellWord } from "./lib/endpoint-errors.js";
-import { displayRemedy, hasMovedStackRemedy } from "./lib/self-exec.js";
+import { displayProjectTrustFailure, displayRemedy, hasMovedStackRemedy } from "./lib/self-exec.js";
 import { asksForHelp, GLOBAL_FLAG_WORDS, leadingInvocation, OUTPUT_FLAG_WORDS } from "./lib/leading-flags.js";
 import { takeManagedHandoffCustody } from "./managed-handoff.js";
 import { nearestWords, LEADING_FLAGS, unknownCommandMessage, unknownSubcommandMessage } from "./lib/nearest-word.js";
@@ -231,7 +232,12 @@ function failureExit(cmd: Command, failure: CommandFailure, json: boolean, plain
     process.exit(1);
   }
   // Rendered in the run's scope, so the `Mesh:` heading keeps the note on how the run chose its space.
-  const report = () => renderReport(commandFailureReport(failure), plain ? "plain" : "rich", process.stderr);
+  const report = () => {
+    const message = displayProjectTrustFailure(failure.message);
+    const remedy = failure.remedy === undefined ? undefined : displayProjectTrustFailure(failure.remedy);
+    const shown = message === failure.message && remedy === failure.remedy ? failure : new CommandFailure(failure.outcome, failure.code, message, { ...failure, remedy });
+    return renderReport(commandFailureReport(shown), plain ? "plain" : "rich", process.stderr);
+  };
   const writeReport = () => writeSync(2, `${scope ? runOperation(scope, report) : report()}
 `);
   // Under --json the envelope alone reports the failure. Its text report goes to stderr only when the
@@ -327,6 +333,7 @@ function skipsSeed(name: string, sub: string | undefined, argv: readonly string[
   if (argv.includes("--dry-run")) return true;
   if (name === "persona" || (name === "personas" && !argv.includes("--running"))) return true; // local files or existing native manager routes; neither installs connectors
   if (name === "telemetry") return true; // one local settings file; never installs connectors
+  if (name === "trust") return true; // one local trust record; never installs connectors
   if (["__service-feedback-intake", "__service-delivery", "__service-manager", "__service-auth", "__service-linear", "__service-web", "__service-exec-endpoint"].includes(name)) return true; // explicit native service child; never repairs the installation
   if (name === "team" && (sub === "deploy" || sub === "remove")) return true; // existing native manager/channel operations never install local connectors
   // `backup restore` is excluded: it starts the restored stack and resumes its seats through `up
@@ -903,6 +910,40 @@ export function runCli(registry: Registry, argv: string[], opts: RunCliOptions =
   return runOperation(scope, () => dispatchCli(registry, argv, opts, scope));
 }
 
+/** Record roots that belong to spaces registered before command bodies can add new ones. */
+function seedProjectTrustBeforeCommand(name: string, dryRun: boolean, json: boolean): void {
+  if (dryRun || ["version", "docs", "completion", "__complete", "update"].includes(name)) return;
+  try { seedTrustedProjects(); }
+  catch (error) {
+    const remedy = isCommandFailure(error) || isMeshRegistryError(error) ? error.remedy : undefined;
+    const details = `${rejectionText(error)}${remedy ? `; ${remedy}` : ""}`;
+    recordOperationWarning({ code: "PROJECT_TRUST_SEED_FAILED", target: null, message: `the project trust upgrade seed did not complete: ${oneLine(details)}` }, { echo: !json });
+  }
+}
+
+function checkCommandLocalState(cmd: Command, parsed: ParsedArgs, rest: readonly string[]): void {
+  if (cmd.name.startsWith("__") || cmd.name === "help" || cmd.name === "completion") return;
+  const json = structured(cmd, parsed.positionals[0]) && parsed.values.json === true;
+  const refuse = (failure: CommandFailure) => failureExit(cmd, failure, json, parsed.values.plain === true, undefined, rest, parsed);
+  // A relative COTAL_HOME would select different records in each working folder.
+  const home = process.env.COTAL_HOME;
+  if (home && !isAbsolute(home)) refuse(new CommandFailure("refused", "USAGE_INVALID", `COTAL_HOME ${JSON.stringify(home)} is a relative path, so each folder a command runs in would have its own Cotal home; the command did not run`, { remedy: `set COTAL_HOME to an absolute path, or unset it to use ${userCotalDir()}` }));
+  const homeProblem = cotalHomeProblem();
+  if (homeProblem) refuse(new CommandFailure("refused", "SCHEMA_INVALID", `${homeProblem}; the command did not run`, { remedy: `point COTAL_HOME at a directory, or unset it to use ${userCotalDir()}` }));
+  // The machine daemon uses its selected home, not the invoking project's records.
+  const dirProblem = cmd.name === "version" || cmd.name === "daemon" || workingFolderRemoved() ? undefined : cotalDirProblem(typeof parsed.values.root === "string" ? resolve(parsed.values.root) : findCotalRoot());
+  if (dirProblem) refuse(new CommandFailure("refused", "CONFLICT", `${dirProblem}; the command did not run`, { remedy: "rename or move that file, then run the command again" }));
+  // Commands that act on preferences refuse an invalid file. Status reports it as a warning.
+  if (!["version", "docs", "status", "daemon"].includes(cmd.name)) {
+    try { cachedPreferences(); }
+    catch (error) {
+      if (!isCommandFailure(error)) throw error;
+      refuse(error);
+    }
+  }
+  seedProjectTrustBeforeCommand(cmd.name, parsed.values["dry-run"] === true, json);
+}
+
 // Explicit help for the bundled reference needs only the built-in command metadata.
 function isExplicitDocsHelp(registry: Registry, builtin: Command | undefined, wantsHelp: boolean, words: readonly string[]): boolean {
   return builtin?.name === "help" && !wantsHelp && registry.has("command", "docs")
@@ -1133,32 +1174,7 @@ async function dispatchCli(registry: Registry, argv: string[], opts: RunCliOptio
   }
   if (!cmd || !parsed) throw new Error("internal error: dispatch reached its effects without a parsed command");
   const updateDirectory = cmd.name === "update" ? prepareUpdateFolder(parsed) : undefined;
-  // A preferences file that does not validate stops every command that could act on a default, as a
-  // broken config file does, so nothing runs on a default the person did not mean. Help, shell
-  // completion, version, docs and machine-daemon operations need no preference defaults, and status
-  // reports the file as a warning, so they still run. `--help` has already returned above.
-  if (!cmd.name.startsWith("__") && cmd.name !== "help" && cmd.name !== "completion") {
-    // A relative COTAL_HOME would name another home in each folder a command runs in, and a
-    // COTAL_HOME that cannot be a directory can hold no record: both stop them before any command
-    // reads it.
-    const home = process.env.COTAL_HOME;
-    if (home && !isAbsolute(home)) failureExit(cmd, new CommandFailure("refused", "USAGE_INVALID", `COTAL_HOME ${JSON.stringify(home)} is a relative path, so each folder a command runs in would have its own Cotal home; the command did not run`, { remedy: `set COTAL_HOME to an absolute path, or unset it to use ${userCotalDir()}` }), structured(cmd, parsed.positionals[0]) && parsed.values.json === true, parsed.values.plain === true, undefined, rest, parsed);
-    const homeProblem = cotalHomeProblem();
-    if (homeProblem) failureExit(cmd, new CommandFailure("refused", "SCHEMA_INVALID", `${homeProblem}; the command did not run`, { remedy: `point COTAL_HOME at a directory, or unset it to use ${userCotalDir()}` }), structured(cmd, parsed.positionals[0]) && parsed.values.json === true, parsed.values.plain === true, undefined, rest, parsed);
-    // A `.cotal` that is a file in the folder the command uses, such as someone's notes, holds no
-    // records, and every reader would otherwise report a different wrong cause. The machine daemon
-    // uses its selected home, not the invoking project's records.
-    const dirProblem = cmd.name === "version" || cmd.name === "daemon" || workingFolderRemoved() ? undefined : cotalDirProblem(typeof parsed.values.root === "string" ? resolve(parsed.values.root) : findCotalRoot());
-    if (dirProblem) failureExit(cmd, new CommandFailure("refused", "CONFLICT", `${dirProblem}; the command did not run`, { remedy: "rename or move that file, then run the command again" }), structured(cmd, parsed.positionals[0]) && parsed.values.json === true, parsed.values.plain === true, undefined, rest, parsed);
-    if (!["version", "docs", "status", "daemon"].includes(cmd.name)) {
-      try {
-        cachedPreferences();
-      } catch (e) {
-        if (!isCommandFailure(e)) throw e;
-        failureExit(cmd, e, structured(cmd, parsed.positionals[0]) && parsed.values.json === true, parsed.values.plain === true, undefined, rest, parsed);
-      }
-    }
-  }
+  checkCommandLocalState(cmd, parsed, rest);
   // Keep failures in the resolved space and completion warnings behind COTAL_COMPLETE_DEBUG.
   if (cmd.name === "__complete" && !debugFlag("COTAL_COMPLETE_DEBUG")) scope.quiet = true;
   const execute = async () => npmProjectDirectory.run(updateDirectory, async () => {

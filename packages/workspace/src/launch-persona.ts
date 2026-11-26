@@ -48,6 +48,12 @@ export function loadLaunchPersonaFile(path: string): AgentDef {
   } finally {
     closeSync(fd);
   }
+  return parseLaunchPersonaSource(bytes, path);
+}
+
+/** Parse persona source read for a launch: a Mesh manifest is refused, and anything else must pass
+ *  the native persona parser. `path` names the file in refusals. */
+export function parseLaunchPersonaSource(bytes: Buffer, path: string): AgentDef {
   const source = bytes.toString("utf8");
   const encoding = utf8Problem(bytes, source);
   if (encoding) throw new PersonaSourceError(`invalid persona definition: ${path}: ${encoding}`, { remedy: `save ${path} as UTF-8` });

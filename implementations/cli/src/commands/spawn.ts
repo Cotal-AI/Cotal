@@ -42,6 +42,8 @@ import {
 } from "@cotal-ai/core";
 import {
   CommandFailure,
+  isTrustedProject,
+  loadTrustCheckedPersona,
   loadLaunchPersonaFile,
   personaFileReference,
   PersonaSourceError,
@@ -72,7 +74,7 @@ import {
 import { c, stderrLine } from "../ui.js";
 import { parseChannelFlag } from "../lib/channel-flags.js";
 import { withProvisioner } from "../lib/provisioner.js";
-import { displayCmd } from "../lib/self-exec.js";
+import { displayCmd, displayProjectTrustFailure } from "../lib/self-exec.js";
 import { completedFlagValue, completingFlagValue, hasCompletedFlagValue, positionalsForCompletion } from "../lib/completion.js";
 import { preflightOrExit, resolveTargetOrExit } from "../lib/connect.js";
 import { onInstance } from "../lib/control.js";
@@ -80,7 +82,7 @@ import { askSpawnPlace } from "../lib/manager-choice.js";
 import { canPrompt } from "./meshes-wizard.js";
 import { listDeclaredChannels, listDeclaredRoles, listPersonaNames } from "../lib/personas.js";
 import { personaCatalog, unreadablePersona } from "../lib/persona-files.js";
-import { brokenPersonaLink, callerHarness, checkSpawnExpiryTarget, directPersonaPath, missingConnector, missingHarnessExecutables, missingPersona, missingPersonaFailure, nonDirectoryPersonaPath, spawnPersona, spawnUsesManager } from "../lib/spawn-defaults.js";
+import { brokenPersonaLink, callerHarness, checkSpawnExpiryTarget, directPersonaPath, missingConnector, missingHarnessExecutables, missingPersona, missingPersonaFailure, nonDirectoryPersonaPath, spawnPersona, spawnUsesManager, type PersonaSite } from "../lib/spawn-defaults.js";
 import { writeDefaultPersonaForLaunch } from "../lib/default-persona.js";
 import { spawnLaunchPreview } from "./spawn-preview.js";
 import { protectedCredentialReference, readLocalRecordSource } from "../lib/protected-records.js";
@@ -296,21 +298,40 @@ function reportDirectPersonaReadFailure(path: string, code: string | undefined, 
   stderrLine("✗ ", (error as Error).message, c.red);
 }
 
-/**
- * `cotal spawn [<persona>] [--file <persona-file>]` runs the native application in this terminal.
- * `--detach` launches it through a manager and returns after readiness, and `--on <instance>`
- * launches it through that manager and attaches to its allocated incarnation. File validation
- * belongs to the execution host.
- *
- * The launch recipe is the connector's `buildLaunch` (the single source of truth,
- * shared with the manager); only *how the spec runs* differs — foreground exec
- * here vs. a supervised runtime in the manager. The connector is resolved from
- * the registry by agent type, composed at the root.
- *
- * The mesh it joins — creds and personas together — is resolved by `resolveMeshTarget` (in @cotal-ai/workspace), so a
- * bare `cotal spawn <persona>` from any directory finds the running mesh (one up, or the `current`
- * default) instead of mistaking `~/.cotal` for a space.
- */
+/** Read the persona through the project trust check, seeding only a missing product default. */
+function readDirectPersona(target: PersonaSite, path: string, ref: string, from: string | undefined, project: string, implicitDefault: boolean, handoff: boolean): { def: AgentDef; refusal?: string } {
+  const { space } = target;
+  try { return loadTrustCheckedPersona(path, "launch"); }
+  catch (e) {
+    const code = (e as NodeJS.ErrnoException).code;
+    if (!(implicitDefault && code === "ENOENT")) {
+      if (e instanceof PersonaSourceError) throw new CommandFailure("refused", "SCHEMA_INVALID", e.message, { target: { space, path }, ...(e.remedy ? { remedy: e.remedy } : {}) });
+      if (handoff) stderrLine("✗ ", `cannot load the managed handoff persona: ${(e as Error).message}`, c.red);
+      else if (code === "ENOENT") throw missingPersonaFailure(target, ref, from, path);
+      else if (code === "ELOOP") {
+        throw new CommandFailure("refused", "SCHEMA_INVALID", `the persona path contains a symbolic-link loop: ${path}`, {
+          target: { space, path }, remedy: "correct the link's target, or move the link aside and put a regular persona file in its place",
+        });
+      } else reportDirectPersonaReadFailure(path, code, space, e);
+      process.exit(1);
+    }
+  }
+  let written: string | undefined;
+  try { written = writeDefaultPersonaForLaunch(project); }
+  catch (error) {
+    const missing = missingPersona(target, ref, from, path);
+    throw new CommandFailure("refused", "PERMISSION_DENIED", `${missing.message}, and the shipped one could not be written there: ${(error as Error).message}`, { target: { space, path }, remedy: missing.remedy });
+  }
+  if (written !== undefined) provenance.wrote("default persona", written);
+  try { return loadTrustCheckedPersona(path, "launch"); }
+  catch (error) {
+    if (written !== undefined || (error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    throw brokenPersonaLink(path, { space, path }, true) ?? error;
+  }
+}
+
+/** `cotal spawn` resolves the target mesh and its persona together. A foreground launch uses the
+ *  local connector; a managed launch validates the persona and launches on the manager's host. */
 export async function spawn(args: ParsedArgs): Promise<void> {
   const positionals = args.positionals;
   const channels = validateSpawnArguments(args);
@@ -542,55 +563,20 @@ export async function spawn(args: ParsedArgs): Promise<void> {
   // written from the shipped template here and launched. This also applies to positional `default`.
   // A missing file, preference or other catalog name is still refused.
   const implicitDefault = ref === "default" && personaFrom === undefined && values.config === undefined && handoffText === undefined && redeemedEnrollment === undefined;
-  let def: AgentDef;
-  try {
-    def = loadLaunchPersonaFile(path);
-  } catch (e) {
-    const code = (e as NodeJS.ErrnoException).code;
-    if (!(implicitDefault && code === "ENOENT")) {
-      if (e instanceof PersonaSourceError) throw new CommandFailure("refused", "SCHEMA_INVALID", e.message, { target: { space, path }, ...(e.remedy ? { remedy: e.remedy } : {}) });
-      // The not-found text names the mesh's space and server, which for a handoff are its values.
-      if (handoffText !== undefined) {
-        stderrLine("✗ ", `cannot load the managed handoff persona: ${(e as Error).message}`, c.red);
-      } else if (code === "ENOENT") {
-        throw missingPersonaFailure(target, ref, personaFrom, path);
-      } else if (code === "ELOOP") {
-        throw new CommandFailure("refused", "SCHEMA_INVALID", `the persona path contains a symbolic-link loop: ${path}`, {
-          target: { space, path }, remedy: "correct the link's target, or move the link aside and put a regular persona file in its place",
-        });
-      } else {
-        reportDirectPersonaReadFailure(path, code, space, e);
-      }
-      process.exit(1);
-    }
-    let written: string | undefined;
-    try {
-      written = writeDefaultPersonaForLaunch(personaProject);
-    } catch (writeError) {
-      const missing = missingPersona(target, ref, personaFrom, path);
-      throw new CommandFailure("refused", "PERMISSION_DENIED", `${missing.message}, and the shipped one could not be written there: ${(writeError as Error).message}`, { target: { space, path }, remedy: missing.remedy });
-    }
-    if (written !== undefined) provenance.wrote("default persona", written);
-    try { def = loadLaunchPersonaFile(path); }
-    catch (retryError) {
-      if (written !== undefined || (retryError as NodeJS.ErrnoException).code !== "ENOENT") throw retryError;
-      throw brokenPersonaLink(path, { space, path }, true) ?? retryError;
-    }
+  const { def, refusal: personaOptionsRefused } = readDirectPersona(target, path, ref, personaFrom, personaProject, implicitDefault, handoffText !== undefined);
+  if (personaOptionsRefused) {
+    stderrLine("✗ ", displayProjectTrustFailure(personaOptionsRefused), c.red);
+    process.exit(1);
   }
 
-  // Provenance: say which persona file WON resolution (--config > positional > preference > default)
-  // — the user must never wonder which directory their agent's definition came from.
+  // Provenance records which persona won resolution.
   provenance.read("persona", path);
 
-  // --name / --role override the file (name defaults from the file's frontmatter).
+  // Flags win over file values before model policy sees them.
   const requested = values.name ?? def.name;
   const role = values.role ?? def.role;
-  // Flags win over the file, resolved once: the model policy below judges these values and the
-  // connector launches on them. Left to the connector, the model is re-read from the persona at
-  // launch, after the check, so an edit in between would launch a model the policy never saw.
   const model = values.model ?? def.model;
   const variant = values.variant ?? def.variant;
-  // Opaque connector options: `--opt` flags win per key over the persona's `launchOptions:`.
   const launchOptions = mergeLaunchOptions(def.launchOptions, cliLaunchOptions);
   if (redeemedEnrollment && redeemedEnrollment.bundle.actor !== requested) {
     stderrLine("✗ ", `the enrollment is for actor "${redeemedEnrollment.bundle.actor}" but this spawn names "${requested}"`, c.red);
@@ -603,7 +589,7 @@ export async function spawn(args: ParsedArgs): Promise<void> {
   // effective role, model (flag over file) and launch options before anything is provisioned or launched.
   let cotalConfig: CotalConfig;
   try {
-    cotalConfig = loadCotalConfig(personaProject);
+    cotalConfig = loadCotalConfig(personaProject, isTrustedProject);
     const refusal = modelPolicyRefusal(cotalConfig, {
       persona: `persona "${ref}" (${path})`,
       role, model, variant,
@@ -616,7 +602,7 @@ export async function spawn(args: ParsedArgs): Promise<void> {
       process.exit(1);
     }
   } catch (e) {
-    stderrLine("✗ ", `${(e as Error).message}`, c.red);
+    stderrLine("✗ ", displayProjectTrustFailure((e as Error).message), c.red);
     process.exit(1);
   }
 

@@ -58,6 +58,7 @@ import {
   type UserBundle,
 } from "@cotal-ai/workspace";
 import { forgetChatSessions } from "@cotal-ai/workspace/chat";
+import { recordNewProjectTrust } from "./up-project-trust.js";
 import { liveMeshOwner, unsettledStackMembers } from "./clean.js";
 import { brokerLaunchAt } from "../lib/broker-service.js";
 import { shellWord } from "../lib/endpoint-errors.js";
@@ -616,13 +617,16 @@ export function recordLocalSpace(name: string, root: string, flag: "--root" | "-
   }
   protectedLocalDirectory(dir, "the project's .cotal directory");
   const preparedAt = new Date().toISOString();
-  try { return { file: recordPreparedSpace({ space: name, root, ts: preparedAt }), preparedAt }; }
+  let file: string;
+  try { file = recordPreparedSpace({ space: name, root, ts: preparedAt }); }
   catch (error) {
     if (!unwritable(error)) throw error;
     // The empty `.cotal` this call made goes too, so the refusal leaves the root as it was.
     if (made !== undefined) rmdirSync(dir);
     throw refuse("PERMISSION_DENIED", `this account cannot write this machine's Cotal home ${homeCotalDir()}, so the space could not be recorded; nothing was written`, target, "make that folder writable by you, or set COTAL_HOME to a folder you own");
   }
+  if (made !== undefined) recordNewProjectTrust(root);
+  return { file, preparedAt };
 }
 
 const unwritable = (error: unknown): boolean => ["EACCES", "EPERM", "EROFS"].includes((error as NodeJS.ErrnoException).code ?? "");
