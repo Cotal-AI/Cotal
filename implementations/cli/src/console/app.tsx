@@ -493,6 +493,7 @@ export function App({
       setNotice(`deleting #${c.channel}…`);
       void deleteChannel({ ...controlCtx, space: ep.space }, c.channel).then((r) => {
         if (!r.ok) return setNotice(`delchan: ${r.error}`);
+        discardChatHistory(c.channel);
         setNotice(`deleted #${c.channel} · ${r.purged} messages purged`);
         setActiveChannel((ch) => (ch === c.channel ? null : ch));
       });

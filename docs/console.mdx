@@ -104,7 +104,8 @@ Available controls include:
 | `delchan <channel>` | Delete one channel after you type its name to confirm. Wildcards are refused. |
 
 Channel deletion uses core's `clearChannel`, which purges matching history and removes the registry
-entry. It acquires a one-use `channel-purger` credential on a static mesh,
+entry. The console removes that channel's posts from its feed and keeps posts from other channels.
+The action acquires a one-use `channel-purger` credential on a static mesh,
 a `channel-purger` view on a user-auth mesh, or an open connection.
 It does not call a manager.
 

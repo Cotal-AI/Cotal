@@ -848,6 +848,24 @@ try {
         check(`N6 repeat ${kind} install acknowledges the existing service in plain output`, retry.status === 0 && retry.stdout.includes("Already installed") && !retry.stderr.includes("before installing again"), { stdout: retry.stdout, stderr: retry.stderr });
 
         check(`N6 valid ${kind} receipt plans and starts`, call("uninstall", home, ["--dry-run"]).status === 0 && call("start", home).status === 0);
+        if (home) {
+          const savedHome = join(dir, "saved-daemon-home");
+          const beforeRecovery = readFileSync(context.calls, "utf8").length;
+          renameSync(home, savedHome);
+          try {
+            const install = call("install", home, ["--dry-run"]);
+            const uninstall = call("uninstall", home, ["--dry-run"]);
+            check("N6 install and uninstall still find the surviving unit after the daemon home is deleted",
+              install.status === 0 && install.doc.result?.state === "would-install" && install.doc.result.unit === receipt.unit
+              && uninstall.status === 0 && uninstall.doc.result?.state === "would-remove" && uninstall.doc.result.unit === receipt.unit,
+              { install, uninstall });
+            const recoveryCalls = readFileSync(context.calls, "utf8").slice(beforeRecovery).trim().split("\n").map(line => JSON.parse(line) as { operation: string });
+            check("N6 surviving unit previews only read native state and leave the home absent",
+              recoveryCalls.some(row => row.operation === "unit-read")
+              && recoveryCalls.every(row => ["directory-read", "linger-read", "unit-read"].includes(row.operation))
+              && !existsSync(home) && readFileSync(receipt.unitPath, "utf8") === sourceBefore, recoveryCalls);
+          } finally { renameSync(savedHome, home); }
+        }
         const machineHome = home ?? env.COTAL_HOME!;
         const recordDir = join(machineHome, "daemon", spaceSegment("retirement"));
         const store = join(recordDir, "service-store");
@@ -918,6 +936,23 @@ try {
       }
       const operations = readFileSync(context.calls, "utf8").trim().split("\n").map((line) => (JSON.parse(line) as { operation: string }).operation);
       check(`N7 ${available ? "ready" : "missing loginctl"} performs only prerequisite reads`, JSON.stringify(operations) === JSON.stringify(available ? ["directory-read", "linger-read", "directory-read", "linger-read"] : ["directory-read", "directory-read"]), operations);
+      if (available) {
+        renameSync(daemonHome, join(dir, "saved-daemon-home"));
+        const before = readFileSync(context.calls, "utf8");
+        for (const [verb, flags, message] of [
+          ["install", [], "the --daemon-home directory does not exist; create it with mode 0700 first"],
+          ["uninstall", ["--dry-run"], "this daemon has no installed unit recorded by `cotal daemon install`; nothing was removed"],
+        ] as const) {
+          const child = spawnSync(process.execPath, [cli, "daemon", verb, "--daemon-home", daemonHome, ...flags, "--json"], { cwd: dir, env, encoding: "utf8", timeout: 30_000 });
+          const doc = JSON.parse(child.stdout) as { outcome: string; error?: { code: string; message: string } };
+          check(`N7 ${verb} names the right refusal for an absent home with no unit`, !child.error && child.status === 2
+            && doc.outcome === "refused" && doc.error?.code === "TARGET_NOT_FOUND" && doc.error.message === message, doc);
+        }
+        const reads = readFileSync(context.calls, "utf8").slice(before.length).trim().split("\n");
+        check("N7 absent home refusals only read the user manager directory and create nothing",
+          reads.length === 2 && reads.every(line => JSON.parse(line).operation === "directory-read")
+          && !existsSync(daemonHome) && !existsSync(join(context.config, "systemd")), reads);
+      }
     }
   } else console.log(`  ○ UNTESTED N7: Linux CLI prerequisites; this is ${process.platform}`);
   console.log("N8 Linux unit-directory preflight and linger ordering through the built CLI");

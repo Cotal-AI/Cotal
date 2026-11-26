@@ -47,6 +47,7 @@ const releaseBroker = teardownOnSignal(broker, dir);
 const auth = `Basic ${Buffer.from("opencode:test-secret").toString("base64")}`;
 
 const list: OpenCode2Message[] = [];
+let replyDelay = 0;
 const oc = createHttpServer((req, res) => {
   if (req.headers.authorization !== auth) return void res.writeHead(401).end();
   req.resume();
@@ -54,8 +55,13 @@ const oc = createHttpServer((req, res) => {
     const url = new URL(req.url ?? "/", "http://x");
     const json = (body: unknown) => void res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(body));
     if (req.method === "POST" && url.pathname === "/api/session") return json({ data: { id: S } });
-    if (req.method === "GET" && url.pathname === `/api/session/${S}/message`)
-      return json({ data: [...list].sort((a, b) => (a.id < b.id ? 1 : -1)), cursor: { previous: null, next: null } });
+    if (req.method === "GET" && url.pathname === `/api/session/${S}/message`) {
+      const data = [...list].sort((a, b) => (a.id < b.id ? 1 : -1));
+      const reply = () => json({ data, cursor: { previous: null, next: null } });
+      if (replyDelay > 0) setTimeout(reply, replyDelay);
+      else reply();
+      return;
+    }
     res.writeHead(404).end();
   });
 });
@@ -114,6 +120,29 @@ try {
   stop = await setupCotal(ctx);
   await sleep(2_000);
 
+  // ---- A fast turn can deliver its whole event burst before the first transcript read returns.
+  const fastStart = seen.length;
+  const feedFast = (type: string, data: Record<string, unknown> = {}, durable = true) => ctx.feed({
+    type, created: Date.now(), ...(durable ? { durable: { aggregateID: S, seq: seq++ } } : {}), data: { sessionID: S, ...data },
+  });
+  const fastStep: OpenCode2Message = { id: "msg_002", type: "assistant", time: { created: at() }, content: [] };
+  replyDelay = 400;
+  list.push({ id: "msg_001", type: "user", time: { created: at() } }, fastStep);
+  feedFast("session.execution.started");
+  feedFast("session.step.started", { assistantMessageID: fastStep.id });
+  feedFast("session.text.started", { assistantMessageID: fastStep.id, ordinal: 0 });
+  feedFast("session.text.delta", { assistantMessageID: fastStep.id, ordinal: 0, delta: "fast" }, false);
+  await sleep(350);
+  replyDelay = 0;
+  fastStep.content = [{ type: "text", text: "fast" }];
+  fastStep.time = { ...fastStep.time, streamed: at(), completed: at() };
+  list.push({ id: "msg_003", type: "idle", time: { created: at() }, outcome: "succeeded" });
+  await durable("session.execution.succeeded");
+  await sleep(600);
+  const fast = seen.slice(fastStart).map((e) => e.type);
+  check("fast:an immediate first delta stays inside the one run opened by its prompt",
+    JSON.stringify(fast) === JSON.stringify(["RUN_STARTED", "TEXT_MESSAGE_START", "TEXT_MESSAGE_CONTENT", "TEXT_MESSAGE_END", "RUN_FINISHED"]), fast);
+
   // ---- Turn 1: reasoning, then text, each streamed while the step runs and saved at its end.
   list.push({ id: "msg_01", type: "user", time: { created: at() }, text: "prompt" } as OpenCode2Message);
   await durable("session.execution.started");
@@ -170,8 +199,8 @@ try {
   check("interrupted:the stream of an element its interrupted step never saved ends before the run closes",
     joined(cKey) === "half an answer" && end >= 0 && close > end, { end, close, events: under(cKey) });
   const types = seen.map((e) => e.type);
-  check("runs:two runs opened and each closed once", types.filter((t) => t === "RUN_STARTED").length === 2 &&
-    types.filter((t) => t === "RUN_FINISHED" || t === "RUN_ERROR").length === 2, types);
+  check("runs:three runs opened and each closed once", types.filter((t) => t === "RUN_STARTED").length === 3 &&
+    types.filter((t) => t === "RUN_FINISHED" || t === "RUN_ERROR").length === 3, types);
   check("arm:no seat exited", exits.length === 0, { exits });
 } finally {
   ctx.end();
@@ -205,7 +234,7 @@ try {
     JSON.stringify(shape) === JSON.stringify([["TEXT_MESSAGE_END", "stream:msg_a:text:1"]]), shape);
 }
 
-const EXPECTED = 8;
+const EXPECTED = 9;
 check(`meta:every cell ran - ${EXPECTED} expected`, passed() + failed() === EXPECTED, `${passed() + failed()} cells reported`);
 finish();
 process.exit();

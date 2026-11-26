@@ -287,17 +287,30 @@ try {
     const serveFailure = await failedLaunch("opencode", "failed_serve");
     ok("OpenCode serve failure returns child stderr rather than wrapper prose", isCommandFailure(serveFailure) && serveFailure.message.includes("run auth login to reauthenticate"), String(serveFailure));
     const modelProbe = join(fakeBin, "model probe.md");
-    writeFileSync(modelProbe, "---\nname: model_probe\nrole: model_probe\nagent: jcode\n---\nRespond only to test prompts.\n");
-    let prefixFailure: unknown;
-    try {
-      await capture(() => run("spawn", ["--file", modelProbe, "--harness", "jcode", "--detach", "--space", SPACE, "--cwd", fakeBin, "--model", "cliproxy/gpt-6.2-sol"]));
-    } catch (error) { prefixFailure = error; }
-    ok("Jcode rejects a model prefix before the host starts and prints a bare-model retry with the original options",
-      isCommandFailure(prefixFailure) && exitCode(prefixFailure.outcome, prefixFailure.code) === 5 && prefixFailure.code === "OPERATION_FAILED"
-        && prefixFailure.message.includes("model_prefix_rejected") && prefixFailure.message.includes("Select the provider in Jcode's configuration")
-        && ["cotal", "pnpm cotal"].some((cli) => prefixFailure.remedy?.startsWith(`${cli} spawn `))
-        && [" -d", ` --space ${SPACE}`, " --harness jcode", ` --file '${modelProbe}'`, ` --cwd ${fakeBin}`, " --model gpt-6.2-sol"].every((part) => prefixFailure.remedy?.includes(part))
-        && !prefixFailure.remedy?.includes("cliproxy/") && !existsSync(join(workspaceRoot, ".cotal", "jcode")), prefixFailure);
+    const modelPersona = (model: string) => writeFileSync(modelProbe, `---\nname: model_probe\nrole: model_probe\nagent: jcode\nmodel: '${model}'\n---\nRespond only to test prompts.\n`);
+    const modelFailure = async (extra: string[] = []): Promise<unknown> => {
+      try { await capture(() => run("spawn", ["--file", modelProbe, "-d", "--space", SPACE, "--server", SERVER, "--cwd", fakeBin, "--no-events", ...extra])); }
+      catch (error) { return error; }
+    };
+    modelPersona("fixture/persona-model");
+    for (const [source, model, extra] of [
+      ["persona", "persona-model", []],
+      ["flag", "gpt-6.2-sol", ["--harness", "jcode", "--model", "cliproxy/gpt-6.2-sol"]],
+    ] as const) {
+      const failure = await modelFailure([...extra]);
+      ok(`Jcode rejects a ${source} model prefix before launch and keeps the original options in the bare-model retry`,
+        isCommandFailure(failure) && exitCode(failure.outcome, failure.code) === 5 && failure.code === "OPERATION_FAILED"
+          && failure.message.includes("model_prefix_rejected") && failure.message.includes("Select the provider in Jcode's configuration")
+          && failure.remedyIsCommand === true && ["cotal", "pnpm cotal"].some((cli) => failure.remedy?.startsWith(`${cli} spawn `))
+          && [" -d", ` --space ${SPACE}`, ` --server ${SERVER}`, ` --file '${modelProbe}'`, ` --cwd ${fakeBin}`, " --no-events", ` --model ${model}`].every((part) => failure.remedy?.includes(part))
+          && (source === "persona" || failure.remedy?.includes(" --harness jcode") === true)
+          && !failure.remedy?.includes("fixture/") && !failure.remedy?.includes("cliproxy/") && !existsSync(join(workspaceRoot, ".cotal", "jcode")), failure);
+    }
+    modelPersona("fixture/unsafe;model");
+    const unsafeModel = await modelFailure();
+    ok("Jcode withholds an unsafe persona model from the refusal and does not suggest a retry command",
+      isCommandFailure(unsafeModel) && unsafeModel.code === "OPERATION_FAILED" && unsafeModel.message.includes("model_prefix_rejected")
+        && !unsafeModel.message.includes("unsafe;model") && !unsafeModel.remedyIsCommand, unsafeModel);
     const originalCwd = process.cwd();
     const jcodeFailure = await (async () => {
       process.chdir(fakeBin);
