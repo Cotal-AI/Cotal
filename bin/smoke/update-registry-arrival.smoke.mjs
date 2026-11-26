@@ -82,6 +82,7 @@ async function assertLifecycleExtension(run, { node }, entry, root) {
 
 /** Runs real npm and the built public entry against a loopback registry. */
 export async function registryArrivalCell({ scenario, entry = join(repo, 'bin/dist/cotal.js'), parent = tmpdir() }) {
+  if (scenario === 'corepack-node-fallback') return corepackNodeFallbackCell(entry, parent);
   const versionNamedNode = scenario === 'version-named-node';
   const reconcileOrphan = scenario === 'reconcile-orphan';
   const reconcileInterrupted = reconcileOrphan || scenario === 'reconcile-killed';
@@ -1108,6 +1109,93 @@ exec npm "$@"
     server.closeAllConnections();
     await new Promise(done => server.close(done));
     if (existsSync(join(root, 'configured-cache'))) chmodSync(join(root, 'configured-cache'), 0o700);
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
+async function corepackNodeFallbackCell(entry, parent) {
+  const root = mkdtempSync(join(parent, 'corepack-node-fallback-'));
+  const prefix = join(root, 'prefix'), home = join(root, 'home'), project = join(root, 'project');
+  const installed = join(prefix, 'lib/node_modules/cotal-ai'), scripts = join(installed, 'scripts');
+  const shims = join(root, 'npm-shims');
+  const executable = join(prefix, 'bin/cotal');
+  const exe = join(installed, 'dist/cotal.js');
+  const version = JSON.parse(readFileSync(join(repo, 'bin/package.json'), 'utf8')).version;
+  const env = { ...childEnv, HOME: home, COTAL_HOME: join(home, '.cotal'), XDG_CONFIG_HOME: join(home, 'config'),
+    XDG_RUNTIME_DIR: join(root, 'runtime'), TMPDIR: join(root, 'tmp'), npm_config_cache: join(root, 'cache'),
+    COREPACK_HOME: join(root, 'corepack-cache'), COREPACK_DEFAULT_TO_LATEST: '0', COREPACK_NPM_REGISTRY: 'https://registry.npmjs.org',
+    COTAL_TELEMETRY: 'off', DO_NOT_TRACK: '1', COTAL_NO_UPDATE_CHECK: '1', COTAL_SKIP_CONNECTOR_SEED: '1' };
+  delete env.NODE_OPTIONS;
+  const requests = [];
+  const server = createServer((req, res) => {
+    requests.push(req.url);
+    res.setHeader('content-type', 'application/json');
+    res.end(JSON.stringify({ name: 'cotal-ai', 'dist-tags': { latest: version }, versions: { [version]: { name: 'cotal-ai', version } } }));
+  });
+  const run = (file, args) => new Promise((resolveRun, reject) => {
+    let output = '';
+    const child = spawn(file, args, { cwd: project, env, timeout: 120_000, killSignal: 'SIGKILL', stdio: ['ignore', 'pipe', 'pipe'] });
+    child.stdout.on('data', chunk => { output += chunk; });
+    child.stderr.on('data', chunk => { output += chunk; });
+    child.once('error', reject);
+    child.once('close', code => resolveRun({ code, output }));
+  });
+  const ok = async (file, args) => {
+    const result = await run(file, args);
+    assert.equal(result.code, 0, `${file} ${args.join(' ')}\n${result.output}`);
+    return result.output;
+  };
+  try {
+    for (const dir of [home, project, shims, scripts, dirname(executable), env.TMPDIR, env.XDG_RUNTIME_DIR])
+      mkdirSync(dir, { recursive: true, mode: 0o700 });
+    const tools = join(root, 'tools');
+    const install = (dir, pkg) => ok('npm', ['install', '--registry=https://registry.npmjs.org', '--no-audit', '--no-fund', '--prefix', dir, pkg]);
+    for (const nodeVersion of ['22.10.0', '22.11.0', '24.21.0']) await install(join(tools, nodeVersion), `node@${nodeVersion}`);
+    await install(tools, 'corepack@0.34.5');
+    const [active, recorded, compatible] = ['22.10.0', '22.11.0', '24.21.0'].map(v => join(tools, v, 'node_modules/node/bin/node'));
+    const corepack = join(tools, 'node_modules/corepack');
+    await ok(compatible, [join(corepack, 'dist/corepack.js'), 'install', '--global', 'npm@12.2.3']);
+    await ok(compatible, [join(corepack, 'dist/corepack.js'), 'enable', '--install-directory', shims, 'npm']);
+
+    cpSync(dirname(entry), join(installed, 'dist'), { recursive: true });
+    cpSync(join(repo, 'bin/package.json'), join(installed, 'package.json'));
+    symlinkSync(join(repo, 'bin/node_modules'), join(installed, 'node_modules'));
+    symlinkSync(exe, executable);
+    const pin = join(scripts, 'pin-npm-node.cjs');
+    cpSync(join(repo, 'bin/scripts/pin-npm-node.cjs'), pin);
+    await ok(recorded, [pin]);
+    assert(readFileSync(join(installed, 'dist/cotal-npm'), 'utf8').includes(`  node='${recorded}'`));
+    const seed = join(env.XDG_CONFIG_HOME, 'cotal', 'seed');
+    mkdirSync(seed, { recursive: true, mode: 0o700 });
+    writeFileSync(join(seed, 'authority.json'), JSON.stringify({ everSeeded: ['claude', 'opencode', 'codex', 'hermes', 'jcode', 'pi', 'web'] }));
+    writeFileSync(join(seed, 'witness.json'), JSON.stringify({ initialized: true, firstGeneration: version }));
+    writeFileSync(join(seed, 'stamp.json'), JSON.stringify({ generation: version }));
+    env.PATH = [dirname(executable), shims, ...[active, recorded, compatible].map(dirname), '/usr/bin', '/bin'].join(delimiter);
+    env.npm_config_prefix = prefix;
+    server.listen(0, '127.0.0.1');
+    await once(server, 'listening');
+    env.npm_config_registry = `http://127.0.0.1:${server.address().port}/`;
+    env.NO_PROXY = '127.0.0.1';
+
+    const npm = join(corepack, 'dist/npm.js');
+    const args = ['view', 'cotal-ai@latest', 'version', '--json'];
+    assert.match(await ok(recorded, [npm, '--version']), /12\.2\.3/);
+    const incompatible = await run(recorded, [npm, ...args]);
+    assert.notEqual(incompatible.code, 0);
+    assert.match(incompatible.output, /ERR_REQUIRE_ESM/);
+    assert.deepEqual(requests, [], 'the recorded Node cannot reach the registry through the selected npm');
+    assert.equal((await ok('node', ['--version'])).trim(), 'v22.10.0');
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const before = requests.length;
+      const output = await ok(executable, ['update', '--self']);
+      assert.match(output, /Registry latest:/);
+      assert.deepEqual(requests.slice(before), ['/cotal-ai'], 'npm reaches the registry without changing the caller Node');
+    }
+    assert.match(await ok(executable, ['status']), /Node v22\.10\.0/);
+    return { scenario: 'corepack-node-fallback', cotal: version, node: '22.10.0', npm: '12.2.3', registryLookups: requests.length };
+  } finally {
+    server.closeAllConnections();
+    if (server.listening) await new Promise(done => server.close(done));
     rmSync(root, { recursive: true, force: true });
   }
 }

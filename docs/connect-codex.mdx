@@ -47,7 +47,18 @@ cotal spawn --harness codex
 ```
 
 A bare spawn runs Codex in this terminal. `--on <instance>` selects a manager and attaches where supported.
-To launch a `reviewer` persona without opening its terminal, run:
+Setup creates `.cotal/agents/default.md`, not a `reviewer` persona.
+Before running the detached example, create `.cotal/agents/reviewer.md` in the manager's project folder with these contents:
+
+```markdown
+---
+name: reviewer
+role: review
+---
+You review changes and report findings.
+```
+
+From the project folder, launch the persona without opening its terminal:
 
 ```bash
 cotal spawn reviewer --harness codex --detach

@@ -314,6 +314,9 @@ leaves the installation unchanged without failing `update --self`.
 On Linux and macOS, an installed self-update restores owner write access to its own connector
 directories before staging a release. If it cannot make those directories writable, it names the
 directory to fix and stops before staging.
+If `cotal update --self` cannot read the extensions manifest because of a permission error, it
+leaves the manifest untouched. Restore your account's read access to the manifest and its path,
+then retry.
 If you move your home or configuration directory while Cotal and its updates are stopped, an
 installed CLI at the same path can use the moved connector set. The former configuration folder
 must be absent, and the private connector set must still be at the same relative path under the
@@ -1226,13 +1229,14 @@ candidate that holds a control character, such as a persona file name with an es
 newline in it, is not offered. `persona` still lists that file with the characters escaped. A
 persona catalog folder that cannot be read fails the completion of a persona name, or of a channel
 or role its personas declare, so the shell offers none, and with `COTAL_COMPLETE_DEBUG=1` it prints
-the folder. A persona file that does not parse fails a channel or role completion the same way, and
+the folder. `persona show` offers only readable, valid persona files, not links.
+A persona file that does not parse fails a channel or role completion the same way, and
 that flag names the file, because the declared set would be incomplete. A record it skips, such as a
 prepared space record that does not parse, is named on stderr only under that flag too. The stubs
 discard stderr, so run the completion by hand to see it, as
 `COTAL_COMPLETE_DEBUG=1 cotal __complete persona show ''` does. The bash
-and zsh stubs complete file names where a value takes a path. The fish stub offers only cotal's own
-candidates.
+and zsh stubs complete file names where a value takes a path. In Bash, a candidate with spaces is
+inserted as one argument. The fish stub offers only cotal's own candidates.
 
 In bash and zsh, a file argument such as `team check <file>`, `up -f <file>`, `--channels <path>`,
 `--creds <path>`, `run start --file <program>` or `auth mint --out <private-file>` completes from the

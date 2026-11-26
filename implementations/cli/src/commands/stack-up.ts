@@ -349,12 +349,13 @@ export function controllerStackApplies(root: string, space: string, values: Pars
   return true;
 }
 
-export function refuseForegroundStackHolder(root: string, space: string, holderPid: number, noManager: boolean, maxPayload?: number): never {
+export function refuseForegroundStackHolder(root: string, space: string, holderPid: number, noManager: boolean, maxPayload?: number, maxFileStore?: number): never {
   const home = readStackJournal(root)?.journal.recovery?.home;
   const cmd = home !== undefined && home !== resolve(homeCotalDir()) ? `COTAL_HOME=${shellWord(home)} ${displayCmd()}` : "cotal";
+  const retry = `${cmd} up --foreground${noManager ? " --no-manager" : ""}${maxPayload !== undefined ? ` --max-payload ${maxPayload}` : ""}${maxFileStore !== undefined ? ` --max-file-store ${maxFileStore}` : ""}`;
   throw new CommandFailure("refused", "CONFLICT", `a foreground \`cotal up\` in process ${holderPid} already holds this stack's lifetime; this terminal did not take it over and nothing was started`, {
     target: { root, space, holderPid },
-    remedy: `use the terminal that runs process ${holderPid}, where Ctrl-C stops the stack, or stop it with ${codeSpan(`${cmd} down --yes`)} from ${root} and run ${codeSpan(`${cmd} up --foreground${noManager ? " --no-manager" : ""}${maxPayload !== undefined ? ` --max-payload ${maxPayload}` : ""}`)} again`,
+    remedy: `use the terminal that runs process ${holderPid}, where Ctrl-C stops the stack, or stop it with ${codeSpan(`${cmd} down --yes`)} from ${root} and run ${codeSpan(retry)} again`,
   });
 }
 
