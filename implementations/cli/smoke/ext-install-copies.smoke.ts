@@ -11,6 +11,25 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { emitSentinel } from "@cotal-ai/smoke-kit";
 
+function recordNpmSpawns(dir: string): { record: string; env: NodeJS.ProcessEnv } {
+  const record = join(dir, "npm-spawn.jsonl");
+  const preload = join(dir, "record-npm-spawn.cjs");
+  writeFileSync(preload, `const cp = require("node:child_process");
+const { appendFileSync } = require("node:fs");
+const { syncBuiltinESMExports } = require("node:module");
+const spawn = cp.spawn;
+cp.spawn = (file, args, options) => {
+  const command = [file, ...(Array.isArray(args) ? args : [])].join(" ");
+  if (/npm/i.test(command) && /\\binstall\\b/.test(command) && command.includes("example-extension")) {
+    appendFileSync(${JSON.stringify(record)}, JSON.stringify({ windowsHide: options?.windowsHide }) + "\\n");
+  }
+  return spawn(file, args, options);
+};
+syncBuiltinESMExports();
+`);
+  return { record, env: { NODE_OPTIONS: `--require="${preload}"` } };
+}
+
 function main(): void {
   const repo = resolve(import.meta.dirname, "../../..");
   const binary = join(repo, "bin", "dist", "cotal.js");
@@ -158,8 +177,10 @@ function main(): void {
       writeFileSync(join(source, "greet.mjs"), `import { registry } from "@cotal-ai/core";
 registry.register({ kind: "command", name: "greet-example", summary: "Print a greeting", run() { console.log("Hello from the extension"); } });
 `);
-      const added = cli(["ext", "add", "./example-extension"]);
+      const { record, env } = recordNpmSpawns(dir);
+      const added = cli(["ext", "add", "./example-extension"], env);
       assert.equal(added.status, 0, `${form} exports-only ext add failed: ${added.stderr.slice(-800)}`);
+      check(`ext add passes windowsHide to the actual npm install for the ${form} root export`, existsSync(record) && readFileSync(record, "utf8").trim().split("\n").every(line => JSON.parse(line).windowsHide === true));
       const greeted = cli(["greet-example"]);
       check(`a fresh CLI loads the installed command through its ${form} root export`, greeted.status === 0 && greeted.stdout.trim() === "Hello from the extension");
 
@@ -218,7 +239,7 @@ registry.register({ kind: "command", name: "greet-example", summary: "Print a gr
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
-  assert.equal(passed + failed, process.platform === "linux" || process.platform === "darwin" ? 39 : 34, "all expected copy/rollback checks ran");
+  assert.equal(passed + failed, process.platform === "linux" || process.platform === "darwin" ? 41 : 36, "all expected copy/rollback checks ran");
   console.log(`ext-install-copies smoke: ${passed} passed, ${failed} failed`);
   emitSentinel({ passed, failed });
   process.exit(failed ? 1 : 0);

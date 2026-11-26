@@ -127,7 +127,7 @@ export function runNpm(args: string[], inherit = false): CommandResult {
     const { file, args: spawnArgs, windowsVerbatimArguments } = cmdSpawnSpec(npm.file, npm.args, npm.env);
     const result = spawnSync(file, spawnArgs, {
       cwd: npm.cwd, env: npm.env, windowsVerbatimArguments,
-      ...(inherit ? { stdio: "inherit" as const } : { encoding: "utf8" as const }),
+      ...(inherit ? { stdio: "inherit" as const } : { encoding: "utf8" as const }), windowsHide: true,
     });
     return {
       status: result.status,
@@ -144,7 +144,7 @@ export function runNpm(args: string[], inherit = false): CommandResult {
 
 export function runProcess(file: string, args: string[], env: NodeJS.ProcessEnv, inherit = false): CommandResult {
   env = npmUpdateChildEnvironment(env);
-  const result = withInstallUmask(() => spawnSync(file, args, inherit ? { stdio: "inherit", env } : { encoding: "utf8", env }));
+  const result = withInstallUmask(() => spawnSync(file, args, { env, ...(inherit ? { stdio: "inherit" as const } : { encoding: "utf8" as const }), windowsHide: true }));
   return {
     status: result.status,
     stdout: `${result.stdout ?? ""}`,

@@ -1085,7 +1085,7 @@ export async function offerGlobalInstall(yes: boolean): Promise<void> {
   const pkg = `cotal-ai@${runningVersion() ?? "latest"}`;
   const s = p.spinner();
   s.start("Installing cotal globally");
-  const r = withInstallUmask(() => spawnSync("npm", ["install", "-g", pkg], { encoding: "utf8" }));
+  const r = withInstallUmask(() => spawnSync("npm", ["install", "-g", pkg], { encoding: "utf8", windowsHide: true }));
   if (r.status === 0) {
     s.stop("Installed - you can now run `cotal`");
   } else {

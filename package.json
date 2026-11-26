@@ -39,6 +39,7 @@
     "check:doc-comments": "node tools/docs-checks/check-doc-comments.mjs && node tools/docs-checks/check-doc-comments.smoke.mjs",
     "check:comment-history": "node scripts/check-comment-history.mjs && node scripts/check-comment-history.smoke.mjs",
     "check:comment-history:update": "node scripts/check-comment-history.mjs --update-allowlist",
+    "check:windows-child-process": "node scripts/check-windows-child-process.mjs",
     "check:file-size": "pnpm smoke:file-size",
     "check:file-size:update": "node scripts/check-file-size.mjs --update-allowlist",
     "smoke:file-size": "node scripts/check-file-size.mjs && node scripts/check-file-size.smoke.mjs",

@@ -62,7 +62,7 @@ export async function readPrivateServe<T>(o: PrivateServe, read: (serve: ServeRe
   const server = spawn(o.bin, ["serve", "--hostname", "127.0.0.1", "--port", o.port], {
     cwd: o.cwd,
     env: { ...o.env, OPENCODE_SERVER_USERNAME: "opencode", OPENCODE_SERVER_PASSWORD: password, OPENCODE_DB: join(data, "opencode.db") },
-    stdio: ["ignore", "pipe", "ignore"],
+    stdio: ["ignore", "pipe", "ignore"], windowsHide: true,
     // Its own process group, so the stop below reaches what the server started too.
     detached: process.platform !== "win32",
   });

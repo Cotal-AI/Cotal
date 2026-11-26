@@ -14,6 +14,6 @@ export function spawnHermesGateway(opts: {
   spawnImpl?: typeof spawn;
 }): ChildProcess {
   const spawnImpl = opts.spawnImpl ?? spawn;
-  const spawnOptions: SpawnOptions = { env: opts.env, stdio: "inherit" };
+  const spawnOptions: SpawnOptions = { env: opts.env, stdio: "inherit", windowsHide: true };
   return spawnImpl(hermesUvCommand(opts.env), ["run", "--project", opts.pkgDir, "hermes", "gateway", "run"], spawnOptions);
 }
