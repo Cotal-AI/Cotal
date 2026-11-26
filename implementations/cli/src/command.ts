@@ -1032,7 +1032,7 @@ async function dispatchCli(registry: Registry, argv: string[], opts: RunCliOptio
   }
   if (word === "-v") usageExit("-v is not the version flag - run `cotal version` or `cotal -V`");
   const { configFolder, configRead, surface, useExtensionOverlay, skipUnreadableConnectorOverlay } =
-    prepareDispatchSurface(registry, opts, builtin, words, wantsHelp, docsHelp, repeatedLeading, ownWords);
+    prepareDispatchSurface(registry, opts, builtin, words, wantsHelp, docsHelp, repeatedLeading, ownWords, scope);
   if (useExtensionOverlay) {
     try {
       if (builtin?.name === "ext" && await extSeedGate(builtin, ownWords(builtin), configFolder, opts.startupNotice)) return;
@@ -1131,7 +1131,7 @@ async function dispatchCli(registry: Registry, argv: string[], opts: RunCliOptio
 
 function prepareDispatchSurface(
   registry: Registry, opts: RunCliOptions, builtin: Command | undefined, words: string[], wantsHelp: boolean,
-  docsHelp: boolean, repeatedLeading: string | undefined, ownWords: (cmd: Command | undefined) => string[],
+  docsHelp: boolean, repeatedLeading: string | undefined, ownWords: (cmd: Command | undefined) => string[], scope: OperationScope,
 ) {
   // The built-in check reports an unreadable inventory itself. Do not require that inventory to
   // construct its command surface, or recover an installation as a prelude to this read-only mode.
