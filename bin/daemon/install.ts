@@ -454,8 +454,8 @@ function assertLinuxRecordedUnit(paths: Pick<DaemonPaths, "state">, daemonHome: 
 }
 
 /** The exact recorded unit `uninstall` would remove, refusing a receipt that no longer matches. */
-export function planUninstall(paths: DaemonPaths, daemonHome: string | undefined): UninstallPlan {
-  return recordedUnit(paths, daemonHome, nativeRun, true).plan;
+export function planUninstall(paths: DaemonPaths, daemonHome: string | undefined, missingReceipt?: () => CommandFailure): UninstallPlan {
+  return recordedUnit(paths, daemonHome, nativeRun, true, false, missingReceipt).plan;
 }
 
 /** Update only the PATH field the installer wrote. Windows tasks have no PATH pin. */
