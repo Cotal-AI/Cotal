@@ -11,6 +11,7 @@
  */
 // The subpath, not the package root: the root's graph reaches the NATS client, zod and yaml, which
 // this process would load on every lifecycle event without using.
+import { createHash } from "node:crypto";
 import { runHookRelay, type LocalHookAnswer } from "@cotal-ai/connector-core/relay";
 import { otherCotalPath } from "./one-path.js";
 import { connectionOwner } from "./connection-owner.js";
@@ -26,8 +27,14 @@ const windowsPermission: LocalHookAnswer = (event) =>
   (process.platform === "win32" && isPermissionRequest(event) ? {} : undefined);
 
 const owner = connectionOwner(process.env.CLAUDE_PLUGIN_DATA);
+const isKickoff = (event: unknown): boolean => {
+  const e = event as { hook_event_name?: unknown; agent_id?: unknown; prompt?: unknown } | null;
+  const hash = process.env.COTAL_CLAUDE_ONCE_PROMPT_HASH;
+  return !!hash && !!process.env.COTAL_CLAUDE_ONCE_GOAL && e?.hook_event_name === "UserPromptSubmit" &&
+    e.agent_id === undefined && typeof e.prompt === "string" && createHash("sha256").update(e.prompt.trim()).digest("hex") === hash;
+};
 void runHookRelay(
   (event, session) => windowsPermission(event, session) ?? otherCotalPath(event, session) ?? owner(event, session),
   async (event, session) => { if (!session.managed) await observePersonalHook(event); },
-  { holds: isPermissionRequest },
+  { holds: isPermissionRequest, atLaunch: isKickoff },
 ).catch(() => process.exit(0));

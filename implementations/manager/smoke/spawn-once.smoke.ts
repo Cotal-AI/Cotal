@@ -38,7 +38,7 @@ function installClaudeFixture(root: string): void {
   const bin = join(root, "bin");
   mkdirSync(bin);
   writeFileSync(join(root, ".mcp.json"), '{"mcpServers":{"cotal":{"command":"node"}}}');
-  for (const name of ["channels_off", "channels_on", "claude-blocked"])
+  for (const name of ["channels_off", "channels_on", "claude-blocked", "early-kickoff"])
     writeFileSync(join(root, ".cotal", "agents", `${name}.md`), `---\nname: ${name}\nrole: tester\n---\n`);
   writeFileSync(join(bin, "claude"), `#!${process.execPath}
 const { spawn, spawnSync } = require('node:child_process');
@@ -49,9 +49,11 @@ const arg = name => argv[argv.indexOf(name) + 1];
 if (argv.includes('--version')) { console.log('2.1.330 (Claude Code fixture)'); process.exit(0); }
 if (arg('--model') !== 'claude-opus-5-5') process.exit(2);
 const { command, args } = JSON.parse(arg('--mcp-config')).mcpServers.cotal;
-const seat = spawn(command, args, { stdio: ['pipe', 'ignore', 'inherit'] });
-seat.on('exit', code => process.exit(code ?? 0));
-for (const signal of ['SIGTERM', 'SIGINT', 'SIGHUP']) process.on(signal, () => seat.kill(signal));
+const startSeat = () => {
+  const seat = spawn(command, args, { stdio: ['pipe', 'ignore', 'inherit'] });
+  seat.on('exit', code => process.exit(code ?? 0));
+  for (const signal of ['SIGTERM', 'SIGINT', 'SIGHUP']) process.on(signal, () => seat.kill(signal));
+};
 const channelsOn = argv[0].includes('CHANNELS_ON');
 const ready = () => process.stdout.write('\\x1b[2J\\x1b[H? for shortcuts\\r\\n');
 if (process.env.COTAL_NAME === 'claude-blocked') {
@@ -66,25 +68,37 @@ if (process.env.COTAL_NAME === 'claude-blocked') {
 }
 const session_id = 'fixture-session';
 const transcript_path = join(process.cwd(), 'fixture-session.jsonl');
-const hook = (hook_event_name, more = {}) => spawnSync(process.execPath, [join(arg('--plugin-dir'), 'dist/hook.cjs')], {
-  input: JSON.stringify({ hook_event_name, session_id, transcript_path, cwd: process.cwd(), ...more }), encoding: 'utf8', timeout: 10000,
+const hookFile = join(arg('--plugin-dir'), 'dist/hook.cjs');
+const hookEvent = (hook_event_name, more = {}) => JSON.stringify({ hook_event_name, session_id, transcript_path, cwd: process.cwd(), ...more });
+const hook = (hook_event_name, more = {}) => spawnSync(process.execPath, [hookFile], {
+  input: hookEvent(hook_event_name, more), encoding: 'utf8', timeout: 10000,
 }).stdout ?? '';
-const start = setInterval(() => {
-  if (!existsSync(process.env.COTAL_CONTROL_SOCKET)) return;
-  clearInterval(start);
-  const prompt = argv[0];
-  hook('Stop');
-  hook('UserPromptSubmit', { prompt: 'unrelated prompt' });
-  hook('Stop');
-  const frame = hook('UserPromptSubmit', { prompt });
+const prompt = argv[0];
+const finish = (frame, beforeBind) => {
   hook('SessionStart', { source: 'compact' });
   hook('Stop', { agent_id: 'subagent' });
   setTimeout(() => {
-    writeFileSync(join(process.cwd(), process.env.COTAL_NAME + '.kickoff.json'), JSON.stringify({ prompt, frame, completed: 'ONCE_PROBE_DONE' }));
+    writeFileSync(join(process.cwd(), process.env.COTAL_NAME + '.kickoff.json'), JSON.stringify({ prompt, frame, beforeBind, completed: 'ONCE_PROBE_DONE' }));
     hook('Stop');
   }, 750);
-}, 50);
-if (process.env.COTAL_NAME === 'claude-blocked') clearInterval(start);
+};
+if (process.env.COTAL_NAME === 'early-kickoff') {
+  const beforeBind = !existsSync(process.env.COTAL_CONTROL_SOCKET);
+  const submit = spawn(process.execPath, [hookFile], { stdio: ['pipe', 'pipe', 'inherit'] });
+  let frame = '';
+  submit.stdout.on('data', chunk => frame += chunk);
+  submit.stdin.end(hookEvent('UserPromptSubmit', { prompt }));
+  submit.on('close', () => setTimeout(() => finish(frame, beforeBind), 2500));
+  setTimeout(startSeat, 1500);
+} else {
+  startSeat();
+  if (process.env.COTAL_NAME !== 'claude-blocked') setTimeout(() => {
+    hook('Stop');
+    hook('UserPromptSubmit', { prompt: 'unrelated prompt' });
+    hook('Stop');
+    finish(hook('UserPromptSubmit', { prompt }), false);
+  }, 1200);
+}
 `, { mode: 0o755 });
   process.env.PATH = `${bin}:${process.env.PATH ?? ""}`;
 }
@@ -628,6 +642,15 @@ try {
   check("a Claude startup that cannot take input names the login blocker and cancels the task",
     blocked.terminal?.state === "failed" && errorOf(blocked.terminal).includes("Claude Code is not logged in for this user and asks for a login method") &&
     blockedTask?.state === "cancelled" && blocked.seat !== undefined && await gone(blocked.name!, blocked.seat.handle), { spawn: blocked.terminal, task: blockedTask });
+  const early = await spawnOnce({ name: "early-kickoff", agent: "claude", cwd: workspaceRoot, model: "claude-opus-5-5", prompt: "Complete the early kickoff", once: { deadlineMs: 12_000 } });
+  const earlyTask = early.once && await resultOf(early.once.goalId, 15_000);
+  const earlyFile = join(workspaceRoot, "early-kickoff.kickoff.json");
+  const earlyLog = await until(() => {
+    try { return readFileSync(earlyFile, "utf8").length > 0; } catch { return false; }
+  }, 2_000) ? JSON.parse(readFileSync(earlyFile, "utf8")) : undefined;
+  check("a kickoff submitted before MCP bind is matched and finishes on its Stop, not its deadline",
+    earlyLog?.beforeBind === true && earlyLog.completed === "ONCE_PROBE_DONE" && earlyTask?.state === "succeeded" &&
+    (earlyTask.data as { status?: string }).status === "done" && early.seat !== undefined && await gone(early.name!, early.seat.handle), earlyTask);
 } finally {
   for (const nc of seatConns) await nc.drain().catch(() => nc.close());
   await runnerNc?.drain().catch(() => runnerNc?.close());
@@ -640,7 +663,7 @@ try {
   else process.env.PATH = originalPath;
 }
 
-const EXPECTED_CELLS = 77;
+const EXPECTED_CELLS = 78;
 console.log(`\n${fail === 0 && pass === EXPECTED_CELLS ? "SPAWN ONCE SMOKE OK ✅" : "SPAWN ONCE SMOKE FAILED"}  (${pass} passed, ${fail} failed)`);
 if (pass + fail !== EXPECTED_CELLS) {
   console.log(`SUITE INCOMPLETE — ran ${pass + fail} of ${EXPECTED_CELLS} cells; a partial run is not a pass`);
