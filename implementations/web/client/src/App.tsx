@@ -59,6 +59,15 @@ export function App({ host = window, start = startLive, clock = Date.now }: { ho
   const navigate = useCallback((r: Route) => goTo(host, r), [host]);
   // Phone width as shadcn's Sidebar reads it, from the same hook, so the layout and the Sidebar agree.
   const phone = useIsMobile();
+  // The 350px navigation and 360px Details columns need room for the channel between them.
+  const [panelSheet, setPanelSheet] = useState(false);
+  useLayoutEffect(() => {
+    const query = window.matchMedia("(width < 1200px)");
+    const update = () => setPanelSheet(query.matches);
+    query.addEventListener("change", update);
+    update();
+    return () => query.removeEventListener("change", update);
+  }, []);
   // The details panel opens beside a channel and beside an agent's page, on that agent's tab.
   return (
     <ThemeProvider defaultTheme="system" storageKey="cotal.theme">
@@ -70,6 +79,7 @@ export function App({ host = window, start = startLive, clock = Date.now }: { ho
       paneOpen={route.view === "channel" || route.view === "agent"}
       msgPerSecond={() => rate.perSecond(clock())}
       phone={phone}
+      panelSheet={panelSheet}
     />
     </Navigate.Provider>
     </ThemeProvider>
