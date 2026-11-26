@@ -391,8 +391,10 @@ load, and its Claude Desktop entry), then checks other `@cotal-ai/*` operator ex
 npm's own record in the extensions prefix. One recorded at the binary's exact version with the spec
 `update` installs (`<package>@<version>`) is kept when the prefix lock records it at that version
 and every package the lock records is on disk at its recorded version. The extension's entry file
-must also be present. The extension check does not compare file contents. If any check fails, Cotal
-reports why and reinstalls the extension at the binary's exact version. A built-in or extension
+must also be present and loadable. The extension check does not compare file contents. Cotal keeps a working
+local-path extension at the binary's version under the same lock and entry checks. If it needs
+repair at that version, Cotal reinstalls it from the recorded path. A registry extension that
+needs repair is reinstalled at the binary's exact version. A built-in or extension
 that passes is reported as verified. `cotal ext seed --force`
 remains the unconditional reinstall of the built-ins, and `cotal ext add <package>` of one extension.
 Each reinstall runs in an isolated child, so one failure cannot poison later replays. It then
