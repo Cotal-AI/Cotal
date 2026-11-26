@@ -2,6 +2,7 @@ import { DEV_OWNER, assertLifecycleToken, peerLabel, type CompletionResult, type
 import {
   brokerAddressForDisplay,
   brokerUrlKey,
+  cachedPreferences,
   checkServer,
   codeSpan,
   CommandFailure,
@@ -30,6 +31,7 @@ import {
   recordOperationSpace,
   resolveControlTarget,
   resolveMeshTarget,
+  resolvePreference,
   retainedLegacyBroker,
   spaceRootTarget,
   stoppedStack,
@@ -47,7 +49,8 @@ import { completingFlagValue } from "../lib/completion.js";
 import { displayCmd } from "../lib/self-exec.js";
 import { shellWord } from "../lib/endpoint-errors.js";
 import { legacyBrokerPidfileBlock, runningStackManagerPid, stackManagerAbsent, stackManagerStarting, unusableStackJournal } from "../lib/stack-journal.js";
-import { connectorHarnesses } from "../lib/status.js";
+import { connectorHarnesses, defaultLaunchBlock } from "../lib/status.js";
+import { defaultPersonaPin, directPersonaPath } from "../lib/spawn-defaults.js";
 import { channelSeedRestartBlock } from "../lib/channel-seed.js";
 import { preparedRootWriteProblem } from "../lib/paths.js";
 import { legacyRestartAddressProblem } from "../lib/broker-service.js";
@@ -579,7 +582,7 @@ export interface PsResult {
  *  `status`'s reading that no agent application is set up here, so an empty list's Next agrees with
  *  the one `status` gives. `interactive` is whether a terminal is there to answer `setup`'s
  *  questions, as `status` reads it: without one, the Next points at `setup --help` instead. */
-export function psView(result: PsResult, wide: boolean, rowsOf: ReadonlyMap<string, readonly unknown[]> = new Map(), noApplication = false, mode?: string, interactive = true, spawnCommand?: string, seatCommand?: (verb: "attach" | "stop") => string): Report {
+export function psView(result: PsResult, wide: boolean, rowsOf: ReadonlyMap<string, readonly unknown[]> = new Map(), noApplication = false, mode?: string, interactive = true, spawnCommand?: string, seatCommand?: (verb: "attach" | "stop") => string, launchBlock?: string): Report {
   const empty = result.kind === "slots" ? "No active static slots." : "No managed agents.";
   const blocksFor = (rows: readonly unknown[]): Block[] =>
     !rows.length ? [{ kind: "lines", lines: [{ text: empty, tone: "hint" }] }]
@@ -597,7 +600,10 @@ export function psView(result: PsResult, wide: boolean, rowsOf: ReadonlyMap<stri
       { title: result.kind === "slots" ? "Static slots" : "Agents", blocks: blocksFor(result.items) },
       ...result.managers.map((m): Section => ({ title: "Manager", blocks: [{ kind: "fields", rows: [["instance", m.instanceId], ...(m.reportedHost ? [["reported host", m.reportedHost] as [string, string]] : [])] }] })),
     ];
-    if (next.length) sections.push({ title: "Next", blocks: [{ kind: "commands", items: next }] });
+    if (next.length || launchBlock) sections.push({ title: "Next", blocks: [
+      ...(next.length ? [{ kind: "commands" as const, items: next }] : []),
+      ...(launchBlock ? [{ kind: "lines" as const, lines: [{ text: launchBlock, tone: "hint" as const }] }] : []),
+    ] });
     return { sections };
   }
   // Several managers: one section each, named by the FULL instance id, since `--on` takes nothing
@@ -619,10 +625,24 @@ export function psView(result: PsResult, wide: boolean, rowsOf: ReadonlyMap<stri
   };
 }
 
-/** Whether no agent application is set up here, as `status` reports "Agent applications: not set up".
- *  An inventory that cannot be read says nothing, so the Next stays the launch. */
-function noApplicationHere(): boolean {
-  try { return connectorHarnesses().every((harness) => harness.missing.length > 0); } catch { return false; }
+/** Resolve the target of the suggested foreground launch, independently of the manager's defaults. */
+function psLaunchNext(scope: { space?: string; server?: string }, command?: string): { noApplication?: boolean; spawn?: string; block?: string } {
+  let noApplication = false;
+  try {
+    const connectors = connectorHarnesses();
+    noApplication = connectors.every((harness) => harness.missing.length > 0);
+    if (!command || !connectors.length) return { noApplication };
+    const { space, root } = resolveMeshTarget(process.cwd(), { ...scope, readOnly: true });
+    const context = { space, preferences: cachedPreferences() };
+    const persona = resolvePreference("persona", context).winner!;
+    const pin = defaultPersonaPin(directPersonaPath(root, persona.value), persona.source === "default");
+    const harness = resolvePreference("harness", { ...context, pin }).value!;
+    const block = defaultLaunchBlock(harness, connectors);
+    return block ? { noApplication, block } : { spawn: command };
+  } catch {
+    // This is optional advice. An unreadable inventory or persona cannot confirm a launch.
+    return { noApplication };
+  }
 }
 
 function psCommand(v: FlagValues<typeof psFlags>, slots = false): string | undefined {
@@ -699,7 +719,10 @@ export async function ps(args: ParsedArgs): Promise<void> {
   const spawnCommand = scope && onRerun(`${displayCmd()} spawn`, scope);
   const manager = census.target.managerInstanceId;
   const seatCommand = scope && ((verb: "attach" | "stop") => onRerun(`${displayCmd()} ${verb} <name>`, scope, manager ? ["--on", manager] : []));
-  const view = (result: PsResult): Report => psView(result, wide, census.rowsOf, !result.items.length && noApplicationHere(), census.mode, presentation === "rich" && canPrompt(), spawnCommand, seatCommand);
+  const view = (result: PsResult): Report => {
+    const next = result.items.length || result.managers.length > 1 ? {} : psLaunchNext(scope ?? {}, spawnCommand);
+    return psView(result, wide, census.rowsOf, next.noApplication, census.mode, presentation === "rich" && canPrompt(), next.spawn, seatCommand, next.block);
+  };
   writeResult(
     presentation,
     {

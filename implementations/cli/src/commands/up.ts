@@ -1,6 +1,7 @@
 import { noManagerCredentialWarning } from "../lib/daemon-credential-warning.js";
 import { openBrokerLog, prepareForegroundBrokerLog } from "../lib/broker-log.js";
 import { spawnBroker } from "../lib/broker-spawn.js";
+import { foregroundBrokerStopped } from "../lib/foreground-broker-stop.js";
 import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import {
@@ -1941,14 +1942,12 @@ async function runUp(args: ParsedArgs, invokedFrom: string, inheritedLock?: Main
   for (const line of hang("", starting, terminalWidth(process.stdout), c.dim)) console.log(line);
   console.log(c.dim("Press Ctrl-C to stop.\n"));
   const listenerStartedAt = new Date().toISOString();
-  // A terminal sends Ctrl-C to the whole foreground process group. Keep the broker outside it
-  // on POSIX so only this owner receives the interrupt and can finish manager-first teardown
-  // before signalling the broker. Keep the child referenced and its output in this terminal.
-  // The configuration names a store inside the root relative to it, so the broker runs from the root.
+  // Keep the POSIX broker out of the terminal's process group for manager-first teardown on Ctrl-C.
   const child = spawnBroker(bin, natsArgs, { cwd: cotalRoot(), stdio: "inherit", detached: process.platform !== "win32" });
   let listenerReady = false;
   let activationFinished = !resumeAttempt;
   await recordSpawnedListener(child, listenerStartedAt, boundListener);
+  const foregroundPin = process.platform === "win32" ? verifyIdentityPin(cotalPath(NATS_PIDFILE)) : undefined;
   child.on("error", (err) => {
     console.error(c.red(`Failed to start nats-server: ${err.message}`));
     if (!resumeAttempt) process.exit(1);
@@ -1996,10 +1995,10 @@ async function runUp(args: ParsedArgs, invokedFrom: string, inheritedLock?: Main
   process.on("SIGINT", () => stop("SIGINT"));
   process.on("SIGTERM", () => stop("SIGTERM"));
   restored?.releaseInterruptNotice?.();
-  // On exit, drop only this stop's registration and matching `current` pointer, unless folder-named.
   child.on("exit", async (code, signal) => {
     if (failedListeners.has(child)) return;
-    removePidPair(cotalPath(NATS_PIDFILE), String(child.pid));
+    const pidPath = cotalPath(NATS_PIDFILE), stoppedByDown = await foregroundBrokerStopped(pidPath, foregroundPin?.kind === "match" && foregroundPin.record.pid === child.pid ? foregroundPin.record : undefined, code);
+    if (!stoppedByDown) removePidPair(pidPath, String(child.pid));
     // One teardown at a time: a stop started while another is in flight is refused the reservation
     // that one holds, so wait for a Ctrl-C teardown already running instead of racing it.
     await teardown;
@@ -2022,7 +2021,7 @@ async function runUp(args: ParsedArgs, invokedFrom: string, inheritedLock?: Main
         if (getCurrent() === space) clearCurrent();
       }
       if (activationFinished) process.exit(stopSignal === "SIGTERM" ? 143 : 130);
-    } else if (code === 0) {
+    } else if (code === 0 || stoppedByDown) {
       // Before readiness, the startup check reports that the listener never answered.
       // After readiness, do not race external `down` with a claim about its registry cleanup.
       if (listenerReady && activationFinished) process.exit(0);

@@ -329,6 +329,13 @@ On receive, a client MUST verify `from.id` equals the subject sender (§3). On m
 missing `from`, or an unparseable delivery subject, the message MUST be rejected and never
 redelivered.
 
+A messaging receiver MUST reject a delivery carrying any of the reserved stored-message headers
+`Nats-Stream`, `Nats-Subject`, `Nats-Sequence`, or `Nats-Time-Stamp`, including when `from.id` matches
+the subject sender. Match header names case-insensitively, including headers with an empty value.
+Do not apply this check to metadata the broker adds to the response to a storage read the client
+initiated. When recovering a recorded messaging delivery, check the original stored headers.
+Endpoint rails have separate rules for request and reply provenance (§13.3 and §13.21).
+
 Endpoint requests and replies (the control surface) use the versioned typed envelope of
 §13.3 (`EndpointRequest`/`EndpointReply`); they are not Cotal delivery messages. The v0
 `ControlRequest`/`ControlReply` shapes are deleted (§13.11).

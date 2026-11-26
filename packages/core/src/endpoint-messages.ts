@@ -1,10 +1,11 @@
 // Message authentication against the delivery subject and the history-row checks, moved verbatim from
 // endpoint.ts. endpoint.ts re-exports the name it exported before, so the package's export set is unchanged.
 import type { JsMsg } from "@nats-io/jetstream";
-import type { NatsConnection } from "@nats-io/transport-node";
+import type { MsgHdrs, NatsConnection } from "@nats-io/transport-node";
 import { isPrincipalOwnerToken, parseSubject, type ParsedSubject } from "./subjects.js";
 import type { CotalMessage, Delivery, HistoryMessage, MessageMeta } from "./types.js";
 import { authenticatedChannelMessage, isRecord } from "./endpoint-inbound.js";
+import { hasStoredOrigin } from "./endpoint-provenance.js";
 
 /** A usable delivery-message id (#624): a string, possibly empty (the never-a-key case), but
  *  never absent and never a non-string. An absent or non-string id is a malformed envelope under
@@ -32,9 +33,8 @@ export function kindFromParsed(kind: ParsedSubject["kind"]): MessageMeta["kind"]
 
 /** SPEC §5 on receive: a delivery comes from the principal its subject names. The payload is an
  *  object whose `from.id` is the subject's sender, and the subject's owner is a real principal, not
- *  an old-shape alias. Every receive path asks this one predicate. What a path does with a refusal
- *  (drop, skip, ack, term or reject) and its own extra checks (a usable id, its own echo) stay with
- *  the path. */
+ *  an old-shape alias. Check stored-message headers separately before trusting the sender. Refusals
+ *  and additional checks, such as a usable ID or echo suppression, belong to the caller. */
 export function isFromSubjectSender(msg: unknown, parsed: ParsedSubject): boolean {
   return isRecord(msg) && isRecord(msg.from) && msg.from.id === parsed.sender && isPrincipalOwnerToken(parsed.owner);
 }
@@ -79,12 +79,10 @@ export function dmOnlyDelivery(m: JsMsg, ackWaitMs: number, nc: NatsConnection |
   };
 }
 
-/** History drain keeps `m.json()` and used to throw the subject away. SPEC §5: on receive, verify
- *  `from.id` equals the subject sender; on mismatch, a missing `from`, or an unparseable delivery
- *  subject, reject and never surface. Fail closed on shape too: a stored JSON `null` or a truthy
- *  non-object `from` must not throw mid-array. Do not echo-drop `from.id === this.card.id`:
- *  god-view history must include the viewer's own sends. */
-export function historyMessageFromDelivery(m: { subject: string; json: <T>() => T }): HistoryMessage | undefined {
+/** Admit only well-formed history deliveries whose sender matches the subject and whose headers
+ *  carry no stored provenance. Include the viewer's own sends. */
+export function historyMessageFromDelivery(m: { subject: string; headers?: MsgHdrs; json: <T>() => T }): HistoryMessage | undefined {
+  if (hasStoredOrigin(m.headers)) return undefined;
   let raw: unknown;
   try {
     raw = m.json();
