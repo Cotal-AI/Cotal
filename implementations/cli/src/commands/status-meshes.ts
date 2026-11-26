@@ -239,6 +239,13 @@ export function selectedStackStarting(selected: Selected, folder: StatusResult["
   } catch { return false; } // The selection report names an unusable journal.
 }
 
+/** Report the local recovery observation without treating it as a resolved connection. */
+export function selectedRecovery(hints: string[]): SelectedResult {
+  const cmd = displayCmd();
+  hints.push(`run ${codeSpan(`${cmd} down --dry-run`)} in this project to inspect the pinned broker, then ${codeSpan(`${cmd} down --yes`)} to stop it`);
+  return { resolved: false, code: "not-started", message: "the stack's broker process is running, but its member records are missing from this Cotal home" };
+}
+
 export async function readSelected(selected: Selected, responder: { state: DeliveryResponderState; leased: boolean }, folder: StatusResult["folder"], gaps: Gaps, hints: string[], { preflight, pidfileUnreadable }: Awaited<ReturnType<typeof readStatusPreflight>>, all: boolean, selectedStarting: boolean): Promise<SelectedResult> {
   const cmd = displayCmd();
   if (!selected.ok) {

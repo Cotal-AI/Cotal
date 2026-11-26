@@ -578,13 +578,13 @@
     {
       "path": "implementations/cli/src/console/app.tsx",
       "kind": "derived-output",
-      "anchor": "      <NeedsYou\n        waiting={mesh.signals.waiting}\n        boxWidth={size.",
+      "anchor": "    <NeedsYou\n          waiting={mesh.signals.waiting}\n          boxWidth={siz",
       "class": "non-render/control"
     },
     {
       "path": "implementations/cli/src/console/app.tsx",
       "kind": "derived-output",
-      "anchor": "eedsYou\n        waiting={mesh.signals.waiting}\n        boxWidth={size.",
+      "anchor": "dsYou\n          waiting={mesh.signals.waiting}\n          boxWidth={siz",
       "class": "non-render/control"
     },
     {

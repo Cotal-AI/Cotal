@@ -40,7 +40,7 @@ function sys32(exe: string): string {
 let cachedSid: string | undefined;
 function ownerSid(): string {
   if (cachedSid) return cachedSid;
-  const out = execFileSync(sys32("whoami.exe"), ["/user", "/fo", "csv", "/nh"], { encoding: "utf8" });
+  const out = execFileSync(sys32("whoami.exe"), ["/user", "/fo", "csv", "/nh"], { encoding: "utf8", windowsHide: true });
   const sid = out.trim().split(",").pop()?.replace(/^"|"$/g, "").trim();
   if (!sid || !/^S-1-/.test(sid))
     throw new Error(`could not determine the current user's SID from \`whoami\` (got: ${out.trim()})`);
@@ -88,7 +88,7 @@ export function hardenPrivate(path: string, kind: "file" | "dir"): void {
         ...grant("S-1-5-18"),
         ...grant("S-1-5-32-544"),
       ],
-      { stdio: ["ignore", "ignore", "pipe"] },
+      { stdio: ["ignore", "ignore", "pipe"], windowsHide: true },
     );
   } catch (e) {
     throw new Error(

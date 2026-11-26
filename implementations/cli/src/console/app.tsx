@@ -549,20 +549,9 @@ export function App({
     return (
       <Confirm target={confirm} width={size.cols} height={size.rows} onConfirm={onConfirmed} onCancel={() => setConfirm(null)} />
     );
-  if (railOverlay)
-    return (
-      <NeedsYou
-        waiting={mesh.signals.waiting}
-        boxWidth={size.cols}
-        boxHeight={size.rows}
-        blocked={blocked}
-        onFocus={onFocus}
-        onOpenDetail={openAgent}
-      />
-    );
 
-  return (
-    <Box flexDirection="column" width={size.cols} height={size.rows}>
+  const mainView = (
+    <>
       <Tabs tabs={tabs} active={activeChannel} counts={counts} unread={unread} width={size.cols} />
       <Tiles counts={mesh.signals.counts} stalestLiveTs={mesh.signals.stalestLiveTs} width={size.cols} />
       {mode === "dm" ? (
@@ -672,6 +661,24 @@ export function App({
         onRoster={onRoster}
         width={size.cols}
       />
+    </>
+  );
+  function renderView() {
+    if (railOverlay) return (
+        <NeedsYou
+          waiting={mesh.signals.waiting}
+          boxWidth={size.cols}
+          boxHeight={size.rows}
+          blocked={blocked}
+          onFocus={onFocus}
+          onOpenDetail={openAgent}
+        />
+      );
+    return mainView;
+  }
+  return (
+    <Box flexDirection="column" width={size.cols} height={size.rows}>
+      {renderView()}
       {palette.active || newAgent ? <Box position="absolute" width={size.cols} height={size.rows}
         alignItems="center" justifyContent="center">
         {newAgent ? <NewAgent space={ep.space} width={size.cols} height={size.rows}

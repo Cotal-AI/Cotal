@@ -1,0 +1,124 @@
+{
+  "bin/daemon/command.ts": {
+    "spawnSync(\"/usr/bin/systemd-notify\", [\"--ready\"])": "Linux systemd readiness."
+  },
+  "bin/daemon/computer-name.ts": {
+    "execFileSync(\"/usr/sbin/scutil\", [\"--get\", key])": "macOS computer name probe."
+  },
+  "bin/daemon/install.ts": {
+    "spawnSync(\"loginctl\", [...args, \"--no-ask-password\", \"--no-pager\"])": "Linux systemd user service install."
+  },
+  "bin/daemon/update-entry.ts": {
+    "execFileSync(\"busctl\", [\"--user\", \"--no-pager\", \"--timeout=5s\", \"call\", \"org.freedesktop.DBus\", \"/org/freedesktop/DBus\", \"org.freedesktop.DBus\", \"GetConnectionUnixProcessID\", \"s\", \"org.freedesktop.systemd1\"])": "Linux systemd update recovery."
+  },
+  "bin/daemon/update-launchd-runner.ts": {
+    "spawn(process.execPath, [process.argv[3] ?? fileURLToPath(new URL(\"../cotal.js\", import.meta.url)), \"update\", \"--self\"])": "macOS launchd update job."
+  },
+  "bin/daemon/update-launchd.ts": {
+    "execFileSync(\"/bin/launchctl\", args)": "macOS launchd control."
+  },
+  "bin/daemon/update-scope.ts": {
+    "execFileSync(file, args)": "Linux systemd update scope control."
+  },
+  "bin/scripts/pin-npm-node.cjs": {
+    "spawnSync(\"/usr/bin/env\", [\"-S\", split, \"-c\", '[ \"$PWD\" = /proc/self/cwd ] && [ . -ef . ] && exit 0'])": "POSIX launcher probe with Linux procfs."
+  },
+  "extensions/cmux/src/driver.ts": {
+    "execFileSync(cmuxBin(), [\"ping\"])": "macOS cmux availability probe.",
+    "execFileSync(cmuxBin(), args)": "macOS cmux control."
+  },
+  "extensions/connector-claude-code/src/desktop-config.ts": {
+    "spawnSync(\"ps\", [\"-A\", \"-o\", \"comm=\"])": "macOS Claude Desktop process inspection."
+  },
+  "extensions/connector-claude-code/src/setup.ts": {
+    "spawn(claudeCommand(), [prompt, \"--permission-mode\", \"auto\", ...sessionArgs])": "Interactive Claude setup session in the user's terminal."
+  },
+  "extensions/connector-codex/src/native-queue.ts": {
+    "execFileSync(\"ps\", [\"-o\", \"comm=\", \"-p\", String(ppid)])": "macOS Codex process inspection."
+  },
+  "extensions/connector-codex/src/tui.ts": {
+    "spawn(opts.bin ?? \"codex\", args)": "Codex TUI in the seat's terminal."
+  },
+  "extensions/connector-jcode/src/host.ts": {
+    "spawn(binary, [\"--socket\", join(runtime, \"jcode.sock\"), \"--resume\", hostState.sessionId!])": "Jcode TUI in the seat's terminal."
+  },
+  "extensions/connector-jcode/src/private-lifecycle.ts": {
+    "execFileSync(\"/bin/ps\", [\"-axo\", \"pid=\"])": "macOS process enumeration for the Unix-socket host.",
+    "execFileSync(\"/bin/ps\", [\"-o\", \"ppid=\", \"-o\", \"pgid=\", \"-o\", \"lstart=\", \"-p\", String(pid)])": "macOS process identity for the Unix-socket host.",
+    "execFileSync(\"/bin/ps\", [\"eww\", \"-p\", String(pid), \"-o\", \"command=\"])": "macOS process environment for the Unix-socket host."
+  },
+  "extensions/connector-opencode/src/launch.ts": {
+    "execFileSync(\"ps\", [\"-p\", String(pid), \"-o\", \"command=\"])": "Non-Windows arm of process inspection.",
+    "spawn(command, args)": "OpenCode TUI in the seat's terminal."
+  },
+  "extensions/tmux/src/driver.ts": {
+    "execFileSync(\"tmux\", [\"-u\", \"-V\"])": "POSIX tmux version probe.",
+    "execFileSync(\"tmux\", [\"-u\", \"capture-pane\", \"-p\", \"-t\", paneId])": "POSIX tmux pane capture.",
+    "execFileSync(\"tmux\", [\"-u\", \"display-message\", \"-p\", \"#S\"])": "POSIX tmux current session probe.",
+    "execFileSync(\"tmux\", [\"-u\", \"display-message\", \"-p\", \"#{pid}\"])": "POSIX tmux server PID probe.",
+    "execFileSync(\"tmux\", [\"-u\", \"has-session\", \"-t\", session])": "POSIX tmux session probe.",
+    "execFileSync(\"tmux\", [\"-u\", \"if-shell\", \"-F\", `#{?${paneElsewhere},0,1}`, kill, \"display-message -p refused\"])": "POSIX tmux conditional pane teardown.",
+    "execFileSync(\"tmux\", [\"-u\", \"kill-window\", \"-t\", target])": "POSIX tmux window teardown.",
+    "execFileSync(\"tmux\", [\"-u\", \"list-panes\", \"-a\", \"-F\", \"#{pane_id} #{window_id}\"])": "POSIX tmux pane enumeration.",
+    "execFileSync(\"tmux\", [\"-u\", \"list-panes\", \"-a\", \"-F\", format])": "POSIX tmux pane inspection.",
+    "execFileSync(\"tmux\", [\"-u\", \"list-windows\", \"-a\", \"-F\", format])": "POSIX tmux window inspection.",
+    "execFileSync(\"tmux\", [\"-u\", \"new-session\", \"-d\", \"-P\", \"-F\", \"#{window_id}\", \"-s\", session, \"-x\", \"200\", \"-y\", \"50\", \"-c\", cwd])": "POSIX tmux session creation.",
+    "execFileSync(\"tmux\", [\"-u\", \"select-window\", \"-t\", target])": "POSIX tmux window selection.",
+    "execFileSync(\"tmux\", [\"-u\", ...args])": "POSIX tmux window creation.",
+    "execFileSync(\"tmux\", [\"-u\", ...args]) [2]": "POSIX tmux pane creation.",
+    "execFileSync(\"tmux\", [\"-u\", ...onServer(opts.server, [\"kill-pane\", \"-t\", paneId])])": "POSIX tmux pane teardown.",
+    "execFileSync(\"tmux\", [\"-u\", ...onServer(opts.server, [\"send-keys\", \"-l\", \"-t\", target, \"--\", text])])": "POSIX tmux text input.",
+    "execFileSync(\"tmux\", [\"-u\", ...onServer(opts.server, [\"send-keys\", \"-t\", target, \"--\", key])])": "POSIX tmux key input."
+  },
+  "implementations/acp/src/cli.ts": {
+    "spawnSync(process.execPath, [...cotal, ...command])": "ACP terminal authentication command."
+  },
+  "implementations/acp/src/launcher.ts": {
+    "spawn(run.file, run.args)": "Only terminal authentication keeps the console; the ACP protocol run sets windowsHide.",
+    "spawnSync(\"sh\", [\"-c\", INSTALL])": "POSIX ACP terminal installer.",
+    "spawnSync(process.env.ComSpec ?? \"cmd.exe\", [\"/d\", \"/s\", \"/c\", \"npm install -g cotal-ai\"])": "ACP installer explicitly launched in the authentication terminal.",
+    "spawnSync(run.file, run.args) [2]": "ACP extension setup explicitly launched in the authentication terminal."
+  },
+  "implementations/cli/src/commands/spawn.ts": {
+    "spawn(launched.command, launched.args)": "Foreground agent attached to the invoking terminal."
+  },
+  "implementations/cli/src/commands/up.ts": {
+    "spawn(bin, natsArgs)": "Foreground broker attached to the invoking terminal."
+  },
+  "implementations/cli/src/lib/broker-spawn.ts": {
+    "spawn(program, args)": "Visibility is set by checked call sites; the detached broker is hidden and the foreground broker inherits the terminal."
+  },
+  "implementations/cli/src/lib/migration-node.ts": {
+    "spawnSync(path, [\"--version\"])": "Linux migration Node custody probe."
+  },
+  "implementations/cli/src/lib/persona-files.ts": {
+    "spawn(`${editor} ${quoted}`, { shell: true, stdio })": "User-requested editor through their configured shell.",
+    "spawn(program, [draft])": "User-requested editor."
+  },
+  "implementations/cli/src/lib/service-scope.ts": {
+    "spawnSync(systemctl, [\"--user\", \"show\", \"--property=Version\", \"--value\"])": "Linux systemd user scope probe."
+  },
+  "implementations/cli/src/lib/service-process.ts": {
+    "spawn(started.program, [...started.args])": "POSIX service launch. Windows uses a separate native custodian that starts the process hidden."
+  },
+  "implementations/manager/src/vitals.ts": {
+    "execFile(\"/sbin/mount\", [])": "macOS mount inspection."
+  },
+  "implementations/tui/bin/cotal-tui.mjs": {
+    "spawnSync(process.execPath, [...process.execArgv, \"--experimental-ffi\", \"--disable-warning=ExperimentalWarning\", fileURLToPath(import.meta.url), ...process.argv.slice(2)])": "Interactive TUI startup in the invoking terminal."
+  },
+  "packages/core/src/advisory-lock.ts": {
+    "execFileSync(\"ps\", [\"-o\", \"lstart=\", \"-p\", String(pid)])": "macOS and BSD advisory lock process birth probe."
+  },
+  "packages/core/src/launch-artifacts.ts": {
+    "spawn(launch.command, launch.args)": "Generated seat launcher must inherit its runtime terminal."
+  },
+  "packages/seat/src/launcher.ts": {
+    "spawn(process.execPath, [custodianEntry(), RUN_MARKER_FLAG, run])": "Linux-only seat custodian bootstrap.",
+    "spawnSync(\"sleep\", [\"0.025\"])": "Linux-only seat custodian wait."
+  },
+  "packages/workspace/src/pid.ts": {
+    "spawnSync(\"ps\", [\"-U\", String(uid), \"-o\", \"pid=,command=\"])": "Non-Linux POSIX process enumeration after the Windows early return.",
+    "spawnSync(\"ps\", [\"-p\", String(pid), \"-o\", \"command=\"])": "Non-Linux POSIX command inspection after the Windows early return."
+  }
+}

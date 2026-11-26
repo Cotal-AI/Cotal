@@ -50,6 +50,39 @@ const srv = spawn("nats-server", ["-js", "-p", String(PORT), "-sd", join(dir, "j
 const releaseBroker = teardownOnSignal(srv, dir);
 recordMesh({ space, server: SERVERS, root: workspaceRoot, mode: "open", ts: new Date().toISOString() });
 
+async function checkNarrowNeedsYouPalette(): Promise<void> {
+  const cols = 80, rows = 24;
+  const s = new ConsoleSession(["--space", space, "--server", SERVERS], home,
+    { CI: "false", CONTINUOUS_INTEGRATION: "false" }, { cols, rows });
+  try {
+    if (!(await s.waitFor("feed", 40_000))) throw new Error(`Console did not paint: ${clean(s.out).slice(-500)}`);
+    let from = s.mark();
+    s.write("n");
+    if (!(await s.waitFor("NEEDS YOU", 8_000, from))) throw new Error("Needs You did not open");
+    const rail = await screen(s.out, cols, rows);
+    check("Needs You replaces the feed and roster at 80 columns", !rail.includes("feed") && !rail.includes("roster"), rail);
+
+    from = s.mark();
+    s.write("\x10");
+    const opened = await s.waitFor("Commands", 8_000, from);
+    check("Ctrl-P opens Commands over full-screen Needs You", opened, clean(s.out).slice(-500));
+    if (!opened) return;
+
+    from = s.mark();
+    s.write("\x1b");
+    const dismissed = await s.waitFor("NEEDS YOU", 8_000, from);
+    const afterEscape = await screen(s.out, cols, rows);
+    check("Esc dismisses Commands and keeps Needs You open", dismissed && !afterEscape.includes("Commands"), afterEscape);
+
+    from = s.mark();
+    s.write("n");
+    check("n returns to the feed after dismissing Commands", await s.waitFor("feed", 8_000, from));
+    check("q exits after dismissing Commands", await s.quit(20_000), s.exited);
+  } finally {
+    await s.close();
+  }
+}
+
 async function checkDisconnectedQuit(): Promise<void> {
   const nc = await connect({ servers: SERVERS });
   let s: ConsoleSession | undefined;
@@ -253,6 +286,8 @@ try {
   console.log("6. help fits a short terminal");
   await checkSmallHelp();
   await Promise.all([reader.stop(), stub.stop(), poster.stop()]);
+  console.log("6. command palette over full-screen Needs You");
+  await checkNarrowNeedsYouPalette();
   await checkDisconnectedQuit();
 } catch (e) {
   fail++;

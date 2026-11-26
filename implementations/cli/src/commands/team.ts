@@ -2,6 +2,7 @@ import { basename, join, resolve } from "node:path";
 import { CotalEndpoint, DEFAULT_SERVER, isReachable, realDirNoSymlink, subjectMatches, durableCovers, type ChannelDefaults, type CompletionResult, type FlagSpec, type FlagValues, type ParsedArgs } from "@cotal-ai/core";
 import { assertSingleSpaceBroker, recordOperationSpace, authDir, CommandFailure, oneLine, credentialRefusalMessage, brokerAddressForDisplay, canonicalRoot, codeSpan, connectOrThrow, findCotalRoot, findMesh, findPreparedSpace, preparedSpaceAt, jsonFlag, loadMeshes, localMeshesForRoot, nearbyMeshManifest, plainFlag, presentationOf, readMaintenanceJournal, shellPath, spaceFlag, userViewAuth, writeResult, type Report } from "@cotal-ai/workspace";
 import { shellWord } from "../lib/endpoint-errors.js";
+import { displayCmd } from "../lib/self-exec.js";
 import { personaCatalog, type PersonaCatalog } from "../lib/persona-files.js";
 import { formatIssue, loadManifest, manifestPathFailure, ManifestError, type PreparedManifest } from "../lib/manifest/index.js";
 import { findLedgerByRun, listLedgerFiles, type MeshLedger } from "../lib/manifest/ledger.js";
@@ -573,9 +574,14 @@ async function bootTeam(file: string, values: TeamValues): Promise<void> {
   // The service controller owns the fresh boot: the same exact members, journal and stop route as
   // `cotal up`, with the manifest's launch carried by the stack's own manager member.
   const selected = preparedUpRoot(root), previous = process.cwd();
+  const presentation = presentationOf(values), foreground = values.foreground === true;
+  const retry = () => {
+    const retryFile = shellWord(file.startsWith("-") ? `./${file}` : file);
+    return codeSpan(`${presentation === "json" ? "cotal" : displayCmd()} team boot ${retryFile}${foreground ? " --foreground" : ""}${presentation === "rich" ? "" : ` --${presentation}`}`);
+  };
   process.chdir(selected);
   try {
-    await controllerTeamBoot({ file: path, space, transport: recordedBrokerTransport(selected), foreground: values.foreground === true, presentation: presentationOf(values) });
+    await controllerTeamBoot({ file: path, space, transport: recordedBrokerTransport(selected), foreground, presentation, retry });
   } finally { process.chdir(previous); }
 }
 

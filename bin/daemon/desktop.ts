@@ -22,6 +22,7 @@ export type DesktopRequest =
   | { readonly op: "update-check" }
   | { readonly op: "update-release"; readonly version: string }
   | { [K in "about" | "status" | "status-watch" | "install" | "log" | "remove-service"]: { readonly op: K } }["about" | "status" | "status-watch" | "install" | "log" | "remove-service"]
+  | { readonly op: "space-recover"; readonly space: string; readonly candidate: string; readonly holder: string }
   | { readonly op: "space-intent"; readonly space: string; readonly enabled: boolean }
   | { readonly op: "name"; readonly name?: string }
   | { readonly op: "spaces"; readonly refresh?: boolean }
@@ -36,7 +37,7 @@ export function parseDesktopRequest(value: unknown): DesktopRequest {
   const o = value as Record<string, unknown>;
   const simple = ["about", "status", "status-watch", "install", "log", "remove-service", "update-check"].includes(String(o.op));
   const scoped = ["connect-check", "register", "service-connect", "service-disconnect", "service-status"].includes(String(o.op));
-  const fields = o.op === "update-policy" ? ["op", "auto"] : o.op === "update-release" ? ["op", "version"] : o.op === "update-settings" ? ["op", "auto", "notify"] : o.op === "name" ? ["op", "name"] : o.op === "space-intent" ? ["op", "space", "enabled"] : simple ? ["op"] : scoped ? ["op", "space"] : o.op === "setup" ? ["op", "space", "idp"] : (o.op === "login" || o.op === "logout") ? ["op", "idp"] : o.op === "spaces" ? ["op", "refresh"] : [];
+  const fields = o.op === "update-policy" ? ["op", "auto"] : o.op === "update-release" ? ["op", "version"] : o.op === "update-settings" ? ["op", "auto", "notify"] : o.op === "name" ? ["op", "name"] : o.op === "space-recover" ? ["op", "space", "candidate", "holder"] : o.op === "space-intent" ? ["op", "space", "enabled"] : simple ? ["op"] : scoped ? ["op", "space"] : o.op === "setup" ? ["op", "space", "idp"] : (o.op === "login" || o.op === "logout") ? ["op", "idp"] : o.op === "spaces" ? ["op", "refresh"] : [];
   if (!fields.length || Object.keys(o).some((key) => !fields.includes(key))) throw new Error("unknown operation or field");
   if (o.op === "update-policy") {
     if (o.auto !== undefined && typeof o.auto !== "boolean") throw new Error("invalid update preference");
@@ -49,6 +50,10 @@ export function parseDesktopRequest(value: unknown): DesktopRequest {
   if (o.op === "update-settings") {
     if ([o.auto, o.notify].some(value => value !== undefined && typeof value !== "boolean")) throw new Error("invalid update setting");
     return { op: "update-settings", ...(o.auto !== undefined ? { auto: o.auto as boolean } : {}), ...(o.notify !== undefined ? { notify: o.notify as boolean } : {}) };
+  }
+  if (o.op === "space-recover") {
+    if (!isDaemonSpaceName(o.space) || typeof o.candidate !== "string" || !/^[0-9a-f]{64}$/.test(o.candidate) || typeof o.holder !== "string" || o.holder.length > 2048) throw new Error("invalid custody recovery");
+    return { op: "space-recover", space: o.space, candidate: o.candidate, holder: normalizeIdpUrl(o.holder) };
   }
   if (o.op === "space-intent") {
     if (!isDaemonSpaceName(o.space) || typeof o.enabled !== "boolean") throw new Error("invalid space intent");
@@ -131,6 +136,43 @@ function attemptStartupRefusal(state: string, attemptStartedAt: number): string 
   return refusal;
 }
 
+/** The last 8 KiB of the background service log, with terminal codes, control characters and tokens removed. */
+function readServiceLogTail(state: string): { text: string; truncated: boolean } {
+  let fd: number | undefined;
+  let bytes = Buffer.alloc(0), truncated = false;
+  try {
+    try { fd = openSync(nativeDaemonLog(state), constants.O_RDONLY | (process.platform === "win32" ? 0 : constants.O_NOFOLLOW | constants.O_NONBLOCK)); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+    if (fd !== undefined) {
+      const stat = fstatSync(fd);
+      if (!stat.isFile() || process.platform !== "win32" && (stat.uid !== process.getuid!() || (stat.mode & 0o077) !== 0)) throw new Error("The background service log is not a private regular file.");
+      const start = Math.max(0, stat.size - 8192);
+      truncated = start > 0;
+      bytes = Buffer.alloc(Math.min(8192, stat.size));
+      let length = 0;
+      while (length < bytes.length) { const count = readSync(fd, bytes, length, bytes.length - length, start + length); if (!count) break; length += count; }
+      bytes = bytes.subarray(0, length);
+    }
+  } finally { if (fd !== undefined) closeSync(fd); }
+  const text = bytes.toString("utf8")
+    .replace(/\u001b\[[0-9;]*[A-Za-z]/g, "")
+    .replace(/[\u0000-\u0008\u000b-\u001f\u007f]/g, "")
+    .replace(/eyJ[A-Za-z0-9_.-]*/g, "<redacted>") ?? "";
+  return { text, truncated };
+}
+
+/**
+ * Only the app's uninstaller sends remove-service; the window's requests never include it. It removes
+ * the service this installation registered and keeps one another installation registered here.
+ */
+async function removeDesktopService(paths: QueryOptions["paths"], home: string | undefined) {
+  if (!preflightInstalledDaemon(paths, home)) return { state: "absent" };
+  const identity = installedDaemonIdentity(paths, home);
+  if (!identity.same) return { state: "kept", installed: identity.installed };
+  const removed = await applyUninstall(paths, home);
+  return { state: removed.state, unit: removed.unit };
+}
+
 /** Run one app operation through the stock local client. Closing the UI never stops the service. */
 export async function runDesktopBridge(opts: DesktopBridgeOptions): Promise<void> {
   const output = opts.output ?? process.stdout;
@@ -173,40 +215,8 @@ export async function runDesktopBridge(opts: DesktopBridgeOptions): Promise<void
     if (req.op === "status" || req.op === "status-watch" || req.op === "install" || req.op === "setup") assertDesktopSetupComplete();
     target = opts.resolveTarget();
     const { paths, home } = target;
-    if (req.op === "log") {
-      let fd: number | undefined;
-      let bytes = Buffer.alloc(0), truncated = false;
-      try {
-        try { fd = openSync(nativeDaemonLog(paths.state), constants.O_RDONLY | (process.platform === "win32" ? 0 : constants.O_NOFOLLOW | constants.O_NONBLOCK)); }
-        catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
-        if (fd !== undefined) {
-          const stat = fstatSync(fd);
-          if (!stat.isFile() || process.platform !== "win32" && (stat.uid !== process.getuid!() || (stat.mode & 0o077) !== 0)) throw new Error("The background service log is not a private regular file.");
-          const start = Math.max(0, stat.size - 8192);
-          truncated = start > 0;
-          bytes = Buffer.alloc(Math.min(8192, stat.size));
-          let length = 0;
-          while (length < bytes.length) { const count = readSync(fd, bytes, length, bytes.length - length, start + length); if (!count) break; length += count; }
-          bytes = bytes.subarray(0, length);
-        }
-      } finally { if (fd !== undefined) closeSync(fd); }
-      const text = bytes.toString("utf8")
-        .replace(/\u001b\[[0-9;]*[A-Za-z]/g, "")
-        .replace(/[\u0000-\u0008\u000b-\u001f\u007f]/g, "")
-        .replace(/eyJ[A-Za-z0-9_.-]*/g, "<redacted>") ?? "";
-      emit({ v: 1, event: "result", ok: true, result: { text, truncated } });
-      return;
-    }
-    if (req.op === "remove-service") {
-      // Only the app's uninstaller sends this; the window's requests never include it. It removes the
-      // service this installation registered and keeps one another installation registered here.
-      if (!preflightInstalledDaemon(paths, home)) { emit({ v: 1, event: "result", ok: true, result: { state: "absent" } }); return; }
-      const identity = installedDaemonIdentity(paths, home);
-      if (!identity.same) { emit({ v: 1, event: "result", ok: true, result: { state: "kept", installed: identity.installed } }); return; }
-      const removed = await applyUninstall(paths, home);
-      emit({ v: 1, event: "result", ok: true, result: { state: removed.state, unit: removed.unit } });
-      return;
-    }
+    if (req.op === "log") { emit({ v: 1, event: "result", ok: true, result: readServiceLogTail(paths.state) }); return; }
+    if (req.op === "remove-service") { emit({ v: 1, event: "result", ok: true, result: await removeDesktopService(paths, home) }); return; }
     const client = { paths, peerUid: opts.peerUid, peerPid: opts.peerPid };
     if (req.op === "install" || req.op === "setup") {
       const discovered = await discoverDesktopApplicationPath();

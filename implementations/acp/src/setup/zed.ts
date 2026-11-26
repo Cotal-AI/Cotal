@@ -8,7 +8,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type { ClientSetupProvider, ConnectorSetupInput, ConnectorStatusRow } from "@cotal-ai/core";
 import { resolveOnPath } from "@cotal-ai/workspace";
-import { acpCommand, acpSpace, passedEnv, refreshedArgs, staleCommand } from "./command.js";
+import { acpCommand, acpSpace, passedEnv, refreshedArgs, runsCotal, staleCommand } from "./command.js";
 import { objectAt, readSettings, writeReported, type SettingsChange, type SettingsFile } from "./settings-file.js";
 
 const APP = "Zed";
@@ -34,8 +34,8 @@ interface Agent {
 
 const isObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 
-/** The custom agents that run `cotal acp`, whoever added them. */
-function cotalAgents(file: SettingsFile): Agent[] {
+/** Custom agents with ACP arguments that name a space. */
+function customAgentsWithSpace(file: SettingsFile): Agent[] {
   return Object.entries(objectAt(file, "agent_servers")).flatMap(([name, value]): Agent[] => {
     if (!isObject(value) || (value.type !== undefined && value.type !== "custom")) return [];
     const space = acpSpace(value.args);
@@ -60,7 +60,7 @@ function refreshChanges(file: SettingsFile, agent: Agent, cotal: readonly string
 function setUp({ cotal, wrote, space }: ConnectorSetupInput): string {
   if (!space) throw new Error(`${APP} setup needs the space it sets up`);
   const file = readSettings(zedSettingsPath(), APP);
-  const ours = cotalAgents(file).filter((agent) => agent.space === space);
+  const ours = customAgentsWithSpace(file).filter((agent) => agent.space === space);
   if (ours.length > 0) {
     const changed = writeReported(APP, file, ours.flatMap((agent) => refreshChanges(file, agent, cotal)), wrote);
     const names = ours.map((agent) => `"${agent.name}"`).join(", ");
@@ -79,7 +79,7 @@ function refresh({ cotal }: ConnectorSetupInput): string {
   const path = zedSettingsPath();
   if (!existsSync(path)) return "not installed";
   const file = readSettings(path, APP);
-  const ours = cotalAgents(file);
+  const ours = customAgentsWithSpace(file).filter(({ value }) => runsCotal(value.command, value.args));
   if (ours.length === 0) return "not installed";
   const changed = writeReported(APP, file, ours.flatMap((agent) => refreshChanges(file, agent, cotal)), undefined);
   const spaces = ours.map((agent) => agent.space).join(", ");
@@ -92,7 +92,7 @@ function status(): ConnectorStatusRow[] {
   const path = zedSettingsPath();
   let ours: Agent[];
   try {
-    ours = existsSync(path) ? cotalAgents(readSettings(path, APP)) : [];
+    ours = existsSync(path) ? customAgentsWithSpace(readSettings(path, APP)) : [];
   } catch (e) {
     return row("error", (e as Error).message);
   }

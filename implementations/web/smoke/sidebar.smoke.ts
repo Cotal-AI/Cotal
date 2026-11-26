@@ -265,6 +265,10 @@ const tipsOn = async (patch: Partial<DashboardState>, pick: (places: Element) =>
   ok("6.4d a feed the browser closed for good reads Disconnected, says why and what to do, keeps the down shape and turns destructive",
     gone?.word === "Disconnected" && gone.dot === down?.dot && gone.variant === "destructive"
       && gone.said === "Disconnected The live feed closed and will not retry. Reload the page, or open the link cotal web printed when it started.", gone);
+  const expired = pill(foot(renderShell({ roster, connection: "session-invalid" })));
+  ok("6.4e an invalid session says to get a new private link instead of reloading",
+    expired?.word === "Disconnected" && expired.variant === "destructive" && expired.dot === gone?.dot
+      && expired.said.includes("new private dashboard link") && expired.said.includes("service logs") && !/reload/i.test(expired.said), expired);
   ok("6.6 no footer line claims the operator's place on the roster: the mesh's mode is not known here",
     !/On the roster|Not on the roster|Read only/.test(textOf(up)), textOf(up));
 }

@@ -32,7 +32,7 @@ export type PiRpcAnswer<T> = { reply: T } | { failed: string };
 /** Starts pi, runs `use` against it and stops pi. Once pi fails, an unanswered ask never settles and
  *  the failure is the answer. */
 export async function askPi<T>(o: PiRpcAsk, use: (ask: PiAsk) => Promise<T>): Promise<PiRpcAnswer<T>> {
-  const child = spawn(o.bin, ["--mode", "rpc", ...o.args], { cwd: o.cwd, env: o.env, stdio: ["pipe", "pipe", "ignore"] });
+  const child = spawn(o.bin, ["--mode", "rpc", ...o.args], { cwd: o.cwd, env: o.env, stdio: ["pipe", "pipe", "ignore"], windowsHide: true });
   try {
     return await new Promise<PiRpcAnswer<T>>((resolve, reject) => {
       const done = (answer: PiRpcAnswer<T>): void => {
