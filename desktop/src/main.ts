@@ -953,7 +953,7 @@ function startStatusWatch(): void {
     }
     if (!busy && !loginActive && !setupActive) {
       ready = false; serviceStatus = undefined; renderSettings(); state("unavailable");
-      if (!(problem === "NOT_ANSWERING" && error instanceof DaemonRefusal && error.code === "NOT_RUNNING")) {
+      if (!(problem && !statusProblem)) {
         if (!(notSetUpYet(error) && (stage === "welcome" || stage === "sign-in"))) refusal(error, true);
       }
       buttons();
@@ -973,7 +973,8 @@ async function refresh(): Promise<void> {
     if (!current()) return;
     selectionPending = false;
     ready = false; serviceStatus = undefined; renderSettings(); state("unavailable");
-    if (problem === "NOT_ANSWERING" && error instanceof DaemonRefusal && error.code === "NOT_RUNNING") { buttons(); return; }
+    // An error from an action stays until the person acts on it; a background check never replaces it.
+    if (problem && !statusProblem) { buttons(); return; }
     if (!(notSetUpYet(error) && (stage === "welcome" || stage === "sign-in") && !loginActive)) refusal(error, true);
   }
   buttons();
