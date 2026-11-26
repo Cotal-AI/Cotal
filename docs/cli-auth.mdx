@@ -708,14 +708,16 @@ static mesh: its broker footprint, then its files and directory. When the broker
 keeps them. Each provision also retires those directories whose owning process has exited. For a
 signed-in identity, `retire` keeps the record until the mesh confirms retirement, and names the
 mesh's phase while it is pending. A request still pending is dropped.
-For a space that supports resume, the original OS machine identity and a device key also protect
-the saved conversation proof. The stock connector checks the machine identity. With the default
+For a space that supports resume, the stock connector uses the OS machine identity and a device
+key to derive the actor secret from the saved conversation proof. With the default
 layout a backup of the Cotal home includes the proof and key. Together with the original public OS
 machine identity, those files can derive the actor credential for the ordinary exchange until it
 is revoked. Protect the backup as a credential. Disconnect conversations you no longer use. An
 approval can last until disconnect, sign-out or revocation, with no idle expiry on the client.
-`cotal logout` attempts to retire resumable conversations before clearing the provider login and
-its registrations. It names any retirement it cannot confirm. A signed-out connection cannot resume.
+`cotal logout` attempts to retire the account's resumable conversations before clearing its login
+and registrations. It names any retirement it cannot confirm. Resume requires an unexpired local
+sign-in for the account that requested the approval. `cotal meshes rm` and `cotal space forget`
+leave the resumable identities live at their authorities.
 
 `cotal app-identity reap` retires the selected mesh's saved conversations whose server process no
 longer exists, except when they hold an approval the space supports resuming. The connector runs it

@@ -26,7 +26,7 @@ if (["agent-bearer", "auth-service", "app-identity"].includes(process.argv[2] ??
   for (const resumeCases of process.argv.includes("--resume-approval") ? [true] : [false, true]) {
   const { spawn } = await import("node:child_process");
   const { createHash, generateKeyPairSync } = await import("node:crypto");
-  const { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } = await import("node:fs");
+  const { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } = await import("node:fs");
   const { createServer } = await import("node:http");
   const { tmpdir } = await import("node:os");
   const { join } = await import("node:path");
@@ -68,9 +68,15 @@ if (["agent-bearer", "auth-service", "app-identity"].includes(process.argv[2] ??
   mkdirSync(copiedHome);
   const jwks = JSON.stringify({ keys: [generateKeyPairSync("ed25519").publicKey.export({ format: "jwk" })] });
   let idpSignOuts = 0;
+  let retirementAttemptsAtRevocation = 0;
   const idp = createServer((req, res) => {
     res.writeHead(200, { "content-type": "application/json" });
-    if (req.method === "POST" && req.url === "/auth/sign-out") { idpSignOuts++; res.end("{}"); }
+    if (req.method === "POST" && req.url === "/auth/sign-out") {
+      idpSignOuts++;
+      retirementAttemptsAtRevocation = counts.retirementAttempts;
+      authority.availability.humanSession = false;
+      res.end("{}");
+    }
     else res.end(jwks);
   });
   await new Promise<void>((resolve) => idp.listen(0, "127.0.0.1", resolve));
@@ -146,7 +152,7 @@ if (["agent-bearer", "auth-service", "app-identity"].includes(process.argv[2] ??
   };
   const recordDir = (session: string, at = space) => join(home, "app-identities", createHash("sha256").update(`${at}\0${session}`).digest("hex"));
   const record = (session: string, at = space) => existsSync(join(recordDir(session, at), "identity.json"))
-    ? JSON.parse(readFileSync(join(recordDir(session, at), "identity.json"), "utf8")) as { state: string; requestId: string; consumer: { pid: number; start?: string }; remote: { material?: { actor: string; lifecycleUid: string } } }
+    ? JSON.parse(readFileSync(join(recordDir(session, at), "identity.json"), "utf8")) as { state: string; requestId: string; accountKey?: string; consumer: { pid: number; start?: string }; remote: { material?: { actor: string; lifecycleUid: string } } }
     : undefined;
   const settled = (test: () => boolean | Promise<boolean>, ms = 30_000) => until(test, "not settled", ms).then(() => true, () => false);
   // The CLI under a short shell, so the saved consumer is that shell: gone when it exits, or kept
@@ -173,6 +179,25 @@ if (["agent-bearer", "auth-service", "app-identity"].includes(process.argv[2] ??
   const actorOf = (session: string) => record(session)?.remote.material?.actor;
   const granted = async (actor: string) => await cotalAuthProvider.actorScope({ dir: stateDir, owner, actor }) !== undefined;
   const footprint = (actor: string) => [...authority.requests.values()].find((row) => row.actor === actor)?.phase;
+
+  const checkUnboundApproval = async () => {
+    const session = "recovery-session-4", name = "recover_unbound";
+    const first = await gateway([session]);
+    assert((await first.connect(name, session)).id);
+    await stopped(first.child);
+    const previous = record(session)!;
+    const actor = previous.remote.material!.actor;
+    assert(previous.accountKey);
+    delete previous.accountKey;
+    writeFileSync(join(recordDir(session), "identity.json"), JSON.stringify(previous));
+    const probes = counts.resumeProbes;
+    const reopened = await gateway([session]);
+    const approval = await reopened.call("cotal_connect", { name, context: session });
+    check("a saved approval without its account must retire before asking for fresh approval", !approval.error &&
+      !!pendingOf(approval.text) && approval.text.includes("Fresh approval is required") && counts.resumeProbes === probes &&
+      !await granted(actor) && footprint(actor) === "terminal", approval.text);
+    await stopped(reopened.child);
+  };
 
   const signOut = (local = false) => new Promise<string>((resolve, reject) => {
     const child = spawn(process.execPath, ["bin/dist/cotal.js", "logout", "--idp", idpUrl, "--json", ...(local ? ["--local"] : [])],
@@ -315,10 +340,28 @@ if (["agent-bearer", "auth-service", "app-identity"].includes(process.argv[2] ??
 
       const g7 = await gateway([recoverySession]);
       const login = loadIdpSession(home, idpUrl)!;
+      const recoveryFile = join(recordDir(recoverySession), "identity.json");
+      const ready = readFileSync(recoveryFile, "utf8");
+      const probes = counts.resumeProbes;
+      const requestsBeforeSwitch = counts.posts;
+      saveIdpSession(home, idpUrl, { ...login, sub: "different-recovery-account", token: "different-fixture-session" });
+      const otherAccount = await g7.call("cotal_connect", { name: recoveryName, context: recoverySession });
+      check("another account of the same provider cannot probe, replace or change the saved approval", otherAccount.error &&
+        otherAccount.text.includes("approved by another account") && counts.resumeProbes === probes && counts.posts === requestsBeforeSwitch &&
+        readFileSync(recoveryFile, "utf8") === ready && await granted(oldActor), otherAccount.text);
       saveIdpSession(home, idpUrl, { ...login, expiresAt: 1 });
       const expired = await g7.call("cotal_connect", { name: recoveryName, context: recoverySession });
       check("an expired login cannot resume a ready approval", expired.error && expired.text.includes("Sign in again") && actorOf(recoverySession) === oldActor, expired.text);
       saveIdpSession(home, idpUrl, login);
+      authority.availability.resumeReply = { status: 429, retryAfter: "37" };
+      const throttled = await g7.call("cotal_connect", { name: recoveryName, context: recoverySession });
+      check("a throttled resume reports the authority's wait and keeps the original approval", throttled.error &&
+        throttled.text.includes("Wait at least 37 seconds") && readFileSync(recoveryFile, "utf8") === ready, throttled.text);
+      authority.availability.resumeReply = { status: 503 };
+      const unavailable = await g7.call("cotal_connect", { name: recoveryName, context: recoverySession });
+      check("a resume outage asks the caller to wait and does not replace the approval", unavailable.error &&
+        unavailable.text.includes("Wait before trying again") && readFileSync(recoveryFile, "utf8") === ready, unavailable.text);
+      delete authority.availability.resumeReply;
       authority.availability.resume = false;
       const unsupported = await g7.call("cotal_connect", { name: recoveryName, context: recoverySession });
       check("missing resume discovery keeps the live approval and saved record", unsupported.error && unsupported.text.includes("does not currently offer resume") &&
@@ -346,14 +389,27 @@ if (["agent-bearer", "auth-service", "app-identity"].includes(process.argv[2] ??
       check("reopening after sign-out asks for sign-in without resuming or issuing", loggedOut.error && loggedOut.text.includes("Sign in again") &&
         record(recoverySession)?.state === "retiring" && !authority.pending(recoveryName).length, loggedOut.text);
       await stopped(g8.child);
-      authority.availability.retirement = true;
       saveIdpSession(home, idpUrl, login);
+      const attemptsBeforeLogout = counts.retirementAttempts;
+      const revokingLogout = await signOut();
+      check("provider-revoking logout reports failed retirements but still revokes and clears the login", revokingLogout.includes('"serverRevoked":true') &&
+        revokingLogout.includes("unconfirmedConversations") && revokingLogout.includes(recoveryName) && !loadIdpSession(home, idpUrl) &&
+        idpSignOuts === 1 && retirementAttemptsAtRevocation > attemptsBeforeLogout && await granted(replacement), revokingLogout);
+      authority.availability.retirement = true;
+      authority.availability.humanSession = true;
+      saveIdpSession(home, idpUrl, login);
+      const setAside = join(home, "app-identities", `unconfirmed-${record(recoverySession)!.requestId}-0000000000000000`);
+      renameSync(recordDir(recoverySession), setAside);
+      await checkUnboundApproval();
       const catalogOwner = deleteIdpSpaceCatalog(home, idpUrl, login.sub!);
       recordMesh({ ...findMesh(space)!, origin: "catalog", catalogOwner });
+      const attemptsBeforeCatalog = counts.retirementAttempts;
       const catalogLogout = await signOut();
       check("logout retires exact lifecycles before removing the catalog registration and revoking the login", catalogLogout.includes(space) &&
-        !catalogLogout.includes("unconfirmedConversations") && !findMesh(space) && !loadIdpSession(home, idpUrl) && idpSignOuts === 1 &&
-        !existsSync(recordDir(recoverySession)) && !await granted(replacement) && footprint(replacement) === "terminal", catalogLogout);
+        !catalogLogout.includes("unconfirmedConversations") && !findMesh(space) && !loadIdpSession(home, idpUrl) && idpSignOuts === 2 &&
+        retirementAttemptsAtRevocation > attemptsBeforeCatalog && retirementAttemptsAtRevocation === counts.retirementAttempts, catalogLogout);
+      check("sign-out retires a live lifecycle in a round-one set-aside folder", !existsSync(setAside) &&
+        !await granted(replacement) && footprint(replacement) === "terminal");
       console.log(`personal-native-recovery: ${checks} real-broker resume checks passed`);
     } else {
     // The reported sequence: disconnect while the authority reports retirement pending, then

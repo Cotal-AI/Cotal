@@ -352,8 +352,9 @@ issued before connection approval keeps working, and its recovery stays exact.
 If the signed-in space supports conversation approval resume, `cotal_connect` with the same native
 conversation, name, space and requested permissions can reuse the approved identity after the server
 exits. Use the new `connection_id` the tool returns. The connector keeps an owner-private proof on
-this computer. The authority checks that the original approval is still valid each time the conversation
-resumes and requires a current local sign-in. The stock connector will not use a copied proof in a
+this computer. The connector requires an unexpired local sign-in for the account that requested the
+approval. The authority checks that the approval is still valid each time the conversation resumes.
+The stock connector will not use a copied proof in a
 different conversation or on a different computer. With the default layout, a copy of the Cotal home
 includes both the proof and the device key. Anyone who also has the original computer's public OS
 machine identity can derive the actor credential and use the ordinary exchange while its grant is
@@ -363,8 +364,9 @@ If the authority cannot be reached, the connector keeps the saved proof for a la
 
 An approval can last until you disconnect, sign out or revoke the identity. Disconnect conversations
 you no longer use with `cotal_disconnect`, or revoke the identity on the space's agent management
-page. Sign-out attempts to retire all resumable conversations for that provider and reports any it
-could not confirm. Other conversations stay connected when you disconnect one. On spaces without approval resume,
+page. Sign-out attempts to retire the signed-out account's resumable conversations and reports any it
+could not confirm. `cotal meshes rm` and `cotal space forget` remove local registrations, not the
+resumable identities at their authorities. Other conversations stay connected when you disconnect one. On spaces without approval resume,
 session end or server exit also retires the identity. A disconnect waits at most 3 seconds for the
 conversation's event plane to finish publishing, then stops the connection. Events it did not publish stay in the
 transcript. When the mesh reports retirement pending or does not confirm it, the

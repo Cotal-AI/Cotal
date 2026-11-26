@@ -1,6 +1,6 @@
 ---
+"cotal-ai": patch
 "@cotal-ai/auth": patch
-"@cotal-ai/core": patch
 "@cotal-ai/cli": patch
 "@cotal-ai/workspace": patch
 "@cotal-ai/connector-core": patch

@@ -53,11 +53,11 @@ export interface ApprovalAuthority {
   /** Trust it in a child process with `NODE_EXTRA_CA_CERTS`. */
   readonly caFile: string;
   readonly requests: ReadonlyMap<string, FixtureRequest>;
-  readonly counts: { posts: number; issues: number; deletes: number; foreignDeletes: number };
+  readonly counts: { posts: number; issues: number; deletes: number; foreignDeletes: number; resumeProbes: number; retirementAttempts: number };
   /** `slow` retirements each answer after 35 s, past the client's own request deadline. */
   readonly retirement: { driverRan: boolean; slow: number; served: number };
   /** Temporarily stop advertising resume or answering retirement for a live test. */
-  readonly availability: { resume: boolean; retirement: boolean };
+  readonly availability: { resume: boolean; retirement: boolean; humanSession: boolean; resumeReply?: { status: 429 | 503; retryAfter?: string } };
   /** Serve a mesh's discovery and identities, and record it in the workspace as a signed-in mesh.
    *  `exchange` is the auth service's public exchange URL; `local` issues into a real ledger. */
   addMesh(mesh: {
@@ -91,9 +91,9 @@ export async function startApprovalAuthority(o: { home: string; human: string })
   type Mesh = { owner: string; bundle: Record<string, unknown>; exchange?: string; local?: LocalIssuer };
   const meshes = new Map<string, Mesh>();
   const requests = new Map<string, FixtureRequest>();
-  const counts = { posts: 0, issues: 0, deletes: 0, foreignDeletes: 0 };
+  const counts = { posts: 0, issues: 0, deletes: 0, foreignDeletes: 0, resumeProbes: 0, retirementAttempts: 0 };
   const retirement = { driverRan: true, slow: 0, served: 0 };
-  const availability = { resume: true, retirement: true };
+  const availability: ApprovalAuthority["availability"] = { resume: true, retirement: true, humanSession: true };
   let base = "";
 
   const issue = async (row: FixtureRequest, mesh: Mesh) => {
@@ -142,8 +142,18 @@ export async function startApprovalAuthority(o: { home: string; human: string })
       const exchange = /^\/s\/([^/]+)\/exchange$/.exec(url.pathname);
       const forward = exchange ? meshes.get(exchange[1]!)?.exchange : undefined;
       if (req.method === "POST" && forward) {
+        if (req.headers["cotal-conversation-resume"] === "1") {
+          counts.resumeProbes++;
+          const reply = availability.resumeReply;
+          if (reply) {
+            if (reply.retryAfter) res.setHeader("Retry-After", reply.retryAfter);
+            return send(reply.status, { error: "resume temporarily unavailable" });
+          }
+        }
         const answer = await fetch(forward, { method: "POST", headers: { "content-type": "application/json",
           ...(req.headers["cotal-conversation-resume"] === "1" ? { "cotal-conversation-resume": "1" } : {}) }, body: await read(req) });
+        const retryAfter = answer.headers.get("retry-after");
+        if (retryAfter) res.setHeader("Retry-After", retryAfter);
         res.writeHead(answer.status, { "content-type": "application/json" });
         return res.end(await answer.text());
       }
@@ -172,6 +182,8 @@ export async function startApprovalAuthority(o: { home: string; human: string })
         return send(status, row.material);
       }
       if (req.method === "DELETE" && route[2]) {
+        counts.retirementAttempts++;
+        if (!availability.humanSession) return send(401, { error: "session revoked" });
         if (!availability.retirement) return send(503, { error: "retirement unavailable" });
         const row = [...requests.values()].find((r) => r.space === at && r.actor === route[2] && url.searchParams.get("lifecycleUid") === r.lifecycleUid);
         if (!row) return send(404, { error: "unknown lifecycle" });

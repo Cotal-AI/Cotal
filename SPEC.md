@@ -26,20 +26,25 @@ redirect following. The body is:
 }
 ```
 
-`grant` is the exact grant from issuance, not an empty object or a new selection. The
+`grant` is the exact grant from issuance, compared as canonical JSON, not an empty object or a new selection. The
 authority verifies the actor secret in constant time, checks the exact live lifecycle and
 grant, and applies current approval and revocation policy. It MUST NOT issue a bearer,
 recreate a retired lifecycle, or extend an approval. It returns HTTP 200 with
 `{ "v": 1, "lifecycleUid": "<uid>", "status": "resumed" }` only if that approval still holds.
 Its definitive refusal is HTTP 401 with `{ "v": 1, "lifecycleUid": "<uid>", "status": "refused" }`.
-An unknown or malformed answer proves neither outcome. An accepted resume still uses the
-ordinary actor exchange and broker authorization to connect. The native client MUST have an
-unexpired local sign-in session for the saved identity provider before it attempts resume.
+An unknown or malformed answer proves neither outcome. The authority sends `Retry-After` on
+HTTP 429. The client retains the approval on 429 or 5xx and reports that it can be retried
+later, including the wait when provided. An accepted resume still uses the ordinary actor
+exchange and broker authorization to connect. The native client MUST have an unexpired local
+sign-in for the same provider and subject that requested the approval. A record without an
+approving account cannot resume. The account binding is local and does not change the probe.
 Missing support or changed discovery pins MUST NOT retire the saved approval.
 
 Explicit disconnect and sign-out use `DELETE <conversation-identity-url>/<actor>?lifecycleUid=<uid>`
-on the original pinned authority, authenticated with the human session. Sign-out attempts this
-before it revokes the provider session or removes the local login and registrations. A client with
+on the original pinned authority, authenticated with the human session. The authority MUST refuse
+a conversation DELETE from a different person. Sign-out may first replay the original creation
+POST to recover an issued lifecycle when none was saved. It attempts this cleanup before it
+revokes the provider session or removes the local login and registrations. A client with
 an unusable proof for its own conversation MUST confirm retirement before requesting another
 approval. The authority returns HTTP 200 with
 `{ "v": 1, "actor": "<actor>", "lifecycleUid": "<uid>", "phase": "terminal", "complete": true }`

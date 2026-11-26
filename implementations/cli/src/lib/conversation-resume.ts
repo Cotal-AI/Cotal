@@ -3,6 +3,14 @@ import { canonicalJson, type ConversationSelection } from "@cotal-ai/core";
 import { conversationResumeToken, type ConversationResumeProof } from "@cotal-ai/workspace/conversation-resume";
 import type { ConversationMaterial } from "./conversation-identity.js";
 
+/** An authority failure that keeps the original saved request or approval for exact recovery. */
+export class ConversationRequestError extends Error {
+  constructor(message: string, readonly retryable: boolean) {
+    super(message);
+    this.name = "ConversationRequestError";
+  }
+}
+
 const hash = (text: string): string => createHash("sha256").update(text).digest("hex");
 
 interface ConversationBinding {
@@ -45,5 +53,19 @@ export async function confirmConversationResume(m: ConversationMaterial, actorTo
   const body: unknown = await response.json().catch(() => undefined);
   if (response.status === 200 && canonicalJson(body ?? null) === canonicalJson({ v: 1, lifecycleUid: m.lifecycleUid, status: "resumed" })) return true;
   if (response.status === 401 && canonicalJson(body ?? null) === canonicalJson({ v: 1, lifecycleUid: m.lifecycleUid, status: "refused" })) return false;
-  throw new Error(`the conversation resume exchange did not confirm its approval (HTTP ${response.status}); the saved identity was retained`);
+  const retryable = response.status === 429 || response.status >= 500;
+  const seconds = response.status === 429 ? retryAfterSeconds(response.headers.get("retry-after")) : undefined;
+  const hint = seconds !== undefined ? ` Wait at least ${seconds} seconds before trying again.`
+    : retryable ? " Wait before trying again." : "";
+  throw new ConversationRequestError(`the conversation resume exchange did not confirm its approval (HTTP ${response.status}); the saved identity was retained.${hint}`, retryable);
+}
+
+function retryAfterSeconds(value: string | null): number | undefined {
+  if (!value) return undefined;
+  if (/^[0-9]+$/.test(value)) {
+    const seconds = Number(value);
+    return Number.isSafeInteger(seconds) ? seconds : undefined;
+  }
+  const time = Date.parse(value);
+  return Number.isFinite(time) ? Math.max(0, Math.ceil((time - Date.now()) / 1000)) : undefined;
 }

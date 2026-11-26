@@ -1,5 +1,5 @@
 import { exchangeRateLimit, readAuthResponseJson, type ExchangeRateLimit } from "./response-json.js";
-import { idpSessionDir, remoteExchangeRetryDeadline } from "./session-context.js";
+import { conversationLogoutLogin, idpSessionDir, remoteExchangeRetryDeadline } from "./session-context.js";
 import { loadManagerAuthorityRoute, managerAuthorityRouteUrl, pinManagerAuthorityRoute } from "./manager-authority-route.js";
 /**
  * The core `auth-provider` extension — how a composition root gets user-mode auth WITHOUT importing
@@ -23,9 +23,9 @@ import { resolve, sep } from "node:path";
 import { AGENT_LIFECYCLE_HELD, AgentGrantConflictError, EP_ERROR_CODES, EpEnvelopeError, agentLifecycleHeld, type AgentLifecycleRelease, type EpEffectOutcome, type EpErrorCode } from "@cotal-ai/core";
 import { parseServiceAuthorityEnvelope, parseServiceAuthorityRequest } from "@cotal-ai/core";
 import { parseRemoteEndpointDeregisterRequest, parseRemoteEndpointDeregisterResult } from "@cotal-ai/core";
-import { CommandFailure } from "@cotal-ai/workspace";
+import { CommandFailure, type ConversationAccount } from "@cotal-ai/workspace";
 import { readRemoteServiceAuthorityInfo, postRemoteServiceAuthority, serviceAuthorityUrl, withServiceAuthorityBudget, assertServiceViewFreshness } from "./service-authority-client.js";
-import { deleteIdpSpaceCatalog, fetchIdpJwt, hasIdpSessions, hasIdpSpaceCatalog, IdpSessionRejectedError, loadIdpSession, normalizeIdpUrl, prepareIdpSpaceCatalogs, probeIdpJwks, requireIdpSession } from "./login.js";
+import { conversationAccountKey, deleteIdpSpaceCatalog, fetchIdpJwt, hasIdpSessions, hasIdpSpaceCatalog, IdpSessionRejectedError, loadIdpSession, normalizeIdpUrl, prepareIdpSpaceCatalogs, probeIdpJwks, requireIdpSession } from "./login.js";
 import { deriveOwnerForIdpSubject } from "./derive.js";
 import { findActorUnified, findInteractiveActor, hashActorToken, newActorToken, notGrantedReason, withManagedGrantTransaction } from "./ledger.js";
 import { userAuthTrustFingerprint, validateRetainedManagedAgent } from "./continuity.js";
@@ -612,37 +612,7 @@ export const cotalAuthProvider: AuthProvider = {
     return { outcome: "unknown", ...at, status: released.status, ...(typeof reason === "string" ? { reason } : {}) };
   },
 
-  requireConversationLogin(idpUrl) {
-    const session = requireIdpSession(idpSessionDir(), idpUrl);
-    if (session.expiresAt <= Date.now() / 1000) throw new Error("the saved sign-in has expired");
-  },
-
-  async requestConversationIdentity({ url, idpUrl, method, body }) {
-    const endpoint = new URL(url);
-    if (endpoint.protocol !== "https:" || endpoint.username || endpoint.password || endpoint.hash)
-      throw new Error("conversation identity authority must use HTTPS without userinfo or a fragment");
-    const session = requireIdpSession(idpSessionDir(), idpUrl);
-    let response: Response;
-    try {
-      response = await fetch(endpoint, {
-        method,
-        redirect: "manual",
-        credentials: "omit",
-        headers: { authorization: `Bearer ${session.token}`, ...(body ? { "content-type": "application/json" } : {}),
-          ...(method === "POST" ? { "Cotal-Conversation-Refusals": "1" } : {}) },
-        ...(body ? { body: JSON.stringify(body) } : {}),
-        signal: AbortSignal.timeout(30_000),
-      });
-    } catch {
-      throw new Error("conversation identity request outcome is unknown; retain its saved request and retry that same lifecycle");
-    }
-    if (response.status >= 300 && response.status < 400)
-      throw new Error("conversation identity authority returned a redirect; no redirect was followed");
-    const parsed: unknown = await response.json().catch(() => undefined);
-    if (parsed === undefined)
-      throw new Error("conversation identity authority returned no JSON; retain its saved request for recovery");
-    return { status: response.status, body: parsed };
-  },
+  requestConversationIdentity: sendConversationIdentity,
 
   /** Redeem one pre-minted remote enrollment. The URL itself carries the one-time secret, so this
    *  method names it nowhere, sends no Authorization header, and performs exactly one manual-redirect
@@ -852,7 +822,52 @@ export const cotalAuthProvider: AuthProvider = {
   agentBearerCommand: "agent-bearer",
 };
 
-registry.register(cotalAuthProvider);
+function conversationLogin(idp: string) {
+  return conversationLogoutLogin(normalizeIdpUrl(idp)) ?? requireIdpSession(idpSessionDir(), idp);
+}
+
+function signedInConversationKey(idp: string, session: ReturnType<typeof conversationLogin>): string {
+  const key = conversationAccountKey(idp, session.sub);
+  if (!key || session.expiresAt <= Date.now() / 1000) throw new Error("there is no unexpired sign-in with a known account");
+  return key;
+}
+
+const conversationAccount: ConversationAccount = {
+  kind: "conversation-account", name: AUTH_PROVIDER_NAME,
+  key(idp) { return signedInConversationKey(idp, conversationLogin(idp)); },
+  async request(key, input) { return sendConversationIdentity(input, key); },
+};
+
+async function sendConversationIdentity({ url, idpUrl, method, body }: Parameters<NonNullable<AuthProvider["requestConversationIdentity"]>>[0], key?: string) {
+  const endpoint = new URL(url);
+  if (endpoint.protocol !== "https:" || endpoint.username || endpoint.password || endpoint.hash)
+    throw new Error("conversation identity authority must use HTTPS without userinfo or a fragment");
+  const session = conversationLogin(idpUrl);
+  if (key !== undefined && signedInConversationKey(idpUrl, session) !== key)
+    throw new Error("the sign-in changed to another account before the request; nothing was sent");
+  let response: Response;
+  try {
+    response = await fetch(endpoint, {
+      method,
+      redirect: "manual",
+      credentials: "omit",
+      headers: { authorization: `Bearer ${session.token}`, ...(body ? { "content-type": "application/json" } : {}),
+        ...(method === "POST" ? { "Cotal-Conversation-Refusals": "1" } : {}) },
+      ...(body ? { body: JSON.stringify(body) } : {}),
+      signal: AbortSignal.timeout(30_000),
+    });
+  } catch {
+    throw new Error("conversation identity request outcome is unknown; retain its saved request and retry that same lifecycle");
+  }
+  if (response.status >= 300 && response.status < 400)
+    throw new Error("conversation identity authority returned a redirect; no redirect was followed");
+  const parsed: unknown = await response.json().catch(() => undefined);
+  if (parsed === undefined)
+    throw new Error("conversation identity authority returned no JSON; retain its saved request for recovery");
+  return { status: response.status, body: parsed };
+}
+
+registry.register(cotalAuthProvider, conversationAccount);
 
 /** The pinned exchange base -> the POST target. Same composition as `agent-bearer
  *  --exchange-url` (append `/exchange`, drop search/hash), same transport rule as the

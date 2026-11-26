@@ -5,7 +5,7 @@ import { createServer, type ServerResponse } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadIdpSession, saveIdpSession, type IdpSession } from "../src/login.js";
-import { signOutIdpSession } from "../src/logout.js";
+import { conversationLogoutWarnings, signOutIdpSession } from "../src/logout.js";
 
 const root = mkdtempSync(join(tmpdir(), "logout-session-race-"));
 const originalEnv = { ...process.env };
@@ -44,7 +44,11 @@ try {
   saveIdpSession(dir, idp, b);
   assert.equal(loadIdpSession(dir, idp)?.token === b.token, true, "replacement login committed before releasing revocation");
   held.writeHead(200, { "content-type": "application/json" }).end("{}");
-  await logout;
+  const result = await logout;
+  assert.ok(!("localLogin" in result));
+  assert.equal(result.conversationCheck, "unavailable", "an unregistered cleanup hook is not a successful conversation scan");
+  assert.match(conversationLogoutWarnings(result).join("\n"), /Saved conversations were not checked/);
+  console.log("PASS logout reports that saved conversations were not checked without a cleanup hook");
   assert.equal(loadIdpSession(dir, idp)?.token === b.token, true, "concurrent replacement login must survive older logout");
   console.log("PASS replacement login survives held HTTP revocation");
 } finally {

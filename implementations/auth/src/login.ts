@@ -124,6 +124,11 @@ export function normalizeIdpUrl(idpUrl: string): string {
   return checked.url.origin + checked.url.pathname.replace(/\/+$/, "");
 }
 
+/** Stable within an IdP, without saving the provider's raw subject in conversation records. */
+export function conversationAccountKey(idp: string, subject: string | undefined): string | undefined {
+  return subject ? createHash("sha256").update(JSON.stringify([normalizeIdpUrl(idp), subject])).digest("hex") : undefined;
+}
+
 interface OAuthError {
   error?: string;
   error_description?: string;

@@ -4,17 +4,19 @@ import { basename, dirname, join, resolve } from "node:path";
 import {
   acquireLock, assertLifecycleToken, canonicalJson, checkConversationApprovalPending, checkConversationPendingAnswer,
   checkConversationSelection, conversationApprovalRefusal, conversationGrant, deprovisionAgent, mintCreds, mkSecretDir, newIdentity,
-  principalKey, provisionAgentDurables, processStartToken, resolveAuthProvider, writeSecretFileAtomic, type AuthProvider,
-  type ConversationApprovalPending, type ConversationApprovalRefusal, type ConversationGrant, type ConversationPending, type ConversationSelection, type ConversationSignOut,
+  principalKey, provisionAgentDurables, processStartToken, registry, resolveAuthProvider, writeSecretFileAtomic, type AuthProvider,
+  type ConversationApprovalPending, type ConversationApprovalRefusal, type ConversationGrant, type ConversationPending, type ConversationSelection,
 } from "@cotal-ai/core";
-import { checkDiscoveryDocument, checkIdpUrl, discoveryDocumentUrl, pinnedFetch, getSpaceAuth, homeCotalDir, oneLine, resolveTargetOrThrow, userAuthStateDir, workspaceSecretStore, type MeshTarget } from "@cotal-ai/workspace";
+import { checkDiscoveryDocument, checkIdpUrl, discoveryDocumentUrl, pinnedFetch, getSpaceAuth, homeCotalDir, oneLine, resolveTargetOrThrow, userAuthStateDir, workspaceSecretStore, type ConversationAccount, type ConversationSignOut, type MeshTarget, type UnconfirmedConversation } from "@cotal-ai/workspace";
 import { CONVERSATION_RESUME_PREFIX, type ConversationResumeProof } from "@cotal-ai/workspace/conversation-resume";
 import {
   agentCapRefusal, checkConversationMaterial, conversationRetirementPhase, discoverConversationAuthority, legacyAgentCapRefusal, legacyNameTakenRefusal, nameTakenRefusal, selectionRefusal, signedInSpace,
   type ConversationAuthority, type ConversationMaterial,
 } from "./conversation-identity.js";
 import { withProvisioner } from "./provisioner.js";
-import { confirmConversationResume, createResumeProof, matchesResumeBinding, resumeToken } from "./conversation-resume.js";
+import { confirmConversationResume, ConversationRequestError, createResumeProof, matchesResumeBinding, resumeToken } from "./conversation-resume.js";
+
+type RetirementTarget = Pick<MeshTarget, "space" | "root" | "server" | "tlsRequired" | "userAuth">;
 
 interface SavedIdentity {
   v: 1;
@@ -22,13 +24,15 @@ interface SavedIdentity {
   root: string;
   trust: string;
   /** Original registration pins, used only to retire at the authority that issued this request. */
-  retirementTarget?: Pick<MeshTarget, "space" | "root" | "server" | "tlsRequired" | "userAuth">;
+  retirementTarget?: RetirementTarget;
   session: string;
   requestId: string;
   label: string;
   token: string;
   /** When present, token is the exchange secret's hash, not the secret itself. */
   proof?: ConversationResumeProof;
+  /** Opaque key for the approving IdP account. An unbound saved proof cannot resume. */
+  accountKey?: string;
   state: "creating" | "ready" | "retiring";
   consumer: { pid: number; start?: string };
   /** What the identity was requested with beyond its own event channel. Fixed at creation. */
@@ -44,7 +48,7 @@ interface SavedIdentity {
 const RECORD = "identity.json";
 const hash = (text: string): string => createHash("sha256").update(text).digest("hex");
 const identityRoot = (): string => join(homeCotalDir(), "app-identities");
-const trust = (t: MeshTarget): string => hash(JSON.stringify({ space: t.space, root: t.root, server: t.server, tlsRequired: t.tlsRequired, userAuth: t.userAuth }));
+const trust = (t: RetirementTarget): string => hash(JSON.stringify({ space: t.space, root: t.root, server: t.server, tlsRequired: t.tlsRequired, userAuth: t.userAuth }));
 
 function syncFile(path: string, flags: "r" | "r+" = "r"): void {
   const fd = openSync(path, flags);
@@ -82,6 +86,8 @@ function read(dir: string): SavedIdentity {
       !["space", "root", "server", "tlsRequired", "userAuth"].includes(key)))
     throw new Error("conversation retirement pins contain unexpected fields; recovery state was retained");
   if (record.proof && !record.remote) throw new Error("conversation resume proof does not name a signed-in identity");
+  if (record.accountKey !== undefined && (typeof record.accountKey !== "string" || !/^[a-f0-9]{64}$/.test(record.accountKey)))
+    throw new Error("conversation approval account is invalid; the saved record was retained");
   if (record.selection !== undefined) checkConversationSelection(record.selection);
   const pending = record.remote?.approval?.pending;
   if (pending !== undefined) checkConversationApprovalPending(pending, new URL(record.remote!.url).origin);
@@ -127,14 +133,7 @@ export class ConversationRefusal extends Error {
   }
 }
 
-/** An HTTP failure with an unknown issuance outcome. Automatic polling stops for permanent request
- *  failures, but the saved request and secret remain available for exact recovery. */
-export class ConversationRequestError extends Error {
-  constructor(message: string, readonly retryable: boolean) {
-    super(message);
-    this.name = "ConversationRequestError";
-  }
-}
+export { ConversationRequestError } from "./conversation-resume.js";
 
 /** What one creation answer proves. A selection refusal, a recorded denial, expiry or cap refusal,
  *  and a pending approval each prove that nothing was issued. Any other answer than an exact issued identity
@@ -171,6 +170,17 @@ function creationOutcome(
 function request(provider: AuthProvider): NonNullable<AuthProvider["requestConversationIdentity"]> {
   if (!provider.requestConversationIdentity) throw new Error("the auth provider does not support conversation identity authority");
   return provider.requestConversationIdentity.bind(provider);
+}
+
+function account(provider = resolveAuthProvider()): ConversationAccount | undefined {
+  return registry.all<ConversationAccount>("conversation-account").find((extension) => extension.name === provider.name);
+}
+
+function requestForRecord(provider: AuthProvider, record: SavedIdentity): ReturnType<typeof request> {
+  if (!record.accountKey) return request(provider);
+  const binding = account(provider);
+  if (!binding) throw new Error("the auth provider cannot check the saved approval's account; nothing was sent");
+  return (input) => binding.request(record.accountKey!, input);
 }
 
 /** A connected conversation identity: its environment, where to retire it, and its exact grant. */
@@ -234,7 +244,8 @@ async function provisionOnSpace(
     if (saved.state === "ready" && saved.trust !== trust(target)) throw new Error(RESUME_UNAVAILABLE);
   }
   const authority = infra ? undefined : await discoverConversationAuthority(target).catch((error: unknown) => {
-    if (saved?.proof && saved.state === "ready") throw new Error(RESUME_UNAVAILABLE, { cause: error });
+    if (saved?.proof && saved.state === "ready")
+      throw new Error(`Conversation identity discovery did not confirm the saved authority. The saved identity was retained. ${oneLine((error as Error).message)}`, { cause: error });
     throw error;
   });
   const policy = authority?.bundle.policy ?? target.policy;
@@ -287,8 +298,7 @@ async function provisionOnSpace(
         consumer: { pid: process.ppid, start: processStartToken(process.ppid) }, ...(selection ? { selection } : {}),
         remote: { url: authority.url, idpUrl: target.userAuth!.idp.url, approval: {} },
       };
-      const resume = authority.resume ? createResumeProof(record) : undefined;
-      if (resume) Object.assign(record, { proof: resume.proof, token: resume.tokenHash });
+      attachResumeProof(record, authority, provider);
       save(dir, record);
       if (process.platform !== "win32") { syncFile(root); syncFile(dirname(root)); }
     }
@@ -299,7 +309,7 @@ async function provisionOnSpace(
       if (!record.remote.material && !authority.approval)
         throw new Error("the selected mesh does not advertise connection approval v1; the saved request was retained and not sent");
       markUnderApproval(dir, record);
-      const response = await request(provider)({ url: authority.url, idpUrl: record.remote.idpUrl, method: "POST", body: creationBody(record) });
+      const response = await requestForRecord(provider, record)({ url: authority.url, idpUrl: record.remote.idpUrl, method: "POST", body: creationBody(record) });
       const outcome = creationOutcome(record, authority, response, "creation");
       if ("refused" in outcome) {
         discard(dir);
@@ -345,6 +355,17 @@ async function provisionOnSpace(
   } finally { lock.release(); }
 }
 
+function attachResumeProof(record: SavedIdentity, authority: ConversationAuthority, provider: AuthProvider): void {
+  if (!authority.resume) return;
+  const binding = account(provider);
+  let accountKey: string | undefined;
+  try { accountKey = binding?.key(record.remote!.idpUrl); }
+  catch { return; } // A legacy login without a subject still uses ordinary approval.
+  if (!accountKey) return;
+  const resume = createResumeProof(record);
+  if (resume) Object.assign(record, { accountKey, proof: resume.proof, token: resume.tokenHash });
+}
+
 async function prepareSavedIdentity(dir: string, expected: {
   name: string; session: string; trust: string; selection?: ConversationSelection;
 }, authority: ConversationAuthority | undefined): Promise<{ reason?: string; resumed?: string }> {
@@ -364,6 +385,10 @@ async function prepareSavedIdentity(dir: string, expected: {
         setAside(dir, current, `-${randomBytes(8).toString("hex")}`);
       } finally { lock.release(); }
       return { reason: "The saved approval could not be used on this computer." };
+    }
+    if (!previous.accountKey) {
+      await retireUserApp(dir);
+      return { reason: "The saved approval does not identify its approving account. Fresh approval is required." };
     }
     if (previous.state === "ready") requireResumeAuthority(previous, authority);
     if (!resumeToken({ ...previous, proof: previous.proof })) {
@@ -401,13 +426,16 @@ async function prepareSavedIdentity(dir: string, expected: {
 const RESUME_UNAVAILABLE = "The space does not currently offer resume at the saved authority and trust pins. The saved identity was retained.";
 
 function requireResumeLogin(record: SavedIdentity): void {
-  const provider = resolveAuthProvider();
+  let key: string;
   try {
-    if (!provider.requireConversationLogin) throw new Error("login check unavailable");
-    provider.requireConversationLogin(record.remote!.idpUrl);
+    const binding = account();
+    if (!binding) throw new Error("login check unavailable");
+    key = binding.key(record.remote!.idpUrl);
   } catch (error) {
     throw new Error("Sign in again with `cotal login` before reconnecting this conversation. The saved identity was retained.", { cause: error });
   }
+  if (record.accountKey && record.accountKey !== key)
+    throw new Error("This conversation was approved by another account. Sign in with the original account or connect a different conversation for fresh approval. The saved identity was retained.");
 }
 
 function requireResumeAuthority(record: SavedIdentity, authority: ConversationAuthority | undefined): ConversationAuthority {
@@ -417,6 +445,7 @@ function requireResumeAuthority(record: SavedIdentity, authority: ConversationAu
 }
 
 async function resumeSavedIdentity(record: SavedIdentity, discovered: ConversationAuthority | undefined): Promise<boolean> {
+  if (!record.accountKey) throw new Error("The saved approval does not identify its approving account. Fresh approval is required.");
   requireResumeLogin(record);
   const authority = requireResumeAuthority(record, discovered);
   const remote = record.remote!;
@@ -451,27 +480,40 @@ function idpKey(url: string): string | undefined {
 
 export const conversationSignOut: ConversationSignOut = {
   kind: "conversation-sign-out", name: "native",
-  async retire({ dir: home, idp }) {
+  async retire({ dir: home, idp, accountKey }) {
     const root = join(home, "app-identities");
     if (!existsSync(root)) return [];
-    const failures: string[] = [];
+    privateDir(root);
+    const failures: UnconfirmedConversation[] = [];
     for (const entry of readdirSync(root)) {
       const dir = join(root, entry);
-      if (!/^[a-f0-9]{64}$/.test(entry) || !existsSync(join(dir, RECORD))) continue;
-      let label = "A saved conversation";
+      const setAside = isUnconfirmedDirectory(entry);
+      if ((!/^[a-f0-9]{64}$/.test(entry) && !setAside) || !existsSync(join(dir, RECORD))) continue;
+      let failure: UnconfirmedConversation = {};
       try {
-        const matches = (r: SavedIdentity) => !!r.proof && !!r.remote && idpKey(r.remote.idpUrl) === idp && matchesResumeBinding(r, r.proof);
+        const matches = (r: SavedIdentity) => !!r.remote && idpKey(r.remote.idpUrl) === idp &&
+          (!r.accountKey || !accountKey || r.accountKey === accountKey) && (setAside ? matchesUnconfirmed(entry, r) : !!r.proof) &&
+          (!r.proof || matchesResumeBinding(r, r.proof));
         const record = read(dir);
         if (!matches(record)) continue;
-        label = `Conversation ${JSON.stringify(oneLine(record.label))} in ${JSON.stringify(oneLine(record.space))}`;
-        await retire(dir, matches, home);
+        failure = { label: oneLine(record.label), space: oneLine(record.space) };
+        await retire(dir, matches, home, true);
       } catch {
-        failures.push(`${label}: retirement was not confirmed. Revoke the identity at its space authority.`);
+        failures.push(failure);
       }
     }
     return failures;
   },
 };
+
+function isUnconfirmedDirectory(entry: string): boolean {
+  return /^unconfirmed-[A-Za-z0-9_-]{22,81}$/.test(entry);
+}
+
+function matchesUnconfirmed(entry: string, record: SavedIdentity): boolean {
+  const prefix = `unconfirmed-${record.requestId}`;
+  return record.state === "retiring" && (entry === prefix || (entry.startsWith(prefix) && /^-[a-f0-9]{16}$/.test(entry.slice(prefix.length))));
+}
 
 /** Clean up dead consumers in this mesh. Resumable approvals stay saved unless retirement is
  *  underway. A live or unknown consumer keeps its identity and is never locked. */
@@ -496,15 +538,15 @@ function setAside(dir: string, record: SavedIdentity, suffix = ""): void {
 }
 
 /** `when` is decided under the record's lock, so a consumer that reissued it in between keeps it. */
-async function retire(dir: string, when?: (record: SavedIdentity) => boolean, home = homeCotalDir()): Promise<void> {
-  if (dirname(resolve(dir)) !== resolve(home, "app-identities") || !/^[a-f0-9]{64}$/.test(basename(dir)))
+async function retire(dir: string, when?: (record: SavedIdentity) => boolean, home = homeCotalDir(), signOut = false): Promise<void> {
+  if (dirname(resolve(dir)) !== resolve(home, "app-identities") || !(/^[a-f0-9]{64}$/.test(basename(dir)) || (signOut && isUnconfirmedDirectory(basename(dir)))))
     throw new Error("not a saved conversation identity directory");
   const lock = acquireLock(`${dir}.lock`, { waitMs: 0 });
   try {
     const record = read(dir);
     if (when && !when(record)) return;
-    const current = await resolveTargetOrThrow({ space: record.space });
-    let target = record.retirementTarget ? { ...current, ...record.retirementTarget } : current;
+    const current = signOut && record.retirementTarget ? undefined : await resolveTargetOrThrow({ space: record.space });
+    let target = record.retirementTarget ?? current!;
     if (!record.retirementTarget && record.remote?.material && trust(target) !== record.trust) {
       try {
         const address = new URL(record.remote.material.exchangeUrl);
@@ -513,8 +555,8 @@ async function retire(dir: string, when?: (record: SavedIdentity) => boolean, ho
           const checked = await checkDiscoveryDocument(response);
           if (checked.ok) {
             const { space, server, tlsRequired, userAuth } = checked.value;
-            const original = { ...current, root: record.root, space, server, tlsRequired,
-              userAuth: { ...current.userAuth, ...userAuth } };
+            const original = { ...target, root: record.root, space, server, tlsRequired,
+              userAuth: { ...target.userAuth, ...userAuth } };
             if (trust(original) === record.trust) target = original;
           }
         }
@@ -523,6 +565,7 @@ async function retire(dir: string, when?: (record: SavedIdentity) => boolean, ho
     if (record.retirementTarget && trust(target) !== record.trust)
       throw new Error("conversation identity retirement pins do not match its saved trust; retirement was not sent");
     if (trust(target) !== record.trust) {
+      if (signOut || record.proof) throw new Error("the original conversation registration could not be confirmed");
       // Older records could not recover matching original pins. Preserve their recovery state
       // outside the active session key without authenticating at the replacement registration.
       setAside(dir, record);
@@ -535,7 +578,7 @@ async function retire(dir: string, when?: (record: SavedIdentity) => boolean, ho
       let unavailable = false;
       const originalRequest = async (args: Parameters<ReturnType<typeof request>>[0]) => {
         try {
-          const response = await request(provider)(args);
+          const response = await requestForRecord(provider, record)(args);
           if ([401, 403].includes(response.status)) unavailable = true;
           return response;
         } catch (error) { unavailable = true; throw error; }
@@ -573,7 +616,7 @@ async function retire(dir: string, when?: (record: SavedIdentity) => boolean, ho
         if (phase !== "terminal")
           throw new Error(`conversation identity retirement is pending at phase ${JSON.stringify(phase)}; its saved lifecycle was retained for an exact retry`);
       } catch (error) {
-        if (record.proof || !unavailable || trust(current) === record.trust) throw error;
+        if (signOut || record.proof || !unavailable || !current || trust(current) === record.trust) throw error;
         setAside(dir, record);
         return;
       }
