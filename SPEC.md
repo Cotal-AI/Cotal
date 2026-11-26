@@ -142,9 +142,8 @@ the principal stays stable across reconnects.
   grant names; if a principal is also set explicitly (via the card) it MUST match, else the client
   MUST fail before publish.
 - A client that authenticates through the auth callout (user mode, §9) cannot know its connection
-  nkey before connecting, so it chooses its own reply-inbox nonce (`connId`) and derives its
-  principal from its bearer; the broker's minted grant, not the client's self-read, is the
-  boundary.
+  nkey before connecting. It derives its principal from the bearer and builds its reply inbox
+  identifier as described in §10. The broker's minted grant is the authority.
 - Open dev mode MAY use `local` as the owner and an opaque stable actor, but open mode is outside
   the security claims in §9 and is not a conformant authenticated deployment.
 
@@ -855,9 +854,11 @@ must implement.
 
 The reference SDK's `EndpointOptions.omitFromLiveMembership` marks a connection as an observer.
 A marked static-auth connection uses the NATS connection name `cotal:observer/<name>`. A marked
-user-auth connection uses `ibx_observer_` followed by a random suffix as its connection name and
-reply-inbox nonce. The feed writer excludes live subscriptions from connections with either marker.
-The markers do not change grants, durable memberships, or the feed record format.
+user-auth connection uses the principal-bound name in §10 with an underscore followed by 25 lowercase
+base36 characters as its nonce. The feed writer recognizes this marker on the connection's own
+principal and also recognizes legacy names starting with `ibx_observer_`. The markers exclude only
+the connection's live subscriptions. They do not change grants, durable memberships, or the feed
+record format.
 
 ### 8.1 Anycast request status
 
@@ -1055,7 +1056,7 @@ operator-facing views of this section: [docs/identity-and-auth.mdx](docs/identit
 
 Every grant below is keyed on the agent's **principal** `<owner>.<actor>` (§2), except the reply
 inbox, which is keyed on the **connection** `<connId>`: the connection nkey (static mode) or the
-client-chosen nonce (user mode, §9). This is the one place the wire identity and the connection
+client-chosen connection name (user mode, §10). This is the one place the wire identity and the connection
 credential diverge (§2): the principal keys subjects/durables/presence; the connId keys the inbox.
 
 | Profile | Application publish | Read surface | Notes |
@@ -1244,8 +1245,14 @@ cotal://user:pass@host/space                         user/password auth
 - Credentials (`creds`) are mutually exclusive with token and username/password auth.
 - A client MUST set `inboxPrefix` to `_INBOX_<connId>` before any request, pull consumer, or KV
   watch operation, where `<connId>` is the connection identifier (the connection nkey in static
-  mode; the client-chosen nonce in user mode, §2/§9), NOT the owner+actor principal, which the
-  client may not know pre-connect.
+  mode; the client-chosen connection name in user mode).
+
+A user-mode client sends `<owner>-<actor>-<nonce>` as its connection name. It reads `owner` and
+`actor` from the bearer's `sub` and `act.actor` claims. The nonce consists of 8 to 128 ASCII
+letters, digits or underscores, and the name is at most 255 characters. For this form the auth
+callout MUST compare the owner and actor with the validated bearer before issuing a grant.
+For compatibility it also accepts the legacy `[A-Za-z0-9_-]{8,120}` syntax for names not in the
+principal-bound form. Both forms scope the reply grant to `_INBOX_<connId>.>`.
 
 Authenticated onboarding has two bindings. **Out-of-band credential minting** provisions a per-agent
 credential ahead of connect (the static path). **Auth-callout onboarding** validates a user bearer at
@@ -2294,7 +2301,7 @@ The dedicated callout authenticates the sealed broker request before using its u
 key or client id. It captures admission time before authority reads and fixes native expiry no
 later than the access expiry or admission plus 60 seconds. It derives serving permissions from
 the current native registration, preserves principal-name attribution and uses the separate
-client inbox nonce. Native issuance and receipt checks and final root authorization precede the
+client inbox name. Native issuance and receipt checks and final root authorization precede the
 encrypted response. An expiry reached while encoding or sealing that response refuses release.
 An unconfigured or non-native service authority cannot fall through to ordinary actor hooks.
 
@@ -2343,7 +2350,7 @@ reports it separately and cannot remove it. That terminal pruning path is not im
 
 **Native-key issuance evidence.** Every callout success first writes one create-only
 `natkey.<userNkey>` row in the same auth bucket, where `userNkey` is the broker-generated
-per-connection user public key the minted JWT is issued to (never the client's inbox nonce or a
+per-connection user public key the minted JWT is issued to (never the client's inbox name or a
 display name). The row is the closed v1 record `{v, space, owner, actor, lifecycleUid,
 credentialId, view, connId, iat, exp}`, taken from the validated bearer's own signed claims
 (already equality-checked against the current row) and from the minted JWT's own `iat`/`exp` (a
@@ -5792,7 +5799,7 @@ the generation, whose horizon is the bearer's expiry, persists evidence whose pe
 that row, `{ space, bucket: "cotal_actors_<space>", key: "actor.<owner>.<actor>.<lifecycleUid>" }`,
 releases it, and writes the accepted row, all before it returns the JWT. The accepted token is the
 first 32 lowercase hex characters of SHA-256 over `"cotal.accepted.v1\0"` followed by the
-connection's inbox nonce: the client chose the nonce and derives the token from it, and no token is
+connection's inbox name: the client chose the name and derives the token from it, and no token is
 read from a request body. The source is live while the auth service's actor ledger holds a row for
 that owner and actor carrying that lifecycle UID; a revoked row, or a re-grant under another UID, is
 a dead source at the next resolution. Only the auth service attests this shape; every other host
@@ -5814,7 +5821,7 @@ rail. The issuer adds three rows: the request publish for `registry` `endpoints`
 of `ep.v1` under the listing generation, the reply subscribe on that caller's own `ep.v1` reply rail,
 and the per-key `DIRECT.GET` of the listing's accepted row. That row's token is the first 32
 lowercase hex characters of SHA-256 over `"cotal.listing.v1\0"`, the connection id, `"\0"`, and the
-horizon in decimal. The connection id is the credential's nkey on a static mint and the inbox nonce
+horizon in decimal. The connection id is the credential's nkey on a static mint and the inbox name
 at a user-auth callout. The horizon is the credential's expiry on a static mint and the bearer's
 expiry at the callout, so a credential without an expiry carries no listing generation. The issuer
 writes the evidence, attempt row and accepted row as for any issuance, and the evidence records the
@@ -7943,7 +7950,7 @@ placeholders:
 - `CHKV = KV_cotal_channels_<space>`; `DLVKV = <delivery lease/readiness KV>`
 - `MEMKV = KV_cotal_membership_<space>` (the derived channel-membership feed, §8)
 - `<owner>.<actor> = the authenticated principal` (§2): `<owner>` and `<actor>` are its two tokens; the dot-form is the wire/KV form, the dash-form `<owner>-<actor>` is the durable-name form
-- `connId = the authenticated connection id` (the connection nkey in static mode; the client-chosen nonce in user mode); distinct from the principal, and keys ONLY the reply inbox
+- `connId = the authenticated connection id` (the connection nkey in static mode; the client-chosen connection name in user mode); distinct from the principal, and keys ONLY the reply inbox
 - `role = authenticated agent role`
 - `chatHistD = chathist_<owner>-<actor>-<uid>`, `dmD = dm_<owner>-<actor>-<uid>`, `dlvD = dlv_<owner>-<actor>-<uid>`, `svcD = svc_<role>` (per-instance durables are lifecycle-scoped from v0.4: keyed on the dash-form + lifecycle UID, §8/§13.1; `svcD` stays role-scoped)
 - `inbox = _INBOX_<connId>.>`

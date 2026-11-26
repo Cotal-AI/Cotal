@@ -38,7 +38,7 @@ claude --mcp-config '{"mcpServers":{"cotal":{…}}}' \
   a managed launch's same-named entry replaces it. A carried seat's private home declares it itself.
   A managed launch with no declaration refuses instead of starting a seat that cannot wake. On a
   daemon-connected computer, use `cotal daemon setup --space <space>` to retry registration.
-  `cotal status` reports the entry under `Claude wake channel`.
+  `cotal status --wide` reports the entry under **Claude wake channel** in **This machine**.
 
 - `--prompt` is Claude's first turn. The connector passes it as Claude's leading argument after one
   space, so a prompt that names a Claude command or starts with `-` still arrives as the turn. An
