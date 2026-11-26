@@ -100,6 +100,7 @@ export interface DashboardState {
   loading: { roster: boolean; channels: boolean };
   /** What the dashboard can post as, null until `/api/meta` answers. */
   post: PostCapability | null;
+  channelDeleteSupported: boolean;
   /** The id the operator posts as. `/api/meta` sets it whenever it reports one, replacing the stored
    *  id; a post's answer sets it only while none is stored. */
   operatorId: string | null;
@@ -125,6 +126,7 @@ export const initialState: DashboardState = {
   membership: {},
   loading: { roster: false, channels: false },
   post: null,
+  channelDeleteSupported: false,
   operatorId: null,
   drafts: {},
   sessions: {},
