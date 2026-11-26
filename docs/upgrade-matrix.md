@@ -152,8 +152,11 @@ and lock observations independently of the updater's output. The macOS socket ob
 native `/var/folders` alias only when it resolves to the matching `/private/var/folders` parent,
 then checks ownership, the socket leaf and its recorded inode without following a leaf symlink.
 The launchd disabled observer accepts native boolean or `enabled`/`disabled` states for the selected
-unit. Unknown or duplicate entries remain errors. Missing, unreadable, timed-out or
-truncated observations remain explicit. Diagnostics never turn an update failure into a pass.
+unit. Unknown or duplicate entries remain errors. The after-update public `cotal daemon status --json`
+capture on macOS has a 15-second deadline to allow for slow CLI startup on a busy runner. Its
+artifact records the start and finish times. A timeout still fails the independent final-state check.
+Missing, unreadable, timed-out or truncated observations remain explicit. Diagnostics never turn an
+update failure into a pass.
 The daemon-hosted consent failure tracked in [#6822](https://github.com/Cotal-AI/Cotal/issues/6822)
 is a product failure, not a known refusal.
 The standalone cell starts with `up --detach` and records its

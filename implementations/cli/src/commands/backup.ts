@@ -190,7 +190,7 @@ async function inspectionConnection(broker: IsolatedBroker): Promise<NatsConnect
   return connectIsolatedBroker(broker, broker.initialLogin);
 }
 
-async function collectInventory(nc: NatsConnection, space: string, selected: SpaceBackupSelection, held: readonly string[]): Promise<{
+async function collectInventory(nc: NatsConnection, space: string, selected: SpaceBackupSelection, held: readonly string[], openBackup: boolean): Promise<{
   checkpoints: PersistentConsumerCheckpoint[];
 }> {
   const requestPage = async <T>(subject: string, offset: number): Promise<T & { total: number; offset: number; limit: number }> => {
@@ -259,7 +259,7 @@ async function collectInventory(nc: NatsConnection, space: string, selected: Spa
         throw new Error(`${stream}/${consumer.name} has an unsupported stopped KV watcher config: ${JSON.stringify(consumer.config)}`);
     return [stream, consumers.filter((consumer) => !isStoppedKvWatcher(stream, consumer))];
   }));
-  return { checkpoints: validatePersistentConsumerInventory(space, backedConsumers, statesByStream, held) };
+  return { checkpoints: validatePersistentConsumerInventory(space, backedConsumers, statesByStream, held, openBackup) };
 }
 
 export function isStoppedKvWatcher(stream: string, consumer: ConsumerInfo): boolean {
@@ -746,7 +746,7 @@ async function createBackup(args: ParsedArgs, observed: BackupObservation): Prom
     const inspect = await inspectionConnection(broker);
     let checkpoints;
     try {
-      ({ checkpoints } = await collectInventory(inspect, ready.space, selected, held));
+      ({ checkpoints } = await collectInventory(inspect, ready.space, selected, held, ready.mode === "open"));
     } finally {
       await drainAndClose(inspect).catch(() => {});
     }

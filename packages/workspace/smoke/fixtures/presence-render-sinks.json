@@ -571,6 +571,13 @@
       "rationale": "This command diagnostic reports operational state and recovery, not peer work progress."
     },
     {
+      "path": "implementations/cli/src/commands/update-windows-install.ts",
+      "kind": "derived-output",
+      "anchor": "process.exitCode = status ?? 1",
+      "class": "non-render/control",
+      "rationale": "The Windows npm wrapper propagates its child process exit code, not an agent's presence or work progress."
+    },
+    {
       "path": "implementations/cli/src/console/app.tsx",
       "kind": "derived-output",
       "anchor": "ep={ep} target={detail} feed={mesh.feed} width={size.cols} heigh",

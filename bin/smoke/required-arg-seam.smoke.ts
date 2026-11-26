@@ -582,7 +582,8 @@ const SEAMS: Seam[] = [
   // drives. It states `tls: false` for the suite's loopback broker.
   // The terminal session suites use loopback broker connections with explicit TLS policy.
   // The inbox rollout adds three connections with explicit loopback TLS policy.
-  { fn: "standaloneConnectOpts", key: "tls", sites: 488, untypecheckedSites: 395 },
+  // The open-space backup suite adds one loopback connection with explicit TLS policy.
+  { fn: "standaloneConnectOpts", key: "tls", sites: 489, untypecheckedSites: 396 },
 ];
 
 const SITE_COUNTS = JSON.parse(readFileSync(new URL("./required-arg-sites.json", import.meta.url), "utf8")) as Record<string, number>;
