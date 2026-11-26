@@ -216,9 +216,29 @@ async function addToAccountPath(dir: string): Promise<string> {
   if (process.platform === "win32") {
     const root = systemRoot();
     if (!root) throw new CommandFailure("refused", "UNSUPPORTED", "the Windows system directory is unavailable; PATH was not changed");
-    // The folder travels in the environment, so no quoting of it reaches PowerShell's parser.
-    const script = "$ErrorActionPreference = 'Stop'; $d = $env:COTAL_ADD_PATH; $p = [Environment]::GetEnvironmentVariable('Path', 'User'); if (-not (@($p -split ';') -contains $d)) { [Environment]::SetEnvironmentVariable('Path', $(if ($p) { $p.TrimEnd(';') + ';' + $d } else { $d }), 'User') }";
-    const ran = await run(win32.join(root, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"), ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script], { env: { ...process.env, COTAL_ADD_PATH: dir }, timeoutMs: 30_000 });
+    // The folder travels in the environment and the script as -EncodedCommand, so nothing in either
+    // passes through command-line quoting. The
+    // value is read raw and written back with its own registry type, so %VAR% entries stay as they
+    // are ([Environment]::SetEnvironmentVariable would expand them and store REG_SZ); running
+    // programs are then told the environment changed, as that call would have done.
+    const script = [
+      "$ErrorActionPreference = 'Stop'",
+      "$d = $env:COTAL_ADD_PATH",
+      "$key = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey('Environment')",
+      "try {",
+      "  $p = [string]$key.GetValue('Path', '', [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)",
+      "  $kind = if ($key.GetValueNames() -contains 'Path') { $key.GetValueKind('Path') } else { [Microsoft.Win32.RegistryValueKind]::ExpandString }",
+      "  $have = @($p -split ';' | Where-Object { $_ } | ForEach-Object { [Environment]::ExpandEnvironmentVariables($_).TrimEnd('\\') })",
+      "  $added = -not ($have -contains $d.TrimEnd('\\'))",
+      "  if ($added) { $key.SetValue('Path', $(if ($p) { $p.TrimEnd(';') + ';' + $d } else { $d }), $kind) }",
+      "} finally { $key.Close() }",
+      "if ($added) {",
+      "  Add-Type -Namespace Cotal -Name UserEnvironment -MemberDefinition '[DllImport(\"user32.dll\", CharSet = CharSet.Unicode)] public static extern IntPtr SendMessageTimeout(IntPtr hWnd, uint msg, UIntPtr wParam, string lParam, uint flags, uint timeout, out UIntPtr result);'",
+      "  $result = [UIntPtr]::Zero",
+      "  [void][Cotal.UserEnvironment]::SendMessageTimeout([IntPtr]0xffff, 0x1A, [UIntPtr]::Zero, 'Environment', 2, 1000, [ref]$result)",
+      "}",
+    ].join("\n");
+    const ran = await run(win32.join(root, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"), ["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")], { env: { ...process.env, COTAL_ADD_PATH: dir }, timeoutMs: 30_000 });
     if (ran.code !== 0) throw new CommandFailure("failed", "OPERATION_FAILED", `the user PATH could not be changed: ${ran.tail.at(-1) ?? `exit ${ran.code}`}`);
     return "your user PATH";
   }
