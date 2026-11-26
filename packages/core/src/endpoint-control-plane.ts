@@ -11,6 +11,7 @@ import { ClosedConnectionError, type Msg, type NatsConnection } from "@nats-io/t
 import { withDeadline } from "./deadline.js";
 import type { CotalEndpoint } from "./endpoint.js";
 import { isFromSubjectSender } from "./endpoint-messages.js";
+import { hasStoredOrigin } from "./endpoint-provenance.js";
 import { resolveService, invokeCommand, goalFollowRefusal, submitAndFollowGoal, BIND_SPLIT_REISSUES, type ResolvedService, type SubmitAndFollowGoalOptions } from "./endpoint-invoke.js";
 import type { GoalResultFact } from "./endpoint-action.js";
 import { EpEnvelopeError, respondedButUnbound, replyRefusedBeforeEffect, replyTargetUnmapped, EP_BIND_REFUSED, type EpBindRefusedDetail } from "./endpoint-envelope.js";
@@ -101,6 +102,10 @@ export class EndpointControlPlane {
     let inOrder: Promise<void> = Promise.resolve();
     void (async () => {
       for await (const m of sub) {
+        if (hasStoredOrigin(m.headers)) {
+          this.emit("error", new Error("dropped control request carrying stored-message headers. Send a fresh request without those headers."));
+          continue;
+        }
         // Sender-bound reply guard (confused-deputy fix): never respond to a reply target outside the
         // authenticated request subject's own `.reply.` subtree. Drop silently (don't inject elsewhere).
         if (opts.boundReply && (!m.reply || !m.reply.startsWith(`${m.subject}.reply.`))) {

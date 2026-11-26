@@ -9,6 +9,7 @@ import type { ConnectionState } from "./endpoint-connection-state.js";
 import type { EndpointIdentity } from "./endpoint-identity.js";
 import { readAcl } from "./acls.js";
 import { isFromSubjectSender } from "./endpoint-messages.js";
+import { hasStoredOrigin } from "./endpoint-provenance.js";
 import { membershipInAllow, chatSubject, isChannelFamily, parsePrincipalKey, lifecycleNameKey, token, chatStream, parseSubject } from "./subjects.js";
 import type { DeliveryClass, Plane3Entry, ControlReply, CotalMessage } from "./types.js";
 import { AckPolicy, DeliverPolicy } from "@nats-io/jetstream";
@@ -105,6 +106,7 @@ export class EndpointDurable {
         for await (const m of iter) {
           got++;
           if (m.seq > toSeqIncl) return copied;
+          if (hasStoredOrigin(m.headers)) continue;
           let msg: CotalMessage;
           try { msg = m.json<CotalMessage>(); } catch { continue; }
           const parsed = parseSubject(m.subject);
