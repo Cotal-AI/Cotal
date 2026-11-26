@@ -1273,34 +1273,6 @@ async function reconcileOtherConnectorSkills(
   }
 }
 
-/** A manual same-version update can repair a moved marketplace without running package reconciliation. */
-export async function reportCurrentConnectorState(version: string, rt: {
-  env: NodeJS.ProcessEnv; out: (line: string) => void; err: (line: string) => void;
-}): Promise<void> {
-  const current = "No newer CLI version; installed package closure is current.";
-  const home = homeCotalDir();
-  if (rt.env.COTAL_AUTO_UPDATE !== "1" && existsSync(join(home, "codex-plugin")) && resolveOnPath("codex")) {
-    try {
-      if (extensionNames("connector-setup").includes("codex")) {
-        const provider = await materializeExtension<ConnectorSetupProvider>({ kind: "connector-setup", name: "codex" });
-        const missing = provider.status?.({ version, skillsRemedy: "run `cotal update`" }).some((row) =>
-          row.state === "error" && /^- `cotal-mesh` at .+: marketplace root does not contain a supported manifest$/m.test(row.text));
-        if (missing && provider.refresh) {
-          const detail = await provider.refresh.run({ cotal: selfArgv() });
-          rt.out(current);
-          rt.out(`${provider.refresh.title}: ${detail}`);
-          return;
-        }
-      }
-    } catch (error) {
-      rt.out(current);
-      rt.err(`Codex integration repair could not finish: ${error instanceof Error ? error.message : String(error)}`);
-      return;
-    }
-  }
-  rt.out(`${current} No connector reconciliation was run.`);
-}
-
 /** Explicit update reports completed refreshes and throws after the pass. Migration stops at the first failure. */
 export async function refreshConnectorInstalls(report?: (line: string) => void, selfUpdate = false): Promise<string[]> {
   const lines: string[] = [];

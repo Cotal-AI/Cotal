@@ -58,7 +58,8 @@ import { cliVersion, installedCliVersion } from "../lib/version.js";
 import { runSeed, compareSemver, seedInstallationCurrent, assertReadableSeedState, readSeedRepairRefusal } from "../seed/reconcile.js";
 import { operatorInstallDiffers, operatorUpdateSpec } from "../seed/verify.js";
 import { cliPackageRoot, entryScript, seedWriterKind } from "../seed/paths.js";
-import { refreshClientInstalls, refreshConnectorInstalls, reportCurrentConnectorState } from "./setup.js";
+import { refreshClientInstalls, refreshConnectorInstalls } from "./setup.js";
+import { reportCurrentConnectorState } from "./setup-current-connectors.js";
 import { c } from "../ui.js";
 import { refreshOwnedCompletions } from "../lib/completion-install.js";
 import { onFlag } from "../lib/control.js";
@@ -113,7 +114,6 @@ export const updateFlags: readonly FlagSpec[] = [
   ...targetFlags,
   onFlag,
 ];
-
 
 export interface ExecutionReplacement {
   readonly entry: string;
