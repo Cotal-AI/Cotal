@@ -33,7 +33,7 @@ interface OpenCode2PromptEvent {
 }
 
 interface OpenCode2ModelRequestEvent {
-  model: { id: string; providerID: string };
+  model: { id: string; providerID: string; variant?: string };
   kind: "primary" | "title";
   agent: string;
 }

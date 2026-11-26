@@ -171,13 +171,14 @@ async function loadCheckedSys(target: ScanTarget, verb: string, need: "observer"
  * census of this lane's account first (`kick-authority.ts`). The sweep and its verify re-scan stay
  * this lane's, on its own observer.
  */
-export async function executeEviction(server: string, target: ScanTarget, principal: string, authority?: KickAuthority): Promise<EvictionResult> {
-  return (await executeEvictions(server, target, [principal], "evictPrincipal", authority))[0]!;
+export async function executeEviction(server: string, target: ScanTarget, principal: string, authority?: KickAuthority, connections?: KickTarget[]): Promise<EvictionResult & { connections?: KickTarget[] }> {
+  const result = (await executeEvictions(server, target, [principal], "evictPrincipal", authority, connections))[0]!;
+  return { ...result, ...(connections !== undefined ? { connections: connections.map((target) => ({ ...target })) } : {}) };
 }
 
 /** {@link executeEviction} for a SET of principals in one shared sweep (`evictPrincipals`): the
  *  same per-principal validation, one observer connection and one scan → KICK → verify for all. */
-export async function executeEvictions(server: string, target: ScanTarget, principals: readonly string[], verb = "evictPrincipals", authority?: KickAuthority): Promise<EvictionResult[]> {
+export async function executeEvictions(server: string, target: ScanTarget, principals: readonly string[], verb = "evictPrincipals", authority?: KickAuthority, connections?: KickTarget[]): Promise<EvictionResult[]> {
   // Fail-closed principal validation — the KICK targets come from the observer's own CONNZ scan,
   // but the FILTER must be a REAL principal: syntax alone is not enough, because the eviction sweep's
   // CONNZ attribution only ever surfaces owners that pass isPrincipalOwnerToken with allowPlatform
@@ -201,6 +202,7 @@ export async function executeEvictions(server: string, target: ScanTarget, princ
     observerCreds: sys.observer,
     accountId,
     principals,
+    ...(connections !== undefined ? { options: { connections } } : {}),
     ...(authority !== undefined
       ? { kick: (t: KickTarget) => authority.kick({ accountId, observerCreds: sys.observer, target: t }) }
       : { openEvictor: async () => (await loadCheckedSys(target, verb, "both")).evictor as string }),

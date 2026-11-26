@@ -46,6 +46,7 @@ export {
   type EpLedgerAuthority, type EpServeHandle, type EpPrincipalServeContext, type EpPrincipalCommandDef,
   type DescribeView, type DescribeAuthorization, type DescribeAnswer,
 } from "./endpoint-serve.js";
+export { hasStoredOrigin } from "./endpoint-provenance.js";
 export * from "./endpoint-describe-observation.js";
 export * from "./endpoint-verbs.js";
 export * from "./endpoint-invoke.js";

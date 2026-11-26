@@ -222,7 +222,7 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
   },
   team: { flags: ["allow-stale:string", "dry-run:boolean", "foreground:boolean", "graph:boolean", "json:boolean:j", "plain:boolean", "runtime:string", "space:string:s", "yes:boolean:y"], positionals: true },
   // One message to one explicit destination: -t/-c/-r, a body positionally or from -f/--stdin,
-  // repeatable `--mention` and `--reply-to` with `--to`.
+  // repeatable `--mention`, and `--reply-to` with `--to` or `--channel`.
   send: {
     flags: [
       ...TARGET, "channel:string:c", "file:string:f", "json:boolean:j", "mention:string", "plain:boolean",
@@ -260,7 +260,7 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
   // `--cwd` save a person's own program in one line (2026-10-26).
   service: {
     flags: [
-      "cwd:string:C", "dry-run:boolean", "exec:string", "file:string:f", "follow:boolean", "foreground:boolean", "instance:string",
+      "cwd:string:C", "dry-run:boolean", "exec:string", "file:string:f", "follow:boolean", "foreground:boolean", "idle-exit:string", "instance:string",
       "json:boolean:j", "new-instance:boolean", "no-open:boolean", "plain:boolean", "preset:string", "space:string:s",
       "tail:string", "with-agents:boolean", "yes:boolean:y",
     ],
@@ -452,7 +452,7 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
   // `--roster`: the manager preset's roster file, whose agents start at each launch.
   "__service-manager": {
     flags: [
-      "console-host:string", "console-port:string", "launch:string", "launch-request:string", "launch-sha256:string",
+      "console-host:string", "console-port:string", "idle-exit:string", "launch:string", "launch-request:string", "launch-sha256:string",
       "max-sessions:string", "name:string", "resume-attempt:string", "resume-commit-file:string", "resume-commit-sha256:string",
       "root:string", "roster:string", "runtime:string", "seat-cap:string", "server:string", "service-instance:string", "space:string",
       "state-directory:string", "ws-port:string",

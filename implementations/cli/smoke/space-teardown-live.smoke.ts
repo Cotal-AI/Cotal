@@ -113,15 +113,16 @@ type Envelope = {
   result?: Record<string, unknown> & { applyVerdict?: { offered: boolean; code?: string; remedy?: string | null } };
 };
 type Run = { status: number | null; stdout: string; stderr: string; env?: Envelope };
-const cli = (cwd: string, ...args: string[]): Run => {
+const cliWithEnv = (cwd: string, args: string[], childEnv: NodeJS.ProcessEnv): Run => {
   // Room for a history that holds messages near the broker's payload limit.
-  const options = { cwd, env, encoding: "utf8" as const, timeout: 180_000, maxBuffer: 64 * 1024 * 1024 };
+  const options = { cwd, env: childEnv, encoding: "utf8" as const, timeout: 180_000, maxBuffer: 64 * 1024 * 1024 };
   assertSmokeSandboxDown(anchors.get(cwd), args, options);
   const run = spawnSync(process.execPath, [CLI, ...args], options);
   let parsed: Envelope | undefined;
   try { parsed = JSON.parse(run.stdout) as Envelope; } catch { parsed = undefined; }
   return { status: run.status, stdout: run.stdout, stderr: run.stderr, env: parsed };
 };
+const cli = (cwd: string, ...args: string[]) => cliWithEnv(cwd, args, env);
 const shown = (run: Run) => ({ status: run.status, error: run.env?.error, out: run.stdout.slice(-1000), err: run.stderr.slice(-1500) });
 
 function checkStoppedDeliveryLog(root: string, space: string, instanceId: string | null | undefined): void {
@@ -247,6 +248,18 @@ try {
         deletePreview.env.error.remedy === `preview the impact of resetting its store with \`cotal reset store ${space} --dry-run\`. A stream inventory requires a running broker.`, shown(deletePreview));
 
     // 4. Reset after a normal down (B4-02).
+    const forcedColor: NodeJS.ProcessEnv = { ...env, FORCE_COLOR: "1" };
+    delete forcedColor.NO_COLOR;
+    const storeConfirmation = cliWithEnv(root, ["reset", "store", space, "--plain"], forcedColor);
+    const [previewWords, confirmWords] = Array.from(storeConfirmation.stderr.matchAll(/`(?:pnpm )?cotal (reset store [^`]+)`/g), ([, words]) => words);
+    check("the noninteractive plain store reset refusal keeps --plain on both commands",
+      storeConfirmation.status === 1 && storeConfirmation.stdout === "" && storeConfirmation.stderr.includes("USAGE_INVALID")
+      && previewWords === `reset store ${space} --dry-run --plain` && confirmWords === `reset store ${space} --yes --plain`, shown(storeConfirmation));
+    const suggestedPreview = previewWords === `reset store ${space} --dry-run` || previewWords === `reset store ${space} --dry-run --plain`
+      ? cliWithEnv(root, previewWords.split(" "), forcedColor) : undefined;
+    check("the printed store preview succeeds without ANSI even with FORCE_COLOR",
+      suggestedPreview?.status === 0 && suggestedPreview.stdout.includes(`reset store ${space} is offered`)
+      && !`${suggestedPreview.stdout}${suggestedPreview.stderr}`.includes("\x1b"), suggestedPreview && shown(suggestedPreview));
     const storeStopped = cli(root, "reset", "store", space, "--dry-run", "--json");
     // This stack runs with --no-manager, so its down recorded why it could not read the runs.
     const contents = storeStopped.env?.result?.storeContents as { removed?: string[]; listed?: boolean; runsAtLastDown?: { read?: boolean; reason?: string } | null } | undefined;

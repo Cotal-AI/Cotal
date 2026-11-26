@@ -36,14 +36,12 @@ import {
   homeCotalDir,
   installationWriter,
   cachedPreferences,
-  loadLaunchPersonaFile,
   resolvePreference,
   isWorkspaceTargetError,
   loadSoleSpaceAuth,
   localProcessPath,
   localProcessVisible,
   PREFERENCE_KEYS,
-  preflightTarget,
   preparedNeverStarted,
   presentationOf,
   stackJournalPath,
@@ -74,7 +72,7 @@ import { selectResetTarget } from "./reset-store-apply.js";
 import { displayCmd } from "../lib/self-exec.js";
 import { shellWord } from "../lib/endpoint-errors.js";
 import { readPersonas } from "../lib/personas.js";
-import { directPersonaPath } from "../lib/spawn-defaults.js";
+import { defaultPersonaPin, directPersonaPath } from "../lib/spawn-defaults.js";
 import { agentStatus } from "./agents.js";
 import { invalidEnvironmentValues } from "./config.js";
 import { canPrompt } from "./meshes-wizard.js";
@@ -126,7 +124,7 @@ import {
   managerServiceHealth,
   printComponentHealth,
 } from "./status-health.js";
-import { registryFallbackChecks, personaCatalog, readMeshes, readStackStoreWarnings, readSelected, reportHeldRestartProblem, selectedStackStarting } from "./status-meshes.js";
+import { registryFallbackChecks, personaCatalog, readMeshes, readStackStoreWarnings, readSelected, readStatusPreflight, reportHeldRestartProblem, selectedStackStarting } from "./status-meshes.js";
 
 export { managerNoService, deliveryLeaseAbsent } from "./status-health.js";
 
@@ -234,7 +232,8 @@ export async function status(args: ParsedArgs): Promise<void> {
   // THE RESPONDER AXIS (#1576), read ONCE and threaded into the rows that would otherwise claim
   // health they never checked. It is read before the folder section because that section renders
   // the delivery process row, and a live pid means nothing without it.
-  const preflight = selected.ok && selected.target.mode !== "user" ? await preflightTarget(selected.target) : undefined;
+  const preflightReport = await readStatusPreflight(selected, gaps, hints);
+  const { preflight } = preflightReport;
   const responder = await readResponderAxis(selected, preflight, gaps);
   const { folder, stackStarting } = blocked ? { folder: unreadFolder(root, blocked), stackStarting: false } : await readFolder(root, selected, values, responder.state, gaps, hints);
   if (selected.ok) {
@@ -255,7 +254,7 @@ export async function status(args: ParsedArgs): Promise<void> {
     : readMaintenance(root, gaps);
   const recovery = backupRecovery(maintenance, sourceMissing);
   const selectedHints: string[] = [], selectedStarting = selectedStackStarting(selected, folder, stackStarting);
-  const target = await readSelected(selected, responder, folder, gaps, selectedHints, preflight, Boolean(values.all), selectedStarting);
+  const target = await readSelected(selected, responder, folder, gaps, selectedHints, preflightReport, Boolean(values.all), selectedStarting);
   const stoppedForeignListener = preflight?.ok === false && preflight.kind === "non-nats-listener" && preflight.pid !== undefined;
   // Address, journal, channel seed, and store problems can block the conditional store reset.
   if (!stoppedForeignListener && (target.resolved || target.code !== "SCHEMA_INVALID") && folder.storedState && folder.processSpace !== null && maintenance === null && !(target.channelSeedBlocksRestart && target.root === root) && !rootStoreProblem(root)) {
@@ -440,16 +439,10 @@ async function readMachine(selected: Selected, gaps: Gaps, hints: string[]): Pro
       let path: string | undefined;
       try {
         path = directPersonaPath(selected.target.root, persona.value!);
-        const definition = loadLaunchPersonaFile(path);
-        defaults.harness = resolvePreference("harness", { ...context, pin: definition.agent }).value;
+        defaults.harness = resolvePreference("harness", { ...context, pin: defaultPersonaPin(path, persona.winner?.source === "default") }).value;
       } catch (error) {
-        const { code, path: errorPath } = error as NodeJS.ErrnoException;
-        // A bare spawn writes the shipped, unpinned default only when the product default is absent.
-        // Every other failed read leaves the effective harness unknown, never the saved preference.
-        if (code !== "ENOENT" || persona.winner?.source !== "default") {
-          defaults.harness = null;
-          gaps.add("DEFAULT_PERSONA_UNREADABLE", "the default launch persona could not be read and validated; its effective harness is unknown", { path: path ?? errorPath });
-        }
+        defaults.harness = null;
+        gaps.add("DEFAULT_PERSONA_UNREADABLE", "the default launch persona could not be read and validated; its effective harness is unknown", { path: path ?? (error as NodeJS.ErrnoException).path });
       }
     }
   } catch (e) {

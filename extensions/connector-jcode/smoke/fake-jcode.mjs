@@ -151,6 +151,8 @@ let busyOwner;
 const queuedTurns = [];
 const initialSessionModel = process.env.FAKE_JCODE_DEFAULT_MODEL ?? "deepseek-v4-pro";
 let sessionModel = initialSessionModel;
+// The reasoning effort `set_reasoning_effort` last took, which a model switch leaves in place here.
+let sessionEffort;
 const sessionStatePath = process.env.FAKE_JCODE_SESSION_STATE;
 const journalPath = process.env.FAKE_JCODE_JOURNAL;
 const sessionJournalPaths = (sessionId) => [...new Set([
@@ -239,8 +241,9 @@ function runTurn(frame, socket) {
   // A turn that is actually EXECUTED, as distinct from a frame that merely arrived. Every frame is
   // logged on arrival, so the request log alone cannot tell "the session ran this" from "the session
   // was handed this and dropped it" — which is exactly the distinction between a late delivery and a
-  // lost one. Carries the content so a fixture can ask whether ITS message ever ran.
-  log({ ev: "turn_run", session_id: frame.session_id, content: String(frame.content ?? "") });
+  // lost one. Carries the content so a fixture can ask whether ITS message ever ran, and the model
+  // and effort the session ran it on.
+  log({ ev: "turn_run", session_id: frame.session_id, content: String(frame.content ?? ""), model: sessionModel, effort: sessionEffort ?? null });
   appendTurnRecord?.(frame);
   // Where the deferred persistence failure lands. Real jcode logs SESSION_PERSISTENCE at this
   // point, fails to persist the session close state, and the session dies under the turn. Ordered
@@ -526,6 +529,7 @@ const server = createServer((socket) => {
               message: process.env.FAKE_JCODE_EFFORT_ERROR ?? `Reasoning effort '${frame.effort}' is not supported (available: low, medium, high)`,
             });
           } else {
+            sessionEffort = frame.effort;
             reply({ ev: "ok" });
           }
           break;
@@ -608,6 +612,7 @@ const server = createServer((socket) => {
             session_id: frame.session_id,
             provider,
             model,
+            ...(sessionEffort ? { reasoning_effort: sessionEffort } : {}),
             routes,
           });
           break;

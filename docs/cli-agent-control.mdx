@@ -36,6 +36,9 @@ cotal attach [<name>] [--on <instance>] [--no-reconnect] [--space <s>]
 | `--no-reconnect` (`attach`) | off | End the attach when its session ends, instead of re-establishing it. For scripts that want one run and one exit code |
 
 
+When a single manager returns an empty list, Next checks the local default harness before offering
+`cotal spawn`. If a required executable is missing, Next names it and links to its installation guide.
+
 ### Control credentials
 
 When `ps` refuses an invalid `--on`, its suggested lookup lists managers on the same target
@@ -102,6 +105,10 @@ On a stopped local stack, `ps` reports an unreadable or invalid stack journal an
 when no `--server` is passed or when it matches the saved broker address. A different address does
 not use the local journal to diagnose the refusal.
 
+If a regular file occupies a prepared project's `.cotal` path, `ps --space <name>` refuses with
+`TARGET_UNAVAILABLE`, exit 2. It names the file and tells you to move it aside and restore the
+original `.cotal` directory. It leaves both entries untouched.
+
 A raw `--creds` file is refused as `UNSUPPORTED` before dialing by `status <agent>`, `ps`, `stop`, `attach`, `input` and `models`, because
 that route mints no endpoint-caller triple. Run the command without `--creds` from the project folder, or pass `--space` against its registry
 entry, so the CLI mints the one-shot caller itself.
@@ -116,9 +123,11 @@ owner-filtered substitute for the refused read.
 
 `ps` shows the instance id `--on` takes for each manager that answered, with or without agents. One
 manager is listed under `Manager` as its `instance`, and with several each gets a `manager <id>`
-header. With no agents it suggests `cotal spawn` for the space just listed, keeping any explicit
-broker address it can safely print. If `status` reports that no agent application is set up here,
-it suggests `cotal setup` instead.
+header. A populated single-manager report suggests `cotal attach <name>` and `cotal stop <name>`
+for the mesh just listed. The hints keep explicit broker addresses that are safe to print and
+include the manager instance when the read was pinned to it. With no agents, `ps` suggests
+`cotal spawn` for the mesh just listed, keeping any explicit broker address it can safely print.
+If `status` reports that no agent application is set up here, it suggests `cotal setup` instead.
 
 When `ps` asks every manager, it then asks each manager that answered for the host name in its own
 status reply. The host shows as `· reports host <host>` after the id, or as a `reported host` row
@@ -491,7 +500,7 @@ cotal input --name <n> --text <text> [--no-enter] [--on <instance>] [--space <s>
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `--space <s>` / `--server <url>` / `--creds <path>` | resolved mesh | Which manager to reach |
+| `--space <s>` / `--server <url>` | resolved mesh | Which manager to reach |
 | `--name <n>` | | Managed agent to type into (required) |
 | `--text <text>` | | The text to type, taken verbatim (required) |
 | `--no-enter` | off | Type the text and stop there, without pressing Enter |
@@ -524,8 +533,8 @@ cotal input --name reviewer --text=--verbose          # dash-leading text: use -
 
 Enter is pressed by default, since a command typed but never submitted has not been delivered.
 `--no-enter` types the text and leaves it sitting at the prompt, which is how you stage a line and
-send it later. If a manager selection refusal prints a retry command, it keeps `--no-enter` when
-you supplied it.
+send it later. If a manager selection refusal prints a retry command, it keeps `--no-enter` and the
+receipt format you selected with `--json` or `--plain`.
 
 At a Claude selection menu, including `AskUserQuestion`, text input is refused before any bytes
 are written. Pasting a number or an answer there can otherwise confirm the highlighted option

@@ -240,7 +240,7 @@ cotal spawn --harness claude --model opus --variant high
 Claude accepts `low`, `medium`, `high`, `xhigh` and `max`, and the connector refuses any other value before launch.
 `cotal models --harness claude` lists the levels each model supports as its variants, and marks the level Claude runs when a launch names none.
 Claude does not run a model at a level that model lacks, so pick one from that list.
-A launch option `--opt effort=<level>` wins over `--variant`, and the seat's roster entry then shows no variant.
+A launch option `--opt effort=<level>` wins over `--variant`. The seat's roster entry, `cotal ps`, and `cotal status <name>` show no variant for that launch.
 
 ### Choose a mode
 

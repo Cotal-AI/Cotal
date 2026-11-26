@@ -1,5 +1,48 @@
 # @cotal-ai/cli
 
+## 0.181.0
+
+### Minor Changes
+
+- b05f907: In ACP clients such as T3 Code, choosing another model or reasoning level on a running thread now switches its agent from the next turn, with no `/despawn`.
+  
+  - The `agent` endpoint advances to revision 6 with the owner-only `set-model`, and presence `agentEndpoint` gains `setModel`. Reconnect clients after the auth callout is updated, so their sign-in carries the new command.
+  - Codex switches with `thread/settings/update`, OpenCode with the model each prompt carries (1.x) or its session model route (2.x), pi 0.84.3 or later with its session setters, Jcode with its model and effort calls, and Claude Code through its command mod for later turns of the session alone. Each checks the model against its own list first. Hermes does not switch yet, and the thread says to use `/despawn`.
+  - A Manager keeps the switch and restarts or resumes the agent on it.
+  - An agent whose role `modelPolicy` governs refuses every switch, since the policy is checked only at launch.
+
+### Patch Changes
+
+- 1db7233: Preserve the requested broker address in the retry instructions for a foreground manifest start.
+- df1666c: When a broker start preview needs more options, the retry tells you to remove `--new-instance` and keep the preview and output flags.
+- e768fb9: `cotal channel set` points to `--desc` when you type `--description` and no longer suggests passing unknown options as extra channel names.
+- 7289937: Show the missing target of a broken persona link in `cotal personas list` and explain how to fix it.
+- fde800c: `cotal doctor auth` explains how to restore a credential export whose recorded path is a symbolic link.
+- 9935b2a: `cotal down` no longer tells you to run it from inside a regular file when the space's recorded project root is no longer a folder; it names that path and asks you to move it aside and restore the original project folder first.
+- d0b9136: `cotal history clear --dry-run` now previews a space that was started directly with `cotal up --foreground` and then stopped, using the broker address its project retains, instead of refusing until the space is restarted. A confirmed clear of that stopped space is still refused.
+- 222e6fb: `history limit` tells you to drop an unknown option instead of moving it after `--`.
+- 36175cd: Keep `--json` or `--plain` in the retry command printed when terminal input needs a different manager pin.
+- b5d204f: Keep the requested JSON refusal when a leading output flag has an attached value, and tell callers how to correct the flag.
+- 22f586b: Keep extension command collision warnings uncolored with `--plain`, even when `FORCE_COLOR` is set.
+- b91919d: Keep `--plain` in both the preview and confirmation commands suggested by `cotal reset store`.
+- df886cf: When a file blocks a prepared space's `.cotal` directory, `status` and `ps` name the file and explain how to restore the directory.
+- 8ff0e85: Recover a stopped local broker with `cotal up` without restarting its read-only web dashboard or losing the current browser session.
+- b1590ac: Keep read-only history follows out of the channel membership list without changing which posts they receive.
+- 958a65d: Flag persona filenames with backslashes as unusable catalog selectors and show how to launch them by file path.
+- e88785e: When foreground startup finds a running legacy broker, return a lifecycle refusal. Identify where to stop the broker and keep the original foreground request for the retry.
+- 49130cf: The attach and stop commands suggested by `cotal ps` now target the mesh it listed instead of your default mesh.
+- 8060402: The scripted self-hosted setup example now creates the required project folder before running setup.
+- 825f3a4: `cotal send -c <channel> --reply-to <message-id>` stores the channel post with `replyTo`, as a direct send already does. A role send still refuses `--reply-to`.
+- d76ec5e: Keep the partial status report and show how to restore access when the selected project's broker PID file cannot be read because of permissions.
+- b869681: Keep the intended channel and replay setting in the suggested retry when `--replay off` comes before the channel name.
+- Updated dependencies [b05f907]
+- Updated dependencies [49d14ac]
+- Updated dependencies [e22d95e]
+- Updated dependencies [b1590ac]
+- Updated dependencies [d76ec5e]
+  - @cotal-ai/core@0.181.0
+  - @cotal-ai/workspace@0.181.0
+
 ## 0.180.0
 
 ### Minor Changes

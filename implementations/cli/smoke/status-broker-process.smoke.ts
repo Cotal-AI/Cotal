@@ -24,13 +24,13 @@ const stubs = join(scratch, "service-stubs");
 for (const dir of [root, home, cotalHome, config, runtime, stubs]) mkdirSync(dir, { mode: 0o700 });
 const serviceCalls = join(scratch, "native-service-calls.log");
 writeFileSync(serviceCalls, "");
-for (const command of ["systemctl", "launchctl", "schtasks"]) {
+for (const command of ["systemctl", "systemd-run", "launchctl", "schtasks"]) {
   const file = join(stubs, command);
-  writeFileSync(file, `#!/bin/sh\nprintf '%s\\n' '${command}' >> '${serviceCalls}'\nexit 99\n`);
+  writeFileSync(file, `#!/bin/sh\nprintf '%s\\n' "${command} $*" >> '${serviceCalls}'\nexit 99\n`);
   chmodSync(file, 0o700);
 }
 const env = {
-  ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_"))),
+  ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_") && key !== "DBUS_SESSION_BUS_ADDRESS" && key !== "INVOCATION_ID")),
   HOME: home, USERPROFILE: home, COTAL_HOME: cotalHome, XDG_CONFIG_HOME: config, XDG_RUNTIME_DIR: runtime,
   PATH: `${stubs}${delimiter}${process.env.PATH}`, COTAL_SKIP_CONNECTOR_SEED: "1", COTAL_NO_PROMPT: "1",
   COTAL_TELEMETRY: "off", NO_COLOR: "1",
@@ -76,6 +76,8 @@ try {
   const started = run("up", "--no-manager", "--server", server, "--json");
   check("isolated controller stack starts without a manager", started.status === 0, started.stdout);
   if (started.status !== 0) throw new Error("up failed");
+  const startupCalls = readFileSync(serviceCalls, "utf8");
+  check("up in a private runtime directory without a user bus does not call a native service manager", startupCalls === "", startupCalls);
   const running = status();
   const broker = running.result.services?.instances?.find((row) => row.definition === "stack-broker");
   brokerPid = broker?.pid ?? undefined;
@@ -222,7 +224,8 @@ try {
   const stopped = run("down", "--yes", "--json");
   check("down stops the owned stack", stopped.status === 0 && (brokerPid === undefined || !alive(brokerPid)), stopped.stdout);
   if (stopped.status !== 0 || brokerPid !== undefined && alive(brokerPid)) throw new Error("owned stack cleanup failed");
-  check("no native service manager was called", readFileSync(serviceCalls, "utf8") === "");
+  const calls = readFileSync(serviceCalls, "utf8");
+  check("no native service manager was called", calls === "", calls);
 }
 {
   const stopped = status();
@@ -479,6 +482,30 @@ if (process.platform === "linux") {
     check("the controller stack is cleaned up", stopped.status === 0, stopped.stdout + stopped.stderr);
   }
 }
+function checkUnreadableSelectedProject(project: string, space: string): void {
+  const chosen = runFrom(scratch, "use", space);
+  if (chosen.status !== 0) throw new Error(chosen.stdout + chosen.stderr);
+  const readable = runFrom(scratch, "status", "--json");
+  check("outside status completes for the readable registered project", readable.status === 0, readable.stdout + readable.stderr);
+  chmodSync(project, 0o000);
+  try {
+    const json = runFrom(scratch, "status", "--json");
+    const report = JSON.parse(json.stdout) as { outcome: string; completeness: string; result?: StatusResult; warnings: { code: string; message: string }[] };
+    const selected = report.result?.selected;
+    check("outside status keeps the machine and selected registration in its partial report",
+      json.status === 4 && report.outcome === "partial" && report.completeness === "partial" && Boolean(report.result?.machine.version) &&
+      selected?.resolved === true && selected.space === space && selected.connection === "unreachable" &&
+      report.result?.meshes.items.some((row) => row.space === space && row.root === project && row.current) === true, json.stdout);
+    check("status names the denied PID read and the directory permission remedy",
+      report.warnings.some((warning) => warning.code === "PIDFILE_UNREADABLE" && warning.message.includes(join(project, ".cotal", "nats.pid"))) &&
+      report.result?.hints.some((hint) => hint.includes(`chmod u+rx ${shellPath(project)}`)) === true &&
+      !report.result.hints.some((hint) => hint.includes("not running")), json.stdout);
+  } finally {
+    chmodSync(project, 0o700);
+    const cleared = runFrom(scratch, "use", "--clear");
+    if (cleared.status !== 0) throw new Error(cleared.stdout + cleared.stderr);
+  }
+}
 if (process.platform === "linux") {
   const project = join(scratch, "foreign-listener");
   mkdirSync(project);
@@ -504,6 +531,7 @@ if (process.platform === "linux") {
     } finally { process.kill(pid, "SIGCONT"); }
     process.kill(pid, "SIGKILL");
     await waitForOwnedChild(() => brokerState.closed, 60_000, "foreground up observed its broker exit");
+    if (process.getuid?.() !== 0) checkUnreadableSelectedProject(project, "foreign-listener");
     const listener = spawn(process.execPath, ["-e", `require('node:net').createServer(s => { s.on('error', () => {}); s.end('HTTP/1.1 400 Bad Request\\r\\n\\r\\n'); }).listen(${port}, '127.0.0.1', () => console.log('listening'))`], { stdio: ["ignore", "pipe", "inherit"] });
     const listenerState = observeOwnedChild(listener);
     let listening = false;

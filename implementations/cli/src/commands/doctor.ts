@@ -75,7 +75,7 @@ import {
 import { displayCmd, displayRemedy } from "../lib/self-exec.js";
 import { shellWord } from "../lib/endpoint-errors.js";
 import { channelSeedRestartBlock } from "../lib/channel-seed.js";
-import { preparedRootWriteProblem } from "../lib/paths.js";
+import { controlFileProblem, preparedRootWriteProblem } from "../lib/paths.js";
 import { rootStoreProblem } from "../lib/store-dir.js";
 import { RESPONDER_UNBOUND_CONSEQUENCE } from "../lib/delivery-responder.js";
 import { noExpiryRecordPath, noExpiryRequestedAt } from "../lib/no-expiry-record.js";
@@ -217,12 +217,7 @@ function trustRootStep(root: string, space: string | undefined, fix: boolean, mi
   }
   if (prepared !== undefined) {
     const here = canonicalRoot(prepared) === canonicalRoot(root);
-    const control = join(prepared, ".cotal");
-    let controlIsFile = false;
-    try { controlIsFile = lstatSync(control, { throwIfNoEntry: false })?.isFile() === true; } catch { /* no confirmed obstruction */ }
-    const block = controlIsFile
-      ? { message: `${codeSpan(control)} is a regular file, not a directory`, remedy: "move the file aside and restore the original .cotal directory" }
-      : preparedRootWriteProblem(prepared) ?? rootStoreProblem(prepared) ?? channelSeedRestartBlock(prepared);
+    const block = controlFileProblem(prepared) ?? preparedRootWriteProblem(prepared) ?? rootStoreProblem(prepared) ?? channelSeedRestartBlock(prepared);
     return `"${named}" is prepared but not started; ${block ? `${block.message}. First ${block.remedy}, then ` : ""}start it with ${codeSpan(upCommand(prepared, named!, ...(here ? [] : ["--root", shellWord(prepared)])))}, then run \`${command}\` ${here ? "again" : "in that folder"}`;
   }
   if (registered && !existsSync(registered)) return `the folder space ${named} is recorded at, ${registered}, no longer exists; if it was moved or renamed, move it back and run \`${command}\` there; otherwise forget the space with \`cotal space forget ${named}\``;
@@ -435,7 +430,11 @@ function exportedCredentials(root: string, auth: SpaceAuth): ExportedRow[] {
     let bytes: Buffer | undefined;
     try { bytes = readLocalRecordSource(entry.path, 1024 * 1024, true); }
     catch {
-      try { const stat = lstatSync(entry.path); row.repair = stat.isFile() ? credentialFileExposure(entry.path, stat)?.remedy ?? null : null; } catch { /* reported unreadable */ }
+      try {
+        const stat = lstatSync(entry.path);
+        if (stat.isSymbolicLink()) row.repair = "The recorded export is a symbolic link. Restore the original private regular file at the recorded path in place of the link.";
+        else if (stat.isFile()) row.repair = credentialFileExposure(entry.path, stat)?.remedy ?? null;
+      } catch { /* reported unreadable */ }
       rows.push(row);
       continue;
     }

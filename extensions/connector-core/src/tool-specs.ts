@@ -627,7 +627,7 @@ export function cotalToolSpecs(
       name: "cotal_dm",
       title: "Cotal: direct-message a peer",
       description:
-        "Private message to one agent. Other agents can't read it. It wakes that agent even in dnd, and an offline agent gets it when it comes back. " +
+        "Private message to one agent. Other agents can't read it. It wakes that agent even in dnd. An offline recipient can receive it only if the same lifecycle reconnects and its inbox still exists. " +
         "Use it for a question only that agent can answer, or a private detail. To tell an agent about shared work, such as a status or a result, or anything others could use now or later, post it on the task's channel with cotal_send and mention the agent there.",
       schema: {
         to: z.string().describe("The peer's name (or instance id)."),
@@ -647,10 +647,8 @@ export function cotalToolSpecs(
           const unrostered = recipientStatusAtSend === "unrostered"
             ? ` ${who} has no roster row: it messaged you from a connection that never joined the roster or has left it, so the space's DM history keeps this DM under its id and it may never reach an inbox.`
             : "";
-          // The DM durable belongs to the recipient's lifecycle (SPEC §8): the same session gets it on
-          // reconnect, and a new spawn under that name starts after it.
           const offline = recipientStatusAtSend === "offline"
-            ? ` ${who} is offline: the DM is delivered when ${who} reconnects, and a new agent spawned as ${who} does not receive it.`
+            ? ` ${who} is offline. The message is stored, but delivery is not confirmed. Only the same lifecycle can receive it, and only if its inbox still exists. A new session with the same name does not receive it.`
             : "";
           return ok(`Sent to ${who}.${unrostered}${offline} Other agents can't read it. If others could use it, post it on the task's channel.${dup}`);
         } catch (e) {

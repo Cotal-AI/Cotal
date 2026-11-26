@@ -30,6 +30,7 @@ Press Ctrl-C to stop the stream. The broker keeps running and the console report
 
 In the interactive console on an open mesh, omit `--space` to open the admin overview.
 It lists spaces found through the server's `CHAT_*` streams and presence buckets, with agent, channel, and message counts.
+The agent count excludes endpoints such as the manager.
 Select a space to open its console. Press `b` to return to the overview.
 Press `q` from the overview to return to the shell, even if you left a space while it was still connecting.
 Use `--space X` to skip the picker. An authenticated connection opens its selected space directly.
@@ -94,7 +95,7 @@ Available controls include:
 | `spawn <persona> [name]` | Launch an agent and wait for it to join, as `cotal spawn --detach` does. |
 | `status <agent>` | Inspect that agent's manager status. |
 | `ps` | Inspect managed agents. |
-| `purge` | Purge the space after you type its name to confirm. |
+| `purge` | Purge the space's chat history after you type its name to confirm. The console that ran the purge clears those chat rows from its feed. |
 | `delchan <channel>` | Delete one channel after you type its name to confirm. Wildcards are refused. |
 
 Channel deletion uses core's `clearChannel`, which purges matching history and removes the registry

@@ -508,7 +508,7 @@ async function unservedClassLaunch(flags: ConnectFlags | undefined, t: ControlTa
 function unansweredClassLaunch(t: ControlTarget, at: { target: object; native: object }): CommandFailure {
   const refused = (message: string, remedy: string) => new CommandFailure("refused", "TARGET_UNAVAILABLE", `${message}, so the launch was not sent and nothing was launched`, { ...at, remedy });
   if (t.root !== undefined && stackManagerStarting(t.root, t.space)) return refused("the stack's manager is starting", "run the spawn again once `cotal up` reports the manager started");
-  if (t.root !== undefined && stackManagerAbsent(t.root, t.space)) return refused("no manager is running for this space", startStackManagerRemedy(t.space, t.server));
+  if (t.root !== undefined && stackManagerAbsent(t.root, t.space, { unanswered: true })) return refused("no manager is running for this space", startStackManagerRemedy(t.space, t.server));
   const pid = t.root === undefined ? undefined : runningStackManagerPid(t.root, t.space);
   if (pid !== undefined) return refused(`this space's stack manager (pid ${pid}) is running but did not answer`, `if it stays unresponsive, end that process with kill -KILL ${pid}; then bare \`cotal up\` starts the manager again`);
   return refused("no manager answered", "cotal ps shows which managers answer; run the spawn again once one does");
