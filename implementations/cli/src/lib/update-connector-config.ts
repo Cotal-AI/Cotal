@@ -2,7 +2,7 @@ import { existsSync, realpathSync, statSync } from "node:fs";
 import { dirname } from "node:path";
 import { globalConfigDir } from "@cotal-ai/core";
 import { loadExtensionsManifest, prepareConnectorConfigForUpdate, protectedLocalDirectory, repairConnectorSelection, type UnreadableConnectorSelection } from "@cotal-ai/workspace";
-import { recoverExtensionPromotion } from "./extension-stage.js";
+import { reclaimAbandonedExtensionStages, recoverExtensionPromotion } from "./extension-stage.js";
 
 /** Check the closest existing ancestor outside the Cotal folder, whose modes update does not repair. */
 export function assertConfigAncestorProtected(): void {
@@ -23,6 +23,7 @@ export function prepareUpdateConnectorConfig(staged: boolean, onChange?: () => v
   if (staged) prepareConnectorConfigForUpdate(onChange, onModeChange);
   const recovered = recoverExtensionPromotion(staged, onChange);
   if (recovered && staged) prepareConnectorConfigForUpdate(onChange, onModeChange);
+  if (!recovered) reclaimAbandonedExtensionStages();
   return recovered;
 }
 
