@@ -664,18 +664,19 @@ export function App({
       />
     </>
   );
-
-  const renderView = () => railOverlay ? (
-    <NeedsYou
-      waiting={mesh.signals.waiting}
-      boxWidth={size.cols}
-      boxHeight={size.rows}
-      blocked={blocked}
-      onFocus={onFocus}
-      onOpenDetail={openAgent}
-    />
-  ) : mainView;
-
+  function renderView() {
+    if (railOverlay) return (
+        <NeedsYou
+          waiting={mesh.signals.waiting}
+          boxWidth={size.cols}
+          boxHeight={size.rows}
+          blocked={blocked}
+          onFocus={onFocus}
+          onOpenDetail={openAgent}
+        />
+      );
+    return mainView;
+  }
   return (
     <Box flexDirection="column" width={size.cols} height={size.rows}>
       {renderView()}
