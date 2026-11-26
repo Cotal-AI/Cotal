@@ -314,6 +314,9 @@ leaves the installation unchanged without failing `update --self`.
 On Linux and macOS, an installed self-update restores owner write access to its own connector
 directories before staging a release. If it cannot make those directories writable, it names the
 directory to fix and stops before staging.
+If `cotal update --self` cannot read the extensions manifest because of a permission error, it
+leaves the manifest untouched. Restore your account's read access to the manifest and its path,
+then retry.
 If you move your home or configuration directory while Cotal and its updates are stopped, an
 installed CLI at the same path can use the moved connector set. The former configuration folder
 must be absent, and the private connector set must still be at the same relative path under the
@@ -840,10 +843,17 @@ An unsupported source spelling returns `USAGE_INVALID` before installation.
 A package can declare its entry through a root `exports` entry such as
 `"exports": { ".": { "import": "./greet.mjs" } }` without also declaring `main`.
 The shorthand `"exports": { "import": "./greet.mjs" }` selects the same entry.
+For conditional root exports, Cotal checks `node`, `import` and `default` in the order they appear,
+including inside nested conditions. For example, `"node": { "import": "./greet.mjs" }` before
+`"default": "./fallback.mjs"` selects `greet.mjs` both at installation and when loading the extension.
 An npm `main` such as `"./greet"` can resolve to `greet.js` without naming the suffix.
 If the installed npm package is missing its entry, `add` reports the path relative to that package.
 For a local extension, check the package contents with `npm pack --dry-run ./example-extension`.
 Include the entry in `files` or generate it before running `cotal ext add ./example-extension` again.
+If npm cannot open a tarball named in a local extension's relative `file:` dependency, `add` names the dependency.
+Use `npm pack --dry-run ./example-extension` to check the source package contents.
+For local use, set the `file:` dependency to the absolute path of an existing archive and run `cotal ext add ./example-extension` again.
+For distribution, use a dependency npm can install from a registry.
 Give `remove` the package name as listed by `cotal ext list`, without a version.
 For a scoped package such as `@acme/_helper`, include the scope and the leading underscore.
 If the package is already absent, `remove` reports that nothing was removed and exits 0.
@@ -1228,13 +1238,14 @@ candidate that holds a control character, such as a persona file name with an es
 newline in it, is not offered. `persona` still lists that file with the characters escaped. A
 persona catalog folder that cannot be read fails the completion of a persona name, or of a channel
 or role its personas declare, so the shell offers none, and with `COTAL_COMPLETE_DEBUG=1` it prints
-the folder. A persona file that does not parse fails a channel or role completion the same way, and
+the folder. `persona show` offers only readable, valid persona files, not links.
+A persona file that does not parse fails a channel or role completion the same way, and
 that flag names the file, because the declared set would be incomplete. A record it skips, such as a
 prepared space record that does not parse, is named on stderr only under that flag too. The stubs
 discard stderr, so run the completion by hand to see it, as
 `COTAL_COMPLETE_DEBUG=1 cotal __complete persona show ''` does. The bash
-and zsh stubs complete file names where a value takes a path. The fish stub offers only cotal's own
-candidates.
+and zsh stubs complete file names where a value takes a path. In Bash, a candidate with spaces is
+inserted as one argument. The fish stub offers only cotal's own candidates.
 
 In bash and zsh, a file argument such as `team check <file>`, `up -f <file>`, `--channels <path>`,
 `--creds <path>`, `run start --file <program>` or `auth mint --out <private-file>` completes from the

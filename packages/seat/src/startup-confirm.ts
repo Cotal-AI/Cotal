@@ -158,6 +158,14 @@ export function unmatchedConfirmMessage(prompt: string, timeoutMs: number, block
     : `Cotal startup confirmation failed: notice ${JSON.stringify(notice)} did not appear within ${timeoutMs}ms of answering ${JSON.stringify(prompt)}.`;
 }
 
+function startupScreenContext(screen: string): string {
+  const lines = screen.split("\n").map((line) => line.replace(/[\p{Cc}\p{Cs}]/gu, "\uFFFD").trim()).filter(Boolean);
+  if (lines.length === 0) return " No text was visible on the startup screen.";
+  const chars = [...lines.slice(-6).join(" | ")];
+  const excerpt = chars.length > 640 ? `…${chars.slice(-640).join("")}` : chars.join("");
+  return ` Last visible lines: ${excerpt}`;
+}
+
 /** What a runtime does for a {@link StartupConfirmGate} whose prompt never appeared. */
 export interface StartupConfirmFailure {
   /** Show `message` to whoever reads the seat's output. */
@@ -203,9 +211,14 @@ export class StartupConfirmGate {
       failure.stop();
     };
     let deadline = Date.now() + CONFIRM_TIMEOUT_MS;
+    let lastScreen = "";
     const bound = (notice?: string): void => {
       clearTimeout(this.timer);
-      this.timer = setTimeout(() => fail(unmatchedConfirmMessage(this.matcher.prompt, CONFIRM_TIMEOUT_MS, this.sequence?.blocked, notice)), CONFIRM_TIMEOUT_MS);
+      this.timer = setTimeout(() => {
+        const blocked = this.sequence?.blocked;
+        const message = unmatchedConfirmMessage(this.matcher.prompt, CONFIRM_TIMEOUT_MS, blocked, notice);
+        fail(this.sequence && blocked === undefined && notice === undefined ? message + startupScreenContext(lastScreen) : message);
+      }, CONFIRM_TIMEOUT_MS);
     };
     bound();
     if (this.sequence) {
@@ -216,6 +229,7 @@ export class StartupConfirmGate {
           const screen = pane.read();
           if (screen === undefined) { this.end("exited"); return; }
           if (!this.active || Date.now() >= deadline) return;
+          lastScreen = screen;
           const awaiting = this.sequence!.awaitingNotice;
           const action = this.sequence!.observe(screen);
           if (action?.key) pane.key(action.key);

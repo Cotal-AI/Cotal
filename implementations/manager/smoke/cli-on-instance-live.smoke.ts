@@ -199,6 +199,36 @@ async function checkRelativeDirectoryRefusals(root: string, instance: string): P
 }
 
 type MgrPriv = { managerInstanceId: string };
+
+async function checkInvokeSpawnRefusal(root: string, managerRoot: string, instance: string): Promise<void> {
+  const args = ["endpoint", "invoke", "manager", "spawn", "--space", space, "--on", instance];
+  const spawnArgs = [...args, "--args", JSON.stringify({ name: "nowhere", agent: "opencode" })];
+  const reason = `no persona "nowhere" in the catalog of manager ${instance} on host ${hostname()}: ${join(managerRoot, ".cotal", "agents", "nowhere.md")} not found; create it there`;
+  for (const format of [[], ["--plain"]]) {
+    const run = await cotal([...spawnArgs, ...format], root);
+    mustHaveRun(run, "native spawn refusal in human output");
+    check(`endpoint invoke ${format[0] ?? "rich"} shows the Manager's reason and create step`,
+      run.status === 2 && strip(run.out).replace(/\s+/g, " ").includes(reason), run);
+  }
+  const json = await cotal([...spawnArgs, "--json"], root);
+  mustHaveRun(json, "native spawn refusal in JSON");
+  const env = JSON.parse(json.stdout);
+  check("endpoint invoke JSON keeps the refusal outcome and puts the Manager's reason in error.message",
+    json.status === 2 && env.outcome === "refused" && env.error?.code === "LIFECYCLE_BLOCKED" && env.error.message === reason
+    && env.error.cause?.code === "failed-precondition" && env.error.cause.outcome === "not-executed"
+    && env.error.cause.detail?.responder?.instanceId === instance, json);
+
+  const privateValues = [`u_${"a".repeat(26)}`, randomUUID(), "eyJfixture.credential.signature"];
+  const config = join(managerRoot, ...privateValues, "missing.md");
+  for (const format of ["--plain", "--json"]) {
+    const run = await cotal([...args, "--args", JSON.stringify({ name: "nowhere", config }), format], root);
+    mustHaveRun(run, "native refusal with private values in its diagnostic");
+    check(`endpoint invoke ${format} keeps the reason but omits credentials and IDs from it`,
+      run.status === 2 && run.out.includes("agent file not found:") && run.out.includes("missing.md")
+      && privateValues.every((value) => !run.out.includes(value)), { status: run.status });
+  }
+}
+
 let m1: InstanceType<typeof Manager> | undefined;
 let m2: InstanceType<typeof Manager> | undefined;
 let m3: InstanceType<typeof Manager> | undefined;
@@ -310,10 +340,17 @@ try {
     bogus.status !== 0 && /not a valid lifecycle token/i.test(strip(bogus.out)),
     { status: bogus.status, tail: strip(bogus.out).slice(-300) });
 
+  const describePinRefusal = (out: string): boolean =>
+    out.includes("--on needs the full instance ID of the selected endpoint.")
+    && ["cotal", "pnpm cotal"].some((cli) =>
+      out.includes(`For the native Manager, use \`${cli} ps --space ${space}\`.`)
+      && out.includes(`Retry with \`${cli} endpoint describe manager --space ${space} --on <instance>\`.`))
+    && !/not a valid lifecycle token|no managed agent|no describe reply|did not answer/i.test(out);
+
   const bogusDescribe = await cotal(["describe", "manager", "--on", "4ik6rb0e", "--space", space], root1);
   mustHaveRun(bogusDescribe, "`describe manager --on <malformed>`");
   check("a malformed instance id on describe is REFUSED, not silently widened (#554)",
-    bogusDescribe.status !== 0 && /not a valid lifecycle token/i.test(strip(bogusDescribe.out)),
+    bogusDescribe.status === 1 && describePinRefusal(strip(bogusDescribe.out)),
     { status: bogusDescribe.status, tail: strip(bogusDescribe.out).slice(-300) });
 
   // A roster PRINCIPAL id (`local.U…`) is the mismatch #423 reports: an operator pins by the id
@@ -330,7 +367,7 @@ try {
     mustHaveRun(r, `\`${site.what}\``);
     const out = strip(r.out);
     check(site.what,
-      r.status !== 0
+      site.argv[0] === "describe" ? r.status === 1 && describePinRefusal(out) : r.status !== 0
         && out.includes(`--on wants the manager INSTANCE id as \`cotal ps${site.argv[0] === "ps" ? ` --space ${space}` : ""}\` prints it`)
         && /not the roster's principal id/.test(out)
         && /is a principal id/.test(out)
@@ -374,8 +411,8 @@ try {
   // answered, not the queue winner (#554). Exit 0 alone is satisfied by the class queue; the
   // equality of the report's "Answering instance" field is the claim.
   for (const [label, iid] of [["IID1", IID1], ["IID2", IID2]] as const) {
-    const r = await cotal(["describe", "manager", "--on", iid, "--space", space], root1);
-    mustHaveRun(r, `\`describe manager --on ${label}\``);
+    const r = await cotal(["endpoint", "describe", "manager", "--space", space, "--on", iid], root1);
+    mustHaveRun(r, `\`endpoint describe manager --space ${space} --on ${label}\``);
     const out = strip(r.out);
     check(`describe --on ${label} SUCCEEDS and its attribution line names ${label}: the pinned instance answered, not the queue winner (#554)`,
       r.status === 0 && new RegExp(`^ +Answering instance: +${iid}$`, "m").test(out),
@@ -526,7 +563,8 @@ try {
     mustHaveRun(r, `\`${site.what} --on ""\``);
     const out = strip(r.out);
     check(`${site.what} --on "" is REFUSED at the flag (exit non-zero, the up-front text, not the mint's token error, not a seat miss)`,
-      r.status !== 0 && emptyRefused.test(out) && !/not a valid lifecycle token/i.test(out) && !/no managed agent/i.test(out),
+      site.what === "describe" ? r.status === 1 && describePinRefusal(out)
+        : r.status !== 0 && emptyRefused.test(out) && !/not a valid lifecycle token/i.test(out) && !/no managed agent/i.test(out),
       { status: r.status, tail: out.slice(-300) });
   }
 
@@ -811,6 +849,7 @@ try {
     nowhere.status === 2 && nowhereOut.includes(`no persona "nowhere" in the catalog of manager ${IID6} on host ${hostname()}`) &&
       nowhereOut.includes("nothing was launched; create that file on the manager's host, then run the spawn again") && !nowhereOut.includes("--config"),
     { status: nowhere.status, out: nowhereOut.slice(-900) });
+  await checkInvokeSpawnRefusal(root1, root6, IID6);
 
   // `--timeout` is one deadline for the call, the contract read included. Nothing serves `nosuch`, so
   // its contract read is never answered and the refusal comes when the flag's 1000ms run out. The

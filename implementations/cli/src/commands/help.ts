@@ -32,7 +32,7 @@ export async function help(args: ParsedArgs): Promise<void> {
     catch (error) { if (namedStart && words.length === 2) throw error; }
   }
   const path = metadataPositionals(scoped, lifecycle?.argv ?? words).positionals.map(({ value }) => value);
-  paintFor(process.stdout, () => printHelpPath(scoped, path));
+  paintFor(process.stdout, () => printHelpPath(scoped, path, undefined, undefined, undefined, words));
 }
 
 export const versionFlags = [jsonFlag] as const;

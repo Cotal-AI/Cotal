@@ -287,17 +287,30 @@ try {
     const serveFailure = await failedLaunch("opencode", "failed_serve");
     ok("OpenCode serve failure returns child stderr rather than wrapper prose", isCommandFailure(serveFailure) && serveFailure.message.includes("run auth login to reauthenticate"), String(serveFailure));
     const modelProbe = join(fakeBin, "model probe.md");
-    writeFileSync(modelProbe, "---\nname: model_probe\nrole: model_probe\nagent: jcode\n---\nRespond only to test prompts.\n");
-    let prefixFailure: unknown;
-    try {
-      await capture(() => run("spawn", ["--file", modelProbe, "--harness", "jcode", "--detach", "--space", SPACE, "--cwd", fakeBin, "--model", "cliproxy/gpt-6.2-sol"]));
-    } catch (error) { prefixFailure = error; }
-    ok("Jcode rejects a model prefix before the host starts and prints a bare-model retry with the original options",
-      isCommandFailure(prefixFailure) && exitCode(prefixFailure.outcome, prefixFailure.code) === 5 && prefixFailure.code === "OPERATION_FAILED"
-        && prefixFailure.message.includes("model_prefix_rejected") && prefixFailure.message.includes("Select the provider in Jcode's configuration")
-        && ["cotal", "pnpm cotal"].some((cli) => prefixFailure.remedy?.startsWith(`${cli} spawn `))
-        && [" -d", ` --space ${SPACE}`, " --harness jcode", ` --file '${modelProbe}'`, ` --cwd ${fakeBin}`, " --model gpt-6.2-sol"].every((part) => prefixFailure.remedy?.includes(part))
-        && !prefixFailure.remedy?.includes("cliproxy/") && !existsSync(join(workspaceRoot, ".cotal", "jcode")), prefixFailure);
+    const modelPersona = (model: string) => writeFileSync(modelProbe, `---\nname: model_probe\nrole: model_probe\nagent: jcode\nmodel: '${model}'\n---\nRespond only to test prompts.\n`);
+    const modelFailure = async (extra: string[] = []): Promise<unknown> => {
+      try { await capture(() => run("spawn", ["--file", modelProbe, "-d", "--space", SPACE, "--server", SERVER, "--cwd", fakeBin, "--no-events", ...extra])); }
+      catch (error) { return error; }
+    };
+    modelPersona("fixture/persona-model");
+    for (const [source, model, extra] of [
+      ["persona", "persona-model", []],
+      ["flag", "gpt-6.2-sol", ["--harness", "jcode", "--model", "cliproxy/gpt-6.2-sol"]],
+    ] as const) {
+      const failure = await modelFailure([...extra]);
+      ok(`Jcode rejects a ${source} model prefix before launch and keeps the original options in the bare-model retry`,
+        isCommandFailure(failure) && exitCode(failure.outcome, failure.code) === 5 && failure.code === "OPERATION_FAILED"
+          && failure.message.includes("model_prefix_rejected") && failure.message.includes("Select the provider in Jcode's configuration")
+          && failure.remedyIsCommand === true && ["cotal", "pnpm cotal"].some((cli) => failure.remedy?.startsWith(`${cli} spawn `))
+          && [" -d", ` --space ${SPACE}`, ` --server ${SERVER}`, ` --file '${modelProbe}'`, ` --cwd ${fakeBin}`, " --no-events", ` --model ${model}`].every((part) => failure.remedy?.includes(part))
+          && (source === "persona" || failure.remedy?.includes(" --harness jcode") === true)
+          && !failure.remedy?.includes("fixture/") && !failure.remedy?.includes("cliproxy/") && !existsSync(join(workspaceRoot, ".cotal", "jcode")), failure);
+    }
+    modelPersona("fixture/unsafe;model");
+    const unsafeModel = await modelFailure();
+    ok("Jcode withholds an unsafe persona model from the refusal and does not suggest a retry command",
+      isCommandFailure(unsafeModel) && unsafeModel.code === "OPERATION_FAILED" && unsafeModel.message.includes("model_prefix_rejected")
+        && !unsafeModel.message.includes("unsafe;model") && !unsafeModel.remedyIsCommand, unsafeModel);
     const originalCwd = process.cwd();
     const jcodeFailure = await (async () => {
       process.chdir(fakeBin);
@@ -524,16 +537,17 @@ try {
   const psAfter = await capture(() => run("ps", ["--space", SPACE]));
   ok("ps is empty after stop", NO_AGENTS.test(psAfter), psAfter);
 
-  {
-    const guide = readFileSync(join(import.meta.dirname, "../../docs/connect-opencode.mdx"), "utf8");
-    const example = /`\.cotal\/agents\/([\w-]+)\.md`[^\n]*\n\n```markdown\n([\s\S]+?)\n```[\s\S]+?^cotal spawn \1 --harness opencode --detach$/m.exec(guide);
-    if (!example) throw new Error("The OpenCode guide must show how to create the persona before its detached launch");
+  for (const [harness, role] of [["opencode", "research"], ["codex", "review"], ["claude", "assistant"]]) {
+    const guide = readFileSync(join(import.meta.dirname, `../../docs/connect-${harness}.mdx`), "utf8");
+    const example = /`\.cotal\/agents\/([\w-]+)\.md`[^\n]*\n\n```markdown\n([\s\S]+?)\n```[\s\S]+?^cotal spawn \1 --harness ([\w-]+) --detach$/m.exec(guide);
+    if (!example || example[3] !== harness) throw new Error(`The ${harness} guide must show how to create the persona before its detached launch`);
     const [, persona, contents] = example;
     writeFileSync(join(workspaceRoot, ".cotal", "agents", `${persona}.md`), `${contents}\n`);
-    // Use the suite harness to test the catalog lookup against the real manager without OpenCode installed.
-    const launched = await capture(() => run("spawn", [persona, "--harness", "e2e", "--detach", "--no-events", "--space", SPACE]));
-    ok("the OpenCode guide's persona launches by catalog name", joinedAs(launched, persona) && lastOpts?.role === "research", launched);
-    await capture(() => run("stop", [persona, "--space", SPACE]));
+    // Use the suite harness to test catalog lookup against the real manager without native applications.
+    const name = `guide-${harness}`;
+    const launched = await capture(() => run("spawn", [persona, "--harness", "e2e", "--detach", "--no-events", "--space", SPACE, "--name", name]));
+    ok(`the ${harness} guide's persona launches by catalog name`, joinedAs(launched, name) && lastOpts?.role === role, launched);
+    await capture(() => run("stop", [name, "--space", SPACE]));
   }
 
   // D — COTAL_DEFAULT_PERSONA supplies the persona for a bare detached spawn. The identity still

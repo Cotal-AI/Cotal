@@ -128,7 +128,8 @@ claude --mcp-config '{"mcpServers":{"cotal":{…}}}' \
   input screen, or answered the prompt without the notice, fails its spawn and is stopped. The PTY runtimes read the child's screen, and the tmux, cmux, Orca
   and Herdr runtimes read the pane's screen. If neither the prompt nor the input screen appears
   within 15 seconds, the seat ends with a bounded error naming the unmatched prompt instead of
-  hanging silently or answering another dialog. Claude's first-run screens, the text style picker and
+  hanging silently or answering another dialog. The PTY runtimes include a short excerpt from the
+  last visible screen, or say that no text was visible. Claude's first-run screens, the text style picker and
   the login method choice, and its Bypass Permissions warning are screens Cotal never answers. When
   the bound ends on one of them, the error names it and the step that clears it, such as running
   `claude` once in a terminal as that user to finish setup and log in. The PTY runtime writes that error to the seat's output and
@@ -1177,8 +1178,10 @@ original is untouched.
   when your `COTAL_DEFAULT_AGENT` names another connector. A re-run of the same bytes
   sends nothing, and an interrupted carry continues where it stopped. The seat forks it in a
   private Claude home under the manager's `.cotal/seat-homes/`, which no other seat's Claude
-  lists or finds, and which is removed when the seat stops. When Claude starts the fork, the seat
-  records the SHA-256 of the transcript it read from its own project; the manager stops a seat
+  lists or finds. The manager removes this home when the seat stops. If it cannot remove the home,
+  it logs the path and the error and continues retiring the seat so its name can be reused.
+  When Claude starts the fork, the seat records the SHA-256 of the transcript it read from its own
+  project. The manager stops a seat
   whose record names other bytes than the carried ones, or that records none within the join
   timeout after it joins, an uncertain launch included, and otherwise shows that record as the
   seat's provenance. `cotal attach` to such a seat names its source after the seat

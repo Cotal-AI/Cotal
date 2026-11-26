@@ -329,6 +329,11 @@ const prepared = mkdtempSync(join(tmpdir(), "cotal-up-usage-prepared-"));
 process.on("exit", () => rmSync(prepared, { recursive: true, force: true }));
 const created = run(["space", "create", "upusage", "--root", prepared, "--json"]);
 check("space create prepares a folder", created.status === 0, shown(created));
+const issuerArgs = ["up", "--root", prepared, "--space", "upusage", "--server", "nats://127.0.0.1:1", "--user-auth", "--no-manager", "--json"];
+const missingIssuer = run(issuerArgs);
+check("missing issuer keeps the original start or manifest in its remedy", missingIssuer.status === 1 && missingIssuer.envelope?.error?.code === "USAGE_INVALID" && missingIssuer.envelope.error.remedy === "add `--idp <auth base URL>` to the original user-auth start. For a manifest, set `broker.idp` in the same file and retry the original command.", shown(missingIssuer));
+const retryIssuer = run([...issuerArgs, "--idp", "http://127.0.0.1:1/auth"]);
+check("adding only the issuer checks it for the selected project before writing a stack", retryIssuer.status === 2 && retryIssuer.envelope?.error?.code === "DEPENDENCY_UNAVAILABLE" && retryIssuer.envelope.target?.root === realpathSync(prepared) && retryIssuer.envelope.target.space === "upusage" && !existsSync(join(prepared, ".cotal", "stack-controller.json")), shown(retryIssuer));
 const upHelp = run(["up", "--help"]);
 check("up help marks every public exchange flag as legacy user-auth only",
   ["exchange-public-port", "exchange-public-url", "exchange-trusted-proxy", "advertised-server", "agent-provisioning-url"].every((flag) =>

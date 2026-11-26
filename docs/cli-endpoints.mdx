@@ -679,6 +679,10 @@ keeps the same state words without ANSI. The JSON envelope stays on stdout; diag
 stderr. Raw argument objects and arbitrary native detail payloads are not copied into the human
 report. Confirmed history purge acknowledgements remain visible when a later stream fails.
 
+For a pre-execution refusal, the human report shows the responder's reason when available, and
+`--json` carries it in `error.message`. The CLI redacts recognized credential forms, owner IDs and
+request IDs from the reason. The request and responder attribution stay in their usual fields.
+
 
 ## Endpoint class scatters [#endpoint-class-scatters]
 

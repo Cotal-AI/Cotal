@@ -94,6 +94,15 @@ export const jcodeConnector: Connector = {
   kind: "connector",
   name: "jcode",
   requires: ["jcode"],
+  install: {
+    title: "Jcode",
+    maker: "Jeremy Huang",
+    installers: {
+      darwin: { script: "https://jcode.sh/install", shell: "bash", binDir: "~/.local/bin" },
+      linux: { script: "https://jcode.sh/install", shell: "bash", binDir: "~/.local/bin" },
+      win32: { script: "https://jcode.sh/install.ps1", binDir: "%LOCALAPPDATA%\\jcode\\bin" },
+    },
+  },
   // Jcode may download model material, bring up its MCP bridge, then run a provider-backed
   // cotal_orientation turn before it joins. A generic 30s presence window is therefore not a
   // verdict for this connector; keep the manager's wait bounded but long enough for that required
@@ -203,8 +212,11 @@ export const jcodeConnector: Connector = {
 
     if (opts.validateOnly) return { command: "", args: [] };
     const model = opts.model?.trim();
-    if (model && !bareModelId(model).ok)
-      throw new Error("Jcode launch failed (model_prefix_rejected): use a bare model ID. Select the provider in Jcode's configuration. No Jcode seat was started.");
+    const modelId = model ? bareModelId(model) : undefined;
+    if (modelId?.ok === false) {
+      const override = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/.test(modelId.bare) ? ` Retry with \`--model ${modelId.bare}\`.` : "";
+      throw new Error(`Jcode launch failed (model_prefix_rejected): use a bare model ID. Select the provider in Jcode's configuration. No Jcode seat was started.${override}`);
+    }
     // Creds, broker URL and the control token ride a 0600 file written after every refusal above.
     // Its directory is a launch artifact the launcher removes once the child has exited. The control
     // endpoint is minted here too, after every refusal, because minting makes its socket directory.
