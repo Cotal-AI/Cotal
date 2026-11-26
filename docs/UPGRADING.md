@@ -92,6 +92,7 @@ terminal and for one a manager runs.
 
 If you call `loadCotalConfig` from `@cotal-ai/core`, pass a trust check as its second argument,
 for example `loadCotalConfig(root, isTrustedProject)` with `isTrustedProject` from `@cotal-ai/workspace`.
+
 ## Messages carrying stored-message headers
 
 Cotal drops channel posts, DMs, role requests, delivery copies, event payloads and legacy control requests
