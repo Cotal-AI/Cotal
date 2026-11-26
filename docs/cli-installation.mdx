@@ -832,6 +832,9 @@ A package can declare its entry through a root `exports` entry such as
 `"exports": { ".": { "import": "./greet.mjs" } }` without also declaring `main`.
 The shorthand `"exports": { "import": "./greet.mjs" }` selects the same entry.
 An npm `main` such as `"./greet"` can resolve to `greet.js` without naming the suffix.
+If the installed npm package is missing its entry, `add` reports the path relative to that package.
+For a local extension, check the package contents with `npm pack --dry-run ./example-extension`.
+Include the entry in `files` or generate it before running `cotal ext add ./example-extension` again.
 Give `remove` the package name as listed by `cotal ext list`, without a version.
 For a scoped package such as `@acme/_helper`, include the scope and the leading underscore.
 If the package is already absent, `remove` reports that nothing was removed and exits 0.
