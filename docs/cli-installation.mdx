@@ -417,7 +417,9 @@ It leaves that registration unchanged and continues the CLI upgrade and the othe
 ### Manager continuity
 
 When `update --self` finds no newer release and verifies the installed package closure is current,
-it reports that no connector reconciliation ran and skips the running Manager continuity check.
+it skips full connector reconciliation and the running Manager continuity check. A manual update
+can still repair a Codex marketplace you moved into the current Cotal home. It leaves other
+harness registrations unchanged and reports the result of the Codex repair separately.
 An unreadable Manager from another installation does not block this result.
 If a first-party operator extension is missing its entry file, `cotal update --self` runs
 reconciliation to restore it even when the CLI is already current.
