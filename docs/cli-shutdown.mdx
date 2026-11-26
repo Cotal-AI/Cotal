@@ -241,8 +241,9 @@ is stopped, `down` removes the stack's saved definitions, their instance records
 registration that names the folder, so the space can be created and started in another folder.
 The same stop runs for a folder moved or renamed while its stack ran, which took its journal, store
 and trust with it. Its Next names `cotal space create <space> --adopt --root <folder>` first, which
-adopts those records where the folder is now and keeps its history, then
-`cotal space create <space>` for another folder. Outside a terminal it needs `--yes`, and
+adopts those records where the folder is now and keeps its history. When the saved definitions
+include a broker but no manager, the receipt recommends `cotal up --no-manager` after adoption.
+The receipt then names `cotal space create <space>` for another folder. Outside a terminal it needs `--yes`, and
 `--dry-run` lists each member with its pid and process.
 If a file occupies the recorded project path, the stop receipt reports it and leaves it untouched.
 To restart at that path, move the file aside and restore the original project folder.
