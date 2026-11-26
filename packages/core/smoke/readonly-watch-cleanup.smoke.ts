@@ -6,7 +6,7 @@ import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { connect } from "@nats-io/transport-node";
+import { connect, type NatsConnection } from "@nats-io/transport-node";
 import { jetstreamManager } from "@nats-io/jetstream";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal, killAndAwaitExit } from "@cotal-ai/smoke-kit";
 import {
@@ -31,6 +31,84 @@ async function until(name: string, predicate: () => boolean | Promise<boolean>):
   }
   throw new Error(`deadline: ${name}`);
 }
+
+function membershipWatchState(endpoint: CotalEndpoint) {
+  const { conn } = endpoint as unknown as {
+    conn: { nc: NatsConnection; membershipFeedWatches: Set<{
+      arm: Promise<void>; consumerName: string; iter: { monitor: { _change(interval: number): void } };
+    }> };
+  };
+  return { nc: conn.nc, intent: [...conn.membershipFeedWatches][0]! };
+}
+
+async function checkSameStoreReset(
+  reader: CotalEndpoint, stream: string, names: (stream: string) => Promise<string[]>, poll: () => Promise<void>,
+): Promise<void> {
+  const changes: MembershipChange[] = [];
+  const watch = await reader.watchMembership((change) => changes.push(change));
+  try {
+    await until("initial replay before same-store reset", () => changes.some((change) => change.type === "replayed"));
+    changes.length = 0;
+    const { intent } = membershipWatchState(reader);
+    const previous = intent.consumerName;
+    const prefix = previous.slice(0, previous.lastIndexOf("_") + 1);
+    const incoming = async () => (await names(stream)).some((name) => name !== previous && name.startsWith(prefix) && name === intent.consumerName);
+    // Run the actual ordered consumer reset with a shorter native idle timeout.
+    const { monitor } = intent.iter;
+    monitor._change(200);
+    try {
+      await until("native consumer serial advances on the same stream", incoming);
+      await intent.arm;
+    } finally { monitor._change(30_000); }
+    await poll();
+    await until("live heartbeat after same-store reset", () => changes.some((change) => change.type === "heartbeat" && change.update));
+    check("same-store reset delivers a live heartbeat without replaying entries", changes.every((change) => change.type !== "replayed" && change.update));
+  } finally { await watch.stop(); }
+}
+
+async function checkResetInfoFailure(reader: CotalEndpoint, stream: string): Promise<void> {
+  let replayed = false;
+  const watch = await reader.watchMembership((change) => { if (change.type === "replayed") replayed = true; });
+  const { nc, intent } = membershipWatchState(reader);
+  const { monitor } = intent.iter;
+  const request = nc.request;
+  const fault = new Error("fixture: transient membership STREAM.INFO failure");
+  const unhandled: unknown[] = [];
+  const onUnhandled = (reason: unknown) => unhandled.push(reason);
+  const reported: Error[] = [];
+  const onError = (err: Error) => reported.push(err);
+  let attempts = 0;
+  nc.request = (subject, payload, opts) => {
+    if (subject !== `$JS.API.STREAM.INFO.${stream}`) return request.call(nc, subject, payload, opts);
+    attempts++;
+    monitor._change(30_000);
+    return attempts <= 2 ? Promise.reject(fault) : request.call(nc, subject, payload, opts);
+  };
+  process.on("unhandledRejection", onUnhandled);
+  try {
+    await until("initial replay before failed stream info", () => replayed);
+    reader.on("error", onError);
+    monitor._change(200);
+    await until("endpoint reports the failed stream info to its listener", () => reported.length > 0);
+    check("the reset reports its transient stream info failure to a listening endpoint", reported.length === 1 && reported[0] === fault);
+    reader.off("error", onError);
+    check("the second reset runs without an endpoint error listener", reader.listenerCount("error") === 0);
+    monitor._change(200);
+    await until("stream info was attempted without an endpoint error listener", () => attempts === 2);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    check(`a listenerless reset creates no unhandled rejection (observed: ${unhandled.map(String).join(", ")})`, unhandled.length === 0);
+    monitor._change(200);
+    await until("later native reset checks stream info again", () => attempts === 3);
+    await intent.arm;
+    check("the follower keeps checking resets after the transient failure", true);
+  } finally {
+    process.off("unhandledRejection", onUnhandled);
+    reader.off("error", onError);
+    nc.request = request;
+    await watch.stop();
+  }
+}
+
 const port = await pickFreePort();
 const monitorPort = await pickFreePort();
 const servers = `nats://127.0.0.1:${port}`;
@@ -125,6 +203,20 @@ try {
   check("no lifecycle DELETE permission violations on the real broker", !brokerLog.split("\n").some((line) => line.includes("Violation") && line.includes("CONSUMER.DELETE.")));
   check("public lifecycle remained free of endpoint errors", errors.length === 0);
 
+  const resetCreds = await mintCreds(auth, newIdentity(), "observer");
+  const resetReader = endpoint(resetCreds);
+  await resetReader.start();
+  await checkSameStoreReset(resetReader, streams[0]!, names, () => feed!.poll());
+  check("same-store reset causes no endpoint error", errors.length === 0);
+  await resetReader.stop();
+
+  const faultReader = new CotalEndpoint({ servers, space, creds: resetCreds, consume: false, registerPresence: false,
+    watchPresence: false, watchChannels: false, channels: [], card: { name: "fault-reader", kind: "endpoint" } });
+  endpoints.push(faultReader);
+  await faultReader.start();
+  await checkResetInfoFailure(faultReader, streams[0]!);
+  await faultReader.stop();
+
   const replacementReader = endpoint(await mintCreds(auth, newIdentity(), "observer"));
   await replacementReader.start();
   const transportEdges: unknown[] = [];
@@ -149,10 +241,7 @@ try {
     check("replacement writer stamps a heartbeat below the old cursor", (await lastSeq()) < oldRevision);
     replacement.length = 0;
     // Shorten only this watch's idle timeout. The native reset and replay still run against the broker.
-    const { conn } = replacementReader as unknown as {
-      conn: { membershipFeedWatches: Set<{ iter: { monitor: { _change(interval: number): void } } }> };
-    };
-    const { monitor } = [...conn.membershipFeedWatches][0]!.iter;
+    const { monitor } = membershipWatchState(replacementReader).intent.iter;
     monitor._change(200);
     await until("replacement store replay", () => replacement.some((c) => c.type === "replayed"));
     check("the existing watch replays the replacement's members and heartbeat below its old cursor",

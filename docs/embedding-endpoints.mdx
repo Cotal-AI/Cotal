@@ -264,6 +264,7 @@ The watch reports state changes. The caller decides whether it still owns the sh
 `watchMembership()` replays the latest entries when it starts or rearms, then follows live updates.
 If the membership store is replaced under the same name, the watch rearms on the replacement when the broker consumer recovers.
 The replacement replay carries `update: false` and ends with a `replayed` change. Revisions belong to one store and can go back when it is replaced.
+A replay is the complete current set. If you apply updates to a local copy, rebuild it from the replay instead of merging the replay into it.
 
 ## Watch cleanup [#watch-cleanup]
 

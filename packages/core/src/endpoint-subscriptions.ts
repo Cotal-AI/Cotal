@@ -496,7 +496,7 @@ export class EndpointSubscriptions {
       watch.onClosed?.(err);
       this.emit("error", err);
     }).catch(() => {});
-    void this.followMembershipConsumer(watch, kv, created, consumer, iter);
+    void this.followMembershipConsumer(watch, kv, created, consumer, iter).catch(() => {});
   }
 
   private async followMembershipConsumer(watch: MembershipFeedWatch, kv: Bucket, created: string, consumer: PushConsumer, iter: Awaited<ReturnType<PushConsumer["consume"]>>): Promise<void> {
@@ -510,7 +510,7 @@ export class EndpointSubscriptions {
         let current: string;
         try { current = (await kv.status()).streamInfo.created; }
         catch (err) {
-          if (!isJetStreamMissing(err, JetStreamApiCodes.StreamNotFound)) this.emit("error", err as Error);
+          if (!isJetStreamMissing(err, JetStreamApiCodes.StreamNotFound)) throw err;
           return; // a missing stream can be checked again when the consumer is recreated on it
         }
         if (current === created || watch.stopped) return;
@@ -522,8 +522,8 @@ export class EndpointSubscriptions {
           throw err;
         }
       });
-      try { await watch.arm; }
-      catch (err) { this.emit("error", err as Error); }
+      // Report the fault without ending the follower when the endpoint has no error listener.
+      await watch.arm.catch((err) => this.emit("error", err)).catch(() => {});
     }
   }
 
