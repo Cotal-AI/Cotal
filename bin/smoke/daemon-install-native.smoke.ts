@@ -368,10 +368,11 @@ try {
     check("missing task entry refuses before registration", code(() => assertScheduledEntry(join(nativeHome, "missing.js"))) === "DEPENDENCY_UNAVAILABLE");
     check("directory task entry refuses before registration", code(() => assertScheduledEntry(nativeHome)) === "DEPENDENCY_UNAVAILABLE");
     check("built task entry passes preflight", code(() => assertScheduledEntry(nativeEntry)) === "none");
-    const refused = spawnSync(process.execPath, [nativeEntry, "daemon", "serve", "--daemon-home", nativeHome, "--json"], {
-      cwd: root, encoding: "utf8", timeout: 20_000,
-      env: { ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_"))), XDG_RUNTIME_DIR: root, COTAL_HOME: join(root, "cotal-home"), COTAL_IDP_TIMEOUT_MS: "0", COTAL_SKIP_CONNECTOR_SEED: "1", DO_NOT_TRACK: "1" },
+    const nativeEnv = { ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_"))), XDG_RUNTIME_DIR: root, COTAL_HOME: join(root, "cotal-home"), COTAL_IDP_TIMEOUT_MS: "0", COTAL_SKIP_CONNECTOR_SEED: "1", DO_NOT_TRACK: "1" };
+    const launchNative = () => spawnSync(process.execPath, [nativeEntry, "daemon", "serve", "--daemon-home", nativeHome, "--json"], {
+      cwd: root, encoding: "utf8", timeout: 20_000, env: nativeEnv,
     });
+    const refused = launchNative();
     const log = join(nativeHome, "daemon.log");
     const previousLog = join(nativeHome, "daemon.previous.log");
     const refusalLog = existsSync(log) ? readFileSync(log, "utf8") : "";
@@ -382,7 +383,7 @@ try {
        captureNativeDaemonOutput(process.argv[1]);
        process.stderr.write("eyJhbGciOiJIUzI1NiJ9.payload.signature\\n");
        process.stdout.write("x".repeat(100000));`, nativeHome], {
-      cwd: root, encoding: "utf8", timeout: 10_000,
+      cwd: root, encoding: "utf8", timeout: 10_000, env: nativeEnv,
     });
     const bounded = readFileSync(log, "utf8");
     check("native launch output is replaced, bounded and credential-redacted", logging.status === 0
@@ -390,10 +391,7 @@ try {
       && Buffer.byteLength(bounded) <= 64 * 1024 + 128);
     check("native launch log is private", process.platform === "win32" || (lstatSync(log).mode & 0o777) === 0o600);
     check("previous native log retains the refusal", existsSync(previousLog) && readFileSync(previousLog, "utf8") === refusalLog);
-    const restarted = spawnSync(process.execPath, [nativeEntry, "daemon", "serve", "--daemon-home", nativeHome, "--json"], {
-      cwd: root, encoding: "utf8", timeout: 20_000,
-      env: { ...process.env, XDG_RUNTIME_DIR: root, COTAL_HOME: join(root, "cotal-home"), COTAL_IDP_TIMEOUT_MS: "0", COTAL_SKIP_CONNECTOR_SEED: "1", DO_NOT_TRACK: "1" },
-    });
+    const restarted = launchNative();
     check("the next launch keeps only the latest bounded, redacted log as history", restarted.status === 1
       && readFileSync(previousLog, "utf8") === bounded && !readFileSync(log, "utf8").includes("x".repeat(1000)));
     check("previous native log is private", process.platform === "win32" || (lstatSync(previousLog).mode & 0o777) === 0o600);

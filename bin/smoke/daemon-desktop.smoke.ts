@@ -111,7 +111,7 @@ try {
   check("an unsafe previous log does not block the current log", unsafeHistory.ok === true && unsafeHistory.result.text === largeLog.result.text);
   rmSync(previousLog);
   writeFileSync(logFile, "service is writing\n", { mode: 0o600 });
-  const writer = spawn(process.execPath, ["--input-type=module", "-e", 'import { appendFileSync } from "node:fs"; const file = process.argv[1]; setInterval(() => appendFileSync(file, "concurrent service output\\n".repeat(200)), 1);', logFile], { stdio: "ignore" });
+  const writer = spawn(process.execPath, ["--input-type=module", "-e", 'import { appendFileSync } from "node:fs"; const file = process.argv[1]; setInterval(() => appendFileSync(file, "concurrent service output\\n".repeat(200)), 1);', logFile], { env: {}, stdio: "ignore" });
   try {
     for (let i = 0; i < 4; i++) {
       const growing = await request({ op: "log" });

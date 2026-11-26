@@ -154,6 +154,29 @@ function serviceLogTail(file: string): { text: string; truncated: boolean } {
   } finally { closeSync(fd); }
 }
 
+/** Show the bounded tails of the previous and current service launches. */
+function readServiceLogTail(state: string): { text: string; truncated: boolean } {
+  let previous = { text: "", truncated: false };
+  if (process.platform !== "darwin") {
+    try { previous = serviceLogTail(previousNativeDaemonLog(state)); } catch { /* Unreadable history must not block the current log. */ }
+  }
+  const current = serviceLogTail(nativeDaemonLog(state));
+  const text = previous.text ? `Previous launch:\n${previous.text}${current.text ? `\n\nCurrent launch:\n${current.text}` : ""}` : current.text;
+  return { text, truncated: previous.truncated || current.truncated };
+}
+
+/**
+ * Only the app's uninstaller sends remove-service; the window's requests never include it. It removes
+ * the service this installation registered and keeps one another installation registered here.
+ */
+async function removeDesktopService(paths: QueryOptions["paths"], home: string | undefined) {
+  if (!preflightInstalledDaemon(paths, home)) return { state: "absent" };
+  const identity = installedDaemonIdentity(paths, home);
+  if (!identity.same) return { state: "kept", installed: identity.installed };
+  const removed = await applyUninstall(paths, home);
+  return { state: removed.state, unit: removed.unit };
+}
+
 /** Run one app operation through the stock local client. Closing the UI never stops the service. */
 export async function runDesktopBridge(opts: DesktopBridgeOptions): Promise<void> {
   const output = opts.output ?? process.stdout;
@@ -196,26 +219,8 @@ export async function runDesktopBridge(opts: DesktopBridgeOptions): Promise<void
     if (req.op === "status" || req.op === "status-watch" || req.op === "install" || req.op === "setup") assertDesktopSetupComplete();
     target = opts.resolveTarget();
     const { paths, home } = target;
-    if (req.op === "log") {
-      let previous = { text: "", truncated: false };
-      if (process.platform !== "darwin") {
-        try { previous = serviceLogTail(previousNativeDaemonLog(paths.state)); } catch { /* Unreadable history must not block the current log. */ }
-      }
-      const current = serviceLogTail(nativeDaemonLog(paths.state));
-      const text = previous.text ? `Previous launch:\n${previous.text}${current.text ? `\n\nCurrent launch:\n${current.text}` : ""}` : current.text;
-      emit({ v: 1, event: "result", ok: true, result: { text, truncated: previous.truncated || current.truncated } });
-      return;
-    }
-    if (req.op === "remove-service") {
-      // Only the app's uninstaller sends this; the window's requests never include it. It removes the
-      // service this installation registered and keeps one another installation registered here.
-      if (!preflightInstalledDaemon(paths, home)) { emit({ v: 1, event: "result", ok: true, result: { state: "absent" } }); return; }
-      const identity = installedDaemonIdentity(paths, home);
-      if (!identity.same) { emit({ v: 1, event: "result", ok: true, result: { state: "kept", installed: identity.installed } }); return; }
-      const removed = await applyUninstall(paths, home);
-      emit({ v: 1, event: "result", ok: true, result: { state: removed.state, unit: removed.unit } });
-      return;
-    }
+    if (req.op === "log") { emit({ v: 1, event: "result", ok: true, result: readServiceLogTail(paths.state) }); return; }
+    if (req.op === "remove-service") { emit({ v: 1, event: "result", ok: true, result: await removeDesktopService(paths, home) }); return; }
     const client = { paths, peerUid: opts.peerUid, peerPid: opts.peerPid };
     if (req.op === "install" || req.op === "setup") {
       const discovered = await discoverDesktopApplicationPath();
