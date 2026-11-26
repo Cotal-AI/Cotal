@@ -1,5 +1,5 @@
 /** The binary composes machine-daemon custody with the stock package updater. */
-import { existsSync, readFileSync, readdirSync, readlinkSync, statSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync, readdirSync, readlinkSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { execFileSync } from "node:child_process";
@@ -70,6 +70,16 @@ function assertDaemonReachable(): void {
   const lifetime = readLifetimeRecord(join(homeCotalDir(), "daemon", "daemon.lock"));
   if (lifetime?.start && processBirth(lifetime.pid) === lifetime.start)
     throw new Error("the machine daemon is running and this session has no XDG_RUNTIME_DIR to reach it; run the update from a login session of this account, or leave it to the daemon's automatic update");
+}
+
+/** Both Windows records are home-local. The SID-based pipe alone says nothing about this home.
+ * Skipping its resolution also keeps the native pipe module unloaded for in-place npm replacement. */
+function hasNoWindowsDaemonRecords(): boolean {
+  const state = join(homeCotalDir(), "daemon");
+  return [join(state, "daemon.lock"), unitReceiptFile({ state })].every(path => {
+    try { lstatSync(path); return false; }
+    catch (error) { return (error as NodeJS.ErrnoException).code === "ENOENT"; }
+  });
 }
 
 /** Retry only status. A disappearing socket after an interruption is not proof of absence. */
@@ -376,7 +386,7 @@ const composed: Command = { ...command, async run(args) {
   }, adoptUpdateChild: adoptAutomaticUpdateChild, preparedRestart: () => preparedRestart, async prepareReplacement() {
     if (readUpdateRecovery()?.phase === "restoring") admission = undefined;
     let paths: DaemonPaths | undefined;
-    try { paths = daemonPaths(); }
+    try { if (process.platform !== "win32" || daemonObserved) paths = daemonPaths(); }
     catch (error) { if (!(error instanceof EndpointRefusal) || error.code !== "NO_RUNTIME_DIR") throw error; }
     if (targetReceipt && !targetAdmissionChecked && readUpdateRecovery()?.phase !== "restoring") {
       // The lifetime record lives under the home, so it is readable in a session with no runtime directory.
@@ -496,7 +506,7 @@ const composed: Command = { ...command, async run(args) {
       return "none";
     }
     const installedChild = process.env.COTAL_UPDATE_PARENT === String(process.ppid) && process.env.COTAL_UPDATE_TARGET_VERSION === updateRuntime.version();
-    if (staged && (args.values.self === true || installedChild || standaloneReconcile) && !reconcileDaemonObserved && !hasUpdateDaemonLifetime())
+    if ((process.platform === "win32" && hasNoWindowsDaemonRecords()) || (staged && (args.values.self === true || installedChild || standaloneReconcile) && !reconcileDaemonObserved && !hasUpdateDaemonLifetime()))
       return reportsRetainedExecution() ? retainedReport(flags) : updateRuntime.reportRunningManager(flags);
     let managers;
     try {
