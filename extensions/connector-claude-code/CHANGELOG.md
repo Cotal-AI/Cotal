@@ -1,5 +1,11 @@
 # @cotal-ai/connector-claude-code
 
+## 0.182.0
+
+### Patch Changes
+
+- b67a783: `cotal_dm` now confirms storage without promising delivery when the recipient is offline, and explains that only the original session can receive the message if its inbox still exists.
+
 ## 0.181.0
 
 ### Minor Changes

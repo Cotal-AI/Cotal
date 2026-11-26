@@ -1,5 +1,13 @@
 # @cotal-ai/web
 
+## 0.182.0
+
+### Patch Changes
+
+- aee5379: Keep the verified sender and badge when you open a channel for a post you already saw live in Activity.
+- 0f9d6e3: Refresh the dashboard's channel list, message count, and open transcript after a channel is purged outside the dashboard.
+- 4a9c5d0: Keep dashboard channels readable on tablets by opening Details over the page instead of beside the messages.
+
 ## 0.181.0
 
 No changes in this release.

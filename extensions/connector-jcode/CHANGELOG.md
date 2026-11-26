@@ -1,5 +1,11 @@
 # @cotal-ai/connector-jcode
 
+## 0.182.0
+
+### Patch Changes
+
+- 71dcf8e: Reject provider-prefixed Jcode model IDs before starting the seat and show a corrected detached spawn command that uses the bare model ID.
+
 ## 0.181.0
 
 ### Minor Changes

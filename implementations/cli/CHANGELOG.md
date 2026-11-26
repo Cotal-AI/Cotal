@@ -1,5 +1,60 @@
 # @cotal-ai/cli
 
+## 0.182.0
+
+### Minor Changes
+
+- d0d5bf5: Legacy persona creation, persona renames, team manifest validation and direct terminal launches now reject names that start with `-`, so choose a name that starts with a letter, digit or underscore instead.
+
+### Patch Changes
+
+- a77d85f: `cotal backup create` points you to a different location for a protected destination even when its parent folder does not exist.
+- db2b232: Status and empty agent lists identify missing executables for the default agent instead of suggesting a launch that cannot start.
+- 17bdfa2: `cotal clean all` now warns that backup creation and restore are unavailable on a controller-owned stack instead of recommending those commands.
+- ecd506f: Clear purged chat messages from the console that ran the purge, without closing configured channel tabs.
+- e8cac22: Explain how to pass a literal dollar sign or backtick in `cotal service add --exec` when double quotes alone do not work.
+- 896100c: The console space picker counts agents without including the manager or other endpoints.
+- 6affa71: When service removal refuses for a controller stack member, the shutdown instructions name the owning project folder and the exact space to stop.
+- e98ef55: Self-update uses a compatible Node when Corepack selects an npm version that cannot run on the Node Cotal is using.
+- 998aed8: `cotal doctor auth` shows how to restore access to a credential export you own when its mode prevents you from reading it.
+- 733ac16: Tell users to remove an unsupported `--file` option from `endpoint check` and keep the contract path.
+- a65e1b4: Show scoped help when `cotal help --` receives flags before a subcommand or service preset.
+- 1d10f92: Make short-option corrections and daemon recovery commands copyable in Windows PowerShell and Command Prompt.
+- 98c2395: After a foreground stack loses its terminal, show how to inspect and then stop the stack from its original project and Cotal home.
+- d69dda2: Keep stack records when `cotal down` cannot access the project's `.cotal` directory.
+- 71dcf8e: Reject provider-prefixed Jcode model IDs before starting the seat and show a corrected detached spawn command that uses the bare model ID.
+- 08b57e9: Keep the requested JSON output when a flag before the command starts with a typographic dash.
+- 10babee: Show the file path when `cotal personas list` reports an invalid persona display name.
+- cba49f9: `cotal status` keeps the diagnostics it can read and reports a partial result when the extension inventory is damaged.
+- b670c41: Keep the extension inventory in place when permissions prevent reading it. The version report points to restoring read access, and connector repair and reset refuse to quarantine the file.
+- 7e4b026: `cotal team boot --dry-run` now explains when an earlier team boot blocks another boot in a stopped project, even when the earlier boot has a matching summary.
+- 82fd363: After stopping a moved broker-only stack, `cotal down` recommends restarting it with `--no-manager` after adoption.
+- ed84db3: Self-update reinstalls first-party extensions that cannot load even when their installed versions match the CLI.
+- 365e355: Quote local extension paths in reinstall commands so you can paste them into a POSIX shell even when the path contains spaces.
+- 9bc6116: `cotal update --self` reclaims abandoned private extension staging copies even when Cotal is already current.
+- bf96c8a: When a running broker cannot change auth mode, `up` now explains how to review and stop the owned stack and retry the original request without losing its broker address, space or identity provider.
+- f5b2a30: Install and load extensions that use Node's shorthand for conditional root exports without requiring a `main` field or an `index.js` file.
+- 34e736e: Scroll through console help when the terminal is too small to show every shortcut at once.
+- 9c7a254: Show the running version in text output when the extension inventory is unreadable, and exit with the same partial status as the JSON report.
+- f3c334e: On Linux, background services start without calling systemd when there is no user bus or systemd socket to contact.
+- b291174: Foreground spawn and its preview identify a file blocking the persona path and tell you to pass the correct path with `--file`.
+- be4c516: When `cotal team boot` refuses to replace an earlier boot, the suggested `cotal team show` command now targets the booted space even if another space is selected.
+- f92cbe4: `cotal whoami` prints an exact retry for each registered space when the broker address matches more than one space and can be printed unchanged.
+- 83db958: The Windows docs show how to install, verify, and remove Cotal without changing PowerShell execution policy and how to prepare a project from PowerShell or Command Prompt.
+- f1651fc: On Windows, a confirmed `cotal down` now ends foreground `cotal up` successfully, and a stopped PTY seat releases its console host so it does not block stack shutdown.
+- Updated dependencies [ecd506f]
+- Updated dependencies [896100c]
+- Updated dependencies [1d10f92]
+- Updated dependencies [30b474d]
+- Updated dependencies [b670c41]
+- Updated dependencies [0adb7ba]
+- Updated dependencies [b4d8ea1]
+- Updated dependencies [365e355]
+- Updated dependencies [f5b2a30]
+- Updated dependencies [0c9e27a]
+  - @cotal-ai/workspace@0.182.0
+  - @cotal-ai/core@0.182.0
+
 ## 0.181.0
 
 ### Minor Changes
