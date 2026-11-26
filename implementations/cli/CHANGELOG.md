@@ -1,5 +1,16 @@
 # @cotal-ai/cli
 
+## 0.182.1
+
+### Patch Changes
+
+- 7948be1: JSON refusals for malformed or repeated global flags include the extension command collision warning in the receipt instead of printing it to stderr or dropping it.
+- 364a6d1: Keep the target and flags in the `cotal clean` retry printed when `.cotal` links to another project.
+- 41c615a: Interrupting a foreground restore before the manager commit is recorded stops the stack and prints how to continue the same restore, while an interrupt after that commit lets the restore finish before stopping.
+- e819f05: Keep the stack settlement smoke test running when its startup poll reads a journal that is being replaced.
+- @cotal-ai/core@0.182.1
+  - @cotal-ai/workspace@0.182.1
+
 ## 0.182.0
 
 ### Minor Changes

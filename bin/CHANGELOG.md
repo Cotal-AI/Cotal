@@ -1,5 +1,27 @@
 # cotal-ai
 
+## 0.182.1
+
+### Patch Changes
+
+- 8d02ac0: Derive the required-argument census totals from reviewed per-file counts so changes in different files do not conflict over a shared total.
+- e4bef3d: Stop running agents or open them in the system terminal from the desktop agent list, which now shows their state, elapsed time, application and model.
+- Updated dependencies [e4bef3d]
+- Updated dependencies [7948be1]
+- Updated dependencies [364a6d1]
+- Updated dependencies [41c615a]
+- Updated dependencies [e819f05]
+  - @cotal-ai/manager@0.182.1
+  - @cotal-ai/cli@0.182.1
+  - @cotal-ai/connector-core@0.182.1
+  - @cotal-ai/auth@0.182.1
+  - @cotal-ai/delivery@0.182.1
+  - @cotal-ai/registry@0.182.1
+  - @cotal-ai/runtime@0.182.1
+  - @cotal-ai/core@0.182.1
+  - @cotal-ai/seat@0.182.1
+  - @cotal-ai/workspace@0.182.1
+
 ## 0.182.0
 
 ### Patch Changes

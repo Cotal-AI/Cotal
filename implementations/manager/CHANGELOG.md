@@ -1,5 +1,14 @@
 # @cotal-ai/manager
 
+## 0.182.1
+
+### Patch Changes
+
+- e4bef3d: Stop running agents or open them in the system terminal from the desktop agent list, which now shows their state, elapsed time, application and model.
+- @cotal-ai/core@0.182.1
+  - @cotal-ai/seat@0.182.1
+  - @cotal-ai/workspace@0.182.1
+
 ## 0.182.0
 
 ### Minor Changes
