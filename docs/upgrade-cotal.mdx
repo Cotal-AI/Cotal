@@ -290,6 +290,9 @@ cotal update
 ```
 
 This reconciles installed extensions and connector integrations with the running CLI's release.
+On Linux, a running Manager whose launch path is missing does not block reconciliation when the
+kernel still identifies it with a separate npm installation. When the process evidence cannot
+separate the installations, the update keeps the continuity refusal and leaves the Manager alone.
 If reconciliation succeeds but the registry version cannot be read, `cotal update` succeeds and reports the latest version as unknown.
 Even when the CLI is already at the latest release, `cotal update --self` reinstalls an installed
 first-party extension whose entry file is missing, empty, or cannot load with its dependencies.
