@@ -246,6 +246,7 @@ export async function clean(args: ParsedArgs): Promise<void> {
     : new CommandFailure("failed", "OPERATION_FAILED", `clean ${target} was interrupted before it removed anything`, { target: { root }, remedy: `run ${cleanCommand(false)} again` }),
   () => { if (lock) releaseMaintenanceLock(lock); });
   let removed: string[];
+  let controllerOwned = false;
   try {
     lock = dryRun ? undefined : acquireMaintenanceLock(root);
     const maintenance = readMaintenanceJournal(root);
@@ -276,6 +277,7 @@ export async function clean(args: ParsedArgs): Promise<void> {
     checkCleanStorePath(root, requested);
     // An absent store was not removed by this clean. Leave unexpected loss visible in status.
     const stack = readStackJournal(root)?.journal;
+    controllerOwned = stack !== undefined;
     const recordedStore = stack?.broker?.storeDir;
     const recordedIdentity = recordedStore === undefined ? undefined : lstatSync(recordedStore, { bigint: true, throwIfNoEntry: false });
     const requestedPath = recordedIdentity?.isDirectory() && existsSync(requested) ? realpathSync.native(requested) : undefined;
@@ -303,17 +305,18 @@ export async function clean(args: ParsedArgs): Promise<void> {
   }
   const trustRemoved = removed.some((path) => path.endsWith(SPACE_TRUST));
   const userAuthRemoved = removed.some((path) => path.endsWith(USER_AUTH_TRUST));
+  const controllerBackupWarning = "! Backup creation and restore, including registry-only restore, are unavailable on this controller-owned stack.";
   if (dryRun) {
     for (const path of removed) console.log(`would remove ${path}`);
     console.log(c.dim(`dry run - nothing was removed; ${codeSpan(`cotal clean ${target}${storeFlag} --force`)} removes these`));
     if (userAuthRemoved) console.error(c.yellow("! this clean would remove the IdP trust and the actor ledger of this user-auth space, so every actor grant would be lost. A later up would need `cotal up --user-auth --idp <auth base URL>`, and each actor `cotal actor grant` again"));
-    if (trustRemoved) console.error(c.yellow("! full backups taken before this clean would no longer restore into this root: each is bound to the space trust it removes. Only their registry would restore, with backup restore <dir> --only registry, and chat and DM history would start empty"));
+    if (trustRemoved) console.error(c.yellow(controllerOwned ? controllerBackupWarning : "! full backups taken before this clean would no longer restore into this root: each is bound to the space trust it removes. Only their registry would restore, with backup restore <dir> --only registry, and chat and DM history would start empty"));
     return;
   }
   for (const path of removed) console.log(c.green(`✓ removed ${path}`));
   if (target === "all") console.log(c.dim(`a fresh space identity is minted on the next \`cotal up${userAuthRemoved ? " --user-auth --idp <auth base URL>" : ""}\``));
   if (userAuthRemoved) console.error(c.yellow("! this clean removed the IdP trust and the actor ledger of this user-auth space, so every actor grant is lost. A later up needs `cotal up --user-auth --idp <auth base URL>`, and each actor needs `cotal actor grant` again"));
-  if (trustRemoved) console.error(c.yellow("! full backups taken before this clean no longer restore into this root: each is bound to the space trust it removed. Only their registry restores, with backup restore <dir> --only registry, and chat and DM history start empty. Take a new full backup after the next `cotal up`"));
+  if (trustRemoved) console.error(c.yellow(controllerOwned ? controllerBackupWarning : "! full backups taken before this clean no longer restore into this root: each is bound to the space trust it removed. Only their registry restores, with backup restore <dir> --only registry, and chat and DM history start empty. Take a new full backup after the next `cotal up`"));
 }
 
 /** Check the requested path without following its final component, even if it is a dangling link. */

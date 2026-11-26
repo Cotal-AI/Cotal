@@ -533,6 +533,8 @@ export function presenceKeySubject(space: string, owner: string, actor: string):
 
 const PRESENCE_STATUSES: Record<PresenceStatus, true> = { idle: true, waiting: true, working: true, offline: true };
 const AGENT_ENDPOINT_FLAGS: readonly (keyof PresenceAgentEndpoint)[] = ["interrupt", "turn", "images", "usage"];
+/** A flag a newer process adds: absent from an older one's record, and a boolean where present. */
+const AGENT_ENDPOINT_LATER_FLAGS: readonly (keyof PresenceAgentEndpoint)[] = ["setModel"];
 
 function presenceRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -547,7 +549,8 @@ function presenceOptionalString(value: unknown): boolean {
  *  whose `ts` is not finite, whose printed display fields are present and not strings, whose
  *  `condition` is present and is not an object with a string `code`, whose `prompts` is present
  *  and is not an object with non-negative integer `open` and `seq`, or whose `agentEndpoint` is
- *  present and is not an object with boolean `interrupt`, `turn`, `images` and `usage`, is not a row. `card.id` must be
+ *  present and is not an object with boolean `interrupt`, `turn`, `images` and `usage` and, where
+ *  present, a boolean `setModel`, is not a row. `card.id` must be
  *  a non-empty string and equal the key it was read under: the key is the identity the write grant
  *  proves, and an empty id matches no key. `card.name` must be a non-blank string: a blank name
  *  cannot identify the participant a refusal prints. */
@@ -578,6 +581,8 @@ function presenceRowProblem(value: unknown, key: string): string | undefined {
   if (value.agentEndpoint !== undefined) {
     if (!presenceRecord(value.agentEndpoint)) return "agentEndpoint";
     for (const k of AGENT_ENDPOINT_FLAGS) if (typeof value.agentEndpoint[k] !== "boolean") return `agentEndpoint.${k}`;
+    for (const k of AGENT_ENDPOINT_LATER_FLAGS)
+      if (value.agentEndpoint[k] !== undefined && typeof value.agentEndpoint[k] !== "boolean") return `agentEndpoint.${k}`;
   }
   return undefined;
 }

@@ -80,7 +80,7 @@ agents:
 
 A relative `persona` path resolves against the manifest's directory. It names a file, not a catalog entry.
 For catalog persona `p20` at the project root, use `./.cotal/agents/p20.md`. A bare name without a matching file is refused with that rule. The refusal suggests a catalog path only when it points to a readable regular file.
-A manifest's agent map key names the deployed agent.
+A manifest's agent map key names the deployed agent. It cannot start with a hyphen.
 Behavior fields come from the persona unless the manifest overrides them.
 Permissions follow `personaPermissions`; a bare persona path does not bypass that policy.
 The [agent file reference](agent-files.mdx) defines the persona format.

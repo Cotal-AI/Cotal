@@ -196,6 +196,27 @@ async function checkChannelReplayRetry(): Promise<void> {
       && read === `cotal channel show ${name} --space ${openSpace} --json`
       && shownAgain?.status === 0 && entry(shownAgain)?.replay === false,
     { show: shown(show), shownAgain: shownAgain && shown(shownAgain) });
+
+  const explicitScope = ["--space", openSpace, "--server", openServers, "--json"];
+  const leading = await run(["channel", "set", "--replay", "off", "true", "--desc", "replay probe", ...explicitScope]);
+  const retry = /^run `(.+)`$/.exec(leading.envelope?.error?.remedy ?? "")?.[1];
+  const savedLeading = retry ? await run(execWords(retry).slice(1)) : undefined;
+  const target = await run(["channel", "show", "true", ...explicitScope]);
+  const other = await run(["channel", "show", "off", ...explicitScope]);
+  const entries = (r: Awaited<ReturnType<typeof run>>) =>
+    (r.envelope?.result as unknown as { registry?: ChannelRegistryRead } | undefined)?.registry?.channels;
+  check("a replay flag before a boolean-like channel retries the intended channel and replay setting",
+    leading.status === 1 && leading.envelope?.error?.code === "USAGE_INVALID"
+      && retry === `cotal channel set true --no-replay --desc 'replay probe' --space ${openSpace} --server ${openServers} --json`
+      && savedLeading?.status === 0 && savedLeading.envelope?.outcome === "ok"
+      && target.status === 0 && entries(target)?.true?.replay === false && entries(target)?.true?.description === "replay probe"
+      && other.status === 0 && JSON.stringify(entries(other)) === "{}",
+    { leading: shown(leading), retry, saved: savedLeading && shown(savedLeading), target: shown(target), other: shown(other) });
+
+  const ambiguous = await run(["channel", "set", "true", "off", "--replay", ...explicitScope]);
+  check("a boolean word not following the replay flag gets guidance without naming a channel to edit",
+    ambiguous.status === 1 && ambiguous.envelope?.error?.code === "USAGE_INVALID"
+      && ambiguous.envelope.error.remedy?.startsWith("name one channel") === true, shown(ambiguous));
 }
 
 async function checkFollowUsageRefusals(): Promise<void> {
@@ -1301,6 +1322,23 @@ try {
     check("channel defaults JSON keeps only the defaults-key decode error",
       badDefaults.status === 0 && badDefaults.stderr === ""
         && JSON.stringify(registryOf(badDefaults)) === JSON.stringify({ undecodable: entries?.filter(({ key }) => key === CHANNEL_DEFAULTS_KEY) }), shown(badDefaults));
+  }
+
+  {
+    const target = ["--space", openSpace, "--server", openServers, "--json"];
+    const description = "Output contract test";
+    const typo = await run(["channel", "set", "results", "--description", description, ...target]);
+    const unsupported = await run(["channel", "set", "results", "--mystery-option", ...target]);
+    const retry = await run(["channel", "set", "results", "--desc", description, ...target]);
+    const readback = await run(["channel", "show", "results", ...target]);
+    const result = readback.envelope?.result as { registry?: ChannelRegistryRead } | undefined;
+    check("channel set with a name suggests --desc for --description, not another operand",
+      typo.status === 1 && typo.stderr === "" && typo.envelope?.outcome === "refused"
+        && typo.envelope.error?.code === "USAGE_INVALID" && typo.envelope.error.remedy === "use --desc"
+        && unsupported.status === 1 && unsupported.envelope?.error?.remedy === "drop the unknown option"
+        && retry.status === 0 && retry.envelope?.outcome === "ok" && readback.status === 0
+        && result?.registry?.channels?.results?.description === description,
+      { typo: shown(typo), unsupported: shown(unsupported), retry: shown(retry), readback: shown(readback) });
   }
 
   {

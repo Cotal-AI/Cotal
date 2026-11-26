@@ -2,6 +2,7 @@ import { DEV_OWNER, assertLifecycleToken, peerLabel, type CompletionResult, type
 import {
   brokerAddressForDisplay,
   brokerUrlKey,
+  cachedPreferences,
   checkServer,
   codeSpan,
   CommandFailure,
@@ -30,6 +31,7 @@ import {
   recordOperationSpace,
   resolveControlTarget,
   resolveMeshTarget,
+  resolvePreference,
   retainedLegacyBroker,
   spaceRootTarget,
   stoppedStack,
@@ -47,12 +49,13 @@ import { completingFlagValue } from "../lib/completion.js";
 import { displayCmd } from "../lib/self-exec.js";
 import { shellWord } from "../lib/endpoint-errors.js";
 import { legacyBrokerPidfileBlock, runningStackManagerPid, stackManagerAbsent, stackManagerStarting, unusableStackJournal } from "../lib/stack-journal.js";
-import { connectorHarnesses } from "../lib/status.js";
+import { connectorHarnesses, defaultLaunchBlock } from "../lib/status.js";
+import { defaultPersonaPin, directPersonaPath } from "../lib/spawn-defaults.js";
 import { channelSeedRestartBlock } from "../lib/channel-seed.js";
 import { preparedRootWriteProblem } from "../lib/paths.js";
 import { legacyRestartAddressProblem } from "../lib/broker-service.js";
 import { rootStoreProblem } from "../lib/store-dir.js";
-import { askManager, scatterManager, managerFailure, readFailure, refuseUnregisteredManager, startStackManagerRemedy, unansweredDescribeRefusal, type ScatterInstanceLiveness, type ScatterInstanceReply, type ManagerPin, managersByInstance, type ManagerCandidate, askYourManagers, locateSeat, managerReadFailure, refusedManagers, seatMissRefusal } from "@cotal-ai/workspace/control";
+import { askManager, scatterManager, managerFailure, readFailure, refuseUnregisteredManager, startStackManagerRemedy, unansweredDescribeRefusal, type ScatterInstanceLiveness, type ScatterInstanceReply, type ScatterReply, type ManagerPin, managersByInstance, type ManagerCandidate, askYourManagers, locateSeat, managerReadFailure, refusedManagers, seatMissRefusal } from "@cotal-ai/workspace/control";
 
 /**
  * The manager's operator clients — thin control-plane request/reply commands (`stop`/`ps`/
@@ -314,10 +317,11 @@ const stopRetryWords = (v: { force?: unknown; json?: unknown; plain?: unknown })
   ...(v.json === true ? ["--json"] : v.plain === true ? ["--plain"] : []),
 ];
 
-/** The words a terminal input retry needs to keep the original text and Enter behavior. */
-const inputRetryWords = (text: string, noEnter?: boolean): string[] => [
+/** Keep the original text, Enter behavior and receipt format on a terminal input retry. */
+const inputRetryWords = (text: string, v: Pick<FlagValues<typeof inputFlags>, "no-enter" | "json" | "plain">): string[] => [
   text.startsWith("-") ? `--text=${text}` : text,
-  ...(noEnter === true ? ["--no-enter"] : []),
+  ...(v["no-enter"] === true ? ["--no-enter"] : []),
+  ...(v.json === true ? ["--json"] : v.plain === true ? ["--plain"] : []),
 ];
 
 /** Resolve a targeted verb's manager and retain the presence-selected seat for its fresh caller.
@@ -578,7 +582,7 @@ export interface PsResult {
  *  `status`'s reading that no agent application is set up here, so an empty list's Next agrees with
  *  the one `status` gives. `interactive` is whether a terminal is there to answer `setup`'s
  *  questions, as `status` reads it: without one, the Next points at `setup --help` instead. */
-export function psView(result: PsResult, wide: boolean, rowsOf: ReadonlyMap<string, readonly unknown[]> = new Map(), noApplication = false, mode?: string, interactive = true, spawnCommand?: string): Report {
+export function psView(result: PsResult, wide: boolean, rowsOf: ReadonlyMap<string, readonly unknown[]> = new Map(), noApplication = false, mode?: string, interactive = true, spawnCommand?: string, seatCommand?: (verb: "attach" | "stop") => string, launchBlock?: string): Report {
   const empty = result.kind === "slots" ? "No active static slots." : "No managed agents.";
   const blocksFor = (rows: readonly unknown[]): Block[] =>
     !rows.length ? [{ kind: "lines", lines: [{ text: empty, tone: "hint" }] }]
@@ -587,16 +591,19 @@ export function psView(result: PsResult, wide: boolean, rowsOf: ReadonlyMap<stri
   // A single manager that answered is the common case: a flat list, no per-manager grouping noise.
   // Its instance id is still shown, with or without agents, because it is what `--on` takes.
   if (result.managers.length <= 1 && result.managers.every((m) => m.state === "answered")) {
-    const next = result.items.length ? [
-      { command: `${displayCmd()} attach <name>`, description: "Return to an agent's terminal" },
-      { command: `${displayCmd()} stop <name>`, description: "Stop one agent" },
+    const next = result.items.length ? seatCommand === undefined ? [] : [
+      { command: seatCommand("attach"), description: "Return to an agent's terminal" },
+      { command: seatCommand("stop"), description: "Stop one agent" },
     ] : noApplication ? [interactive ? { command: `${displayCmd()} setup`, description: "Set up an agent application" } : { command: `${displayCmd()} setup --help`, description: "See setup flags for scripts. Bare setup needs a terminal." }]
     : spawnCommand === undefined ? [] : [{ command: spawnCommand, description: "Launch your default agent" }];
     const sections: Section[] = [
       { title: result.kind === "slots" ? "Static slots" : "Agents", blocks: blocksFor(result.items) },
       ...result.managers.map((m): Section => ({ title: "Manager", blocks: [{ kind: "fields", rows: [["instance", m.instanceId], ...(m.reportedHost ? [["reported host", m.reportedHost] as [string, string]] : [])] }] })),
     ];
-    if (next.length) sections.push({ title: "Next", blocks: [{ kind: "commands", items: next }] });
+    if (next.length || launchBlock) sections.push({ title: "Next", blocks: [
+      ...(next.length ? [{ kind: "commands" as const, items: next }] : []),
+      ...(launchBlock ? [{ kind: "lines" as const, lines: [{ text: launchBlock, tone: "hint" as const }] }] : []),
+    ] });
     return { sections };
   }
   // Several managers: one section each, named by the FULL instance id, since `--on` takes nothing
@@ -618,10 +625,24 @@ export function psView(result: PsResult, wide: boolean, rowsOf: ReadonlyMap<stri
   };
 }
 
-/** Whether no agent application is set up here, as `status` reports "Agent applications: not set up".
- *  An inventory that cannot be read says nothing, so the Next stays the launch. */
-function noApplicationHere(): boolean {
-  try { return connectorHarnesses().every((harness) => harness.missing.length > 0); } catch { return false; }
+/** Resolve the target of the suggested foreground launch, independently of the manager's defaults. */
+function psLaunchNext(scope: { space?: string; server?: string }, command?: string): { noApplication?: boolean; spawn?: string; block?: string } {
+  let noApplication = false;
+  try {
+    const connectors = connectorHarnesses();
+    noApplication = connectors.every((harness) => harness.missing.length > 0);
+    if (!command || !connectors.length) return { noApplication };
+    const { space, root } = resolveMeshTarget(process.cwd(), { ...scope, readOnly: true });
+    const context = { space, preferences: cachedPreferences() };
+    const persona = resolvePreference("persona", context).winner!;
+    const pin = defaultPersonaPin(directPersonaPath(root, persona.value), persona.source === "default");
+    const harness = resolvePreference("harness", { ...context, pin }).value!;
+    const block = defaultLaunchBlock(harness, connectors);
+    return block ? { noApplication, block } : { spawn: command };
+  } catch {
+    // This is optional advice. An unreadable inventory or persona cannot confirm a launch.
+    return { noApplication };
+  }
 }
 
 function psCommand(v: FlagValues<typeof psFlags>, slots = false): string | undefined {
@@ -693,9 +714,15 @@ export async function ps(args: ParsedArgs): Promise<void> {
     if (slots || on !== undefined || !failure || !(failure instanceof NoManagerAnswered || noLiveManager(failure))) throw e;
     return psFromPresence(v, presentation);
   }
-  const spawnCommand = v.server !== undefined && brokerAddressForDisplay(v.server) !== v.server ? undefined
-    : onRerun(`${displayCmd()} spawn`, { space: v.server === undefined ? census.target.space : v.space, server: v.server });
-  const view = (result: PsResult): Report => psView(result, wide, census.rowsOf, !result.items.length && noApplicationHere(), census.mode, presentation === "rich" && canPrompt(), spawnCommand);
+  const scope = v.server !== undefined && brokerAddressForDisplay(v.server) !== v.server ? undefined
+    : { space: v.server === undefined ? census.target.space : v.space, server: v.server };
+  const spawnCommand = scope && onRerun(`${displayCmd()} spawn`, scope);
+  const manager = census.target.managerInstanceId;
+  const seatCommand = scope && ((verb: "attach" | "stop") => onRerun(`${displayCmd()} ${verb} <name>`, scope, manager ? ["--on", manager] : []));
+  const view = (result: PsResult): Report => {
+    const next = result.items.length || result.managers.length > 1 ? {} : psLaunchNext(scope ?? {}, spawnCommand);
+    return psView(result, wide, census.rowsOf, next.noApplication, census.mode, presentation === "rich" && canPrompt(), next.spawn, seatCommand, next.block);
+  };
   writeResult(
     presentation,
     {
@@ -745,7 +772,7 @@ function startManagerNext(root: string | undefined, space: string, named: boolea
   const pid = root === undefined ? undefined : runningStackManagerPid(root, space);
   if (pid !== undefined) return { command: `kill -KILL ${pid}`, description: "End the stack manager that does not answer; bare `cotal up` then starts it again" };
   const entry = findMesh(space);
-  if (root !== undefined && (stackManagerAbsent(root, space) || (entry?.origin === "up" && entry.root === root))) return { command: "cotal up", description: "Start the stack's manager" };
+  if (root !== undefined && (stackManagerAbsent(root, space, { unanswered: true }) || (entry?.origin === "up" && entry.root === root))) return { command: "cotal up", description: "Start the stack's manager" };
   return { command: `cotal manager start${at}`, description: "Start a manager for this space" };
 }
 
@@ -941,31 +968,43 @@ export async function readSeats(v: ConnectFlags & FlagValues<typeof psFlags>, co
   // what this command established about it (pin 3).
   const target = { space: t.space, scope: "all-managers" };
   const scatter = await scatterManager(cliControl, t.space, t.server, command, t.auth, t.spaceAuth, undefined, { reportHosts: true });
+  if (!scatter.ok) throwScatterFailure(scatter, target, t, command, v);
+  return seatCensus(target, scatter.instances, command, t.mode, v);
+}
+
+/** Classify a failed `ps` / `slots` scatter against this root's local stack state without
+ *  mistaking an unanswered registered standalone manager for an absent stack manager. */
+export function throwScatterFailure(
+  scatter: Extract<ScatterReply, { ok: false }>,
+  target: { space: string; scope: string },
+  t: { root?: string; space: string; server: string },
+  command: "ps" | "slots",
+  v: FlagValues<typeof psFlags>,
+): never {
   // An empty manager registry on this root's own controller stack, whose manager does not run, is
   // a known boundary with a remedy; the registry's own failure stays the cause. So is a registry
   // that still lists that manager after its process died: no manager answered the read. While an
   // `up` is still starting that manager, the answer is to wait for it, not to start another.
-  if (!scatter.ok && (scatter.code === "failed-precondition" || scatter.unanswered === true) && t.root !== undefined) {
+  if ((scatter.code === "failed-precondition" || scatter.unanswered === true) && t.root !== undefined) {
     const native = { code: scatter.code, ...(scatter.error ? { detail: scatter.error } : {}) };
     if (stackManagerStarting(t.root, t.space))
       throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "the stack's manager is starting, so it has no managed agents to list yet", { target, native, remedy: `run ${psRerun(v, command === "slots")} again once \`cotal up\` reports the manager started` });
-    if (stackManagerAbsent(t.root, t.space))
+    if (stackManagerAbsent(t.root, t.space, { unanswered: scatter.unanswered === true }))
       throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "no manager is running for this space, so it has no managed agents to list", { target, native, remedy: psManagerStartRemedy(t) });
   }
-  const silentPid = !scatter.ok && scatter.unanswered === true && t.root !== undefined ? runningStackManagerPid(t.root, t.space) : undefined;
-  if (!scatter.ok && silentPid !== undefined)
+  const silentPid = scatter.unanswered === true && t.root !== undefined ? runningStackManagerPid(t.root, t.space) : undefined;
+  if (silentPid !== undefined)
     throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `this space's stack manager (pid ${silentPid}) is running but did not answer, so no agents were listed`, { target, native: { code: scatter.code, ...(scatter.error ? { detail: scatter.error } : {}) }, remedy: `if it stays unresponsive, end that process with kill -KILL ${silentPid}; then bare \`cotal up\` starts the manager again` });
   // Anywhere else, a registry that was read and lists no live manager is the same boundary: no
   // manager was asked. It is not proof that no manager process runs, since one that is starting or
   // cannot register is not listed, so the refusal says only what the registry showed.
-  if (!scatter.ok && scatter.noLiveManager)
+  if (scatter.noLiveManager)
     throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "no manager is registered for this space, so none was asked and nothing was listed. A manager that is still starting or cannot register has no registration either, so this does not show that no manager process runs", { target, native: { code: scatter.code, ...(scatter.error ? { detail: scatter.error } : {}) }, remedy: psManagerStartRemedy(t) });
-  if (!scatter.ok) throw readFailure(scatter, target);
-  return seatCensus(target, scatter.instances, command, t.mode, v);
+  throw readFailure(scatter, target);
 }
 
 /** Diagnose the channel seed only for the recorded local stack at the broker we asked. */
-function psManagerStartRemedy(t: Awaited<ReturnType<typeof resolveControlTarget>>): string {
+function psManagerStartRemedy(t: { root?: string; space: string; server: string }): string {
   let entry: ReturnType<typeof findMesh>;
   try { entry = findMesh(t.space); } catch { entry = undefined; }
   if (entry?.origin === "up" && entry.root === t.root && brokerUrlKey(entry.server) === brokerUrlKey(t.server)) {
@@ -1173,7 +1212,7 @@ export function inputArguments(args: ParsedArgs): { name: string; text: string }
   const text = positionalText ?? values.text;
   if (!name?.trim() || /[\u0000-\u001f\u007f]/u.test(name)) throw new CommandFailure("refused", "USAGE_INVALID", "input needs one concrete agent name without terminal control characters");
   if (!text) throw new CommandFailure("refused", "USAGE_INVALID", "input needs nonempty text; use --text for a value beginning with a dash");
-  if (values.on !== undefined) onInstance(values.on, onRemedyVerb("cotal input", { ...values, name }, inputRetryWords(text, values["no-enter"])), managerRosterHint(values));
+  if (values.on !== undefined) onInstance(values.on, onRemedyVerb("cotal input", { ...values, name }, inputRetryWords(text, values)), managerRosterHint(values));
   return { name, text };
 }
 
@@ -1181,7 +1220,7 @@ export async function input(args: ParsedArgs): Promise<void> {
   const parsed = inputArguments(args);
   const v = { ...args.values, ...parsed } as FlagValues<typeof inputFlags> & { name: string; text: string };
   refuseControlCreds(v.creds, v.space);
-  const pin = await pinForTarget(v as never, "cotal input", inputRetryWords(v.text, v["no-enter"]), { onRefusal: "throw" });
+  const pin = await pinForTarget(v as never, "cotal input", inputRetryWords(v.text, v), { onRefusal: "throw" });
   const on = pin.instanceId;
   // A typed pin the registry does not list is refused at once, as stop refuses it.
   if (v.on !== undefined && on !== undefined) {

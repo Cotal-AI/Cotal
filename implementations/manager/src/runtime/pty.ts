@@ -47,6 +47,8 @@ export class LegacyPtyRuntime implements Runtime {
       cols: DEFAULT_COLS,
       rows: DEFAULT_ROWS,
       cwd,
+      // The bundled ConPTY releases its console host when the last attached process exits.
+      ...(process.platform === "win32" ? { useConptyDll: true } : {}),
       // Pass ONLY the connector-declared env (OS allow-list + identity + named model key) —
       // never `...process.env`. The operator's unrelated secrets (AWS/GH/other service keys) don't
       // bleed into the child. `spec.env ?? {}` so a connector that forgets env fails loud (no

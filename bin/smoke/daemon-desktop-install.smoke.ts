@@ -53,7 +53,7 @@ interface Frame {
   ok?: boolean;
   line?: string;
   progress?: { step: string; outcome: string; detail: string };
-  error?: { code: string; message: string; remedy?: string; native?: { code: string; detail?: unknown } };
+  error?: { code: string; message: string; remedy?: string; native?: { code: string; detail?: unknown }; detail?: { installed?: boolean } };
   result?: { installed: boolean; status: { state: string; pid: number }; omittedRelativePathEntries?: string[] };
 }
 async function requestFrames(target: Isolated, body: string | Record<string, unknown>, timeoutMs = 35_000): Promise<Frame[]> {
@@ -248,6 +248,7 @@ const control = isolated("control");
 const absent = await request(control, "status");
 assert.equal(absent.error?.code, "NOT_RUNNING");
 assert.equal(absent.error?.message, "The daemon is not running. Install its background service first.");
+assert.equal(absent.error?.detail, undefined, "a service not set up yet carries no installed mark");
 assert.ok(!existsSync(control.receipt));
 const installing = request(control, "install");
 // Observe rejection immediately even if a later setup assertion throws before we await it.
@@ -294,6 +295,8 @@ const beforeStatus = operations(control.calls);
 const stopped = await request(control, "status");
 assert.equal(stopped.error?.code, "NOT_RUNNING");
 assert.equal(stopped.error?.message, "The background service is installed but stopped. Choose Start service to start it.");
+// The app shows Start service for this one, and stays quiet before the first sign-in for the one above.
+assert.deepEqual(stopped.error?.detail, { installed: true });
 // Status validates the recorded source without planning or starting a service.
 assert.deepEqual(operations(control.calls).slice(beforeStatus.length), ["directory-read"], "a status request reads the installation and starts nothing");
 console.log("installed and stopped: status names the stopped service, not a missing installation");
@@ -387,4 +390,25 @@ try {
   setupHeld.release();
   await oldDaemon.close();
 }
+// The app's uninstallers send remove-service: nothing recorded is left alone, and this installation's
+// recorded service is removed through the shipped uninstall. Another installation's is kept (Windows setup proof).
+{
+  const none = isolated("remove-absent");
+  const absentRemoval = await request(none, "remove-service");
+  assert.equal(absentRemoval.ok, true, JSON.stringify(absentRemoval));
+  assert.equal((absentRemoval.result as { state?: string } | undefined)?.state, "absent");
+  assert.deepEqual(operations(none.calls), [], "with no recorded service, removal runs no native step");
+  checkInstallation(control);
+  const before = operations(control.calls).length;
+  const removal = await request(control, "remove-service", 150_000);
+  assert.equal(removal.ok, true, JSON.stringify(removal));
+  assert.equal((removal.result as { state?: string } | undefined)?.state, "removed");
+  const steps = operations(control.calls).slice(before);
+  assert.ok(steps.includes("stop") && steps.includes("disable"), `removal stops and disables the recorded unit: ${steps.join(",")}`);
+  assert.ok(!existsSync(control.receipt) && !existsSync(control.unit), "removal deletes the receipt and the unit");
+  const again = await request(control, "remove-service");
+  assert.equal((again.result as { state?: string } | undefined)?.state, "absent", "a second removal finds nothing");
+  console.log("remove-service: nothing recorded is left alone; this installation's service is removed");
+}
+
 console.log(`daemon-desktop-install: passed; isolated evidence retained at ${root}`);

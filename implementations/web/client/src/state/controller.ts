@@ -52,6 +52,7 @@ export interface Api {
 
 export interface Controller {
   refresh(): Promise<void>;
+  refreshChannels(): Promise<void>;
   open(channel: string | null): Promise<void>;
   onRoster(roster: RosterEntry[]): void;
   onPresenceView(view: PresenceView): void;
@@ -179,6 +180,34 @@ function postsOf(s: DashboardState, id: string): StoredMessage[] {
 interface Life {
   reads: number;
   plane: boolean;
+}
+
+// Retained history can change without a live message. Reconcile it from the channel list, then
+// reread the open transcript if its count fell. Other views need no periodic history read.
+async function reconcileChannels(store: Store<DashboardState>, api: Api, open: Controller["open"], mark: (name: string, entry: StaleMark | undefined) => void, lastGood: Map<string, number>, now: () => number): Promise<void> {
+  const before = new Map(store.get().channels.map((row) => [row.channel, row]));
+  const [refusal] = await refreshAll([{
+    name: "channels", read: () => api.channels(),
+    apply: (rows: ChannelInfo[]) => store.set((s) => {
+      const current = new Map(s.channels.map((row) => [row.channel, row]));
+      const listed = new Map<string, ChannelRow>(rows.map((row) => [row.channel, row]));
+      // Keep changes that landed during the read. The next snapshot checks those rows again.
+      for (const [channel, row] of current) if (before.get(channel) !== row) listed.set(channel, row);
+      for (const channel of before.keys()) if (!current.has(channel)) listed.delete(channel);
+      const unread = Object.fromEntries(Object.entries(s.unread).filter(([channel]) => listed.has(channel)));
+      return { channels: [...listed.values()], unread };
+    }),
+  }]);
+  if (refusal) {
+    mark("channels", { ...refusal, lastRead: lastGood.get("channels") });
+    return;
+  }
+  lastGood.set("channels", now());
+  if (store.get().stale.some((entry) => entry.name === "channels")) mark("channels", undefined);
+  const { open: view, channels } = store.get();
+  if (!view) return;
+  const count = channels.find((row) => row.channel === view.channel)?.messages ?? 0;
+  if (count < Math.max(before.get(view.channel)?.messages ?? 0, view.messages.length)) await open(view.channel);
 }
 
 export function createController(store: Store<DashboardState>, api: Api, opts: ControllerOptions = {}): Controller {
@@ -420,11 +449,11 @@ export function createController(store: Store<DashboardState>, api: Api, opts: C
     let refused: string | null = null;
     try {
       // A history row carries no subject, so it has no verified sender: `senderId` stays unset. A
-      // message this page holds verified (on screen, arrived during the fetch, or held by the
-      // machine) keeps that copy.
+      // message this page holds verified (in Activity, on screen, or held by the machine) keeps that copy.
       const history = (await api.history(key, 200)).map((msg): StoredMessage => ({ msg }));
-      const view = store.get().open;
-      msgs = keepVerified(history, held, view?.channel === key ? view.messages : [], pending);
+      const { activity, open: view } = store.get();
+      const channelActivity = activity.filter((entry) => entry.mode === "chat" && entry.channel === key);
+      msgs = keepVerified(history, channelActivity, held, view?.channel === key ? view.messages : [], pending);
     } catch (err) {
       // A REFUSED READ KEEPS WHAT THE READER ALREADY HAD. The held messages take the place of the
       // history that could not be read, so the merge below is the same as on the successful path.
@@ -564,6 +593,8 @@ export function createController(store: Store<DashboardState>, api: Api, opts: C
     }
   }
 
+  let checkingChannels = false;
+
   // A hub the page first meets in a post or in a member's row has no delivery class until the next
   // channel read answers, and a family link waits on that class. One read, a short wait after the
   // first such hub, answers for every hub that appears within the wait; a channel the list never
@@ -652,6 +683,12 @@ export function createController(store: Store<DashboardState>, api: Api, opts: C
 
   return {
     refresh,
+    async refreshChannels() {
+      if (refreshing || checkingChannels) return;
+      checkingChannels = true;
+      try { await reconcileChannels(store, api, open, markStale, lastGood, now); }
+      finally { checkingChannels = false; }
+    },
     open,
     onRoster(roster) {
       liveApplied.add("peers");

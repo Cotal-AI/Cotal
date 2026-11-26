@@ -12,7 +12,7 @@ import {
   AGENT_COMMAND_MESSAGE_MAX, AGENT_COMMAND_STATE_DETAIL, AGENT_CONTRACTS, EpEnvelopeError, fitCommandEntries,
   type CommandEntry, type CommandIdInput, type CommandInput, type CommandOutput, type CommandState, type CommandStateOutput, type CommandTarget,
   type CommandsOutput, type EpErrorCode, type EpPrincipalCommandDef, type EpPrincipalServeContext, type FirstCommand, type InterruptOutput,
-  type PresenceAgentEndpoint, type TurnImage, type TurnInput, type UsageOutput,
+  type PresenceAgentEndpoint, type SetModelOutput, type TurnImage, type TurnInput, type UsageOutput,
 } from "@cotal-ai/core";
 
 /** A `commands` or `usage` reply waits at most this long for the harness. */
@@ -77,6 +77,13 @@ export interface CommandDispatcher {
   /** What the harness reports now. A field it has not reported yet is absent. Without it, or while
    *  {@link unsupported} names a cause, `usage` answers `supported: false`. */
   usage?(): Promise<AgentUsage>;
+  /** Switch the model the harness runs from its next turn, `model` undefined for the one it runs now,
+   *  and its variant, `undefined` to leave the variant to the harness. Resolves once the harness took the
+   *  switch, with the model it runs from its next turn, as the harness names it, and the variant it
+   *  runs, absent when it names none. Throw {@link CommandRefused} when the harness refused it and
+   *  nothing changed; any other throw leaves the model unknown. Without it, `set-model` is
+   *  `unimplemented`. */
+  setModel?(model: string | undefined, variant: string | undefined): Promise<SetModelOutput>;
 }
 
 /** The harness refused a command, and nothing started. */
@@ -129,7 +136,7 @@ function within<T>(work: () => Promise<T>, ms: number): Promise<T> {
 }
 
 /** The `agent` endpoint commands a dispatcher serves now, as presence shows them (SPEC §6). It never
- *  claims more than the handlers serve: `interrupt`, `turn` and `usage` only while {@link
+ *  claims more than the handlers serve: `interrupt`, `turn`, `usage` and `setModel` only while {@link
  *  CommandDispatcher.unsupported} names no cause, and `images` only with `turn`. */
 export function servedCommands(dispatcher: CommandDispatcher | undefined): PresenceAgentEndpoint {
   const now = dispatcher !== undefined && dispatcher.unsupported?.() === undefined;
@@ -139,11 +146,13 @@ export function servedCommands(dispatcher: CommandDispatcher | undefined): Prese
     turn,
     images: turn && dispatcher.images === true,
     usage: now && typeof dispatcher.usage === "function",
+    setModel: now && typeof dispatcher.setModel === "function",
   };
 }
 
-/** An agent never runs a command on itself or stops its own turn, whatever its row. */
-function notSelf(ctx: EpPrincipalServeContext, what: string): void {
+/** An agent never runs a command on itself, stops its own turn or switches its own model, whatever
+ *  its row. */
+export function notSelf(ctx: EpPrincipalServeContext, what: string): void {
   if (ctx.caller.owner === ctx.principal.owner && ctx.caller.actor === ctx.principal.actor)
     throw refused("permission-denied", `an agent never ${what}`);
 }

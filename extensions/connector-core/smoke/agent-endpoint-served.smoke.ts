@@ -3,8 +3,8 @@
  * dispatcher, with no broker.
  *
  * Covered: no dispatcher serves nothing; a pi-like dispatcher (commands, interrupt, turn, images,
- * usage) serves all four; one without images or without turn serves only what it has. A dispatcher
- * whose `unsupported()` names a cause serves none of the four: `turn` is then refused `unimplemented`
+ * usage, a model switch) serves all five; one without images, without turn or without a model switch
+ * serves only what it has. A dispatcher whose `unsupported()` names a cause serves none of the five: `turn` is then refused `unimplemented`
  * with that cause, as `command` and `interrupt` are, and `usage` answers `{ supported: false }` without
  * asking the harness. `openAgentEndpoint` shows the derived value when it serves, calls the dispatcher's
  * `watch` once, shows the value again each time the dispatcher says it changed, and shows nothing
@@ -20,9 +20,9 @@ import { openAgentEndpoint } from "../src/agent-endpoint.js";
 const { check, finish } = createSuite();
 const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
 let usageReads = 0;
-const served = (interrupt: boolean, turn: boolean, images: boolean, usage: boolean): PresenceAgentEndpoint => ({ interrupt, turn, images, usage });
+const served = (interrupt: boolean, turn: boolean, images: boolean, usage: boolean, setModel = false): PresenceAgentEndpoint => ({ interrupt, turn, images, usage, setModel });
 
-function dispatcher(o: { interrupt?: boolean; turn?: boolean; images?: boolean; usage?: boolean; cause?: () => string | undefined } = {}): CommandDispatcher & { watched: (() => void)[] } {
+function dispatcher(o: { interrupt?: boolean; turn?: boolean; images?: boolean; usage?: boolean; setModel?: boolean; cause?: () => string | undefined } = {}): CommandDispatcher & { watched: (() => void)[] } {
   const watched: (() => void)[] = [];
   return {
     watched,
@@ -34,24 +34,26 @@ function dispatcher(o: { interrupt?: boolean; turn?: boolean; images?: boolean; 
     ...(o.turn ? { turn: async () => {} } : {}),
     ...(o.images ? { images: true } : {}),
     ...(o.usage ? { usage: async () => (usageReads++, {}) } : {}),
+    ...(o.setModel ? { setModel: async (model: string | undefined) => ({ model: model ?? "m" }) } : {}),
     watch: (changed) => void watched.push(changed),
   };
 }
 
-const PI_LIKE = { interrupt: true, turn: true, images: true, usage: true };
+const PI_LIKE = { interrupt: true, turn: true, images: true, usage: true, setModel: true };
 
 console.log("\nthe derivation");
 check("no dispatcher serves nothing", same(servedCommands(undefined), served(false, false, false, false)));
-check("a pi-like dispatcher serves interrupt, turn, images and usage", same(servedCommands(dispatcher(PI_LIKE)), served(true, true, true, true)));
-check("a dispatcher that takes turns without images serves turn and no images", same(servedCommands(dispatcher({ ...PI_LIKE, images: false })), served(true, true, false, true)));
+check("a pi-like dispatcher serves interrupt, turn, images, usage and set-model", same(servedCommands(dispatcher(PI_LIKE)), served(true, true, true, true, true)));
+check("a dispatcher that takes turns without images serves turn and no images", same(servedCommands(dispatcher({ ...PI_LIKE, images: false })), served(true, true, false, true, true)));
+check("a dispatcher with no model switch does not serve set-model", same(servedCommands(dispatcher({ ...PI_LIKE, setModel: false })), served(true, true, true, true, false)));
 check("images without turn are not served", same(servedCommands(dispatcher({ images: true, interrupt: true })), served(true, false, false, false)));
-check("a dispatcher with only commands serves none of the four", same(servedCommands(dispatcher()), served(false, false, false, false)));
+check("a dispatcher with only commands serves none of the five", same(servedCommands(dispatcher()), served(false, false, false, false)));
 
 let cause: string | undefined = "the command mod is not running";
 const flipping = dispatcher({ ...PI_LIKE, cause: () => cause });
-check("while unsupported() names a cause: none of the four", same(servedCommands(flipping), served(false, false, false, false)));
+check("while unsupported() names a cause: none of the five", same(servedCommands(flipping), served(false, false, false, false)));
 cause = undefined;
-check("once it names none: all four", same(servedCommands(flipping), served(true, true, true, true)));
+check("once it names none: all five", same(servedCommands(flipping), served(true, true, true, true, true)));
 
 console.log("\nthe endpoint refuses what presence does not show");
 {
@@ -93,7 +95,7 @@ console.log("\nopenAgentEndpoint shows it and follows the dispatcher");
   check("it shows the derived value when it serves, and calls watch once", same(shown, [served(false, false, false, false)]) && d.watched.length === 1, { shown, watched: d.watched.length });
   cause = undefined;
   d.watched[0]!();
-  check("a change the dispatcher reports shows the new value", same(shown.at(-1), served(true, true, true, true)) && shown.length === 2, shown);
+  check("a change the dispatcher reports shows the new value", same(shown.at(-1), served(true, true, true, true, true)) && shown.length === 2, shown);
   await endpoint.close();
   cause = "gone";
   d.watched[0]!();
@@ -101,7 +103,7 @@ console.log("\nopenAgentEndpoint shows it and follows the dispatcher");
 
   const plain: PresenceAgentEndpoint[] = [];
   const plainEnd = await openAgentEndpoint({ ...fakeEp, setAgentEndpointPresence: async (v: PresenceAgentEndpoint) => void plain.push(v) } as never, { warn: () => {} });
-  check("with no dispatcher it shows all four false", same(plain, [served(false, false, false, false)]), plain);
+  check("with no dispatcher it shows all five false", same(plain, [served(false, false, false, false)]), plain);
   await plainEnd.close();
 }
 

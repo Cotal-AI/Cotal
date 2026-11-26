@@ -1,5 +1,5 @@
 /**
- * Agent commands, interrupt, the owner's turns and usage on OpenCode 1.x through the agent endpoint (SPEC 13.22): the real
+ * Agent commands, interrupt, the owner's turns, usage and the model switch on OpenCode 1.x through the agent endpoint (SPEC 13.22): the real
  * plugin, booted in-process, against a fake OpenCode server and a JWT broker with the shipped auth
  * callout. The fake answers as opencode 1.19.6 was measured to: `GET /command` is one list of
  * commands and skills, each `{ name, source, description?, template, hints, subtask? }` with `source`
@@ -10,9 +10,9 @@
  * and a stopped turn ends with a `MessageAbortedError` and an idle. `POST /session/:id/prompt_async`
  * answers a 204 at once. `GET /session/:id/message` lists `{ info, parts }`, where an assistant's
  * `info` carries `cost`, `providerID` and `modelID` and each model step ends in a `step-finish` part
- * with its `tokens`. `GET /provider` lists each provider's models with their `limit`.
+ * with its `tokens`. `GET /provider` lists each provider's models with their `limit` and `variants`.
  *
- * Covered: presence says the agent serves interrupt, turns with images and usage. The owner's session lists the commands, the MCP
+ * Covered: presence says the agent serves interrupt, turns with images, usage and the model switch. The owner's session lists the commands, the MCP
  * prompt as a command and the skills, with nothing else from OpenCode's entries, leaving out the
  * `/reconnect` the launch injects. A listed command runs under its name, and reads started once its
  * turn started after the hook, with OpenCode's answer still owed. Commands sent while that turn runs are queued and one is
@@ -27,7 +27,14 @@
  * 4xx answer ends it refused, failed-precondition. `usage` then reports the last step's input, cache
  * and output tokens of the model's input limit, and the sum of the assistant messages' cost, reading
  * the provider list once; a model the list has no window for leaves the context out. Listed newest
- * first, the step usage reports is still the newest message's. A command OpenCode fails after its
+ * first, the step usage reports is still the newest message's. `set-model` with no model, before
+ * any switch on an agent launched with none, is refused, failed-precondition, and asks OpenCode
+ * nothing. A switch to a model and variant `GET /provider` lists answers them, and then the prompt a
+ * DM drives, an owner's turn and a command each name them: a prompt the model as `{ providerID,
+ * modelID }`, a command as `provider/model`. A model the list lacks is not-found, and a variant the
+ * model lacks or an id with no provider is failed-precondition; the next prompt still names the
+ * earlier choice. A switch with no model keeps the chosen model and changes the variant, and one
+ * with no variant names none on the next prompt. A command OpenCode fails after its
  * hook ends refused, failed-precondition, and leaves the session free. One whose turn never starts
  * reads taken, ends unknown after 5 s, and leaves the session free, so interrupt then answers idle.
  * The broker refuses a sibling agent of the same owner.
@@ -125,7 +132,11 @@ let afterHook: "turn" | "fail" | "stall" = "turn";
 const SERVER_ERROR = { name: "UnknownError", data: { message: "Unexpected server error. Check server logs for details.", ref: "err_aeb81fe6" } };
 let refuseTurn = false;
 let messages: unknown[] = [];
-const providers = { all: [{ id: "opencode", models: { "m1": { id: "m1", limit: { context: 200000, input: 160000, output: 32000 } }, "m2": { id: "m2" }, "m3": { id: "m3", limit: { context: 262144, output: 65536 } } } }], default: {}, connected: ["opencode"] };
+const providers = { all: [{ id: "opencode", models: {
+  "m1": { id: "m1", limit: { context: 200000, input: 160000, output: 32000 } },
+  "m2": { id: "m2" },
+  "m3": { id: "m3", limit: { context: 262144, output: 65536 }, variants: { low: { reasoningEffort: "low" }, high: { reasoningEffort: "high" } } },
+} }], default: {}, connected: ["opencode"] };
 let held: (() => void) | undefined; // answers the POST of the command whose turn runs, ending that turn
 const calls: string[] = [];
 const bodies: Record<string, unknown>[] = [];
@@ -278,7 +289,8 @@ try {
   const served = await until(() => row()?.prompts !== undefined, 20_000);
   check("the plugin came online and serves its agent endpoint", served);
   await sleep(300);
-  check("presence says it serves interrupt, the owner's turns with images, and usage", same(row()?.agentEndpoint, { interrupt: true, turn: true, images: true, usage: true }), row()?.agentEndpoint);
+  check("presence says it serves interrupt, the owner's turns with images, usage and the model switch",
+    same(row()?.agentEndpoint, { interrupt: true, turn: true, images: true, usage: true, setModel: true }), row()?.agentEndpoint);
 
   const listed = await call(webEp, "commands");
   const catalog = listed.ok && listed.value.ok ? listed.value.data : verdict(listed);
@@ -409,6 +421,60 @@ try {
   const newestFirst = await usageOf();
   check("usage takes the step of the newest message by id when OpenCode lists the messages newest first",
     same(newestFirst, { supported: true, context: { used: 520, size: 160000 }, cost: { amount: 0.75, currency: "USD" } }), newestFirst);
+
+  {
+    const switchTo = async (args: Record<string, unknown>) => {
+      const r = await call(webEp, "set-model", args);
+      return { verdict: verdict(r), data: r.ok && r.value.ok ? r.value.data : undefined, message: r.ok && !r.value.ok ? r.value.error.message : "" };
+    };
+    // The body of the prompt the plugin drives for a DM, read before that turn ends.
+    const dmPrompt = async (text: string): Promise<Record<string, unknown> | undefined> => {
+      const at = calls.length;
+      await webEp.unicast(`${A}.cody`, text);
+      await until(() => calls.length > at);
+      const body = calls[at] === "prompt" ? bodies.at(-1) : undefined;
+      await runAndEndTurn();
+      return body;
+    };
+    const m3 = { providerID: "opencode", modelID: "m3" };
+    const beforeSwitch = calls.length;
+    const unnamed = await switchTo({ variant: "high" });
+    check("set-model with no model, before any switch on an agent launched with none, is refused, failed-precondition, and asks OpenCode nothing",
+      unnamed.verdict === "failed-precondition/not-executed" && unnamed.message.includes("name a model") && calls.length === beforeSwitch, [unnamed, calls.slice(beforeSwitch)]);
+    const switched = await switchTo({ model: "opencode/m3", variant: "high" });
+    check("set-model to a model and variant GET /provider lists answers them, after one read of the list",
+      same(switched.data, { model: "opencode/m3", variant: "high" }) && same(calls.slice(beforeSwitch), ["provider"]), [switched, calls.slice(beforeSwitch)]);
+    const dm = await dmPrompt("on the new model");
+    check("the next prompt a DM drives names that model and variant", same(dm?.model, m3) && dm?.variant === "high", dm);
+    const turned = await call(webEp, "turn", { text: "and this one" });
+    const turnState = await settle(turned.ok && turned.value.ok ? (turned.value.data as { id?: string }).id : undefined);
+    check("an owner's turn names them too",
+      turnState.label === "started" && same(bodies.at(-1), { parts: [{ type: "text", text: "and this one" }], model: m3, variant: "high" }), [turnState.label, bodies.at(-1)]);
+    await runAndEndTurn();
+    const command = await run({ target: "command", name: "init", args: "here" });
+    check("a command names the model as provider/model, with the variant",
+      command.label === "started" && same(bodies.at(-1), { command: "init", arguments: "here", model: "opencode/m3", variant: "high" }), [command.label, bodies.at(-1)]);
+    await endTurn();
+
+    const beforeRefusals = calls.length;
+    const unknownModel = await switchTo({ model: "opencode/m9", variant: "high" });
+    const unknownVariant = await switchTo({ model: "opencode/m1", variant: "high" });
+    const notAnId = await switchTo({ model: "m3" });
+    check("a model the provider list lacks is not-found, and a variant the model lacks or an id with no provider failed-precondition, each not-executed",
+      unknownModel.verdict === "not-found/not-executed" && unknownVariant.verdict === "failed-precondition/not-executed" && notAnId.verdict === "failed-precondition/not-executed"
+      && same(calls.slice(beforeRefusals), ["provider", "provider"]), [unknownModel, unknownVariant, notAnId, calls.slice(beforeRefusals)]);
+    const kept = await dmPrompt("after the refusals");
+    check("...and the next prompt still names the model and variant chosen before them", same(kept?.model, m3) && kept?.variant === "high", kept);
+
+    const variantOnly = await switchTo({ variant: "low" });
+    const low = await dmPrompt("at low");
+    check("set-model with no model keeps the chosen model and switches the variant, and the next prompt names both",
+      same(variantOnly.data, { model: "opencode/m3", variant: "low" }) && same(low?.model, m3) && low?.variant === "low", [variantOnly, low]);
+    const noVariant = await switchTo({ model: "opencode/m1" });
+    const plain = await dmPrompt("on m1");
+    check("set-model with no variant answers none, and the next prompt names the model and no variant",
+      same(noVariant.data, { model: "opencode/m1" }) && same(plain?.model, { providerID: "opencode", modelID: "m1" }) && plain !== undefined && !("variant" in plain), [noVariant, plain]);
+  }
 
   // On unchanged code each cell below leaves the seat wedged, and the idle that ends a cell frees it
   // for the next one.

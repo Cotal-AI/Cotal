@@ -281,6 +281,16 @@ async function runTurn(text) {
   activeTurn = turnId;
   activeTurnIsRace = text.includes("RACE");
   rolloutRecord("event_msg", { type: "task_started", turn_id: turnId, started_at: stamp() });
+  if (text.includes("USAGELIMIT")) {
+    // Codex's own usage limit, on every such turn: the turn fails on its first request, with the
+    // text and kind Codex writes to the rollout and sends on the app-server.
+    const message = "You've hit your usage limit. Upgrade to Pro or try again at Nov 28th, 2026 9:00 AM.";
+    rolloutRecord("event_msg", { type: "task_complete", turn_id: turnId, completed_at: stamp(), error: { message, codex_error_info: "usage_limit_exceeded" } });
+    activeTurn = undefined;
+    notify("turn/started", { threadId: THREAD, turn: { id: turnId, status: "inProgress" } });
+    notify("turn/completed", { threadId: THREAD, turn: { id: turnId, status: "failed", error: { message, codexErrorInfo: "usageLimitExceeded", willRetry: false } } });
+    return;
+  }
   if (text.includes("FAIL") && !failUsed) {
     // A turn that fails on its first request (what a rate limit looks like) ends in the SAME
     // frame it started in, so the client processes the start and the failed terminal in one

@@ -1,15 +1,15 @@
 // The connection bind and teardown of CotalEndpoint, as an internal component: open a connection and bind
 // everything that hangs off it, clear the connection-scoped state, close a failed bind, tear down a bind
-// that lost a race with stop, stop the endpoint, and report its native connections. Moved verbatim from
-// endpoint.ts. It owns its timers, the taps, the record of its own watch consumers and the subscription
-// denials it reported, and it opens and clears the endpoint's ConnectionState; the endpoint keeps
-// connectAndBind, the supervisor and the retry loop and forwards to these. Not re-exported by the index.
+// that lost a race with stop, stop the endpoint, and report its native connections. It owns its timers,
+// the taps, watch consumers and reported subscription denials, and it opens and clears the endpoint's
+// ConnectionState. The endpoint retains connectAndBind, the supervisor and the retry loop.
+// Not re-exported by the index.
 import type { DeliveryState } from "./endpoint-delivery-state.js";
 import type { LifecycleState } from "./endpoint-lifecycle-state.js";
 import type { CredentialState } from "./endpoint-credential-state.js";
 import type { ChannelRegistryState } from "./endpoint-channel-registry-state.js";
 import type { ConnectionState } from "./endpoint-connection-state.js";
-import type { EndpointIdentity } from "./endpoint-identity.js";
+import { OBSERVER_CONN_NAME_PREFIX, type EndpointIdentity } from "./endpoint-identity.js";
 import { requireBrokerFloor } from "./broker-floor.js";
 import { openChannelRegistry } from "./channels.js";
 import { drainAndClose } from "./connection-cleanup.js";
@@ -29,6 +29,7 @@ import { nextHeartbeat } from "./presence-heartbeat.js";
 import { PRESENCE_STORAGE } from "./streams.js";
 import { presenceBucket, dmStream, dmDurable, parseSubject } from "./subjects.js";
 import { isFromSubjectSender, authenticatedMessage, isReadableMessagePart } from "./endpoint-messages.js";
+import { hasStoredOrigin } from "./endpoint-provenance.js";
 import type { CotalMessage } from "./types.js";
 import { type ConsumerInfo, jetstream, jetstreamManager } from "@nats-io/jetstream";
 import { type KV, Kvm } from "@nats-io/kv";
@@ -209,8 +210,9 @@ export class EndpointConnection {
       // Keep native failures without eagerly capturing a request-origin stack on every operation.
       noAsyncTraces: true,
       // In USER MODE the connection `name` carries the client-chosen inbox nonce (= connId) the callout
-      // scopes `_INBOX_<connId>.>` on (see EndpointOptions.bearer); otherwise it's the display handle.
-      name: this.identity.userMode ? this.identity.connId : `cotal:${this.identity.card.name}`,
+      // scopes `_INBOX_<connId>.>` on (see EndpointOptions.bearer). Static observers carry a marker
+      // outside the display-name grammar so a participant named like an observer still counts.
+      name: this.identity.userMode ? this.identity.connId : `${this.identity.omitFromLiveMembership ? OBSERVER_CONN_NAME_PREFIX : "cotal:"}${this.identity.card.name}`,
       // Per-CONNECTION inbox namespace (the "Private Inbox" pattern), keyed on the connection nkey
       // (NOT the owner+actor principal): the reply inbox is per-connection plumbing, and under the auth
       // callout the principal is unknown to the client pre-connect (owner is derived server-side) while
@@ -456,6 +458,7 @@ export class EndpointConnection {
     this.delivery.subs.push(sub);
     void (async () => {
       for await (const m of sub) {
+        if (hasStoredOrigin(m.headers)) continue;
         let decoded: CotalMessage | undefined;
         try {
           decoded = m.json<CotalMessage>();

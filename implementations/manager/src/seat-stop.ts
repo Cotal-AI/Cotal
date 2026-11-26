@@ -3,6 +3,7 @@ import type { CleanupFailure, ControlReply, Presence } from "@cotal-ai/core";
 import { agentLifecycleSecretFilePaths } from "@cotal-ai/workspace";
 import { controlShutdown } from "./control-shutdown.js";
 import { removeInlineSnapshot } from "./launch.js";
+import { noteModelSet } from "./seat-model.js";
 import { withTimeout } from "./manager-timeout.js";
 import type { FreeSlotCause, Manager } from "./manager.js";
 import type { TeardownTarget } from "./retirement.js";
@@ -313,7 +314,8 @@ export class SeatStop {
    * unpopulated one logs nothing. The match is {@link isOwnPresence}. A seat being stopped is left to
    * the reap line. The heartbeat is the seat's own record and nothing validated it, so an unreadable
    * one prints as unknown instead of throwing inside the watch. A live record also gives the seat's
-   * display name, which {@link noteShownName} keeps with the seat.
+   * display name, which {@link noteShownName} keeps with the seat, and the model an owner's
+   * `set-model` switched it to, which {@link noteModelSet} keeps.
    */
   logSeatMeshTransitions(): void {
     if (typeof this.ep.presenceView === "function" && this.ep.presenceView().state !== "current") return;
@@ -324,6 +326,7 @@ export class SeatStop {
       if (seen.status !== "offline") {
         a.joinIssue = undefined;
         this.noteShownName(a, seen.card.name);
+        if (noteModelSet(a, seen, { workspaceRoot: this.config.workspaceRoot, log: (line) => console.error(line) })) this.deps.refreshSeatRecord(a);
       }
       const who = `${a.name} (${a.id}, uid ${a.lifecycleUid}${a.handle.pid !== undefined ? `, pid ${a.handle.pid}` : ""})`;
       if (seen.status === "offline" && !a.offMesh) {
