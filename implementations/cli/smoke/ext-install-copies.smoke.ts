@@ -239,12 +239,12 @@ registry.register({ kind: "command", name: "greet-example", summary: "Print a gr
       const name = damage ? "cotal-ext-metadata-changed" : "cotal-ext-metadata-control";
       const source = join(dir, name);
       mkdirSync(source);
-      writeFileSync(join(source, "package.json"), JSON.stringify({ name, version: "1.0.0", type: "module", main: "index.js", peerDependencies: { "@cotal-ai/core": ">=99.0.0" } }));
+      writeFileSync(join(source, "package.json"), JSON.stringify({ name, version: "1.0.0", type: "module", main: "index.js", peerDependencies: { "@cotal-ai/core": "*", "@cotal-ai/workspace": ">=99.0.0" } }));
       writeFileSync(join(source, "index.js"), `import { writeFileSync } from "node:fs";\nimport { registry } from "@cotal-ai/core";\nvoid registry;\n${damage ? 'writeFileSync(new URL("./package.json", import.meta.url), "{corrupt");' : ''}\nawait import("./missing-export.mjs");\n`);
-      writeFileSync(join(source, "missing-export.mjs"), 'import { notAnExportOfCore } from "@cotal-ai/core";\nvoid notAnExportOfCore;\n');
+      writeFileSync(join(source, "missing-export.mjs"), 'import { notAnExportOfWorkspace } from "@cotal-ai/workspace";\nvoid notAnExportOfWorkspace;\n');
       const added = cli(["ext", "add", source]);
-      check(`${name}: missing-export add refuses`, added.status === 1 && added.stderr.includes("notAnExportOfCore"));
-      check(`${name}: diagnosis keeps the validated peer floor`, added.stderr.includes("The installed @cotal-ai/core is BEHIND") && added.stderr.includes(">=99.0.0") && !added.stderr.includes("is corrupt or unreadable"));
+      check(`${name}: missing-export add refuses`, added.status === 1 && added.stderr.includes("notAnExportOfWorkspace"));
+      check(`${name}: diagnosis keeps the validated peer floor`, added.stderr.includes("The installed @cotal-ai/workspace is BEHIND") && added.stderr.includes(">=99.0.0") && !added.stderr.includes("is corrupt or unreadable"));
       check(`${name}: failed add leaves no installed candidate`, !existsSync(join(prefix, "node_modules", name)));
     }
   } finally {

@@ -865,7 +865,15 @@ selective `down`. Removing an additional runtime extension, one the manager was 
 refuses the next seat that names it; the manager's own runtime and the seats already running stay
 as they are. `remove` and `list` manage them. The `@cotal-ai/web` dashboard is the
 canonical service preset and local-process example. Installed packages and their location are described in
-[config](config.mdx). When a package needs an export its linked `@cotal-ai/*` peer does not have,
+[config](config.mdx). Before importing a package you choose, `add` checks its declared
+`@cotal-ai/core` peer range against the core it will link, even if the package marks that peer optional.
+It refuses an invalid or incompatible range without changing the installed extensions. Choose an
+extension build that supports your core or a CLI release that satisfies the declared range.
+`*` allows any version. The check compares prerelease versions at their actual precedence and ignores
+build metadata. In a source checkout, a `0.0.0` placeholder, with or without a prerelease label, cannot
+establish a mismatch. Seeding and self-update reconciliation do not apply this check.
+
+When a package needs an export its linked `@cotal-ai/*` peer does not have,
 `add` rolls back. Both `add` and a later load name the missing export and identify the older install
 when the versions establish one. If the versions match, check the extension's import against the
 exports of the linked peer before replacing either build.

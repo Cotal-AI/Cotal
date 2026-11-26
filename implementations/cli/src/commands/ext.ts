@@ -11,6 +11,7 @@ import { resolveSpace } from "../lib/status.js";
 import { claimExtensionMutation, extensionUpdatePassOwnedBy } from "../lib/ext-mutation.js";
 import { withInstallUmask } from "../lib/install-umask.js";
 import { npmInvocation, npmLifecycleEnvironment } from "../lib/npm-invocation.js";
+import { assertExtensionCorePeer } from "../lib/extension-core-peer.js";
 import { runSeed } from "../seed/reconcile.js";
 import { assertStageVerifier, stageExtensions } from "../lib/extension-stage.js";
 import { connectorConfigDir, extensionReinstallAdvice, isExtensionPathSpec as isPathSpec, resolveExtensionEntry } from "@cotal-ai/workspace";
@@ -243,14 +244,16 @@ export async function addExtension(spec: string, expectedPkg?: string, borrowMut
   // a repair after a parent SIGKILL sees the exact orphan identity and refuses to race it.
   if (seeding) markSeedChildLive(process.env.COTAL_EXT_SEEDING as string, Number(process.env.COTAL_EXT_SEEDING_PARENT));
   try {
-    mkdirSync(dir, { recursive: true, mode: 0o755 });
-    if (!existsSync(join(dir, "package.json"))) {
-      // `wx`: a dangling link at the name passes the check above, and must not be followed.
-      writeFileSync(join(dir, "package.json"), `${JSON.stringify({ name: "cotal-extensions", private: true }, null, 2)}\n`, { flag: "wx", mode: 0o644 });
-      provenance.wrote("extensions prefix", join(dir, "package.json"));
+    if (seeding || expectedPkg !== undefined) {
+      mkdirSync(dir, { recursive: true, mode: 0o755 });
+      if (!existsSync(join(dir, "package.json"))) {
+        // `wx`: a dangling link at the name passes the check above, and must not be followed.
+        writeFileSync(join(dir, "package.json"), `${JSON.stringify({ name: "cotal-extensions", private: true }, null, 2)}\n`, { flag: "wx", mode: 0o644 });
+        provenance.wrote("extensions prefix", join(dir, "package.json"));
+      }
     }
     if (seeding) await addTransaction(pkg, resolved, expectedPkg, true, announce);
-    else await installExtensionSet([{ pkg, spec: resolved }], announce, isPath ? { localOperand: spec } : undefined);
+    else await installExtensionSet([{ pkg, spec: resolved }], announce, { checkCorePeer: expectedPkg === undefined, ...(isPath ? { localOperand: spec } : {}) });
   } finally {
     if (seeding) clearChildMarker();
     releaseMutation();
@@ -275,7 +278,7 @@ function dropForeignLockEntries(lock: { packages?: Record<string, { extraneous?:
 export async function installExtensionSet(
   requests: readonly ExtensionInstallRequest[],
   announce: (line: string) => void = console.error,
-  opts?: { isolate?: boolean; localOperand?: string },
+  opts?: { isolate?: boolean; localOperand?: string; checkCorePeer?: boolean },
 ): Promise<void> {
   if (!requests.length) return;
   const ownerConfig = connectorConfigDir();
@@ -333,6 +336,7 @@ export async function installExtensionSet(
     for (const request of requests) {
       const meta = installedExtensionPackage(request.pkg);
       if (!meta || request.version !== undefined && meta.version !== request.version) throw new Error(`extension set installed an unexpected version of ${request.pkg}`);
+      if (opts?.checkCorePeer) assertExtensionCorePeer(request.pkg, meta.peerDependencies?.["@cotal-ai/core"]);
       const dir = extensionPackageDir(request.pkg);
       const entry = resolveExtensionEntry(dir, meta);
       if (!existsSync(entry)) {
