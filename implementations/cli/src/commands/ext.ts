@@ -604,8 +604,13 @@ async function verifyCandidate(pkg: string, resolved: string, dir: string, recor
     fail(pkg, `could not update the extensions manifest: ${(e as Error).message}`);
   }
   provenance.wrote(`extensions manifest (+${pkg}@${version})`, extensionsManifestPath());
+  const providers = contributed.filter((ext) => ext.kind !== "commands");
+  const pluralCommands = contributed.filter((ext) => ext.kind === "commands");
   return [
-    c.green(`✓ added ${pkg}@${version}`) + c.dim(` - provides: ${contributed.map((ext) => `${ext.kind}:${ext.name}`).join(", ")}`),
+    c.green(`✓ added ${pkg}@${version}`) + (providers.length ? c.dim(` - provides: ${providers.map((ext) => `${ext.kind}:${ext.name}`).join(", ")}`) : ""),
+    ...(pluralCommands.length
+      ? [c.yellow(`  Registered ${pluralCommands.map((ext) => `commands:${oneLine(ext.name)}`).join(", ")} in the registry only. Use kind \`command\` in the extension to add a CLI command.`)]
+      : []),
     ...(!entry.serviceMetadata && (servicePresets.length || localProcesses.some((component) => component.service !== undefined))
       ? [c.dim(`  its services cannot run on this platform: protected workstation file access is not available in this release`)]
       : []),

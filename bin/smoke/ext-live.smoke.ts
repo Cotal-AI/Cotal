@@ -161,6 +161,24 @@ ok("ext list starts empty", /No extensions installed\./.test(cotal(["ext", "list
   ok("a later command resolves the same npm main", run.status === 0 && run.stdout.trim() === "hello world", run);
 }
 
+{
+  const pkg = "cotal-ext-plural-kind";
+  const name = "hello-ext-typo";
+  const path = fixture(pkg, GOOD.replace('kind: "command"', 'kind: "commands"').replace('name: "hello-ext"', `name: "${name}"`));
+  const add = cotal(["ext", "add", path]);
+  ok("add reports a plural kind as a registry entry and explains how to register a command",
+    add.status === 0 && add.stdout.includes(`added ${pkg}@1.0.0`) && !add.stdout.includes(`provides: commands:${name}`)
+      && add.stdout.includes(`Registered commands:${name} in the registry only.`) && add.stdout.includes("Use kind `command`"), add);
+  const list = cotal(["ext", "list"]);
+  ok("list retains the extension and its original registry contribution",
+    list.status === 0 && list.stdout.includes(pkg) && list.stdout.includes(`commands:${name}`), list);
+  const help = cotal(["help"]);
+  const run = cotal([name]);
+  ok("a plural kind does not add a CLI command", help.status === 0 && !help.stdout.includes(name)
+    && run.status === 1 && run.stderr.includes(`unknown command: ${name}`) && run.stdout === "", run);
+  ok("the extension with the plural kind still removes cleanly", cotal(["ext", "remove", pkg]).status === 0);
+}
+
 // -- B: cache-only help/complete; run fails loud while broken -------------------------------------
 {
   const good = readFileSync(installedIndex, "utf8");

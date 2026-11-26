@@ -837,7 +837,9 @@ For a scoped package such as `@acme/_helper`, include the scope and the leading 
 If the package is already absent, `remove` reports that nothing was removed and exits 0.
 
 Operator-installed extensions: `add` installs an npm package into a cotal-owned prefix and records
-every registry provider it contributes. Commands appear in help, completion, and dispatch; runtime
+every registry provider it contributes. If the package registers kind `commands`, the receipt lists
+those entries separately and tells the author to use `command` for CLI commands. The package stays
+installed and `list` shows its recorded providers. Commands appear in help, completion, and dispatch; runtime
 providers are loaded on demand by commands such as `supervise`, and by a running manager the first
 time a managed seat names one with `spawn --runtime <name>`, so a `pty` manager launches a seat on
 an installed `tmux` without a restart; local process providers participate in `status` and
