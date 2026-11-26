@@ -1,8 +1,21 @@
-import { BASELINE_LIFECYCLE_ENDPOINT, EpEnvelopeError, unansweredRequest, type EpAttributedReply } from "@cotal-ai/core";
+import { BASELINE_LIFECYCLE_ENDPOINT, boundedValue, EpEnvelopeError, oneLine, unansweredRequest, type EpAttributedReply } from "@cotal-ai/core";
 import { CommandFailure, brokerAddressForDisplay, codeSpan, isCommandFailure, isConnectRefusal, nativeEndpointRefusal } from "@cotal-ai/workspace";
 
 export class NativeReplyError extends Error {
   constructor(readonly response: EpAttributedReply, readonly phase: "invocation" | "target-inspection") { super("the native reply did not report success"); }
+}
+
+/** Only the reply's message is display text. Keep credentials and IDs out of that text. */
+function refusalReason({ reply }: EpAttributedReply): string | undefined {
+  const message = reply.error?.message.trim();
+  if (!message) return undefined;
+  const safe = message.replaceAll(reply.id, "[request ID]")
+    .replace(/-----BEGIN [^-]+-----[\s\S]*?-----END [^-]+-----|\b(?:eyJ[\w-]+(?:\.[\w-]+){1,2}|S[A-Z2-7]{57})\b/g, "[credential]")
+    .replace(/\b[a-z][\w+.-]*:\/\/[^\s<>"'`]+/gi, (url) => /[@?#]/.test(url) ? "[private URL]" : url)
+    .replace(/\bBearer\s+[\w.~+/-]+=*|\b(?:password|secret|seed|token|authorization)["']?\s*[:=]\s*(?:"[^"]*"|'[^']*'|[^\s,;]+)/gi, "[credential]")
+    .replace(/\b(?:[up]_[a-z2-7]{26}|[AU][A-Z2-7]{55})\b/g, "[owner ID]")
+    .replace(/\b[\da-f]{8}(?:-[\da-f]{4}){3}-[\da-f]{12}\b/gi, "[request ID]");
+  return oneLine(boundedValue(safe, 4352));
 }
 
 export function endpointFailure(error: unknown, target: Record<string, unknown>, mayHaveInvoked: boolean): CommandFailure {
@@ -21,7 +34,9 @@ export function endpointFailure(error: unknown, target: Record<string, unknown>,
       && target.endpoint === BASELINE_LIFECYCLE_ENDPOINT && (target.command === "resolve-cwd" || target.command === "list-dir" || target.command === "harness-commands")
       && error instanceof NativeReplyError && error.phase === "invocation"
       && error.response.reply.error?.details?.some((detail) => detail.kind === "ai.cotal.manager.absolute-directory-required");
-    return new CommandFailure("refused", code, mayHaveInvoked ? "the native endpoint refused the call before execution" : "the native endpoint view could not be resolved under this caller", {
+    const reason = mayHaveInvoked && !absoluteDirectoryRequired && error instanceof NativeReplyError && error.phase === "invocation" && native?.outcome === "not-executed"
+      ? refusalReason(error.response) : undefined;
+    return new CommandFailure("refused", code, reason ?? (mayHaveInvoked ? "the native endpoint refused the call before execution" : "the native endpoint view could not be resolved under this caller"), {
       target, native, cause: error, ...(absoluteDirectoryRequired ? { remedy: "pass an absolute path on the manager host" } : {}),
     });
   }
