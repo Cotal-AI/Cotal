@@ -296,9 +296,10 @@ If reconciliation succeeds but the registry version cannot be read, `cotal updat
 Even when the CLI is already at the latest release, `cotal update --self` reinstalls an installed
 first-party extension whose entry file is missing, empty, or cannot load with its dependencies.
 It reports a failed reinstall instead of declaring the installation current.
-On Linux and macOS, `cotal update --self` also removes abandoned private extension staging copies
-from the selected connector configuration, even when the CLI is current. Cleanup takes the extension
-writer lock and leaves staging alone while a writer is active or a promotion journal is present.
+On Linux and macOS, `cotal update --self` also removes abandoned extension staging copies
+from the selected connector configuration, even when the CLI is current. This includes copies
+renamed for promotion before the journal was written. Cleanup takes the extension writer lock
+and leaves staging alone while a writer is active or a promotion journal is present.
 A self-update inherits the extension state captured by the updating CLI, including added extensions
 and deliberate connector removals, even when that release has an older retained connector set.
 It reuses a matching retained copy or replaces an idle copy at the directory older releases expect.

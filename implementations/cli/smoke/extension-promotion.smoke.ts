@@ -68,6 +68,7 @@ for (const state of ["prepared", "old-renamed", "new-promoted"] as const) {
     stageIdentity: { dev: String(stat.dev), ino: String(stat.ino), birth: stat.birthtimeMs } }), { mode: 0o600 });
   reclaimAbandonedExtensionStages();
   assert.ok(existsSync(wrapper), "cleanup leaves the wrapper of a journaled stage alone");
+  assert.equal(readFileSync(join(stage, "whole"), "utf8"), "new", "cleanup leaves a journaled ready copy alone");
   if (state !== "prepared") renameSync(live, old);
   if (state === "new-promoted") renameSync(stage, live);
   recoverExtensionPromotion();
