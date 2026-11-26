@@ -1635,7 +1635,7 @@ async function runUp(args: ParsedArgs, invokedFrom: string, inheritedLock?: Main
               `! nats-server ${v.version} is below 2.14.5 and the presence bucket of "${held.space}" is file-backed: it can latch after a stall and close the mesh to new joins (#1356); put a nats-server 2.14.5 or newer on PATH (it wins over the bundled one)`,
             ),
           );
-        if (await fileMembershipStore(server, held.space, reconcileCreds)) throw membershipConversionRefusal(held.space);
+        if (await fileMembershipStore(server, held.space, reconcileCreds)) throw membershipConversionRefusal(held.space, "stop this stack with `cotal down --yes`, then retry the original start with `--recreate-membership-store`");
         for (const r of await reconcileSpaceMemoryBuckets({ servers: server, space: held.space, creds: reconcileCreds }))
           console.log(c.dim(r.recreated
             ? `  re-created ${r.stream}: it is Memory-backed and was lost when the broker restarted`
@@ -1643,6 +1643,7 @@ async function runUp(args: ParsedArgs, invokedFrom: string, inheritedLock?: Main
         // The dashboard cred is minted on a refresh too: a space that predates it may never boot again.
         if (held.mode === "auth" && spaceAuth) await provisionWebCreds(spaceAuth, root, held.space);
       } catch (e) {
+        if (isCommandFailure(e) && e.code === "LIFECYCLE_BLOCKED") throw e;
         stderrLine("✗ ", `mesh "${held.space}" is running at ${server} but its Memory buckets and lease TTLs could not be reconciled: ${(e as Error).message}`, c.red);
         process.exit(1);
       }
