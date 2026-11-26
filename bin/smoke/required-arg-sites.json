@@ -77,6 +77,7 @@
   "implementations/cli/src/commands/down-preserve.ts": 2,
   "implementations/cli/src/commands/history-clear.ts": 1,
   "implementations/cli/src/commands/history-limit.ts": 1,
+  "implementations/cli/src/commands/send.ts": 1,
   "implementations/cli/src/commands/space-delete.ts": 3,
   "implementations/cli/src/commands/status-health.ts": 1,
   "implementations/cli/src/commands/up-broker-auth.ts": 1,
