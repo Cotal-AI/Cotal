@@ -274,7 +274,7 @@ export async function setup(args: ParsedArgs): Promise<void> {
   const inputs = interactive ? await askInputs(values, runtimes) : scriptedInputs(values, runtimes);
   if (inputs === undefined) return cancelled(presentation, values.space);
   if (values.on !== undefined && inputs.destination !== "self-hosted") throw usage("--on selects a self-hosted manager; local startup pins the manager this root starts");
-  const plan = await planSetup(inputs, runtimes, values.start === true);
+  const plan = await planSetup(inputs, runtimes, values.start === true, presentation);
   await prepare(plan, { demo: Boolean(values.demo) || Boolean(values.full), interactive, presentation, start: values.start === true, detach: values.detach === true, configureOnly: values["configure-only"] === true, managerInstanceId: values.on }).catch(exitOnInterruptedAdd);
 }
 
@@ -589,7 +589,7 @@ interface SetupPlan {
 /** Every check setup makes before it writes: the space name, the application, the preferences
  *  folder it saves the harness in, the space at the destination, and the NATS server if the
  *  invocation explicitly requests local startup. */
-async function planSetup(inputs: SetupInputs, runtimes: readonly RuntimeChoice[], start: boolean): Promise<SetupPlan> {
+async function planSetup(inputs: SetupInputs, runtimes: readonly RuntimeChoice[], start: boolean, presentation: Presentation): Promise<SetupPlan> {
   const target = { space: inputs.space };
   const problem = preferenceSpaceProblem(inputs.space);
   if (problem) {
@@ -604,7 +604,7 @@ async function planSetup(inputs: SetupInputs, runtimes: readonly RuntimeChoice[]
   assertPreferencesFolderProtected();
   if (inputs.destination === "self-hosted") return { inputs, runtimes, candidate, space: checkSelfHostedSpace(inputs.space, inputs.project, inputs.connectionFile) };
   if (inputs.connectionFile !== undefined) throw usage("--connection-file registers a self-hosted space", "pass --destination self-hosted, or drop --connection-file");
-  let state: LocalSetupState = checkLocalSpace(inputs.space, inputs.project, "--project", true);
+  let state: LocalSetupState = checkLocalSpace(inputs.space, inputs.project, "--project", true, false, presentation);
   if (state === "started") {
     const registered = findMesh(inputs.space);
     const broker = registered?.origin === "up" && canonicalRoot(registered.root) === canonicalRoot(inputs.project)

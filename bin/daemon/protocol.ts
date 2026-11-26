@@ -19,7 +19,7 @@ import type { AccountComputerStatus } from "./account-state.js";
 import { normalizeIdpUrl } from "@cotal-ai/auth";
 import { DAEMON_PROTOCOL_VERSION, MAX_LINE_BYTES } from "./endpoint.js";
 
-const DAEMON_OPS = ["update-settings", "update-check", "name", "daemon-stop", "space-intent", "status", "status-watch", "spaces", "manager-start", "manager-status", "managers-stop", "managers-prepare-restart", "managers-abort-restart", "login-start", "login-cancel", "logout", "connect-check", "register", "service-connect", "service-disconnect", "service-status"] as const;
+const DAEMON_OPS = ["update-settings", "update-check", "name", "daemon-stop", "space-recover", "space-intent", "agent-stop", "agent-terminal", "status", "status-watch", "spaces", "manager-start", "manager-status", "managers-stop", "managers-prepare-restart", "managers-abort-restart", "login-start", "login-cancel", "logout", "connect-check", "register", "service-connect", "service-disconnect", "service-status"] as const;
 type DaemonOp = (typeof DAEMON_OPS)[number];
 
 /** The fields each op takes besides `v`, `id` and `op`. Required ones must be present. */
@@ -27,7 +27,10 @@ const OP_FIELDS: Record<DaemonOp, { readonly required: readonly string[]; readon
   "update-settings": { required: [], optional: ["auto", "notify"] },
   "update-check": { required: [], optional: [] },
   "daemon-stop": { required: [], optional: ["commit"] },
+  "space-recover": { required: ["space", "candidate", "holder"], optional: [] },
   "space-intent": { required: ["space", "enabled"], optional: [] },
+  "agent-stop": { required: ["space", "lifecycleUid"], optional: [] },
+  "agent-terminal": { required: ["space", "lifecycleUid"], optional: [] },
   name: { required: [], optional: ["name"] },
   status: { required: [], optional: [] },
   "status-watch": { required: [], optional: [] },
@@ -55,12 +58,19 @@ type LogoutResult =
   | { readonly kind: "logout"; readonly localLogin: "absent"; readonly serverRevoked: null }
   | { readonly kind: "logout"; readonly serverRevoked: boolean; readonly localLoginCleared: true; readonly removedRegistrations: readonly string[]; readonly skippedServices: readonly string[] };
 
+export type AgentRowRequest = { readonly space: string; readonly lifecycleUid: string } & (
+  { readonly op: "agent-stop" } | { readonly op: "agent-terminal" }
+);
+export const isAgentLifecycleUid = (value: unknown): value is string => typeof value === "string" && /^[A-Za-z0-9_-]{1,128}$/.test(value);
+
 export type DaemonRequest =
+  | ({ readonly v: typeof DAEMON_PROTOCOL_VERSION; readonly id: string } & AgentRowRequest)
   | { readonly v: typeof DAEMON_PROTOCOL_VERSION; readonly id: string; readonly op: "logout"; readonly idp: string }
   | { readonly v: typeof DAEMON_PROTOCOL_VERSION; readonly id: string; readonly op: "update-settings"; readonly auto?: boolean; readonly notify?: boolean }
   | { readonly v: typeof DAEMON_PROTOCOL_VERSION; readonly id: string; readonly op: "update-check" }
   | { readonly v: typeof DAEMON_PROTOCOL_VERSION; readonly id: string; readonly op: "name"; readonly name?: string }
   | { readonly v: typeof DAEMON_PROTOCOL_VERSION; readonly id: string; readonly op: "daemon-stop"; readonly commit?: boolean }
+  | { readonly v: typeof DAEMON_PROTOCOL_VERSION; readonly id: string; readonly op: "space-recover"; readonly space: string; readonly candidate: string; readonly holder: string }
   | { readonly v: typeof DAEMON_PROTOCOL_VERSION; readonly id: string; readonly op: "space-intent"; readonly space: string; readonly enabled: boolean }
   | { readonly v: typeof DAEMON_PROTOCOL_VERSION; readonly id: string; readonly op: "manager-start"; readonly space: string }
   | { readonly v: typeof DAEMON_PROTOCOL_VERSION; readonly id: string; readonly op: "manager-status"; readonly space: string }
@@ -118,6 +128,8 @@ export interface DaemonStatus {
 
 export interface HostedAgent {
   readonly name: string;
+  readonly id?: string;
+  readonly lifecycleUid?: string;
   readonly application: string;
   readonly model?: string;
   readonly cwd: string;
@@ -221,8 +233,8 @@ export interface DaemonSpaces {
 
 type Envelope = { readonly v: typeof DAEMON_PROTOCOL_VERSION; readonly id: string | null };
 export type DaemonResponse =
-  | (Envelope & { readonly ok: true; readonly result: HostedManager | DaemonSpaces | DaemonStatus | LogoutResult | CancelResult | ConnectCheckResult | RegisterResult | ServiceConnectionResult })
-  | (Envelope & { readonly ok: false; readonly error: { readonly code: ProtocolErrorCode; readonly message: string; readonly remedy?: string; readonly outcome?: "failed" | "refused" | "unknown" | "partial"; readonly changed?: readonly LogoutChange[] } })
+  | (Envelope & { readonly ok: true; readonly result: HostedManager | DaemonSpaces | DaemonStatus | LogoutResult | CancelResult | ConnectCheckResult | RegisterResult | ServiceConnectionResult | { readonly argv: readonly string[] } })
+  | (Envelope & { readonly ok: false; readonly error: { readonly code: ProtocolErrorCode | import("@cotal-ai/workspace").CommandFailure["code"]; readonly message: string; readonly remedy?: string; readonly outcome?: "failed" | "refused" | "unknown" | "partial"; readonly changed?: readonly LogoutChange[] } })
   | (Envelope & { readonly ok: true; readonly event: "login-prompt"; readonly attempt: string; readonly prompt: LoginPrompt })
   | (Envelope & { readonly ok: true; readonly event: "login-result"; readonly attempt: string; readonly result: LoginResult })
   | (Envelope & { readonly ok: true; readonly event: "status"; readonly result: DaemonStatus });
@@ -274,9 +286,18 @@ export function parseRequest(line: string): ParsedRequest {
     try { return { ok: true, request: { v, id, op, ...(obj.name !== undefined ? { name: computerName(obj.name) } : {}) } }; }
     catch (error) { return bad(id, error instanceof Error ? error.message : "invalid computer name"); }
   }
+  if (op === "space-recover") {
+    if (!isDaemonSpaceName(obj.space) || typeof obj.candidate !== "string" || !/^[0-9a-f]{64}$/.test(obj.candidate) || typeof obj.holder !== "string" || obj.holder.length > 2048) return bad(id, "invalid custody recovery");
+    try { return { ok: true, request: { v, id, op, space: obj.space, candidate: obj.candidate, holder: normalizeIdpUrl(obj.holder) } }; }
+    catch { return bad(id, "invalid custody recovery"); }
+  }
   if (op === "space-intent") {
     if (!isDaemonSpaceName(obj.space) || typeof obj.enabled !== "boolean") return bad(id, "space and enabled must name a space and a boolean");
     return { ok: true, request: { v, id, op, space: obj.space, enabled: obj.enabled } };
+  }
+  if (op === "agent-stop" || op === "agent-terminal") {
+    if (!isDaemonSpaceName(obj.space) || !isAgentLifecycleUid(obj.lifecycleUid)) return bad(id, "invalid local agent selection");
+    return { ok: true, request: { v, id, op, space: obj.space, lifecycleUid: obj.lifecycleUid } };
   }
   if (op === "spaces") {
     if (obj.refresh !== undefined && typeof obj.refresh !== "boolean") return bad(id, "refresh must be a boolean");

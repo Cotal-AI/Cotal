@@ -48,6 +48,7 @@ import { attachSeat as attachSeatWith, detachKey, type AttachTarget, type Attach
 import { completingFlagValue } from "../lib/completion.js";
 import { displayCmd } from "../lib/self-exec.js";
 import { shellWord } from "../lib/endpoint-errors.js";
+import { targetWords } from "../lib/confirmation-required.js";
 import { legacyBrokerPidfileBlock, runningStackManagerPid, stackManagerAbsent, stackManagerStarting, unusableStackJournal } from "../lib/stack-journal.js";
 import { connectorHarnesses, defaultLaunchBlock } from "../lib/status.js";
 import { defaultPersonaPin, directPersonaPath } from "../lib/spawn-defaults.js";
@@ -806,6 +807,20 @@ function managerItselfRemedy(name: string, openMesh: boolean, { space, server }:
   return openMesh ? status : `${status} ${read("cotal endpoint describe manager")} reads its commands.`;
 }
 
+/** Read OpenCode's reported selection for a seat without a recorded model request. */
+async function observedOpenCodeModel(values: ConnectFlags, row: AgentRow) {
+  const { ep } = await openTransient(values, "status", { throwOnRefusal: true, presenceOnly: true, report: () => {} });
+  try {
+    if (ep.presenceView().state !== "current") return;
+    const id = row.id.includes(".") ? row.id : `${DEV_OWNER}.${row.id}`;
+    const meta = ep.getRoster().find((p) => p.card.id === id && p.lifecycleUid === row.lifecycleUid)?.card.meta;
+    if (typeof meta?.model === "string" && meta.model)
+      return { model: meta.model, variant: typeof meta.variant === "string" && meta.variant ? meta.variant : undefined };
+  } finally {
+    await ep.stop().catch(() => {});
+  }
+}
+
 /** A named-agent detail uses its holding manager's inspect read and checks the selected lifecycle. */
 export async function agentStatus(args: ParsedArgs): Promise<void> {
   const name = args.positionals[0]!;
@@ -833,6 +848,8 @@ export async function agentStatus(args: ParsedArgs): Promise<void> {
     catch { managerHint = " --on <manager-instance>"; }
   }
   const projected = item ? agentStatusProjection(item, managerInstanceId) : { identity: null, execution: null, mesh: null, activity: null, details: null };
+  const observed = presentation !== "json" && item?.agent === "opencode" && !item.model && projected.mesh?.presenceState !== null && item.lifecycleUid
+    ? await observedOpenCodeModel(values, item).catch(() => undefined) : undefined;
   writeResult(presentation, {
     command: "status",
     target: { ...census.target, name },
@@ -848,13 +865,15 @@ export async function agentStatus(args: ParsedArgs): Promise<void> {
     ] };
     const identity = result.identity, execution = result.execution, mesh = result.mesh, activity = result.activity;
     const credential: [string, Cell][] = row.authHealth ? [["Credential", { text: row.authHealth, tone: authTone(row) }]] : [];
+    const model = execution.model ? `${execution.model} · requested, not provider-confirmed`
+      : observed ? `${observed.model} · reported by OpenCode` : "not reported";
     return { sections: [
       { title: "Identity", blocks: [
         ...(census.partial ? [{ kind: "lines" as const, lines: [{ text: "Other managers did not answer. This is one known match, not a complete uniqueness check.", tone: "waiting" as const }] }] : []),
         { kind: "fields", rows: [["Agent", psSeatLabel({ name: identity.name, id: row.id })], ["Space", census.target.space], ["Principal", row.id], ["Owner", identity.owner ?? "not established"], ["Actor", identity.actor ?? "not established"], ["Lifecycle", identity.lifecycleUid ?? "not reported"], ["Role", result.details.role ?? "not reported"]] },
       ] },
       { title: "Execution", blocks: [
-        { kind: "fields", rows: [["Process", processCell(row)], ["Application", execution.harness], ["Model", execution.model ? `${execution.model} · requested, not provider-confirmed` : "not reported"], ["Variant", result.details.variant ?? "not reported"], ["Reported provider", result.details.providerSource === "exact-principal-lifecycle" ? result.details.provider ?? "not reported" : "not established"], ["Name-matched provider", result.details.providerSource === "name-match-unverified" ? result.details.provider ?? "not reported" : "none"], ["Runtime", execution.runtime], ["PID", execution.pid === null ? "not reported" : String(execution.pid)], ["Host", execution.host ?? "not reported"], ["Folder", result.details.cwd ?? "not reported"], ["Manager", execution.managerInstanceId ?? "not reported"], ...credential] },
+        { kind: "fields", rows: [["Process", processCell(row)], ["Application", execution.harness], ["Model", model], ["Variant", result.details.variant ?? observed?.variant ?? "not reported"], ["Reported provider", result.details.providerSource === "exact-principal-lifecycle" ? result.details.provider ?? "not reported" : "not established"], ["Name-matched provider", result.details.providerSource === "name-match-unverified" ? result.details.provider ?? "not reported" : "none"], ["Runtime", execution.runtime], ["PID", execution.pid === null ? "not reported" : String(execution.pid)], ["Host", execution.host ?? "not reported"], ["Folder", result.details.cwd ?? "not reported"], ["Manager", execution.managerInstanceId ?? "not reported"], ...credential] },
         ...(row.authReason ? [{ kind: "lines" as const, lines: [{ text: row.authReason, tone: authTone(row) }] }] : []),
       ] },
       { title: "Mesh", blocks: [
@@ -1108,10 +1127,10 @@ async function readYourManagers(v: ConnectFlags & FlagValues<typeof psFlags>, co
   return seatCensus({ space, scope: "your-managers" }, instances, command, mode, v);
 }
 
-/** The remedy for a seat whose runtime streams no terminal, naming what does reach it in this
- *  CLI's own commands. */
-function noTerminalRemedy({ space, name }: { space: string; name: string }): string {
-  return `nothing was attached and the agent was not touched; follow the runtime's own guidance above, or reach the seat over the mesh with ${codeSpan(`${displayCmd()} send -t ${shellWord(name)} "<message>"`)} and ${codeSpan(`${displayCmd()} watch --space ${shellWord(space)}`)}`;
+/** Mesh commands for a seat whose runtime streams no terminal. Keep a private broker address out of the receipt. */
+export function noTerminalCommands(name: string, space: string, server?: string): { send: string; watch: string } {
+  const target = targetWords({ space, server: server !== undefined && brokerAddressForDisplay(server) !== server ? "<original-server>" : server });
+  return { send: `${displayCmd()} send -t ${shellWord(name)} "<message>"${target}`, watch: `${displayCmd()} watch${target}` };
 }
 
 /**
@@ -1126,7 +1145,10 @@ export async function attachSeat(
 ): Promise<AttachVerdict> {
   if (opts.onRefusal === "exit") refuseControlCreds(v.creds, v.space);
   const pin = opts.on === undefined && opts.onRefusal === "exit" ? await pinForTarget(v as never, "cotal attach") : { instanceId: opts.on };
-  return attachSeatWith({ ...v, expectedSeat: pin.expectedSeat ?? v.expectedSeat }, { ...opts, on: pin.instanceId, control: cliControl, verb: "cotal attach", noTerminalRemedy });
+  return attachSeatWith({ ...v, expectedSeat: pin.expectedSeat ?? v.expectedSeat }, { ...opts, on: pin.instanceId, control: cliControl, verb: "cotal attach", noTerminalRemedy: ({ name, space }) => {
+    const { send, watch } = noTerminalCommands(name, space, v.server);
+    return `nothing was attached and the agent was not touched; follow the runtime's own guidance above, or reach the seat over the mesh with ${codeSpan(send)} and ${codeSpan(watch)}`;
+  } });
 }
 
 async function pickAttach(values: FlagValues<typeof attachFlags>): Promise<{ name: string; on: string; expectedTarget: NonNullable<ManagerPin["expectedTarget"]> } | undefined> {
@@ -1185,9 +1207,12 @@ export async function attach(args: ParsedArgs): Promise<void> {
   }
   if (verdict.kind === "failed") throw new CommandFailure("failed", "OPERATION_FAILED", verdict.message);
   const detached = verdict.kind === "ended" && verdict.reason === "detached";
+  const census = v.server !== undefined && brokerAddressForDisplay(v.server) !== v.server
+    ? `${codeSpan(`${displayCmd()} ps`)} with your original space and broker options`
+    : codeSpan(onRerun(`${displayCmd()} ps`, v));
   console.error(renderReport({ sections: [{ title: verdict.kind === "gone" ? "Attach target no longer available" : detached ? "Detached" : "Attach session ended", blocks: [
     { kind: "fields", rows: [["Agent", v.name]] },
-    { kind: "lines", lines: [{ text: verdict.kind === "gone" ? "The selected agent or incarnation was not available to this attach request." : detached ? "Detaching did not send a stop request." : "The terminal session ended. This view sent no agent stop request; run `cotal ps` to check the agent's current state.", tone: "hint" }] },
+    { kind: "lines", lines: [{ text: verdict.kind === "gone" ? "The selected agent or incarnation was not available to this attach request." : detached ? "Detaching did not send a stop request." : `The terminal session ended. This view sent no agent stop request. Run ${census} to check the agent's current state.`, tone: "hint" }] },
   ] }] }, "rich", process.stderr));
 }
 

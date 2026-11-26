@@ -47,7 +47,7 @@ const { observeServiceProcess, serviceInstances } = await import("../src/lib/ser
 const { check, finish } = createSuite();
 const env: Record<string, string> = {};
 for (const [key, value] of Object.entries(process.env)) if (value !== undefined && !key.startsWith("COTAL_") && key !== "FORCE_COLOR" && key !== "NO_COLOR") env[key] = value;
-Object.assign(env, { HOME: home, USERPROFILE: home, COTAL_HOME: process.env.COTAL_HOME, XDG_CONFIG_HOME: join(home, ".config"), COTAL_SKIP_CONNECTOR_SEED: "1", TERM: "xterm-256color" });
+Object.assign(env, { HOME: home, USERPROFILE: home, COTAL_HOME: process.env.COTAL_HOME, XDG_CONFIG_HOME: join(home, ".config"), COTAL_SKIP_CONNECTOR_SEED: "1", DO_NOT_TRACK: "1", TERM: "xterm-256color" });
 const launcher = resolveOnPath("cotal", env) ? "cotal" : "pnpm cotal";
 const COTAL = join(repoRoot, "bin", "cotal.ts");
 const TSX = join(repoRoot, "node_modules", ".bin", process.platform === "win32" ? "tsx.cmd" : "tsx");
@@ -303,6 +303,25 @@ const QUESTION = "Which one?";
       const picked = run([...args, "--space", space]);
       check(`the ${format} retry for ${space} reads its roster without selecting a default`, picked.status === 0 && getCurrent() === undefined &&
         (format === "-j" ? envelope(picked)?.target?.space === space : picked.stdout.startsWith(`Mesh: ${space}\n`)), shown(picked));
+    }
+  }
+  for (const [words, format] of [[["endpoint", "describe"], "--plain"], [["describe"], "--json"]] as const) {
+    const beforeSpace = [...words, "--server", A, format];
+    const refused = run([...beforeSpace, "--", "manager"]);
+    const error = envelope(refused)?.error;
+    const next = error?.remedy ?? refused.stderr.split("\nNext\n")[1] ?? "";
+    const retries = Array.from(String(next).matchAll(/`([^`]+)`/g), (match) => match[1]!);
+    check(`${words.join(" ")} ${format} keeps the endpoint after the delimiter in both exact retries`, refused.status === 2 &&
+      (format === "--json" ? error?.code === "TARGET_AMBIGUOUS" : /Code:\s+TARGET_AMBIGUOUS/.test(refused.stderr)) &&
+      retries.length === 2 && ["alpha", "shared"].every((space, i) => retries[i]?.endsWith(` ${beforeSpace.join(" ")} --space ${space} -- manager`)), shown(refused));
+    for (const [i, space] of ["alpha", "shared"].entries()) {
+      const retry = retries[i];
+      if (!retry?.endsWith(` ${beforeSpace.join(" ")} --space ${space} -- manager`)) continue;
+      const picked = run(execWords(retry).slice(-beforeSpace.length - 4));
+      const receipt = envelope(picked);
+      check(`the printed ${words.join(" ")} retry reaches ${space} without changing the selection`, picked.status === 2 && getCurrent() === undefined &&
+        (format === "--json" ? receipt?.error?.code === "UNSUPPORTED" && receipt?.target?.space === space && receipt?.target?.endpoint === "manager"
+          : picked.stderr.startsWith(`Mesh: ${space}\n`) && /Code:\s+UNSUPPORTED/.test(picked.stderr)), shown(picked));
     }
   }
   for (const [args, beforeSpace, afterSpace] of [

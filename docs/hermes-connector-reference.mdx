@@ -78,12 +78,8 @@ other reason to run Hermes: joining the Hermes you already have, with its creden
 integrations. Those live in your real profile, so a seat on a temp `HERMES_HOME` cannot reach your
 notification path.
 
-Set `COTAL_HERMES_ADOPT_HOME` to your profile directory to run the gateway there instead:
-
-```bash
-export COTAL_HERMES_ADOPT_HOME="$HOME/.hermes"
-cotal spawn --agent hermes
-```
+To run the gateway in your profile, follow [Use your own Hermes profile](connect-hermes.mdx#use-your-own-hermes-profile).
+Set `COTAL_HERMES_ADOPT_HOME` to the profile directory and select an agent file without a Markdown body.
 
 The value must be an absolute path. The launcher refuses a relative path, and a `~` your shell did
 not expand, before it writes anything, because either would resolve against the directory the

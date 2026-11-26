@@ -18,6 +18,8 @@
  *   - a self-DM says it names this session, and nothing is sent;
  *   - a base name lists the present full names that start with it and sends nothing, and only the
  *     full name delivers;
+ *   - a DM over the broker's max_payload gives the live limit in bytes, says nothing was sent and
+ *     says to shorten or split it, while an ack timeout stays an unknown send outcome;
  *   - a request to a role nobody holds says it waits on the queue, and the next holder of that role
  *     receives it.
  *
@@ -172,6 +174,22 @@ try {
   check("an unrelated name keeps the plain refusal", unrelated.isError && unrelated.text === `Couldn't DM: no peer "grace" in space "${space}"`, unrelated.text);
   const full = await run(me, "cotal_dm", { to: "ada-lovelace (web)", text: "by full name" });
   check("the full name delivers", !full.isError && full.text.startsWith("Sent to ada-lovelace (web)."), full.text);
+  const limit = me.agent.ep.maxPayload;
+  const oversized = await run(me, "cotal_dm", { to: "ada-lovelace (web)", text: "x".repeat(limit) });
+  check(
+    "an oversized DM gives the live broker limit, says nothing was sent, and says to shorten or split",
+    oversized.isError &&
+      oversized.text.includes(`${limit}-byte message limit`) &&
+      oversized.text.includes("Nothing was sent.") &&
+      oversized.text.includes("Shorten the message or split it across several DMs.") &&
+      !oversized.text.includes("max_payload size exceeded"),
+    oversized.text,
+  );
+  const realDm = me.agent.dm;
+  const ackTimeout = new Error('timeout publishing to "x". The send outcome is unknown: the broker may have stored the message. Check before resending.');
+  me.agent.dm = async () => { throw ackTimeout; };
+  const unknown = await run(me, "cotal_dm", { to: "ada-lovelace (web)", text: "acked late" }).finally(() => { me.agent.dm = realDm; });
+  check("an ack timeout still reports an unknown send outcome", unknown.isError && unknown.text === `Couldn't DM: ${ackTimeout.message}`, unknown.text);
   const texts = (seat: Seat) => seat.agent.inboxSnapshot(8).items.map((i) => i.text);
   check("the full-name DM arrived", await until(() => texts(human).includes("by full name")), texts(human));
   await sleep(500);

@@ -225,15 +225,16 @@ async function recreateCheckpoint(
   broker: IsolatedBroker,
   space: string,
   checkpoint: PersistentConsumerCheckpoint,
+  openArtifact: boolean,
 ): Promise<void> {
-  const expected = consumerConfigFromCheckpoint(space, checkpoint);
+  const expected = consumerConfigFromCheckpoint(space, checkpoint, openArtifact);
   const login = await broker.addLogin({
     profile: "restore",
     scope: { operation: "checkpoint", checkpoint },
   });
   const nc = await connectIsolatedBroker(broker, login);
   try {
-    const info = await recreateConsumerCheckpoint(nc, space, checkpoint, RESTORE_TIMEOUT_MS);
+    const info = await recreateConsumerCheckpoint(nc, space, checkpoint, RESTORE_TIMEOUT_MS, openArtifact);
     if (info.config.opt_start_seq !== expected.opt_start_seq || info.config.deliver_policy !== expected.deliver_policy)
       throw new Error(`${checkpoint.stream}/${checkpoint.name} did not preserve its conservative checkpoint floor`);
     // A fresh durable can report a zero ACK floor or effectiveStart - 1. The start policy
@@ -330,7 +331,8 @@ export async function restoreAndValidate(
   for (const name of wanted)
     await validateRestoredStream(broker, space, staged.manifest.streams.find((entry) => entry.stream === name)!, 0);
   if (completeInfrastructure) await createOmittedInfrastructure(broker, space, wanted);
-  if (!onlyRegistry) for (const checkpoint of checkpoints) await recreateCheckpoint(broker, space, checkpoint);
+  if (!onlyRegistry) for (const checkpoint of checkpoints)
+    await recreateCheckpoint(broker, space, checkpoint, staged.manifest.mode === "open");
   if (!onlyRegistry) for (const name of wanted) {
     const count = checkpoints.filter((checkpoint) => checkpoint.stream === name).length;
     await validateRestoredStream(broker, space, staged.manifest.streams.find((entry) => entry.stream === name)!, count);

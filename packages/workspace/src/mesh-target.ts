@@ -109,6 +109,8 @@ export interface ResolveFlags {
    * preflight can name its root. Callers that do not sweep omit this; TAB completion must.
    */
   offline?: readonly string[];
+  /** Report that folder precedence is unverified when the command does not probe brokers. */
+  reportUnverifiedFolderPrecedence?: boolean;
   /** Broker inventory evidence used only by the unflagged registry fallback. */
   openInventory?: { served: readonly string[]; unserved: readonly string[] };
 }
@@ -896,7 +898,7 @@ function recordsRunElsewhere(folder: { root: string; registered: readonly string
  * A root with several running spaces, none of them the selection, keeps the selection and says so
  * before the command acts, with the `--space` that targets one of them instead.
  */
-function selectionTargetsHere(cwd: string, { space: current, source }: CurrentSelection, meshes: readonly MeshEntry[], offline: ReadonlySet<string>): boolean {
+function selectionTargetsHere(cwd: string, { space: current, source }: CurrentSelection, meshes: readonly MeshEntry[], offline: ReadonlySet<string>, reportUnverifiedFolderPrecedence = false): boolean {
   const folder = folderSpaces(cwd, meshes);
   if (source === "explicit") {
     if (folder && !folder.registered.includes(current) && folder.prepared !== current) {
@@ -917,6 +919,15 @@ function selectionTargetsHere(cwd: string, { space: current, source }: CurrentSe
     }
     noteFolderSpaceHeld(folder, current);
     return true;
+  }
+  if (reportUnverifiedFolderPrecedence) {
+    const space = running.length === 1 ? running[0]! : current;
+    const message = "This report uses local records. It cannot check whether this folder takes precedence over the automatically selected space. Name a space with `--space` to choose it explicitly.";
+    recordOperationSpaceNote(space, message);
+    recordOperationWarning(running.length === 1
+      ? { code: "BROKER_NOT_PROBED", target: { space }, message }
+      : { code: "SELECTION_NOT_FOLDER_SPACE", target: { space, folderSpaces: running, root: folder.root }, message }, { echo: false });
+    return running.length !== 1;
   }
   if (running.length === 1) {
     noteFolderSpace(running[0]!, current);
@@ -1235,7 +1246,7 @@ export function resolveMeshTarget(cwd: string, flags: ResolveFlags = {}): MeshTa
 
   const selection = readCurrentSelection();
   const meshes = loadMeshes();
-  if (selection && selectionTargetsHere(cwd, selection, meshes, offline)) {
+  if (selection && selectionTargetsHere(cwd, selection, meshes, offline, flags.reportUnverifiedFolderPrecedence)) {
     const current = selection.space;
     const cur = meshes.find((m) => m.space === current);
     if (!cur) {

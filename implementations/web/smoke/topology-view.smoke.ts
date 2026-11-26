@@ -18,6 +18,7 @@ import { createStore } from "../client/src/state/store.js";
 import { initialState, type DashboardState } from "../client/src/state/types.js";
 import { ForceLayout } from "../client/src/ui/graph/layout.js";
 import { TopologyGraph } from "../client/src/ui/graph/TopologyGraph.tsx";
+import { AgentPicker } from "../client/src/ui/panel/picker.js";
 import { TopologyView } from "../client/src/ui/views/TopologyView.tsx";
 import { bootReads, page, unusedApi } from "./controller-harness.js";
 import { renderShell } from "./render-shell.js";
@@ -360,6 +361,48 @@ const DomWheelEvent = (dom.window as unknown as { WheelEvent: typeof WheelEvent 
     ring !== null && r > 0 && Number(ring.getAttribute("r")) === r && Math.abs(dash[0]! / (2 * Math.PI * r) - 0.2) < 1e-9 && Math.abs(dash[0]! + dash[1]! - 2 * Math.PI * r) < 1e-9,
     { arc: arc?.outerHTML, ring: ring?.outerHTML });
   ok("6.4 and no other node has either", ["B", "C", "D"].every((id) => d.querySelector(`[data-node="${id}"] .ui-orbit, [data-node="${id}"] .ui-orbit-ring`) === null));
+}
+
+// 7. A dense overview keeps every agent, channel and live membership link, with names on demand.
+{
+  const channels = Array.from({ length: 60 }, (_, i) => chan(`team-${String(i).padStart(2, "0")}`));
+  const roster = Array.from({ length: 200 }, (_, i) => agent(`seat-${i}`, `review-worker-${i}`, i % 5 === 0 ? "working" : "idle"));
+  const membership = feed(roster.map((row, i) => member(row.card.id, [channels[i % channels.length]!.channel])));
+  const store = seed({ channels, roster, membership });
+  let picked = "";
+  const m = await mount(inShell(createElement(AgentPicker.Provider, { value: (id: string) => { picked = id; } },
+    createElement(TopologyView, { store, clock: () => NOW }))));
+  try {
+    const svg = m.container.querySelector(".ui-topo-svg")!;
+    const [, , width, height] = svg.getAttribute("viewBox")!.split(" ").map(Number) as [number, number, number, number];
+    const avatars = svg.querySelectorAll(".ui-ta-art > svg");
+    ok("7.1 a dense overview draws all agents, channels and member links", avatars.length === 200
+      && svg.querySelectorAll(".ui-tn").length === 60 && lines(svg, "ui-tl-member") === 200);
+    ok("7.2 full agent names are available on hover without overlapping inline labels", svg.querySelectorAll(".ui-ta-name").length === 0
+      && text(svg, ".ui-ta > title").sort().join() === roster.map((row) => row.card.name).sort().join());
+    const box = (node: Element, halfWidth: number, halfHeight: number) => {
+      const [x, y] = node.getAttribute("transform")!.slice(10, -1).split(" ").map(Number) as [number, number];
+      return { left: x - halfWidth, right: x + halfWidth, top: y - halfHeight, bottom: y + halfHeight };
+    };
+    const artBoxes = [...avatars].map((art) => {
+      const half = Number(art.getAttribute("width")) / 2;
+      return box(art.closest(".ui-ta")!, half, half);
+    });
+    const pills = [...svg.querySelectorAll(".ui-tn")].map((node) => box(node, Number(node.querySelector("rect")!.getAttribute("width")) / 2 + 1, 13));
+    const shapes = [...artBoxes, ...pills];
+    ok("7.3 avatars, working orbits and channel pills fit within the drawing", shapes.every((b, i) => {
+      const pad = i < artBoxes.length ? 8 : 0;
+      return b.left >= pad && b.right <= width - pad && b.top >= pad && b.bottom <= height - pad;
+    }));
+    ok("7.4 no avatar or channel pill overlaps another in the overview", shapes.every((a, i) => shapes.slice(i + 1).every(
+      (b) => a.right <= b.left || b.right <= a.left || a.bottom <= b.top || b.bottom <= a.top)));
+    const node = svg.querySelector('[data-node="seat-199"] .ui-ta-art > svg')!;
+    const Mouse = node.ownerDocument.defaultView!.MouseEvent;
+    await m.run(() => node.dispatchEvent(new Mouse("click", { bubbles: true })));
+    ok("7.5 picking a dense avatar still picks that same agent", picked === "seat-199", picked);
+  } finally {
+    await m.unmount();
+  }
 }
 
 await closeDom();

@@ -810,25 +810,27 @@ try {
       }
       const before = attachCalls;
       // Forcing `isTTY` also turns the report's color on, so the receipt is read without it.
-      const fgOut = plain(await atTerminal(() => capture(() => run("spawn", ["poet", "--no-events", "--agent", "e2e", "--space", SPACE, "--name", "pane", "--on", on2]))));
+      const fgOut = plain(await atTerminal(() => capture(() => run("spawn", ["poet", "--no-events", "--agent", "e2e", "--space", SPACE, "--server", SERVER, "--name", "pane", "--on", on2]))));
       ok("a foreground launch on a runtime with no terminal joins and returns", joinedAs(fgOut, "pane"), fgOut);
       ok("and asks for no attach the detached launch did not also make", attachCalls - before === managerOwn, { foreground: attachCalls - before, detached: managerOwn });
       ok("nothing about it is partial", !/Partly completed|OPERATION_PARTIAL/.test(fgOut), fgOut);
       ok("its receipt names the runtime as streaming no terminal", /Runtime:\s+e2e-nostream [·-] no terminal stream/.test(fgOut), fgOut);
       ok("and says where the seat runs instead of claiming a view", /View:\s+not attached; the seat runs in the manager's e2e-nostream session/.test(fgOut), fgOut);
-      ok("its Next names what reaches the agent without a terminal", /watch --space/.test(fgOut) && /send -t pane/.test(fgOut), fgOut);
+      const scope = `--space ${SPACE} --server ${SERVER}`;
+      const scopedHints = (text: string) => text.includes(`watch ${scope}`) && text.includes(`send -t pane "<message>" ${scope}`);
+      ok("its Next reaches the launched seat's mesh without a terminal", scopedHints(fgOut), fgOut);
       ok("and says once that attach is not available here", /attach is not available here: the e2e-nostream runtime streams no terminal\./.test(fgOut), fgOut);
       const ptyJson = await capture(() => run("spawn", ["poet", "--detach", "--no-events", "--agent", "e2e", "--space", SPACE, "--name", "ptyseat", "--on", on1, "--json"]));
       ok("a pty manager reports the terminal it does have, so nothing skips its attach", (JSON.parse(ptyJson) as { result: { streamsTerminal: boolean | null } }).result.streamsTerminal === true, ptyJson);
       // And `attach` on such a seat refuses once, by the runtime's own guidance, naming what does
       // reach it — never "inspect and reattach", which that runtime cannot do either.
       let refusal: { code?: string; message?: string; remedy?: string } | undefined;
-      try { await run("attach", ["pane", "--space", SPACE, "--on", on2, "--no-reconnect"]); }
+      try { await run("attach", ["pane", "--space", SPACE, "--server", SERVER, "--on", on2, "--no-reconnect"]); }
       catch (e) { refusal = e as { code?: string; message?: string; remedy?: string }; }
       const said = { code: refusal?.code, message: refusal?.message, remedy: refusal?.remedy };
       ok("attach on that seat is refused UNSUPPORTED, not as a lifecycle condition to retry", refusal?.code === "UNSUPPORTED", said);
       ok("the refusal carries the runtime's own guidance", /e2e-nostream runtime: watch this agent where it runs/.test(refusal?.message ?? ""), said);
-      ok("and its Next names the mesh, never a reattach", /send -t pane/.test(refusal?.remedy ?? "") && !/reattach/.test(refusal?.remedy ?? ""), said);
+      ok("and its Next names the seat's space and broker, never a reattach", scopedHints(refusal?.remedy ?? "") && !/reattach/.test(refusal?.remedy ?? ""), said);
       for (const name of ["pane", "pane2", "ptyseat"]) await capture(() => run("stop", ["--name", name, "--space", SPACE]));
     } finally {
       await mgr2.stop().catch(() => {});

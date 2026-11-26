@@ -1186,6 +1186,19 @@ try {
     hostedList.includes("Open meshes cannot host workflow runs.") && hostedListErrors === "" && ["cotal", "pnpm cotal"].some((cli) =>
       hostedList.includes(`${cli} r list --local --space ${spaceB} --server '${server}'`) && hostedList.includes(`${cli} r simulate <file>`)
         && !hostedList.includes(`${cli} r start`)), { hostedList, hostedListErrors });
+  const selectors = ["--endpoint", "custom", "--space", spaceB, "--server", server, "--json"];
+  const missing = ["show", "run-missing", ...selectors];
+  const lookup = (...flags: string[]) => runCli(...missing, ...flags).catch((error: { code?: number; stdout: string; stderr: string }) => error);
+  const [direct, local, pinned] = await Promise.all([lookup(), lookup("--local"), lookup("--on", mintLifecycleUid())]);
+  const missingResult = JSON.parse(direct.stdout || "{}");
+  c("B0d. Unpinned show on a broker-only open mesh reports a missing run just as an explicit local read does",
+    "code" in direct && direct.code === 2 && direct.stderr === "" && direct.stdout === local.stdout && missingResult.error?.code === "TARGET_NOT_FOUND"
+      && missingResult.target?.space === spaceB && missingResult.target?.endpoint === "custom" && missingResult.target?.run === "run-missing"
+      && missingResult.error?.remedy === `list the recorded runs with \`cotal run list --local --space ${spaceB} --server '${server}' --endpoint custom --json\``, direct);
+  const pinnedError = JSON.parse(pinned.stdout || "{}").error;
+  c("B0e. An explicit manager pin does not read the broker journal",
+    "code" in pinned && pinned.code === 2 && pinned.stderr === "" && pinnedError?.code === "TARGET_UNAVAILABLE"
+      && pinnedError?.remedy.endsWith("a stack started with --no-manager has none"), pinned);
   const inventoryArgs = ["list", "--endpoint", "custom", "--space", spaceB, "--server", server, "--json"];
   const hostedInventory = await runCli(...inventoryArgs);
   const localInventory = await runCli(...inventoryArgs, "--local");
@@ -1269,6 +1282,24 @@ try {
   c("B6. and the manager it names is the running one: `run ps --on` that id reads", pinnedPs.includes("ok"), pinnedPs);
   await mgr.stop({ withAgents: true });
   mgr = undefined;
+  const recordedId = "run-recorded";
+  const recordedAt = Date.now();
+  const fixture = await connect({ servers: server });
+  try {
+    await createRunSpec(await openRecordsBucket(fixture, spaceB), "custom", recordedId, {
+      pins: { seed: "recorded", startedAt: recordedAt, yieldEvery: 1, stepBudget: 1, effectCeiling: 1, languageVersion: "1" }, createdAt: recordedAt,
+    });
+    const takeoverId = newTakeoverId();
+    await activateRun(jetstream(fixture), await jetstreamManager(fixture), {
+      space: spaceB, runId: recordedId, holder: `fixture.${takeoverId}`, epoch: 1, fencingToken: 1, takeoverId, at: recordedAt, expect: "new",
+    });
+  } finally { await fixture.close(); }
+  const recorded = await runCli("show", recordedId, ...selectors);
+  const recordedResult = JSON.parse(recorded.stdout);
+  c("B7. Unpinned show reads a recorded journal at the requested endpoint directly from the broker",
+    recorded.stderr === "" && recordedResult.outcome === "ok" && recordedResult.target?.space === spaceB
+      && recordedResult.result?.view?.runId === recordedId && recordedResult.result.view.endpoint === "custom"
+      && recordedResult.result.view.journal.some((row: RunJournalRowT) => row.kind === "activation" && row.epoch === 1), recorded);
 } catch (e) {
   fail++;
   console.log("  ✗ FAIL: phase B threw", (e as Error).stack ?? String(e));
@@ -1294,7 +1325,7 @@ try { await delivery?.stop(); } catch { /* teardown */ }
   if (stillUp.running.length) console.log(`  ! seat processes still running after SIGKILL: ${stillUp.running.join(", ")}`);
 }
 
-const EXPECTED_CELLS = 115;
+const EXPECTED_CELLS = 118;
 if (pass + fail !== EXPECTED_CELLS) {
   console.log(`SUITE INCOMPLETE — ran ${pass + fail} of ${EXPECTED_CELLS} cells; a partial run is not a pass`);
   fail += 1;

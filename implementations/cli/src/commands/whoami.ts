@@ -88,7 +88,7 @@ export async function whoami(args: ParsedArgs): Promise<void> {
     return await whoamiCredential(v.creds, presentation);
   }
   let t: ReturnType<typeof resolveMeshTarget>;
-  try { t = resolveMeshTarget(process.cwd(), { server: v.server, space: v.space }); }
+  try { t = resolveMeshTarget(process.cwd(), { server: v.server, space: v.space, reportUnverifiedFolderPrecedence: true }); }
   catch (error) {
     if (isMeshRegistryError(error)) throw registryFailure(error);
     if (!isWorkspaceTargetError(error) || error.code !== "not-started" || v.server !== undefined) throw error;

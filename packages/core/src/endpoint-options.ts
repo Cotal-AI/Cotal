@@ -29,6 +29,9 @@ export function deliveryLimitOf(value: string | undefined): number | null {
 /** Space joined when none is given on the CLI (the `cotal-<space>` cmux tab, etc.). */
 export const DEFAULT_SPACE = "main";
 
+/** The default idle lifetime of a self-created open-space DM inbox. */
+export const DEFAULT_OPEN_DM_INACTIVE_MS = 600_000;
+
 /** The longest delay `setTimeout` honors, 2^31-1 ms. */
 export const MAX_TIMER_MS = 2_147_483_647;
 

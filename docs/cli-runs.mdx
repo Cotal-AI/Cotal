@@ -71,11 +71,12 @@ wait until one has activated and run it again. Any other refusal of `start`, `re
 Hosted `start` on a known open mesh refuses `UNSUPPORTED` (exit 2) before looking for a manager.
 Use `cotal r simulate <file>` to test the program offline. Use a static-auth mesh to host the run.
 
-Otherwise, an unpinned hosted verb run by the operator reads the space's service registry first. When it
-lists no live manager, as after `cotal down stack-manager`, the verb refuses `TARGET_UNAVAILABLE`
-(exit 2) before waiting for a reply. If this machine started the stack at the requested broker,
-the next step names its project folder. A machine that only registered the space points you to
-the host where its stack runs.
+Otherwise, an unpinned hosted verb run by the operator reads the space's service registry first. On a
+known open mesh with no live manager, `show` reads the journal directly from the broker. A verb that
+needs a manager, including `show` with `--on`, refuses `TARGET_UNAVAILABLE` (exit 2) when the registry
+lists no live manager. If this machine started the stack at the requested broker, the next step
+names its project folder. A machine that only registered the space points you to the host where its
+stack runs.
 
 A mesh a run verb cannot resolve or connect to is refused before any request under the refusal's
 own code, hosted or `--local`, as `ps` refuses it. With no mesh running that is `TARGET_NOT_FOUND`,
@@ -107,8 +108,8 @@ recorded program. A run recorded `completed` or `failed` is
 refused `LIFECYCLE_BLOCKED` (exit 2) and gets no new activation, because nothing is left to continue;
 the next step is `cotal run show <runId>`. Neither takes `--endpoint`: the manager records
 its runs under its own endpoint, and naming another is refused. Bare `run` lists the run records and
-`show` renders one run's durable records; both only inspect. `show` reads the
-journal from the manager in pages, each one reply, so a journal larger than the broker's payload
+`show` renders one run's durable records; both only inspect. When it reads through a manager,
+`show` reads the journal in pages, each one reply, so a journal larger than the broker's payload
 limit stays readable. A record or a journal row too large for one reply refuses `UNSUPPORTED`,
 exit 2, and names `cotal run show <run-id> --local`, which reads the run's stream from its
 project folder with no reply. A manager from release 0.99.3 or earlier reads no journal page, so
