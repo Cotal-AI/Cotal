@@ -133,7 +133,8 @@ from the bottom.
 | Agent page | One agent at `#/agent/<id>`, with Work, Messages and Profile tabs. |
 
 The roster shows status by shape and color, role, activity, and harness. A role that is only
-whitespace is shown as no role.
+whitespace is shown as no role. A name that does not fit ends with an ellipsis. Hover over it to
+read the full name.
 The agent page, the panel's Agent tab and the waiting cards also show reported conditions,
 how long the status has stood, when the activity was set, and when the last work event occurred.
 Missing stamps stay undated. Ages use the same whole-unit rounding down as the CLI; a heartbeat
@@ -217,6 +218,7 @@ Live updates take precedence over older startup reads, including older reads tha
 A member following a channel family such as `team.>` links to each durable channel under it, the channels its stored copies cover.
 The view draws those links once it has read each channel's delivery class, including for a channel it first sees after the page loads, in a post or in a membership row that names it.
 Use **hide-offline** to hide durable members that are away.
+When the graph is crowded, hover over an avatar to read the agent's name or select it to open the agent's details.
 
 | Feed state | Meaning |
 | --- | --- |

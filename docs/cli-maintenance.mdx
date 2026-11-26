@@ -28,8 +28,9 @@ process if it is a leftover, or run the update from the installation that owns i
 installation first if its launch entry is gone. A missing external entry can have been a symlink
 into this installation, so its location alone does not prove that the Manager belongs elsewhere.
 
-macOS and Windows retain their existing Manager discovery in this release. The machine daemon
-continues to pin its hosted Managers on all supported platforms.
+On Windows, after a local stack has stopped, updates use Windows process inspection to check
+whether another local Manager may serve the space. A failed inspection does not establish that
+the Manager is gone. The machine daemon continues to pin its hosted Managers on all supported platforms.
 
 A local legacy custody report names the space, known Manager identity, seat count, and each
 seat's continuity class, including when there are no seats. Before a cold update, obtain the
@@ -409,10 +410,12 @@ gone. After `cotal down` stops that manager, `logs` still reads the log it left:
 manager is stopped, with its PID while its record still names one, and names `cotal up` under Next,
 and `--json` carries `recordedProcess` with `state` set to `stopped`. A one-shot tail of a missing
 log refuses `TARGET_NOT_FOUND` (exit 2) and names the file, even if the manager is running. An
-existing empty log returns an empty tail. If no manager is running but the folder's records show
-one ran there (a PID record that names a dead manager, or a retained instance identity), the
-refusal says the log is gone and names `cotal up` with the stack's `--root` and `--space`. If there
-is no such record, it also offers `cotal manager start` with the same `--space`.
+existing empty log returns an empty tail. If a running manager has no saved service, the missing-log
+refusal tells you where to read its output if you started it with `cotal supervise`. If no manager is
+running but the folder's records show one ran there (a PID record that names a dead manager, or a
+retained instance identity), the refusal says the log is gone and names `cotal up` with the stack's
+`--root` and `--space`. If there is no such record, it also offers `cotal manager start` with the same
+`--space`.
 `cotal service logs stack-manager` reads the same file when no `stack-manager` is saved.
 A manager that `cotal supervise` runs in a terminal writes to that terminal instead. `stop`,
 `install` and the other verbs refuse it while it runs, because no saved service owns it. It stops

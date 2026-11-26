@@ -2,8 +2,8 @@
  * The callout-only replica (`cotal auth-service --callout-only --space <s>`): one more member of the
  * space's `cotal-auth-callout` queue group, for availability and horizontal scale. It answers
  * connects with the same hooks as the full auth service ({@link calloutAuthority}) and holds nothing
- * else: no HTTP listener, no `auth-service.json`, no plane claim, no service registration, scanners,
- * barrier, evictor, pruning or sweeps.
+ * else apart from the exact session-connection sweep: no HTTP listener, no `auth-service.json`,
+ * no plane claim, service registration, scanners, barrier or pruning.
  *
  * This entry is one {@link openCalloutLane} plus the process around it: the signal handlers and the
  * non-zero exit on a loss, so the broker routes every later callout to the other members.
