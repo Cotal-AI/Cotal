@@ -59,7 +59,7 @@ import { cliControl, failIfNotOk, onRerun } from "../lib/control.js";
 import { askManagerFolder, managerPin, managerSelection, managersWithPersona, rerunOn, rerunWithCwd, type FolderCheck } from "../lib/manager-choice.js";
 import { canPrompt } from "./meshes-wizard.js";
 import { callerHarness, missingConnector, spawnPersona } from "../lib/spawn-defaults.js";
-import { attachSeat, joinedAgentRows, psSeatLabel } from "./agents.js";
+import { attachSeat, joinedAgentRows, noTerminalCommands, psSeatLabel } from "./agents.js";
 import { AgentAlreadyRunning, heldAnswer, settleHeldName } from "../lib/held-name.js";
 import { shellWord } from "../lib/endpoint-errors.js";
 import { materializeExtension, preflightRuntime } from "../ext-loader.js";
@@ -74,7 +74,7 @@ import {
   startStackManagerRemedy,
   withControlConnection,
 } from "@cotal-ai/workspace/control";
-import { spawnFlags, spawnRerun } from "./spawn-flags.js";
+import { spawnFlags, spawnModelRetry, spawnRerun } from "./spawn-flags.js";
 
 /** Whether the installed manifest lists a connector named `name`. An unreadable manifest answers
  *  true, so the import's own refusal reports it. */
@@ -125,16 +125,16 @@ export function managedLaunchView(r: ManagedLaunchResult, server?: string): Repo
   const explicitServer = server === undefined ? undefined : brokerAddressForDisplay(server);
   const broker = explicitServer === undefined ? "" : ` --server ${shellWord(explicitServer)}`;
   const target = concrete ? `${r.name} --space ${r.space}${broker} --on ${r.managerInstanceId}` : `<name> --space <space>${broker} --on <manager-instance>`;
-  const noStream = r.streamsTerminal === false;
+  const mesh = r.streamsTerminal === false ? noTerminalCommands(r.name, r.space, server) : undefined;
   return { sections: [
     { title: "Agent joined", blocks: [
-      { kind: "fields", rows: [["Agent", psSeatLabel({ name: r.name, id: r.id })], ["Identity", r.id], ["Lifecycle", r.lifecycleUid], ["Space", r.space], ["Manager receipt", r.managerInstanceId], ["Original request", r.intent?.requestId ?? r.request?.requestId ?? "not recorded"], ["Accepted goal", r.request?.goalId ?? "not reported"], ["Application", r.harness], ["Runtime", noStream ? `${r.runtime} · no terminal stream` : r.runtime], ["Role", r.role ?? "not recorded"], ...(r.acl ? [["Granted", `read ${channelList(r.acl.effective.allowSubscribe)} · post ${channelList(r.acl.effective.allowPublish)}; asked for read ${channelList(r.acl.requested.allowSubscribe)} · post ${channelList(r.acl.requested.allowPublish)}`] as [string, string]] : []), ["Model request", r.requestedModel ?? "persona/manager precedence; not inspected"], ["View", noStream ? `not attached; the seat runs in the manager's ${r.runtime} session` : r.detached ? "not attached" : "attaching to the allocated incarnation"]] },
+      { kind: "fields", rows: [["Agent", psSeatLabel({ name: r.name, id: r.id })], ["Identity", r.id], ["Lifecycle", r.lifecycleUid], ["Space", r.space], ["Manager receipt", r.managerInstanceId], ["Original request", r.intent?.requestId ?? r.request?.requestId ?? "not recorded"], ["Accepted goal", r.request?.goalId ?? "not reported"], ["Application", r.harness], ["Runtime", mesh ? `${r.runtime} · no terminal stream` : r.runtime], ["Role", r.role ?? "not recorded"], ...(r.acl ? [["Granted", `read ${channelList(r.acl.effective.allowSubscribe)} · post ${channelList(r.acl.effective.allowPublish)}; asked for read ${channelList(r.acl.requested.allowSubscribe)} · post ${channelList(r.acl.requested.allowPublish)}`] as [string, string]] : []), ["Model request", r.requestedModel ?? "persona/manager precedence; not inspected"], ["View", mesh ? `not attached; the seat runs in the manager's ${r.runtime} session` : r.detached ? "not attached" : "attaching to the allocated incarnation"]] },
       { kind: "lines", lines: [{ text: "The manager confirmed presence readiness. This is not proof that the kickoff task completed.", tone: "hint" }] },
     ] },
-    ...(noStream ? [{ title: "Next", blocks: [
+    ...(mesh ? [{ title: "Next", blocks: [
       { kind: "commands" as const, items: [
-        { command: `${displayCmd()} watch --space ${r.space}`, description: "Follow this mesh, this agent's messages included" },
-        { command: `${displayCmd()} send -t ${r.name} "<message>"`, description: "Give the agent work over the mesh" },
+        { command: mesh.watch, description: "Follow this mesh, this agent's messages included" },
+        { command: mesh.send, description: "Give the agent work over the mesh" },
         { command: `${displayCmd()} status ${target}`, description: "Read the agent's reported state" },
       ] },
       { kind: "lines" as const, lines: [{ text: `${displayCmd()} attach is not available here: the ${r.runtime} runtime streams no terminal.`, tone: "hint" as const }] },
@@ -342,8 +342,12 @@ export async function launchManagedPersona(
     }
     // A committed `failed` terminal is the manager's answer: the launch ran and failed, as an agent
     // that exits at once does, and the manager says why.
-    if (reply.code === "failed")
-      throw new CommandFailure("failed", "OPERATION_FAILED", reply.error ? oneLine(reply.error) : "the manager reported that the launch failed", { target, native, remedy: "fix what the manager reported, then run the spawn again" });
+    if (reply.code === "failed") {
+      const retry = reply.error?.startsWith("Jcode launch failed (model_prefix_rejected):") ? spawnModelRetry(values, positionals) : undefined;
+      throw new CommandFailure("failed", "OPERATION_FAILED", reply.error ? oneLine(reply.error) : "the manager reported that the launch failed", {
+        target, native, ...(retry ? { remedy: retry, remedyIsCommand: true } : { remedy: "fix what the manager reported, then run the spawn again" }),
+      });
+    }
     const unknown = reply.nativeOutcome !== "executed" || reply.unanswered;
     throw new CommandFailure(unknown ? "unknown" : "failed", unknown ? "OPERATION_UNKNOWN" : "OPERATION_FAILED", reply.error ? oneLine(reply.error) : "the manager did not confirm launch readiness", { target, native, remedy: "inspect `cotal ps` and the selected manager before retrying; this launch was not submitted again" });
   }

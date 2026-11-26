@@ -13,6 +13,7 @@ import { isRestoredConsumer } from "./backup.js";
 import { ackWaitOf, authenticatedChannelMessage, durableDelivery, isRecord } from "./endpoint-inbound.js";
 import type { CotalEndpoint } from "./endpoint.js";
 import { isFromSubjectSender } from "./endpoint-messages.js";
+import { hasStoredOrigin } from "./endpoint-provenance.js";
 import { deliveryLimitOf, fitHistoryPage, type HistoryPage } from "./endpoint-options.js";
 import { EVICT_PRINCIPALS_MAX, type KickTarget } from "./evict.js";
 import { issuedPermitsSubject } from "./issued-authority.js";
@@ -138,6 +139,7 @@ export class EndpointDeliveryPlane {
    *  {@link armDeliveryControl}; tracked so the stale one is dropped on reconnect. */
   deliveryServeSub?: import("@nats-io/transport-node").Subscription;
   deliveryAdminServeSub?: import("@nats-io/transport-node").Subscription;
+  private readonly targetedEvictions = new Set<Promise<ControlReply>>();
   /** The lifecycles whose membership inventory this daemon has been asked for, as principal to uids
    *  (#4965). A durable join or leave bound to one of them is refused, so no row of a retiring lifecycle
    *  is written after its inventory read starts. An entry goes when a later inventory for the same
@@ -629,12 +631,10 @@ export class EndpointDeliveryPlane {
       const i = this.delivery.subs.indexOf(this.deliveryAdminServeSub);
       if (i >= 0) this.delivery.subs.splice(i, 1);
     }
-    // The membership inventory is read-only and shares nothing with the other admin commands, so it
-    // does not queue behind them. In a mass stop each retirement's inventory followed every other
-    // seat's `evictPrincipal` on this rail and missed its 5 s deadline (#4965).
+    // Membership inventory and exact session evictions run outside the in-order admin chain.
     this.deliveryAdminServeSub = this.serveControl(CONTROL_DELIVERY_ADMIN, (req) => this.handleDeliveryAdmin(req), {
       boundReply: true,
-      concurrent: (req) => req.op === "lifecycleMemberships",
+      concurrent: (req) => req.op === "lifecycleMemberships" || req.op === "evictSessionConnections",
     });
   }
 
@@ -695,7 +695,8 @@ export class EndpointDeliveryPlane {
         ? { ok: false, error: failures.join("; "), data: { delivery, membership } }
         : { ok: true, data: { delivery, membership } };
     }
-    if (req.op === "evictPrincipal" || req.op === "evictSessionConnections") return this.deliveryEvictPrincipal(req);
+    if (req.op === "evictSessionConnections") return this.deliveryEvictSessionConnections(req);
+    if (req.op === "evictPrincipal") return this.deliveryEvictPrincipal(req);
     if (req.op === "evictPrincipals") {
       // The same executor over a SET: one shared sweep instead of one request and one scan per
       // principal. The set is bounded so one request stays inside one sweep's work.
@@ -812,6 +813,15 @@ export class EndpointDeliveryPlane {
     return { ok: false, error: `op "${req.op}" not supported on the delivery admin service` };
   }
 
+  private async deliveryEvictSessionConnections(req: ControlRequest): Promise<ControlReply> {
+    // Limit concurrent exact-connection scans across all callers of this delivery daemon.
+    while (this.targetedEvictions.size >= 4) await Promise.race(this.targetedEvictions);
+    if (!this.plane3MayAct()) return { ok: false, error: "delivery: this daemon is not serving this shard (it is re-checking ownership); retry" };
+    const flight = this.deliveryEvictPrincipal(req).finally(() => { this.targetedEvictions.delete(flight); });
+    this.targetedEvictions.add(flight);
+    return flight;
+  }
+
   private async deliveryEvictPrincipal(req: ControlRequest): Promise<ControlReply> {
     const hasFilter = !!req.args && Object.hasOwn(req.args, "connections");
     if (req.op === "evictSessionConnections" && !hasFilter)
@@ -892,7 +902,7 @@ export class EndpointDeliveryPlane {
     // would consume the successor's work.
     if (!this.plane3MayAct()) return;
     const parsed = parseSubject(m.subject);
-    if (!parsed || parsed.kind !== "chat") { m.ack(); return; }
+    if (!parsed || parsed.kind !== "chat" || hasStoredOrigin(m.headers)) { m.ack(); return; }
     const channel = parsed.rest;
     let msg: CotalMessage;
     try { msg = m.json<CotalMessage>(); } catch { m.ack(); return; }
@@ -1018,7 +1028,7 @@ export class EndpointDeliveryPlane {
     // serving the shard. The entry redelivers to the holder rather than being consumed here.
     if (!this.plane3MayAct()) return;
     const pr = parseDinboxPrincipal(m.subject);
-    if (!pr) { m.ack(); return; } // unparseable subject (incl. a pre-cut 5-segment form) — not a real entry
+    if (!pr || hasStoredOrigin(m.headers)) { m.ack(); return; }
     const owner = `${pr.owner}.${pr.actor}`; // the member principal dot-form (acl/member keys, msgID)
     let entry: Plane3Entry;
     try { entry = m.json<Plane3Entry>(); } catch { m.ack(); return; } // undecodable — drop
@@ -1134,7 +1144,7 @@ export class EndpointDeliveryPlane {
   /** Agent-side: bind + pump our pre-created Plane-3 DELIVER durable (`dlv_<id>`). Every message here is
    *  delivery-daemon-written (DLV is delivery-write-only, broker-enforced) and is a CHANNEL message by contract
    *  (the backstop never carries DMs), so `kind=channel` is path-derived (SPEC §4) and the body is
-   *  trusted (no spoof-guard). `durable:true` — real JetStream ack, coalesced with the core-sub live
+   *  trusted after the stored-origin check. `durable:true` — real JetStream ack, coalesced with the core-sub live
    *  copy by `MeshAgent.ingest`. No-op when the durable isn't present (open mode / not provisioned). A read
    *  list declared on a credential that cannot fetch the durable refuses. */
   async pumpDlv(): Promise<void> {
@@ -1174,6 +1184,11 @@ export class EndpointDeliveryPlane {
     this.delivery.streamMsgs.push(msgs);
     void (async () => {
       for await (const m of msgs) {
+        if (hasStoredOrigin(m.headers)) {
+          try { m.term(); } catch { /* draining */ }
+          this.emit("error", new Error("dropped delivery copy carrying stored-message headers. Send a fresh channel post without those headers."));
+          continue;
+        }
         // A copy with a full store behind it means the store held its count, so older copies may have
         // been discarded unread (#5404); NATS gives no notice of the discard itself. The count is the
         // one the trusted writer stamped on this copy. Checked on every delivery, ahead of the checks

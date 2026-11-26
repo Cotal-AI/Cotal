@@ -83,6 +83,10 @@ the address passed to `up -f --server`, copy the manifest beside the original an
 `broker.servers` in the copy to that address. Run `cotal team boot <manifest-copy> --foreground`
 with the copy. Add `--dry-run` to preview it instead.
 
+If another local space already records the exact broker address, a fresh `team boot` names
+the conflicting space and address without starting a broker. Choose a free port in the
+manifest's `broker.servers`, then run the retry command shown under Next.
+
 `--open` with `--service-endpoints` or any public exchange flag refuses `USAGE_INVALID` (exit 1)
 before startup. Remove those flags for an open space, or use them with `--user-auth` instead of `--open`.
 
@@ -248,7 +252,7 @@ terminal can also stop the stack. A controller `up` releases the startup lock be
 completed startup receipt. On a controller stack, the foreground
 `up` sees the completed stop or preserve, prints `Foreground stack released` and exits 0. The same
 applies when `cotal down --space <space> --yes` confirms the stop after the project folder is moved
-or deleted. On a retained stack, a clean broker exit after `down` makes `up` exit 0 without a crash diagnostic.
+or deleted. On a retained stack, a confirmed `down` makes foreground `up` exit 0 without a crash diagnostic, including on Windows. An unexpected broker exit still fails.
 If a controller stack's broker crashes, foreground `up` reports the exit and exits 5. It keeps
 the stack records and releases the foreground hold. Run the repair command printed by `up` to
 restart the same stack. For a broker-only stack, that command includes `--no-manager`.
@@ -269,8 +273,9 @@ command there. A hangup while the stack is still
 starting lets the start settle, prints the stop command and exits 129, and leaves what the start left.
 While a foreground `up` holds the stack, it records its process in `.cotal/stack-foreground.hold`,
 and a second foreground `up` on that stack refuses `CONFLICT`, exit 2, names that process, and
-starts nothing. The suggested restart keeps `--no-manager` when you requested it. If the journal
-records a different launching `COTAL_HOME`, the suggested stop and retry commands set it explicitly.
+starts nothing. The suggested restart keeps `--no-manager` and any explicit `--max-payload` value.
+If the journal records a different launching `COTAL_HOME`, the suggested stop and retry commands
+set it explicitly.
 Run them from the stack's folder. The holding process removes
 that record as it exits, a hangup included. A holder that was killed leaves it, and the next
 `cotal down` removes it once that process is gone. A
@@ -965,9 +970,11 @@ and a re-run of `cotal up` heals a dead service on a running broker. `up` waits 
 finish binding: while the daemon it launched (or found running) stays alive, the wait extends past
 the base 15s up to 60s; a daemon that exits is refused at once with "exited before becoming ready",
 and one alive past 60s is refused as "alive and still starting" (wedged), naming the pid record and
-the service log. `--user-auth` and `--open`
-contradict each other and are refused loudly; a running broker cannot change auth mode
-without a `cotal down` first. See [identity & auth](identity-and-auth.mdx).
+the service log. `--user-auth` and `--open` cannot be used together. A running broker cannot
+change auth mode. If this project started it, run `cotal down --dry-run` in the recorded folder
+to review the stop, then `cotal down --yes` to stop it. For a broker registered from elsewhere,
+use its original launcher to stop it. Retry your original startup command from its original folder
+so it keeps the space, broker address and IdP you selected. See [identity & auth](identity-and-auth.mdx).
 
 
 ### System-account rotation

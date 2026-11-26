@@ -2,11 +2,11 @@
 
 ## Ended terminal sessions on user-auth spaces
 
-A user-auth terminal connection now closes when the auth service confirms that its session
-ended. A different session or control connection for the same actor stays connected. Open
-a new session with `cotal attach <agent>` instead of reusing an ended session. Connections
-admitted before the upgrade, or by an older callout replica during it, have no receipt and
-keep their original expiry.
+A user-auth terminal connection closes when the full auth service or a callout replica confirms
+that its session ended and delivery disconnects it. Other sessions and control connections for
+the same actor stay connected. Open a new session with `cotal attach <agent>` instead of reusing
+an ended session. Connections admitted by a release that does not record receipts keep their
+original expiry.
 
 Upgrade the full auth service, every `--callout-only` replica, and delivery together to
 the release that carries this change. For a local stack, stop it with `cotal down`, run
@@ -14,6 +14,12 @@ the release that carries this change. For a local stack, stop it with `cotal dow
 space and startup options from the same project. For a hosted space, deploy the updated auth
 and delivery packages together and restart those services. An older delivery service cannot
 confirm targeted eviction, so auth retains the receipt and retries after delivery is upgraded.
+
+Set `--auth-timeout` on the full auth service and every callout replica to the broker's
+authorization timeout. Every replica sweeps, and a shorter setting can make it remove a
+receipt while the broker is still waiting for another callout to answer. A callout-only replica
+mints a short-lived `supervisor` credential from its existing data-account signing seed and
+uses it for one `ctl.delivery-admin` connection per eviction.
 
 If auth cannot read the active session or write its connection receipt before the broker's
 authorization deadline, the broker refuses the connection. Check the auth service log for
@@ -28,6 +34,11 @@ principal, then return the same ordered pairs in the result's `connections` fiel
 principal-only hook still handles ordinary principal eviction. Omit the `connections` field
 from `evictPrincipal` if you intend to evict the entire principal. A request that supplies it
 is limited to the exact pairs or refused, never treated as a principal-wide eviction.
+
+Make the eviction hook reentrant. Delivery can run up to four targeted calls at once, and
+they can overlap calls from the in-order admin chain. Keep per-call state separate or protect
+any state the calls share.
+
 ## Agent names that start with a hyphen
 
 `cotal personas new` refuses new catalog names starting with `-`. In scripts, replace the name with
@@ -45,6 +56,32 @@ as the first argument to `spawn`.
 
 Existing cards are still available for inspection and removal. On the CLI, put flags before `--`:
 `cotal persona show -- -reviewer` or `cotal persona remove --yes -- -reviewer`.
+
+## Messages carrying stored-message headers
+
+Cotal drops channel posts, DMs, role requests, delivery copies, event payloads and legacy control requests
+that carry `Nats-Stream`, `Nats-Subject`, `Nats-Sequence` or `Nats-Time-Stamp`, even when the
+claimed sender matches the subject. The operator tap drops marked frames on any subject. Lang
+`wait` ignores marked posts. Marked rows already stored are omitted from history, so older and
+newer readers can show different results for the same stored history.
+
+Upgrade and restart the delivery daemon before updating agents and clients. An older daemon can
+still serve marked history and can deliver a durable copy without the original headers, leaving
+the new reader unable to recognize it. If the space is hosted elsewhere, ask its operator to
+upgrade the delivery daemon first.
+
+If your integration forwards messages from storage, replace that forwarding call with a fresh
+send under the integration's own identity. For example, use
+`await endpoint.multicast(text, { channel: "general" })` for a channel post,
+`await endpoint.unicast(peer, text)` for a DM, or `await endpoint.anycast(role, text)` for a
+role request. For a legacy control request, use `await endpoint.requestControl(service, request)`.
+Do not copy the stored headers, sender or message ID. For custom receivers, core exports
+`hasStoredOrigin(headers)` to identify these reserved names. Do not apply it to answers to
+storage reads your client initiated, such as a roster lookup.
+
+If resuming a Lang run refuses a recorded wait match with these headers, start a new run with
+`cotal run start --file <program>` and have the sender post a fresh message once the wait is ready.
+
 ## Labelling an agent from its thread title
 
 The `agent` cluster advances to revision 7 with `set-label`, which the owner calls to set the label
@@ -53,6 +90,25 @@ of the callout queue, then reconnect each person's clients. A connect that an ol
 gets no `set-label` permission. An agent whose connector predates `set-label` answers it
 `unimplemented`, and `cotal acp` says so in the thread and titles the thread with the name the agent
 shows.
+
+## User-auth reply inbox names
+
+Updated clients set their NATS connection name to `<owner>-<actor>-<nonce>` and their inbox prefix to
+`_INBOX_<owner>-<actor>-<nonce>`. The owner and actor come from the bearer, and the nonce is fresh
+for each new client. After the first release containing this change becomes the latest release,
+update a CLI installation with `npm install -g cotal-ai@latest` to use this form.
+Static and open meshes are unchanged. Existing user-auth clients that send a bare nonce still connect.
+
+Update every auth callout replica before relying on the principal check or using a connection name
+longer than 120 characters. An older replica may accept a mismatched name or refuse a longer name.
+If a new replica refuses a mismatched name, the broker returns `Authorization Violation` to the
+client and the callout log gives the correct settings. Set `name` to `<sub>-<act.actor>-<nonce>`,
+using the bearer's `sub` and `act.actor` claims and a fresh nonce of 8 to 128 letters, digits or
+underscores. Set `inboxPrefix` to `_INBOX_` followed by that exact name.
+
+Update the delivery service before using new user-auth history followers. A delivery service that
+recognizes only the legacy `ibx_observer_` marker can list a follower with a principal-bound inbox
+as a live member. The updated delivery service recognizes both forms. History access is unchanged.
 
 ## Switching a running agent's model
 
@@ -88,15 +144,25 @@ the new version.
 An upgraded Linear extension enforces `allowedTools` in `<cotal-home>/linear/<name>.json` for
 both `linear call` and endpoint `call-tool`. An empty list refuses every tool. If a tool should
 be callable, have the account operator add its case-sensitive name to the list, for example
-`"allowedTools": ["list_issues", "get_issue"]`. Restart any running Linear service for that
-account and retry the call. If the account has no `allowedTools` field, upstream permissions still
+`"allowedTools": ["list_issues", "get_issue"]`. For each running managed Linear service for this
+account, run `cotal service restart <name> --space <space> --yes` before retrying endpoint calls.
+If a service has several instances, run the command for each with `--instance <id>`. For a service
+started with `cotal linear serve`, press Ctrl+C and repeat the original command. Direct calls read
+the list on each invocation. If an account has no `allowedTools` field, upstream permissions still
 decide what it can call. Inventory still lists tools the upstream advertises.
 
-If `linear account add` or `linear account login` refuses an invalid record, repair the named JSON
-file before rerunning the same command. Set `name` to the account name and `mode` to `write` or
-`readonly`. Set `auth` to `token` with `tokenFile` set to the absolute path of the private token
-file, or set `auth` to `oauth`. Keep the intended `allowedTools` list, using distinct nonempty tool
-names without whitespace at either end or terminal controls.
+Every command that opens or replaces the account record refuses a malformed `allowedTools` list,
+including `cotal linear account add`, `cotal linear account login`, and Linear service startup.
+Repair the named JSON file before rerunning the command. Set `name` to the account name and `mode`
+to `write` or `readonly`. Set `auth` to `token` with `tokenFile` set to the absolute path of the
+private token file, or set `auth` to `oauth`. Keep the intended `allowedTools` list, using distinct
+nonempty tool names without whitespace at either end or terminal controls.
+
+If you downgrade or share the same account records between CLI installs, older Linear extensions
+do not enforce `allowedTools`. Running `cotal linear account add` or `cotal linear account login`
+with one of those extensions also rewrites the account record without the list. Use an upgraded
+extension everywhere you use that account. If an older extension has rewritten the record, restore
+the intended list before using the account again, then restart its services as described above.
 
 A missing or mismatched OAuth `state` gets HTTP 400 and leaves the pending login open. Return to
 the authorization URL printed by that login and finish there.
@@ -312,7 +378,8 @@ broker connection view and durable members registry. When plain `cotal up` start
 broker for a stopped stack, it converts a legacy File-backed membership feed before starting the
 space's services and prints one conversion line. Durable members, channel metadata and message
 history are kept. A running stack, remote broker or adopted listener is not converted automatically.
-Stop the stack before using the still-supported `cotal up --recreate-membership-store` flag.
+A refresh of a running legacy stack with a File-backed feed refuses with `LIFECYCLE_BLOCKED` (exit 2).
+Stop that stack, then repeat the original start with `--recreate-membership-store`.
 
 If you stopped the stack with `cotal down --preserve-state`, run
 `cotal up --recreate-membership-store` from the same project. It converts the derived feed
@@ -1713,8 +1780,9 @@ so a container that ran `supervise --server <url>` first runs
 A manager unit that an earlier `cotal service install` wrote keeps calling `supervise`. After the
 upgrade it starts the new binary and prints the deprecation line. This release does not rewrite
 that unit, and `cotal manager install` refuses until a unit that Cotal writes can run the manager.
-A unit you write yourself runs `cotal manager start --foreground --space <space>` with
-`KillMode=mixed`.
+On Linux, a systemd user unit you write yourself runs
+`cotal manager start --foreground --space <space>` with `KillMode=mixed`. On Windows, run
+`cotal up` from the folder that hosts the local space to start its Manager.
 
 A unit that this release's `cotal service install <name>` writes runs the hidden `__service-unit`
 entry, which an earlier binary does not have. To downgrade:

@@ -54,6 +54,7 @@ Both apps load the change without a restart.
 When a settings file cannot be read or written, setup says which one and why, saves the rest, and reports the run as partial.
 
 `cotal update` points every Cotal entry at the Cotal it installed, for example after Cotal moved to another folder.
+It leaves other Zed agents unchanged, even if they use the same `acp --space` arguments.
 `cotal status` lists the spaces each client reaches, and shows an entry whose command is gone.
 
 To add an entry by hand, give the absolute path of `cotal` (`command -v cotal` prints it) and `acp --space <name>` as its arguments.

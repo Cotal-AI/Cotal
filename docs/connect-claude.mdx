@@ -120,10 +120,11 @@ This covers plugin setup, but does not satisfy the executable requirement for ma
 
 ```bash
 cotal up
-cotal status
+cotal status --wide
 ```
 
-Check the Claude connector and plugin rows in `cotal status`.
+Under **This machine**, check that **Claude plugin** says `current (user scope)` and
+**Claude wake channel** says `user MCP entry cotal registered`.
 Reload plugins or reopen existing Claude sessions after setup or an update.
 Running sessions keep the code they already loaded.
 
@@ -239,7 +240,7 @@ cotal spawn --harness claude --model opus --variant high
 Claude accepts `low`, `medium`, `high`, `xhigh` and `max`, and the connector refuses any other value before launch.
 `cotal models --harness claude` lists the levels each model supports as its variants.
 Claude does not run a model at a level that model lacks, so pick one from that list.
-A launch option `--opt effort=<level>` wins over `--variant`, and the seat's roster entry then shows no variant.
+A launch option `--opt effort=<level>` wins over `--variant`. The seat's roster entry, `cotal ps`, and `cotal status <name>` show no variant for that launch.
 
 ### Choose a permission mode
 

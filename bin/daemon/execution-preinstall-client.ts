@@ -27,7 +27,7 @@ export async function targetExecutionPreinstall(root: string, installedEntry: st
     daemonArgv, flags: Object.fromEntries(Object.entries(flags).filter(([key, value]) => ["space", "server", "creds", "on"].includes(key) && typeof value === "string")),
   };
   const result = await new Promise<{ status: number | null; stdout: string; stderr: string }>((resolve, reject) => {
-    const child = spawn(process.execPath, [entry, JSON.stringify(request)], { env: { ...process.env, COTAL_SKIP_CONNECTOR_SEED: "1" }, stdio: ["ignore", "pipe", "pipe"] });
+    const child = spawn(process.execPath, [entry, JSON.stringify(request)], { env: { ...process.env, COTAL_SKIP_CONNECTOR_SEED: "1" }, stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
     let stdout = "", stderr = "", failure = "";
     let escalation: ReturnType<typeof setTimeout> | undefined;
     const terminate = () => { child.kill("SIGTERM"); escalation ??= setTimeout(() => child.kill("SIGKILL"), 2000); };

@@ -123,7 +123,7 @@ function materializeCodexPlugin(cotal: readonly string[], version: string, wrote
 const CODEX_OUTPUT_LIMIT = 64 * 1024 * 1024;
 
 function codex(...args: string[]): { status: number | null; output: string } {
-  const r = spawnSync("codex", args, { encoding: "utf8", maxBuffer: CODEX_OUTPUT_LIMIT, timeout: 60_000, killSignal: "SIGKILL" });
+  const r = spawnSync("codex", args, { encoding: "utf8", maxBuffer: CODEX_OUTPUT_LIMIT, timeout: 60_000, killSignal: "SIGKILL", windowsHide: true });
   if (r.error) {
     const code = (r.error as NodeJS.ErrnoException).code;
     if (code === "ENOBUFS") throw new Error(`codex ${args.join(" ")} printed more than ${CODEX_OUTPUT_LIMIT} bytes`);

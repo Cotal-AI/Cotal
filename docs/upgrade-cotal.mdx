@@ -124,7 +124,8 @@ On Linux and macOS, self-update refreshes an existing npm launcher when it can s
 Self-update keeps the npm selected on `PATH`, including when it installs built-in connectors.
 If that npm requires a different Node version, Cotal tries the Node recorded by its installation
 launcher, when present, and then looks for a compatible Node alongside npm or on `PATH`.
-This also applies when npm is selected through Corepack or a compatible Node is available through Volta's `node` shim.
+When Corepack runs on the current Node but the npm it selects requires a different version,
+Cotal looks for a Node that can run both. The search can also use Volta's `node` shim.
 If the `node` shim on `PATH` selects a compatible version from the current project, as with asdf,
 Cotal verifies that executable and runs npm with it outside the project, including during
 reconciliation after a release changes. If the project's selection cannot run npm, Cotal also
@@ -291,8 +292,11 @@ cotal update
 This reconciles installed extensions and connector integrations with the running CLI's release.
 If reconciliation succeeds but the registry version cannot be read, `cotal update` succeeds and reports the latest version as unknown.
 Even when the CLI is already at the latest release, `cotal update --self` reinstalls an installed
-first-party extension whose entry file is missing or empty. It reports a failed reinstall instead
-of declaring the installation current.
+first-party extension whose entry file is missing, empty, or cannot load with its dependencies.
+It reports a failed reinstall instead of declaring the installation current.
+On Linux and macOS, `cotal update --self` also removes abandoned private extension staging copies
+from the selected connector configuration, even when the CLI is current. Cleanup takes the extension
+writer lock and leaves staging alone while a writer is active or a promotion journal is present.
 A self-update inherits the extension state captured by the updating CLI, including added extensions
 and deliberate connector removals, even when that release has an older retained connector set.
 It reuses a matching retained copy or replaces an idle copy at the directory older releases expect.
@@ -393,6 +397,7 @@ Before replacing the global binary, `cotal update --self` checks the release's f
 package archives through npm. Metadata reads run in bounded parallel batches and npm verifies each archive's integrity.
 The extension dependency check resolves Cotal peers at the selected release's exact version.
 Reconciliation links those peers to the installed CLI's copies.
+On Linux, `cotal update --self` checks the bundled extensions' peer links even when the CLI is at the latest version. It repairs links to a removed installation without reinstalling intact extensions.
 The command prints progress before release checks, the recovery snapshot, package installation,
 connector reconciliation and cleanup, and reports elapsed seconds to one decimal place for completed steps. Connector reconciliation installs changed built-ins and first-party operator extensions into one
 private copy of the extension prefix. It checks every package before promoting the complete prefix.

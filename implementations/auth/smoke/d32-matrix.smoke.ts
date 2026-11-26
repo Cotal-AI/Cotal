@@ -51,7 +51,7 @@ import {
   runDriverGrants, runMediatorGrants, runDriverCaller, runOperatorGrants,
   type EpCapability,
 } from "@cotal-ai/core";
-import { authorityWriterGrants, authorityBarrierGrants, barrierExecutorSettlementGrants, environmentManagerAdmissionIndexGrants, environmentManagerAdmissionWriterGrants, remoteManagerIssuerGrants } from "../src/authority-client.js";
+import { authorityWriterGrants, authorityBarrierGrants, barrierExecutorSettlementGrants, calloutReplicaGrants, environmentManagerAdmissionIndexGrants, environmentManagerAdmissionWriterGrants, remoteManagerIssuerGrants } from "../src/authority-client.js";
 import { retirementExecutorClientGrants } from "../src/retirement-cleaner.js";
 import { drainApplierGrants, drainCancellerGrants, drainReconcilerGrants } from "../src/drain-repair.js";
 import { authAdminListenerGrants } from "../src/auth-admin.js";
@@ -289,6 +289,19 @@ const FIXTURE: Record<string, { publish: string[]; subscribe: string[] }> = {
     "$KV.cotal_auth_d32m.chatholder.*.*",
     "$KV.cotal_auth_d32m.chatowner.*",
     "$KV.cotal_auth_d32m.chatsweep.cursor",
+  ], subscribe: ["_INBOX_ibxconn0123456789.>"] },
+  "callout-replica": { publish: [
+    "$JS.API.INFO",
+    "$JS.API.STREAM.INFO.KV_cotal_auth_d32m",
+    "$JS.API.STREAM.INFO.KV_cotal_records_d32m",
+    "$JS.API.STREAM.INFO.KV_cotal_sessions_d32m",
+    "$JS.API.STREAM.MSG.GET.KV_cotal_auth_d32m",
+    "$JS.API.STREAM.MSG.GET.KV_cotal_records_d32m",
+    "$JS.API.STREAM.MSG.GET.KV_cotal_sessions_d32m",
+    "$JS.API.DIRECT.GET.KV_cotal_records_d32m",
+    "$JS.API.DIRECT.GET.KV_cotal_records_d32m.>",
+    "$KV.cotal_auth_d32m.natkey.>",
+    "$KV.cotal_auth_d32m.sessionconn.*",
   ], subscribe: ["_INBOX_ibxconn0123456789.>"] },
   "environment-admission-index": { publish: [
     "$JS.API.INFO", "$JS.API.STREAM.CREATE.KV_cotal_environment_managers_d32m",
@@ -533,6 +546,7 @@ put("activator", activatorGrants(S, EPJ, "pa", CONN));
 put("caller", epCallerGrantRows(S, [cap], { owner: "u_abc", actor: "cli", uid: UID }));
 put("serve-rows", epServeGrantRows(S, { endpoint: EP, instanceId: "i".repeat(26), epoch: 3, ephemeralCommands: ["status"] }));
 put("auth-writer", authorityWriterGrants(S, CONN));
+put("callout-replica", calloutReplicaGrants(S, CONN));
 put("environment-admission-writer", environmentManagerAdmissionWriterGrants(S, CONN));
 put("environment-admission-index", environmentManagerAdmissionIndexGrants(S, CONN));
 put("remote-manager-issuer", remoteManagerIssuerGrants(S, CONN));
@@ -558,8 +572,9 @@ for (const name of Object.keys(FIXTURE)) {
   c(`fixture pin: ${name}`, JSON.stringify(gen[name]) === JSON.stringify(FIXTURE[name]), gen[name]);
 }
 c("no unreviewed principal appeared", Object.keys(gen).every((k) => FIXTURE[k] !== undefined), Object.keys(gen));
-c("session receipt writes belong to the auth mint writer, not derived host writers",
+c("session receipt writes belong to the auth mint writer and callout replica, not derived host writers",
   gen["auth-writer"]!.publish.includes(`$KV.cotal_auth_${S}.sessionconn.*`) &&
+  gen["callout-replica"]!.publish.includes(`$KV.cotal_auth_${S}.sessionconn.*`) &&
   !gen["environment-admission-writer"]!.publish.some((row) => row.includes("sessionconn")) &&
   !gen["remote-manager-issuer"]!.publish.some((row) => row.includes("sessionconn")));
 
@@ -662,6 +677,7 @@ for (const [principal, v] of Object.entries(gen)) for (const row of [...v.publis
     // so that fact is a reviewed entry rather than something a reader would have to derive.
     "goal-writer:EPF_d32m", "goal-writer:KV_cotal_records_d32m", "goal-writer:KV_cotal_auth_d32m",
     "auth-writer:KV_cotal_auth_d32m", "auth-writer:KV_cotal_records_d32m",
+    "callout-replica:KV_cotal_auth_d32m", "callout-replica:KV_cotal_records_d32m", "callout-replica:KV_cotal_sessions_d32m",
     "environment-admission-writer:KV_cotal_auth_d32m", "environment-admission-writer:KV_cotal_records_d32m",
     "environment-admission-index:KV_cotal_environment_managers_d32m",
     "auth-barrier:KV_cotal_auth_d32m", "auth-barrier:KV_cotal_records_d32m",
@@ -724,7 +740,7 @@ const ISSUER_BODY_DIRECT_GET = new Set([
     const bodySelected = tail === undefined || tail === ">";
     if (!bodySelected) continue; // subject-appended, broker-confined
     if (principal === "remote-manager-issuer" && ISSUER_BODY_DIRECT_GET.has(row)) continue;
-    if (stream !== "KV_cotal_records_d32m" || (principal !== "auth-writer" && principal !== "auth-barrier" && principal !== "environment-admission-writer"))
+    if (stream !== "KV_cotal_records_d32m" || !["auth-writer", "auth-barrier", "environment-admission-writer", "callout-replica"].includes(principal))
       bad.push(`${principal}: ${row}`);
   }
   c("body-selected Direct-Get exists ONLY as the auth path's records pair (every other tail fully qualified)", bad.length === 0, bad);
@@ -812,8 +828,9 @@ const BASELINE_PUB = [
   `cotal.${S}.ep.one.manager.turn-yield.self.u_abc.cli.${UID}.*`,
   `cotal.${S}.ep.one.manager.turn-unconfirmed.self.u_abc.cli.${UID}.*`,
   `cotal.${S}.ep.one.manager.run-answer.self.u_abc.cli.${UID}.*`,
+  `cotal.${S}.ep.prin-reply.agent.u_abc.cli.${UID}.*.*.*.*.*`,
 ];
-c("the agent's control-surface reach is exactly its caller rows + the Appendix-B baseline (request/journal publish + own reply rail)",
+c("the agent's control-surface reach is exactly its caller rows + the Appendix-B baseline (request/journal publish, own reply read and SPEC §13.21 principal reply publish)",
   untrusted.agent.pub.filter((r) => r.includes(".ep.") || r.includes(".epj.")).every((r) => gen["caller"].publish.includes(r) || BASELINE_PUB.includes(r))
   && BASELINE_PUB.every((r) => untrusted.agent.pub.includes(r))
   && untrusted.agent.sub.filter((r) => r.includes(".ep.reply.")).every((r) => gen["caller"].subscribe.includes(r)),

@@ -161,7 +161,7 @@ async function observeInstalledService(label) {
     `$st=if($receipt){try{Get-ScheduledTask -TaskPath '\\' -TaskName $receipt.unit -ErrorAction Stop}catch{$null}}else{$null}; ` +
     `$sti=if($receipt){try{Get-ScheduledTaskInfo -TaskPath '\\' -TaskName $receipt.unit -ErrorAction Stop}catch{$null}}else{$null}; ` +
     `$procs=@(Get-CimInstance Win32_Process -Property ProcessId,ParentProcessId,Name,ExecutablePath,CommandLine,CreationDate | Where-Object { $_.Name -in @('cotal-desktop.exe','node.exe','uninstall.exe') -or ($_.ExecutablePath -and $_.ExecutablePath -like '*\\Cotal\\*') } | ForEach-Object { @{pid=[int]$_.ProcessId;parentPid=[int]$_.ParentProcessId;name=$_.Name;executablePath=$_.ExecutablePath;commandLine=$_.CommandLine;created=$(if($_.CreationDate){$_.CreationDate.ToUniversalTime().ToString('o')}else{$null})} }); ` +
-    `@{receipt=$receipt;xml=@{command=$xmlCommand;arguments=$xmlArgs;workingDirectory=$xmlWorkDir};task=$(if($task){@{name=$task.Name;enabled=[bool]$task.Enabled;state=[int]$task.State;scheduledTaskState=$(if($st){[string]$st.State}else{$null});instances=[int]$task.GetInstances(0).Count;lastRunTime=$(if($task.LastRunTime){$task.LastRunTime.ToUniversalTime().ToString('o')}else{$null});scheduledTaskLastRunTime=$(if($sti -and $sti.LastRunTime){$sti.LastRunTime.ToUniversalTime().ToString('o')}else{$null});lastTaskResult=[int]$task.LastTaskResult;lastTaskResultHex=('0x{0:X8}' -f ([uint32]([int64]$task.LastTaskResult -band 0xFFFFFFFFL)));scheduledTaskLastResult=$(if($sti){[int]$sti.LastTaskResult}else{$null});numberOfMissedRuns=$(if($sti){[int]$sti.NumberOfMissedRuns}else{$null});actionPath=$(if($action){[string]$action.Path}else{$null});actionArguments=$(if($action){[string]$action.Arguments}else{$null});actionWorkingDirectory=$(if($action){[string]$action.WorkingDirectory}else{$null})}}else{$null});processes=$procs} | ConvertTo-Json -Depth 6 -Compress`
+    `@{receipt=$receipt;xml=@{command=$xmlCommand;arguments=$xmlArgs;workingDirectory=$xmlWorkDir};task=$(if($task){@{name=$task.Name;enabled=[bool]$task.Enabled;state=[int]$task.State;scheduledTaskState=$(if($st){[string]$st.State}else{$null});instances=[int]$task.GetInstances(0).Count;lastRunTime=$(if($task.LastRunTime){$task.LastRunTime.ToUniversalTime().ToString('o')}else{$null});scheduledTaskLastRunTime=$(if($sti -and $sti.LastRunTime){$sti.LastRunTime.ToUniversalTime().ToString('o')}else{$null});lastTaskResult=[int]$task.LastTaskResult;lastTaskResultHex=('0x{0:X8}' -f ([uint32]([int64]$task.LastTaskResult -band 0xFFFFFFFFL)));scheduledTaskLastResult=$(if($sti){[int64]$sti.LastTaskResult}else{$null});numberOfMissedRuns=$(if($sti){[int]$sti.NumberOfMissedRuns}else{$null});actionPath=$(if($action){[string]$action.Path}else{$null});actionArguments=$(if($action){[string]$action.Arguments}else{$null});actionWorkingDirectory=$(if($action){[string]$action.WorkingDirectory}else{$null})}}else{$null});processes=$procs} | ConvertTo-Json -Depth 6 -Compress`
   ]);
   const parsed = JSON.parse(obs.stdout);
   parsed.daemonLog = daemonLog;
@@ -608,6 +608,11 @@ try {
     const before = cell === 'fresh' ? [] : inventory();
     const start = Date.now();
     let result;
+    if (cell === 'interactive') {
+      // The silent base install made a desktop shortcut. Remove it so the person's choice on the finish page is what shows.
+      report.desktopShortcut = join((await required(ps, ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', "[Environment]::GetFolderPath('Desktop')"])).stdout.trim(), 'Cotal.lnk');
+      rmSync(report.desktopShortcut, { force: true });
+    }
     if (cell === 'interactive' || cell === 'occupied-ui') {
       result = await run(ps, ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', join(repo, 'desktop/test/setup-ui.ps1'), '-Installer', candidate, '-Mode', cell === 'occupied-ui' ? 'occupied' : 'install', '-Output', join(output, 'ui.json')], 300_000);
       check('Actual UI Automation driver completed', result.code === 0);
@@ -647,6 +652,10 @@ try {
     if (cell === 'interactive') {
       const ui = JSON.parse(readText(join(output, 'ui.json')).replace(/^\uFEFF/, ''));
       check('Newer default click-through never offers the unsafe old-uninstaller choice', !ui.some(row => row.names?.some(name => /uninstall before installing/i.test(name))));
+      check('The finish page offered Create desktop shortcut and the driver cleared it', JSON.parse(result.stdout.trim().split('\n').at(-1)).desktopShortcutCleared === true);
+      check('A cleared Create desktop shortcut leaves no desktop shortcut', !existsSync(report.desktopShortcut));
+      const startMenu = JSON.parse((await required(ps, ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', "@(Get-ChildItem -LiteralPath ([Environment]::GetFolderPath('Programs')) -Recurse -Filter 'Cotal.lnk' -ErrorAction SilentlyContinue).Count | ConvertTo-Json"])).stdout.trim());
+      check('The Start menu shortcut is still created', startMenu >= 1);
     }
     if (['occupied', 'occupied-ui', 'locker', 'locker-filtered', 'locker-short', 'early', 'cannot-start'].includes(cell)) {
       check('Setup refuses before replacing files', result.code !== 0);
@@ -708,6 +717,12 @@ try {
         check('Foreign CLI service keeps its old PID and version', status.pid === report.before.pid && status.version === report.before.version);
         check('Foreign service receipt is unchanged', readText(join(root, 'daemon', 'service-unit.json')) === report.foreignReceipt);
         check('Setup names untouched foreign service', diagnostic.message.includes('another installation'));
+        // The app's uninstaller removes only the service its own installation registered.
+        const uninstalled = await run(join(root, 'uninstall.exe'), ['/S', `_?=${root}`], 300_000);
+        check('App uninstaller exits 0 beside a foreign CLI service', uninstalled.code === 0);
+        const kept = JSON.parse((await required(process.execPath, [report.foreignCli, 'daemon', 'status', '--json'])).stdout).result;
+        check('App uninstall keeps the foreign CLI service and its PID', kept.pid === report.before.pid);
+        check('App uninstall keeps the foreign service receipt', readText(join(root, 'daemon', 'service-unit.json')) === report.foreignReceipt);
       } else if (cell === 'absent' || cell === 'fresh') check('No service was installed', !existsSync(join(root, 'daemon/service-unit.json')));
       else if (cell === 'stopped') {
         const stopped = await daemon('status');

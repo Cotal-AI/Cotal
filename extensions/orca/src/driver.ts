@@ -113,7 +113,7 @@ function execOrca(args: string[], opts: { cwd?: string; timeoutMs?: number } = {
   for (const bin of bins) {
     tried.push(bin);
     try {
-      const out = execFileSync(bin, args, { ...execOptions(opts), stdio: ["ignore", "pipe", "pipe"] });
+      const out = execFileSync(bin, args, { ...execOptions(opts), stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
       if (!explicit) selectedBin = bin;
       return out;
     } catch (err) {
@@ -149,7 +149,7 @@ function execOrcaAsync(args: string[], opts: { cwd?: string; timeoutMs?: number 
       execFile(
         bin,
         args,
-        execOptions(opts),
+        { ...execOptions(opts), windowsHide: true },
         (err, stdout, stderr) => {
           if (!err) {
             if (!explicit) selectedBin = bin;

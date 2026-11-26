@@ -81,6 +81,11 @@ scenarios.splice(0, scenarios.length,
   }, expect: async page => {
     assert.equal(await page.locator('#connect').isDisabled(), false, 'superseding status success releases pending Add');
   } },
+  { name: 'account-manager-reason', state: { installed: true, signedIn: true, account: { mode: 'account', hostSupport: 'supported', spaces: [{ space: 'acme-team', desired: true, observed: 'not-requested', lastRefusal: 'Manager is not answering' }] }, managers: [{ space: 'acme-team', state: 'refused', restarts: 0, reason: 'local test Manager reason', next: 'run `cotal daemon status --space acme-team`' }] }, expect: async page => {
+    const row = await page.locator('[data-testid="connected-space-row"]').textContent();
+    console.log('REPRO account row:', row);
+    assert.match(row, /local test Manager reason/);
+  } },
   { name: 'all-spaces-connected', state: { installed: true, signedIn: true, connected: true }, act: page => page.click('#another-space'), expect: async page => {
     assert.match(await page.locator('#no-other-spaces').textContent(), /Every space in this account is already connected/);
     assert.equal(await page.locator('#connect').isDisabled(), true);

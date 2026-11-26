@@ -69,6 +69,8 @@ export function useTopology(store: Store<DashboardState>, clock: () => number, i
  *  `initialHideOffline` is where the toggle starts (hidden, unless a caller says otherwise). */
 export function TopologyView({ store, clock = Date.now, initialHideOffline = true }: { store: Store<DashboardState>; clock?: () => number; initialHideOffline?: boolean }) {
   const { model, membership, now, hideOffline, setHideOffline } = useTopology(store, clock, initialHideOffline);
+  // Give a busy overview more drawing area per node without increasing its on-screen height.
+  const drawingScale = Math.max(1, Math.sqrt(model.nodes.length / 60));
   return (
     <>
       <header className="ui-bar">
@@ -83,7 +85,7 @@ export function TopologyView({ store, clock = Date.now, initialHideOffline = tru
       <div className="ui-scroll">
         <div className="ui-col ui-col-wide">
           <div className="ui-topo">
-            <TopologyGraph model={model} width={960} height={600} />
+            <TopologyGraph model={model} width={960} height={600} drawingScale={drawingScale} />
           </div>
           <div className="ui-legend">
             {LEGEND.map((l) => (

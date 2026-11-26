@@ -368,11 +368,13 @@ try {
     check("missing task entry refuses before registration", code(() => assertScheduledEntry(join(nativeHome, "missing.js"))) === "DEPENDENCY_UNAVAILABLE");
     check("directory task entry refuses before registration", code(() => assertScheduledEntry(nativeHome)) === "DEPENDENCY_UNAVAILABLE");
     check("built task entry passes preflight", code(() => assertScheduledEntry(nativeEntry)) === "none");
-    const refused = spawnSync(process.execPath, [nativeEntry, "daemon", "serve", "--daemon-home", nativeHome, "--json"], {
-      cwd: root, encoding: "utf8", timeout: 20_000,
-      env: { ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_"))), XDG_RUNTIME_DIR: root, COTAL_HOME: join(root, "cotal-home"), COTAL_IDP_TIMEOUT_MS: "0", COTAL_SKIP_CONNECTOR_SEED: "1", DO_NOT_TRACK: "1" },
+    const nativeEnv = { ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_"))), XDG_RUNTIME_DIR: root, COTAL_HOME: join(root, "cotal-home"), COTAL_IDP_TIMEOUT_MS: "0", COTAL_SKIP_CONNECTOR_SEED: "1", DO_NOT_TRACK: "1" };
+    const launchNative = () => spawnSync(process.execPath, [nativeEntry, "daemon", "serve", "--daemon-home", nativeHome, "--json"], {
+      cwd: root, encoding: "utf8", timeout: 20_000, env: nativeEnv,
     });
+    const refused = launchNative();
     const log = join(nativeHome, "daemon.log");
+    const previousLog = join(nativeHome, "daemon.previous.log");
     const refusalLog = existsSync(log) ? readFileSync(log, "utf8") : "";
     check("built native entry reaches startup and retains its refusal", refused.status === 1
       && refusalLog.includes("COTAL_IDP_TIMEOUT_MS") && !refusalLog.includes("daemon ready"), refused.error ?? refused.stderr);
@@ -381,13 +383,18 @@ try {
        captureNativeDaemonOutput(process.argv[1]);
        process.stderr.write("eyJhbGciOiJIUzI1NiJ9.payload.signature\\n");
        process.stdout.write("x".repeat(100000));`, nativeHome], {
-      cwd: root, encoding: "utf8", timeout: 10_000,
+      cwd: root, encoding: "utf8", timeout: 10_000, env: nativeEnv,
     });
     const bounded = readFileSync(log, "utf8");
     check("native launch output is replaced, bounded and credential-redacted", logging.status === 0
       && bounded.includes("<redacted>") && !bounded.includes("eyJ") && !bounded.includes("COTAL_IDP_TIMEOUT_MS")
       && Buffer.byteLength(bounded) <= 64 * 1024 + 128);
     check("native launch log is private", process.platform === "win32" || (lstatSync(log).mode & 0o777) === 0o600);
+    check("previous native log retains the refusal", existsSync(previousLog) && readFileSync(previousLog, "utf8") === refusalLog);
+    const restarted = launchNative();
+    check("the next launch keeps only the latest bounded, redacted log as history", restarted.status === 1
+      && readFileSync(previousLog, "utf8") === bounded && !readFileSync(log, "utf8").includes("x".repeat(1000)));
+    check("previous native log is private", process.platform === "win32" || (lstatSync(previousLog).mode & 0o777) === 0o600);
     const sid = "S-1-5-21-1004336348-1177238915-682003330-1001";
     check("default task name carries the SID", scheduledTaskName(undefined, sid) === `cotal-daemon-${sid}`);
     check("home task name is derived from the home", scheduledTaskName("C:\\h", sid) === `cotal-daemon-${sha("C:\\h").slice(0, 16)}-${sid}`);
@@ -396,7 +403,8 @@ try {
     const t = renderScheduledTask({ sid, argv: winArgv, workingDirectory: "C:\\Users\\a b" });
     check("UTF-16LE with a byte order mark", t.bytes[0] === 0xff && t.bytes[1] === 0xfe && t.bytes.subarray(2).toString("utf16le") === t.text && t.sha256 === sha(t.bytes));
     check("the trigger and principal name the SID", t.text.includes(`<UserId>${sid}</UserId></LogonTrigger>`) && t.text.includes(`<Principal id="Author"><UserId>${sid}</UserId><LogonType>InteractiveToken</LogonType><RunLevel>LeastPrivilege</RunLevel></Principal>`));
-    check("restarts by a one-minute repetition that ignores a running instance", t.text.includes("<Repetition><Interval>PT1M</Interval><StopAtDurationEnd>false</StopAtDurationEnd></Repetition>") && t.text.includes("<MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>") && !t.text.includes("<Duration>"));
+    // A logon trigger's repetition starts only at the next logon, so a task registered mid-session would never restart.
+    check("restarts by a one-minute repetition on a time trigger that ignores a running instance", /<TimeTrigger><Enabled>true<\/Enabled><StartBoundary>[^<]+<\/StartBoundary><Repetition><Interval>PT1M<\/Interval><StopAtDurationEnd>false<\/StopAtDurationEnd><\/Repetition><\/TimeTrigger>/.test(t.text) && t.text.split("<Repetition>").length === 2 && t.text.includes("<MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>") && !t.text.includes("<Duration>"));
     check("no run-time or battery limit", t.text.includes("<ExecutionTimeLimit>PT0S</ExecutionTimeLimit>") && t.text.includes("<DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>") && t.text.includes("<StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>"));
     check("the command is the executable, unquoted", t.command === winArgv[0] && t.text.includes(`<Command>${winArgv[0]}</Command>`));
     check("a C runtime split of the arguments returns them unchanged", JSON.stringify(splitWindows(t.arguments)) === JSON.stringify([winArgv[1], "C:\\Program Files\\cotal\\daemon-native.js", ...winArgv.slice(3)]), [t.arguments, splitWindows(t.arguments)]);

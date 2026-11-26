@@ -11,7 +11,7 @@ import { useSidebar } from "#client/ui/shadcn/sidebar.tsx";
 import { Toggle } from "#client/ui/shadcn/toggle.tsx";
 import { Tooltip, TooltipContent, TooltipTrigger } from "#client/ui/shadcn/tooltip.tsx";
 import { claimedBy } from "../../lib/claims.js";
-import type { ComposeTarget } from "../../lib/compose.js";
+import { shellArg, type ComposeTarget } from "../../lib/compose.js";
 import { channelMembers } from "../../lib/members.js";
 import { nameIndex, type NameIndex } from "../../lib/names.js";
 import { rosterRows, waiting, type RosterRow } from "../../lib/roster.js";
@@ -179,6 +179,7 @@ export function ChannelView({ store, channel, onMembers, onViewAgent, panelOpen 
   onTogglePanel?: () => void;
 }) {
   const open = useStore(store, (s) => s.open);
+  const space = useStore(store, (s) => s.space);
   const channels = useStore(store, (s) => s.channels);
   const roster = useStore(store, (s) => s.roster);
   const membership = useStore(store, (s) => s.membership);
@@ -265,6 +266,12 @@ export function ChannelView({ store, channel, onMembers, onViewAgent, panelOpen 
         <MessageScroller className="flex-1">
           <MessageScrollerViewport>
             <MessageScrollerContent className="ui-col">
+              {open?.channel === channel && open.olderRetained && (
+                <MessageScrollerItem className="text-sm text-muted-foreground">
+                  <p>Earlier messages are retained. To read further back, run:</p>
+                  <code className="[overflow-wrap:anywhere]">{`cotal history ${shellArg(`#${channel}`)} --limit 2000${space === null ? "" : ` --space ${shellArg(space)}`}`}</code>
+                </MessageScrollerItem>
+              )}
               <MessageList messages={messages} idx={idx} peers={peers} self={self} />
               <OutgoingRows store={store} target={target} shown={shown} />
               {working.length > 0 && (

@@ -18,6 +18,8 @@ import {
   chatStream,
   dmStream,
   taskStream,
+  dialerFor,
+  standaloneConnectOpts,
   subjectMatches,
   AmbiguousPeerError,
   CotalEndpoint,
@@ -30,6 +32,7 @@ import {
   type ParsedArgs,
 } from "@cotal-ai/core";
 import { CLI_USER_ACTOR, CommandFailure, agentGrants, checkServer, codeSpan, connectOrThrow, connectSpace, endpointAuth, recordOperationSpace, jsonFlag, plainFlag, presentationOf, writeResult, targetFlags, userAuthStateDir, workspaceSecretStore, type Connection, type ConnectFlags, type OutputWarning, concreteChannelProblem, offlineRecipientNotice, payloadRefused, spaceStreamsExpected } from "@cotal-ai/workspace";
+import { DIAL_TIMEOUT_MS } from "@cotal-ai/workspace/control";
 import { completedFlagValue, completingFlagValue } from "../lib/completion.js";
 import { batchedRead, openTransient, streamGoneAt } from "../lib/transient.js";
 import { streamsAbsent } from "../lib/space-streams.js";
@@ -91,11 +94,15 @@ export function sendArguments(args: ParsedArgs): SendInput {
   if (destinations.length !== 1) throw new CommandFailure("refused", "USAGE_INVALID", "choose one destination: --to/-t, --channel/-c, or --role/-r");
   const destination = destinations[0]!;
   destination.target = destination.target.replace(destination.mode === "msg" ? /^#/ : /^@/, "");
-  const bodies = Number(args.positionals.length === 1) + Number(values.file !== undefined) + Number(values.stdin === true);
   if (!destination.target.trim()) {
     const [option, what] = destination.mode === "msg" ? ["--channel/-c", "channel"] : destination.mode === "ask" ? ["--role/-r", "role"] : ["--to/-t", "agent"];
     throw new CommandFailure("refused", "USAGE_INVALID", `${option} is empty; name one ${what === "agent" ? "agent or full instance id" : what}`, { remedy: `set ${option} in the original command and keep the same message body and options` });
   }
+  if (destination.mode === "ask" && values["reply-to"] !== undefined)
+    throw new CommandFailure("refused", "USAGE_INVALID", "role sends do not take --reply-to", {
+      remedy: "To send to the role, remove --reply-to and its value. To reply, replace the role destination with --to or --channel. Keep the other options and include a message body.",
+    });
+  const bodies = Number(args.positionals.length === 1) + Number(values.file !== undefined) + Number(values.stdin === true);
   const output = values.json ? "--json " : values.plain ? "--plain " : "";
   const again = (body: string) => sendAgain(destination, values, `${output}${body}`);
   if (args.positionals.length > 1 || bodies !== 1 || values.file === "")
@@ -118,7 +125,7 @@ export function sendArguments(args: ParsedArgs): SendInput {
   } catch (error) {
     throw new CommandFailure("refused", "USAGE_INVALID", (error as Error).message);
   }
-  if (values["reply-to"] !== undefined && (destination.mode === "ask" || !values["reply-to"].trim() || /[\u0000-\u001f\u007f]/u.test(values["reply-to"])))
+  if (values["reply-to"] !== undefined && (!values["reply-to"].trim() || /[\u0000-\u001f\u007f]/u.test(values["reply-to"])))
     throw new CommandFailure("refused", "USAGE_INVALID", "--reply-to takes a message identifier and requires --to or --channel");
   if (values.mention?.length && destination.mode !== "msg")
     throw new CommandFailure("refused", "USAGE_INVALID", "native mention hints belong to channel publications; they do not change a direct or role destination", { remedy: "drop --mention, or send to a channel with -c <channel>" });
@@ -162,22 +169,19 @@ function fileRefusal(input: SendInput, values: Values): FileRefusal {
   };
 }
 
-/** NATS's default max_payload. A file or stdin body is read up to it, plus one byte, before
- *  connecting, so a usual message is checked with no dial. A longer one is read on only once the
- *  connected broker names its own limit, and never past one byte over that. */
+/** NATS's default max_payload. Files are checked up to one byte over this before dialing.
+ *  Stdin uses the connected broker's limit from the first read. */
 const PREREAD_BYTES = 1024 * 1024;
 
 /** An explicit body: the whole text, or an open input past the pre-read whose rest waits for the
  *  broker's limit. `size` is a regular file's length, known without reading it. */
 type Body = { text: string } | { fd: number; file?: string; head: Buffer; size: number | null };
 
-async function bodyOf(input: SendInput, values: Values, refusal: FileRefusal): Promise<Body> {
+async function bodyOf(input: SendInput, values: Values, refusal: FileRefusal, limit = PREREAD_BYTES): Promise<Body> {
   if (input.source === "argument") return { text: input.text! };
-  if (input.source === "stdin" && process.stdin.isTTY)
-    throw new CommandFailure("refused", "USAGE_INVALID", "pipe the message to --stdin, or use a quoted body or --file");
   const file = input.source === "file" ? values.file! : undefined;
   let fd: number | undefined;
-  const head = Buffer.allocUnsafe(PREREAD_BYTES + 1);
+  const head = Buffer.allocUnsafe(limit + 1);
   let held: number;
   let size: number | null;
   try {
@@ -189,7 +193,7 @@ async function bodyOf(input: SendInput, values: Values, refusal: FileRefusal): P
     if (file !== undefined && fd !== undefined) closeSync(fd);
     throw readFailure(error, file, refusal);
   }
-  if (held > PREREAD_BYTES) return { fd, file, head, size };
+  if (held > limit) return { fd, file, head, size };
   if (file !== undefined) closeSync(fd);
   return { text: decoded(head.subarray(0, held), file, refusal) };
 }
@@ -211,6 +215,28 @@ async function bodyRest(body: Body, limit: number, refusal: FileRefusal): Promis
     return held > limit ? { over: null } : { text: decoded(bytes.subarray(0, held), body.file, refusal) };
   } finally {
     if (body.file !== undefined) closeSync(body.fd);
+  }
+}
+
+function tooLarge(limit: number, bytes: number | null, target: { space: string; mode: SendInput["mode"]; destination: string }): CommandFailure {
+  return new CommandFailure("refused", "UNSUPPORTED", bytes === null
+    ? `the message is longer than this broker's ${limit}-byte message limit; nothing was sent`
+    : `the message is ${bytes} bytes, and with its envelope it exceeds this broker's ${limit}-byte message limit; nothing was sent`, { target, remedy: "shorten the message, or split it across several sends" });
+}
+
+/** Read the limit without holding a sender credential or roster snapshot while stdin is open. */
+async function stdinBudget(values: Values, senderActor: string): Promise<{ space: string; limit: number } | undefined> {
+  try {
+    const conn = await connectOrThrow(values, "operator", { operatorActor: senderActor, readOnly: true });
+    const nc = await dialerFor(conn.server)({
+      servers: conn.server, ...standaloneConnectOpts({ ...endpointAuth(conn), tls: conn.tls }), timeout: DIAL_TIMEOUT_MS, reconnect: false,
+    });
+    try {
+      const limit = nc.info?.max_payload;
+      if (limit !== undefined && limit > 0) return { space: conn.space, limit };
+    } finally { await nc.close(); }
+  } catch {
+    // The broker may come up while stdin is open. The send itself checks admission after the read.
   }
 }
 
@@ -425,11 +451,16 @@ export async function send(args: ParsedArgs): Promise<void> {
   const values = args.values as Values;
   const presentation = presentationOf(values);
   const refusal = fileRefusal(input, values);
-  const body = await bodyOf(input, values, refusal);
+  if (input.source === "stdin" && process.stdin.isTTY)
+    throw new CommandFailure("refused", "USAGE_INVALID", "pipe the message to --stdin, or use a quoted body or --file");
   const warnings: OutputWarning[] = [];
   // The account signer binds this OS-derived label to a stable operator actor, not a peer seat.
   // A fresh transport key still authenticates each send. Explicit credentials and user auth keep theirs.
   const senderActor = `cli_${createHash("sha256").update(senderName()).digest("hex")}`;
+  const budget = input.source === "stdin" ? await stdinBudget(values, senderActor) : undefined;
+  const body = await bodyOf(input, values, refusal, budget?.limit);
+  if (budget && !("text" in body))
+    throw tooLarge(budget.limit, body.size, { space: budget.space, mode: input.mode, destination: input.target });
   const opened = await openTransient(values, senderName(), { throwOnRefusal: true, senderActor, report: (level) => {
     warnings.push({ code: level === "error" ? "SENDER_CONNECTION_WARNING" : "SENDER_WARNING", target: { destination: input.target }, message: "The transient sender reported a connection or delivery warning; its receipt confirms only the stated storage outcome." });
   } });
@@ -443,11 +474,6 @@ export async function send(args: ParsedArgs): Promise<void> {
     channelPolicy: { registered: boolean; replay: boolean; window: string | null; delivery: string } | null;
   } | undefined;
   let failure: unknown;
-  // The envelope only adds to the body. A body under the limit can still make a frame over it,
-  // which the client refuses before writing any of it.
-  const tooLarge = (bytes: number | null) => new CommandFailure("refused", "UNSUPPORTED", bytes === null
-    ? `the message is longer than this broker's ${ep.maxPayload}-byte message limit; nothing was sent`
-    : `the message is ${bytes} bytes, and with its envelope it exceeds this broker's ${ep.maxPayload}-byte message limit; nothing was sent`, { target, remedy: "shorten the message, or split it across several sends" });
   try {
     // A channel post is stored on the chat stream, a direct message on the DM stream, and a role
     // send on the task stream. Confirmed absence of that stream refuses before publication. An
@@ -459,10 +485,10 @@ export async function send(args: ParsedArgs): Promise<void> {
       if (await streamGoneAt(connection, storedOn)) throw streamsAbsent(connection);
     } else if (!connection.creds && !connection.bearer) await ep.ensureOpenSpaceStreams();
     const rest = await bodyRest(body, ep.maxPayload, refusal);
-    if ("over" in rest) throw tooLarge(rest.over);
+    if ("over" in rest) throw tooLarge(ep.maxPayload, rest.over, target);
     const { text } = rest;
     const bytes = Buffer.byteLength(text, "utf8");
-    if (bytes > ep.maxPayload) throw tooLarge(bytes);
+    if (bytes > ep.maxPayload) throw tooLarge(ep.maxPayload, bytes, target);
     let policy: NonNullable<typeof receipt>["channelPolicy"] = null;
     let registered: string[] = [];
     if (input.mode === "msg") {
@@ -502,7 +528,7 @@ export async function send(args: ParsedArgs): Promise<void> {
         messageId = msg.id; sequence = ack.seq;
       } else messageId = (await ep.multicast(text, { channel: input.target, mentions, replyTo: values["reply-to"] })).id;
     } catch (error) {
-      if (payloadRefused(error)) throw tooLarge(bytes);
+      if (payloadRefused(error)) throw tooLarge(ep.maxPayload, bytes, target);
       if (isPublishPermissionDenied(error)) {
         if (input.mode === "msg") throw await channelDenied(input.target, target, connection, registered, values.creds !== undefined ? connection.creds : undefined);
         const destination = input.mode === "ask" ? `role ${input.target}` : input.target;

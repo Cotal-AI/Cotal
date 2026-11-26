@@ -455,6 +455,7 @@ export class EndpointSubscriptions {
     const kv = await this.membershipFeedRegistry();
     await this.deleteRetainedMembershipConsumer(watch);
     if (!(kv instanceof Bucket)) throw new Error("membership watch needs the @nats-io/kv Bucket implementation");
+    const { streamInfo: { created } } = await kv.status();
     const cc = kv._buildCC(">", KvWatchInclude.LastValue, { headers_only: false });
     const consumer = await kv.js.consumers.getPushConsumer(kv.stream, cc);
     const info = await consumer.info(true);
@@ -495,6 +496,35 @@ export class EndpointSubscriptions {
       watch.onClosed?.(err);
       this.emit("error", err);
     }).catch(() => {});
+    void this.followMembershipConsumer(watch, kv, created, consumer, iter).catch(() => {});
+  }
+
+  private async followMembershipConsumer(watch: MembershipFeedWatch, kv: Bucket, created: string, consumer: PushConsumer, iter: Awaited<ReturnType<PushConsumer["consume"]>>): Promise<void> {
+    for await (const status of iter.status()) {
+      if (status.type !== "ordered_consumer_recreated") continue;
+      watch.arm = watch.arm.catch(() => {}).then(async () => {
+        if (watch.stopped || watch.consumer !== consumer) return;
+        watch.consumerName = status.name;
+        // The native ordered consumer keeps its cursor through a reset. Only the same stream can
+        // interpret that cursor; a replacement must replay its current last values instead.
+        let current: string;
+        try { current = (await kv.status()).streamInfo.created; }
+        catch (err) {
+          if (!isJetStreamMissing(err, JetStreamApiCodes.StreamNotFound)) throw err;
+          return; // a missing stream can be checked again when the consumer is recreated on it
+        }
+        if (current === created || watch.stopped) return;
+        await this.disarmMembershipWatch(watch);
+        if (watch.stopped) return;
+        try { await this.armMembershipWatch(watch); }
+        catch (err) {
+          watch.onClosed?.(err as Error);
+          throw err;
+        }
+      });
+      // Report the fault without ending the follower when the endpoint has no error listener.
+      await watch.arm.catch((err) => this.emit("error", err)).catch(() => {});
+    }
   }
 
   /** Delete identity retained across a failed/closed-epoch consumer object using the CURRENT connection. */

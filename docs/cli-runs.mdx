@@ -71,11 +71,12 @@ wait until one has activated and run it again. Any other refusal of `start`, `re
 Hosted `start` on a known open mesh refuses `UNSUPPORTED` (exit 2) before looking for a manager.
 Use `cotal r simulate <file>` to test the program offline. Use a static-auth mesh to host the run.
 
-Otherwise, an unpinned hosted verb run by the operator reads the space's service registry first. When it
-lists no live manager, as after `cotal down stack-manager`, the verb refuses `TARGET_UNAVAILABLE`
-(exit 2) before waiting for a reply. If this machine started the stack at the requested broker,
-the next step names its project folder. A machine that only registered the space points you to
-the host where its stack runs.
+Otherwise, an unpinned hosted verb run by the operator reads the space's service registry first. On a
+known open mesh with no live manager, `show` reads the journal directly from the broker. A verb that
+needs a manager, including `show` with `--on`, refuses `TARGET_UNAVAILABLE` (exit 2) when the registry
+lists no live manager. If this machine started the stack at the requested broker, the next step
+names its project folder. A machine that only registered the space points you to the host where its
+stack runs.
 
 A mesh a run verb cannot resolve or connect to is refused before any request under the refusal's
 own code, hosted or `--local`, as `ps` refuses it. With no mesh running that is `TARGET_NOT_FOUND`,
@@ -107,8 +108,8 @@ recorded program. A run recorded `completed` or `failed` is
 refused `LIFECYCLE_BLOCKED` (exit 2) and gets no new activation, because nothing is left to continue;
 the next step is `cotal run show <runId>`. Neither takes `--endpoint`: the manager records
 its runs under its own endpoint, and naming another is refused. Bare `run` lists the run records and
-`show` renders one run's durable records; both only inspect. `show` reads the
-journal from the manager in pages, each one reply, so a journal larger than the broker's payload
+`show` renders one run's durable records; both only inspect. When it reads through a manager,
+`show` reads the journal in pages, each one reply, so a journal larger than the broker's payload
 limit stays readable. A record or a journal row too large for one reply refuses `UNSUPPORTED`,
 exit 2, and names `cotal run show <run-id> --local`, which reads the run's stream from its
 project folder with no reply. A manager from release 0.99.3 or earlier reads no journal page, so
@@ -206,8 +207,11 @@ target, and output flags. If the broker URL cannot be displayed safely, the refu
 replace the key in your original command. Several matches are listed for you to pick from.
 A run ID that no run is recorded under is `TARGET_NOT_FOUND` too, with or without `--local`.
 The refusal says no run is recorded under that ID. Its next step lists
-runs with `cotal run`, rather than showing the missing record. Missing-step refusals instead name
-`cotal run show <runId>`. Both keep the selected space and any explicit manager pin. An
+runs with `cotal run`, rather than showing the missing record. For local `answer` and `amend`, the
+list command keeps the selected space and any explicit `--server`, `--creds`, `--endpoint`, `--json`,
+or `--plain`. If the broker URL cannot be displayed safely, the refusal asks you to reuse the original
+target options. Missing-step refusals instead name `cotal run show <runId>`. Hosted follow-ups keep
+the selected space and any explicit manager pin. An
 answer without `--value` carries no value: the step settles as answered, and the
 program's checkpoint result has no `value`. `--value` is refused with `SCHEMA_INVALID` before
 anything is sent when the record would not hold what you typed: an object that names a key twice,
@@ -251,9 +255,12 @@ them, and nothing is sent. On a user-auth mesh where you run more than one
 live manager, an unpinned hosted verb is refused and `--on` picks one. `--local` takes no `--on`. `--local` drives in this process instead, over one
 connection per invocation under the run's own credential minted from the project folder's trust
 material, and is the path on a bare broker with no manager or for a run with no recorded program
-(`cotal run resume <runId> --local --file <program>`). If a local `resume`, `answer` or `amend` has a
+(`cotal run resume <runId> --local --file <program>`). If the run record itself is missing,
+`resume --local` refuses with `TARGET_NOT_FOUND`, exits 2 and points to `cotal run list --local`
+for the same space and any explicit broker, credential or endpoint. If a local `resume`, `answer` or `amend` has a
 malformed run ID, use `cotal run list --local` with the same target options. Then replace only the run
-ID in the original command. For a local `resume` with no run ID, use the same list and add the ID.
+ID in the original command. A hosted `resume` with a malformed ID points to the run list for the
+requested space, broker and manager. For a local `resume` with no run ID, use the local list and add the ID.
 `answer --local` and `amend --local` take
 `--by <who>` and print the same receipt as the hosted path, and `start --local` requires
 `--admit-read` and `--admit-publish` (comma-separated
@@ -279,7 +286,9 @@ records the path. The guide is [workflows](workflows.mdx).
 `cotal run` (or `cotal r`) lists the authorized workflow records. On an open mesh, both the hosted
 and local text lists point to offline simulation because that mesh cannot host runs. If no manager
 is running, the hosted text list also points to `cotal run list --local` to read records directly from
-the broker. `run show <run-id>` reads
+the broker. The hosted JSON list exits 0 with `completeness: "not-checked"` and a `TARGET_UNAVAILABLE`
+warning that tells you to add `--local`. Its empty `result.items` does not establish that there are no
+records. `run show <run-id>` reads
 recorded state, open requests, each step's recorded error and the last 20 journal rows. `--limit <n>`
 prints the last `n` rows instead, from 1 to 1000, and is refused with `--json`. A settled
 `race` row names the branch it took, and a cancelled row in a branch that lost a race names the

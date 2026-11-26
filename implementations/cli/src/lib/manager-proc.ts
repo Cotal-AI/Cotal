@@ -152,6 +152,7 @@ export function managerUp(space: string = folderSpace(), root: string = cotalRoo
  *  A supervisor whose environment cannot be read or names no space counts, and a process table that
  *  cannot be listed proves nothing. */
 export function supervisorMayServe(space: string, installedEntry?: string): boolean {
+  if (process.platform === "win32") return windowsSupervisorMayServe(space, installedEntry);
   let lines: string[];
   if (process.platform === "linux") {
     lines = readdirSync("/proc").filter(name => /^\d+$/.test(name)).flatMap(name => {
@@ -166,7 +167,7 @@ export function supervisorMayServe(space: string, installedEntry?: string): bool
       }
     });
   } else {
-    const ps = spawnSync("ps", ["-A", "-ww", "-o", "pid=,uid=,args="], { encoding: "utf8" });
+    const ps = spawnSync("ps", ["-A", "-ww", "-o", "pid=,uid=,args="], { encoding: "utf8", windowsHide: true });
     if (ps.error || ps.status !== 0) throw new Error("local Manager continuity cannot be established: the process table could not be listed; restore process inspection before retrying");
     lines = ps.stdout.split("\n");
   }
@@ -188,6 +189,41 @@ export function supervisorMayServe(space: string, installedEntry?: string): bool
     const selected = named ?? environmentSpace(pid);
     if (selected !== undefined && selected !== space) return false;
     if (scope === "unknown") throw new Error(`local Manager continuity cannot be established: supervise pid ${pid}, user ${uid} has no proven CLI entry for this installation; inspect this process, then stop it through its original host or run \`kill -TERM ${pid}\` as user ${uid} before retrying; no Manager instance was guessed`);
+    return true;
+  });
+}
+
+function windowsSupervisorMayServe(space: string, installedEntry?: string): boolean {
+  const shell = join(process.env.SystemRoot ?? "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
+  const script = "$ErrorActionPreference = 'Stop'; [Console]::OutputEncoding = [Text.Encoding]::UTF8; " +
+    "ConvertTo-Json -Compress -InputObject @(Get-CimInstance Win32_Process -Property ProcessId,Name,CommandLine | Select-Object ProcessId,Name,CommandLine)";
+  const result = spawnSync(shell, ["-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")], {
+    encoding: "utf8", timeout: 15_000, maxBuffer: 8 * 1024 * 1024, windowsHide: true,
+  });
+  const inspect = 'Check Windows process inspection with `powershell.exe -NoProfile -Command "Get-CimInstance Win32_Process"`.';
+  const failed = () => new Error(`local Manager continuity cannot be established: Windows process inspection could not list the process table. ${inspect}`);
+  if (result.error || result.status !== 0) throw failed();
+  let rows: { ProcessId: number; Name: string; CommandLine: string | null }[];
+  try { rows = JSON.parse(result.stdout); } catch { throw failed(); }
+  if (!Array.isArray(rows) || !rows.some(row => row?.ProcessId === process.pid && row.CommandLine)) throw failed();
+  const entry = installedEntry === undefined ? thisCliEntry() : realpathSync(installedEntry);
+  return rows.some(row => {
+    const { ProcessId: pid, Name: name, CommandLine: command } = row;
+    if (pid === process.pid) return false;
+    if (typeof command !== "string" || !command) {
+      if (["node.exe", "cotal.exe", basename(process.execPath).toLowerCase()].includes(name.toLowerCase()))
+        throw new Error(`local Manager continuity cannot be established: Windows process ${pid} has no readable command line. ${inspect}`);
+      return false;
+    }
+    const argv = [...command.matchAll(/"([^"]*)"|([^\s"]+)/g)].map(match => match[1] ?? match[2]!);
+    const subcommand = argv.findIndex(word => commandIsCotalSupervisor(word));
+    if (subcommand < 1) return false;
+    const named = argv.slice(subcommand + 1).flatMap((word, index) => word === "--space" ? [argv[subcommand + index + 2]] :
+      word.startsWith("--space=") ? [word.slice("--space=".length)] : []);
+    if (named.length > 0 && named.every(value => value && value !== space)) return false;
+    const scope = supervisorInstallScope(pid, 0, argv.slice(0, subcommand), entry);
+    if (scope === "foreign") return false;
+    if (scope === "unknown") throw new Error(`local Manager continuity cannot be established: Windows process ${pid} has no proven CLI entry. Inspect it and stop it through its original host before retrying.`);
     return true;
   });
 }
@@ -372,7 +408,7 @@ export function startManagerDetached(
       const info = fstatSync(fd);
       onLogStart({ offset: info.size, dev: info.dev, ino: info.ino });
     }
-    child = spawn(node, args, { detached: true, stdio: ["ignore", fd, fd], env: { ...process.env, COTAL_SKIP_CONNECTOR_SEED: "1" } });
+    child = spawn(node, args, { detached: true, stdio: ["ignore", fd, fd], env: { ...process.env, COTAL_SKIP_CONNECTOR_SEED: "1" }, windowsHide: true });
   } finally { closeSync(fd); }
   child.unref();
   // CANONICAL path, never a pre-upgrade one: a start that kept writing the root-scoped name would

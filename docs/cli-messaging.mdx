@@ -59,7 +59,9 @@ Direct and role sends have no native mention field and refuse that option as `US
 (exit 1), before connecting.
 A direct or channel send may use `--reply-to <message-id>` to identify the message it answers,
 and the stored message carries it as `replyTo`. A role send refuses the option as `USAGE_INVALID`
-(exit 1), before connecting. The sender still has no inbox and does not promise thread continuity.
+(exit 1) before checking the message body or connecting. Remove `--reply-to` and its value to send
+to the role, or choose `--to` or `--channel` to send a reply. The sender still has no inbox and does
+not promise thread continuity.
 
 A one-shot sender displays the OS login and host as `<login>@<host>`, not the launching
 seat's name. On a local static-auth mesh, the account signer binds that label to a stable
@@ -89,8 +91,9 @@ whether or not anyone holds the role. When no present participant holds it, the 
 closest role a present participant holds, or lists the roles present when none is close. A roster
 that is not current within two seconds adds no warning. A message over the broker's message limit, envelope included, refuses
 `UNSUPPORTED` (exit 2) with its size and the limit, and nothing is sent. A file or stdin body is read
-only to one byte past that limit. A pipe or a device such as `/dev/zero` has no size to report, so
-its refusal names the limit alone. When the broker denies publishing to a channel, participant
+only to one byte past that limit. If a stdin pipe reaches that point, `send` refuses without
+waiting for the writer to close it. A pipe or a device such as `/dev/zero` has no size to report,
+so its refusal names the limit alone. When the broker denies publishing to a channel, participant
 or role, `send` refuses with `PERMISSION_DENIED` (exit 2) and confirms nothing was stored. For
 channel posts, the remedy reads the grant ledger or the `agent`, `observer` or `admin` file passed
 with `--creds`. An observer or admin file has no channel post grants. If the grant is unknown,

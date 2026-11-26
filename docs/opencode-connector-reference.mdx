@@ -115,10 +115,11 @@ in-process plugin does everything.
   launcher mints per launch, or one a headless host supplies as `OPENCODE_SERVER_PASSWORD`. It
   reaches the server and the TUI only through their environment, and the headless `[cotal-serve]`
   line leaves it out.
-- **Observed model.** Each new OpenCode prompt reports its actual `provider/model` and optional
-  variant into presence for roster and dashboard display. Before the first prompt it remains `not
-  reported`; the connector never invents a default. An explicit `model:` or `variant:` pin wins,
-  and an owner's [`set-model`](#switching-the-model) wins over both.
+- **Observed model.** Each new OpenCode prompt, including one delivered by the mesh, reports its
+  actual `provider/model` and optional variant into presence for roster and dashboard display.
+  Before the first prompt it remains `not reported`. The connector never invents a default.
+  An explicit `model:` or `variant:` pin wins, and an owner's [`set-model`](#switching-the-model)
+  wins over both.
 - **A long turn keeps its batch.** The connector acks a peer batch when the turn carrying it ends,
   so a turn longer than the consumer's 60-second ack wait is ordinary. While the turn runs, the
   connector restarts the ack wait of each message in that batch with JetStream's in-progress ack,

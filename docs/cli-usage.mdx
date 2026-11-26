@@ -188,8 +188,8 @@ A word that starts with `-` reads as an option. A message or name that starts wi
 `--`. The refusal can suggest `--` when an operand is still available and there is no spelling
 suggestion. Once `space add` has its name, `endpoint check` has its contract file, or
 `endpoint work lease` has its target and pool, the refusal tells you to drop an unknown option instead.
-`channel set` gives the same remedy once you supply the channel name. If you type
-`--description`, the refusal points to `--desc`.
+`docs` gives the same remedy once you supply a page. `channel set` gives it once you supply the
+channel name. If you type `--description`, the refusal points to `--desc`.
 The same applies to `team check`, `team boot` and `team deploy` once you have supplied the manifest file.
 Service verbs with a definition name, such as `service add <name>`, give the same remedy.
 `service list` takes no operands and gives it too. So do manager lifecycle commands such as
@@ -211,6 +211,8 @@ cannot preserve the value, the correction names PowerShell. An option such as `-
 rather than read as a positional. Use `--` before the word to pass it as text. The correction keeps
 any attached value the option accepts, as in `--limit=10`. Before the command word the same holds
 for the leading flags, so `cotal ––json status` names `--json`.
+If the command supports JSON and a separate `--json` or `-j` requests it, the refusal uses that
+command's JSON format even when the mistyped flag comes before the command word.
 For extension commands, the correction depends on the subcommand. `ext list` accepts `--json`;
 `ext root` prints a path, so the refusal asks you to omit that option.
 For `endpoint check`, the refusal asks you to omit a pasted `--file` option. Pass the contract file as an argument.
@@ -247,8 +249,9 @@ it without a value. No command may declare a flag with either name. The output
 flags `--json` (`-j`) and `--plain` may also come before the command word, as in
 `cotal --json status`; they are read as the command's own flags, so a command without that output
 refuses them as it does after the command word. If you attach a value to a leading output flag,
-the refusal names the flag and keeps JSON output when you request it with a separate `--json` or
-`-j` and the command supports it. A command that takes its words raw, such as the
+the refusal tells you to omit the flag. It also suggests passing it without a value when the
+selected command or subcommand supports that output. The refusal keeps JSON output when you
+request it with a separate `--json` or `-j` and the command supports it. A command that takes its words raw, such as the
 hidden completion entry, has no flags to read them as and refuses them before its word with a usage
 error. A `--` before the command word ends these leading flags. An installed extension
 whose command declares one is an internal error, and `cotal` exits 1 before running any command.
@@ -293,9 +296,11 @@ records or extension versions need attention. It is `{"kind":"none"}` when there
 reconcile. Other kinds include an `instruction` with the next step. `result.extensions` lists
 installed extensions by `package` and `version`.
 
-If the extension manifest cannot be read, `cotal version --json` still reports the running CLI
-version. The report is partial, includes an `EXTENSIONS_UNREADABLE` warning, and exits 4. For a
-corrupt manifest, the reconciliation instruction and error remedy both point to `cotal ext seed --repair`.
+If the extension manifest cannot be read, `cotal version`, `cotal --version`, and `cotal -V`
+still print the running CLI version on stdout, explain the inventory failure on stderr, and exit 4.
+`cotal version --json` also exits 4 and includes the running version and an `EXTENSIONS_UNREADABLE`
+warning in a partial report. For a corrupt manifest, both output forms point to `cotal ext seed --repair`.
+If permissions block the read, restore the account's read access and retry. The inventory stays in place.
 If a file occupies the config folder and blocks the inventory read, the report names that file
 and tells you to move it aside instead.
 The version command does not repair the manifest itself.
@@ -320,6 +325,7 @@ finite `--json` output is a `refused` envelope with code `USAGE_INVALID`, and th
 This also applies when `-j` comes before a short option that is unknown or needs a value, as in
 `cotal config get harness -jZ` or `cotal config get harness -js`.
 If several leading global switches have attached values, the JSON refusal names the first malformed switch.
+A repeated global flag and a leading switch with an attached value still produce one JSON refusal.
 A word that names none of a command's subcommands and is near none of them is a usage error that
 lists the subcommands the command takes.
 A command without a JSON output refuses `--json` as an unknown option.

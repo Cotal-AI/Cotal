@@ -581,7 +581,7 @@ export async function startMeshDetached(
   const fd = openBrokerLog(logPath);
   const listenerStartedAt = new Date().toISOString();
   let child: ChildProcess;
-  try { child = spawnBroker(bin, args, { cwd: cotalRoot(), detached: true, stdio: ["ignore", fd, fd] }); }
+  try { child = spawnBroker(bin, args, { cwd: cotalRoot(), detached: true, stdio: ["ignore", fd, fd], windowsHide: true }); }
   finally { closeSync(fd); }
   await recordSpawnedListener(child, listenerStartedAt, opts.boundListener);
   child.unref();

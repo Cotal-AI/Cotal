@@ -25,6 +25,7 @@ import { homeHoldsStack } from "../lib/paths.js";
 import { channelSeedRestartBlock } from "../lib/channel-seed.js";
 import { rootStoreProblem } from "../lib/store-dir.js";
 import { natsServerLabel } from "../lib/nats-bin.js";
+import { defaultLaunchBlock } from "../lib/status.js";
 import { readCursor } from "../seed/lock.js";
 import { responderText } from "./status-delivery.js";
 import { type PersonaCatalog, type ProcessRow, type OwnedServiceStatus, type StatusResult, type SelectedResult } from "./status-model.js";
@@ -130,7 +131,11 @@ function folderSection(f: StatusResult["folder"], selected: SelectedResult): Sec
   return { title: "This Folder", blocks: [{ kind: "fields", rows }] };
 }
 
-function meshesSections(m: StatusResult["meshes"]): Section[] {
+function currentMeshState(m: StatusResult["meshes"], journalUnreadable: boolean): string {
+  return journalUnreadable ? "has an unknown stack lifecycle" : m.currentStopped ? "is stopped" : m.currentPrepared ? "is prepared, not started" : "is not recorded";
+}
+
+function meshesSections(m: StatusResult["meshes"], currentJournalUnreadable: boolean): Section[] {
   const check = { reachable: cell("reachable", "ok"), unreachable: cell("down", "failed"), "slow-link": cell("not answering", "failed"), "broker-stopped": cell("broker process is stopped", "failed"), "not-checked": cell("not checked", "hint") } as const;
   const blocks: Section["blocks"][number][] = [];
   if (!m.items.length && !m.unreadable.length) blocks.push({ kind: "lines", lines: [cell("none", "hint")] });
@@ -162,7 +167,7 @@ function meshesSections(m: StatusResult["meshes"]): Section[] {
         ].filter(Boolean).join("  "),
       })),
     });
-  if (!m.currentRecorded) blocks.push({ kind: "lines", lines: [cell(`note: current mesh "${m.current}" is ${m.currentStopped ? "stopped" : m.currentPrepared ? "prepared, not started" : "not recorded"}`, "hint")] });
+  if (!m.currentRecorded) blocks.push({ kind: "lines", lines: [cell(`note: current mesh "${m.current}" ${currentMeshState(m, currentJournalUnreadable)}`, "hint")] });
   if (m.unreadable.length) blocks.push({ kind: "lines", lines: m.unreadable.map((u) => cell(`unreadable: ${u.error}`, "failed")) });
   const sections: Section[] = [{ title: "Recorded Meshes", blocks }];
   if (m.catalogs.length)
@@ -361,7 +366,7 @@ function spaceStateCell(r: StatusResult, entry: StatusResult["meshes"]["items"][
  * is not a group title: it groups spaces by an address a reader does not act on here, and `cotal
  * space show <name>` names it. `--all` and `--wide` keep the grouped report.
  */
-function spacesOverview(r: StatusResult, wide: boolean, seedFailed: boolean): Section {
+function spacesOverview(r: StatusResult, wide: boolean, seedFailed: boolean, currentJournalUnreadable: boolean): Section {
   const blocks: Section["blocks"][number][] = [];
   // The space this report is for: the target it resolved or the space it is about, else the selection
   // it could not resolve.
@@ -397,7 +402,7 @@ function spacesOverview(r: StatusResult, wide: boolean, seedFailed: boolean): Se
   for (const unreadable of r.meshes.unreadable) blocks.push({ kind: "lines", lines: [stateCell(`Registration could not be read: ${unreadable.error}`, "failed")] });
   // One line per account, named by the account whose catalog failed rather than by its token URL.
   for (const account of r.meshes.catalogs) if (account.error) blocks.push({ kind: "lines", lines: [stateCell(`Space catalog for ${account.account ?? account.idp} could not be refreshed: ${account.error}`, "failed")] });
-  if (!r.meshes.currentRecorded) blocks.push({ kind: "lines", lines: [cell(`Selected space '${r.meshes.current}' is ${r.meshes.currentStopped ? "stopped" : r.meshes.currentPrepared ? "prepared, not started" : "not recorded"}${folderTargeted(r) ? "; it applies outside this folder" : ""}`, "waiting")] });
+  if (!r.meshes.currentRecorded) blocks.push({ kind: "lines", lines: [cell(`Selected space '${r.meshes.current}' ${currentMeshState(r.meshes, currentJournalUnreadable)}${folderTargeted(r) ? "; it applies outside this folder" : ""}`, "waiting")] });
   return { title: "Spaces", blocks };
 }
 
@@ -511,6 +516,17 @@ export function backupRecovery(maintenance: StatusResult["maintenance"], sourceM
   return maintenance && (maintenance.state === "claimed" || maintenance.state === "restore-ready" || sourceMissing) ? maintenance.next : null;
 }
 
+function statusLaunchNext(r: StatusResult, s: Extract<SelectedResult, { resolved: true }>, scope: Parameters<typeof onRerun>[1], reachable: boolean, noApplication: boolean): { command: string; description: string } | string | undefined {
+  const defaults = r.machine.defaults;
+  const cmd = displayCmd();
+  if (defaults?.persona === "default" && s.personas.default !== "missing" && s.personas.default !== "valid") {
+    if (!noApplication) return { command: onRerun(`${cmd} persona show default`, scope), description: "See what is wrong with the default persona" };
+    return undefined;
+  }
+  if (!reachable || s.deliveryResponder === "unbound" || s.deliveryResponder === "stale" || !defaults?.harness || !r.machine.connectors?.length) return undefined;
+  return defaultLaunchBlock(defaults.harness, r.machine.connectors) ?? { command: onRerun(`${cmd} spawn`, scope), description: defaults.persona === "default" && s.personas.default === "missing" ? "Open your default agent; creates the shipped default persona" : "Open your default agent" };
+}
+
 function nextActions(r: StatusResult, seedFailed: boolean, interactive: boolean, recovery: string | null, preparedHarness?: string, stoppedForeignListener = false, stackStarting = false, selectedStarting = false): Section {
   if (seedFailed) return {
     title: "Next",
@@ -539,10 +555,9 @@ function nextActions(r: StatusResult, seedFailed: boolean, interactive: boolean,
     const s = r.selected;
     const reachable = s.connection === "ok" || s.connection === "reachable";
     const scope = { space: s.source === "flag-server" ? undefined : s.space, server: s.source === "flag-server" || s.source === "flag-space-override" ? s.server : undefined };
-    if (!noApplication) {
-      if (s.personas.default !== "missing" && s.personas.default !== "valid") items.push({ command: onRerun(`${cmd} persona show default`, scope), description: "See what is wrong with the default persona" });
-      else if (reachable && s.deliveryResponder !== "unbound" && s.deliveryResponder !== "stale") items.push({ command: onRerun(`${cmd} spawn`, scope), description: s.personas.default === "missing" ? "Open your default agent; creates the shipped default persona" : "Open your default agent" });
-    }
+    const launch = statusLaunchNext(r, s, scope, reachable, noApplication);
+    if (typeof launch === "string") extra.push(launch);
+    else if (launch) items.push(launch);
     if (reachable) items.push({ command: onRerun(`${cmd} who`, scope), description: "See the live roster" });
     if (r.stackManager?.endpoint === "answered" || r.outsideStackManager?.endpoint === "answered")
       items.push({ command: onRerun(`${cmd} ps`, scope), description: "List managed agents" });
@@ -732,7 +747,7 @@ function maintenanceOverview(maintenance: StatusResult["maintenance"]): Section 
 
 /** The approved screen hierarchy; record-level diagnostics are opt-in. `wide` reports every row in
  *  full, as `--all` and `--wide` ask. */
-export function statusView(r: StatusResult, verbose = false, wide = false, { interactive = false, preparedHarness, seed, recovery = backupRecovery(r.maintenance), stoppedForeignListener = false, stackStarting = false, selectedStarting = false }: { interactive?: boolean; preparedHarness?: string; seed?: ReturnType<typeof readCursor>; recovery?: string | null; stoppedForeignListener?: boolean; stackStarting?: boolean; selectedStarting?: boolean } = {}): Report {
+export function statusView(r: StatusResult, verbose = false, wide = false, { interactive = false, preparedHarness, seed, recovery = backupRecovery(r.maintenance), stoppedForeignListener = false, stackStarting = false, selectedStarting = false, currentJournalUnreadable = false }: { interactive?: boolean; preparedHarness?: string; seed?: ReturnType<typeof readCursor>; recovery?: string | null; stoppedForeignListener?: boolean; stackStarting?: boolean; selectedStarting?: boolean; currentJournalUnreadable?: boolean } = {}): Report {
   const selected = selectedOverview(r, stackStarting, selectedStarting);
   // This folder's own stack under another selection, with the lines it has when it is selected.
   const held = folderStack(r.folder, r.selected), heldLines = held ? stackLines(r.folder, stackStarting) : [];
@@ -740,8 +755,8 @@ export function statusView(r: StatusResult, verbose = false, wide = false, { int
   const owned = ownedServicesOverview(r.services);
   const attempts = bootAttemptOverview(r.bootAttempts);
   const maintenance = maintenanceOverview(r.maintenance);
-  const sections = [machineOverview(r, wide, interactive, seed), spacesOverview(r, wide, Boolean(seed)), ...(selected ? [selected] : []), ...(heldSection ? [heldSection] : []), ...(maintenance ? [maintenance] : []), ...(attempts ? [attempts] : []), ...(owned ? [owned] : [])];
-  if (verbose) sections.push(machineSection(r.machine), extensionsSection(r.extensions), folderSection(r.folder, r.selected), ...meshesSections(r.meshes), selectedSection(r.selected, r.folder, stackDeliveryPid(r), r.store?.state === "full"));
+  const sections = [machineOverview(r, wide, interactive, seed), spacesOverview(r, wide, Boolean(seed), currentJournalUnreadable), ...(selected ? [selected] : []), ...(heldSection ? [heldSection] : []), ...(maintenance ? [maintenance] : []), ...(attempts ? [attempts] : []), ...(owned ? [owned] : [])];
+  if (verbose) sections.push(machineSection(r.machine), extensionsSection(r.extensions), folderSection(r.folder, r.selected), ...meshesSections(r.meshes, currentJournalUnreadable), selectedSection(r.selected, r.folder, stackDeliveryPid(r), r.store?.state === "full"));
   sections.push(nextActions(r, Boolean(seed), interactive, recovery, preparedHarness, stoppedForeignListener, stackStarting, selectedStarting));
   return { sections };
 }

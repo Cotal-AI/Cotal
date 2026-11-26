@@ -43,7 +43,7 @@ function claudeNameFromMessage(env: NodeJS.ProcessEnv, model: string | undefined
     try {
       return await new Promise<string>((resolve, reject) => {
         const args = [...NAME_ARGS, "--system-prompt", system, ...(model ? ["--model", model] : [])];
-        const child = spawn(binary, args, { cwd, env: childEnv, signal, stdio: ["pipe", "pipe", "pipe"] });
+        const child = spawn(binary, args, { cwd, env: childEnv, signal, stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
         let out = "";
         let err = "";
         child.stdout.setEncoding("utf8").on("data", (d: string) => (out += d));

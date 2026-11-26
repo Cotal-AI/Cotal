@@ -10,12 +10,12 @@ import { cotalRoot } from "../lib/paths.js";
 import { resolveSpace } from "../lib/status.js";
 import { claimExtensionMutation, extensionUpdatePassOwnedBy } from "../lib/ext-mutation.js";
 import { withInstallUmask } from "../lib/install-umask.js";
-import { npmInvocation } from "../lib/npm-invocation.js";
+import { npmInvocation, npmLifecycleEnvironment } from "../lib/npm-invocation.js";
 import { runSeed } from "../seed/reconcile.js";
 import { assertStageVerifier, stageExtensions } from "../lib/extension-stage.js";
 import { connectorConfigDir, extensionReinstallAdvice, isExtensionPathSpec as isPathSpec, resolveExtensionEntry } from "@cotal-ai/workspace";
-import { CorruptExtensionPackageError, CorruptExtensionsManifestError, inspectLock, extensionNpmMutationPath, oneLine, type OutputWarning } from "@cotal-ai/workspace";
-import { selfArgv } from "../lib/self-exec.js";
+import { codeSpan, CorruptExtensionPackageError, CorruptExtensionsManifestError, inspectLock, extensionNpmMutationPath, oneLine, windowsShellWord, type OutputWarning } from "@cotal-ai/workspace";
+import { displayCmd, selfArgv } from "../lib/self-exec.js";
 import { spawnSync } from "node:child_process";
 import { isAuthenticSeedChild, markSeedChildLive, clearChildMarker } from "../seed/lock.js";
 import { cliVersion, seedStoreDir } from "../seed/paths.js";
@@ -140,8 +140,10 @@ async function npm(args: string[], prefix: string, seeding = false): Promise<{ s
   let published = false;
   let preservePending = false;
   let stopForwarding = () => {};
+  let lifecycle: ReturnType<typeof npmLifecycleEnvironment>;
   try {
-    const child = withInstallUmask(() => spawn(file, spawnArgs, { cwd: npm.cwd, env: npm.env, windowsVerbatimArguments, detached: seedGroup }));
+    lifecycle = npmLifecycleEnvironment(npm, prefix);
+    const child = withInstallUmask(() => spawn(file, spawnArgs, { cwd: npm.cwd, env: lifecycle?.env ?? npm.env, windowsVerbatimArguments, detached: seedGroup, windowsHide: true }));
     if (seedGroup && child.pid !== undefined) {
       const pid = child.pid;
       const forward = (signal: NodeJS.Signals) => {
@@ -190,6 +192,7 @@ async function npm(args: string[], prefix: string, seeding = false): Promise<{ s
   } finally {
     stopForwarding();
     if (!published && !preservePending) mutation.clear();
+    lifecycle?.dispose();
   }
 }
 
@@ -247,7 +250,7 @@ export async function addExtension(spec: string, expectedPkg?: string, borrowMut
       provenance.wrote("extensions prefix", join(dir, "package.json"));
     }
     if (seeding) await addTransaction(pkg, resolved, expectedPkg, true, announce);
-    else await installExtensionSet([{ pkg, spec: resolved }], announce);
+    else await installExtensionSet([{ pkg, spec: resolved }], announce, isPath ? { localOperand: spec } : undefined);
   } finally {
     if (seeding) clearChildMarker();
     releaseMutation();
@@ -272,7 +275,7 @@ function dropForeignLockEntries(lock: { packages?: Record<string, { extraneous?:
 export async function installExtensionSet(
   requests: readonly ExtensionInstallRequest[],
   announce: (line: string) => void = console.error,
-  opts?: { isolate?: boolean },
+  opts?: { isolate?: boolean; localOperand?: string },
 ): Promise<void> {
   if (!requests.length) return;
   const ownerConfig = connectorConfigDir();
@@ -330,8 +333,18 @@ export async function installExtensionSet(
     for (const request of requests) {
       const meta = installedExtensionPackage(request.pkg);
       if (!meta || request.version !== undefined && meta.version !== request.version) throw new Error(`extension set installed an unexpected version of ${request.pkg}`);
-      const entry = resolveExtensionEntry(extensionPackageDir(request.pkg), meta);
-      if (!existsSync(entry)) throw new Error(`extension set installed no entry for ${request.pkg} at ${entry}`);
+      const dir = extensionPackageDir(request.pkg);
+      const entry = resolveExtensionEntry(dir, meta);
+      if (!existsSync(entry)) {
+        const path = codeSpan(`./${oneLine(relative(dir, entry).split(sep).join("/"))}`);
+        const message = `the installed npm package ${oneLine(request.pkg)} is missing its entry ${path}.`;
+        const operand = opts?.localOperand;
+        if (operand === undefined) throw new Error(message);
+        const word = oneLine(operand) !== operand ? undefined : process.platform === "win32" ? windowsShellWord(operand) : shellWord(operand);
+        const pack = codeSpan(`npm pack --dry-run ${word ?? "<local-path>"}`);
+        const retry = codeSpan(`${displayCmd()} ext add ${word ?? "<local-path>"}`);
+        throw new Error(`${message} Check the package with ${pack}, then include the entry in \`files\` or generate it before rerunning ${retry}.`);
+      }
     }
     const invocation = requests.length > 1 || opts?.isolate ? selfArgv() : undefined;
     for (const request of requests) {
@@ -341,7 +354,7 @@ export async function installExtensionSet(
       }
       const [file, ...argv] = invocation;
       const child = spawnSync(file!, [...argv, "ext", "__stage-verify", request.pkg, request.spec, ownerConfig, owner.owner.nonce, String(process.pid), request.source ?? "operator"], {
-        encoding: "utf8", env: { ...process.env, COTAL_SKIP_CONNECTOR_SEED: "1" },
+        encoding: "utf8", env: { ...process.env, COTAL_SKIP_CONNECTOR_SEED: "1" }, windowsHide: true,
       });
       if (child.stderr) process.stderr.write(child.stderr);
       if (child.status !== 0) throw new Error(`extension set verification failed for ${request.pkg}: ${child.stderr || child.error?.message || child.status}`);
@@ -604,8 +617,13 @@ async function verifyCandidate(pkg: string, resolved: string, dir: string, recor
     fail(pkg, `could not update the extensions manifest: ${(e as Error).message}`);
   }
   provenance.wrote(`extensions manifest (+${pkg}@${version})`, extensionsManifestPath());
+  const providers = contributed.filter((ext) => ext.kind !== "commands");
+  const pluralCommands = contributed.filter((ext) => ext.kind === "commands");
   return [
-    c.green(`✓ added ${pkg}@${version}`) + c.dim(` - provides: ${contributed.map((ext) => `${ext.kind}:${ext.name}`).join(", ")}`),
+    c.green(`✓ added ${pkg}@${version}`) + (providers.length ? c.dim(` - provides: ${providers.map((ext) => `${ext.kind}:${ext.name}`).join(", ")}`) : ""),
+    ...(pluralCommands.length
+      ? [c.yellow(`  Registered ${pluralCommands.map((ext) => `commands:${oneLine(ext.name)}`).join(", ")} in the registry only. Use kind \`command\` in the extension to add a CLI command.`)]
+      : []),
     ...(!entry.serviceMetadata && (servicePresets.length || localProcesses.some((component) => component.service !== undefined))
       ? [c.dim(`  its services cannot run on this platform: protected workstation file access is not available in this release`)]
       : []),

@@ -36,7 +36,7 @@ export function createModelLane(dispatcher: CommandDispatcher | undefined, o: Mo
   async function switchTo({ model, variant }: SetModelInput): Promise<SetModelOutput> {
     if (!dispatcher?.setModel) throw refused("unimplemented", "this agent's harness cannot switch the model it runs");
     if (o.policed !== undefined)
-      throw refused("failed-precondition", `this agent launched under modelPolicy.${o.policed} in the operator's cotal config, which judges its model at launch only. Start a new agent on a model the policy allows.`);
+      throw refused("failed-precondition", `this agent launched under modelPolicy.${o.policed} in the Cotal configuration, which judges its model at launch only. Start a new agent on a model the policy allows.`);
     const cause = dispatcher.unsupported?.();
     if (cause !== undefined) throw refused("unimplemented", `this agent's connector cannot switch its model now: ${cause}`);
     if (closed) throw refused("unavailable", "this agent is stopping");

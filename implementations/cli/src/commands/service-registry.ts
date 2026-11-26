@@ -22,6 +22,7 @@ import { addedDefinitionStep, isStackMember, STACK_ADAPTER, STACK_DEFINITION } f
 import { assertManagerLogin } from "./stack-user-auth.js";
 import { localRecordName } from "../lib/protected-records.js";
 import { brokerServerProblem, brokerService } from "../lib/broker-service.js";
+import { displayCmd } from "../lib/self-exec.js";
 
 export const serviceFlags = [spaceFlag, jsonFlag, plainFlag,
   { name: "preset", type: "string", value: "<name>", description: "add: use a declared preset and that adapter's schema-derived options; starts nothing" },
@@ -113,6 +114,13 @@ function legacyProcesses(context: LocalProcessContext) {
       return { name: provider.name, component: provider.label, space: context.space, executionHost: "this-machine", generation: "legacy-local-process", processState: "unreadable", ownership: "not-checked", readiness: "not-checked", supervisor: "not-checked", readable: false };
     }
   });
+}
+
+function stackMemberRemovalRemedy(root: string, space: string, json: boolean): string {
+  const cli = json ? "cotal" : displayCmd({ fromAnyFolder: true });
+  const stop = codeSpan(`${cli} down${targetWords({ space })} --yes`);
+  const forget = codeSpan(`${cli} space forget ${space.startsWith("-") ? "-- " : ""}${shellWord(space)}`);
+  return `from ${oneLine(root)}, run ${stop}, then run ${forget}`;
 }
 
 export async function service(args: ParsedArgs, commandName = "service"): Promise<void> {
@@ -230,11 +238,15 @@ export async function service(args: ParsedArgs, commandName = "service"): Promis
   }
   if (mode === "remove") {
     const row = savedService(suppliedName!);
-    if (!row) throw new CommandFailure("refused", "TARGET_NOT_FOUND", "no saved service definition has this full name in the selected space", { target: { ...target, name: suppliedName }, remedy: "see the saved definitions with `cotal service`" });
+    if (!row) throw new CommandFailure("refused", "TARGET_NOT_FOUND", "no saved service definition has this full name in the selected space", { target: { ...target, name: suppliedName }, remedy: `see the saved definitions with ${codeSpan(`cotal service${targetWords({ space })}`)}` });
+    if ((Object.values(STACK_DEFINITION) as string[]).includes(row.name)) {
+      const remedy = stackMemberRemovalRemedy(root, space, presentation === "json");
+      if (args.values.instance !== undefined) throw new CommandFailure("refused", "UNSUPPORTED", "a controller stack member's instance records stay with its stack; nothing was removed", { target: { ...target, name: row.name, instanceId: String(args.values.instance) }, remedy });
+      throw new CommandFailure("refused", "UNSUPPORTED", "a controller stack member's definition stays with its stack, whose up and down read it; nothing was removed", { target: { ...target, name: row.name }, remedy });
+    }
     if (args.values.instance !== undefined) {
       // One stopped instance record goes; the definition, its other instances and the logs stay.
       const id = String(args.values.instance), at = { ...target, name: row.name, instanceId: id };
-      if ((Object.values(STACK_DEFINITION) as string[]).includes(row.name)) throw new CommandFailure("refused", "UNSUPPORTED", "a controller stack member's instance records stay with its stack; nothing was removed", { target: at, remedy: `they go with the stack: \`cotal down --yes\`, then \`cotal space forget ${space}\`` });
       removableServiceInstances(space, row.name, id);
       if (!args.values.yes) {
         if (!canPrompt() || presentation === "json") throw new ConfirmationRequired("removing an instance record outside interactive input requires --yes", { target: at, remedy: `confirm with \`${serviceConfirmCommand("remove", row.name, space, { instance: id }, presentation)}\`` });
@@ -245,8 +257,6 @@ export async function service(args: ParsedArgs, commandName = "service"): Promis
       writeResult(presentation, { command: "service", target: at, result: { kind: "service-instance-record-removed", name: row.name, instanceId: id, processesChanged: false, supervisorChanged: false } }, (): Report => ({ sections: [{ title: "Instance record forgotten", blocks: [{ kind: "fields", rows: [["Name", row.name], ["Instance", id], ["Space", space]] }, { kind: "lines", lines: ["Only this stopped instance record was removed. Its logs, the definition and the other instances were kept, and no process or OS unit was changed."] }] }] }));
       return;
     }
-    // A stack member's definition is the stack's: `up` and `down` read it, so it goes with the space.
-    if ((Object.values(STACK_DEFINITION) as string[]).includes(row.name)) throw new CommandFailure("refused", "UNSUPPORTED", "a controller stack member's definition stays with its stack, whose up and down read it; nothing was removed", { target: { ...target, name: row.name }, remedy: `it goes with the stack: \`cotal down --yes\`, then \`cotal space forget ${space}\`` });
     removableServiceInstances(space, row.name);
     if (!args.values.yes) {
       if (!canPrompt() || presentation === "json") throw new ConfirmationRequired("removing a service definition outside interactive input requires --yes", { target: { ...target, name: row.name }, remedy: `confirm with \`${serviceConfirmCommand("remove", row.name, space, {}, presentation)}\`` });
@@ -446,7 +456,12 @@ async function recordedManagerLogs(name: string, recorded: { pid: number | null;
   const target = { space, name, executionHost: "this-machine", pid: recorded.pid };
   const path = managerLogPath(space, root), tail = values.tail === undefined ? 100 : Number(values.tail);
   if (values.follow) return followRecordedLog(path, recorded.pid, target, presentation, tail);
-  const log = readOwnedLogTail(path, tail, true), stopped = recorded.state === "stopped";
+  const stopped = recorded.state === "stopped";
+  const missingRemedy = stopped ? undefined : () => {
+    const cli = presentation === "json" ? "cotal" : displayCmd();
+    return `If you started the manager with ${codeSpan(`${cli} supervise`)}, read its output in the terminal where you started it.`;
+  };
+  const log = readOwnedLogTail(path, tail, true, missingRemedy);
   writeResult(presentation, { command: commandName, target, result: { kind: "service-logs", name, recordedProcess: { pid: recorded.pid, label: recorded.label, state: recorded.state, startedBy: "cotal up or cotal supervise", savedService: false }, ...log, encoding: "utf8-with-replacement", collection: "the manager's output, in the log `cotal up` opened for it" }, ...(log.omittedBytes && log.lines.length < tail ? { completeness: "partial" as const, partial: { message: "The 16 MiB bounded read holds fewer lines than the requested tail; earlier bytes were omitted." } } : {}) }, (result): Report => ({ sections: [{ title: stopped ? "Manager log tail, from a stopped manager" : "Manager log tail", blocks: [
     { kind: "fields", rows: [["Space", space], ["State", recorded.state], ["PID", recorded.pid === null ? "no longer recorded" : stopped ? `${recorded.pid}, no longer running` : String(recorded.pid)], ["Started by", "cotal up or `cotal supervise`, not as a saved service"], ["Log", path]] },
     { kind: "lines", lines: result.lines.length ? result.lines : ["No captured log lines in this bounded read."] },

@@ -22,6 +22,7 @@ import {
   mintAcceptedToken,
   newIdentity,
   oneLine,
+  patternInAllow,
   withIssuerSession,
   type IssuedCaller,
   probeConnect,
@@ -1058,12 +1059,13 @@ interface CredentialContext {
   path: string;
   named: boolean;
   addressFlags?: "--server" | "--link" | "--server and --link";
-  provision?: boolean;
+  landingChannel?: string;
 }
 
 /** Classify a broker-rejected file from its declared space and recorded local trust. */
 async function rejectCredential(e: ConnectRefusal, server: string, creds: string, context: CredentialContext): Promise<never> {
-  const { space, path, named, addressFlags, provision } = context;
+  const { space, path, named, addressFlags, landingChannel } = context;
+  const provision = landingChannel !== undefined;
   const owner = spaceInCreds(creds);
   if (owner === undefined) throw e;
   const at = brokerAddressForDisplay(server) ?? "an invalid broker address";
@@ -1098,10 +1100,16 @@ async function rejectCredential(e: ConnectRefusal, server: string, creds: string
   }
   const message = `credentials rejected at ${at}: ${path} is a credential for space "${owner}"${named ? `, not "${space}"` : ""}`;
   const use = elsewhere !== undefined ? `use it with --space ${owner} and without ${addressFlags}, which dials ${owner}'s broker at ${elsewhere}` : ownerMesh ? `use it with --space ${owner}` : `use it with --space ${owner} --server <url of its broker>`;
-  const claims = provision && named ? credsClaims(creds) : undefined;
-  const grants = claims?.name === "agent" ? grantMintFlags(agentGrants(claims.nats ?? {}, owner)) : "";
+  let grants = "";
+  if (named && landingChannel !== undefined) {
+    const claims = credsClaims(creds);
+    const held = agentGrants(claims.name === "agent" ? claims.nats ?? {} : {}, owner);
+    if (!patternInAllow(held.read, landingChannel)) held.read.push(landingChannel);
+    grants = grantMintFlags(held);
+  }
   const mint = codeSpan(`cotal auth mint <label> --space ${provision ? shellPath(space) : space}${provisionFlags}${grants} --out <file>`);
-  const remedy = `${use}${named ? `, or mint one for "${space}" with ${mint}${pairing}` : ""}`;
+  const replacement = provision ? `ask the owner of "${space}" to mint a replacement with read access to the landing channel using ${mint}${pairing}` : `mint one for "${space}" with ${mint}`;
+  const remedy = named ? `${use}, or ${replacement}` : use;
   throw new ConnectRefusal(`✗ ${message}`, `  ${remedy}`, { cause: e, code: "PERMISSION_DENIED", parts: { message, remedy }, target: { ...(named ? { space } : {}), credentialSpace: owner, path } });
 }
 

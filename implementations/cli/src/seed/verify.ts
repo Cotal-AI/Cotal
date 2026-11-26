@@ -1,8 +1,18 @@
+import { spawnSync } from "node:child_process";
 import { lstatSync, readdirSync, readFileSync, realpathSync, statSync, type Dirent } from "node:fs";
 import { join, resolve, sep } from "node:path";
-import { SEEDED_EXTENSIONS, extensionPackageDir, extensionsDir, installedExtensionPackage, resolveExtensionEntry, type InstalledExtension } from "@cotal-ai/workspace";
+import { pathToFileURL } from "node:url";
+import { SEEDED_EXTENSIONS, extensionPackageDir, extensionsDir, hostPackageDir, installedExtensionPackage, isExtensionPathSpec, resolveExtensionEntry, type InstalledExtension } from "@cotal-ai/workspace";
 import { seedStorePath, shippedSourceDir } from "./paths.js";
 import { sharedPlacements, type SharedPlacement } from "./shared.js";
+
+/** Check the links installed by the peer binder without changing the extension tree. */
+export function seededPeerLinksCurrent(pkg: string): boolean {
+  const installed = installedExtensionPackage(pkg);
+  return installed !== undefined && Object.keys(installed.peerDependencies ?? {}).every(peer =>
+    !peer.startsWith("@cotal-ai/") ||
+    realpathSync(join(extensionPackageDir(pkg), "node_modules", peer)) === realpathSync(hostPackageDir(peer)));
+}
 
 /**
  * Why `cotal update` still has to reinstall a seeded built-in that is recorded at this generation, or
@@ -60,16 +70,22 @@ export function seededInstallDiffers(name: string, generation: string, entry: In
   return undefined;
 }
 
+/** The source for a matching-generation repair is the operator's path, if one was recorded. */
+export function operatorUpdateSpec(entry: InstalledExtension, generation: string): string {
+  return entry.version === generation && isExtensionPathSpec(entry.spec) ? entry.spec : `${entry.pkg}@${generation}`;
+}
+
 /**
  * Why `cotal update` still has to reinstall a first-party operator extension, or undefined when npm's
  * own record in the prefix proves it installed at this generation: the entry is recorded at this
  * generation with the spec the update would install, the prefix lock records the package at that
  * version, every package the lock records is on disk at its recorded version
- * ({@link prefixLockDiffers}), and the extension's resolved entry is a nonempty regular file.
+ * ({@link prefixLockDiffers}), and the extension's resolved entry is a nonempty regular file
+ * that Node can import with its dependencies.
  * Any doubt is a reason, and a reason runs the ordinary reinstall.
  */
 export function operatorInstallDiffers(entry: InstalledExtension, generation: string): string | undefined {
-  const spec = `${entry.pkg}@${generation}`;
+  const spec = operatorUpdateSpec(entry, generation);
   if (entry.version !== generation) return `recorded at ${entry.version}, not ${generation}`;
   if (entry.spec !== spec) return `recorded spec ${entry.spec} is not ${spec}`;
   const differs = prefixLockDiffers();
@@ -84,7 +100,11 @@ export function operatorInstallDiffers(entry: InstalledExtension, generation: st
   const file = statSync(path, { throwIfNoEntry: false });
   if (!file?.isFile()) return "entry file is missing";
   if (file.size === 0) return "entry file is empty";
-  return undefined;
+  // Import in a fresh process so registrations and Node's module cache stay out of the updater.
+  const probe = spawnSync(process.execPath, ["--input-type=module", "-e", "await import(process.argv[1]); process.exit(0)", pathToFileURL(path).href], {
+    stdio: "ignore", timeout: 15_000, killSignal: "SIGKILL", windowsHide: true,
+  });
+  return probe.status === 0 ? undefined : "entry file failed to load";
 }
 
 /**

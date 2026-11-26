@@ -16,13 +16,14 @@ import {
 } from "@cotal-ai/workspace";
 import * as prompts from "../lib/prompts.js";
 import { cotalRoot } from "../lib/paths.js";
+import { displayCmd } from "../lib/self-exec.js";
 import { canPrompt } from "./meshes-wizard.js";
 import { serviceDefinitionStore, type ServiceDefinitionSnapshot } from "../lib/service-definitions.js";
 import { observeServiceProcess, serviceInstances, serviceInstanceStore, type ServiceInstanceSnapshot } from "../lib/service-instances.js";
 import { assertNoServiceUnitAttempts, pruneEmptyServiceSpace, removeInstanceSidecars, removeServiceLogs } from "../lib/service-process.js";
 import { removeCustodyCapability } from "../lib/service-custody-win32.js";
 import { refuseRecordedSupervisor } from "../lib/service-supervision.js";
-import { STACK_DEFINITION, knownStackRecoveryHost, stackRecoveryHost, goneStackRoot, processGone, runningStackRoles, stackDefinitionsAt, type StackRole } from "../lib/stack-journal.js";
+import { STACK_DEFINITION, knownStackRecoveryHost, stackRecoveryHost, goneStackRoot, processGone, runningStackRoles, stackDefinitionsAt, stackPathState, stackRootRecovery, type StackRole } from "../lib/stack-journal.js";
 
 const STOP_ORDER: readonly StackRole[] = ["manager", "delivery", "auth", "broker"];
 /** How long a member has to exit after SIGTERM. The manager first stops its agents by its default policy. */
@@ -34,9 +35,13 @@ interface Stopped { role: StackRole; definition: string; instanceId: string; pid
 
 /** A project that denies traversal cannot be treated as gone or used as a retry location. */
 export function refuseInaccessibleDownRoot(root: string, space: string): void {
-  const problem = projectRootProblem(root);
-  if (problem !== "inaccessible") return;
-  throw new CommandFailure("refused", "PERMISSION_DENIED", `the project folder at ${oneLine(root)} ${projectRootProblemText(problem)}; nothing was stopped or changed`, {
+  if (projectRootProblem(root) === "inaccessible" || projectRootProblem(join(root, ".cotal")) === "inaccessible")
+    throw inaccessibleDownRoot(root, space);
+}
+
+function inaccessibleDownRoot(root: string, space: string): CommandFailure {
+  const problem = "inaccessible";
+  return new CommandFailure("refused", "PERMISSION_DENIED", `the project folder at ${oneLine(root)} ${projectRootProblemText(problem)}; nothing was stopped or changed`, {
     target: { root, space }, remedy: preparedRootRemedy(space, problem),
   });
 }
@@ -61,8 +66,11 @@ export function goneRootDown(values: ParsedArgs["values"]): { space: string; roo
       space = local.length === 1 ? local[0]!.space : local.length || existsSync(join(here, ".cotal")) && here !== canonicalRoot(homedir()) ? undefined : getCurrent();
     }
   } catch { return undefined; }
-  const root = space === undefined ? undefined : goneStackRoot(space) ?? goneLegacyRoot(space);
-  return space !== undefined && root !== undefined ? { space, root } : undefined;
+  if (space === undefined) return undefined;
+  const recovery = stackRootRecovery(space);
+  if (recovery?.state === "inaccessible") throw inaccessibleDownRoot(recovery.root, space);
+  const root = recovery?.root ?? goneLegacyRoot(space);
+  return root === undefined ? undefined : { space, root };
 }
 
 /** A locally started retained stack whose process records and broker configuration went away.
@@ -70,8 +78,9 @@ export function goneRootDown(values: ParsedArgs["values"]): { space: string; roo
 export function goneLegacyRoot(space: string, mesh: MeshEntry | undefined = findMesh(space)): string | undefined {
   if (!mesh || mesh.origin === "manual" || mesh.origin === "catalog") return undefined;
   if (stackDefinitionsAt(space, mesh.root).length) return undefined;
-  if (existsSync(mesh.root) && !existsSync(join(mesh.root, ".cotal", "nats"))) return undefined;
-  return ["nats.pid", "auth/server.conf", "server-open.conf"].some((path) => existsSync(join(mesh.root, ".cotal", path))) ? undefined : mesh.root;
+  const root = stackPathState(mesh.root);
+  if (root === "inaccessible" || (root === "present" && stackPathState(join(mesh.root, ".cotal", "nats")) !== "present")) return undefined;
+  return ["nats.pid", "auth/server.conf", "server-open.conf"].every((path) => stackPathState(join(mesh.root, ".cotal", path)) === "absent") ? mesh.root : undefined;
 }
 
 /** Find only this account's retained children with exact launch arguments and the registered cwd.
@@ -250,9 +259,9 @@ function releaseDefinitions(space: string, root: string): string[] {
 
 /** `cotal down` for a controller stack whose folder is gone. */
 export async function goneRootStackDown(space: string, root: string, values: ParsedArgs["values"]): Promise<void> {
-  validateGoneRootDownArguments(values);
   recordOperationSpace(space);
   refuseInaccessibleDownRoot(root, space);
+  validateGoneRootDownArguments(values);
   const presentation = presentationOf(values), target = { space, root };
   if (!stackDefinitionsAt(space, root).length) {
     const native = findMesh(space);
@@ -331,6 +340,8 @@ export async function goneRootStackDown(space: string, root: string, values: Par
     const left = entry?.isFile()
       ? " A file occupies the recorded project path. It was left untouched. To restart at that path, move the file aside and restore the original project folder."
       : entry ? " The entry at the recorded project path was left untouched." : "";
+    const brokerOnly = released.includes(STACK_DEFINITION.broker) && !released.includes(STACK_DEFINITION.manager);
+    const restart = codeSpan(`${displayCmd()} up${brokerOnly ? " --no-manager" : ""}`);
     return { space, sections: [
       { title: "Stack stopped; its folder was gone", blocks: [
         { kind: "fields", rows: [["Space", space], ["Folder", `${root} · ${folder}`]] },
@@ -340,7 +351,7 @@ export async function goneRootStackDown(space: string, root: string, values: Par
       // A folder moved or renamed with its records keeps the journal, store and trust, and adopting them
       // where it is now keeps its history, as `up` run there names.
       { title: "Next", blocks: [{ kind: "commands", items: [
-        { command: `cotal space create ${space} --adopt --root <folder>`, description: "If the folder was moved or renamed, adopt its records where it is now, which keeps its history, then run `cotal up` there" },
+        { command: `cotal space create ${space} --adopt --root <folder>`, description: `If the folder was moved or renamed, adopt its records where it is now, which keeps its history, then run ${restart} there` },
         { command: `cotal space create ${space}`, description: "Otherwise prepare the space in another folder, then run `cotal up` there" },
       ] }] },
     ] };
