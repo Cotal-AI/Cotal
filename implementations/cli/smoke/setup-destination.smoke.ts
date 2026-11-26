@@ -217,6 +217,9 @@ if (seeded.status !== 0) {
 // installs read it.
 const REPO = join(import.meta.dirname, "..", "..", "..");
 const installationDocs = readFileSync(join(REPO, "docs", "cli-installation.mdx"), "utf8");
+const setupDocs = readFileSync(join(REPO, "docs", "setup.mdx"), "utf8");
+check("the unattended Windows setup guide uses the cmd shim and accepts the npx install prompt",
+  /^```powershell\nnpx\.cmd -y cotal-ai setup --destination local .* --no-input\nnpx\.cmd -y cotal-ai up .*\n```$/m.test(setupDocs));
 const VERSION = (JSON.parse(readFileSync(join(REPO, "bin", "package.json"), "utf8")) as { version: string }).version;
 const NEWER = "99.0.0";
 const packed = mkdtempSync(join(tmpdir(), "cotal-setup-runtimes-"));
@@ -293,9 +296,13 @@ if (process.getuid && process.getuid() !== 0) {
   check("a self-hosted script missing --project gets the self-hosted form, with --connection-file",
     refused(missingHosted, 1, "USAGE_INVALID") && /pass --project$/.test(missingHosted.env?.error?.message ?? "")
       && (missingHosted.env?.error?.remedy ?? "").startsWith("cotal setup --destination self-hosted --harness <connector> --project <dir> --space <name> [--connection-file <bundle.json>]"), shown(missingHosted));
-  const yes = await run(["setup", "--yes"]);
+  const windowsLauncher = process.platform === "win32" ? join(more, "cotal.cmd") : undefined;
+  if (windowsLauncher) writeFileSync(windowsLauncher, `@"${process.execPath}" "${BIN}" %*\r\n`);
+  const yes = await run(["setup", "--yes"], home, windowsLauncher ? withMore : undefined);
+  if (windowsLauncher) rmSync(windowsLauncher);
   check("setup --yes alone is refused the same way, exit 1, with the scripted form and no command help",
-    yes.status === 1 && /pass --destination, --harness, --project, --space/.test(yes.stderr) && /--destination local --harness <connector>/.test(yes.stderr) && !/^Usage$/m.test(yes.stderr), shown(yes));
+    yes.status === 1 && /pass --destination, --harness, --project, --space/.test(yes.stderr) &&
+    yes.stderr.includes(`${windowsLauncher ? "cotal.cmd" : commandPrefix} setup --destination local --harness <connector>`) && !/^Usage$/m.test(yes.stderr), shown(yes));
   const cloud = await json(FULL("c1", dirs.cloud).map((a) => (a === "local" ? "cloud" : a)));
   check("--destination cloud is UNSUPPORTED, exit 2, naming the self-hosted route after cotal login",
     refused(cloud, 2, "UNSUPPORTED") && /no separate Cloud destination/.test(cloud.env?.error?.message ?? "") && /`cotal login`.*--destination self-hosted --space <name>/.test(cloud.env?.error?.remedy ?? ""), shown(cloud));
