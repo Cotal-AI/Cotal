@@ -72,14 +72,22 @@ function assertDaemonReachable(): void {
     throw new Error("the machine daemon is running and this session has no XDG_RUNTIME_DIR to reach it; run the update from a login session of this account, or leave it to the daemon's automatic update");
 }
 
-/** Both Windows records are home-local. The SID-based pipe alone says nothing about this home.
- * Skipping its resolution also keeps the native pipe module unloaded for in-place npm replacement. */
-function hasNoWindowsDaemonRecords(): boolean {
+/** The shared pipe cannot establish whether this home has a daemon. */
+function hasNoWindowsUpdateDaemon(): boolean {
   const state = join(homeCotalDir(), "daemon");
-  return [join(state, "daemon.lock"), unitReceiptFile({ state })].every(path => {
+  const absent = (path: string): boolean => {
     try { lstatSync(path); return false; }
     catch (error) { return (error as NodeJS.ErrnoException).code === "ENOENT"; }
-  });
+  };
+  if (!absent(unitReceiptFile({ state }))) return false;
+  if (absent(join(state, "daemon.lock"))) return true;
+  // Load the native lock binding only in a child that exits before npm can replace the installation.
+  const script = "const { hasUpdateDaemonLifetime } = await import(process.argv[1]); process.stdout.write(hasUpdateDaemonLifetime() ? 'live' : 'absent');";
+  try {
+    return execFileSync(process.execPath, ["--input-type=module", "-e", script, new URL("./update-lifetime.js", import.meta.url).href], {
+      encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: 5_000, windowsHide: true,
+    }) === "absent";
+  } catch { return false; } // Ambiguous lifetime evidence still requires authenticated continuity.
 }
 
 /** Retry only status. A disappearing socket after an interruption is not proof of absence. */
@@ -506,7 +514,7 @@ const composed: Command = { ...command, async run(args) {
       return "none";
     }
     const installedChild = process.env.COTAL_UPDATE_PARENT === String(process.ppid) && process.env.COTAL_UPDATE_TARGET_VERSION === updateRuntime.version();
-    if ((process.platform === "win32" && hasNoWindowsDaemonRecords()) || (staged && (args.values.self === true || installedChild || standaloneReconcile) && !reconcileDaemonObserved && !hasUpdateDaemonLifetime()))
+    if ((process.platform === "win32" && hasNoWindowsUpdateDaemon()) || (staged && (args.values.self === true || installedChild || standaloneReconcile) && !reconcileDaemonObserved && !hasUpdateDaemonLifetime()))
       return reportsRetainedExecution() ? retainedReport(flags) : updateRuntime.reportRunningManager(flags);
     let managers;
     try {

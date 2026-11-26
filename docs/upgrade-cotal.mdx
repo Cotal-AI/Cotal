@@ -96,7 +96,7 @@ refusal in 0.159.1 through 0.160.7 and the Manager-selection refusal before 0.16
 For an npm installation, install once with `npm install -g cotal-ai@latest`, then run `cotal update`.
 For a shell installation, rerun its installer as described under [Reconcile the installation](#reconcile-the-installation).
 On Linux and macOS, when this Cotal home has neither a live daemon nor a recorded service, installation reconciliation does not contact a daemon at the shared endpoint. This applies to shell installer re-runs, `cotal update`, and `cotal update --self`.
-On Windows, `cotal update` and `cotal update --self` skip the shared daemon pipe when this Cotal home has neither a daemon lifetime record nor a recorded service. They still check local Manager continuity.
+On Windows, `cotal update` and `cotal update --self` skip the shared daemon pipe when this Cotal home has no recorded service and the lifetime lock has no holder. An unlocked file left by a stopped daemon does not block updates. Both commands still check local Manager continuity.
 An unwritable installation refuses before staging and names the owning install command.
 If this first check refuses, `cotal update --self` exits 2 and reports that the installation
 cannot update itself from this account and no changes were made. The original reason and owning
