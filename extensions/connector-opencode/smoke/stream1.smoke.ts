@@ -145,6 +145,9 @@ try {
   await part(u1, "text", "prompt");
   await busy();
   const a1 = await message("assistant");
+  for (let i = 0; i < 25 && seen.length === 0; i++, await sleep(200)) {}
+  check("live:an assistant message with no parts starts a run before the model writes output",
+    seen.length === 1 && seen[0]?.type === "RUN_STARTED", seen);
   await part(a1, "step-start");
   const r1 = await part(a1, "reasoning");
   await deltas(r1, ["thought ", "one"]);
@@ -236,7 +239,7 @@ try {
     ]), shape);
 }
 
-const EXPECTED = 9;
+const EXPECTED = 10;
 check(`meta:every cell ran - ${EXPECTED} expected`, passed() + failed() === EXPECTED, `${passed() + failed()} cells reported`);
 finish();
 process.exit();

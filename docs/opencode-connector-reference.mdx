@@ -330,7 +330,9 @@ OpenCode's status, or 1 when OpenCode exited 0, so the launch fails either way.
 The managed session is created and announced only after the mesh join completes. Its event boundary
 is captured at adopt, before any prompt is admitted.
 
-Both OpenCode lines publish the same events. On 2.x the connector reads the session it launched
+Both OpenCode lines publish `RUN_STARTED` when a turn begins, before the first model answer.
+A message queued behind a running turn does not start a run of its own while it waits.
+On 2.x the connector reads the session it launched
 through OpenCode's message list, `GET /api/session/:id/message`, from its first record, and publishes
 each item once it is final. Text and reasoning are final when their model step has finished
 streaming. On both lines a tool call is published in two parts: its start and end once OpenCode runs
@@ -392,11 +394,8 @@ Four things are specific to OpenCode and worth knowing before you read a stream:
   turn's own records: a failed turn with the same `RUN_ERROR`, and an interrupted one as an ordinary
   end. A turn that a rejected permission or a dismissed question interrupted has no such record, so
   the connector closes its run as an ordinary end when the turn ends, and the next turn waits for
-  that close's position read as above. On 2.x a turn that ends before any output, such as one the
-  provider refused, publishes a run of its own when its end is recorded, so a failed one still ends
-  with `RUN_ERROR`. On 1.x the assistant message of a turn that failed before any output holds the
-  error and no parts. That message opens the turn's run, so its `session.error` still closes it with
-  `RUN_ERROR`.
+  that close's position read as above. On both versions, a turn that fails before any output still
+  ends with `RUN_ERROR`.
 
 Reasoning is off by default. A seat launched with the
 [`reasoningEvents` field](connectors.mdx#opt-in-launch-fields) publishes each saved reasoning part,

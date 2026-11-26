@@ -166,12 +166,14 @@ for (const s of all) {
   const prompt = { id: "msg_1", type: "user", time: { created: 31 }, text: "[user 1]" } as OpenCode2Message;
   const refused: OpenCode2Message = { id: "msg_2", type: "assistant", time: { created: 32, completed: 33 }, content: [] };
   const idle: OpenCode2Message = { id: "msg_3", type: "idle", time: { created: 34 }, outcome: "succeeded" };
-  const none = [map({ message: prompt, index: -1 }), map({ message: refused, index: -1 })];
+  const started = map({ message: prompt, index: -1 });
+  const none = map({ message: refused, index: -1 });
   const closed = map({ message: idle, index: -1 });
   const again = map({ message: { ...idle, id: "msg_4", time: { created: 35 } }, index: -1 });
-  const types = closed && "events" in closed ? closed.events.map((e) => [e.type, (e as { timestamp?: number }).timestamp]) : [];
-  check("empty-turn:a turn with no element publishes a run at its idle, started at its prompt, and a second idle closes nothing",
-    none.every((u) => u === null) && JSON.stringify(types) === JSON.stringify([[T.RUN_STARTED, 31], [T.RUN_FINISHED, 34]]) && again === null, { none, closed, again });
+  const types = (u: typeof started) => u && "events" in u ? u.events.map((e) => [e.type, e.timestamp]) : [];
+  check("empty-turn:the prompt starts a run without assistant elements, and only the first idle closes it",
+    JSON.stringify(types(started)) === JSON.stringify([[T.RUN_STARTED, 31]]) && none === null &&
+      JSON.stringify(types(closed)) === JSON.stringify([[T.RUN_FINISHED, 34]]) && again === null, { started, none, closed, again });
 }
 
 {
