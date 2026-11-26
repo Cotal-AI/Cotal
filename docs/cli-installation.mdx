@@ -838,6 +838,9 @@ An unsupported source spelling returns `USAGE_INVALID` before installation.
 A package can declare its entry through a root `exports` entry such as
 `"exports": { ".": { "import": "./greet.mjs" } }` without also declaring `main`.
 The shorthand `"exports": { "import": "./greet.mjs" }` selects the same entry.
+For conditional root exports, Cotal checks `node`, `import` and `default` in the order they appear,
+including inside nested conditions. For example, `"node": { "import": "./greet.mjs" }` before
+`"default": "./fallback.mjs"` selects `greet.mjs` both at installation and when loading the extension.
 An npm `main` such as `"./greet"` can resolve to `greet.js` without naming the suffix.
 If the installed npm package is missing its entry, `add` reports the path relative to that package.
 For a local extension, check the package contents with `npm pack --dry-run ./example-extension`.

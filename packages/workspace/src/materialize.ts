@@ -85,19 +85,25 @@ function importFailure(pkg: string, version: string, e: unknown, remedy: string,
   }
 }
 
+/** Select the first entry matching the Node ESM conditions in declaration order. */
+function conditionalEntry(target: unknown): string | undefined {
+  if (typeof target === "string") return target;
+  if (!target || typeof target !== "object" || Array.isArray(target)) return undefined;
+  for (const [condition, value] of Object.entries(target)) {
+    if (condition !== "node" && condition !== "import" && condition !== "default") continue;
+    const entry = conditionalEntry(value);
+    if (entry !== undefined) return entry;
+  }
+  return undefined;
+}
+
 /** Select the package's explicit export, if it has one. */
 function exportedEntry(meta: InstalledExtensionPackage): string | undefined {
-  if (typeof meta.exports === "string") return meta.exports;
-  const exports = meta.exports as Record<string, unknown> | undefined;
-  const dot = exports?.["."];
-  if (typeof dot === "string") return dot;
-  if (dot && typeof dot === "object") {
-    const d = dot as Record<string, string>;
-    return d.import ?? d.default;
+  const exports = meta.exports;
+  if (exports && typeof exports === "object" && Object.keys(exports).some((key) => key.startsWith("."))) {
+    return conditionalEntry((exports as Record<string, unknown>)["."]);
   }
-  if (!exports || typeof exports !== "object" || Object.keys(exports).some((key) => key.startsWith("."))) return undefined;
-  const entry = exports.import ?? exports.default;
-  return typeof entry === "string" ? entry : undefined;
+  return conditionalEntry(exports);
 }
 
 /**
