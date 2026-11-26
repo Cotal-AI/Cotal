@@ -655,6 +655,14 @@ try {
   const openUp = cliIn(openRoot, ["up", "--open", "--server", openServer, "--store-dir", openStore], 120_000);
   openStack = openUp.status === 0;
   check("an open controller stack starts", openStack, `${openUp.stdout}${openUp.stderr}`);
+  const openWeb = cliIn(openRoot, ["service", "start", "web", "--space", openSpace, "--dry-run", "--plain"]);
+  const openWebText = `${openWeb.stdout}${openWeb.stderr}`;
+  check("a dashboard preview on an open space directs the operator to a static-auth space, not a credential file",
+    openWeb.status === 2 && openWebText.includes("DEPENDENCY_UNAVAILABLE") &&
+    openWebText.includes("the web dashboard requires a registered static-auth space, and the selected space is open") &&
+    openWebText.includes("select or create a registered static-auth space") && !openWebText.includes("--creds"), openWebText);
+  const staticWeb = cliIn(webRoot, ["service", "start", "web", "--space", WEB_SPACE, "--dry-run"]);
+  check("a dashboard preview on a static-auth space still accepts the default credential", staticWeb.status === 0, `${staticWeb.stdout}${staticWeb.stderr}`);
   const openHealth = cliIn(openRoot, ["status", "--components"]);
   const openText = `${openHealth.stdout}${openHealth.stderr}`;
   check("a healthy open stack needs no delivery daemon and exits zero", openHealth.status === 0 && /delivery\s+not-started.*not used on an open mesh/.test(openText) && /broker\s+serving/.test(openText) && /manager\s+serving/.test(openText), openText);

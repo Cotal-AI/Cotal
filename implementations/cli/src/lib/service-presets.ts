@@ -188,7 +188,12 @@ export function presetDefaultOptions(preset: ServicePreset, space: string, root:
       continue;
     }
     const path = presetMaterialPath(fallback.kind, space, root, migrate);
-    if (!existsSync(path)) throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", `the ${preset.name} preset uses this space's ${fallback.kind} for --${name}, and ${path} does not exist yet; nothing was saved or started`, { target: { space, path }, remedy: `cotal up writes it for this space; or pass --${name} <file>` });
+    if (!existsSync(path)) {
+      if (preset.adapter === WEB_SERVICE_ADAPTER && fallback.kind === "web.creds" && findMesh(space)?.mode === "open") {
+        throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "the web dashboard requires a registered static-auth space, and the selected space is open; nothing was saved or started", { target: { space, path }, remedy: "select or create a registered static-auth space, then rerun the command for that space" });
+      }
+      throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", `the ${preset.name} preset uses this space's ${fallback.kind} for --${name}, and ${path} does not exist yet; nothing was saved or started`, { target: { space, path }, remedy: `cotal up writes it for this space; or pass --${name} <file>` });
+    }
     filled[name] = path;
   }
   return filled;
