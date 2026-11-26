@@ -240,7 +240,7 @@ const failedEnvelope = (out: string): boolean => {
 try {
   // ---- L1: approve against the real IdP ----
   await cell("L1 approve (real Better Auth)", async () => {
-    const { paths, rt, home } = fresh();
+    const { paths, home } = fresh();
     const d = await serveDaemon({ paths, version: "0.0.0-smoke", peerUid, sessionDir: home } as Parameters<typeof serveDaemon>[0]);
     try {
       const w = await wire(paths.socket);
@@ -265,7 +265,7 @@ try {
 
   // ---- L2: deny ----
   await cell("L2 deny (real Better Auth)", async () => {
-    const { paths, rt, home } = fresh();
+    const { paths, home } = fresh();
     const d = await serveDaemon({ paths, version: "x", peerUid, sessionDir: home } as Parameters<typeof serveDaemon>[0]);
     try {
       const w = await wire(paths.socket);
@@ -282,7 +282,7 @@ try {
   // ---- L3, L10: concurrency and status during a sign-in ----
   await cell("L3 one sign-in at a time; L10 status during it", async () => {
     resetScripted();
-    const { paths, rt, home } = fresh();
+    const { paths, home } = fresh();
     const d = await serveDaemon({ paths, version: "x", peerUid, sessionDir: home } as Parameters<typeof serveDaemon>[0]);
     try {
       const a = await wire(paths.socket);
@@ -310,7 +310,7 @@ try {
   // ---- L4: cancel during the poll ----
   await cell("L4 login-cancel during the poll", async () => {
     resetScripted();
-    const { paths, rt, home } = fresh();
+    const { paths, home } = fresh();
     const d = await serveDaemon({ paths, version: "x", peerUid, sessionDir: home } as Parameters<typeof serveDaemon>[0]);
     try {
       const a = await wire(paths.socket);
@@ -337,7 +337,7 @@ try {
   // ---- L5: cancel after approval, before persistence ----
   await cell("L5 login-cancel after approval while the JWT proof is in flight", async () => {
     resetScripted();
-    const { paths, rt, home } = fresh();
+    const { paths, home } = fresh();
     const d = await serveDaemon({ paths, version: "x", peerUid, sessionDir: home } as Parameters<typeof serveDaemon>[0]);
     try {
       let release!: () => void;
@@ -363,7 +363,7 @@ try {
   // ---- L6, L7: cancel after completion, and a stale attempt ----
   await cell("L6 cancel after completion; L7 stale attempt vs successor", async () => {
     resetScripted();
-    const { paths, rt, home } = fresh();
+    const { paths, home } = fresh();
     const d = await serveDaemon({ paths, version: "x", peerUid, sessionDir: home } as Parameters<typeof serveDaemon>[0]);
     try {
       approved = true;
@@ -400,7 +400,7 @@ try {
   // ---- L8: disconnect before the result ----
   await cell("L8 disconnect before the result aborts the attempt", async () => {
     resetScripted();
-    const { paths, rt, home } = fresh();
+    const { paths, home } = fresh();
     const d = await serveDaemon({ paths, version: "x", peerUid, sessionDir: home } as Parameters<typeof serveDaemon>[0]);
     try {
       const a = await wire(paths.socket);
@@ -424,7 +424,7 @@ try {
   // ---- L9: closed contract for the new ops ----
   await cell("L9 closed contract", async () => {
     resetScripted();
-    const { paths, rt, home } = fresh();
+    const { paths, home } = fresh();
     const d = await serveDaemon({ paths, version: "x", peerUid, sessionDir: home } as Parameters<typeof serveDaemon>[0]);
     try {
       const w = await wire(paths.socket);
@@ -453,7 +453,7 @@ try {
 
   // ---- L11: per-connection request cap ----
   await cell("L11 per-connection request cap", async () => {
-    const { paths, rt, home } = fresh();
+    const { paths, home } = fresh();
     const d = await serveDaemon({ paths, version: "x", peerUid, sessionDir: home } as Parameters<typeof serveDaemon>[0]);
     try {
       const w = await wire(paths.socket);
