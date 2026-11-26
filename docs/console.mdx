@@ -31,6 +31,7 @@ Press Ctrl-C to stop the stream. The broker keeps running and the console report
 In the interactive console on an open mesh, omit `--space` to open the admin overview.
 It lists spaces found through the server's `CHAT_*` streams and presence buckets, with agent, channel, and message counts.
 The agent count excludes endpoints such as the manager.
+The channel count includes configured channels and channels with retained posts. It excludes agent event channels.
 Select a space to open its console. Press `b` to return to the overview.
 Press `q` from the overview to return to the shell, even if you left a space while it was still connecting.
 Use `--space X` to skip the picker. An authenticated connection opens its selected space directly.
