@@ -1,6 +1,6 @@
 import { renderAppUpdate, appUpdateNotice, appliedUpdateSummary, type AppUpdate, type AppUpdateReceipt } from "./app-update";
 import { listen } from "@tauri-apps/api/event";
-import { renderAgents } from "./agents";
+import { agentInventory, renderAgents, shownAgentName } from "./agents";
 import { updateScrollThumb } from "./scrollbars";
 import { computerName } from "./computer-name";
 import { updateNotice, updatePolicy, updateSummary, newerVersion, releaseUrl, installerLink, lastChecked, accountHost, type UpdateStatus } from "./updates";
@@ -329,6 +329,8 @@ async function runAccountAction(): Promise<void> {
   }
 }
 let upgradeNeeded = false;
+let serviceUpdateWaiting = false;
+let nextServiceUpdate = 0;
 let busy = false;
 let rowOperation: { space: string; label: string } | undefined;
 let loginActive = false;
@@ -511,13 +513,13 @@ function showStage(next: Stage, focus = false): void {
   else if (setupActive) { title = "Connecting this computer"; description = "Keep this window open while we check your connection and agent applications."; }
   else if (connection?.space === selectedSpace() && connection.state !== "ready" && connection.state !== "disconnected") { const view = connectionView(connection.state); title = view.title; description = view.description; }
   else { title = "Ready to connect"; description = "You are signed in. Choose Connect when you are ready."; }
-  const issue = problem ?? (!setupActive && applicationRefusals.has(selectedSpace()) ? "NO_AVAILABLE_CONNECTOR" : !setupActive && upgradeNeeded && (selectedSpace() || computerAccount?.hostSupport === "supported" || watchMode === "refused-unknown-op" || watchMode === "version-mismatch") ? "VERSION_MISMATCH" : undefined);
+  const issue = problem ?? (!setupActive && applicationRefusals.has(selectedSpace()) ? "NO_AVAILABLE_CONNECTOR" : !setupActive && upgradeNeeded && !(finished && runningAgents() !== undefined) && (selectedSpace() || computerAccount?.hostSupport === "supported" || watchMode === "refused-unknown-op" || watchMode === "version-mismatch") ? "VERSION_MISMATCH" : undefined);
   const recovery = issue ? refusalView(issue, applications) : undefined;
   if (recovery) { title = recovery.title; description = recovery.description; }
   el("recovery-panel").hidden = !recovery;
   el("setup-installer").hidden = issue !== "SETUP_INTERRUPTED";
   if (recovery) {
-    for (const id of ["sign-in-panel", "space-panel", "connect-panel", "setup-progress", "connected-panel", "preferences", "refresh"]) el(id).hidden = true;
+    for (const id of ["sign-in-panel", "space-panel", "connect-panel", "setup-progress", "connected-panel", "refresh"]) el(id).hidden = true;
     text("recover", recovery.label); el("recover").dataset.action = recovery.action;
     el<HTMLButtonElement>("recover").disabled = busy && issue !== "EXPIRED" || retrySignIn;
     if (retrySignIn) text("recover", "Getting a new code…");
@@ -560,7 +562,7 @@ function showStage(next: Stage, focus = false): void {
   el("choose-space").hidden = true;
   el("sync").hidden = addingSpace;
   if (finished && computerAccount?.mode === "sign-in-required") {
-    for (const id of ["retry-login", "sync", "another-space", "dashboard", "preferences"]) el(id).hidden = true;
+    for (const id of ["retry-login", "sync", "another-space", "dashboard"]) el(id).hidden = true;
   }
   if (finished && computerAccount?.hostSupport === "supported") {
     const signInRequired = computerAccount.mode === "sign-in-required";
@@ -845,6 +847,40 @@ function state(value: string, space = selectedSpace()): void {
   if (isTauri()) void refreshPresence(verified).catch(refusal);
 }
 async function applyStatus(status: Record<string, unknown>, current: () => boolean): Promise<void> {
+  await showStatus(status, current);
+  if (current()) updateService();
+}
+/** Agents running on this computer, named as the agent list names them, or undefined when the
+ *  service does not report them. */
+function runningAgentNames(): string[] | undefined {
+  try {
+    const inventory = agentInventory(serviceStatus ?? {});
+    return inventory.available && !inventory.unreadable.length ? inventory.agents.filter(agent => agent.state === "running").map(agent => `${shownAgentName(agent.name)} (${agent.application})`) : undefined;
+  } catch { return undefined; }
+}
+function runningAgents(): number | undefined { return runningAgentNames()?.length; }
+/** An updated app restarts the older background service into its own version, the daemon's idle
+ *  restart, only while no agent runs on this computer. While agents run it waits and says so. */
+function updateService(): void {
+  const running = runningAgents();
+  if (!upgradeNeeded || stage !== "finished" || running === undefined) {
+    if (serviceUpdateWaiting) { serviceUpdateWaiting = false; notice(""); }
+    return;
+  }
+  if (running > 0) { waitForAgents(runningAgentNames()!); return; }
+  if (busy || setupActive || loginActive || Date.now() < nextServiceUpdate) return;
+  serviceUpdateWaiting = false; notice("");
+  el<HTMLButtonElement>("connect").click();
+}
+function waitForAgents(names: readonly string[], count = names.length): void {
+  const shown = names.length > 3 ? [...names.slice(0, 3), `${names.length - 3} more`] : names;
+  const list = shown.length ? `: ${new Intl.ListFormat("en", { type: "conjunction" }).format(shown)}` : "";
+  const message = `An update for the background service is waiting for ${count === 1 ? "1 agent" : `${count} agents`} on this computer to finish${list}. It installs by itself when ${count === 1 ? "it ends" : "they end"}.`;
+  // Announce a change, not every status check.
+  if (!serviceUpdateWaiting || el("notice").textContent !== message || el("notice").hidden) notice(message);
+  serviceUpdateWaiting = true;
+}
+async function showStatus(status: Record<string, unknown>, current: () => boolean): Promise<void> {
   if (!current()) return;
   selectionPending = false;
   serviceStatus = status;
@@ -957,7 +993,7 @@ function startStatusWatch(): void {
     }
     if (!busy && !loginActive && !setupActive) {
       ready = false; serviceStatus = undefined; renderSettings(); state("unavailable");
-      if (!(problem === "NOT_ANSWERING" && error instanceof DaemonRefusal && error.code === "NOT_RUNNING")) {
+      if (!(problem && !statusProblem)) {
         if (!(notSetUpYet(error) && (stage === "welcome" || stage === "sign-in"))) refusal(error, true);
       }
       buttons();
@@ -977,7 +1013,8 @@ async function refresh(): Promise<void> {
     if (!current()) return;
     selectionPending = false;
     ready = false; serviceStatus = undefined; renderSettings(); state("unavailable");
-    if (problem === "NOT_ANSWERING" && error instanceof DaemonRefusal && error.code === "NOT_RUNNING") { buttons(); return; }
+    // An error from an action stays until the person acts on it; a background check never replaces it.
+    if (problem && !statusProblem) { buttons(); return; }
     if (!(notSetUpYet(error) && (stage === "welcome" || stage === "sign-in") && !loginActive)) refusal(error, true);
   }
   buttons();
@@ -1119,6 +1156,14 @@ el("connect").addEventListener("click", () => void action(async () => {
     const failed = progress.indexOf("failed");
     const active = progress.indexOf("running");
     if (failed < 0) progress[active < 0 ? 4 : active] = "failed"; renderProgress();
+    if (upgradeNeeded && error instanceof DaemonRefusal && (error.native === "SEATS_ACTIVE" || error.code === "SEATS_ACTIVE")) {
+      // An agent started after the last check. Keep waiting for it rather than taking over the window.
+      nextServiceUpdate = Date.now() + 600_000;
+      progress = progressNames.map(() => "waiting"); renderProgress();
+      setupActive = false; state("launch-ready", space); showStage("finished");
+      waitForAgents(runningAgentNames() ?? [], Math.max(1, Number(/holds (\d+) active seat/.exec(error.message)?.[1] ?? runningAgents() ?? 1)));
+      return;
+    }
     if (error instanceof DaemonRefusal && error.native === "NO_AVAILABLE_CONNECTOR") { applicationRefusals.add(space); state("no-application", space); }
     else if (error instanceof DaemonRefusal && (error.code === "APPROVAL_PENDING" || error.native === "APPROVAL_PENDING")) {
       addingSpace = false; choosingSpace = false; listOpened = true; problem = undefined; state("approval-pending", space); showStage("finished"); return;
