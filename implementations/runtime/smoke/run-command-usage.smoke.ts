@@ -662,6 +662,21 @@ if (process.platform !== "win32") {
     Object.assign(env, { HOME: dir, COTAL_HOME: dir, XDG_CONFIG_HOME: join(dir, "config"), COTAL_TELEMETRY: "off", NO_COLOR: "1" });
     const options = { cwd: dir, env, encoding: "utf8", timeout: 30_000 } as const;
     const run = (...args: string[]) => spawnSync(cli[0]!, [...cli.slice(1), "run", ...args], options);
+    const dashProgram = "--wibble";
+    writeFileSync(join(dir, dashProgram), 'await sleep("1ms", { name: "pause" });\n');
+    for (const verb of ["plan", "validate", "simulate"]) {
+      const filled = run(verb, `./${dashProgram}`, dashProgram, "--json");
+      const empty = run(verb, dashProgram, "--json");
+      const retry = run(verb, `./${dashProgram}`, "--json");
+      const separated = run(verb, "--json", "--", dashProgram);
+      const refusal = JSON.parse(filled.stdout || "{}");
+      c(`run ${verb} suggests a separator only when its source slot is open`,
+        filled.status === 1 && filled.stderr === "" && refusal.outcome === "refused" && refusal.error?.code === "USAGE_INVALID"
+        && refusal.error.message === "Unknown option '--wibble'" && refusal.error.remedy === "drop the unknown option"
+        && empty.status === 1 && JSON.parse(empty.stdout || "{}").error?.remedy?.includes("put -- before it")
+        && [retry, separated].every((r) => r.status === 0 && r.stderr === "" && JSON.parse(r.stdout).outcome === "ok"),
+        { filled, empty, retry, separated });
+    }
     const turnProgram = "turn.cotal.js", turnHandler = "malformed.json";
     writeFileSync(join(dir, turnProgram), 'const r = await spawn("reviewer");\nawait turn(r, { name: "review" });\nawait turn(r, { name: "review" });\n');
     writeFileSync(join(dir, turnHandler), '{"turns":{"review":[{"status":"handoff","to":"reviewer"}]}}');

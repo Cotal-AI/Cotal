@@ -3,9 +3,9 @@
  *  script and the built stylesheet's color-scheme are smoke:web-client-build's). The phone, below
  *  768px: a bottom tab bar in place of the rail, with the waiting count on Agents; the panel, closed
  *  until asked for, then a modal sheet, handing focus back to its opener; and the places sheet behind
- *  the header's sidebar button, which holds focus and closes on Escape, on the overlay and on a new
- *  route. At tablet widths, the desktop navigation stays and Details opens as a sheet. The app is
- *  mounted in jsdom with a window width and a `matchMedia` the suite controls and a
+ *  the header's sidebar button. It holds focus, offers the same theme choices as the rail, and closes
+ *  on Escape, on the overlay and on a new route. At tablet widths, desktop navigation stays and Details
+ *  opens as a sheet. The app is mounted in jsdom with a window width and a `matchMedia` the suite controls and a
  *  fake dashboard that seeds the store; each cell reads the DOM React wrote, by role and name. Menus,
  *  sheets and tooltips are drawn in a portal on the page's body, so those cells read the document.
  *  The palette's colours and the phone's geometry are CSS only and are left to the browser check. */
@@ -258,8 +258,23 @@ const press = (el: HTMLElement | null) => {
   ok("4.7 a press on the overlay closes it", sheet() === null);
   await m.run(() => press(menuButton()));
   await m.run(() => go("#/activity"));
-  await m.run(() => go("#/channel/review"));
   ok("4.8 a new route, as following a place does, closes it", sheet() === null && menuButton()?.getAttribute("aria-expanded") === "false");
+  await m.run(() => press(menuButton()));
+  const settings = Array.from(sheet()!.querySelectorAll("button")).find((b) => textOf(b) === "Settings");
+  assert.ok(settings, "Activity's phone sidebar offers Settings");
+  const items = () => Array.from(document.querySelectorAll<HTMLElement>("[role=menuitemradio]"));
+  const choices = () => items().map((item) => [textOf(item), item.getAttribute("aria-checked")]);
+  await m.run(() => openWithKeys(settings));
+  same("4.9 Settings in the phone sidebar offers System, Light and Dark", choices(), [["System", "true"], ["Light", "false"], ["Dark", "false"]]);
+  await m.run(() => items().find((i) => textOf(i) === "Dark")!.click());
+  await m.run(tick);
+  same("4.10 picking Dark saves it and returns focus to Settings with the sidebar open",
+    [root.className, localStorage.getItem("cotal.theme"), items().length, document.activeElement === settings, sheet()?.contains(settings)], ["dark", "dark", 0, true, true]);
+  await m.run(() => openWithKeys(settings));
+  same("4.11 reopening Settings checks the saved choice", choices(), [["System", "false"], ["Light", "false"], ["Dark", "true"]]);
+  await m.run(() => items().find((i) => textOf(i) === "System")!.click());
+  same("4.12 picking System clears the override", [root.className, localStorage.getItem("cotal.theme")], ["light", "system"]);
+  await m.run(() => go("#/channel/review"));
 }
 
 // ── 5. Back to the wide layout ───────────────────────────────────────────────────────────────────

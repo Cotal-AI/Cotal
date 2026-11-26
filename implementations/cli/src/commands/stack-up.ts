@@ -1001,7 +1001,7 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
   // including a live refresh; only an unpinned first enable probes JWKS. Preparation checks again.
   if (mode === "user") {
     const brokerRows = serviceInstances(space, STACK_DEFINITION.broker);
-    if (request.idp !== undefined || !(brokerRows.length === 1 && observeServiceProcess(brokerRows[0]!.record.value) === "running")) await preflightUserStack(root, space, request.idp);
+    if (request.idp !== undefined || !(brokerRows.length === 1 && observeServiceProcess(brokerRows[0]!.record.value) === "running")) await preflightUserStack(root, space, request.idp, request.mode === undefined ? request.presentation : undefined);
   }
   const brokerRows = serviceInstances(space, STACK_DEFINITION.broker);
   const brokerRunning = brokerRows.length === 1 && observeServiceProcess(brokerRows[0]!.record.value) === "running";

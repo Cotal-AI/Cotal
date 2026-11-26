@@ -43,6 +43,16 @@ export const hermesConnector: Connector = {
   // `uv` is the external harness. It provisions the project-pinned `hermes` command below, so a
   // separately installed `hermes` on PATH is neither required nor sufficient to launch this seat.
   requires: ["uv"],
+  // Installing Hermes for Cotal means installing uv, which provisions the pinned Hermes at launch.
+  install: {
+    title: "Hermes",
+    maker: "Nous Research",
+    installers: {
+      darwin: { script: "https://astral.sh/uv/install.sh", shell: "sh", binDir: "~/.local/bin" },
+      linux: { script: "https://astral.sh/uv/install.sh", shell: "sh", binDir: "~/.local/bin" },
+      win32: { script: "https://astral.sh/uv/install.ps1", binDir: "%USERPROFILE%\\.local\\bin" },
+    },
+  },
   supportsLaunchValidation: true,
   // The AG-UI event plane, published from the plugin's turn journal (plugin/cotal/journal.py).
   eventChannel,

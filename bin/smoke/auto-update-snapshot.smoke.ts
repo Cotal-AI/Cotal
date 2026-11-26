@@ -1,18 +1,117 @@
 import "../../implementations/cli/smoke/update-isolation.js";
 import assertions from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, statSync, chmodSync, symlinkSync, realpathSync, renameSync, rmSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, linkSync, lstatSync, statSync, chmodSync, symlinkSync, realpathSync, renameSync, rmSync, unlinkSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative, sep } from "node:path";
 import { globalConfigDir } from "@cotal-ai/core";
-import { writeUpdateRecovery, readUpdateRecovery, clearUpdateRecovery, claimUpdateClosureAccess, connectorConfigDir, retainConnectorConfig, prepareCotalHomeForWrite, ProtectedRecordStore, protectedResolvedDirectory } from "@cotal-ai/workspace";
+import { acquireLock, inspectLock, writeUpdateRecovery, readUpdateRecovery, clearUpdateRecovery, claimUpdateClosureAccess, connectorConfigDir, retainConnectorConfig, prepareCotalHomeForWrite, ProtectedRecordStore, protectedResolvedDirectory } from "@cotal-ai/workspace";
 import { snapshotUpdateClosure } from "../../implementations/cli/src/lib/update-snapshot.js";
+import { reclaimInterruptedUpdateSnapshots } from "../daemon/update-snapshot-cleanup.js";
 import { countedAssert, emitSentinel } from "./sentinel.mjs";
 
 const counted = countedAssert(assertions);
 const assert: typeof assertions = counted.assert as typeof assertions;
 const cells = counted.cells;
+
+function leaveDeadLocks(env: NodeJS.ProcessEnv, code: string, ...args: string[]): void {
+  const workspace = import.meta.resolve("@cotal-ai/workspace");
+  const child = spawnSync(process.execPath, ["--input-type=module", "-e", `
+    const fs = await import("node:fs");
+    const { acquireLock, claimUpdateClosureAccess, claimExtensionMutationLock } = await import(${JSON.stringify(workspace)});
+    ${code}
+    process.kill(process.pid, "SIGKILL");
+  `, ...args], { env, encoding: "utf8", timeout: 15_000, killSignal: "SIGKILL" });
+  assert.ifError(child.error);
+  assert.equal(child.signal, "SIGKILL", child.stderr);
+}
+
+function verifySnapshotRetention(root: string): void {
+  const prior = { HOME: process.env.HOME!, COTAL_HOME: process.env.COTAL_HOME!, XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME! };
+  try {
+    for (const scenario of ["own journal", "live closure", "different writer", "symlink", "other journal"]) {
+      const home = mkdtempSync(join(root, "keep-"));
+      Object.assign(process.env, { HOME: home, COTAL_HOME: join(home, "state"), XDG_CONFIG_HOME: join(home, "config") });
+      const config = globalConfigDir(), seed = join(config, "seed");
+      const closure = join(process.env.COTAL_HOME!, ".update-closure.lock");
+      const reconcile = join(seed, "reconcile.lock"), writer = join(config, ".extensions.lock");
+      const snapshot = join(config, ".update-snapshot-Part01");
+      mkdirSync(seed, { recursive: true, mode: 0o700 });
+      leaveDeadLocks(process.env, `
+        const [config, reconcile, snapshot] = process.argv.slice(1);
+        claimUpdateClosureAccess();
+        acquireLock(reconcile);
+        claimExtensionMutationLock({}, config);
+        fs.mkdirSync(snapshot, { mode: 0o700 });
+        fs.mkdirSync(snapshot + "/seed", { mode: 0o700 });
+        fs.writeFileSync(snapshot + "/seed/stamp", "partial copy");
+      `, config, reconcile, snapshot);
+      const locks = [closure, reconcile, writer];
+      for (const path of locks) assert.equal(inspectLock(path).state, "stale", `${scenario}: stale ${path}`);
+      const birth = lstatSync(snapshot, { bigint: true }).birthtimeNs;
+      assert.ok(birth > 0n, "the fixture needs filesystem birth times");
+      const reclaim = () => reclaimInterruptedUpdateSnapshots(() => join(home, "prefix/node_modules"));
+      let unblock: () => void;
+      if (scenario === "own journal" || scenario === "other journal") {
+        const referenced = scenario === "own journal" ? snapshot : join(config, ".update-snapshot-Other1");
+        if (referenced !== snapshot) mkdirSync(referenced, { mode: 0o700 });
+        writeUpdateRecovery({ previous: "1.0.0", target: "2.0.0", installed: "1.0.0", phase: "paused", snapshot: referenced, reason: "fixture" });
+        assert.equal(readUpdateRecovery()?.snapshot, referenced);
+        unblock = clearUpdateRecovery;
+      } else if (scenario === "live closure" || scenario === "different writer") {
+        const path = scenario === "live closure" ? closure : writer;
+        const saved = join(home, "dead-lock");
+        renameSync(path, saved);
+        let clearLock: () => void;
+        if (scenario === "live closure") {
+          const live = acquireLock(path);
+          assert.equal(inspectLock(path).state, "active");
+          clearLock = () => live.release();
+        } else {
+          leaveDeadLocks(process.env, "acquireLock(process.argv[1]);", path);
+          // Make the mismatched PID the only reason to keep the copy.
+          const beforeCopy = new Date(Number(birth / 1_000_000n) - 1000);
+          utimesSync(path, beforeCopy, beforeCopy);
+          assert.equal(inspectLock(path).state, "stale");
+          assert.notEqual(JSON.parse(readFileSync(path, "utf8")).pid, JSON.parse(readFileSync(closure, "utf8")).pid);
+          clearLock = () => unlinkSync(path);
+        }
+        unblock = () => { clearLock(); renameSync(saved, path); };
+      } else {
+        const outside = join(home, "outside-config");
+        const saved = locks.map((path, index) => {
+          const copy = join(home, `lock-${index}`);
+          linkSync(path, copy);
+          return copy;
+        });
+        renameSync(snapshot, outside);
+        symlinkSync(outside, snapshot);
+        unblock = () => {
+          assert.ok(lstatSync(snapshot).isSymbolicLink(), "the snapshot-shaped link stays in place");
+          assert.equal(readFileSync(join(outside, "seed", "stamp"), "utf8"), "partial copy", "the link target stays untouched");
+          unlinkSync(snapshot);
+          renameSync(outside, snapshot);
+          // The scan can retire the locks even when the entry is skipped. Replay their actual inodes for the positive control.
+          locks.forEach((path, index) => { if (!existsSync(path)) linkSync(saved[index]!, path); });
+        };
+      }
+      for (const path of [reconcile, writer]) assert.ok(lstatSync(path, { bigint: true }).mtimeNs <= birth, `${scenario}: snapshot passes the age check`);
+      reclaim();
+      assert.equal(readFileSync(join(snapshot, "seed", "stamp"), "utf8"), "partial copy", `${scenario}: must keep the copy`);
+      unblock();
+      reclaim();
+      assert.equal(existsSync(snapshot), false, `${scenario}: reclaim after clearing the blocker`);
+      console.log(`interrupted snapshot: kept with ${scenario}, reclaimed with matching dead writers`);
+    }
+  } finally { Object.assign(process.env, prior); }
+}
+
 // Keep the fixture physical so linked ancestors below belong to the test.
 const root = realpathSync(mkdtempSync(join(tmpdir(), "update-snapshot-")));
+if (process.platform === "linux") {
+  try { verifySnapshotRetention(root); }
+  catch (error) { rmSync(root, { recursive: true, force: true }); throw error; }
+}
 process.env.XDG_CONFIG_HOME = join(root, "config");
 process.env.COTAL_HOME = join(root, "home");
 const config = globalConfigDir();

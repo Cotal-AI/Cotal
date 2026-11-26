@@ -1,6 +1,7 @@
 import { once } from "node:events";
 import strictAssert from "node:assert/strict";
-import { countedAssert, emitSentinel } from "@cotal-ai/smoke-kit";
+import { isReachable } from "@cotal-ai/core";
+import { awaitBrokerReady, countedAssert, emitSentinel, freePort, killAndAwaitExit, SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { ConnectRefusal, identityRecord } from "@cotal-ai/workspace";
 import { readUpdateManagerContinuity, reportRunningManagers } from "../src/commands/update.js";
 
@@ -204,6 +205,88 @@ if (process.platform === "linux") {
     rmSync(relativeRoot, { recursive: true, force: true });
   }
   await checkCoordinatesRace();
+  await checkRenamedManagerInstall();
+}
+
+async function checkRenamedManagerInstall(): Promise<void> {
+  const { spawn } = await import("node:child_process");
+  const { copyFileSync, cpSync, existsSync, readdirSync, renameSync, realpathSync, symlinkSync } = await import("node:fs");
+  const { createRequire } = await import("node:module");
+  const { dirname } = await import("node:path");
+  const { localUpdateManagers } = await import("../src/lib/update-managers.js");
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "cotal-update-mapped-install-")));
+  const repo = join(import.meta.dirname, "../../..");
+  const archPackage = `@lydell/node-pty-linux-${process.arch}`;
+  const ptyFile = `prebuilds/linux-${process.arch}/pty.node`;
+  const pty = createRequire(join(repo, "implementations/manager/package.json")).resolve("@lydell/node-pty");
+  const nativePkg = dirname(dirname(createRequire(pty).resolve(archPackage)));
+  const stage = (name: string) => {
+    const prefix = join(root, name), installed = join(prefix, "lib/node_modules/cotal-ai");
+    cpSync(join(repo, "bin/dist"), join(installed, "dist"), { recursive: true });
+    copyFileSync(join(repo, "bin/package.json"), join(installed, "package.json"));
+    const modules = join(installed, "node_modules");
+    for (const scope of ["@cotal-ai", "@lydell"]) mkdirSync(join(modules, scope), { recursive: true });
+    for (const name of readdirSync(join(repo, "bin/node_modules/@cotal-ai"))) {
+      if (name !== "manager") symlinkSync(realpathSync(join(repo, "bin/node_modules/@cotal-ai", name)), join(modules, "@cotal-ai", name));
+    }
+    symlinkSync(realpathSync(join(repo, "bin/node_modules/jose")), join(modules, "jose"));
+    const manager = join(modules, "@cotal-ai/manager");
+    cpSync(join(repo, "implementations/manager/dist"), join(manager, "dist"), { recursive: true });
+    copyFileSync(join(repo, "implementations/manager/package.json"), join(manager, "package.json"));
+    mkdirSync(join(manager, "node_modules"));
+    const managerModules = join(repo, "implementations/manager/node_modules");
+    for (const name of readdirSync(managerModules)) {
+      if (name !== "@lydell" && !name.startsWith(".")) symlinkSync(join(managerModules, name), join(manager, "node_modules", name));
+    }
+    cpSync(dirname(pty), join(modules, "@lydell/node-pty"), { recursive: true, dereference: true });
+    cpSync(nativePkg, join(modules, archPackage), { recursive: true, dereference: true });
+    return { prefix, entry: join(installed, "dist/cotal.js"), mapping: join(modules, archPackage, ptyFile) };
+  };
+  const env: NodeJS.ProcessEnv = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_") && key !== "NODE_OPTIONS" && key !== "NODE_PATH"));
+  for (const path of ["home", "updater", "state", "config", "runtime", "tmp", "project"]) mkdirSync(join(root, path), { mode: 0o700 });
+  Object.assign(env, { HOME: join(root, "home"), COTAL_HOME: join(root, "state"), XDG_CONFIG_HOME: join(root, "config"), XDG_RUNTIME_DIR: join(root, "runtime"), TMPDIR: join(root, "tmp"), DO_NOT_TRACK: "1", COTAL_SKIP_CONNECTOR_SEED: "1" });
+  const priorHome = process.env.COTAL_HOME;
+  process.env.COTAL_HOME = join(root, "updater");
+  try {
+    const own = stage("own"), foreign = stage("foreign");
+    const alias = join(root, "alias"), aliasEntry = join(alias, "lib/node_modules/cotal-ai/dist/cotal.js");
+    symlinkSync(own.prefix, alias);
+    const space = "mapped-manager-install", port = await freePort(), server = `nats://127.0.0.1:${port}`;
+    const store = mkdtempSync(join(root, SMOKE_BROKER_TOKEN));
+    const broker = spawn("nats-server", ["-js", "-a", "127.0.0.1", "-p", String(port), "-sd", store], { env, stdio: "ignore" });
+    const releaseBroker = teardownOnSignal(broker, store);
+    try {
+      await awaitBrokerReady(() => isReachable(server), { servers: server, attempts: 50, delayMs: 100 });
+      for (const [entry, mapping, mode] of [[foreign.entry, foreign.mapping, "foreign"], [aliasEntry, own.mapping, "local"]] as const) {
+        const child = spawn(process.execPath, [entry, "supervise", "--space", space, "--server", server], { cwd: join(root, "project"), env, stdio: ["ignore", "pipe", "pipe"] });
+        const releaseChild = teardownOnSignal(child);
+        let output = "";
+        child.stdout.on("data", chunk => { output += chunk; });
+        child.stderr.on("data", chunk => { output += chunk; });
+        try {
+          await once(child, "spawn");
+          const deadline = Date.now() + 15_000;
+          const maps = `/proc/${child.pid}/maps`;
+          const mapped = () => existsSync(maps) && readFileSync(maps, "utf8").includes(mapping);
+          while (child.exitCode === null && Date.now() < deadline && !mapped()) await new Promise(resolve => setTimeout(resolve, 25));
+          assert.ok(mapped(), `real Manager mapped its own PTY dependency: ${output}`);
+          if (mode === "foreign") {
+            renameSync(foreign.prefix, `${foreign.prefix}.moved`);
+            assert.deepEqual(localUpdateManagers({ space }, own.entry), [], "a foreign Manager with a missing launch entry does not block");
+          } else {
+            assert.ok(localUpdateManagers({ space }, own.entry).some(manager => manager.pid === child.pid), "a resolvable symlink into the installation retains Manager custody");
+            renameSync(alias, `${alias}.moved`);
+            assert.throws(() => localUpdateManagers({ space }, own.entry), new RegExp(`Manager pid ${child.pid}.*has no proven CLI entry`));
+          }
+          assert.equal(process.kill(child.pid!, 0), true, "the census never stops a Manager");
+        } finally { await killAndAwaitExit(child); releaseChild(); }
+      }
+    } finally { await killAndAwaitExit(broker); releaseBroker(); }
+  } finally {
+    if (priorHome === undefined) delete process.env.COTAL_HOME;
+    else process.env.COTAL_HOME = priorHome;
+    rmSync(root, { recursive: true, force: true });
+  }
 }
 
 async function checkCoordinatesRace(): Promise<void> {

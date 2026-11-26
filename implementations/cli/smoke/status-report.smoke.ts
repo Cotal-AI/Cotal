@@ -17,7 +17,7 @@
 import { spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
 import { connect } from "node:net";
-import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join, sep } from "node:path";
 import { assertSmokeSandboxDown, createSuite, freePort } from "@cotal-ai/smoke-kit";
@@ -144,9 +144,28 @@ if (!brokerDisplayOnly && !pidfileOnly) {
   if (ext.status !== 0 || !prefix.startsWith(join(home, ".config") + sep)) throw new Error(`extension root is not inside the sandbox: ${JSON.stringify(shown(ext))}`);
   const manifest = join(prefix, "extensions.json");
   mkdirSync(prefix, { recursive: true, mode: 0o700 });
-  writeFileSync(manifest, '{"extensions":[]}\n');
+  const original = '{"extensions":[]}\n';
+  writeFileSync(manifest, original, { mode: 0o600 });
   const control = run(["status", "--json"]);
   check("valid empty inventory keeps the report complete", control.status === 0 && control.envelope?.completeness === "complete" && control.envelope.result?.extensions?.items?.length === 0, shown(control));
+  if (process.platform !== "win32" && process.getuid && process.getuid() !== 0) {
+    chmodSync(manifest, 0o000);
+    const remedy = "restore this account's read access to the extensions manifest and its path, then retry";
+    try {
+      const json = run(["status", "--json"]);
+      const env = json.envelope;
+      check("an unreadable extension inventory produces one partial infrastructure envelope with no stderr",
+        json.status === 4 && json.stderr === "" && env?.command === "status" && env.outcome === "partial" && env.completeness === "partial"
+        && env.result?.kind === "infrastructure" && env.result.extensions?.items === null && env.result.machine.nats !== "", shown(json));
+      check("the extension warning names the unreadable file and asks to restore access, not repair the inventory",
+        env?.warnings.some(w => w.code === "EXTENSIONS_UNREADABLE" && w.message.includes(manifest) && w.message.includes("EACCES") && w.message.includes(remedy) && !w.message.includes("ext seed --repair")) === true, env?.warnings);
+      const plain = run(["status", "--plain"]);
+      check("plain status keeps readable observations and gives the same access remedy",
+        plain.status === 4 && plain.stdout.includes("This machine") && plain.stderr.includes(manifest) && plain.stderr.includes(remedy) && !plain.stderr.includes("ext seed --repair"), shown(plain));
+      check("status leaves the inventory permissions unchanged", (statSync(manifest).mode & 0o777) === 0);
+    } finally { chmodSync(manifest, 0o600); }
+    check("status leaves the inventory bytes unchanged", readFileSync(manifest, "utf8") === original);
+  }
   const damaged = "{}\n";
   writeFileSync(manifest, damaged);
   const json = run(["status", "--json"]);

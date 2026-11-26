@@ -43,5 +43,5 @@ export function useMesh(ep: CotalEndpoint, opts?: MeshViewOptions) {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-  return { mesh: state, discardChatHistory: () => viewRef.current!.discardChatHistory() };
+  return { mesh: state, discardChatHistory: (channel?: string) => viewRef.current!.discardChatHistory(channel) };
 }
