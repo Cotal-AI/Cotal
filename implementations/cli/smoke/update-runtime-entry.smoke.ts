@@ -30,9 +30,9 @@ export async function repairRuntimeEntry(assert: typeof strictAssert): Promise<v
   const version = JSON.parse(readFileSync(join(repo, "bin/package.json"), "utf8")).version as string;
   const config = join(home, "config");
   const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^(?:cotal_|npm_config_|(?:https?_proxy|all_proxy|proxy|no_proxy)$)/i.test(key)));
-  let registryRequests = 0;
+  const registryRequests: string[] = [];
   const registry = createServer((request, response) => {
-    registryRequests++;
+    registryRequests.push(`${request.method} ${request.url} [${request.headers["npm-command"] ?? "no npm-command"}]`);
     const name = decodeURIComponent(request.url ?? "");
     if (name === "/cotal-ai" || name === `/${pkg}`) {
       const packageName = name.slice(1);
@@ -83,7 +83,8 @@ export async function repairRuntimeEntry(assert: typeof strictAssert): Promise<v
     const entry = join(root.stdout.trim(), "node_modules", pkg, "dist/index.js");
     const original = readFileSync(entry);
     assert.ok(original.length > 0);
-    await assertOfflineRuntimeRepair(assert, cli, env, entry, original, () => registryRequests);
+    const offlineCli = (...args: string[]) => run([cliEntry, ...args], home, { ...env, COTAL_SKIP_CONNECTOR_SEED: "1", CI: "false" });
+    await assertOfflineRuntimeRepair(assert, offlineCli, env, entry, original, registryRequests);
     const brokenImport = 'import { notAnExportOfCore } from "@cotal-ai/core";\nvoid notAnExportOfCore;\n';
     for (const damage of ["missing", "empty", "import"]) {
       if (damage === "missing") renameSync(entry, join(home, "tmux-index.saved"));
@@ -123,21 +124,14 @@ export async function repairRuntimeEntry(assert: typeof strictAssert): Promise<v
 
 async function assertOfflineRuntimeRepair(
   assert: typeof strictAssert, cli: (...args: string[]) => ReturnType<typeof run>,
-  env: NodeJS.ProcessEnv, entry: string, original: Buffer, requests: () => number,
+  env: NodeJS.ProcessEnv, entry: string, original: Buffer, requests: readonly string[],
 ): Promise<void> {
-  const count = requests();
-  const warmCache = env.npm_config_cache;
+  const count = requests.length;
+  const warmCache = env.npm_config_cache!;
+  const notifierStamp = join(warmCache, "..", "_update-notifier-last-checked");
   truncateSync(entry, 0);
-  env.npm_config_offline = "true";
-  env.npm_config_cache = `${warmCache}-cold`;
-  const missed = await cli("update", "--self");
-  assert.equal(missed.status, 0, missed.output);
-  assert.match(missed.output, /Offline extension repair for @cotal-ai\/tmux@\S+ did not finish: extension set npm install failed/);
-  assert.equal(readFileSync(entry).length, 0);
-  assert.equal(requests(), count);
-
-  env.npm_config_cache = warmCache;
-  delete env.npm_config_offline;
+  // Keep the package cache warm, but make npm's notifier eligible to check this run.
+  rmSync(notifierStamp, { force: true });
   writeFileSync(env.npm_config_userconfig!, "offline=true\n");
   const repaired = await cli("update", "--self");
   assert.equal(repaired.status, 0, repaired.output);
@@ -151,8 +145,21 @@ async function assertOfflineRuntimeRepair(
   const repeated = await cli("update", "--self");
   assert.equal(repeated.status, 0, repeated.output);
   assert.equal(repeated.output.trim(), "npm is in offline mode. The latest-version check was skipped.");
-  assert.equal(requests(), count);
+  assert.deepEqual(requests.slice(count), []);
   rmSync(env.npm_config_userconfig!);
+
+  truncateSync(entry, 0);
+  env.npm_config_offline = "true";
+  env.npm_config_cache = `${warmCache}-cold`;
+  rmSync(notifierStamp, { force: true });
+  const missed = await cli("update", "--self");
+  assert.equal(missed.status, 0, missed.output);
+  assert.match(missed.output, /Offline extension repair for @cotal-ai\/tmux@\S+ did not finish: extension set npm install failed/);
+  assert.equal(readFileSync(entry).length, 0);
+  assert.deepEqual(requests.slice(count), []);
+  writeFileSync(entry, original);
+  env.npm_config_cache = warmCache;
+  delete env.npm_config_offline;
 }
 
 if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) {

@@ -325,7 +325,9 @@ export async function installExtensionSet(
     }
     const mutationPath = extensionNpmMutationPath();
     const specs = requests.map(({ spec }) => isPathSpec(spec) ? realpathSync(spec) : spec);
-    const result = await npm(["install", "--save", "--no-audit", "--no-fund", "--install-links", ...(opts?.offline ? ["--offline"] : []), ...specs], npmPrefix);
+    // npm's own update notifier can query the registry even in offline mode.
+    const cacheOnly = opts?.offline ? ["--offline", "--update-notifier=false"] : [];
+    const result = await npm(["install", "--save", "--no-audit", "--no-fund", "--install-links", ...cacheOnly, ...specs], npmPrefix);
     if (existsSync(mutationPath)) stage.retain();
     if (interrupted) throw new ExtensionAddInterrupted(requests[0]!.pkg);
     if (result.status !== 0) throw new Error(`extension set npm install failed: ${npmInstallFailure(result.output)}`);
