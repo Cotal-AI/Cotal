@@ -148,8 +148,11 @@ async function repeatedGlobalFlag(word: string, cmd: Command | undefined, words:
       ? { message: `--${flag.name} cannot be repeated`, remedy: `use --${flag.name} once` }
       : missingValue(found, rest, flag)
     : { message: `Option '${word}' cannot be repeated` };
-  if (!json) for (const warning of warnings) console.error(c.red(`! ${warning.message}`));
-  return runOperation({ warnings }, () => usageExit(refusal.message, found, json, options.includes("--plain"), refusal.remedy, rest));
+  if (found && json && isExtensionStub(found)) {
+    return runOperation({ warnings }, () => usageExit(refusal.message, found, json, options.includes("--plain"), refusal.remedy, rest));
+  }
+  routeCollisionWarnings(warnings, found, rest, false);
+  return usageExit(refusal.message, found, json, options.includes("--plain"), refusal.remedy, rest);
 }
 
 /** Whether the invoked mode declares a structured output, so it reports every outcome by the 0 to 5
@@ -590,6 +593,8 @@ function missingValue(cmd: Command, words: readonly string[], flag: FlagSpec, be
     if (sub === "clear" && HISTORY_LIMIT_FLAGS.some((name) => name === flag.name))
       return { message: `\`history clear\` does not take --${flag.name}`, remedy: `omit --${flag.name} from this command. Use it with \`history limit\` to change retention` };
   }
+  if (cmd.name === "persona" && flag.name === "subscribe")
+    return { message: "--subscribe needs a value", remedy: `write --subscribe <a,b> or --subscribe= for none${beforeSeparator ? " (before --)" : ""}` };
   return { message: `--${flag.name} needs a value`, remedy: `write --${flag.name} ${flag.value ?? "<value>"}${beforeSeparator ? " before --" : ""}` };
 }
 
@@ -860,17 +865,25 @@ async function serviceSurface(found: Command | undefined, words: string[], forRe
 }
 
 /** Recover the command and output mode for a malformed leading switch without dispatching it. */
-async function unknownInvocationExit(commands: readonly Command[], word: string, args: string[], output: string[], beforeSeparator: boolean, typed?: { message: string; remedy?: string }): Promise<never> {
+async function unknownInvocationExit(commands: readonly Command[], word: string, args: string[], output: string[], beforeSeparator: boolean, warnings: OutputWarning[]): Promise<never> {
+  const typed = typographicOption(word, new Set(LEADING_FLAGS.map((flag) => flag.slice(2))), [
+    jsonFlag, { name: "help", short: "h", type: "boolean" }, { name: "version", short: "V", type: "boolean" },
+  ]);
   const equals = word.indexOf("=");
   const flag = equals === -1 ? word : word.slice(0, equals);
   const malformedSwitch = equals !== -1 && (GLOBAL_FLAG_WORDS.has(flag) || OUTPUT_FLAG_WORDS.has(flag));
-  if (!beforeSeparator || (!typed && !malformedSwitch)) usageExit(typed?.message ?? unknownCommandMessage(commands, word), undefined, false, false, typed?.remedy);
+  const textExit = () => {
+    routeCollisionWarnings(warnings, undefined, [...output, ...args], false);
+    return usageExit(typed?.message ?? unknownCommandMessage(commands, word), undefined, false, false, typed?.remedy);
+  };
+  if (!beforeSeparator || (!typed && !malformedSwitch)) return textExit();
   const retry = leadingInvocation(args, true);
   const found = findCommand(commands, retry.word);
   const words = [...output, ...retry.leading.filter((item) => OUTPUT_FLAG_WORDS.has(item)), ...retry.args];
   const { cmd, rest } = await serviceSurface(takesWordsRaw(found) ? undefined : found, words, true);
   const json = cmd !== undefined && asksForJson(cmd, rest);
-  if (typed && !json) usageExit(typed.message, undefined, false, false, typed.remedy);
+  if (typed && !json) return textExit();
+  routeCollisionWarnings(warnings, cmd, rest, false);
   const end = rest.indexOf("--");
   const plain = (end === -1 ? rest : rest.slice(0, end)).includes("--plain");
   const refusal = typed ?? switchValueRefusal(flag, cmd, rest);
@@ -945,8 +958,13 @@ async function dispatchCli(registry: Registry, argv: string[], opts: RunCliOptio
   takeManagedHandoffCustody(process.env, builtin?.name === "spawn");
   const docsHelp = isExplicitDocsHelp(registry, builtin, wantsHelp, words);
   setInstalledExtensionsEnabled(Boolean(opts.extensions) && !docsHelp);
+  const pendingWarnings: OutputWarning[] = [];
   const builtinDuplicate = builtin && duplicate(builtin);
-  if (builtinDuplicate) return repeatedGlobalFlag(builtinDuplicate, builtin, ownWords(builtin));
+  if (builtinDuplicate) {
+    try { if (opts.extensions && !docsHelp) overlayExtensions(registry, collisionWarning(pendingWarnings)); }
+    catch { /* An unreadable manifest does not replace the argument refusal. */ }
+    return repeatedGlobalFlag(builtinDuplicate, builtin, ownWords(builtin), pendingWarnings);
+  }
   if (word === "-v") usageExit("-v is not the version flag - run `cotal version` or `cotal -V`");
   // The built-in check reports an unreadable inventory itself. Do not require that inventory to
   // construct its command surface, or recover an installation as a prelude to this read-only mode.
@@ -1000,7 +1018,6 @@ async function dispatchCli(registry: Registry, argv: string[], opts: RunCliOptio
       }
     }
   }
-  const pendingWarnings: OutputWarning[] = [];
   const surface = (warnings: OutputWarning[]): Command[] => {
     let commands: Command[];
     try {
@@ -1036,6 +1053,10 @@ async function dispatchCli(registry: Registry, argv: string[], opts: RunCliOptio
   let rest = ownWords(cmd);
   const repeated = duplicate(cmd);
   if (repeated) return repeatedInvocationExit(repeated, cmd, rest, pendingWarnings, commands, argv.slice(leading.length), output);
+  // A seeded command can be absent until the first seed installs it. Help and unknown words do not seed.
+  const awaitingSeed = !cmd && word !== undefined && opts.extensions === true && isSeededCommand(word) && !wantsHelp && !skipsSeed(word, rest[0], rest);
+  if (!cmd && word !== undefined && !awaitingSeed)
+    return unknownInvocationExit(commands, word, args, output, argv[leading.length] !== "--", pendingWarnings);
   routeCollisionWarnings(pendingWarnings, cmd, rest, wantsHelp);
   if (word === undefined) return paintFor(process.stdout, () => printEntry(commands));
   const scoped = await serviceSurface(cmd, rest);
@@ -1052,16 +1073,6 @@ async function dispatchCli(registry: Registry, argv: string[], opts: RunCliOptio
     }
   };
   arm();
-  // A seeded package's command (`web`) can be absent only because the first seed has not installed
-  // it yet, so running it seeds and resolves again. Asking for its help seeds nothing, and any other
-  // unknown word is a usage error.
-  const awaitingSeed = !cmd && opts.extensions === true && isSeededCommand(word) && !wantsHelp && !skipsSeed(word, rest[0], rest);
-  // A leading flag typed with a typographic dash is read as the command word, so it is refused as the
-  // same word after the command word is.
-  const typed = cmd || awaitingSeed ? undefined : typographicOption(word, new Set(LEADING_FLAGS.map((flag) => flag.slice(2))), [
-    jsonFlag, { name: "help", short: "h", type: "boolean" }, { name: "version", short: "V", type: "boolean" },
-  ]);
-  if (!cmd && !awaitingSeed) return unknownInvocationExit(commands, word, args, output, argv[leading.length] !== "--", typed);
   // `cotal <cmd> --help` / `-h` → that command's help, never run it. This intercept also covers
   // rawArgs commands and extension STUBS (cached specs are exactly the display surface) — only
   // `__`-internal ones are exempt, because __complete's argv is ANOTHER command's half-typed
