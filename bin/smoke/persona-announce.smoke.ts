@@ -242,6 +242,8 @@ try {
   });
   const silentFile = join(workspaceRoot, ".cotal", "agents", `${silentName}.md`);
   check("the tool reports success for a define with no announce", silentResult.isError !== true, silentResult);
+  check("a confirmed save names the spawn tool and the persona argument", silentResult.text ===
+    `Persona \`${silentName}\` saved. You can bring it online with \`cotal_spawn\`. Pass \`name\` set to \`${silentName}\`.`, silentResult);
   check("the persona file was actually written (so silence below is a job done, not a job failed)", existsSync(silentFile));
   check(
     "the silent tool result claims no announcement (the caller is told what actually happened)",

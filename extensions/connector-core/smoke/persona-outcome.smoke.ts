@@ -39,11 +39,14 @@ const timedOut = await result(new EpEnvelopeError("deadline-exceeded", "no reply
 check("an unanswered submitted definition is not reported as a failed write", timedOut.r.isError !== true && !timedOut.r.text.includes("Couldn't define"));
 check("the text says the write may still land and forbids a blind repeat", timedOut.r.text.includes("is unknown") && timedOut.r.text.includes("may still be written") && timedOut.r.text.includes("Do not re-run"));
 check("the exact deadline diagnosis survives without no-responder advice", timedOut.r.text.includes("deadline-exceeded: no reply") && !timedOut.r.text.includes("no responder answered"));
-check("readback advice does not treat an absent file as final", timedOut.r.text.includes('cotal_personas(name="probe")') && timedOut.r.text.includes("missing readback alone"));
+const readback = "Read back with `cotal_personas` on the same manager before acting. Pass `name` set to `probe`.";
+check("readback advice does not treat an absent file as final", timedOut.r.text.includes(readback) && timedOut.r.text.includes("missing readback alone"));
+check("structured next carries the same readback guidance", timedOut.r.structured?.next === readback);
 check("structured content retains the unknown state and identical text", timedOut.r.structured?.status === "unknown" && timedOut.r.structured.message === timedOut.r.text);
 check("a timed-out write is never automatically resubmitted", timedOut.calls === 1);
 const pinned = await result(new EpEnvelopeError("deadline-exceeded", "no reply", [detail]), undefined, true);
-check("readback preserves the explicit manager pin", pinned.r.text.includes(`instance="${instance}"`) && pinned.r.structured?.instance === instance);
+const pinnedReadback = `Read back with \`cotal_personas\` on the same manager before acting. Pass \`name\` set to \`probe\` and \`instance\` set to \`${instance}\`.`;
+check("readback preserves the explicit manager pin", pinned.r.text.includes(pinnedReadback) && pinned.r.structured?.instance === instance && pinned.r.structured.next === pinnedReadback);
 for (const [label, error] of [
   ["describe deadline", new EpEnvelopeError("deadline-exceeded", "no describe", [{ ...detail, command: "describe" }])],
   ["broker no responders", new EpEnvelopeError("unavailable", "no responder", [detail], "not-executed")],
@@ -59,4 +62,6 @@ const repliedRefusal = await result(undefined, { ok: false, error: { code: "fail
 check("an attributed refusal stays a refusal", repliedRefusal.r.isError === true && repliedRefusal.r.text.includes("not authorized"));
 const saved = await result(undefined);
 check("confirmed definitions still report saved without an unknown payload", saved.r.isError !== true && saved.r.text.includes("saved") && saved.r.structured === undefined);
+const pinnedSaved = await result(undefined, undefined, true);
+check("confirmed definitions give the explicit manager pin for spawning", pinnedSaved.r.text.endsWith(`You can bring it online with \`cotal_spawn\`. Pass \`name\` set to \`probe\` and \`instance\` set to \`${instance}\`.`));
 console.log(`persona-outcome smoke passed (${checks} checks)`);
