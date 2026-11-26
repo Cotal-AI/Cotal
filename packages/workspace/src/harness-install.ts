@@ -20,9 +20,10 @@ function installerFor(system: (typeof SYSTEMS)[number], raw: unknown, problem: (
     problem(`the ${system} installer's variables must be plain uppercase names with short values, and cannot set ${RESERVED_ENV.join(", ")}`);
   const folder = system === "win32"
     ? /^%([A-Z]+)%((?:\\[^\\/:*?"<>|%]+)+)$/.exec(String(binDir))
-    : /^~((?:\/[^/\\%]+)+)$/.exec(String(binDir));
+    // The folder is written into shell startup files, so a POSIX segment holds no shell syntax.
+    : /^~((?:\/[A-Za-z0-9._-]+)+)$/.exec(String(binDir));
   if (!plain(binDir, 200) || !folder || (system === "win32" && !FOLDER_VARIABLES.includes(folder[1]!)) || folder.at(-1)!.split(/[\\/]/).some(part => part === "." || part === ".."))
-    problem(system === "win32" ? `the Windows installer's folder must start with %${FOLDER_VARIABLES.join("%\\, %")}%\\` : `the ${system} installer's folder must start with ~/`);
+    problem(system === "win32" ? `the Windows installer's folder must start with %${FOLDER_VARIABLES.join("%\\, %")}%\\` : `the ${system} installer's folder must start with ~/ and name folders with letters, digits, dots, underscores and hyphens only`);
   if (needs !== undefined && (!Array.isArray(needs) || needs.some(name => typeof name !== "string" || !/^[A-Za-z0-9._-]{1,64}$/.test(name))))
     problem(`the ${system} installer's needs must be executable names`);
   return Object.freeze({

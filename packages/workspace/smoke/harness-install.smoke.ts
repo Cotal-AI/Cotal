@@ -26,6 +26,7 @@ const refused: Array<[string, unknown, RegExp, (readonly string[])?]> = [
   ["a Windows installer that names a shell", { ...valid, installers: { win32: { ...valid.installers.win32, shell: "sh" } } }, /names no shell/],
   ["an absolute POSIX folder", { ...valid, installers: { linux: { ...valid.installers.linux, binDir: "/usr/local/bin" } } }, /must start with ~\//],
   ["a folder that climbs out of home", { ...valid, installers: { linux: { ...valid.installers.linux, binDir: "~/../../etc" } } }, /must start with ~\//],
+  ...["~/$(touch x)/bin", "~/`id`/bin", '~/a"b/bin', "~/my bin", "~/$HOME"].map((binDir): [string, unknown, RegExp] => [`a POSIX folder with shell syntax (${binDir})`, { ...valid, installers: { linux: { ...valid.installers.linux, binDir } } }, /letters, digits, dots, underscores and hyphens only/]),
   ["an unknown Windows folder variable", { ...valid, installers: { win32: { ...valid.installers.win32, binDir: "%SYSTEMROOT%\\System32" } } }, /must start with %LOCALAPPDATA%/],
   ["a variable that would set PATH", { ...valid, installers: { linux: { ...valid.installers.linux, env: { PATH: "/tmp" } } } }, /cannot set PATH/],
   ["an unknown system", { ...valid, installers: { freebsd: valid.installers.linux } }, /one or more of darwin, linux, win32/],
