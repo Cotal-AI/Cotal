@@ -240,6 +240,9 @@ try {
   const browserLaunchUrl = (await browserLaunch.json() as { launchUrl: string }).launchUrl;
   const browserToken = new URL(browserLaunchUrl).searchParams.get("k")!;
   const dashboardPage = await page(browserLaunchUrl + "#/channel/general");
+  await until(() => evaluate(dashboardPage, "document.querySelector('.v3-mhead b')?.textContent === '#general' && document.body.innerText.includes('Read only')"), "read-only dashboard renders the selected channel's Members panel");
+  check("dashboard: read-only Members panel offers no Delete channel action", await evaluate(dashboardPage,
+    "![...document.querySelectorAll('.ui-pane-body button')].some(button => button.textContent.trim() === 'Delete channel')"));
   await security("dashboard", dashboardPage, browserToken, dashboardBase, "document.getElementById('root')?.textContent?.includes('browser-live-control') === true");
   const sessionCookie = await cdp("Network.getCookies", { urls: [dashboardBase] }, dashboardPage);
   const cookie = sessionCookie.cookies.find((c: { name: string }) => c.name === "cotal_web_session");
