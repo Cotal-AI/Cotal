@@ -314,6 +314,8 @@ export class SessionRecovery {
         if (this.deps.agentFor(a.name) !== a || a.terminalizing || this.deps.maintenanceState() !== "active") return;
         const connector = await this.deps.resolveConnector(a.agent);
         if (this.deps.agentFor(a.name) !== a || a.terminalizing || this.deps.maintenanceState() !== "active") return;
+        const unavailable = connector.launchUnavailable?.({ cwd: a.launch.cwd });
+        if (unavailable !== undefined) throw new Error(unavailable);
         const continueSession = connector.supportsSessionContinuation ? this.readManagedSession(a) : undefined;
         // The seat starts again under the name it last showed, which `set-name` may have changed since
         // launch, and on the model it runs, which `set-model` may have switched. A seat labels itself
