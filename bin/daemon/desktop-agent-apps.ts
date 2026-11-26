@@ -166,7 +166,8 @@ function folder(binDir: string): string {
  *  shell the maker names, as its instructions say; on Windows PowerShell downloads and runs it.
  *  The installer runs with the PATH the account has once the app adds its folder (prepended on macOS
  *  and Linux as the startup line does, appended on Windows as the user PATH is), so an installer
- *  that checks whether it is on PATH does not stop to ask, or edit PATH itself, with no terminal.
+ *  that checks the PATH it runs with does not stop to ask about it with no terminal. One that reads
+ *  the stored user PATH (Codex on Windows) still adds its folder there itself.
  *  curl and the shell are still found on the account's own PATH. */
 async function runInstaller(installer: HarnessInstaller, path: string, emit: Emit): Promise<Ran> {
   const env = { ...process.env, PATH: path, ...installer.env };
