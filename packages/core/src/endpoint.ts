@@ -20,9 +20,6 @@ import {
 import { EndpointPresence, type CardMetaChanges, type PresenceView } from "./endpoint-presence.js";
 export { PresenceWriteStuckError, type CardMetaChanges, type PresenceView } from "./endpoint-presence.js";
 import { idFromCreds } from "./identity.js";
-import {
-  type SecretStoreIdentity,
-} from "./secret-store.js";
 import { BIND_SPLIT_REISSUES, resolveService, type ResolvedService, type SubmitAndFollowGoalOptions } from "./endpoint-invoke.js";
 import { EpEnvelopeError, respondedButUnbound, replyRefusedBeforeEffect, replyTargetUnmapped } from "./endpoint-envelope.js";
 import { isRepeatSafeCommand } from "./endpoint-grants.js";
@@ -1000,8 +997,8 @@ export class CotalEndpoint extends EventEmitter {
    *  is (SPEC §5): one whose payload sender is not the subject's sender is dropped, and one that
    *  passes carries the channel, recipient or role its subject names, not the payload's (#3741).
    *  A `chat`, `inst` or `svc` message whose parts cannot be read is dropped, as history drops it.
-   *  Any other frame reaches the handler as decoded. An exception from the handler is emitted as
-   *  `error`, and the feed keeps reading (#7060). */
+   *  Frames carrying stored-message headers are dropped on any subject. Handler exceptions emit
+   *  `error`, and the feed keeps reading. Other frames reach the handler as decoded. */
   tap(
     handler: (subject: string, msg: CotalMessage | undefined) => void,
     opts?: { subject?: string },
@@ -2303,7 +2300,7 @@ export class CotalEndpoint extends EventEmitter {
    *  is required, not optional (the responder would otherwise be lost on a broker blip). */
   async startPlane3(
     aclFor: (owner: string, lifecycleUid: string) => MaybePromise<string[] | undefined>,
-    opts: { reloadMembershipCreds?: (expected?: string) => Promise<unknown>; evictPrincipal?: (principal: string) => Promise<unknown>; evictPrincipals?: (principals: string[]) => Promise<unknown>; planeConnLiveness?: (query: unknown) => Promise<unknown>; principalLiveness?: (principal: string) => Promise<unknown>; reloadStoreIdentity?: () => SecretStoreIdentity; onDeliveryCredsAdopted?: () => void; startupComplete?: () => boolean } = {},
+    opts: Parameters<EndpointDeliveryPlane["startPlane3"]>[1] = {},
   ): Promise<void> {
     return this.deliveryPlane.startPlane3(aclFor, opts);
   }

@@ -1,5 +1,5 @@
 import type { JetStreamClient, JetStreamManager } from "@nats-io/jetstream";
-import { assertAdmittedSubscribe, chatStream, chatSubject, isConsumerNotFound, subjectMatches, waitConsumerConfig, waitConsumerName, type RunAdmissionView } from "@cotal-ai/core";
+import { assertAdmittedSubscribe, chatStream, chatSubject, hasStoredOrigin, isConsumerNotFound, subjectMatches, waitConsumerConfig, waitConsumerName, type RunAdmissionView } from "@cotal-ai/core";
 import { RunScopeAuthority, RunScopeDenied, WaitReceipts, type WaitReceipt } from "./run-scope-authority.js";
 import { Cancelled } from "@cotal-ai/lang";
 
@@ -65,6 +65,7 @@ export function createRunWaitHost(
         for await (const message of batch) {
           if (!subjectMatches(expected, message.subject))
             throw new RunScopeDenied(entry.run, message.subject, "receive outside wait channel");
+          if (hasStoredOrigin(message.headers)) { message.ack(); continue; }
           messages.push(Object.freeze({
             sequence: message.seq,
             subject: message.subject,
@@ -100,6 +101,8 @@ export function createRunWaitHost(
         throw new Error(`wait ${requestId}'s recorded message ${sequence} no longer exists`);
       if (!subjectMatches(chatSubject(broker.space, "*", "*", channel), message.subject))
         throw new RunScopeDenied(entry.run, requestId, "read outside wait channel");
+      if (hasStoredOrigin(message.header))
+        throw new Error("the recorded wait message carries stored-message headers. Start a new run and have the sender post a fresh message.");
       return message.data.slice();
     },
   });

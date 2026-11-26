@@ -608,6 +608,11 @@ try {
     const before = cell === 'fresh' ? [] : inventory();
     const start = Date.now();
     let result;
+    if (cell === 'interactive') {
+      // The silent base install made a desktop shortcut. Remove it so the person's choice on the finish page is what shows.
+      report.desktopShortcut = join((await required(ps, ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', "[Environment]::GetFolderPath('Desktop')"])).stdout.trim(), 'Cotal.lnk');
+      rmSync(report.desktopShortcut, { force: true });
+    }
     if (cell === 'interactive' || cell === 'occupied-ui') {
       result = await run(ps, ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', join(repo, 'desktop/test/setup-ui.ps1'), '-Installer', candidate, '-Mode', cell === 'occupied-ui' ? 'occupied' : 'install', '-Output', join(output, 'ui.json')], 300_000);
       check('Actual UI Automation driver completed', result.code === 0);
@@ -647,6 +652,10 @@ try {
     if (cell === 'interactive') {
       const ui = JSON.parse(readText(join(output, 'ui.json')).replace(/^\uFEFF/, ''));
       check('Newer default click-through never offers the unsafe old-uninstaller choice', !ui.some(row => row.names?.some(name => /uninstall before installing/i.test(name))));
+      check('The finish page offered Create desktop shortcut and the driver cleared it', JSON.parse(result.stdout.trim().split('\n').at(-1)).desktopShortcutCleared === true);
+      check('A cleared Create desktop shortcut leaves no desktop shortcut', !existsSync(report.desktopShortcut));
+      const startMenu = JSON.parse((await required(ps, ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', "@(Get-ChildItem -LiteralPath ([Environment]::GetFolderPath('Programs')) -Recurse -Filter 'Cotal.lnk' -ErrorAction SilentlyContinue).Count | ConvertTo-Json"])).stdout.trim());
+      check('The Start menu shortcut is still created', startMenu >= 1);
     }
     if (['occupied', 'occupied-ui', 'locker', 'locker-filtered', 'locker-short', 'early', 'cannot-start'].includes(cell)) {
       check('Setup refuses before replacing files', result.code !== 0);
@@ -708,6 +717,12 @@ try {
         check('Foreign CLI service keeps its old PID and version', status.pid === report.before.pid && status.version === report.before.version);
         check('Foreign service receipt is unchanged', readText(join(root, 'daemon', 'service-unit.json')) === report.foreignReceipt);
         check('Setup names untouched foreign service', diagnostic.message.includes('another installation'));
+        // The app's uninstaller removes only the service its own installation registered.
+        const uninstalled = await run(join(root, 'uninstall.exe'), ['/S', `_?=${root}`], 300_000);
+        check('App uninstaller exits 0 beside a foreign CLI service', uninstalled.code === 0);
+        const kept = JSON.parse((await required(process.execPath, [report.foreignCli, 'daemon', 'status', '--json'])).stdout).result;
+        check('App uninstall keeps the foreign CLI service and its PID', kept.pid === report.before.pid);
+        check('App uninstall keeps the foreign service receipt', readText(join(root, 'daemon', 'service-unit.json')) === report.foreignReceipt);
       } else if (cell === 'absent' || cell === 'fresh') check('No service was installed', !existsSync(join(root, 'daemon/service-unit.json')));
       else if (cell === 'stopped') {
         const stopped = await daemon('status');

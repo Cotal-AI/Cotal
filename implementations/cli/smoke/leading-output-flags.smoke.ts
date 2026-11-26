@@ -267,6 +267,50 @@ for (const { args, command, status, code } of [
 }
 
 const dashFlag = "\u2013\u2013no-color";
+const dashMessage = `${dashFlag} starts with a typographic dash, so it is not an option`;
+const dashRemedy = "type the option with hyphens: --no-color";
+const dashCollision = run([dashFlag, "config", "get", "harness", "--json"], collisionConfig);
+check("a leading typographic flag keeps the dash diagnosis and collision warning in the same receipt", dashCollision.status === 1 &&
+  dashCollision.stderr === "" && dashCollision.envelope?.command === "config" && dashCollision.envelope.outcome === "refused" &&
+  dashCollision.envelope.error?.code === "USAGE_INVALID" && dashCollision.envelope.error.message === dashMessage &&
+  dashCollision.envelope.error.remedy === dashRemedy && dashCollision.envelope.warnings?.length === 1 &&
+  dashCollision.envelope.warnings[0]?.code === "EXTENSION_COMMAND_COLLISION" &&
+  readFileSync(collisionManifest, "utf8") === collisionFixture, shown(dashCollision));
+for (const args of [
+  [dashFlag, "config", "get", "harness", "--json"],
+  ["-j", dashFlag, "cfg", "get", "harness"],
+  [dashFlag, "--json", "config", "get", "harness"],
+]) {
+  const r = run(args);
+  check(`${args.join(" ")} keeps the dash diagnosis in a finite JSON refusal`, r.status === 1 && r.stderr === "" &&
+    r.envelope?.command === "config" && r.envelope.outcome === "refused" && r.envelope.error?.code === "USAGE_INVALID" &&
+    r.envelope.error.message === dashMessage && r.envelope.error.remedy === dashRemedy, shown(r));
+}
+for (const args of [
+  [dashFlag, "config", "get", "harness", "--", "--json"],
+  ["--json", "--", dashFlag, "config", "get", "harness"],
+  [dashFlag, "ext", "root", "--json"],
+]) {
+  const r = run(args);
+  check(`${args.join(" ")} keeps the dash diagnosis on stderr when JSON is not selected`, r.status === 1 && r.stdout === "" &&
+    r.stderr.includes(dashMessage) && r.stderr.includes(dashRemedy), shown(r));
+}
+for (const [stream, ...words] of [
+  ["watch", "watch"],
+  ["history", "history", "general", "--follow"],
+  ["membership", "channel", "members", "general", "--follow"],
+]) {
+  const r = run([dashFlag, ...words, "--json"]);
+  const records = r.stdout.trim().split("\n").map((line) => {
+    try { return JSON.parse(line); } catch { return undefined; }
+  });
+  const [error, end] = records;
+  check(`${words.join(" ")} reports a leading dash error and ends the JSON stream`, r.status === 1 && r.stderr === "" &&
+    records.length === 2 && error?.stream === stream && error.type === "error" && error.data?.code === "USAGE_INVALID" &&
+    error.data.message === dashMessage && error.data.remedy === dashRemedy &&
+    end?.stream === stream && end.type === "end" && end.data?.reason === "setup-failed", shown(r));
+}
+
 for (const { words, command } of [
   { words: [dashFlag, "inspect", "./not-there"], command: "backup inspect" },
   { words: [dashFlag, "verify", "./not-there"], command: "backup verify" },
@@ -309,6 +353,23 @@ check("a typographic flag after the backup verb keeps the same refusal", dashAft
 const scaffold = run(["endpoint", "init", "note", "--dir", "starter"]);
 check("endpoint init creates the contract for the separator check", scaffold.status === 0, shown(scaffold));
 if (scaffold.status === 0) {
+  const contract = "starter/contract.json";
+  for (const flags of [["--file", "--json"], ["--json", "--file"]]) {
+    const r = run(["endpoint", "check", contract, ...flags]);
+    check(`endpoint check ${flags.join(" ")} tells the caller to omit --file`,
+      r.status === 1 && r.stderr === "" && r.envelope?.command === "endpoint check" && r.envelope.outcome === "refused" &&
+      r.envelope.error?.code === "USAGE_INVALID" && r.envelope.error.message === "`endpoint check` does not take --file" &&
+      r.envelope.error.remedy === "omit --file and keep the contract path", shown(r));
+  }
+  const retry = run(["endpoint", "check", contract, "--json"]);
+  check("endpoint check succeeds with the same contract and output mode after omitting --file",
+    retry.status === 0 && retry.stderr === "" && retry.envelope?.command === "endpoint check" && retry.envelope.outcome === "ok", shown(retry));
+  const add = run(["endpoint", "add", "note", "--file", "--json"]);
+  check("endpoint add still asks for a missing reference filename",
+    add.status === 1 && add.stderr === "" && add.envelope?.outcome === "refused" &&
+    add.envelope.error?.code === "USAGE_INVALID" && add.envelope.error.message === "--file needs a value" &&
+    add.envelope.error.remedy === "write --file <reference.json>", shown(add));
+
   copyFileSync(join(neutral, "starter", "contract.json"), join(neutral, "--plain"));
   const endpointCheck = (...args: string[]) => run(["endpoint", "check", ...args], undefined,
     { FORCE_COLOR: "1", NO_COLOR: "", LC_ALL: "C.UTF-8" });

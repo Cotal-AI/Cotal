@@ -1,5 +1,33 @@
 # Upgrading a running deployment
 
+## Ended terminal sessions on user-auth spaces
+
+A user-auth terminal connection now closes when the auth service confirms that its session
+ended. A different session or control connection for the same actor stays connected. Open
+a new session with `cotal attach <agent>` instead of reusing an ended session. Connections
+admitted before the upgrade, or by an older callout replica during it, have no receipt and
+keep their original expiry.
+
+Upgrade the full auth service, every `--callout-only` replica, and delivery together to
+the release that carries this change. For a local stack, stop it with `cotal down`, run
+`cotal update`, then run `cotal up` with the same
+space and startup options from the same project. For a hosted space, deploy the updated auth
+and delivery packages together and restart those services. An older delivery service cannot
+confirm targeted eviction, so auth retains the receipt and retries after delivery is upgraded.
+
+If auth cannot read the active session or write its connection receipt before the broker's
+authorization deadline, the broker refuses the connection. Check the auth service log for
+the cause. Restore access to the auth store if the log reports a receipt write failure, then
+run `cotal attach <agent>` again. Trusted auth-store readers can read the receipt's session ID,
+holder principal, and lifecycle ID.
+
+If you embed delivery, edit the `startPlane3` eviction hook to take
+`(principal, connections)` as two explicit parameters. When `connections` is present, restrict
+the scan, disconnect, and verification to those broker `{serverId, cid}` pairs for that
+principal, then return the same ordered pairs in the result's `connections` field. A
+principal-only hook still handles ordinary principal eviction. Omit the `connections` field
+from `evictPrincipal` if you intend to evict the entire principal. A request that supplies it
+is limited to the exact pairs or refused, never treated as a principal-wide eviction.
 ## Agent names that start with a hyphen
 
 `cotal personas new` refuses new catalog names starting with `-`. In scripts, replace the name with
@@ -17,6 +45,32 @@ as the first argument to `spawn`.
 
 Existing cards are still available for inspection and removal. On the CLI, put flags before `--`:
 `cotal persona show -- -reviewer` or `cotal persona remove --yes -- -reviewer`.
+
+## Messages carrying stored-message headers
+
+Cotal drops channel posts, DMs, role requests, delivery copies, event payloads and legacy control requests
+that carry `Nats-Stream`, `Nats-Subject`, `Nats-Sequence` or `Nats-Time-Stamp`, even when the
+claimed sender matches the subject. The operator tap drops marked frames on any subject. Lang
+`wait` ignores marked posts. Marked rows already stored are omitted from history, so older and
+newer readers can show different results for the same stored history.
+
+Upgrade and restart the delivery daemon before updating agents and clients. An older daemon can
+still serve marked history and can deliver a durable copy without the original headers, leaving
+the new reader unable to recognize it. If the space is hosted elsewhere, ask its operator to
+upgrade the delivery daemon first.
+
+If your integration forwards messages from storage, replace that forwarding call with a fresh
+send under the integration's own identity. For example, use
+`await endpoint.multicast(text, { channel: "general" })` for a channel post,
+`await endpoint.unicast(peer, text)` for a DM, or `await endpoint.anycast(role, text)` for a
+role request. For a legacy control request, use `await endpoint.requestControl(service, request)`.
+Do not copy the stored headers, sender or message ID. For custom receivers, core exports
+`hasStoredOrigin(headers)` to identify these reserved names. Do not apply it to answers to
+storage reads your client initiated, such as a roster lookup.
+
+If resuming a Lang run refuses a recorded wait match with these headers, start a new run with
+`cotal run start --file <program>` and have the sender post a fresh message once the wait is ready.
+
 ## Labelling an agent from its thread title
 
 The `agent` cluster advances to revision 7 with `set-label`, which the owner calls to set the label
