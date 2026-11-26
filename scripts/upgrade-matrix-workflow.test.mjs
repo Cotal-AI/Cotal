@@ -42,6 +42,14 @@ test('paired next-hop builders are explicit in both phases and stamp B and C bef
   assert.equal(workflow.jobs['release-cells'].strategy['max-parallel'], 46);
   for (const job of ['release-native', 'release-pack', 'release-next']) assert(workflow.jobs[job]);
 });
+test('Corepack Node fallback runs on the frozen source independently of the upgrade coordinates', () => {
+  const job = workflow.jobs['release-corepack-node-fallback'];
+  assert.equal(job.needs, 'select');
+  assert.equal(job.if, "needs.select.outputs.applicable == 'true'");
+  assert.equal(job.steps[0].with.ref, '${{ needs.select.outputs.source }}');
+  assert.equal(job.steps[0].with['persist-credentials'], false);
+  assert(job.steps.some(step => step.run?.includes('node bin/smoke/update-registry-arrival.smoke.mjs corepack-node-fallback')));
+});
 test('paired routes preserve ordinary published arguments and bind artifact receipts', () => {
   const cells = workflow.jobs['release-cells'];
   const run = cells.steps.find(step => step.name === 'Run one real product upgrade coordinate').run;

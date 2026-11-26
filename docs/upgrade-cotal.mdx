@@ -124,8 +124,9 @@ On Linux and macOS, self-update refreshes an existing npm launcher when it can s
 Self-update keeps the npm selected on `PATH`, including when it installs built-in connectors.
 If that npm requires a different Node version, Cotal tries the Node recorded by its installation
 launcher, when present, and then looks for a compatible Node alongside npm or on `PATH`.
-When Corepack runs on the current Node but the npm it selects requires a different version,
-Cotal looks for a Node that can run both. The search can also use Volta's `node` shim.
+Cotal checks whether the Node it chooses for Corepack can also run the npm that Corepack selects.
+If npm requires a different Node version, Cotal keeps looking for one that can run both.
+The search can also use Volta's `node` shim.
 If the `node` shim on `PATH` selects a compatible version from the current project, as with asdf,
 Cotal verifies that executable and runs npm with it outside the project, including during
 reconciliation after a release changes. If the project's selection cannot run npm, Cotal also
