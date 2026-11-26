@@ -1,5 +1,20 @@
 # @cotal-ai/connector-core
 
+## 0.182.0
+
+### Minor Changes
+
+- d0d5bf5: Legacy persona creation, persona renames, team manifest validation and direct terminal launches now reject names that start with `-`, so choose a name that starts with a letter, digit or underscore instead.
+- 30b474d: Wire persona saves drop launch options and refuse channels outside the definer's grant, so pass options on spawn or set them in a local persona file, and list only channels the definer holds.
+
+### Patch Changes
+
+- b67a783: `cotal_dm` now confirms storage without promising delivery when the recipient is offline, and explains that only the original session can receive the message if its inbox still exists.
+- b87866b: The OpenCode guide shows how to create the researcher persona before launching it in the background.
+- 9f63fee: Keep Windows consoles from opening during background extension installs, updates, and helper commands.
+- d2e0213: Report how many unread channel posts the MCP inbox omitted when its local buffer filled, and explain how to recover retained posts from channel history.
+- 83db958: The Windows docs show how to install, verify, and remove Cotal without changing PowerShell execution policy and how to prepare a project from PowerShell or Command Prompt.
+
 ## 0.181.0
 
 ### Minor Changes
