@@ -99,7 +99,8 @@ export function channelArguments(args: ParsedArgs): { action: string; name?: str
       const follow = action === "members" && values.follow ? " --follow" : "";
       const retry = action === "remove" ? "remove the replay flag and its value from this command"
         : `run ${codeSpan(`cotal channel${action === "list" ? "" : ` ${action}`}${word}${follow}${targetWords(values)}${output}`)}`;
-      throw new CommandFailure("refused", "USAGE_INVALID", "replay settings belong to channel set/defaults", { remedy: retry });
+      const target = valueFirst && follow && values.json ? { channel: retryName } : undefined;
+      throw new CommandFailure("refused", "USAGE_INVALID", "replay settings belong to channel set/defaults", { remedy: retry, target });
     }
     const edits = (["window", "delivery", "desc", "instructions"] as const).map((key) => {
       const value = values[key];
