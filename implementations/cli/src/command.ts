@@ -1090,7 +1090,7 @@ async function dispatchCli(registry: Registry, argv: string[], opts: RunCliOptio
     try {
       cmd = await materializeExtensionCommand(cmd);
     } catch (e) {
-      stderrLine("✗ ", (e as Error).message, c.red);
+      stderrLine("✗ ", displayRemedy((e as Error).message), c.red);
       process.exit(1);
     }
     parsed = parseOrExit(cmd, rest);
