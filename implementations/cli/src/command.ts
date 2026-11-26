@@ -969,9 +969,13 @@ async function dispatchCli(registry: Registry, argv: string[], opts: RunCliOptio
     try {
       commands = useExtensionOverlay && !versionJson && !extDiagnostics && !configFolder ? overlayExtensions(registry, collisionWarning(warnings)) : registry.all<Command>("command");
     } catch (e) {
-      if (((configRead || completionStatus) && e instanceof CorruptExtensionsManifestError) || skipUnreadableConnectorOverlay(e))
+      const infrastructureStatus = builtin?.name === "status" && !wantsHelp && !words.includes("--components")
+        && metadataPositionals(builtin, words).positionals.length === 0;
+      if (((configRead || completionStatus || infrastructureStatus) && e instanceof CorruptExtensionsManifestError) || skipUnreadableConnectorOverlay(e)) {
+        // The infrastructure report reads the manifest itself and can name the gap.
+        if (infrastructureStatus) setInstalledExtensionsEnabled(false);
         commands = registry.all<Command>("command");
-      else {
+      } else {
         if (repeatedLeading) usageExit(`Option '${repeatedLeading}' cannot be repeated`);
         // A corrupt extensions manifest must not silently shrink the surface.
         stderrLine("✗ ", (e as Error).message, c.red);

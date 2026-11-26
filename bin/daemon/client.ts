@@ -154,9 +154,17 @@ export function readLine(sock: Socket, timeoutMs: number): Promise<string> {
       if (nl !== -1) finish(undefined, buf.slice(0, nl));
       else if (Buffer.byteLength(buf, "utf8") > MAX_LINE_BYTES) finish(new Error("daemon reply exceeds the line limit"));
     });
-    sock.once("end", () => finish(new Error("daemon closed the connection without a reply")));
+    sock.once("end", () => finish(new Error(DAEMON_CLOSED)));
     sock.once("error", (e) => finish(e));
   });
+}
+
+const DAEMON_CLOSED = "daemon closed the connection without a reply";
+const DAEMON_CLOSED_SIGN_IN = "the daemon closed the connection before the sign-in finished";
+/** The daemon's end of a verified connection went away before it answered: it stopped or was killed. */
+export function daemonConnectionLost(error: unknown): boolean {
+  return error instanceof Error && !(error instanceof EndpointRefusal) && (
+    error.message === DAEMON_CLOSED || error.message === DAEMON_CLOSED_SIGN_IN || ["ECONNRESET", "EPIPE"].includes((error as NodeJS.ErrnoException).code ?? ""));
 }
 
 /** The only replies `queryDaemon` sees: it sends status (or a raw contract probe), never login-start,
@@ -337,7 +345,7 @@ export async function loginViaDaemon(opts: LoginOptions): Promise<LoginReply> {
           else if ("event" in msg && msg.event === "login-result") return finish({ ok: true, attempt: msg.attempt, result: msg.result });
         }
       });
-      sock.once("end", () => finish(new Error("the daemon closed the connection before the sign-in finished")));
+      sock.once("end", () => finish(new Error(DAEMON_CLOSED_SIGN_IN)));
       sock.once("error", (e) => finish(e));
       if (opts.signal?.aborted) return finish(abandoned);
       opts.signal?.addEventListener("abort", onAbort, { once: true });

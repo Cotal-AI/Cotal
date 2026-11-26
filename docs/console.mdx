@@ -97,7 +97,7 @@ Available controls include:
 | `spawn <persona> [name]` | Launch an agent and wait for it to join, as `cotal spawn --detach` does. |
 | `status <agent>` | Inspect that agent's manager status. |
 | `ps` | Inspect managed agents. |
-| `purge` | Purge the space after you type its name to confirm. |
+| `purge` | Purge the space's chat history after you type its name to confirm. The console that ran the purge clears those chat rows from its feed. |
 | `delchan <channel>` | Delete one channel after you type its name to confirm. Wildcards are refused. |
 
 Channel deletion uses core's `clearChannel`, which purges matching history and removes the registry

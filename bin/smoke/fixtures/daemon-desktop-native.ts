@@ -18,7 +18,7 @@ export function desktopNativeFixture(root: string) {
     writeFileSync(join(native, tool), `#!${process.execPath}\n${recorder}`, { mode: 0o700 });
   }
   const shell = join(root, "login-shell");
-  writeFileSync(shell, '#!/bin/sh\n[ "$#" -eq 4 ] && [ "$1" = "-i" ] && [ "$2" = "-l" ] && [ "$3" = "-c" ] || exit 1\nPATH=${0%/*}/native\nexport PATH\nexec /bin/sh -c "$4"\n', { mode: 0o700 });
+  writeFileSync(shell, '#!/bin/sh\n[ "$#" -eq 4 ] && [ "$1" = "-l" ] && [ "$2" = "-i" ] && [ "$3" = "-c" ] || exit 1\nPATH=${0%/*}/native\nexport PATH\nexec /bin/sh -c "$4"\n', { mode: 0o700 });
   const preload = join(root, "login-shell.mjs");
   writeFileSync(preload, `import os from "node:os";
 import { syncBuiltinESMExports } from "node:module";
