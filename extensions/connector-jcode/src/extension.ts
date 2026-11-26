@@ -6,6 +6,7 @@ import { registry, type Connector, type LaunchOpts, type LaunchSpec, type ModelC
 import { aclEnv, nameEnv, connectorLaunchOptions, controlEndpoint, eventChannel, launchArmsEvents, launchEnv, materialEnv } from "@cotal-ai/connector-core";
 import { JCODE_READINESS_TIMEOUT_MS } from "./readiness-bound.js";
 import { discardOnceReceipt, retireOnceTree } from "./private-lifecycle.js";
+import { bareModelId } from "./route-identity.js";
 import { jcodeForkRecordPath, jcodeSeatHome, ownedJcodeFork, readJcodeForkSource } from "./session-fork.js";
 
 const FROM_BUILD = import.meta.url.includes("/dist/");
@@ -200,10 +201,13 @@ export const jcodeConnector: Connector = {
         `jcode connector: launch options are not supported by the Harness API host (first option: ${launchOptions[0][0]})`,
       );
 
+    if (opts.validateOnly) return { command: "", args: [] };
+    const model = opts.model?.trim();
+    if (model && !bareModelId(model).ok)
+      throw new Error("Jcode launch failed (model_prefix_rejected): use a bare model ID. Select the provider in Jcode's configuration. No Jcode seat was started.");
     // Creds, broker URL and the control token ride a 0600 file written after every refusal above.
     // Its directory is a launch artifact the launcher removes once the child has exited. The control
     // endpoint is minted here too, after every refusal, because minting makes its socket directory.
-    if (opts.validateOnly) return { command: "", args: [] };
     const control = controlEndpoint(opts.space, opts.name, artifacts);
     env.COTAL_CONTROL_SOCKET = control.path;
     Object.assign(env, materialEnv({ creds: opts.creds, servers: opts.servers, control, eventsRequired: opts.eventsRequired, eventPayloads: opts.eventPayloads, userAuth: opts.userAuth }, artifacts));
