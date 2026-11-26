@@ -839,6 +839,11 @@ if (process.platform !== "win32" && process.getuid?.() !== 0) {
   check("bash completes a persona selector with spaces as one candidate", persona.status === 0 && persona.stdout === "two words\n", shown(persona));
   const escaped = bash(`cotal persona show --space completion-check 'two\\ w'`, `cotal 'two\\ w'`);
   check("bash matches a persona selector after a backslash-escaped space", escaped.status === 0 && escaped.stdout === "two words\n", shown(escaped));
+  mkdirSync(join(work, ".cotal", "agents", "directory.md"));
+  const directory = bash("cotal persona show --space completion-check dir");
+  check("bash does not offer a directory as a persona to show", directory.status === 0 && directory.stdout.trim() === "", shown(directory));
+  const listed = s.run(["persona", "--space", "completion-check", "--plain"]);
+  check("the catalog still reports the directory as unreadable", listed.status === 4 && /directory\s+not set\s+user default\s+unreadable/.test(listed.stdout), shown(listed));
   const zshStub = s.run(["completion", "script", "zsh"]).stdout;
   check("the zsh stub calls _files for a path value", /\[\[ "\$directive" == default \]\] && _files/.test(zshStub), zshStub);
   if (spawnSync("zsh", ["-fc", "true"]).status === 0) {
@@ -931,15 +936,19 @@ if (process.platform !== "win32" && process.getuid?.() !== 0) {
     chmodSync(agents, 0o700);
   }
   // A persona file that does not parse leaves the declared set incomplete, so those completions fail
-  // and name it rather than offer part of it. A persona name needs no parse, so it is still offered.
+  // and name it rather than offer part of it.
   writeFileSync(join(agents, "broken.md"), "no frontmatter\n", { mode: 0o600 });
   for (const words of declared) {
     const r = s.run(["__complete", ...words, ""], { COTAL_COMPLETE_DEBUG: "1" });
     check(`${words.join(" ")} fails its completion on a persona file that does not parse and names it`,
       r.status === 1 && r.stdout === "" && r.stderr.includes(`persona "broken" is unparseable`), shown(r));
   }
+  if (process.platform !== "win32") symlinkSync("default.md", join(agents, "linked.md"));
   const names = offered(["persona", "show", "--space", "cc"]);
-  check("persona show still offers the name of a persona file that does not parse", names.status === 0 && names.values.includes("broken") && names.values.includes("default"), shown(names));
+  check("persona show offers readable regular personas, not malformed files or links", exactly(names, ["default"]), shown(names));
+  const remove = offered(["persona", "remove", "--space", "cc"]);
+  check("persona remove can still complete a malformed file by name", remove.status === 0 && remove.values.includes("broken"), shown(remove));
+  if (process.platform !== "win32") rmSync(join(agents, "linked.md"));
   rmSync(join(agents, "broken.md"));
   // A catalog folder that does not exist is an empty catalog.
   renameSync(agents, `${agents}.away`);

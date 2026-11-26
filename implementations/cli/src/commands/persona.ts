@@ -311,7 +311,8 @@ export function personaComplete(argv: string[]): CompletionResult {
     let catalog: PersonaCatalog;
     try { catalog = personaCatalog({ space: completedFlagValue(argv, personaFlags, "space"), server: completedFlagValue(argv, personaFlags, "server") }); }
     catch { return { items: [], directive: "nofiles" }; }
-    return { items: listPersonaNames(catalog.root).map(value => ({ value })), directive: "nofiles" };
+    const names = listPersonaNames(catalog.root, words[0] === "show");
+    return { items: names.map(value => ({ value })), directive: "nofiles" };
   }
   return { items: [], directive: "nofiles" };
 }
