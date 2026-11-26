@@ -11,7 +11,7 @@
  * Run: pnpm smoke:spawn-once   (needs nats-server + node on PATH)
  */
 import { randomUUID } from "node:crypto";
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -38,7 +38,7 @@ function installClaudeFixture(root: string): void {
   const bin = join(root, "bin");
   mkdirSync(bin);
   writeFileSync(join(root, ".mcp.json"), '{"mcpServers":{"cotal":{"command":"node"}}}');
-  for (const name of ["channels_off", "channels_on", "claude-blocked", "early-kickoff", "stop-active", "interrupted-kickoff", "model-blocked"])
+  for (const name of ["channels_off", "channels_on", "claude-blocked", "early-kickoff", "stop-active", "interrupted-kickoff", "model-blocked", "model-blocked-early", "older-connector", "older-manager"])
     writeFileSync(join(root, ".cotal", "agents", `${name}.md`), `---\nname: ${name}\nrole: tester\n---\n`);
   writeFileSync(join(bin, "claude"), `#!${process.execPath}
 const { spawn, spawnSync } = require('node:child_process');
@@ -48,17 +48,22 @@ const { createInterface } = require('node:readline');
 const argv = process.argv.slice(2);
 const arg = name => argv[argv.indexOf(name) + 1];
 if (argv.includes('--version')) { console.log('2.1.330 (Claude Code fixture)'); process.exit(0); }
+if (['older-manager', 'older-connector'].includes(process.env.COTAL_NAME)) {
+  writeFileSync(join(process.cwd(), process.env.COTAL_NAME + '.launched'), '');
+  process.exit(2);
+}
 if (arg('--model') !== 'claude-opus-5-5') process.exit(2);
 const { command, args } = JSON.parse(arg('--mcp-config')).mcpServers.cotal;
 const blockedNote = 'The fixture cannot read the required input';
+const earlyBlocked = process.env.COTAL_NAME === 'model-blocked-early';
 const startSeat = () => {
-  const sayBlocked = process.env.COTAL_NAME === 'model-blocked';
+  const sayBlocked = earlyBlocked || process.env.COTAL_NAME === 'model-blocked';
   const seat = spawn(command, args, { stdio: ['pipe', sayBlocked ? 'pipe' : 'ignore', 'inherit'] });
   seat.on('exit', code => process.exit(code ?? 0));
   for (const signal of ['SIGTERM', 'SIGINT', 'SIGHUP']) process.on(signal, () => seat.kill(signal));
   if (sayBlocked) {
     const send = (method, params, id) => seat.stdin.write(JSON.stringify({ jsonrpc: '2.0', id, method, params }) + '\\n');
-    const log = (name, value) => writeFileSync(join(process.cwd(), name + '.json'), JSON.stringify(value));
+    const log = (name, value) => writeFileSync(join(process.cwd(), (earlyBlocked ? 'early-' : '') + name + '.json'), JSON.stringify(value));
     createInterface({ input: seat.stdout }).on('line', line => {
       const reply = JSON.parse(line);
       if (reply.id === 1 && reply.result) {
@@ -73,6 +78,7 @@ const startSeat = () => {
       } else if (reply.id === 3) {
         log('blocked-kickoff-yield', reply);
         hook('Stop');
+        if (earlyBlocked) log('kickoff-stop', true);
       }
     });
     send('initialize', { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'claude-fixture', version: '1' } }, 1);
@@ -87,8 +93,14 @@ if (process.env.COTAL_NAME === 'claude-blocked') {
   process.stdin.setRawMode(true);
   process.stdin.resume();
   process.stdin.once('data', ready);
-} else {
+} else if (!earlyBlocked) {
   ready();
+} else {
+  const waiting = setInterval(() => {
+    if (!existsSync(join(process.cwd(), 'allow-early-blocked-startup'))) return;
+    clearInterval(waiting);
+    ready();
+  }, 50);
 }
 const session_id = 'fixture-session';
 const transcript_path = join(process.cwd(), 'fixture-session.jsonl');
@@ -116,7 +128,7 @@ if (process.env.COTAL_NAME === 'early-kickoff') {
   setTimeout(startSeat, 1500);
 } else {
   startSeat();
-  if (!['claude-blocked', 'model-blocked'].includes(process.env.COTAL_NAME)) setTimeout(() => {
+  if (!earlyBlocked && !['claude-blocked', 'model-blocked'].includes(process.env.COTAL_NAME)) setTimeout(() => {
     if (process.env.COTAL_NAME === 'stop-active') {
       const frame = hook('UserPromptSubmit', { prompt });
       hook('Stop', { stop_hook_active: true });
@@ -665,6 +677,49 @@ try {
 
   console.log("\n16. Claude once: a kickoff on both startup screens, with no relayed copy");
   installClaudeFixture(workspaceRoot);
+
+  // Substitute only the launch boundary. Keep the real spawn action for admission, allocation,
+  // buildLaunch, and cancellation, without an installed-package generation gate masking either case.
+  const { supportsOnceKickoff: _kickoff, ...oldClaude } = claude;
+  const skewArgs = { cwd: workspaceRoot, events: false, model: "claude-opus-5-5", prompt: "Do not launch", once: {} };
+  let oldBuildCalled = false;
+  const oldConnector: Connector = { ...oldClaude, buildLaunch: (opts) => {
+    oldBuildCalled = true;
+    return { command: "claude", args: [], env: envFor(opts) };
+  } };
+  registry.unregister("connector", claude.name);
+  registry.register(oldConnector);
+  const oldConnectorId = goalId("old-connector");
+  try {
+    const refused = await call("spawn", { ...skewArgs, name: "older-connector", agent: "claude" }, { id: oldConnectorId });
+    check("a manager refuses a Claude connector without kickoff support before allocating a task or launching",
+      refused.ok === false && errorText(refused) === "once: this manager requires a newer Claude Code connector that supports once kickoffs. Upgrade the connector before retrying" &&
+      await readGoalIndex(actx, refOf(taskOf(oldConnectorId))) === undefined && await readGoalResult(actx, refOf(oldConnectorId)) === undefined &&
+      !oldBuildCalled && !M.agents.has("older-connector") && !M.namesCapacity.reserved.has("older-connector") && !existsSync(join(workspaceRoot, "older-connector.launched")), refused);
+  } finally {
+    registry.unregister("connector", claude.name);
+    registry.register(claude);
+  }
+  // A different registry name lets the real relay-style manager launch path construct the older
+  // call: once is set, but there is no kickoff ID or prompt. The actual Claude builder refuses it.
+  let oldLaunch: Pick<LaunchOpts, "once" | "onceKickoffGoalId" | "prompt"> | undefined;
+  const oldManagerPath: Connector = { ...oldClaude, name: "claude-legacy-launch", buildLaunch: (opts) => {
+    oldLaunch = { once: opts.once, onceKickoffGoalId: opts.onceKickoffGoalId, prompt: opts.prompt };
+    return claude.buildLaunch(opts);
+  } };
+  registry.register(oldManagerPath);
+  try {
+    const id = goalId("old-manager");
+    const accepted = await call("spawn", { ...skewArgs, name: "older-manager", agent: oldManagerPath.name }, { id });
+    const terminal = await resultOf(id, 15_000);
+    const task = await resultOf(taskOf(id), 15_000);
+    check("the Claude connector refuses a relay-style once launch and the manager cancels the accepted task",
+      accepted.ok === true && oldLaunch?.once === true && oldLaunch.onceKickoffGoalId === undefined && oldLaunch.prompt === undefined &&
+      terminal?.state === "failed" && errorOf(terminal).includes("once: this Claude Code connector requires a newer manager that supports once kickoffs. Upgrade the manager before retrying") &&
+      task?.state === "cancelled" && reasonOf(task) === "launch-failed" && await debtCleared(taskOf(id)) &&
+      !M.agents.has("older-manager") && !existsSync(join(workspaceRoot, "older-manager.launched")), { accepted, oldLaunch, terminal, task });
+  } finally { registry.unregister("connector", oldManagerPath.name); }
+
   for (const mode of ["CHANNELS_OFF", "CHANNELS_ON"] as const) {
     const c = await spawnOnce({ name: mode.toLowerCase(), agent: "claude", cwd: workspaceRoot, model: "claude-opus-5-5", prompt: `Reply with ONCE_PROBE_DONE (${mode})`, once: { deadlineMs: 60_000 } });
     const terminal = c.once && await resultOf(c.once.goalId, 20_000);
@@ -725,6 +780,24 @@ try {
     result.note === "The fixture cannot read the required input" && modelBlocked.seat !== undefined &&
     await gone(modelBlocked.name!, modelBlocked.seat.handle) && await debtCleared(modelBlocked.once!.goalId),
     { wrongYield, blockedYield, modelBlockedTask });
+
+  const earlyBlockedId = goalId("early-blocked");
+  const earlyBlockedSpawn = spawnOnce({ name: "model-blocked-early", agent: "claude", cwd: workspaceRoot, model: "claude-opus-5-5",
+    prompt: "Read the required input before the spawn verdict", once: { deadlineMs: 30_000 } }, earlyBlockedId);
+  const stoppedEarly = await until(() => yieldLog("early-kickoff-stop") === true, 12_000);
+  const spawnBeforeReady = await readGoalResult(actx, refOf(earlyBlockedId));
+  const blockedBeforeReady = yieldLog("early-blocked-kickoff-yield");
+  writeFileSync(join(workspaceRoot, "allow-early-blocked-startup"), "");
+  const earlyBlockedSeat = await earlyBlockedSpawn;
+  const earlyBlockedTask = await resultOf(taskOf(earlyBlockedId), 25_000);
+  const earlyBlockedData = earlyBlockedTask?.data as { status?: string; note?: string } | undefined;
+  check("a blocked kickoff before the spawn verdict keeps its note and cannot become done on Stop",
+    stoppedEarly && spawnBeforeReady === undefined && blockedBeforeReady?.result?.isError === true &&
+    JSON.stringify(blockedBeforeReady).includes("the kickoff seat has not passed its startup check yet") &&
+    earlyBlockedSeat.terminal?.state === "succeeded" && earlyBlockedTask?.state === "succeeded" &&
+    earlyBlockedData?.status === "blocked" && earlyBlockedData.note === "The fixture cannot read the required input" &&
+    earlyBlockedSeat.seat !== undefined && await gone(earlyBlockedSeat.name!, earlyBlockedSeat.seat.handle) && await debtCleared(taskOf(earlyBlockedId)),
+    { stoppedEarly, spawnBeforeReady, blockedBeforeReady, spawn: earlyBlockedSeat.terminal, task: earlyBlockedTask });
 } finally {
   for (const nc of seatConns) await nc.drain().catch(() => nc.close());
   await runnerNc?.drain().catch(() => runnerNc?.close());
@@ -737,7 +810,7 @@ try {
   else process.env.PATH = originalPath;
 }
 
-const EXPECTED_CELLS = 82;
+const EXPECTED_CELLS = 85;
 console.log(`\n${fail === 0 && pass === EXPECTED_CELLS ? "SPAWN ONCE SMOKE OK ✅" : "SPAWN ONCE SMOKE FAILED"}  (${pass} passed, ${fail} failed)`);
 if (pass + fail !== EXPECTED_CELLS) {
   console.log(`SUITE INCOMPLETE — ran ${pass + fail} of ${EXPECTED_CELLS} cells; a partial run is not a pass`);
