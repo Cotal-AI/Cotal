@@ -995,6 +995,18 @@ try {
     check("no stray file escaped the agents dir", !existsSync(join(workspaceRoot, ".cotal", "evil.md")) && !existsSync(join(dir, "evil.md")));
     const rTravRun = await A.call("launch", { runId: "../x", name: "w1" });
     check("a traversal launch runId refuses at the token-safe spec loader", rTravRun.reply.ok === false, rTravRun.reply);
+    const runId = "leading-dash";
+    const name = "-reviewer";
+    const runDir = join(workspaceRoot, ".cotal", "run");
+    const rDash = await A.call("launch", { runId, name, spec: {
+      apiVersion: "cotal-launch/v1", space, runId,
+      agents: [{ name, agent: "e2e-stub", events: false, subscribe: [], allowSubscribe: [], allowPublish: [], hash: "dash01" }],
+    } });
+    const writes = { spec: existsSync(join(runDir, `${runId}.json`)), persona: existsSync(join(runDir, runId, "agents", `${name}.md`)) };
+    check("an inline launch with a leading hyphen refuses without writing a spec or persona",
+      rDash.reply.ok === false && rDash.reply.error?.outcome === "not-executed" &&
+      rDash.reply.error.message.includes('cannot start with "-"') && !writes.spec && !writes.persona,
+      { reply: rDash.reply, writes });
     // Frontmatter injection: the YAML library owns quoting, so a newline-bearing model can never
     // smuggle a POLICY field (capabilities) into the persona file (P6 content-vs-policy).
     const rInj = await A.call("define-persona", { name: "injprobe", persona: "body", model: "x\ncapabilities: [spawn]" });
