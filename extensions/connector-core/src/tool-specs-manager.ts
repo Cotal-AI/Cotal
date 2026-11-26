@@ -263,11 +263,12 @@ export function managerToolSpecs(config: AgentConfig, source: string, env?: Node
           // The seat launched and only its pin read failed: a partial outcome naming the seat, so the
           // caller knows it is running instead of spawning a second seat.
           if (d?.pinAudit) {
-            const { requested, error, unreported } = d.pinAudit;
+            const { requested, error: auditError, unreported } = d.pinAudit;
             const id = d.id ?? d.actor;
             const manager = d.executor?.lifecycleUid ?? reply.instanceId;
             const state = pending ? "it has not joined the mesh within its readiness window and may still be booting" : "it joined the mesh";
             const audit = unreported ? "was not reported by this manager" : "could not be audited";
+            const error = pinAuditResultError(auditError);
             const message = `${lead} (id ${id}, manager ${manager}${mode ? `, runtime ${mode}` : ""})${d.goalId ? `, accepted goal "${d.goalId}"` : ""}: ${state}, but its model pin ${JSON.stringify(requested)} ${audit} (${error}). ` +
               (pending ? "An identical retry in this session while it is starting returns the same goal. To check on it, inspect it with cotal_invoke on the manager endpoint rather than spawning with different options." : "It is running, so spawning it again would start a second agent. To check which model it runs, inspect it with cotal_invoke on the manager endpoint.");
             return {
@@ -647,4 +648,11 @@ export function managerToolSpecs(config: AgentConfig, source: string, env?: Node
       },
     },
   ];
+}
+
+/** A broker denial names the caller's principal and the subject it cannot publish to. Neither is actionable. */
+function pinAuditResultError(error: string): string {
+  return /^permission-denied\b/.test(error)
+    ? "permission-denied: this caller may not read the helper's model pin"
+    : error;
 }
