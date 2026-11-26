@@ -146,7 +146,7 @@
 .ui-skel-msg { display: grid; grid-template-columns: 36px 1fr; gap: 12px; padding: 8px 0; }
 
 /* ---------- topology ---------- */
-.ui-topo svg { width: 100%; height: auto; display: block; }
+.ui-topo > svg { width: 100%; height: auto; display: block; }
 .ui-legend { display: flex; flex-wrap: wrap; gap: 10px 14px; font: 500 11.5px/1 var(--mono); color: var(--dim); padding-top: 10px; }
 .ui-legend span { display: inline-flex; align-items: center; gap: 6px; }
 .ui-legend i { width: 16px; height: 2px; border-radius: 2px; }
