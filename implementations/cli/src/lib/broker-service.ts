@@ -432,7 +432,7 @@ export const brokerService: LocalProcess = {
     paths: { root: "directory", config: "file", binary: "file" },
     optionsSchema: { type: "object", additionalProperties: false, required: ["root", "config", "binary", "server"], properties: {
       root: { type: "string", minLength: 1, maxLength: 4096, description: "prepared local root whose .cotal holds this space's broker configuration" },
-      config: { type: "string", minLength: 1, maxLength: 4096, description: "explicitly prepared nats-server configuration inside that root's .cotal directory; it is never generated here" },
+      config: { type: "string", minLength: 1, maxLength: 4096, description: "absolute path to an existing nats-server configuration inside that root's .cotal directory. This command does not generate it" },
       binary: { type: "string", minLength: 1, maxLength: 4096, description: "absolute nats-server executable; no PATH lookup is made" },
       server: { type: "string", minLength: 1, maxLength: 4096, description: "the one broker URL this configuration serves" },
       logFile: { type: "string", minLength: 1, maxLength: 4096, description: "the nats-server log file this configuration's log_file names; start makes it owner-private" },

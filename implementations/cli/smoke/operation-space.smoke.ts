@@ -39,7 +39,8 @@ if (!existsSync(BIN)) {
 interface Envelope {
   outcome: string;
   completeness?: string;
-  result?: { requestedName?: string; name?: string; path?: string; definition?: { name?: string }; source?: string; kind?: string; allocated?: boolean; launched?: boolean };
+  result?: { requestedName?: string; name?: string; path?: string; definition?: { name?: string }; source?: string; kind?: string; allocated?: boolean; launched?: boolean; items?: { name: string; path: string; valid: boolean }[] };
+  warnings?: { code: string; message: string; target: unknown }[];
   target: Record<string, unknown> | null;
   error?: { code: string; message?: string; remedy?: string };
 }
@@ -98,6 +99,19 @@ for (const args of [["reviewer", "Audit text"], ["--name", "reviewer", "--text=-
     missing.status === 2 && missing.stderr === "" && missing.envelope?.outcome === "refused" &&
     missing.envelope.error?.code === "TARGET_NOT_FOUND" && missing.envelope.error.message?.includes('"fifth_missing"') === true, shown(missing));
 }
+
+const emptyInputPin = cotal("input", "--name", "reviewer", "--text", "/compact", "--no-enter", "--on", "", "--space", "fifth_missing", "-j");
+const inputRetry = /`((?:pnpm )?cotal input [^`]+)`/.exec(emptyInputPin.envelope?.error?.message ?? "")?.[1];
+const inputInstance = "a".repeat(26);
+const inputWords = inputRetry ? execWords(inputRetry.replace("<instance>", inputInstance)) : [];
+const inputArgs = inputWords.slice(inputWords.indexOf("input"));
+check("an empty input pin keeps the text, --no-enter, target and JSON format in its retry",
+  emptyInputPin.status === 1 && emptyInputPin.stderr === "" && emptyInputPin.envelope?.error?.code === "USAGE_INVALID" &&
+  same(inputArgs, ["input", "reviewer", "/compact", "--no-enter", "--json", "--space", "fifth_missing", "--on", inputInstance]), shown(emptyInputPin));
+const retriedInput = inputArgs[0] === "input" ? cotal(...inputArgs) : undefined;
+check("replacing only the manager instance placeholder keeps the retry refusal on JSON stdout",
+  retriedInput?.status === 2 && retriedInput.stderr === "" && retriedInput.envelope?.outcome === "refused" &&
+  retriedInput.envelope.error?.code === "TARGET_NOT_FOUND", retriedInput && shown(retriedInput));
 
 const prepared = cotal("space", "create", "opsp", "--root", ".");
 check("fixture: the space is prepared and not started", prepared.status === 0, shown(prepared));
@@ -208,14 +222,23 @@ rmSync(nullOptions);
 const roleOk = cotal("persona", "create", "goodrole", "--prompt", "x", "--role", "reviewer", "--subscribe", "", "--json");
 check("control: a valid role token is created", roleOk.status === 0 && existsSync(agentFilePath(root, "goodrole")), shown(roleOk));
 
+const legacyNew = ["personas", "new", "--prompt", "Review changes.", "--subscribe", "", "--"];
+const invalidLegacyNew = cotal(...legacyNew, "-legacy-reviewer");
+check("personas new refuses a leading hyphen before writing and explains how to retry",
+  invalidLegacyNew.status === 1 && invalidLegacyNew.stderr.includes('cannot start with "-"') &&
+  invalidLegacyNew.stderr.includes("then retry") && !existsSync(agentFilePath(root, "-legacy-reviewer")), shown(invalidLegacyNew));
+const validLegacyNew = cotal(...legacyNew, "legacy-reviewer");
+check("personas new with a corrected name creates the definition",
+  validLegacyNew.status === 0 && existsSync(agentFilePath(root, "legacy-reviewer")), shown(validLegacyNew));
+
 // A malformed --on names the command to rerun, with --on written once.
 for (const [argv, rerun] of [
   [["persona", "--on", "bad"], "cotal persona --on <instance>"],
   // #7322: a verb that targets an agent keeps the agent, its other positionals and the space it named.
   [["stop", "default_agent", "--on", "bad"], "cotal stop default_agent --json --on <instance>"],
   // #7644: input gives its text again, quoted for a shell, rather than a `<text>` a shell reads as a redirection.
-  [["input", "default_agent", "hello world", "--on", "bad"], "cotal input default_agent 'hello world' --on <instance>"],
-  [["input", "default_agent", "hello world", "--no-enter", "--on", "bad"], "cotal input default_agent 'hello world' --no-enter --on <instance>"],
+  [["input", "default_agent", "hello world", "--on", "bad"], "cotal input default_agent 'hello world' --json --on <instance>"],
+  [["input", "default_agent", "hello world", "--no-enter", "--on", "bad"], "cotal input default_agent 'hello world' --no-enter --json --on <instance>"],
   [["status", "default_agent", "--on", "bad"], "cotal status default_agent --json --on <instance>"],
   [["stop", "default_agent", "--force", "--space", "elsewhere", "--on", "bad"], "cotal stop default_agent --force --json --space elsewhere --on <instance>"],
   // #7644: ps and models keep the --space and filter they were given.
@@ -256,8 +279,8 @@ for (const [argv, rerun] of [
   [["stop", "default_agent", "--space", "elsewhere", "--on", "local.U123"], "cotal stop default_agent --json --space elsewhere --on <instance>"],
   [["status", "default_agent", "--on", "local.U123"], "cotal status default_agent --json --on <instance>"],
   [["stop", "default_agent", "--on", ""], "cotal stop default_agent --json --on <instance>"],
-  [["input", "reviewer", "Review this", "--no-enter", "--on", "", "--space", "audit"], "cotal input reviewer 'Review this' --no-enter --space audit --on <instance>"],
-  [["input", "reviewer", "--text=--verbose now", "--no-enter", "--on", "local.U123"], "cotal input reviewer '--text=--verbose now' --no-enter --on <instance>"],
+  [["input", "reviewer", "Review this", "--no-enter", "--on", "", "--space", "audit", "--server", "nats://127.0.0.1:39200"], "cotal input reviewer 'Review this' --no-enter --json --space audit --server nats://127.0.0.1:39200 --on <instance>"],
+  [["input", "reviewer", "--text=--verbose now", "--no-enter", "--on", "local.U123"], "cotal input reviewer '--text=--verbose now' --no-enter --json --on <instance>"],
   [["endpoint", "describe", "ai.cotal.manager", "--space", "elsewhere", "--on", "bad"], "cotal endpoint describe ai.cotal.manager --space elsewhere --on <instance> --json"],
   [["endpoint", "invoke", "ai.cotal.manager", "ps", "--on", "bad"], "cotal endpoint invoke ai.cotal.manager ps --on <instance> --json"],
   [["spawn", "--no-input", "-d", "--on=", "--name", "explicit", "--", "-persona"], "cotal spawn --no-input -d --name explicit --json --on <instance> -- -persona"],
@@ -290,6 +313,9 @@ check("endpoint discovery keeps an explicit caller without printing its file", p
 const plainStatusPin = cotal("status", "default_agent", "--plain", "--on", "bad");
 check("a malformed named status pin keeps plain output on the retry",
   plainStatusPin.status === 1 && /`(?:pnpm )?cotal status default_agent --plain --on <instance>`/.test(plainStatusPin.stderr), shown(plainStatusPin));
+const plainInputPin = cotal("input", "reviewer", "/compact", "--plain", "--on", "");
+check("an empty input pin keeps plain output on the retry",
+  plainInputPin.status === 1 && /`(?:pnpm )?cotal input reviewer \/compact --plain --on <instance>`/.test(plainInputPin.stderr), shown(plainInputPin));
 const attachPrincipal = cotal("attach", "default_agent", "--on", "local.U123");
 check("attach default_agent --on local.U123 names cotal attach default_agent --on <instance> (#7644)",
   attachPrincipal.status === 1 && attachPrincipal.stderr.includes("`cotal attach default_agent --on <instance>`"), shown(attachPrincipal));
@@ -316,6 +342,24 @@ const drafts = join(home, "drafts");
 mkdirSync(drafts);
 const editorScript = (file: string, body: string) => { const path = join(home, file); writeFileSync(path, `#!/bin/sh\n${body}\n`, { mode: 0o755 }); return path; };
 const saved = readFileSync(persona, "utf8");
+if (process.platform !== "win32") {
+  const editTo = (name: string) => {
+    const editor = editorScript(`ed-${name}`, `printf '%s\\n' '---' 'name: ${name}' 'subscribe: []' '---' 'Review changes.' > "$1"`);
+    return outcome(spawnSync(process.execPath, [BIN, "persona", "edit", "legacy-reviewer", "--json"], {
+      cwd: root, env: { ...env, EDITOR: editor, TMPDIR: drafts }, encoding: "utf8", timeout: 120_000,
+    }));
+  };
+  const path = agentFilePath(root, "legacy-reviewer");
+  const before = readFileSync(path, "utf8");
+  const refused = editTo("-reviewer");
+  check("persona edit refuses a new hyphen-leading launch name without saving and keeps the draft",
+    refused.status === 1 && refused.envelope?.error?.message?.includes('the new frontmatter name cannot start with "-"') === true &&
+    refused.envelope.error.remedy?.includes("cotal persona edit legacy-reviewer --json") === true && readFileSync(path, "utf8") === before, shown(refused));
+  const corrected = editTo("reviewer");
+  check("retrying the edit with a corrected frontmatter name saves it",
+    corrected.status === 0 && readFileSync(path, "utf8").includes("name: reviewer\n"), shown(corrected));
+  for (const dir of readdirSync(drafts)) rmSync(join(drafts, dir), { recursive: true });
+}
 for (const [label, editor, status, says] of [
   ["a draft the rules refuse", editorScript("ed-acl", 'printf -- "---\\nname: rev\\nsubscribe: [ops]\\nallowSubscribe: [general]\\n---\\nx\\n" > "$1"'), 1, 'subscribe "ops" is not within allowSubscribe [general] - not saved'],
   ...[3, 126, 127].map(code => [
@@ -474,6 +518,69 @@ try {
   delete env.COTAL_DEFAULT_PERSONA;
   rmSync(dottedCatalog, { force: true });
   rmSync(dottedFile, { force: true });
+}
+
+if (process.platform !== "win32") {
+  const stem = "outbound-back\\slash";
+  const path = join(dirname(dottedCatalog), `${stem}.md`);
+  writeFileSync(path, "---\nname: backslash\n---\nPerform the fixture task.\n");
+  try {
+    const list = cotal("persona", "--space", "opsp", "--plain");
+    const remedy = `spawn --space opsp --file '${path}'`;
+    const hasRemedy = (text: string) => ["cotal", "pnpm cotal"].some(launcher => text.includes(`\`${launcher} ${remedy}\``));
+    check("persona marks the backslash stem as an invalid selector and names its explicit file without failing the list",
+      list.status === 0 && list.stdout.split("\n").some(line => line.includes(stem) && line.includes("invalid selector")) &&
+      hasRemedy(list.stderr), shown(list));
+    const json = cotal("persona", "--space", "opsp", "--json");
+    const row = json.envelope?.result?.items?.find(item => item.name === stem);
+    const warning = json.envelope?.warnings?.find(item => item.code === "USAGE_INVALID" && same(item.target, { name: stem, path }));
+    check("JSON keeps a complete inventory and flags the unusable selector",
+      json.status === 0 && json.envelope?.completeness === "complete" && row?.path === path && row.valid === false &&
+      warning?.message.includes(`\`cotal ${remedy}\``) === true, shown(json));
+    const legacy = cotal("personas", "list", "--space", "opsp");
+    check("legacy list flags the backslash stem with the same explicit-file remedy", legacy.status === 0 &&
+      legacy.stdout.split("\n").some(line => line.includes(stem) && line.includes("invalid selector")) && hasRemedy(legacy.stdout), shown(legacy));
+    const file = cotal("spawn", "--space", "opsp", "--dry-run", "--plain", "--file", path);
+    check("spawn preview still accepts the literal backslash in an explicit file", file.status === 0 &&
+      file.stdout.includes(path) && /Requested name:\s+backslash$/m.test(file.stdout), shown(file));
+  } finally {
+    rmSync(path, { force: true });
+  }
+}
+
+if (process.platform !== "win32") {
+  const stems = ["release\tcheck", "release\x7fcheck"];
+  const escaped = ["release\\u0009check", "release\\u007fcheck"];
+  const paths = stems.map(stem => join(dirname(dottedCatalog), `${stem}.md`));
+  const advisesRename = (text: string) => text.includes("contains control characters. Rename it to open it with") &&
+    text.includes("persona show`") && !text.includes("--file");
+  try {
+    for (const path of paths) writeFileSync(path, "---\nname: checker\n---\nCheck the release.\n");
+    const plain = cotal("persona", "--space", "opsp", "--plain");
+    const legacy = cotal("personas", "list", "--space", "opsp");
+    for (const [label, list, warnings] of [["plain", plain, plain.stderr], ["legacy", legacy, legacy.stdout]] as const) {
+      check(`${label} catalog marks control characters in selectors and recommends renaming without failing the list`, list.status === 0 &&
+        escaped.every(name => list.stdout.split("\n").some(line => line.includes(name) && line.includes("invalid selector")) &&
+          warnings.split("\n").some(line => line.includes(name) && advisesRename(line))), shown(list));
+    }
+    const json = cotal("persona", "--space", "opsp", "--json");
+    check("JSON keeps both control-character filenames in the complete inventory with invalid selectors", json.status === 0 &&
+      json.envelope?.completeness === "complete" && stems.every((name, i) =>
+        json.envelope?.result?.items?.some(item => item.name === name && item.path === paths[i] && item.valid === false) &&
+        json.envelope?.warnings?.some(item => item.code === "USAGE_INVALID" && same(item.target, { name, path: paths[i] }) &&
+          advisesRename(item.message ?? ""))), shown(json));
+    const show = cotal("persona", "show", "--space", "opsp", "--json", "--", stems[0]);
+    check("persona show still refuses the tab-containing selector", show.status === 1 &&
+      show.envelope?.error?.code === "USAGE_INVALID" && show.envelope.error.message?.includes("control characters") === true, shown(show));
+    const positional = cotal("spawn", "--space", "opsp", "--dry-run", "--plain", "--", stems[0]);
+    check("positional spawn preview still selects the tab-containing filename", positional.status === 0 &&
+      positional.stdout.includes(`${escaped[0]}.md`) && /Requested name:\s+checker$/m.test(positional.stdout), shown(positional));
+    const byFile = cotal("spawn", "--space", "opsp", "--dry-run", "--plain", "--file", paths[0]);
+    check("explicit file preview still refuses the tab-containing path", byFile.status === 1 &&
+      byFile.stderr.includes("--file needs one nonempty persona-file path without control characters"), shown(byFile));
+  } finally {
+    for (const path of paths) rmSync(path, { force: true });
+  }
 }
 
 // #7526: spawning or previewing an invalid native persona preserves the field/position error without

@@ -76,6 +76,16 @@ export function userAuthTrustNote(done: boolean): string {
   return `${done ? "Removed" : "Removes"} the IdP trust and the actor ledger of this user-auth space, so every actor grant is lost. A later up needs \`cotal up --user-auth --idp <auth base URL>\`, and each actor needs \`cotal actor grant\` again.`;
 }
 type Target = (typeof TARGETS)[number];
+type CleanValues = {
+  server?: string; space?: string; creds?: string; dms?: boolean; force?: boolean; "store-dir"?: string; attempt?: string; "discard-history"?: boolean; "dry-run"?: boolean;
+};
+
+function linkedCleanRetry(target: Target, values: CleanValues): string {
+  // The retry runs in a different folder, so pin any relative store path to this invocation's cwd.
+  const store = values["store-dir"] === undefined ? "" : ` --store-dir ${shellWord(resolve(values["store-dir"]))}`;
+  const attempt = values.attempt === undefined ? "" : ` --attempt${values.attempt.startsWith("-") ? "=" : " "}${shellWord(values.attempt)}`;
+  return `${displayCmd({ fromAnyFolder: true })} clean ${target}${store}${attempt}${values["dry-run"] === true ? " --dry-run" : ""}${values.force ? " --force" : ""}${values["discard-history"] ? " --discard-history" : ""}${values.dms ? " --dms" : ""}`;
+}
 
 /** The Next a restore verb's refusal gives: the attempt this root's maintenance record names and its
  *  step, or `none` when the root records no maintenance state. */
@@ -112,9 +122,7 @@ export function validateCleanArguments(args: ParsedArgs): void {
  *  Personas (`.cotal/agents`) are source and are never touched. */
 export async function clean(args: ParsedArgs): Promise<void> {
   const target = args.positionals[0] as Target | undefined;
-  const values = args.values as {
-    server?: string; space?: string; creds?: string; dms?: boolean; force?: boolean; "store-dir"?: string; attempt?: string; "discard-history"?: boolean; "dry-run"?: boolean;
-  };
+  const values = args.values as CleanValues;
   if (!target || !TARGETS.includes(target))
     throw new CommandFailure("refused", "USAGE_INVALID", target ? `clean has no target "${target}"; it takes ${TARGETS.join(", ")}` : `clean needs a target: ${TARGETS.join(", ")}`);
   if (args.positionals.length > 1)
@@ -158,7 +166,7 @@ export async function clean(args: ParsedArgs): Promise<void> {
   // left `restore-attempt`/`restore-fallback` a broker-wide bypass.
   // Nothing is read or removed through a `.cotal` link, and one that leads nowhere is not passed
   // over to the records of a folder above it.
-  const linked = linkedCotalRefusal("clean");
+  const linked = linkedCotalRefusal("clean", undefined, () => linkedCleanRetry(target, values));
   if (linked) throw linked;
   const root = cotalRoot();
   assertSingleSpaceBroker(authDir(root), `cotal clean ${target}`);
@@ -246,6 +254,7 @@ export async function clean(args: ParsedArgs): Promise<void> {
     : new CommandFailure("failed", "OPERATION_FAILED", `clean ${target} was interrupted before it removed anything`, { target: { root }, remedy: `run ${cleanCommand(false)} again` }),
   () => { if (lock) releaseMaintenanceLock(lock); });
   let removed: string[];
+  let controllerOwned = false;
   try {
     lock = dryRun ? undefined : acquireMaintenanceLock(root);
     const maintenance = readMaintenanceJournal(root);
@@ -276,6 +285,7 @@ export async function clean(args: ParsedArgs): Promise<void> {
     checkCleanStorePath(root, requested);
     // An absent store was not removed by this clean. Leave unexpected loss visible in status.
     const stack = readStackJournal(root)?.journal;
+    controllerOwned = stack !== undefined;
     const recordedStore = stack?.broker?.storeDir;
     const recordedIdentity = recordedStore === undefined ? undefined : lstatSync(recordedStore, { bigint: true, throwIfNoEntry: false });
     const requestedPath = recordedIdentity?.isDirectory() && existsSync(requested) ? realpathSync.native(requested) : undefined;
@@ -303,17 +313,18 @@ export async function clean(args: ParsedArgs): Promise<void> {
   }
   const trustRemoved = removed.some((path) => path.endsWith(SPACE_TRUST));
   const userAuthRemoved = removed.some((path) => path.endsWith(USER_AUTH_TRUST));
+  const controllerBackupWarning = "! Backup creation and restore, including registry-only restore, are unavailable on this controller-owned stack.";
   if (dryRun) {
     for (const path of removed) console.log(`would remove ${path}`);
     console.log(c.dim(`dry run - nothing was removed; ${codeSpan(`cotal clean ${target}${storeFlag} --force`)} removes these`));
     if (userAuthRemoved) console.error(c.yellow("! this clean would remove the IdP trust and the actor ledger of this user-auth space, so every actor grant would be lost. A later up would need `cotal up --user-auth --idp <auth base URL>`, and each actor `cotal actor grant` again"));
-    if (trustRemoved) console.error(c.yellow("! full backups taken before this clean would no longer restore into this root: each is bound to the space trust it removes. Only their registry would restore, with backup restore <dir> --only registry, and chat and DM history would start empty"));
+    if (trustRemoved) console.error(c.yellow(controllerOwned ? controllerBackupWarning : "! full backups taken before this clean would no longer restore into this root: each is bound to the space trust it removes. Only their registry would restore, with backup restore <dir> --only registry, and chat and DM history would start empty"));
     return;
   }
   for (const path of removed) console.log(c.green(`✓ removed ${path}`));
   if (target === "all") console.log(c.dim(`a fresh space identity is minted on the next \`cotal up${userAuthRemoved ? " --user-auth --idp <auth base URL>" : ""}\``));
   if (userAuthRemoved) console.error(c.yellow("! this clean removed the IdP trust and the actor ledger of this user-auth space, so every actor grant is lost. A later up needs `cotal up --user-auth --idp <auth base URL>`, and each actor needs `cotal actor grant` again"));
-  if (trustRemoved) console.error(c.yellow("! full backups taken before this clean no longer restore into this root: each is bound to the space trust it removed. Only their registry restores, with backup restore <dir> --only registry, and chat and DM history start empty. Take a new full backup after the next `cotal up`"));
+  if (trustRemoved) console.error(c.yellow(controllerOwned ? controllerBackupWarning : "! full backups taken before this clean no longer restore into this root: each is bound to the space trust it removed. Only their registry restores, with backup restore <dir> --only registry, and chat and DM history start empty. Take a new full backup after the next `cotal up`"));
 }
 
 /** Check the requested path without following its final component, even if it is a dangling link. */
@@ -322,6 +333,10 @@ function checkCleanStorePath(root: string, requested: string): void {
   try { stat = lstatSync(requested, { throwIfNoEntry: false }); }
   catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ELOOP") {
+      throw new FlagValueRefusal(`the --store-dir path ${requested} cannot be used: a parent has a symbolic-link loop or too many links. Nothing was removed.`,
+        "correct the links or retry with the intended real store path as --store-dir");
+    }
     if (code === "ENOTDIR") {
       let blocked: string | undefined;
       for (let dir = dirname(requested); dir !== dirname(dir); dir = dirname(dir)) {

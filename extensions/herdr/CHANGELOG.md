@@ -1,5 +1,27 @@
 # @cotal-ai/herdr
 
+## 0.182.0
+
+### Minor Changes
+
+- d0d5bf5: Legacy persona creation, persona renames, team manifest validation and direct terminal launches now reject names that start with `-`, so choose a name that starts with a letter, digit or underscore instead.
+
+### Patch Changes
+
+- 9f63fee: Keep Windows consoles from opening during background extension installs, updates, and helper commands.
+
+## 0.181.0
+
+No changes in this release.
+
+## 0.180.0
+
+No changes in this release.
+
+## 0.179.0
+
+No changes in this release.
+
 ## 0.178.0
 
 No changes in this release.

@@ -174,6 +174,13 @@ try {
   const afterManualRemoval = run("status", "--json");
   suite.check("clean does not acknowledge a recorded store that was already removed by hand",
     absentClean.status === 0 && !existsSync(store) && afterManualRemoval.status === 4 && Boolean(warning(afterManualRemoval, "STORE_MISSING")), absentClean.text + afterManualRemoval.text);
+  for (const mode of ["--dry-run", "--force"]) {
+    const all = run("clean", "all", mode);
+    suite.check(`controller clean all ${mode} warns when removing trust without recommending backup or restore`,
+      all.status === 0 && all.text.includes("(space trust)")
+      && all.text.includes("Backup creation and restore, including registry-only restore, are unavailable on this controller-owned stack.")
+      && !/backup restore|take a new full backup/i.test(all.text), all.text);
+  }
 } finally {
   if (started) {
     chmodSync(journalPath, 0o600);

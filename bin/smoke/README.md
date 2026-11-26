@@ -177,10 +177,11 @@ smoke proofs and rejects unrelated assertions without creating source probes. It
 the cited suites or replace the AST census.
 
 `pnpm smoke:required-arg-seam --census` prints the actual classified call sites. Review each
-added or removed site before updating `required-arg-sites.json` and the total/smoke pins.
+added or removed site before updating its count in `required-arg-sites.json`. The census
+derives the total and smoke counts from the reviewed file counts.
 The per-file counts detect a hidden site replaced by a call in another file, but not a
-replacement within one file. A built Hermes sidecar adds one separately pinned non-smoke
-call. Fresh and built checkouts retain the same source census.
+replacement within one file. Each built Hermes sidecar adds the reviewed non-smoke calls
+from `extensions/connector-core/src/manager-call.ts` to the expected total.
 
 Use the repository's pinned pnpm version. Recursive package tasks start when their
 own declared prerequisites finish, within pnpm's worker limit. They need not wait

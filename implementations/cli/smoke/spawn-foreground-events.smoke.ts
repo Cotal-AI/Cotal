@@ -231,6 +231,20 @@ async function checkPersonaRefusals() {
   check("a bad explicit name is not blamed on the persona", explicit.status === 1 && explicit.stderr.includes('unsafe name "Invalid Name"') &&
     !explicit.stderr.includes("frontmatter name"), explicit.stderr);
   if (process.platform === "win32") return;
+  const parentFile = join(realpathSync(caller), "plain-parent");
+  writeFileSync(parentFile, "not a directory");
+  const fileArgs = ["--file", "plain-parent/nested/persona.md", ...selectors];
+  const preview = invoke(["--dry-run", "--json", ...fileArgs]);
+  const refusal = preview.stdout && (JSON.parse(preview.stdout) as { error?: { code: string; message: string; remedy?: string } }).error;
+  const remedy = "pass the correct persona file path with `--file`";
+  check("foreground preview names the blocking persona path component and gives a retry",
+    preview.status === 2 && !!refusal && refusal.code === "TARGET_NOT_FOUND" && refusal.message.includes(`${parentFile} is not a directory`) &&
+    refusal.remedy === remedy, preview.stdout + preview.stderr);
+  const launch = invoke(["--foreground", ...fileArgs]);
+  check("foreground launch names the blocking persona path component and gives the same retry",
+    launch.status === 1 && launch.stderr.includes(parentFile) && /plain-parent\s+is not a directory/.test(launch.stderr) &&
+    launch.stderr.replace(/\s+/g, " ").includes(remedy) && !launch.stderr.includes("ENOTDIR"), launch.stderr);
+
   const blocked = join(root, "parent-file");
   const link = join(root, ".cotal", "agents", "notdir-link.md");
   const target = "../../parent-file/child.md";
@@ -517,7 +531,7 @@ try {
   rmSync(store, { recursive: true, force: true });
 }
 
-const EXPECTED = process.platform === "win32" ? 41 : 48;
+const EXPECTED = process.platform === "win32" ? 41 : 50;
 check(`every cell ran - ${EXPECTED} expected`, pass + fail === EXPECTED, `${pass + fail} cells reported`);
 console.log(`SUITE COMPLETE: ${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);

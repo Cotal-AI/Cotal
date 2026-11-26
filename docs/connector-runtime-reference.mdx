@@ -183,9 +183,9 @@ A stored sequence proves broker acceptance, without confirming receipt or comple
 `cotal_dm` names the recipient, says other agents can't read the DM, and points what others could use at the task's channel.
 It reads the recipient's roster status immediately before publication.
 It uses that observation for offline and unrostered warnings; the success text does not include the stored sequence or a full roster-status report.
-When that status is `offline`, `cotal_dm`, `cotal send -t`, `cotal chat`, `cotal join`, and the console explain that the DM waits for the recipient to reconnect.
-The same lifecycle receives it after reconnect. A new spawn under the same name does not inherit that inbox.
-Retention and the lifecycle interval still bound delivery.
+When that status is `offline`, `cotal_dm`, `cotal send -t`, `cotal chat`, `cotal join`, and the console report that the DM was stored but delivery is not confirmed.
+Only the original lifecycle can receive the DM, and only if its inbox still exists and the message is still retained.
+A new session with the same name does not inherit that inbox.
 
 A one-shot sender such as `cotal send` can send a DM without joining the roster.
 A reply to that authenticated sender is stored under its ID even if no inbox ever reads it.
@@ -257,8 +257,9 @@ The agent's owner can list an agent's own harness commands and skills and queue 
 It cancels a queued command with `command-cancel` and reads how far a command got with `command-state`.
 It stops the agent's running turn with `interrupt`, so a command queued behind a turn that hangs can run.
 It gives the agent a turn on the owner's own words, images included, with `turn`, and reads what the harness reports of its context window and cost with `usage`.
+It switches the model and variant the harness runs from its next turn with `set-model`.
 No one else can call them: the broker refuses a sibling agent of the same owner, any other owner, and every grant.
-The agent cannot run a command on itself or give itself a turn: `command` and `turn` from the agent's own identity are `permission-denied`.
+The agent cannot run a command on itself, give itself a turn or switch its own model: `command`, `turn` and `set-model` from the agent's own identity are `permission-denied`.
 
 A connector hands `MeshAgent` a dispatcher as the `commands` option:
 
@@ -266,11 +267,12 @@ A connector hands `MeshAgent` a dispatcher as the `commands` option:
 - `list()` returns every command and skill the harness runs now as `{ name, target, description?, inputHint? }`, each named as `dispatch` names it. A rejection reaches the caller as `unavailable`, never as an empty list.
 - `dispatch({ target, name, args })` starts one and resolves once the harness accepted it. A command that runs the model runs as a turn of its own, and some, such as OpenCode's `goal clear`, run no turn. It throws `CommandRefused` with `not-found` or `failed-precondition` when the harness refused it and nothing started. Any other throw leaves the outcome unknown.
 - `interrupt()`, optional, stops the turn the harness is running and resolves `interrupted`, or `idle` when none ran. The connector then ends that turn as one its user stopped, so the next queued command starts. Without it, `interrupt` is `unimplemented`. A throw reaches the caller as `internal` with the outcome unknown.
-- `unsupported()`, optional, names why the harness runs no commands now, or returns undefined while it does. While it names a cause, `commands` and `usage` answer `{ supported: false }`, and `command`, `turn` and `interrupt` are `unimplemented` with that cause. Claude Code uses it while no command mod serves the session.
+- `unsupported()`, optional, names why the harness runs no commands now, or returns undefined while it does. While it names a cause, `commands` and `usage` answer `{ supported: false }`, and `command`, `turn`, `interrupt` and `set-model` are `unimplemented` with that cause. Claude Code uses it while no command mod serves the session.
 - `watch(changed)`, optional, is called once when the endpoint opens. The dispatcher calls `changed` each time `unsupported()` may answer differently, and the agent then republishes what its presence says it serves.
 - `turn({ text, images })`, optional, hands the owner's words to the harness as its user's own message and resolves once the harness accepted it. It throws `CommandRefused` with `failed-precondition` when the harness refused it and nothing started. Without it, `turn` is `unimplemented`.
 - `images`, optional, says the harness takes images with a turn. Without it, a `turn` with images is `unimplemented`. Each image is `{ mimeType, data }`, `data` in base64.
 - `usage()`, optional, resolves what the harness reports now: `context` as `{ used, size }` in tokens and `cost` as `{ amount, currency }`, each left out until the harness reported it. A rejection, or no answer in 10 seconds, reaches the caller as `unavailable`. Without it, or while `unsupported()` names a cause, `usage` answers `{ supported: false }`.
+- `setModel(model, variant)`, optional, switches the harness from its next turn at the latest: `model` undefined keeps the model it runs, and `variant` undefined leaves the variant to the harness. It resolves once the harness took the switch, with `{ model, variant? }` as the harness names what it runs. It throws `CommandRefused` with `not-found` for a model the harness does not offer, or `failed-precondition` for any other refusal, when nothing changed. Any other throw reaches the caller as `internal` with the outcome unknown. Without it, `set-model` is `unimplemented`. The runtime runs one switch at a time, and puts the answer on the agent's card as `meta.model`, `meta.variant` and `meta["ai.cotal.model-set"]`, which a later model report from the harness does not replace. An agent launched under a role its launcher's `modelPolicy` governs refuses every switch as `failed-precondition`.
 
 The runtime sends only those four fields of an entry. It leaves out a name `command` cannot carry and shortens a longer description or hint.
 Without a dispatcher, `commands` answers `{ supported: false }` and `command` is `unimplemented`.
@@ -278,16 +280,18 @@ In this release [OpenCode](opencode-connector-reference.mdx) 1.x and 2.x, [pi](p
 Pi's also takes `turn` with images and answers `usage`, on every Pi version, and so does Claude Code's while its mod runs, with images only in a session Cotal launched.
 [Hermes](hermes-connector-reference.mdx#agent-commands) has one that runs the gateway's slash commands and skill commands, and takes `turn` with images, `interrupt` and `usage`.
 Jcode's, Codex's and OpenCode's also take `turn` with images and answer `usage`.
+Codex's, OpenCode's, Jcode's, pi's from 0.84.3 and Claude Code's while its mod runs also switch the model. Hermes's does not.
 
-The agent's presence carries `agentEndpoint: { interrupt, turn, images, usage }` while it serves the endpoint, so a caller can pick its path before it sends anything.
+The agent's presence carries `agentEndpoint: { interrupt, turn, images, usage, setModel }` while it serves the endpoint, so a caller can pick its path before it sends anything.
 `MeshAgent` derives it from the dispatcher, and a connector declares nothing:
 
 - `interrupt` is true when the dispatcher has `interrupt()` and `unsupported()` names no cause.
 - `turn` is true when it has `turn()` and `unsupported()` names no cause.
 - `images` is true with `turn` when it sets `images`.
 - `usage` is true when it has `usage()` and `unsupported()` names no cause.
+- `setModel` is true when it has `setModel()` and `unsupported()` names no cause.
 
-Without a dispatcher, all four are false. The field never claims a call the endpoint would refuse.
+Without a dispatcher, all five are false. The field never claims a call the endpoint would refuse.
 
 `command` and `turn` answer an `id` at once, and the command or turn waits in one queue for the connector's next idle turn.
 `MeshAgent` emits `command`, and the connector calls `dispatchNextCommand()` while no turn runs. It answers `dispatched`, `failed`, or `empty`.
@@ -335,6 +339,12 @@ Messages the agent sends afterwards carry the new `from.name`, and stored histor
 `agent.displayName` reads the current name, and `config.name` stays the launch name.
 A manager keeps the last name a seat showed with the seat, apart from its alias. When it starts the seat again, after a crash or a preserved resume, it passes the name as `COTAL_DISPLAY_NAME`, so the seat comes back under the same alias and actor and shows its last name.
 
+The owner's session labels an agent with `set-label` `{ label }` and gets `{ label }` back. Only the owner can call it, as with `set-name`.
+`MeshAgent` sets `meta["ai.cotal.label"]`, which clients show in place of the name, and leaves the name, so `@mentions` still reach the agent by it.
+A label follows the rule a label from the first message meets: the shared name rule, at most 40 code points, and single spaces between words.
+The agent refuses a label that breaks it as `bad-request`, `not-executed`, with a message that says which part.
+A later `set-name` drops the label.
+
 ### Labels from the first message [#labels-from-the-first-message]
 
 A seat launched with `COTAL_AUTO_NAME=1` (the Manager `spawn` field `autoName`) labels itself from the first message it gets: its launch prompt, else its first live direct message or `@mention` from a principal of its own owner.
@@ -345,9 +355,10 @@ The request asks for a short name for the message and caps the message at 8,000 
 The card's `name` stays the launch name, so `@mentions`, direct messages and name lookups keep reaching the seat by it.
 A client that lists agents shows `meta["ai.cotal.label"] ?? name`.
 From launch until naming settles, the card carries `meta["ai.cotal.naming"] = "pending"`.
-The key goes when naming settles: a label, a failed or empty reply, 60 seconds, an owner `set-name`, or the seat stopping.
+The key goes when naming settles: a label, a failed or empty reply, 60 seconds, an owner `set-name` or `set-label`, or the seat stopping.
 The label and the key's removal reach presence in one record.
 An owner `set-name` sets the name and drops the label in one record, and one made while naming is out ends naming with no label.
+An owner `set-label` made while naming is out ends naming too, and the owner's label stays.
 A failed naming leaves no label, and so does a relaunch.
 An agent file cannot set either key.
 A connector with no hook never shows the key and logs that the seat shows no label.

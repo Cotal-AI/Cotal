@@ -14,7 +14,8 @@
  *  - The command survives an upgrade: under the get.cotal.ai launcher it names the launcher's Node
  *    link rather than the version folder Node runs from, and it names the install's own entry rather
  *    than the generation this process loaded; status counts a link to this Node as this Node.
- *  - Thread links read back per space in the order they were stored, and a broken line is refused.
+ *  - Thread links read back per space in the order they were stored, with the title stored beside a
+ *    link, and a broken line is refused.
  *  - The launcher finds `cotal` on PATH or in `~/.local/bin`, runs `cotal acp <args>` and passes its
  *    exit status on; with no Cotal, or a Cotal without its ACP extension, it serves a stub agent that
  *    offers the terminal sign-in and asks for it on `session/new`.
@@ -165,6 +166,26 @@ zedRun("demo");
 const both = parse(readFileSync(zed, "utf8"), [], { allowTrailingComma: true }) as typeof zedValue;
 check("another space gets its own agent, named for the space, with the config home the shell set", JSON.stringify(both.agent_servers["Cotal (demo)"]) === JSON.stringify({ type: "custom", command: node, args: [entry, "acp", "--space", "demo"], env: { XDG_CONFIG_HOME: join(home, ".config") } }), both.agent_servers);
 check("Zed status names the spaces it reaches", zedProvider.status!({ version: "0", skillsRemedy: "" })[0]?.text === "Cotal for cotal_cloud, demo");
+const otherZedAgents = {
+  "Other ACP bridge": { type: "custom", command: "/usr/bin/printf", args: ["acp", "--space", "project"], env: { KEEP_ME: "yes" } },
+  "Other Node agent": { type: "custom", command: node, args: [join(home, "other.js"), "acp", "--space=project"] },
+};
+writeFileSync(zed, JSON.stringify({ agent_servers: {
+  ...otherZedAgents,
+  "Cotal (project)": { type: "custom", command: join(home, "old-prefix", "bin", "cotal"), args: ["acp", "--space", "project"] },
+  "Cotal (demo)": { type: "custom", command: node, args: [moved[1], "acp", "--space=demo"] },
+} }, null, 2));
+const zedRefresh = () => zedProvider.refresh!.run({ cotal });
+const refreshed = zedRefresh();
+const zedRefreshed = readFileSync(zed, "utf8");
+const refreshedAgents = (JSON.parse(zedRefreshed) as typeof zedValue).agent_servers;
+check("Zed refresh preserves other agents with the same ACP space arguments",
+  Object.entries(otherZedAgents).every(([name, agent]) => JSON.stringify(refreshedAgents[name]) === JSON.stringify(agent)), refreshedAgents);
+check("Zed refresh repairs missing direct and Node Cotal launchers",
+  refreshed === "agents for project, demo now run this Cotal" && refreshedAgents["Cotal (project)"]?.command === node &&
+  JSON.stringify(refreshedAgents["Cotal (project)"]?.args) === JSON.stringify([entry, "acp", "--space", "project"]) &&
+  JSON.stringify(refreshedAgents["Cotal (demo)"]?.args) === JSON.stringify([entry, "acp", "--space=demo"]), refreshedAgents);
+check("a second Zed refresh writes nothing", zedRefresh() === "agents for project, demo are current" && readFileSync(zed, "utf8") === zedRefreshed);
 // A settings file kept in a dotfiles folder and linked into place.
 const dotfiles = join(home, "dotfiles");
 mkdirSync(dotfiles);
@@ -185,8 +206,14 @@ links.add("b", { thread: "t1", lifecycleUid: "u9" });
 links.add("a", { thread: "t1", lifecycleUid: "u2" });
 check("links read back per space, in the order they were stored", JSON.stringify(links.read("a")) === JSON.stringify([{ thread: "t1", lifecycleUid: "u1" }, { thread: "t1", lifecycleUid: "u2" }]), links.read("a"));
 check("the link file is private", (statSync(join(linksDir, "threads")).mode & 0o077) === 0, statSync(join(linksDir, "threads")).mode.toString(8));
+links.add("a", { thread: "t1", lifecycleUid: "u2", title: "Login work" });
+check("a link stores the title the client's thread carried, and reads it back", JSON.stringify(links.read("a").at(-1)) === JSON.stringify({ thread: "t1", lifecycleUid: "u2", title: "Login work" }), links.read("a"));
 writeFileSync(join(linksDir, "threads"), "{\"space\":\"a\"}\n", { flag: "a" });
-check("a line that is not a link is refused, naming the file", throws(() => links.read("a"))?.includes("line 4 is not a thread link") === true);
+check("a line that is not a link is refused, naming the file", throws(() => links.read("a"))?.includes("line 5 is not a thread link") === true);
+const titled = join(home, "links-titled");
+mkdirSync(titled, { recursive: true });
+writeFileSync(join(titled, "threads"), "{\"space\":\"a\",\"thread\":\"t1\",\"lifecycleUid\":\"u2\",\"title\":7}\n");
+check("a link whose title is not a string is refused too", throws(() => threadStore(titled).read("a"))?.includes("line 1 is not a thread link") === true);
 
 // ── The launcher ──────────────────────────────────────────────────────────────────────────────────
 if (process.platform !== "win32") {

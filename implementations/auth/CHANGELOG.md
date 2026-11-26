@@ -1,5 +1,79 @@
 # @cotal-ai/auth
 
+## 0.182.0
+
+### Minor Changes
+
+- 30b474d: Wire persona saves drop launch options and refuse channels outside the definer's grant, so pass options on spawn or set them in a local persona file, and list only channels the definer holds.
+- b4d8ea1: User-auth terminal connections stop working when their session ends, so start a new session with `cotal attach <agent>` and upgrade auth and delivery together to enforce the cutoff.
+- d387f8b: On user-auth meshes, a reply inbox name of the form `<owner>-<actor>-<nonce>` is refused if it names another principal, so use the bearer’s own owner and actor or keep the bare nonce that existing clients send.
+
+### Patch Changes
+
+- 16065ff: Let concurrent first exchanges for the same actor lifecycle share one root credential instead of refusing the losing request.
+- 0a4f67f: The D32 permission audit recognizes the reply grant for an agent's own endpoint, and a live test confirms that the broker refuses replies under another agent's identity.
+- d7e84c6: The desktop app's Background service log now shows the service's output on macOS and Linux. On macOS, launchd created `daemon.log` readable by others, so the app refused to show it. On Linux the output went only to the journal. The service now makes its log private (macOS), or keeps the same bounded private copy as Windows (Linux), first thing when it starts. A space row that says "Manager is not answering" now also gives the Manager's own reason. Reading the application PATH from the login shell no longer hangs on a startup file that waits for input, or waits on a job a startup file left running. It stops at 30 seconds and kills whatever the shell started. It also works for tcsh and csh, which read `~/.login`, and for PowerShell, which reads `~/.profile`. The Windows MSI installer now registers `cotal:` links. Its template wrote the literal key `Software\Classes{{protocol}}`, so links did not open the app after an MSI install. Device sign-in (the app's and `cotal login`) now keeps waiting when one poll gets no usable answer from the provider, such as a dropped connection or a proxy's 5xx page during a restart. It used to end the sign-in at once, even when the person approved a moment later. If the provider is still unreachable when the code expires, sign-in reports it as unreachable, not as expired.
+- dcbc26a: Add regression coverage for first exchanges that lose to a lifecycle freeze, retirement, or revoked root credential, and document the retry limit.
+- c9a8881: Keep evicting ended user-auth terminal connections when only callout replicas are running, limit delays from slow evictions, and explain when a one-shot terminal connection closes on a broker authorization error.
+- Updated dependencies [ecd506f]
+- Updated dependencies [896100c]
+- Updated dependencies [77a02cd]
+- Updated dependencies [1d10f92]
+- Updated dependencies [7ef585e]
+- Updated dependencies [48b6414]
+- Updated dependencies [423aa24]
+- Updated dependencies [1f37adb]
+- Updated dependencies [30b474d]
+- Updated dependencies [b670c41]
+- Updated dependencies [c9a8881]
+- Updated dependencies [0adb7ba]
+- Updated dependencies [b4d8ea1]
+- Updated dependencies [9f63fee]
+- Updated dependencies [365e355]
+- Updated dependencies [dd426ff]
+- Updated dependencies [f5b2a30]
+- Updated dependencies [0c9e27a]
+- Updated dependencies [d387f8b]
+- Updated dependencies [e6cd8f2]
+- Updated dependencies [6c10b18]
+  - @cotal-ai/workspace@0.182.0
+  - @cotal-ai/core@0.182.0
+  - @cotal-ai/lang@0.182.0
+
+## 0.181.0
+
+### Patch Changes
+
+- Updated dependencies [b05f907]
+- Updated dependencies [49d14ac]
+- Updated dependencies [e22d95e]
+- Updated dependencies [b1590ac]
+- Updated dependencies [d76ec5e]
+  - @cotal-ai/core@0.181.0
+  - @cotal-ai/lang@0.181.0
+  - @cotal-ai/workspace@0.181.0
+
+## 0.180.0
+
+### Patch Changes
+
+- Updated dependencies [bffdc47]
+- Updated dependencies [fcd33e4]
+  - @cotal-ai/workspace@0.180.0
+  - @cotal-ai/core@0.180.0
+  - @cotal-ai/lang@0.180.0
+
+## 0.179.0
+
+### Patch Changes
+
+- Updated dependencies [3b5bde1]
+- Updated dependencies [0413abe]
+- Updated dependencies [c7f487b]
+  - @cotal-ai/core@0.179.0
+  - @cotal-ai/workspace@0.179.0
+  - @cotal-ai/lang@0.179.0
+
 ## 0.178.0
 
 ### Patch Changes

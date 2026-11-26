@@ -115,9 +115,11 @@ in-process plugin does everything.
   launcher mints per launch, or one a headless host supplies as `OPENCODE_SERVER_PASSWORD`. It
   reaches the server and the TUI only through their environment, and the headless `[cotal-serve]`
   line leaves it out.
-- **Observed model.** Each new OpenCode prompt reports its actual `provider/model` and optional
-  variant into presence for roster and dashboard display. Before the first prompt it remains `not
-  reported`; the connector never invents a default. An explicit `model:` or `variant:` pin wins.
+- **Observed model.** Each new OpenCode prompt, including one delivered by the mesh, reports its
+  actual `provider/model` and optional variant into presence for roster and dashboard display.
+  Before the first prompt it remains `not reported`. The connector never invents a default.
+  An explicit `model:` or `variant:` pin wins, and an owner's [`set-model`](#switching-the-model)
+  wins over both.
 - **A long turn keeps its batch.** The connector acks a peer batch when the turn carrying it ends,
   so a turn longer than the consumer's 60-second ack wait is ordinary. While the turn runs, the
   connector restarts the ack wait of each message in that batch with JetStream's in-progress ack,
@@ -268,6 +270,33 @@ On 2.x the check reads `GET /api/model` once the server's plugins have loaded, a
 they have not loaded within 10 seconds, because the list is incomplete until then.
 OpenCode's cold server bootstrap can take longer than the generic 30-second manager check;
 the connector declares a two-minute readiness window for this check and the mesh join.
+
+### Switching the model
+
+On a per-user mesh the owner switches the agent's model with the `agent` endpoint's `set-model`
+command. The model is a `provider/model` id, and an id with no provider is refused as
+`failed-precondition`. OpenCode runs a variant its model does not list as no variant, with no
+error, so the plugin first reads the server's own list: `GET /provider` on 1.x and `GET /api/model`
+on 2.x. A model the list does not have is refused as `not-found`, and a variant the model does not
+list as `failed-precondition`. A refused switch changes nothing. A switch applies from the next
+turn.
+
+On 2.x the plugin posts `/api/session/:id/model` with the model and the variant. Without a variant
+OpenCode clears the session's, so the model runs its own default. The session's model outranks the
+launch model, and OpenCode 2.4.1's TUI follows it, so turns typed there run on it too. A 4xx answer
+refuses the switch as `failed-precondition`. Without a model the switch keeps the model OpenCode last
+named in its `model.request` hook, or else the launch model. With neither, or before the session
+exists, it is refused as `failed-precondition`.
+
+OpenCode 1.x has no route that sets a session's model. A prompt runs on the model it names, or else
+on the launch model, which the connector pins on its `cotal` agent. So the plugin keeps the owner's choice, and every
+prompt it sends names it: a message, an owner's turn, and a command, which names the model as
+`provider/model`. A command that sets its own model, or runs as an agent that has one, runs on that
+model as OpenCode decides. Prompts typed in the attached TUI keep the TUI's own model, and no 1.x
+API changes it. Without a model the switch keeps the model chosen last, or else the launch model,
+and with neither it is refused as `failed-precondition`. A prompt that names the launch model and no
+variant runs at the launch variant, so a switch to the launch model with no variant answers that
+variant.
 
 ## Event plane
 

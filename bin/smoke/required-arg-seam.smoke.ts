@@ -185,16 +185,10 @@
  * run a build carries files a fresh clone does not. `node_modules`, `dist`, `build` and friends are
  * skipped, but a generated bundle landing outside those names is not: the Hermes sidecar at
  * `extensions/connector-hermes/plugin/cotal/_sidecar/` is gitignored build output and IS walked.
- * The bundle adds one outside-smoke call: a clean checkout has 321/244 and a built checkout has
- * 322/244. Packing `cotal-ai` (or `pnpm --dir bin seeded-connectors`) copies the same bundle to
- * `bin/seeded-connectors/hermes/`, which is gitignored too and adds one more. Each copy has its own
- * one-site pin, required whenever that artifact exists. An EXACT count otherwise
- * turns this divergence into a red that
- * depends on whether someone ran `pnpm bundle`, which is a property of a disk rather than of a
- * revision. Reading it is deliberate rather than an oversight, since that bundle SHIPS in the
- * connector package: a seam call inside it would be real, and skipping it would be a hole in shipped
- * code rather than a tidier number. Review found this by measuring the same fence on two trees and
- * getting ten refusals against four, which is the same lesson one level up.
+ * Packing `cotal-ai` (or `pnpm --dir bin seeded-connectors`) copies the same bundle to
+ * `bin/seeded-connectors/hermes/`, which is also gitignored. When either sidecar exists, its
+ * expected count matches the source count for `extensions/connector-core/src/manager-call.ts`.
+ * The sidecars are outside `smoke/` and ship in the connector, so the census checks them too.
  *
  * Each would need a different instrument (a site manifest, a census that does not share
  * the walk's exclusions), and each is written here so the next author inherits the bet rather than
@@ -253,8 +247,9 @@ import ts from "typescript";
 import { parse as parseMarkdown, postprocess, preprocess } from "micromark";
 import { gfm } from "micromark-extension-gfm";
 import { mdxjs } from "micromark-extension-mdxjs";
-import { existsSync, readFileSync, readdirSync } from "node:fs";
-import { join, dirname, relative, sep } from "node:path";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { basename, join, dirname, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
@@ -265,321 +260,10 @@ const check = (name: string, cond: boolean, extra?: unknown): void => {
   else { fail++; console.log(`  ✗ FAIL: ${name}`, extra ?? ""); }
 };
 
-/** One seam: a function whose argument object must carry `key`, enforced at runtime by a throw, and
- *  therefore needing a static reader for the call sites the compiler never sees. The two counts are
- *  the population measured when this was last edited, and they are matched EXACTLY rather than as a
- *  floor; see the population cells for why. */
-type Seam = { fn: string; key: string; sites: number; untypecheckedSites: number };
+/** A seam whose argument object must carry `key`, enforced at runtime and checked across source files here. */
+type Seam = { fn: string; key: string };
 const SEAMS: Seam[] = [
-  // 98/71 -> 101/74: three call sites added under `smoke/`, in
-  // `packages/core/smoke/delivery-reconnect.smoke.ts`, which opens membership-rw probes and a
-  // cleanup admin connection for the reconnect and terminal-shutdown lifecycle cells.
-  // Every site states `tls`, so only the deliberate population census moved.
-  // 101/74 -> 102/75: the remote-agent-bearer live smoke opens the already-enrolled managed
-  // actor with bearer+sentinel and an explicit plaintext-broker `tls: false` decision.
-  // 102/75 -> 108/79: component status and remote manager registration add two typechecked calls;
-  // 108/79 -> 109/80: the static-lifecycle eviction audit (2579d7f8) adds one smoke-side call.
-  // the manager boot self-heal and registered-user-authority smokes add four untypechecked calls.
-  // 109/80 -> 110/80: `cotal run`'s command connection (implementations/runtime/src/run-command.ts)
-  // adds one typechecked call carrying the endpoint auth and the resolved tls decision.
-  // 110/80 -> 114/83: the delivery daemon's checkpoint timer writer (implementations/delivery/src/
-  // delivery.ts) adds one typechecked call, and its suite (delivery-timer-writer.smoke.ts) three
-  // smoke-side calls.
-  // 114/83 -> 117/86: the manager's auth-mesh turn relay suite (turn-relay-auth.smoke.ts, landed at
-  // 301a6cf6e) adds three smoke-side calls. The pin was not moved when that suite landed, so this
-  // cell was red from 301a6cf6e until 24b3d9281 corrected it: a whole-repo exact count goes red
-  // without the file that holds it being touched, which is the reason it is exact.
-  // 117/86 -> 118/87: gate-reconcile-auth.smoke.ts opens one more provisioner connection for the
-  // records KV the lost-ack same-op recovery needs. It stays under smoke/ with the suite's other
-  // three sites: the call is harness residue, not product connect, and it already states tls: false.
-  // Every added site states the transport decision explicitly.
-  // 118/87 -> 119/88: static-lifecycle.smoke.ts's #1274 crash-resume cell (driveTerminalDirect) opens
-  // one more lifecycle-executor connection to plant a terminalizing slot and drive runStaticTerminal
-  // as a resume would. It is under smoke/, harness residue not product connect, and states tls: false.
-  // 119/88 -> 125/92: manager-hosted workflow runs. The manager's per-call run-operator
-  // connection (implementations/manager/src/run-hosting.ts) and `cotal run`'s hosted-client
-  // connection (implementations/runtime/src/run-command.ts) add two typechecked calls; the
-  // supervise-restart, run-driver-auth and run-host-live suites add four smoke-side calls.
-  // 125/92 -> 126/93: run-host-live reads an answer record back under a run-operator READ
-  // credential of its own (one smoke-side call, tls: false).
-  // 126/93 -> 127/94: run-host-live connects under a token-pinned run-operator ANSWERING
-  // credential to prove the broker refuses an answer on any other pause.
-  // 127/94 -> 128/94: the local workflow mediator adds one typechecked connection,
-  // inheriting the same resolved broker and TLS requirement as its driver.
-  // 128/94 -> 133/98: #774 adds one typechecked provisioner re-read before each static reconcile
-  // retry, plus four smoke-side connections for the isolated broker acceptance fixture (orphan write,
-  // observer, caller, and exact terminal gate inspection). Every site states tls: false.
-  // 133/98 -> 140/100: issued authority adds the issuer session's dial, the manager's admission
-  // reader, the local run mediator's two rail connections and the boot reconcile's own dial (all
-  // typechecked, inheriting the resolved TLS requirement), plus two run-host-live connections
-  // that prove a legacy-rail caller and a foreign admitter are refused (tls: false).
-  // 140/100 -> 141/101: the run-command smoke moves onto a static-auth broker and reads records
-  // and journals through a per-run run-operator credential of its own (one smoke-side call,
-  // tls: false); an admin credential holds no records read row on that mesh.
-  // 141/101 -> 142/102: the publish-denial smoke dials a static-auth broker under a class-rail
-  // instrument to prove a refused instance-rail invoke is permission-denied (one smoke-side call,
-  // tls: false).
-  // 142/102 -> 144/104: hosted-retirement-native.acceptance.ts adds two provisioner connections:
-  // one readiness probe after starting its authenticated broker, and one terminal-observer connection
-  // inside the final public retirement cell. Both are fixture-side calls under smoke/ and state tls: false.
-  // 144/104 -> 145/105: hosted-retirement-stock-supervise.acceptance.ts adds one fixture-side
-  // provisioner connection for its authenticated broker readiness probe and states tls: false.
-  // 145/105 -> 146/106: registration-executor-resume.smoke.ts dials the auth broker under a
-  // scoped manager credential (one smoke-side call, tls: false) to prove heal and registration
-  // use separate executor windows.
-  // 146/106 -> 147/107: delivery-starvation.smoke.ts reads the delivery lease STRAIGHT FROM THE
-  // BROKER on a connection of its own (one smoke-side call, tls: false), rather than trusting the
-  // daemon's own report of whether it is still serving. A starved daemon's account of itself is
-  // exactly what that suite exists to doubt.
-  // 147/107 -> 150/110: delivery-starvation.smoke.ts grows three more smoke-side connections
-  // (tls: false), all for the same reason as the one above, the suite refuses to take the daemon's
-  // word for what it is doing. One deletes the lease row to stage a handover, one asks the broker
-  // how many pull requests each Plane-3 durable has parked, and one is a $SYS observer that counts
-  // ctl.delivery subscribers PER CONNECTION, which is what makes "two daemons were bound at once"
-  // a count of processes rather than a self-report.
-  // 150/110 -> 151/111: delivery-lease.smoke.ts grows one more smoke-side connection (tls: false),
-  // a `delivery`-role JetStream manager that REPLACES the fan-out durable with an incompatible
-  // config so a rearm fails at the real broker. The Q cells then read the durable back off that
-  // same connection, so "the endpoint recovered" is broker state rather than the endpoint's own flag.
-  // 151/111 -> 153/113: delivery-starvation.smoke.ts grows two more smoke-side connections for cells
-  // R1-R9, which stage a lease row the daemon must prove is its own: one writes the row's own bytes
-  // back (moving the revision while the holder stays byte-identical), one writes a successor's row
-  // (same holder, another incarnation). Both read and write the lease KV directly, which is the
-  // point - the evidence comes off the broker rather than from the daemon's own log.
-  // 153/113 -> 156/116: three more, attributed rather than merely counted. TWO are smoke-side
-  // connections in delivery-starvation.smoke.ts for cells X1-X6, which break the fan-out durable
-  // at the broker and then repair it, so a start-up failure the CLI CATCHES can be graded off the
-  // lease row rather than from the daemon's log. The THIRD is not a call at all: it is inside
-  // `find`/`replace` STRINGS in bin/smoke/mutations/attach-open-mode.json, which arrived on main,
-  // and it counts because this reader scans text and a mutation body is text that will become
-  // code. All three state `tls` explicitly, so the seam itself is unchanged.
-  // 156/116 -> 157/117: one more smoke-side connection, in
-  // implementations/runtime/smoke/run-command.smoke.ts (#1633). It exists to write a revocation
-  // marker RAW, under the one-shot `run-admitter` profile `revoke` mints, because the exported
-  // writer validates what it writes and a marker the reader CANNOT read has to be created past it.
-  // That is what lets `run ps` be graded on the `unchecked` path, where the marker is unreadable
-  // rather than absent. It states `tls` explicitly, so the seam itself is unchanged.
-  // 157/117 -> 161/119: instance-pinned user control adds two typechecked calls, the user's
-  // control connection in extensions/connector-core/src/manager-call.ts (#1940) and its generated
-  // Hermes sidecar copy, both carrying the resolved transport decision; instance binding for user
-  // seats adds two smoke-side calls (implementations/auth/smoke/remote-agent-bearer.smoke.ts,
-  // implementations/auth/smoke/remote-exchange.smoke.ts), the second already-enrolled actor and
-  // the instance-bound executor dial the pin must refuse. All state `tls` explicitly.
-  // 161/119 -> 162/120: the manager instance caller gap reproduction
-  // (packages/core/smoke/inst-route-enforce.smoke.ts) adds one smoke-side instance-scoped
-  // executor connection. It states `tls: false`.
-  // 162/120 -> 166/123: remote manager registration recovery (#1960) adds one typechecked call,
-  // the one-shot reconciliation executor dial in implementations/auth/src/service.ts, and three
-  // smoke-side calls in implementations/manager/smoke/hosted-retirement-stock-supervise.acceptance.ts
-  // (readiness, eviction and reconciliation executor connections). All state `tls` explicitly.
-  // 166/123 -> 169/125: the managed-seat answer path (#1901, #1877) adds one typechecked call,
-  // the managed seat's connection in implementations/runtime/src/run-command.ts, and two
-  // smoke-side calls in bin/smoke/run-host-live.smoke.ts, the addressed baseline seat's answer
-  // connection and the run-operator read connection grading it. All state `tls` explicitly.
-  // 169/125 -> 175/131: caller-scoped goal mediation and its proof add six smoke-side calls:
-  // the user-callout pre-revoke read (implementations/auth/smoke/deny-new.smoke.ts), the foreign
-  // caller the mediated result refuses (implementations/manager/smoke/manager-service-invoke.smoke.ts),
-  // and four in implementations/manager/smoke/remote-manager-goal-reader.smoke.ts (provisioner,
-  // executors, responder, bearer read). All state `tls: false`.
-  // 175/131 -> 193/149: the goal-follow and manager-caller transport landings add eighteen
-  // smoke-side calls across five suites: manager-caller-transport.smoke.ts five,
-  // goal-follow-cancellation.smoke.ts three, goal-submit-order.smoke.ts two,
-  // user-bearer-goal-lifetime.smoke.ts one (the bearer rebind after a rebuild), and
-  // user-manager-transport.smoke.ts seven. All state `tls: false`.
-  // 193/149 -> 196/152: the artifact-store no-reserve landing (#2123) adds three smoke-side calls
-  // in packages/core/smoke/artifact-store-no-reserve.smoke.ts. All state `tls: false`.
-  // 196/152 -> 197/152: `cotal deliver pending` (#417) adds one typechecked call, the inspection
-  // read's own connection in implementations/delivery/src/pending.ts. States `tls` explicitly.
-  // 197/152 -> 198/152: the broker-version check (#2233) adds one typechecked call in
-  // implementations/cli/src/commands/up.ts. States `tls: false` explicitly.
-  // 198/152 -> 201/155: the scoped-consumer and scan-abort cells add three smoke-side calls in
-  // packages/core/smoke/manager-lease-grant.smoke.ts (the scoped delivery reader, the admin setup
-  // connection, and the supervisor). All state `tls: false`.
-  // 201/155 -> 220/172: hosted service/renewal and cleanup proofs add seventeen smoke calls:
-  // manager-standing-renewal (1), remote-run-attempt-route (4), remote-ef-continuity (4),
-  // remote-isolated-renewal (1), remote-run-renewal (2), remote-start-expiry-recovery (1),
-  // stock-process-restart (2), deprovision-agent-auth (2). Auth service preflight and run-hosting
-  // renewal add two production calls. The full reader verifies every added call states tls.
-  // 220/172 -> 225/176: attach session redemption on a user-auth mesh (#2320) adds one typechecked
-  // call, the session-bearer arm of redeemConnectOpts in implementations/cli/src/commands/agents.ts
-  // (5bec8b225f), carrying the link's resolved tls; its proof adds three smoke-side calls in
-  // implementations/auth/smoke/user-spawn.smoke.ts (00dbb33f07, net of the two 66c1f9dbe0 dropped):
-  // the bearer dial probe, the operator grant connection and the session-ledger reader. The
-  // memory-backed presence bucket fix (#2311, 15c16ffd80) adds one smoke-side teardown connection
-  // in packages/core/smoke/presence-ttl-refresh-cli.smoke.ts that deletes the presence stream so
-  // the provisioner can restage it file-backed. All smoke-side calls state `tls: false`. None of
-  // these landings moved the pin, so this cell was red from #2311 until this correction.
-  // 225/176 -> 227/178: two smoke-side connections in packages/core/smoke/liveness-peer.smoke.ts,
-  // both in the peer-readable liveness suite (#1577) and both under `smoke/`, so each of the two
-  // counts moves by the same two. Named individually, because a count that moves by the right
-  // amount for the wrong reason is the failure this pin exists to catch:
-  //   • `probeNc` — the fixture's own target control, which proves it is talking to ITS OWN broker
-  //     before it reports on anything (being pointed at another broker looks identical to being
-  //     refused by this one);
-  //   • `rawNc`  — the raw connection that reads a REAL reply frame's key set, since a TypeScript
-  //     type cannot stop a handler attaching an extra field.
-  // Both state `tls` explicitly, so the seam itself is unchanged. The `standaloneConnectOpts` near
-  // the top of that file is the IMPORT and is not a call site; this reader counts calls. The two
-  // are named by IDENTIFIER rather than by line, because a line number in a comment is stale the
-  // next time anything is inserted above it, and then it points a reader at the wrong call.
-  // 227/178 -> 228/178: one typechecked call that neither repin above counted, `recreateMemoryBuckets`
-  // in implementations/cli/src/commands/up.ts (ffdb45c345, #2335), the resumed up's dial that
-  // recreates the memory-backed presence bucket. It states `tls: false`. #2335 merged beside the
-  // 225/176 repin, whose branch did not contain it. 227/178 is the count of a tree WITHOUT the
-  // Hermes sidecar bundle, whose copy of the seam (counted since 161/119) offset the missed call.
-  // These counts are for a BUILT tree, the one `smoke:ci` scans after `pnpm build`; a tree that
-  // never ran the bundle finds 227/178.
-  // 228/178 -> 229/179: one smoke-side call, `reader` in
-  // implementations/manager/smoke/boot-delivery-lease.smoke.ts, a second `delivery` principal that
-  // reads the lease row back from the bucket and takes it over, so the fixture's renew and release
-  // are judged from the broker rather than from the fixture's own bookkeeping. Under `smoke/`, so
-  // both counts move by one. It states `tls: false`.
-  // 229/179 -> 234/184: five smoke-side calls in
-  // implementations/auth/smoke/issued-caller-expiry.smoke.ts, all under `smoke/`, so both counts
-  // move by five:
-  //   • `r5Opts`     — the short-lived manager-caller options that R51's `dial` publishes the
-  //                    initial `run-start` with before expiry and R52's reconnect probe reuses;
-  //   • `readerNc`   — the run-mediator connection in R54's failure-diagnostic arm that reads back
-  //                    an admitted `RunAdmission` if the delayed first admission were not refused;
-  //   • `opts`       — the short-lived manager-caller options that R55's `dial` uses to publish and
-  //                    admit a run while its caller's generation is live;
-  //   • `driverNc`   — the issued run-driver connection in R55 that writes the initial `RunSpec`
-  //                    and running `RunStatus` to the records bucket before the caller expires;
-  //   • `mediatorNc` — the renewed run-mediator connection in R55 that reads the admission back
-  //                    after the caller's generation has expired to verify it stays unrevoked.
-  // Each of the five calls states `tls: false`.
-  // 265/212 -> 266/213: delegated-config.smoke.ts adds one issued-caller connection with
-  // `tls: false` to exercise delegated persona-config refusals through the public manager.
-  // 266/213 -> 286/214: two landings added calls without updating required-arg-sites.json.
-  // #4191 (bab4ca8bf5) adds one smoke-side call in
-  // implementations/manager/smoke/run-owned-agents.smoke.ts, so both counts move by one. The
-  // command-line redesign (5c85ef3749) adds nineteen source calls net: twenty-two new calls across
-  // fifteen files under implementations/, less the one it removed from
-  // implementations/cli/src/commands/describe.ts and the two it removed from
-  // implementations/manager/src/commands.ts. The per-file counts name each file. Every call states
-  // `tls`.
-  // The audited source population is pinned per file in required-arg-sites.json. The generated
-  // Hermes sidecar adds one separately pinned call after build, never a smoke-side call.
-  // 286/214 -> 307/233: three landings added calls without updating required-arg-sites.json.
-  // Control-only local management (#4240, a9a78ecf6) adds the provisioner dial of an
-  // `execution: none` manager in implementations/manager/src/manager.ts and seven smoke-side calls:
-  // interactive-manager-selection two, local-no-execution four and local-no-execution-state one.
-  // Caller-bound keyed submission (#4242) adds the run-admitter store connection in
-  // implementations/auth/src/service.ts and ten smoke-side calls: keyed-review-client one,
-  // keyed-submission-client-provider two, keyed-review-window four and keyed-submission-native
-  // three. Host vitals (#4253) adds two in manager-service-invoke.smoke.ts. Every call states `tls`.
-  // Workflow cancellation adds one run-admitter store connection in auth/src/service.ts and
-  // three smoke-side calls: bin/smoke/run-cancel-live two and auth/smoke/run-cancel-live one.
-  // Each states `tls`. The native conversation run suite adds one smoke-side writer connection in
-  // manager/smoke/native-conversation-run, which states `tls`; the source population is now 312/237.
-  // 312/237 -> 320/243: five landings added calls without updating required-arg-sites.json. Reusing
-  // a broker after `space delete` (08a9fe625) adds `recreateDeletedStreams` in cli/src/commands/up.ts
-  // and one teardown connection in cli/smoke/space-teardown-live. Checking a TLS certificate
-  // against a dialed IP (d0d885a3b) adds `refuseUntrustedListener` in up.ts, which dials as the
-  // setup after it does. Both up.ts calls state `tls: false`, as that file's other setup dials do.
-  // Manager-selection refusals (19ba7099f) add three smoke-side connections in
-  // manager/smoke/manager-selection-refusals, a persona owner for a static caller (8d81c1209) adds
-  // one seat connection in manager/smoke/manager-service-ops, and refusing an unadmitted run revoke
-  // (5961162f9) adds one run-admitter read in runtime/smoke/run-command. All six smoke-side calls,
-  // the space-teardown-live one included, dial a loopback broker their suite starts without TLS,
-  // and each states `tls: false`. 320/243 -> 321/244: the manager-call dial deadline (9bc17b222) adds
-  // one smoke-side connection in connector-core/smoke/manager-connect-deadline, which states `tls: false`.
-  // 321/244 -> 328/251: turn notices add three setup connections in connector-core/smoke/idle-seat-connects
-  // and four in connector-core/smoke/turn-notice; each dials a loopback broker its suite starts and
-  // states `tls: false`. 328/251 -> 332/255: the RAM profiles of the load harnesses (0dd04e838) add
-  // one provisioning connection each in delivery/smoke/fanout-load and core/smoke/seat-idle-load,
-  // and the recorded program's hash on run-status (2b59b432f) adds a driver and a reader connection
-  // in bin/smoke/run-status-program-identity. Each dials a plaintext loopback broker its suite
-  // starts and states `tls: false`.
-  // 332/255 -> 353/273: review the 21 additional calls by source context and commit provenance:
-  // four conclave issuance calls, five native-signing controls, one multi-space admission read,
-  // two issued-store recreation calls, one issued-store binder, one backup victim check,
-  // two pending-sender connections, three membership-storage controls, one down lease probe,
-  // and one retirement fence. The 18 smoke calls state explicit booleans (including the native
-  // signer's TLS-true control); down uses resolved.tls and the other two source calls state false.
-  // required-arg-sites.json records the 13 reviewed file counts; the reader's rules are unchanged.
-  // 353/273 -> 354/274: shared-broker account cohorts (112ef8d5a) add one membership-observer
-  // connection in manager/smoke/manager-seat-load that reads each cohort account's connz. It dials
-  // the plaintext loopback broker its suite starts and states `tls: false`.
-  // 354/274 -> 358/277: the endpoints listing (#5499) adds a second manager-call connection that
-  // passes `tls: config.tls` like the first, plus three registry smoke dials (the shared fixture,
-  // the e2e executor and the user-auth reader). The smoke dials reach a plaintext loopback broker
-  // and state `tls: false`.
-  // 358/277 -> 364/282: the chat history limit adds the provisioner
-  // dial of `cotal history limit` in cli/src/commands/history-limit, which states the mesh's recorded
-  // `tlsRequired`, and five smoke-side calls: core/smoke/chat-history-limit four and
-  // cli/smoke/history-limit one. Each smoke-side call dials a plaintext loopback broker its suite
-  // starts and states `tls: false`.
-  // 364/282 -> 371/289: the once-task smokes add two Jcode calls (df46417125), two manager
-  // restart calls (d9776d84b1), and three manager spawn calls (048d2cb41e). Each dials its suite's
-  // plaintext loopback broker and states `tls: false`.
-  // 371/289 -> 372/290: the run-ps latency smoke's caller dials its suite's plaintext loopback
-  // broker and states `tls: false`.
-  // 372/290 -> 382/299. The inline persona and hosted helper bound add ten. The core issuer
-  // session's lifecycle-executor connection passes the caller's resolved tls. The nine smoke calls
-  // dial the plaintext loopback broker their suite starts and state `tls: false`: in
-  // bin/smoke/run-host-live a caller pinned to the run's host, an admin caller, an admission
-  // reader and a run-admitter writing an admission as an earlier release wrote it; in
-  // auth/smoke/managed-run-issuance an admission reader; in cli/smoke/foreground-issuance-live the
-  // foreground seat; and in manager/smoke/spawn-grant-door the spawner, a rival and a definer.
-  // 382/299 -> 386/303: auth/smoke/retire-member-rows, manager/smoke/supervise-crash-late-join
-  // and core/smoke/delete-space-auth each add one call. core/smoke/chat-history-limit also has
-  // a fifth call for its unstamped delivery-copy writer. All four dial their suite's plaintext
-  // loopback broker and state `tls: false`.
-  // 386/303 -> 390/307: persona endpoints add four smoke calls. manager/smoke/spawn-inline-persona
-  // connects a helper's credential, manager/smoke/persona-endpoints-served connects each credential
-  // it probes and a copy that the despawn evicts, and bin/smoke/run-host-live connects the starter
-  // issued again with a command it gained after admission. All dial the plaintext loopback broker
-  // their suite starts and state `tls: false`.
-  // 390/307 -> 400/314: main landed ten calls without booking them: auth/smoke/registry-host two,
-  // cli/smoke/app-identity-live and core/smoke/endpoint-family-scan one each,
-  // runtime/smoke/run-command three, and manager/src/manager.ts three. All ten state `tls: false`.
-  // 400/314 -> 402/316: main landed two more calls without booking them: bin/smoke/daemon-service-connect
-  // and delivery/smoke/deliver-pending-sender add one each. Both state `tls: false`.
-  // 402/316 -> 414/326: connection-cleanup adds four smoke calls, daemon-service-connect
-  // three, and remote-registration-close/expiry/maintenance one each. endpoint-deregister
-  // adds two authority calls. All twelve explicitly state `tls: false`.
-  // 414/326 -> 432/344: credential renewal and request continuity (#6455, 55a5cc880) add twelve
-  // smoke calls across authority-issued-serve (1), renewal-duty-requests (5),
-  // renewal-mint-contention (1), renewal-request-continuity (4) and request-safe-reconnect (1);
-  // renewal retirement bound (6acb10958) adds three in renewal-retirement-bound; late caller grant
-  // recovery (21f573f44) adds two in endpoint-publish-denial; and named read owner resolution
-  // (#6474, 03b2e195c) adds one in named-read-owner. All eighteen dial their suite's plaintext
-  // loopback broker and state `tls: false`.
-  // 432/344 -> 438/348: #6554 adds two stream setup/conversion connections and four smoke
-  // connections in conditional-dlv-chat (1), conditional-dlv (1), and membership-store-no-reserve (2).
-  // Each states its transport decision explicitly. Bundled sidecars are counted separately below.
-  // 438/348 -> 439/349: admission-store-atomic adds one owned fixture connection with tls: false.
-  // 439/349 -> 440/350: the missing DM stream case adds one in delivery/smoke/deliver-pending-sender.
-  // It states `tls: false`.
-  // 440/350 -> 444/354: four event-payload smoke connections:
-  // foreground-issuance-live adds an admin reader, managed-event-payloads adds an observer,
-  // event-payload-legacy provisions a broker without the payload stream, and backup-event-payload
-  // reads the fixture's native stream. Each explicitly states `tls: false` for its local broker.
-  // 444/354 -> 448/357: book four existing calls. bin/daemon/manager.ts carries the
-  // resolved TLS decision on each auth arm. Three smoke calls state `tls: false` for their
-  // local brokers: history-read's teardown, gate-reconcile-auth's registration executor,
-  // and remote-registration-expiry's liveness observer.
-  // 448/357 -> 449/358: reconnect-missing-inbox-auth adds its target-pinned teardown connection,
-  // which states `tls: false` for the suite's loopback broker.
-  // 451/359 -> 452/360: agui-egress-acl-auth adds its payload-rail subscriber connection, which
-  // states `tls: false` for the suite's loopback broker.
-  // 452/360 -> 457/365: run-host-live adds four connections (the interrupted driver, the reader,
-  // the admitter and the fresh driver of the interrupted-activation cells) and run-command adds
-  // one; each states `tls: false` for the suite's loopback broker.
-  // The idle-work observer adds one native connection and its suites add seven fixture calls.
-  // 465/372 -> 466/373: run-host-live adds one timer connection factory for broker outage
-  // recovery. It supplies delivery credentials and states `tls: false` for the loopback broker.
-  // 466/373 -> 467/374: run-command adds one connection for interrupted-run fixtures.
-  // It states `tls: false` for the suite's loopback broker.
-  // 467/374 -> 468/375: up-resume-render-lock adds one loopback connection factory to
-  // seed and verify the preserved membership bucket. It states `tls: false` explicitly.
-  // The run-host-live history writer uses a run-pinned credential and explicit loopback TLS policy.
-  // 469/376 -> 470/377: first-command-live adds its launcher's manager-caller connection, which
-  // states `tls: false` for the suite's loopback broker.
-  // 470/377 -> 471/378: spawn-auto-name adds one admin control connection to the Manager it
-  // drives. It states `tls: false` for the suite's loopback broker.
-  { fn: "standaloneConnectOpts", key: "tls", sites: 471, untypecheckedSites: 378 },
+  { fn: "standaloneConnectOpts", key: "tls" },
 ];
 
 const SITE_COUNTS = JSON.parse(readFileSync(new URL("./required-arg-sites.json", import.meta.url), "utf8")) as Record<string, number>;
@@ -606,6 +290,8 @@ const censusDrift = (expected: Record<string, number>, actual: Record<string, nu
  * directory ever holds vendored code, add it here, so that the skip is a decision on the record.
  */
 const SKIP_DIRS = new Set(["node_modules", "dist", ".git", ".internal", "build", "coverage", ".next", "out"]);
+// TypeDoc and the site's published copy display API names as reference text, not as source.
+const TYPEDOC_DIRS = new Set([join("website", "typedoc"), join("website", "public", "api", "typescript")]);
 const EXTS = [".ts", ".tsx", ".mts", ".cts", ".mjs", ".cjs", ".js", ".jsx"];
 
 /**
@@ -691,20 +377,18 @@ function frontmatter(text: string): { code: string; restAt: number } | undefined
 }
 
 /**
- * Another checkout parked inside this one is not part of this tree, and its copy of a source file
- * answers to its own commit. `.git` marks one whether it is a clone (a directory) or a worktree (a
- * file holding `gitdir:`), so `existsSync` covers both without caring which. This is deliberately a
- * structural test rather than another SKIP_DIRS name: a name list cannot know where someone parks a
- * worktree, and the counts below are exact numbers that a second copy multiplies.
+ * Both walks share the same tree boundary. A nested checkout belongs to its own tree, whether
+ * `.git` is a directory (a clone) or a file (a worktree).
  */
-const isNestedCheckout = (path: string): boolean => existsSync(join(path, ".git"));
+const skipDirectory = (root: string, path: string): boolean =>
+  SKIP_DIRS.has(basename(path)) || TYPEDOC_DIRS.has(relative(root, path)) || existsSync(join(path, ".git"));
 
-function sources(dir: string, acc: string[] = []): string[] {
+function sources(root: string, dir = root, acc: string[] = []): string[] {
   for (const e of readdirSync(dir, { withFileTypes: true })) {
     const p = join(dir, e.name);
     if (e.isDirectory()) {
-      if (SKIP_DIRS.has(e.name) || isNestedCheckout(p)) continue;
-      sources(p, acc);
+      if (skipDirectory(root, p)) continue;
+      sources(root, p, acc);
     } else if (EXTS.some((x) => e.name.endsWith(x)) || scanned(extOf(e.name))) acc.push(p);
   }
   return acc;
@@ -1852,11 +1536,11 @@ function classify(arg: ts.Expression | undefined, key: string, src: ts.SourceFil
 /** Every call of the seam in one file, classified, plus every escape of its name. */
 /** Every file extension present in the walked tree, so the reach claim can be checked against the
  *  repository rather than against memory. */
-function extensionsPresent(dir: string, acc: Set<string> = new Set()): Set<string> {
+function extensionsPresent(root: string, dir = root, acc: Set<string> = new Set()): Set<string> {
   for (const e of readdirSync(dir, { withFileTypes: true })) {
     if (e.isDirectory()) {
       const p = join(dir, e.name);
-      if (!SKIP_DIRS.has(e.name) && !isNestedCheckout(p)) extensionsPresent(p, acc);
+      if (!skipDirectory(root, p)) extensionsPresent(root, p, acc);
     }
     else acc.add(extOf(e.name));
   }
@@ -2762,20 +2446,40 @@ console.log("A. the reader itself, on fixtures whose verdicts are known");
 
 console.log("\nB. the seam, across every source the compiler may or may not read");
 {
+  const root = mkdtempSync(join(tmpdir(), "required-arg-seam-"));
+  try {
+    const authored = join(root, "website", "public", "api", "reference", "index.html");
+    for (const file of [authored, join(root, "website", "typedoc", "index.html"),
+      join(root, "website", "public", "api", "typescript", "index.html")]) {
+      mkdirSync(dirname(file), { recursive: true });
+      writeFileSync(file, "");
+    }
+    const walked = sources(root);
+    check("the walk skips both TypeDoc output trees but still reads authored HTML", walked.length === 1 && walked[0] === authored, walked);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+{
   const call = "standaloneConnectOpts({ tls: false });";
   const scan = (file: string, text: string) => summarize(sitesIn(file, text, SEAMS[0])).sites;
   const expected = countsByFile([...scan("a.ts", call), ...scan("b.ts", call)]);
   check("per-file counts accept the same sites without line-number pins",
     censusDrift(expected, countsByFile([...scan("a.ts", `\n\n${call}`), ...scan("b.ts", call)])).length === 0);
   check("per-file counts refuse replacing a hidden site with a call in another file at the same total",
-    censusDrift(expected, countsByFile(scan("b.ts", `${call}\n${call}`))).length === 2);
+    censusDrift(expected, countsByFile(scan("b.ts", `${call}\n${call}`))).join("\n") ===
+      "a.ts: found 0, expected 1\nb.ts: found 2, expected 1");
+  check("per-file counts name a recorded file that gains an unrecorded call",
+    censusDrift(expected, countsByFile([...scan("a.ts", `${call}\n${call}`), ...scan("b.ts", call)])).join("\n") ===
+      "a.ts: found 2, expected 1");
+  check("per-file counts name a recorded file that loses its last call",
+    censusDrift(expected, countsByFile(scan("b.ts", call))).join("\n") === "a.ts: found 0, expected 1");
   check("per-file counts name a newly added source rather than absorbing it into the population",
-    censusDrift(expected, countsByFile([...scan("a.ts", call), ...scan("b.ts", call), ...scan("new.ts", call)])).length === 1);
+    censusDrift(expected, countsByFile([...scan("a.ts", call), ...scan("b.ts", call), ...scan("new.ts", call)])).join("\n") ===
+      "new.ts: found 1, expected 0");
 }
-check("the literal per-file census accounts for the source and smoke totals",
-  Object.values(SITE_COUNTS).every((n) => Number.isSafeInteger(n) && n > 0)
-  && Object.values(SITE_COUNTS).reduce((a, b) => a + b, 0) === SEAMS[0].sites
-  && Object.entries(SITE_COUNTS).filter(([file]) => file.includes("/smoke/")).reduce((n, [, count]) => n + count, 0) === SEAMS[0].untypecheckedSites);
+check("the reviewed per-file census contains only positive integer counts",
+  Object.values(SITE_COUNTS).every((n) => Number.isSafeInteger(n) && n > 0));
 const files = sources(ROOT);
 check("the scan reached a source tree at all (a zero-file walk would pass every cell below)", files.length > 500, files.length);
 
@@ -2811,9 +2515,11 @@ for (const seam of SEAMS) {
   const normalized = sites.map((site) => ({ ...site, file: site.file.split(sep).join("/") }));
   const drift = censusDrift(expectedByFile, countsByFile(normalized));
   check(`\`${seam.fn}\`: every file matches its reviewed exact call count`, drift.length === 0, drift);
-  const expectedSites = seam.sites + sidecars.length * SIDECAR_SITES;
-  // Printed on SUCCESS as well as failure: a legitimate removal then shows the number to put back,
-  // instead of sending the next author into this file to find out what the floor should become.
+  const expectedSites = Object.values(expectedByFile).reduce((sum, count) => sum + count, 0);
+  const expectedSmokeSites = Object.entries(expectedByFile)
+    .filter(([file]) => file.includes("/smoke/"))
+    .reduce((sum, [, count]) => sum + count, 0);
+  // Report the actual totals on both success and failure.
   console.log(`  · ${seam.fn}: ${sites.length} call sites (${untypechecked.length} under smoke/, ${sites.length - untypechecked.length} outside smoke/)`);
   check(`\`${seam.fn}\`: every call site states \`${seam.key}\``, bad.length === 0,
     bad.map((s) => `${s.file}:${s.line} [${s.verdict}] ${s.detail}`));
@@ -2821,26 +2527,12 @@ for (const seam of SEAMS) {
   check(`\`${seam.fn}\`: the name is never rebound, so no call can hide behind an alias`, aliased.length === 0,
     aliased.map((s) => `${s.file}:${s.line} ${s.detail}`));
 
-  // THE POPULATION. Without it this check degrades into a green that means nothing: a rename, a
-  // wrapper, or a reader that stops matching all produce "no bad sites" out of "no sites at all".
-  //
-  // These were FLOORS (`>=`) until adversarial review executed the cost of the slack. With the live
-  // population one above each floor, it rewrote a single counted site into a form the reader could
-  // not see, the count fell to exactly the floor, and every cell stayed green while a call that
-  // throws at runtime sat in the tree. Slack of one is one free silent hide, so the counts are now
-  // matched EXACTLY: any movement, in either direction, is a call site added, removed, or hidden,
-  // and each of those deserves a human look rather than an inequality that absorbs it.
-  //
-  // The cost is honest and small: a PR that legitimately adds or removes a seam call site updates
-  // the per-file census and the totals here. The per-file check distinguishes cross-file changes,
-  // but a replacement inside the same file still requires review.
+  // Derive both totals from the reviewed file counts so independent changes only touch their own entries.
   check(`\`${seam.fn}\`: the scan finds EXACTLY ${expectedSites} call sites (if you added or removed one, update the per-file census deliberately)`,
     sites.length === expectedSites, { found: sites.length, expected: expectedSites });
 
-  // Keep the smoke subtree census separate: a bare "> 0" would miss disappearing sites.
-  // The legacy field name is not a typecheck coverage claim; packages now typecheck their smokes.
-  check(`\`${seam.fn}\`: EXACTLY ${seam.untypecheckedSites} of them are under smoke/`,
-    untypechecked.length === seam.untypecheckedSites, { found: untypechecked.length, expected: seam.untypecheckedSites });
+  check(`\`${seam.fn}\`: EXACTLY ${expectedSmokeSites} of them are under smoke/`,
+    untypechecked.length === expectedSmokeSites, { found: untypechecked.length, expected: expectedSmokeSites });
 }
 
 console.log(`\n${fail === 0 ? "REQUIRED-ARG SEAM SMOKE OK ✅" : "REQUIRED-ARG SEAM SMOKE FAILED ❌"}  (${pass} passed, ${fail} failed)`);

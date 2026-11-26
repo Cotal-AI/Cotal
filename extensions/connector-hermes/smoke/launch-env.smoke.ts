@@ -53,7 +53,7 @@ const assert: typeof nodeAssert = new Proxy(nodeAssert, {
  * guarantee is the false-green shape this package keeps being bitten by. Pinning the floor turns a
  * smaller green into a red. Raise it deliberately when you add a cell; a drop means one vanished.
  */
-const EXPECTED_CELLS = 191;
+const EXPECTED_CELLS = 193;
 
 if (process.platform === "win32") {
   await checkWindowsLaunch();
@@ -505,6 +505,12 @@ writeFileSync(
 );
 writeFileSync(join(noPs, "ps"), "#!/bin/sh\necho 'ps: unavailable' >&2\nexit 1\n", { mode: 0o755 });
 writeFileSync(join(home, "config.yaml"), "plugins:\n  enabled: [cotal]\ngateway:\n  platforms:\n    cotal:\n      enabled: true\n");
+writeFileSync(join(home, "SOUL.md"), OP_SOUL);
+const guide = readFileSync(new URL("../../../docs/connect-hermes.mdx", import.meta.url), "utf8");
+const example = /`\.cotal\/agents\/([\w-]+\.md)`[^\n]*\n\n```markdown\n([\s\S]+?)\n```[\s\S]+?^cotal spawn --foreground --harness hermes --file \.cotal\/agents\/\1$/m.exec(guide);
+if (!example) throw new Error("The Hermes guide must show the agent file selected by its adopted-profile launch");
+const agentFile = join(stopRoot, example[1]);
+writeFileSync(agentFile, `${example[2]}\n`);
 const alive = (pid: number): boolean => {
   try {
     process.kill(pid, 0);
@@ -518,7 +524,7 @@ const waitFor = async (ok: () => boolean, ms: number): Promise<boolean> => {
   return ok();
 };
 /** Start the launcher, stop it with SIGTERM, and report what was left. */
-const stopRun = async (label: string, opts: { psFails: boolean; holdBridge: boolean }) => {
+const stopRun = async (label: string, opts: { psFails: boolean; holdBridge: boolean; agentFile?: string }) => {
   // The launcher's own temp dir, kept short: the control socket's path has to fit in sun_path.
   const tmp = mkdtempSync(join(tmpdir(), "chs-"));
   const pidFile = join(tmp, "gateway.pid");
@@ -537,6 +543,7 @@ const stopRun = async (label: string, opts: { psFails: boolean; holdBridge: bool
       COTAL_LAUNCH_MATERIAL: material,
       COTAL_HERMES_ADOPT_HOME: home,
       COTAL_HERMES_UV_BIN: join(bin, "uv"),
+      COTAL_AGENT_FILE: opts.agentFile,
       FAKE_GW_PID: pidFile,
     },
     stdio: ["ignore", "ignore", "pipe"],
@@ -570,7 +577,9 @@ assert.ok(unproven.gatewayAlive, "stop: with `ps` failing, the gateway that igno
 assert.ok(unproven.dirKept, `stop: a drain that cannot prove the gateway exited leaves the control socket's directory in place: ${unproven.stderr}`);
 assert.ok(/could not prove the gateway exited/.test(unproven.stderr) && unproven.stderr.includes(unproven.dir), `stop: and the log names the directory it left: ${unproven.stderr}`);
 
-const held = await stopRun("held-bridge", { psFails: false, holdBridge: true });
+const held = await stopRun("held-bridge", { psFails: false, holdBridge: true, agentFile });
+assert.ok(held.started, `the guide's agent file starts the gateway on the adopted profile: ${held.stderr}`);
+assert.equal(readFileSync(join(home, "SOUL.md"), "utf8"), OP_SOUL, "the guide's adopted launch preserves SOUL.md byte-for-byte");
 assert.equal(held.heldClosedWithDir, true, `stop: the sidecar ends an accepted bridge connection before the directory goes: ${held.stderr}`);
 assert.ok(!held.dirKept && !held.gatewayAlive, `stop: once the gateway's exit is proved, the directory is removed: ${held.stderr}`);
 rmSync(stopRoot, { recursive: true, force: true });

@@ -56,8 +56,8 @@ const env = { ...process.env, XDG_CONFIG_HOME: configDir, COTAL_HOME: home, COTA
 const realNode = spawnSync("which", ["node"], { encoding: "utf8" }).stdout.trim();
 const tsxCli = resolve(import.meta.dirname, "..", "..", "node_modules", "tsx", "dist", "cli.mjs");
 const binCotal = resolve(import.meta.dirname, "..", "cotal.ts");
-const cotal = (args: string[], timeout = 180_000) => {
-  const options = { encoding: "utf8" as const, env, cwd: sandbox, timeout };
+const cotal = (args: string[], { timeout = 180_000, extraEnv = {} }: { timeout?: number; extraEnv?: NodeJS.ProcessEnv } = {}) => {
+  const options = { encoding: "utf8" as const, env: { ...env, ...extraEnv }, cwd: sandbox, timeout };
   assertSmokeSandboxDown(sandboxAnchor, args, options);
   return spawnSync(realNode, [tsxCli, binCotal, ...args], options);
 };
@@ -142,13 +142,13 @@ const extDir = join(configDir, "cotal", "extensions");
 const manifestPath = join(extDir, "extensions.json");
 const installedIndex = join(extDir, "node_modules", "cotal-ext-fixture", "index.js");
 const installedPkg = join(extDir, "node_modules", "cotal-ext-fixture", "package.json");
+const goodFixture = fixture("local extension", GOOD, { name: "cotal-ext-fixture", main: "./index", bin: { "fixture-bin": "bin.js" } });
 
 // -- empty state ---------------------------------------------------------------------------------
 ok("ext list starts empty", /No extensions installed\./.test(cotal(["ext", "list"]).stdout));
 
 // -- A: add --------------------------------------------------------------------------------------
 {
-  const goodFixture = fixture("cotal-ext-fixture", GOOD, { main: "./index", bin: { "fixture-bin": "bin.js" } });
   writeFileSync(join(goodFixture, "bin.js"), "#!/usr/bin/env node\n");
   const r = cotal(["ext", "add", goodFixture]);
   ok("add resolves an extensionless npm main", r.status === 0, r.stderr.slice(-400));
@@ -159,6 +159,24 @@ ok("ext list starts empty", /No extensions installed\./.test(cotal(["ext", "list
   ok("manifest pins name@version + caches flags and provider keys", m.extensions[0].version === "1.0.0" && m.extensions[0].commands[0].flags[0].name === "shout" && m.extensions[0].provides[0].kind === "command", m.extensions[0]);
   const run = cotal(["hello-ext"]);
   ok("a later command resolves the same npm main", run.status === 0 && run.stdout.trim() === "hello world", run);
+}
+
+{
+  const pkg = "cotal-ext-plural-kind";
+  const name = "hello-ext-typo";
+  const path = fixture(pkg, GOOD.replace('kind: "command"', 'kind: "commands"').replace('name: "hello-ext"', `name: "${name}"`));
+  const add = cotal(["ext", "add", path]);
+  ok("add reports a plural kind as a registry entry and explains how to register a command",
+    add.status === 0 && add.stdout.includes(`added ${pkg}@1.0.0`) && !add.stdout.includes(`provides: commands:${name}`)
+      && add.stdout.includes(`Registered commands:${name} in the registry only.`) && add.stdout.includes("Use kind `command`"), add);
+  const list = cotal(["ext", "list"]);
+  ok("list retains the extension and its original registry contribution",
+    list.status === 0 && list.stdout.includes(pkg) && list.stdout.includes(`commands:${name}`), list);
+  const help = cotal(["help"]);
+  const run = cotal([name]);
+  ok("a plural kind does not add a CLI command", help.status === 0 && !help.stdout.includes(name)
+    && run.status === 1 && run.stderr.includes(`unknown command: ${name}`) && run.stdout === "", run);
+  ok("the extension with the plural kind still removes cleanly", cotal(["ext", "remove", pkg]).status === 0);
 }
 
 // -- B: cache-only help/complete; run fails loud while broken -------------------------------------
@@ -172,7 +190,17 @@ ok("ext list starts empty", /No extensions installed\./.test(cotal(["ext", "list
   ok("<TAB> offers cached flags WITHOUT importing", comp.status === 0 && /--shout/.test(comp.stdout), comp.stdout);
   const run = cotal(["hello-ext"]);
   ok("running the broken extension fails loud, naming it", run.status === 1 && /cotal-ext-fixture/.test(run.stderr) && /BOOM/.test(run.stderr), run.stderr.slice(0, 300));
-  writeFileSync(installedIndex, good);
+  if (process.platform !== "win32") {
+    const retry = /`(?:pnpm )?cotal (ext add [^`]+)`/.exec(run.stderr)?.[1];
+    ok("the import error prints a reinstall command", retry !== undefined, run.stderr);
+    // Use the smoke's launcher but let the shell parse the printed arguments unchanged.
+    const readded = spawnSync("sh", ["-c", `"$@" ${retry}`, "sh", realNode, tsxCli, binCotal], {
+      encoding: "utf8", env, cwd: sandbox, timeout: 180_000,
+    });
+    ok("the printed reinstall command accepts a path with spaces", readded.status === 0 && /added cotal-ext-fixture/.test(readded.stdout), readded.stderr);
+  } else {
+    writeFileSync(installedIndex, good);
+  }
 }
 
 // -- B2: a peer link left by another Cotal host is rebound before lazy import -----------------------
@@ -261,7 +289,7 @@ registry.register({ kind: "command", name: "hello-ext", summary: "barrier", run:
 
 // -- C2: re-adding an installed extension is a clean refresh (manifest keeps ONE entry) ------------
 {
-  const r = cotal(["ext", "add", join(sandbox, "cotal-ext-fixture")]);
+  const r = cotal(["ext", "add", goodFixture]);
   ok("re-add of the same extension exits 0", r.status === 0, r.stderr.slice(-300));
   const m = JSON.parse(readFileSync(manifestPath, "utf8"));
   ok("re-add keeps one manifest entry at the same pin", m.extensions.length === 1 && m.extensions[0].version === "1.0.0", m.extensions);
@@ -322,10 +350,29 @@ registry.register({ kind: "command", name: "hello-ext", summary: "barrier", run:
   ok("extension mutation reclaims a dead owner's stale lock", staleClaim.status === 0 && /already absent/.test(staleClaim.stdout) && !existsSync(mutationLock), staleClaim.stdout + staleClaim.stderr);
 
   mkdirSync(mutationLock); // a stray directory where the lock file belongs → unreadable
-  const unreadableStarted = Date.now();
-  const unreadable = cotal(["ext", "add", fixture("cotal-ext-unreadable-lock", GOOD.replace('name: "hello-ext"', 'name: "unreadable-lock"'))], 3_000);
-  const unreadableElapsed = Date.now() - unreadableStarted;
-  ok("an unreadable mutation lock fails loud instead of busy-spinning", unreadable.status === 1 && /unreadable/.test(unreadable.stderr) && unreadableElapsed < 3_000, unreadable.stderr + ` (${unreadableElapsed}ms)`);
+  // Observe the real lock read without including CLI startup in the assertion.
+  const probe = join(sandbox, "count-lock-reads.cjs");
+  const countFile = join(sandbox, "lock-read-count");
+  writeFileSync(probe, `
+const fs = require("node:fs");
+const read = fs.readFileSync;
+let reads = 0;
+fs.readFileSync = function (path, ...args) {
+  if (path === ${JSON.stringify(mutationLock)}) reads++;
+  return read.call(this, path, ...args);
+};
+require("node:module").syncBuiltinESMExports();
+process.on("exit", () => {
+  if (reads > 0) fs.writeFileSync(${JSON.stringify(countFile)}, String(reads));
+});
+`);
+  const unreadable = cotal(["ext", "add", fixture("cotal-ext-unreadable-lock", GOOD.replace('name: "hello-ext"', 'name: "unreadable-lock"'))], {
+    timeout: 30_000,
+    extraEnv: { NODE_OPTIONS: [process.env.NODE_OPTIONS, `--require=${JSON.stringify(probe)}`].filter(Boolean).join(" ") },
+  });
+  const lockReads = existsSync(countFile) ? readFileSync(countFile, "utf8") : "none recorded";
+  ok("an unreadable mutation lock fails loud instead of retrying", unreadable.status === 1 && unreadable.stderr.includes(`advisory lock path ${mutationLock} is unreadable`) && lockReads === "1",
+    { stderr: unreadable.stderr, error: unreadable.error?.message, lockReads });
   rmSync(mutationLock, { recursive: true, force: true });
 
   const priorManifest = readFileSync(manifestPath, "utf8");

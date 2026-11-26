@@ -59,6 +59,10 @@ export function startDashboard(deps: {
   const refresh = () => {
     void controller.refresh().catch((err) => console.error("dashboard refresh failed:", err));
   };
+  let stopped = false;
+  const markClosed = (invalid: boolean) => {
+    if (!stopped) store.set({ connection: invalid ? "session-invalid" : "closed" });
+  };
   const handlers: FeedHandlers = {
     // EVERY open runs the bootstrap again, a reconnect included: events published while the feed was
     // down are not replayed, so the reads are what makes up the difference.
@@ -69,9 +73,12 @@ export function startDashboard(deps: {
     // A failed first attempt has dropped nothing, so it is still connecting; an error after an open
     // is a drop, and the browser's EventSource retries it. A closed feed stays closed: the browser
     // will not retry it, so a late error cannot make the pill say it is reconnecting.
-    error: () => store.set((s) => (s.connection === "closed" ? {} : { connection: s.connection === "connecting" ? "connecting" : "reconnecting" })),
+    error: () => store.set((s) => (s.connection === "closed" || s.connection === "session-invalid" ? {} : { connection: s.connection === "connecting" ? "connecting" : "reconnecting" })),
     // Final: nothing reopens a feed the browser gave up on, so no later event can undo it.
-    closed: () => store.set({ connection: "closed" }),
+    closed(sessionCheck) {
+      if (sessionCheck) void sessionCheck.then(markClosed);
+      else markClosed(false);
+    },
     roster: controller.onRoster,
     presenceView: controller.onPresenceView,
     membership: controller.onMembership,
@@ -92,9 +99,9 @@ export function startDashboard(deps: {
     controller.onFeedLost();
     error();
   };
-  handlers.closed = () => {
+  handlers.closed = (sessionInvalid) => {
     controller.onFeedLost();
-    closed();
+    closed(sessionInvalid);
   };
   // One retry pending at most, and pending exactly while the store holds a retryable refusal, by
   // whichever read left it there (a refresh or a channel's history). It fires one refresh, which
@@ -125,6 +132,7 @@ export function startDashboard(deps: {
   return {
     controller,
     stop() {
+      stopped = true;
       unsubscribe();
       if (retry !== null) timer.clear(retry);
       retry = null;

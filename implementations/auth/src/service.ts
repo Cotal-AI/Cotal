@@ -86,6 +86,7 @@ import { type ManagerCluster } from "./manager-contract.js";
 import { authorityBarrierGrants, authorityWriterGrants, openAuthorityClient, openSupervisedConnectReader, remoteManagerIssuerGrants, registrationExecutorGrants, servedRunRequestSubjects, servedRunCancelRequestSubject, servedSpawnRequestSubjects, serviceCalloutWriterGrants, serviceHostDiscoveryGrants, type AuthorityClient } from "./authority-client.js";
 import { createNativeServiceCalloutAuthority, type NativeServiceCalloutAuthority } from "./native-service-callout.js";
 import { openChatSessionAuthority } from "./chat-session-authority.js";
+import { startSessionConnectionSweep } from "./session-connections.js";
 import { CorruptNativeIssuanceEvidence, pruneNativeIssuance } from "./native-issuance.js";
 import { ensureRootCredential } from "./root-credential.js";
 import { activateLifecycleAtUid, observeGate, openLifecycleRegistry, readLifecycleHeadForOperation, type LifecycleRegistry } from "./lifecycle-registry.js";
@@ -284,6 +285,8 @@ export interface OpenAuthAuthorityPlaneOptions extends AuthServiceRuntimeOptions
   /** Bounded trusted-host-only TTL of the held issuer session's credential, 5..300 seconds (default
    *  the `issuer` profile's five minutes). */
   issuerSessionTtlSeconds?: number;
+  /** Maximum callout response window for retaining newly ended connection evidence. */
+  sessionCalloutTimeoutMs?: number;
   /** Delay between completed native-issuance cleanup walks (default 60 s). Startup reads at most
    *  one historical row, then continues in bounded background batches. */
   nativeIssuancePruneMs?: number;
@@ -745,6 +748,13 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
     }));
   }
   const recordsJsm = await jetstreamManager(remoteIssuer.nc);
+  const stopSessionSweep = startSessionConnectionSweep({
+    jsm: recordsJsm, kv: registryStores(registry).authKv, space, secret: dataAccount.signingSeed,
+    releaseWindowMs: (opts.sessionCalloutTimeoutMs ?? 2000) + 1000,
+    canSweep: () => !closing && fatalReason === undefined,
+    evict: makeDeliveryAdminEvictor({ onConnection, space, server, dataAccount, log }), log,
+  });
+  unwind.push(stopSessionSweep);
   const authKv = await new Kvm(remoteIssuer.nc).open(epAuthBucket(space));
   const managerIssuanceGate = (instanceId: string) => serveIssuanceGateKv(authKv, space, { endpoint: "manager", instanceId });
   const loadLocalManager = opts.localManager ?? (() => undefined);
@@ -1128,6 +1138,7 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
       await drainCallerPayload();
       await stopPrune();
       await stopChatSweep();
+      await stopSessionSweep();
       // Every service host call that entered returns, discovery and effects included, then every
       // effect connection that did not close is closed again, before discovery closes and before
       // the claim is released. A failure here rejects with the claim still held; close retries it.

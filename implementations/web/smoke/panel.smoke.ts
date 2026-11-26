@@ -175,12 +175,14 @@ const profile = (id: string, patch: Partial<DashboardState> = {}) =>
   same("2.10 a live channel with replay off reads live, and with no topic has no Topic row", kv(plain), [["Delivery", "live"], ["Messages", "1"]]);
   const bare = pane(parse(renderShell(seed({ channels: [{ channel: "review", messages: 4 }] as ChannelInfo[] }), inReview, true)));
   same("2.11 a channel whose policy the server has not sent says nothing about delivery", kv(bare), [["Messages", "4"]]);
-  const del = button(live, "Delete channel");
-  ok("2.12 Delete channel closes the tab and opens a dialog, which is not drawn until it is clicked",
+  const deletable = members({ channelDeleteSupported: true });
+  const del = button(deletable, "Delete channel");
+  ok("2.12 Delete channel appears when supported and its dialog is not drawn until it is clicked",
     textOf(del) === "Delete channel" && del?.getAttribute("aria-haspopup") === "dialog" && del.getAttribute("aria-expanded") === "false"
-      && live.querySelector("[role=alertdialog], [role=dialog]") === null, del?.outerHTML);
+      && deletable.querySelector("[role=alertdialog], [role=dialog]") === null, del?.outerHTML);
   const unknownDot = all(stranger, "button.v3-mrow").map((r) => r.querySelector(".ui-av .ui-st") !== null);
   same("2.13 a member the roster does not know draws no status dot, as it shows no status word", unknownDot, [true, false]);
+  ok("2.14 Delete channel is absent until the dashboard reports support", button(live, "Delete channel") === undefined);
 }
 
 // ── 3. The Agent tab's peek, and the Profile tab that holds the rest ─────────────────────────────
@@ -407,7 +409,7 @@ localStorage.clear();
 // ── 6. Mounted: the delete dialog ────────────────────────────────────────────────────────────────
 {
   const { controller, deleted } = fakeController();
-  const m = await mountShell(controller);
+  const m = await mountShell(controller, { channelDeleteSupported: true });
   const trigger = button(pane(m.container), "Delete channel");
   await m.run(() => click(trigger));
   const box = () => document.querySelector("[role=alertdialog]");
@@ -457,7 +459,7 @@ localStorage.clear();
   await m.unmount();
 
   const refused = fakeController(async () => { throw new Error("delete #review: permissions violation for publish"); });
-  const r = await mountShell(refused.controller);
+  const r = await mountShell(refused.controller, { channelDeleteSupported: true });
   await r.run(() => click(button(pane(r.container), "Delete channel")));
   const rbox = () => document.querySelector("[role=alertdialog]");
   await r.run(() => typeInto(rbox()?.querySelector("input"), "review"));

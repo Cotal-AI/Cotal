@@ -1,5 +1,85 @@
 # @cotal-ai/runtime
 
+## 0.182.0
+
+### Minor Changes
+
+- 0c9e27a: Messages carrying reserved stored-message headers are dropped, so send a fresh message without those headers instead of forwarding the stored delivery.
+
+### Patch Changes
+
+- be4c3bf: Read workflow journals directly with `cotal run show` on an open broker without a manager, unless the command explicitly selects a manager.
+- 609c84d: When a hosted workflow resume rejects a malformed run ID, its suggested list now looks up runs on the original target.
+- 89b3d2a: Keep the broker override and output format in the run list command suggested when a local checkpoint answer or amendment names a missing run.
+- 717b50c: When `cotal run resume --local` cannot find the run, it reports `TARGET_NOT_FOUND` and points to the local inventory for the same target.
+- 3f6cfef: The JSON workflow list on a broker-only open mesh reports that records were not checked and points to the direct read with `--local`.
+- Updated dependencies [ecd506f]
+- Updated dependencies [896100c]
+- Updated dependencies [77a02cd]
+- Updated dependencies [1d10f92]
+- Updated dependencies [7ef585e]
+- Updated dependencies [48b6414]
+- Updated dependencies [423aa24]
+- Updated dependencies [1f37adb]
+- Updated dependencies [30b474d]
+- Updated dependencies [b670c41]
+- Updated dependencies [c9a8881]
+- Updated dependencies [0adb7ba]
+- Updated dependencies [b4d8ea1]
+- Updated dependencies [9f63fee]
+- Updated dependencies [365e355]
+- Updated dependencies [dd426ff]
+- Updated dependencies [f5b2a30]
+- Updated dependencies [0c9e27a]
+- Updated dependencies [d387f8b]
+- Updated dependencies [e6cd8f2]
+- Updated dependencies [6c10b18]
+  - @cotal-ai/workspace@0.182.0
+  - @cotal-ai/core@0.182.0
+  - @cotal-ai/lang@0.182.0
+
+## 0.181.0
+
+### Minor Changes
+
+- e22d95e: Workflow runs can pin separate effect budgets for spawns, turns and other effect kinds.
+  
+  The optional ceilings record is saved with the run pins, checked on resume and enforced from the journal across restarts. Existing records retain their total-only ceiling. A per-kind refusal names its limit with L4029 before dispatch, without consuming another kind's allowance.
+
+### Patch Changes
+
+- 09617e8: When `run check` or `run revoke --local` gets a malformed run ID, it points to the local run list on the same target instead of a manager-only lookup.
+- 56eb577: List workflows on a broker-only open mesh without asking for a manager, and point to the local inventory and offline simulation.
+- Updated dependencies [b05f907]
+- Updated dependencies [49d14ac]
+- Updated dependencies [e22d95e]
+- Updated dependencies [b1590ac]
+- Updated dependencies [d76ec5e]
+  - @cotal-ai/core@0.181.0
+  - @cotal-ai/lang@0.181.0
+  - @cotal-ai/workspace@0.181.0
+
+## 0.180.0
+
+### Patch Changes
+
+- Updated dependencies [bffdc47]
+- Updated dependencies [fcd33e4]
+  - @cotal-ai/workspace@0.180.0
+  - @cotal-ai/core@0.180.0
+  - @cotal-ai/lang@0.180.0
+
+## 0.179.0
+
+### Patch Changes
+
+- Updated dependencies [3b5bde1]
+- Updated dependencies [0413abe]
+- Updated dependencies [c7f487b]
+  - @cotal-ai/core@0.179.0
+  - @cotal-ai/workspace@0.179.0
+  - @cotal-ai/lang@0.179.0
+
 ## 0.178.0
 
 ### Patch Changes

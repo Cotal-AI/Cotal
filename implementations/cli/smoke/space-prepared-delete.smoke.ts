@@ -285,20 +285,39 @@ if (process.platform !== "win32" && process.getuid?.() !== 0) {
   const saved = `${control}.saved`;
   const before = readdirSync(control).sort();
   renameSync(control, saved);
-  writeFileSync(control, "sentinel\n");
+  writeFileSync(control, "sentinel\n", { mode: 0o600 });
+  const verdict = '"b4d" is prepared but not started';
+  const problem = `\`${control}\` is a regular file, not a directory`;
+  const repair = "move the file aside and restore the original .cotal directory";
+  const target = ["--space", "b4d", "--plain"];
   try {
-    const blocked = run(["doctor", "auth", "--plain", "--space", "b4d"]);
+    const blocked = run(["doctor", "auth", ...target]);
     const next = blocked.stderr.split("Next\n")[1] ?? "";
-    const repair = `\`${control}\` is a regular file, not a directory. First move the file aside and restore the original .cotal directory, then start it with`;
     check("doctor auth from another folder names the regular file and puts restoration before startup",
       blocked.status === 2 && /Code:\s+AUTH_REQUIRED/.test(blocked.stderr) &&
-      ["cotal", "pnpm cotal"].some((launcher) => next.includes(`${repair} \`${launcher} up --root `)), shown(blocked));
-    check("doctor leaves both the obstructing file and the saved directory intact",
+      ["cotal", "pnpm cotal"].some((launcher) => next.includes(`${problem}. First ${repair}, then start it with \`${launcher} up --root `)), shown(blocked));
+    const status = run(["status", ...target]);
+    check("status keeps the prepared verdict and gives the file repair in Next",
+      status.status === 0 && status.stdout.includes(verdict) && (status.stdout.split("Next\n")[1] ?? "").includes(`${problem}. ${repair}`) && !status.stdout.includes("start it with"), shown(status));
+    const ps = run(["ps", ...target]);
+    check("ps names the regular file and gives the repair without blaming permissions",
+      ps.status === 2 && /Code:\s+TARGET_UNAVAILABLE/.test(ps.stderr) && ps.stderr.includes(problem) && (ps.stderr.split("Next\n")[1] ?? "").includes(repair), shown(ps));
+    const components = run(["status", "--components", "--space", "b4d"]);
+    const health = components.stdout.split("Component Health")[1] ?? "";
+    check("component health still refuses and names the file and repair",
+      components.status === 3 && /target\s+refused/.test(health) && health.includes(problem) && health.includes(repair), shown(components));
+    check("diagnostics leave both the obstructing file and the saved directory intact",
       lstatSync(control, { throwIfNoEntry: false })?.isFile() === true && readFileSync(control, "utf8") === "sentinel\n" &&
       lstatSync(saved, { throwIfNoEntry: false })?.isDirectory() === true && JSON.stringify(readdirSync(saved).sort()) === JSON.stringify(before));
   } finally {
     rmSync(control);
     renameSync(saved, control);
+  }
+  for (const [command, code] of [["status", 0], ["ps", 2]] as const) {
+    const restored = run([command, ...target]);
+    const text = restored.stdout + restored.stderr;
+    check(`${command} returns to first-start guidance after the directory is restored`,
+      restored.status === code && text.includes(verdict) && ["cotal", "pnpm cotal"].some((launcher) => text.includes(`start it with \`${launcher} up\` in ${special}`)), shown(restored));
   }
 }
 
@@ -346,6 +365,12 @@ check("the recovery command removes the damaged record", forgetDamaged.status ==
 const unknown = run(["space", "delete", "nosuch", "--dry-run", "--json"]);
 check("control: a name nothing records is still not found, exit 2", unknown.status === 2 && unknown.envelope?.error?.code === "TARGET_NOT_FOUND", shown(unknown));
 const addedOffline = run(["space", "add", "offline", "--server", server, "--root", noSpace, "--force"]);
+const manualConflict = run(["space", "create", "new-local", "--plain"], noSpace);
+check("space create at a manual registration's root points to its broker host and exact registration",
+  addedOffline.status === 0 && manualConflict.status === 2 && /Code: +CONFLICT/.test(manualConflict.stderr) &&
+    manualConflict.stderr.includes('create "new-local" in another folder with --root <dir>; for "offline", start its broker where it runs') &&
+    ["cotal", "pnpm cotal"].some((cli) => manualConflict.stderr.includes(`inspect the registration with \`${cli} space show offline\`, or forget it with \`${cli} space forget offline\``)) &&
+    !/`(?:pnpm )?cotal up`/.test(manualConflict.stderr), shown(manualConflict));
 const offline = run(["space", "delete", "offline", "--dry-run", "--json"]);
 check("a failed deletion preview names the recorded broker and how to inspect its registration",
   addedOffline.status === 0 && offline.status === 2 && offline.envelope?.error?.code === "TARGET_UNAVAILABLE" &&
@@ -388,6 +413,12 @@ for (const [i, space] of workshops.entries()) {
   const added = run(["space", "add", space, "--mode", "open", "--server", `nats://127.0.0.1:${43026 + i}`, "--root", ".", "--force", "--yes"], workshop);
   check(`rig: ${space} is registered open at the shared root`, added.status === 0, shown(added));
 }
+const sharedConflict = run(["space", "create", "new-local", "--json"], workshop);
+const sharedRemedy = sharedConflict.envelope?.error?.remedy ?? "";
+check("a shared manual root names each registration in the JSON remedy without suggesting local startup",
+  sharedConflict.status === 2 && sharedConflict.envelope?.error?.code === "CONFLICT" &&
+    workshops.every((space) => sharedRemedy.includes(`for "${space}", start its broker where it runs, inspect the registration with \`cotal space show ${space}\`, or forget it with \`cotal space forget ${space}\``)) &&
+    !sharedRemedy.includes("`cotal up`"), shown(sharedConflict));
 const unchecked = run(["doctor", "auth", "--space", "workshop-a", "--json"], workshop);
 check("doctor keeps the local open-space no-op and warns that the mode was not checked",
   unchecked.status === 0 && unchecked.envelope?.outcome === "no-op" && unchecked.envelope.result?.credentialScope === "open-space" &&

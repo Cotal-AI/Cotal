@@ -52,12 +52,17 @@ const jsonDuplicate = (r: ReturnType<typeof run>, command: string) => r.status =
 for (const args of [
   ["--json", "--no-input", "--no-input", "version"],
   ["--no-input", "--no-input", "-j", "--", "-V"],
+  ["--no-input", "--no-input", "--plain=false", "version", "--json"],
+  ["--no-input", "--plain=false", "--no-input", "-j", "-V"],
   ["--no-input", "version", "--no-input", "--json"],
   ["version", "--no-input", "--no-input", "--json"],
 ]) {
   const r = run(args);
   check(`${args.join(" ")} preserves the JSON refusal`, jsonDuplicate(r, "version"), shown(r));
 }
+const literalJson = run(["--no-input", "--no-input", "--plain=false", "version", "--", "--json"]);
+check("a duplicate with a valued leading switch ignores literal --json", literalJson.status === 1 &&
+  literalJson.stdout === "" && literalJson.stderr === `✗ ${duplicateInput}\n`, shown(literalJson));
 
 const configHelp = run(["config", "get", "--help"]);
 check("config get help is scoped", configHelp.status === 0 && configHelp.stdout.includes("cotal config get <key>") && !configHelp.stdout.includes("--verbose"), shown(configHelp));
@@ -112,6 +117,21 @@ check("finite JSON refusal carries the retained extension collision once", colli
 const collisionText = run(missingKey, collisionConfig);
 check("text refusal keeps the retained extension collision on stderr", collisionText.status === 1 && collisionText.stdout === "" &&
   collisionText.stderr.includes("output-fixture@1.0.0"), shown(collisionText));
+const forcedColor = { FORCE_COLOR: "1", NO_COLOR: "" };
+const collisionPlain = run(["config", "get", "harness", "--plain"], collisionConfig, forcedColor);
+const collisionPlainRefusal = run(["--plain", ...missingKey], collisionConfig, forcedColor);
+const collisionRich = run(["config", "get", "harness"], collisionConfig, forcedColor);
+const collisionLine = collisionRich.stderr.split("\n")[0] ?? "";
+const uncoloredCollision = collisionLine.replace(/\u001b\[\d+m/g, "");
+check("rich output still colors the collision warning under FORCE_COLOR", collisionRich.status === 0 && collisionLine.startsWith("\u001b[31m") &&
+  uncoloredCollision.startsWith('! command "config"') && ["cotal", "pnpm cotal"].some((cli) => uncoloredCollision.includes(`\`${cli} ext remove output-fixture\``)), shown(collisionRich));
+check("plain success keeps the same warning without ANSI escapes under FORCE_COLOR", collisionPlain.status === 0 && collisionPlain.stdout.includes("Preference - harness") &&
+  !collisionPlain.stdout.includes("\u001b") && collisionPlain.stderr === `${uncoloredCollision}\n`, shown(collisionPlain));
+check("plain refusal keeps the same warning without ANSI escapes under FORCE_COLOR", collisionPlainRefusal.status === 1 && collisionPlainRefusal.stdout === "" &&
+  collisionPlainRefusal.stderr.startsWith(`${uncoloredCollision}\nRequest refused\n`) && !collisionPlainRefusal.stderr.includes("\u001b"), shown(collisionPlainRefusal));
+const collisionLiteral = run(["config", "get", "--", "--plain"], collisionConfig, forcedColor);
+check("--plain after -- does not turn off collision warning color", collisionLiteral.status === 1 &&
+  collisionLiteral.stderr.startsWith(`${collisionLine}\n`), shown(collisionLiteral));
 const collisionParse = run(["--json", "config", "get", "color", "--unknown-option"], collisionConfig);
 check("JSON parser refusal carries the retained extension collision", collisionParse.status === 1 && collisionParse.stderr === "" &&
   collisionParse.envelope?.error?.code === "USAGE_INVALID" && collisionParse.envelope.warnings?.[0]?.code === "EXTENSION_COMMAND_COLLISION", shown(collisionParse));
@@ -142,6 +162,15 @@ check("cotal --plain status prints the plain report", (plain.status === 0 || pla
 
 const plainVersion = run(["--plain", "version"]), versionPlain = run(["version", "--plain"]);
 check("cotal --plain version is refused as version --plain is: version has no plain output", plainVersion.status === 1 && /Unknown option '--plain'/.test(plainVersion.stderr) && versionPlain.status === 1 && /Unknown option '--plain'/.test(versionPlain.stderr), { before: shown(plainVersion), after: shown(versionPlain) });
+
+const malformedVersion = run(["--plain=true", "--json", "version"]);
+check("the version receipt tells you to omit the unsupported --plain flag", malformedVersion.status === 1 && malformedVersion.stderr === "" &&
+  malformedVersion.envelope?.command === "version" && malformedVersion.envelope.outcome === "refused" &&
+  malformedVersion.envelope.error?.code === "USAGE_INVALID" && malformedVersion.envelope.error.message === "--plain takes no value" &&
+  malformedVersion.envelope.error.remedy === "omit --plain", shown(malformedVersion));
+const retryVersion = run(["--json", "version"]);
+check("dropping the unsupported flag returns the JSON version receipt", retryVersion.status === 0 && retryVersion.stderr === "" &&
+  retryVersion.envelope?.command === "version" && retryVersion.envelope.outcome === "ok", shown(retryVersion));
 
 const dashes = run(["--", "version"]);
 check("cotal -- version runs version", dashes.status === 0 && /\d+\.\d+\.\d+/.test(dashes.stdout), shown(dashes));
@@ -195,6 +224,22 @@ const malformedWithLiteralJson = run(["--no-color=false", "--no-input=false", "s
 check("a literal --json does not set the format of a malformed leading switch refusal", malformedWithLiteralJson.status === 1 &&
   malformedWithLiteralJson.stdout === "" && malformedWithLiteralJson.stderr.includes("--no-color takes no value"), shown(malformedWithLiteralJson));
 
+for (const [args, flag] of [
+  [["--plain=false", "status", "--json"], "--plain"],
+  [["--json=false", "status", "--json"], "--json"],
+  [["--plain=false", "--json=false", "-j", "--", "s"], "--plain"],
+  [["--json", "-j=false", "status"], "-j"],
+] as const) {
+  const r = run([...args]);
+  check(`${args.join(" ")} preserves the JSON refusal`, r.status === 1 && r.stderr === "" &&
+    r.envelope?.command === "status" && r.envelope.outcome === "refused" && r.envelope.error?.code === "USAGE_INVALID" &&
+    r.envelope.error.message === `${flag} takes no value` && r.envelope.error.remedy === `omit ${flag} or pass it without a value`, shown(r));
+}
+
+const malformedOutput = run(["--json=false", "status", "--", "--json"]);
+check("only a valid output switch before -- requests JSON", malformedOutput.status === 1 && malformedOutput.stdout === "" &&
+  malformedOutput.stderr.includes("--json takes no value"), shown(malformedOutput));
+
 const literalGlobal = run([...search, "--", "--no-input=false"]);
 check("after -- an attached global value is still a page word", literalGlobal.status === 1 && literalGlobal.stderr === "" &&
   literalGlobal.envelope?.error?.message === "give a page or --search, not both", shown(literalGlobal));
@@ -205,6 +250,10 @@ check("a command that takes its words raw still accepts the word", rawGlobal.sta
 
 const undeclared = run(["--json", "ext", "root"]), trailing = run(["ext", "root", "--json"]);
 check("a mode without that output refuses the leading flag as it does after the word", undeclared.status === 1 && /has no --json or --plain/.test(undeclared.stderr) && trailing.status === 1 && /has no --json or --plain/.test(trailing.stderr), { before: shown(undeclared), after: shown(trailing) });
+const malformedRoot = run(["--json=true", "ext", "root"]);
+check("the remedy uses the subcommand's outputs, not the parent command's", malformedRoot.status === 1 && malformedRoot.stdout === "" &&
+  malformedRoot.stderr.includes("--json takes no value") && malformedRoot.stderr.includes("omit --json") &&
+  !malformedRoot.stderr.includes("pass it without a value"), shown(malformedRoot));
 
 for (const { args, command, status, code } of [
   { args: ["backup", "inspect", "./not-there", "--json"], command: "backup inspect", status: 2, code: "TARGET_NOT_FOUND" },
@@ -221,6 +270,43 @@ for (const { args, command, status, code } of [
 }
 
 const dashFlag = "\u2013\u2013no-color";
+const dashMessage = `${dashFlag} starts with a typographic dash, so it is not an option`;
+const dashRemedy = "type the option with hyphens: --no-color";
+for (const args of [
+  [dashFlag, "config", "get", "harness", "--json"],
+  ["-j", dashFlag, "cfg", "get", "harness"],
+  [dashFlag, "--json", "config", "get", "harness"],
+]) {
+  const r = run(args);
+  check(`${args.join(" ")} keeps the dash diagnosis in a finite JSON refusal`, r.status === 1 && r.stderr === "" &&
+    r.envelope?.command === "config" && r.envelope.outcome === "refused" && r.envelope.error?.code === "USAGE_INVALID" &&
+    r.envelope.error.message === dashMessage && r.envelope.error.remedy === dashRemedy, shown(r));
+}
+for (const args of [
+  [dashFlag, "config", "get", "harness", "--", "--json"],
+  ["--json", "--", dashFlag, "config", "get", "harness"],
+  [dashFlag, "ext", "root", "--json"],
+]) {
+  const r = run(args);
+  check(`${args.join(" ")} keeps the dash diagnosis on stderr when JSON is not selected`, r.status === 1 && r.stdout === "" &&
+    r.stderr.includes(dashMessage) && r.stderr.includes(dashRemedy), shown(r));
+}
+for (const [stream, ...words] of [
+  ["watch", "watch"],
+  ["history", "history", "general", "--follow"],
+  ["membership", "channel", "members", "general", "--follow"],
+]) {
+  const r = run([dashFlag, ...words, "--json"]);
+  const records = r.stdout.trim().split("\n").map((line) => {
+    try { return JSON.parse(line); } catch { return undefined; }
+  });
+  const [error, end] = records;
+  check(`${words.join(" ")} reports a leading dash error and ends the JSON stream`, r.status === 1 && r.stderr === "" &&
+    records.length === 2 && error?.stream === stream && error.type === "error" && error.data?.code === "USAGE_INVALID" &&
+    error.data.message === dashMessage && error.data.remedy === dashRemedy &&
+    end?.stream === stream && end.type === "end" && end.data?.reason === "setup-failed", shown(r));
+}
+
 for (const { words, command } of [
   { words: [dashFlag, "inspect", "./not-there"], command: "backup inspect" },
   { words: [dashFlag, "verify", "./not-there"], command: "backup verify" },
@@ -263,6 +349,23 @@ check("a typographic flag after the backup verb keeps the same refusal", dashAft
 const scaffold = run(["endpoint", "init", "note", "--dir", "starter"]);
 check("endpoint init creates the contract for the separator check", scaffold.status === 0, shown(scaffold));
 if (scaffold.status === 0) {
+  const contract = "starter/contract.json";
+  for (const flags of [["--file", "--json"], ["--json", "--file"]]) {
+    const r = run(["endpoint", "check", contract, ...flags]);
+    check(`endpoint check ${flags.join(" ")} tells the caller to omit --file`,
+      r.status === 1 && r.stderr === "" && r.envelope?.command === "endpoint check" && r.envelope.outcome === "refused" &&
+      r.envelope.error?.code === "USAGE_INVALID" && r.envelope.error.message === "`endpoint check` does not take --file" &&
+      r.envelope.error.remedy === "omit --file and keep the contract path", shown(r));
+  }
+  const retry = run(["endpoint", "check", contract, "--json"]);
+  check("endpoint check succeeds with the same contract and output mode after omitting --file",
+    retry.status === 0 && retry.stderr === "" && retry.envelope?.command === "endpoint check" && retry.envelope.outcome === "ok", shown(retry));
+  const add = run(["endpoint", "add", "note", "--file", "--json"]);
+  check("endpoint add still asks for a missing reference filename",
+    add.status === 1 && add.stderr === "" && add.envelope?.outcome === "refused" &&
+    add.envelope.error?.code === "USAGE_INVALID" && add.envelope.error.message === "--file needs a value" &&
+    add.envelope.error.remedy === "write --file <reference.json>", shown(add));
+
   copyFileSync(join(neutral, "starter", "contract.json"), join(neutral, "--plain"));
   const endpointCheck = (...args: string[]) => run(["endpoint", "check", ...args], undefined,
     { FORCE_COLOR: "1", NO_COLOR: "", LC_ALL: "C.UTF-8" });

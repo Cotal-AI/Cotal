@@ -38,7 +38,7 @@ claude --mcp-config '{"mcpServers":{"cotal":{…}}}' \
   a managed launch's same-named entry replaces it. A carried seat's private home declares it itself.
   A managed launch with no declaration refuses instead of starting a seat that cannot wake. On a
   daemon-connected computer, use `cotal daemon setup --space <space>` to retry registration.
-  `cotal status` reports the entry under `Claude wake channel`.
+  `cotal status --wide` reports the entry under **Claude wake channel** in **This machine**.
 
 - `--prompt` is Claude's first turn. The connector passes it as Claude's leading argument after one
   space, so a prompt that names a Claude command or starts with `-` still arrives as the turn. An
@@ -799,12 +799,35 @@ takes no images.
 model's context window, and the session's cost in US dollars as `/cost` totals it. Before the first
 response it reports the cost alone.
 
-The seat's presence shows `interrupt`, `turn`, `images` and `usage` served only while a mod serves
-the session, and it changes as the mod's reader connects or leaves. A client such as an ACP thread picks
-the endpoint or the Manager's interrupt key and `input` from it.
+`set-model` switches the model and effort of every main turn that starts after it, through the mod.
+The mod hooks `turn.step` and sends each of the main loop's model requests on the switched model and
+effort. Claude Code's own `/model` and `/effort` save the person's settings for every new session,
+so they stay refused, and the switch lives in the session alone. Before the mod takes a switch, the
+seat reads the models `claude` lists for its login, as a launcher's catalog does, and refuses a model
+it does not list, or an effort it does not list for that model, with `not-found`. A list that does
+not read is `failed-precondition`. A switch that names no effort leaves the effort the seat
+launched with, and its answer names that effort where the model takes it. A seat's own MCP server
+serves the switch. A host serving several sessions in one process does not, and neither does Claude
+Desktop.
+
+A switch leaves these on the launch model:
+
+- Claude Code's own view of the session: its status line, `/model`, and the context window `usage`
+  reports.
+- Subagents, which keep the model Claude Code picks for them.
+- A reload of the plugin's mod in the running session, which starts it with no switch.
+
+A `/model` the person runs at the seat ends the switch, and an `/effort` ends its effort, from the
+next turn, so the seat runs what Claude Code shows them. The seat's card keeps showing the switch,
+since Claude tells the connector of neither. A Manager that restarts the seat launches it on the
+switched model and effort, so Claude Code's own view shows them too.
+
+The seat's presence shows `interrupt`, `turn`, `images`, `usage` and `setModel` served only while a
+mod serves the session, and it changes as the mod's reader connects or leaves. A client such as an
+ACP thread picks the endpoint or the Manager's interrupt key and `input` from it.
 
 While no mod serves the session, `commands` and `usage` answer `supported: false`, and `command`,
-`turn` and `interrupt` are `unimplemented` with the cause:
+`turn`, `interrupt` and `set-model` are `unimplemented` with the cause:
 
 - Claude Code is older than 2.1.330.
 - The seat runs on Windows. A Windows pipe lives in a namespace every account on the machine

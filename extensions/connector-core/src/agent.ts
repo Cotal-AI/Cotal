@@ -226,7 +226,10 @@ export class MeshAgent extends EventEmitter {
         events: this,
         owner: this.ep.principal.owner,
         request: options.naming.request,
-        settle: (label) => this.inOrder(() => this.ep.setCardMeta({ [AGENT_NAMING_META_KEY]: undefined, [AGENT_LABEL_META_KEY]: label() })),
+        settle: (label) => this.inOrder(() => {
+          const took = label();
+          return this.ep.setCardMeta(took === undefined ? { [AGENT_NAMING_META_KEY]: undefined } : { [AGENT_NAMING_META_KEY]: undefined, [AGENT_LABEL_META_KEY]: took });
+        }),
         log: (msg) => this.log(msg),
       });
     else if (config.autoName)
@@ -388,6 +391,14 @@ export class MeshAgent extends EventEmitter {
     this._storedCopiesFull = Math.max(0, this._storedCopiesFull - seen);
   }
 
+  get omittedChannelPosts(): number {
+    return this.inboxState.omittedChannelPosts;
+  }
+
+  clearOmittedChannelPosts(seen: number): void {
+    this.inboxState.clearOmittedChannelPosts(seen);
+  }
+
   /** Session-local channel degradation, independent of transport liveness. */
   get channelDeliveryIssue(): string | undefined {
     return this.inboxState.channelDeliveryIssue;
@@ -532,6 +543,8 @@ export class MeshAgent extends EventEmitter {
       const served = await openAgentEndpoint(this.ep, {
         warn: (msg) => this.log(msg),
         onNamed: () => this.naming?.end(),
+        showModel: ({ model, variant }) => this.presence.switchModel(model, variant),
+        policed: this.config.modelPolicy,
         dispatcher: this.options.commands,
         onQueued: () => this.emit("command"),
         first: takeFirstCommand(),

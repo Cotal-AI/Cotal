@@ -65,7 +65,7 @@ const GATEWAY_DRAIN_MS = 1_500;
  *  uv cannot forward a SIGKILL, so killing the gateway means killing the tree. */
 function processTree(pid: number): number[] {
   const children = new Map<number, number[]>();
-  for (const line of execFileSync("ps", ["-A", "-o", "pid=,ppid="], { encoding: "utf8" }).split("\n")) {
+  for (const line of execFileSync("ps", ["-A", "-o", "pid=,ppid="], { encoding: "utf8", windowsHide: true }).split("\n")) {
     const [child, parent] = line.trim().split(/\s+/).map(Number);
     if (!child || parent === undefined) continue;
     children.set(parent, [...(children.get(parent) ?? []), child]);
@@ -278,7 +278,7 @@ export function assertHermesVersion(opts: {
 } = {}): void {
   let raw: string;
   try {
-    const execFileImpl = opts.execFileImpl ?? ((file, args, options) => execFileSync(file, args, options));
+    const execFileImpl = opts.execFileImpl ?? ((file, args, options) => execFileSync(file, args, { ...options, windowsHide: true }));
     raw = execFileImpl(
       hermesUvCommand(opts.env),
       ["run", "--project", opts.pkgDir ?? PKG_DIR, "--quiet", "python", "-c", "from importlib.metadata import version; print(version('hermes-agent'))"],
@@ -324,7 +324,7 @@ function forkHermesSession(opts: { sourceHome: string; source: string; seatHome:
   const r = spawnSync(
     hermesUvCommand(env),
     ["run", "--project", PKG_DIR, "--quiet", "python", "-P", join(PLUGIN_SRC, "resume.py"), "fork", opts.sourceHome, opts.source, opts.seatHome],
-    { encoding: "utf8", env: { ...env, HERMES_HOME: opts.seatHome } },
+    { encoding: "utf8", env: { ...env, HERMES_HOME: opts.seatHome }, windowsHide: true },
   );
   if (r.error) throw new Error(`could not run the Hermes session fork via uv: ${r.error.message}`);
   if (r.status === 3) throw new LaunchRefused(r.stderr.trim());

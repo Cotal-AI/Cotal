@@ -59,6 +59,7 @@ import {
   readProcessCommand,
   resolveMeshTarget,
   processStopped,
+  WEB_SERVICE_ADAPTER,
 } from "@cotal-ai/workspace";
 import { liveMeshProcesses } from "./clean.js";
 import { addressHolder, brokerListenAddress, canonicalServer, listenerBindError } from "../lib/broker-service.js";
@@ -76,7 +77,7 @@ import { listLedgerFiles } from "../lib/manifest/ledger.js";
 import { listAdditiveTeamAttempts, retainedAdditiveTeamAttempts, type AdditiveTeamAttempt } from "../lib/team-additive-attempt.js";
 import { freshTeamAttemptSettled, listFreshTeamAttempts, listFreshTeamSummaries } from "../lib/team-fresh.js";
 import { foreignLocalProcesses, legacyBrokerPidfileBlock, newStackOperation, readStackJournal, removeStaleLocalRecords, runningStackRoles, serviceHeldRecords, settleRetainedStackStops, settleStackOperation, STACK_ADAPTER, STACK_DEFINITION, STACK_ROLES, stackDefinitionsAt, stackMaintenanceFence, stackNeverStarted, stackRecoveryHost, stackOperationUnsettled, stackRoleApplies, stackSettlementNotice, staleRecordWarning, withSettledMembers, writeStackJournal, type LocalRecord, type StackJournal, type StackJournalSnapshot, type StackMember, type StackMode, type StackRole, type StackSettlement } from "../lib/stack-journal.js";
-import { retryStackAddress } from "../lib/up-broker-address.js";
+import { stackRetryServer } from "../lib/up-broker-address.js";
 import { withManagerName } from "../lib/up-manager-name.js";
 import { NATS_DEFAULT_MAX_PAYLOAD, natsServerLabel, type NatsServer } from "../lib/nats-bin.js";
 import { sharedStoreAtStart, sharedStoreWarning, type StoreTenant } from "../lib/store-dir.js";
@@ -348,26 +349,57 @@ export function controllerStackApplies(root: string, space: string, values: Pars
   return true;
 }
 
-export function refuseForegroundStackHolder(root: string, space: string, holderPid: number, noManager: boolean): never {
+export function refuseForegroundStackHolder(root: string, space: string, holderPid: number, noManager: boolean, maxPayload?: number): never {
   const home = readStackJournal(root)?.journal.recovery?.home;
   const cmd = home !== undefined && home !== resolve(homeCotalDir()) ? `COTAL_HOME=${shellWord(home)} ${displayCmd()}` : "cotal";
   throw new CommandFailure("refused", "CONFLICT", `a foreground \`cotal up\` in process ${holderPid} already holds this stack's lifetime; this terminal did not take it over and nothing was started`, {
     target: { root, space, holderPid },
-    remedy: `use the terminal that runs process ${holderPid}, where Ctrl-C stops the stack, or stop it with ${codeSpan(`${cmd} down --yes`)} from ${root} and run ${codeSpan(`${cmd} up --foreground${noManager ? " --no-manager" : ""}`)} again`,
+    remedy: `use the terminal that runs process ${holderPid}, where Ctrl-C stops the stack, or stop it with ${codeSpan(`${cmd} down --yes`)} from ${root} and run ${codeSpan(`${cmd} up --foreground${noManager ? " --no-manager" : ""}${maxPayload !== undefined ? ` --max-payload ${maxPayload}` : ""}`)} again`,
   });
 }
 
+/** An independently owned observer can stay up while its recorded broker is recovered in place. */
+function recoveringObserverBroker(request: StackUpRequest, recorded: StackJournal | undefined, observer: ReturnType<typeof serviceHeldRecords>[number]): boolean {
+  const { root, space, server, transport } = request;
+  if (recorded?.mode !== "auth" || recorded.space !== space || canonicalServer(recorded.server) !== canonicalServer(server) ||
+      request.manifest || request.rotateSys || request.recreateIssuedStores !== undefined || request.recreateMembershipStore || request.channels !== undefined) return false;
+  const registration = findMesh(space), policy = readBrokerPolicy(root);
+  if (registration?.origin !== "up" || canonicalRoot(registration.root) !== root || registration.server !== recorded.server ||
+      (policy?.transport.kind ?? "plaintext") !== transport.kind || (transport.kind === "tls-required" &&
+        (policy?.transport.kind !== "tls-required" || policy.transport.certFile !== transport.certFile || policy.transport.keyFile !== transport.keyFile)) ||
+      (request.maxPayload !== undefined && request.maxPayload !== (policy?.maxPayload ?? NATS_DEFAULT_MAX_PAYLOAD)) ||
+      (request.accountResolver !== undefined && request.accountResolver !== (policy?.accountResolver ?? "memory"))) return false;
+  const member = recorded.members.find((row) => row.role === "broker");
+  const brokers = serviceInstances(space, STACK_DEFINITION.broker);
+  const broker = brokers[0]?.record.value;
+  if (brokers.length !== 1 || !member?.process || !broker?.process || member.instanceId !== broker.instanceId ||
+      member.process.pid !== broker.process.pid || member.process.token !== broker.process.token || observeServiceProcess(broker) !== "gone") return false;
+  const web = serviceInstanceStore(space).read(observer.instanceId)?.record.value;
+  const saved = serviceDefinitionStore(space).read(observer.definition)?.record;
+  const launch = saved?.value.launch;
+  return web?.adapter?.name === WEB_SERVICE_ADAPTER && web.process?.pid === observer.record.pid && observeServiceProcess(web) === "running" &&
+    saved?.revision === web.definitionRevision && launch?.type === "adapter" && launch.adapter === WEB_SERVICE_ADAPTER &&
+    launch.options.root === root && launch.options["read-only"] === true;
+}
+
 /** Returns a settled active restore of the recorded stack that was admitted, for the result to name. */
-function stackPreflight({ root, space, noManager, invokedRoot, foreground, manifest }: StackUpRequest, recorded: StackJournal | undefined): string | undefined {
+function stackPreflight(request: StackUpRequest, recorded: StackJournal | undefined, repeatsBrokerInputs: boolean): string | undefined {
+  const { root, space, noManager, invokedRoot, foreground, manifest } = request;
   // Its members' own pidfiles would read as legacy processes under a Cotal home with no record of them.
   if (recorded && stackRunsUnderOtherHome(root, recorded)) throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "this root's controller stack has missing member records in this Cotal home; nothing was started, adopted or replaced", { target: { root, space, cotalHome: homeCotalDir() }, remedy: stackHomeRemedy(recorded.recovery?.home) });
   const maintenance: { fenced: boolean; admittedRestore?: string } = recorded ? stackMaintenanceFence(root, recorded) : { fenced: readMaintenanceJournal(root) !== undefined };
   if (maintenance.fenced) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "this root retains a maintenance or recovery attempt; the controller stack did not substitute an ordinary startup", { target: { root, space } });
-  const legacy = foreignLocalProcesses(root, space);
+  let legacy = foreignLocalProcesses(root, space);
   const brokerPidfile = legacyBrokerPidfileBlock(root);
   // A service of this space started at this root, such as a `manager` preset, writes its own record
   // here. It is named with the stop `down` names for it; the stack still neither adopts nor replaces it.
-  const held = legacy.length && !brokerPidfile ? serviceHeldRecords(root, space) : [];
+  let held = legacy.length && !brokerPidfile ? serviceHeldRecords(root, space) : [];
+  const observer = held.length === 1 ? held[0] : undefined;
+  if (repeatsBrokerInputs && observer?.record.name === "web" && legacy.length === 1 && legacy[0] === `web (pid ${observer.record.pid})` &&
+      recoveringObserverBroker(request, recorded, observer)) {
+    legacy = [];
+    held = [];
+  }
   if (held.length && held.length === legacy.length) {
     const cmd = displayCmd();
     const retryRoot = invokedRoot !== undefined && invokedRoot !== root ? ` --root ${shellWord(root)}` : "";
@@ -384,11 +416,14 @@ function stackPreflight({ root, space, noManager, invokedRoot, foreground, manif
   try { ledgers = listLedgerFiles(root, { requireReadable: true }); additive = listAdditiveTeamAttempts(root); boots = listFreshTeamAttempts(root); summaries = listFreshTeamSummaries(root); }
   catch { throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "team records under this root could not be read; no empty team state was inferred", { target: { root, space } }); }
   const settled = new Map(summaries.valid.map((summary) => [summary.deploymentId, summary]));
-  // A channel-only deployment that returned onto this recorded stack stays with it across a stop: its
-  // cards are in this broker's store, so starting the stack again adopts nothing and its records stay
-  // as they are. Any other retained deployment still blocks.
-  const carried = (attempt: AdditiveTeamAttempt) => recorded !== undefined && attempt.requestedAgents.length === 0 && additive.returned.some((row) => row.deploymentId === attempt.deploymentId)
-    && attempt.space === recorded.space && canonicalRoot(attempt.root) === canonicalRoot(root) && attempt.server === recorded.server && attempt.authMode === recorded.mode;
+  // Ordinary startup of the recorded stack does not replay returned additive launches or adopt their
+  // cards. Fresh boots, broker maintenance and unsettled removals retain the agent deployment fence.
+  const ordinaryUp = !manifest && !request.rotateSys && request.recreateIssuedStores === undefined && !request.recreateMembershipStore && request.channels === undefined;
+  const removing = new Set([...(additive.removal?.attempts ?? []), ...(additive.channelRemoval?.attempts ?? [])].map((row) => row.deploymentId));
+  const carried = (attempt: AdditiveTeamAttempt) => recorded !== undefined && additive.returned.some((row) => row.deploymentId === attempt.deploymentId)
+    && attempt.space === recorded.space && canonicalRoot(attempt.root) === canonicalRoot(root) && attempt.server === recorded.server && attempt.authMode === recorded.mode
+    && (attempt.requestedAgents.length === 0 || (ordinaryUp && !removing.has(attempt.deploymentId) && space === recorded.space
+      && canonicalServer(request.server) === canonicalServer(recorded.server) && attempt.tlsRequired === (request.transport.kind === "tls-required")));
   const retained = retainedAdditiveTeamAttempts(additive).filter((attempt) => !carried(attempt));
   const unsettledBoots = boots.valid.filter((attempt) => attempt.deploymentId !== manifest?.deploymentId && !freshTeamAttemptSettled(attempt, settled.get(attempt.deploymentId)));
   if (ledgers.valid.length || ledgers.refused.length || retained.length || additive.refused.length || boots.refused.length || summaries.refused.length || unsettledBoots.length) {
@@ -622,8 +657,8 @@ export async function stackStartAddressProblem(root: string, space: string, serv
     const held = await recordedAddressHeld(space, journal.server, journal.broker?.host);
     if (!held) return undefined;
     if (refusedStart && stackNeverStarted(journal)) {
-      const retry = await retryStackAddress(["--foreground"], root, journal.server, journal.broker?.host ?? brokerListenAddress(journal.server).host);
-      return { message: held.says, remedy: `${retry ? `${retry}, or ` : ""}${held.frees}, then run ${codeSpan(`${displayCmd()} up`)} in ${root}` };
+      const alternate = await stackRetryServer(journal.server, journal.broker?.host ?? brokerListenAddress(journal.server).host);
+      return { message: held.says, remedy: `${held.frees}, then repeat your original startup command from the same folder${alternate ? `, or repeat it from that folder with ${codeSpan(`--server ${alternate}`)} and all other options unchanged` : ""}` };
     }
     const noManager = journal.members.some((row) => row.role === "manager" && row.state === "not-attempted" && (cleanStop || row.instanceId === null));
     const restart = `${displayCmd()} up${noManager ? " --no-manager" : ""}`;
@@ -892,7 +927,7 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
         ? `from the stack's project root, run \`cotal down --yes\`, then \`cotal up --max-payload ${NATS_DEFAULT_MAX_PAYLOAD}\`, or keep it broker-only with \`cotal up --no-manager\``
         : `pass --max-payload ${MANAGER_START_PAYLOAD_FLOOR} or more, or pass --no-manager to start the broker without a manager`,
     });
-  const admittedRestore = stackPreflight({ ...request, root, space }, previous?.journal);
+  const admittedRestore = stackPreflight({ ...request, root, space }, previous?.journal, recordedInputs !== undefined && strayHost === undefined && !newCap && !newLog);
   // A recorded stack keeps its space and broker address. The refusal names what is recorded and the
   // bare up that starts it there.
   const recordedTarget = { root, space, recorded: { space: previous?.journal.space, server: previous?.journal.server }, requested: { space, server: request.server } };

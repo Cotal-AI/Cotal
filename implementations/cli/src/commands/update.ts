@@ -12,7 +12,7 @@ import {
   writeResult,
   type OutputWarning,
   claimUpdateClosureAccess,
-  updateClosureOwner,
+  updateClosureOwner, withWindowsUpdateIdentity,
   homeCotalDir,
   preparedRecordSkipped,
   preparedRecordSpace,
@@ -56,7 +56,7 @@ import { selfArgv } from "../lib/self-exec.js";
 import { repairInstallModes } from "../lib/install-umask.js";
 import { cliVersion, installedCliVersion } from "../lib/version.js";
 import { runSeed, compareSemver, seedInstallationCurrent, assertReadableSeedState, readSeedRepairRefusal } from "../seed/reconcile.js";
-import { operatorInstallDiffers } from "../seed/verify.js";
+import { operatorInstallDiffers, operatorUpdateSpec } from "../seed/verify.js";
 import { cliPackageRoot, entryScript, seedWriterKind } from "../seed/paths.js";
 import { refreshClientInstalls, refreshConnectorInstalls } from "./setup.js";
 import { c } from "../ui.js";
@@ -322,7 +322,7 @@ export async function update(args: ParsedArgs, rt: UpdateRuntime = updateRuntime
   let continuation: string | undefined;
   try {
     for (const env of environments) Object.assign(env, { TMPDIR: scratch, TMP: scratch, TEMP: scratch });
-    continuation = await updateInstallation(args, rt);
+    continuation = await (args.values.self === true ? withWindowsUpdateIdentity(() => updateInstallation(args, rt)) : updateInstallation(args, rt));
   } finally {
     for (const { env, values } of previous) for (const [key, value] of Object.entries(values)) {
       if (value === undefined) delete env[key];
@@ -818,7 +818,7 @@ async function updateOperatorExtensions(rt: UpdateRuntime, current: string): Pro
       continue;
     }
     rt.err(c.dim(`${entry.pkg}: ${differs}; reinstalling`));
-    const spec = `${entry.pkg}@${current}`;
+    const spec = operatorUpdateSpec(entry, current);
     const [bin, ...argv] = rt.selfArgv();
     const env: NodeJS.ProcessEnv = {
       ...rt.env,
@@ -930,7 +930,7 @@ async function upgradeAndReconcile(targetVersion: string, current: string, rt: U
   let prefix: string | undefined;
   try {
     prefix = rt.installPrefix();
-    if (prefix) {
+    if (prefix && process.platform !== "win32") {
       for (const [key, value] of Object.entries(rt.env)) {
         if (key.toLowerCase() === "npm_config_prefix" && value && realpathSync(value) !== prefix)
           throw new Error("npm's configured prefix differs from the invoked cotal install; run its installer launcher or correct npm_config_prefix");
@@ -954,7 +954,7 @@ async function upgradeAndReconcile(targetVersion: string, current: string, rt: U
 
   if (prefix) {
     try {
-      if (realpathSync(root) !== realpathSync(join(prefix, "lib", "node_modules")))
+      if (realpathSync(root) !== realpathSync(join(prefix, ...(process.platform === "win32" ? [] : ["lib"]), "node_modules")))
         throw new Error("npm's global root does not match the invoked install prefix");
     } catch (e) {
       rt.err(c.red(`✗ could not verify npm's selected global root: ${message(e)}`));

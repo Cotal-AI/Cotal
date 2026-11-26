@@ -57,8 +57,11 @@ a receiving session compares. An instance id is refused when its name also resol
 participant, and a shared name refuses with the full identities to send to with `--to` instead.
 Direct and role sends have no native mention field and refuse that option as `USAGE_INVALID`
 (exit 1), before connecting.
-A direct send may use `--reply-to <message-id>` to identify the message it answers. The sender
-still has no inbox and does not promise thread continuity.
+A direct or channel send may use `--reply-to <message-id>` to identify the message it answers,
+and the stored message carries it as `replyTo`. A role send refuses the option as `USAGE_INVALID`
+(exit 1) before checking the message body or connecting. Remove `--reply-to` and its value to send
+to the role, or choose `--to` or `--channel` to send a reply. The sender still has no inbox and does
+not promise thread continuity.
 
 A one-shot sender displays the OS login and host as `<login>@<host>`, not the launching
 seat's name. On a local static-auth mesh, the account signer binds that label to a stable
@@ -88,8 +91,9 @@ whether or not anyone holds the role. When no present participant holds it, the 
 closest role a present participant holds, or lists the roles present when none is close. A roster
 that is not current within two seconds adds no warning. A message over the broker's message limit, envelope included, refuses
 `UNSUPPORTED` (exit 2) with its size and the limit, and nothing is sent. A file or stdin body is read
-only to one byte past that limit. A pipe or a device such as `/dev/zero` has no size to report, so
-its refusal names the limit alone. When the broker denies publishing to a channel, participant
+only to one byte past that limit. If a stdin pipe reaches that point, `send` refuses without
+waiting for the writer to close it. A pipe or a device such as `/dev/zero` has no size to report,
+so its refusal names the limit alone. When the broker denies publishing to a channel, participant
 or role, `send` refuses with `PERMISSION_DENIED` (exit 2) and confirms nothing was stored. For
 channel posts, the remedy reads the grant ledger or the `agent`, `observer` or `admin` file passed
 with `--creds`. An observer or admin file has no channel post grants. If the grant is unknown,
@@ -545,7 +549,9 @@ the duration. For example, `--window ' 24h '` saves `24h`.
 
 With `channel set` or `channel defaults`, use `--replay` to turn replay on and `--no-replay` to turn
 it off. If you write `--replay off`, the write refuses without saving and gives a retry that keeps
-your other settings, target and output format. `channel show` reads settings without replay flags.
+your other settings, target and output format, even when `--replay off` comes before the channel
+name. If the extra word does not follow the replay flag, the refusal does not pick a channel for
+you. `channel show` reads settings without replay flags.
 
 `members` reads the broker-derived membership feed. Its timestamp is the last successful feed
 poll, not proof of current activity or access. A roster name that is only whitespace is shown as
@@ -812,9 +818,11 @@ observer or admin credential reads across channels.
 A part that could not be read is a warning and a `partial` run (exit 4): the
 retention, a replay policy, the channel list when a channel is named, or one channel of several.
 
-`--follow` prints the window and then each new message until interrupted. With a static agent
-credential and no channel named, the live feed follows the credential's read grant, including
-channel families. If the broker refuses that feed, name a channel the credential can read.
+`--follow` prints the window and then each new message until interrupted. It does not join a channel.
+A delivery service that recognizes observer connections also leaves the follow out of the live
+membership list. With a static agent credential and no channel named, the live feed follows the
+credential's read grant, including channel families. If the broker refuses that feed,
+name a channel the credential can read.
 With no channel read grant, the follow refuses with `PERMISSION_DENIED`. Each message is one line in the
 form `watch --plain` uses: `[<space>] <time>  <sender>  <destination>  <text>`, with a 24-hour local
 time and `#<channel>` or `DM to <principal>` as the destination. A purge by `history clear` is not
@@ -915,6 +923,7 @@ options. For a preview, omit `--force` and keep `--dry-run`.
 caller credential, connects nowhere and does not check authorization or retained message counts.
 For an open broker, pass both `--space` and `--server` to preview a target without a local registration.
 A local controller stack stopped by a completed `down` previews using its saved broker address.
+So does a space started directly with `cotal up --foreground` and then stopped, from the broker address its project retains.
 Without an explicit broker, a space that is prepared but not started is refused with
 `TARGET_UNAVAILABLE` (exit 2), and the refusal says how to start it.
 The purge uses the existing purger instrument or one-action user purger view, not a broader caller.

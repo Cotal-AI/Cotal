@@ -3,7 +3,7 @@
  *  pause's one-use settlement. The mesh handler composes it and passes its connections, binding,
  *  watcher and run services, each read at its use. */
 import {
-  EpEnvelopeError, chatStream, eptStreamName, eptSubject, handleCheckpointFire, heartbeatCheckpoint, mintCheckpoint,
+  EpEnvelopeError, chatStream, eptStreamName, eptSubject, handleCheckpointFire, hasStoredOrigin, heartbeatCheckpoint, mintCheckpoint,
   readCheckpointSettle, readCheckpointSpec, readCheckpointStatus, reconcileCheckpointSchedule, resumeCheckpoint,
   type CheckpointRef, type CheckpointSettleFact, type CotalMessage,
 } from "@cotal-ai/core";
@@ -278,6 +278,8 @@ export class PauseTimers {
     if (m === null || m === undefined) {
       throw new Error(`the message this wait matched (sequence ${seq}) is no longer on the channel's stream; a recorded match cannot be re-read`);
     }
+    if (hasStoredOrigin(m.header))
+      throw new Error("the recorded wait message carries stored-message headers. Start a new run and have the sender post a fresh message.");
     const msg = decodeMessage(m.data);
     if (msg === undefined) throw new Error(`the message at sequence ${seq} did not decode; a recorded match cannot be re-read`);
     return msg;

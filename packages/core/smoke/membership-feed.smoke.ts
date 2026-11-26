@@ -97,6 +97,10 @@ try {
   conns.push(a1b);
   a1b.subscribe(chatSubject(space, "*", "*", "logs")); // a second conn for the SAME nkey
   await a1b.flush();
+  const tap = await connect({ servers: SERVERS, authenticator: credsAuthenticator(enc(aliceCreds)), name: "cotal:observer/history" });
+  conns.push(tap);
+  tap.subscribe(chatSubject(space, "*", "*", "review.history"));
+  await tap.flush();
 
   // --- bob: a durable member of #deploys (no live conn), written straight to the members registry ---
   // The members registry is the DELIVERY daemon's to write (closure (i): the manager cred no longer holds
@@ -139,7 +143,7 @@ try {
   // were a god-tap (review-general/socrates: shape-based exclusion wrongly erased exactly these). ---
   const dave = newIdentity();
   const daveCreds = await provisionAgent(noop, auth, dave, { subscribe: ["general"], allowSubscribe: [">"], lifecycleUid: mintLifecycleUid() });
-  const dnc = await connect({ servers: SERVERS, authenticator: credsAuthenticator(enc(daveCreds)), name: "cotal:dave" });
+  const dnc = await connect({ servers: SERVERS, authenticator: credsAuthenticator(enc(daveCreds)), name: "cotal:observer:history" });
   conns.push(dnc);
   dnc.subscribe(chatSubject(space, "*", "*", ">")); // chat.*.> — reads everything
   await dnc.flush();
@@ -168,7 +172,8 @@ try {
   const bobRec = out.get(membershipKey(pkey(bob.id)));
 
   check("silent live subscriber appears (zero traffic)", !!aliceRec);
-  check("live patterns unioned across an agent's connections (wildcards kept)", !!aliceRec && eq(aliceRec.live, ["general", "review.>", "logs"]), aliceRec?.live);
+  check("live patterns unioned across an agent's participant connections, excluding the observer tap",
+    !!aliceRec && eq(aliceRec.live, ["general", "review.>", "logs"]), aliceRec?.live);
   check("alice's durable arm merged in (live ∪ durable)", !!aliceRec && eq(aliceRec.durable, ["general"]), aliceRec?.durable);
   check("durable-only member (no live conn) appears", !!bobRec && eq(bobRec.durable, ["deploys"]) && eq(bobRec.live, []), bobRec);
   const daveRec = out.get(membershipKey(pkey(dave.id)));

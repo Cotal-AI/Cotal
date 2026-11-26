@@ -21,7 +21,7 @@
  */
 import { execFile, spawn as spawnProc, spawnSync, type ChildProcess } from "node:child_process";
 import { SMOKE_BROKER_TOKEN, freePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { isAbsolute, join } from "node:path";
@@ -286,6 +286,18 @@ try {
     fixture("opencode", "if(process.argv[2]==='--version'){console.log('1.2.0');process.exit(0)}" + errorLines);
     const serveFailure = await failedLaunch("opencode", "failed_serve");
     ok("OpenCode serve failure returns child stderr rather than wrapper prose", isCommandFailure(serveFailure) && serveFailure.message.includes("run auth login to reauthenticate"), String(serveFailure));
+    const modelProbe = join(fakeBin, "model probe.md");
+    writeFileSync(modelProbe, "---\nname: model_probe\nrole: model_probe\nagent: jcode\n---\nRespond only to test prompts.\n");
+    let prefixFailure: unknown;
+    try {
+      await capture(() => run("spawn", ["--file", modelProbe, "--harness", "jcode", "--detach", "--space", SPACE, "--cwd", fakeBin, "--model", "cliproxy/gpt-6.2-sol"]));
+    } catch (error) { prefixFailure = error; }
+    ok("Jcode rejects a model prefix before the host starts and prints a bare-model retry with the original options",
+      isCommandFailure(prefixFailure) && exitCode(prefixFailure.outcome, prefixFailure.code) === 5 && prefixFailure.code === "OPERATION_FAILED"
+        && prefixFailure.message.includes("model_prefix_rejected") && prefixFailure.message.includes("Select the provider in Jcode's configuration")
+        && ["cotal", "pnpm cotal"].some((cli) => prefixFailure.remedy?.startsWith(`${cli} spawn `))
+        && [" -d", ` --space ${SPACE}`, " --harness jcode", ` --file '${modelProbe}'`, ` --cwd ${fakeBin}`, " --model gpt-6.2-sol"].every((part) => prefixFailure.remedy?.includes(part))
+        && !prefixFailure.remedy?.includes("cliproxy/") && !existsSync(join(workspaceRoot, ".cotal", "jcode")), prefixFailure);
     const originalCwd = process.cwd();
     const jcodeFailure = await (async () => {
       process.chdir(fakeBin);
@@ -511,6 +523,18 @@ try {
   ok("stop reports the acknowledged stop", stopped(stopOut, "bard"), stopOut);
   const psAfter = await capture(() => run("ps", ["--space", SPACE]));
   ok("ps is empty after stop", NO_AGENTS.test(psAfter), psAfter);
+
+  {
+    const guide = readFileSync(join(import.meta.dirname, "../../docs/connect-opencode.mdx"), "utf8");
+    const example = /`\.cotal\/agents\/([\w-]+)\.md`[^\n]*\n\n```markdown\n([\s\S]+?)\n```[\s\S]+?^cotal spawn \1 --harness opencode --detach$/m.exec(guide);
+    if (!example) throw new Error("The OpenCode guide must show how to create the persona before its detached launch");
+    const [, persona, contents] = example;
+    writeFileSync(join(workspaceRoot, ".cotal", "agents", `${persona}.md`), `${contents}\n`);
+    // Use the suite harness to test the catalog lookup against the real manager without OpenCode installed.
+    const launched = await capture(() => run("spawn", [persona, "--harness", "e2e", "--detach", "--no-events", "--space", SPACE]));
+    ok("the OpenCode guide's persona launches by catalog name", joinedAs(launched, persona) && lastOpts?.role === "research", launched);
+    await capture(() => run("stop", [persona, "--space", SPACE]));
+  }
 
   // D — COTAL_DEFAULT_PERSONA supplies the persona for a bare detached spawn. The identity still
   // comes from --name, so this proves persona selection and identity override stay separate.
@@ -783,25 +807,27 @@ try {
       }
       const before = attachCalls;
       // Forcing `isTTY` also turns the report's color on, so the receipt is read without it.
-      const fgOut = plain(await atTerminal(() => capture(() => run("spawn", ["poet", "--no-events", "--agent", "e2e", "--space", SPACE, "--name", "pane", "--on", on2]))));
+      const fgOut = plain(await atTerminal(() => capture(() => run("spawn", ["poet", "--no-events", "--agent", "e2e", "--space", SPACE, "--server", SERVER, "--name", "pane", "--on", on2]))));
       ok("a foreground launch on a runtime with no terminal joins and returns", joinedAs(fgOut, "pane"), fgOut);
       ok("and asks for no attach the detached launch did not also make", attachCalls - before === managerOwn, { foreground: attachCalls - before, detached: managerOwn });
       ok("nothing about it is partial", !/Partly completed|OPERATION_PARTIAL/.test(fgOut), fgOut);
       ok("its receipt names the runtime as streaming no terminal", /Runtime:\s+e2e-nostream [·-] no terminal stream/.test(fgOut), fgOut);
       ok("and says where the seat runs instead of claiming a view", /View:\s+not attached; the seat runs in the manager's e2e-nostream session/.test(fgOut), fgOut);
-      ok("its Next names what reaches the agent without a terminal", /watch --space/.test(fgOut) && /send -t pane/.test(fgOut), fgOut);
+      const scope = `--space ${SPACE} --server ${SERVER}`;
+      const scopedHints = (text: string) => text.includes(`watch ${scope}`) && text.includes(`send -t pane "<message>" ${scope}`);
+      ok("its Next reaches the launched seat's mesh without a terminal", scopedHints(fgOut), fgOut);
       ok("and says once that attach is not available here", /attach is not available here: the e2e-nostream runtime streams no terminal\./.test(fgOut), fgOut);
       const ptyJson = await capture(() => run("spawn", ["poet", "--detach", "--no-events", "--agent", "e2e", "--space", SPACE, "--name", "ptyseat", "--on", on1, "--json"]));
       ok("a pty manager reports the terminal it does have, so nothing skips its attach", (JSON.parse(ptyJson) as { result: { streamsTerminal: boolean | null } }).result.streamsTerminal === true, ptyJson);
       // And `attach` on such a seat refuses once, by the runtime's own guidance, naming what does
       // reach it — never "inspect and reattach", which that runtime cannot do either.
       let refusal: { code?: string; message?: string; remedy?: string } | undefined;
-      try { await run("attach", ["pane", "--space", SPACE, "--on", on2, "--no-reconnect"]); }
+      try { await run("attach", ["pane", "--space", SPACE, "--server", SERVER, "--on", on2, "--no-reconnect"]); }
       catch (e) { refusal = e as { code?: string; message?: string; remedy?: string }; }
       const said = { code: refusal?.code, message: refusal?.message, remedy: refusal?.remedy };
       ok("attach on that seat is refused UNSUPPORTED, not as a lifecycle condition to retry", refusal?.code === "UNSUPPORTED", said);
       ok("the refusal carries the runtime's own guidance", /e2e-nostream runtime: watch this agent where it runs/.test(refusal?.message ?? ""), said);
-      ok("and its Next names the mesh, never a reattach", /send -t pane/.test(refusal?.remedy ?? "") && !/reattach/.test(refusal?.remedy ?? ""), said);
+      ok("and its Next names the seat's space and broker, never a reattach", scopedHints(refusal?.remedy ?? "") && !/reattach/.test(refusal?.remedy ?? ""), said);
       for (const name of ["pane", "pane2", "ptyseat"]) await capture(() => run("stop", ["--name", name, "--space", SPACE]));
     } finally {
       await mgr2.stop().catch(() => {});

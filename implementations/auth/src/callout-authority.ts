@@ -19,7 +19,8 @@ import { authorizeConnectCredential, type ConnectReader } from "./connect-reader
 import type { ConnectLimiter } from "./connect-limit.js";
 import type { UserTokenIssuer } from "./issuer.js";
 import { ledgerAclResolver, ledgerAuthorizeConnect } from "./ledger.js";
-import type { LifecycleRegistry } from "./lifecycle-registry.js";
+import { registryStores, type LifecycleRegistry } from "./lifecycle-registry.js";
+import { recordSessionConnection } from "./session-connections.js";
 import { makeNativeIssuanceRecorder, type NativeIssuanceRecorder } from "./native-issuance.js";
 import type { NativeServiceCalloutAuthority } from "./native-service-callout.js";
 import { calloutPermissions, type EndpointCallerResolver, type ListingIssuer, type UserCallerIssuer } from "./permissions.js";
@@ -141,6 +142,16 @@ export function calloutAuthority(deps: CalloutAuthorityDeps): CalloutAuthority {
     refuse();
     await connectArm(t);
     await authorizeConnectCredential(deps.reader(), t, Date.now);
+    if (t.act.view === "session-caller") {
+      await verifySessionRedemption({
+        jsm: deps.recordsJsm, space,
+        managerGate: async (owner, instanceId) => {
+          const verdict = await gate.managerGate(owner, instanceId);
+          const observed = await gate.observeLegacyManagerGate(instanceId);
+          return { verdict, ...(observed ? { processEpoch: observed.processEpoch } : {}) };
+        },
+      }, { owner: t.owner, actor: t.act.actor, lifecycleUid: t.act.lifecycleUid }, t.act.session!);
+    }
   });
   return {
     resolveEndpointCaller: async (t) => {
@@ -168,9 +179,10 @@ export function calloutAuthority(deps: CalloutAuthorityDeps): CalloutAuthority {
       await connectArm(t);
       await authorizeConnectCredential(deps.reader(), t, Date.now);
     },
-    recordIssuance: (i) => {
+    recordIssuance: async (i) => {
       refuse();
-      return recordIssuance(i);
+      await recordSessionConnection(registryStores(registry).authKv, i, { jsm: deps.recordsJsm, space, secret: dataAccount.signingSeed });
+      await recordIssuance(i);
     },
     authorizeManagerCaller: async (owner, instanceId) => {
       refuse();

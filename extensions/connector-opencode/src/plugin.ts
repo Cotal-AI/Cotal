@@ -138,6 +138,7 @@ export const cotal: Plugin = async () => {
     markInterrupt: markInterruptIntent,
     firstTurnSystem: () => firstTurnSystem(),
     primed: () => { primed = true; },
+    launch: { model: config.model, variant: config.variant },
     warn: log,
   });
   const agent = new MeshAgent(config, undefined, { commands: commands.dispatcher });
@@ -902,10 +903,10 @@ export const cotal: Plugin = async () => {
       const brief = briefed ? undefined : agent.channelBriefing();
       if (brief) parts.unshift({ type: "text", text: brief });
       if (parts.length === 0 && !turnPeek) return;
-      const body: { parts: typeof parts; system?: string } = { parts };
       // persona once, as system (no --append-system-prompt), with the shared briefing after it —
-      // gated on persona so we never replace OpenCode's default system.
-      body.system = firstTurnSystem();
+      // gated on persona so we never replace OpenCode's default system. The model an owner switched
+      // to rides every prompt, since 1.x has no route that sets a session's model.
+      const body = { parts, ...commands.promptModel(), system: firstTurnSystem() };
       // The surface opens the batch, which arms the turn end BEFORE the await: a turn-end signal can
       // land before the server request resolves, and completeTurn bails unless armed — arming after
       // would drop it and wedge the agent.
@@ -1445,10 +1446,14 @@ export const cotal: Plugin = async () => {
       // replaces the map entry, so the prompt follows each replacement until none remains.
       for (let barrier = turnEnds.get(input.sessionID); barrier !== undefined; barrier = turnEnds.get(input.sessionID))
         await barrier;
-      // OpenCode exposes the selected model only on this prompt hook. Do not invent a pre-turn
-      // default: before the first prompt the dashboard truthfully shows "not reported".
+      // OpenCode puts the resolved model on the user message even when the prompt omits it.
+      const resolved = output.message?.model;
       if (input.model)
         await track(agent.setModel(`${input.model.providerID}/${input.model.modelID}`, input.variant));
+      else if (resolved) {
+        const variant = "variant" in resolved && typeof resolved.variant === "string" ? resolved.variant : undefined;
+        await track(agent.setModel(`${resolved.providerID}/${resolved.modelID}`, variant));
+      }
       await injectIntoPrompt(output);
     },
 
