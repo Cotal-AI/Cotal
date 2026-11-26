@@ -89,8 +89,9 @@ export function hangupForegroundStack(root: string, space: string, outsideCmd: s
   const home = homeCotalDir();
   const prefix = home === userCotalDir() ? "" : `COTAL_HOME=${shellWord(home)} `;
   const command = codeSpan(`${prefix}${outsideCmd ?? "cotal"} ${stop}`);
+  const localStop = `cd ${shellWord(root)} && ${prefix}${displayCmd()} down`;
   const remedy = !stackRootGone(space, root)
-    ? `${codeSpan(`cd ${shellWord(root)} && ` + `${displayCmd()} down`)} stops it`
+    ? `inspect it with ${codeSpan(`${localStop} --dry-run`)}; to stop it, run ${codeSpan(`${localStop} --yes`)}`
     : outsideCmd !== undefined
       ? `run ${command} from another folder to stop it`
       : `use a Cotal installation outside the project to run ${command} from another folder to stop it`;

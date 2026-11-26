@@ -36,12 +36,12 @@ try {
   const host = await open("run-mediator", { runMediator: grant });
   const records = await bind(host);
   const out = await startRun(jetstream(driver), await jetstreamManager(driver), {
-    space, endpoint, runId, kv: records, source: 'await sleep("1s");', handler: new SimHandler(),
+    space, endpoint, runId, kv: records, source: 'await sleep("1s");', handler: new SimHandler(), ceilings: { sleep: 1, spawn: 0 },
     lease: { holder: "fixture", epoch: 1, fencingToken: 1, takeoverId: grant.takeoverId },
   });
   const completed = await readRunRecord(records, endpoint, runId);
   if (!completed?.status) throw new Error("runtime wrote no complete run record");
-  check("the real runtime's completed run and resolved pins are accepted", out.status === "completed" && await clear() && !initialized.unknown && initialized.recordsEnumerated === 0 && (await observe()).recordsEnumerated === initialized.recordsEnumerated + 3);
+  check("the real runtime's completed run and per-kind pins are accepted", out.status === "completed" && completed.spec.value.pins.ceilings?.spawn === 0 && await clear() && !initialized.unknown && initialized.recordsEnumerated === 0 && (await observe()).recordsEnumerated === initialized.recordsEnumerated + 3);
   const writeState = async (state: "running" | "released" | "completed") => {
     const current = await readRunRecord(records, endpoint, runId);
     if (!current?.status) throw new Error("run status missing");
@@ -76,6 +76,10 @@ try {
   await badRecord("a program under another run identity", programKey, (kv, key, value) => kv.put(key, JSON.stringify({ ...value, run: "foreign" })));
   await badRecord("a deleted program marker", programKey, (kv, key) => kv.delete(key));
   await badRecord("invalid resolved pins", specKey, (kv, key, value) => kv.put(key, JSON.stringify({ ...value, pins: {} })));
+  for (const ceilings of [null, [], { unknown: 1 }, { sleep: -1 }, { sleep: 1.5 }, { sleep: Number.MAX_SAFE_INTEGER + 1 }]) {
+    await badRecord(`an invalid ceiling map (${JSON.stringify(ceilings)})`, specKey, (kv, key, value) =>
+      kv.put(key, JSON.stringify({ ...value, pins: { ...completed.spec.value.pins, ceilings } })));
+  }
 
   const ref = { endpoint, token: "checkpoint" };
   const holder = { id: "local.worker", lifecycleUid: mintLifecycleUid() };
@@ -96,7 +100,7 @@ try {
 } finally {
   for (const nc of connections) await nc.close();
   await fx.close();
-  if (passed() + failed() !== 23) check(`cell count: ran ${passed() + failed()}, expected 23`, false);
+  if (passed() + failed() !== 35) check(`cell count: ran ${passed() + failed()}, expected 35`, false);
   finish();
 }
 process.exit(process.exitCode ?? 0);

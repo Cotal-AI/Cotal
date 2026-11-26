@@ -15,7 +15,8 @@ export interface AgentEndpoint {
   /** The commands waiting for an idle turn, which the connector runs one per turn. */
   readonly commands: CommandQueue;
   /** Close every prompt and reply to every caller still waiting, refuse every queued command and
-   *  every later `set-name` and `set-model`, then stop serving and wait for the handlers in flight.
+   *  every later `set-name`, `set-label` and `set-model`, then stop serving and wait for the handlers
+   *  in flight.
    *  Does not wait for a `deliver` call that has not ended. */
   close(): Promise<void>;
 }
@@ -27,9 +28,9 @@ export interface AgentEndpoint {
  * `commands` answers `supported: false`, `command` is refused, and `agentEndpoint` shows nothing
  * served. Each time the dispatcher's `watch` reports a change, `agentEndpoint` is derived again.
  * `first` is the command its launch handed the agent, queued before any other. `onNamed` is told
- * when an owner's `set-name` is about to change the name. `showModel` puts the model and variant an
- * owner's `set-model` switched the harness to on the agent's card; without it the card takes them
- * as they are. `policed` names the role whose `modelPolicy` the agent launched under, and then every
+ * when an owner's `set-name` or `set-label` is about to change the name or the label. `showModel`
+ * puts the model and variant an owner's `set-model` switched the harness to on the agent's card;
+ * without it the card takes them as they are. `policed` names the role whose `modelPolicy` the agent launched under, and then every
  * `set-model` is refused.
  *
  * Rejects without a lifecycle UID, when the broker refuses the subscription (a credential minted
@@ -56,7 +57,7 @@ export async function openAgentEndpoint(
   const lane = createCommandLane(opts.dispatcher, opts.onQueued ?? (() => {}), opts.first);
   const naming = createNameLane(ep, warn, opts.onNamed);
   const model = createModelLane(opts.dispatcher, { show: opts.showModel ?? ((s) => ep.setCardModel(s.model, s.variant)), warn, policed: opts.policed });
-  const serve = ep.servePrincipal({ handlers: [...desk.handlers(), ...lane.handlers, naming.handler, model.handler] });
+  const serve = ep.servePrincipal({ handlers: [...desk.handlers(), ...lane.handlers, ...naming.handlers, model.handler] });
   desk.served(serve.ready);
 
   let closing: Promise<void> | undefined;

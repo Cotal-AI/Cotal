@@ -212,14 +212,12 @@ export function validateUpArguments(args: ParsedArgs, beforeRestore = false): vo
 }
 
 function foregroundManifestRefusal(file: string, presentation: ReturnType<typeof presentationOf>, dryRun: boolean, serverOverride: boolean): CommandFailure {
-  const needsCopy = dryRun && serverOverride;
-  const manifest = needsCopy ? "<manifest-copy>" : shellWord(file.startsWith("-") ? `./${file}` : file);
+  const manifest = serverOverride ? "<manifest-copy>" : shellWord(file.startsWith("-") ? `./${file}` : file);
   const boot = `${presentation === "json" ? "cotal" : displayCmd()} team boot ${manifest} --foreground`;
   const preview = codeSpan(`${boot} --dry-run${presentation === "rich" ? "" : ` --${presentation}`}`);
-  const remedy = needsCopy
-    ? `copy the manifest beside the original, set ${codeSpan("broker.servers")} in the copy to the URL from ${codeSpan("--server")} without credentials, then preview with ${preview}`
-    : dryRun ? `preview with ${preview}`
-    : `prepare the project if needed with \`cotal space create <space> --root .\`, then run ${codeSpan(boot)}`;
+  const copy = serverOverride ? `copy the manifest beside the original, set ${codeSpan("broker.servers")} in the copy to the URL from ${codeSpan("--server")} without credentials, then ` : "";
+  const remedy = dryRun ? `${copy}preview with ${preview}`
+    : `prepare the project if needed with \`cotal space create <space> --root .\`, then ${copy}run ${codeSpan(boot)}`;
   return new CommandFailure("refused", "UNSUPPORTED", "manifest boot has no native foreground custody path; a detached broker was not substituted for the requested terminal-bound lifetime", { remedy });
 }
 
