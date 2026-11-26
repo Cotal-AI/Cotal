@@ -124,6 +124,8 @@ async function waitFor<T>(name: string, get: () => T | undefined, timeoutMs = 45
 // takes its identity and target only from its own arguments and these sandboxed dirs.
 const cleanEnv: NodeJS.ProcessEnv = { ...process.env };
 for (const k of Object.keys(cleanEnv)) if (k.startsWith("COTAL_")) delete cleanEnv[k];
+delete cleanEnv.CODEX_HOME;
+delete cleanEnv.OPENAI_API_KEY;
 const cliEnv: NodeJS.ProcessEnv = {
   ...cleanEnv,
   HOME,
@@ -321,12 +323,26 @@ try {
   const selfCapture = join(dir, "selfcapture");
   mkdirSync(selfRoot, { recursive: true });
   mkdirSync(selfCapture, { recursive: true });
+  rmSync(join(HOME, ".codex", "auth.json"));
+  const apiKey = "sk-test-stack-start";
   mkdirSync(join(HOME, ".jcode"), { recursive: true });
   writeFileSync(join(HOME, ".jcode", "auth.json"), JSON.stringify({ openai: { api_key: "fake-smoke-key" } }), { mode: 0o600 });
   const fakeJcode = fileURLToPath(new URL("../../connector-jcode/smoke/fake-jcode.mjs", import.meta.url));
   writeFileSync(
     CODEX,
-    `#!/usr/bin/env node\nimport fs from "node:fs";\nimport { pathToFileURL } from "node:url";\nif (process.argv[2] === "resume") { process.on("SIGTERM", () => process.exit(0)); setInterval(() => {}, 1000); }\nif (process.argv[2] === "app-server") fs.writeFileSync(${JSON.stringify(join(selfCapture, "codex-env.json"))}, JSON.stringify(process.env));\nprocess.env.FAKE_CODEX_LOG = ${JSON.stringify(LOG)};\nawait import(pathToFileURL(${JSON.stringify(FAKE)}).href);\n`,
+    `#!/usr/bin/env node
+import fs from "node:fs";
+import { pathToFileURL } from "node:url";
+if (process.argv[2] === "resume") { process.on("SIGTERM", () => process.exit(0)); setInterval(() => {}, 1000); }
+if (process.argv[2] === "app-server") {
+  const { OPENAI_API_KEY, ...env } = process.env;
+  fs.writeFileSync(${JSON.stringify(join(selfCapture, "codex-env.json"))}, JSON.stringify(env));
+  if (OPENAI_API_KEY === ${JSON.stringify(apiKey)}) fs.writeFileSync(${JSON.stringify(join(selfCapture, "codex-key-received"))}, "");
+}
+process.env.FAKE_CODEX_NOAUTH = "1";
+process.env.FAKE_CODEX_LOG = ${JSON.stringify(LOG)};
+await import(pathToFileURL(${JSON.stringify(FAKE)}).href);
+`,
   );
   chmodSync(CODEX, 0o755);
   const JCODE = join(SHIM, "jcode");
@@ -340,14 +356,19 @@ try {
   try {
     const created = spawnSync("node", [CLI, "space", "create", `cxself${process.pid}`], { cwd: selfRoot, env: cliEnv, encoding: "utf8" });
     if (created.status !== 0) throw new Error(`space create failed (${created.status})\n${created.stdout}\n${created.stderr}`);
-    const started = spawnSync("node", [CLI, "up", "--server", selfServers], { cwd: selfRoot, env: cliEnv, encoding: "utf8" });
+    const started = spawnSync("node", [CLI, "up", "--detach", "--server", selfServers], { cwd: selfRoot, env: { ...cliEnv, OPENAI_API_KEY: apiKey }, encoding: "utf8" });
     if (started.status !== 0) throw new Error(`selfstop up failed (${started.status})\n${started.stdout}\n${started.stderr}`);
     selfUp = true;
+    check("the detached stack starts under the controller", existsSync(join(selfRoot, ".cotal", "stack-controller.json")));
     for (const [harness, seatName, envFile] of [
       ["codex", "self_codex", join(selfCapture, "codex-env.json")],
       ["jcode", "self_jcode", join(selfCapture, "jcode-env.json")],
     ] as const) {
       const spawned = spawnSync("node", [CLI, "spawn", "-d", "-H", harness, "--name", seatName], { cwd: selfRoot, env: cliEnv, encoding: "utf8" });
+      if (harness === "codex") {
+        check("detached Codex joins without an auth file using the API key set only for stack startup",
+          spawned.status === 0 && existsSync(join(selfCapture, "codex-key-received")), `${spawned.stdout}\n${spawned.stderr}`);
+      }
       check(`managed ${harness} seat spawns for stop --self (#7594)`, spawned.status === 0, `${spawned.stdout}\n${spawned.stderr}`);
       const capturedEnv = await waitFor(`${harness} captured env`, () => (existsSync(envFile) ? (JSON.parse(readFileSync(envFile, "utf8")) as NodeJS.ProcessEnv) : undefined));
       check(`${harness} receives complete non-secret seat attribution but no broker material (#7594)`,

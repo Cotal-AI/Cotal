@@ -471,13 +471,13 @@ operator identity. In particular, the web service does not receive the invoking 
 authority.
 
 The manager service also receives the [`spawn.env`](config.mdx#launcher-variables) names that are
-set where it starts, read from the config the manager reads. No value is printed. A manager gives
-its seats their provider keys and `spawn.env` names from its own environment. So when
-`cotal manager start`, `cotal acp` or a controller stack's `cotal up` starts the manager, its seats
-get a provider key or harness folder from the environment only when `spawn.env` lists it. A name
-added to `spawn.env` later reaches seats once the manager starts again. A manager that `cotal up`
-starts on the [legacy launcher](cli-startup.mdx#controller-startup) inherits the whole environment
-of `up`.
+set where it starts, read from the config the manager reads. The controller stack's `stack-manager`
+also receives `OPENAI_API_KEY` when set at startup, without a `spawn.env` entry. No value is printed.
+A manager gives its seats their provider keys and `spawn.env` names from its own environment.
+With `cotal manager start` and `cotal acp`, list provider keys and harness folders in `spawn.env`.
+Do the same for a controller stack's `cotal up` except for `OPENAI_API_KEY`. A name added to
+`spawn.env` later reaches seats once the manager starts again. A manager that `cotal up` starts on
+the [legacy launcher](cli-startup.mdx#controller-startup) inherits the whole environment of `up`.
 
 
 ## Native auth service [#native-auth-service]

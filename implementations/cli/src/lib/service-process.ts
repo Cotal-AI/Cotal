@@ -258,13 +258,17 @@ function executable(definition: ServiceDefinitionInput): string {
   return isAbsolute(source) ? source : resolve(definition.launch.cwd, source);
 }
 
-function environment(definition: ServiceDefinitionInput): NodeJS.ProcessEnv {
+function environment({ name, record: { value: definition } }: ServiceDefinitionSnapshot): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {};
   // LOCALAPPDATA locates Cotal's own folder on Windows when COTAL_HOME is unset, as HOME does elsewhere.
   // The usage telemetry variables and CI reach the service as they reach a seat (docs/telemetry.mdx).
   // NODE_EXTRA_CA_CERTS is the operator's trust in a local CA, which a service dialing the space needs as this command does.
   for (const key of ["PATH", "HOME", "USER", "LOGNAME", "TMPDIR", "LANG", "LC_ALL", "TERM", "COLORTERM", "NO_COLOR", "FORCE_COLOR", "COTAL_HOME", "LOCALAPPDATA", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "XDG_CACHE_HOME", "XDG_RUNTIME_DIR", "DO_NOT_TRACK", "CI", "COTAL_TELEMETRY", "COTAL_TELEMETRY_DISABLED", "COTAL_TELEMETRY_URL", "NODE_EXTRA_CA_CERTS"]) if (process.env[key] !== undefined) env[key] = process.env[key];
-  if (definition.launch.type === "adapter" && definition.launch.adapter === STACK_ADAPTER.manager) Object.assign(env, spawnEnvironment(String(definition.launch.options.root)));
+  if (definition.launch.type === "adapter" && definition.launch.adapter === STACK_ADAPTER.manager) {
+    // Detached Codex launches read their API key from the manager that owns the local stack.
+    if (name === STACK_DEFINITION.manager && process.env.OPENAI_API_KEY !== undefined) env.OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+    Object.assign(env, spawnEnvironment(String(definition.launch.options.root)));
+  }
   // Variable names are not secrets, so a missing one is named with the child variable it feeds.
   const missing = Object.entries(definition.envRefs ?? {}).filter(([, source]) => process.env[source] === undefined);
   if (missing.length) {
@@ -557,7 +561,7 @@ export function prepareProcessService(definition: ServiceDefinitionSnapshot) {
     try { cliInvocation = daemonArgv(); }
     catch { throw new CommandFailure("refused", "UNSUPPORTED", "this native adapter requires the verified cotal binary entry; an arbitrary library entry was not re-executed"); }
   }
-  return { program, adapter, cliInvocation, env: environment(definition.record.value), launcher: requireProcessIdentity(process.pid) };
+  return { program, adapter, cliInvocation, env: environment(definition), launcher: requireProcessIdentity(process.pid) };
 }
 
 /** A restart stops before it starts, and its start carries no maintenance attempt. Under a
