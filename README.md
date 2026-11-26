@@ -93,7 +93,7 @@ Use the shell installer above or follow the [user-owned npm prefix and PATH step
 before the npm command. Install Cotal as your own user, without sudo.
 
 ```bash
-npm install -g cotal-ai
+npm install -g cotal-ai@latest
 cotal setup
 ```
 
