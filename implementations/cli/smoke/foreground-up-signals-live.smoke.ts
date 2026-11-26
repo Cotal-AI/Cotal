@@ -1455,8 +1455,9 @@ async function openBrokerOnlyRestartCell(): Promise<void> {
 }
 
 async function managerNameCell(): Promise<void> {
-  const space = "foreground-manager-name", mesh = join(base, space), home = join(mesh, "home");
-  mkdirSync(home, { recursive: true, mode: 0o700 });
+  const space = "foreground-manager-name", mesh = join(base, "manager name project"), home = join(mesh, "home");
+  const caller = join(base, "manager-name-caller");
+  for (const dir of [home, caller]) mkdirSync(dir, { recursive: true, mode: 0o700 });
   const env = { ...cleanEnv, HOME: home, COTAL_HOME: join(home, "machine"), XDG_CONFIG_HOME: join(home, "xdg"), COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1" };
   const sandbox = recordSmokeSandbox({ root: mesh, cotalHome: env.COTAL_HOME, xdgConfigHome: env.XDG_CONFIG_HOME });
   const probe = (args: string[]) => foregroundCliProbe(cliEntry, tsx, mesh, env, args, 60_000);
@@ -1495,6 +1496,20 @@ async function managerNameCell(): Promise<void> {
       const who = await probe(["who", "--all"]);
       assert.equal(who.code, 0, who.out + who.err);
       assert.match(who.out, /\bKeptManager\b/);
+      if (args.length) {
+        const rename = ["up", "--root", mesh, "--manager-name", "Second Manager"];
+        const guidance = (cli: string) => `run \`${cli} down\` from \`${shellWord(mesh)}\`, then retry the original startup command unchanged from its original folder`;
+        const refused = await foregroundCliProbe(cliEntry, tsx, caller, env, [...rename, "--foreground"]);
+        assert.equal(refused.code, 2, refused.out + refused.err);
+        assert.match(refused.err, /LIFECYCLE_BLOCKED/);
+        assert.ok(["cotal", "pnpm cotal"].some((cli) => refused.err.includes(guidance(cli))), refused.err);
+        const json = await foregroundCliProbe(cliEntry, tsx, caller, env, [...rename, "--json"]);
+        assert.equal(json.code, 2, json.out + json.err);
+        const envelope = JSON.parse(json.out);
+        assert.equal(envelope.error.code, "LIFECYCLE_BLOCKED");
+        assert.equal(envelope.error.remedy, guidance("cotal"));
+        assert.equal(savedName(), "KeptManager");
+      }
     } finally {
       try {
         if (!state.exited) child.kill("SIGTERM");
@@ -1514,7 +1529,7 @@ async function managerNameCell(): Promise<void> {
   await refuseWhileBusy("KeptManager", "RefusedOverride");
   await bootAndStop();
   passed++;
-  console.log("PASS foreground-up-signals refused starts leave the manager name unchanged");
+  console.log("PASS foreground-up-signals refused starts keep the manager name and direct a rename to the owning root");
 }
 
 async function userAuthRestartCell(): Promise<void> {
