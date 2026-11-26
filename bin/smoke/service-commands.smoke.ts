@@ -259,6 +259,16 @@ try {
 
   const piped = cotal(["service", "add", "hello", "--exec", "echo hi | tee out", "--space", SPACE]);
   check("service add --exec with a pipe refuses and saves nothing", piped.status === 1 && out(piped).includes("an unquoted | would not work") && JSON.stringify(definitions()) === "[]", out(piped));
+  for (const char of ["$", "`"]) {
+    const quoted = cotal(["service", "add", "quoted-expansion", "--space", SPACE, "--exec", `node "review process.mjs" "space argument" "literal ${char}HOME"`, "--json"]);
+    const { outcome, error } = JSON.parse(quoted.stdout);
+    check(`service add --exec explains how to pass ${char} literally when double quotes alone do not work`,
+      quoted.status === 1 && outcome === "refused" && error?.code === "USAGE_INVALID"
+        && error.message.includes(`${char} inside double quotes`)
+        && error.remedy.includes("within the value passed to `--exec`, put the literal argument in single quotes")
+        && error.remedy.includes("put a backslash before the character inside double quotes")
+        && error.remedy.includes("run a shell yourself") && JSON.stringify(definitions()) === "[]", out(quoted));
+  }
   const conflicting = cotal(["service", "add", "hello", "--exec", "echo hi", "--preset", "manager", "--space", SPACE]);
   check("service add --exec with --preset refuses and saves nothing", conflicting.status === 1 && JSON.stringify(definitions()) === "[]", out(conflicting));
   const addExec = ["service", "add", "hello", "--exec", "echo 'big world'", "--space", SPACE];
