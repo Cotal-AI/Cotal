@@ -62,7 +62,7 @@ import {
   type Stamp,
 } from "./authority.js";
 import { gcSeedStore, stageSeedPayload } from "./store.js";
-import { prefixLockDiffers, seededInstallDiffers, operatorInstallDiffers, seededPeerLinksCurrent } from "./verify.js";
+import { prefixLockDiffers, seededInstallDiffers, operatorInstallDiffers, operatorUpdateSpec, seededPeerLinksCurrent } from "./verify.js";
 import { assertAutomaticSeedManagers } from "./manager-guard.js";
 
 /**
@@ -173,7 +173,7 @@ async function reconcile(mode: Mode, automatic = false, resumeFirstSeed = false,
   if (waitForUpdateClosure()) {
     if (process.env.COTAL_UPDATE_REEXEC === "1") throw new Error("another Cotal update finished while this command waited; run the command again");
     console.error("Cotal update finished; restarting command with the installed CLI");
-    const child = spawn(process.execPath, process.argv.slice(1), { env: { ...process.env, COTAL_UPDATE_REEXEC: "1" }, stdio: "inherit" });
+    const child = spawn(process.execPath, process.argv.slice(1), { env: { ...process.env, COTAL_UPDATE_REEXEC: "1" }, stdio: "inherit", windowsHide: true });
     const forward = (signal: NodeJS.Signals) => child.kill(signal);
     const onInt = () => forward("SIGINT"), onTerm = () => forward("SIGTERM");
     process.on("SIGINT", onInt); process.on("SIGTERM", onTerm);
@@ -602,7 +602,7 @@ async function runUnderLocks(mode: Mode, generation: string, nonce: string, refr
         ? operatorInstallDiffers(entry, generation) !== undefined
         : mode === "force" || (mode === "repair" && repairAllSeeded) || operatorPackageDiffers(entry, generation) !== undefined
     ),
-  ).map((entry) => ({ pkg: entry.pkg, spec: `${entry.pkg}@${generation}`, version: generation }));
+  ).map((entry) => ({ pkg: entry.pkg, spec: operatorUpdateSpec(entry, generation), version: generation }));
 
   if (mode === "verify") {
     const { installExtensionSet } = await import("../commands/ext.js");
@@ -868,7 +868,7 @@ function seedOne(name: string, generation: string, nonce: string, force: boolean
   writeCursor({ nonce, package: name, phase: "add" });
   writePendingChildMarker(nonce);
   const r = spawnSync(bin, [...argv, "ext", "add", storePath], {
-    encoding: "utf8",
+    encoding: "utf8", windowsHide: true,
     env: { ...process.env, COTAL_TELEMETRY_DISABLED: "1", COTAL_EXT_SEEDING: nonce, COTAL_EXT_SEEDING_PARENT: String(process.pid) },
   });
   clearChildMarker(); // parent survived the child: the marker's job is done (child also clears its own)

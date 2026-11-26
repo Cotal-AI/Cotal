@@ -66,15 +66,15 @@ const tabFor = (route: Route): PanelTab => (route.view === "agent" ? "agent" : (
  *  - A new route resets the tab: Members on a channel route, with the picked agent kept so its tab
  *    stays one click away; the Agent tab on an agent's page, with that agent picked; any other
  *    route drops the pick.
- *  - On a phone (`phone`) the panel is a sheet over the page, so it starts closed, opens only when the
+ *  - In sheet mode the panel sits over the page, so it starts closed, opens only when the
  *    reader asks (the member stack, the panel button, picking an agent), closes again on a new route,
  *    and none of that touches the saved choice, which is the wide layout's. */
-export function usePanel(route: Route, phone = false): Panel {
+export function usePanel(route: Route, sheet = false): Panel {
   const key = formatRoute(route);
   const [wide, setOpen] = useState(true);
-  const [phoneOpen, setPhoneOpen] = useState(false);
-  const onPhone = useRef(phone);
-  onPhone.current = phone;
+  const [sheetOpen, setSheetOpen] = useState(false);
+  const inSheet = useRef(sheet);
+  inSheet.current = sheet;
   useLayoutEffect(() => {
     const saved = readOpen();
     if (saved !== undefined) setOpen(saved);
@@ -86,12 +86,12 @@ export function usePanel(route: Route, phone = false): Panel {
     cur = { key, tab: tabFor(route), agent: route.view === "channel" ? at.agent : null };
     if (route.view === "agent") cur = { ...cur, agent: route.id };
     setAt(cur);
-    setPhoneOpen(false);
+    setSheetOpen(false);
   }
   // Stable across renders, so the picker handed down through `AgentPicker` does not redraw every row.
   const actions = useMemo(() => {
     const remember = (next: boolean) => {
-      if (onPhone.current) return setPhoneOpen(next);
+      if (inSheet.current) return setSheetOpen(next);
       setOpen(next);
       writeOpen(next);
     };
@@ -109,7 +109,7 @@ export function usePanel(route: Route, phone = false): Panel {
       remember,
     };
   }, []);
-  const open = phone ? phoneOpen : wide;
+  const open = sheet ? sheetOpen : wide;
   return {
     open,
     tab: cur.tab,

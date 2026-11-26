@@ -80,6 +80,9 @@ passed to `--file` is refused with that command. An invalid persona file is refu
 Foreground spawn and its preview refuse an unreadable persona file with `PERMISSION_DENIED` (exit 2).
 On POSIX, if you own the regular file and it lacks owner read permission, the refusal suggests
 `chmod u+r <path>` and a retry. The CLI does not change the file's permissions.
+If an explicit persona path runs through a file where a directory is needed, foreground spawn and
+its preview name the blocking component. The launch exits 1 and the preview refuses with
+`TARGET_NOT_FOUND` (exit 2). Pass the correct persona file path with `--file`.
 If a named persona is a symbolic link with a missing target, both commands name the link and its target.
 Restore the target, or move the link aside and put a regular persona file in its place.
 A persona path with a symbolic-link loop also refuses with `SCHEMA_INVALID`, naming the path.
@@ -559,9 +562,11 @@ Persona names for create, edit and remove use letters, digits, `_` and `-`, up t
 A local `persona show` takes the exact filename stem from the catalog, including punctuation,
 Unicode and spaces. It refuses paths, control characters and blank stems.
 The local listing marks a file with an empty or whitespace-only stem as an invalid selector.
-Rename that file or pass its path to `cotal spawn --file <persona.md>`.
-The local listing also marks a stem containing a literal backslash as an invalid selector and
-shows how to launch the file with `cotal spawn --file`. This warning does not change the list exit status.
+Rename that file or, if its path has no control characters, pass it to `cotal spawn --file <persona.md>`.
+The local listing also marks stems that contain control characters, such as tabs, or a literal
+backslash as invalid selectors. Rename a file with control characters to open it with `cotal persona show`.
+For a backslash, the listing shows how to launch the file with `cotal spawn --file` if its path
+has no control characters. These warnings do not change the list exit status.
 Quote a name with spaces: `cotal persona show 'a b'` reads `.cotal/agents/a b.md`.
 `cotal persona show review.md` reads `.cotal/agents/review.md.md` in the selected space,
 not `review.md` in the project root.

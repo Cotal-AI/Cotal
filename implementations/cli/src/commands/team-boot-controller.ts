@@ -29,6 +29,7 @@ export interface ControllerTeamBootRequest {
   transport: BrokerTransport;
   foreground: boolean;
   presentation: "rich" | "json" | "plain";
+  retry: () => string;
 }
 
 /** The controller boot's receipt. Evidence fields are the members' own controller receipts; the
@@ -91,7 +92,7 @@ export async function controllerTeamBoot(request: ControllerTeamBootRequest): Pr
   const recorded = readStackJournal(process.cwd())?.journal;
   let binding: StackResumeBinding | undefined;
   let plan: FreshTeamBootPlan;
-  if (!recorded) plan = await prepareFreshTeamBoot(request.file, { space: request.space, transport: request.transport });
+  if (!recorded) plan = await prepareFreshTeamBoot(request.file, { space: request.space, transport: request.transport, retry: request.retry });
   else {
     // A stack whose last operation started it is up. Say so before the resume checks name the stop
     // it lacks. This manifest may already own cards on the running stack.

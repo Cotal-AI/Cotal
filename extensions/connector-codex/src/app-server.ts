@@ -394,7 +394,7 @@ export class AppServerDriver extends EventEmitter {
     const child = spawn(this.opts.bin ?? "codex", args, {
       cwd: this.opts.cwd,
       env,
-      stdio: ["pipe", "pipe", "pipe"],
+      stdio: ["pipe", "pipe", "pipe"], windowsHide: true,
     });
     this.child = child;
     // In listen mode neither pipe is the protocol channel (the websocket is): they carry the

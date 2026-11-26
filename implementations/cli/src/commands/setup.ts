@@ -655,7 +655,7 @@ async function prepare(plan: SetupPlan, opts: { demo: boolean; interactive: bool
 
   let spaceState: SetupResult["spaceState"];
   if (plan.space.kind === "add") {
-    const added = await addFromBundle(inputs.space, { file: plan.space.file, root: inputs.project, yes: !opts.interactive }, opts.interactive);
+    const added = await addFromBundle(inputs.space, { file: plan.space.file, root: inputs.project, yes: !opts.interactive }, opts.interactive, opts.presentation, "--connection-file");
     if (added === undefined) return cancelled(opts.presentation, inputs.space);
     warnings.push(...added.warnings);
     written.push({ what: "space registration", path: meshFile(inputs.space) });
@@ -1085,7 +1085,7 @@ export async function offerGlobalInstall(yes: boolean): Promise<void> {
   const pkg = `cotal-ai@${runningVersion() ?? "latest"}`;
   const s = p.spinner();
   s.start("Installing cotal globally");
-  const r = withInstallUmask(() => spawnSync("npm", ["install", "-g", pkg], { encoding: "utf8" }));
+  const r = withInstallUmask(() => spawnSync("npm", ["install", "-g", pkg], { encoding: "utf8", windowsHide: true }));
   if (r.status === 0) {
     s.stop("Installed - you can now run `cotal`");
   } else {

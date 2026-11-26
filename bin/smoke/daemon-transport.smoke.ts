@@ -20,11 +20,12 @@
  *      ALREADY_RUNNING, and that squatter receives 0 bytes from a client, which refuses
  *      PEER_NOT_LOCK_OWNER;
  *  W4  a daemon home whose DACL grants Everyone access is refused DIR_WRONG_MODE.
+ *  W5  built CLI guidance distinguishes a missing home and an uninstalled scheduled task.
  * Cells for another platform are listed as not run on this one, never counted as passed.
  *
  * Run: tsx bin/smoke/daemon-transport.smoke.ts
  */
-import { closeSync, mkdtempSync, openSync, readdirSync, rmSync, writeFileSync, chmodSync } from "node:fs";
+import { closeSync, mkdtempSync, openSync, readdirSync, realpathSync, rmSync, writeFileSync, chmodSync } from "node:fs";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -46,8 +47,9 @@ const refusalCode = async (p: Promise<unknown>): Promise<string> => {
 };
 // Restoration-only entries, never a child environment.
 const savedEnvironment = Object.entries(process.env);
-for (const key of Object.keys(process.env)) if (key.startsWith("COTAL_") && key !== "COTAL_DAEMON_SMOKE_TMP") delete process.env[key];
-const root = mkdtempSync(join(process.env.COTAL_DAEMON_SMOKE_TMP ?? tmpdir(), "cotal-transport-"));
+const scratchParent = process.env.COTAL_DAEMON_SMOKE_TMP ?? tmpdir();
+for (const key of Object.keys(process.env)) if (key.startsWith("COTAL_")) delete process.env[key];
+const root = mkdtempSync(join(scratchParent, "cotal-transport-"));
 mkSecretDir(root);
 for (const name of ["home", "runtime", "config", "data", "cache", "appdata", "localappdata"]) mkSecretDir(join(root, name));
 Object.assign(process.env, { HOME: join(root, "home"), USERPROFILE: join(root, "home"), XDG_RUNTIME_DIR: join(root, "runtime"), XDG_CONFIG_HOME: join(root, "config"), XDG_DATA_HOME: join(root, "data"), XDG_CACHE_HOME: join(root, "cache"), APPDATA: join(root, "appdata"), LOCALAPPDATA: join(root, "localappdata"), DO_NOT_TRACK: "1" });
@@ -192,20 +194,6 @@ try {
     const pipe = (tag: string) => `\\\\.\\pipe\\cotal-daemon-smoke-${tag}-${randomBytes(4).toString("hex")}`;
     const pipePaths = (tag: string): DaemonPaths => { const state = privateDir(`${tag}-s`); return { socket: pipe(tag), state, lock: join(state, "daemon.lock") }; };
 
-    {
-      const home = privateDir("daemon state");
-      const bin = join(import.meta.dirname, "..", "dist", "cotal.js");
-      const status = spawnSync(process.execPath, [bin, "daemon", "status", "--daemon-home", home, "--plain"], { encoding: "utf8", timeout: 60_000 });
-      const next = /`(cotal daemon start [^`]+)`/.exec(status.stderr ?? "")?.[1];
-      check("stopped Windows daemon names a copyable command for its private home", status.status === 2
-        && status.stderr.includes("NOT_RUNNING") && next === `cotal daemon start --daemon-home "${home}"`, status.stderr);
-      if (next) {
-        const pasted = spawnSync(`"${process.execPath}" "${bin}" ${next.slice(6)}`, { shell: true, encoding: "utf8", timeout: 60_000 });
-        check("the Windows recovery command reaches the recorded-task check in cmd.exe", pasted.status === 2
-          && pasted.stderr.includes("TARGET_NOT_FOUND"), pasted.stderr);
-      }
-    }
-
     // ---- W1, W2 ----
     {
       const p = pipePaths("w1");
@@ -245,8 +233,48 @@ try {
       check("W4 instrument: Everyone was granted read", grant.status === 0, grant.stderr);
       check("W4 a daemon home whose DACL grants Everyone is refused DIR_WRONG_MODE", (await refusalCode(Promise.resolve().then(() => checkDir(d)))) === "DIR_WRONG_MODE");
     }
+    {
+      const home = realpathSync(privateDir("daemon state"));
+      const bin = join(import.meta.dirname, "..", "dist", "cotal.js");
+      const env = { ...process.env, COTAL_SKIP_CONNECTOR_SEED: "1" };
+      const run = (verb: string, path: string, ...flags: string[]) => spawnSync(process.execPath, [
+        bin, "daemon", verb, "--daemon-home", path, "--plain", ...flags,
+      ], { cwd: root, env, encoding: "utf8", timeout: 60_000 });
+      for (const verb of ["status", "start"]) {
+        const child = run(verb, home);
+        const text = child.stdout + child.stderr;
+        const matchesCommand = (op: string) => ["cotal", "pnpm cotal"].some((cli) => text.includes(`\`${cli} daemon ${op} --daemon-home "${home}"\``));
+        const code = verb === "status" ? "TARGET_UNAVAILABLE" : "TARGET_NOT_FOUND";
+        check(`W5 ${verb} names install and foreground serve for the same uninstalled home`, child.status === 2 && text.includes(code)
+          && text.includes("no scheduled task installation is recorded") && matchesCommand("install") && matchesCommand("serve")
+          && !text.includes("nothing was removed") && !matchesCommand("start"), text);
+      }
+      writeFileSync(join(home, "service-unit.json"), JSON.stringify({
+        v: 1, mechanism: "scheduled-task", daemonHome: home, unit: "fixture", unitPath: join(home, "service-task.xml"), unitSha256: "0".repeat(64), installedAt: "2026-11-25T00:00:00Z",
+      }));
+      const recorded = run("status", home);
+      const advice = recorded.stdout + recorded.stderr;
+      const next = /`(?:pnpm )?cotal (daemon start [^`]+)`/.exec(advice)?.[1];
+      check("W5 status distinguishes a recorded task without asserting that it is registered", recorded.status === 2
+        && advice.includes("NOT_RUNNING") && advice.includes("if the recorded task is still registered") && next === `daemon start --daemon-home "${home}"`
+        && advice.includes("daemon.log") && advice.includes("Task Scheduler"), advice);
+      if (next) {
+        const pasted = spawnSync(`"${process.execPath}" "${bin}" ${next}`, { shell: true, cwd: root, env, encoding: "utf8", timeout: 60_000 });
+        check("W5 recovery command reaches the recorded-task check in cmd.exe", pasted.status === 2
+          && pasted.stderr.includes("TARGET_NOT_FOUND") && pasted.stderr.includes("service-task.xml"), pasted.stderr);
+      }
+      const shellHome = realpathSync(privateDir("daemon $state"));
+      const shellStatus = run("status", shellHome);
+      const shellAdvice = shellStatus.stdout + shellStatus.stderr;
+      check("W5 status names PowerShell for a home that needs literal quoting", shellStatus.status === 2
+        && ["install", "serve"].every(op => ["cotal", "pnpm cotal"].some(cli => shellAdvice.includes(`\`${cli} daemon ${op} --daemon-home '${shellHome.replaceAll("'", "''")}'\` in PowerShell`))), shellAdvice);
+      const missing = run("install", join(root, "missing daemon state"), "--dry-run");
+      const text = missing.stdout + missing.stderr;
+      check("W5 install preview explains the ACL for a missing Windows home", missing.status === 2 && text.includes("TARGET_NOT_FOUND")
+        && text.includes("Windows ACL") && text.includes("Disable inheritance") && !text.includes("0700"), text);
+    }
   } else {
-    notRun.push("W1", "W2", "W3", "W4");
+    notRun.push("W1", "W2", "W3", "W4", "W5");
   }
 } catch (e) {
   fail++;

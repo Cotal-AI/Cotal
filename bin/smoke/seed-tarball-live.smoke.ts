@@ -17,17 +17,20 @@
  * Broker-free and deterministic. Needs `npm` + `pnpm` on PATH and network for third-party deps.
  * Run: pnpm smoke:seed-tarball:live
  */
-import { execFileSync, spawnSync } from "node:child_process";
+import { execFile, execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join, sep } from "node:path";
+import { promisify } from "node:util";
 import { resolveOnPath } from "@cotal-ai/workspace";
 import { platformExcludesHost } from "../../implementations/cli/src/seed/verify.js";
 import { createSuite } from "@cotal-ai/smoke-kit";
 
 const REPO = join(import.meta.dirname, "..", "..");
 const { check, finish, passed, failed } = createSuite();
+const cleanEnv: NodeJS.ProcessEnv = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_")));
 
 function seedWithShadowedNode(entry: string, cwd: string, env: NodeJS.ProcessEnv, version: string) {
   const tools = join(env.HOME!, "tools");
@@ -51,6 +54,53 @@ else process.exit(spawnSync(${JSON.stringify(npm)}, process.argv.slice(2), { std
     calls.includes(`view ${process.execPath}`) && calls.includes(`install ${process.execPath}`), calls);
   check("self-update reconciles the built-ins with an unsupported Node first on PATH",
     result.status === 0 && /connectors reconciled.*seeded/.test(result.stdout), result.stdout + result.stderr);
+}
+
+async function checkLocalOperatorUpdate(entry: string, cwd: string, env: NodeJS.ProcessEnv, version: string, extensions: string): Promise<void> {
+  const command = "local-peer-probe", pkg = `@cotal-ai/${command}`, source = join(cwd, command);
+  mkdirSync(source);
+  writeFileSync(join(source, "package.json"), JSON.stringify({ name: pkg, version, type: "module", main: "index.mjs", peerDependencies: { "@cotal-ai/core": version } }));
+  writeFileSync(join(source, "index.mjs"), `import { registry } from '@cotal-ai/core';
+registry.register({ kind: 'command', name: '${command}', summary: 'Print a test greeting', run() { console.log('probe loaded'); } });
+`);
+  const requests: string[] = [];
+  const registry = createServer((req, res) => {
+    const path = decodeURIComponent(req.url!);
+    requests.push(path);
+    res.setHeader("content-type", "application/json");
+    if (path === "/cotal-ai") res.end(JSON.stringify({ name: "cotal-ai", "dist-tags": { latest: version }, versions: { [version]: { name: "cotal-ai", version } } }));
+    else { res.statusCode = 404; res.end('{"error":"not found"}'); }
+  });
+  await new Promise<void>((resolve, reject) => registry.once("error", reject).listen(0, "127.0.0.1", resolve));
+  try {
+    const address = registry.address();
+    if (!address || typeof address === "string") throw new Error("loopback registry has no port");
+    const exec = promisify(execFile);
+    const run = (...args: string[]) => exec(process.execPath, [entry, ...args], {
+      cwd, env: { ...env, COTAL_NO_UPDATE_CHECK: "1", npm_config_registry: `http://127.0.0.1:${address.port}`, npm_config_fetch_retries: "0" }, timeout: 120_000,
+    });
+    await run("ext", "add", `./${command}`);
+    check("local scoped extension runs before the update", (await run(command)).stdout.trim() === "probe loaded");
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const result = await run("update", "--self");
+      check("self-update keeps the working local scoped extension", result.stdout.includes("installed package closure is current"), result.stdout + result.stderr);
+    }
+    const installed = join(extensions, "node_modules", pkg, "index.mjs");
+    rmSync(installed);
+    await run("update", "--self");
+    check("self-update repairs a missing entry from the recorded local copy", readFileSync(installed).equals(readFileSync(join(source, "index.mjs"))));
+    writeFileSync(installed, "throw new Error('unloadable local entry');\n");
+    await run("update", "--self");
+    check("self-update repairs an unloadable entry from the recorded local copy", readFileSync(installed).equals(readFileSync(join(source, "index.mjs"))));
+    check("local scoped extension runs after repair", (await run(command)).stdout.trim() === "probe loaded");
+    const status = JSON.parse((await run("status", "--json")).stdout) as { result: { extensions: { items: { package: string }[] } } };
+    check("status still lists the local scoped extension", status.result.extensions.items.some(item => item.package === pkg));
+    const inventory = JSON.parse(readFileSync(join(extensions, "extensions.json"), "utf8")) as { extensions: { pkg: string; spec: string }[] };
+    check("update retains the operator's recorded path", inventory.extensions.find(item => item.pkg === pkg)?.spec === source);
+    check("npm checks the latest CLI without asking for the local package", requests.filter(path => path === "/cotal-ai").length >= 4 && !requests.includes(`/${pkg}`), requests);
+  } finally {
+    await new Promise<void>((resolveClose, reject) => registry.close(error => error ? reject(error) : resolveClose()));
+  }
 }
 
 const base = mkdtempSync(join(tmpdir(), "cotal-tarball-smoke-"));
@@ -101,13 +151,13 @@ try {
   for (const d of dirs) {
     const root = d === "packages/seat" ? seatClone : join(REPO, d);
     const skipPrepack = ["packages/workspace", "packages/seat"].includes(d) ? ["--config.ignore-scripts=true"] : [];
-    execFileSync("pnpm", ["-C", root, "pack", ...skipPrepack, "--pack-destination", tgz], { stdio: ["ignore", "ignore", "inherit"] });
+    execFileSync("pnpm", ["-C", root, "pack", ...skipPrepack, "--pack-destination", tgz], { env: cleanEnv, stdio: ["ignore", "ignore", "inherit"] });
   }
   const tarballs = readdirSync(tgz).filter((f) => f.endsWith(".tgz"));
   check("packed the full @cotal-ai closure", tarballs.length === dirs.length, tarballs.length);
 
   const cotalTgz = join(tgz, tarballs.find((f) => /^cotal-ai-\d/.test(f)) ?? "");
-  const listing = execFileSync("tar", ["tzf", cotalTgz], { encoding: "utf8" });
+  const listing = execFileSync("tar", ["tzf", cotalTgz], { env: cleanEnv, encoding: "utf8" });
   check("cotal-ai tarball ships seeded-connectors/ payloads", listing.includes("package/seeded-connectors/hermes/package.json"));
   check("cotal-ai tarball bundles the web dashboard payload", listing.includes("package/seeded-connectors/web/package.json"));
   const webBase = "package/seeded-connectors/web/dist/web";
@@ -123,7 +173,7 @@ try {
     docsEntries,
   );
   check("cotal-ai tarball ships the shared-file placements", listing.includes("package/seeded-connectors/_shared/placements.json"));
-  const packedPkg = execFileSync("tar", ["xzf", cotalTgz, "-O", "package/package.json"], { encoding: "utf8" });
+  const packedPkg = execFileSync("tar", ["xzf", cotalTgz, "-O", "package/package.json"], { env: cleanEnv, encoding: "utf8" });
   check("cotal-ai tarball has concrete dep versions (workspace: replaced)", !packedPkg.includes("workspace:"));
 
   // Every bundled payload must carry the umbrella's exact version — the reconcile stamps that version
@@ -132,7 +182,7 @@ try {
   const umbrellaVersion = (JSON.parse(packedPkg) as { version: string }).version;
   for (const n of ["claude", "opencode", "hermes", "pi", "web"]) {
     const seededPkg = JSON.parse(
-      execFileSync("tar", ["xzf", cotalTgz, "-O", `package/seeded-connectors/${n}/package.json`], { encoding: "utf8" }),
+      execFileSync("tar", ["xzf", cotalTgz, "-O", `package/seeded-connectors/${n}/package.json`], { env: cleanEnv, encoding: "utf8" }),
     ) as { version: string };
     check(`bundled ${n} payload is version-locked to the umbrella (${umbrellaVersion})`, seededPkg.version === umbrellaVersion, seededPkg.version);
   }
@@ -145,7 +195,7 @@ try {
   // binary. marked and DOMPurify are bundled too, because the message rows render bodies as
   // sanitized Markdown, and d3-force, d3-selection and d3-zoom lay out and pan the topology graph.
   const licenses = JSON.parse(
-    execFileSync("tar", ["xzf", cotalTgz, "-O", `${webBase}/bundle-licenses.json`], { encoding: "utf8" }),
+    execFileSync("tar", ["xzf", cotalTgz, "-O", `${webBase}/bundle-licenses.json`], { env: cleanEnv, encoding: "utf8" }),
   ) as { bundled: { package: string; version: string; license: string }[] };
   const libs = new Map(licenses.bundled.map((e) => [e.package, e]));
   check(
@@ -156,7 +206,7 @@ try {
   check("web bundle-licenses.json names react and react-dom", ["react", "react-dom"].every((p) => libs.has(p)), [...libs.keys()].join(","));
   check("web bundle-licenses.json names marked and dompurify", ["marked", "dompurify"].every((p) => libs.has(p)), [...libs.keys()].join(","));
   check("web bundle-licenses.json names d3-force, d3-selection and d3-zoom", ["d3-force", "d3-selection", "d3-zoom"].every((p) => libs.has(p)), [...libs.keys()].join(","));
-  const page = execFileSync("tar", ["xzf", cotalTgz, "-O", `${webBase}/index.html`], { encoding: "utf8" });
+  const page = execFileSync("tar", ["xzf", cotalTgz, "-O", `${webBase}/index.html`], { env: cleanEnv, encoding: "utf8" });
   const refs = [...page.matchAll(/(?:src|href)="\/([^"]+)"/g)].map((m) => m[1]);
   check("the shipped web page references its script and stylesheet", refs.some((r) => r.endsWith(".js")) && refs.some((r) => r.endsWith(".css")), refs);
   for (const r of refs) check(`the shipped web page's reference /${r} is in the tarball`, listing.includes(`${webBase}/${r}`));
@@ -171,16 +221,17 @@ try {
   // above, which reads the umbrella's own tarball.
   const webTgzDir = join(base, "web-tgz");
   mkdirSync(webTgzDir, { recursive: true });
-  execFileSync("npm", ["pack", "--ignore-scripts", "--silent", "--pack-destination", webTgzDir, join(REPO, "implementations", "web")], { stdio: ["ignore", "ignore", "inherit"] });
+  execFileSync("npm", ["pack", "--ignore-scripts", "--silent", "--pack-destination", webTgzDir, join(REPO, "implementations", "web")], { env: cleanEnv, stdio: ["ignore", "ignore", "inherit"] });
   const webTgz = join(webTgzDir, readdirSync(webTgzDir).find((f) => f.endsWith(".tgz")) ?? "");
-  const standalone = execFileSync("tar", ["xzf", webTgz, "-O", "package/dist/web/bundle-licenses.json"], { encoding: "utf8" });
+  const standalone = execFileSync("tar", ["xzf", webTgz, "-O", "package/dist/web/bundle-licenses.json"], { env: cleanEnv, encoding: "utf8" });
   check("the umbrella's web manifest is the one the web package itself packs",
-    standalone === execFileSync("tar", ["xzf", cotalTgz, "-O", `${webBase}/bundle-licenses.json`], { encoding: "utf8" }));
+    standalone === execFileSync("tar", ["xzf", cotalTgz, "-O", `${webBase}/bundle-licenses.json`], { env: cleanEnv, encoding: "utf8" }));
 
   console.log("installing the tarball closure into a clean prefix …");
   writeFileSync(join(prefix, "package.json"), JSON.stringify({ name: "tb-host", private: true }));
   const install = spawnSync("npm", ["install", "--no-audit", "--no-fund", ...tarballs.map((f) => join(tgz, f))], {
     cwd: prefix,
+    env: cleanEnv,
     encoding: "utf8",
   });
   check("npm install of the tarball closure succeeded", install.status === 0, install.stderr?.split("\n").slice(-6).join("\n"));
@@ -202,7 +253,7 @@ try {
   mkdirSync(join(prefix, ".cotal"));
   const npmrc = join(home, ".npmrc");
   writeFileSync(npmrc, "omit=optional\n");
-  const seedEnv: NodeJS.ProcessEnv & { HOME: string; XDG_CONFIG_HOME: string } = { ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_"))),
+  const seedEnv: NodeJS.ProcessEnv & { HOME: string; XDG_CONFIG_HOME: string } = { ...cleanEnv,
     HOME: home, COTAL_HOME: join(home, ".cotal"), XDG_CONFIG_HOME: cfg, npm_config_userconfig: npmrc };
   if (process.platform === "win32") {
     const seed = spawnSync("node", [invokedBin, "ext", "seed"], { cwd: prefix, encoding: "utf8", env: seedEnv });
@@ -366,6 +417,7 @@ try {
     const physicalUpdate = update("--self");
     check("an update through the physical path keeps the installed built-ins", !/reinstalling every built-in|Reconciling built-in/.test(physicalUpdate), physicalUpdate);
   }
+  if (process.platform === "linux") await checkLocalOperatorUpdate(invokedBin, prefix, seedEnv, umbrellaVersion, extensionPrefix);
 } finally {
   rmSync(base, { recursive: true, force: true });
 }

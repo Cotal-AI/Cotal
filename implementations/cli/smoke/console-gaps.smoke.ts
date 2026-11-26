@@ -20,6 +20,7 @@
  *   4. Color follows the CLI's decision: `--no-color` paints the TUI with no ANSI color even under
  *      `FORCE_COLOR`, and so does a non-empty `NO_COLOR`. `FORCE_COLOR` alone paints color, so the
  *      color check can see color.
+ *   5. Feed help at 80 by 24 displays complete, readable rows and pages to the remaining shortcuts.
  */
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
@@ -49,6 +50,39 @@ const srv = spawn("nats-server", ["-js", "-p", String(PORT), "-sd", join(dir, "j
 const releaseBroker = teardownOnSignal(srv, dir);
 recordMesh({ space, server: SERVERS, root: workspaceRoot, mode: "open", ts: new Date().toISOString() });
 
+async function checkNarrowNeedsYouPalette(): Promise<void> {
+  const cols = 80, rows = 24;
+  const s = new ConsoleSession(["--space", space, "--server", SERVERS], home,
+    { CI: "false", CONTINUOUS_INTEGRATION: "false" }, { cols, rows });
+  try {
+    if (!(await s.waitFor("feed", 40_000))) throw new Error(`Console did not paint: ${clean(s.out).slice(-500)}`);
+    let from = s.mark();
+    s.write("n");
+    if (!(await s.waitFor("NEEDS YOU", 8_000, from))) throw new Error("Needs You did not open");
+    const rail = await screen(s.out, cols, rows);
+    check("Needs You replaces the feed and roster at 80 columns", !rail.includes("feed") && !rail.includes("roster"), rail);
+
+    from = s.mark();
+    s.write("\x10");
+    const opened = await s.waitFor("Commands", 8_000, from);
+    check("Ctrl-P opens Commands over full-screen Needs You", opened, clean(s.out).slice(-500));
+    if (!opened) return;
+
+    from = s.mark();
+    s.write("\x1b");
+    const dismissed = await s.waitFor("NEEDS YOU", 8_000, from);
+    const afterEscape = await screen(s.out, cols, rows);
+    check("Esc dismisses Commands and keeps Needs You open", dismissed && !afterEscape.includes("Commands"), afterEscape);
+
+    from = s.mark();
+    s.write("n");
+    check("n returns to the feed after dismissing Commands", await s.waitFor("feed", 8_000, from));
+    check("q exits after dismissing Commands", await s.quit(20_000), s.exited);
+  } finally {
+    await s.close();
+  }
+}
+
 async function checkDisconnectedQuit(): Promise<void> {
   const nc = await connect({ servers: SERVERS });
   let s: ConsoleSession | undefined;
@@ -73,6 +107,44 @@ async function checkDisconnectedQuit(): Promise<void> {
   } finally {
     await nc.close();
     await s?.close();
+  }
+}
+
+async function checkSmallHelp(): Promise<void> {
+  const cols = 80, rows = 24;
+  const s = new ConsoleSession(["--space", space, "--server", SERVERS], home, {}, { cols, rows });
+  const displayed = () => screen(s.out, cols, rows);
+  const hasRow = (frame: string, text: string) => frame.split("\n").some((row) =>
+    row.replace(/^│|│$/g, "").trim().replace(/ +/g, " ") === text);
+  try {
+    check("the 80 by 24 console paints the feed", await s.waitFor(`${space} · all`, 40_000));
+    s.write("?");
+    await s.waitFor("↑↓ scroll", 8_000);
+    const first = await displayed();
+    check("short help shows the title, both headings and distinct feed bindings", [
+      "cotal console - help", "context: feed panel", "feed panel", "global",
+      "Ctrl-d / Ctrl-u half-page down / up", "{ } / K J previous / next message",
+      "[ / ] prev / next channel", "d direct-message lens",
+    ].every((text) => hasRow(first, text)), first);
+    const down = s.mark();
+    s.write("\x1b[6~");
+    await s.waitFor("q / Ctrl-C", 8_000, down);
+    const last = await displayed();
+    check("Page Down reaches the final shortcuts and preserves the wrapped commands description", [
+      "D delete - kill agent / drop space", "/ search / filter", "? toggle this help", "q / Ctrl-C quit",
+      "Ctrl-p commands (spawn / send / attach / status / purge /", "delchan)",
+    ].every((text) => hasRow(last, text)), last);
+    const up = s.mark();
+    s.write("\x1b[5~");
+    await s.waitFor("half-page down / up", 8_000, up);
+    const back = await displayed();
+    check("Page Up restores the first help rows", hasRow(back, "feed panel") && hasRow(back, "Ctrl-d / Ctrl-u half-page down / up"), back);
+    const close = s.mark();
+    s.write("?");
+    check("? closes help and returns to the feed", await s.waitFor(`${space} · all`, 8_000, close));
+    check("q quits after leaving help", await s.quit());
+  } finally {
+    await s.close();
   }
 }
 
@@ -211,7 +283,11 @@ try {
   const noColor = await paint([], { NO_COLOR: "1" });
   check("a non-empty NO_COLOR paints the console with no ANSI color", noColor.painted && !noColor.colored, noColor.tail);
 
+  console.log("6. help fits a short terminal");
+  await checkSmallHelp();
   await Promise.all([reader.stop(), stub.stop(), poster.stop()]);
+  console.log("6. command palette over full-screen Needs You");
+  await checkNarrowNeedsYouPalette();
   await checkDisconnectedQuit();
 } catch (e) {
   fail++;

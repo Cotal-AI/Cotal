@@ -26,7 +26,7 @@ export class ExecEndpointHandlers {
     if (bytes.length > MAX_INPUT_BYTES) throw new EpEnvelopeError("resource-exhausted", "the handler input exceeds 64 KiB; no payload was printed", undefined, "not-executed");
     let child: ReturnType<typeof spawn>;
     try {
-      child = spawn(this.input.handler, this.input.handlerArgs, { cwd: this.input.cwd, env: {}, shell: false, detached: true, stdio: ["pipe", "pipe", "pipe"] });
+      child = spawn(this.input.handler, this.input.handlerArgs, { cwd: this.input.cwd, env: {}, shell: false, detached: true, stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
     } catch { throw new EpEnvelopeError("unavailable", "the configured executable could not be spawned; no payload or native error text was printed", undefined, "not-executed"); }
     return await new Promise<unknown>((resolve, reject) => {
       let closed = false, exited = false, settled = false, failure: EpEnvelopeError | undefined;

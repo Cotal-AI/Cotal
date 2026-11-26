@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { chmodSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { connectorConfigDir, canRecoverConnectorConfig, claimUpdateClosureAccess, inspectLock, processStartToken, protectedLocalDirectory, assertProtectedFileAccess, readLocalRecordSource } from "@cotal-ai/workspace";
+import { connectorConfigDir, canRecoverConnectorConfig, claimExtensionMutationLock, claimUpdateClosureAccess, inspectLock, installationWriter, processStartToken, protectedLocalDirectory, protectedResolvedDirectory, assertProtectedFileAccess, readLocalRecordSource } from "@cotal-ai/workspace";
 import { claimExtensionMutation } from "./ext-mutation.js";
 import { repairInstallModes } from "./install-umask.js";
 
@@ -19,6 +19,29 @@ function save(record: Promotion): void {
   writeFileSync(temp, JSON.stringify(record), { flag: "wx", mode: 0o600 });
   renameSync(temp, path);
 }
+
+/** Reclaim unpublished stages only when the selected prefix has no live writer or promotion journal. */
+export function reclaimAbandonedExtensionStages(): void {
+  const uid = process.getuid?.();
+  if (uid === undefined) return;
+  try {
+    const config = connectorConfigDir();
+    const names = readdirSync(config).filter(name => /^\.extensions\.stage-[A-Za-z0-9]{6}$/.test(name));
+    if (!names.length || installationWriter() || !canRecoverConnectorConfig() || connectorConfigDir() !== config) return;
+    protectedResolvedDirectory(config);
+    const release = claimExtensionMutationLock({}, config);
+    try {
+      if (!canRecoverConnectorConfig() || connectorConfigDir() !== config ||
+          lstatSync(join(config, ".extensions-promotion.json"), { throwIfNoEntry: false })) return;
+      for (const name of names) {
+        const path = join(config, name);
+        const stat = lstatSync(path, { throwIfNoEntry: false });
+        if (stat?.isDirectory() && stat.uid === uid && (stat.mode & 0o077) === 0) rmSync(path, { recursive: true, force: true });
+      }
+    } finally { release(); }
+  } catch { /* Optional cleanup must not refuse an update. */ }
+}
+
 function checkedRecord(): Promotion | undefined {
   const path = journalPath();
   if (!existsSync(path)) return undefined;

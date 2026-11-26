@@ -158,6 +158,15 @@ check("cotal --plain status prints the plain report", (plain.status === 0 || pla
 const plainVersion = run(["--plain", "version"]), versionPlain = run(["version", "--plain"]);
 check("cotal --plain version is refused as version --plain is: version has no plain output", plainVersion.status === 1 && /Unknown option '--plain'/.test(plainVersion.stderr) && versionPlain.status === 1 && /Unknown option '--plain'/.test(versionPlain.stderr), { before: shown(plainVersion), after: shown(versionPlain) });
 
+const malformedVersion = run(["--plain=true", "--json", "version"]);
+check("the version receipt tells you to omit the unsupported --plain flag", malformedVersion.status === 1 && malformedVersion.stderr === "" &&
+  malformedVersion.envelope?.command === "version" && malformedVersion.envelope.outcome === "refused" &&
+  malformedVersion.envelope.error?.code === "USAGE_INVALID" && malformedVersion.envelope.error.message === "--plain takes no value" &&
+  malformedVersion.envelope.error.remedy === "omit --plain", shown(malformedVersion));
+const retryVersion = run(["--json", "version"]);
+check("dropping the unsupported flag returns the JSON version receipt", retryVersion.status === 0 && retryVersion.stderr === "" &&
+  retryVersion.envelope?.command === "version" && retryVersion.envelope.outcome === "ok", shown(retryVersion));
+
 const dashes = run(["--", "version"]);
 check("cotal -- version runs version", dashes.status === 0 && /\d+\.\d+\.\d+/.test(dashes.stdout), shown(dashes));
 
@@ -236,6 +245,10 @@ check("a command that takes its words raw still accepts the word", rawGlobal.sta
 
 const undeclared = run(["--json", "ext", "root"]), trailing = run(["ext", "root", "--json"]);
 check("a mode without that output refuses the leading flag as it does after the word", undeclared.status === 1 && /has no --json or --plain/.test(undeclared.stderr) && trailing.status === 1 && /has no --json or --plain/.test(trailing.stderr), { before: shown(undeclared), after: shown(trailing) });
+const malformedRoot = run(["--json=true", "ext", "root"]);
+check("the remedy uses the subcommand's outputs, not the parent command's", malformedRoot.status === 1 && malformedRoot.stdout === "" &&
+  malformedRoot.stderr.includes("--json takes no value") && malformedRoot.stderr.includes("omit --json") &&
+  !malformedRoot.stderr.includes("pass it without a value"), shown(malformedRoot));
 
 for (const { args, command, status, code } of [
   { args: ["backup", "inspect", "./not-there", "--json"], command: "backup inspect", status: 2, code: "TARGET_NOT_FOUND" },
@@ -331,6 +344,23 @@ check("a typographic flag after the backup verb keeps the same refusal", dashAft
 const scaffold = run(["endpoint", "init", "note", "--dir", "starter"]);
 check("endpoint init creates the contract for the separator check", scaffold.status === 0, shown(scaffold));
 if (scaffold.status === 0) {
+  const contract = "starter/contract.json";
+  for (const flags of [["--file", "--json"], ["--json", "--file"]]) {
+    const r = run(["endpoint", "check", contract, ...flags]);
+    check(`endpoint check ${flags.join(" ")} tells the caller to omit --file`,
+      r.status === 1 && r.stderr === "" && r.envelope?.command === "endpoint check" && r.envelope.outcome === "refused" &&
+      r.envelope.error?.code === "USAGE_INVALID" && r.envelope.error.message === "`endpoint check` does not take --file" &&
+      r.envelope.error.remedy === "omit --file and keep the contract path", shown(r));
+  }
+  const retry = run(["endpoint", "check", contract, "--json"]);
+  check("endpoint check succeeds with the same contract and output mode after omitting --file",
+    retry.status === 0 && retry.stderr === "" && retry.envelope?.command === "endpoint check" && retry.envelope.outcome === "ok", shown(retry));
+  const add = run(["endpoint", "add", "note", "--file", "--json"]);
+  check("endpoint add still asks for a missing reference filename",
+    add.status === 1 && add.stderr === "" && add.envelope?.outcome === "refused" &&
+    add.envelope.error?.code === "USAGE_INVALID" && add.envelope.error.message === "--file needs a value" &&
+    add.envelope.error.remedy === "write --file <reference.json>", shown(add));
+
   copyFileSync(join(neutral, "starter", "contract.json"), join(neutral, "--plain"));
   const endpointCheck = (...args: string[]) => run(["endpoint", "check", ...args], undefined,
     { FORCE_COLOR: "1", NO_COLOR: "", LC_ALL: "C.UTF-8" });

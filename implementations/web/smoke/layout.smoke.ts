@@ -4,7 +4,8 @@
  *  768px: a bottom tab bar in place of the rail, with the waiting count on Agents; the panel, closed
  *  until asked for, then a modal sheet, handing focus back to its opener; and the places sheet behind
  *  the header's sidebar button, which holds focus and closes on Escape, on the overlay and on a new
- *  route. The app is mounted in jsdom with a window width and a `matchMedia` the suite controls and a
+ *  route. At tablet widths, the desktop navigation stays and Details opens as a sheet. The app is
+ *  mounted in jsdom with a window width and a `matchMedia` the suite controls and a
  *  fake dashboard that seeds the store; each cell reads the DOM React wrote, by role and name. Menus,
  *  sheets and tooltips are drawn in a portal on the page's body, so those cells read the document.
  *  The palette's colours and the phone's geometry are CSS only and are left to the browser check. */
@@ -34,17 +35,17 @@ const root = document.documentElement;
 
 // ── The page's width, as the suite says ──────────────────────────────────────────────────────────
 // shadcn's useIsMobile reads the window's width and listens on a width query for changes.
-let phoneNow = false;
+let width = 1440;
 let darkNow = false;
 const watchers = new Set<() => void>();
 const schemeWatchers = new Set<() => void>();
 const asked: string[] = [];
-Object.defineProperty(window, "innerWidth", { configurable: true, get: () => (phoneNow ? 390 : 1440) });
+Object.defineProperty(window, "innerWidth", { configurable: true, get: () => width });
 (window as unknown as { matchMedia: (q: string) => unknown }).matchMedia = (q: string) => {
   asked.push(q);
   const scheme = q === "(prefers-color-scheme: dark)";
   const heard = scheme ? schemeWatchers : watchers;
-  return { get matches() { return scheme ? darkNow : phoneNow; }, media: q, addEventListener: (_t: string, l: () => void) => heard.add(l), removeEventListener: (_t: string, l: () => void) => heard.delete(l) };
+  return { get matches() { return scheme ? darkNow : q === "(width < 1200px)" ? width < 1200 : width <= 767; }, media: q, addEventListener: (_t: string, l: () => void) => heard.add(l), removeEventListener: (_t: string, l: () => void) => heard.delete(l) };
 };
 /** Let the timers Radix sets run: as a layer opens, so it hears a press outside, and as it closes,
  *  since it gives focus back from a timeout. */
@@ -156,7 +157,7 @@ const openWithKeys = (el: HTMLElement) => {
 }
 
 // ── 2. The phone: the tab bar ────────────────────────────────────────────────────────────────────
-phoneNow = true;
+width = 390;
 localStorage.setItem(PANEL_KEY, "1");
 let m: Mounted = await app("#/channel/review");
 {
@@ -264,16 +265,32 @@ const press = (el: HTMLElement | null) => {
 // ── 5. Back to the wide layout ───────────────────────────────────────────────────────────────────
 {
   await m.run(() => {
-    phoneNow = false;
+    width = 768;
     watchers.forEach((l) => l());
   });
-  ok("5.1 when the window widens past 768px the rail, the sidebar and the saved panel come back, and the tab bar goes and the sidebar button collapses the sidebar instead",
+  ok("5.1 at 768px the desktop navigation returns while Details stays out of the channel column",
+    m.container.querySelector('[role="navigation"][aria-label="Views"]') !== null
+      && m.container.querySelector('nav[aria-label="Sections"]') === null
+      && m.container.querySelector('section[aria-label="Details"]') === null && document.querySelector("[role=dialog]") === null);
+  const members = m.container.querySelector<HTMLButtonElement>('main header button[aria-label="0 members"]');
+  await m.run(() => press(members));
+  ok("5.2 Members opens the Details sheet on its Members tab at tablet width",
+    textOf(document.querySelector('[role="dialog"] [role="tab"][aria-selected="true"]')) === "Members");
+  await m.run(() => key(document.activeElement!, "Escape"));
+  await m.run(tick);
+  ok("5.3 Escape closes tablet Details, restores focus and does not change the saved wide layout",
+    document.querySelector("[role=dialog]") === null && document.activeElement === members && localStorage.getItem(PANEL_KEY) === "1");
+  await m.run(() => {
+    width = 1200;
+    watchers.forEach((l) => l());
+  });
+  ok("5.4 at 1200px the saved Details column returns and the sidebar button still collapses navigation",
     m.container.querySelector('[role="navigation"][aria-label="Views"]') !== null && m.container.querySelector('[role="complementary"][aria-label="Space"]') !== null
       && m.container.querySelector('section[aria-label="Details"]') !== null && document.querySelector("[role=dialog]") === null
       && m.container.querySelector('nav[aria-label="Sections"]') === null
       && m.container.querySelector('main header [data-sidebar="trigger"]')?.getAttribute("aria-label") === "Toggle sidebar");
   await m.unmount();
-  ok("5.2 unmounting stops watching the width", watchers.size === 0, watchers.size);
+  ok("5.5 unmounting stops watching the width", watchers.size === 0, watchers.size);
 }
 
 patch = seed;

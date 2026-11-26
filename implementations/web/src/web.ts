@@ -1026,7 +1026,7 @@ async function launchDetachedWeb(
       cwd: root,
       detached: true,
       env: { ...process.env, [DETACHED_ROOT_ENV]: root, [DETACHED_LOG_ENV]: "1" },
-      stdio: ["ignore", logFd, logFd],
+      stdio: ["ignore", logFd, logFd], windowsHide: true,
     });
   } finally {
     closeSync(logFd);
@@ -1346,7 +1346,7 @@ export function openBrowser(url: string): void {
         ? ["cmd", ["/c", "start", "", url]]
         : ["xdg-open", [url]];
   try {
-    spawn(cmd as string, args as string[], { stdio: "ignore", detached: true }).unref();
+    spawn(cmd as string, args as string[], { stdio: "ignore", detached: true, windowsHide: true }).unref();
   } catch {
     /* no opener on this platform — the printed URL is the fallback */
   }
