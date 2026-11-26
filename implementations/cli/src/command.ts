@@ -1025,7 +1025,8 @@ async function dispatchCli(registry: Registry, argv: string[], opts: RunCliOptio
     } catch (e) {
       const infrastructureStatus = builtin?.name === "status" && !wantsHelp && !words.includes("--components")
         && metadataPositionals(builtin, words).positionals.length === 0;
-      if (((configRead || completionStatus || infrastructureStatus) && e instanceof CorruptExtensionsManifestError) || skipUnreadableConnectorOverlay(e)) {
+      if (((configRead || completionStatus || infrastructureStatus) && e instanceof CorruptExtensionsManifestError)
+        || (infrastructureStatus && isCommandFailure(e) && e.code === "PERMISSION_DENIED") || skipUnreadableConnectorOverlay(e)) {
         // The infrastructure report reads the manifest itself and can name the gap.
         if (infrastructureStatus) setInstalledExtensionsEnabled(false);
         commands = registry.all<Command>("command");
