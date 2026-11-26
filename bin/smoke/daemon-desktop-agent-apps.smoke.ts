@@ -56,7 +56,7 @@ type Isolated = ReturnType<typeof isolated>;
 
 /** A fixture installer that puts a stub harness in ~/.local/bin, the way the makers' scripts do. */
 function installer(target: Isolated, host: string, binary: string, body: string, exit = 0): void {
-  writeFileSync(join(target.env.FAKE_INSTALLERS!, host), `set -e\necho "Installing ${binary} for $USER"\nprintf 'progress 50%%\\r'\nmkdir -p "$HOME/.local/bin"\ncat > "$HOME/.local/bin/${binary}" <<'STUB'\n#!/bin/sh\n${body}\nSTUB\nchmod +x "$HOME/.local/bin/${binary}"\necho "Installed ${binary}"\nexit ${exit}\n`, { mode: 0o600 });
+  writeFileSync(join(target.env.FAKE_INSTALLERS!, host), `set -e\necho "Installing ${binary} for $USER"\nprintf 'progress 50%%\\r'\nmkdir -p "$HOME/.local/bin"\ncat > "$HOME/.local/bin/${binary}" <<'STUB'\n#!/bin/sh\n${body}\nSTUB\nchmod +x "$HOME/.local/bin/${binary}"\ncase ":$PATH:" in *":$HOME/.local/bin:"*) echo "PATH already holds ~/.local/bin";; *) echo "PATH lacks ~/.local/bin";; esac\necho "Installed ${binary}"\nexit ${exit}\n`, { mode: 0o600 });
 }
 const claudeStub = `case "$1 $2" in\n  "--version ") echo "9.8.7 (Claude Code)";;\n  "auth status") [ -f "$HOME/.signed-in" ];;\n  "auth login") echo "Opening browser to sign in…"; echo "If the browser didn't open, visit:"; echo "https://claude.ai/oauth/authorize?x=eyJsecret"; touch "$HOME/.signed-in";;\n  *) exit 2;;\nesac`;
 
@@ -108,6 +108,8 @@ try {
     check(lines[0] === "Downloading the Claude Code installer from claude.ai", lines[0]);
     check(lines.includes("Installing claude for " + userInfo().username) && lines.includes("progress 50%") && lines.includes("Installed claude"), `installer output streamed line by line: ${lines.join(" | ")}`);
     check(lines.some(line => line.startsWith("Added ") && line.includes(".local/bin")), "the PATH addition is reported");
+    // The installer already runs with the PATH the account gets, so it never stops to ask about PATH.
+    check(lines.includes("PATH already holds ~/.local/bin") && !lines.includes("PATH lacks ~/.local/bin"), `the installer sees its folder on PATH: ${lines.join(" | ")}`);
     assert.deepEqual(readFileSync(target.env.CURL_CALLS!, "utf8").trim().split("\n"), ["-fsSL --proto =https --tlsv1.2 https://claude.ai/install.sh"], "curl fetched the declared https script only"); checks++;
     const app = end.result!.app as App;
     assert.deepEqual({ state: app.state, version: app.version }, { state: "signed-out", version: "9.8.7" }); checks++;

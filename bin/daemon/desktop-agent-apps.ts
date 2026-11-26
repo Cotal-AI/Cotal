@@ -163,15 +163,21 @@ function folder(binDir: string): string {
 }
 
 /** Run the maker's installer: on macOS and Linux its script is downloaded with curl and piped to the
- *  shell the maker names, as its instructions say; on Windows PowerShell downloads and runs it. */
+ *  shell the maker names, as its instructions say; on Windows PowerShell downloads and runs it.
+ *  The installer runs with the PATH the account has once the app adds its folder (prepended on macOS
+ *  and Linux as the startup line does, appended on Windows as the user PATH is), so an installer
+ *  that checks whether it is on PATH does not stop to ask, or edit PATH itself, with no terminal.
+ *  curl and the shell are still found on the account's own PATH. */
 async function runInstaller(installer: HarnessInstaller, path: string, emit: Emit): Promise<Ran> {
   const env = { ...process.env, PATH: path, ...installer.env };
+  const dir = folder(installer.binDir);
+  const installerEnv = { ...env, PATH: process.platform === "win32" ? `${path.replace(/;+$/, "")};${dir}` : `${dir}:${path}` };
   const timeoutMs = 15 * 60_000;
   if (process.platform === "win32") {
     const root = systemRoot();
     if (!root) throw new CommandFailure("refused", "UNSUPPORTED", "the Windows system directory is unavailable; no installer was run");
     const powershell = win32.join(root, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
-    return await run(powershell, ["-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", `irm '${installer.script}' | iex`], { env, timeoutMs, emit });
+    return await run(powershell, ["-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", `irm '${installer.script}' | iex`], { env: installerEnv, timeoutMs, emit });
   }
   const curl = resolveOnPath("curl", env);
   const shell = resolveOnPath(installer.shell ?? "sh", env);
@@ -180,7 +186,7 @@ async function runInstaller(installer: HarnessInstaller, path: string, emit: Emi
   let downloadError = "";
   download.stderr.on("data", (chunk: Buffer) => { downloadError = shownLine(chunk.toString("utf8")) || downloadError; });
   const downloaded = new Promise<number | null>(resolve => { download.once("error", () => resolve(-1)); download.once("close", resolve); });
-  const ran = await run(shell, [], { env, timeoutMs, emit, input: download.stdout });
+  const ran = await run(shell, [], { env: installerEnv, timeoutMs, emit, input: download.stdout });
   const code = await downloaded;
   if (code !== 0) throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", `the installer could not be downloaded from ${installer.script}${downloadError ? `: ${downloadError}` : ""}`);
   return ran;
