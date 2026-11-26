@@ -78,6 +78,10 @@ recreated empty directories at the old path. Its next step stops the stack with
 `rootGone` is also true when a file obstructs the root of a locally started space. The root row
 names the obstruction and the next step explains how to restore the project folder or forget its
 registration.
+If search permission prevents `space show` from checking a local stack's `.cotal` directory, it
+names the directory and asks you to restore search permission. JSON includes the same warning and
+keeps `rootGone` false. The command still reports broker reachability and exits 0 without suggesting
+a stop.
 A name that is not registered is refused with `TARGET_NOT_FOUND`, exit 2, and
 so is a bare `space show` outside a project with nothing selected. Each entry under `prepared` has `space`, `root`,
 `preparedAt`, `current`, `rootMissing`, `state` and `lastOperation`. `rootMissing` is true when no
@@ -681,8 +685,8 @@ registration intact and excludes it from automatic selection if the broker does 
 space. If the CLI cannot read the inventory and still has to refuse, it marks the unchecked
 record as unverified and gives the exact `--space` choice for each candidate. An explicit
 `--server` can still require `--space` when several records name that address. In that case,
-`cotal history` reads and `cotal ps` give a retry for each space, keeping the broker address and
-the other arguments without changing the saved selection.
+`cotal history` reads, `cotal ps`, and `cotal whoami` give a retry for each space when the broker
+address can be printed unchanged. The retries keep the other arguments without changing the saved selection.
 Every refusal of a target puts what to run next
 in `error.remedy`, apart from `error.message`, and names the space and root it concerns under
 `target` when they are known, as for a prepared space that is not started.
@@ -1458,8 +1462,10 @@ That exit replaces the report's own, so a partial report followed by a clean pas
   fails after the broker disables JetStream keeps its store write diagnosis and history-preserving repair.
 
 When a stopped local broker's address accepts a connection without a NATS greeting, `status`
-and read commands name the occupied address and recommend stopping that listener or starting
-on another port, without changing the space's registration. For a stopped foreground stack,
+and read commands name the occupied address without changing the space's registration. For a
+controller stack, they recommend stopping that listener and running `cotal up` in the recorded
+project, since the stack cannot move to another port. For a legacy stack, they may also offer
+starting on another port. For a stopped foreground stack,
 `status` and `ps` check the saved address even if `down` removed its registration. Neither command
 stops the listener.
 When a controller stack keeps its recorded address, a refused restart does not clear the diagnosis.

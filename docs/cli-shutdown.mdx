@@ -241,8 +241,9 @@ is stopped, `down` removes the stack's saved definitions, their instance records
 registration that names the folder, so the space can be created and started in another folder.
 The same stop runs for a folder moved or renamed while its stack ran, which took its journal, store
 and trust with it. Its Next names `cotal space create <space> --adopt --root <folder>` first, which
-adopts those records where the folder is now and keeps its history, then
-`cotal space create <space>` for another folder. Outside a terminal it needs `--yes`, and
+adopts those records where the folder is now and keeps its history. When the saved definitions
+include a broker but no manager, the receipt recommends `cotal up --no-manager` after adoption.
+The receipt then names `cotal space create <space>` for another folder. Outside a terminal it needs `--yes`, and
 `--dry-run` lists each member with its pid and process.
 If a file occupies the recorded project path, the stop receipt reports it and leaves it untouched.
 To restart at that path, move the file aside and restore the original project folder.
@@ -784,6 +785,9 @@ retry from the same working directory and remove only the named flags and their 
 `--store-dir` is resolved from the working directory, which can be a subdirectory of the project.
 If a parent of that path is not a directory, `store` and `all` refuse with `USAGE_INVALID` (exit 1),
 name the parent and remove nothing. Correct `--store-dir`, or omit it to use the recorded store.
+If a parent has a symbolic-link loop or the path follows too many links, both `--dry-run` and
+`--force` refuse with `USAGE_INVALID` (exit 1) and remove nothing. Correct the links or retry with
+the intended real store path as `--store-dir`.
 
 - `history` purges the retained message backlog on the **running** broker (channels, plus DMs
   with `--dms`). A stream that is not on the broker is already clear: the command purges the streams

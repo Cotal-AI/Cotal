@@ -27,9 +27,9 @@ export interface StoredMessage {
 }
 
 /** The live feed's state as the pill says it. `connecting` until the feed first opens, `connected`
- *  while it is open, `reconnecting` after it dropped while the browser retries, and `closed` once the
- *  browser has failed it for good and will not retry. */
-export type Connection = "connecting" | "connected" | "reconnecting" | "closed";
+ *  while it is open, `reconnecting` after it drops while the browser retries, and `closed` once the
+ *  browser gives up. `session-invalid` is a terminal closure with a confirmed session refusal. */
+export type Connection = "connecting" | "connected" | "reconnecting" | "closed" | "session-invalid";
 
 /** A post the composer sent. `id` is unset while the server has not answered, which is when the row
  *  shows muted and sending, and set once it went out, until the feed delivers the message itself.

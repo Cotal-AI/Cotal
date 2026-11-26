@@ -3,6 +3,7 @@
  */
 import { spawn, spawnSync } from "node:child_process";
 import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { delimiter, join, resolve } from "node:path";
 import { MANAGER_PIDFILE, assertRecordIdentity, canonicalLocalProcessPath, processStopped, shellPath, spaceSegment } from "@cotal-ai/workspace";
@@ -11,6 +12,7 @@ import type { StatusResult } from "../src/commands/status.js";
 import { findNatsServer } from "../src/lib/nats-bin.js";
 import { readStackJournal } from "../src/lib/stack-journal.js";
 import { observeOwnedChild, waitForOwnedChild } from "./_foreground-owned-child.js";
+import { foregroundCliProbe } from "./_foreground-cli-probe.js";
 
 const scratch = mkdtempSync(join(tmpdir(), "cotal-status-broker-"));
 console.log(`Evidence: ${scratch}`);
@@ -436,13 +438,34 @@ if (process.platform === "linux") {
     try { await finished; } finally { clearTimeout(timeout); }
   }
 }
+async function checkOccupiedControllerAddress(project: string, space: string, port: number): Promise<void> {
+  const address = `nats://127.0.0.1:${port}`;
+  const listener = createServer(socket => {
+    socket.on("error", () => {});
+    socket.end("not nats\r\n");
+  });
+  await new Promise<void>((resolve, reject) => listener.once("error", reject).listen(port, "127.0.0.1", resolve));
+  try {
+    for (const [command, code] of [["status", 0], ["ps", 2]] as const) {
+      const result = await foregroundCliProbe(cli, import.meta.resolve("tsx"), project, env, [command, "--space", space, "--plain"], 60_000);
+      const text = result.out + result.err;
+      check(`${command} names only the controller stack's recorded address for restart`,
+        result.code === code && text.includes(`non-NATS listener holds ${address}`) &&
+        ["cotal", "pnpm cotal"].some(launcher => text.includes(`stop the listener at ${address} and run \`${launcher} up\` in ${project}`)) &&
+        !/up --server|another (?:port|broker address)/.test(text), text);
+    }
+  } finally {
+    await new Promise<void>((resolve, reject) => listener.close(error => error ? reject(error) : resolve()));
+  }
+}
+
 if (process.platform === "linux") {
   const project = join(scratch, "controller-zombie"), space = "controller-zombie";
   mkdirSync(project, { mode: 0o700 });
   const prepared = runFrom(project, "space", "create", space);
   if (prepared.status !== 0) throw new Error(prepared.stdout + prepared.stderr);
   const controllerSandbox = recordSmokeSandbox({ root: project, cotalHome, xdgConfigHome: config });
-  const address = `nats://127.0.0.1:${await freePort()}`;
+  const port = await freePort(), address = `nats://127.0.0.1:${port}`;
   const owner = spawn(process.execPath, ["--import", import.meta.resolve("tsx"), cli,
     "up", "--foreground", "--open", "--space", space, "--server", address], { cwd: project, env, stdio: ["ignore", "pipe", "pipe"] });
   const ownerState = observeOwnedChild(owner);
@@ -473,6 +496,9 @@ if (process.platform === "linux") {
     const components = runFrom(project, "status", "--space", space, "--components");
     check("component health marks the unreaped owned broker absent",
       /^  broker\s+absent[^\n]*\bgone\b/m.test(components.stdout), components.stdout);
+    owner.kill("SIGCONT");
+    await waitForOwnedChild(() => ownerState.exited, 60_000, "the foreground controller observed the broker exit");
+    await checkOccupiedControllerAddress(project, space, port);
   } finally {
     if (pausedManager !== undefined) process.kill(pausedManager, "SIGCONT");
     if (!ownerState.closed) owner.kill("SIGCONT");

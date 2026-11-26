@@ -578,6 +578,8 @@ function stripGlobalFlags(cmd: Command, words: string[]): string[] {
 function missingValue(cmd: Command, words: readonly string[], flag: FlagSpec, beforeSeparator = false) {
   if (cmd.name === "run" && (flag.name === "adopt" || flag.name === "release") && helpPath(cmd, words).path[0] === "check")
     return { message: `\`run check\` does not take --${flag.name}`, remedy: `run the check without --${flag.name}` };
+  if (cmd.name === "endpoint" && flag.name === "file" && helpPath(cmd, words).path[0] === "check")
+    return { message: "`endpoint check` does not take --file", remedy: "omit --file and keep the contract path" };
   return { message: `--${flag.name} needs a value`, remedy: `write --${flag.name} ${flag.value ?? "<value>"}${beforeSeparator ? " before --" : ""}` };
 }
 
@@ -917,8 +919,8 @@ async function dispatchCli(registry: Registry, argv: string[], opts: RunCliOptio
   // construct its command surface, or recover an installation as a prelude to this read-only mode.
   const updateCheck = builtin?.name === "update" && words.includes("--check") && !wantsHelp
     && parseOrExit(builtin, ownWords(builtin)).values.check === true;
-  // Structured version reports inventory failures itself and needs no extension commands.
-  const versionJson = builtin?.name === "version" && !wantsHelp && asksForJson(builtin, words);
+  // Version reports inventory failures itself and needs no extension commands.
+  const versionRead = builtin?.name === "version" && !wantsHelp;
   // The built-in updater repairs its connector paths before opening any promotion journal.
   const selfUpdate = builtin?.name === "update" && words.includes("--self") && !wantsHelp
     && parseOrExit(builtin, ownWords(builtin)).values.self === true;
@@ -969,7 +971,7 @@ async function dispatchCli(registry: Registry, argv: string[], opts: RunCliOptio
   const surface = (warnings: OutputWarning[]): Command[] => {
     let commands: Command[];
     try {
-      commands = useExtensionOverlay && !versionJson && !extDiagnostics && !configFolder ? overlayExtensions(registry, collisionWarning(warnings)) : registry.all<Command>("command");
+      commands = useExtensionOverlay && !versionRead && !extDiagnostics && !configFolder ? overlayExtensions(registry, collisionWarning(warnings)) : registry.all<Command>("command");
     } catch (e) {
       const infrastructureStatus = builtin?.name === "status" && !wantsHelp && !words.includes("--components")
         && metadataPositionals(builtin, words).positionals.length === 0;
@@ -1091,7 +1093,7 @@ async function dispatchCli(registry: Registry, argv: string[], opts: RunCliOptio
     try {
       cmd = await materializeExtensionCommand(cmd);
     } catch (e) {
-      stderrLine("✗ ", (e as Error).message, c.red);
+      stderrLine("✗ ", displayRemedy((e as Error).message), c.red);
       process.exit(1);
     }
     parsed = parseOrExit(cmd, rest);

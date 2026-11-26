@@ -331,6 +331,23 @@ check("a typographic flag after the backup verb keeps the same refusal", dashAft
 const scaffold = run(["endpoint", "init", "note", "--dir", "starter"]);
 check("endpoint init creates the contract for the separator check", scaffold.status === 0, shown(scaffold));
 if (scaffold.status === 0) {
+  const contract = "starter/contract.json";
+  for (const flags of [["--file", "--json"], ["--json", "--file"]]) {
+    const r = run(["endpoint", "check", contract, ...flags]);
+    check(`endpoint check ${flags.join(" ")} tells the caller to omit --file`,
+      r.status === 1 && r.stderr === "" && r.envelope?.command === "endpoint check" && r.envelope.outcome === "refused" &&
+      r.envelope.error?.code === "USAGE_INVALID" && r.envelope.error.message === "`endpoint check` does not take --file" &&
+      r.envelope.error.remedy === "omit --file and keep the contract path", shown(r));
+  }
+  const retry = run(["endpoint", "check", contract, "--json"]);
+  check("endpoint check succeeds with the same contract and output mode after omitting --file",
+    retry.status === 0 && retry.stderr === "" && retry.envelope?.command === "endpoint check" && retry.envelope.outcome === "ok", shown(retry));
+  const add = run(["endpoint", "add", "note", "--file", "--json"]);
+  check("endpoint add still asks for a missing reference filename",
+    add.status === 1 && add.stderr === "" && add.envelope?.outcome === "refused" &&
+    add.envelope.error?.code === "USAGE_INVALID" && add.envelope.error.message === "--file needs a value" &&
+    add.envelope.error.remedy === "write --file <reference.json>", shown(add));
+
   copyFileSync(join(neutral, "starter", "contract.json"), join(neutral, "--plain"));
   const endpointCheck = (...args: string[]) => run(["endpoint", "check", ...args], undefined,
     { FORCE_COLOR: "1", NO_COLOR: "", LC_ALL: "C.UTF-8" });
