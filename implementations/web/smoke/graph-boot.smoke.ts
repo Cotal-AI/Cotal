@@ -297,6 +297,10 @@ async function main() {
       d.store.get().connection === "connected" && readsAfterReconnect === readsBefore + 2, { connection: d.store.get().connection, readsAfterReconnect, readsBefore });
     d.deliver("closed");
     ok("6.6 a feed the browser closed for good marks the dashboard closed", d.store.get().connection === "closed", d.store.get().connection);
+    d.deliver("closed", Promise.resolve(true));
+    await Promise.resolve();
+    d.deliver("error");
+    ok("6.6b a confirmed session refusal stays terminal", d.store.get().connection === "session-invalid", d.store.get().connection);
     d.dash.stop();
     ok("6.5 stop() closes the feed it opened, once", d.stats().closed === 1, d.stats());
 
@@ -305,7 +309,8 @@ async function main() {
     const fired: string[] = [];
     const source = (readyState: number): FeedSource => ({ readyState, addEventListener: () => undefined, onopen: null, onerror: null, close: () => undefined });
     const record: FeedHandlers = {
-      open: () => void fired.push("open"), error: () => void fired.push("error"), closed: () => void fired.push("closed"),
+      open: () => void fired.push("open"), error: () => void fired.push("error"),
+      closed: (sessionCheck) => { void sessionCheck?.then((invalid) => fired.push(invalid ? "session-invalid" : "closed")); },
       roster: () => undefined, presenceView: () => undefined, membership: () => undefined, membershipFailed: () => undefined, message: () => undefined,
       hello: () => undefined, agentFrame: () => undefined,
     };
@@ -315,9 +320,15 @@ async function main() {
     ok("6.7 an error while the source is still connecting is a drop the browser retries: error, not closed", fired.join() === "error", fired);
     fired.length = 0;
     const refused = source(2);
-    openFeed(record, () => refused);
+    openFeed(record, () => refused, async () => false);
     refused.onerror?.();
+    await Promise.resolve();
     ok("6.8 an error with the source closed is final: closed, not error", fired.join() === "closed", fired);
+    fired.length = 0;
+    openFeed(record, () => refused, async () => true);
+    refused.onerror?.();
+    await Promise.resolve();
+    ok("6.9 a terminal error reports a confirmed session refusal", fired.join() === "session-invalid", fired);
   }
 
   // CONTROL for 1.2: the chained shape the old page had, `load().then(connect)`, written as a log.
@@ -385,7 +396,9 @@ async function main() {
       unwatch: async (id, feed) => void calls.push(`unwatch ${id} ${feed}`),
     };
     const store = createStore<DashboardState>(structuredClone(initialState));
-    const dash = startDashboard({ store, api, openFeed: (h) => openFeed(h, () => src) });
+    let finishSessionCheck!: (invalid: boolean) => void;
+    const sessionCheck = new Promise<boolean>((resolve) => { finishSessionCheck = resolve; });
+    const dash = startDashboard({ store, api, openFeed: (h) => openFeed(h, () => src, () => sessionCheck) });
     const settle = async () => { for (let i = 0; i < 20; i++) await new Promise((r) => setImmediate(r)); };
     const frame = (id: string, ts: number) =>
       ({ id, ts, space: "main", from: { id: "local.abc" }, parts: [{ kind: "ag-ui.frame", protocol: "ag-ui/1", threadId: "t", runId: "r", epoch: 1, seq: 1, events: [{ type: "RUN_STARTED", runId: "r" }] }] }) as unknown as CotalMessage;
@@ -409,6 +422,8 @@ async function main() {
     src.readyState = 2;
     src.onerror?.();
     dash.controller.openSession("local.ghi");
+    await settle();
+    finishSessionCheck(false);
     await settle();
     ok("9.4 after the browser closes the feed for good, a new session is not watched on its id either",
       store.get().connection === "closed" && !calls.includes("watch local.ghi feed-10") && calls.includes("read local.ghi 200"), calls);

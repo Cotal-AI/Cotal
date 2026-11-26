@@ -1,15 +1,20 @@
-import { Box, Text } from "ink";
+import { displayWidth } from "@cotal-ai/workspace";
+import { Box, Text, useInput } from "ink";
+import { useEffect, useState, type ReactNode } from "react";
 import type { FocusId } from "../mesh.js";
+import { wrapText } from "./theme.js";
 
 /** Context-sensitive `?` overlay: the focused panel's keys first, then the global ones. */
 export function Help({
   focusedId,
   width,
   height,
+  onClose,
 }: {
   focusedId: FocusId;
   width: number;
   height: number;
+  onClose: () => void;
 }) {
   const panel: [string, string][] =
     focusedId === "feed"
@@ -57,40 +62,58 @@ export function Help({
     ["?", "toggle this help"],
     ["q / Ctrl-C", "quit"],
   ];
-  // Pad the key column to the longest key (across both lists) + a gap, so a long key like
-  // "Ctrl-d / Ctrl-u" never sits flush against its description.
-  const colW = Math.max(...[...panel, ...global].map(([k]) => k.length)) + 2;
-  const section = (title: string, rows: [string, string][]) => (
-    <Box marginTop={1} flexDirection="column">
-      <Text bold>{title}</Text>
-      {rows.map(([k, d], i) => (
-        <Text key={i}>
-          {"  "}
-          <Text color="yellow">{k.padEnd(colW)}</Text>
-          <Text dimColor>{d}</Text>
-        </Text>
-      ))}
-    </Box>
-  );
+  const [offset, setOffset] = useState(0);
+  const bordered = height >= 3 && width >= 4;
+  const paddingX = width >= 24 ? 2 : 0;
+  const paddingY = height >= 8 ? 1 : 0;
+  const innerWidth = width - (bordered ? 2 : 0) - 2 * paddingX;
+  const innerHeight = height - (bordered ? 2 : 0) - 2 * paddingY;
+  const showTitle = innerHeight >= 3;
+  const showContext = innerHeight >= 4;
+  const showHint = innerHeight >= 2;
+  const room = innerHeight - Number(showTitle) - Number(showContext) - Number(showHint);
+  const colW = Math.max(...[...panel, ...global].map(([key]) => displayWidth(key))) + 2;
+  const lines: ReactNode[] = [];
+  for (const [title, bindings] of [[focusedId + " panel", panel], ["global", global]] as const) {
+    lines.push(" ", <Text bold>{title}</Text>);
+    for (const [key, description] of bindings) {
+      if (innerWidth < colW + 12) {
+        for (const part of wrapText(key, innerWidth)) lines.push(<Text color="yellow">{part}</Text>);
+        for (const part of wrapText(description, innerWidth)) lines.push(<Text dimColor>{part}</Text>);
+        continue;
+      }
+      const indent = "  ";
+      const space = " ".repeat(colW - displayWidth(key));
+      for (const [i, part] of wrapText(description, innerWidth - colW - indent.length).entries()) {
+        lines.push(i === 0 ? <>{indent}<Text color="yellow">{key + space}</Text><Text dimColor>{part}</Text></> :
+          <Text dimColor>{indent + " ".repeat(colW) + part}</Text>);
+      }
+    }
+  }
+  const maxOffset = Math.max(0, lines.length - room);
+  const top = Math.min(offset, maxOffset);
+  useEffect(() => { setOffset((n) => Math.min(n, maxOffset)); }, [maxOffset]);
+  useInput((_input, key) => {
+    if (maxOffset > 0 && (key.upArrow || key.downArrow || key.pageUp || key.pageDown)) {
+      const delta = key.pageUp ? -room : key.pageDown ? room : key.upArrow ? -1 : 1;
+      setOffset((n) => Math.max(0, Math.min(maxOffset, n + delta)));
+    } else onClose();
+  });
+
   return (
     <Box
       width={width}
       height={height}
-      borderStyle="round"
+      borderStyle={bordered ? "round" : undefined}
       borderColor="cyan"
-      paddingX={2}
-      paddingY={1}
+      paddingX={paddingX}
+      paddingY={paddingY}
       flexDirection="column"
     >
-      <Text bold color="cyan">
-        cotal console - help
-      </Text>
-      <Text dimColor>{"context: " + focusedId + " panel"}</Text>
-      {section(focusedId + " panel", panel)}
-      {section("global", global)}
-      <Box marginTop={1}>
-        <Text dimColor>press any key to close</Text>
-      </Box>
+      {showTitle && <Text bold color="cyan" wrap="truncate-end">cotal console - help</Text>}
+      {showContext && <Text dimColor wrap="truncate-end">{"context: " + focusedId + " panel"}</Text>}
+      {lines.slice(top, top + room).map((line, i) => <Text key={top + i} wrap="truncate-end">{line}</Text>)}
+      {showHint && <Text dimColor wrap="truncate-end">{maxOffset ? "↑↓ scroll · PgUp/PgDn page · any other key closes" : "press any key to close"}</Text>}
     </Box>
   );
 }

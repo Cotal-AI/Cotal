@@ -1191,14 +1191,28 @@ try {
   const lookup = (...flags: string[]) => runCli(...missing, ...flags).catch((error: { code?: number; stdout: string; stderr: string }) => error);
   const [direct, local, pinned] = await Promise.all([lookup(), lookup("--local"), lookup("--on", mintLifecycleUid())]);
   const missingResult = JSON.parse(direct.stdout || "{}");
-  c("B0c. Unpinned show on a broker-only open mesh reports a missing run just as an explicit local read does",
+  c("B0d. Unpinned show on a broker-only open mesh reports a missing run just as an explicit local read does",
     "code" in direct && direct.code === 2 && direct.stderr === "" && direct.stdout === local.stdout && missingResult.error?.code === "TARGET_NOT_FOUND"
       && missingResult.target?.space === spaceB && missingResult.target?.endpoint === "custom" && missingResult.target?.run === "run-missing"
       && missingResult.error?.remedy === `list the recorded runs with \`cotal run list --local --space ${spaceB} --server '${server}' --endpoint custom --json\``, direct);
   const pinnedError = JSON.parse(pinned.stdout || "{}").error;
-  c("B0d. An explicit manager pin does not read the broker journal",
+  c("B0e. An explicit manager pin does not read the broker journal",
     "code" in pinned && pinned.code === 2 && pinned.stderr === "" && pinnedError?.code === "TARGET_UNAVAILABLE"
       && pinnedError?.remedy.endsWith("a stack started with --no-manager has none"), pinned);
+  const inventoryArgs = ["list", "--endpoint", "custom", "--space", spaceB, "--server", server, "--json"];
+  const hostedInventory = await runCli(...inventoryArgs);
+  const localInventory = await runCli(...inventoryArgs, "--local");
+  const unchecked = JSON.parse(hostedInventory.stdout);
+  const checked = JSON.parse(localInventory.stdout);
+  c("B0c. Workflow JSON distinguishes an unchecked broker-only inventory from a checked empty endpoint",
+    hostedInventory.stderr === "" && unchecked.outcome === "ok" && unchecked.completeness === "not-checked"
+      && unchecked.result?.kind === "runs" && unchecked.result.items?.length === 0
+      && unchecked.warnings?.length === 1 && unchecked.warnings[0]?.code === "TARGET_UNAVAILABLE"
+      && unchecked.warnings[0]?.message.includes("Add `--local` to this command")
+      && localInventory.stderr === "" && checked.outcome === "ok" && checked.completeness === "complete"
+      && checked.result?.kind === "runs" && checked.result.items?.length === 0
+      && checked.warnings?.length === 1 && checked.warnings[0]?.code === "ENDPOINT_HAS_NO_RUNS"
+      && checked.warnings[0]?.target.endpoint === "custom", { hostedInventory, localInventory });
   const brokerOnlyStart = await runCli("start", "./cp.cotal.js", "--json").catch((error: { code?: number; stdout?: string }) => error);
   const plainStart = await runCli("start", "./cp.cotal.js", "--plain").catch((error: { code?: number; stderr?: string }) => error);
   const refusal = JSON.parse(brokerOnlyStart.stdout || "{}");
@@ -1311,7 +1325,7 @@ try { await delivery?.stop(); } catch { /* teardown */ }
   if (stillUp.running.length) console.log(`  ! seat processes still running after SIGKILL: ${stillUp.running.join(", ")}`);
 }
 
-const EXPECTED_CELLS = 117;
+const EXPECTED_CELLS = 118;
 if (pass + fail !== EXPECTED_CELLS) {
   console.log(`SUITE INCOMPLETE — ran ${pass + fail} of ${EXPECTED_CELLS} cells; a partial run is not a pass`);
   fail += 1;

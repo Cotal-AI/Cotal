@@ -194,7 +194,18 @@ try {
   check("first enable with malformed JWKS starts no broker and leaves no IdP pin or project state", malformed.status === 2
     && field(malformed.out, "Code", "DEPENDENCY_UNAVAILABLE") && malformed.out.includes("did not serve usable JWKS")
     && !malformed.out.includes("Starting nats-server") && readdirSync(join(root, ".cotal")).length === 0, malformed.out);
-  const up = await cotal(["up", "--user-auth", "--idp", base, "--auth-timeout", "3", "--detach", "--server", SERVER, "--space", SPACE]);
+  const start = ["up", "--user-auth", "--idp", base, "--auth-timeout", "3", "--detach", "--server", SERVER, "--space", SPACE];
+  const open = await cotal(["up", "--open", "--no-manager", "--server", SERVER, "--space", SPACE]);
+  check("the original address hosts an open stack", open.status === 0, open.out);
+  const mismatch = await cotal(start);
+  check("a running stack refuses the auth change and keeps the original startup request", mismatch.status === 2 && field(mismatch.out, "Code", "LIFECYCLE_BLOCKED")
+    && mismatch.out.includes(root) && mismatch.out.includes("down --dry-run") && mismatch.out.includes("down --yes")
+    && mismatch.out.includes("retry the original startup command unchanged from its original folder"), mismatch.out);
+  const preview = await cotal(["down", "--dry-run"]);
+  check("reviewing the stop leaves the original listener up", (preview.status === 0 || preview.status === 4) && await isReachable(SERVER), preview.out);
+  const stopped = await cotal(["down", "--yes"]);
+  check("the reviewed stop closes the open listener", stopped.status === 0 && !await isReachable(SERVER), stopped.out);
+  const up = await cotal(start);
   check("up exits 0 on the same project with the corrected IdP", up.status === 0, up.out);
   check("up announces the user-auth service + login line", up.out.includes("user-auth service up") && up.out.includes(`cotal login --idp ${base}`), up.out);
   check(

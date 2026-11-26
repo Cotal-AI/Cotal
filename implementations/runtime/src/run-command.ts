@@ -415,8 +415,10 @@ async function resume(values: RunValues, runId: string | undefined): Promise<voi
   try {
     const record = await readRunRecord(reader.kv, endpoint, runId);
     if (record === undefined) {
-      console.error(`run ${runId}: no record on endpoint ${endpoint}; a run that was never started cannot be resumed`);
-      process.exit(1);
+      throw new CommandFailure("refused", "TARGET_NOT_FOUND", `run ${runId}: no record on endpoint ${endpoint}; a run that was never started cannot be resumed`, {
+        target: { space: reader.space, endpoint, run: runId },
+        remedy: localRunInventory({ ...values, space: reader.space }),
+      });
     }
     status = record.status?.value;
     // The ORIGINAL admission (SPEC 14.8): a resume continues under it, never under a new one.

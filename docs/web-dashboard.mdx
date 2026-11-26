@@ -89,6 +89,8 @@ A foreground start prints the path in its terminal. A repeat start for that loop
 Read the file and open its single-use link in the browser profile you intend to use.
 The dashboard creates the file for the full service instance and launch request. Output contains only the file path, not the link.
 
+Restarting the dashboard service invalidates its existing browser sessions. If **Disconnected** says your session is invalid, open the new private link instead of reloading the old tab. For a background service, use `cotal service logs web --space main` to find the new session file, substituting your service and space names if they differ. For a foreground service, look in the terminal where the dashboard is running.
+
 <Callout type="warn" title="Keep the session file private">
 
 Do not upload the session file or paste its contents into logs.
@@ -112,16 +114,18 @@ An old cached web command needs the matching extension update, rather than an im
 
 ### Choose a dashboard view
 
-The rail on the left picks a view; the sidebar lists the places in that view with counts and unread
-marks; the content sits in the center; the panel on the right has Members, Agent and Topology tabs.
+The rail on the left picks a view. The sidebar lists the places in that view with counts and unread
+marks. The content sits in the center. The Details panel has Members, Agent and Topology tabs.
+At 1200 pixels or wider, Details has its own column on the right. At narrower widths, it starts
+closed and opens over the page when you select the Members button or the panel button.
 The button at the start of each view's header, or Ctrl+B (Cmd+B on a Mac), collapses the sidebar to
 the rail and opens it again.
-On a phone that button opens the sidebar as a sheet, the panel opens as a sheet too, and a long
-press on a message opens its actions from the bottom.
+On a phone that button opens the sidebar as a sheet. A long press on a message opens its actions
+from the bottom.
 
 | View | What it shows |
 | --- | --- |
-| Activity | Every message across the space with delivery-mode filters and pause. |
+| Activity | A live feed of messages the dashboard can read, with delivery-mode filters. |
 | Channels | One channel's messages, its working members, and the members tab. |
 | Direct messages | The newest 500 direct messages across the space, one conversation per peer. A conversation whose earlier messages are not loaded says so on its first line. The sidebar lists the ten most recent conversations plus the open one; a button lists the rest. |
 | Agents | Every agent grouped by status or by host, with each working agent's running step. |
