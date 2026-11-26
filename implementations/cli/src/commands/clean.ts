@@ -325,6 +325,10 @@ function checkCleanStorePath(root: string, requested: string): void {
   try { stat = lstatSync(requested, { throwIfNoEntry: false }); }
   catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ELOOP") {
+      throw new FlagValueRefusal(`the --store-dir path ${requested} cannot be used: a parent has a symbolic-link loop or too many links. Nothing was removed.`,
+        "correct the links or retry with the intended real store path as --store-dir");
+    }
     if (code === "ENOTDIR") {
       let blocked: string | undefined;
       for (let dir = dirname(requested); dir !== dirname(dir); dir = dirname(dir)) {

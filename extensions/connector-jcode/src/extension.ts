@@ -60,7 +60,7 @@ export function listJcodeModels(opts: ModelCatalogOpts = {}): Promise<ModelCatal
     const child = execFile(
       bin,
       MODEL_LIST_ARGS,
-      { encoding: "utf8", env: launchEnv(), timeout: MODEL_LIST_TIMEOUT_MS, killSignal: "SIGKILL", maxBuffer: 16 * 1024 * 1024 },
+      { encoding: "utf8", env: launchEnv(), timeout: MODEL_LIST_TIMEOUT_MS, killSignal: "SIGKILL", maxBuffer: 16 * 1024 * 1024, windowsHide: true },
       (error, stdout, stderr) => {
         if (error) {
           // jcode prints its error last, after any prompt it left unanswered on the same line.

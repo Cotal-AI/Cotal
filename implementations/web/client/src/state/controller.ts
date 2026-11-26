@@ -295,7 +295,12 @@ export function createController(store: Store<DashboardState>, api: Api, opts: C
 
   /** What `/api/meta` says. Its operator id wins over the one stored, because a restarted server posts
    *  under a new one; a meta with none keeps the stored id, which a post's answer may have given. */
-  const applyMeta = (meta: Meta) => store.set((s) => ({ space: meta.space, post: meta.post, operatorId: meta.operatorId ?? s.operatorId ?? null }));
+  const applyMeta = (meta: Meta) => store.set((s) => ({
+    space: meta.space,
+    post: meta.post,
+    channelDeleteSupported: meta.channelDeleteSupported === true,
+    operatorId: meta.operatorId ?? s.operatorId ?? null,
+  }));
   /** Bumped by every roster the feed delivers. */
   let rosterRev = 0;
   /** The roster revision the last operator re-read was made for, so no revision is read for twice. */

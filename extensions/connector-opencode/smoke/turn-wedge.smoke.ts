@@ -97,9 +97,13 @@ Object.assign(process.env, {
 // Fire one opencode bus event at the plugin's `event` hook.
 type Hooks = Awaited<ReturnType<typeof bootPlugin>>;
 const fire = (hooks: Hooks, event: unknown) => hooks.event!({ event } as never);
+type PromptModel = { providerID: string; modelID: string };
 const chatMessage = (hooks: Hooks) =>
   (hooks as Hooks & {
-    "chat.message"?: (input: { sessionID?: string; model?: { providerID: string; modelID: string }; variant?: string }, output: { parts?: { type: string; text?: string }[] }) => Promise<void>;
+    "chat.message"?: (input: { sessionID?: string; model?: PromptModel; variant?: string }, output: {
+      message?: { model: PromptModel & { variant?: string } };
+      parts?: { type: string; text?: string }[];
+    }) => Promise<void>;
   })["chat.message"]!;
 
 // A plain peer that posts ambient channel traffic at the agent.
@@ -136,6 +140,15 @@ try {
   await pub.multicast("hello team", { channel: "team" });
   await waitForPrompts(1);
   check("a channel message drives a turn (push works)", prompts.length === 1, prompts);
+  const submitted = prompts[0]?.body as { model?: PromptModel };
+  check("the automatic prompt does not submit a model when unpinned", submitted.model === undefined, submitted);
+  // OpenCode resolves the model before chat.message and supplies it on the user message.
+  await chatMessage(hooks)({ sessionID: SID }, {
+    message: { model: { providerID: "local", modelID: "gpt-6.2-sol", variant: "high" } },
+  });
+  for (let i = 0; i < 50 && otto()?.card.meta?.model !== "local/gpt-6.2-sol"; i++) await sleep(100);
+  check("an unpinned mesh turn reports the resolved model and variant to the roster",
+    otto()?.card.meta?.model === "local/gpt-6.2-sol" && otto()?.card.meta?.variant === "high", otto()?.card.meta);
 
   // (2) complete the connector's turn (acks it, returns the session to idle).
   await fire(hooks, { type: "session.idle", properties: { sessionID: SID } });

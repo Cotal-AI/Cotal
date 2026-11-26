@@ -40,7 +40,7 @@ const READ_MS = 10_000;
  *  killed at the bound, so uv's Python child does not outlive the read. */
 function runScript(uv: string, env: NodeJS.ProcessEnv): Promise<string> {
   return new Promise((resolve, reject) => {
-    const child = spawn(uv, SCRIPT_ARGS, { env, stdio: ["ignore", "pipe", "pipe"], detached: true });
+    const child = spawn(uv, SCRIPT_ARGS, { env, stdio: ["ignore", "pipe", "pipe"], detached: true, windowsHide: true });
     let out = "";
     let err = "";
     child.stdout.setEncoding("utf8").on("data", (d: string) => (out += d));
@@ -74,7 +74,7 @@ export function hermesEfforts(opts: {
   execFileImpl?: (file: string, args: readonly string[], options: { encoding: "utf8"; env: NodeJS.ProcessEnv }) => string;
 } = {}): string[] {
   const env = opts.env ?? process.env;
-  const exec = opts.execFileImpl ?? ((file, args, options) => execFileSync(file, args, options));
+  const exec = opts.execFileImpl ?? ((file, args, options) => execFileSync(file, args, { ...options, windowsHide: true }));
   let line: string;
   try {
     line = exec(hermesUvCommand(env), [...SCRIPT_ARGS, "efforts"], { encoding: "utf8", env }).trim().split("\n").at(-1) ?? "";

@@ -24,7 +24,7 @@ export function spaceChoiceRemedy(error: unknown, command: string, args: ParsedA
     : (end === -1 ? rest : rest.slice(0, end)).map(shellWord);
   const words = show ? [cli, "space", "show"] : [cli, command, ...flags, "--space"];
   const suffix = show && args.values.json ? ["--json"] : show && args.values.plain ? ["--plain"]
-    : brokerRead && end !== -1 ? rest.slice(end).map(shellWord) : [];
+    : (brokerRead || describe) && end !== -1 ? rest.slice(end).map(shellWord) : [];
   return `run ${error.details.spaces.map((space) => codeSpan([...words, shellWord(space), ...suffix].join(" "))).join(" or ")}`;
 }
 

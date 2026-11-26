@@ -562,9 +562,11 @@ Persona names for create, edit and remove use letters, digits, `_` and `-`, up t
 A local `persona show` takes the exact filename stem from the catalog, including punctuation,
 Unicode and spaces. It refuses paths, control characters and blank stems.
 The local listing marks a file with an empty or whitespace-only stem as an invalid selector.
-Rename that file or pass its path to `cotal spawn --file <persona.md>`.
-The local listing also marks a stem containing a literal backslash as an invalid selector and
-shows how to launch the file with `cotal spawn --file`. This warning does not change the list exit status.
+Rename that file or, if its path has no control characters, pass it to `cotal spawn --file <persona.md>`.
+The local listing also marks stems that contain control characters, such as tabs, or a literal
+backslash as invalid selectors. Rename a file with control characters to open it with `cotal persona show`.
+For a backslash, the listing shows how to launch the file with `cotal spawn --file` if its path
+has no control characters. These warnings do not change the list exit status.
 Quote a name with spaces: `cotal persona show 'a b'` reads `.cotal/agents/a b.md`.
 `cotal persona show review.md` reads `.cotal/agents/review.md.md` in the selected space,
 not `review.md` in the project root.
