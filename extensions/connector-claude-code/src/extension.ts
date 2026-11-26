@@ -107,6 +107,8 @@ export const claudeConnector: Connector = {
   supportsPrompt: true, // a leading positional is auto-submitted as the first turn — see buildLaunch
   interruptKey: "\x1b", // Escape ends the live turn ("Interrupted · What should Claude do instead?")
   supportsTurnRelay: true,
+  supportsOnceKickoff: true,
+  onceNeedsConfirmed: "this Claude Code connector requires a newer manager for once kickoffs",
   // The startup watch distinguishes a usable input screen from a startup blocker.
   idleWakeNeedsConfirmed: "channels are off for this session (Claude showed no development-channels prompt), so mesh traffic does not wake it while idle; type into its pane to start a turn, or enable channels for the organization",
   turnFrameLimit: HOOK_CONTEXT_CHARS,
@@ -117,6 +119,9 @@ export const claudeConnector: Connector = {
 
   supportsLaunchValidation: true,
   buildLaunch(opts: LaunchOpts): LaunchSpec {
+    if (opts.once && (!opts.onceKickoffGoalId || !opts.prompt?.trim())) {
+      throw new Error("once: this Claude Code connector requires a newer manager that supports once kickoffs. Upgrade the manager before retrying");
+    }
     if (opts.continueSession) throw new Error("claude connector does not support exact-session continuation");
     if (opts.variant !== undefined && !CLAUDE_EFFORT_LEVELS.includes(opts.variant))
       throw new Error(`claude connector: effort level ${JSON.stringify(opts.variant)} is not one claude accepts (${CLAUDE_EFFORT_LEVELS.join(", ")})`);
@@ -195,7 +200,10 @@ export const claudeConnector: Connector = {
     if (prompt === "")
       throw new Error("claude connector: an initial prompt was given but it is empty, there is no first turn to submit");
     Object.assign(env, claudeNamingLaunchEnv(opts, prompt));
-    if (opts.once && prompt) env.COTAL_CLAUDE_ONCE_PROMPT_HASH = createHash("sha256").update(prompt).digest("hex");
+    if (opts.onceKickoffGoalId && prompt) {
+      env.COTAL_CLAUDE_ONCE_GOAL = opts.onceKickoffGoalId;
+      env.COTAL_CLAUDE_ONCE_PROMPT_HASH = createHash("sha256").update(prompt).digest("hex");
+    }
     // `--resume` takes an optional value, so `claude` reads an id that starts with `-` as the next
     // option and resumes nothing. A Claude session id never starts with one.
     if (opts.resume?.startsWith("-"))

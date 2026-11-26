@@ -112,6 +112,8 @@ export interface LaunchOpts {
    *  connector that launches processes outside the seat's own process records them from launch on,
    *  so {@link Connector.retireAfterExit} can prove them gone. */
   once?: boolean;
+  /** The accepted once task id when its rendered prompt is the launch kickoff. */
+  onceKickoffGoalId?: string;
   /** An OPAQUE prior-session handle to FORK FROM when launching — never reused, never resolved by
    *  core. Like `creds` / `configPath`, this is a HOST-LOCAL pointer (into e.g. `~/.claude`), NOT a
    *  portable value like `model`: it only means something on the machine that produced it. A
@@ -432,6 +434,8 @@ export interface Connector extends Extension {
    *  only after a live check shows the harness doing all three; serving `turn-pending` is not
    *  enough. Default-deny. */
   readonly supportsTurnRelay?: boolean;
+  /** Whether this connector takes a once task as its launch prompt and yields the task id. */
+  readonly supportsOnceKickoff?: true;
   /** Why this connector cannot take a relayed turn, in a clause the manager appends to its
    *  refusal of a `once` spawn. Only meaningful without {@link supportsTurnRelay}. */
   readonly turnRelayRefusal?: string;

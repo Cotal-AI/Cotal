@@ -369,9 +369,11 @@ export class SeatLaunch {
     if (launch.supervise !== undefined) return "once: a once seat is never restarted, so it cannot carry supervise";
     // The task reaches the seat as a relayed turn, never as a message, so the seat would wait to be labelled forever.
     if (launch.autoName) return "once: a once seat cannot label itself from its first message (autoName)";
-    if (!connector.supportsTurnRelay)
+    if (connector.name === "claude" && !connector.supportsOnceKickoff)
+      return "once: this manager requires a newer Claude Code connector that supports once kickoffs. Upgrade the connector before retrying";
+    if (!connector.supportsTurnRelay && !connector.supportsOnceKickoff)
       return `once: the ${connector.name} connector cannot take a once task${connector.turnRelayRefusal ? `: ${connector.turnRelayRefusal}` : ""}`;
-    if ((connector.onceNeedsConfirmed !== undefined || connector.name === "claude") && !runtime.reportsStartupOutcome)
+    if ((connector.onceNeedsConfirmed !== undefined || connector.supportsOnceKickoff) && !runtime.reportsStartupOutcome)
       return `once: runtime "${runtime.kind}" does not report how a seat's startup ended, which a once seat on the ${connector.name} connector needs`;
     if (runtime.spawnDelegated) return `once: runtime "${runtime.kind}" starts seats outside this host, where this manager cannot prove the seat's exit`;
     const operator = connector.waitsForOperator?.(launch.launchOptions);

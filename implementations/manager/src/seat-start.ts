@@ -722,7 +722,7 @@ export class SeatStart {
       const hostedEnrollment = this.userMode && (opts.delegatedIntent !== undefined || this.remoteAuthority?.enrollManagedAgent !== undefined);
       // A once spawn's task is accepted with the spawn, before anything launches.
       let onceTask: { ref: GoalRef; deadlineAt?: number } | undefined;
-      const onceKickoff = opts.once !== undefined && connector.name === "claude";
+      const onceKickoff = opts.once !== undefined && connector.supportsOnceKickoff === true;
       const onceSpawner = opts.once === undefined ? undefined : this.spawnerName(spawner);
       const acceptOnce = async (seat: { owner: string; actor: string; uid: string }): Promise<void> => {
         if (opts.once === undefined) return;
@@ -904,6 +904,7 @@ export class SeatStart {
         firstCommand: opts.firstCommand,
         ...(opts.autoName === true ? { autoName: true } : {}),
         ...(opts.once !== undefined ? { once: true } : {}),
+        ...(onceKickoff && onceTask ? { onceKickoffGoalId: onceTask.ref.goalId } : {}),
         // The SAME access set the creds were minted from (above) — forwarded so the session's
         // runtime read/post set matches its credentials. Without this a manifest-spawned agent
         // (materialized persona has no access frontmatter) has no channel set to read and joins
@@ -943,8 +944,7 @@ export class SeatStart {
         }
         spec = connector.buildLaunch(launchOpts);
         if (carried) this.transcripts!.consume(opts.resumeClaim!, opts.resume!);
-        spec.env = { ...spec.env, COTAL_MANAGER_INSTANCE: this.managerInstanceId,
-          ...(onceKickoff && onceTask ? { COTAL_CLAUDE_ONCE_GOAL: onceTask.ref.goalId } : {}) };
+        spec.env = { ...spec.env, COTAL_MANAGER_INSTANCE: this.managerInstanceId };
         handle = await this.seatCustody.spawnCustodied(runtime, name, spec, cwd, custody);
       }
       if (onceTask && !handle.waitForExit)
@@ -1086,7 +1086,7 @@ export class SeatStart {
       // A once seat whose connector needs a confirmed startup is served only on that outcome. Any
       // other ends it like a seat that never joined: stopped before the failed terminal, and its
       // task, never served, cancelled with the verdict.
-      if (onceTask && connector.onceNeedsConfirmed !== undefined) {
+      if (onceTask && !onceKickoff && connector.onceNeedsConfirmed !== undefined) {
         const startup = await this.awaitStartupOutcome(managed, launchedAt, readinessTimeoutMs);
         if (managed.terminalizing || this.leaseStopping) { hooks?.onTerminalDeferred?.(); return { ok: false, error: `${name} was stopped before its startup ended` }; }
         if (startup !== "confirmed") {
@@ -1099,7 +1099,7 @@ export class SeatStart {
         }
       }
       // The channel gate is not needed for a kickoff. An unusable startup still fails the launch.
-      if ((!onceTask || onceKickoff) && connector.idleWakeNeedsConfirmed !== undefined && runtime.reportsStartupOutcome) {
+      if ((onceKickoff || (!onceTask && connector.idleWakeNeedsConfirmed !== undefined)) && runtime.reportsStartupOutcome) {
         const startup = await this.awaitStartupOutcome(managed, launchedAt, readinessTimeoutMs);
         if (managed.terminalizing || this.leaseStopping) { hooks?.onTerminalDeferred?.(); return { ok: false, error: `${name} was stopped before its startup ended` }; }
         if (startup === "failed" || startup === "exited" || (onceKickoff && startup === "pending")) {
@@ -1110,7 +1110,7 @@ export class SeatStart {
           await hooks?.onOutcome?.({ kind: "failed", data: { error } });
           return { ok: false, error };
         }
-        if (startup === "ready") {
+        if (startup === "ready" && connector.idleWakeNeedsConfirmed !== undefined) {
           managed.startupNotice = connector.idleWakeNeedsConfirmed;
           console.error(`! ${name}: ${connector.idleWakeNeedsConfirmed}`);
         }
