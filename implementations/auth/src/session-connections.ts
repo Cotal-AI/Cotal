@@ -17,6 +17,7 @@ interface SessionConnection {
 interface SignedSessionConnection { v: 1; row: SessionConnection; mac: string }
 const PREFIX = "sessionconn.";
 const markerTtl = `${EP_AUTH_MARKER_TTL_MS / 1000}s`;
+const MAX_PENDING_EVICTIONS = 4;
 
 function signature(secret: string, space: string, key: string, row: SessionConnection): Buffer {
   return createHmac("sha256", secret).update(JSON.stringify(["cotal-session-connection-v1", space, key, row])).digest();
@@ -90,80 +91,98 @@ export async function reconcileSessionConnections(opts: {
       opts.retries.set(key, { nextAt: Date.now() + delayMs, delayMs });
     }
   };
-  let seq = opts.seq;
-  for (let visited = 0; visited < opts.maxRows; visited++) {
-    opts.signal.throwIfAborted();
-    const message = await opts.jsm.streams.getMessage(`KV_${bucket}`, { seq, next_by_subj: `${prefix}${PREFIX}>` } as unknown as MsgRequest);
-    if (!message) return undefined;
-    opts.signal.throwIfAborted();
-    seq = message.seq + 1;
-    const key = message.subject.slice(prefix.length);
-    if (message.header?.get("KV-Operation")) { forget(key); continue; }
-    if ((opts.retries?.get(key)?.nextAt ?? 0) > Date.now()) continue;
-    let row: SessionConnection;
+  const pending = new Set<Promise<void>>();
+  const evictEnded = async (key: string, revision: number, row: SessionConnection): Promise<void> => {
     try {
-      fromPublic(key.slice(PREFIX.length));
-      const signed = message.json<SignedSessionConnection>();
-      if (signed?.v !== 1 || typeof signed.mac !== "string") throw new Error("session connection evidence is unsigned");
-      row = validateRow(signed.row);
-      const expected = signature(opts.secret, opts.space, key, row), actual = Buffer.from(signed.mac, "base64url");
-      if (expected.length !== actual.length || !timingSafeEqual(expected, actual)) throw new Error("session connection evidence authentication failed");
+      // Only an observation started after the release window can prove that no late socket remains.
+      const releaseWindowClosed = Date.now() > row.releaseAfter + opts.releaseWindowMs;
+      const result = await opts.evict(row.principal, [row.connection]);
+      if (opts.signal.aborted) return;
+      if (!result.verifiedGone) { retry(key); return; }
+      if (!releaseWindowClosed) return;
+      await opts.kv.purge(key, { previousSeq: revision, ttl: markerTtl });
+      forget(key);
     } catch {
-      try {
-        await opts.kv.purge(key, { previousSeq: message.seq, ttl: markerTtl });
-        forget(key);
-        opts.log?.("auth-plane: quarantined invalid session connection evidence");
-      } catch { retry(key); }
-      continue;
+      if (!opts.signal.aborted) retry(key);
     }
-    try {
-      const sessions = sessionsBucket(opts.space);
-      let session;
-      try { session = await opts.jsm.streams.getMessage(`KV_${sessions}`, { last_by_subj: `$KV.${sessions}.${sessionLedgerKey(row.sessionId)}` }); }
-      catch (e) { if ((e as { code?: unknown }).code !== 10037) throw e; }
+  };
+  let seq = opts.seq;
+  try {
+    for (let visited = 0; visited < opts.maxRows; visited++) {
       opts.signal.throwIfAborted();
-      // A verified receipt proves a real session revision was observed before access was released.
-      if (session && session.seq < row.sessionRevision) {
-        retry(key, `auth-plane: session authority revision ${session.seq} precedes authenticated receipt revision ${row.sessionRevision}; evidence retained for retry`);
-        continue;
-      }
-      let ended = !session || !!session.header?.get("KV-Operation");
-      if (!ended) {
-        let raw: SessionLedgerRow;
+      const message = await opts.jsm.streams.getMessage(`KV_${bucket}`, { seq, next_by_subj: `${prefix}${PREFIX}>` } as unknown as MsgRequest);
+      if (!message) return undefined;
+      opts.signal.throwIfAborted();
+      seq = message.seq + 1;
+      const key = message.subject.slice(prefix.length);
+      if (message.header?.get("KV-Operation")) { forget(key); continue; }
+      if ((opts.retries?.get(key)?.nextAt ?? 0) > Date.now()) continue;
+      let row: SessionConnection;
+      try {
+        fromPublic(key.slice(PREFIX.length));
+        const signed = message.json<SignedSessionConnection>();
+        if (signed?.v !== 1 || typeof signed.mac !== "string") throw new Error("session connection evidence is unsigned");
+        row = validateRow(signed.row);
+        const expected = signature(opts.secret, opts.space, key, row), actual = Buffer.from(signed.mac, "base64url");
+        if (expected.length !== actual.length || !timingSafeEqual(expected, actual)) throw new Error("session connection evidence authentication failed");
+      } catch {
         try {
-          raw = session!.json<SessionLedgerRow>();
-          if (!raw || typeof raw !== "object" || typeof raw.sessionId !== "string" ||
-            typeof raw.holder?.principal !== "string" || typeof raw.holder.lifecycleUid !== "string" ||
-            !["issuing", "active", "closed", "expired", "superseded", "retired"].includes(raw.state) || !Number.isSafeInteger(raw.exp))
-            throw new Error("invalid session authority");
-        } catch {
-          retry(key, "auth-plane: session authority is unreadable; authenticated evidence retained for retry");
-          continue;
-        }
-        opts.retryLogged?.delete(key);
-        let state: SessionLedgerRow;
-        try { state = sessionState(raw, row); }
-        catch {
           await opts.kv.purge(key, { previousSeq: message.seq, ttl: markerTtl });
           forget(key);
-          opts.log?.("auth-plane: quarantined mismatched session connection authority");
+          opts.log?.("auth-plane: quarantined invalid session connection evidence");
+        } catch { retry(key); }
+        continue;
+      }
+      try {
+        const sessions = sessionsBucket(opts.space);
+        let session;
+        try { session = await opts.jsm.streams.getMessage(`KV_${sessions}`, { last_by_subj: `$KV.${sessions}.${sessionLedgerKey(row.sessionId)}` }); }
+        catch (e) { if ((e as { code?: unknown }).code !== 10037) throw e; }
+        opts.signal.throwIfAborted();
+        // A verified receipt proves a real session revision was observed before access was released.
+        if (session && session.seq < row.sessionRevision) {
+          retry(key, `auth-plane: session authority revision ${session.seq} precedes authenticated receipt revision ${row.sessionRevision}; evidence retained for retry`);
           continue;
         }
-        ended = state.state !== "active" || state.exp <= Date.now();
+        let ended = !session || !!session.header?.get("KV-Operation");
+        if (!ended) {
+          let raw: SessionLedgerRow;
+          try {
+            raw = session!.json<SessionLedgerRow>();
+            if (!raw || typeof raw !== "object" || typeof raw.sessionId !== "string" ||
+              typeof raw.holder?.principal !== "string" || typeof raw.holder.lifecycleUid !== "string" ||
+              !["issuing", "active", "closed", "expired", "superseded", "retired"].includes(raw.state) || !Number.isSafeInteger(raw.exp))
+              throw new Error("invalid session authority");
+          } catch {
+            retry(key, "auth-plane: session authority is unreadable; authenticated evidence retained for retry");
+            continue;
+          }
+          opts.retryLogged?.delete(key);
+          let state: SessionLedgerRow;
+          try { state = sessionState(raw, row); }
+          catch {
+            await opts.kv.purge(key, { previousSeq: message.seq, ttl: markerTtl });
+            forget(key);
+            opts.log?.("auth-plane: quarantined mismatched session connection authority");
+            continue;
+          }
+          ended = state.state !== "active" || state.exp <= Date.now();
+        }
+        if (!ended) { forget(key); continue; }
+        if (pending.size >= MAX_PENDING_EVICTIONS) await Promise.race(pending);
+        opts.signal.throwIfAborted();
+        const flight = evictEnded(key, message.seq, row).finally(() => { pending.delete(flight); });
+        pending.add(flight);
+      } catch (e) {
+        if (opts.signal.aborted) throw e;
+        retry(key);
       }
-      if (!ended) { forget(key); continue; }
-      const result = await opts.evict(row.principal, [row.connection]);
-      opts.signal.throwIfAborted();
-      if (!result.verifiedGone) { retry(key); continue; }
-      if (Date.now() <= row.releaseAfter + opts.releaseWindowMs) continue;
-      await opts.kv.purge(key, { previousSeq: message.seq, ttl: markerTtl });
-      forget(key);
-    } catch (e) {
-      if (opts.signal.aborted) throw e;
-      retry(key);
     }
+    return seq;
+  } finally {
+    await Promise.all(pending);
+    opts.signal.throwIfAborted();
   }
-  return seq;
 }
 
 /** Run bounded passes until the authority stops, with one in-flight pass to drain. */
