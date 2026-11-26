@@ -1038,6 +1038,7 @@ cotal docs --search <query> [--json | --plain]
 Reads the docs bundled with this installed version, offline: the same pages agents read with
 `cotal_docs`. The command does not read or repair the installed extension inventory, so you can
 consult it while fixing that inventory.
+Both `cotal help docs` and `cotal docs --help` show the same help without reading the inventory.
 
 Bare `docs` lists the pages by category (`Start here`, `Guide`, `Concept`, `Reference`, `Project`,
 the order of the docs index), each with its title; `result.pages` holds each page's slug,
