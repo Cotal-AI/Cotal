@@ -1,10 +1,10 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { spawnSync } from "node:child_process";
-import { lstatSync, readFileSync, realpathSync } from "node:fs";
+import { lstatSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync } from "node:fs";
 import { createRequire } from "node:module";
 import { homedir } from "node:os";
 import { basename, delimiter, dirname, isAbsolute, join, parse, resolve } from "node:path";
-import { logicalExecutionEntry, resolveOnPath } from "@cotal-ai/workspace";
+import { logicalExecutionEntry, protectedLocalDirectory, resolveOnPath } from "@cotal-ai/workspace";
 
 const { satisfies } = createRequire(import.meta.url)("semver") as { satisfies: (version: string, range: string) => boolean };
 export const npmProjectDirectory = new AsyncLocalStorage<string | undefined>();
@@ -26,7 +26,7 @@ export function preserveUpdatePath(): void {
   process.env.PATH = value;
 }
 
-function npmEngine(file: string): { entry: string; range: string } | undefined {
+function npmEngine(file: string): { entry: string; range: string; corepack: boolean } | undefined {
   try {
     let entry = realpathSync(file);
     if (basename(entry).toLowerCase() === "npm.cmd") {
@@ -37,8 +37,16 @@ function npmEngine(file: string): { entry: string; range: string } | undefined {
     if (!corepack && basename(entry) !== "npm-cli.js") return;
     const manifest = JSON.parse(readFileSync(join(dirname(dirname(entry)), "package.json"), "utf8"));
     if (manifest.name !== (corepack ? "corepack" : "npm") || (!corepack && manifest.bin?.npm !== "bin/npm-cli.js") || typeof manifest.engines?.node !== "string") return;
-    return { entry, range: manifest.engines.node };
+    return { entry, range: manifest.engines.node, corepack };
   } catch { return undefined; }
+}
+
+function corepackNpmRange(entry: string, cwd: string, env: NodeJS.ProcessEnv): string | undefined {
+  const result = spawnSync(process.execPath, [entry, "--version", "--loglevel=warn", "--color=false"], {
+    cwd, env, encoding: "utf8", timeout: 2000, killSignal: "SIGKILL", windowsHide: true,
+  });
+  // npm can print its version and exit successfully even on an unsupported Node.
+  return /^(?:npm warn cli npm v\S+ does not support|ERROR: npm v\S+ is known not to run on) Node\.js \S+\. +This version of npm supports the following node versions: `([^`\r\n]+)`/m.exec(result.stderr ?? "")?.[1];
 }
 
 function recordedNode(): string | undefined {
@@ -65,10 +73,10 @@ function probeNode(file: string, cwd: string, env: NodeJS.ProcessEnv): { path: s
   } catch { return undefined; }
 }
 
-function compatibleNode(candidate: string, directory: string, cwd: string, env: NodeJS.ProcessEnv, range: string): string | undefined {
+function compatibleNode(candidate: string, directory: string, cwd: string, env: NodeJS.ProcessEnv, supports: (version: string) => boolean): string | undefined {
   // Version-manager shims can select the tool by the invoked filename.
   const selected = probeNode(candidate, directory, env);
-  if (!selected || !satisfies(selected.version, range)) return;
+  if (!selected || !supports(selected.version)) return;
   if (directory === cwd && candidate === selected.path) return selected.path;
   // npm uses the same executable from its isolated cwd without the shim.
   const verified = probeNode(selected.path, cwd, env);
@@ -121,7 +129,10 @@ export function npmInvocation(env: NodeJS.ProcessEnv, args: string[]) {
   const engine = npmEngine(file);
   const withNode = (node: string, preserveLiteral = literal !== undefined) => preserveLiteral && dirname(node).includes(delimiter) ? env
     : { ...env, [pathKey]: `${dirname(node)}${delimiter}${path}` };
-  if (engine && !satisfies(process.version, engine.range)) {
+  const npmRange = engine?.corepack && satisfies(process.version, engine.range)
+    ? corepackNpmRange(engine.entry, cwd, withNode(process.execPath, true)) : undefined;
+  const supports = (version: string) => !!engine && satisfies(version, engine.range) && (!npmRange || satisfies(version, npmRange));
+  if (engine && !supports(process.version)) {
     const current = realpathSync(process.execPath);
     const probeEnv = { ...env };
     delete probeEnv.NODE_OPTIONS;
@@ -131,7 +142,7 @@ export function npmInvocation(env: NodeJS.ProcessEnv, args: string[]) {
     if (inheritedNode && isAbsolute(inheritedNode) &&
         (directories.includes(inheritedBin) || (!windows && inheritedBin.includes(delimiter))) &&
         resolveOnPath(inheritedNode, env) === inheritedNode) {
-      const node = compatibleNode(inheritedNode, cwd, cwd, probeEnv, engine.range);
+      const node = compatibleNode(inheritedNode, cwd, cwd, probeEnv, supports);
       if (node === inheritedNode) return { file: node, args: [engine.entry, ...args], env: withNode(node, true), cwd, node };
     }
     const seen = new Set<string>();
@@ -141,13 +152,13 @@ export function npmInvocation(env: NodeJS.ProcessEnv, args: string[]) {
       seen.add(candidate);
       try { if (realpathSync(candidate) === current) continue; } catch { continue; }
       candidates.push(candidate);
-      const node = project === undefined ? undefined : compatibleNode(candidate, project, cwd, probeEnv, engine.range);
+      const node = project === undefined ? undefined : compatibleNode(candidate, project, cwd, probeEnv, supports);
       if (node) return { file: node, args: [engine.entry, ...args], env: withNode(node, true), cwd, node };
     }
     for (const candidate of candidates) {
       // Keep the shim's invocation name and environment for npm if isolated version lookup succeeds.
       const version = spawnSync(candidate, ["--version"], { cwd, env: probeEnv, encoding: "utf8", timeout: 1000, killSignal: "SIGKILL", windowsHide: true });
-      if (version.status === 0 && satisfies(version.stdout.trim(), engine.range))
+      if (version.status === 0 && supports(version.stdout.trim()))
         return { file: candidate, args: [engine.entry, ...args], env: withNode(candidate), cwd };
     }
   }
@@ -158,6 +169,29 @@ export function npmInvocation(env: NodeJS.ProcessEnv, args: string[]) {
   const bin = dirname(process.execPath);
   // Prepending the runtime directory cannot satisfy npm's shebang without a `node` entry.
   if (!node && engine && (bin.includes(delimiter) || !inDirectory(bin, "node")))
-    return { file: process.execPath, args: [engine.entry, ...args], env: withNode(process.execPath, true), cwd };
+    return { file: process.execPath, args: [engine.entry, ...args], env: withNode(process.execPath, true), cwd,
+      lifecycleNode: args[0] === "install" && !args.includes("--ignore-scripts") };
   return { file, args, env: withNode(process.execPath), cwd };
+}
+
+/** Give lifecycle shells a `node` command when npm itself is launched by absolute Node path. */
+export function npmLifecycleEnvironment(npm: ReturnType<typeof npmInvocation>, parent: string) {
+  if (!npm.lifecycleNode) return;
+  for (const base of new Set([parent, "/tmp"])) {
+    let directory: string | undefined;
+    try {
+      const physical = realpathSync(base);
+      if (physical.includes(delimiter)) continue;
+      const scratch = directory = mkdtempSync(join(physical, "cotal-npm-node-"));
+      protectedLocalDirectory(scratch);
+      symlinkSync(npm.file, join(scratch, "node"));
+      return {
+        env: { ...npm.env, PATH: `${scratch}${delimiter}${npm.env.PATH}` },
+        dispose: () => rmSync(scratch, { recursive: true, force: true, maxRetries: 3 }),
+      };
+    } catch {
+      if (directory) rmSync(directory, { recursive: true, force: true, maxRetries: 3 });
+    }
+  }
+  // Installs that do not invoke `node` can still complete; npm reports any script failure.
 }
