@@ -580,8 +580,8 @@ const SEAMS: Seam[] = [
   // states `tls: false` for the suite's loopback broker.
   // 470/377 -> 471/378: spawn-auto-name adds one admin control connection to the Manager it
   // drives. It states `tls: false` for the suite's loopback broker.
-  // The terminal session suites add twelve loopback broker connections with explicit TLS policy.
-  { fn: "standaloneConnectOpts", key: "tls", sites: 484, untypecheckedSites: 391 },
+  // The terminal session suites use loopback broker connections with explicit TLS policy.
+  { fn: "standaloneConnectOpts", key: "tls", sites: 485, untypecheckedSites: 392 },
 ];
 
 const SITE_COUNTS = JSON.parse(readFileSync(new URL("./required-arg-sites.json", import.meta.url), "utf8")) as Record<string, number>;
