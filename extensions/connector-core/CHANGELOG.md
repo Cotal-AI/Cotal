@@ -1,5 +1,42 @@
 # @cotal-ai/connector-core
 
+## 0.182.0
+
+### Minor Changes
+
+- d0d5bf5: Legacy persona creation, persona renames, team manifest validation and direct terminal launches now reject names that start with `-`, so choose a name that starts with a letter, digit or underscore instead.
+- 30b474d: Wire persona saves drop launch options and refuse channels outside the definer's grant, so pass options on spawn or set them in a local persona file, and list only channels the definer holds.
+
+### Patch Changes
+
+- 99ba945: `cotal_dm` now explains a DM the broker is too small for. It used to pass on the client's bare `'payload' max_payload size exceeded`; it now gives the broker's message limit in bytes, says nothing was sent, and tells the sender to shorten the message or split it across several DMs. A publish whose acknowledgement times out is still reported as an unknown send outcome.
+- b67a783: `cotal_dm` now confirms storage without promising delivery when the recipient is offline, and explains that only the original session can receive the message if its inbox still exists.
+- b87866b: The OpenCode guide shows how to create the researcher persona before launching it in the background.
+- 9f63fee: Keep Windows consoles from opening during background extension installs, updates, and helper commands.
+- d2e0213: Report how many unread channel posts the MCP inbox omitted when its local buffer filled, and explain how to recover retained posts from channel history.
+- 83db958: The Windows docs show how to install, verify, and remove Cotal without changing PowerShell execution policy and how to prepare a project from PowerShell or Command Prompt.
+
+## 0.181.0
+
+### Minor Changes
+
+- b05f907: In ACP clients such as T3 Code, choosing another model or reasoning level on a running thread now switches its agent from the next turn, with no `/despawn`.
+  
+  - The `agent` endpoint advances to revision 6 with the owner-only `set-model`, and presence `agentEndpoint` gains `setModel`. Reconnect clients after the auth callout is updated, so their sign-in carries the new command.
+  - Codex switches with `thread/settings/update`, OpenCode with the model each prompt carries (1.x) or its session model route (2.x), pi 0.84.3 or later with its session setters, Jcode with its model and effort calls, and Claude Code through its command mod for later turns of the session alone. Each checks the model against its own list first. Hermes does not switch yet, and the thread says to use `/despawn`.
+  - A Manager keeps the switch and restarts or resumes the agent on it.
+  - An agent whose role `modelPolicy` governs refuses every switch, since the policy is checked only at launch.
+- 49d14ac: An ACP thread is now titled with the name its agent shows, and in T3 Code a title you give the thread becomes the agent's label. The `agent` endpoint advances to revision 7 with the owner-only `set-label`, which sets the label an agent shows in place of its name (`meta["ai.cotal.label"]`) and leaves the name that mentions and direct messages use. It refuses a label that breaks the rule a label from the first message follows: the shared name rule, at most 40 characters and single spaces between words. A `set-label` while the agent labels itself from its first message ends that naming, and the owner's label stays. `cotal acp` sends ACP `session_info_update` with the title when a thread starts, loads or opens its agent, and again whenever the agent's presence shows another name. Where the client lists a thread server in `mcpServers`, found by its `t3_thread_configure`, `t3_thread_read` and `t3_thread_update` tools as T3 Code's `t3-code` server offers them, the bridge sets the client's title there too. When a thread loads and at the start of each prompt it reads that title, and one the person changed since the bridge last set or read it becomes the agent's label. The bridge stores that last title with the thread's link, so a new bridge can tell a title the person gave the thread from a name the agent took elsewhere. It starts each MCP server the client passes once per process to list its tools, with only the environment the client gave, and keeps open only a thread server. A failed read or a refused label is said in the thread, and the prompt runs. The session list and `/open` read the agent's label as well.
+
+### Patch Changes
+
+- 83c33fd: Remove the unsupported `--creds` flag from the `cotal input` reference table.
+- 8060402: The scripted self-hosted setup example now creates the required project folder before running setup.
+
+## 0.180.0
+
+No changes in this release.
+
 ## 0.179.0
 
 ### Minor Changes

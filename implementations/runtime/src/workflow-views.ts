@@ -1,5 +1,5 @@
 import type { RunFailure, RunJournalRow, RunListRow, RunStatusView } from "@cotal-ai/core";
-import { oneLine, presentationOf, shellPath, writeResult, type Report, type Styled } from "@cotal-ai/workspace";
+import { brokerAddressForDisplay, oneLine, presentationOf, shellPath, writeResult, type Report, type Styled } from "@cotal-ai/workspace";
 
 interface OutputValues { json?: boolean; plain?: boolean; on?: string; limit?: string; local?: boolean; endpoint?: string; space?: string; server?: string; creds?: string }
 const recordedState = (state: string | undefined, failure?: RunFailure): Styled => ({ text: state === "failed" && failure?.code ? `failed (${failure.code})` : state ?? "not recorded", tone: state === "completed" ? "ok" : state === "failed" ? "failed" : state === "released" || state === "held" ? "waiting" : "hint" });
@@ -13,20 +13,23 @@ const runRoute = (values: OutputValues) => (values.local ? " --local" : "") +
 
 /** `unmatched` is given when `--endpoint` matched no run: that endpoint, and the endpoints this view
  *  records runs under. */
-export function printRunList(space: string | undefined, items: readonly RunListRow[], values: OutputValues, unmatched?: { endpoint: string; recordedUnder: readonly string[] }, open = false): void {
+export function printRunList(space: string | undefined, items: readonly RunListRow[], values: OutputValues, unmatched?: { endpoint: string; recordedUnder: readonly string[] }, open = false, brokerOnly = false): void {
   const unread = items.filter((row) => row.revocationUnreadable !== undefined);
   const nowhere = unmatched && !items.length
     ? `no run record in this view lives under endpoint ${oneLine(unmatched.endpoint)}; ${unmatched.recordedUnder.length ? `runs are recorded under ${unmatched.recordedUnder.map(oneLine).join(", ")}` : "it holds no run record under any endpoint"}`
     : undefined;
-  writeResult(presentationOf(values), {
-    command: "run", target: { space: space ?? null, requestedManagerInstance: values.on ?? null }, result: { kind: "runs", items },
+  const presentation = presentationOf(values);
+  const target = { space: space ?? null, requestedManagerInstance: values.on ?? null };
+  writeResult(presentation, {
+    command: "run", target, result: { kind: "runs", items },
     warnings: [...unread.map((row) => ({ code: "REVOCATION_NOT_CHECKED", target: { run: row.runId, endpoint: row.endpoint }, message: "The revocation marker could not be read; the recorded state does not establish that this run may continue." })),
+      ...(brokerOnly && presentation === "json" ? [{ code: "TARGET_UNAVAILABLE", target, message: "No manager is running to serve workflow records. Add `--local` to this command to read workflow records directly from the broker." }] : []),
       ...(nowhere ? [{ code: "ENDPOINT_HAS_NO_RUNS", target: { endpoint: unmatched!.endpoint, recordedUnder: unmatched!.recordedUnder }, message: nowhere }] : [])],
-    ...(unread.length ? { completeness: "partial" as const, partial: { message: "Some run revocation markers could not be read." } } : {}),
+    ...(brokerOnly ? { completeness: "not-checked" as const } : unread.length ? { completeness: "partial" as const, partial: { message: "Some run revocation markers could not be read." } } : {}),
   }, (result): Report => ({ sections: [
     { title: "Workflow runs", blocks: [
       { kind: "fields", rows: [["Space", space ?? "not reported"], ...(values.on ? [["Requested manager", values.on]] as [string, string][] : [])] },
-      result.items.length ? { kind: "table", columns: [{ key: "run", label: "Run" }, { key: "endpoint", label: "Endpoint" }, { key: "state", label: "Recorded state" }, { key: "journal", label: "Journal" }], rows: result.items.map((row) => ({ run: row.runId, endpoint: row.endpoint, state: row.revoked ? { text: "admission revoked", tone: "failed" } : row.revocationUnreadable !== undefined ? { text: "revocation not checked", tone: "waiting" } : recordedState(row.state, row.failure), journal: row.journalHigh === undefined ? "not reported" : String(row.journalHigh) })) } : { kind: "lines", lines: ["No workflow runs in this authorized record view."] },
+      result.items.length ? { kind: "table", columns: [{ key: "run", label: "Run" }, { key: "endpoint", label: "Endpoint" }, { key: "state", label: "Recorded state" }, { key: "journal", label: "Journal" }], rows: result.items.map((row) => ({ run: row.runId, endpoint: row.endpoint, state: row.revoked ? { text: "admission revoked", tone: "failed" } : row.revocationUnreadable !== undefined ? { text: "revocation not checked", tone: "waiting" } : recordedState(row.state, row.failure), journal: row.journalHigh === undefined ? "not reported" : String(row.journalHigh) })) } : { kind: "lines", lines: [brokerOnly ? "No manager is running to serve workflow records." : "No workflow runs in this authorized record view."] },
       // The state column says a run is revoked; who revoked it and why go under the table.
       ...(result.items.some((row) => row.revoked) ? [{ kind: "lines" as const, lines: result.items.flatMap((row) => row.revoked ? [`${row.runId}: revoked by ${oneLine(row.revoked.by)} (${oneLine(row.revoked.reason)})`] : []) }] : []),
       { kind: "lines", lines: [{ text: "Recorded workflow state, not a live agent-progress report. Revoking admission is not task cancellation.", tone: "hint" }] },
@@ -34,6 +37,7 @@ export function printRunList(space: string | undefined, items: readonly RunListR
     ] },
     { title: "Next", blocks: [{ kind: "commands", items: [
       ...(!open || values.local ? [{ command: `cotal r show <run-id>${managerPin(values)}${runRoute(values)}`, description: "Read state, open requests and journal steps" }] : []),
+      ...(brokerOnly ? [{ command: `cotal r list${runRoute({ ...values, local: true, server: values.server === undefined ? undefined : brokerAddressForDisplay(values.server) })}`, description: "Read workflow records directly from the broker" }] : []),
       open ? { command: "cotal r simulate <file>", description: "Test a workflow offline" }
         : { command: `cotal r start <file>${managerPin(values)}`, description: "Start a new workflow on the selected manager" },
     ] }] },

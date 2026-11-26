@@ -1,5 +1,46 @@
 # @cotal-ai/core
 
+## 0.182.0
+
+### Minor Changes
+
+- 30b474d: Wire persona saves drop launch options and refuse channels outside the definer's grant, so pass options on spawn or set them in a local persona file, and list only channels the definer holds.
+- b4d8ea1: User-auth terminal connections stop working when their session ends, so start a new session with `cotal attach <agent>` and upgrade auth and delivery together to enforce the cutoff.
+- 0c9e27a: Messages carrying reserved stored-message headers are dropped, so send a fresh message without those headers instead of forwarding the stored delivery.
+- d387f8b: On user-auth meshes, a reply inbox name of the form `<owner>-<actor>-<nonce>` is refused if it names another principal, so use the bearer’s own owner and actor or keep the bare nonce that existing clients send.
+
+### Patch Changes
+
+- 896100c: The console space picker counts agents without including the manager or other endpoints.
+- 77a02cd: The console space picker includes configured channels even when they have no retained posts.
+- 423aa24: Fix full backups of open spaces after a seat disconnects, and restore its DM inbox with the standard inactivity threshold.
+- c9a8881: Keep evicting ended user-auth terminal connections when only callout replicas are running, limit delays from slow evictions, and explain when a one-shot terminal connection closes on a broker authorization error.
+- 0adb7ba: Fix the endpoint grants smoke test to check the exact principal-route permissions for static agent credentials.
+- 9f63fee: Keep Windows consoles from opening during background extension installs, updates, and helper commands.
+
+## 0.181.0
+
+### Minor Changes
+
+- b05f907: In ACP clients such as T3 Code, choosing another model or reasoning level on a running thread now switches its agent from the next turn, with no `/despawn`.
+  
+  - The `agent` endpoint advances to revision 6 with the owner-only `set-model`, and presence `agentEndpoint` gains `setModel`. Reconnect clients after the auth callout is updated, so their sign-in carries the new command.
+  - Codex switches with `thread/settings/update`, OpenCode with the model each prompt carries (1.x) or its session model route (2.x), pi 0.84.3 or later with its session setters, Jcode with its model and effort calls, and Claude Code through its command mod for later turns of the session alone. Each checks the model against its own list first. Hermes does not switch yet, and the thread says to use `/despawn`.
+  - A Manager keeps the switch and restarts or resumes the agent on it.
+  - An agent whose role `modelPolicy` governs refuses every switch, since the policy is checked only at launch.
+- 49d14ac: An ACP thread is now titled with the name its agent shows, and in T3 Code a title you give the thread becomes the agent's label. The `agent` endpoint advances to revision 7 with the owner-only `set-label`, which sets the label an agent shows in place of its name (`meta["ai.cotal.label"]`) and leaves the name that mentions and direct messages use. It refuses a label that breaks the rule a label from the first message follows: the shared name rule, at most 40 characters and single spaces between words. A `set-label` while the agent labels itself from its first message ends that naming, and the owner's label stays. `cotal acp` sends ACP `session_info_update` with the title when a thread starts, loads or opens its agent, and again whenever the agent's presence shows another name. Where the client lists a thread server in `mcpServers`, found by its `t3_thread_configure`, `t3_thread_read` and `t3_thread_update` tools as T3 Code's `t3-code` server offers them, the bridge sets the client's title there too. When a thread loads and at the start of each prompt it reads that title, and one the person changed since the bridge last set or read it becomes the agent's label. The bridge stores that last title with the thread's link, so a new bridge can tell a title the person gave the thread from a name the agent took elsewhere. It starts each MCP server the client passes once per process to list its tools, with only the environment the client gave, and keeps open only a thread server. A failed read or a refused label is said in the thread, and the prompt runs. The session list and `/open` read the agent's label as well.
+- e22d95e: Workflow runs can pin separate effect budgets for spawns, turns and other effect kinds.
+  
+  The optional ceilings record is saved with the run pins, checked on resume and enforced from the journal across restarts. Existing records retain their total-only ceiling. A per-kind refusal names its limit with L4029 before dispatch, without consuming another kind's allowance.
+
+### Patch Changes
+
+- b1590ac: Keep read-only history follows out of the channel membership list without changing which posts they receive.
+
+## 0.180.0
+
+No changes in this release.
+
 ## 0.179.0
 
 ### Minor Changes

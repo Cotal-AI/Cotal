@@ -1,5 +1,20 @@
 # @cotal-ai/connector-hermes
 
+## 0.182.0
+
+### Patch Changes
+
+- 2494ea2: The Hermes guide shows how to launch an existing profile with a separate agent file that leaves its `SOUL.md` intact.
+- 9f63fee: Keep Windows consoles from opening during background extension installs, updates, and helper commands.
+
+## 0.181.0
+
+No changes in this release.
+
+## 0.180.0
+
+No changes in this release.
+
 ## 0.179.0
 
 ### Minor Changes

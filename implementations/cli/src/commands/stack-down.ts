@@ -34,7 +34,7 @@ import { readStackRuns } from "../lib/stack-runs.js";
 import { refuseLiveUnrecordedDaemons } from "./down-live-lease.js";
 import { localProcessSurface } from "../ext-loader.js";
 import { lostRecordsStackDown, stackRecordsLost } from "./stack-lost-records.js";
-import { goneRootStackDown, refuseInaccessibleDownRoot } from "./stack-gone.js";
+import { blockedDownRootRemedy, goneRootStackDown, refuseInaccessibleDownRoot } from "./stack-gone.js";
 
 const STOP_ORDER: readonly StackRole[] = ["manager", "delivery", "auth", "broker"];
 
@@ -325,7 +325,7 @@ function strandedRegistration(journal: StackJournal, members: readonly Member[])
   if (journal.mode === "user") throw new CommandFailure("refused", "UNSUPPORTED", `"${journal.space}" ${what}, and a user-auth stack's registration holds sign-in settings its journal does not, so it was not rebuilt; nothing was stopped`, { target, remedy: `inspect the recorded members with \`cotal service --space ${journal.space}\`` });
   const broker = members.find((member) => member.role === "broker");
   if (!broker?.live || !brokerLaunchAt(journal.space, broker.instance.name, broker.instance.record.value.launchRequestId, journal.root, journal.server))
-    throw new CommandFailure("refused", "CONFLICT", `"${journal.space}" ${what}, and the stack's broker is not the launch its journal records at ${journal.server}, so its registration was not rebuilt; nothing was stopped`, { target, remedy: `inspect the recorded members with \`cotal service --space ${journal.space}\`` });
+    throw new CommandFailure("refused", "CONFLICT", `"${journal.space}" ${what}, and the stack's broker is not the launch its journal records at ${journal.server}, so its registration was not rebuilt; nothing was stopped`, { target, remedy: `read the recorded member roles and instance IDs in ${oneLine(stackJournalPath(journal.root))}; the journal does not establish which broker is running` });
   const tlsRequired = readBrokerPolicy(journal.root)?.transport.kind === "tls-required";
   return { previous: registered, entry: {
     space: journal.space, server: journal.server, root: journal.root, mode: journal.mode, origin: "up", ts: new Date().toISOString(),
@@ -416,6 +416,7 @@ export async function stackDown(rootInput: string, values: ParsedArgs["values"],
 export async function stopForegroundStack(root: string, signal: "SIGINT" | "SIGTERM", duringStartup = false, space?: string): Promise<void> {
   const gone = space !== undefined && stackRootGone(space, root);
   try {
+    if (space !== undefined) refuseInaccessibleDownRoot(root, space);
     if (gone) await goneRootStackDown(space, root, { yes: true });
     else await stackDown(root, { yes: true }, duringStartup);
   } catch (error) {
@@ -461,7 +462,7 @@ function stopTarget(root: string, values: ParsedArgs["values"]) {
     if (elsewhere !== undefined) refuseInaccessibleDownRoot(elsewhere, space);
     throw new CommandFailure("refused", "CONFLICT", `--space ${space} ${elsewhere ? `names a stack rooted at ${elsewhere}` : "is not this folder's stack"}, and \`cotal down\` stops only the stack of the folder it runs in; this folder's stack is ${journal0.space}, so no member was stopped`, {
       target: { root, space, recordedSpace: journal0.space, ...(elsewhere ? { stackRoot: elsewhere } : {}) },
-      remedy: elsewhere ? `run \`${sameDown(values)}\` from ${elsewhere}` : `run \`${sameDown(values)}\` from the folder whose stack is ${space}, or drop --space to stop ${journal0.space} here`,
+      remedy: elsewhere ? blockedDownRootRemedy(elsewhere, sameDown(values)) ?? `run \`${sameDown(values)}\` from ${elsewhere}` : `run \`${sameDown(values)}\` from the folder whose stack is ${space}, or drop --space to stop ${journal0.space} here`,
     });
   }
   recordOperationSpace(journal0.space);

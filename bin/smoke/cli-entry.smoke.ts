@@ -55,6 +55,7 @@ if (!existsSync(BIN)) {
 }
 
 const { check, finish } = createSuite();
+process.env.DO_NOT_TRACK = "1";
 
 // A supervising seat's COTAL_* (COTAL_SKIP_CONNECTOR_SEED above all) would suppress the seed under
 // test, so the host's are scrubbed and checkout seeding is opted in deliberately.
@@ -449,7 +450,8 @@ const envelopes = (r: Run) => {
   check("version formats agree on repairing the corrupt manifest", damagedReport?.result?.reconciliation?.source === "manifest"
     && damagedReport.result.reconciliation.instruction === damagedReport.error?.remedy
     && damagedReport.error?.remedy === "Repair the manifest with `cotal ext seed --repair`."
-    && damagedText.status === 1 && damagedText.stderr.includes("cotal ext seed --repair")
+    && damagedText.status === 4 && damagedText.stdout.split("\n")[0] === `cotal-ai ${env?.result?.version}`
+    && damagedText.stderr.includes("cotal ext seed --repair")
     && !damagedText.stderr.includes("cotal update --self"), { json: damagedReport, text: shown(damagedText) });
   check("version --json leaves the corrupt manifest unchanged", readFileSync(manifest, "utf8") === "{}\n");
   const strict = versionRun(["ext", "list"]);

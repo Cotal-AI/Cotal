@@ -1,9 +1,14 @@
 import type { CommandEntry, CommandTarget } from "@cotal-ai/core";
 import { CommandRefused, type AgentCommand, type AgentTurn, type AgentUsage, type CommandDispatcher } from "@cotal-ai/connector-core";
+import { switchPiModel, type PiModelHost } from "./model-switch.js";
 
 /** The first pi whose `sendUserMessage` takes `expandPromptTemplates`. An older pi ignores the
  *  option and sends `/name args` to its model as text, so it runs no commands. */
 const COMMANDS_MIN_PI = [0, 84, 2] as const;
+
+/** The first pi whose `setModel` and `setThinkingLevel` change only the session. An older pi also
+ *  saves them as the operator's own pi defaults, which every later pi then starts on. */
+const MODEL_SWITCH_MIN_PI = [0, 84, 3] as const;
 
 /** How long a prompt template, skill or owner's turn has to start once pi took it. */
 const COMMAND_TURN_START_MS = 5_000;
@@ -21,9 +26,10 @@ export interface PiCommandInfo {
 /** A part of a user message as pi's `sendUserMessage` takes it. */
 type PiUserPart = { type: "text"; text: string } | { type: "image"; data: string; mimeType: string };
 
-/** The part of pi's extension API that lists and runs commands and sends the owner's words. The
- *  pinned pi types predate `expandPromptTemplates`, so the extension hands its API over as this. */
-export interface PiCommandHost {
+/** The part of pi's extension API that lists and runs commands, sends the owner's words and switches
+ *  the model. The pinned pi types predate `expandPromptTemplates` and the `max` thinking level, so the
+ *  extension hands its API over as this. */
+export interface PiCommandHost extends PiModelHost {
   getCommands(): PiCommandInfo[];
   sendUserMessage(content: string | PiUserPart[], options?: { expandPromptTemplates: true }): void;
 }
@@ -37,7 +43,7 @@ interface PiModel {
 /** What the dispatcher reads of pi's open session: the extension context of its latest start. */
 export interface PiSessionView {
   readonly model: PiModel | undefined;
-  readonly modelRegistry: { isUsingOAuth(model: PiModel): boolean };
+  readonly modelRegistry: { isUsingOAuth(model: PiModel): boolean; find(provider: string, modelId: string): PiModel | undefined };
   readonly sessionManager: { getEntries(): readonly unknown[] };
   getContextUsage(): { tokens: number | null; contextWindow: number } | undefined;
 }
@@ -55,15 +61,24 @@ interface Listed extends CommandEntry {
   readonly source: PiCommandInfo["source"];
 }
 
-/** Whether this pi runs commands an extension sends: 0.84.2 or later. */
-export function piRunsCommands(version: string): boolean {
+function piAtLeast(version: string, min: readonly [number, number, number]): boolean {
   const parts = /^(\d+)\.(\d+)\.(\d+)/.exec(version);
   if (!parts) throw new Error(`pi connector: pi reports version "${version}", which is not major.minor.patch`);
   for (let i = 0; i < 3; i++) {
-    const have = Number(parts[i + 1]), need = COMMANDS_MIN_PI[i]!;
+    const have = Number(parts[i + 1]), need = min[i]!;
     if (have !== need) return have > need;
   }
   return true;
+}
+
+/** Whether this pi runs commands an extension sends: 0.84.2 or later. */
+export function piRunsCommands(version: string): boolean {
+  return piAtLeast(version, COMMANDS_MIN_PI);
+}
+
+/** Whether an extension can switch this pi's model for the session alone: 0.84.3 or later. */
+export function piSwitchesModels(version: string): boolean {
+  return piAtLeast(version, MODEL_SWITCH_MIN_PI);
 }
 
 /** pi's commands as `command` names them. Extension commands and prompt templates are commands, and
@@ -127,17 +142,21 @@ export interface PiDispatcherHooks {
   session(): PiSessionView | undefined;
   /** This pi runs commands an extension sends ({@link piRunsCommands}). */
   readonly commands: boolean;
+  /** This pi switches its model for the session alone ({@link piSwitchesModels}). */
+  readonly models: boolean;
 }
 
 /** Lists and runs pi's own commands, prompt templates and skills through pi's command path
  *  (`sendUserMessage` with `expandPromptTemplates`), sends the owner's words as the user's message,
- *  reads pi's context window and cost, and stops pi's turn with its abort. */
-export function piCommandDispatcher({ host, turns, session, commands }: PiDispatcherHooks): CommandDispatcher {
+ *  reads pi's context window and cost, stops pi's turn with its abort, and switches pi's model and
+ *  thinking level. */
+export function piCommandDispatcher({ host, turns, session, commands, models }: PiDispatcherHooks): CommandDispatcher {
   const current = (): PiCommandHost => {
     const h = host();
     if (!h) throw new CommandRefused("failed-precondition", "pi has not loaded the Cotal extension yet");
     return h;
   };
+  const setModel = async (model: string | undefined, variant: string | undefined) => switchPiModel(current(), session(), model, variant);
   return {
     targets: new Set<CommandTarget>(commands ? ["command", "skill"] : []),
     async list() {
@@ -179,5 +198,6 @@ export function piCommandDispatcher({ host, turns, session, commands }: PiDispat
       if (!open) throw new Error("pi has no session open");
       return piUsage(open);
     },
+    ...(models ? { setModel } : {}),
   };
 }

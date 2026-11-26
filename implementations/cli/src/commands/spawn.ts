@@ -10,7 +10,7 @@ import {
   discardLaunchArtifacts,
   reclaimWithChild,
   loadCotalConfig,
-  modelPolicyRefusal,
+  modelPolicyEnv, modelPolicyRefusal,
   mintCreds,
   newIdentity,
   DEV_OWNER,
@@ -58,7 +58,6 @@ import {
   preflightOrThrow,
   provenance,
   resolveAgentType,
-  resolveOnPath,
   resolveTargetOrThrow,
   spaceKey,
   workspaceSecretStore,
@@ -81,7 +80,7 @@ import { askSpawnPlace } from "../lib/manager-choice.js";
 import { canPrompt } from "./meshes-wizard.js";
 import { listDeclaredChannels, listDeclaredRoles, listPersonaNames } from "../lib/personas.js";
 import { personaCatalog, unreadablePersona } from "../lib/persona-files.js";
-import { brokenPersonaLink, callerHarness, checkSpawnExpiryTarget, directPersonaPath, missingConnector, missingPersona, missingPersonaFailure, spawnPersona, spawnUsesManager } from "../lib/spawn-defaults.js";
+import { brokenPersonaLink, callerHarness, checkSpawnExpiryTarget, directPersonaPath, missingConnector, missingHarnessExecutables, missingPersona, missingPersonaFailure, nonDirectoryPersonaPath, spawnPersona, spawnUsesManager } from "../lib/spawn-defaults.js";
 import { writeDefaultPersonaForLaunch } from "../lib/default-persona.js";
 import { spawnLaunchPreview } from "./spawn-preview.js";
 import { protectedCredentialReference, readLocalRecordSource } from "../lib/protected-records.js";
@@ -286,10 +285,10 @@ export function spawnRequiredExtensions(_args: ParsedArgs): readonly ExtensionRe
 
 function reportDirectPersonaReadFailure(path: string, code: string | undefined, space: string, error: unknown): void {
   const target = { space, path };
-  const broken = code === "ENOTDIR" ? brokenPersonaLink(path, target) : undefined;
-  if (broken) {
-    stderrLine("✗ ", broken.message, c.red);
-    stderrLine("  ", broken.remedy!, c.dim);
+  if (code === "ENOTDIR") {
+    const failure = nonDirectoryPersonaPath(path, target);
+    stderrLine("✗ ", failure.message, c.red);
+    stderrLine("  ", failure.remedy!, c.dim);
     return;
   }
   const unreadable = unreadablePersona(path, code, target);
@@ -659,8 +658,7 @@ export async function spawn(args: ParsedArgs): Promise<void> {
     stderrLine("✗ ", `${(e as Error).message}`, c.red);
     process.exit(1);
   }
-  const binaryPins: Record<string, string | undefined> = { opencode: process.env.COTAL_OPENCODE_BIN, codex: process.env.COTAL_CODEX_BIN };
-  const missing = (connector.requires ?? []).filter((bin) => !resolveOnPath(binaryPins[bin]?.trim() || bin));
+  const missing = missingHarnessExecutables(connector.requires ?? []);
   if (missing.length) {
     const binaries = missing.join(", ");
     const guide = ["claude", "codex", "opencode", "jcode", "hermes", "pi"].includes(agentType) ? `https://docs.cotal.ai/docs/connect-${agentType}/` : "https://docs.cotal.ai/docs/connectors/";
@@ -999,6 +997,7 @@ export async function spawn(args: ParsedArgs): Promise<void> {
       throw new CommandFailure("refused", "USAGE_INVALID", rejectionText(error), { target: { space, path } });
     }
     applyHandoffManagerInstance(spec, handoffManagerInstanceId);
+    spec.env = { ...spec.env, ...modelPolicyEnv(cotalConfig, role) };
     artifacts = spec.artifacts;
     scrubEnrollmentEnv(spec.env);
 

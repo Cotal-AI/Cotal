@@ -60,7 +60,7 @@ export interface FreshTeamBootPlan {
 /** The fresh boot's read-only preparation, shared by the controller team boot. It runs the same
  *  manifest load, override, mode agreement, ownership, bind, runtime, reachability and connector
  *  refusals as the retained `upManifest` fresh path, in the same order, and writes nothing. */
-export async function prepareFreshTeamBoot(file: string, opts: { space: string; transport: BrokerTransport; server?: string; host?: string; runtime?: string; open?: boolean; userAuth?: boolean; idp?: string; maxSessions?: number }): Promise<FreshTeamBootPlan> {
+export async function prepareFreshTeamBoot(file: string, opts: { space: string; transport: BrokerTransport; retry: () => string; server?: string; host?: string; runtime?: string; open?: boolean; userAuth?: boolean; idp?: string; maxSessions?: number }): Promise<FreshTeamBootPlan> {
   const flags: UpManifestFlags = { ...opts, dryRun: false, freshTeamBoot: true };
   let prepared: PreparedManifest;
   try { prepared = loadManifest(resolve(file)); }
@@ -86,8 +86,15 @@ export async function prepareFreshTeamBoot(file: string, opts: { space: string; 
   const runtime = m.runtime ?? "pty";
   if (open && (m.defaults?.deliveryClass === "durable" || m.channels.some((channel) => channel.deliveryClass === "durable")))
     throw new CommandFailure("refused", "UNSUPPORTED", "this open manifest explicitly requests durable channel delivery, but the open broker has no delivery daemon; no channel metadata or broker was written", { target: { space: m.space }, remedy: "use static/user authentication for durable delivery, or declare live delivery for an open mesh" });
-  const other = loadMeshes().filter((row) => row.space !== m.space && row.server === server);
-  if (other.length) throw new CommandFailure("refused", "CONFLICT", "another local registration names this exact broker address; fresh team boot did not create a listener over its recorded target", { target: { space: m.space, server: brokerAddressForDisplay(server) ?? "not displayable", otherSpaces: other.map((row) => row.space) } });
+  const otherSpaces = loadMeshes().filter((row) => row.space !== m.space && row.server === server).map((row) => row.space);
+  if (otherSpaces.length) {
+    const address = brokerAddressForDisplay(server) ?? "not displayable";
+    const names = otherSpaces.map((name) => `"${oneLine(name)}"`).join(", ");
+    throw new CommandFailure("refused", "CONFLICT", `the broker address ${address} is already recorded for ${otherSpaces.length === 1 ? "local space" : "local spaces"} ${names}. No broker was started.`, {
+      target: { space: m.space, server: address, otherSpaces },
+      remedy: `choose a free port in the manifest's \`broker.servers\`, then retry with ${opts.retry()} from the same folder`,
+    });
+  }
   assertFreshTeamBootOwnership(cotalRoot(), m.space, mode);
   await assertFreshTeamBindAvailable(server, host, m.space);
   try { await preflightRuntime(runtime); }

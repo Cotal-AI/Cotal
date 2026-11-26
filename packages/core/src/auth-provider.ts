@@ -517,6 +517,12 @@ export interface AuthProvider extends Extension {
    */
   actorScope(opts: { dir: string; owner: string; actor: string }): Promise<string[] | undefined>;
   /**
+   * Read-only FRESH read of one granted principal's scope and channel lists, `undefined` when it
+   * holds no grant (fail-closed, as {@link actorScope}). Never a mint, never a write. The manager's
+   * `define-persona` bounds a persona's capabilities and channel lists against it.
+   */
+  actorGrant(opts: { dir: string; owner: string; actor: string }): Promise<{ scope: string[]; allowSubscribe: string[]; allowPublish: string[] } | undefined>;
+  /**
    * Remove this provider's SECRET material for a space from the given store — the DELETE half of
    * the seam pair (every kind that reads and writes through a {@link SecretStore} must be
    * deletable through it, or a reset wipes local identity while an injected backend keeps the old
@@ -623,7 +629,7 @@ export function runAgentBearer(
     execFile(
       argv[0],
       argv.slice(1),
-      { timeout: timeoutMs, maxBuffer: 64 * 1024, env: opts.env, signal: opts.signal },
+      { timeout: timeoutMs, maxBuffer: 64 * 1024, env: opts.env, signal: opts.signal, windowsHide: true },
       (err, stdout, stderr) => err ? reject(bearerCommandFailure(err, stderr, timeoutMs, stdout)) : resolve(stdout.trim()),
     );
   });

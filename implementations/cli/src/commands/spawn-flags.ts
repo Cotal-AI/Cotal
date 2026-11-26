@@ -43,6 +43,13 @@ export function spawnRerun(values: FlagValues<typeof spawnFlags>, positionals: r
   return { command: spawnCommand(values, positionals, "cotal spawn", "--on <instance>") };
 }
 
+export function spawnModelRetry(values: FlagValues<typeof spawnFlags>, positionals: readonly string[]): string | undefined {
+  const [provider, model, extra] = values.model?.trim().split("/") ?? [];
+  if (!provider || !model?.trim() || extra !== undefined) return undefined;
+  return spawnCommand({ ...values, model }, positionals, `${values.json ? "cotal" : displayCmd()} spawn`,
+    values.on === undefined ? undefined : `--on${values.on.startsWith("-") ? "=" : " "}${retryWord(values.on)}`);
+}
+
 function spawnCommand(values: FlagValues<typeof spawnFlags>, positionals: readonly string[], launcher: string, managerPin?: string): string {
   const words = [launcher];
   if (explicitNoInputFlag()) words.push("--no-input");

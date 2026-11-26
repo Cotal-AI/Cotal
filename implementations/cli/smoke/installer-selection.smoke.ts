@@ -3,17 +3,68 @@ import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { delimiter, dirname, join, resolve } from "node:path";
 import { emitSentinel } from "@cotal-ai/smoke-kit";
-import { runNpm, runNpmAsync } from "../src/commands/update-process.js";
 
-// Exercise the real POSIX installer main/launcher/PATH/next-step path. Only runtime discovery
-// and npm installation are fixtures; this suite does not qualify a downloaded package.
+const output = (result: ReturnType<typeof spawnSync>): string => `${result.stdout ?? ""}${result.stderr ?? ""}`;
+
+function checkWindowsNpmInstall(): void {
+  const root = mkdtempSync(join(tmpdir(), "cotal-npm-"));
+  try {
+    const prefix = join(root, "npm bin");
+    const fixture = join(root, "package");
+    mkdirSync(prefix);
+    mkdirSync(fixture);
+    const binRoot = resolve(import.meta.dirname, "../../../bin");
+    const { bin, engines, scripts } = JSON.parse(readFileSync(join(binRoot, "package.json"), "utf8"));
+    const postinstall = scripts.postinstall.replace(/^node /, "");
+    writeFileSync(join(fixture, "package.json"), JSON.stringify({ name: "cotal-ai", version: "0.0.0", bin, engines, scripts: { postinstall: scripts.postinstall } }));
+    mkdirSync(join(fixture, "scripts"));
+    mkdirSync(join(fixture, "dist"));
+    copyFileSync(join(binRoot, postinstall), join(fixture, postinstall));
+    writeFileSync(join(fixture, bin.cotal), '#!/usr/bin/env node\nconsole.log("cotal-ai 0.0.0");\n');
+
+    const docs = readFileSync(resolve(import.meta.dirname, "../../../docs/installation.mdx"), "utf8");
+    const windows = docs.split("### Install on Windows")[1]?.split("### ")[0];
+    const install = windows?.match(/```text\n(npm\.cmd install -g --prefix \. )cotal-ai\n```/)?.[1];
+    assert(install, "the Windows install guide selects the current folder as the short npm prefix");
+
+    const env = { ...process.env };
+    for (const key of Object.keys(env)) if (key.toUpperCase().startsWith("COTAL_")) delete env[key];
+    Object.assign(env, { PATH: `${prefix}${delimiter}${dirname(process.execPath)}${delimiter}${process.env.PATH ?? ""}`,
+      COTAL_TEST_NPM_PREFIX: prefix, COTAL_TEST_LAUNCH_CWD: root,
+      npm_config_userconfig: join(root, "user.npmrc"), npm_config_globalconfig: join(root, "global.npmrc"),
+      npm_config_cache: join(root, "cache"), npm_config_prefix: join(root, "unused-prefix") });
+    const shell = "powershell.exe";
+    const shellArgs = ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command"];
+    // Set the directory in the shell so npm.cmd receives a drive path rather than an extended path.
+    const run = (command: string, cwd = "COTAL_TEST_NPM_PREFIX") => spawnSync(shell, [...shellArgs,
+      `Set-Location -LiteralPath $env:${cwd}; ${command}`], { env, encoding: "utf8", timeout: 60_000 });
+    const packed = run("npm.cmd pack ../package --offline --silent; exit $LASTEXITCODE");
+    assert.equal(packed.status, 0, output(packed));
+    const archive = packed.stdout.trim();
+    assert.equal(archive, "cotal-ai-0.0.0.tgz");
+    const installed = run(`${install}./${archive} --offline --no-audit --no-fund; exit $LASTEXITCODE`);
+    assert.equal(installed.status, 0, output(installed));
+    const native = run("cotal --version; exit $LASTEXITCODE", "COTAL_TEST_LAUNCH_CWD");
+    assert.equal(native.status, 0, output(native));
+    assert.equal(native.stdout.trim(), "cotal-ai 0.0.0");
+    const batch = run("cmd.exe /d /c 'cotal --version'; exit $LASTEXITCODE", "COTAL_TEST_LAUNCH_CWD");
+    assert.equal(batch.status, 0, output(batch));
+    assert.equal(batch.stdout.trim(), "cotal-ai 0.0.0");
+    console.log("INSTALLER SELECTION: documented Windows npm install and native launchers passed");
+    emitSentinel({ passed: 7, failed: 0 });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
+// Exercise the real installer/launcher/PATH steps with local package fixtures.
 if (process.platform === "win32") {
-  console.log("INSTALLER SELECTION: excluded on Windows; install.sh is POSIX-only");
-  emitSentinel({ passed: 0, failed: 0 });
+  checkWindowsNpmInstall();
   process.exit(0);
 }
+const { runNpm, runNpmAsync } = await import("../src/commands/update-process.js");
 const root = mkdtempSync(join(tmpdir(), "cotal-installer-selection-"));
 const installer = readFileSync(resolve(import.meta.dirname, "../../../install.sh"), "utf8");
 const entry = '{ main "$@"; exit $?; }';
@@ -69,7 +120,6 @@ function fixture(label: string) {
   const env = { HOME: home, SHELL: "/bin/bash", CI: "1", NO_COLOR: "1", FIXTURE_NODE: process.execPath, FIXTURE_OLD_MARKER: marker, FIXTURE_VERSION_FILE: join(home, "version"), FIXTURE_UPDATE_ARGS: join(home, "updates") };
   return { home, oldBin, newBin, marker, env };
 }
-const output = (result: ReturnType<typeof spawnSync>): string => `${result.stdout ?? ""}${result.stderr ?? ""}`;
 let passed = false;
 try {
   // Execute the documented npm prefix/PATH commands with real npm and an offline package.
@@ -88,6 +138,8 @@ try {
   writeFileSync(join(npmPackage, "dist/cotal.js"), '#!/usr/bin/env node\nconst output = { "--entry": process.argv[1], "--cwd": JSON.stringify([process.cwd(), process.env.PWD]) };\nconsole.log(output[process.argv[2]] ?? "cotal-ai 0.0.0");\n', { mode: 0o755 });
   const installation = readFileSync(resolve(import.meta.dirname, "../../../docs/installation.mdx"), "utf8");
   assert(installation.includes("`wget` instead of `curl`") && installation.includes("wget -qO- https://get.cotal.ai | sh -s -- --no-setup"), "the install guide offers the wget bootstrap");
+  for (const command of ["npm.cmd install -g cotal-ai", "cotal.cmd version", "npm.cmd uninstall -g cotal-ai"])
+    assert(installation.includes(`\`\`\`powershell\n${command}\n\`\`\``), `the Windows install guide includes ${command}`);
   const shellLauncher = join(npmHome, ".local", "bin", "cotal");
   mkdirSync(dirname(shellLauncher), { recursive: true });
   const shellLauncherBody = "#!/bin/sh\nprintf 'shell installer launcher\\n'\n";

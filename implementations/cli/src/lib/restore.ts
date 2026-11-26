@@ -27,6 +27,7 @@ import {
   codeSpan,
   cutController,
   getSpaceAuth,
+  maintenancePaths,
   markRestoreActive,
   settleTokenHandoff,
   markRestoreDegraded,
@@ -335,13 +336,17 @@ function contains(parent: string, child: string): boolean {
   return path === "" || (path !== ".." && !path.startsWith(`..${separator}`) && !isAbsolute(path));
 }
 
-/** The refusal for a restore artifact that is, holds or sits inside the store the restore replaces
- *  or this root's maintenance folder, where it stages its attempt, or `undefined` when it is clear
- *  of both. `artifact` and `store` are real paths. */
+/** Refuse artifacts that overlap the preserved store or maintenance paths restore writes or sweeps.
+ *  `artifact` and `store` are real paths. */
 function artifactOverlapRefusal(root: string, artifact: string, store: string): CommandFailure | undefined {
+  const { maintenanceDir, versionDir, lock, reaper } = maintenancePaths(root);
+  const maintenance = realpathSync.native(maintenanceDir);
   for (const [path, what, why] of [
     [store, "the preserved store", " it would replace"],
-    [realpathSync.native(join(root, ".cotal", "maintenance")), "this root's maintenance folder", ", where it stages its attempt"],
+    [join(maintenance, "attempts"), "this root's maintenance attempt directory", ", where it stages its attempt"],
+    [join(maintenance, basename(versionDir)), "this root's maintenance journal directory", ""],
+    [join(maintenance, basename(lock)), "this root's maintenance lock path", ""],
+    [join(maintenance, basename(reaper)), "this root's maintenance lock recovery path", ""],
   ] as const) {
     if (!contains(path, artifact) && !contains(artifact, path)) continue;
     const relation = artifact === path ? "is" : contains(path, artifact) ? "is inside" : "holds";
@@ -801,7 +806,7 @@ export async function prepareRestore(root: string, flags: RestoreFlags, validate
         first_seq: snapshotState.first_seq,
         last_seq: snapshotState.last_seq,
       })) throw new Error(`checkpoint ${checkpoint.stream}/${checkpoint.name} does not match its snapshot stream state`);
-      consumerConfigFromCheckpoint(journal.space, checkpoint);
+      consumerConfigFromCheckpoint(journal.space, checkpoint, artifact.manifest.mode === "open");
     }
     const authorityBeforeMutation = await authorityFingerprint(root, journal.space, journal.mode);
     if (JSON.stringify(authorityBeforeMutation) !== JSON.stringify(currentAuthority))

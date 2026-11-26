@@ -215,6 +215,10 @@ try {
   check("cotal manager start --help shows its own usage and the manager preset's options with their defaults",
     startHelp.status === 0 && out(startHelp).includes("cotal manager start [--runtime <name>]") && out(startHelp).includes('(default: "pty")') && out(startHelp).includes("--roster"), out(startHelp));
   check("  and none of service add's definition flags", !/--preset\b|--file\b|--new-instance\b|--exec\b/.test(out(startHelp)), out(startHelp));
+  const managerHelpWithOptions = cotal(["help", "--", "mgr", "--space", "help-audit", "start"]);
+  check("explicit manager start help resolves the alias and skips the leading space option",
+    managerHelpWithOptions.status === 0 && managerHelpWithOptions.stderr === "" && managerHelpWithOptions.stdout === startHelp.stdout,
+    out(managerHelpWithOptions));
 
   const managerStartPath = ["service", "start", "manager"];
   const managerPresetHelp = cotal([...managerStartPath, "--help"]);
@@ -249,9 +253,15 @@ try {
       absent.status === 2 && error?.code === "TARGET_NOT_FOUND" && error.message.includes(`no manager has been started in space ${SPACE}`) && error.remedy === `start it with \`cotal manager start --space ${SPACE}\``, out(absent));
   }
 
-  const install = cotal(["manager", "install", "--space", SPACE, "--dry-run"]);
-  check("cotal manager install refuses before any effect and names a unit of your own running manager start --foreground",
-    install.status === 2 && out(install).includes("UNSUPPORTED") && out(install).includes("cotal manager install is not supported yet") && out(install).includes("manager start --foreground --space servicecommands") && out(install).includes("KillMode=mixed"), out(install));
+  for (const flags of [[], ["--dry-run"]]) {
+    const install = cotal(["manager", "install", "--space", SPACE, ...flags]);
+    const text = out(install);
+    const next = process.platform === "win32"
+      ? ["cotal", "pnpm cotal"].some(cli => text.includes(`\`${cli} up --space ${SPACE}\``)) && !/ExecStart=|KillMode=mixed/.test(text)
+      : text.includes(`manager start --foreground --space ${SPACE}`) && text.includes("KillMode=mixed");
+    check(`cotal manager install ${flags.join(" ")} refuses before any effect and names a platform-appropriate next step`,
+      install.status === 2 && text.includes("UNSUPPORTED") && text.includes("cotal manager install is not supported yet") && next, text);
+  }
 
   const intake = cotal(["service", "start", "feedback-intake", "--space", SPACE]);
   check("a built-in preset that needs files refuses naming each flag", intake.status === 1 && out(intake).includes("the feedback-intake preset needs --keys, --creds, which have no default; nothing was saved or started"), out(intake));
@@ -259,6 +269,16 @@ try {
 
   const piped = cotal(["service", "add", "hello", "--exec", "echo hi | tee out", "--space", SPACE]);
   check("service add --exec with a pipe refuses and saves nothing", piped.status === 1 && out(piped).includes("an unquoted | would not work") && JSON.stringify(definitions()) === "[]", out(piped));
+  for (const char of ["$", "`"]) {
+    const quoted = cotal(["service", "add", "quoted-expansion", "--space", SPACE, "--exec", `node "review process.mjs" "space argument" "literal ${char}HOME"`, "--json"]);
+    const { outcome, error } = JSON.parse(quoted.stdout);
+    check(`service add --exec explains how to pass ${char} literally when double quotes alone do not work`,
+      quoted.status === 1 && outcome === "refused" && error?.code === "USAGE_INVALID"
+        && error.message.includes(`${char} inside double quotes`)
+        && error.remedy.includes("within the value passed to `--exec`, put the literal argument in single quotes")
+        && error.remedy.includes("put a backslash before the character inside double quotes")
+        && error.remedy.includes("run a shell yourself") && JSON.stringify(definitions()) === "[]", out(quoted));
+  }
   const conflicting = cotal(["service", "add", "hello", "--exec", "echo hi", "--preset", "manager", "--space", SPACE]);
   check("service add --exec with --preset refuses and saves nothing", conflicting.status === 1 && JSON.stringify(definitions()) === "[]", out(conflicting));
   const addExec = ["service", "add", "hello", "--exec", "echo 'big world'", "--space", SPACE];
@@ -360,9 +380,9 @@ try {
   const brokerHelpCommand = cotal(["help", "service", "start", "broker"]);
   const example = brokerStartHelp.stdout.split("\n").find((line) => line.includes("start the broker in the background"))?.trim().split(/ {2,}/)[0];
   const examplePreview = example ? previewBrokerCommand(`${example} --space ${PREPARED}`) : undefined;
-  check("broker start help omits unsupported modes, keeps the preset's options, and gives a start that previews successfully",
+  check("broker start help omits unsupported modes, names the absolute config path requirement, and gives a start that previews successfully",
     brokerStartHelp.status === 0 && brokerHelpCommand.status === 0 && brokerStartHelp.stdout === brokerHelpCommand.stdout
-    && !/--foreground\b|--new-instance\b/.test(brokerStartHelp.stdout) && /^  --config <file>/m.test(brokerStartHelp.stdout)
+    && !/--foreground\b|--new-instance\b/.test(brokerStartHelp.stdout) && /^  --config <file> +absolute path\b/m.test(brokerStartHelp.stdout)
     && examplePreview?.status === 0, { help: out(brokerStartHelp), preview: examplePreview && out(examplePreview) });
   const badGlobalLeading = cotal(["--no-color=false", "service", "start", "broker"]);
   const badGlobalTrailing = cotal(["service", "start", "broker", "--no-color=false"]);
@@ -370,10 +390,17 @@ try {
     [badGlobalLeading, badGlobalTrailing].every((run) => run.status === 1 && run.stdout === ""
       && run.stderr.includes("--no-color takes no value") && run.stderr.endsWith(brokerStartHelp.stdout)),
     { leading: out(badGlobalLeading), trailing: out(badGlobalTrailing) });
-  const brokerHelpWithOptions = cotal(["help", "--", "service", "start", "broker", "--config", "./nats.conf"]);
-  check("explicit broker start help keeps preset options when passed startup flags",
-    brokerHelpWithOptions.status === 0 && brokerHelpWithOptions.stderr === "" && brokerHelpWithOptions.stdout === brokerStartHelp.stdout,
-    out(brokerHelpWithOptions));
+  for (const words of [
+    ["start", "broker", "--config", "./nats.conf"],
+    ["--space", "help-audit", "start", "broker", "--config", "./nats.conf"],
+    ["start", "--space", "help-audit", "broker", "--config", "./nats.conf"],
+    ["start", "--config", "./nats.conf", "broker"],
+  ]) {
+    const brokerHelpWithOptions = cotal(["help", "--", "service", ...words]);
+    check(`explicit service ${words.join(" ")} help keeps the broker preset options`,
+      brokerHelpWithOptions.status === 0 && brokerHelpWithOptions.stderr === "" && brokerHelpWithOptions.stdout === brokerStartHelp.stdout,
+      out(brokerHelpWithOptions));
+  }
   const genericStartHelp = cotal(["service", "start", "--help"]);
   check("generic service start help still lists --foreground",
     genericStartHelp.status === 0 && /^  --foreground\b/m.test(genericStartHelp.stdout), out(genericStartHelp));
@@ -395,6 +422,18 @@ try {
     brokerPartial.status === 1 && out(brokerPartial).includes(retryWith("--config <file> --binary <file>"))
       && brokerCorrected.status === 0 && out(brokerCorrected).includes("Nothing was saved, launched or loaded.")
       && serviceDefinitionStore(PREPARED).read("broker") === undefined, { refused: out(brokerPartial), corrected: out(brokerCorrected) });
+
+  const brokerNewArgs = ["service", "start", "broker", "--space", PREPARED, "--dry-run", "--new-instance", "--json"];
+  const brokerNew = cotal(brokerNewArgs);
+  const { error: brokerNewError } = JSON.parse(brokerNew.stdout);
+  const edits = /^remove `(--new-instance)` and add `(--config <file> --binary <file> --server <url>)`, keeping the rest of the command unchanged$/.exec(brokerNewError?.remedy);
+  const brokerRetry = edits && cotal([...brokerNewArgs.filter((word) => word !== edits[1]), ...edits[2]!.split(" ").map((word, index, words) => fills[words[index - 1]!] ?? word)]);
+  const retried = brokerRetry?.status === 0 ? JSON.parse(brokerRetry.stdout) : undefined;
+  check("the broker preview retry drops --new-instance, fills the missing options and changes no service state",
+    brokerNew.status === 1 && brokerNew.stderr === "" && brokerNewError?.code === "USAGE_INVALID"
+      && retried?.target.space === PREPARED && retried.result?.dryRun === true && retried.result.saved === false
+      && retried.result.allocated === false && serviceDefinitionStore(PREPARED).read("broker") === undefined,
+    { refused: out(brokerNew), retry: brokerRetry && out(brokerRetry) });
 
   const unready = cotal(["service", "add", "b0", "--preset", "broker", "--space", PREPARED]);
   const printed = out(unready).split("\n").map((line) => line.trim()).find((line) => line.startsWith("cotal service add b0 --preset broker")) ?? "";

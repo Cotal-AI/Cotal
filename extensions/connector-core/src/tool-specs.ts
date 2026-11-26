@@ -31,6 +31,14 @@ function shownParticipant(name: string, id: string): string {
   return ident.trim() ? ident : "(unnamed)";
 }
 
+/** nats.js refuses a frame over the broker's `max_payload` before writing any of it. */
+function payloadRefused(error: unknown): boolean {
+  for (let e: unknown = error; e instanceof Error; e = e.cause) {
+    if (e.name === "InvalidArgumentError" && e.message.includes("max_payload")) return true;
+  }
+  return false;
+}
+
 /** A holder by name and id. Both reach this from peers or the record, so neither may break a line.
  *  A missing or whitespace-only name is the holder's id. */
 function holderLabel(h: { id: string; name: string }): string {
@@ -627,7 +635,7 @@ export function cotalToolSpecs(
       name: "cotal_dm",
       title: "Cotal: direct-message a peer",
       description:
-        "Private message to one agent. Other agents can't read it. It wakes that agent even in dnd, and an offline agent gets it when it comes back. " +
+        "Private message to one agent. Other agents can't read it. It wakes that agent even in dnd. An offline recipient can receive it only if the same lifecycle reconnects and its inbox still exists. " +
         "Use it for a question only that agent can answer, or a private detail. To tell an agent about shared work, such as a status or a result, or anything others could use now or later, post it on the task's channel with cotal_send and mention the agent there.",
       schema: {
         to: z.string().describe("The peer's name (or instance id)."),
@@ -647,10 +655,8 @@ export function cotalToolSpecs(
           const unrostered = recipientStatusAtSend === "unrostered"
             ? ` ${who} has no roster row: it messaged you from a connection that never joined the roster or has left it, so the space's DM history keeps this DM under its id and it may never reach an inbox.`
             : "";
-          // The DM durable belongs to the recipient's lifecycle (SPEC §8): the same session gets it on
-          // reconnect, and a new spawn under that name starts after it.
           const offline = recipientStatusAtSend === "offline"
-            ? ` ${who} is offline: the DM is delivered when ${who} reconnects, and a new agent spawned as ${who} does not receive it.`
+            ? ` ${who} is offline. The message is stored, but delivery is not confirmed. Only the same lifecycle can receive it, and only if its inbox still exists. A new session with the same name does not receive it.`
             : "";
           return ok(`Sent to ${who}.${unrostered}${offline} Other agents can't read it. If others could use it, post it on the task's channel.${dup}`);
         } catch (e) {
@@ -662,6 +668,12 @@ export function cotalToolSpecs(
               `"${e.target}" is ambiguous — ${e.candidates.length} peers share that name. ` +
                 `Re-send cotal_dm with the exact instance id as "to":\n${who}`,
             );
+          }
+          if (payloadRefused(e)) {
+            let limit: number | undefined;
+            try { limit = agent.ep.maxPayload; } catch { /* the connection can close after the refusal */ }
+            const ceiling = limit === undefined ? "message limit" : `${limit}-byte message limit`;
+            return err(`Couldn't DM: the message with its envelope exceeds this broker's ${ceiling}. Nothing was sent. Shorten the message or split it across several DMs.`);
           }
           return err(`Couldn't DM: ${(e as Error).message}`);
         }

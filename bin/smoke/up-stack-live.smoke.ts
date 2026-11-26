@@ -97,7 +97,7 @@ const cliInEnv = (cwd: string, extraEnv: NodeJS.ProcessEnv, ...args: string[]) =
   return spawnSync(TSX, [CLI, ...args], options);
 };
 const cli = (...args: string[]) => cliIn(root, ...args);
-type AcpReply = { id: number; result?: { authMethods?: unknown[]; stopReason?: string }; error?: { code: number; message: string } };
+type AcpReply = { id: number; result?: { authMethods?: unknown[]; stopReason?: string }; error?: { code: number; message: string; data?: { details?: string } } };
 async function withAcp<T>(cwd: string, test: (rpc: (method: string, params: object) => Promise<AcpReply>) => Promise<T>, server?: string): Promise<T> {
   const child = spawnProc(process.execPath, ["--import", join(WT, "implementations/acp/dist/index.js"), join(WT, "bin/dist/cotal.js"), "acp", "--space", basename(cwd), ...(server ? ["--server", server] : [])],
     { cwd, env, stdio: ["pipe", "pipe", "inherit"] });
@@ -527,9 +527,14 @@ try {
     openBrokerOnly.status === 0 && !existsSync(openRecord(MANAGER_PIDFILE)) && !/restored in the background/.test(openBrokerOnly.stdout), plain(openBrokerOnly.stdout + openBrokerOnly.stderr));
   const acpOpen = await acpOnOpenSpace();
   ok("ACP offers no terminal sign-in on an open space", acpOpen.init?.authMethods?.length === 0, acpOpen);
-  ok("ACP names the reachable space and how to add its manager", acpOpen.refusal?.code === -32603 &&
-    acpOpen.refusal.message.includes(`The broker for ${basename(openRoot)} is reachable, but no manager is registered.`) &&
-    acpOpen.refusal.message.includes(`bare \`cotal up\` in ${realpathSync(openRoot)}`), acpOpen);
+  // With no manager on the reachable space, the new thread starts this machine's manager there and
+  // reads its lists only once the broker it dialed lists that manager as running here. No connector
+  // is installed, so the thread then fails on that manager's empty list.
+  ok("ACP starts this machine's manager on the reachable space's broker and reads that manager's lists", acpOpen.refusal?.code === -32603 &&
+    acpOpen.refusal.data?.details === "no application can run a session: the manager offers none", acpOpen);
+  const acpManagerStop = cliIn(openRoot, "manager", "stop", "--space", basename(openRoot), "--yes", "--json");
+  ok("the manager ACP started stops with manager stop",acpManagerStop.status === 0 && JSON.parse(acpManagerStop.stdout).outcome === "ok",
+    plain(acpManagerStop.stdout + acpManagerStop.stderr));
   const override = `nats://127.0.0.1:${await freePort()}`;
   const acpOverride = await acpOnOpenSpace(override);
   ok("ACP dials the explicit broker instead of the recorded one", acpOverride.refusal?.message.includes(`nothing answered at ${override}`) === true &&
@@ -1111,6 +1116,16 @@ process.report.getReport = () => {
     const noAppPsNext = noAppPs.split("\nNext\n")[1] ?? "";
     ok("with seeded connectors and no agent binary on PATH, empty ps recommends setup instead of spawn",
       /setup --help\s+See setup flags for scripts/.test(noAppPsNext) && !/\bspawn\s+Launch your default agent/.test(noAppPsNext), noAppPs);
+
+    writeFileSync(join(noAgentBin, "uv"), "#!/bin/sh\nexit 99\n", { mode: 0o700 });
+    for (const command of ["status", "ps"]) {
+      const result = cliInEnv(recRoot, { ...noAppEnv, COTAL_DEFAULT_AGENT: "claude" }, command, "--plain");
+      const output = plain(result.stdout);
+      const next = output.split("\nNext\n")[1] ?? "";
+      ok(`${command} explains the missing Claude default even with Hermes available`,
+        result.status === 0 && (command === "status" ? /Agent applications:\s+hermes/.test(output) : output.includes("No managed agents.")) &&
+        next.includes("needs claude on PATH") && next.includes("https://docs.cotal.ai/docs/connect-claude/") && !/\bcotal spawn\b/.test(next), output);
+    }
 
     for (const badArgs of [["status", "nosuch", "--json", "--plain"], ["status", "nosuch", "--wide", "--json"], ["status", "nosuch", "--verbose", "--json"]]) {
       const bad = cliIn(recRoot, ...badArgs);

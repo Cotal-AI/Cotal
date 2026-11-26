@@ -1,17 +1,16 @@
 /**
- * An auth-callout connection's history-reader deletes are keyed on what the server assigned it (#4123).
+ * An auth-callout connection's history-reader deletes are keyed on the server-assigned connection.
  *
  * The observer and admin profiles may delete their own history readers, `hist_<readerId>_<n>`. Under
- * the auth callout a connection's connId is the inbox nonce the client chose and passed as its
- * connection name, so deletes keyed on it let one connection claim another's readers by naming the
- * same nonce. The callout now keys them on the server's id and the client id the server assigned the
- * connection, which the client reads from the server's INFO and does not choose.
+ * the auth callout the client chooses the connection name, but the callout keys reader grants on
+ * the server's id and the client id assigned by the server in INFO.
  *
  * The suite runs the shipped callout and permission builder with two admin-view principals. It reads
- * history through a user-mode endpoint, learning that endpoint's nonce and reader name from its
- * requests on the wire, as any responder sees a reply subject. It then connects as the other principal
- * under the same nonce and tries to delete a reader under the endpoint's name. Last, it reconnects the
- * endpoint, whose reader names move with the new connection, and reads again.
+ * history through a user-mode endpoint and checks reader-deletion isolation both for a second
+ * connection sharing the same principal and inbox name, and for a different principal on its own
+ * legacy inbox. A bound name that does not match the bearer is refused at connect. After
+ * reconnecting, the endpoint reads again using the new connection's reader names. A scoped `cli`
+ * reader receives a live post without adding a census row, while a separate user-auth join counts.
  *
  * Run: pnpm smoke:history-reader-callout:auth   (needs nats-server on PATH; operator-mode callout, local-only)
  */
@@ -28,7 +27,8 @@ import { fromPublic, fromSeed } from "@nats-io/nkeys";
 import { SignJWT, generateKeyPair, type CryptoKey } from "jose";
 import {
   CotalEndpoint, createSpaceAuth, isReachable, mintCreds, newIdentity, serverConfig, setupSpaceStreams,
-  seedChannelRegistry, provisionAgent, mintLifecycleUid, chatStream, eventPayloadStream, type CotalMessage,
+  seedChannelRegistry, provisionAgent, mintLifecycleUid, chatStream, eventPayloadStream, userInboxConnId, type CotalMessage,
+  chatSubject, mintMembershipObserverCreds, provisionAgentDurables, startMembershipFeed,
 } from "@cotal-ai/core";
 import { createCalloutAuth, calloutPermissions, deriveOwnerToken, startAuthCallout, USER_TOKEN_VER } from "../src/index.js";
 import { grantActor, ledgerAclResolver, ledgerAuthorizeConnect } from "../src/ledger.js";
@@ -49,7 +49,8 @@ const auth = await createSpaceAuth(space);
 const callout = await createCalloutAuth({ space, operatorSeed: auth.operator.seed, accountPub: auth.account.pub });
 const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
 writeFileSync(join(dir, "server.conf"), serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port: PORT, storeDir: join(dir, "js"), extraAccounts: [{ pub: callout.account.pub, jwt: callout.account.jwt }] }));
-const srv = spawn("nats-server", ["-c", join(dir, "server.conf")], { stdio: ["ignore", "ignore", "pipe"] });
+const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_")));
+const srv = spawn("nats-server", ["-c", join(dir, "server.conf")], { env, stdio: ["ignore", "ignore", "pipe"] });
 let brokerLog = "";
 srv.stderr.on("data", (chunk: Buffer) => { brokerLog += chunk.toString(); });
 const releaseBroker = teardownOnSignal(srv, dir);
@@ -83,6 +84,7 @@ async function participantBearer(row: typeof participantRows[number]): Promise<s
 
 const endpoints: CotalEndpoint[] = [];
 const raws: NatsConnection[] = [];
+let feed: Awaited<ReturnType<typeof startMembershipFeed>> | undefined;
 try {
   let up = false;
   for (let i = 0; i < 50; i++) { if (await isReachable(SERVERS)) { up = true; break; } await wait(200); }
@@ -90,7 +92,7 @@ try {
 
   const mgrCreds = await mintCreds(auth, newIdentity(), "provisioner");
   await setupSpaceStreams({ servers: SERVERS, space, creds: mgrCreds });
-  await seedChannelRegistry({ servers: SERVERS, space, creds: mgrCreds, file: { defaults: { replay: true }, channels: { general: { replay: true } } } });
+  await seedChannelRegistry({ servers: SERVERS, space, creds: mgrCreds, file: { defaults: { replay: true }, channels: { general: { replay: true, deliveryClass: "live" } } } });
   const mgr = new CotalEndpoint({ space, servers: SERVERS, creds: mgrCreds, channels: [], consume: false, watchPresence: false, registerPresence: false, card: { name: "prov", role: "manager", kind: "endpoint" } });
   mgr.on("error", () => {}); await mgr.start(); endpoints.push(mgr);
   const pId = newIdentity(), uidP = mintLifecycleUid();
@@ -134,12 +136,14 @@ try {
     control.subscribe(subject, { callback: (err, m) => {
       if (err || !m.reply) return;
       const name = (m.json<{ config?: { name?: string } }>().config?.name) ?? "";
-      if (name.startsWith("hist_")) seen.push({ name, nonce: m.reply.slice("_INBOX_".length, m.reply.indexOf(".")) });
+      if (name.startsWith("hist_") || name.startsWith("chathist_"))
+        seen.push({ name, nonce: m.reply.slice("_INBOX_".length, m.reply.indexOf(".")) });
     } });
   await control.flush();
 
+  const dashBearer = await adminBearer("dashboard");
   const dash = new CotalEndpoint({
-    space, servers: SERVERS, bearer: await adminBearer("dashboard"), sentinelCreds: callout.sentinelCreds,
+    space, servers: SERVERS, bearer: dashBearer, sentinelCreds: callout.sentinelCreds,
     card: { name: "dashboard", kind: "endpoint" },
     channels: [], consume: false, watchPresence: false, registerPresence: false, watchChannels: false,
   });
@@ -157,22 +161,38 @@ try {
   const afterReads = await count();
   check(`user mode: ${READS} sequential reads all answer and leave no consumer`, answered === READS && afterReads === base, { answered, first, base, afterReads });
 
-  // 2. Another principal names the endpoint's nonce and tries to delete a reader under its name.
+  // 2. Two connections of the same principal can share an inbox name but never a reader grant.
   const victim = seen[0];
-  check("positive control: the endpoint's reader name and nonce were seen on the wire", victim !== undefined && /^ibx[0-9a-f]{32}$/.test(victim.nonce), seen.slice(0, 1));
+  check("positive control: the endpoint's reader name and bound inbox name were seen on the wire",
+    victim !== undefined && new RegExp(`^${OWNER}-dashboard-[a-z0-9]{25}$`).test(victim.nonce), seen.slice(0, 1));
   await jsm.consumers.add(CHAT, { name: victim.name, ack_policy: AckPolicy.None, mem_storage: true, inactive_threshold: 60_000_000_000 });
-  const intruder = await connect({
-    servers: SERVERS, name: victim.nonce, inboxPrefix: `_INBOX_${victim.nonce}`, maxReconnectAttempts: 0,
-    authenticator: [credsAuthenticator(enc(callout.sentinelCreds)), tokenAuthenticator(await adminBearer("intruder"))],
-  });
-  raws.push(intruder);
-  const intruderJsm = await jetstreamManager(intruder);
-  const admitted = await intruderJsm.streams.info(CHAT).then(() => true, () => false);
-  check("positive control: the other principal is admitted as an admin view under the same nonce", admitted);
-  const outcome = await intruderJsm.consumers.delete(CHAT, victim.name).then(() => "deleted", (e: Error) => e.message);
-  const survives = await exists(victim.name);
-  check("user mode: a connection naming another's nonce may not delete a reader under the other's name",
-    /permission/i.test(outcome) && survives, { outcome, survives });
+  const dialAdmin = async (bearer: string, name: string) => {
+    const nc = await connect({
+      servers: SERVERS, name, inboxPrefix: `_INBOX_${name}`, reconnect: false, maxReconnectAttempts: 0,
+      authenticator: [credsAuthenticator(enc(callout.sentinelCreds)), tokenAuthenticator(bearer)],
+    });
+    raws.push(nc);
+    return nc;
+  };
+  const checkReaderIsolation = async (bearer: string, name: string, label: string) => {
+    const nc = await dialAdmin(bearer, name);
+    const otherJsm = await jetstreamManager(nc);
+    const admitted = await otherJsm.streams.info(CHAT).then(() => true, () => false);
+    check(`positive control: ${label} can read stream info`, admitted);
+    const outcome = await otherJsm.consumers.delete(CHAT, victim.name).then(() => "deleted", (e: Error) => e.message);
+    const survives = await exists(victim.name);
+    check(`user mode: ${label} cannot delete another connection's reader`,
+      /permission/i.test(outcome) && survives, { outcome, survives });
+    return { outcome, survives };
+  };
+  const { outcome, survives } = await checkReaderIsolation(dashBearer, victim.nonce, "same principal on a shared bound inbox");
+  const otherBearer = await adminBearer("intruder");
+  const mismatched = await dialAdmin(otherBearer, userInboxConnId(OWNER, "dashboard")).then(
+    () => "admitted", (e: Error) => e.message,
+  );
+  check("user mode: a different principal is refused a bound name outside its principal",
+    /authorization violation/i.test(mismatched), mismatched);
+  await checkReaderIsolation(otherBearer, `ibx${randomUUID().replaceAll("-", "")}`, "different principal on its own legacy inbox");
   await jsm.consumers.delete(CHAT, victim.name).catch(() => {});
 
   // 3. A reconnect is a new connection, so its reader names are new, and reads go on.
@@ -188,6 +208,51 @@ try {
   check("user mode: after a reconnect the read answers and leaves no consumer", again === 5 && afterReconnect === base, { again, afterReconnect, base, cidBefore, cidAfter: dashNc.info?.client_id });
   check("user mode: ...under reader names of the new connection, not the old one",
     moved.length > 0 && moved.every((p) => p !== victim.name.slice(0, victim.name.lastIndexOf("_"))), { moved, before: victim.name });
+
+  const chat = chatSubject(space, "*", "*", "general");
+  const readerUid = mintLifecycleUid();
+  const readerRow = grantActor(dir, { owner: OWNER, actor: "cli", scope: [], lifecycleUid: readerUid, allowSubscribe: ["general"], allowPublish: [] });
+  const memberUid = mintLifecycleUid();
+  const joinRow = grantActor(dir, { owner: FOREIGN, actor: "general_member", scope: [], lifecycleUid: memberUid, allowSubscribe: ["general"], allowPublish: [] });
+  await provisionAgentDurables(mgr, { owner: joinRow.owner, actor: joinRow.actor, lifecycleUid: memberUid }, { subscribe: ["general"] });
+  const member = new CotalEndpoint({
+    space, servers: SERVERS, bearer: await participantBearer(joinRow), sentinelCreds: callout.sentinelCreds,
+    lifecycleUid: memberUid, channels: ["general"], watchPresence: false, registerPresence: false,
+    card: { name: joinRow.actor, kind: "agent" },
+  });
+  endpoints.push(member);
+  await member.start();
+
+  let observerNc: NatsConnection | undefined;
+  const observer = new CotalEndpoint({
+    space, servers: SERVERS, bearer: await participantBearer(readerRow), sentinelCreds: callout.sentinelCreds,
+    lifecycleUid: readerUid, channels: [], consume: false, watchPresence: false, registerPresence: false, watchChannels: false,
+    omitFromLiveMembership: true, card: { name: "history", kind: "endpoint" },
+    onConnection: (nc) => { observerNc = nc; },
+  });
+  endpoints.push(observer);
+  observer.on("error", () => {});
+  await observer.start();
+  let sawPost = false;
+  observer.tap((_subject, message) => { if (message && textOf(message) === "observer follow probe") sawPost = true; }, { subject: chat });
+  await observerNc!.flush();
+  const followingAt = Date.now();
+  const { items } = await observer.channelHistoryPage("general", { limit: 1 });
+  check("user mode: the scoped observer reads history using a bound, marked reply inbox", items.length === 1
+    && textOf(items[0]!) === "general 10"
+    && seen.some(({ nonce }) => new RegExp(`^${OWNER}-cli-_[a-z0-9]{25}$`).test(nonce)));
+  await poster.multicast("observer follow probe", { channel: "general" });
+  for (let i = 0; i < 100 && !sawPost; i++) await wait(20);
+  check("user mode: the bound history observer receives the live post", sawPost);
+
+  feed = await startMembershipFeed({ servers: SERVERS, space, accountId: auth.account.pub,
+    observerCreds: await mintMembershipObserverCreds(auth, newIdentity()),
+    rwCreds: await mintCreds(auth, newIdentity(), "membership-rw") });
+  await feed.poll();
+  const census = await dash.readMembership();
+  check("user mode: a fresh census includes the joined participant but has no row for the scoped observer",
+    (census.asOf ?? 0) >= followingAt && census.members.some((m) => m.id === member.card.id && m.live.includes("general"))
+    && !census.members.some((m) => m.id === observer.card.id), census);
 
   const payloadUid = mintLifecycleUid();
   const payloadWriter = new CotalEndpoint({
@@ -236,6 +301,7 @@ try {
 
   console.log(`  counts ${JSON.stringify({ reads: READS, answered, base, afterReads, outcome, survives, again, afterReconnect })}`);
 } finally {
+  await feed?.stop();
   for (const nc of raws) await nc.close().catch(() => {});
   for (const ep of endpoints.reverse()) await ep.stop().catch(() => {});
   srv.kill("SIGKILL");

@@ -106,7 +106,7 @@ export function authorityWriterGrants(space: string, connId: string): { publish:
   const base = baseAuthorityWriterGrants(space, connId);
   // Chat admission and the chat sweep run on this writer: the holder index, the owner quota and
   // the sweep cursor, each an exact-arity family (SPEC 13.9). Derived host writers do not get them.
-  return { publish: [...base.publish, `$KV.${epAuthBucket(space)}.consent.*`, ...chatAuthorityWriteSubjects(space)], subscribe: base.subscribe };
+  return { publish: [...base.publish, `$KV.${epAuthBucket(space)}.sessionconn.*`, `$KV.${epAuthBucket(space)}.consent.*`, ...chatAuthorityWriteSubjects(space)], subscribe: base.subscribe };
 }
 
 /** Host-private environment reservation writer. It adds manager gates and multi-segment operation
@@ -168,11 +168,11 @@ export function remoteManagerIssuerGrants(space: string, connId: string): { publ
 }
 
 /** The CALLOUT REPLICA's store credential: what a callout-only replica reads to answer
- * a connect, and the one row each answer writes. Leader reads of the auth, records and sessions
- * stores (`STREAM.INFO`, `STREAM.MSG.GET`), records `DIRECT.GET`, and `$KV` writes on auth `natkey.`
- * alone (the create-only native-key issuance evidence). It holds no `STREAM.CREATE` or `UPDATE` and
- * no gate, credential, source, lifecycle or uid write: a replica ensures no store, mints no
- * credential and runs no barrier. */
+ * a connect, and the evidence each answer writes. Leader reads of the auth, records and sessions
+ * stores (`STREAM.INFO`, `STREAM.MSG.GET`), records `DIRECT.GET`, and `$KV` writes for native-key
+ * issuance and exact session connection receipts (create and revision-pinned purge). It holds no
+ * `STREAM.CREATE` or `UPDATE` and no gate, credential, source, lifecycle or uid write. A replica
+ * runs no barrier. Its targeted sweep calls delivery on a separate, short-lived `supervisor` credential. */
 export function calloutReplicaGrants(space: string, connId: string): { publish: string[]; subscribe: string[] } {
   const auth = `KV_${epAuthBucket(space)}`;
   const records = `KV_${recordsBucket(space)}`;
@@ -189,6 +189,7 @@ export function calloutReplicaGrants(space: string, connId: string): { publish: 
       `$JS.API.DIRECT.GET.${records}`,
       `$JS.API.DIRECT.GET.${records}.>`,
       `$KV.${epAuthBucket(space)}.natkey.>`,
+      `$KV.${epAuthBucket(space)}.sessionconn.*`,
     ],
     subscribe: [`_INBOX_${assertInboxConnId(connId)}.>`],
   };

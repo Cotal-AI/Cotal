@@ -164,9 +164,10 @@ The complete reply, responder-state, grant, reply-target validation, and rebindi
 
 `servePrincipal({ handlers })` serves this process's `agent` endpoint on the principal route: the
 core-defined command set about this process, whose cluster and compiled contracts are
-`AGENT_CLUSTER` and `AGENT_CONTRACTS`. The cluster is at revision 5: `prompts`, `prompt` and
+`AGENT_CLUSTER` and `AGENT_CONTRACTS`. The cluster is at revision 7: `prompts`, `prompt` and
 `prompt-answer` admit the `owner` and `grant` words, and `commands`, `command`, `command-cancel`,
-`command-state`, `interrupt`, `set-name`, `turn` and `usage` admit `owner` only.
+`command-state`, `interrupt`, `set-name`, `turn`, `usage`, `set-model` and `set-label` admit
+`owner` only.
 It takes no endpoint or cluster, and refuses either. It serves under a user-auth or static
 credential and on an open mesh. It throws without a lifecycle UID, for handlers that are not the
 cluster's commands with those contracts, and when another endpoint in the process already serves
@@ -257,6 +258,13 @@ Readiness updates, renewal and release use the broker's revision as their compar
 `watchDeliveryLease` reports puts and deletions for one shard and returns a stop handle.
 Its intent survives a connection replacement. Stop and reconnect settle in-flight watch binds and retire owned consumers before closing their connection.
 The watch reports state changes. The caller decides whether it still owns the shard.
+
+## Membership watch
+
+`watchMembership()` replays the latest entries when it starts or rearms, then follows live updates.
+If the membership store is replaced under the same name, the watch rearms on the replacement when the broker consumer recovers.
+The replacement replay carries `update: false` and ends with a `replayed` change. Revisions belong to one store and can go back when it is replaced.
+A replay is the complete current set. If you apply updates to a local copy, rebuild it from the replay instead of merging the replay into it.
 
 ## Watch cleanup [#watch-cleanup]
 

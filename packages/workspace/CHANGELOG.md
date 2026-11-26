@@ -1,5 +1,55 @@
 # @cotal-ai/workspace
 
+## 0.182.0
+
+### Patch Changes
+
+- ecd506f: Clear purged chat messages from the console that ran the purge, without closing configured channel tabs.
+- 1d10f92: Make short-option corrections and daemon recovery commands copyable in Windows PowerShell and Command Prompt.
+- 7ef585e: When `cotal join` rejects a credential from another space, its replacement command includes a read grant for the requested channel without adding publish access.
+- 48b6414: Load installed extensions even when the manifest lacks an install spec, and name the package to remove if it needs recovery.
+- 1f37adb: OpenCode seats launched without a model pin report the model they use after a mesh-delivered prompt in `cotal who` and plain `cotal status`.
+- b670c41: Keep the extension inventory in place when permissions prevent reading it. The version report points to restoring read access, and connector repair and reset refuse to quarantine the file.
+- c9a8881: Keep evicting ended user-auth terminal connections when only callout replicas are running, limit delays from slow evictions, and explain when a one-shot terminal connection closes on a broker authorization error.
+- 365e355: Quote local extension paths in reinstall commands so you can paste them into a POSIX shell even when the path contains spaces.
+- dd426ff: When a non-NATS listener holds a controller stack’s recorded broker address, `cotal status` and `cotal ps` tell you to free that address and restart the stack there.
+- f5b2a30: Install and load extensions that use Node's shorthand for conditional root exports without requiring a `main` field or an `index.js` file.
+- e6cd8f2: Explain when `cotal whoami` cannot verify whether a project space overrides the automatically selected space.
+- 6c10b18: Fix Windows npm self-updates so they can update a stopped local space, replace the invoked installation, and finish or retry safely after an interrupt or a temporary file lock.
+- Updated dependencies [896100c]
+- Updated dependencies [77a02cd]
+- Updated dependencies [423aa24]
+- Updated dependencies [30b474d]
+- Updated dependencies [c9a8881]
+- Updated dependencies [0adb7ba]
+- Updated dependencies [b4d8ea1]
+- Updated dependencies [9f63fee]
+- Updated dependencies [0c9e27a]
+- Updated dependencies [d387f8b]
+  - @cotal-ai/core@0.182.0
+
+## 0.181.0
+
+### Patch Changes
+
+- d76ec5e: Keep the partial status report and show how to restore access when the selected project's broker PID file cannot be read because of permissions.
+- Updated dependencies [b05f907]
+- Updated dependencies [49d14ac]
+- Updated dependencies [e22d95e]
+- Updated dependencies [b1590ac]
+  - @cotal-ai/core@0.181.0
+
+## 0.180.0
+
+### Minor Changes
+
+- bffdc47: `cotal acp` now starts this machine's manager for the space when no manager may start a new thread's agent, or when none of yours runs on this machine, and that manager stops itself after 10 minutes with no agents. The bridge runs `cotal manager start --idle-exit 600` and says so in one line at the start of the thread's first prompt, before the agent's reply. Another computer's manager runs a thread's agent only when the thread's Machine option names it. Threads that open at the same time share one start, and a failed start fails the new thread with its reason. With no manager registered for the space, listing, loading or deleting threads and `/open` now say so and that a new thread starts this machine's manager, in place of a bare internal error. A listed manager whose rail the broker reports empty, such as one whose computer is gone, is not offered. `cotal manager start` and `cotal service start manager` take `--idle-exit <seconds>` for that start only: the manager stops, and deregisters, once it has held no agent, call, workflow run, preservation or resume for that long, and no pending work over which `cotal manager stop` refuses, such as a name held until its retirement completes; `cotal status --components` lists that work on the manager row. `status` shows the value on an `Idle exit` row. A start with a different value while the manager runs refuses `LIFECYCLE_BLOCKED`. `@cotal-ai/workspace` probes a signed-in caller's pinned manager rail on the rail its credential was issued for. A manager that `cotal manager start`, `cotal acp` or a controller stack's `cotal up` starts now gets the `spawn.env` names that are set where it starts, so its seats get them, as seats of a manager the legacy launcher starts do; no value is printed. On Linux, a background service now starts in a systemd user scope of its own when the user manager answers, so it outlives an app that stops the scope its agent ran in, as T3 Code does when a thread's session ends; a scope that cannot be made fails the start, and each launch's scope has a name of its own, so a retry never meets an earlier attempt's scope. When `cotal acp` cannot read this machine's identity, as in a container with no `/etc/machine-id`, a thread still uses a manager its Machine option names, and it neither defaults to a manager nor starts one; a prompt with none chosen, or a new thread with none listed, fails and says why.
+- fcd33e4: `cotal acp` now recognises this machine's manager after the machine's host name changes, as macOS does when the network changes, so it no longer starts a second manager or defaults a thread to another computer. A Manager's `status` and presence card carry `machine`, an HMAC-SHA256 of the host's OS machine identity keyed by it over `cotal manager host`, and the bridge compares it with its own; the host name is only shown. A manager that names no machine counts as another computer's. The Manager cluster advances to revision 57, and its closed status schema of revision 56 rejects the field, so update Managers and their callers together, as revision 56 already requires. `@cotal-ai/workspace` exports `osMachineId()`, the OS machine identity read the CLI's service records use, and `managerMachineId()`; `reportedManagerHost` answers `{ host, machine }`.
+
+### Patch Changes
+
+- @cotal-ai/core@0.180.0
+
 ## 0.179.0
 
 ### Minor Changes

@@ -47,6 +47,7 @@ const ep = new CotalEndpoint({
     meta: {
       ...(e.COTAL_MANAGER_INSTANCE ? { "ai.cotal.manager.instance": e.COTAL_MANAGER_INSTANCE } : {}),
       ...(e.COTAL_E2E_META_PROVIDER ? { provider: e.COTAL_E2E_META_PROVIDER } : {}),
+      ...(e.COTAL_E2E_META_MODEL ? { model: e.COTAL_E2E_META_MODEL, variant: "high" } : {}),
     },
   },
   lifecycleUid: e.COTAL_LIFECYCLE_UID,

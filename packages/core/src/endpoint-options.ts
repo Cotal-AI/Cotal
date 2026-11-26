@@ -29,6 +29,9 @@ export function deliveryLimitOf(value: string | undefined): number | null {
 /** Space joined when none is given on the CLI (the `cotal-<space>` cmux tab, etc.). */
 export const DEFAULT_SPACE = "main";
 
+/** The default idle lifetime of a self-created open-space DM inbox. */
+export const DEFAULT_OPEN_DM_INACTIVE_MS = 600_000;
+
 /** The longest delay `setTimeout` honors, 2^31-1 ms. */
 export const MAX_TIMER_MS = 2_147_483_647;
 
@@ -140,6 +143,8 @@ export interface EndpointOptions {
   ttlMs?: number;
   /** Publish our own presence (default true). */
   registerPresence?: boolean;
+  /** Mark native subscriptions as observer taps, not live membership. Does not change access. */
+  omitFromLiveMembership?: boolean;
   /** Track the roster of peers with a live watch (default true). Every watcher receives every
    *  member's heartbeat, so a space of K watching members moves K² deliveries per heartbeat. An
    *  endpoint that only needs the roster when it acts sets this false and calls

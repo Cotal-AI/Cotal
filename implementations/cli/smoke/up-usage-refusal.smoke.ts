@@ -90,6 +90,23 @@ const run = (args: string[], cwd = folder) => {
 };
 const shown = (r: ReturnType<typeof run>) => ({ status: r.status, stdout: r.stdout.slice(0, 900), stderr: r.stderr.slice(0, 900) });
 
+{
+  const project = mkdtempSync(join(tmpdir(), "cotal-up-remedy-"));
+  process.on("exit", () => rmSync(project, { recursive: true, force: true }));
+  const manifest = "plan's notes.yaml";
+  writeFileSync(join(project, manifest), "apiVersion: cotal/v1\nkind: Mesh\nspace: remedy-check\nbroker: { auth: false }\nchannels: {}\n");
+  const refusal = run(["up", `-f=${manifest}`, "--dry-run", "--json"], project);
+  const remedy = refusal.envelope?.error?.remedy ?? "";
+  const value = process.platform === "win32" ? `"${manifest}"` : "'plan'\\''s notes.yaml'";
+  check("a short option with an attached value names both copyable corrections", refusal.status === 1
+    && refusal.envelope?.error?.code === "USAGE_INVALID" && remedy === `write -f ${value} or --file=${value}`, shown(refusal));
+  for (const flags of remedy.slice(6).split(" or ")) {
+    const command = `"${process.execPath}" "${BIN}" up ${flags} --dry-run`;
+    const pasted = spawnSync(command, { shell: true, cwd: project, env, encoding: "utf8", timeout: 60_000 });
+    check(`pasting ${flags} displays the manifest plan`, pasted.status === 0 && pasted.stdout.includes("remedy-check"), pasted.stderr);
+  }
+}
+
 const cases: { args: string[]; message: RegExp }[] = [
   { args: ["--file", ""], message: /--file is empty, so it names no manifest/ },
   { args: ["-f", "  "], message: /--file is empty, so it names no manifest/ },

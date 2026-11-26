@@ -3,6 +3,7 @@ import { randomBytes } from "node:crypto";
 import { basename, dirname, isAbsolute, join } from "node:path";
 import { shellPath } from "./local-record-source.js";
 import { codeSpan } from "./text-wrap.js";
+import { CommandFailure } from "./output.js";
 import { fileURLToPath } from "node:url";
 import type { Command, CommandExample, Connector, Extension, ExtensionRef, FlagSpec, OutputMode, Subcommand } from "@cotal-ai/core";
 import { connectorConfigDir } from "./connector-retention.js";
@@ -107,8 +108,9 @@ export function isExtensionPathSpec(spec: string, absolute: (p: string) => boole
 /** Recovery for a recorded extension. Do not echo a registry URL or opaque selector in advice. */
 export function extensionReinstallAdvice(entry: InstalledExtension): string {
   if (entry.source === "seeded") return "Run `cotal ext seed --repair` to reinstall it.";
-  if (isExtensionPathSpec(entry.spec) || /^(?:@[a-z0-9._~-]+\/)?[a-z0-9._~-]+(?:@[a-z0-9._~^*<>=|+ -]+)?$/i.test(entry.spec))
-    return `Run ${codeSpan(`cotal ext add ${shellPath(entry.spec)}`)} to reinstall it.`;
+  const { spec } = entry;
+  if (typeof spec === "string" && (isExtensionPathSpec(spec) || /^(?:@[a-z0-9._~-]+\/)?[a-z0-9._~-]+(?:@[a-z0-9._~^*<>=|+ -]+)?$/i.test(spec)))
+    return `Run ${codeSpan(`cotal ext add ${shellPath(spec)}`)} to reinstall it.`;
   return `Run ${codeSpan(`cotal ext remove ${shellPath(entry.pkg)}`)} to drop the record, or reinstall with the original spec.`;
 }
 
@@ -167,8 +169,12 @@ export function loadExtensionsManifest(): ExtensionsManifest {
       closeSync(fd);
     }
   } catch (e) {
-    if ((e as NodeJS.ErrnoException).code === "ENOENT" && !lstatSync(p, { throwIfNoEntry: false })) return { extensions: [] };
-    if ((e as NodeJS.ErrnoException).code === "ENOTDIR" && globalConfigDirProblem()) return { extensions: [] };
+    const code = (e as NodeJS.ErrnoException).code;
+    if (code === "EACCES" || code === "EPERM") throw new CommandFailure("refused", "PERMISSION_DENIED", `cannot read the extensions manifest at ${p} (${code})`, {
+      target: { path: p }, remedy: "restore this account's read access to the extensions manifest and its path, then retry", cause: e,
+    });
+    if (code === "ENOENT" && !lstatSync(p, { throwIfNoEntry: false })) return { extensions: [] };
+    if (code === "ENOTDIR" && globalConfigDirProblem()) return { extensions: [] };
     throw new CorruptExtensionsManifestError(p, (e as Error).message);
   }
   const m = parsed as ExtensionsManifest | null;

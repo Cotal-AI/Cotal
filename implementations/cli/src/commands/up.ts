@@ -48,18 +48,14 @@ import {
   getSpaceAuth,
   brokerAddressKey,
   canonicalRoot,
-  clearCurrent,
-  findMesh,
   legacyStackOtherHome,
   stackHomeRemedy,
-  getCurrent,
   loadMeshes,
   localMeshesForRoot,
   keepsRegistration,
   presentationOf,
   parsePositiveIntegerFlag,
   retainedLegacyBroker,
-  removeMesh,
   userAuthStateDir,
   workspaceSecretStore,
   type UserAuthInfo,
@@ -81,17 +77,15 @@ import {
   cutController,
   type ListenerProof,
   readBrokerPolicy,
-  removePidPair,
   verifyIdentityPin,
   processesNaming,
   recordOperationSpace,
   recordOperationWarning,
   NATS_PIDFILE,
-  exitCode,
   terminalWidth,
 } from "@cotal-ai/workspace";
 import { FlagValueRefusal } from "../lib/flag-value-refusal.js";
-import { resolveAuthProvider, stopAuthService } from "../lib/auth-proc.js";
+import { resolveAuthProvider } from "../lib/auth-proc.js";
 import { c, hang, stderrLine } from "../ui.js";
 import { admitAndRestoreSeatCheckpoints } from "../lib/seat-resume.js";
 import { NATS_DEFAULT_MAX_PAYLOAD, natsServerLabel, resolveNatsServer, unreadVersion } from "../lib/nats-bin.js";
@@ -102,10 +96,10 @@ import { seedBeforeLaunch, seedMoveNote } from "../seed/launch.js";
 import { seedDir } from "../seed/paths.js";
 import { seedStoreMoved } from "../seed/reconcile.js";
 import { upSystemdSupervisionWarning } from "../lib/systemd-supervision.js";
-import { deliveryStoppedByDown, deliveryUp, ensureDelivery, stopDelivery } from "../lib/delivery-proc.js";
+import { deliveryStoppedByDown, deliveryUp, ensureDelivery } from "../lib/delivery-proc.js";
 import { displayCmd } from "../lib/self-exec.js";
 import { shellWord } from "../lib/endpoint-errors.js";
-import { clearManagerArtifacts, liveManagerWouldApplyMaxSessions, managerHasDeliveryMarker, managerRecordState, stopManager } from "../lib/manager-proc.js";
+import { liveManagerWouldApplyMaxSessions, managerHasDeliveryMarker, managerRecordState } from "../lib/manager-proc.js";
 import { loadManifest } from "../lib/manifest/index.js";
 import { checkNewUpSpace, preparedUpRoot, restoreUpCwd } from "./up-target.js";
 import { cleanedManifestStart, interruptedStartBroker } from "../lib/legacy-start.js";
@@ -116,7 +110,7 @@ import {
   stackUp,
   stackUpInterrupted,
 } from "./stack-up.js";
-import { exitInterrupted, handOverStartupNotice, noticeOnInterrupt, releaseStartupNotice } from "../lib/interrupt-notice.js";
+import { handOverStartupNotice, noticeOnInterrupt, releaseStartupNotice } from "../lib/interrupt-notice.js";
 import { claimForegroundHold, foregroundHolder, foregroundStackEnd, foregroundStopLauncher, hangupForegroundStack, releaseForegroundHold } from "../lib/foreground-hold.js";
 import { settleInterruptedLaunches } from "../lib/service-process.js";
 import { assertUserStackTransport, preflightUserStack } from "./stack-user-auth.js";
@@ -140,7 +134,6 @@ import {
   journaledMaxFileStore,
   rearmUnboundRestore,
   replacePreparedDeadRestoreListener,
-  restoreInterruptNotice,
   type PreparedRestore,
   type RestoreFlags,
 } from "../lib/restore.js";
@@ -188,13 +181,11 @@ import {
   assertSelectionNotMoved,
 } from "./up-args.js";
 import {
-  failedListeners,
   startUserAuthService,
   startDeliveryWithBroker,
   reportDegradedControlPlane,
   recordSpawnedListener,
   awaitSpawnedListener,
-  listenerExitRemedy,
   serveReadyListener,
   type DetachOpts,
   startMeshDetached,
@@ -209,6 +200,7 @@ import {
   seedPersonaAfterUp,
   belowPresenceSafeBroker,
 } from "./up-detach.js";
+import { holdForegroundListener } from "./up-foreground-listener.js";
 import { controllerStackNative, manifestFileRefusal, upManifest } from "./up-manifest.js";
 import {
   printRestoreReceipt,
@@ -1102,7 +1094,7 @@ async function runUp(args: ParsedArgs, invokedFrom: string, inheritedLock?: Main
     const presentation = presentationOf(values);
     const holder = values.foreground ? foregroundHolder(meshRoot) : undefined;
     if (holder !== undefined)
-      refuseForegroundStackHolder(meshRoot, stackSpace, holder, noManager);
+      refuseForegroundStackHolder(meshRoot, stackSpace, holder, noManager, maxPayload);
     // A signal ends a detached start where it is, after it records a launch it had not yet pinned to
     // its child, and the notice names what it left running. It is installed before the lock, so no
     // moment of the start exits without it.
@@ -1424,14 +1416,14 @@ async function runUp(args: ParsedArgs, invokedFrom: string, inheritedLock?: Main
       // mode would hand the operator a mesh on the wrong identity plane); a bare refresh keeps the
       // held mode.
       const requested = wantUser ? "user" : values.open ? "open" : undefined;
+      const stopAdvice = () => held.origin === "up"
+        ? `from ${shellWord(held.root)}, inspect the stack with ${codeSpan(`${displayCmd()} down --dry-run`)} and stop it with ${codeSpan(`${displayCmd()} down --yes`)}`
+        : "stop the broker with the launcher that started it";
       if (requested && requested !== held.mode) {
         const label = { auth: "static JWT auth", open: "no auth (--open)", user: "per-user auth" }[held.mode];
-        console.error(
-          c.red(
-            `✗ mesh "${held.space}" is already running at ${server} with ${label} - a running broker can't change auth mode; \`cotal down\` it first, then \`cotal up ${wantUser ? "--user-auth" : "--open"}\``,
-          ),
-        );
-        process.exit(1);
+        throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `mesh "${held.space}" is already running at ${server} with ${label}; a running broker can't change auth mode`, {
+          target: { root, space: held.space }, remedy: `${stopAdvice()}; then retry the original startup command unchanged from its original folder`,
+        });
       }
       // A rotation retires the system account this LIVE broker was started on, and only a broker
       // (re)started from the rewritten config carries the successor. Rotating under a running mesh
@@ -1454,12 +1446,9 @@ async function runUp(args: ParsedArgs, invokedFrom: string, inheritedLock?: Main
       // exit 0. A service unit relying on `--foreground` read that exit as the stack ending, stopped
       // it, and restarted into the same branch. Refuse and name the remedy.
       if (values.foreground) {
-        console.error(
-          c.red(
-            `✗ mesh "${held.space}" is already running at ${server} - \`cotal up --foreground\` starts nothing here, so it can't keep it in this terminal; \`cotal down\` it first, then \`cotal up --foreground\``,
-          ),
-        );
-        process.exit(1);
+        throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `mesh "${held.space}" is already running and this request starts nothing, so it can't keep it in this terminal`, {
+          target: { root, space: held.space }, remedy: `${stopAdvice()}; then retry the original foreground command unchanged from its original folder`,
+        });
       }
       // A running broker cannot change its transport either, and for exactly the reason it cannot
       // change its auth mode: the listener's TLS config was fixed when nats-server read its config
@@ -1637,7 +1626,7 @@ async function runUp(args: ParsedArgs, invokedFrom: string, inheritedLock?: Main
               `! nats-server ${v.version} is below 2.14.5 and the presence bucket of "${held.space}" is file-backed: it can latch after a stall and close the mesh to new joins (#1356); put a nats-server 2.14.5 or newer on PATH (it wins over the bundled one)`,
             ),
           );
-        if (await fileMembershipStore(server, held.space, reconcileCreds)) throw membershipConversionRefusal(held.space);
+        if (await fileMembershipStore(server, held.space, reconcileCreds)) throw membershipConversionRefusal(held.space, "stop this stack with `cotal down --yes`, then retry the original start with `--recreate-membership-store`");
         for (const r of await reconcileSpaceMemoryBuckets({ servers: server, space: held.space, creds: reconcileCreds }))
           console.log(c.dim(r.recreated
             ? `  re-created ${r.stream}: it is Memory-backed and was lost when the broker restarted`
@@ -1645,6 +1634,7 @@ async function runUp(args: ParsedArgs, invokedFrom: string, inheritedLock?: Main
         // The dashboard cred is minted on a refresh too: a space that predates it may never boot again.
         if (held.mode === "auth" && spaceAuth) await provisionWebCreds(spaceAuth, root, held.space);
       } catch (e) {
+        if (isCommandFailure(e) && e.code === "LIFECYCLE_BLOCKED") throw e;
         stderrLine("✗ ", `mesh "${held.space}" is running at ${server} but its Memory buckets and lease TTLs could not be reconciled: ${(e as Error).message}`, c.red);
         process.exit(1);
       }
@@ -1941,128 +1931,14 @@ async function runUp(args: ParsedArgs, invokedFrom: string, inheritedLock?: Main
   for (const line of hang("", starting, terminalWidth(process.stdout), c.dim)) console.log(line);
   console.log(c.dim("Press Ctrl-C to stop.\n"));
   const listenerStartedAt = new Date().toISOString();
-  // A terminal sends Ctrl-C to the whole foreground process group. Keep the broker outside it
-  // on POSIX so only this owner receives the interrupt and can finish manager-first teardown
-  // before signalling the broker. Keep the child referenced and its output in this terminal.
-  // The configuration names a store inside the root relative to it, so the broker runs from the root.
-  const child = spawnBroker(bin, natsArgs, { cwd: cotalRoot(), stdio: "inherit", detached: process.platform !== "win32" });
-  let listenerReady = false;
-  let activationFinished = !resumeAttempt;
+  // Keep the POSIX broker out of the terminal's process group for manager-first teardown on Ctrl-C.
+  const child = spawnBroker(bin, natsArgs, { cwd: cotalRoot(), stdio: "inherit", detached: process.platform !== "win32", windowsHide: false });
   await recordSpawnedListener(child, listenerStartedAt, boundListener);
-  child.on("error", (err) => {
-    console.error(c.red(`Failed to start nats-server: ${err.message}`));
-    if (!resumeAttempt) process.exit(1);
-  });
-  // Stop the detached manager, delivery daemon and space's user-auth service before their broker,
-  // so none outlives it. The auth service's process record is space-scoped.
-  // The manager goes first, in `cotal down`'s order, through the stop `cotal down` runs (#1307): it
-  // holds the stop reservation, asserts the exact manager can spare its seats before any signal,
-  // reports the seats left behind, and escalates a wedged manager to SIGKILL. When that stop throws
-  // the manager may still be serving, so NOTHING else is signalled — no delivery, no auth, no broker:
-  // the refusal is printed with the reap route and the latch is released, so the stack keeps running
-  // in the foreground; the operator ends it with `cotal down --with-agents` from another terminal,
-  // and the broker-exit handler below already ends `up` when the broker goes.
-  // stopDelivery and stopAuthService are the stops bare `cotal down` performs for those daemons
-  // (reservation, SIGKILL escalation); the rest of the teardown must run even if one fails —
-  // the failure is logged, never swallowed silently. Teardown is AWAITED before the broker is
-  // signalled, so it never races a broker that is already going away.
-  let stopping = false;
-  // The operator's signal sets the command's exit status, not the broker's SIGTERM.
-  let stopSignal: "SIGINT" | "SIGTERM" | undefined;
-  let stoppedListener = false;
-  let teardown: Promise<void> | undefined;
-  const stop = (signal: "SIGINT" | "SIGTERM") => {
-    if (stopping) return; // a second Ctrl-C during teardown must not start a second teardown
-    stopping = true;
-    stopSignal = signal;
-    // Once the broker has exited, its handler below is already running this teardown and reads
-    // `stopping` when it is done.
-    if (child.exitCode !== null || child.signalCode !== null) return;
-    teardown = (async () => {
-      try {
-        await stopManager(space);
-        clearManagerArtifacts(space);
-      } catch (e) {
-        console.error(c.red(`! teardown: ${(e as Error).message}`));
-        console.error(c.red(`the stack is still running; to take managed agents with it, run: \`cotal down --with-agents\``));
-        stopping = false;
-        return;
-      }
-      await stopDelivery(space).catch((e: Error) => console.error(`! delivery teardown: ${e.message}`));
-      await stopAuthService(space).catch((e: Error) => console.error(`! auth teardown: ${e.message}`));
-      stoppedListener = child.kill("SIGTERM");
-    })();
-  };
-  process.on("SIGINT", () => stop("SIGINT"));
-  process.on("SIGTERM", () => stop("SIGTERM"));
-  restored?.releaseInterruptNotice?.();
-  // On exit, drop only this stop's registration and matching `current` pointer, unless folder-named.
-  child.on("exit", async (code, signal) => {
-    if (failedListeners.has(child)) return;
-    removePidPair(cotalPath(NATS_PIDFILE), String(child.pid));
-    // One teardown at a time: a stop started while another is in flight is refused the reservation
-    // that one holds, so wait for a Ctrl-C teardown already running instead of racing it.
-    await teardown;
-    await stopDelivery(space).catch((e: Error) => console.error(`! delivery teardown: ${e.message}`));
-    await stopManager(space).then(() => clearManagerArtifacts(space)).catch((e: Error) => console.error(`! manager teardown: ${e.message}`));
-    await stopAuthService(space).catch((e: Error) => console.error(`! auth teardown: ${e.message}`));
-    // Only the shutdown that `stop()` drives (Ctrl-C, SIGTERM) can unrecord here.
-    // External `down` owns its own registry cleanup.
-    if (stopping) {
-      // Only unrecord if the registry still points at THIS broker. A newer broker for the same space
-      // (a concurrent `up`, or a different-port re-up that recorded after us) may have replaced our
-      // record — removing by name would clobber the live winner and hide it from the registry.
-      // …and only if it is still OUR kind of record. A concurrent `cotal meshes add --force` can
-      // replace it with a hand-registered one carrying the same server + root; that record outlives
-      // this broker by design (it is the operator's, and only they remove it), so unrecording it on
-      // our exit would delete a registration this process never owned.
-      const mine = findMesh(space);
-      if (mine && mine.origin !== "manual" && mine.server === server && mine.root === cotalRoot() && !keepsRegistration(mine)) {
-        removeMesh(space);
-        if (getCurrent() === space) clearCurrent();
-      }
-      if (activationFinished) process.exit(stopSignal === "SIGTERM" ? 143 : 130);
-    } else if (code === 0) {
-      // Before readiness, the startup check reports that the listener never answered.
-      // After readiness, do not race external `down` with a claim about its registry cleanup.
-      if (listenerReady && activationFinished) process.exit(0);
-    } else {
-      // The record is kept ON PURPOSE: it still names the store this broker opened, so a repair
-      // `up` reopens that SAME store instead of falling back to the root's default, and a
-      // supervising unit's restart takes the refresh path against the recorded store rather than
-      // racing a second broker into existence. NATS logs to this terminal unless a native log was
-      // requested, so there is no `.cotal/nats.log` to name here.
-      const detail = signal ? `signal ${signal}` : `code ${code}`;
-      const repair = `log: see ${brokerOutput}; repair: ${codeSpan(`cotal up --server ${shellWord(server)} --space ${shellWord(space)}`)}`;
-      // Retention is read from the registry, not assumed: a broker that exits before it first
-      // answers was never recorded, and running the same `up` again only repeats that exit, so its
-      // step is the one a detached start gives. A registry that cannot be read is not claimed
-      // either way, and the read cannot throw past this handler, which still has to exit.
-      let outcome: string;
-      try {
-        const mine = findMesh(space);
-        outcome = mine && mine.server === server && mine.root === cotalRoot()
-          ? `; the mesh "${space}" stays recorded (\`cotal meshes\` lists it offline); ${repair}`
-          : ` before the mesh "${space}" was recorded; next: ${listenerExitRemedy(natsServer, brokerOutput)}`;
-      } catch {
-        outcome = `; whether the mesh "${space}" stays recorded could not be read; ${repair}`;
-      }
-      stderrLine("✗ ", `nats-server exited unexpectedly (${detail})${outcome}`, c.red);
-      // A foreground broker under `Restart=on-failure` must exit non-zero on a crash so the unit
-      // restarts it; exiting 0 here (as an unconditional `code ?? 0` used to) looked like a clean
-      // stop and left the unit sitting dead. An abnormal exit is a failed run, 5, not the broker's
-      // own code, which the exit table would read as a usage error (1) or a refusal (2).
-      if (activationFinished) process.exit(exitCode("failed", "OPERATION_FAILED"));
-    }
-  });
-
-  await awaitSpawnedListener({ child, executable: natsServer, server, space, creds: setup?.creds, tls: transport.kind === "tls-required", log: brokerOutput, boundListener }).catch((error: unknown) => {
-    if (!restored || !stoppedListener || !stopSignal || (child.exitCode === null && child.signalCode === null)) throw error;
-    releaseStartupLock();
-    exitInterrupted(stopSignal, restoreInterruptNotice(restored.root, restored.attemptId));
-  });
-  listenerReady = true;
-  {
+  const foreground = holdForegroundListener({ child, server, space, executable: natsServer, log: brokerOutput, resuming: resumeAttempt !== undefined, restored, releaseStartupLock });
+  try {
+    await awaitSpawnedListener({ child, executable: natsServer, server, space, creds: setup?.creds, tls: transport.kind === "tls-required", log: brokerOutput, boundListener });
+    foreground.listenerReady();
+    await foreground.waitForRestoreStop();
     // A DAEMON THAT DIES UNDER THIS RUNNING BROKER IS RESTARTED HERE (#2469). It exits on its own once
     // it cannot reach the broker, and a starved host makes a running broker look unreachable, so it can
     // end while this broker serves on. Nothing else brings it back, and every static retirement then
@@ -2073,7 +1949,7 @@ async function runUp(args: ParsedArgs, invokedFrom: string, inheritedLock?: Main
     // stop. A failed attempt waits out the lease TTL, the longest a dead holder's lease blocks its
     // replacement. No daemon is alive during that wait for `down` to signal, so a stop there shows only as
     // the dead daemon's record going away. Recovery is announced only once the responder is bound.
-    const meshServing = () => !stopping && child.exitCode === null && child.signalCode === null;
+    const meshServing = () => !foreground.isStopping() && child.exitCode === null && child.signalCode === null;
     let restartingDelivery = false;
     let deliveryStopped = false;
     const onDeliveryExit = (code: number | null, signal: NodeJS.Signals | null): void => {
@@ -2108,7 +1984,7 @@ async function runUp(args: ParsedArgs, invokedFrom: string, inheritedLock?: Main
         restartingDelivery = false;
       })();
     };
-    const { authService, controlPlane } = await serveReadyListener({
+    const { authService, controlPlane } = await foreground.publishControlPlane(() => serveReadyListener({
       child, server, space, storeDir, setup, seedFile: !resumeAttempt || values.channels ? seedFile : undefined, transport, maxPayload: brokerMaxPayload,
       ...(values["recreate-issued-stores"] !== undefined ? { recreateIssuedStores: resolve(values["recreate-issued-stores"]) } : {}),
       ...(values["recreate-membership-store"] ? { recreateMembershipStore: true } : {}),
@@ -2123,8 +1999,9 @@ async function runUp(args: ParsedArgs, invokedFrom: string, inheritedLock?: Main
       runtime: values.runtime,
       noManager,
       onDeliveryExit,
-      isStopping: () => stopping,
-    });
+      isStopping: foreground.isStopping,
+    }));
+    await foreground.waitForRestoreStop();
     if (noManager && setup && controlPlane) recordOperationWarning(await noManagerCredentialWarning(cotalRoot(), space));
     if (restored && process.env.COTAL_SMOKE_FAIL_AFTER_RESTORE_LISTENER_READY === "1")
       throw new Error("smoke-injected failure after restore listener readiness");
@@ -2133,10 +2010,13 @@ async function runUp(args: ParsedArgs, invokedFrom: string, inheritedLock?: Main
       controlPlane !== undefined && authService,
       !authService ? "normal listener started but the user-auth service is unavailable" : "normal listener started but the control plane is degraded",
       server,
-      startupLock,
+      startupLock, undefined, foreground.waitForRestoreStop,
     );
-    activationFinished = true;
+    foreground.activationFinished();
     if (restored && !quietRestore) printRestoreReceipt(restored, values.__invokedRoot);
+  } catch (error) {
+    await foreground.waitForRestoreStop();
+    throw error;
   }
   releaseStartupLock();
   await new Promise<void>(() => {});
