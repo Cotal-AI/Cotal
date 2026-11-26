@@ -1,5 +1,7 @@
+import { spawnSync } from "node:child_process";
 import { lstatSync, readdirSync, readFileSync, realpathSync, statSync, type Dirent } from "node:fs";
 import { join, resolve, sep } from "node:path";
+import { pathToFileURL } from "node:url";
 import { SEEDED_EXTENSIONS, extensionPackageDir, extensionsDir, installedExtensionPackage, resolveExtensionEntry, type InstalledExtension } from "@cotal-ai/workspace";
 import { seedStorePath, shippedSourceDir } from "./paths.js";
 import { sharedPlacements, type SharedPlacement } from "./shared.js";
@@ -65,7 +67,8 @@ export function seededInstallDiffers(name: string, generation: string, entry: In
  * own record in the prefix proves it installed at this generation: the entry is recorded at this
  * generation with the spec the update would install, the prefix lock records the package at that
  * version, every package the lock records is on disk at its recorded version
- * ({@link prefixLockDiffers}), and the extension's resolved entry is a nonempty regular file.
+ * ({@link prefixLockDiffers}), and the extension's resolved entry is a nonempty regular file
+ * that Node can import with its dependencies.
  * Any doubt is a reason, and a reason runs the ordinary reinstall.
  */
 export function operatorInstallDiffers(entry: InstalledExtension, generation: string): string | undefined {
@@ -84,7 +87,11 @@ export function operatorInstallDiffers(entry: InstalledExtension, generation: st
   const file = statSync(path, { throwIfNoEntry: false });
   if (!file?.isFile()) return "entry file is missing";
   if (file.size === 0) return "entry file is empty";
-  return undefined;
+  // Import in a fresh process so registrations and Node's module cache stay out of the updater.
+  const probe = spawnSync(process.execPath, ["--input-type=module", "-e", "await import(process.argv[1]); process.exit(0)", pathToFileURL(path).href], {
+    stdio: "ignore", timeout: 15_000, killSignal: "SIGKILL", windowsHide: true,
+  });
+  return probe.status === 0 ? undefined : "entry file failed to load";
 }
 
 /**

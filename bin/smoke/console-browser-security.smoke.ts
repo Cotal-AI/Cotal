@@ -10,7 +10,7 @@ import { StringDecoder } from "node:string_decoder";
 import type { Readable, Writable } from "node:stream";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
-import { CotalEndpoint, isReachable, newIdentity, setupSpaceStreams } from "@cotal-ai/core";
+import { CotalEndpoint, clearChannel, isReachable, newIdentity, setupSpaceStreams } from "@cotal-ai/core";
 import { emitSentinel, freePort, killAndAwaitExit, skipSuite, SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { AttachEndpoint } from "../../implementations/manager/dist/attach-endpoint.js";
 
@@ -97,6 +97,7 @@ async function page(url: string): Promise<string> {
   await cdp("Page.enable", {}, sessionId);
   await cdp("Runtime.enable", {}, sessionId);
   await cdp("Network.enable", {}, sessionId);
+  await cdp("Emulation.setDeviceMetricsOverride", { width: 1440, height: 960, deviceScaleFactor: 1, mobile: false }, sessionId);
   await cdp("Page.addScriptToEvaluateOnNewDocument", { source: `
     window.__security = { violations: [], errors: [] };
     addEventListener('securitypolicyviolation', e => window.__security.violations.push({ directive: e.effectiveDirective, blocked: e.blockedURI }));
@@ -126,6 +127,25 @@ async function channelVerification(session: string, sender: CotalEndpoint): Prom
   check("dashboard: navigation to the channel did not reload the page", await evaluate(session, "performance.getEntriesByType('navigation').length === 1"));
 }
 
+
+async function channelPurge(session: string, publisher: CotalEndpoint): Promise<void> {
+  const channel = "purge-fixture";
+  await publisher.multicast("browser-purge-control", { channel });
+  const row = `!!document.querySelector('[aria-label="Space"] a[href="#/channel/${channel}"]')`;
+  const control = `!!document.querySelector('[aria-label="Space"] a[href="#/channel/general"]')`;
+  const message = `document.querySelector('.ui-view')?.textContent.includes('browser-purge-control') === true`;
+  const count = `[...document.querySelectorAll('dt')].find(el => el.textContent === 'Messages')?.nextElementSibling?.textContent`;
+  await until(() => evaluate(session, row), "the external post creates a sidebar row");
+  await evaluate(session, `location.hash = '#/channel/${channel}'`);
+  await until(() => evaluate(session, `${message} && (${count}) === '1'`), "the open channel shows its retained message and count");
+  const purged = await clearChannel({ servers: server, space, channel });
+  check("dashboard purge: broker removes retained history from an unconfigured channel", purged.purged === 1 && !purged.removed);
+  const opens = () => responses.filter((res) => res.session === session && res.type === "EventSource").length;
+  const feedCount = opens();
+  await until(() => evaluate(session, `!(${row}) && !(${message}) && (${count}) === undefined`), "the open dashboard refreshes the channel list, transcript and count after an external purge");
+  check("dashboard purge: an unrelated channel remains and the original feed stays connected", feedCount === 1 && opens() === feedCount &&
+    await evaluate(session, `${control} && document.body.textContent.includes('Connected to cotal web')`));
+}
 async function security(name: string, session: string, token: string, base: string, ready: string): Promise<void> {
   await until(() => evaluate(session, ready), `${name} page must render its live data`);
   await evaluate(session, "document.fonts.ready.then(() => true)");
@@ -252,6 +272,9 @@ try {
   check("dashboard browser-launch: new link refuses replay", (await fetch(nextLaunch, { redirect: "manual" })).status === 401);
   check("dashboard: the spent documented launch link refuses a second session", (await fetch(launchUrl, { redirect: "manual" })).status === 401);
   await channelVerification(await page(dashboardBase), seed);
+  const purgePage = await page(dashboardBase + "/#/channel/general");
+  await until(() => evaluate(purgePage, "document.body?.textContent.includes('Connected to cotal web') === true"), "the authenticated dashboard opens its live feed");
+  await channelPurge(purgePage, seed);
   console.log(`browser security: ${passed} passed, ${failed} failed`);
   emitSentinel({ passed, failed });
   process.exitCode = failed ? 1 : 0;

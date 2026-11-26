@@ -225,6 +225,8 @@ Broker-reported membership requires the delivery daemon and is provisioned by a 
 
 ### Interpret incomplete data
 
+The connected dashboard checks retained channel counts every five seconds. After a channel purge, it updates the sidebar and rereads the open channel if its retained count fell. You do not need to reload the page.
+
 A failed poll keeps the last successful values and marks the affected sources stale.
 For example, `stale: peers, activity` names the sources; hover for the server's reason.
 While a refusal stands the dashboard reads again, first after five seconds, then after twice the

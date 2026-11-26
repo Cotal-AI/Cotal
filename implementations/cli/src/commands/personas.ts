@@ -44,7 +44,7 @@ import { c } from "../ui.js";
  * broker), so the offline subcommands stay offline.
  */
 
-/** Persona names are also filenames and spawn names — mirror the `cotal_persona` tool's pattern. */
+/** The character set for a catalog filename stem. */
 const NAME_RE = /^[A-Za-z0-9_-]+$/;
 
 export async function personas(args: ParsedArgs): Promise<void> {
@@ -240,6 +240,11 @@ async function create(name: string | undefined, v: { role?: string; model?: stri
     process.exit(1);
   }
   assertValidName(name); // shared reserved-character guard (also rejects "/")
+  if (name.startsWith("-")) {
+    throw new CommandFailure("refused", "USAGE_INVALID", `invalid persona name ${JSON.stringify(name)}: cannot start with "-"`, {
+      remedy: "replace the name with one that starts with a letter, digit or `_`, then retry",
+    });
+  }
   const reserved = reservedPersonaName(name);
   if (reserved) {
     console.error(c.red(reserved));
