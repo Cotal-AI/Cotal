@@ -25,18 +25,20 @@ export function reclaimAbandonedExtensionStages(): void {
   const uid = process.getuid?.();
   if (uid === undefined) return;
   try {
-    const config = connectorConfigDir();
-    const names = readdirSync(config).filter(name => /^\.extensions\.stage-[A-Za-z0-9]{6}$/.test(name));
-    if (!names.length || installationWriter() || !canRecoverConnectorConfig() || connectorConfigDir() !== config) return;
-    protectedResolvedDirectory(config);
+    const selected = connectorConfigDir();
+    const config = protectedResolvedDirectory(selected);
+    const names = readdirSync(config).filter(name => /^\.extensions\.stage-[A-Za-z0-9]{6}(?:\.ready)?$/.test(name));
+    if (!names.length || installationWriter() || !canRecoverConnectorConfig() || connectorConfigDir() !== selected) return;
     const release = claimExtensionMutationLock({}, config);
     try {
-      if (!canRecoverConnectorConfig() || connectorConfigDir() !== config ||
+      if (!canRecoverConnectorConfig() || connectorConfigDir() !== selected || protectedResolvedDirectory(selected) !== config ||
           lstatSync(join(config, ".extensions-promotion.json"), { throwIfNoEntry: false })) return;
       for (const name of names) {
         const path = join(config, name);
         const stat = lstatSync(path, { throwIfNoEntry: false });
-        if (stat?.isDirectory() && stat.uid === uid && (stat.mode & 0o077) === 0) rmSync(path, { recursive: true, force: true });
+        // The renamed prefix keeps the verified install's mode. The mkdtemp wrapper is private.
+        const mask = name.endsWith(".ready") ? 0o022 : 0o077;
+        if (stat?.isDirectory() && stat.uid === uid && (stat.mode & mask) === 0) rmSync(path, { recursive: true, force: true });
       }
     } finally { release(); }
   } catch { /* Optional cleanup must not refuse an update. */ }
