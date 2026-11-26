@@ -1309,6 +1309,11 @@ appears in `hints` in JSON. Reading a recorded seed failure does not change the 
 status, and status neither repairs nor clears the record. If the seed cursor cannot be read,
 status names the file in an `EXTENSIONS_UNREADABLE` warning and reports a partial read.
 
+If the extension inventory is corrupt or unreadable, the infrastructure report keeps the
+observations it could read and exits 4 with an `EXTENSIONS_UNREADABLE` warning. In JSON,
+`extensions.items` in the result is `null`. The report leaves the inventory untouched and the
+warning names the repair command, `cotal ext seed --repair`.
+
 An unreachable broker, a stopped process or an unbound responder is a state the report names, and
 `status` exits 0. An open mesh runs no delivery daemon, so when it records no delivery lease its
 delivery responder row says the responder is not used and suggests no command. A selected controller
@@ -1322,9 +1327,7 @@ connectors, the skills bundle, the web records, a persona catalog, the mesh
 registry or one of its records, the current-mesh pointer, a user-auth login, or the selected mesh's
 channels or its owned service definition/instance records. Only an absent catalog, registry or pointer reads as empty or unset; an empty pointer is
 named too. A registry directory or record that cannot be read also leaves the selected mesh
-unresolved, because resolution refuses it, and the readable records are still listed. A corrupt or
-unreadable extensions manifest is refused while loading the command surface, before this report
-can run. The manager
+unresolved, because resolution refuses it, and the readable records are still listed. The manager
 row asks the service endpoint once: a live process that does
 not answer is `not serving`, and a probe that could not be made leaves the row
 `running · service unchecked`. A broker that takes the connection and does not answer, as a
