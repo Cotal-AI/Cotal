@@ -169,3 +169,49 @@ test('helper exit diagnostics retain only 200 private-safe run summaries and pre
   failWrite = true;
   assert.doesNotThrow(() => exit!(13));
 });
+
+test('setup inventory skips service bookkeeping and names any other file that disappears', () => {
+  const source = readFileSync(new URL('./setup-proof.mjs', import.meta.url), 'utf8');
+  const start = source.indexOf('const serviceState = new Set([');
+  const end = source.indexOf('\nfunction compare(', start);
+  assert.ok(start > 0 && end > start);
+  const tree = new Map<string, 'dir' | 'file' | 'link'>([
+    ['install', 'dir'],
+    ['install/node.exe', 'file'],
+    ['install/runtime', 'dir'],
+    ['install/runtime/cotal.js', 'file'],
+    ['install/runtime/update-check.lock', 'file'],
+    ['install/daemon', 'dir'],
+    ['install/daemon/daemon.log', 'file'],
+    ['install/update-check.lock', 'file'],
+    ['install/update-check.json', 'file'],
+    ['install/update-check.lock.0123456789abcdef.tmp', 'file'],
+    ['install/update-check.123.tmp', 'file'],
+    ['install/update-example.json', 'file'],
+  ]);
+  const gone = new Set<string>();
+  const read = new Set<string>();
+  const inventory = runInNewContext(`${source.slice(start, end)}\ninventory`, {
+    root: 'install',
+    createHash: () => ({ update: (bytes: Buffer) => ({ digest: () => bytes.toString() }) }),
+    join: (...parts: string[]) => parts.join('/'),
+    readdirSync: (directory: string) => [...tree].filter(([path]) => path.startsWith(`${directory}/`) && !path.slice(directory.length + 1).includes('/')).map(([path]) => {
+      const name = path.slice(directory.length + 1);
+      const kind = tree.get(path);
+      return { name, isDirectory: () => kind === 'dir', isFile: () => kind === 'file' };
+    }),
+    readFileSync: (path: string) => {
+      if (gone.has(path)) { const error = new Error('gone') as NodeJS.ErrnoException; error.code = 'ENOENT'; throw error; }
+      read.add(path);
+      return Buffer.from(path);
+    },
+  }) as () => { file: string; sha256: string }[];
+  assert.equal(inventory().map(row => row.file).join('\n'), 'node.exe\nruntime/cotal.js\nruntime/update-check.lock\nupdate-example.json');
+  assert.equal(read.has('install/daemon/daemon.log'), false);
+  assert.equal(read.has('install/update-check.lock'), false);
+  gone.add('install/runtime/cotal.js');
+  assert.throws(() => inventory(), { message: 'Installed file disappeared during inventory: runtime/cotal.js' });
+  gone.delete('install/runtime/cotal.js');
+  tree.set('install/shortcut', 'link');
+  assert.throws(() => inventory(), { message: 'Unexpected non-file in owned installation' });
+});
