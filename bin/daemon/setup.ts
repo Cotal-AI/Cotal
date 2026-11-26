@@ -24,7 +24,7 @@ import { connectCheckViaDaemon, managerViaDaemon, queryDaemon, registerViaDaemon
 import { exchangeDesktopRequest } from "./desktop.js";
 import type { PeerPid, PeerUid } from "./endpoint.js";
 import type { HostedManager, LoginPrompt, LoginResult, RegisterResult, ServiceConnectionState } from "./protocol.js";
-import { applyInstall, installedDaemonIdentity, planUninstall, planInstalledPathRefresh, startInstalled, restartInstalled, unitReceiptFile } from "./install.js";
+import { applyInstall, installedDaemonIdentity, installedServicePath, planUninstall, planInstalledPathRefresh, preflightInstalledDaemon, startInstalled, restartInstalled, unitReceiptFile } from "./install.js";
 import { fromRegister } from "./service.js";
 import { DAEMON_PROTOCOL_VERSION } from "./endpoint.js";
 import { daemonCommandCopy, NON_USER_AUTH_MESSAGE, NON_USER_AUTH_REMEDY } from "./guidance.js";
@@ -48,7 +48,7 @@ export interface SetupResult {
   readonly registration?: RegisterResult;
 }
 
-interface InstallOptions {
+export interface InstallOptions {
   readonly noManager?: boolean;
   readonly space?: string;
   readonly version?: string;
@@ -203,6 +203,23 @@ async function refreshApplications(opts: InstallOptions, steps: SetupStep[]): Pr
   const release = claimUpdateClosureAccess();
   try { return await refreshApplicationsUnderClosure(opts, steps); }
   finally { release(); }
+}
+
+/** After the app installs an application into `dirs`, or when it checks again: refresh the installed
+ *  service as setup does when it cannot find the application yet. That is when a systemd or launchd
+ *  service's pinned PATH lacks one of `dirs`, when the Windows task started before PATH had them
+ *  (`before`, the account PATH it read), or when a hosted Manager reports a missing executable that
+ *  PATH now finds. Running seats refuse the refresh with LIFECYCLE_BLOCKED and change nothing. */
+export async function refreshServiceForApplication(opts: InstallOptions, dirs: readonly string[], before?: string): Promise<"none" | "unchanged" | "refreshed"> {
+  if (!preflightInstalledDaemon(opts.paths, opts.daemonHome)) return "none";
+  // Windows compares folders without regard to case; macOS and Linux paths keep theirs.
+  const key = (dir: string) => { const trimmed = dir.replace(/[\\/]+$/, ""); return process.platform === "win32" ? trimmed.toLowerCase() : trimmed; };
+  const servicePath = installedServicePath(opts.paths, opts.daemonHome) ?? before;
+  const entries = servicePath?.split(process.platform === "win32" ? ";" : ":").map(key);
+  const pathLacks = entries !== undefined && !dirs.every(dir => entries.includes(key(dir)));
+  const status = pathLacks ? undefined : await queryDaemon(opts).catch(() => undefined);
+  if (!pathLacks && !(status?.ok && status.result.managers?.some(hasNewApplications))) return "unchanged";
+  return await refreshApplications(opts, []) ? "refreshed" : "unchanged";
 }
 
 async function refreshApplicationsUnderClosure(opts: InstallOptions, steps: SetupStep[]): Promise<boolean> {
