@@ -560,6 +560,8 @@ A local `persona show` takes the exact filename stem from the catalog, including
 Unicode and spaces. It refuses paths, control characters and blank stems.
 The local listing marks a file with an empty or whitespace-only stem as an invalid selector.
 Rename that file or pass its path to `cotal spawn --file <persona.md>`.
+The local listing also marks a stem containing a literal backslash as an invalid selector and
+shows how to launch the file with `cotal spawn --file`. This warning does not change the list exit status.
 Quote a name with spaces: `cotal persona show 'a b'` reads `.cotal/agents/a b.md`.
 `cotal persona show review.md` reads `.cotal/agents/review.md.md` in the selected space,
 not `review.md` in the project root.

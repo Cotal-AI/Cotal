@@ -70,7 +70,7 @@ export function App({
   /** Builds the operator's presence peer (root.tsx); absent where the mesh cannot host one. */
   makeParticipant?: () => CotalEndpoint;
 }) {
-  const mesh = useMesh(ep, { tapSubject });
+  const { mesh, discardChatHistory } = useMesh(ep, { tapSubject });
   const { exit } = useApp();
   const { stdout } = useStdout();
   const { focus, focusNext, focusPrevious } = useFocusManager();
@@ -482,7 +482,10 @@ export function App({
       );
     } else if (c?.kind === "purge") {
       setNotice(`purging ${c.space}…`);
-      void ctl("purge", {}).then((r) => setNotice(r.ok ? "purged space history" : `purge: ${r.error ?? "failed"}`));
+      void ctl("purge", {}).then((r) => {
+        if (r.ok) discardChatHistory();
+        setNotice(r.ok ? "purged space history" : `purge: ${r.error ?? "failed"}`);
+      });
     } else if (c?.kind === "delchan") {
       // Core's clearChannel with the web's per-action authority (console/control.ts). The tab
       // vanishes on the next channel poll (MeshView rebuilds the list from the broker) and its

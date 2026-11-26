@@ -785,6 +785,8 @@ with `cotal backup restore <dir> --accept-missing-source` instead of offering to
 
 For the selected space, `Default agent` reports the harness a bare `cotal spawn` selects.
 The default persona's `agent:` pin overrides environment and saved harness preferences.
+If the selected harness needs a missing executable, Next names it and links to its installation guide
+instead of offering the default launch. The default stays the same.
 If the catalog contains `suffix.md` (`.cotal/agents/suffix.md.md`), both commands select that entry
 even if the space's project root has a file named `suffix.md`. Use `./suffix.md` to select the project file explicitly.
 If that persona cannot be read or validated, status reports the application as unresolved
@@ -892,6 +894,8 @@ names the `cotal up` that starts it there.
 receipts, which only `up` and `down` read, so `status` does not name it. When `status` verifies
 that a controller startup still holds the root's maintenance lock, it reports `Startup in progress`.
 For a prepared space, `status --space <name>` checks that space's root even from another folder.
+If a regular file occupies the project's `.cotal` path, Next names the file and tells you to move
+it aside and restore the original `.cotal` directory. `status` leaves both entries untouched.
 In the project's own folder, this includes an open stack restart while it registers the space again.
 Next does not suggest a store reset or settlement for that restart.
 Wait for startup to finish, then run the status command shown under Next.
@@ -1325,6 +1329,10 @@ row asks the service endpoint once: a live process that does
 not answer is `not serving`, and a probe that could not be made leaves the row
 `running · service unchecked`. A broker that takes the connection and does not answer, as a
 stopped one does, leaves it unchecked too, and `status` still exits.
+
+When permission to read a selected local space's broker PID file is denied, `status` keeps the
+rest of the report and exits `4`. The warning names the unreadable record, and Next says which
+permissions to restore. A failed connection does not establish that the broker process stopped.
 
 
 ### Local records

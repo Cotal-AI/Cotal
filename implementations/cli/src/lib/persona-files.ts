@@ -395,7 +395,11 @@ export async function editPersona(path: string, name: string, catalog: PersonaCa
     const oversized = tooLarge(edited, `your edit is kept in ${draft}; shorten it to 1 MiB or less, run \`${retry}\` again and paste it in, then remove ${dirname(draft)}`);
     if (oversized) { keep = true; throw oversized; }
     let displayName: string;
-    try { displayName = validatePersona(edited, draft).name; }
+    try {
+      displayName = validatePersona(edited, draft).name;
+      if (displayName.startsWith("-") && displayName !== validatePersona(source.bytes, path).name)
+        throw new CommandFailure("refused", "SCHEMA_INVALID", "the new frontmatter name cannot start with \"-\"; choose one that starts with a letter, digit or `_`");
+    }
     catch (error) {
       if (!isCommandFailure(error)) throw error;
       keep = true;

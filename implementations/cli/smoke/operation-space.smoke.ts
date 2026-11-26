@@ -39,7 +39,8 @@ if (!existsSync(BIN)) {
 interface Envelope {
   outcome: string;
   completeness?: string;
-  result?: { requestedName?: string; name?: string; path?: string; definition?: { name?: string }; source?: string; kind?: string; allocated?: boolean; launched?: boolean };
+  result?: { requestedName?: string; name?: string; path?: string; definition?: { name?: string }; source?: string; kind?: string; allocated?: boolean; launched?: boolean; items?: { name: string; path: string; valid: boolean }[] };
+  warnings?: { code: string; message: string; target: unknown }[];
   target: Record<string, unknown> | null;
   error?: { code: string; message?: string; remedy?: string };
 }
@@ -221,6 +222,15 @@ rmSync(nullOptions);
 const roleOk = cotal("persona", "create", "goodrole", "--prompt", "x", "--role", "reviewer", "--subscribe", "", "--json");
 check("control: a valid role token is created", roleOk.status === 0 && existsSync(agentFilePath(root, "goodrole")), shown(roleOk));
 
+const legacyNew = ["personas", "new", "--prompt", "Review changes.", "--subscribe", "", "--"];
+const invalidLegacyNew = cotal(...legacyNew, "-legacy-reviewer");
+check("personas new refuses a leading hyphen before writing and explains how to retry",
+  invalidLegacyNew.status === 1 && invalidLegacyNew.stderr.includes('cannot start with "-"') &&
+  invalidLegacyNew.stderr.includes("then retry") && !existsSync(agentFilePath(root, "-legacy-reviewer")), shown(invalidLegacyNew));
+const validLegacyNew = cotal(...legacyNew, "legacy-reviewer");
+check("personas new with a corrected name creates the definition",
+  validLegacyNew.status === 0 && existsSync(agentFilePath(root, "legacy-reviewer")), shown(validLegacyNew));
+
 // A malformed --on names the command to rerun, with --on written once.
 for (const [argv, rerun] of [
   [["persona", "--on", "bad"], "cotal persona --on <instance>"],
@@ -332,6 +342,24 @@ const drafts = join(home, "drafts");
 mkdirSync(drafts);
 const editorScript = (file: string, body: string) => { const path = join(home, file); writeFileSync(path, `#!/bin/sh\n${body}\n`, { mode: 0o755 }); return path; };
 const saved = readFileSync(persona, "utf8");
+if (process.platform !== "win32") {
+  const editTo = (name: string) => {
+    const editor = editorScript(`ed-${name}`, `printf '%s\\n' '---' 'name: ${name}' 'subscribe: []' '---' 'Review changes.' > "$1"`);
+    return outcome(spawnSync(process.execPath, [BIN, "persona", "edit", "legacy-reviewer", "--json"], {
+      cwd: root, env: { ...env, EDITOR: editor, TMPDIR: drafts }, encoding: "utf8", timeout: 120_000,
+    }));
+  };
+  const path = agentFilePath(root, "legacy-reviewer");
+  const before = readFileSync(path, "utf8");
+  const refused = editTo("-reviewer");
+  check("persona edit refuses a new hyphen-leading launch name without saving and keeps the draft",
+    refused.status === 1 && refused.envelope?.error?.message?.includes('the new frontmatter name cannot start with "-"') === true &&
+    refused.envelope.error.remedy?.includes("cotal persona edit legacy-reviewer --json") === true && readFileSync(path, "utf8") === before, shown(refused));
+  const corrected = editTo("reviewer");
+  check("retrying the edit with a corrected frontmatter name saves it",
+    corrected.status === 0 && readFileSync(path, "utf8").includes("name: reviewer\n"), shown(corrected));
+  for (const dir of readdirSync(drafts)) rmSync(join(drafts, dir), { recursive: true });
+}
 for (const [label, editor, status, says] of [
   ["a draft the rules refuse", editorScript("ed-acl", 'printf -- "---\\nname: rev\\nsubscribe: [ops]\\nallowSubscribe: [general]\\n---\\nx\\n" > "$1"'), 1, 'subscribe "ops" is not within allowSubscribe [general] - not saved'],
   ...[3, 126, 127].map(code => [
@@ -490,6 +518,34 @@ try {
   delete env.COTAL_DEFAULT_PERSONA;
   rmSync(dottedCatalog, { force: true });
   rmSync(dottedFile, { force: true });
+}
+
+if (process.platform !== "win32") {
+  const stem = "outbound-back\\slash";
+  const path = join(dirname(dottedCatalog), `${stem}.md`);
+  writeFileSync(path, "---\nname: backslash\n---\nPerform the fixture task.\n");
+  try {
+    const list = cotal("persona", "--space", "opsp", "--plain");
+    const remedy = `spawn --space opsp --file '${path}'`;
+    const hasRemedy = (text: string) => ["cotal", "pnpm cotal"].some(launcher => text.includes(`\`${launcher} ${remedy}\``));
+    check("persona marks the backslash stem as an invalid selector and names its explicit file without failing the list",
+      list.status === 0 && list.stdout.split("\n").some(line => line.includes(stem) && line.includes("invalid selector")) &&
+      hasRemedy(list.stderr), shown(list));
+    const json = cotal("persona", "--space", "opsp", "--json");
+    const row = json.envelope?.result?.items?.find(item => item.name === stem);
+    const warning = json.envelope?.warnings?.find(item => item.code === "USAGE_INVALID" && same(item.target, { name: stem, path }));
+    check("JSON keeps a complete inventory and flags the unusable selector",
+      json.status === 0 && json.envelope?.completeness === "complete" && row?.path === path && row.valid === false &&
+      warning?.message.includes(`\`cotal ${remedy}\``) === true, shown(json));
+    const legacy = cotal("personas", "list", "--space", "opsp");
+    check("legacy list flags the backslash stem with the same explicit-file remedy", legacy.status === 0 &&
+      legacy.stdout.split("\n").some(line => line.includes(stem) && line.includes("invalid selector")) && hasRemedy(legacy.stdout), shown(legacy));
+    const file = cotal("spawn", "--space", "opsp", "--dry-run", "--plain", "--file", path);
+    check("spawn preview still accepts the literal backslash in an explicit file", file.status === 0 &&
+      file.stdout.includes(path) && /Requested name:\s+backslash$/m.test(file.stdout), shown(file));
+  } finally {
+    rmSync(path, { force: true });
+  }
 }
 
 // #7526: spawning or previewing an invalid native persona preserves the field/position error without

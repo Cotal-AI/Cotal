@@ -347,19 +347,42 @@ export async function deviceLogin(opts: DeviceLoginOpts): Promise<IdpSession> {
   }
 
   // RFC 8628 §3.5: poll at the server's interval; `slow_down` adds 5s to it, permanently.
+  // A poll the provider could not answer (no connection, a 5xx such as a proxy's error page) says
+  // nothing about the approval, so polling goes on until the code's own expiry. If the provider was
+  // still unreachable then, that is the refusal, not an expiry the person could not have caused.
   let intervalSec = Math.max(1, grant.interval || 5);
+  let unanswered: IdpUnreachableError | undefined;
   for (;;) {
     await sleepUnlessCancelled(intervalSec * 1000, opts.signal);
-    if (Date.now() > deadline) throw new Error(expired);
-    const poll = await idpFetch(`${base}/device/token`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        grant_type: "urn:ietf:params:oauth:grant-type:device_code",
-        device_code: grant.device_code,
-        client_id: opts.clientId,
-      }),
-    }, opts.signal);
+    if (Date.now() > deadline) throw unanswered ?? new Error(expired);
+    let poll: Response;
+    try {
+      poll = await idpFetch(`${base}/device/token`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          grant_type: "urn:ietf:params:oauth:grant-type:device_code",
+          device_code: grant.device_code,
+          client_id: opts.clientId,
+        }),
+      }, opts.signal);
+    } catch (e) {
+      if (!(e instanceof IdpUnreachableError)) throw e;
+      unanswered = new IdpUnreachableError(`idp login: ${base} could not be reached while waiting for approval, and the device code expired - ${e.message}`);
+      continue;
+    }
+    if (poll.status >= 500) {
+      await poll.body?.cancel().catch(() => {});
+      throwIfCancelled(opts.signal);
+      unanswered = new IdpUnreachableError(`idp login: ${base} answered HTTP ${poll.status} while waiting for approval, and the device code expired - run \`${retry}\` again once it answers`);
+      continue;
+    }
+    unanswered = undefined;
+    if (poll.status === 429) {
+      await poll.body?.cancel().catch(() => {});
+      intervalSec += 5;
+      continue;
+    }
     if (poll.ok) {
       const tok = await idpJson<{ access_token: string; expires_in: number }>(`${base}/device/token`, poll, opts.signal);
       // Bound the session lifetime like the device grant's timing fields above (finite, positive,

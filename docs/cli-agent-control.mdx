@@ -36,6 +36,9 @@ cotal attach [<name>] [--on <instance>] [--no-reconnect] [--space <s>]
 | `--no-reconnect` (`attach`) | off | End the attach when its session ends, instead of re-establishing it. For scripts that want one run and one exit code |
 
 
+When a single manager returns an empty list, Next checks the local default harness before offering
+`cotal spawn`. If a required executable is missing, Next names it and links to its installation guide.
+
 ### Control credentials
 
 When `ps` refuses an invalid `--on`, its suggested lookup lists managers on the same target
@@ -101,6 +104,10 @@ the controller stack's recorded address, the refusal tells you to free it before
 On a stopped local stack, `ps` reports an unreadable or invalid stack journal and its recovery step
 when no `--server` is passed or when it matches the saved broker address. A different address does
 not use the local journal to diagnose the refusal.
+
+If a regular file occupies a prepared project's `.cotal` path, `ps --space <name>` refuses with
+`TARGET_UNAVAILABLE`, exit 2. It names the file and tells you to move it aside and restore the
+original `.cotal` directory. It leaves both entries untouched.
 
 A raw `--creds` file is refused as `UNSUPPORTED` before dialing by `status <agent>`, `ps`, `stop`, `attach`, `input` and `models`, because
 that route mints no endpoint-caller triple. Run the command without `--creds` from the project folder, or pass `--space` against its registry

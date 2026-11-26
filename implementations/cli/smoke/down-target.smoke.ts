@@ -971,6 +971,20 @@ try {
       check(`${label} in an empty folder names the selected legacy stack's space, its root and \`${again}\` there`,
         r.error?.code === "TARGET_NOT_FOUND" && Boolean(r.error.message?.includes(`the selected space "lgs" is a stack rooted at ${lg}`)) && [again, `pnpm ${again}`].some((command) => r.error?.remedy === `run \`${command}\` from ${lg}`), r);
     }
+    // A regular file now at the recorded root cannot be the folder to run `down` from: the remedy
+    // names it and the step to restore the original folder, from a folder with no stack and from one
+    // with its own.
+    const fileRoot = join(realpathSync.native(mkdtempSync(join(tmpdir(), "cotal-file-root-"))), "rootproject");
+    writeFileSync(fileRoot, "replacement file\n");
+    recordMesh({ space: "frs", server: "nats://127.0.0.1:3", root: fileRoot, mode: "open", origin: "up", ts });
+    const restore = (command: string) => `${fileRoot} is not a directory; move what is there aside and restore the original project folder at that path, then run \`${command}\` from it`;
+    for (const [from, code] of [[empty, "TARGET_NOT_FOUND"], [sa, "CONFLICT"]] as const) {
+      const r = await bareDownIn(from, { space: "frs", yes: true });
+      check(`down --yes --space frs from ${from === empty ? "an empty folder" : "another stack's folder"} names the file at its root and the restore step, not a down run inside it`,
+        r.error?.code === code && Boolean(r.error.message?.includes(`--space frs names a stack rooted at ${fileRoot}`)) && ["cotal", "pnpm cotal"].some((prefix) => r.error?.remedy === restore(`${prefix} down --yes`)) && !r.error?.remedy?.startsWith("run "), r);
+    }
+    removeMesh("frs");
+    rmSync(dirname(fileRoot), { recursive: true, force: true });
     setCurrent("sa");
     removeMesh("lgs");
     removeMesh("sa"); removeMesh("sb");

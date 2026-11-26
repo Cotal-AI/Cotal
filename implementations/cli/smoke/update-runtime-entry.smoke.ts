@@ -81,12 +81,15 @@ export async function repairRuntimeEntry(assert: typeof strictAssert): Promise<v
     const entry = join(root.stdout.trim(), "node_modules", pkg, "dist/index.js");
     const original = readFileSync(entry);
     assert.ok(original.length > 0);
-    for (const damage of ["missing", "empty"]) {
+    const brokenImport = 'import { notAnExportOfCore } from "@cotal-ai/core";\nvoid notAnExportOfCore;\n';
+    for (const damage of ["missing", "empty", "import"]) {
       if (damage === "missing") renameSync(entry, join(home, "tmux-index.saved"));
-      else truncateSync(entry, 0);
+      else if (damage === "empty") truncateSync(entry, 0);
+      else writeFileSync(entry, brokenImport);
       const broken = await cli("runtimes", "--plain");
       assert.equal(broken.status, 4, broken.output);
       assert.match(broken.output, /tmux\s+installed - load failed/);
+      if (damage === "import") assert.match(broken.output, /notAnExportOfCore/);
       refuseArchive = true;
       env.npm_config_cache = join(home, `empty-cache-${damage}`);
       const refused = await selfUpdate();
@@ -94,7 +97,7 @@ export async function repairRuntimeEntry(assert: typeof strictAssert): Promise<v
       assert.match(refused.output, /extension set npm install failed/);
       assert.doesNotMatch(refused.output, currentClosure);
       if (damage === "missing") assert.throws(() => readFileSync(entry), { code: "ENOENT" });
-      else assert.equal(readFileSync(entry).length, 0);
+      else assert.equal(readFileSync(entry, "utf8"), damage === "empty" ? "" : brokenImport);
       refuseArchive = false;
       const repaired = await selfUpdate();
       assert.equal(repaired.status, 0, repaired.output);
