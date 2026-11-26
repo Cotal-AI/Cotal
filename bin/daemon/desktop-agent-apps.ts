@@ -1,0 +1,320 @@
+/** The desktop app's agent applications: the harness each installed connector runs, whether this
+ *  account's PATH finds it, and its maker's installer and sign-in. The webview names a connector and
+ *  nothing else; every command comes from that connector's cached install declaration. */
+import { spawn } from "node:child_process";
+import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
+import { homedir, userInfo } from "node:os";
+import { basename, dirname, join, win32 } from "node:path";
+import type { HarnessInstall, HarnessInstaller } from "@cotal-ai/core";
+import { checkedHarnessInstall, cmdSpawnSpec, CommandFailure, extensionConnectors, loadExtensionsManifest, resolveOnPath } from "@cotal-ai/workspace";
+import { discoverDesktopApplicationPath } from "./desktop-path.js";
+import { refreshServiceForApplication, type InstallOptions } from "./setup.js";
+
+export type AgentAppState = "signed-in" | "installed" | "signed-out" | "missing";
+
+/** One application row the app shows. */
+export interface AgentApp {
+  readonly name: string;
+  readonly title: string;
+  readonly maker?: string;
+  readonly state: AgentAppState;
+  readonly version?: string;
+  /** Required executables this account's PATH does not find. */
+  readonly missing?: readonly string[];
+  /** The maker's installer for this system: where it downloads from, and the executables it needs
+   *  that PATH does not find yet. */
+  readonly install?: { readonly source: string; readonly needs?: readonly string[] };
+  /** Whether the app can start the harness's own sign-in. */
+  readonly signIn?: true;
+}
+
+interface Declared { readonly name: string; readonly requires: readonly string[]; readonly install?: HarnessInstall }
+type Emit = (line: string) => void;
+
+/** The Windows system directory, from which PowerShell and taskkill run. Never a PATH lookup. */
+function systemRoot(): string | undefined {
+  const root = process.env.SystemRoot ?? process.env.SYSTEMROOT;
+  return root && win32.isAbsolute(root) ? root : undefined;
+}
+
+const system = process.platform === "darwin" || process.platform === "linux" || process.platform === "win32" ? process.platform : undefined;
+
+/** Every installed connector that runs an external harness, with its checked install declaration. */
+function declaredApps(): Declared[] {
+  return loadExtensionsManifest().extensions.flatMap(ext => extensionConnectors(ext))
+    .filter(connector => connector.requires.length > 0)
+    .map(connector => ({ name: connector.name, requires: connector.requires, ...(connector.install === undefined ? {} : { install: checkedHarnessInstall(connector.name, connector.requires, connector.install) }) }));
+}
+
+function declared(name: string): Declared {
+  const app = declaredApps().find(candidate => candidate.name === name);
+  if (!app) throw new CommandFailure("refused", "TARGET_NOT_FOUND", `no installed connector runs an application named ${name}`);
+  return app;
+}
+
+/** The account's application PATH, set on this process so the checks and the service refresh read it. */
+async function accountPath(): Promise<string> {
+  const { path } = await discoverDesktopApplicationPath();
+  process.env.PATH = path;
+  return path;
+}
+
+/** One line of a child's output as the app may show it: no terminal codes, control characters or tokens. */
+export function shownLine(raw: string): string {
+  const line = raw.replace(/\u001b\[[0-9;?]*[A-Za-z]|\u001b\][^\u0007]*\u0007/g, "").replace(/eyJ[A-Za-z0-9_.-]*/g, "<redacted>")
+    .replace(/[\u0000-\u001f\u007f]/g, "").trim();
+  return line.length > 200 ? `${line.slice(0, 199)}…` : line;
+}
+
+interface Ran { readonly code: number | null; readonly timedOut: boolean; readonly tail: readonly string[] }
+
+/** Run a child with no terminal and report each output line. On POSIX it leads its own session, so
+ *  a script that looks for /dev/tty finds none, and the whole group ends at the time limit. */
+function run(file: string, args: readonly string[], opts: { env: NodeJS.ProcessEnv; timeoutMs: number; emit?: Emit; input?: NodeJS.ReadableStream; verbatim?: boolean }): Promise<Ran> {
+  return new Promise((resolve, reject) => {
+    const posixGroup = process.platform !== "win32";
+    const child = spawn(file, args, { env: opts.env, stdio: [opts.input ? "pipe" : "ignore", "pipe", "pipe"], detached: posixGroup, windowsHide: true, windowsVerbatimArguments: opts.verbatim === true });
+    const tail: string[] = [];
+    let timedOut = false, partial = "";
+    const take = (chunk: Buffer) => {
+      const parts = (partial + chunk.toString("utf8")).split(/\r\n|\r|\n/);
+      partial = parts.pop() ?? "";
+      if (partial.length > 4096) { parts.push(partial); partial = ""; }
+      for (const part of parts) {
+        const line = shownLine(part);
+        if (!line) continue;
+        tail.push(line); if (tail.length > 40) tail.shift();
+        opts.emit?.(line);
+      }
+    };
+    child.stdout!.on("data", take); child.stderr!.on("data", take);
+    if (opts.input) opts.input.pipe(child.stdin!).on("error", () => undefined);
+    const kill = () => {
+      try {
+        if (posixGroup && child.pid) process.kill(-child.pid, "SIGKILL");
+        else if (child.pid && systemRoot()) spawn(win32.join(systemRoot()!, "System32", "taskkill.exe"), ["/T", "/F", "/PID", String(child.pid)], { stdio: "ignore", windowsHide: true });
+        else child.kill("SIGKILL");
+      } catch { /* already ended */ }
+    };
+    const timer = setTimeout(() => { timedOut = true; kill(); }, opts.timeoutMs);
+    // The app waits on this bridge. When the app is gone, nothing waits on the installer or sign-in
+    // either, so it stops instead of outliving the app.
+    const caller = process.ppid;
+    const watch = setInterval(() => { try { process.kill(caller, 0); } catch (error) { if ((error as NodeJS.ErrnoException).code === "ESRCH") kill(); } }, 2_000);
+    const settle = () => { clearTimeout(timer); clearInterval(watch); };
+    child.once("error", error => { settle(); reject(error); });
+    child.once("close", code => { settle(); if (partial.trim()) take(Buffer.from("\n")); resolve({ code, timedOut, tail }); });
+  });
+}
+
+/** Run an executable found on `path`, through cmd.exe when Windows finds a batch shim. */
+function runFound(command: string, args: readonly string[], path: string, timeoutMs: number, emit?: Emit): Promise<Ran> {
+  const env = { ...process.env, PATH: path };
+  const spec = cmdSpawnSpec(process.platform === "win32" ? command : resolveOnPath(command, env) ?? command, args, env);
+  return run(spec.file, spec.args, { env, timeoutMs, verbatim: spec.windowsVerbatimArguments, ...(emit ? { emit } : {}) });
+}
+
+async function versionOf(command: string, path: string): Promise<string | undefined> {
+  try {
+    const ran = await runFound(command, ["--version"], path, 10_000);
+    return ran.code === 0 ? /\d+\.\d+(?:\.\d+)?(?:[-+][0-9A-Za-z.-]+)?/.exec(ran.tail.join(" "))?.[0] : undefined;
+  } catch { return undefined; }
+}
+
+/** Whether the harness says it is signed in: true or false from its exit status, undefined when the
+ *  check could not run or did not finish. */
+async function signedIn(app: Declared, path: string): Promise<boolean | undefined> {
+  const status = app.install?.signIn?.status;
+  if (!status) return undefined;
+  try {
+    const ran = await runFound(status[0]!, status.slice(1), path, 15_000);
+    return ran.timedOut || ran.code === null ? undefined : ran.code === 0;
+  } catch { return undefined; }
+}
+
+async function row(app: Declared, path: string): Promise<AgentApp> {
+  const env = { ...process.env, PATH: path };
+  const missing = app.requires.filter(command => !resolveOnPath(command, env));
+  const installer = system ? app.install?.installers[system] : undefined;
+  const needs = installer?.needs?.filter(command => !resolveOnPath(command, env));
+  const base = {
+    name: app.name, title: app.install?.title ?? app.name, ...(app.install ? { maker: app.install.maker } : {}),
+    ...(installer ? { install: { source: new URL(installer.script).host, ...(needs?.length ? { needs } : {}) } } : {}),
+    ...(app.install?.signIn ? { signIn: true as const } : {}),
+  };
+  if (missing.length) return { ...base, state: "missing", missing };
+  const [version, signed] = await Promise.all([versionOf(app.requires[0]!, path), signedIn(app, path)]);
+  return { ...base, ...(version ? { version } : {}), state: signed === true ? "signed-in" : signed === false ? "signed-out" : "installed" };
+}
+
+/** Every agent application and where it stands on this account. */
+export async function agentApps(): Promise<AgentApp[]> {
+  const path = await accountPath();
+  return await Promise.all(declaredApps().map(app => row(app, path)));
+}
+
+/** `~/` and `%NAME%\` in a declared folder, made absolute for this account. */
+function folder(binDir: string): string {
+  if (binDir.startsWith("~/")) return join(homedir(), ...binDir.slice(2).split("/"));
+  const match = /^%([A-Z]+)%\\(.+)$/.exec(binDir);
+  const base = match ? process.env[match[1]!] : undefined;
+  if (!base || !win32.isAbsolute(base)) throw new CommandFailure("refused", "UNSUPPORTED", `the folder ${binDir} cannot be found on this account`);
+  return win32.join(base, match![2]!);
+}
+
+/** Run the maker's installer: on macOS and Linux its script is downloaded with curl and piped to the
+ *  shell the maker names, as its instructions say; on Windows PowerShell downloads and runs it. */
+async function runInstaller(installer: HarnessInstaller, path: string, emit: Emit): Promise<Ran> {
+  const env = { ...process.env, PATH: path, ...installer.env };
+  const timeoutMs = 15 * 60_000;
+  if (process.platform === "win32") {
+    const root = systemRoot();
+    if (!root) throw new CommandFailure("refused", "UNSUPPORTED", "the Windows system directory is unavailable; no installer was run");
+    const powershell = win32.join(root, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
+    return await run(powershell, ["-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", `irm '${installer.script}' | iex`], { env, timeoutMs, emit });
+  }
+  const curl = resolveOnPath("curl", env);
+  const shell = resolveOnPath(installer.shell ?? "sh", env);
+  if (!curl || !shell) throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", `${!curl ? "curl" : installer.shell} is not on this account's PATH, and the installer needs it`);
+  const download = spawn(curl, ["-fsSL", "--proto", "=https", "--tlsv1.2", installer.script], { env, stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
+  let downloadError = "";
+  download.stderr.on("data", (chunk: Buffer) => { downloadError = shownLine(chunk.toString("utf8")) || downloadError; });
+  const downloaded = new Promise<number | null>(resolve => { download.once("error", () => resolve(-1)); download.once("close", resolve); });
+  const ran = await run(shell, [], { env, timeoutMs, emit, input: download.stdout });
+  const code = await downloaded;
+  if (code !== 0) throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", `the installer could not be downloaded from ${installer.script}${downloadError ? `: ${downloadError}` : ""}`);
+  return ran;
+}
+
+/** The startup files the account's login shell reads, for the shells whose PATH grammar is known.
+ *  A bash login shell reads the first of ~/.bash_profile, ~/.bash_login and ~/.profile, and a
+ *  terminal's bash reads ~/.bashrc, so bash gets the line in both. A new ~/.profile is never shadowed
+ *  by creating a ~/.bash_profile. */
+function shellStartupFiles(): { files: string[]; line: (dir: string) => string } {
+  const shell = basename(userInfo().shell ?? "");
+  const home = homedir();
+  const quoted = (dir: string) => dir.startsWith(`${home}/`) ? `"$HOME/${dir.slice(home.length + 1)}"` : `"${dir}"`;
+  const exportLine = (dir: string) => `export PATH=${quoted(dir).slice(0, -1)}:$PATH"`;
+  if (shell === "zsh") return { files: [join(home, ".zshrc")], line: exportLine };
+  if (shell === "bash") {
+    const login = [".bash_profile", ".bash_login", ".profile"].map(name => join(home, name)).find(file => existsSync(file)) ?? join(home, ".profile");
+    return { files: [login, join(home, ".bashrc")], line: exportLine };
+  }
+  if (shell === "fish") return { files: [join(home, ".config", "fish", "conf.d", "cotal-path.fish")], line: dir => `fish_add_path --global ${quoted(dir)}` };
+  throw new CommandFailure("refused", "UNSUPPORTED", `Cotal cannot add a folder to PATH for the login shell ${shell || "(none)"}`, { remedy: "add the folder to PATH in your shell's startup file, then choose Check again" });
+}
+
+/** Put `dir` on this account's PATH the way the makers' instructions do: the user PATH on Windows,
+ *  the login shell's startup files elsewhere. Returns where it wrote. */
+async function addToAccountPath(dir: string): Promise<string> {
+  if (process.platform === "win32") {
+    const root = systemRoot();
+    if (!root) throw new CommandFailure("refused", "UNSUPPORTED", "the Windows system directory is unavailable; PATH was not changed");
+    // The folder travels in the environment, so no quoting of it reaches PowerShell's parser.
+    const script = "$ErrorActionPreference = 'Stop'; $d = $env:COTAL_ADD_PATH; $p = [Environment]::GetEnvironmentVariable('Path', 'User'); if (-not (@($p -split ';') -contains $d)) { [Environment]::SetEnvironmentVariable('Path', $(if ($p) { $p.TrimEnd(';') + ';' + $d } else { $d }), 'User') }";
+    const ran = await run(win32.join(root, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"), ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script], { env: { ...process.env, COTAL_ADD_PATH: dir }, timeoutMs: 30_000 });
+    if (ran.code !== 0) throw new CommandFailure("failed", "OPERATION_FAILED", `the user PATH could not be changed: ${ran.tail.at(-1) ?? `exit ${ran.code}`}`);
+    return "your user PATH";
+  }
+  const startup = shellStartupFiles();
+  const line = startup.line(dir);
+  for (const file of startup.files) {
+    const current = existsSync(file) ? readFileSync(file, "utf8") : "";
+    if (current.split(/\r?\n/).includes(line)) continue;
+    mkdirSync(dirname(file), { recursive: true });
+    appendFileSync(file, `${current && !current.endsWith("\n") ? "\n" : ""}\n# Added by Cotal so the agent applications it installs are found\n${line}\n`, { mode: 0o600 });
+  }
+  return startup.files.map(file => file.replace(`${homedir()}/`, "~/")).join(" and ");
+}
+
+export interface AgentAppInstalled {
+  readonly app: AgentApp;
+  /** Where the installer's folder was added to PATH, when the installer left it off. */
+  readonly pathAdded?: string;
+  /** The directory each required executable was found in, so the caller can make the service find it. */
+  readonly dirs: readonly string[];
+  /** The account PATH before the installer ran. */
+  readonly before: string;
+}
+
+/** Install one application with its maker's installer, then make sure this account's PATH finds it. */
+export async function installAgentApp(name: string, emit: Emit): Promise<AgentAppInstalled> {
+  const app = declared(name);
+  const installer = system ? app.install?.installers[system] : undefined;
+  if (!app.install || !installer) throw new CommandFailure("refused", "UNSUPPORTED", `${app.install?.title ?? name} has no installer for this operating system`);
+  const before = await accountPath();
+  const missingNeeds = installer.needs?.filter(command => !resolveOnPath(command, { ...process.env, PATH: before })) ?? [];
+  if (missingNeeds.length) throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", `the ${app.install.title} installer needs ${missingNeeds.join(" and ")} on PATH`, { native: { code: "INSTALLER_NEEDS", detail: missingNeeds.join(",") } });
+  emit(`Downloading the ${app.install.title} installer from ${new URL(installer.script).host}`);
+  const ran = await runInstaller(installer, before, emit);
+  if (ran.timedOut) throw new CommandFailure("failed", "OPERATION_FAILED", `the ${app.install.title} installer did not finish within 15 minutes and was stopped`, { native: { code: "INSTALLER_FAILED", detail: ran.tail.join("\n") } });
+  if (ran.code !== 0) throw new CommandFailure("failed", "OPERATION_FAILED", `the ${app.install.title} installer stopped with exit code ${ran.code}`, { native: { code: "INSTALLER_FAILED", detail: ran.tail.join("\n") } });
+  let path = await accountPath();
+  let pathAdded: string | undefined;
+  const unresolved = () => app.requires.filter(command => !resolveOnPath(command, { ...process.env, PATH: path }));
+  if (unresolved().length) {
+    const dir = folder(installer.binDir);
+    const inFolder = unresolved().every(command => resolveOnPath(command, { ...process.env, PATH: dir }));
+    if (!inFolder) throw new CommandFailure("failed", "OPERATION_FAILED", `the ${app.install.title} installer finished, but ${unresolved().join(" and ")} is not on PATH or in ${dir}`, { native: { code: "INSTALLER_FAILED", detail: ran.tail.join("\n") } });
+    pathAdded = await addToAccountPath(dir);
+    emit(`Added ${dir} to PATH in ${pathAdded}`);
+    path = await accountPath();
+    if (unresolved().length) throw new CommandFailure("failed", "OPERATION_FAILED", `${app.install.title} is installed in ${dir} and Cotal added it to PATH in ${pathAdded}, but your login shell still does not find it`, { remedy: `add ${dir} to PATH in the startup file your login shell reads, then choose Check again` });
+  }
+  const dirs = app.requires.map(command => dirname(resolveOnPath(command, { ...process.env, PATH: path })!));
+  return { app: await row(app, path), ...(pathAdded ? { pathAdded } : {}), dirs, before };
+}
+
+/** Start the harness's own browser sign-in and wait for it to finish, then check it. */
+export async function signInAgentApp(name: string, emit: Emit): Promise<AgentApp> {
+  const app = declared(name);
+  const login = app.install?.signIn?.login;
+  if (!login) throw new CommandFailure("refused", "UNSUPPORTED", `${app.install?.title ?? name} has no sign-in the app can start`);
+  const path = await accountPath();
+  const ran = await runFound(login[0]!, login.slice(1), path, 10 * 60_000, emit);
+  if (ran.timedOut) throw new CommandFailure("failed", "OPERATION_FAILED", `sign-in did not finish within 10 minutes and was stopped`, { native: { code: "SIGN_IN_FAILED", detail: ran.tail.join("\n") } });
+  if (ran.code !== 0) throw new CommandFailure("failed", "OPERATION_FAILED", `${app.install!.title} sign-in stopped with exit code ${ran.code}`, { native: { code: "SIGN_IN_FAILED", detail: ran.tail.join("\n") } });
+  return await row(app, path);
+}
+
+export type AgentAppRequest =
+  | { readonly op: "agent-apps"; readonly refresh?: boolean }
+  | { readonly op: "agent-app-install"; readonly name: string }
+  | { readonly op: "agent-app-sign-in"; readonly name: string };
+type ServiceOptions = Omit<InstallOptions, "report">;
+
+/** Let the installed service find what was installed. Running agents defer it: the app says so and
+ *  checks again later. Any other refusal is reported with the install it follows. */
+async function refreshService(service: ServiceOptions, dirs: readonly string[], before: string | undefined, progress: Emit, title?: string): Promise<"none" | "unchanged" | "refreshed" | "waiting"> {
+  try { return await refreshServiceForApplication({ ...service, report: line => progress(line) }, dirs, before); }
+  catch (error) {
+    if (error instanceof CommandFailure && error.native?.code === "SEATS_ACTIVE") return "waiting";
+    if (!title) throw error;
+    throw new CommandFailure("partial", "OPERATION_PARTIAL", `${title} is installed, but the background service could not be refreshed to find it: ${error instanceof Error ? error.message : String(error)}`, { remedy: "choose Check again" });
+  }
+}
+
+/** One agent-application request from the app. Progress lines arrive as `agent-app-progress` frames. */
+export async function agentAppRequest(req: AgentAppRequest, service: ServiceOptions, emit: (frame: unknown) => void): Promise<unknown> {
+  try { return await answer(req, service, emit); }
+  catch (error) {
+    // The app shows this text as the reason, so a plain error keeps its own words instead of a generic one.
+    if (error instanceof CommandFailure) throw error;
+    throw new CommandFailure("failed", "OPERATION_FAILED", error instanceof Error ? error.message : String(error));
+  }
+}
+
+async function answer(req: AgentAppRequest, service: ServiceOptions, emit: (frame: unknown) => void): Promise<unknown> {
+  if (req.op === "agent-apps") {
+    const apps = await agentApps();
+    if (!req.refresh) return { apps };
+    const path = process.env.PATH ?? "";
+    const dirs = apps.filter(app => app.state !== "missing").flatMap(app => declared(app.name).requires.map(command => dirname(resolveOnPath(command, { ...process.env, PATH: path })!)));
+    return { apps, service: await refreshService(service, dirs, undefined, () => undefined) };
+  }
+  const progress = (line: string) => emit({ v: 1, event: "agent-app-progress", name: req.name, line });
+  if (req.op === "agent-app-sign-in") return { app: await signInAgentApp(req.name, progress) };
+  const installed = await installAgentApp(req.name, progress);
+  const serviceState = await refreshService(service, installed.dirs, installed.before, progress, installed.app.title);
+  return { app: installed.app, service: serviceState, ...(installed.pathAdded ? { pathAdded: installed.pathAdded } : {}) };
+}

@@ -158,6 +158,15 @@ export const opencodeConnector: Connector = {
   name: "opencode",
   supportsFreshStart: true,
   requires: ["opencode"],
+  // OpenCode publishes no Windows installer, only zips and an npm package.
+  install: {
+    title: "OpenCode",
+    maker: "Anomaly",
+    installers: {
+      darwin: { script: "https://opencode.ai/v2/install", shell: "bash", binDir: "~/.opencode/bin" },
+      linux: { script: "https://opencode.ai/v2/install", shell: "bash", binDir: "~/.opencode/bin" },
+    },
+  },
   supportsModelVariant: true,
   supportsPrompt: true, // OpenCode serves a first turn from an initial message — see buildLaunch
   // OpenCode can spend longer than the generic 30s window bootstrapping a cold server before

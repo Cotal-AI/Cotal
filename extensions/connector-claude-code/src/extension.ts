@@ -98,6 +98,16 @@ export const claudeConnector: Connector = {
   }),
   pluginRoot: PLUGIN_ROOT,
   requires: ["claude"],
+  install: {
+    title: "Claude Code",
+    maker: "Anthropic",
+    installers: {
+      darwin: { script: "https://claude.ai/install.sh", shell: "bash", binDir: "~/.local/bin" },
+      linux: { script: "https://claude.ai/install.sh", shell: "bash", binDir: "~/.local/bin" },
+      win32: { script: "https://claude.ai/install.ps1", binDir: "%USERPROFILE%\\.local\\bin" },
+    },
+    signIn: { status: ["claude", "auth", "status"], login: ["claude", "auth", "login"] },
+  },
   listModels: listClaudeModels,
   supportsModelVariant: true, // variant = claude's `--effort` level
   supportsResume: true, // renders `--resume <id> --fork-session` (fork-from, never hijack) — see buildLaunch
