@@ -26,13 +26,14 @@ registry.register({
     return { discard: async () => retireLog({ discard: seat.lifecycleUid }) };
   },
 } as Connector);
-registry.register({
+const kickoffStub: Connector = {
   kind: "connector", name: "once-crash-kickoff", requires: ["node"], supportsPrompt: true, supportsTurnRelay: true, supportsOnceKickoff: true,
   buildLaunch: (o: LaunchOpts): LaunchSpec => ({
     command: process.execPath, args: [stub, space, o.name],
     env: { ...envFor(o), REPRO_KICKOFF_FILE: join(root, "kickoff.jsonl"), REPRO_KICKOFF_GOAL: o.onceKickoffGoalId!, REPRO_KICKOFF_PROMPT: o.prompt! },
   }),
-});
+};
+registry.register(kickoffStub);
 const manager = new Manager({ space, servers, runtime: "pty", workspaceRoot: root, consolePort: 0 });
 if (process.env.REPRO_CUSTODIAL === "1") {
   // The custodian handles the real process and custody. This fixture's launch receipt supplies
