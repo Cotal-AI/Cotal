@@ -298,6 +298,22 @@ for (const [args, why] of [
     list.envelope.error.remedy?.includes("cotal ext seed --repair") === true &&
     readFileSync(manifest, "utf8") === "{}\n", shown(list));
 
+  writeFileSync(manifest, "{\n");
+  for (const [prefixArgs, suffixArgs] of [
+    [["help", "docs"], ["docs", "--help"]],
+    [["--no-color", "help", "--all", "--", "docs", "cli-usage"], ["docs", "cli-usage", "--help"]],
+  ] satisfies [string[], string[]][]) {
+    const prefix = run(prefixArgs, env);
+    const suffix = run(suffixArgs, env);
+    check(`\`${prefixArgs.join(" ")}\` shows the same docs help without changing the damaged inventory`,
+      prefix.status === 0 && suffix.status === 0 && prefix.stderr === "" && suffix.stderr === "" &&
+      suffix.stdout.includes("Usage\n") && prefix.stdout === suffix.stdout && readFileSync(manifest, "utf8") === "{\n",
+      { prefix: shown(prefix), suffix: shown(suffix) });
+  }
+  const allHelp = run(["help"], env);
+  check("full help reports a corrupt extension inventory",
+    allHelp.status === 1 && allHelp.stdout === "" && allHelp.stderr.includes("corrupt extensions manifest"), shown(allHelp));
+
   const journal = join(config, "cotal", ".extensions-promotion.json");
   writeFileSync(journal, "{}\n", { mode: 0o600 });
   const index = run(["--no-color", "-j", "--", "docs"], env);
