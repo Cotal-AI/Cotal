@@ -479,6 +479,30 @@ if (process.platform === "linux") {
     check("the controller stack is cleaned up", stopped.status === 0, stopped.stdout + stopped.stderr);
   }
 }
+function checkUnreadableSelectedProject(project: string, space: string): void {
+  const chosen = runFrom(scratch, "use", space);
+  if (chosen.status !== 0) throw new Error(chosen.stdout + chosen.stderr);
+  const readable = runFrom(scratch, "status", "--json");
+  check("outside status completes for the readable registered project", readable.status === 0, readable.stdout + readable.stderr);
+  chmodSync(project, 0o000);
+  try {
+    const json = runFrom(scratch, "status", "--json");
+    const report = JSON.parse(json.stdout) as { outcome: string; completeness: string; result?: StatusResult; warnings: { code: string; message: string }[] };
+    const selected = report.result?.selected;
+    check("outside status keeps the machine and selected registration in its partial report",
+      json.status === 4 && report.outcome === "partial" && report.completeness === "partial" && Boolean(report.result?.machine.version) &&
+      selected?.resolved === true && selected.space === space && selected.connection === "unreachable" &&
+      report.result?.meshes.items.some((row) => row.space === space && row.root === project && row.current) === true, json.stdout);
+    check("status names the denied PID read and the directory permission remedy",
+      report.warnings.some((warning) => warning.code === "PIDFILE_UNREADABLE" && warning.message.includes(join(project, ".cotal", "nats.pid"))) &&
+      report.result?.hints.some((hint) => hint.includes(`chmod u+rx ${shellPath(project)}`)) === true &&
+      !report.result.hints.some((hint) => hint.includes("not running")), json.stdout);
+  } finally {
+    chmodSync(project, 0o700);
+    const cleared = runFrom(scratch, "use", "--clear");
+    if (cleared.status !== 0) throw new Error(cleared.stdout + cleared.stderr);
+  }
+}
 if (process.platform === "linux") {
   const project = join(scratch, "foreign-listener");
   mkdirSync(project);
@@ -504,6 +528,7 @@ if (process.platform === "linux") {
     } finally { process.kill(pid, "SIGCONT"); }
     process.kill(pid, "SIGKILL");
     await waitForOwnedChild(() => brokerState.closed, 60_000, "foreground up observed its broker exit");
+    if (process.getuid?.() !== 0) checkUnreadableSelectedProject(project, "foreign-listener");
     const listener = spawn(process.execPath, ["-e", `require('node:net').createServer(s => { s.on('error', () => {}); s.end('HTTP/1.1 400 Bad Request\\r\\n\\r\\n'); }).listen(${port}, '127.0.0.1', () => console.log('listening'))`], { stdio: ["ignore", "pipe", "inherit"] });
     const listenerState = observeOwnedChild(listener);
     let listening = false;

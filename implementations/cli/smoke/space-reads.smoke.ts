@@ -48,7 +48,7 @@ process.on("exit", () => rmSync(home, { recursive: true, force: true }));
 const run = (args: string[], extraEnv: Record<string, string> = {}, cwd = home) => {
   const options = {
     cwd,
-    env: { ...HOST_ENV, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: xdgConfigHome, XDG_RUNTIME_DIR: xdgRuntimeDir, COTAL_HOME: cotalHome, COTAL_SKIP_CONNECTOR_SEED: "1", ...extraEnv },
+    env: { ...HOST_ENV, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: xdgConfigHome, XDG_RUNTIME_DIR: xdgRuntimeDir, COTAL_HOME: cotalHome, COTAL_SKIP_CONNECTOR_SEED: "1", DO_NOT_TRACK: "1", ...extraEnv },
     encoding: "utf8" as const,
     timeout: 120_000,
   };

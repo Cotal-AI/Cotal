@@ -1,5 +1,5 @@
 /**
- * Agent commands, interrupt, the owner's turns and usage on OpenCode 2.x through the agent endpoint (SPEC 13.22): the real plugin, booted
+ * Agent commands, interrupt, the owner's turns, usage and the model switch on OpenCode 2.x through the agent endpoint (SPEC 13.22): the real plugin, booted
  * in-process with a fake plugin context, against a fake OpenCode server and a JWT broker with the
  * shipped auth callout. The fake answers as opencode 2.2.5 was measured to: `GET /api/command` is
  * `{ location, data: [{ name, description? }] }`, `GET /api/skill` is `{ location, data: [{ id,
@@ -10,7 +10,8 @@
  * follow 200 ms after both first reads, as a fresh 2.2.5 loads a location's lists. As 2.0.24 was
  * measured: `GET /api/session/:id` carries the session's `cost`, `GET /api/session/:id/message`
  * lists records newest first, where an assistant record is one model step with its `model` and
- * `tokens`, and `GET /api/model` lists each model's `limit`.
+ * `tokens`, and `GET /api/model` lists each model's `limit` and `variants`. As 2.4.1 documents it,
+ * `POST /api/session/:id/model` answers a 204 and the session's next turn runs on that model.
  *
  * Covered: the owner's session lists OpenCode's commands, then its skills by id, with no `path` or
  * `content` on the wire, and the first list is complete. The fake also lists the commands the
@@ -29,11 +30,18 @@
  * ends stays queued until the owner's `interrupt`, which POSTs `/api/session/:id/interrupt` once and
  * answers `interrupted`; OpenCode's `session.execution.interrupted` then frees the session, and the
  * command runs. With no turn running, `interrupt` answers `idle`. Presence says the agent serves
- * interrupt, turns with images and usage. `usage` before any model step reports nothing. A turn goes
+ * interrupt, turns with images, usage and the model switch. `usage` before any model step reports nothing. A turn goes
  * out as one prompt, its text and each image as a file with a data URL, and a 4xx answer ends it
  * refused, failed-precondition. `usage` then reports the newest step's input, cache and output
  * tokens of the model's input limit and the session's cost, reading the model list once; a model the
- * list has no window for leaves the context out.
+ * list has no window for leaves the context out. `set-model` with no model, before OpenCode named
+ * the model it runs, on an agent launched with none, is refused, failed-precondition, and asks
+ * OpenCode nothing. A primary `model.request` shows its model and variant on the card. A switch then
+ * reads `GET /api/model` and POSTs the session's model with the variant, with no model named using
+ * the one `model.request` named, and the next prompt a DM drives runs on it and names no model. A
+ * model the list lacks is not-found, a variant the model lacks or an id with no provider
+ * failed-precondition, and none POSTs a model; a 4xx from the switch is failed-precondition; the
+ * next prompt still runs on the earlier choice. A switch with no variant POSTs none.
  *
  * Run: pnpm smoke:opencode2-command:auth   (needs `nats-server` on PATH; local-only)
  */
@@ -137,9 +145,12 @@ let refusePrompt = false;
 let records: unknown[] = [];
 let sessionCost = 0;
 const MODELS = [
-  { id: "m1", modelID: "m1", providerID: "opencode", limit: { context: 200000, input: 160000, output: 32000 } },
-  { id: "m3", modelID: "m3", providerID: "opencode", limit: { context: 262144, output: 65536 } },
+  { id: "m1", modelID: "m1", providerID: "opencode", variants: [], limit: { context: 200000, input: 160000, output: 32000 } },
+  { id: "m3", modelID: "m3", providerID: "opencode", variants: [{ id: "low" }, { id: "high" }], limit: { context: 262144, output: 65536 } },
 ];
+let sessionModel: unknown; // what `POST /api/session/:id/model` last set
+let ranOn: unknown; // the session model when the last prompt came in, which its turn runs on
+let refuseModel = false;
 let turnRunning = false; // a turn the fake holds open, which only an interrupt ends
 const calls: string[] = [];
 const bodies: Record<string, unknown>[] = [];
@@ -158,7 +169,7 @@ const oc = createServer((req, res) => {
       if (failSkills) return json(res, 500, { _tag: "UnknownError", message: "skill index unavailable" });
       return json(res, 200, { location, data: answerList(req.url, SKILLS) });
     }
-    const body = (raw ? JSON.parse(raw) : {}) as { name?: string; text?: string; skills?: { id: string }[] };
+    const body = (raw ? JSON.parse(raw) : {}) as { name?: string; text?: string; skills?: { id: string }[]; model?: unknown };
     if (req.method === "POST" && req.url === `/api/session/${SID}/command`) {
       calls.push(`command ${body.name}`);
       bodies.push(body);
@@ -190,9 +201,17 @@ const oc = createServer((req, res) => {
       const skill = body.skills?.[0]?.id;
       calls.push(skill === undefined ? "prompt" : `skill ${skill}`);
       bodies.push(body);
+      ranOn = sessionModel;
       if (skill !== undefined && !SKILLS.some((s) => s.id === skill)) return json(res, 400, { _tag: "InvalidRequestError", message: `Skill not found: ${skill}`, field: "skills" });
       if (refusePrompt) return json(res, 400, { _tag: "InvalidRequestError", message: "text is too long", field: "text" });
       return json(res, 200, { data: { id: `msg_${calls.length}`, sessionID: SID, type: "user" } });
+    }
+    if (req.method === "POST" && req.url === `/api/session/${SID}/model`) {
+      calls.push("model");
+      bodies.push(body);
+      if (refuseModel) return json(res, 400, { _tag: "InvalidRequestError", message: "model is not allowed here", field: "model" });
+      sessionModel = body.model;
+      return void res.writeHead(204).end();
     }
     if (req.method === "GET" && req.url === `/api/session/${SID}`) return json(res, 200, { data: { id: SID, cost: sessionCost } });
     if (req.method === "GET" && req.url === `/api/session/${SID}/message?limit=200&order=desc`) return json(res, 200, { data: records, cursor: null });
@@ -297,7 +316,8 @@ try {
   check("the plugin came online and serves its agent endpoint", served);
   await sleep(300);
   const row = webEp.getRoster().find((p: Presence) => p.card.id === `${A}.cody`);
-  check("presence says it serves interrupt, the owner's turns with images, and usage", same(row?.agentEndpoint, { interrupt: true, turn: true, images: true, usage: true }), row?.agentEndpoint);
+  check("presence says it serves interrupt, the owner's turns with images, usage and the model switch",
+    same(row?.agentEndpoint, { interrupt: true, turn: true, images: true, usage: true, setModel: true }), row?.agentEndpoint);
 
   const listStart = Date.now();
   const listed = await call(webEp, "commands");
@@ -470,6 +490,56 @@ try {
     check("a model the model list gives no window leaves the context out", same(await usageOf(), { supported: true, cost: { amount: 0.75, currency: "USD" } }), await usageOf());
     (records[1] as { model: { id: string } }).model.id = "m3";
     check("a model with no input limit is measured against its context limit", same(await usageOf(), { supported: true, context: { used: 4250, size: 262144 }, cost: { amount: 0.75, currency: "USD" } }), await usageOf());
+  }
+
+  {
+    const switchTo = async (args: Record<string, unknown>) => {
+      const r = await call(webEp, "set-model", args);
+      return { verdict: verdict(r), data: r.ok && r.value.ok ? r.value.data : undefined, message: r.ok && !r.value.ok ? r.value.error.message : "" };
+    };
+    const card = () => webEp.getRoster().find((p: Presence) => p.card.id === `${A}.cody`)?.card;
+    // The session model the prompt a DM drives ran on, and that prompt's body.
+    const dmRanOn = async (text: string): Promise<{ on: unknown; body?: Record<string, unknown> } | undefined> => {
+      const at = calls.length;
+      await webEp.unicast(`${A}.cody`, text);
+      await until(() => calls.length > at);
+      const ran = calls[at] === "prompt" ? { on: ranOn, body: bodies.at(-1) } : undefined;
+      await replyAndEndTurn();
+      return ran;
+    };
+    const m3high = { providerID: "opencode", id: "m3", variant: "high" };
+    const beforeSwitch = calls.length;
+    const unnamed = await switchTo({ variant: "high" });
+    check("set-model with no model, before OpenCode named the model it runs, on an agent launched with none, is refused, failed-precondition, and asks OpenCode nothing",
+      unnamed.verdict === "failed-precondition/not-executed" && unnamed.message.includes("name a model") && calls.length === beforeSwitch, [unnamed, calls.slice(beforeSwitch)]);
+    await ctx.sessionHooks.get("model.request")!({ model: { id: "m3", providerID: "opencode", variant: "low" }, kind: "primary", agent: "cotal" } as never);
+    const shown = await until(() => card()?.meta?.model === "opencode/m3" && card()?.meta?.variant === "low");
+    check("a primary model.request shows its model and its variant on the card", shown, card()?.meta);
+    const variantOnly = await switchTo({ variant: "high" });
+    check("set-model with no model then switches the model model.request named: it reads GET /api/model, POSTs the session's model with the variant, and answers them",
+      same(variantOnly.data, { model: "opencode/m3", variant: "high" }) && same(calls.slice(beforeSwitch), ["models", "model"]) && same(bodies.at(-1), { model: m3high }),
+      [variantOnly, calls.slice(beforeSwitch), bodies.at(-1)]);
+    const next = await dmRanOn("on the new model");
+    check("the next prompt a DM drives runs on that session model and names no model itself",
+      same(next?.on, m3high) && next?.body !== undefined && !("model" in next.body) && !("variant" in next.body), next);
+
+    const beforeRefusals = calls.length;
+    const unknownModel = await switchTo({ model: "opencode/m9" });
+    const unknownVariant = await switchTo({ model: "opencode/m1", variant: "high" });
+    const notAnId = await switchTo({ model: "m3" });
+    check("a model GET /api/model lacks is not-found, and a variant the model lacks or an id with no provider failed-precondition, each not-executed, and none POSTs a model",
+      unknownModel.verdict === "not-found/not-executed" && unknownVariant.verdict === "failed-precondition/not-executed" && notAnId.verdict === "failed-precondition/not-executed"
+      && same(calls.slice(beforeRefusals), ["models", "models"]), [unknownModel, unknownVariant, notAnId, calls.slice(beforeRefusals)]);
+    refuseModel = true;
+    const refusedSwitch = await switchTo({ model: "opencode/m1" });
+    refuseModel = false;
+    check("a switch OpenCode answers with a 4xx is refused, failed-precondition, with OpenCode's message",
+      refusedSwitch.verdict === "failed-precondition/not-executed" && refusedSwitch.message.includes("model is not allowed here"), refusedSwitch);
+    const kept = await dmRanOn("after the refusals");
+    check("...and the next prompt still runs on the model and variant chosen before them", same(kept?.on, m3high), kept);
+    const plain = await switchTo({ model: "opencode/m1" });
+    check("set-model with no variant POSTs the model with none, which clears the session's, and answers none",
+      same(plain.data, { model: "opencode/m1" }) && same(bodies.at(-1), { model: { providerID: "opencode", id: "m1" } }), [plain, bodies.at(-1)]);
   }
 
   mode = "stall";

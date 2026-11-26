@@ -26,6 +26,7 @@ import {
   materialEnv,
 } from "@cotal-ai/connector-core";
 import { piCommandCatalog } from "./command-catalog.js";
+import { PI_THINKING_LEVELS } from "./model-switch.js";
 import { askPi, type PiAsk, type PiRpcResponse } from "./rpc-once.js";
 
 const DIST = new URL(import.meta.url.includes("/dist/") ? "./" : "../dist/", import.meta.url);
@@ -49,10 +50,6 @@ export const PI_PROVIDER_KEYS = [
   "COPILOT_GITHUB_TOKEN", "AI_GATEWAY_API_KEY", "CLOUDFLARE_API_KEY", "XIAOMI_API_KEY",
   "XIAOMI_TOKEN_PLAN_CN_API_KEY", "XIAOMI_TOKEN_PLAN_AMS_API_KEY", "XIAOMI_TOKEN_PLAN_SGP_API_KEY",
 ] as const;
-
-/** The levels pi's `--thinking` takes (pi's docs/rpc-commands.md). pi runs any other level at its
- *  default without failing, so the launch refuses one. */
-const PI_THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
 
 const refused = (command: string, reply: PiRpcResponse): string =>
   `pi refused ${command}: ${typeof reply.error === "string" ? reply.error : "no reason given"}`;

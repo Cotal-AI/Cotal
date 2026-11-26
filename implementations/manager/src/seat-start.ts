@@ -1,7 +1,7 @@
 import { mkdirSync, readFileSync, rmSync } from "node:fs";
 import { hostname } from "node:os";
 import { join, resolve } from "node:path";
-import { agentFilePath, chatStream, checkEventStartup, controlReplyFromThrown, copyPersonaEndpoints, describeCleanupFailures, DEV_OWNER, EpEnvelopeError, eventChannelPrincipal, EventStateConflictError, grantOverreach, isPermissionDenied, lifecycleBlocked, loadCotalConfig, lowerPersonaEndpoints, managedRetirementOpId, mintAcceptedToken, mintGeneration, mintLifecycleUid, modelPolicyRefusal, newIdentity, parsePrincipalKey, principalKey, provisionAgent, rejectionText, renderLifecycleBlocked, resolveReadAcl, saveAgentFile, STANDING_RENEWABLE_TTL_SEC as MANAGED_STATIC_TTL_SEC, STATIC_GENERATION_HORIZON_SEC, type AgentDef, type CleanupFailure, type Connector, type ControlReply, type CotalConfig, type CotalEndpoint, type EpCaller, type EpCapability, type GoalRef, type IssuedStore, type LaunchOpts, type LaunchSpec, type LifecycleStateTransport, type PersonaEndpoint, type UserAuthLaunch } from "@cotal-ai/core";
+import { agentFilePath, chatStream, checkEventStartup, controlReplyFromThrown, copyPersonaEndpoints, describeCleanupFailures, DEV_OWNER, EpEnvelopeError, eventChannelPrincipal, EventStateConflictError, grantOverreach, isPermissionDenied, lifecycleBlocked, loadCotalConfig, lowerPersonaEndpoints, managedRetirementOpId, mintAcceptedToken, mintGeneration, mintLifecycleUid, modelPolicyEnv, modelPolicyRefusal, newIdentity, parsePrincipalKey, principalKey, provisionAgent, rejectionText, renderLifecycleBlocked, resolveReadAcl, saveAgentFile, STANDING_RENEWABLE_TTL_SEC as MANAGED_STATIC_TTL_SEC, STATIC_GENERATION_HORIZON_SEC, type AgentDef, type CleanupFailure, type Connector, type ControlReply, type CotalConfig, type CotalEndpoint, type EpCaller, type EpCapability, type GoalRef, type IssuedStore, type LaunchOpts, type LaunchSpec, type LifecycleStateTransport, type PersonaEndpoint, type UserAuthLaunch } from "@cotal-ai/core";
 import { agentLifecycleSecretFilePaths, agentSecretKeyForFile, materializeSecretToFile, mergeLaunchOptions, retainConnectorSeat } from "@cotal-ai/workspace";
 import type { KV } from "@nats-io/kv";
 import { CHAT_ALIAS_PREFIX } from "./chat-session.js";
@@ -944,7 +944,7 @@ export class SeatStart {
         }
         spec = connector.buildLaunch(launchOpts);
         if (carried) this.transcripts!.consume(opts.resumeClaim!, opts.resume!);
-        spec.env = { ...spec.env, COTAL_MANAGER_INSTANCE: this.managerInstanceId };
+        spec.env = { ...spec.env, COTAL_MANAGER_INSTANCE: this.managerInstanceId, ...modelPolicyEnv(cotalConfig, role) };
         handle = await this.seatCustody.spawnCustodied(runtime, name, spec, cwd, custody);
       }
       if (onceTask && !handle.waitForExit)

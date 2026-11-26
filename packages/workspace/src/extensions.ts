@@ -3,6 +3,7 @@ import { randomBytes } from "node:crypto";
 import { basename, dirname, isAbsolute, join } from "node:path";
 import { shellPath } from "./local-record-source.js";
 import { codeSpan } from "./text-wrap.js";
+import { CommandFailure } from "./output.js";
 import { fileURLToPath } from "node:url";
 import type { Command, CommandExample, Connector, Extension, ExtensionRef, FlagSpec, OutputMode, Subcommand } from "@cotal-ai/core";
 import { connectorConfigDir } from "./connector-retention.js";
@@ -167,8 +168,12 @@ export function loadExtensionsManifest(): ExtensionsManifest {
       closeSync(fd);
     }
   } catch (e) {
-    if ((e as NodeJS.ErrnoException).code === "ENOENT" && !lstatSync(p, { throwIfNoEntry: false })) return { extensions: [] };
-    if ((e as NodeJS.ErrnoException).code === "ENOTDIR" && globalConfigDirProblem()) return { extensions: [] };
+    const code = (e as NodeJS.ErrnoException).code;
+    if (code === "EACCES" || code === "EPERM") throw new CommandFailure("refused", "PERMISSION_DENIED", `cannot read the extensions manifest at ${p} (${code})`, {
+      target: { path: p }, remedy: "restore this account's read access to the extensions manifest and its path, then retry", cause: e,
+    });
+    if (code === "ENOENT" && !lstatSync(p, { throwIfNoEntry: false })) return { extensions: [] };
+    if (code === "ENOTDIR" && globalConfigDirProblem()) return { extensions: [] };
     throw new CorruptExtensionsManifestError(p, (e as Error).message);
   }
   const m = parsed as ExtensionsManifest | null;

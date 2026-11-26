@@ -327,7 +327,7 @@ export function configOptions(offer: Offer, selection: Selection): SessionConfig
       category: "thought_level",
       type: "select",
       currentValue: selection.variant,
-      options: [{ value: DEFAULT_VARIANT, name: "Model default" }, ...variants.map((v) => ({ value: v, name: v }))],
+      options: [{ value: DEFAULT_VARIANT, name: "Model default" }, ...withCurrent([...variants], selection.variant, DEFAULT_VARIANT).map((v) => ({ value: v, name: v }))],
     });
   if (offer.personas.length)
     options.push({

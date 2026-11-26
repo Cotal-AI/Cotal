@@ -161,9 +161,9 @@ export interface Presence {
    *  exactly while the endpoint is served and the broker accepted its subscription. Advisory: it
    *  carries no prompt content and no authority. */
   prompts?: PresencePrompts;
-  /** The `agent` endpoint commands this process serves now (SPEC §6, §13.22). Present, with all four
-   *  flags, under the same gate as `prompts`. It follows what the connector runs at the moment, so it
-   *  can change within a lifecycle. Advisory: it carries no authority. */
+  /** The `agent` endpoint commands this process serves now (SPEC §6, §13.22). Present, with its four
+   *  required flags, under the same gate as `prompts`. It follows what the connector runs at the
+   *  moment, so it can change within a lifecycle. Advisory: it carries no authority. */
   agentEndpoint?: PresenceAgentEndpoint;
   /** Epoch ms of the last heartbeat. */
   ts: number;
@@ -178,14 +178,16 @@ export interface PresencePrompts {
 }
 
 /** Which `agent` endpoint commands a process serves now. `interrupt` stops its turn, `turn` starts one
- *  on its owner's words, `images` takes images with such a turn, and `usage` reports the harness's
- *  context and cost. False means that call answers `unimplemented`, or `supported: false` for
- *  `usage`. */
+ *  on its owner's words, `images` takes images with such a turn, `usage` reports the harness's
+ *  context and cost, and `setModel` switches the model the harness runs. False means that call
+ *  answers `unimplemented`, or `supported: false` for `usage`. A process older than `set-model`
+ *  omits `setModel`, which reads as false. */
 export interface PresenceAgentEndpoint {
   interrupt: boolean;
   turn: boolean;
   images: boolean;
   usage: boolean;
+  setModel?: boolean;
 }
 
 /**
