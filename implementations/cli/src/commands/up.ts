@@ -1149,11 +1149,11 @@ async function runUp(args: ParsedArgs, invokedFrom: string, inheritedLock?: Main
       target: { root: meshRoot, space: controller.journal.space },
       remedy: controllerManifestRemedy(meshRoot, controller.journal.space, path),
     });
-    if (!values["dry-run"] && (values.json || values.plain)) throw new CommandFailure("refused", "UNSUPPORTED", "up -f starts its manifest on the retained native launcher, which has no structured or plain receipt; nothing was started", { target: { root: meshRoot, path }, remedy: `omit ${values.json ? "--json" : "--plain"}` });
+    if (values.json || values.plain) throw new CommandFailure("refused", "UNSUPPORTED", "up -f starts its manifest on the retained native launcher, which has no structured or plain receipt; nothing was started", { target: { root: meshRoot, path }, remedy: `omit ${values.json ? "--json" : "--plain"}` });
     if (values["dry-run"]) {
       await upManifest(values.file, {
         transport,
-        dryRun: true, presentation: presentationOf(values), previewRoot,
+        dryRun: true,
         server: values.server,
         host: values.host,
         space: values.space,
@@ -1170,6 +1170,7 @@ async function runUp(args: ParsedArgs, invokedFrom: string, inheritedLock?: Main
         logfileSizeLimit,
         logfileMaxNum,
       });
+      if (previewRoot) console.log(c.yellow("! this preview used the invoking folder, not the inherited home store; before applying, prepare it with `cotal space create <space> --root .`"));
       return;
     }
     const lock = acquireStackOperationLock(cotalRoot());

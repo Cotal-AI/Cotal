@@ -853,18 +853,17 @@ const QUESTION = "Which one?";
     const contradicted = run(["up", "-f", "user.yaml", "--open"], fresh);
     check("up -f refused after its lock, for a flag the manifest contradicts, leaves the folder as it found it",
       contradicted.status === 1 && /--open contradicts this manifest's broker\.auth/.test(contradicted.stderr) && entries() === "list.yaml,user.yaml", { ...shown(contradicted), entries: entries() });
-    // Preview has a structured result, while the retained launcher has no structured startup receipt.
+    // up -f always takes the retained launcher, so --json is refused after its manifest is checked.
     const invalidJson = run(["up", "-f", "list.yaml", "--dry-run", "--json"], fresh);
     check("up -f --dry-run --json with a manifest that does not validate refuses SCHEMA_INVALID, exit 1, naming the problem",
       invalidJson.status === 1 && envelope(invalidJson)?.error?.code === "SCHEMA_INVALID" && /list\.yaml:4:\d+: [^;]+ \(at broker\.servers\)$/.test(envelope(invalidJson)?.error?.message ?? "") &&
         envelope(invalidJson)?.target?.issues?.map((issue: { path: string[] }) => issue.path.join(".")).join() === "broker.servers" && entries() === "list.yaml,user.yaml", { ...shown(invalidJson), entries: entries() });
-    writeFileSync(join(fresh, "open.yaml"), `apiVersion: cotal/v1\nkind: Mesh\nspace: gamma\nbroker: { servers: "nats://127.0.0.1:${await freePort()}", auth: false }\nchannels: {}\n`);
-    const validJson = run(["up", "-f", "open.yaml", "--dry-run", "--json", "--no-manager"], fresh);
-    check("up -f --dry-run --json returns a plan without creating local state",
-      validJson.status === 0 && envelope(validJson)?.result?.dryRun === true && envelope(validJson)?.result?.plan.includes("no manager will start") && entries() === "list.yaml,open.yaml,user.yaml", { ...shown(validJson), entries: entries() });
+    const validJson = run(["up", "-f", "user.yaml", "--dry-run", "--json"], fresh);
+    check("up -f --dry-run --json with a valid manifest refuses UNSUPPORTED, exit 2, naming only the flag to omit",
+      validJson.status === 2 && envelope(validJson)?.error?.code === "UNSUPPORTED" && envelope(validJson)?.error?.remedy === "omit --json" && entries() === "list.yaml,user.yaml", { ...shown(validJson), entries: entries() });
     const json = run(["up", "--json", "--server", `nats://127.0.0.1:${await freePort()}`], fresh);
     check("up --json on the retained launcher refuses UNSUPPORTED, exit 2, and leaves the folder as it found it",
-      json.status === 2 && envelope(json)?.error?.code === "UNSUPPORTED" && entries() === "list.yaml,open.yaml,user.yaml", { ...shown(json), entries: entries() });
+      json.status === 2 && envelope(json)?.error?.code === "UNSUPPORTED" && entries() === "list.yaml,user.yaml", { ...shown(json), entries: entries() });
   } finally { rmSync(fresh, { recursive: true, force: true }); }
 }
 

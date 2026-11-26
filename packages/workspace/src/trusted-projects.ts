@@ -4,7 +4,7 @@ import { dirname, isAbsolute, join, parse, resolve, sep } from "node:path";
 import { acquireLock, globalConfigDir, oneLine, parseAgentFileBytes, projectTrustProblem, rejectionText, writeSecretFileAtomic, type AgentDef } from "@cotal-ai/core";
 import { parseLaunchPersonaSource, PersonaSourceError } from "./launch-persona.js";
 import { CommandFailure, isCommandFailure, recordOperationWarning } from "./output.js";
-import { localRecordAccess, prepareCotalHomeForWrite, protectedLocalDirectory } from "./protected-records.js";
+import { assertCotalHomeWriteProtection, localRecordAccess, prepareCotalHomeForWrite, protectedLocalDirectory } from "./protected-records.js";
 import { localWriteFailure } from "./local-write.js";
 import { canonicalRoot, homeCotalDir, isMeshRegistryError, readMeshRegistry } from "./mesh-registry.js";
 import { readPreparedSpaces } from "./prepared-spaces.js";
@@ -80,11 +80,8 @@ function knownSpaceRoots(): string[] {
   return [...readMeshRegistry().entries.map((m) => m.root), ...readPreparedSpaces().spaces.map((p) => p.root)];
 }
 
-/** Run `change` on the current file (undefined when there is none) under its lock and write what it
- *  returns, or nothing when it returns undefined. A config folder another account could write
- *  refuses before anything is written. */
-function update(change: (current: TrustedProjects | undefined) => TrustedProjects | undefined): void {
-  const dir = globalConfigDir();
+/** Check the existing config path before a trust write, without creating directories. */
+function assertTrustConfigWriteProtection(dir: string): void {
   let existing = dir;
   while (!lstatSync(existing, { throwIfNoEntry: false }) && dirname(existing) !== existing) existing = dirname(existing);
   try {
@@ -93,6 +90,12 @@ function update(change: (current: TrustedProjects | undefined) => TrustedProject
     if (!isCommandFailure(e) || e.code !== "PERMISSION_DENIED") throw e;
     throw new CommandFailure(e.outcome, e.code, `${e.message}; no folder was trusted`, { remedy: e.remedy, target: e.target });
   }
+}
+
+/** Run `change` on the current file under its lock and write the returned document, if any. */
+function update(change: (current: TrustedProjects | undefined) => TrustedProjects | undefined): void {
+  const dir = globalConfigDir();
+  assertTrustConfigWriteProtection(dir);
   let lock: ReturnType<typeof acquireLock>;
   try {
     mkdirSync(dir, { recursive: true, mode: 0o700 });
@@ -255,9 +258,13 @@ export function projectTrustForPreview(): (root: string) => boolean {
       pending = new Set();
       try {
         const record = readSeedRecord();
-        const roots = record?.completedAt !== undefined ? [] : (record?.roots ?? seedRoots());
-        if (!(roots instanceof Error)) pending = new Set(roots);
-      } catch { /* Unreadable upgrade records do not establish eligibility. */ }
+        if (record?.completedAt === undefined) {
+          assertCotalHomeWriteProtection();
+          assertTrustConfigWriteProtection(globalConfigDir());
+          const roots = record?.roots ?? seedRoots();
+          if (!(roots instanceof Error)) pending = new Set(roots);
+        }
+      } catch { /* Unreadable records or unprotected write paths do not establish eligibility. */ }
     }
     return pending.has(canonicalRoot(root));
   };

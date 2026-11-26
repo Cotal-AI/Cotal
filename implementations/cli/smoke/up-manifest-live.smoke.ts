@@ -129,15 +129,12 @@ try {
     ok(`preview ignores ${seed} and prints the unchanged manifest plan with one warning`, seedPreview.status === 0
       && seedPreview.stdout === preview.stdout && warnedOnce(seedPreview.stderr), seedPreview);
   }
-  const seedJsonArgs = ["up", "--file", manifest, "--channels", "missing-seed.json", "--json"];
-  for (const dryRun of [true, false]) {
-    const seedJson = cli(...seedJsonArgs, ...(dryRun ? ["--dry-run"] : []));
-    const envelope = JSON.parse(seedJson.stdout);
-    ok(`the JSON ${dryRun ? "preview" : "live format refusal"} carries the ignored seed warning only in its warnings field`,
-      (dryRun ? seedJson.status === 0 && envelope.result?.dryRun === true : seedJson.status === 2 && envelope.error?.code === "UNSUPPORTED")
-      && envelope.warnings?.length === 1 && envelope.warnings[0].code === "MANIFEST_CHANNEL_SEED_IGNORED"
-      && envelope.warnings[0].message === seedWarning && seedJson.stderr === "", seedJson);
-  }
+  const seedJson = cli("up", "--file", manifest, "--channels", "missing-seed.json", "--dry-run", "--json");
+  const envelope = JSON.parse(seedJson.stdout);
+  ok("existing JSON refusal carries the ignored seed warning only in its warnings field", seedJson.status === 2
+    && envelope.error?.code === "UNSUPPORTED" && envelope.warnings?.length === 1
+    && envelope.warnings[0].code === "MANIFEST_CHANNEL_SEED_IGNORED" && envelope.warnings[0].message === seedWarning
+    && seedJson.stderr === "", seedJson);
 
   const unavailableArgs = ["up", "-f", manifest, "--server", SERVER, "--runtime", "example-uninstalled-runtime"];
   const unavailablePreview = cli(...unavailableArgs, "--dry-run");

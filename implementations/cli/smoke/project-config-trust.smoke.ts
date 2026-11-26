@@ -15,7 +15,7 @@
  * Run: pnpm smoke:project-config-trust
  */
 import { spawn as spawnProcess, spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join, resolve } from "node:path";
 import { Kvm } from "@nats-io/kv";
@@ -270,6 +270,12 @@ try {
     const plain = run(legacy, [...args, "--plain"]);
     check("the matching plain invocation names the existing format refusal without writing either trust record",
       plain.status === 2 && `${plain.stdout}${plain.stderr}`.includes("omit --plain") && recordsAbsent(), plain);
+    const dryJson = run(legacy, [...args, "--dry-run", "--json"]);
+    check("legacy manifest JSON dry run keeps the format refusal and writes neither trust record",
+      dryJson.status === 2 && dryJson.stdout.includes('"code":"UNSUPPORTED"') && dryJson.stdout.includes("omit --json") && dryJson.stderr === "" && recordsAbsent(), dryJson);
+    const dryPlain = run(legacy, [...args, "--dry-run", "--plain"]);
+    check("legacy manifest plain dry run keeps the format refusal and writes neither trust record",
+      dryPlain.status === 2 && `${dryPlain.stdout}${dryPlain.stderr}`.includes("omit --plain") && recordsAbsent(), dryPlain);
     const unregistered = run(clone, [...args, "--json"]);
     check("an unregistered manifest root still refuses and leaves pending legacy trust unwritten",
       unregistered.status === 1 && unregistered.stdout.includes("launchOptions.mcp-config") && unregistered.stdout.includes(`cotal trust ${clone}`) && recordsAbsent(), unregistered);
@@ -290,9 +296,7 @@ try {
       await kv.create(channelBucket(space));
     } finally { await nc.close(); }
     const previewCases = [
-      { label: "up JSON", positiveRoot: legacy, argv: [...args, "--dry-run", "--json"], kind: null, plan: "Plan -" },
       { label: "up human", positiveRoot: legacy, argv: [...args, "--dry-run"], kind: null, plan: "Plan -" },
-      { label: "up plain", positiveRoot: legacy, argv: [...args, "--dry-run", "--plain"], kind: null, plan: "Plan -" },
       { label: "team check", positiveRoot: legacy, argv: ["team", "check", "mesh.yaml", "--json"], kind: "team-check" },
       { label: "team boot", positiveRoot: prepared, argv: ["team", "boot", "mesh.yaml", "--dry-run", "--json"], kind: "fresh-team-boot-preview" },
       { label: "team deploy", positiveRoot: legacy, argv: ["team", "deploy", "deploy.yaml", "--dry-run", "--json"], kind: "additive-team-deploy-preview" },
@@ -314,6 +318,28 @@ try {
         refusal.status !== 0 && out.includes("launchOptions.mcp-config") && out.includes(`cotal trust ${clone}`) && noEffects(), refusal);
     }
     recordLegacy(legacyServer);
+    const trustMessage = projectTrustProblem(["launchOptions.mcp-config"], legacy);
+    const refusedTrust = (r: ReturnType<typeof run>) => r.status === 1 && r.stderr.includes(trustMessage) && !r.stdout.includes("Plan -");
+    for (const [label, dir] of [["Cotal home", home], ["config folder", config]] as const) {
+      chmodSync(dir, 0o777);
+      try {
+        const preview = run(legacy, [...args, "--dry-run"]);
+        const readOnly = noEffects() && (statSync(dir).mode & 0o777) === 0o777;
+        const live = run(legacy, args);
+        const attempt = existsSync(witness) ? readFileSync(witness, "utf8") : undefined;
+        const retryPreview = run(legacy, [...args, "--dry-run"]);
+        const after = existsSync(witness) ? readFileSync(witness, "utf8") : undefined;
+        check(`legacy preview and startup refuse the same trust setting with an unprotected ${label}`,
+          refusedTrust(preview) && refusedTrust(live) && refusedTrust(retryPreview) && readOnly && !existsSync(store) && after === attempt
+          && (label === "Cotal home" ? attempt === undefined : attempt !== undefined) && !reportText()
+          && spawnSync("nc", ["-z", "127.0.0.1", new URL(legacyServer).port]).status !== 0, { preview, live, retryPreview, readOnly });
+      } finally { chmodSync(dir, 0o700); }
+    }
+    const pending = existsSync(witness) ? readFileSync(witness, "utf8") : undefined;
+    const recovered = run(legacy, [...args, "--dry-run"]);
+    check("after the config is protected again, a legacy preview uses but does not complete the saved migration attempt",
+      recovered.status === 0 && recovered.stdout.includes("Plan -") && pending !== undefined && readFileSync(witness, "utf8") === pending
+      && !existsSync(store) && !reportText() && spawnSync("nc", ["-z", "127.0.0.1", new URL(legacyServer).port]).status !== 0, recovered);
     try {
       const retry = run(legacy, args);
       const livePort = new URL(legacyServer).port;
@@ -790,7 +816,7 @@ try {
   rmSync(store, { recursive: true, force: true });
 }
 
-const EXPECTED = process.getuid?.() === 0 ? 83 : 85;
+const EXPECTED = process.getuid?.() === 0 ? 84 : 86;
 if (passed + failed !== EXPECTED) { failed++; console.log(`  ✗ FAIL: ${passed + failed - 1} cells reported, ${EXPECTED} expected`); }
 emitSentinel({ passed, failed });
 process.exit(failed === 0 ? 0 : 1);

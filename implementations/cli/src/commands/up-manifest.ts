@@ -1,6 +1,5 @@
 import { mkdirSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { stripVTControlCharacters } from "node:util";
 import { isReachable, DEFAULT_SERVER, type BrokerTransport } from "@cotal-ai/core";
 import { CommandFailure, isCommandFailure, brokerAddressForDisplay, canonicalRoot, getCurrent, loadMeshes, oneLine, writeResult, type Report, workspaceSecretStore } from "@cotal-ai/workspace";
 import { FlagValueRefusal } from "../lib/flag-value-refusal.js";
@@ -204,13 +203,11 @@ export function manifestFileRefusal(e: unknown, path: string): CommandFailure {
  *  local fallback). It owns the whole space, so `cotal down` tears it down without an additive
  *  ownership ledger. */
 export async function upManifest(file: string, opts: UpManifestFlags): Promise<void> {
-  const formattedPreview = opts.dryRun && (opts.presentation === "json" || opts.presentation === "plain");
   let prepared: PreparedManifest;
   try {
     prepared = loadManifest(resolve(file), opts.logFile, opts.dryRun ? "preview" : true);
   } catch (e) {
     if (opts.freshTeamBoot) throw new CommandFailure("refused", "SCHEMA_INVALID", "the fresh boot manifest changed or could not be resolved before startup; no broker was started", { target: { path: resolve(file), space: opts.space } });
-    if (formattedPreview) throw manifestFileRefusal(e, resolve(file));
     failManifest(e);
   }
   if (opts.freshTeamBoot && opts.space !== prepared.manifest.space)
@@ -222,31 +219,28 @@ export async function upManifest(file: string, opts: UpManifestFlags): Promise<v
   const declaredStr = declared === undefined ? '"static" (the unset default)' : JSON.stringify(declared);
   if (opts.open && declared === "user") {
     if (opts.freshTeamBoot) throw new CommandFailure("refused", "CONFLICT", "--open contradicts this manifest's user-auth mode; no trust or broker was changed", { target: { space: prepared.manifest.space } });
-    if (formattedPreview) throw new FlagValueRefusal('--open contradicts this manifest\'s broker.auth: "user"', "drop --open, or change the manifest");
     console.error(c.red('✗ --open contradicts this manifest\'s broker.auth: "user" - a user-auth space cannot run unauthenticated. Drop --open, or change the manifest.'));
     process.exit(1);
   }
   if (opts.userAuth && declared !== "user") {
     if (opts.freshTeamBoot) throw new CommandFailure("refused", "CONFLICT", "--user-auth contradicts this manifest's declared auth mode; no trust or broker was changed", { target: { space: prepared.manifest.space } });
-    if (formattedPreview) throw new FlagValueRefusal(`--user-auth requires manifest broker.auth: "user" (this manifest's broker.auth is ${declaredStr})`, 'set broker.auth: "user" in the manifest, or drop --user-auth');
     stderrLine("✗ ", `--user-auth requires manifest broker.auth: "user" (this manifest's broker.auth is ${declaredStr}). Either set broker.auth: "user" in the manifest, or drop --user-auth.`, c.red);
     process.exit(1);
   }
   if (opts.idp && declared !== "user") {
     if (opts.freshTeamBoot) throw new CommandFailure("refused", "CONFLICT", "--idp needs this manifest's user-auth mode; no trust or broker was changed", { target: { space: prepared.manifest.space } });
-    if (formattedPreview) throw new FlagValueRefusal("--idp is for user-auth spaces", 'set broker.auth: "user" in the manifest, or drop --idp');
     stderrLine("✗ ", `--idp is for user-auth spaces (this manifest's broker.auth is ${declaredStr}) - set broker.auth: "user" in the manifest, or drop --idp.`, c.red);
     process.exit(1);
   }
   const idpProblem = opts.idp === undefined ? undefined : idpUrlProblem(opts.idp, "--idp");
   if (idpProblem) {
-    if (opts.freshTeamBoot || formattedPreview) throw new CommandFailure("refused", "SCHEMA_INVALID", idpProblem, { target: { space: prepared.manifest.space } });
+    if (opts.freshTeamBoot) throw new CommandFailure("refused", "SCHEMA_INVALID", idpProblem, { target: { space: prepared.manifest.space } });
     stderrLine("✗ ", `${idpProblem}`, c.red);
     process.exit(1);
   }
   const serverProblems = opts.server === undefined ? [] : serverUrlProblems(opts.server, "--server");
   if (serverProblems.length) {
-    if (opts.freshTeamBoot || formattedPreview) throw new CommandFailure("refused", "SCHEMA_INVALID", serverProblems.join("; "), { target: { space: prepared.manifest.space } });
+    if (opts.freshTeamBoot) throw new CommandFailure("refused", "SCHEMA_INVALID", serverProblems.join("; "), { target: { space: prepared.manifest.space } });
     for (const problem of serverProblems) stderrLine("✗ ", `${problem}`, c.red);
     process.exit(1);
   }
@@ -324,11 +318,14 @@ export async function upManifest(file: string, opts: UpManifestFlags): Promise<v
     // command refuses is the same green-lit-a-refusal failure class.
     const dryConn = await preflightConnectors(prepared);
     if (dryConn) {
-      if (formattedPreview) throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", `connector preflight failed: ${dryConn}`, { remedy: "check the installed connectors and retry the preview" });
       stderrLine("✗ ", `connector preflight failed: ${dryConn}`, c.red);
       process.exit(1);
     }
-    writeManifestPreview(eff, server, opts, effectiveNoManager);
+    if (opts.transport.kind === "tls-required") announceTransport(opts.transport);
+    console.log(renderUpPlan(eff, server));
+    // The plan names when the applying command omits the manager.
+    if (effectiveNoManager)
+      console.log(c.dim("  no manager will start on this host (--no-manager): broker, channels and, in auth mode, the delivery daemon come up, and no agents launch from here"));
     return;
   }
 
@@ -494,28 +491,12 @@ export async function upManifest(file: string, opts: UpManifestFlags): Promise<v
   if (!authService || !controlPlane || !summaryRecorded) process.exitCode = 1;
 }
 
-function writeManifestPreview(prepared: PreparedManifest, server: string, opts: UpManifestFlags, noManager: boolean): void {
-  const noManagerNote = "  no manager will start on this host (--no-manager): broker, channels and, in auth mode, the delivery daemon come up, and no agents launch from here";
-  const rootNote = "! this preview used the invoking folder, not the inherited home store; before applying, prepare it with `cotal space create <space> --root .`";
-  const plan = renderUpPlan(prepared, server);
-  if (opts.presentation === "json") {
-    const result = { dryRun: true, plan: [stripVTControlCharacters(plan), ...(noManager ? [noManagerNote] : []), ...(opts.previewRoot ? [rootNote] : [])].join("\n") };
-    writeResult("json", { command: "up", target: { root: opts.previewRoot ?? cotalRoot(), space: prepared.manifest.space }, result }, () => ({ sections: [] }));
-    return;
-  }
-  if (opts.transport.kind === "tls-required") announceTransport(opts.transport);
-  console.log(opts.presentation === "plain" ? stripVTControlCharacters(plan) : plan);
-  if (noManager) console.log(opts.presentation === "plain" ? noManagerNote : c.dim(noManagerNote));
-  if (opts.previewRoot) console.log(opts.presentation === "plain" ? rootNote : c.yellow(rootNote));
-}
-
 /** CLI overrides for `up -f` — each wins over the manifest's own value (flag > manifest > default).
  *  `userAuth` is a consistency ASSERTION against the manifest, not an override, and `idp` overrides
  *  only on a user-auth manifest: the manifest declares the auth mode; a disagreeing flag is a hard
  *  error, never a silent re-mode. */
 interface UpManifestFlags {
   root?: string;
-  previewRoot?: string;
   freshTeamBoot?: boolean;
   presentation?: "rich" | "json" | "plain";
   /** The listener's transport, decided above the `--file` branch. NON-OPTIONAL: this path is one of
