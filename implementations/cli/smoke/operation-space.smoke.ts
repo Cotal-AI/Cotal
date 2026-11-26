@@ -380,6 +380,25 @@ if (process.platform !== "win32") {
   check("persona edit with a missing editor refuses without keeping a draft or changing the catalog file",
     edit.status === 2 && edit.stderr.includes("DEPENDENCY_UNAVAILABLE") && edit.stderr.includes(`the editor ${JSON.stringify(editor)} was not found - not saved`) &&
       readdirSync(drafts).length === 0 && readFileSync(persona, "utf8") === saved, shown(edit));
+
+  const jsonEdit = (visual: string) => outcome(spawnSync(process.execPath, [BIN, "persona", "edit", "rev", "--space", "opsp", "--json"], {
+    cwd: root, env: { ...env, VISUAL: visual, EDITOR: "", TMPDIR: drafts }, encoding: "utf8", timeout: 120_000,
+  }));
+  for (const visual of ["no-receipt-editor-binary", `'${editor}' --wait`]) {
+    const refused = jsonEdit(visual);
+    check("persona edit --json reports a missing shell editor only in the refusal envelope",
+      refused.status === 2 && refused.stderr === "" && refused.envelope?.outcome === "refused" &&
+      refused.envelope.target?.space === "opsp" && refused.envelope.error?.code === "DEPENDENCY_UNAVAILABLE" &&
+      refused.envelope.error.message === `the editor ${JSON.stringify(visual)} was not found - not saved` &&
+      readdirSync(drafts).length === 0 && readFileSync(persona, "utf8") === saved, shown(refused));
+  }
+  const reportingEditor = editorScript("editor with spaces", `test "$1" = --wait && test -f "$2" || exit 1
+printf 'Editor stdout\n'
+printf 'Editor stderr\n' >&2`);
+  const ran = jsonEdit(`'${reportingEditor}' --wait`);
+  check("persona edit --json sends both editor streams to stderr and leaves stdout as one receipt",
+    ran.status === 0 && ran.envelope?.outcome === "no-op" && ran.stderr === "Editor stdout\nEditor stderr\n" &&
+    readdirSync(drafts).length === 0 && readFileSync(persona, "utf8") === saved, shown(ran));
 }
 // A save refused because the catalog became unwritable while the editor was open keeps the edited
 // draft and names it beside the chmod that fixes the catalog. Root writes through any mode.

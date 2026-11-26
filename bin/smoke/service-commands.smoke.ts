@@ -300,6 +300,22 @@ try {
       && managerUnknownError.message === "Unknown option '--wibble'" && managerUnknownError.remedy === "drop the unknown option", out(managerUnknown));
   const added = cotal(addExec);
   check("service add <name> --exec saves a program of your own in one command", added.status === 0 && JSON.stringify(definitions()) === '["hello"]', out(added));
+  for (const flags of [["--exec", "--json"], ["--json", "--exec"]]) {
+    const refusedStatus = cotal(["service", "status", "hello", "--space", SPACE, ...flags]);
+    const { outcome, error } = JSON.parse(refusedStatus.stdout);
+    check(`service status ${flags.join(" ")} tells you to omit --exec rather than give it a value`,
+      refusedStatus.status === 1 && refusedStatus.stderr === "" && outcome === "refused" && error?.code === "USAGE_INVALID"
+        && error.message === "`service status` does not take --exec" && error.remedy === "omit --exec", out(refusedStatus));
+  }
+  const retriedStatus = cotal(["service", "status", "hello", "--space", SPACE, "--json"]);
+  const { result: savedStatus } = JSON.parse(retriedStatus.stdout);
+  check("omitting --exec reads the saved service without starting it",
+    retriedStatus.status === 0 && savedStatus?.recordedState === "not started" && savedStatus.instanceId === null, out(retriedStatus));
+  const missingExec = cotal(["service", "add", "hello", "--space", SPACE, "--exec", "--json"]);
+  const { error: missingExecError } = JSON.parse(missingExec.stdout);
+  check("service add still asks for the value of --exec",
+    missingExec.status === 1 && missingExec.stderr === "" && missingExecError?.code === "USAGE_INVALID"
+      && missingExecError.remedy === "write --exec <command>", out(missingExec));
   const show = cotal(["service", "show", "hello", "--space", SPACE, "--json"]);
   let launch: { type?: string; executable?: string; argumentCount?: number; cwd?: string } = {};
   try { launch = (JSON.parse(show.stdout) as { result: { launch: typeof launch } }).result.launch; } catch { /* the cell reports the output */ }
