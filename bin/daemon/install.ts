@@ -459,14 +459,27 @@ export function planUninstall(paths: DaemonPaths, daemonHome: string | undefined
 }
 
 /** Update only the PATH field the installer wrote. Windows tasks have no PATH pin. */
-export function refreshedDaemonPath(mechanism: ServiceMechanism, source: string, terminalPath = process.env.PATH ?? ""): string | undefined {
-  if (mechanism === "scheduled-task") return undefined;
+function pinnedPathMatch(mechanism: Exclude<ServiceMechanism, "scheduled-task">, source: string): { pattern: RegExp; match: RegExpExecArray; old: string } {
   const pattern = mechanism === "systemd-user" ? /^Environment=PATH="((?:\\.|[^"\\])*)"$/m : /(<key>PATH<\/key>\s*<string>)([^<]*)(<\/string>)/;
   const match = pattern.exec(source);
   if (!match) throw new CommandFailure("refused", "CONFLICT", "the recorded daemon service has no readable pinned PATH; nothing was changed");
   const old = mechanism === "systemd-user"
     ? match[1]!.replace(/\\([\\"])/g, "$1").replaceAll("%%", "%")
     : match[2]!.replaceAll("&lt;", "<").replaceAll("&gt;", ">").replaceAll("&quot;", '"').replaceAll("&apos;", "'").replaceAll("&amp;", "&");
+  return { pattern, match, old };
+}
+
+/** The PATH a recorded systemd or launchd service runs with. Undefined for the Windows task, which
+ *  reads the account's PATH each time it starts. */
+export function installedServicePath(paths: DaemonPaths, daemonHome?: string): string | undefined {
+  const { receipt, plan } = recordedUnit(paths, daemonHome);
+  if (plan.mechanism === "scheduled-task") return undefined;
+  return pinnedPathMatch(plan.mechanism, readFileSync(receipt.unitPath, "utf8")).old;
+}
+
+export function refreshedDaemonPath(mechanism: ServiceMechanism, source: string, terminalPath = process.env.PATH ?? ""): string | undefined {
+  if (mechanism === "scheduled-task") return undefined;
+  const { pattern, match, old } = pinnedPathMatch(mechanism, source);
   // A systemd unit and a launchd plist carry a POSIX search path whatever host reads them.
   const merged = [...new Set([...pinnedPath(terminalPath, posix).split(posix.delimiter), ...pinnedPath(old, posix).split(posix.delimiter)])].join(posix.delimiter);
   return source.replace(pattern, () => mechanism === "systemd-user" ? `Environment=PATH=${unitValue(merged)}` : `${match[1]}${xmlText(merged)}${match[3]}`);
