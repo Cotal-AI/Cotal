@@ -1,7 +1,7 @@
 import { lstatSync, statSync } from "node:fs";
 import { dirname, isAbsolute, join, relative } from "node:path";
 import { agentFilePath, personaDir, personaLinkTarget } from "@cotal-ai/core";
-import { cachedPreferences, canonicalRoot, CommandFailure, describeLayer, isWorkspaceTargetError, OFFICIAL_CONNECTORS, preparedNeverStarted, pruneStaleMeshes, resolveMeshTarget, resolvePreference, resolveReadsLiveness, type MeshTarget, type PreferenceContext } from "@cotal-ai/workspace";
+import { cachedPreferences, canonicalRoot, CommandFailure, describeLayer, isWorkspaceTargetError, loadLaunchPersonaFile, OFFICIAL_CONNECTORS, preparedNeverStarted, pruneStaleMeshes, resolveMeshTarget, resolveOnPath, resolvePreference, resolveReadsLiveness, type MeshTarget, type PreferenceContext } from "@cotal-ai/workspace";
 import { defaultPersonaFix } from "./default-persona.js";
 
 /** Persona selection shared by foreground and detached spawn: `--config`, then the positional, then
@@ -22,6 +22,20 @@ export function directPersonaPath(root: string, ref: string, catalogFirst = true
     if (lstatSync(catalogPath, { throwIfNoEntry: false })) return catalogPath;
   }
   return agentFilePath(root, ref);
+}
+
+/** The shipped implicit default has no pin. An absent explicit persona is a failed read. */
+export function defaultPersonaPin(path: string, implicit: boolean): string | undefined {
+  try { return loadLaunchPersonaFile(path).agent; }
+  catch (error) {
+    if (!implicit || (error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    return undefined;
+  }
+}
+
+export function missingHarnessExecutables(requires: readonly string[]): string[] {
+  const pins: Record<string, string | undefined> = { opencode: process.env.COTAL_OPENCODE_BIN, codex: process.env.COTAL_CODEX_BIN };
+  return requires.filter((bin) => !resolveOnPath(pins[bin]?.trim() || bin));
 }
 
 /** The harness a launch falls back to when neither `--agent` nor the persona names one, as this

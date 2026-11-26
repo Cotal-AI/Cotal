@@ -87,13 +87,17 @@ function importFailure(pkg: string, version: string, e: unknown, remedy: string,
 
 /** Select the package's explicit export, if it has one. */
 function exportedEntry(meta: InstalledExtensionPackage): string | undefined {
-  const dot = (meta.exports as Record<string, unknown> | undefined)?.["."];
+  if (typeof meta.exports === "string") return meta.exports;
+  const exports = meta.exports as Record<string, unknown> | undefined;
+  const dot = exports?.["."];
   if (typeof dot === "string") return dot;
   if (dot && typeof dot === "object") {
     const d = dot as Record<string, string>;
     return d.import ?? d.default;
   }
-  return typeof meta.exports === "string" ? meta.exports : undefined;
+  if (!exports || typeof exports !== "object" || Object.keys(exports).some((key) => key.startsWith("."))) return undefined;
+  const entry = exports.import ?? exports.default;
+  return typeof entry === "string" ? entry : undefined;
 }
 
 /**

@@ -4,12 +4,13 @@
 import { closeSync, existsSync, linkSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import {
-  CommandFailure, assertRecordIdentity, commandIsCotalServiceManager, identityLegacyWarning, identityUncertaintyRefusal, localProcessPath, parsePid, probeLiveness,
+  CommandFailure, NATS_PIDFILE, assertRecordIdentity, commandIsCotalServiceManager, identityLegacyWarning, identityUncertaintyRefusal, localProcessPath, parsePid, probeLiveness,
   readPidfile, readProcessCommand, removePidPair, requestLocalStop, stopReservationPath, verifyIdentityPin,
   type LocalProcess, type LocalProcessContext, type ProcessIdentityRecord,
 } from "@cotal-ai/workspace";
 import { c } from "../ui.js";
 import { shellWord } from "./endpoint-errors.js";
+import { recordForegroundBrokerStop } from "./foreground-broker-stop.js";
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -227,9 +228,10 @@ export async function stopLocalProcess(
       const current = verifyIdentityPin(pidPath);
       if (current.kind !== "match" || current.record.pid !== pid || current.record.token !== stoppedPin.token) throw changedRecord();
     }
+    let delivered = false;
     try {
       if (cooperative) cleanupRequest = requestLocalStop(pidPath, attempt);
-      else process.kill(pid, "SIGTERM");
+      else delivered = process.kill(pid, "SIGTERM");
     } catch (e) {
       // ONLY an ESRCH proves the process is already gone (safe to clear). EPERM (exists, another
       // user's) or any other errno (EIO, argument errors, unknown) means we could NOT confirm death
@@ -258,6 +260,7 @@ export async function stopLocalProcess(
     if (state() !== "dead")
       throw new Error(`${component.label} (pid ${pid}) did not exit, or its death could not be confirmed; its pidfile was preserved`);
     stopped = true;
+    if (process.platform === "win32" && component.pidFile === NATS_PIDFILE && stoppedPin && delivered) recordForegroundBrokerStop(pidPath, stoppedPin);
     options.afterExit?.();
     console.log(c.green(`✓ stopped ${component.label} (pid ${pid})`));
     return true;

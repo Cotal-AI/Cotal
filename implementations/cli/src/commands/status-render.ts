@@ -25,6 +25,7 @@ import { homeHoldsStack } from "../lib/paths.js";
 import { channelSeedRestartBlock } from "../lib/channel-seed.js";
 import { rootStoreProblem } from "../lib/store-dir.js";
 import { natsServerLabel } from "../lib/nats-bin.js";
+import { defaultLaunchBlock } from "../lib/status.js";
 import { readCursor } from "../seed/lock.js";
 import { responderText } from "./status-delivery.js";
 import { type PersonaCatalog, type ProcessRow, type OwnedServiceStatus, type StatusResult, type SelectedResult } from "./status-model.js";
@@ -511,6 +512,17 @@ export function backupRecovery(maintenance: StatusResult["maintenance"], sourceM
   return maintenance && (maintenance.state === "claimed" || maintenance.state === "restore-ready" || sourceMissing) ? maintenance.next : null;
 }
 
+function statusLaunchNext(r: StatusResult, s: Extract<SelectedResult, { resolved: true }>, scope: Parameters<typeof onRerun>[1], reachable: boolean, noApplication: boolean): { command: string; description: string } | string | undefined {
+  const defaults = r.machine.defaults;
+  const cmd = displayCmd();
+  if (defaults?.persona === "default" && s.personas.default !== "missing" && s.personas.default !== "valid") {
+    if (!noApplication) return { command: onRerun(`${cmd} persona show default`, scope), description: "See what is wrong with the default persona" };
+    return undefined;
+  }
+  if (!reachable || s.deliveryResponder === "unbound" || s.deliveryResponder === "stale" || !defaults?.harness || !r.machine.connectors?.length) return undefined;
+  return defaultLaunchBlock(defaults.harness, r.machine.connectors) ?? { command: onRerun(`${cmd} spawn`, scope), description: defaults.persona === "default" && s.personas.default === "missing" ? "Open your default agent; creates the shipped default persona" : "Open your default agent" };
+}
+
 function nextActions(r: StatusResult, seedFailed: boolean, interactive: boolean, recovery: string | null, preparedHarness?: string, stoppedForeignListener = false, stackStarting = false, selectedStarting = false): Section {
   if (seedFailed) return {
     title: "Next",
@@ -539,10 +551,9 @@ function nextActions(r: StatusResult, seedFailed: boolean, interactive: boolean,
     const s = r.selected;
     const reachable = s.connection === "ok" || s.connection === "reachable";
     const scope = { space: s.source === "flag-server" ? undefined : s.space, server: s.source === "flag-server" || s.source === "flag-space-override" ? s.server : undefined };
-    if (!noApplication) {
-      if (s.personas.default !== "missing" && s.personas.default !== "valid") items.push({ command: onRerun(`${cmd} persona show default`, scope), description: "See what is wrong with the default persona" });
-      else if (reachable && s.deliveryResponder !== "unbound" && s.deliveryResponder !== "stale") items.push({ command: onRerun(`${cmd} spawn`, scope), description: s.personas.default === "missing" ? "Open your default agent; creates the shipped default persona" : "Open your default agent" });
-    }
+    const launch = statusLaunchNext(r, s, scope, reachable, noApplication);
+    if (typeof launch === "string") extra.push(launch);
+    else if (launch) items.push(launch);
     if (reachable) items.push({ command: onRerun(`${cmd} who`, scope), description: "See the live roster" });
     if (r.stackManager?.endpoint === "answered" || r.outsideStackManager?.endpoint === "answered")
       items.push({ command: onRerun(`${cmd} ps`, scope), description: "List managed agents" });
