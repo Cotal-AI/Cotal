@@ -648,6 +648,7 @@ When an operator-installed first-party extension has no recorded install spec, `
 verifies it against the installed version and npm lock. If it needs repair, the command uses the
 package name at this Cotal release's version. A built-in without a recorded spec is repaired from
 the shipped payload.
+Seed cleanup keeps old generations that the extension inventory or npm metadata still reference.
 
 Third-party extensions are listed with their installed version and any recorded spec but are not
 auto-updated in v1. Floating third-party updates require `@cotal-ai/*` peer-range validation and are
@@ -870,8 +871,9 @@ canonical service preset and local-process example. Installed packages and their
 when the versions establish one. If the versions match, check the extension's import against the
 exports of the linked peer before replacing either build.
 On POSIX shells, a reinstall command printed for a local extension quotes paths with spaces as one argument.
-When a failed load calls for reinstalling an operator-installed extension but its recorded install spec
-cannot be used in a command, the advice names `cotal ext remove <package>` instead.
+When an operator-installed first-party extension has no recorded install spec, the advice gives
+`cotal ext add <package>`. The bare package name selects this CLI's version. In other cases where
+the original spec cannot be used in a command, the advice names `cotal ext remove <package>` instead.
 Each load or add reads the installed package's metadata once, using that same result for its version,
 peer links, entry and import diagnosis. Corrupt or unreadable metadata refuses before import; an entry
 that later changes its own `package.json` cannot change the peer range used to diagnose that import.

@@ -38,8 +38,11 @@ try {
     listNames(cfg);
     const pkg = "@cotal-ai/spec-less-fixture";
     const version = seedGeneration();
-    const fixture = join(cfg, "fixture");
-    mkdirSync(fixture);
+    const store = join(seedDir(cfg), "store");
+    const referenced = join(store, "0.0.1-referenced");
+    const stale = join(store, "0.0.1-stale");
+    const fixture = join(referenced, "fixture");
+    mkdirSync(fixture, { recursive: true });
     writeJson(join(fixture, "package.json"), { name: pkg, version, type: "module", peerDependencies: { "@cotal-ai/core": "*" } });
     writeFileSync(join(fixture, "index.js"), `import { registry } from "@cotal-ai/core";
 registry.register({ kind: "command", name: "spec-less-fixture", summary: "Test extension", run() {} });
@@ -52,17 +55,12 @@ registry.register({ kind: "command", name: "spec-less-fixture", summary: "Test e
     const operator = manifest.extensions.find((entry: { pkg: string }) => entry.pkg === pkg);
     delete operator.spec;
     writeJson(mp, manifest);
-    const oldStore = join(seedDir(cfg), "store", "0.0.1-retained");
-    mkdirSync(oldStore);
-
-    const listed = cotal(cfg, ["ext", "list", "--json"], offline);
-    const row = listed.status === 0 && JSON.parse(listed.stdout).result.items.find((entry: { pkg: string }) => entry.pkg === pkg);
-    check("extension inventory lists the installed version without inventing a recorded spec",
-      row?.version === version && !Object.hasOwn(row, "spec"), listed.stdout + listed.stderr);
+    mkdirSync(stale);
     const updated = cotal(cfg, ["update"], offline);
     check("update verifies the installed first-party operator package without its spec",
       updated.status === 0 && updated.stdout.includes(`verified ${pkg}@${version}`), updated.stdout + updated.stderr);
-    check("a missing spec does not prove an older seed store is unreferenced", existsSync(oldStore));
+    check("update collects only the unreferenced old generation with a spec-less npm file dependency",
+      updated.status === 0 && !existsSync(stale) && existsSync(join(fixture, "package.json")), updated.stdout + updated.stderr);
 
     const after = readJson(mp);
     const builtin = after.extensions.find((entry: { pkg: string }) => entry.pkg === "@cotal-ai/connector-claude-code");
@@ -72,6 +70,15 @@ registry.register({ kind: "command", name: "spec-less-fixture", summary: "Test e
     const restored = readJson(mp).extensions.find((entry: { pkg: string }) => entry.pkg === builtin.pkg);
     check("update repairs a missing built-in spec from the shipped payload",
       repaired.status === 0 && restored?.spec === join(seedDir(cfg), "store", version, "claude"), repaired.stdout + repaired.stderr);
+
+    const stalePin = readJson(mp);
+    stalePin.extensions.find((entry: { pkg: string }) => entry.pkg === pkg).version = "0.0.1";
+    writeJson(mp, stalePin);
+    const listed = cotal(cfg, ["ext", "list", "--json"], offline);
+    const advice = listed.status === 4 && JSON.parse(listed.stdout).warnings.find((warning: { target?: { pkg?: string } }) => warning.target?.pkg === pkg)?.message;
+    const operand = process.platform === "win32" ? `"${pkg}"` : `'${pkg}'`;
+    check("a spec-less first-party entry with a stale pin gets a reinstall command for this CLI",
+      typeof advice === "string" && advice.includes(`\`cotal ext add ${operand}\``), listed.stdout + listed.stderr);
   }
 } finally {
   finishScenario();

@@ -2,7 +2,7 @@ import { closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, open
 import { randomBytes } from "node:crypto";
 import { basename, dirname, isAbsolute, join } from "node:path";
 import { shellPath } from "./local-record-source.js";
-import { codeSpan } from "./text-wrap.js";
+import { codeSpan, windowsShellWord } from "./text-wrap.js";
 import { CommandFailure } from "./output.js";
 import { fileURLToPath } from "node:url";
 import type { Command, CommandExample, Connector, Extension, ExtensionRef, FlagSpec, OutputMode, Subcommand } from "@cotal-ai/core";
@@ -108,7 +108,11 @@ export function isExtensionPathSpec(spec: string, absolute: (p: string) => boole
 /** Recovery for a recorded extension. Do not echo a registry URL or opaque selector in advice. */
 export function extensionReinstallAdvice(entry: InstalledExtension): string {
   if (entry.source === "seeded") return "Run `cotal ext seed --repair` to reinstall it.";
-  const spec = typeof entry.spec === "string" ? entry.spec : entry.pkg.startsWith("@cotal-ai/") ? `${entry.pkg}@${entry.version}` : undefined;
+  const { spec } = entry;
+  if (typeof spec !== "string" && /^@cotal-ai\/[a-zA-Z0-9._~-]+$/.test(entry.pkg)) {
+    const pkg = process.platform === "win32" ? windowsShellWord(entry.pkg) : shellPath(entry.pkg);
+    if (pkg) return `Run ${codeSpan(`cotal ext add ${pkg}`)} to reinstall it.`;
+  }
   if (typeof spec === "string" && (isExtensionPathSpec(spec) || /^(?:@[a-z0-9._~-]+\/)?[a-z0-9._~-]+(?:@[a-z0-9._~^*<>=|+ -]+)?$/i.test(spec)))
     return `Run ${codeSpan(`cotal ext add ${shellPath(spec)}`)} to reinstall it.`;
   return `Run ${codeSpan(`cotal ext remove ${shellPath(entry.pkg)}`)} to drop the record, or reinstall with the original spec.`;

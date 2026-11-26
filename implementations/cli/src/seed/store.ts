@@ -1,6 +1,7 @@
-import { chmodSync, copyFileSync, cpSync, existsSync, lstatSync, mkdirSync, readdirSync, renameSync, rmSync } from "node:fs";
-import { dirname, join, relative, sep } from "node:path";
-import { provenance } from "@cotal-ai/workspace";
+import { chmodSync, copyFileSync, cpSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync } from "node:fs";
+import { dirname, join, relative, resolve, sep } from "node:path";
+import { fileURLToPath } from "node:url";
+import { extensionsDir, isExtensionPathSpec, provenance } from "@cotal-ai/workspace";
 import { assertReleasedSeedWriter, seedStoreDir, seedStorePath, shippedSourceDir } from "./paths.js";
 import { sharedPlacements } from "./shared.js";
 
@@ -75,21 +76,62 @@ export function stageSeedPayload(generation: string, name: string, opts: { force
   return dest;
 }
 
-/**
- * GC seed-store generations other than `keepGeneration`, but ONLY those no live manifest entry still
- * installs from (its normalized `file:` spec points under the generation dir). This is the commit
- * predicate: a prior generation is removed only after every seeded entry has been re-added from the
- * new one, so a running manager never loses the bytes its connectors resolve. A missing spec
- * leaves the reference unknown, so retain the old generations.
- */
+/** Collect only old generations with no manifest or npm reference. npm records local sources
+ * even when the corresponding extension inventory row has no spec. */
 export function gcSeedStore(keepGeneration: string, referencedSpecs: readonly (string | undefined)[]): void {
-  if (!referencedSpecs.every((spec): spec is string => typeof spec === "string")) return;
   const root = seedStoreDir();
   if (!existsSync(root)) return;
-  for (const gen of readdirSync(root)) {
-    if (gen === keepGeneration) continue;
+  const old = readdirSync(root).filter(gen => gen !== keepGeneration);
+  if (!old.length) return;
+  const prefix = extensionsDir();
+  const needsNpmEvidence = referencedSpecs.some(spec => typeof spec !== "string");
+  const refs = new Set<string>();
+  const add = (path: string): void => {
+    refs.add(path);
+    try { refs.add(realpathSync(path)); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+  };
+  const addFile = (spec: string): void => {
+    if (spec.startsWith("file://")) return add(fileURLToPath(spec));
+    const path = spec.slice(5);
+    add(resolve(prefix, path));
+    if (/%[\da-f]{2}/i.test(path)) add(resolve(prefix, decodeURIComponent(path)));
+  };
+  let physicalRoot: string;
+  try {
+    physicalRoot = realpathSync(root);
+    for (const spec of referencedSpecs) {
+      if (typeof spec !== "string") continue;
+      if (spec.startsWith("file:")) addFile(spec);
+      else if (isExtensionPathSpec(spec)) add(resolve(spec));
+    }
+    for (const file of ["package.json", "package-lock.json"]) {
+      let bytes: string;
+      try { bytes = readFileSync(join(prefix, file), "utf8"); }
+      catch (error) {
+        if (!needsNpmEvidence && (error as NodeJS.ErrnoException).code === "ENOENT") continue;
+        throw error;
+      }
+      const metadata: unknown = JSON.parse(bytes, (_key, value: unknown) => {
+        if (typeof value === "string" && value.startsWith("file:")) {
+          addFile(value);
+        } else if (value && typeof value === "object" && "link" in value && value.link === true &&
+          "resolved" in value && typeof value.resolved === "string" && !value.resolved.startsWith("file:")) {
+          add(resolve(prefix, value.resolved));
+        }
+        return value;
+      });
+      if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) return;
+    }
+  } catch {
+    return; // Incomplete reference evidence cannot authorize deletion.
+  }
+  const paths = [...refs];
+  for (const gen of old) {
     const genDir = join(root, gen);
-    const referenced = referencedSpecs.some((spec) => spec === genDir || spec.startsWith(genDir + sep));
+    const physicalDir = join(physicalRoot, gen);
+    const referenced = paths.some(path =>
+      path === genDir || path.startsWith(genDir + sep) || path === physicalDir || path.startsWith(physicalDir + sep));
     if (referenced) continue;
     assertReleasedSeedWriter(keepGeneration, "garbage-collect");
     writableDirectories(genDir);
