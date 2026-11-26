@@ -877,6 +877,12 @@ export function runCli(registry: Registry, argv: string[], opts: RunCliOptions =
   return runOperation(scope, () => dispatchCli(registry, argv, opts, scope));
 }
 
+// Explicit help for the bundled reference needs only the built-in command metadata.
+function isExplicitDocsHelp(registry: Registry, builtin: Command | undefined, wantsHelp: boolean, words: readonly string[]): boolean {
+  return builtin?.name === "help" && !wantsHelp && registry.has("command", "docs")
+    && metadataPositionals(builtin, words).positionals[0]?.value === "docs";
+}
+
 async function dispatchCli(registry: Registry, argv: string[], opts: RunCliOptions, scope: OperationScope): Promise<void> {
   const startedAt = Date.now();
   const { leading, original, word, args } = leadingInvocation(argv);
@@ -911,9 +917,7 @@ async function dispatchCli(registry: Registry, argv: string[], opts: RunCliOptio
   // Before any ordinary dispatch outcome can exit, a spawn takes its handoff, and no command lets a
   // child inherit the variable. The unit entry refuses such a handoff without consuming its file.
   takeManagedHandoffCustody(process.env, builtin?.name === "spawn");
-  // Explicit help for the bundled reference needs only the built-in command metadata.
-  const docsHelp = builtin?.name === "help" && !wantsHelp && registry.has("command", "docs")
-    && metadataPositionals(builtin, words).positionals[0]?.value === "docs";
+  const docsHelp = isExplicitDocsHelp(registry, builtin, wantsHelp, words);
   setInstalledExtensionsEnabled(Boolean(opts.extensions) && !docsHelp);
   const builtinDuplicate = builtin && duplicate(builtin);
   if (builtinDuplicate) return repeatedGlobalFlag(builtinDuplicate, builtin, ownWords(builtin));
