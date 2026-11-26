@@ -45,10 +45,13 @@ export function nativeStub(scenario) {
       if (request.op === "update-settings") { state.update = { ...state.update, ...(request.auto !== undefined ? { automatic: request.auto } : {}), ...(request.notify !== undefined ? { notify: request.notify } : {}) }; return ok({ update: state.update }); }
       if (request.op === "update-check") return ok({ update: state.update });
       if (request.op === "install") {
+        for (const detail of state.installProgress ?? []) send({ v: 1, event: "setup-progress", line: `service: ${detail}`, progress: { step: "install", outcome: "running", detail } });
+        if (state.installHold) await new Promise(resolve => { window.__releaseInstall = resolve; });
         if (state.installWait) await new Promise(() => {});
         if (state.installNotAnswering) return { v: 1, event: "result", ok: false, error: { code: "DEPENDENCY_UNAVAILABLE", message: "Cotal asked the background service on this computer to start, and it did not answer within 15 seconds. It refused to start: the native daemon source names another installation; startup refused", remedy: "choose Check status.", native: { code: "NOT_ANSWERING" } } };
-        state.installed = true; return ok({ installed: true });
+        state.installed = true; state.serviceStopped = false; return ok({ installed: true });
       }
+      if (state.serviceStopped) return { v: 1, event: "result", ok: false, error: { code: "NOT_RUNNING", message: "The background service is installed but stopped. Choose Start service to start it.", detail: { installed: true } } };
       if (!state.installed) return fail("NOT_RUNNING", "The daemon is not running. Install its background service first.");
       const statusPayload = () => ({ state: "ready", version: state.version ?? "0.156.0", managers: state.accountAction || state.readyAccountSpaces ? state.account.spaces.filter(row => row.desired).map(row => ({ ...manager(), space: row.space })) : state.connected ? [manager()] : [], ...(state.omitAgents ? {} : { agents: state.agents ?? [] }), ...(state.update ? { update: state.update } : {}), ...(state.account ? { account: state.account } : {}) });
       if ((request.op === "status" || request.op === "status-watch") && state.offline) return fail(state.offlineCode ?? "UNREACHABLE", "The background service did not answer. Check the host connection before retrying.");
@@ -96,6 +99,7 @@ export function nativeStub(scenario) {
         return ok({ state: "disconnected" });
       }
       if (request.op === "login") {
+        if (state.loginLost) return fail("DAEMON_LOST", "The background service stopped before this could finish, so it did not complete. Try again when the service is running.");
         if (state.loginError) return fail(state.loginError, `Sign-in failed: ${state.loginError}.`);
         send({ v: 1, event: "login-prompt", prompt: { verificationUriComplete: "https://cloud.cotal.ai/device?user_code=WDJB-MJHT", userCode: "WDJB-MJHT", expiresAt: new Date(Date.now() + (state.expired ? -1000 : 581000)).toISOString() } });
         if (state.waiting || state.expired) await new Promise(() => {});
@@ -542,6 +546,54 @@ export const scenarios = [
   { name: "four-steps", state: {}, expect: async page => assert.equal(await page.locator('#journey li').count(), 4) },
   { name: "link", state: { link } },
   { name: "custom-host", state: {}, act: page => page.click("#other-host") },
+  { name: "custom-host-back-to-cloud", state: {}, act: async page => { await page.click("#other-host"); await page.getByRole("button", { name: "Use Cotal Cloud", exact: true }).click(); }, expect: async page => {
+    assert.equal(await page.locator("#custom-host").isHidden(), true, "the host field closes");
+    assert.equal(await page.locator("#login").textContent(), "Continue with Cotal Cloud");
+    assert.equal(await page.locator("#other-host").isVisible(), true, "another host can be chosen again");
+  } },
+  { name: "settings-before-sign-in-tray", state: {}, act: page => page.evaluate(() => window.__emitTauri("desktop-open-settings", null)), expect: async page => {
+    assert.equal(await page.locator("#settings-panel").isVisible(), true, "the tray's Settings opens Settings before sign-in");
+    assert.match(await page.locator("#settings-versions").textContent(), /^App /);
+    assert.equal(await page.locator("#service-log").isVisible(), true, "the service log is reachable before sign-in");
+    assert.equal(await page.locator("#settings-account").textContent(), "No account selected");
+    assert.equal(await page.locator("#settings-signout").isDisabled(), true);
+    assert.equal(await page.locator("#settings-disconnect").isDisabled(), true);
+    await page.locator("#open-settings").click();
+    assert.equal(await page.locator("#settings-panel").isHidden(), true);
+    assert.equal(await page.locator("#sign-in-panel").isVisible(), true, "Back returns to Welcome");
+  } },
+  { name: "settings-before-sign-in-header", state: {}, act: page => page.getByRole("button", { name: "Settings", exact: true }).click(), expect: async page => {
+    assert.equal(await page.locator("#settings-panel").isVisible(), true, "the header's Settings opens Settings before sign-in");
+    await page.locator("#service-log summary").click();
+    await page.locator("#refresh-log").click();
+    await page.waitForFunction(() => (window.__renderState.logReads ?? 0) > 0);
+  } },
+  { name: "welcome-not-installed-quiet", state: {}, expect: async page => {
+    assert.equal(await page.locator("#recovery-panel").isHidden(), true, "before the first sign-in a missing service is not a problem");
+    assert.equal(await page.locator("#sign-in-panel").isVisible(), true);
+  } },
+  // Start service shows the service's latest phase while it runs, and leaves no step spinning once it answers.
+  { name: "start-service-progress-clears", state: { serviceStopped: true, installHold: true, installProgress: ["verifying the recorded installation and owned task before startup", "waiting for a fresh daemon to answer (up to 60s) (5s elapsed)"] },
+    act: page => page.click("#recover"),
+    expect: async page => {
+      await page.waitForFunction(() => typeof window.__releaseInstall === "function");
+      assert.equal(await page.locator('[data-testid="progress-0"] .progress-detail').textContent(), "waiting for a fresh daemon to answer (up to 60s) (5s elapsed)", "the step shows the latest phase");
+      await page.evaluate(() => window.__releaseInstall());
+      await page.waitForFunction(() => document.querySelector("#recovery-panel")?.hidden === true);
+      assert.equal(await page.locator("#sign-in-panel").isVisible(), true, "the started service returns to Welcome");
+      assert.equal(await page.locator("#setup-progress").isHidden(), true, "no step keeps spinning after the service started");
+    } },
+  { name: "sign-in-service-progress-clears", state: { waiting: true, installProgress: ["verifying the recorded installation and owned task before startup"] }, act: page => page.click("#login"), expect: async page => {
+    await page.locator("#approval").waitFor();
+    assert.equal(await page.locator("#setup-progress").isHidden(), true, "no service step keeps spinning while sign-in waits");
+  } },
+  { name: "welcome-service-stopped", state: { serviceStopped: true }, expect: async page => {
+    assert.equal(await page.locator("#connection-title").textContent(), "The background service is not running");
+    assert.equal(await page.locator("#recover").textContent(), "Start service");
+    await page.locator("#recover").click();
+    await page.waitForFunction(() => document.querySelector("#recovery-panel")?.hidden === true);
+    assert.equal(await page.locator("#sign-in-panel").isVisible(), true, "the started service returns to Welcome");
+  } },
   { name: "waiting", state: { waiting: true }, act: page => page.click("#login") },
   { name: "signed-in", state: {}, act: signIn },
   { name: "spaces", state: { multiple: true }, act: signIn },
@@ -560,6 +612,16 @@ export const scenarios = [
     assert.equal(await page.locator("#connection-description").textContent(), "Cotal asked the background service on this computer to start, and it has not answered. Details shows the reason it gave, if it gave one.");
     assert.equal(await page.locator("#recover").textContent(), "Check status");
     assert.equal(await page.locator("#refusal-detail").textContent(), "DEPENDENCY_UNAVAILABLE (NOT_ANSWERING)\nCotal asked the background service on this computer to start, and it did not answer within 15 seconds. It refused to start: the native daemon source names another installation; startup refused\nNext: choose Check status.");
+  } },
+  // The service is killed while sign-in waits on it: say so, and clear once it answers again.
+  { name: "sign-in-service-lost", state: { installed: true, loginLost: true }, act: page => page.click("#login"), expect: async page => {
+    assert.equal(await page.locator("#connection-title").textContent(), "The background service stopped");
+    assert.equal(await page.locator("#connection-description").textContent(), "It stopped before this could finish, so nothing was completed. This clears when the service is running again.");
+    assert.equal(await page.locator("#recover").textContent(), "Check status");
+    assert.ok(!(await page.locator("body").textContent()).includes("cotal daemon"), "no CLI is offered to a desktop user");
+    await page.evaluate(() => window.__pushStatus());
+    await page.waitForFunction(() => document.querySelector("#connection-title")?.textContent !== "The background service stopped");
+    assert.equal(await page.locator("#details").isHidden(), true, "the stopped-service details clear when it answers again");
   } },
   { name: "no-spaces", state: { empty: true }, act: signIn },
   { name: "connected-and-pending", state: { installed: true, signedIn: true, connected: true, multiple: true, serviceState: "approval-pending" }, expect: async page => {

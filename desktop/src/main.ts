@@ -156,7 +156,8 @@ preferencesHome.insertBefore(el("update-banner"), el("connection-icon"));
 function renderSettings(): void {
   requestAnimationFrame(() => { sizeSpaceList(); requestAnimationFrame(sizeSpaceList); });
   const configured = stage === "finished" && !setupActive;
-  el("open-settings").hidden = !configured;
+  // Settings also opens before sign-in: the name, the service log and the version matter most when sign-in fails.
+  el("open-settings").hidden = setupActive || loginActive;
   text("open-settings", settingsOpen ? "Back" : "Settings");
   el("settings-panel").hidden = !settingsOpen;
   document.querySelector<HTMLElement>(".connection-card")!.hidden = settingsOpen;
@@ -418,13 +419,13 @@ function renderProgress(): void {
       const status = document.createElement("span"); status.className = "sr-only";
       li.append(mark, copy, status); list.append(li);
     }
+    const detail = li.querySelector<HTMLElement>(".progress-detail")!;
+    detail.textContent = progressDetails[index]; detail.hidden = progress[index] !== "running";
     if (li.dataset.state === progress[index]) return;
     li.dataset.state = progress[index];
     const mark = li.querySelector(".progress-mark")!;
     if (progress[index] === "waiting") { mark.removeAttribute("data-icon"); mark.textContent = String(index + 1); }
     else setIcon(mark, progress[index] === "done" ? "check" : progress[index] === "failed" ? "warning" : "spinner");
-    const detail = li.querySelector<HTMLElement>(".progress-detail")!;
-    detail.textContent = progressDetails[index]; detail.hidden = progress[index] !== "running";
     li.querySelector(".sr-only")!.textContent = progress[index];
     if (progress[index] === "running") announce(progressDetails[index]);
   });
@@ -579,6 +580,7 @@ function showStage(next: Stage, focus = false): void {
   renderConnections();
   text("login", linked || customHost || next === "sign-in" ? "Continue in browser" : "Continue with Cotal Cloud");
   el("other-host").hidden = customHost || linked;
+  el("cloud-host").hidden = !customHost || linked || loginActive;
   el("change-space").hidden = !addingSpace;
   text("footer-note", finished ? "Closing this window keeps your connection running." : "You choose when to connect this computer.");
   const stages: Stage[] = ["welcome", "sign-in", "connect", "finished"];
@@ -847,7 +849,7 @@ async function applyStatus(status: Record<string, unknown>, current: () => boole
   ready = status.state === "ready";
   daemonVersion = String(status.version);
   upgradeNeeded = appVersion !== undefined && status.version !== appVersion;
-  if ((statusProblem && !upgradeNeeded) || (ready && (problem === "NOT_ANSWERING" || (!upgradeNeeded && el("refusal-detail").textContent?.startsWith("App version:"))))) clearDetails();
+  if ((statusProblem && !upgradeNeeded) || (ready && (problem === "NOT_ANSWERING" || problem === "DAEMON_LOST" || (!upgradeNeeded && el("refusal-detail").textContent?.startsWith("App version:"))))) clearDetails();
   renderAgents(status, el("running-agents"));
   requestAnimationFrame(sizeSpaceList);
   updateStatus = status.update as UpdateStatus | undefined;
@@ -892,6 +894,10 @@ async function applyStatus(status: Record<string, unknown>, current: () => boole
     if (manager?.reason) refusal(new DaemonRefusal("DEPENDENCY_UNAVAILABLE", `${manager.reason}${manager.next ? `\nNext: ${manager.next}` : ""}`));
   } else { state("ready", space); if (stage === "connect") showStage("connect"); }
   buttons();
+}
+/** Before the first sign-in no service is set up, which is not a problem; a stopped one is. */
+function notSetUpYet(error: unknown): boolean {
+  return error instanceof DaemonRefusal && error.code === "NOT_RUNNING" && error.detail?.installed !== true;
 }
 function startStatusWatch(): void {
   if (!isTauri() || watchActive || watchStarting) return;
@@ -948,7 +954,7 @@ function startStatusWatch(): void {
     if (!busy && !loginActive && !setupActive) {
       ready = false; serviceStatus = undefined; renderSettings(); state("unavailable");
       if (!(problem === "NOT_ANSWERING" && error instanceof DaemonRefusal && error.code === "NOT_RUNNING")) {
-        if (!(error instanceof DaemonRefusal && error.code === "NOT_RUNNING" && (stage === "welcome" || stage === "sign-in"))) refusal(error, true);
+        if (!(notSetUpYet(error) && (stage === "welcome" || stage === "sign-in"))) refusal(error, true);
       }
       buttons();
     }
@@ -968,7 +974,7 @@ async function refresh(): Promise<void> {
     selectionPending = false;
     ready = false; serviceStatus = undefined; renderSettings(); state("unavailable");
     if (problem === "NOT_ANSWERING" && error instanceof DaemonRefusal && error.code === "NOT_RUNNING") { buttons(); return; }
-    if (!(error instanceof DaemonRefusal && error.code === "NOT_RUNNING" && (stage === "welcome" || stage === "sign-in") && !loginActive)) refusal(error, true);
+    if (!(notSetUpYet(error) && (stage === "welcome" || stage === "sign-in") && !loginActive)) refusal(error, true);
   }
   buttons();
 }
@@ -1021,13 +1027,14 @@ function nextAfterSignIn(): void {
 }
 el<HTMLInputElement>("provider").value = COTAL_CLOUD_IDP;
 el("other-host").addEventListener("click", () => { customHost = true; el<HTMLInputElement>("provider").value = ""; showStage(stage); el("provider").focus(); });
+el("cloud-host").addEventListener("click", () => { customHost = false; el<HTMLInputElement>("provider").value = ""; showStage(stage); el("login").focus(); });
 el("login-form").addEventListener("submit", (event) => {
   event.preventDefault();
   void action(async () => {
     loginActive = true; editing = true; clearDetails(); notice(""); showStage("sign-in", true);
     try {
       const provider = canonicalProvider(el<HTMLInputElement>("provider").value.trim());
-      if (!ready) { notice("Preparing the background service…"); await request({ op: "install" }); await refresh(); if (!ready) throw new Error("The background service is not ready."); }
+      if (!ready) { await startService(); await refresh(); if (!ready) throw new Error("The background service is not ready."); }
       const result = await request({ op: "login", idp: provider });
       problem = undefined;
       if (result.outcome !== "signed-in") throw new DaemonRefusal(String(result.reason ?? "refused").toUpperCase().replaceAll("-", "_"), String(result.message ?? "Sign-in was not completed."));
@@ -1054,14 +1061,19 @@ el("recover").addEventListener("click", () => {
   else if (recovery === "spaces") void action(async () => { await spaces(true); nextAfterSignIn(); });
   else if (recovery === "install") void action(async () => {
     clearDetails();
-    notice("Preparing the background service…");
-    await request({ op: "install" });
+    await startService();
     await refresh();
     if (!ready) throw new Error("The background service is not ready.");
     notice("");
   });
   else void action(async () => { if (!keepNotAnswering) clearDetails(); await refresh(); });
 });
+/** The install request's progress lines all say "running"; only its result ends them, so the list resets. */
+async function startService(): Promise<void> {
+  notice("Preparing the background service…");
+  try { await request({ op: "install" }); }
+  finally { progress = progressNames.map(() => "waiting"); renderProgress(); }
+}
 el("open-approval").addEventListener("click", () => { if (approval) void invoke("open_browser", { url: approval }).catch(refusal); });
 function beginSignIn(): void {
   if (busy) return;
@@ -1167,10 +1179,8 @@ function openSettings(): void {
   const select = el<HTMLSelectElement>("space");
   for (const option of select.options) { option.hidden = false; option.disabled = false; }
   if (!connections.has(select.value)) select.value = connections.keys().next().value ?? select.value;
-  if (connections.size || completedSetup || listOpened || computerAccount?.hostSupport === "supported") {
-    listOpened = true; showStage("finished");
-    settingsOpen = true; renderSettings(); el("settings-title").focus();
-  }
+  if (connections.size || completedSetup || listOpened || computerAccount?.hostSupport === "supported") { listOpened = true; showStage("finished"); }
+  settingsOpen = true; renderSettings(); el("settings-title").focus();
   if (appUpdaterConfigured()) void readAutoUpdates().then(renderSettings).catch(error => text("settings-message", error instanceof Error ? error.message : String(error)));
   void refresh();
 }
