@@ -17,6 +17,12 @@ public static class PresenceWindow {
   [DllImport("advapi32.dll", SetLastError=true)] static extern bool OpenProcessToken(IntPtr process, uint access, out IntPtr token);
   [DllImport("advapi32.dll", SetLastError=true)] static extern bool GetTokenInformation(IntPtr token, int kind, out int value, int size, out int written);
   [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr handle);
+  [DllImport("kernel32.dll", CharSet=CharSet.Unicode)] static extern uint GetLongPathName(string path, StringBuilder longPath, uint size);
+  // An MSI writes [!File] values with the file's 8.3 short name, so compare paths in their long form; null when the file is missing.
+  public static string LongPath(string path) {
+    var buffer = new StringBuilder(32768);
+    return GetLongPathName(path, buffer, (uint)buffer.Capacity) == 0 ? null : buffer.ToString();
+  }
   public static bool IsElevated(IntPtr process) {
     IntPtr token;
     if (!OpenProcessToken(process, 8, out token)) throw new System.ComponentModel.Win32Exception();
@@ -168,6 +174,11 @@ foreach ($kind in $(if ($LoginScopeOnly) { @('nsis') } else { @('nsis', 'msi') }
     $installed = $true
     $path = Join-Path $directory 'cotal-desktop.exe'
     if (!(Test-Path $path)) { throw 'Installed executable missing.' }
+    # Browser sign-in returns to the app through cotal: links, so each installer must register them for the installed executable.
+    $linkKey = Get-Item -LiteralPath 'Registry::HKEY_CLASSES_ROOT\cotal\shell\open\command' -ErrorAction SilentlyContinue
+    $linkCommand = if ($linkKey) { $linkKey.GetValue('') }
+    $linkTarget = if ($linkCommand -match '^"([^"]+)" "%1"$') { [PresenceWindow]::LongPath($Matches[1]) }
+    if (!$linkTarget -or $linkTarget -ine [PresenceWindow]::LongPath($path)) { throw "$kind did not register the cotal: link handler for $path (found: $linkCommand)" }
     if ($kind -eq 'nsis') { Check-LoginScope $path }
     if ($LoginScopeOnly) {
       $uninstaller = Get-ChildItem $directory -Filter '*uninstall*.exe' | Select-Object -First 1
@@ -227,8 +238,9 @@ foreach ($kind in $(if ($LoginScopeOnly) { @('nsis') } else { @('nsis', 'msi') }
     if ($p.ExitCode -notin @(0, 3010)) { throw "$kind uninstall exited $($p.ExitCode)" }
     foreach ($link in $links) { if (Test-Path $link) { throw "Shortcut remains: $link" } }
     if (Get-ItemProperty -Path $run -Name Cotal -ErrorAction SilentlyContinue) { throw 'App login entry remains after uninstall.' }
+    if (Test-Path -LiteralPath 'Registry::HKEY_CLASSES_ROOT\cotal') { throw 'The cotal: link handler remains after uninstall.' }
     $installed = $false
-    $checks = @('shortcuts', 'shortcut-aumid', 'visible-window', 'single-instance', 'hide', 'restore', 'uninstall-shortcuts', 'uninstall-login')
+    $checks = @('shortcuts', 'shortcut-aumid', 'visible-window', 'single-instance', 'hide', 'restore', 'uninstall-shortcuts', 'uninstall-login', 'link-handler', 'uninstall-link-handler')
     if ($taskbarNamed) { $checks += 'explorer-taskbar-button' }
     $results += @{ installer = $kind; result = $(if ($taskbarNamed) { 'passed' } else { 'passed-with-taskbar-name-unproven' }); checks = $checks; taskbarNameProven = $taskbarNamed }
     @{ platform = 'Windows'; results = $results } | ConvertTo-Json -Depth 6 | Set-Content (Join-Path $out 'result.json')
