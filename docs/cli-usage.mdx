@@ -250,9 +250,11 @@ it without a value. No command may declare a flag with either name. The output
 flags `--json` (`-j`) and `--plain` may also come before the command word, as in
 `cotal --json status`; they are read as the command's own flags, so a command without that output
 refuses them as it does after the command word. If you attach a value to a leading output flag,
-the refusal tells you to omit the flag. It also suggests passing it without a value when the
+the refusal tells you to omit the flag. It can also suggest passing it without a value when the
 selected command or subcommand supports that output. The refusal keeps JSON output when you
-request it with a separate `--json` or `-j` and the command supports it. A command that takes its words raw, such as the
+request it with a separate `--json` or `-j` and the command supports it. In that case, if you give
+`--plain` a value, the remedy is to omit `--plain`.
+A command that takes its words raw, such as the
 hidden completion entry, has no flags to read them as and refuses them before its word with a usage
 error. A `--` before the command word ends these leading flags. An installed extension
 whose command declares one is an internal error, and `cotal` exits 1 before running any command.

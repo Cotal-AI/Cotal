@@ -608,10 +608,10 @@ function missingValue(cmd: Command, words: readonly string[], flag: FlagSpec, be
   return { message: `--${flag.name} needs a value`, remedy: `write --${flag.name} ${flag.value ?? "<value>"}${beforeSeparator ? " before --" : ""}` };
 }
 
-function switchValueRefusal(flag: string, cmd?: Command, rest: readonly string[] = []) {
+function switchValueRefusal(flag: string, cmd?: Command, rest: readonly string[] = [], json = false) {
   const first = cmd && metadataPositionals(cmd, rest).positionals[0]?.value;
   const acceptsFlag = GLOBAL_FLAG_WORDS.has(flag) || (cmd && (flag === "--plain"
-    ? (findSubcommand(cmd, first) ?? cmd).outputs?.includes("plain")
+    ? !json && (findSubcommand(cmd, first) ?? cmd).outputs?.includes("plain")
     : structured(cmd, first)));
   return { message: `${flag} takes no value`, remedy: `omit ${flag}${acceptsFlag ? " or pass it without a value" : ""}` };
 }
@@ -949,7 +949,7 @@ async function unknownInvocationExit(commands: readonly Command[], word: string,
   routeCollisionWarnings(warnings, cmd, rest, false);
   const end = rest.indexOf("--");
   const plain = (end === -1 ? rest : rest.slice(0, end)).includes("--plain");
-  const refusal = typed ?? switchValueRefusal(flag, cmd, rest);
+  const refusal = typed ?? switchValueRefusal(flag, cmd, rest, json);
   return usageExit(refusal.message, cmd, json, plain, refusal.remedy, rest);
 }
 
