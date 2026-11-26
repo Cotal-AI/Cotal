@@ -24,6 +24,7 @@ import { reportRunningManagers } from "@cotal-ai/cli/update";
 import { adoptAutomaticUpdateChild } from "./update-scope.js";
 import { captureWindowsGeneration, closeWindowsGeneration, windowsGenerationLifecycle } from "./update-generation-win32.js";
 import { hasUpdateDaemonLifetime, observeUpdateDaemon, sameUpdateDaemon } from "./update-lifetime.js";
+import { reclaimInterruptedUpdateSnapshots } from "./update-snapshot-cleanup.js";
 import { daemonServiceRequirement, foreignDaemonUpdateReport } from "./guidance.js";
 import { observeExecutionVersion, selectExecutionProgram } from "../cotal.js";
 
@@ -133,7 +134,10 @@ async function collectConnectorSets(): Promise<void> {
 
 function preflightExecutionWithCleanup(): boolean {
   const repaired = preflightExecutionUpdate();
-  if (!process.env.COTAL_UPDATE_PARENT) cleanupExecutionStore(executionInstallRoot());
+  if (!process.env.COTAL_UPDATE_PARENT) {
+    reclaimInterruptedUpdateSnapshots(() => dirname(executionInstallRoot()));
+    cleanupExecutionStore(executionInstallRoot());
+  }
   return repaired;
 }
 
