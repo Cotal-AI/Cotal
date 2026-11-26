@@ -89,8 +89,9 @@ whether or not anyone holds the role. When no present participant holds it, the 
 closest role a present participant holds, or lists the roles present when none is close. A roster
 that is not current within two seconds adds no warning. A message over the broker's message limit, envelope included, refuses
 `UNSUPPORTED` (exit 2) with its size and the limit, and nothing is sent. A file or stdin body is read
-only to one byte past that limit. A pipe or a device such as `/dev/zero` has no size to report, so
-its refusal names the limit alone. When the broker denies publishing to a channel, participant
+only to one byte past that limit. If a stdin pipe reaches that point, `send` refuses without
+waiting for the writer to close it. A pipe or a device such as `/dev/zero` has no size to report,
+so its refusal names the limit alone. When the broker denies publishing to a channel, participant
 or role, `send` refuses with `PERMISSION_DENIED` (exit 2) and confirms nothing was stored. For
 channel posts, the remedy reads the grant ledger or the `agent`, `observer` or `admin` file passed
 with `--creds`. An observer or admin file has no channel post grants. If the grant is unknown,

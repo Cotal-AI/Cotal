@@ -67,14 +67,18 @@ const sandboxEnv = (() => {
 })();
 
 const kids: ChildProcess[] = [];
-async function run(args: string[], timeoutMs?: number): Promise<{ status: number | null; out: string }> {
-  const options = { cwd: root, env: sandboxEnv, stdio: ["ignore", "pipe", "pipe"] as ["ignore", "pipe", "pipe"] };
+async function run(args: string[], timeoutMs?: number, stdin?: Buffer): Promise<{ status: number | null; out: string }> {
+  const options = { cwd: root, env: sandboxEnv, stdio: [stdin === undefined ? "ignore" : "pipe", "pipe", "pipe"] as ["ignore" | "pipe", "pipe", "pipe"] };
   assertSmokeSandboxDown(sandbox, args, options);
   const cp = spawn(process.execPath, ["--import", TSX_IMPORT, CLI, ...args], options);
   kids.push(cp);
   let out = "";
   cp.stdout?.on("data", (b: Buffer) => { out += b.toString(); });
   cp.stderr?.on("data", (b: Buffer) => { out += b.toString(); });
+  if (stdin !== undefined) {
+    cp.stdin!.on("error", () => {});
+    cp.stdin!.write(stdin); // Keep the pipe open until the command exits.
+  }
   const timeout = timeoutMs === undefined ? undefined : setTimeout(() => cp.kill("SIGTERM"), timeoutMs);
   try { await once(cp, "close"); } finally { clearTimeout(timeout); }
   return { status: cp.exitCode, out };
@@ -213,6 +217,10 @@ async function checkMode(mode: "auth" | "open-legacy" | "open-controller"): Prom
     const brokerOnly = await run(["up", "--open", "--no-manager", "--space", space, "--server", server, "--max-payload", "8192"]);
     try {
       ok("a broker-only start accepts and serves 8192 bytes", brokerOnly.status === 0 && await servedMaxPayload(port) === 8192, brokerOnly.out);
+      const source = mode === "open-controller" ? ["--file", "-"] : ["--stdin"];
+      const oversized = await run(["send", "-c", "general", ...source, "--json", "--space", space, "--server", server], 10_000, Buffer.alloc(8193, "a"));
+      ok(`${source.join(" ")} refuses one byte over the broker limit before EOF`, oversized.status === 2 &&
+        oversized.out.includes('"code":"UNSUPPORTED"') && oversized.out.includes("8192-byte message limit; nothing was sent"), oversized.out);
       // Only the controller route renders the add-manager hint: the legacy open route's reuse
       // receipt offers only `down`, so there is no hint to drop there.
       if (mode === "open-controller") {
