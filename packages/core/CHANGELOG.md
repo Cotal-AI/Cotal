@@ -1,5 +1,17 @@
 # @cotal-ai/core
 
+## 0.183.0
+
+### Minor Changes
+
+- 22f261d: Launches that use a project's MCP servers, `spawn.env` or persona launch options now require a trusted project folder, so review the folder and run `cotal trust <path>` before retrying.
+  
+  SDK callers of `loadCotalConfig` must pass a project trust check as the second argument, such as `isTrustedProject` from `@cotal-ai/workspace`.
+
+### Patch Changes
+
+- 287b874: Keep membership watches live when the membership store is replaced under the same name by replaying the replacement's current entries.
+
 ## 0.182.0
 
 ### Minor Changes

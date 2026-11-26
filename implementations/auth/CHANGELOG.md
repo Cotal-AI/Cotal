@@ -1,5 +1,18 @@
 # @cotal-ai/auth
 
+## 0.183.0
+
+### Patch Changes
+
+- 780f723: Explain why live member counts can fall after an upgrade and verify that a scoped user-auth history follower still receives posts without appearing as a member.
+- Updated dependencies [5117d48]
+- Updated dependencies [22f261d]
+- Updated dependencies [287b874]
+- Updated dependencies [d9ffb7d]
+  - @cotal-ai/workspace@0.183.0
+  - @cotal-ai/core@0.183.0
+  - @cotal-ai/lang@0.183.0
+
 ## 0.182.0
 
 ### Minor Changes

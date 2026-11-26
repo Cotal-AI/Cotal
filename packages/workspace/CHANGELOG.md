@@ -1,5 +1,21 @@
 # @cotal-ai/workspace
 
+## 0.183.0
+
+### Minor Changes
+
+- 22f261d: Launches that use a project's MCP servers, `spawn.env` or persona launch options now require a trusted project folder, so review the folder and run `cotal trust <path>` before retrying.
+  
+  SDK callers of `loadCotalConfig` must pass a project trust check as the second argument, such as `isTrustedProject` from `@cotal-ai/workspace`.
+
+### Patch Changes
+
+- 5117d48: When a stack loses its Cotal home records, status and ps point to the stop preview, and component status distinguishes a running broker from a service it cannot check.
+- d9ffb7d: Cotal can update when an extension has no recorded install spec, keeping verified packages and repairing packages that need it.
+- Updated dependencies [22f261d]
+- Updated dependencies [287b874]
+  - @cotal-ai/core@0.183.0
+
 ## 0.182.0
 
 ### Patch Changes

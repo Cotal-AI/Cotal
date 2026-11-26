@@ -1,5 +1,45 @@
 # cotal-ai
 
+## 0.183.0
+
+### Minor Changes
+
+- 22f261d: Launches that use a project's MCP servers, `spawn.env` or persona launch options now require a trusted project folder, so review the folder and run `cotal trust <path>` before retrying.
+  
+  SDK callers of `loadCotalConfig` must pass a project trust check as the second argument, such as `isTrustedProject` from `@cotal-ai/workspace`.
+
+### Patch Changes
+
+- 8d02ac0: Derive the required-argument census totals from reviewed per-file counts so changes in different files do not conflict over a shared total.
+- e4bef3d: Stop running agents or open them in the system terminal from the desktop agent list, which now shows their state, elapsed time, application and model.
+- be18258: Fix Windows updates in a separate Cotal home when another home's daemon is running under the same account.
+- Updated dependencies [a47c69b]
+- Updated dependencies [938d757]
+- Updated dependencies [e4bef3d]
+- Updated dependencies [c368daa]
+- Updated dependencies [35b74b7]
+- Updated dependencies [780f723]
+- Updated dependencies [364a6d1]
+- Updated dependencies [5117d48]
+- Updated dependencies [22f261d]
+- Updated dependencies [41c615a]
+- Updated dependencies [287b874]
+- Updated dependencies [4fb5871]
+- Updated dependencies [e819f05]
+- Updated dependencies [c9778e7]
+- Updated dependencies [d9ffb7d]
+- Updated dependencies [5767c3a]
+  - @cotal-ai/cli@0.183.0
+  - @cotal-ai/connector-core@0.183.0
+  - @cotal-ai/manager@0.183.0
+  - @cotal-ai/auth@0.183.0
+  - @cotal-ai/workspace@0.183.0
+  - @cotal-ai/core@0.183.0
+  - @cotal-ai/delivery@0.183.0
+  - @cotal-ai/runtime@0.183.0
+  - @cotal-ai/registry@0.183.0
+  - @cotal-ai/seat@0.183.0
+
 ## 0.182.0
 
 ### Patch Changes

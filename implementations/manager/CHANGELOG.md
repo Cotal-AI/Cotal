@@ -1,5 +1,25 @@
 # @cotal-ai/manager
 
+## 0.183.0
+
+### Minor Changes
+
+- 22f261d: Launches that use a project's MCP servers, `spawn.env` or persona launch options now require a trusted project folder, so review the folder and run `cotal trust <path>` before retrying.
+  
+  SDK callers of `loadCotalConfig` must pass a project trust check as the second argument, such as `isTrustedProject` from `@cotal-ai/workspace`.
+
+### Patch Changes
+
+- 938d757: The `set-model` policy refusal and configuration read warning now refer to the Cotal configuration without implying that you should run a command.
+- e4bef3d: Stop running agents or open them in the system terminal from the desktop agent list, which now shows their state, elapsed time, application and model.
+- Updated dependencies [5117d48]
+- Updated dependencies [22f261d]
+- Updated dependencies [287b874]
+- Updated dependencies [d9ffb7d]
+  - @cotal-ai/workspace@0.183.0
+  - @cotal-ai/core@0.183.0
+  - @cotal-ai/seat@0.183.0
+
 ## 0.182.0
 
 ### Minor Changes
