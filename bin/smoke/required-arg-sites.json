@@ -130,6 +130,7 @@
   "implementations/manager/smoke/native-issuance-session.smoke.ts": 2,
   "implementations/manager/smoke/no-execution-participant.smoke.ts": 2,
   "implementations/manager/smoke/no-execution.smoke.ts": 4,
+  "implementations/manager/smoke/persona-definer-bound.smoke.ts": 1,
   "implementations/manager/smoke/persona-endpoints-served.smoke.ts": 2,
   "implementations/manager/smoke/queue-win-distribution.smoke.ts": 1,
   "implementations/manager/smoke/registration-executor-resume.smoke.ts": 1,
