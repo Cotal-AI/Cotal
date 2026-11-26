@@ -97,7 +97,7 @@ import {
   readChannelDefaults,
 } from "./channels.js";
 import { isCasLoss } from "./endpoint-records.js";
-import { OBSERVER_INBOX_NONCE_PREFIX, type EndpointIdentity } from "./endpoint-identity.js";
+import { endpointUserInboxId, type EndpointIdentity } from "./endpoint-identity.js";
 import { newConnectionState, type ConnectionState } from "./endpoint-connection-state.js";
 import { newLifecycleState, type LifecycleState } from "./endpoint-lifecycle-state.js";
 import { newCredentialState, type CredentialState } from "./endpoint-credential-state.js";
@@ -112,7 +112,6 @@ import {
   CONTROL_DELIVERY_ADMIN,
   dmStream,
   isConcreteChannel,
-  assertInboxConnId,
   MEMBERSHIP_FEED_KEY,
   principalKey,
   parsePrincipalKey,
@@ -331,8 +330,8 @@ export class CotalEndpoint extends EventEmitter {
       // USER MODE. The owner+actor PRINCIPAL comes from the bearer (server-authored: owner is callout-
       // derived, actor is the spawn-ledger actor) — never from the card. The connection nkey is minted
       // per-connect by NATS and is unknown to the client pre-connect, so the client cannot key its inbox
-      // on it; instead it picks its OWN random inbox NONCE (the connId), passes it as the connect `name`,
-      // and the callout scopes `_INBOX_<connId>.>` on that. `card.id`, if given, must match the bearer.
+      // on it; the client builds the connId from the bearer's principal and a random nonce.
+      // It sends that as the connect `name`. `card.id`, if given, must match the bearer.
       this.identity.userMode = true;
       if (typeof opts.bearer === "function") {
         // Bearer SOURCE: no token exists yet, so the principal must be declared up front; every
@@ -352,11 +351,10 @@ export class CotalEndpoint extends EventEmitter {
         this.identity.actor = claims.actor;
         this.cred.currentBearer = opts.bearer;
       }
-      this.identity.connId = assertInboxConnId(`${this.identity.omitFromLiveMembership ? OBSERVER_INBOX_NONCE_PREFIX : "ibx"}${randomUUID().replace(/-/g, "")}`);
+      this.identity.connId = endpointUserInboxId(this.identity.owner, this.identity.actor, this.identity.omitFromLiveMembership);
       this.identity.sentinelCreds = opts.sentinelCreds;
       // User mode's actor is SERVER-AUTHORED (bearer claims or a declared card checked against
-      // them), never self-minted — the ephemeral value here is the inbox nonce, which is the
-      // connection id and not the principal.
+      // them), never self-minted. Only the inbox nonce is ephemeral.
       this.identity.actorIsEphemeral = false;
     } else {
       // DEV / STATIC. Connection identity precedence: an explicit card.id, else the creds' identity, else

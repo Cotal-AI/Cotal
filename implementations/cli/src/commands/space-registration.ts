@@ -295,11 +295,11 @@ async function addFromServer(name: string | undefined, v: AddValues, prompt: boo
  *  discovery document, which is fetched only after the operator agrees and is adopted only after
  *  they confirm the pins. Its checks run even under `--force`, which only replaces a record.
  *  `cotal setup --connection-file` registers a self-hosted space through it. */
-export async function addFromBundle(name: string | undefined, v: AddValues, prompt: boolean, presentation: Presentation = "rich"): Promise<Added> {
+export async function addFromBundle(name: string | undefined, v: AddValues, prompt: boolean, presentation: Presentation, fileFlag: "--file" | "--connection-file" = "--file"): Promise<Added> {
   const target = name ? { space: name } : null;
   let bundle: UserBundle;
   if (v.file !== undefined) {
-    bundle = readConnectionFile(v.file, "--file", target);
+    bundle = readConnectionFile(v.file, fileFlag, target);
   } else {
     let from: URL;
     let disco: URL;
@@ -370,12 +370,13 @@ export async function addFromBundle(name: string | undefined, v: AddValues, prom
 }
 
 /** A user-auth connection bundle read from `file` and checked; `flag` names the input in a refusal. */
-export function readConnectionFile(file: string, flag: string, target: unknown): UserBundle {
+export function readConnectionFile(file: string, flag: "--file" | "--connection-file", target: unknown): UserBundle {
   let raw: string;
   try {
     raw = readFileSync(file, "utf8");
   } catch (e) {
-    throw usage(`cannot read ${flag} ${file} (${(e as NodeJS.ErrnoException).code ?? (e as Error).message})`);
+    throw usage(`cannot read ${flag} ${file} (${(e as NodeJS.ErrnoException).code ?? (e as Error).message})`,
+      flag === "--connection-file" ? "pass the path to the exported connection bundle with `--connection-file`" : undefined);
   }
   return take(checkUserBundle(raw), target);
 }

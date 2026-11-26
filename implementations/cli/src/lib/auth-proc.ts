@@ -112,7 +112,7 @@ function startAuthServiceDetached(space: string, server: string, command: string
     // Internal child re-exec (the `up` that reached here already seeded); the auth service does not
     // launch agents, so it skips the connector seed on boot (a direct `cotal auth-service` still seeds).
     const child = spawn(node, [...self, command, "--space", space, "--server", server, ...extraArgs], {
-      detached: true,
+      detached: true, windowsHide: true,
       stdio: ["ignore", fd, fd],
       env: { ...process.env, COTAL_SKIP_CONNECTOR_SEED: "1" },
     });

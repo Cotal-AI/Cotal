@@ -253,9 +253,15 @@ try {
       absent.status === 2 && error?.code === "TARGET_NOT_FOUND" && error.message.includes(`no manager has been started in space ${SPACE}`) && error.remedy === `start it with \`cotal manager start --space ${SPACE}\``, out(absent));
   }
 
-  const install = cotal(["manager", "install", "--space", SPACE, "--dry-run"]);
-  check("cotal manager install refuses before any effect and names a unit of your own running manager start --foreground",
-    install.status === 2 && out(install).includes("UNSUPPORTED") && out(install).includes("cotal manager install is not supported yet") && out(install).includes("manager start --foreground --space servicecommands") && out(install).includes("KillMode=mixed"), out(install));
+  for (const flags of [[], ["--dry-run"]]) {
+    const install = cotal(["manager", "install", "--space", SPACE, ...flags]);
+    const text = out(install);
+    const next = process.platform === "win32"
+      ? ["cotal", "pnpm cotal"].some(cli => text.includes(`\`${cli} up --space ${SPACE}\``)) && !/ExecStart=|KillMode=mixed/.test(text)
+      : text.includes(`manager start --foreground --space ${SPACE}`) && text.includes("KillMode=mixed");
+    check(`cotal manager install ${flags.join(" ")} refuses before any effect and names a platform-appropriate next step`,
+      install.status === 2 && text.includes("UNSUPPORTED") && text.includes("cotal manager install is not supported yet") && next, text);
+  }
 
   const intake = cotal(["service", "start", "feedback-intake", "--space", SPACE]);
   check("a built-in preset that needs files refuses naming each flag", intake.status === 1 && out(intake).includes("the feedback-intake preset needs --keys, --creds, which have no default; nothing was saved or started"), out(intake));

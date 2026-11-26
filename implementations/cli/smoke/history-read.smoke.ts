@@ -232,6 +232,10 @@ async function checkFollowUsageRefusals(): Promise<void> {
     const server = `nats://127.0.0.1:${address.port}`;
     const historyTarget = { space: null, channel: "general", dms: false };
     const membershipTarget = { space: "triage", channel: "volume.posts" };
+    const recordsFrom = (stdout: string) => stdout.trim().split("\n").filter(Boolean).map((line) => JSON.parse(line) as {
+      schemaVersion?: number; stream?: string; type?: string; target?: Record<string, unknown>;
+      data?: { code?: string; message?: string; remedy?: string; reason?: string; lastAsOf?: number | null };
+    });
     for (const { base, invalid, stream, target, followAfter } of [
       { base: ["history", "--json"], invalid: ["--limit", "0"], stream: "history", target: { ...historyTarget, channel: null } },
       { base: ["history", "general", "--json"], invalid: ["--limit"], stream: "history", target: historyTarget, followAfter: true },
@@ -242,10 +246,7 @@ async function checkFollowUsageRefusals(): Promise<void> {
       const args = [...base, "--server", server];
       const finite = await run([...args, ...invalid]);
       const followed = await run(followAfter ? [...args, ...invalid, "--follow"] : [...args, "--follow", ...invalid]);
-      const records = followed.stdout.trim().split("\n").filter(Boolean).map((line) => JSON.parse(line) as {
-        schemaVersion?: number; stream?: string; type?: string; target?: Record<string, unknown>;
-        data?: { code?: string; message?: string; remedy?: string; reason?: string; lastAsOf?: number | null };
-      });
+      const records = recordsFrom(followed.stdout);
       const error = finite.envelope?.error;
       check(`${stream} ${invalid.join(" ")} refuses with a receipt for finite reads and error then end for follows`,
         finite.status === 1 && finite.stderr === "" && finite.envelope?.command === (stream === "history" ? "history" : "channel")
@@ -257,6 +258,20 @@ async function checkFollowUsageRefusals(): Promise<void> {
           && records[0]?.data?.code === error.code && records[0]?.data?.message === error.message && records[0]?.data?.remedy === error.remedy
           && records[1]?.data?.reason === "setup-failed" && (stream !== "membership" || records[1].data.lastAsOf === null),
         { follow: shown(followed), finite: shown(finite), connections });
+    }
+    for (const name of ["general", "#true"]) {
+      const followed = await run(["channel", "members", "--replay", "off", name, "--follow", "--space", "triage", "--server", server, "--json"]);
+      const records = recordsFrom(followed.stdout);
+      const retryName = name === "general" ? name : "'#true'";
+      check(`membership follow after a leading replay value names ${name} in its error and end records`,
+        followed.status === 1 && followed.stderr === "" && connections === 0
+          && records.map((record) => record.type).join() === "error,end"
+          && records.every((record) => record.schemaVersion === 1 && record.stream === "membership"
+            && record.target?.space === "triage" && record.target?.channel === name.replace(/^#/, ""))
+          && records[0]?.data?.code === "USAGE_INVALID"
+          && records[0]?.data?.remedy === `run \`cotal channel members ${retryName} --follow --space triage --server ${server} --json\``
+          && records[1]?.data?.reason === "setup-failed" && records[1].data.lastAsOf === null,
+        { follow: shown(followed), connections });
     }
     for (const args of [["history", "--json", "--limit", "--", "--follow"], ["history", "clear", "--json", "--follow", "--limit"],
       ["channel", "show", "volume.posts", "--json", "--follow", "--creds"]]) {

@@ -24,5 +24,6 @@ export function agentGrants(nats: { pub?: { allow?: string[] }; sub?: { allow?: 
  *  the grants its mint names, so both ACL flags are named even when empty and persona defaults
  *  are disabled, including a role the original credential did not hold. */
 export function grantMintFlags(grants: AgentGrants): string {
-  return ` --allow-subscribe ${shellPath(grants.read.join(","))} --allow-publish ${shellPath(grants.post.join(","))}${grants.role ? ` --role ${grants.role}` : ""} --no-persona`;
+  const read = grants.read.join(",");
+  return ` --allow-subscribe${read.startsWith("-") ? "=" : " "}${shellPath(read)} --allow-publish ${shellPath(grants.post.join(","))}${grants.role ? ` --role ${grants.role}` : ""} --no-persona`;
 }

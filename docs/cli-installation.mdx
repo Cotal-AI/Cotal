@@ -86,6 +86,7 @@ cotal.cmd setup --destination local --harness claude --project "%USERPROFILE%\re
 
 To register a self-hosted space from a connection bundle without questions, create the project
 folder if it does not exist, then run setup with the harness and the space name from the bundle.
+If setup cannot read the file, pass the path to the exported bundle with `--connection-file`.
 In PowerShell or Command Prompt on Windows, use `cotal.cmd` and an absolute project path as shown above.
 
 In Bash:
@@ -391,8 +392,10 @@ load, and its Claude Desktop entry), then checks other `@cotal-ai/*` operator ex
 npm's own record in the extensions prefix. One recorded at the binary's exact version with the spec
 `update` installs (`<package>@<version>`) is kept when the prefix lock records it at that version
 and every package the lock records is on disk at its recorded version. The extension's entry file
-must also be present. The extension check does not compare file contents. If any check fails, Cotal
-reports why and reinstalls the extension at the binary's exact version. A built-in or extension
+must also be present and loadable. The extension check does not compare file contents. Cotal keeps a working
+local-path extension at the binary's version under the same lock and entry checks. If it needs
+repair at that version, Cotal reinstalls it from the recorded path. A registry extension that
+needs repair is reinstalled at the binary's exact version. A built-in or extension
 that passes is reported as verified. `cotal ext seed --force`
 remains the unconditional reinstall of the built-ins, and `cotal ext add <package>` of one extension.
 Each reinstall runs in an isolated child, so one failure cannot poison later replays. It then
@@ -761,6 +764,9 @@ reading; `--allow-publish` is optional when the session will not post. A credent
 permission joins read-only, and the prompt says so instead of inviting broadcasts. Attempting to
 post confirms that nothing was sent and names the mint with `--allow-publish` for that channel.
 Reading, roster commands and DMs remain available. Use the intended channel in both commands.
+If the broker rejects a credential for another space, `join` explains how to use the original
+file on its own broker. When the target space is known, it also shows the owner how to mint a
+replacement with a read grant for the landing channel. That grant does not add permission to post.
 For a channel that starts with `-`, attach the values with `=`, as in `--allow-subscribe=-general`
 when minting and `--channel=-general` when joining.
 A subscription pattern such as `team.>` can be the landing channel when the read grant covers it.
@@ -866,6 +872,7 @@ Removing an extension or cleaning up a failed add keeps unrelated file-based ext
 installed copies, rather than turning them into links to their source or the built-in seed store.
 Removal uses the same peer policy as installation. Cotal relinks its shared packages without npm
 looking up peer dependencies for the remaining extensions in the registry.
+On Windows, background extension installs and seeding do not open a terminal window.
 
 One command at a time changes the installed connectors and extensions. While `setup`, `ext add`,
 `ext seed` or an update does that, a command that needs a connector waits for it. After one second

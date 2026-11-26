@@ -91,6 +91,25 @@ gets no `set-label` permission. An agent whose connector predates `set-label` an
 `unimplemented`, and `cotal acp` says so in the thread and titles the thread with the name the agent
 shows.
 
+## User-auth reply inbox names
+
+Updated clients set their NATS connection name to `<owner>-<actor>-<nonce>` and their inbox prefix to
+`_INBOX_<owner>-<actor>-<nonce>`. The owner and actor come from the bearer, and the nonce is fresh
+for each new client. After the first release containing this change becomes the latest release,
+update a CLI installation with `npm install -g cotal-ai@latest` to use this form.
+Static and open meshes are unchanged. Existing user-auth clients that send a bare nonce still connect.
+
+Update every auth callout replica before relying on the principal check or using a connection name
+longer than 120 characters. An older replica may accept a mismatched name or refuse a longer name.
+If a new replica refuses a mismatched name, the broker returns `Authorization Violation` to the
+client and the callout log gives the correct settings. Set `name` to `<sub>-<act.actor>-<nonce>`,
+using the bearer's `sub` and `act.actor` claims and a fresh nonce of 8 to 128 letters, digits or
+underscores. Set `inboxPrefix` to `_INBOX_` followed by that exact name.
+
+Update the delivery service before using new user-auth history followers. A delivery service that
+recognizes only the legacy `ibx_observer_` marker can list a follower with a principal-bound inbox
+as a live member. The updated delivery service recognizes both forms. History access is unchanged.
+
 ## Switching a running agent's model
 
 The `agent` cluster advances to revision 6 with `set-model`, which the owner
@@ -1750,8 +1769,9 @@ so a container that ran `supervise --server <url>` first runs
 A manager unit that an earlier `cotal service install` wrote keeps calling `supervise`. After the
 upgrade it starts the new binary and prints the deprecation line. This release does not rewrite
 that unit, and `cotal manager install` refuses until a unit that Cotal writes can run the manager.
-A unit you write yourself runs `cotal manager start --foreground --space <space>` with
-`KillMode=mixed`.
+On Linux, a systemd user unit you write yourself runs
+`cotal manager start --foreground --space <space>` with `KillMode=mixed`. On Windows, run
+`cotal up` from the folder that hosts the local space to start its Manager.
 
 A unit that this release's `cotal service install <name>` writes runs the hidden `__service-unit`
 entry, which an earlier binary does not have. To downgrade:

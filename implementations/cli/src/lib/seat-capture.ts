@@ -44,7 +44,7 @@ const CONTROL_DIR = ".cotal/";
 export const DEFAULT_RECENCY_HORIZON_MS = 24 * 60 * 60 * 1000;
 
 function git(cwd: string, args: string[]): Buffer {
-  return execFileSync("git", args, { cwd, maxBuffer: 1024 * 1024 * 1024 });
+  return execFileSync("git", args, { cwd, maxBuffer: 1024 * 1024 * 1024, windowsHide: true });
 }
 
 export interface SeatCaptureRequest {
@@ -159,7 +159,7 @@ export function captureSeatCheckpoint<Entry>(
       .filter((name) => name !== CONTROL_DIR.slice(0, -1) && !name.startsWith(CONTROL_DIR));
     const namesFile = join(staging, "untracked.list");
     writeFileSync(namesFile, names.length ? `${names.join("\0")}\0` : "");
-    execFileSync("tar", ["--null", "--files-from", namesFile, "-cf", untrackedPath], { cwd, maxBuffer: 1024 * 1024 * 1024 });
+    execFileSync("tar", ["--null", "--files-from", namesFile, "-cf", untrackedPath], { cwd, maxBuffer: 1024 * 1024 * 1024, windowsHide: true });
     // The status a destination compares its promoted tree against, read under the same selection
     // rule the untracked set was produced under. `git status --porcelain` reports the control
     // directory the capture deliberately excludes, so a raw reading would describe a tree these

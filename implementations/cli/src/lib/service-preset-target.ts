@@ -264,8 +264,8 @@ export function forgetRefusedPresetService(space: string, name: string): boolean
 
 /** Why `service install` refuses an adapter service. A Cotal-written unit replaces itself with one
  *  direct process, and an adapter's start and stop, such as the manager's native stop request, need
- *  their own handoff under the unit, which the unit entry does not do yet. The remedy names a unit
- *  line that works when the adapter runs in the foreground. `command` is `manager` when the person
+ *  their own handoff under the unit, which the unit entry does not do yet. The remedy names a
+ *  platform-appropriate way to run the service. `command` is `manager` when the person
  *  typed the manager's own command. */
 export function adapterInstallRefusal(space: string, name: string, adapter: string, options: Readonly<Record<string, unknown>>, command: "manager" | undefined, target: Record<string, unknown>): CommandFailure {
   const declaration = resolveServiceAdapter(adapter, options, false).declaration;
@@ -274,7 +274,9 @@ export function adapterInstallRefusal(space: string, name: string, adapter: stri
   const foreground = command === "manager" ? "manager start --foreground" : `service start ${name} --foreground`;
   return new CommandFailure("refused", "UNSUPPORTED", `${command === "manager" ? "cotal manager install" : `cotal service install ${name}`} is not supported yet: a Cotal-written unit runs only a direct-process service, and ${name} runs through the ${adapter} adapter, whose stop is ${declaration.stop === "native" ? "a native request" : "its own"}; nothing was installed or allocated`, {
     target,
-    remedy: declaration.capabilities.foreground
+    remedy: process.platform === "win32" && command === "manager"
+      ? `for a local space, run ${codeSpan(`cotal up${targetWords({ space })}`)} from the folder that hosts it. The local stack runs the Manager`
+      : declaration.capabilities.foreground
       ? `run it from your own systemd user unit with ExecStart=${entry} ${foreground} --space ${space} and KillMode=mixed${command === "manager" ? ", or keep an existing unit on `cotal supervise` for now" : ""}`
       : `start it with \`cotal service start ${name}\``,
   });

@@ -27,7 +27,7 @@ function commandInfos(listed: unknown): PiCommandInfo[] {
 /** `env` is the environment a seat's pi gets, so the list comes from the same configuration. */
 export async function piCommandCatalog(opts: CommandListOpts, env: Record<string, string>): Promise<CommandCatalog> {
   const bin = opts.resolvedBinaries?.pi ?? "pi";
-  const { stdout } = await promisify(execFile)(bin, ["--version"], { env, timeout: 5_000 });
+  const { stdout } = await promisify(execFile)(bin, ["--version"], { env, timeout: 5_000, windowsHide: true });
   const version = stdout.trim();
   if (!piRunsCommands(version))
     return { supported: false, reason: `pi ${version} sends an extension's /name to its model as text, so its seats run no agent commands; pi 0.84.2 or later runs them` };

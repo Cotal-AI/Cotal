@@ -775,8 +775,15 @@ the daemon's machine status service needs the space owner's approval. Until then
 nothing and the daemon asks again every 30 seconds.
 A host without the route reports account computers unsupported and keeps per-space behavior.
 Authentication refusal asks you to sign in again. Network failures retain existing connections.
-When another account holds a local space connection, the daemon refuses to transfer it.
+When another account holds a local space connection, the daemon does not transfer it automatically.
 Status names the holding account's sign-in address when the retained identity is known.
+If the holding account is signed out or three consecutive account-computer
+polls fail, the space row can offer **Use signed-in account**.
+Cancel leaves custody unchanged. Confirmation requires a fresh, available catalog registration
+for the space from the signed-in account and rechecks the holder before moving custody.
+A holder that answers again clears its failure count and cannot be replaced through a stale
+action. `cotal daemon status` names the holder and points to the app action when it is available.
+This moves only this computer's connection. It does not grant space membership or remote authority.
 
 On hosts that support account computers, setup with `--space` and local connect write the
 computer's account intent with a fresh revision. A conflicting revision is read again and retried
@@ -858,6 +865,9 @@ before moving it to the current CLI installation. The repair preserves sign-in a
 refuses to stop occupied or unreadable Managers, and keeps an operator-disabled service stopped.
 An interrupted repair retains its source and receipt intent for the next command to finish.
 A modified or unrecorded unit is never adopted by its label.
+On macOS, a validated repair-preparation refusal shows the Manager's code, message and any next step.
+JSON puts the cause in `error.cause` and the next step in `error.remedy`. The outcome is `unknown`
+(`OPERATION_UNKNOWN`, exit 3). Malformed, mismatched and event replies do not supply a cause or next step.
 If the CLI cannot inspect the recorded unit file, keep its install receipt. Restore access to the
 file’s directory or correct its path, then retry the preview.
 `spaces` lists the registry through the daemon; `--refresh` uses the daemon-held sign-in to refresh
@@ -1152,10 +1162,13 @@ the source and receipt, so a delayed updated native child cannot publish after r
 
 The task's native entry writes its output to `daemon.log` in the daemon's state directory,
 replacing the previous launch's log and retaining at most 64 KiB of output. When the daemon does
-not answer on Windows, `status` shows how to run `cotal daemon start` for that home and names the
-log and Task Scheduler's state and last result. The command quotes a path with spaces for PowerShell
-and Command Prompt. If a path needs PowerShell quoting, the remedy names PowerShell. If the
-entry cannot load at all, Task Scheduler's last result is the diagnostic and no new log exists.
+not answer on Windows and a scheduled task installation is recorded, `status` shows how to run
+`cotal daemon start` if the task is still registered. It names the log and directs you to Task
+Scheduler for the task's state and last result if no log was created. Without an installation
+record, `status` and `start` direct you to `cotal daemon install` for a scheduled task or
+`cotal daemon serve` to run in a terminal. These remedies keep the selected `--daemon-home` and
+quote a path with spaces for PowerShell and Command Prompt. If a path needs PowerShell quoting,
+the remedy names PowerShell.
 Install refuses before preparing a task if its launch entry is missing or is not a file.
 Task lookup imports ScheduledTasks and Microsoft.PowerShell.Utility by name before querying the
 task and serializing its result, avoiding automatic module discovery for those commands.
@@ -1305,9 +1318,15 @@ or clear the default selected space. Its space list still shows the shared regis
 `cotal sync` from the shared Cotal home to apply that home's signed-in catalogs there. Its socket is
 `$XDG_RUNTIME_DIR/cotal/home-<16 hex>/daemon.sock` (on macOS the same name under the cache
 directory, on Windows the pipe `\\.\pipe\cotal-daemon-<SID>-home-<16 hex>`), derived from the
-directory, so it runs beside the default daemon. `<dir>` must already exist as an absolute
-directory you own with mode `0700`, and cannot be the Cotal home. On Windows it must be owned by
-you, SYSTEM or Administrators, and its access list may grant nothing to anyone else. A relative path or the Cotal home refuses `USAGE_INVALID`, a missing
+directory, so it runs beside the default daemon. `<dir>` must already exist as a real directory
+at an absolute path and cannot be the Cotal home. On Linux and macOS, you must own it and set
+mode `0700`. On Windows, you, SYSTEM or Administrators must own it, and the Windows ACL may
+grant access only to those accounts. For a new directory, open **Properties > Security > Advanced**
+in File Explorer. Give your account an explicit **Full control** grant. Choose **Disable
+inheritance** and remove inherited permissions. Remove any remaining grants except those for
+your account, SYSTEM and Administrators, and verify the owner.
+
+A relative path or the Cotal home refuses `USAGE_INVALID`, a missing
 directory `TARGET_NOT_FOUND`, and a symlinked, foreign or loose one `PERMISSION_DENIED`. Nothing is
 created or repaired. Bash and Zsh completion offer file paths for `--daemon-home`, including
 existing directories; the directory checks still apply when the command runs.
