@@ -49,7 +49,7 @@ export function restoreManifestAccess(config: string, select: (prepare?: (path: 
     if (!sameEntry(entry.stat, linux ? statSync(entry.name) : lstatSync(entry.name))) throw new Error("manifest access path changed");
     if (linux) chmodSync(entry.name, mode);
     // Darwin chmod -h uses a no-follow mode change even when the inode cannot be opened for I/O.
-    else execFileSync("/bin/chmod", ["-h", mode.toString(8), entry.name], { stdio: "pipe" });
+    else execFileSync("/bin/chmod", ["-h", mode.toString(8), entry.name], { stdio: "pipe", windowsHide: true });
   };
   const addBit = (entry: Entry, bit: number): void => {
     const mode = entry.stat.mode & 0o7777;
