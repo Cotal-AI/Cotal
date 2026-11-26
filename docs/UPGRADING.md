@@ -2,11 +2,11 @@
 
 ## Ended terminal sessions on user-auth spaces
 
-A user-auth terminal connection now closes when the auth service confirms that its session
-ended. A different session or control connection for the same actor stays connected. Open
-a new session with `cotal attach <agent>` instead of reusing an ended session. Connections
-admitted before the upgrade, or by an older callout replica during it, have no receipt and
-keep their original expiry.
+A user-auth terminal connection closes when the full auth service or a callout replica confirms
+that its session ended and delivery disconnects it. Other sessions and control connections for
+the same actor stay connected. Open a new session with `cotal attach <agent>` instead of reusing
+an ended session. Connections admitted by a release that does not record receipts keep their
+original expiry.
 
 Upgrade the full auth service, every `--callout-only` replica, and delivery together to
 the release that carries this change. For a local stack, stop it with `cotal down`, run

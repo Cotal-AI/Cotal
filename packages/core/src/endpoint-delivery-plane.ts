@@ -138,6 +138,7 @@ export class EndpointDeliveryPlane {
    *  {@link armDeliveryControl}; tracked so the stale one is dropped on reconnect. */
   deliveryServeSub?: import("@nats-io/transport-node").Subscription;
   deliveryAdminServeSub?: import("@nats-io/transport-node").Subscription;
+  private readonly targetedEvictions = new Set<Promise<ControlReply>>();
   /** The lifecycles whose membership inventory this daemon has been asked for, as principal to uids
    *  (#4965). A durable join or leave bound to one of them is refused, so no row of a retiring lifecycle
    *  is written after its inventory read starts. An entry goes when a later inventory for the same
@@ -634,7 +635,7 @@ export class EndpointDeliveryPlane {
     // seat's `evictPrincipal` on this rail and missed its 5 s deadline (#4965).
     this.deliveryAdminServeSub = this.serveControl(CONTROL_DELIVERY_ADMIN, (req) => this.handleDeliveryAdmin(req), {
       boundReply: true,
-      concurrent: (req) => req.op === "lifecycleMemberships",
+      concurrent: (req) => req.op === "lifecycleMemberships" || req.op === "evictSessionConnections",
     });
   }
 
@@ -695,7 +696,8 @@ export class EndpointDeliveryPlane {
         ? { ok: false, error: failures.join("; "), data: { delivery, membership } }
         : { ok: true, data: { delivery, membership } };
     }
-    if (req.op === "evictPrincipal" || req.op === "evictSessionConnections") return this.deliveryEvictPrincipal(req);
+    if (req.op === "evictSessionConnections") return this.deliveryEvictSessionConnections(req);
+    if (req.op === "evictPrincipal") return this.deliveryEvictPrincipal(req);
     if (req.op === "evictPrincipals") {
       // The same executor over a SET: one shared sweep instead of one request and one scan per
       // principal. The set is bounded so one request stays inside one sweep's work.
@@ -810,6 +812,15 @@ export class EndpointDeliveryPlane {
       }
     }
     return { ok: false, error: `op "${req.op}" not supported on the delivery admin service` };
+  }
+
+  private async deliveryEvictSessionConnections(req: ControlRequest): Promise<ControlReply> {
+    // Exact connection filters are independent. Bound the shared work across auth replicas.
+    while (this.targetedEvictions.size >= 4) await Promise.race(this.targetedEvictions);
+    if (!this.plane3MayAct()) return { ok: false, error: "delivery: this daemon is not serving this shard (it is re-checking ownership); retry" };
+    const flight = this.deliveryEvictPrincipal(req).finally(() => { this.targetedEvictions.delete(flight); });
+    this.targetedEvictions.add(flight);
+    return flight;
   }
 
   private async deliveryEvictPrincipal(req: ControlRequest): Promise<ControlReply> {

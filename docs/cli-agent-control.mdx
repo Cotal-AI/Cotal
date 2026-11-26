@@ -421,7 +421,9 @@ manager's own words while the loop keeps trying, once per refusal rather than on
 Pressing the detach key ends the view with `Detached`. A remote terminal-session end, including
 process exit or manager shutdown, prints `Attach session ended`. Neither report claims the agent
 is still running or that its cleanup completed. Use `cotal ps` to check its current state.
-`--no-reconnect` restores the single-session behaviour.
+`--no-reconnect` restores the single-session behaviour. If the broker closes a user-auth terminal
+connection with an authorization error before an end frame arrives, `attach` reports that the
+connection ended, includes the broker error, and exits non-zero.
 If the auth service refuses access to the selected manager before the first session, `attach`
 reports `PERMISSION_DENIED` and exits 2 without opening a terminal session.
 

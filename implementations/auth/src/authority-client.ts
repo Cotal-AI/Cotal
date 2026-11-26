@@ -170,7 +170,7 @@ export function remoteManagerIssuerGrants(space: string, connId: string): { publ
 /** The CALLOUT REPLICA's store credential: what a callout-only replica reads to answer
  * a connect, and the evidence each answer writes. Leader reads of the auth, records and sessions
  * stores (`STREAM.INFO`, `STREAM.MSG.GET`), records `DIRECT.GET`, and `$KV` writes for native-key
- * issuance and exact session connection receipts. It holds no `STREAM.CREATE` or `UPDATE` and
+ * issuance and exact session connection receipts (create and revision-pinned purge). It holds no `STREAM.CREATE` or `UPDATE` and
  * no gate, credential, source, lifecycle or uid write: a replica ensures no store, mints no
  * credential and runs no barrier. */
 export function calloutReplicaGrants(space: string, connId: string): { publish: string[]; subscribe: string[] } {

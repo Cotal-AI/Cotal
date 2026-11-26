@@ -1,10 +1,11 @@
 import "./_session-build-freshness.js";
 import { createHmac } from "node:crypto";
+import { spawn } from "node:child_process";
 import { setTimeout as wait } from "node:timers/promises";
 import { Kvm } from "@nats-io/kv";
 import { jetstreamManager } from "@nats-io/jetstream";
 import { connect } from "@nats-io/transport-node";
-import { emitSentinel } from "@cotal-ai/smoke-kit";
+import { emitSentinel, killAndAwaitExit } from "@cotal-ai/smoke-kit";
 import { EP_AUTH_MARKER_TTL_MS, epAuthBucket, sessionsBucket, sessionLedgerKey, mintSessionId, mintLifecycleUid, mintCreds, newIdentity, setupSpaceStreams, standaloneConnectOpts } from "@cotal-ai/core";
 import { recordSessionConnection, reconcileSessionConnections } from "../src/session-connections.js";
 import { openAuthorityClient } from "../src/authority-client.js";
@@ -12,7 +13,8 @@ import { makeDeliveryAdminEvictor } from "../src/barrier-evict.js";
 import { startAuthService } from "../src/service-host.js";
 import { startHostedAuthFixture } from "./_hosted-auth-fixture.js";
 import { startDeliveryService } from "../../delivery/src/index.js";
-import { connectionEvictorCredsKey, deliveryCredsKey, membershipObserverCredsKey, membershipRwCredsKey } from "@cotal-ai/workspace";
+import { executeEviction } from "../../delivery/src/evict-exec.js";
+import { authDir, connectionEvictorCredsKey, deliveryCredsKey, membershipObserverCredsKey, membershipRwCredsKey, saveSpaceAuth, workspaceSecretStore } from "@cotal-ai/workspace";
 import * as core from "@cotal-ai/core";
 import type { NativeIssuance } from "../src/native-issuance.js";
 
@@ -144,6 +146,17 @@ try {
   check("G9 failed eviction retains evidence and live socket", (await kv.get(retry.key))?.operation === "PUT" && !retry.nc.isClosed() && transient > 0);
   await sweep(); await wait(100);
   check("G10 retry after failed eviction closes the honest socket", retry.nc.isClosed());
+  const lateRelease = await session();
+  await recordSessionConnection(kv, lateRelease.issuance, authority); await lateRelease.end();
+  const releaseWindowMs = 1500;
+  await sweep({ releaseWindowMs, evict: async (principal, connections) => {
+    const result = await evict(principal, connections);
+    if (principal === lateRelease.row.holder.principal) await wait(releaseWindowMs);
+    return result;
+  } });
+  check("verification begun inside the release window retains the receipt", (await kv.get(lateRelease.key))?.operation === "PUT");
+  await sweep({ releaseWindowMs });
+  check("verification begun after the release window removes the receipt", (await kv.get(lateRelease.key))?.operation === "PURGE");
   const missing = await session();
   await recordSessionConnection(kv, missing.issuance, authority);
   await jsm.streams.purge(`KV_${sessionsBucket(a.space)}`, { filter: `$KV.${sessionsBucket(a.space)}.${sessionLedgerKey(missing.row.sessionId)}` });
@@ -152,6 +165,30 @@ try {
   const legacy = await session();
   await recordSessionConnection(kv, legacy.issuance, authority); await legacy.end();
   await delivery.close(); delivery = undefined;
+  const releasedDelivery = process.env.COTAL_SMOKE_RELEASED_DELIVERY;
+  if (releasedDelivery !== undefined) {
+    const root = a.stateDir;
+    const store = workspaceSecretStore(root);
+    saveSpaceAuth(authDir(root), a.auth);
+    const keys = [deliveryCredsKey, membershipRwCredsKey, membershipObserverCredsKey, connectionEvictorCredsKey];
+    for (const key of keys) await store.put(key(a.space, { injected: false, root }), (await a.store.get(key(a.space, composition)))!);
+    const daemon = spawn(releasedDelivery, ["deliver", "--space", a.space, "--root", root, "--server", fx.servers], { cwd: root, env: { ...process.env, COTAL_TELEMETRY: "off", COTAL_SKIP_CONNECTOR_SEED: "1" }, stdio: ["ignore", "pipe", "pipe"] });
+    let output = "";
+    for (const stream of [daemon.stdout, daemon.stderr]) stream.on("data", (data: Buffer) => { output = (output + data.toString()).slice(-8192); });
+    let spawnError: Error | undefined;
+    daemon.on("error", (error) => { spawnError = error; });
+    try {
+      const deadline = Date.now() + 15_000;
+      while (!output.includes("delivery daemon up") && daemon.exitCode === null && !spawnError && Date.now() < deadline) await wait(50);
+      if (!output.includes("delivery daemon up")) throw new Error(`released delivery failed to start: ${spawnError ?? output}`);
+      const result = await evict(legacy.row.holder.principal, [legacy.issuance.connection!]);
+      console.log(`OBSERVED released delivery targeted reply: ${result.note}`);
+      check("released delivery cannot confirm a targeted eviction and leaves the connection open",
+        !result.verifiedGone && /not supported on the delivery admin service/.test(result.note ?? "") && !legacy.nc.isClosed());
+      await sweep();
+      check("released delivery leaves the ended connection receipt for retry", (await kv.get(legacy.key))?.operation === "PUT");
+    } finally { await killAndAwaitExit(daemon); }
+  }
   const legacyResponder = new core.CotalEndpoint({ space: a.space, servers: fx.servers, creds: await mintCreds(a.auth, newIdentity(), "delivery"), card: { name: "legacy-fixture", kind: "endpoint" }, channels: [], consume: false, registerPresence: false, watchPresence: false, watchChannels: false });
   await legacyResponder.start();
   let useHook = false;
@@ -209,6 +246,42 @@ try {
     const reordered = await reportEviction(principal, coordinates);
     check("H8 the auth caller accepts an exact echo with fields in a different order", reordered.verifiedGone && calls === 2);
   } finally { await adminCaller?.stop(); legacyReplies.unsubscribe(); await legacyResponder.stop(); }
+  const stalled = await session(), followingStall = await session();
+  for (const target of [stalled, followingStall]) {
+    await recordSessionConnection(kv, target.issuance, authority);
+    await target.end();
+  }
+  const timingResponder = new core.CotalEndpoint({ space: a.space, servers: fx.servers, creds: await mintCreds(a.auth, newIdentity(), "delivery"), card: { name: "timing-fixture", kind: "endpoint" }, channels: [], consume: false, registerPresence: false, watchPresence: false, watchChannels: false });
+  timingResponder.on("error", (error) => console.error(error));
+  await timingResponder.start();
+  let stalledAt: number | undefined, followingAt: number | undefined;
+  let timingLease: number | undefined;
+  let releaseStalled!: () => void;
+  const stalledReply = new Promise<void>((resolve) => { releaseStalled = resolve; });
+  try {
+    timingLease = await timingResponder.acquireDeliveryLease(0);
+    await timingResponder.startPlane3(() => [], { evictPrincipal: async (principal, connections) => {
+      if (principal === stalled.row.holder.principal) {
+        stalledAt = performance.now();
+        await stalledReply;
+      }
+      if (principal === followingStall.row.holder.principal) {
+        followingAt = performance.now();
+        return executeEviction(fx.servers, { root: a.stateDir, source: { secrets: a.store, injected: true, space: a.space }, expectedAccount: a.accountPublicKey }, principal, undefined, connections);
+      }
+      return { principal, connections, kicked: 0, remaining: 1, verifiedGone: false, scanComplete: false };
+    } });
+    timingLease = await timingResponder.markDeliveryLeaseReady(0, timingLease);
+    await sweep();
+    const gap = stalledAt === undefined || followingAt === undefined ? Infinity : Math.round(followingAt - stalledAt);
+    console.log(`OBSERVED targeted requests arrived ${gap} ms apart while the first reply was withheld`);
+    check("a stalled targeted reply does not block the following receipt", gap < 5000);
+    check("the healthy neighbor disconnects while unverified evidence is retained",
+      followingStall.nc.isClosed() && (await kv.get(followingStall.key))?.operation === "PURGE" && (await kv.get(stalled.key))?.operation === "PUT");
+  } finally {
+    releaseStalled();
+    try { await timingResponder.releaseDeliveryLease(0, timingLease); } finally { await timingResponder.stop(); }
+  }
   delivery = await startDeliveryService({ context: { accountPublicKey: a.accountPublicKey, lifecycleUid: mintLifecycleUid() }, space: a.space, servers: fx.servers, stateDir: a.stateDir, store: a.store, storeIdentity: a.store.identity });
   await sweep(); await wait(100);
   check("G14 supported delivery retry evicts the ended legacy-held connection", legacy.nc.isClosed());
