@@ -84,11 +84,12 @@ async function checkNarrowNeedsYouPalette(): Promise<void> {
 }
 
 async function checkSpaceOverviewPalette(): Promise<void> {
+  const cols = 120, rows = 32;
   const overview = "Enter open · r refresh";
   const action = "back to the space overview";
   for (const pinned of [true, false]) {
     const args = pinned ? ["--space", space] : [];
-    const s = new ConsoleSession([...args, "--server", SERVERS], home);
+    const s = new ConsoleSession([...args, "--server", SERVERS], home, {}, { cols, rows });
     try {
       if (!pinned) {
         if (!(await s.waitFor(`▸ ${space}`, 40_000))) throw new Error("The space overview did not list the space");
@@ -98,15 +99,19 @@ async function checkSpaceOverviewPalette(): Promise<void> {
       const opened = s.mark();
       s.write("\x10");
       if (!(await s.waitFor("Commands", 8_000, opened))) throw new Error("The command palette did not open");
-      const typed = s.mark();
       s.write("spaces");
+      const wanted = pinned ? "No matching commands" : action;
+      const deadline = Date.now() + 8_000;
+      let displayed = await screen(s.out, cols, rows);
+      while (!displayed.includes(wanted) && Date.now() < deadline) {
+        await wait(100);
+        displayed = await screen(s.out, cols, rows);
+      }
       if (pinned) {
-        const empty = await s.waitFor("No matching commands", 8_000, typed);
-        check("the pinned console does not suggest Spaces", empty && !clean(s.out.slice(typed)).includes(action), clean(s.out.slice(typed)).slice(-500));
+        check("the pinned console does not suggest Spaces", displayed.includes(wanted) && !displayed.includes(action), displayed);
         s.write("\x1b");
       } else {
-        const offered = await s.waitFor(action, 8_000, typed);
-        check("the console opened from the overview suggests Spaces", offered, clean(s.out.slice(typed)).slice(-500));
+        check("the console opened from the overview suggests Spaces", displayed.includes(wanted), displayed);
         const submitted = s.mark();
         s.write("\r");
         check("Spaces returns to the overview", await s.waitFor(overview, 8_000, submitted), clean(s.out.slice(submitted)).slice(-500));
