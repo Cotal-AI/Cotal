@@ -580,6 +580,13 @@ function missingValue(cmd: Command, words: readonly string[], flag: FlagSpec, be
     return { message: `\`run check\` does not take --${flag.name}`, remedy: `run the check without --${flag.name}` };
   if (cmd.name === "endpoint" && flag.name === "file" && helpPath(cmd, words).path[0] === "check")
     return { message: "`endpoint check` does not take --file", remedy: "omit --file and keep the contract path" };
+  if (cmd.name === "history") {
+    const sub = helpPath(cmd, words).path[0];
+    if (sub === "limit" && flag.name === "server")
+      return { message: "`history limit` does not take --server", remedy: "omit --server and use --space if you need to select a space" };
+    if (sub === "clear" && HISTORY_LIMIT_FLAGS.some((name) => name === flag.name))
+      return { message: `\`history clear\` does not take --${flag.name}`, remedy: `omit --${flag.name} from this command. Use it with \`history limit\` to change retention` };
+  }
   return { message: `--${flag.name} needs a value`, remedy: `write --${flag.name} ${flag.value ?? "<value>"}${beforeSeparator ? " before --" : ""}` };
 }
 
