@@ -1203,9 +1203,12 @@ export async function attach(args: ParsedArgs): Promise<void> {
   }
   if (verdict.kind === "failed") throw new CommandFailure("failed", "OPERATION_FAILED", verdict.message);
   const detached = verdict.kind === "ended" && verdict.reason === "detached";
+  const census = v.server !== undefined && brokerAddressForDisplay(v.server) !== v.server
+    ? `${codeSpan(`${displayCmd()} ps`)} with your original space and broker options`
+    : codeSpan(onRerun(`${displayCmd()} ps`, v));
   console.error(renderReport({ sections: [{ title: verdict.kind === "gone" ? "Attach target no longer available" : detached ? "Detached" : "Attach session ended", blocks: [
     { kind: "fields", rows: [["Agent", v.name]] },
-    { kind: "lines", lines: [{ text: verdict.kind === "gone" ? "The selected agent or incarnation was not available to this attach request." : detached ? "Detaching did not send a stop request." : "The terminal session ended. This view sent no agent stop request; run `cotal ps` to check the agent's current state.", tone: "hint" }] },
+    { kind: "lines", lines: [{ text: verdict.kind === "gone" ? "The selected agent or incarnation was not available to this attach request." : detached ? "Detaching did not send a stop request." : `The terminal session ended. This view sent no agent stop request. Run ${census} to check the agent's current state.`, tone: "hint" }] },
   ] }] }, "rich", process.stderr));
 }
 
