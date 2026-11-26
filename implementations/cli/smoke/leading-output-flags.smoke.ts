@@ -253,10 +253,19 @@ for (const [args, flag] of [
   [["--json", "-j=false", "status"], "-j"],
 ] as const) {
   const r = run([...args]);
+  const remedy = flag === "--plain" ? "omit --plain" : `omit ${flag} or pass it without a value`;
   check(`${args.join(" ")} preserves the JSON refusal`, r.status === 1 && r.stderr === "" &&
     r.envelope?.command === "status" && r.envelope.outcome === "refused" && r.envelope.error?.code === "USAGE_INVALID" &&
-    r.envelope.error.message === `${flag} takes no value` && r.envelope.error.remedy === `omit ${flag} or pass it without a value`, shown(r));
+    r.envelope.error.message === `${flag} takes no value` && r.envelope.error.remedy === remedy, shown(r));
 }
+
+const retryStatus = run(["status", "--json"]);
+check("omitting the malformed --plain flag returns the requested JSON status", retryStatus.status === 0 && retryStatus.stderr === "" &&
+  retryStatus.envelope?.command === "status" && retryStatus.envelope.outcome === "ok", shown(retryStatus));
+
+const malformedPlainOnly = run(["--plain=false", "status"]);
+check("without JSON, the refusal still offers bare --plain", malformedPlainOnly.status === 1 && malformedPlainOnly.stdout === "" &&
+  malformedPlainOnly.stderr.includes("omit --plain or pass it without a value"), shown(malformedPlainOnly));
 
 const malformedOutput = run(["--json=false", "status", "--", "--json"]);
 check("only a valid output switch before -- requests JSON", malformedOutput.status === 1 && malformedOutput.stdout === "" &&
