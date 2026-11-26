@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import fs, { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { mintLifecycleUid } from "@cotal-ai/core";
+import * as auth from "@cotal-ai/auth";
 import {
   findActorUnified, grantActor, grantManagedActor, managedActorLedgerDir, revokeManagedActorIf,
   withManagedGrantTransaction, type ManagedGrantTransaction,
@@ -18,6 +20,147 @@ let passed = 0, failed = 0;
 function check(name: string, run: () => void): void {
   try { run(); passed++; console.log(`  ✓ ${name}`); }
   catch (error) { failed++; console.error(`  ✗ ${name}`, error); }
+}
+
+function subtreeCells(): void {
+  const { commitManagedGrantSubtreeRevoke, snapshotManagedGrantSubtree } = auth;
+  const make = (actor: string, parent?: string) => ({
+    ...input, ...auth.newActorToken(), actor, lifecycleUid: mintLifecycleUid(), scope: ["spawn"],
+    ...(parent === undefined ? {} : { parent }),
+  });
+  const key = (row: { owner: string; actor: string }) => `${row.owner}.${row.actor}`;
+  const put = ({ actorToken: _actorToken, ...row }: ReturnType<typeof make>) => auth.grantManagedActor(dir, row);
+  const read = (row: { owner: string; actor: string }) => auth.findManagedActor(dir, row.owner, row.actor);
+  const coord = ({ owner, actor, lifecycleUid }: ReturnType<typeof make>) => ({ owner, actor, lifecycleUid });
+  const snapshot = (row: ReturnType<typeof make>) => {
+    const result = snapshotManagedGrantSubtree(dir, row.owner, row.actor, row.lifecycleUid);
+    if (typeof result === "string") assert.fail(`Expected a subtree snapshot, got ${result}`);
+    return result;
+  };
+  check("the grant writers' transaction is not exported from the package root", () => {
+    assert.equal("withManagedGrantTransaction" in auth, false);
+  });
+  check("a child moved to another valid parent makes commit change nothing", () => {
+    const root = make("move_root"), other = make("other");
+    put(root);
+    put(other);
+    const child = make("moved", key(root));
+    put(child);
+    const before = snapshot(root);
+    const moved = { ...child, parent: key(other) };
+    put(moved);
+    assert.equal(auth.ledgerAuthorizeAgentExchange(dir, owner, moved.actor, moved.actorToken).parent, key(other));
+    assert.deepEqual(commitManagedGrantSubtreeRevoke(dir, before), { status: "changed" });
+    assert.equal(read(root)?.lifecycleUid, root.lifecycleUid);
+    assert.equal(read(moved)?.parent, key(other));
+    assert.equal(read(moved)?.lifecycleUid, moved.lifecycleUid);
+  });
+  check("a child granted after the snapshot makes commit change nothing", () => {
+    const root = make("late_root");
+    put(root);
+    const before = snapshot(root);
+    assert.deepEqual(before.descendants, []);
+    const late = make("late_child", key(root));
+    put(late);
+    assert.deepEqual(commitManagedGrantSubtreeRevoke(dir, before), { status: "changed" });
+    assert.equal(read(root)?.lifecycleUid, root.lifecycleUid);
+    assert.equal(auth.ledgerAuthorizeAgentExchange(dir, owner, late.actor, late.actorToken).lifecycleUid, late.lifecycleUid);
+    assert.deepEqual(commitManagedGrantSubtreeRevoke(dir, snapshot(root)), { status: "removed", removed: [coord(late), coord(root)] });
+    assert.equal(read(late), undefined);
+    assert.equal(read(root), undefined);
+  });
+  check("a native-only subtree includes cross-owner admin launches and revokes leaf first", () => {
+    const root = { ...make("admin_root"), scope: ["admin"] };
+    put(root);
+    const child = { ...make("foreign_child", key(root)), owner: `u_${"b".repeat(26)}` };
+    put(child);
+    const leaf = { ...make("foreign_leaf", key(child)), owner: child.owner };
+    put(leaf);
+    const before = snapshot(root);
+    assert.deepEqual(before, { root: coord(root), descendants: [
+      { ...coord(leaf), parent: key(child) }, { ...coord(child), parent: key(root) },
+    ] });
+    assert.equal(read(leaf)?.lifecycleUid, leaf.lifecycleUid);
+    assert.deepEqual(commitManagedGrantSubtreeRevoke(dir, before), { status: "removed", removed: [coord(leaf), coord(child), coord(root)] });
+    for (const row of [leaf, child, root]) assert.equal(read(row), undefined);
+    assert.deepEqual(commitManagedGrantSubtreeRevoke(dir, before), { status: "changed" });
+    assert.equal(snapshotManagedGrantSubtree(dir, root.owner, root.actor), "absent");
+  });
+  check("parent changes inside the same subtree preserve all rows", () => {
+    const root = make("same_root"), parent = make("same_parent", key(root)), leaf = make("same_leaf", key(root));
+    for (const row of [root, parent, leaf]) put(row);
+    const before = snapshot(root);
+    put({ ...leaf, parent: key(parent) });
+    assert.deepEqual(commitManagedGrantSubtreeRevoke(dir, before), { status: "changed" });
+    for (const row of [root, parent, leaf]) assert.equal(read(row)?.lifecycleUid, row.lifecycleUid);
+  });
+  check("root and descendant lifecycle changes preserve all rows", () => {
+    const root = make("replace_root"), child = make("replace_child", key(root));
+    put(root);
+    put(child);
+    const before = snapshot(root);
+    const newChild = make(child.actor, key(root));
+    put(newChild);
+    assert.deepEqual(commitManagedGrantSubtreeRevoke(dir, before), { status: "changed" });
+    const newRoot = make(root.actor);
+    put(newRoot);
+    assert.equal(snapshotManagedGrantSubtree(dir, root.owner, root.actor, root.lifecycleUid), "superseded");
+    assert.deepEqual(commitManagedGrantSubtreeRevoke(dir, before), { status: "changed" });
+    assert.equal(read(newRoot)?.lifecycleUid, newRoot.lifecycleUid);
+    assert.equal(read(newChild)?.lifecycleUid, newChild.lifecycleUid);
+  });
+  check("a delegation cycle errors on snapshot and invalidates an earlier commit", () => {
+    const root = { ...make("cycle_root"), scope: ["admin"] };
+    put(root);
+    const child = { ...make("cycle_child", key(root)), scope: ["admin"] };
+    put(child);
+    const before = snapshot(root);
+    put({ ...root, parent: key(child) });
+    assert.throws(() => snapshot(root), /delegation cycle/);
+    assert.deepEqual(commitManagedGrantSubtreeRevoke(dir, before), { status: "changed" });
+    assert.equal(read(root)?.parent, key(child));
+    assert.equal(read(child)?.parent, key(root));
+  });
+  check("an interactive descendant invalidates commit and is never deleted", () => {
+    const root = make("mixed_root");
+    put(root);
+    const before = snapshot(root);
+    const child = auth.grantActor(dir, { owner, actor: "interactive_link", parent: key(root),
+      scope: [], allowSubscribe: [], allowPublish: [] });
+    assert.deepEqual(commitManagedGrantSubtreeRevoke(dir, before), { status: "changed" });
+    assert.throws(() => snapshot(root), /contains an interactive grant/);
+    assert.equal(read(root)?.lifecycleUid, root.lifecycleUid);
+    assert.equal(auth.findInteractiveActor(dir, owner, child.actor)?.lifecycleUid, child.lifecycleUid);
+  });
+  check("a failed delete reports only rows already removed and preserves its ancestors", () => {
+    const root = make("failure_root");
+    const child = make("failure_child", key(root));
+    const leaf = make("failure_leaf", key(child));
+    for (const row of [root, child, leaf]) put(row);
+    const before = snapshot(root);
+    const failAt = join(managedActorLedgerDir(dir), auth.ledgerRowFilename(owner, child.actor));
+    const failure = new Error("simulated filesystem delete failure");
+    const remove = fs.rmSync;
+    fs.rmSync = (path, options) => {
+      if (path === failAt) throw failure;
+      return remove(path, options);
+    };
+    syncBuiltinESMExports();
+    try {
+      assert.throws(() => commitManagedGrantSubtreeRevoke(dir, before), (error: unknown) => {
+        assert.ok(error instanceof auth.ManagedGrantSubtreeRevokeError);
+        assert.deepEqual(error.removed, [coord(leaf)]);
+        assert.equal(error.cause, failure);
+        return true;
+      });
+    } finally {
+      fs.rmSync = remove;
+      syncBuiltinESMExports();
+    }
+    assert.equal(read(leaf), undefined);
+    assert.equal(read(child)?.lifecycleUid, child.lifecycleUid);
+    assert.equal(read(root)?.lifecycleUid, root.lifecycleUid);
+  });
 }
 
 try {
@@ -69,6 +212,7 @@ try {
   check("a managed row cannot be re-granted interactively", () => assert.throws(() => grantActor(dir, { owner, actor: "worker", scope: [], allowSubscribe: [], allowPublish: [] }), /managed agent/));
   check("foreground custody is a closed shape", () => assert.throws(() => grantManagedActor(dir, { ...input, actor: "bad", custody: { kind: "foreground", instanceId: manager } } as never), /foreground custody carries no other field/));
   check("a rejected custody writes no row", () => assert.equal(findActorUnified(dir, owner, "bad"), undefined));
+  subtreeCells();
 } finally {
   rmSync(dir, { recursive: true, force: true });
 }

@@ -151,6 +151,35 @@ the host call converge on one barrier.
 | `retired` at this uid | `200 { retired: true, lifecycleUid, alreadyRetired: true }` |
 | `active`/`retiring` at this uid | the barrier runs, then `200 { retired: true, lifecycleUid }` |
 
+### Revoke a managed grant subtree
+
+A trusted host that owns the actor ledger can revoke a managed grant and its named managed
+descendants in two steps. This removes ledger rows only. The host still owns broker cleanup and
+lifecycle retirement.
+
+1. Call `snapshotManagedGrantSubtree(dir, owner, actor, expectedLifecycleUid?)` from `@cotal-ai/auth`.
+   It returns `absent` if there is no managed root, or `superseded` if the root has a different
+   lifecycle UID from the one requested. Otherwise it returns `{ root, descendants }` without
+   deleting any grant. Every coordinate contains `owner`, `actor`, and `lifecycleUid`. Each
+   descendant also contains its `parent` principal. Descendants are ordered leaves first. The
+   snapshot includes grants with no corresponding host database row and descendants under other
+   owners when the ledger records those links. A cycle in the subtree throws.
+2. Record the host's retirement intents for the returned coordinates. Then call
+   `commitManagedGrantSubtreeRevoke(dir, snapshot)`. It checks the root lifecycle and the complete
+   managed subtree under the same lock that grant writers take. If a row is missing or has a
+   different lifecycle, or a descendant was added or changed parents, the commit returns
+   `{ status: "changed" }` without deleting anything. Take a fresh snapshot and reconcile the
+   intents before retrying. On success it returns `{ status: "removed", removed }` with the exact
+   coordinates deleted, leaves first and the root last.
+
+If deletion fails, `ManagedGrantSubtreeRevokeError` carries the coordinates already deleted in
+`removed`. The failed grant's ancestors have not been deleted. The host can use the reported
+coordinates to reconcile its retirement intents.
+
+This API does not retire interactive grants. A snapshot of a subtree that contains an interactive
+grant throws, and an interactive grant added to the subtree after a snapshot makes the commit
+return `changed`.
+
 
 ### Durable cleanup results
 
