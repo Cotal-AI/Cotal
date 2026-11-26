@@ -11,6 +11,7 @@ import { resolveSpace } from "../lib/status.js";
 import { claimExtensionMutation, extensionUpdatePassOwnedBy } from "../lib/ext-mutation.js";
 import { withInstallUmask } from "../lib/install-umask.js";
 import { npmInvocation, npmLifecycleEnvironment } from "../lib/npm-invocation.js";
+import { assertExtensionCorePeer } from "../lib/extension-core-peer.js";
 import { runSeed } from "../seed/reconcile.js";
 import { assertStageVerifier, stageExtensions } from "../lib/extension-stage.js";
 import { connectorConfigDir, extensionReinstallAdvice, isExtensionPathSpec as isPathSpec, resolveExtensionEntry } from "@cotal-ai/workspace";
@@ -30,7 +31,7 @@ export const extFlags = [
 
 const usage = (message: string): CommandFailure => new CommandFailure("refused", "USAGE_INVALID", message);
 const REGISTRY_SPEC = /^(@[^/@]+\/[^/@]+|[^/@]+)(@.*)?$/;
-const EXT_USAGE = "usage: cotal ext [list] [--json|--plain] | ext add <npm-package> | ext remove <name> | ext root | ext seed [--repair|--reset|--force]";
+const EXT_USAGE = "usage: cotal ext [list] [--json|--plain] | ext add <npm-package> [--json] | ext remove <name> | ext root | ext seed [--repair|--reset|--force]";
 
 /** Parent binding for update's internal isolated re-add. Ordinary `ext add` never reads it. */
 export const EXT_UPDATE_PARENT_ENV = "COTAL_EXT_UPDATE_PARENT";
@@ -56,8 +57,8 @@ export function validateExtArguments(args: ParsedArgs): void {
     throw usage("cotal ext seed takes only one of --repair, --reset, or --force");
   }
   // `ext root` stays a raw path for `$(cotal ext root)`.
-  if (sub !== undefined && (sub !== "list" || args.positionals.length !== 1) && (v.json || v.plain)) {
-    throw usage(sub === "root" ? "ext root prints its path raw and has no --json or --plain" : `ext ${sub}: --json and --plain are taken by the listing only`);
+  if (sub !== undefined && (sub !== "list" || args.positionals.length !== 1) && (v.plain || (v.json && sub !== "add"))) {
+    throw usage(sub === "root" ? "ext root prints its path raw and has no --json or --plain" : `ext ${sub}: --plain is for listing; --json is for listing or adding`);
   }
   if ((sub === "add" || sub === "remove") && (args.positionals.length !== 2 || !operand)) throw usage(EXT_USAGE);
   if (sub === "add" && operand && !isPathSpec(operand) && !REGISTRY_SPEC.test(operand))
@@ -93,13 +94,14 @@ export async function ext(args: ParsedArgs): Promise<void> {
   // and these extensions never appear in `npm list -g` (they live in a cotal-owned prefix, not npm's
   // global tree), so erroring here left the honest answer undiscoverable.
   if (sub === undefined || (sub === "list" && !rest.length)) return list(presentationOf(v));
-  if (sub === "add") return addExtension(atThisVersion(rest[0]!)).catch(exitOnInterruptedAdd);
+  if (sub === "add") return operatorAdd(rest[0]!, v.json === true);
   if (sub === "__update-add" && rest[0] && rest[1]) {
     if (Number(process.env[EXT_UPDATE_PARENT_ENV]) !== process.ppid)
       throw new Error("internal update extension replay must be launched by its recorded parent");
     if (!extensionUpdatePassOwnedBy(process.ppid))
       throw new Error("internal update extension replay requires its parent to own the extension update pass");
-    return addExtension(rest[1], rest[0], true).catch(exitOnInterruptedAdd);
+    await addExtension(rest[1], rest[0], true).catch(exitOnInterruptedAdd);
+    return;
   }
   if (sub === "__stage-verify" && rest.length === 6) {
     const [pkg, spec, ownerConfig, nonce, parent, source] = rest as [string, string, string, string, string, string];
@@ -120,6 +122,16 @@ export async function ext(args: ParsedArgs): Promise<void> {
     return runSeed({ repair, reset, force });
   }
   throw usage(EXT_USAGE);
+}
+
+async function operatorAdd(spec: string, json: boolean): Promise<void> {
+  try {
+    const pkg = await addExtension(atThisVersion(spec), undefined, false, json ? console.error : console.log);
+    if (json) writeResult("json", { command: "ext", target: null, result: { kind: "extension-add", pkg } }, () => ({ sections: [] }));
+  } catch (error) {
+    if (json && error instanceof ExtensionAddInterrupted) throw new CommandFailure("failed", "OPERATION_FAILED", error.message);
+    exitOnInterruptedAdd(error);
+  }
 }
 
 async function npm(args: string[], prefix: string, seeding = false): Promise<{ status: number | null; output: string }> {
@@ -219,7 +231,7 @@ function linkExtensionPeers(recorded: readonly InstalledExtension[], operationPk
 /** `cotal ext add <spec>`: install one extension into the operator prefix and record what it provides.
  *  `announce` takes the closing `✓ added` line; `cotal setup` sends it to stderr when stdout carries
  *  a result. A signal during the add rolls it back and throws {@link ExtensionAddInterrupted}. */
-export async function addExtension(spec: string, expectedPkg?: string, borrowMutation = false, announce: (line: string) => void = console.log): Promise<void> {
+export async function addExtension(spec: string, expectedPkg?: string, borrowMutation = false, announce: (line: string) => void = console.log): Promise<string> {
   const dir = extensionsDir();
   // A file:/path spec is resolved to an absolute path so the prefix install works from any cwd.
   const isPath = isPathSpec(spec);
@@ -243,14 +255,17 @@ export async function addExtension(spec: string, expectedPkg?: string, borrowMut
   // a repair after a parent SIGKILL sees the exact orphan identity and refuses to race it.
   if (seeding) markSeedChildLive(process.env.COTAL_EXT_SEEDING as string, Number(process.env.COTAL_EXT_SEEDING_PARENT));
   try {
-    mkdirSync(dir, { recursive: true, mode: 0o755 });
-    if (!existsSync(join(dir, "package.json"))) {
-      // `wx`: a dangling link at the name passes the check above, and must not be followed.
-      writeFileSync(join(dir, "package.json"), `${JSON.stringify({ name: "cotal-extensions", private: true }, null, 2)}\n`, { flag: "wx", mode: 0o644 });
-      provenance.wrote("extensions prefix", join(dir, "package.json"));
+    if (seeding || expectedPkg !== undefined) {
+      mkdirSync(dir, { recursive: true, mode: 0o755 });
+      if (!existsSync(join(dir, "package.json"))) {
+        // `wx`: a dangling link at the name passes the check above, and must not be followed.
+        writeFileSync(join(dir, "package.json"), `${JSON.stringify({ name: "cotal-extensions", private: true }, null, 2)}\n`, { flag: "wx", mode: 0o644 });
+        provenance.wrote("extensions prefix", join(dir, "package.json"));
+      }
     }
     if (seeding) await addTransaction(pkg, resolved, expectedPkg, true, announce);
-    else await installExtensionSet([{ pkg, spec: resolved }], announce, isPath ? { localOperand: spec } : undefined);
+    else await installExtensionSet([{ pkg, spec: resolved }], announce, { checkCorePeer: expectedPkg === undefined, ...(isPath ? { localOperand: spec } : {}) });
+    return pkg;
   } finally {
     if (seeding) clearChildMarker();
     releaseMutation();
@@ -275,7 +290,7 @@ function dropForeignLockEntries(lock: { packages?: Record<string, { extraneous?:
 export async function installExtensionSet(
   requests: readonly ExtensionInstallRequest[],
   announce: (line: string) => void = console.error,
-  opts?: { isolate?: boolean; localOperand?: string },
+  opts?: { isolate?: boolean; localOperand?: string; checkCorePeer?: boolean },
 ): Promise<void> {
   if (!requests.length) return;
   const ownerConfig = connectorConfigDir();
@@ -333,6 +348,7 @@ export async function installExtensionSet(
     for (const request of requests) {
       const meta = installedExtensionPackage(request.pkg);
       if (!meta || request.version !== undefined && meta.version !== request.version) throw new Error(`extension set installed an unexpected version of ${request.pkg}`);
+      if (opts?.checkCorePeer) assertExtensionCorePeer(request.pkg, meta.peerDependencies?.["@cotal-ai/core"]);
       const dir = extensionPackageDir(request.pkg);
       const entry = resolveExtensionEntry(dir, meta);
       if (!existsSync(entry)) {

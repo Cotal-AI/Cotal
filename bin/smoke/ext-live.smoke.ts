@@ -25,7 +25,7 @@ import { createHash } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { recordMesh } from "@cotal-ai/workspace";
+import { hostPackageDir, recordMesh } from "@cotal-ai/workspace";
 import { assertSmokeSandboxDown, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
 
 // macOS commonly exposes tmpdir() through /var -> /private/var (and this harness may add another
@@ -146,6 +146,59 @@ const goodFixture = fixture("local extension", GOOD, { name: "cotal-ext-fixture"
 
 // -- empty state ---------------------------------------------------------------------------------
 ok("ext list starts empty", /No extensions installed\./.test(cotal(["ext", "list"]).stdout));
+
+{
+  const core = "@cotal-ai/core";
+  const { version } = JSON.parse(readFileSync(join(hostPackageDir(core), "package.json"), "utf8")) as { version: string };
+  const name = "demo-wrong-peer";
+  const pkg = "cotal-wrong-peer-demo";
+  const marker = join(sandbox, "wrong-peer-imported");
+  const body = `import { writeFileSync } from "node:fs";
+import { registry } from "@cotal-ai/core";
+writeFileSync(${JSON.stringify(marker)}, "imported");
+registry.register({ kind: "command", name: ${JSON.stringify(name)}, summary: "Print a greeting", run() { console.log("peer ran"); } });`;
+  const incompatible = fixture(pkg, body, { peerDependencies: { [core]: ">=99.0.0" } });
+  const operand = `./${pkg}`;
+  const list = () => cotal(["ext", "list", "--json"]);
+  const inventory = list().stdout;
+  const wrong = cotal(["ext", "add", operand]);
+  ok("a cleanly importing package with an incompatible core range is refused",
+    wrong.status === 2 && wrong.stdout === "" && wrong.stderr.includes(pkg) && wrong.stderr.includes(">=99.0.0")
+      && wrong.stderr.includes(`${core} ${version}`) && wrong.stderr.includes("`npm view cotal-ai versions --json`"), wrong);
+  ok("a fresh refusal does not create the extension root or expose or import the command",
+    !existsSync(extDir) && !existsSync(marker) && list().stdout === inventory && cotal([name]).status !== 0);
+  ok("a fresh refusal leaves no staging or rollback files",
+    readdirSync(join(configDir, "cotal")).every((entry) => !entry.startsWith(".extensions.")));
+
+  const compatible = fixture("cotal-ext-compatible-core", body, { peerDependencies: { [core]: version } });
+  const added = cotal(["ext", "add", compatible, "--json"]);
+  const receipt = JSON.parse(added.stdout);
+  ok("an exact compatible peer installs with one JSON receipt and its command runs",
+    added.status === 0 && receipt.outcome === "ok" && receipt.result.pkg === "cotal-ext-compatible-core" && cotal([name]).stdout.trim() === "peer ran", added);
+  const prior = list().stdout;
+  const files = ["package.json", "package-lock.json", "extensions.json"].map((file) => join(extDir, file));
+  const hash = (path: string) => createHash("sha256").update(readFileSync(path)).digest("hex");
+  const before = files.map(hash);
+  const inode = statSync(extDir).ino;
+  rmSync(marker);
+  const metadata = join(incompatible, "package.json");
+  const manifest = JSON.parse(readFileSync(metadata, "utf8"));
+  writeFileSync(metadata, JSON.stringify({ ...manifest, name: "cotal-ext-compatible-core", peerDependenciesMeta: { [core]: { optional: true } } }));
+  const retry = cotal(["ext", "add", operand, "--json"]);
+  const refusal = JSON.parse(retry.stdout);
+  ok("JSON refuses an optional incompatible core on re-add with one document and the boundary exit",
+    retry.status === 2 && refusal.outcome === "refused" && refusal.error.code === "DEPENDENCY_UNAVAILABLE"
+      && refusal.error.message.includes("cotal-ext-compatible-core") && refusal.error.message.includes(">=99.0.0")
+      && refusal.error.message.includes(version) && refusal.error.remedy.includes("npm view cotal-ai versions --json"), retry);
+  ok("the refused re-add preserves the live root, manifest and npm metadata and discards its stage",
+    statSync(extDir).ino === inode && files.every((file, i) => hash(file) === before[i]) && list().stdout === prior
+      && !existsSync(marker) && !existsSync(join(extDir, "node_modules", pkg))
+      && readdirSync(join(configDir, "cotal")).every((entry) => !entry.startsWith(".extensions.")));
+  const invalid = cotal(["ext", "add", fixture("cotal-ext-invalid-core", body, { peerDependencies: { [core]: "nightly" } })]);
+  ok("an unparseable core range is refused with its declaration",
+    invalid.status === 1 && invalid.stderr.includes("SCHEMA_INVALID") && invalid.stderr.includes("nightly") && invalid.stderr.includes(version), invalid);
+  ok("the compatible install still removes", cotal(["ext", "remove", "cotal-ext-compatible-core"]).status === 0);
+}
 
 // -- A: add --------------------------------------------------------------------------------------
 {

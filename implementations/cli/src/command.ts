@@ -1219,7 +1219,7 @@ async function dispatchCli(registry: Registry, argv: string[], opts: RunCliOptio
     // A command that declares a structured output reports by the outcome table. A target it could
     // not resolve or connect to is refused before any request, under the refusal's own code; a
     // failure it did not classify is unknown: it may have had effects that cannot be attributed.
-    if (structured(cmd, mode)) {
+    if (structured(cmd, mode) && (json || cmd.name !== "ext" || mode !== "add")) {
       const targetError = isConnectRefusal(e) ? e.cause : e;
       const spaceRemedy = spaceChoiceRemedy(targetError, cmd.name, parsed, rest);
       const renderRemedy = spaceRemedy !== undefined ? () => spaceRemedy

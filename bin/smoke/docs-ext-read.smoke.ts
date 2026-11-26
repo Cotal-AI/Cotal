@@ -416,18 +416,17 @@ for (const [args, why] of [
     readFileSync(seededMetadata, "utf8") === "{}" && readFileSync(manifestPath, "utf8") === manifest);
 }
 
-// ── ext: root stays raw; the other subcommands refuse the listing's flags ────────────────────────
+// ── ext: root stays raw; add and list declare structured output ─────────────────────────────────
 {
   const root = run(["ext", "root"]);
   check("ext root prints only the path", root.status === 0 && root.stdout === `${join(xdg, "cotal", "extensions")}\n`, shown(root));
   const unknownRootOption = run(["ext", "root", "--jso"]);
   check("ext root tells the caller to drop an unknown option", unknownRootOption.status === 1 && unknownRootOption.stdout === "" &&
     /Unknown option '--jso'\n  drop the unknown option\n/.test(unknownRootOption.stderr) && !unknownRootOption.stderr.includes("put -- before it"), shown(unknownRootOption));
-  // Only the listing declares structured output, so the other modes refuse its flags as text, and keep
-  // their own exits.
+  // Modes without structured output refuse its flags as text and keep their own exits.
   for (const args of [["ext", "root", "--json"], ["ext", "root", "--plain"], ["ext", "remove", "x", "--json"], ["ext", "seed", "--plain"]]) {
     const r = run(args);
-    check(`${args.join(" ")} is refused as text with no envelope, exit 1`, r.status === 1 && r.stdout === "" && /--json or --plain|taken by the listing only/.test(r.stderr), shown(r));
+    check(`${args.join(" ")} is refused as text with no envelope, exit 1`, r.status === 1 && r.stdout === "" && /--json or --plain|--plain is for listing/.test(r.stderr), shown(r));
   }
   for (const operand of ["not/a/package", "@acme/fake-runtime@1.2.3", "connector:claude"]) {
     const invalid = run(["ext", "remove", operand]);
@@ -440,7 +439,7 @@ for (const [args, why] of [
   }
   const listHelp = run(["ext", "list", "--help"]);
   const addHelp = run(["ext", "add", "--help"]);
-  check("help names the listing's structured output and no other mode's", /Structured output: json, plain/.test(listHelp.stdout) && !/Structured output: /i.test(addHelp.stdout), { list: listHelp.stdout.slice(-200), add: addHelp.stdout.slice(-200) });
+  check("help names JSON and plain for listing and only JSON for adding", /Structured output: json, plain/.test(listHelp.stdout) && /Structured output: json\s*$/m.test(addHelp.stdout), { list: listHelp.stdout.slice(-200), add: addHelp.stdout.slice(-200) });
 }
 
 finish();
