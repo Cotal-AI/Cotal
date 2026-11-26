@@ -71,7 +71,7 @@ import { historySetupFailureRecords, membershipSetupFailureRecords, watchSetupFa
 import { HISTORY_LIMIT_FLAGS } from "./commands/history-limit.js";
 import { CatalogPreparationError, prepareCatalogCommand } from "./commands/sync.js";
 import { keepStartupNotice, type StartupNotice } from "./lib/interrupt-notice.js";
-import { metadataPositionals } from "./lib/command-path.js";
+import { metadataPositionals, parserOptions } from "./lib/command-path.js";
 import { chooseMeshTarget, spaceChoiceRemedy } from "./lib/choose-target.js";
 import { registryFailure } from "./lib/registry-errors.js";
 import { FlagValueRefusal } from "./lib/flag-value-refusal.js";
@@ -583,10 +583,6 @@ function misspelledOption(cmd: Command, rest: readonly string[], flagNames: read
   return undefined;
 }
 
-function parserOptions(cmd: Command) {
-  return Object.fromEntries((cmd.flags ?? []).map(({ name, type, short }) => [name, { type, ...(short ? { short } : {}) }]));
-}
-
 /** Strip standalone globals, but keep any global where a string option needs its value. */
 function stripGlobalFlags(cmd: Command, words: string[]): string[] {
   if (takesWordsRaw(cmd)) return words;
@@ -917,7 +913,7 @@ function helpPath(cmd: Command, rest: readonly string[]): { path: string[]; unkn
  *  does, so a mistyped subcommand never gets its group's help. */
 function printHelpFor(cmd: Command, rest: readonly string[]): void {
   const { path, unknown } = helpPath(cmd, rest);
-  paintFor(process.stdout, () => printHelpPath(cmd, unknown === undefined ? path : [...path, unknown]));
+  paintFor(process.stdout, () => printHelpPath(cmd, unknown === undefined ? path : [...path, unknown], undefined, undefined, undefined, rest));
 }
 
 /** A service invocation takes its preset's flags, and `manager <verb>` is `service <verb> manager`.

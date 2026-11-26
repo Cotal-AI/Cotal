@@ -841,10 +841,17 @@ An unsupported source spelling returns `USAGE_INVALID` before installation.
 A package can declare its entry through a root `exports` entry such as
 `"exports": { ".": { "import": "./greet.mjs" } }` without also declaring `main`.
 The shorthand `"exports": { "import": "./greet.mjs" }` selects the same entry.
+For conditional root exports, Cotal checks `node`, `import` and `default` in the order they appear,
+including inside nested conditions. For example, `"node": { "import": "./greet.mjs" }` before
+`"default": "./fallback.mjs"` selects `greet.mjs` both at installation and when loading the extension.
 An npm `main` such as `"./greet"` can resolve to `greet.js` without naming the suffix.
 If the installed npm package is missing its entry, `add` reports the path relative to that package.
 For a local extension, check the package contents with `npm pack --dry-run ./example-extension`.
 Include the entry in `files` or generate it before running `cotal ext add ./example-extension` again.
+If npm cannot open a tarball named in a local extension's relative `file:` dependency, `add` names the dependency.
+Use `npm pack --dry-run ./example-extension` to check the source package contents.
+For local use, set the `file:` dependency to the absolute path of an existing archive and run `cotal ext add ./example-extension` again.
+For distribution, use a dependency npm can install from a registry.
 Give `remove` the package name as listed by `cotal ext list`, without a version.
 For a scoped package such as `@acme/_helper`, include the scope and the leading underscore.
 If the package is already absent, `remove` reports that nothing was removed and exits 0.

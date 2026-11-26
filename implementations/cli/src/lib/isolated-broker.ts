@@ -1,10 +1,13 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { randomBytes, randomUUID } from "node:crypto";
 import {
+  closeSync,
   constants,
   copyFileSync,
+  fstatSync,
   lstatSync,
   mkdirSync,
+  openSync,
   realpathSync,
   readdirSync,
   readFileSync,
@@ -193,7 +196,8 @@ export function createAttemptClone(root: string, sourceStore: string, attemptId:
       }
       if (!current.isDirectory() || current.isSymbolicLink() ||
           current.dev !== identity.dev || current.ino !== identity.ino) return;
-      rmSync(path, { recursive: true });
+      // Windows can briefly keep the stopped broker's JetStream file handles busy.
+      rmSync(path, { recursive: true, maxRetries: process.platform === "win32" ? 5 : 0 });
     },
   };
 }
@@ -321,6 +325,7 @@ function authenticatedConfig(
   port: number,
   storeDir: string,
   logins: readonly (IsolatedMaintenanceLogin & { permissions: Record<string, unknown> })[],
+  reload: { user: string; password: string } | undefined,
 ): string {
   const users = logins.map((login) => ({
     user: login.user,
@@ -332,10 +337,33 @@ function authenticatedConfig(
     port,
     max_control_line: 65536,
     jetstream: { store_dir: storeDir },
-    ...(account === undefined
-      ? { authorization: { users } }
-      : { accounts: { [account]: { jetstream: true, users } } }),
+    ...(account === undefined ? { authorization: { users } } : {}),
+    ...(reload ? { system_account: "$SYS" } : {}),
+    ...(account !== undefined || reload ? { accounts: {
+      ...(account === undefined ? {} : { [account]: { jetstream: true, users } }),
+      ...(reload ? { $SYS: { users: [{ ...reload, permissions: {
+        publish: { allow: ["$SYS.REQ.SERVER.*.RELOAD"] }, subscribe: { allow: ["_INBOX_RELOAD.*"] },
+      } }] } } : {}),
+    } } : {}),
   }, null, 2)}\n`;
+}
+
+async function reloadOnWindows(server: string, login: { user: string; password: string }, deadline: number): Promise<void> {
+  const remaining = () => {
+    const ms = deadline - Date.now();
+    if (ms <= 0) throw new Error("the maintenance broker did not confirm its reload before the deadline");
+    return ms;
+  };
+  const nc = await connect({ servers: server, user: login.user, pass: login.password, inboxPrefix: "_INBOX_RELOAD", reconnect: false, timeout: remaining() });
+  try {
+    const id = nc.info?.server_id;
+    if (!id || !/^[A-Z0-9]+$/.test(id)) throw new Error("the maintenance broker did not report a valid server ID");
+    const reply = (await nc.request(`$SYS.REQ.SERVER.${id}.RELOAD`, undefined, { noMux: true, timeout: remaining() })).json<{
+      server?: { id?: string }; error?: { code?: number };
+    }>();
+    if (reply.server?.id !== id) throw new Error("the maintenance broker did not confirm its reload");
+    if (reply.error) throw new Error(`the maintenance broker rejected its reload (NATS ${reply.error.code})`);
+  } finally { await nc.close(); }
 }
 
 function removeOwnedFileStrict(file: IsolatedRunFile): void {
@@ -351,6 +379,35 @@ function removeOwnedFileStrict(file: IsolatedRunFile): void {
 }
 
 const delay = (ms: number) => new Promise((resolveWait) => setTimeout(resolveWait, ms));
+
+function launchWatchdog(bin: string, configPath: string, logFd: number, deadline: Date, handshake: IsolatedRunFile): ChildProcess {
+  // The watchdog owns the broker. Coordinator death or the deadline kills its child, and the
+  // coordinator gets the broker PID only from the attempt's identity-checked handshake file.
+  const script = [
+    "const [bin,config,parent,deadline,pids,dev,ino]=process.argv.slice(1);",
+    "const fs=require('node:fs');",
+    "const {spawn}=require('node:child_process');",
+    "if (fs.lstatSync(pids).isSymbolicLink()) throw new Error('watchdog handshake is a symbolic link');",
+    "const noFollow=process.platform==='win32'?0:fs.constants.O_NOFOLLOW|fs.constants.O_NONBLOCK;",
+    "const pidsFd=fs.openSync(pids,fs.constants.O_WRONLY|noFollow);",
+    "const pin=fs.fstatSync(pidsFd,{bigint:true});",
+    "if(!pin.isFile()||String(pin.dev)!==dev||String(pin.ino)!==ino||pin.size!==0n)throw new Error('watchdog handshake changed before spawn');",
+    "const broker=spawn(bin,['-c',config],{stdio:['ignore','ignore','inherit'],windowsHide:true});",
+    "broker.on('error',err=>{console.error(err.message);process.exit(1);});",
+    "if(!broker.pid)return;",
+    "try{fs.writeFileSync(pidsFd,JSON.stringify({broker:broker.pid,watchdog:process.pid}));fs.closeSync(pidsFd)}catch(err){console.error(err.message);broker.kill('SIGKILL');}",
+    "const alive=p=>{try{process.kill(p,0);return true}catch{return false}};",
+    "const stop=()=>{try{process.kill(broker.pid,'SIGTERM')}catch{};setTimeout(()=>{if(alive(broker.pid))try{process.kill(broker.pid,'SIGKILL')}catch{}},3000).unref();};",
+    "const tick=()=>{if(!alive(Number(parent))||Date.now()>=Number(deadline))stop();};",
+    "broker.on('exit',()=>process.exit(0));",
+    "setInterval(tick,250);tick();",
+  ].join("");
+  return spawn(
+    process.execPath,
+    ["-e", `(()=>{${script}})()`, bin, configPath, String(process.pid), String(deadline.getTime()), handshake.path, handshake.dev, handshake.ino],
+    { detached: true, stdio: ["ignore", "ignore", logFd], windowsHide: true },
+  );
+}
 
 export async function startIsolatedBroker(options: {
   root: string;
@@ -380,12 +437,14 @@ export async function startIsolatedBroker(options: {
   const logins: Array<IsolatedMaintenanceLogin & { permissions: Record<string, unknown> }> = [
     maintenanceLogin(options.space, options.initialScope),
   ];
+  // Foreground NATS on Windows uses a system request rather than SIGHUP. This account cannot
+  // access the maintenance data and can only request a reload on this isolated listener.
+  const reload = process.platform === "win32" ? { user: `reload_${randomUUID()}`, password: randomBytes(32).toString("hex") } : undefined;
   const prefix = `${options.attemptId ?? options.label}-${randomUUID()}`;
   const configPath = join(runDir, `${prefix}.conf`);
   const logPath = join(runDir, `${prefix}.log`);
   const pidsPath = join(runDir, `${prefix}.pids`);
-  writeFileSync(configPath, authenticatedConfig(account, port, options.storeDir, logins), { flag: "wx", mode: 0o600 });
-  writeFileSync(logPath, "", { flag: "wx", mode: 0o600 });
+  writeFileSync(configPath, authenticatedConfig(account, port, options.storeDir, logins, reload), { flag: "wx", mode: 0o600 });
   writeFileSync(pidsPath, "", { flag: "wx", mode: 0o600 });
   // The `.conf` embeds the plaintext maintenance login. `wx` above keeps the exclusive create
   // (never write over a pre-planted file); harden the win32 ACL after, where mode 0o600 is a no-op.
@@ -395,7 +454,7 @@ export async function startIsolatedBroker(options: {
     const stat = lstatSync(path, { bigint: true });
     return { path, dev: stat.dev.toString(), ino: stat.ino.toString() };
   };
-  const runFiles: readonly IsolatedRunFile[] = [fileIdentity(configPath), fileIdentity(logPath), fileIdentity(pidsPath)];
+  const pidsFile = fileIdentity(pidsPath);
   let logOffset = 0;
   const readLogTail = (): string => {
     try {
@@ -416,30 +475,14 @@ export async function startIsolatedBroker(options: {
     while (alive(pid) && Date.now() < hard) await delay(100);
     if (alive(pid)) throw new Error(`process ${pid} did not exit`);
   };
-  // The watchdog OWNS the broker as its child: after this single spawn there is no instant at
-  // which a broker can run unwatched — coordinator death or the deadline kills it via the parent
-  // check, and the broker pid reaches us only through the watchdog's durable handshake file. It
-  // reopens the log and handshake files this attempt created with `wx`, and never through a link.
-  const watchdogScript = [
-    "const [bin,config,log,parent,deadline,pids]=process.argv.slice(1);",
-    "const fs=require('node:fs');",
-    "const {spawn}=require('node:child_process');",
-    "const fd=fs.openSync(log,fs.constants.O_WRONLY|fs.constants.O_APPEND|fs.constants.O_NOFOLLOW);",
-    "const pidsFd=fs.openSync(pids,fs.constants.O_WRONLY|fs.constants.O_TRUNC|fs.constants.O_NOFOLLOW);",
-    "const broker=spawn(bin,['-c',config],{stdio:['ignore','ignore',fd],windowsHide:true});",
-    "fs.writeFileSync(pidsFd,JSON.stringify({broker:broker.pid,watchdog:process.pid}));",
-    "fs.closeSync(pidsFd);",
-    "const alive=p=>{try{process.kill(p,0);return true}catch{return false}};",
-    "const stop=()=>{try{process.kill(broker.pid,'SIGTERM')}catch{};setTimeout(()=>{if(alive(broker.pid))try{process.kill(broker.pid,'SIGKILL')}catch{}},3000).unref();};",
-    "const tick=()=>{if(!alive(Number(parent))||Date.now()>=Number(deadline))stop();};",
-    "broker.on('exit',()=>process.exit(0));",
-    "setInterval(tick,250);tick();",
-  ].join("");
-  const watchdog = spawn(
-    process.execPath,
-    ["-e", watchdogScript, bin, configPath, logPath, String(process.pid), String(options.deadline.getTime()), pidsPath],
-    { detached: true, stdio: "ignore", windowsHide: true },
-  );
+  const logFd = openSync(logPath, "ax", 0o600);
+  let runFiles: readonly IsolatedRunFile[];
+  let watchdog: ChildProcess;
+  try {
+    const logStat = fstatSync(logFd, { bigint: true });
+    runFiles = [fileIdentity(configPath), { path: logPath, dev: String(logStat.dev), ino: String(logStat.ino) }, pidsFile];
+    watchdog = launchWatchdog(bin, configPath, logFd, options.deadline, pidsFile);
+  } finally { closeSync(logFd); }
   watchdog.unref();
   const watchdogOwner = owner(watchdog, `${options.label}-watchdog-${randomUUID()}`);
   let brokerOwner: ProcessOwner | undefined;
@@ -479,7 +522,12 @@ export async function startIsolatedBroker(options: {
           // not the union of every authority used earlier in the attempt.
           logins.splice(0, logins.length, login);
           // The private open: never through a symlink, and the plaintext login stays 0o600.
-          writeSecretFile(configPath, authenticatedConfig(account, port, options.storeDir, logins));
+          writeSecretFile(configPath, authenticatedConfig(account, port, options.storeDir, logins, reload));
+          const reloadDeadline = Math.min(options.deadline.getTime(), Date.now() + RELOAD_TIMEOUT_MS);
+          if (reload) {
+            await reloadOnWindows(server, reload, reloadDeadline);
+            return login;
+          }
           readLogTail();
           try {
             process.kill(brokerOwner!.pid, "SIGHUP");
@@ -488,7 +536,6 @@ export async function startIsolatedBroker(options: {
           }
           // Accumulate partial lines from this operation's fresh cursor. A preceding phase's
           // acknowledgement cannot confirm its replacement principal.
-          const reloadDeadline = Math.min(options.deadline.getTime(), Date.now() + RELOAD_TIMEOUT_MS);
           let reloadDiagnostics = "";
           while (Date.now() < reloadDeadline) {
             if (!alive(brokerOwner!.pid))

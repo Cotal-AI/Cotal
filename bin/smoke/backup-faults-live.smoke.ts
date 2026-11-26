@@ -412,7 +412,7 @@ async function backupStageFaultScenario(): Promise<void> {
       assert.notEqual(faulted.status, 0, `${stage} fault must fail the backup\nstdout:\n${faulted.stdout}`);
       assert.match(faulted.stderr, injected, `${stage} fault reports its injected failure`);
       if (!noSpace) {
-        assert.match(faulted.stderr, new RegExp(`then run \`cotal backup create \\S*artifact-${stage}\` again`), `${stage} fault names the same create as its next step`);
+        assert.match(faulted.stderr, new RegExp(`then run \`(?:pnpm )?cotal backup create \\S*artifact-${stage}\` again`), `${stage} fault names the same create as its next step`);
         assert.match(faulted.stderr, /the preserved cut is still ready; fix the cause in the native detail/, `${stage} fault says the cut is still ready`);
       }
       assert.equal(journalState(root), "ready", `${stage} fault returns the maintenance journal to ready`);
@@ -425,9 +425,9 @@ async function backupStageFaultScenario(): Promise<void> {
       if (noSpace) {
         assert.equal(faulted.status, 5, `disk-full failure exits 5\n${faulted.stderr}`);
         const next = faulted.stderr.split("\nNext\n")[1] ?? "";
-        const retry = /then run (`{2,})(cotal backup create .+?)\1 again/.exec(next)?.[2];
+        const retry = /then run (`{2,})((?:pnpm )?cotal backup create .+?)\1 again/.exec(next)?.[2];
         assert.ok(retry, `Next gives a copyable retry after freeing space\n${faulted.stderr}`);
-        must("paste the disk-full retry", spawnSync("sh", ["-c", `cotal() { "$COTAL_TEST_TSX" "$COTAL_TEST_CLI" "$@"; }\n${retry}`], {
+        must("paste the disk-full retry", spawnSync("sh", ["-c", `cotal() { "$COTAL_TEST_TSX" "$COTAL_TEST_CLI" "$@"; }; pnpm() { "$@"; }\n${retry}`], {
           cwd: root, env: { ...env, COTAL_TEST_TSX: tsx, COTAL_TEST_CLI: cliPath }, encoding: "utf8", timeout: 240_000,
         }));
         must("verify at the original disk-full destination", run("backup", "verify", destination));

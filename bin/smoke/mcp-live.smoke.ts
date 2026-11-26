@@ -134,6 +134,22 @@ async function competingNames(space: string, mode: "race" | "sequential"): Promi
   }
 }
 
+async function boundedNames(space: string, name: string, fallback: string, label: string): Promise<void> {
+  const first = new Rpc(space, `${label}-one`);
+  const second = new Rpc(space, `${label}-two`);
+  try {
+    await Promise.all([first.initialize(), second.initialize()]);
+    const original = await first.call("cotal_connect", { name });
+    const duplicate = await second.call("cotal_connect", { name });
+    check(`${label}: stdio connects both hosts and reports the bounded fallback`,
+      !original.result?.isError && text(original).startsWith(`Connected as ${name}.\n`) &&
+      !duplicate.result?.isError && text(duplicate).startsWith(`Connected as ${fallback} (${JSON.stringify(name)} was taken).\n`),
+      text(duplicate).split("\n")[0]);
+  } finally {
+    await Promise.all([first.end(), second.end()]);
+  }
+}
+
 function run(args: string[]) {
   return spawnSync(process.execPath, [bin, ...args], { cwd: scratch, env, encoding: "utf8", timeout: 30_000 });
 }
@@ -382,6 +398,8 @@ try {
   check("open-mesh EOF removes its identity record", identities().length === 0);
   await competingNames(openSpace, "sequential");
   await competingNames(openSpace, "race");
+  await boundedNames(openSpace, "a".repeat(128), `${"a".repeat(126)}_2`, "maximum-length name");
+  await boundedNames(openSpace, `${"b".repeat(125)}🙂z`, `${"b".repeat(125)}_2`, "supplementary character at the cut");
   await inboxOverflow(openSpace);
 
   const userSpace = `mcpuser${process.pid}`;

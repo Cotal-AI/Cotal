@@ -493,6 +493,7 @@ export function App({
       setNotice(`deleting #${c.channel}…`);
       void deleteChannel({ ...controlCtx, space: ep.space }, c.channel).then((r) => {
         if (!r.ok) return setNotice(`delchan: ${r.error}`);
+        discardChatHistory(c.channel);
         setNotice(`deleted #${c.channel} · ${r.purged} messages purged`);
         setActiveChannel((ch) => (ch === c.channel ? null : ch));
       });
@@ -687,7 +688,7 @@ export function App({
           onClose={() => setNewAgent(false)}
           onBack={() => { setNewAgent(false); setPalette({ active: true, query: "" }); }} />
           : <CommandPalette active query={palette.query} snapshot={mesh} canWrite={!!canWrite}
-            canControl={!!canControl} width={size.cols} readManaged={readPaletteAgents}
+            canControl={!!canControl} canBack={!!onBack} width={size.cols} readManaged={readPaletteAgents}
             onChange={(query) => setPalette({ active: true, query })} onRun={runPaletteLine}
             onNewAgent={() => { setPalette({ active: false, query: "" }); setNewAgent(true); }}
             onCancel={() => setPalette({ active: false, query: "" })} />}

@@ -73,7 +73,7 @@ const USER_AUTH_TRUST = "(IdP trust and actor ledger)";
 
 /** What removing a user-auth space's IdP trust and actor ledger leaves the next start to do. */
 export function userAuthTrustNote(done: boolean): string {
-  return `${done ? "Removed" : "Removes"} the IdP trust and the actor ledger of this user-auth space, so every actor grant is lost. A later up needs \`cotal up --user-auth --idp <auth base URL>\`, and each actor needs \`cotal actor grant\` again.`;
+  return displayRemedy(`${done ? "Removed" : "Removes"} the IdP trust and the actor ledger of this user-auth space, so every actor grant is lost. A later \`up\` from the stack's project folder needs \`cotal up --user-auth --idp <auth base URL>\`, and each actor needs \`cotal actor grant\` again.`);
 }
 type Target = (typeof TARGETS)[number];
 type CleanValues = {

@@ -135,10 +135,10 @@ try {
   const attempt = active.restore.attemptId;
   assert.ok(stdout.includes(`restored the backup registry as restore attempt ${attempt}`), stdout);
   const prefix = `cd ${shellPath(root)} && ${launcher} backup cleanup-fallback ${attempt}`;
-  assert.ok(command === `${prefix} --yes --discard-history`, stdout);
+  assert.equal(command, `${prefix} --dry-run`, stdout);
   check("the foreground receipt and previous-store warning name the project", stdout.includes(`\`${prefix}\` deletes it only with --discard-history`));
   const before = readFileSync(journalPath, "utf8");
-  const preview = spawnSync("sh", ["-c", shell + command.replace(/ --yes --discard-history$/, " --dry-run --discard-history")], {
+  const preview = spawnSync("sh", ["-c", shell + command], {
     cwd: invokingFolder, env: { ...env, TEST_TSX: tsx, TEST_CLI: cli }, encoding: "utf8", timeout: 240_000,
   });
   must("copied cleanup preview runs from the invoking folder", preview);
@@ -154,10 +154,10 @@ try {
   const wrongRoot = runFrom(invokingFolder, "backup", "cleanup-fallback", attempt, "--dry-run");
   check("bare cleanup refuses at the wrong root", wrongRoot.status === 2 && wrongRoot.stderr.includes("TARGET_NOT_FOUND"));
   check("wrong-root refusal points to the original project without claiming cleanup completed", wrongRoot.stderr.includes("original project folder") && !wrongRoot.stderr.includes("finds nothing to do"));
-  const cleanup = spawnSync("sh", ["-c", shell + command], {
+  const cleanup = spawnSync("sh", ["-c", shell + `${prefix} --yes --discard-history`], {
     cwd: invokingFolder, env: { ...env, TEST_TSX: tsx, TEST_CLI: cli }, encoding: "utf8", timeout: 240_000,
   });
-  must("copied cleanup retires the restore from the invoking folder", cleanup);
+  must("explicit cleanup retires the restore from the invoking folder", cleanup);
   const status = run("status", "--space", space, "--plain");
   must("status after copied cleanup", status);
   check("status no longer shows Maintenance", !/^Maintenance$/m.test(status.stdout));

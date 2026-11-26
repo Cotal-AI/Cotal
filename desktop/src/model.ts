@@ -142,7 +142,7 @@ export function initialSpace(spaces: readonly AccountSpace[], requested?: string
 export function connectionView(state: string): { title: string; description: string; connected: boolean } {
   switch (state) {
     case "launch-ready": return { title: "This computer is connected", description: "Manage the spaces that can launch agent applications on this computer.", connected: true };
-    case "no-application": return { title: "No agent application found", description: "Install a supported application named below, then choose Check again.", connected: false };
+    case "no-application": return { title: "No agent app is installed", description: "Install one from Agent apps, then choose Check again.", connected: false };
     case "connected": return { title: "Not connected", description: "The connection is not yet ready to launch agent applications.", connected: false };
     case "approval-pending": return { title: "Waiting for owner approval", description: "The space owner must approve this computer. No connection is claimed yet.", connected: false };
     case "connecting": return { title: "Connecting this computer", description: "Checking that this computer can launch agent applications.", connected: false };
@@ -155,7 +155,7 @@ export function connectionView(state: string): { title: string; description: str
 export interface RefusalView { title: string; description: string; action: "login" | "connect" | "refresh" | "spaces" | "install"; label: string }
 export function refusalView(code: string, applications: readonly string[] = []): RefusalView {
   switch (code) {
-    case "NO_AVAILABLE_CONNECTOR": return { title: "No agent application found", description: `Install ${applications.length ? new Intl.ListFormat("en", { type: "disjunction" }).format(applications) : "a supported agent application"}. Make sure it opens in your login terminal, then check again.`, action: "connect", label: "Check again" };
+    case "NO_AVAILABLE_CONNECTOR": return { title: "No agent app is installed", description: `Install ${applications.length ? new Intl.ListFormat("en", { type: "disjunction" }).format(applications) : "an agent app"} from Agent apps, then check again.`, action: "connect", label: "Check again" };
     case "SEATS_ACTIVE": return { title: "Agent sessions are still running", description: "The connection cannot be updated while agent applications are using it. Stop those sessions, then check again.", action: "connect", label: "Check again" };
     case "DENIED": return { title: "Sign-in was declined", description: "This computer was not approved in your browser. You can try again when you are ready.", action: "login", label: "Try sign-in again" };
     case "EXPIRED": return { title: "Your code has expired", description: "This code can no longer approve your sign-in. Get a new code to continue in your browser.", action: "login", label: "Get a new code" };
