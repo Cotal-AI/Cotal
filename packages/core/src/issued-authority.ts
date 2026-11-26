@@ -747,11 +747,11 @@ export interface PreparedListing {
  */
 export async function prepareListing(
   seam: ListingSeam,
-  args: { space: string; owner: string; actor: string; uid: string; connId: string; horizon: number; sources: readonly IssuedSourceRef[]; expiresAt?: number },
+  args: { space: string; owner: string; actor: string; uid: string; connId: string; horizon: number; tokenExpiry?: number; sources: readonly IssuedSourceRef[]; expiresAt?: number },
   mint: (listing?: ListingBinding) => Record<string, unknown>,
 ): Promise<PreparedListing> {
   const { space, owner, actor, uid, horizon } = args;
-  const acceptedToken = listingAcceptedToken(args.connId, horizon);
+  const acceptedToken = listingAcceptedToken(args.connId, args.tokenExpiry ?? horizon);
   const unbound = (): PreparedListing => ({ permissions: mint(), commit: async () => {} });
   const existing = await seam.nc.request(acceptedReadGrant(space, acceptedToken), new Uint8Array(0), { timeout: 3000 });
   const code = existing.headers?.code ?? 0;

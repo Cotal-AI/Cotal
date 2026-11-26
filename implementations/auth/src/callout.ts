@@ -37,7 +37,7 @@ import { assertUserInboxConnId, calloutReaderId, decodeNatsJwt, nativeNkeySigner
 import type { JWTVerifyGetKey, CryptoKey } from "jose";
 import { expiredBearerPrincipal, validateUserToken, type ValidatedUserToken } from "./token.js";
 import { ConnectLimiter, ConnectRateLimited } from "./connect-limit.js";
-import { SESSION_EXP, ENDPOINT_CALLER_EXP, ENDPOINT_CALLER_RECHECK } from "./permissions.js";
+import { SESSION_EXP, ENDPOINT_CALLER_EXP, ENDPOINT_CALLER_RECHECK, MANAGED_CONNECTION_EXP } from "./permissions.js";
 import type { NativeIssuanceRecorder } from "./native-issuance.js";
 import { assertNativeServiceCalloutAuthority, issueNativeServiceCallout, type NativeServiceCalloutAuthority } from "./native-service-callout.js";
 import type { ServiceKeys } from "./store.js";
@@ -225,7 +225,7 @@ export interface StartAuthCalloutOpts {
   token: { key: JWTVerifyGetKey | CryptoKey; issuer: string };
   /** The spawn-ledger hook: THROW to deny. Client-supplied actor claims are only as good as this
    *  server-side check — the flip wires the manager's authenticated spawn ledger in here. */
-  authorizeActor: (t: ValidatedUserToken) => void | Promise<void>;
+  authorizeActor: (t: ValidatedUserToken) => void | { exp: number; grant: string } | Promise<void | { exp: number; grant: string }>;
   /** Allow-list of trusted nats-server ids (`server_id.id`) — the tightest request-provenance pin:
    *  a request whose server id is not listed is dropped (no response). STRONGLY RECOMMENDED for any
    *  hardened / multi-server deploy. When omitted, the ONLY barrier left is NATS $SYS system-subject
@@ -242,7 +242,7 @@ export interface StartAuthCalloutOpts {
    *  valid. Neither form may contain subject metacharacters.
    *  `readerId` is core's `calloutReaderId` of this connection, which keys the observer and admin
    *  profiles' history-reader deletes: the client chooses the connId, so the connId cannot key them. */
-  permissionsFor: (t: ValidatedUserToken, connId: string, readerId: string) => Record<string, unknown> | Promise<Record<string, unknown>>;
+  permissionsFor: (t: ValidatedUserToken, connId: string, readerId: string, managedExpiry?: number) => Record<string, unknown> | Promise<Record<string, unknown>>;
   /** REQUIRED: durably record the minted JWT's broker user key (`req.user_nkey`) against the validated
    *  principal BEFORE the response leaves (SPEC 13.1 `natkey.`). Awaited; a throw becomes the signed
    *  deny and the minted JWT is never sent. A thrown record write may still have landed: evidence of
@@ -258,9 +258,7 @@ export interface StartAuthCalloutOpts {
   log?: (line: string) => void;
   /** Deadline, concurrency and slow-line limits. Absent: every default. */
   limits?: AuthCalloutLimits;
-  /** Audit hook fired on each successful mint, BEFORE the response is sent — the minted user JWT
-   *  plus its principal and bound expiry. For metering/audit and for asserting the revocation lever
-   *  (the mint's `exp` is bound to the bearer's, so broker access dies with the bearer). */
+  /** Audit hook for each successful mint: the minted broker JWT, principal and broker expiry. */
   onMint?: (info: { jwt: string; principal: string; exp: number }) => void;
 }
 
@@ -507,17 +505,17 @@ export function startAuthCallout(nc: CalloutConnection, opts: StartAuthCalloutOp
         send(c, sealed, "minted", "", () => opts.onMint?.(minted));
         return;
       }
-      await step(c, "ledger", () => opts.authorizeActor(validated));
+      const managed = await step(c, "ledger", () => opts.authorizeActor(validated));
       // The history-reader deletes key on what the SERVER assigned this connection, never on the
       // client-chosen connId: two connections of one principal may name the same connId, and neither
       // may be granted the deletes of the other's readers. A request without a client id throws →
       // signed deny.
       const readerId = calloutReaderId(req.server_id.id, req.client_info?.id as number);
-      const { [SESSION_EXP]: sessionExp, [ENDPOINT_CALLER_EXP]: endpointExp, [ENDPOINT_CALLER_RECHECK]: endpointRecheck, ...perms } =
-        await step(c, "policy", () => opts.permissionsFor(validated, connId, readerId));
+      const { [SESSION_EXP]: sessionExp, [ENDPOINT_CALLER_EXP]: endpointExp, [ENDPOINT_CALLER_RECHECK]: endpointRecheck, [MANAGED_CONNECTION_EXP]: seatExp, ...perms } =
+        await step(c, "policy", () => opts.permissionsFor(validated, connId, readerId, managed?.exp));
       // #2312: a session-caller connection carries EXACTLY the static arm's expiry, the grant's,
       // and only when the permission builder vouched for it from the live session row.
-      const exp = validated.act.view === "session-caller" ? sessionExp : endpointExp === undefined ? validated.exp : Math.min(validated.exp, endpointExp as number);
+      const exp = validated.act.view === "session-caller" ? sessionExp : seatExp ?? Math.min(validated.exp, typeof endpointExp === "number" ? endpointExp : validated.exp);
       if (typeof exp === "number" && exp <= Math.floor(Date.now() / 1000)) throw new Error("callout: endpoint caller authority expired before signing");
       if (typeof exp !== "number" || !Number.isSafeInteger(exp)) throw new Error("callout: no bound expiry for this connection");
       // Stamp the principal into the minted JWT so the live identity is recoverable server-side: the
@@ -535,19 +533,20 @@ export function startAuthCallout(nc: CalloutConnection, opts: StartAuthCalloutOp
           fromPublic(req.user_nkey),
           fromPublic(opts.dataAccount.pub),
           { ...perms, tags: principalTags(validated.owner, validated.act.actor) },
-          { signer: userSigner, exp }, // NATS access dies with the bearer (a session-caller: with its grant)
+          { signer: userSigner, exp },
         );
         return { userJwt: jwt, iat: signedIat(jwt) };
       });
       await step(c, "ledger", () => opts.recordIssuance({ userNkey: req.user_nkey, token: validated, connId, iat, exp,
-        ...(validated.act.view === "session-caller" ? { connection: { serverId: req.server_id.id, cid: req.client_info!.id! } } : {}),
+        ...(validated.act.view === "session-caller" || (seatExp !== undefined && exp > validated.exp) ? { connection: { serverId: req.server_id.id, cid: req.client_info!.id! } } : {}),
+        ...(managed && seatExp !== undefined && exp > validated.exp ? { managed: managed.grant } : {}),
       }));
       if (endpointRecheck !== undefined) {
         if (typeof endpointRecheck !== "function") throw new Error("callout: invalid endpoint caller final check");
         await step(c, "policy", () => endpointRecheck());
       }
       const sealed = await step(c, "sign", () => seal(c, { jwt: userJwt }));
-      if (exp <= Math.floor(Date.now() / 1000)) throw new Error("callout: authority expired before response release");
+      if ((seatExp === undefined ? exp : Math.min(exp, validated.exp)) <= Math.floor(Date.now() / 1000)) throw new Error("callout: authority expired before response release");
       send(c, sealed, "minted", "", () => opts.onMint?.({ jwt: userJwt, principal: key, exp }));
     } catch (e) {
       if (e === ANSWERED || c.answered) return;

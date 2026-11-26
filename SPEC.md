@@ -1357,6 +1357,29 @@ those are the other `/exchange` forms, `/manager-instances`, `/manager-service-a
 chat-session routes, `/tool-result-human-proof/verify` and `/tool-result-consent/issue`. The
 bearer's expiry, and with it the connection's, is bounded by the proof's.
 
+**Managed seat connections.** The managed exchange bearer is valid for up to 300 seconds for a
+new connect. For a Manager-custodied agent using an ordinary bearer with the full 300-second
+lifetime, the callout sets the broker-issued credential's deadline to the lesser of 3600 seconds
+after mint and the live admission credential's expiry. Connections with separately approved
+endpoint caller grants keep their existing, shorter deadline.
+It MUST recheck the managed grant, delegation envelope and admission before releasing the signed
+response. Shorter bearers, foreground agents and views retain their separate bounds. The
+broker user JWT is bound to the broker's per-connect key and cannot admit another connection.
+A renewable endpoint replaces this connection around half-life, using a fresh short bearer and
+draining requests before reconnect. If it cannot get or prove fresh material, it retains the live
+connection and retries with backoff. A broker closes the connection at its issued deadline even
+if the authority is unreachable.
+
+The authority records authenticated evidence of the exact broker server and connection IDs, the
+actor lifecycle and root credential, the grant digest and the issued deadline before releasing a
+broker credential that outlasts the bearer. It rechecks the grant, its ancestor envelope, and the
+live root against this evidence, including after restart. Once they cease to authorize the socket,
+it requests verified native eviction through delivery-admin for the exact broker connection.
+Lifecycle retirement also evicts through its existing barrier. When the evictor cannot complete
+the request, the revoked socket can retain its already-minted grants until its deadline, for up to
+3600 seconds instead of 300. It cannot use that connection credential to open another socket or
+exchange for a fresh bearer. Operations that independently recheck live authority still refuse.
+
 **Connect limits.** The auth service MAY limit connects per actor and per owner, charging a bearer
 whose signature verifies to the principal it names even after it expires, and per client host for a
 bearer that does not verify. Buckets are per space: a process serving several spaces MUST keep a
@@ -5823,7 +5846,10 @@ and the per-key `DIRECT.GET` of the listing's accepted row. That row's token is 
 lowercase hex characters of SHA-256 over `"cotal.listing.v1\0"`, the connection id, `"\0"`, and the
 horizon in decimal. The connection id is the credential's nkey on a static mint and the inbox name
 at a user-auth callout. The horizon is the credential's expiry on a static mint and the bearer's
-expiry at the callout, so a credential without an expiry carries no listing generation. The issuer
+expiry at the callout, so a credential without an expiry carries no listing generation. A managed
+seat's longer broker credential uses its broker deadline as the generation and evidence horizon.
+Its accepted-row token still uses the presented bearer's expiry so the connected client can find
+the broker deadline without a second authority request. The issuer
 writes the evidence, attempt row and accepted row as for any issuance, and the evidence records the
 credential's complete ceiling, its legacy rows included. When the accepted row already exists, the
 issuer reuses its generation only if the row names the same triple, the generation is still active

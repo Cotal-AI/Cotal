@@ -284,6 +284,7 @@ const FIXTURE: Record<string, { publish: string[]; subscribe: string[] }> = {
     "$KV.cotal_records_d32m.lifecycle.>",
     "$KV.cotal_records_d32m.uid.>",
     "$KV.cotal_auth_d32m.sessionconn.*",
+    "$KV.cotal_auth_d32m.managedconn.*",
     "$KV.cotal_auth_d32m.consent.*",
     // Chat admission and sweep: holder index, owner quota, sweep cursor (exact arity, no `.>`).
     "$KV.cotal_auth_d32m.chatholder.*.*",
@@ -302,6 +303,7 @@ const FIXTURE: Record<string, { publish: string[]; subscribe: string[] }> = {
     "$JS.API.DIRECT.GET.KV_cotal_records_d32m.>",
     "$KV.cotal_auth_d32m.natkey.>",
     "$KV.cotal_auth_d32m.sessionconn.*",
+    "$KV.cotal_auth_d32m.managedconn.*",
   ], subscribe: ["_INBOX_ibxconn0123456789.>"] },
   "environment-admission-index": { publish: [
     "$JS.API.INFO", "$JS.API.STREAM.CREATE.KV_cotal_environment_managers_d32m",

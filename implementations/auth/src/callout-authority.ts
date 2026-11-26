@@ -15,12 +15,13 @@ import {
 import type { ManagerInstanceIdentity } from "@cotal-ai/workspace";
 import { startAuthCallout, type AuthCalloutLimits, type CalloutAuth, type CalloutConnection } from "./callout.js";
 import { chatAwareAclResolver, type ChatSessionAuthority } from "./chat-session-authority.js";
-import { authorizeConnectCredential, type ConnectReader } from "./connect-reader.js";
+import { authorizeConnectCredential, readConnectCredentialExpiry, type ConnectReader } from "./connect-reader.js";
 import type { ConnectLimiter } from "./connect-limit.js";
 import type { UserTokenIssuer } from "./issuer.js";
-import { ledgerAclResolver, ledgerAuthorizeConnect } from "./ledger.js";
+import { AGENT_BEARER_TTL_SEC, assertWithinSpawnerGrant, findManagedActor, ledgerAclResolver, ledgerAuthorizeConnect } from "./ledger.js";
 import { registryStores, type LifecycleRegistry } from "./lifecycle-registry.js";
 import { recordSessionConnection } from "./session-connections.js";
+import { managedGrantImage, recordManagedConnection } from "./managed-connections.js";
 import { makeNativeIssuanceRecorder, type NativeIssuanceRecorder } from "./native-issuance.js";
 import type { NativeServiceCalloutAuthority } from "./native-service-callout.js";
 import { calloutPermissions, type EndpointCallerResolver, type ListingIssuer, type UserCallerIssuer } from "./permissions.js";
@@ -81,7 +82,7 @@ export function managerGateReads(deps: {
 
 /** The callout's hooks, as `startAuthCallout` and `calloutPermissions` take them. */
 export interface CalloutAuthority {
-  authorizeConnect: (t: ValidatedUserToken) => Promise<void>;
+  authorizeConnect: (t: ValidatedUserToken) => Promise<{ exp: number; grant: string } | undefined>;
   /** The callout's required native-key issuance recorder (SPEC 13.1 `natkey.`): create-only, then
    *  the same connect authority re-read before the minted JWT may leave. */
   recordIssuance: NativeIssuanceRecorder;
@@ -122,12 +123,28 @@ interface CalloutAuthorityDeps {
   recordsJsm: JetStreamManager;
   /** Present only when the service host bootstrapped its caller payload. */
   checkCallerPayload?: () => Promise<void>;
+  probeManagedLifetimes?: { bearerSec: number; connectionSec: number };
   /** Throws once this process must authorize nothing more: a fenced plane, a stopping replica. */
   refuse: () => void;
 }
 
+const MANAGED_CONNECTION_TTL_SEC = 60 * 60;
+
+function renewableManagedGrant(dir: string, t: ValidatedUserToken, bearerTtl: number) {
+  if (t.act.view !== undefined || t.iat === undefined || t.exp - t.iat !== bearerTtl) return;
+  const row = findManagedActor(dir, t.owner, t.act.actor);
+  if (!row?.custody || row.custody.kind === "foreground" || row.lifecycleUid !== t.act.lifecycleUid) return;
+  assertWithinSpawnerGrant(dir, row, "exchange");
+  return row;
+}
+
 export function calloutAuthority(deps: CalloutAuthorityDeps): CalloutAuthority {
   const { space, issuer, dir, dataAccount, registry, chat, gate, refuse } = deps;
+  const managedTtl = deps.probeManagedLifetimes?.connectionSec ?? MANAGED_CONNECTION_TTL_SEC;
+  const bearerTtl = deps.probeManagedLifetimes?.bearerSec ?? AGENT_BEARER_TTL_SEC;
+  if (!Number.isSafeInteger(bearerTtl) || bearerTtl <= 0 || bearerTtl > AGENT_BEARER_TTL_SEC ||
+      !Number.isSafeInteger(managedTtl) || managedTtl < bearerTtl || managedTtl > MANAGED_CONNECTION_TTL_SEC)
+    throw new Error("managed connection probe lifetimes must be positive integers bounded by the stock lifetimes");
   const fileArm = ledgerAuthorizeConnect(dir);
   // A chat principal (its alias is in the chat row space) is checked by the chat arm: its active
   // row, its parent pin and its holder index. Every other principal by the grant-file arm.
@@ -141,6 +158,7 @@ export function calloutAuthority(deps: CalloutAuthorityDeps): CalloutAuthority {
   const recordIssuance = makeNativeIssuanceRecorder(registry, async (t) => {
     refuse();
     await connectArm(t);
+    renewableManagedGrant(dir, t, bearerTtl);
     await authorizeConnectCredential(deps.reader(), t, Date.now);
     if (t.act.view === "session-caller") {
       await verifySessionRedemption({
@@ -177,12 +195,20 @@ export function calloutAuthority(deps: CalloutAuthorityDeps): CalloutAuthority {
     authorizeConnect: async (t) => {
       refuse();
       await connectArm(t);
-      await authorizeConnectCredential(deps.reader(), t, Date.now);
+      const seat = renewableManagedGrant(dir, t, bearerTtl);
+      const rootExpiry = await readConnectCredentialExpiry(deps.reader(), t, Date.now);
+      if (seat) return { exp: Math.min(rootExpiry, Math.floor(Date.now() / 1000) + managedTtl), grant: managedGrantImage(seat) };
     },
     recordIssuance: async (i) => {
       refuse();
       await recordSessionConnection(registryStores(registry).authKv, i, { jsm: deps.recordsJsm, space, secret: dataAccount.signingSeed });
+      if (i.managed !== undefined) await recordManagedConnection(registryStores(registry).authKv, i, { space, secret: dataAccount.signingSeed });
       await recordIssuance(i);
+      if (i.managed !== undefined) {
+        const seat = renewableManagedGrant(dir, i.token, bearerTtl);
+        if (!seat || managedGrantImage(seat) !== i.managed || await readConnectCredentialExpiry(deps.reader(), i.token, Date.now) < i.exp)
+          throw new Error("managed connection authority changed before release");
+      }
     },
     authorizeManagerCaller: async (owner, instanceId) => {
       refuse();
@@ -232,15 +258,14 @@ export function calloutAuthority(deps: CalloutAuthorityDeps): CalloutAuthority {
         return perms;
       });
     },
-    issueListing: async ({ t, connId, mint }) => {
+    issueListing: async ({ t, connId, horizon = t.exp, mint }) => {
       refuse();
       const owner = assertDerivedOwnerToken(t.owner);
       const actor = t.act.actor;
       const uid = assertLifecycleToken(t.act.lifecycleUid ?? "", "lifecycleUid");
       return issuer.run(async (session) => {
-        // The horizon is the bearer's expiry, which bounds every connection minted on it.
         const prepared = await prepareListing(session, {
-          space, owner, actor, uid, connId, horizon: t.exp, sources: [actorLedgerSource(space, owner, actor, uid)], expiresAt: t.exp,
+          space, owner, actor, uid, connId, horizon, tokenExpiry: t.exp, sources: [actorLedgerSource(space, owner, actor, uid)], expiresAt: horizon,
         }, mint);
         await prepared.commit();
         return prepared.permissions;

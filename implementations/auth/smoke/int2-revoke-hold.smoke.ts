@@ -31,7 +31,9 @@
  * successor + the SAME hold, and the copied token blocked by the retired gate while its row still
  * lives; D clear the fault and recover through the DOCUMENTED public same-name spawn nudge (latched on
  * row-deleted + hold-cleared), then the alias is reusable. Reuses the freeslot user-mode scaffolding.
+ * Set SMOKE_MANAGED_CONNECTION_CASE to continuity or revocation to run the scaled two-seat broker probe.
  */
+import assert from "node:assert/strict";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal, createSuite } from "@cotal-ai/smoke-kit";
 
 // ---------- SELF-DISPATCH (must be the FIRST thing that runs) ----------
@@ -39,6 +41,9 @@ import { SMOKE_BROKER_TOKEN, teardownOnSignal, createSuite } from "@cotal-ai/smo
 // smoke is THIS file; the smoke also re-execs itself to run the auth-service daemon. Intercept
 // both before the heavy harness loads (same shape as user-spawn.smoke.ts).
 const SUBCOMMAND = process.argv[2] ?? "";
+const connectionCase = process.env.SMOKE_MANAGED_CONNECTION_CASE;
+const bearerSec = 8;
+const connectionSec = 12 * bearerSec;
 if (SUBCOMMAND === "agent-bearer" || SUBCOMMAND === "auth-service") {
   await import("@cotal-ai/auth");
   const { registry } = await import("@cotal-ai/core");
@@ -61,7 +66,11 @@ if (SUBCOMMAND === "agent-bearer" || SUBCOMMAND === "auth-service") {
   const cmd = registry.all<Command>("command").find((c) => c.name === SUBCOMMAND);
   if (!cmd) { console.error(`self-dispatch: command "${SUBCOMMAND}" is not registered`); process.exit(1); }
   try {
-    await cmd.run({ values, positionals, raw: rest });
+    const args = { values, positionals, raw: rest };
+    if (SUBCOMMAND === "auth-service" && (connectionCase === "continuity" || connectionCase === "revocation")) {
+      const { runAuthService } = await import("../src/service-host.js");
+      await runAuthService(args, undefined, { probeManagedLifetimes: { bearerSec, connectionSec } });
+    } else await cmd.run(args);
     process.exit(0);
   } catch (e) {
     console.error(e instanceof Error ? (e.stack ?? e.message) : String(e));
@@ -114,9 +123,10 @@ type AddressInfo = import("node:net").AddressInfo;
 const {
   createSpaceAuth, isReachable, mintCreds, newIdentity, serverConfig, setupSpaceStreams,
   principalKey, registry, dmStream, dlvStream, openAclRegistry,
-  createEndpointStreams,
+  createEndpointStreams, connzRequestSubject, MEMBERSHIP_INBOX_PREFIX, mintMembershipObserverCreds,
+  epAuthBucket, credRowKey, livenessSubject, userInboxConnId,
 } = await import("@cotal-ai/core");
-const { connect, credsAuthenticator } = await import("@nats-io/transport-node");
+const { connect, credsAuthenticator, tokenAuthenticator } = await import("@nats-io/transport-node");
 const { jetstreamManager } = await import("@nats-io/jetstream");
 const { Kvm } = await import("@nats-io/kv");
 const { encodeUser, fmtCreds } = await import("@nats-io/jwt");
@@ -124,7 +134,7 @@ const { fromPublic, fromSeed } = await import("@nats-io/nkeys");
 const { agentCredsDir, authDir, userAuthStateDir, saveSpaceAuth, recordMesh, assertUserAuthInfo, agentLifecycleSecretFilePaths, workspaceSecretStore } = await import("@cotal-ai/workspace");
 const {
   cotalAuthProvider, establishIdpSession, grantActor, loadAuthServiceInfo,
-  managedActorLedgerDir, ledgerRowFilename,
+  managedActorLedgerDir, ledgerRowFilename, findInteractiveActor,
 } = await import("@cotal-ai/auth");
 const { approveDevice } = await import("./_device-approval.js");
 const { bootDeliveryDaemon } = await import("../../manager/smoke/_boot-delivery.js");
@@ -184,6 +194,7 @@ const CHILD = [
   "import(pathToFileURL(process.env.CORE_DIST).href).then(async(m)=>{",
   "const ep=new m.CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.COTAL_SERVERS,bearer:bearer,sentinelCreds:sentinel,lifecycleUid:process.env.COTAL_LIFECYCLE_UID,channels:[],consume:false,registerPresence:true,watchPresence:false,card:{name:process.env.COTAL_NAME,owner:process.env.COTAL_OWNER,actor:process.env.COTAL_ACTOR,kind:'agent'}});",
   "ep.on('error',()=>{});await ep.start();",
+  "if(process.env.FSB_REQUEST){const f=process.env.FSB_REQUEST; const tick=setInterval(async()=>{if(!fs.existsSync(f+'.go'))return;clearInterval(tick);try{const subject=fs.readFileSync(f+'.go','utf8');const r=await ep.requestBoundReply(ep.conn.nc,subject,'',subject+'.reply.'+require('node:crypto').randomUUID(),15000);fs.writeFileSync(f+'.result',r.string());}catch(e){fs.writeFileSync(f+'.result','error: '+e.message);}},50);}",
   "if(process.env.FSB_READY)fs.writeFileSync(process.env.FSB_READY,'1');",
   "setInterval(()=>{},1000);",
   "}).catch((e)=>{console.error(e&&e.message||String(e));process.exit(1);});",
@@ -207,6 +218,7 @@ const e2eCon: Connector = {
       // its lifecycle against its dm_ durable before presence, SPEC 13.1 fail-before-presence).
       ...(o.lifecycleUid ? { COTAL_LIFECYCLE_UID: o.lifecycleUid } : {}),
       FSB_READY: join(root, "child-connected"),
+      ...(connectionCase === "continuity" && o.userAuth?.actor === AGENT ? { FSB_REQUEST: join(root, "renewal-request") } : {}),
     },
   }),
 };
@@ -243,12 +255,176 @@ async function agentExchange(actor: string, actorToken: string, owner: string): 
 }
 const managedRowPath = (owner: string) => join(managedActorLedgerDir(dir), ledgerRowFilename(owner, AGENT));
 
+type BrokerSeat = { cid: number; name: string; authorized_user: string; start: string; stop?: string; reason?: string };
+
+async function untilObserved<T>(timeoutMs: number, read: () => Promise<T | undefined>): Promise<T | undefined> {
+  const deadline = Date.now() + timeoutMs;
+  do {
+    const value = await read();
+    if (value !== undefined) return value;
+    await wait(1000);
+  } while (Date.now() < deadline);
+}
+
+async function verifyAuthorityOutage(original: BrokerSeat[], read: (closed: boolean) => Promise<BrokerSeat[]>): Promise<void> {
+  const oldest = Math.min(...original.map(({ start }) => Date.parse(start)));
+  await wait(Math.max(0, oldest + connectionSec * 500 - 7000 - Date.now()));
+  const child = authChild!;
+  const exited = new Promise<void>((resolve) => child.once("exit", () => resolve()));
+  assert(child.kill("SIGTERM"));
+  await exited;
+  authChild = undefined;
+  const started = Date.now();
+  console.log(`authority stopped at ${new Date(started).toISOString()}`);
+  const ids = new Set(original.map(({ cid }) => cid));
+  const closed = new Map<number, BrokerSeat>();
+  await untilObserved(connectionSec * 500, async () => {
+    for (const seat of await read(true)) {
+      if (!ids.has(seat.cid) || closed.has(seat.cid)) continue;
+      closed.set(seat.cid, seat);
+      console.log(`seat ${seat.cid} closed after ${Date.parse(seat.stop!) - started} ms: ${seat.reason}`);
+    }
+    return closed.size === ids.size ? true : undefined;
+  });
+  const remaining = (await read(false)).filter(({ cid }) => ids.has(cid));
+  const elapsed = Date.now() - started;
+  authChild = spawnAuthService();
+  await waitAuthReady();
+  assert.equal(remaining.length, ids.size, `both original connections must survive the scaled 30-minute outage: ${JSON.stringify([...closed.values()])}`);
+  console.log(`both original connections survived ${elapsed} ms without authority`);
+}
+
+async function assertSeatKicked(label: string, started: number, victim: BrokerSeat, read: (closed: boolean) => Promise<BrokerSeat[]>): Promise<void> {
+  const closed = await untilObserved((bearerSec + 1) * 1000, async () => (await read(true)).find(({ cid }) => cid === victim.cid));
+  assert(closed?.stop, "the revoked seat's original connection must close within the five-minute bound");
+  const elapsed = Date.parse(closed.stop) - started;
+  console.log(`${label}: seat ${victim.cid} closed after ${elapsed} ms: ${closed.reason}`);
+  assert(elapsed >= 0 && elapsed <= (bearerSec + 1) * 1000 && closed.reason === "Kicked", "delivery must actively evict the revoked seat within the scaled five-minute bound");
+}
+
+async function verifyManagedRetirement(owner: string, actor: string, read: (closed: boolean) => Promise<BrokerSeat[]>): Promise<void> {
+  const row = JSON.parse(readFileSync(join(managedActorLedgerDir(dir), ledgerRowFilename(owner, actor)), "utf8")) as { lifecycleUid: string };
+  const files = agentLifecycleSecretFilePaths(root, SPACE, actor, row.lifecycleUid);
+  const exchange = await agentExchange(actor, readFileSync(files.actorToken, "utf8").trim(), owner);
+  assert.equal(exchange.status, 200);
+  const name = userInboxConnId(owner, actor);
+  const witness = await connect({ servers: SERVER, name, inboxPrefix: `_INBOX_${name}`, reconnect: false,
+    authenticator: [credsAuthenticator(readFileSync(files.sentinelCreds)), tokenAuthenticator(exchange.body.token!)] });
+  try {
+    const victim = (await read(false)).find((seat) => seat.name === name);
+    assert(victim, "an independent connection must hold this lifecycle's grants before retirement");
+    const m = manager as unknown as { opStop: (args: { name: string }, caller: string, admin: boolean) => Promise<ControlReply>; ep: { ref: () => { id: string } } };
+    const started = Date.now();
+    const stopped = await m.opStop({ name: actor }, m.ep.ref().id, true);
+    assert(stopped.ok, stopped.error);
+    await assertSeatKicked("lifecycle retired", started, victim, read);
+  } finally { await witness.close(); }
+}
+
+async function verifyManagedRevoke(owner: string, victim: BrokerSeat, control: BrokerSeat, read: (closed: boolean) => Promise<BrokerSeat[]>, nc: import("@nats-io/transport-node").NatsConnection): Promise<void> {
+  const spawn = async (actor: string) => {
+    writeFileSync(join(root, ".cotal", "agents", `${actor}.md`), `---\nname: ${actor}\nrole: worker\nsubscribe: [general]\nallowPublish: [general]\n---\nProbe seat.\n`);
+    const result = await manager!.startAgent({ name: actor, agent: "e2e", events: false, allowSubscribe: ["general"], allowPublish: ["general"] }, `${owner}.cli`);
+    assert(result.ok, result.error);
+    const connected = await untilObserved(15_000, async () => (await read(false)).find(({ authorized_user }) => authorized_user === principalKey(owner, actor).name));
+    assert(connected, `${actor} must bind before its grant changes`);
+    return connected;
+  };
+  const parent = findInteractiveActor(dir, owner, "cli")!;
+  await spawn("retired");
+  const delegated = await spawn("delegated");
+  const admission = await spawn("admission");
+  const { lifecycleUid } = JSON.parse(readFileSync(managedRowPath(owner), "utf8")) as { lifecycleUid: string };
+  const actorToken = readFileSync(agentLifecycleSecretFilePaths(root, SPACE, AGENT, lifecycleUid).actorToken, "utf8").trim();
+  assert.equal((await agentExchange(AGENT, actorToken, owner)).status, 200);
+  let started = Date.now();
+  assert(await cotalAuthProvider.revokeAgent({ dir, owner, actor: AGENT, lifecycleUid }));
+  assert.equal((await agentExchange(AGENT, actorToken, owner)).status, 401);
+  await assertSeatKicked("managed row revoked", started, victim, read);
+
+  const { lifecycleUid: admissionUid } = JSON.parse(readFileSync(join(managedActorLedgerDir(dir), ledgerRowFilename(owner, "admission")), "utf8")) as { lifecycleUid: string };
+  const admissionToken = readFileSync(agentLifecycleSecretFilePaths(root, SPACE, "admission", admissionUid).actorToken, "utf8").trim();
+  const exchange = await agentExchange("admission", admissionToken, owner);
+  assert.equal(exchange.status, 200);
+  const claim = JSON.parse(Buffer.from(exchange.body.token!.split(".")[1]!, "base64url").toString()) as { act: { credentialId: string } };
+  const kv = await new Kvm(nc).open(epAuthBucket(SPACE));
+  const key = credRowKey(admissionUid, claim.act.credentialId);
+  const rootEntry = await kv.get(key);
+  assert(rootEntry);
+  started = Date.now();
+  await kv.update(key, JSON.stringify({ ...rootEntry.json<Record<string, unknown>>(), exp: started }), rootEntry.revision);
+  await assertSeatKicked("admission expired", started, admission, read);
+
+  await verifyManagedRetirement(owner, "retired", read);
+  started = Date.now();
+  grantActor(dir, { ...parent, allowPublish: [] });
+  await assertSeatKicked("parent envelope narrowed", started, delegated, read);
+  assert((await read(false)).some(({ cid }) => cid === control.cid), "the unrevoked control seat must retain its original connection");
+}
+
+async function verifyHalfLifeRenewal(owner: string, original: BrokerSeat[], read: (closed: boolean) => Promise<BrokerSeat[]>, nc: import("@nats-io/transport-node").NatsConnection): Promise<void> {
+  const first = original[0]!, started = Date.parse(first.start), midpoint = started + connectionSec * 500;
+  const subject = livenessSubject(SPACE, "delivery", owner, AGENT);
+  const f = join(root, "renewal-request");
+  await wait(Math.max(0, midpoint - Date.now() - 2500));
+  const sub = nc.subscribe(subject, { max: 1, timeout: 5000 });
+  await nc.flush();
+  writeFileSync(`${f}.go`, subject);
+  const msg = (await sub[Symbol.asyncIterator]().next()).value;
+  assert(msg?.reply, "the managed seat must send the live request before renewal");
+  await wait(Math.max(0, midpoint - Date.now() + 1200));
+  assert((await read(false)).some(({ cid }) => cid === first.cid), "renewal must wait for the in-flight request");
+  msg.respond(new TextEncoder().encode("renewal-request-completed"));
+  assert.equal(await untilObserved(5_000, async () => existsSync(`${f}.result`) ? readFileSync(`${f}.result`, "utf8") : undefined), "renewal-request-completed");
+  const renewed = await untilObserved(8_000, async () => (await read(false)).find(({ cid, name }) => cid !== first.cid && name === first.name));
+  assert(renewed, "half-life renewal must replace the resident broker connection");
+  const elapsed = Date.parse(renewed.start) - started;
+  assert(elapsed >= connectionSec * 500 - 2000 && elapsed <= connectionSec * 500 + 10000, `renewal must replace at half-life, observed ${elapsed}ms`);
+  console.log(`renewed original seat after ${elapsed} ms, with its in-flight request completed`);
+}
+
+async function verifyManagedConnections(mode: string, owner: string, auth: Awaited<ReturnType<typeof createSpaceAuth>>, nc: import("@nats-io/transport-node").NatsConnection): Promise<void> {
+  const other = "unrevoked";
+  writeFileSync(join(root, ".cotal", "agents", `${other}.md`), `---\nname: ${other}\nrole: worker\nsubscribe: [general]\nallowPublish: [general]\n---\nControl seat.\n`);
+  const reply = await manager!.startAgent({ name: other, agent: "e2e", owner, events: false });
+  assert(reply.ok, reply.error);
+  const observer = await connect({ servers: SERVER, maxReconnectAttempts: 0, inboxPrefix: MEMBERSHIP_INBOX_PREFIX,
+    authenticator: credsAuthenticator(new TextEncoder().encode(await mintMembershipObserverCreds(auth, newIdentity()))) });
+  try {
+    const read = async (closed: boolean): Promise<BrokerSeat[]> => {
+      const reply = await observer.request(connzRequestSubject(auth.account.pub), JSON.stringify({ auth: true, limit: 1024, state: closed ? 1 : 0 }), { timeout: 3000 });
+      return reply.json<{ data: { connections?: BrokerSeat[] } }>().data.connections ?? [];
+    };
+    const names = [AGENT, other].map((actor) => principalKey(owner, actor).name);
+    const pair = () => untilObserved(20_000, async () => {
+      const seats = await read(false);
+      const pair = names.map((name) => seats.find(({ authorized_user }) => authorized_user === name));
+      if (pair[0] && pair[1]) return [pair[0], pair[1]];
+    });
+    const original = await pair();
+    assert(original, "both managed seats must be present on the broker before the probe");
+    for (const { authorized_user, cid, start } of original) console.log(`online ${authorized_user} cid=${cid} start=${start}`);
+    if (mode === "continuity") {
+      await verifyHalfLifeRenewal(owner, original, read, nc);
+      const renewed = await untilObserved(8_000, async () => {
+        const current = await read(false);
+        const seats = original.map((seat) => current.find(({ cid, name }) => name === seat.name && cid !== seat.cid));
+        if (seats[0] && seats[1]) return [seats[0], seats[1]];
+      });
+      assert(renewed, "both seats must have renewed before the outage");
+      await verifyAuthorityOutage(renewed, read);
+    } else await verifyManagedRevoke(owner, original[0]!, original[1]!, read, nc);
+  } finally {
+    await observer.close();
+  }
+}
+
 let manager: InstanceType<typeof Manager> | undefined;
 let broker: ChildProcess | undefined;
 let authChild: ChildProcess | undefined;
 let delivery: Awaited<ReturnType<typeof bootDeliveryDaemon>> | undefined;
 let jsDir: string | undefined;
-try {
+scenario: try {
   // ---------- A. setup: user-auth broker + streams + auth service + login + grant ----------
   console.log("A) user-auth broker + auth service + device login");
   const auth = await createSpaceAuth(SPACE);
@@ -378,6 +554,11 @@ try {
   manager = new Manager({ space: SPACE, servers: SERVER, runtime: "pty", workspaceRoot: root });
   await manager.start();
   const r1: ControlReply = await manager.startAgent({ name: AGENT, agent: "e2e", owner: OWNER, events: false });
+  if (connectionCase === "continuity" || connectionCase === "revocation") {
+    assert(r1.ok, r1.error);
+    await inspect(async (_jsm, nc) => verifyManagedConnections(connectionCase, OWNER, auth, nc));
+    break scenario;
+  }
   check("predecessor spawn ok", r1.ok === true, r1);
   const fp1 = await footprint();
   check("predecessor footprint exists (row + dm + dlv + acl)",

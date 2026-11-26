@@ -165,6 +165,10 @@ function isRootChain(chain: string[]): boolean {
  *     the operation reports success, and after the leaf CAS deny-new holds.
  */
 export async function authorizeConnectCredential(reader: ConnectReader, t: ValidatedUserToken, now: () => number): Promise<void> {
+  await readConnectCredentialExpiry(reader, t, now);
+}
+
+export async function readConnectCredentialExpiry(reader: ConnectReader, t: ValidatedUserToken, now: () => number): Promise<number> {
   const credid = t.act.credentialId;
   if (credid === undefined)
     throw new EpEnvelopeError("permission-denied", "the bearer carries no credential claim (act.credentialId); connect deny-new requires it; re-exchange for a fresh bearer (lifecycle credential-bound from v0.4 R1)");
@@ -209,4 +213,5 @@ export async function authorizeConnectCredential(reader: ConnectReader, t: Valid
     // Root mapping reads already check alias custody. Descendants still need that check.
     await assertOrdinaryNativeMutation(custodyReader, { owner: t.owner, actor: t.act.actor });
   }
+  return Math.floor(row.exp / 1000);
 }

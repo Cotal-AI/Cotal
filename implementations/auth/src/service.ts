@@ -70,7 +70,7 @@ import { createHash } from "node:crypto";
 import { type IncomingMessage, type ServerResponse } from "node:http";
 import { resolve } from "node:path";
 import { type NatsConnection } from "@nats-io/transport-node";
-import { jetstreamManager } from "@nats-io/jetstream";
+import { jetstreamManager, type JetStreamManager } from "@nats-io/jetstream";
 import { Kvm } from "@nats-io/kv";
 import { CotalEndpoint, isDerivedOwner, deprovisionAgent, fenceLifecycleAcl, dlvDurable, dlvStream, dmDurable, dmStream, isChannelFamily, isConcreteChannel, provisionAgentDurables, contractRefToHex, contractStoreContext, fetchContractArtifact, verifyClusterManifest, verifyClusterRoot, admissionMediatorGrants, assertDerivedOwnerToken, assertLifecycleToken, assertValidOwnerToken, EpEnvelopeError, ensureAuthorityStores, epAuthBucket, mintCreds, newIdentity, parseEndpointGate, parseServiceSpec, readRunAdmission, readSvcRecordLeader, recordSpecKey, RECORD_KINDS, remoteManagerServePrincipal, retirementFrontierStreams, serveIssuanceGateKv, STANDING_RENEWABLE_TTL_SEC, holdIssuerSession, parseActorLedgerSource, type IssuedSourceRef, type IssuerSession, DEV_OWNER, mintLifecycleUid, principalKey, registerServiceInstance, registerServingInstance, type EpErrorCode, type RemoteManagedAgentEnrollmentRequest, type RemoteManagedAgentEnrollmentResult, type RemoteManagerAdminAuthorizationRequest, type RemoteManagerAuthorityRequest, type RemoteManagerMaintenanceRequest, type RemoteRetainedAgentValidationRequest, type SecretStore, type SpaceAuth, type EpServeGrant } from "@cotal-ai/core";
 import { createAuthInstanceIdentity, type ManagerInstanceIdentity } from "@cotal-ai/workspace";
@@ -87,6 +87,7 @@ import { authorityBarrierGrants, authorityWriterGrants, openAuthorityClient, ope
 import { createNativeServiceCalloutAuthority, type NativeServiceCalloutAuthority } from "./native-service-callout.js";
 import { openChatSessionAuthority } from "./chat-session-authority.js";
 import { startSessionConnectionSweep } from "./session-connections.js";
+import { startManagedConnectionSweep } from "./managed-connections.js";
 import { CorruptNativeIssuanceEvidence, pruneNativeIssuance } from "./native-issuance.js";
 import { ensureRootCredential } from "./root-credential.js";
 import { activateLifecycleAtUid, observeGate, openLifecycleRegistry, readLifecycleHeadForOperation, type LifecycleRegistry } from "./lifecycle-registry.js";
@@ -225,6 +226,8 @@ export interface ManagerInstanceCatalog {
 /** Trusted composition policy for unpinned interactive manager-caller requests. No request or CLI
  *  flag sets it. The local-primary policy refuses an unavailable local Manager without substitution. */
 export interface AuthServiceRuntimeOptions {
+  /** In-process smoke fixture only. No command, environment variable or host manifest sets this. */
+  probeManagedLifetimes?: { bearerSec: number; connectionSec: number };
   /** Trusted space restriction applied to every native payload publish grant. */
   eventPayloadsWithheld?: boolean;
   interactiveManagerSelection?: "local-primary";
@@ -382,6 +385,23 @@ export async function openAuthAuthorityPlaneWithCustody(opts: OpenAuthAuthorityP
     for (const close of unwind.reverse()) await close();
     throw e;
   }
+}
+
+function startConnectionSweeps(opts: Parameters<typeof makeDeliveryAdminEvictor>[0] & {
+  dir: string;
+  registry: LifecycleRegistry;
+  recordsJsm: JetStreamManager;
+  reader: () => import("./connect-reader.js").ConnectReader;
+  calloutTimeoutMs?: number;
+  canSweep: () => boolean;
+}): () => Promise<void> {
+  const evict = makeDeliveryAdminEvictor(opts);
+  const common = { jsm: opts.recordsJsm, kv: registryStores(opts.registry).authKv, space: opts.space,
+    secret: opts.dataAccount.signingSeed, evict, canSweep: opts.canSweep, log: opts.log };
+  const releaseWindowMs = opts.calloutTimeoutMs ?? 2000;
+  const stopSession = startSessionConnectionSweep({ ...common, releaseWindowMs: releaseWindowMs + 1000 });
+  const stopManaged = startManagedConnectionSweep({ ...common, dir: opts.dir, reader: opts.reader, releaseWindowMs });
+  return async () => { await Promise.all([stopSession(), stopManaged()]); };
 }
 
 /** The body of the plane opener, which owns the unwind of a failed construction. */
@@ -748,13 +768,10 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
     }));
   }
   const recordsJsm = await jetstreamManager(remoteIssuer.nc);
-  const stopSessionSweep = startSessionConnectionSweep({
-    jsm: recordsJsm, kv: registryStores(registry).authKv, space, secret: dataAccount.signingSeed,
-    releaseWindowMs: (opts.sessionCalloutTimeoutMs ?? 2000) + 1000,
-    canSweep: () => !closing && fatalReason === undefined,
-    evict: makeDeliveryAdminEvictor({ onConnection, space, server, dataAccount, log }), log,
-  });
-  unwind.push(stopSessionSweep);
+  const stopConnectionSweeps = startConnectionSweeps({ dir: opts.dir, space, server, dataAccount, log, onConnection,
+    registry, recordsJsm, reader: () => reader.current(), calloutTimeoutMs: opts.sessionCalloutTimeoutMs,
+    canSweep: () => !closing && fatalReason === undefined });
+  unwind.push(stopConnectionSweeps);
   const authKv = await new Kvm(remoteIssuer.nc).open(epAuthBucket(space));
   const managerIssuanceGate = (instanceId: string) => serveIssuanceGateKv(authKv, space, { endpoint: "manager", instanceId });
   const loadLocalManager = opts.localManager ?? (() => undefined);
@@ -1024,6 +1041,7 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
   });
   const callout = calloutAuthority({
     space, issuer, dir: opts.dir, dataAccount, registry, reader: () => reader.current(), chat, gate: gateReads, recordsJsm,
+    probeManagedLifetimes: opts.probeManagedLifetimes,
     ...(verifyCallerPayload !== undefined ? { checkCallerPayload } : {}),
     refuse: refuseIfFenced,
   });
@@ -1138,7 +1156,7 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
       await drainCallerPayload();
       await stopPrune();
       await stopChatSweep();
-      await stopSessionSweep();
+      await stopConnectionSweeps();
       // Every service host call that entered returns, discovery and effects included, then every
       // effect connection that did not close is closed again, before discovery closes and before
       // the claim is released. A failure here rejects with the claim still held; close retries it.
@@ -1235,6 +1253,7 @@ async function resumeOpenOperations(reg: LifecycleRegistry, evictPrincipal: Evic
 type HumanHolder = Extract<ManagerAuthorityHolder, { scope: string[] }>;
 
 export interface HandlerCtx {
+  probeManagedBearerTtlSec?: number;
   deregisterEndpoint: AuthAuthorityPlane["deregisterEndpoint"];
   /** The callout's connect limits, which the exchange checks before it mints. */
   connectLimiter: ConnectLimiter;

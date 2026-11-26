@@ -28,6 +28,7 @@ import { openLifecycleRegistry, registryStores, type LifecycleRegistry } from ".
 import { parseServiceAdmissionRecord } from "./service-host-ops.js";
 import { ADMISSION_KEY } from "./service-host-kernel.js";
 import { startSessionConnectionSweep } from "./session-connections.js";
+import { startManagedConnectionSweep } from "./managed-connections.js";
 import { dataAccountAuth, loadCalloutAuth, loadIssuer, loadServiceKeys, spaceIssuer } from "./store.js";
 
 /** What one space's callout membership exposes to whoever holds it. */
@@ -107,13 +108,14 @@ export async function openCalloutLane(options: CalloutLaneOptions): Promise<Call
   const clients: AuthorityClient[] = [];
   let calloutNc: NatsConnection | undefined;
   let stopSessionSweep: (() => Promise<void>) | undefined;
+  let stopManagedSweep: (() => Promise<void>) | undefined;
   // This lane's own held issuer session for user-caller issuance (SPEC 13.15). It is one session per
   // account, space and authority plane, private to this lane and never shared with another space's.
   const issuerSession = holdIssuerSession({ servers: server, space, auth: dataAccountAuth(space, dataAccount), tls: false, name: `cotal:auth-replica-issuer:${space}` });
   const closeAll = async (): Promise<void> => {
     // The callout connection goes first: from then on the queue group routes around this lane.
     await calloutNc?.close().catch(() => {});
-    await stopSessionSweep?.();
+    await Promise.all([stopSessionSweep?.(), stopManagedSweep?.()]);
     await issuerSession.close();
     for (const c of clients) await c.close().catch(() => {});
   };
@@ -156,12 +158,16 @@ export async function openCalloutLane(options: CalloutLaneOptions): Promise<Call
     // This space's signing material enters the request path here and nowhere else.
     serveCallout(calloutNc as never, { space, dir, callout, dataAccount, issuer, hooks, eventPayloadsWithheld: options.eventPayloadsWithheld, ...(options.limits !== undefined ? { limits: options.limits } : {}) });
     await calloutNc.flush();
+    const evict = makeDeliveryAdminEvictor({ space, server, dataAccount, log });
     stopSessionSweep = startSessionConnectionSweep({
       jsm: recordsJsm, kv: registryStores(registry).authKv, space, secret: dataAccount.signingSeed,
       releaseWindowMs: (options.limits?.authTimeoutMs ?? 2000) + 1000,
       canSweep: () => !stopping,
-      evict: makeDeliveryAdminEvictor({ space, server, dataAccount, log }), log,
+      evict, log,
     });
+    stopManagedSweep = startManagedConnectionSweep({ dir, space, secret: dataAccount.signingSeed, jsm: recordsJsm,
+      kv: registryStores(registry).authKv, reader: () => reader, releaseWindowMs: options.limits?.authTimeoutMs ?? 2000,
+      canSweep: () => !stopping, evict, log });
   } catch (e) {
     stopping = true;
     await closeAll();
