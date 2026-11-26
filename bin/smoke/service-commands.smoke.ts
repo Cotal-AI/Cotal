@@ -360,9 +360,9 @@ try {
   const brokerHelpCommand = cotal(["help", "service", "start", "broker"]);
   const example = brokerStartHelp.stdout.split("\n").find((line) => line.includes("start the broker in the background"))?.trim().split(/ {2,}/)[0];
   const examplePreview = example ? previewBrokerCommand(`${example} --space ${PREPARED}`) : undefined;
-  check("broker start help omits unsupported modes, keeps the preset's options, and gives a start that previews successfully",
+  check("broker start help omits unsupported modes, names the absolute config path requirement, and gives a start that previews successfully",
     brokerStartHelp.status === 0 && brokerHelpCommand.status === 0 && brokerStartHelp.stdout === brokerHelpCommand.stdout
-    && !/--foreground\b|--new-instance\b/.test(brokerStartHelp.stdout) && /^  --config <file>/m.test(brokerStartHelp.stdout)
+    && !/--foreground\b|--new-instance\b/.test(brokerStartHelp.stdout) && /^  --config <file> +absolute path\b/m.test(brokerStartHelp.stdout)
     && examplePreview?.status === 0, { help: out(brokerStartHelp), preview: examplePreview && out(examplePreview) });
   const badGlobalLeading = cotal(["--no-color=false", "service", "start", "broker"]);
   const badGlobalTrailing = cotal(["service", "start", "broker", "--no-color=false"]);
