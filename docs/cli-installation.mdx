@@ -1231,8 +1231,8 @@ that flag names the file, because the declared set would be incomplete. A record
 prepared space record that does not parse, is named on stderr only under that flag too. The stubs
 discard stderr, so run the completion by hand to see it, as
 `COTAL_COMPLETE_DEBUG=1 cotal __complete persona show ''` does. The bash
-and zsh stubs complete file names where a value takes a path. The fish stub offers only cotal's own
-candidates.
+and zsh stubs complete file names where a value takes a path. In Bash, a candidate with spaces is
+inserted as one argument. The fish stub offers only cotal's own candidates.
 
 In bash and zsh, a file argument such as `team check <file>`, `up -f <file>`, `--channels <path>`,
 `--creds <path>`, `run start --file <program>` or `auth mint --out <private-file>` completes from the
