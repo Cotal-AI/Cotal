@@ -54,7 +54,7 @@ const assert: typeof nodeAssert = new Proxy(nodeAssert, {
  * smaller green into a red. Raise it deliberately when you add a cell; a drop means one vanished.
  */
 const EXPECTED_CELLS = 193;
-const EXPECTED_WINDOWS_CELLS = 17;
+const EXPECTED_WINDOWS_CELLS = 18;
 
 if (process.platform === "win32") {
   await checkWindowsLaunch();
@@ -91,8 +91,10 @@ async function checkWindowsLaunch(): Promise<void> {
     assert.match(readFileSync(log, "utf8"), /host-process-smoke/);
     process.env.PATH = root;
     writeFileSync(join(root, "uv.cmd"), "");
-    assert.match(hermesConnector.launchUnavailable?.() ?? "", /needs uv\.exe on PATH/);
-    assert.throws(() => hermesConnector.buildLaunch({ ...opts, cwd: root }), /does not support detached or manager-attached launches/);
+    assert.equal(hermesConnector.launchUnavailable?.(), "Hermes on Windows needs uv.exe on PATH. Install uv before launching Hermes.");
+    const managedRefusal = hermesConnector.launchUnavailable?.({ cwd: root, resume: "session" });
+    assert.match(managedRefusal ?? "", /does not support detached or manager-attached launches/);
+    assert.throws(() => hermesConnector.buildLaunch({ ...opts, cwd: root, resume: "session" }), { message: managedRefusal });
     writeFileSync(join(root, "uv.exe"), "");
     assert.deepEqual(hermesConnector.buildLaunch(opts), { command: "", args: [] });
     const launch = hermesConnector.buildLaunch({ ...opts, validateOnly: false });

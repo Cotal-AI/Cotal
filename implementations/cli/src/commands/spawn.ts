@@ -1077,6 +1077,9 @@ export async function spawn(args: ParsedArgs): Promise<void> {
 
 function foregroundChildSignals(child: ReturnType<typeof spawnProcess>, agentType: string) {
   const FORWARDED_SIGNALS = ["SIGTERM", "SIGHUP"] as const;
+  const windowsHermes = process.platform === "win32" && agentType === "hermes";
+  const forwarded = windowsHermes ? (["SIGTERM"] as const) : FORWARDED_SIGNALS;
+  const consoleSignals = ["SIGINT", "SIGHUP", "SIGBREAK"] as const;
   type ForwardedSignal = (typeof FORWARDED_SIGNALS)[number];
   let receivedSignal: ForwardedSignal | undefined;
   let killTimer: ReturnType<typeof setTimeout> | undefined;
@@ -1094,20 +1097,19 @@ function foregroundChildSignals(child: ReturnType<typeof spawnProcess>, agentTyp
       }
     }
   };
-  for (const sig of FORWARDED_SIGNALS) process.on(sig, onTerminate);
-  // The Windows console delivers Ctrl+C to the launcher and its child. Keep the outer CLI in
-  // place until Hermes proves its job exited and we retire the seat's credentials.
-  const keepForegroundOnInterrupt = process.platform === "win32" && agentType === "hermes";
+  for (const sig of forwarded) process.on(sig, onTerminate);
+  // Windows delivers console events directly to both processes. Wait for the launcher to drain
+  // its job instead of forwarding a signal through TerminateProcess.
   const waitForHermes = (): void => {};
-  if (keepForegroundOnInterrupt) process.on("SIGINT", waitForHermes);
+  if (windowsHermes) for (const sig of consoleSignals) process.on(sig, waitForHermes);
   const clearTimer = (): void => { clearTimeout(killTimer); killTimer = undefined; };
   return {
     received: () => receivedSignal,
     clearTimer,
     close() {
-      if (keepForegroundOnInterrupt) process.off("SIGINT", waitForHermes);
+      if (windowsHermes) for (const sig of consoleSignals) process.off(sig, waitForHermes);
       clearTimer();
-      for (const sig of FORWARDED_SIGNALS) process.off(sig, onTerminate);
+      for (const sig of forwarded) process.off(sig, onTerminate);
     },
   };
 }

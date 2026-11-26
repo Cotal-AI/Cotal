@@ -80,6 +80,9 @@ Declare only the features your connector implements:
   Connection changes are refused when the connector cannot announce the resulting list.
 - Implement `resumeTranscript` if the CLI can locate and carry a source transcript from another host.
 - List external executables in `requires` so preflight can report a missing command before launch.
+- Implement `launchUnavailable(opts)` to return a host-specific refusal, or `undefined` when the launch is supported.
+  Take no action and write nothing. A defined `opts.cwd` means a supervised Manager launch.
+  `buildLaunch` must refuse the same conditions even if the caller skips preflight.
 - Implement `listModels` if the application provides a model catalog.
   If an installation cannot provide one, return a catalog with `models: []` and an `unavailable` reason.
   The Manager passes the boot `resolvedBinaries` and the `spawn.env` names a launch would receive as `envAllow`.

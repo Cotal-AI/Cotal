@@ -580,6 +580,19 @@ let openInventory: ManagerResumeAgent;
   check("open resume threads the backfill floor into launch", capturedLaunch?.backfillFloor === 4242, capturedLaunch?.backfillFloor);
 }
 
+{
+  const manager = managerWith((name) => fakeHandle(name));
+  const refusal = "test connector cannot resume on this host";
+  let observedCwd: string | undefined;
+  connector.launchUnavailable = ({ cwd } = {}) => { observedCwd = cwd; return refusal; };
+  resetCapturedLaunch();
+  try {
+    const result = await manager.resumePreserved(inventoryOf(openInventory));
+    check("preserved resume passes the retained cwd to launch preflight and refuses before buildLaunch",
+      !result.ok && (result.agents[0]?.reply.error ?? result.error) === refusal && observedCwd === root && capturedLaunch === undefined, result);
+  } finally { delete connector.launchUnavailable; }
+}
+
 // The wire schema refuses a malformed backfillFloor and accepts an absent one (a pre-fx109
 // inventory, or a remote-authority manager that recorded no floor).
 {

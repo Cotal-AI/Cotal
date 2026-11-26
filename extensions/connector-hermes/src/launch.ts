@@ -360,6 +360,24 @@ async function loadWindowsHost(path: string | undefined): Promise<WindowsHost> {
   return { startProcess: host.startProcess, listenOwnerPipe: host.listenOwnerPipe };
 }
 
+async function runWindowsLaunch(host: WindowsHost, env: NodeJS.ProcessEnv, root: string, gatewayTmp: string | undefined, inherited: string | undefined): Promise<void> {
+  for (const key of Object.keys(env)) if (/^temp$|^tmp$/i.test(key)) delete env[key];
+  env.TEMP = env.TMP = gatewayTmp;
+  await runWindowsGateway(PKG_DIR, env, root, host.startProcess,
+    (onShutdown) => {
+      const sidecar = startSidecar({ onShutdown, listenPipe: host.listenOwnerPipe });
+      // After this handoff only the verified drain may remove the profile.
+      localArtifacts.splice(localArtifacts.indexOf(root), 1);
+      return sidecar;
+    }, () => {
+      // The parent shares the console-close deadline. Reclaim after the job drains and the
+      // journal closes, without waiting for a network departure first.
+      try { discardLaunchArtifacts([root, ...localArtifacts]); }
+      finally { if (inherited) discardLaunchMaterial(inherited); }
+      log("removed the disposable Windows Hermes profile");
+    });
+}
+
 async function main(): Promise<void> {
   // No identity → a plain run, not a launcher-spawned agent. Stay off the mesh.
   if (!hasIdentity()) {
@@ -388,7 +406,13 @@ async function main(): Promise<void> {
     ? { root: disposableRoot, home: disposableHome }
     : persistent;
   const home = adopt ?? managed!.home;
-  if (process.platform === "win32") secureWindowsProfile(disposableRoot || undefined, !!adopt);
+  if (windows) {
+    secureWindowsProfile(disposableRoot || undefined, !!adopt);
+    localArtifacts.push(managed!.root);
+    // A synchronous version probe can take time on a cold install. Do not leave a key on disk
+    // during that probe if the terminal closes before the gateway's signal handlers are armed.
+    assertHermesVersion();
+  }
   if (moved) log(`moved this seat's --resume fork from ${moved} to ${home}`);
   const effort = launchEffort(adopt);
   if (adopt) setupAdoptedProfile(home, { persona });
@@ -413,7 +437,7 @@ async function main(): Promise<void> {
 
   // Fail loudly before we hand control to the gateway if the Hermes API line is wrong, and before the
   // control endpoint is minted, since minting makes its socket directory.
-  if (!fork) assertHermesVersion();
+  if (!fork && !windows) assertHermesVersion();
 
   // Paths shared by the sidecar and the gateway child — set in our env so startSidecar reads
   // them, and forwarded verbatim to the child so the plugin connects to the same sockets/file.
@@ -461,9 +485,7 @@ async function main(): Promise<void> {
 
   log(`launching hermes gateway as ${peerLabel(config)} (HERMES_HOME=${home})`);
   if (windows) {
-    for (const key of Object.keys(childEnv)) if (/^temp$|^tmp$/i.test(key)) delete childEnv[key];
-    childEnv.TEMP = childEnv.TMP = gatewayTmp;
-    await runWindowsGateway(PKG_DIR, childEnv, managed!.root, windows.startProcess, (onShutdown) => startSidecar({ onShutdown, listenPipe: windows.listenOwnerPipe }));
+    await runWindowsLaunch(windows, childEnv, managed!.root, gatewayTmp, suppliedControl ? inherited : undefined);
     return;
   }
   runUnixGateway(childEnv, unixSidecar!, { managed, home, journal, controlPath: control.path, material, inherited: !!(suppliedControl && inherited) });

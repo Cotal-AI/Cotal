@@ -30,7 +30,7 @@ export function hermesLaunchUnavailable(opts: Pick<LaunchOpts, "cwd" | "resume">
   const mode = opts.cwd !== undefined ? "detached or manager-attached launches" : opts.resume !== undefined ? "session resume" : process.env.COTAL_HERMES_ADOPT_HOME?.trim() ? "adopted profiles" : undefined;
   if (mode) return `Hermes on Windows does not support ${mode}. Use a foreground launch with a managed profile. Leave COTAL_HERMES_ADOPT_HOME unset and run \`cotal spawn --foreground --harness hermes --model <model>\`.`;
   if (process.arch !== "x64" && process.arch !== "arm64") return "Hermes on Windows needs a 64-bit Node.js installation.";
-  if (!findWindowsUv()) return "Hermes on Windows needs uv.exe on PATH. Install uv, then retry the foreground launch.";
+  if (!findWindowsUv()) return "Hermes on Windows needs uv.exe on PATH. Install uv before launching Hermes.";
   return undefined;
 }
 

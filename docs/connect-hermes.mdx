@@ -64,7 +64,8 @@ cotal spawn --foreground --harness hermes --model <model>
 ```
 
 Replace `<model>` with your model name. Leave `COTAL_HERMES_ADOPT_HOME` unset to use a disposable profile.
-Press Ctrl+C in the launch terminal to stop the gateway and remove the profile.
+Press Ctrl+C or Ctrl+Break in the launch terminal to stop the gateway and remove the profile. Closing the console also requests a graceful stop.
+If you forcibly end the CLI or launcher, for example with Task Manager or `Stop-Process -Force`, it cannot clean up: after the gateway exits, delete that seat's `cotal-hermes-*` folder under `%TEMP%`, identified by `HERMES_HOME` in the launch output.
 Windows does not support detached Hermes launches, adopted profiles, or `--resume`.
 
 ## Choose a model [#choose-a-model]
@@ -78,7 +79,8 @@ See [Model catalog](hermes-connector-reference.mdx#model-catalog).
 A managed profile does not read your `~/.hermes` configuration.
 The launch fails if neither source provides a model, even if you forward `HERMES_MODEL` through `spawn.env`.
 Direct `cotal spawn` checks for the model before issuing credentials, and its `--dry-run` checks it without running `uv`.
-If both `uv` and the model are missing, foreground `cotal spawn` reports both in the same refusal.
+On macOS and Linux, if both `uv` and the model are missing, foreground `cotal spawn` reports both in the same refusal.
+On Windows, install `uv.exe` before retrying. The launch checks the model after it finds `uv.exe`.
 To use your existing model configuration, [adopt your own profile](#use-your-own-hermes-profile).
 
 ## Use a custom endpoint [#use-a-custom-endpoint]
@@ -104,7 +106,7 @@ The connector forwards its declared provider keys and the names in `spawn.env`; 
 `cotal models --harness hermes` then lists the models the endpoint serves.
 
 On Windows, to use a keyed custom endpoint with a managed profile, also include `CUSTOM_API_KEY` in `spawn.env`.
-Set it in the launch environment, not in the Cotal configuration. With `HERMES_INFERENCE_PROVIDER=custom`, the connector writes the model, URL, and key into the seat's private profile and removes it when the seat stops.
+Set it in the launch environment, not in the Cotal configuration. With `HERMES_INFERENCE_PROVIDER=custom`, the connector writes the model, URL, and key into the seat's private profile and removes the profile on a clean stop.
 
 On macOS and Linux, for an endpoint that requires a key, [adopt your own profile](#use-your-own-hermes-profile) and set its `config.yaml` model block:
 

@@ -13,14 +13,17 @@ export interface WindowsHost {
   listenOwnerPipe: ListenBridgePipe;
 }
 
-export async function runWindowsGateway(pkgDir: string, env: NodeJS.ProcessEnv, root: string, startProcess: WindowsHost["startProcess"], start: (onShutdown: () => void) => ReturnType<typeof startSidecar>): Promise<void> {
+const STOP_SIGNALS = ["SIGINT", "SIGHUP", "SIGBREAK", "SIGTERM"] as const;
+
+export async function runWindowsGateway(pkgDir: string, env: NodeJS.ProcessEnv, root: string, startProcess: WindowsHost["startProcess"], start: (onShutdown: () => void) => ReturnType<typeof startSidecar>, reclaim: () => void): Promise<void> {
   let gateway: ReturnType<typeof startProcess> | undefined;
   let requestStop!: () => void;
   const stop = new Promise<void>((resolve) => { requestStop = resolve; });
-  const sidecar = start(requestStop);
+  let sidecar: ReturnType<typeof startSidecar> | undefined;
   const readiness = new AbortController();
-  process.on("SIGINT", requestStop);
+  for (const signal of STOP_SIGNALS) process.on(signal, requestStop);
   try {
+    sidecar = start(requestStop);
     delete env.COTAL_HERMES_PROMPT;
     if (env.HERMES_INFERENCE_PROVIDER === "custom" && env.CUSTOM_BASE_URL) delete env.CUSTOM_API_KEY;
     gateway = startProcess(hermesUvCommand(env), ["run", "--project", pkgDir, "hermes", "gateway", "run"], env, join(root, "gateway.log"));
@@ -34,8 +37,16 @@ export async function runWindowsGateway(pkgDir: string, env: NodeJS.ProcessEnv, 
     }
     process.exitCode = code ?? 0;
   } finally {
-    process.off("SIGINT", requestStop);
-    try { await gateway?.stop(); } finally { await sidecar.stop(); }
+    try {
+      let drained = false;
+      try { await gateway?.stop(); drained = true; }
+      finally {
+        if (sidecar) await sidecar.stop(drained ? reclaim : undefined);
+        else if (drained) reclaim();
+      }
+    } finally {
+      for (const signal of STOP_SIGNALS) process.off(signal, requestStop);
+    }
   }
 }
 

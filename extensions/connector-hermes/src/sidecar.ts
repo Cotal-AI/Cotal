@@ -34,7 +34,7 @@ interface Sidecar {
   agent: MeshAgent;
   config: AgentConfig;
   shutdownGateway(): void;
-  stop(): Promise<void>;
+  stop(afterJournal?: () => void): Promise<void>;
 }
 
 function need(name: string): string {
@@ -122,13 +122,19 @@ export function startSidecar(windows?: { onShutdown(): void; listenPipe: ListenB
     agent,
     config,
     shutdownGateway() { bridge!.shutdownGateway(); },
-    async stop() {
+    async stop(afterJournal) {
       // Both servers have closed, with every accepted connection ended, before stop resolves, so a
       // launcher that removes their directory next leaves nothing listening or connected in it. A
       // control connection ends on its own within the exchange's deadlines.
-      await Promise.all([bridge!.close(), new Promise<void>((resolve) => controlServer.close(() => resolve()))]);
-      await events?.close();
-      await agent.stop();
+      try {
+        await Promise.all([bridge!.close(), new Promise<void>((resolve) => controlServer.close(() => resolve()))]);
+        await events?.close();
+      } finally {
+        if (afterJournal) {
+          try { afterJournal(); } finally { await agent.stop(); }
+        }
+      }
+      if (!afterJournal) await agent.stop();
     },
   };
 }
