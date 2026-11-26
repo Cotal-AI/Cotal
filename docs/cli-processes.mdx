@@ -1124,6 +1124,10 @@ linger enabled, because other user services may rely on it. The unit and its rec
 before enabling linger. If linger cannot be enabled, the unit stays recorded for `uninstall` and
 is not enabled or started.
 
+On Linux and Windows, each service launch writes up to 64 KiB of output to a fresh `daemon.log`
+in the daemon's state directory. It saves the preceding launch in `daemon.previous.log`. The
+Background service log in Settings shows up to 8 KiB from each launch, with the current launch last.
+
 On macOS it is a LaunchAgent. It writes a plist to `~/Library/LaunchAgents`, then loads it into the
 user's GUI domain with `launchctl enable` and `launchctl bootstrap`. launchd starts the daemon when
 the job loads and at each login, and starts it again whenever it exits. Its output goes to
@@ -1160,12 +1164,10 @@ The updated Windows native runtime checks its recorded source under the lifetime
 publishing. Uninstall holds that same lock through its final endpoint check and removal of both
 the source and receipt, so a delayed updated native child cannot publish after removal.
 
-The task's native entry writes its output to `daemon.log` in the daemon's state directory,
-replacing the previous launch's log and retaining at most 64 KiB of output. When the daemon does
-not answer on Windows and a scheduled task installation is recorded, `status` shows how to run
-`cotal daemon start` if the task is still registered. It names the log and directs you to Task
-Scheduler for the task's state and last result if no log was created. Without an installation
-record, `status` and `start` direct you to `cotal daemon install` for a scheduled task or
+When the daemon does not answer on Windows and a scheduled task installation is recorded,
+`status` shows how to run `cotal daemon start` if the task is still registered. It names the log and
+directs you to Task Scheduler for the task's state and last result if no log was created. Without
+an installation record, `status` and `start` direct you to `cotal daemon install` for a scheduled task or
 `cotal daemon serve` to run in a terminal. These remedies keep the selected `--daemon-home` and
 quote a path with spaces for PowerShell and Command Prompt. If a path needs PowerShell quoting,
 the remedy names PowerShell.

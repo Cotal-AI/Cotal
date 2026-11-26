@@ -2,14 +2,15 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir, userInfo } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { peerCredentials } from "@cotal-ai/seat";
-import { skipSuite } from "@cotal-ai/smoke-kit";
+import { killAndAwaitExit, skipSuite } from "@cotal-ai/smoke-kit";
 import { filterDesktopApplicationPath, windowsApplicationPath } from "../daemon/desktop-path.js";
 import { daemonPaths } from "../daemon/endpoint.js";
+import { queryDaemon } from "../daemon/client.js";
 import { excludeLifetime } from "../daemon/lifetime.js";
 import { serveDaemon } from "../daemon/server.js";
 
@@ -54,7 +55,7 @@ interface Frame {
   line?: string;
   progress?: { step: string; outcome: string; detail: string };
   error?: { code: string; message: string; remedy?: string; native?: { code: string; detail?: unknown }; detail?: { installed?: boolean } };
-  result?: { installed: boolean; status: { state: string; pid: number }; omittedRelativePathEntries?: string[] };
+  result?: { installed: boolean; status: { state: string; pid: number }; omittedRelativePathEntries?: string[]; text?: string };
 }
 async function requestFrames(target: Isolated, body: string | Record<string, unknown>, timeoutMs = 35_000): Promise<Frame[]> {
   const payload = typeof body === "string" ? { op: body } : body;
@@ -90,6 +91,44 @@ function checkInstallation(target: Isolated): void {
   assert.equal(receipt.unitPath, target.unit);
   assert.equal(receipt.unitSha256, createHash("sha256").update(readFileSync(target.unit)).digest("hex"));
 }
+
+async function checkRestartLog(): Promise<void> {
+  const target = isolated("log-restart");
+  const paths = daemonPaths(target.env, target.env.COTAL_HOME);
+  const logPath = join(paths.state, "daemon.log");
+  const env = { ...target.env, COTAL_DAEMON_NATIVE_SERVICE: "1", COTAL_SKIP_CONNECTOR_SEED: "1" };
+  const args = [cli, "daemon", "serve"];
+  const held = excludeLifetime(paths.lock);
+  try {
+    const first = spawnSync(process.execPath, args, { cwd: target.dir, env, stdio: "ignore", timeout: 10_000 });
+    assert.equal(first.status, 2, "the first launch refuses on the fixture's lifetime lock");
+  } finally { held.release(); }
+  const before = (await request(target, "log")).result?.text ?? "";
+  assert.match(before, /^daemon service launch \S+\ndaemon startup refused: .*held by a live process/);
+
+  const next = spawn(process.execPath, args, { cwd: target.dir, env, stdio: "ignore" });
+  try {
+    const deadline = Date.now() + 10_000;
+    while (true) {
+      const status = await queryDaemon({ paths }).catch(() => undefined);
+      if (status?.ok && status.result?.state === "ready" && status.result.pid === next.pid) break;
+      assert.ok(next.exitCode === null && Date.now() < deadline, "the replacement daemon must answer ready");
+      await sleep(50);
+    }
+    const current = readFileSync(logPath, "utf8");
+    assert.match(current, /^daemon service launch \S+\ndaemon ready at /);
+    assert.doesNotMatch(current, /daemon startup refused:/, "the current log stays scoped to this attempt");
+    const after = (await request(target, "log")).result?.text ?? "";
+    assert.ok(after.startsWith(`Previous launch:\n${before}`), "Settings retains the first launch's refusal");
+    assert.match(after, /Current launch:\ndaemon service launch \S+\ndaemon ready at /);
+    console.log("native restart: Settings shows the previous refusal and the current ready launch");
+  } finally {
+    await killAndAwaitExit(next, "SIGTERM");
+    rmSync(target.dir, { recursive: true, force: true });
+  }
+}
+
+await checkRestartLog();
 
 // A real account-shell failure must remain actionable before any service operation: the refusal names the shell,
 // how it ended and its last error output, so the person can fix that startup file.
