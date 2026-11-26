@@ -14,8 +14,8 @@ import { npmInvocation } from "../lib/npm-invocation.js";
 import { runSeed } from "../seed/reconcile.js";
 import { assertStageVerifier, stageExtensions } from "../lib/extension-stage.js";
 import { connectorConfigDir, extensionReinstallAdvice, isExtensionPathSpec as isPathSpec, resolveExtensionEntry } from "@cotal-ai/workspace";
-import { CorruptExtensionPackageError, CorruptExtensionsManifestError, inspectLock, extensionNpmMutationPath, oneLine, type OutputWarning } from "@cotal-ai/workspace";
-import { selfArgv } from "../lib/self-exec.js";
+import { codeSpan, CorruptExtensionPackageError, CorruptExtensionsManifestError, inspectLock, extensionNpmMutationPath, oneLine, windowsShellWord, type OutputWarning } from "@cotal-ai/workspace";
+import { displayCmd, selfArgv } from "../lib/self-exec.js";
 import { spawnSync } from "node:child_process";
 import { isAuthenticSeedChild, markSeedChildLive, clearChildMarker } from "../seed/lock.js";
 import { cliVersion, seedStoreDir } from "../seed/paths.js";
@@ -247,7 +247,7 @@ export async function addExtension(spec: string, expectedPkg?: string, borrowMut
       provenance.wrote("extensions prefix", join(dir, "package.json"));
     }
     if (seeding) await addTransaction(pkg, resolved, expectedPkg, true, announce);
-    else await installExtensionSet([{ pkg, spec: resolved }], announce);
+    else await installExtensionSet([{ pkg, spec: resolved }], announce, isPath ? { localOperand: spec } : undefined);
   } finally {
     if (seeding) clearChildMarker();
     releaseMutation();
@@ -272,7 +272,7 @@ function dropForeignLockEntries(lock: { packages?: Record<string, { extraneous?:
 export async function installExtensionSet(
   requests: readonly ExtensionInstallRequest[],
   announce: (line: string) => void = console.error,
-  opts?: { isolate?: boolean },
+  opts?: { isolate?: boolean; localOperand?: string },
 ): Promise<void> {
   if (!requests.length) return;
   const ownerConfig = connectorConfigDir();
@@ -330,8 +330,18 @@ export async function installExtensionSet(
     for (const request of requests) {
       const meta = installedExtensionPackage(request.pkg);
       if (!meta || request.version !== undefined && meta.version !== request.version) throw new Error(`extension set installed an unexpected version of ${request.pkg}`);
-      const entry = resolveExtensionEntry(extensionPackageDir(request.pkg), meta);
-      if (!existsSync(entry)) throw new Error(`extension set installed no entry for ${request.pkg} at ${entry}`);
+      const dir = extensionPackageDir(request.pkg);
+      const entry = resolveExtensionEntry(dir, meta);
+      if (!existsSync(entry)) {
+        const path = codeSpan(`./${oneLine(relative(dir, entry).split(sep).join("/"))}`);
+        const message = `the installed npm package ${oneLine(request.pkg)} is missing its entry ${path}.`;
+        const operand = opts?.localOperand;
+        if (operand === undefined) throw new Error(message);
+        const word = oneLine(operand) !== operand ? undefined : process.platform === "win32" ? windowsShellWord(operand) : shellWord(operand);
+        const pack = codeSpan(`npm pack --dry-run ${word ?? "<local-path>"}`);
+        const retry = codeSpan(`${displayCmd()} ext add ${word ?? "<local-path>"}`);
+        throw new Error(`${message} Check the package with ${pack}, then include the entry in \`files\` or generate it before rerunning ${retry}.`);
+      }
     }
     const invocation = requests.length > 1 || opts?.isolate ? selfArgv() : undefined;
     for (const request of requests) {

@@ -162,6 +162,17 @@ registry.register({ kind: "command", name: "greet-example", summary: "Print a gr
 
       const manifestPath = join(prefix, "extensions.json");
       const before = readFileSync(manifestPath, "utf8");
+      writeFileSync(join(source, "README.md"), "# Greeting extension\n");
+      writeFileSync(join(source, "package.json"), JSON.stringify({ ...meta, version: "2.0.0", exports: "./greet.mjs", files: ["README.md"] }));
+      const omitted = cli(["ext", "add", "./example-extension"]);
+      check("ext add explains when npm omits the local entry", omitted.status === 1 &&
+        omitted.stderr.includes(`the installed npm package ${name} is missing its entry \`./greet.mjs\``) &&
+        omitted.stderr.includes("`npm pack --dry-run ./example-extension`") &&
+        omitted.stderr.includes("include the entry in `files` or generate it") &&
+        ["cotal", "pnpm cotal"].some((cmd) => omitted.stderr.includes(`\`${cmd} ext add ./example-extension\``)) &&
+        !omitted.stderr.includes(".extensions.stage-") && existsSync(join(source, "greet.mjs")));
+      check("a package missing its entry leaves the previous manifest intact", readFileSync(manifestPath, "utf8") === before);
+
       writeFileSync(join(source, "package.json"), JSON.stringify({ ...meta, version: "2.0.0", main: "./greet.mjs", exports: { ".": "./missing.mjs" } }));
       const refused = cli(["ext", "add", "./example-extension"]);
       check("ext add refuses a missing root export even when main exists", refused.status === 1 && refused.stderr.includes("missing.mjs"));
@@ -214,7 +225,7 @@ registry.register({ kind: "command", name: "greet-example", summary: "Print a gr
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
-  assert.equal(passed + failed, process.platform === "linux" || process.platform === "darwin" ? 38 : 33, "all expected copy/rollback checks ran");
+  assert.equal(passed + failed, process.platform === "linux" || process.platform === "darwin" ? 40 : 35, "all expected copy/rollback checks ran");
   console.log(`ext-install-copies smoke: ${passed} passed, ${failed} failed`);
   emitSentinel({ passed, failed });
   process.exit(failed ? 1 : 0);
