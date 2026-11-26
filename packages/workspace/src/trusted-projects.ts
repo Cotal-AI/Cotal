@@ -248,7 +248,8 @@ const walkFailure = (code: string, message: string): NodeJS.ErrnoException => Ob
 function walkPersonaPath(file: string): WalkedPersona {
   const written = isAbsolute(file) ? file : `${process.cwd()}${sep}${file}`;
   const spellings = [written];
-  const split = (p: string): string[] => p.slice(parse(p).root.length).split(/[\\/]/).filter(Boolean);
+  const separator = sep === "\\" ? /[\\/]/ : "/";
+  const split = (p: string): string[] => p.slice(parse(p).root.length).split(separator).filter(Boolean);
   // Joined without collapsing `..`: a spelling is judged as the walk met it.
   const at = (dir: string, rest: string[]): string => (rest.length ? `${dir.endsWith(sep) ? dir : dir + sep}${rest.join(sep)}` : dir);
   let done = parse(written).root;
