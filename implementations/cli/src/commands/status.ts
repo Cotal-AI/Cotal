@@ -29,6 +29,7 @@ import {
   extensionsDir,
   findCotalRoot,
   meshesForRoot,
+  migrateProjectTrust,
   resolveReadsLiveness,
   unsettledStackOperation,
   withdrawOperationNote,
@@ -309,6 +310,7 @@ export async function status(args: ParsedArgs): Promise<void> {
   // An address a saved service's readiness checks that still answers with none of its instances
   // running is named, but it is not a part status failed to read, so the run stays complete.
   const survivors = selected.ok && services.state === "read" ? await readinessAddressSurvivors(selected.target.space) : [];
+  migrateProjectTrust();
   writeResult(
     presentation,
     {

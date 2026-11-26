@@ -5,7 +5,7 @@ import { closeSync, constants, fstatSync, lstatSync, openSync, readdirSync, read
 import { basename, isAbsolute, join, resolve } from "node:path";
 import { CommandFailure, assertRecordIdentity, shellPath, canonicalRoot, commandIsCotalSupervisor, homeCotalDir, isCommandFailure, maintenanceAdmitsStackWork, readMaintenanceJournal, readProcessCommand, readServiceStopRequest, resolveNativeServiceTarget, loopbackListeners, processGroupMembers, processGroupOf, serviceAdapterReadiness, serviceMetadataDigest, spaceKey, serviceAdapterKernelStopPlan, serviceAdapterKernelStopResult, serviceAdapterStopPlan, serviceAdapterStopAbandonment, serviceAdapterStopRefusal, serviceAdapterStopResult, type ServiceAdapterStopAbandonment, type ServiceAdapterAttempt, type ServiceAdapterKernelStopPlan, type ServiceAdapterPreservedStop, type ServiceAdapterStopPlan, type ServiceAdapterContext, type ServiceDefinitionInput, type ControllerStackView, type OutputWarning, isWorkspaceTargetError, oneLine, targetErrorCode, workspaceErrorParts, type MeshTargetError, type ProcessIdentityRecord } from "@cotal-ai/workspace";
 import { loadCotalConfig, openPrivateAppend, ProjectConfigTrustError, spawnEnvAllow } from "@cotal-ai/core";
-import { isTrustedProject } from "@cotal-ai/workspace";
+import { isTrustedProject, migrateProjectTrust } from "@cotal-ai/workspace";
 import type { SeatCap } from "@cotal-ai/workspace";
 import { refuseRecordedSupervisor } from "./service-supervision.js";
 import { serviceInstallIntents } from "./service-install-intent.js";
@@ -285,6 +285,7 @@ function environment(definition: ServiceDefinitionInput): NodeJS.ProcessEnv {
  *  here; a name `spawn.env` gains later reaches a seat once the manager starts again. Only a variable
  *  the environment holds is read, never a member every object inherits, such as `constructor`. */
 function spawnEnvironment(root: string): NodeJS.ProcessEnv {
+  migrateProjectTrust();
   let names: readonly string[];
   try { names = spawnEnvAllow(loadCotalConfig(root, isTrustedProject)) ?? []; }
   catch (error) {

@@ -316,7 +316,7 @@ export async function team(args: ParsedArgs): Promise<void> {
 async function previewDeploy(file: string, values: TeamValues): Promise<void> {
   const dryRun = values["dry-run"] === true;
   // Apply handlers perform their own exact target checks and report the selected space.
-  const { path, prepared } = readTeamFile(file, dryRun ? values.space : undefined);
+  const { path, prepared } = readTeamFile(file, dryRun ? values.space : undefined, !dryRun);
   if (!dryRun) {
     if (prepared.agents.length) {
       const { applyAgentTeam } = await import("./team-agent-apply.js");
@@ -540,10 +540,10 @@ function accessGraph(prepared: PreparedManifest) {
   }));
 }
 
-function readTeamFile(file: string, space?: string): { path: string; prepared: PreparedManifest } {
+function readTeamFile(file: string, space?: string, forLaunch = false): { path: string; prepared: PreparedManifest } {
   const path = resolve(file);
   let prepared: PreparedManifest;
-  try { prepared = loadManifest(path); }
+  try { prepared = loadManifest(path, undefined, forLaunch); }
   catch (e) {
     if (e instanceof ManifestError) throw manifestRefusal(e, path);
     throw manifestPathFailure(e, { path }) ?? new CommandFailure("refused", "SCHEMA_INVALID", "the team manifest or referenced persona could not be read and resolved; no broker was contacted", { target: { path }, remedy: "check the manifest schema, persona paths and permission declarations" });
@@ -563,7 +563,7 @@ function manifestRefusal(e: ManifestError, path: string): CommandFailure {
 }
 
 async function bootTeam(file: string, values: TeamValues): Promise<void> {
-  const { path, prepared } = readTeamFile(file, values.space), space = prepared.manifest.space;
+  const { path, prepared } = readTeamFile(file, values.space, true), space = prepared.manifest.space;
   let local: ReturnType<typeof findMesh>, waiting: ReturnType<typeof findPreparedSpace>;
   try { local = findMesh(space); waiting = findPreparedSpace(space); }
   catch { throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "the selected local registration or prepared-space record could not be read; no boot root was chosen", { target: { space } }); }

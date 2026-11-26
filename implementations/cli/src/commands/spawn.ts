@@ -44,6 +44,7 @@ import {
   CommandFailure,
   isTrustedProject,
   loadTrustCheckedPersona,
+  migrateProjectTrust,
   loadLaunchPersonaFile,
   personaFileReference,
   PersonaSourceError,
@@ -301,7 +302,7 @@ function reportDirectPersonaReadFailure(path: string, code: string | undefined, 
 /** Read the persona through the project trust check, seeding only a missing product default. */
 function readDirectPersona(target: PersonaSite, path: string, ref: string, from: string | undefined, project: string, implicitDefault: boolean, handoff: boolean): { def: AgentDef; refusal?: string } {
   const { space } = target;
-  try { return loadTrustCheckedPersona(path, "launch"); }
+  try { return loadTrustCheckedPersona(path, "launch", migrateProjectTrust); }
   catch (e) {
     const code = (e as NodeJS.ErrnoException).code;
     if (!(implicitDefault && code === "ENOENT")) {
@@ -323,7 +324,7 @@ function readDirectPersona(target: PersonaSite, path: string, ref: string, from:
     throw new CommandFailure("refused", "PERMISSION_DENIED", `${missing.message}, and the shipped one could not be written there: ${(error as Error).message}`, { target: { space, path }, remedy: missing.remedy });
   }
   if (written !== undefined) provenance.wrote("default persona", written);
-  try { return loadTrustCheckedPersona(path, "launch"); }
+  try { return loadTrustCheckedPersona(path, "launch", migrateProjectTrust); }
   catch (error) {
     if (written !== undefined || (error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
     throw brokenPersonaLink(path, { space, path }, true) ?? error;

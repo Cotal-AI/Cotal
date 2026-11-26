@@ -1,11 +1,12 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readlinkSync, statSync, type Stats } from "node:fs";
 import { dirname, isAbsolute, join, parse, resolve, sep } from "node:path";
-import { acquireLock, globalConfigDir, parseAgentFileBytes, projectTrustProblem, writeSecretFileAtomic, type AgentDef } from "@cotal-ai/core";
+import { acquireLock, globalConfigDir, parseAgentFileBytes, projectTrustProblem, rejectionText, writeSecretFileAtomic, type AgentDef } from "@cotal-ai/core";
 import { parseLaunchPersonaSource, PersonaSourceError } from "./launch-persona.js";
-import { CommandFailure, isCommandFailure } from "./output.js";
+import { CommandFailure, isCommandFailure, oneLine, recordOperationWarning } from "./output.js";
 import { localRecordAccess, prepareCotalHomeForWrite, protectedLocalDirectory } from "./protected-records.js";
 import { localWriteFailure } from "./local-write.js";
-import { canonicalRoot, homeCotalDir, readMeshRegistry } from "./mesh-registry.js";
+import { canonicalRoot, homeCotalDir, isMeshRegistryError, readMeshRegistry } from "./mesh-registry.js";
 import { readPreparedSpaces } from "./prepared-spaces.js";
 
 /**
@@ -170,32 +171,70 @@ function writeSeedRecord(record: SeedRecord): void {
   }
 }
 
-/** The one-time upgrade seed, so a project that worked before upgrading keeps working. The first
- *  attempt records, beside the space registry, every root a space was registered or prepared at, and
- *  then adds those roots to the trusted projects file. The CLI calls it before a command body runs,
- *  so a registration made after the upgrade is never in that record.
- *
- *  Once a record exists the registry is never read for this again: an attempt whose file write
- *  failed adds only the recorded roots when it later succeeds, and a completed seed adds nothing,
- *  whether the trusted projects file was removed, is invalid, or lives in another config folder. */
-export function seedTrustedProjects(): void {
-  let record = readSeedRecord();
-  if (record?.completedAt !== undefined) return;
-  if (record === undefined) {
-    const attempt: SeedRecord = { schemaVersion: SCHEMA_VERSION, attemptedAt: new Date().toISOString(), roots: [] };
-    // An unreadable registry cannot distinguish old roots from new ones on a later run.
-    // Record an empty attempt before letting commands continue, rather than trust later additions.
-    try { attempt.roots = [...new Set(knownSpaceRoots().map(canonicalRoot))].sort(); }
-    catch (error) {
-      writeSeedRecord(attempt);
+/** The roots eligible for migration, or the registry error that prevents choosing them. */
+function seedRoots(): string[] | Error {
+  try { return [...new Set(knownSpaceRoots().map(canonicalRoot))].sort(); }
+  catch (error) { return error instanceof Error ? error : new Error(rejectionText(error)); }
+}
+
+/** Migrate once per home. A durable snapshot excludes later registrations even when the trust
+ *  store write fails. With no roots there is no trust store to create. */
+export function seedTrustedProjects(beforeRegistration = false): void {
+  const current = readSeedRecord();
+  if (current?.completedAt !== undefined) return;
+  const initial = current ? undefined : seedRoots();
+  if (!beforeRegistration && Array.isArray(initial) && initial.length === 0) return;
+  prepareCotalHomeForWrite();
+  const lock = acquireLock(`${trustSeedPath()}.lock`, { label: "the project trust upgrade seed", waitMs: 10_000 });
+  try {
+    let record = readSeedRecord();
+    if (record?.completedAt !== undefined) return;
+    if (!record) {
+      const roots = seedRoots();
+      const attemptedAt = new Date().toISOString();
+      if (roots instanceof Error) {
+        writeSeedRecord({ schemaVersion: SCHEMA_VERSION, attemptedAt, roots: [], completedAt: attemptedAt });
+        throw roots;
+      }
+      if (!roots.length) {
+        if (beforeRegistration) writeSeedRecord({ schemaVersion: SCHEMA_VERSION, attemptedAt, roots, completedAt: attemptedAt });
+        return;
+      }
+      record = { schemaVersion: SCHEMA_VERSION, attemptedAt, roots };
+      writeSeedRecord(record);
+    }
+    const roots = record.roots;
+    if (roots.length) update((current) => {
+      const prior = current?.roots ?? [];
+      return roots.every((root) => prior.includes(root)) ? undefined : { schemaVersion: SCHEMA_VERSION, seeded: true, roots: [...prior, ...roots] };
+    });
+    writeSeedRecord({ ...record, completedAt: new Date().toISOString() });
+  } finally { lock.release(); }
+}
+
+const migration = new AsyncLocalStorage<{ json: boolean; attempted: boolean } | undefined>();
+
+/** Enable migration for this invocation without reading or writing trust during dispatch. */
+export function withProjectTrustMigration<T>(enabled: boolean, json: boolean, run: () => T): T {
+  return migration.run(enabled ? { json, attempted: false } : undefined, run);
+}
+
+/** Record upgrade trust at an admitted launch or explicit migration point. Reads of the trust
+ *  store do not call this. A registry writer must first have a durable snapshot, even if empty. */
+export function migrateProjectTrust(beforeRegistration = false): void {
+  const scope = migration.getStore();
+  if (!scope || (!beforeRegistration && scope.attempted)) return;
+  scope.attempted = true;
+  try { seedTrustedProjects(beforeRegistration); }
+  catch (error) {
+    const remedy = isCommandFailure(error) || isMeshRegistryError(error) ? error.remedy : undefined;
+    const details = `${rejectionText(error)}${remedy ? `; ${remedy}` : ""}`;
+    recordOperationWarning({ code: "PROJECT_TRUST_SEED_FAILED", target: null, message: `the project trust upgrade seed did not complete: ${oneLine(details)}` }, { echo: !scope.json });
+    if (beforeRegistration) {
+      try { if (readSeedRecord() !== undefined) return; } catch { /* without a valid cutoff, no registration is safe to add */ }
       throw error;
     }
-    record = attempt;
-    writeSeedRecord(record);
   }
-  const roots = record.roots;
-  update((current) => ({ schemaVersion: SCHEMA_VERSION, seeded: true, roots: [...(current?.roots ?? []), ...roots] }));
-  writeSeedRecord({ ...record, completedAt: new Date().toISOString() });
 }
 
 /** Whether the project at `root` is trusted: its canonical path equals a stored root. Stored roots
@@ -325,10 +364,11 @@ function launchOptionsRefusal(file: string, walked: WalkedPersona, launchOptions
  *  `as` picks the parser: `launch` refuses a Mesh manifest as {@link loadLaunchPersonaFile} does,
  *  `agent` parses as `loadAgentFile`. A missing file throws `ENOENT` and a loop `ELOOP`, as a read
  *  would. */
-export function loadTrustCheckedPersona(file: string, as: "launch" | "agent"): { def: AgentDef; refusal?: string } {
+export function loadTrustCheckedPersona(file: string, as: "launch" | "agent", beforeTrustCheck?: () => void): { def: AgentDef; refusal?: string } {
   const walked = walkPersonaPath(file);
   const source = readWalked(file, walked, as);
   const def = as === "launch" ? parseLaunchPersonaSource(source, file) : parseAgentFileBytes(source, file);
+  beforeTrustCheck?.();
   const refusal = launchOptionsRefusal(file, walked, def.launchOptions);
   return { def, ...(refusal ? { refusal } : {}) };
 }
@@ -370,6 +410,7 @@ export function trustProject(root: string): { root: string; added: boolean } {
   const control = statSync(join(canonical, ".cotal"), { throwIfNoEntry: false });
   if (control && typeof process.getuid === "function" && control.uid !== process.getuid())
     throw new CommandFailure("refused", "PERMISSION_DENIED", `${join(canonical, ".cotal")} belongs to another user, so ${canonical} was not trusted`, { target: { root: canonical }, remedy: "trust a project folder your own account owns" });
+  migrateProjectTrust();
   let added = false;
   update((current) => {
     const roots = current?.roots ?? [];

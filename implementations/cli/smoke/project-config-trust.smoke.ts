@@ -185,6 +185,31 @@ function runTrustRemedy(output: string, root: string): boolean {
 
 console.log("cotal spawn: a project declares servers, spawn.env and persona launch options only in a trusted folder");
 try {
+  {
+    const sandbox = mkdtempSync(join(box, "registration-first-"));
+    const home = join(sandbox, "home"), config = join(sandbox, "config");
+    const old = mkdtempSync(join(sandbox, "old-")), cloned = mkdtempSync(join(sandbox, "cloned-"));
+    mkdirSync(join(cloned, ".cotal"), { mode: 0o700 });
+    const priorHome = process.env.COTAL_HOME;
+    process.env.COTAL_HOME = home;
+    try { recordMesh({ space: "legacy", server, root: old, mode: "open", origin: "manual", ts: new Date().toISOString() }); }
+    finally { process.env.COTAL_HOME = priorHome; }
+    const env = {
+      ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_"))),
+      COTAL_HOME: home, XDG_CONFIG_HOME: config, COTAL_SKIP_CONNECTOR_SEED: "1", DO_NOT_TRACK: "1",
+    };
+    const run = (...argv: string[]) => spawnSync(process.execPath, [cliEntry, ...argv], { cwd: sandbox, env, encoding: "utf8", timeout: 30_000 });
+    const store = join(config, "cotal", "trusted-projects.json");
+    const witness = join(home, "trusted-projects-seed.json");
+    const refused = run("auth", "mint", "missing", "--space", "not-registered", "--json");
+    check("a refused target lookup with legacy registrations writes neither trust record",
+      refused.status === 2 && refused.stdout.includes("TARGET_NOT_FOUND") && !existsSync(witness) && !existsSync(store), refused.stdout);
+    const created = run("space", "create", "new-clone", "--root", cloned, "--json");
+    const roots = existsSync(store) ? JSON.parse(readFileSync(store, "utf8")).roots as string[] : [];
+    check("a first new prepared space does not enter the upgrade trust snapshot",
+      created.status === 0 && roots.includes(old) && !roots.includes(cloned), { status: created.status, roots, stdout: created.stdout });
+  }
+
   // A project with no config launches whether or not its folder is trusted. This is the first command,
   // so it runs the upgrade seed.
   {

@@ -2,12 +2,12 @@ import { existsSync, writeSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join, parse, resolve } from "node:path";
 import { parseArgs } from "node:util";
-import { commandDeclarationProblems, findCommand, findSubcommand, parseCommandArgs, rejectionText, type Command, type FlagSpec, type ParsedArgs, type Registry, type Subcommand } from "@cotal-ai/core";
+import { commandDeclarationProblems, findCommand, findSubcommand, parseCommandArgs, type Command, type FlagSpec, type ParsedArgs, type Registry, type Subcommand } from "@cotal-ai/core";
 import {
   CommandFailure,
   commandFailureReport,
   cachedPreferences,
-  seedTrustedProjects,
+  withProjectTrustMigration,
   CorruptExtensionsManifestError,
   cotalDirProblem,
   cotalHomeProblem,
@@ -910,17 +910,6 @@ export function runCli(registry: Registry, argv: string[], opts: RunCliOptions =
   return runOperation(scope, () => dispatchCli(registry, argv, opts, scope));
 }
 
-/** Record roots that belong to spaces registered before command bodies can add new ones. */
-function seedProjectTrustBeforeCommand(name: string, dryRun: boolean, json: boolean): void {
-  if (dryRun || ["version", "docs", "completion", "__complete", "update"].includes(name)) return;
-  try { seedTrustedProjects(); }
-  catch (error) {
-    const remedy = isCommandFailure(error) || isMeshRegistryError(error) ? error.remedy : undefined;
-    const details = `${rejectionText(error)}${remedy ? `; ${remedy}` : ""}`;
-    recordOperationWarning({ code: "PROJECT_TRUST_SEED_FAILED", target: null, message: `the project trust upgrade seed did not complete: ${oneLine(details)}` }, { echo: !json });
-  }
-}
-
 function checkCommandLocalState(cmd: Command, parsed: ParsedArgs, rest: readonly string[]): void {
   if (cmd.name.startsWith("__") || cmd.name === "help" || cmd.name === "completion") return;
   const json = structured(cmd, parsed.positionals[0]) && parsed.values.json === true;
@@ -941,7 +930,6 @@ function checkCommandLocalState(cmd: Command, parsed: ParsedArgs, rest: readonly
       refuse(error);
     }
   }
-  seedProjectTrustBeforeCommand(cmd.name, parsed.values["dry-run"] === true, json);
 }
 
 // Explicit help for the bundled reference needs only the built-in command metadata.
@@ -1177,7 +1165,8 @@ async function dispatchCli(registry: Registry, argv: string[], opts: RunCliOptio
   checkCommandLocalState(cmd, parsed, rest);
   // Keep failures in the resolved space and completion warnings behind COTAL_COMPLETE_DEBUG.
   if (cmd.name === "__complete" && !debugFlag("COTAL_COMPLETE_DEBUG")) scope.quiet = true;
-  const execute = async () => npmProjectDirectory.run(updateDirectory, async () => {
+  const execute = () => withProjectTrustMigration(parsed.values["dry-run"] !== true && cmd.name !== "update", parsed.values.json === true, executeCommand);
+  const executeCommand = async () => npmProjectDirectory.run(updateDirectory, async () => {
     if (opts.extensions && cmd.requiredExtensions) {
       for (const ref of cmd.requiredExtensions(parsed)) await materializeExtension(ref);
     }

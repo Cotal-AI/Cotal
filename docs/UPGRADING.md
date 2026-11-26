@@ -66,14 +66,15 @@ terminal and for one a manager runs.
 
 ### What changes for you
 
-- The first regular command you run at this version writes `trusted-projects.json` in the operator config
-  folder. It lists every root a space on this machine was registered or prepared at before that
-  command, so those projects keep working with no step. This happens once per Cotal home: a
-  record beside the space registry notes it, so a space registered later is never added, even if
+- The upgrade records trust for existing registrations and prepared spaces on this machine. It runs
+  before the first new space registration or when a command such as `cotal status` or `cotal spawn`
+  reaches the migration step. Commands that refuse or are interrupted before that point do not write
+  trust records. With no roots to migrate, it does not create `trusted-projects.json`. This happens
+  once per Cotal home: a record beside the space registry keeps later registrations out, even if
   `trusted-projects.json` is removed or another shell uses a different config folder. Removing
   `trusted-projects.json` leaves no folder trusted until you run `cotal trust <path>` again.
-  Removing the record, `trusted-projects-seed.json` in the Cotal home, makes the next command
-  trust every folder a space is registered or prepared at by then.
+  Removing `trusted-projects-seed.json` in the Cotal home lets the next migration trust the folders
+  registered or prepared before it runs.
   If the upgrade cannot read the registry, it warns and trusts no roots from that attempt. Review
   each affected folder and run `cotal trust <path>` explicitly. With `--json`, the warning is in
   the command's result envelope. `cotal update` does not run this migration.
