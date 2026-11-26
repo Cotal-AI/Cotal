@@ -245,9 +245,9 @@ export function isTrustedProject(root: string): boolean {
   return (readFile()?.roots ?? []).includes(wanted);
 }
 
-/** Diagnose a command that cannot launch. A pending migration can explain why its supported
- * retry needs no explicit trust command, but only the retry may actually record or use trust. */
-function projectTrustForManifestDiagnosis(): (root: string) => boolean {
+/** Predict migration eligibility for one read-only preview. Never use this predicate to authorize
+ * execution: a real launch must run migration and check the recorded trust. */
+export function projectTrustForPreview(): (root: string) => boolean {
   let pending: Set<string> | undefined;
   return (root) => {
     if (isTrustedProject(root)) return true;
@@ -386,11 +386,9 @@ export function loadTrustCheckedPersona(file: string, as: "launch" | "agent", be
   return readPersonaWithTrust(file, as, beforeTrustCheck, isTrustedProject);
 }
 
-/** For manifest validation on a path that always refuses to launch. Keep the snapshot local to
- * one validation so every persona in the manifest is diagnosed against the same pending roots. */
-export function manifestPersonaDiagnosticReader(): (file: string) => { def: AgentDef; refusal?: string } {
-  const explainTrust = projectTrustForManifestDiagnosis();
-  return (file) => readPersonaWithTrust(file, "agent", undefined, explainTrust);
+/** Read a persona for preview only, without granting or recording trust. */
+export function previewPersonaReader(as: "launch" | "agent", trusted = projectTrustForPreview()): (file: string) => { def: AgentDef; refusal?: string } {
+  return (file) => readPersonaWithTrust(file, as, undefined, trusted);
 }
 
 function readPersonaWithTrust(file: string, as: "launch" | "agent", beforeTrustCheck: (() => void) | undefined, trusted: (root: string) => boolean): { def: AgentDef; refusal?: string } {

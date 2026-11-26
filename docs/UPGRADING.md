@@ -96,6 +96,9 @@ terminal and for one a manager runs.
 - `cotal up` can leave a partially started stack if the manager refuses project settings. It keeps
   the components that started, names the trust command as the next step, and starts the missing
   manager when you trust the project and retry.
+- Manifest previews and foreground `cotal spawn --dry-run` recognize folders eligible for the
+  upgrade without recording trust or starting anything. They still refuse settings that require
+  trust from folders that are neither trusted nor eligible for the upgrade.
 - A foreground `cotal spawn --dry-run` reads the same project config as the launch, even for a
   connector without launch validation. It can refuse an untrusted, foreign-owned or invalid config
   that an older preview did not read. The Manager's model catalog and harness-command listing also

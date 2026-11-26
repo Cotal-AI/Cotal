@@ -29,7 +29,7 @@ export async function topology(args: ParsedArgs): Promise<void> {
     process.exit(1);
   }
   try {
-    const prepared = loadManifest(resolve(file));
+    const prepared = loadManifest(resolve(file), undefined, "preview");
     console.log(renderTopology(prepared));
   } catch (e) {
     failManifest(e);

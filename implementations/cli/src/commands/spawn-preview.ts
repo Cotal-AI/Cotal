@@ -2,7 +2,7 @@ import { realpathSync, statSync } from "node:fs";
 import { hostname } from "node:os";
 import { resolve } from "node:path";
 import { connectorServers, loadCotalConfig, parseAgentFileSource, parseShareSelection, ProjectConfigTrustError, spawnEnvAllow, token, type AgentDef, type Connector, type FlagValues, type ParsedArgs } from "@cotal-ai/core";
-import { CommandFailure, findMesh, isCommandFailure, recordOperationSpace, brokerAddressForDisplay, cachedPreferences, isTrustedProject, isWorkspaceTargetError, loadTrustCheckedPersona, personaDir, PersonaSourceError, presentationOf, pruneStaleMeshes, resolveAgentType, resolveMeshTarget, resolvePreference, resolveReadsLiveness, targetErrorCode, workspaceErrorParts, writeResult, type MeshTarget, type OutputWarning, type Report } from "@cotal-ai/workspace";
+import { CommandFailure, findMesh, isCommandFailure, recordOperationSpace, brokerAddressForDisplay, cachedPreferences, isWorkspaceTargetError, previewPersonaReader, projectTrustForPreview, personaDir, PersonaSourceError, presentationOf, pruneStaleMeshes, resolveAgentType, resolveMeshTarget, resolvePreference, resolveReadsLiveness, targetErrorCode, workspaceErrorParts, writeResult, type MeshTarget, type OutputWarning, type Report } from "@cotal-ai/workspace";
 import { mergeLaunchOptions, parseLaunchOptions } from "@cotal-ai/workspace";
 import { extensionNames, materializeExtension, preflightRuntime } from "../ext-loader.js";
 import { brokenPersonaLink, callerHarness, checkSpawnExpiryTarget, directPersonaPath, missingConnector, missingPersonaFailure, nonDirectoryPersonaPath, spawnPersona, spawnUsesManager, type PersonaSite } from "../lib/spawn-defaults.js";
@@ -14,8 +14,8 @@ import { DEFAULT_AGENT } from "../lib/default-persona.js";
 import { refuseUnmintableName } from "./spawn-managed-launch.js";
 import type { spawnFlags } from "./spawn.js";
 
-function readPreviewConfig(root: string, target: { space: string; path: string }) {
-  try { return loadCotalConfig(root, isTrustedProject); }
+function readPreviewConfig(root: string, target: { space: string; path: string }, trusted: ReturnType<typeof projectTrustForPreview>) {
+  try { return loadCotalConfig(root, trusted); }
   catch (error) {
     if (!(error instanceof ProjectConfigTrustError)) throw error;
     throw new CommandFailure("refused", "PERMISSION_DENIED", error.message, { target });
@@ -113,7 +113,8 @@ export async function spawnLaunchPreview(args: Pick<ParsedArgs, "positionals"> &
   let personaWrite: "none" | "shipped-default" = "none";
   let blockedDefault: CommandFailure | undefined;
   const useShippedDefault = ref === "default" && from === undefined && values.config === undefined && values["enrollment-file"] === undefined;
-  try { ({ def: definition, refusal: personaRefusal } = loadTrustCheckedPersona(path, "launch")); }
+  const trusted = projectTrustForPreview();
+  try { ({ def: definition, refusal: personaRefusal } = previewPersonaReader("launch", trusted)(path)); }
   catch (error) {
     // A missing persona is refused as the launch refuses it, naming where it was looked for.
     const code = (error as NodeJS.ErrnoException).code;
@@ -134,7 +135,7 @@ export async function spawnLaunchPreview(args: Pick<ParsedArgs, "positionals"> &
     }
   }
   if (personaRefusal) throw new CommandFailure("refused", "PERMISSION_DENIED", personaRefusal, { target: { ...target, path } });
-  const config = readPreviewConfig(root, { ...target, path });
+  const config = readPreviewConfig(root, { ...target, path }, trusted);
   let cwd: string;
   let requestedCwd = values.cwd || ".";
   try {

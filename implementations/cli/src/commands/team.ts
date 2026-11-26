@@ -316,7 +316,7 @@ export async function team(args: ParsedArgs): Promise<void> {
 async function previewDeploy(file: string, values: TeamValues): Promise<void> {
   const dryRun = values["dry-run"] === true;
   // Apply handlers perform their own exact target checks and report the selected space.
-  const { path, prepared } = readTeamFile(file, dryRun ? values.space : undefined, !dryRun);
+  const { path, prepared } = readTeamFile(file, dryRun ? values.space : undefined, dryRun ? "preview" : true);
   if (!dryRun) {
     if (prepared.agents.length) {
       const { applyAgentTeam } = await import("./team-agent-apply.js");
@@ -540,7 +540,7 @@ function accessGraph(prepared: PreparedManifest) {
   }));
 }
 
-function readTeamFile(file: string, space?: string, forLaunch = false): { path: string; prepared: PreparedManifest } {
+function readTeamFile(file: string, space: string | undefined, forLaunch: true | "preview"): { path: string; prepared: PreparedManifest } {
   const path = resolve(file);
   let prepared: PreparedManifest;
   try { prepared = loadManifest(path, undefined, forLaunch); }
@@ -587,7 +587,7 @@ async function bootTeam(file: string, values: TeamValues): Promise<void> {
 
 async function previewBoot(file: string, values: TeamValues): Promise<void> {
   if (values["dry-run"] !== true) return bootTeam(file, values);
-  const { path, prepared } = readTeamFile(file, values.space);
+  const { path, prepared } = readTeamFile(file, values.space, "preview");
   const space = prepared.manifest.space;
   let local: ReturnType<typeof findMesh>, waiting: ReturnType<typeof findPreparedSpace>;
   try { local = findMesh(space); waiting = findPreparedSpace(space); }
@@ -683,7 +683,7 @@ async function previewBoot(file: string, values: TeamValues): Promise<void> {
 }
 
 async function checkTeam(file: string, values: TeamValues): Promise<void> {
-  const { path, prepared } = readTeamFile(file, values.space);
+  const { path, prepared } = readTeamFile(file, values.space, "preview");
   const openDurable = prepared.manifest.broker?.auth === false && (prepared.manifest.defaults?.deliveryClass === "durable" || prepared.manifest.channels.some((channel) => channel.deliveryClass === "durable"));
   const result = { kind: "team-check", file: path, space: prepared.manifest.space, runtime: prepared.manifest.runtime ?? "pty",
     agents: prepared.agents.map((agent) => ({ name: agent.name, harness: agent.agentType, role: agent.role ?? null, model: agent.model ?? null, policy: agent.policy, inherited: agent.inherited, capabilities: agent.capabilities, capabilitySource: agent.capabilitySource })),

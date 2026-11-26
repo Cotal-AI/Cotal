@@ -18,8 +18,9 @@ import { spawn as spawnProcess, spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join, resolve } from "node:path";
+import { Kvm } from "@nats-io/kv";
 import { SMOKE_BROKER_TOKEN, assertSmokeSandboxDown, emitSentinel, freePort, recordSmokeSandbox, teardownOnSignal } from "@cotal-ai/smoke-kit";
-import { projectTrustProblem } from "@cotal-ai/core";
+import { channelBucket, dialerFor, presenceBucket, projectTrustProblem } from "@cotal-ai/core";
 
 if (process.platform === "win32") {
   const sandbox = mkdtempSync(join(tmpdir(), "cotal-project-trust-shells-"));
@@ -51,6 +52,20 @@ if (process.platform === "win32") {
         if (result.status === 0 && result.stdout.includes(root)) { passed++; console.log(`✓ ${shell} records ${suffix}`); }
         else { failed++; console.error(`${shell}: ${result.stderr || result.error || result.stdout}`); }
       }
+    }
+    const { loadTrustCheckedPersona } = await import("@cotal-ai/workspace");
+    const root = realpathSync(sandbox);
+    mkdirSync(join(root, ".cotal", "agents"), { recursive: true });
+    writeFileSync(join(root, ".cotal", "agents", "probe.md"), "---\nname: probe\nlaunchOptions: { mcp-config: empty.json }\n---\nbody\n");
+    process.env.COTAL_HOME = env.COTAL_HOME;
+    process.env.XDG_CONFIG_HOME = env.XDG_CONFIG_HOME;
+    const mixed = loadTrustCheckedPersona(`${root}\\.cotal/agents\\probe.md`, "launch");
+    if (mixed.refusal?.includes("launchOptions.mcp-config") && mixed.refusal.includes(root)) {
+      passed++;
+      console.log("✓ Windows recognizes the untrusted project through mixed persona path separators");
+    } else {
+      failed++;
+      console.error("mixed Windows persona path did not refuse launch options", mixed.refusal);
     }
   } finally { rmSync(sandbox, { recursive: true, force: true }); }
   emitSentinel({ passed, failed });
@@ -97,7 +112,7 @@ await import("@cotal-ai/connector-claude-code");
 const { runCli } = await import("../src/command.js");
 const { loadManifest } = await import("../src/lib/manifest/index.js");
 const { registry } = await import("@cotal-ai/core");
-const { recordMesh, trustedProjectsPath } = await import("@cotal-ai/workspace");
+const { recordMesh, recordPreparedSpace, trustedProjectsPath } = await import("@cotal-ai/workspace");
 
 // The one-time upgrade seed reads the registrations before the first command. This space is
 // registered before that command, as a space registered under an earlier version would be, and the
@@ -213,19 +228,29 @@ try {
   {
     const sandbox = mkdtempSync(join(box, "manifest-upgrade-"));
     const home = join(sandbox, "home"), config = join(sandbox, "config");
-    const legacy = join(sandbox, "legacy"), clone = join(sandbox, "clone");
+    const legacy = join(sandbox, "legacy"), clone = join(sandbox, "clone"), prepared = join(sandbox, "prepared");
+    const space = "upgrade-manifest";
     const legacyServer = `nats://127.0.0.1:${await freePort()}`;
     const planted = join(sandbox, "empty-mcp.json");
     writeFileSync(planted, '{"mcpServers":{}}');
-    for (const root of [legacy, clone]) {
+    for (const root of [legacy, clone, prepared]) {
       mkdirSync(join(root, ".cotal", "agents"), { recursive: true, mode: 0o700 });
       writeFileSync(join(root, ".cotal", "agents", "probe.md"), `---\nname: probe\nrole: worker\nlaunchOptions:\n  mcp-config: ${JSON.stringify(planted)}\n---\nbody\n`);
-      writeFileSync(join(root, "mesh.yaml"), `apiVersion: cotal/v1\nkind: Mesh\nspace: upgrade-manifest\nagent: claude\nbroker: { servers: ${JSON.stringify(legacyServer)}, auth: false }\nagents:\n  probe: ./.cotal/agents/probe.md\nchannels:\n  general: { description: Open. }\n`);
+      const manifest = `apiVersion: cotal/v1\nkind: Mesh\nspace: ${root === prepared ? "upgrade-prepared" : space}\nagent: claude\nagents:\n  probe: ./.cotal/agents/probe.md\nchannels:\n  general: { description: Open., deliveryClass: live }\n`;
+      writeFileSync(join(root, "mesh.yaml"), `${manifest}broker: { servers: ${JSON.stringify(legacyServer)}, auth: false }\n`);
+      writeFileSync(join(root, "deploy.yaml"), manifest);
     }
+    writeFileSync(join(legacy, ".cotal", "config.json"), JSON.stringify({ spawn: { env: ["TRUST_SMOKE_NAME"] } }));
     const priorHome = process.env.COTAL_HOME;
-    process.env.COTAL_HOME = home;
-    try { recordMesh({ space: "upgrade-manifest", server: legacyServer, root: legacy, mode: "open", origin: "manual", ts: new Date().toISOString() }); }
-    finally { process.env.COTAL_HOME = priorHome; }
+    const recordLegacy = (address: string, includePrepared = false) => {
+      process.env.COTAL_HOME = home;
+      try {
+        const ts = new Date().toISOString();
+        recordMesh({ space, server: address, root: legacy, mode: "open", origin: "up", ts });
+        if (includePrepared) recordPreparedSpace({ space: "upgrade-prepared", root: prepared, ts });
+      } finally { process.env.COTAL_HOME = priorHome; }
+    };
+    recordLegacy(server, true);
     const env = {
       ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_"))),
       COTAL_HOME: home, XDG_CONFIG_HOME: config, COTAL_SKIP_CONNECTOR_SEED: "1", DO_NOT_TRACK: "1",
@@ -245,8 +270,6 @@ try {
     const plain = run(legacy, [...args, "--plain"]);
     check("the matching plain invocation names the existing format refusal without writing either trust record",
       plain.status === 2 && `${plain.stdout}${plain.stderr}`.includes("omit --plain") && recordsAbsent(), plain);
-    const dry = run(legacy, [...args, "--json", "--dry-run"]);
-    check("a legacy manifest dry run does not migrate project trust", dry.status === 1 && dry.stdout.includes("launchOptions.mcp-config") && recordsAbsent(), dry);
     const unregistered = run(clone, [...args, "--json"]);
     check("an unregistered manifest root still refuses and leaves pending legacy trust unwritten",
       unregistered.status === 1 && unregistered.stdout.includes("launchOptions.mcp-config") && unregistered.stdout.includes(`cotal trust ${clone}`) && recordsAbsent(), unregistered);
@@ -260,12 +283,43 @@ try {
       pkg, version, commands: [], provides: [{ kind: "connector", name: "claude" }],
       connectors: [{ name: "claude", requires: ["claude"], eventPlane: true, setup: null }],
     }] }));
+    const nc = await dialerFor(server)({ servers: server });
+    try {
+      const kv = new Kvm(nc);
+      await kv.create(presenceBucket(space));
+      await kv.create(channelBucket(space));
+    } finally { await nc.close(); }
+    const previewCases = [
+      { label: "up JSON", positiveRoot: legacy, argv: [...args, "--dry-run", "--json"], kind: null, plan: "Plan -" },
+      { label: "up human", positiveRoot: legacy, argv: [...args, "--dry-run"], kind: null, plan: "Plan -" },
+      { label: "up plain", positiveRoot: legacy, argv: [...args, "--dry-run", "--plain"], kind: null, plan: "Plan -" },
+      { label: "team check", positiveRoot: legacy, argv: ["team", "check", "mesh.yaml", "--json"], kind: "team-check" },
+      { label: "team boot", positiveRoot: prepared, argv: ["team", "boot", "mesh.yaml", "--dry-run", "--json"], kind: "fresh-team-boot-preview" },
+      { label: "team deploy", positiveRoot: legacy, argv: ["team", "deploy", "deploy.yaml", "--dry-run", "--json"], kind: "additive-team-deploy-preview" },
+      { label: "topology view", positiveRoot: legacy, argv: ["topology", "view", "-f", "mesh.yaml"], kind: null, plan: `Mesh "${space}"` },
+      { label: "down", positiveRoot: legacy, argv: ["down", "-f", "mesh.yaml", "--dry-run", "--json"], kind: "whole-stack-local-preview", fromLegacy: true, expectedStatus: 4 },
+      { label: "spawn", positiveRoot: legacy, argv: ["spawn", "--file", ".cotal/agents/probe.md", "--space", space, "--agent", "claude", "--dry-run", "--json"], kind: "direct-launch-preview" },
+    ];
+    fresh();
+    const noEffects = () => recordsAbsent() && !reportText() && spawnSync("nc", ["-z", "127.0.0.1", new URL(legacyServer).port]).status !== 0;
+    for (const { label, positiveRoot, argv, kind, plan, fromLegacy, expectedStatus = 0 } of previewCases) {
+      const preview = run(positiveRoot, argv);
+      const body = argv.includes("--json") && preview.status === expectedStatus ? JSON.parse(preview.stdout) : null;
+      const answer = kind ? body?.result?.kind === kind : (body?.result?.plan ?? preview.stdout).includes(plan);
+      check(`${label} previews a legacy root without writing trust or launching`,
+        preview.status === expectedStatus && answer && noEffects() && body?.result?.effectAttempted !== true && body?.result?.launched !== true, preview);
+      const refusal = run(fromLegacy ? legacy : clone, fromLegacy ? argv.map((word) => word === "mesh.yaml" ? join(clone, word) : word) : argv);
+      const out = `${refusal.stdout}${refusal.stderr}`;
+      check(`${label} refuses an unregistered persona without writing trust or launching`,
+        refusal.status !== 0 && out.includes("launchOptions.mcp-config") && out.includes(`cotal trust ${clone}`) && noEffects(), refusal);
+    }
+    recordLegacy(legacyServer);
     try {
       const retry = run(legacy, args);
       const livePort = new URL(legacyServer).port;
       const roots = existsSync(store) ? JSON.parse(readFileSync(store, "utf8")).roots as string[] : [];
-      check("omitting the format flag starts the legacy manifest and migrates just the registered root",
-        retry.status === 0 && spawnSync("nc", ["-z", "127.0.0.1", livePort]).status === 0 && existsSync(witness) && roots.includes(legacy) && !roots.includes(clone), retry);
+      check("omitting the format flag starts the legacy manifest and migrates only eligible roots",
+        retry.status === 0 && spawnSync("nc", ["-z", "127.0.0.1", livePort]).status === 0 && existsSync(witness) && roots.includes(legacy) && roots.includes(prepared) && !roots.includes(clone), retry);
     } finally {
       run(legacy, ["down", "--yes", "--with-agents"]);
     }
@@ -736,7 +790,7 @@ try {
   rmSync(store, { recursive: true, force: true });
 }
 
-const EXPECTED = process.getuid?.() === 0 ? 66 : 68;
+const EXPECTED = process.getuid?.() === 0 ? 83 : 85;
 if (passed + failed !== EXPECTED) { failed++; console.log(`  ✗ FAIL: ${passed + failed - 1} cells reported, ${EXPECTED} expected`); }
 emitSentinel({ passed, failed });
 process.exit(failed === 0 ? 0 : 1);
