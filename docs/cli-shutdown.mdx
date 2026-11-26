@@ -213,9 +213,11 @@ retained name that starts with `-`, use `cotal space show -- -old` and
 so it refuses `UNSUPPORTED`. A stop that refuses or is cancelled before any member stops puts the
 registration back as it was.
 
-A bare `down` stops only the stack of the folder it runs in. In a folder whose root holds no
-stack, when the space named by `--space`, or else the selected space, is a stack this machine
-started in another folder, `down` refuses with `TARGET_NOT_FOUND`, exit 2, and stops nothing. A folder whose
+A bare `down` stops only the stack of the folder it runs in. On Windows, a UNC path and a drive-letter
+path to the same controller project both stop that stack. A copy of the project does not.
+In a folder whose root holds no stack, when the space named by `--space`, or else the selected
+space, is a stack this machine started in another folder, `down` refuses with `TARGET_NOT_FOUND`,
+exit 2, and stops nothing. A folder whose
 own `.cotal` holds no stack, such as one a failed start left, answers for itself unless `--space`
 names another folder's stack. In a folder with its own controller stack, a `--space` that names
 another space refuses with `CONFLICT`, exit 2, and names this folder's stack. Each refusal names
@@ -1040,7 +1042,7 @@ clean-all operation. This route currently requires Linux, a space selected as ab
 plain-NATS loopback listener. It removes a locally started registration; a stopped controller stack
 keeps its prepared record and stack journal. On a user-auth space it also removes the IdP trust and
 the actor ledger, so every actor grant is lost. The preview and the receipt say so on their own
-line: a later `up` needs `cotal up --user-auth --idp <auth base URL>`, and each actor needs
+line: a later `up` from the stack's project folder needs `cotal up --user-auth --idp <auth base URL>`, and each actor needs
 `cotal actor grant` again. TLS-first, remote, shared-root
 and non-Linux targets refuse. It applies the same maintenance, deployment and
 process-custody guards as store reset. It does not stop a process to become

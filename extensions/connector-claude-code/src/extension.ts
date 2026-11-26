@@ -245,6 +245,7 @@ export const claudeConnector: Connector = {
     // exists. After the first write, only writeLaunchArtifact can throw, and it removes every file
     // this launch wrote before it does.
     const passthrough = connectorLaunchOptions("claude", opts.launchOptions).map(([k, v]) => [k, String(v)] as const);
+    const nativeModel = passthrough.find(([k]) => k === "model")?.[1];
     const fieldArgs = launchFieldArgs(opts, passthrough);
     // The private files this launch writes. The launcher that spawns the spec removes them once the
     // child has exited (core launch-artifacts).
@@ -294,10 +295,9 @@ export const claudeConnector: Connector = {
         // The file must outlive buildLaunch for startup and resume, so it is a launch artifact too.
         args.push("--append-system-prompt-file", writeLaunchArtifact(artifacts, "cotal-claude-persona-", "persona.md", def.persona));
       }
-      if (opts.model) {
-        args.push("--model", opts.model);
-        env.COTAL_MODEL = opts.model;
-      }
+      if (opts.model && !nativeModel) args.push("--model", opts.model);
+      const model = nativeModel || opts.model;
+      if (model) env.COTAL_MODEL = model;
       // An explicit `--opt effort=` wins, as a permission option does, and the seat is then not
       // labelled with a variant it does not run.
       if (opts.variant !== undefined && !passthrough.some(([k]) => k === "effort")) {

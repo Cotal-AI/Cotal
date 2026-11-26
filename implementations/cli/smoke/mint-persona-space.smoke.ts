@@ -7,7 +7,7 @@
  */
 import nodeAssert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createSpaceAuth, registry } from "@cotal-ai/core";
@@ -147,6 +147,26 @@ try {
   assert.ok(isCommandFailure(targetedShowErr), "targeted persona show diagnoses invalid YAML in endpoint-audit");
   assert.equal(targetedShowErr.code, "SCHEMA_INVALID");
   assert.ok(targetedShowErr.message.includes("reviewagent.md"));
+
+  const exportDir = join(scratch, "new-export");
+  const nestedDir = join(exportDir, "nested");
+  const output = join(nestedDir, "reviewagent.creds");
+  const exportArgs = [...process.execArgv, process.argv[1]!, "mint-child", "auth", "mint", "reviewagent", "--space", "endpoint-audit", "--out", output, "--plain"];
+  const exportOptions = { encoding: "utf8" as const, timeout: 30_000 };
+  const refusedExport = spawnSync(process.execPath, exportArgs, exportOptions);
+  assert.equal(refusedExport.status, 1, refusedExport.stderr);
+  assert.match(refusedExport.stderr, /^\s*Code:\s+SCHEMA_INVALID$/m);
+  assert.ok(!existsSync(exportDir), "malformed persona YAML leaves the export tree absent");
+
+  writeFileSync(join(project, ".cotal", "agents", "reviewagent.md"), "---\nname: reviewagent\nrole: reviewer\n---\nAudit persona.\n");
+  const repairedExport = spawnSync(process.execPath, exportArgs, exportOptions);
+  assert.equal(repairedExport.status, 0, repairedExport.stderr);
+  assert.ok(statSync(output).isFile(), "the same mint writes a credential after the persona is repaired");
+  if (process.platform !== "win32") {
+    assert.equal(statSync(exportDir).mode & 0o777, 0o700);
+    assert.equal(statSync(nestedDir).mode & 0o777, 0o700);
+    assert.equal(statSync(output).mode & 0o777, 0o600);
+  }
 
   // 2. Mint with invalid role keeps `--space endpoint-audit` in `cotal persona edit`.
   let badRoleErr: unknown;

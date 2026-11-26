@@ -1198,6 +1198,7 @@ export const cotal: Plugin = async () => {
     event: async ({ event }) => {
       asks.event(event.type, event.properties as Record<string, unknown>);
       if (events) deltaStreams.get(events)?.event(event.type, event.properties);
+      if (event.type === "message.updated" && event.properties.info.role === "assistant" && ours(event.properties.info.sessionID)) eventsFor(sessionID)?.flush(sessionID);
       // The server emits `permission.asked` (the SDK's `permission.updated` type ships but never
       // fires — #11616), so match the real runtime name out of band. With permission:"allow" this
       // rarely triggers, but it keeps presence correct if the posture tightens.

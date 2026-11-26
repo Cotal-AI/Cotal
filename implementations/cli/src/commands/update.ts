@@ -378,7 +378,7 @@ async function updateInstallation(args: ParsedArgs, rt: UpdateRuntime): Promise<
     catch (error) {
       if (error instanceof UnreadableConnectorSelection) connectorSelection = error;
       else {
-        rt.err(c.red(`✗ ${message(error)}`));
+        rt.err(c.red(`✗ ${refusal(error)}`));
         process.exitCode = 1;
         return;
       }

@@ -663,6 +663,7 @@ than a foreground daemon. It retains the absent-endpoint refusal even when the u
 or the user manager cannot answer; the recorded service name is guidance, not verified ownership.
 
 On Linux, `daemon install` and `daemon uninstall` can recover after the daemon's local home was deleted when the surviving service source matches this installation. They verify the protected unit file and the user manager's loaded fragment, and refuse modified sources or drop-ins. A missing explicit `--daemon-home` leaf can also recover when its parent resolves and the surviving service verifies that same home; other daemon commands still require the directory. Installation restarts that verified service to rebuild its local state.
+For a first install with `--daemon-home`, create the directory with mode 0700 first. If the directory is absent and no unit survives for it, `daemon install` points to the missing directory.
 
 Connect this computer to Cotal Cloud with `cotal daemon setup --cloud`, or use
 `cotal daemon setup --idp <url>` for another host. With no known provider, bare

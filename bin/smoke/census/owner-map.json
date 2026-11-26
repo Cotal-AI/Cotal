@@ -1383,6 +1383,7 @@
   "env:COTAL_VERSION": "internal:handoff between a Cotal process and the child it starts",
   "env:COTAL_WEB_DETACHED_LOG": "internal:handoff between a Cotal process and the child it starts",
   "env:COTAL_WEB_DETACHED_ROOT": "internal:handoff between a Cotal process and the child it starts",
+  "env:COTAL_WINDOWS_NPM_JOB": "internal:handoff between a Cotal process and the child it starts",
   "env:COTAL_WORKSPACE_ROOT": "pending:config",
   "ep:auth:retire-lifecycle": "pending:auth retire",
   "ep:auth:retire-lifecycle#ephemeral/auth.admin": "pending:auth retire",

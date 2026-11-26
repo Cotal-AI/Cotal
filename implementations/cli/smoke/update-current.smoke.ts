@@ -291,6 +291,10 @@ if (realpathSync(process.execPath) !== ${JSON.stringify(realpathSync(alternate))
   if (process.argv.includes('--version')) console.log('12.2.3');
   process.exit(process.argv.includes('--version') ? 0 : 1);
 }
+if (process.argv.includes('--version')) {
+  console.log('12.2.3');
+  process.exit(0);
+}
 require(${JSON.stringify(cli)});
 `, { mode: 0o755 });
     if (process.platform === "win32") writeFileSync(join(corepackDir, "npm.cmd"), '@node "%~dp0\\..\\node_modules\\corepack\\dist\\npm.js" %*\r\n');

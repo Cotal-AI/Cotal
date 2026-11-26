@@ -162,6 +162,7 @@ try {
     process.exitCode = 1;
   } else {
     const passed = unit.passed + result.results.reduce((sum, row) => sum + row.cells, 0);
+    // The manifest-repair and store-cleanup permission cells run only for a non-root user.
     const permissionChecks = process.getuid && process.getuid() !== 0 ? 5 : 0;
     const expected = (process.platform === "win32" ? 122 : process.platform === "linux" ? 197 : 191) + permissionChecks;
     if (passed !== expected) throw new Error(`seed smoke: expected ${expected} checks, observed ${passed}`);

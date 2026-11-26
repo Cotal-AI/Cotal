@@ -328,7 +328,10 @@ export async function installExtensionSet(
     const result = await npm(["install", "--save", "--no-audit", "--no-fund", "--install-links", ...specs], npmPrefix);
     if (existsSync(mutationPath)) stage.retain();
     if (interrupted) throw new ExtensionAddInterrupted(requests[0]!.pkg);
-    if (result.status !== 0) throw new Error(`extension set npm install failed: ${npmInstallFailure(result.output)}`);
+    if (result.status !== 0) {
+      const localFailure = opts?.localOperand === undefined ? undefined : localTarballFailure(result.output, npmPrefix, requests[0]!, opts.localOperand);
+      throw new Error(localFailure ?? `extension set npm install failed: ${npmInstallFailure(result.output)}`);
+    }
     process.env.XDG_CONFIG_HOME = stage.config;
     for (const request of requests) {
       const meta = installedExtensionPackage(request.pkg);
@@ -628,6 +631,30 @@ async function verifyCandidate(pkg: string, resolved: string, dir: string, recor
       ? [c.dim(`  its services cannot run on this platform: protected workstation file access is not available in this release`)]
       : []),
   ];
+}
+
+/** Explain a missing tarball only when npm's path matches a relative file dependency of the candidate. */
+function localTarballFailure(output: string, prefix: string, request: ExtensionInstallRequest, operand: string): string | undefined {
+  if (!/^npm (?:error|ERR!) code ENOENT\s*$/m.test(output)) return;
+  const missing = /^npm (?:error|ERR!) path ([^\r\n]+)/m.exec(output)?.[1];
+  if (!missing || !/\.(?:tgz|tar\.gz|tar)$/i.test(missing)) return;
+  let meta: { dependencies?: Record<string, string>; optionalDependencies?: Record<string, string> };
+  try {
+    meta = JSON.parse(readFileSync(join(request.spec, "package.json"), "utf8"));
+  } catch {
+    return;
+  }
+  const installed = join(prefix, "node_modules", request.pkg);
+  const match = Object.entries({ ...meta?.dependencies, ...meta?.optionalDependencies }).find(([, spec]) =>
+    typeof spec === "string" && spec.startsWith("file:") && !isAbsolute(spec.slice(5)) && resolve(installed, spec.slice(5)) === missing);
+  if (!match) return;
+  const [dependency, spec] = match;
+  const word = oneLine(operand) !== operand ? undefined : process.platform === "win32" ? windowsShellWord(operand) : shellWord(operand);
+  const pack = codeSpan(`npm pack --dry-run ${word ?? "<local-path>"}`);
+  const retry = codeSpan(`${displayCmd()} ext add ${word ?? "<local-path>"}`);
+  return `npm could not install ${oneLine(request.pkg)}: it could not open the tarball for ${oneLine(dependency)} (${codeSpan(oneLine(spec))}). ` +
+    `Check the source package with ${pack}. For local use, set the \`file:\` dependency to the absolute path of an existing archive, then rerun ${retry}. ` +
+    "For distribution, use a dependency npm can install from a registry.";
 }
 
 /** Why `npm install` did not finish, as one line. A spawn that cannot find npm says so. Any other
