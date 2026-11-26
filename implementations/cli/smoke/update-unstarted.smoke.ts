@@ -4,6 +4,7 @@ import nodeAssert from "node:assert/strict";
 import { assertSmokeSandboxDown, countedAssert, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { once } from "node:events";
 import { chmodSync, chownSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, rmdirSync, statSync, writeFileSync } from "node:fs";
 import { createServer, type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -421,6 +422,24 @@ try {
     expectSuccess(["send", "-c", "general", "broker still running after update"]);
     expectSuccess(["down", "--yes"]);
     started = false;
+    if (process.platform === "win32") {
+      const { supervisorMayServe } = await import("../src/lib/manager-proc.js");
+      const entry = join(controllerProject, "installed path", "dist", "cotal.js");
+      mkdirSync(resolve(entry, ".."), { recursive: true });
+      writeFileSync(entry, "setInterval(() => {}, 1000);\n");
+      const supervisor = spawn(process.execPath, [entry, "supervise", "--space", controllerSpace], { stdio: "ignore" });
+      try {
+        await once(supervisor, "spawn");
+        assert.equal(supervisorMayServe(controllerSpace, entry), true, "Windows sees a matching supervisor with a spaced entry path");
+        assert.equal(supervisorMayServe(`${controllerSpace}-other`, entry), false, "Windows excludes a supervisor that names a different space");
+      } finally {
+        const stopped = once(supervisor, "close");
+        supervisor.kill();
+        await stopped;
+      }
+      assert.equal(supervisorMayServe(controllerSpace, entry), false, "Windows no longer sees the stopped supervisor");
+      assert.match(expectSuccess(["update"]).stdout, /stopped; no manager running/);
+    }
     expectSuccess(["use", "--clear"]);
     const journalPath = join(".cotal", "stack-controller.json");
     let journalBefore = readFileSync(join(controllerProject, journalPath));
