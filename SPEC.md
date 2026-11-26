@@ -7383,8 +7383,9 @@ It accepts the task with the spawn, before the seat launches, addressed to the s
 under the spawn's caller triple. A relayed task is served under the protocol above only once the
 spawn's `succeeded` terminal is written, and its `turn-pending` row carries `once: true`. A Claude
 Code seat takes the task as its kickoff prompt and never receives it through `turn-pending`. The
-kickoff may start before the spawn terminal. The manager accepts its self-mode `turn-yield` after
-startup succeeds. The task's `deadlineAt` is absent when the spawn set no deadline,
+kickoff may start before the spawn terminal. The launching manager accepts its self-mode
+`turn-yield` after startup succeeds. A successor accepts that yield once it adopts the seat,
+even if the spawn has no success terminal. The task's `deadlineAt` is absent when the spawn set no deadline,
 and a row without `deadlineAt` never expires. While the task is pending, the
 manager MUST refuse every other turn to that incarnation. On the task's terminal, the manager MUST
 stop the incarnation, found by its lifecycle uid and never by its name. When the seat exits first,
@@ -7400,8 +7401,9 @@ the terminal is answered with that terminal.
 
 A manager that inherits a relayed once task from an earlier incarnation of itself MUST NOT serve it
 when the spawn has no `succeeded` terminal; it cancels the task as never served. An inherited
-kickoff task is not submitted again, even when the spawn has no `succeeded` terminal. It MUST NOT serve a task
-whose seat it does not hold, and the reason of that task's terminal says the seat may still be
+kickoff task is not submitted again, even when the spawn has no `succeeded` terminal. The
+successor MUST NOT serve a task whose seat it does not hold or accept that kickoff's yield. The
+reason of that task's terminal says the seat may still be
 running. Once such a task has a terminal, the manager answers that seat's `turn-pending` with
 `{ "turns": [], "notices": true, "stop": true }`, keyed by its lifecycle uid, and repeats the turn
 notice at most every 5 seconds until a pull has returned that answer. `stop` appears on no other

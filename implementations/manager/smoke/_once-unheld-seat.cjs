@@ -6,6 +6,10 @@ process.on("SIGHUP", () => {});
 process.stdout.on("error", () => {});
 process.stderr.on("error", () => {});
 const { pathToFileURL } = require("node:url");
+if (process.env.REPRO_KICKOFF_FILE) {
+  require("node:fs").appendFileSync(process.env.REPRO_KICKOFF_FILE, `${JSON.stringify({ goalId: process.env.REPRO_KICKOFF_GOAL, prompt: process.env.REPRO_KICKOFF_PROMPT, pid: process.pid })}\n`);
+  console.log("KICKOFF_READY");
+}
 import(pathToFileURL(process.env.CORE_DIST).href).then(async ({ CotalEndpoint }) => {
   const ep = new CotalEndpoint({
     space: process.env.COTAL_SPACE, servers: process.env.COTAL_SERVERS, lifecycleUid: process.env.COTAL_LIFECYCLE_UID || undefined,

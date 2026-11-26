@@ -165,7 +165,8 @@ leaves it running until a person or its runtime stops it.
 
 A manager that restarts can lose hold of a helper. If it restarted before the spawn's readiness
 verdict, a relayed task is cancelled as never served. A Claude Code kickoff may already have started,
-and a successor does not submit it again. If it cannot take over a running helper, as on an
+and a successor does not submit it again. If it takes over the seat, the helper can report the task's
+outcome even if the spawn itself has no success receipt. If it cannot take over a running helper, as on an
 open mesh, it never serves the task again: the task ends at its deadline, or as `uncertain` after
 one readiness window when it has none, and the reason says the helper may still be running. Once
 the task has ended, the helper is told to stop itself the next time it asks for its task.

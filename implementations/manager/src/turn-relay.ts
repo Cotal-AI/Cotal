@@ -500,7 +500,7 @@ export class TurnRelay {
     const p = this.pendingTurns.get(key);
     if (!p) return this.settledTurnAnswer(key, goalId);
     if (p.once?.kickoff && !p.once.deliverable)
-      throw new EpEnvelopeError("unavailable", "the kickoff seat has not passed its startup check yet");
+      throw new EpEnvelopeError("unavailable", this.onceSeatUnheld(p) ? UNHELD_SEAT : "the kickoff seat has not passed its startup check yet");
     await this.claimTurnHold(p);
     const epoch = this.serviceServe?.grant.epoch ?? 0;
     await this.deps.assertGoalWriterEpochCurrent(epoch);

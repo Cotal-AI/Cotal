@@ -17,6 +17,14 @@ registry.register({
   kind: "connector", name: "once-unheld-stub", requires: ["node"], supportsPrompt: true, supportsTurnRelay: true,
   buildLaunch: (o): LaunchSpec => ({ command: process.execPath, args: [seat, space, o.name], env: envFor(o) }),
 } as Connector);
+registry.register({
+  kind: "connector", name: "once-unheld-kickoff", requires: ["node"], supportsPrompt: true, supportsTurnRelay: true, supportsOnceKickoff: true,
+  buildLaunch: (o: LaunchOpts): LaunchSpec => ({
+    command: process.execPath, args: [seat, space, o.name],
+    env: { ...envFor(o), REPRO_KICKOFF_FILE: join(root, "kickoff.jsonl"), REPRO_KICKOFF_GOAL: o.onceKickoffGoalId!, REPRO_KICKOFF_PROMPT: o.prompt! },
+    confirm: "KICKOFF_CONFIRM", confirmReady: ["KICKOFF_READY"],
+  }),
+});
 const manager = new Manager({ space, servers, runtime: "pty", workspaceRoot: root, consolePort: 0 });
 (manager as unknown as { config: { readinessTimeoutMs: number } }).config.readinessTimeoutMs = Number(process.env.REPRO_READINESS_MS);
 await manager.start();

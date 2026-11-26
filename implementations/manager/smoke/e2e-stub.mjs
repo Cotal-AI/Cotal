@@ -5,12 +5,15 @@
 // COTAL_LIFECYCLE_UID rides through exactly as a real connector forwards it — an authed registering
 // endpoint REQUIRES it (fail-before-presence, SPEC 13.1); COTAL_E2E_CONSUME=1 makes the stub bind its
 // DM/dlv durables like a full agent (the wrong-uid probe needs the broker's bind denial).
-import { readFileSync } from "node:fs";
+import { appendFileSync, readFileSync } from "node:fs";
 import { CotalEndpoint, DEV_OWNER, presenceBucket, principalKey } from "@cotal-ai/core";
 import { connect, credsAuthenticator } from "@nats-io/transport-node";
 import { Kvm } from "@nats-io/kv";
 
 const e = process.env;
+if (e.REPRO_KICKOFF_FILE) {
+  appendFileSync(e.REPRO_KICKOFF_FILE, `${JSON.stringify({ goalId: e.REPRO_KICKOFF_GOAL, prompt: e.REPRO_KICKOFF_PROMPT, pid: process.pid })}\n`);
+}
 if (e.COTAL_E2E_SURVIVE_DISCONNECT === "1") {
   // A deliberately non-reconnecting real broker connection. Delivery-admin can KICK and verify the
   // principal gone while the process remains alive, which is the exact broker-vs-OS boundary #817
