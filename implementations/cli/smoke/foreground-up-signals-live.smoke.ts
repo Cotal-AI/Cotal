@@ -30,6 +30,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { recordsBucket } from "@cotal-ai/core";
+import { connect } from "@nats-io/transport-node";
 import { canonicalLocalProcessPath, DELIVERY_PIDFILE, isCommandFailure, MANAGER_PIDFILE, MANAGER_SPARE_CAPABILITY, readManagerName, shellPath, spaceKey, userAuthStateDir, verifyIdentityPin, type ProcessIdentityRecord } from "@cotal-ai/workspace";
 import { finishOwnedChild, observeOwnedChild, ownedBirthLive as live, waitForOwnedChild } from "./_foreground-owned-child.js";
 import { foregroundCliProbe } from "./_foreground-cli-probe.js";
@@ -188,14 +189,15 @@ async function cell(name: string, options: { auth?: boolean; ready?: boolean; re
   const space = folderNamed ? name : `foreground-${name}`;
   const env = { ...cleanEnv, HOME: home, COTAL_HOME: join(home, "machine"), XDG_CONFIG_HOME: join(home, "xdg"), XDG_DATA_HOME: join(home, "data"), XDG_CACHE_HOME: join(home, "cache"), XDG_STATE_HOME: join(home, "state"), COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1" };
   const logFile = join(mesh, "broker.log");
+  const statusHarness = "status-fixture";
   if (options.repairDelivery) {
     // Make the spawn suggestion available without installing or launching a harness.
     const extensions = join(env.XDG_CONFIG_HOME, "cotal", "extensions");
     mkdirSync(extensions, { recursive: true, mode: 0o700 });
     writeFileSync(join(extensions, "extensions.json"), JSON.stringify({ extensions: [{
       pkg: "@fixture/status", version: "1.0.0", spec: "@fixture/status@1.0.0", commands: [],
-      provides: [{ kind: "connector", name: "status-fixture" }],
-      connectors: [{ name: "status-fixture", requires: ["node"], eventPlane: false, setup: null }],
+      provides: [{ kind: "connector", name: statusHarness }],
+      connectors: [{ name: statusHarness, requires: ["node"], eventPlane: false, setup: null }],
     }] }), { mode: 0o600 });
   }
   const args = ["--import", tsx, cliEntry, "up", "--foreground", "--server", `nats://127.0.0.1:${port}`, ...(folderNamed ? [] : ["--space", space]), ...(options.auth ? [] : options.openBrokerExit || options.openManagerExit || options.externalDown ? ["--open"] : ["--open", "--no-manager"]), ...(options.openManagerExit || (!options.auth && options.externalDown) ? ["--store-dir", store] : []), ...(options.nativeLog ? ["--log-file", "./broker.log", "--logfile-size-limit", "1048576"] : [])];
@@ -311,7 +313,7 @@ async function cell(name: string, options: { auth?: boolean; ready?: boolean; re
       console.log(`PASS foreground-up-signals ${name}: public status broker/manager/delivery serving and ps answered`);
     }
     if (options.repairDelivery) {
-      const status = () => foregroundCliProbe(cliEntry, tsx, mesh, env, ["status"], 60_000);
+      const status = () => foregroundCliProbe(cliEntry, tsx, mesh, { ...env, COTAL_DEFAULT_AGENT: statusHarness }, ["status"], 60_000);
       const next = (report: Awaited<ReturnType<typeof status>>) => report.out.split("\nNext\n")[1] ?? "";
       const spawnLine = /^ {2}(?:pnpm )?cotal spawn +/m;
       const broker = token(brokerPath), delivery = token(deliveryPath);
@@ -1094,9 +1096,43 @@ function projectHangupPath(mesh: string, root: string, mode: "relative-path" | "
   return [mode === "absolute-path" ? tools : "tools", other, ...inherited].join(":");
 }
 
-async function controllerHoldCell(kind: "takeover" | "other-home" | "broker-crash" | "broker-only-crash" | "moved-broker-crash" | "time-wait" | "moved-root" = "takeover"): Promise<void> {
+type ForegroundRun = { state: ReturnType<typeof observeOwnedChild>; io: { out: string; err: string } };
+
+async function checkForegroundPayloadRetry(mesh: string, env: NodeJS.ProcessEnv, port: number, sandbox: ReturnType<typeof recordSmokeSandbox>, holder: ForegroundRun, foreground: (args: string[]) => ForegroundRun): Promise<void> {
+  const servedPayload = async () => {
+    const broker = await connect({ servers: `nats://127.0.0.1:${port}`, reconnect: false, timeout: 5_000 });
+    try { return broker.info?.max_payload; } finally { await broker.close(); }
+  };
+  const downArgs = ["down", "--yes"];
+  const stop = async (run: ForegroundRun) => {
+    assertSmokeSandboxDown(sandbox, downArgs, { cwd: mesh, env });
+    const down = await foregroundCliProbe(cliEntry, tsx, mesh, env, downArgs, 120_000);
+    assert.equal(down.code, 0, down.out + down.err);
+    await waitForOwnedChild(() => run.state.closed, 10_000, run.io.err);
+    assert.equal(run.state.code, 0, run.io.err);
+  };
+  assert.equal(await servedPayload(), 131072);
+  const conflict = await foregroundCliProbe(cliEntry, tsx, mesh, env, ["up", "--foreground", "--no-manager", "--max-payload", "262144"]);
+  assert.equal(conflict.code, 2, conflict.out + conflict.err);
+  assert.match(conflict.err, /Code:\s+CONFLICT/);
+  assert.ok(!holder.state.exited, "the refusal leaves the foreground holder running");
+  assert.equal(await servedPayload(), 131072, "the refusal leaves the running broker's payload limit unchanged");
+  const retry = /run `(?:pnpm )?cotal up --foreground (--no-manager[^`]*)` again/.exec(conflict.err)?.[1];
+  assert.ok(retry, conflict.err);
+  await stop(holder);
+  const restarted = foreground(retry.split(" "));
+  await until(() => {
+    if (restarted.state.error) throw restarted.state.error;
+    if (restarted.state.exited) throw new Error(restarted.io.out + restarted.io.err);
+    return /Operation: +up completed/.test(restarted.io.out);
+  }, 120_000, () => restarted.io.out + restarted.io.err);
+  assert.equal(await servedPayload(), 262144, "following the printed retry serves the requested payload limit"); passed++;
+  await stop(restarted);
+}
+
+async function controllerHoldCell(kind: "takeover" | "other-home" | "broker-crash" | "broker-only-crash" | "moved-broker-crash" | "time-wait" | "moved-root" | "payload-retry" = "takeover"): Promise<void> {
   const otherHome = kind === "other-home";
-  const brokerOnly = kind === "broker-only-crash" || kind === "time-wait";
+  const brokerOnly = kind === "broker-only-crash" || kind === "time-wait" || kind === "payload-retry";
   const name = kind === "takeover" ? "controller-hold" : `controller-hold-${kind}`;
   const root = join(base, name), home = join(root, "home"), mesh = join(root, brokerOnly ? "broker only" : "mesh");
   const machine = join(home, otherHome ? "launching home's machine" : "machine");
@@ -1126,6 +1162,11 @@ async function controllerHoldCell(kind: "takeover" | "other-home" | "broker-cras
       return /Operation: +up completed/.test(holder.io.out);
     }, 120_000, () => holder.io.err.slice(-3000));
     assert.ok(holder.child.pid);
+    if (kind === "payload-retry") {
+      await checkForegroundPayloadRetry(mesh, env, port, sandbox, holder, (args) => taker = foreground(args));
+      console.log(`PASS foreground-up-signals ${name}`);
+      return;
+    }
     if (kind === "time-wait") {
       assertSmokeSandboxDown(sandbox, ["down", "--yes"], { cwd: mesh, env });
       const down = await foregroundCliProbe(cliEntry, tsx, mesh, env, ["down", "--yes"], 120_000);
@@ -1154,7 +1195,7 @@ async function controllerHoldCell(kind: "takeover" | "other-home" | "broker-cras
     }
     if (kind === "broker-crash" || kind === "moved-broker-crash" || brokerOnly) {
       if (brokerOnly) {
-        const conflict = await foregroundCliProbe(cliEntry, tsx, mesh, env, ["up", "--foreground", "--open", "--no-manager", "--server", `nats://127.0.0.1:${port}`, "--max-payload", "131072"]);
+        const conflict = await foregroundCliProbe(cliEntry, tsx, mesh, env, ["up", "--foreground", "--open", "--no-manager", "--server", `nats://127.0.0.1:${port}`]);
         assert.equal(conflict.code, 2, conflict.out + conflict.err);
         assert.match(conflict.err, /run `(?:pnpm )?cotal up --foreground --no-manager` again/); passed++;
       }
@@ -1519,6 +1560,7 @@ await controllerHoldCell();
 await controllerHoldCell("other-home");
 await controllerHoldCell("broker-crash");
 await controllerHoldCell("broker-only-crash");
+await controllerHoldCell("payload-retry");
 await controllerHoldCell("moved-broker-crash");
 if (process.platform === "linux") await controllerHoldCell("time-wait");
 await controllerHoldCell("moved-root");

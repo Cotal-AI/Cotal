@@ -133,7 +133,8 @@ from the bottom.
 | Agent page | One agent at `#/agent/<id>`, with Work, Messages and Profile tabs. |
 
 The roster shows status by shape and color, role, activity, and harness. A role that is only
-whitespace is shown as no role.
+whitespace is shown as no role. A name that does not fit ends with an ellipsis. Hover over it to
+read the full name.
 The agent page, the panel's Agent tab and the waiting cards also show reported conditions,
 how long the status has stood, when the activity was set, and when the last work event occurred.
 Missing stamps stay undated. Ages use the same whole-unit rounding down as the CLI; a heartbeat
@@ -249,6 +250,8 @@ All-activity reads have an 8000 ms deadline.
 A deadline reports `the read did not finish within <deadline>ms`; a refusal reports `the read failed:` with its error.
 Unfinished history pulls are canceled and their ephemeral consumers removed when the deadline wins.
 If no source answers, the page keeps the last good data with the partial marker.
+
+A channel opens with its newest 200 messages. If the read finds earlier retained messages, the top of the list shows a notice with a `cotal history` command for that channel and space. Raise the command's `--limit` to read further back.
 
 A single channel read uses the same deadline but either returns messages or reports a refusal naming the channel and bound.
 The view keeps its previous messages on refusal.

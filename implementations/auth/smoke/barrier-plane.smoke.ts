@@ -33,7 +33,7 @@ import { deriveOwnerToken, openAuthAuthorityPlane } from "../src/index.js";
 import { authorityBarrierGrants, barrierExecutorSettlementGrants, openAuthorityClient } from "../src/authority-client.js";
 import { makeDeliveryAdminEvictor } from "../src/barrier-evict.js";
 import { ensureRootCredential } from "../src/root-credential.js";
-import { observeGate, openLifecycleRegistry, readLifecycleHeadForOperation, registryStores } from "../src/lifecycle-registry.js";
+import { observeGate, openLifecycleRegistry, readLifecycleHeadForOperation, registryStores, type LifecycleRegistry } from "../src/lifecycle-registry.js";
 import { credRowKey, enumerateOperationIntents, parseLedgerRow, runAgentTakeoverBarrier, type EvictPrincipal } from "../src/credential-ledger.js";
 import { runAgentRetirementBarrier, type RetirementDeps } from "../src/retirement-barrier.js";
 import { makeLedgerScannerOverConnection } from "../src/ledger-scanner.js";
@@ -71,6 +71,30 @@ const okEvictor = (calls: string[]): EvictPrincipal => async (principal) => {
   return { principal, kicked: 0, remaining: 0, verifiedGone: true, scanComplete: true } satisfies EvictionResult;
 };
 const failEvictor: EvictPrincipal = async (principal) => ({ principal, kicked: 0, remaining: 1, verifiedGone: false, scanComplete: true, note: "probe: eviction refused" });
+
+async function checkRootMintAcrossTakeover(wreg: LifecycleRegistry, breg: LifecycleRegistry) {
+  const lifecycleUid = mintLifecycleUid();
+  const args = { owner: OWNER, actor: "takeover_race", lifecycleUid, managerInstance: "smoke" };
+  const kv = registryStores(wreg).authKv;
+  const put = kv.put;
+  let pausedKey: string | undefined;
+  let barrierResult: Awaited<ReturnType<typeof runAgentTakeoverBarrier>> | undefined;
+  kv.put = async (key, value, options) => {
+    if (!pausedKey && key.startsWith(`cred.${lifecycleUid}.`) && options?.previousSeq === 0) {
+      pausedKey = key;
+      barrierResult = await runAgentTakeoverBarrier(breg, { ...args, opId: mintLifecycleUid() }, { evictPrincipal: okEvictor([]) });
+    }
+    return put.call(kv, key, value, options);
+  };
+  try {
+    const refusal = await rejects(() => ensureRootCredential(wreg, args));
+    check("a first root mint fenced by a completed takeover still refuses", barrierResult?.toGeneration === 2 && refusal.includes("lost its fence"), refusal);
+    const head = await readLifecycleHeadForOperation(breg, args.owner, args.actor);
+    check("the fenced mint does not stamp a replacement root", head?.mapping.processEpoch === 2 && head.mapping.currentCredentialId === undefined);
+  } finally {
+    kv.put = put;
+  }
+}
 
 /** "denied" iff the failure is an authorization rejection — anything else rethrows so a broken
  *  fixture can never false-pass as confinement. */
@@ -445,6 +469,8 @@ try {
   const seamRes = await seam(`${OWNER}.worker1`);
   check("no delivery daemon => verifiedGone:false (the barrier would stay frozen)", seamRes.verifiedGone === false && seamRes.scanComplete === false, seamRes);
   check("the seam's failure carries an honest note", typeof seamRes.note === "string" && seamRes.note.length > 0, seamRes.note);
+
+  await checkRootMintAcrossTakeover(wreg, breg);
 
   // ---- E3. a garbled intent poisons the store LOUDLY (last: it breaks later enumerations) ----
   await registryStores(breg).authKv.put(`stage.${mintLifecycleUid()}`, enc.encode(JSON.stringify({ kind: "weird" })));

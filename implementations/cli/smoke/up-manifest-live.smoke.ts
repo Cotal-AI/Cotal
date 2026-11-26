@@ -32,7 +32,7 @@ const root = mkdtempSync(join(tmpdir(), "cotal-upf-root-"));
 mkdirSync(join(root, ".cotal"), { mode: 0o700 });
 const configDir = join(home, "xdg");
 const sandbox = recordSmokeSandbox({ root, cotalHome: home, xdgConfigHome: configDir });
-const env = { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: configDir, COTAL_SKIP_CONNECTOR_SEED: "1" };
+const env = { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: configDir, COTAL_SKIP_CONNECTOR_SEED: "1", DO_NOT_TRACK: "1" };
 
 let pass = 0;
 const ok = (name: string, cond: boolean, extra?: unknown) => {

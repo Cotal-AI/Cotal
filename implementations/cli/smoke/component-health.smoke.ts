@@ -655,6 +655,14 @@ try {
   const openUp = cliIn(openRoot, ["up", "--open", "--server", openServer, "--store-dir", openStore], 120_000);
   openStack = openUp.status === 0;
   check("an open controller stack starts", openStack, `${openUp.stdout}${openUp.stderr}`);
+  const openWeb = cliIn(openRoot, ["service", "start", "web", "--space", openSpace, "--dry-run", "--plain"]);
+  const openWebText = `${openWeb.stdout}${openWeb.stderr}`;
+  check("a dashboard preview on an open space directs the operator to a static-auth space, not a credential file",
+    openWeb.status === 2 && openWebText.includes("DEPENDENCY_UNAVAILABLE") &&
+    openWebText.includes("the web dashboard requires a registered static-auth space, and the selected space is open") &&
+    openWebText.includes("select or create a registered static-auth space") && !openWebText.includes("--creds"), openWebText);
+  const staticWeb = cliIn(webRoot, ["service", "start", "web", "--space", WEB_SPACE, "--dry-run"]);
+  check("a dashboard preview on a static-auth space still accepts the default credential", staticWeb.status === 0, `${staticWeb.stdout}${staticWeb.stderr}`);
   const openHealth = cliIn(openRoot, ["status", "--components"]);
   const openText = `${openHealth.stdout}${openHealth.stderr}`;
   check("a healthy open stack needs no delivery daemon and exits zero", openHealth.status === 0 && /delivery\s+not-started.*not used on an open mesh/.test(openText) && /broker\s+serving/.test(openText) && /manager\s+serving/.test(openText), openText);
@@ -973,6 +981,18 @@ try {
   try {
     const message = `the stack journal ${journal} is not valid JSON`;
     const remedy = `no member of this stack is running, so remove ${journal}`;
+    const lifecycle = `The stack lifecycle for "${controllerSpace}" is unknown because the journal could not be read`;
+    const overview = (text: string) => text.includes(`Selected space '${controllerSpace}' has an unknown stack lifecycle`)
+      && text.includes(lifecycle) && !/prepared[,.]? (?:but )?not started/.test(text);
+    const plain = cliIn(controllerRoot, ["status", "--plain", "--verbose"]);
+    check("plain status reports an unknown lifecycle in both overviews and retains its recovery step",
+      plain.status === 4 && overview(plain.stdout) && plain.stdout.includes(`current mesh "${controllerSpace}" has an unknown stack lifecycle`)
+        && plain.stdout.includes(remedy), plain.stdout + plain.stderr);
+    const json = cliIn(controllerRoot, ["status", "--json"]);
+    const report = JSON.parse(json.stdout).result;
+    check("JSON status reports neither a first start nor a stopped stack when it cannot read the journal",
+      json.status === 4 && report.selected.code === "SCHEMA_INVALID" && report.selected.message === lifecycle
+        && report.meshes.hasPrepared && !report.meshes.currentPrepared && !report.meshes.currentStopped, json.stdout + json.stderr);
     const ps = cliIn(controllerRoot, ["ps", "--plain", "--space", controllerSpace]);
     const psText = ps.stdout + ps.stderr;
     check("ps refuses a truncated journal and names its recovery, not an unstarted space",
@@ -980,7 +1000,8 @@ try {
     const status = cliIn(webRoot, ["status", "--components", "--space", controllerSpace]);
     const health = status.stdout.split("Component Health")[1] ?? "";
     check("component health refuses the selected root's truncated journal (3), even from another folder",
-      status.status === 3 && /target\s+refused.*SCHEMA_INVALID/.test(health) && health.includes(message) && health.includes(remedy), status.stdout + status.stderr);
+      status.status === 3 && overview(status.stdout.split("Component Health")[0] ?? "")
+        && /target\s+refused.*SCHEMA_INVALID/.test(health) && health.includes(message) && health.includes(remedy), status.stdout + status.stderr);
     check("the diagnostics leave the journal unchanged", readFileSync(journal, "utf8") === truncatedJournal);
   } finally {
     writeFileSync(journal, wholeJournal);

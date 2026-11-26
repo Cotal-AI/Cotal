@@ -2,11 +2,11 @@
 
 ## Ended terminal sessions on user-auth spaces
 
-A user-auth terminal connection now closes when the auth service confirms that its session
-ended. A different session or control connection for the same actor stays connected. Open
-a new session with `cotal attach <agent>` instead of reusing an ended session. Connections
-admitted before the upgrade, or by an older callout replica during it, have no receipt and
-keep their original expiry.
+A user-auth terminal connection closes when the full auth service or a callout replica confirms
+that its session ended and delivery disconnects it. Other sessions and control connections for
+the same actor stay connected. Open a new session with `cotal attach <agent>` instead of reusing
+an ended session. Connections admitted by a release that does not record receipts keep their
+original expiry.
 
 Upgrade the full auth service, every `--callout-only` replica, and delivery together to
 the release that carries this change. For a local stack, stop it with `cotal down`, run
@@ -14,6 +14,12 @@ the release that carries this change. For a local stack, stop it with `cotal dow
 space and startup options from the same project. For a hosted space, deploy the updated auth
 and delivery packages together and restart those services. An older delivery service cannot
 confirm targeted eviction, so auth retains the receipt and retries after delivery is upgraded.
+
+Set `--auth-timeout` on the full auth service and every callout replica to the broker's
+authorization timeout. Every replica sweeps, and a shorter setting can make it remove a
+receipt while the broker is still waiting for another callout to answer. A callout-only replica
+mints a short-lived `supervisor` credential from its existing data-account signing seed and
+uses it for one `ctl.delivery-admin` connection per eviction.
 
 If auth cannot read the active session or write its connection receipt before the broker's
 authorization deadline, the broker refuses the connection. Check the auth service log for
@@ -28,6 +34,11 @@ principal, then return the same ordered pairs in the result's `connections` fiel
 principal-only hook still handles ordinary principal eviction. Omit the `connections` field
 from `evictPrincipal` if you intend to evict the entire principal. A request that supplies it
 is limited to the exact pairs or refused, never treated as a principal-wide eviction.
+
+Make the eviction hook reentrant. Delivery can run up to four targeted calls at once, and
+they can overlap calls from the in-order admin chain. Keep per-call state separate or protect
+any state the calls share.
+
 ## Agent names that start with a hyphen
 
 `cotal personas new` refuses new catalog names starting with `-`. In scripts, replace the name with
@@ -133,15 +144,25 @@ the new version.
 An upgraded Linear extension enforces `allowedTools` in `<cotal-home>/linear/<name>.json` for
 both `linear call` and endpoint `call-tool`. An empty list refuses every tool. If a tool should
 be callable, have the account operator add its case-sensitive name to the list, for example
-`"allowedTools": ["list_issues", "get_issue"]`. Restart any running Linear service for that
-account and retry the call. If the account has no `allowedTools` field, upstream permissions still
+`"allowedTools": ["list_issues", "get_issue"]`. For each running managed Linear service for this
+account, run `cotal service restart <name> --space <space> --yes` before retrying endpoint calls.
+If a service has several instances, run the command for each with `--instance <id>`. For a service
+started with `cotal linear serve`, press Ctrl+C and repeat the original command. Direct calls read
+the list on each invocation. If an account has no `allowedTools` field, upstream permissions still
 decide what it can call. Inventory still lists tools the upstream advertises.
 
-If `linear account add` or `linear account login` refuses an invalid record, repair the named JSON
-file before rerunning the same command. Set `name` to the account name and `mode` to `write` or
-`readonly`. Set `auth` to `token` with `tokenFile` set to the absolute path of the private token
-file, or set `auth` to `oauth`. Keep the intended `allowedTools` list, using distinct nonempty tool
-names without whitespace at either end or terminal controls.
+Every command that opens or replaces the account record refuses a malformed `allowedTools` list,
+including `cotal linear account add`, `cotal linear account login`, and Linear service startup.
+Repair the named JSON file before rerunning the command. Set `name` to the account name and `mode`
+to `write` or `readonly`. Set `auth` to `token` with `tokenFile` set to the absolute path of the
+private token file, or set `auth` to `oauth`. Keep the intended `allowedTools` list, using distinct
+nonempty tool names without whitespace at either end or terminal controls.
+
+If you downgrade or share the same account records between CLI installs, older Linear extensions
+do not enforce `allowedTools`. Running `cotal linear account add` or `cotal linear account login`
+with one of those extensions also rewrites the account record without the list. Use an upgraded
+extension everywhere you use that account. If an older extension has rewritten the record, restore
+the intended list before using the account again, then restart its services as described above.
 
 A missing or mismatched OAuth `state` gets HTTP 400 and leaves the pending login open. Return to
 the authorization URL printed by that login and finish there.
