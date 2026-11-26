@@ -133,8 +133,10 @@ function takesWordsRaw(cmd: Command | undefined): boolean {
 }
 
 /** Refuse a repeated global flag using the command's output mode and subcommand help. */
-async function repeatedGlobalFlag(word: string, cmd: Command | undefined, words: string[], warnings: OutputWarning[] = []): Promise<never> {
-  const { cmd: found, rest } = await serviceSurface(takesWordsRaw(cmd) ? undefined : cmd, words, true);
+async function repeatedGlobalFlag(word: string, cmd: Command | undefined, words: string[], warnings: OutputWarning[] = [], textWords?: string[]): Promise<never> {
+  const surface = await serviceSurface(takesWordsRaw(cmd) ? undefined : cmd, words, true);
+  const json = surface.cmd !== undefined && asksForJson(surface.cmd, surface.rest);
+  const { cmd: found, rest } = !json && textWords ? { cmd: undefined, rest: textWords } : surface;
   const end = rest.indexOf("--");
   const options = end === -1 ? rest : rest.slice(0, end);
   // A global word in a string option's value slot cannot supply that value.
@@ -146,7 +148,6 @@ async function repeatedGlobalFlag(word: string, cmd: Command | undefined, words:
       ? { message: `--${flag.name} cannot be repeated`, remedy: `use --${flag.name} once` }
       : missingValue(found, rest, flag)
     : { message: `Option '${word}' cannot be repeated` };
-  const json = found !== undefined && asksForJson(found, rest);
   if (!json) for (const warning of warnings) console.error(c.red(`! ${warning.message}`));
   return runOperation({ warnings }, () => usageExit(refusal.message, found, json, options.includes("--plain"), refusal.remedy, rest));
 }
@@ -876,6 +877,16 @@ async function unknownInvocationExit(commands: readonly Command[], word: string,
   return usageExit(refusal.message, cmd, json, plain, refusal.remedy, rest);
 }
 
+function repeatedInvocationExit(repeated: string, cmd: Command | undefined, rest: string[], warnings: OutputWarning[], commands: readonly Command[], tail: string[], output: string[]): Promise<never> {
+  if (!cmd) {
+    // A valued leading switch can hide the command from dispatch, but not from its JSON refusal.
+    const retry = leadingInvocation(tail, true);
+    const found = retry.leading.length ? findCommand(commands, retry.word) : undefined;
+    if (found) return repeatedGlobalFlag(repeated, found, [...output, ...retry.leading.filter((flag) => OUTPUT_FLAG_WORDS.has(flag)), ...retry.args], warnings, rest);
+  }
+  return repeatedGlobalFlag(repeated, cmd, rest, warnings);
+}
+
 /**
  * Dispatch `argv` against the commands self-registered in a {@link Registry}. The single entry point
  * a composition root calls — no hardcoded command list.
@@ -963,7 +974,7 @@ async function dispatchCli(registry: Registry, argv: string[], opts: RunCliOptio
   let cmd = findCommand(commands, word);
   let rest = ownWords(cmd);
   const repeated = duplicate(cmd);
-  if (repeated) return repeatedGlobalFlag(repeated, cmd, rest, pendingWarnings);
+  if (repeated) return repeatedInvocationExit(repeated, cmd, rest, pendingWarnings, commands, argv.slice(leading.length), output);
   routeCollisionWarnings(pendingWarnings, cmd, rest, wantsHelp);
   if (word === undefined) return paintFor(process.stdout, () => printEntry(commands));
   const scoped = await serviceSurface(cmd, rest);

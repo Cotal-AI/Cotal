@@ -246,9 +246,11 @@ judged by the path given and by the path its links lead to, with `CONFLICT` and 
 home `COTAL_HOME` redirects may hold project folders beside its records, so under it only the home
 itself and its record entries (`daemon`, `meshes`, `prepared`, `services` and the like) are control paths. The
 next step names the project folder that `.cotal` belongs to. A project folder inside another project,
-outside its `.cotal`, is a project of its own. For a folder
-another space uses, the next step names creating it in another folder with `--root <dir>`, and
-starting, selecting or forgetting the space that uses the folder. A folder this
+outside its `.cotal`, is a project of its own. If another space uses the folder, prepare the new
+space in a different folder with `--root <dir>`. For a registration added by hand, the next step
+says to start its broker where it runs and gives `cotal space show <name>` and
+`cotal space forget <name>` for that exact registration. For a local space, the next step names
+how to start, select or forget it. A folder this
 account cannot write, such as `/`, refuses `PERMISSION_DENIED`, exit 2, with nothing written, and so
 does a Cotal home (`~/.cotal` or `COTAL_HOME`) it cannot write. A `.cotal` that links to a folder that
 does not exist refuses `TARGET_NOT_FOUND`, exit 2, naming the link and its target. A folder whose
@@ -561,6 +563,8 @@ one registered space other than the selection, and whose broker answers, the com
 space, as it does with nothing selected, and the note under its `Mesh:` heading, a refusal's
 included, says the selection applies outside the folder. If the selection was adopted automatically,
 offline registrations do not prevent the folder's only running space from taking precedence.
+`cotal whoami` does not contact the broker. When folder registrations compete with an adopted
+selection, it reports the identity from local records and notes that it cannot check this precedence.
 A space `cotal space create` prepared there
 and no `cotal up` started, and one whose stack there is stopped, is the target of the commands about
 the folder itself only: `cotal up`, `cotal down`, `cotal space show` and the folder part of
@@ -860,6 +864,8 @@ restart command because Cotal reserves no fixed capacity per space.
 `meshes.currentStopped` says whether the selection is such a stopped stack. A stack whose last `up`
 or `down` has no recorded outcome is not stopped, even when a member it launched still runs: the
 selection reads as prepared but not started, and the selected space names that operation.
+If the selected space has no running registration and its stack journal cannot be read, `status`
+reports an unknown stack lifecycle and keeps the journal's recovery step under Next.
 
 Owned services use the saved controller definitions and instance records for the selected space.
 Instances are listed by definition name, then instance ID, in the text and in

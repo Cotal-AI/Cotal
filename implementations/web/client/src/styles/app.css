@@ -146,7 +146,7 @@
 .ui-skel-msg { display: grid; grid-template-columns: 36px 1fr; gap: 12px; padding: 8px 0; }
 
 /* ---------- topology ---------- */
-.ui-topo svg { width: 100%; height: auto; display: block; }
+.ui-topo > svg { width: 100%; height: auto; display: block; }
 .ui-legend { display: flex; flex-wrap: wrap; gap: 10px 14px; font: 500 11.5px/1 var(--mono); color: var(--dim); padding-top: 10px; }
 .ui-legend span { display: inline-flex; align-items: center; gap: 6px; }
 .ui-legend i { width: 16px; height: 2px; border-radius: 2px; }
@@ -212,8 +212,8 @@
 .v3-arow[aria-current="true"] { background: var(--soft); }
 .v3-arow .ui-av { --s: 36px; }
 .v3-aname { display: flex; align-items: baseline; gap: 8px; min-width: 0; white-space: nowrap; }
-.v3-aname b { font-weight: 600; }
-.v3-aname span { color: var(--dim); font-size: 13px; overflow: hidden; text-overflow: ellipsis; }
+.v3-aname b { min-width: 0; overflow: hidden; text-overflow: ellipsis; font-weight: 600; }
+.v3-aname span { flex-shrink: 0; max-width: calc(100% - 8px - 2ch); color: var(--dim); font-size: 13px; overflow: hidden; text-overflow: ellipsis; }
 .v3-aact { color: var(--dim); font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .v3-arow-off .v3-aname b { color: var(--dim); }
 .v3-meta { display: inline-flex; align-items: center; gap: 6px; color: var(--dim); font-size: 12.5px; white-space: nowrap; }

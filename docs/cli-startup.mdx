@@ -273,8 +273,9 @@ command there. A hangup while the stack is still
 starting lets the start settle, prints the stop command and exits 129, and leaves what the start left.
 While a foreground `up` holds the stack, it records its process in `.cotal/stack-foreground.hold`,
 and a second foreground `up` on that stack refuses `CONFLICT`, exit 2, names that process, and
-starts nothing. The suggested restart keeps `--no-manager` when you requested it. If the journal
-records a different launching `COTAL_HOME`, the suggested stop and retry commands set it explicitly.
+starts nothing. The suggested restart keeps `--no-manager` and any explicit `--max-payload` value.
+If the journal records a different launching `COTAL_HOME`, the suggested stop and retry commands
+set it explicitly.
 Run them from the stack's folder. The holding process removes
 that record as it exits, a hangup included. A holder that was killed leaves it, and the next
 `cotal down` removes it once that process is gone. A

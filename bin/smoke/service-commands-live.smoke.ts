@@ -30,8 +30,8 @@ import { randomUUID } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
-import { SMOKE_BROKER_TOKEN, assertSmokeSandboxDown, createSuite, freePort, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
-import { readManagerSeatCap } from "@cotal-ai/workspace";
+import { SMOKE_BROKER_TOKEN, assertSmokeSandboxDown, createSuite, freePort, killAndAwaitExit, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
+import { readManagerSeatCap, spaceKey } from "@cotal-ai/workspace";
 import { inOwnScope } from "../../implementations/cli/src/lib/service-scope.js";
 
 const WT = join(import.meta.dirname, "..", "..");
@@ -72,6 +72,40 @@ const presetRoot = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}service-comm
 const PRESET_SPACE = "servicecommandspreset";
 const upCotal = (args: string[]) => cotal(args, 180_000, upAt);
 const out = (run: ReturnType<typeof cotal>) => `${run.stdout ?? ""}${run.stderr ?? ""}`;
+async function checkForegroundManagerLog(): Promise<void> {
+  const args = ["supervise", "--space", SPACE, "--server", SERVER, "--console-port", String(await freePort()), "--console-host", "127.0.0.1"];
+  const manager = spawn(process.execPath, ["--import", TSX_LOADER, BIN, ...args], { cwd: root, env, stdio: "ignore" });
+  try {
+    const status = () => cotal(["manager", "status", "--space", SPACE, "--json"]);
+    let running = status();
+    for (let i = 0; i < 30 && running.status !== 0 && manager.exitCode === null; i++) {
+      await sleep(250);
+      running = status();
+    }
+    const observed = JSON.parse(running.stdout).result;
+    check("a standalone foreground manager is running without a saved service",
+      running.status === 0 && observed?.observedProcess === "running" && observed.recordedProcess?.savedService === false
+        && observed.recordedProcess.pid === manager.pid, out(running));
+    const tail = ["manager", "logs", "--space", SPACE, "--tail", "2"];
+    const remedy = (cli: string) => `If you started the manager with \`${cli} supervise\`, read its output in the terminal where you started it.`;
+    const json = cotal([...tail, "--json"]), report = JSON.parse(json.stdout);
+    const path = join(realpathSync(root), ".cotal", `manager.${spaceKey(SPACE)}.log`);
+    check("a missing foreground manager log keeps the JSON refusal and directs the user to its terminal",
+      json.status === 2 && json.stderr === "" && report.outcome === "refused" && report.completeness === "not-checked"
+        && report.result === null && report.target?.path === path && report.error?.code === "TARGET_NOT_FOUND"
+        && report.error.remedy === remedy("cotal") && !existsSync(path), out(json));
+    for (const flags of [[], ["--plain"]]) {
+      const human = cotal([...tail, ...flags]);
+      check(`the ${flags.length ? "plain" : "default"} refusal directs the user to the foreground manager terminal under Next`,
+        human.status === 2 && human.stderr.includes("TARGET_NOT_FOUND") && human.stderr.includes("Next")
+          && ["cotal", "pnpm cotal"].some((cli) => human.stderr.includes(remedy(cli))), out(human));
+    }
+    const after = status(), remaining = JSON.parse(after.stdout).result;
+    check("reading a missing log leaves the same foreground manager running",
+      after.status === 0 && remaining?.observedProcess === "running" && remaining.recordedProcess?.pid === manager.pid, out(after));
+  } finally { await killAndAwaitExit(manager, "SIGTERM"); }
+}
+
 function checkRecordedManagerTail(path: string): void {
   const saved = `${path}.saved`;
   renameSync(path, saved);
@@ -319,6 +353,7 @@ try {
     const freshPreview = cotal(preview);
     check("a fresh manager preview refuses a new instance without saving a definition",
       freshPreview.status === 2 && out(freshPreview).includes("UNSUPPORTED") && !inventory().definitions.includes("manager"), out(freshPreview));
+    await checkForegroundManagerLog();
 
     // ---- The manager: start, start again, status, logs, a conflicting start, stop ---------------
     const dry = cotal(["manager", "start", "--dry-run"]);

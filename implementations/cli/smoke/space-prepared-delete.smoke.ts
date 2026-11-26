@@ -365,6 +365,12 @@ check("the recovery command removes the damaged record", forgetDamaged.status ==
 const unknown = run(["space", "delete", "nosuch", "--dry-run", "--json"]);
 check("control: a name nothing records is still not found, exit 2", unknown.status === 2 && unknown.envelope?.error?.code === "TARGET_NOT_FOUND", shown(unknown));
 const addedOffline = run(["space", "add", "offline", "--server", server, "--root", noSpace, "--force"]);
+const manualConflict = run(["space", "create", "new-local", "--plain"], noSpace);
+check("space create at a manual registration's root points to its broker host and exact registration",
+  addedOffline.status === 0 && manualConflict.status === 2 && /Code: +CONFLICT/.test(manualConflict.stderr) &&
+    manualConflict.stderr.includes('create "new-local" in another folder with --root <dir>; for "offline", start its broker where it runs') &&
+    ["cotal", "pnpm cotal"].some((cli) => manualConflict.stderr.includes(`inspect the registration with \`${cli} space show offline\`, or forget it with \`${cli} space forget offline\``)) &&
+    !/`(?:pnpm )?cotal up`/.test(manualConflict.stderr), shown(manualConflict));
 const offline = run(["space", "delete", "offline", "--dry-run", "--json"]);
 check("a failed deletion preview names the recorded broker and how to inspect its registration",
   addedOffline.status === 0 && offline.status === 2 && offline.envelope?.error?.code === "TARGET_UNAVAILABLE" &&
@@ -407,6 +413,12 @@ for (const [i, space] of workshops.entries()) {
   const added = run(["space", "add", space, "--mode", "open", "--server", `nats://127.0.0.1:${43026 + i}`, "--root", ".", "--force", "--yes"], workshop);
   check(`rig: ${space} is registered open at the shared root`, added.status === 0, shown(added));
 }
+const sharedConflict = run(["space", "create", "new-local", "--json"], workshop);
+const sharedRemedy = sharedConflict.envelope?.error?.remedy ?? "";
+check("a shared manual root names each registration in the JSON remedy without suggesting local startup",
+  sharedConflict.status === 2 && sharedConflict.envelope?.error?.code === "CONFLICT" &&
+    workshops.every((space) => sharedRemedy.includes(`for "${space}", start its broker where it runs, inspect the registration with \`cotal space show ${space}\`, or forget it with \`cotal space forget ${space}\``)) &&
+    !sharedRemedy.includes("`cotal up`"), shown(sharedConflict));
 const unchecked = run(["doctor", "auth", "--space", "workshop-a", "--json"], workshop);
 check("doctor keeps the local open-space no-op and warns that the mode was not checked",
   unchecked.status === 0 && unchecked.envelope?.outcome === "no-op" && unchecked.envelope.result?.credentialScope === "open-space" &&

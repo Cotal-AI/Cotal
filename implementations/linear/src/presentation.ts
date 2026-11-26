@@ -8,7 +8,7 @@ export function emitUpstream(args: ParsedArgs, account: string, operation: strin
   const failure = reply.kind === "result" ? undefined : reply.outcome === "unknown"
     ? new CommandFailure("unknown", "OPERATION_UNKNOWN", "the native Linear request did not confirm its outcome; it was not retried", { target })
     : reply.kind === "refused" && reply.reason === "tool-not-allowed"
-      ? new CommandFailure("refused", "PERMISSION_DENIED", "the Linear account does not allow the requested tool; the request was not sent", { target })
+      ? new CommandFailure("refused", "PERMISSION_DENIED", "the Linear account does not allow the requested tool; the request was not sent", { target, remedy: "ask the account operator to add the tool name to `allowedTools` in the account record, then retry" })
     : new CommandFailure("refused", reply.kind === "refused" && ["unknown-tool", "not-advertised"].includes(reply.reason) ? "TARGET_NOT_FOUND" : reply.kind === "refused" && reply.reason === "stale-inventory" ? "CONFLICT" : "TARGET_UNAVAILABLE", "the native Linear request was refused before dispatch", { target });
   writeResult(presentationOf(args.values), {
     command: "linear", target, result: { kind: "linear-upstream-reply", operation, reply }, ...(failure ? { failure } : {}),

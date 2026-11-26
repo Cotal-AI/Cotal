@@ -1103,7 +1103,7 @@ async function runUp(args: ParsedArgs, invokedFrom: string, inheritedLock?: Main
     const presentation = presentationOf(values);
     const holder = values.foreground ? foregroundHolder(meshRoot) : undefined;
     if (holder !== undefined)
-      refuseForegroundStackHolder(meshRoot, stackSpace, holder, noManager);
+      refuseForegroundStackHolder(meshRoot, stackSpace, holder, noManager, maxPayload);
     // A signal ends a detached start where it is, after it records a launch it had not yet pinned to
     // its child, and the notice names what it left running. It is installed before the lock, so no
     // moment of the start exits without it.

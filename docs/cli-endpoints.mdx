@@ -113,6 +113,10 @@ If `--server` matches several registered spaces, `whoami` refuses with `TARGET_A
 The remedy gives a command for each space with the same broker and output flags when the address can
 be printed unchanged. Run one to read that identity without changing the saved selection.
 
+When a folder's registrations compete with an automatically adopted selection, `whoami` reports
+an identity from local records and notes that it cannot check which space a live command would
+target. Pass `--space <name>` to choose the space explicitly.
+
 | Mesh | `identity.kind` | What it may do |
 |---|---|---|
 | Open | `open` | Everything; the broker authenticates nothing |

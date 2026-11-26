@@ -75,15 +75,9 @@ export class AccountRecordError extends Error {
 }
 
 function existingAccount(name: string): LinearAccount | undefined {
-  const path = accountPath(name);
-  try { lstatSync(path); }
-  catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
-    throw new AccountRecordError(path, "account record cannot be accessed");
-  }
   try { return loadAccount(name); }
   catch (error) {
-    if (accountMissing(error)) throw new AccountRecordError(path, "account record cannot be read");
+    if (accountMissing(error)) return undefined;
     throw error;
   }
 }
@@ -117,8 +111,15 @@ export function loadAccount(name: string): LinearAccount {
   try {
     raw = JSON.parse(readFileSync(path, "utf8"));
   } catch (e) {
-    if ((e as NodeJS.ErrnoException).code === "ENOENT")
-      throw new Error(`no Linear account "${name}" (${path}); add one with \`cotal linear account add\``, { cause: e });
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") {
+      try { lstatSync(path); }
+      catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+          throw new Error(`no Linear account "${name}" (${path}); add one with \`cotal linear account add\``, { cause: e });
+        }
+        throw new AccountRecordError(path, "account record cannot be accessed");
+      }
+    }
     throw new AccountRecordError(path, e instanceof SyntaxError ? "invalid JSON in account record" : "account record cannot be read");
   }
   if (typeof raw !== "object" || raw === null || Array.isArray(raw)) throw new AccountRecordError(path, "account record must be an object");
