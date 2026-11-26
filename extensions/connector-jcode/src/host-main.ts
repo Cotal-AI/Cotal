@@ -2,6 +2,7 @@ import { resolve } from "node:path";
 import { EnvFlagError } from "@cotal-ai/connector-core";
 import { runJcodeHost } from "./host.js";
 import {
+  JcodeConnectorError,
   JcodeCursorStateUnreadable,
   JcodeEffortRefusal,
   JcodeEffortUnsupported,
@@ -82,6 +83,9 @@ runJcodeHost().catch((error) => {
     writeJcodeDiagnostic(
       `[cotal-jcode] fatal: Jcode host startup failed (sessions_unwritable): the harness cannot persist sessions at ${error.sessionsPath} (${error.errnoCode}); fix the directory's permissions on the seat's private state\n`,
     );
+  } else if (error instanceof JcodeConnectorError && error.code === "model_prefix_rejected") {
+    const logPath = jcodeDiagnosticLogPath();
+    writeJcodeDiagnostic(`[cotal-jcode] fatal: Jcode launch failed (${error.code}): ${error.message}${logPath ? ` Workspace log: ${resolve(logPath)}` : ""}\n`);
   } else if (error instanceof JcodeModelMismatch || error instanceof JcodeCursorStateUnreadable || error instanceof JcodeProjectMcpConfig) {
     // These classes construct bounded diagnostics from selected fields, never downstream messages.
     writeJcodeDiagnostic(`[cotal-jcode] fatal: Jcode host startup failed (${error.code}): ${error.message}\n`);
