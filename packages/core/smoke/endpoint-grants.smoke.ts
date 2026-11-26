@@ -294,13 +294,18 @@ const BASELINE_PUB = [
   `cotal.epg.ep.one.manager.turn-yield.self.u_abc.cli.${UID}.*`,
   `cotal.epg.ep.one.manager.turn-unconfirmed.self.u_abc.cli.${UID}.*`,
   `cotal.epg.ep.one.manager.run-answer.self.u_abc.cli.${UID}.*`,
+  `cotal.epg.ep.prin-reply.agent.u_abc.cli.${UID}.*.*.*.*.*`,
 ];
-c("no-capability mint carries EXACTLY the Appendix-B baseline ep rows (describe-all + delivery join/leave/list + self stop/turn-participate/turn-pending/turn-yield/turn-unconfirmed/run-answer), nothing wider",
-  JSON.stringify(without.pub.allow.filter((r) => r.includes(".ep.") || r.includes(".epj.")).sort())
-  === JSON.stringify([...BASELINE_PUB].sort()),
-  JSON.stringify(without.pub.allow.filter((r) => r.includes(".ep."))));
-c("no-capability mint carries the baseline reply-rail read (and only that ep sub row)",
-  without.sub.allow.filter((r) => r.includes(".ep.")).join("|") === `cotal.epg.ep.reply.*.*.*.u_abc.cli.${UID}.*`);
+const BASELINE_SUB = [
+  `cotal.epg.ep.reply.*.*.*.u_abc.cli.${UID}.*`,
+  `cotal.epg.ep.prin.agent.u_abc.cli.${UID}.*.*.*.*.*.*.*`,
+];
+const withoutEpPub = without.pub.allow.filter((r) => r.includes(".ep.") || r.includes(".epj.")).sort();
+const withoutEpSub = without.sub.allow.filter((r) => r.includes(".ep.")).sort();
+c("no-capability static agent mint carries exactly the Appendix B endpoint publish rows",
+  JSON.stringify(withoutEpPub) === JSON.stringify(BASELINE_PUB.sort()), JSON.stringify(withoutEpPub));
+c("no-capability static agent mint carries exactly the ordinary reply read and principal serve subscription",
+  JSON.stringify(withoutEpSub) === JSON.stringify(BASELINE_SUB.sort()), JSON.stringify(withoutEpSub));
 c("no-capability mint carries NO journal rows and NO owner/child/ledger-mode rows",
   ![...without.pub.allow].some((r) => r.includes(".epj.") || r.includes(".owner.") || r.includes(".child.") || r.includes(".ledger.")));
 const withSpawn = decode(await mintCreds(auth, newIdentity(), "agent", { principal: { owner: "u_abc", actor: "cli" }, lifecycleUid: UID, capabilities: ["spawn"] }));
