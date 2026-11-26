@@ -1101,7 +1101,7 @@ export class PreservedResume {
           source: entry.launch.source,
           cwd: entry.launch.cwd,
           model: entry.launch.model,
-          variant: entry.launch.variant,
+          variant: connector.name === "claude" ? prepared.spec.env?.COTAL_VARIANT : entry.launch.variant,
           subscribe: entry.launch.subscribe,
           allowSubscribe: entry.launch.allowSubscribe,
           allowPublish: entry.launch.allowPublish,

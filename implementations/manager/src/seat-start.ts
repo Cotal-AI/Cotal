@@ -982,7 +982,8 @@ export class SeatStart {
               : { kind: "persona", ref: opts.config ? identityName : ref, configPath, configSha256 },
           cwd,
           model,
-          variant,
+          // Claude omits the variant from its launch when a native effort option takes precedence.
+          variant: connector.name === "claude" && spec ? spec.env?.COTAL_VARIANT : variant,
           // The kickoff prompt is part of the launch form: a stale-restart re-submits it, so the
           // recorded launch must carry it for the restart gate (and preserve) to see it. A once
           // seat's prompt is its task, which no relaunch may submit again.

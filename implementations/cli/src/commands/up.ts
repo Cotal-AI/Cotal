@@ -1425,14 +1425,14 @@ async function runUp(args: ParsedArgs, invokedFrom: string, inheritedLock?: Main
       // mode would hand the operator a mesh on the wrong identity plane); a bare refresh keeps the
       // held mode.
       const requested = wantUser ? "user" : values.open ? "open" : undefined;
+      const stopAdvice = () => held.origin === "up"
+        ? `from ${shellWord(held.root)}, inspect the stack with ${codeSpan(`${displayCmd()} down --dry-run`)} and stop it with ${codeSpan(`${displayCmd()} down --yes`)}`
+        : "stop the broker with the launcher that started it";
       if (requested && requested !== held.mode) {
         const label = { auth: "static JWT auth", open: "no auth (--open)", user: "per-user auth" }[held.mode];
-        console.error(
-          c.red(
-            `✗ mesh "${held.space}" is already running at ${server} with ${label} - a running broker can't change auth mode; \`cotal down\` it first, then \`cotal up ${wantUser ? "--user-auth" : "--open"}\``,
-          ),
-        );
-        process.exit(1);
+        throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `mesh "${held.space}" is already running at ${server} with ${label}; a running broker can't change auth mode`, {
+          target: { root, space: held.space }, remedy: `${stopAdvice()}; then retry the original startup command unchanged from its original folder`,
+        });
       }
       // A rotation retires the system account this LIVE broker was started on, and only a broker
       // (re)started from the rewritten config carries the successor. Rotating under a running mesh
@@ -1455,11 +1455,8 @@ async function runUp(args: ParsedArgs, invokedFrom: string, inheritedLock?: Main
       // exit 0. A service unit relying on `--foreground` read that exit as the stack ending, stopped
       // it, and restarted into the same branch. Refuse and name the remedy.
       if (values.foreground) {
-        const stop = held.origin === "up"
-          ? `from ${shellWord(held.root)}, inspect the stack with ${codeSpan(`${displayCmd()} down --dry-run`)} and stop it with ${codeSpan(`${displayCmd()} down --yes`)}`
-          : "stop the broker with the launcher that started it";
         throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `mesh "${held.space}" is already running and this request starts nothing, so it can't keep it in this terminal`, {
-          target: { root, space: held.space }, remedy: `${stop}; then retry the original foreground command unchanged from its original folder`,
+          target: { root, space: held.space }, remedy: `${stopAdvice()}; then retry the original foreground command unchanged from its original folder`,
         });
       }
       // A running broker cannot change its transport either, and for exactly the reason it cannot
