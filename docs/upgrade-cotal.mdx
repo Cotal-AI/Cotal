@@ -294,6 +294,9 @@ If reconciliation succeeds but the registry version cannot be read, `cotal updat
 Even when the CLI is already at the latest release, `cotal update --self` reinstalls an installed
 first-party extension whose entry file is missing, empty, or cannot load with its dependencies.
 It reports a failed reinstall instead of declaring the installation current.
+In npm offline mode, a manual `cotal update --self` skips the release check but can still repair
+damaged first-party extensions installed from npm at the running CLI's version, if npm has the
+packages cached. An unsuccessful offline repair names the affected extensions and still exits 0.
 On Linux and macOS, `cotal update --self` also removes abandoned private extension staging copies
 from the selected connector configuration, even when the CLI is current. Cleanup takes the extension
 writer lock and leaves staging alone while a writer is active or a promotion journal is present.

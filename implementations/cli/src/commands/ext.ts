@@ -275,7 +275,7 @@ function dropForeignLockEntries(lock: { packages?: Record<string, { extraneous?:
 export async function installExtensionSet(
   requests: readonly ExtensionInstallRequest[],
   announce: (line: string) => void = console.error,
-  opts?: { isolate?: boolean; localOperand?: string },
+  opts?: { isolate?: boolean; localOperand?: string; offline?: true },
 ): Promise<void> {
   if (!requests.length) return;
   const ownerConfig = connectorConfigDir();
@@ -325,7 +325,7 @@ export async function installExtensionSet(
     }
     const mutationPath = extensionNpmMutationPath();
     const specs = requests.map(({ spec }) => isPathSpec(spec) ? realpathSync(spec) : spec);
-    const result = await npm(["install", "--save", "--no-audit", "--no-fund", "--install-links", ...specs], npmPrefix);
+    const result = await npm(["install", "--save", "--no-audit", "--no-fund", "--install-links", ...(opts?.offline ? ["--offline"] : []), ...specs], npmPrefix);
     if (existsSync(mutationPath)) stage.retain();
     if (interrupted) throw new ExtensionAddInterrupted(requests[0]!.pkg);
     if (result.status !== 0) throw new Error(`extension set npm install failed: ${npmInstallFailure(result.output)}`);
