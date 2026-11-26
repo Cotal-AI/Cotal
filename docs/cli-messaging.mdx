@@ -48,6 +48,19 @@ present refuses with `TARGET_NOT_FOUND`. The suggested `cotal who --all` command
 space and keeps any explicit broker and credential file so it lists the same roster. No fuzzy match
 selects an agent for you.
 
+### Send piped text from Windows PowerShell 5.1
+
+Windows PowerShell 5.1 pipes text to native commands as ASCII by default. It replaces
+non-ASCII characters with `?` before Cotal reads them. Set `$OutputEncoding` in the same
+scope as the pipeline before sending text with `--stdin` or `--file -`:
+
+```powershell
+$OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+$text | cotal send -c updates --stdin
+```
+
+To send from a UTF-8 file without changing the pipeline encoding, pass its path to `--file`.
+
 
 ### Message addressing
 
