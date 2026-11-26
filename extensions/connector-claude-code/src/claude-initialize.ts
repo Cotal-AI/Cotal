@@ -79,7 +79,7 @@ export async function claudeControl<T>(o: InitializeProbe, read: (ask: AskClaude
         settle({ failed: ended });
       };
       const args = [...PROBE_ARGS, "--settings", JSON.stringify({ ...PROBE_SETTINGS, ...o.settings })];
-      const claude = (child = spawn(o.bin, args, { cwd: o.cwd, env: o.env, stdio: ["pipe", "pipe", "ignore"] }));
+      const claude = (child = spawn(o.bin, args, { cwd: o.cwd, env: o.env, stdio: ["pipe", "pipe", "ignore"], windowsHide: true }));
       // The bound also cuts short stopClaude's grace, so the whole read ends within it.
       timer = setTimeout(() => {
         fail(`claude did not list ${o.what} within ${o.boundMs / 1000}s`);

@@ -258,7 +258,8 @@ material, and is the path on a bare broker with no manager or for a run with no 
 `resume --local` refuses with `TARGET_NOT_FOUND`, exits 2 and points to `cotal run list --local`
 for the same space and any explicit broker, credential or endpoint. If a local `resume`, `answer` or `amend` has a
 malformed run ID, use `cotal run list --local` with the same target options. Then replace only the run
-ID in the original command. For a local `resume` with no run ID, use the same list and add the ID.
+ID in the original command. A hosted `resume` with a malformed ID points to the run list for the
+requested space, broker and manager. For a local `resume` with no run ID, use the local list and add the ID.
 `answer --local` and `amend --local` take
 `--by <who>` and print the same receipt as the hosted path, and `start --local` requires
 `--admit-read` and `--admit-publish` (comma-separated

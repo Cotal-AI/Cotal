@@ -53,7 +53,7 @@ function parseModels2(stdout: string): ModelInfo[] {
 export function listOpenCode2Models(bin: string, env: NodeJS.ProcessEnv): Promise<ModelCatalog> {
   const password = randomBytes(32).toString("base64url");
   // The password rides the environment only, never argv, where any local user could read it.
-  const child = spawn(bin, SERVE_ARGS, { env: { ...env, OPENCODE_SERVER_PASSWORD: password }, detached: process.platform !== "win32" });
+  const child = spawn(bin, SERVE_ARGS, { env: { ...env, OPENCODE_SERVER_PASSWORD: password }, detached: process.platform !== "win32", windowsHide: true });
   const stage = { waitingFor: "the server to start" };
   const deadline = AbortSignal.timeout(CATALOG_TIMEOUT_MS);
   return readCatalog(child, password, deadline, stage).then(

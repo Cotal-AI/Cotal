@@ -9,6 +9,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { assertSmokeSandboxDown, freePort, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
+import { acquireLock } from "@cotal-ai/workspace";
 import { daemonPaths } from "../daemon/endpoint.js";
 import { holdLifetime } from "../daemon/lifetime.js";
 
@@ -154,9 +155,24 @@ console.log('LEGACY_READS=' + legacyReads);
         // Keep the live Manager's launch entry unavailable, as during a concurrent npm replacement.
         renameSync(entry, `${entry}.reinstall`);
         try {
-          const output = await updateOther(otherHome, { ...env, HOME: otherHome, COTAL_HOME: join(otherHome, "state"),
+          const currentUpdate = () => updateOther(otherHome, { ...env, HOME: otherHome, COTAL_HOME: join(otherHome, "state"),
             XDG_CONFIG_HOME: config, XDG_RUNTIME_DIR: join(otherHome, "runtime"), TMPDIR: otherHome }, "--self");
-          assert.match(output, /installed package closure is current\. No connector reconciliation was run\./);
+          const prefix = join(config, "cotal");
+          const stage = join(prefix, ".extensions.stage-Ab1234");
+          const copied = join(stage, "config/cotal/extensions");
+          mkdirSync(copied, { recursive: true, mode: 0o700 });
+          writeFileSync(join(copied, "package.json"), "{}");
+          const link = join(prefix, ".extensions.stage-Cd5678");
+          symlinkSync(join(prefix, "seed"), link);
+          const writer = acquireLock(join(prefix, ".extensions.lock"), { label: "smoke extension writer" });
+          try {
+            assert.match(await currentUpdate(), /installed package closure is current\. No connector reconciliation was run\./);
+            assert.equal(readFileSync(join(copied, "package.json"), "utf8"), "{}");
+          } finally { writer.release(); }
+          assert.match(await currentUpdate(), /installed package closure is current\. No connector reconciliation was run\./);
+          assert.ok(!existsSync(stage), "current self-update removes an unpublished stage once the writer is gone");
+          assert.ok(existsSync(link), "cleanup leaves similarly named links alone");
+          assert.ok(existsSync(join(prefix, "seed/stamp.json")), "cleanup leaves the selected inventory alone");
         } finally { renameSync(`${entry}.reinstall`, entry); }
 
         // The installer adds another prefix in the same home, while the selected stack still uses the old one.

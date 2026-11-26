@@ -190,6 +190,30 @@ async function security(name: string, session: string, token: string, base: stri
   check(`${name}: navigation to a different origin completes`, new URL(destination).origin !== base);
 }
 
+async function activityLayout(session: string, base: string): Promise<void> {
+  for (const width of [360, 1280]) {
+    await cdp("Emulation.setDeviceMetricsOverride", { width, height: 800, deviceScaleFactor: 1, mobile: false }, session);
+    if (width === 360) await cdp("Page.navigate", { url: base + "/#/activity" }, session);
+    await until(() => evaluate(session, `innerWidth === ${width} &&
+      Boolean(document.querySelector('.ui-phone')) === ${width === 360} &&
+      document.querySelector('header.ui-bar h1')?.textContent === 'Activity'`), `Activity renders at ${width}px`);
+    const layout = await evaluate(session, `document.fonts.ready.then(() => {
+      const heading = document.querySelector('header.ui-bar h1');
+      const header = heading.closest('header');
+      const bar = header.getBoundingClientRect();
+      const readable = (el) => {
+        const rect = el.getBoundingClientRect();
+        return el.clientWidth > 0 && el.scrollWidth <= el.clientWidth && rect.left >= bar.left &&
+          rect.right <= Math.min(bar.right, innerWidth) && rect.top >= bar.top && rect.bottom <= bar.bottom;
+      };
+      const filters = [...header.querySelectorAll('[data-slot="toggle-group-item"]')];
+      return { heading: readable(heading), filters: filters.filter(readable).map(button => button.textContent) };
+    })`);
+    check(`dashboard at ${width}px: Activity heading is fully visible`, layout.heading);
+    check(`dashboard at ${width}px: all delivery filters are fully visible`, layout.filters.join(",") === "All,Channels,Direct,Roles");
+  }
+}
+
 try {
   for (let i = 0; !(await isReachable(server)); i++) { assert(i < 100, "private broker starts"); await delay(100); }
   await setupSpaceStreams({ servers: server, space });
@@ -240,7 +264,11 @@ try {
   const browserLaunchUrl = (await browserLaunch.json() as { launchUrl: string }).launchUrl;
   const browserToken = new URL(browserLaunchUrl).searchParams.get("k")!;
   const dashboardPage = await page(browserLaunchUrl + "#/channel/general");
+  await until(() => evaluate(dashboardPage, "document.querySelector('.v3-mhead b')?.textContent === '#general' && document.body.innerText.includes('Read only')"), "read-only dashboard renders the selected channel's Members panel");
+  check("dashboard: read-only Members panel offers no Delete channel action", await evaluate(dashboardPage,
+    "![...document.querySelectorAll('.ui-pane-body button')].some(button => button.textContent.trim() === 'Delete channel')"));
   await security("dashboard", dashboardPage, browserToken, dashboardBase, "document.getElementById('root')?.textContent?.includes('browser-live-control') === true");
+  await activityLayout(dashboardPage, dashboardBase);
   const sessionCookie = await cdp("Network.getCookies", { urls: [dashboardBase] }, dashboardPage);
   const cookie = sessionCookie.cookies.find((c: { name: string }) => c.name === "cotal_web_session");
   check("dashboard: existing query launch link still mints an HttpOnly session cookie", cookie?.httpOnly === true);

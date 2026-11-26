@@ -275,6 +275,22 @@ for (const [args, why] of [
 }
 
 {
+  for (const args of [["cli", "--wibble"], ["--wibble", "cli"]]) {
+    const refused = run(["docs", ...args, "--json"]);
+    const error = refused.envelope?.error;
+    check(`docs ${args.join(" ")} says to drop the unknown option when the page is set`,
+      refused.status === 1 && refused.stderr === "" && refused.envelope?.command === "docs" && refused.envelope.outcome === "refused" &&
+      error?.code === "USAGE_INVALID" && error.message === "Unknown option '--wibble'" && error.remedy === "drop the unknown option", shown(refused));
+  }
+  const retry = run(["docs", "cli", "--json"]);
+  check("dropping the unknown option reads the requested page", retry.status === 0 && retry.stderr === "" &&
+    retry.envelope?.outcome === "ok" && retry.envelope.result?.kind === "docs-page" && retry.envelope.result.slug === "cli", shown(retry));
+  const noPage = run(["docs", "--wibble", "--json"]);
+  check("docs still suggests the separator when no page is set", noPage.status === 1 && noPage.stderr === "" &&
+    noPage.envelope?.error?.remedy === 'to pass a word that starts with "-", put -- before it', shown(noPage));
+}
+
+{
   const config = join(home, "damaged-inventory");
   const extensions = join(config, "cotal", "extensions");
   const manifest = join(extensions, "extensions.json");
@@ -297,6 +313,22 @@ for (const [args, why] of [
     list.envelope.error?.code === "SCHEMA_INVALID" && list.envelope.error.message.includes('no "extensions" array') &&
     list.envelope.error.remedy?.includes("cotal ext seed --repair") === true &&
     readFileSync(manifest, "utf8") === "{}\n", shown(list));
+
+  writeFileSync(manifest, "{\n");
+  for (const [prefixArgs, suffixArgs] of [
+    [["help", "docs"], ["docs", "--help"]],
+    [["--no-color", "help", "--all", "--", "docs", "cli-usage"], ["docs", "cli-usage", "--help"]],
+  ] satisfies [string[], string[]][]) {
+    const prefix = run(prefixArgs, env);
+    const suffix = run(suffixArgs, env);
+    check(`\`${prefixArgs.join(" ")}\` shows the same docs help without changing the damaged inventory`,
+      prefix.status === 0 && suffix.status === 0 && prefix.stderr === "" && suffix.stderr === "" &&
+      suffix.stdout.includes("Usage\n") && prefix.stdout === suffix.stdout && readFileSync(manifest, "utf8") === "{\n",
+      { prefix: shown(prefix), suffix: shown(suffix) });
+  }
+  const allHelp = run(["help"], env);
+  check("full help reports a corrupt extension inventory",
+    allHelp.status === 1 && allHelp.stdout === "" && allHelp.stderr.includes("corrupt extensions manifest"), shown(allHelp));
 
   const journal = join(config, "cotal", ".extensions-promotion.json");
   writeFileSync(journal, "{}\n", { mode: 0o600 });

@@ -56,7 +56,7 @@ import { selfArgv } from "../lib/self-exec.js";
 import { repairInstallModes } from "../lib/install-umask.js";
 import { cliVersion, installedCliVersion } from "../lib/version.js";
 import { runSeed, compareSemver, seedInstallationCurrent, assertReadableSeedState, readSeedRepairRefusal } from "../seed/reconcile.js";
-import { operatorInstallDiffers } from "../seed/verify.js";
+import { operatorInstallDiffers, operatorUpdateSpec } from "../seed/verify.js";
 import { cliPackageRoot, entryScript, seedWriterKind } from "../seed/paths.js";
 import { refreshClientInstalls, refreshConnectorInstalls } from "./setup.js";
 import { c } from "../ui.js";
@@ -818,7 +818,7 @@ async function updateOperatorExtensions(rt: UpdateRuntime, current: string): Pro
       continue;
     }
     rt.err(c.dim(`${entry.pkg}: ${differs}; reinstalling`));
-    const spec = `${entry.pkg}@${current}`;
+    const spec = operatorUpdateSpec(entry, current);
     const [bin, ...argv] = rt.selfArgv();
     const env: NodeJS.ProcessEnv = {
       ...rt.env,

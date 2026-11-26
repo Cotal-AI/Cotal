@@ -26,7 +26,7 @@ import { spawnSync } from "node:child_process";
 import { basename, dirname, isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { registry, type Command, type FlagSpec, type ParsedArgs } from "@cotal-ai/core";
-import { CommandFailure, logicalExecutionEntry, codeSpan, homeCotalDir, keptCatalogCredentials, jsonFlag, plainFlag, presentationOf, recordOperationContext, renderReport, windowsShellWord, writeResult, type Report } from "@cotal-ai/workspace";
+import { CommandFailure, logicalExecutionEntry, codeSpan, homeCotalDir, keptCatalogCredentials, jsonFlag, plainFlag, presentationOf, recordOperationContext, renderReport, writeResult, type Report } from "@cotal-ai/workspace";
 import { cloudAuthUrl, isCotalCloudIdp, openLoginBrowser, isDiscoveryName, resolveDiscoveryLogin } from "@cotal-ai/workspace";
 import { chooseAccountChoice, IdpConfigurationError, normalizeIdpUrl } from "@cotal-ai/auth";
 import { EndpointRefusal, defaultPeerUid, defaultPeerPid, checkDir, daemonPaths, daemonPathsFor, ensureStateDir, type DaemonPaths, type EndpointProblemCode } from "./endpoint.js";
@@ -36,7 +36,7 @@ import { connectCheckViaDaemon, managerViaDaemon, queryDaemon, registerViaDaemon
 import { admitWindowsNativeDaemon, applyInstall, applyUninstall, observeDaemonOwnedService, type DaemonOwnershipObservation, planInstall, planUninstall, repairMissingInstalledProgram, startInstalled } from "./install.js";
 import { exchangeDesktopRequest, runDesktopBridge } from "./desktop.js";
 import { installedUnitForSetup, runAccountSetup, runSetup } from "./setup.js";
-import { daemonCommandCopy, daemonServiceRequirement } from "./guidance.js";
+import { daemonCommandCopy, daemonServiceRequirement, windowsDaemonFirstStart, windowsDaemonHomeAccess, windowsDaemonRemedy } from "./guidance.js";
 import { forgetHostedManagerIntents } from "./manager.js";
 import { automaticUpdates } from "./auto-update.js";
 import { watchDaemonGeneration } from "./generation.js";
@@ -54,7 +54,7 @@ const daemonFlags = [
   { name: "no-browser", type: "boolean", description: "print approval instructions without opening a browser" },
   { name: "idp", type: "string", value: "<auth URL or name>", description: "the provider's auth base URL or issuer-authorized discovery hostname" },
   { name: "client-id", type: "string", value: "<id>", description: "the OAuth device-flow client id" },
-  { name: "daemon-home", type: "string", value: "<abs dir>", completion: "files", description: "run or reach the daemon whose state lives in this directory (absolute, yours, mode 0700, not the Cotal home): its own sign-in, identity and registration, its own socket and lifetime lock. Without it, run or reach the default daemon, whose state lives in the Cotal home." },
+  { name: "daemon-home", type: "string", value: "<abs dir>", completion: "files", description: "run or reach the daemon whose state lives in this separate absolute directory, not the Cotal home. Use mode 0700 and your own account as owner on POSIX. On Windows, use an ACL that grants access only to you, SYSTEM or Administrators, with one of those as owner. Without this flag, use the default daemon in the Cotal home." },
   { name: "refresh", type: "boolean", description: "spaces: refresh catalogs through the daemon-held sign-in" },
   { name: "dry-run", type: "boolean", description: "install, uninstall: report the unit it would write or remove, and change nothing" },
   { name: "yes", type: "boolean", short: "y", description: "uninstall: confirm in a script" },
@@ -77,7 +77,7 @@ const peerUid = defaultPeerUid;
 const peerPid = defaultPeerPid;
 
 /** The daemon this invocation targets: the default one, or the one whose state lives in an explicit
- *  `--daemon-home`. The home must already exist as a real 0700 directory owned by this uid, and may
+ *  `--daemon-home`. The home must already exist as a real private directory for this user, and may
  *  not be the Cotal home itself. Linux install/uninstall may resolve a missing leaf only when its
  *  surviving native service verifies ownership; other operations never create, repair or migrate it. Mesh lookup always stays
  *  the shared Cotal home's registry. */
@@ -109,6 +109,9 @@ function resolveTarget(args: ParsedArgs, recoverMissingHome = false): Target {
     return resolved;
   }
   catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "ENOENT" && process.platform === "win32") throw new CommandFailure("refused", "TARGET_NOT_FOUND", "the --daemon-home directory does not exist", {
+      remedy: `create the directory, then in File Explorer open Properties > Security > Advanced. Give your account an explicit Full control grant, choose Disable inheritance and remove inherited permissions. Remove any remaining grants except those for your account, SYSTEM and Administrators. Verify the owner as well: ${windowsDaemonHomeAccess}`,
+    });
     if ((e as NodeJS.ErrnoException).code === "ENOENT") throw new CommandFailure("refused", "TARGET_NOT_FOUND", "the --daemon-home directory does not exist; create it with mode 0700 first");
     throw asFailure(e);
   }
@@ -189,10 +192,12 @@ async function status(args: ParsedArgs): Promise<void> {
       });
     }
     if (process.platform === "win32" && e instanceof EndpointRefusal && e.code === "NOT_RUNNING") {
-      const start = codeSpan(daemonCommandCopy("start", home));
-      const shell = home !== undefined && home !== homeCotalDir() && windowsShellWord(home) === undefined ? " in PowerShell" : "";
+      const receipt = readReceipt(paths);
+      const recorded = receipt?.mechanism === "scheduled-task" && receipt.daemonHome === home;
       throw new CommandFailure("refused", "TARGET_UNAVAILABLE", e.message, {
-        remedy: `start the owned task with ${start}${shell}; read ${nativeDaemonLog(paths.state)} for its last launch output, and inspect the task's state and last result in Task Scheduler if no log was created`,
+        remedy: recorded
+          ? `if the recorded task is still registered, start it with ${windowsDaemonRemedy("start", home)}. Read ${nativeDaemonLog(paths.state)} for its last launch output. If no log was created, inspect the task's state and last result in Task Scheduler`
+          : `no scheduled task installation is recorded for this daemon. To start it, ${windowsDaemonFirstStart(home)}`,
         native: { code: e.code },
       });
     }

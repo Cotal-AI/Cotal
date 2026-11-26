@@ -18,7 +18,7 @@ export interface AppServerAsk {
  *  runs to sync plugins, are killed on return. */
 export async function askAppServer(o: AppServerAsk): Promise<unknown> {
   // Its own process group, so the kill below reaches the children it started too.
-  const child = spawn(o.bin, ["app-server"], { env: o.env, cwd: o.cwd, stdio: ["pipe", "pipe", "ignore"], detached: process.platform !== "win32" });
+  const child = spawn(o.bin, ["app-server"], { env: o.env, cwd: o.cwd, stdio: ["pipe", "pipe", "ignore"], detached: process.platform !== "win32", windowsHide: true });
   try {
     return await new Promise<unknown>((resolve, reject) => {
       const timer = setTimeout(() => reject(new Error(`codex app-server ${o.method} timed out (${o.boundMs / 1000}s)`)), o.boundMs);
