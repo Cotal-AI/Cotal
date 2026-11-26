@@ -1,10 +1,10 @@
 {
   "expected": {
-    "total": 1153,
+    "total": 1154,
     "honest-text": 71,
     "presence-only-glyph/count": 138,
     "command-ack": 13,
-    "non-render/control": 931
+    "non-render/control": 932
   },
   "classRationales": {
     "non-render/control": "This candidate handles presence state without making a human work-progress claim. Status tokens, routing, component inputs and presentation metadata are control data; exceptions that report a different kind of status carry an entry-specific reason."
@@ -6648,6 +6648,13 @@
       "anchor": "`the seed child exited with status ${r.status}`",
       "class": "non-render/control",
       "rationale": "Connector seed failure: the seed child's exit status; process state, not agent presence."
+    },
+    {
+      "path": "implementations/cli/src/seed/store.ts",
+      "kind": "derived-output",
+      "anchor": "`Warning: could not remove old seed-store generation at ${oneLine(genDir)} (${status}). The old copy was left in place.`",
+      "class": "non-render/control",
+      "rationale": "Seed-store cleanup warning: status is a filesystem removal error, not agent presence."
     },
     {
       "path": "implementations/cli/src/commands/backup-maintenance.ts",

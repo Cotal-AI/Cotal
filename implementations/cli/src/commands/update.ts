@@ -14,10 +14,6 @@ import {
   claimUpdateClosureAccess,
   updateClosureOwner, withWindowsUpdateIdentity,
   homeCotalDir,
-  preparedRecordSkipped,
-  preparedRecordSpace,
-  readPreparedSpaces,
-  recordOperationWarning,
   readUpdateRecovery,
   clearUpdateRecovery,
   writeUpdateRecovery,
@@ -51,6 +47,7 @@ import { snapshotUpdateClosure, type UpdateSnapshot } from "../lib/update-snapsh
 import { assertConfigAncestorProtected, prepareUpdateConnectorConfig, repairCurrentUpdateConnectorSelection, repairUpdateConnectorSelection } from "../lib/update-connector-config.js";
 import { EXT_UPDATE_PARENT_ENV } from "./ext.js";
 import { collectUpdateCaches } from "./update-caches.js";
+import { repairOfflineExtensions } from "./update-offline.js";
 import { claimExtensionUpdatePass } from "../lib/ext-mutation.js";
 import { selfArgv } from "../lib/self-exec.js";
 import { repairInstallModes } from "../lib/install-umask.js";
@@ -90,7 +87,7 @@ import {
   offlineUpdateMessage,
   waitForReleasePreflight,
 } from "./update-release.js";
-import { refusal, reportRunningManagers } from "./update-continuity.js";
+import { admitReconciliation, refusal, reportRunningManagers, reportUncheckedPreparedRecords } from "./update-continuity.js";
 export { isStoppedLocalMesh, reportRunningManagers, readUpdateManagerContinuity, readManagerContinuity, printLegacyReport } from "./update-continuity.js";
 
 export { parseNpmVersion, installedUpdatePrefix, verifyGlobalEntry } from "./update-process.js";
@@ -624,7 +621,12 @@ export async function executeUpdate(self: boolean, rt: UpdateRuntime = updateRun
 
   if (self) {
     const latest = latestVersion(rt);
-    if (!latest.ok) return await handleLatestVersionFailure(latest, current, rt, offlineUpdateMessage(preflightChanged), promotionRecovered, permissionsRestored);
+    if (!latest.ok) {
+      const code = await handleLatestVersionFailure(latest, current, rt, offlineUpdateMessage(preflightChanged), promotionRecovered, permissionsRestored);
+      if (latest.offline && rt.env.COTAL_AUTO_UPDATE !== "1" && !unreadableSelection)
+        await repairOfflineExtensions(current, rt, () => admitReconciliation(current, rt, target));
+      return code;
+    }
     const upgrading = compareSemver(latest.version, current) > 0;
     if (rt.env.COTAL_AUTO_UPDATE === "1") {
       // The live npm lookup can select a different version from the one the daemon held.
@@ -676,58 +678,11 @@ export async function executeUpdate(self: boolean, rt: UpdateRuntime = updateRun
   });
 }
 
-function reportUncheckedPreparedRecords(rt: UpdateRuntime, target: Record<string, unknown>): void {
-  if (["server", "creds", "on"].some(key => typeof target[key] === "string")) return;
-  // The installed child may carry a daemon admission receipt and never resolve the project.
-  // Report read failures separately from the Manager custody verdict and package reconciliation.
-  try {
-    for (const error of readPreparedSpaces().unusable) {
-      if (error.refusal !== "PERMISSION_DENIED") continue;
-      if (typeof target.space === "string" && target.space !== preparedRecordSpace(error.file)) continue;
-      recordOperationWarning(preparedRecordSkipped(error));
-      rt.out(c.dim(`  ${error.file}: leaving its records and processes untouched, continuity not checked`));
-    }
-  } catch (error) {
-    rt.err(`Could not check prepared space records: ${message(error)}; continuity not checked`);
-  }
-}
-
 async function reconcileCurrent(
-  current: string,
-  rt: UpdateRuntime,
-  target: Record<string, unknown>,
+  current: string, rt: UpdateRuntime, target: Record<string, unknown>,
   finish: (reconciled: boolean, deferred?: boolean) => number, selfUpdate = false,
 ): Promise<number> {
-  try { await rt.prepareReconciliation?.(target); }
-  catch (error) {
-    rt.err(c.red(`✗ installed connector reconciliation admission: ${refusal(error)}`));
-    return finish(false, true);
-  }
-  // OBSERVE BEFORE WRITING. `rt.reconcile()` is `runSeed({force: true})`: it rewrites the
-  // operator-global seed store, manifest and npm prefix. It used to run FIRST, so an
-  // `update --self` against a mesh that predates this release's authority stores rewrote the store
-  // and only then failed its `running manager continuity check`, leaving the machine migrated by a
-  // run that refused to proceed (#1620). The continuity check is a pure read of the running manager
-  // and the selected target; nothing may be written until it has answered.
-  try {
-    if (await rt.reportRunningManager(target) === "legacy") {
-      if (rt.env.COTAL_AUTO_UPDATE === "1") recordUpdateDeferral(current, "waiting for agents to stop");
-      return finish(false, true);
-    }
-  } catch (e) {
-    if (rt.env.COTAL_AUTO_UPDATE === "1") recordUpdateDeferral(current, "waiting for agents to stop");
-    rt.err(c.red(`✗ running manager continuity check: ${refusal(e)}`));
-    return finish(false, true);
-  }
-
-  reportUncheckedPreparedRecords(rt, target);
-
-  try { await rt.preflightReplacement?.(); }
-  catch (error) {
-    if (rt.env.COTAL_AUTO_UPDATE === "1") recordUpdateDeferral(current, "installed daemon preflight refused");
-    rt.err(c.red(`✗ installed daemon preflight: ${refusal(error)}`));
-    return finish(false, true);
-  }
+  if (!await admitReconciliation(current, rt, target)) return finish(false, true);
 
   rt.out(c.bold("Built-in connectors"));
   try {
@@ -799,10 +754,10 @@ async function updateOperatorExtensions(rt: UpdateRuntime, current: string): Pro
     return false;
   }
   if (!entries.length) rt.out(c.dim("operator extensions: none installed"));
-
   for (const entry of entries) {
+    const recordedSpec = typeof entry.spec === "string" ? ` (recorded spec: ${entry.spec})` : "";
     if (!entry.pkg.startsWith("@cotal-ai/")) {
-      rt.out(c.dim(`${entry.pkg}@${entry.version} - not auto-updated in v1 (recorded spec: ${entry.spec})`));
+      rt.out(c.dim(`${entry.pkg}@${entry.version} - not auto-updated in v1${recordedSpec}`));
       continue;
     }
     let differs: string | undefined;
@@ -814,7 +769,7 @@ async function updateOperatorExtensions(rt: UpdateRuntime, current: string): Pro
       continue;
     }
     if (differs === undefined) {
-      rt.out(c.green(`✓ verified ${entry.pkg}@${current}`) + c.dim(` - current generation (recorded spec: ${entry.spec})`));
+      rt.out(c.green(`✓ verified ${entry.pkg}@${current}`) + c.dim(` - current generation${recordedSpec}`));
       continue;
     }
     rt.err(c.dim(`${entry.pkg}: ${differs}; reinstalling`));
@@ -841,7 +796,7 @@ async function updateOperatorExtensions(rt: UpdateRuntime, current: string): Pro
       }
       continue;
     }
-    rt.out(c.green(`✓ ${entry.pkg}@${current}`) + c.dim(` - current generation (recorded spec: ${entry.spec})`));
+    rt.out(c.green(`✓ ${entry.pkg}@${current}`) + c.dim(` - current generation${recordedSpec}`));
   }
   return ok;
 
