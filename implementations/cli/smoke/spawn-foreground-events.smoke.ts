@@ -268,6 +268,15 @@ console.log("cotal spawn (foreground): the launch bag an armed session needs");
 
 try {
   await checkPersonaRefusals();
+  const tagged = join(root, ".cotal", "agents", "tagged.md");
+  writeFileSync(tagged, "---\nname: tagged\nmodel: !typo example/model\n---\nCheck the release.\n");
+  try {
+    const launch = await run(["spawn", "tagged", "--foreground", "--space", "fgevents", "--harness", "fg-probe-live"]);
+    check("foreground spawn warns about an unresolved YAML tag and still passes the model to the application",
+      launch.opts?.model === "example/model" && launch.exited === undefined &&
+      launch.stderr.includes(`${JSON.stringify(tagged)}:3:8: unresolved YAML tag "!typo" in "model"`) &&
+      !/example\/model|TAG_RESOLVE_FAILED|trace-warnings/.test(launch.stderr), launch.stderr);
+  } finally { rmSync(tagged); }
   {
     const previous = process.cwd();
     const previousDefault = process.env.COTAL_DEFAULT_PERSONA;
@@ -531,7 +540,7 @@ try {
   rmSync(store, { recursive: true, force: true });
 }
 
-const EXPECTED = process.platform === "win32" ? 41 : 50;
+const EXPECTED = process.platform === "win32" ? 42 : 51;
 check(`every cell ran - ${EXPECTED} expected`, pass + fail === EXPECTED, `${pass + fail} cells reported`);
 console.log(`SUITE COMPLETE: ${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);

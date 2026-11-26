@@ -27,7 +27,7 @@
  */
 import { accessSync, constants, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, realpathSync, statSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
-import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
+import { LineCounter, isMap, isNode, isScalar, parseDocument, stringify as stringifyYaml } from "yaml";
 import type { EndpointKind } from "./types.js";
 import { assertValidName } from "./resolve.js";
 import { createPrivateRecord, writePrivateRecord } from "./secret-fs.js";
@@ -113,7 +113,26 @@ export interface AgentDef {
 function parseFrontmatter(src: string, path: string): Record<string, unknown> {
   let doc: unknown;
   try {
-    doc = parseYaml(src);
+    const lines = new LineCounter();
+    const yaml = parseDocument(src, { lineCounter: lines });
+    for (const warning of yaml.warnings) {
+      if (warning.code !== "TAG_RESOLVE_FAILED") {
+        process.emitWarning(warning);
+        continue;
+      }
+      const [start, end] = warning.pos;
+      const { line, col } = lines.linePos(start);
+      const key = isMap(yaml.contents) ? yaml.contents.items.find(({ key, value }) => {
+        if (!isScalar(key) || !key.range) return false;
+        const keyStart = key.range[0];
+        if (key.tag && end <= keyStart && /^\s*$/.test(src.slice(end, keyStart))) return true;
+        return keyStart <= start && isNode(value) && value.range && start < value.range[2];
+      })?.key : undefined;
+      const field = isScalar(key) && typeof key.value === "string" ? ` in ${JSON.stringify(key.value)}` : "";
+      console.warn(`Warning: agent file ${JSON.stringify(path)}:${line + 1}:${col}: unresolved YAML tag ${JSON.stringify(src.slice(start, end))}${field}. Remove the tag if the value is meant to be a plain string.`);
+    }
+    if (yaml.errors.length > 0) throw yaml.errors[0];
+    doc = yaml.toJS();
   } catch (e) {
     throw new Error(`agent file ${path}: invalid YAML frontmatter; ${(e as Error).message}`);
   }
