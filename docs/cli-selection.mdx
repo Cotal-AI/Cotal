@@ -78,6 +78,10 @@ recreated empty directories at the old path. Its next step stops the stack with
 `rootGone` is also true when a file obstructs the root of a locally started space. The root row
 names the obstruction and the next step explains how to restore the project folder or forget its
 registration.
+If search permission prevents `space show` from checking a local stack's `.cotal` directory, it
+names the directory and asks you to restore search permission. JSON includes the same warning and
+keeps `rootGone` false. The command still reports broker reachability and exits 0 without suggesting
+a stop.
 A name that is not registered is refused with `TARGET_NOT_FOUND`, exit 2, and
 so is a bare `space show` outside a project with nothing selected. Each entry under `prepared` has `space`, `root`,
 `preparedAt`, `current`, `rootMissing`, `state` and `lastOperation`. `rootMissing` is true when no
