@@ -884,6 +884,12 @@ export function runCli(registry: Registry, argv: string[], opts: RunCliOptions =
   return runOperation(scope, () => dispatchCli(registry, argv, opts, scope));
 }
 
+// Explicit help for the bundled reference needs only the built-in command metadata.
+function isExplicitDocsHelp(registry: Registry, builtin: Command | undefined, wantsHelp: boolean, words: readonly string[]): boolean {
+  return builtin?.name === "help" && !wantsHelp && registry.has("command", "docs")
+    && metadataPositionals(builtin, words).positionals[0]?.value === "docs";
+}
+
 async function dispatchCli(registry: Registry, argv: string[], opts: RunCliOptions, scope: OperationScope): Promise<void> {
   const startedAt = Date.now();
   const { leading, original, word, args } = leadingInvocation(argv);
@@ -918,7 +924,8 @@ async function dispatchCli(registry: Registry, argv: string[], opts: RunCliOptio
   // Before any ordinary dispatch outcome can exit, a spawn takes its handoff, and no command lets a
   // child inherit the variable. The unit entry refuses such a handoff without consuming its file.
   takeManagedHandoffCustody(process.env, builtin?.name === "spawn");
-  setInstalledExtensionsEnabled(Boolean(opts.extensions));
+  const docsHelp = isExplicitDocsHelp(registry, builtin, wantsHelp, words);
+  setInstalledExtensionsEnabled(Boolean(opts.extensions) && !docsHelp);
   const builtinDuplicate = builtin && duplicate(builtin);
   if (builtinDuplicate) return repeatedGlobalFlag(builtinDuplicate, builtin, ownWords(builtin));
   if (word === "-v") usageExit("-v is not the version flag - run `cotal version` or `cotal -V`");
@@ -941,7 +948,7 @@ async function dispatchCli(registry: Registry, argv: string[], opts: RunCliOptio
     ? metadataPositionals(builtin, words).positionals[0]?.value : undefined;
   const configRead = builtin?.name === "config" && !wantsHelp && (readMode === undefined || readMode === "get");
   const completionStatus = builtin?.name === "completion" && !wantsHelp && readMode === undefined;
-  let useExtensionOverlay = opts.extensions && !updateCheck && !selfUpdate && !preference?.auto && !preference?.notify && builtin?.name !== "start";
+  let useExtensionOverlay = opts.extensions && !docsHelp && !updateCheck && !selfUpdate && !preference?.auto && !preference?.notify && builtin?.name !== "start";
   function skipUnreadableConnectorOverlay(error: unknown): boolean {
     if (!(error instanceof UnreadableConnectorSelection) || !builtin || !["version", "status", "down"].includes(builtin.name)) return false;
     if (builtin.name === "down") {
