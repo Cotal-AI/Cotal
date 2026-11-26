@@ -280,14 +280,26 @@ console.log(JSON.stringify(${JSON.stringify(version)}));
     const corepackNpm = join(corepackRoot, "dist", "npm.js");
     mkdirSync(corepackDir);
     mkdirSync(dirname(corepackNpm), { recursive: true });
-    writeFileSync(join(corepackRoot, "package.json"), JSON.stringify({ name: "corepack", engines: { node: process.version } }));
-    writeFileSync(corepackNpm, `#!/usr/bin/env node\nconst { realpathSync } = require('node:fs');\nif (realpathSync(process.execPath) !== ${JSON.stringify(realpathSync(alternate))}) process.exit(1);\nrequire(${JSON.stringify(cli)});\n`, { mode: 0o755 });
+    writeFileSync(corepackNpm, `#!/usr/bin/env node
+const { realpathSync } = require('node:fs');
+if (realpathSync(process.execPath) !== ${JSON.stringify(realpathSync(alternate))}) {
+  console.error(${JSON.stringify(`npm warn cli npm v12.2.3 does not support Node.js ${incompatibleVersion}. This version of npm supports the following node versions: \`${process.version}\`.`)});
+  if (process.argv.includes('--version')) console.log('12.2.3');
+  process.exit(process.argv.includes('--version') ? 0 : 1);
+}
+require(${JSON.stringify(cli)});
+`, { mode: 0o755 });
     if (process.platform === "win32") writeFileSync(join(corepackDir, "npm.cmd"), '@node "%~dp0\\..\\node_modules\\corepack\\dist\\npm.js" %*\r\n');
     else symlinkSync(corepackNpm, join(corepackDir, "npm"));
-    const viaCorepack = run("--self", [dirname(alternate)], corepackDir);
-    assert.equal(viaCorepack.status, 0, viaCorepack.stdout + viaCorepack.stderr);
-    assert.match(viaCorepack.stdout, /Registry latest:/);
-    assert.equal(realpathSync(recordedLaunches().at(-1)!.node), realpathSync(alternate), "npm's Corepack entry runs on the compatible Node");
+    for (const node of [process.version, "*"]) {
+      writeFileSync(join(corepackRoot, "package.json"), JSON.stringify({ name: "corepack", engines: { node } }));
+      const before = recordedLaunches().length;
+      const viaCorepack = run("--self", [dirname(alternate)], corepackDir);
+      assert.equal(viaCorepack.status, 0, viaCorepack.stdout + viaCorepack.stderr);
+      assert.match(viaCorepack.stdout, /Registry latest:/);
+      assert.deepEqual(recordedLaunches().slice(before).map(({ node }) => realpathSync(node)),
+        [realpathSync(alternate)], "npm's Corepack entry runs on the compatible Node");
+    }
     renameSync(alternate, `${alternate}.gone`);
     if (process.platform !== "win32") {
       const shimDir = join(root, "shim-bin");
