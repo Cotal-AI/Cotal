@@ -558,10 +558,13 @@ proxy settings and retry. For a refused proxy set in npm configuration, the comm
 neither prints the proxy URL nor bypasses it. An unavailable registry without a confirmed proxy
 refusal remains a no-op.
 If npm is in offline mode and the latest-version lookup misses Cotal's temporary cache,
-`cotal update --self` reports that the check was skipped and exits 0. The skipped check does not
-retry with network access or start a new install. Before the lookup, the updater can still recover an
-interrupted update or finish a pending extension promotion. It reports a completed promotion
-separately. Run the command with npm offline mode disabled to check for a newer release.
+`cotal update --self` reports that the check was skipped and exits 0. It does not retry with network
+access or replace the CLI. A manual run can repair damaged first-party extensions installed from npm
+at the running CLI's version, using npm's existing cache and the usual continuity checks. It names
+any extensions it could not repair and does not stop agents or restart the daemon for this repair.
+Before the lookup, the updater can still recover an interrupted update or finish a pending
+extension promotion. It reports a completed promotion separately. Run the command with npm offline
+mode disabled to check for a newer release.
 For other non-network failures in the latest-version check, `cotal update --self` reports npm's
 first diagnostic line and exits with status 1.
 

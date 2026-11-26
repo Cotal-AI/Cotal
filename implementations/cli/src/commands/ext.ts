@@ -284,7 +284,7 @@ function dropForeignLockEntries(lock: { packages?: Record<string, { extraneous?:
 export async function installExtensionSet(
   requests: readonly ExtensionInstallRequest[],
   announce: (line: string) => void = console.error,
-  opts?: { isolate?: boolean; localOperand?: string; checkCorePeer?: boolean },
+  opts?: { isolate?: boolean; localOperand?: string; offline?: true; checkCorePeer?: boolean },
 ): Promise<void> {
   if (!requests.length) return;
   const ownerConfig = connectorConfigDir();
@@ -334,7 +334,9 @@ export async function installExtensionSet(
     }
     const mutationPath = extensionNpmMutationPath();
     const specs = requests.map(({ spec }) => isPathSpec(spec) ? realpathSync(spec) : spec);
-    const result = await npm(["install", "--save", "--no-audit", "--no-fund", "--install-links", ...specs], npmPrefix);
+    // npm's own update notifier can query the registry even in offline mode.
+    const cacheOnly = opts?.offline ? ["--offline", "--update-notifier=false"] : [];
+    const result = await npm(["install", "--save", "--no-audit", "--no-fund", "--install-links", ...cacheOnly, ...specs], npmPrefix);
     if (existsSync(mutationPath)) stage.retain();
     if (interrupted) throw new ExtensionAddInterrupted(requests[0]!.pkg);
     if (result.status !== 0) {
