@@ -535,6 +535,10 @@ checks for conflicting registrations.
 
 ## Recover an interrupted update
 
+For a staged npm self-update interrupted while copying connector state, a retry can remove the
+unfinished copy. It checks the update and connector writer locks and leaves snapshots named by
+recovery records untouched. If the writer cannot be identified, the retry keeps the copy.
+
 If a recorded npm install child is still running, `cotal update --self` skips preliminary
 cleanup and can wait for the child to finish. Run the command again only if it stops and asks
 you to retry.

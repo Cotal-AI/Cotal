@@ -372,7 +372,7 @@ jobs:
     timeout-minutes: 30
     strategy:
       fail-fast: false
-      max-parallel: 46
+      max-parallel: 47
       matrix: ${{ fromJSON(needs.select.outputs.matrix) }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
@@ -542,6 +542,7 @@ jobs:
           } else {
           const states = { fresh: 'fresh', configured: 'configured', 'stale-self': 'stale-extensions', 'configured-rerun': 'configured', 'daemon-scheduler': 'daemon', 'daemon-self': 'daemon', 'candidate-next-daemon-self': 'daemon', 'candidate-next-stopped-daemon-self': 'daemon', 'candidate-next-disabled-daemon-self': 'daemon', 'candidate-next-stopped-desktop-self': 'daemon', 'candidate-next-second-self': 'daemon', 'candidate-next-manual-npm': 'daemon', 'candidate-next-installer-rerun': 'daemon', 'source-0.164.10-daemon-self-chain': 'daemon', 'agent-stop-consent': 'agent', 'standalone-stop-consent': 'agent', 'foreign-config-recovery': 'recovery', 'candidate-next-foreign-config-recovery': 'recovery', 'container-manager': 'configured' };
           const method = cell.scenario === 'configured-rerun' ? 'installer' : cell.scenario === 'daemon-scheduler' ? 'scheduler' : 'self';
+          if (cell.scenario === 'interrupted-snapshot-copy') states[cell.scenario] = 'configured';
           const args = ['scripts/automatic-update-platform-baseline.mjs', '--source', cell.sourceVersion, '--layout', cell.channel, '--state', (cell.deadUpdater || cell.otherHomeAuth ? 'daemon' : states[cell.scenario]), '--method', method, '--expected-target', cell.targetVersion, '--output', directory];
           const paired = cell.scenario === 'candidate-next-daemon-self' || cell.scenario === 'candidate-next-stopped-daemon-self' || cell.scenario === 'candidate-next-disabled-daemon-self' || cell.scenario === 'candidate-next-stopped-desktop-self' || cell.scenario === 'candidate-next-foreign-config-recovery' || Boolean(cell.followOnAction) || cell.chain === true || cell.deadUpdater === true || cell.otherHomeAuth === true;
           const candidate = process.env.RUNNER_TEMP + '/release-candidate';
@@ -564,6 +565,7 @@ jobs:
           if (cell.scenario === 'agent-stop-consent') args.push('--daemon-hosted-manager', 'true');
           if (['foreign-config-recovery', 'candidate-next-foreign-config-recovery'].includes(cell.scenario)) args.push('--foreign-config-snapshot', 'true');
           if (cell.scenario === 'container-manager') args.push('--container-manager', 'true');
+          if (cell.scenario === 'interrupted-snapshot-copy') args.push('--interrupt-snapshot-copy', 'true');
           if (cell.platform === 'darwin' && method === 'scheduler') {
             args.push('--launchd-proof', 'transition');
             if (process.env.PHASE === 'published') args.push('--published-launchd', 'true');
@@ -746,6 +748,7 @@ jobs:
               const states = { fresh: 'fresh', configured: 'configured', 'stale-self': 'stale-extensions', 'configured-rerun': 'configured', 'daemon-scheduler': 'daemon', 'daemon-self': 'daemon', 'candidate-next-daemon-self': 'daemon', 'candidate-next-stopped-daemon-self': 'daemon', 'candidate-next-disabled-daemon-self': 'daemon', 'candidate-next-stopped-desktop-self': 'daemon', 'candidate-next-second-self': 'daemon', 'candidate-next-manual-npm': 'daemon', 'candidate-next-installer-rerun': 'daemon', 'source-0.164.10-daemon-self-chain': 'daemon', 'agent-stop-consent': 'agent', 'standalone-stop-consent': 'agent', 'foreign-config-recovery': 'recovery', 'candidate-next-foreign-config-recovery': 'recovery', 'container-manager': 'configured' };
               const method = cell.scenario === 'configured-rerun' ? 'installer' : cell.scenario === 'daemon-scheduler' ? 'scheduler' : 'self';
               assert.equal(report.layout, cell.channel);
+              if (cell.scenario === 'interrupted-snapshot-copy') states[cell.scenario] = 'configured';
               assert.equal(report.state, (cell.deadUpdater || cell.otherHomeAuth ? 'daemon' : states[cell.scenario]));
               assert.equal(report.method, method);
               const next = cell.scenario === 'candidate-next-daemon-self' || cell.scenario === 'candidate-next-stopped-daemon-self' || cell.scenario === 'candidate-next-disabled-daemon-self' || cell.scenario === 'candidate-next-stopped-desktop-self' || cell.scenario === 'candidate-next-foreign-config-recovery' || Boolean(cell.followOnAction) || cell.deadUpdater === true || cell.otherHomeAuth === true;
@@ -858,6 +861,7 @@ jobs:
                 'no-manual-intervention': ok('no manual step or refusal'),
                 'installer-source-receipt': report.candidateInstaller?.source === plan.sourceSHA,
                 'foreign-snapshot-retained': ok('foreign snapshot bytes remain untouched'),
+                'interrupted-snapshot-reclaimed': ok('interrupted snapshot is reclaimed by the selected updater') && ok('unrelated snapshot-shaped directory stays intact'),
                 'container-manager-preserved': ok('foreign container Manager remains running and untouched') && ok('host selected remote user-sign-in mesh before upgrade') && report.participant?.remote === true && report.participant?.localManagerStarted === false,
                 'native-service-manual': ['candidate-next-other-home-auth', 'candidate-next-dead-updater', 'daemon-self', 'candidate-next-daemon-self', 'candidate-next-stopped-daemon-self', 'candidate-next-disabled-daemon-self', 'candidate-next-second-self', 'candidate-next-manual-npm', 'candidate-next-installer-rerun', 'source-0.164.10-daemon-self-chain'].includes(cell.scenario) && ok('manual native service starts at source with scheduler disabled') && report.method === 'self' && report.environment?.nativeServiceRequested === true && report.calls.some(call => call.label === 'native install' && call.exit === 0) && (paired ? pairedEvidence?.nextHopSuccess === true : report.calls.some(call => call.label === 'upgrade under test' && call.exit === 0 && Array.isArray(call.argv) && call.argv.includes('--self'))),
                 'independent-final-state': manualFinalState?.passed === true && ok('independent manual service final state'),
