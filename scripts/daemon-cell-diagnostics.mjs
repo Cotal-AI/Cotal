@@ -284,7 +284,8 @@ async function capture(options) {
   });
   const command = async (kind, callback, filter = value => value) => add(kind, async () => {
     assert.equal(typeof callback, 'function', 'runner not supplied');
-    const timeoutMs = options.timeoutMs ?? 5000;
+    const timeoutMs = options.timeoutMs ?? (kind === 'daemon-status' && options.stage === 'after-update'
+      && (options.platform ?? process.platform) === 'darwin' ? 15000 : 5000);
     assert(Number.isSafeInteger(timeoutMs) && timeoutMs > 0 && timeoutMs <= 30000, 'invalid diagnostic timeout');
     const startedAt = new Date().toISOString();
     const controller = new AbortController();
