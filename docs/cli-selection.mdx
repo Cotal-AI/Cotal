@@ -851,8 +851,9 @@ A space that never started still reads as prepared but not started. If startup c
 its `.cotal` directory, `status` and `ps` give the same repair as `cotal up` without changing permissions.
 If the default `.cotal/channels.json` blocks the first start, `status` and `ps` name the file and the
 repair. If a refused first start recorded a broker address and the address is still in use, `status`
-names how to free it or start at another address. A recorded file-store cap does not change the
-restart command because Cotal reserves no fixed capacity per space.
+names how to free it and repeat the original startup command from the same folder. If another
+address is available, it also suggests changing only `--server` in that command. A recorded
+file-store cap does not change the restart command because Cotal reserves no fixed capacity per space.
 `meshes.currentStopped` says whether the selection is such a stopped stack. A stack whose last `up`
 or `down` has no recorded outcome is not stopped, even when a member it launched still runs: the
 selection reads as prepared but not started, and the selected space names that operation.
