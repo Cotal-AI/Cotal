@@ -172,6 +172,9 @@ jobs:
           if-no-files-found: error
           retention-days: 7
       - run: pnpm --filter cotal-ai seeded-connectors
+      - name: Agent apps through the desktop bridge
+        if: runner.os != 'Windows'
+        run: pnpm smoke:daemon-desktop-agent-apps
       # Notarization refuses unsigned nested code, and Tauri does not sign Mach-O files under Resources, so a
       # release build signs the runtime's own before prepare:runtime hashes them. This keychain exists only for
       # that step; Tauri imports the certificate again for the bundle.

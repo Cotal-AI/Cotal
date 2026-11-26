@@ -578,6 +578,22 @@ try {
       (error: unknown) => isCommandFailure(error) && error.code === "LIFECYCLE_BLOCKED" && error.message.endsWith("maintenance state is cut-intent") && (error.target as { space?: string }).space === "create",
       "a create on an unfinished cut names its state and space",
     );
+    const retryLock = acquireMaintenanceLock(createRoot);
+    try {
+      for (const [artifact, store, quote] of [
+        [join(createRoot, "backup\u2019 destination"), undefined, "\u2019"],
+        [join(createRoot, "backup destination"), join(createRoot, "store\u201C path"), "\u201C"],
+      ] as const) {
+        await assert.rejects(
+          backup({ positionals: ["create", artifact], values: { json: true, ...(store ? { "store-dir": store } : {}) }, raw: [] }),
+          (error: unknown) => isCommandFailure(error) && error.code === "LIFECYCLE_BLOCKED" &&
+            (process.platform === "win32"
+              ? error.remedy?.includes("rerun your original backup command from the same folder") === true && !error.remedy.includes(quote) && !error.remedy.includes("backup create")
+              : error.remedy?.includes("`cotal backup create ") === true && error.remedy.includes(quote)),
+          `a retry with ${quote} offers a command only when the shell preserves that path`,
+        );
+      }
+    } finally { releaseMaintenanceLock(retryLock); }
     // A recover or cleanup refusal shows the id format and why it found nothing to act on.
     await assert.rejects(
       backup({ positionals: ["recover", "00000000-0000-4000-8000-000000000000"], values: {}, raw: [] }),

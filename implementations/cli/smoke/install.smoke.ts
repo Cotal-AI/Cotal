@@ -1,8 +1,8 @@
 /**
  * Global-install offer smoke (no real install, no network) — run with: pnpm smoke:install
  *
- * Drives the real `offerGlobalInstall` from setup.ts in isolation: an unreachable npm registry +
- * a throwaway prefix so any `npm i -g` fails fast and can never touch the real global install. It
+ * Drives the real `offerGlobalInstall` from setup.ts in isolation with a stand-in npm launcher and
+ * a throwaway prefix so an install cannot touch the real global installation. It
  * proves the gate (npx + no global `cotal`) and that a failed install is handled gracefully (the
  * feature is best-effort and must never throw / abort setup).
  */
@@ -49,13 +49,35 @@ try {
 check("not-npx ⇒ offerGlobalInstall returns without throwing", !threw);
 
 // 2) Gate open: an npx invocation with no global `cotal`, non-TTY (takes the default = install).
-//    The install must fail fast (dead registry) and be handled gracefully — never throw.
-setArgv("/Users/x/.npm/_npx/abc123/node_modules/cotal-ai/dist/cotal.js");
+//    The npm fixture prints the exact install request then fails. Setup must report it and continue.
+const npxPackage = join(prefix, "_npx", "abc123", "node_modules", "cotal-ai");
+mkdirSync(npxPackage, { recursive: true });
+writeFileSync(join(npxPackage, "package.json"), JSON.stringify({ version: "9.8.7" }));
+setArgv(join(npxPackage, "dist", "cotal.js"));
 check("npx ⇒ isNpx() true (gate open)", isNpx() === true);
 check("cotal not resolvable on (temp) PATH ⇒ gate proceeds", cotalOnPath() === false);
 threw = false;
 try {
-  await offerGlobalInstall(false); // non-TTY here ⇒ takes default ⇒ attempts npm i -g
+  const windows = process.platform === "win32";
+  const npm = windows ? "npm.cmd" : "npm";
+  const npmBin = join(prefix, "npm launcher");
+  mkdirSync(npmBin);
+  writeFileSync(join(npmBin, npm), windows
+    ? "@echo off\r\necho npm fixture: %* 1>&2\r\nexit /b 23\r\n"
+    : "#!/bin/sh\nprintf 'npm fixture: %s\\n' \"$*\" >&2\nexit 23\n", { mode: 0o755 });
+  process.env.PATH = npmBin;
+  const write = process.stdout.write;
+  let output = "";
+  process.stdout.write = ((chunk: string | Uint8Array) => { output += String(chunk); return true; }) as typeof write;
+  try {
+    await offerGlobalInstall(true);
+  } finally {
+    process.stdout.write = write;
+    process.env.PATH = prefix;
+  }
+  check("npx setup launches npm with the versioned install and shows the failure and runnable retries",
+    output.includes("npm fixture: install -g cotal-ai@9.8.7") && output.includes(`\`${npm} i -g cotal-ai\``) &&
+    output.includes(windows ? "`npx.cmd -y cotal-ai`" : "`npx cotal-ai`"));
 } catch (e) {
   threw = true;
   console.log(`  unexpected throw: ${(e as Error).message}`);
