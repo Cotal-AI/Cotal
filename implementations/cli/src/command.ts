@@ -79,7 +79,7 @@ import { npmProjectDirectory, preserveUpdatePath } from "./lib/npm-invocation.js
 import { reportLostOutput, writeAllSync } from "./lib/stdout-owner.js";
 import { shellWord } from "./lib/endpoint-errors.js";
 import { displayRemedy, hasMovedStackRemedy } from "./lib/self-exec.js";
-import { asksForHelp, GLOBAL_FLAG_WORDS, leadingInvocation, OUTPUT_FLAG_WORDS } from "./lib/leading-flags.js";
+import { asksForHelp, GLOBAL_FLAG_WORDS, leadingInvocation, OUTPUT_FLAG_WORDS, TYPOGRAPHIC_OPTION } from "./lib/leading-flags.js";
 import { takeManagedHandoffCustody } from "./managed-handoff.js";
 import { nearestWords, LEADING_FLAGS, unknownCommandMessage, unknownSubcommandMessage } from "./lib/nearest-word.js";
 import { UnusableFile } from "./lib/unusable-file.js";
@@ -502,7 +502,7 @@ function usageExit(message: string, cmd?: Command, json = false, plain = false, 
 /** The refusal for a named or short option typed with a typographic dash pasted from
  *  typeset text, as `\u2013\u2013json`, naming it with hyphens; undefined when `word` is no such option. */
 function typographicOption(word: string, names: ReadonlySet<string>, flags: readonly FlagSpec[] = []) {
-  const typed = /^[\u2010-\u2015\u2212][-\u2010-\u2015\u2212]*([^=]+)(?:=(.*))?$/su.exec(word);
+  const typed = TYPOGRAPHIC_OPTION.exec(word);
   if (!typed) return undefined;
   const [, name, value] = typed;
   const long = names.has(name!);

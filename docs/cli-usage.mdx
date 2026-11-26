@@ -212,7 +212,8 @@ rather than read as a positional. Use `--` before the word to pass it as text. T
 any attached value the option accepts, as in `--limit=10`. Before the command word the same holds
 for the leading flags, so `cotal ––json status` names `--json`.
 If the command supports JSON and a separate `--json` or `-j` requests it, the refusal uses that
-command's JSON format even when the mistyped flag comes before the command word.
+command's JSON format even when several mistyped global or output flags come before the command
+word. The refusal names the first mistyped flag.
 For extension commands, the correction depends on the subcommand. `ext list` accepts `--json`;
 `ext root` prints a path, so the refusal asks you to omit that option.
 For `endpoint check`, the refusal asks you to omit a pasted `--file` option. Pass the contract file as an argument.
