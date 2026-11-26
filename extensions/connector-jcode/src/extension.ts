@@ -94,6 +94,15 @@ export const jcodeConnector: Connector = {
   kind: "connector",
   name: "jcode",
   requires: ["jcode"],
+  install: {
+    title: "Jcode",
+    maker: "Jeremy Huang",
+    installers: {
+      darwin: { script: "https://jcode.sh/install", shell: "bash", binDir: "~/.local/bin" },
+      linux: { script: "https://jcode.sh/install", shell: "bash", binDir: "~/.local/bin" },
+      win32: { script: "https://jcode.sh/install.ps1", binDir: "%LOCALAPPDATA%\\jcode\\bin" },
+    },
+  },
   // Jcode may download model material, bring up its MCP bridge, then run a provider-backed
   // cotal_orientation turn before it joins. A generic 30s presence window is therefore not a
   // verdict for this connector; keep the manager's wait bounded but long enough for that required
