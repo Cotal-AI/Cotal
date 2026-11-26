@@ -6,7 +6,10 @@ import { chmodSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readd
 import { tmpdir } from "node:os";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { hostname } from "node:os";
-import { aclBucket, channelBucket, chatStream, commitAcl, createSpaceAuth, eventPayloadStream, mintCreds, newIdentity, openAclRegistry, probeConnect, readAcl, rotateSystemAccount, taskStream } from "@cotal-ai/core";
+import { aclBucket, channelBucket, chatStream, commitAcl, createSpaceAuth, dmStream, eventPayloadStream, mintCreds, newIdentity, openAclRegistry, probeConnect, readAcl, rotateSystemAccount, taskStream } from "@cotal-ai/core";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { jetstreamManager } from "@nats-io/jetstream";
 import { connect } from "@nats-io/transport-node";
 import type { BackupManifest } from "../../implementations/cli/src/lib/backup-artifact.js";
 import {
@@ -84,6 +87,32 @@ function sandboxRun(root: string, home: string): {
 
 interface Checkpoint { stream: string; name: string }
 
+async function disconnectedMcpInbox(root: string, env: NodeJS.ProcessEnv, server: string, space: string): Promise<string> {
+  const client = new Client({ name: "backup-smoke", version: "1" });
+  const transport = new StdioClientTransport({
+    command: process.execPath,
+    args: [join(worktree, "bin", "dist", "cotal.js"), "mcp", "--space", space],
+    cwd: root,
+    env: Object.fromEntries(Object.entries(env).filter((entry): entry is [string, string] => entry[1] !== undefined)),
+  });
+  try {
+    await client.connect(transport);
+    const reply = await client.callTool({ name: "cotal_connect", arguments: { name: "reader" } });
+    assert.ok(!reply.isError, JSON.stringify(reply));
+  } finally {
+    await client.close();
+  }
+  const nc = await connect({ servers: server });
+  try {
+    const inboxes = await (await jetstreamManager(nc)).consumers.list(dmStream(space)).next();
+    assert.equal(inboxes.length, 1, "the disconnected seat left its inbox at the cut");
+    assert.equal(inboxes[0].config.inactive_threshold, 600_000_000_000);
+    return inboxes[0].name;
+  } finally {
+    await nc.close();
+  }
+}
+
 function assertOverlappingRestoreTarget(root: string, artifact: string, run: ReturnType<typeof sandboxRun>["run"], target: string, overlap: "backup artifact" | "preserved source store"): void {
   const journal = join(root, ".cotal", "maintenance", "v1", "journal.json");
   const manifest = join(artifact, "manifest.json");
@@ -134,6 +163,7 @@ async function scenario(mode: "open" | "auth"): Promise<void> {
 
   try {
     must("up", run("up", "--detach", ...(mode === "open" ? ["--open"] : []), "--server", server, "--space", space));
+    const openDmName = mode === "open" ? await disconnectedMcpInbox(root, env, server, space) : undefined;
     must("seed registry", run("channel", "set", "preserved", "--desc", "survives", "--space", space));
     payload("seed");
     if (mode === "auth") {
@@ -215,6 +245,8 @@ async function scenario(mode: "open" | "auth"): Promise<void> {
     assert.equal(trustBound(artifact), mode === "auth", `a full ${mode} artifact says whether it is bound to this root's trust state`);
     assert.equal(trustBound(registryArtifact), false, "a registry artifact is not bound to this root's trust state");
     const originalCheckpoints = JSON.parse(readFileSync(join(artifact, "checkpoints.json"), "utf8")) as Checkpoint[];
+    if (openDmName) assert.ok(originalCheckpoints.some(({ stream, name }) => stream === dmStream(space) && name === openDmName),
+      "full backup checkpointed the disconnected seat's DM inbox");
     if (mode === "auth") {
       assert.ok(originalCheckpoints.length >= 3, "authenticated backup captured Plane-3 and TASK checkpoints");
       assert.ok(originalCheckpoints.some((checkpoint) => checkpoint.stream === taskStream(space) && checkpoint.name === "svc_reviewer"));

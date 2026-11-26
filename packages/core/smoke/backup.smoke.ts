@@ -150,6 +150,21 @@ const infos = [
 ];
 for (const info of infos) validatePersistentConsumer(space, info.stream_name, info);
 
+const openDm = consumer(dmStream(space), dmName,
+  dmDurableConfig(space, "local", "agent_1", uid, { inactiveThresholdMs: 600_000 }), 3);
+validatePersistentConsumer(space, dmStream(space), openDm, true);
+validatePersistentConsumer(space, dmStream(space), infos[2], true);
+assert.throws(() => validatePersistentConsumer(space, dmStream(space), openDm), /active unsupported setting inactive_threshold/);
+assert.throws(() => validatePersistentConsumer(space, dmStream(space), {
+  ...openDm, config: { ...openDm.config, inactive_threshold: 599_000_000_000 },
+}, true), /active unsupported setting inactive_threshold/);
+assert.throws(() => validatePersistentConsumer(space, dlvStream(space), {
+  ...infos[3], config: { ...infos[3].config, inactive_threshold: openDm.config.inactive_threshold },
+}, true), /active unsupported setting inactive_threshold/);
+assert.throws(() => validatePersistentConsumer(space, dmStream(space), {
+  ...openDm, config: { ...openDm.config, filter_subject: "unrelated.subject" },
+}, true), /noncanonical filter/);
+
 const byStream = Object.fromEntries(inventory.full.map((stream) => [stream, [] as ConsumerInfo[]]));
 for (const info of infos) byStream[info.stream_name].push(info);
 const statesByStream = Object.fromEntries(inventory.full.map((stream) => [stream, {

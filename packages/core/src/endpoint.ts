@@ -147,7 +147,7 @@ export {
   probeConnect,
 } from "./endpoint-dial.js";
 import {
-  type PrincipalServeIntent,
+  DEFAULT_OPEN_DM_INACTIVE_MS, type PrincipalServeIntent,
   type EndpointOptions,
   type TransportState,
   type ChannelMember,
@@ -463,7 +463,7 @@ export class CotalEndpoint extends EventEmitter {
     // (not only after the first runtime toggle). Mirror only — delivery reads the connector's state.
     this.presence.seedChannelModes(opts.channelModes);
     this.identity.ackWaitMs = opts.ackWaitMs ?? 60_000;
-    this.identity.inactiveThresholdMs = opts.inactiveThresholdMs ?? 600_000;
+    this.identity.inactiveThresholdMs = opts.inactiveThresholdMs ?? DEFAULT_OPEN_DM_INACTIVE_MS;
     this.card = this.identity.card;
     this.space = this.identity.space;
     this.channels = this.identity.channels;
