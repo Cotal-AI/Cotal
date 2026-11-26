@@ -6,10 +6,10 @@ import { chmodSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readd
 import { tmpdir } from "node:os";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { hostname } from "node:os";
-import { aclBucket, channelBucket, chatStream, commitAcl, createSpaceAuth, dmStream, eventPayloadStream, mintCreds, newIdentity, openAclRegistry, probeConnect, readAcl, rotateSystemAccount, taskStream } from "@cotal-ai/core";
+import { aclBucket, channelBucket, chatStream, commitAcl, createSpaceAuth, dmDurableConfig, dmStream, eventPayloadStream, mintCreds, mintLifecycleUid, newIdentity, openAclRegistry, probeConnect, readAcl, rotateSystemAccount, standaloneConnectOpts, taskStream, type PersistentConsumerCheckpoint, type SpaceAuth } from "@cotal-ai/core";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
-import { jetstreamManager } from "@nats-io/jetstream";
+import { DeliverPolicy, jetstreamManager, type JetStreamManager } from "@nats-io/jetstream";
 import { connect } from "@nats-io/transport-node";
 import type { BackupManifest } from "../../implementations/cli/src/lib/backup-artifact.js";
 import {
@@ -113,6 +113,43 @@ async function disconnectedMcpInbox(root: string, env: NodeJS.ProcessEnv, server
   }
 }
 
+async function withDmManager<T>(server: string, auth: SpaceAuth | undefined, read: (jsm: JetStreamManager) => Promise<T>): Promise<T> {
+  const creds = auth && await mintCreds(auth, newIdentity(), "provisioner");
+  const nc = await connect({ servers: server, ...standaloneConnectOpts({ creds, tls: false }) });
+  try {
+    return await read(await jetstreamManager(nc));
+  } finally {
+    await nc.close();
+  }
+}
+
+async function assertRestoredDm(server: string, checkpoint: PersistentConsumerCheckpoint, auth?: SpaceAuth): Promise<void> {
+  const { config } = await withDmManager(server, auth, (jsm) => jsm.consumers.info(checkpoint.stream, checkpoint.name));
+  assert.equal(config.inactive_threshold, auth ? undefined : 600_000_000_000, "the restored DM inbox has the space's expiry policy");
+  assert.equal(config.deliver_policy, DeliverPolicy.StartSequence);
+  assert.equal(config.opt_start_seq, Math.max(checkpoint.ackFloorStreamSequence + 1, checkpoint.creationLowerBound, checkpoint.streamState.first_seq || 1));
+}
+
+async function seedAuthenticatedDm(root: string, server: string, space: string): Promise<{ auth: SpaceAuth; name: string }> {
+  const auth = loadSoleSpaceAuth(authDir(root));
+  assert.ok(auth);
+  const inbox = await withDmManager(server, auth, (jsm) => jsm.consumers.add(dmStream(space), dmDurableConfig(space, "local", "reader", mintLifecycleUid())));
+  return { auth, name: inbox.name };
+}
+
+async function checkOpenFullRestore(root: string, server: string, artifact: string, checkpoint: PersistentConsumerCheckpoint, run: ReturnType<typeof sandboxRun>["run"]): Promise<void> {
+  const mustRun = (...args: string[]) => {
+    const result = run(...args);
+    assert.equal(result.status, 0, `${args.join(" ")}\n${result.stdout}${result.stderr}`);
+  };
+  mustRun("backup", "restore", artifact);
+  await assertRestoredDm(server, checkpoint);
+  const fullRestore = readMaintenanceJournal(root);
+  assert.ok(fullRestore?.state === "active");
+  mustRun("backup", "cleanup-fallback", fullRestore.restore.attemptId, "--discard-history", "--yes");
+  mustRun("down", "--preserve-state");
+}
+
 function assertOverlappingRestoreTarget(root: string, artifact: string, run: ReturnType<typeof sandboxRun>["run"], target: string, overlap: "backup artifact" | "preserved source store"): void {
   const journal = join(root, ".cotal", "maintenance", "v1", "journal.json");
   const manifest = join(artifact, "manifest.json");
@@ -164,6 +201,7 @@ async function scenario(mode: "open" | "auth"): Promise<void> {
   try {
     must("up", run("up", "--detach", ...(mode === "open" ? ["--open"] : []), "--server", server, "--space", space));
     const openDmName = mode === "open" ? await disconnectedMcpInbox(root, env, server, space) : undefined;
+    const authDm = mode === "auth" ? await seedAuthenticatedDm(root, server, space) : undefined;
     must("seed registry", run("channel", "set", "preserved", "--desc", "survives", "--space", space));
     payload("seed");
     if (mode === "auth") {
@@ -244,9 +282,9 @@ async function scenario(mode: "open" | "auth"): Promise<void> {
     const trustBound = (dir: string) => (JSON.parse(run("backup", "inspect", dir, "--json").stdout) as { result: { trustBound: boolean } }).result.trustBound;
     assert.equal(trustBound(artifact), mode === "auth", `a full ${mode} artifact says whether it is bound to this root's trust state`);
     assert.equal(trustBound(registryArtifact), false, "a registry artifact is not bound to this root's trust state");
-    const originalCheckpoints = JSON.parse(readFileSync(join(artifact, "checkpoints.json"), "utf8")) as Checkpoint[];
-    if (openDmName) assert.ok(originalCheckpoints.some(({ stream, name }) => stream === dmStream(space) && name === openDmName),
-      "full backup checkpointed the disconnected seat's DM inbox");
+    const originalCheckpoints = JSON.parse(readFileSync(join(artifact, "checkpoints.json"), "utf8")) as PersistentConsumerCheckpoint[];
+    const dmCheckpoint = originalCheckpoints.find(({ stream, name }) => stream === dmStream(space) && name === (openDmName ?? authDm?.name));
+    assert.ok(dmCheckpoint, "full backup checkpointed the test DM inbox");
     if (mode === "auth") {
       assert.ok(originalCheckpoints.length >= 3, "authenticated backup captured Plane-3 and TASK checkpoints");
       assert.ok(originalCheckpoints.some((checkpoint) => checkpoint.stream === taskStream(space) && checkpoint.name === "svc_reviewer"));
@@ -435,6 +473,7 @@ async function scenario(mode: "open" | "auth"): Promise<void> {
       rmSync(join(store, "notes.txt"));
     }
     const restoreArtifact = mode === "open" ? registryArtifact : artifact;
+    if (mode === "open") await checkOpenFullRestore(root, server, artifact, dmCheckpoint, run);
     // Adapt real CLI snapshots to the precise v2 inventory. This is not an old-producer artifact.
     // A v3 with that missing stream must refuse; the same bytes declared as v2 must restore.
     if (mode === "auth") {
@@ -464,6 +503,7 @@ async function scenario(mode: "open" | "auth"): Promise<void> {
     }
     const restored = run("up", "--restore", restoreArtifact, "--detach", "--server", server, "--space", space);
     must("restore", restored);
+    if (authDm) await assertRestoredDm(server, dmCheckpoint, authDm.auth);
     payload(mode === "open" ? "empty" : "full");
     const listed = run("channel", "--space", space);
     must("list restored registry", listed);

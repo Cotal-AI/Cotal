@@ -177,8 +177,14 @@ const statesByStream = Object.fromEntries(inventory.full.map((stream) => [stream
 const checkpoints = validatePersistentConsumerInventory(space, byStream, statesByStream);
 assert.equal(checkpoints.length, 5);
 const dmCheckpoint = checkpoints.find((checkpoint) => checkpoint.name.startsWith("dm_"))!;
-assert.equal(consumerConfigFromCheckpoint(space, dmCheckpoint).opt_start_seq, 4);
-assert.equal(consumerConfigFromCheckpoint(space, dmCheckpoint).deliver_policy, DeliverPolicy.StartSequence);
+const authDmConfig = consumerConfigFromCheckpoint(space, dmCheckpoint);
+assert.equal(authDmConfig.opt_start_seq, 4);
+assert.equal(authDmConfig.deliver_policy, DeliverPolicy.StartSequence);
+assert.equal(authDmConfig.inactive_threshold, undefined, "an authenticated DM checkpoint does not expire");
+assert.deepEqual(consumerConfigFromCheckpoint(space, dmCheckpoint, true), {
+  ...authDmConfig,
+  inactive_threshold: 600_000_000_000,
+}, "an open DM checkpoint keeps the same replay position and gets the stock expiry");
 const taskCheckpoint = checkpoints.find((checkpoint) => checkpoint.name === "svc_worker")!;
 assert.deepEqual(consumerConfigFromCheckpoint(space, taskCheckpoint), {
   ...taskDurableConfig(space, "worker"),

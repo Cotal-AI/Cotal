@@ -4,4 +4,4 @@
 "cotal-ai": patch
 ---
 
-Fix full backups of open spaces after a seat disconnects and leaves its standard DM inbox behind.
+Fix full backups of open spaces after a seat disconnects, and restore its DM inbox with the standard inactivity threshold.

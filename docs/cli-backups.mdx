@@ -359,8 +359,8 @@ submissions, facts, events, timer requests and fires, work pools, contract artif
 auth, session and issued-authority stores. Restore recreates those streams empty with their
 canonical configs before exposing the normal listener, so endpoint sessions do not cross a backup.
 A full backup includes the checkpoint of an open-space DM inbox that is still present after its
-seat disconnects, if the inbox has the standard inactivity threshold or none. Restore uses the
-checkpoint's replay position, not the original inactivity threshold.
+seat disconnects, if the inbox has the standard inactivity threshold or none. A full restore
+recreates the inbox at the checkpoint's replay position with the standard inactivity threshold.
 The delivery daemon's anycast request records are control state too and come back empty. A full
 restore brings back the requests the TASK queue held at the cut and recreates its durables from
 checkpoints, so a role request a holder had taken and not yet acked at the cut is on its role's

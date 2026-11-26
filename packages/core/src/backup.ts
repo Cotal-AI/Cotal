@@ -466,6 +466,7 @@ export function validatePersistentConsumerInventory(
 export function consumerConfigFromCheckpoint(
   space: string,
   checkpoint: PersistentConsumerCheckpoint,
+  openArtifact = false,
 ): Partial<ConsumerConfig> {
   if (!Number.isSafeInteger(checkpoint.ackFloorStreamSequence) || checkpoint.ackFloorStreamSequence < 0 ||
       !Number.isSafeInteger(checkpoint.creationLowerBound) || checkpoint.creationLowerBound < 1)
@@ -491,7 +492,7 @@ export function consumerConfigFromCheckpoint(
     : (lastSequence as number) + 1;
   if (checkpoint.creationLowerBound > lastSuccessor)
     throw new Error(`${checkpoint.stream}/${checkpoint.name} creation lower bound exceeds snapshot sequence window`);
-  const expected = expectedConsumerConfig(space, checkpoint.stream, checkpoint.name);
+  const expected = expectedConsumerConfig(space, checkpoint.stream, checkpoint.name, openArtifact);
   if (checkpoint.stream === taskStream(space)) {
     if (checkpoint.creationLowerBound !== 1)
       throw new Error(`${checkpoint.stream}/${checkpoint.name} has a noncanonical TASK creation lower bound`);
@@ -514,8 +515,9 @@ export function consumerConfigFromCheckpoint(
 function checkpointCreateSubject(
   space: string,
   checkpoint: PersistentConsumerCheckpoint,
+  openArtifact = false,
 ): { subject: string; config: Partial<ConsumerConfig> } {
-  const config = consumerConfigFromCheckpoint(space, checkpoint);
+  const config = consumerConfigFromCheckpoint(space, checkpoint, openArtifact);
   if (!config.filter_subject) throw new Error(`${checkpoint.stream}/${checkpoint.name} has no canonical single filter`);
   return {
     subject: `$JS.API.CONSUMER.CREATE.${checkpoint.stream}.${checkpoint.name}.${config.filter_subject}`,
@@ -530,8 +532,9 @@ export async function recreateConsumerCheckpoint(
   space: string,
   checkpoint: PersistentConsumerCheckpoint,
   timeoutMs = DEFAULT_TRANSFER_TIMEOUT_MS,
+  openArtifact = false,
 ): Promise<ConsumerInfo> {
-  const { subject, config } = checkpointCreateSubject(space, checkpoint);
+  const { subject, config } = checkpointCreateSubject(space, checkpoint, openArtifact);
   const responseMsg = await nc.request(
     subject,
     JSON.stringify({ stream_name: checkpoint.stream, config }),
@@ -547,7 +550,7 @@ export async function recreateConsumerCheckpoint(
   const info = response as ConsumerInfo;
   if (info.name !== checkpoint.name || info.stream_name !== checkpoint.stream)
     throw new JetStreamBackupError(`checkpoint ${checkpoint.stream}/${checkpoint.name}: response identity mismatch`);
-  validatePersistentConsumer(space, checkpoint.stream, info);
+  validatePersistentConsumer(space, checkpoint.stream, info, openArtifact);
   if (info.config.deliver_policy !== config.deliver_policy || info.config.opt_start_seq !== config.opt_start_seq)
     throw new JetStreamBackupError(`checkpoint ${checkpoint.stream}/${checkpoint.name}: response start policy mismatch`);
   return info;
