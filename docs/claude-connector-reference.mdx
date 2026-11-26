@@ -1177,8 +1177,10 @@ original is untouched.
   when your `COTAL_DEFAULT_AGENT` names another connector. A re-run of the same bytes
   sends nothing, and an interrupted carry continues where it stopped. The seat forks it in a
   private Claude home under the manager's `.cotal/seat-homes/`, which no other seat's Claude
-  lists or finds, and which is removed when the seat stops. When Claude starts the fork, the seat
-  records the SHA-256 of the transcript it read from its own project; the manager stops a seat
+  lists or finds. The manager removes this home when the seat stops. If it cannot remove the home,
+  it logs the path and the error and continues retiring the seat so its name can be reused.
+  When Claude starts the fork, the seat records the SHA-256 of the transcript it read from its own
+  project. The manager stops a seat
   whose record names other bytes than the carried ones, or that records none within the join
   timeout after it joins, an uncertain launch included, and otherwise shows that record as the
   seat's provenance. `cotal attach` to such a seat names its source after the seat
