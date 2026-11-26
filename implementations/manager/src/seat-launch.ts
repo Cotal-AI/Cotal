@@ -2,7 +2,7 @@ import { accessSync, constants, existsSync, lstatSync, realpathSync, statSync } 
 import { homedir, hostname } from "node:os";
 import { isAbsolute, join, sep } from "node:path";
 import { agentFilePath, assertLifecycleToken, assertValidChannel, DEFAULT_SERVER, digestIdToken, EpEnvelopeError, eventChannel, eventChannelPrincipal, grantOverreach, grantParts, isIssuedCaller, issuedSpawnerStanding, MAX_SCHEDULE_MS, parsePersonaEndpoints, personaDir, personaLinkTarget, principalKey, registry, rejectionText, renderOnceTask, resolveReadAcl, runDriverCaller, shownSpawner, withIssuerSession, type AgentDef, type Connector, type ControlReply, type CotalEndpoint, type DelegatedGrant, type EpCaller, type EpCapability, type GrantOverreach, type InlinePersona, type IssuedStore, type IssuedSubjectPermissions, type LifecycleStateTransport, type RunAdmission, type RunRevocation } from "@cotal-ai/core";
-import { loadLaunchPersonaFile, manifestExtensionNames, PersonaSourceError, resolveAgentType } from "@cotal-ai/workspace";
+import { loadTrustCheckedPersona, manifestExtensionNames, manifestPersonaLaunchOptionsRefusal, PersonaSourceError, resolveAgentType } from "@cotal-ai/workspace";
 import type { KV } from "@nats-io/kv";
 import { inlinePersonaDir } from "./launch.js";
 import { listDirectory } from "./list-dir.js";
@@ -493,9 +493,14 @@ export class SeatLaunch {
     // file is NOT its authority, so its def (and its agent pin) is deliberately not consulted here —
     // the manifest's own `agent:` field drove the launch object already.
     let def: AgentDef | undefined;
-    if (!opts.resolved) {
+    if (opts.resolved) {
+      const refusal = manifestPersonaLaunchOptionsRefusal(opts.resolved.personaPath, opts.resolved.launchOptions);
+      if (refusal) return { error: refusal };
+    } else {
       try {
-        def = loadLaunchPersonaFile(configPath);
+        const checked = loadTrustCheckedPersona(configPath, "launch");
+        if (checked.refusal) return { error: checked.refusal };
+        def = checked.def;
       } catch (e) {
         return { error: personaPermissionProblem(configPath, e) ?? rejectionText(e), ...(e instanceof PersonaSourceError ? { code: "bad-request" as const } : {}) };
       }

@@ -54,6 +54,12 @@ function privateDirectoryGap(path: string, stat: Stats): { reason: string; remed
  *  owned home others can only read is tightened, to the private folder the record store requires.
  *  Windows keeps its access-list model, so only POSIX checks. */
 export function prepareCotalHomeForWrite(): void {
+  const home = assertCotalHomeWriteProtection();
+  mkSecretDir(home);
+}
+
+/** Verify the Cotal home path for a write without creating or tightening any directory. */
+export function assertCotalHomeWriteProtection(): string {
   const home = homeCotalDir();
   if (localRecordAccess() === "posix") {
     let dir = home;
@@ -66,7 +72,7 @@ export function prepareCotalHomeForWrite(): void {
       throw new CommandFailure(e.outcome, e.code, `${e.message}; nothing was written`, { remedy: e.remedy, target: e.target });
     }
   }
-  mkSecretDir(home);
+  return home;
 }
 
 /** A permission error reading the record store at `path`, as the refusal that names the folder

@@ -7,6 +7,7 @@ import { recordOperationWarning, type OutputWarning } from "./output.js";
 import { prepareCotalHomeForWrite } from "./protected-records.js";
 import { localWriteFailure } from "./local-write.js";
 import { shellPath } from "./local-record-source.js";
+import { migrateProjectTrust } from "./trusted-projects.js";
 
 /**
  * A local space `cotal space create` prepared and no `cotal up` has started: its name and root.
@@ -175,6 +176,7 @@ export function recordPreparedSpace(p: PreparedSpace): string {
   const file = preparedFile(p.space);
   try {
     prepareCotalHomeForWrite();
+    migrateProjectTrust(true);
     mkSecretDir(preparedSpacesDir());
     writeSecretFileAtomic(file, JSON.stringify(p, null, 2));
   } catch (error) { throw localWriteFailure(error, file, { requested: p.space }); }
