@@ -20,8 +20,9 @@
  *     auth mode in words; the JSON keeps the recorded values.
  *     Its show and both `team remove` forms offer `cotal down --space <space> --dry-run` with the
  *     space filled in. The refusal also works after stop and directs callers to the recorded root. After
- *     `down`, a second boot refuses LIFECYCLE_BLOCKED naming `cotal up` and the earlier boot's ID,
- *     and that `cotal up` starts the stack again.
+ *     `down`, a second boot refuses LIFECYCLE_BLOCKED naming `cotal up` and a space-scoped
+ *     inspection command. The command works with another space selected, and `cotal up` starts
+ *     the stack again.
  *  H. a deployment ID that no record names is TARGET_NOT_FOUND, naming the ID, from `team show` and
  *     from `team remove` with and without `--dry-run`.
  *  I. `team boot --dry-run` of another space's manifest in this prepared folder says the folder
@@ -389,12 +390,28 @@ try {
     stopped.status === 0 && /Controller stack stopped/.test(stopped.stdout) && applyStoppedBoot.status === 2 &&
       JSON.stringify(envelope(applyStoppedBoot.stdout)?.error) === JSON.stringify(bootRefusal), { down: stopped.out, remove: applyStoppedBoot.out });
   // A stopped stack that carried a team is not booted with another one. The refusal names the
-  // earlier boot's ID and cotal up, which starts that stack again.
+  // earlier boot's ID and space, and cotal up, which starts that stack again.
   const again = cotal(b, "team", "boot", "boot.yaml", "--json");
-  const againError = envelope(again.stdout)?.error;
-  check("a second team boot after down refuses LIFECYCLE_BLOCKED, naming cotal up and the earlier boot's ID",
-    stopped.status === 0 && again.status === 2 && againError?.code === "LIFECYCLE_BLOCKED" &&
-      againError.remedy === `start this stack again with \`cotal up\` in ${realpathSync(b)}, or inspect the earlier boot with \`cotal team show ${bootId}\``, { down: stopped.out.slice(-400), again: again.out.slice(-800) });
+  const againRefusal = envelope(again.stdout);
+  check("a second team boot after down refuses LIFECYCLE_BLOCKED and scopes the earlier boot inspection",
+    stopped.status === 0 && again.status === 2 && againRefusal?.target?.space === SPACE_B && againRefusal.error?.code === "LIFECYCLE_BLOCKED" &&
+      againRefusal.error.remedy === `start this stack again with \`cotal up\` in ${realpathSync(b)}, or inspect the earlier boot with \`cotal team show ${bootId} --space ${SPACE_B}\``, { down: stopped.out.slice(-400), again: again.out.slice(-800) });
+  const selectedForRefusal = cotal(s, "use", SPACE);
+  check("another space is selected while the booted stack is stopped", selectedForRefusal.status === 0 &&
+    envelope(cotal(b, "use", "--json").stdout)?.result?.current === SPACE, selectedForRefusal.out);
+  try {
+    const plain = cotal(b, "team", "boot", "boot.yaml", "--plain");
+    const inspection = plain.stderr.split("`").find((part) => /^(?:pnpm )?cotal team show /.test(part));
+    const scoped = ["cotal", "pnpm cotal"].some((cli) => inspection === `${cli} team show ${bootId} --space ${SPACE_B}`);
+    check("the plain refusal prints a team show command for the stopped space",
+      plain.status === 2 && plain.stderr.includes("LIFECYCLE_BLOCKED") && scoped, plain.out);
+    if (inspection && scoped) {
+      const replay = cotal(b, ...inspection.replace(/^(?:pnpm )?cotal /, "").split(" "));
+      check("the printed inspection finds the earlier boot without changing the saved selection",
+        replay.status === 0 && replay.stdout.includes("Recorded fresh boot") && replay.stdout.includes(bootId) &&
+        envelope(cotal(b, "use", "--json").stdout)?.result?.current === SPACE, replay.out);
+    }
+  } finally { cotal(b, "use", "--clear"); }
   const restarted = cotal(b, "up");
   check("cotal up there starts that stack again", restarted.status === 0 && /Controller stack started/.test(restarted.stdout), restarted.out.slice(-800));
   const additiveShow = cotal(s, "team", "show", deployment);
