@@ -15,7 +15,9 @@
  *  E. rows that do not apply are left out: no "Durable delivery on open" row for a static space,
  *     and no empty agent table; the deploy preview's TLS row reads as `team show` reads it.
  *  F. `team boot` on a running stack names inspection, stop preview and ordinary restart.
- *  G. folder `b` takes a fresh channel-only `team boot` of its own space on a second port. Its
+ *  G. folder `b` attempts a fresh channel-only `team boot` on `s`'s address. The refusal names
+ *     the conflicting space, address and retry. Changing the manifest to a free port lets the
+ *     printed retry start the stack. Its
  *     receipt, `team show <id>` and the inventory name the record's kind, state, next action and
  *     auth mode in words; the JSON keeps the recorded values.
  *     Its show and both `team remove` forms offer `cotal down --space <space> --dry-run` with the
@@ -45,7 +47,7 @@
  * Needs `nats-server` on PATH. Run: pnpm smoke:team-views:live
  */
 import { spawnSync } from "node:child_process";
-import { copyFileSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { assertSmokeSandboxDown, createSuite, freePort, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
@@ -123,7 +125,7 @@ manifest("order.yaml", SPACE, Object.fromEntries(Array.from({ length: 11 }, (_, 
 manifest("inherit.yaml", SPACE, { design: "", ops: "    replay: true\n", fine: "    deliveryClass: live\n" });
 const OTHER = `other-${process.pid}`, SERVER_OTHER = `nats://127.0.0.1:${await freePort()}`;
 for (const dir of [s, c]) manifest("other.yaml", OTHER, { x: "    deliveryClass: live\n" }, { dir, server: SERVER_OTHER });
-manifest("boot.yaml", SPACE_B, { bootch: "    deliveryClass: live\n" }, { dir: b, server: SERVER_B });
+manifest("boot.yaml", SPACE_B, { bootch: "    deliveryClass: live\n" }, { dir: b, server: SERVER });
 manifest("open.yaml", SPACE, { lobby: "    deliveryClass: live\n" }, { open: true });
 manifest("defaults.yaml", SPACE, { dops: "", own: "    replay: true\n" }, { head: "defaults:\n  replay: false\n  replayWindow: 2h\n  deliveryClass: live\n" });
 
@@ -142,6 +144,27 @@ function checkForegroundPreview(): void {
   check("the foreground plain preview also finishes", plain.status === 0 && /Lifetime request:\s+terminal-bound/.test(plain.stdout), plain.out);
   const apply = cotal(b, ...args, "--json");
   check("a foreground apply still refuses structured output", apply.status === 1 && envelope(apply.stdout)?.error?.code === "USAGE_INVALID", apply.out);
+}
+
+function checkFreshBootAddressConflict(): void {
+  const path = join(b, "boot.yaml"), original = readFileSync(path, "utf8");
+  const control = join(b, ".cotal"), before = readdirSync(control, { recursive: true }).sort();
+  const plain = cotal(b, "team", "boot", "boot.yaml", "--plain");
+  check("fresh boot names the recorded broker conflict and prints a plain retry",
+    plain.status === 2 && plain.stderr.includes("CONFLICT") && plain.stderr.includes(SERVER) &&
+    plain.stderr.replace(/\s+/g, " ").includes(`local space "${SPACE}"`) && /^Next$/m.test(plain.stderr) && plain.stderr.includes("`broker.servers`") &&
+    ["cotal", "pnpm cotal"].some((launcher) => plain.stderr.includes(`\`${launcher} team boot boot.yaml --plain\``)), plain.out);
+
+  const file = "../boot project/boot.yaml";
+  const json = cotal(c, "team", "boot", file, "--json");
+  const failure = envelope(json.stdout);
+  check("fresh boot keeps the structured conflict target and quotes a relative manifest in the JSON retry",
+    json.status === 2 && failure?.outcome === "refused" && failure.error?.code === "CONFLICT" && failure.target?.server === SERVER &&
+    JSON.stringify(failure.target.otherSpaces) === JSON.stringify([SPACE]) &&
+    failure.error.remedy?.includes(`\`cotal team boot '${file}' --json\``) === true, json.out);
+  check("both conflicts leave the fresh root's startup paths and manifest unchanged",
+    JSON.stringify(readdirSync(control, { recursive: true }).sort()) === JSON.stringify(before) && readFileSync(path, "utf8") === original);
+  writeFileSync(path, original.replace(SERVER, SERVER_B));
 }
 
 function checkInvalidLaunchName(): void {
@@ -344,10 +367,12 @@ try {
   const firstPreview = cotal(b, "team", "boot", "boot.yaml", "--dry-run", "--json");
   check("a newly prepared root previews without an earlier boot blocker", answered(firstPreview) &&
     !envelope(firstPreview.stdout)?.warnings?.some((warning) => warning.code === "LIFECYCLE_BLOCKED"), firstPreview.out);
+  checkFreshBootAddressConflict();
   bUp = true;
-  const booted = cotal(b, "team", "boot", "boot.yaml");
-  check("team boot starts the fresh stack in b, and its receipt names the auth mode in words",
-    booted.status === 0 && /Auth mode:\s+static auth\n/.test(booted.stdout) && !booted.stdout.includes("static-auth"), booted.out.slice(-1200));
+  const booted = cotal(b, "team", "boot", "boot.yaml", "--plain");
+  check("the retry starts the fresh stack on the new address and names the auth mode in words",
+    booted.status === 0 && booted.stdout.split("\n").some((line) => line.trim().replace(/\s+/g, " ") === `Broker: ${SERVER_B}`) &&
+    /Auth mode:\s+static auth\n/.test(booted.stdout) && !booted.stdout.includes("static-auth"), booted.out.slice(-1200));
   const bootCommand = booted.stdout.split("\n").map((line) => line.trim()).find((line) => /^(?:pnpm )?cotal team show /.test(line))?.split(/ {2,}/)[0] ?? "";
   const bootArgs = bootCommand.replace(/^(?:pnpm )?cotal /, "").split(" ");
   const bootId = bootArgs[2] ?? "";

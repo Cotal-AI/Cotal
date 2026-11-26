@@ -6,9 +6,20 @@
 // JSON, and `fetch()` does not reject on a 500. Every route therefore reads through `readJson`
 // (lib/snapshot.ts), which turns a non-200 into a throw naming the read and the server's own error.
 import { sendRefusal } from "../lib/compose.js";
-import { readJson } from "../lib/snapshot.js";
+import { HttpReadRefusal, readJson } from "../lib/snapshot.js";
 import type { Api } from "../state/controller.js";
 import type { ActivityPage, AgentEventsPage, ChannelInfo, CotalMessage, MembershipSnapshot, Meta, RosterEntry, SendAnswer } from "./types.js";
+
+/** EventSource does not expose the HTTP status. Check the same session gate on a short JSON read. */
+export async function sessionInvalid(fetchImpl: typeof fetch = globalThis.fetch): Promise<boolean> {
+  try {
+    const options = { cache: "no-store" as const, signal: AbortSignal.timeout(3000) };
+    await readJson<Meta>(await fetchImpl("/api/meta", options), "space");
+    return false;
+  } catch (error) {
+    return error instanceof HttpReadRefusal && error.status === 401 && error.reason === "unauthenticated";
+  }
+}
 
 /** `fetchImpl` defaults to the global `fetch`, looked up when a request is made. */
 export function httpApi(fetchImpl: typeof fetch = (input, init) => globalThis.fetch(input, init)): Api {

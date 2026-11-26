@@ -16,6 +16,7 @@ import {
 } from "@cotal-ai/workspace";
 import * as prompts from "../lib/prompts.js";
 import { cotalRoot } from "../lib/paths.js";
+import { displayCmd } from "../lib/self-exec.js";
 import { canPrompt } from "./meshes-wizard.js";
 import { serviceDefinitionStore, type ServiceDefinitionSnapshot } from "../lib/service-definitions.js";
 import { observeServiceProcess, serviceInstances, serviceInstanceStore, type ServiceInstanceSnapshot } from "../lib/service-instances.js";
@@ -331,6 +332,8 @@ export async function goneRootStackDown(space: string, root: string, values: Par
     const left = entry?.isFile()
       ? " A file occupies the recorded project path. It was left untouched. To restart at that path, move the file aside and restore the original project folder."
       : entry ? " The entry at the recorded project path was left untouched." : "";
+    const brokerOnly = released.includes(STACK_DEFINITION.broker) && !released.includes(STACK_DEFINITION.manager);
+    const restart = codeSpan(`${displayCmd()} up${brokerOnly ? " --no-manager" : ""}`);
     return { space, sections: [
       { title: "Stack stopped; its folder was gone", blocks: [
         { kind: "fields", rows: [["Space", space], ["Folder", `${root} · ${folder}`]] },
@@ -340,7 +343,7 @@ export async function goneRootStackDown(space: string, root: string, values: Par
       // A folder moved or renamed with its records keeps the journal, store and trust, and adopting them
       // where it is now keeps its history, as `up` run there names.
       { title: "Next", blocks: [{ kind: "commands", items: [
-        { command: `cotal space create ${space} --adopt --root <folder>`, description: "If the folder was moved or renamed, adopt its records where it is now, which keeps its history, then run `cotal up` there" },
+        { command: `cotal space create ${space} --adopt --root <folder>`, description: `If the folder was moved or renamed, adopt its records where it is now, which keeps its history, then run ${restart} there` },
         { command: `cotal space create ${space}`, description: "Otherwise prepare the space in another folder, then run `cotal up` there" },
       ] }] },
     ] };

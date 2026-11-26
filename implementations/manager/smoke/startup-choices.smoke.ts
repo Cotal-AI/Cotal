@@ -19,6 +19,12 @@ const assert: typeof nodeAssert = counted.assert;
 
 const root = mkdtempSync(join(tmpdir(), "cotal-startup-choices-"));
 const session = `choices-${process.pid}`;
+const sessionTarget = ["-t", `=${session}`];
+function tmuxSessionAbsent(error: unknown): boolean {
+  const { status, stderr } = error as { status?: number; stderr?: string };
+  return status === 1 && typeof stderr === "string" &&
+    (stderr.startsWith("can't find session: ") || stderr.startsWith("no server running on "));
+}
 const fixture = fileURLToPath(new URL("./fixtures/startup-choices.cjs", import.meta.url));
 const handles: AgentHandle[] = [];
 let ownsTmux = false;
@@ -42,7 +48,7 @@ try {
   const NOTICE_MODES = ["notice", "notice-early", "silent", "ready-notice"];
   const cases = runtimes.flatMap(([runtimeName, runtime]) => ["normal", "trusted", "missing", "ready", "ready-trusted", "unknown", ...(runtimeName === "custody" ? [] : NOTICE_MODES)].map((mode) => {
     if (runtimeName === "tmux" && !ownsTmux) {
-      assert.throws(() => execFileSync("tmux", ["has-session", "-t", session], { stdio: "ignore" }));
+      assert.throws(() => execFileSync("tmux", ["has-session", ...sessionTarget], { stdio: "ignore" }));
       ownsTmux = true;
     }
     const name = `${runtimeName}-${mode}`;
@@ -98,12 +104,23 @@ try {
       console.log(`PASS ${test.name}`);
     } catch (error) { const message = (error as Error).message; failures.push(message); console.error(`FAIL ${message}`); }
   }
-  console.log("STARTUP CHOICES COMPLETE");
   assert.equal(failures.length, 0, failures.join("\n"));
-  emitSentinel({ passed: counted.cells(), failed: 0 });
 } finally {
-  for (const handle of handles) handle.stop({ graceful: false });
-  await Promise.all(handles.map((h) => h.waitForExit?.()));
-  if (ownsTmux) execFileSync("tmux", ["kill-session", "-t", session], { stdio: "ignore" });
-  rmSync(root, { recursive: true, force: true });
+  try {
+    for (const handle of handles) handle.stop({ graceful: false });
+    await Promise.all(handles.map((h) => h.waitForExit?.()));
+    if (ownsTmux) {
+      try {
+        execFileSync("tmux", ["kill-session", ...sessionTarget], { encoding: "utf8", stdio: "pipe" });
+      } catch (error) {
+        if (!tmuxSessionAbsent(error)) throw error;
+      }
+      assert.throws(() => execFileSync("tmux", ["has-session", ...sessionTarget], { encoding: "utf8", stdio: "pipe" }),
+        tmuxSessionAbsent, "tmux test session must be absent after teardown");
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 }
+console.log("STARTUP CHOICES COMPLETE");
+emitSentinel({ passed: counted.cells(), failed: 0 });
