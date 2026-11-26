@@ -1,10 +1,13 @@
-import { spawn } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { createServer } from "node:http";
-import { existsSync, lstatSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
+import { promisify } from "node:util";
 import { CotalEndpoint, createSpaceAuth, isReachable, mintCreds, newIdentity, serverConfig, setupSpaceStreams } from "@cotal-ai/core";
 import { emitSentinel, freePort, killAndAwaitExit, SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { authDir, recordMesh, saveSpaceAuth } from "@cotal-ai/workspace";
 import { LinearUpstream, loadAccount, registerLinearEndpoint, provisionLinearCaller, runLinearEndpoint } from "../src/index.js";
 import { linear } from "../src/cli.js";
 import { linearDir, oauthStatePath, saveAccount } from "../src/account.js";
@@ -20,7 +23,9 @@ function check(name: string, value: boolean): void {
 }
 const calls: string[] = [];
 let tokenExchanges = 0;
+let upstreamRequests = 0;
 const http = createServer(async (req, res) => {
+  upstreamRequests++;
   const path = new URL(req.url ?? "/", "http://local").pathname;
   const json = (value: unknown): void => { res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(value)); };
   if (path.includes("oauth-protected-resource")) return json({ resource: `${LINEAR_MCP_ORIGIN}/mcp`, authorization_servers: [LINEAR_MCP_ORIGIN] });
@@ -71,6 +76,70 @@ function repairAccount(name: string): void {
 function repairNamed(error: unknown, path: string): boolean {
   const { remedy } = (error ?? {}) as { remedy?: string };
   return String(error).includes(path) && remedy?.includes(JSON.stringify(path)) === true && remedy.includes("`allowedTools`");
+}
+
+async function managedToolPolicy(): Promise<void> {
+  const root = join(home, "project");
+  mkdirSync(join(root, ".cotal"), { recursive: true, mode: 0o700 });
+  saveSpaceAuth(authDir(root), auth);
+  recordMesh({ space, server: servers, root, mode: "auth", origin: "up", ts: new Date().toISOString() });
+  const managedEndpoint = "test.example.managed-linear";
+  const hook = join(home, "local-linear.mjs");
+  writeFileSync(hook, `const nativeFetch = globalThis.fetch;
+globalThis.fetch = (input, init) => {
+  const url = new URL(input instanceof Request ? input.url : input);
+  if (url.origin !== ${JSON.stringify(LINEAR_MCP_ORIGIN)}) throw new Error("unexpected upstream origin");
+  return nativeFetch(${JSON.stringify(local)} + url.pathname + url.search, init);
+};\n`, { mode: 0o600 });
+  const run = promisify(execFile);
+  const bin = resolve(import.meta.dirname, "../../../bin/dist/cotal.js");
+  const extension = pathToFileURL(resolve(import.meta.dirname, "../dist/index.js")).href;
+  const service = async (...args: string[]) => {
+    const result = await run(process.execPath, ["--import", pathToFileURL(hook).href, "--import", extension, bin, "service", ...args, "--space", space, "--json"], {
+      cwd: root, env: { ...process.env, COTAL_SKIP_CONNECTOR_SEED: "1" }, timeout: 120_000,
+    }).then(r => ({ ...r, status: 0 }), (error: { code: unknown; stdout?: string; stderr?: string }) => {
+      if (typeof error.code !== "number" || !error.stdout) throw error;
+      return { status: error.code, stdout: error.stdout, stderr: error.stderr };
+    });
+    return { status: result.status, receipt: JSON.parse(result.stdout) };
+  };
+  for (const [name, allowedTools] of [["managed-restricted", ["read_issue"]], ["managed-malformed", [42]]] as const) {
+    writeFileSync(join(linearDir(), `${name}.json`), JSON.stringify({ name, mode: "write", auth: "token", tokenFile, allowedTools }), { mode: 0o600 });
+    const added = await service("add", name, "--preset", "linear", "--root", root, "--account", name, "--endpoint", managedEndpoint);
+    if (added.status !== 0) throw new Error(`service fixture could not save ${name}: ${JSON.stringify(added.receipt.error)}`);
+  }
+  const beforeStart = upstreamRequests;
+  const malformed = await service("start", "managed-malformed");
+  check("managed start refuses malformed allowedTools before launching or contacting Linear",
+    malformed.status === 2 && malformed.receipt.error?.code === "DEPENDENCY_UNAVAILABLE"
+    && malformed.receipt.error.remedy?.includes("`allowedTools`") === true && malformed.receipt.target?.pid === null && upstreamRequests === beforeStart);
+  if (malformed.receipt.target?.pid || malformed.receipt.result?.pid) {
+    await service("stop", "managed-malformed", "--yes");
+  }
+  let managedCaller: CotalEndpoint | undefined;
+  try {
+    const started = await service("start", "managed-restricted");
+    if (started.status !== 0) throw new Error(`restricted service did not start: ${JSON.stringify(started.receipt.error)}`);
+    const minted = await provisionLinearCaller(auth, { servers, space, tls: false }, managedEndpoint);
+    managedCaller = new CotalEndpoint({ space, servers, tls: false, creds: minted.creds, lifecycleUid: minted.lifecycleUid, consume: false,
+      registerPresence: false, watchPresence: false, watchChannels: false, channels: [], card: { name: "managed-policy-caller", kind: "agent" } });
+    managedCaller.on("error", () => {});
+    await managedCaller.start();
+    const { reply } = await managedCaller.invokeService(managedEndpoint, "inventory", {}, { deadlineMs: 5000 });
+    if (!reply.ok) throw new Error(`managed inventory failed: ${reply.error.message}`);
+    const inventoryDigest = (reply.data as { digest: string }).digest;
+    const beforeCalls = calls.length;
+    const allowed = await managedCaller.invokeService(managedEndpoint, "call-tool", { name: "read_issue", inventoryDigest }, { deadlineMs: 5000 });
+    const denied = await managedCaller.invokeService(managedEndpoint, "call-tool", { name: "delete_issue", inventoryDigest }, { deadlineMs: 5000 });
+    check("managed Linear service lets only the allowed tool reach the upstream", allowed.reply.ok && calls.slice(beforeCalls).join(",") === "read_issue"
+      && !denied.reply.ok && denied.reply.error.code === "permission-denied" && denied.reply.error.outcome === "not-executed");
+  } finally {
+    try { await managedCaller?.stop(); }
+    finally {
+      const stopped = await service("stop", "managed-restricted", "--yes");
+      check("managed Linear test service stops", stopped.status === 0 && stopped.receipt.result?.originalIncarnationGone === true);
+    }
+  }
 }
 
 async function login(name: string, noise: boolean, invalidRecord: "before" | "pending" | undefined = undefined): Promise<void> {
@@ -226,6 +295,7 @@ try {
     const refusal = JSON.parse(report);
     console.log(`  OBSERVED linear call limited ${tool} --json with ${JSON.stringify(names)}: exit ${cliCode ?? 0}, ${refusal.error?.code ?? "result"}, upstream calls=${calls.length - before}`);
     check("direct CLI refuses disallowed tool with exit 2 and the edit remedy", cliCode === 2 && refusal.result.reply.reason === "tool-not-allowed" && refusal.result.reply.detail.includes("add its name to `allowedTools`"));
+    check("direct CLI includes the edit in the structured failure remedy", refusal.error?.remedy?.includes("add the tool name to `allowedTools`") === true);
     check("direct CLI reports PERMISSION_DENIED and no execution", refusal.error?.code === "PERMISSION_DENIED" && refusal.result.reply.outcome === "not-executed" && calls.length === before);
   }
   writeFileSync(record, JSON.stringify({ ...JSON.parse(originalRecord), allowedTools: ["read_issue", "delete_issue"] }), { mode: 0o600 });
@@ -263,6 +333,9 @@ try {
     const path = join(linearDir(), `${name}.json`);
     const target = join(home, "missing-account.json");
     symlinkSync(target, path);
+    const showError = await linear({ raw: [], positionals: ["account", "show", name], values: { json: true } }).then(() => undefined, (error: unknown) => error);
+    check("a dangling account record read names the repair rather than suggesting a new account",
+      (showError as { code?: string } | undefined)?.code === "DEPENDENCY_UNAVAILABLE" && repairNamed(showError, path));
     const add = () => linear({ raw: [], positionals: ["account", "add", name], values: { mode: "write", "token-file": tokenFile, plain: true } });
     const error = await add().then(() => undefined, (error: unknown) => error);
     const preserved = lstatSync(path).isSymbolicLink() && !existsSync(target);
@@ -286,6 +359,7 @@ try {
   await login("clean-login", false);
   saveAccount({ name: "noisy-login", mode: "write", auth: "oauth", allowedTools: ["read_issue"] });
   await login("noisy-login", true);
+  await managedToolPolicy();
 } finally {
   if (caller) await caller.stop();
   if (running) await running.stop();
