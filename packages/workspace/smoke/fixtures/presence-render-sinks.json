@@ -27,7 +27,7 @@
     {
       "path": "implementations/cli/src/commands/agents.ts",
       "kind": "derived-output",
-      "anchor": "observedOpenCodeModel(values, item)",
+      "anchor": "observedSeatModel(values, item)",
       "class": "non-render/control",
       "rationale": "Reads the model and variant for one principal and lifecycle. Neither value is a presence state or a work-progress claim."
     },
