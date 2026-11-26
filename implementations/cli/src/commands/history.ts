@@ -205,13 +205,18 @@ function itemOf(msg: CotalMessage, where: { seq?: number; channel?: string }): H
   };
 }
 
+function historyGrepText(text: string): string {
+  // Greek capital sigma lowercases to final sigma at the end of a word.
+  return text.toLowerCase().replaceAll("ς", "σ");
+}
+
 /** The window filters: `--since` against the sequence or time, `--from` against the sender's name or
  *  id, `--grep` against the text. */
 function keep(item: HistoryItem, since: Since | undefined, from: string | undefined, grep: string | undefined): boolean {
   if (since?.kind === "seq" && (item.seq === null || item.seq <= since.seq)) return false;
   if (since?.kind === "time" && Date.parse(item.ts) <= since.ms) return false;
   if (from !== undefined && item.from.name !== from && item.from.id !== from) return false;
-  if (grep !== undefined && !item.text.toLowerCase().includes(grep.toLowerCase())) return false;
+  if (grep !== undefined && !historyGrepText(item.text).includes(historyGrepText(grep))) return false;
   return true;
 }
 
