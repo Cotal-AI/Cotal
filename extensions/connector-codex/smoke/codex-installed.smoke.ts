@@ -340,16 +340,24 @@ try {
   try {
     const created = spawnSync("node", [CLI, "space", "create", `cxself${process.pid}`], { cwd: selfRoot, env: cliEnv, encoding: "utf8" });
     if (created.status !== 0) throw new Error(`space create failed (${created.status})\n${created.stdout}\n${created.stderr}`);
-    const started = spawnSync("node", [CLI, "up", "--server", selfServers], { cwd: selfRoot, env: cliEnv, encoding: "utf8" });
+    const started = spawnSync("node", [CLI, "up", "--detach", "--server", selfServers], { cwd: selfRoot, env: cliEnv, encoding: "utf8" });
     if (started.status !== 0) throw new Error(`selfstop up failed (${started.status})\n${started.stdout}\n${started.stderr}`);
     selfUp = true;
     for (const [harness, seatName, envFile] of [
       ["codex", "self_codex", join(selfCapture, "codex-env.json")],
       ["jcode", "self_jcode", join(selfCapture, "jcode-env.json")],
     ] as const) {
-      const spawned = spawnSync("node", [CLI, "spawn", "-d", "-H", harness, "--name", seatName], { cwd: selfRoot, env: cliEnv, encoding: "utf8" });
+      const args = ["spawn", "-d", "-H", harness, "--name", seatName];
+      if (harness === "codex") args.push("--prompt", "detached-headless-check");
+      const spawned = spawnSync("node", [CLI, ...args], { cwd: selfRoot, env: { ...cliEnv, COTAL_CODEX_TUI: "1" }, encoding: "utf8" });
       check(`managed ${harness} seat spawns for stop --self (#7594)`, spawned.status === 0, `${spawned.stdout}\n${spawned.stderr}`);
       const capturedEnv = await waitFor(`${harness} captured env`, () => (existsSync(envFile) ? (JSON.parse(readFileSync(envFile, "utf8")) as NodeJS.ProcessEnv) : undefined));
+      if (harness === "codex") {
+        // The host submits its kickoff only after choosing whether to start the TUI.
+        await waitFor("the detached Codex kickoff", () => turnStarts().find((t) => t.includes("detached-headless-check")));
+        check("a detached Codex PTY seat stays headless when the manager disables the TUI",
+          /Runtime:\s+pty\b/.test(spawned.stdout) && !!capturedEnv.CODEX_HOME && !existsSync(join(capturedEnv.CODEX_HOME, "host.log")), spawned.stdout);
+      }
       check(`${harness} receives complete non-secret seat attribution but no broker material (#7594)`,
         ["COTAL_SPACE", "COTAL_MANAGER_INSTANCE", "COTAL_NAME", "COTAL_ID", "COTAL_LIFECYCLE_UID", "COTAL_ACCEPTED_TOKEN", "COTAL_HOME"].every((key) => Boolean(capturedEnv[key]))
           && ["COTAL_CREDS", "COTAL_LAUNCH_MATERIAL", "COTAL_CONTROL_TOKEN", "COTAL_BEARER_CMD", "COTAL_SENTINEL_CREDS"].every((key) => capturedEnv[key] === undefined));
