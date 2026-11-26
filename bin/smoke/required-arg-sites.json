@@ -1,6 +1,7 @@
 {
   "bin/daemon/manager.ts": 1,
   "bin/smoke/backup-conservation-live.smoke.ts": 1,
+  "bin/smoke/backup-restore-live.smoke.ts": 1,
   "bin/smoke/connection-cleanup.smoke.ts": 4,
   "bin/smoke/daemon-service-connect.smoke.ts": 4,
   "bin/smoke/jcode-once.smoke.ts": 2,
