@@ -1,0 +1,3 @@
+# A pi seat's tool arguments and results reach the payload rail, the public channel carries only
+# the result marker, and thinking maps to reasoning only when asked.
+smoke:pi-agui-payloads

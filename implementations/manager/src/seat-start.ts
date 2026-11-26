@@ -1,7 +1,7 @@
 import { mkdirSync, readFileSync, rmSync } from "node:fs";
 import { hostname } from "node:os";
 import { join, resolve } from "node:path";
-import { agentFilePath, chatStream, checkEventStartup, controlReplyFromThrown, copyPersonaEndpoints, describeCleanupFailures, DEV_OWNER, EpEnvelopeError, eventChannelPrincipal, EventStateConflictError, grantOverreach, isPermissionDenied, lifecycleBlocked, loadCotalConfig, lowerPersonaEndpoints, managedRetirementOpId, mintAcceptedToken, mintGeneration, mintLifecycleUid, modelPolicyRefusal, newIdentity, parsePrincipalKey, principalKey, provisionAgent, rejectionText, renderLifecycleBlocked, resolveReadAcl, saveAgentFile, STANDING_RENEWABLE_TTL_SEC as MANAGED_STATIC_TTL_SEC, STATIC_GENERATION_HORIZON_SEC, type AgentDef, type CleanupFailure, type Connector, type ControlReply, type CotalConfig, type CotalEndpoint, type EpCaller, type EpCapability, type GoalRef, type IssuedStore, type LaunchOpts, type LaunchSpec, type LifecycleStateTransport, type PersonaEndpoint, type UserAuthLaunch } from "@cotal-ai/core";
+import { agentFilePath, chatStream, checkEventStartup, controlReplyFromThrown, copyPersonaEndpoints, describeCleanupFailures, DEV_OWNER, EpEnvelopeError, eventChannelPrincipal, EventStateConflictError, grantOverreach, isPermissionDenied, lifecycleBlocked, loadCotalConfig, lowerPersonaEndpoints, managedRetirementOpId, mintAcceptedToken, mintGeneration, mintLifecycleUid, modelPolicyEnv, modelPolicyRefusal, newIdentity, parsePrincipalKey, principalKey, provisionAgent, rejectionText, renderLifecycleBlocked, resolveReadAcl, saveAgentFile, STANDING_RENEWABLE_TTL_SEC as MANAGED_STATIC_TTL_SEC, STATIC_GENERATION_HORIZON_SEC, type AgentDef, type CleanupFailure, type Connector, type ControlReply, type CotalConfig, type CotalEndpoint, type EpCaller, type EpCapability, type GoalRef, type IssuedStore, type LaunchOpts, type LaunchSpec, type LifecycleStateTransport, type PersonaEndpoint, type UserAuthLaunch } from "@cotal-ai/core";
 import { agentLifecycleSecretFilePaths, agentSecretKeyForFile, materializeSecretToFile, mergeLaunchOptions, retainConnectorSeat } from "@cotal-ai/workspace";
 import type { KV } from "@nats-io/kv";
 import { CHAT_ALIAS_PREFIX } from "./chat-session.js";
@@ -14,6 +14,7 @@ import { MAX_AGENTS, supervisePolicy } from "./resume.js";
 import type { TeardownTarget } from "./retirement.js";
 import type { AgentHandle, Runtime } from "./runtime/index.js";
 import { watchConnectorHolder } from "./seat-custody.js";
+import { optInLaunchFields } from "./harness-resolution.js";
 import { foreignEventChannels, ownLists, ownPersona, userMeshEndpointsRefusal, type SeatLaunch, type SeatLaunchDeps } from "./seat-launch.js";
 import type { ManagedAgent, SpawnHooks, StartAgentOpts } from "./seat-types.js";
 import { activateStaticLifecycle, casStaticSlot, readStaticSlot } from "./static-lifecycle.js";
@@ -116,9 +117,8 @@ export class SeatStart {
   private onceRefusal(...args: Parameters<SeatLaunch["onceRefusal"]>): ReturnType<SeatLaunch["onceRefusal"]> { return this.launch.onceRefusal(...args); }
 
   /** Why this manager cannot hand a seat a first command, or undefined when it can. The agent runs it
-   *  on its `agent` endpoint, which only a user-auth mesh serves, as its first turn. */
+   *  on its `agent` endpoint, which it serves on every mesh mode, as its first turn. */
   private firstCommandRefusal(runtime: Runtime, launch: { prompt?: string; once: boolean }): string | undefined {
-    if (!this.userMode) return "a first command runs on the agent endpoint, which only a user-auth mesh serves (firstCommand)";
     if (runtime.spawnDelegated) return `runtime "${runtime.kind}" starts seats outside this host and carries no first command (firstCommand)`;
     if (launch.prompt !== undefined) return "a spawn's first turn is its prompt or its first command, not both (prompt, firstCommand)";
     if (launch.once) return "a once seat's first turn is its task, so it takes no first command (once, firstCommand)";
@@ -130,6 +130,28 @@ export class SeatStart {
   private staticSpawnBound(...args: Parameters<SeatLaunch["staticSpawnBound"]>): ReturnType<SeatLaunch["staticSpawnBound"]> { return this.launch.staticSpawnBound(...args); }
   private spawnBoundRefusal(...args: Parameters<SeatLaunch["spawnBoundRefusal"]>): ReturnType<SeatLaunch["spawnBoundRefusal"]> { return this.launch.spawnBoundRefusal(...args); }
   private managedStaticInstanceReads(...args: Parameters<SeatLaunch["managedStaticInstanceReads"]>): ReturnType<SeatLaunch["managedStaticInstanceReads"]> { return this.launch.managedStaticInstanceReads(...args); }
+
+  /** Why a delegated runtime cannot start this spawn, or undefined when it can. A delegated seat
+   *  starts outside this host from values alone, so a choice only this host can honour is refused
+   *  before enrollment, and named rather than dropped. */
+  private delegatedRefusal(runtime: Runtime, opts: StartAgentOpts, hostFields: ReturnType<Manager["hostLaunchFields"]>): string | undefined {
+    const delegatedBy = `runtime "${runtime.kind}" starts seats outside this host`;
+    if (!this.remoteAuthority?.enrollManagedAgent)
+      return `${delegatedBy}, which needs a host that enrolls managed agents (remoteAuthority.enrollManagedAgent); a delegated seat has no local grant path`;
+    try {
+      this.userProvision.delegatedMeshRecord();
+    } catch (e) {
+      return rejectionText(e);
+    }
+    const hostOnly = hostOnlyChoice(opts, delegatedBy);
+    if (hostOnly) return hostOnly;
+    if (opts.askPermissions || opts.reasoningEvents)
+      return `${delegatedBy}, and its child launch takes neither askPermissions nor reasoningEvents`;
+    const shared = Object.keys(hostFields.mcpServers!);
+    if (shared.length)
+      return `${delegatedBy}, so it cannot share MCP servers that run on this host (${shared.join(", ")}); pass --share-tools none`;
+    return undefined;
+  }
 
   async startActive(opts: StartAgentOpts, spawner?: string, hooks?: SpawnHooks, authenticatedCaller?: EpCaller): Promise<ControlReply> {
     // Before the first await, so the grant, the launch, the retained form and the restart slot all read
@@ -258,23 +280,8 @@ export class SeatStart {
       if (hooks?.onAccepted) throw new EpEnvelopeError("failed-precondition", error, undefined, "not-executed");
       return { ok: false, error };
     }
-    // A delegated seat starts outside this host from values alone, so a choice only this host can
-    // honour is refused here, before enrollment, and named rather than dropped.
-    if (runtime.spawnDelegated) {
-      const delegatedBy = `runtime "${runtime.kind}" starts seats outside this host`;
-      if (!this.remoteAuthority?.enrollManagedAgent)
-        return { ok: false, error: `${delegatedBy}, which needs a host that enrolls managed agents (remoteAuthority.enrollManagedAgent); a delegated seat has no local grant path` };
-      try {
-        this.userProvision.delegatedMeshRecord();
-      } catch (e) {
-        return { ok: false, error: rejectionText(e) };
-      }
-      const hostOnly = hostOnlyChoice(opts, delegatedBy);
-      if (hostOnly) return { ok: false, error: hostOnly };
-      const shared = Object.keys(hostFields.mcpServers!);
-      if (shared.length)
-        return { ok: false, error: `${delegatedBy}, so it cannot share MCP servers that run on this host (${shared.join(", ")}); pass --share-tools none` };
-    }
+    const delegatedRefused = runtime.spawnDelegated ? this.delegatedRefusal(runtime, opts, hostFields) : undefined;
+    if (delegatedRefused) return { ok: false, error: delegatedRefused };
 
     // A placed spawn's cwd is checked on this host BEFORE anything is minted or reserved: an absolute
     // path this manager cannot realpath, or one that is not a directory, is refused here with the
@@ -503,7 +510,7 @@ export class SeatStart {
     // declared name. Refused before any reserve or mint when the connector cannot reopen an exact
     // session or the recorded assignment does not match this declaration.
     const exact = opts.resolved?.continuity === "exact";
-    const unsupported = this.capabilityRefusal(connector, { variant, prompt, firstCommand: opts.firstCommand, exact })
+    const unsupported = this.capabilityRefusal(connector, { variant, prompt, firstCommand: opts.firstCommand, exact, askPermissions: opts.askPermissions, reasoningEvents: opts.reasoningEvents, events })
       ?? (opts.firstCommand && this.firstCommandRefusal(runtime, { prompt, once: opts.once !== undefined }));
     if (unsupported) return { ok: false, error: unsupported };
     const onceRefused = opts.once && this.onceRefusal(connector, runtime, { ...opts, launchOptions, prompt }, spawner, hooks);
@@ -906,6 +913,7 @@ export class SeatStart {
         endpoints: copyPersonaEndpoints(personaEndpoints) ?? [],
         events,
         eventPayloads,
+        ...optInLaunchFields(opts),
         cwd,
       };
       // A delegated seat gets no local launch at all: no launch-material file, control token or
@@ -931,7 +939,7 @@ export class SeatStart {
         }
         spec = connector.buildLaunch(launchOpts);
         if (carried) this.transcripts!.consume(opts.resumeClaim!, opts.resume!);
-        spec.env = { ...spec.env, COTAL_MANAGER_INSTANCE: this.managerInstanceId };
+        spec.env = { ...spec.env, COTAL_MANAGER_INSTANCE: this.managerInstanceId, ...modelPolicyEnv(cotalConfig, role) };
         handle = await this.seatCustody.spawnCustodied(runtime, name, spec, cwd, custody);
       }
       if (onceTask && !handle.waitForExit)
@@ -986,6 +994,7 @@ export class SeatStart {
           ...(personaEndpoints?.length ? { endpoints: copyPersonaEndpoints(personaEndpoints) } : {}),
           events,
           eventPayloads,
+          ...optInLaunchFields(opts),
           shareTools: opts.shareTools,
           forkSource: opts.resume,
           ...(opts.resume !== undefined && spec?.resumeRecordPath ? { resumeRecordPath: spec.resumeRecordPath } : {}),

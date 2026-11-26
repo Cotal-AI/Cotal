@@ -2,6 +2,8 @@
 // socket or write to a running child's stdin, so a reader relays the seat server's requests on its
 // stdout and a one-shot helper carries each answer back.
 
+import { streamTo } from './stream.js';
+
 const ALLOW = 'allow';
 const PANEL = 'refuse-panel';
 const SETTINGS = 'refuse-writes-settings';
@@ -71,6 +73,12 @@ const COMPLETE_MS = 2000;
 
 const described = new Map();
 let turnId;
+// The owner's model switch (SPEC 13.22): `{ model, effort? }`, which every step of each main turn
+// that starts after it goes out on. It lives in this session alone, because Claude Code's own
+// /model and /effort save the person's settings.
+let wanted;
+// The switch the running main turn started under: a turn already running keeps its model.
+let running;
 // Resolvers for interrupts waiting on a main turn's completion, by turn id.
 const completions = new Map();
 
@@ -184,11 +192,39 @@ async function interrupt($) {
   return { op: 'interrupt', outcome: 'interrupted', ...(reason ? { reason } : {}) };
 }
 
+// The owner's words as the person's own, a turn of its own once the session is idle.
+async function prompt($, { text }) {
+  const submitted = await $.prompt.submit({ text, asUser: true });
+  if (submitted.drop !== undefined) return { op: 'prompt', outcome: 'refused', reason: submitted.drop || 'Claude Code dropped the prompt' };
+  return { op: 'prompt', outcome: 'submitted' };
+}
+
+// The status line's figures: no breakdown, so the call sends no request.
+async function usage($) {
+  const { context, cost } = await $.session.usage();
+  return {
+    op: 'usage',
+    window: context.window,
+    ...(context.tokens !== undefined ? { tokens: context.tokens } : {}),
+    ...(cost ? { usd: cost.usd } : {}),
+  };
+}
+
+// The model the session runs from its next main turn: the one named, else the one in force.
+async function switchModel($, { model, effort }) {
+  const name = model ?? wanted?.model ?? (await $.session.model());
+  wanted = { model: name, ...(effort !== undefined ? { effort } : {}) };
+  return { op: 'model', ...wanted };
+}
+
 async function answerFor($, request) {
   try {
     if (request.op === 'list') return await list($);
     if (request.op === 'run') return await run($, request);
     if (request.op === 'interrupt') return await interrupt($);
+    if (request.op === 'prompt') return await prompt($, request);
+    if (request.op === 'usage') return await usage($);
+    if (request.op === 'model') return await switchModel($, request);
     return { op: 'error', reason: `unknown request op ${JSON.stringify(request.op)}` };
   } catch (error) {
     return { op: 'error', reason: messageOf(error) };
@@ -197,6 +233,7 @@ async function answerFor($, request) {
 
 async function serve($, line) {
   const request = JSON.parse(line);
+  if (request.op === 'stream') return streamTo(request);
   const answer = await answerFor($, request);
   if (answer.reason !== undefined) answer.reason = clip(answer.reason, MAX_REASON);
   await $.process.run(['node', $.plugin.root + '/dist/command-reader.cjs', 'answer', request.route], {
@@ -234,8 +271,25 @@ export function register(on) {
     return shown;
   });
   on('turn.start', { turnId: /./ }, async ($, e, next) => {
-    if (e.agentId === undefined) turnId = e.turnId;
+    if (e.agentId === undefined) {
+      turnId = e.turnId;
+      running = wanted;
+    }
     return next(e);
+  });
+  // A rewrite lasts one step, so each of the main turn's steps carries the switch. A subagent's
+  // steps keep the model Claude Code picks for them.
+  on('turn.step', { turnId: /./ }, async function* ($, e, next) {
+    if (e.agentId !== undefined || running === undefined || e.turnId !== turnId) return yield* next(e);
+    return yield* next({ ...e, ...running });
+  });
+  // A /model or /effort run at the seat wins from the next turn: Claude Code shows the person its own
+  // setting, which a switch leaves unchanged. This mod never runs either.
+  on('command.run', { command: /^(model|effort)$/ }, async ($, e, next) => {
+    const ran = await next(e);
+    if (e.command === 'model') wanted = undefined;
+    else if (wanted) wanted = { model: wanted.model };
+    return ran;
   });
   on('turn.complete', { turnId: /./ }, async ($, e, next) => {
     const completed = await next(e);

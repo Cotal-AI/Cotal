@@ -80,6 +80,10 @@ export type LaunchMaterial = {
   eventsRequired?: boolean;
   /** Trusted decision to withhold tool payloads while retaining status events. */
   eventPayloadsWithheld?: boolean;
+  /** The launch asked the harness to ask before it uses a tool (`LaunchOpts.askPermissions`). */
+  askPermissions?: boolean;
+  /** The launch asked for the model's reasoning on the event plane (`LaunchOpts.reasoningEvents`). */
+  reasoningEvents?: boolean;
   /** User-mode launch identity: principal, sentinel creds path, and the exec-able bearer command. */
   userAuth?: UserAuthLaunch;
 };
@@ -203,6 +207,11 @@ function validate(raw: Record<string, unknown>, path: string): LaunchMaterial {
   if (raw.eventPayloadsWithheld !== undefined) {
     if (raw.eventPayloadsWithheld !== true) throw new Error(`launch material: ${path} has eventPayloadsWithheld that is not true`);
     material.eventPayloadsWithheld = true;
+  }
+  for (const key of ["askPermissions", "reasoningEvents"] as const) {
+    if (raw[key] === undefined) continue;
+    if (raw[key] !== true) throw new Error(`launch material: ${path} has ${key} that is not true`);
+    material[key] = true;
   }
   if (raw.userAuth !== undefined) {
     const u = raw.userAuth;

@@ -1181,6 +1181,11 @@ try {
   c("B0. The local list on a broker-only open mesh keeps the local journal and offers offline simulation instead of start",
     localList.includes("Open meshes cannot host workflow runs.") && ["cotal", "pnpm cotal"].some((cli) =>
       localList.includes(`${cli} r show <run-id> --local`) && localList.includes(`${cli} r simulate <file>`) && !localList.includes(`${cli} r start`)), localList);
+  const { stdout: hostedList, stderr: hostedListErrors } = await runCli("--space", spaceB, "--server", server, "--plain");
+  c("B0b. The hosted list on a broker-only open mesh succeeds and points to the local inventory and offline simulation",
+    hostedList.includes("Open meshes cannot host workflow runs.") && hostedListErrors === "" && ["cotal", "pnpm cotal"].some((cli) =>
+      hostedList.includes(`${cli} r list --local --space ${spaceB} --server '${server}'`) && hostedList.includes(`${cli} r simulate <file>`)
+        && !hostedList.includes(`${cli} r start`)), { hostedList, hostedListErrors });
   const brokerOnlyStart = await runCli("start", "./cp.cotal.js", "--json").catch((error: { code?: number; stdout?: string }) => error);
   const plainStart = await runCli("start", "./cp.cotal.js", "--plain").catch((error: { code?: number; stderr?: string }) => error);
   const refusal = JSON.parse(brokerOnlyStart.stdout || "{}");
@@ -1275,7 +1280,7 @@ try { await delivery?.stop(); } catch { /* teardown */ }
   if (stillUp.running.length) console.log(`  ! seat processes still running after SIGKILL: ${stillUp.running.join(", ")}`);
 }
 
-const EXPECTED_CELLS = 113;
+const EXPECTED_CELLS = 114;
 if (pass + fail !== EXPECTED_CELLS) {
   console.log(`SUITE INCOMPLETE — ran ${pass + fail} of ${EXPECTED_CELLS} cells; a partial run is not a pass`);
   fail += 1;

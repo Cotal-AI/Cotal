@@ -4,7 +4,9 @@
  * `process.ppid` names the same sockets, as it does under Claude Code. The reader says hello, the
  * feed is acknowledged, requests reach the reader's stdout with their `route`, and answers sent
  * through `answer <route>` resolve them. Refusals (an old Claude, version skew) carry their causes,
- * and a reader that goes away rejects what it left unanswered.
+ * and a reader that goes away rejects what it left unanswered. A feed that streams asks each reader
+ * it accepts for the session's reply text, and takes `deltas` only under the id it sent the current
+ * reader.
  *
  * Run: pnpm smoke:claude-command-socket
  * Graded: node scripts/mutation-proof.mjs --config extensions/connector-claude-code/smoke/mutations/command-socket.json
@@ -19,7 +21,7 @@ import { fileURLToPath } from "node:url";
 import { createSuite } from "@cotal-ai/smoke-kit";
 import { CONNECTOR_VERSION } from "@cotal-ai/connector-core/version";
 import { commandSocketPath, openCommandFeed, type CommandFeed } from "../src/command-feed.js";
-import type { ModAnswer } from "../src/command-frames.js";
+import { MAX_REQUEST_BYTES, type ModAnswer } from "../src/command-frames.js";
 
 const READER = join(dirname(fileURLToPath(import.meta.url)), "..", "dist", "command-reader.cjs");
 const scratch = mkdtempSync(join(tmpdir(), "cmd-sock-"));
@@ -127,11 +129,42 @@ async function served(feed: CommandFeed, path: string): Promise<void> {
   check("an error answer settles a run request", (await answer(path, { id: runReq?.id, op: "error", reason: "the mod failed" })) === 0 && (await until(() => run.state() === "resolved")) && run.value()?.op === "error");
   check("the server warned about each refused answer", warnings.some((w) => /a list answer to a run request/.test(w)) && warnings.some((w) => /unknown request/.test(w)), warnings);
 
+  // The longest turn text, every character one that JSON escapes to six bytes: over the 1 MiB an
+  // answer may take, under the request limit.
+  const longest = "\u0001".repeat(262144);
+  const prompt = settle(feed.request({ op: "prompt", text: longest }));
+  const promptReq = await reader.next();
+  check("a prompt of the longest turn text reaches the reader whole", promptReq?.op === "prompt" && promptReq.text === longest, String(promptReq?.op));
+  check("...and its answer settles it", (await answer(path, { id: promptReq?.id, op: "prompt", outcome: "submitted" })) === 0 && (await until(() => prompt.state() === "resolved")));
+  const over = settle(feed.request({ op: "prompt", text: "x".repeat(MAX_REQUEST_BYTES) }));
+  check("a request over the limit rejects at once, unsent", (await until(() => over.state() === "rejected")) && /over 2097152 bytes/.test(over.error()?.message ?? "") && feed.unsupported() === undefined, over.error()?.message);
+
   const interrupt = settle(feed.request({ op: "interrupt" }));
   check("the reader got the interrupt request", (await reader.next())?.op === "interrupt");
   reader.child.kill("SIGTERM");
   check("a reader that disconnects rejects its pending request", (await until(() => interrupt.state() === "rejected")) && /reader disconnected/.test(interrupt.error()?.message ?? ""), interrupt.error()?.message);
   check("with its reader gone the feed names the missing mod again", /^the command mod is not running/.test(feed.unsupported() ?? ""), feed.unsupported());
+}
+
+/** The stream request, and the reply text answered under it. */
+async function streaming(feed: CommandFeed, path: string): Promise<void> {
+  const got: unknown[] = [];
+  const first = startReader("2.1.330");
+  await until(() => feed.unsupported() === undefined);
+  feed.stream((deltas) => got.push(...deltas));
+  const ask = await first.next();
+  check("a feed that streams asks its reader for the reply text", ask?.op === "stream" && ask.route === path && /^[a-z2-7]{26}$/.test(String(ask.id)), ask);
+  const delta = { key: "stream:4b5c1a7e-1f0e-4f4e-9c55-6f0bb2f1a001:1", text: "one\n" };
+  check("reply text under that id reaches the sink, and the helper exits 0",
+    (await answer(path, { id: ask?.id, op: "deltas", deltas: [delta] })) === 0 && JSON.stringify(got) === JSON.stringify([delta]), got);
+  const second = startReader("2.1.330");
+  const again = await second.next();
+  check("a reader that replaces it is asked under a new id", again?.op === "stream" && again.id !== ask?.id, again);
+  check("reply text under the replaced reader's id is refused, and the sink gets nothing more",
+    (await answer(path, { id: ask?.id, op: "deltas", deltas: [delta] })) === 1 && got.length === 1, got);
+  first.child.kill("SIGTERM");
+  second.child.kill("SIGTERM");
+  await until(() => feed.unsupported() !== undefined);
 }
 
 async function refusals(feed: CommandFeed, path: string): Promise<void> {
@@ -171,6 +204,7 @@ try {
   const path = commandSocketPath(process.pid);
   await noReader(feed, path);
   await served(feed, path);
+  await streaming(feed, path);
   await refusals(feed, path);
   console.log("command-socket.smoke: done");
 } catch (e) {

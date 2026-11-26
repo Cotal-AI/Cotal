@@ -20,9 +20,6 @@ import {
 import { EndpointPresence, type CardMetaChanges, type PresenceView } from "./endpoint-presence.js";
 export { PresenceWriteStuckError, type CardMetaChanges, type PresenceView } from "./endpoint-presence.js";
 import { idFromCreds } from "./identity.js";
-import {
-  type SecretStoreIdentity,
-} from "./secret-store.js";
 import { BIND_SPLIT_REISSUES, resolveService, type ResolvedService, type SubmitAndFollowGoalOptions } from "./endpoint-invoke.js";
 import { EpEnvelopeError, respondedButUnbound, replyRefusedBeforeEffect, replyTargetUnmapped } from "./endpoint-envelope.js";
 import { isRepeatSafeCommand } from "./endpoint-grants.js";
@@ -62,6 +59,7 @@ import type {
   Part,
   Presence,
   PresencePrompts,
+  PresenceAgentEndpoint,
   PresenceStatus,
   PresenceCondition,
   AttentionMode,
@@ -99,7 +97,7 @@ import {
   readChannelDefaults,
 } from "./channels.js";
 import { isCasLoss } from "./endpoint-records.js";
-import type { EndpointIdentity } from "./endpoint-identity.js";
+import { OBSERVER_INBOX_NONCE_PREFIX, type EndpointIdentity } from "./endpoint-identity.js";
 import { newConnectionState, type ConnectionState } from "./endpoint-connection-state.js";
 import { newLifecycleState, type LifecycleState } from "./endpoint-lifecycle-state.js";
 import { newCredentialState, type CredentialState } from "./endpoint-credential-state.js";
@@ -263,7 +261,8 @@ export class CotalEndpoint extends EventEmitter {
     emit: (event, error) => this.emit(event, error),
   });
   private readonly presence = new EndpointPresence(this.identity, this.conn, this.lifecycle, {
-    prompts: () => this.servedPrompts(),
+    prompts: () => this.principalServe.servedPrompts(),
+    agentEndpoint: () => this.principalServe.servedAgentEndpoint(),
     notLiveMsg: () => this.notLiveMsg(),
     bindWatch: (kv) => this.bindKvWatch(kv),
     retireWatch: (iter) => this.retireKvWatch(iter),
@@ -296,7 +295,6 @@ export class CotalEndpoint extends EventEmitter {
   get presenceBindingDropCount(): number {
     return this.presence.bindingDropCount;
   }
-
   /** The endpoint's own lifecycle UID, REQUIRED for every lifecycle-keyed messaging resource; absent
    *  ⇒ loud refusal naming the operation (the hard cut of SPEC §13.1 — no alias-keyed fallback). */
   private requireLifecycleUid(what: string): string {
@@ -314,6 +312,7 @@ export class CotalEndpoint extends EventEmitter {
      *  `connId` so the ephemeral verdict below can never read an unassigned value. */
     let selfMintedConnId = false;
     this.identity.space = opts.space;
+    this.identity.omitFromLiveMembership = opts.omitFromLiveMembership === true;
     // A display name is the client-side handle a peer is addressed by; reject the reserved `/`
     // (the future owner/name separator) and surrounding whitespace at the one identity choke
     // point every join/spawn path flows through. A role is an address too, refused here before
@@ -353,7 +352,7 @@ export class CotalEndpoint extends EventEmitter {
         this.identity.actor = claims.actor;
         this.cred.currentBearer = opts.bearer;
       }
-      this.identity.connId = assertInboxConnId(`ibx${randomUUID().replace(/-/g, "")}`);
+      this.identity.connId = assertInboxConnId(`${this.identity.omitFromLiveMembership ? OBSERVER_INBOX_NONCE_PREFIX : "ibx"}${randomUUID().replace(/-/g, "")}`);
       this.identity.sentinelCreds = opts.sentinelCreds;
       // User mode's actor is SERVER-AUTHORED (bearer claims or a declared card checked against
       // them), never self-minted — the ephemeral value here is the inbox nonce, which is the
@@ -2301,7 +2300,7 @@ export class CotalEndpoint extends EventEmitter {
    *  is required, not optional (the responder would otherwise be lost on a broker blip). */
   async startPlane3(
     aclFor: (owner: string, lifecycleUid: string) => MaybePromise<string[] | undefined>,
-    opts: { reloadMembershipCreds?: (expected?: string) => Promise<unknown>; evictPrincipal?: (principal: string) => Promise<unknown>; evictPrincipals?: (principals: string[]) => Promise<unknown>; planeConnLiveness?: (query: unknown) => Promise<unknown>; principalLiveness?: (principal: string) => Promise<unknown>; reloadStoreIdentity?: () => SecretStoreIdentity; onDeliveryCredsAdopted?: () => void; startupComplete?: () => boolean } = {},
+    opts: Parameters<EndpointDeliveryPlane["startPlane3"]>[1] = {},
   ): Promise<void> {
     return this.deliveryPlane.startPlane3(aclFor, opts);
   }
@@ -2464,8 +2463,9 @@ export class CotalEndpoint extends EventEmitter {
    * and runtime id, with no registration. `handlers` serves the cluster's commands with
    * `AGENT_CONTRACTS`; `describe` is built in.
    *
-   * Throws on an open mesh and on a static credential, where no row names who may call, without a
-   * lifecycle UID, before the endpoint has started, while it already serves `agent`, for an
+   * Serves under a user-auth or static credential, whose rows name who may call, and on an open mesh,
+   * where the broker confines no caller (SPEC 13.21). Throws without a lifecycle UID, before the
+   * endpoint has started, while it already serves `agent`, for an
    * `endpoint` or `cluster` field, which this entry point does not take, and for a set of handlers
    * that is not the cluster's commands with its contracts. It subscribes this process's own subject
    * with no queue group.
@@ -2481,10 +2481,6 @@ export class CotalEndpoint extends EventEmitter {
     if ("endpoint" in spec || "cluster" in spec)
       throw new Error(`servePrincipal serves only the "${AGENT_ENDPOINT}" endpoint with AGENT_CLUSTER and takes handlers alone; an endpoint or cluster is refused, never ignored (SPEC 13.22)`);
     const serve = { endpoint: AGENT_ENDPOINT, cluster: AGENT_CLUSTER, handlers: spec.handlers };
-    if (!this.authed)
-      throw new Error("the principal route is served only on an authenticated mesh: on an open mesh no row says who may call (SPEC 13.21)");
-    if (!this.identity.userMode)
-      throw new Error("the principal route is served only under a user-auth credential: a static credential names no one who may call (SPEC 13.21)");
     const uid = this.identity.ownLifecycleUid;
     if (uid === undefined)
       throw new Error("serving the principal route needs this endpoint's lifecycleUid: the subject names it (SPEC 13.21)");
@@ -2550,30 +2546,28 @@ export class CotalEndpoint extends EventEmitter {
     return this.principalServe.stopPrincipalServe(intent, republish);
   }
 
-  /**
-   * Set this process's `prompts` presence field and write presence at once (SPEC §6): how many
-   * prompts it holds `open` or `sent`, and a counter that goes up by one each time a prompt opens or
-   * changes state. The field shows only while the `agent` endpoint is served and the broker accepted
-   * its subscription on the current connection. Until this is called it shows `open: 0` with the
-   * fresh `seq` the serve took from {@link nextPromptsSeq} when it started. Throws when the `agent`
-   * endpoint is not served, and a RangeError for a `seq` below one this runtime already used.
-   */
+  /** Set this process's `prompts` presence field and write presence at once (SPEC §6): how many
+   *  prompts it holds `open` or `sent`, and a counter that goes up by one each time a prompt opens or
+   *  changes state. The field shows only while the `agent` endpoint is served and the broker accepted
+   *  its subscription on the current connection. Until this is called it shows `open: 0` with the
+   *  fresh `seq` the serve took from {@link nextPromptsSeq} when it started. Throws when the `agent`
+   *  endpoint is not served, and a RangeError for a `seq` below one this runtime already used. */
   async setPromptsPresence(prompts: PresencePrompts): Promise<void> {
     return this.principalServe.setPromptsPresence(prompts);
   }
 
-  /**
-   * Take the next `prompts` `seq` for this process's runtime (SPEC §6): 0 the first time, then one
-   * above every `seq` this process used under its runtime id, whichever endpoint object used it. A
-   * prompt desk takes every `seq` it shows from here. Throws without a lifecycle UID.
-   */
+  /** Take the next `prompts` `seq` for this process's runtime (SPEC §6): 0 the first time, then one
+   *  above every `seq` this process used under its runtime id, whichever endpoint object used it. A
+   *  prompt desk takes every `seq` it shows from here. Throws without a lifecycle UID. */
   nextPromptsSeq(): number {
     return this.principalServe.nextPromptsSeq();
   }
 
-  /** Forwards to the principal-serve component's {@link EndpointPrincipalServe.servedPrompts}. */
-  private servedPrompts(): PresencePrompts | undefined {
-    return this.principalServe.servedPrompts();
+  /** Set this process's `agentEndpoint` presence field (SPEC §6): the `agent` endpoint commands it
+   *  serves now, shown under the same gate as `prompts`. Presence is written when the value changed.
+   *  Throws when the `agent` endpoint is not served, and a TypeError for a flag that is not boolean. */
+  async setAgentEndpointPresence(served: PresenceAgentEndpoint): Promise<void> {
+    return this.principalServe.setAgentEndpointPresence(served);
   }
 
   /**

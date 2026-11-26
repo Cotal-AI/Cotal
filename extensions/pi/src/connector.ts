@@ -26,6 +26,7 @@ import {
   materialEnv,
 } from "@cotal-ai/connector-core";
 import { piCommandCatalog } from "./command-catalog.js";
+import { PI_THINKING_LEVELS } from "./model-switch.js";
 import { askPi, type PiAsk, type PiRpcResponse } from "./rpc-once.js";
 
 const DIST = new URL(import.meta.url.includes("/dist/") ? "./" : "../dist/", import.meta.url);
@@ -50,41 +51,41 @@ export const PI_PROVIDER_KEYS = [
   "XIAOMI_TOKEN_PLAN_CN_API_KEY", "XIAOMI_TOKEN_PLAN_AMS_API_KEY", "XIAOMI_TOKEN_PLAN_SGP_API_KEY",
 ] as const;
 
-/** The levels pi's `--thinking` takes (pi's docs/rpc-commands.md). pi runs any other level at its
- *  default without failing, so the launch refuses one. */
-const PI_THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
-
-const unavailable = (reason: string): ModelCatalog => ({ models: [], unavailable: reason });
 const refused = (command: string, reply: PiRpcResponse): string =>
   `pi refused ${command}: ${typeof reply.error === "string" ? reply.error : "no reason given"}`;
 
-/** The thinking levels pi lists for one model once it is selected, or why it listed none. */
-async function thinkingLevels(ask: PiAsk, provider: string, modelId: string): Promise<{ levels: string[] } | { failed: string }> {
+/** The thinking levels pi lists for one model once it is selected. A pi older than the command
+ *  answers it with its own "Unknown command" error: that install has no catalog to list, so the
+ *  levels are `unlisted` with the reason. Any other failure throws, as a failed read. */
+async function thinkingLevels(ask: PiAsk, provider: string, modelId: string): Promise<{ levels: string[] } | { unlisted: string }> {
   const id = `${provider}/${modelId}`;
   const selected = await ask({ type: "set_model", provider, modelId });
-  if (selected.success !== true) return { failed: refused(`set_model for ${id}`, selected) };
+  if (selected.success !== true) throw new Error(refused(`set_model for ${id}`, selected));
   const reply = await ask({ type: "get_available_thinking_levels" });
-  if (reply.success !== true) return { failed: `${refused(`get_available_thinking_levels for ${id}`, reply)} (pi 0.81.0 added it)` };
+  if (reply.success !== true && reply.error === "Unknown command: get_available_thinking_levels")
+    return { unlisted: `${refused(`get_available_thinking_levels for ${id}`, reply)} (pi 0.81.0 added it)` };
+  if (reply.success !== true) throw new Error(refused(`get_available_thinking_levels for ${id}`, reply));
   const levels = reply.data?.levels;
   if (!Array.isArray(levels) || !levels.every((level) => typeof level === "string"))
-    return { failed: `pi answered get_available_thinking_levels for ${id} without a level list` };
+    throw new Error(`pi answered get_available_thinking_levels for ${id} without a level list`);
   return { levels };
 }
 
 /** Map pi's answers to the catalog. The ids are `provider/id`, the form pi's `--model` takes, so a
  *  model offered by two providers stays two choices. A model's variants are the thinking levels pi
- *  lists for it, so the catalog offers what pi itself would run. */
+ *  lists for it, so the catalog offers what pi itself would run. A reply that names no model a seat
+ *  could run throws, and the manager reports a failed read. */
 async function piCatalog(ask: PiAsk): Promise<ModelCatalog> {
   const reply = await ask({ type: "get_available_models" });
-  if (reply.success !== true) return unavailable(refused("get_available_models", reply));
+  if (reply.success !== true) throw new Error(refused("get_available_models", reply));
   const entries = reply.data?.models;
-  if (!Array.isArray(entries)) return unavailable("pi answered get_available_models without a models list");
+  if (!Array.isArray(entries)) throw new Error("pi answered get_available_models without a models list");
   const models: ModelInfo[] = [];
   for (const m of entries as { provider?: unknown; id?: unknown; name?: unknown }[]) {
     if (typeof m?.provider !== "string" || !m.provider || typeof m.id !== "string" || !m.id)
-      return unavailable("pi answered get_available_models with a model that has no provider or id");
+      throw new Error("pi answered get_available_models with a model that has no provider or id");
     const listed = await thinkingLevels(ask, m.provider, m.id);
-    if ("failed" in listed) return unavailable(listed.failed);
+    if ("unlisted" in listed) return { models: [], unavailable: listed.unlisted };
     models.push({
       id: `${m.provider}/${m.id}`,
       provider: m.provider,
@@ -94,15 +95,17 @@ async function piCatalog(ask: PiAsk): Promise<ModelCatalog> {
   }
   // pi lists only the models of providers it holds credentials for.
   if (models.length === 0)
-    return unavailable("pi lists no models because it holds no provider credentials; sign in with /login in pi or set a provider API key");
+    throw new Error("pi lists no models because it holds no provider credentials; sign in with /login in pi or set a provider API key");
   return { source: "pi --mode rpc get_available_models", models };
 }
 
 export async function listPiModels(opts: ModelCatalogOpts = {}): Promise<ModelCatalog> {
   // `--offline` skips startup network work, such as an OAuth refresh that stopping pi mid-request would lose.
-  const env = launchEnv({ providerKeys: PI_PROVIDER_KEYS });
+  // The spawn.env names a launch gets, such as PI_CODING_AGENT_DIR, so pi lists what a seat reaches.
+  const env = launchEnv({ providerKeys: PI_PROVIDER_KEYS, envAllow: opts.envAllow });
   const answer = await askPi({ bin: opts.resolvedBinaries?.pi ?? "pi", args: ["--no-session", "--offline"], env, boundMs: 6_000 }, piCatalog);
-  return "failed" in answer ? unavailable(answer.failed) : answer.reply;
+  if ("failed" in answer) throw new Error(answer.failed);
+  return answer.reply;
 }
 
 export const piConnector: Connector = {
@@ -118,6 +121,9 @@ export const piConnector: Connector = {
   supportsTurnRelay: true,
   supportsModelVariant: true, // variant = pi's `--thinking` level
   listModels: listPiModels,
+  supportsAskPermissions: true,
+  supportsReasoningEvents: true,
+  prompts: true,
   // pi's extension commands and prompt templates are commands, and its skills are skills (commands.ts).
   commands: { targets: ["command", "skill"], list: (o) => piCommandCatalog(o, launchEnv({ providerKeys: PI_PROVIDER_KEYS, envAllow: o.envAllow })) },
   eventChannel,
@@ -204,7 +210,7 @@ export const piConnector: Connector = {
     if (sessionStatePath) rmSync(sessionStatePath, { force: true });
     const control = controlEndpoint(opts.space, opts.name, artifacts);
     env.COTAL_CONTROL_SOCKET = control.path;
-    Object.assign(env, materialEnv({ creds: opts.creds, servers: opts.servers, control, eventsRequired: opts.eventsRequired, eventPayloads: opts.eventPayloads, userAuth: opts.userAuth }, artifacts));
+    Object.assign(env, materialEnv({ creds: opts.creds, servers: opts.servers, control, eventsRequired: opts.eventsRequired, eventPayloads: opts.eventPayloads, askPermissions: opts.askPermissions, reasoningEvents: opts.reasoningEvents, userAuth: opts.userAuth }, artifacts));
     Object.assign(env, firstCommandEnv(opts.firstCommand, artifacts));
     if (persona) {
       const file = writeLaunchArtifact(artifacts, "cotal-persona-", "persona.md", persona);

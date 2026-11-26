@@ -34,7 +34,7 @@ import { readStackRuns } from "../lib/stack-runs.js";
 import { refuseLiveUnrecordedDaemons } from "./down-live-lease.js";
 import { localProcessSurface } from "../ext-loader.js";
 import { lostRecordsStackDown, stackRecordsLost } from "./stack-lost-records.js";
-import { goneRootStackDown, refuseInaccessibleDownRoot } from "./stack-gone.js";
+import { blockedDownRootRemedy, goneRootStackDown, refuseInaccessibleDownRoot } from "./stack-gone.js";
 
 const STOP_ORDER: readonly StackRole[] = ["manager", "delivery", "auth", "broker"];
 
@@ -461,7 +461,7 @@ function stopTarget(root: string, values: ParsedArgs["values"]) {
     if (elsewhere !== undefined) refuseInaccessibleDownRoot(elsewhere, space);
     throw new CommandFailure("refused", "CONFLICT", `--space ${space} ${elsewhere ? `names a stack rooted at ${elsewhere}` : "is not this folder's stack"}, and \`cotal down\` stops only the stack of the folder it runs in; this folder's stack is ${journal0.space}, so no member was stopped`, {
       target: { root, space, recordedSpace: journal0.space, ...(elsewhere ? { stackRoot: elsewhere } : {}) },
-      remedy: elsewhere ? `run \`${sameDown(values)}\` from ${elsewhere}` : `run \`${sameDown(values)}\` from the folder whose stack is ${space}, or drop --space to stop ${journal0.space} here`,
+      remedy: elsewhere ? blockedDownRootRemedy(elsewhere, sameDown(values)) ?? `run \`${sameDown(values)}\` from ${elsewhere}` : `run \`${sameDown(values)}\` from the folder whose stack is ${space}, or drop --space to stop ${journal0.space} here`,
     });
   }
   recordOperationSpace(journal0.space);

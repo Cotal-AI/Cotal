@@ -164,7 +164,7 @@ const mapAll = (entries: ClaudeEntry[]) => {
   c("a native Cotal plugin prompt withholds its entire body", !JSON.stringify(events).includes(PEER_SECRET));
   for (const origin of [
     { kind: "plugin", name: "another" },
-    { kind: "plugin", name: "cotal", asUser: true },
+    { kind: "plugin", name: "another", asUser: true },
     { kind: "unrecognised" },
   ]) {
     let refused = false;
@@ -177,8 +177,20 @@ const mapAll = (entries: ClaudeEntry[]) => {
   }
 }
 
+// The owner's turn: the plugin submits the owner's own words as the user (hooks/commands.js), and
+// Claude Code 2.1.330 records them under the plugin's origin with asUser.
+{
+  const { events } = mapAll([{
+    type: "user", uuid: "owner-turn", origin: { kind: "plugin", name: "cotal", asUser: true }, promptSource: "system",
+    message: { content: [{ type: "text", text: MINE }] },
+  }]);
+  c("an owner's turn opens a human-attributed run",
+    events.some((e) => e.type === "RUN_STARTED" && (e.cotal as Record<string, unknown> | undefined)?.turnSource === "human"));
+  c("an owner's turn publishes its words", JSON.stringify(events).includes(MINE));
+}
+
 // Keep the cell count explicit so a deleted case cannot silently reduce coverage.
-const EXPECTED = 17;
+const EXPECTED = 19;
 c(`every cell ran - ${EXPECTED} expected`, pass + fail === EXPECTED, `${pass + fail} cells reported`);
 
 console.log(`agui-authorship smoke: ${pass} passed, ${fail} failed`);

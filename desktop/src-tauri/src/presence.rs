@@ -82,7 +82,9 @@ pub fn tray_status(frame: &serde_json::Value) -> String {
 
 fn connection_tray_status(frame: &serde_json::Value) -> String {
     if frame["ok"].as_bool() != Some(true) {
-        return if frame["error"]["code"] == "NOT_RUNNING" { "Sign in required" } else { "Needs attention" }.into();
+        // A service not set up yet waits for sign-in; one that is set up but stopped needs attention.
+        let not_set_up = frame["error"]["code"] == "NOT_RUNNING" && frame["error"]["detail"]["installed"] != true;
+        return if not_set_up { "Sign in required" } else { "Needs attention" }.into();
     }
     let result = &frame["result"];
     if matches!(result["account"]["mode"].as_str(), Some("signed-out" | "sign-in-required")) {
@@ -213,6 +215,7 @@ mod tests {
         assert_eq!(tray_status(&json!({"ok":true,"result":{"managers":[ready.clone(),ready.clone()]}})), "Connected · 2 spaces");
         assert_eq!(tray_status(&json!({"ok":true,"result":{"managers":[ready,{"state":"refused"}]}})), "Needs attention · 1 connected");
         assert_eq!(tray_status(&json!({"ok":false,"error":{"code":"NOT_RUNNING"}})), "Sign in required");
+        assert_eq!(tray_status(&json!({"ok":false,"error":{"code":"NOT_RUNNING","detail":{"installed":true}}})), "Needs attention");
         assert_eq!(tray_status(&json!({"ok":false,"error":{"code":"NOT_ANSWERING"}})), "Needs attention");
         assert_eq!(tray_status(&json!({"ok":true,"result":{"state":"connected"}})), "Needs attention");
     }

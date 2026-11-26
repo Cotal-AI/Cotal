@@ -57,6 +57,9 @@ _base.BasePlatformAdapter = BasePlatformAdapter
 _base.MessageEvent = MessageEvent
 _base.MessageType = MessageType
 _base.SendResult = SendResult
+_base.cache_image_from_bytes = lambda data, ext=".jpg": ""
+_session = types.ModuleType("gateway.session")
+_session.build_session_key = lambda source, **kw: ""
 
 _cfg = types.ModuleType("gateway.config")
 
@@ -79,6 +82,7 @@ sys.modules.update(
         "gateway.platforms": types.ModuleType("gateway.platforms"),
         "gateway.platforms.base": _base,
         "gateway.config": _cfg,
+        "gateway.session": _session,
     }
 )
 

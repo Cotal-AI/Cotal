@@ -226,7 +226,10 @@ export class MeshAgent extends EventEmitter {
         events: this,
         owner: this.ep.principal.owner,
         request: options.naming.request,
-        settle: (label) => this.inOrder(() => this.ep.setCardMeta({ [AGENT_NAMING_META_KEY]: undefined, [AGENT_LABEL_META_KEY]: label() })),
+        settle: (label) => this.inOrder(() => {
+          const took = label();
+          return this.ep.setCardMeta(took === undefined ? { [AGENT_NAMING_META_KEY]: undefined } : { [AGENT_NAMING_META_KEY]: undefined, [AGENT_LABEL_META_KEY]: took });
+        }),
         log: (msg) => this.log(msg),
       });
     else if (config.autoName)
@@ -523,15 +526,17 @@ export class MeshAgent extends EventEmitter {
     }
   }
 
-  /** Only a user-auth credential names who may call (SPEC 13.21), so an open or static mesh serves
-   *  nothing. */
+  /** Served on every mesh mode (SPEC 13.21). A credential without the serve rows, one minted before
+   *  they existed, is refused by the broker, and the log line names the remedy. */
   private async serveAgentEndpoint(): Promise<void> {
-    if (this.agentEndpointOpened || !this.config.userAuth) return;
+    if (this.agentEndpointOpened) return;
     this.agentEndpointOpened = true;
     try {
       const served = await openAgentEndpoint(this.ep, {
         warn: (msg) => this.log(msg),
         onNamed: () => this.naming?.end(),
+        showModel: ({ model, variant }) => this.presence.switchModel(model, variant),
+        policed: this.config.modelPolicy,
         dispatcher: this.options.commands,
         onQueued: () => this.emit("command"),
         first: takeFirstCommand(),
@@ -547,8 +552,8 @@ export class MeshAgent extends EventEmitter {
   }
 
   /** The prompt desk of this process's `agent` endpoint, where a harness adapter opens the dialogs it
-   *  offers remotely. Undefined until the broker accepted the serve, and on an open or static mesh or
-   *  when the endpoint was refused. Once the endpoint closed, `open` refuses with `closed`. */
+   *  offers remotely. Undefined until the broker accepted the serve, and when the endpoint was
+   *  refused. Once the endpoint closed, `open` refuses with `closed`. */
   get prompts(): PromptDesk | undefined {
     return this.agentEndpoint?.prompts;
   }

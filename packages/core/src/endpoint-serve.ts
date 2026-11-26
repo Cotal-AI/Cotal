@@ -770,8 +770,8 @@ export interface EpPrincipalServeHandle {
 
 /**
  * Serve a principal's own command set on the principal route (SPEC 13.21), on one connection.
- * `Endpoint.servePrincipal` is the entry point an agent uses: it adds the refusals for an open mesh
- * and a static credential, re-binds on every replaced connection and owns the presence field.
+ * `Endpoint.servePrincipal` is the entry point an agent uses: it requires a lifecycle UID, re-binds
+ * on every replaced connection and owns the presence field.
  *
  * The cluster is a core constant, not a registration: construction parses it and refuses a command
  * that declares no `authorities`, one that is not ephemeral, one with a governed trait (this route
@@ -890,7 +890,7 @@ export function servePrincipalRoute(
     callback: (err, msg) => {
       if (err) {
         if (refusal === undefined) {
-          refusal = new EpEnvelopeError("permission-denied", `the broker refused this process's subscription to its principal-route subject "${filter}": ${err.message}. The credential holds no serve row for it, which a credential minted before the rows existed does not; reconnect after the auth service runs a release that mints them (SPEC 13.21)`);
+          refusal = new EpEnvelopeError("permission-denied", `the broker refused this process's subscription to its principal-route subject "${filter}": ${err.message}. The credential holds no serve row for it, as one minted before the rows existed does not. On a space where people sign in, reconnect after the auth service runs a release that mints them; on a static space, respawn the agent, since a new incarnation's credential carries them (SPEC 13.21)`);
           markRefused(refusal);
         }
         return;

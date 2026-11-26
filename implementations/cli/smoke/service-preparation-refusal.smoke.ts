@@ -375,6 +375,15 @@ const answering = (port: number, status: number) => ({ type: "process", executab
   const after = run(["service", "status", "broken", "--space", "b1"]);
   check("status then shows it failed with exit code 1", after.envelope?.result?.recordedState === "failed" && (after.envelope.result.exit as { code?: number } | null)?.code === 1, after.envelope?.result);
   check("rig: the definition is forgotten", run(["service", "remove", "broken", "--space", "b1", "--yes"]).status === 0);
+  const silentFile = join(home, "silent.json");
+  writeFileSync(silentFile, JSON.stringify({ schemaVersion: 1, space: "b1", launch: { type: "process", executable: node, args: ["-e", "process.exitCode = 1"], cwd: root }, readiness: { type: "process", timeoutMs: 3000 } }));
+  check("rig: a service that exits silently is saved", run(["service", "add", "silent", "--file", silentFile, "--space", "b1"]).status === 0);
+  const silent = run(["service", "start", "silent", "--space", "b1"]);
+  const instance = String(silent.envelope?.target?.instanceId), logs = run(["service", "logs", "silent", "--instance", instance, "--space", "b1"]);
+  check("a silent early exit reports the unavailable line and points to its empty instance log", exited(silent) &&
+    silent.envelope?.error?.message.endsWith("no log line was available from this start") === true && silent.envelope.error.remedy?.includes(`--instance ${instance} --space b1`) === true &&
+    logs.status === 0 && Array.isArray(logs.envelope?.result?.lines) && logs.envelope.result.lines.length === 0, shown(silent));
+  check("rig: the silent definition is forgotten", run(["service", "remove", "silent", "--space", "b1", "--yes"]).status === 0);
   // A last line longer than the quote holds keeps its start and its next step.
   const line = `fatal: ${"cause ".repeat(200)}; next: run the step that clears it`, longFile = join(home, "long.json");
   writeFileSync(longFile, JSON.stringify({ schemaVersion: 1, space: "b1", launch: { type: "process", executable: "/bin/sh", args: ["-c", "printf '%s\\n' \"$0\"; exit 1", line], cwd: root }, readiness: { type: "process", timeoutMs: 3000 } }));

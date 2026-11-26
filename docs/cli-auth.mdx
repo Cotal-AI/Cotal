@@ -355,7 +355,10 @@ The exchange or Manager operation that consumes the proof is never replayed by t
 A provider that cannot be reached, or that stops answering, refuses with
 `DEPENDENCY_UNAVAILABLE` (exit 2) and caches no session. `logout` revokes the IdP session, clears
 its cache, and removes only that
-account's discovered registry entries. See
+account's discovered registry entries. Logout does not enumerate open terminal sessions or
+send their detach frames. Those session grants stay in the attach process, not the login cache.
+Detach the terminal to end its session. Signing out at the provider on another machine also
+does not close an admitted terminal connection. See
 [identity & auth](identity-and-auth.mdx).
 
 
@@ -533,7 +536,9 @@ lifecycle UID the mint reports.
 
 Each file `auth mint --out` wrote for the space from this root and that is still there is listed
 under Exported credential files, and in `result.exported`, with its state and expiry. These rows
-are not findings. A file missing its user seed block is unreadable even if its JWT still parses.
+are not findings. On POSIX, doctor reports a symbolic link at the recorded export path as unreadable
+without following it. Restore the original private regular file at that path in place of the link.
+A file missing its user seed block is unreadable even if its JWT still parses.
 Restore the complete file, or use the replacement mint the report names. If the JWT claims cannot
 be read, the report cannot determine the original grants. Restore the complete file or confirm the
 intended grants before minting a replacement to a new private path. An expired file is an

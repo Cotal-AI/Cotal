@@ -26,7 +26,7 @@ The output schemas below describe successful command results, not the protocol e
 
 ## manager
 
-Cluster `ai.cotal.manager`, revision 55. 46 commands.
+Cluster `ai.cotal.manager`, revision 57. 46 commands.
 
 | Command                                                   | Capability          | Class     | Target modes |
 | --------------------------------------------------------- | ------------------- | --------- | ------------ |
@@ -211,7 +211,7 @@ Registered declaration:
   "targeted": false,
   "capability": "manager.read",
   "inputDigest": "sha256:1db0472aaee8e6b9d8d3d430ee021a1b6efc559ab7c0b99186898c972c53dd2d",
-  "outputDigest": "sha256:0f3b6c0ea655f46c6e99c5bcacff8673032b15affd67c57e7db7c1c57d793090"
+  "outputDigest": "sha256:7ddc01b2950b21aa624051d4cc8f679f63a189101833422af3869171f02ad4f4"
 }
 ```
 
@@ -248,6 +248,10 @@ Output schema:
     },
     "host": {
       "type": "string"
+    },
+    "machine": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
     },
     "version": {
       "type": "string"
@@ -298,7 +302,9 @@ Output schema:
           "state",
           "binaries",
           "eventPlane",
-          "prompts"
+          "prompts",
+          "askPermissions",
+          "reasoningEvents"
         ],
         "properties": {
           "agent": {
@@ -320,6 +326,12 @@ Output schema:
             "type": "boolean"
           },
           "prompts": {
+            "type": "boolean"
+          },
+          "askPermissions": {
+            "type": "boolean"
+          },
+          "reasoningEvents": {
             "type": "boolean"
           },
           "reason": {
@@ -1561,7 +1573,7 @@ Registered declaration:
   "class": "ephemeral",
   "targeted": false,
   "capability": "manager.spawn",
-  "inputDigest": "sha256:0cbf09007f6d255f4e907dfa196a8e30037545e229c8f6a1e630aabd30c44bd8",
+  "inputDigest": "sha256:fb1d7085a9b0cc75e9b409b44bf080ca4fdaf2b5f1ea0335630a7fe9baf73582",
   "outputDigest": "sha256:8db6027204c85b301a3fb109d3fd53dac815204b55d433824cff566d8b766154"
 }
 ```
@@ -1627,6 +1639,12 @@ Input schema:
       "type": "boolean"
     },
     "eventPayloads": {
+      "type": "boolean"
+    },
+    "askPermissions": {
+      "type": "boolean"
+    },
+    "reasoningEvents": {
       "type": "boolean"
     },
     "cwd": {
