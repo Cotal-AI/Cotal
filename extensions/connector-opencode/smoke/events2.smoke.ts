@@ -175,8 +175,20 @@ try {
   check("condition:a turn someone stopped is not a failure, and the seat that ran it reports no condition",
     after?.status === "idle" && after.condition === undefined, { status: after?.status, condition: after?.condition });
 
-  // A form, such as the question tool's, waits on a person while it is open. This turn records
-  // nothing, so it publishes nothing.
+  // Read the live event channel while the turn has only a prompt and an unanswered question.
+  const reader = new CotalEndpoint({ space: SPACE, servers, card: { name: "Reader", kind: "agent", id: "reader" }, channels: [CHANNEL] });
+  reader.on("error", () => {});
+  type Ev = Record<string, unknown> & { type: string };
+  const seen: Ev[] = [];
+  reader.on("message", (m: { channel?: string; parts?: { data?: unknown }[] }) => {
+    if (m?.channel !== CHANNEL) return;
+    for (const p of m.parts ?? []) for (const e of ((p.data ?? p) as { events?: Ev[] }).events ?? []) seen.push(e);
+  });
+  await reader.start();
+  const stopped = snapshotsOf("interrupted while streaming").at(-1)!;
+  const userRecord = (id: string, created: number, text: string) => ({ id, type: "user", time: { created }, text });
+  const held = userRecord("msg_05", 1794314120000, "[user 2]");
+  lists.set(SESSIONS[1]!, [...stopped, held]);
   const fed = (type: string, data: Record<string, unknown>) => second.feed({ type, durable: { aggregateID: SESSIONS[1]!, seq: seq++ }, data });
   fed("session.execution.started", { sessionID: SESSIONS[1]! });
   second.feed({ type: "form.created", data: { form: { id: "frm_1", sessionID: SESSIONS[1]!, title: "Questions", metadata: { kind: "question" }, fields: [] } } });
@@ -184,6 +196,10 @@ try {
   for (let i = 0; i < 25 && asking?.status !== "waiting"; i++, await sleep(200)) asking = otto();
   check("waiting:an open question form reads waiting, with the form's title as the activity",
     asking?.status === "waiting" && asking.activity === "Questions", { status: asking?.status, activity: asking?.activity });
+  const heldEvents = () => seen.filter((e) => typeof e.timestamp === "number" && e.timestamp >= held.time.created);
+  for (let i = 0; i < 25 && heldEvents().length === 0; i++, await sleep(200)) {}
+  check("start:an execution waiting on a question before any assistant output publishes just its run start",
+    JSON.stringify(heldEvents().map((e) => e.type)) === '["RUN_STARTED"]', heldEvents());
   // An answered ask leaves the turn running, so the seat reads working again until the turn ends.
   const settledOn = async (status: string) => {
     let now = otto();
@@ -198,31 +214,18 @@ try {
   second.feed({ type: "permission.replied", data: { sessionID: SESSIONS[1]!, requestID: "per_1", reply: "once" } });
   const allowed = await settledOn("working");
   check("answered:a permission ask answered while its turn runs reads working again", allowed?.status === "working", { status: allowed?.status, activity: allowed?.activity });
-  fed("session.execution.interrupted", { sessionID: SESSIONS[1]! });
-  await sleep(300);
-
-  // Read from here on, so a close can be told from one the next prompt makes.
-  const reader = new CotalEndpoint({ space: SPACE, servers, card: { name: "Reader", kind: "agent", id: "reader" }, channels: [CHANNEL] });
-  reader.on("error", () => {});
-  type Ev = Record<string, unknown> & { type: string };
-  const seen: Ev[] = [];
-  reader.on("message", (m: { channel?: string; parts?: { data?: unknown }[] }) => {
-    if (m?.channel !== CHANNEL) return;
-    for (const p of m.parts ?? []) for (const e of ((p.data ?? p) as { events?: Ev[] }).events ?? []) seen.push(e);
-  });
-  await reader.start();
-
   // A rejected permission ends the execution as interrupted and records no `idle` (measured on
   // OpenCode 2.0.24); the declined call's record is the live one, its text replaced.
-  const stopped = snapshotsOf("interrupted while streaming").at(-1)!;
-  const userRecord = (id: string, created: number, text: string) => ({ id, type: "user", time: { created }, text });
   const rejected: OpenCode2Message[] = [
     ...stopped,
-    userRecord("msg_05", 1794314120000, "[user 2]"),
+    held,
     { id: "msg_06", type: "assistant", time: { created: 1794314120010, streamed: 1794314120020, completed: 1794314120030 }, error: { type: "aborted", message: "Step interrupted" },
       content: [{ type: "tool", id: "call_2", name: "shell", state: { status: "error", input: { command: "[input 2]" }, error: { type: "aborted", message: "The user declined this tool call" } }, time: { created: 1794314120011, ran: 1794314120015, completed: 1794314120029 } }] },
   ];
-  await grow(second, SESSIONS[1]!, [rejected], "session.execution.interrupted");
+  lists.set(SESSIONS[1]!, rejected);
+  fed("session.step.ended", { sessionID: SESSIONS[1]! });
+  await sleep(250);
+  fed("session.execution.interrupted", { sessionID: SESSIONS[1]! });
   const rejectedRun = () => seen.filter((e) => e.type === "RUN_STARTED" && e.threadId === SESSIONS[1]).at(-1)?.runId;
   const closedBeforeNext = async () => {
     for (let i = 0; i < 15; i++, await sleep(200)) if (seen.some((e) => e.type === "RUN_FINISHED" && e.runId === rejectedRun())) return true;
@@ -306,7 +309,7 @@ try {
   process.exit = exit;
 }
 
-const EXPECTED = 21;
+const EXPECTED = 22;
 check(`meta:every cell ran - ${EXPECTED} expected`, passed() + failed() === EXPECTED, `${passed() + failed()} cells reported`);
 finish();
 process.exit();

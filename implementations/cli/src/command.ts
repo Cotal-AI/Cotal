@@ -79,7 +79,7 @@ import { npmProjectDirectory, preserveUpdatePath } from "./lib/npm-invocation.js
 import { reportLostOutput, writeAllSync } from "./lib/stdout-owner.js";
 import { shellWord } from "./lib/endpoint-errors.js";
 import { displayRemedy, hasMovedStackRemedy } from "./lib/self-exec.js";
-import { asksForHelp, GLOBAL_FLAG_WORDS, leadingInvocation, OUTPUT_FLAG_WORDS } from "./lib/leading-flags.js";
+import { asksForHelp, GLOBAL_FLAG_WORDS, leadingInvocation, OUTPUT_FLAG_WORDS, TYPOGRAPHIC_OPTION } from "./lib/leading-flags.js";
 import { takeManagedHandoffCustody } from "./managed-handoff.js";
 import { nearestWords, LEADING_FLAGS, unknownCommandMessage, unknownSubcommandMessage } from "./lib/nearest-word.js";
 import { UnusableFile } from "./lib/unusable-file.js";
@@ -487,6 +487,16 @@ function streamRefusalArgs(cmd: Command, words: readonly string[]): ParsedArgs |
   }
 }
 
+/** An unreadable extension surface refuses dispatch, using the known built-in output mode if available. */
+function overlayFailureExit(error: unknown, builtin: Command | undefined, words: readonly string[], wantsHelp: boolean, scope: OperationScope): never {
+  if (error instanceof CorruptExtensionsManifestError && builtin && !wantsHelp && !takesWordsRaw(builtin) && asksForJson(builtin, words)) {
+    const failure = new CommandFailure("refused", "SCHEMA_INVALID", error.diagnosis, { remedy: error.remedy, cause: error });
+    failureExit(builtin, failure, true, false, scope, words, streamRefusalArgs(builtin, words));
+  }
+  stderrLine("✗ ", (error as Error).message, c.red);
+  process.exit(1);
+}
+
 /** A usage error, written by {@link usageRefusal} with the help of the command or subcommand `words`
  *  name when there is one, and with `remedy` under the message when the parser can name one. Exit 1. */
 function usageExit(message: string, cmd?: Command, json = false, plain = false, remedy?: string, words: readonly string[] = []): never {
@@ -502,7 +512,7 @@ function usageExit(message: string, cmd?: Command, json = false, plain = false, 
 /** The refusal for a named or short option typed with a typographic dash pasted from
  *  typeset text, as `\u2013\u2013json`, naming it with hyphens; undefined when `word` is no such option. */
 function typographicOption(word: string, names: ReadonlySet<string>, flags: readonly FlagSpec[] = []) {
-  const typed = /^[\u2010-\u2015\u2212][-\u2010-\u2015\u2212]*([^=]+)(?:=(.*))?$/su.exec(word);
+  const typed = TYPOGRAPHIC_OPTION.exec(word);
   if (!typed) return undefined;
   const [, name, value] = typed;
   const long = names.has(name!);
@@ -586,6 +596,8 @@ function missingValue(cmd: Command, words: readonly string[], flag: FlagSpec, be
     return { message: `\`run check\` does not take --${flag.name}`, remedy: `run the check without --${flag.name}` };
   if (cmd.name === "endpoint" && flag.name === "file" && helpPath(cmd, words).path[0] === "check")
     return { message: "`endpoint check` does not take --file", remedy: "omit --file and keep the contract path" };
+  if (cmd.name === "service" && flag.name === "exec" && helpPath(cmd, words).path[0] === "status")
+    return { message: "`service status` does not take --exec", remedy: "omit --exec" };
   if (cmd.name === "history") {
     const sub = helpPath(cmd, words).path[0];
     if (sub === "limit" && flag.name === "server")
@@ -598,19 +610,82 @@ function missingValue(cmd: Command, words: readonly string[], flag: FlagSpec, be
   return { message: `--${flag.name} needs a value`, remedy: `write --${flag.name} ${flag.value ?? "<value>"}${beforeSeparator ? " before --" : ""}` };
 }
 
-function switchValueRefusal(flag: string, cmd?: Command, rest: readonly string[] = []) {
+function switchValueRefusal(flag: string, cmd?: Command, rest: readonly string[] = [], json = false) {
   const first = cmd && metadataPositionals(cmd, rest).positionals[0]?.value;
   const acceptsFlag = GLOBAL_FLAG_WORDS.has(flag) || (cmd && (flag === "--plain"
-    ? (findSubcommand(cmd, first) ?? cmd).outputs?.includes("plain")
+    ? !json && (findSubcommand(cmd, first) ?? cmd).outputs?.includes("plain")
     : structured(cmd, first)));
   return { message: `${flag} takes no value`, remedy: `omit ${flag}${acceptsFlag ? " or pass it without a value" : ""}` };
+}
+
+/** Positional word limit for the separator remedy only, counting subcommand words. Commands with
+ *  variable or unspecified arity keep their own grammar. */
+function operandLimit(cmd: Command, selected: Command | Subcommand, first: string | undefined, rest: readonly string[]): number {
+  const mode = selected.name;
+  const values = () => parseArgs({ args: [...rest], options: parserOptions(cmd), strict: false, allowPositionals: true }).values;
+  switch (cmd.name) {
+    case "app-identity": case "chat": case "clean": case "describe": case "docs": case "doctor":
+    case "feedback": case "manager": case "pending": case "telemetry": return 1;
+    case "backup": case "invoke": case "persona": case "reset": case "service-endpoint": case "space":
+      return 2;
+    case "config": return mode === "set" ? 3 : 2;
+    case "actor": return mode === "list" ? 1 : mode === "label" ? 3 : 2;
+    case "auth": return mode === "grants" || mode === "signer" ? 1 : mode === "inspect" ? 3 : 2;
+    case "channel": return mode === "defaults" ? 1 : 2;
+    case "daemon": return mode === "name" ? 2 : 1;
+    case "endpoint":
+      if (mode === "list") return 1;
+      if (mode === "lease" || mode === "commit") return 4;
+      if (mode === "work") return 3;
+      return ["deregister", "invoke", "watch", "session"].includes(mode) ? 3 : 2;
+    case "ext": return mode === "root" || mode === "list" ? 1 : mode === "add" || mode === "remove" ? 2 : Infinity;
+    case "linear": return mode === "account" ? 2 : ["add", "login", "show", "call", "resource", "prompt"].includes(mode) ? 3 : 2;
+    case "meshes": return first === "add" ? 2 : Infinity;
+    case "personas": case "service": case "team": return mode === "list" ? 1 : 2;
+    case "run":
+      if (mode === "list" || mode === "turns") return 1;
+      if (mode === "answer" || mode === "amend") return 3;
+      if (mode === "check") return values().file === undefined ? 3 : 2;
+      if (mode === "start" && values().file !== undefined) return 1;
+      return 2;
+    case "attach": return values().name === undefined ? 1 : 0;
+    case "history": return mode === "clear" || mode === "limit" || !values().dms ? 1 : 0;
+    case "input": {
+      const { name, text } = values();
+      return name !== undefined ? 0 : text !== undefined ? 1 : 2;
+    }
+    case "login": {
+      const { cloud, idp, "migrate-from": migrateFrom } = values();
+      return cloud || idp !== undefined || migrateFrom !== undefined ? 0 : 1;
+    }
+    case "send": {
+      const { file, stdin } = values();
+      return file !== undefined || stdin ? 0 : 1;
+    }
+    case "spawn": return values().file === undefined ? 1 : 0;
+    case "status": {
+      const { all, components, wide, verbose } = values();
+      return all || components || wide || verbose ? 0 : 1;
+    }
+    case "stop": {
+      const { self, name } = values();
+      return self || name !== undefined ? 0 : 1;
+    }
+    case "topology": return values().file === undefined ? 2 : 1;
+    case "update": {
+      const { auto, notify } = values();
+      return auto || notify ? 1 : 0;
+    }
+    case "use": return values().clear ? 0 : 1;
+    default: return Infinity;
+  }
 }
 
 /** A parse error as a refusal. A mistyped option names its spelling. A word that starts with `-`
  *  goes after `--` only where the command has room for an operand and there is no spelling suggestion.
  *  An option value that starts with `-` is written `--name=value`, and an option given with no value,
  *  last, before `--`, or before another of the command's options, is named with its placeholder. */
-function parseRefusal(error: Error & { code?: string }, cmd: Command, rest: readonly string[], flagNames: readonly string[] | undefined, takesOperands: boolean, operandsFull: boolean): { message: string; remedy?: string } {
+function parseRefusal(error: Error & { code?: string }, cmd: Command, rest: readonly string[], flagNames: readonly string[] | undefined, takesOperands: boolean, operandsFull: () => boolean): { message: string; remedy?: string } {
   if (error.code === "ERR_PARSE_ARGS_UNKNOWN_OPTION") {
     const reason = error.message.replace(/'\. To specify a positional argument starting with a '-', place it at the end of the command after '--', as in '-- "(?:[^"\\]|\\.)*"$/u, "'");
     const option = /^Unknown option '(--.+)'$/su.exec(reason)?.[1];
@@ -631,7 +706,7 @@ function parseRefusal(error: Error & { code?: string }, cmd: Command, rest: read
     const message = spellings ? `${reason} - did you mean ${spellings}?` : reason;
     const remedy = cmd.name === "completion" ? "drop the unknown option"
       : !takesOperands ? undefined : spellings ? `use ${spellings}`
-      : operandsFull ? "drop the unknown option" : "to pass a word that starts with \"-\", put -- before it";
+      : operandsFull() ? "drop the unknown option" : "to pass a word that starts with \"-\", put -- before it";
     return { message, remedy };
   }
   if (error.code === "ERR_PARSE_ARGS_UNEXPECTED_POSITIONAL") {
@@ -691,17 +766,7 @@ function parseOrExit(cmd: Command, rest: string[], noMoreOperands = false): Pars
       }
       const takesOperands = !seed && cmd.positionals !== undefined &&
         (!cmd.subcommands?.length || cmd.name === "history" || (first !== undefined && findSubcommand(cmd, first) !== undefined));
-      const operandsFull = noMoreOperands || (cmd.name === "config" && ((selected.name === "set" && positionals.length >= 3)
-        || ((selected.name === "get" || selected.name === "unset") && positionals.length >= 2)))
-        || (cmd.name === "docs" && positionals.length >= 1)
-        || (cmd.name === "ext" && selected.name === "root")
-        || (cmd.name === "history" && selected.name === "limit")
-        || (cmd.name === "space" && selected.name === "add" && positionals.length >= 2)
-        || (cmd.name === "channel" && selected.name === "set" && positionals.length >= 2)
-        || (cmd.name === "service" && selected !== cmd && (selected.name === "list" || positionals.length >= 2))
-        || (cmd.name === "team" && ["check", "boot", "deploy"].includes(selected.name) && positionals.length >= 2)
-        || (cmd.name === "endpoint" && ((selected.name === "check" && positionals.length >= 2)
-          || (first === "work" && selected.name === "lease" && positionals.length >= 4)));
+      const operandsFull = () => noMoreOperands || positionals.length >= operandLimit(cmd, selected, first, rest);
       const refusal = parseRefusal(e as Error & { code?: string }, cmd, rest, seed?.flagNames ?? selected.flagNames, takesOperands, operandsFull);
       usageExit(refusal.message, cmd, json, plain, refusal.remedy, rest);
     }
@@ -886,7 +951,7 @@ async function unknownInvocationExit(commands: readonly Command[], word: string,
   routeCollisionWarnings(warnings, cmd, rest, false);
   const end = rest.indexOf("--");
   const plain = (end === -1 ? rest : rest.slice(0, end)).includes("--plain");
-  const refusal = typed ?? switchValueRefusal(flag, cmd, rest);
+  const refusal = typed ?? switchValueRefusal(flag, cmd, rest, json);
   return usageExit(refusal.message, cmd, json, plain, refusal.remedy, rest);
 }
 
@@ -1025,15 +1090,14 @@ async function dispatchCli(registry: Registry, argv: string[], opts: RunCliOptio
     } catch (e) {
       const infrastructureStatus = builtin?.name === "status" && !wantsHelp && !words.includes("--components")
         && metadataPositionals(builtin, words).positionals.length === 0;
-      if (((configRead || completionStatus || infrastructureStatus) && e instanceof CorruptExtensionsManifestError) || skipUnreadableConnectorOverlay(e)) {
+      if (((configRead || completionStatus || infrastructureStatus) && e instanceof CorruptExtensionsManifestError)
+        || (infrastructureStatus && isCommandFailure(e) && e.code === "PERMISSION_DENIED") || skipUnreadableConnectorOverlay(e)) {
         // The infrastructure report reads the manifest itself and can name the gap.
         if (infrastructureStatus) setInstalledExtensionsEnabled(false);
         commands = registry.all<Command>("command");
       } else {
         if (repeatedLeading) usageExit(`Option '${repeatedLeading}' cannot be repeated`);
-        // A corrupt extensions manifest must not silently shrink the surface.
-        stderrLine("✗ ", (e as Error).message, c.red);
-        process.exit(1);
+        overlayFailureExit(e, builtin, words, wantsHelp, scope);
       }
     }
     for (const cmd of commands) {

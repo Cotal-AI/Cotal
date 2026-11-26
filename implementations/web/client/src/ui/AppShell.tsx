@@ -24,7 +24,7 @@ const SIDEBAR_WIDTH = { "--sidebar-width": "350px" } as CSSProperties;
  *  Below 768px (`phone`) it is mock section F instead: the centre over a bottom tab bar. The places
  *  are then the Sidebar's own sheet from the left, which the header's SidebarToggle opens. The rail is
  *  left out of it, since the tab bar already picks the views and the sheet keeps its width for the
- *  places; theme settings live on the rail, so the phone follows the system. Both sheets are modal:
+ *  places. The places sheet has its own Settings button for the theme. Both sheets are modal:
  *  each holds focus until it closes, and Escape and a tap on the overlay close it. Focus then goes
  *  back to the button that opened it.
  *

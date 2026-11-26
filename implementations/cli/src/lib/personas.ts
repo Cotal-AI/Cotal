@@ -108,11 +108,12 @@ export function personaSelectorWarning({ name, path }: Pick<PersonaEntry, "name"
   return `${reason} Rename it or launch it with ${codeSpan(launch)}.`;
 }
 
-/** Just the persona names: the completion source for `cotal spawn`, `persona show` and `personas
- *  show/rm`. Only an absent folder is an empty catalog. One that cannot be read throws an error that
- *  names it, so the completion offers nothing and COTAL_COMPLETE_DEBUG says why. */
-export function listPersonaNames(root: string): string[] {
-  return completionPersonas(root).filter((p) => !hasBlankPersonaSelector(p) && !p.name.includes("\\")).map((p) => p.name);
+/** Catalog selectors for completion. For `persona show`, only readable, valid definitions in
+ *  regular files qualify. An unreadable catalog throws and COTAL_COMPLETE_DEBUG says why. */
+export function listPersonaNames(root: string, forShow = false): string[] {
+  return completionPersonas(root)
+    .filter((p) => !hasBlankPersonaSelector(p) && !p.name.includes("\\") && (!forShow || (p.def && p.link === undefined)))
+    .map((p) => p.name);
 }
 
 /** {@link readPersonas} for a completion: a catalog folder that cannot be read throws an error that

@@ -563,6 +563,8 @@ one registered space other than the selection, and whose broker answers, the com
 space, as it does with nothing selected, and the note under its `Mesh:` heading, a refusal's
 included, says the selection applies outside the folder. If the selection was adopted automatically,
 offline registrations do not prevent the folder's only running space from taking precedence.
+When a target selection checks broker inventory, it skips an unchecked open registration if the
+inventory shows that broker does not serve the space. The registration and saved selection stay unchanged.
 `cotal whoami` does not contact the broker. When folder registrations compete with an adopted
 selection, it reports the identity from local records and notes that it cannot check this precedence.
 A space `cotal space create` prepared there
@@ -1322,8 +1324,9 @@ status names the file in an `EXTENSIONS_UNREADABLE` warning and reports a partia
 
 If the extension inventory is corrupt or unreadable, the infrastructure report keeps the
 observations it could read and exits 4 with an `EXTENSIONS_UNREADABLE` warning. In JSON,
-`extensions.items` in the result is `null`. The report leaves the inventory untouched and the
-warning names the repair command, `cotal ext seed --repair`.
+`extensions.items` in the result is `null`. The report leaves the inventory untouched. If access
+is denied, the warning asks you to restore read access to the manifest and its path. If the manifest
+is corrupt, it names the repair command, `cotal ext seed --repair`.
 
 An unreachable broker, a stopped process or an unbound responder is a state the report names, and
 `status` exits 0. An open mesh runs no delivery daemon, so when it records no delivery lease its

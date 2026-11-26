@@ -149,7 +149,9 @@ See [Event access](connect-claude.mdx#event-plane) for grants and [Jcode event b
 ## Resolve a launch refusal [#model-limits]
 
 A model with a provider prefix is refused as `model_prefix_rejected` before Cotal starts the Jcode seat.
-Select the provider in Jcode's configuration. For a detached launch with a single prefix in `--model`, `Next` shows the command with that prefix removed.
+Select the provider in Jcode's configuration.
+For a detached launch with a single provider prefix, `Next` shows a retry with a bare `--model` when Cotal can print the model ID safely.
+This overrides a prefixed `model:` in the persona without changing the file.
 `model_refused` means Jcode rejected the bare ID.
 `model_mismatch` means Cotal could not verify one provider route for the requested effort.
 The diagnostic names the requested model, reported runtime model and provider, matching-route count, and reason.

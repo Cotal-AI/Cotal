@@ -5,7 +5,7 @@
  * each part streams under a key of its own id and its own saved record closes the stream.
  *
  * **A line is anchored at the start of the streaming part's message**, the `<message>:<message>`
- * position the source also gives a failed message's stand-in record. The session store holds the
+ * cursor of its assistant header. The session store holds the
  * part from its first delta, so the store's end would place every line after the part, where its
  * saved record has already closed the stream. The merged source places a line before the first
  * record after its anchor, or where its read starts when it has read past it, so the text arrives

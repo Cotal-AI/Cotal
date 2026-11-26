@@ -166,6 +166,7 @@ function main(): void {
     for (const [form, exports] of [
       ["nested", { ".": { import: "./greet.mjs" } }],
       ["shorthand", { import: "./greet.mjs" }],
+      ["node-conditional", { ".": { node: { import: "./greet.mjs" }, default: "./fallback.mjs" } }],
     ] as const) {
       const dir = join(root, `exports-entry-${form}`);
       const { prefix, cli } = sandbox(dir);
@@ -177,9 +178,19 @@ function main(): void {
       writeFileSync(join(source, "greet.mjs"), `import { registry } from "@cotal-ai/core";
 registry.register({ kind: "command", name: "greet-example", summary: "Print a greeting", run() { console.log("Hello from the extension"); } });
 `);
+      if (form === "node-conditional") {
+        writeFileSync(join(source, "fallback.mjs"), `import { registry } from "@cotal-ai/core";
+registry.register({ kind: "command", name: "greet-example", summary: "Print a fallback greeting", run() { console.log("Hello from the fallback"); } });
+registry.register({ kind: "command", name: "greet-fallback", summary: "Fallback provider", run() {} });
+`);
+      }
       const { record, env } = recordNpmSpawns(dir);
       const added = cli(["ext", "add", "./example-extension"], env);
       assert.equal(added.status, 0, `${form} exports-only ext add failed: ${added.stderr.slice(-800)}`);
+      if (form === "node-conditional") {
+        check("ext add records the Node import providers instead of the default providers",
+          added.stdout.includes("command:greet-example") && !added.stdout.includes("command:greet-fallback"));
+      }
       check(`ext add passes windowsHide to the actual npm install for the ${form} root export`, existsSync(record) && readFileSync(record, "utf8").trim().split("\n").every(line => JSON.parse(line).windowsHide === true));
       const greeted = cli(["greet-example"]);
       check(`a fresh CLI loads the installed command through its ${form} root export`, greeted.status === 0 && greeted.stdout.trim() === "Hello from the extension");
@@ -250,7 +261,7 @@ registry.register({ kind: "command", name: "greet-example", summary: "Print a gr
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
-  assert.equal(passed + failed, process.platform === "linux" || process.platform === "darwin" ? 43 : 38, "all expected copy/rollback checks ran");
+  assert.equal(passed + failed, process.platform === "linux" || process.platform === "darwin" ? 46 : 41, "all expected copy/rollback checks ran");
   console.log(`ext-install-copies smoke: ${passed} passed, ${failed} failed`);
   emitSentinel({ passed, failed });
   process.exit(failed ? 1 : 0);

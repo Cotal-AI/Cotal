@@ -8,9 +8,9 @@
  * - `tool`      -> `TOOL_CALL_START` / `ARGS` / `END` at its call record, which the source hands over
  *   once the tool runs, and `TOOL_CALL_RESULT` then the `cotal.toolResult` marker with the element's
  *   own error status at its result record. `toolCallId` is the native call id.
- * - `user`      -> nothing of its own: it closes the open run, because a new turn began. Its text is
- *   never published, for the 1.x reason: a peer batch is prepended into the person's own prompt, so
- *   the record has no boundary between the two authors to filter on.
+ * - `user`      -> starts a run when OpenCode delivers the prompt into an idle session. A prompt
+ *   steered into an open run closes that run; the next assistant element opens its own. User text
+ *   is never published, because a peer batch and a person's own prompt can share the same record.
  * - `idle`      -> closes the open run with the outcome the server recorded: `failed` is `RUN_ERROR`,
  *   and `succeeded` and `interrupted` are `RUN_FINISHED` with no outcome, which says the run ended
  *   without claiming it succeeded. A stop someone pressed is not a failure. An execution that a
@@ -18,12 +18,10 @@
  *   so `plugin2.ts` closes that run out of band and this mapper forgets it.
  * - every other message kind -> nothing, and it closes nothing.
  *
- * A turn that ends before its first element, such as one the provider refused, has no run open at
- * its `idle`, so that `idle` publishes a run of its own: its start at the turn's `user` record and
- * the `idle`'s terminal. A reader waiting on the turn then sees it end. An `idle` that ends no turn
- * of its own, such as one recorded after an out-of-band close, maps to nothing. Tool arguments and
- * results are mapped here and dropped by the emitter's egress policy before anything is written,
- * the one place that decides what leaves.
+ * An `idle` closes a turn even if it ends before its first assistant element. When an `idle` ends a
+ * steered turn with no run yet, it publishes that turn's start and terminal together. An `idle` that
+ * ends no turn of its own, such as one recorded after an out-of-band close, maps to nothing. The
+ * mapper produces tool arguments and results, and the emitter's egress policy decides what leaves.
  *
  * A text or reasoning element that streamed through the delta journal (stream2.ts) publishes as it
  * streams, under its stream key, and its saved record ends that message. A run that closes with a
@@ -108,7 +106,7 @@ function wholeElement(kind: "text" | "reasoning", messageId: string, text: strin
 export function createOpenCode2Mapper(opts: OpenCode2MapperOptions): OpenCode2Mapper {
   const streams = new StreamedParts(opts.seed);
   let open: string | null = opts.resumeRunId ?? null;
-  /** When the turn no run has taken yet began: its `user` record's time. */
+  /** The timestamp of a prompt steered into a running turn. */
   let begunAt: number | undefined;
 
   const map: RecordMapper<OpenCode2Record> = (record) => {
@@ -120,9 +118,12 @@ export function createOpenCode2Mapper(opts: OpenCode2MapperOptions): OpenCode2Ma
       begunAt = message.type === "user" ? timestamp : undefined;
       const events: AguiEvent[] = [];
       if (open === null) {
-        if (message.type === "user" || begun === undefined) return null;
+        const at = message.type === "user" ? timestamp : begun;
+        if (at === undefined) return null;
         open = opts.mintRunId();
-        events.push(runStarted({ threadId: opts.threadId, runId: open, timestamp: begun, cotal: { runIdSource: "connector" } }));
+        events.push(runStarted({ threadId: opts.threadId, runId: open, timestamp: at, cotal: { runIdSource: "connector" } }));
+        begunAt = undefined;
+        if (message.type === "user") return { runId: open, events };
       }
       const runId = open;
       open = null;
