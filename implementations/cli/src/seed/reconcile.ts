@@ -62,7 +62,7 @@ import {
   type Stamp,
 } from "./authority.js";
 import { gcSeedStore, stageSeedPayload } from "./store.js";
-import { prefixLockDiffers, seededInstallDiffers, operatorInstallDiffers, operatorUpdateSpec } from "./verify.js";
+import { prefixLockDiffers, seededInstallDiffers, operatorInstallDiffers, operatorUpdateSpec, seededPeerLinksCurrent } from "./verify.js";
 import { assertAutomaticSeedManagers } from "./manager-guard.js";
 
 /**
@@ -119,7 +119,7 @@ export async function reconcileSeededConnectors(resumeFirstSeed = false): Promis
   await reconcile("auto", true, resumeFirstSeed);
 }
 
-/** Whether the seed journal, authority and installed built-in payloads need no package repair. */
+/** Whether the seed journal, authority, installed built-in payloads and shared peers need no repair. */
 export function seedInstallationCurrent(): boolean {
   try {
     const generation = seedGeneration();
@@ -127,7 +127,8 @@ export function seedInstallationCurrent(): boolean {
     if (!readWitness() || !authorityIntact() || !builtinsAccounted() || !builtinsMetadataCurrent() || readStamp()?.generation !== generation) return false;
     const entries = SEED_BUILTINS.map(name => ({ name, entry: installedEntry(name) }));
     if (entries.some(({ entry }) => entry !== undefined) && prefixLockDiffers() !== undefined) return false;
-    return entries.every(({ name, entry }) => entry === undefined || seededInstallDiffers(name, generation, entry) === undefined);
+    return entries.every(({ name, entry }) => entry === undefined ||
+      (seededInstallDiffers(name, generation, entry) === undefined && seededPeerLinksCurrent(entry.pkg)));
   } catch {
     return false;
   }
