@@ -14,11 +14,11 @@ type Suggestions = { items: Sugg[]; tokenStart: number; matchLen: number; mode: 
 
 /** The command's first argument opens choices immediately. Later @/# tokens retain the old
  * Tab completion, while Enter submits the complete command rather than replacing message text. */
-function suggest(query: string, snap: MeshSnapshot, managed: PsReply | undefined): Suggestions {
+function suggest(query: string, snap: MeshSnapshot, managed: PsReply | undefined, canBack: boolean): Suggestions {
   const command = query.split(" ")[0]!.toLowerCase();
   if (!query.includes(" ") || !COMMANDS.some((item) => item.name === command)) {
     const q = query.toLowerCase();
-    const commands: Sugg[] = COMMANDS.map((c) => ({
+    const commands: Sugg[] = COMMANDS.filter((c) => canBack || c.name !== "spaces").map((c) => ({
       value: c.name, label: c.name === "spawn" ? "Spawn agent" : c.name,
       summary: c.name === "spawn" ? "Choose an application, model and first task" : c.summary,
       write: c.write, control: c.control,
@@ -86,6 +86,7 @@ export function CommandPalette({
   snapshot,
   canWrite,
   canControl,
+  canBack = false,
   width,
   onChange,
   onRun,
@@ -98,6 +99,7 @@ export function CommandPalette({
   snapshot: MeshSnapshot;
   canWrite: boolean;
   canControl?: boolean;
+  canBack?: boolean;
   width: number;
   onChange: (q: string) => void;
   onRun: (line: string) => void;
@@ -116,7 +118,7 @@ export function CommandPalette({
     });
     return () => { alive = false; };
   }, [active, needsManaged, canControl, readManaged]);
-  const { items, tokenStart, matchLen, mode, hint } = suggest(query, snapshot, managed);
+  const { items, tokenStart, matchLen, mode, hint } = suggest(query, snapshot, managed, canBack);
   const { index: selClamped, up, down, first } = useListCursor(items.length);
   const [choosingTarget, setChoosingTarget] = useState(false);
 

@@ -12,6 +12,7 @@ import { STACK_ADAPTER, STACK_DEFINITION } from "./stack-journal.js";
 import { entryScript } from "../seed/paths.js";
 import { observeServiceProcess, serviceInstances } from "./service-instances.js";
 import { isCliEntry, supervisorInstallScope, supervisorProcessUid } from "./manager-proc.js";
+import { managerOutsideInstall } from "./update-manager-install-linux.js";
 import { serviceDefinitionStore } from "./service-definitions.js";
 
 /** Read-only update admission: skip roots that do not stat, or saved broker definitions
@@ -295,7 +296,7 @@ export function localUpdateManagers(
         try { const path = realpathSync(cwd ? resolve(cwd, arg) : arg); return path !== ownEntry && isCliEntry(path); }
         catch { return false; }
       });
-      if (other) continue;
+      if (other || managerOutsideInstall(pin, argv, ownEntry, env)) continue;
       unprovenManagerEntry(pid, uid, pin);
     }
     const recorded = known.get(pid);

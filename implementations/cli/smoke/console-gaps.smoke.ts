@@ -83,6 +83,45 @@ async function checkNarrowNeedsYouPalette(): Promise<void> {
   }
 }
 
+async function checkSpaceOverviewPalette(): Promise<void> {
+  const cols = 120, rows = 32;
+  const overview = "Enter open · r refresh";
+  const action = "back to the space overview";
+  for (const pinned of [true, false]) {
+    const args = pinned ? ["--space", space] : [];
+    const s = new ConsoleSession([...args, "--server", SERVERS], home, {}, { cols, rows });
+    try {
+      if (!pinned) {
+        if (!(await s.waitFor(`▸ ${space}`, 40_000))) throw new Error("The space overview did not list the space");
+        s.write("\r");
+      }
+      if (!(await s.waitFor(`${space} · all`, 40_000))) throw new Error("The console did not open the all feed");
+      const opened = s.mark();
+      s.write("\x10");
+      if (!(await s.waitFor("Commands", 8_000, opened))) throw new Error("The command palette did not open");
+      s.write("spaces");
+      const wanted = pinned ? "No matching commands" : action;
+      const deadline = Date.now() + 8_000;
+      let displayed = await screen(s.out, cols, rows);
+      while (!displayed.includes(wanted) && Date.now() < deadline) {
+        await wait(100);
+        displayed = await screen(s.out, cols, rows);
+      }
+      if (pinned) {
+        check("the pinned console does not suggest Spaces", displayed.includes(wanted) && !displayed.includes(action), displayed);
+        s.write("\x1b");
+      } else {
+        check("the console opened from the overview suggests Spaces", displayed.includes(wanted), displayed);
+        const submitted = s.mark();
+        s.write("\r");
+        check("Spaces returns to the overview", await s.waitFor(overview, 8_000, submitted), clean(s.out.slice(submitted)).slice(-500));
+      }
+    } finally {
+      await s.close();
+    }
+  }
+}
+
 async function checkDisconnectedQuit(): Promise<void> {
   const nc = await connect({ servers: SERVERS });
   let s: ConsoleSession | undefined;
@@ -294,6 +333,8 @@ try {
   await Promise.all([reader.stop(), stub.stop(), poster.stop()]);
   console.log("6. command palette over full-screen Needs You");
   await checkNarrowNeedsYouPalette();
+  console.log("7. space overview action in the command palette");
+  await checkSpaceOverviewPalette();
   await checkDisconnectedQuit();
 } catch (e) {
   fail++;

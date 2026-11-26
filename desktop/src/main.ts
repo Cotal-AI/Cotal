@@ -1,6 +1,7 @@
 import { renderAppUpdate, appUpdateNotice, appliedUpdateSummary, type AppUpdate, type AppUpdateReceipt } from "./app-update";
 import { listen } from "@tauri-apps/api/event";
 import { agentInventory, renderAgents, shownAgentName, type AgentAction, type LocalAgent } from "./agents";
+import { AgentApps } from "./agent-apps";
 import { updateScrollThumb } from "./scrollbars";
 import { computerName } from "./computer-name";
 import { updateNotice, updatePolicy, updateSummary, newerVersion, releaseUrl, installerLink, lastChecked, accountHost, type UpdateStatus } from "./updates";
@@ -77,6 +78,16 @@ let stage: Stage = "welcome";
 let ready = false;
 let appVersion: string | undefined;
 let settingsOpen = false;
+let appsOpen = false;
+let appsOpener: HTMLElement | undefined;
+let appsLoadedAt = 0;
+const agentApps = new AgentApps({
+  platform: () => appPlatform,
+  announce: message => announce(message),
+  openUrl: url => void invoke("open_browser", { url }).catch(refusal),
+  openPanel: () => openApps(),
+  changed: () => { appsLoadedAt = Date.now(); renderSettings(); },
+});
 let updateStatus: UpdateStatus | undefined;
 let appUpdate: AppUpdate | undefined;
 let autoUpdates: boolean | undefined;
@@ -158,10 +169,12 @@ function renderSettings(): void {
   const configured = stage === "finished" && !setupActive;
   // Settings also opens before sign-in: the name, the service log and the version matter most when sign-in fails.
   el("open-settings").hidden = setupActive || loginActive;
-  text("open-settings", settingsOpen ? "Back" : "Settings");
-  el("settings-panel").hidden = !settingsOpen;
-  document.querySelector<HTMLElement>(".connection-card")!.hidden = settingsOpen;
-  document.querySelector(".app")!.classList.toggle("settings-open", settingsOpen);
+  text("open-settings", settingsOpen || appsOpen ? "Back" : "Settings");
+  el("settings-panel").hidden = !settingsOpen || appsOpen;
+  el("apps-panel").hidden = !appsOpen;
+  document.querySelector<HTMLElement>(".connection-card")!.hidden = settingsOpen || appsOpen;
+  document.querySelector(".app")!.classList.toggle("settings-open", settingsOpen || appsOpen);
+  renderApps();
   const latest = appVersion ? appUpdaterConfigured() ? appUpdateNotice(appUpdate!, dismissedUpdate) : updateNotice(updateStatus, appVersion, dismissedUpdate) : undefined;
   const nextTray = configured ? latest : undefined;
   if (isTauri() && nextTray !== trayUpdate) { trayUpdate = nextTray; void invoke("set_update_notice", { version: nextTray ?? null }).catch(error => notice(String(error), true)); }
@@ -525,6 +538,7 @@ function showStage(next: Stage, focus = false): void {
   if (recovery) { title = recovery.title; description = recovery.description; }
   el("recovery-panel").hidden = !recovery;
   el("setup-installer").hidden = issue !== "SETUP_INTERRUPTED";
+  el("recover-apps").hidden = issue !== "NO_AVAILABLE_CONNECTOR";
   if (recovery) {
     for (const id of ["sign-in-panel", "space-panel", "connect-panel", "setup-progress", "connected-panel", "refresh"]) el(id).hidden = true;
     text("recover", recovery.label); el("recover").dataset.action = recovery.action;
@@ -552,10 +566,8 @@ function showStage(next: Stage, focus = false): void {
   }
   const inventoryVisible = !addingSpace && (anyConnected || el("agent-list").children.length > 0);
   el("running-agents").hidden = !inventoryVisible;
-  const summaryVisible = inventoryVisible && el("running-agents").dataset.available === "true";
-  el("applications-summary").hidden = !summaryVisible;
-  el("applications-label").hidden = summaryVisible || addingSpace || !anyConnected || !el("connected-applications").children.length;
-  el("connected-applications").hidden = summaryVisible || addingSpace || !anyConnected;
+  el("apps-strip-wrap").hidden = !finished || addingSpace || computerAccount?.mode === "sign-in-required" || !(anyConnected || computerAccount?.hostSupport === "supported");
+  syncAppsChip();
   el("dashboard").hidden = addingSpace || !(anyConnected || computerAccount?.hostSupport === "supported");
   if (finished && pending) { el("connection-icon").dataset.tone = "waiting"; setIcon(el("connection-icon"), "clock"); }
   el("another-space").hidden = addingSpace;
@@ -807,17 +819,6 @@ function updateCountdown(): void {
 el("copy-code").addEventListener("click", () => {
   void navigator.clipboard.writeText(el("approval-code").textContent ?? "").then(() => { text("copy-code", "Copied"); text("announcer", "Approval code copied."); }).catch(() => notice("The code could not be copied. Select the code and copy it manually.", true));
 });
-function showApplications(manager: unknown): void {
-  const names: Record<string, string> = { claude: "Claude Code", codex: "Codex", hermes: "Hermes", jcode: "Jcode", opencode: "OpenCode", pi: "pi" };
-  const connectors = (manager as { connectors?: { agent?: string; state?: string }[] })?.connectors ?? [];
-  const available = connectors.filter(c => c.state === "available" && typeof c.agent === "string").map(c => names[c.agent!] ?? c.agent!);
-  const container = el("connected-applications");
-  const value = available.join("\n");
-  text("applications-summary", available.length ? `Applications: ${available.join(", ")}` : "");
-  if (container.dataset.applications === value) return;
-  container.dataset.applications = value;
-  container.replaceChildren(...available.map(name => { const chip = document.createElement("span"); chip.className = "application-chip"; chip.dataset.testid = "application-chip"; chip.textContent = name; return chip; }));
-}
 async function request(body: Request): Promise<Record<string, unknown>> {
   const events = new Channel<Frame>();
   events.onmessage = (frame) => {
@@ -936,6 +937,7 @@ async function showStatus(status: Record<string, unknown>, current: () => boolea
   upgradeNeeded = appVersion !== undefined && status.version !== appVersion;
   if ((statusProblem && !upgradeNeeded) || (ready && (problem === "NOT_ANSWERING" || problem === "DAEMON_LOST" || (!upgradeNeeded && el("refusal-detail").textContent?.startsWith("App version:"))))) clearDetails();
   renderAgentRows(status);
+  if (isTauri() && !agentApps.busy && Date.now() - appsLoadedAt > 30_000 && (agentApps.apps === undefined || (agentApps.waitingForAgents && runningAgents() === 0))) { appsLoadedAt = Date.now(); void agentApps.load(); }
   requestAnimationFrame(sizeSpaceList);
   updateStatus = status.update as UpdateStatus | undefined;
   renderSettings();
@@ -952,7 +954,7 @@ async function showStatus(status: Record<string, unknown>, current: () => boolea
       connections.set(row.space, row.observed === "connected" && observedReadySpaces.includes(row.space) ? "launch-ready" : row.observed);
     }
     const manager = Array.isArray(status.managers) ? status.managers.find(item => item.space === space) : undefined;
-    if (launchReady(manager)) { instances.set(space, manager.instanceId); showApplications(manager); }
+    if (launchReady(manager)) { instances.set(space, manager.instanceId); }
     else instances.delete(space);
     connection = { space, state: connections.get(space) ?? "ready" };
     if (computerAccount.mode === "account" || computerAccount.mode === "sign-in-required" || computerRows.size || listOpened) { listOpened = true; showStage("finished"); buttons(); return; }
@@ -973,7 +975,7 @@ async function showStatus(status: Record<string, unknown>, current: () => boolea
   }
   if (space) {
     const manager = Array.isArray(status.managers) ? status.managers.find((item) => item.space === space) : undefined;
-    if (launchReady(manager)) { instances.set(space, manager.instanceId); showApplications(manager); state("launch-ready", space); buttons(); return; }
+    if (launchReady(manager)) { instances.set(space, manager.instanceId); state("launch-ready", space); buttons(); return; }
     instances.delete(space);
     const service = await request({ op: "service-status", space });
     if (!current()) return;
@@ -1195,7 +1197,7 @@ el("connect").addEventListener("click", () => void action(async () => {
     const result = await request({ op: "setup", space, idp });
     if (result.launchReady !== true || !launchReady(result.manager)) throw new Error("Setup did not confirm that this computer can launch agent applications.");
     applicationRefusals.delete(space); upgradeNeeded = false;
-    instances.set(space, (result.manager as { instanceId: string }).instanceId); showApplications(result.manager);
+    instances.set(space, (result.manager as { instanceId: string }).instanceId);
     progress = progressNames.map(() => "done"); renderProgress();
     completedSetup = true; addingSpace = false; choosingSpace = false; listOpened = true;
     state("launch-ready", space); notice(""); showStage("finished", true);
@@ -1269,6 +1271,26 @@ el("connection-status").addEventListener("click", () => {
     (row ?? el("connection-title")).scrollIntoView({ block: "nearest" });
   }
 });
+/** The compact Agent apps button shows where the callout could, once an app is ready. */
+function syncAppsChip(): void { el("apps-chip").hidden = el("apps-strip-wrap").hidden || agentApps.readyCount === 0; }
+function renderApps(): void {
+  agentApps.renderPanel(el("app-list"), el("apps-message"), el<HTMLButtonElement>("apps-refresh"));
+  agentApps.renderStrip(el("apps-strip"), el<HTMLButtonElement>("apps-chip"));
+  syncAppsChip();
+  // With no app ready, installing one is the step that matters, so the dashboard button steps back.
+  el("dashboard").classList.toggle("primary", !agentApps.apps || agentApps.readyCount > 0);
+}
+/** The Agent apps screen opens from the Ready screen, and Back returns focus to the control that opened it. */
+function openApps(): void {
+  if (loginActive || setupActive) return;
+  appsOpener = document.activeElement instanceof HTMLElement ? document.activeElement : undefined;
+  appsOpen = true; renderSettings(); el("apps-title").focus();
+  if (!agentApps.busy) void agentApps.load();
+}
+function closeApps(): void {
+  appsOpen = false; renderSettings();
+  (appsOpener?.isConnected && appsOpener.getClientRects().length ? appsOpener : el("apps-chip").hidden ? el("connection-title") : el("apps-chip")).focus();
+}
 function openSettings(): void {
   if (busy || loginActive) return;
   editing = false; addingSpace = false; choosingSpace = false;
@@ -1314,7 +1336,12 @@ el("update-preference").addEventListener("change", () => {
 el("update-download").addEventListener("click", () => void openInstaller());
 el("setup-installer").addEventListener("click", event => { event.preventDefault(); void invoke("open_browser", { url: el<HTMLAnchorElement>("setup-installer").href }).catch(refusal); });
 el("settings-download").addEventListener("click", () => void openInstaller());
-el("open-settings").addEventListener("click", () => { if (busy) return; if (settingsOpen) { if (nameEditing) closeNameEditor(); pendingAccountAction = undefined; settingsOpen = false; showStage(stage); renderSettings(); } else openSettings(); });
+el("apps-back").addEventListener("click", closeApps);
+el("apps-refresh").addEventListener("click", () => void agentApps.load(true));
+el("recover-apps").addEventListener("click", () => openApps());
+el("apps-chip").addEventListener("click", () => openApps());
+window.addEventListener("focus", () => { if (isTauri() && agentApps.apps && !agentApps.busy && Date.now() - appsLoadedAt > 30_000) void agentApps.load(); });
+el("open-settings").addEventListener("click", () => { if (appsOpen) { closeApps(); return; } if (busy) return; if (settingsOpen) { if (nameEditing) closeNameEditor(); pendingAccountAction = undefined; settingsOpen = false; showStage(stage); renderSettings(); } else openSettings(); });
 el("settings-back").addEventListener("click", () => { if (busy) return; if (nameEditing) closeNameEditor(); pendingAccountAction = undefined; settingsOpen = false; showStage(stage); renderSettings(); el("open-settings").focus(); });
 el("account-outcome-back").addEventListener("click", () => { accountOutcomeOpen = false; renderSettings(); el("settings-title").focus(); });
 el("settings-signout").addEventListener("click", () => confirmAccountAction("logout"));

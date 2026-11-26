@@ -1,5 +1,11 @@
 # @cotal-ai/web
 
+## 0.182.1
+
+### Patch Changes
+
+- 252feff: Change or reset the dashboard theme from the sidebar on a phone.
+
 ## 0.182.0
 
 ### Patch Changes
