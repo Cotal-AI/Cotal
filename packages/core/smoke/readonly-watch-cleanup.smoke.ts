@@ -6,11 +6,13 @@ import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { connect } from "@nats-io/transport-node";
+import { jetstreamManager } from "@nats-io/jetstream";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal, killAndAwaitExit } from "@cotal-ai/smoke-kit";
 import {
   CotalEndpoint, createSpaceAuth, newIdentity, mintCreds, mintMembershipObserverCreds,
   setupSpaceStreams, serverConfig, provisionAgent, mintLifecycleUid, startMembershipFeed, isReachable,
-  membershipBucket, presenceBucket, channelBucket, type MembershipChange,
+  membershipBucket, presenceBucket, channelBucket, standaloneConnectOpts, type MembershipChange,
 } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
 
@@ -68,9 +70,10 @@ try {
   poster.on("error", (error: Error) => { errors.push(error); });
   endpoints.push(poster);
   await poster.start();
-  feed = await startMembershipFeed({ servers, space, accountId: auth.account.pub,
+  const startFeed = async () => startMembershipFeed({ servers, space, accountId: auth.account.pub,
     observerCreds: await mintMembershipObserverCreds(auth, newIdentity()),
     rwCreds: await mintCreds(auth, newIdentity(), "membership-rw") });
+  feed = await startFeed();
   const streams = [membershipBucket(space), presenceBucket(space), channelBucket(space)].map((bucket) => `KV_${bucket}`);
   const names = async (stream: string): Promise<string[]> => {
     // Out-of-band observation needs no product credential or extra broker grant.
@@ -121,6 +124,47 @@ try {
   await delay(50);
   check("no lifecycle DELETE permission violations on the real broker", !brokerLog.split("\n").some((line) => line.includes("Violation") && line.includes("CONSUMER.DELETE.")));
   check("public lifecycle remained free of endpoint errors", errors.length === 0);
+
+  const replacementReader = endpoint(await mintCreds(auth, newIdentity(), "observer"));
+  await replacementReader.start();
+  const transportEdges: unknown[] = [];
+  replacementReader.on("transport", (edge) => transportEdges.push(edge));
+  const deleteId = newIdentity();
+  const deleteCreds = await mintCreds(auth, deleteId, "membership-store-recreate");
+  const deleteNc = await connect({ servers, ...standaloneConnectOpts({ creds: deleteCreds, tls: false }), inboxPrefix: `_INBOX_${deleteId.id}` });
+  let replacementWatch: { stop(): Promise<void> } | undefined;
+  try {
+    const jsm = await jetstreamManager(deleteNc, { checkAPI: false });
+    const stream = streams[0]!;
+    const lastSeq = async () => (await jsm.streams.info(stream)).state.last_seq;
+    for (let i = 0; i < 8; i++) await feed.poll();
+    const oldRevision = await lastSeq();
+    const replacement: MembershipChange[] = [];
+    replacementWatch = await replacementReader.watchMembership((change) => replacement.push(change));
+    await until("old store heartbeat", () => replacement.some((c) => c.type === "heartbeat" && c.revision >= oldRevision));
+    await feed.stop();
+    check("delete the membership stream on the running broker", await jsm.streams.delete(stream));
+    await setupSpaceStreams({ servers, space, creds: provisionerCreds });
+    feed = await startFeed();
+    check("replacement writer stamps a heartbeat below the old cursor", (await lastSeq()) < oldRevision);
+    replacement.length = 0;
+    // Shorten only this watch's idle timeout. The native reset and replay still run against the broker.
+    const { conn } = replacementReader as unknown as {
+      conn: { membershipFeedWatches: Set<{ iter: { monitor: { _change(interval: number): void } } }> };
+    };
+    const { monitor } = [...conn.membershipFeedWatches][0]!.iter;
+    monitor._change(200);
+    await until("replacement store replay", () => replacement.some((c) => c.type === "replayed"));
+    check("the existing watch replays the replacement's members and heartbeat below its old cursor",
+      replacement.some((c) => c.type === "member" && !c.update && c.member?.live.includes("general"))
+      && replacement.some((c) => c.type === "heartbeat" && !c.update && c.revision < oldRevision));
+    await feed.poll();
+    await until("replacement live heartbeat", () => replacement.some((c) => c.type === "heartbeat" && c.update));
+    check("the replacement watch continues delivering without a transport edge or endpoint error", transportEdges.length === 0 && errors.length === 0);
+  } finally {
+    await replacementWatch?.stop();
+    await deleteNc.close();
+  }
 } finally {
   await feed?.stop();
   for (const ep of endpoints.reverse()) await ep.stop();

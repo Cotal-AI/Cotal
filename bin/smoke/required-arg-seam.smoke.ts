@@ -584,7 +584,8 @@ const SEAMS: Seam[] = [
   // The inbox rollout adds three connections with explicit loopback TLS policy.
   // The open-space backup suite adds one loopback connection with explicit TLS policy.
   // The stdin payload probe carries the selected broker's TLS requirement.
-  { fn: "standaloneConnectOpts", key: "tls", sites: 490, untypecheckedSites: 396 },
+  // The membership watch replacement smoke adds one loopback connection with explicit TLS policy.
+  { fn: "standaloneConnectOpts", key: "tls", sites: 491, untypecheckedSites: 397 },
 ];
 
 const SITE_COUNTS = JSON.parse(readFileSync(new URL("./required-arg-sites.json", import.meta.url), "utf8")) as Record<string, number>;
