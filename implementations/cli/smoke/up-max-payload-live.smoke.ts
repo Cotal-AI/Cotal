@@ -21,6 +21,7 @@
  *  6. A broker-only reuse on that low limit exits 0 but drops the add-manager hint from its Next
  *     section, naming the stop and restart instead; on a sufficient limit the hint stays. This is
  *     the controller route; the legacy open route's reuse receipt offers only `down`.
+ *  7. Status after a busy-port first start tells the operator to keep the original startup options.
  *
  * Sandboxes COTAL_HOME and a project root under a scratch base with proven-clean `.cotal` ancestry;
  * kills only its own children. Needs `nats-server` on PATH.
@@ -295,8 +296,43 @@ async function checkStoppedBrokerOnly(space: string, port: number): Promise<void
   }
 }
 
+async function checkBlockedFirstStart(): Promise<void> {
+  const space = "payload-blocked-first";
+  root = mkdtempSync(join(scratch, `${space}-`));
+  sandbox = recordSmokeSandbox({ root, cotalHome: home, xdgConfigHome: configDir });
+  const prepared = await run(["space", "create", space]);
+  ok("the busy-port fixture is prepared", prepared.status === 0, prepared.out);
+  const holder = net.createServer((socket) => socket.end("not NATS\n"));
+  holder.listen(0, "127.0.0.1");
+  await once(holder, "listening");
+  const port = (holder.address() as net.AddressInfo).port;
+  const options = ["--open", "--no-manager", "--max-payload", "8192"];
+  try {
+    const refused = await run(["up", ...options, "--server", `nats://127.0.0.1:${port}`]);
+    ok("the busy port refuses the first start", refused.status === 2 && refused.out.includes("CONFLICT"), refused.out);
+    const status = await run(["status", "--plain", "--space", space]);
+    const alternate = /`--server (nats:\/\/127\.0\.0\.1:(\d+))` and all other options unchanged/.exec(status.out);
+    ok("status says to repeat the original command or change only its server",
+      status.status === 0 && status.out.includes(`stop the process listening on 127.0.0.1:${port}, then repeat your original startup command from the same folder`) &&
+      alternate !== null && Number(alternate[2]) !== port && !/`(?:pnpm )?cotal up\b/.test(status.out), status.out);
+    try {
+      const started = await run(["up", ...options, "--server", alternate![1]!]);
+      const health = await run(["status", "--components", "--space", space]);
+      ok("changing only the server starts a broker with the original payload limit and no manager",
+        started.status === 0 && await servedMaxPayload(Number(alternate![2])) === 8192 &&
+        /manager\s+not-started.*started with --no-manager/.test(health.out), `${started.out}\n${health.out}`);
+    } finally {
+      const stopped = await run(["down", "--yes"]);
+      ok("the recovered broker stops", stopped.status === 0, stopped.out);
+    }
+  } finally {
+    await new Promise<void>((resolve) => holder.close(() => resolve()));
+  }
+}
+
 try {
   for (const mode of ["auth", "open-legacy", "open-controller"] as const) await checkMode(mode);
+  await checkBlockedFirstStart();
   console.log(`\nup-max-payload live smoke: OK - ${pass} checks`);
 } finally {
   for (const cp of kids) { try { cp.kill("SIGKILL"); } catch { /* already gone */ } }

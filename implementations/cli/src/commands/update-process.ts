@@ -1,7 +1,8 @@
 import { spawn, spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, realpathSync, rmSync, watch, writeFileSync, type FSWatcher } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, watch, writeFileSync, type FSWatcher } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, parse, relative, resolve, sep } from "node:path";
+import { fileURLToPath } from "node:url";
 import { cmdSpawnSpec, beginGlobalUpdateChild, processGroupMembers, processStartToken } from "@cotal-ai/workspace";
 import { withInstallUmask } from "../lib/install-umask.js";
 import { npmInvocation, npmUpdateChildEnvironment } from "../lib/npm-invocation.js";
@@ -41,13 +42,24 @@ export const STRICT_SEMVER = new RegExp(
   `^(0|[1-9]\\d*)\\.(0|[1-9]\\d*)\\.(0|[1-9]\\d*)(?:-${PRE}(?:\\.${PRE})*)?(?:\\+${BUILD}(?:\\.${BUILD})*)?$`,
 );
 
-/** Bind a POSIX npm global installation to its package and bin link before replacing it.
- * Local/npx copies and source checkouts retain npm's separate global destination. A global-shaped
- * installation with a missing, redirected or escaping entry refuses instead of guessing a prefix. */
+/** Bind an npm global installation to its invoked package before replacing it.
+ * Local/npx copies and source checkouts retain npm's separate global destination. On Windows an
+ * adjacent npm shim must name the entry; on POSIX the bin link must resolve to it. */
 export function installedUpdatePrefix(packageRoot: string, entry: string): string | undefined {
   const root = realpathSync(packageRoot);
   const modules = dirname(root);
-  if (process.platform === "win32" || basename(modules) !== "node_modules" || basename(dirname(modules)) !== "lib")
+  if (process.platform === "win32") {
+    if (basename(modules).toLowerCase() !== "node_modules" || basename(root).toLowerCase() !== "cotal-ai") return;
+    const prefix = dirname(modules);
+    const shim = join(prefix, "cotal.cmd");
+    if (!existsSync(shim) || existsSync(join(prefix, "package.json"))) return;
+    const launcher = readFileSync(shim, "utf8");
+    const linked = /"%dp0%[\\/]([^"\r\n]+)"[ \t]+%\*[ \t]*\r?$/im.exec(launcher)?.[1];
+    if (!linked || !existsSync(join(prefix, linked)) || realpathSync(join(prefix, linked)) !== realpathSync(entry)) return;
+    const version = (JSON.parse(readFileSync(join(root, "package.json"), "utf8")) as { version: string }).version;
+    return verifyGlobalEntry(modules, version) === realpathSync(entry) ? prefix : undefined;
+  }
+  if (basename(modules) !== "node_modules" || basename(dirname(modules)) !== "lib")
     return undefined;
   const prefix = dirname(dirname(modules));
   const meta = JSON.parse(readFileSync(join(root, "package.json"), "utf8")) as { version?: string };
@@ -141,7 +153,16 @@ export function runProcess(file: string, args: string[], env: NodeJS.ProcessEnv,
   };
 }
 
-export async function runGlobalProcess(
+export function runGlobalProcess(
+  ...args: Parameters<typeof runGlobalChild>
+): Promise<CommandResult> {
+  const [root, operation, file, argv, env, inherit = false, verbatim = false] = args;
+  return process.platform === "win32" && operation === "install"
+    ? runWindowsInstall(root, file, argv, env, inherit, verbatim)
+    : runGlobalChild(...args);
+}
+
+async function runGlobalChild(
   root: string,
   operation: "install" | "reconcile",
   file: string,
@@ -162,6 +183,7 @@ export async function runGlobalProcess(
   let stopping: Promise<void> | undefined;
   try {
     if (operation === "reconcile") env = npmUpdateChildEnvironment(env);
+    const pipeConsole = process.platform === "win32" && inherit;
     const npm = operation === "install" && file === "npm" ? npmInvocation(env, args) : undefined;
     if (npm) ({ file, args, windowsVerbatimArguments } = cmdSpawnSpec(npm.file, npm.args, npm.env));
     const reconcileCache = gated && operation === "reconcile";
@@ -198,14 +220,14 @@ export async function runGlobalProcess(
       detached: true,
       windowsHide: true,
       windowsVerbatimArguments,
-      ...(gated ? { stdio: [inherit ? "inherit" : "pipe", inherit ? "inherit" : "pipe", inherit ? "inherit" : "pipe", "pipe"] } : inherit ? { stdio: "inherit" as const } : {}),
+      stdio: updateChildStdio(gated, inherit, pipeConsole),
     }));
     const permit = gated ? child.stdio[3] as import("node:stream").Writable : undefined;
     let error = "";
     let stdout = "";
     let stderr = "";
-    child.stdout?.on("data", (chunk: Buffer | string) => { stdout += chunk.toString(); });
-    child.stderr?.on("data", (chunk: Buffer | string) => { stderr += chunk.toString(); });
+    child.stdout?.on("data", (chunk: Buffer | string) => { if (pipeConsole) process.stdout.write(chunk); else stdout += chunk.toString(); });
+    child.stderr?.on("data", (chunk: Buffer | string) => { if (pipeConsole) process.stderr.write(chunk); else stderr += chunk.toString(); });
     child.once("error", (e) => { error = e.message; });
     permit?.on("error", (e) => { error = e.message; });
     if (child.pid !== undefined) {
@@ -289,6 +311,48 @@ export async function runGlobalProcess(
     if (!published && !preservePending) mutation.clear();
     if (cache) rmSync(cache, { recursive: true, force: true, maxRetries: 3 });
   }
+}
+
+function updateChildStdio(gated: boolean, inherit: boolean, pipeConsole: boolean): import("node:child_process").StdioOptions | undefined {
+  if (gated) return [...Array<"inherit" | "pipe">(3).fill(inherit ? "inherit" : "pipe"), "pipe"];
+  return pipeConsole ? ["ignore", "pipe", "pipe"] : inherit ? "inherit" : undefined;
+}
+
+async function runWindowsInstall(root: string, file: string, args: string[], env: NodeJS.ProcessEnv, inherit: boolean, verbatim: boolean): Promise<CommandResult> {
+  const npm = file === "npm" ? npmInvocation(env, args) : undefined;
+  if (npm) ({ file, args, windowsVerbatimArguments: verbatim } = cmdSpawnSpec(npm.file, npm.args, npm.env));
+  const cache = mkdtempSync(join(tmpdir(), "cotal-update-npm-"));
+  try {
+    const mutation = beginGlobalUpdateChild(root, "install");
+    let published = false;
+    let error: string | undefined;
+    let result: CommandResult | undefined;
+    try {
+      const worker = spawn(process.execPath, [fileURLToPath(new URL("./update-windows-install.js", import.meta.url))], {
+        detached: true, windowsHide: true, stdio: ["ignore", "ignore", "ignore", "ipc"],
+        env: { ...(npm?.env ?? env), npm_config_cache: cache, npm_config_logs_max: "0", npm_config_update_notifier: "false" },
+      });
+      worker.once("error", cause => { error = cause.message; });
+      worker.once("message", (reply: CommandResult) => { result = reply; });
+      const closed = new Promise<{ status: number | null; signal: NodeJS.Signals | null }>(done => worker.once("close", (status, signal) => done({ status, signal })));
+      if (worker.pid !== undefined) {
+        published = true;
+        try {
+          mutation.markLive(worker.pid);
+          worker.send!({ file, args, cwd: parse(homedir()).root, log: join(cache, "install.log"), verbatim });
+        } catch (cause) { error = message(cause); worker.disconnect?.(); }
+      }
+      const exit = await closed;
+      if (!result || exit.status !== 0) {
+        if (published) mutation.complete(exit.status === 0 ? null : exit.status, exit.signal, "Windows npm job completion could not be verified");
+        return { status: null, stdout: "", stderr: "", error: error ?? result?.error ?? "Windows npm job completion could not be verified" };
+      }
+      mutation.clear();
+      if (inherit && result.stdout) process.stdout.write(result.stdout);
+      return inherit ? { ...result, stdout: "" } : result;
+    } finally { if (!published) mutation.clear(); }
+  } catch (cause) { return { status: null, stdout: "", stderr: "", error: message(cause) }; }
+  finally { rmSync(cache, { recursive: true, force: true, maxRetries: 3 }); }
 }
 
 /** npm --json supplies the code, but its summary is the only field naming the missing spec. */

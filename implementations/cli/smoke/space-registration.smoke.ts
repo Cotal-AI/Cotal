@@ -1078,6 +1078,21 @@ if (process.platform === "linux") {
   const up = await run(["up", "--detach", "--open", "--no-manager", "--server", server], {}, first);
   check("with nothing selected, up selects the space it started and says so",
     up.status === 0 && getCurrent() === "selfirst" && up.stdout.includes(`automatically selected "selfirst"`), shown(up));
+  const offline = await json(["space", "add", "seloffline", "--force", "--server", DEAD, "--root", second], second);
+  const liveTarget = await json(["who"], second);
+  const offlineIdentity = await run(["whoami", "--plain"], {}, second);
+  const offlineIdentityJson = await json(["whoami"], second);
+  const explicitIdentity = await run(["whoami", "--space", "selfirst", "--plain"], {}, second);
+  const uncertainty = "cannot check whether this folder takes precedence";
+  check("whoami reports local identity without claiming an offline folder overrides the adopted selection",
+    offline.status === 0 && liveTarget.status === 0 && liveTarget.env?.target?.space === "selfirst" &&
+      offlineIdentity.status === 4 && offlineIdentity.stdout.startsWith("Mesh: seloffline\n") &&
+      offlineIdentity.stdout.includes(uncertainty) && !offlineIdentity.stdout.includes("applies outside it") &&
+      offlineIdentityJson.status === 4 && offlineIdentityJson.env?.target?.space === "seloffline" &&
+      offlineIdentityJson.env?.warnings.some((w: { code: string; message: string }) => w.code === "BROKER_NOT_PROBED" && w.message.includes(uncertainty)) &&
+      explicitIdentity.status === 0 && explicitIdentity.stdout.startsWith("Mesh: selfirst\n") && !explicitIdentity.stdout.includes(uncertainty),
+    { liveTarget: shown(liveTarget), offlineIdentity: shown(offlineIdentity), json: shown(offlineIdentityJson), explicit: shown(explicitIdentity) });
+  check("forget the offline registration before starting the prepared space", (await json(["space", "forget", "seloffline"], second)).status === 0);
   assertSmokeSandboxDown(sandbox, ["down", "--yes"], { cwd: first, env: runEnv });
   await run(["down", "--yes"], {}, first);
   const secondSandbox = recordSmokeSandbox({ root: second, cotalHome: process.env.COTAL_HOME!, xdgConfigHome: runEnv.XDG_CONFIG_HOME });
@@ -1095,6 +1110,10 @@ if (process.platform === "linux") {
   check("the only running registration in this folder takes precedence over an adopted selection",
     added.status === 0 && who.status === 0 && who.env?.target?.space === "selsecond" &&
       readCurrentSelection()?.source === "adopted" && getCurrent() === "selfirst" && findMesh("seloffline")?.server === DEAD, shown(who));
+  const multipleIdentity = await json(["whoami"], second);
+  check("whoami keeps a successful identity report when multiple folder registrations compete with the adopted selection",
+    multipleIdentity.status === 0 && multipleIdentity.env?.target?.space === "selfirst" &&
+      multipleIdentity.env?.warnings.some((w: { code: string; message: string }) => w.code === "SELECTION_NOT_FOLDER_SPACE" && w.message.includes(uncertainty)), shown(multipleIdentity));
   check("space inventory marks the roster target and still lists the offline registration",
     inventory.status === 0 && inventory.env?.result.current === "selfirst" && inventory.env.result.folder === who.env?.target?.space &&
       inventory.env.result.items.some((row: { space: string; check: string }) => row.space === "seloffline" && row.check === "unreachable"), shown(inventory));

@@ -71,7 +71,7 @@ export * from "./telemetry.js";
 export * from "./win-cmd.js";
 export * from "./pid.js";
 export { darwinProcessBinding, type DarwinProcess, type DarwinProcessBinding } from "./darwin-process.js";
-export { win32ProcessBinding, windowsCommandLine, windowsEnvironmentBlock, type Win32ProcessBinding, type Win32ProcessPin, type Win32TreePin } from "./win32-process.js";
+export { win32ProcessBinding, withWindowsUpdateIdentity, windowsCommandLine, windowsEnvironmentBlock, type Win32ProcessBinding, type Win32ProcessPin, type Win32TreePin } from "./win32-process.js";
 export { managerMachineId, osMachineId, SYSTEM_ID_SOURCES, type OsMachineId, type Win32SystemIdSource } from "./machine-identity.js";
 export { custodyRequest, custodyStatus, isCustodyPipe, startWin32Custodian, type CustodyRequest, type CustodyStatus, type Win32Custody } from "./win32-custody.js";
 export * from "./progress.js";

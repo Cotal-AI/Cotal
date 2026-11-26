@@ -1235,9 +1235,9 @@ try {
     const status = cli(root, "status", "--space", space, "--json");
     const selected = status.env?.result?.selected as { code?: string; message?: string } | undefined;
     const hints = (status.env?.result?.hints as string[] | undefined) ?? [];
-    const statusRetry = /\bcotal up --foreground --server nats:\/\/127\.0\.0\.1:(\d+)`/.exec(hints.join("\n"));
+    const statusRetry = /`--server nats:\/\/127\.0\.0\.1:(\d+)` and all other options unchanged/.exec(hints.join("\n"));
     check("status keeps the prepared verdict and names how to free or change the refused first-start address",
-      status.status === 0 && selected?.code === "not-started" && selected.message?.includes(`"${space}" is prepared but not started; another process holds that address 127.0.0.1:${port}`) === true && !!statusRetry && Number(statusRetry[1]) !== port && hints.some((hint) => hint.includes(`stop the process listening on 127.0.0.1:${port}`)) && !hints.some((hint) => hint.startsWith("start it with")), shown(status));
+      status.status === 0 && selected?.code === "not-started" && selected.message?.includes(`"${space}" is prepared but not started; another process holds that address 127.0.0.1:${port}`) === true && !!statusRetry && Number(statusRetry[1]) !== port && hints.some((hint) => hint.includes(`stop the process listening on 127.0.0.1:${port}, then repeat your original startup command from the same folder`)) && !hints.some((hint) => /`(?:pnpm )?cotal up\b/.test(hint)), shown(status));
     const bareRetry = cli(root, "up", "--no-manager", "--json");
     check("retrying without a server override refuses at the same address", bareRetry.status === 2 && bareRetry.env?.error?.code === "CONFLICT" && bareRetry.env.error.message.includes(`127.0.0.1:${port}`), shown(bareRetry));
     check("no broker instance was recorded", serviceInstances(space, "stack-broker").length === 0, serviceInstances(space, "stack-broker").map((row) => row.record.value.state));

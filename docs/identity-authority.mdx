@@ -146,7 +146,7 @@ the legacy rail can carry a **listing generation** for it: one `ep.v1` request r
 only `registry` `endpoints`, its reply row, and the read of its own accepted row. At the auth
 callout an `agent` connection and an unissued `manager-caller` view get one, with the bearer's
 expiry as its horizon. The evidence records the credential's complete ceiling. The accepted row's
-token is derived from the connection's inbox nonce and that expiry, so the client finds the row
+token is derived from the connection's inbox name and that expiry, so the client finds the row
 without being handed a token. If a row already exists under that token, the callout reuses its
 generation only for the same caller, a generation that is still live and an identical ceiling;
 otherwise it connects the credential without the listing rows. An issued credential asks on its own generation instead: an agent a

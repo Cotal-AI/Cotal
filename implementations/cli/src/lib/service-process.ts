@@ -1172,13 +1172,13 @@ function unreadableLog(path: string, code: string) {
 
 /** The last `tail` lines of an owned private log file, from at most its last 1 MiB. A log this
  *  account cannot read is refused with the step that gives its owner read and write back. */
-export function readOwnedLogTail(path: string, tail: number, requireFile = false) {
+export function readOwnedLogTail(path: string, tail: number, requireFile = false, missingRemedy?: () => string) {
   let fd: number;
   try { fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK); }
   catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
     if (code === "ENOENT") {
-      if (requireFile) throw new CommandFailure("refused", "TARGET_NOT_FOUND", `the captured service log ${path} does not exist`, { target: { path } });
+      if (requireFile) throw new CommandFailure("refused", "TARGET_NOT_FOUND", `the captured service log ${path} does not exist`, { target: { path }, remedy: missingRemedy?.() });
       return { lines: [] as string[], omittedBytes: 0, path };
     }
     if (code === "EACCES" || code === "EPERM") throw unreadableLog(path, code);
