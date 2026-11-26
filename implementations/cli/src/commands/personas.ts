@@ -168,7 +168,8 @@ async function list(verbose: boolean, running: boolean, values: ConnectValues): 
         continue;
       }
       const prefix = `agent file ${e.path}: `;
-      const reason = e.error.startsWith(prefix) ? `${prefix}${personaDefinitionProblem(e.error, e.path)}` : e.error;
+      const reason = e.error.startsWith(prefix) || e.error.startsWith("invalid name ")
+        ? `${prefix}${personaDefinitionProblem(e.error, e.path)}` : e.error;
       const blankSelector = hasBlankPersonaSelector(e);
       console.log(`${c.red(blankSelector ? JSON.stringify(e.name) : name)}  ${c.red(blankSelector ? "⨯ invalid selector" : "⨯ unparseable")} ${c.dim(oneLine(reason))}`);
       continue;
