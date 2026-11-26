@@ -10,7 +10,7 @@ import { cotalRoot } from "../lib/paths.js";
 import { resolveSpace } from "../lib/status.js";
 import { claimExtensionMutation, extensionUpdatePassOwnedBy } from "../lib/ext-mutation.js";
 import { withInstallUmask } from "../lib/install-umask.js";
-import { npmInvocation } from "../lib/npm-invocation.js";
+import { npmInvocation, npmLifecycleEnvironment } from "../lib/npm-invocation.js";
 import { runSeed } from "../seed/reconcile.js";
 import { assertStageVerifier, stageExtensions } from "../lib/extension-stage.js";
 import { connectorConfigDir, extensionReinstallAdvice, isExtensionPathSpec as isPathSpec, resolveExtensionEntry } from "@cotal-ai/workspace";
@@ -140,8 +140,10 @@ async function npm(args: string[], prefix: string, seeding = false): Promise<{ s
   let published = false;
   let preservePending = false;
   let stopForwarding = () => {};
+  let lifecycle: ReturnType<typeof npmLifecycleEnvironment>;
   try {
-    const child = withInstallUmask(() => spawn(file, spawnArgs, { cwd: npm.cwd, env: npm.env, windowsVerbatimArguments, detached: seedGroup }));
+    lifecycle = npmLifecycleEnvironment(npm, prefix);
+    const child = withInstallUmask(() => spawn(file, spawnArgs, { cwd: npm.cwd, env: lifecycle?.env ?? npm.env, windowsVerbatimArguments, detached: seedGroup }));
     if (seedGroup && child.pid !== undefined) {
       const pid = child.pid;
       const forward = (signal: NodeJS.Signals) => {
@@ -190,6 +192,7 @@ async function npm(args: string[], prefix: string, seeding = false): Promise<{ s
   } finally {
     stopForwarding();
     if (!published && !preservePending) mutation.clear();
+    lifecycle?.dispose();
   }
 }
 

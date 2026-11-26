@@ -149,6 +149,10 @@ assert.equal(seedInstallationCurrent(), false, "an unseeded checkout is not prov
 const { registryArrivalCell } = await import("../../../bin/smoke/update-registry-arrival.smoke.mjs");
 const cacheUpdate = await registryArrivalCell({ scenario: "cache" });
 assert.equal(cacheUpdate.code, 0, "real CLI and npm update succeed with a user-owned cache that is not writable");
+if (["linux", "darwin"].includes(process.platform)) {
+  const lifecycleUpdate = await registryArrivalCell({ scenario: "version-named-node" });
+  assert.equal(lifecycleUpdate.code, 0, lifecycleUpdate.output);
+}
 
 function assertSlowProbeFallback(root: string, dispatcher: string, executable: string, path: string,
   check: () => { status: number | null; stdout: string; stderr: string }, launchedNode: () => string): void {

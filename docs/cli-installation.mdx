@@ -336,7 +336,8 @@ manager does not affect the update. Relative `PATH` entries are resolved from th
 ran `update`. On Linux and macOS, an empty entry also refers to that folder, just like `.`.
 On Linux and macOS, self-update can run a recognized npm script directly with the Node running Cotal
 when npm cannot find `node` on its `PATH`. This covers version-named Node executables without a
-`node` link and Node directories that contain a colon.
+`node` link and Node directories that contain a colon. When npm runs lifecycle scripts during
+the install, it can find that same Node as `node` without changes to the caller's `PATH`.
 Removing an unrelated working folder before or during update does not block it or its npm and
 reconciliation children. A relative `--creds` path keeps its meaning from the original folder.
 
@@ -809,6 +810,8 @@ An unsupported source spelling returns `USAGE_INVALID` before installation.
 A package can declare its entry through a root `exports` entry such as
 `"exports": { ".": { "import": "./greet.mjs" } }` without also declaring `main`.
 An npm `main` such as `"./greet"` can resolve to `greet.js` without naming the suffix.
+On Linux and macOS, when Cotal runs a recognized npm script directly with its own Node because
+`node` is missing from `PATH`, extension install scripts can find that same Node as `node`.
 Give `remove` the package name as listed by `cotal ext list`, without a version.
 For a scoped package such as `@acme/_helper`, include the scope and the leading underscore.
 If the package is already absent, `remove` reports that nothing was removed and exits 0.
