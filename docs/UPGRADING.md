@@ -57,6 +57,54 @@ as the first argument to `spawn`.
 Existing cards are still available for inspection and removal. On the CLI, put flags before `--`:
 `cotal persona show -- -reviewer` or `cotal persona remove --yes -- -reviewer`.
 
+## Trusted project folders
+
+A project folder's own `.cotal` may now declare `connectors.<name>.mcpServers` entries, `spawn.env`
+names and persona `launchOptions` only when the folder is trusted. A spawn that reads them from any
+other folder refuses, names the folder, and launches nothing. This holds for a spawn in this
+terminal and for one a manager runs.
+
+### What changes for you
+
+- The upgrade records trust for existing registrations and prepared spaces on this machine. It runs
+  before the first new space registration or when a command such as `cotal status` or `cotal spawn`
+  reaches the migration step. Commands that refuse or are interrupted before that point do not write
+  trust records. With no roots to migrate, it does not create `trusted-projects.json`. This happens
+  once per Cotal home: a record beside the space registry keeps later registrations out, even if
+  `trusted-projects.json` is removed or another shell uses a different config folder. Removing
+  `trusted-projects.json` leaves no folder trusted until you run `cotal trust <path>` again.
+  Removing `trusted-projects-seed.json` in the Cotal home lets the next migration trust the folders
+  registered or prepared before it runs.
+  If the upgrade cannot read the registry, it warns and trusts no roots from that attempt. Review
+  each affected folder and run `cotal trust <path>` explicitly. With `--json`, the warning is in
+  the command's result envelope. `cotal update` does not run this migration.
+- `cotal setup`, `cotal space create` and `cotal up` trust a folder only when they made its
+  `.cotal` in that run. A folder that already had one, such as a cloned repository, needs
+  `cotal trust <path>` once if it declares servers, `spawn.env` or persona launch options.
+- A project with no space registered or prepared before the upgrade needs `cotal trust <path>`
+  if it uses these settings. A persona file a manifest names (`cotal up -f`, `cotal team deploy`)
+  follows the same rule for its `launchOptions`. The manifest's own `launchOptions` on an agent
+  are not checked: a manifest you run is trusted as you run it. The persona's launch options are
+  refused when the path you give, any symbolic link or folder on the way, or the file reached lies
+  under the `.cotal/agents` of a folder that is not trusted.
+- A project config is refused if its file or `.cotal` belongs to another account. Copy the settings
+  into a project folder and config file your account owns, then review the folder and run
+  `cotal trust <path>` if the settings require trust.
+- Restart a running manager at this version so its spawns apply the rule. Run the printed trust
+  command on the execution host, as the account that runs the manager. A manager service also
+  checks project trust before it starts with project-supplied environment names.
+- `cotal up` can leave a partially started stack if the manager refuses project settings. It keeps
+  the components that started, names the trust command as the next step, and starts the missing
+  manager when you trust the project and retry.
+- A foreground `cotal spawn --dry-run` reads the same project config as the launch, even for a
+  connector without launch validation. It can refuse an untrusted, foreign-owned or invalid config
+  that an older preview did not read. The Manager's model catalog and harness-command listing also
+  read this config, including when requested by a remote client. Review the project and record
+  trust on the Manager's host before retrying those reads with project settings that require trust.
+
+If you call `loadCotalConfig` from `@cotal-ai/core`, pass a trust check as its second argument,
+for example `loadCotalConfig(root, isTrustedProject)` with `isTrustedProject` from `@cotal-ai/workspace`.
+
 ## Messages carrying stored-message headers
 
 Cotal drops channel posts, DMs, role requests, delivery copies, event payloads and legacy control requests

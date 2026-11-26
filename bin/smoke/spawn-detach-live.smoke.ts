@@ -39,6 +39,7 @@ const awaitExit = (p: ChildProcess, ms = 5000): Promise<void> =>
 // finds its folder by walking up to the nearest one, and a home holding `.cotal` would answer.
 const scratch = makeScratch("cotal-detach-");
 const home = mkdtempSync(join(tmpdir(), "cotal-detach-home-"));
+for (const key of Object.keys(process.env)) if (key.startsWith("COTAL_")) delete process.env[key];
 process.env.COTAL_HOME = home;
 
 const { parseCommandArgs, probeConnect, registry, CotalEndpoint, openSessionRail, EpEnvelopeError, eventChannel } = await import("@cotal-ai/core");
@@ -83,6 +84,11 @@ writeFileSync(
   join(workspaceRoot, ".cotal", "config.json"),
   JSON.stringify({ connectors: { e2e: { mcpServers: { alpha: { command: "true" }, beta: { command: "true" } } } } }),
 );
+// A project config that declares servers applies only in a folder the operator trusts. The trust
+// record lives in this suite's own config folder.
+process.env.XDG_CONFIG_HOME = join(home, "xdg");
+const { trustProject } = await import("@cotal-ai/workspace");
+trustProject(workspaceRoot);
 
 // The e2e connector: a REAL long-lived child (node keepalive) through the REAL pty runtime — no
 // Claude cold-start, but a genuine process the manager supervises and attach streams. The child
@@ -649,7 +655,10 @@ try {
   // validation under test is ever reached. The seed stays skipped so nothing npm-installs into
   // the sandbox either. Customers never see this state (the lockstep release publishes core +
   // connectors together).
-  const subEnv = { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: join(home, "xdg"), COTAL_SKIP_CONNECTOR_SEED: "1" };
+  const subEnv = {
+    ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_"))),
+    COTAL_HOME: home, XDG_CONFIG_HOME: join(home, "xdg"), COTAL_SKIP_CONNECTOR_SEED: "1",
+  };
 
   {
     const retryConnector: Connector = { ...e2eCon, name: "retry-e2e", eventChannel };

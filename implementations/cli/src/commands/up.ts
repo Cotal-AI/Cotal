@@ -201,6 +201,7 @@ import {
   belowPresenceSafeBroker,
 } from "./up-detach.js";
 import { holdForegroundListener } from "./up-foreground-listener.js";
+import { createUpControlDirectory, withUpProjectTrust } from "./up-project-trust.js";
 import { controllerStackNative, manifestFileRefusal, upManifest } from "./up-manifest.js";
 import {
   printRestoreReceipt,
@@ -427,8 +428,7 @@ function seedMovedFailure(error: unknown): unknown {
 /** `inheritedLock` is the root maintenance lock a recovery re-entry hands down (see the re-entry
  *  below). Ownership transfers with it: this call releases it at its own release point. */
 export async function up(args: ParsedArgs, inheritedLock?: MaintenanceLock, freshTeamBoot = false, restoreSink?: (result: RestoreStartupResult) => void): Promise<void> {
-  // One `up`, its re-entries included, reads each channels file once (see `channelsReads`).
-  if (!channelsReads.getStore()) return channelsReads.run(new Map(), () => up(args, inheritedLock, freshTeamBoot, restoreSink));
+  if (!channelsReads.getStore()) return withUpProjectTrust(() => channelsReads.run(new Map(), () => up(args, inheritedLock, freshTeamBoot, restoreSink)));
   // A --server is recorded and compared in one spelling, the scheme in lower case with no bare
   // trailing slash. A manifest boot checks its own override against broker.servers.
   if (typeof args.values.server === "string" && !args.values.file) args = { ...args, values: { ...args.values, server: canonicalServer(args.values.server) } };
@@ -447,7 +447,7 @@ export async function up(args: ParsedArgs, inheritedLock?: MaintenanceLock, fres
     // A fresh folder under the machine home gets its own `.cotal` before anything resolves the root, so
     // every later step uses this folder. A run that stops before writing there removes it again.
     if (fresh) {
-      mkdirSync(join(fresh, ".cotal"), { mode: 0o700 });
+      createUpControlDirectory(fresh);
       for (const line of hang("", `made ${join(fresh, ".cotal")} for this folder's records; the machine's home .cotal was not used`, terminalWidth(process.stderr), c.dim)) console.error(line);
     }
     const previousCwd = process.cwd();

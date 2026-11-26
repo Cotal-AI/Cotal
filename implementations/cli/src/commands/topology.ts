@@ -3,6 +3,7 @@ import { type ParsedArgs } from "@cotal-ai/core";
 import { isCommandFailure } from "@cotal-ai/workspace";
 import { loadManifest, renderTopology, ManifestError, type PreparedManifest } from "../lib/manifest/index.js";
 import { c, stderrLine } from "../ui.js";
+import { displayProjectTrustFailure } from "../lib/self-exec.js";
 
 /**
  * `cotal topology view -f cotal.yaml` — validate a mesh manifest and print its access graph:
@@ -45,7 +46,7 @@ export function refuseManifestSpaceMismatch(prepared: PreparedManifest, space: s
 
 /** Print a manifest/file error as one red block (located issues for a ManifestError) and exit 1. */
 export function failManifest(e: unknown): never {
-  if (e instanceof ManifestError) console.error(c.red(e.message));
+  if (e instanceof ManifestError) console.error(c.red(displayProjectTrustFailure(e.message)));
   else if ((e as NodeJS.ErrnoException)?.code === "ENOENT")
     stderrLine("✗ ", `manifest file not found: ${(e as NodeJS.ErrnoException).path ?? ""}`, c.red);
   else {

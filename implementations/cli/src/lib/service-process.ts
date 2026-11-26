@@ -4,7 +4,8 @@ import { randomUUID } from "node:crypto";
 import { closeSync, constants, fstatSync, lstatSync, openSync, readdirSync, readSync, renameSync, rmSync, rmdirSync, unlinkSync } from "node:fs";
 import { basename, isAbsolute, join, resolve } from "node:path";
 import { CommandFailure, assertRecordIdentity, shellPath, canonicalRoot, commandIsCotalSupervisor, homeCotalDir, isCommandFailure, maintenanceAdmitsStackWork, readMaintenanceJournal, readProcessCommand, readServiceStopRequest, resolveNativeServiceTarget, loopbackListeners, processGroupMembers, processGroupOf, serviceAdapterReadiness, serviceMetadataDigest, spaceKey, serviceAdapterKernelStopPlan, serviceAdapterKernelStopResult, serviceAdapterStopPlan, serviceAdapterStopAbandonment, serviceAdapterStopRefusal, serviceAdapterStopResult, type ServiceAdapterStopAbandonment, type ServiceAdapterAttempt, type ServiceAdapterKernelStopPlan, type ServiceAdapterPreservedStop, type ServiceAdapterStopPlan, type ServiceAdapterContext, type ServiceDefinitionInput, type ControllerStackView, type OutputWarning, isWorkspaceTargetError, oneLine, targetErrorCode, workspaceErrorParts, type MeshTargetError, type ProcessIdentityRecord } from "@cotal-ai/workspace";
-import { loadCotalConfig, openPrivateAppend, spawnEnvAllow } from "@cotal-ai/core";
+import { loadCotalConfig, openPrivateAppend, ProjectConfigTrustError, spawnEnvAllow } from "@cotal-ai/core";
+import { isTrustedProject, migrateProjectTrust } from "@cotal-ai/workspace";
 import type { SeatCap } from "@cotal-ai/workspace";
 import { refuseRecordedSupervisor } from "./service-supervision.js";
 import { serviceInstallIntents } from "./service-install-intent.js";
@@ -284,9 +285,13 @@ function environment(definition: ServiceDefinitionInput): NodeJS.ProcessEnv {
  *  here; a name `spawn.env` gains later reaches a seat once the manager starts again. Only a variable
  *  the environment holds is read, never a member every object inherits, such as `constructor`. */
 function spawnEnvironment(root: string): NodeJS.ProcessEnv {
+  migrateProjectTrust();
   let names: readonly string[];
-  try { names = spawnEnvAllow(loadCotalConfig(root)) ?? []; }
-  catch (error) { throw new CommandFailure("refused", "SCHEMA_INVALID", `${(error as Error).message}; the manager reads spawn.env from it, so no process was launched`, { remedy: "fix the config file, then run the command again" }); }
+  try { names = spawnEnvAllow(loadCotalConfig(root, isTrustedProject)) ?? []; }
+  catch (error) {
+    if (error instanceof ProjectConfigTrustError) throw new CommandFailure("refused", "PERMISSION_DENIED", error.message, { target: { root }, remedy: error.remedy });
+    throw new CommandFailure("refused", "SCHEMA_INVALID", `${(error as Error).message}; the manager reads spawn.env from it, so no process was launched`, { remedy: "fix the config file, then run the command again" });
+  }
   return Object.fromEntries(names.filter((name) => Object.hasOwn(process.env, name)).map((name) => [name, process.env[name]]));
 }
 
@@ -568,6 +573,7 @@ export function assertRestartAdmitted(definition: ServiceDefinitionSnapshot): vo
   const value = definition.record.value;
   if (value.launch.type !== "adapter" || !["nats-broker", "manager-service"].includes(value.launch.adapter)) return;
   const options = value.launch.options, root = canonicalRoot(String(options.root));
+  if (value.launch.adapter === STACK_ADAPTER.manager) spawnEnvironment(root);
   if (!readMaintenanceJournal(root)) return;
   const server = value.launch.adapter === "nats-broker" ? String(options.server) : resolveNativeServiceTarget(root, value.space, options.server as string | undefined).server;
   if (!maintenanceAdmitsStackWork(root, value.space, server, maintenanceStackView(root, value.space)))

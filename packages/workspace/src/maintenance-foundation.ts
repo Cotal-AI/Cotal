@@ -623,6 +623,8 @@ export interface AcquireMaintenanceLockOptions {
   /** What the holder does, such as `backup create`, recorded in the lock so a refused contender can
    *  name it ({@link readMaintenanceLockHolder}). */
   readonly operation?: string;
+  /** Called if this acquisition creates the project control directory. */
+  readonly onControlDirectoryCreated?: () => void;
 }
 
 const noRecourse: readonly MaintenanceRecourse[] = [];
@@ -693,13 +695,14 @@ export function fsyncDirectory(path: string): void {
   }
 }
 
-function ensureDirectory(path: string, harden: boolean): void {
+function ensureDirectory(path: string, harden: boolean, onCreated?: () => void): void {
   if (!existsSync(path)) {
     // A concurrent first operation on this root can create it between the check and the mkdir; the
     // checks below verify what is there, and the lock then names that operation.
     try {
       mkdirSync(path, { mode: 0o700 });
       fsyncDirectory(dirname(path));
+      onCreated?.();
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
     }
@@ -713,8 +716,8 @@ function ensureDirectory(path: string, harden: boolean): void {
   }
 }
 
-export function ensureLayout(paths: MaintenancePaths): void {
-  ensureDirectory(paths.cotalDir, false);
+export function ensureLayout(paths: MaintenancePaths, onControlDirectoryCreated?: () => void): void {
+  ensureDirectory(paths.cotalDir, false, onControlDirectoryCreated);
   ensureDirectory(paths.maintenanceDir, true);
   ensureDirectory(paths.versionDir, true);
 }
@@ -973,7 +976,7 @@ export function acquireMaintenanceLock(
   options: AcquireMaintenanceLockOptions = {},
 ): MaintenanceLock {
   const paths = maintenancePaths(root);
-  ensureLayout(paths);
+  ensureLayout(paths, options.onControlDirectoryCreated);
   const owner = options.owner ?? defaultOwner();
   parseOwner(owner, "requested lock");
   const token = randomUUID();

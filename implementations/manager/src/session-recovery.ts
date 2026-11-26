@@ -5,6 +5,7 @@ import {
   type AttachSession, type Connector, type CotalEndpoint, type LaunchOpts, type LaunchSpec, type RuntimeReference,
 } from "@cotal-ai/core";
 import type { ControlEndpoint } from "@cotal-ai/core";
+import { isTrustedProject } from "@cotal-ai/workspace";
 import type { ForkProvenance, FreeSlotCause, ManagedAgent, ManagerResumeAgent } from "./manager.js";
 import type { AgentHandle, Runtime } from "./runtime/index.js";
 import { writeContinuityAssignment } from "./launch.js";
@@ -320,8 +321,9 @@ export class SessionRecovery {
         // at its first launch only.
         const named = { ...restart.opts, displayName: a.displayName, model: a.launch.model, variant: a.launch.variant, resume: undefined, reopenSession: undefined, prompt: undefined, firstCommand: undefined, autoName: undefined };
         const opts: LaunchOpts = continueSession !== undefined ? { ...named, continueSession } : named;
+        const policyEnv = modelPolicyEnv(loadCotalConfig(this.config.workspaceRoot, isTrustedProject), a.role);
         const spec = connector.buildLaunch(opts);
-        spec.env = { ...spec.env, COTAL_MANAGER_INSTANCE: this.managerInstanceId, ...modelPolicyEnv(loadCotalConfig(this.config.workspaceRoot), a.role) };
+        spec.env = { ...spec.env, COTAL_MANAGER_INSTANCE: this.managerInstanceId, ...policyEnv };
         const wanted = this.deps.managedPrincipal(a);
         const joinedAfter = this.deps.endpoint().getRoster()
           .filter((p) => p.card.id === wanted && p.lifecycleUid === a.lifecycleUid)

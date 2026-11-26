@@ -28,6 +28,7 @@ import {
   terminalWidth,
   wrapWords,
   writeResult,
+  migrateProjectTrust,
   type OutputWarning,
   type RefusalCode,
   type Report,
@@ -223,6 +224,7 @@ export async function launchManagedPersona(
   // A pin the registry does not list is refused at once; only a registered manager is waited on.
   if (on !== undefined && !t.auth.bearer) await refuseUnregisteredManager(t.space, t.server, t.auth, on);
   if (values.runtime !== undefined) await refuseRuntimeHere(values.runtime.trim(), t, on ?? t.auth.managerInstanceId, live);
+  migrateProjectTrust();
   const { ref, from: personaFrom } = spawnPersona(values.config, positionals, { space: t.space, preferences: cachedPreferences() });
   const managerConfigRef = values.config ?? (personaFrom !== undefined ? ref : undefined);
   const defaultAgent = callerHarness(t.space);
