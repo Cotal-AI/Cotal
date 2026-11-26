@@ -300,6 +300,9 @@ A package manifest can have this shape:
 ```
 
 Replace `<compatible-core-range>` with the version range your connector supports.
+For local and third-party packages, `cotal ext add` refuses an invalid range or one that excludes the
+bundled core before it imports your connector. Marking the peer optional does not skip the check.
+`*` allows any core version.
 Ship every file needed to import and run it.
 
 The installer links `@cotal-ai/*` peers to the binary's copies.
