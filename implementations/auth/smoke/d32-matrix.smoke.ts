@@ -812,8 +812,9 @@ const BASELINE_PUB = [
   `cotal.${S}.ep.one.manager.turn-yield.self.u_abc.cli.${UID}.*`,
   `cotal.${S}.ep.one.manager.turn-unconfirmed.self.u_abc.cli.${UID}.*`,
   `cotal.${S}.ep.one.manager.run-answer.self.u_abc.cli.${UID}.*`,
+  `cotal.${S}.ep.prin-reply.agent.u_abc.cli.${UID}.*.*.*.*.*`,
 ];
-c("the agent's control-surface reach is exactly its caller rows + the Appendix-B baseline (request/journal publish + own reply rail)",
+c("the agent's control-surface reach is exactly its caller rows + the Appendix-B baseline (request/journal publish, own reply read and SPEC §13.21 principal reply publish)",
   untrusted.agent.pub.filter((r) => r.includes(".ep.") || r.includes(".epj.")).every((r) => gen["caller"].publish.includes(r) || BASELINE_PUB.includes(r))
   && BASELINE_PUB.every((r) => untrusted.agent.pub.includes(r))
   && untrusted.agent.sub.filter((r) => r.includes(".ep.reply.")).every((r) => gen["caller"].subscribe.includes(r)),
