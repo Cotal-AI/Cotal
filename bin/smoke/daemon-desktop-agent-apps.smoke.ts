@@ -1,14 +1,19 @@
 /** The desktop bridge's agent apps through the built CLI: detection, a maker's installer run with no
  *  terminal, the PATH line it leaves to the app, a failed installer, a missing prerequisite, browser
- *  sign-in, and the stop when the app goes away. A recording curl stands in for the network, so no
- *  real installer is downloaded and the host's own PATH and startup files are never read. */
+ *  sign-in, the stop when the app goes away, and the wait while agents run on an installed service.
+ *  A recording curl stands in for the network, so no real installer is downloaded and the host's own
+ *  PATH and startup files are never read. */
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { createServer } from "node:net";
 import { tmpdir, userInfo } from "node:os";
 import { basename, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { skipSuite } from "@cotal-ai/smoke-kit";
+import { daemonPaths } from "../daemon/endpoint.js";
+import { generationOf, holdLifetime } from "../daemon/lifetime.js";
 
 if (process.platform === "win32") skipSuite("daemon-desktop-agent-apps: the recording curl and login-shell PATH are POSIX; Windows runs the real installers in the setup proof");
 const shell = basename(userInfo().shell ?? "");
@@ -166,6 +171,57 @@ try {
       while (sleepers().length && Date.now() < gone) await new Promise(resolve => setTimeout(resolve, 250));
       check(sleepers().length === 0, "the sign-in stopped once the app's process was gone");
     } else app.kill("SIGKILL");
+  }
+  // Cell 8: with the service installed and agents running on it, an install and the app's later check
+  // both answer "waiting", and the unit, its receipt and the running service stay as they were.
+  if (process.platform === "linux") {
+    const paths = daemonPaths(target.env, target.env.COTAL_HOME);
+    const unitPath = join(target.env.XDG_CONFIG_HOME!, "systemd", "user", "cotal-daemon.service");
+    const unit = `[Service]\nEnvironment=PATH="${nodeDir}:${sys}"\nEnvironment=COTAL_DAEMON_NATIVE_SERVICE=1\nExecStart="${node}" "${cli}" daemon serve\nRestart=always\n`;
+    mkdirSync(join(target.env.XDG_CONFIG_HOME!, "systemd", "user"), { recursive: true, mode: 0o700 });
+    writeFileSync(unitPath, unit, { mode: 0o600 });
+    mkdirSync(paths.state, { recursive: true, mode: 0o700 });
+    const receiptFile = join(paths.state, "service-unit.json");
+    const receipt = `${JSON.stringify({ v: 1, mechanism: "systemd-user", unit: "cotal-daemon.service", unitPath, unitSha256: createHash("sha256").update(unit).digest("hex"), installedAt: new Date().toISOString() })}\n`;
+    writeFileSync(receiptFile, receipt, { mode: 0o600 });
+    // The user manager answers only where its unit directory is; any other systemctl call is recorded.
+    const systemctlCalls = join(target.dir, "systemctl.calls");
+    writeFileSync(join(target.dir, "native", "systemctl"), `#!/bin/sh\nif [ "$*" = "--user show-environment" ]; then printf 'HOME=%s\\nXDG_CONFIG_HOME=%s\\n' "$HOME" "$XDG_CONFIG_HOME"; exit 0; fi\nprintf '%s\\n' "$*" >> "${systemctlCalls}"\nexit 99\n`, { mode: 0o700 });
+    // The running service, holding the daemon's lifetime, has a Manager with a seat, so it refuses to prepare a restart.
+    const ops: string[] = [];
+    mkdirSync(paths.dir!, { recursive: true, mode: 0o700 });
+    const lifetime = holdLifetime(paths.lock);
+    const daemon = createServer(peer => {
+      let buffer = "";
+      peer.setEncoding("utf8");
+      peer.on("data", chunk => {
+        buffer += chunk;
+        for (let newline; (newline = buffer.indexOf("\n")) !== -1; buffer = buffer.slice(newline + 1)) {
+          const { id, v, op } = JSON.parse(buffer.slice(0, newline)) as { id: string; v: number; op: string };
+          ops.push(op);
+          const reply = op === "managers-prepare-restart" ? { ok: false, error: { code: "SEATS_ACTIVE", message: "hosted Manager holds 1 active seat", remedy: "stop the seat first" } } : { ok: false, error: { code: "UNKNOWN_OP", message: `unexpected ${op}` } };
+          peer.write(`${JSON.stringify({ id, v, ...reply })}\n`);
+        }
+      });
+    });
+    await new Promise<void>(resolve => daemon.listen(paths.socket, resolve));
+    chmodSync(paths.socket, 0o600);
+    lifetime.publishing(generationOf(paths.socket));
+    try {
+      const frames = await request(target, { op: "agent-app-install", name: "claude" });
+      const end = resultOf(frames);
+      check(end.ok === true && end.result!.service === "waiting", `an install while agents run answers waiting: ${JSON.stringify(end)}`);
+      check((end.result!.app as App).state === "signed-in", "the installed app is still reported");
+      check(progressOf(frames, "claude").some(line => line.startsWith("service: waiting for hosted Managers")), "the wait is reported as progress");
+      const checked = resultOf(await request(target, { op: "agent-apps", refresh: true }));
+      check(checked.ok === true && checked.result!.service === "waiting", `the app's later check also answers waiting: ${JSON.stringify(checked)}`);
+      assert.deepEqual(ops, ["managers-prepare-restart", "managers-prepare-restart"], "each request asked the Manager once and never aborted or restarted"); checks++;
+      check(readFileSync(unitPath, "utf8") === unit && readFileSync(receiptFile, "utf8") === receipt, "the unit and its receipt are unchanged");
+      check(!existsSync(systemctlCalls), `the service was never reloaded or restarted: ${existsSync(systemctlCalls) ? readFileSync(systemctlCalls, "utf8") : ""}`);
+    } finally {
+      await new Promise<void>(resolve => daemon.close(() => resolve()));
+      lifetime.release();
+    }
   }
   console.log(`daemon-desktop-agent-apps: ${checks} checks passed (${process.platform}, login shell ${shell})`);
 } finally {
