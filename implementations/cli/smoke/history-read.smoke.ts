@@ -343,6 +343,21 @@ async function checkEventShapedChannelHistory(): Promise<void> {
   }
 }
 
+async function checkGreekSigmaHistory(): Promise<void> {
+  const target = ["--space", openSpace, "--server", openServers, "--json"];
+  const saved = await run(["channel", "set", "greek", "--desc", "Filter demo", ...target]);
+  const sent = await run(["send", "-c", "greek", "ΟΣ", ...target]);
+  check("fixture: the Greek channel accepts a post", saved.status === 0 && sent.status === 0,
+    { saved: shown(saved), sent: shown(sent) });
+  for (const sigma of ["Σ", "σ", "ς"]) {
+    const history = await run(["history", "greek", "--grep", sigma, ...target]);
+    check(`history --grep ${sigma} matches the retained word-final sigma`,
+      history.status === 0 && history.stderr === "" && history.envelope?.result?.window.read === 1
+        && texts(history).length === 1 && texts(history)[0] === "ΟΣ",
+      shown(history));
+  }
+}
+
 /** A follow child: its stdout lines as they arrive, and a way to wait for one. */
 function follow(args: string[]) {
   const child = spawn(process.execPath, [BIN, ...args], { cwd: shell, env: isolatedEnv, stdio: ["ignore", "pipe", "pipe"] });
@@ -1677,6 +1692,7 @@ try {
     { read: shown(stoppedRead), follow: shown(stoppedFollow) });
   await checkMembershipSetupRefusal(space, "updates", "TARGET_UNAVAILABLE", "--server", servers);
   await checkEventShapedChannelHistory();
+  await checkGreekSigmaHistory();
 } finally {
   for (const ep of endpoints) await ep.stop().catch(() => {});
   await provisioner?.stop().catch(() => {});
