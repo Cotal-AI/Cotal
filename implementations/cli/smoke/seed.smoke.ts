@@ -162,7 +162,9 @@ try {
     process.exitCode = 1;
   } else {
     const passed = unit.passed + result.results.reduce((sum, row) => sum + row.cells, 0);
-    const expected = process.platform === "win32" ? 117 : process.platform === "linux" ? 192 : 186;
+    // The manifest-repair permission cells run only for a non-root user.
+    const permissionChecks = process.getuid && process.getuid() !== 0 ? 4 : 0;
+    const expected = (process.platform === "win32" ? 117 : process.platform === "linux" ? 192 : 186) + permissionChecks;
     if (passed !== expected) throw new Error(`seed smoke: expected ${expected} checks, observed ${passed}`);
     console.log(`seed smoke: ${passed} passed, 0 failed`);
     emitSentinel({ passed, failed: 0 });
