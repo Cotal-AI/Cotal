@@ -203,8 +203,11 @@ export const jcodeConnector: Connector = {
 
     if (opts.validateOnly) return { command: "", args: [] };
     const model = opts.model?.trim();
-    if (model && !bareModelId(model).ok)
-      throw new Error("Jcode launch failed (model_prefix_rejected): use a bare model ID. Select the provider in Jcode's configuration. No Jcode seat was started.");
+    const modelId = model ? bareModelId(model) : undefined;
+    if (modelId?.ok === false) {
+      const override = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/.test(modelId.bare) ? ` Retry with \`--model ${modelId.bare}\`.` : "";
+      throw new Error(`Jcode launch failed (model_prefix_rejected): use a bare model ID. Select the provider in Jcode's configuration. No Jcode seat was started.${override}`);
+    }
     // Creds, broker URL and the control token ride a 0600 file written after every refusal above.
     // Its directory is a launch artifact the launcher removes once the child has exited. The control
     // endpoint is minted here too, after every refusal, because minting makes its socket directory.
