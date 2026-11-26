@@ -52,8 +52,10 @@ ExecStart=/usr/bin/cotal up --foreground --space main --host 0.0.0.0
 Restart=on-failure
 RestartSec=5s
 ```
-`cotal up --foreground` refuses when this folder's stack is already running, for example after a
-manual background `cotal up`. Stop that stack before the unit starts.
+For a stack using the older launcher, `cotal up --foreground` refuses with `LIFECYCLE_BLOCKED`
+(exit 2) if the broker is already running. If Cotal started it, inspect and stop the stack from its
+project folder. If the broker was registered by hand, stop it with its own launcher. Then retry the
+original foreground command from the folder where you invoked it, with the same options.
 
 If repeated refusals hit the start limit, `systemctl status cotal-stack.service` shows the unit as failed and the refusal is in the journal.
 After fixing the cause, run `systemctl reset-failed cotal-stack.service` and then `systemctl start cotal-stack.service`, adding `--user` after `systemctl` for a user unit.

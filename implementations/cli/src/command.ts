@@ -7,6 +7,7 @@ import {
   CommandFailure,
   commandFailureReport,
   cachedPreferences,
+  CorruptExtensionsManifestError,
   cotalDirProblem,
   cotalHomeProblem,
   findCotalRoot,
@@ -43,6 +44,7 @@ import {
   targetErrorSpace,
   terminalWidth,
   userCotalDir,
+  windowsShellWord,
   type OperationScope,
   type OutputWarning,
   staleStoreHint,
@@ -193,9 +195,14 @@ function routeCollisionWarnings(warnings: OutputWarning[], cmd: Command | undefi
       finiteJson = values?.follow !== true && values?.wait !== true;
     }
   }
+  const end = words.indexOf("--");
+  const plain = !takesWordsRaw(cmd) && (end === -1 ? words : words.slice(0, end)).includes("--plain");
   for (const warning of warnings) {
     if (finiteJson) recordOperationWarning(warning, { echo: false });
-    else console.error(c.red(`! ${warning.message}`));
+    else {
+      const line = `! ${warning.message}`;
+      console.error(plain ? line : c.red(line));
+    }
   }
 }
 
@@ -533,10 +540,12 @@ function misspelledOption(cmd: Command, rest: readonly string[], flagNames: read
     const flag = short && cmd.flags?.find((item) => item.short === short[1] && item.type === "string");
     if (short && flag) {
       const value = short[2]!;
-      const quoted = shellWord(value);
+      const windows = process.platform === "win32";
+      const common = windows ? windowsShellWord(value) : undefined;
+      const quoted = windows ? common ?? `'${value.replaceAll("'", "''")}'` : shellWord(value);
       const long = `--${flag.name}=${quoted}`;
       const correction = value.startsWith("-") ? long : `-${short[1]} ${quoted} or ${long}`;
-      return { message: `${word} gives -${short[1]} the value "=${value}"`, remedy: `write ${correction}` };
+      return { message: `${word} gives -${short[1]} the value "=${value}"`, remedy: `write ${correction}${windows && common === undefined ? " in PowerShell" : ""}` };
     }
     const typed = positionals.has(index) ? recognize(word) : undefined;
     if (typed && (cmd.name === "ext" || cmd.name === "endpoint") && typed.flagName && typed.flagName !== "help") {
@@ -572,7 +581,7 @@ function missingValue(cmd: Command, words: readonly string[], flag: FlagSpec, be
   return { message: `--${flag.name} needs a value`, remedy: `write --${flag.name} ${flag.value ?? "<value>"}${beforeSeparator ? " before --" : ""}` };
 }
 
-function globalFlagValueRefusal(flag: string) {
+function switchValueRefusal(flag: string) {
   return { message: `${flag} takes no value`, remedy: `omit ${flag} or pass it without a value` };
 }
 
@@ -584,13 +593,14 @@ function parseRefusal(error: Error & { code?: string }, cmd: Command, rest: read
   if (error.code === "ERR_PARSE_ARGS_UNKNOWN_OPTION") {
     const reason = error.message.replace(/'\. To specify a positional argument starting with a '-', place it at the end of the command after '--', as in '-- "(?:[^"\\]|\\.)*"$/u, "'");
     const option = /^Unknown option '(--.+)'$/su.exec(reason)?.[1];
-    if (option && GLOBAL_FLAG_WORDS.has(option) && !takesWordsRaw(cmd)) return globalFlagValueRefusal(option);
+    if (option && GLOBAL_FLAG_WORDS.has(option) && !takesWordsRaw(cmd)) return switchValueRefusal(option);
     if (cmd.name === "help" && option === "--preset") {
       const [service, verb] = metadataPositionals(cmd, rest).positionals;
       if (findCommand(commandSurface(), service?.value)?.name === "service" && verb?.value === "add")
         return { message: reason, remedy: displayRemedy("to see the preset options, use `cotal service add <name> --preset <preset> --help`") };
     }
-    const nearest = option ? nearestWords(option, [...(flagNames ?? (cmd.flags ?? []).map((flag) => flag.name)).map((name) => `--${name}`), "--no-color", "--no-input", "--help"]) : [];
+    const nearest = cmd.name === "channel" && flagNames?.includes("desc") && option === "--description" ? ["--desc"]
+      : option ? nearestWords(option, [...(flagNames ?? (cmd.flags ?? []).map((flag) => flag.name)).map((name) => `--${name}`), "--no-color", "--no-input", "--help"]) : [];
     const spellings = nearest.join(" or ");
     const flag = cmd.flags?.find((item) => `--${item.name}` === spellings);
     if (flag && !flag.multiple && typeof parseArgs({ args: [...rest], options: parserOptions(cmd), strict: false, allowPositionals: true }).values[flag.name] === flag.type) {
@@ -636,11 +646,12 @@ function parseRefusal(error: Error & { code?: string }, cmd: Command, rest: read
 }
 
 /** `rest` parsed against `cmd`'s declared flags, positionals and subcommands, or a usage exit. */
-function parseOrExit(cmd: Command, rest: string[]): ParsedArgs {
+function parseOrExit(cmd: Command, rest: string[], noMoreOperands = false): ParsedArgs {
   rest = stripGlobalFlags(cmd, rest);
   const seed = extSeedSubcommand(cmd, rest);
   const json = !seed && asksForJson(cmd, rest);
-  const plain = !seed && rest.includes("--plain");
+  const end = rest.indexOf("--");
+  const plain = !seed && (end === -1 ? rest : rest.slice(0, end)).includes("--plain");
   const flagNames = seed?.flagNames ?? (cmd.name === "spawn" ? cmd.flagNames : undefined);
   const misspelled = cmd.rawArgs ? undefined : misspelledOption(cmd, rest, flagNames);
   if (misspelled) usageExit(misspelled.message, cmd, json, plain, misspelled.remedy, seed ? [seed.name] : rest);
@@ -659,10 +670,13 @@ function parseOrExit(cmd: Command, rest: string[]): ParsedArgs {
       }
       const takesOperands = !seed && cmd.positionals !== undefined &&
         (!cmd.subcommands?.length || cmd.name === "history" || (first !== undefined && findSubcommand(cmd, first) !== undefined));
-      const operandsFull = (cmd.name === "config" && ((selected.name === "set" && positionals.length >= 3)
+      const operandsFull = noMoreOperands || (cmd.name === "config" && ((selected.name === "set" && positionals.length >= 3)
         || ((selected.name === "get" || selected.name === "unset") && positionals.length >= 2)))
         || (cmd.name === "ext" && selected.name === "root")
+        || (cmd.name === "history" && selected.name === "limit")
         || (cmd.name === "space" && selected.name === "add" && positionals.length >= 2)
+        || (cmd.name === "channel" && selected.name === "set" && positionals.length >= 2)
+        || (cmd.name === "service" && selected !== cmd && (selected.name === "list" || positionals.length >= 2))
         || (cmd.name === "team" && ["check", "boot", "deploy"].includes(selected.name) && positionals.length >= 2)
         || (cmd.name === "endpoint" && ((selected.name === "check" && positionals.length >= 2)
           || (first === "work" && selected.name === "lease" && positionals.length >= 4)));
@@ -814,13 +828,13 @@ function printHelpFor(cmd: Command, rest: readonly string[]): void {
 
 /** A service invocation takes its preset's flags, and `manager <verb>` is `service <verb> manager`.
  *  Preset details can enrich a global flag refusal but cannot replace it. */
-async function serviceSurface(found: Command | undefined, words: string[], forRefusal = false): Promise<{ cmd: Command | undefined; rest: string[] }> {
+async function serviceSurface(found: Command | undefined, words: string[], forRefusal = false): Promise<{ cmd: Command | undefined; rest: string[]; noMoreOperands?: true }> {
   if (found?.name !== "service" && found?.name !== "manager") return { cmd: found, rest: words };
   try {
     const [{ servicePresetCommand }, { managerServiceCommand }] = await serviceSurfaces();
     if (found.name === "service") return { cmd: servicePresetCommand(found, words), rest: words };
     const lifecycle = managerServiceCommand(found, words, forRefusal);
-    return lifecycle ? { cmd: lifecycle.cmd, rest: lifecycle.argv } : { cmd: found, rest: words };
+    return lifecycle ? { cmd: lifecycle.cmd, rest: lifecycle.argv, noMoreOperands: true } : { cmd: found, rest: words };
   } catch (error) {
     if (forRefusal || asksForHelp(words)) return { cmd: found, rest: words };
     const failure = isCommandFailure(error) ? error : new CommandFailure("refused", "SCHEMA_INVALID", "service preset metadata could not be read; no provider was imported or installed");
@@ -828,18 +842,18 @@ async function serviceSurface(found: Command | undefined, words: string[], forRe
   }
 }
 
-/** Recover the command and output mode for a malformed leading global without dispatching it. */
+/** Recover the command and output mode for a malformed leading switch without dispatching it. */
 async function unknownInvocationExit(commands: readonly Command[], word: string, args: string[], output: string[], beforeSeparator: boolean): Promise<never> {
   const equals = word.indexOf("=");
   const flag = equals === -1 ? undefined : word.slice(0, equals);
-  if (!beforeSeparator || !flag || !GLOBAL_FLAG_WORDS.has(flag)) usageExit(unknownCommandMessage(commands, word));
+  if (!beforeSeparator || !flag || (!GLOBAL_FLAG_WORDS.has(flag) && !OUTPUT_FLAG_WORDS.has(flag))) usageExit(unknownCommandMessage(commands, word));
   const retry = leadingInvocation(args, true);
   const found = findCommand(commands, retry.word);
   const words = [...output, ...retry.leading.filter((item) => OUTPUT_FLAG_WORDS.has(item)), ...retry.args];
   const { cmd, rest } = await serviceSurface(takesWordsRaw(found) ? undefined : found, words, true);
   const end = rest.indexOf("--");
   const plain = (end === -1 ? rest : rest.slice(0, end)).includes("--plain");
-  const { message, remedy } = globalFlagValueRefusal(flag);
+  const { message, remedy } = switchValueRefusal(flag);
   return usageExit(message, cmd, cmd !== undefined && asksForJson(cmd, rest), plain, remedy, rest);
 }
 
@@ -912,6 +926,10 @@ async function dispatchCli(registry: Registry, argv: string[], opts: RunCliOptio
   // Root only resolves a path. The JSON list classifies inventory errors in its handler.
   const extDiagnostics = builtin?.name === "ext" && !wantsHelp
     && (extMode === "root" || ((extMode === undefined || extMode === "list") && asksForJson(builtin, words)));
+  const readMode = builtin && !wantsHelp && (builtin.name === "config" || builtin.name === "completion")
+    ? metadataPositionals(builtin, words).positionals[0]?.value : undefined;
+  const configRead = builtin?.name === "config" && !wantsHelp && (readMode === undefined || readMode === "get");
+  const completionStatus = builtin?.name === "completion" && !wantsHelp && readMode === undefined;
   let useExtensionOverlay = opts.extensions && !updateCheck && !selfUpdate && !preference?.auto && !preference?.notify && builtin?.name !== "start";
   function skipUnreadableConnectorOverlay(error: unknown): boolean {
     if (!(error instanceof UnreadableConnectorSelection) || !builtin || !["version", "status", "down"].includes(builtin.name)) return false;
@@ -951,8 +969,13 @@ async function dispatchCli(registry: Registry, argv: string[], opts: RunCliOptio
     try {
       commands = useExtensionOverlay && !versionJson && !extDiagnostics && !configFolder ? overlayExtensions(registry, collisionWarning(warnings)) : registry.all<Command>("command");
     } catch (e) {
-      if (skipUnreadableConnectorOverlay(e)) commands = registry.all<Command>("command");
-      else {
+      const infrastructureStatus = builtin?.name === "status" && !wantsHelp && !words.includes("--components")
+        && metadataPositionals(builtin, words).positionals.length === 0;
+      if (((configRead || completionStatus || infrastructureStatus) && e instanceof CorruptExtensionsManifestError) || skipUnreadableConnectorOverlay(e)) {
+        // The infrastructure report reads the manifest itself and can name the gap.
+        if (infrastructureStatus) setInstalledExtensionsEnabled(false);
+        commands = registry.all<Command>("command");
+      } else {
         if (repeatedLeading) usageExit(`Option '${repeatedLeading}' cannot be repeated`);
         // A corrupt extensions manifest must not silently shrink the surface.
         stderrLine("✗ ", (e as Error).message, c.red);
@@ -978,7 +1001,8 @@ async function dispatchCli(registry: Registry, argv: string[], opts: RunCliOptio
   if (repeated) return repeatedGlobalFlag(repeated, cmd, rest, pendingWarnings);
   routeCollisionWarnings(pendingWarnings, cmd, rest, wantsHelp);
   if (word === undefined) return paintFor(process.stdout, () => printEntry(commands));
-  ({ cmd, rest } = await serviceSurface(cmd, rest));
+  const scoped = await serviceSurface(cmd, rest);
+  ({ cmd, rest } = scoped);
   // The usage telemetry hook is armed as soon as the command is known, so a usage refusal below
   // counts too, and before anything runs, so the one-time notice precedes the command's output.
   const arm = (): void => {
@@ -1007,7 +1031,7 @@ async function dispatchCli(registry: Registry, argv: string[], opts: RunCliOptio
   // `__`-internal ones are exempt, because __complete's argv is ANOTHER command's half-typed
   // line, where `--help` is a word being completed, not a request.
   if (cmd && !cmd.name.startsWith("__") && wantsHelp) return printHelpFor(cmd, rest);
-  let parsed = cmd && !isExtensionStub(cmd) ? parseOrExit(cmd, rest) : undefined;
+  let parsed = cmd && !isExtensionStub(cmd) ? parseOrExit(cmd, rest, scoped.noMoreOperands) : undefined;
   // ---- Effects: only a validated invocation reaches this line. ----
   // A config folder that is a file fails every read and write of the preferences, the config file and
   // the extensions, so a command that could use them stops here, before the seed would write there.
@@ -1135,6 +1159,8 @@ async function dispatchCli(registry: Registry, argv: string[], opts: RunCliOptio
     recordTelemetryError(e);
     const mode = parsed.positionals[0];
     const json = structured(cmd, mode) && parsed.values.json === true;
+    if (configRead && e instanceof CorruptExtensionsManifestError)
+      failureExit(cmd, new CommandFailure("refused", "SCHEMA_INVALID", e.diagnosis, { remedy: e.remedy, cause: e }), json, parsed.values.plain === true, scope, rest);
     // A usage error a command raises from its own checks prints the command's help, not a stack trace.
     if (isArgError(e)) usageExit((e as Error).message.split(".")[0]!, cmd, json, parsed.values.plain === true, undefined, rest);
     // A refused manager selection among several live managers becomes the choice: each manager

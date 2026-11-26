@@ -1,0 +1,4 @@
+# A Jcode reply streams before Jcode saves it and every streamed part closes: by the reply Jcode
+# saved for its provider call, after a retry, at the end of a turn whose call failed, at a
+# checkpoint, and across a restart.
+smoke:jcode-stream

@@ -1,16 +1,19 @@
 /**
  * The Claude Code seat's commands on its `agent` endpoint (SPEC 13.22). The plugin's command mod
  * (`hooks/commands.js`) lists, runs and interrupts inside Claude Code, and the seat's command socket
- * (`command-feed.ts`) carries each request to it. The mod lists only what may run remotely, and
+ * (`command-feed.ts`) carries each request to it. It also switches the model of later turns
+ * (`model-switch.ts`). The mod lists only what may run remotely, and
  * Claude's list does not say which entries are skills, so every entry is a `command`.
  */
-import { CommandRefused, type CommandDispatcher, type MeshAgent } from "@cotal-ai/connector-core";
+import { CommandRefused, type AgentTurn, type AgentUsage, type CommandDispatcher, type MeshAgent } from "@cotal-ai/connector-core";
 import type { CommandEntry } from "@cotal-ai/core";
 import type { CommandFeed } from "./command-feed.js";
 import type { ModAnswer } from "./command-frames.js";
+import { switchClaudeModel, type ClaudeModelSwitch } from "./model-switch.js";
+import { promptWithImages } from "./turn-images.js";
 
-/** How long Claude Code has to start a command, and the mod to stop a turn. A panel or dialog open
- *  at the seat holds a command's start until someone there closes it. */
+/** How long Claude Code has to start a command or take a prompt, and the mod to stop a turn. A panel
+ *  or dialog open at the seat holds a command's start until someone there closes it. */
 const BOUNDS = { runMs: 30_000, interruptMs: 10_000 };
 
 /** How long a started command's turn has to show in presence before the next command goes. The
@@ -28,6 +31,12 @@ interface ClaudeCommandsOptions {
    *  Code reports with no hook. Undefined when no hooks follow the session's turns. */
   interrupting(): (() => Promise<void>) | undefined;
   warn(msg: string): void;
+  /** The seat's image folder (turn-images.ts). Without one, a turn takes no images. */
+  imageDir?: string;
+  /** What the seat's model switch reads. Without it the seat does not switch its model. */
+  models?: ClaudeModelSwitch;
+  /** Hands over what stops the feed's calls to `watch`, to run when the agent stops. */
+  onStop?(stop: () => void): void;
   bounds?: typeof BOUNDS;
 }
 
@@ -59,6 +68,10 @@ export function claudeCommands(o: ClaudeCommandsOptions): CommandDispatcher {
   return {
     targets: new Set(["command"]),
     unsupported,
+    watch(changed) {
+      const stop = o.feed()?.watch(changed);
+      if (stop) o.onStop?.(stop);
+    },
     async list(): Promise<CommandEntry[]> {
       const { commands } = expect(await served().request({ op: "list" }), "list");
       return commands.map((c) => ({ name: c.name, target: "command", description: c.description, inputHint: c.argumentHint }));
@@ -69,6 +82,28 @@ export function claudeCommands(o: ClaudeCommandsOptions): CommandDispatcher {
       if (answer.outcome === "started") return;
       throw new CommandRefused(answer.outcome === "not-found" ? "not-found" : "failed-precondition", answer.reason);
     },
+    ...(o.imageDir !== undefined ? { images: true } : {}),
+    async turn({ text, images }: AgentTurn) {
+      const feed = served();
+      const late = `Claude Code did not take the prompt within ${bounds.runMs / 1000} s. A panel or dialog open at the seat holds it until someone there closes it, so it may still run`;
+      const prompt = images.length ? promptWithImages(o.imageDir!, text, images) : text;
+      const answer = expect(await within(feed.request({ op: "prompt", text: prompt }), bounds.runMs, late), "prompt");
+      if (answer.outcome === "refused") throw new CommandRefused("failed-precondition", answer.reason);
+    },
+    async usage(): Promise<AgentUsage> {
+      const late = `the command mod did not report usage within ${bounds.interruptMs / 1000} s`;
+      const { window, tokens, usd } = expect(await within(served().request({ op: "usage" }), bounds.interruptMs, late), "usage");
+      return {
+        ...(tokens !== undefined ? { context: { used: tokens, size: window } } : {}),
+        ...(usd !== undefined ? { cost: { amount: usd, currency: "USD" } } : {}),
+      };
+    },
+    ...(o.models ? {
+      setModel: (model: string | undefined, variant: string | undefined) => switchClaudeModel(o.models!, model, variant, async (ask) => {
+        const late = `the command mod did not take the switch within ${bounds.interruptMs / 1000} s`;
+        return expect(await within(served().request(ask), bounds.interruptMs, late), "model");
+      }),
+    } : {}),
     async interrupt() {
       const feed = served();
       const stopped = o.interrupting();

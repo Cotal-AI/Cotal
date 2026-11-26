@@ -1,6 +1,6 @@
-import { EpEnvelopeError, rejectionText, resolveAuthProvider } from "@cotal-ai/core";
+import { EpEnvelopeError, loadCotalConfig, rejectionText, resolveAuthProvider, spawnEnvAllow } from "@cotal-ai/core";
 import type { Connector, ConnectorModelCatalog, ControlReply, EpCaller } from "@cotal-ai/core";
-import { agentAuthState, agentLifecycleSecretFilePaths, userAuthStateDir } from "@cotal-ai/workspace";
+import { agentAuthState, agentLifecycleSecretFilePaths, managerMachineId, userAuthStateDir } from "@cotal-ai/workspace";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { hostname } from "node:os";
@@ -14,6 +14,21 @@ import type { ManagerStartState } from "./manager-start-state.js";
 // Capture the loaded package version before an installation can replace its files.
 export const MANAGER_VERSION = (JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as { version: string }).version;
 
+let machineRead: { machine?: string } | undefined;
+
+/** This machine as status and presence name it (`machine`), or undefined when its OS identity
+ *  cannot be read, as in a container without `/etc/machine-id`. Read once and said once. */
+export function hostMachine(): string | undefined {
+  if (!machineRead) {
+    try { machineRead = { machine: managerMachineId() }; }
+    catch (e) {
+      machineRead = {};
+      console.error(`! manager: this machine's identity could not be read, so status and presence name no machine: ${(e as Error).message}`);
+    }
+  }
+  return machineRead.machine;
+}
+
 /** Sentinel owner-filter value that matches NO agent's `userOwner` (owner tokens never contain a
  *  dash) — what {@link Manager.psOwnerFilter} returns for an unparseable caller so a malformed
  *  principal fail-closes to an empty `ps` instead of an unbounded one. */
@@ -25,16 +40,13 @@ export interface StatusAndModelsDeps {
   agents: () => Manager["agents"];
   ep: () => Manager["ep"];
   leaseStopping: () => Manager["leaseStopping"];
-  lifecycleInFlight: () => Manager["lifecycleInFlight"];
   maintenanceState: () => Manager["maintenanceState"];
-  namesCapacity: () => Manager["namesCapacity"];
+  pendingWork: (...args: Parameters<Manager["pendingWork"]>) => ReturnType<Manager["pendingWork"]>;
   preservationAttemptId: () => Manager["preservationAttemptId"];
   preservationInventory: () => Manager["preservationInventory"];
   requiredRuntime: () => Manager["requiredRuntime"];
   resumeRequired: () => Manager["resumeRequired"];
-  retirement: () => Manager["retirement"];
   runtimeKind: () => Manager["runtimeKind"];
-  staticLifecycle: () => Manager["staticLifecycle"];
   classSpawnEnabled: (...args: Parameters<Manager["classSpawnEnabled"]>) => ReturnType<Manager["classSpawnEnabled"]>;
   epAdminReach: (...args: Parameters<Manager["epAdminReach"]>) => ReturnType<Manager["epAdminReach"]>;
   executionRefusal: (...args: Parameters<Manager["executionRefusal"]>) => ReturnType<Manager["executionRefusal"]>;
@@ -51,16 +63,13 @@ export function statusAndModelsDeps(m: Manager): StatusAndModelsDeps {
     agents: () => m["agents"],
     ep: () => m["ep"],
     leaseStopping: () => m["leaseStopping"],
-    lifecycleInFlight: () => m["lifecycleInFlight"],
     maintenanceState: () => m["maintenanceState"],
-    namesCapacity: () => m["namesCapacity"],
+    pendingWork: (...args) => m["pendingWork"](...args),
     preservationAttemptId: () => m["preservationAttemptId"],
     preservationInventory: () => m["preservationInventory"],
     requiredRuntime: () => m["requiredRuntime"],
     resumeRequired: () => m["resumeRequired"],
-    retirement: () => m["retirement"],
     runtimeKind: () => m["runtimeKind"],
-    staticLifecycle: () => m["staticLifecycle"],
     classSpawnEnabled: (...args) => m["classSpawnEnabled"](...args),
     epAdminReach: (...args) => m["epAdminReach"](...args),
     executionRefusal: (...args) => m["executionRefusal"](...args),
@@ -82,18 +91,14 @@ export class StatusAndModels {
   private get auth() { return this.state.auth; }
   private get ep() { return this.deps.ep(); }
   private get leaseStopping() { return this.deps.leaseStopping(); }
-  private get lifecycleInFlight() { return this.deps.lifecycleInFlight(); }
   private get maintenanceState() { return this.deps.maintenanceState(); }
   private get managerInstanceId() { return this.state.managerInstanceId!; }
-  private get namesCapacity() { return this.deps.namesCapacity(); }
   private get preservationAttemptId() { return this.deps.preservationAttemptId(); }
   private get preservationInventory() { return this.deps.preservationInventory(); }
   private get remoteAuthority() { return this.config.remoteAuthority; }
   private get requiredRuntime() { return this.deps.requiredRuntime(); }
   private get resumeRequired() { return this.deps.resumeRequired(); }
-  private get retirement() { return this.deps.retirement(); }
   private get runtimeKind() { return this.deps.runtimeKind(); }
-  private get staticLifecycle() { return this.deps.staticLifecycle(); }
   private get userMode() { return this.state.userMode; }
   private classSpawnEnabled(...args: Parameters<Manager["classSpawnEnabled"]>): ReturnType<Manager["classSpawnEnabled"]> { return this.deps.classSpawnEnabled(...args); }
   private epAdminReach(...args: Parameters<Manager["epAdminReach"]>): ReturnType<Manager["epAdminReach"]> { return this.deps.epAdminReach(...args); }
@@ -110,13 +115,21 @@ export class StatusAndModels {
     if (this.config.execution === "none") throw new EpEnvelopeError("unimplemented", this.executionRefusal());
     const requested = String(args.agent ?? "").trim();
     const refresh = args.refresh === true;
+    // The spawn.env names a spawn would read now, so a catalog lists what a launch reaches. A config
+    // that cannot be read fails the read, as it refuses a spawn.
+    let envAllow: readonly string[] | undefined;
+    try {
+      envAllow = spawnEnvAllow(loadCotalConfig(this.config.workspaceRoot));
+    } catch (e) {
+      return { ok: false, error: rejectionText(e) };
+    }
     const one = async (connector: Connector): Promise<ConnectorModelCatalog> => {
       await this.parts.connectorInventory.refreshUnavailableConnectors(connector.name, true);
       const harness = this.parts.harnessResolution.launchHarness(connector);
       if (!connector.listModels) return { agent: connector.name, supported: false, models: [] };
       if ("refusal" in harness) return { agent: connector.name, supported: true, models: [], error: harness.refusal };
       try {
-        const catalog = await connector.listModels({ refresh, resolvedBinaries: harness.binaries });
+        const catalog = await connector.listModels({ refresh, resolvedBinaries: harness.binaries, ...(envAllow ? { envAllow } : {}) });
         return { agent: connector.name, supported: catalog.unavailable === undefined, ...catalog };
       } catch (e) {
         return { agent: connector.name, supported: true, models: [], error: rejectionText(e) };
@@ -191,10 +204,12 @@ export class StatusAndModels {
    *  learn how many seats other owners hold on it. */
   managerStatusData(ownerFilter: string | undefined, setupClaude = false): ManagerStatus {
     this.parts.connectorInventory.refreshUnavailableConnectors(undefined, setupClaude);
+    const machine = hostMachine();
     return {
       instanceId: this.managerInstanceId,
       lifecycleUid: this.config.managerLifecycleUid,
       host: hostname(),
+      ...(machine ? { machine } : {}),
       version: MANAGER_VERSION,
       execution: this.config.execution,
       runtime: this.runtimeKind,
@@ -203,7 +218,7 @@ export class StatusAndModels {
       terminalSessions: this.config.execution !== "none",
       agentCount: ownerFilter === undefined ? this.agents.size : [...this.agents.values()].filter((a) => a.userOwner === ownerFilter).length,
       uptimeMs: Date.now() - this.config.startedAtMs,
-      connectors: servedConnectorStatuses(this.parts.connectorInventory.connectorStatuses, this.userMode),
+      connectors: servedConnectorStatuses(this.parts.connectorInventory.connectorStatuses),
       classSpawn: this.classSpawnEnabled(),
       staticReconciliation: this.staticReconciliationStatus(),
       stopImpact: {
@@ -212,11 +227,7 @@ export class StatusAndModels {
         maintenance: this.maintenanceState,
         resumeRequired: this.resumeRequired,
         stopping: this.leaseStopping,
-        lifecycleInFlight: this.lifecycleInFlight,
-        reservedLaunches: this.namesCapacity.reservedCount,
-        retirementsPending: this.retirement.pendingCount,
-        deprovisioningInFlight: this.retirement.inFlightCount,
-        staticReconciliationInFlight: this.staticLifecycle.sweepsInFlight,
+        ...this.deps.pendingWork(),
         agents: [...this.agents.values()]
           .filter((a) => ownerFilter === undefined || a.userOwner === ownerFilter)
           .map((a): ManagerStopImpact["agents"][number] => ({

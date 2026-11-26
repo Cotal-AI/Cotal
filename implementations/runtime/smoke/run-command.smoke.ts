@@ -981,22 +981,48 @@ const takeoverRun = startedId()!;
     filtered?.items?.length === 1 && filtered.items[0]?.runId === rid, filtered);
 
   const listCommand = `run list --local --space ${SPACE} --server ${shellPath(servers)} --endpoint ${endpoint}`;
-  for (const [kind, ids, correction] of [
-    ["missing", [], "Then add a run ID after `run resume` in the original command"],
-    ["malformed", ["bad/id"], "Then replace only the run ID in the original command"],
+  const replaceId = "Then replace only the run ID in the original command";
+  for (const [kind, positionals, flags, correction] of [
+    ["missing", ["resume"], { file: PURE, timeout: "5m" }, "Then add a run ID after `run resume` in the original command"],
+    ["malformed", ["resume", "bad/id"], { file: PURE, timeout: "5m" }, replaceId],
+    ["malformed", ["answer", "bad/id", "/checkpoint:a#0"], { by: "operator", value: "true" }, replaceId],
+    ["malformed", ["amend", "bad/id", "/checkpoint:a#0"], { by: "operator", value: "true" }, replaceId],
+    ["malformed", ["check", "bad/id", PURE], {}, replaceId],
+    ["malformed", ["migrate", "bad/id", PURE], { local: undefined }, replaceId],
+    ["malformed", ["revoke", "bad/id"], { by: "operator", reason: "review" }, replaceId],
   ] as const) {
-    const refusal = await wf(["resume", ...ids], { endpoint, file: PURE, timeout: "5m" }).then(() => undefined, (e: Error) => e);
+    const refusal = await wf([...positionals], { endpoint, ...flags }).then(() => undefined, (e: Error) => e);
     const remedy = isCommandFailure(refusal) ? refusal.remedy : undefined;
     const inventory = /`([^`]+)`/.exec(remedy ?? "")?.[1];
     const [, ...listArgs] = ["cotal", "pnpm cotal"].some((cli) => inventory === `${cli} ${listCommand}`)
       ? execFileSync("bash", ["-c", `printf '%s\\0' ${inventory!.replace(/^.*? run /, "run ")}`], { encoding: "utf8" }).split("\0").slice(0, -1) : [];
     reset();
     const listed = run && listArgs.length > 0 && await runWorkflow(parseCommandArgs(run, listArgs)).then(() => true, () => false);
-    c(`a ${kind} local resume ID refuses with exit 1 and its remedy finds the same endpoint's run without a manager`,
+    c(`a ${kind} local ${positionals[0]} ID refuses with exit 1 and its remedy finds the same endpoint's run without a manager`,
       isCommandFailure(refusal) && refusal.code === "USAGE_INVALID" && exitCode(refusal.outcome, refusal.code) === 1
         && remedy?.endsWith(correction) === true
         && listed === true && (process.exitCode ?? 0) === 0 && stateOf(psRow(rid)) === "completed", { refusal, remedy, out: captured() });
   }
+
+  const mesh = { space: SPACE, server: servers, root, mode: "auth", ts: new Date().toISOString() } as const;
+  recordMesh({ ...mesh, server: `nats://127.0.0.1:${await pickFreePort()}` });
+  try {
+    for (const verb of ["answer", "amend"]) {
+      const refusal = await wf([verb, "run-missing", "/checkpoint:approve#0"], { endpoint, by: "operator", value: "true", json: true })
+        .then(() => undefined, (e: Error) => e);
+      const remedy = isCommandFailure(refusal) ? refusal.remedy : undefined;
+      const inventory = /`([^`]+)`/.exec(remedy ?? "")?.[1];
+      const [, ...listArgs] = ["cotal", "pnpm cotal"].some((cli) => inventory === `${cli} ${listCommand} --json`)
+        ? execFileSync("bash", ["-c", `printf '%s\\0' ${inventory!.replace(/^.*? run /, "run ")}`], { encoding: "utf8" }).split("\0").slice(0, -1) : [];
+      reset();
+      const listed = run && listArgs.length > 0 ? await readEnvelope(() => runWorkflow(parseCommandArgs(run, listArgs))) : undefined;
+      const result = listed?.result as { kind?: string; items?: RunRowJson[] } | undefined;
+      c(`a missing local ${verb} run keeps the broker override, endpoint, and JSON output in its remedy`,
+        isCommandFailure(refusal) && refusal.code === "TARGET_NOT_FOUND" && exitCode(refusal.outcome, refusal.code) === 2
+          && refusal.message.endsWith("no run is recorded under that id") && (process.exitCode ?? 0) === 0
+          && result?.kind === "runs" && result.items?.length === 1 && result.items[0]?.runId === rid, { refusal, remedy, listed });
+    }
+  } finally { recordMesh(mesh); }
 
   const origin = join(home, "origin");
   mkdirSync(origin);
@@ -1162,7 +1188,7 @@ const takeoverRun = startedId()!;
 
 // The sentinel: a skipped block above would exit green while running fewer cells than the suite
 // declares, and a count is the only reader that can see that.
-const DECLARED = 139;
+const DECLARED = 146;
 if (ok + fail !== DECLARED) {
   fail += 1;
   console.error(`  ✗ FAIL: the suite declares ${DECLARED} cells but ran ${ok + fail - 1}`);

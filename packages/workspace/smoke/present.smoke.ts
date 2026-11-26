@@ -190,6 +190,13 @@ check("a command names itself between backticks, or between a longer run when it
 const tickedPath = wrapWords(`add them to the running stack with ${codeSpan(`cotal team deploy '/srv/tick\`q "dq" $(x)/team.yaml'`)}, or stop it`, 56);
 check("a command between double backticks wraps whole past a backtick in its quoted path",
   JSON.stringify(tickedPath) === JSON.stringify(["add them to the running stack with", "``cotal team deploy '/srv/tick`q \"dq\" $(x)/team.yaml'``,", "or stop it"]), tickedPath);
+const outWord = codeSpan("'/srv/physical`` folder with  spaces/linked.creds'");
+const outReport = renderReport(commandFailureReport(new CommandFailure("refused", "PERMISSION_DENIED", "no credential was written", {
+  remedy: `name the \`--out\` file by a path with no symbolic link in it, such as ${outWord} if that folder is yours`,
+})), "plain", 32);
+check("a narrow Next keeps a quoted path whole when its first word contains backticks", outReport.split("\n").some(line => line.trim() === outWord), outReport);
+const adjacent = wrapWords("try `--out` with a different file, then use `--plain` to inspect the result", 32);
+check("a span closed in its opening word does not absorb prose before the next span", adjacent.every(line => displayWidth(line) <= 32), adjacent);
 const bare = wrapWords("run cotal down --yes then cotal up", 24);
 check("a command outside backticks wraps at its spaces", JSON.stringify(bare) === JSON.stringify(["run cotal down --yes", "then cotal up"]), bare);
 const ticked = wrapWords("the restore left it stopped; start it with `cotal up --space restored-space` in its folder", 30);

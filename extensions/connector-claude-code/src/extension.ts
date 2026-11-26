@@ -1,107 +1,24 @@
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { discardLaunchArtifacts, loadAgentFile, registry, writeLaunchArtifact, type Connector, type CommandListOpts, type LaunchOpts, type LaunchSpec, type ModelCatalog, type ModelCatalogOpts, type ModelInfo } from "@cotal-ai/core";
+import { discardLaunchArtifacts, loadAgentFile, registry, writeLaunchArtifact, type Connector, type CommandListOpts, type LaunchOpts, type LaunchSpec } from "@cotal-ai/core";
 import { aclEnv, nameEnv, connectorLaunchOptions, controlEndpoint, eventChannel, firstCommandEnv, launchArmsEvents, launchEnv, materialEnv, mcpServerEnvKeys } from "@cotal-ai/connector-core";
 import { carriedForkRecord, claudeResumeTranscript, placeCarried, refuseCarriedLaunch } from "./carried.js";
 import { CLAUDE_READY_TEXTS, CLAUDE_STARTUP_BLOCKERS, CLAUDE_WORKSPACE_TRUST_REPLIES } from "./trust.js";
 import { assertChannelServerDeclared, claudeUserMcpEnvKeys } from "./user-mcp.js";
 import { HOST_EXE_ENV, resolveHostExe } from "./once-exit.js";
 import { HOOK_CONTEXT_CHARS } from "./hooks.js";
-import { claudeInitialize } from "./claude-initialize.js";
+import { launchFieldArgs } from "./launch-fields.js";
+import { CLAUDE_EFFORT_LEVELS, listClaudeModels } from "./models.js";
+import { imageFolder } from "./turn-images.js";
+import { CLAUDE_PROVIDER_KEYS } from "./provider-keys.js";
+import { claudeNamingLaunchEnv } from "./naming.js";
 import { claudeCommandCatalog } from "./command-catalog.js";
+
+export { CLAUDE_PROVIDER_KEYS };
 
 /** Name the cotal MCP server is registered under via --mcp-config (see buildLaunch). */
 const MCP_SERVER_NAME = "cotal";
 
-/** Auth and provider-routing env `claude` actually reads for a headless or container seat.
- *  Drawn from Anthropic's authentication precedence
- *  (https://docs.anthropic.com/en/docs/claude-code/iam) and the env-vars page, not from a
- *  prefix guess. `CLAUDE_CODE_OAUTH_TOKEN` is the load-bearing name: `docs/deploy.mdx` and
- *  `deploy/` tell operators a container Claude authenticates with it, and a container has no
- *  Keychain. Host-session markers (`CLAUDE_CODE_CHILD_SESSION`, `CLAUDECODE`,
- *  `CLAUDE_CODE_ENTRYPOINT`) are deliberately absent — those are how a nested `claude` decides
- *  it must not save a transcript. Files under the default `~/.claude` and `~/.aws` locations
- *  remain reachable through HOME. A credential file at a non-default path is reachable only when
- *  its path variable, such as `GOOGLE_APPLICATION_CREDENTIALS`, is forwarded explicitly. */
-export const CLAUDE_PROVIDER_KEYS = [
-  // First-party / subscription (setup-token, Console key, gateway bearer).
-  "CLAUDE_CODE_OAUTH_TOKEN",
-  "CLAUDE_CODE_OAUTH_REFRESH_TOKEN",
-  "CLAUDE_CODE_OAUTH_SCOPES",
-  "ANTHROPIC_API_KEY",
-  "ANTHROPIC_AUTH_TOKEN",
-  "ANTHROPIC_BASE_URL",
-  "CLAUDE_CONFIG_DIR",
-  // Cloud provider selection. Without the matching flag, the credential vars below are inert.
-  "CLAUDE_CODE_USE_BEDROCK",
-  "CLAUDE_CODE_USE_VERTEX",
-  "CLAUDE_CODE_USE_FOUNDRY",
-  "CLAUDE_CODE_USE_ANTHROPIC_AWS",
-  "CLAUDE_CODE_USE_MANTLE",
-  "CLAUDE_CODE_SKIP_BEDROCK_AUTH",
-  "CLAUDE_CODE_SKIP_VERTEX_AUTH",
-  "CLAUDE_CODE_SKIP_FOUNDRY_AUTH",
-  "CLAUDE_CODE_SKIP_ANTHROPIC_AWS_AUTH",
-  "CLAUDE_CODE_SKIP_MANTLE_AUTH",
-  "CLAUDE_CODE_SKIP_AWS_CRED_CACHE",
-  "CLAUDE_CODE_AWS_CHAIN_RESOLVE_TIMEOUT_MS",
-  // Amazon Bedrock / Claude Platform on AWS.
-  "ANTHROPIC_AWS_API_KEY",
-  "ANTHROPIC_AWS_BASE_URL",
-  "ANTHROPIC_AWS_WORKSPACE_ID",
-  "AWS_ACCESS_KEY_ID",
-  "AWS_SECRET_ACCESS_KEY",
-  "AWS_SESSION_TOKEN",
-  "AWS_PROFILE",
-  "AWS_REGION",
-  "AWS_DEFAULT_REGION",
-  "AWS_SHARED_CREDENTIALS_FILE",
-  "AWS_CONFIG_FILE",
-  "AWS_BEARER_TOKEN_BEDROCK",
-  "ANTHROPIC_BEDROCK_BASE_URL",
-  "ANTHROPIC_BEDROCK_MANTLE_BASE_URL",
-  "ANTHROPIC_BEDROCK_REGION_PREFIX",
-  "ANTHROPIC_BEDROCK_SERVICE_TIER",
-  "ANTHROPIC_SMALL_FAST_MODEL_AWS_REGION",
-  // Google Cloud's Agent Platform.
-  "ANTHROPIC_VERTEX_BASE_URL",
-  "ANTHROPIC_VERTEX_PROJECT_ID",
-  "GOOGLE_APPLICATION_CREDENTIALS",
-  "CLOUD_ML_REGION",
-  "GCLOUD_PROJECT",
-  "GOOGLE_CLOUD_PROJECT",
-  "VERTEX_REGION_CLAUDE_3_5_HAIKU",
-  "VERTEX_REGION_CLAUDE_3_5_SONNET",
-  "VERTEX_REGION_CLAUDE_3_7_SONNET",
-  "VERTEX_REGION_CLAUDE_4_0_OPUS",
-  "VERTEX_REGION_CLAUDE_4_0_SONNET",
-  "VERTEX_REGION_CLAUDE_4_1_OPUS",
-  "VERTEX_REGION_CLAUDE_4_5_OPUS",
-  "VERTEX_REGION_CLAUDE_4_5_SONNET",
-  "VERTEX_REGION_CLAUDE_4_6_OPUS",
-  "VERTEX_REGION_CLAUDE_4_6_SONNET",
-  "VERTEX_REGION_CLAUDE_4_7_OPUS",
-  "VERTEX_REGION_CLAUDE_4_8_OPUS",
-  "VERTEX_REGION_CLAUDE_5_OPUS",
-  "VERTEX_REGION_CLAUDE_5_SONNET",
-  "VERTEX_REGION_CLAUDE_FABLE_5",
-  "VERTEX_REGION_CLAUDE_FABLE_5_1",
-  "VERTEX_REGION_CLAUDE_HAIKU_4_5",
-  // Microsoft Foundry.
-  "ANTHROPIC_FOUNDRY_API_KEY",
-  "ANTHROPIC_FOUNDRY_AUTH_TOKEN",
-  "ANTHROPIC_FOUNDRY_BASE_URL",
-  "ANTHROPIC_FOUNDRY_RESOURCE",
-  // Workload Identity Federation / named Anthropic profiles.
-  "ANTHROPIC_PROFILE",
-  "ANTHROPIC_FEDERATION_RULE_ID",
-  "ANTHROPIC_ORGANIZATION_ID",
-  "ANTHROPIC_WORKSPACE_ID",
-  "ANTHROPIC_IDENTITY_TOKEN",
-  "ANTHROPIC_IDENTITY_TOKEN_FILE",
-] as const;
 /** Channel ref for `--dangerously-load-development-channels`, which turns on the cotal MCP server's
  *  `claude/channel` capability so an idle session wakes the instant a peer message arrives. The ref
  *  is the server tagged `server:<name>` (the CLI rejects a plugin ref or a bare name here), and
@@ -154,57 +71,6 @@ function assertServableModel(model: string): void {
   );
 }
 
-const unavailable = (why: string): ModelCatalog => ({ models: [], unavailable: why });
-
-/** The levels `claude --effort` accepts (2.1.330). Given another level, claude warns on stderr and
- *  runs at its default effort, so a variant outside this list is refused at launch. */
-const CLAUDE_EFFORT_LEVELS = ["low", "medium", "high", "xhigh", "max"];
-
-interface ModelRow {
-  value: string;
-  displayName: string;
-  resolvedModel?: string;
-  supportedEffortLevels?: string[];
-}
-
-function isModelRow(row: unknown): row is ModelRow {
-  const { value, displayName, resolvedModel, supportedEffortLevels: levels } = (row ?? {}) as Partial<Record<keyof ModelRow, unknown>>;
-  return (
-    typeof value === "string" &&
-    typeof displayName === "string" &&
-    (resolvedModel === undefined || typeof resolvedModel === "string") &&
-    (levels === undefined || (Array.isArray(levels) && levels.every((level) => typeof level === "string")))
-  );
-}
-
-/** An alias such as `opus` follows each new release, and some logins name it only "Opus", so its name
- *  also carries the model it resolves to today. A value that extends that model, such as
- *  `claude-fable-5-2[1m]`, is the more specific of the two and is carried instead. */
-function modelInfo(row: ModelRow): ModelInfo {
-  const { value, resolvedModel } = row;
-  const resolves = resolvedModel && resolvedModel !== value ? ` (${value.startsWith(resolvedModel) ? value : resolvedModel})` : "";
-  const levels = row.supportedEffortLevels ?? [];
-  return { id: value, name: row.displayName + resolves, ...(levels.length ? { variants: levels.map((name) => ({ name })) } : {}) };
-}
-
-async function listClaudeModels(opts: ModelCatalogOpts = {}): Promise<ModelCatalog> {
-  // claude applies the settings of the project it runs in, so it runs in an empty private directory.
-  const cwd = mkdtempSync(join(tmpdir(), "cotal-claude-models-"));
-  try {
-    const bin = opts.resolvedBinaries?.claude ?? "claude";
-    const answer = await claudeInitialize({ bin, cwd, env: launchEnv({ providerKeys: CLAUDE_PROVIDER_KEYS }), boundMs: 6_000, what: "its models" });
-    if ("failed" in answer) return unavailable(answer.failed);
-    const { account, models: rows } = answer.response;
-    // Logged out, claude still answers, with its built-in aliases, and no seat of this install can run one.
-    if (account?.tokenSource === "none" && !account.apiKeySource) return unavailable("claude is not logged in; run claude to log in");
-    if (!Array.isArray(rows) || !rows.every(isModelRow)) return unavailable("claude answered without a model list");
-    // `default` points at claude's own default model, which a launch that names no model gets anyway.
-    return { source: "claude stream-json initialize", models: rows.filter((m) => m.value !== "default").map(modelInfo) };
-  } finally {
-    rmSync(cwd, { recursive: true, force: true });
-  }
-}
-
 /**
  * The Claude Code connector: launches the real `claude` with the Cotal identity in
  * the environment and the mesh channel enabled, so the session joins the mesh and
@@ -222,7 +88,9 @@ export const claudeConnector: Connector = {
   eventChannel,
   // A launched session serves Claude's tool permissions on the agent endpoint (prompts.ts), except on
   // Windows, where the hook answers each one itself until serving there is built (hook.ts).
-  ...(process.platform === "win32" ? {} : { prompts: true as const }),
+  // askPermissions launches in the mode that asks, so it is declared only where the prompts are served.
+  ...(process.platform === "win32" ? {} : { prompts: true as const, supportsAskPermissions: true }),
+  supportsReasoningEvents: true, // thinking summaries on, and the mapper's reasoning option
   // The seat's command mod runs every listed entry as a `command` (commands.ts). Windows seats run
   // none yet (command-feed.ts).
   ...(process.platform === "win32" ? {} : {
@@ -330,6 +198,7 @@ export const claudeConnector: Connector = {
     const prompt = opts.prompt === undefined ? undefined : opts.prompt.trim();
     if (prompt === "")
       throw new Error("claude connector: an initial prompt was given but it is empty, there is no first turn to submit");
+    Object.assign(env, claudeNamingLaunchEnv(opts, prompt));
     // `--resume` takes an optional value, so `claude` reads an id that starts with `-` as the next
     // option and resumes nothing. A Claude session id never starts with one.
     if (opts.resume?.startsWith("-"))
@@ -376,6 +245,7 @@ export const claudeConnector: Connector = {
     // exists. After the first write, only writeLaunchArtifact can throw, and it removes every file
     // this launch wrote before it does.
     const passthrough = connectorLaunchOptions("claude", opts.launchOptions).map(([k, v]) => [k, String(v)] as const);
+    const fieldArgs = launchFieldArgs(opts, passthrough);
     // The private files this launch writes. The launcher that spawns the spec removes them once the
     // child has exited (core launch-artifacts).
     // Creds, broker URL and the control token ride a 0600 file; only its path is exported, so the
@@ -389,7 +259,10 @@ export const claudeConnector: Connector = {
     // recorded so far instead of leaving it with no owner.
     try {
       env.COTAL_CONTROL_SOCKET = control.path;
-      Object.assign(env, materialEnv({ creds: opts.creds, servers: opts.servers, control, eventsRequired: opts.eventsRequired, eventPayloads: opts.eventPayloads, userAuth: opts.userAuth }, artifacts));
+      const images = imageFolder(artifacts);
+      Object.assign(env, images.env);
+      args.push(...images.args);
+      Object.assign(env, materialEnv({ creds: opts.creds, servers: opts.servers, control, eventsRequired: opts.eventsRequired, eventPayloads: opts.eventPayloads, askPermissions: opts.askPermissions, reasoningEvents: opts.reasoningEvents, userAuth: opts.userAuth }, artifacts));
       Object.assign(env, firstCommandEnv(opts.firstCommand, artifacts));
       // Default (no shared servers): pass the config inline, unchanged. With shared servers, write it
       // to a file instead and pass the path. Either way the secret stays a `${VAR}` reference (Claude
@@ -445,14 +318,7 @@ export const claudeConnector: Connector = {
       // no deny-list — the spawn capability is the trust boundary (see connectorLaunchOptions), not the
       // flag set. An operator can already run `claude` with any flag directly, and a peer's cotal_spawn
       // is gated by the spawn capability itself; every `claude` flag is forwarded verbatim.
-      // A managed seat has no human at its terminal, so a permission prompt under the default mode
-      // is a prompt nobody answers: the seat's first mesh tool call stalled there and it looked dead
-      // to its peers. Bypass is the default for a managed seat, which the manager marks with `cwd`. A
-      // foreground launch runs in the operator's terminal and keeps Claude's own mode, so the operator
-      // answers its prompts there. An operator who wants another mode passes
-      // `--opt permission-mode=<mode>`, and either permission flag in the passthrough wins.
-      if (opts.cwd && !passthrough.some(([k]) => k === "permission-mode" || k === "dangerously-skip-permissions"))
-        args.push("--permission-mode", "bypassPermissions");
+      args.push(...fieldArgs);
       for (const [k, val] of passthrough) {
         if (val === "") args.push(`--${k}`);
         else args.push(`--${k}`, val);

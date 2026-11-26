@@ -15,7 +15,7 @@ import type { EpCaller, EpPrincipal, PrincipalAuthority } from "./endpoint-subje
 import { processRuntime } from "./process-runtime.js";
 import type { CompiledContract } from "./schema-profile.js";
 import { spacePrefix } from "./subjects.js";
-import type { PresencePrompts } from "./types.js";
+import type { PresenceAgentEndpoint, PresencePrompts } from "./types.js";
 import type { NatsConnection, PermissionViolationError } from "@nats-io/transport-node";
 
 /** The highest `prompts` presence `seq` this process used under each runtime id (SPEC §6). A reader
@@ -40,6 +40,9 @@ export class EndpointPrincipalServe {
   /** The `prompts` presence field {@link setPromptsPresence} last set. Shown only while the `agent`
    *  endpoint is served and its subscription was accepted on the current connection. */
   private promptsPresence?: PresencePrompts;
+  /** The `agentEndpoint` presence field {@link setAgentEndpointPresence} last set, shown under the
+   *  same gate as `prompts`. */
+  private agentEndpointPresence?: PresenceAgentEndpoint;
 
   constructor(private readonly identity: Readonly<EndpointIdentity>, private readonly conn: Readonly<ConnectionState>, private readonly delivery: Readonly<DeliveryState>, private readonly deps: EndpointPrincipalServeDeps) {}
 
@@ -136,7 +139,7 @@ export class EndpointPrincipalServe {
     intent.resolveFailed(err);
     for (const handle of intent.handles) void handle.stop();
     if (intent.serve.endpoint === AGENT_ENDPOINT) {
-      this.promptsPresence = undefined;
+      this.promptsPresence = this.agentEndpointPresence = undefined;
       this.publishPresence().catch((e) => this.emitRecoverable(e as Error));
     }
     // `ready` already carried a refusal that came before it settled; a later one is reported here.
@@ -163,7 +166,7 @@ export class EndpointPrincipalServe {
         intent.rejectReady(new Error(`stopped serving "${intent.serve.endpoint}" before the broker confirmed the subscription`));
       }
       if (intent.serve.endpoint === AGENT_ENDPOINT) {
-        this.promptsPresence = undefined;
+        this.promptsPresence = this.agentEndpointPresence = undefined;
         if (republish) this.publishPresence().catch((e) => this.emitRecoverable(e as Error));
       }
     }
@@ -192,6 +195,25 @@ export class EndpointPrincipalServe {
     await this.publishPresence();
   }
 
+  /**
+   * Set this process's `agentEndpoint` presence field (SPEC §6): the `agent` endpoint commands it
+   * serves now. It shows under the same gate as `prompts`, and presence is written at once when the
+   * value changed. An absent `setModel` is written as false. Throws when the `agent` endpoint is not
+   * served, and a TypeError for a flag that is not a boolean.
+   */
+  async setAgentEndpointPresence(served: PresenceAgentEndpoint): Promise<void> {
+    for (const k of ["interrupt", "turn", "images", "usage"] as const)
+      if (typeof served?.[k] !== "boolean") throw new TypeError(`agentEndpoint.${k} must be a boolean`);
+    if (served.setModel !== undefined && typeof served.setModel !== "boolean") throw new TypeError("agentEndpoint.setModel must be a boolean");
+    if (!this.delivery.principalServes.has(AGENT_ENDPOINT))
+      throw new Error(`the agentEndpoint presence field belongs to a served "${AGENT_ENDPOINT}" endpoint: call servePrincipal first (SPEC §6)`);
+    const was = this.agentEndpointPresence;
+    const next = { interrupt: served.interrupt, turn: served.turn, images: served.images, usage: served.usage, setModel: served.setModel ?? false };
+    if (was && (Object.keys(next) as (keyof PresenceAgentEndpoint)[]).every((k) => was[k] === next[k])) return;
+    this.agentEndpointPresence = next;
+    await this.publishPresence();
+  }
+
   /** Show `open: 0` with a fresh `seq` for a new serve of the `agent` endpoint. */
   openPrompts(): void {
     this.promptsPresence = { open: 0, seq: this.nextPromptsSeq() };
@@ -212,9 +234,18 @@ export class EndpointPrincipalServe {
 
   /** The `prompts` field this process's presence carries now, or none. */
   servedPrompts(): PresencePrompts | undefined {
+    return this.agentEndpointShown() ? this.promptsPresence : undefined;
+  }
+
+  /** The `agentEndpoint` field this process's presence carries now, or none. */
+  servedAgentEndpoint(): PresenceAgentEndpoint | undefined {
+    return this.agentEndpointShown() ? this.agentEndpointPresence : undefined;
+  }
+
+  /** The `agent` endpoint is served and its subscription was accepted on the current connection. */
+  private agentEndpointShown(): boolean {
     const intent = this.delivery.principalServes.get(AGENT_ENDPOINT);
-    if (!intent || intent.ended || !this.conn.nc || intent.readyOn !== this.conn.nc) return undefined;
-    return this.promptsPresence;
+    return !!intent && !intent.ended && !!this.conn.nc && intent.readyOn === this.conn.nc;
   }
 
   /**

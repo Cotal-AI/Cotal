@@ -1446,12 +1446,12 @@ async function runUp(args: ParsedArgs, invokedFrom: string, inheritedLock?: Main
       // exit 0. A service unit relying on `--foreground` read that exit as the stack ending, stopped
       // it, and restarted into the same branch. Refuse and name the remedy.
       if (values.foreground) {
-        console.error(
-          c.red(
-            `✗ mesh "${held.space}" is already running at ${server} - \`cotal up --foreground\` starts nothing here, so it can't keep it in this terminal; \`cotal down\` it first, then \`cotal up --foreground\``,
-          ),
-        );
-        process.exit(1);
+        const stop = held.origin === "up"
+          ? `from ${shellWord(held.root)}, inspect the stack with ${codeSpan(`${displayCmd()} down --dry-run`)} and stop it with ${codeSpan(`${displayCmd()} down --yes`)}`
+          : "stop the broker with the launcher that started it";
+        throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `mesh "${held.space}" is already running and this request starts nothing, so it can't keep it in this terminal`, {
+          target: { root, space: held.space }, remedy: `${stop}; then retry the original foreground command unchanged from its original folder`,
+        });
       }
       // A running broker cannot change its transport either, and for exactly the reason it cannot
       // change its auth mode: the listener's TLS config was fixed when nats-server read its config
@@ -1933,10 +1933,7 @@ async function runUp(args: ParsedArgs, invokedFrom: string, inheritedLock?: Main
   for (const line of hang("", starting, terminalWidth(process.stdout), c.dim)) console.log(line);
   console.log(c.dim("Press Ctrl-C to stop.\n"));
   const listenerStartedAt = new Date().toISOString();
-  // A terminal sends Ctrl-C to the whole foreground process group. Keep the broker outside it
-  // on POSIX so only this owner receives the interrupt and can finish manager-first teardown
-  // before signalling the broker. Keep the child referenced and its output in this terminal.
-  // The configuration names a store inside the root relative to it, so the broker runs from the root.
+  // Keep the POSIX broker out of the terminal's process group for manager-first teardown on Ctrl-C.
   const child = spawnBroker(bin, natsArgs, { cwd: cotalRoot(), stdio: "inherit", detached: process.platform !== "win32" });
   await recordSpawnedListener(child, listenerStartedAt, boundListener);
   const foreground = holdForegroundListener({ child, server, space, executable: natsServer, log: brokerOutput, resuming: resumeAttempt !== undefined, restored, releaseStartupLock });

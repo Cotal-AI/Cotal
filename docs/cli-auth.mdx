@@ -164,9 +164,10 @@ such as `/tmp`, and the file is owner-only. Unsupported platforms refuse rather 
 Mint checks the existing parent folders before creating any missing ones. An unsafe parent leaves
 the output tree unchanged.
 A credential is never written through a symbolic link: a link among the output's folders refuses
-`PERMISSION_DENIED`, naming the link, the folder it points to and the same file named without the
-link. A path through a file refuses `USAGE_INVALID`, and a folder this account cannot create
-refuses `PERMISSION_DENIED`, naming the folder. None of them writes anything.
+`PERMISSION_DENIED`, naming the link and the folder it points to. If the physical output path can
+be shown without escaping characters for the terminal, the refusal offers it as one POSIX shell
+argument for `--out`. A path through a file refuses `USAGE_INVALID`, and a folder this account cannot
+create refuses `PERMISSION_DENIED`, naming the folder. None of them writes anything.
 
 `--identity` reuses the native nkey. The out-of-band agent mint reports its newly allocated
 lifecycle UID, with a warning that it did not reuse the old inbox/delivery footprint. Use that
@@ -354,7 +355,10 @@ The exchange or Manager operation that consumes the proof is never replayed by t
 A provider that cannot be reached, or that stops answering, refuses with
 `DEPENDENCY_UNAVAILABLE` (exit 2) and caches no session. `logout` revokes the IdP session, clears
 its cache, and removes only that
-account's discovered registry entries. See
+account's discovered registry entries. Logout does not enumerate open terminal sessions or
+send their detach frames. Those session grants stay in the attach process, not the login cache.
+Detach the terminal to end its session. Signing out at the provider on another machine also
+does not close an admitted terminal connection. See
 [identity & auth](identity-and-auth.mdx).
 
 
@@ -532,8 +536,12 @@ lifecycle UID the mint reports.
 
 Each file `auth mint --out` wrote for the space from this root and that is still there is listed
 under Exported credential files, and in `result.exported`, with its state and expiry. These rows
-are not findings. A file missing its user seed block is unreadable even if its JWT still parses.
-Restore the complete file, or use the replacement mint the report names. An expired one is an
+are not findings. On POSIX, doctor reports a symbolic link at the recorded export path as unreadable
+without following it. Restore the original private regular file at that path in place of the link.
+A file missing its user seed block is unreadable even if its JWT still parses.
+Restore the complete file, or use the replacement mint the report names. If the JWT claims cannot
+be read, the report cannot determine the original grants. Restore the complete file or confirm the
+intended grants before minting a replacement to a new private path. An expired file is an
 `EXPORTED_CREDENTIAL_EXPIRED` warning. One near expiry or
 expired names `cotal auth mint <label> --identity <file> --out <file>`, which signs the same key
 again with the same grants. One whose key was revoked, or that an earlier space identity issued,

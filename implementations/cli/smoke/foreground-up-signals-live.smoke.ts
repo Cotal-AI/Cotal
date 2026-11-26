@@ -752,6 +752,73 @@ async function controllerStartupCell(kind: "up" | "receipt" | "team" | "team-lau
   }
 }
 
+async function manifestBrokerRetryCell(): Promise<void> {
+  const space = "foreground-manifest-retry", root = join(base, space), home = join(root, "home"), mesh = join(root, "mesh");
+  const env = { ...cleanEnv, HOME: home, COTAL_HOME: join(home, "machine"), XDG_CONFIG_HOME: join(home, "xdg"), COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1" };
+  for (const dir of [mesh, env.COTAL_HOME, env.XDG_CONFIG_HOME]) mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const sandbox = recordSmokeSandbox({ root: mesh, cotalHome: env.COTAL_HOME, xdgConfigHome: env.XDG_CONFIG_HOME });
+  const originalPort = await freePort(), port = await freePort();
+  const originalServer = `nats://127.0.0.1:${originalPort}`, server = `nats://127.0.0.1:${port}`;
+  const manifest = `apiVersion: cotal/v1\nkind: Mesh\nspace: ${space}\nbroker: {servers: "${originalServer}", auth: false}\nchannels:\n  notes: {}\n`;
+  const original = join(mesh, "team.yaml"), copy = "team-copy.yaml";
+  writeFileSync(original, manifest);
+  const probe = (args: string[]) => foregroundCliProbe(cliEntry, tsx, mesh, env, args, 60_000);
+  const created = await probe(["space", "create", space, "--root", "."]);
+  assert.equal(created.code, 0, created.out + created.err);
+  const refusal = await probe(["up", "-f", "team.yaml", "--server", server, "--foreground"]);
+  const advice = refusal.err.replace(/\s+/g, " ");
+  assert.equal(refusal.code, 2, advice);
+  assert.match(advice, /Code:\s+UNSUPPORTED/);
+  assert.match(advice, /copy the manifest beside the original.*`broker\.servers`.*`--server`/);
+  const command = /`(?:pnpm )?cotal (team boot <manifest-copy> --foreground)`/.exec(advice);
+  assert.ok(command, advice);
+  assert.doesNotMatch(advice, /team boot team\.yaml(?: |`)/);
+  assert.ok(!(await portOpen(originalPort)) && !(await portOpen(port)), "the refusal starts no broker");
+
+  writeFileSync(join(mesh, copy), manifest.replace(originalServer, server));
+  const args = command[1]!.split(" ").map((word) => word === "<manifest-copy>" ? copy : word);
+  const child = spawn(process.execPath, ["--import", tsx, cliEntry, ...args], { cwd: mesh, env, stdio: ["ignore", "pipe", "pipe"] });
+  const state = observeOwnedChild(child);
+  let out = "", err = "";
+  child.stdout?.on("data", (b: Buffer) => { out += b.toString(); });
+  child.stderr?.on("data", (b: Buffer) => { err += b.toString(); });
+  const log = () => out + err;
+  const stop = () => {
+    const down = ["down", "--space", space, "--yes"];
+    assertSmokeSandboxDown(sandbox, down, { cwd: mesh, env });
+    return probe(down);
+  };
+  try {
+    await until(() => {
+      if (state.error) throw state.error;
+      return state.exited || (out.includes("Fresh team boot started") && /^\s*Broker:[^\n]*\n/m.test(out));
+    }, 90_000, log);
+    assert.equal(state.exited, false, log());
+    assert.ok(out.split("\n").some((line) => line.trim().startsWith("Broker:") && line.trimEnd().endsWith(` ${server}`)), out);
+    const status = await probe(["status", "--components", "--space", space]);
+    assert.equal(status.code, 0, status.out + status.err);
+    assert.ok(status.out.split("\n").some((line) => /^\s*broker\s+serving\b/.test(line) && line.includes(`registered ${server} · reachable`)), status.out);
+    assert.ok(await portOpen(port) && !(await portOpen(originalPort)), "only the requested broker port is listening");
+    assert.equal(readFileSync(original, "utf8"), manifest);
+    const stopped = await stop();
+    assert.equal(stopped.code, 0, stopped.out + stopped.err);
+    await waitForOwnedChild(() => state.closed, 10_000, err);
+    assert.equal(state.code, 0, err);
+    assert.equal(await portOpen(port), false, "the broker listener closed");
+    passed++;
+    console.log(`PASS foreground-up-signals ${space}`);
+  } finally {
+    try {
+      if (!state.exited) {
+        child.kill("SIGTERM");
+        await waitForOwnedChild(() => state.closed, 120_000, log());
+      }
+    } finally {
+      if (await portOpen(port) || await portOpen(originalPort)) await stop();
+    }
+  }
+}
+
 async function preparePendingLaunch(mesh: string, env: NodeJS.ProcessEnv, space: string, server: string): Promise<NodeJS.ProcessEnv> {
   const installed = await foregroundCliProbe(cliEntry, tsx, mesh, env, ["ext", "add", join(wt, "extensions", "connector-claude-code")], 120_000);
   assert.equal(installed.code, 0, installed.out + installed.err);
@@ -876,9 +943,9 @@ async function controllerSighupCell(): Promise<void> {
     await waitForOwnedChild(() => state.closed, 3_000, `${root}: hangup owner streams drained`);
     assert.equal(state.code, 129, `a hangup exits 129 and leaves the stack: ${err}`); passed++;
     // The command word depends on whether the host has a `cotal` launcher on PATH; the project selection does not.
-    const stopPrefix = `\`cd ${shellPath(realpathSync(mesh))} && `;
-    const stopAt = err.indexOf(stopPrefix);
-    assert.ok(stopAt !== -1 && /^[^`\n]+ down` stops it\./.test(err.slice(stopAt + stopPrefix.length)), `the hangup stop command selects the project from the invoking folder: ${err}`); passed++;
+    const stopPrefix = `\`cd ${shellPath(realpathSync(mesh))} && COTAL_HOME=${shellPath(env.COTAL_HOME)} `;
+    const steps = err.split(stopPrefix);
+    assert.ok(steps.length === 3 && /^[^`\n]+ down --dry-run`; to stop it, run $/.test(steps[1]!) && /^[^`\n]+ down --yes`\./.test(steps[2]!), `both hangup commands select the original project and home: ${err}`); passed++;
     assert.equal(await portOpen(port), true, "the broker keeps running after the hangup"); passed++;
     assert.equal(existsSync(hold), false, "the hangup removes this process's hold record"); passed++;
     const status = await foregroundCliProbe(cliEntry, tsx, mesh, env, ["status", "--space", space, "--server", `nats://127.0.0.1:${port}`]);
@@ -1432,6 +1499,7 @@ async function userAuthRestartCell(): Promise<void> {
 }
 
 console.log(`foreground-up-signals retained evidence: ${base}`);
+await manifestBrokerRetryCell();
 await openBrokerOnlyRestartCell();
 await managerNameCell();
 await userAuthRestartCell();

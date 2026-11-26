@@ -125,12 +125,8 @@ export function validateUpArguments(args: ParsedArgs, beforeRestore = false): vo
   // checks the certificate against the address it names.
   if (!args.values.file && args.values["tls-cert"] !== undefined && typeof args.values.server === "string" && /^nats:\/\//i.test(args.values.server))
     throw new CommandFailure("refused", "USAGE_INVALID", "--tls-cert serves the broker over TLS, so --server must be a tls:// address; nothing was started or written", { remedy: `pass --server ${tlsAddress(args.values.server)}`, selfContained: true });
-  if (typeof args.values.file === "string" && args.values.foreground === true) {
-    const boot = `${presentation === "json" ? "cotal" : displayCmd()} team boot ${shellWord((args.values.file.startsWith("-") ? "./" : "") + args.values.file)} --foreground`;
-    const remedy = args.values["dry-run"] === true ? `preview with ${codeSpan(`${boot} --dry-run${presentation === "rich" ? "" : ` --${presentation}`}`)}`
-      : `prepare the project if needed with \`cotal space create <space> --root .\`, then run ${codeSpan(boot)}`;
-    throw new CommandFailure("refused", "UNSUPPORTED", "manifest boot has no native foreground custody path; a detached broker was not substituted for the requested terminal-bound lifetime", { remedy });
-  }
+  if (typeof args.values.file === "string" && args.values.foreground === true)
+    throw foregroundManifestRefusal(args.values.file, presentation, args.values["dry-run"] === true, args.values.server !== undefined);
   if (args.values.foreground === true && (args.values.json === true || args.values.plain === true)) throw new CommandFailure("refused", "USAGE_INVALID", "foreground up keeps native terminal custody and cannot produce a finite JSON or plain receipt", { remedy: `omit ${args.values.json ? "--json" : "--plain"} to keep the stack in this terminal, or omit --foreground for a finite receipt from a controller-owned stack` });
   // Flag values and combinations are usage, so they refuse here, before any effect. The run keeps
   // its own checks for maintenance re-entries, which do not pass through this validation.
@@ -213,6 +209,16 @@ export function validateUpArguments(args: ParsedArgs, beforeRestore = false): vo
     // A restore creates its own store. A manifest uses the explicit or default store, not a legacy one.
     if (args.values.restore === undefined) assertUpStoreWritable(root, typeof args.values["store-dir"] === "string" ? args.values["store-dir"] : args.values.file === undefined ? undefined : join(root, ".cotal", "nats"), beforeRestore);
   }
+}
+
+function foregroundManifestRefusal(file: string, presentation: ReturnType<typeof presentationOf>, dryRun: boolean, serverOverride: boolean): CommandFailure {
+  const manifest = serverOverride ? "<manifest-copy>" : shellWord(file.startsWith("-") ? `./${file}` : file);
+  const boot = `${presentation === "json" ? "cotal" : displayCmd()} team boot ${manifest} --foreground`;
+  const preview = codeSpan(`${boot} --dry-run${presentation === "rich" ? "" : ` --${presentation}`}`);
+  const copy = serverOverride ? `copy the manifest beside the original, set ${codeSpan("broker.servers")} in the copy to the URL from ${codeSpan("--server")} without credentials, then ` : "";
+  const remedy = dryRun ? `${copy}preview with ${preview}`
+    : `prepare the project if needed with \`cotal space create <space> --root .\`, then ${copy}run ${codeSpan(boot)}`;
+  return new CommandFailure("refused", "UNSUPPORTED", "manifest boot has no native foreground custody path; a detached broker was not substituted for the requested terminal-bound lifetime", { remedy });
 }
 
 function assertUpRootWritable(root: string): void {

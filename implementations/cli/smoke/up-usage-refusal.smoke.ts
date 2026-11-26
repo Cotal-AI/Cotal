@@ -66,7 +66,7 @@ if (!existsSync(BIN)) {
   process.exit(1);
 }
 
-interface Envelope { outcome?: string; target?: { root?: string; space?: string; heldBy?: string }; error?: { code?: string; message?: string; remedy?: string }; result?: { kind?: string; lifetimeRequest?: string; effectAttempted?: boolean; persisted?: boolean } }
+interface Envelope { outcome?: string; target?: { root?: string; space?: string; heldBy?: string }; error?: { code?: string; message?: string; remedy?: string }; result?: { kind?: string; lifetimeRequest?: string; brokerCandidate?: string; effectAttempted?: boolean; persisted?: boolean } }
 const { readStackJournal, writeStackJournal } = await import("../src/lib/stack-journal.js");
 
 const { check, finish } = createSuite();
@@ -89,6 +89,23 @@ const run = (args: string[], cwd = folder) => {
   return { status: r.status, stdout: r.stdout ?? "", stderr: r.stderr ?? "", envelope };
 };
 const shown = (r: ReturnType<typeof run>) => ({ status: r.status, stdout: r.stdout.slice(0, 900), stderr: r.stderr.slice(0, 900) });
+
+{
+  const project = mkdtempSync(join(tmpdir(), "cotal-up-remedy-"));
+  process.on("exit", () => rmSync(project, { recursive: true, force: true }));
+  const manifest = "plan's notes.yaml";
+  writeFileSync(join(project, manifest), "apiVersion: cotal/v1\nkind: Mesh\nspace: remedy-check\nbroker: { auth: false }\nchannels: {}\n");
+  const refusal = run(["up", `-f=${manifest}`, "--dry-run", "--json"], project);
+  const remedy = refusal.envelope?.error?.remedy ?? "";
+  const value = process.platform === "win32" ? `"${manifest}"` : "'plan'\\''s notes.yaml'";
+  check("a short option with an attached value names both copyable corrections", refusal.status === 1
+    && refusal.envelope?.error?.code === "USAGE_INVALID" && remedy === `write -f ${value} or --file=${value}`, shown(refusal));
+  for (const flags of remedy.slice(6).split(" or ")) {
+    const command = `"${process.execPath}" "${BIN}" up ${flags} --dry-run`;
+    const pasted = spawnSync(command, { shell: true, cwd: project, env, encoding: "utf8", timeout: 60_000 });
+    check(`pasting ${flags} displays the manifest plan`, pasted.status === 0 && pasted.stdout.includes("remedy-check"), pasted.stderr);
+  }
+}
 
 const cases: { args: string[]; message: RegExp }[] = [
   { args: ["--file", ""], message: /--file is empty, so it names no manifest/ },
@@ -163,6 +180,31 @@ for (const { args, message } of cases) {
           && retry.envelope?.outcome === "ok" && result?.kind === "fresh-team-boot-preview"
           && result.lifetimeRequest === "terminal-bound" && result.effectAttempted === false && result.persisted === false
           : /Lifetime request:\s+terminal-bound/.test(retry.stdout)),
+      { refusal: shown(refusal), retry: retry && shown(retry) });
+  }
+  const originalServer = "nats://127.0.0.1:1";
+  const server = `nats://127.0.0.1:${await freePort()}`;
+  const manifest = readFileSync(openManifest, "utf8").replace("  auth: false\n", `  auth: false\n  servers: ${originalServer}\n`);
+  const original = "team.yaml", copy = "team-copy.yaml";
+  writeFileSync(join(manifests, original), manifest);
+  writeFileSync(join(manifests, copy), manifest.replace(originalServer, server));
+  for (const flags of [[], ["--json"], ["--plain"]]) {
+    const refusal = run(["up", "-f", original, "--server", server, "--foreground", "--dry-run", ...flags], manifests);
+    const advice = refusal.envelope?.error?.remedy ?? refusal.stderr;
+    const preview = ["team", "boot", "<manifest-copy>", "--foreground", "--dry-run", ...flags];
+    const json = flags[0] === "--json";
+    const command = /`((?:pnpm )?cotal) (team boot [^`]+)`/.exec(advice);
+    const retry = command?.[2] === preview.join(" ") && (!json || command[1] === "cotal")
+      ? run(preview.map((word) => word === "<manifest-copy>" ? copy : word), manifests) : undefined;
+    const result = retry?.envelope?.result;
+    const correctPreview = json ? result?.brokerCandidate === server && result.lifetimeRequest === "terminal-bound"
+      : retry !== undefined && /Lifetime request:\s+terminal-bound/.test(retry.stdout)
+        && retry.stdout.split("\n").some((line) => line.trim().startsWith("Broker candidate:") && line.trimEnd().endsWith(` ${server}`));
+    check(`foreground preview with --server and ${flags[0] ?? "default output"} inspects the broker from the manifest copy`,
+      refusal.status === 2 && (json ? refusal.envelope?.error?.code === "UNSUPPORTED" : /Code:\s+UNSUPPORTED/.test(refusal.stderr))
+        && advice.includes("copy the manifest") && advice.includes("`broker.servers`") && advice.includes("`--server`")
+        && !advice.includes(`team boot ${original}`) && !advice.includes(server) && retry?.status === 0 && retry.stderr === "" && correctPreview
+        && readFileSync(join(manifests, original), "utf8") === manifest && !existsSync(join(manifests, ".cotal")),
       { refusal: shown(refusal), retry: retry && shown(retry) });
   }
   for (const { label, args, json, help, message, remedy } of [

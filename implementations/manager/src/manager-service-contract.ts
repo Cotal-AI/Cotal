@@ -165,6 +165,9 @@ const STATUS_OUTPUT_SCHEMA = {
     instanceId: { type: "string" },
     /** Answering Manager's host name. Advisory display metadata, never routing authority. */
     host: { type: "string" },
+    /** This machine's id (`managerMachineId`): an HMAC of the OS machine id, never the id. Absent
+     *  when the host has none this reads. Advisory, never routing authority. */
+    machine: { type: "string", pattern: "^[0-9a-f]{64}$" },
     /** Running @cotal-ai/manager package version. Optional for older status payloads. */
     version: { type: "string" },
     /** Native per-process incarnation, not inferred from a PID or a logical instance name. */
@@ -192,7 +195,7 @@ const STATUS_OUTPUT_SCHEMA = {
       items: {
         type: "object",
         additionalProperties: false,
-        required: ["agent", "state", "binaries", "eventPlane", "prompts"],
+        required: ["agent", "state", "binaries", "eventPlane", "prompts", "askPermissions", "reasoningEvents"],
         properties: {
           agent: { type: "string" },
           state: { enum: ["available", "unavailable"] },
@@ -204,6 +207,10 @@ const STATUS_OUTPUT_SCHEMA = {
            *  the agent endpoint: the connector declares it and the mesh is user-auth. A launch
            *  capability, not a promise that a given session's endpoint opens. */
           prompts: { type: "boolean" },
+          /** Whether this connector takes `askPermissions` and `reasoningEvents` on `spawn`. A
+           *  launch that asks for one the row reports false is refused before provisioning. */
+          askPermissions: { type: "boolean" },
+          reasoningEvents: { type: "boolean" },
           reason: { type: "string" },
         },
       },
@@ -263,6 +270,9 @@ export interface ManagerStatus {
   instanceId: string;
   /** Answering Manager's host name. Advisory only; older payloads may omit it. */
   host?: string;
+  /** The answering Manager's machine, as `managerMachineId` derives it. Advisory only; absent when
+   *  the host has no OS machine id it reads, and on older payloads. */
+  machine?: string;
   /** Running @cotal-ai/manager package version. Older payloads may omit it. */
   version?: string;
   /** Older managers can omit this process-incarnation coordinate. */
@@ -341,6 +351,8 @@ export interface ManagerConnectorStatus {
   binaries: Record<string, string>;
   eventPlane: boolean;
   prompts: boolean;
+  askPermissions: boolean;
+  reasoningEvents: boolean;
   reason?: string;
 }
 
@@ -1343,9 +1355,19 @@ export const MANAGER_STATUS_CONTRACT: { input: CompiledContract; output: Compile
  *
  *  54 = `harness-commands` lists what a harness would offer a seat in a directory before launch,
  *  `spawn` input takes `firstCommand`, and its acceptance names `firstCommand.id`. A new served
- *  command cannot fold into 53. */
+ *  command cannot fold into 53.
+ *
+ *  55 = `spawn` takes `autoName`, so the seat labels itself from its first message. The input schema
+ *  is closed, so a revision-54 contract rejects this field.
+ *
+ *  56 = `spawn` takes the opt-in `askPermissions` and `reasoningEvents`, and every `status.connectors`
+ *  row requires both as booleans, the connector's declarations. The spawn input and status output
+ *  schemas are closed, so a revision-55 contract rejects either.
+ *
+ *  57 = `status` adds the optional `machine`, the answering Manager's machine id. The status output
+ *  schema is closed, so a revision-56 contract rejects it. */
 export function managerClusterDocument(): ClusterDocument {
-  return buildClusterDocument(MANAGER_CLUSTER_URN, 54, ROWS);
+  return buildClusterDocument(MANAGER_CLUSTER_URN, 57, ROWS);
 }
 
 /** Revision, count, and names from the shipped cluster document. Reached smokes derive surface pins from this. */

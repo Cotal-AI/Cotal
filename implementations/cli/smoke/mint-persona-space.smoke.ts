@@ -1,16 +1,25 @@
 /**
  * `cotal auth mint` persona diagnostics keep the resolved `--space`, even when mint targeted the
  * space with `--server` while another space is selected via `cotal use`.
+ * The symlink refusal gives a POSIX shell argument only when it can print the path literally.
  *
- * Hermetic (no broker, no network). Run:
- *   tsx implementations/cli/smoke/mint-persona-space.smoke.ts
+ * Hermetic (no broker, no network). Run: pnpm smoke:mint-persona-space
  */
 import nodeAssert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createSpaceAuth } from "@cotal-ai/core";
+import { createSpaceAuth, registry } from "@cotal-ai/core";
 import { countedAssert, emitSentinel } from "@cotal-ai/smoke-kit";
+
+if (process.argv[2] === "mint-child") {
+  await import("../src/index.js");
+  await import("@cotal-ai/auth");
+  const { runCli } = await import("../src/command.js");
+  await runCli(registry, process.argv.slice(3));
+  process.exit(process.exitCode ?? 0);
+}
 
 const counted = countedAssert(nodeAssert);
 const assert: typeof nodeAssert = counted.assert;
@@ -47,6 +56,36 @@ const {
 const { mint } = await import("../src/commands/mint.js");
 const { persona } = await import("../src/commands/persona.js");
 
+function checkSymlinkOutput(name: string, display: "--plain" | "--json" | undefined, suggest: boolean): void {
+  const fixture = mkdtempSync(join(scratch, "out-"));
+  const real = join(fixture, name), link = join(fixture, "export-link");
+  mkdirSync(real, { mode: 0o700 });
+  symlinkSync(real, link);
+  const out = join(real, "issued.creds");
+  const nodeArgs = [...process.execArgv, process.argv[1]!, "mint-child", "auth", "mint", "issued", "--space", "endpoint-audit", ...(display ? [display] : []), "--out"];
+  const env = { ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_"))),
+    COTAL_HOME: process.env.COTAL_HOME };
+  const options = { env, encoding: "utf8" as const, timeout: 30_000 };
+  const refused = spawnSync(process.execPath, [...nodeArgs, join(link, "issued.creds")], options);
+  assert.equal(refused.status, 2, refused.stderr);
+  const error = display === "--json" ? (JSON.parse(refused.stdout) as { error: { code: string; remedy: string } }).error : undefined;
+  if (error) assert.equal(error.code, "PERMISSION_DENIED");
+  else assert.match(refused.stderr, /^\s*Code:\s+PERMISSION_DENIED$/m);
+  assert.deepEqual(readdirSync(real), [], "the symlink refusal writes nothing");
+  if (!suggest) {
+    const rendered = error?.remedy ?? refused.stderr;
+    assert.match(rendered, /name the --out file by a path with no symbolic link in it/);
+    assert.doesNotMatch(rendered, /such as/, "a rewritten path must not be offered for a retry");
+    return;
+  }
+  const suggested = /^\s*name the --out file by a path with no symbolic link in it, such as (`+)(.+?)\1 if that folder is yours$/m.exec(error?.remedy ?? refused.stderr)?.[2];
+  assert.ok(suggested, "mint names the physical --out argument in its Next line");
+  const retry = spawnSync("/bin/sh", ["-c", `exec "$@" ${suggested}`, "sh", process.execPath, ...nodeArgs], options);
+  assert.equal(retry.status, 0, retry.stderr);
+  assert.deepEqual(readdirSync(real), ["issued.creds"]);
+  assert.equal(statSync(out).mode & 0o777, 0o600);
+}
+
 try {
   const endpointServer = "nats://127.0.0.1:47100";
   const otherServer = "nats://127.0.0.1:47101";
@@ -66,6 +105,13 @@ try {
 
   setCurrent("reference-audit");
   process.chdir(project);
+  if (process.platform !== "win32") {
+    checkSymlinkOutput("export``'s → $HOME", "--plain", true);
+    checkSymlinkOutput("Notes \u2764\ufe0f", "--plain", false);
+    checkSymlinkOutput("physical folder", "--json", true);
+    checkSymlinkOutput("team\u200dbox", undefined, false);
+    checkSymlinkOutput("line1\nline2", "--json", false);
+  }
 
   // Control: bare `cotal persona show reviewagent` resolves the selected space (`reference-audit`).
   let bareShowErr: unknown;
@@ -117,7 +163,7 @@ try {
   );
 
   // 3. A resolved space name starting with `-` uses `--space=...` so the option parser does not choke.
-  process.chdir(scratch);
+  process.chdir(hyphenProject);
   let hyphenErr: unknown;
   try {
     await mint({ values: { server: hyphenServer, plain: true }, positionals: ["hyphenagent"], raw: [] });

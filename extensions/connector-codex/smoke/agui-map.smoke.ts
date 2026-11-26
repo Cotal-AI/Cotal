@@ -25,7 +25,7 @@
  */
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { AguiBrackets, type AguiEvent } from "@cotal-ai/connector-core";
+import { AguiBrackets, type AguiEvent, type Merged } from "@cotal-ai/connector-core";
 import { createCodexMapper, type CodexRecord } from "../src/agui-map.js";
 
 /** The unit a record mapped to, or `null`: a turn the mapper opens no run for maps to none. */
@@ -57,14 +57,15 @@ const THREAD = "01a01586-5f04-7c53-a91b-78386b50a901";
 
 /** Replay every record through a fresh mapper, feeding every event to the bracket machine so a
  *  vocabulary violation fails here rather than at the broker. */
-function replay(recs: CodexRecord[]): {
+/** `reasoning` is the launch's `reasoningEvents`. */
+function replay(recs: CodexRecord[], reasoning = true): {
   events: AguiEvent[];
   perRecord: ({ runId: string; events: AguiEvent[] } | null)[];
   bracketError: string | null;
   runs: string[];
 } {
   let n = 0;
-  const mapper = createCodexMapper({ threadId: THREAD, mintRunId: () => `run-${++n}` });
+  const mapper = createCodexMapper({ threadId: THREAD, mintRunId: () => `run-${++n}`, reasoning });
   const brackets = new AguiBrackets();
   const events: AguiEvent[] = [];
   const perRecord: ({ runId: string; events: AguiEvent[] } | null)[] = [];
@@ -250,17 +251,16 @@ const kinds = (evts: AguiEvent[]): Record<string, number> => {
     kinds: kinds(replay([start, done]).events),
   });
 
-  const withReasoning = replay([
-    start,
-    { timestamp: ts, type: "response_item", payload: { type: "reasoning", id: "r1", encrypted_content: "OPAQUE", summary: [{ type: "summary_text", text: "thinking" }] } },
-    done,
-  ]);
+  const thinking: CodexRecord = { timestamp: ts, type: "response_item", payload: { type: "reasoning", id: "r1", encrypted_content: "OPAQUE", summary: [{ type: "summary_text", text: "thinking" }] } };
+  const withReasoning = replay([start, thinking, done]);
   const kr = kinds(withReasoning.events);
   c("shape:a reasoning record becomes REASONING START/CONTENT/END", kr.REASONING_MESSAGE_START === 1 && kr.REASONING_MESSAGE_CONTENT === 1 && kr.REASONING_MESSAGE_END === 1, kr);
   const deltas = withReasoning.events
     .filter((e) => (e as { type: string }).type === "REASONING_MESSAGE_CONTENT")
     .map((e) => (e as { delta: string }).delta);
   c("shape:encrypted_content is NEVER published", deltas.every((d) => !d.includes("OPAQUE")), { deltas: deltas.length });
+  const unasked = kinds(replay([start, thinking, done], false).events);
+  c("shape:without reasoningEvents a reasoning record publishes nothing", unasked.REASONING_MESSAGE_START === undefined && unasked.REASONING_MESSAGE_CONTENT === undefined && unasked.RUN_FINISHED === 1, unasked);
 
   const withTool = replay([
     start,
@@ -279,6 +279,41 @@ const kinds = (evts: AguiEvent[]): Record<string, number> => {
   c("shape:TOOL_CALL_START carries the NATIVE call_id, not a synthesized key", startEvt.toolCallId === "call-9", { toolCallId: startEvt.toolCallId });
   c("shape:toolCallId is the NATIVE call_id, not a synthesized key", res.toolCallId === "call-9", { toolCallId: res.toolCallId });
   c("shape:TOOL_CALL_RESULT carries the messageId every connector owes, derived from the call id", res.messageId === "res:call-9", { messageId: res.messageId });
+
+  // The result marker rides in the same unit as the result, so a read that starts with the output
+  // still holds a public event. `isError` comes only from an end record the mapper saw for the call.
+  const markerOf = (u: { events: AguiEvent[] } | null) => u?.events.find((e) => (e as { type: string; name?: string }).type === "CUSTOM") as { name: string; value: Record<string, unknown> } | undefined;
+  const resultOf = (u: { events: AguiEvent[] } | null) => u?.events.find((e) => (e as { type: string }).type === "TOOL_CALL_RESULT") as { cotal?: { isError?: boolean } } | undefined;
+  const outputUnit = withTool.perRecord[2] ?? null;
+  c("shape:the output's unit holds RESULT and the cotal.toolResult marker", markerOf(outputUnit)?.name === "cotal.toolResult" && resultOf(outputUnit) !== undefined, outputUnit?.events.map((e) => (e as { type: string }).type));
+  c("shape:with no end record the marker and the RESULT leave isError out",
+    JSON.stringify(markerOf(outputUnit)?.value) === JSON.stringify({ toolCallId: "call-9" }) && resultOf(outputUnit)?.cotal === undefined, { marker: markerOf(outputUnit)?.value, cotal: resultOf(outputUnit)?.cotal });
+  const ended = (call: string, end: CodexRecord["payload"]) => {
+    const r = replay([
+      start,
+      { timestamp: ts, type: "response_item", payload: { type: "function_call", call_id: call, name: "exec_command", arguments: "{}" } },
+      { timestamp: ts, type: "event_msg", payload: end },
+      { timestamp: ts, type: "response_item", payload: { type: "function_call_output", call_id: call, output: "out" } },
+      done,
+    ]);
+    const unit = r.perRecord[3] ?? null;
+    return { marker: markerOf(unit)?.value.isError, result: resultOf(unit)?.cotal?.isError, err: r.bracketError };
+  };
+  const endCases: [string, CodexRecord["payload"], boolean][] = [
+    ["exec_command_end with exit code 0", { type: "exec_command_end", call_id: "e0", exit_code: 0 }, false],
+    ["exec_command_end with exit code 1", { type: "exec_command_end", call_id: "e1", exit_code: 1 }, true],
+    ["patch_apply_end that succeeded", { type: "patch_apply_end", call_id: "p0", success: true }, false],
+    ["patch_apply_end that failed", { type: "patch_apply_end", call_id: "p1", success: false }, true],
+    ["mcp_tool_call_end with an Err result", { type: "mcp_tool_call_end", call_id: "m1", result: { Err: "boom" } }, true],
+    ["mcp_tool_call_end with an Ok result marked isError", { type: "mcp_tool_call_end", call_id: "m2", result: { Ok: { content: [], isError: true } } }, true],
+    ["mcp_tool_call_end with an Ok result", { type: "mcp_tool_call_end", call_id: "m3", result: { Ok: { content: [] } } }, false],
+  ];
+  for (const [label, end, want] of endCases) {
+    const got = ended((end as { call_id: string }).call_id, end);
+    c(`shape:${label} sets isError ${want} on the marker and the RESULT`, got.marker === want && got.result === want && got.err === null, got);
+  }
+  const otherCall = ended("x1", { type: "exec_command_end", call_id: "someone-else", exit_code: 1 });
+  c("shape:an end record for another call says nothing about this one", otherCall.marker === undefined && otherCall.result === undefined, otherCall);
 
   // THE UNION. `output` is a string on 6 353 `function_call_output` records and a list on 380, and
   // the other output family leans the other way, 664 string against 1 660 list. A mapper that
@@ -397,6 +432,128 @@ const kinds = (evts: AguiEvent[]): Record<string, number> => {
   // The run must survive the family it cannot describe. A gap that also broke the brackets would be
   // a second defect wearing the first one's clothes.
   c("gap:and the run still opens and closes exactly once around it", k.RUN_STARTED === 1 && k.RUN_FINISHED === 1 && R?.bracketError === null, { thrown, k });
+}
+
+// ------------------------------------------------------- code mode, in codex 0.162's rollout shapes
+// With code mode, every tool call runs inside one `exec` script. app-server reports no item for the
+// script, only for the calls it makes, and the rollout records each of those as an `item_completed`
+// once it ends. A direct call writes the same record after its own call record.
+{
+  const ts = "2026-11-23T18:49:24.000Z";
+  const item = (i: Record<string, unknown>) => ({ timestamp: ts, type: "event_msg", payload: { type: "item_completed", thread_id: "th", turn_id: "t1", item: i } });
+  const R = replay([
+    { timestamp: ts, type: "event_msg", payload: { type: "task_started", turn_id: "t1" } },
+    { timestamp: ts, type: "response_item", payload: { type: "custom_tool_call", status: "completed", call_id: "call_wrap", name: "exec", input: "const r = await tools.exec_command({cmd: \"cat notes.txt\"});\ntext(r.output);" } },
+    item({ type: "CommandExecution", id: "exec-cmd", command: ["/usr/bin/zsh", "-lc", "cat notes.txt"], cwd: "file:///w/work", status: "completed", aggregated_output: "alpha\nbeta\n", exit_code: 0 }),
+    item({ type: "CommandExecution", id: "exec-bad", command: ["/usr/bin/zsh", "-lc", "false"], cwd: "file:///w/work", status: "failed", aggregated_output: "", exit_code: 1 }),
+    item({ type: "FileChange", id: "exec-patch", changes: { "/w/work/notes.txt": { type: "update", unified_diff: "@@ -1,2 +1,2 @@\n alpha\n-beta\n+gamma\n", move_path: null } }, status: "completed", stdout: "Success.", stderr: "" }),
+    item({ type: "McpToolCall", id: "exec-mcp", server: "cotal", tool: "cotal_status", arguments: { state: "working" }, status: "completed", result: { content: [{ type: "text", text: "status set" }] } }),
+    { timestamp: ts, type: "response_item", payload: { type: "custom_tool_call_output", call_id: "call_wrap", output: [{ type: "input_text", text: "Script completed" }] } },
+    { timestamp: ts, type: "response_item", payload: { type: "function_call", name: "hello", namespace: "mcp__elicit", call_id: "toolu_1", arguments: "{}" } },
+    item({ type: "McpToolCall", id: "toolu_1", server: "elicit", tool: "hello", arguments: {}, status: "completed", result: { content: [{ type: "text", text: "hello" }] } }),
+    { timestamp: ts, type: "response_item", payload: { type: "function_call_output", call_id: "toolu_1", output: "hello" } },
+    { timestamp: ts, type: "event_msg", payload: { type: "task_complete", turn_id: "t1", error: null } },
+  ]);
+  type Ev = { type: string; toolCallId?: string; toolCallName?: string; delta?: string; content?: string; cotal?: { isError?: boolean } };
+  const evs = R.events as unknown as Ev[];
+  const started = evs.filter((e) => e.type === "TOOL_CALL_START");
+  const argsOf = (id: string) => JSON.parse(evs.find((e) => e.type === "TOOL_CALL_ARGS" && e.toolCallId === id)?.delta ?? "null") as unknown;
+  const resultOf = (id: string) => evs.find((e) => e.type === "TOOL_CALL_RESULT" && e.toolCallId === id);
+  c("code-mode:the exec script and its output publish nothing", !evs.some((e) => e.toolCallId === "call_wrap"), started);
+  c("code-mode:a command the script ran is an exec_command call with its script and folder",
+    started.some((e) => e.toolCallId === "exec-cmd" && e.toolCallName === "exec_command") && JSON.stringify(argsOf("exec-cmd")) === JSON.stringify({ cmd: "cat notes.txt", workdir: "/w/work" }), argsOf("exec-cmd"));
+  c("code-mode:its output is the call's result", resultOf("exec-cmd")?.content === "alpha\nbeta\n" && resultOf("exec-cmd")?.cotal?.isError === false, resultOf("exec-cmd"));
+  c("code-mode:a command that exits nonzero is a failed result", resultOf("exec-bad")?.cotal?.isError === true, resultOf("exec-bad"));
+  c("code-mode:a file change is an apply_patch call with Codex's change list",
+    started.some((e) => e.toolCallId === "exec-patch" && e.toolCallName === "apply_patch") &&
+      JSON.stringify(argsOf("exec-patch")) === JSON.stringify({ changes: [{ path: "/w/work/notes.txt", kind: { type: "update" }, diff: "@@ -1,2 +1,2 @@\n alpha\n-beta\n+gamma\n" }] }), argsOf("exec-patch"));
+  c("code-mode:an MCP call is a call to its tool with its arguments and result",
+    started.some((e) => e.toolCallId === "exec-mcp" && e.toolCallName === "cotal_status") && JSON.stringify(argsOf("exec-mcp")) === JSON.stringify({ state: "working" }) && resultOf("exec-mcp")?.content === "status set", { args: argsOf("exec-mcp"), result: resultOf("exec-mcp") });
+  c("code-mode:a direct call's item adds no second call", started.filter((e) => e.toolCallId === "toolu_1").length === 1, started);
+  c("code-mode:brackets legal", R.bracketError === null, R.bracketError);
+}
+
+// ------------------------------------------------------- a plan, from the thread's delta journal
+// A plan a code-mode script sets reaches app-server clients only as `turn/plan/updated`, which the
+// seat journals as a plan record. A direct update_plan call already carries its plan in the rollout.
+{
+  const ts = "2026-11-23T19:45:10.000Z";
+  const at = (r: CodexRecord): Merged<CodexRecord> => ({ harness: r });
+  const planLine = (id: string, explanation: string | null): Merged<CodexRecord> => ({ deltas: [], timestamp: 5, records: [{ type: "plan", id, explanation,
+    plan: [{ step: "read", status: "completed" }, { step: "fix", status: "inProgress" }] }] } as Merged<CodexRecord>);
+  const start = at({ timestamp: ts, type: "event_msg", payload: { type: "task_started", turn_id: "t1" } });
+  const done = at({ timestamp: ts, type: "event_msg", payload: { type: "task_complete", turn_id: "t1", error: null } });
+  type Ev = { type: string; toolCallId?: string; toolCallName?: string; delta?: string; content?: string; cotal?: { isError?: boolean } };
+  const merged = (values: Merged<CodexRecord>[]): Ev[] => {
+    const mapper = createCodexMapper({ threadId: THREAD, mintRunId: () => "run-plan" });
+    return values.flatMap((v) => unitOf(mapper.mapMerged(v))?.events ?? []) as unknown as Ev[];
+  };
+  const scripted = merged([start,
+    at({ timestamp: ts, type: "response_item", payload: { type: "custom_tool_call", status: "completed", call_id: "call_wrap", name: "exec", input: "await tools.update_plan({...});" } }),
+    planLine("plan_1", "read first"),
+    at({ timestamp: ts, type: "response_item", payload: { type: "custom_tool_call_output", call_id: "call_wrap", output: [{ type: "input_text", text: "Script completed" }] } }),
+    done]);
+  const args = scripted.find((e) => e.type === "TOOL_CALL_ARGS" && e.toolCallId === "plan_1")?.delta;
+  c("plan:a plan the script sets is an update_plan call", scripted.some((e) => e.type === "TOOL_CALL_START" && e.toolCallId === "plan_1" && e.toolCallName === "update_plan"),
+    scripted.map((e) => e.type));
+  c("plan:in update_plan's own arguments", args === JSON.stringify({ explanation: "read first", plan: [{ step: "read", status: "completed" }, { step: "fix", status: "in_progress" }] }), args);
+  c("plan:and it ends with the result update_plan returns",
+    scripted.some((e) => e.type === "TOOL_CALL_END" && e.toolCallId === "plan_1") && scripted.find((e) => e.type === "TOOL_CALL_RESULT" && e.toolCallId === "plan_1")?.content === "Plan updated",
+    scripted.filter((e) => e.toolCallId === "plan_1"));
+  const bare = merged([start, planLine("plan_4", null), done]).find((e) => e.type === "TOOL_CALL_ARGS")?.delta;
+  c("plan:a plan with no explanation leaves it out", bare !== undefined && !("explanation" in (JSON.parse(bare) as object)), bare);
+  const direct = merged([start,
+    at({ timestamp: ts, type: "response_item", payload: { type: "function_call", name: "update_plan", call_id: "call_plan", arguments: '{"plan":[{"step":"read","status":"completed"}]}' } }),
+    planLine("plan_2", null),
+    at({ timestamp: ts, type: "response_item", payload: { type: "function_call_output", call_id: "call_plan", output: "Plan updated" } }),
+    done]);
+  const starts = direct.filter((e) => e.type === "TOOL_CALL_START").map((e) => e.toolCallId);
+  c("plan:a direct update_plan call publishes its plan once, as itself", JSON.stringify(starts) === '["call_plan"]', starts);
+  c("plan:a plan line read with no run open publishes nothing", merged([planLine("plan_3", null)]).length === 0);
+
+  // A call the script makes starts as `item/started`, which the seat journals, and ends in the
+  // rollout's `item_completed`. Shapes from a live codex 0.162 code-mode turn.
+  const startedLine = (item: Record<string, unknown>): Merged<CodexRecord> => ({ deltas: [], timestamp: 6, records: [{ type: "started", item }] } as Merged<CodexRecord>);
+  const ended = (item: Record<string, unknown>) => at({ timestamp: ts, type: "event_msg", payload: { type: "item_completed", thread_id: "th", turn_id: "t1", item } });
+  const script = at({ timestamp: ts, type: "response_item", payload: { type: "custom_tool_call", status: "completed", call_id: "call_wrap", name: "exec", input: "..." } });
+  const scriptDone = at({ timestamp: ts, type: "response_item", payload: { type: "custom_tool_call_output", call_id: "call_wrap", output: [{ type: "input_text", text: "Script completed" }] } });
+  const cmdStarted = { type: "commandExecution", id: "exec-cmd", command: "/usr/bin/zsh -lc 'cat notes.txt'", cwd: "/w/work", processId: "3071", source: "unifiedExecStartup", status: "inProgress", aggregatedOutput: null, exitCode: null };
+  const cmdEnded = { type: "CommandExecution", id: "exec-cmd", command: ["/usr/bin/zsh", "-lc", "cat notes.txt"], cwd: "file:///w/work", status: "completed", aggregated_output: "alpha\nbeta\n", exit_code: 0 };
+  const running = merged([start, script, startedLine(cmdStarted)]);
+  const runArgs = running.find((e) => e.type === "TOOL_CALL_ARGS" && e.toolCallId === "exec-cmd")?.delta;
+  c("started:a command the script starts is published while it runs, with its script and folder",
+    running.some((e) => e.type === "TOOL_CALL_START" && e.toolCallId === "exec-cmd" && e.toolCallName === "exec_command") &&
+      runArgs === JSON.stringify({ cmd: "cat notes.txt", workdir: "/w/work" }) && !running.some((e) => e.type === "TOOL_CALL_RESULT"), running.map((e) => e.type));
+  const whole = merged([start, script, startedLine(cmdStarted), ended(cmdEnded), scriptDone, done]);
+  const ofCmd = whole.filter((e) => e.toolCallId === "exec-cmd").map((e) => e.type);
+  c("started:its end publishes only its result", JSON.stringify(ofCmd) === JSON.stringify(["TOOL_CALL_START", "TOOL_CALL_ARGS", "TOOL_CALL_END", "TOOL_CALL_RESULT"]) &&
+    whole.find((e) => e.type === "TOOL_CALL_RESULT")?.content === "alpha\nbeta\n", ofCmd);
+  const brackets = new AguiBrackets();
+  let bracketError: string | null = null;
+  for (const e of whole) try { brackets.accept(e as unknown as AguiEvent); } catch (err) { bracketError ??= (err as Error).message; }
+  c("started:brackets legal", bracketError === null, bracketError);
+  const quoted = merged([start, script, startedLine({ ...cmdStarted, id: "exec-q", command: "/bin/bash -lc 'echo '\\''hi there'\\'' \"$HOME\"'" })])
+    .find((e) => e.type === "TOOL_CALL_ARGS")?.delta;
+  c("started:a quoted command reads back as the script it runs", quoted === JSON.stringify({ cmd: "echo 'hi there' \"$HOME\"", workdir: "/w/work" }), quoted);
+  const patch = merged([start, script, startedLine({ type: "fileChange", id: "exec-patch", status: "inProgress",
+    changes: [{ path: "/w/work/notes.txt", kind: { type: "update", move_path: null }, diff: "@@ -1,2 +1,2 @@\n alpha\n-beta\n+gamma\n" }] })]);
+  c("started:a file change starts as apply_patch with Codex's change list",
+    patch.find((e) => e.type === "TOOL_CALL_START")?.toolCallName === "apply_patch" && patch.find((e) => e.type === "TOOL_CALL_ARGS")?.delta ===
+      JSON.stringify({ changes: [{ path: "/w/work/notes.txt", kind: { type: "update" }, diff: "@@ -1,2 +1,2 @@\n alpha\n-beta\n+gamma\n" }] }), patch);
+  const mcp = merged([start, script, startedLine({ type: "mcpToolCall", id: "exec-mcp", server: "cotal", tool: "cotal_status", status: "inProgress", arguments: { state: "working" } })]);
+  c("started:an MCP call starts under its tool's name with its arguments",
+    mcp.find((e) => e.type === "TOOL_CALL_START")?.toolCallName === "cotal_status" && mcp.find((e) => e.type === "TOOL_CALL_ARGS")?.delta === JSON.stringify({ state: "working" }), mcp);
+  const directStart = merged([start,
+    at({ timestamp: ts, type: "response_item", payload: { type: "function_call", name: "hello", namespace: "mcp__elicit", call_id: "toolu_1", arguments: "{}" } }),
+    startedLine({ type: "mcpToolCall", id: "toolu_1", server: "elicit", tool: "hello", status: "inProgress", arguments: {} }),
+    at({ timestamp: ts, type: "response_item", payload: { type: "function_call_output", call_id: "toolu_1", output: "hello" } }), done]);
+  c("started:a direct call's start publishes nothing", directStart.filter((e) => e.type === "TOOL_CALL_START").length === 1, directStart.map((e) => e.type));
+  c("started:a start with no script running publishes nothing", merged([start, startedLine({ ...cmdStarted, id: "call_x" }), done]).every((e) => !e.type.startsWith("TOOL_CALL")));
+  const late = merged([start, script, startedLine({ ...cmdStarted, id: "call_late" }),
+    at({ timestamp: ts, type: "response_item", payload: { type: "function_call", name: "exec_command", call_id: "call_late", arguments: '{"cmd":"cat notes.txt"}' } }),
+    at({ timestamp: ts, type: "response_item", payload: { type: "function_call_output", call_id: "call_late", output: "alpha" } }), scriptDone, done]);
+  c("started:a call record read after its start publishes no second start",
+    late.filter((e) => e.type === "TOOL_CALL_START" && e.toolCallId === "call_late").length === 1 && late.some((e) => e.type === "TOOL_CALL_RESULT" && e.toolCallId === "call_late"), late.map((e) => `${e.type}:${e.toolCallId}`));
 }
 
 // The census is printed, not just asserted: a reader who sees "28 passed" learns nothing about

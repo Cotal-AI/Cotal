@@ -11,9 +11,31 @@
  * Hermes hook names into the `hook_event_name` values switched on below.
  */
 import type { HookEvent, MeshAgent } from "@cotal-ai/connector-core";
+import type { BridgeServer } from "./bridge.js";
 
 /** Last tool the turn started — so `waiting` (approval) and `working` can name what it's doing. */
 let pendingTool: string | undefined;
+
+async function endTurn(agent: MeshAgent): Promise<void> {
+  pendingTool = undefined;
+  await agent.setStatus("idle");
+  // Now idle: if ambient messages were held while busy, ask the bridge to flush them.
+  if (agent.pendingWake() > 0) agent.requestWake();
+}
+
+/**
+ * Run when the bridge may have gone idle. With no Cotal message or turn in progress, a turn still
+ * working has ended without `post_llm_call` or `on_session_end`: a run Hermes gave up on, as when its
+ * provider refused the request, returns before both. One that ended through them is idle already.
+ */
+export async function gatewayIdle(agent: MeshAgent, bridge: Pick<BridgeServer, "idle"> | undefined): Promise<void> {
+  if (!bridge?.idle() || agent.status !== "working") return;
+  try {
+    await endTurn(agent);
+  } catch {
+    // presence is best effort, as in every hook
+  }
+}
 
 /** A control-server handler that never reads the hook's connection. */
 export const hermesHookHandle = async (agent: MeshAgent, ev: HookEvent): Promise<Record<string, unknown>> => {
@@ -39,12 +61,12 @@ export const hermesHookHandle = async (agent: MeshAgent, ev: HookEvent): Promise
       case "approval_wait": // Hermes asked for command approval — blocked on a human/peer
         await agent.setStatus("waiting", typeof ev.detail === "string" ? ev.detail : pendingTool);
         return {};
+      case "approval_done": // the approval stopped waiting, and the tool goes on or is refused
+        await agent.setStatus("working", pendingTool);
+        return {};
       case "post_llm_call": // turn done
       case "on_session_end":
-        pendingTool = undefined;
-        await agent.setStatus("idle");
-        // Now idle: if ambient messages were held while busy, ask the bridge to flush them.
-        if (agent.pendingWake() > 0) agent.requestWake();
+        await endTurn(agent);
         return {};
       case "gateway_shutdown":
         await agent.setStatus("offline");

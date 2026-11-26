@@ -48,7 +48,7 @@ process.on("exit", () => rmSync(home, { recursive: true, force: true }));
 const run = (args: string[], extraEnv: Record<string, string> = {}, cwd = home) => {
   const options = {
     cwd,
-    env: { ...HOST_ENV, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: xdgConfigHome, XDG_RUNTIME_DIR: xdgRuntimeDir, COTAL_HOME: cotalHome, COTAL_SKIP_CONNECTOR_SEED: "1", ...extraEnv },
+    env: { ...HOST_ENV, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: xdgConfigHome, XDG_RUNTIME_DIR: xdgRuntimeDir, COTAL_HOME: cotalHome, COTAL_SKIP_CONNECTOR_SEED: "1", DO_NOT_TRACK: "1", ...extraEnv },
     encoding: "utf8" as const,
     timeout: 120_000,
   };
@@ -219,8 +219,9 @@ function checkConfigScope(live: string): void {
     diagnostic.env.error.remedy.includes(fileMessage) && recovery(diagnostic.env.error.remedy), shown(diagnostic));
   const up = ["up", "--foreground", "--no-manager", "--open", ...at];
   const explicit = run([...up, "--root", project], {}, elsewhere);
-  check("explicit up --root still refuses a file without starting anything", explicit.status === 2 &&
-    explicit.stderr.includes("TARGET_UNAVAILABLE") && explicit.stderr.includes("--root must name an existing prepared local project"), shown(explicit));
+  check("explicit up --root refuses a file without starting anything or offering to prepare it", explicit.status === 2 &&
+    explicit.stderr.includes("TARGET_UNAVAILABLE") && explicit.stderr.includes("a file occupies the project path") && recovery(explicit.stderr) &&
+    !explicit.stderr.includes("prepare it with"), shown(explicit));
   const namedUp = run(up, {}, elsewhere);
   check("named up from another folder refuses without offering startup at a file", namedUp.status === 2 &&
     namedUp.stderr.includes("TARGET_UNAVAILABLE") && namedUp.stderr.includes(fileMessage) && recovery(namedUp.stderr), shown(namedUp));

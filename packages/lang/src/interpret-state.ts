@@ -2,7 +2,7 @@ import { RuntimeFault } from "./errors.js";
 import { KeyScope, type PathKind } from "./keys.js";
 import { Journal, RunClock } from "./journal.js";
 import { crossedWrite, type WritingFrame } from "./values.js";
-import type { RunPins } from "./pins.js";
+import type { EffectCeilings, RunPins } from "./pins.js";
 import type { CancelSignal, RootCancellationSource, EffectHandler } from "./effects.js";
 
 // ---- environments ------------------------------------------------------------------------------
@@ -225,6 +225,7 @@ export interface RunOptions {
   readonly file?: string;
   /** Fail loud rather than spinning forever when a loop does not terminate. */
   readonly effectCeiling?: number;
+  readonly ceilings?: EffectCeilings;
   /**
    * The HOST's stop, asked before every effect that has not already been recorded.
    *

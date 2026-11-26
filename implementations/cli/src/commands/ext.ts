@@ -29,6 +29,7 @@ export const extFlags = [
 ] as const satisfies readonly FlagSpec[];
 
 const usage = (message: string): CommandFailure => new CommandFailure("refused", "USAGE_INVALID", message);
+const REGISTRY_SPEC = /^(@[^/@]+\/[^/@]+|[^/@]+)(@.*)?$/;
 const EXT_USAGE = "usage: cotal ext [list] [--json|--plain] | ext add <npm-package> | ext remove <name> | ext root | ext seed [--repair|--reset|--force]";
 
 /** Parent binding for update's internal isolated re-add. Ordinary `ext add` never reads it. */
@@ -59,6 +60,8 @@ export function validateExtArguments(args: ParsedArgs): void {
     throw usage(sub === "root" ? "ext root prints its path raw and has no --json or --plain" : `ext ${sub}: --json and --plain are taken by the listing only`);
   }
   if ((sub === "add" || sub === "remove") && (args.positionals.length !== 2 || !operand)) throw usage(EXT_USAGE);
+  if (sub === "add" && operand && !isPathSpec(operand) && !REGISTRY_SPEC.test(operand))
+    throw usage("unsupported extension spec - use a local path or a registry name[@version]; prefix a relative folder with ./");
   // npm accepts an initial underscore in either part of a scoped name.
   if (sub === "remove" && operand && !/^(?:[a-z0-9-]|@[a-z0-9_-][a-z0-9._~-]*\/[a-z0-9_-])[a-z0-9._~-]*$/i.test(operand)) {
     throw usage(`invalid extension package name "${oneLine(operand)}". Give the package name as shown by \`cotal ext list\``);
@@ -637,7 +640,7 @@ function packageNameFromSpec(resolved: string, isPath: boolean): string {
     if (meta.name) return meta.name;
     throw new Error(`${join(resolved, "package.json")} declares no "name"`);
   }
-  const m = /^(@[^/@]+\/[^/@]+|[^/@]+)(@.*)?$/.exec(resolved);
+  const m = REGISTRY_SPEC.exec(resolved);
   if (m) return m[1];
   throw new Error(`unsupported extension spec "${resolved}" - use a local path or a registry name[@version]`);
 }

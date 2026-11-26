@@ -1,0 +1,3 @@
+# The Hermes plugin sends each command approval of an asking seat to the sidecar, resolves it with
+# the owner's answer in the shape of each Hermes release, and leaves other seats' to the gateway.
+smoke:hermes-plugin-approvals

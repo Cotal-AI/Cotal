@@ -1,5 +1,156 @@
 # Upgrading a running deployment
 
+## Ended terminal sessions on user-auth spaces
+
+A user-auth terminal connection now closes when the auth service confirms that its session
+ended. A different session or control connection for the same actor stays connected. Open
+a new session with `cotal attach <agent>` instead of reusing an ended session. Connections
+admitted before the upgrade, or by an older callout replica during it, have no receipt and
+keep their original expiry.
+
+Upgrade the full auth service, every `--callout-only` replica, and delivery together to
+the release that carries this change. For a local stack, stop it with `cotal down`, run
+`cotal update`, then run `cotal up` with the same
+space and startup options from the same project. For a hosted space, deploy the updated auth
+and delivery packages together and restart those services. An older delivery service cannot
+confirm targeted eviction, so auth retains the receipt and retries after delivery is upgraded.
+
+If auth cannot read the active session or write its connection receipt before the broker's
+authorization deadline, the broker refuses the connection. Check the auth service log for
+the cause. Restore access to the auth store if the log reports a receipt write failure, then
+run `cotal attach <agent>` again. Trusted auth-store readers can read the receipt's session ID,
+holder principal, and lifecycle ID.
+
+If you embed delivery, edit the `startPlane3` eviction hook to take
+`(principal, connections)` as two explicit parameters. When `connections` is present, restrict
+the scan, disconnect, and verification to those broker `{serverId, cid}` pairs for that
+principal, then return the same ordered pairs in the result's `connections` field. A
+principal-only hook still handles ordinary principal eviction. Omit the `connections` field
+from `evictPrincipal` if you intend to evict the entire principal. A request that supplies it
+is limited to the exact pairs or refused, never treated as a principal-wide eviction.
+## Agent names that start with a hyphen
+
+`cotal personas new` refuses new catalog names starting with `-`. In scripts, replace the name with
+one that starts with a letter, digit or `_`, for example `cotal personas new reviewer --prompt "Review changes" --subscribe ""`.
+When editing a persona, change its `name:` to `reviewer` rather than `-reviewer`.
+The same name rule applies when defining a persona through `cotal_persona`.
+
+`cotal team check` and `cotal team deploy` refuse a manifest with an `agents:` key starting with `-`.
+Rename the key from `-reviewer` to `reviewer` and change the corresponding channel `subscribe`,
+`allowSubscribe` and `allowPublish` entries, then run `cotal team check cotal.yaml` before deploying.
+A refused manifest creates no channels or agents.
+
+If you call the tmux, herdr, cmux or Orca runtime directly, pass `reviewer` instead of `-reviewer`
+as the first argument to `spawn`.
+
+Existing cards are still available for inspection and removal. On the CLI, put flags before `--`:
+`cotal persona show -- -reviewer` or `cotal persona remove --yes -- -reviewer`.
+## Labelling an agent from its thread title
+
+The `agent` cluster advances to revision 7 with `set-label`, which the owner calls to set the label
+an agent shows in place of its name. The auth callout grants it, so update and restart every member
+of the callout queue, then reconnect each person's clients. A connect that an old member answers
+gets no `set-label` permission. An agent whose connector predates `set-label` answers it
+`unimplemented`, and `cotal acp` says so in the thread and titles the thread with the name the agent
+shows.
+
+## Switching a running agent's model
+
+The `agent` cluster advances to revision 6 with `set-model`, which the owner
+calls to switch a running agent's model and variant. The auth callout grants it, so update and
+restart every member of the callout queue, then reconnect each person's clients. A connect that an
+old member answers gets no `set-model` permission. An agent whose connector predates `set-model`
+omits `setModel` from its presence `agentEndpoint`, and a client reads that as not served.
+
+Presence `agentEndpoint` gains the optional boolean `setModel`. A reader older than this accepts the
+field, because it checks only the four flags it knows.
+
+A Manager keeps a switch the agent's presence shows and starts the agent on it when it restarts or
+resumes it. An older Manager starts it on its launch model. The Manager and `cotal spawn` also tell
+an agent whose role `modelPolicy` governs, through `COTAL_MODEL_POLICY`, so it refuses every switch.
+An agent launched by an older Manager or CLI is not told, so on a space whose cotal config sets
+`modelPolicy`, update the Manager and the CLI with the connectors.
+
+## Managers name their machine
+
+The Manager cluster advances to revision 57. A Manager's `status` and its presence card now carry
+`machine`, an HMAC of the host's OS machine identity. `cotal acp` decides which manager runs on its
+own machine by this value. The host name cannot decide it, because macOS changes it when the
+network changes. The closed status schema of revision 56 rejects the field, so update Managers and
+their callers together. A Manager service that an older release started on this machine keeps
+running after `cotal update --self` and names no machine. `cotal acp` still recognises it as
+running here, by the native instance that `cotal manager status` shows for the space, and starts no
+second Manager. Any other Manager that names no machine counts as another computer's until it runs
+the new version.
+
+## Linear account tool restrictions
+
+An upgraded Linear extension enforces `allowedTools` in `<cotal-home>/linear/<name>.json` for
+both `linear call` and endpoint `call-tool`. An empty list refuses every tool. If a tool should
+be callable, have the account operator add its case-sensitive name to the list, for example
+`"allowedTools": ["list_issues", "get_issue"]`. Restart any running Linear service for that
+account and retry the call. If the account has no `allowedTools` field, upstream permissions still
+decide what it can call. Inventory still lists tools the upstream advertises.
+
+If `linear account add` or `linear account login` refuses an invalid record, repair the named JSON
+file before rerunning the same command. Set `name` to the account name and `mode` to `write` or
+`readonly`. Set `auth` to `token` with `tokenFile` set to the absolute path of the private token
+file, or set `auth` to `oauth`. Keep the intended `allowedTools` list, using distinct nonempty tool
+names without whitespace at either end or terminal controls.
+
+A missing or mismatched OAuth `state` gets HTTP 400 and leaves the pending login open. Return to
+the authorization URL printed by that login and finish there.
+
+## Personas saved over the wire
+
+`define-persona` refuses channel lists outside the definer's grant before writing, even if a later
+spawner holds those channels. This applies to prompt frontmatter, explicit arguments and lists kept
+on redefine. Replace `subscribe`, `allowSubscribe` and `allowPublish` with channels the definer
+holds. To save without channels, pass `subscribe: []`, `allowSubscribe: []` and `allowPublish: []`.
+For a hosted user-auth manager, also pass `capabilities: []` to save without granting capabilities.
+If saved `quiet` or `muted` entries name a channel you remove, have the operator remove those entries
+with `cotal persona edit <name>` on the manager host.
+
+A wire save drops `launchOptions` from the prompt and from a file it redefines. Pass options with
+`cotal spawn <name> --opt key=value`, or set `launchOptions` with `cotal persona edit <name>` on the
+manager host and edit that file locally to keep the options.
+
+Third-party `AuthProvider` implementations must add `actorGrant({ dir, owner, actor })`. Read the
+current principal row and return `{ scope, allowSubscribe, allowPublish }`, or return `undefined`
+if the principal has no grant. Update the provider together with the manager.
+
+## The agent endpoint on every space
+
+Agents now serve their `agent` endpoint on a static space and on an open mesh, as they do where
+people sign in. A static agent started by an older release keeps a credential without the serve
+rows, because a renewal keeps what its first issuance recorded. It runs on, and its connector logs
+that the broker refused the serve and says to respawn the agent. Despawn it and start it again to
+give it the endpoint.
+
+On a static space, `cotal acp` calls agents through an `agent-caller` credential it mints in memory
+from the space's signing key, so a thread there shows the agent's questions and commands, and `/name`
+renames a running agent. On an open mesh any client that reaches the broker can answer an agent's
+questions and run its commands.
+
+The Manager's `status.connectors[].prompts` is now the connector's declaration on every mesh mode.
+Its schema and the Manager cluster revision are unchanged.
+
+## Opt-in launch fields
+
+The Manager cluster advances to revision 56. Its `spawn` takes the optional `askPermissions` and
+`reasoningEvents`, and every `status.connectors` row carries both. The closed schemas of revision 55
+reject either, so update Managers and their callers together. A launch without the fields runs as
+before.
+
+## Agents that label themselves
+
+The Manager cluster advances to revision 55: `spawn` takes `autoName: true`, and a revision-54
+Manager refuses the field. Check that a Manager reports revision 55 or later before you send it.
+A seat labels itself only when the Manager and the seat's connector are both updated. An older
+connector ignores `COTAL_AUTO_NAME` and shows no label. The label is card metadata,
+`meta["ai.cotal.label"]`, and the seat keeps its launch name as its address. A client that lists
+agents shows `meta["ai.cotal.label"] ?? name`.
+
 ## A person's control of their own agents
 
 On a space where people sign in, a person can now stop, attach to, type into and interrupt every

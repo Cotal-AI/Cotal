@@ -1,8 +1,9 @@
 import type { ChildProcess } from "node:child_process";
-import { clearCurrent, codeSpan, exitCode, findMesh, getCurrent, keepsRegistration, NATS_PIDFILE, removeMesh, removePidPair } from "@cotal-ai/workspace";
+import { clearCurrent, codeSpan, exitCode, findMesh, getCurrent, keepsRegistration, NATS_PIDFILE, removeMesh, removePidPair, verifyIdentityPin } from "@cotal-ai/workspace";
 import { stopAuthService } from "../lib/auth-proc.js";
 import { stopDelivery } from "../lib/delivery-proc.js";
 import { shellWord } from "../lib/endpoint-errors.js";
+import { foregroundBrokerStopped } from "../lib/foreground-broker-stop.js";
 import { exitInterrupted } from "../lib/interrupt-notice.js";
 import { clearManagerArtifacts, stopManager } from "../lib/manager-proc.js";
 import type { NatsServer } from "../lib/nats-bin.js";
@@ -23,6 +24,8 @@ export function holdForegroundListener({ child, server, space, executable, log, 
   restored: PreparedRestore | undefined;
   releaseStartupLock: () => void;
 }) {
+  const pidPath = cotalPath(NATS_PIDFILE);
+  const foregroundPin = process.platform === "win32" ? verifyIdentityPin(pidPath) : undefined;
   let listenerReady = false;
   let activationFinished = !resuming;
   let stopSignal: StopSignal | undefined;
@@ -72,8 +75,11 @@ export function holdForegroundListener({ child, server, space, executable, log, 
   child.once("exit", (code, signal) => {
     listenerCleanup = (async () => {
       const launchStoppedListener = failedListeners.has(child);
+      let stoppedByDown = false;
       if (!launchStoppedListener || stoppedListener) {
-        removePidPair(cotalPath(NATS_PIDFILE), String(child.pid));
+        if (foregroundPin?.kind === "match" && foregroundPin.record.pid === child.pid)
+          stoppedByDown = await foregroundBrokerStopped(pidPath, foregroundPin.record, code);
+        if (!stoppedByDown) removePidPair(pidPath, String(child.pid));
         await teardown;
         await stopDelivery(space).catch((e: Error) => console.error(`! delivery teardown: ${e.message}`));
         await stopManager(space).then(() => clearManagerArtifacts(space)).catch((e: Error) => console.error(`! manager teardown: ${e.message}`));
@@ -88,7 +94,7 @@ export function holdForegroundListener({ child, server, space, executable, log, 
       if (launchStoppedListener) return;
       if (stopSignal) {
         if (activationFinished) process.exit(stopSignal === "SIGTERM" ? 143 : 130);
-      } else if (code === 0) {
+      } else if (code === 0 || stoppedByDown) {
         // External `down` owns its own registry cleanup. Startup reports an early exit itself.
         if (listenerReady && activationFinished) process.exit(0);
       } else {

@@ -1,0 +1,3 @@
+# The Manager forwards spawn autoName to the seat's launch and never on a supervised restart,
+# at cluster revision 54, and refuses it on a once spawn.
+smoke:manager-spawn-auto-name
