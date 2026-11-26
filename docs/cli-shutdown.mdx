@@ -277,7 +277,9 @@ this whole-stack stop while any of those children still runs, even after the bro
 
 If the Cotal home is removed while a controller stack runs, the project's journal still names
 its members. `status` reports missing member records rather than assuming another home holds
-them. Run `cotal down --dry-run` in that project to inspect the recovery stop, then
+them. For an open stack started with `--no-manager`, `status` can verify the broker is still
+running from the journal's process creation pin even when no pidfile or service record remains.
+Run `cotal down --dry-run` in that project to inspect the recovery stop, then
 `cotal down --yes`. This Linux recovery route requires the journal's launch-time Cotal home,
 machine, boot, account and each member's process creation pin. A different home, an older journal
 without these pins, partial record loss, an unresolved replacement or a maintenance operation
