@@ -1,5 +1,18 @@
 # @cotal-ai/workspace
 
+## 0.182.1
+
+### Patch Changes
+
+- 3bf0c84: The desktop app has an Agent apps screen. It lists the application each connector runs (Claude Code, Codex, OpenCode, pi, Hermes and Jcode) with its logo, version and whether it is signed in, and installs a missing one with its maker's own installer in one click, with no terminal. Before you install, each app says which site it downloads from, and a connector that is not one of Cotal's own also shows its package name. When an installer leaves its folder off PATH, the app adds it, and the background service picks the application up. Claude Code and Codex sign in from the app through their own browser sign-in. A connector declares all this in a new `install` field beside `requires`, which the extensions manifest caches and checks.
+- 5117d48: When a stack loses its Cotal home records, status and ps point to the stop preview, and component status distinguishes a running broker from a service it cannot check.
+- 2af983b: The console removes a deleted channel's posts from the aggregate feed without hiding posts from other channels.
+- c27ddc1: Select the matching Node import from nested conditional exports when installing and loading extensions.
+- 8a9ffeb: An unchecked project registration does not override the automatically selected space when its broker does not serve it.
+- Updated dependencies [3bf0c84]
+- Updated dependencies [287b874]
+  - @cotal-ai/core@0.182.1
+
 ## 0.182.0
 
 ### Patch Changes
