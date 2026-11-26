@@ -361,6 +361,17 @@ try {
       check(`${harness} receives complete non-secret seat attribution but no broker material (#7594)`,
         ["COTAL_SPACE", "COTAL_MANAGER_INSTANCE", "COTAL_NAME", "COTAL_ID", "COTAL_LIFECYCLE_UID", "COTAL_ACCEPTED_TOKEN", "COTAL_HOME"].every((key) => Boolean(capturedEnv[key]))
           && ["COTAL_CREDS", "COTAL_LAUNCH_MATERIAL", "COTAL_CONTROL_TOKEN", "COTAL_BEARER_CMD", "COTAL_SENTINEL_CREDS"].every((key) => capturedEnv[key] === undefined));
+      if (harness === "codex") {
+        const options = { cwd: selfRoot, env: cliEnv, encoding: "utf8" as const };
+        const plain = spawnSync("node", [CLI, "status", seatName, "--plain"], options);
+        check("named status shows the model reported by the unpinned Codex thread without guessing a variant",
+          plain.status === 0 && /^  Model: +fake-model - reported by Codex$/m.test(plain.stdout)
+            && /^  Variant: +not reported$/m.test(plain.stdout), `${plain.stdout}\n${plain.stderr}`);
+        const json = spawnSync("node", [CLI, "status", seatName, "--json"], options);
+        const recorded = json.status === 0 ? JSON.parse(json.stdout).result : undefined;
+        check("named status JSON leaves unrequested model and variant fields null",
+          recorded?.execution.model === null && recorded?.details.variant === null, `${json.stdout}\n${json.stderr}`);
+      }
       const selfStop = spawnSync("node", [CLI, "stop", "--self"], { cwd: selfRoot, env: capturedEnv, encoding: "utf8" });
       check(
         `\`cotal stop --self\` inside managed ${harness} seat exits 0 and acknowledges verified self-stop (#7594)`,

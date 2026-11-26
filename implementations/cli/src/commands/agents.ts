@@ -807,8 +807,8 @@ function managerItselfRemedy(name: string, openMesh: boolean, { space, server }:
   return openMesh ? status : `${status} ${read("cotal endpoint describe manager")} reads its commands.`;
 }
 
-/** Read OpenCode's reported selection for a seat without a recorded model request. */
-async function observedOpenCodeModel(values: ConnectFlags, row: AgentRow) {
+/** Read the reported model and variant for a seat without a recorded model request. */
+async function observedSeatModel(values: ConnectFlags, row: AgentRow) {
   const { ep } = await openTransient(values, "status", { throwOnRefusal: true, presenceOnly: true, report: () => {} });
   try {
     if (ep.presenceView().state !== "current") return;
@@ -848,8 +848,8 @@ export async function agentStatus(args: ParsedArgs): Promise<void> {
     catch { managerHint = " --on <manager-instance>"; }
   }
   const projected = item ? agentStatusProjection(item, managerInstanceId) : { identity: null, execution: null, mesh: null, activity: null, details: null };
-  const observed = presentation !== "json" && item?.agent === "opencode" && !item.model && projected.mesh?.presenceState !== null && item.lifecycleUid
-    ? await observedOpenCodeModel(values, item).catch(() => undefined) : undefined;
+  const observed = presentation !== "json" && (item?.agent === "opencode" || item?.agent === "codex") && !item.model && projected.mesh?.presenceState !== null && item.lifecycleUid
+    ? await observedSeatModel(values, item).catch(() => undefined) : undefined;
   writeResult(presentation, {
     command: "status",
     target: { ...census.target, name },
@@ -866,7 +866,7 @@ export async function agentStatus(args: ParsedArgs): Promise<void> {
     const identity = result.identity, execution = result.execution, mesh = result.mesh, activity = result.activity;
     const credential: [string, Cell][] = row.authHealth ? [["Credential", { text: row.authHealth, tone: authTone(row) }]] : [];
     const model = execution.model ? `${execution.model} · requested, not provider-confirmed`
-      : observed ? `${observed.model} · reported by OpenCode` : "not reported";
+      : observed ? `${observed.model} · reported by ${row.agent === "codex" ? "Codex" : "OpenCode"}` : "not reported";
     return { sections: [
       { title: "Identity", blocks: [
         ...(census.partial ? [{ kind: "lines" as const, lines: [{ text: "Other managers did not answer. This is one known match, not a complete uniqueness check.", tone: "waiting" as const }] }] : []),
