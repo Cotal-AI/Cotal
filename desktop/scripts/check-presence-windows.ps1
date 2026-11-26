@@ -250,7 +250,27 @@ foreach ($kind in $(if ($LoginScopeOnly) { @('nsis') } else { @('nsis', 'msi') }
       $uninstaller = Get-ChildItem $directory -Filter '*uninstall*.exe' | Select-Object -First 1
       $p = Start-Process $uninstaller.FullName -ArgumentList @('/S', "_?=$directory") -Wait -PassThru
     } else {
-      $p = Start-Process msiexec.exe -ArgumentList @('/x', "`"$($installer.FullName)`"", '/qn', '/norestart', '/l*v', "`"$out/msi-uninstall.log`"") -Wait -PassThru
+      # Settings > Apps uninstalls with Windows Installer's basic UI, which shows its own "close these applications" prompt.
+      # A silent uninstall never shows it, so it cannot catch a prompt that a person would be stuck on.
+      $p = Start-Process msiexec.exe -ArgumentList @('/x', "`"$($installer.FullName)`"", '/qb', '/norestart', '/l*v', "`"$out/msi-uninstall.log`"") -PassThru
+      $null = $p.Handle
+      $prompt = $null
+      $deadline = (Get-Date).AddSeconds(240)
+      while (-not $p.HasExited -and -not $prompt -and (Get-Date) -lt $deadline) {
+        Start-Sleep -Milliseconds 500
+        $installers = @(Get-Process msiexec -ErrorAction SilentlyContinue | ForEach-Object { $_.Id })
+        foreach ($window in [System.Windows.Automation.AutomationElement]::RootElement.FindAll([System.Windows.Automation.TreeScope]::Children, [System.Windows.Automation.Condition]::TrueCondition)) {
+          if ($installers -notcontains $window.Current.ProcessId) { continue }
+          $text = @($window.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition) | ForEach-Object { $_.Current.Name }) -join ' '
+          if ($text -match 'should be closed before continuing|unable to automatically close') { $prompt = $text; break }
+        }
+      }
+      if ($prompt) {
+        Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
+        throw "msi uninstall with the app open stopped on Windows Installer's prompt to close Cotal: $prompt"
+      }
+      if (-not $p.HasExited) { Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue; throw 'msi uninstall with the app open did not finish within 240 s' }
+      $p.WaitForExit()
     }
     if ($p.ExitCode -notin @(0, 3010)) { throw "$kind uninstall exited $($p.ExitCode)" }
     foreach ($link in $links) { if (Test-Path $link) { throw "Shortcut remains: $link" } }
