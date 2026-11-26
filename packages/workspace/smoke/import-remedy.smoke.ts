@@ -101,7 +101,7 @@ try {
   {
     const m = await failureFor({ scope: "@cotal-ai", version: "0.0.1", peerRange: ">=0.1.0" });
     check("lockstep, extension older: names the EXTENSION as the older side", m.includes("The extension is the older side"), m);
-    check("lockstep, extension older: keeps the `cotal ext add` remedy", m.includes("cotal ext add @cotal-ai/remedy-"), m);
+    check("lockstep, extension older: keeps the `cotal ext add` remedy", m.includes("cotal ext add '@cotal-ai/remedy-"), m);
   }
 
   // 5. A third-party extension whose declared range the linked core satisfies: nothing available
@@ -119,7 +119,7 @@ try {
   {
     const m = await failureFor({ scope: "@cotal-ai", version: "99.0.0", peerRange: ">=0.1.0", body: `import "./does-not-exist.mjs";\n` });
     check("control, non-export failure: claims no side", !/is BEHIND|older side|Same version|Neither side/.test(m), m);
-    check("control, non-export failure: keeps the plain reinstall remedy", m.includes("cotal ext add @cotal-ai/remedy-"), m);
+    check("control, non-export failure: keeps the plain reinstall remedy", m.includes("cotal ext add '@cotal-ai/remedy-"), m);
   }
   // A package whose `main` names a directory resolves through that directory's index file, the
   // way Node's own resolution does. The add-time existence check already passes for such a package
