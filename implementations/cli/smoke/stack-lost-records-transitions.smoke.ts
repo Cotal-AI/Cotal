@@ -73,6 +73,12 @@ for (const scenario of ["forget", "managerless", "settled", "repeat", "broker-on
       check("missing home: status names the lost records and recommends preview then stop, not cleanup or recreation",
         !lost.selected.resolved && lost.selected.message.includes("member records are missing") &&
         /`(?:pnpm )?cotal down --dry-run`.*`(?:pnpm )?cotal down --yes`/.test(next) && !/clean store|reset store|space create/.test(next), lost);
+      const components = spawnSync(process.execPath, [binary, "status", "--components"], { cwd: root, env, encoding: "utf8", timeout: 150_000 });
+      const health = components.stdout.split("Component Health")[1] ?? "";
+      check("component health refuses the service check and reports the same running broker pin and recovery step",
+        components.status === 3 && /target\s+refused/.test(health) && !/target\s+absent/.test(health) &&
+        health.includes("broker process is running") && health.includes(`pid ${pin.pid}`) &&
+        /`(?:pnpm )?cotal down --dry-run`.*`(?:pnpm )?cotal down --yes`/.test(health), components.stdout + components.stderr);
       const preview = cli(["down", "--dry-run"]);
       const result = preview.data.result as { kind?: string; signalled?: boolean; members?: { role: string; process: string; pid: number }[] };
       check("recovery preview agrees with status and neither writes the journal nor signals the broker",

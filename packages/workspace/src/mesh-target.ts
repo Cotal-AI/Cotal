@@ -1,5 +1,5 @@
 import { accessSync, closeSync, constants, existsSync, lstatSync, openSync, readFileSync, readdirSync, readSync, realpathSync, type Stats } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { boundedValue, DEFAULT_SERVER, DEFAULT_SPACE, MANAGER_START_PAYLOAD_FLOOR, personaDir, type SpaceAuth } from "@cotal-ai/core";
 import { isLoopbackLiteral } from "@cotal-ai/core/loopback";
 import { parse as parseYaml } from "yaml";
@@ -706,9 +706,13 @@ function stackRecord(root: string): { server?: string; stackSpace?: string; home
     const journal = JSON.parse(readFileSync(path, "utf8")) as { server?: unknown; space?: unknown; members?: unknown; root?: unknown; operation?: unknown; recovery?: { home?: unknown } } | null;
     if (!journal) return {};
     const elsewhere = typeof journal.root === "string" && journal.root !== canonicalRoot(root) ? journal.root : undefined;
-    return { ...(typeof journal.server === "string" ? { server: journal.server } : {}), ...(typeof journal.space === "string" ? { stackSpace: journal.space } : {}), ...(stackRunsUnderOtherHome(root, journal) ? { home: homeCotalDir() } : {}),
+    const missing = stackRunsUnderOtherHome(root, journal), home = homeCotalDir(), recordedHome = journal.recovery?.home;
+    const missingRemedy = !missing || typeof recordedHome !== "string" ? undefined : recordedHome !== resolve(home)
+      ? `run the command from this folder with COTAL_HOME=${shellPath(recordedHome)}`
+      : elsewhere === undefined ? "run `cotal down --dry-run` in this project to inspect the pinned members, then `cotal down --yes` if the preview confirms they can be stopped" : undefined;
+    return { ...(typeof journal.server === "string" ? { server: journal.server } : {}), ...(typeof journal.space === "string" ? { stackSpace: journal.space } : {}), ...(missing ? { home } : {}),
       ...(elsewhere !== undefined ? { recordedRoot: elsewhere, stackRemedy: stackElsewhereRemedy(canonicalRoot(root), elsewhere, typeof journal.space === "string" ? journal.space : "<space>", journal.members, journal.operation) } : {}),
-      ...(stackRunsUnderOtherHome(root, journal) && typeof journal.recovery?.home === "string" ? { stackRemedy: `run the command from this folder with COTAL_HOME=${shellPath(journal.recovery.home)}` } : {}) };
+      ...(missingRemedy === undefined ? {} : { stackRemedy: missingRemedy }) };
   } catch {
     return {};
   }

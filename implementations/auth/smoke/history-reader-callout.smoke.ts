@@ -9,7 +9,8 @@
  * history through a user-mode endpoint and checks reader-deletion isolation both for a second
  * connection sharing the same principal and inbox name, and for a different principal on its own
  * legacy inbox. A bound name that does not match the bearer is refused at connect. After
- * reconnecting, the endpoint reads again using the new connection's reader names.
+ * reconnecting, the endpoint reads again using the new connection's reader names. A scoped `cli`
+ * reader receives a live post without adding a census row, while a separate user-auth join counts.
  *
  * Run: pnpm smoke:history-reader-callout:auth   (needs nats-server on PATH; operator-mode callout, local-only)
  */
@@ -27,7 +28,7 @@ import { SignJWT, generateKeyPair, type CryptoKey } from "jose";
 import {
   CotalEndpoint, createSpaceAuth, isReachable, mintCreds, newIdentity, serverConfig, setupSpaceStreams,
   seedChannelRegistry, provisionAgent, mintLifecycleUid, chatStream, eventPayloadStream, userInboxConnId, type CotalMessage,
-  chatSubject, mintMembershipObserverCreds, startMembershipFeed,
+  chatSubject, mintMembershipObserverCreds, provisionAgentDurables, startMembershipFeed,
 } from "@cotal-ai/core";
 import { createCalloutAuth, calloutPermissions, deriveOwnerToken, startAuthCallout, USER_TOKEN_VER } from "../src/index.js";
 import { grantActor, ledgerAclResolver, ledgerAuthorizeConnect } from "../src/ledger.js";
@@ -91,7 +92,7 @@ try {
 
   const mgrCreds = await mintCreds(auth, newIdentity(), "provisioner");
   await setupSpaceStreams({ servers: SERVERS, space, creds: mgrCreds });
-  await seedChannelRegistry({ servers: SERVERS, space, creds: mgrCreds, file: { defaults: { replay: true }, channels: { general: { replay: true } } } });
+  await seedChannelRegistry({ servers: SERVERS, space, creds: mgrCreds, file: { defaults: { replay: true }, channels: { general: { replay: true, deliveryClass: "live" } } } });
   const mgr = new CotalEndpoint({ space, servers: SERVERS, creds: mgrCreds, channels: [], consume: false, watchPresence: false, registerPresence: false, card: { name: "prov", role: "manager", kind: "endpoint" } });
   mgr.on("error", () => {}); await mgr.start(); endpoints.push(mgr);
   const pId = newIdentity(), uidP = mintLifecycleUid();
@@ -135,7 +136,8 @@ try {
     control.subscribe(subject, { callback: (err, m) => {
       if (err || !m.reply) return;
       const name = (m.json<{ config?: { name?: string } }>().config?.name) ?? "";
-      if (name.startsWith("hist_")) seen.push({ name, nonce: m.reply.slice("_INBOX_".length, m.reply.indexOf(".")) });
+      if (name.startsWith("hist_") || name.startsWith("chathist_"))
+        seen.push({ name, nonce: m.reply.slice("_INBOX_".length, m.reply.indexOf(".")) });
     } });
   await control.flush();
 
@@ -208,10 +210,23 @@ try {
     moved.length > 0 && moved.every((p) => p !== victim.name.slice(0, victim.name.lastIndexOf("_"))), { moved, before: victim.name });
 
   const chat = chatSubject(space, "*", "*", "general");
+  const readerUid = mintLifecycleUid();
+  const readerRow = grantActor(dir, { owner: OWNER, actor: "cli", scope: [], lifecycleUid: readerUid, allowSubscribe: ["general"], allowPublish: [] });
+  const memberUid = mintLifecycleUid();
+  const joinRow = grantActor(dir, { owner: FOREIGN, actor: "general_member", scope: [], lifecycleUid: memberUid, allowSubscribe: ["general"], allowPublish: [] });
+  await provisionAgentDurables(mgr, { owner: joinRow.owner, actor: joinRow.actor, lifecycleUid: memberUid }, { subscribe: ["general"] });
+  const member = new CotalEndpoint({
+    space, servers: SERVERS, bearer: await participantBearer(joinRow), sentinelCreds: callout.sentinelCreds,
+    lifecycleUid: memberUid, channels: ["general"], watchPresence: false, registerPresence: false,
+    card: { name: joinRow.actor, kind: "agent" },
+  });
+  endpoints.push(member);
+  await member.start();
+
   let observerNc: NatsConnection | undefined;
   const observer = new CotalEndpoint({
-    space, servers: SERVERS, bearer: await adminBearer("history"), sentinelCreds: callout.sentinelCreds,
-    channels: [], consume: false, watchPresence: false, registerPresence: false, watchChannels: false,
+    space, servers: SERVERS, bearer: await participantBearer(readerRow), sentinelCreds: callout.sentinelCreds,
+    lifecycleUid: readerUid, channels: [], consume: false, watchPresence: false, registerPresence: false, watchChannels: false,
     omitFromLiveMembership: true, card: { name: "history", kind: "endpoint" },
     onConnection: (nc) => { observerNc = nc; },
   });
@@ -221,11 +236,11 @@ try {
   let sawPost = false;
   observer.tap((_subject, message) => { if (message && textOf(message) === "observer follow probe") sawPost = true; }, { subject: chat });
   await observerNc!.flush();
-  dash.tap(() => {}, { subject: chat });
-  await dashNc.flush();
-  const observerRead = await observer.channelHistory("general", { limit: 1 });
-  check("user mode: the observer reads history using a bound, marked reply inbox", observerRead.length === 1
-    && seen.some(({ nonce }) => new RegExp(`^${OWNER}-history-_[a-z0-9]{25}$`).test(nonce)));
+  const followingAt = Date.now();
+  const { items } = await observer.channelHistoryPage("general", { limit: 1 });
+  check("user mode: the scoped observer reads history using a bound, marked reply inbox", items.length === 1
+    && textOf(items[0]!) === "general 10"
+    && seen.some(({ nonce }) => new RegExp(`^${OWNER}-cli-_[a-z0-9]{25}$`).test(nonce)));
   await poster.multicast("observer follow probe", { channel: "general" });
   for (let i = 0; i < 100 && !sawPost; i++) await wait(20);
   check("user mode: the bound history observer receives the live post", sawPost);
@@ -235,9 +250,9 @@ try {
     rwCreds: await mintCreds(auth, newIdentity(), "membership-rw") });
   await feed.poll();
   const census = await dash.readMembership();
-  check("user mode: a fresh census includes the ordinary subscriber but not the bound observer",
-    census.asOf !== undefined && census.members.some((m) => m.id === `${OWNER}.dashboard` && m.live.includes("general"))
-    && !census.members.some((m) => m.id === `${OWNER}.history` && m.live.includes("general")), census);
+  check("user mode: a fresh census includes the joined participant but has no row for the scoped observer",
+    (census.asOf ?? 0) >= followingAt && census.members.some((m) => m.id === member.card.id && m.live.includes("general"))
+    && !census.members.some((m) => m.id === observer.card.id), census);
 
   const payloadUid = mintLifecycleUid();
   const payloadWriter = new CotalEndpoint({

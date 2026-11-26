@@ -154,9 +154,19 @@ client and the callout log gives the correct settings. Set `name` to `<sub>-<act
 using the bearer's `sub` and `act.actor` claims and a fresh nonce of 8 to 128 letters, digits or
 underscores. Set `inboxPrefix` to `_INBOX_` followed by that exact name.
 
-Update the delivery service before using new user-auth history followers. A delivery service that
-recognizes only the legacy `ibx_observer_` marker can list a follower with a principal-bound inbox
-as a live member. The updated delivery service recognizes both forms. History access is unchanged.
+## Why live member counts can fall
+
+`cotal channel members` can show fewer live members after an upgrade. A read-only
+`cotal history <channel> --follow` still receives posts, but it does not count as a live member
+when the CLI marks the connection as an observer and the delivery service recognizes that mark.
+History access, real live joins and durable membership are unchanged.
+
+Update the delivery service before rolling out the updated CLI, then restart old history follows.
+A follower that does not mark its connection can still count as a live member, even with updated
+delivery. An older delivery service can still count a marked follower. In particular, a service
+that recognizes only the legacy `ibx_observer_` marker can count a user-auth follower with a
+principal-bound inbox. The current delivery service recognizes both forms. Older clients reading
+the census from updated delivery see the same count as newer clients.
 
 ## Switching a running agent's model
 

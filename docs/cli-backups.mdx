@@ -54,9 +54,8 @@ writes native snapshots with consumers excluded, and stores conservative contigu
 checkpoints separately. The presence bucket is memory-backed, so it does not survive the cut and
 the clone may lack it. Every other stream must be present. The original store is never opened by
 the backup broker, and the stack is not restarted implicitly. Artifact destinations must not overlap
-the preserved source or maintenance
-attempt tree. Restore artifacts and targets likewise cannot nest inside or contain each other, the
-preserved source, or the maintenance attempt tree.
+the preserved source or maintenance attempt tree. A restore target cannot overlap the artifact or
+the maintenance attempt tree. It can overlap the preserved source only by replacing it at the same path.
 
 `backup create` checks its preconditions before it claims the cut or creates any maintenance state.
 If it receives an option it does not accept, such as `--yes`, it names the option and asks you to remove it.
@@ -303,10 +302,12 @@ records no cut. An artifact path that names nothing refuses `TARGET_NOT_FOUND` (
 point. It names the path, and its JSON
 target says in `missing` whether the folder that should hold the artifact (`folder`) or only the
 artifact (`artifact`) is missing. A path that is not an artifact, or is an incomplete one, refuses
-there too, as `backup verify` refuses it. A path that is, holds or sits inside the preserved store
-or `.cotal/maintenance`, such as `.` in this folder, refuses `USAGE_INVALID` (exit 1) there, naming
-that store or folder. The restore checks the path again once it holds the maintenance lock, because a
-link in it may name another folder by then, and refuses the same way. A restore that fails after it
+there too, as `backup verify` refuses it. A restore artifact can sit in `.cotal/maintenance`, beside
+the attempt and journal directories. It must not overlap the preserved store or any of these paths:
+`.cotal/maintenance/attempts`, `.cotal/maintenance/v1`, `.cotal/maintenance/lock.json`, and
+`.cotal/maintenance/lock-reaper.json`. If paths overlap, restore refuses `USAGE_INVALID` (exit 1)
+and names the protected path. Restore repeats this check under the maintenance lock because a link
+may name another folder by then. A restore that fails after it
 began names its attempt in the text and in the JSON target, which also carries `journalState`, and
 its remedy gives the next step for that state. The listener endpoint must be a bare `nats://` or
 `tls://` URL without credentials, a query, a fragment or a path. Its refusal does not repeat the

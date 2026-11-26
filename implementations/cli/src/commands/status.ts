@@ -330,7 +330,7 @@ export async function status(args: ParsedArgs): Promise<void> {
       recovery, stoppedForeignListener, stackStarting, selectedStarting,
     }),
   );
-  if (values.components) await printComponentHealth(selected, store, target, meshes, recovery && !recoveringOtherSpace ? recovery : selectedHints[0], !target.resolved && selectedStarting ? target.message : undefined);
+  if (values.components) await printComponentHealth(selected, store, target, meshes, recovery && !recoveringOtherSpace ? recovery : selectedHints[0], !target.resolved && selectedStarting ? target.message : undefined, recoveryBroker);
 }
 
 /** Why this account cannot list or search `root`, or undefined when it can. */
