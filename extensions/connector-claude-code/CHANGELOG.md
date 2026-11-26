@@ -1,5 +1,11 @@
 # @cotal-ai/connector-claude-code
 
+## 0.183.0
+
+### Patch Changes
+
+- e21aff3: Running `cotal update --self` repairs a moved Codex marketplace even when the CLI packages are already current.
+
 ## 0.182.1
 
 ### Patch Changes

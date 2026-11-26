@@ -1,5 +1,22 @@
 # @cotal-ai/workspace
 
+## 0.183.0
+
+### Minor Changes
+
+- 22f261d: Launches that use a project's MCP servers, `spawn.env` or persona launch options now require a trusted project folder, so review the folder and run `cotal trust <path>` before retrying.
+  
+  SDK callers of `loadCotalConfig` must pass a project trust check as the second argument, such as `isTrustedProject` from `@cotal-ai/workspace`.
+  
+  The workspace exports `projectTrustForPreview` and `previewPersonaReader` for read-only plans that predict the legacy upgrade without recording or granting trust. Do not use them to authorize a launch.
+
+### Patch Changes
+
+- d9ffb7d: Cotal can update when an extension has no recorded install spec, keeping verified packages and repairing packages that need it.
+- Updated dependencies [4281699]
+- Updated dependencies [22f261d]
+  - @cotal-ai/core@0.183.0
+
 ## 0.182.1
 
 ### Patch Changes

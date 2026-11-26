@@ -1,5 +1,25 @@
 # @cotal-ai/manager
 
+## 0.183.0
+
+### Minor Changes
+
+- 22f261d: Launches that use a project's MCP servers, `spawn.env` or persona launch options now require a trusted project folder, so review the folder and run `cotal trust <path>` before retrying.
+  
+  SDK callers of `loadCotalConfig` must pass a project trust check as the second argument, such as `isTrustedProject` from `@cotal-ai/workspace`.
+  
+  The workspace exports `projectTrustForPreview` and `previewPersonaReader` for read-only plans that predict the legacy upgrade without recording or granting trust. Do not use them to authorize a launch.
+
+### Patch Changes
+
+- 4281699: Keep online managed seats connected during a short auth service outage without extending the lifetime of their exchange bearers.
+- Updated dependencies [4281699]
+- Updated dependencies [22f261d]
+- Updated dependencies [d9ffb7d]
+  - @cotal-ai/core@0.183.0
+  - @cotal-ai/workspace@0.183.0
+  - @cotal-ai/seat@0.183.0
+
 ## 0.182.1
 
 ### Patch Changes

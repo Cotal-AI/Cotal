@@ -1,5 +1,28 @@
 # @cotal-ai/cli
 
+## 0.183.0
+
+### Minor Changes
+
+- 22f261d: Launches that use a project's MCP servers, `spawn.env` or persona launch options now require a trusted project folder, so review the folder and run `cotal trust <path>` before retrying.
+  
+  SDK callers of `loadCotalConfig` must pass a project trust check as the second argument, such as `isTrustedProject` from `@cotal-ai/workspace`.
+  
+  The workspace exports `projectTrustForPreview` and `previewPersonaReader` for read-only plans that predict the legacy upgrade without recording or granting trust. Do not use them to authorize a launch.
+
+### Patch Changes
+
+- 5906e3b: `cotal ext add` refuses a local or third-party extension whose declared core peer range does not match the bundled core, without changing the installed extensions.
+- e21aff3: Running `cotal update --self` repairs a moved Codex marketplace even when the CLI packages are already current.
+- e4e22eb: Split CLI dispatch into smaller steps without changing how commands run or report results.
+- d9ffb7d: Cotal can update when an extension has no recorded install spec, keeping verified packages and repairing packages that need it.
+- a73af87: Manual `cotal update --self` can repair damaged first-party extensions from npm's cache without checking for a newer release when npm is offline.
+- Updated dependencies [4281699]
+- Updated dependencies [22f261d]
+- Updated dependencies [d9ffb7d]
+  - @cotal-ai/core@0.183.0
+  - @cotal-ai/workspace@0.183.0
+
 ## 0.182.1
 
 ### Patch Changes
