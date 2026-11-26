@@ -59,9 +59,8 @@ export class EndpointCredentials {
 
   /** Fetch a fresh bearer from the source, pin its principal to ours, arm the next renewal. On a
    *  fetch/principal failure: THROWS when `initial` (start() must fail loud before first connect);
-   *  otherwise retries on a jittered, capped backoff, and warns once for the whole run of failures —
-   *  the live connection keeps working until its current JWT expiry, so a dead auth service is
-   *  loud without instantly dropping the mesh, and without a line per attempt. */
+   *  a definitive managed identity refusal closes the extended connection. Other failures retain
+   *  the live socket and retry on a jittered, capped backoff, with one warning per run of failures. */
   async refreshBearer(initial = false): Promise<void> {
     try {
       const bearer = await this.identity.bearerSource!();
@@ -109,8 +108,21 @@ export class EndpointCredentials {
         this.armBearerTimer(armRenewal(this.identity.space, issuedAtMs, expiresAtMs, () => void this.renewBearerOnTimer(), EndpointCredentials.BEARER_MIN_RENEWAL_MS));
     } catch (e) {
       if (initial) throw e;
-      this.retryBearer(e);
+      if (this.brokerBearerExpiryMs !== undefined && (e as { bearerRefused?: unknown } | null)?.bearerRefused === true)
+        await this.closeRefusedBearer(e);
+      else this.retryBearer(e);
     }
+  }
+
+  private async closeRefusedBearer(error: unknown): Promise<void> {
+    this.cred.currentBearer = undefined;
+    this.cred.cancelBearerRenewal?.();
+    this.cred.cancelBearerRenewal = undefined;
+    this.brokerBearerExpiryMs = undefined;
+    const nc = this.conn.nc;
+    if (!nc || nc.isClosed() || this.lifecycle.stopped) return;
+    this.emitRecoverable(new Error(`bearer refresh refused (${error instanceof Error ? error.message : String(error)}) - closing the managed connection`));
+    await this.closeWithoutLibraryReconnect(nc);
   }
 
   private retryBearer(error: unknown): void {

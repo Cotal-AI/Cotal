@@ -2,9 +2,9 @@ import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import type { JetStreamManager, MsgRequest } from "@nats-io/jetstream";
 import type { KV } from "@nats-io/kv";
 import { fromPublic } from "@nats-io/nkeys";
-import { canonicalJson, epAuthBucket, EpEnvelopeError, type EvictionResult, type KickTarget } from "@cotal-ai/core";
-import { readConnectCredentialExpiry, type ConnectReader } from "./connect-reader.js";
-import { assertWithinSpawnerGrant, findManagedActor, type ActorRow } from "./ledger.js";
+import { canonicalJson, epAuthBucket, type EvictionResult, type KickTarget } from "@cotal-ai/core";
+import { connectReaderUnreachable, readConnectCredentialExpiry, type ConnectReader } from "./connect-reader.js";
+import { assertWithinSpawnerGrant, findActorUnified, type ActorRow } from "./ledger.js";
 import type { NativeIssuance } from "./native-issuance.js";
 import type { ValidatedUserToken } from "./token.js";
 
@@ -12,7 +12,7 @@ const PREFIX = "managedconn.";
 const PASS_MS = 1000;
 const BATCH = 64;
 const MAX_EVICTIONS = 4;
-const MAX_RETRIES = 1024;
+const RETRY_MS = 5000;
 
 type Receipt = { owner: string; actor: string; lifecycleUid: string; credentialId: string; grant: string; connection: KickTarget; iat: number; exp: number };
 type Custody = { space: string; secret: string };
@@ -20,6 +20,14 @@ type Custody = { space: string; secret: string };
 export function managedGrantImage(row: ActorRow): string {
   return createHash("sha256").update(canonicalJson([row.lifecycleUid, row.custody, row.tokenHash, row.parent ?? null, row.role ?? null,
     row.eventPayloads ?? null, [...row.scope].sort(), [...row.allowSubscribe].sort(), [...row.allowPublish].sort()])).digest("base64url");
+}
+
+/** Issuance and reconciliation share this unified grant and delegation read. */
+export function managedConnectionGrant(dir: string, owner: string, actor: string, uid: string | undefined): ActorRow | undefined {
+  const row = findActorUnified(dir, owner, actor);
+  if (row?.kind !== "managed-agent" || !row.custody || row.custody.kind === "foreground" || row.lifecycleUid !== uid) return;
+  assertWithinSpawnerGrant(dir, row, "exchange");
+  return row;
 }
 
 function mac(opts: Custody, key: string, row: Receipt): Buffer {
@@ -49,17 +57,17 @@ function authenticatedReceipt(value: unknown, key: string, opts: Custody): Recei
 }
 
 async function stillAuthorized(opts: SweepOptions, row: Receipt): Promise<boolean> {
-  const grant = findManagedActor(opts.dir, row.owner, row.actor);
-  if (!grant || managedGrantImage(grant) !== row.grant) return false;
-  try { assertWithinSpawnerGrant(opts.dir, grant, "exchange"); }
-  catch { return false; }
   const { owner, actor, lifecycleUid, credentialId } = row;
+  try {
+    const grant = managedConnectionGrant(opts.dir, owner, actor, lifecycleUid);
+    if (!grant || managedGrantImage(grant) !== row.grant) return false;
+  } catch { return false; }
   const token: ValidatedUserToken = { owner, space: opts.space, scope: [], ver: 1, exp: row.exp, act: { owner, actor, lifecycleUid, credentialId } };
   try {
     return await readConnectCredentialExpiry(opts.reader(), token, Date.now) >= row.exp;
   } catch (error) {
-    if (error instanceof EpEnvelopeError && error.code === "permission-denied") return false;
-    throw error;
+    if (connectReaderUnreachable(error)) throw error;
+    return false;
   }
 }
 
@@ -74,11 +82,12 @@ interface SweepOptions extends Custody {
   log(line: string): void;
 }
 
-async function reconcileReceipt(opts: SweepOptions, row: Receipt, purge: () => Promise<void>): Promise<boolean> {
+async function reconcileReceipt(opts: SweepOptions, row: Receipt, purge: () => Promise<void>, logEvictionFailure: (note: string) => void): Promise<boolean> {
   if (row.exp <= Math.floor(Date.now() / 1000) || await stillAuthorized(opts, row)) return true;
   if (!opts.canSweep()) return false;
   const releaseWindowClosed = Date.now() > row.iat * 1000 + opts.releaseWindowMs + 1000;
   const result = await opts.evict(`${row.owner}.${row.actor}`, [row.connection]);
+  if (!result.verifiedGone) logEvictionFailure(result.note ?? "delivery did not verify absence");
   if (result.verifiedGone && releaseWindowClosed) await purge();
   return result.verifiedGone;
 }
@@ -90,17 +99,20 @@ export function startManagedConnectionSweep(opts: SweepOptions): () => Promise<v
   let timer: ReturnType<typeof setTimeout> | undefined;
   let flight: Promise<void> = Promise.resolve();
   const retries = new Map<string, number>();
-  const retry = (key: string): void => {
-    if (!retries.has(key) && retries.size >= MAX_RETRIES) retries.delete(retries.keys().next().value!);
-    retries.set(key, Date.now() + 5000);
-  };
+  const loggedEvictions = new Map<string, number>();
+  const retry = (key: string): void => { retries.set(key, Date.now() + RETRY_MS); };
   const run = async (): Promise<number> => {
     const pending = new Set<Promise<void>>();
     try {
       for (let i = 0; i < BATCH && !stopped && opts.canSweep(); i++) {
         if (pending.size >= MAX_EVICTIONS) await Promise.race(pending);
         const m = await opts.jsm.streams.getMessage(`KV_${bucket}`, { seq: cursor, next_by_subj: `${prefix}${PREFIX}>` } as unknown as MsgRequest);
-        if (!m) { cursor = 1; return PASS_MS; }
+        if (!m) {
+          cursor = 1;
+          for (const [key, at] of loggedEvictions) if (at <= Date.now()) loggedEvictions.delete(key);
+          for (const [key, at] of retries) if (at <= Date.now() - RETRY_MS) retries.delete(key);
+          return PASS_MS;
+        }
         cursor = m.seq + 1;
         if (m.header?.get("KV-Operation")) continue;
         const key = m.subject.slice(prefix.length);
@@ -108,7 +120,12 @@ export function startManagedConnectionSweep(opts: SweepOptions): () => Promise<v
         let row: Receipt | undefined;
         try { row = authenticatedReceipt(m.json(), key, opts); } catch { continue; }
         if (!row) continue;
-        const current = reconcileReceipt(opts, row, () => opts.kv.purge(key, { previousSeq: m.seq, ttl: "60s" }))
+        const logEvictionFailure = (note: string) => {
+          if (loggedEvictions.has(key) || stopped) return;
+          loggedEvictions.set(key, row.exp * 1000);
+          opts.log(`auth-plane: managed eviction unverified for ${row.owner}.${row.actor} on ${row.connection.serverId}/${row.connection.cid}: ${note}`);
+        };
+        const current = reconcileReceipt(opts, row, () => opts.kv.purge(key, { previousSeq: m.seq, ttl: "60s" }), logEvictionFailure)
           .then((done) => { if (done) retries.delete(key); else retry(key); }, (error: unknown) => {
             if (!retries.has(key) && !stopped) opts.log(`auth-plane: managed connection authority could not be checked: ${String(error)}`);
             retry(key);

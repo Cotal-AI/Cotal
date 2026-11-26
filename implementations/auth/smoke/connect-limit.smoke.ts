@@ -186,6 +186,14 @@ try {
   const ran = await runAgentBearer([process.execPath, "-e", `process.stdout.write("retry-after 7\\n"); process.stderr.write(${JSON.stringify(sentence)}); process.exit(2)`])
     .then(() => undefined, (e: Error & { retryAfterSeconds?: unknown }) => e);
   check("the bearer command's retry-after line rides its error beside its one sentence", ran?.message === sentence && ran.retryAfterSeconds === 7, ran);
+  const definitive = "agent-bearer: exchange refused: HTTP 401: agent exchange refused: unknown agent or wrong secret";
+  const hasDefinitiveRefusal = async (text: string) => (await runAgentBearer([process.execPath, "-e", `console.error(${JSON.stringify(text)}); process.exit(1)`])
+    .then(() => undefined, (e: Error & { bearerRefused?: boolean }) => e))?.bearerRefused === true;
+  check("the same identity refusal is definitive on HTTP 401 and 403", await hasDefinitiveRefusal(definitive) && await hasDefinitiveRefusal(definitive.replace("401", "403")));
+  check("a restart response, a 5xx, or no exchange response is not a definitive identity refusal",
+    !(await hasDefinitiveRefusal("agent-bearer: exchange refused: HTTP 401: the auth service is momentarily unavailable (it detected a fault and is restarting); retry shortly")) &&
+    !(await hasDefinitiveRefusal(definitive.replace("401", "503"))) &&
+    !(await hasDefinitiveRefusal("agent-bearer: the pinned exchange did not answer (TimeoutError)")));
 
   const epOwner = ownerOf("endpoint-human");
   const endpointOf = (owner: string, actor: string, source: () => Promise<string>) => new CotalEndpoint({

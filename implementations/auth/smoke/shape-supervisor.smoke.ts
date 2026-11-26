@@ -27,6 +27,7 @@ import { createSpaceAuth, ensureAuthorityStores, epAuthBucket, isReachable, serv
 import { Kvm } from "@nats-io/kv";
 import { assertAuthorityStreamShape, type AuthorityStreamCfg } from "../src/lifecycle-registry.js";
 import { openAuthorityClient, openSupervisedConnectReader } from "../src/authority-client.js";
+import { connectReaderUnreachable } from "../src/connect-reader.js";
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
@@ -118,6 +119,15 @@ try {
   }
   check("BLOCKER 1c: renewal replaced the reader several times inside the window", seen.size >= 4, { readers: seen.size });
   check("BLOCKER 1c: current() never refused across those rebinds", refused === 0 && reads > 500, { reads, refused });
+  await jsm.streams.update(`KV_${bucket}`, { allow_direct: true });
+  let shapeDenied = false;
+  for (let i = 0; i < 30 && !shapeDenied; i++) {
+    try { reader.current(); }
+    catch (e) { shapeDenied = !connectReaderUnreachable(e) && String(e).includes("allow_direct=true"); }
+    if (!shapeDenied) await wait(100);
+  }
+  check("a reachable but drifted auth store is a definitive refusal", shapeDenied);
+  await jsm.streams.update(`KV_${bucket}`, { allow_direct: false });
   await reader.close();
   reader = undefined;
 
@@ -127,7 +137,7 @@ try {
   // Bounce the broker on the SAME port + store dir so the reader reconnects to a live JetStream.
   srv.kill();
   await awaitExit(srv);
-  const downDenied = await (async () => { for (let i = 0; i < 25; i++) { if (throwsSync(() => reader!.current())) return true; await wait(100); } return false; })();
+  const downDenied = await (async () => { for (let i = 0; i < 25; i++) { try { reader!.current(); } catch (e) { return connectReaderUnreachable(e); } await wait(100); } return false; })();
   check("BLOCKER 1b: current() DENIES while the connection is down (unproved between binds)", downDenied);
   releaseBroker();
   srv = spawn("nats-server", ["-c", conf], { stdio: "ignore" });

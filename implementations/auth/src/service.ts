@@ -400,7 +400,8 @@ function startConnectionSweeps(opts: Parameters<typeof makeDeliveryAdminEvictor>
     secret: opts.dataAccount.signingSeed, evict, canSweep: opts.canSweep, log: opts.log };
   const releaseWindowMs = opts.calloutTimeoutMs ?? 2000;
   const stopSession = startSessionConnectionSweep({ ...common, releaseWindowMs: releaseWindowMs + 1000 });
-  const stopManaged = startManagedConnectionSweep({ ...common, dir: opts.dir, reader: opts.reader, releaseWindowMs });
+  const stopManaged = startManagedConnectionSweep({ ...common, dir: opts.dir, reader: opts.reader, releaseWindowMs,
+    evict: makeDeliveryAdminEvictor({ ...opts, log: () => {} }) });
   return async () => { await Promise.all([stopSession(), stopManaged()]); };
 }
 

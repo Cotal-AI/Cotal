@@ -109,8 +109,9 @@ async function scanLive(
   observerConn: NatsConnection,
   accountId: string,
   opts: Required<Pick<EvictOptions, "settleMs" | "maxWaitMs" | "pageLimit">>,
-): Promise<{ conns: LiveConn[]; complete: boolean }> {
+): Promise<{ conns: LiveConn[]; complete: boolean; repliers: Set<string> }> {
   const conns: LiveConn[] = [];
+  const repliers = new Set<string>();
   let gotAnyReply = false;
   let truncated = false;
   let unroutable = false; // a reply named no server id → its conns can't be KICKed → scan is not complete
@@ -136,6 +137,9 @@ async function scanLive(
         continue;
       }
       const cs = r.data?.connections ?? [];
+      if (page === 0 && r.data && !r.error && (!r.server?.id || r.server.id === serverId) &&
+        Number.isSafeInteger(r.data.total) && r.data.total! >= 0 && cs.length >= Math.min(r.data.total!, opts.pageLimit))
+        repliers.add(serverId);
       for (const c of cs) {
         // Attribute across BOTH cred shapes — a callout user surfaces its principal as the
         // `authorized_user` name-form (no tags), a static user surfaces the `principal:` tag.
@@ -167,7 +171,7 @@ async function scanLive(
     if (!fullPageSomewhere) break; // no server still has a full page → done
     if (page === MAX_PAGES - 1) truncated = true;
   }
-  return { conns, complete: gotAnyReply && !truncated && !unroutable && !lostPage };
+  return { conns, complete: gotAnyReply && !truncated && !unroutable && !lostPage, repliers };
 }
 
 /** One CONNZ round: fan out the account request, collect every server's reply within the window. */
@@ -326,9 +330,11 @@ export async function evictDeniedPrincipals(
     }
     return m;
   };
+  const complete = (scan: Awaited<ReturnType<typeof scanLive>>) => scan.complete &&
+    (options.connections?.every(({ serverId }) => scan.repliers.has(serverId)) ?? true);
 
   const first = await scanLive(observerConn, accountId, opts);
-  if (!first.complete) {
+  if (!complete(first)) {
     for (const p of set)
       out.set(p, { principal: p, kicked: 0, remaining: 0, verifiedGone: false, scanComplete: false, note: "CONNZ scan under-reported (no responder or truncated) - eviction UNKNOWN, not attempted" });
     return answer();
@@ -370,7 +376,7 @@ export async function evictDeniedPrincipals(
   // cid, so loop until every principal is gone or the rounds run out (never one snapshot).
   for (let round = 0; round < opts.maxVerifyRounds && pending.size > 0; round++) {
     const rescan = await scanLive(observerConn, accountId, opts);
-    if (!rescan.complete) {
+    if (!complete(rescan)) {
       for (const [p, st] of pending)
         out.set(p, { principal: p, kicked: st.kicked, remaining: 0, verifiedGone: false, scanComplete: false, note: st.note ?? "verify re-scan under-reported - eviction UNKNOWN" });
       return answer();

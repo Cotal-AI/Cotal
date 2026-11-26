@@ -167,7 +167,7 @@ export async function openCalloutLane(options: CalloutLaneOptions): Promise<Call
     });
     stopManagedSweep = startManagedConnectionSweep({ dir, space, secret: dataAccount.signingSeed, jsm: recordsJsm,
       kv: registryStores(registry).authKv, reader: () => reader, releaseWindowMs: options.limits?.authTimeoutMs ?? 2000,
-      canSweep: () => !stopping, evict, log });
+      canSweep: () => !stopping, evict: makeDeliveryAdminEvictor({ space, server, dataAccount, log: () => {} }), log });
   } catch (e) {
     stopping = true;
     await closeAll();

@@ -18,10 +18,10 @@ import { chatAwareAclResolver, type ChatSessionAuthority } from "./chat-session-
 import { authorizeConnectCredential, readConnectCredentialExpiry, type ConnectReader } from "./connect-reader.js";
 import type { ConnectLimiter } from "./connect-limit.js";
 import type { UserTokenIssuer } from "./issuer.js";
-import { AGENT_BEARER_TTL_SEC, assertWithinSpawnerGrant, findManagedActor, ledgerAclResolver, ledgerAuthorizeConnect } from "./ledger.js";
+import { AGENT_BEARER_TTL_SEC, ledgerAclResolver, ledgerAuthorizeConnect } from "./ledger.js";
 import { registryStores, type LifecycleRegistry } from "./lifecycle-registry.js";
 import { recordSessionConnection } from "./session-connections.js";
-import { managedGrantImage, recordManagedConnection } from "./managed-connections.js";
+import { managedConnectionGrant, managedGrantImage, recordManagedConnection } from "./managed-connections.js";
 import { makeNativeIssuanceRecorder, type NativeIssuanceRecorder } from "./native-issuance.js";
 import type { NativeServiceCalloutAuthority } from "./native-service-callout.js";
 import { calloutPermissions, type EndpointCallerResolver, type ListingIssuer, type UserCallerIssuer } from "./permissions.js";
@@ -132,10 +132,7 @@ const MANAGED_CONNECTION_TTL_SEC = 60 * 60;
 
 function renewableManagedGrant(dir: string, t: ValidatedUserToken, bearerTtl: number) {
   if (t.act.view !== undefined || t.iat === undefined || t.exp - t.iat !== bearerTtl) return;
-  const row = findManagedActor(dir, t.owner, t.act.actor);
-  if (!row?.custody || row.custody.kind === "foreground" || row.lifecycleUid !== t.act.lifecycleUid) return;
-  assertWithinSpawnerGrant(dir, row, "exchange");
-  return row;
+  return managedConnectionGrant(dir, t.owner, t.act.actor, t.act.lifecycleUid);
 }
 
 export function calloutAuthority(deps: CalloutAuthorityDeps): CalloutAuthority {
@@ -197,7 +194,8 @@ export function calloutAuthority(deps: CalloutAuthorityDeps): CalloutAuthority {
       await connectArm(t);
       const seat = renewableManagedGrant(dir, t, bearerTtl);
       const rootExpiry = await readConnectCredentialExpiry(deps.reader(), t, Date.now);
-      if (seat) return { exp: Math.min(rootExpiry, Math.floor(Date.now() / 1000) + managedTtl), grant: managedGrantImage(seat) };
+      const exp = Math.min(rootExpiry, Math.floor(Date.now() / 1000) + managedTtl);
+      if (seat && managedTtl > bearerTtl) return { exp, grant: managedGrantImage(seat) };
     },
     recordIssuance: async (i) => {
       refuse();

@@ -608,7 +608,18 @@ export interface ManagerInstanceListing {
 export function bearerCommandFailure(err: ExecFileException, stderr: string, timeoutMs: number, stdout = ""): Error {
   const said = stderr.trim();
   const retryAfter = /^retry-after (\d+)$/.exec(stdout.trim());
-  if (said) return Object.assign(new Error(said), retryAfter ? { retryAfterSeconds: Number(retryAfter[1]) } : {});
+  if (said) {
+    const exchange = /^agent-bearer: exchange refused: HTTP (?:401|403): (.*)$/s.exec(said);
+    const reason = exchange?.[1];
+    const denied = reason !== undefined && (
+      /^agent exchange refused: unknown agent or wrong secret\b/.test(reason)
+      || /^agent "[^"]+": (?:spawner .* is no longer granted|.*(?:exceeds its spawner's CURRENT grant|delegation chain contains a cycle))/.test(reason)
+      || /^the root credential for .* (?:is revoked|expired at)\b/.test(reason)
+      || /^uid \S+ has a terminally retired issuance gate\b/.test(reason)
+      || /^lifecycle "[^"]+" is retiring \(op /.test(reason)
+    );
+    return Object.assign(new Error(said), retryAfter ? { retryAfterSeconds: Number(retryAfter[1]) } : {}, denied ? { bearerRefused: true } : {});
+  }
   // execFile marks an exit error `killed` only when its own timeout killed the child.
   if (err.killed) return new Error(`the bearer command timed out after ${timeoutMs}ms`);
   if (err.signal) return new Error(`the bearer command was killed by ${err.signal}`);

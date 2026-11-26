@@ -237,6 +237,19 @@ try {
     noCid,
   );
 
+  const remoteServer = `N${"B".repeat(55)}`;
+  const target = { serverId: remoteServer, cid: 7 };
+  const missingServer = await evictDeniedPrincipal(
+    mockObserver({ data: { server_id: `N${"A".repeat(55)}`, total: 0, connections: [] } }),
+    evictorNc, auth.account.pub, principalP, { ...EVICT_OPTS, connections: [target] },
+  );
+  check("an exact target's absent broker reply does not verify the socket gone", !missingServer.verifiedGone && !missingServer.scanComplete, missingServer);
+  const answeringServer = await evictDeniedPrincipal(
+    mockObserver({ data: { server_id: remoteServer, total: 0, connections: [] } }),
+    evictorNc, auth.account.pub, principalP, { ...EVICT_OPTS, connections: [target] },
+  );
+  check("an exact target's own empty broker reply can verify it gone", answeringServer.verifiedGone && answeringServer.scanComplete, answeringServer);
+
   // ---------- PLANE-LIVENESS ORACLE (#29 HIGH 3, SPEC 13.13): the read-only CONNZ twin, LIVE ----------
   // The reclaim adjudicator the auth plane consults over the delivery-admin rail: two claimed
   // scanner tuples in, two bound verdicts + sweep completeness out. Proven against the SAME real

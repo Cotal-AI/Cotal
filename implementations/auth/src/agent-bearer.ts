@@ -123,7 +123,8 @@ async function runAgentBearer(args: ParsedArgs): Promise<void> {
         process.stdout.write(`retry-after ${limited.retryAfterSeconds}\n`);
         throw Object.assign(new Error(`agent-bearer: ${limited.message}; ${limited.remedy}`), { exitCode: 2 });
       }
-      throw new Error(`agent-bearer: exchange refused: ${body.error ?? `HTTP ${res.status}`}`);
+      const status = res.status === 401 || res.status === 403 ? `HTTP ${res.status}: ` : "";
+      throw new Error(`agent-bearer: exchange refused: ${status}${body.error ?? `HTTP ${res.status}`}`);
     }
     const out = (await readAuthResponseJson(res, `agent-bearer: the exchange at ${exchangeUrl}`)) as { token?: string };
     if (typeof out.token !== "string" || !out.token)

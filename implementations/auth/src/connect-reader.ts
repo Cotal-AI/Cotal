@@ -20,7 +20,7 @@
  * mapping read, or explicitly for a descendant, before this invocation can allow. Both callout
  * passes execute fresh reads; no observation is reused across signing or connections.
  */
-import type { NatsConnection } from "@nats-io/transport-node";
+import { ClosedConnectionError, ConnectionError, NoRespondersError, RequestError, TimeoutError, type NatsConnection } from "@nats-io/transport-node";
 import { jetstreamManager, type JetStreamManager } from "@nats-io/jetstream";
 import { EpEnvelopeError, assertInboxConnId, epAuthBucket, recordsBucket, readRecordLeader, assertOrdinaryNativeMutation } from "@cotal-ai/core";
 import { assertAuthorityStreamShape, openLifecycleMappingReader, readLifecycleMappingLeader, type LifecycleMappingReader } from "./lifecycle-registry.js";
@@ -73,6 +73,15 @@ export interface ConnectReader {
 
 const READERS = new WeakMap<ConnectReader, ConnectReaderInternals>();
 
+export function connectReaderUnreachable(error: unknown): boolean {
+  if (error instanceof EpEnvelopeError)
+    return error.cause === undefined ? error.code === "unavailable" : connectReaderUnreachable(error.cause);
+  if (error instanceof TimeoutError || error instanceof ClosedConnectionError || error instanceof ConnectionError || error instanceof NoRespondersError) return true;
+  if (error instanceof RequestError) return error.isNoResponders() || connectReaderUnreachable(error.cause);
+  const reply = error as { code?: unknown; apiError?: { code?: unknown } } | undefined;
+  return reply?.apiError?.code === 503 || reply?.code === 503 || reply?.code === "503";
+}
+
 function internals(reader: ConnectReader): ConnectReaderInternals {
   const i = READERS.get(reader);
   if (!i)
@@ -105,7 +114,7 @@ export async function openConnectReader(nc: NatsConnection, space: string): Prom
       throw new EpEnvelopeError("failed-precondition", `the auth store ${authBucket} has allow_direct=${String(authCfg.allow_direct)}, not false; a Direct-Get-capable credential store defeats leader-served deny-new (SPEC 13.1); reprovision`);
   } catch (e) {
     if (e instanceof EpEnvelopeError) throw e;
-    throw new EpEnvelopeError("failed-precondition", `the connect reader cannot bind + shape-prove the auth store ${authBucket} (SPEC 13.12): ${(e as Error)?.message ?? String(e)}`);
+    throw Object.assign(new EpEnvelopeError("failed-precondition", `the connect reader cannot bind + shape-prove the auth store ${authBucket} (SPEC 13.12): ${(e as Error)?.message ?? String(e)}`), { cause: e });
   }
   // The records-head reads go through the mapping reader, which shape-proves the records store the
   // same way at its own bind — so both stores are proved on this (re)bind.
