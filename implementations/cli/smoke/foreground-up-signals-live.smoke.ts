@@ -186,7 +186,7 @@ async function cell(name: string, options: { auth?: boolean; ready?: boolean; re
   const markerIdentity = statSync(join(mesh, ".cotal"), { bigint: true, throwIfNoEntry: false });
   const port = await freePort(); assert.notEqual(port, 4222);
   const space = folderNamed ? name : `foreground-${name}`;
-  const env = { ...cleanEnv, HOME: home, COTAL_HOME: join(home, "machine"), XDG_CONFIG_HOME: join(home, "xdg"), XDG_DATA_HOME: join(home, "data"), XDG_CACHE_HOME: join(home, "cache"), XDG_STATE_HOME: join(home, "state"), COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1" };
+  const env = { ...cleanEnv, HOME: home, COTAL_HOME: join(home, "machine"), XDG_CONFIG_HOME: join(home, "xdg"), XDG_DATA_HOME: join(home, "data"), XDG_CACHE_HOME: join(home, "cache"), XDG_STATE_HOME: join(home, "state"), COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1", ...(options.repairDelivery ? { COTAL_DEFAULT_AGENT: "status-fixture" } : {}) };
   const logFile = join(mesh, "broker.log");
   if (options.repairDelivery) {
     // Make the spawn suggestion available without installing or launching a harness.
