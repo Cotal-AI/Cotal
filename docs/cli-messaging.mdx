@@ -533,6 +533,7 @@ The suggested membership and history commands name the space inspected and keep 
 `--server` and `--creds` options. A membership report's suggested follow command does the same.
 Channel write receipts also keep the target space and those options in their suggested inventory
 and history commands. For a named channel the history command includes the quoted `#` channel name.
+On Windows the channel name uses double quotes for Command Prompt and PowerShell.
 
 `channel show <name> --json` returns the raw space defaults in `result.registry.defaults` when
 saved and decodable. `result.registry.channels` contains only the named channel's saved entry, or

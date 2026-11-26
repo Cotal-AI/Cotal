@@ -18,7 +18,7 @@
  *
  * Run: pnpm smoke:history-read
  */
-import { execFile, spawn } from "node:child_process";
+import { execFile, spawn, spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
@@ -130,6 +130,7 @@ const run = (args: string[], cwd = shell, extra: NodeJS.ProcessEnv = {}, timeout
   });
 const shown = (r: { status: number; stdout: string; stderr: string }) => ({ status: r.status, stdout: r.stdout.slice(0, 1500), stderr: r.stderr.slice(0, 600) });
 const texts = (r: { envelope?: Envelope }) => (r.envelope?.result?.items ?? []).map((i) => i.text);
+const quotedChannel = (name: string) => process.platform === "win32" ? `"#${name}"` : `'#${name}'`;
 
 async function checkDottedHistory(): Promise<void> {
   const dotted = "a.".repeat(2047) + "bc";
@@ -1050,7 +1051,7 @@ try {
 
   // Channel receipts and reads recommend scoped commands even when the channel name is a history verb.
   {
-    const channels = ["clear", "limit", "ordinary"];
+    const channels = ["clear", "limit", "baseline"];
     const scope = ["--space", openSpace, "--server", openServers];
     const printedLines = (stdout: string) => stdout.split("\n").map((line) => line.trim().replace(/^pnpm cotal /, "cotal "));
     for (const channel of channels) {
@@ -1064,7 +1065,7 @@ try {
       const history = suggestion("history");
       const target = scope.join(" ");
       const listed = inventory === `cotal ch ${target}` ? await run([...execWords(inventory).slice(1), "--plain"]) : undefined;
-      const read = history === `cotal history '#clear' ${target}` ? await run([...execWords(history).slice(1), "--json"]) : undefined;
+      const read = history === `cotal history ${quotedChannel("clear")} ${target}` ? await run([...execWords(history).slice(1), "--json"]) : undefined;
       check("channel set receipt inventory keeps the explicit target when another space is selected",
         listed?.status === 0 && listed.stdout.includes(`Mesh: ${openSpace}`) && listed.stdout.includes("#clear"), { receipt: shown(saved), listed });
       check("channel set receipt history reads the quoted channel instead of the history verb",
@@ -1072,14 +1073,16 @@ try {
     }
     for (const channel of channels) {
       const card = await run(["channel", "show", channel, "--space", openSpace, "--plain"]);
-      const [, word, targetSpace] = card.stdout.match(/^\s+(?:pnpm )?cotal history '(#[\w.-]+)' --space (\S+)\s+Read retained messages within your grant$/m) ?? [];
+      const [, command] = card.stdout.match(/^\s+((?:pnpm )?cotal history .+?) {2,}Read retained messages within your grant\r?$/m) ?? [];
       // Only execute the quoted channel form. An unexpected administrative command is a test failure.
-      const read = word === `#${channel}` && targetSpace === openSpace ? await run(["history", word, "--space", targetSpace, "--json"]) : undefined;
-      const messages = read?.envelope?.result?.items;
-      check(`channel show #${channel} recommends a history read for that channel only`,
+      const read = command && ["cotal", "pnpm cotal"].some((cli) => command === `${cli} history ${quotedChannel(channel)} --space ${openSpace}`)
+        ? spawnSync(`${command.replace(/^(?:pnpm )?cotal /, () => `"${process.execPath}" "${BIN}" `)} --json`,
+          { shell: true, cwd: shell, env: isolatedEnv, encoding: "utf8", timeout: 120_000 }) : undefined;
+      const messages = read?.status === 0 ? (JSON.parse(read.stdout) as Envelope).result?.items : undefined;
+      check(`pasting the channel show #${channel} history command reads that channel only`,
         card.status === 0 && read?.status === 0 && messages?.length === 1
           && messages[0]?.channel === channel && messages[0].text === `retained in ${channel}`,
-        { card: shown(card), read: read && shown(read) });
+        { card: shown(card), read: read && { status: read.status, stdout: read.stdout, stderr: read.stderr, error: read.error } });
     }
     const writer = join(home, "channel writer.creds");
     writeFileSync(writer, await mintCreds(auth, newIdentity(), "channel-writer"), { mode: 0o600 });
@@ -1428,7 +1431,7 @@ try {
     const openCard = await run(["channel", "show", "general", "--space", openSpace, "--plain"]);
     check("channel show explains unavailable membership on an open mesh and still suggests history",
       openCard.status === 0 && openCard.stdout.includes("Broker-observed channel membership is unavailable on open meshes.")
-      && !openCard.stdout.includes("cotal ch members") && openCard.stdout.includes("cotal history '#general'"), shown(openCard));
+      && !openCard.stdout.includes("cotal ch members") && openCard.stdout.includes(`cotal history ${quotedChannel("general")}`), shown(openCard));
     const authCard = await run(["channel", "show", "general", "--space", space, "--plain"]);
     check("channel show still suggests membership on the auth mesh",
       authCard.status === 0 && authCard.stdout.includes("cotal ch members general"), shown(authCard));
