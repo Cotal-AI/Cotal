@@ -253,7 +253,13 @@ export async function addExtension(spec: string, expectedPkg?: string, borrowMut
       }
     }
     if (seeding) await addTransaction(pkg, resolved, expectedPkg, true, announce);
-    else await installExtensionSet([{ pkg, spec: resolved }], announce, { checkCorePeer: expectedPkg === undefined, ...(isPath ? { localOperand: spec } : {}) });
+    else {
+      // Official registry releases can be pinned out of lockstep and reconciled by update.
+      const selector = resolved.slice(pkg.length + 1);
+      const officialRelease = !isPath && pkg.startsWith("@cotal-ai/") && /^[a-z0-9._~^*<>=|+ -]*$/i.test(selector)
+        && !/\.(?:tgz|tar(?:\.gz)?)$/i.test(selector);
+      await installExtensionSet([{ pkg, spec: resolved }], announce, { checkCorePeer: expectedPkg === undefined && !officialRelease, ...(isPath ? { localOperand: spec } : {}) });
+    }
   } finally {
     if (seeding) clearChildMarker();
     releaseMutation();

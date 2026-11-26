@@ -20,11 +20,13 @@
  *  G. remove: commands leave the surface; the manifest empties.
  * Run: pnpm smoke:ext:live   (needs npm on PATH)
  */
-import { spawn, spawnSync } from "node:child_process";
+import { execFile, execFileSync, spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { promisify } from "node:util";
 import { hostPackageDir, recordMesh } from "@cotal-ai/workspace";
 import { assertSmokeSandboxDown, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
 
@@ -195,6 +197,65 @@ registry.register({ kind: "command", name: ${JSON.stringify(name)}, summary: "Pr
   ok("an unparseable core range is refused with its declaration",
     invalid.status === 1 && invalid.stdout === "" && invalid.stderr.includes('"nightly", which is not a valid version range') && invalid.stderr.includes(version), invalid);
   ok("the compatible install still removes", cotal(["ext", "remove", "cotal-ext-compatible-core"]).status === 0);
+}
+
+{
+  const pinned = "0.1.0";
+  const official = "@cotal-ai/tmux";
+  const thirdParty = "cotal-ext-registry-peer";
+  const command = "registry-peer";
+  const body = GOOD.replace('name: "hello-ext"', `name: "${command}"`);
+  const packages = [official, thirdParty].map((name, i) => {
+    const base = fixture(`registry-peer-${i}/package`, body, {
+      name, version: pinned, peerDependencies: { "@cotal-ai/core": pinned },
+    });
+    const archive = execFileSync("tar", ["-czf", "-", "-C", join(base, ".."), "package"]);
+    const meta = JSON.parse(readFileSync(join(base, "package.json"), "utf8"));
+    return { name, base, meta, archive, integrity: `sha512-${createHash("sha512").update(archive).digest("base64")}` };
+  });
+  let origin: string;
+  const requests = new Set<string>();
+  const server = createServer((req, res) => {
+    const path = decodeURIComponent(req.url ?? "");
+    requests.add(path);
+    const index = packages.findIndex(({ name }, i) => path === `/${name}` || path === `/package-${i}.tgz`);
+    const pkg = packages[index];
+    if (!pkg) { res.writeHead(404).end(); return; }
+    if (path.endsWith(".tgz")) { res.end(pkg.archive); return; }
+    const dist = { tarball: `${origin}/package-${index}.tgz`, integrity: pkg.integrity };
+    res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify({ name: pkg.name, versions: { [pinned]: { ...pkg.meta, dist } } }));
+  });
+  try {
+    await new Promise<void>((ready, reject) => server.once("error", reject).listen(0, "127.0.0.1", ready));
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("loopback registry has no TCP port");
+    origin = `http://127.0.0.1:${address.port}`;
+    const npmrc = join(sandbox, "peer-registry.npmrc");
+    writeFileSync(npmrc, `@cotal-ai:registry=${origin}\n`);
+    const addRegistry = (name: string) => promisify(execFile)(realNode, [tsxCli, binCotal, "ext", "add", `${name}@${pinned}`], {
+      cwd: sandbox, timeout: 180_000,
+      env: { ...env, npm_config_userconfig: npmrc, npm_config_registry: origin, npm_config_fetch_retries: "0" },
+    });
+    const added = await addRegistry(official);
+    const manifest = readFileSync(manifestPath, "utf8");
+    const pin = JSON.parse(manifest).extensions.find((entry: { pkg: string }) => entry.pkg === official);
+    const peer = join(extDir, "node_modules", official, "node_modules", "@cotal-ai", "core");
+    ok("an explicit older first-party registry pin installs and links the bundled core",
+      requests.has("/package-0.tgz") && added.stdout.includes(`added ${official}@${pinned}`)
+        && pin?.version === pinned && pin.provides.some((entry: { name: string }) => entry.name === command)
+        && realpathSync(peer) === realpathSync(hostPackageDir("@cotal-ai/core")), added);
+    const refused = await addRegistry(thirdParty).then(() => undefined, (error: { code?: number; stderr?: string }) => error);
+    ok("an incompatible third-party registry package is refused before replacing the inventory",
+      requests.has("/package-1.tgz") && refused?.code === 1 && refused.stderr?.includes(`${thirdParty} declares @cotal-ai/core "${pinned}"`) === true
+        && readFileSync(manifestPath, "utf8") === manifest, refused);
+    const local = cotal(["ext", "add", packages[0]!.base]);
+    ok("a local build is checked even when its name matches an official package",
+      local.status === 1 && local.stderr.includes(`${official} declares @cotal-ai/core "${pinned}"`)
+        && readFileSync(manifestPath, "utf8") === manifest, local);
+    ok("the pinned registry package still removes", cotal(["ext", "remove", official]).status === 0);
+  } finally {
+    await new Promise<void>((done) => server.close(() => done()));
+  }
 }
 
 // -- A: add --------------------------------------------------------------------------------------
