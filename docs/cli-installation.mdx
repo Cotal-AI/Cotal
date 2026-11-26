@@ -57,16 +57,38 @@ a project keeps that project.
 
 Without a terminal, or with `--yes`, `--no-input` or `--json`, every input is a flag. A missing one
 is `USAGE_INVALID` naming each missing flag, before anything is written. The refusal prints the
-scripted form for the destination and not the full command help. For local setup, create the project
-folder if it does not exist, then run setup:
+scripted form for the destination and not the full command help. For local setup, use the example for
+your shell. Each creates the project folder first. The example uses Claude Code, which must be installed
+for its setup to complete.
+
+In Bash:
 
 ```bash
 mkdir -p -m 700 ~/research
 cotal setup --destination local --harness claude --project ~/research --space research --no-input
 ```
 
+In PowerShell on Windows, build an absolute path with `Join-Path` so setup does not depend on the
+shell expanding `~` for a native command:
+
+```powershell
+$project = Join-Path $HOME 'research'
+New-Item -ItemType Directory -Force -Path $project | Out-Null
+cotal.cmd setup --destination local --harness claude --project "$project" --space research --no-input
+```
+
+In Command Prompt on Windows:
+
+```bat
+if not exist "%USERPROFILE%\research" mkdir "%USERPROFILE%\research"
+cotal.cmd setup --destination local --harness claude --project "%USERPROFILE%\research" --space research --no-input
+```
+
 To register a self-hosted space from a connection bundle without questions, create the project
-folder if it does not exist, then run setup with the harness and the space name from the bundle:
+folder if it does not exist, then run setup with the harness and the space name from the bundle.
+In PowerShell or Command Prompt on Windows, use `cotal.cmd` and an absolute project path as shown above.
+
+In Bash:
 
 ```bash
 mkdir -p -m 700 ~/research
