@@ -56,8 +56,8 @@ const env = { ...process.env, XDG_CONFIG_HOME: configDir, COTAL_HOME: home, COTA
 const realNode = spawnSync("which", ["node"], { encoding: "utf8" }).stdout.trim();
 const tsxCli = resolve(import.meta.dirname, "..", "..", "node_modules", "tsx", "dist", "cli.mjs");
 const binCotal = resolve(import.meta.dirname, "..", "cotal.ts");
-const cotal = (args: string[], timeout = 180_000) => {
-  const options = { encoding: "utf8" as const, env, cwd: sandbox, timeout };
+const cotal = (args: string[], { timeout = 180_000, extraEnv = {} }: { timeout?: number; extraEnv?: NodeJS.ProcessEnv } = {}) => {
+  const options = { encoding: "utf8" as const, env: { ...env, ...extraEnv }, cwd: sandbox, timeout };
   assertSmokeSandboxDown(sandboxAnchor, args, options);
   return spawnSync(realNode, [tsxCli, binCotal, ...args], options);
 };
@@ -322,10 +322,29 @@ registry.register({ kind: "command", name: "hello-ext", summary: "barrier", run:
   ok("extension mutation reclaims a dead owner's stale lock", staleClaim.status === 0 && /already absent/.test(staleClaim.stdout) && !existsSync(mutationLock), staleClaim.stdout + staleClaim.stderr);
 
   mkdirSync(mutationLock); // a stray directory where the lock file belongs → unreadable
-  const unreadableStarted = Date.now();
-  const unreadable = cotal(["ext", "add", fixture("cotal-ext-unreadable-lock", GOOD.replace('name: "hello-ext"', 'name: "unreadable-lock"'))], 3_000);
-  const unreadableElapsed = Date.now() - unreadableStarted;
-  ok("an unreadable mutation lock fails loud instead of busy-spinning", unreadable.status === 1 && /unreadable/.test(unreadable.stderr) && unreadableElapsed < 3_000, unreadable.stderr + ` (${unreadableElapsed}ms)`);
+  // Observe the real lock read without including CLI startup in the assertion.
+  const probe = join(sandbox, "count-lock-reads.cjs");
+  const countFile = join(sandbox, "lock-read-count");
+  writeFileSync(probe, `
+const fs = require("node:fs");
+const read = fs.readFileSync;
+let reads = 0;
+fs.readFileSync = function (path, ...args) {
+  if (path === ${JSON.stringify(mutationLock)}) reads++;
+  return read.call(this, path, ...args);
+};
+require("node:module").syncBuiltinESMExports();
+process.on("exit", () => {
+  if (reads > 0) fs.writeFileSync(${JSON.stringify(countFile)}, String(reads));
+});
+`);
+  const unreadable = cotal(["ext", "add", fixture("cotal-ext-unreadable-lock", GOOD.replace('name: "hello-ext"', 'name: "unreadable-lock"'))], {
+    timeout: 30_000,
+    extraEnv: { NODE_OPTIONS: [process.env.NODE_OPTIONS, `--require=${JSON.stringify(probe)}`].filter(Boolean).join(" ") },
+  });
+  const lockReads = existsSync(countFile) ? readFileSync(countFile, "utf8") : "none recorded";
+  ok("an unreadable mutation lock fails loud instead of retrying", unreadable.status === 1 && unreadable.stderr.includes(`advisory lock path ${mutationLock} is unreadable`) && lockReads === "1",
+    { stderr: unreadable.stderr, error: unreadable.error?.message, lockReads });
   rmSync(mutationLock, { recursive: true, force: true });
 
   const priorManifest = readFileSync(manifestPath, "utf8");
