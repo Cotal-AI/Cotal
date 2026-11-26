@@ -284,7 +284,7 @@ try {
   writeFileSync(shim, `#!/bin/sh\nif [ "$1" = model ]; then\n  printf '%s\\n' '{"provider":"fake-provider","models":["fake-model"],"routes":[{"model":"fake-model","provider":"fake-provider","available":true}]}'\n  exit 0\nfi\nexec "${process.execPath}" "${fake}" "$@"\n`);
   chmodSync(shim, 0o755);
   for (let i = 0; i < 100 && !(await isReachable(servers)); i++) await sleep(50);
-  await seedChannelRegistry({ servers, space: "jcodehost", file: { defaults: { replay: false }, channels: { team: { replay: false } } } });
+  await seedChannelRegistry({ servers, space: "jcodehost", file: { defaults: { replay: false }, channels: { team: { replay: false }, fold: { replay: false } } } });
   operator = new CotalEndpoint({ space: "jcodehost", servers, card: { name: "operator", kind: "agent", id: "operator" }, channels: ["team"] });
   operator.on("error", () => {});
   operator.on("message", (message: { parts: unknown[] }) => {
@@ -453,9 +453,9 @@ try {
       COTAL_NAME: "foldpeer",
       COTAL_ID: "foldpeer",
       COTAL_SERVERS: servers,
-      COTAL_SUBSCRIBE: "team",
-      COTAL_ALLOW_SUBSCRIBE: "team",
-      COTAL_ALLOW_PUBLISH: "team",
+      COTAL_SUBSCRIBE: "fold",
+      COTAL_ALLOW_SUBSCRIBE: "fold",
+      COTAL_ALLOW_PUBLISH: "fold",
       COTAL_JCODE_HOME: root,
       COTAL_WORKSPACE_ROOT: root,
       COTAL_JCODE_TUI: "0",
@@ -502,7 +502,9 @@ try {
     "Jcode journal fold priming idle",
     () => foldStatuses.slice(foldStatusStart).includes("idle") ? true : undefined,
   );
-  await operator.unicast(foldPeerId!, foldMarker);
+  // Presence can show idle before the host releases dispatch. Ambient work waits for its own turn
+  // instead of being steered into the priming turn while that boundary settles.
+  await operator.multicast(foldMarker, { channel: "fold" });
   await waitFor(
     "Jcode journal fold request",
     () =>
