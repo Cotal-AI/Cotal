@@ -19,7 +19,8 @@
  *     the conflicting space, address and retry. Changing the manifest to a free port lets the
  *     printed retry start the stack. Its
  *     receipt, `team show <id>` and the inventory name the record's kind, state, next action and
- *     auth mode in words; the JSON keeps the recorded values.
+ *     auth mode in words; the JSON keeps the recorded values. Its printed stop preview runs from
+ *     the sibling folder where the team was booted.
  *     Its show and both `team remove` forms offer `cotal down --space <space> --dry-run` with the
  *     space filled in. The refusal also works after stop and directs callers to the recorded root. After
  *     `down`, a second boot refuses LIFECYCLE_BLOCKED naming `cotal up` and a space-scoped
@@ -53,6 +54,7 @@ import { tmpdir } from "node:os";
 import { delimiter, join, resolve } from "node:path";
 import { assertSmokeSandboxDown, createSuite, freePort, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
 import { shellPath } from "@cotal-ai/workspace";
+import { shellWord } from "../src/lib/endpoint-errors.js";
 
 const WT = resolve(import.meta.dirname, "..", "..", "..");
 const CLI = join(WT, "bin", "dist", "cotal.js");
@@ -417,13 +419,26 @@ try {
     !envelope(firstPreview.stdout)?.warnings?.some((warning) => warning.code === "LIFECYCLE_BLOCKED"), firstPreview.out);
   checkFreshBootAddressConflict();
   bUp = true;
-  const booted = cotal(b, "team", "boot", "boot.yaml", "--plain");
+  const booted = cotal(c, "team", "boot", "../boot project/boot.yaml", "--plain");
   check("the retry starts the fresh stack on the new address and names the auth mode in words",
     booted.status === 0 && booted.stdout.split("\n").some((line) => line.trim().replace(/\s+/g, " ") === `Broker: ${SERVER_B}`) &&
     /Auth mode:\s+static auth\n/.test(booted.stdout) && !booted.stdout.includes("static-auth"), booted.out.slice(-1200));
   const bootCommand = booted.stdout.split("\n").map((line) => line.trim()).find((line) => /^(?:pnpm )?cotal team show /.test(line))?.split(/ {2,}/)[0] ?? "";
   const bootArgs = bootCommand.replace(/^(?:pnpm )?cotal /, "").split(" ");
   const bootId = bootArgs[2] ?? "";
+  const receiptPreview = booted.stdout.split("\n").find((line) => line.includes("Preview the guarded whole-stack stop"))
+    ?.trim().replace(/ {2,}Preview the guarded whole-stack stop$/, "");
+  const receiptLaunchers = ["cotal", "pnpm cotal", [process.execPath, CLI].map(shellWord).join(" ")];
+  const receiptScoped = receiptLaunchers.some((cli) => receiptPreview === `cd ${shellPath(realpathSync(b))} && ${cli} down --space ${SPACE_B} --dry-run`);
+  check("the sibling boot receipt quotes the project root in its scoped stop preview", receiptScoped, booted.stdout);
+  if (receiptScoped && process.platform !== "win32") {
+    assertSmokeSandboxDown(sandboxes.get(b), ["down", "--space", SPACE_B, "--dry-run"], { cwd: b, env });
+    const replayed = spawnSync("sh", ["-c", `cli=$1\ncotal() { "$0" "$cli" "$@"; }\n${receiptPreview}`, process.execPath, CLI],
+      { cwd: c, env, encoding: "utf8", timeout: 180_000 });
+    check("the copied boot receipt preview works from the sibling without stopping the stack",
+      replayed.status === 0 && replayed.stdout.includes("Whole-stack stop plan") && replayed.stdout.includes(SPACE_B) &&
+      replayed.stdout.includes("Nothing was stopped or written"), replayed);
+  }
   const repeat = cotal(c, "team", "boot", "../boot project/boot.yaml", "--foreground");
   const repeatPreview = repeat.stderr.split("`").find((part) => part.startsWith("cd ") && part.includes("--dry-run"));
   const scopedPreview = `cd ${shellPath(realpathSync(b))} && cotal down --space ${SPACE_B} --dry-run`;
