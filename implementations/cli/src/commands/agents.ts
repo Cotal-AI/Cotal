@@ -290,8 +290,9 @@ function agentStatusProjection(row: AgentRow, managerInstanceId: string | null) 
  *  provider default Cotal cannot observe. */
 export function agentIdentity(r: Pick<AgentRow, "agent" | "model" | "variant" | "mode">): string {
   const parts = [r.agent];
-  if (r.model) parts.push(`${r.model}${r.variant ? ` (${r.variant})` : ""}`);
-  else if (r.variant) parts.push(`variant ${r.variant}`);
+  const variant = r.variant && (r.agent === "opencode" ? `requested variant ${r.variant}` : r.variant);
+  if (r.model) parts.push(`${r.model}${variant ? ` (${variant})` : ""}`);
+  else if (variant) parts.push(r.agent === "opencode" ? variant : `variant ${variant}`);
   parts.push(r.mode);
   return parts.join(" · ");
 }
@@ -867,13 +868,16 @@ export async function agentStatus(args: ParsedArgs): Promise<void> {
     const credential: [string, Cell][] = row.authHealth ? [["Credential", { text: row.authHealth, tone: authTone(row) }]] : [];
     const model = execution.model ? `${execution.model} · requested, not provider-confirmed`
       : observed ? `${observed.model} · reported by OpenCode` : "not reported";
+    const variant = result.details.variant && execution.harness === "opencode"
+      ? `${result.details.variant} · requested, not provider-confirmed`
+      : result.details.variant ?? observed?.variant ?? "not reported";
     return { sections: [
       { title: "Identity", blocks: [
         ...(census.partial ? [{ kind: "lines" as const, lines: [{ text: "Other managers did not answer. This is one known match, not a complete uniqueness check.", tone: "waiting" as const }] }] : []),
         { kind: "fields", rows: [["Agent", psSeatLabel({ name: identity.name, id: row.id })], ["Space", census.target.space], ["Principal", row.id], ["Owner", identity.owner ?? "not established"], ["Actor", identity.actor ?? "not established"], ["Lifecycle", identity.lifecycleUid ?? "not reported"], ["Role", result.details.role ?? "not reported"]] },
       ] },
       { title: "Execution", blocks: [
-        { kind: "fields", rows: [["Process", processCell(row)], ["Application", execution.harness], ["Model", model], ["Variant", result.details.variant ?? observed?.variant ?? "not reported"], ["Reported provider", result.details.providerSource === "exact-principal-lifecycle" ? result.details.provider ?? "not reported" : "not established"], ["Name-matched provider", result.details.providerSource === "name-match-unverified" ? result.details.provider ?? "not reported" : "none"], ["Runtime", execution.runtime], ["PID", execution.pid === null ? "not reported" : String(execution.pid)], ["Host", execution.host ?? "not reported"], ["Folder", result.details.cwd ?? "not reported"], ["Manager", execution.managerInstanceId ?? "not reported"], ...credential] },
+        { kind: "fields", rows: [["Process", processCell(row)], ["Application", execution.harness], ["Model", model], ["Variant", variant], ["Reported provider", result.details.providerSource === "exact-principal-lifecycle" ? result.details.provider ?? "not reported" : "not established"], ["Name-matched provider", result.details.providerSource === "name-match-unverified" ? result.details.provider ?? "not reported" : "none"], ["Runtime", execution.runtime], ["PID", execution.pid === null ? "not reported" : String(execution.pid)], ["Host", execution.host ?? "not reported"], ["Folder", result.details.cwd ?? "not reported"], ["Manager", execution.managerInstanceId ?? "not reported"], ...credential] },
         ...(row.authReason ? [{ kind: "lines" as const, lines: [{ text: row.authReason, tone: authTone(row) }] }] : []),
       ] },
       { title: "Mesh", blocks: [

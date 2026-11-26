@@ -176,7 +176,8 @@ proof. Match the returned principal and lifecycle UID before interpreting any te
 These are operator clients over the running manager's control plane. The default row includes the
 connector, model pin, optional requested variant, and runtime as operational descriptors for the
 managed row. They do not make a shared display name a unique protocol identity; use `--json` when
-unambiguous owner+actor attribution is required. An omitted variant means no override was requested;
+unambiguous owner+actor attribution is required. The human view labels OpenCode launch variants as
+requested. An omitted variant means no override was requested;
 Cotal does not invent an effective provider default it cannot observe. `ps` also prints two state
 facts per managed agent, because they answer different questions: the process fact from the manager's
 own runtime handle (`running` with its uptime, or `exited` with how long it ran), and the mesh fact
