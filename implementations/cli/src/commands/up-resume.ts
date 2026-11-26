@@ -116,7 +116,7 @@ export function printRestoreReceipt(restored: PreparedRestore, invokedRoot?: str
   for (const line of leftOutNotes(restored.attemptId, restored.selection, onlyCopy, cleanupRoot, cmd)) console.log(c.yellow(line));
   const journal = readMaintenanceJournal(restored.root);
   if (journal && "restore" in journal && journal.restore.attemptId === restored.attemptId)
-    console.log(c.dim(`next: ${restoreNextStep(journal.state, restored.attemptId, journal, cleanupRoot, cmd)}`));
+    console.log(c.dim(`next: ${restoreNextStep(journal.state, restored.attemptId, journal, { cleanupRoot, cmd })}`));
 }
 
 /** The address of a prepared stack that neither a journal nor a registration records, as after a
@@ -148,7 +148,7 @@ export function restoredBrokerRuns(root: string, attempt: string, pid: number, m
  *  out, cleanup deletes that store only with `--discard-history`. */
 function retireRestore(attempt: string, leftOut: string | undefined): string {
   return leftOut
-    ? `\`cotal backup cleanup-fallback ${attempt} --yes --discard-history\`, which deletes the previous store and the ${leftOut} only it holds`
+    ? `\`cotal backup cleanup-fallback ${attempt}\` only if you choose to discard the ${leftOut} held only in the previous store (deletion requires --discard-history)`
     : `\`cotal backup cleanup-fallback ${attempt} --yes\``;
 }
 

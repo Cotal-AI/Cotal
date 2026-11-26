@@ -524,8 +524,8 @@ reports the reason boot recorded, as a spawn does, so restart the manager after 
 a result with `cotal spawn --model <id> --variant <v>`, where `<id>` is the model id as the catalog
 printed it. Codex ids are bare (`gpt-6.2-sol`, not `openai/gpt-6.2-sol`). Do not prepend the
 separately reported provider. OpenCode ids are `provider/model`, and pi ids are `provider/id`.
-Jcode ids are bare (`opus-5`, not `cliproxy/opus-5`), because the provider is selected by the
-operator's Jcode config and a prefixed id is refused at launch with the bare form named.
+For Jcode, keep any slash that is part of the listed ID. Do not prepend a provider name, because
+Jcode's configuration selects the provider.
 
 
 ## persona [#persona]

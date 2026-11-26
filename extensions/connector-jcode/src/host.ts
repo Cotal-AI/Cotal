@@ -8,7 +8,8 @@ import { captureProcessIdentity, launchIdentityEnv, recordLaunch, recordOnceLaun
 import { connectSteerClient } from "./steer-replies.js";
 import { chooseSessionToResume, type ResumeCandidate } from "./session-resume.js";
 import { forkJcodeSession, markJcodeForkBriefed, type JcodeFork } from "./session-fork.js";
-import { activeModelRoute, bareModelId, describeRoute, effectiveProvider } from "./route-identity.js";
+import { activeModelRoute, describeRoute, effectiveProvider } from "./route-identity.js";
+import { checkJcodeLaunchModel } from "./model-catalog.js";
 import {
   classifyReadinessFailure,
   classifyReadinessProviderRefusal,
@@ -99,6 +100,7 @@ export async function runJcodeHost(): Promise<void> {
   assertNoProjectMcpConfig(cwd);
   const home = privateAgentHome(config.space, config.name);
   installJcodeDiagnosticLog(home);
+  if (config.model?.includes("/")) await checkJcodeLaunchModel(binary, config.model, noCotalEnv());
   // A lifecycle killed without its teardown leaves its Jcode server holding this seat's runtime
   // dir for five more minutes. Adopt and stop it before claiming the home; a tree whose connector
   // is still alive is a live seat and is left to Jcode's own runtime-dir lock (#1211).
@@ -842,17 +844,6 @@ export async function runJcodeHost(): Promise<void> {
     agent.setContextId(hostState.sessionId);
     if (events) {
       hostState.eventJournal = jcodeJournalPath(socketHome.jcodeHome, hostState.sessionId);
-    }
-    // A `provider/model` specifier was forwarded verbatim to an endpoint that wants a bare id, and
-    // the refusal came back as `model_not_found` naming neither the connector nor the prefix as the
-    // cause. Refuse it here, where the accepted form can actually be named (#785).
-    if (config.model) {
-      const spec = bareModelId(config.model);
-      if (!spec.ok)
-        throw new JcodeConnectorError(
-          "model_prefix_rejected",
-          `jcode connector: model ${JSON.stringify(config.model)} carries a provider prefix, but the Harness API expects a bare model id — pass ${JSON.stringify(spec.bare)} (the ${JSON.stringify(spec.prefix)} provider is selected by configuration, not by the model id)`,
-        );
     }
     if (config.model) {
       try {

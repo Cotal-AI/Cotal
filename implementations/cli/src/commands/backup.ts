@@ -65,6 +65,7 @@ import { controllerStackApplies } from "./stack-up.js";
 import { completingFlagValue, positionalsForCompletion } from "../lib/completion.js";
 import { assertEndpointUnreachable } from "../lib/endpoint-cut.js";
 import { shellWord } from "../lib/endpoint-errors.js";
+import { displayCmd } from "../lib/self-exec.js";
 
 const OPERATION_TIMEOUT_MS = 30 * 60 * 1000;
 
@@ -495,9 +496,14 @@ function noSpaceFailure(error: unknown, observed: BackupObservation, args: Parse
 /** A displayed retry must name the same paths after terminal escaping. */
 function retryCreateStep(args: ParsedArgs): string {
   const { only, "store-dir": store } = args.values as BackupValues;
+  const destination = resolve(args.positionals[1]!);
+  const windowsWord = (path: string) => !/["%`$!\u2018-\u201E]|\\$/u.test(path);
+  if (process.platform === "win32" && (!windowsWord(destination) || (store !== undefined && !windowsWord(store))))
+    return "rerun your original backup command from the same folder";
+  const quote = process.platform === "win32" ? (path: string) => `"${path}"` : shellWord;
   const selectionFlag = only === undefined ? "" : ` --only ${only}`;
-  const storeFlag = store === undefined ? "" : ` --store-dir${store.startsWith("-") ? "=" : " "}${shellWord(store)}`;
-  const command = `cotal backup create ${shellWord(resolve(args.positionals[1]!))}${selectionFlag}${storeFlag}`;
+  const storeFlag = store === undefined ? "" : ` --store-dir${store.startsWith("-") ? "=" : " "}${quote(store)}`;
+  const command = `${args.values.json === true ? "cotal" : displayCmd()} backup create ${quote(destination)}${selectionFlag}${storeFlag}`;
   return oneLine(command) === command
     ? `run ${codeSpan(command)} again`
     : "rerun your original backup command from the same folder (a path cannot be displayed unchanged)";
