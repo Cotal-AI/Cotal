@@ -518,7 +518,7 @@ try {
   assert.equal(readFileSync(state, "utf8"), initial, "connector construction never rewrites host trust state");
   assert.ok(spec.confirmBefore?.length, "managed untrusted cwd declares native startup choices");
   const foreground = claudeConnector.buildLaunch(opts);
-  const onceSpec = claudeConnector.buildLaunch({ ...opts, cwd, once: true });
+  const onceSpec = claudeConnector.buildLaunch({ ...opts, cwd, once: true, onceKickoffGoalId: "test-goal", prompt: "Test the kickoff" });
   assert.equal(foreground.confirmBefore, undefined, "foreground workspace trust stays interactive");
   assert.equal(spec.env?.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC, "1", "native test traffic suppression reaches the actual child");
   assert.ok(!spec.args.includes("--dangerously-skip-permissions"));
@@ -533,15 +533,15 @@ try {
     assert.deepEqual(spec.confirmBlockers?.map((blocker) => blocker.prompt), BLOCKER_SCREENS.map(([, , prompt]) => prompt));
     assert.deepEqual(foreground.confirmBlockers, spec.confirmBlockers, "a launch with no workspace declares them too");
   });
-  await cell("only a once Claude launch waits for the channel notice, and a once seat needs it confirmed", () => {
+  await cell("a once Claude launch watches for startup input, not channel registration", () => {
     assert.equal(spec.confirmNotice, undefined, "an ordinary launch ends its watch on the gate's Enter");
     assert.equal(foreground.confirmNotice, undefined);
-    assert.equal(onceSpec.confirmNotice, "messages from server:cotal inject directly in this session");
-    assert.ok(claudeConnector.onceNeedsConfirmed, "the connector declares that a once seat needs a confirmed startup");
+    assert.equal(onceSpec.confirmNotice, undefined);
+    assert.equal(claudeConnector.supportsOnceKickoff, true);
     assert.deepEqual([onceSpec.confirm, onceSpec.confirmBefore, onceSpec.confirmReady, onceSpec.confirmBlockers], [spec.confirm, spec.confirmBefore, spec.confirmReady, spec.confirmBlockers]);
   });
   await choiceCells(spec.confirm!, spec.confirmBefore!, spec.confirmReady!, spec.confirmBlockers!);
-  await noticeCells(onceSpec.confirm!, onceSpec.confirmBefore!, onceSpec.confirmReady!, onceSpec.confirmBlockers!, onceSpec.confirmNotice!);
+  await noticeCells(spec.confirm!, spec.confirmBefore!, spec.confirmReady!, spec.confirmBlockers!, "messages from server:cotal inject directly in this session");
 
   if (process.argv.includes("--live")) {
     const binary = cotalOriginal.get("COTAL_TEST_CLAUDE_BINARY");

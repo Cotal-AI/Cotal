@@ -5,7 +5,8 @@ import { appendFileSync, existsSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Manager } from "../src/manager.js";
-import { evictDeniedPrincipalWithCreds, registry, type Connector, type EvictionResult, type LaunchOpts, type LaunchSpec } from "@cotal-ai/core";
+import { evictDeniedPrincipalWithCreds, registry, type Connector, type EvictionResult, type LaunchOpts, type LaunchSpec, type Runtime } from "@cotal-ai/core";
+import { CustodialPtyRuntime } from "../src/runtime/custodial-pty.js";
 
 const root = process.env.REPRO_ROOT!;
 const space = process.env.REPRO_SPACE!;
@@ -25,7 +26,27 @@ registry.register({
     return { discard: async () => retireLog({ discard: seat.lifecycleUid }) };
   },
 } as Connector);
+const kickoffStub: Connector = {
+  kind: "connector", name: "once-crash-kickoff", requires: ["node"], supportsPrompt: true, supportsTurnRelay: true, supportsOnceKickoff: true,
+  buildLaunch: (o: LaunchOpts): LaunchSpec => ({
+    command: process.execPath, args: [stub, space, o.name],
+    env: { ...envFor(o), REPRO_KICKOFF_FILE: join(root, "kickoff.jsonl"), REPRO_KICKOFF_GOAL: o.onceKickoffGoalId!, REPRO_KICKOFF_PROMPT: o.prompt! },
+  }),
+};
+registry.register(kickoffStub);
 const manager = new Manager({ space, servers, runtime: "pty", workspaceRoot: root, consolePort: 0 });
+if (process.env.REPRO_CUSTODIAL === "1") {
+  // The custodian handles the real process and custody. This fixture's launch receipt supplies
+  // the startup outcome that a Claude-capable runtime normally takes from its input screen.
+  class KickoffRuntime extends CustodialPtyRuntime {
+    readonly reportsStartupOutcome = true;
+    override spawn(...args: Parameters<CustodialPtyRuntime["spawn"]>) {
+      const handle = super.spawn(...args);
+      return { ...handle, startupOutcome: () => existsSync(join(root, "kickoff.jsonl")) ? "ready" as const : "pending" as const };
+    }
+  }
+  (manager as unknown as { runtime: Runtime }).runtime = new KickoffRuntime();
+}
 (manager as unknown as { staticLifecycleEvict?: (principal: string) => Promise<EvictionResult> }).staticLifecycleEvict =
   (principal) => evictDeniedPrincipalWithCreds({
     servers,

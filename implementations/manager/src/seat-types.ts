@@ -102,7 +102,7 @@ export interface StartAgentOpts {
    *  `restarts` deaths fall inside `windowMs`. Absent: only a continuation-capable connector
    *  (pi) arms the existing session-recovery constants. */
   supervise?: { restarts: number; windowMs: number };
-  /** A `once` spawn: the prompt is relayed as the seat's one turn instead of a kickoff, and the
+  /** A `once` spawn: the prompt is the seat's only task, and the
    *  seat is stopped when that turn ends. `deadlineMs` is resolved: `undefined` means no deadline. */
   once?: { deadlineMs: number | undefined };
   /** A fully-resolved launch profile (from a mesh manifest via `supervise --launch`). When present,
@@ -303,7 +303,7 @@ export interface SpawnHooks {
   /** Fires right after `onAccepted` on a `once` spawn, before anything launches: accepts the seat's
    *  one task as a turn addressed to the allocated incarnation and returns its goal. A throw fails
    *  the spawn. */
-  onOnce?: (task: { seat: { name: string; owner: string; actor: string; uid: string }; prompt: string; spawner: string; deadlineMs: number | undefined; readinessDeadlineMs: number; retire?: string }) => Promise<{ ref: GoalRef; deadlineAt?: number }>;
+  onOnce?: (task: { seat: { name: string; owner: string; actor: string; uid: string }; prompt: string; spawner: string; deadlineMs: number | undefined; readinessDeadlineMs: number; retire?: string; kickoff?: true }) => Promise<{ ref: GoalRef; deadlineAt?: number }>;
 }
 
 /** The spawn-as-action acceptance floor: the ALLOCATED agent identity (name + the

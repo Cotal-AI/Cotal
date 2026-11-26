@@ -17,7 +17,7 @@
  */
 import { randomUUID } from "node:crypto";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -39,8 +39,10 @@ type EpCaller = import("@cotal-ai/core").EpCaller;
 const CELLS = [
   "the first manager starts two once seats, one with no deadline and one with a deadline, and serves each its task",
   "both seats outlive the crashed manager",
+  "the unheld kickoff survives restart without a second launch or relay, and its yield says the successor cannot hold the seat",
   "the successor serves neither task to a seat it does not hold, and tells neither seat to stop while its task is open",
   "the task with no deadline is settled `uncertain` after one readiness window, saying the manager does not hold the seat",
+  "the unheld kickoff becomes uncertain, keeps its debt, and is told to stop",
   "the seat's notice repeats while no pull has carried the stop",
   "its pull is answered `stop` with no turn, and a pull repeated after a lost answer is answered `stop` again",
   "the notice stops repeating once a pull has carried the stop",
@@ -76,7 +78,7 @@ const seatPids = (name: string) => {
   return result.stdout.split("\n").map(Number).filter((pid) => pid > 0);
 };
 mkdirSync(join(root, ".cotal", "agents"), { recursive: true });
-for (const name of ["open", "timed"]) writeFileSync(join(root, ".cotal", "agents", `${name}.md`), `---\nname: ${name}\nrole: worker\n---\n`);
+for (const name of ["open", "timed", "kickoff"]) writeFileSync(join(root, ".cotal", "agents", `${name}.md`), `---\nname: ${name}\nrole: worker\n---\n`);
 recordMesh({ space, server: servers, root, mode: "open", ts: new Date().toISOString() });
 const broker = spawn("nats-server", ["-a", "127.0.0.1", "-p", String(port), "-js", "-sd", join(dir, "js")], { stdio: "ignore" }); const releaseBroker = teardownOnSignal(broker, dir);
 const managers: ChildProcess[] = [];
@@ -152,6 +154,16 @@ try {
     spawned.every((r) => r.ok === true) && ready && served.every((s) => s?.turns?.length === 1 && s.stop === undefined) && seatPids("open").length === 1 && seatPids("timed").length === 1,
     { spawned, ready, served, stderr: first.stderr().slice(-2000) });
 
+  const kickoffId = "unheld-kickoff".padEnd(43, "k");
+  const kickoffGoal = digestIdToken(`${kickoffId}:once`);
+  const launches = () => readFileSync(join(root, "kickoff.jsonl"), "utf8").trim().split("\n").map((line) => JSON.parse(line) as { goalId: string; prompt: string; pid: number });
+  const kickoffAccepted = await call("spawn", { name: "kickoff", agent: "once-unheld-kickoff", cwd: repo, events: false, prompt: "the unheld kickoff task", once: { deadlineMs: -1 } }, kickoffId);
+  if (kickoffAccepted.ok !== true) throw new Error(`kickoff admission failed: ${JSON.stringify(kickoffAccepted)}`);
+  let kickoffSpawn: Result | undefined;
+  if (!await until(async () => (kickoffSpawn = await resultOf(kickoffId))?.state === "succeeded", 25_000)) throw new Error(`kickoff spawn failed: ${JSON.stringify(kickoffSpawn)}`);
+  const kickoffSeat = seatOf(kickoffSpawn);
+  const before = launches();
+
   // Every notice each seat is sent, from any epoch of this manager instance.
   const notices = { open: 0, timed: 0 };
   for (const name of ["open", "timed"] as const) nc.subscribe(turnNoticeFilter(space, first.manager.managerInstanceId, seats[name]), { callback: () => { notices[name]++; } });
@@ -161,6 +173,16 @@ try {
   check("both seats outlive the crashed manager", seatPids("open").length === 1 && seatPids("timed").length === 1, [...seatPids("open"), ...seatPids("timed")]);
   const successor = await startHost();
   epoch = 1;
+  const kickoffService = await resolveService(nc, space, MANAGER_ENDPOINT, kickoffSeat);
+  const yielded = await invokeCommand(nc, space, kickoffService, "turn-yield", { goalId: kickoffGoal, status: "done" },
+    { target: { mode: "self" }, deadlineMs: 10_000 }).then((r) => r.reply, asValue);
+  const kickoffPull = await pull(kickoffSeat);
+  const unheldYield = yielded as { ok?: boolean; code?: string; message?: string; error?: { code?: string; message?: string } };
+  check("the unheld kickoff survives restart without a second launch or relay, and its yield says the successor cannot hold the seat",
+    before.length === 1 && before[0]?.goalId === kickoffGoal && before[0].prompt.includes("the unheld kickoff task") &&
+    launches().length === 1 && seatPids("kickoff").includes(before[0].pid) && kickoffPull?.turns?.length === 0 &&
+    (unheldYield.code ?? unheldYield.error?.code) === "unavailable" && (unheldYield.message ?? unheldYield.error?.message)?.includes(UNHELD) === true,
+    { before, yielded, kickoffPull });
   let early: Awaited<ReturnType<typeof pull>>[] = [];
   await until(async () => (early = [await pull(seats.open), await pull(seats.timed)]).every((p) => p !== undefined), 30_000);
   check("the successor serves neither task to a seat it does not hold, and tells neither seat to stop while its task is open",
@@ -170,6 +192,12 @@ try {
   await until(async () => (open = await resultOf(tasks.open)) !== undefined, 30_000);
   check("the task with no deadline is settled `uncertain` after one readiness window, saying the manager does not hold the seat",
     open?.state === "uncertain" && String(open.data?.reason).includes(UNHELD), open);
+  let kickoff: Result | undefined;
+  await until(async () => (kickoff = await resultOf(kickoffGoal)) !== undefined, 30_000);
+  const kickoffStop = await pull(kickoffSeat);
+  check("the unheld kickoff becomes uncertain, keeps its debt, and is told to stop",
+    kickoff?.state === "uncertain" && String(kickoff.data?.reason).includes(UNHELD) &&
+    await indexed(kickoffGoal) && kickoffStop?.stop === true && kickoffStop.turns?.length === 0, { kickoff, kickoffStop });
   const noticedAtSettle = notices.open;
   await wait(11_000);
   check("the seat's notice repeats while no pull has carried the stop", notices.open - noticedAtSettle >= 2, { before: noticedAtSettle, after: notices.open });
@@ -207,7 +235,7 @@ try {
   for (const child of managers) if (child.exitCode === null) { try { process.kill(-child.pid!, "SIGKILL"); } catch { /* already gone */ } }
   await Promise.all(managerExits);
   // End every seat this suite started, by its own command line and exact pid.
-  for (const pid of [...seatPids("open"), ...seatPids("timed")]) { try { process.kill(pid, "SIGKILL"); } catch { /* already gone */ } }
+  for (const name of ["open", "timed", "kickoff"]) for (const pid of seatPids(name)) { try { process.kill(pid, "SIGKILL"); } catch { /* already gone */ } }
   broker.kill("SIGKILL");
   await wait(300);
   rmSync(dir, { recursive: true, force: true });

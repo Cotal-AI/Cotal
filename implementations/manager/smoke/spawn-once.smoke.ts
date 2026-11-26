@@ -11,7 +11,7 @@
  * Run: pnpm smoke:spawn-once   (needs nats-server + node on PATH)
  */
 import { randomUUID } from "node:crypto";
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -32,6 +32,125 @@ import { hostTimerWriter, type HostedTimerWriter } from "./_timer-writer.js";
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(here, "../../..");
 const STUB = join(here, "e2e-stub.mjs");
+
+/** The Claude host boundary: show its real startup text and run the shipped MCP seat and hooks. */
+function installClaudeFixture(root: string): void {
+  const bin = join(root, "bin");
+  mkdirSync(bin);
+  writeFileSync(join(root, ".mcp.json"), '{"mcpServers":{"cotal":{"command":"node"}}}');
+  for (const name of ["channels_off", "channels_on", "claude-blocked", "early-kickoff", "stop-active", "interrupted-kickoff", "model-blocked", "model-blocked-early", "older-connector", "older-manager"])
+    writeFileSync(join(root, ".cotal", "agents", `${name}.md`), `---\nname: ${name}\nrole: tester\n---\n`);
+  writeFileSync(join(bin, "claude"), `#!${process.execPath}
+const { spawn, spawnSync } = require('node:child_process');
+const { existsSync, writeFileSync } = require('node:fs');
+const { join } = require('node:path');
+const { createInterface } = require('node:readline');
+const argv = process.argv.slice(2);
+const arg = name => argv[argv.indexOf(name) + 1];
+if (argv.includes('--version')) { console.log('2.1.330 (Claude Code fixture)'); process.exit(0); }
+if (['older-manager', 'older-connector'].includes(process.env.COTAL_NAME)) {
+  writeFileSync(join(process.cwd(), process.env.COTAL_NAME + '.launched'), '');
+  process.exit(2);
+}
+if (arg('--model') !== 'claude-opus-5-5') process.exit(2);
+const { command, args } = JSON.parse(arg('--mcp-config')).mcpServers.cotal;
+const blockedNote = 'The fixture cannot read the required input';
+const earlyBlocked = process.env.COTAL_NAME === 'model-blocked-early';
+const startSeat = () => {
+  const sayBlocked = earlyBlocked || process.env.COTAL_NAME === 'model-blocked';
+  const seat = spawn(command, args, { stdio: ['pipe', sayBlocked ? 'pipe' : 'ignore', 'inherit'] });
+  seat.on('exit', code => process.exit(code ?? 0));
+  for (const signal of ['SIGTERM', 'SIGINT', 'SIGHUP']) process.on(signal, () => seat.kill(signal));
+  if (sayBlocked) {
+    const send = (method, params, id) => seat.stdin.write(JSON.stringify({ jsonrpc: '2.0', id, method, params }) + '\\n');
+    const log = (name, value) => writeFileSync(join(process.cwd(), (earlyBlocked ? 'early-' : '') + name + '.json'), JSON.stringify(value));
+    createInterface({ input: seat.stdout }).on('line', line => {
+      const reply = JSON.parse(line);
+      if (reply.id === 1 && reply.result) {
+        send('notifications/initialized');
+        setTimeout(() => {
+          hook('UserPromptSubmit', { prompt });
+          send('tools/call', { name: 'cotal_yield', arguments: { status: 'blocked', turn: 'not-this-task', note: blockedNote } }, 2);
+        }, 1500);
+      } else if (reply.id === 2) {
+        log('wrong-kickoff-yield', reply);
+        send('tools/call', { name: 'cotal_yield', arguments: { status: 'blocked', turn: process.env.COTAL_CLAUDE_ONCE_GOAL, note: blockedNote } }, 3);
+      } else if (reply.id === 3) {
+        log('blocked-kickoff-yield', reply);
+        hook('Stop');
+        if (earlyBlocked) log('kickoff-stop', true);
+      }
+    });
+    send('initialize', { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'claude-fixture', version: '1' } }, 1);
+  }
+};
+const channelsOn = argv[0].includes('CHANNELS_ON');
+const ready = () => process.stdout.write('\\x1b[2J\\x1b[H? for shortcuts\\r\\n');
+if (process.env.COTAL_NAME === 'claude-blocked') {
+  process.stdout.write('Select login method:\\r\\n');
+} else if (channelsOn) {
+  process.stdout.write('WARNING: Loading development channels\\r\\n');
+  process.stdin.setRawMode(true);
+  process.stdin.resume();
+  process.stdin.once('data', ready);
+} else if (!earlyBlocked) {
+  ready();
+} else {
+  const waiting = setInterval(() => {
+    if (!existsSync(join(process.cwd(), 'allow-early-blocked-startup'))) return;
+    clearInterval(waiting);
+    ready();
+  }, 50);
+}
+const session_id = 'fixture-session';
+const transcript_path = join(process.cwd(), 'fixture-session.jsonl');
+const hookFile = join(arg('--plugin-dir'), 'dist/hook.cjs');
+const hookEvent = (hook_event_name, more = {}) => JSON.stringify({ hook_event_name, session_id, transcript_path, cwd: process.cwd(), ...more });
+const hook = (hook_event_name, more = {}) => spawnSync(process.execPath, [hookFile], {
+  input: hookEvent(hook_event_name, more), encoding: 'utf8', timeout: 10000,
+}).stdout ?? '';
+const prompt = argv[0];
+const finish = (frame, beforeBind) => {
+  hook('SessionStart', { source: 'compact' });
+  hook('Stop', { agent_id: 'subagent' });
+  setTimeout(() => {
+    writeFileSync(join(process.cwd(), process.env.COTAL_NAME + '.kickoff.json'), JSON.stringify({ prompt, frame, beforeBind, completed: 'ONCE_PROBE_DONE' }));
+    hook('Stop');
+  }, 750);
+};
+if (process.env.COTAL_NAME === 'early-kickoff') {
+  const beforeBind = !existsSync(process.env.COTAL_CONTROL_SOCKET);
+  const submit = spawn(process.execPath, [hookFile], { stdio: ['pipe', 'pipe', 'inherit'] });
+  let frame = '';
+  submit.stdout.on('data', chunk => frame += chunk);
+  submit.stdin.end(hookEvent('UserPromptSubmit', { prompt }));
+  submit.on('close', () => setTimeout(() => finish(frame, beforeBind), 2500));
+  setTimeout(startSeat, 1500);
+} else {
+  startSeat();
+  if (!earlyBlocked && !['claude-blocked', 'model-blocked'].includes(process.env.COTAL_NAME)) setTimeout(() => {
+    if (process.env.COTAL_NAME === 'stop-active') {
+      const frame = hook('UserPromptSubmit', { prompt });
+      hook('Stop', { stop_hook_active: true });
+      setTimeout(() => finish(frame, false), 1500);
+      return;
+    }
+    if (process.env.COTAL_NAME === 'interrupted-kickoff') {
+      hook('UserPromptSubmit', { prompt });
+      // Escape interrupts the kickoff without a Stop. This Stop belongs to the new pane prompt.
+      hook('UserPromptSubmit', { prompt: 'unrelated pane prompt' });
+      hook('Stop');
+      return;
+    }
+    hook('Stop');
+    hook('UserPromptSubmit', { prompt: 'unrelated prompt' });
+    hook('Stop');
+    finish(hook('UserPromptSubmit', { prompt }), false);
+  }, 1200);
+}
+`, { mode: 0o755 });
+  process.env.PATH = `${bin}:${process.env.PATH ?? ""}`;
+}
 
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 let pass = 0, fail = 0;
@@ -84,6 +203,7 @@ const retireCalls: Array<{ seat: OnceSeat; indexed: boolean; ended: boolean }> =
 const discarded: string[] = [];
 const launchedOnce = new Map<string, boolean | undefined>();
 let retireRefusals = 1;
+let retireProofGate: Promise<void> | undefined;
 /** What the task's records showed when the connector was asked: its index entry, and its terminal. */
 let probe: (() => Promise<{ indexed: boolean; ended: boolean }>) | undefined;
 const retireStub: Connector = {
@@ -92,6 +212,7 @@ const retireStub: Connector = {
   async retireAfterExit(seat) {
     retireCalls.push({ seat, ...((await probe?.()) ?? { indexed: false, ended: false }) });
     if (retireRefusals-- > 0) throw new Error("its launched tree is still running");
+    await retireProofGate;
     return { discard: async () => { discarded.push(seat.lifecycleUid); } };
   },
 };
@@ -142,6 +263,7 @@ let writer: HostedTimerWriter | undefined;
 let writerNc: Awaited<ReturnType<typeof connect>> | undefined;
 let runnerNc: Awaited<ReturnType<typeof connect>> | undefined;
 const seatConns: Awaited<ReturnType<typeof connect>>[] = [];
+const originalPath = process.env.PATH;
 
 try {
   await setupSpaceStreams({ servers: broker.servers, space, creds: await mintCreds(auth, newIdentity(), "provisioner") });
@@ -376,14 +498,18 @@ try {
   const side7 = await seatSide(s7.name!, s7.seat!);
   const probeOf = (goal: string) => async () => ({ indexed: (await readGoalIndex(actx, refOf(goal))) !== undefined, ended: (await readGoalResult(actx, refOf(goal))) !== undefined });
   probe = probeOf(s7.once!.goalId);
+  let releaseProof!: () => void;
+  retireProofGate = new Promise<void>((resolve) => { releaseProof = resolve; });
   check("the launch is told it is a once seat, so it can record what it launches", launchedOnce.get(s7.name!) === true, [...launchedOnce]);
   await side7.invoke("turn-yield", { goalId: s7.once!.goalId, status: "done" });
   check("the yield stops the seat", await gone(s7.name!, s7.seat!.handle));
   await until(() => retireCalls.length >= 1, 10_000);
   check("its exit asks the connector, naming the seat it launched",
     retireCalls[0]?.seat.name === s7.name && retireCalls[0]?.seat.lifecycleUid === s7.seat!.lifecycleUid && retireCalls[0]?.seat.space === space && retireCalls[0]?.seat.workspaceRoot === workspaceRoot, retireCalls);
-  await wait(1_000);
-  check("a refused proof keeps the debt", retireCalls.length === 1 && (await readGoalIndex(actx, refOf(s7.once!.goalId))) !== undefined);
+  try {
+    await until(() => retireCalls.length >= 2, 10_000);
+    check("a refused proof keeps the debt", retireCalls.length === 2 && (await readGoalIndex(actx, refOf(s7.once!.goalId))) !== undefined);
+  } finally { releaseProof(); }
   check("...and the turn sweep asks again, and the debt clears on the proof", await debtCleared(s7.once!.goalId) && retireCalls.length === 2 && retireCalls[1]!.indexed, retireCalls.length);
   check("...after which the proof's receipt is discarded", await until(() => discarded.includes(s7.seat!.lifecycleUid), 5_000));
   const s8 = await spawnOnce({ agent: "once-retire-stub", prompt: "dies first", once: {} });
@@ -548,6 +674,130 @@ try {
       `${plainUnmatched.name}: Cotal startup confirmation failed: prompt "LOAD THE CHANNEL" did not appear within 15000ms. Last visible lines: app banner | STUB_JOINED ${plainUnmatched.name} `) === true,
     plainUnmatched.terminal);
   check("the failed startup is absent from ps", plainUnmatched.name !== undefined && plainUnmatched.ps.ok === true && plainUnmatched.row === undefined, plainUnmatched.ps);
+
+  console.log("\n16. Claude once: a kickoff on both startup screens, with no relayed copy");
+  installClaudeFixture(workspaceRoot);
+
+  // Substitute only the launch boundary. Keep the real spawn action for admission, allocation,
+  // buildLaunch, and cancellation, without an installed-package generation gate masking either case.
+  const { supportsOnceKickoff: _kickoff, ...oldClaude } = claude;
+  const skewArgs = { cwd: workspaceRoot, events: false, model: "claude-opus-5-5", prompt: "Do not launch", once: {} };
+  let oldBuildCalled = false;
+  const oldConnector: Connector = { ...oldClaude, buildLaunch: (opts) => {
+    oldBuildCalled = true;
+    return { command: "claude", args: [], env: envFor(opts) };
+  } };
+  registry.unregister("connector", claude.name);
+  registry.register(oldConnector);
+  const oldConnectorId = goalId("old-connector");
+  try {
+    const refused = await call("spawn", { ...skewArgs, name: "older-connector", agent: "claude" }, { id: oldConnectorId });
+    check("a manager refuses a Claude connector without kickoff support before allocating a task or launching",
+      refused.ok === false && errorText(refused) === "once: this manager requires a newer Claude Code connector that supports once kickoffs. Upgrade the connector before retrying" &&
+      await readGoalIndex(actx, refOf(taskOf(oldConnectorId))) === undefined && await readGoalResult(actx, refOf(oldConnectorId)) === undefined &&
+      !oldBuildCalled && !M.agents.has("older-connector") && !M.namesCapacity.reserved.has("older-connector") && !existsSync(join(workspaceRoot, "older-connector.launched")), refused);
+  } finally {
+    registry.unregister("connector", claude.name);
+    registry.register(claude);
+  }
+  // A different registry name lets the real relay-style manager launch path construct the older
+  // call: once is set, but there is no kickoff ID or prompt. The actual Claude builder refuses it.
+  let oldLaunch: Pick<LaunchOpts, "once" | "onceKickoffGoalId" | "prompt"> | undefined;
+  const oldManagerPath: Connector = { ...oldClaude, name: "claude-legacy-launch", buildLaunch: (opts) => {
+    oldLaunch = { once: opts.once, onceKickoffGoalId: opts.onceKickoffGoalId, prompt: opts.prompt };
+    return claude.buildLaunch(opts);
+  } };
+  registry.register(oldManagerPath);
+  try {
+    const id = goalId("old-manager");
+    const accepted = await call("spawn", { ...skewArgs, name: "older-manager", agent: oldManagerPath.name }, { id });
+    const terminal = await resultOf(id, 15_000);
+    const task = await resultOf(taskOf(id), 15_000);
+    check("the Claude connector refuses a relay-style once launch and the manager cancels the accepted task",
+      accepted.ok === true && oldLaunch?.once === true && oldLaunch.onceKickoffGoalId === undefined && oldLaunch.prompt === undefined &&
+      terminal?.state === "failed" && errorOf(terminal).includes("once: this Claude Code connector requires a newer manager that supports once kickoffs. Upgrade the manager before retrying") &&
+      task?.state === "cancelled" && reasonOf(task) === "launch-failed" && await debtCleared(taskOf(id)) &&
+      !M.agents.has("older-manager") && !existsSync(join(workspaceRoot, "older-manager.launched")), { accepted, oldLaunch, terminal, task });
+  } finally { registry.unregister("connector", oldManagerPath.name); }
+
+  for (const mode of ["CHANNELS_OFF", "CHANNELS_ON"] as const) {
+    const c = await spawnOnce({ name: mode.toLowerCase(), agent: "claude", cwd: workspaceRoot, model: "claude-opus-5-5", prompt: `Reply with ONCE_PROBE_DONE (${mode})`, once: { deadlineMs: 60_000 } });
+    const terminal = c.once && await resultOf(c.once.goalId, 20_000);
+    const log = c.name && await until(() => {
+      try { return readFileSync(join(workspaceRoot, `${c.name}.kickoff.json`), "utf8").length > 0; } catch { return false; }
+    }, 2_000) ? JSON.parse(readFileSync(join(workspaceRoot, `${c.name}.kickoff.json`), "utf8")) : undefined;
+    check(`${mode}: the spawn accepts; one attributed kickoff carries the task and deadline, without injection`,
+      c.terminal?.state === "succeeded" && c.once?.deadlineAt !== undefined &&
+      log?.prompt.includes(`started this seat for one task (goal ${c.once.goalId})`) &&
+      log.prompt.includes(`Reply with ONCE_PROBE_DONE (${mode})`) && log.prompt.includes(new Date(c.once.deadlineAt).toISOString()) &&
+      log.prompt.includes(`cotal_yield with status "blocked", turn "${c.once.goalId}"`) &&
+      !log.frame.includes("ONCE_PROBE_DONE"), { spawn: c.terminal, log });
+    check(`${mode}: the fixture completed and its main Stop ends the task, exits the seat and clears its debt`,
+      log?.completed === "ONCE_PROBE_DONE" && terminal?.state === "succeeded" && (terminal.data as { status?: string }).status === "done" &&
+      c.seat !== undefined && await gone(c.name!, c.seat.handle) && await debtCleared(c.once!.goalId), terminal);
+    if (mode === "CHANNELS_OFF") check("the kickoff receipt omits the idle-seat pane notice",
+      c.terminal?.state === "succeeded" && (c.terminal.data as { startupNotice?: unknown }).startupNotice === undefined, c.terminal);
+  }
+  const blocked = await spawnOnce({ name: "claude-blocked", agent: "claude", cwd: workspaceRoot, model: "claude-opus-5-5", prompt: "Must not run", once: { deadlineMs: 60_000 } });
+  const blockedTask = await resultOf(taskOf(blocked.id), 20_000);
+  check("a Claude startup that cannot take input names the login blocker and cancels the task",
+    blocked.terminal?.state === "failed" && errorOf(blocked.terminal).includes("Claude Code is not logged in for this user and asks for a login method") &&
+    blockedTask?.state === "cancelled" && blocked.seat !== undefined && await gone(blocked.name!, blocked.seat.handle), { spawn: blocked.terminal, task: blockedTask });
+  const early = await spawnOnce({ name: "early-kickoff", agent: "claude", cwd: workspaceRoot, model: "claude-opus-5-5", prompt: "Complete the early kickoff", once: { deadlineMs: 12_000 } });
+  const earlyTask = early.once && await resultOf(early.once.goalId, 15_000);
+  const earlyFile = join(workspaceRoot, "early-kickoff.kickoff.json");
+  const earlyLog = await until(() => {
+    try { return readFileSync(earlyFile, "utf8").length > 0; } catch { return false; }
+  }, 2_000) ? JSON.parse(readFileSync(earlyFile, "utf8")) : undefined;
+  check("a kickoff submitted before MCP bind is matched and finishes on its Stop, not its deadline",
+    earlyLog?.beforeBind === true && earlyLog.completed === "ONCE_PROBE_DONE" && earlyTask?.state === "succeeded" &&
+    (earlyTask.data as { status?: string }).status === "done" && early.seat !== undefined && await gone(early.name!, early.seat.handle), earlyTask);
+  for (const name of ["stop-active", "interrupted-kickoff"] as const) {
+    const c = await spawnOnce({ name, agent: "claude", cwd: workspaceRoot, model: "claude-opus-5-5", prompt: "Complete the kickoff", once: { deadlineMs: 12_000 } });
+    const terminal = c.once && await resultOf(c.once.goalId, 30_000);
+    if (name === "stop-active") {
+      let completed: unknown;
+      try { completed = JSON.parse(readFileSync(join(workspaceRoot, `${name}.kickoff.json`), "utf8")).completed; } catch { /* fixture stopped early */ }
+      check("a Stop with stop_hook_active cannot retire the seat before the later main Stop",
+        completed === "ONCE_PROBE_DONE" && terminal?.state === "succeeded" && (terminal.data as { status?: string }).status === "done" &&
+        c.seat !== undefined && await gone(c.name!, c.seat.handle), { completed, terminal });
+    } else {
+      check("a pane prompt after interrupt cannot finish the kickoff; the deadline retires it",
+        terminal?.state === "failed" && (terminal.data as { reason?: string }).reason === "turn-deadline" &&
+        c.seat !== undefined && await gone(c.name!, c.seat.handle), { spawn: c.terminal, terminal });
+    }
+  }
+  const modelBlocked = await spawnOnce({ name: "model-blocked", agent: "claude", cwd: workspaceRoot, model: "claude-opus-5-5", prompt: "Read the required input", once: { deadlineMs: 15_000 } });
+  const modelBlockedTask = modelBlocked.once && await resultOf(modelBlocked.once.goalId, 20_000);
+  const yieldLog = (name: string) => {
+    try { return JSON.parse(readFileSync(join(workspaceRoot, `${name}.json`), "utf8")); } catch { return undefined; }
+  };
+  const wrongYield = yieldLog("wrong-kickoff-yield");
+  const blockedYield = yieldLog("blocked-kickoff-yield");
+  const result = modelBlockedTask?.data as { status?: string; note?: string } | undefined;
+  check("Claude can use cotal_yield to record blocked with a note for its exact kickoff goal",
+    wrongYield?.result?.isError === true && modelBlockedTask?.state === "succeeded" && result?.status === "blocked" &&
+    result.note === "The fixture cannot read the required input" && modelBlocked.seat !== undefined &&
+    await gone(modelBlocked.name!, modelBlocked.seat.handle) && await debtCleared(modelBlocked.once!.goalId),
+    { wrongYield, blockedYield, modelBlockedTask });
+
+  const earlyBlockedId = goalId("early-blocked");
+  const earlyBlockedSpawn = spawnOnce({ name: "model-blocked-early", agent: "claude", cwd: workspaceRoot, model: "claude-opus-5-5",
+    prompt: "Read the required input before the spawn verdict", once: { deadlineMs: 30_000 } }, earlyBlockedId);
+  const stoppedEarly = await until(() => yieldLog("early-kickoff-stop") === true, 12_000);
+  const spawnBeforeReady = await readGoalResult(actx, refOf(earlyBlockedId));
+  const blockedBeforeReady = yieldLog("early-blocked-kickoff-yield");
+  writeFileSync(join(workspaceRoot, "allow-early-blocked-startup"), "");
+  const earlyBlockedSeat = await earlyBlockedSpawn;
+  const earlyBlockedTask = await resultOf(taskOf(earlyBlockedId), 25_000);
+  const earlyBlockedData = earlyBlockedTask?.data as { status?: string; note?: string } | undefined;
+  check("a blocked kickoff before the spawn verdict keeps its note and cannot become done on Stop",
+    stoppedEarly && spawnBeforeReady === undefined && blockedBeforeReady?.result?.isError === true &&
+    JSON.stringify(blockedBeforeReady).includes("the kickoff seat has not passed its startup check yet") &&
+    earlyBlockedSeat.terminal?.state === "succeeded" && earlyBlockedTask?.state === "succeeded" &&
+    earlyBlockedData?.status === "blocked" && earlyBlockedData.note === "The fixture cannot read the required input" &&
+    earlyBlockedSeat.seat !== undefined && await gone(earlyBlockedSeat.name!, earlyBlockedSeat.seat.handle) && await debtCleared(taskOf(earlyBlockedId)),
+    { stoppedEarly, spawnBeforeReady, blockedBeforeReady, spawn: earlyBlockedSeat.terminal, task: earlyBlockedTask });
 } finally {
   for (const nc of seatConns) await nc.drain().catch(() => nc.close());
   await runnerNc?.drain().catch(() => runnerNc?.close());
@@ -556,9 +806,11 @@ try {
   await writerNc?.drain().catch(() => writerNc?.close());
   await delivery?.stop().catch(() => {});
   await broker.stop().catch(() => {});
+  if (originalPath === undefined) delete process.env.PATH;
+  else process.env.PATH = originalPath;
 }
 
-const EXPECTED_CELLS = 72;
+const EXPECTED_CELLS = 85;
 console.log(`\n${fail === 0 && pass === EXPECTED_CELLS ? "SPAWN ONCE SMOKE OK ✅" : "SPAWN ONCE SMOKE FAILED"}  (${pass} passed, ${fail} failed)`);
 if (pass + fail !== EXPECTED_CELLS) {
   console.log(`SUITE INCOMPLETE — ran ${pass + fail} of ${EXPECTED_CELLS} cells; a partial run is not a pass`);

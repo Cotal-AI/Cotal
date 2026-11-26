@@ -22,6 +22,7 @@ import type { TranscriptClaim } from "./transcript-receive.js";
 import type { ProvisionedUserAgent } from "./user-provision.js";
 import type { ManagerConfig } from "./manager-config.js";
 import type { ManagerStartState } from "./manager-start-state.js";
+import { renderOnceTask } from "@cotal-ai/core";
 
 class LegacyEventCountPermissionError extends Error {}
 
@@ -721,10 +722,13 @@ export class SeatStart {
       const hostedEnrollment = this.userMode && (opts.delegatedIntent !== undefined || this.remoteAuthority?.enrollManagedAgent !== undefined);
       // A once spawn's task is accepted with the spawn, before anything launches.
       let onceTask: { ref: GoalRef; deadlineAt?: number } | undefined;
+      const onceKickoff = opts.once !== undefined && connector.supportsOnceKickoff === true;
+      const onceSpawner = opts.once === undefined ? undefined : this.spawnerName(spawner);
       const acceptOnce = async (seat: { owner: string; actor: string; uid: string }): Promise<void> => {
         if (opts.once === undefined) return;
         onceTask = await hooks!.onOnce!({
-          seat: { name, ...seat }, prompt: prompt!, spawner: this.spawnerName(spawner), deadlineMs: opts.once.deadlineMs, readinessDeadlineMs: readinessTimeoutMs,
+          seat: { name, ...seat }, prompt: prompt!, spawner: onceSpawner!, deadlineMs: opts.once.deadlineMs, readinessDeadlineMs: readinessTimeoutMs,
+          ...(onceKickoff ? { kickoff: true } : {}),
           ...(connector.retireAfterExit ? { retire: connector.name } : {}),
         });
       };
@@ -893,13 +897,14 @@ export class SeatStart {
         resume: opts.resume,
         reopenSession,
         // Initial prompt: the `--prompt` flag, or the manifest entry's `prompt:` on a resolved launch.
-        // A reopened session already had its kickoff turn, so it is not submitted again. A once
-        // seat gets its prompt as its one relayed task instead.
-        prompt: reopenSession === undefined && opts.once === undefined ? prompt : undefined,
+        // A reopened session does not receive another kickoff. A once task has one delivery rail.
+        prompt: onceKickoff && onceTask ? renderOnceTask({ goalId: onceTask.ref.goalId, payload: JSON.stringify({ context: prompt }), spawner: onceSpawner, deadlineAt: onceTask.deadlineAt, kickoff: true })
+          : reopenSession === undefined && opts.once === undefined ? prompt : undefined,
         // Never recorded on the launch, so no restart or resume runs it again.
         firstCommand: opts.firstCommand,
         ...(opts.autoName === true ? { autoName: true } : {}),
         ...(opts.once !== undefined ? { once: true } : {}),
+        ...(onceKickoff && onceTask ? { onceKickoffGoalId: onceTask.ref.goalId } : {}),
         // The SAME access set the creds were minted from (above) — forwarded so the session's
         // runtime read/post set matches its credentials. Without this a manifest-spawned agent
         // (materialized persona has no access frontmatter) has no channel set to read and joins
@@ -1082,7 +1087,7 @@ export class SeatStart {
       // A once seat whose connector needs a confirmed startup is served only on that outcome. Any
       // other ends it like a seat that never joined: stopped before the failed terminal, and its
       // task, never served, cancelled with the verdict.
-      if (onceTask && connector.onceNeedsConfirmed !== undefined) {
+      if (onceTask && !onceKickoff && connector.onceNeedsConfirmed !== undefined) {
         const startup = await this.awaitStartupOutcome(managed, launchedAt, readinessTimeoutMs);
         if (managed.terminalizing || this.leaseStopping) { hooks?.onTerminalDeferred?.(); return { ok: false, error: `${name} was stopped before its startup ended` }; }
         if (startup !== "confirmed") {
@@ -1094,18 +1099,19 @@ export class SeatStart {
           return { ok: false, error };
         }
       }
-      // An input screen without the prompt allows a plain launch, but mesh traffic cannot wake it.
-      if (!onceTask && connector.idleWakeNeedsConfirmed !== undefined && runtime.reportsStartupOutcome) {
+      // The channel gate is not needed for a kickoff. An unusable startup still fails the launch.
+      if ((onceKickoff || (!onceTask && connector.idleWakeNeedsConfirmed !== undefined)) && runtime.reportsStartupOutcome) {
         const startup = await this.awaitStartupOutcome(managed, launchedAt, readinessTimeoutMs);
         if (managed.terminalizing || this.leaseStopping) { hooks?.onTerminalDeferred?.(); return { ok: false, error: `${name} was stopped before its startup ended` }; }
-        if (startup === "failed" || startup === "exited") {
-          const error = await startupFailureDetail(managed, startup);
+        if (startup === "failed" || startup === "exited" || (onceKickoff && startup === "pending")) {
+          const error = startup === "pending" ? `${name}: the startup watch did not reach an input screen` : await startupFailureDetail(managed, startup);
           if (managed.terminalizing || this.leaseStopping) { hooks?.onTerminalDeferred?.(); return { ok: false, error }; }
           this.watchExit(managed);
+          if (onceKickoff) this.endOnceBeforeServe(managed, "launch-failed", "launch-failed");
           await hooks?.onOutcome?.({ kind: "failed", data: { error } });
           return { ok: false, error };
         }
-        if (startup === "ready") {
+        if (!onceKickoff && startup === "ready" && connector.idleWakeNeedsConfirmed !== undefined) {
           managed.startupNotice = connector.idleWakeNeedsConfirmed;
           console.error(`! ${name}: ${connector.idleWakeNeedsConfirmed}`);
         }

@@ -118,7 +118,7 @@ export function shownSpawner(name: string | undefined, fallback: string): string
  *  as text. It lives here so a seat renders it and a manager measures it at admission
  *  ({@link Connector.turnFrameLimit}) with the same function. A missing or whitespace-only spawner
  *  is shown as "your spawner". */
-export function renderOnceTask(t: { goalId: string; payload: string; spawner?: string; deadlineAt?: number }): string {
+export function renderOnceTask(t: { goalId: string; payload: string; spawner?: string; deadlineAt?: number; kickoff?: true }): string {
   let context = t.payload;
   try {
     const p = JSON.parse(t.payload) as { context?: unknown };
@@ -128,5 +128,7 @@ export function renderOnceTask(t: { goalId: string; payload: string; spawner?: s
   const deadline = t.deadlineAt !== undefined ? `, or at ${new Date(t.deadlineAt).toISOString()} if you are still working then` : "";
   return `🎯 Cotal — ${from} started this seat for one task (goal ${t.goalId}):\n${context}\n`
     + `(This is the only task this seat takes. Do it with your own tools, and send your result to whoever needs it, for example with cotal_dm to ${from}, before you end your turn: `
-    + `this seat is stopped when your turn ends${deadline}, and a result you have not sent reaches no one. If you cannot finish, call cotal_yield with blocked or handoff and say why.)`;
+    + `this seat is stopped when your turn ends${deadline}, and a result you have not sent reaches no one. `
+    + (t.kickoff ? `If you cannot finish, call cotal_yield with status "blocked", turn "${t.goalId}", and a note that says why.)`
+      : "If you cannot finish, call cotal_yield with blocked or handoff and say why.)");
 }

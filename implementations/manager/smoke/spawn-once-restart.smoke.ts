@@ -23,13 +23,14 @@ import { fileURLToPath } from "node:url";
 import { connect } from "@nats-io/transport-node";
 import { Kvm } from "@nats-io/kv";
 import {
-  createSpaceAuth, digestIdToken, epCall, isReachable, listGoalIndex, mintConnectionEvictorCreds, mintCreds,
-  mintMembershipObserverCreds, newIdentity, recordsBucket, serverConfig, setupSpaceStreams, standaloneConnectOpts,
+  createSpaceAuth, DEV_OWNER, digestIdToken, epCall, invokeCommand, isReachable, listGoalIndex, mintConnectionEvictorCreds, mintCreds,
+  mintMembershipObserverCreds, newIdentity, recordsBucket, resolveService, serverConfig, setupSpaceStreams, standaloneConnectOpts, type IssuedCaller,
 } from "@cotal-ai/core";
 import { authDir, saveSpaceAuth, mintControlInstrument, workspaceSecretStore } from "@cotal-ai/workspace";
-import { SMOKE_BROKER_TOKEN, emitSentinel, freePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { SMOKE_BROKER_TOKEN, emitSentinel, freePort, makeSeatRoot, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { MANAGER_CONTRACTS, MANAGER_ENDPOINT } from "../src/manager-service-contract.js";
 import { bootDeliveryDaemon, type DeliveryDaemon } from "./_boot-delivery.js";
+import { readSeatRecord } from "../src/resume.js";
 
 // Every cell, in order. A cell an earlier failure left unreachable is graded failed, so the suite
 // always reaches its completion line.
@@ -46,6 +47,11 @@ const CELLS = [
   "the next manager cancels that task `launch-failed` and drops its index entry",
   "a manager that dies after a seat joined and before its spawn's succeeded terminal leaves the task recorded",
   "the next manager cancels that task as never served, and drops its index entry once the seat is ruled out",
+  ...(process.platform === "linux" ? [
+    "a custodied kickoff already ran when its manager dies before the spawn verdict",
+    "the successor adopts the same kickoff, with no relay or second launch, and accepts its authenticated yield",
+    "the adopted kickoff retires and clears its debt at proved exit",
+  ] : []),
 ];
 let pass = 0, fail = 0;
 const graded = new Set<string>();
@@ -76,8 +82,9 @@ const seatPids = (name: string) => {
   return result.stdout.split("\n").map(Number).filter((pid) => pid > 0);
 };
 const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN)); const root = join(dir, "ws");
+const seatRoot = process.platform === "linux" ? makeSeatRoot("once-") : undefined;
 mkdirSync(join(root, ".cotal", "agents"), { recursive: true }); saveSpaceAuth(authDir(root), auth);
-for (const name of ["open", "timed", "held", "early"]) writeFileSync(join(root, ".cotal", "agents", `${name}.md`), `---\nname: ${name}\nrole: worker\nsubscribe: []\nallowSubscribe: []\nallowPublish: []\n---\n`);
+for (const name of ["open", "timed", "held", "early", "kickoff"]) writeFileSync(join(root, ".cotal", "agents", `${name}.md`), `---\nname: ${name}\nrole: worker\nsubscribe: []\nallowSubscribe: []\nallowPublish: []\n---\n`);
 writeFileSync(join(dir, "server.conf"), serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port, storeDir: join(dir, "js") }));
 const broker = spawn("nats-server", ["-c", join(dir, "server.conf")], { stdio: "ignore" }); const releaseBroker = teardownOnSignal(broker, dir);
 let daemon: DeliveryDaemon | undefined; const managers: ChildProcess[] = [];
@@ -87,10 +94,10 @@ let indexNc: Awaited<ReturnType<typeof connect>> | undefined;
 type Host = { child: ChildProcess; manager: { managerPid: number; managerInstanceId: string }; stderr: () => string };
 /** Start one manager process. A successor started while the dead one's lease still stands exits on
  *  the lease refusal, so that one exit is retried until the lease lapses. */
-async function startHost(): Promise<Host> {
+async function startHost(custodial = false): Promise<Host> {
   const deadline = Date.now() + 120_000;
   for (;;) {
-    const child = spawn(tsx, [host], { cwd: repo, env: { ...ambientEnv, REPRO_ROOT: root, REPRO_SPACE: space, REPRO_SERVERS: servers, REPRO_OBSERVER_CREDS: observerCreds, REPRO_EVICTOR_CREDS: evictorCreds, REPRO_ACCOUNT_ID: auth.account.pub, COTAL_SERVER: "", COTAL_SERVERS: "", COTAL_CREDS: "", NATS_URL: "" }, detached: true, stdio: ["ignore", "pipe", "pipe"] });
+    const child = spawn(tsx, [host], { cwd: repo, env: { ...ambientEnv, REPRO_ROOT: root, REPRO_SPACE: space, REPRO_SERVERS: servers, REPRO_OBSERVER_CREDS: observerCreds, REPRO_EVICTOR_CREDS: evictorCreds, REPRO_ACCOUNT_ID: auth.account.pub, COTAL_SEAT_ROOT: seatRoot, REPRO_CUSTODIAL: custodial ? "1" : "0", COTAL_SERVER: "", COTAL_SERVERS: "", COTAL_CREDS: "", NATS_URL: "" }, detached: true, stdio: ["ignore", "pipe", "pipe"] });
     managers.push(child);
     let out = "", err = "";
     child.stdout?.on("data", (b) => out += String(b)); child.stderr?.on("data", (b) => err += String(b));
@@ -198,7 +205,7 @@ try {
   const diedEarly = await Promise.race([thirdExit.then(() => true), wait(60_000).then(() => false)]);
   check("a manager that dies after a seat joined and before its spawn's succeeded terminal leaves the task recorded",
     diedEarly && await indexed(earlyTask) && await until(() => seatPids("early").length === 0, 15_000), { diedEarly, pids: seatPids("early"), stderr: third.stderr().slice(-1500) });
-  const fourth = await startHost();
+  const fourth = await startHost(seatRoot !== undefined);
   epoch = 3;
   let early: Awaited<ReturnType<typeof resultOf>>;
   await until(async () => (early = await resultOf(earlyTask)) !== undefined, 60_000);
@@ -206,6 +213,44 @@ try {
   check("the next manager cancels that task as never served, and drops its index entry once the seat is ruled out",
     early?.state === "cancelled" && early.data?.reason === "never served: the manager restarted before the spawn's readiness verdict"
       && earlySpawn?.state !== "succeeded" && await until(async () => !(await indexed(earlyTask)), 30_000), { early, earlySpawn, stderr: fourth.stderr().slice(-2000) });
+
+  if (seatRoot !== undefined) {
+    const name = "kickoff";
+    const id = "spawn-kickoff".padEnd(43, "k");
+    const goalId = digestIdToken(`${id}:once`);
+    const args = { name, agent: "once-crash-kickoff", cwd: repo, events: false, prompt: "the kickoff fixture task", once: { deadlineMs: -1 } };
+    const launches = () => readFileSync(join(root, "kickoff.jsonl"), "utf8").trim().split("\n").map((line) => JSON.parse(line) as { goalId: string; prompt: string; pid: number });
+    const fourthExit = new Promise((r) => fourth.child.once("exit", r));
+    writeFileSync(join(root, "crash-at-success"), "");
+    void call("spawn", args, id);
+    const died = await Promise.race([fourthExit.then(() => true), wait(30_000).then(() => false)]);
+    const before = died ? launches() : [];
+    const record = readSeatRecord(root, space, name)?.agent.identity;
+    check("a custodied kickoff already ran when its manager dies before the spawn verdict",
+      died && before.length === 1 && before[0]?.goalId === goalId && before[0].prompt.includes(args.prompt) &&
+      seatPids(name).includes(before[0].pid) && record?.mode === "static" && await indexed(goalId), { before, died });
+    if (record?.mode !== "static" || !record.issued) throw new Error("missing static seat issuance");
+
+    const fifth = await startHost();
+    epoch = 4;
+    const seatNc = await connect({ servers, ...standaloneConnectOpts({ creds: readFileSync(record.credential.path, "utf8"), tls: false }), maxReconnectAttempts: 0 });
+    try {
+      const caller: IssuedCaller = { owner: DEV_OWNER, actor: record.id, uid: record.lifecycleUid, generation: record.issued.generation };
+      const service = await resolveService(seatNc, space, MANAGER_ENDPOINT, caller);
+      const self = { target: { mode: "self" as const }, deadlineMs: 10_000 };
+      const pull = (await invokeCommand(seatNc, space, service, "turn-pending", undefined, self)).reply;
+      const sameSeat = seatPids(name)[0] === before[0]?.pid;
+      const spawnBeforeYield = await resultOf(id);
+      const yielded = await invokeCommand(seatNc, space, service, "turn-yield", { goalId, status: "done" }, self).then((r) => r.reply, asValue);
+      check("the successor adopts the same kickoff, with no relay or second launch, and accepts its authenticated yield",
+        spawnBeforeYield?.state !== "succeeded" && sameSeat && launches().length === 1 && pull.ok &&
+        (pull.data as { turns?: unknown[]; stop?: true })?.turns?.length === 0 && !(pull.data as { stop?: true })?.stop &&
+        yielded.ok === true && ("data" in yielded ? (yielded.data as { state?: unknown })?.state : undefined) === "succeeded",
+        { spawnBeforeYield, sameSeat, pull, yielded, stderr: fifth.stderr().slice(-2000) });
+      check("the adopted kickoff retires and clears its debt at proved exit", (await resultOf(goalId))?.state === "succeeded" &&
+        await until(async () => seatPids(name).length === 0 && !(await indexed(goalId)) && (await resultOf(id))?.state === "uncertain", 40_000));
+    } finally { await seatNc.close(); }
+  }
 } catch (error) {
   for (const name of CELLS) if (!graded.has(name)) check(name, false, `not reached: ${(error as Error).message}`);
 } finally {
@@ -215,11 +260,12 @@ try {
   for (const child of managers) if (child.exitCode === null) stopGroup(child.pid);
   await Promise.all(managerExits);
   // End every seat this suite started, by its own command line.
-  for (const pid of [...seatPids("open"), ...seatPids("timed"), ...seatPids("held"), ...seatPids("early")]) stopGroup(pid);
+  for (const name of ["open", "timed", "held", "early", "kickoff"]) for (const pid of seatPids(name)) stopGroup(pid);
   await daemon?.stop().catch(() => {});
   broker.kill("SIGKILL");
   await wait(300);
   rmSync(dir, { recursive: true, force: true });
+  if (seatRoot !== undefined) rmSync(seatRoot, { recursive: true, force: true });
   releaseBroker();
 }
 

@@ -169,7 +169,7 @@ A connected MCP server does not prove that channel wake works.
 A managed launch whose startup showed no development-channels prompt says so: the `cotal spawn`
 receipt carries a `STARTUP_NOTICE` warning, the `cotal_spawn` result ends with the notice, and
 `cotal ps` marks the seat with `no idle wake` (`--wide` and `--json` carry the clause). A `once`
-launch of such a seat is refused instead.
+launch gives Claude its task as the kickoff prompt, so it does not need idle wake.
 
 </Callout>
 

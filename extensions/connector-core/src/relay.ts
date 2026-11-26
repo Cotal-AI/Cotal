@@ -31,7 +31,7 @@ const MAY_HAVE_BEEN_HANDLED =
 const CONNECT_RETRY_INITIAL_MS = 25;
 const CONNECT_RETRY_MAX_MS = 250;
 /**
- * How long a SessionStart fired at launch keeps dialing a connector that has not bound its socket.
+ * How long a launch hook keeps dialing a connector that has not bound its socket.
  * Claude Code fires that hook before the session's MCP servers are available and starts the
  * connector process alongside it. Measured with six managed seats starting at once, the connector
  * bound up to four seconds after the hook began, and a relay that stopped at two seconds lost the
@@ -136,6 +136,8 @@ export interface HookRelayOptions {
    *  deadline still bounds the dial and the server's proof of a held event, and ends once its request
    *  was sent to a proven server, so only the runtime's own hook timeout bounds the wait for the reply. */
   readonly holds?: (event: unknown) => boolean;
+  /** A launch event that may precede the control socket. Only the dial is retried. */
+  readonly atLaunch?: (event: unknown) => boolean;
 }
 
 /** Relay one hook event from stdin to the connector's control socket and print the reply. `answer`
@@ -191,8 +193,9 @@ export async function runHookRelay(
   } catch {
     /* a predicate that throws holds nothing */
   }
-  const startupCritical = isSessionStart(event);
-  const launch = startupCritical && LAUNCH_SOURCES.has((event as { source?: unknown }).source);
+  const sessionStart = isSessionStart(event);
+  const launch = (sessionStart && LAUNCH_SOURCES.has((event as { source?: unknown }).source)) || opts.atLaunch?.(event) === true;
+  const startupCritical = sessionStart || launch;
   let sock: ReturnType<typeof connect> | undefined;
   let settled = false;
   let retryDelayMs = CONNECT_RETRY_INITIAL_MS;
@@ -312,9 +315,8 @@ export async function runHookRelay(
         retryLater();
         return;
       }
-      // Only SessionStart may outpace creation of the connector process. Later hooks must preserve
-      // immediate fail-open, and once the frame may have reached a connector any retry could deliver
-      // one lifecycle event twice.
+      // Only startup-critical hooks retry before connecting. Once the frame may have reached a
+      // connector, another dial could deliver a lifecycle event twice.
       unanswered();
     });
   };
