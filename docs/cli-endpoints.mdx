@@ -565,6 +565,7 @@ existing native caller and digest-verified contracts. `ref:<name>` requires a sa
 references first, then uses the native class only when no reference exists. An unreadable or
 invalid reference refuses instead of selecting another target.
 If several spaces match, `endpoint describe` names them and shows how to retry with `--space`.
+Each retry keeps the original options and endpoint target, including a target after `--`.
 If the requested space is not registered, the refusal names it and points to `cotal space`.
 
 A selected reference is disclosed on stderr and in `result.resolution`, with its revision and
