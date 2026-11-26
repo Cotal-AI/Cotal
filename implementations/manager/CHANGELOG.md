@@ -1,5 +1,29 @@
 # @cotal-ai/manager
 
+## 0.182.0
+
+### Minor Changes
+
+- d0d5bf5: Legacy persona creation, persona renames, team manifest validation and direct terminal launches now reject names that start with `-`, so choose a name that starts with a letter, digit or underscore instead.
+- 30b474d: Wire persona saves drop launch options and refuse channels outside the definer's grant, so pass options on spawn or set them in a local persona file, and list only channels the definer holds.
+
+### Patch Changes
+
+- f1651fc: On Windows, a confirmed `cotal down` now ends foreground `cotal up` successfully, and a stopped PTY seat releases its console host so it does not block stack shutdown.
+- Updated dependencies [ecd506f]
+- Updated dependencies [896100c]
+- Updated dependencies [1d10f92]
+- Updated dependencies [30b474d]
+- Updated dependencies [b670c41]
+- Updated dependencies [b4d8ea1]
+- Updated dependencies [2000a6d]
+- Updated dependencies [67c9255]
+- Updated dependencies [f5b2a30]
+- Updated dependencies [089b9ab]
+  - @cotal-ai/workspace@0.182.0
+  - @cotal-ai/core@0.182.0
+  - @cotal-ai/seat@0.182.0
+
 ## 0.181.0
 
 ### Minor Changes

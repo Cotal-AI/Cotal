@@ -1,5 +1,17 @@
 # @cotal-ai/core
 
+## 0.182.0
+
+### Minor Changes
+
+- 30b474d: Wire persona saves drop launch options and refuse channels outside the definer's grant, so pass options on spawn or set them in a local persona file, and list only channels the definer holds.
+- b4d8ea1: User-auth terminal connections stop working when their session ends, so start a new session with `cotal attach <agent>` and upgrade auth and delivery together to enforce the cutoff.
+
+### Patch Changes
+
+- 896100c: The console space picker counts agents without including the manager or other endpoints.
+- 2000a6d: Keep Windows consoles from opening during background extension installs, updates, and helper commands.
+
 ## 0.181.0
 
 ### Minor Changes

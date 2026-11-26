@@ -1,5 +1,24 @@
 # @cotal-ai/runtime
 
+## 0.182.0
+
+### Patch Changes
+
+- 89b3d2a: Keep the broker override and output format in the run list command suggested when a local checkpoint answer or amendment names a missing run.
+- Updated dependencies [ecd506f]
+- Updated dependencies [896100c]
+- Updated dependencies [1d10f92]
+- Updated dependencies [30b474d]
+- Updated dependencies [b670c41]
+- Updated dependencies [b4d8ea1]
+- Updated dependencies [2000a6d]
+- Updated dependencies [67c9255]
+- Updated dependencies [f5b2a30]
+- Updated dependencies [089b9ab]
+  - @cotal-ai/workspace@0.182.0
+  - @cotal-ai/core@0.182.0
+  - @cotal-ai/lang@0.182.0
+
 ## 0.181.0
 
 ### Minor Changes

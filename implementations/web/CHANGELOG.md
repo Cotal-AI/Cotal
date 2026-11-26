@@ -1,5 +1,12 @@
 # @cotal-ai/web
 
+## 0.182.0
+
+### Patch Changes
+
+- 0f9d6e3: Refresh the dashboard's channel list, message count, and open transcript after a channel is purged outside the dashboard.
+- 2000a6d: Keep Windows consoles from opening during background extension installs, updates, and helper commands.
+
 ## 0.181.0
 
 No changes in this release.

@@ -1,5 +1,63 @@
 # cotal-ai
 
+## 0.182.0
+
+### Patch Changes
+
+- db2b232: Status and empty agent lists identify missing executables for the default agent instead of suggesting a launch that cannot start.
+- ffba998: When Start service or another step you chose fails, the desktop app keeps showing why until you act on it. Before, the next background status check could replace the reason with "The background service is not running", so a failed Start service looked as if nothing had happened.
+- d7e84c6: The desktop app's Background service log now shows the service's output on macOS and Linux. On macOS, launchd created `daemon.log` readable by others, so the app refused to show it. On Linux the output went only to the journal. The service now makes its log private (macOS), or keeps the same bounded private copy as Windows (Linux), first thing when it starts. A space row that says "Manager is not answering" now also gives the Manager's own reason. Reading the application PATH from the login shell no longer hangs on a startup file that waits for input, or waits on a job a startup file left running. It stops at 30 seconds and kills whatever the shell started. It also works for tcsh and csh, which read `~/.login`, and for PowerShell, which reads `~/.profile`. The Windows MSI installer now registers `cotal:` links. Its template wrote the literal key `Software\Classes{{protocol}}`, so links did not open the app after an MSI install. Device sign-in (the app's and `cotal login`) now keeps waiting when one poll gets no usable answer from the provider, such as a dropped connection or a proxy's 5xx page during a restart. It used to end the sign-in at once, even when the person approved a moment later. If the provider is still unreachable when the code expires, sign-in reports it as unreachable, not as expired.
+- 1474154: The desktop app's Settings now opens before you sign in, from the window and from the tray's Settings…, so the computer name, the background service log and the version are there when a first sign-in fails. Before, the tray item only showed the window. If the background service was set up but has stopped, the Welcome screen now says so and offers Start service, instead of showing only "Not connected", and the tray says Needs attention. After choosing "Use another Cotal host", a Use Cotal Cloud button goes back.
+- b198228: The desktop app's Settings keeps its "Open at login" row while the main screen asks you to sign in again or shows a problem, such as a stopped background service. Before, Startup showed only its heading in those states.
+- 1474154: If the desktop app's background service stops while sign-in or setup is waiting on it, the app now says "The background service stopped" and clears that screen once the service is running again. Before, it showed a generic error that pointed to a `cotal daemon` command the app doesn't include, and it stayed on that screen until you chose Try again.
+- 1474154: After the desktop app starts its background service (Start service, or before a sign-in), the service step no longer keeps spinning with its first message once the service answers. While it runs, the step now shows the service's latest phase.
+- 2183597: After the desktop app updates, it now brings the background service up to its version by itself once no agent is running on the computer. Before, it replaced the window with "Your connection needs an update", and choosing Update connection while agents worked showed "Agent sessions are still running" with a command line to run. While agents run, the window stays usable and says that the update is waiting for them. Error screens also keep their explanation when the computer is in several spaces.
+- 1d10f92: Make short-option corrections and daemon recovery commands copyable in Windows PowerShell and Command Prompt.
+- 341e133: Keep matching local extensions during self-update and repair them from their recorded path instead of npm.
+- 2000a6d: Keep Windows consoles from opening during background extension installs, updates, and helper commands.
+- 67c9255: Quote local extension paths in reinstall commands so you can paste them into a POSIX shell even when the path contains spaces.
+- 34a9ae0: The required-argument smoke check now passes whether it runs before or after generating the TypeScript API reference.
+- 268a00b: Show the running version in text output when the extension inventory is unreadable, and exit with the same partial status as the JSON report.
+- 2a148ae: On Windows, the background service now starts again within a minute after it exits, also in the Windows session in which it was installed. Its one-minute restart sat on the sign-in trigger, which only begins repeating at the next sign-in, so after a fresh install a service that crashed or was ended stayed down until the person signed out or restarted the computer. The restart now sits on a time trigger, and the sign-in trigger still starts the service at sign-in. Existing installs keep their task until they are installed again; their restart works from the next sign-in.
+- 83db958: The Windows docs show how to install, verify, and remove Cotal without changing PowerShell execution policy and how to prepare a project from PowerShell or Command Prompt.
+- Updated dependencies [d0d5bf5]
+- Updated dependencies [db2b232]
+- Updated dependencies [17bdfa2]
+- Updated dependencies [ecd506f]
+- Updated dependencies [896100c]
+- Updated dependencies [0a4f67f]
+- Updated dependencies [d7e84c6]
+- Updated dependencies [1d10f92]
+- Updated dependencies [98c2395]
+- Updated dependencies [341e133]
+- Updated dependencies [10babee]
+- Updated dependencies [89b3d2a]
+- Updated dependencies [cba49f9]
+- Updated dependencies [30b474d]
+- Updated dependencies [b670c41]
+- Updated dependencies [7e4b026]
+- Updated dependencies [b4d8ea1]
+- Updated dependencies [ed84db3]
+- Updated dependencies [2000a6d]
+- Updated dependencies [67c9255]
+- Updated dependencies [f5b2a30]
+- Updated dependencies [268a00b]
+- Updated dependencies [f3c334e]
+- Updated dependencies [be4c516]
+- Updated dependencies [089b9ab]
+- Updated dependencies [83db958]
+- Updated dependencies [f1651fc]
+  - @cotal-ai/cli@0.182.0
+  - @cotal-ai/manager@0.182.0
+  - @cotal-ai/connector-core@0.182.0
+  - @cotal-ai/workspace@0.182.0
+  - @cotal-ai/core@0.182.0
+  - @cotal-ai/auth@0.182.0
+  - @cotal-ai/runtime@0.182.0
+  - @cotal-ai/delivery@0.182.0
+  - @cotal-ai/registry@0.182.0
+  - @cotal-ai/seat@0.182.0
+
 ## 0.181.0
 
 ### Patch Changes

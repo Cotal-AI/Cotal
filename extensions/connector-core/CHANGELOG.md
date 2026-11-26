@@ -1,5 +1,17 @@
 # @cotal-ai/connector-core
 
+## 0.182.0
+
+### Minor Changes
+
+- d0d5bf5: Legacy persona creation, persona renames, team manifest validation and direct terminal launches now reject names that start with `-`, so choose a name that starts with a letter, digit or underscore instead.
+- 30b474d: Wire persona saves drop launch options and refuse channels outside the definer's grant, so pass options on spawn or set them in a local persona file, and list only channels the definer holds.
+
+### Patch Changes
+
+- 2000a6d: Keep Windows consoles from opening during background extension installs, updates, and helper commands.
+- 83db958: The Windows docs show how to install, verify, and remove Cotal without changing PowerShell execution policy and how to prepare a project from PowerShell or Command Prompt.
+
 ## 0.181.0
 
 ### Minor Changes

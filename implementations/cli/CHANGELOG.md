@@ -1,5 +1,47 @@
 # @cotal-ai/cli
 
+## 0.182.0
+
+### Minor Changes
+
+- d0d5bf5: Legacy persona creation, persona renames, team manifest validation and direct terminal launches now reject names that start with `-`, so choose a name that starts with a letter, digit or underscore instead.
+
+### Patch Changes
+
+- db2b232: Status and empty agent lists identify missing executables for the default agent instead of suggesting a launch that cannot start.
+- 17bdfa2: `cotal clean all` now warns that backup creation and restore are unavailable on a controller-owned stack instead of recommending those commands.
+- ecd506f: Clear purged chat messages from the console that ran the purge, without closing configured channel tabs.
+- 896100c: The console space picker counts agents without including the manager or other endpoints.
+- 1d10f92: Make short-option corrections and daemon recovery commands copyable in Windows PowerShell and Command Prompt.
+- 98c2395: After a foreground stack loses its terminal, show how to inspect and then stop the stack from its original project and Cotal home.
+- 341e133: Keep matching local extensions during self-update and repair them from their recorded path instead of npm.
+- 10babee: Show the file path when `cotal personas list` reports an invalid persona display name.
+- cba49f9: `cotal status` keeps the diagnostics it can read and reports a partial result when the extension inventory is damaged.
+- b670c41: Keep the extension inventory in place when permissions prevent reading it. The version report points to restoring read access, and connector repair and reset refuse to quarantine the file.
+- 7e4b026: `cotal team boot --dry-run` now explains when an earlier team boot blocks another boot in a stopped project, even when the earlier boot has a matching summary.
+- ed84db3: Self-update reinstalls first-party extensions that cannot load even when their installed versions match the CLI.
+- 2000a6d: Keep Windows consoles from opening during background extension installs, updates, and helper commands.
+- 67c9255: Quote local extension paths in reinstall commands so you can paste them into a POSIX shell even when the path contains spaces.
+- f5b2a30: Install and load extensions that use Node's shorthand for conditional root exports without requiring a `main` field or an `index.js` file.
+- 268a00b: Show the running version in text output when the extension inventory is unreadable, and exit with the same partial status as the JSON report.
+- f3c334e: On Linux, background services start without calling systemd when there is no user bus or systemd socket to contact.
+- be4c516: When `cotal team boot` refuses to replace an earlier boot, the suggested `cotal team show` command now targets the booted space even if another space is selected.
+- 089b9ab: Fix Windows npm self-updates so they can update a stopped local space, replace the invoked installation, and finish or retry safely after an interrupt or a temporary file lock.
+- 83db958: The Windows docs show how to install, verify, and remove Cotal without changing PowerShell execution policy and how to prepare a project from PowerShell or Command Prompt.
+- f1651fc: On Windows, a confirmed `cotal down` now ends foreground `cotal up` successfully, and a stopped PTY seat releases its console host so it does not block stack shutdown.
+- Updated dependencies [ecd506f]
+- Updated dependencies [896100c]
+- Updated dependencies [1d10f92]
+- Updated dependencies [30b474d]
+- Updated dependencies [b670c41]
+- Updated dependencies [b4d8ea1]
+- Updated dependencies [2000a6d]
+- Updated dependencies [67c9255]
+- Updated dependencies [f5b2a30]
+- Updated dependencies [089b9ab]
+  - @cotal-ai/workspace@0.182.0
+  - @cotal-ai/core@0.182.0
+
 ## 0.181.0
 
 ### Minor Changes

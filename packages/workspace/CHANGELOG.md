@@ -1,5 +1,21 @@
 # @cotal-ai/workspace
 
+## 0.182.0
+
+### Patch Changes
+
+- ecd506f: Clear purged chat messages from the console that ran the purge, without closing configured channel tabs.
+- 1d10f92: Make short-option corrections and daemon recovery commands copyable in Windows PowerShell and Command Prompt.
+- b670c41: Keep the extension inventory in place when permissions prevent reading it. The version report points to restoring read access, and connector repair and reset refuse to quarantine the file.
+- 67c9255: Quote local extension paths in reinstall commands so you can paste them into a POSIX shell even when the path contains spaces.
+- f5b2a30: Install and load extensions that use Node's shorthand for conditional root exports without requiring a `main` field or an `index.js` file.
+- 089b9ab: Fix Windows npm self-updates so they can update a stopped local space, replace the invoked installation, and finish or retry safely after an interrupt or a temporary file lock.
+- Updated dependencies [896100c]
+- Updated dependencies [30b474d]
+- Updated dependencies [b4d8ea1]
+- Updated dependencies [2000a6d]
+  - @cotal-ai/core@0.182.0
+
 ## 0.181.0
 
 ### Patch Changes

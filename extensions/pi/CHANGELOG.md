@@ -1,5 +1,11 @@
 # @cotal-ai/pi
 
+## 0.182.0
+
+### Patch Changes
+
+- 2000a6d: Keep Windows consoles from opening during background extension installs, updates, and helper commands.
+
 ## 0.181.0
 
 ### Minor Changes
