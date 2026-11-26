@@ -28,7 +28,7 @@
  * the `ext` help.
  *
  * The `persona create` example runs as written against a fresh Cotal home; it lacked the
- * `--subscribe ""` a persona body needs. A usage refusal shows the help `--help` prints for the same
+ * `--subscribe=` a persona body needs. A usage refusal shows the help `--help` prints for the same
  * words, so a refused `persona create` shows its own help; it showed the `persona` help.
  *
  * A usage that declares several forms, one per line, as `linear` does, shows each form on its own
@@ -989,7 +989,7 @@ for (const [args, usage, foreign] of [
   check(`${written} runs as written and saves a persona that reads no channels`, prepared.status === 0 && created.status === 0 && saved.status === 0 && JSON.stringify(JSON.parse(saved.stdout).result.definition.subscribe) === "[]", { prepared: shown(prepared), created: shown(created), saved: shown(saved) });
   const noReadSet = run(["persona", "create", "other", "--prompt", "review the diff"], fresh, project);
   check("persona create without --subscribe is refused with the persona create help, not the persona help",
-    usageShape(noReadSet, /provide --subscribe <a,b> or --subscribe "" for none/) && noReadSet.stderr.includes("\nUsage\n  cotal persona create <name> ") && !/^Commands$/m.test(noReadSet.stderr), shown(noReadSet));
+    usageShape(noReadSet, /provide --subscribe <a,b> or --subscribe= for none/) && noReadSet.stderr.includes("\nUsage\n  cotal persona create <name> ") && !/^Commands$/m.test(noReadSet.stderr), shown(noReadSet));
   if (process.platform !== "win32") {
     for (const [name, prompt, option] of [["short", "Review only", 0], ["long", "Review only", 1], ["dash", "-Review only", 0]] as const) {
       const refused = run(["persona", "create", name, `-p=${prompt}`, "--subscribe", ""], fresh, project);
