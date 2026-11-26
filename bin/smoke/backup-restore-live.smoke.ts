@@ -185,7 +185,8 @@ async function scenario(mode: "open" | "auth"): Promise<void> {
   const root = realpathSync.native(mkdtempSync(join(tmpdir(), `cotal-backup-restore-${mode}-root-`)));
   const home = realpathSync.native(mkdtempSync(join(tmpdir(), `cotal-backup-restore-${mode}-home-`)));
   const artifact = join(root, "full-backup");
-  const registryArtifact = join(root, "registry-backup");
+  const maintenance = join(root, ".cotal", "maintenance");
+  const registryArtifact = join(mode === "open" ? maintenance : root, "registry-backup");
   const port = await freePort();
   const server = `nats://127.0.0.1:${port}`;
   const space = `backup_live_${mode}`;
@@ -253,6 +254,7 @@ async function scenario(mode: "open" | "auth"): Promise<void> {
     must("full backup", run("backup", "create", artifact));
     must("registry backup", run("backup", "create", registryArtifact, "--only", "registry"));
     if (mode === "open") {
+      must("verify registry backup inside maintenance", run("backup", "verify", registryArtifact, "--plain"));
       const cold = mkdtempSync(join(tmpdir(), "cotal-backup-restore-cold-"));
       try {
         const project = join(cold, "project"), config = join(cold, "config");
@@ -406,12 +408,16 @@ async function scenario(mode: "open" | "auth"): Promise<void> {
       assert.equal(sourceAfterStateDrift.ino, sourceBefore.ino);
     }
 
-    const attemptArtifact = join(root, ".cotal", "maintenance", "attempts", "nested-artifact");
-    cpSync(artifact, attemptArtifact, { recursive: true });
-    const nestedArtifact = run("up", "--restore", attemptArtifact, "--detach", "--server", server, "--space", space);
-    assert.equal(nestedArtifact.status, 1, `an artifact in the maintenance folder is a usage refusal\n${nestedArtifact.stderr}`);
-    assert.ok(nestedArtifact.stderr.includes(`the restore artifact ${realpathSync(attemptArtifact)} is inside this root's maintenance folder ${realpathSync(join(root, ".cotal", "maintenance"))}, where it stages its attempt; nothing was restored`), `it names the artifact and the folder\n${nestedArtifact.stderr}`);
-    rmSync(attemptArtifact, { recursive: true });
+    for (const [name, label] of [["attempts", "attempt"], ["v1", "journal"]]) {
+      const folder = join(maintenance, name);
+      const nestedArtifact = join(folder, "nested-artifact");
+      cpSync(artifact, nestedArtifact, { recursive: true });
+      const refused = run("up", "--restore", nestedArtifact, "--detach", "--server", server, "--space", space);
+      assert.equal(refused.status, 1, refused.stderr);
+      assert.ok(refused.stderr.includes(`the restore artifact ${nestedArtifact} is inside this root's maintenance ${label} directory ${folder}`), refused.stderr);
+      assert.ok(existsSync(join(nestedArtifact, "manifest.json")), "refusal leaves the artifact intact");
+      rmSync(nestedArtifact, { recursive: true });
+    }
     assertOverlappingRestoreTarget(root, artifact, run, join(artifact, "target"), "backup artifact");
     // An explicit store that already exists, or whose parent is missing, is a usage refusal before
     // anything is staged, and the preserved cut stays as it was.
@@ -503,6 +509,7 @@ async function scenario(mode: "open" | "auth"): Promise<void> {
     }
     const restored = run("up", "--restore", restoreArtifact, "--detach", "--server", server, "--space", space);
     must("restore", restored);
+    assert.ok(existsSync(join(restoreArtifact, "manifest.json")), "restore leaves the original artifact in place");
     if (authDm) await assertRestoredDm(server, dmCheckpoint, authDm.auth);
     payload(mode === "open" ? "empty" : "full");
     const listed = run("channel", "--space", space);
