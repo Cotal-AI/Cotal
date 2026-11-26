@@ -509,7 +509,7 @@ async function ps(values: RunValues, planes: Planes): Promise<void> {
   printRunList(planes.space, rows, values, unmatched, planes.connection.mode === "open");
 }
 
-async function journal(values: RunValues, planes: Planes, endpoint: string, runId: string | undefined, takeoverId: string): Promise<void> {
+async function journal(values: RunValues, planes: RunHostPlanes, endpoint: string, runId: string | undefined, takeoverId: string): Promise<void> {
   if (runId === undefined) {
     console.error(USAGE);
     process.exit(1);
@@ -812,13 +812,13 @@ function reportInterruptedStart(values: RunValues, space: string): () => void {
   return () => { process.off("SIGINT", onInterrupt); process.off("SIGTERM", onTerminate); };
 }
 
-const OPEN_INVENTORY_WITHOUT_MANAGER = Symbol();
+const OPEN_READ_WITHOUT_MANAGER = Symbol();
 
 /** One command to the mesh's manager over the endpoint rails: a fresh resolve (describe, store
  *  fetch, digest-verified recompile), then the invoke, re-issued after a bind split
  *  ({@link invokeRepairingSplit}). The reply's data on success; a refusal throws as
  *  {@link managerRefusal} classifies it. */
-async function askHost(values: RunValues, command: string, args: Record<string, unknown> | undefined, resolved: (target: ControlTarget) => void): Promise<unknown> {
+async function askHost(values: RunValues, command: string, args: Record<string, unknown> | undefined, resolved: (target: ControlTarget) => void, firstJournalRun?: string): Promise<unknown> {
   const { target: t, seat } = await resolveRunControlTarget(values);
   resolved(t);
   const who = controlCaller(t.auth);
@@ -841,8 +841,15 @@ async function askHost(values: RunValues, command: string, args: Record<string, 
     // Only the operator's own unpinned instrument holds the registry rows `ps` scatters on; a seat's
     // credential and a user's manager view hold none.
     if (!seat && auth.bearer === undefined && (auth.managerInstanceId === undefined || values.on !== undefined)) {
-      const openInventory = command === "run-ps" && t.mode === "open" && values.on === undefined && values.page !== true;
-      if (await refuseWithoutLiveManager(nc, t, values.on, openInventory)) return OPEN_INVENTORY_WITHOUT_MANAGER;
+      const openRead = t.mode === "open" && values.on === undefined && (
+        (command === "run-ps" && values.page !== true) || firstJournalRun !== undefined
+      );
+      if (await refuseWithoutLiveManager(nc, t, values.on, openRead)) {
+        if (firstJournalRun !== undefined) await journal({ ...values, local: true }, {
+          nc, space: t.space, js: jetstream(nc), jsm: await jetstreamManager(nc), kv: await openRecordsBucket(nc, t.space),
+        }, values.endpoint ?? "manager", firstJournalRun, newTakeoverId());
+        return OPEN_READ_WITHOUT_MANAGER;
+      }
     }
     // A logged-in user's manager view is issued at the callout (SPEC 13.15): its generation is read
     // back from this connection's accepted row, and every request rides `ep.v1` under it.
@@ -919,14 +926,14 @@ async function chatStreamGone(nc: NatsConnection, space: string): Promise<boolea
  *  it, rather than after the describe has waited out its whole deadline for an answer no manager
  *  can send. So is an `on` pin that names none of the live managers, with the ones that run. Any
  *  other registry outcome, an unreadable registry included, leaves the describe to decide. An
- *  ordinary unpinned list on a known open mesh needs no manager to report an empty inventory. */
-async function refuseWithoutLiveManager(nc: NatsConnection, { space, server }: ControlTarget, on?: string, openInventory = false): Promise<true | undefined> {
+ *  unpinned list or journal read on a known open mesh can proceed without a manager. */
+async function refuseWithoutLiveManager(nc: NatsConnection, { space, server }: ControlTarget, on?: string, openRead = false): Promise<true | undefined> {
   let live: Awaited<ReturnType<typeof freezeExpectedSet>>;
   try {
     live = await freezeExpectedSet(await jetstreamManager(nc, { checkAPI: false }), space, BASELINE_LIFECYCLE_ENDPOINT);
   } catch (e) {
     if (!(e instanceof EpEnvelopeError) || !noLiveInstances(e)) return;
-    if (openInventory) return true;
+    if (openRead) return true;
     throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "no manager is running for this space to host or read its workflow runs", {
       target: { space },
       native: { code: e.code, detail: `${e.code}: ${e.message}` },
@@ -975,7 +982,8 @@ export function renderLangProblem(d: EpErrorDetail): string {
 async function hosted(values: RunValues, verb: string, a: string | undefined, b: string | undefined): Promise<void> {
   let space: string | undefined;
   let open = false;
-  const ask = (command: string, args: Record<string, unknown> | undefined) => askHost(values, command, args, (target) => { space = target.space; open = target.mode === "open"; });
+  const ask = (command: string, args: Record<string, unknown> | undefined, firstJournalRun?: string) =>
+    askHost(values, command, args, (target) => { space = target.space; open = target.mode === "open"; }, firstJournalRun);
   const endpoint = values.endpoint !== undefined ? { endpoint: values.endpoint } : {};
   // A hosted drive is recorded under the manager's own endpoint; a caller cannot choose another,
   // so an `--endpoint` here is refused rather than dropped.
@@ -1025,7 +1033,7 @@ async function hosted(values: RunValues, verb: string, a: string | undefined, b:
       return;
     }
     const listed = await ask("run-ps", Object.keys(endpoint).length ? endpoint : undefined);
-    if (listed === OPEN_INVENTORY_WITHOUT_MANAGER) {
+    if (listed === OPEN_READ_WITHOUT_MANAGER) {
       printRunList(space, [], values, undefined, true, true);
       return;
     }
@@ -1042,7 +1050,9 @@ async function hosted(values: RunValues, verb: string, a: string | undefined, b:
     const rows: RunJournalRow[] = [];
     let view: RunStatusView;
     do {
-      view = await ask("run-status", { runId: a, ...endpoint, journal: { offset: rows.length } }) as RunStatusView;
+      const reply = await ask("run-status", { runId: a, ...endpoint, journal: { offset: rows.length } }, rows.length === 0 ? a : undefined);
+      if (reply === OPEN_READ_WITHOUT_MANAGER) return;
+      view = reply as RunStatusView;
       if (view.journalTotal === undefined) throw new CommandFailure("failed", "OPERATION_FAILED", "the manager answered the journal read without a page; the journal was not read", { target: { space: space ?? null, run: a } });
       if (view.journal.length === 0 && rows.length < view.journalTotal) throw new CommandFailure("failed", "OPERATION_FAILED", `the manager returned no journal rows at row ${rows.length} of ${view.journalTotal}; the journal was not read completely`, { target: { space: space ?? null, run: a } });
       rows.push(...view.journal);
