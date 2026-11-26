@@ -182,6 +182,14 @@ process.stdout.write("OK");
   }
 }
 
+// Name validation runs before the runtime checks whether cmux is reachable.
+for (const dashed of ["-reviewer", "--reviewer"]) {
+  let refusal = "";
+  try { new CmuxRuntime().spawn(dashed, { command: "true", args: [], env: {} }, "/tmp"); }
+  catch (error) { refusal = (error as Error).message; }
+  ok(`spawn refuses an agent name that begins with - (${dashed})`, refusal.includes("not starting with -"));
+}
+
 console.log(`\n${passed} passed, ${failed} failed\n`);
 console.log("CMUX SMOKE COMPLETE");
 if (failed > 0) process.exit(1);

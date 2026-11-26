@@ -43,7 +43,7 @@ export const versionFlags = [jsonFlag] as const;
  *  envelope with no target, since it reads only local metadata. */
 export async function version(args: ParsedArgs): Promise<void> {
   if ((args.values as FlagValues<typeof versionFlags>).json) {
-    const { versions, unreadable } = readExtensionVersions();
+    const { versions, unreadable, remedy } = readExtensionVersions();
     const config = unreadable === undefined ? undefined : globalConfigDirProblem();
     const current = cliVersion();
     const pending = readUpdatePending(current);
@@ -62,7 +62,7 @@ export async function version(args: ParsedArgs): Promise<void> {
           : {
               completeness: "partial",
               warnings: [{ code: "EXTENSIONS_UNREADABLE", target: null, message: `the extensions manifest could not be read: ${config?.message ?? unreadable}` }],
-              partial: { message: "the installed extensions could not be listed", remedy: config?.remedy ?? manifestRepair },
+              partial: { message: "the installed extensions could not be listed", remedy: config?.remedy ?? remedy ?? manifestRepair },
             }),
       },
       () => ({ sections: [] }),

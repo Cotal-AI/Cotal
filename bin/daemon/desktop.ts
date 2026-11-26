@@ -7,9 +7,9 @@ import { arch, platform, release, totalmem } from "node:os";
 import type { Readable, Writable } from "node:stream";
 import { CommandFailure, readLocalRecordSource, readUpdateSettings, setUpdateSetting } from "@cotal-ai/workspace";
 import { normalizeIdpUrl } from "@cotal-ai/auth";
-import { loginViaDaemon, updateViaDaemon, openVerified, queryDaemon, readLine, type QueryOptions } from "./client.js";
+import { daemonConnectionLost, loginViaDaemon, updateViaDaemon, openVerified, queryDaemon, readLine, type QueryOptions } from "./client.js";
 import { DAEMON_PROTOCOL_VERSION, MAX_LINE_BYTES, EndpointRefusal } from "./endpoint.js";
-import { applyInstall, planUninstall, startInstalled } from "./install.js";
+import { applyInstall, applyUninstall, installedDaemonIdentity, planUninstall, preflightInstalledDaemon, startInstalled } from "./install.js";
 import { nativeDaemonLog } from "./native-log.js";
 import { encode, isDaemonSpaceName, type DaemonResponse } from "./protocol.js";
 import { runSetup } from "./setup.js";
@@ -21,7 +21,7 @@ export type DesktopRequest =
   | { readonly op: "update-settings"; readonly auto?: boolean; readonly notify?: boolean }
   | { readonly op: "update-check" }
   | { readonly op: "update-release"; readonly version: string }
-  | { [K in "about" | "status" | "status-watch" | "install" | "log"]: { readonly op: K } }["about" | "status" | "status-watch" | "install" | "log"]
+  | { [K in "about" | "status" | "status-watch" | "install" | "log" | "remove-service"]: { readonly op: K } }["about" | "status" | "status-watch" | "install" | "log" | "remove-service"]
   | { readonly op: "space-recover"; readonly space: string; readonly candidate: string; readonly holder: string }
   | { readonly op: "space-intent"; readonly space: string; readonly enabled: boolean }
   | { readonly op: "name"; readonly name?: string }
@@ -35,7 +35,7 @@ export type DesktopRequest =
 export function parseDesktopRequest(value: unknown): DesktopRequest {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("request must be an object");
   const o = value as Record<string, unknown>;
-  const simple = ["about", "status", "status-watch", "install", "log", "update-check"].includes(String(o.op));
+  const simple = ["about", "status", "status-watch", "install", "log", "remove-service", "update-check"].includes(String(o.op));
   const scoped = ["connect-check", "register", "service-connect", "service-disconnect", "service-status"].includes(String(o.op));
   const fields = o.op === "update-policy" ? ["op", "auto"] : o.op === "update-release" ? ["op", "version"] : o.op === "update-settings" ? ["op", "auto", "notify"] : o.op === "name" ? ["op", "name"] : o.op === "space-recover" ? ["op", "space", "candidate", "holder"] : o.op === "space-intent" ? ["op", "space", "enabled"] : simple ? ["op"] : scoped ? ["op", "space"] : o.op === "setup" ? ["op", "space", "idp"] : (o.op === "login" || o.op === "logout") ? ["op", "idp"] : o.op === "spaces" ? ["op", "refresh"] : [];
   if (!fields.length || Object.keys(o).some((key) => !fields.includes(key))) throw new Error("unknown operation or field");
@@ -60,7 +60,7 @@ export function parseDesktopRequest(value: unknown): DesktopRequest {
     return { op: "space-intent", space: o.space, enabled: o.enabled };
   }
   if (o.op === "name") return { op: "name", ...(o.name !== undefined ? { name: computerName(o.name) } : {}) };
-  if (simple) return { op: o.op as "about" | "status" | "status-watch" | "install" | "log" | "update-check" };
+  if (simple) return { op: o.op as "about" | "status" | "status-watch" | "install" | "log" | "remove-service" | "update-check" };
   if (scoped) {
     if (!isDaemonSpaceName(o.space)) throw new Error("invalid space");
     return { op: o.op as "connect-check" | "register" | "service-connect" | "service-disconnect" | "service-status", space: o.space };
@@ -200,6 +200,16 @@ export async function runDesktopBridge(opts: DesktopBridgeOptions): Promise<void
         .replace(/[\u0000-\u0008\u000b-\u001f\u007f]/g, "")
         .replace(/eyJ[A-Za-z0-9_.-]*/g, "<redacted>") ?? "";
       emit({ v: 1, event: "result", ok: true, result: { text, truncated } });
+      return;
+    }
+    if (req.op === "remove-service") {
+      // Only the app's uninstaller sends this; the window's requests never include it. It removes the
+      // service this installation registered and keeps one another installation registered here.
+      if (!preflightInstalledDaemon(paths, home)) { emit({ v: 1, event: "result", ok: true, result: { state: "absent" } }); return; }
+      const identity = installedDaemonIdentity(paths, home);
+      if (!identity.same) { emit({ v: 1, event: "result", ok: true, result: { state: "kept", installed: identity.installed } }); return; }
+      const removed = await applyUninstall(paths, home);
+      emit({ v: 1, event: "result", ok: true, result: { state: removed.state, unit: removed.unit } });
       return;
     }
     const client = { paths, peerUid: opts.peerUid, peerPid: opts.peerPid };
@@ -402,24 +412,27 @@ export async function runDesktopBridge(opts: DesktopBridgeOptions): Promise<void
     const reply = await exchangeDesktopRequest(client, req);
     emit({ ...reply, event: "result" });
   } catch (e) {
-    const code = e instanceof EndpointRefusal || e instanceof CommandFailure ? e.code : "OPERATION_FAILED";
+    const code = e instanceof EndpointRefusal || e instanceof CommandFailure ? e.code : daemonConnectionLost(e) ? "DAEMON_LOST" : "OPERATION_FAILED";
+    // The app tells a stopped service (offer Start service) from one not set up yet (sign-in sets it up).
+    const stoppedService = code === "NOT_RUNNING" && target !== undefined && serviceInstalled(target);
     const notAnswering = e instanceof CommandFailure && (req.op === "setup" || req.op === "install") && e.code === "DEPENDENCY_UNAVAILABLE" && e.native?.code === "NOT_ANSWERING";
     const refusal = notAnswering && target && startedAt !== undefined ? attemptStartupRefusal(target.paths.state, startedAt) : undefined;
     const rawWait = notAnswering && e.native?.detail && typeof e.native.detail === "object" ? (e.native.detail as { waitSeconds?: unknown }).waitSeconds : undefined;
     const waitSeconds = typeof rawWait === "number" && Number.isInteger(rawWait) && rawWait > 0 ? rawWait : undefined;
     const baseMessage = notAnswering ? `Cotal asked the background service on this computer to start, and it ${waitSeconds !== undefined ? `did not answer within ${waitSeconds} seconds.` : "has not answered."}${refusal ? ` It refused to start: ${refusal}` : ""}`
-      : e instanceof CommandFailure && (e.code === "CONFLICT" || req.op === "setup" || req.op === "install") ? e.message
-      : code === "NOT_RUNNING" ? (target && serviceInstalled(target)
+      : e instanceof CommandFailure && (e.code === "CONFLICT" || req.op === "setup" || req.op === "install" || req.op === "remove-service") ? e.message
+      : code === "NOT_RUNNING" ? (stoppedService
         ? "The background service is installed but stopped. Choose Start service to start it."
         : "The daemon is not running. Install its background service first.")
       : code === "NO_RUNTIME_DIR" ? "The daemon runtime path is unavailable or too long. On Linux, check XDG_RUNTIME_DIR for the intended operating-system user."
       : code === "UNSUPPORTED_PLATFORM" ? "This platform does not have the required native daemon support."
       : code === "PEER_UID_MISMATCH" || code === "PEER_NOT_LOCK_OWNER" ? "The local daemon identity could not be verified. The requested change was not sent."
-      : "The operation could not be completed. Use the matching `cotal daemon` command for diagnostics; no success is assumed.";
+      : code === "DAEMON_LOST" ? "The background service stopped before this could finish, so it did not complete. Try again when the service is running."
+      : "The operation could not be completed, and no success is assumed. Settings shows the background service log.";
     const message = (req.op === "setup" || req.op === "install") && omittedRelativePathEntries.length
       ? `${baseMessage}${baseMessage.endsWith(".") ? "" : "."} Left out relative PATH entries: ${omittedRelativePathEntries.join(", ")}.`
       : baseMessage;
-    emit({ v: 1, event: "result", ok: false, error: { code, message,
+    emit({ v: 1, event: "result", ok: false, error: { code, message, ...(stoppedService ? { detail: { installed: true } } : {}),
       ...(e instanceof CommandFailure && (req.op === "setup" || req.op === "install") ? { remedy: notAnswering ? "choose Check status." : e.remedy, native: e.native } : {}),
     } });
   }
