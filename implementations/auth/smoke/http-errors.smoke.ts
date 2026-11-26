@@ -1,10 +1,12 @@
-/** Real auth listeners: malformed exchange bodies consume their face's refusal budget;
- * unexpected handler failures stay server-side. No copied routes or live credentials. */
+/** Real auth listeners: concurrent first exchanges share a root credential, malformed bodies consume
+ * their face's refusal budget, and unexpected handler failures stay server-side. */
 import { ServerResponse } from "node:http";
 import { emitSentinel } from "@cotal-ai/smoke-kit";
-import { mintCreds, newIdentity, setupSpaceStreams } from "@cotal-ai/core";
-import { startAuthService, type AuthServiceHandle } from "../dist/index.js";
-import { startHostedAuthFixture } from "./_hosted-auth-fixture.js";
+import { epAuthBucket, mintCreds, mintLifecycleUid, newIdentity, setupSpaceStreams } from "@cotal-ai/core";
+import { Kvm } from "@nats-io/kv";
+import { decodeJwt } from "jose";
+import { grantActor, grantManagedActor, newActorToken, startAuthService, type AuthServiceHandle } from "../dist/index.js";
+import { startHostedAuthFixture, type HostedAuthAccount } from "./_hosted-auth-fixture.js";
 
 const fx = await startHostedAuthFixture("http-errors", 1);
 let service: AuthServiceHandle | undefined;
@@ -13,16 +15,86 @@ const check = (name: string, condition: boolean) => {
   if (condition) passed++; else failed++;
   console.log(`${condition ? "PASS" : "FAIL"} ${name}`);
 };
+
+async function checkConcurrentFirstExchanges(a: HostedAuthAccount) {
+  const owner = "u_aaaaaaaaaaaaaaaaaaaaaaaaaa";
+  const actor = "worker";
+  const lifecycleUid = mintLifecycleUid();
+  const { actorToken, tokenHash } = newActorToken();
+  const envelope = { owner, scope: [], allowSubscribe: [], allowPublish: [] };
+  grantActor(a.stateDir, { ...envelope, actor: "cli" });
+  grantManagedActor(a.stateDir, { ...envelope, actor, lifecycleUid, tokenHash, parent: `${owner}.cli`, custody: { kind: "foreground" } });
+
+  const post = async (url: string) => {
+    const response = await fetch(`${url}/exchange`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ owner, actor, actorToken }), signal: AbortSignal.timeout(10_000),
+    });
+    const body = await response.json() as { token?: string; error?: string };
+    const root = body.token ? (decodeJwt(body.token).act as { credentialId?: string }).credentialId : undefined;
+    return { status: response.status, root, error: body.error };
+  };
+
+  const open = Kvm.prototype.open;
+  const creates: string[] = [];
+  let hold!: () => void;
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => { hold = resolve; });
+  const released = new Promise<void>((resolve) => { release = resolve; });
+  let firstStore: Awaited<ReturnType<Kvm["open"]>> | undefined;
+  const restorePuts: (() => void)[] = [];
+  Kvm.prototype.open = async function (name, ...args) {
+    const kv = await open.call(this, name, ...args);
+    if (name !== epAuthBucket(a.space)) return kv;
+    const put = kv.put;
+    restorePuts.push(() => { kv.put = put; });
+    kv.put = async (key, value, options) => {
+      if (options?.previousSeq === 0 && key.startsWith(`cred.${lifecycleUid}.`)) {
+        creates.push(key);
+        if (creates.length === 1) { firstStore = kv; hold(); await released; }
+      }
+      return put.call(kv, key, value, options);
+    };
+    return kv;
+  };
+
+  let first: ReturnType<typeof post> | undefined;
+  try {
+    const started = service = await startAuthService({
+      context: { accountPublicKey: a.accountPublicKey, lifecycleUid: "http-errors" },
+      space: a.space, servers: fx.servers, store: a.store, storeIdentity: a.store.identity, stateDir: a.stateDir,
+      publicFace: { port: 0, trustedProxy: false },
+    });
+    Kvm.prototype.open = open;
+    const url = started.publicUrl!;
+    first = post(url);
+    await Promise.race([held, first.then((reply) => { throw new Error(`first exchange did not reach its create: ${JSON.stringify(reply)}`); })]);
+    const second = await post(url);
+    release();
+    const resumed = await first;
+    const third = await post(url);
+    console.log(`first exchange race: ${JSON.stringify({ second, resumed, third, creates: creates.length })}`);
+    check("both first exchanges and a later exchange return the same stamped root", second.status === 200 && !!second.root &&
+      resumed.status === 200 && resumed.root === second.root && third.status === 200 && third.root === second.root);
+    check("only the first two exchanges stage rows", creates.length === 2 && creates[1] === `cred.${lifecycleUid}.${second.root}`);
+    const losing = await firstStore?.get(creates[0]);
+    check("the delayed exchange's unpublished row is revoked", losing?.operation === "PUT" &&
+      (JSON.parse(new TextDecoder().decode(losing.value)) as { state: string }).state === "revoked");
+  } finally {
+    release();
+    Kvm.prototype.open = open;
+    await first?.catch(() => {});
+    for (const restore of restorePuts) restore();
+  }
+}
+
 const writeHead = ServerResponse.prototype.writeHead;
 const log = console.error;
 try {
   const a = fx.accounts[0];
   await setupSpaceStreams({ servers: fx.servers, space: a.space, creds: await mintCreds(a.auth, newIdentity(), "provisioner") });
-  service = await startAuthService({
-    context: { accountPublicKey: a.accountPublicKey, lifecycleUid: "http-errors" },
-    space: a.space, servers: fx.servers, store: a.store, storeIdentity: a.store.identity, stateDir: a.stateDir,
-    publicFace: { port: 0, trustedProxy: false },
-  });
+  await checkConcurrentFirstExchanges(a);
+  if (!service) throw new Error("auth service did not start");
   for (const [face, url, headers] of [
     ["loopback", service.url, { authorization: `Bearer ${service.cap}` }],
     ["public", service.publicUrl!, {}],
