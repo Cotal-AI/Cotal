@@ -850,6 +850,8 @@ canonical service preset and local-process example. Installed packages and their
 when the versions establish one. If the versions match, check the extension's import against the
 exports of the linked peer before replacing either build.
 On POSIX shells, a reinstall command printed for a local extension quotes paths with spaces as one argument.
+When a failed load calls for reinstalling an operator-installed extension but its recorded install spec
+cannot be used in a command, the advice names `cotal ext remove <package>` instead.
 Each load or add reads the installed package's metadata once, using that same result for its version,
 peer links, entry and import diagnosis. Corrupt or unreadable metadata refuses before import; an entry
 that later changes its own `package.json` cannot change the peer range used to diagnose that import.
