@@ -48,9 +48,11 @@ export function nativeStub(scenario) {
         for (const detail of state.installProgress ?? []) send({ v: 1, event: "setup-progress", line: `service: ${detail}`, progress: { step: "install", outcome: "running", detail } });
         if (state.installHold) await new Promise(resolve => { window.__releaseInstall = resolve; });
         if (state.installWait) await new Promise(() => {});
+        if (state.installFails) return { v: 1, event: "result", ok: false, error: { code: "OPERATION_UNKNOWN", message: "Windows daemon restart failed during waiting for a fresh daemon to answer (up to 60s): replacement exited during proof", native: { code: "OPERATION_UNKNOWN" } } };
         if (state.installNotAnswering) return { v: 1, event: "result", ok: false, error: { code: "DEPENDENCY_UNAVAILABLE", message: "Cotal asked the background service on this computer to start, and it did not answer within 15 seconds. It refused to start: the native daemon source names another installation; startup refused", remedy: "choose Check status.", native: { code: "NOT_ANSWERING" } } };
         state.installed = true; state.serviceStopped = false; return ok({ installed: true });
       }
+      if (state.serviceStopped && request.op === "status") state.stoppedStatusChecks = (state.stoppedStatusChecks ?? 0) + 1;
       if (state.serviceStopped) return { v: 1, event: "result", ok: false, error: { code: "NOT_RUNNING", message: "The background service is installed but stopped. Choose Start service to start it.", detail: { installed: true } } };
       if (!state.installed) return fail("NOT_RUNNING", "The daemon is not running. Install its background service first.");
       const statusPayload = () => ({ state: "ready", version: state.version ?? "0.156.0", managers: state.managers ?? (state.accountAction || state.readyAccountSpaces ? state.account.spaces.filter(row => row.desired).map(row => ({ ...manager(), space: row.space })) : state.connected ? [manager()] : []), ...(state.omitAgents ? {} : { agents: state.agents ?? [] }), ...(state.update ? { update: state.update } : {}), ...(state.account ? { account: state.account } : {}) });
@@ -604,6 +606,21 @@ export const scenarios = [
   { name: "sign-in-service-progress-clears", state: { waiting: true, installProgress: ["verifying the recorded installation and owned task before startup"] }, act: page => page.click("#login"), expect: async page => {
     await page.locator("#approval").waitFor();
     assert.equal(await page.locator("#setup-progress").isHidden(), true, "no service step keeps spinning while sign-in waits");
+  } },
+  // A failed Start service keeps its reason after a background status check, until the person acts on it.
+  { name: "start-service-failure-stays", state: { serviceStopped: true, installFails: true }, act: page => page.click("#recover"), expect: async page => {
+    await page.waitForFunction(() => document.querySelector("#connection-title")?.textContent === "This operation could not finish");
+    const reason = "OPERATION_UNKNOWN (OPERATION_UNKNOWN)\nWindows daemon restart failed during waiting for a fresh daemon to answer (up to 60s): replacement exited during proof";
+    assert.equal(await page.locator("#refusal-detail").textContent(), reason);
+    const checks = await page.evaluate(() => window.__renderState.stoppedStatusChecks ?? 0);
+    await page.evaluate(() => { window.__emitTauri("desktop-hidden", null); window.__emitTauri("desktop-shown", null); });
+    await page.waitForFunction(count => (window.__renderState.stoppedStatusChecks ?? 0) > count, checks);
+    await page.waitForTimeout(500);
+    assert.equal(await page.locator("#connection-title").textContent(), "This operation could not finish", "a background status check does not replace the failure");
+    assert.equal(await page.locator("#refusal-detail").textContent(), reason, "the reason stays");
+    await page.locator("#recover").click();
+    await page.waitForFunction(() => document.querySelector("#connection-title")?.textContent === "The background service is not running");
+    assert.equal(await page.locator("#recover").textContent(), "Start service", "acting on it shows the current state again");
   } },
   { name: "welcome-service-stopped", state: { serviceStopped: true }, expect: async page => {
     assert.equal(await page.locator("#connection-title").textContent(), "The background service is not running");
