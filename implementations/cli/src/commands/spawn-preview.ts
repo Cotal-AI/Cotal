@@ -150,6 +150,8 @@ export async function spawnLaunchPreview(args: Pick<ParsedArgs, "positionals"> &
     let connector: Connector;
     try { connector = await materializeExtension<Connector>({ kind: "connector", name: harness }); }
     catch (error) { throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", error instanceof Error ? error.message : String(error), { target: { ...target, path } }); }
+    const unavailable = connector.launchUnavailable?.({ resume: values.resume });
+    if (unavailable) throw new CommandFailure("refused", "UNSUPPORTED", unavailable, { target: { ...target, path } });
     if (connector.supportsLaunchValidation) {
       const config = loadCotalConfig(root);
       try {

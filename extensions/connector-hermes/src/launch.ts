@@ -19,13 +19,14 @@ import { randomUUID } from "node:crypto";
 import { mkdirSync, writeFileSync, cpSync, rmSync, existsSync, readFileSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
-import { LAUNCH_MATERIAL_ENV, discardLaunchArtifacts, discardLaunchMaterial, loadAgentFile, peerLabel, readLaunchMaterial, writeLaunchMaterial } from "@cotal-ai/core";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { LAUNCH_MATERIAL_ENV, discardLaunchArtifacts, discardLaunchMaterial, loadAgentFile, peerLabel, readLaunchMaterial, writeLaunchMaterial, hardenPrivate } from "@cotal-ai/core";
 import { hasIdentity, configFromEnv, controlEndpoint, controlFromEnv, eventPlaneArmed, SUN_PATH_MAX_BYTES, briefing, type AgentConfig } from "@cotal-ai/connector-core";
 import { hermesUvCommand, spawnHermesGateway } from "./binary.js";
 import { hermesEfforts } from "./models.js";
 import { startSidecar } from "./sidecar.js";
 import { HERMES_FORK_RECORD, hermesSeatHome, moveLegacyHermesFork } from "./seat-home.js";
+import { runWindowsGateway, type WindowsHost } from "./windows-gateway.js";
 
 /** Hermes API range this connector is written against (keep in sync with pyproject.toml).
  *
@@ -77,6 +78,7 @@ function processTree(pid: number): number[] {
  *  so another user can create no name for it. Its first frame carries a token derived from the
  *  launch's control key (see `bridgeToken` in bridge.ts). */
 function bridgeSocketPath(controlPath: string): string {
+  if (process.platform === "win32") return `${controlPath}-hermes-bridge`;
   const path = join(dirname(controlPath), `${basename(controlPath, ".sock")}.bridge.sock`);
   const bytes = Buffer.byteLength(path);
   if (bytes > SUN_PATH_MAX_BYTES) {
@@ -150,7 +152,12 @@ export function setupProfile(
   if (opts.effort) lines.push("agent:", `  reasoning_effort: ${yamlStr(opts.effort)}`);
   if (eventPlaneArmed(opts.config))
     lines.push("streaming:", "  enabled: true", "  transport: draft", '  cursor: ""', "  edit_interval: 0.25");
-  lines.push(`model: ${yamlStr(opts.model)}`);
+  // Hermes resolves keyed custom providers from the managed profile's model block.
+  const custom = process.platform === "win32" && process.env.HERMES_INFERENCE_PROVIDER === "custom" && process.env.CUSTOM_BASE_URL;
+  if (custom) {
+    lines.push("model:", `  default: ${JSON.stringify(opts.model)}`, "  provider: custom", `  base_url: ${JSON.stringify(custom)}`);
+    if (process.env.CUSTOM_API_KEY) lines.push(`  api_key: ${JSON.stringify(process.env.CUSTOM_API_KEY)}`);
+  } else lines.push(`model: ${yamlStr(opts.model)}`);
   writeFileSync(join(home, "config.yaml"), lines.join("\n") + "\n");
 
   // Persona → SOUL.md (Hermes' identity file) — the one place a system prompt can be set, with the
@@ -327,6 +334,12 @@ function forkHermesSession(opts: { sourceHome: string; source: string; seatHome:
 /** Files the launcher itself created, rather than those already tracked by `buildLaunch`. */
 const localArtifacts: string[] = [];
 
+function secureWindowsProfile(root: string | undefined, adopted: boolean): void {
+  if (adopted || process.env.COTAL_HERMES_RESUME?.trim() || !root)
+    throw new LaunchRefused("Hermes on Windows requires a foreground launch with a disposable managed profile");
+  hardenPrivate(root, "dir");
+}
+
 /** Create this launch's empty turn journal (plugin/cotal/journal.py) in the profile. Its name is
  *  the event plane's thread id. */
 function createTurnJournal(home: string): string {
@@ -337,12 +350,41 @@ function createTurnJournal(home: string): string {
   return path;
 }
 
+async function loadWindowsHost(path: string | undefined): Promise<WindowsHost> {
+  const remedy = "The Windows Hermes launcher needs its matching Cotal CLI. Update Cotal and retry the foreground launch.";
+  if (!path || !isAbsolute(path)) throw new LaunchRefused(remedy);
+  const host: Partial<WindowsHost> = await import(pathToFileURL(path).href).catch((error: unknown) => {
+    throw new LaunchRefused(`${remedy} ${error instanceof Error ? error.message : String(error)}`);
+  });
+  if (typeof host.startProcess !== "function" || typeof host.listenOwnerPipe !== "function") throw new LaunchRefused(remedy);
+  return { startProcess: host.startProcess, listenOwnerPipe: host.listenOwnerPipe };
+}
+
+async function runWindowsLaunch(host: WindowsHost, env: NodeJS.ProcessEnv, root: string, gatewayTmp: string | undefined, inherited: string | undefined): Promise<void> {
+  for (const key of Object.keys(env)) if (/^temp$|^tmp$/i.test(key)) delete env[key];
+  env.TEMP = env.TMP = gatewayTmp;
+  await runWindowsGateway(PKG_DIR, env, root, host.startProcess,
+    (onShutdown) => {
+      const sidecar = startSidecar({ onShutdown, listenPipe: host.listenOwnerPipe });
+      // After this handoff only the verified drain may remove the profile.
+      localArtifacts.splice(localArtifacts.indexOf(root), 1);
+      return sidecar;
+    }, () => {
+      // The parent shares the console-close deadline. Reclaim after the job drains and the
+      // journal closes, without waiting for a network departure first.
+      try { discardLaunchArtifacts([root, ...localArtifacts]); }
+      finally { if (inherited) discardLaunchMaterial(inherited); }
+      log("removed the disposable Windows Hermes profile");
+    });
+}
+
 async function main(): Promise<void> {
   // No identity → a plain run, not a launcher-spawned agent. Stay off the mesh.
   if (!hasIdentity()) {
     log("no COTAL_NAME — not a managed session; staying off the mesh");
     process.exit(0);
   }
+  const windows = process.platform === "win32" ? await loadWindowsHost(process.argv[2]) : undefined;
   const config = configFromEnv();
 
   const adopt = adoptedHome();
@@ -353,17 +395,24 @@ async function main(): Promise<void> {
   // seat stops, unless it holds a `--resume` fork. Adopted (opt-in): the operator's own profile, into
   // which only this connector's plugin directory is written, and which is never removed.
   const persistent = adopt ? undefined : hermesSeatHome(config.space, config.name);
-  const moved = persistent && moveLegacyHermesFork(config.space, config.name);
+  const moved = process.platform !== "win32" && persistent && moveLegacyHermesFork(config.space, config.name);
   const disposableHome = process.env.COTAL_HERMES_SEAT_HOME;
   const disposableRoot = disposableHome && dirname(dirname(disposableHome));
   if (persistent && disposableRoot && (dirname(disposableRoot) !== tmpdir()
     || !/^cotal-hermes-[A-Za-z0-9]{6}$/.test(basename(disposableRoot))
     || disposableHome !== join(disposableRoot, "profiles", basename(persistent.home))))
     throw new LaunchRefused("the disposable Hermes profile is not inside its launch temporary directory");
-  const managed = persistent && disposableRoot && disposableHome && !existsSync(join(persistent.home, HERMES_FORK_RECORD))
+  const managed = persistent && disposableRoot && disposableHome && (process.platform === "win32" || !existsSync(join(persistent.home, HERMES_FORK_RECORD)))
     ? { root: disposableRoot, home: disposableHome }
     : persistent;
   const home = adopt ?? managed!.home;
+  if (windows) {
+    secureWindowsProfile(disposableRoot || undefined, !!adopt);
+    localArtifacts.push(managed!.root);
+    // A synchronous version probe can take time on a cold install. Do not leave a key on disk
+    // during that probe if the terminal closes before the gateway's signal handlers are armed.
+    assertHermesVersion();
+  }
   if (moved) log(`moved this seat's --resume fork from ${moved} to ${home}`);
   const effort = launchEffort(adopt);
   if (adopt) setupAdoptedProfile(home, { persona });
@@ -388,7 +437,7 @@ async function main(): Promise<void> {
 
   // Fail loudly before we hand control to the gateway if the Hermes API line is wrong, and before the
   // control endpoint is minted, since minting makes its socket directory.
-  if (!fork) assertHermesVersion();
+  if (!fork && !windows) assertHermesVersion();
 
   // Paths shared by the sidecar and the gateway child — set in our env so startSidecar reads
   // them, and forwarded verbatim to the child so the plugin connects to the same sockets/file.
@@ -417,8 +466,7 @@ async function main(): Promise<void> {
   process.env.COTAL_TOOLS_FILE = toolsFile;
   const journal = eventPlaneArmed(config) ? createTurnJournal(home) : undefined;
   if (journal) process.env.COTAL_HERMES_EVENTS = journal;
-
-  const sidecar = startSidecar();
+  const unixSidecar = process.platform === "win32" ? undefined : startSidecar();
 
   // A managed gateway's temp files land inside the root a stop removes, not in the shared temp dir.
   const gatewayTmp = managed && join(managed.root, "tmp");
@@ -436,6 +484,17 @@ async function main(): Promise<void> {
   };
 
   log(`launching hermes gateway as ${peerLabel(config)} (HERMES_HOME=${home})`);
+  if (windows) {
+    await runWindowsLaunch(windows, childEnv, managed!.root, gatewayTmp, suppliedControl ? inherited : undefined);
+    return;
+  }
+  runUnixGateway(childEnv, unixSidecar!, { managed, home, journal, controlPath: control.path, material, inherited: !!(suppliedControl && inherited) });
+}
+
+function runUnixGateway(childEnv: NodeJS.ProcessEnv, sidecar: ReturnType<typeof startSidecar>, opts: {
+  managed?: { root: string; home: string }; home: string; journal?: string; controlPath: string; material: string; inherited: boolean;
+}): void {
+  const { managed, home, journal, controlPath, material, inherited } = opts;
   const child = spawnHermesGateway({ pkgDir: PKG_DIR, env: childEnv });
   const gatewayExit = new Promise<void>((done) => child.once("exit", () => done()));
 
@@ -484,9 +543,9 @@ async function main(): Promise<void> {
     // did), the gateway may still be running and using both directories, so they stay and the log
     // says where.
     if (drained.status === "rejected") {
-      const left = [dirname(control.path), dirname(material), ...(disposable ? [disposable.root] : [])].join(", ");
+      const left = [dirname(controlPath), dirname(material), ...(disposable ? [disposable.root] : [])].join(", ");
       log(`could not prove the gateway exited (${String((drained.reason as Error).message).replace(/\s+/g, " ").trim()}), so ${left} is left on disk; remove it once the gateway has exited`);
-      if (suppliedControl && inherited) await gatewayExit;
+      if (inherited) await gatewayExit;
       else process.exit(code);
     }
     // The journal is this launch's alone; an adopted or forked profile outlives it.
