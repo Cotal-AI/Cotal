@@ -200,6 +200,7 @@ export class MeshView extends EventEmitter {
   private channelCounts = new Map<string, number>();
   private arrivals = new Map<string, number>();
   private feed: FeedEntry[] = [];
+  private chatPrefillGeneration = 0;
   private seen = new Set<string>(); // feed ids, for prefill ∪ live dedupe-by-id
   private pending = new Map<string, Burst>();
   private dmLog: RawDm[] = []; // raw unicast for the DM roll-up
@@ -373,6 +374,17 @@ export class MeshView extends EventEmitter {
     this.dirty = true;
   }
 
+  /** Discard local copies of chat after a confirmed history purge. DMs and anycast stay in the feed. */
+  discardChatHistory(): void {
+    this.chatPrefillGeneration++;
+    this.feed = this.feed.filter((entry) => {
+      if (entry.delivery !== "multicast") return true;
+      if (entry.id) this.seen.delete(entry.id);
+      return false;
+    });
+    this.dirty = true;
+  }
+
   snapshot(): MeshSnapshot {
     const channels = [...this.channelCounts]
       .map(([channel, messages]) => ({ channel, messages, arrivals: this.arrivals.get(channel) ?? 0, deliveryClass: this.ep.channelDeliveryClass(channel) }))
@@ -514,15 +526,22 @@ export class MeshView extends EventEmitter {
     if (this.dmLog.length > DM_LOG_CAP) this.dmLog.splice(0, this.dmLog.length - DM_LOG_CAP);
   }
 
-  /** One-shot backlog: prefill each channel's history (multicast), plus the DM backlog when DMs
-   *  are visible (god-view — `dmHistory` needs an admin cred), deduped by id, oldest-first. */
+  /** One-shot backlog: prefill chat and, when visible, DMs. */
   private async prefill(): Promise<void> {
     let chans: { channel: string; messages: number }[];
+    const generation = this.chatPrefillGeneration;
     try {
       chans = await this.ep.listChannels();
     } catch {
       return;
     }
+    await this.prefillChat(chans, generation);
+    if (!this.chatOnly) await this.prefillDms();
+  }
+
+  /** Merge channel history, deduped by id, unless a purge invalidated the read. */
+  private async prefillChat(chans: { channel: string }[], generation: number): Promise<void> {
+    if (generation !== this.chatPrefillGeneration) return;
     // THE FILTER RUNS BEFORE THE HISTORY READ, AND THE ORDER IS THE WHOLE POINT.
     //
     // `listChannels()` derives an entry from every RETAINED CONCRETE SUBJECT, and the chat stream
@@ -537,6 +556,7 @@ export class MeshView extends EventEmitter {
         this.ep.channelHistory(c.channel, { limit: HISTORY_LIMIT }).catch(() => [] as CotalMessage[]),
       ),
     );
+    if (generation !== this.chatPrefillGeneration) return;
     const history: FeedEntry[] = [];
     for (const msgs of batches)
       for (const msg of msgs) {
@@ -557,7 +577,6 @@ export class MeshView extends EventEmitter {
       this.trim();
       this.dirty = true;
     }
-    if (!this.chatOnly) await this.prefillDms();
   }
 
   /** Best-effort DM backlog for the roll-up — only meaningful for a god-view cred; a non-admin
