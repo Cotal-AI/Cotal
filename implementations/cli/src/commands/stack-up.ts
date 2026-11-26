@@ -416,11 +416,14 @@ function stackPreflight(request: StackUpRequest, recorded: StackJournal | undefi
   try { ledgers = listLedgerFiles(root, { requireReadable: true }); additive = listAdditiveTeamAttempts(root); boots = listFreshTeamAttempts(root); summaries = listFreshTeamSummaries(root); }
   catch { throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "team records under this root could not be read; no empty team state was inferred", { target: { root, space } }); }
   const settled = new Map(summaries.valid.map((summary) => [summary.deploymentId, summary]));
-  // A channel-only deployment that returned onto this recorded stack stays with it across a stop: its
-  // cards are in this broker's store, so starting the stack again adopts nothing and its records stay
-  // as they are. Any other retained deployment still blocks.
-  const carried = (attempt: AdditiveTeamAttempt) => recorded !== undefined && attempt.requestedAgents.length === 0 && additive.returned.some((row) => row.deploymentId === attempt.deploymentId)
-    && attempt.space === recorded.space && canonicalRoot(attempt.root) === canonicalRoot(root) && attempt.server === recorded.server && attempt.authMode === recorded.mode;
+  // Ordinary startup of the recorded stack does not replay returned additive launches or adopt their
+  // cards. Fresh boots, broker maintenance and unsettled removals retain the agent deployment fence.
+  const ordinaryUp = !manifest && !request.rotateSys && request.recreateIssuedStores === undefined && !request.recreateMembershipStore && request.channels === undefined;
+  const removing = new Set([...(additive.removal?.attempts ?? []), ...(additive.channelRemoval?.attempts ?? [])].map((row) => row.deploymentId));
+  const carried = (attempt: AdditiveTeamAttempt) => recorded !== undefined && additive.returned.some((row) => row.deploymentId === attempt.deploymentId)
+    && attempt.space === recorded.space && canonicalRoot(attempt.root) === canonicalRoot(root) && attempt.server === recorded.server && attempt.authMode === recorded.mode
+    && (attempt.requestedAgents.length === 0 || (ordinaryUp && !removing.has(attempt.deploymentId) && space === recorded.space
+      && canonicalServer(request.server) === canonicalServer(recorded.server) && attempt.tlsRequired === (request.transport.kind === "tls-required")));
   const retained = retainedAdditiveTeamAttempts(additive).filter((attempt) => !carried(attempt));
   const unsettledBoots = boots.valid.filter((attempt) => attempt.deploymentId !== manifest?.deploymentId && !freshTeamAttemptSettled(attempt, settled.get(attempt.deploymentId)));
   if (ledgers.valid.length || ledgers.refused.length || retained.length || additive.refused.length || boots.refused.length || summaries.refused.length || unsettledBoots.length) {

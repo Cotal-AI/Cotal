@@ -41,15 +41,16 @@
  *     The confirmation commands retain the target and output mode, and replay previews and removes the card.
  *  N. the printed fresh boot summary command works with a different space selected.
  *  O. an invalid launch name blocks validation and deployment before any channel is created.
+ *  P. a returned mixed deployment permits the same stack to restart without relaunching its seat.
  *
- * Channels only, so no agent launches. COTAL_HOME is sandboxed, the child environment carries no
- * `COTAL_` variable of the runner, and each stack stops with `cotal down --yes`.
+ * The mixed deployment uses the local Jcode Harness API stand-in. COTAL_HOME is sandboxed, the
+ * child environment carries no `COTAL_` variable of the runner, and each stack is stopped here.
  * Needs `nats-server` on PATH. Run: pnpm smoke:team-views:live
  */
 import { spawnSync } from "node:child_process";
 import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { delimiter, join, resolve } from "node:path";
 import { assertSmokeSandboxDown, createSuite, freePort, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
 import { shellPath } from "@cotal-ai/workspace";
 
@@ -206,6 +207,44 @@ function checkDeployAuthConflict(): void {
   check("deploy apply still refuses the auth mismatch", apply.status === 2 && envelope(apply.stdout)?.error?.code === "CONFLICT", apply.out);
 }
 
+function checkMixedRestart(): void {
+  manifest("mixed.yaml", SPACE, { "team-observer": "    deliveryClass: live\n    subscribe: [observer]\n    allowPublish: [observer]\n" }, {
+    head: "agent: jcode\nagents:\n  observer:\n    role: observer\n    model: gpt-6.2-sol\n    instructions: Respond only to test prompts.\n",
+  });
+  const deploy = cotal(s, "team", "deploy", "mixed.yaml", "--json");
+  const receipt = envelope(deploy.stdout)?.result;
+  const id = receipt?.deploymentId;
+  const returned = deploy.status === 0 && typeof id === "string" && receipt?.returnedReceipt === true &&
+    Array.isArray(receipt.createdAgents) && receipt.createdAgents.length === 1 && receipt.createdAgents[0]?.name === "observer" &&
+    Array.isArray(receipt.createdChannels) && receipt.createdChannels.length === 1 && receipt.createdChannels[0]?.name === "team-observer";
+  check("the mixed deployment returns one joined seat and one created card", returned, deploy.out);
+  if (!returned || typeof id !== "string") return;
+  const shownBefore = cotal(s, "team", "show", id, "--space", SPACE, "--json");
+
+  const stopped = cotal(s, "down", "--yes", "--with-agents", "--json");
+  const stoppedMembers = envelope(stopped.stdout)?.result?.members as { role: string; state: string }[] | undefined;
+  check("down with agents stops the three members", stopped.status === 0 &&
+    ["broker", "delivery", "manager"].every((role) => stoppedMembers?.some((row) => row.role === role && row.state === "stopped")), stopped.out);
+  if (stopped.status !== 0) return;
+  const restarted = cotal(s, "up", "--detach", "--server", SERVER, "--json");
+  const members = envelope(restarted.stdout)?.result?.members as { role: string; state: string }[] | undefined;
+  check("up restarts the broker, delivery and manager over the returned mixed deployment", restarted.status === 0 &&
+    ["broker", "delivery", "manager"].every((role) => members?.some((row) => row.role === role && row.state === "started")), restarted.out);
+  if (restarted.status !== 0) return;
+
+  const seats = cotal(s, "ps", "--space", SPACE, "--json");
+  const roster = envelope(seats.stdout);
+  check("restart does not bring the stopped seat back", seats.status === 0 && roster?.completeness === "complete" &&
+    Array.isArray(roster.result?.items) && !roster.result.items.some((row) => row.name === "observer"), seats.out);
+  const card = cotal(s, "channel", "show", "team-observer", "--space", SPACE, "--json");
+  const registry = envelope(card.stdout)?.result?.registry as { channels?: Record<string, unknown> } | undefined;
+  check("the mixed deployment's card remains in the broker", card.status === 0 && Object.hasOwn(registry?.channels ?? {}, "team-observer"), card.out);
+  const shown = cotal(s, "team", "show", id, "--space", SPACE, "--json");
+  const before = envelope(shownBefore.stdout)?.result?.receipt;
+  check("up leaves the original returned deployment receipt unchanged", answered(shownBefore) && before !== undefined &&
+    answered(shown) && JSON.stringify(envelope(shown.stdout)?.result?.receipt) === JSON.stringify(before), shown.out);
+}
+
 let up = false, bUp = false, openUp = false;
 try {
   const noApplications = join(base, "no-applications");
@@ -226,6 +265,15 @@ try {
   check("up -f --dry-run refuses before printing a plan with Claude absent from PATH",
     refusedUp.status === 1 && refusedUp.stdout === "" && refusedUp.stderr.includes("connector preflight failed: claude needs claude on PATH"), refusedUp);
 
+  if (process.platform !== "win32") {
+    const fake = join(WT, "extensions", "connector-jcode", "smoke", "fake-jcode.mjs");
+    const bin = join(base, "bin");
+    mkdirSync(bin);
+    writeFileSync(join(bin, "jcode"), `#!/bin/sh\nexec ${shellPath(process.execPath)} ${shellPath(fake)} "$@"\n`, { mode: 0o755 });
+    env.PATH = `${bin}${delimiter}${env.PATH ?? ""}`;
+    const jcode = cotal(s, "ext", "add", join(WT, "extensions", "connector-jcode"));
+    check("the workspace Jcode connector installs into the sandbox", jcode.status === 0, jcode.out);
+  }
   check("space create prepares the folder", cotal(s, "space", "create", SPACE).status === 0);
   up = true;
   const started = cotal(s, "up", "--server", SERVER);
@@ -711,6 +759,10 @@ try {
     check(`team ${args[0]} of a copied summary points status at the folder and space holding the copy`,
       copied.status === 2 && error?.code === "CONFLICT" && error.remedy?.includes(`\`cd '${realpathSync(c)}' && cotal status --space=${OTHER}\``) === true, copied.out);
   }
+  if (process.platform !== "win32") {
+    console.log("\nP. the stack restarts after stopping a returned mixed deployment");
+    checkMixedRestart();
+  }
 } finally {
   if (openUp) {
     const down = cotal(c, "down", "--yes");
@@ -721,8 +773,8 @@ try {
     check("down --yes stops the stack in b", down.status === 0, down.out.slice(-600));
   }
   if (up) {
-    const down = cotal(s, "down", "--yes");
-    check("down --yes stops the stack", down.status === 0, down.out.slice(-600));
+    const down = cotal(s, "down", "--yes", "--with-agents");
+    check("down stops the static-auth stack", down.status === 0, down.out.slice(-600));
   }
   rmSync(base, { recursive: true, force: true });
 }

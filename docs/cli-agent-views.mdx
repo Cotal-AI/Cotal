@@ -360,10 +360,13 @@ intents and unremoved agent/channel receipts before effects. Bare `down` and a l
 blocks them. A complete matched
 removal receipt releases only its original deployment's blocker. The boot preview
 lists that deployment as history without warning that it blocks boot.
-A bare `up` of a stopped controller stack starts it again over a returned channel-only deployment
-made on that stack, and keeps the deployment's records and cards as they are. Any other retained
-deployment, such as an unsettled attempt or an agent deployment, still refuses the start with
-`LIFECYCLE_BLOCKED`, and its Next names `cotal team show <id>` for each one.
+After stopping a controller stack, run `cotal up` from its recorded root to restart it.
+A completed deployment to that stack does not block ordinary startup, whether it added channels,
+agents, or both. Startup keeps the deployment receipts and channel cards and does not relaunch
+agents stopped by `cotal down --with-agents`. Once the stack is running, preview removal with
+`cotal team remove <id> --dry-run`.
+Unreadable records, unsettled deployments, and unfinished removals of deployments with agents
+still block startup with `LIFECYCLE_BLOCKED`. Inspect a named deployment with `cotal team show <id>`.
 This is a known-blocker guard,
 not complete broker ownership. The service records belong to the workstation's selected-space store,
 not necessarily this boot root; their recorded
