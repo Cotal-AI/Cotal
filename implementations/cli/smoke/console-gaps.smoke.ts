@@ -15,8 +15,8 @@
  *   3. `:delchan <channel>`: the verb opens the typed-name confirm, the name arms Enter, the notice
  *      reports the purge count, and the channel's history is actually gone while another survives
  *      (core's clearChannel, the web dashboard's delete, with a bare connection on an open mesh).
- *      The deleted channel's tab leaves the strip on the next channel poll, and never shows a
- *      badge on the way out (its watermark is dropped only once the tab is gone).
+ *      The aggregate feed drops the deleted posts and keeps other posts. The deleted channel's tab
+ *      leaves the strip on the next poll without showing a badge on the way out.
  *   4. Color follows the CLI's decision: `--no-color` paints the TUI with no ANSI color even under
  *      `FORCE_COLOR`, and so does a non-empty `NO_COLOR`. `FORCE_COLOR` alone paints color, so the
  *      color check can see color.
@@ -172,11 +172,11 @@ try {
   reader.on("error", () => {});
   await reader.start();
   await poster.multicast("baseline", { channel: "kept" }); // pre-start history: must NOT count as unread
-  await poster.multicast("doomed-1", { channel: "doomed" });
-  await poster.multicast("doomed-2", { channel: "doomed" });
   // A channel filled to the per-sender retention cap: the 1,001st message evicts the oldest, so the
   // broker's count for it is pinned at 1,000 from here on.
   for (let i = 0; i < 1000; i++) await poster.multicast(`cap-${i}`, { channel: "cap" });
+  await poster.multicast("doomed-1", { channel: "doomed" });
+  await poster.multicast("doomed-2", { channel: "doomed" });
   check("fixture: both channels have persisted history", (await reader.channelHistory("kept")).length === 1 && (await reader.channelHistory("doomed")).length === 2);
   const capRow = (await reader.listChannels()).find((c) => c.channel === "cap");
   check("fixture: the cap channel sits at the retention cap", capRow?.messages === 1000, capRow);
@@ -221,6 +221,9 @@ try {
   await wait(400);
 
   console.log("3. :delchan through the typed-name confirm");
+  const beforeDelete = await screen(s.out, 140, 36);
+  check("delchan fixture: the aggregate shows posts from both channels",
+    beforeDelete.includes("feed · all") && beforeDelete.includes("doomed-2") && beforeDelete.includes("m4"), beforeDelete);
   const dm = s.out.length;
   await s.command("delchan doomed");
   check("delchan: the confirm opens", await s.waitFor("Delete channel", 8_000, dm), clean(s.out.slice(dm)).slice(-300));
@@ -247,6 +250,9 @@ try {
   const strips = clean(s.out.slice(dm)).match(/1: all[^\n]*/g) ?? [];
   check("delchan: the deleted channel's tab is gone on the next poll", strips.length > 0 && !strips[strips.length - 1].includes("#doomed"), strips.at(-1));
   check("delchan: the tab never carried a badge on the way out", !/#doomed \d+ \+\d/.test(clean(s.out.slice(dm))), clean(s.out.slice(dm)).match(/#doomed \d+ \+\d/)?.[0]);
+  const afterDelete = await screen(s.out, 140, 36);
+  check("delchan: the aggregate keeps other posts and drops the deleted channel's posts",
+    afterDelete.includes("feed · all") && afterDelete.includes("m4") && !/doomed-[12]/.test(afterDelete), afterDelete);
 
   console.log("4. the aggregate and the channel named all are separate tabs");
   await poster.multicast("other-feed-marker", { channel: "kept" });
