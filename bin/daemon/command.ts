@@ -506,7 +506,7 @@ async function setupCommand(args: ParsedArgs): Promise<void> {
   ] }));
 }
 
-/** launchd writes the service's log itself, readable by others; systemd sends the output to the journal instead. */
+/** Protect the log launchd writes, or capture a private copy of native service output. */
 async function privateServiceLog(args: ParsedArgs): Promise<void> {
   let paths: DaemonPaths;
   // serve resolves the same target again and refuses an unusable one with its full diagnosis.

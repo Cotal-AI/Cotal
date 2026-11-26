@@ -1,7 +1,7 @@
 /** Live Linux local-control checks through the actual desktop stdio entry, with an owned daemon. */
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { PassThrough, Readable } from "node:stream";
@@ -99,6 +99,17 @@ try {
   writeFileSync(logFile, `${"x".repeat(5 * 1024 * 1024)}\nlarge log final reason\n`, { mode: 0o600 });
   const largeLog = await request({ op: "log" });
   check("large native logs return only their recent tail", largeLog.ok === true && largeLog.result.truncated === true && largeLog.result.text.endsWith("large log final reason\n") && Buffer.byteLength(largeLog.result.text) <= 8192);
+  const previousLog = join(paths.state, "daemon.previous.log");
+  writeFileSync(previousLog, `older launch output\n${"y".repeat(9000)}\nprevious launch final reason\neyJprevious.token\n`, { mode: 0o600 });
+  const bothLogs = await request({ op: "log" });
+  check("the previous and current launches have independent redacted tails", bothLogs.ok === true && bothLogs.result.truncated === true
+    && /^Previous launch:\n.*previous launch final reason\n<redacted>\n.*Current launch:\n.*large log final reason\n$/s.test(bothLogs.result.text)
+    && !bothLogs.result.text.includes("older launch output") && Buffer.byteLength(bothLogs.result.text) <= 2 * 8192 + 64);
+  rmSync(previousLog);
+  symlinkSync(logFile, previousLog);
+  const unsafeHistory = await request({ op: "log" });
+  check("an unsafe previous log does not block the current log", unsafeHistory.ok === true && unsafeHistory.result.text === largeLog.result.text);
+  rmSync(previousLog);
   writeFileSync(logFile, "service is writing\n", { mode: 0o600 });
   const writer = spawn(process.execPath, ["--input-type=module", "-e", 'import { appendFileSync } from "node:fs"; const file = process.argv[1]; setInterval(() => appendFileSync(file, "concurrent service output\\n".repeat(200)), 1);', logFile], { stdio: "ignore" });
   try {
