@@ -208,8 +208,8 @@ const cmd = (name: string): Command => {
 
 const cliEnv = { ...cleanEnv, COTAL_HOME: home, XDG_CONFIG_HOME: join(home, "xdg"), COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1" };
 
-/** Run the CLI's `attach` and stop at the session banner, exit or deadline. */
-async function attachFrom(cwd: string, args: string[], ms = 25_000): Promise<string> {
+/** Run the CLI's `attach` through the banner, or to a clean exit after `endSession`. */
+async function attachFrom(cwd: string, args: string[], ms = 25_000, endSession?: () => Promise<void>): Promise<string> {
   const p = spawnProc(process.execPath, ["--import", import.meta.resolve("tsx"), BIN, "attach", ...args], {
     cwd,
     env: cliEnv,
@@ -220,10 +220,18 @@ async function attachFrom(cwd: string, args: string[], ms = 25_000): Promise<str
   p.stdout.on("data", (b: Buffer) => void (out += b.toString()));
   p.stderr.on("data", (b: Buffer) => void (out += b.toString()));
   const end = Date.now() + ms;
-  while (Date.now() < end && p.exitCode === null && !/attached to /.test(out)) await sleep(200);
-  if (/attached to /.test(out)) await sleep(300);
-  p.kill("SIGKILL");
-  await awaitExit(p);
+  try {
+    while (Date.now() < end && p.exitCode === null && !/attached to /.test(out)) await sleep(200);
+    if (endSession) {
+      must("the attach session is open before requesting a stop", /attached to /.test(out) && p.exitCode === null, out);
+      await endSession();
+      await awaitExit(p, ms);
+      must("attach exits cleanly after the separate stop", p.exitCode === 0, out);
+    } else if (/attached to /.test(out)) await sleep(300);
+  } finally {
+    p.kill("SIGKILL");
+    await awaitExit(p);
+  }
   return out.replace(/\x1b\[[0-9;]*m/g, "");
 }
 
@@ -263,12 +271,20 @@ async function checkScopedSeatHints(manager: InstanceType<typeof Manager>): Prom
       ["cotal", "pnpm cotal"].some((cli) => single.stdout.includes(`  ${cli} ${verb} <name> ${selector.join(" ")}  `))), single);
   }
   const hintArgs = (hint: string) => hint.replace("<name>", name).split(" ").slice(hint.startsWith("pnpm cotal ") ? 2 : 1);
-  const attached = await attachFrom(other, hintArgs(attach!).slice(1));
-  ok("the printed attach reaches the displayed mesh instead of the offline selection",
-    attached.includes(`attached to ${name}`) && attached.includes(SPACE), attached);
-  const stopped = await runFrom(other, hintArgs(stop!));
-  ok("the printed stop reaches the displayed mesh instead of the offline selection",
-    stopped.status === 0 && stopped.stdout.includes("Agent stop acknowledged") && stopped.stdout.includes(`Mesh: ${SPACE}`), stopped);
+  const ended = await attachFrom(other, [...hintArgs(attach!).slice(1), "--no-reconnect"], 25_000, async () => {
+    const stopped = await runFrom(other, hintArgs(stop!));
+    must("the printed stop reaches the displayed mesh instead of the offline selection",
+      stopped.status === 0 && stopped.stdout.includes("Agent stop acknowledged") && stopped.stdout.includes(`Mesh: ${SPACE}`), stopped);
+  });
+  must("the printed attach reaches the displayed mesh and reports the session end",
+    ended.includes(`attached to ${name}`) && ended.includes(SPACE) && ended.includes("Attach session ended"), ended);
+  const census = /run `((?:pnpm )?cotal ps[^`]*)`/i.exec(ended)?.[1];
+  ok("the attach end report keeps the explicit space and broker", census?.endsWith(`ps ${route.join(" ")}`) === true, ended);
+  if (census) {
+    const followed = await runFrom(other, hintArgs(census));
+    ok("the printed census checks the same mesh without changing the offline selection",
+      followed.status === 0 && followed.stdout.includes(`Mesh: ${SPACE}`) && followed.stdout.includes(instance!), followed);
+  }
 }
 
 async function checkPinnedRetries(): Promise<void> {
