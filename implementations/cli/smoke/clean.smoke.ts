@@ -102,6 +102,13 @@ function checkCleanStoreCli(): void {
     const notFolder = join(root, "not-folder");
     writeFileSync(notFolder, "not a directory\n");
     for (const target of ["store", "all"]) {
+      const preview = spawnSync(process.execPath, [cli, "clean", target, flag, "--dry-run"], options);
+      const both = spawnSync(process.execPath, [cli, "clean", target, flag, "--dry-run", "--force"], options);
+      const warning = both.stderr.replace(/\s+/g, " ");
+      check(`clean ${target} previews and warns that --force is ignored when both flags are set`,
+        preview.status === 0 && preview.stderr === "" && both.status === 0 && both.stdout === preview.stdout
+          && both.stdout.includes(`would remove ${store}`) && warning.includes("--force is ignored when --dry-run is set")
+          && warning.includes("Use --force without --dry-run to apply") && existsSync(data), both);
       for (const mode of ["--dry-run", "--force"]) {
         const badPath = mode === "--dry-run" ? "./not-folder/child" : "./not-folder/nested/child";
         const invalid = spawnSync(process.execPath, [cli, "clean", target, mode, "--store-dir", badPath], options);
