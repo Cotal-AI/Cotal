@@ -550,6 +550,10 @@ If a recorded npm install child is still running, `cotal update --self` skips pr
 cleanup and can wait for the child to finish. Run the command again only if it stops and asks
 you to retry.
 
+On Linux and macOS, a successful `cotal update --self` also removes the temporary extension
+dependency check when its records identify this installation and confirm both the updater and
+its npm worker have stopped. A retry leaves projects without those records and checks still in use alone.
+
 If an interrupted self-update already selected its target, `cotal update --self` verifies that
 installation and finishes reconciliation before looking for another release. The built-in connectors
 can reconcile without a registry. If the command cannot finish, it reports the pending work and

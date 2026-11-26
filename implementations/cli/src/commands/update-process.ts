@@ -93,11 +93,11 @@ export function verifyGlobalEntry(root: string, expectedVersion: string): string
 // exec keeps the published PID and the real child keeps its original argv and stdin.
 const npmChildGate = 'IFS= read -r permit <&3 && [ "$permit" = run ] || exit 1; exec 3<&-; exec "$@"';
 
-export async function runNpmAsync(args: string[], archiveCache?: string): Promise<CommandResult> {
+export async function runNpmAsync(args: string[], cache?: string): Promise<CommandResult> {
   try {
     const npm = npmInvocation(process.env, args);
     const { file, args: spawnArgs, windowsVerbatimArguments } = cmdSpawnSpec(npm.file, npm.args, npm.env);
-    const gated = archiveCache !== undefined && (process.platform === "linux" || process.platform === "darwin");
+    const gated = cache !== undefined && (process.platform === "linux" || process.platform === "darwin");
     const child = spawn(gated ? "/bin/sh" : file, gated ? ["-c", npmChildGate, "cotal-release-check", file, ...spawnArgs] : spawnArgs, {
       cwd: npm.cwd, env: npm.env, windowsVerbatimArguments, windowsHide: true,
       ...(gated ? { detached: true, stdio: ["ignore", "pipe", "pipe", "pipe"] } : {}),
@@ -112,13 +112,13 @@ export async function runNpmAsync(args: string[], archiveCache?: string): Promis
       try {
         if (child.pid === undefined) permit.end();
         else {
-          writeFileSync(join(archiveCache!, `.worker-${child.pid}`), "", { mode: 0o600 });
+          writeFileSync(join(cache!, `.worker-${child.pid}`), "", { mode: 0o600 });
           permit.end("run\n");
         }
       } catch (cause) { error = message(cause); permit.end(); }
     }
-    const status = await new Promise<number | null>(resolveClose => child.once("close", resolveClose));
-    return { status, stdout, stderr, ...(error ? { error } : {}) };
+    const result = await new Promise<{ status: number | null; signal: NodeJS.Signals | null }>(resolveClose => child.once("close", (status, signal) => resolveClose({ status, signal })));
+    return { ...result, stdout, stderr, ...(error ? { error } : {}) };
   } catch (error) {
     return { status: null, stdout: "", stderr: "", error: message(error) };
   }
