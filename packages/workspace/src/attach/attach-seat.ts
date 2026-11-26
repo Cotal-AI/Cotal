@@ -1,5 +1,5 @@
 import { dialerFor, drainAndClose, mintCreds, newIdentity, oneLine, openSessionRail, standaloneConnectOpts, type SessionGrant, type SpaceAuth } from "@cotal-ai/core";
-import type { NatsConnection } from "@nats-io/transport-node";
+import { AuthorizationError, type NatsConnection } from "@nats-io/transport-node";
 import { divergentCwdAnchor } from "../auth-paths.js";
 import { ConnectRefusal, userSessionAuth } from "../connect.js";
 import { resolveControlTarget, resolveSeatControlTarget } from "../control-target.js";
@@ -739,6 +739,8 @@ async function runAttachLoop(
     // lasted is the other half of the same question.
     if (outcome.carried || Date.now() - startedAt >= SESSION_WORKED_MS) attempt = 0;
     if (!reconnect) {
+      if (est.link.mode === "session-bearer" && outcome.reason === "connection-closed" && outcome.error instanceof AuthorizationError)
+        throw new Error(`the terminal session connection ended: ${outcome.error.message}`, { cause: outcome.error });
       // One-shot: a faulted session still throws, so `--no-reconnect` exits the way it does today.
       if (outcome.error) throw outcome.error;
       return await done({ kind: "ended", reason: outcome.reason });
