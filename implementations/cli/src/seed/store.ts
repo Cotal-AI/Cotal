@@ -79,9 +79,11 @@ export function stageSeedPayload(generation: string, name: string, opts: { force
  * GC seed-store generations other than `keepGeneration`, but ONLY those no live manifest entry still
  * installs from (its normalized `file:` spec points under the generation dir). This is the commit
  * predicate: a prior generation is removed only after every seeded entry has been re-added from the
- * new one, so a running manager never loses the bytes its connectors resolve.
+ * new one, so a running manager never loses the bytes its connectors resolve. A missing spec
+ * leaves the reference unknown, so retain the old generations.
  */
-export function gcSeedStore(keepGeneration: string, referencedSpecs: readonly string[]): void {
+export function gcSeedStore(keepGeneration: string, referencedSpecs: readonly (string | undefined)[]): void {
+  if (!referencedSpecs.every((spec): spec is string => typeof spec === "string")) return;
   const root = seedStoreDir();
   if (!existsSync(root)) return;
   for (const gen of readdirSync(root)) {

@@ -559,7 +559,7 @@ async function runUnderLocks(mode: Mode, generation: string, nonce: string, refr
       // every seeded built-in; and on an ordinary --repair a seeded entry that is not fully intact on
       // disk (a partial tear can leave package.json while a required file is gone).
       const isSeeded = entry.source === "seeded";
-      const torn = mode === "repair" && isSeeded && (repairAllSeeded || installState(name) !== "intact");
+      const torn = mode === "repair" && isSeeded && (repairAllSeeded || typeof entry.spec !== "string" || installState(name) !== "intact");
       const metadataStale = !isSeeded || entry.version !== generation || connectorMetadataStale(entry);
       let refresh = mode === "force" || torn || metadataStale || isStrictlyNewer(generation, stampGen);
       if (mode === "auto" && refresh && !torn && !metadataStale && entry.version === generation && seededInstallDiffers(name, generation, entry) === undefined) {

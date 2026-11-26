@@ -799,10 +799,10 @@ async function updateOperatorExtensions(rt: UpdateRuntime, current: string): Pro
     return false;
   }
   if (!entries.length) rt.out(c.dim("operator extensions: none installed"));
-
   for (const entry of entries) {
+    const recordedSpec = typeof entry.spec === "string" ? ` (recorded spec: ${entry.spec})` : "";
     if (!entry.pkg.startsWith("@cotal-ai/")) {
-      rt.out(c.dim(`${entry.pkg}@${entry.version} - not auto-updated in v1 (recorded spec: ${entry.spec})`));
+      rt.out(c.dim(`${entry.pkg}@${entry.version} - not auto-updated in v1${recordedSpec}`));
       continue;
     }
     let differs: string | undefined;
@@ -814,7 +814,7 @@ async function updateOperatorExtensions(rt: UpdateRuntime, current: string): Pro
       continue;
     }
     if (differs === undefined) {
-      rt.out(c.green(`✓ verified ${entry.pkg}@${current}`) + c.dim(` - current generation (recorded spec: ${entry.spec})`));
+      rt.out(c.green(`✓ verified ${entry.pkg}@${current}`) + c.dim(` - current generation${recordedSpec}`));
       continue;
     }
     rt.err(c.dim(`${entry.pkg}: ${differs}; reinstalling`));
@@ -841,7 +841,7 @@ async function updateOperatorExtensions(rt: UpdateRuntime, current: string): Pro
       }
       continue;
     }
-    rt.out(c.green(`✓ ${entry.pkg}@${current}`) + c.dim(` - current generation (recorded spec: ${entry.spec})`));
+    rt.out(c.green(`✓ ${entry.pkg}@${current}`) + c.dim(` - current generation${recordedSpec}`));
   }
   return ok;
 

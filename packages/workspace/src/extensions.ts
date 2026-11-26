@@ -78,8 +78,8 @@ export interface InstalledExtension {
   readonly pkg: string;
   /** Exact installed version, pinned at add time and verified at run-import. */
   readonly version: string;
-  /** The spec the operator passed to `ext add` (registry range, file:, tarball…) — for re-adds. */
-  readonly spec: string;
+  /** The original install spec, when recorded. */
+  readonly spec?: string;
   /** `"seeded"` iff installed by the built-in-connector reconcile (not an operator `ext add`). Keys
    *  refresh-gating and import-failure hints on the marker rather than trusting the spec path. */
   readonly source?: "seeded";
@@ -108,7 +108,7 @@ export function isExtensionPathSpec(spec: string, absolute: (p: string) => boole
 /** Recovery for a recorded extension. Do not echo a registry URL or opaque selector in advice. */
 export function extensionReinstallAdvice(entry: InstalledExtension): string {
   if (entry.source === "seeded") return "Run `cotal ext seed --repair` to reinstall it.";
-  const { spec } = entry;
+  const spec = typeof entry.spec === "string" ? entry.spec : entry.pkg.startsWith("@cotal-ai/") ? `${entry.pkg}@${entry.version}` : undefined;
   if (typeof spec === "string" && (isExtensionPathSpec(spec) || /^(?:@[a-z0-9._~-]+\/)?[a-z0-9._~-]+(?:@[a-z0-9._~^*<>=|+ -]+)?$/i.test(spec)))
     return `Run ${codeSpan(`cotal ext add ${shellPath(spec)}`)} to reinstall it.`;
   return `Run ${codeSpan(`cotal ext remove ${shellPath(entry.pkg)}`)} to drop the record, or reinstall with the original spec.`;

@@ -1,4 +1,4 @@
-import { boot, existsSync, rmSync, join, check, cotal, freshCfg, seedDir, manifestPath, readJson, writeJson, listNames, track, finishScenario } from "./harness.js";
+import { boot, existsSync, mkdirSync, rmSync, writeFileSync, join, check, cotal, freshCfg, seedDir, manifestPath, readJson, writeJson, listNames, seedGeneration, track, finishScenario } from "./harness.js";
 
 try {
   // ── 8b. a built-in added at an UNCHANGED generation still seeds (fast-path coverage) ─────────────
@@ -32,6 +32,46 @@ try {
     check("same-generation built-in add: auto reconcile seeds the missing built-in", names.includes("codex"), names);
     check("provenance: a re-seed that reuses an intact payload announces no seed-store write",
       !reseed.stderr.includes("seed store payload"), reseed.stderr);
+  }
+  {
+    const cfg = track(freshCfg());
+    listNames(cfg);
+    const pkg = "@cotal-ai/spec-less-fixture";
+    const version = seedGeneration();
+    const fixture = join(cfg, "fixture");
+    mkdirSync(fixture);
+    writeJson(join(fixture, "package.json"), { name: pkg, version, type: "module", peerDependencies: { "@cotal-ai/core": "*" } });
+    writeFileSync(join(fixture, "index.js"), `import { registry } from "@cotal-ai/core";
+registry.register({ kind: "command", name: "spec-less-fixture", summary: "Test extension", run() {} });
+`);
+    const offline = { npm_config_offline: "true" };
+    const added = cotal(cfg, ["ext", "add", fixture], offline);
+    check("install spec fixture: real npm installs the operator package", added.status === 0, added.stderr);
+    const mp = manifestPath(cfg);
+    const manifest = readJson(mp);
+    const operator = manifest.extensions.find((entry: { pkg: string }) => entry.pkg === pkg);
+    delete operator.spec;
+    writeJson(mp, manifest);
+    const oldStore = join(seedDir(cfg), "store", "0.0.1-retained");
+    mkdirSync(oldStore);
+
+    const listed = cotal(cfg, ["ext", "list", "--json"], offline);
+    const row = listed.status === 0 && JSON.parse(listed.stdout).result.items.find((entry: { pkg: string }) => entry.pkg === pkg);
+    check("extension inventory lists the installed version without inventing a recorded spec",
+      row?.version === version && !Object.hasOwn(row, "spec"), listed.stdout + listed.stderr);
+    const updated = cotal(cfg, ["update"], offline);
+    check("update verifies the installed first-party operator package without its spec",
+      updated.status === 0 && updated.stdout.includes(`verified ${pkg}@${version}`), updated.stdout + updated.stderr);
+    check("a missing spec does not prove an older seed store is unreferenced", existsSync(oldStore));
+
+    const after = readJson(mp);
+    const builtin = after.extensions.find((entry: { pkg: string }) => entry.pkg === "@cotal-ai/connector-claude-code");
+    delete builtin.spec;
+    writeJson(mp, after);
+    const repaired = cotal(cfg, ["update"], offline);
+    const restored = readJson(mp).extensions.find((entry: { pkg: string }) => entry.pkg === builtin.pkg);
+    check("update repairs a missing built-in spec from the shipped payload",
+      repaired.status === 0 && restored?.spec === join(seedDir(cfg), "store", version, "claude"), repaired.stdout + repaired.stderr);
   }
 } finally {
   finishScenario();
