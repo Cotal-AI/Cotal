@@ -62,7 +62,7 @@ import {
   type Stamp,
 } from "./authority.js";
 import { gcSeedStore, stageSeedPayload } from "./store.js";
-import { prefixLockDiffers, seededInstallDiffers, operatorInstallDiffers } from "./verify.js";
+import { prefixLockDiffers, seededInstallDiffers, operatorInstallDiffers, operatorUpdateSpec } from "./verify.js";
 import { assertAutomaticSeedManagers } from "./manager-guard.js";
 
 /**
@@ -601,7 +601,7 @@ async function runUnderLocks(mode: Mode, generation: string, nonce: string, refr
         ? operatorInstallDiffers(entry, generation) !== undefined
         : mode === "force" || (mode === "repair" && repairAllSeeded) || operatorPackageDiffers(entry, generation) !== undefined
     ),
-  ).map((entry) => ({ pkg: entry.pkg, spec: `${entry.pkg}@${generation}`, version: generation }));
+  ).map((entry) => ({ pkg: entry.pkg, spec: operatorUpdateSpec(entry, generation), version: generation }));
 
   if (mode === "verify") {
     const { installExtensionSet } = await import("../commands/ext.js");
