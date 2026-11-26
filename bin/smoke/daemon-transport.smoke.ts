@@ -194,20 +194,6 @@ try {
     const pipe = (tag: string) => `\\\\.\\pipe\\cotal-daemon-smoke-${tag}-${randomBytes(4).toString("hex")}`;
     const pipePaths = (tag: string): DaemonPaths => { const state = privateDir(`${tag}-s`); return { socket: pipe(tag), state, lock: join(state, "daemon.lock") }; };
 
-    {
-      const home = privateDir("daemon state");
-      const bin = join(import.meta.dirname, "..", "dist", "cotal.js");
-      const status = spawnSync(process.execPath, [bin, "daemon", "status", "--daemon-home", home, "--plain"], { encoding: "utf8", timeout: 60_000 });
-      const next = /`(cotal daemon start [^`]+)`/.exec(status.stderr ?? "")?.[1];
-      check("stopped Windows daemon names a copyable command for its private home", status.status === 2
-        && status.stderr.includes("NOT_RUNNING") && next === `cotal daemon start --daemon-home "${home}"`, status.stderr);
-      if (next) {
-        const pasted = spawnSync(`"${process.execPath}" "${bin}" ${next.slice(6)}`, { shell: true, encoding: "utf8", timeout: 60_000 });
-        check("the Windows recovery command reaches the recorded-task check in cmd.exe", pasted.status === 2
-          && pasted.stderr.includes("TARGET_NOT_FOUND"), pasted.stderr);
-      }
-    }
-
     // ---- W1, W2 ----
     {
       const p = pipePaths("w1");
@@ -249,10 +235,11 @@ try {
     }
     {
       const home = realpathSync(privateDir("daemon state"));
+      const bin = join(import.meta.dirname, "..", "dist", "cotal.js");
+      const env = { ...process.env, COTAL_SKIP_CONNECTOR_SEED: "1" };
       const run = (verb: string, path: string, ...flags: string[]) => spawnSync(process.execPath, [
-        join(import.meta.dirname, "..", "dist", "cotal.js"),
-        "daemon", verb, "--daemon-home", path, "--plain", ...flags,
-      ], { cwd: root, env: { ...process.env, COTAL_SKIP_CONNECTOR_SEED: "1" }, encoding: "utf8", timeout: 30_000 });
+        bin, "daemon", verb, "--daemon-home", path, "--plain", ...flags,
+      ], { cwd: root, env, encoding: "utf8", timeout: 60_000 });
       for (const verb of ["status", "start"]) {
         const child = run(verb, home);
         const text = child.stdout + child.stderr;
@@ -267,9 +254,15 @@ try {
       }));
       const recorded = run("status", home);
       const advice = recorded.stdout + recorded.stderr;
+      const next = /`(?:pnpm )?cotal (daemon start [^`]+)`/.exec(advice)?.[1];
       check("W5 status distinguishes a recorded task without asserting that it is registered", recorded.status === 2
-        && advice.includes("if the recorded task is still registered") && advice.includes(`daemon start --daemon-home "${home}"`)
+        && advice.includes("NOT_RUNNING") && advice.includes("if the recorded task is still registered") && next === `daemon start --daemon-home "${home}"`
         && advice.includes("daemon.log") && advice.includes("Task Scheduler"), advice);
+      if (next) {
+        const pasted = spawnSync(`"${process.execPath}" "${bin}" ${next}`, { shell: true, cwd: root, env, encoding: "utf8", timeout: 60_000 });
+        check("W5 recovery command reaches the recorded-task check in cmd.exe", pasted.status === 2
+          && pasted.stderr.includes("TARGET_NOT_FOUND") && pasted.stderr.includes("service-task.xml"), pasted.stderr);
+      }
       const shellHome = realpathSync(privateDir("daemon $state"));
       const shellStatus = run("status", shellHome);
       const shellAdvice = shellStatus.stdout + shellStatus.stderr;
