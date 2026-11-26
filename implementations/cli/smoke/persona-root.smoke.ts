@@ -565,6 +565,15 @@ try {
   const showReceipt = show ? native([...show.replace("<name>", only).split(" "), "--plain"], CWD) : undefined;
   check("persona list's show command reads the explicitly selected catalog",
     listReceipt.status === 0 && showReceipt?.status === 0 && showReceipt.stdout.includes("Only in the other catalog."), listReceipt.stdout + listReceipt.stderr);
+  const showWords = ["p", "show", only, "--space", "offline-audit", "--json"];
+  const unknownShow = native([...showWords, "--wibble"], CWD);
+  const fixedShow = native(showWords, CWD);
+  const unknownError = JSON.parse(unknownShow.stdout || "{}").error;
+  check("persona show tells you to drop an unknown option and keep the supplied name",
+    unknownShow.status === 1 && unknownShow.stderr === "" && unknownError?.code === "USAGE_INVALID"
+    && unknownError.message === "Unknown option '--wibble'" && unknownError.remedy === "drop the unknown option"
+    && fixedShow.status === 0 && fixedShow.stderr === "" && JSON.parse(fixedShow.stdout).outcome === "ok",
+    { unknownShow: unknownShow.stdout, fixedShow: fixedShow.stdout });
   const create = plannedServer.stdout.match(/(?:cotal|pnpm cotal) (p create <name> --file <persona.md> --space offline-audit --server nats:\/\/127\.0\.0\.1:1)/)?.[1];
   const sourcePath = join(scratch, "catalog-input.md");
   const source = "---\nname: catalog-created\n---\nCreated in the other catalog.\n";
