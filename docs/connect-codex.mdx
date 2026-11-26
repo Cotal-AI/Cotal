@@ -21,6 +21,8 @@ Read [the sandbox defaults](#sandbox-autonomy) before launching an agent.
 
 Install the `codex` binary on the execution host and authenticate it using [OpenAI's authentication guide](https://developers.openai.com/codex/auth/).
 Use file-based login credentials or `OPENAI_API_KEY`.
+For a detached seat on a local stack, export `OPENAI_API_KEY` in the shell that starts `cotal up --detach`.
+If the stack is already running, restart it with the key set before spawning the seat. Setting the key only for `cotal spawn --detach` does not change the running manager's environment.
 The connector cannot use credentials held only in the OS keyring.
 Its app-server listener requires codex-cli 0.145.0 or later, although a newer release can still need a connector update.
 
