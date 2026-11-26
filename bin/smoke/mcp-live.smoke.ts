@@ -137,6 +137,50 @@ async function competingNames(space: string, mode: "race" | "sequential"): Promi
 function run(args: string[]) {
   return spawnSync(process.execPath, [bin, ...args], { cwd: scratch, env, encoding: "utf8", timeout: 30_000 });
 }
+
+async function inboxOverflow(space: string): Promise<void> {
+  const reader = new Rpc(space, "overflow-reader");
+  const writer = new Rpc(space, "overflow-writer");
+  try {
+    await Promise.all([reader.initialize(), writer.initialize()]);
+    const connect = async (rpc: Rpc) => {
+      const result = await rpc.call("cotal_connect", { name: rpc.tag });
+      const connection_id = /connection_id: (\S+)/.exec(text(result))?.[1];
+      assert.ok(connection_id, text(result));
+      return async (name: string, args: Record<string, unknown> = {}) => {
+        const reply = await rpc.call(name, { connection_id, ...args });
+        assert.ok(reply.result && !reply.result.isError, text(reply));
+        return text(reply);
+      };
+    };
+    const read = await connect(reader);
+    const write = await connect(writer);
+    const channel = "general";
+    const omitted = /\d+ unread channel posts? (?:was|were) omitted/;
+    const notice = "3 unread channel posts were omitted because the local inbox was full.";
+    for (let i = 0; i < 203; i++) {
+      await write("cotal_send", { channel, text: `overflow-probe-${i} end` });
+    }
+    let peeked = "";
+    await until(async () => {
+      peeked = await read("cotal_inbox", { peek: true });
+      return peeked.includes("overflow-probe-202 end");
+    }, "last overflow probe did not reach the reader");
+    const drained = await read("cotal_inbox");
+    check("MCP inbox reports how many unread channel posts overflowed and how to recover them",
+      drained.includes(notice) && drained.includes("`cotal history <channel> --limit <n>`"));
+    check("MCP peek shows the overflow without clearing the notice or posts",
+      peeked.includes(notice) && drained.includes("overflow-probe-3 end") && drained.includes("overflow-probe-202 end") && !drained.includes("overflow-probe-2 end"));
+    check("MCP clearing read consumes the overflow notice", !(await read("cotal_inbox")).match(omitted));
+    await write("cotal_send", { channel, text: "below-cap-probe" });
+    await until(async () => (await read("cotal_inbox", { peek: true })).includes("below-cap-probe"), "control post did not reach the reader");
+    const control = await read("cotal_inbox");
+    check("an ordinary MCP delivery does not report omissions", control.includes("below-cap-probe") && !omitted.test(control));
+  } finally {
+    await Promise.all([reader.end(), writer.end()]);
+  }
+}
+
 /** This suite's identity directories, under the Cotal home where provision makes them or in the temp dir where earlier versions did. */
 const identities = () => [join(env.COTAL_HOME!, "app-identities"), env.TMPDIR!].flatMap((parent) => (existsSync(parent) ? readdirSync(parent) : []).filter((name) => name.startsWith("cotal-app-identity-")));
 const persona = "---\nname: default\nsubscribe: [general]\nallowSubscribe: [general, team.>]\nallowPublish: [general]\ncapabilities: []\n---\n\nA local conversation.\n";
@@ -314,6 +358,7 @@ try {
   check("open-mesh EOF removes its identity record", identities().length === 0);
   await competingNames(openSpace, "sequential");
   await competingNames(openSpace, "race");
+  await inboxOverflow(openSpace);
 
   const userSpace = `mcpuser${process.pid}`;
   recordMesh({ space: userSpace, server: servers, root, mode: "user", origin: "manual", ts: new Date().toISOString(),
