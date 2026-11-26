@@ -28,8 +28,9 @@ process if it is a leftover, or run the update from the installation that owns i
 installation first if its launch entry is gone. A missing external entry can have been a symlink
 into this installation, so its location alone does not prove that the Manager belongs elsewhere.
 
-macOS and Windows retain their existing Manager discovery in this release. The machine daemon
-continues to pin its hosted Managers on all supported platforms.
+On Windows, after a local stack has stopped, updates use Windows process inspection to check
+whether another local Manager may serve the space. A failed inspection does not establish that
+the Manager is gone. The machine daemon continues to pin its hosted Managers on all supported platforms.
 
 A local legacy custody report names the space, known Manager identity, seat count, and each
 seat's continuity class, including when there are no seats. Before a cold update, obtain the
