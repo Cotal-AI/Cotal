@@ -497,7 +497,7 @@ function noSpaceFailure(error: unknown, observed: BackupObservation, args: Parse
 function retryCreateStep(args: ParsedArgs): string {
   const { only, "store-dir": store } = args.values as BackupValues;
   const destination = resolve(args.positionals[1]!);
-  const windowsWord = (path: string) => !/["%`$!]|\\$/u.test(path);
+  const windowsWord = (path: string) => !/["%`$!\u2018-\u201E]|\\$/u.test(path);
   if (process.platform === "win32" && (!windowsWord(destination) || (store !== undefined && !windowsWord(store))))
     return "rerun your original backup command from the same folder";
   const quote = process.platform === "win32" ? (path: string) => `"${path}"` : shellWord;
