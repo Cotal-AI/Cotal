@@ -23,9 +23,10 @@ if (["agent-bearer", "auth-service", "app-identity"].includes(process.argv[2] ??
   const { serveFixtureGateway } = await import("../../../extensions/connector-claude-code/smoke/_gateway-fixture.js");
   await serveFixtureGateway({ cli: [process.execPath, ...process.execArgv, import.meta.filename], cwd: process.cwd(), sessions: JSON.parse(process.argv[3]!) });
 } else {
+  for (const resumeCases of process.argv.includes("--resume-approval") ? [true] : [false, true]) {
   const { spawn } = await import("node:child_process");
   const { createHash, generateKeyPairSync } = await import("node:crypto");
-  const { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } = await import("node:fs");
+  const { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } = await import("node:fs");
   const { createServer } = await import("node:http");
   const { tmpdir } = await import("node:os");
   const { join } = await import("node:path");
@@ -36,7 +37,7 @@ if (["agent-bearer", "auth-service", "app-identity"].includes(process.argv[2] ??
   process.env.COTAL_HOME = home;
   const { CotalEndpoint, createSpaceAuth, isReachable, mintCreds, newIdentity, serverConfig, setupSpaceStreams } = await import("@cotal-ai/core");
   const { authDir, assertUserAuthInfo, saveSpaceAuth, userAuthStateDir, workspaceSecretStore } = await import("@cotal-ai/workspace");
-  const { cotalAuthProvider, grantActor, loadCalloutAuth } = await import("@cotal-ai/auth");
+  const { cotalAuthProvider, grantActor, loadCalloutAuth, revokeManagedActor } = await import("@cotal-ai/auth");
   const { saveIdpSession } = await import("../src/login.js");
   const { pickFreePort } = await import("./_free-port.js");
   const { EMPTY, startApprovalAuthority } = await import("./_approval-authority.js");
@@ -62,6 +63,9 @@ if (["agent-bearer", "auth-service", "app-identity"].includes(process.argv[2] ??
   authority.retirement.driverRan = false;
   const { counts, retirement } = authority;
   const childEnv = { ...process.env, COTAL_HOME: home, NODE_EXTRA_CA_CERTS: authority.caFile };
+  const deviceHome = join(home, "device-home"), copiedHome = join(home, "copied-home");
+  mkdirSync(deviceHome);
+  mkdirSync(copiedHome);
   const jwks = JSON.stringify({ keys: [generateKeyPairSync("ed25519").publicKey.export({ format: "jwk" })] });
   const idp = createServer((_req, res) => { res.writeHead(200, { "content-type": "application/json" }); res.end(jwks); });
   await new Promise<void>((resolve) => idp.listen(0, "127.0.0.1", resolve));
@@ -92,9 +96,10 @@ if (["agent-bearer", "auth-service", "app-identity"].includes(process.argv[2] ??
 
   // One gateway process speaking MCP over stdio, as Claude Code runs the plugin's server.
   const sessions = new Map<string, string>();
-  const gateway = async (names: string[]) => {
+  const gateway = async (names: string[], userHome = deviceHome) => {
     const child = spawn(process.execPath, [...process.execArgv, import.meta.filename, "gateway",
-      JSON.stringify(names.map((session) => ({ session, path: sessions.get(session)! })))], { cwd: root, env: childEnv, stdio: ["pipe", "pipe", "pipe"] });
+      JSON.stringify(names.map((session) => ({ session, path: sessions.get(session)! })))], { cwd: root,
+      env: { ...childEnv, HOME: userHome, USERPROFILE: userHome, LOCALAPPDATA: userHome }, stdio: ["pipe", "pipe", "pipe"] });
     gateways.push(child);
     let buffer = "", stderr = "", next = 1;
     const replies = new Map<number, (value: Reply) => void>();
@@ -136,7 +141,7 @@ if (["agent-bearer", "auth-service", "app-identity"].includes(process.argv[2] ??
   };
   const recordDir = (session: string, at = space) => join(home, "app-identities", createHash("sha256").update(`${at}\0${session}`).digest("hex"));
   const record = (session: string, at = space) => existsSync(join(recordDir(session, at), "identity.json"))
-    ? JSON.parse(readFileSync(join(recordDir(session, at), "identity.json"), "utf8")) as { state: string; requestId: string; consumer: { pid: number; start?: string }; remote: { material?: { actor: string } } }
+    ? JSON.parse(readFileSync(join(recordDir(session, at), "identity.json"), "utf8")) as { state: string; requestId: string; consumer: { pid: number; start?: string }; remote: { material?: { actor: string; lifecycleUid: string } } }
     : undefined;
   const settled = (test: () => boolean | Promise<boolean>, ms = 30_000) => until(test, "not settled", ms).then(() => true, () => false);
   // The CLI under a short shell, so the saved consumer is that shell: gone when it exits, or kept
@@ -189,7 +194,7 @@ if (["agent-bearer", "auth-service", "app-identity"].includes(process.argv[2] ??
     const sentinelCreds = (await loadCalloutAuth(store, space))!.sentinelCreds;
     const userAuth = assertUserAuthInfo(prepared.publicAuth);
     authority.addMesh({ space, server: servers, root, owner, userAuth, sentinelCreds, exchange: `http://127.0.0.1:${publicPort}/exchange`,
-      local: { stateDir, provisioner, auth, servers } });
+      local: { stateDir, provisioner, auth, servers }, resume: resumeCases, selection: resumeCases });
     mkdirSync(join(home, "foreign-workspace"));
     authority.addMesh({ space: foreign, server: "nats://127.0.0.1:1", root: join(home, "foreign-workspace"), owner, userAuth, sentinelCreds });
     for (const session of [1, 2, 3, 4, 5, 6].map((n) => `recovery-session-${n}`).concat("recovery-orphan-a", "recovery-orphan-b", "recovery-live-ctl", "recovery-unknown-ctl")) {
@@ -214,6 +219,77 @@ if (["agent-bearer", "auth-service", "app-identity"].includes(process.argv[2] ??
     check("once the person approves, the conversation connects through the real gateway, plumbing and exchange with its granted actor",
       !first.error && first.id && firstActor && counts.issues === 1 && await granted(firstActor), first.text);
 
+    if (resumeCases) {
+      retirement.driverRan = true;
+      const session = "recovery-session-1", name = "recover_a";
+      const before = record(session)!;
+      const original = readFileSync(join(recordDir(session), "identity.json"), "utf8");
+      const originalProof = readFileSync(join(recordDir(session), "actor.token"), "utf8");
+      check("the saved conversation proof is owner-private and contains no raw actor token", originalProof.startsWith("cotal-conversation-resume-v1:") &&
+        (process.platform === "win32" || (statSync(join(recordDir(session), "actor.token")).mode & 0o077) === 0));
+      await stopped(g1.child);
+      const g2 = await gateway([session]);
+      const old = await g2.call("cotal_connection_status", { connection_id: first.id });
+      check("the former MCP connection ID remains process-local", old.error && old.text.includes("CONNECTION_REQUIRED"));
+      const resumed = await g2.call("cotal_connect", { name, context: session });
+      const id = /connection_id: (\S+)/.exec(resumed.text)?.[1];
+      check("same native session and selection take back the exact actor and lifecycle without approval",
+        !resumed.error && id && id !== first.id && !pendingOf(resumed.text) && counts.issues === 1 &&
+        record(session)?.remote.material?.lifecycleUid === before.remote.material?.lifecycleUid && actorOf(session) === firstActor, resumed.text);
+      check("the resumed MCP connection is live", !(await g2.call("cotal_connection_status", { connection_id: id })).error);
+      const sibling = "recovery-session-2";
+      const siblingGateway = await gateway([sibling]);
+      const foreignContext = await siblingGateway.call("cotal_connect", { name, context: session });
+      check("the second native host cannot select the first host's conversation ID", foreignContext.error &&
+        foreignContext.text.includes("has not bound its lifecycle"), foreignContext.text);
+      mkdirSync(recordDir(sibling), { mode: 0o700 });
+      const copied = { ...JSON.parse(original), session: sibling };
+      writeFileSync(join(recordDir(sibling), "identity.json"), JSON.stringify(copied), { mode: 0o600 });
+      writeFileSync(join(recordDir(sibling), "actor.token"), originalProof, { mode: 0o600 });
+      const wrongConversation = await siblingGateway.call("cotal_connect", { name, context: sibling });
+      check("a copied proof cannot join from another native conversation", !wrongConversation.error && !!pendingOf(wrongConversation.text) &&
+        wrongConversation.text.includes("saved approval could not be used") && counts.issues === 1, wrongConversation.text);
+      const disconnected = await g2.call("cotal_disconnect", { connection_id: id });
+      check("explicit disconnect removes the proof and retires the original lifecycle", !disconnected.error &&
+        !existsSync(recordDir(session)) && !await granted(firstActor) && footprint(firstActor) === "terminal", disconnected.text);
+      await stopped(g2.child);
+      await stopped(siblingGateway.child);
+
+      const restore = () => {
+        mkdirSync(recordDir(session), { mode: 0o700 });
+        writeFileSync(join(recordDir(session), "identity.json"), original, { mode: 0o600 });
+        writeFileSync(join(recordDir(session), "actor.token"), originalProof, { mode: 0o600 });
+      };
+      restore();
+      const copiedGateway = await gateway([session], copiedHome);
+      const moved = await copiedGateway.call("cotal_connect", { name, context: session });
+      check("a copied proof without the original device key starts a new approval, not a session", !moved.error &&
+        !!pendingOf(moved.text) && moved.text.includes("saved approval could not be used") && counts.issues === 1, moved.text);
+      await stopped(copiedGateway.child);
+      rmSync(recordDir(session), { recursive: true });
+      restore();
+      const g3 = await gateway([session]);
+      const retired = await g3.call("cotal_connect", { name, context: session });
+      check("the authority refuses a restored proof after explicit disconnect and explains the fresh request",
+        !retired.error && !!pendingOf(retired.text) && retired.text.includes("authority did not accept the saved approval") && counts.issues === 1, retired.text);
+      const fresh = await g3.connect(name, session);
+      const freshActor = actorOf(session)!;
+      check("fresh approval after disconnect creates a different identity", !fresh.error && freshActor !== firstActor && counts.issues === 2, fresh.text);
+      await stopped(g3.child, "SIGKILL");
+      revokeManagedActor(stateDir, owner, freshActor);
+      const g4 = await gateway([session]);
+      const revoked = await g4.call("cotal_connect", { name, context: session });
+      check("authority revocation after a crash sends the conversation through fresh approval", !revoked.error &&
+        !!pendingOf(revoked.text) && revoked.text.includes("authority did not accept the saved approval") && counts.issues === 2, revoked.text);
+      const approvedAgain = await g4.connect(name, session);
+      assert(approvedAgain.id, approvedAgain.text);
+      await stopped(g4.child);
+      const g5 = await gateway([session]);
+      const changed = await g5.call("cotal_connect", { name, context: session, channels: [{ channel: "team", access: "read" }] });
+      check("a different selection cannot resume the saved approval", !changed.error && !!pendingOf(changed.text) &&
+        changed.text.includes("does not cover this name or selection") && counts.issues === 3, changed.text);
+      console.log(`personal-native-recovery: ${checks} real-broker resume checks passed`);
+    } else {
     // The reported sequence: disconnect while the authority reports retirement pending, then
     // every route the conversation can take next.
     const disconnect = await g1.call("cotal_disconnect", { connection_id: first.id });
@@ -348,6 +424,7 @@ if (["agent-bearer", "auth-service", "app-identity"].includes(process.argv[2] ??
     await stopped(g2.child);
     check("every fixture identity reached terminal retirement", [...authority.requests.values()].every((row) => row.phase === "terminal"), [...authority.requests.values()].map((row) => row.phase));
     console.log(`personal-native-recovery: ${checks} real-broker gateway checks passed; isolated HTTPS authority only, no hosted acceptance claimed`);
+    }
   } finally {
     for (const child of [...gateways, ...holders]) await stopped(child, "SIGKILL");
     for (const endpoint of endpoints.reverse()) await endpoint.stop().catch(() => {});
@@ -357,5 +434,6 @@ if (["agent-bearer", "auth-service", "app-identity"].includes(process.argv[2] ??
     await authority.close();
     await new Promise<void>((resolve) => idp.close(() => resolve()));
     rmSync(home, { recursive: true, force: true });
+  }
   }
 }

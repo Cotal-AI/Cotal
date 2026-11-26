@@ -60,7 +60,7 @@ export interface ApprovalAuthority {
    *  `exchange` is the auth service's public exchange URL; `local` issues into a real ledger. */
   addMesh(mesh: {
     space: string; server: string; root: string; owner: string; userAuth: ReturnType<typeof assertUserAuthInfo>; sentinelCreds: string;
-    exchange?: string; local?: LocalIssuer; selection?: boolean;
+    exchange?: string; local?: LocalIssuer; selection?: boolean; resume?: boolean;
   }): void;
   /** The fixture person's decision in the authority's own page. */
   decide(requestId: string, decision: { approve: Approved } | "deny" | "expire"): void;
@@ -133,7 +133,8 @@ export async function startApprovalAuthority(o: { home: string; human: string })
       const exchange = /^\/s\/([^/]+)\/exchange$/.exec(url.pathname);
       const forward = exchange ? meshes.get(exchange[1]!)?.exchange : undefined;
       if (req.method === "POST" && forward) {
-        const answer = await fetch(forward, { method: "POST", headers: { "content-type": "application/json" }, body: await read(req) });
+        const answer = await fetch(forward, { method: "POST", headers: { "content-type": "application/json",
+          ...(req.headers["cotal-conversation-resume"] === "1" ? { "cotal-conversation-resume": "1" } : {}) }, body: await read(req) });
         res.writeHead(answer.status, { "content-type": "application/json" });
         return res.end(await answer.text());
       }
@@ -183,7 +184,8 @@ export async function startApprovalAuthority(o: { home: string; human: string })
       meshes.set(m.space, { owner: m.owner, exchange: m.exchange, local: m.local, bundle: {
         space: m.space, server: m.server, tlsRequired: false, userAuth, policy: { events: "required" }, sentinelCreds: m.sentinelCreds,
         cloudCapabilities: { conversationIdentity: { version: 1, url: `${base}/api/spaces/${m.space}/conversation-identities` },
-          connectionApproval: { version: 1 }, ...(m.selection ? { conversationIdentitySelection: { version: 1 } } : {}) } } });
+          connectionApproval: { version: 1 }, ...(m.selection ? { conversationIdentitySelection: { version: 1 } } : {}),
+          ...(m.resume ? { conversationResume: { version: 1 } } : {}) } } });
       recordMesh({ space: m.space, server: m.server, root: m.root, mode: "user", origin: "manual", policy: { events: "required" },
         userAuth: { ...userAuth, remote: true }, ts: new Date().toISOString() });
     },

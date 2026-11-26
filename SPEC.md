@@ -1,5 +1,41 @@
 # Cotal Wire Specification
 
+## Native conversation approval resume
+
+A discovery document MAY advertise `cloudCapabilities.conversationResume: { "version": 1 }`
+alongside conversation identity and connection approval. The client retains the exact
+approved actor, lifecycle and grant. On resume it MUST use the pinned discovery origin and
+exchange address. Neither the approval URL nor the previous MCP connection ID is a proof.
+
+For a new approval on a supporting authority, the creation POST's existing `tokenHash` is
+the SHA-256 hex digest of an actor secret derived from the native conversation, its original
+request and selection, and a separate OS-user device key. The local conversation proof file
+contains the derivation context, not the actor secret. An authority MUST NOT infer device
+identity from a hostname or a client-supplied system ID. It checks the original commitment.
+
+On the pinned HTTPS exchange base, the client sends `POST <exchange-base>/exchange` with
+`Content-Type: application/json`, `Cotal-Conversation-Resume: 1`, no human bearer and no
+redirect following. The body is:
+
+```json
+{
+  "owner": "<owner>",
+  "actor": "<actor>",
+  "actorToken": "<device-derived actor secret>",
+  "conversationResume": { "v": 1, "lifecycleUid": "<uid>", "grant": {} }
+}
+```
+
+`grant` is the exact grant from issuance, not an empty object or a new selection. The
+authority verifies the actor secret in constant time, checks the exact live lifecycle and
+grant, and applies current approval and revocation policy. It MUST NOT issue a bearer,
+recreate a retired lifecycle, or extend an approval. It returns HTTP 200 with
+`{ "v": 1, "lifecycleUid": "<uid>", "status": "resumed" }` only if that approval still holds.
+Its definitive refusal is HTTP 401 with `{ "v": 1, "lifecycleUid": "<uid>", "status": "refused" }`.
+An unknown or malformed answer proves neither outcome. An accepted resume still uses the
+ordinary actor exchange and broker authorization to connect. Explicit disconnect uses
+the exact lifecycle retirement route, which MUST also prevent later resume.
+
 ## Local daemon custody recovery
 
 The local daemon protocol additionally accepts `space-recover` with `space`, `candidate`
