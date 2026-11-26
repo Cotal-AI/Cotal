@@ -31,7 +31,7 @@ const connector: Connector = { kind: "connector", name: "e2e-stub", requires: ["
   },
 }) };
 registry.register(connector);
-const openCodeStub: Connector = { ...connector, name: "opencode", buildLaunch(o) {
+const openCodeStub: Connector = { ...connector, name: "opencode", supportsModelVariant: true, buildLaunch(o) {
   const spec = connector.buildLaunch(o);
   return { ...spec, env: { ...spec.env, COTAL_E2E_META_MODEL: "local/gpt-6.2-sol" } };
 } };
@@ -75,19 +75,23 @@ try {
   const started = await manager.startAgent({ name: "raw-seat", agent: "e2e-stub", model: "raw-pin", cwd: dir, events: false });
   assert.ok(started.ok, JSON.stringify(started));
   const iid = (manager as unknown as { managerInstanceId: string }).managerInstanceId;
-  for (const [name, model] of [["observed-seat", undefined], ["pinned-seat", "local/launch-pin"]] as const) {
+  for (const [name, model, variant] of [["observed-seat", undefined, undefined], ["pinned-seat", "local/launch-pin", "no-such-variant"]] as const) {
     writeFileSync(join(root, ".cotal", "agents", `${name}.md`), `---\nname: ${name}\nagent: opencode\n---\n`);
-    const seat = await manager.startAgent({ name, agent: "opencode", model, cwd: dir, events: false });
+    const seat = await manager.startAgent({ name, agent: "opencode", model, variant, cwd: dir, events: false });
     assert.ok(seat.ok, JSON.stringify(seat));
     const plain = await cli(["status", name], "--plain");
     check(`named status distinguishes ${model ? "a launch pin" : "the observed model"}`,
       plain.code === 0 && (model
         ? /Model: +local\/launch-pin - requested, not provider-confirmed/.test(plain.out) && !plain.out.includes("reported by OpenCode")
-        : /Model: +local\/gpt-6\.2-sol - reported by OpenCode/.test(plain.out) && /Variant: +high/.test(plain.out)), plain);
+          && /^ *Variant: +no-such-variant - requested, not provider-confirmed$/m.test(plain.out)
+        : /Model: +local\/gpt-6\.2-sol - reported by OpenCode/.test(plain.out) && /^ *Variant: +high$/m.test(plain.out)), plain);
     const json = await cli(["status", name]);
     check("named status JSON keeps the recorded launch model and variant", json.code === 0
-      && JSON.parse(json.out).result.execution.model === (model ?? null) && JSON.parse(json.out).result.details.variant === null, json);
+      && JSON.parse(json.out).result.execution.model === (model ?? null) && JSON.parse(json.out).result.details.variant === (variant ?? null), json);
   }
+  const psText = await cli(["ps"], "--plain");
+  check("plain ps labels the OpenCode launch variant as requested", psText.code === 0
+    && /pinned-seat[^\n]+local\/launch-pin \(requested variant no-such-variant\)/.test(psText.out), psText);
   const badPin = await cli(["status", "absent-seat", "--on", "manager"]);
   const error = JSON.parse(badPin.out).error;
   const retryCommand = error?.remedy?.match(/rerun it as `([^`]+)`/)?.[1];
@@ -102,7 +106,9 @@ try {
       && result.error?.code === "TARGET_NOT_FOUND" && result.target?.space === space && result.target.managerInstanceId === iid, retried);
   const ps = await cli(["ps"]);
   check("positive control: raw-open ps sees the held seat", ps.code === 0 && ps.out.includes("raw-seat"), ps);
-  const row = (JSON.parse(ps.out).result.items as { name: string; id: string; lifecycleUid: string }[]).find(p => p.name === "raw-seat")!;
+  const items = JSON.parse(ps.out).result.items as { name: string; id: string; lifecycleUid: string; variant?: string }[];
+  check("ps JSON keeps the recorded launch variant", items.find(p => p.name === "pinned-seat")?.variant === "no-such-variant", ps);
+  const row = items.find(p => p.name === "raw-seat")!;
   for (const pin of [[], ["--on", iid]]) {
     const status = await cli(["status", "raw-seat", ...pin]);
     check(`raw-open named status ${pin.length ? "with" : "without"} explicit owner`, status.code === 0 && status.out.includes("raw-seat") && status.out.includes("raw-pin") && status.out.includes(iid), status);
