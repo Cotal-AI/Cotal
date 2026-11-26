@@ -843,18 +843,20 @@ async function serviceSurface(found: Command | undefined, words: string[], forRe
 }
 
 /** Recover the command and output mode for a malformed leading switch without dispatching it. */
-async function unknownInvocationExit(commands: readonly Command[], word: string, args: string[], output: string[], beforeSeparator: boolean): Promise<never> {
+async function unknownInvocationExit(commands: readonly Command[], word: string, args: string[], output: string[], beforeSeparator: boolean, typed?: { message: string; remedy?: string }): Promise<never> {
   const equals = word.indexOf("=");
   const flag = equals === -1 ? undefined : word.slice(0, equals);
-  if (!beforeSeparator || !flag || (!GLOBAL_FLAG_WORDS.has(flag) && !OUTPUT_FLAG_WORDS.has(flag))) usageExit(unknownCommandMessage(commands, word));
+  const refusal = typed ?? (flag && (GLOBAL_FLAG_WORDS.has(flag) || OUTPUT_FLAG_WORDS.has(flag)) ? switchValueRefusal(flag) : undefined);
+  if (!beforeSeparator || !refusal) usageExit(typed?.message ?? unknownCommandMessage(commands, word), undefined, false, false, typed?.remedy);
   const retry = leadingInvocation(args, true);
   const found = findCommand(commands, retry.word);
   const words = [...output, ...retry.leading.filter((item) => OUTPUT_FLAG_WORDS.has(item)), ...retry.args];
   const { cmd, rest } = await serviceSurface(takesWordsRaw(found) ? undefined : found, words, true);
+  const json = cmd !== undefined && asksForJson(cmd, rest);
+  if (typed && !json) usageExit(typed.message, undefined, false, false, typed.remedy);
   const end = rest.indexOf("--");
   const plain = (end === -1 ? rest : rest.slice(0, end)).includes("--plain");
-  const { message, remedy } = switchValueRefusal(flag);
-  return usageExit(message, cmd, cmd !== undefined && asksForJson(cmd, rest), plain, remedy, rest);
+  return usageExit(refusal.message, cmd, json, plain, refusal.remedy, rest);
 }
 
 /**
@@ -1020,8 +1022,7 @@ async function dispatchCli(registry: Registry, argv: string[], opts: RunCliOptio
   const typed = cmd || awaitingSeed ? undefined : typographicOption(word, new Set(LEADING_FLAGS.map((flag) => flag.slice(2))), [
     jsonFlag, { name: "help", short: "h", type: "boolean" }, { name: "version", short: "V", type: "boolean" },
   ]);
-  if (typed) usageExit(typed.message, undefined, false, false, typed.remedy);
-  if (!cmd && !awaitingSeed) return unknownInvocationExit(commands, word, args, output, argv[leading.length] !== "--");
+  if (!cmd && !awaitingSeed) return unknownInvocationExit(commands, word, args, output, argv[leading.length] !== "--", typed);
   // `cotal <cmd> --help` / `-h` → that command's help, never run it. This intercept also covers
   // rawArgs commands and extension STUBS (cached specs are exactly the display surface) — only
   // `__`-internal ones are exempt, because __complete's argv is ANOTHER command's half-typed
