@@ -1019,7 +1019,7 @@ async function runUp(args: ParsedArgs, invokedFrom: string, inheritedLock?: Main
   if (managerName !== undefined) {
     const named = { root: cotalRoot(), space: values.space ?? folderSpace() };
     if (readManagerName(named) !== managerName && managerRecordState(named.space, named.root).state === "alive")
-      throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `a manager already runs for space ${named.space}, and it keeps the name it started with`, { target: { root: named.root, space: named.space }, remedy: `stop it with \`cotal down\`, then run ${codeSpan(`cotal up --manager-name ${shellWord(managerName)}`)}` });
+      throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `a manager already runs for space ${named.space}, and it keeps the name it started with`, { target: { root: named.root, space: named.space }, remedy: `run ${codeSpan(`${values.json ? "cotal" : displayCmd()} down`)} from ${codeSpan(shellWord(named.root))}, then retry the original startup command unchanged from its original folder` });
   }
   // The manager records this cap once it serves. A running manager keeps the cap it started with.
   const managerSeatCap = parseSeatCapFlag("--seat-cap", values["seat-cap"]);
