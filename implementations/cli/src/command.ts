@@ -583,8 +583,12 @@ function missingValue(cmd: Command, words: readonly string[], flag: FlagSpec, be
   return { message: `--${flag.name} needs a value`, remedy: `write --${flag.name} ${flag.value ?? "<value>"}${beforeSeparator ? " before --" : ""}` };
 }
 
-function switchValueRefusal(flag: string) {
-  return { message: `${flag} takes no value`, remedy: `omit ${flag} or pass it without a value` };
+function switchValueRefusal(flag: string, cmd?: Command, rest: readonly string[] = []) {
+  const first = cmd && metadataPositionals(cmd, rest).positionals[0]?.value;
+  const acceptsFlag = GLOBAL_FLAG_WORDS.has(flag) || (cmd && (flag === "--plain"
+    ? (findSubcommand(cmd, first) ?? cmd).outputs?.includes("plain")
+    : structured(cmd, first)));
+  return { message: `${flag} takes no value`, remedy: `omit ${flag}${acceptsFlag ? " or pass it without a value" : ""}` };
 }
 
 /** A parse error as a refusal. A mistyped option names its spelling. A word that starts with `-`
@@ -847,9 +851,9 @@ async function serviceSurface(found: Command | undefined, words: string[], forRe
 /** Recover the command and output mode for a malformed leading switch without dispatching it. */
 async function unknownInvocationExit(commands: readonly Command[], word: string, args: string[], output: string[], beforeSeparator: boolean, typed?: { message: string; remedy?: string }): Promise<never> {
   const equals = word.indexOf("=");
-  const flag = equals === -1 ? undefined : word.slice(0, equals);
-  const refusal = typed ?? (flag && (GLOBAL_FLAG_WORDS.has(flag) || OUTPUT_FLAG_WORDS.has(flag)) ? switchValueRefusal(flag) : undefined);
-  if (!beforeSeparator || !refusal) usageExit(typed?.message ?? unknownCommandMessage(commands, word), undefined, false, false, typed?.remedy);
+  const flag = equals === -1 ? word : word.slice(0, equals);
+  const malformedSwitch = equals !== -1 && (GLOBAL_FLAG_WORDS.has(flag) || OUTPUT_FLAG_WORDS.has(flag));
+  if (!beforeSeparator || (!typed && !malformedSwitch)) usageExit(typed?.message ?? unknownCommandMessage(commands, word), undefined, false, false, typed?.remedy);
   const retry = leadingInvocation(args, true);
   const found = findCommand(commands, retry.word);
   const words = [...output, ...retry.leading.filter((item) => OUTPUT_FLAG_WORDS.has(item)), ...retry.args];
@@ -858,6 +862,7 @@ async function unknownInvocationExit(commands: readonly Command[], word: string,
   if (typed && !json) usageExit(typed.message, undefined, false, false, typed.remedy);
   const end = rest.indexOf("--");
   const plain = (end === -1 ? rest : rest.slice(0, end)).includes("--plain");
+  const refusal = typed ?? switchValueRefusal(flag, cmd, rest);
   return usageExit(refusal.message, cmd, json, plain, refusal.remedy, rest);
 }
 
