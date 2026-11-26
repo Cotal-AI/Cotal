@@ -91,11 +91,15 @@ export function sendArguments(args: ParsedArgs): SendInput {
   if (destinations.length !== 1) throw new CommandFailure("refused", "USAGE_INVALID", "choose one destination: --to/-t, --channel/-c, or --role/-r");
   const destination = destinations[0]!;
   destination.target = destination.target.replace(destination.mode === "msg" ? /^#/ : /^@/, "");
-  const bodies = Number(args.positionals.length === 1) + Number(values.file !== undefined) + Number(values.stdin === true);
   if (!destination.target.trim()) {
     const [option, what] = destination.mode === "msg" ? ["--channel/-c", "channel"] : destination.mode === "ask" ? ["--role/-r", "role"] : ["--to/-t", "agent"];
     throw new CommandFailure("refused", "USAGE_INVALID", `${option} is empty; name one ${what === "agent" ? "agent or full instance id" : what}`, { remedy: `set ${option} in the original command and keep the same message body and options` });
   }
+  if (destination.mode === "ask" && values["reply-to"] !== undefined)
+    throw new CommandFailure("refused", "USAGE_INVALID", "role sends do not take --reply-to", {
+      remedy: "To send to the role, remove --reply-to and its value. To reply, replace the role destination with --to or --channel. Keep the other options and include a message body.",
+    });
+  const bodies = Number(args.positionals.length === 1) + Number(values.file !== undefined) + Number(values.stdin === true);
   const output = values.json ? "--json " : values.plain ? "--plain " : "";
   const again = (body: string) => sendAgain(destination, values, `${output}${body}`);
   if (args.positionals.length > 1 || bodies !== 1 || values.file === "")
@@ -118,7 +122,7 @@ export function sendArguments(args: ParsedArgs): SendInput {
   } catch (error) {
     throw new CommandFailure("refused", "USAGE_INVALID", (error as Error).message);
   }
-  if (values["reply-to"] !== undefined && (destination.mode === "ask" || !values["reply-to"].trim() || /[\u0000-\u001f\u007f]/u.test(values["reply-to"])))
+  if (values["reply-to"] !== undefined && (!values["reply-to"].trim() || /[\u0000-\u001f\u007f]/u.test(values["reply-to"])))
     throw new CommandFailure("refused", "USAGE_INVALID", "--reply-to takes a message identifier and requires --to or --channel");
   if (values.mention?.length && destination.mode !== "msg")
     throw new CommandFailure("refused", "USAGE_INVALID", "native mention hints belong to channel publications; they do not change a direct or role destination", { remedy: "drop --mention, or send to a channel with -c <channel>" });
