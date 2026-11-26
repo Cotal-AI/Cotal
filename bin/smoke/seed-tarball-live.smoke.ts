@@ -88,12 +88,15 @@ registry.register({ kind: 'command', name: '${command}', summary: 'Print a test 
     rmSync(installed);
     await run("update", "--self");
     check("self-update repairs a missing entry from the recorded local copy", readFileSync(installed).equals(readFileSync(join(source, "index.mjs"))));
+    writeFileSync(installed, "throw new Error('unloadable local entry');\n");
+    await run("update", "--self");
+    check("self-update repairs an unloadable entry from the recorded local copy", readFileSync(installed).equals(readFileSync(join(source, "index.mjs"))));
     check("local scoped extension runs after repair", (await run(command)).stdout.trim() === "probe loaded");
     const status = JSON.parse((await run("status", "--json")).stdout) as { result: { extensions: { items: { package: string }[] } } };
     check("status still lists the local scoped extension", status.result.extensions.items.some(item => item.package === pkg));
     const inventory = JSON.parse(readFileSync(join(extensions, "extensions.json"), "utf8")) as { extensions: { pkg: string; spec: string }[] };
     check("update retains the operator's recorded path", inventory.extensions.find(item => item.pkg === pkg)?.spec === source);
-    check("npm checks the latest CLI without asking for the local package", requests.filter(path => path === "/cotal-ai").length >= 3 && !requests.includes(`/${pkg}`), requests);
+    check("npm checks the latest CLI without asking for the local package", requests.filter(path => path === "/cotal-ai").length >= 4 && !requests.includes(`/${pkg}`), requests);
   } finally {
     await new Promise<void>((resolveClose, reject) => registry.close(error => error ? reject(error) : resolveClose()));
   }

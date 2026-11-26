@@ -19,16 +19,22 @@
  * and leaves a taken one taken; closing the endpoint returns at once. A `MeshAgent` opens its endpoint
  * once it joined a per-user mesh, with or without a dispatcher, runs a command that arrived before
  * the broker confirmed its serve, never runs a command still queued when it stops, stops within 4 s
- * while its harness is being asked to start a command, and on an open mesh starts as before and
- * serves nothing. `turn` queues the owner's words and images on the same queue and the harness gets them
+ * while its harness is being asked to start a command, and on an open mesh serves too, where a
+ * client with no credential calls it. `turn` queues the owner's words and images on the same queue and the harness gets them
  * once taken; a turn with nothing in it is bad-request, a turn to a connector that takes none, or with
  * images to one that takes no images, is unimplemented, and an agent never gives itself a turn.
  * `usage` answers the harness's numbers, `supported: false` without a hook, and unavailable when the
- * harness fails; the broker refuses both to everyone but the owner's sessions. Presence shows
- * `agentEndpoint` with all four for a pi-like dispatcher and all false with none, follows the
- * dispatcher's `watch` as its `unsupported()` flips (all four false, `turn` then unimplemented and
+ * harness fails; the broker refuses both to everyone but the owner's sessions. `set-model` hands the
+ * harness the model and variant, or the variant alone, answers what the harness runs and shows it on
+ * the card; the harness's refusal is not-found or failed-precondition and changes nothing, its
+ * failure is internal with the outcome unknown, a connector without the hook is unimplemented, a
+ * closed lane unavailable, and an agent never switches its own model; the broker refuses it to
+ * everyone but the owner's sessions. Presence shows
+ * `agentEndpoint` with all five for a pi-like dispatcher and all false with none, follows the
+ * dispatcher's `watch` as its `unsupported()` flips (all five false, `turn` then unimplemented and
  * `usage` then `supported: false` without asking the harness), and carries
- * none on an offline record or on an open mesh.
+ * none on an offline record. A MeshAgent's card keeps a switched model when the
+ * harness later reports another.
  *
  * Run: pnpm smoke:agent-commands:auth   (needs nats-server on PATH; operator-mode callout, local-only)
  */
@@ -43,12 +49,13 @@ import {
   AGENT_CONTRACTS, AGENT_ENDPOINT, CotalEndpoint, EpEnvelopeError, createSpaceAuth, epPrincipalCallerReplyFilter, epPrincipalGrantRows,
   epPrincipalNoRespondersSubject, epPrincipalReplySubject, epPrincipalRequestSubject, isReachable, mintCreds, mintLifecycleUid,
   newIdentity, processRuntime, provisionAgentDurables, serverConfig, setupSpaceStreams,
-  type CommandEntry, type CommandState, type CommandTarget, type EndpointReply, type EpPrincipal, type Presence,
+  type CommandEntry, type CommandState, type CommandTarget, type EndpointReply, type EpPrincipal, type Presence, type SetModelOutput,
 } from "@cotal-ai/core";
 import { createCalloutAuth, calloutPermissions, deriveOwnerToken, startAuthCallout, USER_TOKEN_VER, type AclResolver, type ValidatedUserToken } from "@cotal-ai/auth";
 import { SMOKE_BROKER_TOKEN, createSuite, killAndAwaitExit, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { openAgentEndpoint, type AgentEndpoint } from "../src/agent-endpoint.js";
 import { CommandRefused, createCommandLane, type AgentCommand, type AgentTurn, type AgentUsage, type CommandDispatcher } from "../src/agent-commands.js";
+import { createModelLane } from "../src/agent-model.js";
 import { MeshAgent } from "../src/agent.js";
 import type { AgentConfig } from "../src/config.js";
 import { pickFreePort } from "./_free-port.js";
@@ -118,7 +125,7 @@ const resolveAcl: AclResolver = (t) => {
   return { allowSubscribe: [], allowPublish: [], lifecycleUid: w.uid, scope: [], kind: w.kind };
 };
 // The shipped mint, plus one test-only edit: `builder` holds every grant row the shipped builder
-// makes for alice.coder out of prompts, the four command commands, interrupt, turn and usage. It refuses all but prompts.
+// makes for alice.coder out of prompts, the four command commands, interrupt, turn, usage and set-model. It refuses all but prompts.
 type Perm = { pub?: { allow?: string[] }; sub?: { allow?: string[] }; [k: string]: unknown };
 const shipped = calloutPermissions(resolveAcl, async () => {});
 const builderGrants: string[] = [];
@@ -127,7 +134,7 @@ const mintFor = async (t: ValidatedUserToken, connId: string, readerId: string):
   const uid = t.act.lifecycleUid!;
   if (uid === W.foreignGrantee.uid) {
     const pub: string[] = [], sub: string[] = [];
-    for (const command of ["prompts", "commands", "command", "command-cancel", "command-state", "interrupt", "turn", "usage"]) {
+    for (const command of ["prompts", "commands", "command", "command-cancel", "command-state", "interrupt", "turn", "usage", "set-model"]) {
       try {
         const r = epPrincipalGrantRows(space, { owner: B, actor: "builder", uid }, { owner: A, actor: "coder", uid: W.withDispatcher.uid }, [command]);
         pub.push(...r.pub);
@@ -221,19 +228,21 @@ const EXPECTED: CommandEntry[] = [
   { name: "init", target: "command" },
   { name: "browser", target: "skill", description: `${"d".repeat(1023)}…` },
 ];
-interface Fake extends CommandDispatcher { ran: AgentCommand[]; turns: AgentTurn[]; lists: number; interrupts: number; usages: number }
+interface Fake extends CommandDispatcher { ran: AgentCommand[]; turns: AgentTurn[]; lists: number; interrupts: number; usages: number; switches: [string | undefined, string | undefined][] }
 function fake(o: {
   targets?: CommandTarget[]; list?: () => Promise<unknown[]>; dispatch?: (c: AgentCommand) => Promise<void>; interrupt?: () => Promise<"interrupted" | "idle">;
   turn?: (t: AgentTurn) => Promise<void>; images?: boolean; usage?: () => Promise<AgentUsage>;
+  setModel?: (model: string | undefined, variant: string | undefined) => Promise<SetModelOutput>;
 } = {}): Fake {
   const f: Fake = {
-    ran: [], turns: [], lists: 0, interrupts: 0, usages: 0, targets: new Set(o.targets ?? ["command", "skill"]),
+    ran: [], turns: [], lists: 0, interrupts: 0, usages: 0, switches: [], targets: new Set(o.targets ?? ["command", "skill"]),
     async list() { f.lists++; return (await (o.list ? o.list() : Promise.resolve(structuredClone(LISTED)))) as CommandEntry[]; },
     async dispatch(c) { f.ran.push(c); await o.dispatch?.(c); },
     ...(o.interrupt ? { async interrupt() { f.interrupts++; return o.interrupt!(); } } : {}),
     ...(o.turn ? { async turn(t: AgentTurn) { f.turns.push(t); await o.turn!(t); } } : {}),
     ...(o.images ? { images: true } : {}),
     ...(o.usage ? { async usage() { f.usages++; return o.usage!(); } } : {}),
+    ...(o.setModel ? { async setModel(model: string | undefined, variant: string | undefined) { f.switches.push([model, variant]); return o.setModel!(model, variant); } } : {}),
   };
   return f;
 }
@@ -270,6 +279,7 @@ try {
   const coder2Ep = await userEndpoint(W.sibling);
   const bobWebEp = await userEndpoint(W.foreignSession);
   const builderEp = await userEndpoint(W.foreignGrantee);
+  const rosterOf = (w: Who) => webEp.getRoster().find((p: Presence) => p.card.id === `${w.owner}.${w.actor}`);
 
   const queue = async (to: Who, args: Record<string, unknown>): Promise<{ verdict: string; id?: string; data?: unknown }> => {
     const r = await settled(call(webEp, to, "command", args));
@@ -323,26 +333,26 @@ try {
 
   console.log("\nwho else may call");
   {
-    const heard = () => coderHarness.ran.length + coderHarness.lists + coderHarness.interrupts + coderHarness.turns.length + coderHarness.usages;
+    const heard = () => coderHarness.ran.length + coderHarness.lists + coderHarness.interrupts + coderHarness.turns.length + coderHarness.usages + coderHarness.switches.length;
     const before = heard();
-    const FIVE = ["commands", "command", "command-cancel", "command-state", "interrupt", "turn", "usage"] as const;
-    const argsFor = (cmd: string): Record<string, unknown> => (cmd === "commands" || cmd === "interrupt" || cmd === "usage" ? {} : cmd === "command" ? { target: "command", name: "review" } : cmd === "turn" ? { text: "hello" } : { id: ranCommand.id });
+    const FIVE = ["commands", "command", "command-cancel", "command-state", "interrupt", "turn", "usage", "set-model"] as const;
+    const argsFor = (cmd: string): Record<string, unknown> => (cmd === "commands" || cmd === "interrupt" || cmd === "usage" ? {} : cmd === "command" ? { target: "command", name: "review" } : cmd === "turn" ? { text: "hello" } : cmd === "set-model" ? { model: "other" } : { id: ranCommand.id });
     const sibling = await Promise.all(FIVE.map((cmd) => settled(call(coder2Ep, W.withDispatcher, cmd, argsFor(cmd)))));
-    check("a sibling agent of the same owner: commands, command, command-cancel, command-state, interrupt, turn and usage are each permission-denied, not-executed",
+    check("a sibling agent of the same owner: commands, command, command-cancel, command-state, interrupt, turn, usage and set-model are each permission-denied, not-executed",
       sibling.every((r) => verdict(r) === "permission-denied/not-executed"), sibling.map(verdict));
     const coder2Raw = await seat(W.sibling);
     const siblingRaw = await Promise.all(FIVE.flatMap((cmd) => (["owner", "grant"] as const).map((word) => publishRefused(coder2Raw, W.withDispatcher, cmd, word))));
     check(`...and the broker refuses ${siblingRaw.filter(Boolean).length}/${FIVE.length * 2} of its raw publishes, under owner and grant`, siblingRaw.every(Boolean));
     const foreign = await Promise.all(FIVE.map((cmd) => settled(call(bobWebEp, W.withDispatcher, cmd, argsFor(cmd)))));
-    check("another owner's interactive session: permission-denied, not-executed, on all seven", foreign.every((r) => verdict(r) === "permission-denied/not-executed"), foreign.map(verdict));
-    check("the shipped grant builder makes rows for prompts and refuses the four command commands, interrupt, turn and usage", same(builderGrants, ["prompts"]), builderGrants);
+    check("another owner's interactive session: permission-denied, not-executed, on all eight", foreign.every((r) => verdict(r) === "permission-denied/not-executed"), foreign.map(verdict));
+    check("the shipped grant builder makes rows for prompts and refuses the four command commands, interrupt, turn, usage and set-model", same(builderGrants, ["prompts"]), builderGrants);
     const granted = await settled(call(builderEp, W.withDispatcher, "prompts", {}, "grant"));
     const viaGrant = await Promise.all(FIVE.map((cmd) => settled(call(builderEp, W.withDispatcher, cmd, argsFor(cmd), "grant"))));
-    check("another owner's agent with a prompts grant reads prompts, and lists, runs, cancels and reads no command, interrupts nothing, gives no turn and reads no usage: permission-denied, not-executed",
+    check("another owner's agent with a prompts grant reads prompts, and lists, runs, cancels and reads no command, interrupts nothing, gives no turn, reads no usage and switches no model: permission-denied, not-executed",
       verdict(granted) === "ok" && viaGrant.every((r) => verdict(r) === "permission-denied/not-executed"), [verdict(granted), ...viaGrant.map(verdict)]);
     const still = await stateOf(W.withDispatcher, ranCommand.id);
     check("the harness heard nothing from any of them, and the command they named still reads started",
-      heard() === before && still === "started", { ran: coderHarness.ran, interrupts: coderHarness.interrupts, turns: coderHarness.turns, still });
+      heard() === before && still === "started", { ran: coderHarness.ran, interrupts: coderHarness.interrupts, turns: coderHarness.turns, switches: coderHarness.switches, still });
   }
 
   console.log("\nan agent endpoint with no dispatcher");
@@ -395,7 +405,10 @@ try {
   let laneList: () => Promise<unknown[]> = async () => structuredClone(LISTED);
   let stopAnswer: "interrupted" | "idle" | "throw" = "interrupted";
   let usageAnswer: () => Promise<AgentUsage> = async () => ({ context: { used: 1200, size: 200000 }, cost: { amount: 0.42, currency: "USD" } });
+  const runsModel = async (model: string | undefined, variant: string | undefined): Promise<SetModelOutput> => ({ model: model ?? "opus", ...(variant ? { variant } : {}) });
+  let switchAnswer = runsModel;
   const laneHarness = fake({
+    setModel: (model, variant) => switchAnswer(model, variant),
     turn: async (t) => {
       if (t.text === "refuse me") throw new CommandRefused("failed-precondition", "the harness is waiting for its user");
     },
@@ -570,6 +583,32 @@ try {
       verdict(failed) === "unavailable/not-executed" && failed.ok && !failed.value.ok && failed.value.error.message.includes("no session yet"), failed.ok ? failed.value : verdict(failed));
   }
 
+  console.log("\nthe model");
+  {
+    const meta = () => (rosterOf(W.byHand)?.card.meta ?? {}) as Record<string, unknown>;
+    const both = await settled(call(webEp, W.byHand, "set-model", { model: "opus", variant: "high" }));
+    check("set-model hands the harness the model and variant, and answers what it runs",
+      both.ok && both.value.ok && same(both.value.data, { model: "opus", variant: "high" }) && same(laneHarness.switches.at(-1), ["opus", "high"]), both.ok ? both.value : verdict(both));
+    check("...and the card shows them", await until(() => meta().model === "opus" && meta().variant === "high"), meta());
+    const effort = await settled(call(webEp, W.byHand, "set-model", { variant: "low" }));
+    check("a variant alone hands the harness no model, and the answer names the model it keeps",
+      effort.ok && effort.value.ok && same(effort.value.data, { model: "opus", variant: "low" }) && same(laneHarness.switches.at(-1), [undefined, "low"]), effort.ok ? effort.value : verdict(effort));
+    check("...and the card shows the new variant", await until(() => meta().variant === "low"), meta());
+    switchAnswer = async () => { throw new CommandRefused("not-found", "the harness has no model gpt-x"); };
+    const unknown = await settled(call(webEp, W.byHand, "set-model", { model: "gpt-x" }));
+    switchAnswer = async () => { throw new CommandRefused("failed-precondition", "no credentials for that provider"); };
+    const refusedSwitch = await settled(call(webEp, W.byHand, "set-model", { model: "other/model" }));
+    switchAnswer = async () => { throw new Error("socket hang up"); };
+    const failedSwitch = await settled(call(webEp, W.byHand, "set-model", { model: "third" }));
+    switchAnswer = runsModel;
+    check("the harness's refusals are not-found and failed-precondition, not-executed, with its reason",
+      verdict(unknown) === "not-found/not-executed" && verdict(refusedSwitch) === "failed-precondition/not-executed"
+      && refusedSwitch.ok && !refusedSwitch.value.ok && refusedSwitch.value.error.message.includes("no credentials"), [verdict(unknown), verdict(refusedSwitch)]);
+    check("a harness failure is internal, with the outcome unknown", verdict(failedSwitch) === "internal/unknown", verdict(failedSwitch));
+    await wait(300);
+    check("...and after all three the card still shows the model the harness runs", meta().model === "opus" && meta().variant === "low", meta());
+  }
+
   console.log("\nforgetting");
   {
     const endOne = async (name: string): Promise<string | undefined> => {
@@ -646,6 +685,24 @@ try {
     check("after close, interrupt is unavailable, not-executed, and the harness was not asked",
       !stopShut.ok && stopShut.error instanceof EpEnvelopeError && stopShut.error.code === "unavailable" && stopShut.error.outcome === "not-executed" && hooked.interrupts === 0,
       [stopShut.ok ? stopShut.value : (stopShut.error as Error).message, hooked.interrupts]);
+    const modelCall = (lane: ReturnType<typeof createModelLane>, caller = { owner: A, actor: "web", uid: W.ownerSession.uid }) =>
+      settled(Promise.resolve().then(() => lane.handler.handler({ request: { args: { model: "next" } }, principal: addressOf(W.byHand), caller } as never)));
+    const codeOf = (r: Awaited<ReturnType<typeof modelCall>>) => (!r.ok && r.error instanceof EpEnvelopeError ? `${r.error.code}/${r.error.outcome}` : r.ok ? "ok" : (r.error as Error).message);
+    const switcher = fake({ setModel: async (model) => ({ model: model ?? "x" }) });
+    const quiet = { show: async () => {}, warn: () => {} };
+    const noSwitch = await modelCall(createModelLane(fake(), quiet));
+    const selfSwitch = await modelCall(createModelLane(switcher, quiet), { owner: W.byHand.owner, actor: W.byHand.actor, uid: W.byHand.uid });
+    const policed = await modelCall(createModelLane(switcher, { ...quiet, policed: "reviewer" }));
+    const shutModel = createModelLane(switcher, quiet);
+    shutModel.close();
+    const afterClose = await modelCall(shutModel);
+    check("set-model without a setModel hook is unimplemented, the agent itself is permission-denied, and after close it is unavailable, each not-executed, and the harness was not asked",
+      codeOf(noSwitch) === "unimplemented/not-executed" && codeOf(selfSwitch) === "permission-denied/not-executed" && codeOf(afterClose) === "unavailable/not-executed" && switcher.switches.length === 0,
+      [codeOf(noSwitch), codeOf(selfSwitch), codeOf(afterClose), switcher.switches]);
+    const policedMessage = !policed.ok ? (policed.error as Error).message : "";
+    check("an agent launched under a role's modelPolicy refuses set-model as failed-precondition, not-executed, naming the policy and a new agent, and the harness was not asked",
+      codeOf(policed) === "failed-precondition/not-executed" && policedMessage.includes("modelPolicy.reviewer") && policedMessage.includes("new agent") && switcher.switches.length === 0,
+      [codeOf(policed), policedMessage]);
     release();
     const took = await taking;
     const finished = took.ok ? took.value : `threw ${(took.error as Error).message}`;
@@ -665,7 +722,6 @@ try {
   }
 
   console.log("\na MeshAgent on a per-user mesh");
-  const rosterOf = (w: Who) => webEp.getRoster().find((p: Presence) => p.card.id === `${w.owner}.${w.actor}`);
   const servedBy = (w: Who) => until(() => rosterOf(w)?.prompts !== undefined, 10_000);
   {
     const harness = fake();
@@ -702,24 +758,34 @@ try {
       list.ok && list.value.ok && same(list.value.data, { supported: false }) && verdict(run) === "unimplemented/not-executed", [verdict(list), verdict(run)]);
     check("...and has nothing waiting to dispatch", plain.queuedCommands === 0 && await plain.dispatchNextCommand() === "empty");
     const shown = rosterOf(W.meshNoDispatcher)?.agentEndpoint;
-    check("...and its presence shows agentEndpoint with all four false", same(shown, { interrupt: false, turn: false, images: false, usage: false }), shown);
+    check("...and its presence shows agentEndpoint with all five false", same(shown, { interrupt: false, turn: false, images: false, usage: false, setModel: false }), shown);
   }
   {
     let cause: string | undefined;
     let changed: (() => void) | undefined;
     let usageReads = 0;
-    const harness = { ...fake({ interrupt: async () => "idle", turn: async () => {}, images: true, usage: async () => (usageReads++, {}) }), unsupported: () => cause, watch: (c: () => void) => { changed = c; } };
+    const harness = { ...fake({ interrupt: async () => "idle", turn: async () => {}, images: true, usage: async () => (usageReads++, {}), setModel: async (model, variant) => ({ model: model ?? "big", ...(variant ? { variant } : {}) }) }), unsupported: () => cause, watch: (c: () => void) => { changed = c; } };
     const agent = new MeshAgent(meshConfig(W.meshServed), {}, { commands: harness });
     agent.on("error", () => {});
     stops.push(() => agent.stop());
     await agent.start();
     const shown = () => rosterOf(W.meshServed)?.agentEndpoint;
-    const ALL = { interrupt: true, turn: true, images: true, usage: true };
-    check("a MeshAgent with a pi-like dispatcher shows agentEndpoint with interrupt, turn, images and usage once it serves", await until(() => same(shown(), ALL), 10_000), shown());
+    const ALL = { interrupt: true, turn: true, images: true, usage: true, setModel: true };
+    check("a MeshAgent with a pi-like dispatcher shows agentEndpoint with interrupt, turn, images, usage and setModel once it serves", await until(() => same(shown(), ALL), 10_000), shown());
+    const metaOf = () => (rosterOf(W.meshServed)?.card.meta ?? {}) as Record<string, unknown>;
+    const switched = await settled(call(webEp, W.meshServed, "set-model", { model: "big", variant: "high" }));
+    await agent.setModel("small", "low");
+    await wait(300);
+    check("its card shows the model set-model switched to, with the ai.cotal.model-set mark a launcher relaunches it on, and keeps both when the harness later reports another",
+      verdict(switched) === "ok" && metaOf().model === "big" && metaOf().variant === "high" && same(metaOf()["ai.cotal.model-set"], { model: "big", variant: "high" }),
+      { switched: verdict(switched), meta: metaOf() });
     cause = "the command mod is not running";
     changed?.();
-    check("when its dispatcher reports that unsupported() names a cause, presence shows none of the four",
-      await until(() => same(shown(), { interrupt: false, turn: false, images: false, usage: false })), shown());
+    check("when its dispatcher reports that unsupported() names a cause, presence shows none of the five",
+      await until(() => same(shown(), { interrupt: false, turn: false, images: false, usage: false, setModel: false })), shown());
+    const notNow = await settled(call(webEp, W.meshServed, "set-model", { model: "small" }));
+    check("...and set-model is unimplemented, not-executed, naming the cause", verdict(notNow) === "unimplemented/not-executed"
+      && notNow.ok && !notNow.value.ok && notNow.value.error.message.includes("the command mod is not running"), notNow.ok ? notNow.value : verdict(notNow));
     const turn = await settled(call(webEp, W.meshServed, "turn", { text: "hello" }));
     check("...and the owner's turn is unimplemented, not-executed, and the harness never got it", verdict(turn) === "unimplemented/not-executed" && harness.turns.length === 0, verdict(turn));
     const usage = await settled(call(webEp, W.meshServed, "usage"));
@@ -727,7 +793,7 @@ try {
       usage.ok && usage.value.ok && same(usage.value.data, { supported: false }) && usageReads === 0, usage.ok ? usage.value : verdict(usage));
     cause = undefined;
     changed?.();
-    check("once it names none again, presence shows all four", await until(() => same(shown(), ALL)), shown());
+    check("once it names none again, presence shows all five", await until(() => same(shown(), ALL)), shown());
     await agent.stop();
     const gone = await until(() => rosterOf(W.meshServed)?.status === "offline");
     check("its offline record carries no agentEndpoint", gone && rosterOf(W.meshServed)?.agentEndpoint === undefined, rosterOf(W.meshServed));
@@ -781,7 +847,7 @@ try {
     watcher.on("error", () => {});
     stops.push(() => watcher.stop());
     await watcher.start();
-    const harness = fake();
+    const harness = fake({ interrupt: async () => "idle" });
     // MeshAgent logs to stderr: an open mesh must add no line about an agent endpoint.
     const said: string[] = [];
     const write = process.stderr.write.bind(process.stderr);
@@ -794,12 +860,19 @@ try {
     stops.push(() => open.stop());
     try {
       await open.start();
-      const seen = await until(() => watcher.getRoster().some((p: Presence) => p.card.id === open.id), 8000);
-      await wait(500);
+      const served = await until(() => watcher.getRoster().find((p: Presence) => p.card.id === open.id)?.prompts !== undefined, 8000);
       const presence = watcher.getRoster().find((p: Presence) => p.card.id === open.id);
-      check("a MeshAgent with a dispatcher on an open mesh starts and connects as before, serves nothing, logs nothing about it, and its presence has no prompts or agentEndpoint field",
-        open.connected && seen && presence !== undefined && presence.prompts === undefined && presence.agentEndpoint === undefined && open.queuedCommands === 0 && said.length === 0,
+      check("a MeshAgent with a dispatcher on an open mesh serves its agent endpoint, logs nothing about it, and its presence shows the prompts and agentEndpoint fields",
+        open.connected && served && presence?.prompts !== undefined && same(presence?.agentEndpoint, { interrupt: true, turn: false, images: false, usage: false, setModel: false }) && said.length === 0,
         { prompts: presence?.prompts, agentEndpoint: presence?.agentEndpoint, said });
+      // No row exists on an open mesh: any client that reaches the broker calls as the owner.
+      const at = { owner: presence!.card.owner ?? "local", actor: open.id.split(".").pop()!, uid: presence!.lifecycleUid!, runtimeId: presence!.runtime!.id };
+      const openCall = (command: string) => settled(watcher.callPrincipal({ endpoint: AGENT_ENDPOINT, principal: at, command, authority: "owner", args: {}, deadlineMs: WAIT }));
+      const list = await openCall("commands");
+      const stop = await openCall("interrupt");
+      check("...and a client with no credential lists its commands and interrupts it",
+        list.ok && list.value.ok && same(list.value.data, { supported: true, commands: EXPECTED }) && stop.ok && stop.value.ok && same(stop.value.data, { state: "idle" }) && harness.interrupts === 1,
+        { list: verdict(list), stop: verdict(stop) });
     } finally {
       process.stderr.write = write;
     }

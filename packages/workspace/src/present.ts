@@ -5,6 +5,7 @@ import { codeSpan, displayWidth, terminalWidth, wrapWords } from "./text-wrap.js
 
 // Defined in a leaf module so that output.ts can wrap its warnings without importing this one.
 export { codeSpan, displayWidth, terminalWidth, wrapWords };
+export { windowsShellWord } from "./text-wrap.js";
 
 /**
  * The terminal presentation every command surface shares: one view model of a finished report,

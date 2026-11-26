@@ -15,6 +15,7 @@ import type { Manager } from "./manager.js";
 import type { ManagerParts } from "./manager-parts.js";
 import { GateReconcileRefused, reconcileEndpointGate } from "./reconcile-gate.js";
 import { RunHosting } from "./run-hosting.js";
+import { hostMachine } from "./status-and-models.js";
 import { TranscriptReceiver } from "./transcript-receive.js";
 import type { ManagerConfig } from "./manager-config.js";
 import type { ManagerStartState } from "./manager-start-state.js";
@@ -315,6 +316,7 @@ export class ManagerBoot {
       // cred is broker-dead within the matrix TTL.
       creds = () => mintCreds(auth, identity, "supervisor");
     }
+    const machine = hostMachine();
     this.ep = new CotalEndpoint({
       space: this.config.space,
       servers: this.config.servers,
@@ -336,8 +338,10 @@ export class ManagerBoot {
       // holds no channel-KV read grant. Presence (the roster) is still watched.
       watchChannels: false,
       // `host` says which machine runs this manager, as an agent's card does: an owner with several
-      // managers tells them apart by it. Advisory display metadata, never a routing input.
-      card: { id, ...(this.remoteAuthority ? { owner: this.remoteAuthority.owner, actor: this.remoteAuthority.actors.supervisor } : {}), name: this.config.name, role: "manager", kind: "endpoint", meta: { host: hostname(), terminal: this.streamsTerminal ? "stream" : "none" } },
+      // managers tells them apart by it. Advisory display metadata, never a routing input. The card
+      // is built once, so `host` keeps the name the machine had at boot; `machine` does not change
+      // with it, and a caller on this machine recognises its own manager by it.
+      card: { id, ...(this.remoteAuthority ? { owner: this.remoteAuthority.owner, actor: this.remoteAuthority.actors.supervisor } : {}), name: this.config.name, role: "manager", kind: "endpoint", meta: { host: hostname(), ...(machine ? { machine } : {}), terminal: this.streamsTerminal ? "stream" : "none" } },
     });
     // Raw failures ride error; conditions the endpoint is already surviving ride warning. Both
     // matter to a supervisor operator, especially a failed standing-credential renewal.

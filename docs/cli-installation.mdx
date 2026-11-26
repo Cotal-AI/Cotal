@@ -65,10 +65,11 @@ mkdir -p -m 700 ~/research
 cotal setup --destination local --harness claude --project ~/research --space research --no-input
 ```
 
-To register a self-hosted space from a connection bundle without questions, name the harness, the
-project folder and the space from the bundle:
+To register a self-hosted space from a connection bundle without questions, create the project
+folder if it does not exist, then run setup with the harness and the space name from the bundle:
 
 ```bash
+mkdir -p -m 700 ~/research
 cotal setup --destination self-hosted --harness claude --project ~/research --space research --connection-file ./research.json --no-input
 ```
 
@@ -368,7 +369,7 @@ load, and its Claude Desktop entry), then checks other `@cotal-ai/*` operator ex
 npm's own record in the extensions prefix. One recorded at the binary's exact version with the spec
 `update` installs (`<package>@<version>`) is kept when the prefix lock records it at that version
 and every package the lock records is on disk at its recorded version. The extension's entry file
-must also be present. The extension check does not compare file contents. Cotal keeps a working
+must also be present and loadable. The extension check does not compare file contents. Cotal keeps a working
 local-path extension at the binary's version under the same lock and entry checks. If it needs
 repair at that version, Cotal reinstalls it from the recorded path. A registry extension that
 needs repair is reinstalled at the binary's exact version. A built-in or extension

@@ -1,16 +1,18 @@
 /**
- * The Codex agent's skills, owner turns and context use on its `agent` endpoint (SPEC 13.22).
+ * The Codex agent's skills, owner turns, context use and model on its `agent` endpoint (SPEC 13.22).
  * Codex's app-server lists skills and starts one as a skill in the running thread. It has no method
  * that lists or runs Codex's built-in slash commands or custom prompts, so this dispatcher runs
- * skills only. An owner's turn starts with `turn/start` on the same thread, and `usage` answers
- * what Codex last reported in `thread/tokenUsage/updated`.
+ * skills only. An owner's turn starts with `turn/start` on the same thread, `usage` answers
+ * what Codex last reported in `thread/tokenUsage/updated`, and `set-model` switches the thread with
+ * `thread/settings/update` (see model-switch.ts).
  */
 import { CommandRefused, type CommandDispatcher } from "@cotal-ai/connector-core";
 import type { CommandEntry } from "@cotal-ai/core";
 import { AppServerRpcError, type AppServerDriver, type CodexSkill } from "./app-server.js";
+import { switchModel } from "./model-switch.js";
 import { codexSkillEntries, enabledSkills } from "./skills.js";
 
-type ThreadHost = Pick<AppServerDriver, "listSkills" | "startSkillTurn" | "startTurn" | "interruptTurn" | "contextUsage">;
+type ThreadHost = Pick<AppServerDriver, "listSkills" | "startSkillTurn" | "startTurn" | "interruptTurn" | "contextUsage" | "model" | "listModels" | "switchModel">;
 
 /** Start a turn. An error answer means Codex refused it; a request it never answered may have
  *  started one. */
@@ -49,5 +51,6 @@ export function codexCommands(host: () => ThreadHost): CommandDispatcher {
       const context = host().contextUsage;
       return context ? { context } : {};
     },
+    setModel: (model, variant) => switchModel(host(), model, variant),
   };
 }

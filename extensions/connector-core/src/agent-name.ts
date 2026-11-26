@@ -1,26 +1,28 @@
 /**
- * An agent's display name on its `agent` endpoint (SPEC 13.22): the `set-name` handler. It changes
- * `card.name` and republishes presence at once. The principal, and every subject, durable and grant
+ * An agent's display name and label on its `agent` endpoint (SPEC 13.22): the `set-name` and
+ * `set-label` handlers. `set-name` changes `card.name`, `set-label` the `ai.cotal.label` shown in its
+ * place, and each republishes presence at once. The principal, and every subject, durable and grant
  * keyed by it, stays as it is.
  */
 import {
-  AGENT_CONTRACTS, AGENT_LABEL_META_KEY, AGENT_NAME_REFUSED_DETAIL, EpEnvelopeError, assertValidName,
-  type AgentNameRefusal, type CotalEndpoint, type EpErrorCode, type EpPrincipalCommandDef, type SetNameIO,
+  AGENT_CONTRACTS, AGENT_LABEL_META_KEY, AGENT_NAME_REFUSED_DETAIL, EpEnvelopeError, assertValidLabel, assertValidName,
+  type AgentNameRefusal, type CotalEndpoint, type EpErrorCode, type EpPrincipalCommandDef, type SetLabelIO, type SetNameIO,
 } from "@cotal-ai/core";
 
 export interface NameLane {
-  readonly handler: EpPrincipalCommandDef;
-  /** Refuse every later `set-name` as `unavailable`. */
+  readonly handlers: readonly EpPrincipalCommandDef[];
+  /** Refuse every later `set-name` and `set-label` as `unavailable`. */
   close(): void;
 }
 
 const refused = (code: EpErrorCode, message: string, reason?: AgentNameRefusal) =>
   new EpEnvelopeError(code, message, reason ? [{ kind: AGENT_NAME_REFUSED_DETAIL, reason }] : undefined, "not-executed");
 
-/** Serve `set-name` for `ep`. Calls run one at a time, so the check that a name is free and the
- *  change it allows are one step for this agent. Two agents can still take one name at once: the
- *  check reads presence, which is advisory (SPEC §6). `onNamed` runs once a `set-name` will succeed
- *  and before the card changes, so a label the agent is about to take never covers the owner's name. */
+/** Serve `set-name` and `set-label` for `ep`. Calls run one at a time, so the check that a name is
+ *  free and the change it allows are one step for this agent. Two agents can still take one name at
+ *  once: the check reads presence, which is advisory (SPEC §6). `onNamed` runs once a `set-name` or
+ *  `set-label` will succeed and before the card changes, so a label the agent is about to take from
+ *  its first message never covers the owner's choice. */
 export function createNameLane(ep: CotalEndpoint, warn: (msg: string) => void, onNamed?: () => void): NameLane {
   let closed = false;
   let tail: Promise<unknown> = Promise.resolve();
@@ -60,16 +62,33 @@ export function createNameLane(ep: CotalEndpoint, warn: (msg: string) => void, o
     return { name: ep.card.name };
   }
 
+  async function setLabel(label: string): Promise<SetLabelIO> {
+    try {
+      assertValidLabel(label);
+    } catch (e) {
+      throw refused("bad-request", (e as Error).message);
+    }
+    if (closed) throw refused("unavailable", "this agent is stopping");
+    onNamed?.();
+    try {
+      await ep.setCardMeta({ [AGENT_LABEL_META_KEY]: label });
+    } catch (e) {
+      // The card carries the label already, so the next heartbeat publishes it.
+      warn(`set-label: presence did not take "${label}" yet: ${(e as Error).message}`);
+    }
+    return { label };
+  }
+
+  const inTurn = <T>(run: () => Promise<T>): Promise<T> => {
+    const next = tail.then(run);
+    tail = next.catch(() => {});
+    return next;
+  };
   return {
-    handler: {
-      command: "set-name",
-      contract: AGENT_CONTRACTS["set-name"],
-      handler: (ctx) => {
-        const run = tail.then(() => setName((ctx.request.args as unknown as SetNameIO).name));
-        tail = run.catch(() => {});
-        return run;
-      },
-    },
+    handlers: [
+      { command: "set-name", contract: AGENT_CONTRACTS["set-name"], handler: (ctx) => inTurn(() => setName((ctx.request.args as unknown as SetNameIO).name)) },
+      { command: "set-label", contract: AGENT_CONTRACTS["set-label"], handler: (ctx) => inTurn(() => setLabel((ctx.request.args as unknown as SetLabelIO).label)) },
+    ],
     close() {
       closed = true;
     },

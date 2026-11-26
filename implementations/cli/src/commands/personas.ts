@@ -14,7 +14,8 @@ import { targetWords } from "../lib/confirmation-required.js";
 import { assertLabels, commitPersona, editPersona, personaCatalog, personaPath, readPersonaSource, requirePersonaSource, reservedPersonaName, serializePersona, validatePersona } from "../lib/persona-files.js";
 import { completedFlagValue, completingFlagValue, positionalsForCompletion } from "../lib/completion.js";
 import { shellWord } from "../lib/endpoint-errors.js";
-import { catalogReadRefusal, hasBlankPersonaSelector, listPersonaNames, readPersonas, type PersonaEntry } from "../lib/personas.js";
+import { backslashPersonaWarning, catalogReadRefusal, hasBackslashPersonaSelector, hasBlankPersonaSelector, listPersonaNames, readPersonas, type PersonaEntry } from "../lib/personas.js";
+import { displayCmd } from "../lib/self-exec.js";
 import { openTransient, type ConnectValues } from "../lib/transient.js";
 import { c } from "../ui.js";
 
@@ -43,7 +44,7 @@ import { c } from "../ui.js";
  * broker), so the offline subcommands stay offline.
  */
 
-/** Persona names are also filenames and spawn names — mirror the `cotal_persona` tool's pattern. */
+/** The character set for a catalog filename stem. */
 const NAME_RE = /^[A-Za-z0-9_-]+$/;
 
 export async function personas(args: ParsedArgs): Promise<void> {
@@ -162,6 +163,10 @@ async function list(verbose: boolean, running: boolean, values: ConnectValues): 
   for (const e of entries) {
     const name = oneLine(e.name).padEnd(pad);
     if (e.error) {
+      if (e.link !== undefined && /^(?:ENOENT|ENOTDIR):/.test(e.error)) {
+        console.log(`${c.red(name)}  ${c.red("⨯ missing link target")} ${c.dim(`${oneLine(e.path)} is a link to ${oneLine(e.link)}. Restore the target or replace the link with a regular persona file.`)}`);
+        continue;
+      }
       const prefix = `agent file ${e.path}: `;
       const reason = e.error.startsWith(prefix) ? `${prefix}${personaDefinitionProblem(e.error, e.path)}` : e.error;
       const blankSelector = hasBlankPersonaSelector(e);
@@ -173,7 +178,9 @@ async function list(verbose: boolean, running: boolean, values: ConnectValues): 
     const meta = [d.role && c.cyan(oneLine(d.role)), d.model && c.dim(`model=${oneLine(d.model)}`), d.owner && c.dim(`owner=${oneLine(d.owner)}`), live]
       .filter(Boolean)
       .join("  ");
-    console.log(`${c.bold(name)}  ${meta}`.trimEnd());
+    const invalidSelector = hasBackslashPersonaSelector(e);
+    console.log(`${c.bold(name)}  ${invalidSelector ? `${c.red("⨯ invalid selector")}  ` : ""}${meta}`.trimEnd());
+    if (invalidSelector) console.log(c.yellow(`  ! ${oneLine(backslashPersonaWarning(e.path, targetWords(values), displayCmd()))}`));
     if (e.link !== undefined) console.log(c.yellow(`  ! ${oneLine(e.path)} is a link to ${oneLine(e.link)}; persona show, edit and remove refuse a link`));
     const desc = d.description ?? firstLine(d.persona);
     // The preview wraps under its indent at the terminal's width, so none of it is cut off. Verbose
@@ -233,6 +240,11 @@ async function create(name: string | undefined, v: { role?: string; model?: stri
     process.exit(1);
   }
   assertValidName(name); // shared reserved-character guard (also rejects "/")
+  if (name.startsWith("-")) {
+    throw new CommandFailure("refused", "USAGE_INVALID", `invalid persona name ${JSON.stringify(name)}: cannot start with "-"`, {
+      remedy: "replace the name with one that starts with a letter, digit or `_`, then retry",
+    });
+  }
   const reserved = reservedPersonaName(name);
   if (reserved) {
     console.error(c.red(reserved));

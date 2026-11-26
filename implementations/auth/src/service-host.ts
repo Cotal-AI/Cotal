@@ -563,6 +563,7 @@ async function startAuthContext(o: AuthContextOptions): Promise<{ handle: Omit<A
     ...(o.standingRenewableTtlSeconds !== undefined ? { standingRenewableTtlSeconds: o.standingRenewableTtlSeconds } : {}),
     ...(o.issuerSessionTtlSeconds !== undefined ? { issuerSessionTtlSeconds: o.issuerSessionTtlSeconds } : {}),
     ...(o.serviceEndpoints !== undefined ? { serviceEndpoints: o.serviceEndpoints } : {}),
+    sessionCalloutTimeoutMs: o.calloutLimits?.authTimeoutMs ?? 2000,
     ...(o.registry !== undefined ? { registry: o.registry, registryStore: secrets } : {}),
     ...(o.registryCredentialTtlSeconds !== undefined ? { registryCredentialTtlSeconds: o.registryCredentialTtlSeconds } : {}),
   }, onConnection);

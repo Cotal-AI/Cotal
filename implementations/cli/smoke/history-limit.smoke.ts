@@ -235,6 +235,12 @@ try {
   check("...and no chat stream was created", bareCreated === false);
 
   // ── the read-only call ───────────────────────────────────────────────────────────────────────────
+  const unknown = await run(["history", "limit", "--wibble", "--json", "--space", space]);
+  const error = unknown.envelope?.error;
+  check("history limit tells the caller to drop an unknown option rather than pass an operand",
+    unknown.status === 1 && unknown.stderr === "" && unknown.envelope?.outcome === "refused"
+    && error?.code === "USAGE_INVALID" && error.message === "Unknown option '--wibble'"
+    && error.remedy === "drop the unknown option", shown(unknown));
   const read = await run(["history", "limit", "--json", "--space", space]);
   const expected: Record<HistoryLimitStream, HistoryLimit> = { chat: CHAT_HISTORY_DEFAULT, inbox: INBOX_HISTORY_DEFAULT, dlv: INBOX_HISTORY_DEFAULT, dm: { maxAgeMs: 0, perSubject: NONE } };
   check("with no limit flag, --json without --yes reads the four streams' limits", read.status === 0 && read.envelope?.outcome === "ok" && read.envelope.result?.kind === "history-limits" && (["chat", "inbox", "dlv", "dm"] as const).every((s) => sameView(rowOf(read.envelope, s)?.holds, expected[s])), shown(read));
