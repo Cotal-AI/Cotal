@@ -1,5 +1,13 @@
 # @cotal-ai/workspace
 
+## 0.182.2
+
+### Patch Changes
+
+- cbf6823: Self-update restores missing owner read or folder search permissions on a verified, owned extensions manifest path and continues.
+- Updated dependencies [700ab47]
+  - @cotal-ai/core@0.182.2
+
 ## 0.182.1
 
 ### Patch Changes

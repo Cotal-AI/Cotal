@@ -1,5 +1,26 @@
 # cotal-ai
 
+## 0.182.2
+
+### Patch Changes
+
+- 5906e3b: `cotal ext add` refuses a local or third-party extension whose declared core peer range does not match the bundled core, without changing the installed extensions.
+- Updated dependencies [700ab47]
+- Updated dependencies [5906e3b]
+- Updated dependencies [e21aff3]
+- Updated dependencies [cbf6823]
+- Updated dependencies [e4e22eb]
+  - @cotal-ai/core@0.182.2
+  - @cotal-ai/cli@0.182.2
+  - @cotal-ai/connector-core@0.182.2
+  - @cotal-ai/manager@0.182.2
+  - @cotal-ai/workspace@0.182.2
+  - @cotal-ai/auth@0.182.2
+  - @cotal-ai/delivery@0.182.2
+  - @cotal-ai/registry@0.182.2
+  - @cotal-ai/runtime@0.182.2
+  - @cotal-ai/seat@0.182.2
+
 ## 0.182.1
 
 ### Patch Changes

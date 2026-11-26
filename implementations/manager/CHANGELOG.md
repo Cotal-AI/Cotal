@@ -1,5 +1,16 @@
 # @cotal-ai/manager
 
+## 0.182.2
+
+### Patch Changes
+
+- 700ab47: Run a foreground Hermes seat with a disposable managed profile in Windows PowerShell or Command Prompt.
+- Updated dependencies [700ab47]
+- Updated dependencies [cbf6823]
+  - @cotal-ai/core@0.182.2
+  - @cotal-ai/workspace@0.182.2
+  - @cotal-ai/seat@0.182.2
+
 ## 0.182.1
 
 ### Patch Changes

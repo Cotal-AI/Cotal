@@ -1,5 +1,20 @@
 # @cotal-ai/cli
 
+## 0.182.2
+
+### Patch Changes
+
+- 700ab47: Run a foreground Hermes seat with a disposable managed profile in Windows PowerShell or Command Prompt.
+- 5906e3b: `cotal ext add` refuses a local or third-party extension whose declared core peer range does not match the bundled core, without changing the installed extensions.
+- e21aff3: Running `cotal update --self` repairs a moved Codex marketplace even when the CLI packages are already current.
+- cbf6823: Self-update restores missing owner read or folder search permissions on a verified, owned extensions manifest path and continues.
+- e4e22eb: Split CLI dispatch into smaller steps without changing how commands run or report results.
+- Updated dependencies [700ab47]
+- Updated dependencies [cbf6823]
+  - @cotal-ai/core@0.182.2
+  - @cotal-ai/workspace@0.182.2
+  - @cotal-ai/seat@0.182.2
+
 ## 0.182.1
 
 ### Patch Changes
