@@ -808,6 +808,7 @@ For a folder below the current directory, include the `./` prefix: `./plugins/ex
 An unsupported source spelling returns `USAGE_INVALID` before installation.
 A package can declare its entry through a root `exports` entry such as
 `"exports": { ".": { "import": "./greet.mjs" } }` without also declaring `main`.
+The shorthand `"exports": { "import": "./greet.mjs" }` selects the same entry.
 An npm `main` such as `"./greet"` can resolve to `greet.js` without naming the suffix.
 Give `remove` the package name as listed by `cotal ext list`, without a version.
 For a scoped package such as `@acme/_helper`, include the scope and the leading underscore.
