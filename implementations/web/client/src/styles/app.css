@@ -262,6 +262,9 @@
 .ui-phone .ui-dock { padding: 0 10px 12px; }
 .ui-phone .ui-dock-in { gap: 8px; }
 .ui-phone .ui-bar h1 { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ui-phone .ui-bar-activity { height: auto; min-height: 52px; flex-wrap: wrap; padding-block: 8px; }
+.ui-phone .ui-bar-activity h1 { flex: none; }
+.ui-phone .ui-bar-activity > [data-slot="toggle-group"] { max-width: 100%; flex-wrap: wrap; }
 /* The tab bar's tabs are links, and a tab with nowhere to go yet is a disabled button. */
 .v3-tabbar > a { display: grid; justify-items: center; align-content: center; gap: 3px; font-size: 11.5px; color: var(--dim); position: relative; text-decoration: none; }
 .v3-tabbar > [aria-current="page"] { color: var(--ink); font-weight: 500; }
