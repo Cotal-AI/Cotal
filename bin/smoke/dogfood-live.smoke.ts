@@ -132,6 +132,10 @@ async function checkDefaultObserver() {
         data += decoder.decode(chunk.value, { stream: true });
       }
       ok("the default observer still receives live channel messages", data.includes(live));
+      const guide = readFileSync(join(REPO, "docs", "web-dashboard.mdx"), "utf8");
+      const activityRow = guide.split("\n").find((line) => line.startsWith("| Activity |"));
+      ok("the Activity guide describes the live feed without promising a pause control",
+        activityRow !== undefined && /\blive feed\b/i.test(activityRow) && !/\bpause\b/i.test(activityRow), activityRow);
     } finally { await reader.cancel().catch(() => {}); }
     const broker = readFileSync(join(root, ".cotal", "nats.log"), "utf8");
     ok("the observer requests neither unauthorized messaging rail", !output.includes("endpoint reported an error") && !broker.split("\n").some((line) =>

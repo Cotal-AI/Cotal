@@ -119,7 +119,7 @@ export function createCodexPersonalHost(o: CodexPersonalHostOptions): CodexPerso
   let reaping: Promise<void> | undefined;
   const plumbing = (args: string[], cwd: string): Promise<Reply> => new Promise((resolve, reject) => {
     const cotal = o.cotal();
-    execFile(cotal[0]!, [...cotal.slice(1), "app-identity", ...args], { cwd, env: o.env, timeout: PLUMBING_MS }, (_error, stdout) => {
+    execFile(cotal[0]!, [...cotal.slice(1), "app-identity", ...args], { cwd, env: o.env, timeout: PLUMBING_MS, windowsHide: true }, (_error, stdout) => {
       try { resolve(JSON.parse(stdout.trim().split("\n").at(-1) ?? "") as Reply); }
       catch { reject(new Error("the Cotal CLI did not return an identity result; any saved request was retained for recovery")); }
     });

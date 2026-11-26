@@ -179,6 +179,10 @@ const baseCommands: Command[] = [
     name: "update",
     group: "Setup",
     summary: "reconcile first-party extensions and check for a coherent cotal-ai upgrade",
+    usage: "cotal update [--self [--stop-agents]] [-s|--space <s>] [--server <url>] [--creds <path>] [--on <instance>]\n" +
+      "cotal update --check [-j|--json|--plain]\n" +
+      "cotal update --auto [off|on] [-j|--json|--plain]\n" +
+      "cotal update --notify [off|on] [-j|--json|--plain]",
     flags: updateFlags,
     positionals: "[off|on]",
     prepareMeshTarget: false,

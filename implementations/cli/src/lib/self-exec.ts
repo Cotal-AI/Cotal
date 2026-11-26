@@ -171,7 +171,7 @@ export function verifiedCotalExecutables(env: NodeJS.ProcessEnv = process.env): 
         encoding: "utf8",
         env,
         timeout: 2000,
-        windowsVerbatimArguments: spec.windowsVerbatimArguments,
+        windowsVerbatimArguments: spec.windowsVerbatimArguments, windowsHide: true,
       });
       if (result.status !== 0 || result.error) continue;
       const firstLine = `${result.stdout ?? ""}`.split(/\r?\n/, 1)[0];

@@ -775,7 +775,7 @@ export async function startProcessService(definition: ServiceDefinitionSnapshot,
         }
         const launchChild = value.launch.type === "adapter" && value.launch.adapter === "nats-broker" ? spawnBroker : spawn;
         const started = options.foreground ? launch : inOwnScope(launch, env, { space: value.space, instanceId: id, launchRequestId });
-        child = launchChild(started.program, [...started.args], { cwd: started.cwd, env, shell: false, detached: !options.foreground, stdio: options.foreground ? "inherit" : ["ignore", log!, log!] });
+        child = launchChild(started.program, [...started.args], { cwd: started.cwd, env, shell: false, detached: !options.foreground, stdio: options.foreground ? "inherit" : ["ignore", log!, log!], windowsHide: !options.foreground });
         if (!options.foreground) child.unref();
         child.once("exit", (code, signal) => { exited = true; exitCode = code; exitSignal = signal; done(); });
         await new Promise<void>((resolve, reject) => { child!.once("spawn", resolve); child!.once("error", reject); });

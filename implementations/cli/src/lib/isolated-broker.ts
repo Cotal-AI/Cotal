@@ -426,7 +426,7 @@ export async function startIsolatedBroker(options: {
     "const {spawn}=require('node:child_process');",
     "const fd=fs.openSync(log,fs.constants.O_WRONLY|fs.constants.O_APPEND|fs.constants.O_NOFOLLOW);",
     "const pidsFd=fs.openSync(pids,fs.constants.O_WRONLY|fs.constants.O_TRUNC|fs.constants.O_NOFOLLOW);",
-    "const broker=spawn(bin,['-c',config],{stdio:['ignore','ignore',fd]});",
+    "const broker=spawn(bin,['-c',config],{stdio:['ignore','ignore',fd],windowsHide:true});",
     "fs.writeFileSync(pidsFd,JSON.stringify({broker:broker.pid,watchdog:process.pid}));",
     "fs.closeSync(pidsFd);",
     "const alive=p=>{try{process.kill(p,0);return true}catch{return false}};",
@@ -438,7 +438,7 @@ export async function startIsolatedBroker(options: {
   const watchdog = spawn(
     process.execPath,
     ["-e", watchdogScript, bin, configPath, logPath, String(process.pid), String(options.deadline.getTime()), pidsPath],
-    { detached: true, stdio: "ignore" },
+    { detached: true, stdio: "ignore", windowsHide: true },
   );
   watchdog.unref();
   const watchdogOwner = owner(watchdog, `${options.label}-watchdog-${randomUUID()}`);

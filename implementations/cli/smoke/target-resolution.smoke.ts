@@ -305,6 +305,25 @@ const QUESTION = "Which one?";
         (format === "-j" ? envelope(picked)?.target?.space === space : picked.stdout.startsWith(`Mesh: ${space}\n`)), shown(picked));
     }
   }
+  for (const [words, format] of [[["endpoint", "describe"], "--plain"], [["describe"], "--json"]] as const) {
+    const beforeSpace = [...words, "--server", A, format];
+    const refused = run([...beforeSpace, "--", "manager"]);
+    const error = envelope(refused)?.error;
+    const next = error?.remedy ?? refused.stderr.split("\nNext\n")[1] ?? "";
+    const retries = Array.from(String(next).matchAll(/`([^`]+)`/g), (match) => match[1]!);
+    check(`${words.join(" ")} ${format} keeps the endpoint after the delimiter in both exact retries`, refused.status === 2 &&
+      (format === "--json" ? error?.code === "TARGET_AMBIGUOUS" : /Code:\s+TARGET_AMBIGUOUS/.test(refused.stderr)) &&
+      retries.length === 2 && ["alpha", "shared"].every((space, i) => retries[i]?.endsWith(` ${beforeSpace.join(" ")} --space ${space} -- manager`)), shown(refused));
+    for (const [i, space] of ["alpha", "shared"].entries()) {
+      const retry = retries[i];
+      if (!retry?.endsWith(` ${beforeSpace.join(" ")} --space ${space} -- manager`)) continue;
+      const picked = run(execWords(retry).slice(-beforeSpace.length - 4));
+      const receipt = envelope(picked);
+      check(`the printed ${words.join(" ")} retry reaches ${space} without changing the selection`, picked.status === 2 && getCurrent() === undefined &&
+        (format === "--json" ? receipt?.error?.code === "UNSUPPORTED" && receipt?.target?.space === space && receipt?.target?.endpoint === "manager"
+          : picked.stderr.startsWith(`Mesh: ${space}\n`) && /Code:\s+UNSUPPORTED/.test(picked.stderr)), shown(picked));
+    }
+  }
   for (const [args, beforeSpace, afterSpace] of [
     [["history", "fleet-test", "--server", A, "--plain"], `history fleet-test --server ${A} --plain`, ""],
     [["history", "--server", A, "--json", "--grep", "two words", "--", "fleet-test"], `history --server ${A} --json --grep 'two words'`, " -- fleet-test"],

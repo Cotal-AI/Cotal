@@ -614,7 +614,7 @@ const composed: Command = { ...command, async run(args) {
       const installed = executionInstallRoot();
       if (existsSync(join(installed, "dist/cotal-npm"))) {
         const selected = selectExecutionProgram(installed);
-        if (selected.retained) execFileSync(process.execPath, [join(selected.root, "scripts/pin-npm-node.cjs"), "--refresh", installed], { stdio: "ignore", timeout: 15_000, killSignal: "SIGKILL" });
+        if (selected.retained) execFileSync(process.execPath, [join(selected.root, "scripts/pin-npm-node.cjs"), "--refresh", installed], { stdio: "ignore", timeout: 15_000, killSignal: "SIGKILL", windowsHide: true });
       }
     } catch { /* Refresh is optional after successful reconciliation. */ }
   }
