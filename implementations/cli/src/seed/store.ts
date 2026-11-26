@@ -1,7 +1,7 @@
 import { chmodSync, copyFileSync, cpSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync } from "node:fs";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import { extensionsDir, isExtensionPathSpec, provenance } from "@cotal-ai/workspace";
+import { extensionsDir, isExtensionPathSpec, oneLine, provenance } from "@cotal-ai/workspace";
 import { assertReleasedSeedWriter, seedStoreDir, seedStorePath, shippedSourceDir } from "./paths.js";
 import { sharedPlacements } from "./shared.js";
 
@@ -134,8 +134,15 @@ export function gcSeedStore(keepGeneration: string, referencedSpecs: readonly (s
       path === genDir || path.startsWith(genDir + sep) || path === physicalDir || path.startsWith(physicalDir + sep));
     if (referenced) continue;
     assertReleasedSeedWriter(keepGeneration, "garbage-collect");
-    writableDirectories(genDir);
-    rmSync(genDir, { recursive: true, force: true });
+    try {
+      writableDirectories(genDir);
+      rmSync(genDir, { recursive: true, force: true });
+    } catch (error) {
+      if (!(error instanceof Error) || typeof (error as NodeJS.ErrnoException).errno !== "number") throw error;
+      const status = oneLine(error.message);
+      console.error(`Warning: could not remove old seed-store generation at ${oneLine(genDir)} (${status}). The old copy was left in place.`);
+      continue;
+    }
     // Announce the DELETE for the same reason the write above is announced: this store is
     // operator-global, so dropping a generation from it is a machine-wide act performed by a command
     // the operator ran for a local reason. It is announced AFTER the removal, so the line reports

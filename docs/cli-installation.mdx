@@ -649,6 +649,7 @@ verifies it against the installed version and npm lock. If it needs repair, the 
 package name at this Cotal release's version. A built-in without a recorded spec is repaired from
 the shipped payload.
 Seed cleanup keeps old generations that the extension inventory or npm metadata still reference.
+If cleanup cannot remove an old generation, the command warns and continues the update.
 
 Third-party extensions are listed with their installed version and any recorded spec but are not
 auto-updated in v1. Floating third-party updates require `@cotal-ai/*` peer-range validation and are
