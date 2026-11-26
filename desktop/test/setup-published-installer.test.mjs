@@ -1,6 +1,10 @@
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { test } from 'node:test';
+import { fileURLToPath } from 'node:url';
 import { selectPublishedInstaller } from './setup-published-installer.mjs';
 
 const asset = version => ({
@@ -51,4 +55,43 @@ test('workflow exercises selection, pins its version and still verifies download
   assert.match(workflow, /\$asset=@\(\$selected\)/);
   assert.match(workflow, /Get-FileHash \$path -Algorithm SHA256/);
   assert.match(workflow, /Published installer digest mismatch/);
+});
+
+test('path-probe failure preserves both process streams and the nested report', () => {
+  const scratch = mkdtempSync(join(tmpdir(), 'setup-proof-'));
+  try {
+    const candidate = join(scratch, 'candidate.exe');
+    writeFileSync(candidate, 'test installer');
+    const probe = `
+      const fs = require('node:fs');
+      fs.mkdirSync('setup-proof/path-probe/probe', { recursive: true });
+      fs.writeFileSync('setup-proof/path-probe/probe/result.json', JSON.stringify({ status: 'incomplete' }));
+      console.log('probe output');
+      console.error('probe error');
+      process.exitCode = 7;
+    `;
+    // Route PowerShell calls to a real subprocess without running an installer or starting a service.
+    const preload = `
+      import child from 'node:child_process';
+      import { syncBuiltinESMExports } from 'node:module';
+      Object.defineProperty(process, 'platform', { value: 'win32' });
+      const { execFile } = child;
+      child.execFile = (_file, args, options, cb) =>
+        execFile(process.execPath, ['--eval', args.includes('-Output') ? ${JSON.stringify(probe)} : ''], options, cb);
+      syncBuiltinESMExports();
+    `;
+    const driver = fileURLToPath(new URL('./setup-proof.mjs', import.meta.url));
+    const result = spawnSync(process.execPath, ['--import', `data:text/javascript,${encodeURIComponent(preload)}`, driver, 'path-probe'], {
+      cwd: scratch, encoding: 'utf8', timeout: 10_000,
+      env: { ...process.env, RUNNER_ENVIRONMENT: 'github-hosted', RUNNER_TEMP: scratch, LOCALAPPDATA: scratch, SystemRoot: process.env.SystemRoot ?? scratch, COTAL_SETUP_CANDIDATE: candidate },
+    });
+    assert.ifError(result.error);
+    assert.equal(result.status, 1, result.stderr || result.stdout);
+    const diagnostics = { code: 7, signal: null, stdout: 'probe output\n', stderr: 'probe error\n' };
+    const artifact = JSON.parse(readFileSync(join(scratch, 'setup-proof', 'path-probe', 'result.json'), 'utf8'));
+    assert.deepEqual(artifact.pathProbe, { status: 'incomplete', ...diagnostics });
+    assert.deepEqual(JSON.parse(result.stdout).probeFailure, diagnostics);
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
 });

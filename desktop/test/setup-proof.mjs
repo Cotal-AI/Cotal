@@ -393,6 +393,7 @@ async function pollRelaunchedApp(previousPid, previousBirth, timeoutMs = 30_000)
 }
 
 let fixture, seat, locker, app, elevatedExternalPid, systemExternalTask, stopExternalSpawner;
+let pathProbeProcess;
 let serviceInstalled = false;
 let seatStopped = false;
 try {
@@ -400,9 +401,12 @@ try {
   if (cell === 'path-probe') {
     const probeOutput = join(output, 'probe');
     const probeRun = await run(ps, ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', join(repo, 'desktop/test/setup-path-probe.ps1'), '-Installer', candidate, '-Output', probeOutput, '-ExpectedVersion', candidateVersion], 420_000);
+    const { code, signal, stdout, stderr } = probeRun;
+    pathProbeProcess = { code, signal, stdout, stderr };
+    report.pathProbe = pathProbeProcess;
     const probeResultPath = join(probeOutput, 'result.json');
     const probeReport = existsSync(probeResultPath) ? JSON.parse(readText(probeResultPath)) : null;
-    report.pathProbe = probeReport ?? { code: probeRun.code, stderr: probeRun.stderr };
+    report.pathProbe = { ...probeReport, ...pathProbeProcess };
     check('Path-identity probe script exited 0', probeRun.code === 0);
     check('All 28 guard and recovery cases completed with zero issues or failures', probeReport?.status === 'fixed-acceptance-complete' && probeReport?.cases?.length === 28 && probeReport?.observationIssues?.length === 0 && probeReport?.acceptanceFailures?.length === 0);
     check('Missing-folder /S installer rerun cleared the stale handover', probeReport?.recovery?.handoverRemoved === true);
@@ -891,5 +895,6 @@ finally {
   writeFileSync(join(output, 'application-events-1000.json'), JSON.stringify(events, null, 2));
   await fixture?.close();
   save();
-  console.log(JSON.stringify({ cell, failure: report.failure, cleanup: report.cleanupOutcome ?? null, checks: report.checks, output }, null, 2));
+  const probeFailure = report.failure ? pathProbeProcess : undefined;
+  console.log(JSON.stringify({ cell, failure: report.failure, probeFailure, cleanup: report.cleanupOutcome ?? null, checks: report.checks, output }, null, 2));
 }
