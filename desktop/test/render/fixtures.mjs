@@ -297,6 +297,17 @@ export const scenarios = [
   { name: "audit-account-several-spaces", state: { installed: true, signedIn: true, connected: true, multiple: true, account: { mode: "account", hostSupport: "supported", label: "david@cotal.ai", spaces: [{ space: "acme-team", desired: true, observed: "connected" }, { space: "research", desired: true, observed: "starting" }] } } },
   { name: "audit-move-offer", state: { installed: true, relocationOffer: true }, expect: presenceOffer("move-offer") },
   { name: "audit-pin-offer", state: { installed: true, signedIn: true, connected: true, pinOffer: true }, act: page => page.click("#open-settings"), expect: presenceOffer("pin-offer") },
+  // Settings keeps its Startup row while the main card asks for attention behind it.
+  ...[["sign-in-required", { installed: true, account: { mode: "sign-in-required", hostSupport: "supported", spaces: [{ space: "acme-team", desired: true, observed: "starting" }] } }],
+    ["service-update", { installed: true, signedIn: true, connected: true, version: "0.155.0" }]].map(([mode, state]) => ({
+    name: `settings-startup-${mode}`, state,
+    act: page => page.click("#open-settings"),
+    expect: async page => {
+      assert.equal(await page.locator("#settings-panel").isVisible(), true);
+      assert.equal(await page.locator("#settings-startup #preferences").isVisible(), true, "the Startup row shows in Settings");
+      assert.match(await page.locator("#settings-startup").innerText(), /Open at login/);
+    },
+  })),
   { name: "audit-pin-message", state: { installed: true, signedIn: true, connected: true, pinMessage: "Cotal is pinned to your taskbar." }, act: page => page.click("#open-settings"), expect: async page => assert.equal(await page.locator("#settings-startup > #pin-availability").count(), 1) },
   ...[1.25, 1.5].map(factor => ({ name: `audit-zoom-${factor * 100}-connected`, state: { installed: true, signedIn: true, connected: true, agents: auditAgents }, act: zoom(factor), expect: async page => {
     await page.locator("#dashboard").scrollIntoViewIfNeeded();

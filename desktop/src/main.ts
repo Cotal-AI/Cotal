@@ -519,7 +519,7 @@ function showStage(next: Stage, focus = false): void {
   el("recovery-panel").hidden = !recovery;
   el("setup-installer").hidden = issue !== "SETUP_INTERRUPTED";
   if (recovery) {
-    for (const id of ["sign-in-panel", "space-panel", "connect-panel", "setup-progress", "connected-panel", "preferences", "refresh"]) el(id).hidden = true;
+    for (const id of ["sign-in-panel", "space-panel", "connect-panel", "setup-progress", "connected-panel", "refresh"]) el(id).hidden = true;
     text("recover", recovery.label); el("recover").dataset.action = recovery.action;
     el<HTMLButtonElement>("recover").disabled = busy && issue !== "EXPIRED" || retrySignIn;
     if (retrySignIn) text("recover", "Getting a new code…");
@@ -562,7 +562,7 @@ function showStage(next: Stage, focus = false): void {
   el("choose-space").hidden = true;
   el("sync").hidden = addingSpace;
   if (finished && computerAccount?.mode === "sign-in-required") {
-    for (const id of ["retry-login", "sync", "another-space", "dashboard", "preferences"]) el(id).hidden = true;
+    for (const id of ["retry-login", "sync", "another-space", "dashboard"]) el(id).hidden = true;
   }
   if (finished && computerAccount?.hostSupport === "supported") {
     const signInRequired = computerAccount.mode === "sign-in-required";
