@@ -191,6 +191,7 @@ const retireCalls: Array<{ seat: OnceSeat; indexed: boolean; ended: boolean }> =
 const discarded: string[] = [];
 const launchedOnce = new Map<string, boolean | undefined>();
 let retireRefusals = 1;
+let retireProofGate: Promise<void> | undefined;
 /** What the task's records showed when the connector was asked: its index entry, and its terminal. */
 let probe: (() => Promise<{ indexed: boolean; ended: boolean }>) | undefined;
 const retireStub: Connector = {
@@ -199,6 +200,7 @@ const retireStub: Connector = {
   async retireAfterExit(seat) {
     retireCalls.push({ seat, ...((await probe?.()) ?? { indexed: false, ended: false }) });
     if (retireRefusals-- > 0) throw new Error("its launched tree is still running");
+    await retireProofGate;
     return { discard: async () => { discarded.push(seat.lifecycleUid); } };
   },
 };
@@ -484,14 +486,18 @@ try {
   const side7 = await seatSide(s7.name!, s7.seat!);
   const probeOf = (goal: string) => async () => ({ indexed: (await readGoalIndex(actx, refOf(goal))) !== undefined, ended: (await readGoalResult(actx, refOf(goal))) !== undefined });
   probe = probeOf(s7.once!.goalId);
+  let releaseProof!: () => void;
+  retireProofGate = new Promise<void>((resolve) => { releaseProof = resolve; });
   check("the launch is told it is a once seat, so it can record what it launches", launchedOnce.get(s7.name!) === true, [...launchedOnce]);
   await side7.invoke("turn-yield", { goalId: s7.once!.goalId, status: "done" });
   check("the yield stops the seat", await gone(s7.name!, s7.seat!.handle));
   await until(() => retireCalls.length >= 1, 10_000);
   check("its exit asks the connector, naming the seat it launched",
     retireCalls[0]?.seat.name === s7.name && retireCalls[0]?.seat.lifecycleUid === s7.seat!.lifecycleUid && retireCalls[0]?.seat.space === space && retireCalls[0]?.seat.workspaceRoot === workspaceRoot, retireCalls);
-  await wait(1_000);
-  check("a refused proof keeps the debt", retireCalls.length === 1 && (await readGoalIndex(actx, refOf(s7.once!.goalId))) !== undefined);
+  try {
+    await until(() => retireCalls.length >= 2, 10_000);
+    check("a refused proof keeps the debt", retireCalls.length === 2 && (await readGoalIndex(actx, refOf(s7.once!.goalId))) !== undefined);
+  } finally { releaseProof(); }
   check("...and the turn sweep asks again, and the debt clears on the proof", await debtCleared(s7.once!.goalId) && retireCalls.length === 2 && retireCalls[1]!.indexed, retireCalls.length);
   check("...after which the proof's receipt is discarded", await until(() => discarded.includes(s7.seat!.lifecycleUid), 5_000));
   const s8 = await spawnOnce({ agent: "once-retire-stub", prompt: "dies first", once: {} });
