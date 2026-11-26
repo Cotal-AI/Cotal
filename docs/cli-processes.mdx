@@ -348,7 +348,9 @@ manager released for the next manager to adopt keeps running in it, and systemd 
 once its last process exits. If the scope cannot be made, the start fails with
 systemd-run's error as the last line logged, and the service is not launched without a scope. With
 no user manager, as with no `XDG_RUNTIME_DIR`, no `systemd-run` or no user bus, nothing scopes the
-starting command either, and the service starts without a scope.
+starting command either, and the service starts without a scope. Cotal queries the user manager
+only when the session bus address is set or the runtime directory contains a user bus or systemd
+socket.
 
 On Windows each background instance runs under its own custodian. The custodian is a detached
 Cotal process that creates the program inside a new job object. The job ends every member when its

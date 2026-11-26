@@ -343,6 +343,10 @@ possibly live process records, the root's additive deployment ledgers and
 attempts, and fresh boot attempts/summaries, plus selected-space service
 definitions, instances, supervisor receipts and retained native attempts. An
 unreadable additive or fresh record is listed rather than treated as absent.
+If the selected root records a completed stack stop and an earlier team boot, the preview
+reports that another team boot is blocked even when the earlier attempt's summary matches.
+JSON includes this notice in `warnings`. A matched summary does not establish current liveness,
+and the preview does not authorize an apply.
 The team inventory separately lists unsettled fresh and additive attempts
 and returned agent/channel receipts. `team show <id>` distinguishes those
 historical records without inferring current card or broker state. Bare
@@ -427,8 +431,9 @@ space in another folder prepared with `cotal space create <space>`.
 The stack's broker inputs must be recorded, every applicable member must have its original
 settled stopped record, and no supervisor, retained custody or earlier team boot may remain. A
 stack that an earlier team boot started refuses with `LIFECYCLE_BLOCKED`, and its Next names
-`cotal up` in the root, which starts that stack again, and `cotal team show <id>` with each earlier
-boot's ID. The broker requires its kernel-exit receipt. Auth and delivery use their settled process
+`cotal up` in the root, which starts that stack again. It also offers `cotal team show <id> --space <space>`
+for each recorded boot so you can inspect it without changing your saved space selection.
+The broker requires its kernel-exit receipt. Auth and delivery use their settled process
 stop and released custody; that is not proof of credential, lease or authority retirement. A generic
 process stop now records a `process-exit` receipt on the stopped instance when that stop signalled
 the pinned process and saw it exit. `service stop --json` and `service status --json` expose it as
