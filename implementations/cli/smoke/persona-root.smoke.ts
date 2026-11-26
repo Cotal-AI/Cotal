@@ -531,6 +531,21 @@ try {
   const offlineRoot = join(scratch, "offline-project");
   const prepared = native(["space", "create", "offline-audit", "--root", offlineRoot, "--plain"], CWD);
   check("a separate project is prepared without starting a broker", prepared.status === 0, prepared.stdout + prepared.stderr);
+  const help = [native(["persona", "--help"]), native(["persona", "create", "--help"])];
+  const emptyExample = /persona create <name> --prompt "<text>" (--subscribe=) +save a persona from a prompt, reading no channels/;
+  const makeEmpty = ["persona", "create", "empty-read-set", "--prompt", "Review the patch."];
+  const missingValue = native([...makeEmpty, "--subscribe", "--json"], offlineRoot);
+  const error = JSON.parse(missingValue.stdout).error;
+  const attached = emptyExample.exec(help[1]!.stdout)?.[1];
+  check("persona help and missing-value guidance show an attached empty subscription",
+    help.every((entry) => entry.status === 0 && emptyExample.test(entry.stdout)) && missingValue.status === 1 &&
+    error?.code === "USAGE_INVALID" && error.message === "--subscribe needs a value" && error.remedy?.includes("--subscribe= for none"),
+    [...help.map((entry) => entry.stdout + entry.stderr), missingValue.stdout + missingValue.stderr]);
+  const emptyCreated = native([...makeEmpty, attached!, "--json"], offlineRoot);
+  const emptyShown = native(["persona", "show", "empty-read-set", "--json"], offlineRoot);
+  check("the printed attached option saves a persona with no subscriptions",
+    emptyCreated.status === 0 && emptyShown.status === 0 && JSON.stringify(JSON.parse(emptyShown.stdout).result.definition.subscribe) === "[]",
+    emptyCreated.stdout + emptyCreated.stderr + emptyShown.stdout + emptyShown.stderr);
   const args = ["persona", "--space", "offline-audit", "--plain"];
   const offline = native(args, CWD);
   const plannedServer = native([...args, "--server", "nats://127.0.0.1:1"], CWD);

@@ -31,7 +31,7 @@ export const personaFlags = [
   { name: "from", type: "string", value: "<path>", description: "create: read the body from a file, or - for explicit stdin" },
   { name: "role", type: "string", value: "<role>", description: "create: role" },
   { name: "model", short: "m", type: "string", value: "<model>", description: "create: model pin" },
-  { name: "subscribe", type: "string", value: '<a,b|"">', description: "create from body: explicit read set, empty for none" },
+  { name: "subscribe", type: "string", value: "<a,b>", description: "create from body: explicit read set (use --subscribe= for none)" },
   { name: "yes", short: "y", type: "boolean", description: "remove: confirm deletion of the named local definition" },
   { name: "on", type: "string", value: "<manager-instance>", description: "list/show/create: address this exact manager's caller-owned catalog" },
   { name: "harness", short: "H", type: "string", value: "<application>", description: "create: application pin" },
@@ -189,7 +189,7 @@ async function createSource(name: string, path: string, values: Values, presenta
     }
     return bytes;
   }
-  if (values.subscribe === undefined) throw usage('provide --subscribe <a,b> or --subscribe "" for none');
+  if (values.subscribe === undefined) throw usage("provide --subscribe <a,b> or --subscribe= for none");
   if (values.harness !== undefined) checkHarness(values.harness);
   assertLabels(values);
   // A refusal that quotes a value escapes its control characters, so the value cannot rewrite the terminal.

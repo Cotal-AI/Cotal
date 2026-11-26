@@ -593,6 +593,8 @@ function missingValue(cmd: Command, words: readonly string[], flag: FlagSpec, be
     if (sub === "clear" && HISTORY_LIMIT_FLAGS.some((name) => name === flag.name))
       return { message: `\`history clear\` does not take --${flag.name}`, remedy: `omit --${flag.name} from this command. Use it with \`history limit\` to change retention` };
   }
+  if (cmd.name === "persona" && flag.name === "subscribe")
+    return { message: "--subscribe needs a value", remedy: `write --subscribe <a,b> or --subscribe= for none${beforeSeparator ? " (before --)" : ""}` };
   return { message: `--${flag.name} needs a value`, remedy: `write --${flag.name} ${flag.value ?? "<value>"}${beforeSeparator ? " before --" : ""}` };
 }
 

@@ -1457,6 +1457,10 @@ That exit replaces the report's own, so a partial report followed by a clean pas
   failure in its facts, even if that URL is reachable.
   For a locally owned stack, a missing or dead broker process is `absent`, not `not-serving`.
   A cleanly stopped controller target reports `absent` and exits `1` without dialing another space.
+  If the home records for a broker-only open stack are missing and the project journal verifies
+  its broker process is running, the component check reports `target refused` and exits `3`.
+  It names the running process and points to `cotal down --dry-run` in the project because it
+  cannot check service health without the saved records.
   If its store is not writable or its broker address is occupied, the target row names what to fix
   before restarting.
   Inside a renamed open project without a saved selection, the check reports `target refused` when
