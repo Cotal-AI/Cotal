@@ -53,8 +53,8 @@
     {
       "name": "C5 purge confirmed but never sent",
       "file": "implementations/cli/src/console/app.tsx",
-      "find": "      void ctl(\"purge\", {}).then((r) => setNotice(r.ok ? \"purged space history\" : `purge: ${r.error ?? \"failed\"}`));",
-      "replace": "      void Promise.resolve({ ok: true, error: undefined as string | undefined }).then((r) => setNotice(r.ok ? \"purged space history\" : `purge: ${r.error ?? \"failed\"}`));",
+      "find": "      void ctl(\"purge\", {}).then((r) => {",
+      "replace": "      void Promise.resolve({ ok: true, error: undefined as string | undefined }).then((r) => {",
       "expectRed": "purge: the space history is gone",
       "cell": "purge: the space history is gone",
       "afterRestore": "pnpm --filter @cotal-ai/cli build"
