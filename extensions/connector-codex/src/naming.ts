@@ -72,7 +72,7 @@ function execOnce(seat: CodexNamingSeat, cwd: string, answer: string, input: str
   const env: Record<string, string> = { CODEX_HOME: seat.codexHome };
   for (const [k, v] of Object.entries(process.env)) if (v !== undefined && !k.startsWith("COTAL_") && k !== "CODEX_HOME") env[k] = v;
   return new Promise((resolve, reject) => {
-    const child = spawn(seat.bin, execArgs(seat, answer), { cwd, env, signal, stdio: ["pipe", "pipe", "pipe"] });
+    const child = spawn(seat.bin, execArgs(seat, answer), { cwd, env, signal, stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
     let failure = "";
     let err = "";
     let buf = "";

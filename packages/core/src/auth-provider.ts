@@ -629,7 +629,7 @@ export function runAgentBearer(
     execFile(
       argv[0],
       argv.slice(1),
-      { timeout: timeoutMs, maxBuffer: 64 * 1024, env: opts.env, signal: opts.signal },
+      { timeout: timeoutMs, maxBuffer: 64 * 1024, env: opts.env, signal: opts.signal, windowsHide: true },
       (err, stdout, stderr) => err ? reject(bearerCommandFailure(err, stderr, timeoutMs, stdout)) : resolve(stdout.trim()),
     );
   });

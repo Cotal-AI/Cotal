@@ -57,7 +57,7 @@ async function readLoadedLists({ url, auth, signal }: ServeRead): Promise<Comman
 /** `env` is the environment a seat's OpenCode gets, so the list comes from the same configuration. */
 export async function openCodeCommandCatalog(opts: CommandListOpts, env: Record<string, string>): Promise<CommandCatalog> {
   const bin = process.env.COTAL_OPENCODE_BIN?.trim() || opts.resolvedBinaries?.opencode || "opencode";
-  const { stdout } = await promisify(execFile)(bin, ["--version"], { env, timeout: 5_000 });
+  const { stdout } = await promisify(execFile)(bin, ["--version"], { env, timeout: 5_000, windowsHide: true });
   const version = stdout.trim();
   if (opencodeLine(version, bin) === 1) return openCode1CommandCatalog({ bin, cwd: opts.cwd, env });
   return readPrivateServe({ bin, cwd: opts.cwd, env, port: "0" }, readLoadedLists);

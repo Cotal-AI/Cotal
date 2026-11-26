@@ -172,7 +172,7 @@ async function reconcile(mode: Mode, automatic = false, resumeFirstSeed = false,
   if (waitForUpdateClosure()) {
     if (process.env.COTAL_UPDATE_REEXEC === "1") throw new Error("another Cotal update finished while this command waited; run the command again");
     console.error("Cotal update finished; restarting command with the installed CLI");
-    const child = spawn(process.execPath, process.argv.slice(1), { env: { ...process.env, COTAL_UPDATE_REEXEC: "1" }, stdio: "inherit" });
+    const child = spawn(process.execPath, process.argv.slice(1), { env: { ...process.env, COTAL_UPDATE_REEXEC: "1" }, stdio: "inherit", windowsHide: true });
     const forward = (signal: NodeJS.Signals) => child.kill(signal);
     const onInt = () => forward("SIGINT"), onTerm = () => forward("SIGTERM");
     process.on("SIGINT", onInt); process.on("SIGTERM", onTerm);
@@ -867,7 +867,7 @@ function seedOne(name: string, generation: string, nonce: string, force: boolean
   writeCursor({ nonce, package: name, phase: "add" });
   writePendingChildMarker(nonce);
   const r = spawnSync(bin, [...argv, "ext", "add", storePath], {
-    encoding: "utf8",
+    encoding: "utf8", windowsHide: true,
     env: { ...process.env, COTAL_TELEMETRY_DISABLED: "1", COTAL_EXT_SEEDING: nonce, COTAL_EXT_SEEDING_PARENT: String(process.pid) },
   });
   clearChildMarker(); // parent survived the child: the marker's job is done (child also clears its own)
