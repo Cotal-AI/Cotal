@@ -1,10 +1,10 @@
 {
   "expected": {
-    "total": 1149,
+    "total": 1151,
     "honest-text": 71,
     "presence-only-glyph/count": 138,
     "command-ack": 13,
-    "non-render/control": 927
+    "non-render/control": 929
   },
   "classRationales": {
     "non-render/control": "This candidate handles presence state without making a human work-progress claim. Status tokens, routing, component inputs and presentation metadata are control data; exceptions that report a different kind of status carry an entry-specific reason."
@@ -5507,6 +5507,20 @@
       "anchor": "\"waiting\"",
       "class": "non-render/control",
       "rationale": "Service set stop table: \"waiting\" is the color tone for a stop result, not any peer's presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/setup.ts",
+      "kind": "derived-output",
+      "anchor": "`npm exited with status ${r.status}`",
+      "class": "non-render/control",
+      "rationale": "Setup's optional global install reports the npm child process exit status, not peer presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/setup.ts",
+      "kind": "derived-output",
+      "anchor": "`${detail}\\n\\nInstall it yourself with ${codeSpan(installCmd)}, or keep using ${codeSpan(runnerCmd)}.`",
+      "class": "non-render/control",
+      "rationale": "Setup's optional global install warning reports an npm failure and retry commands, not peer presence."
     },
     {
       "path": "implementations/cli/src/commands/setup.ts",
