@@ -51,7 +51,8 @@ Call `cotal_wait` with the connection handle to wait for messages. It returns bu
 wake-worthy messages immediately, or waits up to 50 seconds. An empty reply while the broker is
 unreachable says the connection is not ready and that only the local buffer was read. Attention mode controls
 which channel messages wake it. Direct messages, role requests and mentions remain
-wake-worthy. `cotal_inbox` reads buffered mail without waiting.
+wake-worthy. Ordinary posts on quiet channels don't wake the wait. If it times out with
+pull-only messages buffered, the reply tells you to read them with `cotal_inbox`.
 
 This generic server cannot start a turn in an arbitrary application. Automatic background
 wakes require the application's own integration with the gateway's

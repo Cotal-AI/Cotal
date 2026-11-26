@@ -709,6 +709,11 @@ export function registerCotalGatewayTools(
           const span = `${limit} second${limit === 1 ? "" : "s"}`;
           // A wait that could not hear from the broker only knows the local buffer, as cotal_inbox says.
           const notReady = connectionNotReadyWarning(c.agent);
+          if (c.agent.inboxCount("pull-only") > 0) {
+            return toContent({
+              text: `${notReady ? `${notReady}\n\n` : ""}No message woke this wait in ${span}. Buffered messages are waiting. Call cotal_inbox to read them.`,
+            });
+          }
           return toContent({
             text: notReady
               ? `${notReady}\n\nNothing new reached the local buffer in ${span}. Call cotal_wait again to keep listening.`
