@@ -1,5 +1,22 @@
 # @cotal-ai/runtime
 
+## 0.182.1
+
+### Patch Changes
+
+- e0b4c97: When a hosted workflow resume is missing its run ID, the suggested run list keeps the original target and output format.
+- 82fd7c4: Commands such as `run plan`, `space show`, and `persona show` tell you to drop an unknown option when you have already supplied all their arguments.
+- Updated dependencies [8495df7]
+- Updated dependencies [8eead0e]
+- Updated dependencies [5117d48]
+- Updated dependencies [2af983b]
+- Updated dependencies [c27ddc1]
+- Updated dependencies [8a9ffeb]
+- Updated dependencies [287b874]
+  - @cotal-ai/workspace@0.182.1
+  - @cotal-ai/core@0.182.1
+  - @cotal-ai/lang@0.182.1
+
 ## 0.182.0
 
 ### Minor Changes

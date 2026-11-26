@@ -1056,6 +1056,108 @@ async function dispatchCli(registry: Registry, argv: string[], opts: RunCliOptio
     return repeatedGlobalFlag(builtinDuplicate, builtin, ownWords(builtin), pendingWarnings);
   }
   if (word === "-v") usageExit("-v is not the version flag - run `cotal version` or `cotal -V`");
+  const { configFolder, configRead, surface, useExtensionOverlay, skipUnreadableConnectorOverlay } =
+    prepareDispatchSurface(registry, opts, builtin, words, wantsHelp, docsHelp, repeatedLeading, ownWords, scope);
+  if (useExtensionOverlay) {
+    try {
+      if (builtin?.name === "ext" && await extSeedGate(builtin, ownWords(builtin), configFolder, opts.startupNotice)) return;
+      // Topology only renders a manifest. Read the installed overlay normally without finishing an install.
+      if (!configFolder && builtin?.name !== "topology") recoverExtensionPromotion();
+    } catch (e) {
+      if (!skipUnreadableConnectorOverlay(e)) {
+        if (repeatedLeading) {
+          const warnings: OutputWarning[] = [];
+          let found: Command | undefined;
+          try { found = findCommand(overlayExtensions(registry, collisionWarning(warnings)), word); }
+          catch { /* The current manifest cannot supply refusal context. */ }
+          return repeatedGlobalFlag(repeatedLeading, found, ownWords(found), warnings);
+        }
+        seedRefusal(e);
+        process.exit(1);
+      }
+    }
+  }
+  let commands = surface(pendingWarnings);
+  let cmd = findCommand(commands, word);
+  let rest = ownWords(cmd);
+  const repeated = duplicate(cmd);
+  if (repeated) return repeatedInvocationExit(repeated, cmd, rest, pendingWarnings, commands, argv.slice(leading.length), output);
+  // A seeded command can be absent until the first seed installs it. Help and unknown words do not seed.
+  const awaitingSeed = !cmd && word !== undefined && opts.extensions === true && isSeededCommand(word) && !wantsHelp && !skipsSeed(word, rest[0], rest);
+  if (!cmd && word !== undefined && !awaitingSeed)
+    return unknownInvocationExit(commands, word, args, output, argv[leading.length] !== "--", pendingWarnings);
+  routeCollisionWarnings(pendingWarnings, cmd, rest, wantsHelp);
+  if (word === undefined) return paintFor(process.stdout, () => printEntry(commands));
+  const scoped = await serviceSurface(cmd, rest);
+  ({ cmd, rest } = scoped);
+  // The usage telemetry hook is armed as soon as the command is known, so a usage refusal below
+  // counts too, and before anything runs, so the one-time notice precedes the command's output.
+  const arm = (): void => {
+    if (!cmd) return;
+    try {
+      armTelemetry(registry, cmd, words, startedAt);
+    } catch (e) {
+      if (isCommandFailure(e)) failureExit(cmd, e, asksForJson(cmd, rest), rest.includes("--plain"), undefined, rest);
+      throw e;
+    }
+  };
+  arm();
+  // `cotal <cmd> --help` / `-h` → that command's help, never run it. This intercept also covers
+  // rawArgs commands and extension stubs. The `__`-internal ones are exempt: `__complete` receives
+  // another command's half-typed line, where `--help` is a word being completed, not a request.
+  if (cmd && !cmd.name.startsWith("__") && wantsHelp) return printHelpFor(cmd, rest);
+  let parsed = cmd && !isExtensionStub(cmd) ? parseOrExit(cmd, rest, scoped.noMoreOperands) : undefined;
+  // ---- Effects: only a validated invocation reaches this line. ----
+  // A config folder that is a file fails every read and write of the preferences, the config file and
+  // the extensions, so a command that could use them stops here, before the seed would write there.
+  // Help, shell completion, version and docs use none of them.
+  if (configFolder && cmd && parsed && !cmd.name.startsWith("__") && !["help", "completion", "version", "docs"].includes(cmd.name))
+    failureExit(cmd, configFolderRefusal(configFolder), structured(cmd, parsed.positionals[0]) && parsed.values.json === true, parsed.values.plain === true, undefined, rest, parsed);
+  // The seed can install or upgrade an extension package, so the surface is read again after it and
+  // an extension stub resolves against the manifest the seed left.
+  const controlOnlyManager = parsed?.values.execution === "none" && (cmd?.name === "supervise" || cmd?.name === "__daemon-manager");
+  if (opts.extensions && !controlOnlyManager && !skipsSeed(cmd?.name ?? word, parsed ? parsed.positionals[0] : rest[0], rest, cmd, parsed?.values)) {
+    const deferred = cmd?.name === "up" || (cmd?.name === "backup" && parsed?.positionals[0] === "restore");
+    try {
+      if (deferred) deferStartupSeed(parsed);
+      else await reconcileSeededConnectors(cmd?.name === "setup");
+    } catch (e) {
+      dispatchSeedRefusal(e, cmd, parsed, rest);
+    }
+    if (!deferred) {
+      const warnings: OutputWarning[] = [];
+      commands = surface(warnings);
+      cmd = findCommand(commands, word);
+      if (!cmd) {
+        routeCollisionWarnings(warnings, cmd, rest, wantsHelp);
+        usageExit(unknownCommandMessage(commands, word));
+      }
+      const repeated = duplicate(cmd);
+      if (repeated) return repeatedGlobalFlag(repeated, cmd, ownWords(cmd), warnings);
+      routeCollisionWarnings(warnings, cmd, ownWords(cmd), wantsHelp);
+      ({ cmd, rest } = await serviceSurface(cmd, ownWords(cmd)));
+      arm();
+    }
+  }
+  // An extension stub materializes before parsing: verify the version pin, import the package
+  // (self-registers), and parse with the live specs. The cache never drives run's input.
+  if (cmd && isExtensionStub(cmd)) {
+    try {
+      cmd = await materializeExtensionCommand(cmd);
+    } catch (e) {
+      stderrLine("✗ ", displayRemedy((e as Error).message), c.red);
+      process.exit(1);
+    }
+    parsed = parseOrExit(cmd, rest);
+  }
+  if (!cmd || !parsed) throw new Error("internal error: dispatch reached its effects without a parsed command");
+  return executeDispatchedCommand(cmd, parsed, rest, argv, opts, scope, configRead);
+}
+
+function prepareDispatchSurface(
+  registry: Registry, opts: RunCliOptions, builtin: Command | undefined, words: string[], wantsHelp: boolean,
+  docsHelp: boolean, repeatedLeading: string | undefined, ownWords: (cmd: Command | undefined) => string[], scope: OperationScope,
+) {
   // The built-in check reports an unreadable inventory itself. Do not require that inventory to
   // construct its command surface, or recover an installation as a prelude to this read-only mode.
   const updateCheck = builtin?.name === "update" && words.includes("--check") && !wantsHelp
@@ -1089,26 +1191,7 @@ async function dispatchCli(registry: Registry, argv: string[], opts: RunCliOptio
     return true;
   }
   const configFolder = globalConfigDirProblem();
-  if (useExtensionOverlay) {
-    try {
-      if (builtin?.name === "ext" && await extSeedGate(builtin, ownWords(builtin), configFolder, opts.startupNotice)) return;
-      // Topology only renders a manifest. Read the installed overlay normally without finishing an install.
-      if (!configFolder && builtin?.name !== "topology") recoverExtensionPromotion();
-    } catch (e) {
-      if (!skipUnreadableConnectorOverlay(e)) {
-        if (repeatedLeading) {
-          const warnings: OutputWarning[] = [];
-          let found: Command | undefined;
-          try { found = findCommand(overlayExtensions(registry, collisionWarning(warnings)), word); }
-          catch { /* The current manifest cannot supply refusal context. */ }
-          return repeatedGlobalFlag(repeatedLeading, found, ownWords(found), warnings);
-        }
-        seedRefusal(e);
-        process.exit(1);
-      }
-    }
-  }
-  const surface = (warnings: OutputWarning[]): Command[] => {
+  function surface(warnings: OutputWarning[]): Command[] {
     let commands: Command[];
     try {
       commands = useExtensionOverlay && !versionRead && !extDiagnostics && !configFolder ? overlayExtensions(registry, collisionWarning(warnings)) : registry.all<Command>("command");
@@ -1136,102 +1219,40 @@ async function dispatchCli(registry: Registry, argv: string[], opts: RunCliOptio
     }
     setCommandSurface(commands); // the completion dispatcher reads the SAME surface help renders
     return commands;
-  };
-  let commands = surface(pendingWarnings);
-  let cmd = findCommand(commands, word);
-  let rest = ownWords(cmd);
-  const repeated = duplicate(cmd);
-  if (repeated) return repeatedInvocationExit(repeated, cmd, rest, pendingWarnings, commands, argv.slice(leading.length), output);
-  // A seeded command can be absent until the first seed installs it. Help and unknown words do not seed.
-  const awaitingSeed = !cmd && word !== undefined && opts.extensions === true && isSeededCommand(word) && !wantsHelp && !skipsSeed(word, rest[0], rest);
-  if (!cmd && word !== undefined && !awaitingSeed)
-    return unknownInvocationExit(commands, word, args, output, argv[leading.length] !== "--", pendingWarnings);
-  routeCollisionWarnings(pendingWarnings, cmd, rest, wantsHelp);
-  if (word === undefined) return paintFor(process.stdout, () => printEntry(commands));
-  const scoped = await serviceSurface(cmd, rest);
-  ({ cmd, rest } = scoped);
-  // The usage telemetry hook is armed as soon as the command is known, so a usage refusal below
-  // counts too, and before anything runs, so the one-time notice precedes the command's output.
-  const arm = (): void => {
-    if (!cmd) return;
-    try {
-      armTelemetry(registry, cmd, words, startedAt);
-    } catch (e) {
-      if (isCommandFailure(e)) failureExit(cmd, e, asksForJson(cmd, rest), rest.includes("--plain"), undefined, rest);
-      throw e;
-    }
-  };
-  arm();
-  // `cotal <cmd> --help` / `-h` → that command's help, never run it. This intercept also covers
-  // rawArgs commands and extension STUBS (cached specs are exactly the display surface) — only
-  // `__`-internal ones are exempt, because __complete's argv is ANOTHER command's half-typed
-  // line, where `--help` is a word being completed, not a request.
-  if (cmd && !cmd.name.startsWith("__") && wantsHelp) return printHelpFor(cmd, rest);
-  let parsed = cmd && !isExtensionStub(cmd) ? parseOrExit(cmd, rest, scoped.noMoreOperands) : undefined;
-  // ---- Effects: only a validated invocation reaches this line. ----
-  // A config folder that is a file fails every read and write of the preferences, the config file and
-  // the extensions, so a command that could use them stops here, before the seed would write there.
-  // Help, shell completion, version and docs use none of them.
-  if (configFolder && cmd && parsed && !cmd.name.startsWith("__") && !["help", "completion", "version", "docs"].includes(cmd.name))
-    failureExit(cmd, configFolderRefusal(configFolder), structured(cmd, parsed.positionals[0]) && parsed.values.json === true, parsed.values.plain === true, undefined, rest, parsed);
-  // The seed can install or upgrade an extension package, so the surface is read again after it and
-  // an extension stub resolves against the manifest the seed left.
-  const controlOnlyManager = parsed?.values.execution === "none" && (cmd?.name === "supervise" || cmd?.name === "__daemon-manager");
-  if (opts.extensions && !controlOnlyManager && !skipsSeed(cmd?.name ?? word, parsed ? parsed.positionals[0] : rest[0], rest, cmd, parsed?.values)) {
-    // Startup checks seed compatibility here and reconciles at launch. A restore that refuses
-    // before launch leaves the operator-global store as it found it.
-    const deferred = cmd?.name === "up" || (cmd?.name === "backup" && parsed?.positionals[0] === "restore");
-    try {
-      if (deferred) {
-        // Broker-only startup still checks the store generation. An explicit restore can start its
-        // recorded manager even when --no-manager is present, so it retains the full seed path.
-        const brokerOnly = parsed?.values["no-manager"] === true && !parsed.values.restore;
-        const refusal = brokerOnly ? seedDowngradeRefusal() : deferredSeedRefusal();
-        if (refusal) throw refusal;
-        if (!brokerOnly) deferSeedToLaunch();
-      } else await reconcileSeededConnectors(cmd?.name === "setup");
-    } catch (e) {
-      // The seed runs before the command reaches its own failure path. A structured command still
-      // reports the same outcome and exit status in every presentation.
-      const sub = parsed?.positionals[0] ?? (cmd && metadataPositionals(cmd, rest).positionals[0]?.value);
-      if (cmd && structured(cmd, sub)) {
-        const message = e instanceof Error ? e.message : String(e);
-        const failure = isCommandFailure(e) ? e : new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", displayRemedy(message),
-          e instanceof SeedChildFailure ? { remedy: displayRemedy("fix that, then run `cotal ext seed --repair`") } : {});
-        const end = rest.indexOf("--");
-        const plain = parsed?.values.plain === true || (!parsed && (end === -1 ? rest : rest.slice(0, end)).includes("--plain"));
-        failureExit(cmd, failure, asksForJson(cmd, rest), plain, undefined, rest);
-      }
-      seedRefusal(e);
-      process.exit(1);
-    }
-    if (!deferred) {
-      const warnings: OutputWarning[] = [];
-      commands = surface(warnings);
-      cmd = findCommand(commands, word);
-      if (!cmd) {
-        routeCollisionWarnings(warnings, cmd, rest, wantsHelp);
-        usageExit(unknownCommandMessage(commands, word));
-      }
-      const repeated = duplicate(cmd);
-      if (repeated) return repeatedGlobalFlag(repeated, cmd, ownWords(cmd), warnings);
-      routeCollisionWarnings(warnings, cmd, ownWords(cmd), wantsHelp);
-      ({ cmd, rest } = await serviceSurface(cmd, ownWords(cmd)));
-      arm();
-    }
   }
-  // An extension stub materializes before parsing: verify the version pin, import the package
-  // (self-registers), and parse with the LIVE specs — the cache never drives run's input.
-  if (cmd && isExtensionStub(cmd)) {
-    try {
-      cmd = await materializeExtensionCommand(cmd);
-    } catch (e) {
-      stderrLine("✗ ", displayRemedy((e as Error).message), c.red);
-      process.exit(1);
-    }
-    parsed = parseOrExit(cmd, rest);
+  return { configFolder, configRead, surface, useExtensionOverlay, skipUnreadableConnectorOverlay };
+}
+
+function deferStartupSeed(parsed: ParsedArgs | undefined): void {
+  // Startup checks seed compatibility here and reconciles at launch. A restore that refuses
+  // before launch leaves the operator-global store as it found it.
+  // Broker-only startup still checks the store generation. An explicit restore can start its
+  // recorded manager even when `--no-manager` is present, so it retains the full seed path.
+  const brokerOnly = parsed?.values["no-manager"] === true && !parsed.values.restore;
+  const refusal = brokerOnly ? seedDowngradeRefusal() : deferredSeedRefusal();
+  if (refusal) throw refusal;
+  if (!brokerOnly) deferSeedToLaunch();
+}
+
+function dispatchSeedRefusal(e: unknown, cmd: Command | undefined, parsed: ParsedArgs | undefined, rest: string[]): never {
+  // The seed runs before the command reaches its own failure path. A structured command still
+  // reports the same outcome and exit status in every presentation.
+  const sub = parsed?.positionals[0] ?? (cmd && metadataPositionals(cmd, rest).positionals[0]?.value);
+  if (cmd && structured(cmd, sub)) {
+    const message = e instanceof Error ? e.message : String(e);
+    const failure = isCommandFailure(e) ? e : new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", displayRemedy(message),
+      e instanceof SeedChildFailure ? { remedy: displayRemedy("fix that, then run `cotal ext seed --repair`") } : {});
+    const end = rest.indexOf("--");
+    const plain = parsed?.values.plain === true || (!parsed && (end === -1 ? rest : rest.slice(0, end)).includes("--plain"));
+    failureExit(cmd, failure, asksForJson(cmd, rest), plain, undefined, rest);
   }
-  if (!cmd || !parsed) throw new Error("internal error: dispatch reached its effects without a parsed command");
+  seedRefusal(e);
+  process.exit(1);
+}
+
+async function executeDispatchedCommand(
+  cmd: Command, parsed: ParsedArgs, rest: string[], argv: string[], opts: RunCliOptions, scope: OperationScope, configRead: boolean,
+): Promise<void> {
   const updateDirectory = cmd.name === "update" ? prepareUpdateFolder(parsed) : undefined;
   checkCommandLocalState(cmd, parsed, rest);
   // Keep failures in the resolved space and completion warnings behind COTAL_COMPLETE_DEBUG.

@@ -417,7 +417,9 @@ It leaves that registration unchanged and continues the CLI upgrade and the othe
 ### Manager continuity
 
 When `update --self` finds no newer release and verifies the installed package closure is current,
-it reports that no connector reconciliation ran and skips the running Manager continuity check.
+it skips full connector reconciliation and the running Manager continuity check. A manual update
+can still repair a Codex marketplace you moved into the current Cotal home. It leaves other
+harness registrations unchanged and reports the result of the Codex repair separately.
 An unreadable Manager from another installation does not block this result.
 If a first-party operator extension is missing its entry file, `cotal update --self` runs
 reconciliation to restore it even when the CLI is already current.
@@ -870,7 +872,16 @@ selective `down`. Removing an additional runtime extension, one the manager was 
 refuses the next seat that names it; the manager's own runtime and the seats already running stay
 as they are. `remove` and `list` manage them. The `@cotal-ai/web` dashboard is the
 canonical service preset and local-process example. Installed packages and their location are described in
-[config](config.mdx). When a package needs an export its linked `@cotal-ai/*` peer does not have,
+[config](config.mdx). Before importing a local or third-party extension, `add` checks its declared
+`@cotal-ai/core` peer range against the core it will link, even if the package marks that peer optional.
+It refuses an invalid or incompatible range without changing the installed extensions. Choose an
+extension build that supports your core or a CLI release that satisfies the declared range.
+`*` allows any version. The check compares prerelease versions at their actual precedence and ignores
+build metadata. In a source checkout, a `0.0.0` placeholder, with or without a prerelease label, cannot
+establish a mismatch. This check does not apply to official `@cotal-ai/*` releases selected by
+registry name, version, range, or tag. Seeding and self-update reconciliation do not apply this check.
+
+When a package needs an export its linked `@cotal-ai/*` peer does not have,
 `add` rolls back. Both `add` and a later load name the missing export and identify the older install
 when the versions establish one. If the versions match, check the extension's import against the
 exports of the linked peer before replacing either build.
