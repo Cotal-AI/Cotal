@@ -420,11 +420,11 @@ export function createController(store: Store<DashboardState>, api: Api, opts: C
     let refused: string | null = null;
     try {
       // A history row carries no subject, so it has no verified sender: `senderId` stays unset. A
-      // message this page holds verified (on screen, arrived during the fetch, or held by the
-      // machine) keeps that copy.
+      // message this page holds verified (in Activity, on screen, or held by the machine) keeps that copy.
       const history = (await api.history(key, 200)).map((msg): StoredMessage => ({ msg }));
-      const view = store.get().open;
-      msgs = keepVerified(history, held, view?.channel === key ? view.messages : [], pending);
+      const { activity, open: view } = store.get();
+      const channelActivity = activity.filter((entry) => entry.mode === "chat" && entry.channel === key);
+      msgs = keepVerified(history, channelActivity, held, view?.channel === key ? view.messages : [], pending);
     } catch (err) {
       // A REFUSED READ KEEPS WHAT THE READER ALREADY HAD. The held messages take the place of the
       // history that could not be read, so the merge below is the same as on the successful path.

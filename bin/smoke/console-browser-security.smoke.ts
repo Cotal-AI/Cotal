@@ -106,6 +106,26 @@ async function page(url: string): Promise<string> {
   await cdp("Page.navigate", { url }, sessionId);
   return sessionId;
 }
+async function channelVerification(session: string, sender: CotalEndpoint): Promise<void> {
+  const liveText = "browser-verification-live";
+  const rows = (text: string) => evaluate(session, `Array.from(document.querySelectorAll('[data-slot="message"]'))
+    .filter(row => row.textContent.includes(${JSON.stringify(text)}))
+    .map(row => ({ sender: row.querySelector('[data-slot="message-header"] button')?.textContent ?? null,
+      badge: !!row.querySelector('.ui-idb'), unverified: row.textContent.includes('unverified') }))`);
+  await until(async () => await evaluate(session, "document.querySelector('h1')?.textContent === 'Activity' && document.body.textContent.includes('Connected to cotal web')") &&
+    (await rows("browser-live-control")).length === 1, "Activity connects and renders the history control");
+  await sender.multicast(liveText, { channel: "general" });
+  await until(async () => (await rows(liveText)).length > 0, "Activity renders the new live post");
+  const verified = [{ sender: "browser-control", badge: true, unverified: false }];
+  assert.deepEqual(await rows(liveText), verified, "Activity verifies the sender and renders the badge");
+  await evaluate(session, "location.hash = '#/channel/general'");
+  await until(async () => await evaluate(session, "document.querySelector('h1')?.textContent !== 'Activity'") &&
+    (await rows(liveText)).length > 0, "the first channel open renders the retained post");
+  check("dashboard: the first channel open keeps the verified live row exactly once", JSON.stringify(await rows(liveText)) === JSON.stringify(verified));
+  check("dashboard: the history-only control stays unverified", JSON.stringify(await rows("browser-live-control")) === JSON.stringify([{ sender: null, badge: false, unverified: true }]));
+  check("dashboard: navigation to the channel did not reload the page", await evaluate(session, "performance.getEntriesByType('navigation').length === 1"));
+}
+
 async function security(name: string, session: string, token: string, base: string, ready: string): Promise<void> {
   await until(() => evaluate(session, ready), `${name} page must render its live data`);
   await evaluate(session, "document.fonts.ready.then(() => true)");
@@ -231,6 +251,7 @@ try {
   securityHeaders("dashboard renewed exchange", nextExchange, DASHBOARD_POLICY);
   check("dashboard browser-launch: new link refuses replay", (await fetch(nextLaunch, { redirect: "manual" })).status === 401);
   check("dashboard: the spent documented launch link refuses a second session", (await fetch(launchUrl, { redirect: "manual" })).status === 401);
+  await channelVerification(await page(dashboardBase), seed);
   console.log(`browser security: ${passed} passed, ${failed} failed`);
   emitSentinel({ passed, failed });
   process.exitCode = failed ? 1 : 0;
