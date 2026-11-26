@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
-import { CotalEndpoint, createSpaceAuth, isReachable, mintCreds, newIdentity, serverConfig, setupSpaceStreams } from "@cotal-ai/core";
+import { CotalEndpoint, createSpaceAuth, EpEnvelopeError, isReachable, mintCreds, newIdentity, serverConfig, setupSpaceStreams } from "@cotal-ai/core";
 import { emitSentinel, freePort, killAndAwaitExit, SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { authDir, recordMesh, saveSpaceAuth } from "@cotal-ai/workspace";
 import { LinearUpstream, loadAccount, registerLinearEndpoint, provisionLinearCaller, runLinearEndpoint } from "../src/index.js";
@@ -14,7 +14,8 @@ import { linearDir, oauthStatePath, saveAccount } from "../src/account.js";
 import { LINEAR_MCP_ORIGIN } from "../src/origin.js";
 
 const home = mkdtempSync(join(tmpdir(), "linear-policy-"));
-process.env.COTAL_HOME = join(home, "cotal");
+const cotalHome = join(home, "cotal");
+process.env.COTAL_HOME = cotalHome;
 process.env.HOME = home;
 let passed = 0, failed = 0;
 function check(name: string, value: boolean): void {
@@ -23,10 +24,11 @@ function check(name: string, value: boolean): void {
 }
 const calls: string[] = [];
 let tokenExchanges = 0;
-let upstreamRequests = 0;
+let managedRequests = 0;
 const http = createServer(async (req, res) => {
-  upstreamRequests++;
-  const path = new URL(req.url ?? "/", "http://local").pathname;
+  const url = new URL(req.url ?? "/", "http://local");
+  if (url.searchParams.has("managed-fixture")) managedRequests++;
+  const path = url.pathname;
   const json = (value: unknown): void => { res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(value)); };
   if (path.includes("oauth-protected-resource")) return json({ resource: `${LINEAR_MCP_ORIGIN}/mcp`, authorization_servers: [LINEAR_MCP_ORIGIN] });
   if (path.includes("oauth-authorization-server") || path.includes("openid-configuration")) return json({ issuer: LINEAR_MCP_ORIGIN,
@@ -78,6 +80,21 @@ function repairNamed(error: unknown, path: string): boolean {
   return String(error).includes(path) && remedy?.includes(JSON.stringify(path)) === true && remedy.includes("`allowedTools`");
 }
 
+async function waitForRestartedEndpoint(caller: CotalEndpoint): Promise<void> {
+  const deadline = Date.now() + 5000;
+  for (;;) {
+    try {
+      const { reply } = await caller.invokeService(endpoint, "inventory", {}, { deadlineMs: Math.max(1, deadline - Date.now()) });
+      if (!reply.ok) throw new Error(`restarted Linear inventory failed: ${reply.error.message}`);
+      return;
+    } catch (error) {
+      if (!(error instanceof EpEnvelopeError) || error.code !== "unavailable" || error.outcome !== "not-executed"
+        || !error.message.startsWith("no responder for ") || Date.now() >= deadline) throw error;
+      await wait(20);
+    }
+  }
+}
+
 async function managedToolPolicy(): Promise<void> {
   const root = join(home, "project");
   mkdirSync(join(root, ".cotal"), { recursive: true, mode: 0o700 });
@@ -89,14 +106,20 @@ async function managedToolPolicy(): Promise<void> {
 globalThis.fetch = (input, init) => {
   const url = new URL(input instanceof Request ? input.url : input);
   if (url.origin !== ${JSON.stringify(LINEAR_MCP_ORIGIN)}) throw new Error("unexpected upstream origin");
+  url.searchParams.set("managed-fixture", "1");
   return nativeFetch(${JSON.stringify(local)} + url.pathname + url.search, init);
 };\n`, { mode: 0o600 });
   const run = promisify(execFile);
   const bin = resolve(import.meta.dirname, "../../../bin/dist/cotal.js");
   const extension = pathToFileURL(resolve(import.meta.dirname, "../dist/index.js")).href;
+  const env = {
+    ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_"))),
+    COTAL_HOME: cotalHome,
+    COTAL_SKIP_CONNECTOR_SEED: "1",
+  };
   const service = async (...args: string[]) => {
     const result = await run(process.execPath, ["--import", pathToFileURL(hook).href, "--import", extension, bin, "service", ...args, "--space", space, "--json"], {
-      cwd: root, env: { ...process.env, COTAL_SKIP_CONNECTOR_SEED: "1" }, timeout: 120_000,
+      cwd: root, env, timeout: 120_000,
     }).then(r => ({ ...r, status: 0 }), (error: { code: unknown; stdout?: string; stderr?: string }) => {
       if (typeof error.code !== "number" || !error.stdout) throw error;
       return { status: error.code, stdout: error.stdout, stderr: error.stderr };
@@ -108,11 +131,12 @@ globalThis.fetch = (input, init) => {
     const added = await service("add", name, "--preset", "linear", "--root", root, "--account", name, "--endpoint", managedEndpoint);
     if (added.status !== 0) throw new Error(`service fixture could not save ${name}: ${JSON.stringify(added.receipt.error)}`);
   }
-  const beforeStart = upstreamRequests;
+  const beforeStart = managedRequests;
   const malformed = await service("start", "managed-malformed");
-  check("managed start refuses malformed allowedTools before launching or contacting Linear",
-    malformed.status === 2 && malformed.receipt.error?.code === "DEPENDENCY_UNAVAILABLE"
-    && malformed.receipt.error.remedy?.includes("`allowedTools`") === true && malformed.receipt.target?.pid === null && upstreamRequests === beforeStart);
+  const refusedBeforeLaunch = malformed.status === 2 && malformed.receipt.error?.code === "DEPENDENCY_UNAVAILABLE"
+    && malformed.receipt.error.remedy?.includes("`allowedTools`") === true && malformed.receipt.target?.pid === null && managedRequests === beforeStart;
+  check("managed start refuses malformed allowedTools before launching or contacting Linear", refusedBeforeLaunch);
+  if (!refusedBeforeLaunch) console.error(JSON.stringify({ ...malformed, managedRequests: managedRequests - beforeStart }));
   if (malformed.receipt.target?.pid || malformed.receipt.result?.pid) {
     await service("stop", "managed-malformed", "--yes");
   }
@@ -309,6 +333,7 @@ try {
   const restarted = new LinearUpstream(loadAccount("limited"));
   upstreams.push(restarted);
   running = await runLinearEndpoint(registration.bundle, restarted);
+  await waitForRestartedEndpoint(caller);
   check("endpoint calls the tool after editing and restarting the service", (await invoke("delete_issue")).reply.ok);
   for (const [name, contents] of [["invalid-readd", JSON.stringify({ name: "invalid-readd", mode: "write", auth: "oauth", allowedTools: [42] })], ["corrupt-readd", "{"]] as const) {
     const path = join(linearDir(), `${name}.json`);
