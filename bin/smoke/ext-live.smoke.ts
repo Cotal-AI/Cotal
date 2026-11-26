@@ -142,13 +142,13 @@ const extDir = join(configDir, "cotal", "extensions");
 const manifestPath = join(extDir, "extensions.json");
 const installedIndex = join(extDir, "node_modules", "cotal-ext-fixture", "index.js");
 const installedPkg = join(extDir, "node_modules", "cotal-ext-fixture", "package.json");
+const goodFixture = fixture("local extension", GOOD, { name: "cotal-ext-fixture", main: "./index", bin: { "fixture-bin": "bin.js" } });
 
 // -- empty state ---------------------------------------------------------------------------------
 ok("ext list starts empty", /No extensions installed\./.test(cotal(["ext", "list"]).stdout));
 
 // -- A: add --------------------------------------------------------------------------------------
 {
-  const goodFixture = fixture("cotal-ext-fixture", GOOD, { main: "./index", bin: { "fixture-bin": "bin.js" } });
   writeFileSync(join(goodFixture, "bin.js"), "#!/usr/bin/env node\n");
   const r = cotal(["ext", "add", goodFixture]);
   ok("add resolves an extensionless npm main", r.status === 0, r.stderr.slice(-400));
@@ -172,7 +172,17 @@ ok("ext list starts empty", /No extensions installed\./.test(cotal(["ext", "list
   ok("<TAB> offers cached flags WITHOUT importing", comp.status === 0 && /--shout/.test(comp.stdout), comp.stdout);
   const run = cotal(["hello-ext"]);
   ok("running the broken extension fails loud, naming it", run.status === 1 && /cotal-ext-fixture/.test(run.stderr) && /BOOM/.test(run.stderr), run.stderr.slice(0, 300));
-  writeFileSync(installedIndex, good);
+  if (process.platform !== "win32") {
+    const retry = /`(?:pnpm )?cotal (ext add [^`]+)`/.exec(run.stderr)?.[1];
+    ok("the import error prints a reinstall command", retry !== undefined, run.stderr);
+    // Use the smoke's launcher but let the shell parse the printed arguments unchanged.
+    const readded = spawnSync("sh", ["-c", `"$@" ${retry}`, "sh", realNode, tsxCli, binCotal], {
+      encoding: "utf8", env, cwd: sandbox, timeout: 180_000,
+    });
+    ok("the printed reinstall command accepts a path with spaces", readded.status === 0 && /added cotal-ext-fixture/.test(readded.stdout), readded.stderr);
+  } else {
+    writeFileSync(installedIndex, good);
+  }
 }
 
 // -- B2: a peer link left by another Cotal host is rebound before lazy import -----------------------
@@ -261,7 +271,7 @@ registry.register({ kind: "command", name: "hello-ext", summary: "barrier", run:
 
 // -- C2: re-adding an installed extension is a clean refresh (manifest keeps ONE entry) ------------
 {
-  const r = cotal(["ext", "add", join(sandbox, "cotal-ext-fixture")]);
+  const r = cotal(["ext", "add", goodFixture]);
   ok("re-add of the same extension exits 0", r.status === 0, r.stderr.slice(-300));
   const m = JSON.parse(readFileSync(manifestPath, "utf8"));
   ok("re-add keeps one manifest entry at the same pin", m.extensions.length === 1 && m.extensions[0].version === "1.0.0", m.extensions);
