@@ -215,6 +215,10 @@ try {
   check("cotal manager start --help shows its own usage and the manager preset's options with their defaults",
     startHelp.status === 0 && out(startHelp).includes("cotal manager start [--runtime <name>]") && out(startHelp).includes('(default: "pty")') && out(startHelp).includes("--roster"), out(startHelp));
   check("  and none of service add's definition flags", !/--preset\b|--file\b|--new-instance\b|--exec\b/.test(out(startHelp)), out(startHelp));
+  const managerHelpWithOptions = cotal(["help", "--", "mgr", "--space", "help-audit", "start"]);
+  check("explicit manager start help resolves the alias and skips the leading space option",
+    managerHelpWithOptions.status === 0 && managerHelpWithOptions.stderr === "" && managerHelpWithOptions.stdout === startHelp.stdout,
+    out(managerHelpWithOptions));
 
   const managerStartPath = ["service", "start", "manager"];
   const managerPresetHelp = cotal([...managerStartPath, "--help"]);
@@ -370,10 +374,17 @@ try {
     [badGlobalLeading, badGlobalTrailing].every((run) => run.status === 1 && run.stdout === ""
       && run.stderr.includes("--no-color takes no value") && run.stderr.endsWith(brokerStartHelp.stdout)),
     { leading: out(badGlobalLeading), trailing: out(badGlobalTrailing) });
-  const brokerHelpWithOptions = cotal(["help", "--", "service", "start", "broker", "--config", "./nats.conf"]);
-  check("explicit broker start help keeps preset options when passed startup flags",
-    brokerHelpWithOptions.status === 0 && brokerHelpWithOptions.stderr === "" && brokerHelpWithOptions.stdout === brokerStartHelp.stdout,
-    out(brokerHelpWithOptions));
+  for (const words of [
+    ["start", "broker", "--config", "./nats.conf"],
+    ["--space", "help-audit", "start", "broker", "--config", "./nats.conf"],
+    ["start", "--space", "help-audit", "broker", "--config", "./nats.conf"],
+    ["start", "--config", "./nats.conf", "broker"],
+  ]) {
+    const brokerHelpWithOptions = cotal(["help", "--", "service", ...words]);
+    check(`explicit service ${words.join(" ")} help keeps the broker preset options`,
+      brokerHelpWithOptions.status === 0 && brokerHelpWithOptions.stderr === "" && brokerHelpWithOptions.stdout === brokerStartHelp.stdout,
+      out(brokerHelpWithOptions));
+  }
   const genericStartHelp = cotal(["service", "start", "--help"]);
   check("generic service start help still lists --foreground",
     genericStartHelp.status === 0 && /^  --foreground\b/m.test(genericStartHelp.stdout), out(genericStartHelp));
