@@ -26,7 +26,7 @@
  *
  * Run: tsx bin/smoke/daemon-transport.smoke.ts
  */
-import { closeSync, mkdtempSync, openSync, readdirSync, realpathSync, rmSync, writeFileSync, chmodSync } from "node:fs";
+import { closeSync, mkdtempSync, openSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync, chmodSync } from "node:fs";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -37,7 +37,7 @@ import { lockExclusiveNb } from "@cotal-ai/seat";
 import { EndpointRefusal, assertSocketPathFits, checkDir, daemonPaths, type DaemonPaths } from "../daemon/endpoint.js";
 import { serveDaemon, type RunningDaemon, type ServeOptions } from "../daemon/server.js";
 import { EmptyLifetimeRefusal, isStoppingLifetime, queryDaemon, type ClientCounters } from "../daemon/client.js";
-import { processBirth } from "../daemon/lifetime.js";
+import { excludeLifetime, processBirth } from "../daemon/lifetime.js";
 
 let pass = 0, fail = 0;
 const notRun: string[] = [];
@@ -316,14 +316,30 @@ try {
     }
     {
       const home = privateDir("w6-owned"), other = privateDir("w6-other");
+      const stoppedHome = privateDir("w6-stopped"), staleHome = privateDir("w6-stale");
       const paths = { ...daemonPaths(process.env, home), socket: pipe("w6") };
+      const stoppedPaths = { ...daemonPaths(process.env, stoppedHome), socket: paths.socket };
+      const stopped = await ownedServe({ paths: stoppedPaths, version: "0.0.0-transport" });
+      await stopped.close();
+      check("W6 clean shutdown leaves an empty lifetime file", statSync(stoppedPaths.lock).size === 0);
+      const stalePaths = daemonPaths(process.env, staleHome);
+      mkSecretDir(stalePaths.state);
+      writeFileSync(stalePaths.lock, JSON.stringify({ v: 1, pid: process.pid, start: "stale", startedAt: "now" }));
       const daemon = await ownedServe({ paths, version: "0.0.0-transport" });
       for (const self of [false, true]) {
         const command = self ? "update --self" : "update";
-        const before = daemon.counters.accepted;
-        const foreign = await windowsUpdateAgainstPipe(paths.socket, other, self);
-        check(`W6 ${command} reconciles in the other home without opening the pipe`,
-          foreign.status === 0 && /LOCAL_CONTINUITY[\s\S]*RECONCILED/.test(foreign.output) && daemon.counters.accepted === before, foreign);
+        for (const [label, foreignHome] of [["no record", other], ["empty record", stoppedHome], ["stale record", staleHome]] as const) {
+          const before = daemon.counters.accepted;
+          const foreign = await windowsUpdateAgainstPipe(paths.socket, foreignHome, self);
+          check(`W6 ${command} reconciles with ${label} without opening the foreign pipe`,
+            foreign.status === 0 && /LOCAL_CONTINUITY[\s\S]*RECONCILED/.test(foreign.output) && daemon.counters.accepted === before, foreign);
+        }
+        const exclusion = excludeLifetime(stoppedPaths.lock);
+        try {
+          const held = await windowsUpdateAgainstPipe(paths.socket, stoppedHome, self);
+          check(`W6 ${command} does not skip a held lifetime lock with an empty record`,
+            held.status === 1 && /running manager continuity check:/.test(held.output) && !held.output.includes("RECONCILED"), held);
+        } finally { exclusion.release(); }
         const answered = daemon.counters.statusAnswered;
         const owned = await windowsUpdateAgainstPipe(paths.socket, home, self);
         check(`W6 ${command} still authenticates the daemon in its own home`,
