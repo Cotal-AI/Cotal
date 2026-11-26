@@ -327,9 +327,9 @@ Stop a helper when its job is done, or stop yourself by leaving out name. The ma
 
 *yield a run turn*
 
-Report the outcome of a workflow turn assigned to you. Use this only when your context contains a pending run turn; it does not start a workflow or resolve a checkpoint/ask.
+Report the outcome of a workflow turn assigned to you. Use this only when your context contains a pending run turn or an assigned once task. It does not start a workflow or resolve a checkpoint/ask.
 
-Usually finish your session turn normally: that yields `done` automatically. If you cannot progress, call `{"status":"blocked","note":"<what prevents progress>"}`. To hand the assigned turn to another agent, call `{"status":"handoff","to":"<agent-name>","note":"<handoff context>"}`.
+Usually finish your session turn normally: that yields `done` automatically. If you cannot progress, call `{"status":"blocked","note":"<what prevents progress>"}`. To hand the assigned turn to another agent, call `{"status":"handoff","to":"<agent-name>","note":"<handoff context>"}`. For a Claude Code once kickoff, only `blocked` is explicit: pass the kickoff goal ID as `turn` and explain what blocked you in `note`.
 
 When you hold several assigned turns, pass `turn` with the exact goal id from the relevant run-turn context block. Without `turn`, the oldest turn already shown to your session is selected. A turn that has not been shown cannot be yielded, and neither can one the run already settled, such as a turn whose deadline elapsed: that refusal names the turn and its deadline. A turn already yielded, including by the automatic `done` when your session turn ended, is refused the same way, and the refusal says how it was yielded. A successful reply confirms the turn was yielded, not that the whole workflow completed; the run's coordinator can inspect progress with `cotal_run` status.
 

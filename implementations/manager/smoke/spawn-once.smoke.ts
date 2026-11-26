@@ -38,21 +38,45 @@ function installClaudeFixture(root: string): void {
   const bin = join(root, "bin");
   mkdirSync(bin);
   writeFileSync(join(root, ".mcp.json"), '{"mcpServers":{"cotal":{"command":"node"}}}');
-  for (const name of ["channels_off", "channels_on", "claude-blocked", "early-kickoff"])
+  for (const name of ["channels_off", "channels_on", "claude-blocked", "early-kickoff", "stop-active", "interrupted-kickoff", "model-blocked"])
     writeFileSync(join(root, ".cotal", "agents", `${name}.md`), `---\nname: ${name}\nrole: tester\n---\n`);
   writeFileSync(join(bin, "claude"), `#!${process.execPath}
 const { spawn, spawnSync } = require('node:child_process');
 const { existsSync, writeFileSync } = require('node:fs');
 const { join } = require('node:path');
+const { createInterface } = require('node:readline');
 const argv = process.argv.slice(2);
 const arg = name => argv[argv.indexOf(name) + 1];
 if (argv.includes('--version')) { console.log('2.1.330 (Claude Code fixture)'); process.exit(0); }
 if (arg('--model') !== 'claude-opus-5-5') process.exit(2);
 const { command, args } = JSON.parse(arg('--mcp-config')).mcpServers.cotal;
+const blockedNote = 'The fixture cannot read the required input';
 const startSeat = () => {
-  const seat = spawn(command, args, { stdio: ['pipe', 'ignore', 'inherit'] });
+  const sayBlocked = process.env.COTAL_NAME === 'model-blocked';
+  const seat = spawn(command, args, { stdio: ['pipe', sayBlocked ? 'pipe' : 'ignore', 'inherit'] });
   seat.on('exit', code => process.exit(code ?? 0));
   for (const signal of ['SIGTERM', 'SIGINT', 'SIGHUP']) process.on(signal, () => seat.kill(signal));
+  if (sayBlocked) {
+    const send = (method, params, id) => seat.stdin.write(JSON.stringify({ jsonrpc: '2.0', id, method, params }) + '\\n');
+    const log = (name, value) => writeFileSync(join(process.cwd(), name + '.json'), JSON.stringify(value));
+    createInterface({ input: seat.stdout }).on('line', line => {
+      const reply = JSON.parse(line);
+      if (reply.id === 1 && reply.result) {
+        send('notifications/initialized');
+        setTimeout(() => {
+          hook('UserPromptSubmit', { prompt });
+          send('tools/call', { name: 'cotal_yield', arguments: { status: 'blocked', turn: 'not-this-task', note: blockedNote } }, 2);
+        }, 1500);
+      } else if (reply.id === 2) {
+        log('wrong-kickoff-yield', reply);
+        send('tools/call', { name: 'cotal_yield', arguments: { status: 'blocked', turn: process.env.COTAL_CLAUDE_ONCE_GOAL, note: blockedNote } }, 3);
+      } else if (reply.id === 3) {
+        log('blocked-kickoff-yield', reply);
+        hook('Stop');
+      }
+    });
+    send('initialize', { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'claude-fixture', version: '1' } }, 1);
+  }
 };
 const channelsOn = argv[0].includes('CHANNELS_ON');
 const ready = () => process.stdout.write('\\x1b[2J\\x1b[H? for shortcuts\\r\\n');
@@ -92,7 +116,20 @@ if (process.env.COTAL_NAME === 'early-kickoff') {
   setTimeout(startSeat, 1500);
 } else {
   startSeat();
-  if (process.env.COTAL_NAME !== 'claude-blocked') setTimeout(() => {
+  if (!['claude-blocked', 'model-blocked'].includes(process.env.COTAL_NAME)) setTimeout(() => {
+    if (process.env.COTAL_NAME === 'stop-active') {
+      const frame = hook('UserPromptSubmit', { prompt });
+      hook('Stop', { stop_hook_active: true });
+      setTimeout(() => finish(frame, false), 1500);
+      return;
+    }
+    if (process.env.COTAL_NAME === 'interrupted-kickoff') {
+      hook('UserPromptSubmit', { prompt });
+      // Escape interrupts the kickoff without a Stop. This Stop belongs to the new pane prompt.
+      hook('UserPromptSubmit', { prompt: 'unrelated pane prompt' });
+      hook('Stop');
+      return;
+    }
     hook('Stop');
     hook('UserPromptSubmit', { prompt: 'unrelated prompt' });
     hook('Stop');
@@ -632,10 +669,13 @@ try {
       c.terminal?.state === "succeeded" && c.once?.deadlineAt !== undefined &&
       log?.prompt.includes(`started this seat for one task (goal ${c.once.goalId})`) &&
       log.prompt.includes(`Reply with ONCE_PROBE_DONE (${mode})`) && log.prompt.includes(new Date(c.once.deadlineAt).toISOString()) &&
+      log.prompt.includes(`cotal_yield with status "blocked", turn "${c.once.goalId}"`) &&
       !log.frame.includes("ONCE_PROBE_DONE"), { spawn: c.terminal, log });
     check(`${mode}: the fixture completed and its main Stop ends the task, exits the seat and clears its debt`,
       log?.completed === "ONCE_PROBE_DONE" && terminal?.state === "succeeded" && (terminal.data as { status?: string }).status === "done" &&
       c.seat !== undefined && await gone(c.name!, c.seat.handle) && await debtCleared(c.once!.goalId), terminal);
+    if (mode === "CHANNELS_OFF") check("the kickoff receipt omits the idle-seat pane notice",
+      c.terminal?.state === "succeeded" && (c.terminal.data as { startupNotice?: unknown }).startupNotice === undefined, c.terminal);
   }
   const blocked = await spawnOnce({ name: "claude-blocked", agent: "claude", cwd: workspaceRoot, model: "claude-opus-5-5", prompt: "Must not run", once: { deadlineMs: 60_000 } });
   const blockedTask = await resultOf(taskOf(blocked.id), 20_000);
@@ -651,6 +691,34 @@ try {
   check("a kickoff submitted before MCP bind is matched and finishes on its Stop, not its deadline",
     earlyLog?.beforeBind === true && earlyLog.completed === "ONCE_PROBE_DONE" && earlyTask?.state === "succeeded" &&
     (earlyTask.data as { status?: string }).status === "done" && early.seat !== undefined && await gone(early.name!, early.seat.handle), earlyTask);
+  for (const name of ["stop-active", "interrupted-kickoff"] as const) {
+    const c = await spawnOnce({ name, agent: "claude", cwd: workspaceRoot, model: "claude-opus-5-5", prompt: "Complete the kickoff", once: { deadlineMs: 12_000 } });
+    const terminal = c.once && await resultOf(c.once.goalId, 30_000);
+    if (name === "stop-active") {
+      let completed: unknown;
+      try { completed = JSON.parse(readFileSync(join(workspaceRoot, `${name}.kickoff.json`), "utf8")).completed; } catch { /* fixture stopped early */ }
+      check("a Stop with stop_hook_active cannot retire the seat before the later main Stop",
+        completed === "ONCE_PROBE_DONE" && terminal?.state === "succeeded" && (terminal.data as { status?: string }).status === "done" &&
+        c.seat !== undefined && await gone(c.name!, c.seat.handle), { completed, terminal });
+    } else {
+      check("a pane prompt after interrupt cannot finish the kickoff; the deadline retires it",
+        terminal?.state === "failed" && (terminal.data as { reason?: string }).reason === "turn-deadline" &&
+        c.seat !== undefined && await gone(c.name!, c.seat.handle), { spawn: c.terminal, terminal });
+    }
+  }
+  const modelBlocked = await spawnOnce({ name: "model-blocked", agent: "claude", cwd: workspaceRoot, model: "claude-opus-5-5", prompt: "Read the required input", once: { deadlineMs: 15_000 } });
+  const modelBlockedTask = modelBlocked.once && await resultOf(modelBlocked.once.goalId, 20_000);
+  const yieldLog = (name: string) => {
+    try { return JSON.parse(readFileSync(join(workspaceRoot, `${name}.json`), "utf8")); } catch { return undefined; }
+  };
+  const wrongYield = yieldLog("wrong-kickoff-yield");
+  const blockedYield = yieldLog("blocked-kickoff-yield");
+  const result = modelBlockedTask?.data as { status?: string; note?: string } | undefined;
+  check("Claude can use cotal_yield to record blocked with a note for its exact kickoff goal",
+    wrongYield?.result?.isError === true && modelBlockedTask?.state === "succeeded" && result?.status === "blocked" &&
+    result.note === "The fixture cannot read the required input" && modelBlocked.seat !== undefined &&
+    await gone(modelBlocked.name!, modelBlocked.seat.handle) && await debtCleared(modelBlocked.once!.goalId),
+    { wrongYield, blockedYield, modelBlockedTask });
 } finally {
   for (const nc of seatConns) await nc.drain().catch(() => nc.close());
   await runnerNc?.drain().catch(() => runnerNc?.close());
@@ -663,7 +731,7 @@ try {
   else process.env.PATH = originalPath;
 }
 
-const EXPECTED_CELLS = 78;
+const EXPECTED_CELLS = 82;
 console.log(`\n${fail === 0 && pass === EXPECTED_CELLS ? "SPAWN ONCE SMOKE OK ✅" : "SPAWN ONCE SMOKE FAILED"}  (${pass} passed, ${fail} failed)`);
 if (pass + fail !== EXPECTED_CELLS) {
   console.log(`SUITE INCOMPLETE — ran ${pass + fail} of ${EXPECTED_CELLS} cells; a partial run is not a pass`);

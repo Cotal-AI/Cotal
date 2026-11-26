@@ -129,5 +129,6 @@ export function renderOnceTask(t: { goalId: string; payload: string; spawner?: s
   return `🎯 Cotal — ${from} started this seat for one task (goal ${t.goalId}):\n${context}\n`
     + `(This is the only task this seat takes. Do it with your own tools, and send your result to whoever needs it, for example with cotal_dm to ${from}, before you end your turn: `
     + `this seat is stopped when your turn ends${deadline}, and a result you have not sent reaches no one. `
-    + (t.kickoff ? `If you cannot finish, tell ${from} why before ending your turn.)` : "If you cannot finish, call cotal_yield with blocked or handoff and say why.)");
+    + (t.kickoff ? `If you cannot finish, call cotal_yield with status "blocked", turn "${t.goalId}", and a note that says why.)`
+      : "If you cannot finish, call cotal_yield with blocked or handoff and say why.)");
 }

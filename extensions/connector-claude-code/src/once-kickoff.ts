@@ -36,6 +36,16 @@ export function onceKickoff(env: NodeJS.ProcessEnv, warn: (message: string) => v
     void report(agent, ev.hook_event_name === "StopFailure");
   };
   return {
+    async yieldBlocked(agent: MeshAgent, turn: string | undefined, note: string | undefined) {
+      if (closed || ended || session === undefined || turn !== goal) return undefined;
+      const reply = await agent.yieldKickoff(goal, "blocked", note);
+      if (reply.ok) {
+        ended = true;
+        const state = (reply.data as { state?: unknown } | undefined)?.state;
+        if (state !== "succeeded") return { ok: false, error: `the kickoff task already ended (${String(state)})` };
+      }
+      return reply;
+    },
     wrap(next: HookConsumer): HookConsumer {
       return {
         onReply: next.onReply,

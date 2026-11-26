@@ -144,7 +144,8 @@ mesh too. The language's `once` scope above is a different thing.
 The task ends in one of these ways:
 
 - The helper ends its turn. A helper taking a relayed task can also call `cotal_yield` to end it.
-  The manager records the outcome and stops the helper.
+  A Claude Code helper can call `cotal_yield` with `status: "blocked"`, the kickoff's goal ID as
+  `turn`, and a `note` explaining why it cannot proceed. The manager records the outcome and stops the helper.
 - The deadline passes. It is one hour unless the spawn passes `deadline`, and `-1` sets none. The
   task fails with `turn-deadline` and the helper is stopped.
 - The helper exits first, never joins, or cannot confirm that its harness took the task. The task

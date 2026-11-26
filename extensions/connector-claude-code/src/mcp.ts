@@ -244,6 +244,21 @@ function requireControl(env: NodeJS.ProcessEnv): NonNullable<ReturnType<typeof c
   return control;
 }
 
+/** Keep a kickoff out of the relay but allow its running session to report a blocker explicitly. */
+class ClaudeSeatAgent extends MeshAgent {
+  constructor(private readonly kickoff: ReturnType<typeof onceKickoff>, ...args: ConstructorParameters<typeof MeshAgent>) {
+    super(...args);
+  }
+
+  override async yieldTurn(status: Parameters<MeshAgent["yieldTurn"]>[0], opts: Parameters<MeshAgent["yieldTurn"]>[1] = {}) {
+    if (status === "blocked") {
+      const reply = await this.kickoff?.yieldBlocked(this, opts.turn, opts.note);
+      if (reply !== undefined) return reply;
+    }
+    return super.yieldTurn(status, opts);
+  }
+}
+
 async function startSession(
   opts: ClaudeSessionOptions,
   setClose: (close: () => Promise<void>) => void,
@@ -282,7 +297,7 @@ async function startSession(
   const kickoff = onceKickoff(env, warn);
   // The command mod's socket opens below, once the session's teardown is in place.
   const commands = sessionCommands(env, claude, () => agent, warn);
-  const agent: MeshAgent = new MeshAgent(config, env, {
+  const agent = new ClaudeSeatAgent(kickoff, config, env, {
     withholdProcessCwd: true,
     onceClaimBound: true,
     commands: commands.dispatcher,
