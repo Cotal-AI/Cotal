@@ -27,9 +27,9 @@
  * kills only its own children. Needs `nats-server` on PATH.
  * Run: pnpm smoke:up-max-payload:live  (BUILD FIRST - the subprocess runs built dist.)
  */
-import { spawn, type ChildProcess } from "node:child_process";
+import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import net from "node:net";
 import { join, resolve as resolvePath } from "node:path";
 import { assertSmokeSandboxDown, freePort, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
@@ -108,6 +108,37 @@ function servedMaxPayload(port: number, timeoutMs = 5_000): Promise<number | und
 let open = false;
 const confText = () => readFileSync(open ? join(root, ".cotal", "server-open.conf") : join(authDir(root), "server.conf"), "utf8");
 const recordedPayload = () => (JSON.parse(readFileSync(join(root, ".cotal", "broker-policy.json"), "utf8")) as { maxPayload?: number }).maxPayload;
+
+async function checkFifoBody(space: string, server: string): Promise<void> {
+  const target = ["--space", space, "--server", server, "--json"];
+  const small = join(root, "small.txt");
+  writeFileSync(small, "short file body");
+  const sent = await run(["send", "-c", "fifo-body", "--file", small, ...target]);
+  ok("a short file body is stored on the low-limit broker", sent.status === 0 && JSON.parse(sent.out).result?.stored === true, sent.out);
+
+  const fifo = join(root, "body.fifo");
+  execFileSync("mkfifo", [fifo]);
+  // The producer holds the FIFO open until the parent stops it, even after writing the entire body.
+  const writer = spawn(process.execPath, ["-e", `
+    const { openSync, writeFileSync } = require("node:fs");
+    writeFileSync(openSync(process.argv[1], "w"), Buffer.alloc(8193, "a"));
+    process.stdin.resume();
+  `, fifo], { stdio: ["pipe", "ignore", "ignore"] });
+  kids.push(writer);
+  const closed = once(writer, "close");
+  try {
+    const refused = await run(["send", "-c", "fifo-body", "--file", fifo, ...target], 10_000);
+    ok("a FIFO one byte over the broker limit refuses while its writer is still open", refused.status === 2 && writer.exitCode === null && writer.signalCode === null &&
+      JSON.parse(refused.out).error?.code === "UNSUPPORTED" && refused.out.includes("8192-byte message limit; nothing was sent"), refused.out);
+  } finally {
+    writer.stdin.end();
+    writer.kill();
+    await closed;
+  }
+  const history = await run(["history", "fifo-body", ...target]);
+  const items = JSON.parse(history.out).result?.items as { text: string }[] | undefined;
+  ok("only the short file reaches history", history.status === 0 && items?.length === 1 && items[0]?.text === "short file body", history.out);
+}
 
 async function checkMode(mode: "auth" | "open-legacy" | "open-controller"): Promise<void> {
   open = mode !== "auth";
@@ -225,6 +256,7 @@ async function checkMode(mode: "auth" | "open-legacy" | "open-controller"): Prom
       // Only the controller route renders the add-manager hint: the legacy open route's reuse
       // receipt offers only `down`, so there is no hint to drop there.
       if (mode === "open-controller") {
+        if (process.platform !== "win32") await checkFifoBody(space, server);
         const reuse = await run(["up", "--no-manager", "--space", space, "--server", server]);
         ok("a broker-only reuse exits 0 and its Next drops the add-manager hint for the low limit",
           reuse.status === 0 && /already running/.test(reuse.out) && !reuse.out.includes("Add the manager to this stack") &&

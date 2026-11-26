@@ -182,12 +182,13 @@ check("the waiting view keeps the agent-only signal scope", waitingReport.includ
   const row = marker(feedLine({ ...post, text: cut.text, omittedCodeUnits: cut.omittedCodeUnits }, space));
   const dm = marker(feedLine({ ...post, delivery: "unicast", channel: undefined, toIds: [ids.bob], text: cut.text, omittedCodeUnits: cut.omittedCodeUnits }, space));
   const carries = (target: string) => `; \`cotal history ${target} --json --space ${space}\` carries the whole text`;
+  const quotedChannel = (channel: string) => process.platform === "win32" ? `"#${channel}"` : `'#${channel}'`;
   check("a watch line cut at the row bound names the code units not shown and the history read that carries the whole text",
-    whole?.[1] === String(lost) && whole[2] === carries("'#general'") && !feedLine(post, space).includes("END-MARK"));
-  check("a stream row already cut keeps the count it lost", row?.[1] === String(lost) && row[2] === carries("'#general'"));
+    whole?.[1] === String(lost) && whole[2] === carries(quotedChannel("general")) && !feedLine(post, space).includes("END-MARK"));
+  check("a stream row already cut keeps the count it lost", row?.[1] === String(lost) && row[2] === carries(quotedChannel("general")));
   for (const channel of ["clear", "limit"]) {
     const hint = marker(feedLine({ ...post, channel }, space));
-    check(`a cut #${channel} post names a channel read, not a history verb`, hint?.[2] === carries(`'#${channel}'`));
+    check(`a cut #${channel} post names a channel read, not a history verb`, hint?.[2] === carries(quotedChannel(channel)));
   }
   check("a cut direct message points at a scoped JSON DM history read", dm?.[1] === String(lost) && dm[2] === carries("--dms"));
   check("control: a message within the bound has no marker", marker(feedLine({ ...post, text: "short" }, space)) === null);

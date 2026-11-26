@@ -328,7 +328,7 @@ export async function status(args: ParsedArgs): Promise<void> {
       recovery, stoppedForeignListener, stackStarting, selectedStarting,
     }),
   );
-  if (values.components) await printComponentHealth(selected, store, target, meshes, recovery && !recoveringOtherSpace ? recovery : selectedHints[0], !target.resolved && selectedStarting ? target.message : undefined);
+  if (values.components) await printComponentHealth(selected, store, target, meshes, recovery && !recoveringOtherSpace ? recovery : selectedHints[0], !target.resolved && selectedStarting ? target.message : undefined, recoveryBroker);
 }
 
 /** Why this account cannot list or search `root`, or undefined when it can. */
@@ -535,8 +535,8 @@ function readExtensions(gaps: Gaps): StatusResult["extensions"] {
     gaps.add("EXTENSIONS_UNREADABLE", error.message);
     return { root: globalConfigDir(), items: null };
   }
-  const { versions, unreadable } = readExtensionVersions();
-  if (unreadable !== undefined) gaps.add("EXTENSIONS_UNREADABLE", `the extensions manifest could not be read: ${unreadable}`);
+  const { versions, unreadable, remedy } = readExtensionVersions();
+  if (unreadable !== undefined) gaps.add("EXTENSIONS_UNREADABLE", `the extensions manifest could not be read: ${unreadable}${remedy ? `. ${remedy}` : ""}`);
   return { root, items: unreadable === undefined ? versions.map((e) => ({ package: e.pkg, label: e.label, version: e.version })) : null };
 }
 

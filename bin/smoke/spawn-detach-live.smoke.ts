@@ -524,16 +524,17 @@ try {
   const psAfter = await capture(() => run("ps", ["--space", SPACE]));
   ok("ps is empty after stop", NO_AGENTS.test(psAfter), psAfter);
 
-  {
-    const guide = readFileSync(join(import.meta.dirname, "../../docs/connect-opencode.mdx"), "utf8");
-    const example = /`\.cotal\/agents\/([\w-]+)\.md`[^\n]*\n\n```markdown\n([\s\S]+?)\n```[\s\S]+?^cotal spawn \1 --harness opencode --detach$/m.exec(guide);
-    if (!example) throw new Error("The OpenCode guide must show how to create the persona before its detached launch");
+  for (const [harness, role] of [["opencode", "research"], ["codex", "review"], ["claude", "assistant"]]) {
+    const guide = readFileSync(join(import.meta.dirname, `../../docs/connect-${harness}.mdx`), "utf8");
+    const example = /`\.cotal\/agents\/([\w-]+)\.md`[^\n]*\n\n```markdown\n([\s\S]+?)\n```[\s\S]+?^cotal spawn \1 --harness ([\w-]+) --detach$/m.exec(guide);
+    if (!example || example[3] !== harness) throw new Error(`The ${harness} guide must show how to create the persona before its detached launch`);
     const [, persona, contents] = example;
     writeFileSync(join(workspaceRoot, ".cotal", "agents", `${persona}.md`), `${contents}\n`);
-    // Use the suite harness to test the catalog lookup against the real manager without OpenCode installed.
-    const launched = await capture(() => run("spawn", [persona, "--harness", "e2e", "--detach", "--no-events", "--space", SPACE]));
-    ok("the OpenCode guide's persona launches by catalog name", joinedAs(launched, persona) && lastOpts?.role === "research", launched);
-    await capture(() => run("stop", [persona, "--space", SPACE]));
+    // Use the suite harness to test catalog lookup against the real manager without native applications.
+    const name = `guide-${harness}`;
+    const launched = await capture(() => run("spawn", [persona, "--harness", "e2e", "--detach", "--no-events", "--space", SPACE, "--name", name]));
+    ok(`the ${harness} guide's persona launches by catalog name`, joinedAs(launched, name) && lastOpts?.role === role, launched);
+    await capture(() => run("stop", [name, "--space", SPACE]));
   }
 
   // D — COTAL_DEFAULT_PERSONA supplies the persona for a bare detached spawn. The identity still

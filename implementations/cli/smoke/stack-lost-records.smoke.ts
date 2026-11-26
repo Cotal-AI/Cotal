@@ -20,11 +20,15 @@ let anchor = recordSmokeSandbox({ root, cotalHome: home, xdgConfigHome: env.XDG_
 const binary = resolve(import.meta.dirname, "../../../bin/dist/cotal.js");
 interface Pin { pid: number; token: string }
 interface Journal { members: { role: string; instanceId: string | null; process?: Pin }[]; recovery?: { home: string; host: string }; operation: { kind: string; phase: string } }
-function cli(args: string[], cotalHome = home) {
+function run(args: string[], cotalHome = home) {
   const options = { cwd: root, env: { ...env, COTAL_HOME: cotalHome }, encoding: "utf8" as const, timeout: 150_000 };
   if (cotalHome === home) assertSmokeSandboxDown(anchor, args, options);
-  const result = spawnSync(process.execPath, [binary, ...args, "--json"], options);
+  const result = spawnSync(process.execPath, [binary, ...args], options);
   assert.equal(result.error, undefined, result.error?.message);
+  return result;
+}
+function cli(args: string[], cotalHome = home) {
+  const result = run([...args, "--json"], cotalHome);
   const data = JSON.parse(result.stdout) as { outcome?: string; completeness?: string; warnings?: { code: string; message: string }[]; result?: { kind?: string; selected?: { message?: string }; members?: { role: string; process: string }[]; signalled?: boolean }; error?: { code?: string; message?: string; remedy?: string } };
   return { exit: result.status, data };
 }
@@ -61,6 +65,10 @@ try {
   assert.equal(foreignDown.exit, 2, "another home must not stop this stack");
   assert(foreignDown.data.error?.remedy?.includes(`COTAL_HOME=${home}`));
   assert(!foreignDown.data.error?.remedy?.includes("down --dry-run"));
+  const foreignPs = cli(["ps"], other);
+  assert.equal(foreignPs.exit, 2);
+  assert(foreignPs.data.error?.remedy?.includes(`COTAL_HOME=${home}`));
+  assert(!foreignPs.data.error?.remedy?.includes("down --dry-run"));
   assert(pins.every((pin) => assertRecordIdentity(pin).kind === "match"));
   renameSync(home, `${home}-retained`); hidden = true;
   mkdirSync(home, { mode: 0o700 });
@@ -76,6 +84,13 @@ try {
   }]);
   assert.match(status.data.result?.selected?.message ?? "", /member records are missing/);
   assert.doesNotMatch(status.data.result?.selected?.message ?? "", /runs under another/);
+  for (const [command, exit, cotalHome] of [["status", 4, home], ["ps", 2, home], ["ps", 2, `${home}/`]] as const) {
+    const plain = run([command, "--plain"], cotalHome);
+    const text = plain.stdout + plain.stderr;
+    assert.equal(plain.status, exit, text);
+    assert.doesNotMatch(text, /with COTAL_HOME=/);
+    assert.match(text, /`(?:pnpm )?cotal down --dry-run`.*`(?:pnpm )?cotal down --yes`/);
+  }
   const before = readFileSync(journalPath, "utf8");
   const preview = cli(["down", "--dry-run"]);
   assert.equal(preview.exit, 0);

@@ -1,9 +1,9 @@
 import { existsSync, readFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
-import { c, cachedUpdateSummary, exitCode, logicalExecutionEntry, extensionProvides, loadExtensionsManifest, stderrLine, UnreadableConnectorSelection } from "@cotal-ai/workspace";
+import { c, cachedUpdateSummary, exitCode, isCommandFailure, logicalExecutionEntry, extensionProvides, loadExtensionsManifest, stderrLine, UnreadableConnectorSelection } from "@cotal-ai/workspace";
 import { cliPackageRoot, cliVersion, installedCliVersion } from "../seed/paths.js";
 import { isNpx } from "./self-exec.js";
-import { manifestReadRemedy, readUpdatePending } from "./update-pending.js";
+import { readUpdatePending } from "./update-pending.js";
 
 /** This binary's own published version. Re-exported here so the version surfaces (`cotal version` and
  *  `cotal status`) have a single import for all version reporting. */
@@ -71,7 +71,7 @@ export function readExtensionVersions(): { versions: ExtensionVersion[]; unreada
     });
     return { versions };
   } catch (e) {
-    return { versions: [], unreadable: e instanceof Error ? e.message : String(e), remedy: manifestReadRemedy(e), ...(e instanceof UnreadableConnectorSelection ? { unreadableSelection: true } : {}) };
+    return { versions: [], unreadable: e instanceof Error ? e.message : String(e), remedy: isCommandFailure(e) ? e.remedy : undefined, ...(e instanceof UnreadableConnectorSelection ? { unreadableSelection: true } : {}) };
   }
 }
 

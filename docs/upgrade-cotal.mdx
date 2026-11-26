@@ -96,6 +96,7 @@ refusal in 0.159.1 through 0.160.7 and the Manager-selection refusal before 0.16
 For an npm installation, install once with `npm install -g cotal-ai@latest`, then run `cotal update`.
 For a shell installation, rerun its installer as described under [Reconcile the installation](#reconcile-the-installation).
 On Linux and macOS, when this Cotal home has neither a live daemon nor a recorded service, installation reconciliation does not contact a daemon at the shared endpoint. This applies to shell installer re-runs, `cotal update`, and `cotal update --self`.
+On Windows, `cotal update` and `cotal update --self` skip the shared daemon pipe when this Cotal home has neither a daemon lifetime record nor a recorded service. They still check local Manager continuity.
 An unwritable installation refuses before staging and names the owning install command.
 If this first check refuses, `cotal update --self` exits 2 and reports that the installation
 cannot update itself from this account and no changes were made. The original reason and owning
@@ -124,8 +125,9 @@ On Linux and macOS, self-update refreshes an existing npm launcher when it can s
 Self-update keeps the npm selected on `PATH`, including when it installs built-in connectors.
 If that npm requires a different Node version, Cotal tries the Node recorded by its installation
 launcher, when present, and then looks for a compatible Node alongside npm or on `PATH`.
-When Corepack runs on the current Node but the npm it selects requires a different version,
-Cotal looks for a Node that can run both. The search can also use Volta's `node` shim.
+Cotal checks whether the Node it chooses for Corepack can also run the npm that Corepack selects.
+If npm requires a different Node version, Cotal keeps looking for one that can run both.
+The search can also use Volta's `node` shim.
 If the `node` shim on `PATH` selects a compatible version from the current project, as with asdf,
 Cotal verifies that executable and runs npm with it outside the project, including during
 reconciliation after a release changes. If the project's selection cannot run npm, Cotal also
