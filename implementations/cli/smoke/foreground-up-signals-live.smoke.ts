@@ -1116,7 +1116,7 @@ function projectHangupPath(mesh: string, root: string, mode: "relative-path" | "
 
 type ForegroundRun = { state: ReturnType<typeof observeOwnedChild>; io: { out: string; err: string } };
 
-async function checkForegroundPayloadRetry(mesh: string, env: NodeJS.ProcessEnv, port: number, sandbox: ReturnType<typeof recordSmokeSandbox>, holder: ForegroundRun, foreground: (args: string[]) => ForegroundRun): Promise<void> {
+async function checkForegroundBrokerLimitsRetry(mesh: string, env: NodeJS.ProcessEnv, port: number, sandbox: ReturnType<typeof recordSmokeSandbox>, holder: ForegroundRun, foreground: (args: string[]) => ForegroundRun): Promise<void> {
   const servedPayload = async () => {
     const broker = await connect({ servers: `nats://127.0.0.1:${port}`, reconnect: false, timeout: 5_000 });
     try { return broker.info?.max_payload; } finally { await broker.close(); }
@@ -1130,7 +1130,7 @@ async function checkForegroundPayloadRetry(mesh: string, env: NodeJS.ProcessEnv,
     assert.equal(run.state.code, 0, run.io.err);
   };
   assert.equal(await servedPayload(), 131072);
-  const conflict = await foregroundCliProbe(cliEntry, tsx, mesh, env, ["up", "--foreground", "--no-manager", "--max-payload", "262144"]);
+  const conflict = await foregroundCliProbe(cliEntry, tsx, mesh, env, ["up", "--foreground", "--no-manager", "--max-payload", "262144", "--max-file-store", "10485760"]);
   assert.equal(conflict.code, 2, conflict.out + conflict.err);
   assert.match(conflict.err, /Code:\s+CONFLICT/);
   assert.ok(!holder.state.exited, "the refusal leaves the foreground holder running");
@@ -1145,6 +1145,10 @@ async function checkForegroundPayloadRetry(mesh: string, env: NodeJS.ProcessEnv,
     return /Operation: +up completed/.test(restarted.io.out);
   }, 120_000, () => restarted.io.out + restarted.io.err);
   assert.equal(await servedPayload(), 262144, "following the printed retry serves the requested payload limit"); passed++;
+  const logs = await foregroundCliProbe(cliEntry, tsx, mesh, env, ["service", "logs", "stack-broker", "--tail", "100"]);
+  assert.equal(logs.code, 0, logs.out + logs.err);
+  const storage = logs.out.split("\n").filter((line) => line.includes("Max Storage:")).at(-1) ?? "";
+  assert.match(storage, /Max Storage:\s+10\.00 MB$/, "following the printed retry applies the requested JetStream file storage cap"); passed++;
   await stop(restarted);
 }
 
@@ -1181,7 +1185,7 @@ async function controllerHoldCell(kind: "takeover" | "other-home" | "broker-cras
     }, 120_000, () => holder.io.err.slice(-3000));
     assert.ok(holder.child.pid);
     if (kind === "payload-retry") {
-      await checkForegroundPayloadRetry(mesh, env, port, sandbox, holder, (args) => taker = foreground(args));
+      await checkForegroundBrokerLimitsRetry(mesh, env, port, sandbox, holder, (args) => taker = foreground(args));
       console.log(`PASS foreground-up-signals ${name}`);
       return;
     }
