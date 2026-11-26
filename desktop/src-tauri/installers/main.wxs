@@ -67,9 +67,9 @@
       <Component Id="RegistryEntries" Guid="*">
         <RegistryValue Root="HKCU" Key="Software\{{manufacturer}}\{{product_name}}" Name="InstallDir" Type="string" Value="[INSTALLDIR]" KeyPath="yes" />
         {{#each deep_link_protocols as |protocol| ~}}
-        <RegistryKey Root="HKLM" Key="Software\Classes\{{protocol}}">
+        <RegistryKey Root="HKLM" Key="Software\Classes\\{{protocol}}">
           <RegistryValue Type="string" Name="URL Protocol" Value="" />
-          <RegistryValue Type="string" Value="URL:{{bundle_id}} protocol" />
+          <RegistryValue Type="string" Value="URL:{{../bundle_id}} protocol" />
           <RegistryKey Key="DefaultIcon"><RegistryValue Type="string" Value="&quot;[!Path]&quot;,0" /></RegistryKey>
           <RegistryKey Key="shell\open\command"><RegistryValue Type="string" Value="&quot;[!Path]&quot; &quot;%1&quot;" /></RegistryKey>
         </RegistryKey>

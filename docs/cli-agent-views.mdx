@@ -343,6 +343,10 @@ possibly live process records, the root's additive deployment ledgers and
 attempts, and fresh boot attempts/summaries, plus selected-space service
 definitions, instances, supervisor receipts and retained native attempts. An
 unreadable additive or fresh record is listed rather than treated as absent.
+If the selected root records a completed stack stop and an earlier team boot, the preview
+reports that another team boot is blocked even when the earlier attempt's summary matches.
+JSON includes this notice in `warnings`. A matched summary does not establish current liveness,
+and the preview does not authorize an apply.
 The team inventory separately lists unsettled fresh and additive attempts
 and returned agent/channel receipts. `team show <id>` distinguishes those
 historical records without inferring current card or broker state. Bare

@@ -16,7 +16,15 @@
  * they attach, as a turn of its own on the same thread: `turn/start` carries the text and the image as
  * a data URL, and live Codex puts both into the model request. `usage` answers no context until
  * Codex reports token usage, then the last call's total tokens in the model's window. Presence says
- * the agent serves interrupt, turn, images and usage.
+ * the agent serves interrupt, turn, images, usage and set-model.
+ *
+ * `set-model` (fake only) reads every page of `model/list`, then sends `thread/settings/update` with
+ * the model and effort, and answers them. The next turn runs on them, and its `turn/start` names
+ * neither. Without a variant it sends the model's default effort, and without a model it keeps the
+ * model the thread runs, the switched one. An unlisted model is `not-found` and an unlisted effort
+ * `failed-precondition`, both before Codex is asked, and an update Codex refuses is
+ * `failed-precondition`. After the app-server crashes, the host sends the switch to the restarted
+ * thread before any `turn/start`, and the new thread's first turn runs on it.
  *
  * Run: pnpm smoke:codex-skill-command:auth   (needs `nats-server` on PATH; local-only)
  */
@@ -96,13 +104,23 @@ const ECHO_PATH = join(work, ".agents/skills/smoke-echo/SKILL.md");
 /** A 1×1 red PNG. */
 const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC";
 
-// What the harness was asked. Fake: the app-server journals each `turn/start` input. Live: the mock
-// Responses endpoint records the last user text of each model request.
+// What the harness was asked. Fake: the app-server journals each request, with a `turn/start`'s input
+// and the model and effort it runs on. Live: the mock Responses endpoint records the last user text of
+// each model request.
 const fakeLog = join(dir, "fake.log.jsonl");
 const modelTurns: string[] = [];
 let usersSeen = 0;
-const fakeTurns = (): { input: { type: string; name?: string; path?: string; text?: string }[] }[] =>
-  existsSync(fakeLog) ? readFileSync(fakeLog, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l)).filter((e) => e.method === "turn/start") : [];
+interface FakeEntry {
+  ev: string;
+  method?: string;
+  params?: Record<string, unknown>;
+  input?: { type: string; name?: string; path?: string; text?: string }[];
+  model?: string;
+  effort?: string;
+  runs?: { model: string; effort: string | null };
+}
+const fakeEntries = (): FakeEntry[] => existsSync(fakeLog) ? readFileSync(fakeLog, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l) as FakeEntry) : [];
+const fakeTurns = (): FakeEntry[] => fakeEntries().filter((e) => e.method === "turn/start");
 const turnCount = () => (live ? modelTurns.length : fakeTurns().length);
 
 const mock = createServer((req, res) => {
@@ -227,8 +245,8 @@ try {
   const presence = webEp.getRoster().find((p) => p.card.id === `${A}.cody`);
   if (presence?.runtime) cody = { owner: A, actor: "cody", uid: W.cody.uid, runtimeId: presence.runtime.id };
   check(`the host came online${live ? " on the installed codex" : ""}`, served && cody !== undefined, served ? undefined : hostOut.join("").slice(-3000));
-  check("presence says the agent serves interrupt, turn, images and usage",
-    same(presence?.agentEndpoint, { interrupt: true, turn: true, images: true, usage: true }), presence?.agentEndpoint);
+  check("presence says the agent serves interrupt, turn, images, usage and set-model",
+    same(presence?.agentEndpoint, { interrupt: true, turn: true, images: true, usage: true, setModel: true }), presence?.agentEndpoint);
   const fresh = await call("usage");
   check("before Codex reports token usage, usage answers supported with no context",
     fresh.ok && fresh.value.ok && same(fresh.value.data, { supported: true }), fresh.ok ? fresh.value : verdict(fresh));
@@ -312,6 +330,63 @@ try {
     const late = await call("interrupt");
     check("an interrupt that reaches Codex after the turn ended answers idle",
       late.ok && late.value.ok && same(late.value.data, { state: "idle" }), late.ok ? late.value : verdict(late));
+
+    // set-model: checked against model/list, then thread/settings/update, from the next turn on.
+    await until(() => webEp.getRoster().some((p) => p.card.id === `${A}.cody` && p.status === "idle"));
+    const updates = () => fakeEntries().filter((e) => e.method === "thread/settings/update").map((e) => e.params);
+    const answer = (r: Awaited<ReturnType<typeof call>>) => (r.ok && r.value.ok ? r.value.data : verdict(r));
+    const ownerTurn = async (text: string): Promise<FakeEntry | undefined> => {
+      const r = await call("turn", { text });
+      const state = await settle(r.ok && r.value.ok ? (r.value.data as { id?: string }).id : undefined, 20_000);
+      const find = () => fakeTurns().find((t) => JSON.stringify(t.input).includes(text));
+      await until(() => find() !== undefined);
+      return find() ?? ({ ev: `the turn did not run: ${verdict(r)} ${state}` } as FakeEntry);
+    };
+    const next = await call("set-model", { model: "fake-next", variant: "low" });
+    check("set-model to a listed model and effort answers the model and effort Codex runs",
+      same(answer(next), { model: "fake-next", variant: "low" }), answer(next));
+    const lists = fakeEntries().filter((e) => e.method === "model/list").map((e) => e.params);
+    check("the host read both pages of model/list with hidden models, then sent thread/settings/update with that model and effort",
+      same(lists, [{ includeHidden: true }, { includeHidden: true, cursor: "page-2" }]) && same(updates(), [{ threadId: "t_skills", model: "fake-next", effort: "low" }]), [lists, updates()]);
+    const switched = await ownerTurn("AFTER-SWITCH");
+    check("the next turn runs on fake-next at low effort, and its turn/start names neither, so the thread's setting decides",
+      same(switched?.runs, { model: "fake-next", effort: "low" }) && switched?.model === undefined && switched?.effort === undefined, switched);
+    await until(() => webEp.getRoster().some((p) => p.card.id === `${A}.cody` && p.status === "idle"));
+
+    const effortOnly = await call("set-model", { variant: "high" });
+    check("set-model with only a variant keeps the model the thread runs, the switched one, and changes the effort",
+      same(answer(effortOnly), { model: "fake-next", variant: "high" }) && same(updates().at(-1), { threadId: "t_skills", model: "fake-next", effort: "high" }), [answer(effortOnly), updates().at(-1)]);
+    const modelOnly = await call("set-model", { model: "fake-model" });
+    check("set-model with only a model sends that model's default effort from model/list",
+      same(answer(modelOnly), { model: "fake-model", variant: "medium" }) && same(updates().at(-1), { threadId: "t_skills", model: "fake-model", effort: "medium" }), [answer(modelOnly), updates().at(-1)]);
+
+    const sent = updates().length;
+    const unlisted = await call("set-model", { model: "gpt-nope" });
+    const effortOff = await call("set-model", { variant: "xhigh" });
+    const pairOff = await call("set-model", { model: "fake-next", variant: "medium" });
+    check("an unlisted model is not-found, and an effort the model does not list is failed-precondition, both before Codex is asked",
+      verdict(unlisted) === "not-found/not-executed" && verdict(effortOff) === "failed-precondition/not-executed"
+      && verdict(pairOff) === "failed-precondition/not-executed" && updates().length === sent, [verdict(unlisted), verdict(effortOff), verdict(pairOff), updates().length - sent]);
+    const codexSaidNo = await call("set-model", { model: "fake-refused" });
+    check("a switch Codex refuses with an error answer is failed-precondition",
+      verdict(codexSaidNo) === "failed-precondition/not-executed" && updates().length === sent + 1 && updates().at(-1)?.model === "fake-refused", [verdict(codexSaidNo), updates().slice(sent)]);
+
+    // An app-server restart starts a new thread on the launch config. The switch goes to it first.
+    const kept = await call("set-model", { model: "fake-next", variant: "low" });
+    const mark = fakeEntries().length;
+    writeFileSync(`${fakeLog}.crash`, "");
+    await until(() => fakeEntries().slice(mark).some((e) => e.method === "thread/settings/update"), 30_000);
+    const tail = fakeEntries().slice(mark);
+    const died = tail.findIndex((e) => e.ev === "died");
+    const restarted = tail.findIndex((e, i) => i > died && e.method === "thread/start");
+    const reapplied = tail.findIndex((e, i) => i > restarted && e.method === "thread/settings/update");
+    const firstTurn = tail.findIndex((e, i) => i > restarted && e.method === "turn/start");
+    check("after the app-server crashes, the host sends the switch to the restarted thread before any turn/start",
+      same(answer(kept), { model: "fake-next", variant: "low" }) && died >= 0 && restarted > died && reapplied > restarted && (firstTurn < 0 || firstTurn > reapplied)
+      && same(tail[reapplied]?.params, { threadId: "t_skills", model: "fake-next", effort: "low" }), { tail: tail.map((e) => e.method ?? e.ev), host: hostOut.join("").slice(-1500) });
+    const reborn = await ownerTurn("AFTER-RESTART");
+    check("the restarted thread's first turn runs on fake-next at low effort",
+      same(reborn?.runs, { model: "fake-next", effort: "low" }), reborn);
   }
 } catch (e) {
   check(`scenario threw: ${(e as Error).stack ?? (e as Error).message}`, false);
