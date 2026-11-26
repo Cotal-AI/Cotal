@@ -86,6 +86,7 @@ cotal.cmd setup --destination local --harness claude --project "%USERPROFILE%\re
 
 To register a self-hosted space from a connection bundle without questions, create the project
 folder if it does not exist, then run setup with the harness and the space name from the bundle.
+If setup cannot read the file, pass the path to the exported bundle with `--connection-file`.
 In PowerShell or Command Prompt on Windows, use `cotal.cmd` and an absolute project path as shown above.
 
 In Bash:
