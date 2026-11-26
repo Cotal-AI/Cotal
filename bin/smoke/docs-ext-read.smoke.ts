@@ -275,6 +275,22 @@ for (const [args, why] of [
 }
 
 {
+  for (const args of [["cli", "--wibble"], ["--wibble", "cli"]]) {
+    const refused = run(["docs", ...args, "--json"]);
+    const error = refused.envelope?.error;
+    check(`docs ${args.join(" ")} says to drop the unknown option when the page is set`,
+      refused.status === 1 && refused.stderr === "" && refused.envelope?.command === "docs" && refused.envelope.outcome === "refused" &&
+      error?.code === "USAGE_INVALID" && error.message === "Unknown option '--wibble'" && error.remedy === "drop the unknown option", shown(refused));
+  }
+  const retry = run(["docs", "cli", "--json"]);
+  check("dropping the unknown option reads the requested page", retry.status === 0 && retry.stderr === "" &&
+    retry.envelope?.outcome === "ok" && retry.envelope.result?.kind === "docs-page" && retry.envelope.result.slug === "cli", shown(retry));
+  const noPage = run(["docs", "--wibble", "--json"]);
+  check("docs still suggests the separator when no page is set", noPage.status === 1 && noPage.stderr === "" &&
+    noPage.envelope?.error?.remedy === 'to pass a word that starts with "-", put -- before it', shown(noPage));
+}
+
+{
   const config = join(home, "damaged-inventory");
   const extensions = join(config, "cotal", "extensions");
   const manifest = join(extensions, "extensions.json");

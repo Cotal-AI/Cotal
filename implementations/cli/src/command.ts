@@ -674,6 +674,7 @@ function parseOrExit(cmd: Command, rest: string[], noMoreOperands = false): Pars
         (!cmd.subcommands?.length || cmd.name === "history" || (first !== undefined && findSubcommand(cmd, first) !== undefined));
       const operandsFull = noMoreOperands || (cmd.name === "config" && ((selected.name === "set" && positionals.length >= 3)
         || ((selected.name === "get" || selected.name === "unset") && positionals.length >= 2)))
+        || (cmd.name === "docs" && positionals.length >= 1)
         || (cmd.name === "ext" && selected.name === "root")
         || (cmd.name === "history" && selected.name === "limit")
         || (cmd.name === "space" && selected.name === "add" && positionals.length >= 2)
