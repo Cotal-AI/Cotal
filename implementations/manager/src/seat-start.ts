@@ -1110,7 +1110,7 @@ export class SeatStart {
           await hooks?.onOutcome?.({ kind: "failed", data: { error } });
           return { ok: false, error };
         }
-        if (startup === "ready" && connector.idleWakeNeedsConfirmed !== undefined) {
+        if (!onceKickoff && startup === "ready" && connector.idleWakeNeedsConfirmed !== undefined) {
           managed.startupNotice = connector.idleWakeNeedsConfirmed;
           console.error(`! ${name}: ${connector.idleWakeNeedsConfirmed}`);
         }

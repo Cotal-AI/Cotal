@@ -22,9 +22,16 @@ export function onceKickoff(env: NodeJS.ProcessEnv, warn: (message: string) => v
   };
   const observe = (agent: MeshAgent, ev: HookEvent): void => {
     if (ended || ev.agent_id !== undefined || typeof ev.session_id !== "string") return;
-    if (ev.hook_event_name === "UserPromptSubmit" && session === undefined && typeof ev.prompt === "string" &&
-        createHash("sha256").update(ev.prompt.trim()).digest("hex") === hash) session = ev.session_id;
+    if (ev.hook_event_name === "UserPromptSubmit") {
+      // Escape can interrupt without a Stop. Any later main-session submission means its Stop
+      // cannot attest to the kickoff. Do not rearm even if the operator repeats the same text.
+      if (session !== undefined) ended = true;
+      else if (typeof ev.prompt === "string" && createHash("sha256").update(ev.prompt.trim()).digest("hex") === hash)
+        session = ev.session_id;
+      return;
+    }
     if (session !== ev.session_id || (ev.hook_event_name !== "Stop" && ev.hook_event_name !== "StopFailure")) return;
+    if (ev.hook_event_name === "Stop" && ev.stop_hook_active === true) return;
     ended = true;
     void report(agent, ev.hook_event_name === "StopFailure");
   };
