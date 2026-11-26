@@ -54,7 +54,6 @@
     "implementations/auth/src/service.ts": [777],
     "implementations/auth/src/session-ledger.ts": [170],
     "implementations/cli/src/chat/plain.ts": [232],
-    "implementations/cli/src/command.ts": [347],
     "implementations/cli/src/commands/backup.ts": [217],
     "implementations/cli/src/commands/channel-members.ts": [185],
     "implementations/cli/src/commands/clean.ts": [202, 157],
