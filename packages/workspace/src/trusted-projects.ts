@@ -1,9 +1,9 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readlinkSync, statSync, type Stats } from "node:fs";
 import { dirname, isAbsolute, join, parse, resolve, sep } from "node:path";
-import { acquireLock, globalConfigDir, parseAgentFileBytes, projectTrustProblem, rejectionText, writeSecretFileAtomic, type AgentDef } from "@cotal-ai/core";
+import { acquireLock, globalConfigDir, oneLine, parseAgentFileBytes, projectTrustProblem, rejectionText, writeSecretFileAtomic, type AgentDef } from "@cotal-ai/core";
 import { parseLaunchPersonaSource, PersonaSourceError } from "./launch-persona.js";
-import { CommandFailure, isCommandFailure, oneLine, recordOperationWarning } from "./output.js";
+import { CommandFailure, isCommandFailure, recordOperationWarning } from "./output.js";
 import { localRecordAccess, prepareCotalHomeForWrite, protectedLocalDirectory } from "./protected-records.js";
 import { localWriteFailure } from "./local-write.js";
 import { canonicalRoot, homeCotalDir, isMeshRegistryError, readMeshRegistry } from "./mesh-registry.js";
