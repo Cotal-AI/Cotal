@@ -127,6 +127,37 @@ async function channelVerification(session: string, sender: CotalEndpoint): Prom
   check("dashboard: navigation to the channel did not reload the page", await evaluate(session, "performance.getEntriesByType('navigation').length === 1"));
 }
 
+async function rosterLayout(session: string): Promise<void> {
+  const name = `name-start-${"W".repeat(108)}-name-end`;
+  const agent = new CotalEndpoint({ space, servers: server, channels: [], consume: false, card: { name, role: "writer", kind: "agent" } });
+  agent.on("error", () => {});
+  try {
+    await agent.start();
+    const row = `document.querySelector(${JSON.stringify(`button[data-agent="${agent.card.id}"]`)})`;
+    await cdp("Emulation.setDeviceMetricsOverride", { width: 1280, height: 960, deviceScaleFactor: 1, mobile: false }, session);
+    await until(() => evaluate(session, `!!${row}`), "Agents renders the live 128-character name");
+    await evaluate(session, "document.fonts.ready.then(() => true)");
+    const result = await evaluate(session, `(() => {
+      const row = ${row};
+      const name = row.querySelector('.v3-aname b');
+      const role = name.nextElementSibling;
+      const right = Math.min(row.getBoundingClientRect().right, innerWidth);
+      const style = getComputedStyle(name);
+      return {
+        shortened: name.clientWidth > 0 && name.scrollWidth > name.clientWidth &&
+          style.overflowX === 'hidden' && style.textOverflow === 'ellipsis' && name.getBoundingClientRect().right <= right,
+        fullName: name.title === name.textContent ? name.title : null,
+        roleVisible: role.textContent === 'writer' && role.clientWidth > 0 &&
+          role.scrollWidth <= role.clientWidth && role.getBoundingClientRect().right <= right,
+      };
+    })()`);
+    check("dashboard roster: a 128-character name fits with an ellipsis", result.shortened);
+    check("dashboard roster: the shortened name has its full value in the tooltip", result.fullName === name);
+    check("dashboard roster: the role remains fully visible next to the shortened name", result.roleVisible);
+  } finally {
+    await agent.stop();
+  }
+}
 
 async function channelPurge(session: string, publisher: CotalEndpoint): Promise<void> {
   const channel = "purge-fixture";
@@ -275,6 +306,7 @@ try {
   const purgePage = await page(dashboardBase + "/#/channel/general");
   await until(() => evaluate(purgePage, "document.body?.textContent.includes('Connected to cotal web') === true"), "the authenticated dashboard opens its live feed");
   await channelPurge(purgePage, seed);
+  await rosterLayout(await page(dashboardBase + "/#/agents"));
   console.log(`browser security: ${passed} passed, ${failed} failed`);
   emitSentinel({ passed, failed });
   process.exitCode = failed ? 1 : 0;
