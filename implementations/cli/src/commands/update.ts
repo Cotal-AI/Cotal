@@ -48,7 +48,7 @@ import {
 import { resumePublishedUpdate, retainUnusableRecovery } from "../lib/update-recovery-state.js";
 import { readUpdatePending } from "../lib/update-pending.js";
 import { snapshotUpdateClosure, type UpdateSnapshot } from "../lib/update-snapshot.js";
-import { assertConfigAncestorProtected, prepareUpdateConnectorConfig, repairCurrentUpdateConnectorSelection, repairUpdateConnectorSelection } from "../lib/update-connector-config.js";
+import { assertConfigAncestorProtected, manifestAccessReporter, prepareUpdateConnectorConfig, repairCurrentUpdateConnectorSelection, repairUpdateConnectorSelection, restoreUpdateManifestAccess } from "../lib/update-connector-config.js";
 import { EXT_UPDATE_PARENT_ENV } from "./ext.js";
 import { collectUpdateCaches } from "./update-caches.js";
 import { claimExtensionUpdatePass } from "../lib/ext-mutation.js";
@@ -352,6 +352,7 @@ async function updateInstallation(args: ParsedArgs, rt: UpdateRuntime): Promise<
   let permissionsRestored = false;
   let promotionRecovered = false;
   if (args.values.self === true) {
+    const reportManifestAccess = manifestAccessReporter(line => { preflightChanged = true; rt.out(line); });
     try { preflightChanged = rt.preflightExecution?.() === true; }
     catch (error) {
       if (isCommandFailure(error)) throw error;
@@ -362,7 +363,7 @@ async function updateInstallation(args: ParsedArgs, rt: UpdateRuntime): Promise<
       });
     }
     try {
-      promotionRecovered = prepareUpdateConnectorConfig(Boolean(rt.prepareExecution), () => { preflightChanged = true; }, () => { permissionsRestored = true; });
+      promotionRecovered = prepareUpdateConnectorConfig(Boolean(rt.prepareExecution), () => { preflightChanged = true; }, () => { permissionsRestored = true; }, reportManifestAccess);
     } catch (error) {
       if (error instanceof UnreadableConnectorSelection) connectorSelection = error;
       else {
@@ -373,8 +374,7 @@ async function updateInstallation(args: ParsedArgs, rt: UpdateRuntime): Promise<
         throw failure;
       }
     }
-    // Built-in self-update skips the extension overlay. Validate its inventory after recovery.
-    if (!connectorSelection) try { loadExtensionsManifest(); }
+    if (!connectorSelection) try { restoreUpdateManifestAccess(Boolean(rt.prepareExecution), reportManifestAccess); }
     catch (error) {
       if (error instanceof UnreadableConnectorSelection) connectorSelection = error;
       else {
