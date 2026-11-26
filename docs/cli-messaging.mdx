@@ -522,7 +522,9 @@ that would write such a key refuses with `CONFLICT` and leaves the bytes as they
 of that key removes the entry.
 
 The inventory's `Next` commands name the space it read and keep any `--server` and `--creds`
-options you passed.
+options you passed. Without `--creds`, if `--server` matches several space registrations, the
+inventory refuses and prints one retry per space. Each retry keeps the broker and output options
+and adds `--space` without changing the saved selection.
 
 The `channel show` text report, including `--plain`, shows the resolved replay, window and delivery settings.
 Each value with no per-channel override is marked `inherited`, whether it comes from space

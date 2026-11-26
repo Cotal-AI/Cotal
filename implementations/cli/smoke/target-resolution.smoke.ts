@@ -329,10 +329,12 @@ const QUESTION = "Which one?";
     [["history", "--server", A, "--json", "--grep", "two words", "--", "fleet-test"], `history --server ${A} --json --grep 'two words'`, " -- fleet-test"],
     [["history", "fleet-test", "--server", A, "--follow", "--json"], `history fleet-test --server ${A} --follow --json`, ""],
     [["ps", "--server", A, "--plain", "--wide"], `ps --server ${A} --plain --wide`, ""],
+    [["channel", "--server", A, "--plain"], `channel --server ${A} --plain`, ""],
+    [["ch", `--server=${A}/`, "-j"], `channel '--server=${A}/' -j`, ""],
   ] as const) {
     const refused = run([...args]);
     const follow = args.some((arg) => arg === "--follow");
-    const json = args.some((arg) => arg === "--json");
+    const json = args.some((arg) => arg === "--json" || arg === "-j");
     const records = follow ? refused.stdout.trim().split("\n").map((line) => JSON.parse(line)) : [];
     const error = follow ? records[0]?.data : envelope(refused)?.error;
     const next = error?.remedy ?? refused.stderr.split("\nNext\n")[1] ?? "";
@@ -347,8 +349,11 @@ const QUESTION = "Which one?";
       const retry = retries[index];
       if (!retry?.endsWith(` ${beforeSpace} --space ${space}${afterSpace}`)) continue;
       const picked = run(execWords(retry).slice(-args.length - 2));
+      const channel = args[0] === "channel" || args[0] === "ch";
       check(`the printed ${args[0]} retry reaches ${space} without selecting a default`, getCurrent() === undefined &&
         (args[0] === "ps" ? picked.stderr.startsWith(`Mesh: ${space}\n`) && !picked.stderr.includes("TARGET_AMBIGUOUS")
+          : channel ? picked.status === 0 && (json ? envelope(picked)?.target?.space === space && envelope(picked)?.result?.action === "list"
+            : picked.stdout.includes(`Channels - ${space}\n`))
           : picked.status === 0 && (json ? envelope(picked)?.target?.space === space && envelope(picked)?.target?.channel === "fleet-test"
             : picked.stdout.startsWith(`Mesh: ${space}\n`) && picked.stdout.includes(`#fleet-test of ${space}`))), shown(picked));
     }
