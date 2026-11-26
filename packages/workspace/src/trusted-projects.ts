@@ -245,6 +245,24 @@ export function isTrustedProject(root: string): boolean {
   return (readFile()?.roots ?? []).includes(wanted);
 }
 
+/** Diagnose a command that cannot launch. A pending migration can explain why its supported
+ * retry needs no explicit trust command, but only the retry may actually record or use trust. */
+function projectTrustForManifestDiagnosis(): (root: string) => boolean {
+  let pending: Set<string> | undefined;
+  return (root) => {
+    if (isTrustedProject(root)) return true;
+    if (pending === undefined) {
+      pending = new Set();
+      try {
+        const record = readSeedRecord();
+        const roots = record?.completedAt !== undefined ? [] : (record?.roots ?? seedRoots());
+        if (!(roots instanceof Error)) pending = new Set(roots);
+      } catch { /* Unreadable upgrade records do not establish eligibility. */ }
+    }
+    return pending.has(canonicalRoot(root));
+  };
+}
+
 /** The refusal for a trusted-only entry a project folder declares while it is not trusted: the
  *  file, what it declares, the folder and the command that trusts it. */
 export function untrustedProjectRefusal(file: string, declared: readonly string[], root: string): string {
@@ -336,18 +354,18 @@ function readWalked(file: string, walked: WalkedPersona, as: "launch" | "agent")
 
 /** The first spelling on the way to a persona file that lies under the `.cotal/agents` of a project
  *  folder that is not trusted, with that folder. */
-function untrustedSpelling(walked: WalkedPersona): { root: string; spelling: string } | undefined {
+function untrustedSpelling(walked: WalkedPersona, trusted = isTrustedProject): { root: string; spelling: string } | undefined {
   for (const spelling of walked.spellings) {
     const root = personaProjectRoot(spelling);
-    if (root !== undefined && !isTrustedProject(root)) return { root, spelling };
+    if (root !== undefined && !trusted(root)) return { root, spelling };
   }
   return undefined;
 }
 
-function launchOptionsRefusal(file: string, walked: WalkedPersona, launchOptions: Record<string, unknown> | undefined): string | undefined {
+function launchOptionsRefusal(file: string, walked: WalkedPersona, launchOptions: Record<string, unknown> | undefined, trusted = isTrustedProject): string | undefined {
   const keys = Object.keys(launchOptions ?? {});
   if (!keys.length) return undefined;
-  const untrusted = untrustedSpelling(walked);
+  const untrusted = untrustedSpelling(walked, trusted);
   if (untrusted === undefined) return undefined;
   const shown = untrusted.spelling === resolve(file) ? file : `${file} (which leads to ${untrusted.spelling})`;
   return untrustedProjectRefusal(shown, keys.map((key) => `launchOptions.${key}`), untrusted.root);
@@ -365,11 +383,22 @@ function launchOptionsRefusal(file: string, walked: WalkedPersona, launchOptions
  *  `agent` parses as `loadAgentFile`. A missing file throws `ENOENT` and a loop `ELOOP`, as a read
  *  would. */
 export function loadTrustCheckedPersona(file: string, as: "launch" | "agent", beforeTrustCheck?: () => void): { def: AgentDef; refusal?: string } {
+  return readPersonaWithTrust(file, as, beforeTrustCheck, isTrustedProject);
+}
+
+/** For manifest validation on a path that always refuses to launch. Keep the snapshot local to
+ * one validation so every persona in the manifest is diagnosed against the same pending roots. */
+export function manifestPersonaDiagnosticReader(): (file: string) => { def: AgentDef; refusal?: string } {
+  const explainTrust = projectTrustForManifestDiagnosis();
+  return (file) => readPersonaWithTrust(file, "agent", undefined, explainTrust);
+}
+
+function readPersonaWithTrust(file: string, as: "launch" | "agent", beforeTrustCheck: (() => void) | undefined, trusted: (root: string) => boolean): { def: AgentDef; refusal?: string } {
   const walked = walkPersonaPath(file);
   const source = readWalked(file, walked, as);
   const def = as === "launch" ? parseLaunchPersonaSource(source, file) : parseAgentFileBytes(source, file);
   beforeTrustCheck?.();
-  const refusal = launchOptionsRefusal(file, walked, def.launchOptions);
+  const refusal = launchOptionsRefusal(file, walked, def.launchOptions, trusted);
   return { def, ...(refusal ? { refusal } : {}) };
 }
 

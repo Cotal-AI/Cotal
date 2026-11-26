@@ -1140,7 +1140,7 @@ async function runUp(args: ParsedArgs, invokedFrom: string, inheritedLock?: Main
     const path = resolve(values.file);
     // Structured and plain manifest refusals report file errors before checking startup support.
     if (values.json || values.plain) {
-      try { loadManifest(path, logFile); } catch (e) { throw manifestFileRefusal(e, path); }
+      try { loadManifest(path, logFile, values["dry-run"] ? false : "unsupported-presentation"); } catch (e) { throw manifestFileRefusal(e, path); }
     }
     // A manifest start takes the legacy launcher, which never runs beside a controller stack, running
     // or stopped, so a dry run refuses as the start would.

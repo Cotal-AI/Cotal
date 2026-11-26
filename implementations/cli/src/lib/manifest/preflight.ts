@@ -9,7 +9,7 @@
 import { accessSync, constants, statSync } from "node:fs";
 import { basename, dirname, extname, join, relative } from "node:path";
 import { type AgentDef } from "@cotal-ai/core";
-import { findCotalRoot, loadTrustCheckedPersona } from "@cotal-ai/workspace";
+import { findCotalRoot, loadTrustCheckedPersona, manifestPersonaDiagnosticReader } from "@cotal-ai/workspace";
 import type { ResolvedManifest } from "./model.js";
 import { prepareAgent, type AgentWarning, type PreparedAgent } from "./prepare.js";
 import { ManifestError, type ManifestIssue } from "./errors.js";
@@ -39,11 +39,12 @@ export function missingPersona(path: string, sourcePath: string): string {
 
 /** Read personas + merge. Behavior defaults always come from the file (under both policies); only
  *  the persona's *permissions* are gated by `personaPermissions`. */
-export function preparePersonas(manifest: ResolvedManifest, beforeTrustCheck?: () => void): PreparedManifest {
+export function preparePersonas(manifest: ResolvedManifest, beforeTrustCheck?: () => void, diagnoseUnsupportedPresentation = false): PreparedManifest {
   const declared = new Set(manifest.channels.map((c) => c.name));
   const issues: ManifestIssue[] = [];
   const warnings: AgentWarning[] = [];
   const agents: PreparedAgent[] = [];
+  const readPersona = diagnoseUnsupportedPresentation ? manifestPersonaDiagnosticReader() : (file: string) => loadTrustCheckedPersona(file, "agent", beforeTrustCheck);
 
   for (const a of manifest.agents) {
     let persona: AgentDef | undefined;
@@ -54,7 +55,7 @@ export function preparePersonas(manifest: ResolvedManifest, beforeTrustCheck?: (
       // read. The manifest's own `launchOptions` are not gated.
       let optionsRefused: string | undefined;
       try {
-        ({ def: persona, refusal: optionsRefused } = loadTrustCheckedPersona(a.persona, "agent", beforeTrustCheck));
+        ({ def: persona, refusal: optionsRefused } = readPersona(a.persona));
       } catch (e) {
         const code = (e as NodeJS.ErrnoException).code;
         issues.push({

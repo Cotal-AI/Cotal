@@ -18,7 +18,7 @@ import { spawn as spawnProcess, spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join, resolve } from "node:path";
-import { SMOKE_BROKER_TOKEN, emitSentinel, freePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { SMOKE_BROKER_TOKEN, assertSmokeSandboxDown, emitSentinel, freePort, recordSmokeSandbox, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { projectTrustProblem } from "@cotal-ai/core";
 
 if (process.platform === "win32") {
@@ -128,9 +128,9 @@ for (let i = 0; i < 75; i++) {
  *  appends `RAN <marker>` to the report. Recorded as an open space by hand, the way `cotal meshes
  *  add` records one, so no command trusts it as a side effect. */
 let spaces = 0;
-function project(config: ((marker: string) => unknown) | undefined, prefix = ""): { root: string; space: string; marker: string } {
+function project(config: ((marker: string) => unknown) | undefined, prefix = "", suffix = ""): { root: string; space: string; marker: string } {
   const space = `trust${++spaces}`;
-  const root = mkdtempSync(join(box, `${prefix}${space}-`));
+  const root = suffix ? join(box, `${space}${suffix}`) : mkdtempSync(join(box, `${prefix}${space}-`));
   const marker = `server-${space}`;
   mkdirSync(join(root, ".cotal", "agents"), { recursive: true, mode: 0o700 });
   writeFileSync(join(root, ".cotal", "agents", "probe.md"), "---\nname: probe\nrole: worker\nsubscribe: [general]\nallowSubscribe: [general]\n---\nbody\n");
@@ -176,9 +176,9 @@ const fresh = (): void => writeFileSync(report, "");
 
 function runTrustRemedy(output: string, root: string): boolean {
   const printed = /`((?:pnpm )?cotal trust [^`]+)`/.exec(output)?.[1];
-  const literal = `${root.includes(" ") ? `-- "${root}"` : root}`;
+  const literal = /^[A-Za-z0-9_./:-]+$/.test(root) ? root : /^[A-Za-z0-9_./:\\ -]+$/.test(root) && !/\\\\|\\$/.test(root) ? `-- "${root}"` : undefined;
   const encoded = `--hex ${Buffer.from(root).toString("hex")}`;
-  if (!printed || ![literal, encoded].some((arg) => printed === `cotal trust ${arg}` || printed === `pnpm cotal trust ${arg}`)) return false;
+  if (!printed || ![literal, encoded].some((arg) => arg !== undefined && (printed === `cotal trust ${arg}` || printed === `pnpm cotal trust ${arg}`))) return false;
   const result = spawnSync("/bin/sh", ["-c", printed], { cwd: process.cwd(), stdio: "ignore" });
   return result.status === 0 && trustedRoots().includes(root);
 }
@@ -208,6 +208,57 @@ try {
     const roots = existsSync(store) ? JSON.parse(readFileSync(store, "utf8")).roots as string[] : [];
     check("a first new prepared space does not enter the upgrade trust snapshot",
       created.status === 0 && roots.includes(old) && !roots.includes(cloned), { status: created.status, roots, stdout: created.stdout });
+  }
+
+  {
+    const sandbox = mkdtempSync(join(box, "manifest-upgrade-"));
+    const home = join(sandbox, "home"), config = join(sandbox, "config");
+    const legacy = join(sandbox, "legacy"), clone = join(sandbox, "clone");
+    const legacyServer = `nats://127.0.0.1:${await freePort()}`;
+    const planted = join(sandbox, "empty-mcp.json");
+    writeFileSync(planted, '{"mcpServers":{}}');
+    for (const root of [legacy, clone]) {
+      mkdirSync(join(root, ".cotal", "agents"), { recursive: true, mode: 0o700 });
+      writeFileSync(join(root, ".cotal", "agents", "probe.md"), `---\nname: probe\nrole: worker\nlaunchOptions:\n  mcp-config: ${JSON.stringify(planted)}\n---\nbody\n`);
+      writeFileSync(join(root, "mesh.yaml"), `apiVersion: cotal/v1\nkind: Mesh\nspace: upgrade-manifest\nagent: claude\nbroker: { servers: ${JSON.stringify(legacyServer)}, auth: false }\nagents:\n  probe: ./.cotal/agents/probe.md\nchannels:\n  general: { description: Open. }\n`);
+    }
+    const priorHome = process.env.COTAL_HOME;
+    process.env.COTAL_HOME = home;
+    try { recordMesh({ space: "upgrade-manifest", server: legacyServer, root: legacy, mode: "open", origin: "manual", ts: new Date().toISOString() }); }
+    finally { process.env.COTAL_HOME = priorHome; }
+    const env = {
+      ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_"))),
+      COTAL_HOME: home, XDG_CONFIG_HOME: config, COTAL_SKIP_CONNECTOR_SEED: "1", DO_NOT_TRACK: "1",
+    };
+    const guard = recordSmokeSandbox({ root: legacy, cotalHome: home, xdgConfigHome: config });
+    const run = (cwd: string, argv: string[]) => {
+      const options = { cwd, env, encoding: "utf8" as const, timeout: 50_000 };
+      assertSmokeSandboxDown(guard, argv, options);
+      return spawnSync(process.execPath, [cliEntry, ...argv], options);
+    };
+    const store = join(config, "cotal", "trusted-projects.json"), witness = join(home, "trusted-projects-seed.json");
+    const recordsAbsent = () => !existsSync(store) && !existsSync(witness);
+    const args = ["up", "-f", "mesh.yaml"];
+    const json = run(legacy, [...args, "--json"]);
+    check("the first legacy manifest JSON invocation names only the existing format refusal and writes neither trust record",
+      json.status === 2 && json.stdout.includes('"code":"UNSUPPORTED"') && json.stdout.includes("omit --json") && recordsAbsent(), json);
+    const plain = run(legacy, [...args, "--plain"]);
+    check("the matching plain invocation names the existing format refusal without writing either trust record",
+      plain.status === 2 && `${plain.stdout}${plain.stderr}`.includes("omit --plain") && recordsAbsent(), plain);
+    const dry = run(legacy, [...args, "--json", "--dry-run"]);
+    check("a legacy manifest dry run does not migrate project trust", dry.status === 1 && dry.stdout.includes("launchOptions.mcp-config") && recordsAbsent(), dry);
+    const unregistered = run(clone, [...args, "--json"]);
+    check("an unregistered manifest root still refuses and leaves pending legacy trust unwritten",
+      unregistered.status === 1 && unregistered.stdout.includes("launchOptions.mcp-config") && unregistered.stdout.includes(`cotal trust ${clone}`) && recordsAbsent(), unregistered);
+    try {
+      const retry = run(legacy, args);
+      const livePort = new URL(legacyServer).port;
+      const roots = existsSync(store) ? JSON.parse(readFileSync(store, "utf8")).roots as string[] : [];
+      check("omitting the format flag starts the legacy manifest and migrates just the registered root",
+        retry.status === 0 && spawnSync("nc", ["-z", "127.0.0.1", livePort]).status === 0 && existsSync(witness) && roots.includes(legacy) && !roots.includes(clone), retry);
+    } finally {
+      run(legacy, ["down", "--yes", "--with-agents"]);
+    }
   }
 
   // A project with no config launches whether or not its folder is trusted. This is the first command,
@@ -381,6 +432,36 @@ try {
     fresh();
     const o = await cli(q.root, ["spawn", "--foreground", "--file", join(q.root, ".cotal", "agents", "probe.md"), "--space", q.space, "--agent", "claude", "--opt", `mcp-config=${planted}`]);
     check("--opt given by the caller is not gated in an untrusted project", o.exited === undefined && reportText().includes(`RAN persona-${p.marker}`), o.out.slice(-300));
+  }
+
+  for (const [suffix, form] of [["-back\\slash", "quoted"], ["-trailing\\", "hex"]] as const) {
+    const p = project(undefined, "", suffix);
+    const file = join(p.root, ".cotal", "agents", "probe.md");
+    const planted = join(box, `${p.marker}.json`);
+    const marker = `RAN ${p.marker}`;
+    writeFileSync(planted, JSON.stringify({ mcpServers: { test: { command: "/bin/sh", args: ["-c", `echo ${marker} >> ${JSON.stringify(report)}`] } } }));
+    writeFileSync(file, `---\nname: probe\nrole: worker\nsubscribe: [general]\nallowSubscribe: [general]\nlaunchOptions:\n  mcp-config: ${JSON.stringify(planted)}\n---\nbody\n`);
+    fresh();
+    const refused = await spawnIn(p);
+    const argument = form === "quoted" ? `-- "${p.root}"` : `--hex ${Buffer.from(p.root).toString("hex")}`;
+    const named = refused.exited === 1 && refused.out.includes(file) && refused.out.includes("launchOptions.mcp-config")
+      && refused.out.includes(`cotal trust ${argument}\``) && reportText() === "";
+    const remedied = named && runTrustRemedy(refused.out, p.root);
+    const launched = remedied && (await spawnIn(p)).exited === undefined && reportText().includes(marker);
+    check(`a ${form} backslash-root remedy works when pasted into a POSIX shell`, launched, { out: refused.out.slice(-600), report: reportText() });
+  }
+  {
+    const p = project(undefined);
+    const file = join(p.root, ".cotal", "agents", "a\\..\\x.md");
+    const planted = join(box, `${p.marker}.json`);
+    const marker = `RAN ${p.marker}`;
+    writeFileSync(planted, JSON.stringify({ mcpServers: { test: { command: "/bin/sh", args: ["-c", `echo ${marker} >> ${JSON.stringify(report)}`] } } }));
+    writeFileSync(file, `---\nname: probe\nrole: worker\nsubscribe: [general]\nallowSubscribe: [general]\nlaunchOptions:\n  mcp-config: ${JSON.stringify(planted)}\n---\nbody\n`);
+    fresh();
+    const trusted = await cli(p.root, ["trust", p.root]);
+    const launched = await cli(p.root, ["spawn", "--foreground", "--file", file, "--space", p.space, "--agent", "claude"]);
+    check("a trusted persona named a\\..\\x.md is one literal POSIX file and its launch options reach the host",
+      trusted.exited === undefined && launched.exited === undefined && reportText().includes(marker), launched.out.slice(-600));
   }
 
   // A persona file outside any project is the operator's own, so its launch options apply.
@@ -645,7 +726,7 @@ try {
   rmSync(store, { recursive: true, force: true });
 }
 
-const EXPECTED = process.getuid?.() === 0 ? 58 : 60;
+const EXPECTED = process.getuid?.() === 0 ? 66 : 68;
 if (passed + failed !== EXPECTED) { failed++; console.log(`  ✗ FAIL: ${passed + failed - 1} cells reported, ${EXPECTED} expected`); }
 emitSentinel({ passed, failed });
 process.exit(failed === 0 ? 0 : 1);
