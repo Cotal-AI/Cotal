@@ -13,6 +13,8 @@ import { armRenewal, jitteredBackoffMs } from "./renewal.js";
 import { credsClaims, credsFingerprint, credsRenewalDelayMs, idFromCreds } from "./identity.js";
 import { withDeadline } from "./deadline.js";
 import { requestSafeReconnect } from "./request-safe-reconnect.js";
+import { issuedHorizon, listingAcceptedToken, readAcceptedRow } from "./issued-authority.js";
+import { userInboxConnId } from "./subject-grammar.js";
 
 /** What the credentials component reads from its endpoint. State is read when it is used, never
  *  copied, a field it reassigns is written back through its setter, and every method is looked up on
@@ -37,6 +39,7 @@ export class EndpointCredentials {
    *  outcome; the internal chain never rejects. */
   private credsTxn: Promise<unknown> = Promise.resolve();
   private credsTimer?: NodeJS.Timeout;
+  private brokerBearerExpiryMs?: number;
 
   constructor(private readonly identity: Readonly<EndpointIdentity>, private readonly conn: Readonly<ConnectionState>, private readonly lifecycle: Readonly<LifecycleState>, private readonly cred: CredentialState, private readonly deps: EndpointCredentialsDeps) {}
 
@@ -102,18 +105,42 @@ export class EndpointCredentials {
       // process's other renewals in the space: a fixed margin before `exp` kept every endpoint
       // issued in one second renewing, and rebinding through the callout, in one second for life.
       const { issuedAtMs, expiresAtMs } = bearerLifetimeMs(bearer, this.cred.bearerAdoptedAtMs);
-      this.armBearerTimer(armRenewal(this.identity.space, issuedAtMs, expiresAtMs, () => void this.renewBearerOnTimer(), EndpointCredentials.BEARER_MIN_RENEWAL_MS));
+      if (this.brokerBearerExpiryMs === undefined)
+        this.armBearerTimer(armRenewal(this.identity.space, issuedAtMs, expiresAtMs, () => void this.renewBearerOnTimer(), EndpointCredentials.BEARER_MIN_RENEWAL_MS));
     } catch (e) {
       if (initial) throw e;
-      if (this.cred.bearerRenewalFailures === 0)
-        this.emitRecoverable(new Error(`bearer refresh failed (${e instanceof Error ? e.message : String(e)}) - retrying with backoff; this connection dies at its current token's expiry if the auth service stays down`));
-      // A wait the source named is kept as named: never retried inside it, nor stretched by the backoff.
-      const named = retryAfterMs(e);
-      const delay = named > 0 ? named : jitteredBackoffMs(this.cred.bearerRenewalFailures, EndpointCredentials.BEARER_RETRY_MS, EndpointCredentials.BEARER_RETRY_CAP_MS);
-      this.cred.bearerRenewalFailures++;
-      const timer = setTimeout(() => void this.renewBearerOnTimer(), delay);
+      this.retryBearer(e);
+    }
+  }
+
+  private retryBearer(error: unknown): void {
+    if (this.cred.bearerRenewalFailures === 0)
+      this.emitRecoverable(new Error(`bearer refresh failed (${error instanceof Error ? error.message : String(error)}) - retrying with backoff; the broker closes this connection when its credential expires`));
+    const delay = retryAfterMs(error) || jitteredBackoffMs(this.cred.bearerRenewalFailures, EndpointCredentials.BEARER_RETRY_MS, EndpointCredentials.BEARER_RETRY_CAP_MS);
+    this.cred.bearerRenewalFailures++;
+    const timer = setTimeout(() => void this.renewBearerOnTimer(), delay);
+    timer.unref?.();
+    this.armBearerTimer(() => clearTimeout(timer));
+  }
+
+  /** The accepted row uses the presented bearer's key but names the broker credential's horizon. */
+  private async observeBearerHorizon(nc: NatsConnection): Promise<void> {
+    const exp = this.cred.presentedExp;
+    const cid = nc.info?.client_id;
+    if (!this.identity.bearerSource || exp === undefined || this.identity.ownLifecycleUid === undefined || cid === undefined) return;
+    const ref = await readAcceptedRow(nc, this.identity.space, listingAcceptedToken(this.identity.connId, exp)).catch(() => undefined);
+    if (this.lifecycle.stopped || this.conn.nc !== nc || nc.info?.client_id !== cid) return;
+    const horizon = ref && ref.owner === this.identity.owner && ref.actor === this.identity.actor && ref.uid === this.identity.ownLifecycleUid ? issuedHorizon(ref.generation) : exp;
+    this.brokerBearerExpiryMs = horizon > exp ? horizon * 1000 : undefined;
+    this.armAuthExpiryReconnectFence(nc, false);
+    if (this.brokerBearerExpiryMs !== undefined) {
+      const issuedAt = bearerLifetimeMs(this.cred.currentBearer!, this.cred.bearerAdoptedAtMs).issuedAtMs;
+      const timer = setTimeout(() => void this.renewBearerOnTimer(), Math.max(0, (issuedAt + this.brokerBearerExpiryMs) / 2 - Date.now()));
       timer.unref?.();
       this.armBearerTimer(() => clearTimeout(timer));
+    } else if (!this.cred.cancelBearerRenewal && this.cred.currentBearer) {
+      const { issuedAtMs, expiresAtMs } = bearerLifetimeMs(this.cred.currentBearer, this.cred.bearerAdoptedAtMs);
+      this.armBearerTimer(armRenewal(this.identity.space, issuedAtMs, expiresAtMs, () => void this.renewBearerOnTimer(), EndpointCredentials.BEARER_MIN_RENEWAL_MS));
     }
   }
 
@@ -128,10 +155,26 @@ export class EndpointCredentials {
    *  this endpoint could renew. With no live connection, it ends the rebuild loop's wait instead:
    *  that loop refuses to dial an expired token and leaves the retries to this timer. */
   private async renewBearerOnTimer(): Promise<void> {
+    this.cred.cancelBearerRenewal = undefined;
     const held = this.cred.currentBearer;
+    const priorFailures = this.cred.bearerRenewalFailures;
     await this.refreshBearer();
     if (this.lifecycle.stopped || this.cred.currentBearer === held) return;
-    if (this.conn.nc && !this.conn.nc.isClosed()) await this.swapConnectionOntoFreshCreds();
+    const nc = this.conn.nc;
+    if (nc && !nc.isClosed() && this.brokerBearerExpiryMs !== undefined) {
+      try {
+        const proofId = userInboxConnId(this.identity.owner, this.identity.actor);
+        const proof = await dialerFor(this.identity.servers)({ servers: this.identity.servers, name: proofId,
+          inboxPrefix: `_INBOX_${proofId}`, timeout: 3000, reconnect: false, maxReconnectAttempts: 0,
+          ...authOpts({ bearer: () => this.bearerForWire(), sentinelCreds: this.identity.sentinelCreds, tls: this.identity.tls }) });
+        await proof.close();
+        if (this.lifecycle.stopped || this.conn.nc !== nc) return;
+        await requestSafeReconnect(nc, () => this.conn.requestsAwaitingReply.get(nc)?.size ?? 0);
+      } catch (error) {
+        this.cred.bearerRenewalFailures = priorFailures;
+        this.retryBearer(error);
+      }
+    } else if (nc && !nc.isClosed()) await this.swapConnectionOntoFreshCreds();
     else this.kickBackoff();
   }
 
@@ -374,12 +417,13 @@ export class EndpointCredentials {
    *  lead makes the policy change precede the broker's expiry close even when both timers wake in the
    *  same event-loop turn. A credential adoption does not move this fence until the resident reconnect
    *  is requested, so the old wire remains protected during the prove-then-adopt window. */
-  armAuthExpiryReconnectFence(nc: NatsConnection): void {
+  armAuthExpiryReconnectFence(nc: NatsConnection, observe = true): void {
+    if (observe && this.identity.bearerSource) void this.observeBearerHorizon(nc);
     clearTimeout(this.cred.authExpiryReconnectTimer);
     this.cred.authExpiryReconnectTimer = undefined;
     const credsExp = this.cred.currentCreds && credsClaims(this.cred.currentCreds).exp;
     const expiryMs = this.identity.userMode && this.cred.currentBearer
-      ? bearerExpiryMs(this.cred.currentBearer)
+      ? this.brokerBearerExpiryMs ?? bearerExpiryMs(this.cred.currentBearer)
       : typeof credsExp === "number"
         ? credsExp * 1000
         : undefined;

@@ -350,10 +350,9 @@ function rawGrantInteractive(dir: string, row: Omit<ActorRow, "grantedAt">): Act
  *  spawner's own grant. A spawn-scoped actor can delegate only a SUBSET of what it holds — channel
  *  ACLs by NATS-pattern containment ({@link patternInAllow}), capability scope by set inclusion —
  *  never more; a spawner whose row carries `admin` is the operator authority and is exempt, and a
- *  row with NO parent is an operator/roster boot (the operator is the authority). Enforced at BOTH
- *  managed-row boundaries: authorship ({@link grantManagedActor}) and every agent bearer exchange
- *  ({@link ledgerAuthorizeAgentExchange}) — so narrowing or revoking a spawner bites its agents at
- *  their next refresh (≤ {@link AGENT_BEARER_TTL_SEC}s), instead of leaving them orphaned. */
+ *  row with NO parent is an operator/roster boot (the operator is the authority). Enforced when
+ *  authoring a managed row ({@link grantManagedActor}), at every agent bearer exchange
+ *  ({@link ledgerAuthorizeAgentExchange}), and reconciliation of live managed connections. */
 export function assertWithinSpawnerGrant(
   dir: string,
   row: Pick<ActorRow, "owner" | "actor" | "scope" | "allowSubscribe" | "allowPublish" | "parent" | "role">,
@@ -524,9 +523,7 @@ function rawGrantManaged(dir: string, row: ManagedGrantInput): ActorRow {
   return full;
 }
 
-/** Revoke a row in one space. Returns false when there was nothing to revoke. NOTE: this stops NEW
- *  bearer mints and NEW connects immediately (both boundaries read fresh); an ALREADY-LIVE
- *  connection dies at its bearer-bound JWT expiry — live eviction is the D5 lever, not the ledger's. */
+/** Remove a grant so the next exchange and connect deny it. Live eviction is separate from this write. */
 export function revokeActor(dir: string, owner: string, actor: string): boolean {
   return withManagedGrantTransaction(dir, (tx) => tx.revokeInteractive(owner, actor));
 }
@@ -792,9 +789,7 @@ export function managedActorLedgerDir(dir: string): string {
   return spaceDir(dir, "managed-agent");
 }
 
-/** Agent bearers are SHORT by design — a spawned agent's endpoint re-exchanges ahead of every
- *  expiry, so revocation (row deletion) bites a live connection within this window even before
- *  live eviction lands. There is no upstream IdP proof to cap to; this constant is that cap. */
+/** An agent's exchange bearer can authorize a new connection for at most this many seconds. */
 export const AGENT_BEARER_TTL_SEC = 300;
 
 /** Generate a fresh per-agent exchange secret (returned to the spawner ONCE) + its ledger hash. */

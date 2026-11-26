@@ -288,7 +288,7 @@ export async function handleExchange(req: IncomingMessage, res: ServerResponse, 
         lifecycleUid: grant.lifecycleUid,
         credentialId,
         ...(view === "manager-caller" ? { view, managerInstanceId: selectedManagerInstanceId } : {}),
-        ttlSec: Math.min(ttlSec ?? AGENT_BEARER_TTL_SEC, AGENT_BEARER_TTL_SEC),
+        ttlSec: Math.min(ttlSec ?? AGENT_BEARER_TTL_SEC, ctx.probeManagedBearerTtlSec ?? AGENT_BEARER_TTL_SEC),
       });
       const { exp } = decodeJwt(token);
       return send(res, 200, { token, owner, exp });

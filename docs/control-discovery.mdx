@@ -252,9 +252,10 @@ handle. A missing readback is inconclusive while the original submission may sti
 The manager's `goal-result` command accepts `{goalId}` and returns `{goalId, result?}`. It reads
 only the authenticated caller's owner, actor and lifecycle through the manager's separate trusted
 goal-writer connection. The caller receives an attributed reply, never a raw JetStream reader
-grant. Each read is admitted by the connection's broker-enforced command grant. A live user-auth
-connection remains bounded by its bearer expiry after revocation; a renewed connection is checked
-against fresh authority. There is no separate per-read ledger check. An absent `result` means no
+grant. Each read is admitted by the connection's broker-enforced command grant. A revoked connection
+that cannot be evicted keeps that grant until its broker credential expires. This can be longer than
+the exchange bearer for a [managed seat](identity-user-auth.mdx#retirement). A new connection is
+checked against fresh authority. There is no separate per-read ledger check. An absent `result` means no
 terminal is recorded; it does not prove the goal is running or permit another submission. The
 existing trusted goal-writer's leader-served EPF read is space-wide at the broker; the handler
 confines it to this endpoint and caller triple.

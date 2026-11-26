@@ -269,13 +269,21 @@ exited 15 seconds after SIGTERM. A legacy stack has no command that stops only t
 
 **Your agents are yours.** `cotal spawn` on a user mesh grants a managed actor under the
 *spawning operator's* owner and launches the agent with a bearer command instead of a
-creds file. The agent exchanges its spawn-time secret for short bearers (five minutes or
-less). It renews each one at a random point between half and four fifths of its lifetime and
-moves its connection onto the new bearer, so the broker never closes the connection for an
-expired one. Agents started together draw different points, and two connections in one process
-for the same space renew at least a second apart. An agent never presents an expired bearer: it
-renews first. While renewal fails it retries with growing, randomized waits of up to a minute,
-and reports the failure once until renewal works again. A locally provisioned foreground launch
+creds file. The agent exchanges its spawn-time secret for a bearer valid for at most five minutes.
+The broker accepts that bearer only on a new connection. A Manager-custodied seat using the full
+five-minute bearer gets a broker credential that lasts up to 60 minutes, bounded by its admission.
+Connections with separately approved endpoint caller grants keep their shorter lifetime.
+The managed endpoint renews around half-life. It waits for pending
+requests before moving the connection onto fresh credentials. If renewal fails, the existing
+connection can stay live until the broker credential expires. The agent retries with growing,
+randomized waits of up to a minute and can reconnect after the service returns. Foreground launches,
+shorter bearers and views keep their existing expiry rules.
+
+Removing a managed grant blocks new exchanges. The authority rechecks live managed connections
+and asks the delivery daemon to disconnect those that lose their grant, delegation, or admission.
+If the daemon cannot evict a revoked seat, its existing connection can keep its current broker
+permissions until expiry, up to 60 minutes instead of five. Its expired or revoked bearer cannot
+authorize a fresh connection. A locally provisioned foreground launch
 refuses an existing actor rather than rotating another launch's secret. Its exit and failed-start cleanup
 revoke only the grant matching the launch's token and lifecycle. Broker-footprint deletion follows
 a successful owned revoke; credential files are removed only while they still hold this launch's
