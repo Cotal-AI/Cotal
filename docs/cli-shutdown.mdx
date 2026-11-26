@@ -1038,7 +1038,7 @@ clean-all operation. This route currently requires Linux, a space selected as ab
 plain-NATS loopback listener. It removes a locally started registration; a stopped controller stack
 keeps its prepared record and stack journal. On a user-auth space it also removes the IdP trust and
 the actor ledger, so every actor grant is lost. The preview and the receipt say so on their own
-line: a later `up` needs `cotal up --user-auth --idp <auth base URL>`, and each actor needs
+line: a later `up` from the stack's project folder needs `cotal up --user-auth --idp <auth base URL>`, and each actor needs
 `cotal actor grant` again. TLS-first, remote, shared-root
 and non-Linux targets refuse. It applies the same maintenance, deployment and
 process-custody guards as store reset. It does not stop a process to become
