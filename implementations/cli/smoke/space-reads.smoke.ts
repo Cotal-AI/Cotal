@@ -83,6 +83,29 @@ function saveDormantBroker(space: string, project: string): string {
   return revision;
 }
 
+function checkRunningSpaceSearchPermission(space: string, project: string): void {
+  if (process.platform === "win32" || process.getuid?.() === 0) return;
+  const control = join(project, ".cotal");
+  chmodSync(control, 0o600);
+  try {
+    accessSync(project, constants.X_OK);
+    const plain = run(["space", "show", space, "--plain"]);
+    const denied = json(["space", "show", space]);
+    const remedy = "Restore search permission before retrying.";
+    check("plain space show preserves broker reachability and asks to restore control directory access",
+      plain.status === 0 && /broker: +reachable/.test(plain.stdout) && plain.stderr.includes(control) && plain.stderr.includes(remedy) &&
+      !plain.stdout.includes("folder was moved or deleted") && !plain.stdout.includes("down --space"), shown(plain));
+    check("JSON space show warns about denied control directory lookup without marking the root gone",
+      denied.status === 0 && denied.env?.result?.check === "reachable" && denied.env.result.rootGone === false &&
+      denied.env.warnings.some((w: { code: string; target: { path?: string }; message: string }) =>
+        w.code === "PERMISSION_DENIED" && w.target.path === control && w.message.includes(remedy)), shown(denied));
+  } finally { chmodSync(control, 0o700); }
+  const restored = json(["space", "show", space]);
+  check("restoring search permission clears the warning without restarting the broker",
+    restored.status === 0 && restored.env?.result?.check === "reachable" && restored.env.result.rootGone === false &&
+    restored.env.warnings.length === 0, shown(restored));
+}
+
 // An implicit config scope outside a project requires a running broker.
 function checkConfigScope(live: string): void {
   const space = "config-probe";
@@ -606,6 +629,7 @@ recordMesh({ space: "gamma", server: CATALOG, root, mode: "user", origin: "catal
     check("a prepared root offers another folder, not creation in this folder", list.status === 0 && otherHint.test(list.stdout) && !localHint.test(list.stdout), shown(list));
     const started = run(["up", "--no-manager", "--server", `nats://127.0.0.1:${await freePort()}`], {}, project);
     check("rig: the prepared space starts a real local broker", started.status === 0, shown(started));
+    if (started.status === 0) checkRunningSpaceSearchPermission("hint-live", project);
     const used = run(["use", "hint-live"]);
     check("rig: this root's space is also selected", used.status === 0, shown(used));
     for (const args of [["space", "--plain"], ["space"]]) {

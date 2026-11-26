@@ -429,10 +429,14 @@ function exportedCredentials(root: string, auth: SpaceAuth): ExportedRow[] {
     const row: ExportedRow = { label: entry.label, profile: entry.profile, path: entry.path, state: "unreadable", issuedAt: null, expiresAt: null, revokedAt: null, repair: null };
     let bytes: Buffer | undefined;
     try { bytes = readLocalRecordSource(entry.path, 1024 * 1024, true); }
-    catch {
+    catch (error) {
       try {
         const stat = lstatSync(entry.path);
         if (stat.isSymbolicLink()) row.repair = "The recorded export is a symbolic link. Restore the original private regular file at the recorded path in place of the link.";
+        else if (stat.isFile() && isCommandFailure(error) && error.code === "PERMISSION_DENIED" &&
+          stat.uid === process.getuid?.() && (stat.mode & 0o400) === 0) {
+          row.repair = `The export's owner lacks read permission. Run ${codeSpan(`chmod 600 ${shellWord(entry.path)}`)}.`;
+        }
         else if (stat.isFile()) row.repair = credentialFileExposure(entry.path, stat)?.remedy ?? null;
       } catch { /* reported unreadable */ }
       rows.push(row);

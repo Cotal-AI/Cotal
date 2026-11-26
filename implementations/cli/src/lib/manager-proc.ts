@@ -166,7 +166,7 @@ export function supervisorMayServe(space: string, installedEntry?: string): bool
       }
     });
   } else {
-    const ps = spawnSync("ps", ["-A", "-ww", "-o", "pid=,uid=,args="], { encoding: "utf8" });
+    const ps = spawnSync("ps", ["-A", "-ww", "-o", "pid=,uid=,args="], { encoding: "utf8", windowsHide: true });
     if (ps.error || ps.status !== 0) throw new Error("local Manager continuity cannot be established: the process table could not be listed; restore process inspection before retrying");
     lines = ps.stdout.split("\n");
   }
@@ -372,7 +372,7 @@ export function startManagerDetached(
       const info = fstatSync(fd);
       onLogStart({ offset: info.size, dev: info.dev, ino: info.ino });
     }
-    child = spawn(node, args, { detached: true, stdio: ["ignore", fd, fd], env: { ...process.env, COTAL_SKIP_CONNECTOR_SEED: "1" } });
+    child = spawn(node, args, { detached: true, stdio: ["ignore", fd, fd], env: { ...process.env, COTAL_SKIP_CONNECTOR_SEED: "1" }, windowsHide: true });
   } finally { closeSync(fd); }
   child.unref();
   // CANONICAL path, never a pre-upgrade one: a start that kept writing the root-scoped name would

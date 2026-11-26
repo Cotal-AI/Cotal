@@ -109,6 +109,10 @@ pinned issuer to exchange a fresh IdP proof and reports the current grant return
 bearer. It does not refresh the remote space catalog or connect to the broker. A one-shot command
 has no mesh session, so there is no unread count or connection state to report.
 
+If `--server` matches several registered spaces, `whoami` refuses with `TARGET_AMBIGUOUS` (exit 2).
+The remedy gives a command for each space with the same broker and output flags when the address can
+be printed unchanged. Run one to read that identity without changing the saved selection.
+
 | Mesh | `identity.kind` | What it may do |
 |---|---|---|
 | Open | `open` | Everything; the broker authenticates nothing |
@@ -565,6 +569,7 @@ existing native caller and digest-verified contracts. `ref:<name>` requires a sa
 references first, then uses the native class only when no reference exists. An unreadable or
 invalid reference refuses instead of selecting another target.
 If several spaces match, `endpoint describe` names them and shows how to retry with `--space`.
+Each retry keeps the original options and endpoint target, including a target after `--`.
 If the requested space is not registered, the refusal names it and points to `cotal space`.
 
 A selected reference is disclosed on stderr and in `result.resolution`, with its revision and

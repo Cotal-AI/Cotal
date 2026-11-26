@@ -173,6 +173,21 @@ check("cotal --plain status prints the plain report", (plain.status === 0 || pla
 const plainVersion = run(["--plain", "version"]), versionPlain = run(["version", "--plain"]);
 check("cotal --plain version is refused as version --plain is: version has no plain output", plainVersion.status === 1 && /Unknown option '--plain'/.test(plainVersion.stderr) && versionPlain.status === 1 && /Unknown option '--plain'/.test(versionPlain.stderr), { before: shown(plainVersion), after: shown(versionPlain) });
 
+const malformedVersion = run(["--plain=true", "--json", "version"]);
+check("the version receipt tells you to omit the unsupported --plain flag", malformedVersion.status === 1 && malformedVersion.stderr === "" &&
+  malformedVersion.envelope?.command === "version" && malformedVersion.envelope.outcome === "refused" &&
+  malformedVersion.envelope.error?.code === "USAGE_INVALID" && malformedVersion.envelope.error.message === "--plain takes no value" &&
+  malformedVersion.envelope.error.remedy === "omit --plain", shown(malformedVersion));
+const retryVersion = run(["--json", "version"]);
+check("dropping the unsupported flag returns the JSON version receipt", retryVersion.status === 0 && retryVersion.stderr === "" &&
+  retryVersion.envelope?.command === "version" && retryVersion.envelope.outcome === "ok", shown(retryVersion));
+const malformedVersionCollision = run(["--plain=true", "--json", "version"], collisionConfig);
+check("a malformed leading output flag keeps the unsupported-flag remedy and collision warning together", malformedVersionCollision.status === 1 &&
+  malformedVersionCollision.stderr === "" && malformedVersionCollision.envelope?.command === "version" &&
+  malformedVersionCollision.envelope.error?.code === "USAGE_INVALID" && malformedVersionCollision.envelope.error.remedy === "omit --plain" &&
+  malformedVersionCollision.envelope.warnings?.length === 1 && malformedVersionCollision.envelope.warnings[0]?.code === "EXTENSION_COMMAND_COLLISION",
+  shown(malformedVersionCollision));
+
 const dashes = run(["--", "version"]);
 check("cotal -- version runs version", dashes.status === 0 && /\d+\.\d+\.\d+/.test(dashes.stdout), shown(dashes));
 
@@ -251,6 +266,10 @@ check("a command that takes its words raw still accepts the word", rawGlobal.sta
 
 const undeclared = run(["--json", "ext", "root"]), trailing = run(["ext", "root", "--json"]);
 check("a mode without that output refuses the leading flag as it does after the word", undeclared.status === 1 && /has no --json or --plain/.test(undeclared.stderr) && trailing.status === 1 && /has no --json or --plain/.test(trailing.stderr), { before: shown(undeclared), after: shown(trailing) });
+const malformedRoot = run(["--json=true", "ext", "root"]);
+check("the remedy uses the subcommand's outputs, not the parent command's", malformedRoot.status === 1 && malformedRoot.stdout === "" &&
+  malformedRoot.stderr.includes("--json takes no value") && malformedRoot.stderr.includes("omit --json") &&
+  !malformedRoot.stderr.includes("pass it without a value"), shown(malformedRoot));
 
 for (const { args, command, status, code } of [
   { args: ["backup", "inspect", "./not-there", "--json"], command: "backup inspect", status: 2, code: "TARGET_NOT_FOUND" },

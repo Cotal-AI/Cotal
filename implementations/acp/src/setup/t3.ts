@@ -8,10 +8,10 @@
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, join, resolve } from "node:path";
+import { join, resolve } from "node:path";
 import type { ClientSetupProvider, ConnectorSetupInput, ConnectorStatusRow } from "@cotal-ai/core";
 import { resolveOnPath } from "@cotal-ai/workspace";
-import { acpCommand, acpSpace, passedEnv, refreshedArgs, staleCommand } from "./command.js";
+import { acpCommand, acpSpace, passedEnv, refreshedArgs, runsCotal, staleCommand } from "./command.js";
 import { objectAt, readSettings, writeReported, type SettingsChange, type SettingsFile } from "./settings-file.js";
 
 const APP = "T3 Code";
@@ -40,17 +40,6 @@ interface Instance {
 }
 
 const isObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
-
-/** Recognize direct Cotal launchers and Node invocations of the Cotal entry, even after they move. */
-function runsCotal(command: unknown, args: unknown): boolean {
-  if (typeof command !== "string" || !Array.isArray(args)) return false;
-  const at = args.indexOf("acp");
-  const launcher = basename(command);
-  if (at === 0) return /^(?:cotal(?:\.(?:cmd|exe|bat|js|ts))?|cotal-npm)$/i.test(launcher);
-  const entry = args[at - 1];
-  return at > 0 && /^(?:node|nodejs|cotal-node)(?:\.exe)?$/i.test(launcher) && typeof entry === "string" &&
-    /^cotal(?:\.(?:js|ts))?$/i.test(basename(entry));
-}
 
 /** The instances that run `cotal acp` as a local ACP command, whoever added them. */
 function cotalInstances(file: SettingsFile): Instance[] {

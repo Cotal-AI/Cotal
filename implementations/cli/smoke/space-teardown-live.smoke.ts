@@ -64,7 +64,8 @@
  *     --yes` and `up` bring back every message stored before the failure.
  * 14. A moved folder. With a stack running, its folder is renamed. `down --space --yes` from another
  *     folder stops it, and its Next names `cotal space create <space> --adopt --root <folder>` before
- *     `cotal space create <space>`. Adopting the renamed folder keeps its history, and `up` starts it there.
+ *     `cotal space create <space>`. Adopting the renamed folder keeps its history, and the receipt's
+ *     restart command starts it without a manager at its saved payload limit.
  * 15. A forgotten stack that ran a manager, started again in its own folder without one. While the
  *     manager runs, `up --no-manager` refuses LIFECYCLE_BLOCKED. After `down --yes`, `space forget`
  *     removes the three stack definitions, and the journal names none of their instances. `space
@@ -834,7 +835,7 @@ try {
   }
 
   // 14. An open stack whose folder is renamed while it runs stops from another folder. Adopting it
-  // keeps its mode, saved channel metadata and history.
+  // keeps its mode, saved payload limit, channel metadata and history.
   {
     const space = "tear14";
     const root = folder(space);
@@ -842,7 +843,7 @@ try {
     check("space create prepares a root that is then renamed", created.status === 0, shown(created));
     anchor(root);
     const server = `nats://127.0.0.1:${await freePort()}`;
-    const started = cli(root, "up", "--open", "--server", server, "--no-manager", "--json");
+    const started = cli(root, "up", "--open", "--server", server, "--no-manager", "--max-payload", "16384", "--json");
     const channel = "moved.notes", description = "Notes kept across the move";
     const saved = cli(root, "channel", "set", channel, "--desc", description);
     const messages = ["first post across the move", "second post across the move"];
@@ -858,14 +859,24 @@ try {
     const stopped = cli(other, "down", "--space", space, "--yes");
     anchors.delete(other);
     const text = stopped.stdout.replace(/\x1b\[[0-9;]*m/g, "");
-    const next = text.slice(text.indexOf("\nNext\n")).split("\n").map((line) => line.trim().split(/\s{2,}/)[0]).filter((command) => command.startsWith("cotal "));
+    const next = text.slice(text.indexOf("\nNext\n")).split("\n").map((line) => line.trim().split(/\s{2,}/)[0]).filter((command) => /^(?:pnpm )?cotal /.test(command)).map((command) => command.replace(/^pnpm /, ""));
     check("down --space from another folder stops it, and its Next names the adopt route before another folder",
       stopped.status === 0 && text.includes("Stack stopped; its folder was gone") && JSON.stringify(next) === JSON.stringify([`cotal space create ${space} --adopt --root <folder>`, `cotal space create ${space}`]), shown(stopped));
+    const restart = /--adopt --root <folder>[^\n]* then run `(?:pnpm )?cotal (up[^`\n]*)` there/.exec(text)?.[1];
+    check("the adoption advice preserves --no-manager without changing the fresh-start advice",
+      restart === "up --no-manager" && /Otherwise prepare the space in another folder, then run `(?:pnpm )?cotal up` there/.test(text), shown(stopped));
     const adopted = cli(other, "space", "create", space, "--adopt", "--root", moved, "--json");
     anchor(moved);
-    const restarted = cli(moved, "up", "--json");
-    check("bare up starts the adopted stack in open mode on its original address",
-      adopted.status === 0 && restarted.status === 0 && restarted.env?.result?.mode === "open" && restarted.env.result.server === server, { adopt: shown(adopted), up: shown(restarted) });
+    const restarted = cli(moved, ...(restart ?? "up").split(" "), "--json");
+    const members = restarted.env?.result?.members as { role: string; state: string }[] | undefined;
+    check("the printed restart starts the adopted stack at its original address without a manager",
+      adopted.status === 0 && restarted.status === 0 && restarted.env?.result?.mode === "open" && restarted.env.result.server === server
+      && members?.some((member) => member.role === "manager" && member.state === "not-attempted") === true, { adopt: shown(adopted), up: shown(restarted) });
+    if (restarted.status === 0) {
+      const nc = await connect({ servers: server, reconnect: false, timeout: 2_000 });
+      try { check("the restarted broker serves at the saved 16384-byte payload limit", nc.info?.max_payload === 16384, nc.info?.max_payload); }
+      finally { await nc.close(); }
+    }
     const channels = cli(moved, "channel", "--plain");
     check("the adopted open stack lists the saved channel metadata",
       channels.status === 0 && channels.stdout.includes(channel) && channels.stdout.includes(description), shown(channels));
