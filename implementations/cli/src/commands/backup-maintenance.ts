@@ -47,7 +47,8 @@ export async function backupMaintenance(args: ParsedArgs): Promise<void> {
   // cleanup refuses until it is moved out.
   const oldStore = mode === "cleanup-fallback" ? restore.previousSource?.identity.path : undefined;
   const foreign = oldStoreForeignEntries(oldStore);
-  const retry = `cotal backup cleanup-fallback ${attemptId} --yes${onlyCopy ? " --discard-history" : ""}`;
+  const retry = `cotal backup cleanup-fallback ${attemptId} --yes${args.values["discard-history"] ? " --discard-history" : ""}`;
+  const keepHistory = onlyCopy ? `. ${onlyCopyText[0]!.toUpperCase()}${onlyCopyText.slice(1)}. Keep that store unless you choose to discard that data.` : "";
   const historyWarnings = onlyCopy ? [{ code: "HISTORY_ONLY_IN_PREVIOUS_STORE", target: { space: snapshot.space, previousStore: onlyCopy, ...(otherAccounts.length ? { otherAccounts } : {}), ...(rolledBack.runs.length ? { rolledBackRuns: rolledBack.runs } : {}) }, message: `${onlyCopyText[0]!.toUpperCase()}${onlyCopyText.slice(1)}. Cleanup deletes it only with --discard-history.` }] : [];
   const assessment = snapshot.state === "restore-ready" ? assessRestoreClaim(snapshot, { unrecordedOwnersDead: attemptProcessesGone(root) }) : null;
   const claim = snapshot.state === "restore-ready" ? snapshot.claim : undefined;
@@ -61,7 +62,7 @@ export async function backupMaintenance(args: ParsedArgs): Promise<void> {
     ] }] }));
     return;
   }
-  if (foreign.length) throw foreignEntriesRefusal(oldStore!, foreign, "the previous store", "nothing was deleted", `\`${retry}\``, target);
+  if (foreign.length) throw foreignEntriesRefusal(oldStore!, foreign, "the previous store", `nothing was deleted${keepHistory}`, `\`${retry}\``, target);
   if (onlyCopy && !args.values["discard-history"])
     throw new MissingFlags(`${onlyCopyText}, and cleanup deletes it only with --discard-history; nothing was deleted`, `keep that store, or delete it and the ${leftOut} it holds with \`cotal backup cleanup-fallback ${attemptId} --yes --discard-history\``, target);
   if (!args.values.yes) {
@@ -98,7 +99,7 @@ export async function backupMaintenance(args: ParsedArgs): Promise<void> {
   } catch (error) {
     // A file put into the old store after the check above is refused by the cleanup itself, which
     // moves that store back first.
-    if (isMaintenanceError(error) && error.code === "store-holds-foreign-entries") error = new CommandFailure("refused", "CONFLICT", `${error.message}; it was not deleted`, { target, remedy: `move them out of that store, then run \`${retry}\` again` });
+    if (isMaintenanceError(error) && error.code === "store-holds-foreign-entries") error = new CommandFailure("refused", "CONFLICT", `${error.message}; it was not deleted${keepHistory}`, { target, remedy: `move them out of that store, then run \`${retry}\` again` });
     fatal = isCommandFailure(error) ? error : new CommandFailure(invoked ? "unknown" : "refused", invoked ? "OPERATION_UNKNOWN" : "LIFECYCLE_BLOCKED", invoked ? "the native maintenance operation did not confirm completion; the original attempt was not retried" : "the native maintenance preflight or lock refused before operation submission", { target, ...(isMaintenanceError(error) ? { native: { code: error.code } } : {}), remedy: "re-read the original maintenance attempt and retain both source and target until its native recovery state is established" });
   } finally {
     if (lock) {

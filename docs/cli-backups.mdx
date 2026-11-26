@@ -186,8 +186,11 @@ removes only its unchanged retained old-store identity; it never removes the res
 It removes that store by its store entries, as `clean store` does. When the old store also holds
 anything else, such as a file you put in a custom store directory or in the fallback folder, its
 `--dry-run` names those entries, and the cleanup refuses `CONFLICT` (exit 2), names them and deletes
-nothing; move them out and run it again. A restore into the preserved store's own path moves that
-store aside whole, so it refuses `CONFLICT` (exit 2) the same way before anything moves.
+nothing. Move those entries out before retrying. The retry includes `--discard-history` only if
+it was given in the original command. If the store holds the only copy of data the restore left
+out, the refusal tells you to keep that store unless you choose to discard the data.
+A restore into the preserved store's own path moves that store aside whole, so it refuses
+`CONFLICT` (exit 2) the same way before anything moves.
 A restore made with `--accept-missing-source` replaced a missing source and retains no old store.
 Run `cotal backup cleanup-fallback <attempt> --yes` to retire its journal without removing a store.
 A later `down --preserve-state` then
