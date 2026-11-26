@@ -109,6 +109,22 @@ try {
   up = true;
   const managers = JSON.parse(await succeed("ps", "--json")).result.managers;
   const selection = ["--space", "project", "--on", managers[0].instanceId];
+  const recoveryServer = `nats://127.0.0.1:${await freePort()}`;
+  const recoveryTarget = ["--space", "recovery-lab", "--server", recoveryServer, "--on", managers[0].instanceId, "--json"];
+  const missingResume = await call("run", "resume", ...recoveryTarget);
+  const resumeError = JSON.parse(missingResume.text).error;
+  assert.equal(missingResume.code, 1, missingResume.text);
+  assert.equal(resumeError.code, "USAGE_INVALID", missingResume.text);
+  const correction = ". Then add a run ID after `run resume` in the original command";
+  const resumeRemedy = resumeError.remedy as string;
+  assert.ok(resumeRemedy.endsWith(correction), resumeRemedy);
+  const resumeLookup = retryWords(resumeRemedy.slice(0, -correction.length));
+  assert.deepEqual(resumeLookup, ["run", "list", ...recoveryTarget]);
+  const recoveryList = await call(...resumeLookup);
+  const recoveryReceipt = JSON.parse(recoveryList.text);
+  check("the missing hosted resume ID lookup reaches the requested broker instead of the project broker",
+    recoveryList.code === 2 && recoveryReceipt.error.code === "TARGET_UNAVAILABLE"
+      && recoveryReceipt.error.message.includes(recoveryServer) && recoveryReceipt.target.space === "recovery-lab", recoveryList.text);
   const unknownShow = await call("run", "show", "run-missing", "--local", "--space", "project", "--server", server, "--endpoint", "manager", "--json");
   const unknownShowError = JSON.parse(unknownShow.text).error;
   assert.equal(unknownShow.code, 2, unknownShow.text);
