@@ -2,7 +2,7 @@
  * Run: pnpm smoke:moved-root:live
  */
 import { spawnSync } from "node:child_process";
-import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join, resolve } from "node:path";
 import { codeSpan, setAdoptedCurrent, shellPath, spaceKey, spaceSegment } from "@cotal-ai/workspace";
@@ -46,18 +46,29 @@ const definitionPath = (space: string) => join(cotalHome, "services", spaceKey(s
 function checkInaccessibleDown(project: string, space: string, records: string[]): void {
   if (process.platform === "win32" || process.getuid?.() === 0) return;
   const before = records.map((path) => readFileSync(path));
-  chmodSync(project, 0o000);
-  try {
-    for (const mode of ["--yes", "--dry-run"]) {
-      const args = ["down", "--space", space, mode, "--json"];
-      assertSmokeSandboxDown(outsideAnchor, args, { cwd: other, env });
-      const result = cli(other, ...args);
-      const error = (JSON.parse(result.stdout) as Envelope).error;
-      check(`${mode} refuses an inaccessible project and advises restoring access`, result.status === 2 && error?.code === "PERMISSION_DENIED" &&
-        error.message?.includes(`${project} could not be accessed`) === true && error.remedy === "restore access to the original project folder, then try again");
-    }
-  } finally { chmodSync(project, 0o700); }
-  check("the inaccessible project retains its records unchanged", records.every((path, i) => existsSync(path) && readFileSync(path).equals(before[i]!)));
+  for (const blocked of [project, join(project, ".cotal")]) {
+    const priorMode = statSync(blocked).mode & 0o777;
+    try {
+      chmodSync(blocked, 0o000);
+      for (const flags of [["--yes"], ["--dry-run"], ["--yes", "--with-agents"]]) {
+        const args = ["down", "--space", space, ...flags, "--json"];
+        assertSmokeSandboxDown(outsideAnchor, args, { cwd: other, env });
+        const result = cli(other, ...args);
+        const error = (JSON.parse(result.stdout) as Envelope).error;
+        check(`${flags.join(" ")} refuses denied traversal at ${blocked} before recovery validation`, result.status === 2 && error?.code === "PERMISSION_DENIED" &&
+          error.message?.includes(`${project} could not be accessed`) === true && error.remedy === "restore access to the original project folder, then try again");
+      }
+      if (blocked !== project) {
+        const forgotten = json(other, "space", "forget", space);
+        check("space forget does not remove records behind an inaccessible control directory", forgotten.status === 2);
+        if (records.some((path) => path === join(cotalHome, "meshes", `${spaceSegment(space)}.json`))) {
+          const shown = json(other, "space", "show", space);
+          check("space show does not mark the inaccessible stack root as gone", shown.status === 0 && shown.envelope.result?.rootGone === false);
+        }
+      }
+    } finally { chmodSync(blocked, priorMode); }
+    check(`denied traversal at ${blocked} leaves the stack records byte-identical`, records.every((path, i) => existsSync(path) && readFileSync(path).equals(before[i]!)));
+  }
 }
 
 function checkImplicitComponents(server: string): void {
