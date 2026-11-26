@@ -28,8 +28,9 @@ The host implements `GatewayHost`:
   `options.approvalResume` is enabled. It conveys no authority. Bind it to the authenticated account,
   space, name and request generation. An issued approval cannot grant a replacement connection.
   Throw `NameTaken` only for an authoritative name collision. A new request tries `name_2` and later
-  variants up to `GATEWAY_NAME_ATTEMPTS`; a resumed approval never renames. The collision check and
-  issue must be atomic. Other errors reach the caller without renaming and must not carry secrets.
+  variants up to `GATEWAY_NAME_ATTEMPTS`, shortening the base as needed to fit the suffix within
+  the name limit. A resumed approval never renames. The collision check and issue must be atomic.
+  Other errors reach the caller without renaming and must not carry secrets.
 - `find(account, id)` and `close(account, id)` act only on a connection that account owns.
 
 `cotal_connect` refuses a name `assertValidName` rejects before it calls `open`. Its reply names

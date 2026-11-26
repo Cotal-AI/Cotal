@@ -38,7 +38,8 @@ one connection between conversations.
 
 Hosts using the same account's Cotal folder reserve names on each local space before
 publishing presence. If two hosts request the same name together, one keeps it and the
-other receives the next free suffix, such as `twin_2`, reported by `cotal_connect`.
+other receives the next free suffix, such as `twin_2`, reported by `cotal_connect`. The server
+shortens the requested name if needed to fit the suffix within the name limit.
 The reservation remains until the identity is retired, including when cleanup must retry.
 
 The default persona bounds channels, role and capabilities. A `cotal_connect` permission

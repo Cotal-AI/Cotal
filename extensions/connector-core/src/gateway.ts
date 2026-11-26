@@ -21,7 +21,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
 import { McpError, ErrorCode, type ToolAnnotations } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
-import { assertValidName, conversationSelection, SELECTION_MAX_ITEMS, type ConversationPending, type ConversationSelection } from "@cotal-ai/core";
+import { assertValidName, conversationSelection, MAX_NAME_LENGTH, SELECTION_MAX_ITEMS, type ConversationPending, type ConversationSelection } from "@cotal-ai/core";
 import { DOCS_VERSION } from "./docs.js";
 import { cotalToolSpecs, orientationCard, parseToolArgs, PATTERN_SEND_HELP, type CotalToolSpec, type ToolResult } from "./tool-specs.js";
 import { connectionNotReadyWarning } from "./tool-specs-inbox.js";
@@ -272,7 +272,12 @@ export interface GatewayWake {
 
 /** The names `cotal_connect` tries for `base`, in order. */
 export function gatewayNames(base: string, attempts = GATEWAY_NAME_ATTEMPTS): string[] {
-  return [base, ...Array.from({ length: attempts - 1 }, (_, i) => `${base}_${i + 2}`)];
+  return [base, ...Array.from({ length: attempts - 1 }, (_, i) => {
+    const suffix = `_${i + 2}`;
+    // A cut through a surrogate pair leaves its high surrogate at the end of the prefix.
+    const prefix = base.slice(0, MAX_NAME_LENGTH - suffix.length).replace(/[\uD800-\uDBFF]$/, "");
+    return `${prefix}${suffix}`;
+  })];
 }
 
 const CONNECTION_REQUIRED =
