@@ -2,9 +2,17 @@ import { spawnSync } from "node:child_process";
 import { lstatSync, readdirSync, readFileSync, realpathSync, statSync, type Dirent } from "node:fs";
 import { join, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
-import { SEEDED_EXTENSIONS, extensionPackageDir, extensionsDir, installedExtensionPackage, resolveExtensionEntry, type InstalledExtension } from "@cotal-ai/workspace";
+import { SEEDED_EXTENSIONS, extensionPackageDir, extensionsDir, hostPackageDir, installedExtensionPackage, resolveExtensionEntry, type InstalledExtension } from "@cotal-ai/workspace";
 import { seedStorePath, shippedSourceDir } from "./paths.js";
 import { sharedPlacements, type SharedPlacement } from "./shared.js";
+
+/** Check the links installed by the peer binder without changing the extension tree. */
+export function seededPeerLinksCurrent(pkg: string): boolean {
+  const installed = installedExtensionPackage(pkg);
+  return installed !== undefined && Object.keys(installed.peerDependencies ?? {}).every(peer =>
+    !peer.startsWith("@cotal-ai/") ||
+    realpathSync(join(extensionPackageDir(pkg), "node_modules", peer)) === realpathSync(hostPackageDir(peer)));
+}
 
 /**
  * Why `cotal update` still has to reinstall a seeded built-in that is recorded at this generation, or

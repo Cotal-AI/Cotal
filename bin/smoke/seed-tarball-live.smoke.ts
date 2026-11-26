@@ -202,7 +202,7 @@ try {
   mkdirSync(join(prefix, ".cotal"));
   const npmrc = join(home, ".npmrc");
   writeFileSync(npmrc, "omit=optional\n");
-  const seedEnv = { ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_"))),
+  const seedEnv: NodeJS.ProcessEnv & { HOME: string; XDG_CONFIG_HOME: string } = { ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_"))),
     HOME: home, COTAL_HOME: join(home, ".cotal"), XDG_CONFIG_HOME: cfg, npm_config_userconfig: npmrc };
   if (process.platform === "win32") {
     const seed = spawnSync("node", [invokedBin, "ext", "seed"], { cwd: prefix, encoding: "utf8", env: seedEnv });
@@ -287,11 +287,12 @@ try {
   check("first seed includes the host native dependency despite omit=optional", existsSync(nativeManifest));
   const updateEnv = seedEnv;
   mkdirSync(updateEnv.HOME, { recursive: true });
-  const update = (...args: string[]) => {
-    const run = spawnSync("node", [invokedBin, "update", ...args], { cwd: prefix, encoding: "utf8", env: updateEnv });
+  const runUpdate = (env: NodeJS.ProcessEnv, ...args: string[]) => {
+    const run = spawnSync(process.execPath, [invokedBin, "update", ...args], { cwd: prefix, encoding: "utf8", env });
     check(`update ${args.join(" ")} exits successfully`, run.status === 0, run.stderr);
     return `${run.stdout ?? ""}${run.stderr ?? ""}`;
   };
+  const update = (...args: string[]) => runUpdate(updateEnv, ...args);
   const reconciled = (out: string) => out.split("\n").find((line) => line.includes("connectors reconciled")) ?? "";
   const kept = reconciled(update());
   const standaloneDir = join(home, ".pi", "agent", "extensions");
@@ -301,6 +302,22 @@ try {
     kept,
   );
   check("update does not create a standalone pi extension directory", !existsSync(standaloneDir));
+  if (process.platform === "linux") {
+    const selfUpdate = () => runUpdate({ ...updateEnv, PATH: `${join(home, "tools")}${delimiter}${updateEnv.PATH}` }, "--self");
+    const coreLink = installedAt("web", "node_modules/@cotal-ai/core");
+    const dashboard = installedAt("web", "dist/index.js");
+    const importDashboard = () => spawnSync(process.execPath, ["--input-type=module", "-e",
+      "await import(process.argv[1]);", dashboard], { cwd: prefix, env: updateEnv, encoding: "utf8" });
+    rmSync(coreLink);
+    symlinkSync(join(base, "removed-generation", "core"), coreLink);
+    const broken = importDashboard();
+    check("the dashboard cannot import with a dangling core peer", broken.status === 1 && broken.stderr.includes("ERR_MODULE_NOT_FOUND"), broken.stderr);
+    const repaired = selfUpdate();
+    check("current self-update verifies the dashboard without reinstalling it", /verified [^;]*\bweb\b/.test(reconciled(repaired)) && !repaired.includes("Reconciling built-in web"), repaired);
+    const loaded = importDashboard();
+    check("the dashboard imports after self-update rebinds its peer", loaded.status === 0, loaded.stderr);
+    check("a second self-update skips reconciliation", selfUpdate().includes("installed package closure is current"));
+  }
   // Real npm creates the reported existing installation while leaving its lock intact.
   const omitted = spawnSync("npm", ["install", "--omit=optional", "--legacy-peer-deps", "--install-links", "--no-audit", "--no-fund"], {
     cwd: extensionPrefix, env: updateEnv, encoding: "utf8",
