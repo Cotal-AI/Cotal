@@ -864,6 +864,8 @@ restart command because Cotal reserves no fixed capacity per space.
 `meshes.currentStopped` says whether the selection is such a stopped stack. A stack whose last `up`
 or `down` has no recorded outcome is not stopped, even when a member it launched still runs: the
 selection reads as prepared but not started, and the selected space names that operation.
+If the selected space has no running registration and its stack journal cannot be read, `status`
+reports an unknown stack lifecycle and keeps the journal's recovery step under Next.
 
 Owned services use the saved controller definitions and instance records for the selected space.
 Instances are listed by definition name, then instance ID, in the text and in

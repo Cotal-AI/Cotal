@@ -249,7 +249,7 @@ export async function status(args: ParsedArgs): Promise<void> {
       if (isCommandFailure(error) && error.remedy) hints.push(error.remedy);
     }
   }
-  const meshes = await readMeshes(cwd, selected, Boolean(values.all), gaps, offline, preflight, checks);
+  const { meshes, currentJournalUnreadable } = await readMeshes(cwd, selected, Boolean(values.all), gaps, offline, preflight, checks);
   const { maintenance, sourceMissing } = blocked
     ? { maintenance: { root, space: null, state: "unreadable", attemptId: null, next: null }, sourceMissing: false }
     : readMaintenance(root, gaps);
@@ -324,7 +324,7 @@ export async function status(args: ParsedArgs): Promise<void> {
       interactive: presentation === "rich" && canPrompt(),
       preparedHarness: !selected.ok && isWorkspaceTargetError(selected.error) && selected.error.code === "not-started" && preparedNeverStarted(selected.error.details)
         ? preferences.spaces[selected.error.details.space]?.harness : undefined,
-      seed,
+      seed, currentJournalUnreadable,
       recovery, stoppedForeignListener, stackStarting, selectedStarting,
     }),
   );
