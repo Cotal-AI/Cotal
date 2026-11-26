@@ -76,6 +76,8 @@ export {
   deprovisionTargetPrincipal,
   parsePrincipalKey,
   assertInboxConnId,
+  assertUserInboxConnId,
+  userInboxConnId,
   PRINCIPAL_TAG_PREFIX,
   principalTags,
   principalFromTags,
