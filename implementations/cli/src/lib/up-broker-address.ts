@@ -54,10 +54,13 @@ export function freePort(host: string, requestedPort = 0): Promise<number> {
 }
 
 export async function retryStackAddress(raw: readonly string[], invokedFrom: string, stackServer: string, host: string): Promise<string | undefined> {
-  let server: string;
-  try { server = await freshStackServer(await serverWithFreePort(stackServer, host), host); }
+  const server = await stackRetryServer(stackServer, host);
+  if (server !== undefined) return `start this stack at another address with ${codeSpan(upAtAddress(raw, server))} from ${shellWord(invokedFrom)}`;
+}
+
+export async function stackRetryServer(stackServer: string, host: string): Promise<string | undefined> {
+  try { return await freshStackServer(await serverWithFreePort(stackServer, host), host); }
   catch { return undefined; }
-  return `start this stack at another address with ${codeSpan(upAtAddress(raw, server))} from ${shellWord(invokedFrom)}`;
 }
 
 function upAtAddress(raw: readonly string[], server: string): string {

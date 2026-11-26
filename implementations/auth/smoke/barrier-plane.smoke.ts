@@ -19,14 +19,15 @@
  *
  * Run: pnpm smoke:barrier-plane:auth   (needs nats-server on PATH; local-only)
  */
-import { randomUUID } from "node:crypto";
+import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Kvm } from "@nats-io/kv";
 import { jetstream, jetstreamManager } from "@nats-io/jetstream";
-import { contractDigest, createEndpointStreams, createSpaceAuth, ensureAuthorityStores, epAuthBucket, epfEffectSubject, epfStreamName, epfSubject, epwStreamName, isReachable, mintLifecycleUid, parseEffectFact, parseWorkTerminalFact, poolConsumerConfig, publishFactCreateOnly, readLastFact, readRecordLeader, recordAtomicKey, recordsBucket, RETIREMENT_FRONTIER, serverConfig, updateRecordEntry, workTerminalSubject, type EvictionResult } from "@cotal-ai/core";
+import { contractDigest, createEndpointStreams, createSpaceAuth, ensureAuthorityStores, epAuthBucket, EpEnvelopeError, epfEffectSubject, epfStreamName, epfSubject, epwStreamName, isReachable, mintLifecycleUid, parseEffectFact, parseWorkTerminalFact, poolConsumerConfig, publishFactCreateOnly, readLastFact, readRecordLeader, recordAtomicKey, recordsBucket, RETIREMENT_FRONTIER, serverConfig, updateRecordEntry, workTerminalSubject, type EvictionResult } from "@cotal-ai/core";
 import { openAdmissionMediator, mediatedRequestFromSubject, obtainEpfObligation, obtainSelfObligation, acceptSelfObligation } from "../src/admission-mediator.js";
 import { makeRecordsScannerOverConnection } from "../src/records-scanner.js";
 import { deriveOwnerToken, openAuthAuthorityPlane } from "../src/index.js";
@@ -34,7 +35,7 @@ import { authorityBarrierGrants, barrierExecutorSettlementGrants, openAuthorityC
 import { makeDeliveryAdminEvictor } from "../src/barrier-evict.js";
 import { ensureRootCredential } from "../src/root-credential.js";
 import { observeGate, openLifecycleRegistry, readLifecycleHeadForOperation, registryStores, type LifecycleRegistry } from "../src/lifecycle-registry.js";
-import { credRowKey, enumerateOperationIntents, parseLedgerRow, runAgentTakeoverBarrier, type EvictPrincipal } from "../src/credential-ledger.js";
+import { credRowKey, enumerateOperationIntents, markLedgerRowRevoked, parseLedgerRow, runAgentTakeoverBarrier, type EvictPrincipal } from "../src/credential-ledger.js";
 import { runAgentRetirementBarrier, type RetirementDeps } from "../src/retirement-barrier.js";
 import { makeLedgerScannerOverConnection } from "../src/ledger-scanner.js";
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
@@ -93,6 +94,69 @@ async function checkRootMintAcrossTakeover(wreg: LifecycleRegistry, breg: Lifecy
     check("the fenced mint does not stamp a replacement root", head?.mapping.processEpoch === 2 && head.mapping.currentCredentialId === undefined);
   } finally {
     kv.put = put;
+  }
+}
+
+async function checkRootMintRetryGuards(wreg: LifecycleRegistry, breg: LifecycleRegistry, retirementDeps: RetirementDeps) {
+  const kv = registryStores(wreg).authKv;
+  const { get, put } = kv;
+  for (const scenario of ["frozen", "retired", "revoked"] as const) {
+    const lifecycleUid = mintLifecycleUid();
+    const args = { owner: OWNER, actor: `root_${scenario}`, lifecycleUid, managerInstance: "smoke" };
+    const opId = mintLifecycleUid();
+    let stagedKey: string | undefined;
+    let winnerId: string | undefined;
+    let interleaved = false;
+    let gateReads = 0;
+    kv.get = (key, ...rest) => {
+      if (interleaved && key === `gate.${lifecycleUid}`) gateReads++;
+      return get.call(kv, key, ...rest);
+    };
+    kv.put = async (key, value, options) => {
+      const revision = await put.call(kv, key, value, options);
+      if (stagedKey || !key.startsWith(`cred.${lifecycleUid}.`) || options?.previousSeq !== 0) return revision;
+      stagedKey = key;
+      if (scenario === "frozen") {
+        await assert.rejects(runAgentTakeoverBarrier(breg, { ...args, opId }, { evictPrincipal: failEvictor }), /probe: eviction refused/);
+      } else if (scenario === "retired") {
+        await runAgentRetirementBarrier(breg, { ...args, opId, frontierStreams: [epfStreamName(space), epwStreamName(space)] }, retirementDeps);
+      } else {
+        winnerId = await ensureRootCredential(wreg, args);
+        assert.notEqual(credRowKey(lifecycleUid, winnerId), stagedKey);
+        await markLedgerRowRevoked(kv, credRowKey(lifecycleUid, winnerId));
+      }
+      interleaved = true;
+      return revision;
+    };
+    try {
+      await assert.rejects(ensureRootCredential(wreg, args), (error) => {
+        assert.ok(interleaved && error instanceof EpEnvelopeError && error.code === "permission-denied");
+        if (scenario === "revoked") {
+          assert.ok(winnerId && error.message.includes(`(${winnerId}) is revoked`));
+        } else {
+          assert.ok(error.message.includes(`the mint for ${stagedKey} lost its fence`));
+          // Finalize reads its pin; the refusal handler observes the gate once and does not re-enter minting.
+          assert.equal(gateReads, 2);
+        }
+        return true;
+      });
+    } finally {
+      kv.get = get;
+      kv.put = put;
+    }
+    assert.ok(stagedKey);
+    const loser = await kv.get(stagedKey);
+    assert.ok(loser && parseLedgerRow(loser.value, stagedKey).state === "revoked");
+    const gate = await observeGate(breg, lifecycleUid);
+    const head = await readLifecycleHeadForOperation(breg, OWNER, args.actor);
+    if (scenario === "revoked") {
+      check("a first root mint retries but refuses the revoked winner",
+        gate?.row.state === "open" && gate.row.generation === 1 && head?.mapping.currentCredentialId === winnerId);
+    } else {
+      check(`a first root mint does not retry across a ${scenario} gate`,
+        gate?.row.state === scenario && gate.row.op?.opId === opId
+        && head?.mapping.state === (scenario === "retired" ? "retired" : "active") && head.mapping.currentCredentialId === undefined);
+    }
   }
 }
 
@@ -155,7 +219,9 @@ try {
   // The barrier profile holds NO auth-stream CONSUMER.CREATE; enumeration runs on the SEALED scanner
   // (a SEPARATE credential — modeled here over the broad writer connection, since the barrier cred
   // deliberately cannot create a consumer). The registry threads the scanner's closed ops.
-  const breg = await openLifecycleRegistry(barrier.nc, space, makeLedgerScannerOverConnection(writer.nc, space));
+  const breg = await openLifecycleRegistry(
+    barrier.nc, space, makeLedgerScannerOverConnection(writer.nc, space), makeRecordsScannerOverConnection(writer.nc, space),
+  );
   check("ALLOWED: the barrier connection binds + shape-proves both stores (STREAM.INFO)", true);
 
   // ---- E1. intent discovery baseline: empty, and session release pins are skipped ----
@@ -471,6 +537,7 @@ try {
   check("the seam's failure carries an honest note", typeof seamRes.note === "string" && seamRes.note.length > 0, seamRes.note);
 
   await checkRootMintAcrossTakeover(wreg, breg);
+  await checkRootMintRetryGuards(wreg, breg, wedgeDeps(okEvictor([])));
 
   // ---- E3. a garbled intent poisons the store LOUDLY (last: it breaks later enumerations) ----
   await registryStores(breg).authKv.put(`stage.${mintLifecycleUid()}`, enc.encode(JSON.stringify({ kind: "weird" })));
