@@ -21,6 +21,7 @@ import { console_ } from "./commands/console.js";
 import { spawn, spawnComplete, spawnFlags, spawnRequiredExtensions, validateSpawnArguments } from "./commands/spawn.js";
 import { refuseRemovedStart } from "./commands/removed-start.js";
 import { appIdentity, appIdentityFlags } from "./commands/app-identity.js";
+import { conversationSignOut } from "./lib/app-user-identity.js";
 import { attach, attachFlags, input, inputFlags, inputArguments, managedAgentComplete, managedTarget, ps, psFlags, stop, stopFlags, validateStopArguments } from "./commands/agents.js";
 import { models, modelsComplete, modelsFlags, validateModelsArguments } from "./commands/models.js";
 import { watch, watchComplete, watchFlags, validateWatchArguments } from "./commands/watch.js";
@@ -916,7 +917,7 @@ const baseProcesses: LocalProcess[] = [
 
 const credentialMintAction: CredentialAction = { kind: "credential-action", name: "mint", validate: validateCredentialMintArguments, run: mint };
 const credentialRevokeAction: CredentialAction = { kind: "credential-action", name: "revoke-credential", validate: validateCredentialRevokeArguments, run: revokeCredential };
-registry.register(...baseCommands, ...baseProcesses, credentialMintAction, credentialRevokeAction);
+registry.register(...baseCommands, ...baseProcesses, credentialMintAction, credentialRevokeAction, conversationSignOut);
 
 export { runCli } from "./command.js";
 export { stdoutError } from "./lib/stdout-owner.js";

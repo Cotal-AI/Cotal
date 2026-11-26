@@ -14,6 +14,7 @@ interface ConversationBinding {
 }
 
 const bindingOf = (r: ConversationBinding): string => hash(canonicalJson([r.trust, r.session, r.label, r.requestId, r.selection ?? null]));
+export const matchesResumeBinding = (r: ConversationBinding, proof: ConversationResumeProof): boolean => proof.binding === bindingOf(r);
 
 export function createResumeProof(r: ConversationBinding): { proof: ConversationResumeProof; tokenHash: string } | undefined {
   const proof = { v: 1 as const, salt: randomBytes(32).toString("base64url"), binding: bindingOf(r) };
@@ -21,10 +22,9 @@ export function createResumeProof(r: ConversationBinding): { proof: Conversation
   catch { return undefined; } // An unsupported or unwritable device still uses ordinary approval.
 }
 
-/** The expected binding comes from the native host's session and the resolved target, never from
- * the proof file. Compare the original commitment before sending anything to the authority. */
+/** Compare the original commitment before sending anything to the authority. */
 export function resumeToken(r: ConversationBinding & { token: string; proof: ConversationResumeProof }): string | undefined {
-  if (r.proof.binding !== bindingOf(r)) return undefined;
+  if (!matchesResumeBinding(r, r.proof)) return undefined;
   try {
     const token = conversationResumeToken(r.proof);
     return hash(token) === r.token ? token : undefined;

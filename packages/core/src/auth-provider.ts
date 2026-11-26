@@ -438,6 +438,8 @@ export interface AuthProvider extends Extension {
     method: "POST" | "DELETE";
     body?: { v: 1; requestId: string; tokenHash: string; label?: string; selection?: ConversationSelection };
   }): Promise<{ status: number; body: unknown }>;
+  /** Refuse a native conversation resume when this machine has no unexpired login for this IdP. */
+  requireConversationLogin?(idpUrl: string): void;
   /**
    * CLIENT side of a REMOTE mesh's one-time enrollment redeem: GET the secret-bearing enrollment
    * URL exactly once and return the parsed JSON answer verbatim. The URL itself is the credential,
@@ -667,6 +669,12 @@ export interface SpaceCatalogConsumer extends Extension {
   /** Validate a deliberate account-origin migration without writes, returning its local commit.
    * Session approval and identity pin checks belong to the auth provider before this call. */
   prepareMigration?(oldAccount: AuthSpaceCatalogAccount, newAccount: AuthSpaceCatalogAccount, snapshot: unknown): () => void;
+}
+
+/** Workstation-owned conversation recovery records are retired before auth clears the login. */
+export interface ConversationSignOut extends Extension {
+  readonly kind: "conversation-sign-out";
+  retire(opts: { dir: string; idp: string }): Promise<string[]>;
 }
 
 export function resolveSpaceCatalogConsumer(): SpaceCatalogConsumer {

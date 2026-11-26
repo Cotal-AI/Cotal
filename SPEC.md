@@ -9,7 +9,7 @@ exchange address. Neither the approval URL nor the previous MCP connection ID is
 
 For a new approval on a supporting authority, the creation POST's existing `tokenHash` is
 the SHA-256 hex digest of an actor secret derived from the native conversation, its original
-request and selection, and a separate OS-user device key. The local conversation proof file
+request and selection, a separate OS-user device key, and the OS machine identity. The local conversation proof file
 contains the derivation context, not the actor secret. An authority MUST NOT infer device
 identity from a hostname or a client-supplied system ID. It checks the original commitment.
 
@@ -33,8 +33,19 @@ recreate a retired lifecycle, or extend an approval. It returns HTTP 200 with
 `{ "v": 1, "lifecycleUid": "<uid>", "status": "resumed" }` only if that approval still holds.
 Its definitive refusal is HTTP 401 with `{ "v": 1, "lifecycleUid": "<uid>", "status": "refused" }`.
 An unknown or malformed answer proves neither outcome. An accepted resume still uses the
-ordinary actor exchange and broker authorization to connect. Explicit disconnect uses
-the exact lifecycle retirement route, which MUST also prevent later resume.
+ordinary actor exchange and broker authorization to connect. The native client MUST have an
+unexpired local sign-in session for the saved identity provider before it attempts resume.
+Missing support or changed discovery pins MUST NOT retire the saved approval.
+
+Explicit disconnect and sign-out use `DELETE <conversation-identity-url>/<actor>?lifecycleUid=<uid>`
+on the original pinned authority, authenticated with the human session. Sign-out attempts this
+before it revokes the provider session or removes the local login and registrations. A client with
+an unusable proof for its own conversation MUST confirm retirement before requesting another
+approval. The authority returns HTTP 200 with
+`{ "v": 1, "actor": "<actor>", "lifecycleUid": "<uid>", "phase": "terminal", "complete": true }`
+when retirement is complete, including an exact retry. HTTP 202 with the same coordinates,
+the current `phase` and `"complete": false` means cleanup is still pending. Retirement MUST
+prevent later resume. Sign-out reports unconfirmed retirements rather than claiming they succeeded.
 
 ## Local daemon custody recovery
 

@@ -257,10 +257,7 @@ export async function handleExchange(req: IncomingMessage, res: ServerResponse, 
     if (req.headers["cotal-conversation-resume"] === "1") {
       if (view !== undefined || ttlSec !== undefined) return send(res, 400, { error: "conversation resume cannot mint a bearer" });
       const answer = checkConversationResumeExchange(ctx.dir, owner, actor, actorToken, conversationResume);
-      if (answer.status === 401) {
-        policy.recordFailure(ctx, peer);
-        if (peerThrottled) return send(res, 429, { error: "too many refused exchanges - wait a minute and retry" });
-      }
+      if (answer.status === 401) return refuseExchange(res, ctx, policy, peer, peerThrottled, "refused an agent exchange: conversation resume was refused", 401, answer.body);
       return send(res, answer.status, answer.body);
     }
     try {

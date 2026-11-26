@@ -36,9 +36,9 @@ if (["agent-bearer", "auth-service", "app-identity"].includes(process.argv[2] ??
   for (const key of Object.keys(process.env)) if (key.startsWith("COTAL_")) delete process.env[key];
   process.env.COTAL_HOME = home;
   const { CotalEndpoint, createSpaceAuth, isReachable, mintCreds, newIdentity, serverConfig, setupSpaceStreams } = await import("@cotal-ai/core");
-  const { authDir, assertUserAuthInfo, saveSpaceAuth, userAuthStateDir, workspaceSecretStore } = await import("@cotal-ai/workspace");
+  const { authDir, assertUserAuthInfo, findMesh, recordMesh, saveSpaceAuth, userAuthStateDir, workspaceSecretStore } = await import("@cotal-ai/workspace");
   const { cotalAuthProvider, grantActor, loadCalloutAuth, revokeManagedActor } = await import("@cotal-ai/auth");
-  const { saveIdpSession } = await import("../src/login.js");
+  const { deleteIdpSpaceCatalog, loadIdpSession, saveIdpSession } = await import("../src/login.js");
   const { pickFreePort } = await import("./_free-port.js");
   const { EMPTY, startApprovalAuthority } = await import("./_approval-authority.js");
   type Child = import("node:child_process").ChildProcess;
@@ -67,7 +67,12 @@ if (["agent-bearer", "auth-service", "app-identity"].includes(process.argv[2] ??
   mkdirSync(deviceHome);
   mkdirSync(copiedHome);
   const jwks = JSON.stringify({ keys: [generateKeyPairSync("ed25519").publicKey.export({ format: "jwk" })] });
-  const idp = createServer((_req, res) => { res.writeHead(200, { "content-type": "application/json" }); res.end(jwks); });
+  let idpSignOuts = 0;
+  const idp = createServer((req, res) => {
+    res.writeHead(200, { "content-type": "application/json" });
+    if (req.method === "POST" && req.url === "/auth/sign-out") { idpSignOuts++; res.end("{}"); }
+    else res.end(jwks);
+  });
   await new Promise<void>((resolve) => idp.listen(0, "127.0.0.1", resolve));
   const idpUrl = `http://127.0.0.1:${(idp.address() as import("node:net").AddressInfo).port}/auth`;
   let broker: Child | undefined;
@@ -168,6 +173,16 @@ if (["agent-bearer", "auth-service", "app-identity"].includes(process.argv[2] ??
   const actorOf = (session: string) => record(session)?.remote.material?.actor;
   const granted = async (actor: string) => await cotalAuthProvider.actorScope({ dir: stateDir, owner, actor }) !== undefined;
   const footprint = (actor: string) => [...authority.requests.values()].find((row) => row.actor === actor)?.phase;
+
+  const signOut = (local = false) => new Promise<string>((resolve, reject) => {
+    const child = spawn(process.execPath, ["bin/dist/cotal.js", "logout", "--idp", idpUrl, "--json", ...(local ? ["--local"] : [])],
+      { cwd: new URL("../../../", import.meta.url), env: childEnv, stdio: ["ignore", "pipe", "pipe"] });
+    let out = "", err = "";
+    child.stdout.on("data", (text) => { out += text; });
+    child.stderr.on("data", (text) => { err += text; });
+    child.once("error", reject);
+    child.once("close", (code) => code === 0 ? resolve(out) : reject(new Error(`logout failed (${code}): ${out} ${err}`)));
+  });
 
   try {
     const auth = await createSpaceAuth(space);
@@ -288,6 +303,57 @@ if (["agent-bearer", "auth-service", "app-identity"].includes(process.argv[2] ??
       const changed = await g5.call("cotal_connect", { name, context: session, channels: [{ channel: "team", access: "read" }] });
       check("a different selection cannot resume the saved approval", !changed.error && !!pendingOf(changed.text) &&
         changed.text.includes("does not cover this name or selection") && counts.issues === 3, changed.text);
+      const pendingChange = pendingOf(changed.text)!;
+      authority.decide(pendingChange.requestId, { approve: EMPTY });
+      assert(!(await g5.call("cotal_connect", { name, context: session, channels: [{ channel: "team", access: "read" }] })).error);
+      const recoverySession = "recovery-session-3", recoveryName = "recover_logout";
+      await stopped(g5.child);
+      const g6 = await gateway([recoverySession]);
+      assert((await g6.connect(recoveryName, recoverySession)).id);
+      const oldActor = actorOf(recoverySession)!;
+      await stopped(g6.child);
+
+      const g7 = await gateway([recoverySession]);
+      const login = loadIdpSession(home, idpUrl)!;
+      saveIdpSession(home, idpUrl, { ...login, expiresAt: 1 });
+      const expired = await g7.call("cotal_connect", { name: recoveryName, context: recoverySession });
+      check("an expired login cannot resume a ready approval", expired.error && expired.text.includes("Sign in again") && actorOf(recoverySession) === oldActor, expired.text);
+      saveIdpSession(home, idpUrl, login);
+      authority.availability.resume = false;
+      const unsupported = await g7.call("cotal_connect", { name: recoveryName, context: recoverySession });
+      check("missing resume discovery keeps the live approval and saved record", unsupported.error && unsupported.text.includes("does not currently offer resume") &&
+        await granted(oldActor) && record(recoverySession)?.state === "ready", unsupported.text);
+      authority.availability.resume = true;
+      const keyFile = join(deviceHome, process.platform === "win32" ? "Cotal" : ".cotal", "conversation-device", "key");
+      rmSync(keyFile);
+      authority.availability.retirement = false;
+      const blocked = await g7.call("cotal_connect", { name: recoveryName, context: recoverySession });
+      check("lost device key cannot request replacement until exact retirement is confirmed", blocked.error && blocked.text.includes("retirement is not confirmed") &&
+        record(recoverySession)?.state === "retiring" && await granted(oldActor) && !authority.pending(recoveryName).length, blocked.text);
+      authority.availability.retirement = true;
+      const afterKeyLoss = await g7.connect(recoveryName, recoverySession);
+      const replacement = actorOf(recoverySession)!;
+      check("lost device key retires the original before connecting the new actor", !afterKeyLoss.error && replacement !== oldActor &&
+        !await granted(oldActor) && footprint(oldActor) === "terminal" && await granted(replacement), afterKeyLoss.text);
+      await stopped(g7.child);
+
+      authority.availability.retirement = false;
+      const failedLogout = await signOut(true);
+      check("local sign-out reports each unreachable retirement and clears the login", failedLogout.includes(recoveryName) && failedLogout.includes(name) &&
+        !loadIdpSession(home, idpUrl) && await granted(replacement), failedLogout);
+      const g8 = await gateway([recoverySession]);
+      const loggedOut = await g8.call("cotal_connect", { name: recoveryName, context: recoverySession });
+      check("reopening after sign-out asks for sign-in without resuming or issuing", loggedOut.error && loggedOut.text.includes("Sign in again") &&
+        record(recoverySession)?.state === "retiring" && !authority.pending(recoveryName).length, loggedOut.text);
+      await stopped(g8.child);
+      authority.availability.retirement = true;
+      saveIdpSession(home, idpUrl, login);
+      const catalogOwner = deleteIdpSpaceCatalog(home, idpUrl, login.sub!);
+      recordMesh({ ...findMesh(space)!, origin: "catalog", catalogOwner });
+      const catalogLogout = await signOut();
+      check("logout retires exact lifecycles before removing the catalog registration and revoking the login", catalogLogout.includes(space) &&
+        !catalogLogout.includes("unconfirmedConversations") && !findMesh(space) && !loadIdpSession(home, idpUrl) && idpSignOuts === 1 &&
+        !existsSync(recordDir(recoverySession)) && !await granted(replacement) && footprint(replacement) === "terminal", catalogLogout);
       console.log(`personal-native-recovery: ${checks} real-broker resume checks passed`);
     } else {
     // The reported sequence: disconnect while the authority reports retirement pending, then

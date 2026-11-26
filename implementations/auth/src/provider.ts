@@ -612,6 +612,11 @@ export const cotalAuthProvider: AuthProvider = {
     return { outcome: "unknown", ...at, status: released.status, ...(typeof reason === "string" ? { reason } : {}) };
   },
 
+  requireConversationLogin(idpUrl) {
+    const session = requireIdpSession(idpSessionDir(), idpUrl);
+    if (session.expiresAt <= Date.now() / 1000) throw new Error("the saved sign-in has expired");
+  },
+
   async requestConversationIdentity({ url, idpUrl, method, body }) {
     const endpoint = new URL(url);
     if (endpoint.protocol !== "https:" || endpoint.username || endpoint.password || endpoint.hash)

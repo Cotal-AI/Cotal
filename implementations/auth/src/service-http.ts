@@ -53,7 +53,7 @@ export function refuseExchange(
   peerThrottled: boolean,
   audit: string,
   status: number,
-  body: { error: string; code?: string; outcome?: string },
+  body: { error: string; code?: string; outcome?: string } | { v: number; lifecycleUid: string; status: string },
   throttledExtra: { code?: string; outcome?: string } = {},
 ): void {
   policy.recordFailure(ctx, peer);

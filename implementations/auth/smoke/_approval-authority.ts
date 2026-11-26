@@ -56,6 +56,8 @@ export interface ApprovalAuthority {
   readonly counts: { posts: number; issues: number; deletes: number; foreignDeletes: number };
   /** `slow` retirements each answer after 35 s, past the client's own request deadline. */
   readonly retirement: { driverRan: boolean; slow: number; served: number };
+  /** Temporarily stop advertising resume or answering retirement for a live test. */
+  readonly availability: { resume: boolean; retirement: boolean };
   /** Serve a mesh's discovery and identities, and record it in the workspace as a signed-in mesh.
    *  `exchange` is the auth service's public exchange URL; `local` issues into a real ledger. */
   addMesh(mesh: {
@@ -91,6 +93,7 @@ export async function startApprovalAuthority(o: { home: string; human: string })
   const requests = new Map<string, FixtureRequest>();
   const counts = { posts: 0, issues: 0, deletes: 0, foreignDeletes: 0 };
   const retirement = { driverRan: true, slow: 0, served: 0 };
+  const availability = { resume: true, retirement: true };
   let base = "";
 
   const issue = async (row: FixtureRequest, mesh: Mesh) => {
@@ -129,7 +132,13 @@ export async function startApprovalAuthority(o: { home: string; human: string })
     void (async () => {
       const url = new URL(req.url!, base);
       const discovery = /^\/s\/([^/]+)\/\.well-known\/cotal-mesh$/.exec(url.pathname);
-      if (req.method === "GET" && discovery && meshes.has(discovery[1]!)) return send(200, meshes.get(discovery[1]!)!.bundle);
+      if (req.method === "GET" && discovery && meshes.has(discovery[1]!)) {
+        const bundle = meshes.get(discovery[1]!)!.bundle;
+        if (availability.resume) return send(200, bundle);
+        const capabilities = { ...bundle.cloudCapabilities as Record<string, unknown> };
+        delete capabilities.conversationResume;
+        return send(200, { ...bundle, cloudCapabilities: capabilities });
+      }
       const exchange = /^\/s\/([^/]+)\/exchange$/.exec(url.pathname);
       const forward = exchange ? meshes.get(exchange[1]!)?.exchange : undefined;
       if (req.method === "POST" && forward) {
@@ -163,6 +172,7 @@ export async function startApprovalAuthority(o: { home: string; human: string })
         return send(status, row.material);
       }
       if (req.method === "DELETE" && route[2]) {
+        if (!availability.retirement) return send(503, { error: "retirement unavailable" });
         const row = [...requests.values()].find((r) => r.space === at && r.actor === route[2] && url.searchParams.get("lifecycleUid") === r.lifecycleUid);
         if (!row) return send(404, { error: "unknown lifecycle" });
         if (mesh.local) counts.deletes++; else counts.foreignDeletes++;
@@ -178,7 +188,7 @@ export async function startApprovalAuthority(o: { home: string; human: string })
   base = `https://127.0.0.1:${(server.address() as AddressInfo).port}`;
 
   return {
-    base, caFile, requests, counts, retirement,
+    base, caFile, requests, counts, retirement, availability,
     addMesh(m) {
       const userAuth = { ...m.userAuth, endpoints: { url: `${base}/s/${m.space}` } };
       meshes.set(m.space, { owner: m.owner, exchange: m.exchange, local: m.local, bundle: {

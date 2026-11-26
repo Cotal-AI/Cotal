@@ -56,12 +56,13 @@ async function runAgentBearer(args: ParsedArgs): Promise<void> {
     let actorToken: string;
     try {
       actorToken = readFileSync(tokenFile, "utf8").trim();
-      if (actorToken.startsWith("cotal-conversation-resume-v1:")) {
-        const { CONVERSATION_RESUME_PREFIX, conversationResumeToken } = await import("@cotal-ai/workspace/conversation-resume");
-        actorToken = conversationResumeToken(JSON.parse(actorToken.slice(CONVERSATION_RESUME_PREFIX.length)));
-      }
     } catch (e) {
       throw new Error(`agent-bearer: can't read the actor token file at ${tokenFile} (${e instanceof Error ? e.message : String(e)}) - respawn this agent to re-provision it`);
+    }
+    if (actorToken.startsWith("cotal-conversation-resume-v1:")) {
+      const { CONVERSATION_RESUME_PREFIX, conversationDeviceKeyPath, conversationResumeToken } = await import("@cotal-ai/workspace/conversation-resume");
+      try { actorToken = conversationResumeToken(JSON.parse(actorToken.slice(CONVERSATION_RESUME_PREFIX.length))); }
+      catch { throw new Error(`The conversation proof could not be used with the device key at ${JSON.stringify(conversationDeviceKeyPath())}. Reconnect with \`cotal_connect\`.`); }
     }
     const remote = v["exchange-url"];
     let exchangeUrl: string;

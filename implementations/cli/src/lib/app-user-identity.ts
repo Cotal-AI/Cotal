@@ -5,16 +5,16 @@ import {
   acquireLock, assertLifecycleToken, canonicalJson, checkConversationApprovalPending, checkConversationPendingAnswer,
   checkConversationSelection, conversationApprovalRefusal, conversationGrant, deprovisionAgent, mintCreds, mkSecretDir, newIdentity,
   principalKey, provisionAgentDurables, processStartToken, resolveAuthProvider, writeSecretFileAtomic, type AuthProvider,
-  type ConversationApprovalPending, type ConversationApprovalRefusal, type ConversationGrant, type ConversationPending, type ConversationSelection,
+  type ConversationApprovalPending, type ConversationApprovalRefusal, type ConversationGrant, type ConversationPending, type ConversationSelection, type ConversationSignOut,
 } from "@cotal-ai/core";
-import { checkDiscoveryDocument, discoveryDocumentUrl, pinnedFetch, getSpaceAuth, homeCotalDir, resolveTargetOrThrow, userAuthStateDir, workspaceSecretStore, type MeshTarget } from "@cotal-ai/workspace";
+import { checkDiscoveryDocument, checkIdpUrl, discoveryDocumentUrl, pinnedFetch, getSpaceAuth, homeCotalDir, oneLine, resolveTargetOrThrow, userAuthStateDir, workspaceSecretStore, type MeshTarget } from "@cotal-ai/workspace";
 import { CONVERSATION_RESUME_PREFIX, type ConversationResumeProof } from "@cotal-ai/workspace/conversation-resume";
 import {
   agentCapRefusal, checkConversationMaterial, conversationRetirementPhase, discoverConversationAuthority, legacyAgentCapRefusal, legacyNameTakenRefusal, nameTakenRefusal, selectionRefusal, signedInSpace,
   type ConversationAuthority, type ConversationMaterial,
 } from "./conversation-identity.js";
 import { withProvisioner } from "./provisioner.js";
-import { confirmConversationResume, createResumeProof, resumeToken } from "./conversation-resume.js";
+import { confirmConversationResume, createResumeProof, matchesResumeBinding, resumeToken } from "./conversation-resume.js";
 
 interface SavedIdentity {
   v: 1;
@@ -211,6 +211,7 @@ export async function provisionUserApp(
       if (!isUserAppDir(dir) || !existsSync(join(dir, RECORD))) continue;
       const previous = read(dir);
       if (previous.session !== session || previous.space === target.space) continue;
+      if (previous.proof && !matchesResumeBinding(previous, previous.proof)) continue;
       if (previous.consumer.pid !== process.ppid && !consumerGone(previous.consumer))
         throw new Error("this native conversation still has a live consumer on another space; disconnect it before choosing another");
       // A pending request or a dead consumer must finish its exact retirement before a new target
@@ -226,7 +227,16 @@ async function provisionOnSpace(
 ): Promise<UserAppResult> {
   const store = workspaceSecretStore(target.root);
   const infra = target.userAuth?.remote === true ? undefined : await getSpaceAuth(store, target.space);
-  const authority = infra ? undefined : await discoverConversationAuthority(target);
+  const dir = join(identityRoot(), hash(`${target.space}\0${session}`));
+  const saved = existsSync(join(dir, RECORD)) ? read(dir) : undefined;
+  if (saved?.proof && saved.session === session && matchesResumeBinding(saved, saved.proof)) {
+    requireResumeLogin(saved);
+    if (saved.state === "ready" && saved.trust !== trust(target)) throw new Error(RESUME_UNAVAILABLE);
+  }
+  const authority = infra ? undefined : await discoverConversationAuthority(target).catch((error: unknown) => {
+    if (saved?.proof && saved.state === "ready") throw new Error(RESUME_UNAVAILABLE, { cause: error });
+    throw error;
+  });
   const policy = authority?.bundle.policy ?? target.policy;
   if (policy?.events === "required" && !events)
     throw new Error("this mesh requires a real native conversation event source; no identity was requested");
@@ -237,7 +247,6 @@ async function provisionOnSpace(
   const root = identityRoot();
   mkSecretDir(root);
   privateDir(root);
-  const dir = join(root, hash(`${target.space}\0${session}`));
   const { reason, resumed } = await prepareSavedIdentity(dir, { name, session, trust: trust(target), selection }, authority);
   // A reconnect first finishes the previous explicit departure, or preserves an older record
   // whose original registration is unavailable before releasing its session key.
@@ -341,18 +350,25 @@ async function prepareSavedIdentity(dir: string, expected: {
 }, authority: ConversationAuthority | undefined): Promise<{ reason?: string; resumed?: string }> {
   if (!existsSync(join(dir, RECORD))) return {};
   const previous = read(dir);
-  if (previous.session !== expected.session || previous.trust !== expected.trust || previous.state === "retiring") return {};
+  if (previous.state === "retiring") return {};
   const changed = previous.label !== expected.name || canonicalJson(previous.selection ?? null) !== canonicalJson(expected.selection ?? null);
   if (previous.proof) {
+    if (matchesResumeBinding(previous, previous.proof) && previous.trust !== expected.trust) throw new Error(RESUME_UNAVAILABLE);
     if (previous.consumer.pid !== process.ppid && !consumerGone(previous.consumer))
       throw new Error("this native conversation still has a live inbox consumer; no identity was reissued");
-    if (!resumeToken({ ...previous, proof: previous.proof })) {
+    if (previous.session !== expected.session || !matchesResumeBinding(previous, previous.proof)) {
       const lock = acquireLock(`${dir}.lock`, { waitMs: 0 });
       try {
         const current = read(dir);
         if (current.requestId !== previous.requestId || current.state === "retiring") return {};
         setAside(dir, current, `-${randomBytes(8).toString("hex")}`);
       } finally { lock.release(); }
+      return { reason: "The saved approval could not be used on this computer." };
+    }
+    if (previous.state === "ready") requireResumeAuthority(previous, authority);
+    if (!resumeToken({ ...previous, proof: previous.proof })) {
+      try { await retireUserApp(dir); }
+      catch (error) { throw new Error(`The saved approval could not be used on this computer, and retirement is not confirmed. ${oneLine((error as Error).message)}`); }
       return { reason: "The saved approval could not be used on this computer." };
     }
     if (previous.state === "ready") {
@@ -372,6 +388,7 @@ async function prepareSavedIdentity(dir: string, expected: {
       return { reason: "The authority did not accept the saved approval." };
     }
   }
+  if (previous.session !== expected.session || previous.trust !== expected.trust) return {};
   // Resolve the old request before replacing it. If approval raced us, retire the exact identity.
   if (changed && previous.state === "creating" && previous.remote && !previous.remote.material) {
     if (previous.consumer.pid !== process.ppid && !consumerGone(previous.consumer))
@@ -381,9 +398,29 @@ async function prepareSavedIdentity(dir: string, expected: {
   return {};
 }
 
-async function resumeSavedIdentity(record: SavedIdentity, authority: ConversationAuthority | undefined): Promise<boolean> {
-  const remote = record.remote;
-  if (!authority?.resume || !remote?.material || remote.url !== authority.url || remote.idpUrl !== authority.bundle.userAuth.idp.url) return false;
+const RESUME_UNAVAILABLE = "The space does not currently offer resume at the saved authority and trust pins. The saved identity was retained.";
+
+function requireResumeLogin(record: SavedIdentity): void {
+  const provider = resolveAuthProvider();
+  try {
+    if (!provider.requireConversationLogin) throw new Error("login check unavailable");
+    provider.requireConversationLogin(record.remote!.idpUrl);
+  } catch (error) {
+    throw new Error("Sign in again with `cotal login` before reconnecting this conversation. The saved identity was retained.", { cause: error });
+  }
+}
+
+function requireResumeAuthority(record: SavedIdentity, authority: ConversationAuthority | undefined): ConversationAuthority {
+  if (!authority?.resume || record.remote?.url !== authority.url || record.remote.idpUrl !== authority.bundle.userAuth.idp.url)
+    throw new Error(RESUME_UNAVAILABLE);
+  return authority;
+}
+
+async function resumeSavedIdentity(record: SavedIdentity, discovered: ConversationAuthority | undefined): Promise<boolean> {
+  requireResumeLogin(record);
+  const authority = requireResumeAuthority(record, discovered);
+  const remote = record.remote!;
+  if (!remote.material) throw new Error("The saved approval has no issued identity. The saved record was retained.");
   const material = checkConversationMaterial(remote.material, authority, record.requestId, record.selection, approvalExpectation(remote));
   const token = record.proof && resumeToken({ ...record, proof: record.proof });
   return !!token && !!material.approval && await confirmConversationResume(material, token);
@@ -406,6 +443,35 @@ export function isUserAppDir(dir: string): boolean {
 export function retireUserApp(dir: string): Promise<void> {
   return retire(dir);
 }
+
+function idpKey(url: string): string | undefined {
+  const checked = checkIdpUrl(url);
+  return checked.ok ? checked.url.origin + checked.url.pathname.replace(/\/+$/, "") : undefined;
+}
+
+export const conversationSignOut: ConversationSignOut = {
+  kind: "conversation-sign-out", name: "native",
+  async retire({ dir: home, idp }) {
+    const root = join(home, "app-identities");
+    if (!existsSync(root)) return [];
+    const failures: string[] = [];
+    for (const entry of readdirSync(root)) {
+      const dir = join(root, entry);
+      if (!/^[a-f0-9]{64}$/.test(entry) || !existsSync(join(dir, RECORD))) continue;
+      let label = "A saved conversation";
+      try {
+        const matches = (r: SavedIdentity) => !!r.proof && !!r.remote && idpKey(r.remote.idpUrl) === idp && matchesResumeBinding(r, r.proof);
+        const record = read(dir);
+        if (!matches(record)) continue;
+        label = `Conversation ${JSON.stringify(oneLine(record.label))} in ${JSON.stringify(oneLine(record.space))}`;
+        await retire(dir, matches, home);
+      } catch {
+        failures.push(`${label}: retirement was not confirmed. Revoke the identity at its space authority.`);
+      }
+    }
+    return failures;
+  },
+};
 
 /** Clean up dead consumers in this mesh. Resumable approvals stay saved unless retirement is
  *  underway. A live or unknown consumer keeps its identity and is never locked. */
@@ -430,8 +496,9 @@ function setAside(dir: string, record: SavedIdentity, suffix = ""): void {
 }
 
 /** `when` is decided under the record's lock, so a consumer that reissued it in between keeps it. */
-async function retire(dir: string, when?: (record: SavedIdentity) => boolean): Promise<void> {
-  if (!isUserAppDir(dir)) throw new Error("not a saved conversation identity directory");
+async function retire(dir: string, when?: (record: SavedIdentity) => boolean, home = homeCotalDir()): Promise<void> {
+  if (dirname(resolve(dir)) !== resolve(home, "app-identities") || !/^[a-f0-9]{64}$/.test(basename(dir)))
+    throw new Error("not a saved conversation identity directory");
   const lock = acquireLock(`${dir}.lock`, { waitMs: 0 });
   try {
     const record = read(dir);
@@ -506,7 +573,7 @@ async function retire(dir: string, when?: (record: SavedIdentity) => boolean): P
         if (phase !== "terminal")
           throw new Error(`conversation identity retirement is pending at phase ${JSON.stringify(phase)}; its saved lifecycle was retained for an exact retry`);
       } catch (error) {
-        if (!unavailable || trust(current) === record.trust) throw error;
+        if (record.proof || !unavailable || trust(current) === record.trust) throw error;
         setAside(dir, record);
         return;
       }
@@ -539,5 +606,5 @@ function removeSavedIdentity(dir: string): void {
     if (existsSync(path)) unlinkSync(path);
   }
   rmdirSync(dir);
-  if (process.platform !== "win32") syncFile(identityRoot());
+  if (process.platform !== "win32") syncFile(dirname(dir));
 }

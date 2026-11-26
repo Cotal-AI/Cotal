@@ -605,10 +605,11 @@ flow requires approval and refuses `--no-input` before requesting a device sessi
 Bare `logout` chooses among cached providers. A single cached provider is unambiguous; scripts
 with multiple providers must select one with `--idp`. `logout --json` and `--plain` report the
 same result. No cached session is a local no-op, not proof that all provider sessions are gone.
-Revocation must return before local cleanup. If revocation is unconfirmed the login is retained
+Sign-out first attempts to retire resumable conversations at their spaces. Provider revocation
+must return before local login and registry cleanup. If revocation is unconfirmed the login is retained
 for retry, and the refusal names `--local`; a later cleanup failure is partial and keeps the
 confirmed server outcome. `logout --local` clears this machine's cached login and that account's
-discovered registry entries without contacting the provider, for a provider that is down or does
+discovered registry entries without asking the provider to revoke the session, for a provider that is down or does
 not confirm sign-out. The provider session stays valid until it expires or is revoked at the
 provider, and the receipt says so. `logout` does not seed or refresh connectors, so a connector
 install problem does not keep the cached login.
@@ -707,6 +708,15 @@ static mesh: its broker footprint, then its files and directory. When the broker
 keeps them. Each provision also retires those directories whose owning process has exited. For a
 signed-in identity, `retire` keeps the record until the mesh confirms retirement, and names the
 mesh's phase while it is pending. A request still pending is dropped.
+For a space that supports resume, the original OS machine identity and a device key also protect
+the saved conversation proof. The stock connector checks the machine identity. With the default
+layout a backup of the Cotal home includes the proof and key. Together with the original public OS
+machine identity, those files can derive the actor credential for the ordinary exchange until it
+is revoked. Protect the backup as a credential. Disconnect conversations you no longer use. An
+approval can last until disconnect, sign-out or revocation, with no idle expiry on the client.
+`cotal logout` attempts to retire resumable conversations before clearing the provider login and
+its registrations. It names any retirement it cannot confirm. A signed-out connection cannot resume.
+
 `cotal app-identity reap` retires the selected mesh's saved conversations whose server process no
 longer exists, except when they hold an approval the space supports resuming. The connector runs it
 after each signed-in connection, so a connection never waits for that cleanup. Like `agent-bearer`,

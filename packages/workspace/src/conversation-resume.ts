@@ -13,6 +13,8 @@ export interface ConversationResumeProof {
 }
 
 export const CONVERSATION_RESUME_PREFIX = "cotal-conversation-resume-v1:";
+const conversationDeviceDir = () => join(userCotalDir(), "conversation-device");
+export const conversationDeviceKeyPath = () => join(conversationDeviceDir(), "key");
 
 /** A copied conversation record contains neither this key nor an actor token. The key is outside
  * the redirected Cotal home, under this OS user's Cotal directory. The OS identity also separates
@@ -21,10 +23,9 @@ export function conversationResumeToken(proof: ConversationResumeProof, create =
   if (proof.v !== 1 || !/^[A-Za-z0-9_-]{43}$/.test(proof.salt) || !/^[a-f0-9]{64}$/.test(proof.binding))
     throw new Error("invalid conversation resume proof");
   const machine = osMachineId();
-  const dir = join(userCotalDir(), "conversation-device");
-  const file = join(dir, "key");
+  const file = conversationDeviceKeyPath();
   if (create) {
-    mkSecretDir(dir);
+    mkSecretDir(conversationDeviceDir());
     try { writeSecretFileCreateOnly(file, randomBytes(32).toString("hex")); }
     catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; }
   }

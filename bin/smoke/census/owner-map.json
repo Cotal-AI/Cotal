@@ -1258,6 +1258,7 @@
   "env:COTAL_CONTROL_SOCKET": "internal:connector plumbing the launcher sets for one harness",
   "env:COTAL_CONTROL_TOKEN": "internal:connector plumbing the launcher sets for one harness",
   "env:COTAL_CONTROL_VERSION": "internal:connector plumbing the launcher sets for one harness",
+  "env:COTAL_CONVERSATION_APPROVAL": "internal:connector plumbing the identity command writes for the native connector",
   "env:COTAL_CREDS": "current:spawn --creds",
   "env:COTAL_DEBUG": "pending:config",
   "env:COTAL_DEFAULT_AGENT": "current:config set",
