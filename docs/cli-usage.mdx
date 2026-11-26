@@ -204,6 +204,7 @@ which the refusal gives. The refusal quotes values that a POSIX shell would spli
 another option, a group of short options, or `--` is refused with the option and its placeholder.
 Put the value before `--` and leave the operands after it. Before another option or `--`, a missing
 value on an option that cannot be repeated can also report the duplicate and ask you to use the option once.
+If you pass a bare `--exec` to `service status`, the refusal tells you to omit it.
 A short option takes its value after a space, so `-c=general` is refused rather than read as the
 value `=general`. On Windows, the correction uses double quotes for values such as a filename with
 spaces or an apostrophe, so it can be pasted into PowerShell or Command Prompt. When shared quoting

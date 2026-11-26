@@ -586,6 +586,8 @@ function missingValue(cmd: Command, words: readonly string[], flag: FlagSpec, be
     return { message: `\`run check\` does not take --${flag.name}`, remedy: `run the check without --${flag.name}` };
   if (cmd.name === "endpoint" && flag.name === "file" && helpPath(cmd, words).path[0] === "check")
     return { message: "`endpoint check` does not take --file", remedy: "omit --file and keep the contract path" };
+  if (cmd.name === "service" && flag.name === "exec" && helpPath(cmd, words).path[0] === "status")
+    return { message: "`service status` does not take --exec", remedy: "omit --exec" };
   if (cmd.name === "history") {
     const sub = helpPath(cmd, words).path[0];
     if (sub === "limit" && flag.name === "server")
