@@ -942,7 +942,8 @@ the seed keeps stdout to itself:
 Pass at most one maintenance flag. Flags may precede `seed`: `cotal ext --repair seed` is
 equivalent to `cotal ext seed --repair`. If the extensions manifest is corrupt, repair moves
 the damaged file aside and rebuilds the built-in inventory. Add any third-party extensions
-recorded in that file again with `cotal ext add`.
+recorded in that file again with `cotal ext add`. If the account lacks read access, repair and reset
+leave the manifest in place. Restore access before retrying.
 
 A seed that fails names the connector and the reason, such as npm missing from PATH. Until
 `cotal ext seed --repair` finishes it, each command that seeds refuses. The refusal says whether
