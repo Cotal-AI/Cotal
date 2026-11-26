@@ -1163,6 +1163,16 @@ process.report.getReport = () => {
     ok("with seeded connectors and no agent binary on PATH, empty ps recommends setup instead of spawn",
       /setup --help\s+See setup flags for scripts/.test(noAppPsNext) && !/\bspawn\s+Launch your default agent/.test(noAppPsNext), noAppPs);
 
+    writeFileSync(join(noAgentBin, "uv"), "#!/bin/sh\nexit 99\n", { mode: 0o700 });
+    for (const command of ["status", "ps"]) {
+      const result = cliInEnv(recRoot, { ...noAppEnv, COTAL_DEFAULT_AGENT: "claude" }, command, "--plain");
+      const output = plain(result.stdout);
+      const next = output.split("\nNext\n")[1] ?? "";
+      ok(`${command} explains the missing Claude default even with Hermes available`,
+        result.status === 0 && (command === "status" ? /Agent applications:\s+hermes/.test(output) : output.includes("No managed agents.")) &&
+        next.includes("needs claude on PATH") && next.includes("https://docs.cotal.ai/docs/connect-claude/") && !/\bcotal spawn\b/.test(next), output);
+    }
+
     for (const badArgs of [["status", "nosuch", "--json", "--plain"], ["status", "nosuch", "--wide", "--json"], ["status", "nosuch", "--verbose", "--json"]]) {
       const bad = cliIn(recRoot, ...badArgs);
       ok(`${badArgs.join(" ")} fails USAGE_INVALID before querying managers`, bad.status === 1 && /"USAGE_INVALID"/.test(bad.stdout), bad.stdout + bad.stderr);

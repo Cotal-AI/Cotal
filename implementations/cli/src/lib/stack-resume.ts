@@ -68,7 +68,7 @@ export function stackResumeEligibility(rootInput: string, space: string, expecte
     // That stack starts again with an ordinary up; the earlier boots are named by their recorded IDs.
     const earlier = [...new Set([...attempts.valid, ...summaries.valid].map((row) => row.deploymentId).filter((id) => id !== ownAttempt))];
     refuse("LIFECYCLE_BLOCKED", "this root records an earlier team boot; a stopped stack that already carried a team is not resumed with another one", { ...target, attempts: attempts.valid.map((row) => ({ deploymentId: row.deploymentId, settled: freshTeamAttemptSettled(row, summaries.valid.find((summary) => summary.deploymentId === row.deploymentId)) })) },
-      `start this stack again with \`cotal up\` in ${root}, or ${earlier.length ? `inspect the earlier boot with ${earlier.map((id) => `\`cotal team show ${id}\``).join(", ")}` : "list the recorded boots with `cotal team` there"}`);
+      `start this stack again with \`cotal up\` in ${root}, or ${earlier.length ? `inspect the earlier boot with ${earlier.map((id) => `\`cotal team show ${id} --space ${space}\``).join(", ")}` : "list the recorded boots with `cotal team` there"}`);
   }
   if (serviceSupervisorStore(space).list().length) refuse("LIFECYCLE_BLOCKED", "an OS supervisor receipt remains for this space; the controller stack is not resumed beside it", target);
 

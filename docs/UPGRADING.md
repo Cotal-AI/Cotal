@@ -92,6 +92,30 @@ terminal and for one a manager runs.
 
 If you call `loadCotalConfig` from `@cotal-ai/core`, pass a trust check as its second argument,
 for example `loadCotalConfig(root, isTrustedProject)` with `isTrustedProject` from `@cotal-ai/workspace`.
+## Messages carrying stored-message headers
+
+Cotal drops channel posts, DMs, role requests, delivery copies, event payloads and legacy control requests
+that carry `Nats-Stream`, `Nats-Subject`, `Nats-Sequence` or `Nats-Time-Stamp`, even when the
+claimed sender matches the subject. The operator tap drops marked frames on any subject. Lang
+`wait` ignores marked posts. Marked rows already stored are omitted from history, so older and
+newer readers can show different results for the same stored history.
+
+Upgrade and restart the delivery daemon before updating agents and clients. An older daemon can
+still serve marked history and can deliver a durable copy without the original headers, leaving
+the new reader unable to recognize it. If the space is hosted elsewhere, ask its operator to
+upgrade the delivery daemon first.
+
+If your integration forwards messages from storage, replace that forwarding call with a fresh
+send under the integration's own identity. For example, use
+`await endpoint.multicast(text, { channel: "general" })` for a channel post,
+`await endpoint.unicast(peer, text)` for a DM, or `await endpoint.anycast(role, text)` for a
+role request. For a legacy control request, use `await endpoint.requestControl(service, request)`.
+Do not copy the stored headers, sender or message ID. For custom receivers, core exports
+`hasStoredOrigin(headers)` to identify these reserved names. Do not apply it to answers to
+storage reads your client initiated, such as a roster lookup.
+
+If resuming a Lang run refuses a recorded wait match with these headers, start a new run with
+`cotal run start --file <program>` and have the sender post a fresh message once the wait is ready.
 
 ## Labelling an agent from its thread title
 
