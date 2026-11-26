@@ -824,7 +824,7 @@ the credential again with `--provision`.
 
 ```bash
 cotal ext [list] [--json | --plain]
-cotal ext add <npm-package> [--json]
+cotal ext add <npm-package>
 cotal ext remove <name>
 cotal ext root            # print just the install prefix (scriptable)
 cotal ext seed [--repair|--reset|--force]
@@ -911,9 +911,7 @@ Bare `ext --json` (or `ext list --json`) writes one JSON document: `result.root`
 prefix and `result.items` holds one row per installed extension with `pkg`, `version`, `spec` (what
 `ext add` was given), `seeded` (`true` for an entry the built-in seed installed) and `provides` (the
 `kind:name` refs the table shows). An empty prefix is an empty list. `--plain` writes the same report
-without color. `ext add --json` writes one document with `result.pkg` on success or `error` on refusal.
-An incompatible core range is `DEPENDENCY_UNAVAILABLE` (exit 2). An invalid range is `SCHEMA_INVALID`
-(exit 1). `--plain` is for listing. `remove`, `root`, and `seed` take neither output flag.
+without color. The other `ext` subcommands refuse `--json` and `--plain` with `USAGE_INVALID`.
 `ext root` stays a raw path for `$(cotal ext root)`, even if the manifest is corrupt.
 If the manifest is corrupt, `ext list --json` exits 1 with a `SCHEMA_INVALID` refusal and names
 `cotal ext seed --repair` in `error.remedy`. The listing leaves the damaged file unchanged.

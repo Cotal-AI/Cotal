@@ -163,7 +163,7 @@ registry.register({ kind: "command", name: ${JSON.stringify(name)}, summary: "Pr
   const inventory = list().stdout;
   const wrong = cotal(["ext", "add", operand]);
   ok("a cleanly importing package with an incompatible core range is refused",
-    wrong.status === 2 && wrong.stdout === "" && wrong.stderr.includes(pkg) && wrong.stderr.includes(">=99.0.0")
+    wrong.status === 1 && wrong.stdout === "" && wrong.stderr.startsWith(`✗ ${pkg} declares ${core} ">=99.0.0"`)
       && wrong.stderr.includes(`${core} ${version}`) && wrong.stderr.includes("`npm view cotal-ai versions --json`"), wrong);
   ok("a fresh refusal does not create the extension root or expose or import the command",
     !existsSync(extDir) && !existsSync(marker) && list().stdout === inventory && cotal([name]).status !== 0);
@@ -171,10 +171,9 @@ registry.register({ kind: "command", name: ${JSON.stringify(name)}, summary: "Pr
     readdirSync(join(configDir, "cotal")).every((entry) => !entry.startsWith(".extensions.")));
 
   const compatible = fixture("cotal-ext-compatible-core", body, { peerDependencies: { [core]: version } });
-  const added = cotal(["ext", "add", compatible, "--json"]);
-  const receipt = JSON.parse(added.stdout);
-  ok("an exact compatible peer installs with one JSON receipt and its command runs",
-    added.status === 0 && receipt.outcome === "ok" && receipt.result.pkg === "cotal-ext-compatible-core" && cotal([name]).stdout.trim() === "peer ran", added);
+  const added = cotal(["ext", "add", compatible]);
+  ok("an exact compatible peer installs and its command runs",
+    added.status === 0 && added.stdout.includes("added cotal-ext-compatible-core@1.0.0") && cotal([name]).stdout.trim() === "peer ran", added);
   const prior = list().stdout;
   const files = ["package.json", "package-lock.json", "extensions.json"].map((file) => join(extDir, file));
   const hash = (path: string) => createHash("sha256").update(readFileSync(path)).digest("hex");
@@ -184,19 +183,17 @@ registry.register({ kind: "command", name: ${JSON.stringify(name)}, summary: "Pr
   const metadata = join(incompatible, "package.json");
   const manifest = JSON.parse(readFileSync(metadata, "utf8"));
   writeFileSync(metadata, JSON.stringify({ ...manifest, name: "cotal-ext-compatible-core", peerDependenciesMeta: { [core]: { optional: true } } }));
-  const retry = cotal(["ext", "add", operand, "--json"]);
-  const refusal = JSON.parse(retry.stdout);
-  ok("JSON refuses an optional incompatible core on re-add with one document and the boundary exit",
-    retry.status === 2 && refusal.outcome === "refused" && refusal.error.code === "DEPENDENCY_UNAVAILABLE"
-      && refusal.error.message.includes("cotal-ext-compatible-core") && refusal.error.message.includes(">=99.0.0")
-      && refusal.error.message.includes(version) && refusal.error.remedy.includes("npm view cotal-ai versions --json"), retry);
+  const retry = cotal(["ext", "add", operand]);
+  ok("an optional incompatible core is refused on re-add",
+    retry.status === 1 && retry.stdout === "" && retry.stderr.startsWith(`✗ cotal-ext-compatible-core declares ${core} ">=99.0.0"`)
+      && retry.stderr.includes(`${core} ${version}`) && retry.stderr.includes("`npm view cotal-ai versions --json`"), retry);
   ok("the refused re-add preserves the live root, manifest and npm metadata and discards its stage",
     statSync(extDir).ino === inode && files.every((file, i) => hash(file) === before[i]) && list().stdout === prior
       && !existsSync(marker) && !existsSync(join(extDir, "node_modules", pkg))
       && readdirSync(join(configDir, "cotal")).every((entry) => !entry.startsWith(".extensions.")));
   const invalid = cotal(["ext", "add", fixture("cotal-ext-invalid-core", body, { peerDependencies: { [core]: "nightly" } })]);
   ok("an unparseable core range is refused with its declaration",
-    invalid.status === 1 && invalid.stderr.includes("SCHEMA_INVALID") && invalid.stderr.includes("nightly") && invalid.stderr.includes(version), invalid);
+    invalid.status === 1 && invalid.stdout === "" && invalid.stderr.includes('"nightly", which is not a valid version range') && invalid.stderr.includes(version), invalid);
   ok("the compatible install still removes", cotal(["ext", "remove", "cotal-ext-compatible-core"]).status === 0);
 }
 

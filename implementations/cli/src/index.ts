@@ -104,10 +104,10 @@ const baseCommands: Command[] = [
     aliases: ["x"],
     group: "Setup",
     summary: "operator-installed extensions - add commands, runtimes, and local process providers",
-    usage: "cotal ext [list] [--json|--plain] | ext add <npm-package> [--json] | ext remove <name> | ext root | ext seed [--repair|--reset|--force]",
+    usage: "cotal ext [list] [--json|--plain] | ext add <npm-package> | ext remove <name> | ext root | ext seed [--repair|--reset|--force]",
     positionals: "[add <npm-package> | remove <name> | list | root | seed]",
     subcommands: [
-      { name: "add", flagNames: ["json"], outputs: ["json"], summary: "install an extension package and register what it provides", examples: [{ command: "cotal ext add @cotal-ai/tmux", note: "add the tmux runtime" }, { command: "cotal ext add <npm-package>", note: "install any extension package from npm" }], usage: "cotal ext add <npm-package> [--json]" },
+      { name: "add", flagNames: [], summary: "install an extension package and register what it provides", examples: [{ command: "cotal ext add @cotal-ai/tmux", note: "add the tmux runtime" }, { command: "cotal ext add <npm-package>", note: "install any extension package from npm" }], usage: "cotal ext add <npm-package>" },
       { name: "remove", aliases: ["rm"], flagNames: [], summary: "uninstall an extension", examples: [{ command: "cotal ext remove <name>", note: "uninstall an extension and what it registered" }], usage: "cotal ext remove <name>" },
       { name: "list", flagNames: ["json", "plain"], summary: "list installed extensions (what bare `cotal ext` does)", examples: [{ command: "cotal ext list", note: "list installed extensions and their versions" }, { command: "cotal ext list --json", note: "the same as one JSON document" }], usage: "cotal ext list [--json|--plain]", outputs: ["json", "plain"], reads: true },
       { name: "root", flagNames: [], summary: "print the extension root directory", examples: [{ command: "cotal ext root", note: "print the folder extensions are installed in" }], usage: "cotal ext root", reads: true },
