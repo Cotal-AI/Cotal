@@ -1,5 +1,49 @@
 # @cotal-ai/cli
 
+## 0.182.1
+
+### Patch Changes
+
+- f9729db: Bash completes persona names with spaces as one argument, and `persona show` completion skips entries it cannot open as valid persona files.
+- a47c69b: Return the oversized-message refusal from `cotal send --file` without waiting for a named pipe's writer to close it.
+- 24b89fe: When several spaces share a broker address, the channel inventory prints a runnable retry for each space without changing the saved selection.
+- e64eec6: Show `--subscribe=` in persona help and retry instructions so the same command creates a persona with no channel subscriptions in Windows PowerShell 5.1 and other shells.
+- 54ecd82: Self-update looks for a Node version that can run both Corepack and the npm it selects, even when the Node running Cotal cannot run Corepack.
+- 5100dc5: Built-in commands blocked by a corrupt extension manifest now report the refusal and repair advice in their JSON output.
+- c368daa: JSON refusals for malformed or repeated global flags include the extension command collision warning in the receipt instead of printing it to stderr or dropping it.
+- 35b74b7: Fix the extension installation smoke suite's expected check count on every platform.
+- ed3b78e: The restart command printed by a foreground `cotal up` conflict keeps the requested `--max-file-store` cap.
+- d757524: Fix `cotal history --grep` so uppercase, lowercase, and final Greek sigma all match the same retained text.
+- 41baead: When you request JSON and give a leading `--plain` flag a value, the CLI tells you to drop `--plain` rather than retry with both output flags.
+- 1260ff7: Keep the first error in the requested JSON output when several leading switches use typographic dashes.
+- 364a6d1: Keep the target and flags in the `cotal clean` retry printed when `.cotal` links to another project.
+- 3cfee1f: `cotal ext add` refuses an extension whose declared core peer range does not match the bundled core, without changing the installed extensions.
+- 5117d48: When a stack loses its Cotal home records, status and ps point to the stop preview, and component status distinguishes a running broker from a service it cannot check.
+- 63c1509: When a running manager cannot be renamed, `cotal up` names the project to stop and tells you to repeat the original startup command from the same folder, keeping all options.
+- 41c615a: Interrupting a foreground restore before the manager commit is recorded stops the stack and prints how to continue the same restore, while an interrupt after that commit lets the restore finish before stopping.
+- 412c202: Report a missing editor once in the `cotal persona edit --json` refusal while keeping editor output on stderr.
+- 8a9ffeb: An unchecked project registration does not override the automatically selected space when its broker does not serve it.
+- cad8880: Self-update removes abandoned extension copies left behind when promotion is interrupted before its journal is written.
+- 9e4c9a1: Running `cotal update --self` repairs a moved Codex marketplace even when the CLI packages are already current.
+- 4fb5871: Restore a backup from `.cotal/maintenance` without moving it, as long as it does not overlap the preserved store, the maintenance lock files, or the attempt and journal directories.
+- e819f05: Keep the stack settlement smoke test running when its startup poll reads a journal that is being replaced.
+- b4af2aa: When self-update cannot read the extensions manifest, it tells you to restore read access and retry.
+- 0e36096: `cotal service status` tells you to omit a bare `--exec` instead of asking you to give it a value.
+- 938cd61: Keep the partial infrastructure status report when permissions prevent reading the extension inventory, and tell the user to restore read access.
+- 82fd7c4: Commands such as `run plan`, `space show`, and `persona show` tell you to drop an unknown option when you have already supplied all their arguments.
+- 5767c3a: Fix self-updates and extension installs whose npm scripts need `node` when Cotal is running on a version-named Node executable.
+- 8401965: Make the commands printed when a Windows foreground terminal closes work in PowerShell and Command Prompt.
+- 32b79a6: Make suggested channel history commands work when pasted into Windows Command Prompt.
+- f017c32: Show how to preserve Unicode when piping text into `cotal send --stdin` from Windows PowerShell 5.1.
+- 33d288c: Make setup retries and optional global installation work on Windows without changing PowerShell execution policy.
+- ac8c75e: On Windows, `cotal down` stops a controller stack from either the UNC path or a drive-letter path to the same project, while still refusing copies.
+- Updated dependencies [3bf0c84]
+- Updated dependencies [5117d48]
+- Updated dependencies [8a9ffeb]
+- Updated dependencies [287b874]
+  - @cotal-ai/core@0.182.1
+  - @cotal-ai/workspace@0.182.1
+
 ## 0.182.0
 
 ### Minor Changes
