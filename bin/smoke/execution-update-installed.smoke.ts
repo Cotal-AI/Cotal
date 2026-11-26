@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { lstatSync, readFileSync, readdirSync, readlinkSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, readlinkSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { dirname, join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -175,7 +175,57 @@ async function interruptedExecutionUpdate(input: Parameters<typeof installedExec
   console.log(`installed execution update: interrupted ${input.current} to ${input.target} reconciled all seven connectors ${foreignConfig ? "in a different config folder" : "offline"}`);
 }
 
-if (["--installed", "--interrupted", "--interrupted-foreign-config"].includes(process.argv[2] ?? "")) {
+/** Kill only the actual installed snapshot writer, after its first bytes reach disk. */
+export async function interruptedSnapshotCopy(input: { installed: string; config: string; cwd: string; env: NodeJS.ProcessEnv }): Promise<string> {
+  assert.equal(process.platform, "linux");
+  assert(input.env.COTAL_HOME && input.env.XDG_CONFIG_HOME, "the smoke requires isolated config and recovery homes");
+  const logical = realpathSync(join(input.installed, "dist/cotal.js"));
+  const snapshotName = /^\.update-snapshot-[A-Za-z0-9]{6}$/;
+  const before = new Set(readdirSync(input.config));
+  const recovery = join(input.env.COTAL_HOME, "update-recovery.json");
+  assert.equal(existsSync(recovery) ? JSON.parse(readFileSync(recovery, "utf8")) : null, null);
+  const script = `
+    const { selectExecutionProgram } = await import(${JSON.stringify(logical)});
+    const { root } = selectExecutionProgram(${JSON.stringify(input.installed)});
+    Object.defineProperty(globalThis, Symbol.for('cotal.execution.identity'), { value: Object.freeze({ logicalEntry: ${JSON.stringify(logical)}, loadedEntry: root + '/dist/cotal.js' }) });
+    const { claimUpdateClosureAccess } = await import(root + '/node_modules/@cotal-ai/workspace/dist/index.js');
+    const { snapshotUpdateClosure } = await import(root + '/node_modules/@cotal-ai/cli/dist/lib/update-snapshot.js');
+    const release = claimUpdateClosureAccess();
+    try { snapshotUpdateClosure(); } finally { release(); }
+  `;
+  const source = join(input.config, "seed", "interrupted-copy-fixture");
+  mkdirSync(source, { mode: 0o700 });
+  try {
+    for (let i = 0; i < 4096; i++) writeFileSync(join(source, String(i)), "connector snapshot signal window\n");
+    const child = spawn(process.execPath, ["--input-type=module", "-e", script], { cwd: input.cwd, env: input.env, stdio: ["ignore", "ignore", "pipe"] });
+    let stderr = "";
+    child.stderr.on("data", bytes => { stderr += bytes; });
+    const ended = new Promise<NodeJS.Signals | null>(resolve => {
+      child.once("error", error => { stderr += error.message; });
+      child.once("close", (_code, signal) => resolve(signal));
+    });
+    let snapshot: string | undefined;
+    const deadline = Date.now() + 30_000;
+    try {
+      while (child.exitCode === null && child.signalCode === null && Date.now() < deadline) {
+        const name = readdirSync(input.config).find(name => !before.has(name) && snapshotName.test(name));
+        if (name && existsSync(join(input.config, name, "seed"))) { snapshot = join(input.config, name); break; }
+        await delay(5);
+      }
+    } finally { child.kill("SIGKILL"); }
+    assert.equal(await ended, "SIGKILL", stderr || "snapshot writer completed before capture");
+    assert(snapshot, stderr || "no real interrupted snapshot was observed");
+    assert(!existsSync(join(snapshot, "extensions")), "the writer must be interrupted before it copies extensions");
+    assert.equal(existsSync(recovery) ? JSON.parse(readFileSync(recovery, "utf8")) : null, null);
+    return snapshot;
+  } finally { rmSync(source, { recursive: true, force: true }); }
+}
+
+if (process.argv[2] === "--interrupt-snapshot-copy") {
+  const [installed, config, cwd] = process.argv.slice(3);
+  if (!installed || !config || !cwd) throw new Error("interrupted snapshot smoke needs package root, connector config and cwd");
+  console.log(await interruptedSnapshotCopy({ installed, config, cwd, env: process.env }));
+} else if (["--installed", "--interrupted", "--interrupted-foreign-config"].includes(process.argv[2] ?? "")) {
   const [cli, installed, current, target, cwd] = process.argv.slice(3);
   if (!cli || !installed || !current || !target || !cwd) throw new Error("installed execution update needs CLI, package root, current, target and cwd");
   const input = { cli, installed, current, target, cwd, env: process.env };

@@ -1,10 +1,11 @@
 /** Directory identity persists through journals, legacy upgrades and completed restores. */
 import { cpSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, sep } from "node:path";
 import { randomUUID } from "node:crypto";
 import { createSuite } from "@cotal-ai/smoke-kit";
-import { adoptStackJournal, readStackJournal, writeStackJournal, type StackJournal } from "../src/lib/stack-journal.js";
+import { adoptStackJournal, readStackJournal, stackJournalPath, writeStackJournal, type StackJournal } from "../src/lib/stack-journal.js";
+import { controllerStackRecorded } from "../src/commands/stack-down.js";
 import { readStoreIdentity, stackStoreWarnings } from "../src/lib/store-identity.js";
 import { settleControllerResume } from "../src/lib/controller-resume.js";
 
@@ -21,6 +22,21 @@ const journal: StackJournal = {
 };
 const saved = writeStackJournal(root, undefined, journal);
 suite.check("journal round trip keeps all store identity fields", JSON.stringify(readStackJournal(root)?.journal.broker) === JSON.stringify(journal.broker));
+{
+  const path = stackJournalPath(root), bytes = readFileSync(path);
+  const recorded = `${root}${sep}.`;
+  writeFileSync(path, JSON.stringify({ ...journal, root: recorded }), { mode: 0o600 });
+  let target: unknown;
+  try { target = controllerStackRecorded(root); } catch (error) { target = String(error); }
+  suite.check("down recognizes another spelling of its own project as a controller stack", target === true, target);
+  const copy = join(root, "copy");
+  mkdirSync(join(copy, ".cotal"), { recursive: true, mode: 0o700 });
+  cpSync(path, stackJournalPath(copy));
+  let refused = false;
+  try { controllerStackRecorded(copy); } catch (error) { refused = (error as { code?: string }).code === "CONFLICT"; }
+  suite.check("a byte-identical journal in a different directory is not a project alias", refused);
+  writeFileSync(path, bytes, { mode: 0o600 });
+}
 suite.check("an unchanged custom store has no warning", stackStoreWarnings(journal).length === 0);
 writeFileSync(join(store, "ordinary-file"), "changing contents does not change directory identity");
 suite.check("ordinary directory content changes do not warn", stackStoreWarnings(journal).length === 0);

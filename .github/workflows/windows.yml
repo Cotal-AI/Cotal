@@ -68,6 +68,10 @@ jobs:
         with:
           name: workspace-native-x64
           path: packages/workspace/build/Release/win32-x64
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: seat-native-win32-x64
+          path: packages/seat/build/Release/win32-x64
       # Default pnpm install keeps optionalDependencies (@lydell/node-pty ConPTY + the
       # @eplightning/nats-server-win32-* fallback binaries are per-platform optional deps).
       - name: Install dependencies
@@ -90,6 +94,8 @@ jobs:
         run: pnpm smoke:windows
       - name: Update crash and npm descendant barriers
         run: pnpm smoke:update-concurrency
+      - name: Native daemon transport and update continuity
+        run: pnpm exec tsx bin/smoke/daemon-transport.smoke.ts
       # Secrets at rest: 0o600/0o700 is a no-op on Windows, so secret files/dirs are locked down via
       # an NTFS ACL (icacls). Asserts the broad inherited access is actually stripped.
       - name: Secrets-at-rest ACL hardening (smoke:secret-fs)

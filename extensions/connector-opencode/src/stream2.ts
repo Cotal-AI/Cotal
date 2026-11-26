@@ -6,13 +6,11 @@
  * 2.0.24). So an element streams under a key of its message, kind and ordinal, and the mapper finds
  * the same key from the element's position when its saved record arrives.
  *
- * **A line is anchored at the session's last record before the step's message.** The step's message
- * is in the list, unsettled, from its first element, so a position inside it would hold every line
- * until the step ends. That record is read when the step starts; until it answers, a line takes the
- * furthest position a read of the session has reached, which is never past it. Either way the
- * records before the step come before the line and the step's saved elements after it.
+ * A line is anchored at the step's assistant header, before any of its elements and after the
+ * prompt that opened the run. Even a delta sent immediately can take that position by message id.
  */
 import { DeltaJournal, type DeltaJournalOptions, type StreamDelta } from "@cotal-ai/connector-core";
+import { stepAnchor2 } from "./agui-source2.js";
 
 /** The key the element of `kind` at `ordinal` among a message's elements of that kind streams under.
  *  It differs from the `<message>#<index>` id an element mapped whole is published under. */
@@ -23,13 +21,6 @@ export interface StreamEvent2 {
   type: string;
   created?: number;
   data?: { sessionID?: unknown; assistantMessageID?: unknown; ordinal?: unknown; delta?: unknown };
-}
-
-/** What the stream reads of the session's source: the furthest position a read has reached, read
- *  synchronously, and the session's last record before a message. */
-interface StreamSource2 {
-  readonly reached: string;
-  before(messageId: string): Promise<string>;
 }
 
 const KINDS: Record<string, { kind: StreamDelta["kind"]; step: "started" | "delta" }> = {
@@ -50,28 +41,21 @@ export class OpenCode2DeltaStream {
   private readonly turn = new Set<string>();
   /** The session's end while the turn's end is journaled. */
   private endedAt: string | undefined;
-  /** The running step's message, and the session's last record before it once that is read. */
-  private step: { message: string; before?: string } | undefined;
-  private session: StreamSource2 | undefined;
-  private onError: (error: Error) => void = () => {};
+  private anchor = "";
 
   /** @param reasoning Whether reasoning is published, and so streamed. */
   constructor(private readonly reasoning: boolean) {}
 
-  /** Journal the elements of the session `source` reads from now on, once. A written line should
-   *  wake the emitter. */
-  open(sessionID: string, source: StreamSource2, opts: Omit<DeltaJournalOptions, "anchor">): void {
+  /** Journal the elements of this session from now on. A written line wakes the emitter. */
+  open(sessionID: string, opts: Omit<DeltaJournalOptions, "anchor">): void {
     if (this.journal) return;
-    this.journal = DeltaJournal.open({ ...opts, anchor: () => this.endedAt ?? this.step?.before ?? source.reached });
+    this.journal = DeltaJournal.open({ ...opts, anchor: () => this.endedAt ?? this.anchor });
     this.sessionID = sessionID;
-    this.session = source;
     this.openedAt = Date.now();
-    this.onError = opts.onError;
   }
 
   /** Follow one event of the session's event stream. */
   event(ev: StreamEvent2): void {
-    if (ev.type === "session.step.started") return this.stepStarted(ev);
     // A turn that ends with its `idle` record closes its streams there, so its keys need no end of
     // their own.
     if ((ev.type === "session.execution.succeeded" || ev.type === "session.execution.failed") && ev.data?.sessionID === this.sessionID) {
@@ -89,6 +73,12 @@ export class OpenCode2DeltaStream {
       return;
     }
     if (!this.started.has(key) || typeof d.delta !== "string" || d.delta.length === 0) return;
+    const anchor = stepAnchor2(d.assistantMessageID);
+    if (anchor !== this.anchor) {
+      // A new step starts after the preceding one's output is saved. Its deltas need their own anchor.
+      this.journal.settle();
+      this.anchor = anchor;
+    }
     this.turn.add(key);
     this.journal.append({ key, kind: arm.kind, text: d.delta });
   }
@@ -115,18 +105,5 @@ export class OpenCode2DeltaStream {
   close(): void {
     this.journal?.close();
     this.journal = undefined;
-  }
-
-  private stepStarted(ev: StreamEvent2): void {
-    const message = ev.data?.assistantMessageID;
-    if (!this.session || ev.data?.sessionID !== this.sessionID || typeof message !== "string" || (ev.created ?? 0) < this.openedAt) return;
-    const step: { message: string; before?: string } = { message };
-    this.step = step;
-    this.session.before(message).then(
-      (at) => {
-        step.before = at;
-      },
-      (e: Error) => this.onError(new Error(`the position before step ${message} could not be read: ${e.message}`)),
-    );
   }
 }

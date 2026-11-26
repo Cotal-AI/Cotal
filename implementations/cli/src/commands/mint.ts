@@ -167,6 +167,24 @@ export async function mint(args: ParsedArgs): Promise<void> {
     const out = resolve(values.out ?? agentSecretFilePaths(root, space, name).creds);
     target = { ...target, path: out };
     if (values.out !== undefined) assertExternalCredentialExport(out, [root, currentRoot]);
+    let allowSubscribe: string[] | undefined, allowPublish: string[] | undefined, role: string | undefined;
+    if (profile === "agent") {
+      const path = agentFilePath(root, name);
+      // A persona that cannot be used names its file and the command that says why; its values stay unprinted.
+      const unusable = (problem: string, remedy: string) => new CommandFailure("refused", "SCHEMA_INVALID", `the persona file ${path} for this label ${problem}, so no credential was minted; file values and secret material were not printed`, { target: { ...target, persona: path }, remedy });
+      let definition;
+      try { definition = !values["no-persona"] && existsSync(path) ? loadAgentFile(path, { deferRoleValidation: true }) : undefined; }
+      catch { throw unusable("could not be read as a persona", `see what is wrong with it with \`${personaCommand("show", name, space)}\`, then fix it and mint again`); }
+      // A flag wins, then the grants of the --identity credential, then the persona.
+      const readFlag = parseCommaList(values["allow-subscribe"]);
+      allowSubscribe = readFlag === undefined && carried ? carried.read : resolveReadAcl(definition?.subscribe ?? [], readFlag ?? definition?.allowSubscribe);
+      allowPublish = parseCommaList(values["allow-publish"]) ?? carried?.post ?? definition?.allowPublish;
+      role = values.role ?? (carried ? carried.role ?? undefined : definition?.role);
+      if (values.role === undefined && !carried && role !== undefined) {
+        try { assertValidRole(role); }
+        catch { throw unusable("sets a role that is not one word of letters, digits, _ or -", `give it such a role with \`${personaCommand("edit", name, space)}\`, then mint again`); }
+      }
+    }
     const parent = dirname(out), volume = parse(parent).root;
     try {
       let existing = parent;
@@ -194,25 +212,7 @@ export async function mint(args: ParsedArgs): Promise<void> {
         replacedGrants = heldGrants(standing, space, auth.account.pub);
       }
     }
-    let allowSubscribe: string[] | undefined, allowPublish: string[] | undefined, role: string | undefined;
-    if (profile === "agent") {
-      const path = agentFilePath(root, name);
-      // A persona that cannot be used names its file and the command that says why; its values stay unprinted.
-      const unusable = (problem: string, remedy: string) => new CommandFailure("refused", "SCHEMA_INVALID", `the persona file ${path} for this label ${problem}, so no credential was minted; file values and secret material were not printed`, { target: { ...target, persona: path }, remedy });
-      let definition;
-      try { definition = !values["no-persona"] && existsSync(path) ? loadAgentFile(path, { deferRoleValidation: true }) : undefined; }
-      catch { throw unusable("could not be read as a persona", `see what is wrong with it with \`${personaCommand("show", name, space)}\`, then fix it and mint again`); }
-      // A flag wins, then the grants of the --identity credential, then the persona.
-      const readFlag = parseCommaList(values["allow-subscribe"]);
-      allowSubscribe = readFlag === undefined && carried ? carried.read : resolveReadAcl(definition?.subscribe ?? [], readFlag ?? definition?.allowSubscribe);
-      allowPublish = parseCommaList(values["allow-publish"]) ?? carried?.post ?? definition?.allowPublish;
-      role = values.role ?? (carried ? carried.role ?? undefined : definition?.role);
-      if (values.role === undefined && !carried && role !== undefined) {
-        try { assertValidRole(role); }
-        catch { throw unusable("sets a role that is not one word of letters, digits, _ or -", `give it such a role with \`${personaCommand("edit", name, space)}\`, then mint again`); }
-      }
-      lifecycleUid = mintLifecycleUid();
-    }
+    if (profile === "agent") lifecycleUid = mintLifecycleUid();
     identity ??= newIdentity();
     target = { ...target, identity: identity.id, ...(lifecycleUid === undefined ? {} : { lifecycleUid }) };
     // With no lifetime flag the credential gets the default lifetime; only --no-expiry leaves it unbounded.

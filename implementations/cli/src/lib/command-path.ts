@@ -1,5 +1,9 @@
 import type { Command, FlagSpec } from "@cotal-ai/core";
 
+export function parserOptions(cmd: Command) {
+  return Object.fromEntries((cmd.flags ?? []).map(({ name, type, short }) => [name, { type, ...(short ? { short } : {}) }]));
+}
+
 /** Read metadata paths without treating flag values as command words. A caller can supply recognized
  *  option spellings for attribution only, without changing the original arguments. */
 export function metadataPositionals(cmd: Pick<Command, "flags">, argv: readonly string[], options: {

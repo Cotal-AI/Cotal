@@ -153,6 +153,12 @@ async function checkForegroundRepeat() {
   const start = ["service", "start", "dash", "--space", SPACE];
   const preview = cotal([...start, "--foreground", "--no-open", "--dry-run", "--plain"]);
   ok("a custom dashboard accepts a manual foreground preview", preview.status === 0 && /Definition:\s+dash/.test(preview.stdout), out(preview));
+  for (const args of [[...start, "--help"], ["help", "--", ...start]]) {
+    const help = cotal(args);
+    ok(`${args.join(" ")} lists --no-open for a saved dashboard`, help.status === 0 && /^  --no-open\b/m.test(help.stdout), out(help));
+  }
+  const missingSpace = cotal(["help", "--", "service", "start", "dash", "--space=missing-dashboard-help-space"]);
+  ok("start help does not use the project's dashboard for another space", missingSpace.status === 0 && !/^  --no-open\b/m.test(missingSpace.stdout), out(missingSpace));
   const foreground = spawn(realNode, [join(REPO, "bin", "dist", "cotal.js"), ...start, "--foreground", "--no-open", "--plain"],
     { env, cwd: root, stdio: ["ignore", "pipe", "pipe"] });
   const closed = new Promise((resolve) => foreground.once("close", resolve));

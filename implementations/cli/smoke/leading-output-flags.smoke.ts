@@ -114,6 +114,19 @@ check("finite JSON refusal carries the retained extension collision once", colli
   collisionRefusal.envelope.error?.code === "USAGE_INVALID" && collisionRefusal.envelope.error.message?.includes('unknown preference "missing-key"') === true &&
   collisionWarnings?.length === 1 && collisionWarnings[0]?.code === "EXTENSION_COMMAND_COLLISION" &&
   collisionWarnings[0].message?.includes("output-fixture@1.0.0") === true && readFileSync(collisionManifest, "utf8") === collisionFixture, shown(collisionRefusal));
+for (const [args, message] of [
+  [["--no-input=false", "config", "get", "harness", "--json"], "--no-input takes no value"],
+  [["config", "get", "harness", "--no-input=false", "--json"], "--no-input takes no value"],
+  [["--no-input", "config", "get", "harness", "--no-input", "--json"], duplicateInput],
+  [["--no-input", "--no-input", "--plain=false", "config", "get", "harness", "--json"], duplicateInput],
+] as const) {
+  const r = run([...args], collisionConfig);
+  check(`${args.join(" ")} carries the retained collision once in the refusal`, r.status === 1 && r.stderr === "" &&
+    r.envelope?.command === "config" && r.envelope.outcome === "refused" && r.envelope.error?.code === "USAGE_INVALID" &&
+    r.envelope.error.message === message && r.envelope.warnings?.length === 1 &&
+    r.envelope.warnings[0]?.code === "EXTENSION_COMMAND_COLLISION" && r.envelope.warnings[0].message?.includes("output-fixture@1.0.0") === true &&
+    readFileSync(collisionManifest, "utf8") === collisionFixture, shown(r));
+}
 const collisionText = run(missingKey, collisionConfig);
 check("text refusal keeps the retained extension collision on stderr", collisionText.status === 1 && collisionText.stdout === "" &&
   collisionText.stderr.includes("output-fixture@1.0.0"), shown(collisionText));
@@ -143,10 +156,13 @@ for (const args of [["history", "general"], ["channel", "members", "general"]]) 
   const finite = run([...args, "--json", "--follow=false"], collisionConfig);
   check(`${args.join(" ")} keeps the collision in its finite JSON refusal`, finite.status === 1 && finite.stderr === "" &&
     finite.envelope?.error?.code === "USAGE_INVALID" && finite.envelope.warnings?.[0]?.code === "EXTENSION_COMMAND_COLLISION", shown(finite));
-  const stream = run([...args, "--json", "--follow", "--follow=false"], collisionConfig);
-  check(`${args.join(" ")} keeps the collision on stderr for its JSON stream refusal`, stream.status === 1 &&
-    stream.envelope === undefined && stream.stdout.includes('"type":"error"') && stream.stdout.includes('"type":"end"') &&
-    stream.stderr.includes("output-fixture@1.0.0"), shown(stream));
+  const follow = [...args, "--json", "--follow"];
+  for (const streamArgs of [[...follow, "--follow=false"], ["--no-input=false", ...follow], ["--no-input", ...follow, "--no-input"]]) {
+    const stream = run(streamArgs, collisionConfig);
+    check(`${streamArgs.join(" ")} keeps the collision on stderr for its JSON stream refusal`, stream.status === 1 &&
+      stream.envelope === undefined && stream.stdout.includes('"type":"error"') && stream.stdout.includes('"type":"end"') &&
+      stream.stderr.includes("output-fixture@1.0.0"), shown(stream));
+  }
 }
 
 for (const args of [["--json", "version"], ["-j", "version"], ["--no-input", "--json", "version"], ["--json", "--no-input", "version"]]) {
@@ -171,6 +187,12 @@ check("the version receipt tells you to omit the unsupported --plain flag", malf
 const retryVersion = run(["--json", "version"]);
 check("dropping the unsupported flag returns the JSON version receipt", retryVersion.status === 0 && retryVersion.stderr === "" &&
   retryVersion.envelope?.command === "version" && retryVersion.envelope.outcome === "ok", shown(retryVersion));
+const malformedVersionCollision = run(["--plain=true", "--json", "version"], collisionConfig);
+check("a malformed leading output flag keeps the unsupported-flag remedy and collision warning together", malformedVersionCollision.status === 1 &&
+  malformedVersionCollision.stderr === "" && malformedVersionCollision.envelope?.command === "version" &&
+  malformedVersionCollision.envelope.error?.code === "USAGE_INVALID" && malformedVersionCollision.envelope.error.remedy === "omit --plain" &&
+  malformedVersionCollision.envelope.warnings?.length === 1 && malformedVersionCollision.envelope.warnings[0]?.code === "EXTENSION_COMMAND_COLLISION",
+  shown(malformedVersionCollision));
 
 const dashes = run(["--", "version"]);
 check("cotal -- version runs version", dashes.status === 0 && /\d+\.\d+\.\d+/.test(dashes.stdout), shown(dashes));
@@ -231,10 +253,19 @@ for (const [args, flag] of [
   [["--json", "-j=false", "status"], "-j"],
 ] as const) {
   const r = run([...args]);
+  const remedy = flag === "--plain" ? "omit --plain" : `omit ${flag} or pass it without a value`;
   check(`${args.join(" ")} preserves the JSON refusal`, r.status === 1 && r.stderr === "" &&
     r.envelope?.command === "status" && r.envelope.outcome === "refused" && r.envelope.error?.code === "USAGE_INVALID" &&
-    r.envelope.error.message === `${flag} takes no value` && r.envelope.error.remedy === `omit ${flag} or pass it without a value`, shown(r));
+    r.envelope.error.message === `${flag} takes no value` && r.envelope.error.remedy === remedy, shown(r));
 }
+
+const retryStatus = run(["status", "--json"]);
+check("omitting the malformed --plain flag returns the requested JSON status", retryStatus.status === 0 && retryStatus.stderr === "" &&
+  retryStatus.envelope?.command === "status" && retryStatus.envelope.outcome === "ok", shown(retryStatus));
+
+const malformedPlainOnly = run(["--plain=false", "status"]);
+check("without JSON, the refusal still offers bare --plain", malformedPlainOnly.status === 1 && malformedPlainOnly.stdout === "" &&
+  malformedPlainOnly.stderr.includes("omit --plain or pass it without a value"), shown(malformedPlainOnly));
 
 const malformedOutput = run(["--json=false", "status", "--", "--json"]);
 check("only a valid output switch before -- requests JSON", malformedOutput.status === 1 && malformedOutput.stdout === "" &&
@@ -270,8 +301,16 @@ for (const { args, command, status, code } of [
 }
 
 const dashFlag = "\u2013\u2013no-color";
+const secondDashFlag = "\u2013\u2013no-input";
 const dashMessage = `${dashFlag} starts with a typographic dash, so it is not an option`;
 const dashRemedy = "type the option with hyphens: --no-color";
+const dashCollision = run([dashFlag, "config", "get", "harness", "--json"], collisionConfig);
+check("a leading typographic flag keeps the dash diagnosis and collision warning in the same receipt", dashCollision.status === 1 &&
+  dashCollision.stderr === "" && dashCollision.envelope?.command === "config" && dashCollision.envelope.outcome === "refused" &&
+  dashCollision.envelope.error?.code === "USAGE_INVALID" && dashCollision.envelope.error.message === dashMessage &&
+  dashCollision.envelope.error.remedy === dashRemedy && dashCollision.envelope.warnings?.length === 1 &&
+  dashCollision.envelope.warnings[0]?.code === "EXTENSION_COMMAND_COLLISION" &&
+  readFileSync(collisionManifest, "utf8") === collisionFixture, shown(dashCollision));
 for (const args of [
   [dashFlag, "config", "get", "harness", "--json"],
   ["-j", dashFlag, "cfg", "get", "harness"],
@@ -282,10 +321,18 @@ for (const args of [
     r.envelope?.command === "config" && r.envelope.outcome === "refused" && r.envelope.error?.code === "USAGE_INVALID" &&
     r.envelope.error.message === dashMessage && r.envelope.error.remedy === dashRemedy, shown(r));
 }
+const twoDashVersion = run([dashFlag, secondDashFlag, "version", "--json"]);
+check("two leading typographic flags keep the first diagnosis in a version JSON refusal", twoDashVersion.status === 1 &&
+  twoDashVersion.stderr === "" && twoDashVersion.envelope?.command === "version" && twoDashVersion.envelope.outcome === "refused" &&
+  twoDashVersion.envelope.error?.code === "USAGE_INVALID" && twoDashVersion.envelope.error.message === dashMessage &&
+  twoDashVersion.envelope.error.remedy === dashRemedy, shown(twoDashVersion));
 for (const args of [
   [dashFlag, "config", "get", "harness", "--", "--json"],
   ["--json", "--", dashFlag, "config", "get", "harness"],
   [dashFlag, "ext", "root", "--json"],
+  [dashFlag, secondDashFlag, "version", "--", "--json"],
+  [dashFlag, "\u2013\u2013json", "version"],
+  [dashFlag, "\u2013\u2013not-a-global", "version", "--json"],
 ]) {
   const r = run(args);
   check(`${args.join(" ")} keeps the dash diagnosis on stderr when JSON is not selected`, r.status === 1 && r.stdout === "" &&
@@ -293,6 +340,7 @@ for (const args of [
 }
 for (const [stream, ...words] of [
   ["watch", "watch"],
+  ["watch", secondDashFlag, "watch"],
   ["history", "history", "general", "--follow"],
   ["membership", "channel", "members", "general", "--follow"],
 ]) {

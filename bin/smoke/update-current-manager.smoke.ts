@@ -155,23 +155,47 @@ console.log('LEGACY_READS=' + legacyReads);
         // Keep the live Manager's launch entry unavailable, as during a concurrent npm replacement.
         renameSync(entry, `${entry}.reinstall`);
         try {
-          const currentUpdate = () => updateOther(otherHome, { ...env, HOME: otherHome, COTAL_HOME: join(otherHome, "state"),
+          const cleanEnv = Object.fromEntries(Object.entries(env).filter(([key]) => !key.startsWith("COTAL_")));
+          const currentUpdate = () => updateOther(otherHome, { ...cleanEnv, HOME: otherHome, COTAL_HOME: join(otherHome, "state"),
             XDG_CONFIG_HOME: config, XDG_RUNTIME_DIR: join(otherHome, "runtime"), TMPDIR: otherHome }, "--self");
           const prefix = join(config, "cotal");
           const stage = join(prefix, ".extensions.stage-Ab1234");
           const copied = join(stage, "config/cotal/extensions");
           mkdirSync(copied, { recursive: true, mode: 0o700 });
           writeFileSync(join(copied, "package.json"), "{}");
+          const ready = [join(prefix, ".extensions.stage-Ef9012.ready"), join(prefix, ".extensions.stage-Gh3456.ready")];
+          const outside = join(otherHome, "keep");
+          mkdirSync(outside, { mode: 0o700 });
+          writeFileSync(join(outside, "marker"), "keep");
+          for (const [index, path] of ready.entries()) {
+            const wrapper = join(path.slice(0, -".ready".length), "config/cotal/extensions");
+            mkdirSync(dirname(wrapper), { recursive: true, mode: 0o700 });
+            cpSync(copied, wrapper, { recursive: true });
+            chmodSync(wrapper, index === 0 ? 0o700 : 0o755);
+            renameSync(wrapper, path);
+            symlinkSync(outside, join(path, "external"));
+          }
           const link = join(prefix, ".extensions.stage-Cd5678");
           symlinkSync(join(prefix, "seed"), link);
+          symlinkSync(outside, `${link}.ready`);
+          const writable = join(prefix, ".extensions.stage-Ij7890.ready");
+          mkdirSync(writable);
+          chmodSync(writable, 0o777);
           const writer = acquireLock(join(prefix, ".extensions.lock"), { label: "smoke extension writer" });
           try {
             assert.match(await currentUpdate(), /installed package closure is current\. No connector reconciliation was run\./);
             assert.equal(readFileSync(join(copied, "package.json"), "utf8"), "{}");
+            for (const path of ready) assert.equal(readFileSync(join(path, "package.json"), "utf8"), "{}");
           } finally { writer.release(); }
           assert.match(await currentUpdate(), /installed package closure is current\. No connector reconciliation was run\./);
           assert.ok(!existsSync(stage), "current self-update removes an unpublished stage once the writer is gone");
-          assert.ok(existsSync(link), "cleanup leaves similarly named links alone");
+          for (const path of ready) {
+            assert.ok(!existsSync(path), "current self-update removes unpublished ready copies");
+            assert.ok(!existsSync(path.slice(0, -".ready".length)), "current self-update removes empty stage wrappers");
+          }
+          assert.ok(existsSync(link) && existsSync(`${link}.ready`), "cleanup leaves similarly named links alone");
+          assert.ok(existsSync(writable), "cleanup leaves a directory other accounts can write alone");
+          assert.equal(readFileSync(join(outside, "marker"), "utf8"), "keep", "cleanup does not follow nested links");
           assert.ok(existsSync(join(prefix, "seed/stamp.json")), "cleanup leaves the selected inventory alone");
         } finally { renameSync(`${entry}.reinstall`, entry); }
 

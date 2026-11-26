@@ -18,7 +18,7 @@ import { execFile } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { createServer } from "node:http";
-import type { AddressInfo } from "node:net";
+import { connect as connectSocket, createServer as createRelay, type AddressInfo, type Socket } from "node:net";
 import { setTimeout as wait } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { exportJWK, generateKeyPair, SignJWT } from "jose";
@@ -26,6 +26,7 @@ import { connect, credsAuthenticator, tokenAuthenticator } from "@nats-io/transp
 import {
   mintCreds, newIdentity, mintLifecycleUid, setupSpaceStreams, issuedUserCaller, resolveService,
   prepareKeyedRunSubmission, invokeKeyedRunSubmission, readKeyedRunSubmission, invokeCommand, inspectCredHealth,
+  type RunStatusView,
 } from "@cotal-ai/core";
 import {
   cotalAuthProvider, deriveOwnerForIdpSubject, ensurePinnedIdp, grantActor, loadOwnerSecret, saveIdpSession, startAuthService,
@@ -65,13 +66,31 @@ let keyedHostCalls = 0, legacyHostAdmissions = 0;
 let outageStart = Infinity;
 const outageMs = 20_000;
 const standingRequests: { at: number; status: number }[] = [];
+const brokerSockets = new Set<Socket>();
+let brokerCut = false, runExchangeCut = false, runExchangeFailures = 0;
+const brokerRelay = createRelay(client => {
+  if (brokerCut) { client.destroy(); return; }
+  const upstream = connectSocket(Number(new URL(fx.servers).port), "127.0.0.1");
+  for (const socket of [client, upstream]) {
+    brokerSockets.add(socket);
+    socket.on("error", () => socket.destroy());
+    socket.once("close", () => { brokerSockets.delete(socket); client.destroy(); upstream.destroy(); });
+  }
+  client.pipe(upstream).pipe(client);
+});
 const edge = createServer(async (req, res) => {
   try {
     const chunks: Buffer[] = [];
     for await (const chunk of req) chunks.push(chunk);
     const body = Buffer.concat(chunks).toString();
     const now = Date.now();
-    const standing = req.method === "POST" && JSON.parse(body).request?.operation === "renewStandingBundle";
+    const request = req.method === "POST" ? JSON.parse(body).request : undefined;
+    const standing = request?.operation === "renewStandingBundle";
+    if (runExchangeCut && request?.kind === "manager-run-attempt") {
+      runExchangeFailures++;
+      res.writeHead(502, { "content-type": "text/plain" }).end("Bad Gateway");
+      return;
+    }
     const unavailable = req.url === "/manager-service-authority" && now >= outageStart && now < outageStart + outageMs;
     if (unavailable) {
       if (standing) standingRequests.push({ at: now, status: 503 });
@@ -89,6 +108,49 @@ const edge = createServer(async (req, res) => {
     res.writeHead(502, { "content-type": "application/json" }).end(JSON.stringify({ error: String(error) }));
   }
 });
+
+async function recoverInterruptedRun(start: () => Promise<string>, show: (runId: string) => Promise<RunStatusView>) {
+  async function until<T>(description: string, observe: () => Promise<T | undefined>, ms: number): Promise<T> {
+    const end = Date.now() + ms;
+    for (;;) {
+      const result = await observe();
+      if (result !== undefined) return result;
+      assert.ok(Date.now() < end, description);
+      await wait(200);
+    }
+  }
+  const runId = await start();
+  const parked = await until("run did not park before the outage", async () => {
+    const view = await show(runId);
+    return view.journal.some(row => row.kind === "step" && row.step === "/sleep:before#0" && row.state === "pending") ? view : undefined;
+  }, 10_000);
+  assert.equal(parked.status?.epoch, 1);
+  const log = console.error;
+  let releasePending = false;
+  console.error = (...args: unknown[]) => {
+    releasePending ||= args.map(String).join(" ").includes(`${runId}: the "released" status write did not land`);
+    log(...args);
+  };
+  try {
+    brokerCut = runExchangeCut = true;
+    for (const socket of brokerSockets) socket.destroy();
+    await until("the outage did not interrupt a journal append", async () => releasePending || undefined, 90_000);
+    brokerCut = false;
+    await until("automatic recovery did not reach a still-unavailable issuer", async () => runExchangeFailures || undefined, 20_000);
+    runExchangeCut = false;
+    const recovered = await until("the Manager did not recover its released run", async () => {
+      const view = await show(runId);
+      return view.status && ["running", "completed"].includes(view.status.state) && view.status.epoch === 2 ? view : undefined;
+    }, 20_000);
+    assert.equal(recovered.status?.holder.split(".")[0], parked.status?.holder.split(".")[0]);
+    assert.equal(recovered.status?.fencingToken, 2);
+    assert.deepEqual(recovered.journal.flatMap(row => row.kind === "activation" ? [row.epoch] : []), [1, 2]);
+    console.log("PASS the same Manager reactivated exactly once after HTTP 502 without a resume command");
+  } finally {
+    brokerCut = runExchangeCut = false;
+    console.error = log;
+  }
+}
 
 async function restartAuthority(root: string, runIds: string[], manager: Awaited<ReturnType<typeof nativeRemoteManager>>) {
   const { state: { instanceId }, remote: { supervisorCreds } } = manager;
@@ -149,6 +211,8 @@ try {
   const root = join(fx.dir, "keyed-manager"); mkdirSync(root);
   await new Promise<void>(resolve => edge.listen(0, "127.0.0.1", resolve));
   const edgeUrl = `http://127.0.0.1:${(edge.address() as AddressInfo).port}`;
+  await new Promise<void>(resolve => brokerRelay.listen(0, "127.0.0.1", resolve));
+  const brokerUrl = `nats://127.0.0.1:${(brokerRelay.address() as AddressInfo).port}`;
   const dir = userAuthStateDir(root, a.space);
   const store = workspaceSecretStore(root);
   mkdirSync(dir, { recursive: true });
@@ -157,7 +221,7 @@ try {
   recordMesh({ space: a.space, server: fx.servers, root, mode: "user", origin: "manual", policy: { events: "required" },
     userAuth: { provider: "cotal", remote: true, idp: { url: `${origin}/api/auth`, issuer: origin, audience: origin }, endpoints: { url: edgeUrl }, sentinelCredsPath: sentinel }, ts: new Date().toISOString() });
   saveIdpSession(homeCotalDir(), `${origin}/api/auth`, { token: "fixture-session", expiresAt: Math.floor(Date.now() / 1000) + 600, sub: "keyed-human" });
-  remote = await nativeRemoteManager({ space: a.space, servers: fx.servers, root, exchangeUrl: service.publicUrl!, execution: "runtime", runtime: "pty",
+  remote = await nativeRemoteManager({ space: a.space, servers: brokerUrl, root, exchangeUrl: service.publicUrl!, execution: "runtime", runtime: "pty",
     call: async request => {
       if (request.kind === "manager-run-submission") keyedHostCalls++;
       if (request.kind === "manager-run-admission") legacyHostAdmissions++;
@@ -206,12 +270,28 @@ try {
     runIds.push(next.runId);
   }
   await restartAuthority(root, runIds, remote);
+  const current = await dial();
+  await recoverInterruptedRun(async () => {
+    const reply = await invokeCommand(current.nc, a.space, current.selected, "run-start", {
+      source: 'await sleep("8s", { name: "before" }); await sleep("1s", { name: "after" });',
+    }, { deadlineMs: 15_000 });
+    assert.equal(reply.reply.ok, true);
+    return (reply.reply.data as { runId: string }).runId;
+  }, async runId => {
+    const reply = await invokeCommand(current.nc, a.space, current.selected, "run-status", { runId }, { deadlineMs: 5_000 });
+    assert.equal(reply.reply.ok, true);
+    return reply.reply.data as RunStatusView;
+  });
   console.log(JSON.stringify({ scope: "owned native signerless Manager + actual auth HTTP/encrypted callout + driver, not Cloud/webhook/deployment",
     instanceId: remote.state.instanceId, epoch: remote.epoch, submissionId: submission.submissionId, runId, keyedHostCalls, legacyHostAdmissions,
     modelSeats: 0 }));
 } finally {
   const errors: unknown[] = [];
   for (const close of [...connections.map(nc => () => nc.close()), () => remote?.manager.stop(), () => service?.close(), () => delivery?.stop(),
+    () => brokerRelay.listening ? new Promise<void>(resolve => {
+      for (const socket of brokerSockets) socket.destroy();
+      brokerRelay.close(() => resolve());
+    }) : undefined,
     () => edge.listening ? new Promise<void>(resolve => edge.close(() => resolve())) : undefined,
     () => new Promise<void>((resolve, reject) => idp.close(error => error ? reject(error) : resolve())), () => fx.stopBroker()]) {
     try { await close(); } catch (error) { errors.push(error); }
