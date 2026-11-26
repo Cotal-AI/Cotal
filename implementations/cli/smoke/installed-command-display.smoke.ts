@@ -220,6 +220,8 @@ try {
   writeFileSync(join(fixtureExtensions, "extensions.json"), JSON.stringify({ extensions: [{ pkg: "@cotal-ai/pi", version, commands: [],
     provides: [{ kind: "connector", name: "pi" }], connectors: [{ name: "pi", requires: ["pi"], eventPlane: true, setup: null }] }] }));
   writeFileSync(join(tools, "pi"), "#!/bin/sh\nexit 1\n", { mode: 0o700 });
+  const savedHarness = run(["config", "set", "harness", "pi", "--space", space]);
+  if (savedHarness.code !== 0) throw new Error(`harness preference did not save: ${savedHarness.output}`);
   const reselected = run(["use", "other-project"], otherRoot);
   for (const [flags, scope] of [
     [["--space", space], `--space ${space}`],

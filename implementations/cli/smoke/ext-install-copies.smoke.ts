@@ -163,24 +163,28 @@ function main(): void {
         !lstatSync(kept).isSymbolicLink() && digest(join(kept, "index.js")) === sourceDigest);
       check("seed: the surviving core peer matches the running CLI", realpathSync(join(kept, "node_modules", "@cotal-ai", "core")) === hostCore);
     }
-    {
-      const dir = join(root, "exports-entry");
+    for (const [form, exports] of [
+      ["nested", { ".": { import: "./greet.mjs" } }],
+      ["shorthand", { import: "./greet.mjs" }],
+    ] as const) {
+      const dir = join(root, `exports-entry-${form}`);
       const { prefix, cli } = sandbox(dir);
       const source = join(dir, "example-extension");
       mkdirSync(source);
       const name = "cotal-example-greet";
-      const meta = { name, version: "1.0.0", type: "module", exports: { ".": { import: "./greet.mjs" } }, peerDependencies: { "@cotal-ai/core": "*" } };
+      const meta = { name, version: "1.0.0", type: "module", exports, peerDependencies: { "@cotal-ai/core": "*" } };
       writeFileSync(join(source, "package.json"), JSON.stringify(meta));
       writeFileSync(join(source, "greet.mjs"), `import { registry } from "@cotal-ai/core";
 registry.register({ kind: "command", name: "greet-example", summary: "Print a greeting", run() { console.log("Hello from the extension"); } });
 `);
       const { record, env } = recordNpmSpawns(dir);
       const added = cli(["ext", "add", "./example-extension"], env);
-      assert.equal(added.status, 0, `exports-only ext add failed: ${added.stderr.slice(-800)}`);
-      check("ext add passes windowsHide to the actual npm install", existsSync(record) && readFileSync(record, "utf8").trim().split("\n").every(line => JSON.parse(line).windowsHide === true));
+      assert.equal(added.status, 0, `${form} exports-only ext add failed: ${added.stderr.slice(-800)}`);
+      check(`ext add passes windowsHide to the actual npm install for the ${form} root export`, existsSync(record) && readFileSync(record, "utf8").trim().split("\n").every(line => JSON.parse(line).windowsHide === true));
       const greeted = cli(["greet-example"]);
-      check("a fresh CLI loads the installed command through its root export", greeted.status === 0 && greeted.stdout.trim() === "Hello from the extension");
+      check(`a fresh CLI loads the installed command through its ${form} root export`, greeted.status === 0 && greeted.stdout.trim() === "Hello from the extension");
 
+      if (form !== "nested") continue;
       const manifestPath = join(prefix, "extensions.json");
       const before = readFileSync(manifestPath, "utf8");
       writeFileSync(join(source, "package.json"), JSON.stringify({ ...meta, version: "2.0.0", main: "./greet.mjs", exports: { ".": "./missing.mjs" } }));
@@ -235,7 +239,7 @@ registry.register({ kind: "command", name: "greet-example", summary: "Print a gr
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
-  assert.equal(passed + failed, process.platform === "linux" || process.platform === "darwin" ? 39 : 34, "all expected copy/rollback checks ran");
+  assert.equal(passed + failed, process.platform === "linux" || process.platform === "darwin" ? 41 : 36, "all expected copy/rollback checks ran");
   console.log(`ext-install-copies smoke: ${passed} passed, ${failed} failed`);
   emitSentinel({ passed, failed });
   process.exit(failed ? 1 : 0);

@@ -7,6 +7,7 @@ import {
   claimUpdateClosureAccess,
   waitForUpdateClosure,
   CorruptExtensionPackageError,
+  CorruptExtensionsManifestError,
   SEEDED_EXTENSIONS,
   bindExtensionPeers,
   connectorConfigDir,
@@ -745,7 +746,8 @@ function prepareMaintenanceState(mode: Mode): { manifestRebuilt: boolean; repair
     try {
       loadExtensionsManifest();
       return false;
-    } catch {
+    } catch (error) {
+      if (!(error instanceof CorruptExtensionsManifestError)) throw error;
       return true;
     }
   })();

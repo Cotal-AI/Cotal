@@ -57,16 +57,38 @@ a project keeps that project.
 
 Without a terminal, or with `--yes`, `--no-input` or `--json`, every input is a flag. A missing one
 is `USAGE_INVALID` naming each missing flag, before anything is written. The refusal prints the
-scripted form for the destination and not the full command help. For local setup, create the project
-folder if it does not exist, then run setup:
+scripted form for the destination and not the full command help. For local setup, use the example for
+your shell. Each creates the project folder first. The example uses Claude Code, which must be installed
+for its setup to complete.
+
+In Bash:
 
 ```bash
 mkdir -p -m 700 ~/research
 cotal setup --destination local --harness claude --project ~/research --space research --no-input
 ```
 
+In PowerShell on Windows, build an absolute path with `Join-Path` so setup does not depend on the
+shell expanding `~` for a native command:
+
+```powershell
+$project = Join-Path $HOME 'research'
+New-Item -ItemType Directory -Force -Path $project | Out-Null
+cotal.cmd setup --destination local --harness claude --project "$project" --space research --no-input
+```
+
+In Command Prompt on Windows:
+
+```bat
+if not exist "%USERPROFILE%\research" mkdir "%USERPROFILE%\research"
+cotal.cmd setup --destination local --harness claude --project "%USERPROFILE%\research" --space research --no-input
+```
+
 To register a self-hosted space from a connection bundle without questions, create the project
-folder if it does not exist, then run setup with the harness and the space name from the bundle:
+folder if it does not exist, then run setup with the harness and the space name from the bundle.
+In PowerShell or Command Prompt on Windows, use `cotal.cmd` and an absolute project path as shown above.
+
+In Bash:
 
 ```bash
 mkdir -p -m 700 ~/research
@@ -808,6 +830,7 @@ For a folder below the current directory, include the `./` prefix: `./plugins/ex
 An unsupported source spelling returns `USAGE_INVALID` before installation.
 A package can declare its entry through a root `exports` entry such as
 `"exports": { ".": { "import": "./greet.mjs" } }` without also declaring `main`.
+The shorthand `"exports": { "import": "./greet.mjs" }` selects the same entry.
 An npm `main` such as `"./greet"` can resolve to `greet.js` without naming the suffix.
 Give `remove` the package name as listed by `cotal ext list`, without a version.
 For a scoped package such as `@acme/_helper`, include the scope and the leading underscore.
@@ -943,7 +966,8 @@ the seed keeps stdout to itself:
 Pass at most one maintenance flag. Flags may precede `seed`: `cotal ext --repair seed` is
 equivalent to `cotal ext seed --repair`. If the extensions manifest is corrupt, repair moves
 the damaged file aside and rebuilds the built-in inventory. Add any third-party extensions
-recorded in that file again with `cotal ext add`.
+recorded in that file again with `cotal ext add`. If the account lacks read access, repair and reset
+leave the manifest in place. Restore access before retrying.
 
 A seed that fails names the connector and the reason, such as npm missing from PATH. Until
 `cotal ext seed --repair` finishes it, each command that seeds refuses. The refusal says whether
