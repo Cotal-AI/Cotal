@@ -188,14 +188,15 @@ async function cell(name: string, options: { auth?: boolean; ready?: boolean; re
   const space = folderNamed ? name : `foreground-${name}`;
   const env = { ...cleanEnv, HOME: home, COTAL_HOME: join(home, "machine"), XDG_CONFIG_HOME: join(home, "xdg"), XDG_DATA_HOME: join(home, "data"), XDG_CACHE_HOME: join(home, "cache"), XDG_STATE_HOME: join(home, "state"), COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1" };
   const logFile = join(mesh, "broker.log");
+  const statusHarness = "status-fixture";
   if (options.repairDelivery) {
     // Make the spawn suggestion available without installing or launching a harness.
     const extensions = join(env.XDG_CONFIG_HOME, "cotal", "extensions");
     mkdirSync(extensions, { recursive: true, mode: 0o700 });
     writeFileSync(join(extensions, "extensions.json"), JSON.stringify({ extensions: [{
       pkg: "@fixture/status", version: "1.0.0", spec: "@fixture/status@1.0.0", commands: [],
-      provides: [{ kind: "connector", name: "status-fixture" }],
-      connectors: [{ name: "status-fixture", requires: ["node"], eventPlane: false, setup: null }],
+      provides: [{ kind: "connector", name: statusHarness }],
+      connectors: [{ name: statusHarness, requires: ["node"], eventPlane: false, setup: null }],
     }] }), { mode: 0o600 });
   }
   const args = ["--import", tsx, cliEntry, "up", "--foreground", "--server", `nats://127.0.0.1:${port}`, ...(folderNamed ? [] : ["--space", space]), ...(options.auth ? [] : options.openBrokerExit || options.openManagerExit || options.externalDown ? ["--open"] : ["--open", "--no-manager"]), ...(options.openManagerExit || (!options.auth && options.externalDown) ? ["--store-dir", store] : []), ...(options.nativeLog ? ["--log-file", "./broker.log", "--logfile-size-limit", "1048576"] : [])];
@@ -311,7 +312,7 @@ async function cell(name: string, options: { auth?: boolean; ready?: boolean; re
       console.log(`PASS foreground-up-signals ${name}: public status broker/manager/delivery serving and ps answered`);
     }
     if (options.repairDelivery) {
-      const status = () => foregroundCliProbe(cliEntry, tsx, mesh, env, ["status"], 60_000);
+      const status = () => foregroundCliProbe(cliEntry, tsx, mesh, { ...env, COTAL_DEFAULT_AGENT: statusHarness }, ["status"], 60_000);
       const next = (report: Awaited<ReturnType<typeof status>>) => report.out.split("\nNext\n")[1] ?? "";
       const spawnLine = /^ {2}(?:pnpm )?cotal spawn +/m;
       const broker = token(brokerPath), delivery = token(deliveryPath);
