@@ -330,6 +330,11 @@ A word that names none of a command's subcommands and is near none of them is a 
 lists the subcommands the command takes.
 A command without a JSON output refuses `--json` as an unknown option.
 
+If a corrupt extension manifest blocks a built-in before it runs, finite JSON reports a
+`SCHEMA_INVALID` refusal. The streams for `history --follow`, `channel members --follow`, and
+`watch` report an `error` record with that code followed by an `end` record. The refusal points to
+`cotal ext seed --repair`, exits 1, and leaves the manifest in place.
+
 When a retained extension command collides with a built-in, the built-in wins. A finite JSON
 envelope from a built-in carries `EXTENSION_COMMAND_COLLISION` in `warnings` rather than printing
 the warning on stderr.

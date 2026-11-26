@@ -487,6 +487,16 @@ function streamRefusalArgs(cmd: Command, words: readonly string[]): ParsedArgs |
   }
 }
 
+/** An unreadable extension surface refuses dispatch, using the known built-in output mode if available. */
+function overlayFailureExit(error: unknown, builtin: Command | undefined, words: readonly string[], wantsHelp: boolean, scope: OperationScope): never {
+  if (error instanceof CorruptExtensionsManifestError && builtin && !wantsHelp && !takesWordsRaw(builtin) && asksForJson(builtin, words)) {
+    const failure = new CommandFailure("refused", "SCHEMA_INVALID", error.diagnosis, { remedy: error.remedy, cause: error });
+    failureExit(builtin, failure, true, false, scope, words, streamRefusalArgs(builtin, words));
+  }
+  stderrLine("✗ ", (error as Error).message, c.red);
+  process.exit(1);
+}
+
 /** A usage error, written by {@link usageRefusal} with the help of the command or subcommand `words`
  *  name when there is one, and with `remedy` under the message when the parser can name one. Exit 1. */
 function usageExit(message: string, cmd?: Command, json = false, plain = false, remedy?: string, words: readonly string[] = []): never {
@@ -1031,9 +1041,7 @@ async function dispatchCli(registry: Registry, argv: string[], opts: RunCliOptio
         commands = registry.all<Command>("command");
       } else {
         if (repeatedLeading) usageExit(`Option '${repeatedLeading}' cannot be repeated`);
-        // A corrupt extensions manifest must not silently shrink the surface.
-        stderrLine("✗ ", (e as Error).message, c.red);
-        process.exit(1);
+        overlayFailureExit(e, builtin, words, wantsHelp, scope);
       }
     }
     for (const cmd of commands) {
