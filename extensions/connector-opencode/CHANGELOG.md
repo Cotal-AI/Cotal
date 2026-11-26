@@ -1,5 +1,11 @@
 # @cotal-ai/connector-opencode
 
+## 0.182.0
+
+### Patch Changes
+
+- 9f63fee: Keep Windows consoles from opening during background extension installs, updates, and helper commands.
+
 ## 0.181.0
 
 ### Minor Changes
