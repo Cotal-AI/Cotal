@@ -59,6 +59,7 @@ import {
   readProcessCommand,
   resolveMeshTarget,
   processStopped,
+  WEB_SERVICE_ADAPTER,
 } from "@cotal-ai/workspace";
 import { liveMeshProcesses } from "./clean.js";
 import { addressHolder, brokerListenAddress, canonicalServer, listenerBindError } from "../lib/broker-service.js";
@@ -357,17 +358,48 @@ export function refuseForegroundStackHolder(root: string, space: string, holderP
   });
 }
 
+/** An independently owned observer can stay up while its recorded broker is recovered in place. */
+function recoveringObserverBroker(request: StackUpRequest, recorded: StackJournal | undefined, observer: ReturnType<typeof serviceHeldRecords>[number]): boolean {
+  const { root, space, server, transport } = request;
+  if (recorded?.mode !== "auth" || recorded.space !== space || canonicalServer(recorded.server) !== canonicalServer(server) ||
+      request.manifest || request.rotateSys || request.recreateIssuedStores !== undefined || request.recreateMembershipStore || request.channels !== undefined) return false;
+  const registration = findMesh(space), policy = readBrokerPolicy(root);
+  if (registration?.origin !== "up" || canonicalRoot(registration.root) !== root || registration.server !== recorded.server ||
+      (policy?.transport.kind ?? "plaintext") !== transport.kind || (transport.kind === "tls-required" &&
+        (policy?.transport.kind !== "tls-required" || policy.transport.certFile !== transport.certFile || policy.transport.keyFile !== transport.keyFile)) ||
+      (request.maxPayload !== undefined && request.maxPayload !== (policy?.maxPayload ?? NATS_DEFAULT_MAX_PAYLOAD)) ||
+      (request.accountResolver !== undefined && request.accountResolver !== (policy?.accountResolver ?? "memory"))) return false;
+  const member = recorded.members.find((row) => row.role === "broker");
+  const brokers = serviceInstances(space, STACK_DEFINITION.broker);
+  const broker = brokers[0]?.record.value;
+  if (brokers.length !== 1 || !member?.process || !broker?.process || member.instanceId !== broker.instanceId ||
+      member.process.pid !== broker.process.pid || member.process.token !== broker.process.token || observeServiceProcess(broker) !== "gone") return false;
+  const web = serviceInstanceStore(space).read(observer.instanceId)?.record.value;
+  const saved = serviceDefinitionStore(space).read(observer.definition)?.record;
+  const launch = saved?.value.launch;
+  return web?.adapter?.name === WEB_SERVICE_ADAPTER && web.process?.pid === observer.record.pid && observeServiceProcess(web) === "running" &&
+    saved?.revision === web.definitionRevision && launch?.type === "adapter" && launch.adapter === WEB_SERVICE_ADAPTER &&
+    launch.options.root === root && launch.options["read-only"] === true;
+}
+
 /** Returns a settled active restore of the recorded stack that was admitted, for the result to name. */
-function stackPreflight({ root, space, noManager, invokedRoot, foreground, manifest }: StackUpRequest, recorded: StackJournal | undefined): string | undefined {
+function stackPreflight(request: StackUpRequest, recorded: StackJournal | undefined, repeatsBrokerInputs: boolean): string | undefined {
+  const { root, space, noManager, invokedRoot, foreground, manifest } = request;
   // Its members' own pidfiles would read as legacy processes under a Cotal home with no record of them.
   if (recorded && stackRunsUnderOtherHome(root, recorded)) throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "this root's controller stack has missing member records in this Cotal home; nothing was started, adopted or replaced", { target: { root, space, cotalHome: homeCotalDir() }, remedy: stackHomeRemedy(recorded.recovery?.home) });
   const maintenance: { fenced: boolean; admittedRestore?: string } = recorded ? stackMaintenanceFence(root, recorded) : { fenced: readMaintenanceJournal(root) !== undefined };
   if (maintenance.fenced) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "this root retains a maintenance or recovery attempt; the controller stack did not substitute an ordinary startup", { target: { root, space } });
-  const legacy = foreignLocalProcesses(root, space);
+  let legacy = foreignLocalProcesses(root, space);
   const brokerPidfile = legacyBrokerPidfileBlock(root);
   // A service of this space started at this root, such as a `manager` preset, writes its own record
   // here. It is named with the stop `down` names for it; the stack still neither adopts nor replaces it.
-  const held = legacy.length && !brokerPidfile ? serviceHeldRecords(root, space) : [];
+  let held = legacy.length && !brokerPidfile ? serviceHeldRecords(root, space) : [];
+  const observer = held.length === 1 ? held[0] : undefined;
+  if (repeatsBrokerInputs && observer?.record.name === "web" && legacy.length === 1 && legacy[0] === `web (pid ${observer.record.pid})` &&
+      recoveringObserverBroker(request, recorded, observer)) {
+    legacy = [];
+    held = [];
+  }
   if (held.length && held.length === legacy.length) {
     const cmd = displayCmd();
     const retryRoot = invokedRoot !== undefined && invokedRoot !== root ? ` --root ${shellWord(root)}` : "";
@@ -892,7 +924,7 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
         ? `from the stack's project root, run \`cotal down --yes\`, then \`cotal up --max-payload ${NATS_DEFAULT_MAX_PAYLOAD}\`, or keep it broker-only with \`cotal up --no-manager\``
         : `pass --max-payload ${MANAGER_START_PAYLOAD_FLOOR} or more, or pass --no-manager to start the broker without a manager`,
     });
-  const admittedRestore = stackPreflight({ ...request, root, space }, previous?.journal);
+  const admittedRestore = stackPreflight({ ...request, root, space }, previous?.journal, recordedInputs !== undefined && strayHost === undefined && !newCap && !newLog);
   // A recorded stack keeps its space and broker address. The refusal names what is recorded and the
   // bare up that starts it there.
   const recordedTarget = { root, space, recorded: { space: previous?.journal.space, server: previous?.journal.server }, requested: { space, server: request.server } };

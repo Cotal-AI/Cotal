@@ -1325,6 +1325,7 @@
   "env:COTAL_MEMBERSHIP_INTERVAL_MS": "pending:config",
   "env:COTAL_MODEL": "current:spawn --model",
   "env:COTAL_MODEL_LIST_SETTLE_MS": "pending:config",
+  "env:COTAL_MODEL_POLICY": "internal:seat session variable the launcher writes for a spawned seat",
   "env:COTAL_MUTED": "internal:seat session variable the launcher writes for a spawned seat",
   "env:COTAL_NAME": "current:spawn --name",
   "env:COTAL_NO_PROMPT": "pending:config",

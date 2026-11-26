@@ -19,7 +19,7 @@ import { once } from "node:events";
 import { connect } from "node:net";
 import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { delimiter, join } from "node:path";
+import { delimiter, join, sep } from "node:path";
 import { assertSmokeSandboxDown, createSuite, freePort } from "@cotal-ai/smoke-kit";
 import { acquireMaintenanceLock, beginMaintenanceCut, canonicalLocalProcessPath, findMesh, recordMesh, releaseMaintenanceLock, renderReport, WEB_PIDFILE, writeMaintenanceResumeDocument } from "@cotal-ai/workspace";
 import { statusView } from "../src/commands/status.js";
@@ -136,6 +136,32 @@ if (!brokerDisplayOnly && !pidfileOnly) {
   const corrupt = run(["status", "--json"]);
   check("a corrupt cursor names the unreadable file with the existing extension warning", corrupt.status === 4 && corrupt.envelope?.outcome === "partial" && corrupt.envelope.warnings.some(w => w.code === "EXTENSIONS_UNREADABLE" && w.message.includes(cursor)), shown(corrupt));
   check("reading a corrupt cursor does not quarantine or repair it", readFileSync(cursor, "utf8") === "{broken\n");
+}
+if (!brokerDisplayOnly && !pidfileOnly) {
+  const { home, run } = sandbox();
+  const ext = run(["ext", "root"]);
+  const prefix = ext.stdout.trim();
+  if (ext.status !== 0 || !prefix.startsWith(join(home, ".config") + sep)) throw new Error(`extension root is not inside the sandbox: ${JSON.stringify(shown(ext))}`);
+  const manifest = join(prefix, "extensions.json");
+  mkdirSync(prefix, { recursive: true, mode: 0o700 });
+  writeFileSync(manifest, '{"extensions":[]}\n');
+  const control = run(["status", "--json"]);
+  check("valid empty inventory keeps the report complete", control.status === 0 && control.envelope?.completeness === "complete" && control.envelope.result?.extensions?.items?.length === 0, shown(control));
+  const damaged = "{}\n";
+  writeFileSync(manifest, damaged);
+  const json = run(["status", "--json"]);
+  const env = json.envelope;
+  check("a corrupt extension inventory produces one partial infrastructure envelope with no stderr",
+    json.status === 4 && json.stderr === "" && env?.command === "status" && env.outcome === "partial" && env.completeness === "partial"
+    && env.result?.kind === "infrastructure" && env.result.extensions?.items === null && env.result.machine.nats !== "", shown(json));
+  check("the extension warning names the corrupt file and its repair step",
+    env?.warnings.some(w => w.code === "EXTENSIONS_UNREADABLE" && w.message.includes(manifest) && w.message.includes("ext seed --repair")) === true, env?.warnings);
+  for (const flags of [[], ["--plain"]]) {
+    const text = run(["status", ...flags], { NO_COLOR: "1" });
+    check(`status ${flags.join(" ") || "human"} keeps readable observations and reports the damaged inventory`,
+      text.status === 4 && text.stdout.includes("This machine") && text.stderr.includes("corrupt extensions manifest"), shown(text));
+  }
+  check("status leaves the corrupt inventory unchanged", readFileSync(manifest, "utf8") === damaged);
 }
 // Component pidfile reads share the folder report's path-bearing diagnostics.
 if (!brokerDisplayOnly) {

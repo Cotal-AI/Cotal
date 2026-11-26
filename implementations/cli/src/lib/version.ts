@@ -3,7 +3,7 @@ import { basename, dirname, join } from "node:path";
 import { cachedUpdateSummary, logicalExecutionEntry, extensionProvides, loadExtensionsManifest, UnreadableConnectorSelection } from "@cotal-ai/workspace";
 import { cliPackageRoot, cliVersion, installedCliVersion } from "../seed/paths.js";
 import { isNpx } from "./self-exec.js";
-import { readUpdatePending } from "./update-pending.js";
+import { manifestReadRemedy, readUpdatePending } from "./update-pending.js";
 
 /** This binary's own published version. Re-exported here so the version surfaces (`cotal version` and
  *  `cotal status`) have a single import for all version reporting. */
@@ -57,7 +57,7 @@ export function extensionVersions(): ExtensionVersion[] {
 
 /** {@link extensionVersions}, with the reason when the manifest could not be read, so a structured
  *  report can say its list is incomplete rather than empty. */
-export function readExtensionVersions(): { versions: ExtensionVersion[]; unreadable?: string; unreadableSelection?: true } {
+export function readExtensionVersions(): { versions: ExtensionVersion[]; unreadable?: string; unreadableSelection?: true; remedy?: string } {
   try {
     const versions = loadExtensionsManifest().extensions.map((entry, index) => {
       if (!entry || typeof entry.pkg !== "string" || !entry.pkg || typeof entry.version !== "string" || !entry.version || !Array.isArray(entry.commands)) {
@@ -71,7 +71,7 @@ export function readExtensionVersions(): { versions: ExtensionVersion[]; unreada
     });
     return { versions };
   } catch (e) {
-    return { versions: [], unreadable: e instanceof Error ? e.message : String(e), ...(e instanceof UnreadableConnectorSelection ? { unreadableSelection: true } : {}) };
+    return { versions: [], unreadable: e instanceof Error ? e.message : String(e), remedy: manifestReadRemedy(e), ...(e instanceof UnreadableConnectorSelection ? { unreadableSelection: true } : {}) };
   }
 }
 

@@ -24,6 +24,8 @@
  *    described by what its rail reports;
  *  - a manager is local only by the machine id it names: this machine's manager under a host name it
  *    no longer has is local and starts no second one, and another machine's under this host name is not;
+ *  - a manager that names no machine, as one an older release started, is local when this machine's
+ *    service record names its instance, so a new thread starts no second manager beside it;
  *  - `launchManagers` starts this machine's manager when no listed one is, remote live included, and
  *    fails the thread when the start fails or its manager is still not listed here;
  *  - the model select and model state list `<agent>/default` once when the catalog names a model
@@ -39,7 +41,7 @@ import { FrameMapper } from "../src/frames.js";
 import { patchDiffs } from "../src/tools.js";
 import { agentCatalogs, answeredReads, frameOf, listedChoice, managerChoice, managerPlan, namesDeregister, runningManagers } from "../src/live-mesh.js";
 import { launchManagers } from "../src/manager-start.js";
-import { applyOption, configOptions, initialSelection, launchModel, modelState, noMachine, refusal, type Offer } from "../src/options.js";
+import { applyOption, configOptions, initialSelection, modelState, noMachine, refusal, spawnModel, type Offer } from "../src/options.js";
 import { NoLaunchManager } from "../src/mesh.js";
 import type { AguiEventLike, ManagerChoice, SeatFrame } from "../src/mesh.js";
 
@@ -347,6 +349,25 @@ const HERE = "1".repeat(64), THERE = "2".repeat(64);
   check("so a new thread starts this machine's manager", starts === 1, { starts, got: got instanceof Error ? got.message : got });
 }
 
+// A manager that an older release started names no machine, as a manager service that kept running
+// across `cotal update --self` does. This machine's service record for the space names the instance it
+// runs here, and that one is local; a manager that names a machine is still decided by it.
+{
+  const card = (id: string, machine?: string) => ({ card: { id: `u_p.manager_${id}`, name: `manager_${id}`, meta: { host: "mac", ...(machine ? { machine } : {}) } }, status: "idle" }) as unknown as Presence;
+  const roster = [card("old"), card("far", THERE)];
+  const old = managerChoice("old", roster, HERE, "u_p", "old");
+  check("a manager row that names no machine is local when this machine's service record names it", old.live === true && old.local === true, old);
+  const other = managerChoice("old", roster, HERE, "u_p", "another");
+  check("and not when the record names another instance", other.live === true && other.local === false, other);
+  const far = managerChoice("far", roster, HERE, "u_p", "far");
+  check("a row that names another machine stays not local, whatever the record says", far.live === true && far.local === false, far);
+  const listed = listedChoice("space", { host: "mac" }, [], HERE, "u_p", "space");
+  check("a rail report that names no machine is local when the record names the instance", listed?.live === true && listed.local === true, listed);
+  let starts = 0;
+  const got = await launchManagers({ space: "s", managers: async () => [old], startManager: async () => (starts++, "started"), machineUnreadable: () => undefined }, () => {}).catch((e: Error) => e);
+  check("so a new thread starts no second manager beside the older one", starts === 0 && Array.isArray(got) && got.length === 1, { starts, got: got instanceof Error ? got.message : got });
+}
+
 // This machine's identity could not be read, as in a container with no /etc/machine-id. A manager a
 // thread names is still described, and none reads as this machine's, not even one that names no
 // machine either. So a new thread neither defaults to one nor starts one.
@@ -435,12 +456,12 @@ const HERE = "1".repeat(64), THERE = "2".repeat(64);
   const reasoning = configOptions(alone, initialSelection(alone)).find((o) => o.id === "variant") as unknown as { options: { value: string }[] } | undefined;
   check("where it is the only model, the Reasoning select holds its variants", JSON.stringify(reasoning?.options.map((o) => o.value)) === JSON.stringify(["default", "high"]), reasoning);
   // The Manager checks a variant against the model a launch names, or the catalog's marked default
-  // when it names none, so a variant chosen on <agent>/default names the model it came from.
-  check("a variant chosen on <agent>/default launches naming the model default", launchModel(offer, { ...selection, variant: "high" }) === "default", launchModel(offer, { ...selection, variant: "high" }));
-  check("<agent>/default with no variant still launches naming no model", launchModel(offer, selection) === undefined, launchModel(offer, selection));
+  // when it names none, so a variant chosen on <agent>/default launches naming the model it came from.
+  const chosen = applyOption(offer, selection, "variant", "high");
+  check("a variant chosen on <agent>/default launches naming the model default, with that variant", spawnModel(offer, chosen.model) === "default" && chosen.variant === "high", chosen);
   const plainOffer = offerOf([{ id: "a", variants: [{ name: "low" }] }]);
-  check("nor does a variant where no catalog model is named default", launchModel(plainOffer, { ...initialSelection(plainOffer), variant: "low" }) === undefined);
-  check("a named model launches as itself", launchModel(offer, { ...selection, model: "hermes/a", variant: "low" }) === "a");
+  check("where no catalog model is named default, <agent>/default launches naming no model", spawnModel(plainOffer, initialSelection(plainOffer).model) === undefined);
+  check("a named model launches as itself", spawnModel(offer, "hermes/a") === "a");
 }
 
 // A Jcode whose `jcode model list` lists models, as its catalog reads them on an install with no

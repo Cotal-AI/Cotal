@@ -5,7 +5,7 @@ import { connectorServers, loadCotalConfig, parseAgentFileSource, parseShareSele
 import { CommandFailure, findMesh, isCommandFailure, recordOperationSpace, brokerAddressForDisplay, cachedPreferences, isWorkspaceTargetError, loadLaunchPersonaFile, personaDir, PersonaSourceError, presentationOf, pruneStaleMeshes, resolveAgentType, resolveMeshTarget, resolvePreference, resolveReadsLiveness, targetErrorCode, workspaceErrorParts, writeResult, type MeshTarget, type OutputWarning, type Report } from "@cotal-ai/workspace";
 import { mergeLaunchOptions, parseLaunchModes, parseLaunchOptions } from "@cotal-ai/workspace";
 import { extensionNames, materializeExtension, preflightRuntime } from "../ext-loader.js";
-import { brokenPersonaLink, callerHarness, checkSpawnExpiryTarget, directPersonaPath, missingConnector, missingPersonaFailure, spawnPersona, spawnUsesManager, type PersonaSite } from "../lib/spawn-defaults.js";
+import { brokenPersonaLink, callerHarness, checkSpawnExpiryTarget, directPersonaPath, missingConnector, missingPersonaFailure, nonDirectoryPersonaPath, spawnPersona, spawnUsesManager, type PersonaSite } from "../lib/spawn-defaults.js";
 import { managerPin } from "../lib/manager-choice.js";
 import { unreadablePersona } from "../lib/persona-files.js";
 import { refuseDirectSpawnName, spawnRerun, unsupportedVariantRemedy } from "./spawn-flags.js";
@@ -180,6 +180,6 @@ export async function spawnLaunchPreview(args: Pick<ParsedArgs, "positionals"> &
 }
 
 function previewPersonaReadFailure(path: string, code: string | undefined, target: object): CommandFailure {
-  const broken = code === "ENOTDIR" ? brokenPersonaLink(path, target) : undefined;
-  return broken ?? new CommandFailure("refused", "PERMISSION_DENIED", `cannot read persona: ${path}`, { target });
+  if (code === "ENOTDIR") return nonDirectoryPersonaPath(path, target);
+  return new CommandFailure("refused", "PERMISSION_DENIED", `cannot read persona: ${path}`, { target });
 }

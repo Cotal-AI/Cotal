@@ -371,6 +371,21 @@ function canonicalFuturePath(path: string): string {
   return join(realpathSync.native(dirname(absolute)), basename(absolute));
 }
 
+/** Project missing components from the closest existing ancestor, unless it is a dangling link. */
+function canonicalMissingBackupPath(path: string): string | undefined {
+  let ancestor = dirname(path);
+  while (!lstatSync(ancestor, { throwIfNoEntry: false })) {
+    const parent = dirname(ancestor);
+    if (parent === ancestor) return undefined;
+    ancestor = parent;
+  }
+  try { return join(realpathSync.native(ancestor), relative(ancestor, path)); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    return undefined;
+  }
+}
+
 function overlaps(a: string, b: string): boolean {
   const fromA = relative(a, b);
   const fromB = relative(b, a);
@@ -600,19 +615,21 @@ async function createBackup(args: ParsedArgs, observed: BackupObservation): Prom
     const partial = journal.state === "claimed" && journal.claim.ownedPaths?.some((owned) => owned.label === "destination" && owned.path === destinationPath) ? journal.claim.attemptId : undefined;
     throw new CommandFailure("refused", "CONFLICT", partial ? `the backup destination ${destinationPath} is the partial artifact of interrupted backup attempt ${partial}; backup create writes only a new directory` : "the backup destination already exists; backup create writes only a new directory", { target: { directory: destinationPath }, remedy: partial ? `remove it with \`cotal backup recover ${partial} --yes\`, then run this create again` : "name a directory that does not exist yet" });
   }
-  if (missingBackupPath(destinationPath) === "folder")
-    throw new CommandFailure("refused", "TARGET_NOT_FOUND", `there is no folder ${dirname(destinationPath)} to create the backup in; nothing was written`, { target: { directory: destinationPath, folder: dirname(destinationPath), missing: "folder" }, remedy: "create that folder first; backup create makes only the artifact's own folder" });
+  const missingFolder = missingBackupPath(destinationPath) === "folder";
+  const artifact = missingFolder ? canonicalMissingBackupPath(destinationPath) : canonicalFuturePath(destinationPath);
   // A destination the preserved store holds, or one in a folder this account cannot write, is refused
   // here, before the lock, so it leaves no attempt behind.
   const preserved = journal.state === "ready" || journal.state === "claimed" ? journal.source.path : undefined;
-  if (preserved && overlaps(canonicalFuturePath(destinationPath), preserved))
+  if (artifact && preserved && overlaps(artifact, preserved))
     throw new CommandFailure("refused", "USAGE_INVALID", `the backup destination ${destinationPath} is inside the preserved store ${preserved} it would copy; nothing was written`, { target: { directory: destinationPath, store: preserved }, remedy: `name a destination outside ${preserved}`, selfContained: true });
   // `clean all` removes the space's identity, material and launch files with whatever they hold, so
   // an artifact among them would be removed with them.
-  const cleaned = Object.values(localIdentityCleanupTargets(canonicalRoot(root), journal.space)).flat().map(canonicalRoot)
-    .find((path) => overlaps(canonicalFuturePath(destinationPath), path));
+  const cleaned = artifact && Object.values(localIdentityCleanupTargets(canonicalRoot(root), journal.space)).flat().map(canonicalRoot)
+    .find((path) => overlaps(artifact, path));
   if (cleaned)
     throw new CommandFailure("refused", "USAGE_INVALID", `the backup destination ${destinationPath} is inside ${cleaned}, which \`cotal clean all\` removes; nothing was written`, { target: { directory: destinationPath, removedBy: cleaned }, remedy: `name a destination outside ${cleaned}`, selfContained: true });
+  if (missingFolder)
+    throw new CommandFailure("refused", "TARGET_NOT_FOUND", `there is no folder ${folder} to create the backup in; nothing was written`, { target: { directory: destinationPath, folder, missing: "folder" }, remedy: "create that folder first; backup create makes only the artifact's own folder" });
   try { accessSync(folder, constants.W_OK | constants.X_OK); }
   catch {
     // Do not offer a command whose operand the terminal would change by escaping invisibles.

@@ -170,7 +170,29 @@ manager keeps serving the other connectors.
 Model and variant are published on presence, which is where the web dashboard's `model · variant`
 badge reads them from. The variant appears only when you asked for one (via
 `--variant` or `variant:` in the agent file): there is no way to read the effort back off a running
-thread, so an unset variant is shown as absent rather than guessed at.
+thread, so an unset variant is shown as absent rather than guessed at. After a switch, presence
+shows the model and effort the switch answered.
+
+### Switching the model
+
+On a per-user mesh the owner switches the agent's model with the `agent` endpoint's `set-model`
+command. Codex accepts a model name it does not know and finds out only when a turn runs, so the
+host first reads `model/list` from the agent's own app-server, hidden models included. A model it
+does not list is refused as `not-found`. A variant the model's reasoning efforts do not list is
+refused as `failed-precondition`. The host then sends `thread/settings/update` with the model and
+the effort. Without a variant it sends the model's default effort from `model/list`, because an
+update with no effort keeps the previous one. Without a model it keeps the model the thread runs
+and changes only the effort. When Codex refuses the update, the switch is refused as
+`failed-precondition` and nothing changes. The answer names the model and effort Codex runs from
+then on.
+
+The switch applies from the next turn, and a turn already running keeps its model. Codex tells
+every client attached to the thread, so turns typed into the attached TUI follow it. After an
+app-server restart the host sends the same update to the new thread before that thread runs a
+turn, and a new thread that refuses it stops the agent. The host does not see a model picked with
+`/model` in the attached TUI, so a `set-model` without a model keeps the model the host launched
+with or last switched to. `thread/settings/update` belongs to Codex's experimental app-server API,
+which the host already turns on.
 
 ## Sandbox options
 
@@ -317,7 +339,8 @@ Twelve things are specific to Codex and worth knowing before you read a stream:
   the turn's own completion record, so a turn that hit a usage limit or an upstream error ends its
   run with `RUN_ERROR` carrying the fixed message `run failed` and no code. Neither Codex's error
   text nor its `codex_error_info` is published there: both are upstream values that can echo your
-  prompt or tool output, and the events channel has a different read ACL.
+  prompt or tool output, and the events channel has a different read ACL. Both reach presence as the
+  agent's condition, and an [ACP thread](acp-clients.mdx#threads) shows them when the turn fails.
 - **No user-authored text is published, ever.** Your prompts, the peer messages injected into the
   thread, and the developer instructions the persona supplies are all withheld. The events channel
   carries a different read ACL from the channel you typed into, so republishing your own words there

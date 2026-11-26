@@ -209,6 +209,8 @@ mod tests {
         assert!(serde_json::from_str::<DesktopRequest>(r#"{"op":"log","limit":1000000}"#).is_err());
         assert!(DesktopRequest::Log {}.validate().is_ok());
         for input in [
+            // Only the uninstaller removes the background service; the window can never ask for it.
+            r#"{"op":"remove-service"}"#,
             r#"{"op":"exec","command":"sh"}"#,
             r#"{"op":"status","args":[]}"#,
             r#"{"op":"status-watch","args":[]}"#,
