@@ -6,7 +6,7 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { homedir, userInfo } from "node:os";
 import { basename, dirname, join, win32 } from "node:path";
 import type { HarnessInstall, HarnessInstaller } from "@cotal-ai/core";
-import { checkedHarnessInstall, cmdSpawnSpec, CommandFailure, extensionConnectors, loadExtensionsManifest, resolveOnPath } from "@cotal-ai/workspace";
+import { checkedHarnessInstall, cmdSpawnSpec, CommandFailure, extensionConnectors, loadExtensionsManifest, OFFICIAL_CONNECTORS, resolveOnPath } from "@cotal-ai/workspace";
 import { discoverDesktopApplicationPath } from "./desktop-path.js";
 import { refreshServiceForApplication, type InstallOptions } from "./setup.js";
 
@@ -26,9 +26,12 @@ export interface AgentApp {
   readonly install?: { readonly source: string; readonly needs?: readonly string[] };
   /** Whether the app can start the harness's own sign-in. */
   readonly signIn?: true;
+  /** The npm package of a connector that is not Cotal's own, so the person sees who declared the
+   *  installer before choosing Install. Absent for an official connector. */
+  readonly package?: string;
 }
 
-interface Declared { readonly name: string; readonly requires: readonly string[]; readonly install?: HarnessInstall }
+interface Declared { readonly name: string; readonly pkg: string; readonly requires: readonly string[]; readonly install?: HarnessInstall }
 type Emit = (line: string) => void;
 
 /** The Windows system directory, from which PowerShell and taskkill run. Never a PATH lookup. */
@@ -41,9 +44,9 @@ const system = process.platform === "darwin" || process.platform === "linux" || 
 
 /** Every installed connector that runs an external harness, with its checked install declaration. */
 function declaredApps(): Declared[] {
-  return loadExtensionsManifest().extensions.flatMap(ext => extensionConnectors(ext))
-    .filter(connector => connector.requires.length > 0)
-    .map(connector => ({ name: connector.name, requires: connector.requires, ...(connector.install === undefined ? {} : { install: checkedHarnessInstall(connector.name, connector.requires, connector.install) }) }));
+  return loadExtensionsManifest().extensions.flatMap(ext => extensionConnectors(ext).map(connector => ({ connector, pkg: ext.pkg })))
+    .filter(({ connector }) => connector.requires.length > 0)
+    .map(({ connector, pkg }) => ({ name: connector.name, pkg, requires: connector.requires, ...(connector.install === undefined ? {} : { install: checkedHarnessInstall(connector.name, connector.requires, connector.install) }) }));
 }
 
 function declared(name: string): Declared {
@@ -141,6 +144,7 @@ async function row(app: Declared, path: string): Promise<AgentApp> {
     name: app.name, title: app.install?.title ?? app.name, ...(app.install ? { maker: app.install.maker } : {}),
     ...(installer ? { install: { source: new URL(installer.script).host, ...(needs?.length ? { needs } : {}) } } : {}),
     ...(app.install?.signIn ? { signIn: true as const } : {}),
+    ...(Object.hasOwn(OFFICIAL_CONNECTORS, app.name) && OFFICIAL_CONNECTORS[app.name] === app.pkg ? {} : { package: app.pkg }),
   };
   if (missing.length) return { ...base, state: "missing", missing };
   const [version, signed] = await Promise.all([versionOf(app.requires[0]!, path), signedIn(app, path)]);

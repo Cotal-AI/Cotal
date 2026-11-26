@@ -226,7 +226,7 @@ export class AgentApps {
     if (suggested) {
       const go = document.createElement("button");
       go.type = "button"; go.className = "button primary"; go.disabled = this.busy;
-      go.textContent = signedOut ? `Sign in to ${signedOut.title}` : `Install ${suggested.title}`;
+      go.textContent = signedOut ? `Sign in to ${signedOut.title}` : `Install ${suggested.title} from ${suggested.install!.source}`;
       go.addEventListener("click", () => { this.host.openPanel(); void (signedOut ? this.signIn(signedOut.name) : this.install(suggested.name)); });
       actions.append(go);
     }

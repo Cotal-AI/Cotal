@@ -187,7 +187,7 @@ const reachable = async page => {
 };
 const auditAgents = [{ space: "acme-team", state: "read", agents: Array.from({ length: 12 }, (_, i) => ({ name: `writer-${i + 1}`, application: "codex", model: "gpt-model", cwd: "/projects/cotal", startedAt: "2026-11-11T20:00:00.000Z", state: "running" })) }];
 const longAccountSpaces = Array.from({ length: 12 }, (_, index) => ({ space: `team-${index + 1}-${"nested-project-path-".repeat(5)}`, label: `Organization / engineering / projects / ${index + 1} / ${"long-unbroken-label".repeat(5)}`, idp: "https://cloud.cotal.ai/api/auth", mode: "user", kind: "team", role: "owner" }));
-const appState = (name, state, extra = {}) => ({ name, title: { claude: "Claude Code", codex: "Codex", opencode: "OpenCode", pi: "pi", jcode: "Jcode", hermes: "Hermes" }[name], maker: { claude: "Anthropic", codex: "OpenAI", opencode: "Anomaly", pi: "Earendil", jcode: "Jeremy Huang", hermes: "Nous Research" }[name], state, ...(state === "missing" ? {} : { version: "1.4.2" }), install: { source: { claude: "claude.ai", codex: "chatgpt.com", opencode: "opencode.ai", pi: "pi.dev", jcode: "jcode.sh", hermes: "astral.sh" }[name] }, ...(["claude", "codex"].includes(name) ? { signIn: true } : {}), ...extra });
+const appState = (name, state, extra = {}) => ({ name, title: { claude: "Claude Code", codex: "Codex", opencode: "OpenCode", pi: "pi", jcode: "Jcode", hermes: "Hermes" }[name], maker: { claude: "Anthropic", codex: "OpenAI", opencode: "Anomaly", pi: "Earendil", jcode: "Jeremy Huang", hermes: "Nous Research" }[name], state, ...(state === "missing" ? { missing: [{ claude: "claude", codex: "codex", opencode: "opencode", pi: "pi", jcode: "jcode", hermes: "uv" }[name]] } : { version: "1.4.2" }), install: { source: { claude: "claude.ai", codex: "chatgpt.com", opencode: "opencode.ai", pi: "pi.dev", jcode: "jcode.sh", hermes: "astral.sh" }[name] }, ...(["claude", "codex"].includes(name) ? { signIn: true } : {}), ...extra });
 const connectedApps = { installed: true, signedIn: true, connected: true };
 const accountOnly = { installed: true, signedIn: true, account: { mode: "account", hostSupport: "supported", spaces: [] } };
 const openApps = async page => { await page.getByRole("button", { name: /^(Agent apps: |See all apps$)/ }).click(); await page.locator("#apps-panel:not([hidden]) .app-row").first().waitFor(); };
@@ -221,16 +221,27 @@ const appsScenarios = [
   { name: "agent-apps-none", state: { ...accountOnly, agentApps: noApps }, expect: async page => {
     await page.locator("#apps-strip.apps-callout").waitFor();
     assert.match(await page.locator("#apps-strip h2").textContent(), /Install an agent app/);
-    assert.equal(await appButton(page, "Install Claude Code").isVisible(), true);
+    assert.equal(await appButton(page, "Install Claude Code from claude.ai").isVisible(), true);
   } },
-  { name: "agent-apps-none-install", state: { ...accountOnly, agentApps: noApps, appInstallHold: true }, act: async page => { await appButton(page, "Install Claude Code").click(); await page.locator('[data-app="claude"][data-state="busy"]').waitFor(); }, expect: async page => {
+  { name: "agent-apps-provenance", state: { ...accountOnly, agentApps: [appState("claude", "missing"), appState("hermes", "missing"), { name: "thing", title: "Thing", maker: "Thing Co", state: "missing", missing: ["thing"], install: { source: "thing.example" }, package: "cotal-connector-thing" }] }, act: openApps, expect: async page => {
+    assert.equal(await page.locator('[data-app="claude"] .app-status').textContent(), "Not installed · installs from claude.ai");
+    assert.equal(await page.locator('[data-app="hermes"] .app-status').textContent(), "Not installed · installs uv from astral.sh");
+    assert.equal(await page.locator('[data-app="thing"] .app-status').textContent(), "Not installed · installs from thing.example · package cotal-connector-thing");
+    assert.equal(await appButton(page, "Install: Thing").isVisible(), true);
+  } },
+  { name: "agent-apps-only-third-party", state: { ...accountOnly, agentApps: [{ name: "thing", title: "Thing", maker: "Thing Co", state: "missing", missing: ["thing"], install: { source: "thing.example" }, package: "cotal-connector-thing" }] }, expect: async page => {
+    await page.locator("#apps-strip.apps-callout").waitFor();
+    assert.equal(await page.locator("#apps-strip .button.primary").count(), 0, "the callout offers no one-click install of a connector that is not Cotal's");
+    assert.equal(await appButton(page, "See all apps").isVisible(), true);
+  } },
+  { name: "agent-apps-none-install", state: { ...accountOnly, agentApps: noApps, appInstallHold: true }, act: async page => { await appButton(page, "Install Claude Code from claude.ai").click(); await page.locator('[data-app="claude"][data-state="busy"]').waitFor(); }, expect: async page => {
     assert.equal(await page.locator("#apps-panel").isVisible(), true);
     assert.match(await page.locator('[data-app="claude"] .app-status').textContent(), /Installing from claude\.ai/);
     assert.match(await page.locator('[data-app="claude"] .app-line').textContent(), /Installing native build latest/);
     assert.equal(await appButton(page, "Install: Codex").isDisabled(), true);
     assert.deepEqual((await page.evaluate(() => window.__renderState.appActions)), ["agent-app-install:claude"]);
   } },
-  { name: "agent-apps-install-signs-in", state: { ...accountOnly, agentApps: noApps, signInHold: true }, act: async page => { await appButton(page, "Install Claude Code").click(); await page.locator('[data-app="claude"] .app-status:has-text("Finish signing in")').waitFor(); }, expect: async page => {
+  { name: "agent-apps-install-signs-in", state: { ...accountOnly, agentApps: noApps, signInHold: true }, act: async page => { await appButton(page, "Install Claude Code from claude.ai").click(); await page.locator('[data-app="claude"] .app-status:has-text("Finish signing in")').waitFor(); }, expect: async page => {
     assert.deepEqual((await page.evaluate(() => window.__renderState.appActions)), ["agent-app-install:claude", "agent-app-sign-in:claude"]);
     assert.equal(await appButton(page, "Open sign-in page: Claude Code").isVisible(), true);
     await appButton(page, "Open sign-in page: Claude Code").click();

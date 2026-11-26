@@ -9,7 +9,11 @@ test("rows say where each application stands and offer the one next step", () =>
   assert.deepEqual(rowView(app("claude", "signed-in", { version: "2.1.3" }), undefined, "darwin"), { tone: "ready", status: "Signed in · version 2.1.3" });
   assert.deepEqual(rowView(app("pi", "installed"), undefined, "linux"), { tone: "ready", status: "Installed" });
   assert.deepEqual(rowView(app("codex", "signed-out", { version: "0.1" }), undefined, "win32"), { tone: "warn", status: "Installed · version 0.1, not signed in", action: { kind: "sign-in", label: "Sign in", primary: true } });
-  assert.deepEqual(rowView(app("jcode", "missing"), undefined, "linux"), { tone: "missing", status: "Not installed", action: { kind: "install", label: "Install" } });
+  assert.deepEqual(rowView(app("jcode", "missing"), undefined, "linux"), { tone: "missing", status: "Not installed · installs from jcode.example", action: { kind: "install", label: "Install" } });
+  // Before Install, a row says what it downloads and from where, and who declared the installer when it is not Cotal.
+  assert.equal(rowView(app("hermes", "missing", { missing: ["uv"], install: { source: "astral.sh" } }), undefined, "linux").status, "Not installed · installs uv from astral.sh");
+  assert.equal(rowView(app("claude", "missing", { missing: ["claude"], install: { source: "claude.ai" } }), undefined, "linux").status, "Not installed · installs from claude.ai");
+  assert.equal(rowView(app("thing", "missing", { package: "cotal-connector-thing" }), undefined, "linux").status, "Not installed · installs from thing.example · package cotal-connector-thing");
   assert.deepEqual(rowView(app("pi", "missing", { install: { source: "pi.dev", needs: ["node", "npm"] } }), undefined, "linux"), { tone: "off", status: "Needs node and npm installed first" });
   // A declared harness with no installer for this system, and a connector that declares none.
   assert.deepEqual(rowView({ ...app("opencode", "missing"), install: undefined }, undefined, "win32"), { tone: "off", status: "No installer for Windows" });
@@ -32,6 +36,8 @@ test("Claude Code comes first and the no-app prompt suggests the first app it ca
   // Claude Code's installer needs a missing tool here, so Codex is suggested; none installable means none.
   assert.equal(suggestedApp(apps)?.name, "codex");
   assert.equal(suggestedApp([app("claude", "installed"), { ...app("opencode", "missing"), install: undefined }]), undefined);
+  // A connector that is not Cotal's own installs only from its row, which names its package.
+  assert.equal(suggestedApp([app("claude", "installed"), app("thing", "missing", { package: "cotal-connector-thing" })]), undefined);
 });
 
 test("the list is refused unless every row has a known shape", () => {

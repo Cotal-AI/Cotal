@@ -5,6 +5,8 @@ export type AgentAppState = "signed-in" | "installed" | "signed-out" | "missing"
 export interface AgentApp {
   name: string; title: string; maker?: string; state: AgentAppState; version?: string;
   missing?: string[]; install?: { source: string; needs?: string[] }; signIn?: true;
+  /** Set only for a connector that is not Cotal's own: the npm package that declared the installer. */
+  package?: string;
 }
 /** What the person started on one row, and how it went. */
 export type Activity =
@@ -50,7 +52,15 @@ export function rowView(app: AgentApp, activity: Activity | undefined, platform:
   if (app.state === "signed-out") return { tone: "warn", status: `Installed${version}, not signed in`, action: { kind: "sign-in", label: "Sign in", primary: true } };
   if (!app.install) return { tone: "off", status: SYSTEM_NAMES[platform] && app.maker ? `No installer for ${SYSTEM_NAMES[platform]}` : "Not installed" };
   if (app.install.needs?.length) return { tone: "off", status: `Needs ${new Intl.ListFormat("en", { type: "conjunction" }).format(app.install.needs)} installed first` };
-  return { tone: "missing", status: "Not installed", action: { kind: "install", label: "Install" } };
+  return { tone: "missing", status: `Not installed · ${installsFrom(app)}`, action: { kind: "install", label: "Install" } };
+}
+
+/** Where Install downloads from, said before the click: the executables when they are not the app's
+ *  own (Hermes installs uv), the installer's host, and the package of a connector that is not Cotal's. */
+export function installsFrom(app: AgentApp): string {
+  const own = !app.missing?.length || app.missing.every(command => command === app.name);
+  const what = own ? "installs" : `installs ${new Intl.ListFormat("en", { type: "conjunction" }).format(app.missing!)}`;
+  return `${what} from ${app.install?.source ?? "its maker"}${app.package ? ` · package ${app.package}` : ""}`;
 }
 
 /** The first https address a sign-in printed, which the person can open again if the browser did not. */
@@ -59,9 +69,10 @@ export function signInUrl(line: string): string | undefined {
   return match ? match[0] : undefined;
 }
 
-/** The app that the no-app prompt offers to install: Claude Code when it can be installed here. */
+/** The app that the no-app prompt offers to install: Claude Code when it can be installed here. Only
+ *  Cotal's own connectors are offered there; any other installs from its row, which names its package. */
 export function suggestedApp(apps: readonly AgentApp[]): AgentApp | undefined {
-  return orderedApps(apps).find(app => app.state === "missing" && app.install && !app.install.needs?.length);
+  return orderedApps(apps).find(app => app.state === "missing" && app.install && !app.install.needs?.length && !app.package);
 }
 
 /** The detail a refusal carries for the Details disclosure: the installer's last lines. */
