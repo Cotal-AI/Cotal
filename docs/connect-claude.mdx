@@ -120,10 +120,11 @@ This covers plugin setup, but does not satisfy the executable requirement for ma
 
 ```bash
 cotal up
-cotal status
+cotal status --wide
 ```
 
-Check the Claude connector and plugin rows in `cotal status`.
+Under **This machine**, check that **Claude plugin** says `current (user scope)` and
+**Claude wake channel** says `user MCP entry cotal registered`.
 Reload plugins or reopen existing Claude sessions after setup or an update.
 Running sessions keep the code they already loaded.
 

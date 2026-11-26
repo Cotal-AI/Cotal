@@ -125,14 +125,15 @@ export function resolveExtensionEntry(dir: string, meta: InstalledExtensionPacka
  * while an add has already rolled its candidate back. `metadata` carries the caller's validated read
  * through entry selection and failure diagnosis; a standalone call reads it once here.
  */
-export async function importExtensionEntry(pkg: string, version: string, remedy: string, metadata?: InstalledExtensionPackage): Promise<void> {
+export async function importExtensionEntry(pkg: string, version: string, remedy: string | (() => string), metadata?: InstalledExtensionPackage): Promise<void> {
+  const advice = () => typeof remedy === "string" ? remedy : remedy();
   const dir = extensionPackageDir(pkg);
   const meta = metadata ?? installedExtensionPackage(pkg);
-  if (!meta) throw new Error(`extension ${pkg} is not installed at ${dir} - ${remedy}`);
+  if (!meta) throw new Error(`extension ${pkg} is not installed at ${dir} - ${advice()}`);
   try {
     await import(pathToFileURL(resolveExtensionEntry(dir, meta)).href);
   } catch (e) {
-    throw importFailure(pkg, version, e, remedy, meta);
+    throw importFailure(pkg, version, e, advice(), meta);
   }
 }
 
@@ -207,7 +208,7 @@ async function loadOne(ext: InstalledExtension, advertised: ExtensionRef): Promi
   // The import self-registers into OUR registry (core is linked); runStaged keeps those
   // registrations invisible until we've validated them, so a throw discards the stage untouched.
   const { staged } = await registry.runStaged(() =>
-    importExtensionEntry(pkg, ext.version, extensionReinstallAdvice(ext), onDisk),
+    importExtensionEntry(pkg, ext.version, () => extensionReinstallAdvice(ext), onDisk),
   );
   // Publish ONLY if the package advertised the requested provider. Otherwise commit NONE of its
   // registrations (never leave a package's other keys live when its advertised one is absent).

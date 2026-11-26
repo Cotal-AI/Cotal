@@ -25,6 +25,14 @@ for (const input of [{ op: "exec", command: "sh" }, { op: "status", path: "/tmp/
 }
 check("status admits only its closed shape", parseDesktopRequest({ op: "status" }).op === "status");
 check("status-watch admits only its closed shape", parseDesktopRequest({ op: "status-watch" }).op === "status-watch" && parseRequest('{"v":1,"id":"w1","op":"status-watch"}').ok);
+const recover = { op: "space-recover", space: "team", candidate: "b".repeat(64), holder: "https://example.test/api/auth" };
+const recoveryFrame = (request: Record<string, unknown>) => parseRequest(JSON.stringify({ v: 1, id: "recovery", ...request }));
+assert.deepEqual(parseDesktopRequest(recover), recover);
+check("confirmed recovery has the same shape on both boundaries", recoveryFrame(recover).ok);
+for (const invalid of [{ ...recover, candidate: "B".repeat(64) }, { ...recover, holder: "file:///tmp/auth" }, { ...recover, unsafe: true }]) {
+  assert.throws(() => parseDesktopRequest(invalid));
+  check("both boundaries reject an invalid recovery request", !recoveryFrame(invalid).ok);
+}
 check("spaces refresh remains a typed field", parseDesktopRequest({ op: "spaces", refresh: true }).op === "spaces");
 await assert.rejects(readDesktopRequest(Readable.from(["x".repeat(65537)]))); checks++;
 await assert.rejects(readDesktopRequest(Readable.from(['{"op":"status"}\n{"op":"install"}\n']))); checks++;

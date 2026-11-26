@@ -2,7 +2,8 @@
  * Status's skills rows must recommend a skills-only write (`cotal setup --skills`),
  * never unscoped `cotal setup`. The real CLI entry (`bin/cotal.ts`) is driven in an
  * isolated HOME/COTAL_HOME with the Claude connector installed, a planted stale `.agents` skill,
- * and with and without the connector executable on PATH.
+ * and with and without the connector executable on PATH. It also checks the Claude setup guide's
+ * wide status command against a configured plugin and wake channel.
  *
  * Run: pnpm smoke:status-skills-remedy
  */
@@ -44,14 +45,38 @@ function freshEnv(): { home: string; cwd: string; env: NodeJS.ProcessEnv } {
     `#!/bin/sh
 state="$HOME/.claude-fake-state"
 current="${cliVersion}"
+if [ "$1 $2 $3 $4 $5 $6" = "mcp add --scope user cotal --" ]; then
+  shift 6
+  exec "${process.execPath}" -e '
+    const [command, ...args] = process.argv.slice(1);
+    require("node:fs").writeFileSync(process.env.HOME + "/.claude.json", JSON.stringify({ mcpServers: { cotal: { command, args } } }));
+  ' -- "$@"
+fi
+if [ "$1 $2 $3" = "plugin install cotal@cotal-mesh" ]; then
+  : > "$HOME/.claude-plugin-installed"
+  exit 0
+fi
+if [ "$1 $2" = "plugin list" ] && [ -f "$HOME/.claude-plugin-installed" ]; then
+  exec "${process.execPath}" -e '
+    const { join } = require("node:path");
+    console.log(JSON.stringify(["cotal", "cotal-skills"].map(name => ({
+      id: name + "@cotal-mesh", scope: "user", enabled: true,
+      readFromFolder: join(process.env.COTAL_HOME, "claude-plugin", name),
+    }))));
+  '
+fi
 if [ "$1" = plugin ] && [ "$2" = list ]; then
   ver=0.0.0
   [ -f "$state" ] && IFS= read -r ver < "$state"
   printf '%s\\n' "[{\\"id\\":\\"cotal-skills@cotal-mesh\\",\\"scope\\":\\"user\\",\\"enabled\\":true,\\"version\\":\\"$ver\\"}]"
   exit 0
 fi
-if [ "$1" = plugin ] && [ "$2" = marketplace ] && [ "$3" = list ] && [ -n "$FAKE_MARKET_PATH" ]; then
-  printf '%s\\n' "[{\\"name\\":\\"cotal-mesh\\",\\"source\\":\\"directory\\",\\"path\\":\\"$FAKE_MARKET_PATH\\"}]"
+if [ "$1 $2 $3" = "plugin marketplace list" ]; then
+  if [ -n "$FAKE_MARKET_PATH" ]; then
+    printf '%s\\n' "[{\\"name\\":\\"cotal-mesh\\",\\"source\\":\\"directory\\",\\"path\\":\\"$FAKE_MARKET_PATH\\"}]"
+  else
+    printf '[]\\n'
+  fi
   exit 0
 fi
 if [ "$1" = plugin ] && { [ "$2" = install ] || [ "$2" = update ] || [ "$2" = marketplace ]; }; then
@@ -193,6 +218,25 @@ try {
   assert.ok(ownedRow.includes(`Claude marketplace cotal-mesh belongs to Cotal home ${other}, not ${samever.env.COTAL_HOME}.`), `status names the owning home: ${ownedRow}`);
   assert.match(ownedRow, /Use that COTAL_HOME or a separate CLAUDE_CONFIG_DIR and plugin cache for this home\./, "status gives the refusal's choices");
   assert.doesNotMatch(ownedStatus.stdout, /Claude skills:.*setup --skills/, "status does not recommend the refused skills write");
+
+  const configured = freshEnv();
+  const prepared = await run(["setup", "--destination", "local", "--harness", "claude", "--project", ".", "--space", "claude-status", "--configure-only", "--yes"], configured.env, configured.cwd);
+  assert.equal(prepared.code, 0, prepared.stdout + prepared.stderr);
+  const compact = await run(["status"], configured.env, configured.cwd);
+  assert.equal(compact.code, 0, compact.stderr);
+  assert.doesNotMatch(compact.stdout, /^  Claude (?:plugin|wake channel):/m);
+
+  const guide = readFileSync(join(repoRoot, "docs", "connect-claude.mdx"), "utf8");
+  const start = guide.split("### Start the mesh\n")[1]?.split("```")[1];
+  const command = start?.match(/^cotal (status.*)$/m)?.[1];
+  assert.ok(command, "the guide provides a status command in Start the mesh");
+  const wide = await run(command.split(/\s+/), configured.env, configured.cwd);
+  assert.equal(wide.code, 0, wide.stderr);
+  assert.match(wide.stdout, /^  Claude plugin: +(?:● )?current \(user scope\)$/m);
+  assert.match(wide.stdout, /^  Claude wake channel: +(?:● )?user MCP entry cotal registered$/m);
+  const reference = readFileSync(join(repoRoot, "docs", "claude-connector-reference.mdx"), "utf8");
+  const wake = reference.split("**Wake channel.**")[1]?.split("\n\n")[0];
+  assert.match(wake ?? "", /`cotal status --wide`/);
 
   console.log(`status-skills-remedy.smoke: ${cells()} checks passed`);
 } finally {

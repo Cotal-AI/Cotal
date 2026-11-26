@@ -123,6 +123,12 @@ assert.equal(preference(["--auto"], { COTAL_NO_UPDATE_CHECK: "1" }), "Automatic 
   assert.equal(noopJson.outcome, "no-op");
 }
 
+const help = run(["update", "--help"]);
+assert.equal(help.code, 0, help.text);
+assert.match(help.text, /^  (?:pnpm )?cotal update --auto \[off\|on\]/m);
+assert.match(help.text, /^  (?:pnpm )?cotal update --notify \[off\|on\]/m);
+assert.doesNotMatch(help.text, /^  (?:pnpm )?cotal update \[off\|on\]/m);
+
 const settingsFile = join(home, "update-settings.json");
 const backups = () => readdirSync(home).filter(name => name.startsWith("update-settings.json.corrupt."));
 const damaged = ["{garbage", "", "[]", "null", '{"auto":"yes"}', '{"v":1,"auto":"off","notify":false}', '{"v":2,"auto":false,"notify":false}', Buffer.from([0xff, 0x7b])];

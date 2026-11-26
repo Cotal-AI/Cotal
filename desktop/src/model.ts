@@ -1,5 +1,5 @@
 export type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
-export type Request = { op: string; space?: string; idp?: string; refresh?: boolean; enabled?: boolean; name?: string; auto?: boolean; notify?: boolean; version?: string };
+export type Request = { op: string; candidate?: string; holder?: string; space?: string; idp?: string; refresh?: boolean; enabled?: boolean; name?: string; auto?: boolean; notify?: boolean; version?: string };
 export const COTAL_CLOUD_IDP = "https://cotal.cloud/api/auth";
 export function isCotalCloudIdp(provider: string | undefined): boolean {
   return provider === COTAL_CLOUD_IDP || provider === "https://cloud.cotal.ai/api/auth";
@@ -23,7 +23,7 @@ export function machinesUrl(provider: string, spaceId: string, instanceId: strin
   return url.href;
 }
 
-export interface ComputerSpace { space: string; desired: boolean; observed: string; lastRefusal?: string }
+export interface ComputerSpace { space: string; desired: boolean; observed: string; lastRefusal?: string; custodyRecovery?: { holder: string; candidate: string } }
 /** States a space passes through without anyone acting. A space that was just turned on reports `not-requested` while its Manager boots. */
 const PASSING_SPACE_STATE: Record<string, string> = {
   "not-requested": "Starting",

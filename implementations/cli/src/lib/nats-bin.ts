@@ -49,7 +49,7 @@ export async function findNatsServer(): Promise<NatsServer> {
   const found = resolveOnPath("nats-server");
   const pathRefused = found === undefined ? undefined : refusal(found, "the nats-server on PATH");
   if (!pathRefused) {
-    const onPath = spawnSync("nats-server", ["--version"], { encoding: "utf8" });
+    const onPath = spawnSync("nats-server", ["--version"], { encoding: "utf8", windowsHide: true });
     if (!onPath.error && onPath.status === 0) return { path: found ?? "nats-server", source: "path", version: reportedVersion(onPath) };
   }
   // With no protected bundled one, the refused PATH one stays the choice, so its refusal names the fix.
@@ -59,7 +59,7 @@ export async function findNatsServer(): Promise<NatsServer> {
   catch (error) { if (pathRefused) return refusedOnPath(); throw error; }
   const bundledRefused = refusal(bin, "the bundled nats-server");
   if (bundledRefused) return pathRefused ? refusedOnPath() : { path: bin, source: "bundled", version: null, refused: bundledRefused };
-  const run = spawnSync(bin, ["--version"], { encoding: "utf8", timeout: 10_000 });
+  const run = spawnSync(bin, ["--version"], { encoding: "utf8", timeout: 10_000, windowsHide: true });
   const error = versionError(run);
   return { path: bin, source: "bundled", version: reportedVersion(run), ...(error !== undefined ? { versionError: error } : {}), ...(pathRefused ? { skipped: { path: found!, reason: pathRefused.message } } : {}) };
 }

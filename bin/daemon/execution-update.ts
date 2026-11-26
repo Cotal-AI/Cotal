@@ -27,7 +27,7 @@ export function preflightExecutionUpdate(): boolean {
 function verifySelected(root: string, version: string): void {
   const entry = join(root, "dist/cotal.js");
   const timeout = 300_000;
-  const result = spawnSync(process.execPath, [entry, "--version"], { env: { ...process.env, COTAL_SKIP_CONNECTOR_SEED: "1", [executionCopyModesEnv]: "explicit" }, encoding: "utf8", timeout });
+  const result = spawnSync(process.execPath, [entry, "--version"], { env: { ...process.env, COTAL_SKIP_CONNECTOR_SEED: "1", [executionCopyModesEnv]: "explicit" }, encoding: "utf8", timeout, windowsHide: true });
   if (result.error) {
     const detail = (result.error as NodeJS.ErrnoException).code === "ETIMEDOUT"
       ? `entry verification timed out after ${timeout / 1000} seconds`
