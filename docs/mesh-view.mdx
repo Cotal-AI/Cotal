@@ -24,7 +24,7 @@ The endpoint stays off the roster and creates no inbox, chat, or anycast durable
 It reads through a live tap, history reads, and presence and membership watches.
 The web server creates its own endpoint with the same observer flags. Browsers read its HTTP APIs and event stream.
 
-History reads can create temporary consumers. Stopping or rebinding a watch first disarms local delivery. If the presented credentials exclude consumer deletion, cleanup sends no delete and leaves broker expiry to reclaim it after five minutes. Permitted deletes reclaim immediately. SDK-internal ordered-consumer recovery is unchanged.
+History reads can create temporary consumers. Stopping or rebinding a watch first disarms local delivery. If the presented credentials exclude consumer deletion, cleanup sends no delete and leaves broker expiry to reclaim it after five minutes. Permitted deletes reclaim immediately. A [membership watch](embedding-endpoints.mdx#membership-watch) replays the current entries if the store is replaced.
 
 The console narrows its tap to `chatWildcard(space)` whenever it has credentials or a user bearer.
 That view exposes multicast traffic and hides DMs and anycast.

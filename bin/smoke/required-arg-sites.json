@@ -210,6 +210,7 @@
   "packages/core/smoke/presence-ttl-migration-auth.smoke.ts": 1,
   "packages/core/smoke/presence-ttl-refresh-cli.smoke.ts": 3,
   "packages/core/smoke/presence-watch-rebuild.smoke.ts": 1,
+  "packages/core/smoke/readonly-watch-cleanup.smoke.ts": 1,
   "packages/core/smoke/request-safe-reconnect.smoke.ts": 1,
   "packages/core/smoke/seat-idle-load.smoke.ts": 1,
   "packages/core/src/channels.ts": 4,
