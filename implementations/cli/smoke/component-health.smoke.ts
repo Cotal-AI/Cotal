@@ -973,6 +973,18 @@ try {
   try {
     const message = `the stack journal ${journal} is not valid JSON`;
     const remedy = `no member of this stack is running, so remove ${journal}`;
+    const lifecycle = `The stack lifecycle for "${controllerSpace}" is unknown because the journal could not be read`;
+    const overview = (text: string) => text.includes(`Selected space '${controllerSpace}' has an unknown stack lifecycle`)
+      && text.includes(lifecycle) && !/prepared[,.]? (?:but )?not started/.test(text);
+    const plain = cliIn(controllerRoot, ["status", "--plain", "--verbose"]);
+    check("plain status reports an unknown lifecycle in both overviews and retains its recovery step",
+      plain.status === 4 && overview(plain.stdout) && plain.stdout.includes(`current mesh "${controllerSpace}" has an unknown stack lifecycle`)
+        && plain.stdout.includes(remedy), plain.stdout + plain.stderr);
+    const json = cliIn(controllerRoot, ["status", "--json"]);
+    const report = JSON.parse(json.stdout).result;
+    check("JSON status reports neither a first start nor a stopped stack when it cannot read the journal",
+      json.status === 4 && report.selected.code === "SCHEMA_INVALID" && report.selected.message === lifecycle
+        && report.meshes.hasPrepared && !report.meshes.currentPrepared && !report.meshes.currentStopped, json.stdout + json.stderr);
     const ps = cliIn(controllerRoot, ["ps", "--plain", "--space", controllerSpace]);
     const psText = ps.stdout + ps.stderr;
     check("ps refuses a truncated journal and names its recovery, not an unstarted space",
@@ -980,7 +992,8 @@ try {
     const status = cliIn(webRoot, ["status", "--components", "--space", controllerSpace]);
     const health = status.stdout.split("Component Health")[1] ?? "";
     check("component health refuses the selected root's truncated journal (3), even from another folder",
-      status.status === 3 && /target\s+refused.*SCHEMA_INVALID/.test(health) && health.includes(message) && health.includes(remedy), status.stdout + status.stderr);
+      status.status === 3 && overview(status.stdout.split("Component Health")[0] ?? "")
+        && /target\s+refused.*SCHEMA_INVALID/.test(health) && health.includes(message) && health.includes(remedy), status.stdout + status.stderr);
     check("the diagnostics leave the journal unchanged", readFileSync(journal, "utf8") === truncatedJournal);
   } finally {
     writeFileSync(journal, wholeJournal);
