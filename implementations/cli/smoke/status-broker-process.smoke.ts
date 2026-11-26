@@ -24,13 +24,13 @@ const stubs = join(scratch, "service-stubs");
 for (const dir of [root, home, cotalHome, config, runtime, stubs]) mkdirSync(dir, { mode: 0o700 });
 const serviceCalls = join(scratch, "native-service-calls.log");
 writeFileSync(serviceCalls, "");
-for (const command of ["systemctl", "launchctl", "schtasks"]) {
+for (const command of ["systemctl", "systemd-run", "launchctl", "schtasks"]) {
   const file = join(stubs, command);
-  writeFileSync(file, `#!/bin/sh\nprintf '%s\\n' '${command}' >> '${serviceCalls}'\nexit 99\n`);
+  writeFileSync(file, `#!/bin/sh\nprintf '%s\\n' "${command} $*" >> '${serviceCalls}'\nexit 99\n`);
   chmodSync(file, 0o700);
 }
 const env = {
-  ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_"))),
+  ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_") && key !== "DBUS_SESSION_BUS_ADDRESS" && key !== "INVOCATION_ID")),
   HOME: home, USERPROFILE: home, COTAL_HOME: cotalHome, XDG_CONFIG_HOME: config, XDG_RUNTIME_DIR: runtime,
   PATH: `${stubs}${delimiter}${process.env.PATH}`, COTAL_SKIP_CONNECTOR_SEED: "1", COTAL_NO_PROMPT: "1",
   COTAL_TELEMETRY: "off", NO_COLOR: "1",
@@ -76,6 +76,8 @@ try {
   const started = run("up", "--no-manager", "--server", server, "--json");
   check("isolated controller stack starts without a manager", started.status === 0, started.stdout);
   if (started.status !== 0) throw new Error("up failed");
+  const startupCalls = readFileSync(serviceCalls, "utf8");
+  check("up in a private runtime directory without a user bus does not call a native service manager", startupCalls === "", startupCalls);
   const running = status();
   const broker = running.result.services?.instances?.find((row) => row.definition === "stack-broker");
   brokerPid = broker?.pid ?? undefined;
@@ -222,7 +224,8 @@ try {
   const stopped = run("down", "--yes", "--json");
   check("down stops the owned stack", stopped.status === 0 && (brokerPid === undefined || !alive(brokerPid)), stopped.stdout);
   if (stopped.status !== 0 || brokerPid !== undefined && alive(brokerPid)) throw new Error("owned stack cleanup failed");
-  check("no native service manager was called", readFileSync(serviceCalls, "utf8") === "");
+  const calls = readFileSync(serviceCalls, "utf8");
+  check("no native service manager was called", calls === "", calls);
 }
 {
   const stopped = status();

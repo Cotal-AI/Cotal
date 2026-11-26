@@ -309,7 +309,31 @@ try {
   const open = new Rpc(openSpace, "open");
   await open.initialize();
   const openReply = await open.call("cotal_connect", { name: "reader" });
-  check("an open mesh also connects through the shipped command", !openReply.result?.isError && Boolean(/connection_id:/.test(text(openReply))));
+  const openHandle = /connection_id: (\S+)/.exec(text(openReply))?.[1];
+  check("an open mesh also connects through the shipped command", !openReply.result?.isError && Boolean(openHandle));
+  assert.ok(openHandle, text(openReply));
+  const remaining = new Rpc(openSpace, "remaining");
+  await remaining.initialize();
+  const remainingReply = await remaining.call("cotal_connect", { name: "remaining" });
+  const remainingHandle = /connection_id: (\S+)/.exec(text(remainingReply))?.[1];
+  assert.ok(!remainingReply.result?.isError && remainingHandle, text(remainingReply));
+  const retiredReply = await open.call("cotal_disconnect", { connection_id: openHandle });
+  assert.ok(!retiredReply.result?.isError && text(retiredReply).startsWith("Disconnected "), text(retiredReply));
+  await until(async () => /(?:^|\n)· reader(?:\/[^\s]+)? — offline\b/.test(text(await remaining.call("cotal_roster", { connection_id: remainingHandle }))),
+    "retired reader did not appear offline");
+  const offlineDm = await remaining.call("cotal_dm", { connection_id: remainingHandle, to: "reader", text: "sent after retirement" });
+  const receipt = text(offlineDm);
+  check("an MCP DM to a retired connection succeeds without promising delivery",
+    !offlineDm.result?.isError && receipt.startsWith("Sent to reader. reader is offline.") &&
+    receipt.includes("stored, but delivery is not confirmed. Only the same lifecycle can receive it, and only if its inbox still exists.") &&
+    receipt.includes("A new session with the same name does not receive it."), receipt);
+  const successor = await open.call("cotal_connect", { name: "reader" });
+  const successorHandle = /connection_id: (\S+)/.exec(text(successor))?.[1];
+  assert.ok(!successor.result?.isError && text(successor).startsWith("Connected as reader.") && successorHandle && successorHandle !== openHandle, text(successor));
+  const successorInbox = await open.call("cotal_inbox", { connection_id: successorHandle });
+  check("the new same-name MCP connection does not inherit the retired connection's DM",
+    !successorInbox.result?.isError && text(successorInbox) === "Inbox empty, no new messages.", text(successorInbox));
+  await remaining.end();
   await open.end();
   check("open-mesh EOF removes its identity record", identities().length === 0);
   await competingNames(openSpace, "sequential");

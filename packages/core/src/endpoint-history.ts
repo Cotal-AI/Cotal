@@ -2,11 +2,12 @@ import type { ConnectionState } from "./endpoint-connection-state.js";
 import type { EndpointIdentity } from "./endpoint-identity.js";
 import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
-import { nanos, type NatsConnection } from "@nats-io/transport-node";
+import { nanos, type MsgHdrs, type NatsConnection } from "@nats-io/transport-node";
 import { jetstream, jetstreamManager, AckPolicy, DeliverPolicy, JetStreamApiError, type JetStreamClient, type JetStreamManager, type Consumer, type ConsumerInfo, type ConsumerConfig, type JsMsg } from "@nats-io/jetstream";
 import { chatStream, dmStream, chatSubject, chatHistDurable, spacePrefix, parseSubject, subjectMatches, assertValidChannel, assertValidOwnerToken, isConcreteChannel, isChannelFamily, historyReaderConsumer, HISTORY_READERS, calloutReaderId, type ParsedSubject } from "./subjects.js";
 import { isConsumerAlreadyExists, isConsumerNotFound } from "./jetstream-missing.js";
 import { isPermissionDenied } from "./permission-denied.js";
+import { hasStoredOrigin } from "./endpoint-provenance.js";
 import type { CotalMessage, HistoryMessage, Delivery, MessageMeta, ControlReply } from "./types.js";
 import type { HistoryPage } from "./endpoint.js";
 
@@ -19,7 +20,7 @@ export interface EndpointHistoryDeps {
   joinPolicyFresh: (channel: string) => Promise<{ replay: boolean; windowMs?: number }>;
   chatMayHaveLost: (subject: string, sinceSeq: number) => Promise<boolean>;
   emit: (event: string, ...args: unknown[]) => boolean;
-  decodeHistory: (message: { subject: string; json: <T>() => T }) => HistoryMessage | undefined;
+  decodeHistory: (message: { subject: string; headers?: MsgHdrs; json: <T>() => T }) => HistoryMessage | undefined;
   isRecord: (value: unknown) => value is Record<string, unknown>;
   isUsableMessageId: (value: unknown) => value is string;
   isFromSubjectSender: (message: unknown, parsed: ParsedSubject) => boolean;
@@ -987,6 +988,7 @@ export class EndpointHistory {
     const noop: Delivery = { ack: () => {}, nak: () => {}, durable: false };
     let n = 0;
     for (const sm of msgs) {
+      if (hasStoredOrigin(sm.headers)) continue;
       let msg: CotalMessage;
       try {
         msg = sm.json<CotalMessage>();
@@ -1045,6 +1047,7 @@ export class EndpointHistory {
     const collected: CotalMessage[] = [];
     const seqs: number[] = [];
     for (const sm of raw) {
+      if (hasStoredOrigin(sm.headers)) continue;
       let msg: CotalMessage;
       try {
         msg = sm.json<CotalMessage>();

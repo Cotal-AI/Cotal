@@ -215,6 +215,10 @@ try {
   check("cotal manager start --help shows its own usage and the manager preset's options with their defaults",
     startHelp.status === 0 && out(startHelp).includes("cotal manager start [--runtime <name>]") && out(startHelp).includes('(default: "pty")') && out(startHelp).includes("--roster"), out(startHelp));
   check("  and none of service add's definition flags", !/--preset\b|--file\b|--new-instance\b|--exec\b/.test(out(startHelp)), out(startHelp));
+  const managerHelpWithOptions = cotal(["help", "--", "mgr", "--space", "help-audit", "start"]);
+  check("explicit manager start help resolves the alias and skips the leading space option",
+    managerHelpWithOptions.status === 0 && managerHelpWithOptions.stderr === "" && managerHelpWithOptions.stdout === startHelp.stdout,
+    out(managerHelpWithOptions));
 
   const managerStartPath = ["service", "start", "manager"];
   const managerPresetHelp = cotal([...managerStartPath, "--help"]);
@@ -259,6 +263,16 @@ try {
 
   const piped = cotal(["service", "add", "hello", "--exec", "echo hi | tee out", "--space", SPACE]);
   check("service add --exec with a pipe refuses and saves nothing", piped.status === 1 && out(piped).includes("an unquoted | would not work") && JSON.stringify(definitions()) === "[]", out(piped));
+  for (const char of ["$", "`"]) {
+    const quoted = cotal(["service", "add", "quoted-expansion", "--space", SPACE, "--exec", `node "review process.mjs" "space argument" "literal ${char}HOME"`, "--json"]);
+    const { outcome, error } = JSON.parse(quoted.stdout);
+    check(`service add --exec explains how to pass ${char} literally when double quotes alone do not work`,
+      quoted.status === 1 && outcome === "refused" && error?.code === "USAGE_INVALID"
+        && error.message.includes(`${char} inside double quotes`)
+        && error.remedy.includes("within the value passed to `--exec`, put the literal argument in single quotes")
+        && error.remedy.includes("put a backslash before the character inside double quotes")
+        && error.remedy.includes("run a shell yourself") && JSON.stringify(definitions()) === "[]", out(quoted));
+  }
   const conflicting = cotal(["service", "add", "hello", "--exec", "echo hi", "--preset", "manager", "--space", SPACE]);
   check("service add --exec with --preset refuses and saves nothing", conflicting.status === 1 && JSON.stringify(definitions()) === "[]", out(conflicting));
   const addExec = ["service", "add", "hello", "--exec", "echo 'big world'", "--space", SPACE];
@@ -370,10 +384,17 @@ try {
     [badGlobalLeading, badGlobalTrailing].every((run) => run.status === 1 && run.stdout === ""
       && run.stderr.includes("--no-color takes no value") && run.stderr.endsWith(brokerStartHelp.stdout)),
     { leading: out(badGlobalLeading), trailing: out(badGlobalTrailing) });
-  const brokerHelpWithOptions = cotal(["help", "--", "service", "start", "broker", "--config", "./nats.conf"]);
-  check("explicit broker start help keeps preset options when passed startup flags",
-    brokerHelpWithOptions.status === 0 && brokerHelpWithOptions.stderr === "" && brokerHelpWithOptions.stdout === brokerStartHelp.stdout,
-    out(brokerHelpWithOptions));
+  for (const words of [
+    ["start", "broker", "--config", "./nats.conf"],
+    ["--space", "help-audit", "start", "broker", "--config", "./nats.conf"],
+    ["start", "--space", "help-audit", "broker", "--config", "./nats.conf"],
+    ["start", "--config", "./nats.conf", "broker"],
+  ]) {
+    const brokerHelpWithOptions = cotal(["help", "--", "service", ...words]);
+    check(`explicit service ${words.join(" ")} help keeps the broker preset options`,
+      brokerHelpWithOptions.status === 0 && brokerHelpWithOptions.stderr === "" && brokerHelpWithOptions.stdout === brokerStartHelp.stdout,
+      out(brokerHelpWithOptions));
+  }
   const genericStartHelp = cotal(["service", "start", "--help"]);
   check("generic service start help still lists --foreground",
     genericStartHelp.status === 0 && /^  --foreground\b/m.test(genericStartHelp.stdout), out(genericStartHelp));

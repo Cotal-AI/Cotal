@@ -26,3 +26,8 @@ export function captureNativeDaemonOutput(state: string): void {
   }
   process.once("exit", () => closeSync(fd));
 }
+
+/** launchd opens StandardOutPath with its own umask, so the log it creates is readable by others. */
+export function privateLaunchdLog(state: string): void {
+  closeSync(openPrivateAppend(nativeDaemonLog(state)));
+}

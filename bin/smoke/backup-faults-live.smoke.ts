@@ -124,6 +124,36 @@ function assertAttemptsDestinationRefusal(root: string, run: (...args: string[])
   assert.equal(existsSync(join(root, ".cotal", "maintenance", "lock.json")), false);
 }
 
+function assertMissingCleanupDestinationRefusal(root: string, run: (...args: string[]) => SpawnSyncReturns<string>): void {
+  const auth = join(root, ".cotal", "auth");
+  const journal = join(root, ".cotal", "maintenance", "v1", "journal.json");
+  const journalBefore = readFileSync(journal);
+  const attemptsBefore = attemptResidue(root).sort();
+  const controlLink = join(root, "control-link");
+  assert.equal(existsSync(auth), false, "the unprepared open space has no auth folder");
+  symlinkSync(join(root, ".cotal"), controlLink, "junction");
+  for (const [path, flag] of [[".cotal/auth/new", "--plain"], [join(controlLink, "auth", "nested", "new"), "--json"]] as const) {
+    const result = run("backup", "create", path, flag);
+    const output = result.stdout + result.stderr;
+    assert.equal(result.status, 1, output);
+    const remedy = `name a destination outside ${auth}`;
+    if (flag === "--json") {
+      const envelope = JSON.parse(result.stdout);
+      assert.equal(envelope.error.code, "USAGE_INVALID");
+      assert.equal(envelope.error.remedy, remedy);
+      assert.deepEqual(envelope.target, { directory: path, removedBy: auth });
+    } else {
+      assert.match(output, /Code:\s+USAGE_INVALID/);
+      assert.ok(output.includes(remedy), output);
+    }
+    assert.doesNotMatch(output, /create that folder first/);
+  }
+  assert.equal(existsSync(auth), false);
+  assert.deepEqual(readFileSync(journal), journalBefore);
+  assert.deepEqual(attemptResidue(root).sort(), attemptsBefore);
+  assert.equal(existsSync(join(root, ".cotal", "maintenance", "lock.json")), false);
+}
+
 function assertBackupUsage(run: (...args: string[]) => SpawnSyncReturns<string>): void {
   const restore = run("backup", "restore", "--help");
   const refused = run("backup", "restore", "sample-backup", "--only", "full");
@@ -253,6 +283,7 @@ async function backupStageFaultScenario(): Promise<void> {
     assert.equal(created.error?.code, "TARGET_NOT_FOUND", "a create into a missing folder is TARGET_NOT_FOUND");
     assert.equal(created.target?.missing, "folder", "it says the folder is missing");
     assert.match(created.error?.message ?? "", /there is no folder \S*no-such-folder to create the backup in/, "it names that folder");
+    assertMissingCleanupDestinationRefusal(root, run);
     if (process.platform !== "win32") {
       const notFolder = join(root, "parent-file"), loop = join(root, "loop-a");
       writeFileSync(notFolder, "owned fixture");

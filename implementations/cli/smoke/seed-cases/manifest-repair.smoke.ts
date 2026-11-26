@@ -1,6 +1,24 @@
-import { dirname, join, readFileSync, readdirSync, writeFileSync, check, cotal, freshCfg, manifestPath, listNames, track, finishScenario } from "./harness.js";
+import { chmodSync, dirname, join, readFileSync, readdirSync, statSync, writeFileSync, check, cotal, freshCfg, manifestPath, listNames, track, finishScenario } from "./harness.js";
 
 try {
+  if (process.getuid && process.getuid() !== 0) {
+    const cfg = track(freshCfg());
+    listNames(cfg);
+    const path = manifestPath(cfg), original = readFileSync(path), stat = statSync(path);
+    chmodSync(path, 0);
+    try {
+      const version = cotal(cfg, ["version", "--json"]);
+      const report = JSON.parse(version.stdout);
+      check("version preserves the partial read and explains how to restore access", version.status === 4 &&
+        report.error?.remedy?.includes("read access") && report.result.reconciliation.instruction === report.error.remedy, version.stdout);
+      for (const flag of ["--repair", "--reset"]) {
+        const r = cotal(cfg, ["ext", "seed", flag]);
+        check(`${flag} leaves the inaccessible inventory in place`, r.status !== 0 && statSync(path).ino === stat.ino &&
+          !readdirSync(dirname(path)).some(name => name.startsWith("extensions.json.corrupt.")), r.stderr);
+      }
+    } finally { chmodSync(path, stat.mode & 0o777); }
+    check("restoring read access recovers the intact inventory", original.equals(readFileSync(path)) && cotal(cfg, ["version", "--json"]).status === 0);
+  }
   // ── 4. corrupt manifest with connectors still on disk → --repair rebuilds (not "kept removed") ────
   for (const args of [["ext", "seed", "--repair"], ["ext", "--repair", "seed"]]) {
     const cfg = track(freshCfg());
