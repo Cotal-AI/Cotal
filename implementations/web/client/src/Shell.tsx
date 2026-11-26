@@ -133,7 +133,7 @@ function centreView(
  *  The composers the views draw reach the controller's `send` and `draft` through `Compose`, and
  *  every avatar of a roster row finds its initial badge through `BadgeOf`. The dashboard's one
  *  TooltipProvider sits here too, so every shadcn Tooltip in it shares one delay. */
-export function Shell({ store, controller, route, paneOpen, msgPerSecond, clock = Date.now, phone = false }: {
+export function Shell({ store, controller, route, paneOpen, msgPerSecond, clock = Date.now, phone = false, panelSheet = phone }: {
   store: Store<DashboardState>;
   controller: Controller | null;
   route: Route;
@@ -141,6 +141,7 @@ export function Shell({ store, controller, route, paneOpen, msgPerSecond, clock 
   msgPerSecond: () => number;
   clock?: () => number;
   phone?: boolean;
+  panelSheet?: boolean;
 }) {
   const space = useStore(store, (s) => s.space);
   const channels = useStore(store, (s) => s.channels);
@@ -154,7 +155,7 @@ export function Shell({ store, controller, route, paneOpen, msgPerSecond, clock 
   const busy = useMemo(() => roster.filter((p) => p.card.kind === "agent" && p.status === "working").length, [roster]);
   const lastSeen = useStore(store, (s) => s.stale.some((m) => m.name === "roster"));
   const badgeOf = useMemo(() => badgeLookup(everyone), [everyone]);
-  const panel = usePanel(route, phone);
+  const panel = usePanel(route, panelSheet);
   const shown = panelShown(panel, paneOpen);
   const seen: Panel = { ...panel, agent: shown && panel.tab === "agent" ? panel.agent : null };
   const back = useBack(route);
@@ -175,6 +176,7 @@ export function Shell({ store, controller, route, paneOpen, msgPerSecond, clock 
         panel={panelBody}
         places={places}
         phone={phone}
+        panelSheet={panelSheet}
         waiting={needing}
         working={busy}
         stale={lastSeen}

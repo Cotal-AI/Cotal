@@ -48,6 +48,7 @@ export interface Meta {
   space: string;
   pid: number;
   post: PostCapability;
+  channelDeleteSupported?: boolean;
   operatorId?: string;
 }
 

@@ -281,7 +281,7 @@ async function joinSpace(args: ParsedArgs): Promise<void> {
     const addressFlags = values.server !== undefined ? (link ? "--server and --link" : "--server") : link ? "--link" : undefined;
     await reachableOrThrow(server, auth, values.creds ? {
       space, path: values.creds, named: values.space !== undefined || link !== undefined || resolved !== undefined,
-      addressFlags, provision: true,
+      addressFlags, landingChannel: channel,
     } : undefined);
     if (values.creds) checkCredentialJoin(auth.creds!, space, lifecycleUid!, channel);
   } else {

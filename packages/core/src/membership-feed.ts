@@ -31,7 +31,7 @@ import { watchNativeConnection, type NativeConnectionBinding } from "./native-co
  */
 import { credsAuthenticator, type NatsConnection } from "@nats-io/transport-node";
 import { dialerFor } from "./endpoint.js";
-import { OBSERVER_CONN_NAME_PREFIX, OBSERVER_INBOX_NONCE_PREFIX } from "./endpoint-identity.js";
+import { OBSERVER_CONN_NAME_PREFIX, OBSERVER_INBOX_NONCE_PREFIX, isBoundObserverInbox } from "./endpoint-identity.js";
 import { Kvm, type KV } from "@nats-io/kv";
 import {
   membershipBucket,
@@ -823,7 +823,7 @@ function addConn(space: string, live: Map<string, Set<string>>, c: ConnzConnecti
   if (c.name?.startsWith(OBSERVER_CONN_NAME_PREFIX) || c.name?.startsWith(OBSERVER_INBOX_NONCE_PREFIX)) return;
   const subs = c.subscriptions_list ?? [];
   const id = principalFromConnz(c); // tag (static) OR authorized_user name-form (callout) — see doc above
-  if (!id) return; // no attributable principal (open mode / legacy / infra) — not a member here
+  if (!id || isBoundObserverInbox(c.name, id)) return;
   const patterns = subs
     .map((s) => channelFromChatSubscription(space, s))
     .filter((x): x is string => x !== null);

@@ -117,7 +117,7 @@ function listOpenCodeModels(opts: ModelCatalogOpts = {}): ModelCatalog | Promise
   // subcommand: `opencode models --pure --verbose` exits 1 on 2.x with the help text rather than a
   // real catalog.
   const versionRaw = execFileSync(bin, ["--version"], {
-    encoding: "utf8",
+    encoding: "utf8", windowsHide: true,
     env,
     stdio: ["ignore", "pipe", "pipe"],
   }).trim();
@@ -127,7 +127,7 @@ function listOpenCodeModels(opts: ModelCatalogOpts = {}): ModelCatalog | Promise
   if (opts.refresh) args.push("--refresh");
   try {
     const stdout = execFileSync(bin, args, {
-      encoding: "utf8",
+      encoding: "utf8", windowsHide: true,
       env,
       stdio: ["ignore", "pipe", "pipe"],
       maxBuffer: 16 * 1024 * 1024,

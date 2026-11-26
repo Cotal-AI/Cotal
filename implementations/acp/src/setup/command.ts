@@ -8,7 +8,7 @@
  * The running entry names one install generation, and a later update moves to another.
  */
 import { existsSync, realpathSync } from "node:fs";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { executionIdentity } from "@cotal-ai/workspace";
 
 /** The Node a client runs: the get.cotal.ai launcher's Node link when this Cotal runs under that
@@ -39,6 +39,17 @@ export function acpCommand(cotal: readonly string[], space: string): { command: 
 }
 
 const strings = (value: unknown): value is string[] => Array.isArray(value) && value.every((item) => typeof item === "string");
+
+/** Recognize direct Cotal launchers and Node invocations of the Cotal entry, even after they move. */
+export function runsCotal(command: unknown, args: unknown): boolean {
+  if (typeof command !== "string" || !Array.isArray(args)) return false;
+  const at = args.indexOf("acp");
+  const launcher = basename(command);
+  if (at === 0) return /^(?:cotal(?:\.(?:cmd|exe|bat|js|ts))?|cotal-npm)$/i.test(launcher);
+  const entry = args[at - 1];
+  return at > 0 && /^(?:node|nodejs|cotal-node)(?:\.exe)?$/i.test(launcher) && typeof entry === "string" &&
+    /^cotal(?:\.(?:js|ts))?$/i.test(basename(entry));
+}
 
 /** The space an entry's arguments run `cotal acp` for, or undefined when they run something else.
  *  This is how setup recognises an entry it wrote or one a person added by hand, such as

@@ -1,3 +1,4 @@
+import { accessSync, constants } from "node:fs";
 import { dirname } from "node:path";
 import type { CompletionResult, FlagSpec, FlagValues, ParsedArgs } from "@cotal-ai/core";
 import {
@@ -7,6 +8,7 @@ import {
   brokerCheck,
   canonicalRoot,
   codeSpan,
+  cotalDir,
   cotalDirLink,
   findCotalRoot,
   findMesh,
@@ -36,6 +38,7 @@ import {
   recordOperationSpaceNote,
   spaceKey,
   stackElsewhereRemedy,
+  stackJournalPath,
   stackJournalRoot,
   stoppedStack,
   writeResult,
@@ -303,7 +306,8 @@ async function read(sub: "show" | undefined, rest: string[], presentation: Prese
       if (check !== "reachable" && check !== "not-checked") noteFolderSpaceShown(registered, "stopped", current);
       else noteFolderSpace(registered, current);
     }
-    writeResult(presentation, { command: "space", target: { space: m.space }, result: detail(m, current, check) }, spaceView);
+    const warning = stackRecordsPermissionWarning(m);
+    writeResult(presentation, { command: "space", target: { space: m.space }, result: detail(m, current, check, warning !== undefined), warnings: warning ? [warning] : [] }, spaceView);
     return;
   }
 }
@@ -338,13 +342,28 @@ function row(m: MeshEntry, current: string | null, check: Check): SpaceRow {
   };
 }
 
+/** The journal lookup requires search permission, not permission to read the journal itself. */
+function stackRecordsPermissionWarning(m: MeshEntry): OutputWarning | undefined {
+  if (m.origin === "manual" || m.origin === "catalog") return undefined;
+  try {
+    accessSync(stackJournalPath(m.root), constants.F_OK);
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "EACCES" || code === "EPERM") {
+      const path = cotalDir(m.root);
+      return { code: "PERMISSION_DENIED", target: { space: m.space, path }, message: `Cannot check stack records in ${oneLine(path)}. Restore search permission before retrying.` };
+    }
+  }
+  return undefined;
+}
+
 /** One registration in full, as `space show` reports it. */
-export function detail(m: MeshEntry, current: string | null, check: Check): SpaceDetail {
+export function detail(m: MeshEntry, current: string | null, check: Check, rootSearchDenied = false): SpaceDetail {
   const base = row(m, current, check);
   return {
     kind: "space",
     ...base,
-    rootGone: (m.origin === "up" && projectRootProblem(m.root) === "not-directory") || stackRootGone(m.space, m.root),
+    rootGone: !rootSearchDenied && ((m.origin === "up" && projectRootProblem(m.root) === "not-directory") || stackRootGone(m.space, m.root)),
     recordedAt: m.ts,
     attachHost: m.attachHost ?? null,
     maxSessions: m.maxSessions ?? null,

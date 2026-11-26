@@ -113,10 +113,18 @@
     {{/if}}
     <InstallExecuteSequence>
       <RemoveShortcuts>Installed AND NOT UPGRADINGPRODUCTCODE</RemoveShortcuts>
+      <Custom Action="RemoveCotalService" Before="CloseCotalApp">REMOVE = "ALL" AND NOT UPGRADINGPRODUCTCODE</Custom>
+      <Custom Action="CloseCotalApp" Before="InstallValidate">REMOVE = "ALL" AND NOT UPGRADINGPRODUCTCODE</Custom>
       <Custom Action="RemoveCotalLogin" Before="RemoveFiles">REMOVE = "ALL" AND NOT UPGRADINGPRODUCTCODE</Custom>
       <Custom Action="LaunchApplication" After="InstallFinalize">AUTOLAUNCHAPP AND NOT Installed</Custom>
     </InstallExecuteSequence>
     <CustomAction Id="RemoveCotalLogin" FileKey="Path" ExeCommand="--remove-login" Execute="deferred" Impersonate="yes" Return="check" />
+    <!-- Both run as the installing user before InstallValidate. That is where Windows Installer checks for files in use, and the service's
+         processes have no window it could ask to close, so anything still running would leave the person on its "close these applications" prompt. -->
+    <!-- The installing user's background service, removed through the packaged runtime before anything else; a refusal ends the uninstall before any file changes. -->
+    <CustomAction Id="RemoveCotalService" FileKey="Path" ExeCommand="--remove-service" Execute="immediate" Return="check" />
+    <!-- The window only hides on close. End what still runs from this installation, as the NSIS uninstaller does. -->
+    <CustomAction Id="CloseCotalApp" FileKey="Path" ExeCommand="--close-app" Execute="immediate" Return="check" />
     <SetProperty Id="ARPINSTALLLOCATION" Value="[INSTALLDIR]" After="CostFinalize" />
   </Product>
 </Wix>

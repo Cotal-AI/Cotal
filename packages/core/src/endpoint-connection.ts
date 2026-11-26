@@ -29,6 +29,7 @@ import { nextHeartbeat } from "./presence-heartbeat.js";
 import { PRESENCE_STORAGE } from "./streams.js";
 import { presenceBucket, dmStream, dmDurable, parseSubject } from "./subjects.js";
 import { isFromSubjectSender, authenticatedMessage, isReadableMessagePart } from "./endpoint-messages.js";
+import { hasStoredOrigin } from "./endpoint-provenance.js";
 import type { CotalMessage } from "./types.js";
 import { type ConsumerInfo, jetstream, jetstreamManager } from "@nats-io/jetstream";
 import { type KV, Kvm } from "@nats-io/kv";
@@ -208,14 +209,11 @@ export class EndpointConnection {
       servers: this.identity.servers,
       // Keep native failures without eagerly capturing a request-origin stack on every operation.
       noAsyncTraces: true,
-      // In USER MODE the connection `name` carries the client-chosen inbox nonce (= connId) the callout
-      // scopes `_INBOX_<connId>.>` on (see EndpointOptions.bearer). Static observers carry a marker
-      // outside the display-name grammar so a participant named like an observer still counts.
+      // User-auth names carry the principal-bound connId, with a nonce marker for observers.
+      // Static observers carry a marker outside the display-name grammar.
       name: this.identity.userMode ? this.identity.connId : `${this.identity.omitFromLiveMembership ? OBSERVER_CONN_NAME_PREFIX : "cotal:"}${this.identity.card.name}`,
-      // Per-CONNECTION inbox namespace (the "Private Inbox" pattern), keyed on the connection nkey
-      // (NOT the owner+actor principal): the reply inbox is per-connection plumbing, and under the auth
-      // callout the principal is unknown to the client pre-connect (owner is derived server-side) while
-      // the connection id always is. nats.js routes ALL generated inboxes — request replies, JetStream
+      // The inbox is scoped by the connection nkey in static mode and by the principal and nonce
+      // in user mode. nats.js routes ALL generated inboxes: request replies, JetStream
       // pull delivery, kv.watch ordered-consumer delivery — through this prefix. Paired with
       // sub.allow=[_INBOX_<connId>.>] it stops a peer from subscribing the wildcard inbox to sniff
       // others' DM deliveries. Set unconditionally so the prefix can never drift from the ACL.
@@ -457,6 +455,7 @@ export class EndpointConnection {
     this.delivery.subs.push(sub);
     void (async () => {
       for await (const m of sub) {
+        if (hasStoredOrigin(m.headers)) continue;
         let decoded: CotalMessage | undefined;
         try {
           decoded = m.json<CotalMessage>();

@@ -193,7 +193,7 @@ async function handoffDashboardBrowser(space: string, name: string, instance: Se
         if (process.platform === "linux" && !process.env.DISPLAY && !process.env.WAYLAND_DISPLAY) noBrowser();
         else {
           const executable = process.platform === "darwin" ? "open" : process.platform === "win32" ? "cmd" : "xdg-open";
-          const child = spawn(executable, process.platform === "win32" ? ["/c", "start", "", launchUrl] : [launchUrl], { stdio: "ignore", detached: true });
+          const child = spawn(executable, process.platform === "win32" ? ["/c", "start", "", launchUrl] : [launchUrl], { stdio: "ignore", detached: true, windowsHide: true });
           await new Promise<void>((resolve, reject) => { child.once("spawn", resolve); child.once("error", reject); });
           child.unref();
         }

@@ -1094,7 +1094,7 @@ async function runUp(args: ParsedArgs, invokedFrom: string, inheritedLock?: Main
     const presentation = presentationOf(values);
     const holder = values.foreground ? foregroundHolder(meshRoot) : undefined;
     if (holder !== undefined)
-      refuseForegroundStackHolder(meshRoot, stackSpace, holder, noManager);
+      refuseForegroundStackHolder(meshRoot, stackSpace, holder, noManager, maxPayload);
     // A signal ends a detached start where it is, after it records a launch it had not yet pinned to
     // its child, and the notice names what it left running. It is installed before the lock, so no
     // moment of the start exits without it.
@@ -1416,14 +1416,14 @@ async function runUp(args: ParsedArgs, invokedFrom: string, inheritedLock?: Main
       // mode would hand the operator a mesh on the wrong identity plane); a bare refresh keeps the
       // held mode.
       const requested = wantUser ? "user" : values.open ? "open" : undefined;
+      const stopAdvice = () => held.origin === "up"
+        ? `from ${shellWord(held.root)}, inspect the stack with ${codeSpan(`${displayCmd()} down --dry-run`)} and stop it with ${codeSpan(`${displayCmd()} down --yes`)}`
+        : "stop the broker with the launcher that started it";
       if (requested && requested !== held.mode) {
         const label = { auth: "static JWT auth", open: "no auth (--open)", user: "per-user auth" }[held.mode];
-        console.error(
-          c.red(
-            `✗ mesh "${held.space}" is already running at ${server} with ${label} - a running broker can't change auth mode; \`cotal down\` it first, then \`cotal up ${wantUser ? "--user-auth" : "--open"}\``,
-          ),
-        );
-        process.exit(1);
+        throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `mesh "${held.space}" is already running at ${server} with ${label}; a running broker can't change auth mode`, {
+          target: { root, space: held.space }, remedy: `${stopAdvice()}; then retry the original startup command unchanged from its original folder`,
+        });
       }
       // A rotation retires the system account this LIVE broker was started on, and only a broker
       // (re)started from the rewritten config carries the successor. Rotating under a running mesh
@@ -1446,11 +1446,8 @@ async function runUp(args: ParsedArgs, invokedFrom: string, inheritedLock?: Main
       // exit 0. A service unit relying on `--foreground` read that exit as the stack ending, stopped
       // it, and restarted into the same branch. Refuse and name the remedy.
       if (values.foreground) {
-        const stop = held.origin === "up"
-          ? `from ${shellWord(held.root)}, inspect the stack with ${codeSpan(`${displayCmd()} down --dry-run`)} and stop it with ${codeSpan(`${displayCmd()} down --yes`)}`
-          : "stop the broker with the launcher that started it";
         throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `mesh "${held.space}" is already running and this request starts nothing, so it can't keep it in this terminal`, {
-          target: { root, space: held.space }, remedy: `${stop}; then retry the original foreground command unchanged from its original folder`,
+          target: { root, space: held.space }, remedy: `${stopAdvice()}; then retry the original foreground command unchanged from its original folder`,
         });
       }
       // A running broker cannot change its transport either, and for exactly the reason it cannot
@@ -1934,7 +1931,7 @@ async function runUp(args: ParsedArgs, invokedFrom: string, inheritedLock?: Main
   console.log(c.dim("Press Ctrl-C to stop.\n"));
   const listenerStartedAt = new Date().toISOString();
   // Keep the POSIX broker out of the terminal's process group for manager-first teardown on Ctrl-C.
-  const child = spawnBroker(bin, natsArgs, { cwd: cotalRoot(), stdio: "inherit", detached: process.platform !== "win32" });
+  const child = spawnBroker(bin, natsArgs, { cwd: cotalRoot(), stdio: "inherit", detached: process.platform !== "win32", windowsHide: false });
   await recordSpawnedListener(child, listenerStartedAt, boundListener);
   const foreground = holdForegroundListener({ child, server, space, executable: natsServer, log: brokerOutput, resuming: resumeAttempt !== undefined, restored, releaseStartupLock });
   try {

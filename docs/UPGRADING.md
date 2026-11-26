@@ -45,6 +45,32 @@ as the first argument to `spawn`.
 
 Existing cards are still available for inspection and removal. On the CLI, put flags before `--`:
 `cotal persona show -- -reviewer` or `cotal persona remove --yes -- -reviewer`.
+
+## Messages carrying stored-message headers
+
+Cotal drops channel posts, DMs, role requests, delivery copies, event payloads and legacy control requests
+that carry `Nats-Stream`, `Nats-Subject`, `Nats-Sequence` or `Nats-Time-Stamp`, even when the
+claimed sender matches the subject. The operator tap drops marked frames on any subject. Lang
+`wait` ignores marked posts. Marked rows already stored are omitted from history, so older and
+newer readers can show different results for the same stored history.
+
+Upgrade and restart the delivery daemon before updating agents and clients. An older daemon can
+still serve marked history and can deliver a durable copy without the original headers, leaving
+the new reader unable to recognize it. If the space is hosted elsewhere, ask its operator to
+upgrade the delivery daemon first.
+
+If your integration forwards messages from storage, replace that forwarding call with a fresh
+send under the integration's own identity. For example, use
+`await endpoint.multicast(text, { channel: "general" })` for a channel post,
+`await endpoint.unicast(peer, text)` for a DM, or `await endpoint.anycast(role, text)` for a
+role request. For a legacy control request, use `await endpoint.requestControl(service, request)`.
+Do not copy the stored headers, sender or message ID. For custom receivers, core exports
+`hasStoredOrigin(headers)` to identify these reserved names. Do not apply it to answers to
+storage reads your client initiated, such as a roster lookup.
+
+If resuming a Lang run refuses a recorded wait match with these headers, start a new run with
+`cotal run start --file <program>` and have the sender post a fresh message once the wait is ready.
+
 ## Labelling an agent from its thread title
 
 The `agent` cluster advances to revision 7 with `set-label`, which the owner calls to set the label
@@ -53,6 +79,25 @@ of the callout queue, then reconnect each person's clients. A connect that an ol
 gets no `set-label` permission. An agent whose connector predates `set-label` answers it
 `unimplemented`, and `cotal acp` says so in the thread and titles the thread with the name the agent
 shows.
+
+## User-auth reply inbox names
+
+Updated clients set their NATS connection name to `<owner>-<actor>-<nonce>` and their inbox prefix to
+`_INBOX_<owner>-<actor>-<nonce>`. The owner and actor come from the bearer, and the nonce is fresh
+for each new client. After the first release containing this change becomes the latest release,
+update a CLI installation with `npm install -g cotal-ai@latest` to use this form.
+Static and open meshes are unchanged. Existing user-auth clients that send a bare nonce still connect.
+
+Update every auth callout replica before relying on the principal check or using a connection name
+longer than 120 characters. An older replica may accept a mismatched name or refuse a longer name.
+If a new replica refuses a mismatched name, the broker returns `Authorization Violation` to the
+client and the callout log gives the correct settings. Set `name` to `<sub>-<act.actor>-<nonce>`,
+using the bearer's `sub` and `act.actor` claims and a fresh nonce of 8 to 128 letters, digits or
+underscores. Set `inboxPrefix` to `_INBOX_` followed by that exact name.
+
+Update the delivery service before using new user-auth history followers. A delivery service that
+recognizes only the legacy `ibx_observer_` marker can list a follower with a principal-bound inbox
+as a live member. The updated delivery service recognizes both forms. History access is unchanged.
 
 ## Switching a running agent's model
 
@@ -1713,8 +1758,9 @@ so a container that ran `supervise --server <url>` first runs
 A manager unit that an earlier `cotal service install` wrote keeps calling `supervise`. After the
 upgrade it starts the new binary and prints the deprecation line. This release does not rewrite
 that unit, and `cotal manager install` refuses until a unit that Cotal writes can run the manager.
-A unit you write yourself runs `cotal manager start --foreground --space <space>` with
-`KillMode=mixed`.
+On Linux, a systemd user unit you write yourself runs
+`cotal manager start --foreground --space <space>` with `KillMode=mixed`. On Windows, run
+`cotal up` from the folder that hosts the local space to start its Manager.
 
 A unit that this release's `cotal service install <name>` writes runs the hidden `__service-unit`
 entry, which an earlier binary does not have. To downgrade:

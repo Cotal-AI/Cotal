@@ -1,10 +1,10 @@
 {
   "expected": {
-    "total": 1147,
+    "total": 1148,
     "honest-text": 71,
     "presence-only-glyph/count": 138,
     "command-ack": 13,
-    "non-render/control": 925
+    "non-render/control": 926
   },
   "classRationales": {
     "non-render/control": "This candidate handles presence state without making a human work-progress claim. Status tokens, routing, component inputs and presentation metadata are control data; exceptions that report a different kind of status carry an entry-specific reason."
@@ -24,6 +24,13 @@
     }
   ],
   "entries": [
+    {
+      "path": "implementations/cli/src/commands/agents.ts",
+      "kind": "derived-output",
+      "anchor": "observedOpenCodeModel(values, item)",
+      "class": "non-render/control",
+      "rationale": "Reads the model and variant for one principal and lifecycle. Neither value is a presence state or a work-progress claim."
+    },
     {
       "path": "implementations/cli/src/commands/down.ts",
       "kind": "derived-output",
@@ -578,13 +585,13 @@
     {
       "path": "implementations/cli/src/console/app.tsx",
       "kind": "derived-output",
-      "anchor": "      <NeedsYou\n        waiting={mesh.signals.waiting}\n        boxWidth={size.",
+      "anchor": "    <NeedsYou\n          waiting={mesh.signals.waiting}\n          boxWidth={siz",
       "class": "non-render/control"
     },
     {
       "path": "implementations/cli/src/console/app.tsx",
       "kind": "derived-output",
-      "anchor": "eedsYou\n        waiting={mesh.signals.waiting}\n        boxWidth={size.",
+      "anchor": "dsYou\n          waiting={mesh.signals.waiting}\n          boxWidth={siz",
       "class": "non-render/control"
     },
     {
@@ -3272,7 +3279,7 @@
     {
       "path": "implementations/web/client/src/ui/graph/TopologyGraph.tsx",
       "kind": "status-token",
-      "anchor": "    >\n      {status === \"working\" && <Orbit r={size / 2 +",
+      "anchor": "tle>}\n      {status === \"working\" && <Orbit r={size / 2 +",
       "class": "presence-only-glyph/count",
       "rationale": "A topology node's status dot, drawn as the avatars draw it, and a working node's ring and arc: presence glyphs that are aria-hidden and say nothing in text."
     },
@@ -7649,7 +7656,7 @@
     {
       "path": "extensions/connector-core/src/tool-specs.ts",
       "kind": "derived-output",
-      "anchor": "` ${who} is offline: the DM is delivered when ${who} reconnects, and a new agent spawned as ${who} does not receive it.`",
+      "anchor": "` ${who} is offline. The message is stored, but delivery is not confirmed. Only the same lifecycle can receive it, and only if its inbox still exists. A new session with the same name does not receive it.`",
       "class": "command-ack",
       "rationale": "Command result or ambiguity guidance reports the status involved in that operation, not observed work progress."
     },
