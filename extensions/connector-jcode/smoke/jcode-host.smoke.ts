@@ -1493,7 +1493,7 @@ try {
     await stopHostTree(failed, "SIGKILL");
     const logPath = connectorLogPath(managedHome("jcodehost", modelCase.name));
     const expected = modelCase.request === undefined
-      ? `[cotal-jcode] fatal: Jcode launch failed (${modelCase.code}): Select the provider in Jcode's configuration and use the model ID from the catalog. Workspace log: ${logPath}\n`
+      ? `[cotal-jcode] fatal: Jcode launch failed (${modelCase.code}): Workspace log: ${logPath}. Select the provider in Jcode's configuration and use the model ID from the catalog. Retry with \`--model fake-model\`.\n`
       : `[cotal-jcode] fatal: Jcode startup failed (${modelCase.code}); workspace log: ${logPath}\n`;
     const persisted = readFileSync(logPath, "utf8");
     check(`${modelCase.code} names the connector-owned refusal and its private log`, failedCode === 1 && failedErr.includes(expected), { failedCode, failedErr });

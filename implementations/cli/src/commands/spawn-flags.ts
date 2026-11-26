@@ -43,9 +43,15 @@ export function spawnRerun(values: FlagValues<typeof spawnFlags>, positionals: r
   return { command: spawnCommand(values, positionals, "cotal spawn", "--on <instance>") };
 }
 
-export function spawnModelRetry(values: FlagValues<typeof spawnFlags>, positionals: readonly string[]): string | undefined {
-  const [provider, model, extra] = values.model?.trim().split("/") ?? [];
-  if (!provider || !model?.trim() || extra !== undefined) return undefined;
+export function spawnModelRetry(values: FlagValues<typeof spawnFlags>, positionals: readonly string[], error: string | undefined): string | undefined {
+  if (!error) return undefined;
+  const fromHost = /^[^\n]+?: \[cotal-jcode\] fatal: Jcode launch failed \(model_prefix_rejected\):/.test(error);
+  if (!fromHost && !error.startsWith("Jcode launch failed (model_prefix_rejected):")) return undefined;
+  const [provider, explicitModel, extra] = values.model?.trim().split("/") ?? [];
+  const model = fromHost || values.model === undefined
+    ? error.match(/ Retry with `--model ([A-Za-z0-9][A-Za-z0-9._:-]{0,255})`\.$/)?.[1]
+    : provider && explicitModel?.trim() && extra === undefined ? explicitModel : undefined;
+  if (!model) return undefined;
   return spawnCommand({ ...values, model }, positionals, `${values.json ? "cotal" : displayCmd()} spawn`,
     values.on === undefined ? undefined : `--on${values.on.startsWith("-") ? "=" : " "}${retryWord(values.on)}`);
 }

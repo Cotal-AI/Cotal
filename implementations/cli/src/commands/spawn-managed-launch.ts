@@ -343,9 +343,7 @@ export async function launchManagedPersona(
     // A committed `failed` terminal is the manager's answer: the launch ran and failed, as an agent
     // that exits at once does, and the manager says why.
     if (reply.code === "failed") {
-      const prefixRejected = reply.error?.startsWith("Jcode launch failed (model_prefix_rejected):") ||
-        reply.error?.includes(": [cotal-jcode] fatal: Jcode launch failed (model_prefix_rejected):");
-      const retry = prefixRejected ? spawnModelRetry(values, positionals) : undefined;
+      const retry = spawnModelRetry(values, positionals, reply.error);
       throw new CommandFailure("failed", "OPERATION_FAILED", reply.error ? oneLine(reply.error) : "the manager reported that the launch failed", {
         target, native, ...(retry ? { remedy: retry, remedyIsCommand: true } : { remedy: "fix what the manager reported, then run the spawn again" }),
       });

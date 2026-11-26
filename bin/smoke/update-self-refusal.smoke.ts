@@ -50,6 +50,20 @@ try {
     check.equal(readFileSync(join(installed, "package.json"), "utf8"), packageBefore);
     check.equal(existsSync(join(prefix, "lib/.cotal-generations")), false);
   }
+  const manifest = join(extensions, "extensions.json"), inventory = '{"extensions":[]}';
+  writeFileSync(manifest, inventory);
+  const { ino } = lstatSync(manifest);
+  chmodSync(manifest, 0);
+  try {
+    const unreadable = run(offlineRegistry);
+    check.equal(unreadable.status, 1, unreadable.stderr);
+    check.ok(unreadable.stderr.includes(`cannot read the extensions manifest at ${manifest} (EACCES)`), unreadable.stderr);
+    check.match(unreadable.stderr, /restore this account's read access to the extensions manifest and its path, then retry/);
+    check.doesNotMatch(unreadable.stderr, /ext seed --repair/);
+    check.equal(lstatSync(manifest).mode & 0o777, 0);
+    check.equal(lstatSync(manifest).ino, ino);
+  } finally { chmodSync(manifest, 0o600); }
+  check.equal(readFileSync(manifest, "utf8"), inventory);
   // The verified prefix is already live. Only a directory in the old rollback tree needs repair.
   const journal = join(connectorRoot, ".extensions-promotion.json");
   const old = join(connectorRoot, ".extensions.rollback-fixture"), oldChild = join(old, "child");

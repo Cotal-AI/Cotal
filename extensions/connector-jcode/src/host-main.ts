@@ -85,7 +85,7 @@ runJcodeHost().catch((error) => {
     );
   } else if (error instanceof JcodeConnectorError && error.code === "model_prefix_rejected") {
     const logPath = jcodeDiagnosticLogPath();
-    writeJcodeDiagnostic(`[cotal-jcode] fatal: Jcode launch failed (${error.code}): ${error.message}${logPath ? ` Workspace log: ${resolve(logPath)}` : ""}\n`);
+    writeJcodeDiagnostic(`[cotal-jcode] fatal: Jcode launch failed (${error.code}): ${logPath ? `Workspace log: ${resolve(logPath)}. ` : ""}${error.message}\n`);
   } else if (error instanceof JcodeModelMismatch || error instanceof JcodeCursorStateUnreadable || error instanceof JcodeProjectMcpConfig) {
     // These classes construct bounded diagnostics from selected fields, never downstream messages.
     writeJcodeDiagnostic(`[cotal-jcode] fatal: Jcode host startup failed (${error.code}): ${error.message}\n`);

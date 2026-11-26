@@ -253,10 +253,19 @@ for (const [args, flag] of [
   [["--json", "-j=false", "status"], "-j"],
 ] as const) {
   const r = run([...args]);
+  const remedy = flag === "--plain" ? "omit --plain" : `omit ${flag} or pass it without a value`;
   check(`${args.join(" ")} preserves the JSON refusal`, r.status === 1 && r.stderr === "" &&
     r.envelope?.command === "status" && r.envelope.outcome === "refused" && r.envelope.error?.code === "USAGE_INVALID" &&
-    r.envelope.error.message === `${flag} takes no value` && r.envelope.error.remedy === `omit ${flag} or pass it without a value`, shown(r));
+    r.envelope.error.message === `${flag} takes no value` && r.envelope.error.remedy === remedy, shown(r));
 }
+
+const retryStatus = run(["status", "--json"]);
+check("omitting the malformed --plain flag returns the requested JSON status", retryStatus.status === 0 && retryStatus.stderr === "" &&
+  retryStatus.envelope?.command === "status" && retryStatus.envelope.outcome === "ok", shown(retryStatus));
+
+const malformedPlainOnly = run(["--plain=false", "status"]);
+check("without JSON, the refusal still offers bare --plain", malformedPlainOnly.status === 1 && malformedPlainOnly.stdout === "" &&
+  malformedPlainOnly.stderr.includes("omit --plain or pass it without a value"), shown(malformedPlainOnly));
 
 const malformedOutput = run(["--json=false", "status", "--", "--json"]);
 check("only a valid output switch before -- requests JSON", malformedOutput.status === 1 && malformedOutput.stdout === "" &&
@@ -292,6 +301,7 @@ for (const { args, command, status, code } of [
 }
 
 const dashFlag = "\u2013\u2013no-color";
+const secondDashFlag = "\u2013\u2013no-input";
 const dashMessage = `${dashFlag} starts with a typographic dash, so it is not an option`;
 const dashRemedy = "type the option with hyphens: --no-color";
 const dashCollision = run([dashFlag, "config", "get", "harness", "--json"], collisionConfig);
@@ -311,10 +321,18 @@ for (const args of [
     r.envelope?.command === "config" && r.envelope.outcome === "refused" && r.envelope.error?.code === "USAGE_INVALID" &&
     r.envelope.error.message === dashMessage && r.envelope.error.remedy === dashRemedy, shown(r));
 }
+const twoDashVersion = run([dashFlag, secondDashFlag, "version", "--json"]);
+check("two leading typographic flags keep the first diagnosis in a version JSON refusal", twoDashVersion.status === 1 &&
+  twoDashVersion.stderr === "" && twoDashVersion.envelope?.command === "version" && twoDashVersion.envelope.outcome === "refused" &&
+  twoDashVersion.envelope.error?.code === "USAGE_INVALID" && twoDashVersion.envelope.error.message === dashMessage &&
+  twoDashVersion.envelope.error.remedy === dashRemedy, shown(twoDashVersion));
 for (const args of [
   [dashFlag, "config", "get", "harness", "--", "--json"],
   ["--json", "--", dashFlag, "config", "get", "harness"],
   [dashFlag, "ext", "root", "--json"],
+  [dashFlag, secondDashFlag, "version", "--", "--json"],
+  [dashFlag, "\u2013\u2013json", "version"],
+  [dashFlag, "\u2013\u2013not-a-global", "version", "--json"],
 ]) {
   const r = run(args);
   check(`${args.join(" ")} keeps the dash diagnosis on stderr when JSON is not selected`, r.status === 1 && r.stdout === "" &&
@@ -322,6 +340,7 @@ for (const args of [
 }
 for (const [stream, ...words] of [
   ["watch", "watch"],
+  ["watch", secondDashFlag, "watch"],
   ["history", "history", "general", "--follow"],
   ["membership", "channel", "members", "general", "--follow"],
 ]) {

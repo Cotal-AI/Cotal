@@ -83,6 +83,8 @@ export async function checkJcodeLaunchModel(bin: string, model: string, env: Nod
   // Jcode's session selector still decides whether it can run the exact ID when listing fails.
   const catalog = await readJcodeModels(bin, env).catch(() => undefined);
   if (!catalog || catalog.models.some(({ id }) => id === model)) return;
-  if (catalog.models.some(({ id }) => id === spec.bare))
-    throw new JcodeConnectorError("model_prefix_rejected", "Select the provider in Jcode's configuration and use the model ID from the catalog.");
+  if (catalog.models.some(({ id }) => id === spec.bare)) {
+    const override = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/.test(spec.bare) ? ` Retry with \`--model ${spec.bare}\`.` : "";
+    throw new JcodeConnectorError("model_prefix_rejected", `Select the provider in Jcode's configuration and use the model ID from the catalog.${override}`);
+  }
 }

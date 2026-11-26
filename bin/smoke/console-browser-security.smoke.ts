@@ -246,6 +246,55 @@ async function activityLayout(session: string, base: string): Promise<void> {
   }
 }
 
+async function phoneTheme(session: string): Promise<void> {
+  const sidebar = 'button[aria-label="Open sidebar"]';
+  const settings = '[role="dialog"] button';
+  const item = '[role="menuitemradio"]';
+  const click = async (selector: string, label?: string) => {
+    let point: { x: number; y: number } | undefined;
+    await until(async () => point = await evaluate(session, `(() => {
+      const button = [...document.querySelectorAll(${JSON.stringify(selector)})]
+        .find(el => el.getClientRects().length && ${label === undefined ? "true" : `el.textContent.trim() === ${JSON.stringify(label)}`});
+      if (!button) return;
+      const bounds = button.getBoundingClientRect();
+      const x = bounds.x + bounds.width / 2, y = bounds.y + bounds.height / 2;
+      if (button.contains(document.elementFromPoint(x, y))) return { x, y };
+    })()`), `dashboard phone theme: ${label ?? selector} is clickable`);
+    assert(point);
+    await cdp("Input.dispatchMouseEvent", { type: "mouseMoved", ...point }, session);
+    for (const type of ["mousePressed", "mouseReleased"]) {
+      await cdp("Input.dispatchMouseEvent", { type, ...point, button: "left", clickCount: 1 }, session);
+    }
+  };
+  const scheme = "getComputedStyle(document.documentElement).colorScheme";
+  await cdp("Page.bringToFront", {}, session);
+  await cdp("Emulation.setDeviceMetricsOverride", { width: 360, height: 800, deviceScaleFactor: 1, mobile: false }, session);
+  await cdp("Emulation.setEmulatedMedia", { features: [{ name: "prefers-color-scheme", value: "light" }] }, session);
+  const ready = "innerWidth === 360 && document.querySelector('header.ui-bar h1')?.textContent === 'Activity'";
+  await until(() => evaluate(session, ready), "dashboard phone theme: Activity renders at 360px");
+  await click(sidebar);
+  await until(() => evaluate(session, "document.querySelector('button[aria-label=\"Open sidebar\"]')?.getAttribute('aria-expanded') === 'true'"), "dashboard phone theme: the sidebar opens");
+  await click(settings, "Settings");
+  const choices = `[...document.querySelectorAll(${JSON.stringify(item)})].map(el => [el.textContent.trim(), el.getAttribute('aria-checked')])`;
+  await until(async () => (await evaluate(session, choices)).length > 0, "dashboard phone theme: Settings opens its menu");
+  check("dashboard at 360px: the sidebar offers System, Light and Dark", JSON.stringify(await evaluate(session, choices)) ===
+    JSON.stringify([["System", "true"], ["Light", "false"], ["Dark", "false"]]));
+  await click(item, "Dark");
+  const dark = `${scheme} === 'dark' && localStorage.getItem('cotal.theme') === 'dark'`;
+  await until(() => evaluate(session, dark), "dashboard phone theme: Dark applies and is saved");
+  const before = await evaluate(session, "performance.timeOrigin");
+  await cdp("Page.reload", {}, session);
+  await until(() => evaluate(session, `performance.timeOrigin !== ${before} && ${ready}`), "dashboard phone theme: Activity reloads at 360px");
+  await click(sidebar);
+  check("dashboard at 360px: Dark survives a reload", await evaluate(session, dark));
+  await click(settings, "Settings");
+  await click(item, "System");
+  const system = `${scheme} === 'light' && localStorage.getItem('cotal.theme') === 'system'`;
+  await until(() => evaluate(session, system), "dashboard phone theme: System applies and is saved");
+  check("dashboard at 360px: System restores the light device theme", await evaluate(session, system));
+  await cdp("Emulation.setDeviceMetricsOverride", { width: 1280, height: 800, deviceScaleFactor: 1, mobile: false }, session);
+}
+
 try {
   for (let i = 0; !(await isReachable(server)); i++) { assert(i < 100, "private broker starts"); await delay(100); }
   await setupSpaceStreams({ servers: server, space });
@@ -301,6 +350,7 @@ try {
     "![...document.querySelectorAll('.ui-pane-body button')].some(button => button.textContent.trim() === 'Delete channel')"));
   await security("dashboard", dashboardPage, browserToken, dashboardBase, "document.getElementById('root')?.textContent?.includes('browser-live-control') === true");
   await activityLayout(dashboardPage, dashboardBase);
+  await phoneTheme(dashboardPage);
   const sessionCookie = await cdp("Network.getCookies", { urls: [dashboardBase] }, dashboardPage);
   const cookie = sessionCookie.cookies.find((c: { name: string }) => c.name === "cotal_web_session");
   check("dashboard: existing query launch link still mints an HttpOnly session cookie", cookie?.httpOnly === true);

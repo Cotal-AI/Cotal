@@ -258,6 +258,45 @@ check("an unknown id stays an eight-character prefix", named.nameOf("local.unkno
 
 await view.stop();
 
+// Deletion can complete while the startup chat reads are still in flight.
+{
+  let finishHistory!: () => void;
+  const historyGate = new Promise<void>((resolve) => { finishHistory = resolve; });
+  let beginHistory!: () => void;
+  const historyStarted = new Promise<void>((resolve) => { beginHistory = resolve; });
+  let finishPrefill!: () => void;
+  const prefillDone = new Promise<void>((resolve) => { finishPrefill = resolve; });
+  const requested: string[] = [];
+  class PendingHistory extends MockEndpoint {
+    override async listChannels() {
+      return ["deleted", "kept"].map((channel) => ({ channel, messages: 1 }));
+    }
+    override async channelHistory(channel = "") {
+      requested.push(channel);
+      if (requested.length === 2) beginHistory();
+      const retained = msg(ids.alice, "alice", { channel }, `history from ${channel}`, channel);
+      await historyGate;
+      return [retained];
+    }
+    override async dmHistory() {
+      finishPrefill();
+      return [];
+    }
+  }
+  const source = new PendingHistory();
+  const pendingView = new MeshView(source as unknown as CotalEndpoint);
+  await pendingView.start();
+  await Promise.race([historyStarted, wait(2_000)]);
+  check("prefill requested both channels before deletion", requested.includes("deleted") && requested.includes("kept"));
+  pendingView.discardChatHistory("deleted");
+  finishHistory();
+  await Promise.race([prefillDone, wait(2_000)]);
+  const rows = pendingView.snapshot().feed;
+  check("prefill keeps unrelated history without restoring the deleted channel",
+    rows.some((row) => row.channel === "kept") && !rows.some((row) => row.channel === "deleted"));
+  await pendingView.stop();
+}
+
 // ---- stop after the connection is closed for good ----
 {
   // The real endpoint keeps a membership watch's own stop pending until its broker consumer is

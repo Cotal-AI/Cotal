@@ -314,6 +314,9 @@ leaves the installation unchanged without failing `update --self`.
 On Linux and macOS, an installed self-update restores owner write access to its own connector
 directories before staging a release. If it cannot make those directories writable, it names the
 directory to fix and stops before staging.
+If `cotal update --self` cannot read the extensions manifest because of a permission error, it
+leaves the manifest untouched. Restore your account's read access to the manifest and its path,
+then retry.
 If you move your home or configuration directory while Cotal and its updates are stopped, an
 installed CLI at the same path can use the moved connector set. The former configuration folder
 must be absent, and the private connector set must still be at the same relative path under the
