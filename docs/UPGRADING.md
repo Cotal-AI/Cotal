@@ -15,6 +15,12 @@ space and startup options from the same project. For a hosted space, deploy the 
 and delivery packages together and restart those services. An older delivery service cannot
 confirm targeted eviction, so auth retains the receipt and retries after delivery is upgraded.
 
+Set `--auth-timeout` on the full auth service and every callout replica to the broker's
+authorization timeout. Every replica sweeps, and a shorter setting can make it remove a
+receipt while the broker is still waiting for another callout to answer. A callout-only replica
+mints a short-lived `supervisor` credential from its existing data-account signing seed and
+uses it for one `ctl.delivery-admin` connection per eviction.
+
 If auth cannot read the active session or write its connection receipt before the broker's
 authorization deadline, the broker refuses the connection. Check the auth service log for
 the cause. Restore access to the auth store if the log reports a receipt write failure, then
@@ -28,6 +34,11 @@ principal, then return the same ordered pairs in the result's `connections` fiel
 principal-only hook still handles ordinary principal eviction. Omit the `connections` field
 from `evictPrincipal` if you intend to evict the entire principal. A request that supplies it
 is limited to the exact pairs or refused, never treated as a principal-wide eviction.
+
+Make the eviction hook reentrant. Delivery can run up to four targeted calls at once, and
+they can overlap calls from the in-order admin chain. Keep per-call state separate or protect
+any state the calls share.
+
 ## Agent names that start with a hyphen
 
 `cotal personas new` refuses new catalog names starting with `-`. In scripts, replace the name with

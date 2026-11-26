@@ -188,7 +188,7 @@ try {
       await sweep();
       check("released delivery leaves the ended connection receipt for retry", (await kv.get(legacy.key))?.operation === "PUT");
     } finally { await killAndAwaitExit(daemon); }
-  }
+  } else console.log("SKIP released delivery compatibility: set COTAL_SMOKE_RELEASED_DELIVERY to a released Cotal binary");
   const legacyResponder = new core.CotalEndpoint({ space: a.space, servers: fx.servers, creds: await mintCreds(a.auth, newIdentity(), "delivery"), card: { name: "legacy-fixture", kind: "endpoint" }, channels: [], consume: false, registerPresence: false, watchPresence: false, watchChannels: false });
   await legacyResponder.start();
   let useHook = false;

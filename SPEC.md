@@ -8236,8 +8236,16 @@ single-function profiles, each granting only the verbs its function needs and no
   verify-evict their whole holder set through it, so neither costs one sweep per family holder,
   and KICKing a live family costs one broker round trip per 16 live connections. A
   daemon that does not serve it refuses the verb, and the repair or re-registration then leaves
-  the gate frozen. Its READ-ONLY twin `principalLiveness` answers whether one
-  principal still holds a live connection (the same CONNZ sweep, observer credential only — the
+  the gate frozen. `evictSessionConnections` takes the session holder's `principal` (`owner.actor`)
+  and a `connections` array of 1 to 256 exact broker `{serverId, cid}` pairs. `serverId` is a
+  broker server NKey and `cid` is a positive safe integer. The scan, disconnect and verification
+  MUST match both the principal and a supplied pair. A successful reply carries the `EvictionResult`
+  in `data`, with the pairs echoed in order in `data.connections`. The daemon MUST refuse rather
+  than evict the whole principal if it cannot honor the filter. The daemon serves this verb outside
+  the in-order admin chain, with at most four targeted requests executing at a time per delivery
+  daemon (per lane in a multi-space host). Targeted requests can overlap one another and in-order
+  admin requests. The READ-ONLY `principalLiveness` verb answers whether one principal still holds
+  a live connection (the same CONNZ sweep, observer credential only — the
   KICK credential is never opened on that path), reporting `live` / `gone` / `unknown` with scan
   completeness as a separate field and a reply bound to the exact principal queried. It exists
   because eviction cannot serve as its own precondition: a repair that must REFUSE while a holder
@@ -8349,6 +8357,7 @@ Normative revisions of this document, newest first. Dated snapshots per §11; th
 
 | Date | Revision |
 | --- | --- |
+| 2026-11-26 | **Targeted session evictions run outside the in-order admin chain (Appendix B).** A slow eviction can hold one slot without holding the other targeted requests. A delivery daemon runs at most four `evictSessionConnections` requests at once, alongside other admin commands. The verb's request and reply are unchanged. |
 | 2026-11-25 | **The owner labels an agent (§6, §13.21, §13.22, Appendix B), additive.** The `agent` cluster advances to revision 7 with `set-label`, capability `agent.profile.write`, `authorities: ["owner"]`, input `{ label }` of any string and output `{ label }`. It sets `meta["ai.cotal.label"]`, which readers show in place of the name, and leaves `card.name`, so `@mentions`, direct messages and name lookups still resolve it. It refuses as `bad-request`, `not-executed`, a label that breaks the rule a label from the first message meets: the shared name rule, at most 40 code points, and single spaces between words. It runs in turn with `set-name`, and a `set-label` before naming settles ends naming with the owner's label. An interactive ledger row's mint and a static `agent-caller` mint add the `owner` row for `set-label`; no `grant` row admits it. Earlier commands and their digests are unchanged. No subject changes. |
 | 2026-11-25 | **The owner switches a running agent's model (§6, §13.21, §13.22, Appendix B), additive.** The `agent` cluster advances to revision 6 with `set-model`, capability `agent.model.write`, `authorities: ["owner"]`, input `{ model?, variant? }` and output `{ model, variant? }`. It switches the model and the variant the harness runs from its next turn at the latest; an absent `model` keeps the model and changes the variant, and an absent `variant` leaves the variant to the harness. It refuses the agent itself as `permission-denied`, a connector that cannot switch as `unimplemented`, an agent launched under a governed role's model policy as `failed-precondition`, a model the harness lacks as `not-found` and any other harness refusal as `failed-precondition`, each with nothing changed. The card then shows the switch as `meta.model`, `meta.variant` and the new `meta["ai.cotal.model-set"]`, which a launcher that starts the same lifecycle again SHOULD launch on. Presence `agentEndpoint` gains an optional boolean `setModel`, read as false when absent. An `interactive` ledger row gains the `owner` row for `set-model`; no `grant` row admits it. Earlier commands and their digests are unchanged. |
 | 2026-11-24 | **Managers name their machine (§6, §9, §13.9), additive.** The Manager cluster advances to revision 57. Its `status` output gains the optional `machine`, and its presence card's `meta` carries the same value: HMAC-SHA256 keyed by the host's OS machine identity over `cotal manager host`, never the identity itself. A caller on the same machine recognises its own Managers by it, because a host name can change while a Manager runs. The closed status schema of revision 56 rejects the field, so Managers and their callers update together. No subject changes. |

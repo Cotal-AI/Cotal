@@ -631,9 +631,7 @@ export class EndpointDeliveryPlane {
       const i = this.delivery.subs.indexOf(this.deliveryAdminServeSub);
       if (i >= 0) this.delivery.subs.splice(i, 1);
     }
-    // The membership inventory is read-only and shares nothing with the other admin commands, so it
-    // does not queue behind them. In a mass stop each retirement's inventory followed every other
-    // seat's `evictPrincipal` on this rail and missed its 5 s deadline (#4965).
+    // Membership inventory and exact session evictions run outside the in-order admin chain.
     this.deliveryAdminServeSub = this.serveControl(CONTROL_DELIVERY_ADMIN, (req) => this.handleDeliveryAdmin(req), {
       boundReply: true,
       concurrent: (req) => req.op === "lifecycleMemberships" || req.op === "evictSessionConnections",
@@ -816,7 +814,7 @@ export class EndpointDeliveryPlane {
   }
 
   private async deliveryEvictSessionConnections(req: ControlRequest): Promise<ControlReply> {
-    // Exact connection filters are independent. Bound the shared work across auth replicas.
+    // Limit concurrent exact-connection scans across all callers of this delivery daemon.
     while (this.targetedEvictions.size >= 4) await Promise.race(this.targetedEvictions);
     if (!this.plane3MayAct()) return { ok: false, error: "delivery: this daemon is not serving this shard (it is re-checking ownership); retry" };
     const flight = this.deliveryEvictPrincipal(req).finally(() => { this.targetedEvictions.delete(flight); });
