@@ -644,7 +644,12 @@ and names `chmod g-w <path>` as the next step.
 
 ### Update limits
 
-Third-party extensions are listed with their installed version and recorded spec but are not
+When an operator-installed first-party extension has no recorded install spec, `cotal update`
+verifies it against the installed version and npm lock. If it needs repair, the command uses the
+package name at this Cotal release's version. A built-in without a recorded spec is repaired from
+the shipped payload.
+
+Third-party extensions are listed with their installed version and any recorded spec but are not
 auto-updated in v1. Floating third-party updates require `@cotal-ai/*` peer-range validation and are
 a future follow-up. When `update --self` cannot reach the registry before selecting a release,
 it exits 0 without reconciling packages, inspecting Manager custody or creating an update recovery
@@ -902,7 +907,8 @@ rather than weakening its shell-file ownership checks.
 Bare `ext --json` (or `ext list --json`) writes one JSON document: `result.root` is the install
 prefix and `result.items` holds one row per installed extension with `pkg`, `version`, `spec` (what
 `ext add` was given), `seeded` (`true` for an entry the built-in seed installed) and `provides` (the
-`kind:name` refs the table shows). An empty prefix is an empty list. `--plain` writes the same report
+`kind:name` refs the table shows). If the install spec was not recorded, the row omits `spec`.
+An empty prefix is an empty list. `--plain` writes the same report
 without color. The other `ext` subcommands refuse `--json` and `--plain` with `USAGE_INVALID`.
 `ext root` stays a raw path for `$(cotal ext root)`, even if the manifest is corrupt.
 If the manifest is corrupt, `ext list --json` exits 1 with a `SCHEMA_INVALID` refusal and names
