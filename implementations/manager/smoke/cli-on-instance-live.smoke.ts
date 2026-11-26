@@ -340,10 +340,17 @@ try {
     bogus.status !== 0 && /not a valid lifecycle token/i.test(strip(bogus.out)),
     { status: bogus.status, tail: strip(bogus.out).slice(-300) });
 
+  const describePinRefusal = (out: string): boolean =>
+    out.includes("--on needs the full instance ID of the selected endpoint.")
+    && ["cotal", "pnpm cotal"].some((cli) =>
+      out.includes(`For the native Manager, use \`${cli} ps --space ${space}\`.`)
+      && out.includes(`Retry with \`${cli} endpoint describe manager --space ${space} --on <instance>\`.`))
+    && !/not a valid lifecycle token|no managed agent|no describe reply|did not answer/i.test(out);
+
   const bogusDescribe = await cotal(["describe", "manager", "--on", "4ik6rb0e", "--space", space], root1);
   mustHaveRun(bogusDescribe, "`describe manager --on <malformed>`");
   check("a malformed instance id on describe is REFUSED, not silently widened (#554)",
-    bogusDescribe.status !== 0 && /not a valid lifecycle token/i.test(strip(bogusDescribe.out)),
+    bogusDescribe.status === 1 && describePinRefusal(strip(bogusDescribe.out)),
     { status: bogusDescribe.status, tail: strip(bogusDescribe.out).slice(-300) });
 
   // A roster PRINCIPAL id (`local.U…`) is the mismatch #423 reports: an operator pins by the id
@@ -360,7 +367,7 @@ try {
     mustHaveRun(r, `\`${site.what}\``);
     const out = strip(r.out);
     check(site.what,
-      r.status !== 0
+      site.argv[0] === "describe" ? r.status === 1 && describePinRefusal(out) : r.status !== 0
         && out.includes(`--on wants the manager INSTANCE id as \`cotal ps${site.argv[0] === "ps" ? ` --space ${space}` : ""}\` prints it`)
         && /not the roster's principal id/.test(out)
         && /is a principal id/.test(out)
@@ -404,8 +411,8 @@ try {
   // answered, not the queue winner (#554). Exit 0 alone is satisfied by the class queue; the
   // equality of the report's "Answering instance" field is the claim.
   for (const [label, iid] of [["IID1", IID1], ["IID2", IID2]] as const) {
-    const r = await cotal(["describe", "manager", "--on", iid, "--space", space], root1);
-    mustHaveRun(r, `\`describe manager --on ${label}\``);
+    const r = await cotal(["endpoint", "describe", "manager", "--space", space, "--on", iid], root1);
+    mustHaveRun(r, `\`endpoint describe manager --space ${space} --on ${label}\``);
     const out = strip(r.out);
     check(`describe --on ${label} SUCCEEDS and its attribution line names ${label}: the pinned instance answered, not the queue winner (#554)`,
       r.status === 0 && new RegExp(`^ +Answering instance: +${iid}$`, "m").test(out),
@@ -556,7 +563,8 @@ try {
     mustHaveRun(r, `\`${site.what} --on ""\``);
     const out = strip(r.out);
     check(`${site.what} --on "" is REFUSED at the flag (exit non-zero, the up-front text, not the mint's token error, not a seat miss)`,
-      r.status !== 0 && emptyRefused.test(out) && !/not a valid lifecycle token/i.test(out) && !/no managed agent/i.test(out),
+      site.what === "describe" ? r.status === 1 && describePinRefusal(out)
+        : r.status !== 0 && emptyRefused.test(out) && !/not a valid lifecycle token/i.test(out) && !/no managed agent/i.test(out),
       { status: r.status, tail: out.slice(-300) });
   }
 
