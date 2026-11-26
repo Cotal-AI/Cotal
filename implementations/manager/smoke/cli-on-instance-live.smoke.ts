@@ -199,6 +199,36 @@ async function checkRelativeDirectoryRefusals(root: string, instance: string): P
 }
 
 type MgrPriv = { managerInstanceId: string };
+
+async function checkInvokeSpawnRefusal(root: string, managerRoot: string, instance: string): Promise<void> {
+  const args = ["endpoint", "invoke", "manager", "spawn", "--space", space, "--on", instance];
+  const spawnArgs = [...args, "--args", JSON.stringify({ name: "nowhere", agent: "opencode" })];
+  const reason = `no persona "nowhere" in the catalog of manager ${instance} on host ${hostname()}: ${join(managerRoot, ".cotal", "agents", "nowhere.md")} not found; create it there`;
+  for (const format of [[], ["--plain"]]) {
+    const run = await cotal([...spawnArgs, ...format], root);
+    mustHaveRun(run, "native spawn refusal in human output");
+    check(`endpoint invoke ${format[0] ?? "rich"} shows the Manager's reason and create step`,
+      run.status === 2 && strip(run.out).replace(/\s+/g, " ").includes(reason), run);
+  }
+  const json = await cotal([...spawnArgs, "--json"], root);
+  mustHaveRun(json, "native spawn refusal in JSON");
+  const env = JSON.parse(json.stdout);
+  check("endpoint invoke JSON keeps the refusal outcome and puts the Manager's reason in error.message",
+    json.status === 2 && env.outcome === "refused" && env.error?.code === "LIFECYCLE_BLOCKED" && env.error.message === reason
+    && env.error.cause?.code === "failed-precondition" && env.error.cause.outcome === "not-executed"
+    && env.error.cause.detail?.responder?.instanceId === instance, json);
+
+  const privateValues = [`u_${"a".repeat(26)}`, randomUUID(), "eyJfixture.credential.signature"];
+  const config = join(managerRoot, ...privateValues, "missing.md");
+  for (const format of ["--plain", "--json"]) {
+    const run = await cotal([...args, "--args", JSON.stringify({ name: "nowhere", config }), format], root);
+    mustHaveRun(run, "native refusal with private values in its diagnostic");
+    check(`endpoint invoke ${format} keeps the reason but omits credentials and IDs from it`,
+      run.status === 2 && run.out.includes("agent file not found:") && run.out.includes("missing.md")
+      && privateValues.every((value) => !run.out.includes(value)), { status: run.status });
+  }
+}
+
 let m1: InstanceType<typeof Manager> | undefined;
 let m2: InstanceType<typeof Manager> | undefined;
 let m3: InstanceType<typeof Manager> | undefined;
@@ -811,6 +841,7 @@ try {
     nowhere.status === 2 && nowhereOut.includes(`no persona "nowhere" in the catalog of manager ${IID6} on host ${hostname()}`) &&
       nowhereOut.includes("nothing was launched; create that file on the manager's host, then run the spawn again") && !nowhereOut.includes("--config"),
     { status: nowhere.status, out: nowhereOut.slice(-900) });
+  await checkInvokeSpawnRefusal(root1, root6, IID6);
 
   // `--timeout` is one deadline for the call, the contract read included. Nothing serves `nosuch`, so
   // its contract read is never answered and the refusal comes when the flag's 1000ms run out. The
