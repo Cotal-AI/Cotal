@@ -364,6 +364,33 @@ try {
       assert.equal(restored?.repair, null, "a restored export needs no repair");
     }
 
+    if (process.getuid && process.getuid() !== 0) {
+      const privatePath = join(exported, "owner's unreadable file.creds");
+      const privateId = newIdentity();
+      const creds = await mintCreds(auth, privateId, "agent", { lifecycleUid: mintLifecycleUid(), expiresInSeconds: 3600 });
+      writeFileSync(privatePath, creds, { mode: 0o600 });
+      recordCredentialExport(SPACE, { label: "owner_unreadable", profile: "agent", path: privatePath, root, identity: privateId.id });
+      chmodSync(privatePath, 0o000);
+
+      const unreadable = await runDoctor({ json: true });
+      const row = unreadable.envelope!.result.exported.find((entry) => entry.path === privatePath);
+      const repair = `The export's owner lacks read permission. Run \`chmod 600 '${exported}/owner'\\''s unreadable file.creds'\`.`;
+      assert.equal(row?.state, "unreadable", "an export without owner read permission stays unreadable");
+      assert.equal(row?.issuedAt, null, "no claims are read from the export");
+      assert.equal(row?.repair, repair, "the repair quotes the path and restores permission without replacing the credential");
+      assert.equal(unreadable.envelope!.result.findings, 0, "the unreadable export is informational");
+      assert.equal(unreadable.code, 0, "the unreadable export does not change the JSON exit code");
+      const plain = await runDoctor({ plain: true });
+      assert.equal(plain.code, 0, "the unreadable export does not change the plain exit code");
+      assert.ok(plain.text.includes(`owner_unreadable: ${repair}`), "plain output includes the same permission guidance");
+
+      chmodSync(privatePath, 0o600);
+      const restored = (await runDoctor({ json: true })).envelope!.result.exported.find((entry) => entry.path === privatePath);
+      assert.equal(restored?.state, "healthy", "restoring the mode resolves the diagnostic");
+      assert.equal(restored?.repair, null, "a readable private export needs no repair");
+      assert.equal(readFileSync(privatePath, "utf8"), creds, "the credential contents are unchanged");
+    }
+
     // #7542: if a root is registered as open even while leftover .cotal/auth files exist on disk,
     // doctor auth (with or without --fix) reports the open-space no-op rather than Mode: static or CONFLICT.
     writeFileSync(join(material, "membership-rw.creds"), "", { mode: 0o600 });

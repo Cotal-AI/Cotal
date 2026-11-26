@@ -74,7 +74,7 @@ import {
   startStackManagerRemedy,
   withControlConnection,
 } from "@cotal-ai/workspace/control";
-import { spawnFlags, spawnRerun } from "./spawn-flags.js";
+import { spawnFlags, spawnModelRetry, spawnRerun } from "./spawn-flags.js";
 
 /** Whether the installed manifest lists a connector named `name`. An unreadable manifest answers
  *  true, so the import's own refusal reports it. */
@@ -342,8 +342,12 @@ export async function launchManagedPersona(
     }
     // A committed `failed` terminal is the manager's answer: the launch ran and failed, as an agent
     // that exits at once does, and the manager says why.
-    if (reply.code === "failed")
-      throw new CommandFailure("failed", "OPERATION_FAILED", reply.error ? oneLine(reply.error) : "the manager reported that the launch failed", { target, native, remedy: "fix what the manager reported, then run the spawn again" });
+    if (reply.code === "failed") {
+      const retry = reply.error?.startsWith("Jcode launch failed (model_prefix_rejected):") ? spawnModelRetry(values, positionals) : undefined;
+      throw new CommandFailure("failed", "OPERATION_FAILED", reply.error ? oneLine(reply.error) : "the manager reported that the launch failed", {
+        target, native, ...(retry ? { remedy: retry, remedyIsCommand: true } : { remedy: "fix what the manager reported, then run the spawn again" }),
+      });
+    }
     const unknown = reply.nativeOutcome !== "executed" || reply.unanswered;
     throw new CommandFailure(unknown ? "unknown" : "failed", unknown ? "OPERATION_UNKNOWN" : "OPERATION_FAILED", reply.error ? oneLine(reply.error) : "the manager did not confirm launch readiness", { target, native, remedy: "inspect `cotal ps` and the selected manager before retrying; this launch was not submitted again" });
   }

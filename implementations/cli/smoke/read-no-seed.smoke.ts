@@ -147,6 +147,12 @@ channels:
   mkdirSync(root, { recursive: true });
   writeFileSync(manifest, corrupt);
   const offline = { COTAL_NO_UPDATE_CHECK: "1", COTAL_TELEMETRY: "off" };
+  for (const args of [["version"], ["--version"], ["-V"]]) {
+    const r = run(args, offline);
+    check(`${args[0]} reports the running version with an unreadable inventory`,
+      r.status === 4 && r.stdout.split("\n")[0] === `cotal-ai ${VERSION}` &&
+      r.stderr.includes(manifest) && r.stderr.includes('no "extensions" array') && r.stderr.includes("`cotal ext seed --repair`"), shown(r));
+  }
   for (const args of [["config", "get", "harness", "--json"], ["--json", "config"], ["completion", "-j"]]) {
     const r = run(args, offline);
     const receipt = r.stdout ? JSON.parse(r.stdout) : undefined;
