@@ -117,7 +117,7 @@ function listOpenCodeModels(opts: ModelCatalogOpts = {}): ModelCatalog | Promise
   // subcommand: `opencode models --pure --verbose` exits 1 on 2.x with the help text rather than a
   // real catalog.
   const versionRaw = execFileSync(bin, ["--version"], {
-    encoding: "utf8",
+    encoding: "utf8", windowsHide: true,
     env,
     stdio: ["ignore", "pipe", "pipe"],
   }).trim();
@@ -127,7 +127,7 @@ function listOpenCodeModels(opts: ModelCatalogOpts = {}): ModelCatalog | Promise
   if (opts.refresh) args.push("--refresh");
   try {
     const stdout = execFileSync(bin, args, {
-      encoding: "utf8",
+      encoding: "utf8", windowsHide: true,
       env,
       stdio: ["ignore", "pipe", "pipe"],
       maxBuffer: 16 * 1024 * 1024,
@@ -158,6 +158,15 @@ export const opencodeConnector: Connector = {
   name: "opencode",
   supportsFreshStart: true,
   requires: ["opencode"],
+  // OpenCode publishes no Windows installer, only zips and an npm package.
+  install: {
+    title: "OpenCode",
+    maker: "Anomaly",
+    installers: {
+      darwin: { script: "https://opencode.ai/v2/install", shell: "bash", binDir: "~/.opencode/bin" },
+      linux: { script: "https://opencode.ai/v2/install", shell: "bash", binDir: "~/.opencode/bin" },
+    },
+  },
   supportsModelVariant: true,
   supportsPrompt: true, // OpenCode serves a first turn from an initial message — see buildLaunch
   // OpenCode can spend longer than the generic 30s window bootstrapping a cold server before

@@ -341,8 +341,8 @@ are not publisher signatures or a proof of every executable file. No remote sche
 `service show <name>` reads declared policy, not live state. Public reports omit argument bodies,
 adapter option values and credential contents. Missing launch paths do not prevent reading the
 saved declaration. Records live under the workstation store's case-safe per-space service path.
-If no definition has that name, `show` refuses with `TARGET_NOT_FOUND` (exit 2) and suggests
-`cotal service --space <space>` for the space it checked.
+If no definition has that name, `show` and `remove` refuse with `TARGET_NOT_FOUND` (exit 2) and suggest
+`cotal service --space <space>` for the space each checked.
 
 `service remove <name> --yes` removes the unchanged definition and its stopped instances' records
 and sidecar receipts, and deletes each removed instance's log file and rotated `<log>.1` file.
@@ -369,8 +369,8 @@ explicit intent, has only the positive form. Numeric and complex options use JSO
 Use `cotal service start <preset> --help` for start options. To keep flags from an existing
 start command, pass its words after `cotal help --`. Flags can precede the verb or the preset,
 as in `cotal help -- service --space reviews-dev start broker --config ./nats.conf`.
-Use `--no-open` with
-`cotal service start web` or when starting a dashboard saved under a custom name.
+Use `--no-open` with `cotal service start web` or when starting a dashboard saved under a custom name.
+Start help lists `--no-open` for either name. For a saved dashboard in another space, pass `--space <s>` to select it.
 A preset no registered or installed provider declares refuses by name; for `web` the refusal
 names `cotal ext add @cotal-ai/web`.
 Options that collide with service/global flags require the file form. No preset is installed or
@@ -557,7 +557,8 @@ and serves no HTTP, so it refuses `--port`, the public-face flags and `--service
 refuses to start in a space that admits service endpoints: one whose full service has ever run with
 them. It never writes `auth-service.json`, and
 it exits non-zero when it loses a store connection or the broker. Give it the same `--auth-timeout`
-as the full service, the value the broker config renders.
+as the full service, the value the broker config renders. The replica continues evicting ended
+terminal connections through delivery when the full service is down.
 See [callout replicas](identity-and-auth.mdx#per-user-authentication).
 
 `--callout-only --spaces` serves several spaces from one callout process, one lane each, and stands

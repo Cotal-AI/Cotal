@@ -2,9 +2,17 @@ import { spawnSync } from "node:child_process";
 import { lstatSync, readdirSync, readFileSync, realpathSync, statSync, type Dirent } from "node:fs";
 import { join, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
-import { SEEDED_EXTENSIONS, extensionPackageDir, extensionsDir, installedExtensionPackage, resolveExtensionEntry, type InstalledExtension } from "@cotal-ai/workspace";
+import { SEEDED_EXTENSIONS, extensionPackageDir, extensionsDir, hostPackageDir, installedExtensionPackage, isExtensionPathSpec, resolveExtensionEntry, type InstalledExtension } from "@cotal-ai/workspace";
 import { seedStorePath, shippedSourceDir } from "./paths.js";
 import { sharedPlacements, type SharedPlacement } from "./shared.js";
+
+/** Check the links installed by the peer binder without changing the extension tree. */
+export function seededPeerLinksCurrent(pkg: string): boolean {
+  const installed = installedExtensionPackage(pkg);
+  return installed !== undefined && Object.keys(installed.peerDependencies ?? {}).every(peer =>
+    !peer.startsWith("@cotal-ai/") ||
+    realpathSync(join(extensionPackageDir(pkg), "node_modules", peer)) === realpathSync(hostPackageDir(peer)));
+}
 
 /**
  * Why `cotal update` still has to reinstall a seeded built-in that is recorded at this generation, or
@@ -62,6 +70,11 @@ export function seededInstallDiffers(name: string, generation: string, entry: In
   return undefined;
 }
 
+/** The source for a matching-generation repair is the operator's path, if one was recorded. */
+export function operatorUpdateSpec(entry: InstalledExtension, generation: string): string {
+  return entry.version === generation && isExtensionPathSpec(entry.spec) ? entry.spec : `${entry.pkg}@${generation}`;
+}
+
 /**
  * Why `cotal update` still has to reinstall a first-party operator extension, or undefined when npm's
  * own record in the prefix proves it installed at this generation: the entry is recorded at this
@@ -72,7 +85,7 @@ export function seededInstallDiffers(name: string, generation: string, entry: In
  * Any doubt is a reason, and a reason runs the ordinary reinstall.
  */
 export function operatorInstallDiffers(entry: InstalledExtension, generation: string): string | undefined {
-  const spec = `${entry.pkg}@${generation}`;
+  const spec = operatorUpdateSpec(entry, generation);
   if (entry.version !== generation) return `recorded at ${entry.version}, not ${generation}`;
   if (entry.spec !== spec) return `recorded spec ${entry.spec} is not ${spec}`;
   const differs = prefixLockDiffers();

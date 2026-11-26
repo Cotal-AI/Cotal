@@ -691,8 +691,10 @@ async function movedStackTargetHealth(report: SelectedResult, meshes: StatusResu
   return movedStackComponent("target", [`registered ${address}`, ...(reachable ? ["reachable"] : [])]);
 }
 
-export async function printComponentHealth(selected: Selected, store: StoreWriteObservation | undefined, report: SelectedResult, meshes: StatusResult["meshes"], selectedHint: string | undefined, starting?: string): Promise<void> {
+export async function printComponentHealth(selected: Selected, store: StoreWriteObservation | undefined, report: SelectedResult, meshes: StatusResult["meshes"], selectedHint: string | undefined, starting?: string, recoveryBroker?: number): Promise<void> {
   section("Component Health");
+  if (recoveryBroker !== undefined && !report.resolved)
+    return printComponents([{ name: "target", verdict: "refused", facts: ["service health cannot be checked", report.message, `pid ${recoveryBroker}`, ...(selectedHint === undefined ? [] : [selectedHint])] }]);
   if (!selected.ok) {
     const e = selected.error;
     const journal = isWorkspaceTargetError(e) && e.code === "not-started" && e.details.root !== undefined && !e.details.rootMissing

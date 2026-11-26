@@ -65,6 +65,7 @@ import { controllerStackApplies } from "./stack-up.js";
 import { completingFlagValue, positionalsForCompletion } from "../lib/completion.js";
 import { assertEndpointUnreachable } from "../lib/endpoint-cut.js";
 import { shellWord } from "../lib/endpoint-errors.js";
+import { displayCmd } from "../lib/self-exec.js";
 
 const OPERATION_TIMEOUT_MS = 30 * 60 * 1000;
 
@@ -190,7 +191,7 @@ async function inspectionConnection(broker: IsolatedBroker): Promise<NatsConnect
   return connectIsolatedBroker(broker, broker.initialLogin);
 }
 
-async function collectInventory(nc: NatsConnection, space: string, selected: SpaceBackupSelection, held: readonly string[]): Promise<{
+async function collectInventory(nc: NatsConnection, space: string, selected: SpaceBackupSelection, held: readonly string[], openBackup: boolean): Promise<{
   checkpoints: PersistentConsumerCheckpoint[];
 }> {
   const requestPage = async <T>(subject: string, offset: number): Promise<T & { total: number; offset: number; limit: number }> => {
@@ -259,7 +260,7 @@ async function collectInventory(nc: NatsConnection, space: string, selected: Spa
         throw new Error(`${stream}/${consumer.name} has an unsupported stopped KV watcher config: ${JSON.stringify(consumer.config)}`);
     return [stream, consumers.filter((consumer) => !isStoppedKvWatcher(stream, consumer))];
   }));
-  return { checkpoints: validatePersistentConsumerInventory(space, backedConsumers, statesByStream, held) };
+  return { checkpoints: validatePersistentConsumerInventory(space, backedConsumers, statesByStream, held, openBackup) };
 }
 
 export function isStoppedKvWatcher(stream: string, consumer: ConsumerInfo): boolean {
@@ -495,9 +496,14 @@ function noSpaceFailure(error: unknown, observed: BackupObservation, args: Parse
 /** A displayed retry must name the same paths after terminal escaping. */
 function retryCreateStep(args: ParsedArgs): string {
   const { only, "store-dir": store } = args.values as BackupValues;
+  const destination = resolve(args.positionals[1]!);
+  const windowsWord = (path: string) => !/["%`$!\u2018-\u201E]|\\$/u.test(path);
+  if (process.platform === "win32" && (!windowsWord(destination) || (store !== undefined && !windowsWord(store))))
+    return "rerun your original backup command from the same folder";
+  const quote = process.platform === "win32" ? (path: string) => `"${path}"` : shellWord;
   const selectionFlag = only === undefined ? "" : ` --only ${only}`;
-  const storeFlag = store === undefined ? "" : ` --store-dir${store.startsWith("-") ? "=" : " "}${shellWord(store)}`;
-  const command = `cotal backup create ${shellWord(resolve(args.positionals[1]!))}${selectionFlag}${storeFlag}`;
+  const storeFlag = store === undefined ? "" : ` --store-dir${store.startsWith("-") ? "=" : " "}${quote(store)}`;
+  const command = `${args.values.json === true ? "cotal" : displayCmd()} backup create ${quote(destination)}${selectionFlag}${storeFlag}`;
   return oneLine(command) === command
     ? `run ${codeSpan(command)} again`
     : "rerun your original backup command from the same folder (a path cannot be displayed unchanged)";
@@ -746,7 +752,7 @@ async function createBackup(args: ParsedArgs, observed: BackupObservation): Prom
     const inspect = await inspectionConnection(broker);
     let checkpoints;
     try {
-      ({ checkpoints } = await collectInventory(inspect, ready.space, selected, held));
+      ({ checkpoints } = await collectInventory(inspect, ready.space, selected, held, ready.mode === "open"));
     } finally {
       await drainAndClose(inspect).catch(() => {});
     }

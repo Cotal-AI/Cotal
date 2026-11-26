@@ -253,9 +253,15 @@ try {
       absent.status === 2 && error?.code === "TARGET_NOT_FOUND" && error.message.includes(`no manager has been started in space ${SPACE}`) && error.remedy === `start it with \`cotal manager start --space ${SPACE}\``, out(absent));
   }
 
-  const install = cotal(["manager", "install", "--space", SPACE, "--dry-run"]);
-  check("cotal manager install refuses before any effect and names a unit of your own running manager start --foreground",
-    install.status === 2 && out(install).includes("UNSUPPORTED") && out(install).includes("cotal manager install is not supported yet") && out(install).includes("manager start --foreground --space servicecommands") && out(install).includes("KillMode=mixed"), out(install));
+  for (const flags of [[], ["--dry-run"]]) {
+    const install = cotal(["manager", "install", "--space", SPACE, ...flags]);
+    const text = out(install);
+    const next = process.platform === "win32"
+      ? ["cotal", "pnpm cotal"].some(cli => text.includes(`\`${cli} up --space ${SPACE}\``)) && !/ExecStart=|KillMode=mixed/.test(text)
+      : text.includes(`manager start --foreground --space ${SPACE}`) && text.includes("KillMode=mixed");
+    check(`cotal manager install ${flags.join(" ")} refuses before any effect and names a platform-appropriate next step`,
+      install.status === 2 && text.includes("UNSUPPORTED") && text.includes("cotal manager install is not supported yet") && next, text);
+  }
 
   const intake = cotal(["service", "start", "feedback-intake", "--space", SPACE]);
   check("a built-in preset that needs files refuses naming each flag", intake.status === 1 && out(intake).includes("the feedback-intake preset needs --keys, --creds, which have no default; nothing was saved or started"), out(intake));
@@ -294,6 +300,22 @@ try {
       && managerUnknownError.message === "Unknown option '--wibble'" && managerUnknownError.remedy === "drop the unknown option", out(managerUnknown));
   const added = cotal(addExec);
   check("service add <name> --exec saves a program of your own in one command", added.status === 0 && JSON.stringify(definitions()) === '["hello"]', out(added));
+  for (const flags of [["--exec", "--json"], ["--json", "--exec"]]) {
+    const refusedStatus = cotal(["service", "status", "hello", "--space", SPACE, ...flags]);
+    const { outcome, error } = JSON.parse(refusedStatus.stdout);
+    check(`service status ${flags.join(" ")} tells you to omit --exec rather than give it a value`,
+      refusedStatus.status === 1 && refusedStatus.stderr === "" && outcome === "refused" && error?.code === "USAGE_INVALID"
+        && error.message === "`service status` does not take --exec" && error.remedy === "omit --exec", out(refusedStatus));
+  }
+  const retriedStatus = cotal(["service", "status", "hello", "--space", SPACE, "--json"]);
+  const { result: savedStatus } = JSON.parse(retriedStatus.stdout);
+  check("omitting --exec reads the saved service without starting it",
+    retriedStatus.status === 0 && savedStatus?.recordedState === "not started" && savedStatus.instanceId === null, out(retriedStatus));
+  const missingExec = cotal(["service", "add", "hello", "--space", SPACE, "--exec", "--json"]);
+  const { error: missingExecError } = JSON.parse(missingExec.stdout);
+  check("service add still asks for the value of --exec",
+    missingExec.status === 1 && missingExec.stderr === "" && missingExecError?.code === "USAGE_INVALID"
+      && missingExecError.remedy === "write --exec <command>", out(missingExec));
   const show = cotal(["service", "show", "hello", "--space", SPACE, "--json"]);
   let launch: { type?: string; executable?: string; argumentCount?: number; cwd?: string } = {};
   try { launch = (JSON.parse(show.stdout) as { result: { launch: typeof launch } }).result.launch; } catch { /* the cell reports the output */ }
@@ -374,9 +396,9 @@ try {
   const brokerHelpCommand = cotal(["help", "service", "start", "broker"]);
   const example = brokerStartHelp.stdout.split("\n").find((line) => line.includes("start the broker in the background"))?.trim().split(/ {2,}/)[0];
   const examplePreview = example ? previewBrokerCommand(`${example} --space ${PREPARED}`) : undefined;
-  check("broker start help omits unsupported modes, keeps the preset's options, and gives a start that previews successfully",
+  check("broker start help omits unsupported modes, names the absolute config path requirement, and gives a start that previews successfully",
     brokerStartHelp.status === 0 && brokerHelpCommand.status === 0 && brokerStartHelp.stdout === brokerHelpCommand.stdout
-    && !/--foreground\b|--new-instance\b/.test(brokerStartHelp.stdout) && /^  --config <file>/m.test(brokerStartHelp.stdout)
+    && !/--foreground\b|--new-instance\b/.test(brokerStartHelp.stdout) && /^  --config <file> +absolute path\b/m.test(brokerStartHelp.stdout)
     && examplePreview?.status === 0, { help: out(brokerStartHelp), preview: examplePreview && out(examplePreview) });
   const badGlobalLeading = cotal(["--no-color=false", "service", "start", "broker"]);
   const badGlobalTrailing = cotal(["service", "start", "broker", "--no-color=false"]);

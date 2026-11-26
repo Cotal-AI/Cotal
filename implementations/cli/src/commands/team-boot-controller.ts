@@ -21,6 +21,7 @@ import { assertManagerLogin, assertUserStackTransport, preflightUserStack, userL
 import { controllerStackNative, holdForegroundStack, prepareFreshTeamBoot, prepareResumeTeamBoot, recheckFreshTeamBoot, type FreshTeamBootPlan } from "./up.js";
 import { recheckStackResume, stackResumeEligibility, type StackResumeBinding } from "../lib/stack-resume.js";
 import { shellWord } from "../lib/endpoint-errors.js";
+import { displayCmd } from "../lib/self-exec.js";
 import { authModeText } from "../lib/team-text.js";
 
 export interface ControllerTeamBootRequest {
@@ -29,6 +30,7 @@ export interface ControllerTeamBootRequest {
   transport: BrokerTransport;
   foreground: boolean;
   presentation: "rich" | "json" | "plain";
+  retry: () => string;
 }
 
 /** The controller boot's receipt. Evidence fields are the members' own controller receipts; the
@@ -79,7 +81,7 @@ function bootView(data: ControllerTeamBootResult, journal: StackJournal): Report
     { title: "Fresh team boot started", blocks: [{ kind: "fields", rows: [["Space", data.space], ["Deployment", data.deploymentId], ["Root", data.root], ["Broker", data.server], ["Manifest", data.manifestPath], ["Auth mode", authModeText(data.mode)], ["Runtime request", data.runtime], ["Launch spec", data.launchSpec ? `${data.launchSpec.path} (sha256 ${data.launchSpec.sha256.slice(0, 12)}…)` : "not written"], ["Launch summary", data.summaryRecorded ? "recorded" : "not recorded"], ["Lifetime", data.foreground ? "this terminal" : "background"], ["Agent readiness", "not checked"]] }, { kind: "lines", lines: ["The stack's own manager member was started with this exact pinned launch spec. Manager readiness proves the manager, not that each requested agent joined. The launch summary is not stop authority; stop the stack with `cotal down`."] }] },
     ...members.sections,
     { title: "Requested topology", blocks: [data.requestedAgents.length ? { kind: "table", columns: [{ key: "name", label: "Agent" }, { key: "application", label: "Application" }, { key: "role", label: "Role" }], rows: data.requestedAgents.slice(0, 100).map((agent) => ({ ...agent, role: agent.role ?? "none" })) } : { kind: "lines", lines: ["No agents requested."] }, { kind: "lines", lines: data.declaredChannels.length ? data.declaredChannels.slice(0, 100).map((name) => `declared #${name}`) : ["No channels declared."] }] },
-    { title: "Next", blocks: [{ kind: "commands", items: [{ command: `cotal team show ${data.deploymentId} --space ${data.space}`, description: "Read this local launch summary" }, { command: `cotal ps --space ${data.space}`, description: "List the agents the manager reports" }, { command: `cotal down --space ${data.space} --dry-run`, description: "Preview the guarded whole-stack stop" }] }] },
+    { title: "Next", blocks: [{ kind: "commands", items: [{ command: `cotal team show ${data.deploymentId} --space ${data.space}`, description: "Read this local launch summary" }, { command: `cotal ps --space ${data.space}`, description: "List the agents the manager reports" }, { command: `cd ${shellPath(data.root)} && ${displayCmd({ fromAnyFolder: true })} down --space ${shellWord(data.space)} --dry-run`, description: "Preview the guarded whole-stack stop" }] }] },
   ] };
 }
 
@@ -91,7 +93,7 @@ export async function controllerTeamBoot(request: ControllerTeamBootRequest): Pr
   const recorded = readStackJournal(process.cwd())?.journal;
   let binding: StackResumeBinding | undefined;
   let plan: FreshTeamBootPlan;
-  if (!recorded) plan = await prepareFreshTeamBoot(request.file, { space: request.space, transport: request.transport });
+  if (!recorded) plan = await prepareFreshTeamBoot(request.file, { space: request.space, transport: request.transport, retry: request.retry });
   else {
     // A stack whose last operation started it is up. Say so before the resume checks name the stop
     // it lacks. This manifest may already own cards on the running stack.

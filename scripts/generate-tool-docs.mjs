@@ -68,7 +68,7 @@ const ANNOTATIONS = {
     availability: "always",
     notes:
       "A name must match a present peer's name in full (case-insensitive) or its instance id. On a miss nothing is sent, and the refusal lists present names that start with the target so you can choose one; it never picks one for you. Your own name is refused as this session, not as a missing peer. " +
-      "A DM publish timeout names its NATS subject and reports an unknown storage outcome. A timeout is not proof that the message was rejected or not delivered. Check before resending.",
+      "A DM publish timeout names its NATS subject and reports an unknown storage outcome. A timeout is not proof that the message was rejected or not delivered. Check before resending. A DM larger than the broker's message limit, envelope included, is refused with that limit in bytes; nothing was sent, so shorten it or split it across several DMs.",
   },
   cotal_anycast: {
     effect: "queues a request for one holder of a role; with `seq`, reads or cancels one you sent",

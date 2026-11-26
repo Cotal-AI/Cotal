@@ -9,6 +9,8 @@ mod native_presence;
 #[cfg(feature = "desktop")]
 pub mod updater;
 pub mod app_activity;
+#[cfg(any(feature = "desktop", test))]
+mod terminal;
 pub mod update_receipt;
 pub mod presence;
 pub mod first_paint;
@@ -63,8 +65,14 @@ pub enum DesktopRequest {
     Logout { idp: String },
     #[serde(rename = "setup")]
     Setup { space: String, idp: String },
+    #[serde(rename = "space-recover")]
+    SpaceRecover { space: String, candidate: String, holder: String },
     #[serde(rename = "space-intent")]
     SpaceIntent { space: String, enabled: bool },
+    #[serde(rename = "agent-stop", rename_all = "camelCase")]
+    AgentStop { space: String, lifecycle_uid: String },
+    #[serde(rename = "agent-terminal", rename_all = "camelCase")]
+    AgentTerminal { space: String, lifecycle_uid: String },
     #[serde(rename = "connect-check")]
     ConnectCheck { space: String },
     #[serde(rename = "register")]
@@ -75,11 +83,27 @@ pub enum DesktopRequest {
     Disconnect { space: String },
     #[serde(rename = "service-status")]
     ServiceStatus { space: String },
+    #[serde(rename = "agent-apps")]
+    AgentApps {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        refresh: Option<bool>,
+    },
+    #[serde(rename = "agent-app-install")]
+    AgentAppInstall { name: String },
+    #[serde(rename = "agent-app-sign-in")]
+    AgentAppSignIn { name: String },
 }
 
 impl DesktopRequest {
     pub fn validate(&self) -> Result<(), String> {
         match self {
+            Self::SpaceRecover { space, candidate, holder } => {
+                Self::ConnectCheck { space: space.clone() }.validate()?;
+                if candidate.len() != 64 || !candidate.bytes().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()) || holder.len() > 2048 {
+                    return Err("Invalid custody recovery.".into());
+                }
+                browser_url(holder)?;
+            }
             Self::UpdateRelease { version } => {
                 let parts: Vec<_> = version.split('.').collect();
                 if parts.len() != 3 || parts.iter().any(|part| part.is_empty() || !part.bytes().all(|c| c.is_ascii_digit())) || version.len() > 64 {
@@ -93,6 +117,8 @@ impl DesktopRequest {
                 }
             }
             Self::SpaceIntent { space, .. }
+            | Self::AgentStop { space, .. }
+            | Self::AgentTerminal { space, .. }
             | Self::ConnectCheck { space }
             | Self::Register { space }
             | Self::Connect { space }
@@ -112,6 +138,18 @@ impl DesktopRequest {
         if let Self::Setup { space, .. } = self {
             Self::ConnectCheck { space: space.clone() }.validate()?;
         }
+        // The webview names an installed connector's application and nothing else; the service
+        // reads every command from that connector's declaration.
+        if let Self::AgentAppInstall { name } | Self::AgentAppSignIn { name } = self {
+            let bytes = name.as_bytes();
+            if bytes.is_empty()
+                || bytes.len() > 64
+                || !bytes[0].is_ascii_alphanumeric()
+                || !bytes.iter().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == b'-')
+            {
+                return Err("Invalid application name.".into());
+            }
+        }
         Ok(())
     }
 
@@ -120,7 +158,8 @@ impl DesktopRequest {
     }
 
     pub fn timeout_seconds(&self) -> u64 {
-        if matches!(self, Self::Login { .. } | Self::Setup { .. }) {
+        // An installer may run for 15 minutes and a browser sign-in for 10; the service stops either first.
+        if matches!(self, Self::Login { .. } | Self::Setup { .. } | Self::AgentAppInstall { .. } | Self::AgentAppSignIn { .. }) {
             1200
         } else {
             150
@@ -199,6 +238,16 @@ mod tests {
         );
     }
     #[test]
+    fn custody_recovery_validates_the_candidate_and_holder() {
+        for (candidate, holder, valid) in [
+            ("b".repeat(64), "https://example.test/api/auth", true),
+            ("B".repeat(64), "https://example.test/api/auth", false),
+            ("b".repeat(64), "file:///tmp/auth", false),
+        ] {
+            assert_eq!(DesktopRequest::SpaceRecover { space: "team".into(), candidate, holder: holder.into() }.validate().is_ok(), valid);
+        }
+    }
+    #[test]
     fn only_closed_requests_are_admitted() {
         let status = serde_json::from_str::<DesktopRequest>(r#"{"op":"status"}"#).unwrap();
         assert!(!status.is_watch());
@@ -217,8 +266,18 @@ mod tests {
             r#"{"op":"install","path":"/tmp/foreign"}"#,
             r#"{"op":"setup","space":"team","idp":"https://example.com","PATH":"/foreign"}"#,
             r#"{"op":"setup","space":"team","idp":"https://example.com","command":"sh"}"#,
+            r#"{"op":"agent-app-install","name":"claude","script":"https://example.com/x.sh"}"#,
+            r#"{"op":"agent-app-install"}"#,
+            r#"{"op":"agent-app-sign-in","name":"claude","args":["auth","login"]}"#,
+            r#"{"op":"agent-apps","path":"/foreign"}"#,
         ] {
             assert!(serde_json::from_str::<DesktopRequest>(input).is_err());
+        }
+        assert!(serde_json::from_str::<DesktopRequest>(r#"{"op":"agent-apps"}"#).unwrap().validate().is_ok());
+        assert!(serde_json::from_str::<DesktopRequest>(r#"{"op":"agent-apps","refresh":true}"#).unwrap().validate().is_ok());
+        for (name, valid) in [("claude", true), ("connector-2", true), ("", false), ("-x", false), ("Claude", false), ("a b", false), ("../x", false), (&"a".repeat(65)[..], false)] {
+            assert_eq!(DesktopRequest::AgentAppInstall { name: name.into() }.validate().is_ok(), valid, "{name}");
+            assert_eq!(DesktopRequest::AgentAppSignIn { name: name.into() }.validate().is_ok(), valid, "{name}");
         }
         for (space, idp, valid) in [
             ("team", "https://example.com/api/auth", true),

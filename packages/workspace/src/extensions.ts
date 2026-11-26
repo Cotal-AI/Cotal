@@ -5,7 +5,8 @@ import { shellPath } from "./local-record-source.js";
 import { codeSpan } from "./text-wrap.js";
 import { CommandFailure } from "./output.js";
 import { fileURLToPath } from "node:url";
-import type { Command, CommandExample, Connector, Extension, ExtensionRef, FlagSpec, OutputMode, Subcommand } from "@cotal-ai/core";
+import type { Command, CommandExample, Connector, Extension, ExtensionRef, FlagSpec, HarnessInstall, OutputMode, Subcommand } from "@cotal-ai/core";
+import { checkedHarnessInstall } from "./harness-install.js";
 import { connectorConfigDir } from "./connector-retention.js";
 import { inspectLock } from "./advisory-lock.js";
 import { globalConfigDirProblem } from "./cotal-config.js";
@@ -71,6 +72,9 @@ export interface CachedConnector {
   /** The connector's declared setup provider, `null` when it declares none. Absent only in a
    *  manifest written before this was cached. */
   readonly setup?: ExtensionRef | null;
+  /** How a person installs what `requires` names, from its maker. Absent when the connector declares
+   *  none, and in a manifest written before this was cached: no app offers an install on a guess. */
+  readonly install?: HarnessInstall;
 }
 
 export interface InstalledExtension {
@@ -108,8 +112,9 @@ export function isExtensionPathSpec(spec: string, absolute: (p: string) => boole
 /** Recovery for a recorded extension. Do not echo a registry URL or opaque selector in advice. */
 export function extensionReinstallAdvice(entry: InstalledExtension): string {
   if (entry.source === "seeded") return "Run `cotal ext seed --repair` to reinstall it.";
-  if (isExtensionPathSpec(entry.spec) || /^(?:@[a-z0-9._~-]+\/)?[a-z0-9._~-]+(?:@[a-z0-9._~^*<>=|+ -]+)?$/i.test(entry.spec))
-    return `Run ${codeSpan(`cotal ext add ${shellPath(entry.spec)}`)} to reinstall it.`;
+  const { spec } = entry;
+  if (typeof spec === "string" && (isExtensionPathSpec(spec) || /^(?:@[a-z0-9._~-]+\/)?[a-z0-9._~-]+(?:@[a-z0-9._~^*<>=|+ -]+)?$/i.test(spec)))
+    return `Run ${codeSpan(`cotal ext add ${shellPath(spec)}`)} to reinstall it.`;
   return `Run ${codeSpan(`cotal ext remove ${shellPath(entry.pkg)}`)} to drop the record, or reinstall with the original spec.`;
 }
 
@@ -230,6 +235,7 @@ export function cacheConnector(connector: Connector): CachedConnector {
     askPermissions: connector.supportsAskPermissions === true,
     reasoningEvents: connector.supportsReasoningEvents === true,
     setup: connector.setup ? { kind: connector.setup.kind, name: connector.setup.name } : null,
+    ...(connector.install === undefined ? {} : { install: checkedHarnessInstall(connector.name, connector.requires ?? [], connector.install) }),
   };
 }
 

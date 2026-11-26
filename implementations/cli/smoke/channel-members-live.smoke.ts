@@ -169,8 +169,9 @@ try {
 
   check("a leading hyphen is valid in a channel name", cotal("channel", "set", "#-audit", "--desc", "Dash-prefixed channel").status === 0);
   const dashShow = cotal("channel", "show", "#-audit", "--plain");
+  const dashHistory = process.platform === "win32" ? '"#-audit"' : "'#-audit'";
   check("channel show spells a dash-prefixed channel as a shell-safe operand",
-    dashShow.status === 0 && dashShow.out.includes("cotal ch members '#-audit' ") && dashShow.out.includes("cotal history '#-audit' "), dashShow.out);
+    dashShow.status === 0 && dashShow.out.includes("cotal ch members '#-audit' ") && dashShow.out.includes(`cotal history ${dashHistory} `), dashShow.out);
   const dashMembers = cotal("ch", "members", "#-audit", "--plain");
   check("the suggested member read succeeds and its follow command keeps the operand safe",
     dashMembers.status === 0 && dashMembers.out.includes(`cotal ch members '#-audit' --space ${SPACE} --follow`), dashMembers.out);
@@ -230,7 +231,8 @@ try {
         && suggestedShow?.status === 0 && suggestedShow.stdout.includes(`Mesh: ${SPACE}`)
         && /Description:\s+General talk/.test(suggestedShow.stdout), { inventory: inventory.out, show: suggestedShow?.out });
     const card = cotal("channel", "show", "archive", ...target, "--plain");
-    const history = card.stdout.includes(`cotal history '#archive' ${scope}`) ? cotal("history", "#archive", ...target, "--json") : undefined;
+    const archiveWord = process.platform === "win32" ? '"#archive"' : "'#archive'";
+    const history = card.stdout.includes(`cotal history ${archiveWord} ${scope}`) ? cotal("history", "#archive", ...target, "--json") : undefined;
     check("the suggested history read uses the inspected space, broker and credential",
       card.status === 0 && history?.status === 0 && history.stdout.includes('"text":"kept"'), { card: card.out, history: history?.out });
     const members = card.stdout.includes(`cotal ch members archive ${scope}`) ? cotal("ch", "members", "archive", ...target, "--plain") : undefined;

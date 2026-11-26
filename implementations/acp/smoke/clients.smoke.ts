@@ -166,6 +166,26 @@ zedRun("demo");
 const both = parse(readFileSync(zed, "utf8"), [], { allowTrailingComma: true }) as typeof zedValue;
 check("another space gets its own agent, named for the space, with the config home the shell set", JSON.stringify(both.agent_servers["Cotal (demo)"]) === JSON.stringify({ type: "custom", command: node, args: [entry, "acp", "--space", "demo"], env: { XDG_CONFIG_HOME: join(home, ".config") } }), both.agent_servers);
 check("Zed status names the spaces it reaches", zedProvider.status!({ version: "0", skillsRemedy: "" })[0]?.text === "Cotal for cotal_cloud, demo");
+const otherZedAgents = {
+  "Other ACP bridge": { type: "custom", command: "/usr/bin/printf", args: ["acp", "--space", "project"], env: { KEEP_ME: "yes" } },
+  "Other Node agent": { type: "custom", command: node, args: [join(home, "other.js"), "acp", "--space=project"] },
+};
+writeFileSync(zed, JSON.stringify({ agent_servers: {
+  ...otherZedAgents,
+  "Cotal (project)": { type: "custom", command: join(home, "old-prefix", "bin", "cotal"), args: ["acp", "--space", "project"] },
+  "Cotal (demo)": { type: "custom", command: node, args: [moved[1], "acp", "--space=demo"] },
+} }, null, 2));
+const zedRefresh = () => zedProvider.refresh!.run({ cotal });
+const refreshed = zedRefresh();
+const zedRefreshed = readFileSync(zed, "utf8");
+const refreshedAgents = (JSON.parse(zedRefreshed) as typeof zedValue).agent_servers;
+check("Zed refresh preserves other agents with the same ACP space arguments",
+  Object.entries(otherZedAgents).every(([name, agent]) => JSON.stringify(refreshedAgents[name]) === JSON.stringify(agent)), refreshedAgents);
+check("Zed refresh repairs missing direct and Node Cotal launchers",
+  refreshed === "agents for project, demo now run this Cotal" && refreshedAgents["Cotal (project)"]?.command === node &&
+  JSON.stringify(refreshedAgents["Cotal (project)"]?.args) === JSON.stringify([entry, "acp", "--space", "project"]) &&
+  JSON.stringify(refreshedAgents["Cotal (demo)"]?.args) === JSON.stringify([entry, "acp", "--space=demo"]), refreshedAgents);
+check("a second Zed refresh writes nothing", zedRefresh() === "agents for project, demo are current" && readFileSync(zed, "utf8") === zedRefreshed);
 // A settings file kept in a dotfiles folder and linked into place.
 const dotfiles = join(home, "dotfiles");
 mkdirSync(dotfiles);

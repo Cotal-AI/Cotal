@@ -32,7 +32,7 @@ export const serviceFlags = [spaceFlag, jsonFlag, plainFlag,
   { name: "yes", short: "y", type: "boolean", description: "stop/restart/remove/uninstall: confirm the exact selected local target" },
   { name: "instance", type: "string", value: "<full-id>", description: "select one full owned service instance ID, not a prefix; remove: forget only that stopped instance record" },
   { name: "new-instance", type: "boolean", description: "start: explicitly allocate another process-driver instance" },
-  { name: "no-open", type: "boolean", description: "start web: keep browser authentication manual" },
+  { name: "no-open", type: "boolean", description: "start: keep browser authentication manual for a web dashboard" },
   { name: "foreground", type: "boolean", description: "start: keep the owned process in this terminal; not a detachable view" },
   { name: "idle-exit", type: "string", value: "<seconds>", description: "start manager: stop it once it has held no agents for this long; this start only" },
   { name: "with-agents", type: "boolean", description: "stop/restart: request the declared native agent-stop policy; never generic descendant signals" },
@@ -238,7 +238,7 @@ export async function service(args: ParsedArgs, commandName = "service"): Promis
   }
   if (mode === "remove") {
     const row = savedService(suppliedName!);
-    if (!row) throw new CommandFailure("refused", "TARGET_NOT_FOUND", "no saved service definition has this full name in the selected space", { target: { ...target, name: suppliedName }, remedy: "see the saved definitions with `cotal service`" });
+    if (!row) throw new CommandFailure("refused", "TARGET_NOT_FOUND", "no saved service definition has this full name in the selected space", { target: { ...target, name: suppliedName }, remedy: `see the saved definitions with ${codeSpan(`cotal service${targetWords({ space })}`)}` });
     if ((Object.values(STACK_DEFINITION) as string[]).includes(row.name)) {
       const remedy = stackMemberRemovalRemedy(root, space, presentation === "json");
       if (args.values.instance !== undefined) throw new CommandFailure("refused", "UNSUPPORTED", "a controller stack member's instance records stay with its stack; nothing was removed", { target: { ...target, name: row.name, instanceId: String(args.values.instance) }, remedy });
@@ -456,7 +456,12 @@ async function recordedManagerLogs(name: string, recorded: { pid: number | null;
   const target = { space, name, executionHost: "this-machine", pid: recorded.pid };
   const path = managerLogPath(space, root), tail = values.tail === undefined ? 100 : Number(values.tail);
   if (values.follow) return followRecordedLog(path, recorded.pid, target, presentation, tail);
-  const log = readOwnedLogTail(path, tail, true), stopped = recorded.state === "stopped";
+  const stopped = recorded.state === "stopped";
+  const missingRemedy = stopped ? undefined : () => {
+    const cli = presentation === "json" ? "cotal" : displayCmd();
+    return `If you started the manager with ${codeSpan(`${cli} supervise`)}, read its output in the terminal where you started it.`;
+  };
+  const log = readOwnedLogTail(path, tail, true, missingRemedy);
   writeResult(presentation, { command: commandName, target, result: { kind: "service-logs", name, recordedProcess: { pid: recorded.pid, label: recorded.label, state: recorded.state, startedBy: "cotal up or cotal supervise", savedService: false }, ...log, encoding: "utf8-with-replacement", collection: "the manager's output, in the log `cotal up` opened for it" }, ...(log.omittedBytes && log.lines.length < tail ? { completeness: "partial" as const, partial: { message: "The 16 MiB bounded read holds fewer lines than the requested tail; earlier bytes were omitted." } } : {}) }, (result): Report => ({ sections: [{ title: stopped ? "Manager log tail, from a stopped manager" : "Manager log tail", blocks: [
     { kind: "fields", rows: [["Space", space], ["State", recorded.state], ["PID", recorded.pid === null ? "no longer recorded" : stopped ? `${recorded.pid}, no longer running` : String(recorded.pid)], ["Started by", "cotal up or `cotal supervise`, not as a saved service"], ["Log", path]] },
     { kind: "lines", lines: result.lines.length ? result.lines : ["No captured log lines in this bounded read."] },

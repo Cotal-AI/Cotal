@@ -1382,6 +1382,20 @@ let openInventory: ManagerResumeAgent;
     marks({ model: "intruder" }, uidFor("another-lifecycle"));
     check("a mark that is not set-model's answer, or that another lifecycle shows, is not kept: the last good one stays",
       seat.launch.model === "big-model" && seat.launch.variant === "high", seat.launch);
+    const configPath = join(root, ".cotal", "config.json");
+    const warnings: string[] = [];
+    const originalError = console.error;
+    writeFileSync(configPath, "{");
+    try {
+      console.error = (line: string) => { warnings.push(line); };
+      marks({ model: "unreadable-config-model" });
+    } finally {
+      console.error = originalError;
+      rmSync(configPath);
+    }
+    check("an unreadable Cotal configuration warns with the file path and keeps the last good model",
+      warnings.some((line) => line.includes("could not read the Cotal configuration:") && line.includes(configPath))
+      && seat.launch.model === "big-model" && seat.launch.variant === "high", warnings);
     marks({ model: "small-model" });
     check("a later switch with no variant leaves none", seat.launch.model === "small-model" && seat.launch.variant === undefined, seat.launch);
     const cut = await first.preserveState({ attemptId: "model_cut", persistInventory: async () => {} });

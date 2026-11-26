@@ -30,6 +30,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { recordsBucket } from "@cotal-ai/core";
+import { connect } from "@nats-io/transport-node";
 import { canonicalLocalProcessPath, DELIVERY_PIDFILE, isCommandFailure, MANAGER_PIDFILE, MANAGER_SPARE_CAPABILITY, readManagerName, shellPath, spaceKey, userAuthStateDir, verifyIdentityPin, type ProcessIdentityRecord } from "@cotal-ai/workspace";
 import { finishOwnedChild, observeOwnedChild, ownedBirthLive as live, waitForOwnedChild } from "./_foreground-owned-child.js";
 import { foregroundCliProbe } from "./_foreground-cli-probe.js";
@@ -40,8 +41,67 @@ import { checkInheritedPipeCleanup } from "./_foreground-pipe-fixture.js";
 import { assertSmokeSandboxDown, emitSentinel, freePort, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
 
 if (process.platform === "win32") {
-  console.log("SKIP foreground-up-signals: POSIX terminal process groups do not apply on Windows");
+  await windowsHangupCell();
+  emitSentinel({ passed: 1, failed: 0 });
   process.exit(0);
+}
+
+async function windowsHangupCell(): Promise<void> {
+  const { cotalPty, clean, COTAL, wait } = await import("./_console-pty.js");
+  const base = mkdtempSync(join(tmpdir(), "cotal-foreground-close-"));
+  const mesh = join(base, "owner's mesh"), home = join(base, "stack home"), xdg = join(base, "xdg");
+  const bin = join(base, "bin"), caller = join(base, "caller"), tsx = import.meta.resolve("tsx");
+  const space = "foreground-windows", port = await freePort();
+  for (const path of [mesh, home, xdg, bin, caller]) mkdirSync(path);
+  const sandbox = recordSmokeSandbox({ root: mesh, cotalHome: home, xdgConfigHome: xdg });
+  const env = Object.fromEntries(Object.entries(process.env).filter(([k, v]) => v !== undefined && !/^COTAL_|^PATH$/i.test(k))) as Record<string, string>;
+  Object.assign(env, { PATH: `${bin};${process.env.PATH ?? ""}`, COTAL_HOME: home, XDG_CONFIG_HOME: xdg, COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1" });
+  writeFileSync(join(bin, "cotal.cmd"), `@"${process.execPath}" --import "${tsx}" "${COTAL}" %*\r\n`);
+  const probe = (args: string[]) => {
+    assertSmokeSandboxDown(sandbox, args, { cwd: mesh, env });
+    return foregroundCliProbe(COTAL, tsx, mesh, env, args, 90_000);
+  };
+  const created = await probe(["space", "create", space, "--root", "."]);
+  assert.equal(created.code, 0, created.out + created.err);
+  const child = cotalPty(["up", "--foreground", "--open", "--no-manager", "--server", `nats://127.0.0.1:${port}`], { cwd: mesh, env, cols: 1000 });
+  let raw = "", exit: number | undefined;
+  child.onData((text) => { raw += text; });
+  child.onExit((event) => { exit = event.exitCode; });
+  const poll = async (ready: () => boolean, timeout: number) => {
+    const deadline = Date.now() + timeout;
+    while (!ready() && exit === undefined && Date.now() < deadline) await wait(50);
+  };
+  try {
+    await poll(() => clean(raw).includes("Controller stack started"), 90_000);
+    assert.ok(exit === undefined && clean(raw).includes("Controller stack started"), clean(raw));
+    child.kill();
+    await poll(() => exit !== undefined, 15_000);
+    assert.equal(exit, 129, clean(raw));
+    const notice = /The terminal closed\. This stack is still running; inspect it with `([^`\r\n]+)`; to stop it, run `([^`\r\n]+)`/.exec(clean(raw));
+    assert.ok(notice, clean(raw));
+    const run = (shell: "powershell" | "cmd", action: "--dry-run" | "--yes", command: string) => {
+      const literal = (path: string) => path.replaceAll("'", "''");
+      assert.ok(command.includes(`Set-Location -LiteralPath '${literal(realpathSync(mesh))}'; `)
+        && command.includes(`SetEnvironmentVariable('COTAL_HOME', '${literal(home)}')`)
+        && command.includes(`'down' '${action}'`), command);
+      const options = { cwd: caller, env: { ...env, COTAL_HOME: join(caller, "other home") }, encoding: "utf8", timeout: 90_000 } as const;
+      assertSmokeSandboxDown(sandbox, ["down", action], { cwd: mesh, env });
+      const result = shell === "powershell"
+        ? spawnSync("powershell.exe", ["-NoProfile", "-EncodedCommand", Buffer.from(command, "utf16le").toString("base64")], options)
+        : spawnSync("cmd.exe", ["/d", "/s", "/c", `"${command}"`], { ...options, windowsVerbatimArguments: true });
+      assert.equal(result.status, 0, `${command}\n${result.stdout}${result.stderr}${result.error ?? ""}`);
+      return result.stdout;
+    };
+    assert.match(run("powershell", "--dry-run", notice[1]!), /stack-broker/);
+    assert.match(run("cmd", "--dry-run", notice[1]!), /stack-broker/);
+    assert.equal(await portOpen(port), true, "both previews left the broker running");
+    assert.match(run("cmd", "--yes", notice[2]!), /Controller stack stopped/);
+    assert.equal(await portOpen(port), false, "the printed command stopped the broker");
+    console.log("PASS foreground-up-signals Windows console close commands");
+  } finally {
+    if (exit === undefined) child.kill();
+    if (await portOpen(port)) await probe(["down", "--yes"]);
+  }
 }
 const wt = resolve(import.meta.dirname, "../../..");
 const cliEntry = join(wt, "bin/cotal.ts");
@@ -188,14 +248,15 @@ async function cell(name: string, options: { auth?: boolean; ready?: boolean; re
   const space = folderNamed ? name : `foreground-${name}`;
   const env = { ...cleanEnv, HOME: home, COTAL_HOME: join(home, "machine"), XDG_CONFIG_HOME: join(home, "xdg"), XDG_DATA_HOME: join(home, "data"), XDG_CACHE_HOME: join(home, "cache"), XDG_STATE_HOME: join(home, "state"), COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1" };
   const logFile = join(mesh, "broker.log");
+  const statusHarness = "status-fixture";
   if (options.repairDelivery) {
     // Make the spawn suggestion available without installing or launching a harness.
     const extensions = join(env.XDG_CONFIG_HOME, "cotal", "extensions");
     mkdirSync(extensions, { recursive: true, mode: 0o700 });
     writeFileSync(join(extensions, "extensions.json"), JSON.stringify({ extensions: [{
       pkg: "@fixture/status", version: "1.0.0", spec: "@fixture/status@1.0.0", commands: [],
-      provides: [{ kind: "connector", name: "status-fixture" }],
-      connectors: [{ name: "status-fixture", requires: ["node"], eventPlane: false, setup: null }],
+      provides: [{ kind: "connector", name: statusHarness }],
+      connectors: [{ name: statusHarness, requires: ["node"], eventPlane: false, setup: null }],
     }] }), { mode: 0o600 });
   }
   const args = ["--import", tsx, cliEntry, "up", "--foreground", "--server", `nats://127.0.0.1:${port}`, ...(folderNamed ? [] : ["--space", space]), ...(options.auth ? [] : options.openBrokerExit || options.openManagerExit || options.externalDown ? ["--open"] : ["--open", "--no-manager"]), ...(options.openManagerExit || (!options.auth && options.externalDown) ? ["--store-dir", store] : []), ...(options.nativeLog ? ["--log-file", "./broker.log", "--logfile-size-limit", "1048576"] : [])];
@@ -311,7 +372,7 @@ async function cell(name: string, options: { auth?: boolean; ready?: boolean; re
       console.log(`PASS foreground-up-signals ${name}: public status broker/manager/delivery serving and ps answered`);
     }
     if (options.repairDelivery) {
-      const status = () => foregroundCliProbe(cliEntry, tsx, mesh, env, ["status"], 60_000);
+      const status = () => foregroundCliProbe(cliEntry, tsx, mesh, { ...env, COTAL_DEFAULT_AGENT: statusHarness }, ["status"], 60_000);
       const next = (report: Awaited<ReturnType<typeof status>>) => report.out.split("\nNext\n")[1] ?? "";
       const spawnLine = /^ {2}(?:pnpm )?cotal spawn +/m;
       const broker = token(brokerPath), delivery = token(deliveryPath);
@@ -541,13 +602,14 @@ async function checkStoppedStore(mesh: string, env: NodeJS.ProcessEnv, space: st
     }
   } finally { chmodSync(jetstream, mode); }
 }
-async function restoreStartupCell(): Promise<void> {
-  const mesh = join(base, "restore-startup"), home = join(mesh, "home");
-  const env = { ...cleanEnv, HOME: home, COTAL_HOME: join(home, "machine"), XDG_CONFIG_HOME: join(home, "xdg"), COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1" };
-  for (const p of [mesh, home, env.COTAL_HOME, env.XDG_CONFIG_HOME]) mkdirSync(p, { recursive: true, mode: 0o700 });
+async function restoreStartupCell(phase: "listener" | "manager" | "committed"): Promise<void> {
+  const mesh = join(base, `restore-at-${phase}`), home = join(mesh, "home");
+  const env = { ...cleanEnv, HOME: home, COTAL_HOME: join(home, "machine"), XDG_CONFIG_HOME: join(home, "xdg"), XDG_RUNTIME_DIR: join(home, "run"), COTAL_SKIP_CONNECTOR_SEED: "1", DO_NOT_TRACK: "1", NO_COLOR: "1" };
+  for (const p of [mesh, home, env.COTAL_HOME, env.XDG_CONFIG_HOME, env.XDG_RUNTIME_DIR]) mkdirSync(p, { recursive: true, mode: 0o700 });
   const sandbox = recordSmokeSandbox({ root: mesh, cotalHome: env.COTAL_HOME, xdgConfigHome: env.XDG_CONFIG_HOME });
   const port = await freePort(), space = "foreground-restore";
   const server = `nats://127.0.0.1:${port}`;
+  const managerPath = canonicalLocalProcessPath(MANAGER_PIDFILE, { root: mesh, space });
   const journalPath = join(mesh, ".cotal", "maintenance", "v1", "journal.json");
   const journal = (): { state?: string; restore?: { attemptId: string }; listenerProof?: { processOwner: { pid: number } } } =>
     JSON.parse(readFileSync(journalPath, "utf8"));
@@ -556,10 +618,11 @@ async function restoreStartupCell(): Promise<void> {
     assertSmokeSandboxDown(sandbox, args, { cwd: mesh, env });
     const result = await probe(args);
     assert.equal(result.code, 0, `${args.join(" ")}: ${result.out}${result.err}`);
+    return result.out;
   };
   const owned = new Map<string, ProcessIdentityRecord>();
   const collect = () => {
-    for (const file of [join(mesh, ".cotal/nats.pid"), canonicalLocalProcessPath(MANAGER_PIDFILE, { root: mesh, space })]) {
+    for (const file of [join(mesh, ".cotal/nats.pid"), managerPath]) {
       const row = token(file);
       if (row) owned.set(`${row.pid}:${row.token}`, row);
     }
@@ -578,43 +641,59 @@ async function restoreStartupCell(): Promise<void> {
       const result = await probe(["channel", "set", "restore-probe", "--desc", "before restore", "--space", space]);
       return result.code === 0;
     }, 90_000, () => "source manager did not register");
+    const post = "retained through foreground restore";
+    await must(["send", "-c", "restore-probe", post, "--space", space]);
     await must(["down", "--preserve-state", "--store-dir", "./source store"]);
     await must(["backup", "create", "./full backup", "--store-dir", "./source store", "--plain"]);
 
     const restore = run = foreground(["--foreground", "--restore", "./full backup", "--store-dir", "./phase target"]);
+    const committed = phase === "committed";
+    const signal = committed ? "SIGINT" : "SIGTERM";
     let attempt: string | undefined;
     let broker: ProcessIdentityRecord | undefined;
     await until(() => {
       if (restore.state.error || restore.state.exited) throw new Error(restore.log());
+      const manager = token(managerPath);
+      if (phase !== "listener" && !manager) return false;
       const record = journal();
-      if (record.state !== "commit-intent" || !record.listenerProof) return false;
+      if (committed) assert.notEqual(record.state, "active", "missed the manager-committed window");
+      if (record.state !== (committed ? "manager-committed" : "commit-intent") || !record.listenerProof) return false;
       broker = token(join(mesh, ".cotal/nats.pid"));
       assert.equal(broker?.pid, record.listenerProof.processOwner.pid);
-      collect();
+      for (const row of [broker, manager]) if (row) owned.set(`${row.pid}:${row.token}`, row);
       attempt = record.restore?.attemptId;
-      assert.ok(restore.child.kill("SIGTERM"));
+      assert.ok(restore.child.kill(signal));
       return true;
-    }, 120_000, restore.log, 2);
+    }, 120_000, restore.log, committed ? 1 : 2);
     await until(() => restore.state.exited, 90_000, restore.log);
     await waitForOwnedChild(() => restore.state.closed, 3_000, "interrupted restore streams drained");
-    assert.equal(restore.state.code, 143, restore.log()); passed++;
-    assert.ok(attempt && restore.log().includes(`Interrupted: restore attempt ${attempt}`), restore.log()); passed++;
-    assert.match(restore.log(), /Continue it with bare `(?:pnpm )?cotal up`/); passed++;
-    assert.doesNotMatch(restore.log(), /before it answered|take it off PATH|OPERATION_FAILED/); passed++;
-    assert.ok(broker && !live(broker) && !await portOpen(port), "the interrupted restore stopped its own listener"); passed++;
+    assert.equal(restore.state.code, committed ? 130 : 143, restore.log()); passed++;
+    if (committed) {
+      assert.ok(attempt && restore.log().includes(`restored the backup in full as restore attempt ${attempt}`), restore.log()); passed++;
+      assert.doesNotMatch(restore.log(), /Continue it with bare|Interrupted: restore attempt/); passed++;
+      assert.equal(journal().state, "active", "the committed restore finished before shutdown"); passed++;
+    } else {
+      assert.ok(attempt && restore.log().includes(`Interrupted: restore attempt ${attempt}`), restore.log()); passed++;
+      assert.match(restore.log(), /Continue it with bare `(?:pnpm )?cotal up`/); passed++;
+    }
+    assert.doesNotMatch(restore.log(), /before it answered|take it off PATH|OPERATION_FAILED|OPERATION_UNKNOWN/); passed++;
+    assert.ok(broker && ![...owned.values()].some(live) && !await portOpen(port), "the interrupted restore stopped its own manager and listener"); passed++;
+    assert.equal(journal().restore?.attemptId, attempt, "interruption kept the same journaled attempt"); passed++;
+    assert.notEqual(journal().state, "degraded", "intentional shutdown is not an activation failure"); passed++;
 
     const recovery = run = foreground([]);
-    await until(() => {
+    await until(async () => {
       collect();
       if (recovery.state.error || recovery.state.exited) throw new Error(recovery.log());
       const record = journal();
-      return record.state === "active" && record.restore?.attemptId === attempt;
+      return record.state === "active" && record.restore?.attemptId === attempt && await portOpen(port);
     }, 120_000, recovery.log);
-    await must(["channel", "set", "restore-probe", "--desc", "after recovery", "--space", space]);
+    const history = JSON.parse(await must(["history", "restore-probe", "--space", space, "--json"])) as { result: { items: { text: string }[] } };
+    assert.deepEqual(history.result.items.map((item) => item.text), [post]); passed++;
     await must(["down", "--yes"]);
     await until(() => recovery.state.exited, 20_000, recovery.log);
     assert.equal(recovery.state.code, 0, recovery.log()); passed++;
-    console.log("PASS foreground-up-signals restore-startup: SIGTERM preserves forward recovery of the same attempt");
+    console.log(`PASS foreground-up-signals restore-at-${phase}: ${signal} ${committed ? "lets the same attempt finish" : "preserves forward recovery of the same attempt"}`);
   } finally {
     if (run) await finishOwnedChild(run.child, run.state, collect, () => owned.values(), mesh);
     else if (await portOpen(port)) await must(["down", "--yes"]);
@@ -1094,9 +1173,47 @@ function projectHangupPath(mesh: string, root: string, mode: "relative-path" | "
   return [mode === "absolute-path" ? tools : "tools", other, ...inherited].join(":");
 }
 
-async function controllerHoldCell(kind: "takeover" | "other-home" | "broker-crash" | "broker-only-crash" | "moved-broker-crash" | "time-wait" | "moved-root" = "takeover"): Promise<void> {
+type ForegroundRun = { state: ReturnType<typeof observeOwnedChild>; io: { out: string; err: string } };
+
+async function checkForegroundBrokerLimitsRetry(mesh: string, env: NodeJS.ProcessEnv, port: number, sandbox: ReturnType<typeof recordSmokeSandbox>, holder: ForegroundRun, foreground: (args: string[]) => ForegroundRun): Promise<void> {
+  const servedPayload = async () => {
+    const broker = await connect({ servers: `nats://127.0.0.1:${port}`, reconnect: false, timeout: 5_000 });
+    try { return broker.info?.max_payload; } finally { await broker.close(); }
+  };
+  const downArgs = ["down", "--yes"];
+  const stop = async (run: ForegroundRun) => {
+    assertSmokeSandboxDown(sandbox, downArgs, { cwd: mesh, env });
+    const down = await foregroundCliProbe(cliEntry, tsx, mesh, env, downArgs, 120_000);
+    assert.equal(down.code, 0, down.out + down.err);
+    await waitForOwnedChild(() => run.state.closed, 10_000, run.io.err);
+    assert.equal(run.state.code, 0, run.io.err);
+  };
+  assert.equal(await servedPayload(), 131072);
+  const conflict = await foregroundCliProbe(cliEntry, tsx, mesh, env, ["up", "--foreground", "--no-manager", "--max-payload", "262144", "--max-file-store", "10485760"]);
+  assert.equal(conflict.code, 2, conflict.out + conflict.err);
+  assert.match(conflict.err, /Code:\s+CONFLICT/);
+  assert.ok(!holder.state.exited, "the refusal leaves the foreground holder running");
+  assert.equal(await servedPayload(), 131072, "the refusal leaves the running broker's payload limit unchanged");
+  const retry = /run `(?:pnpm )?cotal up --foreground (--no-manager[^`]*)` again/.exec(conflict.err)?.[1];
+  assert.ok(retry, conflict.err);
+  await stop(holder);
+  const restarted = foreground(retry.split(" "));
+  await until(() => {
+    if (restarted.state.error) throw restarted.state.error;
+    if (restarted.state.exited) throw new Error(restarted.io.out + restarted.io.err);
+    return /Operation: +up completed/.test(restarted.io.out);
+  }, 120_000, () => restarted.io.out + restarted.io.err);
+  assert.equal(await servedPayload(), 262144, "following the printed retry serves the requested payload limit"); passed++;
+  const logs = await foregroundCliProbe(cliEntry, tsx, mesh, env, ["service", "logs", "stack-broker", "--tail", "100"]);
+  assert.equal(logs.code, 0, logs.out + logs.err);
+  const storage = logs.out.split("\n").filter((line) => line.includes("Max Storage:")).at(-1) ?? "";
+  assert.match(storage, /Max Storage:\s+10\.00 MB$/, "following the printed retry applies the requested JetStream file storage cap"); passed++;
+  await stop(restarted);
+}
+
+async function controllerHoldCell(kind: "takeover" | "other-home" | "broker-crash" | "broker-only-crash" | "moved-broker-crash" | "time-wait" | "moved-root" | "payload-retry" = "takeover"): Promise<void> {
   const otherHome = kind === "other-home";
-  const brokerOnly = kind === "broker-only-crash" || kind === "time-wait";
+  const brokerOnly = kind === "broker-only-crash" || kind === "time-wait" || kind === "payload-retry";
   const name = kind === "takeover" ? "controller-hold" : `controller-hold-${kind}`;
   const root = join(base, name), home = join(root, "home"), mesh = join(root, brokerOnly ? "broker only" : "mesh");
   const machine = join(home, otherHome ? "launching home's machine" : "machine");
@@ -1126,6 +1243,11 @@ async function controllerHoldCell(kind: "takeover" | "other-home" | "broker-cras
       return /Operation: +up completed/.test(holder.io.out);
     }, 120_000, () => holder.io.err.slice(-3000));
     assert.ok(holder.child.pid);
+    if (kind === "payload-retry") {
+      await checkForegroundBrokerLimitsRetry(mesh, env, port, sandbox, holder, (args) => taker = foreground(args));
+      console.log(`PASS foreground-up-signals ${name}`);
+      return;
+    }
     if (kind === "time-wait") {
       assertSmokeSandboxDown(sandbox, ["down", "--yes"], { cwd: mesh, env });
       const down = await foregroundCliProbe(cliEntry, tsx, mesh, env, ["down", "--yes"], 120_000);
@@ -1154,7 +1276,7 @@ async function controllerHoldCell(kind: "takeover" | "other-home" | "broker-cras
     }
     if (kind === "broker-crash" || kind === "moved-broker-crash" || brokerOnly) {
       if (brokerOnly) {
-        const conflict = await foregroundCliProbe(cliEntry, tsx, mesh, env, ["up", "--foreground", "--open", "--no-manager", "--server", `nats://127.0.0.1:${port}`, "--max-payload", "131072"]);
+        const conflict = await foregroundCliProbe(cliEntry, tsx, mesh, env, ["up", "--foreground", "--open", "--no-manager", "--server", `nats://127.0.0.1:${port}`]);
         assert.equal(conflict.code, 2, conflict.out + conflict.err);
         assert.match(conflict.err, /run `(?:pnpm )?cotal up --foreground --no-manager` again/); passed++;
       }
@@ -1337,8 +1459,9 @@ async function openBrokerOnlyRestartCell(): Promise<void> {
 }
 
 async function managerNameCell(): Promise<void> {
-  const space = "foreground-manager-name", mesh = join(base, space), home = join(mesh, "home");
-  mkdirSync(home, { recursive: true, mode: 0o700 });
+  const space = "foreground-manager-name", mesh = join(base, "manager name project"), home = join(mesh, "home");
+  const caller = join(base, "manager-name-caller");
+  for (const dir of [home, caller]) mkdirSync(dir, { recursive: true, mode: 0o700 });
   const env = { ...cleanEnv, HOME: home, COTAL_HOME: join(home, "machine"), XDG_CONFIG_HOME: join(home, "xdg"), COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1" };
   const sandbox = recordSmokeSandbox({ root: mesh, cotalHome: env.COTAL_HOME, xdgConfigHome: env.XDG_CONFIG_HOME });
   const probe = (args: string[]) => foregroundCliProbe(cliEntry, tsx, mesh, env, args, 60_000);
@@ -1377,6 +1500,20 @@ async function managerNameCell(): Promise<void> {
       const who = await probe(["who", "--all"]);
       assert.equal(who.code, 0, who.out + who.err);
       assert.match(who.out, /\bKeptManager\b/);
+      if (args.length) {
+        const rename = ["up", "--root", mesh, "--manager-name", "Second Manager"];
+        const guidance = (cli: string) => `run \`${cli} down\` from \`${shellWord(mesh)}\`, then retry the original startup command unchanged from its original folder`;
+        const refused = await foregroundCliProbe(cliEntry, tsx, caller, env, [...rename, "--foreground"]);
+        assert.equal(refused.code, 2, refused.out + refused.err);
+        assert.match(refused.err, /LIFECYCLE_BLOCKED/);
+        assert.ok(["cotal", "pnpm cotal"].some((cli) => refused.err.includes(guidance(cli))), refused.err);
+        const json = await foregroundCliProbe(cliEntry, tsx, caller, env, [...rename, "--json"]);
+        assert.equal(json.code, 2, json.out + json.err);
+        const envelope = JSON.parse(json.out);
+        assert.equal(envelope.error.code, "LIFECYCLE_BLOCKED");
+        assert.equal(envelope.error.remedy, guidance("cotal"));
+        assert.equal(savedName(), "KeptManager");
+      }
     } finally {
       try {
         if (!state.exited) child.kill("SIGTERM");
@@ -1396,7 +1533,7 @@ async function managerNameCell(): Promise<void> {
   await refuseWhileBusy("KeptManager", "RefusedOverride");
   await bootAndStop();
   passed++;
-  console.log("PASS foreground-up-signals refused starts leave the manager name unchanged");
+  console.log("PASS foreground-up-signals refused starts keep the manager name and direct a rename to the owning root");
 }
 
 async function userAuthRestartCell(): Promise<void> {
@@ -1508,7 +1645,9 @@ for (let attempt = 1; attempt <= 3 && !refusalObserved; attempt++) {
 }
 assert.ok(refusalObserved, "native unavailable-capability refusal must be observed within three owned attempts, never manufactured");
 await cell("crash", { crash: true });
-await restoreStartupCell();
+await restoreStartupCell("listener");
+await restoreStartupCell("manager");
+await restoreStartupCell("committed");
 await controllerStartupCell();
 await controllerStartupCell("receipt");
 await controllerStartupCell("team");
@@ -1519,6 +1658,7 @@ await controllerHoldCell();
 await controllerHoldCell("other-home");
 await controllerHoldCell("broker-crash");
 await controllerHoldCell("broker-only-crash");
+await controllerHoldCell("payload-retry");
 await controllerHoldCell("moved-broker-crash");
 if (process.platform === "linux") await controllerHoldCell("time-wait");
 await controllerHoldCell("moved-root");

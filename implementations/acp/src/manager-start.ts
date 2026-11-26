@@ -37,7 +37,7 @@ export function startLine(space: string, stdout: string): string {
 /** Run `cotal <args>` with the node and cotal entry this process runs from, as `cotal acp --auth`
  *  runs `cotal login`. Rejects only when the process could not be started. */
 async function runCotal(args: readonly string[]): Promise<{ code: number | null; stdout: string; stderr: string }> {
-  const child = spawn(process.execPath, [...process.execArgv, process.argv[1]!, ...args], { stdio: ["ignore", "pipe", "pipe"] });
+  const child = spawn(process.execPath, [...process.execArgv, process.argv[1]!, ...args], { stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
   let stdout = "";
   let stderr = "";
   child.stdout.on("data", (b: Buffer) => (stdout += b));

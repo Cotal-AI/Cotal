@@ -73,9 +73,19 @@ const USER_AUTH_TRUST = "(IdP trust and actor ledger)";
 
 /** What removing a user-auth space's IdP trust and actor ledger leaves the next start to do. */
 export function userAuthTrustNote(done: boolean): string {
-  return `${done ? "Removed" : "Removes"} the IdP trust and the actor ledger of this user-auth space, so every actor grant is lost. A later up needs \`cotal up --user-auth --idp <auth base URL>\`, and each actor needs \`cotal actor grant\` again.`;
+  return displayRemedy(`${done ? "Removed" : "Removes"} the IdP trust and the actor ledger of this user-auth space, so every actor grant is lost. A later \`up\` from the stack's project folder needs \`cotal up --user-auth --idp <auth base URL>\`, and each actor needs \`cotal actor grant\` again.`);
 }
 type Target = (typeof TARGETS)[number];
+type CleanValues = {
+  server?: string; space?: string; creds?: string; dms?: boolean; force?: boolean; "store-dir"?: string; attempt?: string; "discard-history"?: boolean; "dry-run"?: boolean;
+};
+
+function linkedCleanRetry(target: Target, values: CleanValues): string {
+  // The retry runs in a different folder, so pin any relative store path to this invocation's cwd.
+  const store = values["store-dir"] === undefined ? "" : ` --store-dir ${shellWord(resolve(values["store-dir"]))}`;
+  const attempt = values.attempt === undefined ? "" : ` --attempt${values.attempt.startsWith("-") ? "=" : " "}${shellWord(values.attempt)}`;
+  return `${displayCmd({ fromAnyFolder: true })} clean ${target}${store}${attempt}${values["dry-run"] === true ? " --dry-run" : ""}${values.force ? " --force" : ""}${values["discard-history"] ? " --discard-history" : ""}${values.dms ? " --dms" : ""}`;
+}
 
 /** The Next a restore verb's refusal gives: the attempt this root's maintenance record names and its
  *  step, or `none` when the root records no maintenance state. */
@@ -112,9 +122,7 @@ export function validateCleanArguments(args: ParsedArgs): void {
  *  Personas (`.cotal/agents`) are source and are never touched. */
 export async function clean(args: ParsedArgs): Promise<void> {
   const target = args.positionals[0] as Target | undefined;
-  const values = args.values as {
-    server?: string; space?: string; creds?: string; dms?: boolean; force?: boolean; "store-dir"?: string; attempt?: string; "discard-history"?: boolean; "dry-run"?: boolean;
-  };
+  const values = args.values as CleanValues;
   if (!target || !TARGETS.includes(target))
     throw new CommandFailure("refused", "USAGE_INVALID", target ? `clean has no target "${target}"; it takes ${TARGETS.join(", ")}` : `clean needs a target: ${TARGETS.join(", ")}`);
   if (args.positionals.length > 1)
@@ -158,7 +166,7 @@ export async function clean(args: ParsedArgs): Promise<void> {
   // left `restore-attempt`/`restore-fallback` a broker-wide bypass.
   // Nothing is read or removed through a `.cotal` link, and one that leads nowhere is not passed
   // over to the records of a folder above it.
-  const linked = linkedCotalRefusal("clean");
+  const linked = linkedCotalRefusal("clean", undefined, () => linkedCleanRetry(target, values));
   if (linked) throw linked;
   const root = cotalRoot();
   assertSingleSpaceBroker(authDir(root), `cotal clean ${target}`);
@@ -325,6 +333,10 @@ function checkCleanStorePath(root: string, requested: string): void {
   try { stat = lstatSync(requested, { throwIfNoEntry: false }); }
   catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ELOOP") {
+      throw new FlagValueRefusal(`the --store-dir path ${requested} cannot be used: a parent has a symbolic-link loop or too many links. Nothing was removed.`,
+        "correct the links or retry with the intended real store path as --store-dir");
+    }
     if (code === "ENOTDIR") {
       let blocked: string | undefined;
       for (let dir = dirname(requested); dir !== dirname(dir); dir = dirname(dir)) {

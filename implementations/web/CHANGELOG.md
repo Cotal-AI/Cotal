@@ -1,5 +1,28 @@
 # @cotal-ai/web
 
+## 0.182.1
+
+### Patch Changes
+
+- 252feff: Change or reset the dashboard theme from the sidebar on a phone.
+
+## 0.182.0
+
+### Patch Changes
+
+- c032df3: Keep the Activity heading and all four delivery filters readable on narrow phone screens.
+- 1e6472a: Correct the dashboard guide to describe Activity as a live, filterable feed without promising a Pause control.
+- c1becb3: Keep agent roles visible beside long names in the dashboard roster, and show the full name on hover when it is shortened.
+- ff00bed: Show the Cotal icon in the dashboard's browser tab without a missing favicon error on first load.
+- b1de472: Keep busy dashboard topology drawings in bounds and show agent names on hover instead of overlapping them in the overview.
+- aee5379: Keep the verified sender and badge when you open a channel for a post you already saw live in Activity.
+- 0f26a54: The web dashboard shows when earlier channel messages are retained and gives you a command to read them.
+- 7643101: Hide the Delete channel action in dashboards that do not support channel deletion.
+- 0f9d6e3: Refresh the dashboard's channel list, message count, and open transcript after a channel is purged outside the dashboard.
+- eb4dd99: When a dashboard restart invalidates your browser session, the Disconnected hint points to a new private link instead of asking you to reload.
+- 9f63fee: Keep Windows consoles from opening during background extension installs, updates, and helper commands.
+- 4a9c5d0: Keep dashboard channels readable on tablets by opening Details over the page instead of beside the messages.
+
 ## 0.181.0
 
 No changes in this release.

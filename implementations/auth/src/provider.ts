@@ -143,8 +143,12 @@ export const cotalAuthProvider: AuthProvider = {
     try {
       return await postManagerAuthority(endpoint, idpUrl, authorization, request, "manager run issuance") as RemoteRunAttemptResult;
     } catch (error) {
-      if (error instanceof ManagerAuthorityRefusal && error.status === 503 && request.operator && request.operator.answers === undefined)
-        throw new EpEnvelopeError("unavailable", "the run authority is temporarily unavailable; retry the read in a few seconds", undefined, "not-executed");
+      if (error instanceof ManagerAuthorityRefusal && isManagerAuthorityOutage(error.status)) {
+        if (request.operator && request.operator.answers === undefined)
+          throw new EpEnvelopeError("unavailable", "the run authority is temporarily unavailable; retry the read in a few seconds", undefined, "not-executed");
+        if (request.attempt && request.attempt.served === undefined)
+          throw new EpEnvelopeError("unavailable", error.message, undefined, "unknown");
+      }
       throw error;
     }
   },
@@ -968,7 +972,7 @@ async function postManagerAuthority(
   // A stand-in object would reach the caller as a result the endpoint never sent.
   const body = await response.json().catch(() => {
     const message = `the ${what} endpoint at ${endpoint} answered HTTP ${response.status} with a body that could not be read as JSON`;
-    if (response.status === 503) throw new ManagerAuthorityRefusal(message, response.status, undefined);
+    if (isManagerAuthorityOutage(response.status)) throw new ManagerAuthorityRefusal(message, response.status, undefined);
     throw new Error(message);
   });
   signal?.throwIfAborted();
@@ -979,6 +983,10 @@ async function postManagerAuthority(
 /** This build's version. The release group versions every package in lockstep, so it is also the
  *  version of the manager whose requests this client sends. */
 const COTAL_VERSION = (JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as { version: string }).version;
+
+function isManagerAuthorityOutage(status: number): boolean {
+  return status === 502 || status === 503 || status === 504;
+}
 
 /** A host's non-2xx answer to a manager-authority request, with the HTTP status and body it answered. */
 class ManagerAuthorityRefusal extends Error {

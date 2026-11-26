@@ -78,6 +78,10 @@ recreated empty directories at the old path. Its next step stops the stack with
 `rootGone` is also true when a file obstructs the root of a locally started space. The root row
 names the obstruction and the next step explains how to restore the project folder or forget its
 registration.
+If search permission prevents `space show` from checking a local stack's `.cotal` directory, it
+names the directory and asks you to restore search permission. JSON includes the same warning and
+keeps `rootGone` false. The command still reports broker reachability and exits 0 without suggesting
+a stop.
 A name that is not registered is refused with `TARGET_NOT_FOUND`, exit 2, and
 so is a bare `space show` outside a project with nothing selected. Each entry under `prepared` has `space`, `root`,
 `preparedAt`, `current`, `rootMissing`, `state` and `lastOperation`. `rootMissing` is true when no
@@ -242,9 +246,11 @@ judged by the path given and by the path its links lead to, with `CONFLICT` and 
 home `COTAL_HOME` redirects may hold project folders beside its records, so under it only the home
 itself and its record entries (`daemon`, `meshes`, `prepared`, `services` and the like) are control paths. The
 next step names the project folder that `.cotal` belongs to. A project folder inside another project,
-outside its `.cotal`, is a project of its own. For a folder
-another space uses, the next step names creating it in another folder with `--root <dir>`, and
-starting, selecting or forgetting the space that uses the folder. A folder this
+outside its `.cotal`, is a project of its own. If another space uses the folder, prepare the new
+space in a different folder with `--root <dir>`. For a registration added by hand, the next step
+says to start its broker where it runs and gives `cotal space show <name>` and
+`cotal space forget <name>` for that exact registration. For a local space, the next step names
+how to start, select or forget it. A folder this
 account cannot write, such as `/`, refuses `PERMISSION_DENIED`, exit 2, with nothing written, and so
 does a Cotal home (`~/.cotal` or `COTAL_HOME`) it cannot write. A `.cotal` that links to a folder that
 does not exist refuses `TARGET_NOT_FOUND`, exit 2, naming the link and its target. A folder whose
@@ -557,6 +563,10 @@ one registered space other than the selection, and whose broker answers, the com
 space, as it does with nothing selected, and the note under its `Mesh:` heading, a refusal's
 included, says the selection applies outside the folder. If the selection was adopted automatically,
 offline registrations do not prevent the folder's only running space from taking precedence.
+When a target selection checks broker inventory, it skips an unchecked open registration if the
+inventory shows that broker does not serve the space. The registration and saved selection stay unchanged.
+`cotal whoami` does not contact the broker. When folder registrations compete with an adopted
+selection, it reports the identity from local records and notes that it cannot check this precedence.
 A space `cotal space create` prepared there
 and no `cotal up` started, and one whose stack there is stopped, is the target of the commands about
 the folder itself only: `cotal up`, `cotal down`, `cotal space show` and the folder part of
@@ -851,11 +861,14 @@ A space that never started still reads as prepared but not started. If startup c
 its `.cotal` directory, `status` and `ps` give the same repair as `cotal up` without changing permissions.
 If the default `.cotal/channels.json` blocks the first start, `status` and `ps` name the file and the
 repair. If a refused first start recorded a broker address and the address is still in use, `status`
-names how to free it or start at another address. A recorded file-store cap does not change the
-restart command because Cotal reserves no fixed capacity per space.
+names how to free it and repeat the original startup command from the same folder. If another
+address is available, it also suggests changing only `--server` in that command. A recorded
+file-store cap does not change the restart command because Cotal reserves no fixed capacity per space.
 `meshes.currentStopped` says whether the selection is such a stopped stack. A stack whose last `up`
 or `down` has no recorded outcome is not stopped, even when a member it launched still runs: the
 selection reads as prepared but not started, and the selected space names that operation.
+If the selected space has no running registration and its stack journal cannot be read, `status`
+reports an unknown stack lifecycle and keeps the journal's recovery step under Next.
 
 Owned services use the saved controller definitions and instance records for the selected space.
 Instances are listed by definition name, then instance ID, in the text and in
@@ -1311,8 +1324,9 @@ status names the file in an `EXTENSIONS_UNREADABLE` warning and reports a partia
 
 If the extension inventory is corrupt or unreadable, the infrastructure report keeps the
 observations it could read and exits 4 with an `EXTENSIONS_UNREADABLE` warning. In JSON,
-`extensions.items` in the result is `null`. The report leaves the inventory untouched and the
-warning names the repair command, `cotal ext seed --repair`.
+`extensions.items` in the result is `null`. The report leaves the inventory untouched. If access
+is denied, the warning asks you to restore read access to the manifest and its path. If the manifest
+is corrupt, it names the repair command, `cotal ext seed --repair`.
 
 An unreachable broker, a stopped process or an unbound responder is a state the report names, and
 `status` exits 0. An open mesh runs no delivery daemon, so when it records no delivery lease its
@@ -1446,6 +1460,10 @@ That exit replaces the report's own, so a partial report followed by a clean pas
   failure in its facts, even if that URL is reachable.
   For a locally owned stack, a missing or dead broker process is `absent`, not `not-serving`.
   A cleanly stopped controller target reports `absent` and exits `1` without dialing another space.
+  If the home records for a broker-only open stack are missing and the project journal verifies
+  its broker process is running, the component check reports `target refused` and exits `3`.
+  It names the running process and points to `cotal down --dry-run` in the project because it
+  cannot check service health without the saved records.
   If its store is not writable or its broker address is occupied, the target row names what to fix
   before restarting.
   Inside a renamed open project without a saved selection, the check reports `target refused` when
@@ -1458,8 +1476,10 @@ That exit replaces the report's own, so a partial report followed by a clean pas
   fails after the broker disables JetStream keeps its store write diagnosis and history-preserving repair.
 
 When a stopped local broker's address accepts a connection without a NATS greeting, `status`
-and read commands name the occupied address and recommend stopping that listener or starting
-on another port, without changing the space's registration. For a stopped foreground stack,
+and read commands name the occupied address without changing the space's registration. For a
+controller stack, they recommend stopping that listener and running `cotal up` in the recorded
+project, since the stack cannot move to another port. For a legacy stack, they may also offer
+starting on another port. For a stopped foreground stack,
 `status` and `ps` check the saved address even if `down` removed its registration. Neither command
 stops the listener.
 When a controller stack keeps its recorded address, a refused restart does not clear the diagnosis.

@@ -109,7 +109,8 @@ so a preserved same-label persona cannot add grants the old credential did not h
 file of that name that cannot be read as a persona refuses the mint `SCHEMA_INVALID`, exit 1, even
 when the flags name every grant. The mint refusal does not print file values or parser text.
 It names the file and `cotal persona show <name> --space <space>` to inspect it. A role from the file that is not one word
-of letters, digits, `_` and `-` refuses the same way, naming `cotal persona edit <name> --space <space>`. With
+of letters, digits, `_` and `-` refuses the same way, naming `cotal persona edit <name> --space <space>`.
+These persona refusals leave the `--out` directory tree unchanged. With
 `--identity` naming an agent credential this space issued, the new credential keeps that
 credential's read channels, post channels and role in place of the persona's, and each flag still
 replaces its own grant. The receipt lists the grants as May read, May post and Role, marking those
@@ -538,6 +539,8 @@ Each file `auth mint --out` wrote for the space from this root and that is still
 under Exported credential files, and in `result.exported`, with its state and expiry. These rows
 are not findings. On POSIX, doctor reports a symbolic link at the recorded export path as unreadable
 without following it. Restore the original private regular file at that path in place of the link.
+If an export you own is unreadable because its mode lacks owner read permission, doctor names
+`chmod 600 <file>` to restore access without replacing the credential.
 A file missing its user seed block is unreadable even if its JWT still parses.
 Restore the complete file, or use the replacement mint the report names. If the JWT claims cannot
 be read, the report cannot determine the original grants. Restore the complete file or confirm the

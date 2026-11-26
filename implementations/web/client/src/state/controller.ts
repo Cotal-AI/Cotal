@@ -99,6 +99,7 @@ type Entry = ActivityEntry | FeedMessage;
 type Wire = { id?: string; channel?: string };
 
 const ACTIVITY_CAP = 500;
+const CHANNEL_HISTORY_LIMIT = 200;
 /** How long the page waits for more unknown hubs before it reads the channel list for their class. */
 const CHANNEL_CLASS_READ_MS = 250;
 const NOTES_CAP = 50;
@@ -295,7 +296,12 @@ export function createController(store: Store<DashboardState>, api: Api, opts: C
 
   /** What `/api/meta` says. Its operator id wins over the one stored, because a restarted server posts
    *  under a new one; a meta with none keeps the stored id, which a post's answer may have given. */
-  const applyMeta = (meta: Meta) => store.set((s) => ({ space: meta.space, post: meta.post, operatorId: meta.operatorId ?? s.operatorId ?? null }));
+  const applyMeta = (meta: Meta) => store.set((s) => ({
+    space: meta.space,
+    post: meta.post,
+    channelDeleteSupported: meta.channelDeleteSupported === true,
+    operatorId: meta.operatorId ?? s.operatorId ?? null,
+  }));
   /** Bumped by every roster the feed delivers. */
   let rosterRev = 0;
   /** The roster revision the last operator re-read was made for, so no revision is read for twice. */
@@ -432,7 +438,8 @@ export function createController(store: Store<DashboardState>, api: Api, opts: C
     // HELD, and only when it belongs to THIS channel. A fresh selection must not inherit the last
     // channel's messages, so a switch holds nothing and starts empty.
     const cur = store.get().open;
-    const held = cur?.channel === key ? cur.messages : [];
+    const heldView = cur?.channel === key ? cur : undefined;
+    const held = heldView?.messages ?? [];
     // ARMED BEFORE THE FETCH IS ISSUED. Held in a LOCAL as well, so this bootstrap settles the
     // machine it armed even if an open of another channel has since rebound `openOrder`.
     const order = createOrder("open");
@@ -444,13 +451,17 @@ export function createController(store: Store<DashboardState>, api: Api, opts: C
     // A REOPEN KEEPS WHAT IS ON SCREEN until its history lands, the keep-last-good rule the refused
     // read already follows. `refresh()` reopens the open channel on every feed open, so clearing
     // here would draw an empty list on each reconnect.
-    store.set({ open: { channel: key, messages: held } });
+    store.set({ open: heldView ?? { channel: key, messages: held } });
     let msgs: StoredMessage[] = [];
+    let olderRetained = heldView?.olderRetained;
     let refused: string | null = null;
     try {
+      // One extra row proves an older post exists without changing the displayed window.
+      const rows = await api.history(key, CHANNEL_HISTORY_LIMIT + 1);
+      olderRetained = rows.length > CHANNEL_HISTORY_LIMIT;
       // A history row carries no subject, so it has no verified sender: `senderId` stays unset. A
       // message this page holds verified (in Activity, on screen, or held by the machine) keeps that copy.
-      const history = (await api.history(key, 200)).map((msg): StoredMessage => ({ msg }));
+      const history = rows.slice(-CHANNEL_HISTORY_LIMIT).map((msg): StoredMessage => ({ msg }));
       const { activity, open: view } = store.get();
       const channelActivity = activity.filter((entry) => entry.mode === "chat" && entry.channel === key);
       msgs = keepVerified(history, channelActivity, held, view?.channel === key ? view.messages : [], pending);
@@ -475,7 +486,7 @@ export function createController(store: Store<DashboardState>, api: Api, opts: C
         const merged = settled.emit.slice() as unknown as StoredMessage[];
         const ids = new Set(merged.map((m) => m.msg.id));
         for (const m of live) if (m && !ids.has(m.msg.id)) merged.push(m);
-        store.set({ open: { channel: key, messages: merged.slice(-ACTIVITY_CAP) } });
+        store.set({ open: { channel: key, messages: merged.slice(-ACTIVITY_CAP), olderRetained } });
         pruneDelivered();
         // SAID, NOT JUST KEPT. Retention without the mark shows old messages as though they were current.
         const history = `#${key} history`;
@@ -674,7 +685,7 @@ export function createController(store: Store<DashboardState>, api: Api, opts: C
           messages.push(m);
           if (messages.length > ACTIVITY_CAP) messages.shift();
         }
-        return { open: { channel, messages } };
+        return { open: { ...s.open, messages } };
       });
     } else {
       store.set((s) => ({ unread: { ...s.unread, [channel]: (s.unread[channel] ?? 0) + 1 } }));

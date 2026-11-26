@@ -380,6 +380,25 @@ if (process.platform !== "win32") {
   check("persona edit with a missing editor refuses without keeping a draft or changing the catalog file",
     edit.status === 2 && edit.stderr.includes("DEPENDENCY_UNAVAILABLE") && edit.stderr.includes(`the editor ${JSON.stringify(editor)} was not found - not saved`) &&
       readdirSync(drafts).length === 0 && readFileSync(persona, "utf8") === saved, shown(edit));
+
+  const jsonEdit = (visual: string) => outcome(spawnSync(process.execPath, [BIN, "persona", "edit", "rev", "--space", "opsp", "--json"], {
+    cwd: root, env: { ...env, VISUAL: visual, EDITOR: "", TMPDIR: drafts }, encoding: "utf8", timeout: 120_000,
+  }));
+  for (const visual of ["no-receipt-editor-binary", `'${editor}' --wait`]) {
+    const refused = jsonEdit(visual);
+    check("persona edit --json reports a missing shell editor only in the refusal envelope",
+      refused.status === 2 && refused.stderr === "" && refused.envelope?.outcome === "refused" &&
+      refused.envelope.target?.space === "opsp" && refused.envelope.error?.code === "DEPENDENCY_UNAVAILABLE" &&
+      refused.envelope.error.message === `the editor ${JSON.stringify(visual)} was not found - not saved` &&
+      readdirSync(drafts).length === 0 && readFileSync(persona, "utf8") === saved, shown(refused));
+  }
+  const reportingEditor = editorScript("editor with spaces", `test "$1" = --wait && test -f "$2" || exit 1
+printf 'Editor stdout\n'
+printf 'Editor stderr\n' >&2`);
+  const ran = jsonEdit(`'${reportingEditor}' --wait`);
+  check("persona edit --json sends both editor streams to stderr and leaves stdout as one receipt",
+    ran.status === 0 && ran.envelope?.outcome === "no-op" && ran.stderr === "Editor stdout\nEditor stderr\n" &&
+    readdirSync(drafts).length === 0 && readFileSync(persona, "utf8") === saved, shown(ran));
 }
 // A save refused because the catalog became unwritable while the editor was open keeps the edited
 // draft and names it beside the chmod that fixes the catalog. Root writes through any mode.
@@ -545,6 +564,41 @@ if (process.platform !== "win32") {
       file.stdout.includes(path) && /Requested name:\s+backslash$/m.test(file.stdout), shown(file));
   } finally {
     rmSync(path, { force: true });
+  }
+}
+
+if (process.platform !== "win32") {
+  const stems = ["release\tcheck", "release\x7fcheck"];
+  const escaped = ["release\\u0009check", "release\\u007fcheck"];
+  const paths = stems.map(stem => join(dirname(dottedCatalog), `${stem}.md`));
+  const advisesRename = (text: string) => text.includes("contains control characters. Rename it to open it with") &&
+    text.includes("persona show`") && !text.includes("--file");
+  try {
+    for (const path of paths) writeFileSync(path, "---\nname: checker\n---\nCheck the release.\n");
+    const plain = cotal("persona", "--space", "opsp", "--plain");
+    const legacy = cotal("personas", "list", "--space", "opsp");
+    for (const [label, list, warnings] of [["plain", plain, plain.stderr], ["legacy", legacy, legacy.stdout]] as const) {
+      check(`${label} catalog marks control characters in selectors and recommends renaming without failing the list`, list.status === 0 &&
+        escaped.every(name => list.stdout.split("\n").some(line => line.includes(name) && line.includes("invalid selector")) &&
+          warnings.split("\n").some(line => line.includes(name) && advisesRename(line))), shown(list));
+    }
+    const json = cotal("persona", "--space", "opsp", "--json");
+    check("JSON keeps both control-character filenames in the complete inventory with invalid selectors", json.status === 0 &&
+      json.envelope?.completeness === "complete" && stems.every((name, i) =>
+        json.envelope?.result?.items?.some(item => item.name === name && item.path === paths[i] && item.valid === false) &&
+        json.envelope?.warnings?.some(item => item.code === "USAGE_INVALID" && same(item.target, { name, path: paths[i] }) &&
+          advisesRename(item.message ?? ""))), shown(json));
+    const show = cotal("persona", "show", "--space", "opsp", "--json", "--", stems[0]);
+    check("persona show still refuses the tab-containing selector", show.status === 1 &&
+      show.envelope?.error?.code === "USAGE_INVALID" && show.envelope.error.message?.includes("control characters") === true, shown(show));
+    const positional = cotal("spawn", "--space", "opsp", "--dry-run", "--plain", "--", stems[0]);
+    check("positional spawn preview still selects the tab-containing filename", positional.status === 0 &&
+      positional.stdout.includes(`${escaped[0]}.md`) && /Requested name:\s+checker$/m.test(positional.stdout), shown(positional));
+    const byFile = cotal("spawn", "--space", "opsp", "--dry-run", "--plain", "--file", paths[0]);
+    check("explicit file preview still refuses the tab-containing path", byFile.status === 1 &&
+      byFile.stderr.includes("--file needs one nonempty persona-file path without control characters"), shown(byFile));
+  } finally {
+    for (const path of paths) rmSync(path, { force: true });
   }
 }
 

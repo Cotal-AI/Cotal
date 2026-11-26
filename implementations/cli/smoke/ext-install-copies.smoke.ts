@@ -11,6 +11,52 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { emitSentinel } from "@cotal-ai/smoke-kit";
 
+function recordNpmSpawns(dir: string): { record: string; env: NodeJS.ProcessEnv } {
+  const record = join(dir, "npm-spawn.jsonl");
+  const preload = join(dir, "record-npm-spawn.cjs");
+  writeFileSync(preload, `const cp = require("node:child_process");
+const { appendFileSync } = require("node:fs");
+const { syncBuiltinESMExports } = require("node:module");
+const spawn = cp.spawn;
+cp.spawn = (file, args, options) => {
+  const command = [file, ...(Array.isArray(args) ? args : [])].join(" ");
+  if (/npm/i.test(command) && /\\binstall\\b/.test(command) && command.includes("example-extension")) {
+    appendFileSync(${JSON.stringify(record)}, JSON.stringify({ windowsHide: options?.windowsHide }) + "\\n");
+  }
+  return spawn(file, args, options);
+};
+syncBuiltinESMExports();
+`);
+  return { record, env: { NODE_OPTIONS: `--require="${preload}"` } };
+}
+
+function checkMissingLocalTarball(
+  dir: string,
+  prefix: string,
+  cli: (args: string[], extra?: NodeJS.ProcessEnv) => { status: number | null; stderr: string },
+): void {
+  const source = join(dir, "bad-dependency");
+  mkdirSync(source);
+  writeFileSync(join(source, "package.json"), JSON.stringify({
+    name: "cotal-bad-dependency-demo", version: "1.0.0", type: "module", main: "./greeting.mjs",
+    peerDependencies: { "@cotal-ai/core": "*" }, dependencies: { "missing-library": "file:./missing-library.tgz" },
+  }));
+  writeFileSync(join(source, "greeting.mjs"), `import { registry } from "@cotal-ai/core";
+registry.register({ kind: "command", name: "demo-bad-dependency", summary: "Print a greeting", run() {} });
+`);
+  const files = ["package.json", "package-lock.json", "extensions.json"].map(name => join(prefix, name));
+  const before = files.map(file => readFileSync(file));
+  const refused = cli(["ext", "add", "./bad-dependency"], { npm_config_offline: "true" });
+  assert.equal(refused.status, 1, refused.stderr);
+  assert.match(refused.stderr, /cotal-bad-dependency-demo: it could not open the tarball for missing-library/);
+  assert.match(refused.stderr, /`npm pack --dry-run \.\/bad-dependency`/);
+  assert.match(refused.stderr, /absolute path of an existing archive/);
+  assert.match(refused.stderr, /`(?:pnpm )?cotal ext add \.\/bad-dependency`/);
+  assert.match(refused.stderr, /npm can install from a registry/);
+  assert.doesNotMatch(refused.stderr, /\.extensions\.stage-/);
+  assert.deepEqual(files.map(file => readFileSync(file)), before);
+}
+
 function main(): void {
   const repo = resolve(import.meta.dirname, "../../..");
   const binary = join(repo, "bin", "dist", "cotal.js");
@@ -147,6 +193,7 @@ function main(): void {
     for (const [form, exports] of [
       ["nested", { ".": { import: "./greet.mjs" } }],
       ["shorthand", { import: "./greet.mjs" }],
+      ["node-conditional", { ".": { node: { import: "./greet.mjs" }, default: "./fallback.mjs" } }],
     ] as const) {
       const dir = join(root, `exports-entry-${form}`);
       const { prefix, cli } = sandbox(dir);
@@ -158,14 +205,38 @@ function main(): void {
       writeFileSync(join(source, "greet.mjs"), `import { registry } from "@cotal-ai/core";
 registry.register({ kind: "command", name: "greet-example", summary: "Print a greeting", run() { console.log("Hello from the extension"); } });
 `);
-      const added = cli(["ext", "add", "./example-extension"]);
+      if (form === "node-conditional") {
+        writeFileSync(join(source, "fallback.mjs"), `import { registry } from "@cotal-ai/core";
+registry.register({ kind: "command", name: "greet-example", summary: "Print a fallback greeting", run() { console.log("Hello from the fallback"); } });
+registry.register({ kind: "command", name: "greet-fallback", summary: "Fallback provider", run() {} });
+`);
+      }
+      const { record, env } = recordNpmSpawns(dir);
+      const added = cli(["ext", "add", "./example-extension"], env);
       assert.equal(added.status, 0, `${form} exports-only ext add failed: ${added.stderr.slice(-800)}`);
+      if (form === "node-conditional") {
+        check("ext add records the Node import providers instead of the default providers",
+          added.stdout.includes("command:greet-example") && !added.stdout.includes("command:greet-fallback"));
+      }
+      check(`ext add passes windowsHide to the actual npm install for the ${form} root export`, existsSync(record) && readFileSync(record, "utf8").trim().split("\n").every(line => JSON.parse(line).windowsHide === true));
       const greeted = cli(["greet-example"]);
       check(`a fresh CLI loads the installed command through its ${form} root export`, greeted.status === 0 && greeted.stdout.trim() === "Hello from the extension");
 
       if (form !== "nested") continue;
+      checkMissingLocalTarball(dir, prefix, cli);
       const manifestPath = join(prefix, "extensions.json");
       const before = readFileSync(manifestPath, "utf8");
+      writeFileSync(join(source, "README.md"), "# Greeting extension\n");
+      writeFileSync(join(source, "package.json"), JSON.stringify({ ...meta, version: "2.0.0", exports: "./greet.mjs", files: ["README.md"] }));
+      const omitted = cli(["ext", "add", "./example-extension"]);
+      check("ext add explains when npm omits the local entry", omitted.status === 1 &&
+        omitted.stderr.includes(`the installed npm package ${name} is missing its entry \`./greet.mjs\``) &&
+        omitted.stderr.includes("`npm pack --dry-run ./example-extension`") &&
+        omitted.stderr.includes("include the entry in `files` or generate it") &&
+        ["cotal", "pnpm cotal"].some((cmd) => omitted.stderr.includes(`\`${cmd} ext add ./example-extension\``)) &&
+        !omitted.stderr.includes(".extensions.stage-") && existsSync(join(source, "greet.mjs")));
+      check("a package missing its entry leaves the previous manifest intact", readFileSync(manifestPath, "utf8") === before);
+
       writeFileSync(join(source, "package.json"), JSON.stringify({ ...meta, version: "2.0.0", main: "./greet.mjs", exports: { ".": "./missing.mjs" } }));
       const refused = cli(["ext", "add", "./example-extension"]);
       check("ext add refuses a missing root export even when main exists", refused.status === 1 && refused.stderr.includes("missing.mjs"));
@@ -207,18 +278,18 @@ registry.register({ kind: "command", name: "greet-example", summary: "Print a gr
       const name = damage ? "cotal-ext-metadata-changed" : "cotal-ext-metadata-control";
       const source = join(dir, name);
       mkdirSync(source);
-      writeFileSync(join(source, "package.json"), JSON.stringify({ name, version: "1.0.0", type: "module", main: "index.js", peerDependencies: { "@cotal-ai/core": ">=99.0.0" } }));
+      writeFileSync(join(source, "package.json"), JSON.stringify({ name, version: "1.0.0", type: "module", main: "index.js", peerDependencies: { "@cotal-ai/core": "*", "@cotal-ai/workspace": ">=99.0.0" } }));
       writeFileSync(join(source, "index.js"), `import { writeFileSync } from "node:fs";\nimport { registry } from "@cotal-ai/core";\nvoid registry;\n${damage ? 'writeFileSync(new URL("./package.json", import.meta.url), "{corrupt");' : ''}\nawait import("./missing-export.mjs");\n`);
-      writeFileSync(join(source, "missing-export.mjs"), 'import { notAnExportOfCore } from "@cotal-ai/core";\nvoid notAnExportOfCore;\n');
+      writeFileSync(join(source, "missing-export.mjs"), 'import { notAnExportOfWorkspace } from "@cotal-ai/workspace";\nvoid notAnExportOfWorkspace;\n');
       const added = cli(["ext", "add", source]);
-      check(`${name}: missing-export add refuses`, added.status === 1 && added.stderr.includes("notAnExportOfCore"));
-      check(`${name}: diagnosis keeps the validated peer floor`, added.stderr.includes("The installed @cotal-ai/core is BEHIND") && added.stderr.includes(">=99.0.0") && !added.stderr.includes("is corrupt or unreadable"));
+      check(`${name}: missing-export add refuses`, added.status === 1 && added.stderr.includes("notAnExportOfWorkspace"));
+      check(`${name}: diagnosis keeps the validated peer floor`, added.stderr.includes("The installed @cotal-ai/workspace is BEHIND") && added.stderr.includes(">=99.0.0") && !added.stderr.includes("is corrupt or unreadable"));
       check(`${name}: failed add leaves no installed candidate`, !existsSync(join(prefix, "node_modules", name)));
     }
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
-  assert.equal(passed + failed, process.platform === "linux" || process.platform === "darwin" ? 39 : 34, "all expected copy/rollback checks ran");
+  assert.equal(passed + failed, process.platform === "linux" || process.platform === "darwin" ? 46 : 41, "all expected copy/rollback checks ran");
   console.log(`ext-install-copies smoke: ${passed} passed, ${failed} failed`);
   emitSentinel({ passed, failed });
   process.exit(failed ? 1 : 0);

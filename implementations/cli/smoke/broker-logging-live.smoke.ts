@@ -32,13 +32,13 @@ const check = (name: string, condition: boolean, detail?: unknown) => {
 for (const mask of [0o022, 0o002, 0o077, 0o777]) {
   const previous = process.umask(mask);
   try {
-    const child = spawnBroker(process.execPath, ["-e", "console.log(process.umask().toString(8))"], { stdio: ["ignore", "pipe", "inherit"] });
+    const child = spawnBroker(process.execPath, ["-e", "console.log(process.umask().toString(8))"], { stdio: ["ignore", "pipe", "inherit"], windowsHide: true });
     check("broker spawn restores caller umask immediately", process.umask() === mask);
     let output = "";
     child.stdout!.setEncoding("utf8").on("data", (data: string) => { output += data; });
     const [code] = await once(child, "close");
     check("broker child inherits private umask without relaxing stricter bits", code === 0 && output.trim() === (mask | 0o077).toString(8), output);
-    assert.throws(() => spawnBroker("", [], {}));
+    assert.throws(() => spawnBroker("", [], { windowsHide: true }));
     check("synchronous spawn refusal restores caller umask", process.umask() === mask);
   } finally { process.umask(previous); }
 }

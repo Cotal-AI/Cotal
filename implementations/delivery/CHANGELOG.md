@@ -1,5 +1,51 @@
 # @cotal-ai/delivery
 
+## 0.182.1
+
+### Patch Changes
+
+- Updated dependencies [8495df7]
+- Updated dependencies [8eead0e]
+- Updated dependencies [5117d48]
+- Updated dependencies [2af983b]
+- Updated dependencies [c27ddc1]
+- Updated dependencies [8a9ffeb]
+- Updated dependencies [287b874]
+  - @cotal-ai/workspace@0.182.1
+  - @cotal-ai/core@0.182.1
+
+## 0.182.0
+
+### Minor Changes
+
+- b4d8ea1: User-auth terminal connections stop working when their session ends, so start a new session with `cotal attach <agent>` and upgrade auth and delivery together to enforce the cutoff.
+
+### Patch Changes
+
+- Updated dependencies [ecd506f]
+- Updated dependencies [896100c]
+- Updated dependencies [77a02cd]
+- Updated dependencies [1d10f92]
+- Updated dependencies [7ef585e]
+- Updated dependencies [48b6414]
+- Updated dependencies [423aa24]
+- Updated dependencies [1f37adb]
+- Updated dependencies [30b474d]
+- Updated dependencies [b670c41]
+- Updated dependencies [c9a8881]
+- Updated dependencies [0adb7ba]
+- Updated dependencies [b4d8ea1]
+- Updated dependencies [9f63fee]
+- Updated dependencies [365e355]
+- Updated dependencies [dd426ff]
+- Updated dependencies [f5b2a30]
+- Updated dependencies [0c9e27a]
+- Updated dependencies [d387f8b]
+- Updated dependencies [e6cd8f2]
+- Updated dependencies [6c10b18]
+  - @cotal-ai/workspace@0.182.0
+  - @cotal-ai/core@0.182.0
+
 ## 0.181.0
 
 ### Patch Changes

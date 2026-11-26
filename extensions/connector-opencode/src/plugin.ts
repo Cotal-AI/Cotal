@@ -1198,6 +1198,7 @@ export const cotal: Plugin = async () => {
     event: async ({ event }) => {
       asks.event(event.type, event.properties as Record<string, unknown>);
       if (events) deltaStreams.get(events)?.event(event.type, event.properties);
+      if (event.type === "message.updated" && event.properties.info.role === "assistant" && ours(event.properties.info.sessionID)) eventsFor(sessionID)?.flush(sessionID);
       // The server emits `permission.asked` (the SDK's `permission.updated` type ships but never
       // fires — #11616), so match the real runtime name out of band. With permission:"allow" this
       // rarely triggers, but it keeps presence correct if the posture tightens.
@@ -1446,10 +1447,14 @@ export const cotal: Plugin = async () => {
       // replaces the map entry, so the prompt follows each replacement until none remains.
       for (let barrier = turnEnds.get(input.sessionID); barrier !== undefined; barrier = turnEnds.get(input.sessionID))
         await barrier;
-      // OpenCode exposes the selected model only on this prompt hook. Do not invent a pre-turn
-      // default: before the first prompt the dashboard truthfully shows "not reported".
+      // OpenCode puts the resolved model on the user message even when the prompt omits it.
+      const resolved = output.message?.model;
       if (input.model)
         await track(agent.setModel(`${input.model.providerID}/${input.model.modelID}`, input.variant));
+      else if (resolved) {
+        const variant = "variant" in resolved && typeof resolved.variant === "string" ? resolved.variant : undefined;
+        await track(agent.setModel(`${resolved.providerID}/${resolved.modelID}`, variant));
+      }
       await injectIntoPrompt(output);
     },
 

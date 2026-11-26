@@ -8,8 +8,8 @@
  * a user does: `cotal ext seed`, `cotal up --open --detach`, then `cotal spawn --agent claude` in the
  * foreground and through the stack's manager, against a `claude` found by name on PATH. That
  * `claude` is a recorder the suite writes, so each cell reads the argv the connector really handed
- * the harness. For the effort cases it starts the shipped MCP server, so the manager also sees
- * both seats join before the suite checks their inventory. No Claude login or model call is needed.
+ * the harness. For the model and effort cases it starts the shipped MCP server so the seats join
+ * before the suite checks the roster and inventory. No Claude login or model call is needed.
  *
  * A plain prompt and a prompt with a `-` inside it are the controls: they must arrive unchanged
  * apart from the leading space, and a plain resume id must reach `claude` as the value of `--resume`.
@@ -42,7 +42,7 @@ writeFileSync(
   `#!${process.execPath}
 const argv = process.argv.slice(2);
 require("node:fs").appendFileSync(${JSON.stringify(argvLog)}, JSON.stringify(argv) + "\\n");
-if (process.env.COTAL_NAME?.startsWith("effort-")) {
+if (process.env.COTAL_NAME?.startsWith("effort-") || process.env.COTAL_NAME === "model-override") {
   console.log("WARNING: Loading development channels");
   process.stdin.once("data", () => {
     const { command, args } = JSON.parse(argv[argv.indexOf("--mcp-config") + 1]).mcpServers.cotal;
@@ -215,6 +215,7 @@ try {
   }
   checkLocalPersonaLaunches(server);
   checkManagedEffortInventory();
+  checkManagedModelRoster();
 } finally {
   if (up) {
     const down = cotal(root, anchor, "down", "--yes", "--with-agents");
@@ -249,4 +250,19 @@ function checkManagedEffortInventory(): void {
     check(`${name} has the expected model and variant in named status`, status.status === 0 && result?.execution?.model === "opus" &&
       result.details?.variant === (override ? null : "high"), status);
   }
+}
+
+function checkManagedModelRoster(): void {
+  const name = "model-override";
+  const model = "gpt-6.2-sol";
+  const spawned = cotal(root, anchor, "spawn", "probe", "--detach", "--no-events", "--harness", "claude",
+    "--name", name, "--cwd", seatDir, "--model", "claude-opus-5-5", "--opt", `model=${model}`);
+  check("a Claude seat with conflicting model flags joins", spawned.status === 0, spawned);
+  const models = launches().flatMap((args) => args.flatMap((arg, i) => arg === "--model" ? [args[i + 1]] : []));
+  check("the managed launch passes only the native model to Claude", models.length === 1 && models[0] === model, models);
+  const who = cotal(root, anchor, "who", "--json");
+  const line = who.out.split("\n").find((l) => l.startsWith('{"schemaVersion"'));
+  const report = line ? JSON.parse(line) as { result?: { items: { name: string; model?: string; managed: boolean }[] } } : undefined;
+  const row = report?.result?.items.find((item) => item.name === name);
+  check("the live roster reports the native model for the managed seat", who.status === 0 && row?.managed === true && row.model === model, who);
 }

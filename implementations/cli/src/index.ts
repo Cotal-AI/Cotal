@@ -164,6 +164,10 @@ const baseCommands: Command[] = [
     name: "update",
     group: "Setup",
     summary: "reconcile first-party extensions and check for a coherent cotal-ai upgrade",
+    usage: "cotal update [--self [--stop-agents]] [-s|--space <s>] [--server <url>] [--creds <path>] [--on <instance>]\n" +
+      "cotal update --check [-j|--json|--plain]\n" +
+      "cotal update --auto [off|on] [-j|--json|--plain]\n" +
+      "cotal update --notify [off|on] [-j|--json|--plain]",
     flags: updateFlags,
     positionals: "[off|on]",
     prepareMeshTarget: false,
@@ -723,13 +727,13 @@ const baseCommands: Command[] = [
     aliases: ["p"],
     group: "Agents",
     summary: "manage local definitions or an exact manager's caller-owned persona catalog",
-    examples: [{ command: "cotal persona", note: "list your personas" }, { command: "cotal persona create <name> --prompt \"<text>\" --subscribe \"\"", note: "save a persona from a prompt, reading no channels" }, { command: "cotal persona show <name>", note: "read one persona" }],
-    usage: "cotal persona [--json|--plain] | persona show <name> | persona create <name> (--file <persona.md>|(--prompt <text>|--from <path>) --subscribe <a,b|\"\">) | persona edit <name> | persona remove <name> [--yes]; list/show/create support --on <manager-instance>",
+    examples: [{ command: "cotal persona", note: "list your personas" }, { command: 'cotal persona create <name> --prompt "<text>" --subscribe=', note: "save a persona from a prompt, reading no channels" }, { command: "cotal persona show <name>", note: "read one persona" }],
+    usage: "cotal persona [--json|--plain] | persona show <name> | persona create <name> (--file <persona.md>|(--prompt <text>|--from <path>) (--subscribe <a,b>|--subscribe=)) | persona edit <name> | persona remove <name> [--yes]; list/show/create support --on <manager-instance>",
     positionals: "[show <name> | create <name> | edit <name> | remove <name>]",
     flagNames: ["space", "server", "on", "json", "plain"],
     subcommands: [
       { name: "show", flagNames: ["space", "server", "on", "json", "plain"], summary: "read a local definition or an authorized exact-manager card", examples: [{ command: "cotal persona show <name>", note: "read a persona's definition" }], usage: "cotal persona show <name> [--on <manager-instance>] [--json|--plain]", reads: true, outputs: ["json", "plain"] },
-      { name: "create", flagNames: ["space", "server", "on", "file", "prompt", "from", "role", "model", "harness", "subscribe", "allow-subscribe", "allow-publish", "announce", "json", "plain"], summary: "save a local definition or define a caller-owned remote persona", examples: [{ command: "cotal persona create <name> --prompt \"<text>\" --subscribe \"\"", note: "save a persona from a prompt, reading no channels" }, { command: "cotal persona create <name> --file <persona.md>", note: "save one from a file" }], usage: "cotal persona create <name> (--file <persona.md> | (--prompt <text> | --from <path>) --subscribe <a,b|\"\">) [--role <role>] [--model <model>] [--harness <application>] [--on <manager-instance>] [--json|--plain]", outputs: ["json", "plain"] },
+      { name: "create", flagNames: ["space", "server", "on", "file", "prompt", "from", "role", "model", "harness", "subscribe", "allow-subscribe", "allow-publish", "announce", "json", "plain"], summary: "save a local definition or define a caller-owned remote persona", examples: [{ command: 'cotal persona create <name> --prompt "<text>" --subscribe=', note: "save a persona from a prompt, reading no channels" }, { command: "cotal persona create <name> --file <persona.md>", note: "save one from a file" }], usage: "cotal persona create <name> (--file <persona.md> | (--prompt <text> | --from <path>) (--subscribe <a,b> | --subscribe=)) [--role <role>] [--model <model>] [--harness <application>] [--on <manager-instance>] [--json|--plain]", outputs: ["json", "plain"] },
       { name: "edit", flagNames: ["space", "server", "json", "plain"], summary: "validate a private editor draft before saving", examples: [{ command: "cotal persona edit <name>", note: "edit a persona in your editor" }], usage: "cotal persona edit <name> [--json|--plain]", outputs: ["json", "plain"] },
       { name: "remove", flagNames: ["space", "server", "yes", "json", "plain"], aliases: ["rm"], summary: "remove a named local definition after confirmation", examples: [{ command: "cotal persona remove <name>", note: "remove a persona after you confirm" }], usage: "cotal persona remove <name> [-y|--yes] [--json|--plain]", outputs: ["json", "plain"] },
     ],

@@ -147,6 +147,12 @@ channels:
   mkdirSync(root, { recursive: true });
   writeFileSync(manifest, corrupt);
   const offline = { COTAL_NO_UPDATE_CHECK: "1", COTAL_TELEMETRY: "off" };
+  for (const args of [["version"], ["--version"], ["-V"]]) {
+    const r = run(args, offline);
+    check(`${args[0]} reports the running version with an unreadable inventory`,
+      r.status === 4 && r.stdout.split("\n")[0] === `cotal-ai ${VERSION}` &&
+      r.stderr.includes(manifest) && r.stderr.includes('no "extensions" array') && r.stderr.includes("`cotal ext seed --repair`"), shown(r));
+  }
   for (const args of [["config", "get", "harness", "--json"], ["--json", "config"], ["completion", "-j"]]) {
     const r = run(args, offline);
     const receipt = r.stdout ? JSON.parse(r.stdout) : undefined;
@@ -187,6 +193,34 @@ channels:
       r.status === 1 && r.stderr === "" && receipt?.command === "ext" && receipt.outcome === "refused" &&
       receipt.result === null && receipt.error?.code === "SCHEMA_INVALID" &&
       receipt.error.message.includes("corrupt extensions manifest") && receipt.error.remedy.includes("cotal ext seed --repair"), shown(r));
+  }
+  const corruptFailure = (error: { code?: string; message?: string; remedy?: string } | undefined) =>
+    error?.code === "SCHEMA_INVALID" && error.message?.includes(manifest) === true && error.remedy?.includes("cotal ext seed --repair") === true;
+  for (const [command, args] of [
+    ["space", ["--json", "space"]],
+    ["doctor auth", ["doctor", "auth", "--json"]],
+    ["history", ["h", "general", "--space", "absent", "-j"]],
+  ] as const) {
+    const r = run([...args], offline);
+    const receipt = r.stdout ? JSON.parse(r.stdout) : undefined;
+    check(`${args.join(" ")} reports one finite refusal without running`,
+      r.status === 1 && r.stderr === "" && receipt?.schemaVersion === 1 && receipt.command === command &&
+      receipt.outcome === "refused" && receipt.result === null && corruptFailure(receipt.error), shown(r));
+  }
+  for (const [stream, args] of [
+    ["watch", ["watch", "--space", "absent", "--json"]],
+    ["history", ["history", "general", "--space", "absent", "--follow", "--json"]],
+    ["membership", ["channel", "members", "general", "--space", "absent", "--follow", "--json"]],
+  ] as const) {
+    const r = run([...args], offline);
+    const records = r.stdout.trim().split("\n").filter(Boolean).map((line) => JSON.parse(line));
+    const [error, end] = records;
+    const target = stream === "watch" ? { requestedSpace: "absent" }
+      : stream === "history" ? { space: "absent", channel: "general", dms: false } : { space: "absent", channel: "general" };
+    check(`${stream} reports the corrupt manifest as a stream setup failure`,
+      r.status === 1 && r.stderr === "" && records.length === 2 && error.stream === stream && end.stream === stream &&
+      error.type === "error" && corruptFailure(error.data) && end.type === "end" && end.data?.reason === "setup-failed" &&
+      isDeepStrictEqual(error.target, target) && isDeepStrictEqual(end.target, target), shown(r));
   }
   const add = run(["ext", "add", "example-extension"], { ...offline, npm_config_offline: "true" });
   check("ext add still refuses a corrupt manifest without installing anything",

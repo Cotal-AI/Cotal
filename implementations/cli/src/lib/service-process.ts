@@ -264,7 +264,10 @@ function environment(definition: ServiceDefinitionInput): NodeJS.ProcessEnv {
   // The usage telemetry variables and CI reach the service as they reach a seat (docs/telemetry.mdx).
   // NODE_EXTRA_CA_CERTS is the operator's trust in a local CA, which a service dialing the space needs as this command does.
   for (const key of ["PATH", "HOME", "USER", "LOGNAME", "TMPDIR", "LANG", "LC_ALL", "TERM", "COLORTERM", "NO_COLOR", "FORCE_COLOR", "COTAL_HOME", "LOCALAPPDATA", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "XDG_CACHE_HOME", "XDG_RUNTIME_DIR", "DO_NOT_TRACK", "CI", "COTAL_TELEMETRY", "COTAL_TELEMETRY_DISABLED", "COTAL_TELEMETRY_URL", "NODE_EXTRA_CA_CERTS"]) if (process.env[key] !== undefined) env[key] = process.env[key];
-  if (definition.launch.type === "adapter" && definition.launch.adapter === STACK_ADAPTER.manager) Object.assign(env, spawnEnvironment(String(definition.launch.options.root)));
+  if (definition.launch.type === "adapter" && definition.launch.adapter === STACK_ADAPTER.manager) {
+    if (process.env.COTAL_CODEX_TUI !== undefined) env.COTAL_CODEX_TUI = process.env.COTAL_CODEX_TUI;
+    Object.assign(env, spawnEnvironment(String(definition.launch.options.root)));
+  }
   // Variable names are not secrets, so a missing one is named with the child variable it feeds.
   const missing = Object.entries(definition.envRefs ?? {}).filter(([, source]) => process.env[source] === undefined);
   if (missing.length) {
@@ -770,7 +773,7 @@ export async function startProcessService(definition: ServiceDefinitionSnapshot,
         }
         const launchChild = value.launch.type === "adapter" && value.launch.adapter === "nats-broker" ? spawnBroker : spawn;
         const started = options.foreground ? launch : inOwnScope(launch, env, { space: value.space, instanceId: id, launchRequestId });
-        child = launchChild(started.program, [...started.args], { cwd: started.cwd, env, shell: false, detached: !options.foreground, stdio: options.foreground ? "inherit" : ["ignore", log!, log!] });
+        child = launchChild(started.program, [...started.args], { cwd: started.cwd, env, shell: false, detached: !options.foreground, stdio: options.foreground ? "inherit" : ["ignore", log!, log!], windowsHide: !options.foreground });
         if (!options.foreground) child.unref();
         child.once("exit", (code, signal) => { exited = true; exitCode = code; exitSignal = signal; done(); });
         await new Promise<void>((resolve, reject) => { child!.once("spawn", resolve); child!.once("error", reject); });
@@ -1167,13 +1170,13 @@ function unreadableLog(path: string, code: string) {
 
 /** The last `tail` lines of an owned private log file, from at most its last 1 MiB. A log this
  *  account cannot read is refused with the step that gives its owner read and write back. */
-export function readOwnedLogTail(path: string, tail: number, requireFile = false) {
+export function readOwnedLogTail(path: string, tail: number, requireFile = false, missingRemedy?: () => string) {
   let fd: number;
   try { fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK); }
   catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
     if (code === "ENOENT") {
-      if (requireFile) throw new CommandFailure("refused", "TARGET_NOT_FOUND", `the captured service log ${path} does not exist`, { target: { path } });
+      if (requireFile) throw new CommandFailure("refused", "TARGET_NOT_FOUND", `the captured service log ${path} does not exist`, { target: { path }, remedy: missingRemedy?.() });
       return { lines: [] as string[], omittedBytes: 0, path };
     }
     if (code === "EACCES" || code === "EPERM") throw unreadableLog(path, code);

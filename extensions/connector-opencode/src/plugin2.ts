@@ -242,7 +242,7 @@ async function setupSession(ctx: OpenCode2Context): Promise<() => Promise<void>>
         const subjectFrontier = await FileSubjectFrontier.open(subjectPath, { space: config.space, principal });
         const wal = await EventWal.open(walPath, { space: config.space, threadId: id, principal, subjectMayExist: false });
         if (!bound) {
-          stream.open(id, session, {
+          stream.open(id, {
             path: deltaJournalPath,
             onWrite: () => holder.flush(id),
             onError: (e) => log(`AG-UI: streamed text could not be journaled, the saved element carries it: ${e.message}`),

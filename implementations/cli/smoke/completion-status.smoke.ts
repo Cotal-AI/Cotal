@@ -819,7 +819,7 @@ if (process.platform !== "win32" && process.getuid?.() !== 0) {
   for (const name of ["plain.yaml", "my team.yaml"]) writeFileSync(join(work, name), "");
   const env = { ...HOST_ENV, HOME: s.home, XDG_CONFIG_HOME: s.xdg, COTAL_HOME: join(s.home, ".cotal"), COTAL_SKIP_CONNECTOR_SEED: "1", PATH: `${bin}:${process.env.PATH ?? ""}` };
   const drive = (shell: string, script: string) => spawnSync(shell, shell === "bash" ? ["--norc", "--noprofile", "-c", script] : ["-f", "-c", script], { cwd: work, env, encoding: "utf8", timeout: 60_000 });
-  const bash = (words: string) => drive("bash", `source <(cotal completion script bash); COMP_WORDS=(${words}); COMP_CWORD=$(( \${#COMP_WORDS[@]} - 1 )); _cotal_complete; printf '%s\\n' "\${COMPREPLY[@]}"`);
+  const bash = (words: string, fnArgs = "") => drive("bash", `source <(cotal completion script bash); COMP_WORDS=(${words}); COMP_CWORD=$(( \${#COMP_WORDS[@]} - 1 )); _cotal_complete ${fnArgs}; printf '%s\\n' "\${COMPREPLY[@]}"`);
   const files = bash(`cotal team check ""`);
   check("bash completes file names where the value takes a path, one per file", files.status === 0 && files.stdout.split("\n").filter(Boolean).sort().join("|") === "my team.yaml|plain.yaml", { status: files.status, stdout: files.stdout, stderr: files.stderr.slice(0, 300) });
   const prefix = bash("cotal team check pl");
@@ -832,6 +832,18 @@ if (process.platform !== "win32" && process.getuid?.() !== 0) {
   check("bash completes an absolute daemon-home directory containing spaces", homes.status === 0 && homes.stdout === `${daemonHome}\n`, { status: homes.status, stdout: homes.stdout });
   const idp = bash(`cotal daemon login --idp ""`);
   check("bash does not offer paths for the daemon's provider URL", idp.status === 0 && idp.stdout.trim() === "", { status: idp.status, stdout: idp.stdout });
+  const prepared = s.run(["space", "create", "completion-check", "--root", work]);
+  check("fixture: prepare a space for bash persona completion", prepared.status === 0, shown(prepared));
+  writeFileSync(join(work, ".cotal", "agents", "two words.md"), "---\nname: release-check\n---\nReview the release.\n");
+  const persona = bash("cotal persona show --space completion-check tw");
+  check("bash completes a persona selector with spaces as one candidate", persona.status === 0 && persona.stdout === "two words\n", shown(persona));
+  const escaped = bash(`cotal persona show --space completion-check 'two\\ w'`, `cotal 'two\\ w'`);
+  check("bash matches a persona selector after a backslash-escaped space", escaped.status === 0 && escaped.stdout === "two words\n", shown(escaped));
+  mkdirSync(join(work, ".cotal", "agents", "directory.md"));
+  const directory = bash("cotal persona show --space completion-check dir");
+  check("bash does not offer a directory as a persona to show", directory.status === 0 && directory.stdout.trim() === "", shown(directory));
+  const listed = s.run(["persona", "--space", "completion-check", "--plain"]);
+  check("the catalog still reports the directory as unreadable", listed.status === 4 && /directory\s+not set\s+user default\s+unreadable/.test(listed.stdout), shown(listed));
   const zshStub = s.run(["completion", "script", "zsh"]).stdout;
   check("the zsh stub calls _files for a path value", /\[\[ "\$directive" == default \]\] && _files/.test(zshStub), zshStub);
   if (spawnSync("zsh", ["-fc", "true"]).status === 0) {
@@ -924,15 +936,19 @@ if (process.platform !== "win32" && process.getuid?.() !== 0) {
     chmodSync(agents, 0o700);
   }
   // A persona file that does not parse leaves the declared set incomplete, so those completions fail
-  // and name it rather than offer part of it. A persona name needs no parse, so it is still offered.
+  // and name it rather than offer part of it.
   writeFileSync(join(agents, "broken.md"), "no frontmatter\n", { mode: 0o600 });
   for (const words of declared) {
     const r = s.run(["__complete", ...words, ""], { COTAL_COMPLETE_DEBUG: "1" });
     check(`${words.join(" ")} fails its completion on a persona file that does not parse and names it`,
       r.status === 1 && r.stdout === "" && r.stderr.includes(`persona "broken" is unparseable`), shown(r));
   }
+  if (process.platform !== "win32") symlinkSync("default.md", join(agents, "linked.md"));
   const names = offered(["persona", "show", "--space", "cc"]);
-  check("persona show still offers the name of a persona file that does not parse", names.status === 0 && names.values.includes("broken") && names.values.includes("default"), shown(names));
+  check("persona show offers readable regular personas, not malformed files or links", exactly(names, ["default"]), shown(names));
+  const remove = offered(["persona", "remove", "--space", "cc"]);
+  check("persona remove can still complete a malformed file by name", remove.status === 0 && remove.values.includes("broken"), shown(remove));
+  if (process.platform !== "win32") rmSync(join(agents, "linked.md"));
   rmSync(join(agents, "broken.md"));
   // A catalog folder that does not exist is an empty catalog.
   renameSync(agents, `${agents}.away`);

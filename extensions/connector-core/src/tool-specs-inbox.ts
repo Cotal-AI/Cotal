@@ -487,6 +487,7 @@ function droppedNote(channels: readonly string[]): string {
 /** Said once after this session's stored copies reached their limit (#5404). NATS reports no discard,
  *  so it says "may". */
 const storedCopiesNote = (limit: number): string => `⚠ Your stored copies reached their limit of ${limit}, so earlier channel posts may have been dropped before they reached you. Channel history may still hold them: \`cotal history <channel>\` reads it, within the space's history limit.`;
+const localOverflowNote = (count: number): string => `⚠ ${count} unread channel ${count === 1 ? "post was" : "posts were"} omitted because the local inbox was full. To recover retained posts from channel history, use \`cotal history <channel> --limit <n>\`.`;
 
 /** How many channels the recall warning names before it starts counting them instead. */
 const NAMED_DROPPED = 5;
@@ -522,7 +523,7 @@ export function inboxToolSpecs(emptyInboxNote?: () => string | undefined): Cotal
       description:
         "Read messages other agents have sent you since you last checked: channel broadcasts, direct messages, and role requests. It clears ONLY what it actually returns to you (nothing at all when peek is true), and one call carries at most a receivable window: direct messages and role requests first, then a current mention of you, then other channel traffic, with replayed history last. A peek shows a current mention of you before older direct messages too, and still clears nothing. A peek shows a newer direct message or role request before an older one that fills that window, and still clears nothing. When the window holds a mention back, the reply says so. Anything that does not fit stays buffered and is named in the reply, so call again for the next batch. A single message larger than one whole response is delivered in parts: once no smaller mail is waiting, each call carries the next part of it, a peek shows the current part without moving on, and the message is cleared only after its last part goes out. In focus mode it also pulls back the channel chatter held since you entered focus. If exclusion tracking makes a channel's focus recall unsafe, new non-historical mentions on that unmuted channel wake to pull their buffered bodies, never automatic injection, including on quiet channels. Ambient handling is unchanged, and the incomplete-recall warning still names unsafe channels. " +
         "When the connection is not ready, the reply says so and still returns locally buffered messages; an empty local buffer does not prove no new mesh messages exist. Exhausted channel drop tracking is reported even with an empty inbox; non-historical mentions on unmuted channels wake to pull their buffered bodies while ambient traffic stays suppressed. " +
-        "If your stored copies reached their limit, 1000 unless an operator set another, the reply says earlier channel posts may have been dropped and that channel history may still hold them. A peek keeps that line for the next read.",
+        "If your stored copies reached their limit, 1000 unless an operator set another, the reply says earlier channel posts may have been dropped and that channel history may still hold them. If the local inbox fills and drops unread channel posts, the reply tells you how many it omitted and how to recover retained posts from channel history. A peek keeps these notices for the next read.",
       schema: {
         peek: z.boolean().optional().describe("If true, show messages without clearing them."),
       },
@@ -544,19 +545,21 @@ export function inboxToolSpecs(emptyInboxNote?: () => string | undefined): Cotal
         // evicted and lost. That is the buffer's documented bounded local loss (see
         // MeshAgent.buffer), unchanged by this path; an evicted directed message is never acked.
         const automaticPending = scope ? agent.inboxCount("automatic") : 0;
-        // Every reply below carries the stored-copy notice, and it clears as the messages do: once the
+        // Every reply below carries pending loss notices, and they clear as the messages do: once the
         // reply exists and its caller is still there. A recall that throws or a caller that goes keeps it.
         const storedSeen = agent.storedCopiesFull;
-        const storedNote = storedSeen ? storedCopiesNote(agent.storedCopiesLimit) : "";
+        const omittedSeen = agent.omittedChannelPosts;
+        const lossNotes = [storedSeen ? storedCopiesNote(agent.storedCopiesLimit) : "", omittedSeen ? localOverflowNote(omittedSeen) : ""].filter(Boolean).join("\n");
         const reply = (text: string): ToolResult => {
           if (storedSeen && !keeps()) agent.clearStoredCopiesFull(storedSeen);
+          if (omittedSeen && !keeps()) agent.clearOmittedChannelPosts(omittedSeen);
           return ok(text);
         };
         if (agent.attention !== "focus") {
           // A peek shows bodies too, so a peek takes what it shows like any read.
           const { reply: rendered, offered, buffered, part: taken } = await takeForReply(agent, inboxScope, {
             peek,
-            warning: () => [inboxConnectionWarning(agent), storedNote].filter(Boolean).join("\n"),
+            warning: () => [inboxConnectionWarning(agent), lossNotes].filter(Boolean).join("\n"),
             signal: call?.signal,
             head: (s) =>
               pulls
@@ -566,7 +569,7 @@ export function inboxToolSpecs(emptyInboxNote?: () => string | undefined): Cotal
           const { text, shown, held, stuck } = rendered;
           // Asked after the takes: one this read asked for can have been held since.
           const connectionWarning = inboxConnectionWarning(agent);
-          const warning = [connectionWarning, storedNote].filter(Boolean).join("\n");
+          const warning = [connectionWarning, lossNotes].filter(Boolean).join("\n");
           if (!offered.length) {
             return reply(
               [warning, pulls
@@ -644,7 +647,7 @@ export function inboxToolSpecs(emptyInboxNote?: () => string | undefined): Cotal
         aheadFresh.sort(byTsThenId);
         const fresh = [...clocked, ...aheadFresh];
         const aheadIds = new Set(aheadFresh.map((i) => i.recvKey));
-        const focusWarning = () => [inboxConnectionWarning(agent), storedNote, droppedNote(recall.droppedChannels), aheadNote(aheadWithheld)]
+        const focusWarning = () => [inboxConnectionWarning(agent), lossNotes, droppedNote(recall.droppedChannels), aheadNote(aheadWithheld)]
           .filter(Boolean)
           .join(" ");
         // Taken after recall, which can hand an id-less message back into the buffer (#662).
@@ -665,7 +668,7 @@ export function inboxToolSpecs(emptyInboxNote?: () => string | undefined): Cotal
         const warning = focusWarning();
         if (!offered.length && !fresh.length && !recall.droppedChannels.length && !aheadWithheld.length)
           return reply(
-            [connectionWarning, storedNote, pulls
+            [connectionWarning, lossNotes, pulls
               ? `No pull-only messages and no normal focus recall.${automaticPending ? ` ${automaticPending} connector-managed automatic message${automaticPending === 1 ? " is" : "s are"} still queued; peek to read ${automaticPending === 1 ? "it" : "them"} now.` : ""}`
               : connectionWarning ? "Local inbox buffer and available focus recall are empty." : "Inbox empty, no new messages, and no channel chatter since you entered focus."].filter(Boolean).join("\n\n"),
           );

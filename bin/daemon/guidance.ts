@@ -16,6 +16,18 @@ export function foreignDaemonUpdateReport(entry: string): string {
   return `machine daemon: the background service belongs to another Cotal installation (${entry}). This update did not start or stop it.`;
 }
 
+export const windowsDaemonHomeAccess = "its owner must be you, SYSTEM or Administrators, and its Windows ACL may grant access only to those accounts";
+
+/** Name PowerShell when its quoting is needed to copy the daemon home unchanged. */
+export function windowsDaemonRemedy(op: "install" | "serve" | "start", home?: string): string {
+  const shell = home !== undefined && home !== homeCotalDir() && windowsShellWord(home) === undefined ? " in PowerShell" : "";
+  return `${codeSpan(daemonCommandCopy(op, home))}${shell}`;
+}
+
+export function windowsDaemonFirstStart(home?: string): string {
+  return `install a scheduled task with ${windowsDaemonRemedy("install", home)}, or run the daemon in the foreground with ${windowsDaemonRemedy("serve", home)}`;
+}
+
 /** A copyable command for this daemon. Tuples keep option values distinct from boolean flags;
  *  leading-hyphen values need `=` even when shell-quoted. */
 export function daemonCommandCopy(op: string, home?: string, args: readonly (string | readonly [string, string])[] = []): string {

@@ -96,7 +96,9 @@ answers with that fact and the launch stops there: no attach is asked for, nothi
 the command exits 0 with the agent running. Its `Runtime` row reads `<runtime> · no terminal
 stream`, its `View` row reads `not attached; the seat runs in the manager's <runtime> session`, and
 its Next gives `cotal watch` and `cotal send -t <name>` with one line saying `attach` is not
-available there. `--json` carries the same answer as `result.streamsTerminal`, beside the
+available there. Both the launch receipt and a refused attach keep the seat's space and any explicit
+broker in the send and watch commands. If the broker address cannot be printed unchanged, supply
+its original value in place of `<original-server>`. `--json` carries the same answer as `result.streamsTerminal`, beside the
 `result.runtime` that names the backend. A manager from before 0.104.2 reports neither, so
 `streamsTerminal` is null and the launch asks for an attach. When that manager refuses it because
 the runtime streams no terminal, the launch ends there too, with one line that names the runtime,
@@ -176,7 +178,9 @@ On an authenticated space it also points to `cotal endpoint describe manager`.
 Both reads keep the space and broker options you supplied. If the broker address cannot be shown,
 the refusal tells you to reuse those options without printing the address.
 Passing an answering manager's own instance ID gives the same guidance on static and open spaces.
-A requested model is not provider-confirmed. Connector-reported provider
+A requested model is not provider-confirmed. If a Codex or OpenCode agent has no recorded model
+request, the human view shows the model and optional variant reported by that exact seat in current presence.
+JSON keeps the manager's recorded model and variant. Connector-reported provider
 information is labeled exact or name-matched under the same proof. A new manager
 row marks a roster observation exact only when its principal and lifecycle UID
 match the managed seat and its presence view is current. Older or mismatched rows leave exact presence
@@ -358,10 +362,13 @@ intents and unremoved agent/channel receipts before effects. Bare `down` and a l
 blocks them. A complete matched
 removal receipt releases only its original deployment's blocker. The boot preview
 lists that deployment as history without warning that it blocks boot.
-A bare `up` of a stopped controller stack starts it again over a returned channel-only deployment
-made on that stack, and keeps the deployment's records and cards as they are. Any other retained
-deployment, such as an unsettled attempt or an agent deployment, still refuses the start with
-`LIFECYCLE_BLOCKED`, and its Next names `cotal team show <id>` for each one.
+After stopping a controller stack, run `cotal up` from its recorded root to restart it.
+A completed deployment to that stack does not block ordinary startup, whether it added channels,
+agents, or both. Startup keeps the deployment receipts and channel cards and does not relaunch
+agents stopped by `cotal down --with-agents`. Once the stack is running, preview removal with
+`cotal team remove <id> --dry-run`.
+Unreadable records, unsettled deployments, and unfinished removals of deployments with agents
+still block startup with `LIFECYCLE_BLOCKED`. Inspect a named deployment with `cotal team show <id>`.
 This is a known-blocker guard,
 not complete broker ownership. The service records belong to the workstation's selected-space store,
 not necessarily this boot root; their recorded
@@ -388,7 +395,9 @@ the controller members and requested topology. Agent joins are not checked, so t
 partial. A manifest that requests no agents leaves no join unchecked, so its receipt is `ok`. The fresh attempt and summary are launch records, not stop authority. No additive
 ownership ledger is created; `cotal down` uses the stack journal and each member's native lifecycle.
 The text receipt offers `cotal team show <id> --space <space>` to read the launch summary in the
-booted space without changing your saved selection.
+booted space without changing your saved selection. Its stop preview changes to the booted project's
+root before running `cotal down --space <space> --dry-run`, so you can copy the command from the
+folder where you ran the boot.
 
 Before writes it checks the selected root, auth mode, broker address, runtime, connectors and
 retained ownership records. A journal, legacy PID record, possibly live component, service instance,

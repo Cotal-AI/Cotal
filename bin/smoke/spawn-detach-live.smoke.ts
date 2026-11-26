@@ -286,6 +286,48 @@ try {
     fixture("opencode", "if(process.argv[2]==='--version'){console.log('1.2.0');process.exit(0)}" + errorLines);
     const serveFailure = await failedLaunch("opencode", "failed_serve");
     ok("OpenCode serve failure returns child stderr rather than wrapper prose", isCommandFailure(serveFailure) && serveFailure.message.includes("run auth login to reauthenticate"), String(serveFailure));
+    const modelProbe = join(fakeBin, "model probe.md");
+    const slashModel = "deepseek-ai/DeepSeek-V3.2";
+    const modelList = [slashModel, "DeepSeek-V3.2", "gpt-6.2-sol", "persona-model", "unsafe;model"].map((model) => ({ model, provider: "Hugging Face", available: true }));
+    const listCommand = `if(process.argv[2]==='model'){console.log(JSON.stringify(${JSON.stringify({ provider: "Hugging Face", models: modelList.map(({ model }) => model), routes: modelList })}));process.exit(0)}`;
+    fixture("jcode", listCommand + errorLines);
+    const catalog = JSON.parse(await capture(() => run("models", ["--harness", "jcode", "--space", SPACE, "--json"])));
+    const listed = catalog.result.items[0].models.find(({ id }: { id: string }) => id === slashModel);
+    ok("Jcode lists the exact slash-bearing model ID", listed?.provider === "Hugging Face", listed);
+    const modelPersona = (model: string) => writeFileSync(modelProbe, `---\nname: model_probe\nrole: model_probe\nagent: jcode\nmodel: '${model}'\n---\nRespond only to test prompts.\n`);
+    const modelFailure = async (extra: string[] = []): Promise<unknown> => {
+      try { await capture(() => run("spawn", ["--file", modelProbe, "-d", "--space", SPACE, "--server", SERVER, "--cwd", fakeBin, "--no-events", ...extra])); }
+      catch (error) { return error; }
+    };
+    modelPersona("fixture/persona-model");
+    for (const [source, model, extra] of [
+      ["persona", "persona-model", []],
+      ["flag", "gpt-6.2-sol", ["--harness", "jcode", "--model", "cliproxy/gpt-6.2-sol"]],
+    ] as const) {
+      const failure = await modelFailure([...extra]);
+      ok(`Jcode rejects a ${source} model prefix and keeps the original options in the bare-model retry`,
+        isCommandFailure(failure) && exitCode(failure.outcome, failure.code) === 5 && failure.code === "OPERATION_FAILED"
+          && failure.message.includes("model_prefix_rejected") && failure.message.includes("Select the provider in Jcode's configuration")
+          && failure.remedyIsCommand === true && ["cotal", "pnpm cotal"].some((cli) => failure.remedy?.startsWith(`${cli} spawn `))
+          && [" -d", ` --space ${SPACE}`, ` --server ${SERVER}`, ` --file '${modelProbe}'`, ` --cwd ${fakeBin}`, " --no-events", ` --model ${model}`].every((part) => failure.remedy?.includes(part))
+          && (source === "persona" || failure.remedy?.includes(" --harness jcode") === true)
+          && !failure.remedy?.includes("fixture/") && !failure.remedy?.includes("cliproxy/"), failure);
+    }
+    modelPersona("fixture/unsafe;model");
+    const unsafeModel = await modelFailure();
+    ok("Jcode withholds an unsafe persona model from the refusal and does not suggest a retry command",
+      isCommandFailure(unsafeModel) && unsafeModel.code === "OPERATION_FAILED" && unsafeModel.message.includes("model_prefix_rejected")
+        && !unsafeModel.message.includes("unsafe;model") && !unsafeModel.remedyIsCommand, unsafeModel);
+    const harness = join(import.meta.dirname, "../../extensions/connector-jcode/smoke/fake-jcode.mjs");
+    const modelLog = join(fakeBin, "model-harness.jsonl");
+    fixture("jcode", `${listCommand}process.env.FAKE_JCODE_LOG=${JSON.stringify(modelLog)};await import(${JSON.stringify(harness)});`);
+    modelPersona("fixture/persona-model");
+    const selected = await capture(() => run("spawn", ["--file", modelProbe, "--harness", "jcode", "--detach", "--space", SPACE, "--cwd", fakeBin, "--model", listed.id]));
+    const modelCalls = readFileSync(modelLog, "utf8").trim().split("\n").map((line) => JSON.parse(line)).filter((e) => e.ev === "request" && e.frame?.req === "set_model");
+    ok("Jcode joins and receives the catalog ID verbatim even when its suffix is also listed",
+      joinedAs(selected, "model_probe") && modelCalls.length === 1 && modelCalls[0].frame.model === slashModel, { selected, modelCalls });
+    await capture(() => run("stop", ["--name", "model_probe", "--space", SPACE]));
+    fixture("jcode", errorLines);
     const originalCwd = process.cwd();
     const jcodeFailure = await (async () => {
       process.chdir(fakeBin);
@@ -512,16 +554,17 @@ try {
   const psAfter = await capture(() => run("ps", ["--space", SPACE]));
   ok("ps is empty after stop", NO_AGENTS.test(psAfter), psAfter);
 
-  {
-    const guide = readFileSync(join(import.meta.dirname, "../../docs/connect-opencode.mdx"), "utf8");
-    const example = /`\.cotal\/agents\/([\w-]+)\.md`[^\n]*\n\n```markdown\n([\s\S]+?)\n```[\s\S]+?^cotal spawn \1 --harness opencode --detach$/m.exec(guide);
-    if (!example) throw new Error("The OpenCode guide must show how to create the persona before its detached launch");
+  for (const [harness, role] of [["opencode", "research"], ["codex", "review"], ["claude", "assistant"]]) {
+    const guide = readFileSync(join(import.meta.dirname, `../../docs/connect-${harness}.mdx`), "utf8");
+    const example = /`\.cotal\/agents\/([\w-]+)\.md`[^\n]*\n\n```markdown\n([\s\S]+?)\n```[\s\S]+?^cotal spawn \1 --harness ([\w-]+) --detach$/m.exec(guide);
+    if (!example || example[3] !== harness) throw new Error(`The ${harness} guide must show how to create the persona before its detached launch`);
     const [, persona, contents] = example;
     writeFileSync(join(workspaceRoot, ".cotal", "agents", `${persona}.md`), `${contents}\n`);
-    // Use the suite harness to test the catalog lookup against the real manager without OpenCode installed.
-    const launched = await capture(() => run("spawn", [persona, "--harness", "e2e", "--detach", "--no-events", "--space", SPACE]));
-    ok("the OpenCode guide's persona launches by catalog name", joinedAs(launched, persona) && lastOpts?.role === "research", launched);
-    await capture(() => run("stop", [persona, "--space", SPACE]));
+    // Use the suite harness to test catalog lookup against the real manager without native applications.
+    const name = `guide-${harness}`;
+    const launched = await capture(() => run("spawn", [persona, "--harness", "e2e", "--detach", "--no-events", "--space", SPACE, "--name", name]));
+    ok(`the ${harness} guide's persona launches by catalog name`, joinedAs(launched, name) && lastOpts?.role === role, launched);
+    await capture(() => run("stop", [name, "--space", SPACE]));
   }
 
   // D — COTAL_DEFAULT_PERSONA supplies the persona for a bare detached spawn. The identity still
@@ -795,25 +838,27 @@ try {
       }
       const before = attachCalls;
       // Forcing `isTTY` also turns the report's color on, so the receipt is read without it.
-      const fgOut = plain(await atTerminal(() => capture(() => run("spawn", ["poet", "--no-events", "--agent", "e2e", "--space", SPACE, "--name", "pane", "--on", on2]))));
+      const fgOut = plain(await atTerminal(() => capture(() => run("spawn", ["poet", "--no-events", "--agent", "e2e", "--space", SPACE, "--server", SERVER, "--name", "pane", "--on", on2]))));
       ok("a foreground launch on a runtime with no terminal joins and returns", joinedAs(fgOut, "pane"), fgOut);
       ok("and asks for no attach the detached launch did not also make", attachCalls - before === managerOwn, { foreground: attachCalls - before, detached: managerOwn });
       ok("nothing about it is partial", !/Partly completed|OPERATION_PARTIAL/.test(fgOut), fgOut);
       ok("its receipt names the runtime as streaming no terminal", /Runtime:\s+e2e-nostream [·-] no terminal stream/.test(fgOut), fgOut);
       ok("and says where the seat runs instead of claiming a view", /View:\s+not attached; the seat runs in the manager's e2e-nostream session/.test(fgOut), fgOut);
-      ok("its Next names what reaches the agent without a terminal", /watch --space/.test(fgOut) && /send -t pane/.test(fgOut), fgOut);
+      const scope = `--space ${SPACE} --server ${SERVER}`;
+      const scopedHints = (text: string) => text.includes(`watch ${scope}`) && text.includes(`send -t pane "<message>" ${scope}`);
+      ok("its Next reaches the launched seat's mesh without a terminal", scopedHints(fgOut), fgOut);
       ok("and says once that attach is not available here", /attach is not available here: the e2e-nostream runtime streams no terminal\./.test(fgOut), fgOut);
       const ptyJson = await capture(() => run("spawn", ["poet", "--detach", "--no-events", "--agent", "e2e", "--space", SPACE, "--name", "ptyseat", "--on", on1, "--json"]));
       ok("a pty manager reports the terminal it does have, so nothing skips its attach", (JSON.parse(ptyJson) as { result: { streamsTerminal: boolean | null } }).result.streamsTerminal === true, ptyJson);
       // And `attach` on such a seat refuses once, by the runtime's own guidance, naming what does
       // reach it — never "inspect and reattach", which that runtime cannot do either.
       let refusal: { code?: string; message?: string; remedy?: string } | undefined;
-      try { await run("attach", ["pane", "--space", SPACE, "--on", on2, "--no-reconnect"]); }
+      try { await run("attach", ["pane", "--space", SPACE, "--server", SERVER, "--on", on2, "--no-reconnect"]); }
       catch (e) { refusal = e as { code?: string; message?: string; remedy?: string }; }
       const said = { code: refusal?.code, message: refusal?.message, remedy: refusal?.remedy };
       ok("attach on that seat is refused UNSUPPORTED, not as a lifecycle condition to retry", refusal?.code === "UNSUPPORTED", said);
       ok("the refusal carries the runtime's own guidance", /e2e-nostream runtime: watch this agent where it runs/.test(refusal?.message ?? ""), said);
-      ok("and its Next names the mesh, never a reattach", /send -t pane/.test(refusal?.remedy ?? "") && !/reattach/.test(refusal?.remedy ?? ""), said);
+      ok("and its Next names the seat's space and broker, never a reattach", scopedHints(refusal?.remedy ?? "") && !/reattach/.test(refusal?.remedy ?? ""), said);
       for (const name of ["pane", "pane2", "ptyseat"]) await capture(() => run("stop", ["--name", name, "--space", SPACE]));
     } finally {
       await mgr2.stop().catch(() => {});

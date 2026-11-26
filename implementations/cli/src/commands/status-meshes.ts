@@ -115,7 +115,7 @@ export function personaCatalog(root: string, gaps: Gaps): PersonaCatalog {
  *  with its own recorded TLS requirement. A bare TCP/INFO probe would green-light a plaintext broker
  *  that has substituted for a TLS-required mesh — the FAIL1 attack — so a list that only asks "is
  *  anything listening" cannot report on the one property the record claims. */
-export async function readMeshes(cwd: string, selected: Selected, all: boolean, gaps: Gaps, offline: readonly string[], preflight: SelectedPreflight, checks: Awaited<ReturnType<typeof registryFallbackChecks>>): Promise<StatusResult["meshes"]> {
+export async function readMeshes(cwd: string, selected: Selected, all: boolean, gaps: Gaps, offline: readonly string[], preflight: SelectedPreflight, checks: Awaited<ReturnType<typeof registryFallbackChecks>>): Promise<{ meshes: StatusResult["meshes"]; currentJournalUnreadable: boolean }> {
   // A registry file that cannot be read is named, and the readable records are still listed and
   // checked. Only an absent directory or pointer is an empty registry or no current mesh.
   const unreadable: StatusResult["meshes"]["unreadable"] = [];
@@ -174,7 +174,7 @@ export async function readMeshes(cwd: string, selected: Selected, all: boolean, 
     })),
   );
   // The prepared spaces folder, or a record in it, that cannot be read is named the same way.
-  let currentPrepared = false, currentStopped = false, hasPrepared = false;
+  let currentPrepared = false, currentStopped = false, hasPrepared = false, currentJournalUnreadable = false;
   try {
     const prepared = readPreparedSpaces();
     hasPrepared = prepared.spaces.length > 0;
@@ -184,14 +184,17 @@ export async function readMeshes(cwd: string, selected: Selected, all: boolean, 
       unreadable.push({ file: e.file, error: e.message });
       gaps.add(skipped.code, skipped.message, skipped.target);
     }
-    const selected = current !== null && !entries.some((m) => m.space === current) ? prepared.spaces.find((p) => p.space === current) : undefined;
-    currentPrepared = selected !== undefined;
-    currentStopped = selected !== undefined && stoppedStack(selected.root, selected.space) !== undefined && unsettledStackOperation(selected.root, selected.space) === undefined;
+    const saved = current !== null && !entries.some((m) => m.space === current) ? prepared.spaces.find((p) => p.space === current) : undefined;
+    if (saved) {
+      currentJournalUnreadable = journalLifecycleUnknown(unusableStackJournal(saved.root));
+      currentPrepared = !currentJournalUnreadable;
+      currentStopped = currentPrepared && stoppedStack(saved.root, saved.space) !== undefined && unsettledStackOperation(saved.root, saved.space) === undefined;
+    }
   } catch (e) {
     if (!isMeshRegistryError(e)) throw e;
     unread(e.file, e.message);
   }
-  return {
+  const meshes: StatusResult["meshes"] = {
     current,
     currentRecorded: current === null || entries.some((m) => m.space === current),
     currentPrepared,
@@ -202,6 +205,22 @@ export async function readMeshes(cwd: string, selected: Selected, all: boolean, 
     items,
     catalogs: preparedCatalogDiagnostics().map((r) => ({ idp: r.account.idpUrl, account: r.account.sub, state: r.state, error: r.state === "failed" ? (r.error ?? "refresh failed") : null })),
   };
+  return { meshes, currentJournalUnreadable };
+}
+
+function journalLifecycleUnknown(journal: CommandFailure | undefined): boolean {
+  return journal?.code === "SCHEMA_INVALID" || journal?.code === "PERMISSION_DENIED";
+}
+
+function reportSelectedJournal(result: Extract<SelectedResult, { resolved: false }>, journal: CommandFailure, hints: string[]): SelectedResult {
+  if (journalLifecycleUnknown(journal)) {
+    result.code = journal.code;
+    result.message = result.space === undefined ? "The stack lifecycle is unknown because the journal could not be read"
+      : `The stack lifecycle for "${result.space}" is unknown because the journal could not be read`;
+  }
+  const step = journal.remedy === undefined ? journal.message : journal.code === "TARGET_UNAVAILABLE" ? `${journal.message}. ${journal.remedy}` : journal.remedy;
+  if (!hints.includes(step)) hints.push(step);
+  return result;
 }
 
 /** Diagnose the current folder's store and a selected local stack independently of folder trust. */
@@ -237,6 +256,13 @@ export function selectedStackStarting(selected: Selected, folder: StatusResult["
     const journal = readStackJournal(root)?.journal;
     return journal?.space === space && stackUpInProgress(journal);
   } catch { return false; } // The selection report names an unusable journal.
+}
+
+/** Report the local recovery observation without treating it as a resolved connection. */
+export function selectedRecovery(hints: string[]): SelectedResult {
+  const cmd = displayCmd();
+  hints.push(`run ${codeSpan(`${cmd} down --dry-run`)} in this project to inspect the pinned broker, then ${codeSpan(`${cmd} down --yes`)} to stop it`);
+  return { resolved: false, code: "not-started", message: "the stack's broker process is running, but its member records are missing from this Cotal home" };
 }
 
 export async function readSelected(selected: Selected, responder: { state: DeliveryResponderState; leased: boolean }, folder: StatusResult["folder"], gaps: Gaps, hints: string[], { preflight, pidfileUnreadable }: Awaited<ReturnType<typeof readStatusPreflight>>, all: boolean, selectedStarting: boolean): Promise<SelectedResult> {
@@ -300,11 +326,8 @@ export async function readSelected(selected: Selected, responder: { state: Deliv
     // This folder's stack cut off with no recorded outcome is named under the selected space, and
     // Next names the step that finishes or settles it. One that neither blocks nor stays part way
     // settles from its members' processes when it starts.
-    if (journal) {
-      const step = journal.remedy === undefined ? journal.message : journal.code === "TARGET_UNAVAILABLE" ? `${journal.message}. ${journal.remedy}` : journal.remedy;
-      if (!hints.includes(step)) hints.push(step);
-    }
-    else if (instances) hints.push(instances.remedy ?? instances.message);
+    if (journal) return reportSelectedJournal(result, journal, hints);
+    if (instances) hints.push(instances.remedy ?? instances.message);
     else if (writeProblem) hints.push(`${d.stopped ? "Restart" : "First start"} blocked: ${writeProblem.message}. ${writeProblem.remedy}`);
     else if (store) hints.push(`${store.message}; ${store.remedy}`);
     else if (restartRoot !== undefined) {

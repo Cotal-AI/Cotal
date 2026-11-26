@@ -1,5 +1,18 @@
 # Cotal Wire Specification
 
+## Local daemon custody recovery
+
+The local daemon protocol additionally accepts `space-recover` with `space`, `candidate`
+and `holder`, alongside its existing `v`, `id` and `op` envelope fields. `candidate` is the
+64-character lowercase hexadecimal local account key and `holder` is the sign-in address
+shown by status. This operation is local machine authority, not a mesh endpoint or a grant
+of remote space membership. The desktop bridge forwards these exact fields only after the
+person confirms the action. Status may include `custodyRecovery: { holder, candidate }` on
+a space row when its holding account is signed out or has failed three consecutive account
+polls. A successful poll clears the failure count. The daemon rechecks the current holder,
+candidate sign-in and fresh available catalog registration before moving local custody.
+An answering holder refuses replacement. Matching issuer and subject alone never transfer custody.
+
 > **Status:** Draft, v0.5 (pre-1.0). This document is the normative wire contract. Libraries
 > (including the reference TypeScript implementation) are thin clients over it; where a
 > client disagrees with this document, this document wins.
@@ -129,9 +142,8 @@ the principal stays stable across reconnects.
   grant names; if a principal is also set explicitly (via the card) it MUST match, else the client
   MUST fail before publish.
 - A client that authenticates through the auth callout (user mode, §9) cannot know its connection
-  nkey before connecting, so it chooses its own reply-inbox nonce (`connId`) and derives its
-  principal from its bearer; the broker's minted grant, not the client's self-read, is the
-  boundary.
+  nkey before connecting. It derives its principal from the bearer and builds its reply inbox
+  identifier as described in §10. The broker's minted grant is the authority.
 - Open dev mode MAY use `local` as the owner and an opaque stable actor, but open mode is outside
   the security claims in §9 and is not a conformant authenticated deployment.
 
@@ -842,9 +854,11 @@ must implement.
 
 The reference SDK's `EndpointOptions.omitFromLiveMembership` marks a connection as an observer.
 A marked static-auth connection uses the NATS connection name `cotal:observer/<name>`. A marked
-user-auth connection uses `ibx_observer_` followed by a random suffix as its connection name and
-reply-inbox nonce. The feed writer excludes live subscriptions from connections with either marker.
-The markers do not change grants, durable memberships, or the feed record format.
+user-auth connection uses the principal-bound name in §10 with an underscore followed by 25 lowercase
+base36 characters as its nonce. The feed writer recognizes this marker on the connection's own
+principal and also recognizes legacy names starting with `ibx_observer_`. The markers exclude only
+the connection's live subscriptions. They do not change grants, durable memberships, or the feed
+record format.
 
 ### 8.1 Anycast request status
 
@@ -1042,7 +1056,7 @@ operator-facing views of this section: [docs/identity-and-auth.mdx](docs/identit
 
 Every grant below is keyed on the agent's **principal** `<owner>.<actor>` (§2), except the reply
 inbox, which is keyed on the **connection** `<connId>`: the connection nkey (static mode) or the
-client-chosen nonce (user mode, §9). This is the one place the wire identity and the connection
+client-chosen connection name (user mode, §10). This is the one place the wire identity and the connection
 credential diverge (§2): the principal keys subjects/durables/presence; the connId keys the inbox.
 
 | Profile | Application publish | Read surface | Notes |
@@ -1231,8 +1245,14 @@ cotal://user:pass@host/space                         user/password auth
 - Credentials (`creds`) are mutually exclusive with token and username/password auth.
 - A client MUST set `inboxPrefix` to `_INBOX_<connId>` before any request, pull consumer, or KV
   watch operation, where `<connId>` is the connection identifier (the connection nkey in static
-  mode; the client-chosen nonce in user mode, §2/§9), NOT the owner+actor principal, which the
-  client may not know pre-connect.
+  mode; the client-chosen connection name in user mode).
+
+A user-mode client sends `<owner>-<actor>-<nonce>` as its connection name. It reads `owner` and
+`actor` from the bearer's `sub` and `act.actor` claims. The nonce consists of 8 to 128 ASCII
+letters, digits or underscores, and the name is at most 255 characters. For this form the auth
+callout MUST compare the owner and actor with the validated bearer before issuing a grant.
+For compatibility it also accepts the legacy `[A-Za-z0-9_-]{8,120}` syntax for names not in the
+principal-bound form. Both forms scope the reply grant to `_INBOX_<connId>.>`.
 
 Authenticated onboarding has two bindings. **Out-of-band credential minting** provisions a per-agent
 credential ahead of connect (the static path). **Auth-callout onboarding** validates a user bearer at
@@ -2281,7 +2301,7 @@ The dedicated callout authenticates the sealed broker request before using its u
 key or client id. It captures admission time before authority reads and fixes native expiry no
 later than the access expiry or admission plus 60 seconds. It derives serving permissions from
 the current native registration, preserves principal-name attribution and uses the separate
-client inbox nonce. Native issuance and receipt checks and final root authorization precede the
+client inbox name. Native issuance and receipt checks and final root authorization precede the
 encrypted response. An expiry reached while encoding or sealing that response refuses release.
 An unconfigured or non-native service authority cannot fall through to ordinary actor hooks.
 
@@ -2330,7 +2350,7 @@ reports it separately and cannot remove it. That terminal pruning path is not im
 
 **Native-key issuance evidence.** Every callout success first writes one create-only
 `natkey.<userNkey>` row in the same auth bucket, where `userNkey` is the broker-generated
-per-connection user public key the minted JWT is issued to (never the client's inbox nonce or a
+per-connection user public key the minted JWT is issued to (never the client's inbox name or a
 display name). The row is the closed v1 record `{v, space, owner, actor, lifecycleUid,
 credentialId, view, connId, iat, exp}`, taken from the validated bearer's own signed claims
 (already equality-checked against the current row) and from the minted JWT's own `iat`/`exp` (a
@@ -5779,7 +5799,7 @@ the generation, whose horizon is the bearer's expiry, persists evidence whose pe
 that row, `{ space, bucket: "cotal_actors_<space>", key: "actor.<owner>.<actor>.<lifecycleUid>" }`,
 releases it, and writes the accepted row, all before it returns the JWT. The accepted token is the
 first 32 lowercase hex characters of SHA-256 over `"cotal.accepted.v1\0"` followed by the
-connection's inbox nonce: the client chose the nonce and derives the token from it, and no token is
+connection's inbox name: the client chose the name and derives the token from it, and no token is
 read from a request body. The source is live while the auth service's actor ledger holds a row for
 that owner and actor carrying that lifecycle UID; a revoked row, or a re-grant under another UID, is
 a dead source at the next resolution. Only the auth service attests this shape; every other host
@@ -5801,7 +5821,7 @@ rail. The issuer adds three rows: the request publish for `registry` `endpoints`
 of `ep.v1` under the listing generation, the reply subscribe on that caller's own `ep.v1` reply rail,
 and the per-key `DIRECT.GET` of the listing's accepted row. That row's token is the first 32
 lowercase hex characters of SHA-256 over `"cotal.listing.v1\0"`, the connection id, `"\0"`, and the
-horizon in decimal. The connection id is the credential's nkey on a static mint and the inbox nonce
+horizon in decimal. The connection id is the credential's nkey on a static mint and the inbox name
 at a user-auth callout. The horizon is the credential's expiry on a static mint and the bearer's
 expiry at the callout, so a credential without an expiry carries no listing generation. The issuer
 writes the evidence, attempt row and accepted row as for any issuance, and the evidence records the
@@ -7930,7 +7950,7 @@ placeholders:
 - `CHKV = KV_cotal_channels_<space>`; `DLVKV = <delivery lease/readiness KV>`
 - `MEMKV = KV_cotal_membership_<space>` (the derived channel-membership feed, §8)
 - `<owner>.<actor> = the authenticated principal` (§2): `<owner>` and `<actor>` are its two tokens; the dot-form is the wire/KV form, the dash-form `<owner>-<actor>` is the durable-name form
-- `connId = the authenticated connection id` (the connection nkey in static mode; the client-chosen nonce in user mode); distinct from the principal, and keys ONLY the reply inbox
+- `connId = the authenticated connection id` (the connection nkey in static mode; the client-chosen connection name in user mode); distinct from the principal, and keys ONLY the reply inbox
 - `role = authenticated agent role`
 - `chatHistD = chathist_<owner>-<actor>-<uid>`, `dmD = dm_<owner>-<actor>-<uid>`, `dlvD = dlv_<owner>-<actor>-<uid>`, `svcD = svc_<role>` (per-instance durables are lifecycle-scoped from v0.4: keyed on the dash-form + lifecycle UID, §8/§13.1; `svcD` stays role-scoped)
 - `inbox = _INBOX_<connId>.>`
@@ -8236,8 +8256,16 @@ single-function profiles, each granting only the verbs its function needs and no
   verify-evict their whole holder set through it, so neither costs one sweep per family holder,
   and KICKing a live family costs one broker round trip per 16 live connections. A
   daemon that does not serve it refuses the verb, and the repair or re-registration then leaves
-  the gate frozen. Its READ-ONLY twin `principalLiveness` answers whether one
-  principal still holds a live connection (the same CONNZ sweep, observer credential only — the
+  the gate frozen. `evictSessionConnections` takes the session holder's `principal` (`owner.actor`)
+  and a `connections` array of 1 to 256 exact broker `{serverId, cid}` pairs. `serverId` is a
+  broker server NKey and `cid` is a positive safe integer. The scan, disconnect and verification
+  MUST match both the principal and a supplied pair. A successful reply carries the `EvictionResult`
+  in `data`, with the pairs echoed in order in `data.connections`. The daemon MUST refuse rather
+  than evict the whole principal if it cannot honor the filter. The daemon serves this verb outside
+  the in-order admin chain, with at most four targeted requests executing at a time per delivery
+  daemon (per lane in a multi-space host). Targeted requests can overlap one another and in-order
+  admin requests. The READ-ONLY `principalLiveness` verb answers whether one principal still holds
+  a live connection (the same CONNZ sweep, observer credential only — the
   KICK credential is never opened on that path), reporting `live` / `gone` / `unknown` with scan
   completeness as a separate field and a reply bound to the exact principal queried. It exists
   because eviction cannot serve as its own precondition: a repair that must REFUSE while a holder
@@ -8349,6 +8377,7 @@ Normative revisions of this document, newest first. Dated snapshots per §11; th
 
 | Date | Revision |
 | --- | --- |
+| 2026-11-26 | **Targeted session evictions run outside the in-order admin chain (Appendix B).** A slow eviction can hold one slot without holding the other targeted requests. A delivery daemon runs at most four `evictSessionConnections` requests at once, alongside other admin commands. The verb's request and reply are unchanged. |
 | 2026-11-25 | **The owner labels an agent (§6, §13.21, §13.22, Appendix B), additive.** The `agent` cluster advances to revision 7 with `set-label`, capability `agent.profile.write`, `authorities: ["owner"]`, input `{ label }` of any string and output `{ label }`. It sets `meta["ai.cotal.label"]`, which readers show in place of the name, and leaves `card.name`, so `@mentions`, direct messages and name lookups still resolve it. It refuses as `bad-request`, `not-executed`, a label that breaks the rule a label from the first message meets: the shared name rule, at most 40 code points, and single spaces between words. It runs in turn with `set-name`, and a `set-label` before naming settles ends naming with the owner's label. An interactive ledger row's mint and a static `agent-caller` mint add the `owner` row for `set-label`; no `grant` row admits it. Earlier commands and their digests are unchanged. No subject changes. |
 | 2026-11-25 | **The owner switches a running agent's model (§6, §13.21, §13.22, Appendix B), additive.** The `agent` cluster advances to revision 6 with `set-model`, capability `agent.model.write`, `authorities: ["owner"]`, input `{ model?, variant? }` and output `{ model, variant? }`. It switches the model and the variant the harness runs from its next turn at the latest; an absent `model` keeps the model and changes the variant, and an absent `variant` leaves the variant to the harness. It refuses the agent itself as `permission-denied`, a connector that cannot switch as `unimplemented`, an agent launched under a governed role's model policy as `failed-precondition`, a model the harness lacks as `not-found` and any other harness refusal as `failed-precondition`, each with nothing changed. The card then shows the switch as `meta.model`, `meta.variant` and the new `meta["ai.cotal.model-set"]`, which a launcher that starts the same lifecycle again SHOULD launch on. Presence `agentEndpoint` gains an optional boolean `setModel`, read as false when absent. An `interactive` ledger row gains the `owner` row for `set-model`; no `grant` row admits it. Earlier commands and their digests are unchanged. |
 | 2026-11-24 | **Managers name their machine (§6, §9, §13.9), additive.** The Manager cluster advances to revision 57. Its `status` output gains the optional `machine`, and its presence card's `meta` carries the same value: HMAC-SHA256 keyed by the host's OS machine identity over `cotal manager host`, never the identity itself. A caller on the same machine recognises its own Managers by it, because a host name can change while a Manager runs. The closed status schema of revision 56 rejects the field, so Managers and their callers update together. No subject changes. |

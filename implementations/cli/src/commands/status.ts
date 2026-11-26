@@ -98,6 +98,7 @@ import {
 } from "../lib/stack-journal.js";
 import { cotalLinkHere, linkedCotalRemedy } from "../lib/paths.js";
 import { rootStoreProblem } from "../lib/store-dir.js";
+import { lostRecordsBroker } from "./stack-lost-records.js";
 import { readCursor } from "../seed/lock.js";
 import { reconcileCursorPath } from "../seed/paths.js";
 import {
@@ -124,7 +125,7 @@ import {
   managerServiceHealth,
   printComponentHealth,
 } from "./status-health.js";
-import { registryFallbackChecks, personaCatalog, readMeshes, readStackStoreWarnings, readSelected, readStatusPreflight, reportHeldRestartProblem, selectedStackStarting } from "./status-meshes.js";
+import { registryFallbackChecks, personaCatalog, readMeshes, readStackStoreWarnings, readSelected, readStatusPreflight, reportHeldRestartProblem, selectedRecovery, selectedStackStarting } from "./status-meshes.js";
 
 export { managerNoService, deliveryLeaseAbsent } from "./status-health.js";
 
@@ -235,7 +236,7 @@ export async function status(args: ParsedArgs): Promise<void> {
   const preflightReport = await readStatusPreflight(selected, gaps, hints);
   const { preflight } = preflightReport;
   const responder = await readResponderAxis(selected, preflight, gaps);
-  const { folder, stackStarting } = blocked ? { folder: unreadFolder(root, blocked), stackStarting: false } : await readFolder(root, selected, values, responder.state, gaps, hints);
+  const { folder, stackStarting, recoveryBroker } = blocked ? { folder: unreadFolder(root, blocked), stackStarting: false, recoveryBroker: undefined } : await readFolder(root, selected, values, responder.state, gaps, hints);
   if (selected.ok) {
     try {
       const renewal = readRenewalRecord(selected.target.root, selected.target.space);
@@ -248,13 +249,13 @@ export async function status(args: ParsedArgs): Promise<void> {
       if (isCommandFailure(error) && error.remedy) hints.push(error.remedy);
     }
   }
-  const meshes = await readMeshes(cwd, selected, Boolean(values.all), gaps, offline, preflight, checks);
+  const { meshes, currentJournalUnreadable } = await readMeshes(cwd, selected, Boolean(values.all), gaps, offline, preflight, checks);
   const { maintenance, sourceMissing } = blocked
     ? { maintenance: { root, space: null, state: "unreadable", attemptId: null, next: null }, sourceMissing: false }
     : readMaintenance(root, gaps);
   const recovery = backupRecovery(maintenance, sourceMissing);
   const selectedHints: string[] = [], selectedStarting = selectedStackStarting(selected, folder, stackStarting);
-  const target = await readSelected(selected, responder, folder, gaps, selectedHints, preflightReport, Boolean(values.all), selectedStarting);
+  const target = recoveryBroker !== undefined ? selectedRecovery(selectedHints) : await readSelected(selected, responder, folder, gaps, selectedHints, preflightReport, Boolean(values.all), selectedStarting);
   const stoppedForeignListener = preflight?.ok === false && preflight.kind === "non-nats-listener" && preflight.pid !== undefined;
   // Address, journal, channel seed, and store problems can block the conditional store reset.
   if (!stoppedForeignListener && (target.resolved || target.code !== "SCHEMA_INVALID") && folder.storedState && folder.processSpace !== null && maintenance === null && !(target.channelSeedBlocksRestart && target.root === root) && !rootStoreProblem(root)) {
@@ -323,11 +324,11 @@ export async function status(args: ParsedArgs): Promise<void> {
       interactive: presentation === "rich" && canPrompt(),
       preparedHarness: !selected.ok && isWorkspaceTargetError(selected.error) && selected.error.code === "not-started" && preparedNeverStarted(selected.error.details)
         ? preferences.spaces[selected.error.details.space]?.harness : undefined,
-      seed,
+      seed, currentJournalUnreadable,
       recovery, stoppedForeignListener, stackStarting, selectedStarting,
     }),
   );
-  if (values.components) await printComponentHealth(selected, store, target, meshes, recovery && !recoveringOtherSpace ? recovery : selectedHints[0], !target.resolved && selectedStarting ? target.message : undefined);
+  if (values.components) await printComponentHealth(selected, store, target, meshes, recovery && !recoveringOtherSpace ? recovery : selectedHints[0], !target.resolved && selectedStarting ? target.message : undefined, recoveryBroker);
 }
 
 /** Why this account cannot list or search `root`, or undefined when it can. */
@@ -534,8 +535,8 @@ function readExtensions(gaps: Gaps): StatusResult["extensions"] {
     gaps.add("EXTENSIONS_UNREADABLE", error.message);
     return { root: globalConfigDir(), items: null };
   }
-  const { versions, unreadable } = readExtensionVersions();
-  if (unreadable !== undefined) gaps.add("EXTENSIONS_UNREADABLE", `the extensions manifest could not be read: ${unreadable}`);
+  const { versions, unreadable, remedy } = readExtensionVersions();
+  if (unreadable !== undefined) gaps.add("EXTENSIONS_UNREADABLE", `the extensions manifest could not be read: ${unreadable}${remedy ? `. ${remedy}` : ""}`);
   return { root, items: unreadable === undefined ? versions.map((e) => ({ package: e.pkg, label: e.label, version: e.version })) : null };
 }
 
@@ -622,7 +623,7 @@ async function readResponderAxis(selected: Selected, preflight: SelectedPrefligh
   }
 }
 
-async function readFolder(root: string, selected: Selected, values: FlagValues<typeof statusFlags>, responder: DeliveryResponderState, gaps: Gaps, hints: string[]): Promise<{ folder: StatusResult["folder"]; stackStarting: boolean }> {
+async function readFolder(root: string, selected: Selected, values: FlagValues<typeof statusFlags>, responder: DeliveryResponderState, gaps: Gaps, hints: string[]): Promise<{ folder: StatusResult["folder"]; stackStarting: boolean; recoveryBroker?: number }> {
   let stackJournal: NonNullable<StatusResult["folder"]["stackJournal"]>;
   try { stackJournal = lstatSync(stackJournalPath(root), { throwIfNoEntry: false }) === undefined ? "absent" : "present"; }
   catch { stackJournal = "unreadable"; }
@@ -696,12 +697,13 @@ async function readFolder(root: string, selected: Selected, values: FlagValues<t
     elsewhere = isCommandFailure(error) && error.code === "CONFLICT";
   }
   const activeStartup = journal !== undefined && stackUpInProgress(journal);
+  const recoveryBroker = journal && !selected.ok && isWorkspaceTargetError(selected.error) && selected.error.code === "not-started" && selected.error.details.stackSpace === journal.space && selected.error.details.root === root ? lostRecordsBroker(journal) : undefined;
   // A root whose records show two spaces running has no single answer, the
   // same shape as the multi-account case above. The process rows below are keyed by one space, so
   // report that state and stop rather than crashing in the recovery command that names it.
   let space: string;
   try {
-    space = auth?.space ?? statusRuntimeSpace(root, selected.ok ? selected.target : undefined, activeStartup && journal?.mode === "open" ? journal.space : undefined);
+    space = auth?.space ?? statusRuntimeSpace(root, selected.ok ? selected.target : undefined, journal?.mode === "open" && (activeStartup || recoveryBroker !== undefined) ? journal.space : undefined);
   } catch (e) {
     hints.push((e as Error).message);
     return { folder: folder({ state: "none", spaces: [], userAuth: false, error: null }), stackStarting: false };
@@ -737,16 +739,13 @@ async function readFolder(root: string, selected: Selected, values: FlagValues<t
     // rather than a reconcile that has not happened yet.
     else processes.push(processRow(component.name, state, component.name === "delivery" ? deliveryDetail(state.liveness === "alive", responder) : null));
   }
-  // A stopped mesh with a persisted store: name the reset verb. Stale state (e.g. durables from
-  // an older Cotal generation) is otherwise invisible until a spawn fails on it. The restart is
-  // "your usual flags": a stopped stack's flags are not all recorded. A static-auth broker that
-  // exited here is named the repair `up` first, under Next (see `nextActions`).
-  // A controller stack's broker has no legacy pidfile, so that heuristic says nothing about it.
+  // A legacy store can persist after its broker stops. A controller broker has no legacy pidfile.
+  // Only its instance record or verified recovery pin can establish that broker's state.
   const controllerStack = journal?.space === space;
   const brokerIndex = processes.findIndex((row) => row.name === "nats");
   if (brokerIndex !== -1) processes[brokerIndex] = unusable
     ? { name: "nats", state: "unreadable", pid: null, detail: "stack journal unreadable; no broker stopped state was inferred" }
-    : brokerProcess(processes[brokerIndex]!, controllerStack ? journal : undefined, gaps);
+    : brokerProcess(processes[brokerIndex]!, controllerStack ? journal : undefined, gaps, recoveryBroker);
   const managerIndex = !unusable && !controllerStack && (nats?.liveness === "alive" || nats?.liveness === "dead")
     ? processes.findIndex((row) => row.name === "manager" && row.state === "stopped" && row.pid === null)
     : -1;
@@ -778,7 +777,7 @@ async function readFolder(root: string, selected: Selected, values: FlagValues<t
   if (controllerStack && journal) try {
     heldServices = serviceHeldRecords(root, journal.space).map((row) => ({ definition: row.definition, instanceId: row.instanceId, record: row.record.name, pid: row.record.pid! }));
   } catch { heldServices = null; }
-  return { folder: { ...folder({ state: auth ? "space" : "none", spaces: auth ? [auth.space] : [], userAuth: userDisk, error: null }, processes, storedState, space, controllerStack, noManager, stackBlock, stackUnfinished), managerService, heldServices }, stackStarting };
+  return { folder: { ...folder({ state: auth ? "space" : "none", spaces: auth ? [auth.space] : [], userAuth: userDisk, error: null }, processes, storedState, space, controllerStack, noManager, stackBlock, stackUnfinished), managerService, heldServices }, stackStarting, ...(controllerStack && recoveryBroker !== undefined ? { recoveryBroker } : {}) };
 }
 
 /** The folder's persona catalog, which must never let a catalog imply a `spawn` the operator does
@@ -836,10 +835,11 @@ function processRow(name: string, p: PidfileState, detail: string | null): Proce
 
 /** A controller broker has no legacy pidfile. Observe its saved process identity instead, keeping
  *  the pidfile result as a separate fact. A failed owned-record read never selects the legacy row. */
-function brokerProcess(legacy: ProcessRow, journal: StackJournal | undefined, gaps: Gaps): ProcessRow {
+function brokerProcess(legacy: ProcessRow, journal: StackJournal | undefined, gaps: Gaps, recoveryBroker?: number): ProcessRow {
   const { state, pid, detail } = legacy;
   const row: ProcessRow = { ...legacy, source: journal ? "owned-service" : "legacy-pidfile", legacyPidfile: { state, pid, detail }, ownedService: null };
   if (!journal) return row;
+  if (recoveryBroker !== undefined) return { ...row, state: "running", pid: recoveryBroker, detail: "verified from the stack journal; service instance record missing" };
   const recordedHome = journal.recovery?.home;
   if (recordedHome !== homeCotalDir() && stackRunsUnderOtherHome(journal.root, journal)) {
     const detail = recordedHome === undefined ? "stack member records are missing from this Cotal home" : `stack member records belong to ${recordedHome}`;

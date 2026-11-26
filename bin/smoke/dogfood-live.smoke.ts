@@ -132,6 +132,10 @@ async function checkDefaultObserver() {
         data += decoder.decode(chunk.value, { stream: true });
       }
       ok("the default observer still receives live channel messages", data.includes(live));
+      const guide = readFileSync(join(REPO, "docs", "web-dashboard.mdx"), "utf8");
+      const activityRow = guide.split("\n").find((line) => line.startsWith("| Activity |"));
+      ok("the Activity guide describes the live feed without promising a pause control",
+        activityRow !== undefined && /\blive feed\b/i.test(activityRow) && !/\bpause\b/i.test(activityRow), activityRow);
     } finally { await reader.cancel().catch(() => {}); }
     const broker = readFileSync(join(root, ".cotal", "nats.log"), "utf8");
     ok("the observer requests neither unauthorized messaging rail", !output.includes("endpoint reported an error") && !broker.split("\n").some((line) =>
@@ -149,6 +153,12 @@ async function checkForegroundRepeat() {
   const start = ["service", "start", "dash", "--space", SPACE];
   const preview = cotal([...start, "--foreground", "--no-open", "--dry-run", "--plain"]);
   ok("a custom dashboard accepts a manual foreground preview", preview.status === 0 && /Definition:\s+dash/.test(preview.stdout), out(preview));
+  for (const args of [[...start, "--help"], ["help", "--", ...start]]) {
+    const help = cotal(args);
+    ok(`${args.join(" ")} lists --no-open for a saved dashboard`, help.status === 0 && /^  --no-open\b/m.test(help.stdout), out(help));
+  }
+  const missingSpace = cotal(["help", "--", "service", "start", "dash", "--space=missing-dashboard-help-space"]);
+  ok("start help does not use the project's dashboard for another space", missingSpace.status === 0 && !/^  --no-open\b/m.test(missingSpace.stdout), out(missingSpace));
   const foreground = spawn(realNode, [join(REPO, "bin", "dist", "cotal.js"), ...start, "--foreground", "--no-open", "--plain"],
     { env, cwd: root, stdio: ["ignore", "pipe", "pipe"] });
   const closed = new Promise((resolve) => foreground.once("close", resolve));
@@ -319,6 +329,10 @@ try {
     const script = /(?:src)="(\/assets\/[^"]+\.js)"/.exec(html)?.[1];
     const asset = script === undefined ? undefined : await web(script, { headers: authed });
     ok("the page's script under /assets/ serves as JavaScript", asset?.status === 200 && (asset.headers.get("content-type") ?? "").startsWith("text/javascript"), { script, status: asset?.status, type: asset?.headers.get("content-type") });
+    const icon = /<link\b[^>]*\brel="icon"[^>]*\bhref="(\/assets\/[^"]+\.svg)"/.exec(html)?.[1];
+    const favicon = icon === undefined ? undefined : await web(icon, { headers: authed });
+    ok("the dashboard declares a favicon and serves it as SVG", favicon?.status === 200
+      && favicon.headers.get("content-type") === "image/svg+xml" && (await favicon.text()).includes("<svg"), icon);
     const metaRes = await web("/api/meta", { headers: authed });
     const meta = (await metaRes.json()) as { space?: string; pid?: number; channelDeleteSupported?: boolean };
     ok("/api/meta names the space and serving pid, and no channel delete", metaRes.status === 200 && meta.space === SPACE && meta.pid === webPid && meta.channelDeleteSupported === false, { meta, webPid });
