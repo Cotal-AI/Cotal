@@ -1322,8 +1322,9 @@ status names the file in an `EXTENSIONS_UNREADABLE` warning and reports a partia
 
 If the extension inventory is corrupt or unreadable, the infrastructure report keeps the
 observations it could read and exits 4 with an `EXTENSIONS_UNREADABLE` warning. In JSON,
-`extensions.items` in the result is `null`. The report leaves the inventory untouched and the
-warning names the repair command, `cotal ext seed --repair`.
+`extensions.items` in the result is `null`. The report leaves the inventory untouched. If access
+is denied, the warning asks you to restore read access to the manifest and its path. If the manifest
+is corrupt, it names the repair command, `cotal ext seed --repair`.
 
 An unreachable broker, a stopped process or an unbound responder is a state the report names, and
 `status` exits 0. An open mesh runs no delivery daemon, so when it records no delivery lease its
