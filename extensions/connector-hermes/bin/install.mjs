@@ -232,7 +232,7 @@ async function reachabilityInfo(meshEnv) {
 // ---- host / docker discovery ------------------------------------------------
 function hermesVersion() {
   try {
-    return execFileSync("hermes", ["--version"], { encoding: "utf8" }).trim();
+    return execFileSync("hermes", ["--version"], { encoding: "utf8", windowsHide: true }).trim();
   } catch {
     return undefined;
   }
@@ -240,7 +240,7 @@ function hermesVersion() {
 
 function dockerAvailable() {
   try {
-    execFileSync("docker", ["version", "--format", "{{.Server.Version}}"], { stdio: ["ignore", "pipe", "ignore"] });
+    execFileSync("docker", ["version", "--format", "{{.Server.Version}}"], { stdio: ["ignore", "pipe", "ignore"], windowsHide: true });
     return true;
   } catch {
     return false;
@@ -251,7 +251,7 @@ function dockerAvailable() {
 function findHermesContainers() {
   let out;
   try {
-    out = execFileSync("docker", ["ps", "--format", "{{.ID}}\t{{.Image}}\t{{.Names}}"], { encoding: "utf8" });
+    out = execFileSync("docker", ["ps", "--format", "{{.ID}}\t{{.Image}}\t{{.Names}}"], { encoding: "utf8", windowsHide: true });
   } catch {
     return [];
   }
@@ -266,7 +266,7 @@ function findHermesContainers() {
     .filter((r) => /hermes/i.test(r.image));
   return rows.filter((r) => {
     try {
-      execFileSync("docker", ["exec", r.name, "hermes", "--version"], { stdio: ["ignore", "pipe", "ignore"] });
+      execFileSync("docker", ["exec", r.name, "hermes", "--version"], { stdio: ["ignore", "pipe", "ignore"], windowsHide: true });
       return true;
     } catch {
       return false;
@@ -278,7 +278,7 @@ function findHermesContainers() {
 // for a volume / no mount (then we copy in with `docker cp`).
 function bindSource(container) {
   try {
-    const out = execFileSync("docker", ["inspect", container, "--format", "{{json .Mounts}}"], { encoding: "utf8" });
+    const out = execFileSync("docker", ["inspect", container, "--format", "{{json .Mounts}}"], { encoding: "utf8", windowsHide: true });
     const m = JSON.parse(out).find((x) => x.Destination === CONTAINER_HOME);
     return m && m.Type === "bind" ? m.Source : null;
   } catch {
@@ -349,8 +349,8 @@ function dockerCopyPlugin(container) {
   const stage = mkdtempSync(join(tmpdir(), "cotal-plugin-"));
   try {
     copyPluginTo(join(stage, "cotal"));
-    execFileSync("docker", ["exec", container, "mkdir", "-p", `${CONTAINER_HOME}/plugins`], { stdio: "inherit" });
-    execFileSync("docker", ["cp", join(stage, "cotal"), `${container}:${CONTAINER_HOME}/plugins/cotal`], { stdio: "inherit" });
+    execFileSync("docker", ["exec", container, "mkdir", "-p", `${CONTAINER_HOME}/plugins`], { stdio: "inherit", windowsHide: true });
+    execFileSync("docker", ["cp", join(stage, "cotal"), `${container}:${CONTAINER_HOME}/plugins/cotal`], { stdio: "inherit", windowsHide: true });
   } finally {
     rmSync(stage, { recursive: true, force: true });
   }
@@ -358,22 +358,22 @@ function dockerCopyPlugin(container) {
 
 function dockerReadFile(container, path) {
   try {
-    return execFileSync("docker", ["exec", container, "sh", "-c", `cat ${path} 2>/dev/null || true`], { encoding: "utf8" });
+    return execFileSync("docker", ["exec", container, "sh", "-c", `cat ${path} 2>/dev/null || true`], { encoding: "utf8", windowsHide: true });
   } catch {
     return "";
   }
 }
 
 function dockerWriteFile(container, path, content) {
-  execFileSync("docker", ["exec", "-i", container, "sh", "-c", `mkdir -p "$(dirname ${path})" && cat > ${path}`], { input: content });
+  execFileSync("docker", ["exec", "-i", container, "sh", "-c", `mkdir -p "$(dirname ${path})" && cat > ${path}`], { input: content, windowsHide: true });
 }
 
 // ---- running hermes (host or in-container) ----------------------------------
 function runHermes(target, hermesArgs) {
   if (target.mode === "host")
-    execFileSync("hermes", [...(target.profile ? ["-p", target.profile] : []), ...hermesArgs], { stdio: "inherit" });
+    execFileSync("hermes", [...(target.profile ? ["-p", target.profile] : []), ...hermesArgs], { stdio: "inherit", windowsHide: true });
   else if (target.mode === "docker")
-    execFileSync("docker", ["exec", target.container, "hermes", ...hermesArgs], { stdio: "inherit" });
+    execFileSync("docker", ["exec", target.container, "hermes", ...hermesArgs], { stdio: "inherit", windowsHide: true });
   else throw new Error("runHermes is not available in files-only mode");
 }
 
@@ -425,7 +425,7 @@ async function install(flags) {
     if (hasEnv) info(`✓ Wrote ${Object.keys(meshEnv).join(", ")} to ${target.container}:${CONTAINER_HOME}/.env`);
     // The sidecar needs Node inside the container; the official image ships it, but verify.
     try {
-      execFileSync("docker", ["exec", target.container, "node", "--version"], { stdio: ["ignore", "pipe", "ignore"] });
+      execFileSync("docker", ["exec", target.container, "node", "--version"], { stdio: ["ignore", "pipe", "ignore"], windowsHide: true });
     } catch {
       warn(`No \`node\` in container '${target.container}' — the Cotal sidecar can't start. Use the official nousresearch/hermes-agent image (it bundles Node 22).`);
     }
@@ -474,7 +474,7 @@ async function uninstall(flags) {
       /* not enabled */
     }
     try {
-      execFileSync("docker", ["exec", target.container, "rm", "-rf", `${CONTAINER_HOME}/plugins/cotal`], { stdio: "inherit" });
+      execFileSync("docker", ["exec", target.container, "rm", "-rf", `${CONTAINER_HOME}/plugins/cotal`], { stdio: "inherit", windowsHide: true });
     } catch {
       /* already gone */
     }

@@ -11,6 +11,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { emitSentinel } from './sentinel.mjs';
 
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
+const childEnv = Object.fromEntries(Object.entries(process.env).filter(([name]) => !/^cotal_/i.test(name)));
 
 function reconciliationScratch(parent, worker) {
   const old = new Date(Date.now() - 61 * 60_000);
@@ -52,7 +53,7 @@ function reconciliationScratch(parent, worker) {
 function lifecycleRuntime(root, payload) {
   const tools = join(root, 'lifecycle tools');
   mkdirSync(tools);
-  const npm = spawnSync('/bin/sh', ['-c', 'command -v npm'], { encoding: 'utf8' });
+  const npm = spawnSync('/bin/sh', ['-c', 'command -v npm'], { env: childEnv, encoding: 'utf8' });
   assert.equal(npm.status, 0, npm.stderr);
   symlinkSync(realpathSync(npm.stdout.trim()), join(tools, 'npm'));
   const node = join(tools, `node-${process.versions.node}`);
@@ -135,7 +136,7 @@ export async function registryArrivalCell({ scenario, entry = join(repo, 'bin/di
       writeFileSync(join(root, 'payload/package/dist/cotal-program.js'), `${fail}console.log('cotal-ai ${version}');\n`);
       writeFileSync(join(root, 'payload/package/dist/preinstall.js'), `const { nonce, installedEntry } = JSON.parse(process.argv[2]); console.log('COTAL_PREINSTALL_RESULT ' + JSON.stringify({ v: 1, nonce, installedEntry, hostedSpaces: [], occupied: 0, admission: { disposition: 'restart-empty', occupied: 0, hostedSpaces: [] } }));\n`);
     }
-    const packed = spawnSync('tar', ['-czf', join(root, `${version}.tgz`), '-C', join(root, 'payload'), 'package']);
+    const packed = spawnSync('tar', ['-czf', join(root, `${version}.tgz`), '-C', join(root, 'payload'), 'package'], { env: childEnv });
     assert.equal(packed.status, 0);
     archives.set(version, readFileSync(join(root, `${version}.tgz`)));
   }
@@ -146,7 +147,7 @@ export async function registryArrivalCell({ scenario, entry = join(repo, 'bin/di
         ? { peerDependencies: Object.fromEntries(hostPeers.map(peer => [peer, '*'])) } : {}) };
       writeFileSync(join(root, 'peer-payload/package/package.json'), JSON.stringify(manifest));
       const archive = join(root, `${name.split('/')[1]}.tgz`);
-      assert.equal(spawnSync('tar', ['-czf', archive, '-C', join(root, 'peer-payload'), 'package']).status, 0);
+      assert.equal(spawnSync('tar', ['-czf', archive, '-C', join(root, 'peer-payload'), 'package'], { env: childEnv }).status, 0);
       peerArchives.set(name, { manifest, bytes: readFileSync(archive) });
     }
   }
@@ -155,10 +156,10 @@ export async function registryArrivalCell({ scenario, entry = join(repo, 'bin/di
   if (extensionMissing) {
     writeFileSync(join(root, 'peer-payload/package/package.json'), JSON.stringify(hermesManifest));
     const archive = join(root, 'hermes-previous.tgz');
-    assert.equal(spawnSync('tar', ['-czf', archive, '-C', join(root, 'peer-payload'), 'package']).status, 0);
+    assert.equal(spawnSync('tar', ['-czf', archive, '-C', join(root, 'peer-payload'), 'package'], { env: childEnv }).status, 0);
     hermesArchive = readFileSync(archive);
   }
-  const env = lifecycle ? { PATH: process.env.PATH } : Object.fromEntries(Object.entries(process.env).filter(([name]) => !name.startsWith('COTAL_') &&
+  const env = lifecycle ? { PATH: childEnv.PATH } : Object.fromEntries(Object.entries(childEnv).filter(([name]) =>
     !/^npm_config_(?:before|offline)$/i.test(name) && !(stagingFetchTimeout && /^npm_config_(?:prefix|registry)$/i.test(name))));
   Object.assign(env, { HOME: home, COTAL_HOME: join(root, 'cotal'), XDG_CONFIG_HOME: join(root, 'config'), TMPDIR: join(root, 'tmp'), XDG_RUNTIME_DIR: join(root, 'runtime'), npm_config_prefix: prefix, npm_config_cache: join(root, 'cache'), npm_config_update_notifier: 'false', npm_config_audit: 'false', npm_config_fund: 'false', COTAL_SKIP_CONNECTOR_SEED: '1', COTAL_TELEMETRY: 'off', DO_NOT_TRACK: '1' });
   let origin, armed = false, disconnected = false, missing = 0, heldArchive, closureSignal, holdStaging = scenario === 'staging-killed';
@@ -471,7 +472,7 @@ exec npm "$@"
       if (noAccept) {
         // Stop the loopback listener before anyone connects. Fill Linux's accept queue
         // so the npm client's SYN gets no answer, unlike an intentionally refused port.
-        blackhole = spawn(process.execPath, ['-e', `require('node:net').createServer().listen({host:'127.0.0.1',port:0,backlog:1}, function() { process.send(this.address().port); process.kill(process.pid,'SIGSTOP'); });`], { stdio: ['ignore', 'ignore', 'inherit', 'ipc'] });
+        blackhole = spawn(process.execPath, ['-e', `require('node:net').createServer().listen({host:'127.0.0.1',port:0,backlog:1}, function() { process.send(this.address().port); process.kill(process.pid,'SIGSTOP'); });`], { env: childEnv, stdio: ['ignore', 'ignore', 'inherit', 'ipc'] });
         blockedPort = await new Promise((resolve, reject) => { blackhole.once('message', resolve); blackhole.once('error', reject); });
         for (let i = 0; i < 2; i++) await new Promise((resolve, reject) => {
           const socket = connect(blockedPort, '127.0.0.1', resolve);
@@ -898,7 +899,7 @@ exec npm "$@"
       assert.throws(() => process.kill(record.owner, 0), { code: 'ESRCH' });
     }
     if (scenario === 'cache' && process.platform === 'linux') {
-      cacheWorker = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { detached: true, stdio: 'ignore' });
+      cacheWorker = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { env: childEnv, detached: true, stdio: 'ignore' });
       await once(cacheWorker, 'spawn');
     }
     const scratchFixtures = scenario === 'cache' ? reconciliationScratch(join(root, 'tmp'), cacheWorker?.pid) : undefined;
@@ -1115,7 +1116,7 @@ if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.m
   const mountPoint = mkdtempSync(join(tmpdir(), 'closure-mount-probe-'));
   let canMount;
   try {
-    canMount = process.platform === 'linux' && spawnSync('unshare', ['-Urm', 'mount', '-t', 'tmpfs', '-o', 'size=2m', 'tmpfs', mountPoint]).status === 0;
+    canMount = process.platform === 'linux' && spawnSync('unshare', ['-Urm', 'mount', '-t', 'tmpfs', '-o', 'size=2m', 'tmpfs', mountPoint], { env: childEnv }).status === 0;
   } finally { rmSync(mountPoint, { recursive: true }); }
   const selected = process.argv[2] ? [process.argv[2]] : ['arrives', 'unavailable', 'integrity', 'reset', 'cache', 'orphan', 'closed-scope', 'min-release-age', 'before', 'offline-metadata', 'offline-archive', 'offline-closure', 'offline-staging', 'concurrent', 'extension-peers', 'extension-arrives', ...(process.platform !== 'win32' ? ['corepack'] : []), ...(process.platform === 'linux' ? ['archive-interrupted', 'closure-killed', 'pending', 'reconcile-killed', 'reconcile-orphan', 'staging-killed', 'staging-timeout', 'staging-fetch-timeout', 'staging-partial', 'staging-no-accept', 'staging-trickle', 'staging-auto', 'staging-refused', 'selection-upgrade', 'selection-rollback'] : []), ...(canMount ? ['closure-nospace'] : [])];
   for (const scenario of selected) console.log(JSON.stringify(await registryArrivalCell({ scenario })));

@@ -59,7 +59,9 @@ Direct and role sends have no native mention field and refuse that option as `US
 (exit 1), before connecting.
 A direct or channel send may use `--reply-to <message-id>` to identify the message it answers,
 and the stored message carries it as `replyTo`. A role send refuses the option as `USAGE_INVALID`
-(exit 1), before connecting. The sender still has no inbox and does not promise thread continuity.
+(exit 1) before checking the message body or connecting. Remove `--reply-to` and its value to send
+to the role, or choose `--to` or `--channel` to send a reply. The sender still has no inbox and does
+not promise thread continuity.
 
 A one-shot sender displays the OS login and host as `<login>@<host>`, not the launching
 seat's name. On a local static-auth mesh, the account signer binds that label to a stable

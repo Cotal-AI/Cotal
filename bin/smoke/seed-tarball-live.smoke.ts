@@ -17,11 +17,13 @@
  * Broker-free and deterministic. Needs `npm` + `pnpm` on PATH and network for third-party deps.
  * Run: pnpm smoke:seed-tarball:live
  */
-import { execFileSync, spawnSync } from "node:child_process";
+import { execFile, execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join, sep } from "node:path";
+import { promisify } from "node:util";
 import { resolveOnPath } from "@cotal-ai/workspace";
 import { platformExcludesHost } from "../../implementations/cli/src/seed/verify.js";
 import { createSuite } from "@cotal-ai/smoke-kit";
@@ -51,6 +53,53 @@ else process.exit(spawnSync(${JSON.stringify(npm)}, process.argv.slice(2), { std
     calls.includes(`view ${process.execPath}`) && calls.includes(`install ${process.execPath}`), calls);
   check("self-update reconciles the built-ins with an unsupported Node first on PATH",
     result.status === 0 && /connectors reconciled.*seeded/.test(result.stdout), result.stdout + result.stderr);
+}
+
+async function checkLocalOperatorUpdate(entry: string, cwd: string, env: NodeJS.ProcessEnv, version: string, extensions: string): Promise<void> {
+  const command = "local-peer-probe", pkg = `@cotal-ai/${command}`, source = join(cwd, command);
+  mkdirSync(source);
+  writeFileSync(join(source, "package.json"), JSON.stringify({ name: pkg, version, type: "module", main: "index.mjs", peerDependencies: { "@cotal-ai/core": version } }));
+  writeFileSync(join(source, "index.mjs"), `import { registry } from '@cotal-ai/core';
+registry.register({ kind: 'command', name: '${command}', summary: 'Print a test greeting', run() { console.log('probe loaded'); } });
+`);
+  const requests: string[] = [];
+  const registry = createServer((req, res) => {
+    const path = decodeURIComponent(req.url!);
+    requests.push(path);
+    res.setHeader("content-type", "application/json");
+    if (path === "/cotal-ai") res.end(JSON.stringify({ name: "cotal-ai", "dist-tags": { latest: version }, versions: { [version]: { name: "cotal-ai", version } } }));
+    else { res.statusCode = 404; res.end('{"error":"not found"}'); }
+  });
+  await new Promise<void>((resolve, reject) => registry.once("error", reject).listen(0, "127.0.0.1", resolve));
+  try {
+    const address = registry.address();
+    if (!address || typeof address === "string") throw new Error("loopback registry has no port");
+    const exec = promisify(execFile);
+    const run = (...args: string[]) => exec(process.execPath, [entry, ...args], {
+      cwd, env: { ...env, COTAL_NO_UPDATE_CHECK: "1", npm_config_registry: `http://127.0.0.1:${address.port}`, npm_config_fetch_retries: "0" }, timeout: 120_000,
+    });
+    await run("ext", "add", `./${command}`);
+    check("local scoped extension runs before the update", (await run(command)).stdout.trim() === "probe loaded");
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const result = await run("update", "--self");
+      check("self-update keeps the working local scoped extension", result.stdout.includes("installed package closure is current"), result.stdout + result.stderr);
+    }
+    const installed = join(extensions, "node_modules", pkg, "index.mjs");
+    rmSync(installed);
+    await run("update", "--self");
+    check("self-update repairs a missing entry from the recorded local copy", readFileSync(installed).equals(readFileSync(join(source, "index.mjs"))));
+    writeFileSync(installed, "throw new Error('unloadable local entry');\n");
+    await run("update", "--self");
+    check("self-update repairs an unloadable entry from the recorded local copy", readFileSync(installed).equals(readFileSync(join(source, "index.mjs"))));
+    check("local scoped extension runs after repair", (await run(command)).stdout.trim() === "probe loaded");
+    const status = JSON.parse((await run("status", "--json")).stdout) as { result: { extensions: { items: { package: string }[] } } };
+    check("status still lists the local scoped extension", status.result.extensions.items.some(item => item.package === pkg));
+    const inventory = JSON.parse(readFileSync(join(extensions, "extensions.json"), "utf8")) as { extensions: { pkg: string; spec: string }[] };
+    check("update retains the operator's recorded path", inventory.extensions.find(item => item.pkg === pkg)?.spec === source);
+    check("npm checks the latest CLI without asking for the local package", requests.filter(path => path === "/cotal-ai").length >= 4 && !requests.includes(`/${pkg}`), requests);
+  } finally {
+    await new Promise<void>((resolveClose, reject) => registry.close(error => error ? reject(error) : resolveClose()));
+  }
 }
 
 const base = mkdtempSync(join(tmpdir(), "cotal-tarball-smoke-"));
@@ -349,6 +398,7 @@ try {
     const physicalUpdate = update("--self");
     check("an update through the physical path keeps the installed built-ins", !/reinstalling every built-in|Reconciling built-in/.test(physicalUpdate), physicalUpdate);
   }
+  if (process.platform === "linux") await checkLocalOperatorUpdate(invokedBin, prefix, seedEnv, umbrellaVersion, extensionPrefix);
 } finally {
   rmSync(base, { recursive: true, force: true });
 }

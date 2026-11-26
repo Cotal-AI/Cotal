@@ -125,7 +125,7 @@ assert.equal(seedInstallationCurrent(), false, "an unseeded checkout is not prov
     mkdirSync(path);
     if (process.platform === "win32") copyFileSync(process.execPath, join(path, "node.exe"));
     else symlinkSync(process.execPath, join(path, "node"));
-    const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_") && key.toLowerCase() !== "path"));
+    const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^(?:cotal_|path$)/i.test(key)));
     for (const flags of [["--self"], ["--check"], ["--check", "--plain"], ["--check", "--json"]]) {
       const result = spawnSync(process.execPath, [join(import.meta.dirname, "../../../bin/dist/cotal.js"), "update", ...flags], {
         cwd: home, encoding: "utf8", timeout: 30_000,
@@ -214,7 +214,7 @@ console.log(JSON.stringify(${JSON.stringify(version)}));
       symlinkSync(entry, join(prefix, "bin", "cotal"));
       const pin = join(installed, "scripts", "pin-npm-node.cjs");
       copyFileSync(join(repoBin, "scripts", "pin-npm-node.cjs"), pin);
-      const result = spawnSync(alternate, [pin], { cwd: root, encoding: "utf8" });
+      const result = spawnSync(alternate, [pin], { cwd: root, env: Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^cotal_/i.test(key))), encoding: "utf8" });
       assert.equal(result.status, 0, result.stdout + result.stderr);
       assert.match(readlinkSync(join(prefix, "bin", "cotal")), /cotal-npm$/);
     }
@@ -364,12 +364,12 @@ if (process.platform !== "win32") {
       copyFileSync(join(repoBin, pinScript), join(installed, pinScript));
       symlinkSync(entry[1]!, join(installed, "dist/cotal.js"));
       symlinkSync("../lib/node_modules/cotal-ai/dist/cotal.js", launcher);
-      const pin = spawnSync(process.execPath, [join(installed, pinScript)], { cwd: home, encoding: "utf8" });
+      const pin = spawnSync(process.execPath, [join(installed, pinScript)], { cwd: home, env: Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^cotal_/i.test(key))), encoding: "utf8" });
       assert.equal(pin.status, 0, pin.stdout + pin.stderr);
       assert.equal(readlinkSync(launcher), "../lib/node_modules/cotal-ai/dist/cotal-npm");
       if (readFileSync(launcher, "utf8").startsWith("#!/usr/bin/env -S ")) entry.splice(0, entry.length, launcher);
     }
-    const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_") && !key.toLowerCase().startsWith("npm_config_")));
+    const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^(?:cotal_|npm_config_)/i.test(key)));
     const result = spawnSync("/bin/sh", ["-c", 'cd "$1" && rmdir "$1" && shift && "$@" update --self && "$@" update --self', "sh", gone,
       ...entry], {
       cwd: home, encoding: "utf8", timeout: 180_000,

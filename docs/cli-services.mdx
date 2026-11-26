@@ -115,11 +115,12 @@ cotal service add reviews --space reviews-dev --exec "node /srv/reviews/server.m
 ```
 
 `--exec` splits its text into the program and its arguments as a shell quotes words, but runs no
-shell. Single and double quotes and backslashes work as in a terminal. A pipe, a redirection, a
-`;` or `&`, a variable, a glob or a `~` outside quotes refuses `USAGE_INVALID` (exit 1), because it
-would not mean here what it means in a terminal; for those, run a shell yourself with
-`--exec "sh -c '<command line>'"`. A bare program name is looked up on `PATH` as `add` saves it, and
-a relative path is saved as the absolute path it names in `--cwd`, which defaults to the folder you
+shell. It refuses an unquoted pipe, redirection, `;`, `&`, variable, glob or `~` with
+`USAGE_INVALID` (exit 1). It also refuses an unescaped dollar sign or backtick inside double quotes.
+To pass either character as text, put the argument in single quotes within the `--exec` value, or
+put a backslash before the character inside double quotes. To use shell operators or expansion, run
+a shell yourself with `--exec "sh -c '<command line>'"`. A bare program name is looked up on `PATH`
+as `add` saves it, and a relative path is saved as the absolute path it names in `--cwd`, which defaults to the folder you
 run `add` in. An explicit empty or whitespace-only `--cwd` refuses `USAGE_INVALID` (exit 1)
 before a definition is saved. Omit `--cwd` to use the directory you run `add` in, or pass
 `--cwd <dir>` to use another directory. The service is ready once its process runs. `--file` keeps the full definition shape
@@ -289,8 +290,9 @@ refuses `CONFLICT` (exit 2) and launches nothing. Its Next names
 `cotal service remove <name> --instance <id> --space <space> --yes` and then `start` again, after a
 `cotal service stop` of that instance when it still runs. A controller stack's
 member definitions and records are not removed this way, since its `up` and `down` read them:
-`remove` refuses `UNSUPPORTED`, exit 2, and names `cotal down --yes`, then `cotal space forget <space>`,
-which removes them with the space.
+`remove` refuses `UNSUPPORTED`, exit 2. Its Next names the owning project folder and the command
+`cotal down --space <space> --yes` to run there. Then run `cotal space forget <space>` to remove
+the stopped definitions and records with the space.
 
 `install` writes an owned systemd user unit for a saved direct-process definition with no
 `envRefs` or `credentialRef`, and enables it without starting it. It is Linux only. `uninstall`
@@ -339,8 +341,8 @@ are not publisher signatures or a proof of every executable file. No remote sche
 `service show <name>` reads declared policy, not live state. Public reports omit argument bodies,
 adapter option values and credential contents. Missing launch paths do not prevent reading the
 saved declaration. Records live under the workstation store's case-safe per-space service path.
-If no definition has that name, `show` refuses with `TARGET_NOT_FOUND` (exit 2) and suggests
-`cotal service --space <space>` for the space it checked.
+If no definition has that name, `show` and `remove` refuse with `TARGET_NOT_FOUND` (exit 2) and suggest
+`cotal service --space <space>` for the space each checked.
 
 `service remove <name> --yes` removes the unchanged definition and its stopped instances' records
 and sidecar receipts, and deletes each removed instance's log file and rotated `<log>.1` file.
@@ -365,8 +367,8 @@ help and completion derive those flags from the adapter's closed schema. Boolean
 positive and negative forms; a pair refuses. A boolean whose schema admits only true, such as an
 explicit intent, has only the positive form. Numeric and complex options use JSON syntax.
 Use `cotal service start <preset> --help` for start options. To keep flags from an existing
-start command, pass its words after `cotal help --`, for example
-`cotal help -- service start broker --config ./nats.conf`.
+start command, pass its words after `cotal help --`. Flags can precede the verb or the preset,
+as in `cotal help -- service --space reviews-dev start broker --config ./nats.conf`.
 Use `--no-open` with
 `cotal service start web` or when starting a dashboard saved under a custom name.
 A preset no registered or installed provider declares refuses by name; for `web` the refusal

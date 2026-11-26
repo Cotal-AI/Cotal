@@ -19,7 +19,7 @@ import type { AccountComputerStatus } from "./account-state.js";
 import { normalizeIdpUrl } from "@cotal-ai/auth";
 import { DAEMON_PROTOCOL_VERSION, MAX_LINE_BYTES } from "./endpoint.js";
 
-const DAEMON_OPS = ["update-settings", "update-check", "name", "daemon-stop", "space-intent", "status", "status-watch", "spaces", "manager-start", "manager-status", "managers-stop", "managers-prepare-restart", "managers-abort-restart", "login-start", "login-cancel", "logout", "connect-check", "register", "service-connect", "service-disconnect", "service-status"] as const;
+const DAEMON_OPS = ["update-settings", "update-check", "name", "daemon-stop", "space-recover", "space-intent", "status", "status-watch", "spaces", "manager-start", "manager-status", "managers-stop", "managers-prepare-restart", "managers-abort-restart", "login-start", "login-cancel", "logout", "connect-check", "register", "service-connect", "service-disconnect", "service-status"] as const;
 type DaemonOp = (typeof DAEMON_OPS)[number];
 
 /** The fields each op takes besides `v`, `id` and `op`. Required ones must be present. */
@@ -27,6 +27,7 @@ const OP_FIELDS: Record<DaemonOp, { readonly required: readonly string[]; readon
   "update-settings": { required: [], optional: ["auto", "notify"] },
   "update-check": { required: [], optional: [] },
   "daemon-stop": { required: [], optional: ["commit"] },
+  "space-recover": { required: ["space", "candidate", "holder"], optional: [] },
   "space-intent": { required: ["space", "enabled"], optional: [] },
   name: { required: [], optional: ["name"] },
   status: { required: [], optional: [] },
@@ -61,6 +62,7 @@ export type DaemonRequest =
   | { readonly v: typeof DAEMON_PROTOCOL_VERSION; readonly id: string; readonly op: "update-check" }
   | { readonly v: typeof DAEMON_PROTOCOL_VERSION; readonly id: string; readonly op: "name"; readonly name?: string }
   | { readonly v: typeof DAEMON_PROTOCOL_VERSION; readonly id: string; readonly op: "daemon-stop"; readonly commit?: boolean }
+  | { readonly v: typeof DAEMON_PROTOCOL_VERSION; readonly id: string; readonly op: "space-recover"; readonly space: string; readonly candidate: string; readonly holder: string }
   | { readonly v: typeof DAEMON_PROTOCOL_VERSION; readonly id: string; readonly op: "space-intent"; readonly space: string; readonly enabled: boolean }
   | { readonly v: typeof DAEMON_PROTOCOL_VERSION; readonly id: string; readonly op: "manager-start"; readonly space: string }
   | { readonly v: typeof DAEMON_PROTOCOL_VERSION; readonly id: string; readonly op: "manager-status"; readonly space: string }
@@ -273,6 +275,11 @@ export function parseRequest(line: string): ParsedRequest {
   if (op === "name") {
     try { return { ok: true, request: { v, id, op, ...(obj.name !== undefined ? { name: computerName(obj.name) } : {}) } }; }
     catch (error) { return bad(id, error instanceof Error ? error.message : "invalid computer name"); }
+  }
+  if (op === "space-recover") {
+    if (!isDaemonSpaceName(obj.space) || typeof obj.candidate !== "string" || !/^[0-9a-f]{64}$/.test(obj.candidate) || typeof obj.holder !== "string" || obj.holder.length > 2048) return bad(id, "invalid custody recovery");
+    try { return { ok: true, request: { v, id, op, space: obj.space, candidate: obj.candidate, holder: normalizeIdpUrl(obj.holder) } }; }
+    catch { return bad(id, "invalid custody recovery"); }
   }
   if (op === "space-intent") {
     if (!isDaemonSpaceName(obj.space) || typeof obj.enabled !== "boolean") return bad(id, "space and enabled must name a space and a boolean");

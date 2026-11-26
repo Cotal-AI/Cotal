@@ -18,11 +18,14 @@ export function printRunList(space: string | undefined, items: readonly RunListR
   const nowhere = unmatched && !items.length
     ? `no run record in this view lives under endpoint ${oneLine(unmatched.endpoint)}; ${unmatched.recordedUnder.length ? `runs are recorded under ${unmatched.recordedUnder.map(oneLine).join(", ")}` : "it holds no run record under any endpoint"}`
     : undefined;
-  writeResult(presentationOf(values), {
-    command: "run", target: { space: space ?? null, requestedManagerInstance: values.on ?? null }, result: { kind: "runs", items },
+  const presentation = presentationOf(values);
+  const target = { space: space ?? null, requestedManagerInstance: values.on ?? null };
+  writeResult(presentation, {
+    command: "run", target, result: { kind: "runs", items },
     warnings: [...unread.map((row) => ({ code: "REVOCATION_NOT_CHECKED", target: { run: row.runId, endpoint: row.endpoint }, message: "The revocation marker could not be read; the recorded state does not establish that this run may continue." })),
+      ...(brokerOnly && presentation === "json" ? [{ code: "TARGET_UNAVAILABLE", target, message: "No manager is running to serve workflow records. Add `--local` to this command to read workflow records directly from the broker." }] : []),
       ...(nowhere ? [{ code: "ENDPOINT_HAS_NO_RUNS", target: { endpoint: unmatched!.endpoint, recordedUnder: unmatched!.recordedUnder }, message: nowhere }] : [])],
-    ...(unread.length ? { completeness: "partial" as const, partial: { message: "Some run revocation markers could not be read." } } : {}),
+    ...(brokerOnly ? { completeness: "not-checked" as const } : unread.length ? { completeness: "partial" as const, partial: { message: "Some run revocation markers could not be read." } } : {}),
   }, (result): Report => ({ sections: [
     { title: "Workflow runs", blocks: [
       { kind: "fields", rows: [["Space", space ?? "not reported"], ...(values.on ? [["Requested manager", values.on]] as [string, string][] : [])] },

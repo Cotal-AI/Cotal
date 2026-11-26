@@ -261,8 +261,33 @@ const QUESTION = "Which one?";
     }
   }
   recordMesh({ space: "shared", server: A, root: join(home, "beta"), mode: "open", origin: "manual", ts: new Date(0).toISOString(), unchecked: true });
-  const ambiguous = run(["whoami", "--server", A, "--json"]);
-  check("explicit broker ambiguity names recorded spaces and explains removing --server after use", ambiguous.status === 2 && /multiple spaces recorded/.test(envelope(ambiguous)?.error?.message ?? "") && /remove --server/.test(envelope(ambiguous)?.error?.remedy ?? ""), shown(ambiguous));
+  for (const format of ["--plain", "--json"]) {
+    const args = ["whoami", "--server", A, format];
+    const refused = run(args);
+    const json = format === "--json";
+    const error = envelope(refused)?.error;
+    const next = json ? error?.remedy ?? "" : refused.stderr.split("\nNext\n")[1] ?? "";
+    const retries = Array.from(String(next).matchAll(/`([^`]+)`/g), (match) => match[1]!);
+    const spaces = ["alpha", "shared"];
+    const expected = spaces.map((space) => ` ${args.join(" ")} --space ${space}`);
+    check(`whoami ${format} refuses ambiguity and prints an exact retry for each space`,
+      refused.status === 2 && (json ? error?.code === "TARGET_AMBIGUOUS" : /Code:\s+TARGET_AMBIGUOUS/.test(refused.stderr)) &&
+      /multiple spaces recorded/.test(json ? error?.message ?? "" : refused.stderr) && retries.length === expected.length &&
+      expected.every((command, index) => retries[index]?.endsWith(command)), shown(refused));
+    for (const [index, space] of spaces.entries()) {
+      const retry = retries[index];
+      if (!retry?.endsWith(expected[index]!)) continue;
+      const picked = run(execWords(retry).slice(-args.length - 2));
+      const identity = envelope(picked);
+      const checked = space === "alpha";
+      check(`the printed whoami ${format} retry reads ${space} without selecting a default`,
+        picked.status === (checked ? 0 : 4) && getCurrent() === undefined &&
+        (json ? identity?.target?.space === space && identity?.result?.identity?.kind === "open" && identity?.result?.modeChecked === checked &&
+          (checked || identity?.warnings?.some((warning: { code: string }) => warning.code === "MODE_NOT_CHECKED"))
+          : picked.stdout.startsWith(`Mesh: ${space}\n`) && picked.stdout.includes("the broker authenticates nothing") &&
+            picked.stdout.includes("that was not checked") === !checked), shown(picked));
+    }
+  }
   for (const [serverFlags, format] of [[["--server", A], "--plain"], [[`--server=${A}/`], "-j"]] as const) {
     const args = ["who", ...serverFlags, format, "--all"];
     const refused = run(args);
@@ -278,6 +303,25 @@ const QUESTION = "Which one?";
       const picked = run([...args, "--space", space]);
       check(`the ${format} retry for ${space} reads its roster without selecting a default`, picked.status === 0 && getCurrent() === undefined &&
         (format === "-j" ? envelope(picked)?.target?.space === space : picked.stdout.startsWith(`Mesh: ${space}\n`)), shown(picked));
+    }
+  }
+  for (const [words, format] of [[["endpoint", "describe"], "--plain"], [["describe"], "--json"]] as const) {
+    const beforeSpace = [...words, "--server", A, format];
+    const refused = run([...beforeSpace, "--", "manager"]);
+    const error = envelope(refused)?.error;
+    const next = error?.remedy ?? refused.stderr.split("\nNext\n")[1] ?? "";
+    const retries = Array.from(String(next).matchAll(/`([^`]+)`/g), (match) => match[1]!);
+    check(`${words.join(" ")} ${format} keeps the endpoint after the delimiter in both exact retries`, refused.status === 2 &&
+      (format === "--json" ? error?.code === "TARGET_AMBIGUOUS" : /Code:\s+TARGET_AMBIGUOUS/.test(refused.stderr)) &&
+      retries.length === 2 && ["alpha", "shared"].every((space, i) => retries[i]?.endsWith(` ${beforeSpace.join(" ")} --space ${space} -- manager`)), shown(refused));
+    for (const [i, space] of ["alpha", "shared"].entries()) {
+      const retry = retries[i];
+      if (!retry?.endsWith(` ${beforeSpace.join(" ")} --space ${space} -- manager`)) continue;
+      const picked = run(execWords(retry).slice(-beforeSpace.length - 4));
+      const receipt = envelope(picked);
+      check(`the printed ${words.join(" ")} retry reaches ${space} without changing the selection`, picked.status === 2 && getCurrent() === undefined &&
+        (format === "--json" ? receipt?.error?.code === "UNSUPPORTED" && receipt?.target?.space === space && receipt?.target?.endpoint === "manager"
+          : picked.stderr.startsWith(`Mesh: ${space}\n`) && /Code:\s+UNSUPPORTED/.test(picked.stderr)), shown(picked));
     }
   }
   for (const [args, beforeSpace, afterSpace] of [

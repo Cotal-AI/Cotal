@@ -415,8 +415,10 @@ async function resume(values: RunValues, runId: string | undefined): Promise<voi
   try {
     const record = await readRunRecord(reader.kv, endpoint, runId);
     if (record === undefined) {
-      console.error(`run ${runId}: no record on endpoint ${endpoint}; a run that was never started cannot be resumed`);
-      process.exit(1);
+      throw new CommandFailure("refused", "TARGET_NOT_FOUND", `run ${runId}: no record on endpoint ${endpoint}; a run that was never started cannot be resumed`, {
+        target: { space: reader.space, endpoint, run: runId },
+        remedy: runInventory({ ...values, space: reader.space }, "local"),
+      });
     }
     status = record.status?.value;
     // The ORIGINAL admission (SPEC 14.8): a resume continues under it, never under a new one.
@@ -544,7 +546,7 @@ async function answer(values: RunValues, reader: Planes, runId: string | undefin
     { runId, stepKey, takeoverId },
   ).catch((e: unknown) => {
     // Locating writes nothing, so a pause it does not find is refused as the hosted answer refuses it.
-    if (e instanceof CheckpointNotOpen) throw new CommandFailure("refused", "TARGET_NOT_FOUND", e.message, { target: { space: reader.space, endpoint, run: runId }, remedy: e.why === "no-run" ? `list the recorded runs with \`cotal run --local --space ${reader.space}${values.endpoint ? ` --endpoint ${endpoint}` : ""}\`` : `read the run's open requests with \`cotal run show ${runId} --local --space ${reader.space}${values.endpoint ? ` --endpoint ${endpoint}` : ""}\`` });
+    if (e instanceof CheckpointNotOpen) throw new CommandFailure("refused", "TARGET_NOT_FOUND", e.message, { target: { space: reader.space, endpoint, run: runId }, remedy: e.why === "no-run" ? runInventory({ ...values, space: reader.space }, "local") : `read the run's open requests with \`cotal run show ${runId} --local --space ${reader.space}${values.endpoint ? ` --endpoint ${endpoint}` : ""}\`` });
     throw e;
   });
   // Resume is holder-bound (SPEC 13.10) and the CLI is not the driver: the resolver presents as
@@ -587,7 +589,7 @@ async function amend(values: RunValues, reader: Planes, runId: string | undefine
     { runId, stepKey, takeoverId },
   ).catch((e: unknown) => {
     // Locating writes nothing, so an answer it does not find is refused as the hosted amend refuses it.
-    if (e instanceof CheckpointNotAmendable) throw new CommandFailure("refused", "TARGET_NOT_FOUND", e.message, { target: { space: reader.space, endpoint, run: runId }, remedy: e.why === "no-run" ? `list the recorded runs with \`cotal run --local --space ${reader.space}${values.endpoint ? ` --endpoint ${endpoint}` : ""}\`` : `read the run's answers with \`cotal run show ${runId} --local --space ${reader.space}${values.endpoint ? ` --endpoint ${endpoint}` : ""}\`` });
+    if (e instanceof CheckpointNotAmendable) throw new CommandFailure("refused", "TARGET_NOT_FOUND", e.message, { target: { space: reader.space, endpoint, run: runId }, remedy: e.why === "no-run" ? runInventory({ ...values, space: reader.space }, "local") : `read the run's answers with \`cotal run show ${runId} --local --space ${reader.space}${values.endpoint ? ` --endpoint ${endpoint}` : ""}\`` });
     throw e;
   });
   const writer = await openPlanes(values, "run-operator", { runOperator: { endpoint, takeoverId: newTakeoverId(), answers: { token: accepted.token } } });
@@ -1190,11 +1192,14 @@ function journalIdRemedy(verb: string, values: RunValues): string {
   return `${codeSpan(`cotal run${target}${output}`)} lists the runs; run ${codeSpan(`cotal run ${verb} <run-id>${target}${retryFlag("limit", values.limit)}${output}`)}`;
 }
 
-function localRunInventory(values: RunValues): string {
+function runInventory(values: RunValues, mode: "local" | "hosted"): string {
+  const list = mode === "local" ? "cotal run list --local" : "cotal run list";
+  const output = values.json ? " --json" : values.plain ? " --plain" : "";
   if (values.server !== undefined && brokerAddressForDisplay(values.server) !== values.server)
-    return "run `cotal run list --local` with the original target options";
+    return `run ${codeSpan(`${list}${output}`)} with the original target options`;
   const target = (["space", "server", "creds", "endpoint"] as const).map((flag) => retryFlag(flag, values[flag])).join("");
-  return `list the recorded runs with ${codeSpan(`cotal run list --local${target}`)}`;
+  const manager = mode === "hosted" ? retryFlag("on", values.on) : "";
+  return `list the recorded runs with ${codeSpan(`${list}${target}${manager}${output}`)}`;
 }
 
 /** Public workflow grammar, before catalog preparation or native requests. */
@@ -1217,8 +1222,8 @@ export function workflowArguments(args: ParsedArgs): { values: RunValues; verb: 
     try { assertIdToken(first, "run id"); } catch {
       const message = `run ${raw}: ${JSON.stringify(boundedValue(first, SHOWN_VALUE_MAX))} is not a run id, which is 1 to 64 letters, digits, "_" or "-"`;
       if (verb === "journal") usage(message, journalIdRemedy(raw, values));
-      if (verb === "migrate" || (values.local === true && ["resume", "answer", "amend", "revoke"].includes(verb)))
-        usage(message, `${localRunInventory(values)}. Then replace only the run ID in the original command`);
+      if (verb === "migrate" || verb === "resume" || (values.local === true && ["answer", "amend", "revoke"].includes(verb)))
+        usage(message, `${runInventory(values, verb === "resume" && !values.local ? "hosted" : "local")}. Then replace only the run ID in the original command`);
       usage(`${message}; \`cotal run\` lists them`);
     }
   }
@@ -1245,7 +1250,7 @@ export function workflowArguments(args: ParsedArgs): { values: RunValues; verb: 
   } else if (verb === "revoke" && first === undefined) {
     usage("run revoke takes one identifier", "add a run ID after `run revoke` in the original command. A revoke requires `--local --by <actor> --reason <text>`");
   } else if (verb === "resume" && !first && values.local === true) {
-    usage("run resume takes one identifier", `${localRunInventory(values)}. Then add a run ID after \`run resume\` in the original command`);
+    usage("run resume takes one identifier", `${runInventory(values, "local")}. Then add a run ID after \`run resume\` in the original command`);
   } else if (!first || second !== undefined) usage(`run ${raw} takes one identifier`, verb === "yield" ? "`cotal run turns` lists your turns. Run `cotal run yield <turn-id> --status <done|blocked|handoff>`. For a handoff, add `--to <agent>`." : `\`cotal run\` lists the runs; run \`cotal run ${raw} <run-id>\``);
   const scopes: Record<string, readonly string[]> = {
     timeout: ["start", "resume"], by: ["answer", "amend", "revoke"], reason: ["revoke"], value: ["answer", "amend"], artifact: ["answer", "amend"],

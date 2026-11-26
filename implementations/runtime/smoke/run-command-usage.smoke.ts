@@ -201,6 +201,10 @@ const gate = (positionals: string[], values: Record<string, string | boolean> = 
     const target = ` --space beta --server '${server}' --on ${on} --json`;
     c("the suggested list and show read the requested manager", isCommandFailure(got) && got.remedy === `\`cotal run${target}\` lists the runs; run \`cotal run show <run-id>${target}\``, got);
   }
+  const hostedResume = gate(["resume", "bad/id"], { space: "beta", server, on, json: true, timeout: "5m" });
+  c("a malformed hosted resume ID lists runs on the requested manager", isCommandFailure(hostedResume) && hostedResume.remedy === `list the recorded runs with \`cotal run list --space beta --server '${server}' --on ${on} --json\`. Then replace only the run ID in the original command`, hostedResume);
+  const privateResume = gate(["resume", "bad/id"], { space: "beta", server: "wss://broker.example/ws?token=private", plain: true });
+  c("a hosted resume keeps private broker options out of its inventory hint", isCommandFailure(privateResume) && privateResume.remedy === "run `cotal run list --plain` with the original target options. Then replace only the run ID in the original command", privateResume);
   const local = gate(["journal"], { local: true, space: "beta", endpoint: "worker", limit: "5", plain: true });
   c("the local lookup retains its endpoint and leaves the journal limit for the read", isCommandFailure(local) && local.remedy === "`cotal run --local --space beta --endpoint worker --plain` lists the runs; run `cotal run journal <run-id> --local --space beta --endpoint worker --limit 5 --plain`", local);
   for (const [ids, message, correction] of [

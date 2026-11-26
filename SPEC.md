@@ -1,5 +1,18 @@
 # Cotal Wire Specification
 
+## Local daemon custody recovery
+
+The local daemon protocol additionally accepts `space-recover` with `space`, `candidate`
+and `holder`, alongside its existing `v`, `id` and `op` envelope fields. `candidate` is the
+64-character lowercase hexadecimal local account key and `holder` is the sign-in address
+shown by status. This operation is local machine authority, not a mesh endpoint or a grant
+of remote space membership. The desktop bridge forwards these exact fields only after the
+person confirms the action. Status may include `custodyRecovery: { holder, candidate }` on
+a space row when its holding account is signed out or has failed three consecutive account
+polls. A successful poll clears the failure count. The daemon rechecks the current holder,
+candidate sign-in and fresh available catalog registration before moving local custody.
+An answering holder refuses replacement. Matching issuer and subject alone never transfer custody.
+
 > **Status:** Draft, v0.5 (pre-1.0). This document is the normative wire contract. Libraries
 > (including the reference TypeScript implementation) are thin clients over it; where a
 > client disagrees with this document, this document wins.
@@ -328,6 +341,13 @@ sender's current name looks `from.id` up in presence.
 On receive, a client MUST verify `from.id` equals the subject sender (§3). On mismatch, a
 missing `from`, or an unparseable delivery subject, the message MUST be rejected and never
 redelivered.
+
+A messaging receiver MUST reject a delivery carrying any of the reserved stored-message headers
+`Nats-Stream`, `Nats-Subject`, `Nats-Sequence`, or `Nats-Time-Stamp`, including when `from.id` matches
+the subject sender. Match header names case-insensitively, including headers with an empty value.
+Do not apply this check to metadata the broker adds to the response to a storage read the client
+initiated. When recovering a recorded messaging delivery, check the original stored headers.
+Endpoint rails have separate rules for request and reply provenance (§13.3 and §13.21).
 
 Endpoint requests and replies (the control surface) use the versioned typed envelope of
 §13.3 (`EndpointRequest`/`EndpointReply`); they are not Cotal delivery messages. The v0
