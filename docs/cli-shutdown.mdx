@@ -875,7 +875,10 @@ In a folder whose `.cotal` is a link, every target but `history`, and both dry r
 anything reads through it: `CONFLICT`, exit 2, naming the link and where it leads, or
 `TARGET_NOT_FOUND` for a link that leads nowhere, which is not passed over to the records of a
 folder above it. When the link leads to this folder's own records, moved away and linked back, the
-Next names moving them back, as [up](cli-startup.mdx#up) does.
+Next names moving them back, as [up](cli-startup.mdx#up) does. When the link leads to another
+project's `.cotal`, the Next gives the command to run in that project with the requested target
+and flags, including `--dry-run`. It prints a relative `--store-dir` as an absolute path so the
+retry selects the same directory.
 
 In a copy, in a folder moved away from its recorded path, and in the folder a later `up` took its
 space's name over from, the store may hold that space's only history. There `store` and `all`, and
