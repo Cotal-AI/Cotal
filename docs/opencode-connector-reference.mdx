@@ -330,8 +330,11 @@ OpenCode's status, or 1 when OpenCode exited 0, so the launch fails either way.
 The managed session is created and announced only after the mesh join completes. Its event boundary
 is captured at adopt, before any prompt is admitted.
 
-Both OpenCode lines publish `RUN_STARTED` when a turn begins, before the first model answer.
-A message queued behind a running turn does not start a run of its own while it waits.
+Both OpenCode lines publish `RUN_STARTED` before the first model answer when a turn starts in an idle session.
+A message queued behind a running turn does not start a run of its own while it waits. If OpenCode 2.x
+steers a native prompt into a running execution, the connector closes the current run when OpenCode
+delivers that prompt. The next run starts with the next step's output. If OpenCode records an end
+without output, the connector publishes the start with that end.
 On 2.x the connector reads the session it launched
 through OpenCode's message list, `GET /api/session/:id/message`, from its first record, and publishes
 each item once it is final. Text and reasoning are final when their model step has finished

@@ -177,6 +177,31 @@ for (const s of all) {
 }
 
 {
+  let n = 0;
+  const { map } = createOpenCode2Mapper({ threadId: THREAD, mintRunId: () => `steered-${++n}` });
+  const first: OpenCode2Message = { id: "msg_2", type: "assistant", time: { created: 42 }, content: [{ type: "text", text: "first reply" }] };
+  const refused: OpenCode2Message = { id: "msg_4", type: "assistant", time: { created: 44, completed: 45 }, content: [] };
+  const units = [
+    map({ message: { id: "msg_1", type: "user", time: { created: 41 } }, index: -1 }),
+    map({ message: first, index: 0, element: first.content![0] }),
+    map({ message: { id: "msg_3", type: "user", time: { created: 43 } }, index: -1 }),
+    map({ message: refused, index: -2 }),
+    map({ message: refused, index: -1 }),
+    map({ message: { id: "msg_5", type: "idle", time: { created: 46 }, outcome: "failed" }, index: -1 }),
+  ];
+  const shape = units.map((u) => u && "events" in u ? [u.runId, u.events.map((e) => [e.type, e.timestamp])] : u);
+  check("steered-refusal:with no output, the failed idle opens and closes a distinct run stamped at the steered prompt",
+    JSON.stringify(shape) === JSON.stringify([
+      ["steered-1", [[T.RUN_STARTED, 41]]],
+      ["steered-1", TEXT.map((type) => [type, 42])],
+      ["steered-1", [[T.RUN_FINISHED, 43]]],
+      null,
+      null,
+      ["steered-2", [[T.RUN_STARTED, 43], [T.RUN_ERROR, 46]]],
+    ]), shape);
+}
+
+{
   const messages = [...finished("shell then text, two turns")].sort((a, b) => (a.id < b.id ? -1 : 1));
   const out = await publish(messages);
   const stamp = (type: string) => (out.published.find((e) => e.type === type) as { timestamp: number }).timestamp;
@@ -239,6 +264,6 @@ for (const s of all) {
     { types: done.types, violation });
 }
 
-const EXPECTED = 25;
+const EXPECTED = 26;
 check(`meta:every cell ran - ${EXPECTED} expected`, passed() + failed() === EXPECTED, `${passed() + failed()} cells reported`);
 finish();
