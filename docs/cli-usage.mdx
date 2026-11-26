@@ -211,6 +211,8 @@ cannot preserve the value, the correction names PowerShell. An option such as `-
 rather than read as a positional. Use `--` before the word to pass it as text. The correction keeps
 any attached value the option accepts, as in `--limit=10`. Before the command word the same holds
 for the leading flags, so `cotal ––json status` names `--json`.
+If the command supports JSON and a separate `--json` or `-j` requests it, the refusal uses that
+command's JSON format even when the mistyped flag comes before the command word.
 For extension commands, the correction depends on the subcommand. `ext list` accepts `--json`;
 `ext root` prints a path, so the refusal asks you to omit that option.
 For `endpoint check`, the refusal asks you to omit a pasted `--file` option. Pass the contract file as an argument.
@@ -293,9 +295,10 @@ records or extension versions need attention. It is `{"kind":"none"}` when there
 reconcile. Other kinds include an `instruction` with the next step. `result.extensions` lists
 installed extensions by `package` and `version`.
 
-If the extension manifest cannot be read, `cotal version --json` still reports the running CLI
-version. The report is partial, includes an `EXTENSIONS_UNREADABLE` warning, and exits 4. For a
-corrupt manifest, the reconciliation instruction and error remedy both point to `cotal ext seed --repair`.
+If the extension manifest cannot be read, `cotal version`, `cotal --version`, and `cotal -V`
+still print the running CLI version on stdout, explain the inventory failure on stderr, and exit 4.
+`cotal version --json` also exits 4 and includes the running version and an `EXTENSIONS_UNREADABLE`
+warning in a partial report. For a corrupt manifest, both output forms point to `cotal ext seed --repair`.
 If permissions block the read, restore the account's read access and retry. The inventory stays in place.
 If a file occupies the config folder and blocks the inventory read, the report names that file
 and tells you to move it aside instead.

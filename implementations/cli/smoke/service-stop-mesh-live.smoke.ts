@@ -7,8 +7,8 @@
  *
  * Prepares a space at a sandboxed root (`space create`), so `up --detach --open --no-manager` starts
  * it as a controller stack whose broker is the saved `stack-broker` definition. An unprepared root
- * takes the retained launcher, which saves no definition for `service stop` to resolve. It then
- * stops that broker with `service stop stack-broker --yes --plain`; that stop is also the teardown.
+ * takes the retained launcher, which saves no definition for `service stop` to resolve. After the
+ * named stop, it restarts the stack and follows the remedy from a refused removal in another folder.
  * If the suite fails before it, every running instance the sandbox's own `service --json` inventory
  * lists is sent SIGTERM by pid. Needs `nats-server` on PATH.
  *
@@ -16,10 +16,10 @@
  */
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createSuite, freePort } from "@cotal-ai/smoke-kit";
+import { assertSmokeSandboxDown, createSuite, freePort, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
 
 const BIN = join(import.meta.dirname, "..", "..", "..", "bin", "dist", "cotal.js");
 if (!existsSync(BIN)) {
@@ -31,15 +31,20 @@ interface Inventory { result?: { instances?: { pid?: number; observedProcess?: s
 
 const { check, finish } = createSuite();
 const home = mkdtempSync(join(tmpdir(), "cotal-service-stop-mesh-"));
-const root = realpathSync(mkdtempSync(join(home, "project-")));
+const root = realpathSync(mkdtempSync(join(home, "owning project-")));
+const elsewhere = join(home, "elsewhere");
+mkdirSync(elsewhere);
 const space = `svcmesh-${randomUUID().slice(0, 8)}`;
 const server = `nats://127.0.0.1:${await freePort()}`;
 const HOST_ENV = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("COTAL_") && k !== "FORCE_COLOR" && k !== "NO_COLOR"));
 const env = { ...HOST_ENV, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: join(home, ".config"), COTAL_HOME: join(home, ".cotal"), COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1" };
-const cotal = (...words: string[]) => {
-  const r = spawnSync(process.execPath, [BIN, ...words], { cwd: root, env, encoding: "utf8", timeout: 120_000 });
+const sandbox = recordSmokeSandbox({ root, cotalHome: env.COTAL_HOME, xdgConfigHome: env.XDG_CONFIG_HOME });
+const run = (cwd: string, ...words: string[]) => {
+  assertSmokeSandboxDown(sandbox, words, { cwd, env });
+  const r = spawnSync(process.execPath, [BIN, ...words], { cwd, env, encoding: "utf8", timeout: 120_000 });
   return { status: r.status, stdout: r.stdout ?? "", stderr: r.stderr ?? "" };
 };
+const cotal = (...words: string[]) => run(root, ...words);
 const shown = (r: ReturnType<typeof cotal>) => ({ status: r.status, stdout: r.stdout.slice(0, 1200), stderr: r.stderr.slice(0, 600) });
 
 try {
@@ -53,6 +58,33 @@ try {
   check("service stop of the stack broker exits 0", stop.status === 0, shown(stop));
   check("its output begins with Mesh: <space>", stop.stdout.split("\n")[0] === `Mesh: ${space}`, shown(stop));
   check("the broker stop scope is printed after that Mesh line", mesh === 0 && scope > mesh, { mesh, scope, stdout: stop.stdout.slice(0, 1200) });
+
+  const restarted = cotal("up", "--detach", "--open", "--no-manager", "--server", server, "--space", space);
+  check("fixture: the broker starts again", restarted.status === 0, shown(restarted));
+  const use = run(elsewhere, "use", space);
+  check("fixture: select the stack from another folder", use.status === 0, shown(use));
+  const status = () => run(elsewhere, "service", "status", "stack-broker", "--space", space, "--json");
+  const broker = JSON.parse(status().stdout).result;
+  const remove = ["service", "remove", "stack-broker", "--space", space, "--yes"];
+  const removeDefinition = run(elsewhere, ...remove, "--plain");
+  const stopWords = ["down", "--space", space, "--yes"];
+  const advice = (cli: string) => `from ${root}, run \`${cli} ${stopWords.join(" ")}\`, then run \`${cli} space forget ${space}\``;
+  check("removing a live stack definition refuses and prints the owning folder and explicit space",
+    removeDefinition.status === 2 && /Code:\s+UNSUPPORTED/.test(removeDefinition.stderr) &&
+      ["cotal", "pnpm cotal", `${process.execPath} ${BIN}`].some((cli) => removeDefinition.stderr.includes(advice(cli))), shown(removeDefinition));
+  const removeInstance = run(elsewhere, ...remove, "--instance", broker.instanceId, "--json");
+  const refusal = JSON.parse(removeInstance.stdout);
+  check("removing its instance refuses with the same remedy and retains the exact instance ID",
+    removeInstance.status === 2 && refusal.error?.code === "UNSUPPORTED" && refusal.error.remedy === advice("cotal") &&
+      refusal.target?.instanceId === broker.instanceId, shown(removeInstance));
+  const retained = JSON.parse(status().stdout).result;
+  check("both refusals leave the same broker running", retained.instanceId === broker.instanceId && retained.observedProcess === "running", retained);
+  assertSmokeSandboxDown(sandbox, stopWords, { cwd: root, env });
+  const remedied = run(root, ...stopWords);
+  check("the suggested stop completes in the owning folder", remedied.status === 0, shown(remedied));
+  const forgotten = cotal("space", "forget", space, "--json");
+  check("the suggested forget releases the stopped broker's definition",
+    forgotten.status === 0 && JSON.parse(forgotten.stdout).result?.releasedDefinitions?.includes("stack-broker"), shown(forgotten));
 } catch (error) {
   check("scenario completed", false, (error as Error).stack ?? String(error));
 } finally {

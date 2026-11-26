@@ -10,6 +10,7 @@ import type { EndpointIdentity } from "./endpoint-identity.js";
 import { withDeadline } from "./deadline.js";
 import { ackWaitOf, durableDelivery, isRecord } from "./endpoint-inbound.js";
 import { authenticatedMessage, kindFromParsed, isUsableMessageId, isFromSubjectSender, dmOnlyDelivery } from "./endpoint-messages.js";
+import { hasStoredOrigin } from "./endpoint-provenance.js";
 import { DmDurableMissingError, type DmOnlyOptions, DmBindRefusedError } from "./endpoint-options.js";
 import { isConsumerNotFound, isJetStreamMissing, isStreamNotFound } from "./jetstream-missing.js";
 import { taskDurableConfig } from "./streams.js";
@@ -247,6 +248,11 @@ export class EndpointConsumers {
    *  A rejected copy is `term()`ed (permanently invalid, never redelivered) and reported, and
    *  `undefined` returns, so no handler ever sees it. */
   private authenticateStreamMsg(m: JsMsg): { msg: CotalMessage; parsed: ParsedSubject } | undefined {
+    if (hasStoredOrigin(m.headers)) {
+      m.term();
+      this.emit("error", new Error("dropped message carrying stored-message headers. Send a fresh message without those headers."));
+      return undefined;
+    }
     let msg: CotalMessage;
     try {
       msg = m.json<CotalMessage>();
@@ -373,7 +379,7 @@ export class EndpointConsumers {
           return;
         }
         const parsed = parseSubject(m.subject);
-        if (!parsed || parsed.kind !== "chat") return;
+        if (!parsed || parsed.kind !== "chat" || hasStoredOrigin(m.headers)) return;
         let msg: CotalMessage;
         try {
           msg = m.json<CotalMessage>();

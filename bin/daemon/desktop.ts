@@ -9,7 +9,7 @@ import { CommandFailure, readLocalRecordSource, readUpdateSettings, setUpdateSet
 import { normalizeIdpUrl } from "@cotal-ai/auth";
 import { daemonConnectionLost, loginViaDaemon, updateViaDaemon, openVerified, queryDaemon, readLine, type QueryOptions } from "./client.js";
 import { DAEMON_PROTOCOL_VERSION, MAX_LINE_BYTES, EndpointRefusal } from "./endpoint.js";
-import { applyInstall, planUninstall, startInstalled } from "./install.js";
+import { applyInstall, applyUninstall, installedDaemonIdentity, planUninstall, preflightInstalledDaemon, startInstalled } from "./install.js";
 import { nativeDaemonLog } from "./native-log.js";
 import { encode, isDaemonSpaceName, type DaemonResponse } from "./protocol.js";
 import { runSetup } from "./setup.js";
@@ -21,7 +21,7 @@ export type DesktopRequest =
   | { readonly op: "update-settings"; readonly auto?: boolean; readonly notify?: boolean }
   | { readonly op: "update-check" }
   | { readonly op: "update-release"; readonly version: string }
-  | { [K in "about" | "status" | "status-watch" | "install" | "log"]: { readonly op: K } }["about" | "status" | "status-watch" | "install" | "log"]
+  | { [K in "about" | "status" | "status-watch" | "install" | "log" | "remove-service"]: { readonly op: K } }["about" | "status" | "status-watch" | "install" | "log" | "remove-service"]
   | { readonly op: "space-intent"; readonly space: string; readonly enabled: boolean }
   | { readonly op: "name"; readonly name?: string }
   | { readonly op: "spaces"; readonly refresh?: boolean }
@@ -34,7 +34,7 @@ export type DesktopRequest =
 export function parseDesktopRequest(value: unknown): DesktopRequest {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("request must be an object");
   const o = value as Record<string, unknown>;
-  const simple = ["about", "status", "status-watch", "install", "log", "update-check"].includes(String(o.op));
+  const simple = ["about", "status", "status-watch", "install", "log", "remove-service", "update-check"].includes(String(o.op));
   const scoped = ["connect-check", "register", "service-connect", "service-disconnect", "service-status"].includes(String(o.op));
   const fields = o.op === "update-policy" ? ["op", "auto"] : o.op === "update-release" ? ["op", "version"] : o.op === "update-settings" ? ["op", "auto", "notify"] : o.op === "name" ? ["op", "name"] : o.op === "space-intent" ? ["op", "space", "enabled"] : simple ? ["op"] : scoped ? ["op", "space"] : o.op === "setup" ? ["op", "space", "idp"] : (o.op === "login" || o.op === "logout") ? ["op", "idp"] : o.op === "spaces" ? ["op", "refresh"] : [];
   if (!fields.length || Object.keys(o).some((key) => !fields.includes(key))) throw new Error("unknown operation or field");
@@ -55,7 +55,7 @@ export function parseDesktopRequest(value: unknown): DesktopRequest {
     return { op: "space-intent", space: o.space, enabled: o.enabled };
   }
   if (o.op === "name") return { op: "name", ...(o.name !== undefined ? { name: computerName(o.name) } : {}) };
-  if (simple) return { op: o.op as "about" | "status" | "status-watch" | "install" | "log" | "update-check" };
+  if (simple) return { op: o.op as "about" | "status" | "status-watch" | "install" | "log" | "remove-service" | "update-check" };
   if (scoped) {
     if (!isDaemonSpaceName(o.space)) throw new Error("invalid space");
     return { op: o.op as "connect-check" | "register" | "service-connect" | "service-disconnect" | "service-status", space: o.space };
@@ -131,6 +131,43 @@ function attemptStartupRefusal(state: string, attemptStartedAt: number): string 
   return refusal;
 }
 
+/** The last 8 KiB of the background service log, with terminal codes, control characters and tokens removed. */
+function readServiceLogTail(state: string): { text: string; truncated: boolean } {
+  let fd: number | undefined;
+  let bytes = Buffer.alloc(0), truncated = false;
+  try {
+    try { fd = openSync(nativeDaemonLog(state), constants.O_RDONLY | (process.platform === "win32" ? 0 : constants.O_NOFOLLOW | constants.O_NONBLOCK)); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+    if (fd !== undefined) {
+      const stat = fstatSync(fd);
+      if (!stat.isFile() || process.platform !== "win32" && (stat.uid !== process.getuid!() || (stat.mode & 0o077) !== 0)) throw new Error("The background service log is not a private regular file.");
+      const start = Math.max(0, stat.size - 8192);
+      truncated = start > 0;
+      bytes = Buffer.alloc(Math.min(8192, stat.size));
+      let length = 0;
+      while (length < bytes.length) { const count = readSync(fd, bytes, length, bytes.length - length, start + length); if (!count) break; length += count; }
+      bytes = bytes.subarray(0, length);
+    }
+  } finally { if (fd !== undefined) closeSync(fd); }
+  const text = bytes.toString("utf8")
+    .replace(/\u001b\[[0-9;]*[A-Za-z]/g, "")
+    .replace(/[\u0000-\u0008\u000b-\u001f\u007f]/g, "")
+    .replace(/eyJ[A-Za-z0-9_.-]*/g, "<redacted>") ?? "";
+  return { text, truncated };
+}
+
+/**
+ * Only the app's uninstaller sends remove-service; the window's requests never include it. It removes
+ * the service this installation registered and keeps one another installation registered here.
+ */
+async function removeDesktopService(paths: QueryOptions["paths"], home: string | undefined) {
+  if (!preflightInstalledDaemon(paths, home)) return { state: "absent" };
+  const identity = installedDaemonIdentity(paths, home);
+  if (!identity.same) return { state: "kept", installed: identity.installed };
+  const removed = await applyUninstall(paths, home);
+  return { state: removed.state, unit: removed.unit };
+}
+
 /** Run one app operation through the stock local client. Closing the UI never stops the service. */
 export async function runDesktopBridge(opts: DesktopBridgeOptions): Promise<void> {
   const output = opts.output ?? process.stdout;
@@ -173,30 +210,8 @@ export async function runDesktopBridge(opts: DesktopBridgeOptions): Promise<void
     if (req.op === "status" || req.op === "status-watch" || req.op === "install" || req.op === "setup") assertDesktopSetupComplete();
     target = opts.resolveTarget();
     const { paths, home } = target;
-    if (req.op === "log") {
-      let fd: number | undefined;
-      let bytes = Buffer.alloc(0), truncated = false;
-      try {
-        try { fd = openSync(nativeDaemonLog(paths.state), constants.O_RDONLY | (process.platform === "win32" ? 0 : constants.O_NOFOLLOW | constants.O_NONBLOCK)); }
-        catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
-        if (fd !== undefined) {
-          const stat = fstatSync(fd);
-          if (!stat.isFile() || process.platform !== "win32" && (stat.uid !== process.getuid!() || (stat.mode & 0o077) !== 0)) throw new Error("The background service log is not a private regular file.");
-          const start = Math.max(0, stat.size - 8192);
-          truncated = start > 0;
-          bytes = Buffer.alloc(Math.min(8192, stat.size));
-          let length = 0;
-          while (length < bytes.length) { const count = readSync(fd, bytes, length, bytes.length - length, start + length); if (!count) break; length += count; }
-          bytes = bytes.subarray(0, length);
-        }
-      } finally { if (fd !== undefined) closeSync(fd); }
-      const text = bytes.toString("utf8")
-        .replace(/\u001b\[[0-9;]*[A-Za-z]/g, "")
-        .replace(/[\u0000-\u0008\u000b-\u001f\u007f]/g, "")
-        .replace(/eyJ[A-Za-z0-9_.-]*/g, "<redacted>") ?? "";
-      emit({ v: 1, event: "result", ok: true, result: { text, truncated } });
-      return;
-    }
+    if (req.op === "log") { emit({ v: 1, event: "result", ok: true, result: readServiceLogTail(paths.state) }); return; }
+    if (req.op === "remove-service") { emit({ v: 1, event: "result", ok: true, result: await removeDesktopService(paths, home) }); return; }
     const client = { paths, peerUid: opts.peerUid, peerPid: opts.peerPid };
     if (req.op === "install" || req.op === "setup") {
       const discovered = await discoverDesktopApplicationPath();
@@ -405,7 +420,7 @@ export async function runDesktopBridge(opts: DesktopBridgeOptions): Promise<void
     const rawWait = notAnswering && e.native?.detail && typeof e.native.detail === "object" ? (e.native.detail as { waitSeconds?: unknown }).waitSeconds : undefined;
     const waitSeconds = typeof rawWait === "number" && Number.isInteger(rawWait) && rawWait > 0 ? rawWait : undefined;
     const baseMessage = notAnswering ? `Cotal asked the background service on this computer to start, and it ${waitSeconds !== undefined ? `did not answer within ${waitSeconds} seconds.` : "has not answered."}${refusal ? ` It refused to start: ${refusal}` : ""}`
-      : e instanceof CommandFailure && (e.code === "CONFLICT" || req.op === "setup" || req.op === "install") ? e.message
+      : e instanceof CommandFailure && (e.code === "CONFLICT" || req.op === "setup" || req.op === "install" || req.op === "remove-service") ? e.message
       : code === "NOT_RUNNING" ? (stoppedService
         ? "The background service is installed but stopped. Choose Start service to start it."
         : "The daemon is not running. Install its background service first.")

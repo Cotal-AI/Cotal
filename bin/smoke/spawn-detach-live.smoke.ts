@@ -21,7 +21,7 @@
  */
 import { execFile, spawn as spawnProc, spawnSync, type ChildProcess } from "node:child_process";
 import { SMOKE_BROKER_TOKEN, freePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { isAbsolute, join } from "node:path";
@@ -286,6 +286,18 @@ try {
     fixture("opencode", "if(process.argv[2]==='--version'){console.log('1.2.0');process.exit(0)}" + errorLines);
     const serveFailure = await failedLaunch("opencode", "failed_serve");
     ok("OpenCode serve failure returns child stderr rather than wrapper prose", isCommandFailure(serveFailure) && serveFailure.message.includes("run auth login to reauthenticate"), String(serveFailure));
+    const modelProbe = join(fakeBin, "model probe.md");
+    writeFileSync(modelProbe, "---\nname: model_probe\nrole: model_probe\nagent: jcode\n---\nRespond only to test prompts.\n");
+    let prefixFailure: unknown;
+    try {
+      await capture(() => run("spawn", ["--file", modelProbe, "--harness", "jcode", "--detach", "--space", SPACE, "--cwd", fakeBin, "--model", "cliproxy/gpt-6.2-sol"]));
+    } catch (error) { prefixFailure = error; }
+    ok("Jcode rejects a model prefix before the host starts and prints a bare-model retry with the original options",
+      isCommandFailure(prefixFailure) && exitCode(prefixFailure.outcome, prefixFailure.code) === 5 && prefixFailure.code === "OPERATION_FAILED"
+        && prefixFailure.message.includes("model_prefix_rejected") && prefixFailure.message.includes("Select the provider in Jcode's configuration")
+        && ["cotal", "pnpm cotal"].some((cli) => prefixFailure.remedy?.startsWith(`${cli} spawn `))
+        && [" -d", ` --space ${SPACE}`, " --harness jcode", ` --file '${modelProbe}'`, ` --cwd ${fakeBin}`, " --model gpt-6.2-sol"].every((part) => prefixFailure.remedy?.includes(part))
+        && !prefixFailure.remedy?.includes("cliproxy/") && !existsSync(join(workspaceRoot, ".cotal", "jcode")), prefixFailure);
     const originalCwd = process.cwd();
     const jcodeFailure = await (async () => {
       process.chdir(fakeBin);
@@ -511,6 +523,18 @@ try {
   ok("stop reports the acknowledged stop", stopped(stopOut, "bard"), stopOut);
   const psAfter = await capture(() => run("ps", ["--space", SPACE]));
   ok("ps is empty after stop", NO_AGENTS.test(psAfter), psAfter);
+
+  {
+    const guide = readFileSync(join(import.meta.dirname, "../../docs/connect-opencode.mdx"), "utf8");
+    const example = /`\.cotal\/agents\/([\w-]+)\.md`[^\n]*\n\n```markdown\n([\s\S]+?)\n```[\s\S]+?^cotal spawn \1 --harness opencode --detach$/m.exec(guide);
+    if (!example) throw new Error("The OpenCode guide must show how to create the persona before its detached launch");
+    const [, persona, contents] = example;
+    writeFileSync(join(workspaceRoot, ".cotal", "agents", `${persona}.md`), `${contents}\n`);
+    // Use the suite harness to test the catalog lookup against the real manager without OpenCode installed.
+    const launched = await capture(() => run("spawn", [persona, "--harness", "e2e", "--detach", "--no-events", "--space", SPACE]));
+    ok("the OpenCode guide's persona launches by catalog name", joinedAs(launched, persona) && lastOpts?.role === "research", launched);
+    await capture(() => run("stop", [persona, "--space", SPACE]));
+  }
 
   // D — COTAL_DEFAULT_PERSONA supplies the persona for a bare detached spawn. The identity still
   // comes from --name, so this proves persona selection and identity override stay separate.

@@ -578,6 +578,8 @@ function stripGlobalFlags(cmd: Command, words: string[]): string[] {
 function missingValue(cmd: Command, words: readonly string[], flag: FlagSpec, beforeSeparator = false) {
   if (cmd.name === "run" && (flag.name === "adopt" || flag.name === "release") && helpPath(cmd, words).path[0] === "check")
     return { message: `\`run check\` does not take --${flag.name}`, remedy: `run the check without --${flag.name}` };
+  if (cmd.name === "endpoint" && flag.name === "file" && helpPath(cmd, words).path[0] === "check")
+    return { message: "`endpoint check` does not take --file", remedy: "omit --file and keep the contract path" };
   return { message: `--${flag.name} needs a value`, remedy: `write --${flag.name} ${flag.value ?? "<value>"}${beforeSeparator ? " before --" : ""}` };
 }
 
@@ -843,18 +845,20 @@ async function serviceSurface(found: Command | undefined, words: string[], forRe
 }
 
 /** Recover the command and output mode for a malformed leading switch without dispatching it. */
-async function unknownInvocationExit(commands: readonly Command[], word: string, args: string[], output: string[], beforeSeparator: boolean): Promise<never> {
+async function unknownInvocationExit(commands: readonly Command[], word: string, args: string[], output: string[], beforeSeparator: boolean, typed?: { message: string; remedy?: string }): Promise<never> {
   const equals = word.indexOf("=");
   const flag = equals === -1 ? undefined : word.slice(0, equals);
-  if (!beforeSeparator || !flag || (!GLOBAL_FLAG_WORDS.has(flag) && !OUTPUT_FLAG_WORDS.has(flag))) usageExit(unknownCommandMessage(commands, word));
+  const refusal = typed ?? (flag && (GLOBAL_FLAG_WORDS.has(flag) || OUTPUT_FLAG_WORDS.has(flag)) ? switchValueRefusal(flag) : undefined);
+  if (!beforeSeparator || !refusal) usageExit(typed?.message ?? unknownCommandMessage(commands, word), undefined, false, false, typed?.remedy);
   const retry = leadingInvocation(args, true);
   const found = findCommand(commands, retry.word);
   const words = [...output, ...retry.leading.filter((item) => OUTPUT_FLAG_WORDS.has(item)), ...retry.args];
   const { cmd, rest } = await serviceSurface(takesWordsRaw(found) ? undefined : found, words, true);
+  const json = cmd !== undefined && asksForJson(cmd, rest);
+  if (typed && !json) usageExit(typed.message, undefined, false, false, typed.remedy);
   const end = rest.indexOf("--");
   const plain = (end === -1 ? rest : rest.slice(0, end)).includes("--plain");
-  const { message, remedy } = switchValueRefusal(flag);
-  return usageExit(message, cmd, cmd !== undefined && asksForJson(cmd, rest), plain, remedy, rest);
+  return usageExit(refusal.message, cmd, json, plain, refusal.remedy, rest);
 }
 
 /**
@@ -915,8 +919,8 @@ async function dispatchCli(registry: Registry, argv: string[], opts: RunCliOptio
   // construct its command surface, or recover an installation as a prelude to this read-only mode.
   const updateCheck = builtin?.name === "update" && words.includes("--check") && !wantsHelp
     && parseOrExit(builtin, ownWords(builtin)).values.check === true;
-  // Structured version reports inventory failures itself and needs no extension commands.
-  const versionJson = builtin?.name === "version" && !wantsHelp && asksForJson(builtin, words);
+  // Version reports inventory failures itself and needs no extension commands.
+  const versionRead = builtin?.name === "version" && !wantsHelp;
   // The built-in updater repairs its connector paths before opening any promotion journal.
   const selfUpdate = builtin?.name === "update" && words.includes("--self") && !wantsHelp
     && parseOrExit(builtin, ownWords(builtin)).values.self === true;
@@ -967,7 +971,7 @@ async function dispatchCli(registry: Registry, argv: string[], opts: RunCliOptio
   const surface = (warnings: OutputWarning[]): Command[] => {
     let commands: Command[];
     try {
-      commands = useExtensionOverlay && !versionJson && !extDiagnostics && !configFolder ? overlayExtensions(registry, collisionWarning(warnings)) : registry.all<Command>("command");
+      commands = useExtensionOverlay && !versionRead && !extDiagnostics && !configFolder ? overlayExtensions(registry, collisionWarning(warnings)) : registry.all<Command>("command");
     } catch (e) {
       const infrastructureStatus = builtin?.name === "status" && !wantsHelp && !words.includes("--components")
         && metadataPositionals(builtin, words).positionals.length === 0;
@@ -1024,8 +1028,7 @@ async function dispatchCli(registry: Registry, argv: string[], opts: RunCliOptio
   const typed = cmd || awaitingSeed ? undefined : typographicOption(word, new Set(LEADING_FLAGS.map((flag) => flag.slice(2))), [
     jsonFlag, { name: "help", short: "h", type: "boolean" }, { name: "version", short: "V", type: "boolean" },
   ]);
-  if (typed) usageExit(typed.message, undefined, false, false, typed.remedy);
-  if (!cmd && !awaitingSeed) return unknownInvocationExit(commands, word, args, output, argv[leading.length] !== "--");
+  if (!cmd && !awaitingSeed) return unknownInvocationExit(commands, word, args, output, argv[leading.length] !== "--", typed);
   // `cotal <cmd> --help` / `-h` → that command's help, never run it. This intercept also covers
   // rawArgs commands and extension STUBS (cached specs are exactly the display surface) — only
   // `__`-internal ones are exempt, because __complete's argv is ANOTHER command's half-typed
@@ -1090,7 +1093,7 @@ async function dispatchCli(registry: Registry, argv: string[], opts: RunCliOptio
     try {
       cmd = await materializeExtensionCommand(cmd);
     } catch (e) {
-      stderrLine("✗ ", (e as Error).message, c.red);
+      stderrLine("✗ ", displayRemedy((e as Error).message), c.red);
       process.exit(1);
     }
     parsed = parseOrExit(cmd, rest);
