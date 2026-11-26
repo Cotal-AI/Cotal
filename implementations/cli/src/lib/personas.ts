@@ -1,5 +1,5 @@
 import { lstatSync, statSync } from "node:fs";
-import { listPersonaCatalog, personaDir, personaLinkTarget, readPersonaCatalog, type AgentDef, type PersonaCatalogEntry } from "@cotal-ai/core";
+import { listPersonaCatalog, oneLine, personaDir, personaLinkTarget, readPersonaCatalog, type AgentDef, type PersonaCatalogEntry } from "@cotal-ai/core";
 import { codeSpan, CommandFailure, unsearchableFolder } from "@cotal-ai/workspace";
 import { shellWord } from "./endpoint-errors.js";
 
@@ -92,11 +92,27 @@ export function hasBlankPersonaSelector(entry: Pick<PersonaEntry, "name">): bool
   return !entry.name.trim();
 }
 
+export const personaSelectorControls = /[\u0000-\u001f\u007f]/u;
+
+export function hasUnsupportedPersonaSelector(entry: Pick<PersonaEntry, "name">): boolean {
+  return entry.name.includes("\\") || personaSelectorControls.test(entry.name);
+}
+
+export function personaSelectorWarning({ name, path }: Pick<PersonaEntry, "name" | "path">, target: string, launcher: string): string {
+  const file = shellWord(path);
+  if (personaSelectorControls.test(name))
+    return `The filename ${oneLine(file)} contains control characters. Rename it to open it with ${codeSpan(`${launcher} persona show`)}.`;
+  const reason = `The filename ${oneLine(file)} contains a backslash and cannot be used as a catalog selector.`;
+  if (personaSelectorControls.test(path)) return `${reason} Rename it.`;
+  const launch = oneLine(file) === file ? `${launcher} spawn${target} --file ${file}` : `${launcher} spawn${target} --file <persona.md>`;
+  return `${reason} Rename it or launch it with ${codeSpan(launch)}.`;
+}
+
 /** Just the persona names: the completion source for `cotal spawn`, `persona show` and `personas
  *  show/rm`. Only an absent folder is an empty catalog. One that cannot be read throws an error that
  *  names it, so the completion offers nothing and COTAL_COMPLETE_DEBUG says why. */
 export function listPersonaNames(root: string): string[] {
-  return completionPersonas(root).filter((p) => !hasBlankPersonaSelector(p)).map((p) => p.name);
+  return completionPersonas(root).filter((p) => !hasBlankPersonaSelector(p) && !p.name.includes("\\")).map((p) => p.name);
 }
 
 /** {@link readPersonas} for a completion: a catalog folder that cannot be read throws an error that

@@ -7,15 +7,13 @@
  * outcome, in the same presence record as the label.
  */
 import type { EventEmitter } from "node:events";
-import { assertValidName, parsePrincipalKey } from "@cotal-ai/core";
+import { AGENT_LABEL_MAX, assertValidName, parsePrincipalKey } from "@cotal-ai/core";
 import type { InboxItem } from "./agent-inbox-model.js";
 
 /** How much of the first message the request carries, in code points. */
 export const NAMING_SOURCE_MAX = 8_000;
 /** How long naming may take, from the first message to the label being set. */
 export const NAMING_TIMEOUT_MS = 60_000;
-/** The longest label naming gives, in code points, cut at a word boundary. */
-const LABEL_MAX = 40;
 
 const SYSTEM = [
   'You name AI agents so people can tell them apart in a list. You will receive the first message an agent was given. Reply with a name for the agent and nothing else: one line, no quotes, no trailing period, no label such as "Name:".',
@@ -82,7 +80,7 @@ export function sanitizeLabel(reply: string): string | undefined {
     const wrap = WRAPPERS.find(([open, close]) => line!.length >= open.length + close.length && line!.startsWith(open) && line!.endsWith(close));
     if (wrap) line = line.slice(wrap[0].length, line.length - wrap[1].length).trim();
   }
-  const label = capAtWord(line.replace(/[/\\]/g, " ").replace(/\s+/g, " ").trim(), LABEL_MAX);
+  const label = capAtWord(line.replace(/[/\\]/g, " ").replace(/\s+/g, " ").trim(), AGENT_LABEL_MAX);
   try {
     assertValidName(label);
   } catch {
@@ -119,7 +117,8 @@ export interface AutoNamingDeps {
   owner: string;
   request: NameFromMessage;
   /** Remove the card's naming key and set its label to what `label()` returns when the write runs,
-   *  both in one presence record. Removes the label when `label()` returns undefined. */
+   *  both in one presence record. Leaves the label as it is when `label()` returns undefined, so a
+   *  label the owner set while naming ran stays. */
   settle(label: () => string | undefined): Promise<void>;
   log(msg: string): void;
   timeoutMs?: number;
@@ -128,7 +127,7 @@ export interface AutoNamingDeps {
 /**
  * Naming for one agent whose card shows `pending` from construction. It waits for the first message,
  * then labels the agent once. Every way it ends removes the key: a label, a failure, a timeout, the
- * owner's `set-name`, and the agent stopping.
+ * owner's `set-name` or `set-label`, and the agent stopping.
  */
 export class AutoNaming {
   private state: NamingState = { phase: "waiting" };
@@ -154,9 +153,9 @@ export class AutoNaming {
     void this.run(text, abort);
   }
 
-  /** End naming with no label: the owner's `set-name` is about to change the card, or the agent is
-   *  stopping. A label naming took and the card has not shown yet is dropped, so it never covers the
-   *  owner's name. */
+  /** End naming with no label: the owner's `set-name` or `set-label` is about to change the card, or
+   *  the agent is stopping. A label naming took and the card has not shown yet is dropped, so it never
+   *  covers the owner's choice. */
   end(): void {
     this.label = undefined;
     this.settle();

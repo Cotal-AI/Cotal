@@ -1,5 +1,26 @@
 # @cotal-ai/delivery
 
+## 0.181.0
+
+### Patch Changes
+
+- Updated dependencies [b05f907]
+- Updated dependencies [49d14ac]
+- Updated dependencies [e22d95e]
+- Updated dependencies [b1590ac]
+- Updated dependencies [d76ec5e]
+  - @cotal-ai/core@0.181.0
+  - @cotal-ai/workspace@0.181.0
+
+## 0.180.0
+
+### Patch Changes
+
+- Updated dependencies [bffdc47]
+- Updated dependencies [fcd33e4]
+  - @cotal-ai/workspace@0.180.0
+  - @cotal-ai/core@0.180.0
+
 ## 0.179.0
 
 ### Patch Changes

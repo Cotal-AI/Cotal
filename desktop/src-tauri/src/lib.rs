@@ -65,6 +65,8 @@ pub enum DesktopRequest {
     Logout { idp: String },
     #[serde(rename = "setup")]
     Setup { space: String, idp: String },
+    #[serde(rename = "space-recover")]
+    SpaceRecover { space: String, candidate: String, holder: String },
     #[serde(rename = "space-intent")]
     SpaceIntent { space: String, enabled: bool },
     #[serde(rename = "agent-stop", rename_all = "camelCase")]
@@ -86,6 +88,13 @@ pub enum DesktopRequest {
 impl DesktopRequest {
     pub fn validate(&self) -> Result<(), String> {
         match self {
+            Self::SpaceRecover { space, candidate, holder } => {
+                Self::ConnectCheck { space: space.clone() }.validate()?;
+                if candidate.len() != 64 || !candidate.bytes().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()) || holder.len() > 2048 {
+                    return Err("Invalid custody recovery.".into());
+                }
+                browser_url(holder)?;
+            }
             Self::UpdateRelease { version } => {
                 let parts: Vec<_> = version.split('.').collect();
                 if parts.len() != 3 || parts.iter().any(|part| part.is_empty() || !part.bytes().all(|c| c.is_ascii_digit())) || version.len() > 64 {
@@ -207,6 +216,16 @@ mod tests {
         );
     }
     #[test]
+    fn custody_recovery_validates_the_candidate_and_holder() {
+        for (candidate, holder, valid) in [
+            ("b".repeat(64), "https://example.test/api/auth", true),
+            ("B".repeat(64), "https://example.test/api/auth", false),
+            ("b".repeat(64), "file:///tmp/auth", false),
+        ] {
+            assert_eq!(DesktopRequest::SpaceRecover { space: "team".into(), candidate, holder: holder.into() }.validate().is_ok(), valid);
+        }
+    }
+    #[test]
     fn only_closed_requests_are_admitted() {
         let status = serde_json::from_str::<DesktopRequest>(r#"{"op":"status"}"#).unwrap();
         assert!(!status.is_watch());
@@ -217,6 +236,8 @@ mod tests {
         assert!(serde_json::from_str::<DesktopRequest>(r#"{"op":"log","limit":1000000}"#).is_err());
         assert!(DesktopRequest::Log {}.validate().is_ok());
         for input in [
+            // Only the uninstaller removes the background service; the window can never ask for it.
+            r#"{"op":"remove-service"}"#,
             r#"{"op":"exec","command":"sh"}"#,
             r#"{"op":"status","args":[]}"#,
             r#"{"op":"status-watch","args":[]}"#,

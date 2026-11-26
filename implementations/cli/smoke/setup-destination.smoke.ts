@@ -435,6 +435,27 @@ ${example.replaceAll("research", "scripted-research")}`, "setup-example", proces
       runExample.status === 4 && /saved scripted-research; claude is not set up yet/.test(runExample.stdout) &&
       existsSync(join(dir, ".cotal", "agents", "default.md")), shown(runExample));
   }
+} else {
+  const example = installationDocs.split(/^```/m)
+    .find((block) => block.startsWith("powershell\n") && /^cotal\.cmd setup --destination local .* --no-input$/m.test(block))
+    ?.slice("powershell\n".length);
+  const dir = join(home, "scripted research");
+  check("the documented PowerShell example starts without its project folder", example !== undefined && !existsSync(dir));
+  if (example !== undefined) {
+    const script = `$ErrorActionPreference = 'Stop'
+Set-Variable HOME $env:HOME -Force
+$env:Path = "$env:SETUP_EXAMPLE_BIN;$env:Path"
+${example.replace("'research'", "'scripted research'").replace("--space research", "--space ps-research")}
+exit $LASTEXITCODE`;
+    writeFileSync(join(bin, "cotal.cmd"), `@"${process.execPath}" "${BIN}" %*\r\n`);
+    const powershell = join(process.env.SystemRoot ?? "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
+    const runExample = spawnSync(powershell, ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Restricted", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")],
+      { cwd: home, env: { ...env, SETUP_EXAMPLE_BIN: bin }, encoding: "utf8", timeout: 180_000 });
+    rmSync(join(bin, "cotal.cmd"));
+    check("the documented PowerShell example saves preparation under Restricted in a path with spaces",
+      runExample.status === 4 && /saved ps-research; claude is not set up yet/.test(runExample.stdout) &&
+      existsSync(join(dir, ".cotal", "agents", "default.md")), shown(runExample));
+  }
 }
 
 {
@@ -496,6 +517,10 @@ if (process.platform !== "win32") {
   check("a project other than the registration's root is CONFLICT, naming the root", refused(elsewhere, 2, "CONFLICT") && elsewhere.env?.error?.remedy === `pass \`--project ${teamRoot}\``, shown(elsewhere));
   const unknown = await json(hosted("nobody", teamRoot));
   check("an unregistered space with no connection file is TARGET_NOT_FOUND", refused(unknown, 2, "TARGET_NOT_FOUND") && /--connection-file/.test(unknown.env?.error?.remedy ?? ""), shown(unknown));
+  const missingBundle = await json(hosted("nobody", notTeam, ["--connection-file", "./absent.json", "--no-input"]));
+  check("setup names the unreadable connection file and tells the caller what to pass",
+    refused(missingBundle, 1, "USAGE_INVALID") && missingBundle.env?.error?.message === "cannot read --connection-file ./absent.json (ENOENT)" &&
+      missingBundle.env.error.remedy === "pass the path to the exported connection bundle with `--connection-file`", shown(missingBundle));
   const local = await json(hosted("research", join(home, "research")));
   check("a space prepared here is not self-hosted: CONFLICT", refused(local, 2, "CONFLICT") && /--destination local/.test(local.env?.error?.remedy ?? ""), shown(local));
   check("those refusals wrote nothing", JSON.stringify(files()) === JSON.stringify(before));
@@ -554,8 +579,24 @@ if (process.platform !== "win32") {
   const help = await run(["setup", "--help"]);
   check("setup help labels the self-hosted connection-file example as prompting in a terminal",
     help.status === 0 && help.stdout.replace(/\s+/g, " ").includes("cotal setup --destination self-hosted --connection-file <bundle.json> asks for the remaining inputs in a terminal"), shown(help));
-  const example = /^cotal setup --destination self-hosted .*--connection-file .*$/m.exec(installationDocs)?.[0];
+  const setupLine = /^cotal setup --destination self-hosted .*--connection-file .*$/m;
+  const block = installationDocs.split(/^```/m).find((block) => block.startsWith("bash\n") && setupLine.test(block));
+  const example = setupLine.exec(block ?? "")?.[0];
   check("the installation docs show a scripted self-hosted connection-file example", example !== undefined, { example });
+  if (process.platform !== "win32" && block !== undefined) {
+    const dir = join(home, "scripted-hosted-research");
+    check("the documented self-hosted example starts without its project or bundle",
+      !existsSync(dir) && !existsSync(join(home, "scripted-hosted-research.json")));
+    const runExample = spawnSync("sh", ["-ec", `node=$1; cli=$2
+cotal() { "$node" "$cli" "$@"; }
+${block.slice("bash\n".length).replaceAll("research", "scripted-hosted-research")}`, "setup-example", process.execPath, BIN],
+    { cwd: home, env, encoding: "utf8", timeout: 180_000 });
+    const folder = statSync(dir, { throwIfNoEntry: false });
+    check("the documented self-hosted example creates a private project and reaches the connection file check",
+      runExample.status === 1 && folder !== undefined && folder.isDirectory() && (folder.mode & 0o777) === 0o700 &&
+      /cannot read --connection-file .*scripted-hosted-research\.json \(ENOENT\)/.test(runExample.stderr) &&
+      runExample.stderr.includes("pass the path to the exported connection bundle with `--connection-file`"), shown(runExample));
+  }
   const substitutions: Record<string, string> = { claude: "codex", "~/research": userRoot, research: "hosted", "./research.json": file };
   const exampleArgs = (example ?? "").trim().split(/\s+/).slice(1).map((word) => substitutions[word] ?? word);
   const added = await json(exampleArgs);

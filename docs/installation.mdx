@@ -106,15 +106,11 @@ Add the same `export PATH="$HOME/.npm-global/bin:$PATH"` line to your shell star
 (such as `~/.bashrc` or `~/.zshrc`) so new terminals can find `cotal`.
 If an install fails with npm `EACCES`, use one of these routes instead of retrying with sudo.
 
-On Windows, or when your existing npm prefix is already user-writable and its executable directory is on PATH, run:
+On macOS or Linux, if your existing npm prefix is already user-writable and its executable directory is on PATH, run:
 
 ```bash
 npm install -g cotal-ai
 ```
-
-Use this route on Windows.
-The shell installer does not support Windows shells.
-You can also use the shell installer inside WSL.
 
 On Linux and macOS, a global npm install with lifecycle scripts enabled records the Node executable used to install Cotal.
 The `bin/cotal` link in the npm prefix points to a shell launcher. It prefers a supported Node on PATH.
@@ -130,8 +126,33 @@ Otherwise it uses the bundled binary. `cotal up` refuses a selected broker older
 An older deployment with a file-backed presence bucket needs 2.14.5 or newer to avoid a known write failure.
 See [Run a mesh](run-a-mesh.mdx#the-stack) before reusing an existing broker.
 
-The CLI sends usage telemetry by default. Run `cotal telemetry off` to disable it.
+The CLI sends usage telemetry by default. Run `cotal telemetry off` to disable it (`cotal.cmd telemetry off` on Windows).
 [Telemetry](telemetry.mdx) lists the fields and other opt-outs.
+
+### Install on Windows
+
+Use npm in PowerShell, Command Prompt, or Git Bash. The shell installer works inside WSL, not in a native Windows shell.
+PowerShell can pick `npm.ps1` and `cotal.ps1` for the bare commands. If your execution policy blocks
+these scripts, use `npm.cmd` and `cotal.cmd` without changing the policy.
+
+Use a short, writable npm global prefix and put that directory on PATH. Run `npm.cmd prefix -g` to see the current prefix.
+If the current prefix is suitable, run:
+
+```powershell
+npm.cmd install -g cotal-ai
+```
+
+A long prefix can stop npm from starting the install script even when Windows long paths are enabled.
+If npm does install successfully, PowerShell, Command Prompt, or Git Bash can still fail to run the generated `cotal` launcher.
+
+To install into a shorter prefix without changing npm's default, open a terminal in a short, writable folder and run:
+
+```text
+npm.cmd install -g --prefix . cotal-ai
+```
+
+Add that folder to your user PATH before the old prefix, then [check the installation](#check-the-installation).
+Use the same prefix for later manual npm installs and removals of this copy.
 
 ### Switch from a shell installation
 
@@ -151,14 +172,21 @@ It does not adopt a service from another installation or overwrite an edited uni
 If the destination launcher belongs to a different npm installation and a daemon service is recorded, both `--dry-run` and a normal shell install stop before making changes.
 Keep the npm installation and run `cotal update --self`, or stop your spaces and run `cotal daemon uninstall` from the installation that owns the service before switching.
 
-Open a new terminal, then run:
+On macOS or Linux, or in Git Bash on Windows, open a new terminal and run:
 
 ```bash
 cotal version
 ```
 
+On Windows, open a new PowerShell or Command Prompt window and run:
+
+```powershell
+cotal.cmd version
+```
+
 This reports the Cotal binary version and the installed extension versions.
-If the command is missing, check that the installer's launcher directory is on PATH.
+If the command is missing, check that the launcher's directory is on PATH. For a Windows npm install,
+this is the npm global prefix itself, not a `bin` subdirectory.
 
 If an older installation runs, use the absolute launcher path printed by the installer.
 On macOS and Linux, `type -a cotal` lists shell aliases, functions, and executable candidates.
@@ -186,19 +214,30 @@ Use `--help` for the full list.
 ## Remove Cotal
 
 For any installation method, stop the local spaces and agents that use this installation first.
+In PowerShell or Command Prompt, use `cotal.cmd` in place of `cotal` in the following daemon commands.
 Run `cotal daemon status` to check the machine daemon. A daemon that is not running can still have an installed service.
 If you installed the machine daemon, run `cotal daemon uninstall` from the installation that owns it before removing any CLI files.
 In a script, use `cotal daemon uninstall --yes`. If you installed with `--daemon-home`, pass the same option and directory to both daemon commands.
 If the daemon uninstall fails, resolve the error before continuing.
 
-For an npm installation, remove the package and any generation store created by `cotal update --self`:
+For an npm installation on macOS or Linux, remove the package and any generation store created by `cotal update --self`:
 
 ```bash
 rm -rf "$(npm root -g)/../.cotal-generations"
 npm uninstall -g cotal-ai
 ```
 
-On Windows, run `npm uninstall -g cotal-ai`.
+On Windows, remove a default-prefix installation with:
+
+```powershell
+npm.cmd uninstall -g cotal-ai
+```
+
+If you installed with `--prefix .`, open a terminal in that same folder and run:
+
+```text
+npm.cmd uninstall -g --prefix . cotal-ai
+```
 
 For a shell installation with the default locations, remove `~/.local/bin/cotal` and the `cotal` directory under `${XDG_DATA_HOME:-~/.local/share}`.
 If you selected custom install locations, remove those locations instead.

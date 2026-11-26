@@ -70,7 +70,7 @@ function resolveFeedbackEmail(explicit: string | undefined, env?: NodeJS.Process
   // A hosted session must not discover a contact in the host repository.
   const args = env === undefined ? ["config", "user.email"] : ["config", "--global", "--includes", "user.email"];
   try {
-    const email = execFileSync("git", args, { encoding: "utf8", env }).trim();
+    const email = execFileSync("git", args, { encoding: "utf8", env, windowsHide: true }).trim();
     return email || undefined;
   } catch {
     return undefined;
@@ -485,7 +485,7 @@ export function managerToolSpecs(config: AgentConfig, source: string, env?: Node
         "Save a persona that cotal_spawn can start by name. Most jobs need a persona written for them. For one job, pass persona to cotal_spawn instead, and save one here only when it is worth reusing. Reuse one from cotal_personas only when it really fits, such as a general reviewer. Every persona you save stays in the user's workspace after the helper stops. No cotal_* tool removes one: remove one you own with cotal_invoke, endpoint `manager`, command `remove-persona`, args `{ name }`; the operator removes any with `cotal persona remove <name>`. " +
         "Name it after what it does, such as review-login-page. Write the prompt about the job: what to do, where the brief is, how to report, and when to stop. Point to sources for facts rather than stating them. Set role when others should reach it through a role. " +
         "List its channels and give it only what the job needs: subscribe for where it starts, allowSubscribe for what it may read, and allowPublish for what it may post to. A wildcard works in all three. For example, review.> covers every channel under review, including ones opened later, and review.* covers one level. If you list subscribe alone, it may read just those channels and can't post anywhere. Leave all three out and it can read and post nowhere, so list the channels it needs. A persona you pass to cotal_spawn differs here: with no channel field it takes your own read and post grants. " +
-        "To give its agent one of your capabilities, list it in capabilities. cotal_orientation shows the ones you hold. To let it call an endpoint command, list it in endpoints, a per-user auth mesh excepted. You can give only capabilities and endpoint commands you hold, and each later spawn of the persona is checked again against its spawner. Only you or an operator can change a persona you saved.\n\n" +
+        "To give its agent one of your capabilities, list it in capabilities. cotal_orientation shows the ones you hold. To let it call an endpoint command, list it in endpoints, a per-user auth mesh excepted. You can give only channels, capabilities and endpoint commands you hold, and each later spawn of the persona is checked again against its spawner. A wire save does not keep launch options. Only you or an operator can change a persona you saved.\n\n" +
         "Before you write one, check what you can give. cotal_orientation shows your own channels and capabilities, and cotal_channels lists the channels in the space. cotal_endpoints lists the endpoints you can call, and cotal_describe shows what one lets a caller do. The agent-files page in cotal_docs lists every persona field.\n\n" +
         "Example:\n\n" +
         "```\n" +
@@ -500,8 +500,8 @@ export function managerToolSpecs(config: AgentConfig, source: string, env?: Node
       schema: {
         name: z
           .string()
-          .regex(/^[A-Za-z0-9_-]+$/, "letters, digits, _ or - only")
-          .describe("Unique name for the persona (also the spawn name): letters, digits, _ or -."),
+          .regex(/^[A-Za-z0-9_][A-Za-z0-9_-]*$/, "use letters, digits, _ or -, starting with a letter, digit or _")
+          .describe("Unique name for the persona (also the spawn name): letters, digits, _ or -, not beginning with -."),
         instance: managerInstanceArg,
         prompt: z.string().max(10_000).describe("The persona: an appended system prompt describing who this agent is. A complete agent file (leading --- frontmatter with subscribe / allowSubscribe / allowPublish) is merged, not wrapped."),
         model: z.string().max(120).optional().describe("Optional model override (e.g. opus, sonnet). Wins over a model: in the prompt's frontmatter."),

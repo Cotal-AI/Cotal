@@ -10,7 +10,7 @@ import { StringDecoder } from "node:string_decoder";
 import type { Readable, Writable } from "node:stream";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
-import { CotalEndpoint, isReachable, newIdentity, setupSpaceStreams } from "@cotal-ai/core";
+import { CotalEndpoint, clearChannel, isReachable, newIdentity, setupSpaceStreams } from "@cotal-ai/core";
 import { emitSentinel, freePort, killAndAwaitExit, skipSuite, SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { AttachEndpoint } from "../../implementations/manager/dist/attach-endpoint.js";
 
@@ -61,9 +61,19 @@ const sink = createServer((req, res) => { if (req.url === "/destination") resolv
 let sequence = 0;
 let wire = "";
 const pending = new Map<number, { resolve(value: any): void; reject(error: Error): void; timer: NodeJS.Timeout }>();
-const responses: { session?: string; status: number; type: string }[] = [];
+const responses: { session?: string; status: number; type: string; path: string }[] = [];
 const failures: { session?: string; blocked?: string }[] = [];
-let dashboardOutput = "";
+
+async function startDashboard(port: number): Promise<{ launchUrl: string; launchNonce: string }> {
+  const child = spawn(process.execPath, ["--import", "tsx", fileURLToPath(new URL("../../implementations/web/smoke/console-security-server.ts", import.meta.url)), server, space, String(port)], { stdio: ["ignore", "pipe", "pipe"] });
+  dashboard = child;
+  let output = "";
+  child.stdout.on("data", (data: Buffer) => { output += data.toString(); });
+  await until(async () => output.split("\n").some((line) => line.startsWith('{"ready":') && line.endsWith("}")), "dashboard publishes its private launch record");
+  const { launchUrl, launchNonce } = JSON.parse(output.split("\n").find((line) => line.startsWith('{"ready":'))!);
+  assert(launchUrl && launchNonce);
+  return { launchUrl, launchNonce };
+}
 
 function securityHeaders(name: string, response: Response, policy: string): void {
   check(`${name}: complete Content-Security-Policy matches exactly`, response.headers.get("content-security-policy") === policy);
@@ -97,6 +107,7 @@ async function page(url: string): Promise<string> {
   await cdp("Page.enable", {}, sessionId);
   await cdp("Runtime.enable", {}, sessionId);
   await cdp("Network.enable", {}, sessionId);
+  await cdp("Emulation.setDeviceMetricsOverride", { width: 1440, height: 960, deviceScaleFactor: 1, mobile: false }, sessionId);
   await cdp("Page.addScriptToEvaluateOnNewDocument", { source: `
     window.__security = { violations: [], errors: [] };
     addEventListener('securitypolicyviolation', e => window.__security.violations.push({ directive: e.effectiveDirective, blocked: e.blockedURI }));
@@ -105,6 +116,45 @@ async function page(url: string): Promise<string> {
   ` }, sessionId);
   await cdp("Page.navigate", { url }, sessionId);
   return sessionId;
+}
+async function channelVerification(session: string, sender: CotalEndpoint): Promise<void> {
+  const liveText = "browser-verification-live";
+  const rows = (text: string) => evaluate(session, `Array.from(document.querySelectorAll('[data-slot="message"]'))
+    .filter(row => row.textContent.includes(${JSON.stringify(text)}))
+    .map(row => ({ sender: row.querySelector('[data-slot="message-header"] button')?.textContent ?? null,
+      badge: !!row.querySelector('.ui-idb'), unverified: row.textContent.includes('unverified') }))`);
+  await until(async () => await evaluate(session, "document.querySelector('h1')?.textContent === 'Activity' && document.body.textContent.includes('Connected to cotal web')") &&
+    (await rows("browser-live-control")).length === 1, "Activity connects and renders the history control");
+  await sender.multicast(liveText, { channel: "general" });
+  await until(async () => (await rows(liveText)).length > 0, "Activity renders the new live post");
+  const verified = [{ sender: "browser-control", badge: true, unverified: false }];
+  assert.deepEqual(await rows(liveText), verified, "Activity verifies the sender and renders the badge");
+  await evaluate(session, "location.hash = '#/channel/general'");
+  await until(async () => await evaluate(session, "document.querySelector('h1')?.textContent !== 'Activity'") &&
+    (await rows(liveText)).length > 0, "the first channel open renders the retained post");
+  check("dashboard: the first channel open keeps the verified live row exactly once", JSON.stringify(await rows(liveText)) === JSON.stringify(verified));
+  check("dashboard: the history-only control stays unverified", JSON.stringify(await rows("browser-live-control")) === JSON.stringify([{ sender: null, badge: false, unverified: true }]));
+  check("dashboard: navigation to the channel did not reload the page", await evaluate(session, "performance.getEntriesByType('navigation').length === 1"));
+}
+
+
+async function channelPurge(session: string, publisher: CotalEndpoint): Promise<void> {
+  const channel = "purge-fixture";
+  await publisher.multicast("browser-purge-control", { channel });
+  const row = `!!document.querySelector('[aria-label="Space"] a[href="#/channel/${channel}"]')`;
+  const control = `!!document.querySelector('[aria-label="Space"] a[href="#/channel/general"]')`;
+  const message = `document.querySelector('.ui-view')?.textContent.includes('browser-purge-control') === true`;
+  const count = `[...document.querySelectorAll('dt')].find(el => el.textContent === 'Messages')?.nextElementSibling?.textContent`;
+  await until(() => evaluate(session, row), "the external post creates a sidebar row");
+  await evaluate(session, `location.hash = '#/channel/${channel}'`);
+  await until(() => evaluate(session, `${message} && (${count}) === '1'`), "the open channel shows its retained message and count");
+  const purged = await clearChannel({ servers: server, space, channel });
+  check("dashboard purge: broker removes retained history from an unconfigured channel", purged.purged === 1 && !purged.removed);
+  const opens = () => responses.filter((res) => res.session === session && res.type === "EventSource").length;
+  const feedCount = opens();
+  await until(() => evaluate(session, `!(${row}) && !(${message}) && (${count}) === undefined`), "the open dashboard refreshes the channel list, transcript and count after an external purge");
+  check("dashboard purge: an unrelated channel remains and the original feed stays connected", feedCount === 1 && opens() === feedCount &&
+    await evaluate(session, `${control} && document.body.textContent.includes('Connected to cotal web')`));
 }
 async function security(name: string, session: string, token: string, base: string, ready: string): Promise<void> {
   await until(() => evaluate(session, ready), `${name} page must render its live data`);
@@ -140,6 +190,30 @@ async function security(name: string, session: string, token: string, base: stri
   check(`${name}: navigation to a different origin completes`, new URL(destination).origin !== base);
 }
 
+async function activityLayout(session: string, base: string): Promise<void> {
+  for (const width of [360, 1280]) {
+    await cdp("Emulation.setDeviceMetricsOverride", { width, height: 800, deviceScaleFactor: 1, mobile: false }, session);
+    if (width === 360) await cdp("Page.navigate", { url: base + "/#/activity" }, session);
+    await until(() => evaluate(session, `innerWidth === ${width} &&
+      Boolean(document.querySelector('.ui-phone')) === ${width === 360} &&
+      document.querySelector('header.ui-bar h1')?.textContent === 'Activity'`), `Activity renders at ${width}px`);
+    const layout = await evaluate(session, `document.fonts.ready.then(() => {
+      const heading = document.querySelector('header.ui-bar h1');
+      const header = heading.closest('header');
+      const bar = header.getBoundingClientRect();
+      const readable = (el) => {
+        const rect = el.getBoundingClientRect();
+        return el.clientWidth > 0 && el.scrollWidth <= el.clientWidth && rect.left >= bar.left &&
+          rect.right <= Math.min(bar.right, innerWidth) && rect.top >= bar.top && rect.bottom <= bar.bottom;
+      };
+      const filters = [...header.querySelectorAll('[data-slot="toggle-group-item"]')];
+      return { heading: readable(heading), filters: filters.filter(readable).map(button => button.textContent) };
+    })`);
+    check(`dashboard at ${width}px: Activity heading is fully visible`, layout.heading);
+    check(`dashboard at ${width}px: all delivery filters are fully visible`, layout.filters.join(",") === "All,Channels,Direct,Roles");
+  }
+}
+
 try {
   for (let i = 0; !(await isReachable(server)); i++) { assert(i < 100, "private broker starts"); await delay(100); }
   await setupSpaceStreams({ servers: server, space });
@@ -153,21 +227,7 @@ try {
   await manager.start();
   const managerBase = new URL(manager.consoleUrl()).origin;
   const port = await freePort();
-  dashboard = spawn(process.execPath, ["--import", "tsx", fileURLToPath(new URL("../../implementations/web/smoke/console-security-server.ts", import.meta.url)), server, space, String(port)], { stdio: ["ignore", "pipe", "pipe"] });
-  dashboard.stdout!.on("data", (data: Buffer) => { dashboardOutput += data.toString(); });
-  dashboard.stderr!.on("data", (data: Buffer) => { dashboardOutput += data.toString(); });
-  let launchUrl: string | undefined;
-  let launchNonce: string | undefined;
-  await until(async () => {
-    for (const line of dashboardOutput.split("\n")) {
-      if (!line.startsWith('{"ready":')) continue;
-      const record = JSON.parse(line);
-      launchUrl = record.launchUrl;
-      launchNonce = record.launchNonce;
-    }
-    return launchUrl !== undefined;
-  }, "dashboard starts without printing its private launch credential in an operator log");
-  assert(launchUrl && launchNonce);
+  const { launchUrl, launchNonce } = await startDashboard(port);
   const dashboardToken = new URL(launchUrl).searchParams.get("k")!;
   const dashboardBase = new URL(launchUrl).origin;
   chrome = spawn(browser, ["--headless", "--no-sandbox", "--disable-gpu", "--no-first-run", "--no-default-browser-check", "--disable-extensions", "--remote-debugging-pipe", `--user-data-dir=${profile}`, "about:blank"], { stdio: ["ignore", "ignore", "ignore", "pipe", "pipe"], detached: true });
@@ -182,7 +242,8 @@ try {
         clearTimeout(entry.timer); pending.delete(message.id);
         if (message.error) entry.reject(new Error("browser protocol refused a command")); else entry.resolve(message.result);
       } else if (message.method === "Network.responseReceived") {
-        responses.push({ session: message.sessionId, status: message.params.response.status, type: message.params.type });
+        const { status, url } = message.params.response;
+        responses.push({ session: message.sessionId, status, type: message.params.type, path: new URL(url).pathname });
       } else if (message.method === "Network.loadingFailed") {
         failures.push({ session: message.sessionId, blocked: message.params.blockedReason });
       }
@@ -203,7 +264,11 @@ try {
   const browserLaunchUrl = (await browserLaunch.json() as { launchUrl: string }).launchUrl;
   const browserToken = new URL(browserLaunchUrl).searchParams.get("k")!;
   const dashboardPage = await page(browserLaunchUrl + "#/channel/general");
+  await until(() => evaluate(dashboardPage, "document.querySelector('.v3-mhead b')?.textContent === '#general' && document.body.innerText.includes('Read only')"), "read-only dashboard renders the selected channel's Members panel");
+  check("dashboard: read-only Members panel offers no Delete channel action", await evaluate(dashboardPage,
+    "![...document.querySelectorAll('.ui-pane-body button')].some(button => button.textContent.trim() === 'Delete channel')"));
   await security("dashboard", dashboardPage, browserToken, dashboardBase, "document.getElementById('root')?.textContent?.includes('browser-live-control') === true");
+  await activityLayout(dashboardPage, dashboardBase);
   const sessionCookie = await cdp("Network.getCookies", { urls: [dashboardBase] }, dashboardPage);
   const cookie = sessionCookie.cookies.find((c: { name: string }) => c.name === "cotal_web_session");
   check("dashboard: existing query launch link still mints an HttpOnly session cookie", cookie?.httpOnly === true);
@@ -231,6 +296,24 @@ try {
   securityHeaders("dashboard renewed exchange", nextExchange, DASHBOARD_POLICY);
   check("dashboard browser-launch: new link refuses replay", (await fetch(nextLaunch, { redirect: "manual" })).status === 401);
   check("dashboard: the spent documented launch link refuses a second session", (await fetch(launchUrl, { redirect: "manual" })).status === 401);
+  await channelVerification(await page(dashboardBase), seed);
+  const purgePage = await page(dashboardBase + "/#/channel/general");
+  await until(() => evaluate(purgePage, "document.body?.textContent.includes('Connected to cotal web') === true"), "the authenticated dashboard opens its live feed");
+  await channelPurge(purgePage, seed);
+  const connected = "Array.from(document.querySelectorAll('[data-sidebar=footer] [data-slot=item-actions]')).some(el => el.textContent.trim().startsWith('Connected'))";
+  await cdp("Page.navigate", { url: dashboardBase }, dashboardPage);
+  await until(() => evaluate(dashboardPage, connected), "dashboard reconnects before the restart");
+  await killAndAwaitExit(dashboard!);
+  const fresh = await startDashboard(port);
+  const recovery = "document.querySelector('[data-sidebar=footer] [data-slot=item-actions]')?.textContent";
+  await until(async () => String(await evaluate(dashboardPage, recovery)).includes("new private dashboard link"), "the old tab needs a fresh session after restart");
+  const hint = String(await evaluate(dashboardPage, recovery));
+  check("dashboard restart: the existing tab's feed is refused", responses.some((r) => r.session === dashboardPage && r.path === "/feed" && r.status === 401));
+  check("dashboard restart: the disconnected pill points to service logs, not reload", hint.includes("Disconnected") && hint.includes("service logs") && !/reload/i.test(hint));
+  check("dashboard restart: the old cookie still cannot load the page", (await fetch(dashboardBase, { headers })).status === 401);
+  await cdp("Page.navigate", { url: fresh.launchUrl }, dashboardPage);
+  await until(() => evaluate(dashboardPage, connected), "a fresh private link reconnects the same tab");
+  check("dashboard restart: the fresh link reconnects the same tab", await evaluate(dashboardPage, connected));
   console.log(`browser security: ${passed} passed, ${failed} failed`);
   emitSentinel({ passed, failed });
   process.exitCode = failed ? 1 : 0;

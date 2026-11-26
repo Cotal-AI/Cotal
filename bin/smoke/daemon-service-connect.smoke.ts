@@ -258,6 +258,9 @@ const jwk = { ...await exportJWK(key.publicKey), kid: "a2b2-idp" };
 const SESSION = "a2b2-session-handle-not-a-secret";
 let idpOrigin = "";
 const accountOnly = process.argv.includes("--account-only");
+if (process.argv.includes("--account-custody-repro")) {
+  assert.ok(accountOnly && !process.argv.includes("--no-manager-only"), "custody cases require the hosted account-computer fixture");
+}
 let accountDesired = false;
 let accountRevision = 1;
 let accountRegistration: { managers?: { spaceId: string; instanceId: string }[] } | undefined;
@@ -296,6 +299,9 @@ let exchangeGate: ((view: unknown, res: ServerResponse) => Promise<boolean>) | u
 const exchangeReads: Array<{ view: unknown; managerInstanceId: unknown }> = [];
 let unsupportedComputerReads = 0;
 let custodyOldFails = false;
+const custodySubject = (host?: string) => process.argv.includes("--account-recovery-repro") && host !== new URL(idpOrigin).host
+  ? { sub: "replacement-owner" }
+  : {};
 const idp = createHttpServer(async (req: IncomingMessage, res: ServerResponse) => {
   res.setHeader("content-type", "application/json");
   if (req.url === "/api/auth/sign-out") {
@@ -356,10 +362,10 @@ const idp = createHttpServer(async (req: IncomingMessage, res: ServerResponse) =
       return aliasRow;
     }) : [];
     res.setHeader("etag", JSON.stringify(accountRevision));
-    res.end(JSON.stringify({ v: 1, machineId, revision: accountRevision, account: process.argv.includes("--account-custody-repro") ? { ...(snapshot.account as object), idpUrl: `http://${req.headers.host}/api/auth` } : snapshot.account, spaces, bindingRevisions: Object.fromEntries(spaces.map(row => [row.id, accountBindingRevision])) })); return;
+    res.end(JSON.stringify({ v: 1, machineId, revision: accountRevision, account: process.argv.includes("--account-custody-repro") ? { ...(snapshot.account as object), idpUrl: `http://${req.headers.host}/api/auth`, ...custodySubject(req.headers.host) } : snapshot.account, spaces, bindingRevisions: Object.fromEntries(spaces.map(row => [row.id, accountBindingRevision])) })); return;
   }
   if (req.url === "/catalog" && catalogUnavailable) { res.writeHead(503); return void res.end("{}"); }
-  if (req.url === "/catalog" && catalog) return void res.end(JSON.stringify(process.argv.includes("--account-custody-repro") ? { ...(catalog as object), account: { ...(catalog as { account: object }).account, idpUrl: `http://${req.headers.host}/api/auth` } } : catalog));
+  if (req.url === "/catalog" && catalog) return void res.end(JSON.stringify(process.argv.includes("--account-custody-repro") ? { ...(catalog as object), account: { ...(catalog as { account: object }).account, idpUrl: `http://${req.headers.host}/api/auth`, ...custodySubject(req.headers.host) } } : catalog));
   const accountTarget = [...accountTargets].find(([space]) => req.url?.startsWith(`/account-space/${space}/`));
   if (accountOnly && accountTarget) {
     const [space, target] = accountTarget;
@@ -399,9 +405,9 @@ const idp = createHttpServer(async (req: IncomingMessage, res: ServerResponse) =
   if (req.url === "/api/auth/token" && (req.headers.authorization ?? "") === `Bearer ${SESSION}`) {
     await tokenGate?.(res);
     if (res.destroyed) return;
-    if (catalog) res.setHeader("link", `<${idpOrigin}/catalog>; rel="https://cotal.ai/relations/space-catalog"`);
+    if (catalog) res.setHeader("link", `</catalog>; rel="https://cotal.ai/relations/space-catalog"`);
     const now = Math.floor(Date.now() / 1000);
-    const token = await new SignJWT({ email: "operator@example.test" }).setProtectedHeader({ alg: "EdDSA", kid: jwk.kid }).setIssuer(idpOrigin).setAudience(idpOrigin).setSubject("machine-owner").setIssuedAt(now).setExpirationTime(now + idpJwtTtl).sign(key.privateKey);
+    const token = await new SignJWT({ email: "operator@example.test" }).setProtectedHeader({ alg: "EdDSA", kid: jwk.kid }).setIssuer(idpOrigin).setAudience(idpOrigin).setSubject(custodySubject(req.headers.host).sub ?? "machine-owner").setIssuedAt(now).setExpirationTime(now + idpJwtTtl).sign(key.privateKey);
     jwtsIssued.push(token);
     return void res.end(JSON.stringify({ token }));
   }
@@ -2738,6 +2744,29 @@ process.stdin.once('data', () => {
             const accounts = signedInMachineAccounts(home);
             const holder = accounts.find(account => account.idpUrl === idpUrl)!;
             const current = accounts.find(account => account.idpUrl.includes("[::ffff:"))!;
+            if (process.argv.includes("--account-recovery-repro")) {
+              assert.equal(current.sub, "replacement-owner");
+              const recoveryShown = (s: Record<string, any>) => s.account?.spaces?.some((row: any) => row.space === ON && row.custodyRecovery?.candidate === current.ownerKey);
+              const owner = () => JSON.parse(readFileSync(join(home, "daemon", "account-spaces.json"), "utf8")).spaces[ON].owner;
+              const recover = (expectedHolder: string) => ask(paths.socket, { op: "space-recover", space: ON, candidate: current.ownerKey, holder: expectedHolder }, 100_000);
+              await waitAccount(recoveryShown, "failing holder exposes confirmed recovery through real daemon status");
+              check("different subject never silently takes custody", owner() === holder.ownerKey);
+              check("CLI points to the explicit app action", (await plainCommand("status")).out.includes("choose Use signed-in account"));
+              const changed = await recover("https://changed.example/api/auth");
+              check("stale holder address refuses without moving custody", !changed.ok && JSON.stringify(changed).includes("holding account changed") && owner() === holder.ownerKey, changed);
+              custodyOldFails = false;
+              await waitAccount(s => !recoveryShown(s), "an answering holder clears the recovery action");
+              const answering = await recover(idpUrl);
+              check("a holder that answers again cannot be confirmed away", !answering.ok && owner() === holder.ownerKey, answering);
+              if (process.argv.includes("--account-recovery-signed-out")) deleteIdpSession(home, idpUrl);
+              else custodyOldFails = true;
+              await waitAccount(recoveryShown, "a signed-out or failing holder offers recovery again");
+              const moved = await recover(idpUrl);
+              check("confirmed real daemon recovery request succeeds", moved.ok === true, moved);
+              check("confirmed real daemon recovery changes custody", owner() === current.ownerKey);
+              check("confirmed recovery changes the registry owner", findMesh(ON)?.catalogOwner === current.ownerKey);
+              return;
+            }
             check("fixture presents matching issuer and subject at different addresses", holder.issuer === current.issuer && holder.sub === current.sub && holder.ownerKey !== current.ownerKey);
             check("copied identity is refused and status names the holder", status.account.spaces.some((row: any) => row.space === ON && row.lastRefusal === `The local space connection is held by ${idpUrl}.`), status.account);
             check("copied identity leaves custody with the holder", custody.spaces[ON]?.owner === holder.ownerKey, custody);

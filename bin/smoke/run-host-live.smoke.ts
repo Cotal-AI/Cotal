@@ -1181,6 +1181,25 @@ try {
   c("B0. The local list on a broker-only open mesh keeps the local journal and offers offline simulation instead of start",
     localList.includes("Open meshes cannot host workflow runs.") && ["cotal", "pnpm cotal"].some((cli) =>
       localList.includes(`${cli} r show <run-id> --local`) && localList.includes(`${cli} r simulate <file>`) && !localList.includes(`${cli} r start`)), localList);
+  const { stdout: hostedList, stderr: hostedListErrors } = await runCli("--space", spaceB, "--server", server, "--plain");
+  c("B0b. The hosted list on a broker-only open mesh succeeds and points to the local inventory and offline simulation",
+    hostedList.includes("Open meshes cannot host workflow runs.") && hostedListErrors === "" && ["cotal", "pnpm cotal"].some((cli) =>
+      hostedList.includes(`${cli} r list --local --space ${spaceB} --server '${server}'`) && hostedList.includes(`${cli} r simulate <file>`)
+        && !hostedList.includes(`${cli} r start`)), { hostedList, hostedListErrors });
+  const inventoryArgs = ["list", "--endpoint", "custom", "--space", spaceB, "--server", server, "--json"];
+  const hostedInventory = await runCli(...inventoryArgs);
+  const localInventory = await runCli(...inventoryArgs, "--local");
+  const unchecked = JSON.parse(hostedInventory.stdout);
+  const checked = JSON.parse(localInventory.stdout);
+  c("B0c. Workflow JSON distinguishes an unchecked broker-only inventory from a checked empty endpoint",
+    hostedInventory.stderr === "" && unchecked.outcome === "ok" && unchecked.completeness === "not-checked"
+      && unchecked.result?.kind === "runs" && unchecked.result.items?.length === 0
+      && unchecked.warnings?.length === 1 && unchecked.warnings[0]?.code === "TARGET_UNAVAILABLE"
+      && unchecked.warnings[0]?.message.includes("Add `--local` to this command")
+      && localInventory.stderr === "" && checked.outcome === "ok" && checked.completeness === "complete"
+      && checked.result?.kind === "runs" && checked.result.items?.length === 0
+      && checked.warnings?.length === 1 && checked.warnings[0]?.code === "ENDPOINT_HAS_NO_RUNS"
+      && checked.warnings[0]?.target.endpoint === "custom", { hostedInventory, localInventory });
   const brokerOnlyStart = await runCli("start", "./cp.cotal.js", "--json").catch((error: { code?: number; stdout?: string }) => error);
   const plainStart = await runCli("start", "./cp.cotal.js", "--plain").catch((error: { code?: number; stderr?: string }) => error);
   const refusal = JSON.parse(brokerOnlyStart.stdout || "{}");
@@ -1275,7 +1294,7 @@ try { await delivery?.stop(); } catch { /* teardown */ }
   if (stillUp.running.length) console.log(`  ! seat processes still running after SIGKILL: ${stillUp.running.join(", ")}`);
 }
 
-const EXPECTED_CELLS = 113;
+const EXPECTED_CELLS = 115;
 if (pass + fail !== EXPECTED_CELLS) {
   console.log(`SUITE INCOMPLETE — ran ${pass + fail} of ${EXPECTED_CELLS} cells; a partial run is not a pass`);
   fail += 1;

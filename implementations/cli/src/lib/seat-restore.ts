@@ -79,7 +79,7 @@ function run(command: "git" | "tar", args: string[], cwd: string, seat: string, 
       cwd,
       encoding: "utf8",
       stdio: ["ignore", "pipe", "pipe"],
-      maxBuffer: 1024 * 1024 * 1024,
+      maxBuffer: 1024 * 1024 * 1024, windowsHide: true,
     });
   } catch (error) {
     const failure = error as { stderr?: string | Buffer; stdout?: string | Buffer; message?: string };

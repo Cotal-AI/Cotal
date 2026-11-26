@@ -407,6 +407,10 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
         }));
         return;
       }
+      if (req.op === "space-recover") {
+        managerResult(async () => { await account.recover(req.space, req.candidate, req.holder); return status(); });
+        return;
+      }
       if (req.op === "space-intent" || req.op === "agent-stop" || req.op === "agent-terminal") {
         managerResult(() => req.op === "agent-terminal" ? managers.terminalAgent(req.space, req.lifecycleUid)
           : (req.op === "agent-stop" ? managers.stopAgent(req.space, req.lifecycleUid) : account.intent(req.space, req.enabled)).then(() => status()));

@@ -179,6 +179,7 @@ async function setupSession(ctx: OpenCode2Context): Promise<() => Promise<void>>
     firstTurnSystem: () => firstTurnSystem(),
     primed: () => { primed = true; },
     signal: controller.signal,
+    launchModel: config.model,
   });
   const agent = new MeshAgent(config, undefined, {
     commands: commands.dispatcher,
@@ -567,10 +568,13 @@ async function setupSession(ctx: OpenCode2Context): Promise<() => Promise<void>>
 
   // Measured: `model.request` fires `{model:{id,providerID}, kind:"primary"|"title", agent}` with
   // no `sessionID` field, so there is nothing to scope an `ours()` check against — this adapter
-  // drives exactly one session, so every `primary` request is ours by construction.
+  // drives exactly one session, so every `primary` request is ours by construction. The model is
+  // 2.4.1's `Model.Ref`, which carries the variant too.
   await ctx.session.hook("model.request", (e) => {
     if (e.kind !== "primary") return;
-    void agent.setModel(`${e.model.providerID}/${e.model.id}`);
+    const model = `${e.model.providerID}/${e.model.id}`;
+    commands.modelRan(model);
+    void agent.setModel(model, e.model.variant);
   });
 
   // Surface the running tool as presence activity — parity with 1.x's `tool.execute.before`.

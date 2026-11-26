@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import { closeSync, constants, fstatSync, lstatSync, openSync, readdirSync, readSync, renameSync, rmSync, rmdirSync, unlinkSync } from "node:fs";
 import { basename, isAbsolute, join, resolve } from "node:path";
 import { CommandFailure, assertRecordIdentity, shellPath, canonicalRoot, commandIsCotalSupervisor, homeCotalDir, isCommandFailure, maintenanceAdmitsStackWork, readMaintenanceJournal, readProcessCommand, readServiceStopRequest, resolveNativeServiceTarget, loopbackListeners, processGroupMembers, processGroupOf, serviceAdapterReadiness, serviceMetadataDigest, spaceKey, serviceAdapterKernelStopPlan, serviceAdapterKernelStopResult, serviceAdapterStopPlan, serviceAdapterStopAbandonment, serviceAdapterStopRefusal, serviceAdapterStopResult, type ServiceAdapterStopAbandonment, type ServiceAdapterAttempt, type ServiceAdapterKernelStopPlan, type ServiceAdapterPreservedStop, type ServiceAdapterStopPlan, type ServiceAdapterContext, type ServiceDefinitionInput, type ControllerStackView, type OutputWarning, isWorkspaceTargetError, oneLine, targetErrorCode, workspaceErrorParts, type MeshTargetError, type ProcessIdentityRecord } from "@cotal-ai/workspace";
-import { openPrivateAppend } from "@cotal-ai/core";
+import { loadCotalConfig, openPrivateAppend, spawnEnvAllow } from "@cotal-ai/core";
 import type { SeatCap } from "@cotal-ai/workspace";
 import { refuseRecordedSupervisor } from "./service-supervision.js";
 import { serviceInstallIntents } from "./service-install-intent.js";
@@ -14,10 +14,11 @@ import { daemonArgv } from "./self-exec.js";
 import { controlsRecordedAdapter, loadServiceAdapter, resolveServiceAdapter, type LoadedServiceAdapter, type ResolvedServiceAdapter } from "./service-adapters.js";
 import { serviceDefinitionStore, validateServiceDefinition, type ServiceDefinitionSnapshot } from "./service-definitions.js";
 import { instanceProjection, observeServiceProcess, processServiceHost, requireProcessIdentity, serviceInstances, serviceInstanceStore, type ServiceCustody, type ServiceInstance, type ServiceInstanceSnapshot } from "./service-instances.js";
-import { maintenanceStackView, STACK_DEFINITION, stackMemberRecord } from "./stack-journal.js";
+import { maintenanceStackView, STACK_ADAPTER, STACK_DEFINITION, stackMemberRecord } from "./stack-journal.js";
 import { askCustodian, custodiedPlatform, custodyLog, removeCustodyCapability, startCustodiedService } from "./service-custody-win32.js";
 import { seedBeforeLaunch } from "../seed/launch.js";
 import { lastLoggedLine, privateLog } from "./private-log.js";
+import { inOwnScope } from "./service-scope.js";
 import { targetWords } from "./confirmation-required.js";
 
 export const PROCESS_SERVICE_CAPABILITIES = Object.freeze({ multiInstance: true, foreground: true, logs: true, install: false });
@@ -263,6 +264,7 @@ function environment(definition: ServiceDefinitionInput): NodeJS.ProcessEnv {
   // The usage telemetry variables and CI reach the service as they reach a seat (docs/telemetry.mdx).
   // NODE_EXTRA_CA_CERTS is the operator's trust in a local CA, which a service dialing the space needs as this command does.
   for (const key of ["PATH", "HOME", "USER", "LOGNAME", "TMPDIR", "LANG", "LC_ALL", "TERM", "COLORTERM", "NO_COLOR", "FORCE_COLOR", "COTAL_HOME", "LOCALAPPDATA", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "XDG_CACHE_HOME", "XDG_RUNTIME_DIR", "DO_NOT_TRACK", "CI", "COTAL_TELEMETRY", "COTAL_TELEMETRY_DISABLED", "COTAL_TELEMETRY_URL", "NODE_EXTRA_CA_CERTS"]) if (process.env[key] !== undefined) env[key] = process.env[key];
+  if (definition.launch.type === "adapter" && definition.launch.adapter === STACK_ADAPTER.manager) Object.assign(env, spawnEnvironment(String(definition.launch.options.root)));
   // Variable names are not secrets, so a missing one is named with the child variable it feeds.
   const missing = Object.entries(definition.envRefs ?? {}).filter(([, source]) => process.env[source] === undefined);
   if (missing.length) {
@@ -275,6 +277,17 @@ function environment(definition: ServiceDefinitionInput): NodeJS.ProcessEnv {
   for (const [destination, source] of Object.entries(definition.envRefs ?? {})) env[destination] = process.env[source];
   if (definition.credentialRef) env.COTAL_CREDS = definition.credentialRef.path;
   return env;
+}
+
+/** The `spawn.env` names set in this command's environment, read from the config the manager at
+ *  `root` reads. A manager gives its seats those names from its own environment, so they reach it
+ *  here; a name `spawn.env` gains later reaches a seat once the manager starts again. Only a variable
+ *  the environment holds is read, never a member every object inherits, such as `constructor`. */
+function spawnEnvironment(root: string): NodeJS.ProcessEnv {
+  let names: readonly string[];
+  try { names = spawnEnvAllow(loadCotalConfig(root)) ?? []; }
+  catch (error) { throw new CommandFailure("refused", "SCHEMA_INVALID", `${(error as Error).message}; the manager reads spawn.env from it, so no process was launched`, { remedy: "fix the config file, then run the command again" }); }
+  return Object.fromEntries(names.filter((name) => Object.hasOwn(process.env, name)).map((name) => [name, process.env[name]]));
 }
 
 export function serviceLogPath(space: string, id: string, create = false): string | undefined {
@@ -396,7 +409,7 @@ function adapterContext(definition: ServiceDefinitionSnapshot, instance: Service
   const options = ownedMetadata(value.launch.options);
   const stateDirectory = serviceInstanceStore(value.space).directory();
   if (!stateDirectory) throw new CommandFailure("refused", "CONFLICT", "the reserved service state directory disappeared");
-  return Object.freeze({ space: value.space, definition: definition.name, definitionRevision: definition.record.revision, instanceId: instance.instanceId, launchRequestId: instance.launchRequestId, stateDirectory, ...(cliInvocation ? { cliInvocation: Object.freeze([...cliInvocation]) } : {}), options, ...(value.credentialRef ? { credentialRef: Object.freeze({ ...value.credentialRef }) } : {}), ...(value.envRefs ? { envRefs: ownedMetadata(value.envRefs) } : {}), ...(attempt ? { attempt: ownedMetadata(attempt) } : {}), ...(stack ? { stack: ownedMetadata(stack) } : {}), ...(managerSeatCap !== undefined ? { managerSeatCap } : {}) });
+  return Object.freeze({ space: value.space, definition: definition.name, definitionRevision: definition.record.revision, instanceId: instance.instanceId, launchRequestId: instance.launchRequestId, stateDirectory, ...(cliInvocation ? { cliInvocation: Object.freeze([...cliInvocation]) } : {}), options, ...(value.credentialRef ? { credentialRef: Object.freeze({ ...value.credentialRef }) } : {}), ...(value.envRefs ? { envRefs: ownedMetadata(value.envRefs) } : {}), ...(attempt ? { attempt: ownedMetadata(attempt) } : {}), ...(stack ? { stack: ownedMetadata(stack) } : {}), ...(managerSeatCap !== undefined ? { managerSeatCap } : {}), ...(instance.managerIdleExit !== undefined ? { managerIdleExit: instance.managerIdleExit } : {}) });
 }
 
 /** A deadline bounds our observation, not the provider's work. No timed-out hook is retried. */
@@ -574,11 +587,12 @@ function staleRevisionInstance(definition: ServiceDefinitionSnapshot, selected: 
 }
 
 type DefinitionHold = ReturnType<ReturnType<typeof serviceDefinitionStore>["pin"]>;
-export async function startProcessService(definition: ServiceDefinitionSnapshot, options: { instance?: string; newInstance?: boolean; foreground?: boolean; attempt?: ServiceAdapterAttempt; brokerInstance?: { instanceId: string; launchRequestId: string }; replacement?: { instanceId: string; launchRequestId: string }; managerSeatCap?: SeatCap }, held?: DefinitionHold) {
+export async function startProcessService(definition: ServiceDefinitionSnapshot, options: { instance?: string; newInstance?: boolean; foreground?: boolean; attempt?: ServiceAdapterAttempt; brokerInstance?: { instanceId: string; launchRequestId: string }; replacement?: { instanceId: string; launchRequestId: string }; managerSeatCap?: SeatCap; managerIdleExit?: number }, held?: DefinitionHold) {
   const value = definition.record.value;
   if (options.attempt && (value.launch.type !== "adapter" || options.foreground)) throw new CommandFailure("refused", "UNSUPPORTED", "a maintenance attempt reaches only an adapter launch in the background; no launch was allocated");
   // Only the broker and manager adapters read an attempt; every other adapter refuses it.
   if (options.attempt && value.launch.type === "adapter" && !["nats-broker", "manager-service"].includes(value.launch.adapter)) throw new CommandFailure("refused", "UNSUPPORTED", "this adapter accepts no maintenance attempt; no launch was allocated");
+  if (options.managerIdleExit !== undefined && (value.launch.type !== "adapter" || value.launch.adapter !== "manager-service")) throw new CommandFailure("refused", "USAGE_INVALID", "--idle-exit belongs to the manager; no launch was allocated");
   // A controller attempt whose cut broker is retired starts the new broker
   // instance its maintenance journal names, with the journal's own IDs. The broker adapter admits
   // only that exact pair, and only while every other record of the definition is retired.
@@ -613,6 +627,7 @@ export async function startProcessService(definition: ServiceDefinitionSnapshot,
       const state = observeServiceProcess(selected.record.value);
       if (state === "running") {
         if (options.foreground) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "an existing live instance cannot be converted into this terminal's foreground process; stop it explicitly before a foreground start", { target: instanceProjection(selected) });
+        if (options.managerIdleExit !== undefined && options.managerIdleExit !== selected.record.value.managerIdleExit) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `the manager already runs ${selected.record.value.managerIdleExit === undefined ? "with no idle exit" : `with --idle-exit ${selected.record.value.managerIdleExit}`}; --idle-exit applies to a new start`, { target: instanceProjection(selected), remedy: `stop it first with \`cotal manager stop --space ${value.space}\`` });
         const adapter = declaredAdapter && value.launch.type === "adapter" ? { provider: await loadServiceAdapter(declaredAdapter, value.launch.options), context: adapterContext(definition, selected.record.value, cliInvocation) } : undefined;
         return { instance: await serviceReadiness(selected, value, adapter), noOp: true, child: undefined, exit: undefined };
       }
@@ -640,7 +655,7 @@ export async function startProcessService(definition: ServiceDefinitionSnapshot,
     await seedBeforeLaunch();
     hold.check();
     const now = new Date().toISOString(), id = options.brokerInstance?.instanceId ?? options.replacement?.instanceId ?? selected?.name ?? randomUUID(), launchRequestId = options.brokerInstance?.launchRequestId ?? options.replacement?.launchRequestId ?? randomUUID();
-    const instance: ServiceInstance = { schemaVersion: 1, instanceId: id, definition: definition.name, definitionRevision: definition.record.revision, space: value.space, host: processServiceHost(), requestId: launchRequestId, launchRequestId, state: "starting", launcher, readiness: "not-checked", supervisor: "none", ...(options.attempt ? { attempt: { attemptId: options.attempt.attemptId } } : {}), ...(declaredAdapter ? { adapter: declaredAdapter.pin, ...(declaredAdapter.declaration.stop === "native" ? { nativeStopRequired: true as const } : declaredAdapter.declaration.stop === "kernel-exit" ? { kernelStopRequired: true as const } : {}) } : {}), foreground: options.foreground === true, createdAt: selected?.record.value.createdAt ?? now, updatedAt: now };
+    const instance: ServiceInstance = { schemaVersion: 1, instanceId: id, definition: definition.name, definitionRevision: definition.record.revision, space: value.space, host: processServiceHost(), requestId: launchRequestId, launchRequestId, state: "starting", launcher, readiness: "not-checked", supervisor: "none", ...(options.attempt ? { attempt: { attemptId: options.attempt.attemptId } } : {}), ...(options.managerIdleExit !== undefined ? { managerIdleExit: options.managerIdleExit } : {}), ...(declaredAdapter ? { adapter: declaredAdapter.pin, ...(declaredAdapter.declaration.stop === "native" ? { nativeStopRequired: true as const } : declaredAdapter.declaration.stop === "kernel-exit" ? { kernelStopRequired: true as const } : {}) } : {}), foreground: options.foreground === true, createdAt: selected?.record.value.createdAt ?? now, updatedAt: now };
     const store = serviceInstanceStore(value.space);
     store.commit(id, selected, instance);
     // The replaced incarnation's custodian and launch sidecars are gone once the new launch request is committed.
@@ -754,7 +769,8 @@ export async function startProcessService(definition: ServiceDefinitionSnapshot,
           logFrom = info.size;
         }
         const launchChild = value.launch.type === "adapter" && value.launch.adapter === "nats-broker" ? spawnBroker : spawn;
-        child = launchChild(launch.program, [...launch.args], { cwd: launch.cwd, env, shell: false, detached: !options.foreground, stdio: options.foreground ? "inherit" : ["ignore", log!, log!] });
+        const started = options.foreground ? launch : inOwnScope(launch, env, { space: value.space, instanceId: id, launchRequestId });
+        child = launchChild(started.program, [...started.args], { cwd: started.cwd, env, shell: false, detached: !options.foreground, stdio: options.foreground ? "inherit" : ["ignore", log!, log!], windowsHide: !options.foreground });
         if (!options.foreground) child.unref();
         child.once("exit", (code, signal) => { exited = true; exitCode = code; exitSignal = signal; done(); });
         await new Promise<void>((resolve, reject) => { child!.once("spawn", resolve); child!.once("error", reject); });

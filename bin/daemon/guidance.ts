@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { codeSpan, CommandFailure, homeCotalDir, resolveOnPath, shellPath } from "@cotal-ai/workspace";
+import { codeSpan, CommandFailure, homeCotalDir, resolveOnPath, shellPath, windowsShellWord } from "@cotal-ai/workspace";
 
 /** An unavailable systemd installation is different from an unreachable systemd user manager. */
 export function daemonServiceRequirement(home?: string): CommandFailure | undefined {
@@ -16,11 +16,23 @@ export function foreignDaemonUpdateReport(entry: string): string {
   return `machine daemon: the background service belongs to another Cotal installation (${entry}). This update did not start or stop it.`;
 }
 
+export const windowsDaemonHomeAccess = "its owner must be you, SYSTEM or Administrators, and its Windows ACL may grant access only to those accounts";
+
+/** Name PowerShell when its quoting is needed to copy the daemon home unchanged. */
+export function windowsDaemonRemedy(op: "install" | "serve" | "start", home?: string): string {
+  const shell = home !== undefined && home !== homeCotalDir() && windowsShellWord(home) === undefined ? " in PowerShell" : "";
+  return `${codeSpan(daemonCommandCopy(op, home))}${shell}`;
+}
+
+export function windowsDaemonFirstStart(home?: string): string {
+  return `install a scheduled task with ${windowsDaemonRemedy("install", home)}, or run the daemon in the foreground with ${windowsDaemonRemedy("serve", home)}`;
+}
+
 /** A copyable command for this daemon. Tuples keep option values distinct from boolean flags;
- *  leading-hyphen values need `=` even when shell-quoted. Windows copy targets PowerShell. */
+ *  leading-hyphen values need `=` even when shell-quoted. */
 export function daemonCommandCopy(op: string, home?: string, args: readonly (string | readonly [string, string])[] = []): string {
   const quote = process.platform === "win32"
-    ? (value: string) => /^[A-Za-z0-9_./:-]+$/.test(value) ? value : `'${value.replaceAll("'", "''")}'`
+    ? (value: string) => windowsShellWord(value) ?? `'${value.replaceAll("'", "''")}'`
     : shellPath;
   const words: (string | readonly [string, string])[] = ["cotal", "daemon", op, ...args];
   if (home !== undefined && home !== homeCotalDir()) words.push(["--daemon-home", home]);

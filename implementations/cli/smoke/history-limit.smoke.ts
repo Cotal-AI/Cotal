@@ -206,6 +206,20 @@ try {
   const same = (a: HistoryLimit | undefined, b: HistoryLimit) => a !== undefined && a.maxAgeMs === b.maxAgeMs && a.perSubject === b.perSubject;
 
   // ── refusals before any connection ──────────────────────────────────────────────────────────────
+  for (const [sub, flag, message, remedy] of [
+    ["limit", "--server", "`history limit` does not take --server", "omit --server and use --space if you need to select a space"],
+    ["clear", "--max-age", "`history clear` does not take --max-age", "omit --max-age from this command. Use it with `history limit` to change retention"],
+    ["limit", "--max-age", "--max-age needs a value", "write --max-age <age|none>"],
+    ["clear", "--server", "--server needs a value", "write --server <url>"],
+  ] as const) {
+    for (const flags of [[flag, "--json"], ["--json", flag]]) {
+      const r = await run(["history", sub, ...flags]);
+      const error = r.envelope?.error;
+      check(`history ${sub} ${flags.join(" ")} reports the option in the selected subcommand`,
+        r.status === 1 && r.stderr === "" && r.envelope?.outcome === "refused"
+        && error?.code === "USAGE_INVALID" && error.message === message && error.remedy === remedy, shown(r));
+    }
+  }
   for (const [args, what, needle] of [
     [["--max-age", "1m", "--yes"], "an age below 2m", "--max-age: the age must be at least 2m"],
     [["--max-age", "0s", "--yes"], "an age of 0s", "--max-age: the age must be at least 2m"],
@@ -235,6 +249,12 @@ try {
   check("...and no chat stream was created", bareCreated === false);
 
   // ── the read-only call ───────────────────────────────────────────────────────────────────────────
+  const unknown = await run(["history", "limit", "--wibble", "--json", "--space", space]);
+  const error = unknown.envelope?.error;
+  check("history limit tells the caller to drop an unknown option rather than pass an operand",
+    unknown.status === 1 && unknown.stderr === "" && unknown.envelope?.outcome === "refused"
+    && error?.code === "USAGE_INVALID" && error.message === "Unknown option '--wibble'"
+    && error.remedy === "drop the unknown option", shown(unknown));
   const read = await run(["history", "limit", "--json", "--space", space]);
   const expected: Record<HistoryLimitStream, HistoryLimit> = { chat: CHAT_HISTORY_DEFAULT, inbox: INBOX_HISTORY_DEFAULT, dlv: INBOX_HISTORY_DEFAULT, dm: { maxAgeMs: 0, perSubject: NONE } };
   check("with no limit flag, --json without --yes reads the four streams' limits", read.status === 0 && read.envelope?.outcome === "ok" && read.envelope.result?.kind === "history-limits" && (["chat", "inbox", "dlv", "dm"] as const).every((s) => sameView(rowOf(read.envelope, s)?.holds, expected[s])), shown(read));

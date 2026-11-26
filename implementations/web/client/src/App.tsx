@@ -25,7 +25,16 @@ const RATE_WINDOW_MS = 10_000;
 type Start = (store: Store<DashboardState>, onArrival: () => void) => { controller: Controller; stop(): void };
 
 /** The real start: the HTTP API and the live feed. */
-const startLive: Start = (s, onArrival) => startDashboard({ store: s, api: httpApi(), openFeed, onArrival });
+const startLive: Start = (s, onArrival) => {
+  const dashboard = startDashboard({ store: s, api: httpApi(), openFeed, onArrival });
+  // A purge may change retained counts without sending any live traffic.
+  const timer = setInterval(() => {
+    const { connection, stale } = s.get();
+    if (connection === "connected" && !stale.some((mark) => mark.name === "channels"))
+      void dashboard.controller.refreshChannels().catch((err) => console.error("dashboard refresh failed:", err));
+  }, 5000);
+  return { controller: dashboard.controller, stop: () => { clearInterval(timer); dashboard.stop(); } };
+};
 
 /** The wiring: one store, the dashboard started, the route followed from the address hash, the
  *  theme and the phone layout followed from the browser, and the shell drawn from all of it.
@@ -59,6 +68,15 @@ export function App({ host = window, start = startLive, clock = Date.now }: { ho
   const navigate = useCallback((r: Route) => goTo(host, r), [host]);
   // Phone width as shadcn's Sidebar reads it, from the same hook, so the layout and the Sidebar agree.
   const phone = useIsMobile();
+  // The 350px navigation and 360px Details columns need room for the channel between them.
+  const [panelSheet, setPanelSheet] = useState(false);
+  useLayoutEffect(() => {
+    const query = window.matchMedia("(width < 1200px)");
+    const update = () => setPanelSheet(query.matches);
+    query.addEventListener("change", update);
+    update();
+    return () => query.removeEventListener("change", update);
+  }, []);
   // The details panel opens beside a channel and beside an agent's page, on that agent's tab.
   return (
     <ThemeProvider defaultTheme="system" storageKey="cotal.theme">
@@ -70,6 +88,7 @@ export function App({ host = window, start = startLive, clock = Date.now }: { ho
       paneOpen={route.view === "channel" || route.view === "agent"}
       msgPerSecond={() => rate.perSecond(clock())}
       phone={phone}
+      panelSheet={panelSheet}
     />
     </Navigate.Provider>
     </ThemeProvider>
