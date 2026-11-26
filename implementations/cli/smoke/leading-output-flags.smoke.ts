@@ -252,6 +252,43 @@ for (const { args, command, status, code } of [
 }
 
 const dashFlag = "\u2013\u2013no-color";
+const dashMessage = `${dashFlag} starts with a typographic dash, so it is not an option`;
+const dashRemedy = "type the option with hyphens: --no-color";
+for (const args of [
+  [dashFlag, "config", "get", "harness", "--json"],
+  ["-j", dashFlag, "cfg", "get", "harness"],
+  [dashFlag, "--json", "config", "get", "harness"],
+]) {
+  const r = run(args);
+  check(`${args.join(" ")} keeps the dash diagnosis in a finite JSON refusal`, r.status === 1 && r.stderr === "" &&
+    r.envelope?.command === "config" && r.envelope.outcome === "refused" && r.envelope.error?.code === "USAGE_INVALID" &&
+    r.envelope.error.message === dashMessage && r.envelope.error.remedy === dashRemedy, shown(r));
+}
+for (const args of [
+  [dashFlag, "config", "get", "harness", "--", "--json"],
+  ["--json", "--", dashFlag, "config", "get", "harness"],
+  [dashFlag, "ext", "root", "--json"],
+]) {
+  const r = run(args);
+  check(`${args.join(" ")} keeps the dash diagnosis on stderr when JSON is not selected`, r.status === 1 && r.stdout === "" &&
+    r.stderr.includes(dashMessage) && r.stderr.includes(dashRemedy), shown(r));
+}
+for (const [stream, ...words] of [
+  ["watch", "watch"],
+  ["history", "history", "general", "--follow"],
+  ["membership", "channel", "members", "general", "--follow"],
+]) {
+  const r = run([dashFlag, ...words, "--json"]);
+  const records = r.stdout.trim().split("\n").map((line) => {
+    try { return JSON.parse(line); } catch { return undefined; }
+  });
+  const [error, end] = records;
+  check(`${words.join(" ")} reports a leading dash error and ends the JSON stream`, r.status === 1 && r.stderr === "" &&
+    records.length === 2 && error?.stream === stream && error.type === "error" && error.data?.code === "USAGE_INVALID" &&
+    error.data.message === dashMessage && error.data.remedy === dashRemedy &&
+    end?.stream === stream && end.type === "end" && end.data?.reason === "setup-failed", shown(r));
+}
+
 for (const { words, command } of [
   { words: [dashFlag, "inspect", "./not-there"], command: "backup inspect" },
   { words: [dashFlag, "verify", "./not-there"], command: "backup verify" },
