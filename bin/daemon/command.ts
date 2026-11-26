@@ -29,7 +29,7 @@ import { registry, type Command, type FlagSpec, type ParsedArgs } from "@cotal-a
 import { CommandFailure, logicalExecutionEntry, codeSpan, homeCotalDir, keptCatalogCredentials, jsonFlag, plainFlag, presentationOf, recordOperationContext, renderReport, windowsShellWord, writeResult, type Report } from "@cotal-ai/workspace";
 import { cloudAuthUrl, isCotalCloudIdp, openLoginBrowser, isDiscoveryName, resolveDiscoveryLogin } from "@cotal-ai/workspace";
 import { chooseAccountChoice, IdpConfigurationError, normalizeIdpUrl } from "@cotal-ai/auth";
-import { EndpointRefusal, defaultPeerUid, defaultPeerPid, checkDir, daemonPaths, daemonPathsFor, type DaemonPaths, type EndpointProblemCode } from "./endpoint.js";
+import { EndpointRefusal, defaultPeerUid, defaultPeerPid, checkDir, daemonPaths, daemonPathsFor, ensureStateDir, type DaemonPaths, type EndpointProblemCode } from "./endpoint.js";
 import { serveDaemon } from "./server.js";
 import { loginFromCli } from "./cli-login.js";
 import { connectCheckViaDaemon, managerViaDaemon, queryDaemon, registerViaDaemon, serviceViaDaemon } from "./client.js";
@@ -506,7 +506,20 @@ async function setupCommand(args: ParsedArgs): Promise<void> {
   ] }));
 }
 
+/** launchd writes the service's log itself, readable by others; systemd sends the output to the journal instead. */
+async function privateServiceLog(args: ParsedArgs): Promise<void> {
+  let paths: DaemonPaths;
+  // serve resolves the same target again and refuses an unusable one with its full diagnosis.
+  try { ({ paths } = resolveTarget(args)); } catch { return; }
+  const log = await import("./native-log.js");
+  ensureStateDir(paths);
+  if (process.platform === "darwin") log.privateLaunchdLog(paths.state);
+  else log.captureNativeDaemonOutput(paths.state);
+}
+
 async function serve(args: ParsedArgs): Promise<void> {
+  // The app's Background service log reads a private daemon.log; set it up before anything below can fail.
+  if (process.env.COTAL_DAEMON_NATIVE_SERVICE === "1" && process.platform !== "win32") await privateServiceLog(args);
   const { recoverInterruptedUpdate, updateRuntime } = await import("@cotal-ai/cli/update");
   const { recoverExecutionUpdate, executionInstallRoot } = await import("./execution-update.js");
   const { cleanupExecutionStore } = await import("../execution-store.js");

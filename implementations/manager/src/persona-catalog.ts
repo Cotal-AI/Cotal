@@ -1,4 +1,4 @@
-import { agentFilePath, capabilityWithin, composeWirePersona, copyPersonaEndpoints, EpEnvelopeError, listPersonaCatalog, loadAgentFile, lowerPersonaEndpoints, parsePersonaEndpoints, parsePrincipalKey, personaCatalogDescription, personaCatalogReadable, rejectionText, resolveAuthProvider, saveAgentFile } from "@cotal-ai/core";
+import { agentFilePath, capabilityWithin, composeWirePersona, copyPersonaEndpoints, EpEnvelopeError, listPersonaCatalog, loadAgentFile, lowerPersonaEndpoints, parsePersonaEndpoints, parsePrincipalKey, patternInAllow, personaCatalogDescription, personaCatalogReadable, rejectionText, resolveAuthProvider, resolveReadAcl, saveAgentFile } from "@cotal-ai/core";
 import type { AgentDef, ControlReply, EpCaller, EpCapability, PersonaEndpoint } from "@cotal-ai/core";
 import { userAuthStateDir } from "@cotal-ai/workspace";
 import { existsSync, readFileSync, rmSync } from "node:fs";
@@ -8,6 +8,33 @@ import { userMeshEndpointsRefusal } from "./seat-launch.js";
 import type { ManagerConfig } from "./manager-config.js";
 import type { ManagerParts } from "./manager-parts.js";
 import type { ManagerStartState } from "./manager-start-state.js";
+
+type PersonaChannels = { allowSubscribe: string[]; allowPublish: string[] };
+type PersonaGrant = PersonaChannels & { capabilities: string[]; endpoints: EpCapability[]; namesEndpoints: boolean };
+
+function channelsOf(def: AgentDef): PersonaChannels {
+  let allowSubscribe: string[] = [];
+  try {
+    allowSubscribe = resolveReadAcl(def.subscribe ?? [], def.allowSubscribe);
+  } catch {
+    // The writer refuses an invalid read ACL and names the rule it violates.
+  }
+  return { allowSubscribe, allowPublish: def.allowPublish ?? [] };
+}
+
+function channelRemedies(def: AgentDef, channels: PersonaChannels, existing: boolean): string[] {
+  const remedies = [];
+  if (channels.allowSubscribe.length) {
+    if (def.quiet?.length || def.muted?.length) {
+      remedies.push(existing
+        ? "If you remove a read channel named in `quiet` or `muted`, have the operator remove that entry with `cotal persona edit <name>` on the manager host."
+        : "Remove any `quiet` or `muted` entries for channels you remove from the read list in the prompt.");
+    }
+    remedies.push("To remove all read access, pass `subscribe: []` and `allowSubscribe: []`.");
+  }
+  if (channels.allowPublish.length) remedies.push("To remove all post access, pass `allowPublish: []`.");
+  return remedies;
+}
 
 /** What {@link PersonaCatalog} reads from the Manager. Every entry is read at use, so a field the Manager
  *  assigns after construction is always current, and a Manager method a test replaces is the one that runs. */
@@ -56,9 +83,9 @@ export class PersonaCatalog {
    *  .cotal/agents/<name>.md and the connector applies its persona/model at spawn.
    *
    *  CONTENT vs POLICY: `owner` has no slot, so a peer cannot claim ownership, and the
-   *  capabilities the written persona carries, a saved list a redefine keeps included, are bounded
+   *  capabilities, endpoint commands and channels in the written persona, including retained lists, are bounded
    *  against the definer before the write, so a peer can put only what it holds into a persona that
-   *  a wider spawner might later launch. Channel grants, role, and agent are content: they may
+   *  a wider spawner might later launch. A wire persona carries no launch options. Channel grants, role and agent may
    *  arrive as explicit arguments or as a leading frontmatter block inside `persona`. A prompt
    *  that starts with `---` is parsed and merged (explicit args win) so the written file has one
    *  frontmatter block; a malformed block is refused by name rather than wrapped. A fresh name is
@@ -88,7 +115,7 @@ export class PersonaCatalog {
     // Read, authorize and compose against the catalog as it is now. Nothing yields between this and
     // the write, so no other call in this manager can change the file in between. The handler does
     // not serialize with other processes; their writes are outside this single-manager guarantee.
-    const compose = (): { def: AgentDef } | { reply: ControlReply } => {
+    const compose = (): { def: AgentDef; existing: boolean } | { reply: ControlReply } => {
       let existing: AgentDef | undefined;
       if (existsSync(path)) {
         try {
@@ -123,6 +150,7 @@ export class PersonaCatalog {
             },
             existing,
           ),
+          existing: existing !== undefined,
         };
       } catch (e) {
         return { reply: { ok: false, error: rejectionText(e) } };
@@ -130,31 +158,38 @@ export class PersonaCatalog {
     };
     let composed = compose();
     if ("reply" in composed) return composed.reply;
-    // The bound reads the persona as written, so a redefine that omits `capabilities` or `endpoints`
-    // has the list it keeps checked too. Resolving the definer's grant yields, so the catalog is read
-    // again after it.
-    if (composed.def.capabilities?.length || composed.def.endpoints !== undefined) {
+    // The bound reads the persona as written, including saved lists. Resolving the definer's
+    // grant yields, so the catalog is read again after it.
+    let channels = channelsOf(composed.def);
+    if (composed.def.capabilities?.length || composed.def.endpoints !== undefined || channels.allowSubscribe.length || channels.allowPublish.length) {
       const refusal = await this.definerGrantRefusal(caller, authenticated);
       composed = compose();
       if ("reply" in composed) return composed.reply;
+      channels = channelsOf(composed.def);
       const kept = composed.def.capabilities ?? [];
       const keptEndpoints = lowerPersonaEndpoints(composed.def.endpoints);
       // A user-auth persona may not name the field at all; elsewhere `[]` hands on nothing to bound.
       const namesEndpoints = composed.def.endpoints !== undefined;
-      const refused = kept.length || keptEndpoints.length || (namesEndpoints && this.meshMode === "user")
-        ? refusal({ capabilities: kept, endpoints: keptEndpoints, namesEndpoints })
+      const refused = kept.length || keptEndpoints.length || channels.allowSubscribe.length || channels.allowPublish.length || (namesEndpoints && this.meshMode === "user")
+        ? refusal({ capabilities: kept, endpoints: keptEndpoints, namesEndpoints, ...channels })
         : undefined;
       if (refused) {
         const fromSaved = [
           ...(capabilities === undefined && kept.length ? ["capabilities"] : []),
           ...(endpointArg === undefined && composed.def.endpoints?.length ? ["endpoints"] : []),
         ];
+        const savedChannels = [
+          ...(composed.existing && args.subscribe === undefined && args.allowSubscribe === undefined && channels.allowSubscribe.length ? ["`allowSubscribe` comes from the saved persona."] : []),
+          ...(composed.existing && args.allowPublish === undefined && channels.allowPublish.length ? ["`allowPublish` comes from the saved persona."] : []),
+        ];
+        const savedPolicy = fromSaved.length
+          ? `${fromSaved.map((f) => `\`${f}\``).join(" and ")} come${fromSaved.length === 1 ? "s" : ""} from the saved persona, which a redefine that omits ${fromSaved.length === 1 ? "it keeps" : "them keeps"}; pass what the definer holds, or [] to clear ${fromSaved.length === 1 ? "it" : "them"}.`
+          : undefined;
         return {
           ok: false,
           code: "permission-denied",
-          error: fromSaved.length
-            ? `${refused} ${fromSaved.map((f) => `\`${f}\``).join(" and ")} come${fromSaved.length === 1 ? "s" : ""} from the saved persona, which a redefine that omits ${fromSaved.length === 1 ? "it keeps" : "them keeps"}; pass what the definer holds, or [] to clear ${fromSaved.length === 1 ? "it" : "them"}.`
-            : refused,
+          outcome: "not-executed",
+          error: [refused, savedPolicy, ...savedChannels, ...channelRemedies(composed.def, channels, composed.existing)].filter(Boolean).join(" "),
         };
       }
     }
@@ -167,33 +202,40 @@ export class PersonaCatalog {
   }
 
   /** Resolve what a persona's definer may put into it, as a check that returns the refusal for
-   *  capabilities or endpoint commands it does not hold, or `undefined` when it holds them all. The
+   *  capabilities, endpoint commands or channels it does not hold, or `undefined` when it holds them all. The
    *  check itself does not yield. An open mesh mints no credential, so nothing is bounded there. A
    *  static definer is bounded by its issued evidence, as a spawner is; a user-auth definer by its
-   *  own ledger row's scope, under the ledger's token rule, with `admin` exempt. A user-auth persona
+   *  own ledger row's scope and channel lists, with `admin` exempt. A user-auth persona
    *  cannot name `endpoints` at all, `[]` included (SPEC 13.15). A hosted manager reads no ledger, so
    *  it refuses. A later spawn of the persona is bounded again against its own spawner. */
-  private async definerGrantRefusal(caller: string, authenticated: EpCaller | undefined): Promise<(grant: { capabilities: string[]; endpoints: EpCapability[]; namesEndpoints: boolean }) => string | undefined> {
+  private async definerGrantRefusal(caller: string, authenticated: EpCaller | undefined): Promise<(grant: PersonaGrant) => string | undefined> {
     if (this.meshMode === "open") return () => undefined;
     if (this.meshMode === "static") {
       const run = await this.spawnRun(authenticated, undefined);
       const bound = await this.staticSpawnBound(authenticated, run !== undefined && "admission" in run ? run : undefined);
-      return ({ capabilities, endpoints }) => this.parts.seatLaunch.spawnBoundRefusal(bound, { capabilities, ...(endpoints.length ? { endpoints } : {}) }, false, "define-persona");
+      return ({ capabilities, endpoints, allowSubscribe, allowPublish }) =>
+        this.parts.seatLaunch.spawnBoundRefusal(bound, { capabilities, allowSubscribe, allowPublish, ...(endpoints.length ? { endpoints } : {}) }, false, "define-persona");
     }
     if (this.remoteAuthority)
-      return ({ capabilities, namesEndpoints }) => namesEndpoints
+      return ({ capabilities, namesEndpoints, allowSubscribe, allowPublish }) => namesEndpoints
         ? userMeshEndpointsRefusal("define-persona")
-        : capabilities.length ? "define-persona: this manager's user authority is hosted, so it cannot read the definer's grant and its persona can grant no capabilities." : undefined;
+        : capabilities.length || allowSubscribe.length || allowPublish.length
+          ? "define-persona: this manager's user authority is hosted, so it cannot read the definer's grant and its persona can grant no capabilities or channels. Pass `capabilities: []` to remove all capabilities."
+          : undefined;
     const p = parsePrincipalKey(caller);
-    const scope = p ? await resolveAuthProvider().actorScope({ dir: userAuthStateDir(this.config.workspaceRoot, this.config.space), owner: p.owner, actor: p.actor }) : undefined;
-    return ({ capabilities, namesEndpoints }) => {
+    const held = p ? await resolveAuthProvider().actorGrant({ dir: userAuthStateDir(this.config.workspaceRoot, this.config.space), owner: p.owner, actor: p.actor }) : undefined;
+    return ({ capabilities, namesEndpoints, allowSubscribe, allowPublish }) => {
       if (namesEndpoints) return userMeshEndpointsRefusal("define-persona");
-      if (scope?.includes("admin")) return undefined;
-      const over = capabilities.filter((c) => !capabilityWithin(scope ?? [], c));
+      if (held?.scope.includes("admin")) return undefined;
+      const overCaps = capabilities.filter((c) => !capabilityWithin(held?.scope ?? [], c));
+      const overSub = allowSubscribe.filter((ch) => !patternInAllow(held?.allowSubscribe ?? [], ch));
+      const overPub = allowPublish.filter((ch) => !patternInAllow(held?.allowPublish ?? [], ch));
+      const named: Array<[string, string[], string[]]> = [["capabilities", overCaps, held?.scope ?? []], ["allowSubscribe", overSub, held?.allowSubscribe ?? []], ["allowPublish", overPub, held?.allowPublish ?? []]];
+      const over = named.filter(([, entries]) => entries.length);
       if (!over.length) return undefined;
-      return scope === undefined
-        ? `define-persona: the definer ${caller} has no grant in this space, so its persona can grant nothing. This persona asks for capabilities ${over.join(", ")}.`
-        : `define-persona: this persona grants more than the definer holds: capabilities ${over.join(", ")} beyond [${scope.join(", ") || "none"}]. Drop these from the persona, or have the operator widen the definer's grant.`;
+      return held === undefined
+        ? `define-persona: the definer ${caller} has no grant in this space, so its persona can grant nothing. This persona asks for ${over.map(([field, entries]) => `${field} ${entries.join(", ")}`).join("; ")}.`
+        : `define-persona: this persona grants more than the definer holds: ${over.map(([field, entries, within]) => `${field} ${entries.join(", ")} beyond [${within.join(", ") || "none"}]`).join("; ")}. Drop these from the persona, or have the operator widen the definer's grant.`;
     };
   }
 
@@ -298,7 +340,8 @@ export class PersonaCatalog {
   opShowPersona(args: Record<string, unknown>, caller: string, admin: boolean): ControlReply {
     const name = String(args.name ?? "").trim();
     if (!name) return { ok: false, error: "name required" };
-    const nameErr = this.nameError(name);
+    const legacyStem = name.startsWith("-") && /^[A-Za-z0-9_-]+$/.test(name);
+    const nameErr = legacyStem ? undefined : this.nameError(name);
     if (nameErr) return { ok: false, error: nameErr };
     const path = agentFilePath(this.config.workspaceRoot, name);
     if (!existsSync(path)) return { ok: false, error: `no persona "${name}"` };

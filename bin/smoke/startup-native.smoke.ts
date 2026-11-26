@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
-import { execFileSync, spawnSync } from "node:child_process";
+import { execFileSync, spawn, spawnSync, type SpawnSyncReturns } from "node:child_process";
 import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
 import { createConnection } from "node:net";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join, resolve } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import { assertSmokeSandboxDown, freePort, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
+import { verifyIdentityPin } from "@cotal-ai/workspace";
 
 // Run the built CLI with its bundled broker, without the operator's home, credentials or PATH tools.
 // Retain command output and roots for inspection. Teardown uses only the sandbox's own CLI route.
@@ -14,6 +16,7 @@ const systemRoot = process.env.SystemRoot ?? process.env.SYSTEMROOT;
 if (windows) assert.ok(systemRoot, "the Windows runner must provide its system directory");
 const systemDirectories = windows ? [join(systemRoot!, "System32"), systemRoot!] : ["/usr/bin", "/bin", "/usr/sbin", "/sbin"];
 const source = resolve(import.meta.dirname, "../..");
+const cliPath = join(source, "bin/dist/cotal.js");
 const commit = execFileSync("git", ["rev-parse", "HEAD"], { cwd: source, encoding: "utf8" }).trim();
 const root = realpathSync(mkdtempSync(join(tmpdir(), "cotal-startup-native-")));
 const receipt = process.env.COTAL_STARTUP_RESULTS ?? join(root, "result.json");
@@ -29,7 +32,42 @@ const reachable = (port: number) => new Promise<boolean>((done) => {
   socket.setTimeout(500, () => { socket.destroy(); done(false); });
 });
 
-for (const scenario of ["fresh", "prepared"]) {
+async function checkForeground(cli: (...args: string[]) => SpawnSyncReturns<string>, project: string, env: NodeJS.ProcessEnv, port: number, scenario: string): Promise<void> {
+  const crash = scenario === "foreground-crash", auth = scenario === "foreground-auth";
+  const args = ["up", "--foreground", "--no-manager", "--server", `nats://127.0.0.1:${port}`, ...(auth ? ["--space", "ux-live", "--no-input"] : ["--open"])];
+  const child = spawn(process.execPath, [cliPath, ...args], { cwd: project, env, stdio: ["ignore", "pipe", "pipe"] });
+  let out = "", err = "";
+  child.stdout.setEncoding("utf8").on("data", (part: string) => { out += part; });
+  child.stderr.setEncoding("utf8").on("data", (part: string) => { err += part; });
+  const exited = new Promise<void>((accept) => child.once("close", () => accept()));
+  child.once("error", (error) => { err += error.message; });
+  try {
+    for (const deadline = Date.now() + 30_000; !out.includes("automatically selected") && child.exitCode === null && Date.now() < deadline;) await delay(100);
+    assert.match(out, /automatically selected/, err);
+    if (crash) {
+      const pin = verifyIdentityPin(join(project, ".cotal", "nats.pid"));
+      assert.equal(pin.kind, "match");
+      process.kill(pin.record.pid, "SIGTERM");
+    } else {
+      if (auth) {
+        const sent = cli("send", "-c", "general", "lifecycle-probe");
+        assert.equal(sent.status, 0, sent.stdout + sent.stderr);
+      }
+      const down = cli("down", "--yes");
+      assert.equal(down.status, 0, down.stdout + down.stderr);
+    }
+    await Promise.race([exited, delay(30_000, undefined, { ref: false })]);
+    assert.equal(child.exitCode, crash ? 5 : 0, out + err);
+    if (crash) assert.match(err, /nats-server exited unexpectedly/);
+    else assert.doesNotMatch(err, /nats-server exited unexpectedly/);
+  } finally {
+    if (child.exitCode === null) cli("down", "--yes");
+    writeFileSync(join(logs, `${scenario}.stdout`), out);
+    writeFileSync(join(logs, `${scenario}.stderr`), err);
+  }
+}
+
+for (const scenario of ["fresh", "prepared", ...(windows ? ["foreground-down", "foreground-auth", "foreground-crash"] : [])]) {
   const base = join(root, scenario);
   const home = join(base, "home");
   const cotalHome = join(home, ".cotal");
@@ -55,7 +93,7 @@ for (const scenario of ["fresh", "prepared"]) {
   const cli = (...args: string[]) => {
     const options = { cwd: project, env, encoding: "utf8" as const, timeout: 90_000 };
     assertSmokeSandboxDown(anchor, args, options);
-    const result = spawnSync(process.execPath, [join(source, "bin/dist/cotal.js"), ...args], options);
+    const result = spawnSync(process.execPath, [cliPath, ...args], options);
     const name = `${scenario}-${row.commands.length}`;
     writeFileSync(join(logs, `${name}.stdout`), result.stdout ?? "", { flag: "wx" });
     writeFileSync(join(logs, `${name}.stderr`), result.stderr ?? "", { flag: "wx" });
@@ -70,13 +108,17 @@ for (const scenario of ["fresh", "prepared"]) {
   };
   let attempted = false;
   try {
-    if (scenario === "prepared") success("space", "create", scenario);
-    attempted = true;
-    success("up", "-d", "--server", `nats://127.0.0.1:${port}`, "--host", "127.0.0.1");
-    assert(await reachable(port), `${scenario}: broker listener is absent`);
-    success("ps");
-    success("up", "-d");
-    assert(await reachable(port), `${scenario}: refresh lost the broker listener`);
+    if (scenario.startsWith("foreground-")) {
+      await checkForeground(cli, project, env, port, scenario);
+    } else {
+      if (scenario === "prepared") success("space", "create", scenario);
+      attempted = true;
+      success("up", "-d", "--server", `nats://127.0.0.1:${port}`, "--host", "127.0.0.1");
+      assert(await reachable(port), `${scenario}: broker listener is absent`);
+      success("ps");
+      success("up", "-d");
+      assert(await reachable(port), `${scenario}: refresh lost the broker listener`);
+    }
   } catch (error) {
     row.error = error instanceof Error ? error.message : String(error);
     console.error(row.error);

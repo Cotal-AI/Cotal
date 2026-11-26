@@ -138,6 +138,8 @@ try {
   writeFileSync(join(npmPackage, "dist/cotal.js"), '#!/usr/bin/env node\nconst output = { "--entry": process.argv[1], "--cwd": JSON.stringify([process.cwd(), process.env.PWD]) };\nconsole.log(output[process.argv[2]] ?? "cotal-ai 0.0.0");\n', { mode: 0o755 });
   const installation = readFileSync(resolve(import.meta.dirname, "../../../docs/installation.mdx"), "utf8");
   assert(installation.includes("`wget` instead of `curl`") && installation.includes("wget -qO- https://get.cotal.ai | sh -s -- --no-setup"), "the install guide offers the wget bootstrap");
+  for (const command of ["npm.cmd install -g cotal-ai", "cotal.cmd version", "npm.cmd uninstall -g cotal-ai"])
+    assert(installation.includes(`\`\`\`powershell\n${command}\n\`\`\``), `the Windows install guide includes ${command}`);
   const shellLauncher = join(npmHome, ".local", "bin", "cotal");
   mkdirSync(dirname(shellLauncher), { recursive: true });
   const shellLauncherBody = "#!/bin/sh\nprintf 'shell installer launcher\\n'\n";
