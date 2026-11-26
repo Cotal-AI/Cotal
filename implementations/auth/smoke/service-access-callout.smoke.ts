@@ -33,7 +33,8 @@ const callout = await createCalloutAuth({ space, operatorSeed: auth.operator.see
 const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
 writeFileSync(join(dir, "server.conf"), serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port, storeDir: join(dir, "js"),
   extraAccounts: [{ pub: callout.account.pub, jwt: callout.account.jwt }] }));
-const srv = spawn("nats-server", ["-c", join(dir, "server.conf")], { stdio: "ignore" });
+const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_")));
+const srv = spawn("nats-server", ["-c", join(dir, "server.conf")], { env, stdio: "ignore" });
 const releaseBroker = teardownOnSignal(srv, dir);
 const exited = new Promise<void>((resolve, reject) => { srv.once("exit", () => resolve()); srv.once("error", reject); });
 const issuer = createUserTokenIssuer({ issuer: "https://service-access.test", key: await generateSigningKey() });
