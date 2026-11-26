@@ -31,6 +31,14 @@ function shownParticipant(name: string, id: string): string {
   return ident.trim() ? ident : "(unnamed)";
 }
 
+/** nats.js refuses a frame over the broker's `max_payload` before writing any of it. */
+function payloadRefused(error: unknown): boolean {
+  for (let e: unknown = error; e instanceof Error; e = e.cause) {
+    if (e.name === "InvalidArgumentError" && e.message.includes("max_payload")) return true;
+  }
+  return false;
+}
+
 /** A holder by name and id. Both reach this from peers or the record, so neither may break a line.
  *  A missing or whitespace-only name is the holder's id. */
 function holderLabel(h: { id: string; name: string }): string {
@@ -660,6 +668,12 @@ export function cotalToolSpecs(
               `"${e.target}" is ambiguous — ${e.candidates.length} peers share that name. ` +
                 `Re-send cotal_dm with the exact instance id as "to":\n${who}`,
             );
+          }
+          if (payloadRefused(e)) {
+            let limit: number | undefined;
+            try { limit = agent.ep.maxPayload; } catch { /* the connection can close after the refusal */ }
+            const ceiling = limit === undefined ? "message limit" : `${limit}-byte message limit`;
+            return err(`Couldn't DM: the message with its envelope exceeds this broker's ${ceiling}. Nothing was sent. Shorten the message or split it across several DMs.`);
           }
           return err(`Couldn't DM: ${(e as Error).message}`);
         }
