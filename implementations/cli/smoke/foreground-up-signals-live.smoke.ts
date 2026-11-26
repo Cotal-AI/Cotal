@@ -543,13 +543,14 @@ async function checkStoppedStore(mesh: string, env: NodeJS.ProcessEnv, space: st
     }
   } finally { chmodSync(jetstream, mode); }
 }
-async function restoreStartupCell(): Promise<void> {
-  const mesh = join(base, "restore-startup"), home = join(mesh, "home");
-  const env = { ...cleanEnv, HOME: home, COTAL_HOME: join(home, "machine"), XDG_CONFIG_HOME: join(home, "xdg"), COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1" };
-  for (const p of [mesh, home, env.COTAL_HOME, env.XDG_CONFIG_HOME]) mkdirSync(p, { recursive: true, mode: 0o700 });
+async function restoreStartupCell(phase: "listener" | "manager" | "committed"): Promise<void> {
+  const mesh = join(base, `restore-at-${phase}`), home = join(mesh, "home");
+  const env = { ...cleanEnv, HOME: home, COTAL_HOME: join(home, "machine"), XDG_CONFIG_HOME: join(home, "xdg"), XDG_RUNTIME_DIR: join(home, "run"), COTAL_SKIP_CONNECTOR_SEED: "1", DO_NOT_TRACK: "1", NO_COLOR: "1" };
+  for (const p of [mesh, home, env.COTAL_HOME, env.XDG_CONFIG_HOME, env.XDG_RUNTIME_DIR]) mkdirSync(p, { recursive: true, mode: 0o700 });
   const sandbox = recordSmokeSandbox({ root: mesh, cotalHome: env.COTAL_HOME, xdgConfigHome: env.XDG_CONFIG_HOME });
   const port = await freePort(), space = "foreground-restore";
   const server = `nats://127.0.0.1:${port}`;
+  const managerPath = canonicalLocalProcessPath(MANAGER_PIDFILE, { root: mesh, space });
   const journalPath = join(mesh, ".cotal", "maintenance", "v1", "journal.json");
   const journal = (): { state?: string; restore?: { attemptId: string }; listenerProof?: { processOwner: { pid: number } } } =>
     JSON.parse(readFileSync(journalPath, "utf8"));
@@ -558,10 +559,11 @@ async function restoreStartupCell(): Promise<void> {
     assertSmokeSandboxDown(sandbox, args, { cwd: mesh, env });
     const result = await probe(args);
     assert.equal(result.code, 0, `${args.join(" ")}: ${result.out}${result.err}`);
+    return result.out;
   };
   const owned = new Map<string, ProcessIdentityRecord>();
   const collect = () => {
-    for (const file of [join(mesh, ".cotal/nats.pid"), canonicalLocalProcessPath(MANAGER_PIDFILE, { root: mesh, space })]) {
+    for (const file of [join(mesh, ".cotal/nats.pid"), managerPath]) {
       const row = token(file);
       if (row) owned.set(`${row.pid}:${row.token}`, row);
     }
@@ -580,43 +582,59 @@ async function restoreStartupCell(): Promise<void> {
       const result = await probe(["channel", "set", "restore-probe", "--desc", "before restore", "--space", space]);
       return result.code === 0;
     }, 90_000, () => "source manager did not register");
+    const post = "retained through foreground restore";
+    await must(["send", "-c", "restore-probe", post, "--space", space]);
     await must(["down", "--preserve-state", "--store-dir", "./source store"]);
     await must(["backup", "create", "./full backup", "--store-dir", "./source store", "--plain"]);
 
     const restore = run = foreground(["--foreground", "--restore", "./full backup", "--store-dir", "./phase target"]);
+    const committed = phase === "committed";
+    const signal = committed ? "SIGINT" : "SIGTERM";
     let attempt: string | undefined;
     let broker: ProcessIdentityRecord | undefined;
     await until(() => {
       if (restore.state.error || restore.state.exited) throw new Error(restore.log());
+      const manager = token(managerPath);
+      if (phase !== "listener" && !manager) return false;
       const record = journal();
-      if (record.state !== "commit-intent" || !record.listenerProof) return false;
+      if (committed) assert.notEqual(record.state, "active", "missed the manager-committed window");
+      if (record.state !== (committed ? "manager-committed" : "commit-intent") || !record.listenerProof) return false;
       broker = token(join(mesh, ".cotal/nats.pid"));
       assert.equal(broker?.pid, record.listenerProof.processOwner.pid);
-      collect();
+      for (const row of [broker, manager]) if (row) owned.set(`${row.pid}:${row.token}`, row);
       attempt = record.restore?.attemptId;
-      assert.ok(restore.child.kill("SIGTERM"));
+      assert.ok(restore.child.kill(signal));
       return true;
-    }, 120_000, restore.log, 2);
+    }, 120_000, restore.log, committed ? 1 : 2);
     await until(() => restore.state.exited, 90_000, restore.log);
     await waitForOwnedChild(() => restore.state.closed, 3_000, "interrupted restore streams drained");
-    assert.equal(restore.state.code, 143, restore.log()); passed++;
-    assert.ok(attempt && restore.log().includes(`Interrupted: restore attempt ${attempt}`), restore.log()); passed++;
-    assert.match(restore.log(), /Continue it with bare `(?:pnpm )?cotal up`/); passed++;
-    assert.doesNotMatch(restore.log(), /before it answered|take it off PATH|OPERATION_FAILED/); passed++;
-    assert.ok(broker && !live(broker) && !await portOpen(port), "the interrupted restore stopped its own listener"); passed++;
+    assert.equal(restore.state.code, committed ? 130 : 143, restore.log()); passed++;
+    if (committed) {
+      assert.ok(attempt && restore.log().includes(`restored the backup in full as restore attempt ${attempt}`), restore.log()); passed++;
+      assert.doesNotMatch(restore.log(), /Continue it with bare|Interrupted: restore attempt/); passed++;
+      assert.equal(journal().state, "active", "the committed restore finished before shutdown"); passed++;
+    } else {
+      assert.ok(attempt && restore.log().includes(`Interrupted: restore attempt ${attempt}`), restore.log()); passed++;
+      assert.match(restore.log(), /Continue it with bare `(?:pnpm )?cotal up`/); passed++;
+    }
+    assert.doesNotMatch(restore.log(), /before it answered|take it off PATH|OPERATION_FAILED|OPERATION_UNKNOWN/); passed++;
+    assert.ok(broker && ![...owned.values()].some(live) && !await portOpen(port), "the interrupted restore stopped its own manager and listener"); passed++;
+    assert.equal(journal().restore?.attemptId, attempt, "interruption kept the same journaled attempt"); passed++;
+    assert.notEqual(journal().state, "degraded", "intentional shutdown is not an activation failure"); passed++;
 
     const recovery = run = foreground([]);
-    await until(() => {
+    await until(async () => {
       collect();
       if (recovery.state.error || recovery.state.exited) throw new Error(recovery.log());
       const record = journal();
-      return record.state === "active" && record.restore?.attemptId === attempt;
+      return record.state === "active" && record.restore?.attemptId === attempt && await portOpen(port);
     }, 120_000, recovery.log);
-    await must(["channel", "set", "restore-probe", "--desc", "after recovery", "--space", space]);
+    const history = JSON.parse(await must(["history", "restore-probe", "--space", space, "--json"])) as { result: { items: { text: string }[] } };
+    assert.deepEqual(history.result.items.map((item) => item.text), [post]); passed++;
     await must(["down", "--yes"]);
     await until(() => recovery.state.exited, 20_000, recovery.log);
     assert.equal(recovery.state.code, 0, recovery.log()); passed++;
-    console.log("PASS foreground-up-signals restore-startup: SIGTERM preserves forward recovery of the same attempt");
+    console.log(`PASS foreground-up-signals restore-at-${phase}: ${signal} ${committed ? "lets the same attempt finish" : "preserves forward recovery of the same attempt"}`);
   } finally {
     if (run) await finishOwnedChild(run.child, run.state, collect, () => owned.values(), mesh);
     else if (await portOpen(port)) await must(["down", "--yes"]);
@@ -1549,7 +1567,9 @@ for (let attempt = 1; attempt <= 3 && !refusalObserved; attempt++) {
 }
 assert.ok(refusalObserved, "native unavailable-capability refusal must be observed within three owned attempts, never manufactured");
 await cell("crash", { crash: true });
-await restoreStartupCell();
+await restoreStartupCell("listener");
+await restoreStartupCell("manager");
+await restoreStartupCell("committed");
 await controllerStartupCell();
 await controllerStartupCell("receipt");
 await controllerStartupCell("team");
