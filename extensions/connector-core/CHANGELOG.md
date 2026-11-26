@@ -1,5 +1,11 @@
 # @cotal-ai/connector-core
 
+## 0.182.1
+
+### Patch Changes
+
+- 938d757: The `set-model` policy refusal and configuration read warning now refer to the Cotal configuration without implying that you should run a command.
+
 ## 0.182.0
 
 ### Minor Changes

@@ -1,5 +1,13 @@
 # @cotal-ai/workspace
 
+## 0.182.1
+
+### Patch Changes
+
+- 5117d48: When a stack loses its Cotal home records, status and ps point to the stop preview, and component status distinguishes a running broker from a service it cannot check.
+- Updated dependencies [287b874]
+  - @cotal-ai/core@0.182.1
+
 ## 0.182.0
 
 ### Patch Changes

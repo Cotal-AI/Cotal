@@ -1,5 +1,26 @@
 # @cotal-ai/cli
 
+## 0.182.1
+
+### Patch Changes
+
+- a47c69b: Return the oversized-message refusal from `cotal send --file` without waiting for a named pipe's writer to close it.
+- e64eec6: Show `--subscribe=` in persona help and retry instructions so the same command creates a persona with no channel subscriptions in Windows PowerShell 5.1 and other shells.
+- 213f163: Self-update looks for a Node version that can run both Corepack and the npm it selects, even when the Node running Cotal cannot run Corepack.
+- c368daa: JSON refusals for malformed or repeated global flags include the extension command collision warning in the receipt instead of printing it to stderr or dropping it.
+- 35b74b7: Fix the extension installation smoke suite's expected check count on every platform.
+- 364a6d1: Keep the target and flags in the `cotal clean` retry printed when `.cotal` links to another project.
+- 5117d48: When a stack loses its Cotal home records, status and ps point to the stop preview, and component status distinguishes a running broker from a service it cannot check.
+- 41c615a: Interrupting a foreground restore before the manager commit is recorded stops the stack and prints how to continue the same restore, while an interrupt after that commit lets the restore finish before stopping.
+- 4fb5871: Restore a backup from `.cotal/maintenance` without moving it, as long as it does not overlap the preserved store, the maintenance lock files, or the attempt and journal directories.
+- e819f05: Keep the stack settlement smoke test running when its startup poll reads a journal that is being replaced.
+- c9778e7: When self-update cannot read the extensions manifest, it tells you to restore read access and retry.
+- 5767c3a: Fix self-updates and extension installs whose npm scripts need `node` when Cotal is running on a version-named Node executable.
+- Updated dependencies [5117d48]
+- Updated dependencies [287b874]
+  - @cotal-ai/workspace@0.182.1
+  - @cotal-ai/core@0.182.1
+
 ## 0.182.0
 
 ### Minor Changes

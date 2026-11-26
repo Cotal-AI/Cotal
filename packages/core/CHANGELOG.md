@@ -1,5 +1,11 @@
 # @cotal-ai/core
 
+## 0.182.1
+
+### Patch Changes
+
+- 287b874: Keep membership watches live when the membership store is replaced under the same name by replaying the replacement's current entries.
+
 ## 0.182.0
 
 ### Minor Changes

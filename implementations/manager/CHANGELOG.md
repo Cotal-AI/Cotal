@@ -1,5 +1,17 @@
 # @cotal-ai/manager
 
+## 0.182.1
+
+### Patch Changes
+
+- 938d757: The `set-model` policy refusal and configuration read warning now refer to the Cotal configuration without implying that you should run a command.
+- e4bef3d: Stop running agents or open them in the system terminal from the desktop agent list, which now shows their state, elapsed time, application and model.
+- Updated dependencies [5117d48]
+- Updated dependencies [287b874]
+  - @cotal-ai/workspace@0.182.1
+  - @cotal-ai/core@0.182.1
+  - @cotal-ai/seat@0.182.1
+
 ## 0.182.0
 
 ### Minor Changes
