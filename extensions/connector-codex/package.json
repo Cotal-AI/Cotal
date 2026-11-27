@@ -20,12 +20,17 @@
   "scripts": {
     "test": "tsx smoke/codex-args.smoke.ts && tsx smoke/model-catalog.smoke.ts && tsx smoke/thread-binding.smoke.ts && tsx smoke/mcp-version.smoke.ts && tsx smoke/personal-binding.smoke.ts && tsx smoke/personal-approval-resume.smoke.ts && tsx smoke/setup-refresh.smoke.ts && tsx smoke/plugin-list-buffer.smoke.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.smoke.json",
-    "build": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && tsc -p tsconfig.json --emitDeclarationOnly && pnpm run bundle",
-    "bundle": "esbuild src/index.ts --bundle --minify-whitespace --platform=node --format=esm --target=node20 --outfile=dist/index.js --external:@cotal-ai/core && esbuild src/host-main.ts --bundle --minify-whitespace --platform=node --format=esm --target=node20 --outfile=dist/host.js --banner:js=\"import { createRequire as __cotalCreateRequire } from 'node:module'; const require = __cotalCreateRequire(import.meta.url);\" && esbuild src/personal-main.ts --bundle --minify-whitespace --platform=node --format=esm --target=node20 --outfile=dist/personal.js --banner:js=\"import { createRequire as __cotalCreateRequire } from 'node:module'; const require = __cotalCreateRequire(import.meta.url);\" && node -e \"require('node:fs').copyFileSync('../connector-core/src/docs-index.bin','dist/docs-index.bin')\" && node -e \"require('node:fs').copyFileSync('../connector-core/src/docs-bundle.bin','dist/docs-bundle.bin')\"",
+    "build": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && tsc -p tsconfig.json --emitDeclarationOnly && pnpm run bundle && node ../../scripts/plugin-manifest.mjs",
+    "bundle": "esbuild src/index.ts --bundle --minify-whitespace --platform=node --format=esm --target=node20 --outfile=dist/index.js --banner:js=\"import { createRequire as __cotalCreateRequire } from 'node:module'; const require = __cotalCreateRequire(import.meta.url);\" && esbuild src/host-main.ts --bundle --minify-whitespace --platform=node --format=esm --target=node20 --outfile=dist/host.js --banner:js=\"import { createRequire as __cotalCreateRequire } from 'node:module'; const require = __cotalCreateRequire(import.meta.url);\" && esbuild src/personal-main.ts --bundle --minify-whitespace --platform=node --format=esm --target=node20 --outfile=dist/personal.js --banner:js=\"import { createRequire as __cotalCreateRequire } from 'node:module'; const require = __cotalCreateRequire(import.meta.url);\" && node -e \"require('node:fs').copyFileSync('../connector-core/src/docs-index.bin','dist/docs-index.bin')\" && node -e \"require('node:fs').copyFileSync('../connector-core/src/docs-bundle.bin','dist/docs-bundle.bin')\"",
     "prepublishOnly": "pnpm run build"
   },
   "peerDependencies": {
-    "@cotal-ai/core": ">=0.1.0"
+    "@cotal-ai/core": "*"
+  },
+  "peerDependenciesMeta": {
+    "@cotal-ai/core": {
+      "optional": true
+    }
   },
   "devDependencies": {
     "@cotal-ai/auth": "workspace:*",
@@ -44,6 +49,81 @@
   "files": [
     "dist"
   ],
+  "cotal": {
+    "contract": 1,
+    "core": "0.183.1",
+    "provides": [
+      {
+        "kind": "connector",
+        "name": "codex",
+        "aliases": []
+      },
+      {
+        "kind": "connector-setup",
+        "name": "codex",
+        "aliases": []
+      }
+    ],
+    "commands": [],
+    "connectors": [
+      {
+        "name": "codex",
+        "requires": [
+          "codex"
+        ],
+        "eventPlane": true,
+        "prompts": true,
+        "askPermissions": true,
+        "reasoningEvents": true,
+        "setup": {
+          "kind": "connector-setup",
+          "name": "codex"
+        },
+        "install": {
+          "title": "Codex",
+          "maker": "OpenAI",
+          "installers": {
+            "darwin": {
+              "script": "https://chatgpt.com/codex/install.sh",
+              "shell": "sh",
+              "env": {
+                "CODEX_NON_INTERACTIVE": "1"
+              },
+              "binDir": "~/.local/bin"
+            },
+            "linux": {
+              "script": "https://chatgpt.com/codex/install.sh",
+              "shell": "sh",
+              "env": {
+                "CODEX_NON_INTERACTIVE": "1"
+              },
+              "binDir": "~/.local/bin"
+            },
+            "win32": {
+              "script": "https://chatgpt.com/codex/install.ps1",
+              "env": {
+                "CODEX_NON_INTERACTIVE": "1"
+              },
+              "binDir": "%LOCALAPPDATA%\\Programs\\OpenAI\\Codex\\bin"
+            }
+          },
+          "signIn": {
+            "status": [
+              "codex",
+              "login",
+              "status"
+            ],
+            "login": [
+              "codex",
+              "login"
+            ]
+          }
+        }
+      }
+    ],
+    "localProcesses": [],
+    "servicePresets": []
+  },
   "publishConfig": {
     "access": "public"
   }

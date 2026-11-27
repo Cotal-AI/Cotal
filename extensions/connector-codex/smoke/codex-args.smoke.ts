@@ -6,9 +6,9 @@ import { strict as assert } from "node:assert";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { LAUNCH_MATERIAL_ENV, readLaunchMaterial, registry } from "@cotal-ai/core";
+import { commitPlugin, LAUNCH_MATERIAL_ENV, readLaunchMaterial, registry, stagePlugin } from "@cotal-ai/core";
 import { configFromEnv, controlFromEnv } from "@cotal-ai/connector-core";
-import { codexConnector } from "../src/index.js";
+import registerCodex, { codexConnector, codexSetupProvider } from "../src/index.js";
 import { configOverrides } from "../src/codex-config.js";
 
 let pass = 0;
@@ -32,8 +32,12 @@ const dir = mkdtempSync(join(tmpdir(), "cotal-codexargs-"));
 process.env.SUPER_SECRET_LEAK_CANARY = "leak-me";
 process.env.OPENAI_API_KEY = "sk-test-canary";
 try {
-  // Self-registration: importing the package must register the connector under "codex".
-  check("self-registers as connector codex", registry.resolve("connector", "codex") === codexConnector);
+  check("import leaves Codex connector and setup unregistered", !registry.has("connector", "codex") && !registry.has("connector-setup", "codex"));
+  const scope = commitPlugin(registry, await stagePlugin(registry, registerCodex));
+  check("factory registers the Codex connector", registry.resolve("connector", "codex") === codexConnector);
+  check("factory registers the Codex setup provider", registry.resolve("connector-setup", "codex") === codexSetupProvider);
+  scope.dispose();
+  check("disposal removes both Codex providers", !registry.has("connector", "codex") && !registry.has("connector-setup", "codex"));
 
   // Base launch.
   const base = launch({ space: "s", name: "n" });

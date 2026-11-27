@@ -2,7 +2,7 @@ import { existsSync, mkdtempSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { discardLaunchArtifacts, registry, type Connector, type LaunchOpts, type LaunchSpec } from "@cotal-ai/core";
+import { discardLaunchArtifacts, type Connector, type LaunchOpts, type LaunchSpec } from "@cotal-ai/core";
 import { aclEnv, nameEnv, controlEndpoint, eventChannel, launchArmsEvents, launchEnv, materialEnv } from "@cotal-ai/connector-core";
 import { findWindowsUv } from "./binary.js";
 import { HERMES_PROVIDER_KEYS, listHermesModels } from "./models.js";
@@ -188,5 +188,3 @@ export const hermesConnector: Connector = {
     };
   },
 };
-
-registry.register(hermesConnector);

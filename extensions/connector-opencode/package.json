@@ -20,12 +20,17 @@
   "scripts": {
     "test": "tsx smoke/tool-input-closed.smoke.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.smoke.json",
-    "build": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && tsc -p tsconfig.json --emitDeclarationOnly && pnpm run bundle",
-    "bundle": "esbuild src/index.ts --bundle --minify-whitespace --platform=node --format=esm --target=node20 --outfile=dist/index.js --external:@cotal-ai/core && esbuild src/plugin.entry.ts --bundle --minify-whitespace --platform=node --format=esm --target=node20 --outfile=dist/plugin/index.js && esbuild src/serve.ts --bundle --minify-whitespace --platform=node --format=esm --target=node20 --outfile=dist/serve.js && esbuild src/launch.ts --bundle --minify-whitespace --platform=node --format=esm --target=node20 --outfile=dist/launch.js && node -e \"require('node:fs').copyFileSync('../connector-core/src/docs-index.bin','dist/plugin/docs-index.bin')\" && node -e \"require('node:fs').copyFileSync('../connector-core/src/docs-bundle.bin','dist/plugin/docs-bundle.bin')\"",
+    "build": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && tsc -p tsconfig.json --emitDeclarationOnly && pnpm run bundle && node ../../scripts/plugin-manifest.mjs",
+    "bundle": "esbuild src/index.ts --bundle --minify-whitespace --platform=node --format=esm --target=node20 --outfile=dist/index.js --banner:js=\"import { createRequire as __cotalCreateRequire } from 'node:module'; const require = __cotalCreateRequire(import.meta.url);\" && esbuild src/plugin.entry.ts --bundle --minify-whitespace --platform=node --format=esm --target=node20 --outfile=dist/plugin/index.js && esbuild src/serve.ts --bundle --minify-whitespace --platform=node --format=esm --target=node20 --outfile=dist/serve.js && esbuild src/launch.ts --bundle --minify-whitespace --platform=node --format=esm --target=node20 --outfile=dist/launch.js && node -e \"require('node:fs').copyFileSync('../connector-core/src/docs-index.bin','dist/plugin/docs-index.bin')\" && node -e \"require('node:fs').copyFileSync('../connector-core/src/docs-bundle.bin','dist/plugin/docs-bundle.bin')\"",
     "prepublishOnly": "pnpm run build"
   },
   "peerDependencies": {
-    "@cotal-ai/core": ">=0.1.0"
+    "@cotal-ai/core": "*"
+  },
+  "peerDependenciesMeta": {
+    "@cotal-ai/core": {
+      "optional": true
+    }
   },
   "devDependencies": {
     "@cotal-ai/auth": "workspace:*",
@@ -41,6 +46,49 @@
   "files": [
     "dist"
   ],
+  "cotal": {
+    "contract": 1,
+    "core": "0.183.1",
+    "provides": [
+      {
+        "kind": "connector",
+        "name": "opencode",
+        "aliases": []
+      }
+    ],
+    "commands": [],
+    "connectors": [
+      {
+        "name": "opencode",
+        "requires": [
+          "opencode"
+        ],
+        "eventPlane": true,
+        "prompts": true,
+        "askPermissions": true,
+        "reasoningEvents": true,
+        "setup": null,
+        "install": {
+          "title": "OpenCode",
+          "maker": "Anomaly",
+          "installers": {
+            "darwin": {
+              "script": "https://opencode.ai/v2/install",
+              "shell": "bash",
+              "binDir": "~/.opencode/bin"
+            },
+            "linux": {
+              "script": "https://opencode.ai/v2/install",
+              "shell": "bash",
+              "binDir": "~/.opencode/bin"
+            }
+          }
+        }
+      }
+    ],
+    "localProcesses": [],
+    "servicePresets": []
+  },
   "publishConfig": {
     "access": "public"
   }

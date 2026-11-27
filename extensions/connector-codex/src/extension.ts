@@ -13,7 +13,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { join, resolve } from "node:path";
-import { registry, type CommandCatalog, type CommandListOpts, type Connector, type LaunchModes, type LaunchOpts, type LaunchSpec, type ModelCatalog, type ModelCatalogOpts, type ModelInfo, type ModeInfo } from "@cotal-ai/core";
+import { type CommandCatalog, type CommandListOpts, type Connector, type LaunchModes, type LaunchOpts, type LaunchSpec, type ModelCatalog, type ModelCatalogOpts, type ModelInfo, type ModeInfo } from "@cotal-ai/core";
 import { aclEnv, nameEnv, connectorLaunchOptions, controlEndpoint, eventChannel, firstCommandEnv, launchArmsEvents, launchEnv, materialEnv } from "@cotal-ai/connector-core";
 import { askAppServer } from "./app-server-once.js";
 import type { CodexSkill } from "./app-server.js";
@@ -322,5 +322,3 @@ export const codexConnector: Connector = {
     return { command: HOST_COMMAND, args: [HOST_ENTRY], env, control, ...(artifacts.length > 0 ? { artifacts } : {}) };
   },
 };
-
-registry.register(codexConnector);

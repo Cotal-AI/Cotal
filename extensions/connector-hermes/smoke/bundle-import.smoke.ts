@@ -19,8 +19,9 @@ import { join } from "node:path";
 import { skipSuite } from "@cotal-ai/smoke-kit";
 
 const pkgDir = fileURLToPath(new URL("..", import.meta.url));
-const { peerDependencies } = JSON.parse(readFileSync(join(pkgDir, "package.json"), "utf8"));
+const { peerDependencies, peerDependenciesMeta } = JSON.parse(readFileSync(join(pkgDir, "package.json"), "utf8"));
 assert.deepEqual(Object.keys(peerDependencies).filter((name) => name.startsWith("@cotal-ai/")), ["@cotal-ai/core"]);
+assert.equal(peerDependenciesMeta["@cotal-ai/core"].optional, true);
 
 if (process.platform === "win32") skipSuite("execFileSync(\"pnpm\") cannot spawn a .cmd");
 

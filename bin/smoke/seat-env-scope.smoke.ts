@@ -53,13 +53,15 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { LAUNCH_MATERIAL_ENV, createSpaceAuth, discardLaunchArtifacts, discardLaunchMaterial, mintCreds, mintLifecycleUid, newIdentity, readLaunchMaterial, reclaimWithChild, registry, writeLaunchMaterial, type Connector, type LaunchOpts, type UserAuthLaunch } from "@cotal-ai/core";
 import { configFromEnv, controlFromEnv, materialEnv, OPERATOR_ENV_KEEP, scrubLaunchMaterial } from "@cotal-ai/connector-core";
-import "@cotal-ai/connector-claude-code";
-import "@cotal-ai/connector-opencode";
-import "@cotal-ai/connector-codex";
-import "@cotal-ai/connector-hermes";
-import "@cotal-ai/connector-jcode";
-import "@cotal-ai/pi";
+import { claudeConnector } from "@cotal-ai/connector-claude-code";
+import { opencodeConnector } from "@cotal-ai/connector-opencode";
+import { codexConnector } from "@cotal-ai/connector-codex";
+import { hermesConnector } from "@cotal-ai/connector-hermes";
+import { jcodeConnector } from "@cotal-ai/connector-jcode";
+import { piConnector } from "@cotal-ai/pi";
 import { perSpawnAssignments } from "../../extensions/connector-core/smoke/_per-spawn-census.js";
+
+registry.register(claudeConnector, opencodeConnector, codexConnector, hermesConnector, jcodeConnector, piConnector);
 
 /** The variables that carry material a descendant has no business holding. `COTAL_CONTROL_SOCKET` is
  *  deliberately NOT here: it is a path, the socket refuses an unauthenticated frame, and the

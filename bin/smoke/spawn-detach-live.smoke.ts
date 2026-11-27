@@ -249,7 +249,7 @@ try {
   const previousUv = process.env.COTAL_HERMES_UV_BIN;
   const previousAdoptHome = process.env.COTAL_HERMES_ADOPT_HOME;
   try {
-    await import("../../extensions/connector-hermes/dist/index.js");
+    registry.register((await import("../../extensions/connector-hermes/dist/index.js")).hermesConnector);
     process.env.PATH = fakeBin;
     delete process.env.COTAL_HERMES_ADOPT_HOME;
     const hermesWithoutUv = async (extra: string[] = []): Promise<unknown> => {
@@ -279,9 +279,11 @@ try {
     fixture("uv", "if(process.argv.includes('python')){console.log('0.19.0');process.exit(0)}const {spawnSync}=await import('node:child_process');const r=spawnSync('hermes',[],{stdio:'inherit'});process.exit(r.status??1);");
     process.env.PATH = `${fakeBin}:${previousPath ?? ""}`;
     process.env.COTAL_HERMES_UV_BIN = join(fakeBin, "uv");
-    await import("../../extensions/connector-codex/dist/index.js");
-    await import("../../extensions/connector-opencode/dist/index.js");
-    await import("../../extensions/connector-jcode/dist/index.js");
+    registry.register(
+      (await import("../../extensions/connector-codex/dist/index.js")).codexConnector,
+      (await import("../../extensions/connector-opencode/dist/index.js")).opencodeConnector,
+      (await import("../../extensions/connector-jcode/dist/index.js")).jcodeConnector,
+    );
     const failedLaunch = async (harness: string, name: string, extra: string[] = []): Promise<unknown> => {
       try {
         await capture(() => run("spawn", ["poet", "--detach", "--agent", harness, "--space", SPACE, "--name", name, ...extra]));

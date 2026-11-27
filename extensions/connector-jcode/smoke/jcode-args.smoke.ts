@@ -3,10 +3,10 @@ import { appendFileSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { LAUNCH_MATERIAL_ENV, readLaunchMaterial, registry } from "@cotal-ai/core";
+import { commitPlugin, LAUNCH_MATERIAL_ENV, readLaunchMaterial, registry, stagePlugin } from "@cotal-ai/core";
 import { configFromEnv, controlFromEnv, cotalToolSpecs, DeltaMergedSource, EventWal } from "@cotal-ai/connector-core";
 import { z } from "zod";
-import { jcodeConnector, listJcodeModels, JCODE_READINESS_TIMEOUT_MS } from "../src/index.js";
+import registerJcode, { jcodeConnector, listJcodeModels, JCODE_READINESS_TIMEOUT_MS } from "../src/index.js";
 import { createJcodeMapper } from "../src/agui-map.js";
 /** The unit a record mapped to, or `null`: a turn the mapper opens no run for maps to none. */
 const unitOf = <U extends { runId: string }>(r: U | { turn: true } | null): U | null => (r !== null && "runId" in r ? r : null);
@@ -39,14 +39,11 @@ const throws = (name: string, fn: () => unknown, match: RegExp): void => {
 const dir = mkdtempSync(join(tmpdir(), "cotal-jcodeargs-"));
 process.env.UNRELATED_JCODE_ENV_CANARY = "inherited";
 try {
-  let registered = false;
-  try {
-    registered = registry.resolve("connector", "jcode") === jcodeConnector;
-  } catch {
-    // Keep the assertion's named failure visible: a missing registration otherwise throws before
-    // check() can print its label, which makes mutation-proof correctly call it an unrelated red.
-  }
-  check("self-registers as connector jcode", registered);
+  check("import leaves Jcode unregistered", !registry.has("connector", "jcode"));
+  const scope = commitPlugin(registry, await stagePlugin(registry, registerJcode));
+  check("factory registers the Jcode connector", registry.has("connector", "jcode") && registry.resolve("connector", "jcode") === jcodeConnector);
+  scope.dispose();
+  check("disposal removes the Jcode connector", !registry.has("connector", "jcode"));
   if (process.platform === "win32") {
     // The refusal below is the FIRST buildLaunch on this platform: every later probe in this file
     // assumes a Unix host, so the Windows arm must run before any of them can throw unlabelled.

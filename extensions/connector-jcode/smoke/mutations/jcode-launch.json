@@ -4,11 +4,11 @@
   "minTicks": 20,
   "mutations": [
     {
-      "name": "Jcode connector self-registers",
-      "file": "extensions/connector-jcode/src/extension.ts",
-      "find": "registry.register(jcodeConnector);",
-      "replace": "// registry intentionally removed",
-      "expectRed": "self-registers as connector jcode"
+      "name": "Jcode connector registers through the host",
+      "file": "extensions/connector-jcode/src/index.ts",
+      "find": "  host.register(jcodeConnector);",
+      "replace": "  void host;",
+      "expectRed": "factory registers the Jcode connector"
     },
     {
       "name": "Jcode connector refuses resume of an unreadable transcript before launch",

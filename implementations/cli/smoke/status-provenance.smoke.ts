@@ -2,9 +2,11 @@ import assert from "node:assert/strict";
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { registry } from "@cotal-ai/core";
 import { status } from "../src/commands/status.js";
-// The Claude skills row comes from the claude connector's setup provider; importing it registers both.
-import "../../../extensions/connector-claude-code/dist/index.js";
+import { claudeConnector, claudeSetupProvider } from "../../../extensions/connector-claude-code/dist/index.js";
+
+registry.register(claudeConnector, claudeSetupProvider);
 
 const ANSI = /\x1b\[[0-9;]*m/g;
 const realArgv1 = process.argv[1];

@@ -36,10 +36,11 @@ process.env.PATH = `${bin}:${process.env.PATH ?? ""}`;
 const { connect } = await import("@nats-io/transport-node");
 const {
   createSpaceAuth, mintCreds, newIdentity, standaloneConnectOpts, setupSpaceStreams,
-  digestIdToken, epCall, readGoalResult, readGoalIndex, lifecycleBlockedFrom,
+  digestIdToken, epCall, readGoalResult, readGoalIndex, lifecycleBlockedFrom, registry,
 } = await import("@cotal-ai/core");
 const { authDir, saveSpaceAuth, mintControlInstrument, trustProject, workspaceSecretStore } = await import("@cotal-ai/workspace");
-await import("@cotal-ai/connector-jcode");
+const { jcodeConnector } = await import("@cotal-ai/connector-jcode");
+registry.register(jcodeConnector);
 const { Manager } = await import("@cotal-ai/manager");
 const { MANAGER_ENDPOINT, MANAGER_CONTRACTS } = await import("../../implementations/manager/src/manager-service-contract.js");
 const { bootBroker } = await import("../../implementations/manager/smoke/_boot-broker.js");

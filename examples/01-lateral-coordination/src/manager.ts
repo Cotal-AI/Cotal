@@ -14,7 +14,7 @@ import {
 } from "@cotal-ai/core";
 import { Manager } from "@cotal-ai/manager";
 import { launchEnv } from "@cotal-ai/connector-core";
-import "@cotal-ai/connector-claude-code"; // self-registers the `claude` connector
+import { claudeConnector } from "@cotal-ai/connector-claude-code";
 
 /** The walking-skeleton peer: a manual CLI endpoint launched via `cotal join`. */
 const cotalConnector: Connector = {
@@ -27,7 +27,7 @@ const cotalConnector: Connector = {
     return { command: "pnpm", args, env: launchEnv() };
   },
 };
-registry.register(cotalConnector);
+registry.register(cotalConnector, claudeConnector);
 
 const space = process.env.COTAL_SPACE?.trim() || "demo";
 const server = process.env.COTAL_SERVERS?.trim() || DEFAULT_SERVER;

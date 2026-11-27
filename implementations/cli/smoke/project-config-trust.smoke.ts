@@ -108,10 +108,11 @@ process.env.PATH = `${bin}:${process.env.PATH ?? ""}`;
 process.env.TRUST_SMOKE_NAME = "forwarded-1118";
 
 await import("../src/index.js");
-await import("@cotal-ai/connector-claude-code");
+const { claudeConnector, claudeSetupProvider } = await import("@cotal-ai/connector-claude-code");
 const { runCli } = await import("../src/command.js");
 const { loadManifest } = await import("../src/lib/manifest/index.js");
 const { registry } = await import("@cotal-ai/core");
+registry.register(claudeConnector, claudeSetupProvider);
 const { recordMesh, recordPreparedSpace, trustedProjectsPath } = await import("@cotal-ai/workspace");
 
 // The one-time upgrade seed reads the registrations before the first command. This space is

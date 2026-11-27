@@ -36,10 +36,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadCotalConfig, spawnEnvAllow } from "@cotal-ai/core";
 import { registry, type Connector, type LaunchOpts } from "@cotal-ai/core";
-import "@cotal-ai/connector-claude-code";
-import "@cotal-ai/connector-opencode";
-import "@cotal-ai/connector-codex";
-import "@cotal-ai/connector-jcode";
+import { claudeConnector } from "@cotal-ai/connector-claude-code";
+import { opencodeConnector } from "@cotal-ai/connector-opencode";
+import { codexConnector } from "@cotal-ai/connector-codex";
+import { jcodeConnector } from "@cotal-ai/connector-jcode";
+
+registry.register(claudeConnector, opencodeConnector, codexConnector, jcodeConnector);
 
 const ALLOWED = "E2E_ALLOWED_7f21", DENIED = "E2E_DENIED_7f21";
 const box = mkdtempSync(join(tmpdir(), "cotal-e2e-"));

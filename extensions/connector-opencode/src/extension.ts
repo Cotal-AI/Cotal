@@ -1,7 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { resolve } from "node:path";
-import { registry, type Connector, type LaunchOpts, type LaunchSpec, type ModelCatalog, type ModelCatalogOpts, type ModelInfo } from "@cotal-ai/core";
+import type { Connector, LaunchOpts, LaunchSpec, ModelCatalog, ModelCatalogOpts, ModelInfo } from "@cotal-ai/core";
 import { aclEnv, nameEnv, connectorLaunchOptions, eventChannel, firstCommandEnv, launchArmsEvents, launchEnv, controlEndpoint, materialEnv, MODEL_PROVIDER_KEYS } from "@cotal-ai/connector-core";
 import { listOpenCode2Models } from "./catalog2.js";
 import { openCodeCommandCatalog } from "./command-catalog.js";
@@ -356,5 +356,3 @@ export const opencodeConnector: Connector = {
     };
   },
 };
-
-registry.register(opencodeConnector);

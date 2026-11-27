@@ -5,7 +5,6 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import {
   mkSecretDir,
   loadAgentFile,
-  registry,
   writeLaunchArtifact,
   type Connector,
   type LaunchOpts,
@@ -251,5 +250,3 @@ export const piConnector: Connector = {
     };
   },
 };
-
-registry.register(piConnector);

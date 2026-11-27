@@ -22,12 +22,14 @@ import {
   type AgentHandle, type Connector, type EpCaller, type IssuedCaller, type LaunchOpts, type LaunchSpec, type OnceSeat, type Runtime,
 } from "@cotal-ai/core";
 import { authDir, saveSpaceAuth, agentLifecycleSecretFilePaths, mintControlInstrument, workspaceSecretStore } from "@cotal-ai/workspace";
-import "@cotal-ai/connector-claude-code";
+import { claudeConnector, claudeSetupProvider } from "@cotal-ai/connector-claude-code";
 import { Manager } from "../src/manager.js";
 import { MANAGER_ENDPOINT, MANAGER_CONTRACTS } from "../src/manager-service-contract.js";
 import { bootBroker } from "./_boot-broker.js";
 import { bootDeliveryDaemon } from "./_boot-delivery.js";
 import { hostTimerWriter, type HostedTimerWriter } from "./_timer-writer.js";
+
+registry.register(claudeConnector, claudeSetupProvider);
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(here, "../../..");

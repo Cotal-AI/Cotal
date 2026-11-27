@@ -1,7 +1,7 @@
 import { fileURLToPath } from "node:url";
 import { resolve } from "node:path";
 import { userJcodeHome } from "@1jehuang/jcode-sdk";
-import { registry, type Connector, type LaunchOpts, type LaunchSpec, type OnceSeat } from "@cotal-ai/core";
+import type { Connector, LaunchOpts, LaunchSpec, OnceSeat } from "@cotal-ai/core";
 import { aclEnv, nameEnv, connectorLaunchOptions, controlEndpoint, eventChannel, launchArmsEvents, launchEnv, materialEnv } from "@cotal-ai/connector-core";
 import { JCODE_READINESS_TIMEOUT_MS } from "./readiness-bound.js";
 import { discardOnceReceipt, retireOnceTree } from "./private-lifecycle.js";
@@ -161,5 +161,3 @@ export const jcodeConnector: Connector = {
     };
   },
 };
-
-registry.register(jcodeConnector);

@@ -35,7 +35,7 @@
       "find": "export const JCODE_READINESS_TIMEOUT_MS = 180_000;",
       "replace": "export const JCODE_READINESS_TIMEOUT_MS = 1_000;",
       "command": "pnpm smoke:jcode-args",
-      "completionMarker": "self-registers as connector jcode",
+      "completionMarker": "factory registers the Jcode connector",
       "expectRed": "declares a bounded three-minute bootstrap window"
     },
     {
@@ -44,7 +44,7 @@
       "find": "  readinessTimeoutMs: JCODE_READINESS_TIMEOUT_MS,",
       "replace": "  readinessTimeoutMs: 180_000,",
       "command": "pnpm smoke:jcode-args",
-      "completionMarker": "self-registers as connector jcode",
+      "completionMarker": "factory registers the Jcode connector",
       "expectRed": "the manager window is the exported bound, not a second literal"
     },
     {
@@ -53,7 +53,7 @@
       "find": "  if (!raw) return JCODE_READINESS_TIMEOUT_MS;",
       "replace": "  if (!raw) return 180_000;",
       "command": "pnpm smoke:jcode-args",
-      "completionMarker": "self-registers as connector jcode",
+      "completionMarker": "factory registers the Jcode connector",
       "expectRed": "the host default bound is that same export, not a second literal"
     },
     {

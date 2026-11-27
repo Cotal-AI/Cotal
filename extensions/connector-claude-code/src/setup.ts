@@ -9,7 +9,6 @@ import {
   acquireLock,
   globalConfigPath,
   mcpServerProblem,
-  registry,
   writePrivateRecord,
   type ConnectorSetupProvider,
   type ConnectorSkillsSetupInput,
@@ -880,5 +879,3 @@ export const claudeSetupProvider: ConnectorSetupProvider = {
     return [pluginRow(plugins, input), userServerRow(plugins?.some((entry) => entry.id === `cotal@${MARKETPLACE}`) ?? false), ...(app ? [app] : []), skillsRow(plugins, input)];
   },
 };
-
-registry.register(claudeSetupProvider);

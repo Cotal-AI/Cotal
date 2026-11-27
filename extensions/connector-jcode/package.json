@@ -23,12 +23,17 @@
   "scripts": {
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.smoke.json",
     "test": "tsx smoke/jcode-args.smoke.ts && tsx smoke/mcp-version.smoke.ts && tsx smoke/cursor-credentials.smoke.ts",
-    "build": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && tsc -p tsconfig.json --emitDeclarationOnly && pnpm run bundle",
-    "bundle": "esbuild src/index.ts --bundle --minify-whitespace --platform=node --format=esm --target=node20 --outfile=dist/index.js --external:@cotal-ai/core && esbuild src/host-main.ts --bundle --minify-whitespace --platform=node --format=esm --target=node20 --outfile=dist/host.js --banner:js=\"import { createRequire as __cotalCreateRequire } from 'node:module'; const require = __cotalCreateRequire(import.meta.url);\" && esbuild src/mcp-main.ts --bundle --minify-whitespace --platform=node --format=esm --target=node20 --outfile=dist/mcp.js --banner:js=\"import { createRequire as __cotalCreateRequire } from 'node:module'; const require = __cotalCreateRequire(import.meta.url);\" && node -e \"require('node:fs').copyFileSync('../connector-core/src/docs-index.bin','dist/docs-index.bin')\" && node -e \"require('node:fs').copyFileSync('../connector-core/src/docs-bundle.bin','dist/docs-bundle.bin')\"",
+    "build": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && tsc -p tsconfig.json --emitDeclarationOnly && pnpm run bundle && node ../../scripts/plugin-manifest.mjs",
+    "bundle": "esbuild src/index.ts --bundle --minify-whitespace --platform=node --format=esm --target=node20 --outfile=dist/index.js --banner:js=\"import { createRequire as __cotalCreateRequire } from 'node:module'; const require = __cotalCreateRequire(import.meta.url);\" && esbuild src/host-main.ts --bundle --minify-whitespace --platform=node --format=esm --target=node20 --outfile=dist/host.js --banner:js=\"import { createRequire as __cotalCreateRequire } from 'node:module'; const require = __cotalCreateRequire(import.meta.url);\" && esbuild src/mcp-main.ts --bundle --minify-whitespace --platform=node --format=esm --target=node20 --outfile=dist/mcp.js --banner:js=\"import { createRequire as __cotalCreateRequire } from 'node:module'; const require = __cotalCreateRequire(import.meta.url);\" && node -e \"require('node:fs').copyFileSync('../connector-core/src/docs-index.bin','dist/docs-index.bin')\" && node -e \"require('node:fs').copyFileSync('../connector-core/src/docs-bundle.bin','dist/docs-bundle.bin')\"",
     "prepublishOnly": "pnpm run build"
   },
   "peerDependencies": {
-    "@cotal-ai/core": ">=0.1.0"
+    "@cotal-ai/core": "*"
+  },
+  "peerDependenciesMeta": {
+    "@cotal-ai/core": {
+      "optional": true
+    }
   },
   "dependencies": {
     "@1jehuang/jcode-sdk": "^1.1.0",
@@ -47,6 +52,53 @@
   "files": [
     "dist"
   ],
+  "cotal": {
+    "contract": 1,
+    "core": "0.183.1",
+    "provides": [
+      {
+        "kind": "connector",
+        "name": "jcode",
+        "aliases": []
+      }
+    ],
+    "commands": [],
+    "connectors": [
+      {
+        "name": "jcode",
+        "requires": [
+          "jcode"
+        ],
+        "eventPlane": true,
+        "prompts": false,
+        "askPermissions": false,
+        "reasoningEvents": false,
+        "setup": null,
+        "install": {
+          "title": "Jcode",
+          "maker": "Jeremy Huang",
+          "installers": {
+            "darwin": {
+              "script": "https://jcode.sh/install",
+              "shell": "bash",
+              "binDir": "~/.local/bin"
+            },
+            "linux": {
+              "script": "https://jcode.sh/install",
+              "shell": "bash",
+              "binDir": "~/.local/bin"
+            },
+            "win32": {
+              "script": "https://jcode.sh/install.ps1",
+              "binDir": "%LOCALAPPDATA%\\jcode\\bin"
+            }
+          }
+        }
+      }
+    ],
+    "localProcesses": [],
+    "servicePresets": []
+  },
   "publishConfig": {
     "access": "public"
   }
