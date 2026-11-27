@@ -449,9 +449,10 @@ const envelopes = (r: Run) => {
   const damagedText = versionRun(["version"]);
   check("version formats agree on repairing the corrupt manifest", damagedReport?.result?.reconciliation?.source === "manifest"
     && damagedReport.result.reconciliation.instruction === damagedReport.error?.remedy
-    && damagedReport.error?.remedy === "Repair the manifest with `cotal ext seed --repair`."
+    && damagedReport.error?.remedy === "run `cotal ext seed --repair` to preserve the damaged file and rebuild the built-in inventory"
     && damagedText.status === 4 && damagedText.stdout.split("\n")[0] === `cotal-ai ${env?.result?.version}`
-    && damagedText.stderr.includes("cotal ext seed --repair")
+    && damagedText.stdout.includes("run `cotal ext seed --repair` to preserve the damaged file and rebuild the built-in inventory")
+    && damagedText.stderr.includes(`corrupt extensions manifest ${manifest}: no "extensions" array`)
     && !damagedText.stderr.includes("cotal update --self"), { json: damagedReport, text: shown(damagedText) });
   check("version --json leaves the corrupt manifest unchanged", readFileSync(manifest, "utf8") === "{}\n");
   const strict = versionRun(["ext", "list"]);
