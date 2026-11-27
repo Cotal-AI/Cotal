@@ -121,8 +121,8 @@ function inPnpmDlxCache(path: string, env: NodeJS.ProcessEnv): boolean {
 }
 
 /** Is a *durable* `cotal` executable resolvable on PATH? A pure PATH scan (no exec):
- *  {@link displayCmd} calls it for every user-facing hint, so it only resolves files, and the
- *  `--version` exec probe stays in {@link verifiedCotalExecutables} for the recovery path.
+ *  User-facing hints also only resolve files. The `--version` exec probe stays in
+ *  {@link verifiedCotalExecutables} for the recovery path.
  *  Skips npx's transient shim: `npm exec` (npx) prepends the package's own
  *  `<cache>/_npx/<hash>/node_modules/.bin` to PATH, and since `cotal-ai` declares a `cotal` bin,
  *  that dir holds a throwaway `cotal`. Counting it would make a bare `npx cotal-ai setup` conclude
@@ -200,7 +200,8 @@ function durableCotalsOnPath(env: NodeJS.ProcessEnv): string[] {
  *  installed entry under this Node runtime. A dev clone uses pnpm unless the command must run
  *  from another folder. Re-execs use {@link selfArgv}. */
 export function displayCmd({ fromAnyFolder = false } = {}): string {
-  if (cotalOnPath()) return "cotal";
+  const [launcher] = durableCotalsOnPath(process.env);
+  if (launcher) return process.platform === "win32" && launcher.toLowerCase().endsWith(".cmd") ? "cotal.cmd" : "cotal";
   if (isNpx()) return "npx cotal-ai";
   if (isPnpmDlx()) return "pnpm dlx cotal-ai";
   if (runsCliEntry() && (fromAnyFolder || seedWriterKind() === "released")) {
@@ -221,6 +222,11 @@ export function displayCmd({ fromAnyFolder = false } = {}): string {
 export function displayRemedy(remedy: string, cmd?: string): string {
   return remedy.replace(/(?<!`)(`+)(?!`)([\s\S]*?)(?<!`)\1(?!`)/g, (span, _fence, command: string) =>
     command.startsWith("cotal ") ? codeSpan(`${cmd ??= displayCmd()}${command.slice("cotal".length)}`) : span);
+}
+
+/** Adapt the project-trust command for human output without changing the machine-readable error. */
+export function displayProjectTrustFailure(message: string): string {
+  return message.replace(/(?<=If you trust this folder, run `)cotal(?= trust )/g, () => displayCmd());
 }
 
 export function hasMovedStackRemedy(error: unknown): boolean {

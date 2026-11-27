@@ -169,8 +169,7 @@ function fileRefusal(input: SendInput, values: Values): FileRefusal {
   };
 }
 
-/** NATS's default max_payload. Files are checked up to one byte over this before dialing.
- *  Stdin uses the connected broker's limit from the first read. */
+/** NATS's default max_payload bounds the initial read when the broker's limit is unavailable. */
 const PREREAD_BYTES = 1024 * 1024;
 
 /** An explicit body: the whole text, or an open input past the pre-read whose rest waits for the
@@ -224,8 +223,8 @@ function tooLarge(limit: number, bytes: number | null, target: { space: string; 
     : `the message is ${bytes} bytes, and with its envelope it exceeds this broker's ${limit}-byte message limit; nothing was sent`, { target, remedy: "shorten the message, or split it across several sends" });
 }
 
-/** Read the limit without holding a sender credential or roster snapshot while stdin is open. */
-async function stdinBudget(values: Values, senderActor: string): Promise<{ space: string; limit: number } | undefined> {
+/** Read the limit without holding a sender connection or roster snapshot while the input is open. */
+async function bodyBudget(values: Values, senderActor: string): Promise<{ space: string; limit: number } | undefined> {
   try {
     const conn = await connectOrThrow(values, "operator", { operatorActor: senderActor, readOnly: true });
     const nc = await dialerFor(conn.server)({
@@ -236,7 +235,7 @@ async function stdinBudget(values: Values, senderActor: string): Promise<{ space
       if (limit !== undefined && limit > 0) return { space: conn.space, limit };
     } finally { await nc.close(); }
   } catch {
-    // The broker may come up while stdin is open. The send itself checks admission after the read.
+    // The broker may come up while the input is open. The send itself checks admission after the read.
   }
 }
 
@@ -457,10 +456,12 @@ export async function send(args: ParsedArgs): Promise<void> {
   // The account signer binds this OS-derived label to a stable operator actor, not a peer seat.
   // A fresh transport key still authenticates each send. Explicit credentials and user auth keep theirs.
   const senderActor = `cli_${createHash("sha256").update(senderName()).digest("hex")}`;
-  const budget = input.source === "stdin" ? await stdinBudget(values, senderActor) : undefined;
+  const budget = input.source === "argument" ? undefined : await bodyBudget(values, senderActor);
   const body = await bodyOf(input, values, refusal, budget?.limit);
-  if (budget && !("text" in body))
+  if (budget && !("text" in body)) {
+    if (body.file !== undefined) closeSync(body.fd);
     throw tooLarge(budget.limit, body.size, { space: budget.space, mode: input.mode, destination: input.target });
+  }
   const opened = await openTransient(values, senderName(), { throwOnRefusal: true, senderActor, report: (level) => {
     warnings.push({ code: level === "error" ? "SENDER_CONNECTION_WARNING" : "SENDER_WARNING", target: { destination: input.target }, message: "The transient sender reported a connection or delivery warning; its receipt confirms only the stated storage outcome." });
   } });

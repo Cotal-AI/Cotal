@@ -24,9 +24,9 @@
   "mutations": [
     {
       "name": "prefixed models collapse back to the unknown startup code",
-      "file": "extensions/connector-jcode/src/host.ts",
-      "find": "          \"model_prefix_rejected\",\n          `jcode connector: model ${JSON.stringify(config.model)} carries a provider prefix, but the Harness API expects a bare model id \u2014 pass ${JSON.stringify(spec.bare)} (the ${JSON.stringify(spec.prefix)} provider is selected by configuration, not by the model id)`,",
-      "replace": "          \"unknown\",\n          `jcode connector: model ${JSON.stringify(config.model)} carries a provider prefix, but the Harness API expects a bare model id \u2014 pass ${JSON.stringify(spec.bare)} (the ${JSON.stringify(spec.prefix)} provider is selected by configuration, not by the model id)`,",
+      "file": "extensions/connector-jcode/src/model-catalog.ts",
+      "find": "throw new JcodeConnectorError(\"model_prefix_rejected\",",
+      "replace": "throw new JcodeConnectorError(\"unknown\" as never,",
       "expectRed": "model_prefix_rejected names the connector-owned refusal",
       "cell": "model_prefix_rejected names the connector-owned refusal"
     },
@@ -65,8 +65,8 @@
     {
       "name": "the startup fatal line reaches stderr but is no longer persisted per seat",
       "file": "extensions/connector-jcode/src/host-main.ts",
-      "find": "    writeJcodeDiagnostic(`[cotal-jcode] fatal: Jcode host startup failed (${startupFailureCode(error)}); inspect the private Jcode logs.\\n`);",
-      "replace": "    process.stderr.write(`[cotal-jcode] fatal: Jcode host startup failed (${startupFailureCode(error)}); inspect the private Jcode logs.\\n`);",
+      "find": "    writeJcodeDiagnostic(`[cotal-jcode] fatal: Jcode launch failed (${error.code}):",
+      "replace": "    process.stderr.write(`[cotal-jcode] fatal: Jcode launch failed (${error.code}):",
       "expectRed": "model_prefix_rejected fatal is persisted in the seat connector log",
       "cell": "model_prefix_rejected fatal is persisted in the seat connector log"
     }

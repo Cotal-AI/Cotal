@@ -47,9 +47,14 @@ cancellation, so one new head or publication cannot evict an older qualification
 
 ## Required release set
 
+The separate Linux Corepack check runs the frozen release's own `cotal update --self` against a
+loopback registry with no newer version. The npm launcher's recorded Node can run Corepack but not
+the npm it selects. The update must reach the registry through a later Node on `PATH` twice and
+leave the Node running Cotal unchanged. The check uploads its own transcript.
+
 At plan time both phases read public npm metadata and freeze the newest stable published version
 strictly below the target. The plan records that source and its registry observation. Missing registry
-metadata or a missing predecessor fails without a fixed-version fallback. Each phase runs 42 isolated
+metadata or a missing predecessor fails without a fixed-version fallback. Each phase runs isolated
 product coordinates:
 
 | Coordinates | Count |
@@ -60,6 +65,7 @@ product coordinates:
 | Linux stand-in agent with public stop consent, separately daemon-hosted and standalone | 2 |
 | Linux paused record pointing to a real snapshot under another config home | 1 |
 | Linux host update with a foreign-UID container's bare `cotal supervise` | 1 |
+| Linux npm upgrade followed by interruption during a connector snapshot copy and two self-update retries | 1 |
 | The target release's own manual updater to a synthetic next version, with the service installed, on all three platforms | 3 |
 | The target release's own manual updater to a synthetic next version after stopping the installed native service, on all three platforms | 3 |
 | POSIX manual updater to a synthetic next version with the recorded user service disabled (`systemctl --user disable --now` on Linux, `launchctl disable` + `launchctl bootout` on macOS), staying stopped and reporting `service is disabled; not started` | 2 |

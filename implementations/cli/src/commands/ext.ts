@@ -11,6 +11,7 @@ import { resolveSpace } from "../lib/status.js";
 import { claimExtensionMutation, extensionUpdatePassOwnedBy } from "../lib/ext-mutation.js";
 import { withInstallUmask } from "../lib/install-umask.js";
 import { npmInvocation, npmLifecycleEnvironment } from "../lib/npm-invocation.js";
+import { assertExtensionCorePeer } from "../lib/extension-core-peer.js";
 import { runSeed } from "../seed/reconcile.js";
 import { assertStageVerifier, stageExtensions } from "../lib/extension-stage.js";
 import { connectorConfigDir, extensionReinstallAdvice, isExtensionPathSpec as isPathSpec, resolveExtensionEntry } from "@cotal-ai/workspace";
@@ -243,14 +244,22 @@ export async function addExtension(spec: string, expectedPkg?: string, borrowMut
   // a repair after a parent SIGKILL sees the exact orphan identity and refuses to race it.
   if (seeding) markSeedChildLive(process.env.COTAL_EXT_SEEDING as string, Number(process.env.COTAL_EXT_SEEDING_PARENT));
   try {
-    mkdirSync(dir, { recursive: true, mode: 0o755 });
-    if (!existsSync(join(dir, "package.json"))) {
-      // `wx`: a dangling link at the name passes the check above, and must not be followed.
-      writeFileSync(join(dir, "package.json"), `${JSON.stringify({ name: "cotal-extensions", private: true }, null, 2)}\n`, { flag: "wx", mode: 0o644 });
-      provenance.wrote("extensions prefix", join(dir, "package.json"));
+    if (seeding || expectedPkg !== undefined) {
+      mkdirSync(dir, { recursive: true, mode: 0o755 });
+      if (!existsSync(join(dir, "package.json"))) {
+        // `wx`: a dangling link at the name passes the check above, and must not be followed.
+        writeFileSync(join(dir, "package.json"), `${JSON.stringify({ name: "cotal-extensions", private: true }, null, 2)}\n`, { flag: "wx", mode: 0o644 });
+        provenance.wrote("extensions prefix", join(dir, "package.json"));
+      }
     }
     if (seeding) await addTransaction(pkg, resolved, expectedPkg, true, announce);
-    else await installExtensionSet([{ pkg, spec: resolved }], announce, isPath ? { localOperand: spec } : undefined);
+    else {
+      // Official registry releases can be pinned out of lockstep and reconciled by update.
+      const selector = resolved.slice(pkg.length + 1);
+      const officialRelease = !isPath && pkg.startsWith("@cotal-ai/") && /^[a-z0-9._~^*<>=|+ -]*$/i.test(selector)
+        && !/\.(?:tgz|tar(?:\.gz)?)$/i.test(selector);
+      await installExtensionSet([{ pkg, spec: resolved }], announce, { checkCorePeer: expectedPkg === undefined && !officialRelease, ...(isPath ? { localOperand: spec } : {}) });
+    }
   } finally {
     if (seeding) clearChildMarker();
     releaseMutation();
@@ -275,7 +284,7 @@ function dropForeignLockEntries(lock: { packages?: Record<string, { extraneous?:
 export async function installExtensionSet(
   requests: readonly ExtensionInstallRequest[],
   announce: (line: string) => void = console.error,
-  opts?: { isolate?: boolean; localOperand?: string },
+  opts?: { isolate?: boolean; localOperand?: string; offline?: true; checkCorePeer?: boolean },
 ): Promise<void> {
   if (!requests.length) return;
   const ownerConfig = connectorConfigDir();
@@ -325,14 +334,20 @@ export async function installExtensionSet(
     }
     const mutationPath = extensionNpmMutationPath();
     const specs = requests.map(({ spec }) => isPathSpec(spec) ? realpathSync(spec) : spec);
-    const result = await npm(["install", "--save", "--no-audit", "--no-fund", "--install-links", ...specs], npmPrefix);
+    // npm's own update notifier can query the registry even in offline mode.
+    const cacheOnly = opts?.offline ? ["--offline", "--update-notifier=false"] : [];
+    const result = await npm(["install", "--save", "--no-audit", "--no-fund", "--install-links", ...cacheOnly, ...specs], npmPrefix);
     if (existsSync(mutationPath)) stage.retain();
     if (interrupted) throw new ExtensionAddInterrupted(requests[0]!.pkg);
-    if (result.status !== 0) throw new Error(`extension set npm install failed: ${npmInstallFailure(result.output)}`);
+    if (result.status !== 0) {
+      const localFailure = opts?.localOperand === undefined ? undefined : localTarballFailure(result.output, npmPrefix, requests[0]!, opts.localOperand);
+      throw new Error(localFailure ?? `extension set npm install failed: ${npmInstallFailure(result.output)}`);
+    }
     process.env.XDG_CONFIG_HOME = stage.config;
     for (const request of requests) {
       const meta = installedExtensionPackage(request.pkg);
       if (!meta || request.version !== undefined && meta.version !== request.version) throw new Error(`extension set installed an unexpected version of ${request.pkg}`);
+      if (opts?.checkCorePeer) assertExtensionCorePeer(request.pkg, meta.peerDependencies?.["@cotal-ai/core"]);
       const dir = extensionPackageDir(request.pkg);
       const entry = resolveExtensionEntry(dir, meta);
       if (!existsSync(entry)) {
@@ -630,6 +645,30 @@ async function verifyCandidate(pkg: string, resolved: string, dir: string, recor
   ];
 }
 
+/** Explain a missing tarball only when npm's path matches a relative file dependency of the candidate. */
+function localTarballFailure(output: string, prefix: string, request: ExtensionInstallRequest, operand: string): string | undefined {
+  if (!/^npm (?:error|ERR!) code ENOENT\s*$/m.test(output)) return;
+  const missing = /^npm (?:error|ERR!) path ([^\r\n]+)/m.exec(output)?.[1];
+  if (!missing || !/\.(?:tgz|tar\.gz|tar)$/i.test(missing)) return;
+  let meta: { dependencies?: Record<string, string>; optionalDependencies?: Record<string, string> };
+  try {
+    meta = JSON.parse(readFileSync(join(request.spec, "package.json"), "utf8"));
+  } catch {
+    return;
+  }
+  const installed = join(prefix, "node_modules", request.pkg);
+  const match = Object.entries({ ...meta?.dependencies, ...meta?.optionalDependencies }).find(([, spec]) =>
+    typeof spec === "string" && spec.startsWith("file:") && !isAbsolute(spec.slice(5)) && resolve(installed, spec.slice(5)) === missing);
+  if (!match) return;
+  const [dependency, spec] = match;
+  const word = oneLine(operand) !== operand ? undefined : process.platform === "win32" ? windowsShellWord(operand) : shellWord(operand);
+  const pack = codeSpan(`npm pack --dry-run ${word ?? "<local-path>"}`);
+  const retry = codeSpan(`${displayCmd()} ext add ${word ?? "<local-path>"}`);
+  return `npm could not install ${oneLine(request.pkg)}: it could not open the tarball for ${oneLine(dependency)} (${codeSpan(oneLine(spec))}). ` +
+    `Check the source package with ${pack}. For local use, set the \`file:\` dependency to the absolute path of an existing archive, then rerun ${retry}. ` +
+    "For distribution, use a dependency npm can install from a registry.";
+}
+
 /** Why `npm install` did not finish, as one line. A spawn that cannot find npm says so. Any other
  *  output keeps its last lines, joined, so a stored seed reason never carries a newline. */
 function npmInstallFailure(output: string): string {
@@ -749,8 +788,12 @@ async function extensionProcesses(entry: InstalledExtension): Promise<ExtensionP
   if (!refs.length) return [];
   const providers = [...extensionLocalProcesses(entry)];
   const missing = refs.map((ref) => ref.name).filter((name) => !providers.some((provider) => provider.name === name));
-  if (missing.length)
-    throw new Error(`${entry.pkg} predates cached local-process metadata for ${missing.join(", ")} - re-add it before removal: \`cotal ext add ${entry.spec}\``);
+  if (missing.length) {
+    const reinstall = typeof entry.spec === "string" ? `\`cotal ext add ${entry.spec}\``
+      : entry.source === "seeded" || entry.pkg.startsWith("@cotal-ai/") ? extensionReinstallAdvice(entry)
+      : "use the original install spec";
+    throw new Error(`${entry.pkg} predates cached local-process metadata for ${missing.join(", ")} - re-add it before removal: ${reinstall}`);
+  }
   const currentRoot = cotalRoot();
   const contexts = new Map<string, LocalProcessContext>();
   contexts.set(currentRoot, { root: currentRoot, space: resolveSpace(currentRoot) });
@@ -794,8 +837,8 @@ export interface ExtensionRow {
   readonly pkg: string;
   /** The manifest pin recorded at add time. */
   readonly version: string;
-  /** What `ext add` was given. */
-  readonly spec: string;
+  /** What `ext add` was given, when recorded. */
+  readonly spec?: string;
   /** Whether the built-in seed installed the entry. */
   readonly seeded: boolean;
   /** The `kind:name` refs the package registers. */
@@ -858,7 +901,7 @@ function extensionRow(e: InstalledExtension): ExtensionRow {
   return {
     pkg: e.pkg,
     version: e.version,
-    spec: e.spec,
+    ...(typeof e.spec === "string" ? { spec: e.spec } : {}),
     seeded: e.source === "seeded",
     provides: extensionProvides(e).map((ref) => `${ref.kind}:${ref.name}`),
   };

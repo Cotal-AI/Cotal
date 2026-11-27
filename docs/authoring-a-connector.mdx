@@ -80,6 +80,13 @@ Declare only the features your connector implements:
   Connection changes are refused when the connector cannot announce the resulting list.
 - Implement `resumeTranscript` if the CLI can locate and carry a source transcript from another host.
 - List external executables in `requires` so preflight can report a missing command before launch.
+- Implement `launchUnavailable(opts)` to return a host-specific refusal, or `undefined` when the launch is supported.
+  Take no action and write nothing. A defined `opts.cwd` means a supervised Manager launch.
+  `buildLaunch` must refuse the same conditions even if the caller skips preflight.
+- Declare `install` so the desktop app can install what `requires` names for the person.
+  It is data: the application's `title` and `maker`, and for each of `darwin`, `linux` and `win32` the maker's https installer `script`, the `shell` a POSIX script is piped to, documented `env` for a run without a terminal, the `binDir` it installs into (`~/…` with folder names made of letters, digits, `.`, `_` and `-`, or `%LOCALAPPDATA%\…`, `%APPDATA%\…`, `%USERPROFILE%\…`) and any executables it `needs` first.
+  Add `signIn` with a `status` command that exits 0 when signed in and a `login` command that signs in through the browser, each starting with an executable from `requires`.
+  The app builds every command from these fields, and `ext add` refuses a declaration that does not check out.
 - Implement `listModels` if the application provides a model catalog.
   If an installation cannot provide one, return a catalog with `models: []` and an `unavailable` reason.
   The Manager passes the boot `resolvedBinaries` and the `spawn.env` names a launch would receive as `envAllow`.
@@ -303,6 +310,9 @@ A package manifest can have this shape:
 ```
 
 Replace `<compatible-core-range>` with the version range your connector supports.
+For local and third-party packages, `cotal ext add` refuses an invalid range or one that excludes the
+bundled core before it imports your connector. Marking the peer optional does not skip the check.
+`*` allows any core version.
 Ship every file needed to import and run it.
 
 The installer links `@cotal-ai/*` peers to the binary's copies.

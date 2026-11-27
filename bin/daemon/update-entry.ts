@@ -1,5 +1,5 @@
 /** The binary composes machine-daemon custody with the stock package updater. */
-import { existsSync, readFileSync, readdirSync, readlinkSync, statSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync, readdirSync, readlinkSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { execFileSync } from "node:child_process";
@@ -24,6 +24,7 @@ import { reportRunningManagers } from "@cotal-ai/cli/update";
 import { adoptAutomaticUpdateChild } from "./update-scope.js";
 import { captureWindowsGeneration, closeWindowsGeneration, windowsGenerationLifecycle } from "./update-generation-win32.js";
 import { hasUpdateDaemonLifetime, observeUpdateDaemon, sameUpdateDaemon } from "./update-lifetime.js";
+import { reclaimInterruptedUpdateSnapshots } from "./update-snapshot-cleanup.js";
 import { daemonServiceRequirement, foreignDaemonUpdateReport } from "./guidance.js";
 import { observeExecutionVersion, selectExecutionProgram } from "../cotal.js";
 
@@ -70,6 +71,24 @@ function assertDaemonReachable(): void {
   const lifetime = readLifetimeRecord(join(homeCotalDir(), "daemon", "daemon.lock"));
   if (lifetime?.start && processBirth(lifetime.pid) === lifetime.start)
     throw new Error("the machine daemon is running and this session has no XDG_RUNTIME_DIR to reach it; run the update from a login session of this account, or leave it to the daemon's automatic update");
+}
+
+/** The shared pipe cannot establish whether this home has a daemon. */
+function hasNoWindowsUpdateDaemon(): boolean {
+  const state = join(homeCotalDir(), "daemon");
+  const absent = (path: string): boolean => {
+    try { lstatSync(path); return false; }
+    catch (error) { return (error as NodeJS.ErrnoException).code === "ENOENT"; }
+  };
+  if (!absent(unitReceiptFile({ state }))) return false;
+  if (absent(join(state, "daemon.lock"))) return true;
+  // Load the native lock binding only in a child that exits before npm can replace the installation.
+  const script = "const { hasUpdateDaemonLifetime } = await import(process.argv[1]); process.stdout.write(hasUpdateDaemonLifetime() ? 'live' : 'absent');";
+  try {
+    return execFileSync(process.execPath, ["--input-type=module", "-e", script, new URL("./update-lifetime.js", import.meta.url).href], {
+      encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: 5_000, windowsHide: true,
+    }) === "absent";
+  } catch { return false; } // Ambiguous lifetime evidence still requires authenticated continuity.
 }
 
 /** Retry only status. A disappearing socket after an interruption is not proof of absence. */
@@ -123,7 +142,10 @@ async function collectConnectorSets(): Promise<void> {
 
 function preflightExecutionWithCleanup(): boolean {
   const repaired = preflightExecutionUpdate();
-  if (!process.env.COTAL_UPDATE_PARENT) cleanupExecutionStore(executionInstallRoot());
+  if (!process.env.COTAL_UPDATE_PARENT) {
+    reclaimInterruptedUpdateSnapshots(() => dirname(executionInstallRoot()));
+    cleanupExecutionStore(executionInstallRoot());
+  }
   return repaired;
 }
 
@@ -376,7 +398,7 @@ const composed: Command = { ...command, async run(args) {
   }, adoptUpdateChild: adoptAutomaticUpdateChild, preparedRestart: () => preparedRestart, async prepareReplacement() {
     if (readUpdateRecovery()?.phase === "restoring") admission = undefined;
     let paths: DaemonPaths | undefined;
-    try { paths = daemonPaths(); }
+    try { if (process.platform !== "win32" || daemonObserved) paths = daemonPaths(); }
     catch (error) { if (!(error instanceof EndpointRefusal) || error.code !== "NO_RUNTIME_DIR") throw error; }
     if (targetReceipt && !targetAdmissionChecked && readUpdateRecovery()?.phase !== "restoring") {
       // The lifetime record lives under the home, so it is readable in a session with no runtime directory.
@@ -496,7 +518,7 @@ const composed: Command = { ...command, async run(args) {
       return "none";
     }
     const installedChild = process.env.COTAL_UPDATE_PARENT === String(process.ppid) && process.env.COTAL_UPDATE_TARGET_VERSION === updateRuntime.version();
-    if (staged && (args.values.self === true || installedChild || standaloneReconcile) && !reconcileDaemonObserved && !hasUpdateDaemonLifetime())
+    if ((process.platform === "win32" && hasNoWindowsUpdateDaemon()) || (staged && (args.values.self === true || installedChild || standaloneReconcile) && !reconcileDaemonObserved && !hasUpdateDaemonLifetime()))
       return reportsRetainedExecution() ? retainedReport(flags) : updateRuntime.reportRunningManager(flags);
     let managers;
     try {
@@ -585,7 +607,7 @@ const composed: Command = { ...command, async run(args) {
         if (await updateRuntime.reportRunningManager({ ...flags, space: entry.space }) === "legacy") return "legacy";
       }
     }
-    if (localVerdict === "legacy") return localVerdict;
+    if (localVerdict === "legacy" || (packageCheck === "offline" && blockedAgents.length > 0)) return "legacy";
     if (blockedAgents.length) {
       const summary = blockedAgents.map(row => `${row.space}: ${row.describe}`).join("; ");
       let consent = flags["stop-agents"] === true && process.env.COTAL_AUTO_UPDATE !== "1";

@@ -380,6 +380,25 @@ if (process.platform !== "win32") {
   check("persona edit with a missing editor refuses without keeping a draft or changing the catalog file",
     edit.status === 2 && edit.stderr.includes("DEPENDENCY_UNAVAILABLE") && edit.stderr.includes(`the editor ${JSON.stringify(editor)} was not found - not saved`) &&
       readdirSync(drafts).length === 0 && readFileSync(persona, "utf8") === saved, shown(edit));
+
+  const jsonEdit = (visual: string) => outcome(spawnSync(process.execPath, [BIN, "persona", "edit", "rev", "--space", "opsp", "--json"], {
+    cwd: root, env: { ...env, VISUAL: visual, EDITOR: "", TMPDIR: drafts }, encoding: "utf8", timeout: 120_000,
+  }));
+  for (const visual of ["no-receipt-editor-binary", `'${editor}' --wait`]) {
+    const refused = jsonEdit(visual);
+    check("persona edit --json reports a missing shell editor only in the refusal envelope",
+      refused.status === 2 && refused.stderr === "" && refused.envelope?.outcome === "refused" &&
+      refused.envelope.target?.space === "opsp" && refused.envelope.error?.code === "DEPENDENCY_UNAVAILABLE" &&
+      refused.envelope.error.message === `the editor ${JSON.stringify(visual)} was not found - not saved` &&
+      readdirSync(drafts).length === 0 && readFileSync(persona, "utf8") === saved, shown(refused));
+  }
+  const reportingEditor = editorScript("editor with spaces", `test "$1" = --wait && test -f "$2" || exit 1
+printf 'Editor stdout\n'
+printf 'Editor stderr\n' >&2`);
+  const ran = jsonEdit(`'${reportingEditor}' --wait`);
+  check("persona edit --json sends both editor streams to stderr and leaves stdout as one receipt",
+    ran.status === 0 && ran.envelope?.outcome === "no-op" && ran.stderr === "Editor stdout\nEditor stderr\n" &&
+    readdirSync(drafts).length === 0 && readFileSync(persona, "utf8") === saved, shown(ran));
 }
 // A save refused because the catalog became unwritable while the editor was open keeps the edited
 // draft and names it beside the chmod that fixes the catalog. Root writes through any mode.
@@ -678,6 +697,22 @@ const docsResult = (docsPreview.envelope as { result?: Preview } | undefined)?.r
 check("the opening Agent files example previews with Claude and validates its model",
   docsPreview.status === 0 && docsPreview.envelope?.outcome === "ok" && docsResult?.harness === "claude"
     && docsResult.model === "opus" && docsResult.variant === null && docsResult.connectorArgumentValidation === "checked", shown(docsPreview));
+
+const opencodeGuide = readFileSync(join(import.meta.dirname, "..", "..", "..", "docs", "connect-opencode.mdx"), "utf8");
+const opencodeFile = /use `--file ([^`]+)`/.exec(opencodeGuide)?.[1];
+if (!opencodeFile) throw new Error("missing --file example in docs/connect-opencode.mdx");
+const catalogFile = join(root, ".cotal", "agents", "researcher.md");
+mkdirSync(dirname(catalogFile), { recursive: true });
+writeFileSync(catalogFile, "---\nname: researcher\nrole: research\n---\nYou research questions and summarize your findings.\n");
+const guidePreview = cotal("spawn", "--foreground", "--harness", "opencode", "--file", opencodeFile, "--dry-run", "--plain");
+check("the OpenCode guide's --file example previews the catalog persona it tells readers to create",
+  opencodeFile === "./.cotal/agents/researcher.md" && guidePreview.status === 0
+    && guidePreview.stdout.includes(catalogFile) && /Requested name:\s+researcher$/m.test(guidePreview.stdout)
+    && /Harness:\s+opencode$/m.test(guidePreview.stdout), shown(guidePreview));
+const guideMiss = cotal("spawn", "--foreground", "--harness", "opencode", "--file", "./researcher.md", "--dry-run", "--plain");
+check("a project-root researcher.md is still refused when only the catalog file exists",
+  guideMiss.status === 2 && guideMiss.stderr.includes('no persona "./researcher.md"')
+    && guideMiss.stderr.includes("TARGET_NOT_FOUND"), shown(guideMiss));
 
 const variantPersona = join(root, "variant-persona.md");
 const previewVariant = (...flags: string[]) => cotal("spawn", "--file", variantPersona, "--dry-run", ...flags);

@@ -543,9 +543,9 @@ try {
   await despawnPlain(plainConfirmed.name);
   startupMode = "unmatched";
   const plainUnmatched = await plainSpawn(goalId("plain-unmatched"));
-  check("a plain launch fails with the runtime diagnostic when a joined seat never shows the startup prompt",
-    plainUnmatched.terminal?.state === "failed" && errorOf(plainUnmatched.terminal) ===
-      `${plainUnmatched.name}: Cotal startup confirmation failed: prompt "LOAD THE CHANNEL" did not appear within 15000ms.`,
+  check("a plain launch fails with the runtime diagnostic and visible banner when a joined seat never shows the startup prompt",
+    plainUnmatched.terminal?.state === "failed" && errorOf(plainUnmatched.terminal)?.startsWith(
+      `${plainUnmatched.name}: Cotal startup confirmation failed: prompt "LOAD THE CHANNEL" did not appear within 15000ms. Last visible lines: app banner | STUB_JOINED ${plainUnmatched.name} `) === true,
     plainUnmatched.terminal);
   check("the failed startup is absent from ps", plainUnmatched.name !== undefined && plainUnmatched.ps.ok === true && plainUnmatched.row === undefined, plainUnmatched.ps);
 } finally {

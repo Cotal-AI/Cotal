@@ -82,7 +82,7 @@ const peerPid = defaultPeerPid;
  *  surviving native service verifies ownership; other operations never create, repair or migrate it. Mesh lookup always stays
  *  the shared Cotal home's registry. */
 interface Target { readonly paths: DaemonPaths; readonly home?: string }
-function target(args: ParsedArgs, recoverMissingHome = false): Target {
+function target(args: ParsedArgs, recoverMissingHome?: "install" | "uninstall"): Target {
   const raw = (args.values as { "daemon-home"?: string })["daemon-home"];
   if (raw === undefined) return { paths: daemonPaths() };
   if (!raw || !isAbsolute(raw)) throw new CommandFailure("refused", "USAGE_INVALID", "--daemon-home needs an absolute directory path");
@@ -98,10 +98,17 @@ function target(args: ParsedArgs, recoverMissingHome = false): Target {
   try { cotalHome = realpathSync(homeCotalDir()); } catch (e) { if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e; }
   if (home === cotalHome) throw new CommandFailure("refused", "USAGE_INVALID", "--daemon-home cannot be the Cotal home; name a separate directory for this daemon's state");
   const paths = daemonPathsFor(home);
-  if (missing) planUninstall(paths, home);
+  if (missing) planUninstall(paths, home, recoverMissingHome === "install" ? missingDaemonHome : undefined);
   return { paths, home };
 }
-function resolveTarget(args: ParsedArgs, recoverMissingHome = false): Target {
+function missingDaemonHome(): CommandFailure {
+  return process.platform === "win32"
+    ? new CommandFailure("refused", "TARGET_NOT_FOUND", "the --daemon-home directory does not exist", {
+      remedy: `create the directory, then in File Explorer open Properties > Security > Advanced. Give your account an explicit Full control grant, choose Disable inheritance and remove inherited permissions. Remove any remaining grants except those for your account, SYSTEM and Administrators. Verify the owner as well: ${windowsDaemonHomeAccess}`,
+    })
+    : new CommandFailure("refused", "TARGET_NOT_FOUND", "the --daemon-home directory does not exist; create it with mode 0700 first");
+}
+function resolveTarget(args: ParsedArgs, recoverMissingHome?: "install" | "uninstall"): Target {
   try {
     const resolved = target(args, recoverMissingHome);
     // Native user-service tools need the same validated runtime as the socket client.
@@ -109,10 +116,7 @@ function resolveTarget(args: ParsedArgs, recoverMissingHome = false): Target {
     return resolved;
   }
   catch (e) {
-    if ((e as NodeJS.ErrnoException).code === "ENOENT" && process.platform === "win32") throw new CommandFailure("refused", "TARGET_NOT_FOUND", "the --daemon-home directory does not exist", {
-      remedy: `create the directory, then in File Explorer open Properties > Security > Advanced. Give your account an explicit Full control grant, choose Disable inheritance and remove inherited permissions. Remove any remaining grants except those for your account, SYSTEM and Administrators. Verify the owner as well: ${windowsDaemonHomeAccess}`,
-    });
-    if ((e as NodeJS.ErrnoException).code === "ENOENT") throw new CommandFailure("refused", "TARGET_NOT_FOUND", "the --daemon-home directory does not exist; create it with mode 0700 first");
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") throw missingDaemonHome();
     throw asFailure(e);
   }
 }
@@ -384,7 +388,7 @@ async function unitCommand(args: ParsedArgs, op: "install" | "uninstall"): Promi
     const requirement = daemonServiceRequirement(values["daemon-home"]);
     if (requirement) throw requirement;
   }
-  const { paths, home } = resolveTarget(args, true);
+  const { paths, home } = resolveTarget(args, op);
   if (op === "install") {
     const dry = values["dry-run"] === true;
     if (!dry && await repairMissingInstalledProgram(paths, home)) {

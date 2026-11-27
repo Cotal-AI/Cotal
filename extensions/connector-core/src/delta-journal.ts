@@ -12,6 +12,7 @@
  * journal records of its own, for what its harness reports and never saves.
  */
 import { closeSync, constants, fstatSync, openSync, writeSync } from "node:fs";
+import { writeSecretFileCreateOnly } from "@cotal-ai/core";
 
 /** One piece of streamed text for one part of one message. */
 export interface StreamDelta {
@@ -44,6 +45,8 @@ export const DELTA_JOURNAL_INTERVAL_MS = 250;
 
 export interface DeltaJournalOptions {
   path: string;
+  /** The caller owns a fresh Windows thread and must not adopt an existing file. */
+  createPrivateOnWindows?: boolean;
   /** The harness source's position now, read synchronously: the cursor its `end` would give. */
   anchor: () => string;
   /** A line was written: wake the emitter. */
@@ -89,6 +92,12 @@ export class DeltaJournal {
    * can read are refused. Only the seat process writes it.
    */
   static open(opts: DeltaJournalOptions): DeltaJournal {
+    if (process.platform === "win32" && opts.createPrivateOnWindows) {
+      // Create a new file with an NTFS ACL rather than trusting POSIX mode bits or adopting an
+      // existing file whose ACL is unknown. No streamed content is written before hardening.
+      writeSecretFileCreateOnly(opts.path, "");
+      return new DeltaJournal(openSync(opts.path, constants.O_WRONLY | constants.O_APPEND), opts);
+    }
     const fd = openSync(opts.path, constants.O_WRONLY | constants.O_APPEND | constants.O_CREAT | (constants.O_NOFOLLOW ?? 0), 0o600);
     const st = fstatSync(fd);
     if (!st.isFile() || (st.mode & 0o077) !== 0 || (process.getuid !== undefined && st.uid !== process.getuid())) {

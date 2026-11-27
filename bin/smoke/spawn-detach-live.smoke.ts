@@ -21,7 +21,7 @@
  */
 import { execFile, spawn as spawnProc, spawnSync, type ChildProcess } from "node:child_process";
 import { SMOKE_BROKER_TOKEN, freePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { isAbsolute, join } from "node:path";
@@ -39,6 +39,7 @@ const awaitExit = (p: ChildProcess, ms = 5000): Promise<void> =>
 // finds its folder by walking up to the nearest one, and a home holding `.cotal` would answer.
 const scratch = makeScratch("cotal-detach-");
 const home = mkdtempSync(join(tmpdir(), "cotal-detach-home-"));
+for (const key of Object.keys(process.env)) if (key.startsWith("COTAL_")) delete process.env[key];
 process.env.COTAL_HOME = home;
 
 const { parseCommandArgs, probeConnect, registry, CotalEndpoint, openSessionRail, EpEnvelopeError, eventChannel } = await import("@cotal-ai/core");
@@ -83,6 +84,11 @@ writeFileSync(
   join(workspaceRoot, ".cotal", "config.json"),
   JSON.stringify({ connectors: { e2e: { mcpServers: { alpha: { command: "true" }, beta: { command: "true" } } } } }),
 );
+// A project config that declares servers applies only in a folder the operator trusts. The trust
+// record lives in this suite's own config folder.
+process.env.XDG_CONFIG_HOME = join(home, "xdg");
+const { trustProject } = await import("@cotal-ai/workspace");
+trustProject(workspaceRoot);
 
 // The e2e connector: a REAL long-lived child (node keepalive) through the REAL pty runtime — no
 // Claude cold-start, but a genuine process the manager supervises and attach streams. The child
@@ -290,17 +296,51 @@ try {
     const serveFailure = await failedLaunch("opencode", "failed_serve");
     ok("OpenCode serve failure returns child stderr rather than wrapper prose", isCommandFailure(serveFailure) && serveFailure.message.includes("run auth login to reauthenticate"), String(serveFailure));
     const modelProbe = join(fakeBin, "model probe.md");
-    writeFileSync(modelProbe, "---\nname: model_probe\nrole: model_probe\nagent: jcode\n---\nRespond only to test prompts.\n");
-    let prefixFailure: unknown;
-    try {
-      await capture(() => run("spawn", ["--file", modelProbe, "--harness", "jcode", "--detach", "--space", SPACE, "--cwd", fakeBin, "--model", "cliproxy/gpt-6.2-sol"]));
-    } catch (error) { prefixFailure = error; }
-    ok("Jcode rejects a model prefix before the host starts and prints a bare-model retry with the original options",
-      isCommandFailure(prefixFailure) && exitCode(prefixFailure.outcome, prefixFailure.code) === 5 && prefixFailure.code === "OPERATION_FAILED"
-        && prefixFailure.message.includes("model_prefix_rejected") && prefixFailure.message.includes("Select the provider in Jcode's configuration")
-        && ["cotal", "pnpm cotal"].some((cli) => prefixFailure.remedy?.startsWith(`${cli} spawn `))
-        && [" -d", ` --space ${SPACE}`, " --harness jcode", ` --file '${modelProbe}'`, ` --cwd ${fakeBin}`, " --model gpt-6.2-sol"].every((part) => prefixFailure.remedy?.includes(part))
-        && !prefixFailure.remedy?.includes("cliproxy/") && !existsSync(join(workspaceRoot, ".cotal", "jcode")), prefixFailure);
+    const slashModel = "deepseek-ai/DeepSeek-V3.2";
+    const modelList = [slashModel, "DeepSeek-V3.2", "gpt-6.2-sol", "persona-model", "unsafe;model", "org/unsafe;model"].map((model) => ({ model, provider: "Hugging Face", available: true }));
+    const listCommand = `if(process.argv[2]==='model'){console.log(JSON.stringify(${JSON.stringify({ provider: "Hugging Face", models: modelList.map(({ model }) => model), routes: modelList })}));process.exit(0)}`;
+    fixture("jcode", listCommand + errorLines);
+    const catalog = JSON.parse(await capture(() => run("models", ["--harness", "jcode", "--space", SPACE, "--json"])));
+    const listed = catalog.result.items[0].models.find(({ id }: { id: string }) => id === slashModel);
+    ok("Jcode lists the exact slash-bearing model ID", listed?.provider === "Hugging Face", listed);
+    const modelPersona = (model: string) => writeFileSync(modelProbe, `---\nname: model_probe\nrole: model_probe\nagent: jcode\nmodel: '${model}'\n---\nRespond only to test prompts.\n`);
+    const modelFailure = async (extra: string[] = []): Promise<unknown> => {
+      try { await capture(() => run("spawn", ["--file", modelProbe, "-d", "--space", SPACE, "--server", SERVER, "--cwd", fakeBin, "--no-events", ...extra])); }
+      catch (error) { return error; }
+    };
+    for (const [source, personaModel, model, extra] of [
+      ["persona", "fixture/persona-model", "persona-model", []],
+      ["flag", "fixture/persona-model", "gpt-6.2-sol", ["--harness", "jcode", "--model", "cliproxy/gpt-6.2-sol"]],
+      ["persona slash", `fixture/${slashModel}`, slashModel, []],
+      ["flag slash", "fixture/persona-model", slashModel, ["--harness", "jcode", "--model", `cliproxy/${slashModel}`]],
+    ] as const) {
+      modelPersona(personaModel);
+      const failure = await modelFailure([...extra]);
+      ok(`Jcode rejects a ${source} model prefix and keeps the original options in the bare-model retry`,
+        isCommandFailure(failure) && exitCode(failure.outcome, failure.code) === 5 && failure.code === "OPERATION_FAILED"
+          && failure.message.includes("model_prefix_rejected") && failure.message.includes("Select the provider in Jcode's configuration")
+          && failure.remedyIsCommand === true && ["cotal", "pnpm cotal"].some((cli) => failure.remedy?.startsWith(`${cli} spawn `))
+          && [" -d", ` --space ${SPACE}`, ` --server ${SERVER}`, ` --file '${modelProbe}'`, ` --cwd ${fakeBin}`, " --no-events", ` --model ${model}`].every((part) => failure.remedy?.includes(part))
+          && (source.startsWith("persona") || failure.remedy?.includes(" --harness jcode") === true)
+          && !failure.remedy?.includes("fixture/") && !failure.remedy?.includes("cliproxy/"), failure);
+    }
+    for (const [label, unsafe] of [["persona model", "unsafe;model"], ["slash-bearing model", "org/unsafe;model"]] as const) {
+      modelPersona(`fixture/${unsafe}`);
+      const unsafeModel = await modelFailure();
+      ok(`Jcode withholds an unsafe ${label} from the refusal and does not suggest a retry command`,
+        isCommandFailure(unsafeModel) && unsafeModel.code === "OPERATION_FAILED" && unsafeModel.message.includes("model_prefix_rejected")
+          && !unsafeModel.message.includes("unsafe;model") && !unsafeModel.remedyIsCommand, unsafeModel);
+    }
+    const harness = join(import.meta.dirname, "../../extensions/connector-jcode/smoke/fake-jcode.mjs");
+    const modelLog = join(fakeBin, "model-harness.jsonl");
+    fixture("jcode", `${listCommand}process.env.FAKE_JCODE_LOG=${JSON.stringify(modelLog)};await import(${JSON.stringify(harness)});`);
+    modelPersona("fixture/persona-model");
+    const selected = await capture(() => run("spawn", ["--file", modelProbe, "--harness", "jcode", "--detach", "--space", SPACE, "--cwd", fakeBin, "--model", listed.id]));
+    const modelCalls = readFileSync(modelLog, "utf8").trim().split("\n").map((line) => JSON.parse(line)).filter((e) => e.ev === "request" && e.frame?.req === "set_model");
+    ok("Jcode joins and receives the catalog ID verbatim even when its suffix is also listed",
+      joinedAs(selected, "model_probe") && modelCalls.length === 1 && modelCalls[0].frame.model === slashModel, { selected, modelCalls });
+    await capture(() => run("stop", ["--name", "model_probe", "--space", SPACE]));
+    fixture("jcode", errorLines);
     const originalCwd = process.cwd();
     const jcodeFailure = await (async () => {
       process.chdir(fakeBin);
@@ -527,16 +567,17 @@ try {
   const psAfter = await capture(() => run("ps", ["--space", SPACE]));
   ok("ps is empty after stop", NO_AGENTS.test(psAfter), psAfter);
 
-  {
-    const guide = readFileSync(join(import.meta.dirname, "../../docs/connect-opencode.mdx"), "utf8");
-    const example = /`\.cotal\/agents\/([\w-]+)\.md`[^\n]*\n\n```markdown\n([\s\S]+?)\n```[\s\S]+?^cotal spawn \1 --harness opencode --detach$/m.exec(guide);
-    if (!example) throw new Error("The OpenCode guide must show how to create the persona before its detached launch");
+  for (const [harness, role] of [["opencode", "research"], ["codex", "review"], ["claude", "assistant"]]) {
+    const guide = readFileSync(join(import.meta.dirname, `../../docs/connect-${harness}.mdx`), "utf8");
+    const example = /`\.cotal\/agents\/([\w-]+)\.md`[^\n]*\n\n```markdown\n([\s\S]+?)\n```[\s\S]+?^cotal spawn \1 --harness ([\w-]+) --detach$/m.exec(guide);
+    if (!example || example[3] !== harness) throw new Error(`The ${harness} guide must show how to create the persona before its detached launch`);
     const [, persona, contents] = example;
     writeFileSync(join(workspaceRoot, ".cotal", "agents", `${persona}.md`), `${contents}\n`);
-    // Use the suite harness to test the catalog lookup against the real manager without OpenCode installed.
-    const launched = await capture(() => run("spawn", [persona, "--harness", "e2e", "--detach", "--no-events", "--space", SPACE]));
-    ok("the OpenCode guide's persona launches by catalog name", joinedAs(launched, persona) && lastOpts?.role === "research", launched);
-    await capture(() => run("stop", [persona, "--space", SPACE]));
+    // Use the suite harness to test catalog lookup against the real manager without native applications.
+    const name = `guide-${harness}`;
+    const launched = await capture(() => run("spawn", [persona, "--harness", "e2e", "--detach", "--no-events", "--space", SPACE, "--name", name]));
+    ok(`the ${harness} guide's persona launches by catalog name`, joinedAs(launched, name) && lastOpts?.role === role, launched);
+    await capture(() => run("stop", [name, "--space", SPACE]));
   }
 
   // D — COTAL_DEFAULT_PERSONA supplies the persona for a bare detached spawn. The identity still
@@ -652,7 +693,10 @@ try {
   // validation under test is ever reached. The seed stays skipped so nothing npm-installs into
   // the sandbox either. Customers never see this state (the lockstep release publishes core +
   // connectors together).
-  const subEnv = { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: join(home, "xdg"), COTAL_SKIP_CONNECTOR_SEED: "1" };
+  const subEnv = {
+    ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_"))),
+    COTAL_HOME: home, XDG_CONFIG_HOME: join(home, "xdg"), COTAL_SKIP_CONNECTOR_SEED: "1",
+  };
 
   {
     const retryConnector: Connector = { ...e2eCon, name: "retry-e2e", eventChannel };

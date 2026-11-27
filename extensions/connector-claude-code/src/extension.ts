@@ -72,15 +72,16 @@ function assertServableModel(model: string): void {
 }
 
 /** The `--model` and `--effort` flags of the launch, and the env that labels the seat with its model
- *  and variant. An explicit `--opt effort=` wins, as a permission option does, and the seat is then
- *  not labelled with a variant it does not run. */
+ *  and variant. A native `--opt model=` is the one model argument and the seat's model label. An
+ *  explicit `--opt effort=` wins, as a permission option does, and the seat is then not labelled with
+ *  a variant it does not run. */
 function modelFlags(opts: LaunchOpts, passthrough: readonly (readonly [string, string])[]): { args: string[]; env: Record<string, string> } {
   const args: string[] = [];
   const env: Record<string, string> = {};
-  if (opts.model) {
-    args.push("--model", opts.model);
-    env.COTAL_MODEL = opts.model;
-  }
+  const native = passthrough.find(([k]) => k === "model")?.[1];
+  if (opts.model && !native) args.push("--model", opts.model);
+  const model = native || opts.model;
+  if (model) env.COTAL_MODEL = model;
   if (opts.variant !== undefined && !passthrough.some(([k]) => k === "effort")) {
     args.push("--effort", opts.variant);
     env.COTAL_VARIANT = opts.variant;
@@ -115,6 +116,16 @@ export const claudeConnector: Connector = {
   }),
   pluginRoot: PLUGIN_ROOT,
   requires: ["claude"],
+  install: {
+    title: "Claude Code",
+    maker: "Anthropic",
+    installers: {
+      darwin: { script: "https://claude.ai/install.sh", shell: "bash", binDir: "~/.local/bin" },
+      linux: { script: "https://claude.ai/install.sh", shell: "bash", binDir: "~/.local/bin" },
+      win32: { script: "https://claude.ai/install.ps1", binDir: "%USERPROFILE%\\.local\\bin" },
+    },
+    signIn: { status: ["claude", "auth", "status"], login: ["claude", "auth", "login"] },
+  },
   listModels: listClaudeModels,
   supportsModelVariant: true, // variant = claude's `--effort` level
   supportsModes: true, // fast and ultracode, rendered as claude's `--settings`

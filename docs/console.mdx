@@ -32,9 +32,10 @@ In the interactive console on an open mesh, omit `--space` to open the admin ove
 It lists spaces found through the server's `CHAT_*` streams and presence buckets, with agent, channel, and message counts.
 The agent count excludes endpoints such as the manager.
 The channel count includes configured channels and channels with retained posts. It excludes agent event channels.
-Select a space to open its console. Press `b` to return to the overview.
+Select a space to open its console. Press `b` or choose `spaces` in the command palette to return to the overview.
 Press `q` from the overview to return to the shell, even if you left a space while it was still connecting.
 Use `--space X` to skip the picker. An authenticated connection opens its selected space directly.
+The palette offers `spaces` only when you opened the space from the overview.
 This scopes the view; one broker can host several accounts and spaces.
 
 <Callout type="warn" title="The console includes operator controls">
@@ -103,7 +104,8 @@ Available controls include:
 | `delchan <channel>` | Delete one channel after you type its name to confirm. Wildcards are refused. |
 
 Channel deletion uses core's `clearChannel`, which purges matching history and removes the registry
-entry. It acquires a one-use `channel-purger` credential on a static mesh,
+entry. The console removes that channel's posts from its feed and keeps posts from other channels.
+The action acquires a one-use `channel-purger` credential on a static mesh,
 a `channel-purger` view on a user-auth mesh, or an open connection.
 It does not call a manager.
 

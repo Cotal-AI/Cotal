@@ -47,11 +47,11 @@ Managers with running seats still require stopping those seats before replacemen
 ## Updating the installation
 
 On Linux, when `cotal update --self` finds no newer CLI version and proves the installed package closure
-current, it reports local Manager custody without replacing packages, reconciling connectors,
-or restarting the daemon. Legacy custody is informational on this path: a later replacement
-still requires stopping those agents. An unreadable custody report remains a refusal.
-This package check does not verify external harness integrations. Run `cotal update` to refresh
-those integrations. If the package closure needs repair, the usual continuity guards still apply.
+current, it skips package replacement, full connector reconciliation, and the running Manager continuity
+check. It does not restart a running daemon.
+A manual `cotal update --self` also repairs a complete Codex marketplace moved into the current
+Cotal home when Codex still points to the missing old path. Run `cotal update` to refresh other
+harness integrations. If the package closure needs repair, the usual continuity guards still apply.
 
 `cotal update` validates a recorded machine-daemon service before reconciling connectors.
 `cotal update --self` also checks it before replacing the global package. A missing receipt

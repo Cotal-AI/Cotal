@@ -221,7 +221,7 @@ try {
     "on 40 columns cotal help persona breaks a compact group after its own |",
     usageOf(persona.all).join("\n") === [
       "  cotal persona [--json|--plain] |", "  persona show <name> |", "  persona create <name>",
-      "  (--file <persona.md>|", "  (--prompt <text>|--from <path>)", "  --subscribe <a,b|\"\">) |", "  persona edit <name> |", "  persona remove <name>",
+      "  (--file <persona.md>|", "  (--prompt <text>|--from <path>)", "  (--subscribe <a,b>|--subscribe=)) |", "  persona edit <name> |", "  persona remove <name>",
       "  [--yes]; list/show/create support", "  --on <manager-instance>",
     ].join("\n"),
     usageOf(persona.all),

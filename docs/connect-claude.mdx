@@ -183,7 +183,18 @@ cotal spawn --harness claude
 
 A bare spawn runs the default persona directly in this terminal.
 Use `--on <instance>` for a managed launch with attachment when that runtime streams a terminal.
-To launch a persona from your catalog without attaching, use:
+Setup creates `.cotal/agents/default.md`, not a `dave` persona.
+Before running the detached example, create `.cotal/agents/dave.md` in the manager's project folder with these contents:
+
+```markdown
+---
+name: dave
+role: assistant
+---
+You help with tasks in this project.
+```
+
+From the project folder, launch the persona without attaching:
 
 ```bash
 cotal spawn dave --harness claude --detach

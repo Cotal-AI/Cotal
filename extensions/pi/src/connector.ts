@@ -112,6 +112,16 @@ export const piConnector: Connector = {
   kind: "connector",
   name: "pi",
   requires: ["pi"],
+  // pi runs on Node; its installer installs Node itself only after asking in a terminal.
+  install: {
+    title: "pi",
+    maker: "Earendil",
+    installers: {
+      darwin: { script: "https://pi.dev/install.sh", shell: "sh", binDir: "~/.pi/agent/bin", needs: ["node", "npm"] },
+      linux: { script: "https://pi.dev/install.sh", shell: "sh", binDir: "~/.pi/agent/bin", needs: ["node", "npm"] },
+      win32: { script: "https://pi.dev/install.ps1", binDir: "%USERPROFILE%\\.pi\\agent\\bin", needs: ["node", "npm"] },
+    },
+  },
   supportsResume: true,
   supportsSessionContinuation: true,
   supportsSessionReopen: true,

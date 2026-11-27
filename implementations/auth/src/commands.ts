@@ -25,7 +25,7 @@ import {
   normalizeIdpUrl,
 } from "./login.js";
 import { refreshServiceSessions } from "./service-sessions.js";
-import { signOutIdpSession } from "./logout.js";
+import { conversationLogoutWarnings, signOutIdpSession } from "./logout.js";
 import { inspectHandleFile } from "./handle-inspect.js";
 import { checkedEviction } from "./barrier-evict.js";
 import { deriveOwnerForIdpSubject } from "./derive.js";
@@ -339,9 +339,11 @@ async function runLogout(args: ParsedArgs): Promise<void> {
     writeResult(presentation, { command: "logout", target: { idp }, result: { kind: "logout", localLogin: "absent", serverRevoked: null, daemonNotice: DAEMON_SIGN_OUT_NOTICE }, noOp: true }, () => ({ sections: [{ title: "No cached sign-in", blocks: [{ kind: "fields", rows: [["Provider", idp]] }, { kind: "lines", lines: [{ text: "No local session was found. Other server sessions were not checked or revoked.", tone: "hint" }, { text: DAEMON_SIGN_OUT_NOTICE, tone: "hint" }] }] }] }));
     return;
   }
+  const conversationWarnings = conversationLogoutWarnings(result);
   writeResult(presentation, { command: "logout", target: { idp }, result: { ...result, daemonNotice: DAEMON_SIGN_OUT_NOTICE } }, (result) => ({ sections: [
     { title: local ? "Signed out on this machine" : "Signed out", blocks: [{ kind: "fields", rows: [["Provider", idp], ["Provider session", local ? { text: "not contacted; it stays valid until it expires or is revoked at the provider", tone: "waiting" } : { text: "revoked", tone: "ok" }], ["Local login", "cleared"], ["Discovered spaces removed", String(result.removedRegistrations.length)]] }, { kind: "lines", lines: [{ text: "This does not claim that independently running agents or other provider sessions were stopped.", tone: "hint" }, { text: result.daemonNotice, tone: "hint" }] }] },
     ...(result.skippedServices.length ? [{ title: "Manager services skipped", blocks: [{ kind: "lines" as const, lines: result.skippedServices }] }] : []),
+    ...(conversationWarnings.length ? [{ title: "Conversation retirements not confirmed", blocks: [{ kind: "lines" as const, lines: conversationWarnings }] }] : []),
     { title: "Next", blocks: [{ kind: "commands", items: [{ command: "cotal login", description: "Sign in deliberately when needed" }] }] },
   ] }));
 }

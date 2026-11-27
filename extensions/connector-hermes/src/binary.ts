@@ -1,4 +1,17 @@
 import { spawn, type ChildProcess, type SpawnOptions } from "node:child_process";
+import { statSync } from "node:fs";
+import { delimiter, resolve } from "node:path";
+
+/** Native launch accepts only a real uv.exe on PATH, never a PATHEXT script shim. */
+export function findWindowsUv(): string | undefined {
+  for (const dir of (process.env.PATH ?? "").split(delimiter)) {
+    if (!dir) continue;
+    const path = resolve(dir, "uv.exe");
+    try { if (statSync(path, { throwIfNoEntry: false })?.isFile()) return path; }
+    catch { /* Skip inaccessible PATH entries. */ }
+  }
+  return undefined;
+}
 
 /** The exact `uv` executable resolved by manager boot. A bare fallback remains for library
  * compositions that do not run the installed-extension inventory. */

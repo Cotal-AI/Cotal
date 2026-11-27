@@ -21,6 +21,7 @@ import {
   recordMeshes,
   removeMeshes,
   userAuthStateDir,
+  withProjectTrustMigration,
   type MeshEntry,
   type RefusalCode,
 } from "@cotal-ai/workspace";
@@ -194,7 +195,7 @@ export function importAccountComputerSpace(account: AuthSpaceCatalogAccount, row
     throw new Error("a different local registration owns this space name");
   const next = entryFor(account, row, prior, new Date().toISOString());
   writeCatalogCredential(next, row);
-  recordMeshes([next]);
+  withProjectTrustMigration(true, false, () => recordMeshes([next]));
 }
 
 function writeCatalogCredential(entry: MeshEntry, row: CatalogSpace): void {

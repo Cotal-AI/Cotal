@@ -100,12 +100,7 @@ const EMITTING_TYPES = new Set(["text", "reasoning", "tool"]);
  */
 export function isSettled(record: OpenCodeRecord): boolean {
   const { part, message } = record;
-  // AUTHORSHIP FIRST, AND IT IS NOT AN OPTIMISATION. §3.2 rules that no user-authored text is ever
-  // emitted, so a user message produces no frame and cannot gate one. Testing the part type first
-  // would WEDGE EVERY SESSION AT ITS FIRST PROMPT: `UserMessage.time` carries only `created` (no
-  // `completed` field exists on the type, and 0 of 634 user messages carry one), and 659 of 668
-  // user text parts carry no `time` object at all, so neither settle signal can ever arrive for
-  // them. The safety ruling and the liveness of this stream are the same line.
+  // User records can close the previous turn, but carry no completion mark and publish no text.
   if (message.role !== "assistant") return true;
   if (!EMITTING_TYPES.has(part.type)) return true; // emits nothing, so it gates nothing
   if (message.time?.completed !== undefined) return true; // the turn ended: nothing more is coming
@@ -210,12 +205,10 @@ export class OpenCodeSessionSource implements OrderedSource<OpenCodeRecord> {
     const messages = await this.read0();
     const ordered: OpenCodeRecord[] = [];
     for (const m of [...messages].sort((a, b) => (a.info.id < b.info.id ? -1 : a.info.id > b.info.id ? 1 : 0))) {
-      // A turn that failed before any output leaves its assistant message with an error and no
-      // parts (measured on 1.19.6). The message stands in as one record, so the turn opens a run
-      // that its `session.error` closes; without it the run never opens and the close finds none.
-      const parts = m.parts.length === 0 && m.info.role === "assistant" && m.info.error !== undefined
-        ? [{ id: m.info.id, messageID: m.info.id, type: "error" }]
-        : [...m.parts].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+      // The assistant header is written before the model call, including for a failed turn that
+      // never writes a part. Its cursor sorts before every native `prt_` part of this message.
+      if (m.info.role === "assistant") ordered.push({ part: { id: m.info.id, messageID: m.info.id, type: "assistant-header" }, message: m.info });
+      const parts = [...m.parts].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
       for (const part of parts) {
         if (part.type === "tool") ordered.push({ part, message: m.info, call: true });
         ordered.push({ part, message: m.info });

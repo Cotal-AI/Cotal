@@ -90,7 +90,7 @@ interface IdentityRecord {
  *  polling without asserting that the identity was never issued. */
 export type AppIdentityReply =
   | { ok: true; env: Record<string, string>; retire?: { dir: string }; grant?: ConversationGrant }
-  | ({ ok: false; pending: true } & ConversationPending)
+  | ({ ok: false; pending: true; error?: string } & ConversationPending)
   | { ok: false; taken: true }
   | { ok: false; error: string; refused?: ConversationRefusal["decision"]; retryable?: boolean };
 
@@ -133,7 +133,7 @@ async function provision(values: FlagValues<typeof appIdentityFlags>): Promise<A
   const t = await target(values.space);
   if (t.mode === "user") {
     const connection = await provisionUserApp(t, name, values.session, values.events === true, selection);
-    return "pending" in connection ? { ok: false, pending: true, ...connection.pending } : { ok: true, ...connection };
+    return "pending" in connection ? { ok: false, pending: true, ...connection.pending, ...(connection.reason ? { error: connection.reason } : {}) } : { ok: true, ...connection };
   }
   // What a host that died without retiring left behind is retired first.
   const retired = await retireOrphans();

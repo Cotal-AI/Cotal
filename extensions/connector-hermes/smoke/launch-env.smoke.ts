@@ -8,18 +8,20 @@
  * Run: pnpm --filter @cotal-ai/connector-hermes test
  */
 import { strict as nodeAssert } from "node:assert";
-import { spawn, type ChildProcess } from "node:child_process";
+import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { connect } from "node:net";
+import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
-import { discardLaunchArtifacts, readLaunchMaterial, writeLaunchMaterial, type LaunchOpts } from "@cotal-ai/core";
-import { skipSuite } from "@cotal-ai/smoke-kit";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { CONTROL_PROTOCOL_VERSION, controlCall, discardLaunchArtifacts, readLaunchMaterial, writeLaunchMaterial, type LaunchOpts } from "@cotal-ai/core";
 import { hermesUvCommand, spawnHermesGateway } from "../src/binary.js";
 import { hermesConnector } from "../src/extension.js";
+import { bridgeToken, startBridgeServer } from "../src/bridge.js";
 import { ADOPT_HOME_ENV, LaunchRefused, adoptedHome, assertHermesVersion, setupAdoptedProfile, setupProfile } from "../src/launch.js";
-import { briefing } from "@cotal-ai/connector-core";
+import { windowsHostFromPreload } from "../src/windows-gateway.js";
+import { briefing, DeltaJournal, type AgentConfig, type MeshAgent } from "@cotal-ai/connector-core";
 
 /**
  * Count every assertion, so the terminal tally is derived from what actually ran.
@@ -52,8 +54,97 @@ const assert: typeof nodeAssert = new Proxy(nodeAssert, {
  * smaller green into a red. Raise it deliberately when you add a cell; a drop means one vanished.
  */
 const EXPECTED_CELLS = 193;
+const EXPECTED_WINDOWS_CELLS = 29;
 
-if (process.platform === "win32") skipSuite("the Hermes connector is Unix-only; buildLaunch throws");
+if (process.platform === "win32") {
+  await checkWindowsLaunch();
+  if (cells !== EXPECTED_WINDOWS_CELLS) throw new Error(`expected ${EXPECTED_WINDOWS_CELLS} Windows checks, got ${cells}`);
+  console.log(`COTAL_SMOKE_SENTINEL cells=${cells} passed=${cells} failed=0`);
+  process.exit(0);
+}
+
+async function checkWindowsLaunch(): Promise<void> {
+  // The packaged smoke receives the CLI preload and independently packed launcher as paths.
+  const hostUrl = process.argv[2] ? pathToFileURL(process.argv[2]) : new URL("../../../implementations/cli/dist/lib/hermes-windows-preload.js", import.meta.url);
+  assert.equal(windowsHostFromPreload(), undefined);
+  await import(hostUrl.href);
+  const host = windowsHostFromPreload();
+  assert.ok(host, "the CLI preload supplies both native operations");
+  const { listenOwnerPipe, startProcess } = host;
+  const root = mkdtempSync(join(tmpdir(), "cotal-hermes-availability-"));
+  const savedPath = process.env.PATH;
+  const savedAdopt = process.env.COTAL_HERMES_ADOPT_HOME;
+  const opts = { space: "smoke", name: "hermes", model: "smoke-model", events: false, validateOnly: true };
+  const endpoint = { path: `\\\\.\\pipe\\cotal-hermes-smoke-${randomUUID()}`, token: randomUUID(), version: CONTROL_PROTOCOL_VERSION };
+  let reached = 0;
+  const agent = { on() {}, inboxPreview: () => [] } as unknown as MeshAgent;
+  const config: AgentConfig = { space: "smoke", name: "hermes", servers: "", subscribe: [], allowSubscribe: [], allowPublish: [], kind: "agent", tls: false };
+  const bridge = startBridgeServer(agent, config, endpoint.path, endpoint, { onSubscribe: () => { reached++; } }, listenOwnerPipe);
+  const signed = { ...endpoint, token: bridgeToken(endpoint) };
+  const limit = { timeoutMs: 2_000, maxReplyBytes: 16 };
+  try {
+    checkWindowsLauncherRefusal(root, hostUrl);
+    const deltaPath = join(root, "deltas.jsonl");
+    const deltaOptions = { path: deltaPath, createPrivateOnWindows: true, anchor: () => "", onWrite() {}, onError(error: Error) { throw error; } };
+    DeltaJournal.open(deltaOptions).close();
+    assert.equal(readFileSync(deltaPath, "utf8"), "");
+    assert.throws(() => DeltaJournal.open(deltaOptions), { code: "EEXIST" });
+    delete process.env.COTAL_HERMES_ADOPT_HOME;
+    const log = join(root, "gateway.log");
+    const child = startProcess(process.execPath, ["-e", "console.error('host-process-smoke'); process.exit(17)"], process.env, log);
+    try { assert.equal(await child.exited, 17); } finally { await child.stop(); }
+    assert.match(readFileSync(log, "utf8"), /host-process-smoke/);
+    process.env.PATH = root;
+    writeFileSync(join(root, "uv.cmd"), "");
+    assert.equal(hermesConnector.launchUnavailable?.(), "Hermes on Windows needs uv.exe on PATH. Install uv before launching Hermes.");
+    const managedRefusal = hermesConnector.launchUnavailable?.({ cwd: root, resume: "session" });
+    assert.match(managedRefusal ?? "", /does not support detached or manager-attached launches/);
+    assert.throws(() => hermesConnector.buildLaunch({ ...opts, cwd: root, resume: "session" }), { message: managedRefusal });
+    writeFileSync(join(root, "uv.exe"), "");
+    assert.deepEqual(hermesConnector.buildLaunch(opts), { command: "", args: [] });
+    const launch = hermesConnector.buildLaunch({ ...opts, validateOnly: false });
+    try {
+      assert.equal(launch.env?.COTAL_HERMES_UV_BIN, join(root, "uv.exe"));
+      assert.equal(launch.command, process.execPath);
+      assert.match(launch.args[0] ?? "", /[\\/]dist[\\/]launch\.js$/);
+    }
+    finally { discardLaunchArtifacts(launch.artifacts); }
+    assert.throws(() => hermesConnector.buildLaunch({ ...opts, resume: "session" }), /does not support session resume/);
+    process.env.COTAL_HERMES_ADOPT_HOME = root;
+    assert.throws(() => hermesConnector.buildLaunch(opts), /does not support adopted profiles/);
+    assert.throws(() => listenOwnerPipe(endpoint.path, () => {}, () => {}), { code: "EADDRINUSE" });
+    await assert.rejects(controlCall(endpoint, { t: "subscribe" }, limit));
+    await assert.rejects(controlCall(signed, { t: "tool" }, limit));
+    assert.equal(reached, 0);
+    assert.equal(await controlCall(signed, { t: "subscribe" }, limit), "{}");
+    assert.equal(reached, 1);
+  } finally {
+    await bridge.close();
+    if (savedPath === undefined) delete process.env.PATH;
+    else process.env.PATH = savedPath;
+    if (savedAdopt === undefined) delete process.env.COTAL_HERMES_ADOPT_HOME;
+    else process.env.COTAL_HERMES_ADOPT_HOME = savedAdopt;
+    rmSync(root, { recursive: true, force: true });
+  }
+  await assert.rejects(controlCall(signed, { t: "subscribe" }, limit));
+}
+
+function checkWindowsLauncherRefusal(root: string, oldArg: URL): void {
+  const launcher = process.argv[3] ?? fileURLToPath(new URL("../dist/launch.js", import.meta.url));
+  const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^(?:COTAL_|(?:NODE_OPTIONS|TMP|TEMP)$)/i.test(key)));
+  const bare = { ...env, TMP: root, TEMP: root };
+  const run = (args: string[], env: NodeJS.ProcessEnv) => spawnSync(process.execPath, args, { env, encoding: "utf8", timeout: 15_000 });
+  const inert = run([launcher], bare);
+  assert.equal(inert.status, 0, inert.stderr);
+  assert.match(inert.stderr, /not a managed session/);
+  const incompatible = `data:text/javascript,${encodeURIComponent('Object.defineProperty(globalThis, Symbol.for("cotal.hermes.windows-host.v1"), { value: {} })')}`;
+  for (const args of [[launcher, fileURLToPath(oldArg)], ["--import", incompatible, launcher]]) {
+    const refused = run(args, { ...bare, COTAL_NAME: "smoke-hermes-host" });
+    assert.equal(refused.status, 1, refused.stderr);
+    assert.match(refused.stderr, /needs its matching Cotal CLI\. Update Cotal and retry the foreground launch\./);
+  }
+  assert.deepEqual(readdirSync(root), [], "refused launches leave no material in the private temp directory");
+}
 
 /** The provider keys this connector declares. They must still arrive. */
 const PROVIDER_KEYS = [

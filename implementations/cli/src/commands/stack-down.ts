@@ -13,7 +13,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import * as prompts from "../lib/prompts.js";
 import { CotalEndpoint, DEFAULT_SPACE, deliveryLeaseHolderFor, MANAGER_START_PAYLOAD_FLOOR, mintCreds, newIdentity, type ParsedArgs } from "@cotal-ai/core";
 import {
-  CommandFailure, ConfirmationRequired, assertRecordIdentity, canonicalRoot, codeSpan, commandFailureReport, commandIsCotalSupervisor, deliveryCredsKey, findMesh, getSpaceAuth, isCommandFailure, isConnectRefusal, oneLine, presentationOf, processStopped, readBrokerPolicy, readNatsInfoGreeting, readProcessCommand, recordMesh, recordOperationSpace, recordPreparedSpace, releaseMaintenanceLock, removeMesh, removeMeshesByRoot, renderReport, resolveMeshTarget, workspaceSecretStore, writeResult,
+  CommandFailure, ConfirmationRequired, assertRecordIdentity, canonicalRoot, codeSpan, commandFailureReport, commandIsCotalSupervisor, deliveryCredsKey, findMesh, getSpaceAuth, isCommandFailure, isConnectRefusal, oneLine, presentationOf, processStopped, readBrokerPolicy, readNatsInfoGreeting, readProcessCommand, recordMesh, recordOperationSpace, recordPreparedSpace, releaseMaintenanceLock, removeMesh, removeMeshesByRoot, renderReport, resolveMeshTarget, windowsShellWord, workspaceSecretStore, writeResult,
   type MaintenanceLock, type MeshEntry, type OutputWarning, type Presentation, type Report, type ServiceAdapterKernelStopPlan, type ServiceAdapterStopAbandonment, type ServiceAdapterStopPlan,
   hasUserAuthState, localProcessPathCandidates, MANAGER_DELIVERY_AWARE_MARKER, MANAGER_LOGFILE, MANAGER_PIDFILE, MANAGER_SHUTDOWN_INTENT, MANAGER_SPARE_CAPABILITY, retainedLegacyBroker, stopReservationPath,
 } from "@cotal-ai/workspace";
@@ -21,6 +21,7 @@ import { brokerLaunchAt } from "../lib/broker-service.js";
 import { brokerStoreWrite, fullStoreStopRefusal, jetStreamDisabled, jetStreamDisabledRefusal, readStoredBytes, recordedStore, storeFull, storeRefusedWrite, storeWriteError, storeWriteFailedRefusal } from "../lib/broker-store-health.js";
 import { yesRequired } from "../lib/confirmation-required.js";
 import { noticeOnInterrupt } from "../lib/interrupt-notice.js";
+import { cotalRoot } from "../lib/paths.js";
 import { releaseDeadForegroundHold } from "../lib/foreground-hold.js";
 import { shellWord } from "../lib/endpoint-errors.js";
 import { stackStoreWarnings } from "../lib/store-identity.js";
@@ -42,7 +43,7 @@ interface Member { role: StackRole; definition: ServiceDefinitionSnapshot; insta
 
 /** The controller route applies whenever the root has a stack journal. */
 export function controllerStackRecorded(root: string): boolean {
-  return readStackJournal(canonicalRoot(root)) !== undefined;
+  return readStackJournal(root, true) !== undefined;
 }
 
 /** The root of the stack this machine started for `space` in a folder other than `root`, or
@@ -98,7 +99,7 @@ export function validateStackDownArguments(root: string, values: ParsedArgs["val
     if (values.yes !== true) {
       // The ID is looked up first, with nothing written, so one no member retains is refused, naming
       // the stop request to abandon, before --yes is asked for.
-      const journal = readStackJournal(root)?.journal;
+      const journal = readStackJournal(root, true)?.journal;
       if (journal && typeof values["abandon-stop"] === "string" && (values.space === undefined || values.space === journal.space)) refuseUnretainedStackStop(journal, values["abandon-stop"]);
       throw new ConfirmationRequired("--abandon-stop needs --yes, because it gives up the only record of what that stop did", { remedy: `run \`cotal down --abandon-stop ${values["abandon-stop"]} --yes\` to give it up` });
     }
@@ -107,7 +108,7 @@ export function validateStackDownArguments(root: string, values: ParsedArgs["val
     if (values["dry-run"] === true) throw new CommandFailure("refused", "USAGE_INVALID", "--abandon-launch records a member launch failed, so a read-only preview cannot take it");
     if (values.yes !== true) throw new CommandFailure("refused", "USAGE_INVALID", "--abandon-launch needs --yes, because a process that launch started without recording it is not excluded");
   }
-  if (preserve) refuseControllerCut(root, "down --preserve-state");
+  if (preserve) refuseControllerCut(root, "down --preserve-state", true);
 }
 
 /** Each recorded member, read without writing. A live process is stopped by its own policy, whatever
@@ -301,12 +302,19 @@ export function nothingRunning(presentation: Presentation, target: { root: strin
   ] }));
 }
 
-function stoppedRestart(target: { root: string; space?: string }, noManager: boolean, journal?: StackJournal) {
+function stoppedRestart(target: { root: string; space?: string }, noManager: boolean, journal?: StackJournal, description = noManager ? "Start the stack without a manager" : "Start it") {
   const { root, space } = target, up = `${displayCmd()} up`;
   const retained = !journal && space && hasUserAuthState(root, space, { readOnly: true }) ? retainedLegacyBroker(root) : undefined;
   if (retained && !retained.open && space)
     return { command: `${up} --foreground --no-manager --user-auth --space ${shellWord(space)} --server ${shellWord(retained.server)}`, description: "Start it with user auth" };
-  return { command: `${up}${noManager ? " --no-manager" : ""}`, description: noManager ? "Start the stack without a manager" : "Start it" };
+  const command = `${up}${noManager ? " --no-manager" : ""}`;
+  if (journal && process.platform === "win32" && canonicalRoot(cotalRoot()) !== root) {
+    // A dollar sign before a path separator is literal in both Windows shells.
+    if (windowsShellWord(root.replace(/\$(?=\\)/g, "")) !== undefined)
+      return { command: `${command} --root "${root}"`, description };
+    return { command, description: `Run from the recorded project path: ${root}` };
+  }
+  return { command, description };
 }
 
 /** The registration `cotal up` wrote for this stack is how its members' stops reach it. An older
@@ -393,8 +401,10 @@ export async function stackDown(rootInput: string, values: ParsedArgs["values"],
   validateStackDownArguments(rootInput, values);
   const presentation = presentationOf(values), interactive = canPrompt() && presentation !== "json";
   const withAgents = values["with-agents"] === true;
-  const root = canonicalRoot(rootInput);
-  const recorded = readStackJournal(root);
+  const invoked = canonicalRoot(rootInput);
+  const recorded = readStackJournal(invoked, true);
+  // Keep the recorded spelling for the lock, registration and member ownership checks.
+  const root = recorded?.journal.root ?? invoked;
   if (recorded && stackRecordsLost(recorded) && !recordedReplacementSupersedesLostRecords(recorded)) return lostRecordsStackDown(root, values);
   // The preview reads without the lock and writes nothing. The real stop holds the root's
   // maintenance lock from its first read to its last write, so no other whole-stack operation runs.
@@ -404,11 +414,14 @@ export async function stackDown(rootInput: string, values: ParsedArgs["values"],
   const release = noticeOnInterrupt(() => stackStopInterruptNotice(root));
   try {
     // A busy root's refusal names the recorded space, as every refusal after the lock does.
-    const recorded = readStackJournal(root)?.journal.space;
-    if (recorded !== undefined) recordOperationSpace(recorded);
+    const space = recorded?.journal.space;
+    if (space !== undefined) recordOperationSpace(space);
     const lock = acquireStackOperationLock(root);
-    try { await applyStackStop(root, values, presentation, interactive, withAgents, lock, waitForLaunch); }
-    finally { releaseMaintenanceLock(lock); }
+    try {
+      if (root !== invoked && readStackJournal(invoked, true)?.journal.root !== root)
+        throw new CommandFailure("refused", "CONFLICT", "the stack journal changed during this operation; nothing was replaced");
+      await applyStackStop(root, values, presentation, interactive, withAgents, lock, waitForLaunch);
+    } finally { releaseMaintenanceLock(lock); }
   } finally { release(); }
 }
 
@@ -733,5 +746,5 @@ async function applyStackStop(root: string, values: ParsedArgs["values"], presen
   ];
   writeResult(presentation, { command: "down", target, result: { kind: "controller-stack-stop", ...target, operation: journal.operation, withAgents, members: journal.members, changed, managerImpact: manager?.native ?? null, atomic: false, cleanup: failure ? "not-confirmed" : journal.mode === "open" ? "registration-removed-no-delivery-credential" : deliveryCredentialKept ? "registration-removed-delivery-credential-kept" : "delivery-credential-and-registration-removed", admittedRestore: admittedRestore ?? null, settledOperation: settled ?? null }, ...(warnings.length ? { warnings } : {}), ...(failure ? { failure, completeness: "partial" as const } : changed.length ? {} : { noOp: true }) }, (result) => ({ sections: [...restoreNotice(admittedRestore), { title: failure ? "Controller stack stop incomplete" : changed.length ? "Controller stack stopped" : "Controller stack was not running; nothing was stopped", blocks: [
     { kind: "table", columns: [{ key: "role", label: "Member" }, { key: "instance", label: "Full instance" }, { key: "state", label: "Result" }], rows: result.members.filter((row) => row.instanceId !== null).sort((a, b) => STOP_ORDER.indexOf(a.role) - STOP_ORDER.indexOf(b.role)).map((row) => ({ role: row.role, instance: row.instanceId ?? "none", state: { text: killed.some((k) => k.role === row.role) ? "stopped with SIGKILL" : row.state.replaceAll("-", " "), tone: ["stopped", "already-stopped"].includes(row.state) ? "ok" as const : ["refused", "failed"].includes(row.state) ? "failed" as const : "waiting" as const } })) },
-  ] }, ...(failure ? [] : [{ title: "Next", blocks: [{ kind: "commands" as const, items: [{ command: `${displayCmd()} up${stackStartedWithoutManager(previous.journal) || interruptedUpLeftManagerOut(previous.journal) ? " --no-manager" : ""}`, description: "Start the stack again from its journal and saved definitions" }] }] }])] }));
+  ] }, ...(failure ? [] : [{ title: "Next", blocks: [{ kind: "commands" as const, items: [stoppedRestart(target, stackStartedWithoutManager(previous.journal) || interruptedUpLeftManagerOut(previous.journal), previous.journal, "Start the stack again from its journal and saved definitions")] }] }])] }));
 }

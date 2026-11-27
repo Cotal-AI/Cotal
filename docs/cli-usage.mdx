@@ -186,8 +186,9 @@ still checks and uses the whole value. A usage error is found before any effect,
 connectors or writes configuration. Help, version and completion never do either.
 A word that starts with `-` reads as an option. A message or name that starts with one goes after
 `--`. The refusal can suggest `--` when an operand is still available and there is no spelling
-suggestion. Once `space add` has its name, `endpoint check` has its contract file, or
-`endpoint work lease` has its target and pool, the refusal tells you to drop an unknown option instead.
+suggestion. Once `space show` or `space add` has its name, `run plan` has its source file,
+`endpoint check` has its contract file, or `endpoint work lease` has its target and pool, the
+refusal tells you to drop an unknown option instead.
 `docs` gives the same remedy once you supply a page. `channel set` gives it once you supply the
 channel name. If you type `--description`, the refusal points to `--desc`.
 The same applies to `team check`, `team boot` and `team deploy` once you have supplied the manifest file.
@@ -204,6 +205,7 @@ which the refusal gives. The refusal quotes values that a POSIX shell would spli
 another option, a group of short options, or `--` is refused with the option and its placeholder.
 Put the value before `--` and leave the operands after it. Before another option or `--`, a missing
 value on an option that cannot be repeated can also report the duplicate and ask you to use the option once.
+If you pass a bare `--exec` to `service status`, the refusal tells you to omit it.
 A short option takes its value after a space, so `-c=general` is refused rather than read as the
 value `=general`. On Windows, the correction uses double quotes for values such as a filename with
 spaces or an apostrophe, so it can be pasted into PowerShell or Command Prompt. When shared quoting
@@ -212,7 +214,8 @@ rather than read as a positional. Use `--` before the word to pass it as text. T
 any attached value the option accepts, as in `--limit=10`. Before the command word the same holds
 for the leading flags, so `cotal ––json status` names `--json`.
 If the command supports JSON and a separate `--json` or `-j` requests it, the refusal uses that
-command's JSON format even when the mistyped flag comes before the command word.
+command's JSON format even when several mistyped global or output flags come before the command
+word. The refusal names the first mistyped flag.
 For extension commands, the correction depends on the subcommand. `ext list` accepts `--json`;
 `ext root` prints a path, so the refusal asks you to omit that option.
 For `endpoint check`, the refusal asks you to omit a pasted `--file` option. Pass the contract file as an argument.
@@ -249,9 +252,11 @@ it without a value. No command may declare a flag with either name. The output
 flags `--json` (`-j`) and `--plain` may also come before the command word, as in
 `cotal --json status`; they are read as the command's own flags, so a command without that output
 refuses them as it does after the command word. If you attach a value to a leading output flag,
-the refusal tells you to omit the flag. It also suggests passing it without a value when the
+the refusal tells you to omit the flag. It can also suggest passing it without a value when the
 selected command or subcommand supports that output. The refusal keeps JSON output when you
-request it with a separate `--json` or `-j` and the command supports it. A command that takes its words raw, such as the
+request it with a separate `--json` or `-j` and the command supports it. In that case, if you give
+`--plain` a value, the remedy is to omit `--plain`.
+A command that takes its words raw, such as the
 hidden completion entry, has no flags to read them as and refuses them before its word with a usage
 error. A `--` before the command word ends these leading flags. An installed extension
 whose command declares one is an internal error, and `cotal` exits 1 before running any command.
@@ -320,7 +325,8 @@ The version command does not repair the manifest itself.
 Diagnostics stay on stderr. A command with finite JSON output reports a refusal or failure with the
 envelope alone and writes no text report on stderr. If the reader closes stdout early, the command
 keeps its exit code without printing a text report. Other failures to write the envelope send the
-text report to stderr and keep the same exit code. A usage error under
+text report to stderr and keep the same exit code. If that write stops partway into a regular file,
+the file is restored to its prior size so no partial JSON document remains. A usage error under
 finite `--json` output is a `refused` envelope with code `USAGE_INVALID`, and the help it names stays off stdout.
 This also applies when `-j` comes before a short option that is unknown or needs a value, as in
 `cotal config get harness -jZ` or `cotal config get harness -js`.
@@ -329,6 +335,11 @@ A repeated global flag and a leading switch with an attached value still produce
 A word that names none of a command's subcommands and is near none of them is a usage error that
 lists the subcommands the command takes.
 A command without a JSON output refuses `--json` as an unknown option.
+
+If a corrupt extension manifest blocks a built-in before it runs, finite JSON reports a
+`SCHEMA_INVALID` refusal. The streams for `history --follow`, `channel members --follow`, and
+`watch` report an `error` record with that code followed by an `end` record. The refusal points to
+`cotal ext seed --repair`, exits 1, and leaves the manifest in place.
 
 When a retained extension command collides with a built-in, the built-in wins. A finite JSON
 envelope from a built-in carries `EXTENSION_COMMAND_COLLISION` in `warnings` rather than printing
@@ -528,6 +539,7 @@ interrupted. Ctrl-C ends it at once with exit 130, as it ends the commands above
 | Setup | [`ext`](cli-installation.mdx#ext) | List, install and remove operator CLI extensions |
 | Setup | [`config`](cli-installation.mdx#config) | Show and set your preferences: the defaults your commands use |
 | Setup | [`telemetry`](cli-installation.mdx#telemetry) | Show or set the anonymous usage telemetry level (`off`, `minimal`, `regular`) |
+| Setup | [`trust`](cli-installation.mdx#trust) | Trust a project folder, so its `.cotal` may declare MCP servers, `spawn.env` names and persona launch options |
 | Setup | [`update`](cli-installation.mdx#update) | Reconcile first-party extensions and check or opt into a coherent CLI upgrade |
 | Setup | [`completion`](cli-installation.mdx#completion) | Report, print or install shell completion |
 | Setup | [`docs`](cli-installation.mdx#docs) | Read this version's protocol and CLI docs, offline |

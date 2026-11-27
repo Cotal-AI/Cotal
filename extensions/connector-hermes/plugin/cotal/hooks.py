@@ -23,13 +23,13 @@ extract what they need, so a signature change degrades to "no detail" rather tha
 from __future__ import annotations
 
 import os
-import socket
 import sys
 from typing import Any
 
 from . import approvals, journal, streams
 from .bridge_client import get_client
 from .control_exchange import ClientExchange, ControlConfigError, ExchangeRefused, control_key, socket_dir_problem
+from .transport import dial
 
 _TIMEOUT_S = 2.0
 _warned = False
@@ -69,10 +69,8 @@ def relay(event_name: str, **fields: Any) -> None:
             _warn_once(f"{reason}, so the hook connected to nothing - presence relays are disabled for this session")
         return
     try:
-        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        s = dial(path, _TIMEOUT_S)
         try:
-            s.settimeout(_TIMEOUT_S)
-            s.connect(path)
             exchange = ClientExchange(s, key)
             exchange.open({"event": {"hook_event_name": event_name, **fields}})
             try:

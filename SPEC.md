@@ -1,5 +1,59 @@
 # Cotal Wire Specification
 
+## Native conversation approval resume
+
+A discovery document MAY advertise `cloudCapabilities.conversationResume: { "version": 1 }`
+alongside conversation identity and connection approval. The client retains the exact
+approved actor, lifecycle and grant. On resume it MUST use the pinned discovery origin and
+exchange address. Neither the approval URL nor the previous MCP connection ID is a proof.
+
+For a new approval on a supporting authority, the creation POST's existing `tokenHash` is
+the SHA-256 hex digest of an actor secret derived from the native conversation, its original
+request and selection, a separate OS-user device key, and the OS machine identity. The local conversation proof file
+contains the derivation context, not the actor secret. An authority MUST NOT infer device
+identity from a hostname or a client-supplied system ID. It checks the original commitment.
+
+On the pinned HTTPS exchange base, the client sends `POST <exchange-base>/exchange` with
+`Content-Type: application/json`, `Cotal-Conversation-Resume: 1`, no human bearer and no
+redirect following. The body is:
+
+```json
+{
+  "owner": "<owner>",
+  "actor": "<actor>",
+  "actorToken": "<device-derived actor secret>",
+  "conversationResume": { "v": 1, "lifecycleUid": "<uid>", "grant": {} }
+}
+```
+
+`grant` is the exact grant from issuance, compared as canonical JSON, not an empty object or a new selection. The
+authority verifies the actor secret in constant time, checks the exact live lifecycle and
+grant, and applies current approval and revocation policy. It MUST NOT issue a bearer,
+recreate a retired lifecycle, or extend an approval. It returns HTTP 200 with
+`{ "v": 1, "lifecycleUid": "<uid>", "status": "resumed" }` only if that approval still holds.
+Its definitive refusal is HTTP 401 with `{ "v": 1, "lifecycleUid": "<uid>", "status": "refused" }`.
+An unknown or malformed answer proves neither outcome. The authority sends `Retry-After` on
+HTTP 429. The client retains the approval on 429 or 5xx and reports that it can be retried
+later, including the wait when provided: only whole seconds (one to eight digits, above zero)
+or an IMF-fixdate at most about three years ahead count, and anything else is treated as
+missing. An accepted resume still uses the ordinary actor
+exchange and broker authorization to connect. The native client MUST have an unexpired local
+sign-in for the same provider and subject that requested the approval. A record without an
+approving account cannot resume. The account binding is local and does not change the probe.
+Missing support or changed discovery pins MUST NOT retire the saved approval.
+
+Explicit disconnect and sign-out use `DELETE <conversation-identity-url>/<actor>?lifecycleUid=<uid>`
+on the original pinned authority, authenticated with the human session. The authority MUST refuse
+a conversation DELETE from a different person. Sign-out may first replay the original creation
+POST to recover an issued lifecycle when none was saved. It attempts this cleanup before it
+revokes the provider session or removes the local login and registrations. A client with
+an unusable proof for its own conversation MUST confirm retirement before requesting another
+approval. The authority returns HTTP 200 with
+`{ "v": 1, "actor": "<actor>", "lifecycleUid": "<uid>", "phase": "terminal", "complete": true }`
+when retirement is complete, including an exact retry. HTTP 202 with the same coordinates,
+the current `phase` and `"complete": false` means cleanup is still pending. Retirement MUST
+prevent later resume. Sign-out reports unconfirmed retirements rather than claiming they succeeded.
+
 ## Local daemon custody recovery
 
 The local daemon protocol additionally accepts `space-recover` with `space`, `candidate`

@@ -87,6 +87,14 @@ for (const model of ["opus", "sonnet", "claude-opus-5"]) {
   }
 }
 
+for (const model of ["claude-opus-5-5", undefined]) {
+  const override = "gpt-6.2-sol";
+  const spec = launch({ model, launchOptions: { model: override, print: "" } });
+  const models = spec.args.flatMap((arg, i) => arg === "--model" ? [spec.args[i + 1]] : []);
+  check(model ? "a native model replaces the launch pin" : "a native model works without a launch pin",
+    models.length === 1 && models[0] === override && spec.env?.COTAL_MODEL === override && spec.args.includes("--print"), spec);
+}
+
 // A Bedrock inference-profile ARN legitimately carries a slash and `claude` does serve it, so the
 // exemption has to be exercised. An exemption no cell enters is an exemption nobody knows is broken.
 const arn = "arn:aws:bedrock:us-east-1:1234:inference-profile/us.anthropic.claude-opus-5";
@@ -179,7 +187,7 @@ for (const variant of ["extreme", "minimal", "HIGH"]) {
 //
 // A count is the only thing that sees a cell that is not there. It is a real assertion and it is
 // allowed to fail on a legitimate edit: change the cases above and change this number deliberately.
-const EXPECTED = 46;
+const EXPECTED = 48;
 check(
   `every cell ran - ${EXPECTED} expected, a conditional cell that vanishes is invisible without this`,
   passed() + failed() === EXPECTED, // counted BEFORE this check lands, so it counts the cells above it
