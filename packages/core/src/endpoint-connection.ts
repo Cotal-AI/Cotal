@@ -20,8 +20,9 @@ import type { TransportState } from "./endpoint-options.js";
 import { credsRenewalDelayMs, credsClaims } from "./identity.js";
 import { type IssuedSubjectPermission, importNativeSubjectPermissions, issuedPermitsSubject, readAcceptedRow } from "./issued-authority.js";
 import { isStreamNotFound } from "./jetstream-missing.js";
-import { type NativeConnectionBinding, nativeBindingAfter, nativeConnectionBinding } from "./native-connection.js";
+import { type NativeConnectionBinding, nativeBindingAfter, nativeConnectionBinding, watchNativeConnection } from "./native-connection.js";
 import { nextHeartbeat } from "./presence-heartbeat.js";
+import { readPluginChannelRouteProjection } from "./plugin-channel-projection.js";
 import { PRESENCE_STORAGE } from "./streams.js";
 import { presenceBucket, dmStream, dmDurable, parseSubject } from "./subjects.js";
 import { isFromSubjectSender, authenticatedMessage, isReadableMessagePart } from "./endpoint-messages.js";
@@ -83,6 +84,7 @@ export class EndpointConnection {
    *  {@link stop} or a rebuild moved the epoch retires its watch and starts that delete itself, so
    *  the same two paths wait for these first. */
   private readonly kvWatchBinds = new Set<Promise<unknown>>();
+  private readonly projectionWires = new WeakMap<NatsConnection, ReturnType<typeof watchNativeConnection>>();
 
   constructor(private readonly identity: Readonly<EndpointIdentity>, private readonly conn: ConnectionState, private readonly lifecycle: LifecycleState, private readonly cred: CredentialState, private readonly channelRegistry: ChannelRegistryState, private readonly delivery: Readonly<DeliveryState>, private readonly deps: EndpointConnectionDeps, private readonly parts: Pick<EndpointParts, "anycastRail" | "channelDiscovery" | "consumers" | "credentials" | "deliveryLease" | "deliveryPlane" | "liveness" | "presence" | "principalServe" | "provisioning" | "reconnection" | "subscriptions">) {}
 
@@ -90,6 +92,39 @@ export class EndpointConnection {
   private requireLifecycleUid(what: string): string { return this.deps.requireLifecycleUid(what); }
   private emitRecoverable(err: Error): void { return this.deps.emitRecoverable(err); }
   private emit(event: string, ...args: unknown[]) { return this.deps.emit(event, ...args); }
+
+  /** True only after this exact wire has a valid route. A native reconnect cannot install a new
+   *  rail or epoch over the old subscriptions. That requires the full bind path. */
+  private async validatePluginChannelProjection(nc: NatsConnection): Promise<boolean> {
+    if (this.lifecycle.stopped || this.conn.nc !== nc || nc.isClosed()) return false;
+    if (!this.authed || this.identity.dmOnly || this.identity.card.kind !== "agent") return true;
+    let wire = this.projectionWires.get(nc);
+    if (!wire) {
+      wire = watchNativeConnection(nc, "plugin channel projection");
+      this.projectionWires.set(nc, wire);
+    }
+    const { serverId, cid } = wire.binding();
+    const result = await readPluginChannelRouteProjection(nc, this.identity.space).then(
+      (projection) => ({ projection }),
+      (error: unknown) => ({ error }),
+    );
+    if (this.lifecycle.stopped || this.conn.nc !== nc) return false;
+    // This status reader keeps moving while the endpoint's status handler awaits the KV read.
+    try {
+      const current = wire.binding();
+      if (current.serverId !== serverId || current.cid !== cid) return false;
+    } catch {
+      return false;
+    }
+    if ("error" in result) throw result.error;
+    const { enabled, epoch } = result.projection;
+    if (this.conn.pluginChannelEpoch !== undefined &&
+        (epoch !== this.conn.pluginChannelEpoch || enabled !== this.conn.pluginChannelsEnabled))
+      throw new Error("plugin channel routing changed; a full endpoint bind is required");
+    this.conn.pluginChannelsEnabled = enabled;
+    this.conn.pluginChannelEpoch = epoch;
+    return true;
+  }
 
   async bindConnection(): Promise<void> {
     this.clearConnectionScoped();
@@ -185,6 +220,10 @@ export class EndpointConnection {
     this.identity.onConnection?.(this.conn.nc);
     requireBrokerFloor(this.conn.nc);
     this.parts.credentials.armAuthExpiryReconnectFence(this.conn.nc);
+    if (!(await this.validatePluginChannelProjection(this.conn.nc))) {
+      if (this.lifecycle.stopped) return;
+      throw new Error("transport changed during plugin channel projection validation");
+    }
     this.watchStatus();
     this.conn.js = jetstream(this.conn.nc);
 
@@ -565,6 +604,19 @@ export class EndpointConnection {
         }
         if (s.type === "reconnect") {
           this.parts.credentials.armAuthExpiryReconnectFence(nc);
+          try {
+            if (!(await this.validatePluginChannelProjection(nc))) continue;
+          } catch (error) {
+            if (this.lifecycle.stopped || this.conn.nc !== nc) continue;
+            this.conn.nativeBound = false;
+            this.emitRecoverable(error as Error);
+            // Close rather than reuse subscriptions bound under an unproved route. The terminal
+            // supervisor owns the full bind and retry backoff. A failed read cannot throw out of
+            // this status loop or fire a ready event.
+            await this.parts.credentials.closeWithoutLibraryReconnect(nc).catch((e: Error) => this.emitRecoverable(e));
+            continue;
+          }
+          if (this.lifecycle.stopped || this.conn.nc !== nc || nc.isClosed()) continue;
           // The library re-subscribed on a connection the broker authorized again: re-run the check.
           this.parts.principalServe.rebindPrincipalServes(true);
           this.emit("transport", { connected: true, server: s.server } satisfies TransportState);
@@ -708,6 +760,8 @@ export class EndpointConnection {
    *  second heartbeat, double-pump a consumer, or keep stale roster ghosts. Caller-owned
    *  subs (tap/serve) are left alone — they aren't rebuilt here. */
   clearConnectionScoped(): void {
+    this.conn.pluginChannelsEnabled = false;
+    this.conn.pluginChannelEpoch = undefined;
     if (this.cred.authExpiryReconnectTimer) {
       clearTimeout(this.cred.authExpiryReconnectTimer);
       this.cred.authExpiryReconnectTimer = undefined;

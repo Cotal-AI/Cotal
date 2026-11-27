@@ -20,6 +20,7 @@ import { isPublishPermissionDenied } from "./endpoint-dial.js";
 import { isJetStreamMissing } from "./jetstream-missing.js";
 import { lastKvEntries } from "./kv-scan.js";
 import { CHANNEL_DEFAULTS_KEY, channelBucket, isConcreteChannel } from "./subjects.js";
+import { PLUGIN_CHANNEL_PROJECTION_KEY } from "./plugin-channel-projection.js";
 import type { ChannelConfig, ChannelDefaults, DeliveryClass } from "./types.js";
 
 /** What the channel discovery component reads from its endpoint. State is read when it is used,
@@ -151,6 +152,7 @@ export class EndpointChannelDiscovery {
   }
 
   private handleChannelEntry(e: KvEntry): void {
+    if (e.key === PLUGIN_CHANNEL_PROJECTION_KEY) return;
     // Cleared before the decode, so an entry that does not decode resolves to the default as the
     // fresh registry reads do.
     const isDefaults = e.key === CHANNEL_DEFAULTS_KEY;
