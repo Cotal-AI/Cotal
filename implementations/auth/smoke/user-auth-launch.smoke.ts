@@ -936,17 +936,21 @@ try {
     const rootTb = await prepare(TB);
     const tbSandbox = second.roots.at(-1)!.sandbox;
     const serverTb = `nats://127.0.0.1:${await pickFreePort()}`;
-    const tbFile = join(rootTb, "team.yaml");
+    const tbFile = join(rootTb, "first team.yaml");
     writeFileSync(tbFile, `apiVersion: cotal/v1\nkind: Mesh\nspace: ${TB}\nbroker:\n  servers: ${serverTb}\n  auth: user\n  idp: ${base}\nchannels:\n  general:\n    description: The general channel.\n`);
-    const unprepared = await cotal(["team", "boot", tbFile], { cwd: rootTb, env });
-    check("a team boot of a root with no granted login is refused AUTH_REQUIRED, and Next grants the CLI with --full",
-      unprepared.status === 2 && field(unprepared.out, "Code", "AUTH_REQUIRED") && plain(unprepared.out).includes("then `cotal login`, then `cotal auth grant cli --sub <subject> --full`, then `cotal down`") && !existsSync(join(rootTb, ".cotal", "stack-controller.json")), unprepared.out);
-    const tbUp = await cotal(["up", "-d", "--user-auth", "--idp", base, "--server", serverTb], { cwd: rootTb, env });
+    const unprepared = await cotal(["team", "boot", tbFile, "--json"], { cwd: root3, env });
+    const error = JSON.parse(unprepared.out.split("\n").find((line) => line.startsWith("{")) ?? "null")?.error;
+    const prep = ["up", "--root", rootTb, "--space", TB, "--server", serverTb, "--user-auth", "--idp", base, "--no-manager"];
+    check("a first team boot from another project names its own preparation, grant, stop and quoted manifest retry",
+      unprepared.status === 2 && error?.code === "AUTH_REQUIRED" && [prep.join(" "), `login --idp ${base}`, `auth grant cli --sub <subject> --full --space ${TB}`,
+        `down --space ${TB}`, `team boot '${tbFile}' --json`].every((step) => error.remedy.includes(`cotal ${step}\``)) &&
+        error.remedy.includes(`cd ${rootTb} && cotal down`) && !existsSync(join(rootTb, ".cotal", "stack-controller.json")), unprepared.out);
+    const tbUp = await cotal(prep, { cwd: root3, env });
     const { sub: tbSub } = await establishIdpSession({ dir: home2, idpUrl: base, clientId: CLIENT_ID, onPrompt: (p: DeviceLoginPrompt) => approve(p.userCode) });
     const tbGrant = await cotal(["auth", "grant", "cli", "--sub", tbSub, "--full"], { cwd: rootTb, env });
     const tbDown = await cotal(["down", "--yes"], { cwd: rootTb, env, sandbox: tbSandbox });
     check("following it, up prepares the space, the grant it names succeeds, and down stops the stack",
-      tbUp.status === 4 && tbGrant.status === 0 && plain(tbGrant.out).includes("Actor grant stored") && tbDown.status === 0, { up: tbUp.out, grant: tbGrant.out, down: tbDown.out });
+      tbUp.status === 0 && tbGrant.status === 0 && plain(tbGrant.out).includes("Actor grant stored") && tbDown.status === 0, { up: tbUp.out, grant: tbGrant.out, down: tbDown.out });
     idpTokenUnavailable = true;
     const unconfirmed = await cotal(["team", "boot", tbFile], { cwd: rootTb, env });
     idpTokenUnavailable = false;

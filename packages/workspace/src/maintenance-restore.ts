@@ -483,25 +483,34 @@ export function replaceDeadRestoreListener(
 }
 
 /**
- * Return a degraded restore that has no bound listener to commit intent, so its next listener can
- * start and bind (#7127). A bound listener is retired through {@link replaceDeadRestoreListener}, and
- * a restore past manager commitment never returns here. The caller first proves that no listener
- * this attempt spawned still runs. A commit intent with no bound listener is returned unchanged.
+ * Return an unbound degraded restore to commit intent after the caller proves its listener is gone.
+ * A bound listener is retired through {@link replaceDeadRestoreListener}. At the spawn boundary,
+ * sync the current listener name and spawn mark before the caller starts the process. A caller
+ * that proves its spawn created no live listener can reset the mark without changing the name.
  */
-export function rearmUnboundRestoreCommitIntent(lock: MaintenanceLock): CommitIntentRecord {
+export function rearmUnboundRestoreCommitIntent(
+  lock: MaintenanceLock,
+  spawn?: { readonly serverNonce: string } | "not-started",
+): CommitIntentRecord {
   const record = currentJournal(lock);
-  if (record.state === "commit-intent" && !record.listenerProof) return record;
-  if (record.state !== "degraded" || record.listenerProof)
+  if ((record.state !== "commit-intent" && record.state !== "degraded") || record.listenerProof)
     maintenanceError("invalid-transition", "restore commit intent is re-armed only from a degraded restore with no bound listener", {
       root: lock.root,
     });
-  if (record.managerCommittedAt !== undefined || record.managerCommit !== undefined || record.activeAt !== undefined)
+  if (record.state === "degraded" &&
+      (record.managerCommittedAt !== undefined || record.managerCommit !== undefined || record.activeAt !== undefined))
     maintenanceError("invalid-transition", "manager-committed restore cannot return to commit intent", {
       root: lock.root, attemptId: record.restore.attemptId,
     });
+  if (record.state === "commit-intent" && !spawn) return record;
   assertStoreIdentity(record.restore.target);
+  const launch = spawn === "not-started"
+    ? { ...record.launch, listenerSpawn: spawn }
+    : spawn
+      ? { ...record.launch, listenerSpawn: "started", serverNonce: spawn.serverNonce, serverName: `${record.restore.attemptId}-${spawn.serverNonce}` }
+      : record.launch;
   return writeJournal(lock, record, {
-    ...readyFrom(record), state: "commit-intent", restore: record.restore, launch: record.launch,
+    ...readyFrom(record), state: "commit-intent", restore: record.restore, launch,
     ...(record.listenerReplacements ? { listenerReplacements: record.listenerReplacements } : {}),
     ...carriedTokenHandoff(record),
   }) as CommitIntentRecord;

@@ -125,6 +125,8 @@ const recCon: Connector = {
   name: "smoke-launch",
   requires: ["node"],
   supportsModelVariant: true,
+  // The Manager launches only a variant the catalog lists for the model.
+  listModels: () => ({ models: [{ id: "opus", variants: [{ name: "high" }] }] }),
   supportsPrompt: true, // the suite launches with a prompt; the contract is default-deny (#315)
   buildLaunch: (opts) => {
     seenVariant = opts.variant;

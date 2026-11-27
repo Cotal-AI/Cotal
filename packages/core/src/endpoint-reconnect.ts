@@ -1,8 +1,8 @@
 // The rebuild and retry pacing of CotalEndpoint, as an internal component: the single serialized rebuild,
 // its transition onto a fresh connection, the capped retry delay, and the backoff and membership pauses.
 // Moved verbatim from endpoint.ts. It owns the retry attempt count and the backoff, and clears the endpoint's
-// ConnectionState around a rebuild; the endpoint keeps the
-// supervisor and the retry loop and forwards to these. Not re-exported by the index.
+// ConnectionState around a rebuild; the connection part runs the
+// supervisor and the retry loop and calls these. Not re-exported by the index.
 import type { LifecycleState } from "./endpoint-lifecycle-state.js";
 import type { ConnectionState } from "./endpoint-connection-state.js";
 import type { TransportState } from "./endpoint-options.js";
@@ -13,14 +13,11 @@ import type { EndpointParts } from "./endpoint-parts.js";
  *  at call time, so a member a caller replaced on the endpoint is the one that runs. A peer part is read
  *  from the parts record at call time. */
 export interface EndpointReconnectDeps {
-  settleKvWatches: () => Promise<void>;
-  connectAndBind: () => Promise<void>;
-  superviseConnection: () => void;
   emit: (event: string, ...args: unknown[]) => boolean;
 }
 
 /** One endpoint's rebuild and retry pacing. Internal: it owns the retry count and the backoff, and
- *  `CotalEndpoint` keeps the other shared fields, the supervisor and the retry loop, and forwards to it. */
+ *  `CotalEndpoint` keeps the other shared fields, {@link EndpointConnection} runs the supervisor and the retry loop, and both call it. */
 export class EndpointReconnect {
   private readonly retryMs = 3000;
   /** Consecutive failed rebuilds, driving {@link nextRetryDelayMs}. Reset on every success. */
@@ -32,12 +29,20 @@ export class EndpointReconnect {
 
   constructor(private readonly conn: ConnectionState, private readonly lifecycle: LifecycleState, private readonly deps: EndpointReconnectDeps, private readonly parts: Pick<EndpointParts, "connection" | "credentials" | "deliveryLease">) {}
 
-  private settleKvWatches() { return this.deps.settleKvWatches(); }
-  private connectAndBind() { return this.deps.connectAndBind(); }
-  private superviseConnection() { void this.deps.superviseConnection(); }
   private emit(event: string, ...args: unknown[]) { return this.deps.emit(event, ...args); }
 
-  /** Single serialized rebuild: drain the old connection and rebind via {@link connectAndBind},
+  async reconnect(): Promise<void> {
+    if (this.lifecycle.stopped) throw new Error("endpoint stopped - cannot reconnect");
+    this.kickBackoff();
+    try {
+      await this.rebuild();
+    } catch (e) {
+      void this.parts.connection.reestablishLoop(); // background retry until success or stop
+      throw e;
+    }
+  }
+
+  /** Single serialized rebuild: drain the old connection and rebind via {@link EndpointConnection.connectAndBind},
    *  guarded so concurrent triggers (manual {@link reconnect}, the supervisor's closed(), the
    *  retry loop) coalesce onto ONE in-flight rebuild instead of racing two connectAndBinds and
    *  leaking a connection. Returns the shared promise; a second caller gets the in-flight one. */
@@ -64,7 +69,7 @@ export class EndpointReconnect {
       // Terminal self-heal has an already-closed epoch: disarm retains stream/name for fresh cleanup,
       // and the KV watch consumers that closed with it are left to the broker's inactive threshold.
       if (oldNc && !oldNc.isClosed())
-        await Promise.all([...[...this.conn.membershipFeedWatches].map((watch) => watch.arm), this.parts.deliveryLease.settleDeliveryLeaseWatches(), this.settleKvWatches()]);
+        await Promise.all([...[...this.conn.membershipFeedWatches].map((watch) => watch.arm), this.parts.deliveryLease.settleDeliveryLeaseWatches(), this.parts.connection.settleKvWatches()]);
       this.conn.nc = undefined;
       this.conn.js = undefined;
       this.conn.jsm = undefined;
@@ -92,7 +97,7 @@ export class EndpointReconnect {
       // Keep old-epoch and late-epoch close failures outside this dial-only catch.
       if (this.lifecycle.stopped) return;
       try {
-        await this.connectAndBind();
+        await this.parts.connection.connectAndBind();
       } catch (error) {
         if (!this.lifecycle.stopped) throw error;
       }
@@ -101,7 +106,7 @@ export class EndpointReconnect {
       // here in doRebuild narrows to `never` via TS inlining connectAndBind's assignment.)
       // Re-arm on the fresh nc only after this stopped fence accepts it.
       if (await this.parts.connection.tearDownIfStopped()) return;
-      this.superviseConnection();
+      this.parts.connection.superviseConnection();
     } finally {
       this.lifecycle.reconnecting = false;
     }

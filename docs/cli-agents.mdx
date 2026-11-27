@@ -233,6 +233,7 @@ there it runs the enrollment consumer above without redeeming anything. See
 | `--role <r>` | persona's `role:` | Role override |
 | `--model <m>`, `-m` | persona's `model:` | Model override |
 | `--variant <v>` | persona's `variant:` | Model variant override (connector-defined; e.g. OpenCode reasoning tiers, Claude effort levels or pi thinking levels) |
+| `--mode <id=value>` | the application's default | A model mode, repeatable: `true` or `false` for a toggle, or an option id for a choice. Refused on a connector that does not support modes |
 | `--cwd <dir>`, `-C` | this cwd; on a managed launch, the serving manager's workspace root | Working directory to root the agent at. Refuses an empty value with `USAGE_INVALID`. On a spawn in this terminal, a path that does not exist or is not a directory is refused with `TARGET_UNAVAILABLE` before provisioning. On a managed launch, a relative path resolves against the manager's workspace root, not your shell, and a directory that does not exist on the serving manager's host is refused before launch. Without it, a terminal asks for the folder when the manager is not known to run on this host. |
 | `--prompt <text>`, `-p` | none | Initial prompt auto-submitted at start |
 | `--opt <k=v>` | none | Connector-specific launch option, repeatable. Wins per key over the persona's `launchOptions:`; a connector with no option surface refuses it |
@@ -264,6 +265,15 @@ native options without creating launch files or checking its binary or login. Ot
 reports connector arguments as not checked.
 When the connector does not support variants, a direct preview or launch that refuses the variant
 names what to remove: the `--variant` option, the `variant:` field in the persona file, or both.
+A launch with a variant or a mode is refused with `USAGE_INVALID` before provisioning unless the
+connector's model catalog lists it for the model, or for the catalog's default model when no
+`--model` is given. The refusal names the values the catalog lists. A mode the catalog marks
+unavailable for your account is refused when the launch turns it on, and the refusal gives the
+reason. Turning it off, `false` or the choice's default, launches. A spawn in
+this terminal reads the catalog from the application for that check, and only after the connector's
+own launch check accepts the variant, so a level the connector rejects gets the preview's refusal and
+starts nothing.
+A managed launch is checked by its manager, against the catalog it read last.
 A managed preview warns about an unknown local harness and reports `not-checked`, since the
 selected manager checks its own connectors at launch. On an open or static space, a managed
 preview refuses a `--on` value that cannot be a manager instance id with `USAGE_INVALID`
@@ -491,8 +501,11 @@ cotal models [--json | --plain] [-H | --harness <connector>] [--refresh] [--on <
 | `--json` / `-j` | off | One JSON document: `result.items` holds each catalog as returned; the requested manager ID, answering ID and answering epoch are separate, and `result.notAskedManagerInstanceIds` lists the live managers an unpinned read did not ask, or is `null` when no registry was read |
 | `--plain` | off | The same report without color |
 
-Asks the selected manager for each application's model catalog (model ids plus their variants)
-for connectors that expose one. Authenticated meshes must be registered. Run `cotal models` from
+Asks the selected manager for each application's model catalog for connectors that expose one: model
+ids, their variants and modes, each model's default variant, and the model the application runs by
+default, marked `(default)`. A mode reads as `--mode` takes it, such as `fast=true|false (default false)`.
+A mode the account cannot use reads as `fast (unavailable: <reason>)`, with the reason the application gave.
+The manager keeps what it reads and checks later launches against it. Authenticated meshes must be registered. Run `cotal models` from
 the mesh's project folder or name the registered space with `--space`. `models` does not accept
 raw credential files (`--creds`).
 An empty or whitespace-only `--harness` or `-H` refuses with
@@ -500,7 +513,8 @@ An empty or whitespace-only `--harness` or `-H` refuses with
 Claude Code, OpenCode, Codex and pi ask the installed application.
 Hermes asks the connector's pinned Hermes which provider a launch's environment selects, and lists
 that provider's models.
-Claude Code lists the models its login can use, with their effort levels as variants, and pi lists
+Claude Code lists the models its login can use, with their effort levels as variants and its `fast` and
+`ultracode` modes, and pi lists
 the models of providers it holds credentials for, with their thinking levels as variants. Jcode lists
 the models `jcode model list` reports with an available route, without variants.
 A connector without a catalog says so with `supported: false`, and one whose install has no
@@ -521,8 +535,9 @@ A manager lists a catalog row for every
 application its install names, so an empty list says the answering manager has no agent
 application installed. A connector whose harness the manager did not find at boot
 reports the reason boot recorded, as a spawn does, so restart the manager after installing it. Pick
-a result with `cotal spawn --model <id> --variant <v>`, where `<id>` is the model id as the catalog
-printed it. Codex ids are bare (`gpt-6.2-sol`, not `openai/gpt-6.2-sol`). Do not prepend the
+a result with `cotal spawn --model <id> --variant <v> --mode <mode>=<value>`, where `<id>` is the
+model id as the catalog printed it. A launch is refused a variant or mode its model's row does not
+list. Codex ids are bare (`gpt-6.2-sol`, not `openai/gpt-6.2-sol`). Do not prepend the
 separately reported provider. OpenCode ids are `provider/model`, and pi ids are `provider/id`.
 For Jcode, keep any slash that is part of the listed ID. Do not prepend a provider name, because
 Jcode's configuration selects the provider.
@@ -751,8 +766,9 @@ body input. Leading frontmatter follows the native persona merge:
 the supplied name wins, explicit model/role/application and channel fields override the file,
 and the manager preserves existing ownership and redefinition policy. Inputs are bounded to
 1 MiB and must be valid UTF-8. A malformed leading block refuses before the remote request.
-If the manager instance ID is invalid, find the full ID with `cotal ps` in the same space and replace
-only the `--on` value. Keep the definition options and pipe any standard input again.
+If the manager instance ID is invalid, use the suggested roster lookup. It keeps the selected
+space, broker and output format. If the broker address contains private details, use the original
+broker options yourself. Replace only the `--on` value and pipe any standard input again.
 
 The remote wire accepts name, body, model, role, application, initial read channels and read/post
 ACLs. `--harness`, `--subscribe`, `--allow-subscribe` and `--allow-publish` name those fields.

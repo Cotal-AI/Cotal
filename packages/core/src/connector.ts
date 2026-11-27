@@ -93,6 +93,11 @@ export interface LaunchOpts {
    *  supports variants renders it in its host form; unsupported connectors fail loud rather than
    *  silently ignoring it. */
   variant?: string;
+  /** The modes the launcher resolved, by {@link ModeInfo.id}: a boolean for a toggle, an option id
+   *  for a choice. A manager launches only modes the connector's catalog lists for the model, so a
+   *  connector renders them as given. A mode the launch does not name runs at the harness default.
+   *  Only set when the connector declares {@link Connector.supportsModes}. */
+  modes?: LaunchModes;
   /** Opaque, connector-specific launch options — an arbitrary key→value map core forwards VERBATIM
    *  and never inspects. Connectors forward well-shaped keys raw into their own host form (CLI flags,
    *  config, env); a connector with no option surface fails loud. Fed by `--opt k=v`, a persona's
@@ -264,13 +269,40 @@ export interface ModelVariantInfo {
   options?: Record<string, unknown>;
 }
 
-/** One model a connector can launch. `id` is the value to pass as {@link LaunchOpts.model}; variants
- *  are selected separately via {@link LaunchOpts.variant}. */
+/** One option of a choice {@link ModeInfo}. `id` is the value a launch passes. */
+export interface ModeOption {
+  id: string;
+  label: string;
+}
+
+/** A launch setting a model offers besides its variant, such as a fast tier or an agent. A toggle is
+ *  on or off; a choice picks one option. `default` is what the harness runs when a launch does not
+ *  name the mode. `unavailable` is set when the logged-in account cannot run the mode, and says why
+ *  for a person to read; a manager refuses a launch that turns the mode on, a toggle to `true` or a
+ *  choice to any option but `default`, and launches one that sets it off. */
+export type ModeInfo =
+  | { id: string; label: string; kind: "toggle"; default: boolean; unavailable?: string }
+  | { id: string; label: string; kind: "choice"; options: ModeOption[]; default: string; unavailable?: string };
+
+/** A launch's mode choices, by {@link ModeInfo.id}: a boolean for a toggle, an option id for a choice. */
+export type LaunchModes = Record<string, boolean | string>;
+
+/** One model a connector can launch. `id` is the value to pass as {@link LaunchOpts.model}; a variant
+ *  and modes are selected separately via {@link LaunchOpts.variant} and {@link LaunchOpts.modes}, and
+ *  a manager refuses either when this row does not list it. */
 export interface ModelInfo {
   id: string;
   name?: string;
   provider?: string;
+  description?: string;
+  /** The model the harness runs when a launch names none. At most one row of a catalog sets it. */
+  isDefault?: boolean;
   variants?: ModelVariantInfo[];
+  /** The variant the harness runs when a launch names none. It is the name of one of {@link variants}. */
+  defaultVariant?: string;
+  /** The modes this model offers, each marked `unavailable` when the account the harness is logged in
+   *  as cannot run it. */
+  modes?: ModeInfo[];
 }
 
 /** Connector-provided model catalog. Optional by design: some hosts have no local model-list API. */
@@ -375,8 +407,9 @@ export interface Connector extends Extension {
    *  means a supervised Manager launch. `buildLaunch` must refuse the same conditions itself. */
   launchUnavailable?(opts?: Pick<LaunchOpts, "cwd" | "resume">): string | undefined;
   buildLaunch(opts: LaunchOpts): LaunchSpec;
-  /** Optional model catalog hook. The manager calls this for selector UIs; launch remains authority-free
-   *  and still accepts any string the operator supplies. */
+  /** Optional model catalog hook. The manager calls this for selector UIs and keeps the last answer.
+   *  A launch may still name a model the catalog does not list, but a variant or modes it names are
+   *  checked against the kept catalog, and one its model's row does not list is refused. */
   listModels?(opts?: ModelCatalogOpts): ModelCatalog | Promise<ModelCatalog>;
   /** The harness commands and skills its seats run. Absent: they run none, and the manager answers
    *  `supported: false` before launch. */
@@ -450,6 +483,9 @@ export interface Connector extends Extension {
   /** Whether this connector can honor {@link LaunchOpts.variant}. Default-deny so a variant request
    *  fails before provisioning side effects in the manager. */
   readonly supportsModelVariant?: boolean;
+  /** Whether this connector renders {@link LaunchOpts.modes}. Default-deny so a modes request fails
+   *  before provisioning side effects in the manager. */
+  readonly supportsModes?: boolean;
   /** Whether this connector can honor {@link LaunchOpts.prompt} as the harness's first turn.
    *  Default-deny, so a prompt on a connector that does not declare it fails before any
    *  provisioning rather than being accepted and never submitted. */

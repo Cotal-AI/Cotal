@@ -111,16 +111,19 @@ export function executionStagingPrefix(installed: string): string {
 export function repairExecutionInstallModes(installed: string, repair: () => number): number {
   const selected = selectExecutionProgram(installed);
   const descriptor = selected.retained ? executionRecord(executionDescriptorPath(installed)) as ExecutionDescriptor : undefined;
-  const before = descriptor?.launch && (descriptor.launch.path === join(realpathSync.native(installed), "package.json")
-    ? executionLaunchBinding(installed, descriptor.launch.entry).ctime : descriptor.launch.ctime);
+  const canonicalManifest = join(realpathSync.native(installed), "package.json");
+  const beforeBinding = descriptor?.launch ? executionLaunchBinding(installed, descriptor.launch.entry) : undefined;
+  const before = beforeBinding && (beforeBinding.path === canonicalManifest ? beforeBinding.ctime : descriptor!.launch!.ctime);
   const changed = repair();
-  if (descriptor?.launch) {
+  if (descriptor?.launch && beforeBinding) {
     const launch = executionLaunchBinding(installed, descriptor.launch.entry);
-    const { ctime: _, ...previous } = descriptor.launch;
+    const { ctime: _, ...previous } = beforeBinding;
     const { ctime: after, ...current } = launch;
     if (JSON.stringify(previous) !== JSON.stringify(current)) throw new Error("execution launch route changed during permission repair");
-    if (before !== after) {
-      if (!changed) throw new Error("execution launch route changed without a permission repair");
+    const migrated = descriptor.launch.entry !== launch.entry || descriptor.launch.path !== launch.path;
+    if (migrated || before !== after) {
+      if (!migrated && !changed) throw new Error("execution launch route changed without a permission repair");
+      if (selectExecutionProgram(installed).root !== selected.root) throw new Error("selected execution changed during permission repair");
       writeExecutionDescriptor(installed, { ...descriptor, launch });
     }
     if (selectExecutionProgram(installed).root !== selected.root) throw new Error("selected execution changed during permission repair");
