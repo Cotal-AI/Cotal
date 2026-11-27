@@ -35,7 +35,7 @@ check("a launch without it hands none", material({}).reasoningEvents === undefin
 const summary = (launchOptions?: Record<string, string>): unknown => {
   if (launchOptions) process.env.COTAL_CODEX_CONFIG = JSON.stringify(launchOptions);
   try {
-    return codexConfig.reasoningTurn?.(codexConfig.configOverrides("gpt", undefined, false));
+    return codexConfig.reasoningTurn?.(codexConfig.configOverrides("gpt", undefined, false, undefined));
   } finally {
     delete process.env.COTAL_CODEX_CONFIG;
   }
