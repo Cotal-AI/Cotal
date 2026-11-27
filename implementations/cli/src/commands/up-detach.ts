@@ -594,7 +594,7 @@ export async function startMeshDetached(
   const listenerStartedAt = new Date().toISOString();
   let child: ChildProcess;
   try {
-    child = spawnMarkedListener(cotalRoot(), opts.boundListener !== undefined, () =>
+    child = spawnMarkedListener(cotalRoot(), opts.boundListener, () =>
       spawnBroker(bin, args, { cwd: cotalRoot(), detached: true, stdio: ["ignore", fd, fd], windowsHide: true }), opts.heldLock);
     freezeSmokeRestoreListener(child);
   } finally { closeSync(fd); }

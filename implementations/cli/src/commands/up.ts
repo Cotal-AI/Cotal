@@ -1939,7 +1939,7 @@ async function runUp(args: ParsedArgs, invokedFrom: string, inheritedLock?: Main
   console.log(c.dim("Press Ctrl-C to stop.\n"));
   const listenerStartedAt = new Date().toISOString();
   // Keep the POSIX broker out of the terminal's process group for manager-first teardown on Ctrl-C.
-  const child = spawnMarkedListener(cotalRoot(), boundListener !== undefined, () =>
+  const child = spawnMarkedListener(cotalRoot(), restored, () =>
     spawnBroker(bin, natsArgs, { cwd: cotalRoot(), stdio: "inherit", detached: process.platform !== "win32", windowsHide: false }), startupLock);
   freezeSmokeRestoreListener(child);
   await recordSpawnedListener(child, listenerStartedAt, boundListener, startupLock);

@@ -211,7 +211,6 @@ export {
   bindRestoreListener,
   replaceDeadRestoreListener,
   rearmUnboundRestoreCommitIntent,
-  setRestoreListenerSpawn,
   recordRestoreManagerCommit,
   markRestoreActive,
   markRestoreDegraded,
