@@ -140,6 +140,13 @@ export const SPAWN_INPUT_SCHEMA = deepFreeze({
     identity: nonBlank(),
     model: nonBlank(),
     variant: nonBlank(),
+    // Mode id to a toggle's boolean or a choice's option id. The manager refuses any the connector's
+    // catalog does not list for the launched model.
+    modes: {
+      type: "object", minProperties: 1, maxProperties: 32,
+      propertyNames: { minLength: 1, maxLength: 128 },
+      additionalProperties: { anyOf: [{ type: "boolean" }, { type: "string", minLength: 1, maxLength: 256 }] },
+    },
     launchOptions: { type: "object" },
     resume: nonBlank(),
     // #1499: the one-time claim `transcript-receive` issued for carried bytes of `resume`, and the

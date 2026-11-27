@@ -40,7 +40,7 @@
     },
     {
       "name": "a stop during a pending dial still seeds transport live when the dial lands",
-      "file": "packages/core/src/endpoint.ts",
+      "file": "packages/core/src/endpoint-connection.ts",
       "find": "    if (this.lifecycle.stopped) return;\n    this.emit(\"transport\", { connected: true, server: nc.getServer() } satisfies TransportState);\n",
       "replace": "    this.emit(\"transport\", { connected: true, server: nc.getServer() } satisfies TransportState);\n",
       "expectRed": "stop during a pending dial never seeds transport live afterwards",
@@ -50,8 +50,8 @@
     {
       "name": "doRebuild skips tearDownIfStopped, so a stop mid-rebuild-bind leaves the fresh nc live",
       "file": "packages/core/src/endpoint-reconnect.ts",
-      "find": "      if (await this.parts.connection.tearDownIfStopped()) return;\n      this.superviseConnection();\n    } finally {\n      this.lifecycle.reconnecting = false;",
-      "replace": "      this.superviseConnection();\n    } finally {\n      this.lifecycle.reconnecting = false;",
+      "find": "      if (await this.parts.connection.tearDownIfStopped()) return;\n      this.parts.connection.superviseConnection();\n    } finally {\n      this.lifecycle.reconnecting = false;",
+      "replace": "      this.parts.connection.superviseConnection();\n    } finally {\n      this.lifecycle.reconnecting = false;",
       "expectRed": "stop during a REAL rebuild bind tears the just-bound connection rather than leaving nc live",
       "cell": "stop during a REAL rebuild bind tears the just-bound connection rather than leaving nc live",
       "note": "PATH-SPECIFIC. start()'s tearDownIfStopped call is left intact. A shared-tail mutation of connectAndBind's stopped emit would redden the start() cell and cannot attribute a kill to doRebuild.",

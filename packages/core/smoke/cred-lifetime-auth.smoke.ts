@@ -92,10 +92,10 @@ if (process.argv[2] === "expiry-child") {
   await ep.start();
   const nc = (ep as unknown as { conn: { nc?: NatsConnection } }).conn.nc;
   if (!nc) throw new Error("expiry child started without a NATS connection");
-  const binding = ep as unknown as { lifecycle: { stopped: boolean }; connectAndBind(): Promise<void> };
-  const connectAndBind = binding.connectAndBind.bind(ep);
+  const binding = ep as unknown as { lifecycle: { stopped: boolean }; connection: { connectAndBind(): Promise<void> } };
+  const connectAndBind = binding.connection.connectAndBind.bind(binding.connection);
   let stoppedBindAttempts = 0;
-  binding.connectAndBind = async () => {
+  binding.connection.connectAndBind = async () => {
     if (binding.lifecycle.stopped) stoppedBindAttempts++;
     await connectAndBind();
   };
