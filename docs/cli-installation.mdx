@@ -402,7 +402,10 @@ and every package the lock records is on disk at its recorded version. The exten
 must also be present and loadable. The extension check does not compare file contents. A registry extension that
 needs repair is reinstalled at the binary's exact version. An extension recorded from a local
 folder, a tarball, Git, or a URL, even under `@cotal-ai/*`, keeps its recorded source and is not
-auto-updated from npm. A built-in or extension
+auto-updated from npm. On releases from `0.159.1` through `0.183.1`, `cotal update --self` checks
+every `@cotal-ai/*` package against npm before upgrading, so an installation holding an unpublished
+local `@cotal-ai/*` package upgrades once with `npm i -g cotal-ai@<version>` followed by
+`cotal update`. A built-in or extension
 that passes is reported as verified. `cotal ext seed --force`
 remains the unconditional reinstall of the built-ins, and `cotal ext add <package>` of one extension.
 Each reinstall runs in an isolated child, so one failure cannot poison later replays. It then
@@ -905,7 +908,7 @@ When a package needs an export its linked `@cotal-ai/*` peer does not have,
 when the versions establish one. If the versions match, check the extension's import against the
 exports of the linked peer before replacing either build.
 On POSIX shells, a reinstall command printed for a local extension quotes paths with spaces as one argument.
-When an operator-installed first-party release extension has no recorded install spec, the advice gives
+When an operator-installed first-party extension has no recorded install spec, the advice gives
 `cotal ext add <package>`. The bare package name selects this CLI's version. In other cases where
 the original spec cannot be used in a command, the advice names `cotal ext remove <package>` instead.
 Each load or add reads the installed package's metadata once, using that same result for its version,

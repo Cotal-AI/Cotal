@@ -294,12 +294,45 @@ registry.register(
     assert.match(reconciled.stdout + reconciled.stderr, new RegExp(`${unlistedPkg}@${generation.replaceAll('.', '\\.')}`));
     const ranUnlisted = await execAsync(process.execPath, [bin, 'unlisted-release-cmd'], { cwd: root, env: registryEnv, timeout: 120000 });
     assert.equal(ranUnlisted.stdout.trim(), generation);
+
+    // Manifest rows with a missing or non-string `spec` (e.g. omitted, `null`, `3`) complete on `cotal update`, `cotal ext seed`, and command load as on main.
+    const manifestFile = join(prefix, 'extensions.json');
+    for (const oddSpec of [undefined, null, 3] as const) {
+      const writeOddSpec = () => {
+        const parsed = JSON.parse(readFileSync(manifestFile, 'utf8')) as { extensions: Record<string, unknown>[] };
+        const row = parsed.extensions.find(entry => entry.pkg === unlistedPkg);
+        assert(row, 'expected unlisted-release-fixture manifest row');
+        if (oddSpec === undefined) delete row.spec;
+        else row.spec = oddSpec;
+        const keptRow = parsed.extensions.find(entry => entry.pkg === 'kept-ext');
+        assert(keptRow, 'expected kept-ext manifest row');
+        if (oddSpec === undefined) delete keptRow.spec;
+        else keptRow.spec = oddSpec;
+        writeFileSync(manifestFile, `${JSON.stringify(parsed, null, 2)}\n`);
+      };
+
+      writeOddSpec();
+      const loadOdd = await execAsync(process.execPath, [bin, 'unlisted-release-cmd'], { cwd: root, env: registryEnv, timeout: 120000 });
+      assert.equal(loadOdd.stdout.trim(), generation);
+      const loadKeptOdd = await execAsync(process.execPath, [bin, 'kept-ext'], { cwd: root, env: registryEnv, timeout: 120000 });
+      assert.equal(loadKeptOdd.stdout.trim(), '');
+
+      writeOddSpec();
+      const updateOdd = await execAsync(process.execPath, [bin, 'update'], { cwd: root, env: registryEnv, timeout: 120000 });
+      assert.match(updateOdd.stdout, new RegExp(`verified ${unlistedPkg}@${generation.replaceAll('.', '\\.')}`));
+      assert.match(updateOdd.stdout, /kept-ext@1\.0\.0 - not auto-updated in v1\b/);
+
+      writeOddSpec();
+      const reconcileOdd = await execAsync(process.execPath, [bin, 'ext', 'seed', '--force'], { cwd: root, env: registryEnv, timeout: 120000 });
+      assert(reconcileOdd.stdout !== undefined);
+    }
+
     await execAsync(process.execPath, [bin, 'ext', 'remove', unlistedPkg], { cwd: root, env: registryEnv, timeout: 120000 });
   } finally {
     await new Promise<void>(done => server.close(() => done()));
   }
 }
 console.log('local @cotal-ai/* preservation, core-peer load refusal, and unlisted release reconciliation verified');
-emitSentinel({ passed: 6, failed: 0 });
+emitSentinel({ passed: 7, failed: 0 });
 } finally { rmSync(root, { recursive: true, force: true }); }
 }

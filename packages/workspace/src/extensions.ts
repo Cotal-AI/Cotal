@@ -113,9 +113,9 @@ const FIRST_PARTY_PACKAGE = /^@cotal-ai\/[a-zA-Z0-9._~-]+$/;
 const REGISTRY_SELECTOR = /^[a-z0-9._~^*<>=|+ -]+$/i;
 
 /** Whether an inventory entry is a registry-managed first-party release package rather than a local, tarball, Git, or URL install. */
-export function isReleaseExtension(entry: Pick<InstalledExtension, "pkg" | "source" | "spec">): boolean {
+export function isReleaseExtension(entry: { readonly pkg: string; readonly source?: "seeded"; readonly spec?: unknown }): boolean {
   if (!FIRST_PARTY_PACKAGE.test(entry.pkg)) return false;
-  if (entry.source === "seeded" || entry.spec === undefined) return true;
+  if (entry.source === "seeded" || typeof entry.spec !== "string") return true;
   const spec = entry.spec.trim();
   if (spec === entry.pkg || spec === `${entry.pkg}@`) return true;
   const aliasTail = spec.startsWith(`${entry.pkg}@npm:${entry.pkg}`)
@@ -138,7 +138,7 @@ export function isReleaseExtension(entry: Pick<InstalledExtension, "pkg" | "sour
 export function extensionReinstallAdvice(entry: InstalledExtension): string {
   if (entry.source === "seeded") return "Run `cotal ext seed --repair` to reinstall it.";
   const { spec } = entry;
-  if (typeof spec !== "string" && isReleaseExtension(entry)) {
+  if (typeof spec !== "string" && /^@cotal-ai\/[a-zA-Z0-9._~-]+$/.test(entry.pkg)) {
     const pkg = process.platform === "win32" ? windowsShellWord(entry.pkg) : shellPath(entry.pkg);
     if (pkg) return `Run ${codeSpan(`cotal ext add ${pkg}`)} to reinstall it.`;
   }

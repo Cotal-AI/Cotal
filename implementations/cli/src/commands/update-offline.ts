@@ -10,7 +10,7 @@ export async function repairOfflineExtensions(current: string, rt: UpdateRuntime
   const builtIns = new Set(Object.values(SEEDED_EXTENSIONS).map(entry => entry.pkg));
   const repairs = () => rt.extensions().flatMap(entry => {
     const spec = `${entry.pkg}@${current}`;
-    return isReleaseExtension(entry) && !builtIns.has(entry.pkg) && entry.version === current && (entry.spec === undefined || entry.spec === spec)
+    return isReleaseExtension(entry) && !builtIns.has(entry.pkg) && entry.version === current && entry.spec === spec
       && operatorInstallDiffers(entry, current) !== undefined ? [{ pkg: entry.pkg, version: current, spec }] : [];
   });
   let packages: string | undefined;

@@ -351,8 +351,13 @@ try {
     for (const entry of nonReleaseSpecs) {
       check(`isReleaseExtension rejects non-release spec ${JSON.stringify(entry)}`, !isReleaseExtension(entry));
     }
+    for (const oddSpec of [null, 3, false, {}, []] as unknown[]) {
+      check(`isReleaseExtension treats non-string spec ${JSON.stringify(oddSpec)} on @cotal-ai/* as release without throwing`, isReleaseExtension({ pkg: "@cotal-ai/tmux", spec: oddSpec }));
+      check(`isReleaseExtension treats non-string spec ${JSON.stringify(oddSpec)} on third-party as non-release without throwing`, !isReleaseExtension({ pkg: "@other/pkg", spec: oddSpec }));
+    }
     check("spec-less non-first-party advice still prescribes remove", extensionReinstallAdvice({ pkg: "@other/pkg", version: "1.0.0", commands: [] }).includes("cotal ext remove"));
     check("spec-less first-party release advice prescribes bare add", extensionReinstallAdvice({ pkg: "@cotal-ai/tmux", version: "1.0.0", commands: [] }).includes("cotal ext add"));
+    check("non-string spec first-party advice prescribes bare add without throwing", extensionReinstallAdvice({ pkg: "@cotal-ai/tmux", version: "1.0.0", spec: null as unknown as string, commands: [] }).includes("cotal ext add"));
     check("extensionCorePeerProblem accepts wildcard and current core", extensionCorePeerProblem("@cotal-ai/local-ext", "*") === undefined && extensionCorePeerProblem("@cotal-ai/local-ext", CORE_VERSION) === undefined);
     check("extensionCorePeerProblem refuses missing, invalid, and incompatible core ranges",
       Boolean(extensionCorePeerProblem("@cotal-ai/local-ext", undefined)?.includes("does not declare @cotal-ai/core")) &&
