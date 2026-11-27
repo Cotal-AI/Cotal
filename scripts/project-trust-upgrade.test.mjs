@@ -18,7 +18,9 @@ import {
   CONTROL_SOCKET_TAIL_BYTES,
   SUN_PATH_LIMIT_BYTES,
   HOSTED_CELL_ROOT_BYTES,
-  controlSocketBytes,
+  cellControlSocket,
+  shortNameSpelling,
+  recordedPids,
   waitUntilGone,
 } from './project-trust-upgrade.mjs';
 import { planRelease, verifyResults } from './upgrade-matrix-plan.mjs';
@@ -300,18 +302,49 @@ test('verifyProjectTrustEvidence accepts complete cross-platform evidence and re
 });
 
 test('the control socket follows the cell temp directory and stays under the hosted limit', () => {
-  assert.equal(CONTROL_SOCKET_TAIL_BYTES, 42);
-  assert.equal(HOSTED_CELL_ROOT_BYTES, 35);
-  const hosted = `/${'r'.repeat(HOSTED_CELL_ROOT_BYTES - 1)}`;
-  assert.equal(Buffer.byteLength(hosted), HOSTED_CELL_ROOT_BYTES);
+  assert.equal(CONTROL_SOCKET_TAIL_BYTES, 46);
+  assert.deepEqual(HOSTED_CELL_ROOT_BYTES, { linux: 35, darwin: 36 });
+  const hosted = {
+    linux: `/${'r'.repeat(HOSTED_CELL_ROOT_BYTES.linux - 1)}`,
+    darwin: `/${'r'.repeat(HOSTED_CELL_ROOT_BYTES.darwin - 1)}`,
+  };
   for (const [platform, limit] of Object.entries(SUN_PATH_LIMIT_BYTES)) {
-    const bytes = controlSocketBytes(hosted, platform);
-    assert.equal(bytes, HOSTED_CELL_ROOT_BYTES + '/tmp'.length + CONTROL_SOCKET_TAIL_BYTES);
+    const root = hosted[platform];
+    assert.equal(Buffer.byteLength(root), HOSTED_CELL_ROOT_BYTES[platform]);
+    assert.equal(join(root, 'tmp'), `${root}/tmp`);
+    const bytes = cellControlSocket(root, platform);
+    assert.equal(bytes, HOSTED_CELL_ROOT_BYTES[platform] + CONTROL_SOCKET_TAIL_BYTES);
     assert(bytes <= limit, `${platform} hosted socket is ${bytes}, over ${limit}`);
-    assert(limit - bytes >= 20, `${platform} margin is ${limit - bytes}, under 20`);
   }
-  const perProfile = `${hosted}/project-trust/profiles/primary`;
-  assert(controlSocketBytes(perProfile, 'linux') > SUN_PATH_LIMIT_BYTES.linux, 'a per-profile temp would exceed the limit');
+  assert.equal(SUN_PATH_LIMIT_BYTES.darwin - cellControlSocket(hosted.darwin, 'darwin'), 22);
+  const perProfile = `${hosted.linux}/project-trust/profiles/primary`;
+  assert(cellControlSocket(perProfile, 'linux') > SUN_PATH_LIMIT_BYTES.linux, 'a per-profile temp would exceed the limit');
+});
+
+test('the 8.3 short name is asked for without quotes around the path', async () => {
+  const canonical = 'D:\\a\\_temp\\cell-wy2qla\\status-first-registered';
+  const seen = [];
+  const resolved = await shortNameSpelling(canonical, (file, args) => {
+    seen.push([file, args]);
+    return 'D:\\a\\_temp\\CELL-W~1\\STATUS~1\n';
+  });
+  assert.deepEqual(seen, [['cmd', ['/c', `for %I in (${canonical}) do @echo %~sI`]]]);
+  assert.equal(seen[0][1][1].includes('"'), false);
+  assert.equal(resolved.ran, false);
+  assert.match(resolved.reason, /ENOENT|no 8\.3 short name/);
+});
+
+test('cleanup reads the seat pid the stand-in records in the space root', () => {
+  const root = mkdtempSync(join(tmpdir(), 'standin-seat-'));
+  try {
+    mkdirSync(join(root, '.cotal'), { recursive: true, mode: 0o700 });
+    writeFileSync(join(root, '.cotal', 'standin-seat.pid'), '4321\n', { mode: 0o600 });
+    writeFileSync(join(root, '.cotal', 'manager.ab12.pid'), '4322 1\n', { mode: 0o600 });
+    writeFileSync(join(root, '.cotal', 'other.pid'), '9999\n', { mode: 0o600 });
+    assert.deepEqual(recordedPids(root).sort(), [4321, 4322]);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test('cleanup is not done while a recorded process is still alive', async () => {

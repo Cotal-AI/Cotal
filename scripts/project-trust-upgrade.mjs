@@ -191,16 +191,18 @@ function writeTrustedProjectFiles(projectDir, probeScript) {
 }
 
 // The connector binds tmpdir()/cotal-ctl-<22>/ctl.sock. The cell sets TMPDIR to
-// join(root, 'tmp'), so the socket is that directory plus this 42-byte tail.
-// sun_path holds 108 on Linux and 104 on macOS. A hosted runner temp is 24 bytes
-// and mkdtemp adds cell-XXXXXX, so the root is 35 bytes and the socket is 81.
-export const CONTROL_SOCKET_TAIL_BYTES = '/cotal-ctl-'.length + 22 + '/ctl.sock'.length;
+// join(root, 'tmp') in the baseline, and every profile reuses that directory,
+// so the socket is the cell root plus this 46-byte tail. sun_path holds 108
+// on Linux and 104 on macOS. The hosted roots that produced the first evidence
+// are 35 bytes on Linux and 36 on macOS, so the macOS socket is 82.
+export const CONTROL_SOCKET_TAIL_BYTES = '/tmp'.length + '/cotal-ctl-'.length + 22 + '/ctl.sock'.length;
 export const SUN_PATH_LIMIT_BYTES = { linux: 108, darwin: 104 };
-export const HOSTED_CELL_ROOT_BYTES = 35;
+export const HOSTED_CELL_ROOT_BYTES = { linux: 35, darwin: 36 };
 
-export function controlSocketBytes(cellRoot, platform) {
+export function cellControlSocket(cellRoot, platform) {
   const separator = platform === 'win32' ? '\\' : '/';
-  const socket = `${cellRoot}${separator}tmp${separator}cotal-ctl-${'a'.repeat(22)}${separator}ctl.sock`;
+  const temp = join(cellRoot, 'tmp');
+  const socket = `${temp}${separator}cotal-ctl-${'a'.repeat(22)}${separator}ctl.sock`;
   return Buffer.byteLength(socket);
 }
 
@@ -553,9 +555,11 @@ async function windowsPathSpellings(projectDir) {
   return { platform: 'win32', canonical, spellings: result };
 }
 
-async function shortNameSpelling(canonical) {
+export async function shortNameSpelling(canonical, run = execFileSync) {
   try {
-    const short = execFileSync('cmd', ['/c', 'for %I in ("' + canonical + '") do @echo %~sI'], { encoding: 'utf8', windowsHide: true }).trim();
+    // cmd receives this as one argument. Quotes inside it become part of the
+    // path, so the path is left bare: a cell root has no spaces.
+    const short = run('cmd', ['/c', `for %I in (${canonical}) do @echo %~sI`], { encoding: 'utf8', windowsHide: true }).trim();
     if (!short || short.toLowerCase() === canonical.toLowerCase()) return { ran: false, reason: `no 8.3 short name for ${canonical}` };
     return { spelling: short, canonical: realpathSync.native(short), ran: true };
   } catch (error) { return { ran: false, reason: error.message }; }
@@ -569,7 +573,7 @@ function windowsSymlinkSpelling(canonical) {
   } catch (error) { return { spelling: link, ran: false, reason: error.message }; }
 }
 
-function recordedPids(cwd) {
+export function recordedPids(cwd) {
   const dir = join(cwd, '.cotal');
   if (!existsSync(dir)) return [];
   const pids = [];
