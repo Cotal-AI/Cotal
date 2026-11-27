@@ -143,6 +143,11 @@ static napi_value ProcessStartTime(napi_env env, napi_callback_info info) {
     napi_get_undefined(env, &out);
     return out;
   }
+  if (len != sizeof(kp) || kp.kp_proc.p_pid != pid || kp.kp_proc.p_starttime.tv_sec <= 0 ||
+      kp.kp_proc.p_starttime.tv_usec < 0 || kp.kp_proc.p_starttime.tv_usec >= 1000000) {
+    napi_throw_error(env, NULL, "invalid kernel process identity");
+    return NULL;
+  }
   char buf[64];
   snprintf(buf, sizeof(buf), "%lld.%06d", (long long)kp.kp_proc.p_starttime.tv_sec, (int)kp.kp_proc.p_starttime.tv_usec);
   napi_create_string_utf8(env, buf, NAPI_AUTO_LENGTH, &out);

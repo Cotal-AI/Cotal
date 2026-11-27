@@ -7,11 +7,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { PeerCredentials } from "@cotal-ai/seat";
+import { darwinSharedIdentity, type DarwinSharedIdentity } from "../src/shared-identity-darwin.js";
 
 const publicApi = await import("@cotal-ai/seat") as Record<string, unknown>;
 const readPeer = publicApi.peerCredentials as (socket: Socket) => PeerCredentials;
 const readLocalPeer = publicApi.localPeerCredentials as (socket: Socket) => PeerCredentials;
 const bootSession = publicApi.darwinBootSession as () => string;
+const processStartTime = publicApi.processStartTime as (pid: number) => string | undefined;
 const observePeer = process.platform === "darwin" ? readLocalPeer : readPeer;
 
 if (process.argv[2] === "client") {
@@ -76,9 +78,31 @@ if (process.argv[2] === "client") {
         assert.equal(reverse.uid, process.getuid!());
         assert.equal(reverse.gid, process.getgid!());
       });
+      let darwinChild: DarwinSharedIdentity | undefined;
+      if (process.platform === "darwin") {
+        const current = darwinSharedIdentity.current();
+        const start = processStartTime(remote.pid);
+        assert(current && start);
+        const identity = darwinChild = { pid: remote.pid, uid: remote.uid, start, bootId: current.bootId };
+        check("Darwin writer proof binds the actual live child and boot to the socket", () => {
+          assert.equal(darwinSharedIdentity.observe(identity), "live");
+          assert(darwinSharedIdentity.matchesPeer(socket!, identity));
+          assert(!darwinSharedIdentity.matchesPeer(socket!, current));
+        });
+        check("Darwin writer proof refuses stale births and malformed or foreign identities", () => {
+          const stale = { ...identity, start: start === "1.000000" ? "2.000000" : "1.000000" };
+          assert.equal(darwinSharedIdentity.observe(stale), "gone");
+          assert(!darwinSharedIdentity.matchesPeer(socket!, stale));
+          assert.equal(darwinSharedIdentity.observe({ ...identity, start: "invalid" }), "unknown");
+          assert.equal(darwinSharedIdentity.observe({ ...identity, uid: identity.uid + 1 }), "unknown");
+        });
+      }
       child.send("close");
       const [code, signal] = await bounded(exit);
       check("native peer process exits cleanly", () => { assert.equal(code, 0); assert.equal(signal, null); });
+      if (darwinChild) check("Darwin writer proof recognizes the exact child after its kernel exit", () => {
+        assert.equal(darwinSharedIdentity.observe(darwinChild!), "gone");
+      });
     }
   } catch (error) {
     if (failed === 0) { failed++; console.error("  ✗ fixture failed", error); }
