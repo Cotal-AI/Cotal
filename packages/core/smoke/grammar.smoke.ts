@@ -17,9 +17,13 @@ import {
   anycastServeFilter, dmDurable, isPrincipalOwnerToken, assertInboxConnId, principalTags,
   principalFromTags, patternCovers, patternInAllow, DEV_OWNER,
 } from "../src/index.js";
+import { PLUGIN_CHANNEL_ROOT, classifyChannel, parsePluginChannelSubject, pluginChannelSubject } from "../src/plugin-channel-route.js";
 
 let ok = 0, fail = 0;
 const c = (n: string, v: boolean) => { if (v) { ok++; } else { fail++; console.log("  ✗ FAIL:", n); } };
+const rejects = (fn: () => unknown): boolean => {
+  try { fn(); return false; } catch { return true; }
+};
 
 // A literal in-grammar lifecycle uid ([a-z0-9]{26,32}) — dm/dlv/dinbox resources are lifecycle-keyed
 // (SPEC §13.1), so the durable-name / subject builders now carry it.
@@ -30,6 +34,43 @@ const cs = chatSubject("demo", "u_abc", "act1", "team.backend");
 c("chat build", cs === "cotal.demo.chat.u_abc.act1.team.backend");
 const pc = parseSubject(cs)!;
 c("chat parse owner/actor/sender/rest", pc.owner === "u_abc" && pc.actor === "act1" && pc.sender === "u_abc.act1" && pc.rest === "team.backend");
+const familyRoot = PLUGIN_CHANNEL_ROOT;
+const linear = `${familyRoot}.linear`;
+const pluginWire = `cotal.demo.${familyRoot}`;
+const issue = `${linear}.agtec-6270.thread`;
+const pluginSubject = pluginChannelSubject("demo", "u_abc", "act1", issue);
+c("plugin subject pins owner then actor", pluginSubject === `${pluginWire}.u_abc.act1.linear.agtec-6270.thread`);
+const parsedPlugin = parsePluginChannelSubject(pluginSubject);
+c("plugin parser restores the logical channel", parsedPlugin?.kind === familyRoot && parsedPlugin.space === "demo" &&
+  parsedPlugin.owner === "u_abc" && parsedPlugin.actor === "act1" && parsedPlugin.sender === "u_abc.act1" && parsedPlugin.rest === issue);
+c("existing parser does not dispatch the isolated family", parseSubject(pluginSubject) === null);
+c("plugin parser leaves ordinary chat alone", parsePluginChannelSubject(cs) === null);
+const legacyPlugin = chatSubject("demo", "u_abc", "act1", `${linear}.inbox`);
+c("legacy plugin address remains chat", parseSubject(legacyPlugin)?.kind === "chat" && parsePluginChannelSubject(legacyPlugin) === null);
+for (const resource of [">", "*", "agtec-6270.>"]) {
+  const pattern = `${linear}.${resource}`;
+  const family = classifyChannel(pattern);
+  const filter = pluginChannelSubject("demo", "*", "*", pattern);
+  const parsed = parsePluginChannelSubject(filter);
+  c(`plugin filter round trip: ${pattern}`, family.kind === familyRoot && family.plugin === "linear" &&
+    filter === `${pluginWire}.*.*.linear.${resource}` && family.resource === resource && parsed?.owner === "*" &&
+    parsed.actor === "*" && parsed.rest === pattern);
+}
+for (const ordinary of [">", "*", "*.linear.>", `team.${linear}`, `${familyRoot.toUpperCase()}.linear.inbox`, `${familyRoot}-other.linear.inbox`]) {
+  c(`only the literal reserved root selects the plugin family: ${ordinary}`, classifyChannel(ordinary).kind === "chat");
+}
+for (const invalid of [familyRoot, linear, `${familyRoot}.>`, `${familyRoot}.*.>`, `${linear}.>.extra`, `${linear}.a/b`, `${linear}..inbox`]) {
+  c(`channel classifier rejects ${invalid}`, rejects(() => classifyChannel(invalid)));
+  c(`plugin subject builder rejects ${invalid}`, rejects(() => pluginChannelSubject("demo", "u_abc", "act1", invalid)));
+}
+for (const bad of [`${pluginWire}.u_abc.act1.linear`, `${pluginWire}.u_abc.act1.*.inbox`,
+  `${pluginWire}.u_abc.act-1.linear.inbox`, `cotal..${familyRoot}.u_abc.act1.linear.inbox`,
+  `${pluginWire}.u_abc.act1.linear.>.inbox`, `${pluginWire}.u_abc.act1.linear.in box`]) {
+  c(`plugin parser rejects ${bad}`, parsePluginChannelSubject(bad) === null);
+}
+c("plugin subject builder rejects an ordinary channel", rejects(() => pluginChannelSubject("demo", "u_abc", "act1", "team.backend")));
+c("plugin subject builder rejects a dotted owner", rejects(() => pluginChannelSubject("demo", "u_abc.extra", "act1", `${linear}.inbox`)));
+c("plugin subject builder rejects a partial actor wildcard", rejects(() => pluginChannelSubject("demo", "u_abc", "act*", `${linear}.inbox`)));
 const is = unicastSubject("demo", "u_r", "ra", "u_s", "sa");
 c("inst build (4-token)", is === "cotal.demo.inst.u_r.ra.u_s.sa");
 const pi = parseSubject(is)!;
