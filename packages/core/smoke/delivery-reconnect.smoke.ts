@@ -102,7 +102,11 @@ async function checkPluginProjection(space: string, provisioner: string, creds: 
       ready.length === 4 && ready[3].epoch === 2 && ready[3].wire !== old);
 
     const view = await readChannelRegistry({ servers: SERVERS, space, creds, directGet: true });
-    check("the public registry view does not expose routing metadata as a channel", !Object.hasOwn(view.channels ?? {}, key));
+    check("the public registry view does not expose routing metadata as a channel or warning",
+      !Object.hasOwn(view.channels ?? {}, key) && !view.undecodable?.some((entry) => entry.key === key));
+    const watchedView = await readChannelRegistry({ servers: SERVERS, space, creds: provisioner });
+    check("the scanned registry also excludes routing metadata and warnings",
+      !Object.hasOwn(watchedView.channels ?? {}, key) && !watchedView.undecodable?.some((entry) => entry.key === key));
     const stale = state.nc!;
     const request = stale.request.bind(stale);
     let readHeld = false;

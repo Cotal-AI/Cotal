@@ -24,6 +24,7 @@ import { type NativeConnectionBinding, nativeBindingAfter, nativeConnectionBindi
 import { nextHeartbeat } from "./presence-heartbeat.js";
 import { isPermissionDenied } from "./permission-denied.js";
 import { readPluginChannelRouteProjection } from "./plugin-channel-projection.js";
+import { PLUGIN_CHANNEL_ROOT } from "./plugin-channel-route.js";
 import { PRESENCE_STORAGE } from "./streams.js";
 import { channelBucket, presenceBucket, dmStream, dmDurable, parseSubject } from "./subjects.js";
 import { isFromSubjectSender, authenticatedMessage, isReadableMessagePart } from "./endpoint-messages.js";
@@ -486,7 +487,8 @@ export class EndpointConnection {
           decoded = undefined;
         }
         const parsed = parseSubject(m.subject);
-        if (decoded !== undefined && (parsed?.kind === "chat" || parsed?.kind === "evp" || parsed?.kind === "inst" || parsed?.kind === "svc")) {
+        if (parsed?.kind === PLUGIN_CHANNEL_ROOT && (this.channelRoutingMode() !== "isolated" || decoded === undefined)) continue;
+        if (decoded !== undefined && (parsed?.kind === PLUGIN_CHANNEL_ROOT || parsed?.kind === "chat" || parsed?.kind === "evp" || parsed?.kind === "inst" || parsed?.kind === "svc")) {
           if (!isFromSubjectSender(decoded, parsed)) continue;
           // A message whose parts cannot be read is dropped, as history drops it (#7060).
           if (parsed.kind !== "evp" && (!Array.isArray(decoded.parts) || !decoded.parts.every(isReadableMessagePart))) continue;

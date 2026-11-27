@@ -370,6 +370,7 @@ export async function readChannelRegistry(opts: {
         ? (await kv.status(), (await lastKvEntries(kv)).filter((e) => e.operation !== "DEL" && e.operation !== "PURGE"))
         : await liveKvEntries(kv);
       for (const e of entries) {
+        if (e.key === PLUGIN_CHANNEL_PROJECTION_KEY) continue;
         const decoded = entryDecode(e);
         if (decoded.error !== undefined) {
           undecodable.push({ key: e.key, error: decoded.error });
