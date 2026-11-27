@@ -68,6 +68,7 @@ type HostNative = {
   flockExclusiveNb?: (fd: number) => boolean;
   lockExclusiveNb?: (fd: number) => boolean;
   processStartTime?: (pid: number) => string | undefined;
+  observeProcess?: (pid: number) => { birth: string; user: string; session: number } | undefined;
   userCacheDir?: () => string;
   currentUserSid?: () => string;
   inspectDir?: (path: string) => WindowsDirSecurity;
@@ -104,6 +105,13 @@ export function lockExclusiveNb(fd: number): boolean {
  *  exist. A reused pid has a different value. Linux reads `/proc/<pid>/stat` instead. */
 export function processStartTime(pid: number): string | undefined {
   return native("processStartTime")(pid);
+}
+
+/** Windows: read the live process's token, session and FILETIME together. Undefined is a proved
+ * absent or exited process. Access failures throw and do not prove an exit. */
+export function observeWindowsProcess(pid: number): { birth: string; user: string; session: number } | undefined {
+  if (!Number.isSafeInteger(pid) || pid <= 0 || pid > 0xffffffff) throw new Error("invalid Windows PID");
+  return native("observeProcess")(pid);
 }
 
 /** macOS: `confstr(_CS_DARWIN_USER_CACHE_DIR)`, this user's 0700 cache directory, which no

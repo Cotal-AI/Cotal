@@ -199,6 +199,53 @@ static napi_value ProcessStartTime(napi_env env, napi_callback_info info) {
   return birth_string(env, filetime64(created));
 }
 
+/* One query handle binds all observations to the same process object. No terminate access. */
+static napi_value ObserveProcess(napi_env env, napi_callback_info info) {
+  size_t argc = 1;
+  napi_value argv[1], out, v;
+  uint32_t pid;
+  if (napi_get_cb_info(env, info, &argc, argv, NULL, NULL) != napi_ok || argc != 1 ||
+      napi_get_value_uint32(env, argv[0], &pid) != napi_ok || pid == 0) {
+    napi_throw_type_error(env, NULL, "pid must be positive");
+    return NULL;
+  }
+  HANDLE proc = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE, FALSE, pid);
+  if (proc == NULL) {
+    DWORD err = GetLastError();
+    if (err != ERROR_INVALID_PARAMETER) return throw_win32(env, "OpenProcess", err);
+    napi_get_undefined(env, &out);
+    return out;
+  }
+  DWORD err = 0, session = 0, returned = 0;
+  const char* step = "GetProcessTimes";
+  FILETIME created, exited, kernel, user;
+  HANDLE token = NULL;
+  LPWSTR sid = NULL;
+  if (!GetProcessTimes(proc, &created, &exited, &kernel, &user)) { err = GetLastError(); goto done; }
+  DWORD live = WaitForSingleObject(proc, 0);
+  if (live == WAIT_OBJECT_0) { napi_get_undefined(env, &out); goto done; }
+  if (live != WAIT_TIMEOUT) { step = "WaitForSingleObject"; err = GetLastError(); goto done; }
+  if (!OpenProcessToken(proc, TOKEN_QUERY, &token)) { step = "OpenProcessToken"; err = GetLastError(); goto done; }
+  err = token_sid(token, &sid, &step);
+  if (err) goto done;
+  if (!GetTokenInformation(token, TokenSessionId, &session, sizeof(session), &returned)) {
+    step = "GetTokenInformation"; err = GetLastError(); goto done;
+  }
+  live = WaitForSingleObject(proc, 0);
+  if (live == WAIT_OBJECT_0) { napi_get_undefined(env, &out); goto done; }
+  if (live != WAIT_TIMEOUT) { step = "WaitForSingleObject"; err = GetLastError(); goto done; }
+  napi_create_object(env, &out);
+  napi_set_named_property(env, out, "birth", birth_string(env, filetime64(created)));
+  napi_set_named_property(env, out, "user", utf16(env, sid));
+  napi_create_uint32(env, session, &v);
+  napi_set_named_property(env, out, "session", v);
+done:
+  if (sid != NULL) LocalFree(sid);
+  if (token != NULL) CloseHandle(token);
+  CloseHandle(proc);
+  return err ? throw_win32(env, step, err) : out;
+}
+
 /* ---- lifetime lock ---- */
 
 /* LockFileEx(LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY) on one byte at 1 GiB of the file
@@ -668,6 +715,7 @@ static void Export(napi_env env, napi_value exports, const char* name, napi_call
 static napi_value Init(napi_env env, napi_value exports) {
   Export(env, exports, "currentUserSid", CurrentUserSid);
   Export(env, exports, "processStartTime", ProcessStartTime);
+  Export(env, exports, "observeProcess", ObserveProcess);
   Export(env, exports, "lockExclusiveNb", LockExclusiveNb);
   Export(env, exports, "inspectDir", InspectDir);
   Export(env, exports, "pipeListen", PipeListen);
