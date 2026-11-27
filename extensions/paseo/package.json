@@ -1,7 +1,7 @@
 {
   "name": "@cotal-ai/paseo",
   "description": "Cotal Paseo integration: a Paseo Runtime provider for spawning agents into Paseo workspace terminals.",
-  "version": "0.178.0",
+  "version": "0.183.1",
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
