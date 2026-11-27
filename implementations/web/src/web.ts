@@ -37,14 +37,12 @@ import {
   removePidPair,
   userViewAuth,
   userViewAuthOrExit,
-  WEB_PIDFILE,
   WEB_READINESS_HEADER,
   WEB_READINESS_PATH,
   WEB_SESSION_FILE,
   writeIdentityPin,
   type ConnectFlags,
   type Connection,
-  type LocalProcess,
   type UserViewAuth,
   type WebMeta,
   type WebSession,
@@ -133,17 +131,11 @@ export {
   operatorPoster,
 } from "./web-post.js";
 
+import { normalizeWebHost, WEB_HOST, WEB_PORT, WEB_URL, webProcess } from "./registration.js";
+export { normalizeWebHost, WEB_HOST, WEB_PORT, WEB_URL, webProcess } from "./registration.js";
+
 const here = dirname(fileURLToPath(import.meta.url));
 
-/** The dashboard's default port and its branded address. The server binds loopback
- *  (127.0.0.1) but serves any Host, so `cotal.localhost` — which Chrome/Firefox/Edge
- *  resolve to loopback with no DNS setup — just works. (Safari may not resolve
- *  `*.localhost`; plain http://127.0.0.1:7799 always does.) */
-export const WEB_PORT = 7799;
-export const WEB_HOST = "127.0.0.1";
-export const WEB_URL = `http://cotal.localhost:${WEB_PORT}/`;
-const WILDCARD_HOSTS = new Set(["0.0.0.0", "::"]);
-const IPV4_MAPPED_WILDCARD = "::ffff:0:0";
 /** The three reasons this surface refuses a request. Each names a different condition so a caller
  *  learns which one failed, and the refusal body and the smokes share these constants because a
  *  restated literal drifts silently. */
@@ -312,17 +304,6 @@ const DETACHED_READY_TIMEOUT_MS = 30_000;
 const DETACHED_STOP_TIMEOUT_MS = 3_000;
 const DETACHED_ROOT_ENV = "COTAL_WEB_DETACHED_ROOT";
 const DETACHED_LOG_ENV = "COTAL_WEB_DETACHED_LOG";
-export const webProcess: LocalProcess = {
-  kind: "local-process",
-  name: "web",
-  label: "web dashboard",
-  order: 40,
-  pidFile: WEB_PIDFILE,
-  // `web.session` holds the readiness nonce, which is accepted for this process's whole lifetime.
-  // The exit handler removes it, but an exit handler does not run on SIGKILL — so without this the
-  // credential outlives the process it authenticates.
-  artifacts: [WEB_SESSION_FILE],
-};
 
 /** Atomically claim this mesh's web pidfile so concurrent custom-port launches cannot overwrite it,
  *  then pin this process's identity beside it. The pin follows the exclusive create because
@@ -1210,32 +1191,6 @@ export function appendedLogTail(path: string, offset: number): string {
 }
 
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
-
-/** Validate and normalize one host used for both binding and browser advertisement. Wildcard binds
- *  are refused because they do not name a destination a browser or readiness probe can honestly use. */
-export function normalizeWebHost(input: string | undefined): string {
-  if (input === undefined) return WEB_HOST;
-  if (input === "" || input !== input.trim()) throw new Error("--host must be a hostname or IP address without surrounding whitespace");
-  const unbracketed = input.startsWith("[") && input.endsWith("]") ? input.slice(1, -1) : input;
-  if (unbracketed.includes("[") || unbracketed.includes("]") || /[\s/?#@]/.test(unbracketed))
-    throw new Error(`invalid --host ${input}`);
-  let host: string;
-  try {
-    // WHATWG parsing canonicalizes alternate IPv4 spellings and compressed IPv6. Check the
-    // canonical value so aliases such as `0` cannot bypass the wildcard refusal and advertise
-    // `0.0.0.0` after URL serialization.
-    const ipv6 = unbracketed.includes(":");
-    const parsed = new URL(`http://${ipv6 ? `[${unbracketed}]` : unbracketed}:1/`);
-    if (parsed.port !== "1" || parsed.pathname !== "/" || parsed.username || parsed.password)
-      throw new Error(`invalid --host ${input}`);
-    host = ipv6 ? parsed.hostname.slice(1, -1) : parsed.hostname;
-  } catch {
-    throw new Error(`invalid --host ${input}`);
-  }
-  if (WILDCARD_HOSTS.has(host) || host === IPV4_MAPPED_WILDCARD)
-    throw new Error(`--host ${input} is a wildcard bind, not a browser address; pass one reachable hostname or IP address`);
-  return host;
-}
 
 /** Validate the one port used for the bind, the advertised link, the Origin allow-list and the
  *  detached readiness probe. Port 0 is refused because the kernel would bind an ephemeral port that

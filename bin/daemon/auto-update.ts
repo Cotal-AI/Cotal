@@ -3,7 +3,7 @@ import { readFileSync, existsSync, closeSync, ftruncateSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import { openPrivateAppend, writeSecretFileAtomic } from "@cotal-ai/core";
-import { checkForUpdate, homeCotalDir, loadExtensionsManifest, logicalExecutionEntry, newerUpdate, readUpdateCheck, readUpdateRecovery, readUpdateSettings, recoveryDisposition, UPDATE_DAY_MS, UPDATE_HOUR_MS } from "@cotal-ai/workspace";
+import { BUILT_IN_PACKAGES, checkForUpdate, homeCotalDir, loadExtensionsManifest, logicalExecutionEntry, newerUpdate, readUpdateCheck, readUpdateRecovery, readUpdateSettings, recoveryDisposition, UPDATE_DAY_MS, UPDATE_HOUR_MS } from "@cotal-ai/workspace";
 import type { DaemonUpdateStatus } from "./protocol.js";
 import { cleanWindowsUpdate, startWindowsUpdate } from "./update-windows.js";
 import { WINDOWS_INTERRUPTED_UPDATE, readWindowsUpdatePause } from "@cotal-ai/workspace";
@@ -11,7 +11,7 @@ import { cleanLaunchUpdate, startLaunchUpdate } from "./update-launchd.js";
 
 function reconciliationPending(version: string): boolean {
   try {
-    return loadExtensionsManifest().extensions.some((entry) => entry.pkg.startsWith("@cotal-ai/") && entry.version !== version);
+    return loadExtensionsManifest().extensions.some((entry) => entry.pkg.startsWith("@cotal-ai/") && !Object.hasOwn(BUILT_IN_PACKAGES, entry.pkg) && entry.version !== version);
   } catch {
     return false;
   }

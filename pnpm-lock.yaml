@@ -105,6 +105,9 @@ importers:
 
   bin:
     dependencies:
+      '@cotal-ai/acp':
+        specifier: workspace:*
+        version: link:../implementations/acp
       '@cotal-ai/auth':
         specifier: workspace:*
         version: link:../implementations/auth
@@ -120,6 +123,9 @@ importers:
       '@cotal-ai/delivery':
         specifier: workspace:*
         version: link:../implementations/delivery
+      '@cotal-ai/linear':
+        specifier: workspace:*
+        version: link:../implementations/linear
       '@cotal-ai/manager':
         specifier: workspace:*
         version: link:../implementations/manager
@@ -132,6 +138,9 @@ importers:
       '@cotal-ai/seat':
         specifier: workspace:*
         version: link:../packages/seat
+      '@cotal-ai/web':
+        specifier: workspace:*
+        version: link:../implementations/web
       '@cotal-ai/workspace':
         specifier: workspace:*
         version: link:../packages/workspace
@@ -139,9 +148,6 @@ importers:
         specifier: ^6.2.3
         version: 6.2.3
     devDependencies:
-      '@cotal-ai/acp':
-        specifier: workspace:*
-        version: link:../implementations/acp
       '@cotal-ai/connector-claude-code':
         specifier: workspace:*
         version: link:../extensions/connector-claude-code
@@ -157,18 +163,12 @@ importers:
       '@cotal-ai/connector-opencode':
         specifier: workspace:*
         version: link:../extensions/connector-opencode
-      '@cotal-ai/linear':
-        specifier: workspace:*
-        version: link:../implementations/linear
       '@cotal-ai/pi':
         specifier: workspace:*
         version: link:../extensions/pi
       '@cotal-ai/smoke-kit':
         specifier: workspace:*
         version: link:../packages/smoke-kit
-      '@cotal-ai/web':
-        specifier: workspace:*
-        version: link:../implementations/web
       '@modelcontextprotocol/sdk':
         specifier: 1.29.0
         version: 1.29.0(zod@4.4.3)

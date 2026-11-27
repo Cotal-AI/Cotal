@@ -6,8 +6,7 @@ import {
   serviceStartupPath, validateServiceStartupPath, type LocalProcess, type ServicePreset,
 } from "@cotal-ai/workspace";
 import { assertAccountName } from "./account.js";
-import { accountForRead, serveLinearAccount } from "./cli.js";
-import { assertLinearEndpointName } from "./serve.js";
+import { assertLinearEndpointName } from "./endpoint-name.js";
 
 function nativeTarget(root: string, space: string, server?: string) {
   const target = resolveNativeServiceTarget(root, space, server);
@@ -41,7 +40,7 @@ export const linearService: LocalProcess = {
       server: { type: "string", minLength: 1, maxLength: 4096, description: "optional repeat of the registered broker; its TLS requirement is retained" },
     } },
   },
-  buildServiceLaunch(context) {
+  async buildServiceLaunch(context) {
     if (!context.cliInvocation?.length) throw new CommandFailure("refused", "UNSUPPORTED", "the Linear service requires the verified cotal entry; no PATH binary was selected");
     if (context.credentialRef) throw new CommandFailure("refused", "UNSUPPORTED", "Linear service authority comes from its selected authenticated root and recorded upstream account, not a generic caller reference");
     // The child inherits COTAL_HOME, which envRefs cannot set. Without it, a reference to a variable the
@@ -51,7 +50,7 @@ export const linearService: LocalProcess = {
     const target = nativeTarget(String(context.options.root), context.space, context.options.server as string | undefined);
     const selected = inputs(context.options.account, context.options.endpoint);
     // The child now reads the same Cotal home as this process, so an absent account refuses here, before a launch.
-    accountForRead(selected.account);
+    (await import("./cli.js")).accountForRead(selected.account);
     const [executable, ...self] = context.cliInvocation;
     return { executable: executable!, cwd: target.root, args: [...self, ...(colorEnabled() ? [] : ["--no-color"]), "__service-linear", "--root", target.root, "--space", context.space, "--server", target.server, "--account", selected.account, "--endpoint", selected.endpoint, "--service-instance", context.instanceId, "--launch-request", context.launchRequestId, "--ready-file", serviceStartupPath(context)] };
   },
@@ -77,6 +76,7 @@ const nativeLinearServiceCommand: Command = {
     const instanceId = serviceOperationId(args.values["service-instance"]), launchRequestId = serviceOperationId(args.values["launch-request"]), path = String(args.values["ready-file"]);
     validateServiceStartupPath(path, instanceId, launchRequestId);
     try {
+      const { serveLinearAccount } = await import("./cli.js");
       await serveLinearAccount(selected.account, selected.endpoint, { space: target.space, server: target.server }, {
         root: target.root,
         onInitialized: () => publishServiceStartup(path, { phase: "linear-serve-initialized", space: target.space, instanceId, launchRequestId }),

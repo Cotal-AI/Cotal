@@ -1,4 +1,4 @@
-import { isCommandFailure, loadExtensionsManifest, readUpdateRecovery, recoveryDisposition, type UpdateRecovery } from "@cotal-ai/workspace";
+import { BUILT_IN_PACKAGES, isCommandFailure, loadExtensionsManifest, readUpdateRecovery, recoveryDisposition, type UpdateRecovery } from "@cotal-ai/workspace";
 
 const receiptRepair = "Run `cotal update --self` to reconcile this installation.";
 export const manifestRepair = "run `cotal ext seed --repair` to preserve the damaged file and rebuild the built-in inventory";
@@ -24,7 +24,7 @@ export function readUpdatePending(current: string): UpdatePending {
   }
   try {
     const extensions = loadExtensionsManifest().extensions
-      .filter(entry => entry.pkg.startsWith("@cotal-ai/") && entry.version !== current)
+      .filter(entry => entry.pkg.startsWith("@cotal-ai/") && !Object.hasOwn(BUILT_IN_PACKAGES, entry.pkg) && entry.version !== current)
       .map(entry => ({ package: entry.pkg, version: entry.version }));
     return extensions.length ? { kind: "version-mismatch", extensions, instruction: "Reconciliation pending: Run `cotal update` to reconcile this home's extensions." } : { kind: "none" };
   } catch (error) {

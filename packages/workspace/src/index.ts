@@ -12,6 +12,7 @@ export * from "./cotal-config.js";
 export * from "./control-target.js";
 export * from "./default-agent.js";
 export * from "./official-connectors.js";
+export { BUILT_IN_PACKAGES } from "./built-in-packages.js";
 export * from "./official-runtimes.js";
 export * from "./extensions.js";
 export { pluginManifest, type PluginDeclaration } from "./plugin-manifest.js";

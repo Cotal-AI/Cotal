@@ -1,7 +1,7 @@
 import { brokerUrlHasUserinfo, registry, type Command, type FlagSpec, type ParsedArgs } from "@cotal-ai/core";
 import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { assertManagerName, brokerUrlCredentialRefusal, cacheServicePreset, codeSpan, CommandFailure, extensionProvides, findMesh, hasUserAuthState, installedExtensionPackage, isCommandFailure, loadExtensionsManifest, loadRoster, oneLine, recordOperationWarning, resolveNativeServiceTarget, runtimeInstallHint, segmentedKey, serviceMetadataDigest, spaceMaterialKey, validateServiceAdapterOptions, validateServiceAdapterPaths, verifiedExtensionServicePresets, WEB_SERVICE_ADAPTER, type ServiceDefinitionInput, type ServicePreset, type ServicePresetDefault } from "@cotal-ai/workspace";
+import { assertManagerName, brokerUrlCredentialRefusal, BUILT_IN_PACKAGES, cacheServicePreset, codeSpan, CommandFailure, extensionProvides, findMesh, hasUserAuthState, installedExtensionPackage, isCommandFailure, loadExtensionsManifest, loadRoster, oneLine, recordOperationWarning, resolveNativeServiceTarget, runtimeInstallHint, segmentedKey, serviceMetadataDigest, spaceMaterialKey, validateServiceAdapterOptions, validateServiceAdapterPaths, verifiedExtensionServicePresets, WEB_SERVICE_ADAPTER, type ServiceDefinitionInput, type ServicePreset, type ServicePresetDefault } from "@cotal-ai/workspace";
 import { installedExtensionsEnabled } from "../ext-loader.js";
 import { metadataPositionals } from "./command-path.js";
 import { shellWord } from "./endpoint-errors.js";
@@ -43,6 +43,7 @@ const reserved = new Set(["help", "no-color", "no-input", "space", "json", "plai
 export function servicePresets(): { preset: ServicePreset; package: string | null; version: string; validation: "not-checked" }[] {
   const rows = registry.all<ServicePreset>("service-preset").map((preset) => ({ preset: cacheServicePreset(preset), package: null as string | null, version: cliVersion(), validation: "not-checked" as const }));
   if (installedExtensionsEnabled()) for (const extension of loadExtensionsManifest().extensions) {
+    if (Object.hasOwn(BUILT_IN_PACKAGES, extension.pkg)) continue;
     const refs = extensionProvides(extension).filter((ref) => ref.kind === "service-preset");
     for (const ref of refs) {
       const preset = extension.servicePresets?.find((preset) => preset.name === ref.name);
@@ -67,7 +68,7 @@ export function findServicePreset(name: string): ServicePreset | undefined {
 export function resolveServicePreset(name: string): ServicePreset {
   if (!/^[a-z][a-z0-9-]{0,63}$/.test(name)) throw new CommandFailure("refused", "USAGE_INVALID", "--preset needs one declared lower-case preset name");
   const row = servicePresets().find((row) => row.preset.name === name);
-  if (!row) throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", `no registered or installed service preset is named "${name}"; install its provider explicitly or use a supported --file definition`, { remedy: name === "web" ? "bare `cotal svc` lists the installed presets; add the dashboard provider with `cotal ext add @cotal-ai/web`" : "bare `cotal svc` lists the installed presets; add the extension that provides this one with `cotal ext add <package>`" });
+  if (!row) throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", `no registered or installed service preset is named "${name}"; install its provider explicitly or use a supported --file definition`, { remedy: name === "web" ? "bare `cotal svc` lists the available presets" : "bare `cotal svc` lists the installed presets; add the extension that provides this one with `cotal ext add <package>`" });
   if (row.package !== null) {
     const owner = loadExtensionsManifest().extensions.find((extension) => extension.pkg === row.package);
     const checked = owner && verifiedExtensionServicePresets(owner).find((preset) => preset.name === name);

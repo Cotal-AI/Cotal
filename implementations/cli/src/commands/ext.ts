@@ -22,7 +22,8 @@ import { isAuthenticSeedChild, markSeedChildLive, clearChildMarker } from "../se
 import { cliVersion, seedStoreDir } from "../seed/paths.js";
 import { generateExtensionManifest } from "../lib/extension-manifest-command.js";
 import { declaredExtensionEntry } from "../lib/extension-install-declaration.js";
-import { checkPluginCore, readPluginDeclaration } from "@cotal-ai/workspace";
+import { BUILT_IN_PACKAGES, checkPluginCore, readPluginDeclaration } from "@cotal-ai/workspace";
+import { builtInExtension } from "../lib/built-in-extension.js";
 
 export const extFlags = [
   jsonFlag,
@@ -98,6 +99,11 @@ export async function ext(args: ParsedArgs): Promise<void> {
   // and these extensions never appear in `npm list -g` (they live in a cotal-owned prefix, not npm's
   // global tree), so erroring here left the honest answer undiscoverable.
   if (sub === undefined || (sub === "list" && !rest.length)) return list(presentationOf(v));
+  const builtin = sub === "add" || sub === "remove" ? builtInExtension(rest[0]) : undefined;
+  if (builtin) {
+    console.log(`${builtin} is built into this CLI.`);
+    return;
+  }
   if (sub === "add") return addExtension(atThisVersion(rest[0]!)).catch(exitOnInterruptedAdd);
   if (sub === "__update-add" && rest[0] && rest[1]) {
     if (Number(process.env[EXT_UPDATE_PARENT_ENV]) !== process.ppid)
@@ -128,7 +134,7 @@ export async function ext(args: ParsedArgs): Promise<void> {
   throw usage(EXT_USAGE);
 }
 
-async function npm(args: string[], prefix: string, seeding = false): Promise<{ status: number | null; output: string }> {
+export async function runExtensionNpm(args: string[], prefix: string, seeding = false): Promise<{ status: number | null; output: string }> {
   // On Windows `npm` is `npm.cmd`; Node refuses to spawn a `.cmd` without a shell (CVE-2024-27980),
   // and a naive shell re-parses cmd metachars, so run it through cmd.exe with a byte-for-byte command
   // line (shared with the manager's PtyRuntime launch).
@@ -201,6 +207,8 @@ async function npm(args: string[], prefix: string, seeding = false): Promise<{ s
     lifecycle?.dispose();
   }
 }
+
+const npm = runExtensionNpm;
 
 /** Rebuild each installed package's private links after npm mutates the shared prefix: every
  * `recorded` package's and, with `candidate`, the operation's own. Keeping the links inside the
@@ -864,7 +872,7 @@ export interface ExtensionRow {
 function list(presentation: Presentation): void {
   let entries: readonly InstalledExtension[];
   try {
-    entries = loadExtensionsManifest().extensions;
+    entries = loadExtensionsManifest().extensions.filter((entry) => !Object.hasOwn(BUILT_IN_PACKAGES, entry.pkg));
   } catch (error) {
     if (presentation !== "json" || !(error instanceof CorruptExtensionsManifestError)) throw error;
     throw new CommandFailure("refused", "SCHEMA_INVALID", error.diagnosis, { remedy: error.remedy, cause: error });

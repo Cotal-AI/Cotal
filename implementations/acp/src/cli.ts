@@ -12,8 +12,6 @@ import { homeCotalDir, isConnectRefusal, resolveTargetOrThrow } from "@cotal-ai/
 import { cotalAgent, type HiddenSessions, type ThreadLink, type ThreadLinks } from "./agent.js";
 import { openLiveMesh } from "./live-mesh.js";
 
-export const USAGE = "cotal acp [--space <name>] [--server <url>] | cotal acp --auth [--space <name>]";
-
 const version = (JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as { version: string }).version;
 
 /** Seat runs that `session/delete` hid, one lifecycle UID per line. Every read goes to the file,

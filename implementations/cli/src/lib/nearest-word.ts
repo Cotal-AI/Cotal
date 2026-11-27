@@ -1,6 +1,5 @@
 import type { Command } from "@cotal-ai/core";
 import { boundedValue, oneLine, SHOWN_VALUE_MAX } from "@cotal-ai/workspace";
-import { OFFICIAL_COMMANDS } from "../ext-loader.js";
 
 /** The optimal string alignment distance between `a` and `b`: insertions, deletions, substitutions
  *  and swaps of two neighbouring characters, each one edit, so `stauts` is one edit from `status`. */
@@ -57,11 +56,8 @@ function commandWords(commands: readonly Command[], word: string): string[] {
  *  the docs call a stop a despawn, which is nearer to `spawn`, its opposite. */
 const COMMAND_SYNONYMS: Readonly<Record<string, string>> = { despawn: "stop" };
 
-/** The usage line for a word that names no command: the package to add when an official extension
- *  provides it, else the command it is Cotal's own word for, else the nearest command or leading flag. */
+/** The usage line for a word that names no command: a synonym, or the nearest command or flag. */
 export function unknownCommandMessage(commands: readonly Command[], word: string): string {
-  const pkg = Object.hasOwn(OFFICIAL_COMMANDS, word) ? OFFICIAL_COMMANDS[word] : undefined;
-  if (pkg) return `no installed extension provides command "${word}" - install it with \`cotal ext add ${pkg}\``;
   const words = commandWords(commands, word);
   const synonym = Object.hasOwn(COMMAND_SYNONYMS, word) ? COMMAND_SYNONYMS[word] : undefined;
   if (synonym !== undefined && words.includes(synonym)) return `unknown command: ${oneLine(word)} - did you mean ${synonym}? Or run \`cotal help\` to list commands`;

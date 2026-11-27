@@ -1,5 +1,3 @@
-import { homedir } from "node:os";
-import { join, resolve } from "node:path";
 import {
   registry,
   type Command,
@@ -9,11 +7,9 @@ import {
   type RuntimeProvider,
 } from "@cotal-ai/core";
 import {
+  BUILT_IN_PACKAGES,
   SEEDED_EXTENSIONS,
-  CommandFailure,
   runtimeInstallHint,
-  jsonFlag,
-  plainFlag,
   connectorInstallHint,
   extensionLocalProcesses,
   extensionProvides,
@@ -41,32 +37,6 @@ export const OFFICIAL_RUNTIME_TOOLS: Readonly<Record<string, { readonly names: r
   tmux: { names: ["tmux"] },
   cmux: { names: ["cmux"], override: "CMUX_BUNDLED_CLI_PATH" },
   herdr: { names: ["herdr"] },
-};
-
-/** The ACP clients `cotal setup` connects, client-setup provider name → the package that registers it
- *  and how to tell the application is on this machine before that package is installed: any one of
- *  `tools` on PATH, or one of `dirs` present. Once installed, the provider's own `available()`
- *  decides. Kept beside {@link OFFICIAL_RUNTIME_TOOLS} because an uninstalled provider cannot be asked. */
-export const OFFICIAL_CLIENT_APPS: Readonly<Record<string, { readonly package: string; readonly title: string; readonly tools: readonly string[]; readonly dirs: () => readonly string[] }>> = {
-  // T3 Code's base directory (its `resolveBaseDir`).
-  t3: { package: "@cotal-ai/acp", title: "T3 Code", tools: ["t3"], dirs: () => [process.env.T3CODE_HOME?.trim() ? resolve(process.env.T3CODE_HOME.trim().replace(/^~(?=$|[/\\])/, homedir())) : join(homedir(), ".t3")] },
-  // Zed's config directory (its `paths::config_dir`).
-  zed: {
-    package: "@cotal-ai/acp",
-    title: "Zed",
-    tools: ["zed", "zeditor"],
-    dirs: () => [process.platform === "win32" ? join(process.env.APPDATA ?? join(homedir(), "AppData", "Roaming"), "Zed")
-      : process.platform === "linux" && process.env.XDG_CONFIG_HOME?.trim() ? join(process.env.XDG_CONFIG_HOME.trim(), "zed")
-      : join(homedir(), ".config", "zed")],
-  },
-};
-
-/** The commands official first-party extensions add that the binary does not seed, command name →
- *  npm package, so running one before its extension is added names the package. Not authority, as
- *  for {@link OFFICIAL_RUNTIMES}: the command exists only once `cotal ext add` installs it. */
-export const OFFICIAL_COMMANDS: Readonly<Record<string, string>> = {
-  acp: "@cotal-ai/acp",
-  linear: "@cotal-ai/linear",
 };
 
 /**
@@ -136,6 +106,7 @@ export function extensionNames(kind: string): string[] {
   const names = new Set(registry.all().filter((ext) => ext.kind === kind && (kind !== "local-process" || (ext as LocalProcess).controllerOnly !== true)).map((ext) => ext.name));
   if (installedEnabled) {
     for (const ext of loadExtensionsManifest().extensions) {
+      if (Object.hasOwn(BUILT_IN_PACKAGES, ext.pkg)) continue;
       if (kind === "local-process") {
         for (const process of extensionLocalProcesses(ext)) if (!process.controllerOnly) names.add(process.name);
       } else {
@@ -152,6 +123,7 @@ export function localProcessSurface(): LocalProcess[] {
   const owners = new Map(processes.map((process) => [process.name, "this CLI"]));
   if (!installedEnabled) return processes;
   for (const ext of loadExtensionsManifest().extensions) {
+    if (Object.hasOwn(BUILT_IN_PACKAGES, ext.pkg)) continue;
     for (const process of extensionLocalProcesses(ext)) {
       if (process.controllerOnly) continue;
       const owner = owners.get(process.name);
@@ -175,6 +147,7 @@ export function overlayExtensions(reg: Registry, warn = (message: string) => con
   const owner = new Map<string, string>(); // command name or alias → "" for a builtin, else the owning ext pkg
   for (const cm of commands) for (const word of [cm.name, ...(cm.aliases ?? [])]) owner.set(word, "");
   for (const ext of loadExtensionsManifest().extensions) {
+    if (Object.hasOwn(BUILT_IN_PACKAGES, ext.pkg)) continue;
     for (const cached of ext.commands) {
       const words = [cached.name, ...(cached.aliases ?? [])];
       const clash = words.find((word) => owner.has(word));
@@ -189,21 +162,10 @@ export function overlayExtensions(reg: Registry, warn = (message: string) => con
         continue;
       }
       for (const word of words) owner.set(word, ext.pkg);
-      commands.push(ext.pkg === "@cotal-ai/web" && cached.name === "web" ? obsoleteWebCommand() : stubFor(ext, cached));
+      commands.push(stubFor(ext, cached));
     }
   }
   return commands;
-}
-
-/** An obsolete first-party descriptor is diagnostic only. Preserve normal collision ownership,
- *  but never import its old command, repair the installation, or suggest removing the dashboard. */
-function obsoleteWebCommand(): Command {
-  const refuse = (): never => { throw new CommandFailure("refused", "CONFLICT", "this installed dashboard still declares the retired web command; no package was loaded, removed or reinstalled", { remedy: "run `cotal update` to refresh the matching @cotal-ai/web service preset; then use `cotal service add web --preset web` with its explicit options" }); };
-  return { kind: "command", name: "web", hidden: true, rawArgs: true,
-    summary: "outdated dashboard descriptor; refresh it with `cotal update`",
-    flags: [jsonFlag, plainFlag], outputs: ["json", "plain"], prepareMeshTarget: false,
-    validate: refuse, run: refuse,
-  };
 }
 
 /** Swap an extension STUB for its live command: verify the version pin, import the package (it
@@ -231,6 +193,7 @@ export async function materializeExtensionCommand(stub: Command): Promise<Comman
 export async function materializeExtension<T extends Extension = Extension>(ref: ExtensionRef): Promise<T> {
   const registered = registry.all().find((ext) => ext.kind === ref.kind && ext.name === ref.name);
   if (registered) return registered as T;
+  if (registry.provides(ref.kind, ref.name)) return registry.load<T>(ref.kind, ref.name);
   if (!installedEnabled)
     throw new Error(`no ${ref.kind} registered for "${ref.name}" - import its integration in this composition root`);
   const skew = seededVersionSkew(ref);

@@ -53,13 +53,9 @@ import {
 } from "@cotal-ai/core";
 import { linearClusterArtifacts, linearCommandDefs, linearContractArtifactValues, LINEAR_COMMANDS } from "./contract.js";
 import type { LinearUpstream } from "./upstream.js";
+import { assertLinearEndpointName } from "./endpoint-name.js";
 
-/** A reverse-DNS endpoint name: at least two lowercase labels, as the operator configured it. */
-export function assertLinearEndpointName(name: string): string {
-  if (!/^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/.test(name) || name.length > 200)
-    throw new Error(`"${name}" is not a reverse-DNS endpoint name (for example com.example.linear); use a namespace you own`);
-  return name;
-}
+export { assertLinearEndpointName } from "./endpoint-name.js";
 
 /** An authorized, scoped serve bundle. `creds` returns the CURRENT serve credential and is read on
  *  every (re)connect, so a renewed credential is adopted without re-registering. */

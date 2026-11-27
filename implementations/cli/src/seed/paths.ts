@@ -15,7 +15,7 @@ import { connectorConfigDir, SEEDED_EXTENSIONS } from "@cotal-ai/workspace";
  * path, keyed by the binary's version so a `cotal-ai` upgrade lands a fresh generation.
  */
 
-/** The first-party seeded extensions, in a stable seed order: the connectors plus the web dashboard.
+/** The first-party seeded connectors, in a stable seed order.
  *  Keys of {@link SEEDED_EXTENSIONS}. */
 export const SEED_BUILTINS: readonly string[] = Object.keys(SEEDED_EXTENSIONS);
 

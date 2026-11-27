@@ -54,6 +54,7 @@ import {
 } from "@cotal-ai/workspace";
 import { c, stderrLine } from "./ui.js";
 import { debugFlag } from "./lib/debug-flag.js";
+import { builtInExtension } from "./lib/built-in-extension.js";
 import {
   commandSurface,
   isExtensionStub,
@@ -352,6 +353,7 @@ function skipsSeed(name: string, sub: string | undefined, argv: readonly string[
   // which replaces it) still seeds on first run.
   if (process.env.COTAL_SKIP_CONNECTOR_SEED === "1") return true;
   if (name === "ext" && (sub === "seed" || sub === "manifest")) return true;
+  if (name === "ext" && (sub === "add" || sub === "remove") && argv.some((word) => builtInExtension(word))) return true;
   if (name === "ext" && sub === "add" && isAuthenticSeedChild()) return true; // a seed child must not recurse
   // `agent-bearer` is machine-facing: a spawned seat execs it on EVERY bearer refresh to read one 0600
   // token file, exchange it, print the bearer and exit. It must not depend on or mutate the

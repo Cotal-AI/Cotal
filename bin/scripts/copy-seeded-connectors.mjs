@@ -26,6 +26,10 @@ const outRoot = join(binRoot, "seeded-connectors");
 // a skewed payload can never be published inside the umbrella and then installed as the current
 // generation (see verifyInstalled in seed/reconcile.ts for the install-time half of this guard).
 const umbrellaVersion = JSON.parse(readFileSync(join(binRoot, "package.json"), "utf8")).version;
+const webClient = join(repoRoot, "implementations", "web", "dist", "web", "index.html");
+if (!existsSync(webClient)) {
+  throw new Error("the dashboard client is not built - run `pnpm --filter @cotal-ai/web build` before packing cotal-ai");
+}
 
 rmSync(outRoot, { recursive: true, force: true });
 mkdirSync(outRoot, { recursive: true });
@@ -47,11 +51,6 @@ for (const [name, { pkg, srcDir: srcSubdir }] of Object.entries(SEEDED_EXTENSION
   }
   if (!existsSync(join(srcDir, "dist"))) {
     throw new Error(`first-party extension ${pkg} is not built (no dist at ${srcDir}) - run \`pnpm build\` before packing cotal-ai`);
-  }
-  // The dashboard's page is its own build step (vite) beside the server's tsc, so a dist holding the
-  // server alone is possible, and an install of it would answer 503 on its own front page.
-  if (pkg === "@cotal-ai/web" && !existsSync(join(srcDir, "dist", "web", "index.html"))) {
-    throw new Error(`first-party extension ${pkg} has no client build (no dist/web/index.html at ${srcDir}) - run \`pnpm --filter @cotal-ai/web build\` before packing cotal-ai`);
   }
   const tmp = mkdtempSync(join(tmpdir(), "cotal-seed-"));
   try {

@@ -1,4 +1,4 @@
-import { claimExtensionMutationLock, SEEDED_EXTENSIONS } from "@cotal-ai/workspace";
+import { BUILT_IN_PACKAGES, claimExtensionMutationLock, SEEDED_EXTENSIONS } from "@cotal-ai/workspace";
 import { operatorInstallDiffers } from "../seed/verify.js";
 import { c } from "../ui.js";
 import { installExtensionSet } from "./ext.js";
@@ -7,7 +7,7 @@ import type { UpdateRuntime } from "./update.js";
 
 /** Repair only installed npm packages at this release, without activating a new generation. */
 export async function repairOfflineExtensions(current: string, rt: UpdateRuntime, admit: () => Promise<boolean>): Promise<void> {
-  const builtIns = new Set(Object.values(SEEDED_EXTENSIONS).map(entry => entry.pkg));
+  const builtIns = new Set([...Object.keys(BUILT_IN_PACKAGES), ...Object.values(SEEDED_EXTENSIONS).map(entry => entry.pkg)]);
   const repairs = () => rt.extensions().flatMap(entry => {
     const spec = `${entry.pkg}@${current}`;
     return entry.pkg.startsWith("@cotal-ai/") && !builtIns.has(entry.pkg) && entry.version === current && entry.spec === spec

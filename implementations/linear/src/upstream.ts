@@ -54,6 +54,7 @@ import { contractDigest } from "@cotal-ai/core";
 import type { LinearAccount } from "./account.js";
 import { credentialFor, type LinearCredential } from "./oauth.js";
 import { linearMcpUrl, OriginRefusedError, RedirectRefusedError, pinnedFetch, ResponseTooLargeError } from "./origin.js";
+import { MAX_TIMEOUT_MS } from "./limits.js";
 
 export interface LinearLimits {
   /** Cap on one HTTP response body, checked before it is accumulated. */
@@ -94,7 +95,7 @@ export const DEFAULT_LIMITS: LinearLimits = {
   maxConcurrent: 8,
   maxQueued: 32,
   defaultTimeoutMs: 30_000,
-  maxTimeoutMs: 120_000,
+  maxTimeoutMs: MAX_TIMEOUT_MS,
   maxInventoryAgeMs: 15 * 60_000,
 };
 

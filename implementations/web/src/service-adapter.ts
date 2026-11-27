@@ -7,7 +7,7 @@ import {
   readDashboardPostingCredential, resolveNativeServiceTarget, serviceOperationId, serviceStartupPath, serviceWebSessionPath, validateServiceStartupPath,
   type LocalProcess, type ServicePreset, type WebSession,
 } from "@cotal-ai/workspace";
-import { normalizeWebHost, web, WEB_HOST, WEB_PORT } from "./web.js";
+import { normalizeWebHost, WEB_HOST, WEB_PORT } from "./registration.js";
 
 function exposure(host: unknown, port: unknown) {
   if (host !== undefined && typeof host !== "string" || port !== undefined && (typeof port !== "number" || !Number.isSafeInteger(port) || port < 1 || port > 65535)) throw new CommandFailure("refused", "SCHEMA_INVALID", "the dashboard exposure requires a public host and integer port from 1 to 65535");
@@ -84,6 +84,7 @@ const nativeWebServiceCommand: Command = {
   ], validate: validateChild,
   async run(args) {
     validateChild(args);
+    const { web } = await import("./web.js");
     const selected = target(String(args.values.root), String(args.values.space), String(args.values.server));
     const credsPath = String(args.values.creds), readyPath = String(args.values["ready-file"]);
     const instanceId = serviceOperationId(args.values["service-instance"]), launchRequestId = serviceOperationId(args.values["launch-request"]);

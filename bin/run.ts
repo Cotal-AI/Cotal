@@ -13,6 +13,7 @@
  * must never be the executable entry — importing it on an old Node crashes at parse time.
  */
 import { registry, type ExtensionRef } from "@cotal-ai/core";
+import { BUILT_IN_PACKAGES } from "@cotal-ai/workspace";
 import { handOverStartupInterrupt, releaseStartupInterrupt } from "./startup-interrupt.js";
 
 // Each surface self-registers when imported. The whole CLI imports them one after another in this
@@ -27,6 +28,9 @@ const surfaces = {
   docs: () => import("./docs.js"), // `docs`; the docs bundle loads only when `docs` runs
   mcp: () => import("./mcp.js"), // stock stdio gateway for hosts without a native connector
   daemon: () => import("./daemon/command.js"), // `daemon`: the local machine daemon's authenticated control endpoint (Linux)
+  acp: () => import("@cotal-ai/acp/register"),
+  linear: () => import("@cotal-ai/linear/register"),
+  web: () => import("@cotal-ai/web"),
   // The `ag-ui.frame` part renderer, so `cotal console` and `cotal join` draw an event frame instead
   // of `[unrenderable part kind "ag-ui.frame"]`.
   //
@@ -59,6 +63,9 @@ registry.provide({ provides: [{ kind: "registry-service", name: "builtin" }], lo
 registry.provide({ provides: commands("__service-unit"), load: () => import("@cotal-ai/cli/service-unit") });
 registry.provide({ provides: commands("daemon"), load: importing("daemon", "auth") });
 registry.provide({ provides: commands("mcp"), load: importing("mcp") });
+registry.provide({ provides: BUILT_IN_PACKAGES["@cotal-ai/acp"]!, load: importing("acp", "auth", "aguiRender") });
+registry.provide({ provides: BUILT_IN_PACKAGES["@cotal-ai/linear"]!, load: importing("linear", "auth") });
+registry.provide({ provides: BUILT_IN_PACKAGES["@cotal-ai/web"]!, load: importing("web", "auth") });
 
 // The dispatch module reads the command word as `runCli` will, and loads no command. A word a
 // provider declares imports that provider's surfaces; any other word imports them all.
@@ -75,8 +82,8 @@ const { installUpdateNotice } = await import("./update-notice.js");
 //
 // Bare `cotal` prints the entry screen; explicit `cotal setup` runs guided setup. The published binary is
 // the ONE composition root that loads operator-installed extensions (`cotal ext add …`) — commands,
-// runtimes, connectors, and local process components all self-register from those packages. Library
-// roots keep the explicit-import model.
+// runtimes, connectors, and local process components register through a scoped host. Library
+// roots compose their own providers explicitly.
 // The bundled app uses only stock daemon operations, never operator extension discovery or seeding.
 const desktopBridge = argv.length === 2 && argv[0] === "daemon" && argv[1] === "desktop";
 // The bundled reference must open even when the extension inventory needs repair.

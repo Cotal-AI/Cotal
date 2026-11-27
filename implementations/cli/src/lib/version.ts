@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
-import { c, cachedUpdateSummary, CorruptExtensionsManifestError, exitCode, isCommandFailure, logicalExecutionEntry, extensionProvides, loadExtensionsManifest, stderrLine, UnreadableConnectorSelection } from "@cotal-ai/workspace";
+import { BUILT_IN_PACKAGES, c, cachedUpdateSummary, CorruptExtensionsManifestError, exitCode, isCommandFailure, logicalExecutionEntry, extensionProvides, loadExtensionsManifest, stderrLine, UnreadableConnectorSelection } from "@cotal-ai/workspace";
 import { cliPackageRoot, cliVersion, installedCliVersion } from "../seed/paths.js";
 import { isNpx } from "./self-exec.js";
 import { readUpdatePending } from "./update-pending.js";
@@ -59,10 +59,11 @@ export function extensionVersions(): ExtensionVersion[] {
  *  report can say its list is incomplete rather than empty. */
 export function readExtensionVersions(): { versions: ExtensionVersion[]; unreadable?: string; unreadableSelection?: true; remedy?: string } {
   try {
-    const versions = loadExtensionsManifest().extensions.map((entry, index) => {
+    const versions = loadExtensionsManifest().extensions.flatMap((entry, index) => {
       if (!entry || typeof entry.pkg !== "string" || !entry.pkg || typeof entry.version !== "string" || !entry.version || !Array.isArray(entry.commands)) {
         throw new Error(`invalid extension inventory entry at index ${index}`);
       }
+      if (Object.hasOwn(BUILT_IN_PACKAGES, entry.pkg)) return [];
       const refs = extensionProvides(entry);
       if (!Array.isArray(refs) || refs.some((ref) => typeof ref?.name !== "string" || !ref.name)) {
         throw new Error(`invalid extension inventory entry at index ${index}: expected named contributions`);

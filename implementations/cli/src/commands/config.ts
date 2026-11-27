@@ -16,6 +16,7 @@ import {
   jsonFlag,
   knownHarnesses,
   loadExtensionsManifest,
+  BUILT_IN_PACKAGES,
   loadMeshes,
   loadPreparedSpaces,
   plainFlag,
@@ -248,7 +249,7 @@ function harnessProblem(value: string): string | undefined {
 
 /** The harnesses this workstation knows: the official connectors and the installed ones. */
 function harnessNames(): string[] {
-  return knownHarnesses(loadExtensionsManifest().extensions.flatMap((ext) => extensionProvides(ext).filter((ref) => ref.kind === "connector").map((ref) => ref.name)));
+  return knownHarnesses(loadExtensionsManifest().extensions.flatMap((ext) => Object.hasOwn(BUILT_IN_PACKAGES, ext.pkg) ? [] : extensionProvides(ext).filter((ref) => ref.kind === "connector").map((ref) => ref.name)));
 }
 
 /** A persona default is a catalog name or a persona file path, the two forms a launch resolves (a path

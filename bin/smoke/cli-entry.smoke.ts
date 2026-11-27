@@ -276,10 +276,10 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
     serviceHelp.status === 0 && serviceHelp.stderr === "" && /^cotal service$/m.test(serviceHelp.stdout)
     && /^Commands$/m.test(serviceHelp.stdout) && !/^  list\s/m.test(serviceHelp.stdout)
     && same(serviceHelp, serviceListHelp) && same(serviceHelp, cotal(["service", "list", "--help"])), shown(serviceListHelp));
-  // An official extension's command, before the extension is added, names the package to add.
-  const linearAdd = /^✗ no installed extension provides command "linear" - install it with `cotal ext add @cotal-ai\/linear`$/m;
-  refused("help linear without its extension names cotal ext add @cotal-ai/linear", cotal(["help", "linear"]), linearAdd);
-  refused("linear without its extension names the same package", cotal(["linear", "serve", "acct"]), linearAdd);
+  for (const name of ["acp", "linear"]) {
+    const help = cotal(["help", name]);
+    check(`help ${name} works without an installed extension`, help.status === 0 && help.stdout.includes(`cotal ${name}`), shown(help));
+  }
   // `docs` reads its page names from the bundled docs, so completion offers them offline.
   const pages = cotal(["__complete", "docs", ""], undefined, noSeed);
   check("docs completes its page names", pages.status === 0 && ["spec", "lang", "architecture"].every((page) => new RegExp(`^${page}(\\t|$)`, "m").test(pages.stdout)) && !/^--/m.test(pages.stdout), shown(pages));

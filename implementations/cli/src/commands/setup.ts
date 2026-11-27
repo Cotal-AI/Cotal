@@ -49,7 +49,7 @@ import {
   type Presentation,
   type Report,
 } from "@cotal-ai/workspace";
-import { OFFICIAL_CLIENT_APPS, OFFICIAL_RUNTIMES, OFFICIAL_RUNTIME_TOOLS, extensionNames, materializeExtension } from "../ext-loader.js";
+import { OFFICIAL_RUNTIMES, OFFICIAL_RUNTIME_TOOLS, extensionNames, materializeExtension } from "../ext-loader.js";
 import { agentSkillsHome, agentSkillsSkew, canonicalSkillsDir, installAgentSkills, type AgentSkillsResult } from "../lib/agent-skills.js";
 import { cliVersion } from "../lib/version.js";
 import { seedWriterKind } from "../seed/paths.js";
@@ -1312,31 +1312,12 @@ export async function refreshConnectorInstalls(report?: (line: string) => void, 
 }
 
 /**
- * Connects every ACP client on this machine to the space. An official client whose package is not
- * installed gets it added at this cotal's version when the application is found, the way an official
- * runtime is. Then each available client provider runs its own setup for the space. Each runs on its
- * own, so one that fails or does not load leaves the others set up and the result partial.
+ * Each available ACP client provider configures its own application. A failure leaves the other
+ * clients set up and the result partial.
  */
 async function setUpClients(space: string, narrate: boolean, interactive: boolean, log: SetupLog, wrote: (what: string, path: string) => void): Promise<{ ran: ActionRun[]; problems: Problem[] }> {
   const ran: ActionRun[] = [];
   const problems: Problem[] = [];
-  const installed = new Set(extensionNames("client-setup"));
-  const found = new Map<string, string[]>();
-  for (const [name, app] of Object.entries(OFFICIAL_CLIENT_APPS)) {
-    if (installed.has(name) || (!app.tools.some((tool) => resolveOnPath(tool)) && !app.dirs().some(isDir))) continue;
-    found.set(app.package, [...(found.get(app.package) ?? []), app.title]);
-  }
-  for (const [pkg, titles] of found) {
-    try {
-      // With --json or --plain, stdout carries the result alone.
-      await addExtension(`${pkg}@${cliVersion()}`, pkg, false, narrate ? console.log : (line) => console.error(line));
-    } catch (e) {
-      if (e instanceof ExtensionAddInterrupted) throw e;
-      problems.push({ message: `${titles.join(" and ")} ${titles.length === 1 ? "is" : "are"} on this computer, but ${pkg} did not install (${(e as Error).message.split("\n")[0]})`, remedy: `run \`cotal ext add ${pkg}\`, then run the same setup again` });
-      continue;
-    }
-    wrote(`${titles.join(" and ")} integration`, extensionPackageDir(pkg));
-  }
   for (const name of extensionNames("client-setup")) {
     let provider: ClientSetupProvider;
     try {
@@ -1354,9 +1335,8 @@ async function setUpClients(space: string, narrate: boolean, interactive: boolea
   return { ran, problems };
 }
 
-/** Run every installed client provider's refresh, so the entries an earlier setup wrote in each
- *  application run this cotal. `cotal update` calls it once the operator extensions are current, since
- *  a client provider ships in one. Returns one line per provider that declares a refresh; a refresh
+/** Run every client provider's refresh, so the entries an earlier setup wrote in each
+ *  application run this cotal. Returns one line per provider that declares a refresh; a refresh
  *  that fails throws. */
 export async function refreshClientInstalls(): Promise<string[]> {
   const lines: string[] = [];

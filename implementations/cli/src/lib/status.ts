@@ -1,5 +1,6 @@
 import { registry, type ClientSetupProvider, type Connector, type ConnectorSetupProvider, type ConnectorStatusRow, type ExtensionRef, type SignedInSpace } from "@cotal-ai/core";
-import { assertRecordIdentity, codeSpan, extensionConnectors, installedExtensionVersion, loadExtensionsManifest, localProcessPath, OFFICIAL_CONNECTORS, oneLine, parsePid, probeLiveness, readPidfile, readWebSession, webBoundUrl, serviceWebSessionPath, WEB_PIDFILE, WEB_SERVICE_ADAPTER, WEB_SESSION_FILE, type LocalProcessContext } from "@cotal-ai/workspace";
+import { assertRecordIdentity, codeSpan, extensionConnectors, loadExtensionsManifest, localProcessPath, OFFICIAL_CONNECTORS, oneLine, parsePid, probeLiveness, readPidfile, readWebSession, webBoundUrl, serviceWebSessionPath, WEB_PIDFILE, WEB_SERVICE_ADAPTER, WEB_SESSION_FILE, type LocalProcessContext } from "@cotal-ai/workspace";
+import { servicePresets } from "./service-presets.js";
 import { extensionNames, materializeExtension } from "../ext-loader.js";
 import { findNatsServer, natsServerProblem } from "./nats-bin.js";
 import { displayCmd } from "./self-exec.js";
@@ -66,11 +67,9 @@ export function recordedWebUrl(context: LocalProcessContext): string | undefined
   }
 }
 
-/** True when an installed extension contributes the `web` service preset and its package is on disk,
- * so `cotal service add --preset web` can configure the dashboard. A manifest or package record that
- * cannot be read throws, like every other reader. */
+/** Whether the service inventory exposes the dashboard preset. An unreadable inventory still throws. */
 export function webInstalled(): boolean {
-  return loadExtensionsManifest().extensions.some((e) => e.servicePresets?.some((preset) => preset.name === "web") === true && installedExtensionVersion(e.pkg) !== undefined);
+  return servicePresets().some(({ preset }) => preset.name === "web");
 }
 
 export interface MachineStatus {

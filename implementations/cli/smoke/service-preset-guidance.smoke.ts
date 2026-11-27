@@ -1,8 +1,8 @@
 /**
  * Preset flags and the absent-preset refusal, from metadata only. A boolean option whose schema
  * admits only true, such as the dashboard's explicit read-only intent, gets no `--no-` form, while
- * an ordinary boolean keeps both. A preset no provider declares refuses by name, and `web` names
- * the package that provides it, as `service start web` does.
+ * an ordinary boolean keeps both. An absent preset refuses by name. A library root without web
+ * does not recommend installing the dashboard separately.
  *
  * No broker, no provider code and no installed extension: the adapter and preset below are
  * registered in this process.
@@ -42,7 +42,7 @@ check("an ordinary boolean keeps both forms", names.includes("toggle") && names.
 
 const web = refusal(() => resolveServicePreset("web"));
 check("an absent web preset refuses by name", web?.code === "DEPENDENCY_UNAVAILABLE" && web.message.includes('named "web"'), web);
-check("...and names the package that provides it", web?.remedy?.includes("cotal ext add @cotal-ai/web") === true, web);
+check("...and lists the available presets without dashboard installation advice", web?.remedy?.includes("cotal svc") === true && !web.remedy.includes("ext add"), web);
 const other = refusal(() => resolveServicePreset("nosuchpreset"));
 check("any other absent preset refuses by name with the generic install route", other?.code === "DEPENDENCY_UNAVAILABLE" && other.message.includes('named "nosuchpreset"') && other.remedy?.includes("cotal ext add <package>") === true, other);
 

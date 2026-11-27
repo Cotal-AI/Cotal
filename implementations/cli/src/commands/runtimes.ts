@@ -1,5 +1,5 @@
 import { registry, type FlagSpec, type FlagValues, type ParsedArgs, type RuntimeProvider } from "@cotal-ai/core";
-import { extensionProvides, jsonFlag, loadExtensionsManifest, plainFlag, presentationOf, writeResult, type Report, type Styled } from "@cotal-ai/workspace";
+import { BUILT_IN_PACKAGES, extensionProvides, jsonFlag, loadExtensionsManifest, plainFlag, presentationOf, writeResult, type Report, type Styled } from "@cotal-ai/workspace";
 import { OFFICIAL_RUNTIMES, materializeExtension } from "../ext-loader.js";
 
 export const runtimesFlags = [jsonFlag, plainFlag] as const satisfies readonly FlagSpec[];
@@ -82,7 +82,7 @@ function partialSummary(loads: number, probes: number) {
  *  package name. */
 export function runtimeProviders(): Map<string, string | undefined> {
   const providers = new Map<string, string | undefined>();
-  for (const ext of loadExtensionsManifest().extensions)
+  for (const ext of loadExtensionsManifest().extensions.filter((entry) => !Object.hasOwn(BUILT_IN_PACKAGES, entry.pkg)))
     for (const ref of extensionProvides(ext)) if (ref.kind === "runtime") providers.set(ref.name, ext.pkg);
   for (const ext of registry.all()) if (ext.kind === "runtime" && !providers.has(ext.name)) providers.set(ext.name, undefined);
   return providers;

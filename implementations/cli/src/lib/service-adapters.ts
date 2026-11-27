@@ -1,5 +1,5 @@
 import { registry } from "@cotal-ai/core";
-import { CommandFailure, claimExtensionMutationLockAsync, extensionLocalProcesses, loadExtensionsManifest, serviceAdapterDeclaration, serviceMetadataDigest, validateServiceAdapterOptions, validateServiceAdapterPaths, verifiedExtensionServiceProcesses, type LocalProcess, type ServiceAdapterContext, type ServiceAdapterDeclaration, type ServiceAdapterLaunch, type ServiceAdapterReadiness, type ServiceAdapterHooks } from "@cotal-ai/workspace";
+import { BUILT_IN_PACKAGES, CommandFailure, claimExtensionMutationLockAsync, extensionLocalProcesses, loadExtensionsManifest, serviceAdapterDeclaration, serviceMetadataDigest, validateServiceAdapterOptions, validateServiceAdapterPaths, verifiedExtensionServiceProcesses, type LocalProcess, type ServiceAdapterContext, type ServiceAdapterDeclaration, type ServiceAdapterLaunch, type ServiceAdapterReadiness, type ServiceAdapterHooks } from "@cotal-ai/workspace";
 import { installedExtensionsEnabled, materializeExtension } from "../ext-loader.js";
 import { cliVersion } from "./version.js";
 
@@ -28,7 +28,7 @@ export interface LoadedServiceAdapter extends ResolvedServiceAdapter {
  *  a credential the stack's own stop removed is not something a stop needs (#7111). */
 export function resolveServiceAdapter(name: string, options: Readonly<Record<string, unknown>>, checkOptions = true, label?: (option: string) => string, registeredOnly = false): ResolvedServiceAdapter {
   const registered = registry.all<LocalProcess>("local-process").find((component) => component.name === name);
-  const owners = !registeredOnly && installedExtensionsEnabled() ? loadExtensionsManifest().extensions.filter((extension) => extensionLocalProcesses(extension).some((component) => component.name === name)) : [];
+  const owners = !registeredOnly && installedExtensionsEnabled() ? loadExtensionsManifest().extensions.filter((extension) => !Object.hasOwn(BUILT_IN_PACKAGES, extension.pkg) && extensionLocalProcesses(extension).some((component) => component.name === name)) : [];
   if (owners.length > 1) throw new CommandFailure("refused", "CONFLICT", "several installed packages claim this service adapter; no provider was chosen");
   const owner = owners[0];
   const cached = owner ? verifiedExtensionServiceProcesses(owner).find((component) => component.name === name) : registered;
@@ -36,7 +36,8 @@ export function resolveServiceAdapter(name: string, options: Readonly<Record<str
   if (owner?.pkg.startsWith("@cotal-ai/") && owner.version !== cliVersion()) throw new CommandFailure("refused", "CONFLICT", "the first-party service adapter and this CLI have different versions; run `cotal update` before use");
   const declaration = serviceAdapterDeclaration(JSON.parse(JSON.stringify(cached.service)));
   if (checkOptions) { validateServiceAdapterOptions(declaration, options, label); validateServiceAdapterPaths(declaration, options, label); }
-  const pin = { name, package: owner?.pkg ?? null, version: owner?.version ?? cliVersion(), declarationSha256: serviceMetadataDigest(declaration) };
+  const builtin = Object.entries(BUILT_IN_PACKAGES).find(([, refs]) => refs.some((ref) => ref.kind === "local-process" && ref.name === name))?.[0];
+  const pin = { name, package: owner?.pkg ?? builtin ?? null, version: owner?.version ?? cliVersion(), declarationSha256: serviceMetadataDigest(declaration) };
   if (registered && (!registered.service || serviceMetadataDigest(serviceAdapterDeclaration(registered.service)) !== pin.declarationSha256)) throw new CommandFailure("refused", "CONFLICT", "the loaded service provider disagrees with its cached declaration; no changed schema was silently adopted");
   return { pin, declaration };
 }
@@ -66,7 +67,7 @@ export async function loadServiceAdapter(expected: ResolvedServiceAdapter, optio
   // The controller has already published a starting intent. Uninstall scans those intents while
   // holding this same writer lock. Even a registered-provider short circuit cannot cross a remove
   // that scanned before our intent was written: recheck after that remover releases the lock.
-  const release = expected.pin.package === null ? undefined : await claimExtensionMutationLockAsync({ waitMs: 0, label: "service adapter launch validation" });
+  const release = expected.pin.package === null || Object.hasOwn(BUILT_IN_PACKAGES, expected.pin.package) ? undefined : await claimExtensionMutationLockAsync({ waitMs: 0, label: "service adapter launch validation" });
   try {
     const after = resolveServiceAdapter(expected.pin.name, options);
     if (!sameServiceAdapterPin(after.pin, expected.pin) || typeof provider.buildServiceLaunch !== "function" || typeof provider.checkServiceReadiness !== "function") throw new CommandFailure("refused", "CONFLICT", "the service adapter's live declaration or hooks do not match its reviewed metadata");

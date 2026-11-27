@@ -33,6 +33,7 @@ import {
   loadExtensionsManifest,
   provenance,
   SEEDED_EXTENSIONS,
+  BUILT_IN_PACKAGES,
   type InstalledExtension,
   targetFlags,
   recoveryDisposition,
@@ -218,7 +219,7 @@ export const updateRuntime: UpdateRuntime = {
     if (process.platform !== "linux") return false;
     if (!seedInstallationCurrent()) return false;
     try {
-      const builtIns = new Set(Object.values(SEEDED_EXTENSIONS).map(entry => entry.pkg));
+      const builtIns = new Set([...Object.keys(BUILT_IN_PACKAGES), ...Object.values(SEEDED_EXTENSIONS).map(entry => entry.pkg)]);
       return updateRuntime.extensions().filter(entry => entry.pkg.startsWith("@cotal-ai/") && !builtIns.has(entry.pkg))
         .every(entry => operatorInstallDiffers(entry, cliVersion()) === undefined);
     } catch { return false; }
@@ -742,10 +743,8 @@ async function updateOperatorExtensions(rt: UpdateRuntime, current: string): Pro
   rt.out(c.bold("Operator extensions"));
   let entries: readonly InstalledExtension[];
   try {
-    // Exclude every seeded built-in (the connectors AND the bundled web dashboard) — runSeed already
-    // reconciled them from the bundled store; letting web fall through here reinstalls it from npm on
-    // top of the seed, drops its seeded marker, and makes `cotal update` fail offline on a bundled pkg.
-    const builtIns = new Set(Object.values(SEEDED_EXTENSIONS).map((e) => e.pkg));
+    // Seeded connectors use the bundled store. The other built-ins ship in the CLI itself.
+    const builtIns = new Set([...Object.keys(BUILT_IN_PACKAGES), ...Object.values(SEEDED_EXTENSIONS).map((e) => e.pkg)]);
     entries = rt.extensions().filter((entry) => !builtIns.has(entry.pkg));
   } catch (e) {
     rt.err(c.red(`✗ could not read installed extensions: ${message(e)}`));

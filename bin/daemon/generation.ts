@@ -2,7 +2,7 @@
 import { spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { connectorConfigDir, deferredUpdateActivation, loadExtensionsManifest, logicalExecutionEntry, updateActivationBlocked } from "@cotal-ai/workspace";
+import { BUILT_IN_PACKAGES, connectorConfigDir, deferredUpdateActivation, loadExtensionsManifest, logicalExecutionEntry, updateActivationBlocked } from "@cotal-ai/workspace";
 import { observeExecutionVersion, selectExecutionProgram } from "../cotal.js";
 import { fileURLToPath } from "node:url";
 
@@ -26,7 +26,7 @@ export async function reconcileHostedConnectors(version: string): Promise<void> 
   if (installed !== version) throw new ReplacedDaemonGeneration(version, installed);
   try {
     const stamp = JSON.parse(readFileSync(join(connectorConfigDir(), "seed", "stamp.json"), "utf8"));
-    const skewed = loadExtensionsManifest().extensions.some((entry) => entry.pkg.startsWith("@cotal-ai/") && entry.version !== version);
+    const skewed = loadExtensionsManifest().extensions.some((entry) => entry.pkg.startsWith("@cotal-ai/") && !Object.hasOwn(BUILT_IN_PACKAGES, entry.pkg) && entry.version !== version);
     if (stamp?.generation === version && !skewed) return;
   } catch (error) {
     if (!(error instanceof SyntaxError) && (error as NodeJS.ErrnoException).code !== "ENOENT") throw error;

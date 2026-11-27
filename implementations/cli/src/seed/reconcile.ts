@@ -8,6 +8,7 @@ import {
   waitForUpdateClosure,
   CorruptExtensionPackageError,
   CorruptExtensionsManifestError,
+  BUILT_IN_PACKAGES,
   SEEDED_EXTENSIONS,
   bindExtensionPeers,
   connectorConfigDir,
@@ -30,6 +31,7 @@ import { c } from "../ui.js";
 import { selfArgv, verifiedCotalExecutables } from "../lib/self-exec.js";
 import { claimExtensionMutation } from "../lib/ext-mutation.js";
 import { recoverExtensionPromotion } from "../lib/extension-stage.js";
+import { builtInRetirementsCurrent, builtInRetirementSpecs, retireBuiltInPackages } from "./builtin-retire.js";
 import { exitInterrupted, handOverStartupNotice, INTERRUPT_SIGNALS, type InterruptSignal } from "../lib/interrupt-notice.js";
 import { assertReleasedSeedWriter, entryScript, isValidSemver, parseSemver, SEED_BUILTINS, seedDir, seedGeneration, seedStoreDir, seedStorePath, stampPath } from "./paths.js";
 import {
@@ -124,7 +126,7 @@ export function seedInstallationCurrent(): boolean {
   try {
     const generation = seedGeneration();
     if (readCursor() || readRecovery() || seedChildStatus().kind !== "none" || reconcileLockActive()) return false;
-    if (!readWitness() || !authorityIntact() || !builtinsAccounted() || !builtinsMetadataCurrent() || readStamp()?.generation !== generation) return false;
+    if (!readWitness() || !authorityIntact() || !builtinsAccounted() || !builtinsMetadataCurrent() || !builtInRetirementsCurrent() || readStamp()?.generation !== generation) return false;
     const entries = SEED_BUILTINS.map(name => ({ name, entry: installedEntry(name) }));
     if (entries.some(({ entry }) => entry !== undefined) && prefixLockDiffers() !== undefined) return false;
     return entries.every(({ name, entry }) => entry === undefined ||
@@ -236,7 +238,7 @@ async function reconcileUnderClosure(mode: Mode, automatic: boolean, resumeFirst
         }
         if (!resumeFirstSeed || !interruptedFirstSeed(cursor, generation)) throw seedRepairRefusal(cursor, generation);
       }
-    } else if (readWitness() && authorityIntact() && builtinsAccounted() && builtinsMetadataCurrent() && officialExtensionsCurrent(generation) && readStamp()?.generation === generation && !reconcileLockActive()) {
+    } else if (readWitness() && authorityIntact() && builtinsAccounted() && builtinsMetadataCurrent() && officialExtensionsCurrent(generation) && builtInRetirementsCurrent() && readStamp()?.generation === generation && !reconcileLockActive()) {
       // Steady state AND no reconcile in flight. The lock check is LAST (immediately before NOOP) so
       // it is the linearization point: a `--force` that link-publishes the lock during the slower
       // health/stamp reads is still caught here, and we fall through to acquire/wait rather than
@@ -407,7 +409,7 @@ function officialExtensionsCurrent(generation: string): boolean {
   try {
     const builtIns = new Set(Object.values(SEEDED_EXTENSIONS).map((entry) => entry.pkg));
     return loadExtensionsManifest().extensions.every(
-      (entry) => !entry.pkg.startsWith("@cotal-ai/") || builtIns.has(entry.pkg) || operatorPackageDiffers(entry, generation) === undefined,
+      (entry) => !entry.pkg.startsWith("@cotal-ai/") || builtIns.has(entry.pkg) || Object.hasOwn(BUILT_IN_PACKAGES, entry.pkg) || operatorPackageDiffers(entry, generation) === undefined,
     );
   } catch {
     return false;
@@ -486,11 +488,13 @@ async function runUnderLocks(mode: Mode, generation: string, nonce: string, refr
     readWitness() &&
     builtinsMetadataCurrent() &&
     officialExtensionsCurrent(generation) &&
+    builtInRetirementsCurrent() &&
     readStamp()?.generation === generation &&
     SEED_BUILTINS.every((name) => everSeeded.has(name))
   )
     return NOOP;
 
+  await retireBuiltInPackages();
   const stampGen = readStamp()?.generation;
   const migrationFrom =
     mode !== "reset" &&
@@ -597,7 +601,7 @@ async function runUnderLocks(mode: Mode, generation: string, nonce: string, refr
 
   const builtIns = new Set(Object.values(SEEDED_EXTENSIONS).map((entry) => entry.pkg));
   const operators = mode === "reset" ? [] : loadExtensionsManifest().extensions.filter((entry) =>
-    entry.pkg.startsWith("@cotal-ai/") && !builtIns.has(entry.pkg) && (
+    entry.pkg.startsWith("@cotal-ai/") && !builtIns.has(entry.pkg) && !Object.hasOwn(BUILT_IN_PACKAGES, entry.pkg) && (
       mode === "verify"
         ? operatorInstallDiffers(entry, generation) !== undefined
         : mode === "force" || (mode === "repair" && repairAllSeeded) || operatorPackageDiffers(entry, generation) !== undefined
@@ -650,7 +654,7 @@ async function runUnderLocks(mode: Mode, generation: string, nonce: string, refr
   clearRecovery();
   gcSeedStore(
     generation,
-    loadExtensionsManifest().extensions.map((e) => e.spec),
+    [...loadExtensionsManifest().extensions.map((e) => e.spec), ...builtInRetirementSpecs()],
   );
   return { noop: false, seeded, refreshed, verified, removedKept };
 }
@@ -662,7 +666,7 @@ export function deferredSeedRefusal(): Error | undefined {
   const generation = seedGeneration();
   let current = false;
   try {
-    current = !readCursor() && !recoveryPending() && !!readWitness() && authorityIntact() && builtinsAccounted() && builtinsMetadataCurrent() && officialExtensionsCurrent(generation) && readStamp()?.generation === generation;
+    current = !readCursor() && !recoveryPending() && !!readWitness() && authorityIntact() && builtinsAccounted() && builtinsMetadataCurrent() && officialExtensionsCurrent(generation) && builtInRetirementsCurrent() && readStamp()?.generation === generation;
   } catch {
     current = false; // unreadable seed state: the deferred reconcile reports it
   }

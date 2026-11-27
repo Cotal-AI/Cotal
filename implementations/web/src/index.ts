@@ -1,7 +1,6 @@
 import { registry } from "@cotal-ai/core";
-import { webProcess } from "./web.js";
+import { webProcess } from "./registration.js";
 import "./service-adapter.js";
 
-// Keep the old process observation/removal descriptor for existing instances. New launches use
-// the service preset; importing this package no longer registers a competing web command.
+// Direct process observation uses the PID descriptor. New launches use the service preset.
 registry.register(webProcess);
