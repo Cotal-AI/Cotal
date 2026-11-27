@@ -10,7 +10,7 @@ import {
   waitForDeliveryLease,
   deliveryLeaseHolderFor,
 } from "@cotal-ai/core";
-import { DELIVERY_PROCESS, DELIVERY_CREDS_KIND, DELIVERY_LOGFILE, DELIVERY_PIDFILE, authDir, canonicalLocalProcessPath, commandIsCotalDelivery, deliveryCredsKey, findCotalRoot, getSpaceAuth, listSpaceAccounts, localProcessPath, parsePid, probeLiveness, readProcessCommand, readProcessRecord, reclaimDeadPreUpgradeRecord, segmentedKey, stopReservationPath, type LivenessProbe, type LocalProcessContext, type ProcessRecord, type ProcessRecordState, workspaceSecretStore, writePidPair } from "@cotal-ai/workspace";
+import { DELIVERY_PROCESS, DELIVERY_CREDS_KIND, DELIVERY_LOGFILE, DELIVERY_PIDFILE, DAEMON_ENDPOINT_BOOTSTRAPS, authDir, bootstrapDaemonEndpoint, canonicalLocalProcessPath, commandIsCotalDelivery, deliveryCredsKey, findCotalRoot, getSpaceAuth, listSpaceAccounts, localProcessPath, parsePid, probeLiveness, readProcessCommand, readProcessRecord, reclaimDeadPreUpgradeRecord, segmentedKey, stopReservationPath, type LivenessProbe, type LocalProcessContext, type ProcessRecord, type ProcessRecordState, workspaceSecretStore, writePidPair } from "@cotal-ai/workspace";
 import { daemonArgv, displayCmd } from "./self-exec.js";
 import { resolveRuntimeSpace } from "./status.js";
 import { cotalRoot } from "./paths.js";
@@ -49,7 +49,9 @@ const deliveryCredsKeysToClear = (space: string) => [segmentedKey(DELIVERY_CREDS
  *  the launch (foreground `up`) can act on it.
  *  `open` is the mesh's mode, decided by the caller. An open mesh runs no delivery daemon, whatever
  *  trust material the root still holds from an earlier static stack. */
-type Opts = { space?: string; server?: string; tls?: boolean; open?: boolean; spawn?: string[]; runtime?: string; launch?: string; attachHost?: string; resumeAttempt?: string; resumeCommit?: { path: string; sha256: string }; wsPort?: number; maxSessions?: number; managerName?: string; managerSeatCap?: ManagerStartOpts["managerSeatCap"]; noManager?: boolean; onDeliveryExit?: (code: number | null, signal: NodeJS.Signals | null) => void };
+type Opts = { space?: string; server?: string; tls?: boolean; open?: boolean; spawn?: string[]; runtime?: string; launch?: string; attachHost?: string; resumeAttempt?: string; resumeCommit?: { path: string; sha256: string }; wsPort?: number; maxSessions?: number; managerName?: string; managerSeatCap?: ManagerStartOpts["managerSeatCap"]; noManager?: boolean; onDeliveryExit?: (code: number | null, signal: NodeJS.Signals | null) => void;
+  /** Endpoints the delivery daemon also serves (`cotal up --serve`). Not given: none. */
+  serve?: readonly string[] };
 
 /** The recorded daemon, attributed by {@link readProcessRecord} to a `cotal deliver` process.
  *  Same order as {@link managerRecordState}: the space and root, then the test seams. */
@@ -210,6 +212,7 @@ export function startDeliveryDetached(o: Opts = {}): number {
     // because it still upgrades on the server's INFO. It holds a STANDING credential and reconnects
     // unattended, so that exposure would repeat on every reconnect with nobody watching.
     ...(o.tls ? ["--tls"] : []),
+    ...(o.serve?.length ? ["--serve", o.serve.join(",")] : []),
   ];
   // Internal child re-exec (the `up` that reached here already seeded); the delivery daemon does not
   // launch agents, so it skips the connector seed on boot (a direct `cotal deliver` still seeds).
@@ -384,6 +387,18 @@ export async function ensureDelivery(
         `  This does not time out on its own: the boot durable joins retry with backoff and WILL reconcile when the responder binds, however long that takes, and agents rejoin WITHOUT being respawned.\n` +
         `  Check it with \`${displayCmd()} status --components\` (delivery row) and read ${canonicalLocalProcessPath(DELIVERY_LOGFILE, ctx(space))} for the daemon's own reason.`,
     );
+  // The endpoints asked for (plan section 2, E1): the daemon is up and answers delivery-admin, so the
+  // registration barrier has its eviction oracle. Register each one, hand the daemon its credentials,
+  // and write `ready` on the daemon's proof. A failure is loud and the caller hears it: an asked-for
+  // endpoint that did not bind is never reported as served.
+  if (o.serve?.length) {
+    if (!ready) throw new Error(`the delivery daemon's responder is not bound, so ${o.serve.join(", ")} cannot be registered; nothing was served`);
+    for (const name of o.serve) {
+      const spec = DAEMON_ENDPOINT_BOOTSTRAPS[name];
+      if (spec === undefined) throw new Error(`--serve ${name}: the delivery daemon serves only ${Object.keys(DAEMON_ENDPOINT_BOOTSTRAPS).join(", ")}`);
+      await bootstrapDaemonEndpoint({ auth, servers: server, space, tls: o.tls === true, store: credsStore(), log: (line) => console.error(line) }, spec());
+    }
+  }
   // The caller hears WHICH of the two states it got. `running` still means "a daemon process is
   // there" (unchanged for every existing caller), but a caller that needs the responder — anything
   // that is about to spawn, retire or join — can now ask instead of assuming, which it could not do
