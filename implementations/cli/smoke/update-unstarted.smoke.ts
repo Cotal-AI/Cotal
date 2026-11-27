@@ -3,22 +3,80 @@ import "./update-isolation.js";
 import nodeAssert from "node:assert/strict";
 import { assertSmokeSandboxDown, countedAssert, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { once } from "node:events";
-import { chmodSync, chownSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, rmdirSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, chownSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, rmdirSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer, type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { createSpaceAuth } from "@cotal-ai/core";
 import type { MeshTarget } from "@cotal-ai/workspace";
 import { isStoppedLocalMesh, readManagerContinuity } from "../src/commands/update.js";
-import { assertRecordIdentity, authDir, clearCurrent, findPreparedSpace, localProcessPath, MANAGER_PIDFILE, meshFile, parsePid, readCurrent, recordMesh, recordPreparedSpace, removeMesh, saveSpaceAuth, setCurrent, spaceKey, writeUpdateRecovery } from "@cotal-ai/workspace";
+import { assertRecordIdentity, authDir, clearCurrent, clearUpdateRecovery, findPreparedSpace, localProcessPath, MANAGER_PIDFILE, meshFile, parsePid, readCurrent, recordMesh, recordPreparedSpace, removeMesh, saveSpaceAuth, setCurrent, spaceKey, writeUpdateRecovery } from "@cotal-ai/workspace";
 import { writeStackJournal, STACK_ROLES, type StackJournal } from "../src/lib/stack-journal.js";
 import { serviceInstances, serviceInstanceStore, processServiceHost, requireProcessIdentity } from "../src/lib/service-instances.js";
 import { SEED_BUILTINS } from "../src/seed/paths.js";
 
 const counted = countedAssert(nodeAssert);
 const assert: typeof nodeAssert = counted.assert;
+
+function checkForeignLaunch(bin: string, cwd: string, space: string, version: string, env: NodeJS.ProcessEnv & { XDG_CONFIG_HOME: string }): void {
+  if (process.platform !== "linux" && process.platform !== "darwin") return;
+  const scratch = realpathSync.native(mkdtempSync(join(cwd, "foreign-launch-")));
+  const base = join(env.XDG_CONFIG_HOME, "cotal");
+  const target = "9.8.7", id = "a".repeat(32);
+  const metadata = { name: "cotal-ai", type: "module", version, bin: { cotal: "./dist/cotal.js" } };
+  function prefix(name: string) {
+    const lib = join(scratch, name, "lib"), installed = join(lib, "node_modules/cotal-ai"), entry = join(installed, "dist/cotal.js");
+    mkdirSync(installed, { recursive: true, mode: 0o700 });
+    writeFileSync(join(installed, "package.json"), JSON.stringify(metadata));
+    cpSync(dirname(bin), dirname(entry), { recursive: true });
+    symlinkSync(resolve(bin, "../../node_modules"), join(installed, "node_modules"), "dir");
+    const key = createHash("sha256").update(entry).digest("hex");
+    const set = join(base, "installs", key, "sets", version), config = join(set, "cotal");
+    const seed = join(config, "seed");
+    mkdirSync(seed, { recursive: true, mode: 0o700 });
+    writeFileSync(join(set, "selection.json"), JSON.stringify({ v: 1, entry, version, root: config }), { mode: 0o600 });
+    writeFileSync(join(seed, "authority.json"), JSON.stringify({ everSeeded: SEED_BUILTINS }), { mode: 0o600 });
+    writeFileSync(join(seed, "witness.json"), JSON.stringify({ initialized: true, firstGeneration: version }), { mode: 0o600 });
+    writeFileSync(join(seed, "stamp.json"), JSON.stringify({ generation: version }), { mode: 0o600 });
+    const store = join(lib, ".cotal-generations"), execution = join(store, ".transaction-smoke", "execution.json");
+    const snapshot = join(config, ".update-snapshot-smoke");
+    mkdirSync(dirname(execution), { recursive: true, mode: 0o700 });
+    mkdirSync(snapshot, { mode: 0o700 });
+    writeFileSync(execution, JSON.stringify({ v: 1, installed, previous: { manifest: JSON.stringify(metadata), bootstrap: "", descriptor: null },
+      target: { id, version: target, root: join(store, id, "cotal-ai"), inventorySha256: "a".repeat(64) } }), { mode: 0o600 });
+    return { entry, execution, snapshot };
+  }
+  const a = prefix("a"), b = prefix("b");
+  const launch = (entry: string) => spawnSync(process.execPath, [entry, "spawn", "default", "--space", space, "--detach", "--plain"], {
+    cwd, env: { ...env, COTAL_SKIP_CONNECTOR_SEED: "0" }, encoding: "utf8", timeout: 45_000,
+  });
+  const noRecovery = /an interrupted update needs restoration/;
+  const abandoned = { previous: version, installed: version, target, phase: "replacing" as const, reason: "interrupted update",
+    owner: { pid: 2147483647, start: "dead-start", nonce: "old-owner" }, execution: b.execution, snapshot: b.snapshot };
+  const refuse = (entry: string, record: typeof abandoned, label: string) => {
+    writeUpdateRecovery(record);
+    const result = launch(entry);
+    const output = result.stdout + result.stderr;
+    assert.equal(result.status, 2, `${label}: ${output}`);
+    assert.match(output, noRecovery, label);
+    assert.doesNotMatch(output, /Managed launch/, label);
+  };
+  try {
+    writeUpdateRecovery(abandoned);
+    const recovery = join(env.COTAL_HOME!, "update-recovery.json"), before = readFileSync(recovery);
+    const allowed = launch(a.entry), output = allowed.stdout + allowed.stderr;
+    assert.match(output, /Managed launch/, output);
+    assert.match(output, /not found|unavailable|Original request|Agent started/i, output);
+    assert.doesNotMatch(output, noRecovery);
+    assert.deepEqual(readFileSync(recovery), before, "dispatch leaves the foreign record unchanged");
+    refuse(b.entry, abandoned, "the owning installation still blocks");
+    refuse(a.entry, { ...abandoned, execution: join(scratch, "absent") }, "missing journal blocks");
+    refuse(a.entry, { ...abandoned, snapshot: a.snapshot }, "disagreeing owners block");
+    refuse(a.entry, { ...abandoned, snapshot: join(base, ".update-snapshot-legacy") }, "unscoped snapshot blocks");
+  } finally { clearUpdateRecovery(); }
+}
 
 function offlineUpdateFixture(bin: string, cwd: string, version: string, env: NodeJS.ProcessEnv) {
   const scratch = mkdtempSync(join(cwd, "inaccessible-update-"));
@@ -419,6 +477,7 @@ try {
     assert.equal(up.status, 0, `${up.stdout}\n${up.stderr}`);
     checkInaccessibleUpdate(bin, other, controllerProject, controllerSpace, version, env);
     checkDeniedManagerUpdate(bin, other, controllerProject, controllerSpace, version, env, "static");
+    checkForeignLaunch(bin, controllerProject, controllerSpace, version, env);
     expectSuccess(["send", "-c", "general", "broker still running after update"]);
     expectSuccess(["down", "--yes"]);
     started = false;

@@ -6,6 +6,7 @@ import {
   CommandFailure,
   claimUpdateClosureAccess,
   waitForUpdateClosure,
+  waitForLocalLaunchClosure,
   CorruptExtensionPackageError,
   CorruptExtensionsManifestError,
   SEEDED_EXTENSIONS,
@@ -115,8 +116,8 @@ export class SeedChildFailure extends Error {
 }
 
 /** Auto reconcile for the boot gate: silent no-op when the stamp is current and healthy. */
-export async function reconcileSeededConnectors(resumeFirstSeed = false): Promise<void> {
-  await reconcile("auto", true, resumeFirstSeed);
+export async function reconcileSeededConnectors(resumeFirstSeed = false, localLaunch?: () => boolean): Promise<void> {
+  await reconcile("auto", true, resumeFirstSeed, false, localLaunch);
 }
 
 /** Whether the seed journal, authority, installed built-in payloads and shared peers need no repair. */
@@ -169,8 +170,13 @@ export async function runSeed(flags: SeedFlags, selfUpdate = false): Promise<voi
 
 const NOOP: ReconcileResult = { noop: true, seeded: [], refreshed: [], verified: [], removedKept: [] };
 
-async function reconcile(mode: Mode, automatic = false, resumeFirstSeed = false, selfUpdate = false): Promise<ReconcileResult> {
-  if (waitForUpdateClosure()) {
+async function reconcile(mode: Mode, automatic = false, resumeFirstSeed = false, selfUpdate = false, localLaunch?: () => boolean): Promise<ReconcileResult> {
+  let readOnlyLaunch = false;
+  const waited = localLaunch ? waitForLocalLaunchClosure(() => {
+    readOnlyLaunch = localLaunch() && seedInstallationCurrent() && officialExtensionsCurrent(seedGeneration());
+    return readOnlyLaunch;
+  }) : waitForUpdateClosure();
+  if (waited) {
     if (process.env.COTAL_UPDATE_REEXEC === "1") throw new Error("another Cotal update finished while this command waited; run the command again");
     console.error("Cotal update finished; restarting command with the installed CLI");
     const child = spawn(process.execPath, process.argv.slice(1), { env: { ...process.env, COTAL_UPDATE_REEXEC: "1" }, stdio: "inherit", windowsHide: true });
@@ -185,6 +191,7 @@ async function reconcile(mode: Mode, automatic = false, resumeFirstSeed = false,
     if (result.signal) { process.kill(process.pid, result.signal); await new Promise(() => {}); }
     process.exit(result.code ?? 1);
   }
+  if (readOnlyLaunch) return NOOP;
   return reconcileUnderClosure(mode, automatic, resumeFirstSeed, selfUpdate);
 }
 

@@ -107,8 +107,8 @@ export class SeatCustody {
   /** Spawn under a reserved reference and prove the runtime honoured it. A runtime that minted its
    *  own id instead would leave every durable record addressing a seat that does not exist, so the
    *  mismatch tears the new seat down and throws rather than returning an unaddressable handle. */
-  async spawnCustodied(runtime: Runtime, name: string, spec: LaunchSpec, cwd: string, reserved: RuntimeReference | undefined): Promise<AgentHandle> {
-    const holder = retainConnectorSeat(this.managerInstanceId, name);
+  async spawnCustodied(runtime: Runtime, name: string, spec: LaunchSpec, cwd: string, reserved: RuntimeReference | undefined, localLaunch = false): Promise<AgentHandle> {
+    const holder = retainConnectorSeat(this.managerInstanceId, name, localLaunch);
     const handle = runtime.spawn(name, spec, cwd, reserved);
     this.deps.watchConnectorHolder(handle, holder);
     if (reserved === undefined) return handle;
