@@ -175,6 +175,12 @@ const args=process.argv.slice(2);
 const enablement=()=>fs.readFileSync(${JSON.stringify(unitStateFile)},'utf8').trim();
 const get=(op)=>fetch('http://127.0.0.1:${port}/'+op);
 if(args.join(' ')==='--user show-environment'){console.log(${JSON.stringify(`XDG_CONFIG_HOME=${join(root, "config")}`)});process.exit(0)}
+if(args.join(' ')==='--user --no-ask-password --no-pager show * --all --property=Id,NeedDaemonReload'){
+  const ownReload=fs.existsSync(${JSON.stringify(join(root, "need-daemon-reload"))})?'yes':'no';
+  const otherReload=fs.existsSync(${JSON.stringify(join(root, "other-unit-need-reload"))})?'yes':'no';
+  console.log('Id=cotal-daemon.service\\nNeedDaemonReload='+ownReload+'\\n\\nId=other-user.service\\nNeedDaemonReload='+otherReload);
+  process.exit(0);
+}
 if(args.join(' ')==='--user --no-ask-password --no-pager show cotal-daemon.service --property=UnitFileState --value'){console.log(enablement());process.exit(0)}
 if(args.includes('show') && args.includes('cotal-daemon.service')) {
   get('show').then(r=>r.text()).then(pid => {
@@ -310,7 +316,7 @@ try {
     const ownerReport = `machine daemon: the background service belongs to another Cotal installation (${otherEntry}). This update did not start or stop it.`;
     if (process.argv.includes("--setup-foreign")) {
       if (calls.length || !output.includes("TARGET_NOT_FOUND") || after.result.version !== "0.0.0") throw new Error("R2-4 compatible foreign setup restarted the daemon");
-    } else if (calls.length || !output.includes(`${ownerReport} The daemon is running Cotal 0.0.0.`)) throw new Error("R2-4 update restarted or failed to identify the running foreign installation");
+    } else if (calls.length || !output.includes("machine daemon: cotal-daemon.service left unchanged (the service belongs to another Cotal installation); Cotal did not update or reload OOMPolicy") || !output.includes(`${ownerReport} The daemon is running Cotal 0.0.0.`)) throw new Error("R2-4 update restarted or failed to identify the running foreign installation");
     console.log("PASS R2-4 foreign installation is left running");
     if (!process.argv.includes("--setup-foreign")) {
       await old.close();
@@ -357,13 +363,12 @@ try {
         }
         console.log(`PASS ${nonEnabledState} owned daemon left stopped and reported by update --self`);
       }
-      // Failed daemon-reload during shipped `cotal update` keeps exit 0, prints one concise warning line, and retries daemon-reload on the next `cotal update` when nothing else is pending.
+      // Another loaded user unit with NeedDaemonReload=yes during shipped `cotal update` skips rewrite + daemon-reload, exits 0, and prints one skip line.
       writeFileSync(unitStateFile, "enabled\n", { mode: 0o600 });
       writeFileSync(loadedOomPolicyFile, "stop\n", { mode: 0o600 });
       writeFileSync(unitPath, bytes, { mode: 0o600 });
       writeFileSync(join(paths.state, "service-unit.json"), JSON.stringify({ v: 1, unit: "cotal-daemon.service", unitPath, unitSha256: createHash("sha256").update(bytes).digest("hex"), installedAt: new Date().toISOString() }), { mode: 0o600 });
-      writeFileSync(join(root, "fail-daemon-reload"), "1", { mode: 0o600 });
-      calls.length = 0;
+      writeFileSync(join(root, "other-unit-need-reload"), "1", { mode: 0o600 });
       const runShipped = async (cliArgs: string[]) => {
         const c = spawn(process.execPath, [join(repo, "bin/dist/cotal.js"), ...cliArgs], { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] });
         let stdout = "", stderr = "";
@@ -372,6 +377,17 @@ try {
         const exitCode = await new Promise<number | null>(resolve => c.once("exit", resolve));
         return { code: exitCode, stdout, stderr, output: stdout + stderr };
       };
+      calls.length = 0;
+      const otherPendingUpdate = await runShipped(["update"]);
+      rmSync(join(root, "other-unit-need-reload"));
+      const otherPendingLines = otherPendingUpdate.output.split("\n").filter(line => line === "machine daemon: cotal-daemon.service left unchanged (another user unit has a pending reload); Cotal did not update or reload OOMPolicy");
+      if (otherPendingUpdate.code !== 0 || otherPendingLines.length !== 1 || calls.includes("/daemon-reload") || readFileSync(unitPath, "utf8") !== bytes || readFileSync(loadedOomPolicyFile, "utf8").trim() !== "stop") {
+        throw new Error(`another unit pending reload was not skipped cleanly with one line: ${JSON.stringify({ otherPendingUpdate, otherPendingLines, calls })}`);
+      }
+      console.log("PASS another loaded user unit pending reload skips rewrite and daemon-reload with one skip line");
+      // Failed daemon-reload during shipped `cotal update` keeps exit 0, prints one concise warning line, and retries daemon-reload on the next `cotal update` when nothing else is pending.
+      writeFileSync(join(root, "fail-daemon-reload"), "1", { mode: 0o600 });
+      calls.length = 0;
       const failedReload = await runShipped(["update"]);
       const warningLines = failedReload.output.split("\n").filter(line => line.includes("updated with OOMPolicy=continue, but systemctl --user daemon-reload failed"));
       if (failedReload.code !== 0 || warningLines.length !== 1 || !calls.includes("/daemon-reload") || !readFileSync(unitPath, "utf8").includes("OOMPolicy=continue") || readFileSync(loadedOomPolicyFile, "utf8").trim() !== "stop") {

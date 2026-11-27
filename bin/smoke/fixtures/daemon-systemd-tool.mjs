@@ -26,11 +26,25 @@ if (basename(process.argv[1]) === "loginctl") {
     process.exit(0);
   } else process.exit(88);
 } else if (args.includes("show-environment")) {
+  if (context.failShowEnvironment) process.exit(1);
   operation = "directory-read";
   console.log(context.environmentOutput ?? `HOME=${context.home}\nXDG_CONFIG_HOME=${context.config}`);
 } else if (args.includes("show")) {
-  operation = "unit-read";
   const unit = args[args.indexOf("show") + 1];
+  if (unit === "*") {
+    operation = "all-units-read";
+    appendFileSync(context.calls, JSON.stringify({ operation }) + "\n");
+    if (context.failAllUnitsShow) process.exit(1);
+    if (typeof context.allUnitsOutput === "string") {
+      console.log(context.allUnitsOutput);
+      process.exit(0);
+    }
+    const rows = context.units.map((u) => `Id=${u}\nNeedDaemonReload=${context.needDaemonReload ?? "no"}`);
+    rows.push(`Id=other-user.service\nNeedDaemonReload=${context.otherUnitNeedDaemonReload ?? "no"}`);
+    console.log(rows.join("\n\n"));
+    process.exit(0);
+  }
+  operation = "unit-read";
   if (!context.units.includes(unit)) process.exit(89);
   const fields = {
     Id: unit,

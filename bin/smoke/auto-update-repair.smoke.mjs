@@ -61,58 +61,16 @@ for (const scenario of terminal ? ['terminal'] : process.argv.includes('--releas
   assert.equal(readFileSync(join(candDir, 'dist/daemon/update-entry.js'), 'utf8').includes('reconcileInstalledLinuxPolicy'), true);
   assert.equal(spawnSync('npm', ['pack', '--ignore-scripts', '--offline', '--pack-destination', fixtureDir], { cwd: candDir, encoding: 'utf8' }).status, 0);
   archives[first] = readFileSync(join(fixtureDir, `cotal-ai-${first}.tgz`));
-  // Assemble genuine published 0.183.0 first-party packages from npm over the offline third-party dependency closure.
+  // Assemble an offline pre-OOMPolicy baseline release over the local workspace dependency closure.
   const relDir = join(fixtureDir, 'hoisted-fix2-0.151.2');
-  const templateMeta = JSON.parse(readFileSync(join(relDir, 'package.json'), 'utf8'));
-  const hoistedDeps = templateMeta.bundledDependencies;
-  const expectedPkgs = JSON.parse(readFileSync(join(repo, '.changeset/config.json'), 'utf8')).fixed.flat().sort();
-  const fetched = await Promise.all(expectedPkgs.map(async (name, idx) => {
-   const metaRes = await fetch(`https://registry.npmjs.org/${encodeURIComponent(name)}/${baseVersion}`, { signal: AbortSignal.timeout(30_000) });
-   assert.equal(metaRes.ok, true, `failed fetching metadata for ${name}@${baseVersion}: ${metaRes.status}`);
-   const meta = await metaRes.json();
-   assert.equal(meta.version, baseVersion);
-   const tgzRes = await fetch(meta.dist.tarball, { signal: AbortSignal.timeout(60_000) });
-   assert.equal(tgzRes.ok, true, `failed fetching tarball for ${name}@${baseVersion}: ${tgzRes.status}`);
-   const bytes = Buffer.from(await tgzRes.arrayBuffer());
-   assert.equal('sha512-' + createHash('sha512').update(bytes).digest('base64'), meta.dist.integrity, `SRI mismatch for ${name}@${baseVersion}`);
-   const tgzPath = join(fixtureDir, `pub-${idx}.tgz`);
-   writeFileSync(tgzPath, bytes);
-   return { name, tgzPath };
-  }));
-  for (const { name, tgzPath } of fetched) {
-   if (name === 'cotal-ai') {
-    for (const entry of readdirSync(relDir)) if (entry !== 'node_modules') rmSync(join(relDir, entry), { recursive: true, force: true });
-    assert.equal(spawnSync('tar', ['-xzf', tgzPath, '--strip-components=1', '-C', relDir]).status, 0);
-    const pubMeta = JSON.parse(readFileSync(join(relDir, 'package.json'), 'utf8'));
-    assert.equal(pubMeta.version, baseVersion);
-    pubMeta.private = true;
-    pubMeta.dependencies = Object.fromEntries(hoistedDeps.map(k => [k, k.startsWith('@cotal-ai/') ? baseVersion : '*']));
-    pubMeta.bundledDependencies = hoistedDeps;
-    delete pubMeta.bundleDependencies;
-    delete pubMeta.scripts;
-    delete pubMeta.devDependencies;
-    writeFileSync(join(relDir, 'package.json'), JSON.stringify(pubMeta, null, 2) + '\n');
-   } else {
-    const pkgDir = join(relDir, 'node_modules', name);
-    const savedNested = existsSync(join(pkgDir, 'node_modules')) ? join(fixtureDir, `nested-${name.replace('/', '_')}`) : undefined;
-    const prevPkgMeta = existsSync(join(pkgDir, 'package.json')) ? JSON.parse(readFileSync(join(pkgDir, 'package.json'), 'utf8')) : undefined;
-    if (savedNested) { mkdirSync(savedNested, { recursive: true }); assert.equal(spawnSync('cp', ['-a', join(pkgDir, 'node_modules/.'), savedNested]).status, 0); }
-    rmSync(pkgDir, { recursive: true, force: true });
-    mkdirSync(pkgDir, { recursive: true });
-    assert.equal(spawnSync('tar', ['-xzf', tgzPath, '--strip-components=1', '-C', pkgDir]).status, 0);
-    if (savedNested) {
-     mkdirSync(join(pkgDir, 'node_modules'), { recursive: true });
-     assert.equal(spawnSync('cp', ['-a', `${savedNested}/.`, join(pkgDir, 'node_modules')]).status, 0);
-     if (prevPkgMeta?.bundledDependencies?.length) {
-      const m = JSON.parse(readFileSync(join(pkgDir, 'package.json'), 'utf8'));
-      m.bundledDependencies = prevPkgMeta.bundledDependencies;
-      delete m.bundleDependencies;
-      writeFileSync(join(pkgDir, 'package.json'), JSON.stringify(m, null, 2) + '\n');
-     }
-    }
-   }
-  }
-  assert.equal(readFileSync(join(relDir, 'dist/daemon/update-entry.js'), 'utf8').includes('reconcileInstalledLinuxPolicy'), false, 'published 0.183.0 must not contain candidate OOMPolicy step');
+  reversionTree(relDir, baseVersion);
+  const baseInstall = join(relDir, 'dist/daemon/install.js');
+  writeFileSync(baseInstall, readFileSync(baseInstall, 'utf8').replace("'OOMPolicy=continue',", ''));
+  const baseUpdate = join(relDir, 'dist/daemon/update-entry.js');
+  writeFileSync(baseUpdate, readFileSync(baseUpdate, 'utf8')
+   .replace(/function reconcileInstalledLinuxPolicy\(\)\s*\{[\s\S]*?\n\}\n/, '')
+   .replace(/\s*reconcileInstalledLinuxPolicy\(\);\n/, '\n'));
+  assert.equal(readFileSync(baseUpdate, 'utf8').includes('reconcileInstalledLinuxPolicy'), false, 'baseline release must not contain candidate OOMPolicy step');
   assert.equal(spawnSync('npm', ['pack', '--ignore-scripts', '--offline', '--pack-destination', fixtureDir], { cwd: relDir, encoding: 'utf8' }).status, 0);
   archives[baseVersion] = readFileSync(join(fixtureDir, `cotal-ai-${baseVersion}.tgz`));
  } else {
@@ -359,6 +317,10 @@ if (args.includes('show')) {
   for (const f of args.filter(x => x.startsWith('--property='))) console.log(f.slice(11) + '=' + (fields[f.slice(11)] ?? ''));
   process.exit(0);
  }
+ if (unit === '*') {
+  console.log('Id=cotal-daemon.service\\nNeedDaemonReload=no\\n\\nId=other.service\\nNeedDaemonReload=no');
+  process.exit(0);
+ }
  if (unit === 'cotal-daemon.service') {
   const pid = fs.existsSync(${JSON.stringify(daemonPidFile)}) ? fs.readFileSync(${JSON.stringify(daemonPidFile)}, 'utf8').trim() : '0';
   const live = pid !== '0' && (() => { try { process.kill(Number(pid), 0); return true; } catch { return false; } })();
@@ -382,7 +344,7 @@ if (args.includes('stop')) {
  process.exit(0);
 }
 if (args.includes('start')) {
- // Fail native start when target candidate generation (0.183.1000) is active; succeed once rolled back to 0.183.0.
+ // Fail native start when target candidate generation (0.183.1000) is active; succeed once rolled back to baseline.
  const active = fs.existsSync(storeDir) && fs.readdirSync(storeDir).some(name => name.startsWith('.active-'));
  if (active) { console.error('target 0.183.1000 native start failed'); process.exit(99); }
  const child = spawn(${JSON.stringify(process.execPath)}, [${JSON.stringify(installedEntry)}, 'daemon', 'serve'], { cwd: ${JSON.stringify(root)}, env: ${JSON.stringify(daemonEnv)}, detached: true, stdio: 'ignore' });
@@ -450,10 +412,10 @@ for (const data of [[[argv[0], argv, [], 0, 0, 0, 0, pid, 0, 0]], [], []]) conso
     const rollbackScopeReuses = scopeEvents.filter(e => e.op === 'scope-show' && e.scope === adoptedScope && String(e.callerPid) !== initialChildPid && e.activeGeneration === false);
     assert.ok(rollbackScopeReuses.length > 0, `rollback child did not reuse ${adoptedScope}: ${JSON.stringify(scopeEvents)}`);
     assert.equal(scopeEvents.some(e => e.op === 'daemon-reload'), false, JSON.stringify(scopeEvents));
-    assert.match(autoRun.output, /Restoring verified cotal-ai@0\.183\.0/);
+    assert.ok(autoRun.output.includes(`Restoring verified cotal-ai@${baseVersion}`), autoRun.output);
     assert.equal(recovery(), null, autoRun.output);
     assert.equal(installedVersion(), baseVersion);
-    // Legacy unit and receipt must remain untouched so the rolled-back 0.183.0 daemon still sees an owned unit and keeps automatic updates enabled.
+    // Legacy unit and receipt must remain untouched so the rolled-back baseline daemon still sees an owned unit and keeps automatic updates enabled.
     assert.equal(readFileSync(unitPath, 'utf8'), legacyUnit);
     assert.equal(JSON.parse(readFileSync(receiptPath, 'utf8')).unitSha256, legacySha);
     let parsedStatus;

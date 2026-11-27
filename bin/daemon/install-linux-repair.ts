@@ -1,4 +1,4 @@
-import { lstatSync, readFileSync, rmSync, statSync } from "node:fs";
+import { lstatSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { dirname, isAbsolute, join } from "node:path";
 import { acquireLock, acquireLockAsync, writeSecretFileAtomic } from "@cotal-ai/core";
 import { assertSystemdSource, submitSystemdUnitRegistration, systemdUserUnitDirectory } from "@cotal-ai/cli";
@@ -109,7 +109,22 @@ function decodeSystemdEnvValue(value: string): string | undefined {
   catch { return undefined; }
 }
 
-function hasUnitDropInDirectoryOnDisk(run: NativeRun, unit: string, unitPath: string, env?: NodeJS.ProcessEnv): boolean {
+function systemdDropInDirectoryNames(unit: string): string[] {
+  const names = new Set([`${unit}.d`]);
+  const suffixIndex = unit.lastIndexOf(".");
+  if (suffixIndex > 0) {
+    const stem = unit.slice(0, suffixIndex), suffix = unit.slice(suffixIndex);
+    names.add(`${suffix.slice(1)}.d`);
+    const parts = stem.split("-");
+    for (let count = parts.length - 1; count >= 1; count--) {
+      const prefix = parts.slice(0, count).join("-");
+      if (prefix) names.add(`${prefix}-${suffix}.d`);
+    }
+  }
+  return [...names];
+}
+
+function hasUnitDropInOnDisk(run: NativeRun, unit: string, unitPath: string, env?: NodeJS.ProcessEnv): boolean {
   const envRead = run("systemctl", ["--user", "show-environment"], env, 2000);
   if (envRead.status !== 0) return true;
   const mgr: Record<string, string> = {};
@@ -138,42 +153,104 @@ function hasUnitDropInDirectoryOnDisk(run: NativeRun, unit: string, unitPath: st
     for (const entry of (src.XDG_DATA_DIRS || "/usr/local/share:/usr/share").split(":")) if (entry) add(join(entry, "systemd", "user"));
   }
   for (const sys of ["/etc/systemd/user", "/run/systemd/user", "/usr/local/lib/systemd/user", "/usr/lib/systemd/user", "/lib/systemd/user"]) add(sys);
+  const dropInNames = systemdDropInDirectoryNames(unit);
   for (const dir of dirs) {
-    try { lstatSync(join(dir, `${unit}.d`)); return true; }
-    catch (error) { const code = (error as NodeJS.ErrnoException).code; if (code !== "ENOENT" && code !== "ENOTDIR") return true; }
+    for (const dropInName of dropInNames) {
+      const candidate = join(dir, dropInName);
+      try {
+        if (!statSync(candidate).isDirectory()) return true;
+        if (readdirSync(candidate).some(entry => !entry.startsWith(".") && entry.endsWith(".conf"))) return true;
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code;
+        if (code !== "ENOENT" && code !== "ENOTDIR") return true;
+      }
+    }
   }
   return false;
 }
 
+/** Inspect every loaded user unit in one call so daemon-reload never applies another unit's pending change. */
+function observeOtherUnitsNeedDaemonReload(run: NativeRun, ownUnit: string, env?: NodeJS.ProcessEnv): "none" | "other-pending" | "unverified" {
+  let read: ReturnType<NativeRun>;
+  try {
+    read = run("systemctl", ["--user", "--no-ask-password", "--no-pager", "show", "*", "--all", "--property=Id,NeedDaemonReload"], env, 5000);
+  } catch { return "unverified"; }
+  if (read.status !== 0) return "unverified";
+  const blocks = read.stdout.replace(/\r\n/g, "\n").trimEnd().split("\n\n").filter(Boolean);
+  if (blocks.length === 0) return "unverified";
+  let sawOwnUnit = false;
+  for (const block of blocks) {
+    let id: string | undefined, needsReload: string | undefined;
+    for (const line of block.split("\n")) {
+      const at = line.indexOf("=");
+      if (at < 1) return "unverified";
+      const key = line.slice(0, at), val = line.slice(at + 1);
+      if (/[\u0000-\u001f\u007f]/u.test(val)) return "unverified";
+      if (key === "Id" && id === undefined) id = val;
+      else if (key === "NeedDaemonReload" && needsReload === undefined) needsReload = val;
+      else return "unverified";
+    }
+    if (!id || (needsReload !== "yes" && needsReload !== "no")) return "unverified";
+    if (id === ownUnit) sawOwnUnit = true;
+    else if (needsReload !== "no") return "other-pending";
+  }
+  return sawOwnUnit ? "none" : "unverified";
+}
+
 type SystemdPolicyUnitState =
   | { readonly loaded: false }
-  | { readonly loaded: true; readonly dropInPaths: string; readonly needsReload: boolean; readonly oomPolicy: string; readonly dropInDirOnDisk: boolean };
+  | { readonly loaded: true; readonly dropInPaths: string; readonly needsReload: boolean; readonly oomPolicy: string; readonly dropInOnDisk: boolean };
 
 function readSystemdPolicyUnitState(run: NativeRun, unit: string, unitPath: string, env?: NodeJS.ProcessEnv): SystemdPolicyUnitState {
-  const fields = ["Id", "LoadState", "FragmentPath", "DropInPaths", "NeedDaemonReload", "OOMPolicy"];
-  const read = run("systemctl", ["--user", "--no-ask-password", "--no-pager", "show", unit, "--all", ...fields.map(field => `--property=${field}`)], env, 5000);
-  if (read.status !== 0) return { loaded: false };
-  const values = new Map<string, string>();
-  for (const line of read.stdout.split("\n").filter(Boolean)) {
-    const at = line.indexOf("="), field = line.slice(0, at), value = line.slice(at + 1);
-    if (at < 1 || !fields.includes(field) || values.has(field) || /[\u0000-\u001f\u007f]/u.test(value)) return { loaded: false };
-    values.set(field, value);
-  }
-  const needsReload = values.get("NeedDaemonReload");
-  if (values.size !== fields.length || values.get("Id") !== unit || values.get("LoadState") !== "loaded" || values.get("FragmentPath") !== unitPath || (needsReload !== "yes" && needsReload !== "no")) return { loaded: false };
-  return { loaded: true, dropInPaths: values.get("DropInPaths")!, needsReload: needsReload === "yes", oomPolicy: values.get("OOMPolicy")!, dropInDirOnDisk: hasUnitDropInDirectoryOnDisk(run, unit, unitPath, env) };
+  try {
+    const fields = ["Id", "LoadState", "FragmentPath", "DropInPaths", "NeedDaemonReload", "OOMPolicy"];
+    const read = run("systemctl", ["--user", "--no-ask-password", "--no-pager", "show", unit, "--all", ...fields.map(field => `--property=${field}`)], env, 5000);
+    if (read.status !== 0) return { loaded: false };
+    const values = new Map<string, string>();
+    for (const line of read.stdout.split("\n").filter(Boolean)) {
+      const at = line.indexOf("="), field = line.slice(0, at), value = line.slice(at + 1);
+      if (at < 1 || !fields.includes(field) || values.has(field) || /[\u0000-\u001f\u007f]/u.test(value)) return { loaded: false };
+      values.set(field, value);
+    }
+    const needsReload = values.get("NeedDaemonReload");
+    if (values.size !== fields.length || values.get("Id") !== unit || values.get("LoadState") !== "loaded" || values.get("FragmentPath") !== unitPath || (needsReload !== "yes" && needsReload !== "no")) return { loaded: false };
+    return { loaded: true, dropInPaths: values.get("DropInPaths")!, needsReload: needsReload === "yes", oomPolicy: values.get("OOMPolicy")!, dropInOnDisk: hasUnitDropInOnDisk(run, unit, unitPath, env) };
+  } catch { return { loaded: false }; }
 }
 
 function isInPlaceOomPolicyIntent(intent: ServiceRepairIntent): boolean {
   return (intent.receipt.mechanism ?? "systemd-user") === "systemd-user" && upgradedSystemdOomPolicy(intent.previousSource) === intent.nextSource;
 }
 
+function policySkippedReport(unit: string, reason: string): string {
+  return `machine daemon: ${unit} left unchanged (${reason}); Cotal did not update or reload OOMPolicy`;
+}
+
 function reloadFailedReport(unit: string): string {
   return `machine daemon: ${unit} updated with OOMPolicy=continue, but systemctl --user daemon-reload failed; run \`systemctl --user daemon-reload\` or retry \`cotal update\``;
 }
 
-function reloadSkippedReport(unit: string): string {
-  return `machine daemon: ${unit} needs a reload (\`systemctl --user daemon-reload\`), and Cotal did not reload it`;
+function reloadSkippedReport(unit: string, reason?: string): string {
+  return `machine daemon: ${unit} needs a reload (\`systemctl --user daemon-reload\`)${reason ? ` (${reason})` : ""}, and Cotal did not reload it`;
+}
+
+function systemdUnavailableReason(error: unknown): string {
+  if (error instanceof CommandFailure && error.native?.code === "ENOENT") return "systemctl was not found";
+  const message = error instanceof Error ? error.message : "";
+  if (message.includes("ENOENT")) return "systemctl was not found";
+  return "the systemd user manager did not answer";
+}
+
+function resolveUserUnitDirectory(env: NodeJS.ProcessEnv): { readonly dir: string } | { readonly reason: string } {
+  let probe: ReturnType<NativeRun>;
+  try {
+    probe = nativeRun("systemctl", ["--user", "show-environment"], env, 2000);
+  } catch (error) {
+    return { reason: systemdUnavailableReason(error) };
+  }
+  if (probe.status !== 0) return { reason: "the systemd user manager did not answer" };
+  try { return { dir: systemdUserUnitDirectory(env) }; }
+  catch (error) { return { reason: systemdUnavailableReason(error) }; }
 }
 
 function submitPolicyReload(unit: string, env: NodeJS.ProcessEnv, report?: (line: string) => void): boolean {
@@ -192,10 +269,28 @@ function reloadUpgradedPolicyIfSafe(paths: Pick<DaemonPaths, "state">, receipt: 
     assertSystemdSource(receipt.unitPath, receipt.unitSha256);
     digestMatchesReceipt = readReceipt(paths)?.unitSha256 === receipt.unitSha256;
   } catch { digestMatchesReceipt = false; }
-  if (digestMatchesReceipt && state.loaded && state.dropInPaths === "" && !state.dropInDirOnDisk && state.oomPolicy !== "continue")
-    return submitPolicyReload(receipt.unit, env, report);
-  report?.(reloadSkippedReport(receipt.unit));
-  return false;
+  if (!digestMatchesReceipt) {
+    report?.(reloadSkippedReport(receipt.unit, "the unit file was modified"));
+    return false;
+  }
+  if (!state.loaded) {
+    report?.(reloadSkippedReport(receipt.unit, "the systemd user manager did not verify the loaded unit"));
+    return false;
+  }
+  if (state.dropInPaths !== "" || state.dropInOnDisk) {
+    report?.(reloadSkippedReport(receipt.unit, "drop-ins are present"));
+    return false;
+  }
+  if (state.oomPolicy === "continue") {
+    if (state.needsReload) report?.(reloadSkippedReport(receipt.unit, "the unit has a pending reload"));
+    return false;
+  }
+  const otherUnits = observeOtherUnitsNeedDaemonReload(nativeRun, receipt.unit, env);
+  if (otherUnits !== "none") {
+    report?.(reloadSkippedReport(receipt.unit, otherUnits === "other-pending" ? "another user unit has a pending reload" : "loaded user units could not be verified"));
+    return false;
+  }
+  return submitPolicyReload(receipt.unit, env, report);
 }
 
 function hasPolicyRepairFile(state: string): boolean {
@@ -225,7 +320,7 @@ function completeInPlaceOomPolicyIntent(paths: Pick<DaemonPaths, "state">, daemo
   if (actual.unitSha256 !== nextSha) writeSecretFileAtomic(unitReceiptFile(paths), `${JSON.stringify(nextReceipt)}\n`);
   rmSync(servicePolicyRepairFile(paths.state), { force: true });
   const state = readSystemdPolicyUnitState(nativeRun, nextReceipt.unit, nextReceipt.unitPath, env);
-  if (state.loaded && !state.needsReload && state.oomPolicy === "continue" && !(state.dropInPaths === "" && state.dropInDirOnDisk)) return false;
+  if (state.loaded && !state.needsReload && state.oomPolicy === "continue" && !(state.dropInPaths === "" && state.dropInOnDisk)) return false;
   return reloadUpgradedPolicyIfSafe(paths, nextReceipt, env, report, state);
 }
 
@@ -256,50 +351,77 @@ export async function finishRecordedOomPolicyIntent(paths: Pick<DaemonPaths, "st
 /** Upgrade an unmodified same-installation Linux unit's OOMPolicy in place without restarting running seats. */
 export function reconcileInstalledSystemdOomPolicy(paths: Pick<DaemonPaths, "state">, daemonHome?: string, expectedUnit = "cotal-daemon.service", report?: (line: string) => void): boolean {
   if (process.platform !== "linux") return false;
+  const skip = (unit: string, reason: string) => { report?.(policySkippedReport(unit, reason)); return false; };
   const pending = hasPolicyRepairFile(paths.state);
   const existing = readReceipt(paths);
   if (!existing || (existing.mechanism ?? "systemd-user") !== "systemd-user" || existing.daemonHome !== daemonHome || existing.unit !== expectedUnit) {
     if (!pending) return false;
   }
+  let candidateUnit = existing?.unit ?? expectedUnit;
   if (!pending && existing) {
     const raw = readLocalRecordSource(existing.unitPath, 64 * 1024, true)?.toString("utf8");
-    if (!raw) return false;
-    const needsUpgrade = sourceDigest(raw) === existing.unitSha256 && upgradedSystemdOomPolicy(raw) !== undefined;
-    const alreadyUpgraded = sourceDigest(raw) === existing.unitSha256 && /^[ \t]*OOMPolicy=continue$/m.test(raw);
-    if (!needsUpgrade && !alreadyUpgraded) return false;
+    if (!raw) return skip(existing.unit, "the unit file could not be verified");
+    if (sourceDigest(raw) !== existing.unitSha256) return skip(existing.unit, "the unit file was modified");
+    if (upgradedSystemdOomPolicy(raw) === undefined && !/^[ \t]*OOMPolicy=continue$/m.test(raw)) {
+      return skip(existing.unit, /^[ \t]*OOMPolicy=/m.test(raw) ? "OOMPolicy is already set" : "the unit file has custom service settings");
+    }
   }
   let lock: ReturnType<typeof acquireLock>;
   try {
     lock = acquireLock(join(paths.state, "service-repair.lock"), { waitMs: 0, label: "service-repair" });
-  } catch { return false; }
+  } catch { return skip(candidateUnit, "another service repair is in progress"); }
   try {
     if (hasPolicyRepairFile(paths.state)) return completeInPlaceOomPolicyIntent(paths, daemonHome, expectedUnit, report);
     const receipt = readReceipt(paths);
     if (!receipt || (receipt.mechanism ?? "systemd-user") !== "systemd-user" || receipt.daemonHome !== daemonHome || receipt.unit !== expectedUnit) return false;
-    const env = daemonUserServiceEnv();
-    if (receipt.unitPath !== join(systemdUserUnitDirectory(env), expectedUnit)) return false;
-    try { assertSystemdSource(receipt.unitPath, receipt.unitSha256); }
-    catch { return false; }
-    const argv = daemonServeArgv(daemonHome);
-    if (!recordedSourceIdentity(receipt, "systemd-user", () => argv).same) return false;
-    const source = readFileSync(receipt.unitPath, "utf8");
-    const next = upgradedSystemdOomPolicy(source);
+    candidateUnit = receipt.unit;
+    let rawUnderLock: string | undefined;
+    try {
+      assertSystemdSource(receipt.unitPath, receipt.unitSha256);
+      rawUnderLock = readFileSync(receipt.unitPath, "utf8");
+    } catch { return skip(receipt.unit, "the unit file was modified"); }
+    const needsUpgrade = upgradedSystemdOomPolicy(rawUnderLock);
+    const alreadyContinue = !needsUpgrade && /^[ \t]*OOMPolicy=continue$/m.test(rawUnderLock);
+    if (!needsUpgrade && !alreadyContinue) {
+      return skip(receipt.unit, /^[ \t]*OOMPolicy=/m.test(rawUnderLock) ? "OOMPolicy is already set" : "the unit file has custom service settings");
+    }
+    let sameInstall = false;
+    let argv: string[];
+    try {
+      argv = daemonServeArgv(daemonHome);
+      sameInstall = recordedSourceIdentity(receipt, "systemd-user", () => argv).same;
+    } catch { return skip(receipt.unit, "the recorded installation could not be verified"); }
+    if (!sameInstall) return needsUpgrade ? skip(receipt.unit, "the service belongs to another Cotal installation") : false;
+    let env: NodeJS.ProcessEnv;
+    try { env = daemonUserServiceEnv(); }
+    catch { return needsUpgrade ? skip(receipt.unit, "the systemd user manager did not answer") : false; }
+    const resolvedDir = resolveUserUnitDirectory(env);
+    if ("reason" in resolvedDir) return needsUpgrade ? skip(receipt.unit, resolvedDir.reason) : false;
+    if (receipt.unitPath !== join(resolvedDir.dir, expectedUnit)) {
+      return needsUpgrade ? skip(receipt.unit, "the unit file is outside the user manager's unit directory") : false;
+    }
     const state = readSystemdPolicyUnitState(nativeRun, receipt.unit, receipt.unitPath, env);
-    if (!next) {
-      if (!/^[ \t]*OOMPolicy=continue$/m.test(source) || !state.loaded || (!state.needsReload && !state.dropInDirOnDisk)) return false;
+    if (!needsUpgrade) {
+      if (!state.loaded || (!state.needsReload && !state.dropInOnDisk)) return false;
       if (!state.needsReload && state.dropInPaths !== "") return false;
       return reloadUpgradedPolicyIfSafe(paths, receipt, env, report, state);
     }
-    if (!state.loaded || state.needsReload || state.dropInPaths !== "" || state.dropInDirOnDisk) return false;
+    if (!state.loaded) return skip(receipt.unit, "the systemd user manager did not verify the loaded unit");
+    if (state.dropInPaths !== "" || state.dropInOnDisk) return skip(receipt.unit, "drop-ins are present");
+    if (state.needsReload) return skip(receipt.unit, "the unit already has a pending reload");
+    const otherUnits = observeOtherUnitsNeedDaemonReload(nativeRun, receipt.unit, env);
+    if (otherUnits !== "none") {
+      return skip(receipt.unit, otherUnits === "other-pending" ? "another user unit has a pending reload" : "loaded user units could not be verified");
+    }
     const entry = argv[argv.lastIndexOf("daemon") - 1]!;
     const version = (JSON.parse(readFileSync(join(dirname(dirname(entry)), "package.json"), "utf8")) as { version?: string }).version ?? "";
-    if (!version) return false;
+    if (!version) return skip(receipt.unit, "the CLI package version could not be read");
     if (readReceipt(paths)?.unitSha256 !== receipt.unitSha256) throw new CommandFailure("refused", "CONFLICT", "the recorded daemon service changed during update");
     const enabledRead = nativeRun("systemctl", ["--user", "--no-ask-password", "--no-pager", "show", receipt.unit, "--property=UnitFileState", "--value"], env, 5000);
-    const intent: ServiceRepairIntent = { v: 1, receipt, previousSource: source, nextSource: next, enabled: enabledRead.status === 0 && enabledRead.stdout.trim() === "enabled", argv, version, hostedSpaces: [], phase: "prepared" };
+    const intent: ServiceRepairIntent = { v: 1, receipt, previousSource: rawUnderLock, nextSource: needsUpgrade, enabled: enabledRead.status === 0 && enabledRead.stdout.trim() === "enabled", argv, version, hostedSpaces: [], phase: "prepared" };
     writeSecretFileAtomic(servicePolicyRepairFile(paths.state), `${JSON.stringify(intent)}\n`);
-    writeSecretFileAtomic(receipt.unitPath, next);
-    const sha256 = sourceDigest(next);
+    writeSecretFileAtomic(receipt.unitPath, needsUpgrade);
+    const sha256 = sourceDigest(needsUpgrade);
     assertSystemdSource(receipt.unitPath, sha256);
     const nextReceipt: UnitReceipt = { ...receipt, unitSha256: sha256 };
     writeSecretFileAtomic(unitReceiptFile(paths), `${JSON.stringify(nextReceipt)}\n`);

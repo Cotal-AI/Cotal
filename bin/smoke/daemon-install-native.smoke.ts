@@ -1082,28 +1082,101 @@ try {
         process.env.XDG_DATA_HOME = join(dir, "data");
         process.execArgv = [];
         process.argv[1] = cli;
-        // 1. Operator drop-in present: leave untouched without daemon-reload or restart.
+        const isPolicySkipLine = (lines: string[], reason: string) =>
+          lines.length === 1 && lines[0] === `machine daemon: ${unit} left unchanged (${reason}); Cotal did not update or reload OOMPolicy`;
+        // 1. Operator drop-in present: leave untouched without daemon-reload or restart, printing one skip line.
         writeLegacy();
         writeFileSync(configFile, JSON.stringify({ ...context, dropInPaths: `${unitPath}.d/operator.conf` }), { mode: 0o600 });
         let before = readFileSync(context.calls, "utf8").length;
-        check("N8 drop-in skips in-place OOMPolicy rewrite", reconcileInstalledSystemdOomPolicy({ state: daemonHome }, daemonHome) === false && readFileSync(unitPath, "utf8") === legacySource && !operationsSince(before).includes("daemon-reload") && !operationsSince(before).includes("stop"));
+        let skipLines: string[] = [];
+        check("N8 drop-in skips in-place OOMPolicy rewrite with one skip line",
+          reconcileInstalledSystemdOomPolicy({ state: daemonHome }, daemonHome, line => skipLines.push(line)) === false
+          && readFileSync(unitPath, "utf8") === legacySource
+          && !operationsSince(before).includes("daemon-reload") && !operationsSince(before).includes("stop")
+          && isPolicySkipLine(skipLines, "drop-ins are present"), skipLines);
+        // 1b. Prefix (`cotal-.service.d`) and type (`service.d`) drop-in directories with .conf files skip rewrite and print one skip line.
+        writeFileSync(configFile, JSON.stringify(context), { mode: 0o600 });
+        for (const dropInFolder of ["cotal-.service.d", "service.d"] as const) {
+          writeLegacy();
+          const dropInDir = join(context.config, "systemd", "user", dropInFolder);
+          mkdirSync(dropInDir, { recursive: true, mode: 0o700 });
+          writeFileSync(join(dropInDir, "override.conf"), "[Service]\nEnvironment=PREFIX_DROPIN=1\n", { mode: 0o600 });
+          before = readFileSync(context.calls, "utf8").length;
+          skipLines = [];
+          check(`N8 ${dropInFolder} drop-in directory skips in-place OOMPolicy rewrite with one skip line`,
+            reconcileInstalledSystemdOomPolicy({ state: daemonHome }, daemonHome, line => skipLines.push(line)) === false
+            && readFileSync(unitPath, "utf8") === legacySource
+            && !operationsSince(before).includes("daemon-reload")
+            && isPolicySkipLine(skipLines, "drop-ins are present"), skipLines);
+          rmSync(dropInDir, { recursive: true, force: true });
+        }
         // 2. NeedDaemonReload=yes on a legacy unit skips the rewrite without sweeping un-reloaded edits into daemon-reload.
         writeLegacy();
         writeFileSync(configFile, JSON.stringify({ ...context, needDaemonReload: "yes" }), { mode: 0o600 });
         before = readFileSync(context.calls, "utf8").length;
-        check("N8 NeedDaemonReload=yes skips in-place OOMPolicy rewrite", reconcileInstalledSystemdOomPolicy({ state: daemonHome }, daemonHome) === false && readFileSync(unitPath, "utf8") === legacySource && !operationsSince(before).includes("daemon-reload"));
-        // 3. Hand-edited unit (digest mismatch): leave untouched without native unit-read or reload.
+        skipLines = [];
+        check("N8 NeedDaemonReload=yes skips in-place OOMPolicy rewrite with one skip line",
+          reconcileInstalledSystemdOomPolicy({ state: daemonHome }, daemonHome, line => skipLines.push(line)) === false
+          && readFileSync(unitPath, "utf8") === legacySource
+          && !operationsSince(before).includes("daemon-reload")
+          && isPolicySkipLine(skipLines, "the unit already has a pending reload"), skipLines);
+        // 2b. Another loaded user unit with NeedDaemonReload=yes (or unparseable/failing `show '*'`) skips before rewriting and prints one skip line.
+        for (const [label, extra, expectedReason] of [
+          ["another unit pending reload", { otherUnitNeedDaemonReload: "yes" }, "another user unit has a pending reload"],
+          ["failed show *", { failAllUnitsShow: true }, "loaded user units could not be verified"],
+          ["unparseable show *", { allUnitsOutput: `Id=${unit}\nUnexpected=1\n` }, "loaded user units could not be verified"],
+        ] as const) {
+          writeLegacy();
+          writeFileSync(configFile, JSON.stringify({ ...context, ...extra }), { mode: 0o600 });
+          before = readFileSync(context.calls, "utf8").length;
+          skipLines = [];
+          check(`N8 ${label} skips OOMPolicy rewrite and daemon-reload with one skip line`,
+            reconcileInstalledSystemdOomPolicy({ state: daemonHome }, daemonHome, line => skipLines.push(line)) === false
+            && readFileSync(unitPath, "utf8") === legacySource
+            && operationsSince(before).includes("all-units-read")
+            && !operationsSince(before).includes("daemon-reload")
+            && isPolicySkipLine(skipLines, expectedReason), skipLines);
+        }
+        // 3. Hand-edited unit (digest mismatch): leave untouched without native unit-read or reload, printing one skip line.
         writeFileSync(configFile, JSON.stringify(context), { mode: 0o600 });
         writeFileSync(unitPath, `${legacySource}# operator edit\n`, { mode: 0o600 });
         before = readFileSync(context.calls, "utf8").length;
-        check("N8 hand-edited unit skips in-place OOMPolicy rewrite without native calls", reconcileInstalledSystemdOomPolicy({ state: daemonHome }, daemonHome) === false && readFileSync(unitPath, "utf8").endsWith("# operator edit\n") && operationsSince(before).length === 0);
-        // 4. Foreign installation unit: leave untouched without daemon-reload.
+        skipLines = [];
+        check("N8 hand-edited unit skips in-place OOMPolicy rewrite without native calls and prints one skip line",
+          reconcileInstalledSystemdOomPolicy({ state: daemonHome }, daemonHome, line => skipLines.push(line)) === false
+          && readFileSync(unitPath, "utf8").endsWith("# operator edit\n")
+          && operationsSince(before).length === 0
+          && isPolicySkipLine(skipLines, "the unit file was modified"), skipLines);
+        // 4. Foreign installation unit: leave untouched without daemon-reload, printing one skip line.
         for (const name of ["node", "cotal.js"]) writeFileSync(join(dir, "foreign", name), "", { mode: 0o700 });
         const foreignSource = `[Service]\nExecStart="${join(dir, "foreign", "node")}" "${join(dir, "foreign", "cotal.js")}" daemon serve --daemon-home "${daemonHome}"\nRestart=always\n`;
         writeLegacy(foreignSource);
         before = readFileSync(context.calls, "utf8").length;
-        check("N8 foreign installation unit is not rewritten", reconcileInstalledSystemdOomPolicy({ state: daemonHome }, daemonHome) === false && readFileSync(unitPath, "utf8") === foreignSource && !operationsSince(before).includes("daemon-reload"));
-        // 5. Held service-repair.lock from another live process skips immediately (<1s) instead of waiting 30s.
+        skipLines = [];
+        check("N8 foreign installation unit is not rewritten and prints one skip line",
+          reconcileInstalledSystemdOomPolicy({ state: daemonHome }, daemonHome, line => skipLines.push(line)) === false
+          && readFileSync(unitPath, "utf8") === foreignSource
+          && !operationsSince(before).includes("daemon-reload")
+          && isPolicySkipLine(skipLines, "the service belongs to another Cotal installation"), skipLines);
+        // 4b. Missing `systemctl` and silent user manager each skip without failing and print one skip line.
+        writeLegacy();
+        const emptyPathDir = join(dir, "empty-bin");
+        mkdirSync(emptyPathDir, { mode: 0o700 });
+        process.env.PATH = emptyPathDir;
+        skipLines = [];
+        check("N8 missing systemctl skips OOMPolicy rewrite with one skip line",
+          reconcileInstalledSystemdOomPolicy({ state: daemonHome }, daemonHome, line => skipLines.push(line)) === false
+          && readFileSync(unitPath, "utf8") === legacySource
+          && isPolicySkipLine(skipLines, "systemctl was not found"), skipLines);
+        process.env.PATH = `${join(dir, "native")}:/usr/bin:/bin`;
+        writeFileSync(configFile, JSON.stringify({ ...context, failShowEnvironment: true }), { mode: 0o600 });
+        skipLines = [];
+        check("N8 silent systemd user manager skips OOMPolicy rewrite with one skip line",
+          reconcileInstalledSystemdOomPolicy({ state: daemonHome }, daemonHome, line => skipLines.push(line)) === false
+          && readFileSync(unitPath, "utf8") === legacySource
+          && isPolicySkipLine(skipLines, "the systemd user manager did not answer"), skipLines);
+        writeFileSync(configFile, JSON.stringify(context), { mode: 0o600 });
+        // 5. Held service-repair.lock from another live process skips immediately (<1s) instead of waiting 30s and prints one skip line.
         writeLegacy();
         const lockFile = join(daemonHome, "service-repair.lock");
         const holder = spawn(process.execPath, ["-e", `
@@ -1120,12 +1193,14 @@ try {
         });
         try {
           before = readFileSync(context.calls, "utf8").length;
+          skipLines = [];
           const startedAt = Date.now();
-          const skipped = reconcileInstalledSystemdOomPolicy({ state: daemonHome }, daemonHome);
+          const skipped = reconcileInstalledSystemdOomPolicy({ state: daemonHome }, daemonHome, line => skipLines.push(line));
           const elapsedMs = Date.now() - startedAt;
-          check("N8 held service-repair.lock skips immediately without blocking",
-            skipped === false && elapsedMs < 2000 && readFileSync(unitPath, "utf8") === legacySource && operationsSince(before).length === 0,
-            { skipped, elapsedMs });
+          check("N8 held service-repair.lock skips immediately without blocking and prints one skip line",
+            skipped === false && elapsedMs < 2000 && readFileSync(unitPath, "utf8") === legacySource && operationsSince(before).length === 0
+            && isPolicySkipLine(skipLines, "another service repair is in progress"),
+            { skipped, elapsedMs, skipLines });
         } finally {
           holder.kill("SIGKILL");
           await new Promise<void>(resolve => holder.once("close", () => resolve()));
@@ -1229,22 +1304,36 @@ try {
           skippedAlreadyContinue === false && !operationsSince(before).includes("daemon-reload")
           && loadedContinueLines.length === 1 && loadedContinueLines[0]!.includes("needs a reload") && loadedContinueLines[0]!.includes("Cotal did not reload it"),
           loadedContinueLines);
-        // 7b. Upgraded unit + unloaded drop-in directory in XDG_CONFIG_HOME or XDG_DATA_HOME user unit path (even when loaded OOMPolicy is stop) -> no reload, one skip line.
-        for (const dropInParent of [join(context.config, "systemd", "user"), join(dir, "data", "systemd", "user")]) {
-          const dropInDir = join(dropInParent, `${unit}.d`);
+        // 7b. Upgraded unit + unloaded drop-in directory (`${unit}.d`, `cotal-.service.d`, `service.d`) in XDG_CONFIG_HOME or XDG_DATA_HOME user unit path -> no reload, one skip line.
+        for (const [dropInParent, dropInFolder] of [
+          [join(context.config, "systemd", "user"), `${unit}.d`],
+          [join(dir, "data", "systemd", "user"), `${unit}.d`],
+          [join(context.config, "systemd", "user"), "cotal-.service.d"],
+          [join(context.config, "systemd", "user"), "service.d"],
+        ] as const) {
+          const dropInDir = join(dropInParent, dropInFolder);
           mkdirSync(dropInDir, { recursive: true, mode: 0o700 });
           writeFileSync(join(dropInDir, "operator.conf"), "[Service]\nEnvironment=X=1\n", { mode: 0o600 });
           writeFileSync(configFile, JSON.stringify({ ...context, needDaemonReload: "yes", oomPolicy: "stop" }), { mode: 0o600 });
           before = readFileSync(context.calls, "utf8").length;
           const dropInSkipLines: string[] = [];
           const skippedDropIn = reconcileInstalledSystemdOomPolicy({ state: daemonHome }, daemonHome, line => dropInSkipLines.push(line));
-          check(`N8 unloaded drop-in directory in ${dropInParent} blocks reload retry with one skip line`,
+          check(`N8 unloaded ${dropInFolder} in ${dropInParent} blocks reload retry with one skip line`,
             skippedDropIn === false && !operationsSince(before).includes("daemon-reload")
-            && dropInSkipLines.length === 1 && dropInSkipLines[0]!.includes("needs a reload") && dropInSkipLines[0]!.includes("Cotal did not reload it"),
+            && dropInSkipLines.length === 1 && dropInSkipLines[0]!.includes("needs a reload") && dropInSkipLines[0]!.includes("(drop-ins are present)") && dropInSkipLines[0]!.includes("Cotal did not reload it"),
             dropInSkipLines);
           rmSync(dropInDir, { recursive: true, force: true });
         }
-        // 7c. Failed first reload with nothing else pending (loaded OOMPolicy=stop, no drop-in dir on disk, digest matches receipt) -> next update reloads.
+        // 7b2. Retry when another loaded user unit has NeedDaemonReload=yes -> no reload, one skip line.
+        writeFileSync(configFile, JSON.stringify({ ...context, needDaemonReload: "yes", oomPolicy: "stop", otherUnitNeedDaemonReload: "yes" }), { mode: 0o600 });
+        before = readFileSync(context.calls, "utf8").length;
+        const otherRetryLines: string[] = [];
+        const skippedOtherRetry = reconcileInstalledSystemdOomPolicy({ state: daemonHome }, daemonHome, line => otherRetryLines.push(line));
+        check("N8 another loaded user unit pending reload blocks reload retry with one skip line",
+          skippedOtherRetry === false && !operationsSince(before).includes("daemon-reload")
+          && otherRetryLines.length === 1 && otherRetryLines[0]!.includes("needs a reload") && otherRetryLines[0]!.includes("(another user unit has a pending reload)") && otherRetryLines[0]!.includes("Cotal did not reload it"),
+          otherRetryLines);
+        // 7c. Failed first reload with nothing else pending (loaded OOMPolicy=stop, no .conf drop-in on disk, digest matches receipt) -> next update reloads.
         writeFileSync(configFile, JSON.stringify({ ...context, needDaemonReload: "yes", oomPolicy: "stop" }), { mode: 0o600 });
         before = readFileSync(context.calls, "utf8").length;
         const retriedLines: string[] = [];
@@ -1252,20 +1341,28 @@ try {
         check("N8 subsequent update retries daemon-reload when loaded OOMPolicy is stop and nothing else is pending",
           reloadRetried === true && retriedLines.length === 0 && operationsSince(before).includes("daemon-reload"));
         writeFileSync(configFile, JSON.stringify(context), { mode: 0o600 });
-        // 8. Unmodified stock pre-fix unit: rewritten in place + receipt updated + daemon-reload only (never stop/start).
+        // 8. Empty `${unit}.d` folder on disk does NOT block initial OOMPolicy upgrade and does NOT cause steady-state updates to print "needs a reload".
+        const emptyDropInDir = `${unitPath}.d`;
+        mkdirSync(emptyDropInDir, { recursive: true, mode: 0o700 });
         writeLegacy();
         before = readFileSync(context.calls, "utf8").length;
-        check("N8 unmodified stock unit upgrades OOMPolicy=continue in place with daemon-reload only",
-          reconcileInstalledSystemdOomPolicy({ state: daemonHome }, daemonHome) === true
+        const upgradeWithEmptyDirLines: string[] = [];
+        check("N8 unmodified stock unit upgrades OOMPolicy=continue in place even with an empty .d directory on disk",
+          reconcileInstalledSystemdOomPolicy({ state: daemonHome }, daemonHome, line => upgradeWithEmptyDirLines.push(line)) === true
+          && upgradeWithEmptyDirLines.length === 0
           && readFileSync(unitPath, "utf8") === modernSource
           && (JSON.parse(readFileSync(receiptPath, "utf8")) as UnitReceipt).unitSha256 === sha(modernSource)
           && operationsSince(before).includes("daemon-reload")
-          && !operationsSince(before).some(op => op === "stop" || op === "start"));
-        // 9. Idempotent second run does not rewrite, reload or restart.
+          && !operationsSince(before).some(op => op === "stop" || op === "start"), upgradeWithEmptyDirLines);
+        // 9. Idempotent second run (even with empty .d directory still on disk and oomPolicy=continue) does not rewrite, reload, restart, or print "needs a reload".
+        writeFileSync(configFile, JSON.stringify({ ...context, oomPolicy: "continue" }), { mode: 0o600 });
         before = readFileSync(context.calls, "utf8").length;
-        check("N8 upgraded unit needs no second rewrite or reload",
-          reconcileInstalledSystemdOomPolicy({ state: daemonHome }, daemonHome) === false
-          && !operationsSince(before).some(op => op === "daemon-reload" || op === "stop" || op === "start"));
+        const steadyEmptyDirLines: string[] = [];
+        check("N8 upgraded unit with empty .d directory stays silent and needs no second rewrite or reload",
+          reconcileInstalledSystemdOomPolicy({ state: daemonHome }, daemonHome, line => steadyEmptyDirLines.push(line)) === false
+          && steadyEmptyDirLines.length === 0
+          && !operationsSince(before).some(op => op === "daemon-reload" || op === "stop" || op === "start"), steadyEmptyDirLines);
+        rmSync(emptyDropInDir, { recursive: true, force: true });
       } finally {
         process.argv[1] = savedEntry!;
         process.execArgv = savedExecArgv;
