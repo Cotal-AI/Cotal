@@ -47,7 +47,7 @@ export class EndpointConsumers {
    *  Persists across reconnect (NOT connection-scoped). Replaces the legacy chat-durable consumed-cursor
    *  signal now that there is no per-instance chat durable. */
   private firstConnect = true;
-  private readonly pluginHistoryFrontiers = new Map<string, number>();
+  private readonly pluginHistoryFrontiers = new Map<string, { seq: number; epoch: number | undefined }>();
   private readonly pluginReceipts = new Set<string>();
   private pluginReceiptEpoch?: number;
   private pluginHistoryRecovery?: Promise<void>;
@@ -121,21 +121,22 @@ export class EndpointConsumers {
     // self-join, the delivery daemon's fan-out writer + trusted reader deliver via the `dlv_<id>` pump
     // above; open dev mode is live-only — the durable plane needs the daemon's trusted reader, the
     // security boundary). Per-
-    // channel history is the explicit replay-gated backfill, on FIRST connect only; a reconnect reopens
-    // the subs without re-backfilling (the durable backstop redelivers any missed window via dlv).
+    // channel history is replay-gated backfill. Reconnect uses the existing CHAT backstop and the
+    // plugin history position only when it belongs to this route epoch.
     if (this.identity.channels.length) {
-      // Arm the per-channel join watermarks BEFORE opening the subs: the backfill reads <= frontier and
-      // the core-sub delivers > frontier, so they never overlap (first connect). On reconnect we reopen
-      // without arming/backfilling.
-      const armed = this.firstConnect ? await this.armJoin(this.identity.channels) : undefined;
+      const join = this.firstConnect ? this.identity.channels : this.identity.channels.filter((channel) => {
+        const position = this.pluginHistoryFrontiers.get(channel);
+        return isRoutedPluginChannel(this.conn.pluginChannelsEnabled, channel) &&
+          (!position || position.epoch !== this.conn.pluginChannelEpoch);
+      });
+      const armed = join.length ? await this.armJoin(join) : undefined;
       for (const ch of this.identity.channels) this.subscribeChat(ch);
       await this.confirmChatSub();
-      if (armed) await this.parts.history.backfillArmed(armed, this.identity.backfillFloor);
       if (armed) {
+        await this.parts.history.backfillArmed(armed, this.identity.backfillFloor);
         for (const [channel, frontier] of armed) this.rememberPluginHistory(channel, frontier);
-      } else {
-        await this.recoverPluginChannels();
       }
+      if (!this.firstConnect) await this.recoverPluginChannels();
     }
     // First connect, auth mode: self-join BOOT durable channels via the server-side delivery daemon
     // (it owns membership now — there is no manager-written boot membership). Seeds plane3Channels so a
@@ -161,7 +162,7 @@ export class EndpointConsumers {
 
   rememberPluginHistory(channel: string, frontier: number): void {
     if (isRoutedPluginChannel(this.conn.pluginChannelsEnabled, channel) && !this.delivery.chatSubDenied.has(channel))
-      this.pluginHistoryFrontiers.set(channel, frontier);
+      this.pluginHistoryFrontiers.set(channel, { seq: frontier, epoch: this.conn.pluginChannelEpoch });
   }
 
   /** A live core message has no stream sequence. Coalesce by authenticated subject and ID
@@ -195,13 +196,13 @@ export class EndpointConsumers {
     for (const [channel, from] of this.pluginHistoryFrontiers) {
       if (!stillCurrent()) return;
       const sub = this.delivery.chatSubs.get(channel);
-      if (!sub || !isRoutedPluginChannel(this.conn.pluginChannelsEnabled, channel)) continue;
+      if (!sub || from.epoch !== this.conn.pluginChannelEpoch || !isRoutedPluginChannel(this.conn.pluginChannelsEnabled, channel)) continue;
       const replayFence = this.pluginReplayFence(channel);
       const stillJoined = () => stillCurrent() && replayFence() && this.pluginHistoryFrontiers.get(channel) === from;
       const through = await this.parts.history.channelFrontier(channel);
-      if (!stillJoined() || through <= from) continue;
-      await this.parts.history.recoverPluginHistory(channel, from, through, stillJoined);
-      if (stillJoined()) this.pluginHistoryFrontiers.set(channel, through);
+      if (!stillJoined() || through <= from.seq) continue;
+      await this.parts.history.recoverPluginHistory(channel, from.seq, through, stillJoined);
+      if (stillJoined()) this.pluginHistoryFrontiers.set(channel, { ...from, seq: through });
     }
   }
 
