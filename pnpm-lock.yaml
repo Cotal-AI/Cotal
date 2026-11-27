@@ -535,8 +535,8 @@ importers:
   extensions/paseo:
     dependencies:
       '@getpaseo/client':
-        specifier: ^0.17.4
-        version: 0.17.4
+        specifier: ^0.18.1
+        version: 0.18.1
     devDependencies:
       '@cotal-ai/core':
         specifier: workspace:*
@@ -2155,14 +2155,14 @@ packages:
   '@gerrit0/mini-shiki@3.23.0':
     resolution: {integrity: sha512-bEMORlG0cqdjVyCEuU0cDQbORWX+kYCeo0kV1lbxF5bt4r7SID2l9bqsxJEM0zndaxpOUT7riCyIVEuqq/Ynxg==}
 
-  '@getpaseo/client@0.17.4':
-    resolution: {integrity: sha512-R3g6Tt14aVDxiWSza9DeHJ8GSCbygb8TN38HurqlWkM0qOynuDxIYgH8hwF6/Ay7hEQs8wOz4WFaqgFVkItK4g==}
+  '@getpaseo/client@0.18.1':
+    resolution: {integrity: sha512-MgXlghnD1tQMBaFcEcFOzjZkVSLrlM+ReJqy/lIbxFya68WCBBcsGLf1nRfhDetzXb7tyS1jablpRZgzlfgJ5w==}
 
-  '@getpaseo/protocol@0.17.4':
-    resolution: {integrity: sha512-p9Ay0wJb/WSL2bfN97gTkvhlElLk9exhH9mCJCGT6LUd9l2MN81TNsr5RgvbvFA0tCZnIcPMNURABOuKEJEy0A==}
+  '@getpaseo/protocol@0.18.1':
+    resolution: {integrity: sha512-Zd88pwBOKMVOqXvU3r4NZfbT9+sgFdzEjilRN4YUoMxryqsOq6JH1NT077Cp0sVJisHEMGXcx20IuF2BAj5l4g==}
 
-  '@getpaseo/relay@0.17.4':
-    resolution: {integrity: sha512-iVR+Xkq18HhsVC//eP7cig7b/YuQjNPT7u9fQx81xIoX6UpGRyHVNm7SUGjyByS3WKFYprnst5Q365hKDjQJcA==}
+  '@getpaseo/relay@0.18.1':
+    resolution: {integrity: sha512-HBdreID1+e+UXfGH6QZR/RO4pZIbU38ssTTrxk9URYXR2db65ycI5w7qdVJnX3qRkhzFW/IpUKZ0N0cJZkmPdA==}
 
   '@google/genai@1.52.0':
     resolution: {integrity: sha512-gwSvbpiN/17O9TbsqSsE/OzZcpv5Fo4RQjdngGgogtuB9RsyJ8ZHhX5KjHj1bp5N9snN2eK8LDGXSaWW2hof8Q==}
@@ -7480,22 +7480,22 @@ snapshots:
       '@shikijs/types': 3.23.0
       '@shikijs/vscode-textmate': 10.1.0
 
-  '@getpaseo/client@0.17.4':
+  '@getpaseo/client@0.18.1':
     dependencies:
-      '@getpaseo/protocol': 0.17.4
-      '@getpaseo/relay': 0.17.4
+      '@getpaseo/protocol': 0.18.1
+      '@getpaseo/relay': 0.18.1
       ws: 8.21.0
       zod: 4.4.3
     transitivePeerDependencies:
       - bufferutil
       - utf-8-validate
 
-  '@getpaseo/protocol@0.17.4':
+  '@getpaseo/protocol@0.18.1':
     dependencies:
       semver: 7.8.5
       zod: 4.4.3
 
-  '@getpaseo/relay@0.17.4':
+  '@getpaseo/relay@0.18.1':
     dependencies:
       '@noble/ciphers': 2.4.0
       '@noble/curves': 2.4.0

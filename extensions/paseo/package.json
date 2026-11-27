@@ -24,7 +24,7 @@
     "prepublishOnly": "pnpm run build"
   },
   "dependencies": {
-    "@getpaseo/client": "^0.17.4"
+    "@getpaseo/client": "^0.18.1"
   },
   "peerDependencies": {
     "@cotal-ai/core": "*"
