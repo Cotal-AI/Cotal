@@ -67,10 +67,8 @@ Payload admission and withholding follow the
 
 ### Dashboard command [#web]
 
-The dashboard is an owned service preset from `@cotal-ai/web`, not a top-level `web` command.
-It is not started by `up`, which only mints its read-only credential, the space's `web.creds`. An
-absent extension requires the explicit `cotal ext add @cotal-ai/web`; starting a service never
-installs it or creates a caller credential.
+The CLI ships the dashboard as the `web` service preset. `cotal up` mints the space's read-only
+`web.creds` without starting the dashboard. Starting the service uses an existing credential.
 
 ```bash
 cotal service start web --space main

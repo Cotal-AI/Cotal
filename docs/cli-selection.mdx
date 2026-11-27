@@ -1370,13 +1370,8 @@ its `web.pid` is alive. The dashboard that holds `web.pid` picks the record. A d
 that record through the web service instance whose recorded process is that PID. Any other holder is
 read from `web.session`. Neither record is read in place of the other. A `web.pid`, session record or
 service instance record that exists but cannot be read is named on the row with the error.
-Otherwise it reads `down`, or `not installed` without the web
-extension. Status and the `cotal setup` card count the web extension as installed only when a
-package in the extensions manifest provides `web` and that package is on disk. A web package record
-that cannot be read, is not JSON or has no `version` is named on the `Web extension` row and on the
-card's web row, after the dashboard's address when it is listening and beside an unreadable
-`web.pid` or session record. The `Web process` row still prints, and reads `down` unless the
-dashboard is listening.
+Otherwise it reads `down`. The CLI includes the dashboard, so availability does not depend on
+an entry in the extension inventory.
 
 
 ### Account state
@@ -1416,8 +1411,8 @@ It reads **each
 component's own control surface**, rather than treating a PID, a lease, or a successful probe of a
 sibling as proof that the component serves. It prints one of `serving`, `absent`, `not-serving`, or
 `refused` for each component and exits `0`, `1`, `2`, or `3` respectively (the highest observed
-state wins). The optional dashboard prints `not-installed` when its extension is not installed,
-or `not-started` when it is installed but has no process record or unsettled owned instance. Both exit `0`.
+state wins). The dashboard prints `not-started` when it has no process record or unsettled owned
+instance. This does not fail the check.
 The component pass uses the same selected space as the report above it. A trailing slash in the
 broker URL does not change which startup records the pass reads.
 That exit replaces the report's own, so a partial report followed by a clean pass exits 0:
@@ -1443,8 +1438,7 @@ That exit replaces the report's own, so a partial report followed by a clean pas
   unreadable part and exits `4` instead of silently skipping lease-holder verification.
   An unreadable renewal record or a recorded adoption refusal makes delivery `refused`, even when
   its responder is bound. Bare status reports the same finding and exits partial rather than healthy.
-- **web**: `not-installed` when the dashboard extension is not installed and no PID record exists.
-  An installed dashboard with no PID record or unsettled owned instance is `not-started`, which does not fail the check.
+- **web**: `not-started` when the dashboard has no PID record or unsettled owned instance.
   A dead PID with a stale record is still `absent` and exits `1`.
   An owned dashboard instance that exited without a confirmed stop is also `absent`, even if
   its shutdown removed the PID file. Confirm its stop with `cotal service stop web --yes`.

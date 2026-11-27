@@ -16,10 +16,10 @@ Read [Architecture](architecture.mdx) first, and use an existing [connector refe
 
 ## Implement the interface [#the-contract]
 
-Implement `Connector` from `@cotal-ai/core` and register it when your package is imported:
+Implement `Connector` from `@cotal-ai/core`. Export a default factory that registers it through the host:
 
 ```ts
-import { registry, type Connector } from "@cotal-ai/core";
+import type { Connector, PluginHost } from "@cotal-ai/core";
 
 const myConnector: Connector = {
 	kind: "connector",
@@ -30,7 +30,9 @@ const myConnector: Connector = {
 	},
 };
 
-registry.register(myConnector);
+export default function register(host: PluginHost): void {
+	host.register(myConnector);
+}
 ```
 
 This scaffold registers the connector but refuses every launch until you implement `buildLaunch`.
@@ -281,44 +283,38 @@ dialed, and the adapter reports a permanent error.
 
 ## Package the extension [#packaging-rules-enforced-at-ext-add]
 
-Publish your connector as an ESM npm package.
-`cotal ext add` imports the package and verifies its contributions in the CLI's registry.
-Use the following rules to share the host's registry:
+Publish your connector as an ESM npm package with a `version` and an entry in `main` or the root `exports`.
+Use a connector name that is unique among installed connectors. The name `cotal` is reserved.
+Operators select your connector with `--harness`.
 
-1. Declare `@cotal-ai/core` and every other `@cotal-ai/*` package you use as a `peerDependency`.
-   A regular dependency can create a second registry or a mismatched package copy, so installation refuses it.
-2. If you bundle your entry point, mark those host peers as external.
-3. Register the connector as an import side effect of your `main` or `exports` entry.
-4. Choose a connector `name` that is unique among installed connectors and is not the reserved name `cotal`.
-   Operators select it with `--harness`.
-5. Include a package `version`.
-   Installation pins that version, and each load checks the pin.
+Keep the entry free of registration side effects. Use the supplied `host` for every registration,
+including when the package has its own copy of core. The synchronous factory runs during
+manifest generation and first load. Keep it limited to building and registering providers.
+Start processes or open connections in the appropriate provider operations.
 
-A package manifest can have this shape:
+Build the entry and any launch artifacts before generating the declaration:
 
-```json
-{
-	"name": "@you/cotal-connector-myagent",
-	"version": "0.1.0",
-	"type": "module",
-	"main": "./dist/index.js",
-	"files": ["dist"],
-	"peerDependencies": {
-		"@cotal-ai/core": "<compatible-core-range>"
-	}
-}
+```bash
+cotal ext manifest
+npm pack --dry-run
 ```
 
-Replace `<compatible-core-range>` with the version range your connector supports.
-For local and third-party packages, `cotal ext add` refuses an invalid range or one that excludes the
-bundled core before it imports your connector. Marking the peer optional does not skip the check.
-`*` allows any core version.
-Ship every file needed to import and run it.
+`cotal ext manifest [<dir>]` runs the built factory to generate the `cotal` field in `package.json`.
+It records the contract and provider keys, along with metadata for help, connectors, local processes
+and service presets. Regenerate it whenever the declared contributions change. Contract `1` supports `connector`,
+`connector-setup`, `client-setup`, `runtime`, `command`, `local-process`, and `service-preset`.
+Include the built files in the published package. `cotal ext add` runs npm with `--ignore-scripts`
+and reads the declaration without importing the entry. On first use, Cotal checks the pinned version
+and core compatibility, runs the factory, and publishes the registrations only if they agree with the declaration.
 
-The installer links `@cotal-ai/*` peers to the binary's copies.
-Lazy materialization verifies and rebinds those links for the entry's initial import.
-Import each host peer through that initial graph.
-Child programs and launch artifacts that resolve dependencies later must bundle their dependencies rather than rely on a host-peer link that another process can rebind.
+If you use core at runtime, declare `@cotal-ai/core` in `dependencies` or bundle it. Cotal does not
+link your package to the binary's core. For a bundled build, generate the declaration with a CLI
+that uses the same core version as the bundle. First-party plugins must match the running CLI's
+core version. Third-party plugins that use core must use version `0.184.0` or later, up to the host's version.
+Installed plugins cannot depend on or declare peers on the host's shared-state packages
+`@cotal-ai/workspace`, `@cotal-ai/acp`, `@cotal-ai/linear`, or `@cotal-ai/web`.
+
+A plugin runs with the privileges of the Cotal process that loads it. Install plugins only from sources you trust.
 
 ## Exercise the connector [#connector-lifecycle]
 

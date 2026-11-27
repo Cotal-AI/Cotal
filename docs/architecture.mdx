@@ -100,7 +100,9 @@ Its internal seat custody component records runtime references and successor rec
 seats, and checks supervised restart and orphan reaping before lifecycle retirement.
 See [process supervision](cli-processes.mdx#supervise) for successor recovery.
 
-Extensions peer-depend on the host's core instance and self-register when imported.
+Installed extensions are npm packages. Cotal loads a package on demand and calls its default
+factory with a host that owns registration. An extension can use its own compatible core copy
+without sharing the binary's registry. See [Authoring a connector](authoring-a-connector.mdx).
 An unavailable connector or runtime throws. Implementations such as the CLI, manager, and delivery
 service communicate over the mesh and never import each other.
 The binary or an example imports the packages it needs as its composition root.

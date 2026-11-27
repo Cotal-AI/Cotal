@@ -12,15 +12,10 @@ T3 Code, Zed, JetBrains IDEs and Neovim are ACP clients.
 In the client, each thread is one Cotal agent. Its first prompt spawns the agent through your space's manager, in the thread's folder.
 The agent belongs to the manager, so it keeps running on the mesh when the client closes.
 
-## Install the extension [#install]
+## Prepare Cotal [#install]
 
-The `cotal acp` command comes from the optional `@cotal-ai/acp` extension.
-`cotal setup` adds it when it finds T3 Code or Zed on this computer.
-To add it yourself, run this on the machine where the client runs its agents:
-
-```bash
-cotal ext add @cotal-ai/acp
-```
+The `cotal acp` command ships with Cotal. Install Cotal on the machine where the client runs its agents.
+`cotal setup` configures T3 Code or Zed when it finds them on this computer.
 
 The agent needs a [running mesh](run-a-mesh.mdx).
 It finds the space the way other commands do, from the folder the client starts it in.
@@ -90,8 +85,8 @@ A client that installs agents as npm packages starts Cotal with `npx @cotal-ai/a
 That command keeps nothing of its own. It finds the `cotal` installed on this computer, on `PATH`, in `~/.local/bin` or in npm's global folder, and runs its `cotal acp` with the same arguments.
 Your spaces, sign-in and agents stay the ones that `cotal` already uses.
 
-When this computer has no Cotal, or a Cotal without the ACP extension, the agent offers only **Sign in to Cotal**.
-That sign-in runs in a terminal. It installs Cotal with `curl -fsSL https://get.cotal.ai | sh` (`npm install -g cotal-ai` on Windows) or adds the extension, then signs in to a space or sets one up.
+When this computer has no CLI with `cotal acp`, the agent offers only **Sign in to Cotal**.
+That sign-in runs in a terminal. If Cotal is missing, it installs Cotal with `curl -fsSL https://get.cotal.ai | sh` (`npm install -g cotal-ai` on Windows), then signs in to a space or sets one up. With an older CLI that shipped ACP separately, the launcher can still install the matching extension.
 
 ## How threads map to agents [#threads]
 

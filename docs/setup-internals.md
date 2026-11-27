@@ -312,9 +312,7 @@ verify that the recorded pid is alive and is a supervisor before they trust it
 
 ### The web dashboard is not started by `cotal up`
 
-The web dashboard ships inside `cotal-ai` as the `@cotal-ai/web` extension. The boot reconcile
-seeds it automatically, on the same durable, version-locked path as the built-in connectors
-(`SEEDED_EXTENSIONS`). It always matches the CLI version and needs no separate install. A static
+The `web` service preset ships with `cotal-ai` and needs no separate install. A static
 `up` also mints the dashboard's read-only credential, the space's `web.creds`, when it is absent.
 The provisioning notice wraps to stdout's terminal width with indented continuation lines and
 keeps `service start web` together. Outside a terminal it stays on one line.
@@ -384,8 +382,8 @@ uses, which is `cotal`, `npx cotal-ai`, `pnpm dlx cotal-ai`, or `pnpm cotal`, so
 ## Built-in connectors are seeded extensions
 
 The binary does not static-import the first-party connectors (`claude`, `opencode`, `codex`,
-`hermes`, `jcode`, `pi`). The composition root (`bin/cotal.ts`) registers no connector. A connector
-self-registers only when imported, and the CLI imports it only once it is installed.
+`hermes`, `jcode`, `pi`). The CLI loads each installed connector on demand and registers its
+providers through the factory. Help and inventory can use the package declaration without loading it.
 
 The CLI seeds the connectors before the first command of each boot that is not a read. It uses the
 same `cotal ext add` path a third party uses, so the connectors are ordinary extensions you can
@@ -408,7 +406,7 @@ The copied-install daemon upgrade fixture builder runs this same staging step be
 either source mode. After `pnpm build`, `tsx bin/smoke/daemon-generation-live.smoke.ts` needs no
 separate staging command and refreshes any existing generated payload from the current build.
 
-`SEEDED_EXTENSIONS` (`@cotal-ai/workspace`) is the shared list: the connectors plus `web`. The
+`SEEDED_EXTENSIONS` (`@cotal-ai/workspace`) lists the six first-party connectors. The
 prepack asserts that every bundled payload's `name` and `version` match the umbrella package. The
 `fixed` changeset group keeps them in lockstep, so a version-skewed payload can never be published.
 
@@ -422,7 +420,7 @@ Every connector bundle reads the same `cotal_docs` data (`docs-bundle.bin`, `doc
 `_shared/placements.json` records each file's sha256 and every path the prepack removed it from.
 
 `seed/paths.ts:shippedSourceDir` resolves each payload. In a source checkout it is the live source
-directory, `extensions/<pkg>` for a connector and `implementations/web` for `web`. In a published
+directory, `extensions/<pkg>`. In a published
 install it is `<cotal-ai>/seeded-connectors/<name>`.
 
 The reconcile copies that payload into the durable store, `seed/store/<version>/<name>`. It makes
@@ -438,16 +436,11 @@ After reconciliation, garbage collection removes older generations only when no 
 references them. It makes those generations' directories owner-writable before removal, including
 read-only staging trees left by an older failed seed.
 
-`ext add --install-links` reifies the `file:` dependency from that stable path. A volatile source
-would fail to re-reify. `ext add` then junction-links each `@cotal-ai/*` peer to the binary's own
-copy, and relinks the peers of every other installed package. It skips a recorded package whose
-directory is gone, with a warning.
-
-Before the first lazy import in each process, materialization rechecks those links by realpath and
-rebinds stale links under the extension lock. The recheck lets the registry-facing imports of a
-global install, npx, and source worktrees share the machine prefix. Each process still gets its
-host's single `@cotal-ai/core` registry instance. Launcher artifacts are self-contained and do not
-resolve those mutable links later.
+Seeding uses npm's `--install-links` to install a copy from the stable `file:` source, with
+`--ignore-scripts` to skip lifecycle scripts. The installed package's `cotal` declaration supplies
+its inventory without evaluating its code. First-party plugin builds bundle core. On demand, the
+host verifies the version and calls the factory with its registration interface. No links to the
+binary's own packages are needed.
 
 ### The reconcile treats each built-in by its record
 

@@ -1,5 +1,21 @@
 # Upgrading a running deployment
 
+## Extension package migration
+
+ACP, Linear and the web dashboard now ship with the CLI. Keep using `cotal acp`, `cotal linear`
+and `cotal service start web`. Reconciliation removes their old extension entries when it can
+retire the old package safely. Keep the existing client, account and service configuration.
+
+First-party connectors and optional runtimes remain separately installed packages. Reconciliation
+brings installed first-party plugins to the CLI version and preserves deliberate connector removals.
+
+Third-party plugins that registered on import need a release with a default factory and a `cotal`
+declaration. When the author publishes a compatible release, install it with
+`cotal ext add <package>@latest`. If you no longer need the plugin, remove its entry with
+`cotal ext remove <package>`. For local packages, follow the
+[connector packaging guide](authoring-a-connector.mdx#packaging-rules-enforced-at-ext-add), then
+rerun `cotal ext add` with the local path.
+
 ## Ended terminal sessions on user-auth spaces
 
 A user-auth terminal connection closes when the full auth service or a callout replica confirms

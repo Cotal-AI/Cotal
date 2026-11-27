@@ -128,8 +128,7 @@ before a definition is saved. Omit `--cwd` to use the directory you run `add` in
 below, for readiness over HTTP, environment references or a credential file.
 
 The presets built into the CLI are `auth-service`, `broker`, `delivery`, `exec-endpoint`,
-`feedback-intake` and `manager`. The `linear` and `web` presets come with the `@cotal-ai/linear`
-and `@cotal-ai/web` extensions, which `cotal ext add <package>` installs. Bare `service` lists the
+`feedback-intake`, `linear`, `manager` and `web`. Bare `service` lists the
 presets this machine has, and a name it does not have is refused as `DEPENDENCY_UNAVAILABLE`.
 
 `cotal service add <name> --preset <preset> --help` lists a preset's options. So does
@@ -372,8 +371,7 @@ start command, pass its words after `cotal help --`. Flags can precede the verb 
 as in `cotal help -- service --space reviews-dev start broker --config ./nats.conf`.
 Use `--no-open` with `cotal service start web` or when starting a dashboard saved under a custom name.
 Start help lists `--no-open` for either name. For a saved dashboard in another space, pass `--space <s>` to select it.
-A preset no registered or installed provider declares refuses by name; for `web` the refusal
-names `cotal ext add @cotal-ai/web`.
+A preset no registered or installed provider declares is refused by name.
 Options that collide with service/global flags require the file form. No preset is installed or
 provider code imported by help, completion, a guided question or definition creation.
 
@@ -387,8 +385,8 @@ one package-metadata fingerprint receipt. A changed selected declaration refuses
 Path annotations require absolute physical files/directories, or owned private files, without
 reading their contents during definition validation.
 
-The CLI's own presets are `auth-service`, `broker`, `delivery`, `exec-endpoint`, `feedback-intake`
-and `manager`. The `linear` and `web` presets come with their extensions. The intake preset is
+The CLI's own presets are `auth-service`, `broker`, `delivery`, `exec-endpoint`, `feedback-intake`,
+`linear`, `manager` and `web`. The intake preset is
 `feedback-intake`. Supply its `--root`, protected `--keys` and scoped
 broker `--creds` paths in the selected registered space. The keys file is JSON with one entry per
 key, `{"keys":[{"key":"<token>","tester":"<tester-id>","name":"<display-name>"}]}`, where `name`

@@ -7,13 +7,12 @@ audience: operators
 
 import { Callout } from "fumadocs-ui/components/callout";
 
-`linear` exposes account-specific MCP operations and registered endpoints through the installed `@cotal-ai/linear` extension.
+The built-in `linear` command exposes account-specific MCP operations and registered endpoints.
 
 
 ## linear [#linear]
 
 ```bash
-cotal ext add @cotal-ai/linear
 cotal linear account add <name> --mode <write|readonly> (--token-stdin | --token-file <path>)
 cotal linear account login <name> --mode <write|readonly>
 cotal linear account show <name>
@@ -26,8 +25,7 @@ cotal linear caller <name> --endpoint <reverse-dns-name> --out <path> [--channel
 ```
 
 Serves one Linear account as a registered Cotal endpoint that agents call with `cotal_describe` and
-`cotal_invoke`, and gives the operator a direct client for the same server. Until the extension is
-added, `cotal linear` and `cotal help linear` name the `cotal ext add` that adds it. It only talks to `https://mcp.linear.app/mcp`
+`cotal_invoke`, and gives the operator a direct client for the same server. It only talks to `https://mcp.linear.app/mcp`
 (mode `write`) or `https://mcp.linear.app/mcp/readonly` (mode `readonly`); there is no URL or header
 option. Use a separate account per Linear workspace, and prefer a `readonly` account with a
 restricted read key wherever writes are not needed.

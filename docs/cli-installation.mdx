@@ -180,8 +180,8 @@ written. Setup never removes a runtime you leave out; `cotal ext remove` does. `
 lists each one with its package, its host tool and whether setup found it set up, added it or left it
 out.
 
-When T3 Code or Zed is on this computer, setup installs `@cotal-ai/acp` as `cotal ext add` does, at
-this cotal's version, and adds the space to each client it finds (see
+When T3 Code or Zed is on this computer, setup uses the built-in ACP integration to add the space
+to each client it finds (see
 [Use an ACP client](acp-clients.mdx#add-to-a-client)). A client settings file setup cannot change
 leaves the rest saved and the result `partial`. `cotal update` points those entries at the Cotal it
 installed, and `cotal status` shows one whose command is gone.
@@ -849,6 +849,7 @@ cotal ext add <npm-package>
 cotal ext remove <name>
 cotal ext root            # print just the install prefix (scriptable)
 cotal ext seed [--repair|--reset|--force]
+cotal ext manifest [<dir>]
 ```
 
 `add` and `remove` each take one operand. Missing or extra operands are usage errors and
@@ -874,47 +875,25 @@ Give `remove` the package name as listed by `cotal ext list`, without a version.
 For a scoped package such as `@acme/_helper`, include the scope and the leading underscore.
 If the package is already absent, `remove` reports that nothing was removed and exits 0.
 
-On Linux and macOS, when Cotal runs a recognized npm script directly with its own Node because
-`node` is missing from `PATH`, extension install scripts can find that same Node as `node`.
+`cotal ext add` runs npm with `--ignore-scripts`. It reads the package's `cotal` declaration and
+records its providers without importing the package. Commands appear in help, completion and
+dispatch. Runtime providers load on demand, including when a running manager starts a seat with
+`spawn --runtime <name>`. Local process providers participate in `status` and selective `down`.
+On first use, Cotal verifies the installed version and core compatibility, then stages the default
+factory's registrations. It publishes them only if they match the declaration. Cotal does not link
+the plugin to the CLI's own packages.
 
-Operator-installed extensions: `add` installs an npm package into a cotal-owned prefix and records
-every registry provider it contributes. If the package registers kind `commands`, the receipt lists
-those entries separately and tells the author to use `command` for CLI commands. The package stays
-installed and `list` shows its recorded providers. Commands appear in help, completion, and dispatch; runtime
-providers are loaded on demand by commands such as `supervise`, and by a running manager the first
-time a managed seat names one with `spawn --runtime <name>`, so a `pty` manager launches a seat on
-an installed `tmux` without a restart; local process providers participate in `status` and
-selective `down`. Removing an additional runtime extension, one the manager was not started with,
-refuses the next seat that names it; the manager's own runtime and the seats already running stay
-as they are. `remove` and `list` manage them. The `@cotal-ai/web` dashboard is the
-canonical service preset and local-process example. Installed packages and their location are described in
-[config](config.mdx). Before importing a local or third-party extension, `add` checks its declared
-`@cotal-ai/core` peer range against the core it will link, even if the package marks that peer optional.
-It refuses an invalid or incompatible range without changing the installed extensions. Choose an
-extension build that supports your core or a CLI release that satisfies the declared range.
-`*` allows any version. The check compares prerelease versions at their actual precedence and ignores
-build metadata. In a source checkout, a `0.0.0` placeholder, with or without a prerelease label, cannot
-establish a mismatch. This check does not apply to official `@cotal-ai/*` releases selected by
-registry name, version, range, or tag. Seeding and self-update reconciliation do not apply this check.
+A running manager updates its extension inventory without stopping or restarting seats. Removing
+a plugin withdraws its providers from future launches. If the manager already loaded a plugin,
+replacing or reinstalling that package requires a manager restart before it can use the new copy.
 
-When a package needs an export its linked `@cotal-ai/*` peer does not have,
-`add` rolls back. Both `add` and a later load name the missing export and identify the older install
-when the versions establish one. If the versions match, check the extension's import against the
-exports of the linked peer before replacing either build.
-On POSIX shells, a reinstall command printed for a local extension quotes paths with spaces as one argument.
-When an operator-installed first-party extension has no recorded install spec, the advice gives
-`cotal ext add <package>`. The bare package name selects this CLI's version. In other cases where
-the original spec cannot be used in a command, the advice names `cotal ext remove <package>` instead.
-Each load or add reads the installed package's metadata once, using that same result for its version,
-peer links, entry and import diagnosis. Corrupt or unreadable metadata refuses before import; an entry
-that later changes its own `package.json` cannot change the peer range used to diagnose that import.
-When linking siblings, only a missing package directory can be skipped with a warning. A directory
-without metadata, or a dangling package link, is damaged and still refuses.
-Removing an extension or cleaning up a failed add keeps unrelated file-based extensions as
-installed copies, rather than turning them into links to their source or the built-in seed store.
-Removal uses the same peer policy as installation. Cotal relinks its shared packages without npm
-looking up peer dependencies for the remaining extensions in the registry.
-On Windows, background extension installs and seeding do not open a terminal window.
+`cotal ext manifest [<dir>]` generates the `cotal` declaration in a built plugin's `package.json`.
+It defaults to the current directory and runs the package's factory. Use it only on trusted
+source. See [Authoring a connector](authoring-a-connector.mdx#packaging-rules-enforced-at-ext-add).
+
+ACP, Linear and the web dashboard ship with the CLI and need no extension install. The inventory
+covers packages installed in the extension prefix. On Windows, background extension installs and
+seeding do not open a terminal window.
 
 One command at a time changes the installed connectors and extensions. While `setup`, `ext add`,
 `ext seed` or an update does that, a command that needs a connector waits for it. After one second
@@ -954,19 +933,10 @@ differs from the recorded pin, the warning names both versions and gives the rei
 Either a mismatch or unverifiable metadata makes the listing partial (exit 4). The warnings name the package, the affected
 path and a recovery step. JSON includes them in `warnings`, and the text report writes them to stderr.
 
-`add`, `remove` and each built-in seed relink the shared peers of every installed package after npm
-changes the prefix. A package recorded in the manifest whose directory is gone does not fail that
-step. One example is a package npm pruned as extraneous because no dependency list names it. A
-warning names the package and its path, the command that reinstalls it and
-`cotal ext remove <package>`, which drops its entry. For a built-in the reinstall command is
-`cotal ext seed --repair`. For any other package the warning prints `cotal ext add <original-spec>`
-with that placeholder, since a recorded spec can be a URL that carries a credential. Replace it with
-the spec you first passed to `ext add`. The entry stays in the manifest until you run one of them.
-A seed or repair that succeeds past it neither installs the package nor removes its entry, so
-`cotal ext list` still lists it and a command that reads that entry can still report it as a problem.
-A package directory that is present without a readable `package.json` still fails the step. After
-a seed that failed this way in an earlier release, `cotal ext seed --repair` finishes it, and
-`cotal ext remove` then drops the entry.
+If an install or removal finds another recorded package missing from disk, it warns and keeps
+that package's manifest entry. Run `cotal ext seed --repair` for a seeded connector or rerun
+`cotal ext add` with the original spec for an operator-installed package. Use
+`cotal ext remove <package>` to drop an entry you do not want.
 
 Removing an extension reclaims a pidfile when its recorded PID is proven dead. A running process,
 unreadable or unattributable record, or unconfirmed liveness still refuses removal with its process
@@ -977,8 +947,8 @@ declares under every mesh root, and a record folder it creates there is mode `07
 group-writable umask.
 
 Loading an installed extension first waits for the installation closure held by another command,
-including another extension load. It leaves peer links and module evaluation untouched until the
-holder releases, then continues. A non-update holder has a five-minute wait limit and gets the
+including another extension load. It waits to evaluate the module until the holder releases.
+A non-update holder has a five-minute wait limit and gets the
 one-second notice above. A running update has a two-minute limit and prints
 `waiting for a Cotal update to finish`.
 
@@ -998,9 +968,7 @@ The first-party agent connectors (`claude`, `opencode`, `codex`, `hermes`, `jcod
 the binary. They are seeded on first run through the **same** `ext add` path a third party uses, and
 appear in `cotal ext list` like any other extension. So you can remove one you do not want
 (`cotal ext remove @cotal-ai/connector-hermes`), and a deliberately-removed connector STAYS removed
-across upgrades. `cotal ext add <your-package>` adds a third-party connector the same way. The web
-dashboard (`@cotal-ai/web`, providing `service-preset:web`) is the seventh built-in seeded on the
-same path.
+across upgrades. `cotal ext add <your-package>` adds a third-party connector the same way.
 
 `cotal ext seed` is the maintenance entry for that seeding. Most commands that change state run
 it automatically. When `cotal up` starts a mesh with a manager, it seeds before launching its
@@ -1017,7 +985,7 @@ the seed keeps stdout to itself:
 |---|---|
 | (none) | Reconcile: seed any never-seeded built-in, refresh a seeded one whose version the binary bumped, leave a removed one removed. A no-op once current. |
 | `--repair` | Recover after a seed that failed or was interrupted, or a lost authority (rebuilds that seed's connector; restores the removed-vs-never-seeded record from its durable backup). Also reinstalls a seeded built-in whose entry file is gone or whose `package.json` is not JSON or has no `version`. |
-| `--reset` | Discard the record and re-seed all seven built-ins (the six connectors plus the web dashboard). **Resurrects any you removed.** Rebuilds cleanly over corrupt seed state. |
+| `--reset` | Discard the record and re-seed all six first-party connectors, including any you removed. Rebuilds cleanly over corrupt seed state. |
 | `--force` | Re-seed the built-ins even when the version stamp is current. Refuses to downgrade a newer shared store. |
 
 Pass at most one maintenance flag. Flags may precede `seed`: `cotal ext --repair seed` is

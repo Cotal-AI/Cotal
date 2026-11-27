@@ -46,7 +46,7 @@ Automatic connector reconciliation launches seed children through the same logic
 
 `pnpm smoke:retained-reads:live <A-pack> <B-pack> <C-pack> <new-private-root>` checks an install of A, a self-update to B and bare npm replacement with C. The three normal guarded closure packs must share a source revision. It verifies read-only inventory visibility, pending reconciliation, stale runtime refusal and a separate C selection after explicit reconciliation. Append `pending-promotion` to interrupt B's extension publication and check that C's reads leave that pending state untouched, without reconciling it.
 
-`pnpm smoke:seed-child:live <source-pack> <target-pack> <new-private-root>` exercises a real self-update and the other home's first plain `up`. It requires two normal guarded closure packs from one source revision and verifies the retained bootstrap, one logical target selection and all seven connector versions.
+`pnpm smoke:seed-child:live <source-pack> <target-pack> <new-private-root>` exercises a real self-update and the other home's first plain `up`. It requires two normal guarded closure packs from one source revision and verifies the retained bootstrap, one logical target selection and the seeded connector versions.
 
 Homes sharing one CLI installation keep separate built-in connector inventories.
 After another home updates the CLI, the next command that needs built-ins reconciles this home.
@@ -408,15 +408,17 @@ computer keeps its service credentials and identity. `cotal daemon uninstall` is
 would remove them. An incomplete rollback still requires guarded snapshot restoration.
 Before replacing the global binary, `cotal update --self` checks the release's first-party
 package archives through npm. Metadata reads run in bounded parallel batches and npm verifies each archive's integrity.
-The extension dependency check resolves Cotal peers at the selected release's exact version.
-Reconciliation links those peers to the installed CLI's copies.
-On Linux, `cotal update --self` checks the bundled extensions' peer links even when the CLI is at the latest version. It repairs links to a removed installation without reinstalling intact extensions.
+First-party plugins bundle core. Reconciliation checks that installed first-party plugins match
+the CLI release and reinstalls those that fail verification. Plugins are installed without links
+to the CLI's own core copy.
+For third-party packages that register on import, see the [extension package migration](UPGRADING.md#extension-package-migration).
 The command prints progress before release checks, the recovery snapshot, package installation,
 connector reconciliation and cleanup, and reports elapsed seconds to one decimal place for completed steps. Connector reconciliation installs changed built-ins and first-party operator extensions into one
 private copy of the extension prefix. It checks every package before promoting the complete prefix.
 A failed install or validation leaves the live prefix unchanged. Interrupted promotion is recovered
-before the CLI reads extension declarations. Extension imports used for validation remain serial
-so each package's registrations can be attributed and checked independently.
+before the CLI reads extension declarations. A first-party entry import used to verify a seeded
+or updated package does not register its providers. Registration happens when the host invokes the
+factory on demand.
 Every update reads and verifies its own package closure without reusing results from an earlier command.
 On Linux and macOS, self-update stops staging if the download stops making progress or staging
 reaches its five-minute limit. Cotal leaves the installed version and running local spaces unchanged.

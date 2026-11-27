@@ -269,11 +269,11 @@ Commands come from the surfaces the binary composes: the base mesh CLI, the mana
 delivery daemon, plus any operator-installed extensions. Hidden entries such as the deprecated
 `deliver` and `auth-service` are not completed.
 `cotal ext add <npm-package>` installs any registry providers a package contributes: commands,
-runtimes, service presets and local process lifecycle descriptors. The `web` dashboard and
-optional manager runtimes ship this way. A `@cotal-ai/*` package named without a version installs
+runtimes, service presets and local process lifecycle descriptors. Optional manager runtimes ship
+this way. A `@cotal-ai/*` extension named without a version installs
 this cotal's version, as `setup` and `update` do; a version or tag you name is installed as given.
 A new third-party extension is installed and validated in a temporary prefix before it is added
-to the live installation. A refused new add leaves installed package links and the three prefix
+to the live installation. A refused new add leaves installed packages and the three prefix
 manifests unchanged, and removes its temporary prefix. An add over an installed extension that
 fails or is interrupted puts the previous installation back. An interrupted add exits 130 and never
 reports the version it rolled back. Once an add has committed, failing to remove its copy of the
@@ -605,9 +605,8 @@ interrupted. Ctrl-C ends it at once with exit 130, as it ends the commands above
 
 The table has one row per command, including the hidden ones `cotal help` leaves out, under the
 section help lists it in.
-Installed extensions add their own: `@cotal-ai/linear` adds the [`linear`](cli-integrations.mdx#linear) command,
-`@cotal-ai/acp` adds the [`acp`](acp-clients.mdx#acp) command, and
-`@cotal-ai/web` adds the [web dashboard](cli-observation.mdx#web) as a service preset.
+The CLI also ships [`linear`](cli-integrations.mdx#linear), [`acp`](acp-clients.mdx#acp) and the
+[web dashboard](cli-observation.mdx#web) service preset.
 
 The manifest modes of `up`, `spawn`, and `down` (`-f <cotal.yaml>`) plus `topology` are covered
 together under [Manifest deploys](cli-startup.mdx#manifest-deploys).

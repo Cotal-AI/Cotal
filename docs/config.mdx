@@ -636,8 +636,8 @@ Move the file aside so Cotal can create the folder when it next saves configurat
 | `config.json` | Operator-level connector config (the base layer above) |
 | `preferences.json` | Your [preferences](#preferences), private to you (`0600`), written by `cotal config` |
 | `trusted-projects.json` | The [trusted project folders](#trusted-project-folders), private to you (`0600`), written by `cotal trust` |
-| `installs/<sha256>/sets/<version>/cotal/extensions/` | Installed POSIX CLI's `cotal ext` prefix: its own npm root (`node_modules`) plus an `extensions.json` provider/command-display cache. Built-in connectors install here too, seeded on first run |
-| `installs/<sha256>/sets/<version>/cotal/seed/` | Installed POSIX CLI's built-in-connector seeding state: the `ever-seeded` authority (+ durable backup), the init witness, the version stamp, the crash cursor, and `store/<version>/<name>` (the stable payloads `ext add --install-links` reifies each seeded connector from) |
+| `installs/<sha256>/sets/<version>/cotal/extensions/` | Installed POSIX CLI's extension prefix: an npm root (`node_modules`) and `extensions.json`, the authoritative inventory of package pins and declared providers. The first-party connectors are seeded here on first run |
+| `installs/<sha256>/sets/<version>/cotal/seed/` | Installed POSIX CLI's connector seeding state: the `ever-seeded` record and backup, the init witness, the version stamp, the crash cursor, and stable npm payloads in `store/<version>/<name>` |
 
 #### Shared extension storage
 
@@ -646,6 +646,8 @@ On Linux and macOS, an installed CLI keeps `extensions/` and `seed/` under
 the logical CLI entry path. Spaces and projects using that installation share its stores.
 `cotal ext root` prints the extension prefix, including before its first seed, without creating it.
 The first `cotal ext seed` keeps extensions already installed in that prefix.
+Use `cotal ext add` and `cotal ext remove` to change the inventory. Cotal does not discover
+plugins in project dependencies or npm's global tree, and it does not link extensions to the binary's own packages.
 A new version reads its retained predecessor until reconciliation copies and selects a new set.
 An existing legacy `extensions/` or `seed/` directly under the configuration directory remains
 readable until that migration. Windows, desktop runtimes and source checkouts use the direct paths.
