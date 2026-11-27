@@ -28,8 +28,9 @@ process if it is a leftover, or run the update from the installation that owns i
 installation first if its launch entry is gone. A missing external entry can have been a symlink
 into this installation, so its location alone does not prove that the Manager belongs elsewhere.
 
-macOS and Windows retain their existing Manager discovery in this release. The machine daemon
-continues to pin its hosted Managers on all supported platforms.
+On Windows, after a local stack has stopped, updates use Windows process inspection to check
+whether another local Manager may serve the space. A failed inspection does not establish that
+the Manager is gone. The machine daemon continues to pin its hosted Managers on all supported platforms.
 
 A local legacy custody report names the space, known Manager identity, seat count, and each
 seat's continuity class, including when there are no seats. Before a cold update, obtain the
@@ -46,11 +47,11 @@ Managers with running seats still require stopping those seats before replacemen
 ## Updating the installation
 
 On Linux, when `cotal update --self` finds no newer CLI version and proves the installed package closure
-current, it reports local Manager custody without replacing packages, reconciling connectors,
-or restarting the daemon. Legacy custody is informational on this path: a later replacement
-still requires stopping those agents. An unreadable custody report remains a refusal.
-This package check does not verify external harness integrations. Run `cotal update` to refresh
-those integrations. If the package closure needs repair, the usual continuity guards still apply.
+current, it skips package replacement, full connector reconciliation, and the running Manager continuity
+check. It does not restart a running daemon.
+A manual `cotal update --self` also repairs a complete Codex marketplace moved into the current
+Cotal home when Codex still points to the missing old path. Run `cotal update` to refresh other
+harness integrations. If the package closure needs repair, the usual continuity guards still apply.
 
 `cotal update` validates a recorded machine-daemon service before reconciling connectors.
 `cotal update --self` also checks it before replacing the global package. A missing receipt
@@ -312,7 +313,7 @@ and an unconfirmed native stop cannot be forgotten just because its process disa
 ## manager [#manager]
 
 ```bash
-cotal manager start [--runtime <name>] [--roster <file>] [--name <name>] [--launch <file> --launch-sha256 <digest>] [--foreground] [--dry-run] [--space <s>]
+cotal manager start [--runtime <name>] [--roster <file>] [--name <name>] [--launch <file> --launch-sha256 <digest>] [--idle-exit <seconds>] [--foreground] [--dry-run] [--space <s>]
 cotal manager stop [--with-agents] [--yes|--dry-run] [--space <s>]
 cotal manager restart [--with-agents] [--yes|--dry-run] [--space <s>]
 cotal manager status [--instance <full-id>] [--space <s>] [--json]
@@ -336,6 +337,10 @@ existing private resolved launch spec for the selected space, and `--launch-sha2
 SHA-256 of those file bytes. If you pass only one flag, the command names the missing flag before
 checking the file. If the file is missing, give `--launch` an existing absolute path and update the
 digest to match. Keep your other flags, including `--dry-run` for a preview.
+The lifecycle verbs take no positional arguments. Use `--space <space>` or `--instance <full-id>`
+to select the manager.
+`--name` gives the manager a display name. Only user-auth spaces accept this name with `--on`.
+On open and static spaces, use the full instance ID printed by `cotal ps`.
 See [Native manager service definition](#native-manager-service-definition).
 `cotal help manager <verb>` and `cotal manager <verb> --help` print the verb's help with those
 options. The first
@@ -343,15 +348,23 @@ start saves the space's `manager` service from the preset's defaults and says so
 service show manager` reads it. A start that names another `--runtime` or other option for a
 stopped manager saves it again with that option, and says so. With `--dry-run` it checks the
 registered broker URL and installed runtime metadata without loading provider code, saving a
-definition or starting a process. An invalid `--name` or a `--console-host` with whitespace or control
-characters is refused before changing the saved definition or stopped instance. A running one refuses
-`LIFECYCLE_BLOCKED` and names `cotal manager stop` first.
+definition or starting a process. It also rejects a `--console-host` with whitespace or control
+characters. If no manager is saved yet, the refusal suggests retrying with `--console-host 127.0.0.1`
+and keeping the other flags unchanged. An invalid `--name`, malformed `--console-host`,
+or launch digest override that does not match its file leaves the saved definition and stopped
+instance unchanged. After a digest mismatch, omit both launch flags to keep the saved launch settings,
+or verify the override file and retry with its matching SHA-256. With a manager running, start checks
+the replacement's runtime and broker before recommending a stop. If those checks pass and the start
+would change the running manager's options, it refuses with `LIFECYCLE_BLOCKED` and names
+`cotal manager stop`.
 
 On a user-auth space this folder hosts, `start` and `restart` need your signed-in, granted login,
 as `cotal up` does for its manager. On a user-auth space registered here from another host, they
 need your sign-in. Before anything is saved, stopped or launched, they confirm the sign-in with its
 IdP. Without one, or when the IdP rejects it because it expired or was revoked, they refuse
-`AUTH_REQUIRED` (exit 2), and Next names `cotal login --idp <base>`, then the command again. A
+`AUTH_REQUIRED` (exit 2). After signing in with `cotal login --idp <base>`, retry the original
+command. The printed retry keeps an explicit space, dry run and output format. If you supplied
+an instance or launch settings, the advice asks you to repeat your original options. A
 refused `restart` leaves a running manager as it was and says the running manager was left
 running. Any other failure of that check, such as an IdP that does not answer, is left to the start.
 In a folder
@@ -365,8 +378,12 @@ The manager these verbs act on is the space's one manager service: `manager` whe
 start` saved it, or `stack-manager` when `cotal up` did. Stderr names the saved service when it is
 not `manager`. So after `cotal up`, `cotal manager status` and `cotal manager stop` act on the
 stack's manager, and `cotal manager start` reports it running and starts no second one.
-If no manager has been started in the requested space, the start command suggested by `status` and
-`stop` names that space even when another one is selected.
+If the requested space was prepared but never started, `manager status` suggests running `cotal up`
+in that project's folder. When `status` or `stop` suggests a manager-only start, that command names
+the requested space even when another one is selected.
+When there is no saved or running manager, `cotal manager restart --dry-run` refuses with
+`TARGET_NOT_FOUND` (exit 2) and suggests `cotal manager start --space <space> --dry-run`.
+The suggested command keeps `--json` or `--plain` if you passed it.
 Without `--instance`, `cotal manager status` and `cotal manager stop` select the running stack
 manager even if an older saved `manager` service is stopped. Stopping the stack manager this way
 leaves the broker running. `--instance` still selects the named saved service instance.
@@ -391,28 +408,54 @@ opened for it, `<root>/.cotal/manager.<spaceKey>.log`, and changes nothing. It t
 `--follow` and `--json` as a service's `logs` does, and a follow ends when that manager's process is
 gone. After `cotal down` stops that manager, `logs` still reads the log it left: the text says the
 manager is stopped, with its PID while its record still names one, and names `cotal up` under Next,
-and `--json` carries `recordedProcess` with `state` set to `stopped`. With no such log, `logs`
-refuses `TARGET_NOT_FOUND` and names the file. If the folder's records show a manager ran there (a
-PID record that names a dead manager, or the instance identity a manager keeps once it starts), the
-refusal says the log is no longer there and names `cotal up` with the stack's `--root` and `--space`.
-Otherwise it says no manager has been started and also offers `cotal manager start` with the same
-`--space`. `cotal service logs stack-manager` reads
-the same file when no `stack-manager` is saved. A
-manager that `cotal supervise` runs in a terminal writes to that terminal instead. `stop`, `install`
-and the other verbs refuse it while it runs, because no saved service owns it; it stops with its
-stack through `cotal down`, or where `cotal supervise` runs it. With no saved `stack-manager`,
+and `--json` carries `recordedProcess` with `state` set to `stopped`. A one-shot tail of a missing
+log refuses `TARGET_NOT_FOUND` (exit 2) and names the file, even if the manager is running. An
+existing empty log returns an empty tail. If a running manager has no saved service, the missing-log
+refusal tells you where to read its output if you started it with `cotal supervise`. If no manager is
+running but the folder's records show one ran there (a PID record that names a dead manager, or a
+retained instance identity), the refusal says the log is gone and names `cotal up` with the stack's
+`--root` and `--space`. If there is no such record, it also offers `cotal manager start` with the same
+`--space`.
+`cotal service logs stack-manager` reads the same file when no `stack-manager` is saved.
+A manager that `cotal supervise` runs in a terminal writes to that terminal instead. `stop`,
+`install` and the other verbs refuse it while it runs, because no saved service owns it. It stops
+with its stack through `cotal down`, or where `cotal supervise` runs it. With no saved `stack-manager`,
 `cotal service stop stack-manager --yes` and `cotal service restart stack-manager --yes` identify
 that running manager and refuse `UNSUPPORTED` with the same stop advice. The refusal explains that
 stopping the manager stops every hosted workflow run it drives, and `cotal down` also stops the
 broker and agents. Revoke a run before the stop if it must not resume when the stack starts again
 ([workflow operations](workflow-operations.mdx#revocation)).
 
+`--idle-exit <seconds>` applies to that start only. The manager stops itself once it has held no
+agents for that long: no agent running or starting, no hosted workflow run, no preservation or
+resume open, and none of the pending work over which `cotal manager stop` refuses.
+`cotal status --components` lists that work on the manager row by these labels, with a count:
+`lifecycle work` (a spawn or control call in flight), `reserved launches` (a name reserved for a
+launch), `pending retirements` (a name held until its retirement completes), `cleanup in flight` (a
+deprovision in flight) and `reconciliation in flight` (the startup reconcile of static agents). A
+retirement that failed holds its name until a spawn of that name retries it, and until then the
+manager does not stop itself. The clock starts when the manager serves and starts again whenever it
+holds an agent. The manager checks it every 5 seconds, so it stops within 5 seconds after the
+period ends. The stop is the one `cotal manager stop` makes without `--with-agents`, so the manager
+also deregisters. The value is recorded on the instance and never in the saved definition, so a
+later start without it runs until stopped. While the manager runs, `status` shows it on the
+`Idle exit` row. Once the manager stopped itself, `status` shows when on the `Stopped` row and names `cotal manager start` under Next, and the
+log's last lines say why. A start with `--idle-exit` while the manager runs with another value, or
+with none, refuses `LIFECYCLE_BLOCKED`. `--idle-exit` on another service refuses before anything
+launches. [`cotal acp`](acp-clients.mdx) passes `--idle-exit 600` when it starts a manager for a thread.
+
+A started manager gets the environment of a [service child](cli-services.mdx#service-child-environment)
+and the [`spawn.env`](config.mdx#launcher-variables) names that are set where it starts. Its seats
+take their provider keys and harness folders from that environment, so one reaches them only when
+`spawn.env` lists it.
+
 `--foreground` keeps the manager in this terminal until Ctrl-C, which stops it through its native
 stop. A unit or container you write that runs a manager uses `cotal manager start --foreground`.
 `cotal manager install` refuses `UNSUPPORTED` even with `--dry-run`, because a Cotal-written unit runs
-only a direct-process service. It names the `ExecStart=` line for a unit of your own instead, whether
-or not a manager was started, with one exception: while a manager that `cotal up` started with no
-saved service runs, `install` refuses it as `stop` does and names `cotal down`.
+only a direct-process service. On Windows, run `cotal up` from the folder that hosts the local
+space to start its Manager. On Linux, the refusal names the `ExecStart=` line for a systemd user
+unit of your own. While a manager that `cotal up` started with no saved service runs, `install`
+refuses it as `stop` does and names `cotal down`.
 
 A manager that fails while it starts writes one last line that names the cause:
 `the manager did not start`, then the failure's code and message, the error it wraps and its
@@ -431,6 +474,14 @@ lifetime notice that `start` prints there first, and the refusal says
 `manager start` and `manager restart` run the first-run connector seed, as `cotal supervise` does,
 so a fresh machine or container has its connectors before the manager boots; `status`, `logs`,
 `stop` and the maintenance verbs install nothing.
+
+A manager publishes this machine's id as `machine` in its `status` and presence, so a client on the
+same machine, such as [`cotal acp`](acp-clients.mdx), knows it runs there even after the host name
+changes. The id is an HMAC of the OS machine identity: `/etc/machine-id` on Linux, the hardware UUID
+on macOS, and the system ID on Windows. Where the manager cannot read that identity, as in a
+container without `/etc/machine-id`, it leaves `machine` out and its log says so in one line. No
+client then reads it as running on the client's own machine, and `cotal acp` on such a host fails a
+new thread, saying it cannot read this machine's id.
 
 `reconcile` and `seats` are the [manager maintenance](#manager-maintenance) commands. Bare
 `cotal manager` lists every verb and starts nothing.

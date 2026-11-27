@@ -57,7 +57,9 @@ import { createHash } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { codeSpan } from "@cotal-ai/workspace";
 import { assertSmokeSandboxDown, freePort, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
+import { shellWord } from "../src/lib/endpoint-errors.js";
 
 // The child `runCotal` starts: the composition root as the binary imports it (the CLI and the
 // `auth` command register themselves), one command line through `runCli`, then its exit code.
@@ -586,6 +588,15 @@ try {
       try { envelope = JSON.parse(json.out); } catch { /* not one envelope; the check below shows it */ }
       check("  and --json carries the same message and Next", json.code === 1 && envelope.error?.code === "USAGE_INVALID" && envelope.error.message === said && envelope.error.remedy === next && !existsSync(out), json.out);
     }
+    const dashRole = await runMint(["reader", "--role=-review!", "--out", out, "--json"]);
+    const dashError = JSON.parse(dashRole.out).error;
+    const roleOption = /such as `(--role=[^`]+)`/.exec(dashError?.remedy ?? "")?.[1];
+    check("auth mint gives the corrected dash-leading role as one option word",
+      dashRole.code === 1 && dashError?.code === "USAGE_INVALID" && roleOption === "--role=-review_" && !existsSync(out), dashRole.out);
+    const dashOut = join(root, "dash-role.creds");
+    const dashRetry = await runMint(["reader", roleOption!, "--out", dashOut, "--json"]);
+    check("the printed role option mints a credential with the corrected role",
+      dashRetry.code === 0 && JSON.parse(dashRetry.out).result?.grants?.role === "-review_" && existsSync(dashOut), dashRetry.out);
     for (const flag of [["--expires-in", "3600"], ["--expires-at", "2000000000"]]) {
       const r = await runMint(["x", "--profile", "observer", "--no-expiry", ...flag, "--out", out]);
       check(`--no-expiry with ${flag[0]} exits 1 with the reason and mints nothing`, r.code === 1 && /--no-expiry issues a credential with no expiry, so it takes no --expires-in or --expires-at/.test(r.out) && !existsSync(out) && !existsSync(`${out}.no-expiry.json`), r.out);
@@ -649,7 +660,7 @@ try {
     const linked = await runMint(["x", "--profile", "observer", "--out", join(link, "sub", "x.creds")]);
     check("--out through a symbolic link exits 2 PERMISSION_DENIED, naming the link, where it points and the path without it",
       linked.code === 2 && /^\s*Code:\s+PERMISSION_DENIED$/m.test(linked.out) && linked.out.includes(`the --out path goes through ${link}, a symbolic link to ${real}`)
-        && linked.out.includes(`such as ${join(real, "sub", "x.creds")} if that folder is yours`), linked.out);
+        && linked.out.includes(`such as ${codeSpan(shellWord(join(real, "sub", "x.creds")))} if that folder is yours`), linked.out);
     check("  and creates nothing through the link", readdirSync(real).length === 0);
     const file = join(root, "out-file");
     writeFileSync(file, "", { mode: 0o600 });
@@ -897,7 +908,7 @@ try {
       check("#7565: a lifetime beyond Node's timer limit stays connected rather than overflowing to immediate expiry",
         longStarted && longStillRunning && !/TimeoutOverflowWarning/.test(longOut), longOut);
 
-      // #7563: control commands refuse --creds before dialing as UNSUPPORTED (exit 2) with Next naming without --creds,
+      // #7563: control commands refuse --creds before dialing as UNSUPPORTED (exit 2) with a remedy,
       // and status --help / bare status --creds do not advertise --creds as a working named-agent read.
       const admCreds = join(exports, "adm-ctrl.creds");
       const admMinted = await runMint(["adm_ctrl", "--profile", "admin", "--out", admCreds]);
@@ -906,8 +917,10 @@ try {
       check("#7563: status --help does not advertise --creds as a working named-agent credential",
         statusHelp.code === 0 && !/named agent: use an explicit connection credential/.test(statusHelp.out), statusHelp.out);
       const bareStatusCreds = await runCotal(["status", "--creds", admCreds]);
-      check("#7563: bare status --creds exits 2 UNSUPPORTED naming without --creds",
-        bareStatusCreds.code === 2 && /Code:\s+UNSUPPORTED/.test(bareStatusCreds.out) && /without --creds/.test(bareStatusCreds.out) && !/select a named agent read/.test(bareStatusCreds.out), bareStatusCreds);
+      check("#7563: bare status --creds exits 2 UNSUPPORTED with Next to remove only --creds and its value",
+        bareStatusCreds.code === 2 && /Code:\s+UNSUPPORTED/.test(bareStatusCreds.out)
+          && /Next\s+remove --creds and its value, then rerun the same command with the remaining arguments unchanged/.test(bareStatusCreds.out)
+          && !/select a named agent read/.test(bareStatusCreds.out), bareStatusCreds);
       for (const [label, argv] of [
         ["status <agent>", ["status", "some_agent", "--space", "offlinecheck", "--creds", admCreds]],
         ["ps", ["ps", "--space", "offlinecheck", "--creds", admCreds]],

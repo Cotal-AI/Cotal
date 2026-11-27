@@ -146,6 +146,15 @@ let delivery: Awaited<ReturnType<typeof bootDeliveryDaemon>> | undefined;
 try {
   await setupSpaceStreams({ servers: brokerA.servers, space: spaceA, creds: await mintCreds(auth, newIdentity(), "provisioner") });
   recordMesh({ space: spaceA, server: brokerA.servers, root: wsA, mode: "auth", ts: new Date().toISOString() });
+  const startFile = join(wsA, "start.cotal.js");
+  writeFileSync(startFile, PURE);
+  const noManager = await execFile(process.execPath, [resolve("bin/dist/cotal.js"), "r", "start", startFile, "--json"], {
+    cwd: wsA, env: { PATH: process.env.PATH, HOME: home, XDG_CONFIG_HOME: home, COTAL_HOME: home, COTAL_SKIP_CONNECTOR_SEED: "1", DO_NOT_TRACK: "1" }, timeout: 30_000,
+  }).catch((error: { code?: number; stdout?: string }) => error);
+  const noManagerError = JSON.parse(noManager.stdout || "{}").error;
+  c("A0. Hosted start still points to the manager on a static-auth mesh without one",
+    "code" in noManager && noManager.code === 2 && noManagerError?.code === "TARGET_UNAVAILABLE"
+      && noManagerError?.remedy.endsWith("a stack started with --no-manager has none"), noManager);
   delivery = await bootDeliveryDaemon({
     space: spaceA, servers: brokerA.servers, auth,
     reloadStoreIdentity: workspaceSecretStore(wsA).identity,
@@ -1163,11 +1172,60 @@ try {
   scratch.push(wsB);
   mkdirSync(join(wsB, ".cotal", "agents"), { recursive: true });
   recordMesh({ space: spaceB, server, root: wsB, mode: "open", ts: new Date().toISOString() });
+  const file = join(wsB, "cp.cotal.js");
+  writeFileSync(file, CHECKPOINT);
+  const runCli = (...args: string[]) => execFile(process.execPath, [resolve("bin/dist/cotal.js"), "run", ...args], {
+    cwd: wsB, env: { PATH: process.env.PATH, HOME: home, XDG_CONFIG_HOME: home, COTAL_HOME: home, COTAL_SKIP_CONNECTOR_SEED: "1", DO_NOT_TRACK: "1" }, timeout: 30_000,
+  });
+  const { stdout: localList } = await runCli("list", "--local", "--plain");
+  c("B0. The local list on a broker-only open mesh keeps the local journal and offers offline simulation instead of start",
+    localList.includes("Open meshes cannot host workflow runs.") && ["cotal", "pnpm cotal"].some((cli) =>
+      localList.includes(`${cli} r show <run-id> --local`) && localList.includes(`${cli} r simulate <file>`) && !localList.includes(`${cli} r start`)), localList);
+  const { stdout: hostedList, stderr: hostedListErrors } = await runCli("--space", spaceB, "--server", server, "--plain");
+  c("B0b. The hosted list on a broker-only open mesh succeeds and points to the local inventory and offline simulation",
+    hostedList.includes("Open meshes cannot host workflow runs.") && hostedListErrors === "" && ["cotal", "pnpm cotal"].some((cli) =>
+      hostedList.includes(`${cli} r list --local --space ${spaceB} --server '${server}'`) && hostedList.includes(`${cli} r simulate <file>`)
+        && !hostedList.includes(`${cli} r start`)), { hostedList, hostedListErrors });
+  const selectors = ["--endpoint", "custom", "--space", spaceB, "--server", server, "--json"];
+  const missing = ["show", "run-missing", ...selectors];
+  const lookup = (...flags: string[]) => runCli(...missing, ...flags).catch((error: { code?: number; stdout: string; stderr: string }) => error);
+  const [direct, local, pinned] = await Promise.all([lookup(), lookup("--local"), lookup("--on", mintLifecycleUid())]);
+  const missingResult = JSON.parse(direct.stdout || "{}");
+  c("B0d. Unpinned show on a broker-only open mesh reports a missing run just as an explicit local read does",
+    "code" in direct && direct.code === 2 && direct.stderr === "" && direct.stdout === local.stdout && missingResult.error?.code === "TARGET_NOT_FOUND"
+      && missingResult.target?.space === spaceB && missingResult.target?.endpoint === "custom" && missingResult.target?.run === "run-missing"
+      && missingResult.error?.remedy === `list the recorded runs with \`cotal run list --local --space ${spaceB} --server '${server}' --endpoint custom --json\``, direct);
+  const pinnedError = JSON.parse(pinned.stdout || "{}").error;
+  c("B0e. An explicit manager pin does not read the broker journal",
+    "code" in pinned && pinned.code === 2 && pinned.stderr === "" && pinnedError?.code === "TARGET_UNAVAILABLE"
+      && pinnedError?.remedy.endsWith("a stack started with --no-manager has none"), pinned);
+  const inventoryArgs = ["list", "--endpoint", "custom", "--space", spaceB, "--server", server, "--json"];
+  const hostedInventory = await runCli(...inventoryArgs);
+  const localInventory = await runCli(...inventoryArgs, "--local");
+  const unchecked = JSON.parse(hostedInventory.stdout);
+  const checked = JSON.parse(localInventory.stdout);
+  c("B0c. Workflow JSON distinguishes an unchecked broker-only inventory from a checked empty endpoint",
+    hostedInventory.stderr === "" && unchecked.outcome === "ok" && unchecked.completeness === "not-checked"
+      && unchecked.result?.kind === "runs" && unchecked.result.items?.length === 0
+      && unchecked.warnings?.length === 1 && unchecked.warnings[0]?.code === "TARGET_UNAVAILABLE"
+      && unchecked.warnings[0]?.message.includes("Add `--local` to this command")
+      && localInventory.stderr === "" && checked.outcome === "ok" && checked.completeness === "complete"
+      && checked.result?.kind === "runs" && checked.result.items?.length === 0
+      && checked.warnings?.length === 1 && checked.warnings[0]?.code === "ENDPOINT_HAS_NO_RUNS"
+      && checked.warnings[0]?.target.endpoint === "custom", { hostedInventory, localInventory });
+  const brokerOnlyStart = await runCli("start", "./cp.cotal.js", "--json").catch((error: { code?: number; stdout?: string }) => error);
+  const plainStart = await runCli("start", "./cp.cotal.js", "--plain").catch((error: { code?: number; stderr?: string }) => error);
+  const refusal = JSON.parse(brokerOnlyStart.stdout || "{}");
+  const openStartRemedy = "test the program offline with `cotal r simulate <file>`, or use a static-auth mesh to host the run";
+  c("B0a. Hosted start on a broker-only open mesh gives the same simulation and static-auth guidance in JSON and plain output",
+    "code" in brokerOnlyStart && brokerOnlyStart.code === 2 && refusal.outcome === "refused" && refusal.target?.space === spaceB
+      && refusal.error?.code === "UNSUPPORTED" && refusal.error?.message === "an open mesh cannot host workflow runs because it does not issue caller authority or record run admission"
+      && refusal.error?.remedy === openStartRemedy
+      && "code" in plainStart && plainStart.code === 2
+      && plainStart.stderr?.split("\n").some((line) => line.trim() === openStartRemedy) === true, { refusal, plainStart });
   mgr = new Manager({ space: spaceB, servers: server, runtime: "pty", workspaceRoot: wsB });
   await mgr.start();
 
-  const file = join(wsB, "cp.cotal.js");
-  writeFileSync(file, CHECKPOINT);
   const LOGS: string[] = [];
   const realLog = console.log;
   console.log = (...a: unknown[]) => { LOGS.push(a.map(String).join(" ")); };
@@ -1177,8 +1235,8 @@ try {
     return LOGS.join("\n");
   };
   // An open mesh issues no caller authority and keeps no admission store (SPEC 14.8), so it hosts
-  // no run and admits no local one: both refusals name the fact. The hosted one is the manager's
-  // refusal, thrown classified for the command kernel; the local one goes through `console.error` +
+  // no run and admits no local one: both refusals name the fact. The hosted one is classified for
+  // the command kernel; the local one goes through `console.error` +
   // `process.exit(1)`, captured here the way A7 captures them.
   const realError = console.error, realExit = process.exit;
   console.error = (...a: unknown[]) => { LOGS.push(a.map(String).join(" ")); };
@@ -1209,7 +1267,7 @@ try {
     process.exit = realExit;
     process.exitCode = undefined;
   }
-  c("B1. `cotal run start` on an open mesh is refused by the manager, UNSUPPORTED, naming the space and that runs need a static-auth mesh", hostedRefusal?.outcome === "refused" && hostedRefusal.code === "UNSUPPORTED" && hostedOut.includes("an open mesh issues no caller authority") && hostedOut.includes(spaceB), hostedOut);
+  c("B1. `cotal run start` on an open mesh with a manager is still refused as UNSUPPORTED", hostedRefusal?.outcome === "refused" && hostedRefusal.code === "UNSUPPORTED" && hostedOut.includes("an open mesh cannot host workflow runs"), hostedOut);
   c("B2. `cotal run start --local` on an open mesh is refused before any drive: no admission store stands there", localOut.includes("threw: exit 1") && localOut.includes("an open mesh keeps no admission store"), localOut);
   const listed = (() => { try { return JSON.parse(ps) as { command?: unknown; outcome?: unknown; target?: { space?: unknown }; result?: { kind?: unknown; items?: unknown } }; } catch { return undefined; } })();
   c("B3. `cotal run ps` still reads there, and lists nothing", listed?.command === "run" && listed.outcome === "ok" && listed.target?.space === spaceB
@@ -1224,6 +1282,24 @@ try {
   c("B6. and the manager it names is the running one: `run ps --on` that id reads", pinnedPs.includes("ok"), pinnedPs);
   await mgr.stop({ withAgents: true });
   mgr = undefined;
+  const recordedId = "run-recorded";
+  const recordedAt = Date.now();
+  const fixture = await connect({ servers: server });
+  try {
+    await createRunSpec(await openRecordsBucket(fixture, spaceB), "custom", recordedId, {
+      pins: { seed: "recorded", startedAt: recordedAt, yieldEvery: 1, stepBudget: 1, effectCeiling: 1, languageVersion: "1" }, createdAt: recordedAt,
+    });
+    const takeoverId = newTakeoverId();
+    await activateRun(jetstream(fixture), await jetstreamManager(fixture), {
+      space: spaceB, runId: recordedId, holder: `fixture.${takeoverId}`, epoch: 1, fencingToken: 1, takeoverId, at: recordedAt, expect: "new",
+    });
+  } finally { await fixture.close(); }
+  const recorded = await runCli("show", recordedId, ...selectors);
+  const recordedResult = JSON.parse(recorded.stdout);
+  c("B7. Unpinned show reads a recorded journal at the requested endpoint directly from the broker",
+    recorded.stderr === "" && recordedResult.outcome === "ok" && recordedResult.target?.space === spaceB
+      && recordedResult.result?.view?.runId === recordedId && recordedResult.result.view.endpoint === "custom"
+      && recordedResult.result.view.journal.some((row: RunJournalRowT) => row.kind === "activation" && row.epoch === 1), recorded);
 } catch (e) {
   fail++;
   console.log("  ✗ FAIL: phase B threw", (e as Error).stack ?? String(e));
@@ -1249,7 +1325,7 @@ try { await delivery?.stop(); } catch { /* teardown */ }
   if (stillUp.running.length) console.log(`  ! seat processes still running after SIGKILL: ${stillUp.running.join(", ")}`);
 }
 
-const EXPECTED_CELLS = 110;
+const EXPECTED_CELLS = 118;
 if (pass + fail !== EXPECTED_CELLS) {
   console.log(`SUITE INCOMPLETE — ran ${pass + fail} of ${EXPECTED_CELLS} cells; a partial run is not a pass`);
   fail += 1;

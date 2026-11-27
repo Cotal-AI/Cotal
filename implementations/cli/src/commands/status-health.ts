@@ -66,7 +66,7 @@ import { recordTelemetryFailure } from "../telemetry.js";
 import { c } from "../ui.js";
 import { cliControl } from "../lib/control.js";
 import { instanceProjection, serviceInstances } from "../lib/service-instances.js";
-import { readStackJournal, STACK_DEFINITION, stackStartedWithoutManager, unusableStackJournal } from "../lib/stack-journal.js";
+import { readStackJournal, STACK_DEFINITION, stackRootGone, stackStartedWithoutManager, unusableStackJournal } from "../lib/stack-journal.js";
 import { askManager } from "@cotal-ai/workspace/control";
 import { managerStopImpactFacts } from "./status-stop-impact.js";
 import { type Selected, type SelectedResult, type StatusResult, UnregisteredRoot } from "./status-model.js";
@@ -667,31 +667,54 @@ async function brokerHealth(target: MeshTarget, store: StoreWriteObservation | u
   }
 }
 
-/** The listener can answer even when the original folder's health evidence is unavailable. */
-function movedStackComponentHealth(target: MeshTarget, meshes: StatusResult["meshes"]): [ComponentHealth, ComponentHealth, ComponentHealth] {
-  const reason = "stack health cannot be checked at the recorded project folder";
-  const refused = (name: string, facts: string[] = []): ComponentHealth => ({ name, verdict: "refused", facts: [...facts, reason] });
-  const address = brokerAddressForDisplay(target.server);
-  const reachable = meshes.items.some((mesh) => mesh.space === target.space && mesh.server === address && mesh.check === "reachable");
-  return [refused("manager"), refused("delivery"), refused("broker", [
-    ...(address === undefined ? [] : [`registered ${address}`]), ...(reachable ? ["reachable"] : []),
-  ])];
+function movedStackComponent(name: string, facts: string[] = []): ComponentHealth {
+  return { name, verdict: "refused", facts: [...facts, "stack health cannot be checked at the recorded project folder"] };
 }
 
-export async function printComponentHealth(selected: Selected, store: StoreWriteObservation | undefined, report: SelectedResult, meshes: StatusResult["meshes"]): Promise<void> {
+/** The listener can answer even when the original folder's health evidence is unavailable. */
+function movedStackBrokerHealth(target: MeshTarget, meshes: StatusResult["meshes"]): ComponentHealth {
+  const address = brokerAddressForDisplay(target.server);
+  const reachable = meshes.items.some((mesh) => mesh.space === target.space && mesh.server === address && mesh.check === "reachable");
+  return movedStackComponent("broker", [
+    ...(address === undefined ? [] : [`registered ${address}`]), ...(reachable ? ["reachable"] : []),
+  ]);
+}
+
+/** An implicit target can find the displaced records without resolving a mesh to probe. */
+async function movedStackTargetHealth(report: SelectedResult, meshes: StatusResult["meshes"], server: string | undefined): Promise<ComponentHealth | undefined> {
+  if (report.resolved || !report.space || !report.recordedRoot || !server) return undefined;
+  const address = brokerAddressForDisplay(server);
+  const registered = meshes.items.find((mesh) => mesh.space === report.space && mesh.root === report.recordedRoot
+    && mesh.origin === "up" && (mesh.mode === "auth" || mesh.mode === "open") && mesh.server === address);
+  if (!address || !registered || !stackRootGone(registered.space, registered.root)) return undefined;
+  const reachable = registered.check === "reachable" || await isReachable(server, registered.tlsRequired ? { tls: true } : {});
+  return movedStackComponent("target", [`registered ${address}`, ...(reachable ? ["reachable"] : [])]);
+}
+
+export async function printComponentHealth(selected: Selected, store: StoreWriteObservation | undefined, report: SelectedResult, meshes: StatusResult["meshes"], selectedHint: string | undefined, starting?: string, recoveryBroker?: number, recoveryMembers?: readonly { role: string; pid: number }[]): Promise<void> {
   section("Component Health");
+  const verified = recoveryMembers ?? (recoveryBroker === undefined ? undefined : [{ role: "broker", pid: recoveryBroker }]);
+  if (verified !== undefined && !report.resolved)
+    return printComponents([{ name: "target", verdict: "refused", facts: ["service health cannot be checked", report.message, ...verified.map((row) => `${row.role} pid ${row.pid}`), ...(selectedHint === undefined ? [] : [selectedHint])] }]);
   if (!selected.ok) {
-    const error = selected.error;
-    const e = isWorkspaceTargetError(error) && error.code === "not-started" && error.details.root !== undefined && !error.details.rootMissing
-      ? unusableStackJournal(error.details.root) ?? error : error;
-    if (isCommandFailure(e) && (e.code === "SCHEMA_INVALID" || e.code === "PERMISSION_DENIED"))
-      return printComponents([{ name: "target", verdict: "refused", facts: [e.code, e.message, ...(e.remedy ? [e.remedy] : [])] }], e.code);
+    const e = selected.error;
+    const journal = isWorkspaceTargetError(e) && e.code === "not-started" && e.details.root !== undefined && !e.details.rootMissing
+      ? unusableStackJournal(e.details.root) : undefined;
+    const refusal = journal ?? (isCommandFailure(e) && (e.code === "SCHEMA_INVALID" || e.code === "PERMISSION_DENIED") ? e : undefined);
+    if (refusal)
+      return printComponents([{ name: "target", verdict: "refused", facts: [refusal.code, refusal.message, ...(refusal.remedy ? [refusal.remedy] : [])] }], refusal.code);
     if (isMeshRegistryError(e))
       return printComponents([{ name: "target", verdict: "refused", facts: ["SCHEMA_INVALID", e.message] }], "SCHEMA_INVALID");
     if (isWorkspaceTargetError(e)) {
+      const moved = e.code === "not-started" ? await movedStackTargetHealth(report, meshes, e.details.server) : undefined;
+      if (moved) {
+        const { message, remedy } = workspaceErrorParts({ kind: "target", error: e });
+        return printComponents([{ ...moved, facts: [...moved.facts, remedy === undefined ? message : `${message} - ${displayRemedy(remedy)}`] }]);
+      }
       const verdict = e.code === "not-started" ? "absent" : "refused";
       const { message, remedy } = workspaceErrorParts({ kind: "target", error: e });
-      return printComponents([{ name: "target", verdict, facts: [e.code, report.channelSeedBlocksRestart || remedy === undefined ? message : `${message} - ${displayRemedy(remedy)}`] }]);
+      const step = verdict === "absent" ? selectedHint : remedy === undefined ? undefined : displayRemedy(remedy);
+      return printComponents([{ name: "target", verdict, facts: [e.code, starting ?? (report.channelSeedBlocksRestart || step === undefined || step === message ? message : `${message} - ${step}`)] }]);
     }
     if (e instanceof UnregisteredRoot)
       return printComponents([{ name: "target", verdict: "refused", facts: ["unregistered-root", `no space is registered or prepared here for ${e.root}`] }]);
@@ -700,14 +723,14 @@ export async function printComponentHealth(selected: Selected, store: StoreWrite
   const target = selected.target;
   const context: LocalProcessContext = { root: target.root, space: target.space, userAuth: target.mode === "user" };
   if (target.mode === "auth" && (report.resolved ? report.connection === "root-gone" : report.code === "moved-folder") && target.source !== "flag-space-override") {
-    const [manager, delivery, broker] = movedStackComponentHealth(target, meshes);
-    return printComponents([manager, delivery, await webHealth(context), broker]);
+    return printComponents([movedStackComponent("manager"), movedStackComponent("delivery"), await webHealth(context), movedStackBrokerHealth(target, meshes)]);
   }
   // ONE credential read for the whole pass (user mode resolves the signed-in login once; the
   // static shape is just the target's own auth material), shared by the manager and delivery
   // probes so the two rows cannot disagree about whose credential they probed with.
   const credential = await componentCredential(target);
-  const broker = await brokerHealth(target, store);
+  const broker = target.mode === "open" && report.resolved && report.connection === "root-gone"
+    ? movedStackBrokerHealth(target, meshes) : await brokerHealth(target, store);
   const components = await Promise.all([
     managerHealth(target, context, credential, broker),
     deliveryHealth(target, context, credential, report.resolved && report.connection === "unreachable" && broker.verdict === "absent"),

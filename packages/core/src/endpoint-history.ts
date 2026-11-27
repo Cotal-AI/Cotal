@@ -1,25 +1,24 @@
 import type { ConnectionState } from "./endpoint-connection-state.js";
 import type { EndpointIdentity } from "./endpoint-identity.js";
+import type { EndpointParts } from "./endpoint-parts.js";
 import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
-import { nanos, type NatsConnection } from "@nats-io/transport-node";
+import { nanos, type MsgHdrs, type NatsConnection } from "@nats-io/transport-node";
 import { jetstream, jetstreamManager, AckPolicy, DeliverPolicy, JetStreamApiError, type JetStreamClient, type JetStreamManager, type Consumer, type ConsumerInfo, type ConsumerConfig, type JsMsg } from "@nats-io/jetstream";
-import { chatStream, dmStream, chatSubject, chatHistDurable, spacePrefix, parseSubject, subjectMatches, assertValidChannel, assertValidOwnerToken, isConcreteChannel, isChannelFamily, historyReaderConsumer, HISTORY_READERS, calloutReaderId, type ParsedSubject } from "./subjects.js";
+import { chatStream, dmStream, chatSubject, chatHistDurable, spacePrefix, parseSubject, subjectMatches, assertValidChannel, assertValidOwnerToken, isConcreteChannel, isChannelFamily, historyReaderConsumer, HISTORY_READERS, calloutReaderId, parsePrincipalKey, unicastRecvFilter, unicastSubject, type ParsedSubject } from "./subjects.js";
 import { isConsumerAlreadyExists, isConsumerNotFound } from "./jetstream-missing.js";
+import { effectiveReplay, effectiveReplayWindowMs, readChannelConfig, readChannelDefaults } from "./channels.js";
 import { isPermissionDenied } from "./permission-denied.js";
-import type { CotalMessage, HistoryMessage, Delivery, MessageMeta, ControlReply } from "./types.js";
+import { hasStoredOrigin } from "./endpoint-provenance.js";
+import type { CotalMessage, DmHistoryRead, HistoryMessage, Delivery, MessageMeta } from "./types.js";
 import type { HistoryPage } from "./endpoint.js";
 
 /** Current transport and shared lifecycle operations used by history reads. */
 export interface EndpointHistoryDeps {
   notLiveMsg: () => string;
   requireLifecycleUid: (operation: string) => string;
-  requestDelivery: (op: string, args: Record<string, unknown>) => Promise<ControlReply>;
-  deleteConsumerIfPresent: (stream: string, name: string) => Promise<void>;
-  joinPolicyFresh: (channel: string) => Promise<{ replay: boolean; windowMs?: number }>;
-  chatMayHaveLost: (subject: string, sinceSeq: number) => Promise<boolean>;
   emit: (event: string, ...args: unknown[]) => boolean;
-  decodeHistory: (message: { subject: string; json: <T>() => T }) => HistoryMessage | undefined;
+  decodeHistory: (message: { subject: string; headers?: MsgHdrs; json: <T>() => T }) => HistoryMessage | undefined;
   isRecord: (value: unknown) => value is Record<string, unknown>;
   isUsableMessageId: (value: unknown) => value is string;
   isFromSubjectSender: (message: unknown, parsed: ParsedSubject) => boolean;
@@ -44,6 +43,8 @@ type HistoryReader = {
   pool: HistoryReaderSlots;
   slot: number;
   name: string;
+  /** Keep the stream-wide CREATE subject when a plural batch is split into singletons. */
+  usePluralFilter?: boolean;
   /** False once the hold is given back, so it is given back once. */
   held: boolean;
   /** True once a delete under the name failed, so the name may still hold this read's reader and is
@@ -78,9 +79,13 @@ type HistoryReaderSlots = {
  *  1,000 is chosen from that sweep rather than from the failure point: it is a fifth of the largest
  *  count that still answered, and it answers in a quarter second, so a batch stays far away from
  *  both the timeout and the response-deadline budget the dashboard has to share with its DM read.
- *  A space with the 69 chat channels this was built for is still ONE read, so the round-trip claim
- *  in #1210 is unchanged at that size. */
+ *  A filter set within this count takes one read if no filter exceeds the depth budget. */
 export const MULTI_FILTER_BATCH = 1_000;
+
+// On NATS 2.14.0 with 2,002 posts, all-channel reads took 2.5–2.7s at 128 whole-subject
+// tokens, 4.7–5.0s at 256, and 13–15s at 512. Cap multi-filter pulls at the last measured
+// depth below 4s, half the first measured depth over that budget.
+const MULTI_FILTER_TOKEN_BUDGET = 128;
 
 
 /** How many filter batches may be in flight at once. Bounded because the point of #1210 was to stop
@@ -123,7 +128,7 @@ export class EndpointHistory {
   /** Per stream, the history-reader names of this connection's current reader id and the reads
    *  waiting for one (see {@link acquireHistoryReader}). */
   private readonly historyReaderSlots = new Map<string, HistoryReaderSlots>();
-  constructor(private readonly identity: Readonly<EndpointIdentity>, private readonly conn: ConnectionState, private readonly deps: EndpointHistoryDeps) {}
+  constructor(private readonly identity: Readonly<EndpointIdentity>, private readonly conn: ConnectionState, private readonly deps: EndpointHistoryDeps, private readonly parts: Pick<EndpointParts, "consumers" | "controlPlane">) {}
 
 
   /** Fetch recent messages from a channel's JetStream backlog. `signal` cancels the active pull and
@@ -250,8 +255,9 @@ export class EndpointHistory {
    * each tagged with the channel the BROKER delivered it on.
    *
    * The CHAT stream interleaves every channel into one sequence space. Consumers take sets of
-   * filter subjects for the requested channels. Large filter sets are read in batches, and the
-   * pages are merged by stream sequence to select the newest `limit` messages overall.
+   * filter subjects for the requested channels. Batches are capped by filter count, and deep
+   * filters are isolated in their own batches. The pages are merged by stream sequence to select
+   * the newest `limit` messages overall.
    *
    * **The broker does the filtering, so the wire carries only what is asked for.** A channel left
    * out of `channels` costs nothing: its messages are never delivered, so a space whose volume is
@@ -265,13 +271,11 @@ export class EndpointHistory {
    * concrete channels. Otherwise every channel must be concrete: mixing a family with other
    * filters, or using other wildcard patterns, is refused rather than risking overlapping filters.
    *
-   * **The broker enforces read authority.** A multi-filter create
-   * cannot encode its filter in the API subject, so it rides the bare
-   * `$JS.API.CONSUMER.CREATE.<CHAT>` row that only the read-only dashboard profiles hold. An agent
-   * credential pins the filter into the subject per channel and is denied here by the broker, which
-   * is the correct answer: this method reads across channels, and an agent's read ACL is per
-   * channel. A single filter uses the filter-bearing create subject, including a channel family,
-   * so the broker checks the credential's grant for that filter. No additional authority is minted.
+   * **The broker enforces read authority.** A batch formed with multiple filters uses the bare
+   * `$JS.API.CONSUMER.CREATE.<CHAT>` subject. Any pieces split from it keep that create form,
+   * even if they contain one filter. A batch formed with just one filter, including a channel
+   * family, uses the filter-bearing create subject. The broker checks the caller's grant for
+   * the create subject. No additional authority is minted.
    */
   async multiChannelHistory(
     channels: readonly string[],
@@ -298,16 +302,24 @@ export class EndpointHistory {
     // request and the client's request timeout is what gives way, so past roughly 5,000 filters the
     // read does not answer at all and the route loses the whole chat source: measured on an
     // isolated broker, 10,000 channels failed `timeout` after 5,023ms while the fan-out this
-    // replaced still returned 2,739 messages on the same corpus. Reading in batches keeps the
-    // single-read cost at the sizes this was built for (69 channels is one batch, so #1210's
-    // round-trip numbers are unchanged) and degrades to a few reads instead of none above that.
+    // replaced still returned 2,739 messages on the same corpus. The count limit lets small sets
+    // of shallow filters share one read and splits larger sets across several reads.
     // `batch` is a knob rather than a constant so the batched path can be compared against the
     // single-create path on ONE corpus: forcing a small batch makes a space that would otherwise be
     // one read take many, which is the only way to assert the two select the same messages.
     const size = Math.max(1, Math.trunc(opts?.batch ?? MULTI_FILTER_BATCH));
-    const batches: string[][] = [];
-    for (let i = 0; i < subjects.length; i += size)
-      batches.push(subjects.slice(i, i + size));
+    const batches: { subjects: string[]; usePluralFilter: boolean }[] = [];
+    for (let i = 0; i < subjects.length; i += size) {
+      const batch = subjects.slice(i, i + size);
+      const usePluralFilter = batch.length > 1;
+      const shallow: string[] = [];
+      for (const subject of batch) {
+        if (usePluralFilter && subject.split(".").length > MULTI_FILTER_TOKEN_BUDGET)
+          batches.push({ subjects: [subject], usePluralFilter });
+        else shallow.push(subject);
+      }
+      if (shallow.length) batches.push({ subjects: shallow, usePluralFilter });
+    }
     const pages: { seq: number; subject: string; msg: HistoryMessage }[][] = new Array(batches.length);
     let next = 0;
     const readBatch = async (): Promise<void> => {
@@ -315,7 +327,7 @@ export class EndpointHistory {
         const i = next++;
         if (i >= batches.length) return;
         pages[i] = await this.streamHistory(
-          chatStream(this.identity.space), batches[i], limit, undefined, opts?.signal,
+          chatStream(this.identity.space), batches[i].subjects, limit, undefined, opts?.signal, batches[i].usePluralFilter,
         );
       }
     };
@@ -372,7 +384,7 @@ export class EndpointHistory {
    *  different authorization model, and one handler with two authz paths is the wrong shape on the
    *  surface where a mistake exposes messages). */
   async readHistory(channel: string, opts?: { limit?: number }): Promise<HistoryPage> {
-    const reply = await this.deps.requestDelivery("readHistory", { channel, limit: opts?.limit });
+    const reply = await this.parts.controlPlane.requestDelivery("readHistory", { channel, limit: opts?.limit });
     if (!reply.ok) throw new Error(reply.error ?? "readHistory failed");
     const data = reply.data as { items?: unknown; complete?: unknown } | undefined;
     // Validate rather than coerce. A malformed reply must not be massaged into a plausible page:
@@ -437,6 +449,7 @@ export class EndpointHistory {
     limit: number,
     before?: number,
     signal?: AbortSignal,
+    usePluralFilter?: boolean,
   ): Promise<{ seq: number; subject: string; msg: HistoryMessage }[]> {
     if (!this.conn.nc) throw new Error(this.deps.notLiveMsg());
     signal?.throwIfAborted();
@@ -466,6 +479,7 @@ export class EndpointHistory {
     let reader: HistoryReader | undefined;
     try {
       reader = await this.acquireHistoryReader(nc, this.conn.jsm ?? (this.conn.jsm = await jetstreamManager(nc)), stream, signal);
+      reader.usePluralFilter = usePluralFilter;
       // THE EXACT CEILING, on the already-granted surface. A one-shot consumer with
       // `DeliverPolicy.Last` plus this subject's filter reports the newest MATCHING sequence, and its
       // `num_pending` of zero means the channel is genuinely empty. Using the STREAM's last sequence
@@ -639,8 +653,9 @@ export class EndpointHistory {
    *  the name was taken again since. The read moves to a free name, and the taken one stays out of use
    *  until such a consumer would have expired. */
   async openHistoryReader(reader: HistoryReader, config: Partial<ConsumerConfig>): Promise<Consumer> {
-    // A single filter must ride the filter-bearing API subject so scoped read grants apply.
-    if (config.filter_subjects?.length === 1) {
+    // A scoped read uses the filter-bearing API subject. A split plural batch keeps its original
+    // stream-wide CREATE grant, but NATS uses the single-filter pull path for a one-element list.
+    if (config.filter_subjects?.length === 1 && !reader.usePluralFilter) {
       const { filter_subjects, ...rest } = config;
       config = { ...rest, filter_subject: filter_subjects[0] };
     }
@@ -904,7 +919,7 @@ export class EndpointHistory {
     const out: JsMsg[] = [];
     // Clear any consumer leaked by a crashed prior read before re-creating it with THIS read's
     // single filter (the read ACL is enforced at create — see the doc above).
-    await this.deps.deleteConsumerIfPresent(stream, name);
+    await this.parts.consumers.deleteConsumerIfPresent(stream, name);
     await this.conn.jsm.consumers.add(stream, {
       name,
       filter_subject: subject,
@@ -935,7 +950,7 @@ export class EndpointHistory {
         pending -= got;
       }
     } finally {
-      await this.deps.deleteConsumerIfPresent(stream, name);
+      await this.parts.consumers.deleteConsumerIfPresent(stream, name);
     }
     return out;
   }
@@ -971,6 +986,7 @@ export class EndpointHistory {
     const noop: Delivery = { ack: () => {}, nak: () => {}, durable: false };
     let n = 0;
     for (const sm of msgs) {
+      if (hasStoredOrigin(sm.headers)) continue;
       let msg: CotalMessage;
       try {
         msg = sm.json<CotalMessage>();
@@ -1015,7 +1031,7 @@ export class EndpointHistory {
   ): Promise<{ messages: CotalMessage[]; seqs: number[]; dropped: boolean; unanswered: boolean }> {
     if (!this.conn.jsm) throw new Error(this.deps.notLiveMsg());
     if (!isConcreteChannel(channel)) return { messages: [], seqs: [], dropped: false, unanswered: true };
-    const policy = await this.deps.joinPolicyFresh(channel);
+    const policy = await this.joinPolicyFresh(channel);
     if (!policy.replay) return { messages: [], seqs: [], dropped: true, unanswered: true };
     const subject = chatSubject(this.identity.space, "*", "*", channel);
     let raw: JsMsg[];
@@ -1029,6 +1045,7 @@ export class EndpointHistory {
     const collected: CotalMessage[] = [];
     const seqs: number[] = [];
     for (const sm of raw) {
+      if (hasStoredOrigin(sm.headers)) continue;
       let msg: CotalMessage;
       try {
         msg = sm.json<CotalMessage>();
@@ -1044,7 +1061,7 @@ export class EndpointHistory {
     }
     let dropped: boolean;
     try {
-      dropped = await this.deps.chatMayHaveLost(subject, sinceSeq);
+      dropped = await this.chatMayHaveLost(subject, sinceSeq);
     } catch (e) {
       // Completeness could not be read, so the read is reported as unanswered: nothing settles on it.
       this.deps.emit("error", e as Error);
@@ -1052,5 +1069,83 @@ export class EndpointHistory {
       return { messages: [], seqs: [], dropped: true, unanswered: true };
     }
     return { messages: collected, seqs, dropped, unanswered: false };
+  }
+
+  async dmHistoryOf(principals: readonly string[], opts?: { limit?: number; signal?: AbortSignal }): Promise<DmHistoryRead> {
+    const keys = [...new Set(principals)].map((p) => {
+      const key = parsePrincipalKey(p);
+      if (!key) throw new Error(`dmHistoryOf: "${p}" is not a principal <owner>.<actor>`);
+      return key;
+    });
+    if (!keys.length) return { state: "read", items: [] };
+    const limit = opts?.limit ?? 100;
+    const read = (subjects: string[]) => this.streamHistory(dmStream(this.identity.space), subjects, limit, undefined, opts?.signal);
+    let rows: { seq: number; msg: HistoryMessage }[];
+    try {
+      // A consumer refuses overlapping filters, and a DM between two of these principals matches a
+      // recipient filter and a sender filter, so each direction is its own read.
+      rows = (await Promise.all([
+        read(keys.map((k) => unicastRecvFilter(this.identity.space, k.owner, k.actor))),
+        read(keys.map((k) => unicastSubject(this.identity.space, "*", "*", k.owner, k.actor))),
+      ])).flat();
+    } catch (e) {
+      if (isPermissionDenied(e)) return { state: "denied", reason: (e as Error).message };
+      throw e;
+    }
+    const bySeq = new Map(rows.map((r) => [r.seq, r.msg]));
+    return { state: "read", items: [...bySeq].sort(([a], [b]) => a - b).slice(-limit).map(([, msg]) => msg) };
+  }
+
+  /** Phase 2 of a join — backfill each armed channel's history up to its frontier (replay-gated),
+   *  AFTER the filter flip. `floorSeq`, when set, is this incarnation's last-consumed CHAT stream
+   *  sequence before a preservation cut (SPEC-external, manager-recorded) — it bounds the read from
+   *  below so a resumed seat does not re-read messages it already consumed. Only the boot-channel
+   *  call site (`start()`) passes it; `joinChannel`'s mid-session call never does (a channel joined
+   *  after the cut was never read by this incarnation, so its replay window is the join contract).
+   *  Returns the total backfilled. */
+  async backfillArmed(frontiers: Map<string, number>, floorSeq?: number): Promise<number> {
+    let total = 0;
+    for (const [ch, frontier] of frontiers) {
+      const policy = await this.joinPolicyFresh(ch);
+      if (policy.replay) total += await this.backfillChannel(ch, frontier, policy.windowMs, floorSeq);
+    }
+    return total;
+  }
+
+  /** Replay policy + backfill window read straight from the registry bucket (vs the watch cache)
+   *  — the authoritative read for a join decision (a join is infrequent, and at startup the async
+   *  cache may not have caught up). Falls to the built-in default only with no registry open. */
+  private async joinPolicyFresh(channel: string): Promise<{ replay: boolean; windowMs?: number }> {
+    if (!this.conn.channelKv) return { replay: effectiveReplay(undefined, undefined) };
+    // A wildcard subscription (`review.>`) has no single registry entry — and `>`/`*` are illegal
+    // KV keys, so a per-channel get would throw. Read only the space defaults for it; concrete
+    // channels still get their per-channel override.
+    const [cfg, defaults] = await Promise.all([
+      isConcreteChannel(channel) ? readChannelConfig(this.conn.channelKv, channel) : Promise.resolve(undefined),
+      readChannelDefaults(this.conn.channelKv),
+    ]);
+    return { replay: effectiveReplay(cfg, defaults), windowMs: effectiveReplayWindowMs(cfg, defaults) };
+  }
+
+  /** Whether the chat stream's limits may have removed posts on `subject` after `sinceSeq`, read from
+   *  the stream's own config rather than a compiled default. Throws when it cannot read, so no caller
+   *  takes an unread stream for a complete one. It reports possible loss, never proof: a removed
+   *  sequence does not record its subject, so the stream cannot say which channel lost it.
+   *
+   *  Either rule is enough. The stream's oldest retained post is past the watermark, so every post up
+   *  to it is gone, from this channel or another. Or a sender on the channel is at the stream's
+   *  per-sender limit and the channel's oldest retained post is past the watermark, so that sender's
+   *  eviction may have reached into the window; a sender at exactly the limit may have lost nothing.
+   *  A hole behind a retained older post, as a channel-filtered purge leaves, sets neither. */
+  private async chatMayHaveLost(subject: string, sinceSeq: number): Promise<boolean> {
+    if (!this.conn.jsm) throw new Error(this.deps.notLiveMsg());
+    const info = await this.conn.jsm.streams.info(chatStream(this.identity.space), { subjects_filter: subject });
+    if (info.state.first_seq > sinceSeq + 1) return true;
+    const cap = info.config.max_msgs_per_subject;
+    let maxPerSubject = 0;
+    for (const count of Object.values(info.state.subjects ?? {})) maxPerSubject = Math.max(maxPerSubject, count);
+    if (cap < 1 || maxPerSubject < cap) return false; // no sender at the cap ⇒ none evicted
+    const oldest = (await this.collectHistory(subject, { seq: 1 }, { limit: 1 }))[0]?.seq;
+    return oldest !== undefined && oldest > sinceSeq + 1;
   }
 }

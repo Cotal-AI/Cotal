@@ -19,6 +19,7 @@ import {
 } from "@cotal-ai/core";
 import {
   parseCommaList,
+  brokerAddressForDisplay,
   CommandFailure,
   isCommandFailure,
   presentationOf,
@@ -27,6 +28,7 @@ import {
   terminalWidth,
   wrapWords,
   writeResult,
+  migrateProjectTrust,
   type OutputWarning,
   type RefusalCode,
   type Report,
@@ -49,6 +51,7 @@ import {
   recordOperationSpace,
   resolveMeshTarget,
   resolveControlTarget,
+  parseLaunchModes,
 } from "@cotal-ai/workspace";
 import { readManagedLaunch, requestManagedLaunch, type ManagedLaunchResult } from "@cotal-ai/workspace/launch";
 import { c, stderrLine } from "../ui.js";
@@ -58,7 +61,7 @@ import { cliControl, failIfNotOk, onRerun } from "../lib/control.js";
 import { askManagerFolder, managerPin, managerSelection, managersWithPersona, rerunOn, rerunWithCwd, type FolderCheck } from "../lib/manager-choice.js";
 import { canPrompt } from "./meshes-wizard.js";
 import { callerHarness, missingConnector, spawnPersona } from "../lib/spawn-defaults.js";
-import { attachSeat, joinedAgentRows, psSeatLabel } from "./agents.js";
+import { attachSeat, joinedAgentRows, noTerminalCommands, psSeatLabel } from "./agents.js";
 import { AgentAlreadyRunning, heldAnswer, settleHeldName } from "../lib/held-name.js";
 import { shellWord } from "../lib/endpoint-errors.js";
 import { materializeExtension, preflightRuntime } from "../ext-loader.js";
@@ -73,7 +76,7 @@ import {
   startStackManagerRemedy,
   withControlConnection,
 } from "@cotal-ai/workspace/control";
-import { spawnFlags, spawnRerun } from "./spawn-flags.js";
+import { spawnFlags, spawnModelRetry, spawnRerun } from "./spawn-flags.js";
 
 /** Whether the installed manifest lists a connector named `name`. An unreadable manifest answers
  *  true, so the import's own refusal reports it. */
@@ -119,19 +122,21 @@ export interface ManagedLaunchObserver {
   ready(result: ManagedLaunchResult, warnings: readonly OutputWarning[]): void;
 }
 
-export function managedLaunchView(r: ManagedLaunchResult): Report {
+export function managedLaunchView(r: ManagedLaunchResult, server?: string): Report {
   const concrete = [r.name, r.space, r.managerInstanceId].every((value) => /^[A-Za-z0-9_-]+$/.test(value));
-  const target = concrete ? `${r.name} --space ${r.space} --on ${r.managerInstanceId}` : "<name> --space <space> --on <manager-instance>";
-  const noStream = r.streamsTerminal === false;
+  const explicitServer = server === undefined ? undefined : brokerAddressForDisplay(server);
+  const broker = explicitServer === undefined ? "" : ` --server ${shellWord(explicitServer)}`;
+  const target = concrete ? `${r.name} --space ${r.space}${broker} --on ${r.managerInstanceId}` : `<name> --space <space>${broker} --on <manager-instance>`;
+  const mesh = r.streamsTerminal === false ? noTerminalCommands(r.name, r.space, server) : undefined;
   return { sections: [
     { title: "Agent joined", blocks: [
-      { kind: "fields", rows: [["Agent", psSeatLabel({ name: r.name, id: r.id })], ["Identity", r.id], ["Lifecycle", r.lifecycleUid], ["Space", r.space], ["Manager receipt", r.managerInstanceId], ["Original request", r.intent?.requestId ?? r.request?.requestId ?? "not recorded"], ["Accepted goal", r.request?.goalId ?? "not reported"], ["Application", r.harness], ["Runtime", noStream ? `${r.runtime} · no terminal stream` : r.runtime], ["Role", r.role ?? "not recorded"], ...(r.acl ? [["Granted", `read ${channelList(r.acl.effective.allowSubscribe)} · post ${channelList(r.acl.effective.allowPublish)}; asked for read ${channelList(r.acl.requested.allowSubscribe)} · post ${channelList(r.acl.requested.allowPublish)}`] as [string, string]] : []), ["Model request", r.requestedModel ?? "persona/manager precedence; not inspected"], ["View", noStream ? `not attached; the seat runs in the manager's ${r.runtime} session` : r.detached ? "not attached" : "attaching to the allocated incarnation"]] },
+      { kind: "fields", rows: [["Agent", psSeatLabel({ name: r.name, id: r.id })], ["Identity", r.id], ["Lifecycle", r.lifecycleUid], ["Space", r.space], ["Manager receipt", r.managerInstanceId], ["Original request", r.intent?.requestId ?? r.request?.requestId ?? "not recorded"], ["Accepted goal", r.request?.goalId ?? "not reported"], ["Application", r.harness], ["Runtime", mesh ? `${r.runtime} · no terminal stream` : r.runtime], ["Role", r.role ?? "not recorded"], ...(r.acl ? [["Granted", `read ${channelList(r.acl.effective.allowSubscribe)} · post ${channelList(r.acl.effective.allowPublish)}; asked for read ${channelList(r.acl.requested.allowSubscribe)} · post ${channelList(r.acl.requested.allowPublish)}`] as [string, string]] : []), ["Model request", r.requestedModel ?? "persona/manager precedence; not inspected"], ["View", mesh ? `not attached; the seat runs in the manager's ${r.runtime} session` : r.detached ? "not attached" : "attaching to the allocated incarnation"]] },
       { kind: "lines", lines: [{ text: "The manager confirmed presence readiness. This is not proof that the kickoff task completed.", tone: "hint" }] },
     ] },
-    ...(noStream ? [{ title: "Next", blocks: [
+    ...(mesh ? [{ title: "Next", blocks: [
       { kind: "commands" as const, items: [
-        { command: `${displayCmd()} watch --space ${r.space}`, description: "Follow this mesh, this agent's messages included" },
-        { command: `${displayCmd()} send -t ${r.name} "<message>"`, description: "Give the agent work over the mesh" },
+        { command: mesh.watch, description: "Follow this mesh, this agent's messages included" },
+        { command: mesh.send, description: "Give the agent work over the mesh" },
         { command: `${displayCmd()} status ${target}`, description: "Read the agent's reported state" },
       ] },
       { kind: "lines" as const, lines: [{ text: `${displayCmd()} attach is not available here: the ${r.runtime} runtime streams no terminal.`, tone: "hint" as const }] },
@@ -220,6 +225,7 @@ export async function launchManagedPersona(
   // A pin the registry does not list is refused at once; only a registered manager is waited on.
   if (on !== undefined && !t.auth.bearer) await refuseUnregisteredManager(t.space, t.server, t.auth, on);
   if (values.runtime !== undefined) await refuseRuntimeHere(values.runtime.trim(), t, on ?? t.auth.managerInstanceId, live);
+  migrateProjectTrust();
   const { ref, from: personaFrom } = spawnPersona(values.config, positionals, { space: t.space, preferences: cachedPreferences() });
   const managerConfigRef = values.config ?? (personaFrom !== undefined ? ref : undefined);
   const defaultAgent = callerHarness(t.space);
@@ -235,7 +241,7 @@ export async function launchManagedPersona(
   // The report that answers names the mesh in its heading, so this block names it once, in a field.
   const toStdout = !observer && presentationOf(values) !== "json";
   (toStdout ? console.log : console.error)(renderReport({ sections: [{ title: "Managed launch", blocks: [{ kind: "fields", rows: [["Space", t.space], ["Manager selector", on ?? t.auth.managerInstanceId ?? "native class selection"], ["Persona", ref], ["File source", managerConfigRef ? `${managerConfigRef} · manager execution host` : "selected manager's persona catalog"], ["File transfer", "none"]] }, { kind: "lines", lines: [{ text: "The accepting manager validates its own visible file before allocation. No local file is uploaded, and a pin never selects a replacement manager.", tone: "hint" }] }] }] }, presentationOf(values) === "plain" ? "plain" : "rich", toStdout ? process.stdout : process.stderr));
-  for (const line of wrapWords("waiting for the manager: it answers when it refuses the launch, or when the agent joins or exits (at most about 30s) …", terminalWidth(process.stderr))) console.error(c.dim(line));
+  for (const line of wrapWords("waiting for the manager: it answers when it refuses the launch, or when the agent joins or exits …", terminalWidth(process.stderr))) console.error(c.dim(line));
   const start = () => requestManagedLaunch({
     persona: ref,
     identity: values.name,
@@ -250,6 +256,7 @@ export async function launchManagedPersona(
     config: managerConfigRef,
     model: values.model,
     variant: values.variant,
+    modes: parseLaunchModes(values.mode),
     ...(values.restarts !== undefined ? { supervise: { restarts: Number(values.restarts), windowMs: Number(values["restart-window"]) } } : {}),
     launchOptions,
     cwd,
@@ -339,8 +346,12 @@ export async function launchManagedPersona(
     }
     // A committed `failed` terminal is the manager's answer: the launch ran and failed, as an agent
     // that exits at once does, and the manager says why.
-    if (reply.code === "failed")
-      throw new CommandFailure("failed", "OPERATION_FAILED", reply.error ? oneLine(reply.error) : "the manager reported that the launch failed", { target, native, remedy: "fix what the manager reported, then run the spawn again" });
+    if (reply.code === "failed") {
+      const retry = spawnModelRetry(values, positionals, reply.error);
+      throw new CommandFailure("failed", "OPERATION_FAILED", reply.error ? oneLine(reply.error) : "the manager reported that the launch failed", {
+        target, native, ...(retry ? { remedy: retry, remedyIsCommand: true } : { remedy: "fix what the manager reported, then run the spawn again" }),
+      });
+    }
     const unknown = reply.nativeOutcome !== "executed" || reply.unanswered;
     throw new CommandFailure(unknown ? "unknown" : "failed", unknown ? "OPERATION_UNKNOWN" : "OPERATION_FAILED", reply.error ? oneLine(reply.error) : "the manager did not confirm launch readiness", { target, native, remedy: "inspect `cotal ps` and the selected manager before retrying; this launch was not submitted again" });
   }
@@ -354,7 +365,7 @@ export async function launchManagedPersona(
   if (observer) {
     try { observer.ready(result, warnings); }
     catch { throw new CommandFailure("partial", "OPERATION_PARTIAL", "the agent joined, but the composite command could not record its native readiness; no replacement was launched", { target, changed: [result], remedy: "inspect the original agent and manager before another launch" }); }
-  } else writeResult(presentation, { command: "spawn", target, result, warnings }, managedLaunchView);
+  } else writeResult(presentation, { command: "spawn", target, result, warnings }, (r) => managedLaunchView(r, values.server));
   if (values.detach) return;
   // A runtime that streams no terminal has none to attach, so this launch does not ask for one: the
   // seat is up, the receipt above says where it runs and what reaches it, and the command is done.
@@ -415,7 +426,8 @@ export function meshRelease(mesh: MeshTarget | undefined): ((lifecycleUid: strin
 async function reportStarting(start: { name: string; managerInstanceId: string; waitingFor?: string; expected?: { id: string; lifecycleUid: string } }, values: FlagValues<typeof spawnFlags>, space: string, server: string, target: Record<string, unknown>): Promise<void> {
   const selection = await managerSelection(values, start.managerInstanceId).catch(() => undefined);
   const selector = selection?.selector ?? start.managerInstanceId, host = selection?.manager.host ?? null;
-  const attach = `${displayCmd()} attach ${shellWord(start.name)} --on ${shellWord(selector)}`;
+  const explicitServer = values.server === undefined ? undefined : brokerAddressForDisplay(values.server);
+  const attach = `${onRerun(`${displayCmd()} attach`, { space, server: explicitServer }, [start.name])} --on ${shellWord(selector)}`;
   const presentation = presentationOf(values);
   const now = presentation !== "json" && canPrompt() && (start.waitingFor !== undefined || !values.detach);
   const place = `on ${selector}${host && host !== selector ? ` (${host})` : ""}`;
@@ -435,9 +447,10 @@ async function reportStarting(start: { name: string; managerInstanceId: string; 
 /** The agent a spawn asked for already runs, so nothing new is launched: say where it runs, then
  *  attach to it in this terminal unless the spawn was detached or cannot attach, or print the
  *  command that does. */
-export async function reportAlreadyRunning(running: AgentAlreadyRunning, values: { detach?: boolean; creds?: string; json?: boolean; plain?: boolean }, space: string, server: string | undefined): Promise<void> {
+export async function reportAlreadyRunning(running: AgentAlreadyRunning, values: { detach?: boolean; creds?: string; json?: boolean; plain?: boolean; server?: string }, space: string, server: string | undefined): Promise<void> {
   const where = running.manager;
-  const attach = where ? `${onRerun(`${displayCmd()} attach`, { space }, [running.agent])} --on ${shellWord(where.selector)}` : null;
+  const explicitServer = values.server === undefined ? undefined : brokerAddressForDisplay(values.server);
+  const attach = where ? `${onRerun(`${displayCmd()} attach`, { space, server: explicitServer }, [running.agent])} --on ${shellWord(where.selector)}` : null;
   const presentation = presentationOf(values);
   const now = where !== null && !values.detach && presentation !== "json" && canPrompt();
   const place = where ? `on ${where.selector}${where.host && where.host !== where.selector ? ` (${where.host})` : ""}` : "on the mesh, not on a manager of yours";
@@ -501,7 +514,7 @@ async function unservedClassLaunch(flags: ConnectFlags | undefined, t: ControlTa
 function unansweredClassLaunch(t: ControlTarget, at: { target: object; native: object }): CommandFailure {
   const refused = (message: string, remedy: string) => new CommandFailure("refused", "TARGET_UNAVAILABLE", `${message}, so the launch was not sent and nothing was launched`, { ...at, remedy });
   if (t.root !== undefined && stackManagerStarting(t.root, t.space)) return refused("the stack's manager is starting", "run the spawn again once `cotal up` reports the manager started");
-  if (t.root !== undefined && stackManagerAbsent(t.root, t.space)) return refused("no manager is running for this space", startStackManagerRemedy(t.space, t.server));
+  if (t.root !== undefined && stackManagerAbsent(t.root, t.space, { unanswered: true })) return refused("no manager is running for this space", startStackManagerRemedy(t.space, t.server));
   const pid = t.root === undefined ? undefined : runningStackManagerPid(t.root, t.space);
   if (pid !== undefined) return refused(`this space's stack manager (pid ${pid}) is running but did not answer`, `if it stays unresponsive, end that process with kill -KILL ${pid}; then bare \`cotal up\` starts the manager again`);
   return refused("no manager answered", "cotal ps shows which managers answer; run the spawn again once one does");

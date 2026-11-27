@@ -1,5 +1,80 @@
 # @cotal-ai/lang
 
+## 0.183.1
+
+No changes in this release.
+
+## 0.183.0
+
+No changes in this release.
+
+## 0.182.1
+
+No changes in this release.
+
+## 0.182.0
+
+No changes in this release.
+
+## 0.181.0
+
+### Minor Changes
+
+- e22d95e: Workflow runs can pin separate effect budgets for spawns, turns and other effect kinds.
+  
+  The optional ceilings record is saved with the run pins, checked on resume and enforced from the journal across restarts. Existing records retain their total-only ceiling. A per-kind refusal names its limit with L4029 before dispatch, without consuming another kind's allowance.
+
+## 0.180.0
+
+No changes in this release.
+
+## 0.179.0
+
+No changes in this release.
+
+## 0.178.0
+
+No changes in this release.
+
+## 0.177.0
+
+No changes in this release.
+
+## 0.176.6
+
+No changes in this release.
+
+## 0.176.5
+
+No changes in this release.
+
+## 0.176.4
+
+### Patch Changes
+
+- 0758948: Keep workflow journal suggestions on the same target, explain how to correct malformed simulation tables, and apply scripted faults to parallel steps before their branches run.
+
+## 0.176.3
+
+### Patch Changes
+
+- a38ed1d: Apply scripted workflow simulation faults to the named fan-out step before any of its branches run.
+
+## 0.176.2
+
+No changes in this release.
+
+## 0.176.1
+
+No changes in this release.
+
+## 0.176.0
+
+### Patch Changes
+
+- 7266240: Make workflow simulations reject late turn yields and enforce one shared deadline across ask retries.
+- 28b97c7: Show how to look up a missing local workflow ID, label computed calls accurately in plans, and apply scripted race faults before the branches start.
+
 ## 0.175.3
 
 No changes in this release.

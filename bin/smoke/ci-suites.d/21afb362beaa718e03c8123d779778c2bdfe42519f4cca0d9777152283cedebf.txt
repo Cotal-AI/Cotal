@@ -1,0 +1,3 @@
+# A Pi reply streams on the event plane before Pi saves it, survives a seat restart mid-reply,
+# and a provider retry publishes the saved text as its own message.
+smoke:pi-events-stream

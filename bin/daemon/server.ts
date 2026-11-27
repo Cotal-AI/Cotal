@@ -17,22 +17,38 @@
  */
 import { chmodSync, closeSync, linkSync, unlinkSync, lstatSync } from "node:fs";
 import { randomBytes } from "node:crypto";
-import { join } from "node:path";
+import { basename, dirname, isAbsolute, join } from "node:path";
 import { createServer, type Server, type Socket } from "node:net";
 import { localPeerCredentials, listenPipe, windowsUserSid, type PipeListener, type PipePeer, type PipeRefused } from "@cotal-ai/seat";
-import { DAEMON_PROTOCOL_VERSION, MAX_LINE_BYTES, EndpointRefusal, adoptPipe, assertSocketPathFits, assertSupportedPlatform, checkSocket, defaultPeerUid, ensureDir, ensureStateDir, type DaemonPaths, type PeerUid } from "./endpoint.js";
+import { DAEMON_PROTOCOL_VERSION, MAX_LINE_BYTES, EndpointRefusal, adoptPipe, assertSocketPathFits, assertSupportedPlatform, checkDir, checkSocket, defaultPeerUid, ensureDir, ensureStateDir, type DaemonPaths, type PeerUid } from "./endpoint.js";
 import { claimSocketPath, generationOf, holdLifetime, processBirth, type HeldLifetime } from "./lifetime.js";
 import { encode, parseRequest, type ConnectCheckResult, type DaemonResponse, type DaemonStatus, type HostedManager, type LogoutChange, type RegisterResult, type ServiceConnectionResult } from "./protocol.js";
 import { createLoginCoordinator, type LoginCoordinator } from "./login.js";
 import { connectCheck } from "./connect.js";
 import { createServiceConnections } from "./service.js";
-import { findMesh, homeCotalDir, isCommandFailure, isMeshRegistryError, meshFile, readMeshRegistry, readUpdateSettings, setUpdateSetting } from "@cotal-ai/workspace";
+import { findMesh, homeCotalDir, isCommandFailure, isConnectRefusal, isMeshRegistryError, meshFile, readMeshRegistry, readUpdateSettings, setUpdateSetting } from "@cotal-ai/workspace";
 import { NON_USER_AUTH_MESSAGE, NON_USER_AUTH_REMEDY } from "./guidance.js";
 import { desktopSpaces } from "./desktop-state.js";
 import { idpTimeoutMs, signOutIdpSession, withIdpSessionDir } from "@cotal-ai/auth";
 import { createHostedManagers, HostedManagerRefusal } from "./manager.js";
 import { createAccountReconciler } from "./account-reconcile.js";
 import { createAccountComputer } from "./account.js";
+
+type ManagerResult = DaemonStatus | HostedManager | ServiceConnectionResult | { argv: string[] };
+function managerResultError(op: string, error: unknown, log: (message: string) => void) {
+  const clean = (value: string) => value.replace(/\u001b\[[0-9;]*m/g, "").replace(/eyJ[A-Za-z0-9_.-]*/g, "<redacted>").slice(0, 1000);
+  const cause = clean(String(error instanceof Error ? error.message : error));
+  log(`daemon: ${op} refused: ${cause}`);
+  if (error instanceof HostedManagerRefusal) return { code: error.code, message: error.message.slice(0, 1500), remedy: error.remedy.slice(0, 1500) };
+  if (op !== "agent-stop" && op !== "agent-terminal") return managerUnavailable(op, cause);
+  const failure = isConnectRefusal(error) ? error.failure() : error;
+  if (!isCommandFailure(failure)) return managerUnavailable(op, cause);
+  return { code: failure.code, message: clean(failure.message), ...(failure.remedy ? { remedy: clean(failure.remedy) } : {}) };
+}
+
+function managerUnavailable(op: string, cause: string) {
+  return { code: "MANAGER_UNAVAILABLE" as const, message: `the daemon could not complete ${op}: ${cause}`, remedy: "read \`cotal daemon status\`, restore the Manager connection if needed, then run the same command again" };
+}
 
 /** Requests one connection may send. A sign-in needs two (start, cancel); status polling a few. */
 const MAX_REQUESTS_PER_CONNECTION = 64;
@@ -321,16 +337,13 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
         })().catch(error => log(`daemon: shutdown failed: ${String(error)}`));
         return;
       }
-      const managerResult = (run: () => DaemonStatus | HostedManager | ServiceConnectionResult | Promise<DaemonStatus | HostedManager | ServiceConnectionResult>) => {
+      const managerResult = (run: () => ManagerResult | Promise<ManagerResult>) => {
         replyTask(Promise.resolve().then(run).then((result) => {
           if (req.op !== "status") notifyStatusWatchers();
           return write({ v: DAEMON_PROTOCOL_VERSION, id: req.id, ok: true, result });
         }, (error: unknown) => {
           counters.requestsRefused++;
-          const cause = String(error instanceof Error ? error.message : error).replace(/\u001b\[[0-9;]*m/g, "").replace(/eyJ[A-Za-z0-9_.-]*/g, "<redacted>").slice(0, 1000);
-          log(`daemon: ${req.op} refused: ${cause}`);
-          if (error instanceof HostedManagerRefusal) return write({ v: DAEMON_PROTOCOL_VERSION, id: req.id, ok: false, error: { code: error.code, message: error.message.slice(0, 1500), remedy: error.remedy.slice(0, 1500) } });
-          return write({ v: DAEMON_PROTOCOL_VERSION, id: req.id, ok: false, error: { code: "MANAGER_UNAVAILABLE", message: `the daemon could not complete ${req.op}: ${cause}`, remedy: "read \`cotal daemon status\`, restore the Manager connection if needed, then run the same command again" } });
+          return write({ v: DAEMON_PROTOCOL_VERSION, id: req.id, ok: false, error: managerResultError(req.op, error, log) });
         }));
       };
       if (req.op === "manager-start" || req.op === "manager-status") {
@@ -397,8 +410,13 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
         }));
         return;
       }
-      if (req.op === "space-intent") {
-        managerResult(async () => { await account.intent(req.space, req.enabled); return status(); });
+      if (req.op === "space-recover") {
+        managerResult(async () => { await account.recover(req.space, req.candidate, req.holder); return status(); });
+        return;
+      }
+      if (req.op === "space-intent" || req.op === "agent-stop" || req.op === "agent-terminal") {
+        managerResult(() => req.op === "agent-terminal" ? managers.terminalAgent(req.space, req.lifecycleUid)
+          : (req.op === "agent-stop" ? managers.stopAgent(req.space, req.lifecycleUid) : account.intent(req.space, req.enabled)).then(() => status()));
         return;
       }
       if (req.op === "connect-check") {
@@ -672,6 +690,28 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
     async prepareGenerationRestart() { await resumed; await managers.prepareGenerationRestart(daemonRestartOwner); notifyStatusWatchers(); }, abortGenerationRestart: () => managers.abortGenerationRestart(daemonRestartOwner).finally(() => notifyStatusWatchers()) };
 }
 
+/** Recover a predecessor's socket before a different Linux runtime replaces its record. */
+async function recoverPreviousRuntime(paths: DaemonPaths, uid: number, previous: HeldLifetime["previous"]): Promise<void> {
+  const socket = previous?.socket;
+  if (process.platform !== "linux" || !socket || socket.path === paths.socket || !isAbsolute(socket.path)) return;
+  const dir = dirname(socket.path);
+  const parent = dirname(dir);
+  if (basename(socket.path) !== basename(paths.socket) || basename(dir) !== basename(paths.dir!)
+    || (paths.parent !== undefined && basename(parent) !== basename(paths.parent))) return;
+  try {
+    const runtime = lstatSync(paths.parent === undefined ? parent : dirname(parent));
+    if (!runtime.isDirectory() || runtime.uid !== uid || (runtime.mode & 0o022) !== 0) return;
+    if (paths.parent !== undefined) checkDir(parent, uid);
+    checkDir(dir, uid);
+    checkSocket(socket.path, uid);
+    if (await claimSocketPath(socket.path, socket) !== "recover") return;
+    const current = lstatSync(socket.path);
+    if (current.isSocket() && current.uid === uid && current.dev === socket.dev && current.ino === socket.ino) unlinkSync(socket.path);
+  } catch {
+    // The old runtime may be gone or inaccessible. It cannot block serving in the selected runtime.
+  }
+}
+
 /** Linux and macOS: publish the unix socket, and on close remove it only if it is still ours. */
 async function publishSocket(paths: DaemonPaths, uid: number, lock: HeldLifetime, counters: ServerCounters, log: (line: string) => void, accept: (sock: Socket) => void): Promise<Endpoint> {
   const server = createServer({ allowHalfOpen: false, pauseOnConnect: true }, accept);
@@ -685,6 +725,7 @@ async function publishSocket(paths: DaemonPaths, uid: number, lock: HeldLifetime
     throw error;
   }
   if (claim === "recover") unlinkSync(paths.socket);
+  await recoverPreviousRuntime(paths, uid, lock.previous);
   lock.discardPrevious();
   if (claim === "recover") {
     counters.socketsRecovered++;

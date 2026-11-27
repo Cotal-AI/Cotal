@@ -22,6 +22,7 @@ import {
   mintAcceptedToken,
   newIdentity,
   oneLine,
+  patternInAllow,
   withIssuerSession,
   type IssuedCaller,
   probeConnect,
@@ -43,11 +44,11 @@ import { agentGrants, grantMintFlags } from "./agent-grants.js";
 import { workspaceSecretStore } from "./secret-store-fs.js";
 import { brokerUrlKey, canonicalRoot, findMesh, loadMeshes, movedProject, pruneMesh, type MeshEntry, type UserAuthInfo } from "./mesh-registry.js";
 import { isWorkspaceTargetError, MeshTargetError, preparedLifecycle, recordsElsewhereError, resolveMeshTarget, resolveReadsLiveness, retainedLegacyBroker, stoppedStack, targetErrorSpace, type MeshTarget, type ResolveFlags, credsSpace } from "./mesh-target.js";
-import { findPreparedSpace } from "./prepared-spaces.js";
+import { findPreparedSpace, projectRootProblem, projectRootProblemText } from "./prepared-spaces.js";
 import { shellPath } from "./local-record-source.js";
 import { codeSpan } from "./text-wrap.js";
 import { PREFLIGHT_CONFIRM_TIMEOUT_MS, preflightTarget, pruneStaleMeshes } from "./preflight.js";
-import { renderWorkspaceError, workspaceErrorParts, type WorkspaceError, type WorkspaceErrorParts } from "./render.js";
+import { preparedRootRemedy, renderWorkspaceError, workspaceErrorParts, type WorkspaceError, type WorkspaceErrorParts } from "./render.js";
 import { CommandFailure, type NativeCause, type RefusalCode } from "./output.js";
 import { credentialFileExposure, localRecordAccess, protectedLocalDirectory } from "./protected-records.js";
 import { localStackRoot, spaceStreamsAbsent, spaceStreamsExpected } from "./space-streams.js";
@@ -356,8 +357,19 @@ export function principalFromBearer(bearer: string): { owner: string; actor: str
 export function refuseStaticCredsForKnownUserAuth(space: string, server: string | undefined, what: string): void {
   const recorded = findMesh(space);
   const knownRecordedUser = recorded?.mode === "user" && (server === undefined || recorded.server === server);
-  const knownLocalUser = hasUserAuthState(findCotalRoot(), space);
-  if (!knownRecordedUser && !knownLocalUser) return;
+  const root = findCotalRoot();
+  try {
+    if (!hasUserAuthState(root, space) && !knownRecordedUser) return;
+  } catch (error) {
+    const native = error as NodeJS.ErrnoException | undefined;
+    const code = native?.code;
+    if (native?.syscall !== "lstat" || (code !== "EACCES" && code !== "EPERM")) throw error;
+    throw new ConnectRefusal(
+      `✗ cannot check the local authentication mode for space "${space}" (${code})`,
+      "  Check that this account can read the project's authentication settings and traverse their parent folders.",
+      { code: "PERMISSION_DENIED", cause: error, native: { code }, target: { space, root } },
+    );
+  }
   throw new ConnectRefusal(
     `✗ ${what} tried to authenticate with a static creds file, but space "${space}" is a per-user-auth mesh - old --creds files are refused here so they can't bypass user accounts.`,
     `  Sign in with \`cotal login\` and use the user-mode path instead (for agents: \`cotal spawn\`).`,
@@ -709,17 +721,21 @@ export async function connectOrThrow(flags: ConnectFlags, role: Profile, opts: C
       // Preparation can guide recovery, but it must not affect which broker we dial.
       const prepared = findPreparedSpace(flags.space);
       const at = checkServer(flags.server, "--server").ok && !flags.server.includes(",") ? new URL(flags.server) : undefined;
-      if (prepared && at) {
+      const rootProblem = prepared ? projectRootProblem(prepared.root) : undefined;
+      if (prepared && at && rootProblem === undefined) {
         const stopped = stoppedStack(prepared.root, flags.space, flags.server);
         if (stopped) {
           const target = new MeshTargetError("not-started", `"${flags.space}" is stopped; its last operation, ${stopped.operation}, ${stopped.outcome}`, { space: flags.space, root: prepared.root, stopped }, { cause: error });
           throw workspaceRefusal({ kind: "target", error: target }, { cause: target, kind: error.kind, code: error.code });
         }
       }
-      const local = prepared && existsSync(prepared.root) && at?.protocol === "nats:" && at.hostname === "127.0.0.1" && at.port && at.port !== "0"
-        && preparedLifecycle(prepared.root, flags.space).state === "prepared";
-      const command = local && codeSpan(`cotal up --root ${shellPath(prepared.root)} --space ${shellPath(flags.space)} --server ${shellPath(flags.server)}`);
-      const remedy = command ? `if you meant to start the prepared space here, run ${command}. Otherwise, check that address and that a broker runs there` : "check that address and that a broker runs there";
+      const local = prepared && at?.protocol === "nats:" && at.hostname === "127.0.0.1" && at.port && at.port !== "0";
+      const addressRemedy = "check that address and that a broker runs there";
+      const remedy = !local || rootProblem === "missing" ? addressRemedy
+        : rootProblem !== undefined ? `${addressRemedy}. The recorded project path ${prepared.root} ${projectRootProblemText(rootProblem)}. ${preparedRootRemedy(flags.space, rootProblem)}`
+        : preparedLifecycle(prepared.root, flags.space).state === "prepared"
+          ? `if you meant to start the prepared space here, run ${codeSpan(`cotal up --root ${shellPath(prepared.root)} --space ${shellPath(flags.space)} --server ${shellPath(flags.server)}`)}. Otherwise, ${addressRemedy}`
+          : addressRemedy;
       const message = error.failure().message;
       throw new ConnectRefusal(`✗ ${message} - ${remedy}`, undefined, {
         cause: error, kind: error.kind, code: error.code, parts: { message, remedy },
@@ -1043,12 +1059,13 @@ interface CredentialContext {
   path: string;
   named: boolean;
   addressFlags?: "--server" | "--link" | "--server and --link";
-  provision?: boolean;
+  landingChannel?: string;
 }
 
 /** Classify a broker-rejected file from its declared space and recorded local trust. */
 async function rejectCredential(e: ConnectRefusal, server: string, creds: string, context: CredentialContext): Promise<never> {
-  const { space, path, named, addressFlags, provision } = context;
+  const { space, path, named, addressFlags, landingChannel } = context;
+  const provision = landingChannel !== undefined;
   const owner = spaceInCreds(creds);
   if (owner === undefined) throw e;
   const at = brokerAddressForDisplay(server) ?? "an invalid broker address";
@@ -1083,10 +1100,16 @@ async function rejectCredential(e: ConnectRefusal, server: string, creds: string
   }
   const message = `credentials rejected at ${at}: ${path} is a credential for space "${owner}"${named ? `, not "${space}"` : ""}`;
   const use = elsewhere !== undefined ? `use it with --space ${owner} and without ${addressFlags}, which dials ${owner}'s broker at ${elsewhere}` : ownerMesh ? `use it with --space ${owner}` : `use it with --space ${owner} --server <url of its broker>`;
-  const claims = provision && named ? credsClaims(creds) : undefined;
-  const grants = claims?.name === "agent" ? grantMintFlags(agentGrants(claims.nats ?? {}, owner)) : "";
+  let grants = "";
+  if (named && landingChannel !== undefined) {
+    const claims = credsClaims(creds);
+    const held = agentGrants(claims.name === "agent" ? claims.nats ?? {} : {}, owner);
+    if (!patternInAllow(held.read, landingChannel)) held.read.push(landingChannel);
+    grants = grantMintFlags(held);
+  }
   const mint = codeSpan(`cotal auth mint <label> --space ${provision ? shellPath(space) : space}${provisionFlags}${grants} --out <file>`);
-  const remedy = `${use}${named ? `, or mint one for "${space}" with ${mint}${pairing}` : ""}`;
+  const replacement = provision ? `ask the owner of "${space}" to mint a replacement with read access to the landing channel using ${mint}${pairing}` : `mint one for "${space}" with ${mint}`;
+  const remedy = named ? `${use}, or ${replacement}` : use;
   throw new ConnectRefusal(`✗ ${message}`, `  ${remedy}`, { cause: e, code: "PERMISSION_DENIED", parts: { message, remedy }, target: { ...(named ? { space } : {}), credentialSpace: owner, path } });
 }
 

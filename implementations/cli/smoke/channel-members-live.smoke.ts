@@ -21,7 +21,7 @@
  * stack stops with `cotal down --yes`. Needs `nats-server` on PATH. Run: pnpm smoke:channel-members:live
  */
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
-import { copyFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { assertSmokeSandboxDown, awaitBrokerReady, createSuite, freePort, killAndAwaitExit, recordSmokeSandbox, SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
@@ -79,6 +79,27 @@ const records = (out: string) => out.split("\n").filter((line) => line.startsWit
 /** What a change is: whether the feed has a census, and who it observed how. */
 const shape = (data: Census) => JSON.stringify([data.asOf !== null, data.members.map(({ id, name, live, durable }) => [id, name, live, durable])]);
 
+async function checkHistoryObserver(): Promise<void> {
+  const observerCreds = join(base, "history-reader.creds");
+  const minted = cotal("auth", "mint", "history_reader", "--provision", "--allow-subscribe", "general", "--out", observerCreds, "--json");
+  check("a provisioned agent credential can read #general", minted.status === 0, minted.out);
+  if (minted.status !== 0) return;
+  const read = started("history", "general", "--creds", observerCreds, "--follow", "--json");
+  try {
+    check("history follow starts on the joined channel", await until(() => records(read.out).some((r) => r.type === "snapshot"), 30_000), read.out);
+    const openedAt = Date.now();
+    check("a post is stored while history follows", cotal("send", "-c", "general", "history follow membership probe").status === 0);
+    check("the history observer receives the new post", await until(() => records(read.out).some((r) => r.type === "event" && JSON.stringify(r.data).includes("history follow membership probe")), 30_000), read.out);
+    let observed: Census | undefined;
+    const fresh = await until(() => ((observed = census("general"))?.asOf ?? 0) >= openedAt, 30_000);
+    check("a fresh census shows the real join and no history observer", fresh && observed?.members.length === 1
+      && observed.members[0]?.name === "anna" && observed.members[0]?.live === true, observed);
+  } finally {
+    read.child.kill("SIGINT");
+    await read.exited;
+  }
+}
+
 let up = false;
 try {
   const legacySpace = `${SPACE}-legacy`;
@@ -104,6 +125,12 @@ try {
   check("up starts the static-auth stack", stack.status === 0, stack.out.slice(-600));
   if (stack.status !== 0) throw new Error("the stack did not start; no later cell can run");
   check("#general is durable with replay disabled", cotal("channel", "set", "general", "--desc", "General talk", "--delivery", "durable", "--no-replay").status === 0);
+  const guide = readFileSync(join(WT, "docs", "UPGRADING.md"), "utf8");
+  const verification = guide.split("# 4. verify the mesh is whole again")[1]?.split("# 5. the step")[0];
+  const inventoryCommand = /^cotal ([^#\n]+)\s*# current CLI$/m.exec(verification ?? "")?.[1]?.trim();
+  const inventory = inventoryCommand === "channel" ? cotal(inventoryCommand) : undefined;
+  check("the current inventory command in the split upgrade guide reads the live channel settings",
+    inventory?.status === 0 && inventory.stdout.includes("general") && inventory.stdout.includes("General talk"), inventory?.out ?? verification);
   check("#archive has a retained message and no saved entry", cotal("send", "-c", "archive", "kept").status === 0);
   const anna = started("join", "--name", "anna", "--channel", "general");
   const bert = started("join", "--name", "bert", "--channel", "lounge");
@@ -121,7 +148,7 @@ try {
   check("an unknown name is refused TARGET_NOT_FOUND, exit 2, naming the registered channels",
     unknown.status === 2 && refusal?.outcome === "refused" && refusal.error?.code === "TARGET_NOT_FOUND"
       && refusal.error.message === "#nosuch has no observed members, no saved entry and no retained messages; registered channels: #general"
-      && refusal.error.remedy === "name a channel the space has; `cotal ch` lists the registered ones", unknown.out.slice(-600));
+      && refusal.error.remedy === `name a channel the space has; \`cotal ch --space ${SPACE}\` lists the registered ones`, unknown.out.slice(-600));
   const cased = cotal("channel", "members", "General");
   check("General names the registered #general and the command for it, with no census",
     cased.status === 2 && cased.out.includes("channel names are case-sensitive, and the registered one is #general")
@@ -134,11 +161,17 @@ try {
   const general = cotal("channel", "members", "general");
   check("#general lists anna and offers to follow it in the resolved space",
     general.status === 0 && general.out.includes("anna") && general.out.includes(`cotal ch members general --space ${SPACE} --follow`), general.out.slice(-600));
+  await checkHistoryObserver();
+
+  const inferredInventory = cotal("channel", "--plain");
+  check("the channel inventory suggests the resolved space even when none is passed",
+    inferredInventory.status === 0 && ["cotal", "pnpm cotal"].some((cli) => inferredInventory.stdout.includes(`${cli} ch show <name> --space ${SPACE}`)), inferredInventory.out);
 
   check("a leading hyphen is valid in a channel name", cotal("channel", "set", "#-audit", "--desc", "Dash-prefixed channel").status === 0);
   const dashShow = cotal("channel", "show", "#-audit", "--plain");
+  const dashHistory = process.platform === "win32" ? '"#-audit"' : "'#-audit'";
   check("channel show spells a dash-prefixed channel as a shell-safe operand",
-    dashShow.status === 0 && dashShow.out.includes("cotal ch members '#-audit' ") && dashShow.out.includes("cotal history '#-audit' "), dashShow.out);
+    dashShow.status === 0 && dashShow.out.includes("cotal ch members '#-audit' ") && dashShow.out.includes(`cotal history ${dashHistory} `), dashShow.out);
   const dashMembers = cotal("ch", "members", "#-audit", "--plain");
   check("the suggested member read succeeds and its follow command keeps the operand safe",
     dashMembers.status === 0 && dashMembers.out.includes(`cotal ch members '#-audit' --space ${SPACE} --follow`), dashMembers.out);
@@ -149,10 +182,23 @@ try {
   const corrected = cotal("channel", "members", "#-audit", "--space", SPACE, "--json");
   check("the corrected member read returns its census as JSON", corrected.status === 0 && Array.isArray(envelope(corrected.stdout)?.result?.members), corrected.out);
   const dashRemove = cotal("ch", "rm", "#-audit", "--json");
-  check("the removal confirmation prints a shell-safe operand",
-    dashRemove.status === 1 && envelope(dashRemove.stdout)?.error?.remedy === "confirm with `cotal channel remove '#-audit' --yes`", dashRemove.out);
-  const removed = cotal("channel", "remove", "#-audit", "--yes");
-  check("the suggested confirmation removes the same channel", removed.status === 0 && removed.out.includes("Channel removed"), removed.out);
+  const confirm = envelope(dashRemove.stdout)?.error?.remedy?.match(/^confirm with `cotal (.+)`$/)?.[1];
+  check("the removal confirmation prints a shell-safe operand and keeps --json",
+    dashRemove.status === 1 && confirm === "channel remove '#-audit' --yes --json", dashRemove.out);
+  const removed = confirm ? cotal(...confirm.split(" ").map((word) => word.replace(/^'|'$/g, ""))) : undefined;
+  check("the suggested confirmation removes the same channel with a JSON receipt",
+    removed?.status === 0 && JSON.parse(removed.stdout).result?.removed === true, removed?.out);
+
+  const plainTarget = ["--space", SPACE, "--server", SERVER];
+  const plainCard = cotal("channel", "set", "plain.retry", "--desc", "Confirmation fixture", ...plainTarget, "--json");
+  const askedPlain = cotal("channel", "remove", "plain.retry", ...plainTarget, "--plain");
+  const retry = askedPlain.out.match(/confirm with `(?:pnpm )?cotal ([^`]+)`/)?.[1];
+  const confirmed = retry ? cotal(...retry.split(" ")) : undefined;
+  check("the suggested removal confirmation preserves --plain and gives a plain receipt",
+    plainCard.status === 0 && askedPlain.status === 1 && askedPlain.stdout === "" && askedPlain.out.includes("USAGE_INVALID")
+      && retry === `channel remove plain.retry ${plainTarget.join(" ")} --yes --plain`
+      && confirmed?.status === 0 && /^Channel removed - #plain\.retry$/m.test(confirmed.stdout),
+    { saved: plainCard.out, refused: askedPlain.out, confirmed: confirmed?.out });
 
   const other = join(base, "other");
   mkdirSync(other, { mode: 0o700 });
@@ -170,8 +216,23 @@ try {
     writeFileSync(join(s, path), await mintCreds(targetAuth, newIdentity(), "admin"), { mode: 0o600 });
     const target = ["--space", SPACE, "--server", SERVER, "--creds", path];
     const scope = `--space ${SPACE} --server ${SERVER} --creds '${path}'`;
+    const removal = cotal("channel", "remove", "genral", ...target, "--json");
+    const missing = envelope(removal.stdout);
+    const list = missing?.error?.remedy === `name a channel the space has; \`cotal ch ${scope}\` lists the registered ones`
+      ? cotal("ch", ...target, "--plain") : undefined;
+    check("an unknown removal suggests listing the intended space with its broker and credential",
+      removal.status === 2 && missing?.error?.code === "TARGET_NOT_FOUND" && list?.status === 0
+        && list.stdout.includes(`Mesh: ${SPACE}`) && list.stdout.includes("#general"), { removal: removal.out, list: list?.out });
+    const inventory = cotal("ch", ...target, "--plain");
+    const suggests = (action: string) => ["cotal", "pnpm cotal"].some((cli) => inventory.stdout.includes(`${cli} ch ${action} ${scope}`));
+    const suggestedShow = suggests("show <name>") ? cotal("ch", "show", "general", ...target, "--plain") : undefined;
+    check("the inventory's show, set and defaults commands keep the inspected space, broker and credential",
+      inventory.status === 0 && suggests('set <name> --desc "…"') && suggests("defaults")
+        && suggestedShow?.status === 0 && suggestedShow.stdout.includes(`Mesh: ${SPACE}`)
+        && /Description:\s+General talk/.test(suggestedShow.stdout), { inventory: inventory.out, show: suggestedShow?.out });
     const card = cotal("channel", "show", "archive", ...target, "--plain");
-    const history = card.stdout.includes(`cotal history '#archive' ${scope}`) ? cotal("history", "#archive", ...target, "--json") : undefined;
+    const archiveWord = process.platform === "win32" ? '"#archive"' : "'#archive'";
+    const history = card.stdout.includes(`cotal history ${archiveWord} ${scope}`) ? cotal("history", "#archive", ...target, "--json") : undefined;
     check("the suggested history read uses the inspected space, broker and credential",
       card.status === 0 && history?.status === 0 && history.stdout.includes('"text":"kept"'), { card: card.out, history: history?.out });
     const members = card.stdout.includes(`cotal ch members archive ${scope}`) ? cotal("ch", "members", "archive", ...target, "--plain") : undefined;

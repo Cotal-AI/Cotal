@@ -21,7 +21,6 @@
  * stdout may be a shared terminal or log. Bind stays loopback; no CORS / mDNS.
  */
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
-import { createServer } from "node:net";
 import { once } from "node:events";
 import { randomBytes } from "node:crypto";
 import { accessSync, closeSync, constants, mkdirSync, readdirSync, readFileSync, rmdirSync, rmSync, statSync, writeFileSync } from "node:fs";
@@ -31,6 +30,7 @@ import { acquireLock } from "@cotal-ai/core/advisory-lock";
 import { openPrivateAppend } from "@cotal-ai/core/secret-fs";
 import { OPENCODE_BOOT_TIMEOUT_MS } from "./startup.js";
 import { opencodeLine } from "./opencode-line.js";
+import { freePort } from "./private-serve.js";
 
 /** The opencode binary to spawn. `COTAL_OPENCODE_BIN` overrides. On Windows, `opencode` on PATH is
  *  an npm `.cmd` shim that child_process can't spawn, and the real `opencode.exe` it wraps
@@ -81,16 +81,6 @@ const SECRET = process.env.OPENCODE_SERVER_PASSWORD || randomBytes(24).toString(
  *  write stops it before the command starts. */
 const RECORD_THEN_EXEC = `printf %s "$$" > "$1" && shift && exec "$@"`;
 
-/** Ask the OS for a free port (bind :0, read it, release) so co-located peers don't collide. */
-async function freePort(): Promise<number> {
-  const srv = createServer();
-  srv.listen(0, "127.0.0.1");
-  await once(srv, "listening");
-  const port = (srv.address() as { port: number }).port;
-  await new Promise<void>((r) => srv.close(() => r()));
-  return port;
-}
-
 /** SIGTERM the child, then SIGKILL if it's still alive 3s later. Resolves once it's dead. A
  *  lingering serve keeps the agent's data dir (SQLite) open and wedges every later same-name spawn;
  *  a stopped or SIGTERM-ignoring TUI keeps the seat's process up after its server has gone. */
@@ -115,7 +105,7 @@ function processCommand(pid: number): string | undefined {
         "-NonInteractive",
         "-Command",
         `(Get-CimInstance Win32_Process -Filter 'ProcessId = ${pid}').CommandLine`,
-      ], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+      ], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], windowsHide: true }).trim();
     }
     return execFileSync("ps", ["-p", String(pid), "-o", "command="], {
       encoding: "utf8",
@@ -220,7 +210,7 @@ export async function launch(tuiArgv: TuiArgv, serveEnv?: ServeEnv): Promise<voi
   // plugin and the viewer below can each act on it without probing anything themselves.
   let versionRaw: string;
   try {
-    versionRaw = execFileSync(BIN, ["--version"], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+    versionRaw = execFileSync(BIN, ["--version"], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], windowsHide: true }).trim();
   } catch (error) {
     const stderr = String((error as { stderr?: string | Buffer }).stderr ?? "").trim();
     process.stderr.write(`[cotal-connector] OpenCode version probe failed${stderr ? `: ${stderr.split(/\r?\n/).slice(-2).join(" | ")}` : ""}\n`);
@@ -257,7 +247,7 @@ export async function launch(tuiArgv: TuiArgv, serveEnv?: ServeEnv): Promise<voi
       OPENCODE_SERVER_PASSWORD: SECRET,
       OPENCODE_DB: dbPath,
     },
-    stdio: ["ignore", "pipe", "pipe"],
+    stdio: ["ignore", "pipe", "pipe"], windowsHide: true,
   });
   if (process.platform === "win32") writeFileSync(pidFile, String(serve.pid));
   serve.on("exit", () => rmSync(pidFile, { force: true }));

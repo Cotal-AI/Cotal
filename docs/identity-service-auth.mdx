@@ -24,11 +24,12 @@ member of the space's callout queue group. `cotal auth-service` is a deprecated 
 existing units and scripts; new setups use the `auth-service` service preset
 ([deprecated daemon entries](UPGRADING.md#deprecated-daemon-entries)). The broker hands each connect to one member, so a
 replica keeps connects answered while the full auth service restarts or crashes, and adds capacity.
-A replica runs the same connect checks as the full service and holds nothing else: no HTTP
-listener, no `auth-service.json`, no plane claim, service registration, barrier, scanner or sweep,
-so it never competes with the full service for any of them. Its store connection reads
-the auth, records and sessions stores and creates each connect's issuance row; it creates no store,
-mints no credential and writes no gate. Like the full service, it holds its own issuer session for
+A replica runs the same connect checks and exact terminal-connection sweep as the full service.
+It can evict an ended terminal connection through delivery while the full service is down. It
+has no HTTP listener, `auth-service.json`, plane claim, service registration, barrier or scanner.
+Its store connection reads the auth, records and sessions stores, writes issuance evidence,
+and removes verified terminal connection receipts. It creates no store and writes no gate.
+Like the full service, it holds its own issuer session for
 the connects that need issued authority. A replica reads the actor ledger in the space's state dir
 and the same secret entries the full service's callout reads, the bearer issuer key among them, so
 it runs only on a host trusted like the full service's. A replica that loses a store connection or
@@ -97,7 +98,7 @@ dashboard's per-click channel delete) and the one-object `transfer-writer` (belo
 the scope-free `session-caller` view (below) and the narrowing `manager-caller` view for humans
 or managed agents. That view binds the bearer to one live registered manager instance. It adds no
 capability, except that a `spawn` holder's view may read that manager's `status`, `models`,
-`resolve-cwd` and `list-dir`, which a launch there needs, and `ps`, which lists the caller's own
+`resolve-cwd`, `list-dir` and `harness-commands`, which a launch there needs, and `ps`, which lists the caller's own
 agents, an `admin` holder's view carries the
 operator reads and `slots`, and a person's own view carries their agents'
 commands whatever the scope ([your own agents](identity-user-auth.mdx#delegation)). A manager using a delegated runtime refuses
@@ -195,8 +196,10 @@ broker's `authorization { timeout }` and starts the space's auth service with th
 callout deadline. The value is recorded with the root's broker policy, so a later `cotal up`
 renders it again and passes it to the auth service again. Without it the broker config has no
 `authorization` block and the auth service uses the defaults, which match nats-server's. `cotal up`
-does not start callout replicas, so start each one with the same `--auth-timeout <seconds>` as the
-broker config.
+does not start callout replicas. Give the full service and every replica the broker's timeout
+with `--auth-timeout <seconds>`. Each uses it to decide how long to keep checking for an ended
+session's connection. A shorter setting can stop those checks while the broker is still waiting
+for another callout to answer.
 
 A replica serves one space. `cotal auth-service --callout-only --spaces <manifest>` instead serves
 every space a manifest names from one process, one callout lane each, which is how a host runs one

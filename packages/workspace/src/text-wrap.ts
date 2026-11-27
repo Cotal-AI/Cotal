@@ -15,6 +15,13 @@ export function codeSpan(command: string): string {
   return `${fence}${command}${fence}`;
 }
 
+/** One argument in PowerShell and Command Prompt without interpolation by either shell. */
+export function windowsShellWord(value: string): string | undefined {
+  if (/^[A-Za-z0-9_./:+-]+$/.test(value)) return value;
+  if (/["$`%!\u0000-\u001f\u201c\u201d\u201e]/.test(value) || value.endsWith("\\")) return undefined;
+  return `"${value}"`;
+}
+
 /** `text` split at spaces into the words {@link wrapWords} breaks between. A span in backticks, from
  *  its opening run of backticks to the next run of as many, is one word, so no line holds part of it,
  *  whatever it starts with and whatever words it holds. A line that starts with a command outside
@@ -23,11 +30,11 @@ function wrapUnits(text: string): string[] {
   const parts = text.split(" "), words: string[] = [];
   for (let i = 0; i < parts.length; i++) {
     let end = i;
-    const open = /^[("']*(`+)[^`]*$/.exec(parts[i]!);
+    const open = /^[("']*(`+)/.exec(parts[i]!);
     if (open) {
       const fence = new RegExp(`(?<!\`)\`{${open[1]!.length}}(?!\`)`);
-      const close = parts.findIndex((part, j) => j > i && fence.test(part));
-      if (close > 0) end = close;
+      const close = parts.findIndex((part, j) => j >= i && fence.test(j === i ? part.slice(open[0].length) : part));
+      if (close >= i) end = close;
     }
     words.push(parts.slice(i, end + 1).join(" "));
     i = end;

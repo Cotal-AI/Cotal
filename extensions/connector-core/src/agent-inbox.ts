@@ -42,6 +42,16 @@ export class AgentInbox {
 
 
   private inbox: Pending[] = [];
+  private omittedChannelCount = 0;
+
+  get omittedChannelPosts(): number {
+    return this.omittedChannelCount;
+  }
+
+  clearOmittedChannelPosts(seen: number): void {
+    this.omittedChannelCount -= seen;
+  }
+
   /** Role requests delivered on an auth mesh whose take is not recorded for the copy held (SPEC §8.1).
    *  They count toward a wake and are never shown: {@link takeChosen} asks the delivery daemon to
    *  record the take of each one a host chose to show, and a recorded one moves to {@link inbox}. */
@@ -439,7 +449,10 @@ export class AgentInbox {
         // it instead, as a per-id eviction count once did (#807), acked a message the sender had
         // seen stored and the live recipient never read, with one stderr line as the only trace:
         // a seat whose turn ran long lost its oldest DMs exactly that way (#2215).
-        if (!sacrificingDirected) evicted.ack();
+        if (!sacrificingDirected) {
+          this.omittedChannelCount++;
+          evicted.ack();
+        }
       }
     }
   }

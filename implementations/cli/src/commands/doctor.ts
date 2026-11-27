@@ -45,6 +45,9 @@ import {
   migrateLegacyCotalMaterial,
   preparedSpaceAt,
   preflightTarget,
+  preparedRootRemedy,
+  projectRootProblemText,
+  readPreparedSpaces,
   remintDaemonCreds,
   REMINTABLE_DAEMON_CREDS,
   type Report,
@@ -69,9 +72,11 @@ import {
   grantMintFlags,
   type AgentGrants,
 } from "@cotal-ai/workspace";
-import { displayCmd } from "../lib/self-exec.js";
+import { displayCmd, displayRemedy } from "../lib/self-exec.js";
 import { shellWord } from "../lib/endpoint-errors.js";
 import { channelSeedRestartBlock } from "../lib/channel-seed.js";
+import { controlFileProblem, preparedRootWriteProblem } from "../lib/paths.js";
+import { rootStoreProblem } from "../lib/store-dir.js";
 import { RESPONDER_UNBOUND_CONSEQUENCE } from "../lib/delivery-responder.js";
 import { noExpiryRecordPath, noExpiryRequestedAt } from "../lib/no-expiry-record.js";
 import { credentialExportStore } from "../lib/credential-exports.js";
@@ -176,8 +181,9 @@ function recordedOpenSpace(root: string, space: string | undefined, fix: boolean
 function legacyOpenRecord(root: string): { path: string; space?: string } | undefined {
   if (!isGenuineSpace(root) || cotalDirLink(root) !== undefined || existsSync(stackJournalPath(root)) ||
       meshesForRoot(root).length || preparedSpaceAt(root) || rootHoldsAccount(root) || legacyStackOtherHome(root) !== undefined) return undefined;
+  if (!retainedLegacyBroker(root)?.open) return undefined;
   const path = join(root, ".cotal", "server-open.conf");
-  const space = retainedLegacyBroker(root)?.open ? retainedOpenSpace(root) : undefined;
+  const space = retainedOpenSpace(root);
   if (space !== undefined && (findMesh(space) || findPreparedSpace(space))) return undefined;
   return { path, space };
 }
@@ -200,6 +206,9 @@ function trustRootStep(root: string, space: string | undefined, fix: boolean, mi
           : `${correct}.`;
       }
       if (error instanceof MeshTargetError && error.code === "not-started") {
+        const { root: recorded, rootProblem } = error.details;
+        if (recorded !== undefined && rootProblem !== undefined && rootProblem !== "missing")
+          return `"${named}" is prepared in ${recorded}, which ${projectRootProblemText(rootProblem)}. ${displayRemedy(preparedRootRemedy(named, rootProblem))}`;
         if (error.details.rootMissing) registered = error.details.root;
         else if (preparedNeverStarted(error.details)) prepared = error.details.root;
       }
@@ -208,11 +217,15 @@ function trustRootStep(root: string, space: string | undefined, fix: boolean, mi
   }
   if (prepared !== undefined) {
     const here = canonicalRoot(prepared) === canonicalRoot(root);
-    const block = channelSeedRestartBlock(prepared);
+    const block = controlFileProblem(prepared) ?? preparedRootWriteProblem(prepared) ?? rootStoreProblem(prepared) ?? channelSeedRestartBlock(prepared);
     return `"${named}" is prepared but not started; ${block ? `${block.message}. First ${block.remedy}, then ` : ""}start it with ${codeSpan(upCommand(prepared, named!, ...(here ? [] : ["--root", shellWord(prepared)])))}, then run \`${command}\` ${here ? "again" : "in that folder"}`;
   }
   if (registered && !existsSync(registered)) return `the folder space ${named} is recorded at, ${registered}, no longer exists; if it was moved or renamed, move it back and run \`${command}\` there; otherwise forget the space with \`cotal space forget ${named}\``;
   if (!registered && missingModeStep) return missingModeStep;
+  if (named === undefined && isGenuineSpace(root)) {
+    const { unusable } = readPreparedSpaces();
+    if (unusable.length) return `Check the unreadable prepared records before retrying: ${unusable.map(({ summary, remedy }) => remedy ? `${summary}. To resolve it, ${remedy}.` : summary).join("\n")}`;
+  }
   return registered ? `run \`${command}\` in the folder space ${space} is registered at: ${registered}` : `run \`${command}\` in ${space === undefined ? "a" : "that"} space's root folder; \`cotal space\` lists each space's root`;
 }
 
@@ -416,8 +429,16 @@ function exportedCredentials(root: string, auth: SpaceAuth): ExportedRow[] {
     const row: ExportedRow = { label: entry.label, profile: entry.profile, path: entry.path, state: "unreadable", issuedAt: null, expiresAt: null, revokedAt: null, repair: null };
     let bytes: Buffer | undefined;
     try { bytes = readLocalRecordSource(entry.path, 1024 * 1024, true); }
-    catch {
-      try { const stat = lstatSync(entry.path); row.repair = stat.isFile() ? credentialFileExposure(entry.path, stat)?.remedy ?? null : null; } catch { /* reported unreadable */ }
+    catch (error) {
+      try {
+        const stat = lstatSync(entry.path);
+        if (stat.isSymbolicLink()) row.repair = "The recorded export is a symbolic link. Restore the original private regular file at the recorded path in place of the link.";
+        else if (stat.isFile() && isCommandFailure(error) && error.code === "PERMISSION_DENIED" &&
+          stat.uid === process.getuid?.() && (stat.mode & 0o400) === 0) {
+          row.repair = `The export's owner lacks read permission. Run ${codeSpan(`chmod 600 ${shellWord(entry.path)}`)}.`;
+        }
+        else if (stat.isFile()) row.repair = credentialFileExposure(entry.path, stat)?.remedy ?? null;
+      } catch { /* reported unreadable */ }
       rows.push(row);
       continue;
     }
@@ -425,7 +446,11 @@ function exportedCredentials(root: string, auth: SpaceAuth): ExportedRow[] {
     if (!bytes) continue;
     const creds = bytes.toString("utf8");
     let claims: ReturnType<typeof credsClaims>;
-    try { claims = credsClaims(creds); } catch { rows.push(row); continue; }
+    try { claims = credsClaims(creds); } catch {
+      row.repair = `The original grants cannot be determined from this file. Restore the complete credential file, or confirm the intended grants before using \`${cmd} auth mint\` to mint a replacement to a new private path.`;
+      rows.push(row);
+      continue;
+    }
     const profile = entry.profile === "agent" ? "" : ` --profile ${entry.profile}`;
     const provision = entry.profile === "agent" && entry.provisioned === true ? " --provision" : "";
     const quotedPath = shellWord(entry.path);

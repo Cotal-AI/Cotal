@@ -27,9 +27,9 @@ export interface StoredMessage {
 }
 
 /** The live feed's state as the pill says it. `connecting` until the feed first opens, `connected`
- *  while it is open, `reconnecting` after it dropped while the browser retries, and `closed` once the
- *  browser has failed it for good and will not retry. */
-export type Connection = "connecting" | "connected" | "reconnecting" | "closed";
+ *  while it is open, `reconnecting` after it drops while the browser retries, and `closed` once the
+ *  browser gives up. `session-invalid` is a terminal closure with a confirmed session refusal. */
+export type Connection = "connecting" | "connected" | "reconnecting" | "closed" | "session-invalid";
 
 /** A post the composer sent. `id` is unset while the server has not answered, which is when the row
  *  shows muted and sending, and set once it went out, until the feed delivers the message itself.
@@ -87,7 +87,8 @@ export interface DashboardState {
    *  the server may hold older ones, or a live DM pushed the oldest out. A read that came back short
    *  of the window held everything the server had, and sets it false. */
   dmsCut: boolean;
-  open: { channel: string; messages: StoredMessage[] } | null;
+  /** `olderRetained` is known after a successful history read and follows that channel's window. */
+  open: { channel: string; messages: StoredMessage[]; olderRetained?: boolean } | null;
   stale: StaleMark[];
   /** Newest last, capped at 50. */
   orderNotes: OrderNote[];
@@ -100,6 +101,7 @@ export interface DashboardState {
   loading: { roster: boolean; channels: boolean };
   /** What the dashboard can post as, null until `/api/meta` answers. */
   post: PostCapability | null;
+  channelDeleteSupported: boolean;
   /** The id the operator posts as. `/api/meta` sets it whenever it reports one, replacing the stored
    *  id; a post's answer sets it only while none is stored. */
   operatorId: string | null;
@@ -125,6 +127,7 @@ export const initialState: DashboardState = {
   membership: {},
   loading: { roster: false, channels: false },
   post: null,
+  channelDeleteSupported: false,
   operatorId: null,
   drafts: {},
   sessions: {},

@@ -16,6 +16,7 @@ const { bootDeliveryDaemon } = await import("./_boot-delivery.js");
 const { nativeRemoteManager } = await import("./_native-remote-manager.js");
 const { remoteManagerClient } = await import("../dist/index.js");
 const { emitSentinel } = await import("@cotal-ai/smoke-kit");
+const { managerMachineId } = await import("@cotal-ai/workspace");
 
 let passed = 0, failed = 0;
 const cell = (name: string, ok: boolean, seen?: unknown) => {
@@ -109,6 +110,13 @@ try {
   cell("browser caller B receives its distinct selected instance", bStatus.reply.ok && bStatus.responder.instanceId === peer.state.instanceId && bData.instanceId === peer.state.instanceId && peer.state.instanceId !== iid);
   cell("status A reports the answering host", aData.host === hostname(), aData.host);
   cell("status B reports the answering host", bData.host === hostname(), bData.host);
+  // Both managers run on this machine, so each names the id a caller here derives for itself.
+  const here = managerMachineId();
+  cell("status A names this machine's id, as a caller on this machine derives it", aData.machine === here, aData.machine);
+  cell("status B names the same machine", bData.machine === here, bData.machine);
+  cell("the machine id is an HMAC, not the OS machine id", /^[0-9a-f]{64}$/.test(here) && (process.platform !== "linux" || !here.includes(readFileSync("/etc/machine-id", "utf8").trim().toLowerCase())));
+  const card = (participant.manager as unknown as { ep: { card: { meta?: Record<string, unknown> } } }).ep.card;
+  cell("its presence names the same machine beside its host", card.meta?.machine === here && card.meta?.host === hostname(), card.meta);
   cell("status A reports its own stock package version", aData.version === stockPackage.version, aData.version);
   cell("status B reports its own running package version, not caller or replaced disk", bData.version === peerVersion && bData.version !== aData.version, bData.version);
   const outputDigest = source.document.commands.find((c) => c.name === "status")!.outputDigest;
@@ -121,9 +129,10 @@ try {
     statusProbe?.eventPlane === false && statusEvents?.eventPlane === true, aConnectors);
   cell("browser status validator requires every connector eventPlane fact",
     !validate({ ...aData, connectors: aConnectors.map((row) => row.agent === "status-probe" ? (({ eventPlane: _eventPlane, ...rest }) => rest)(row) : row) }));
-  const { host: _host, version: _version, ...withoutMetadata } = aData;
+  const { host: _host, version: _version, machine: _machine, ...withoutMetadata } = aData;
   cell("absent metadata compatibility: output validator accepts omission", validate(withoutMetadata));
-  cell("absent metadata compatibility: no values are synthesized", !Object.hasOwn(withoutMetadata, "host") && !Object.hasOwn(withoutMetadata, "version"));
+  cell("absent metadata compatibility: no values are synthesized", !Object.hasOwn(withoutMetadata, "host") && !Object.hasOwn(withoutMetadata, "version") && !Object.hasOwn(withoutMetadata, "machine"));
+  cell("absent metadata compatibility: machine alone validates", validate({ ...withoutMetadata, machine: aData.machine }));
   cell("absent metadata compatibility: version alone validates", validate({ ...withoutMetadata, version: bData.version }));
   cell("absent metadata compatibility: host alone validates", validate({ ...withoutMetadata, host: bData.host }));
   // Compile-time package-root public type also permits older payloads.
@@ -134,6 +143,7 @@ try {
   cell("public ManagerStatus type permits absent display metadata", validate({ ...typedOlder, instanceId: iid }));
   cell("metadata type contract rejects non-string host", !validate({ ...aData, host: 42 }));
   cell("metadata type contract rejects non-string version", !validate({ ...aData, version: 42 }));
+  cell("metadata type contract rejects a machine that is not a 64-digit hex id", !validate({ ...aData, machine: "mac-home" }) && !validate({ ...aData, machine: here.toUpperCase() }));
   const swapped = await exchange(token, "launcher", iid);
   const badPin = await openBrowserManagerCaller({ servers: fx.wsServers!, space: a.space, owner, actor: "launcher", lifecycleUid: (decodeJwt(swapped.body.token) as any).act.lifecycleUid,
     instanceId: peer.state.instanceId, contracts, acquire: async () => ({ bearer: swapped.body.token, sentinelCreds: a.sentinelCreds }) }).then(async (c) => { await c.close(); return false; }, () => true);

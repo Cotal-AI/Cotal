@@ -22,10 +22,9 @@ challenge at 1 KiB, the reply's JSON at 4 KiB. The challenge and the reply are d
 UTF-8, as the TypeScript client decodes them. The hooks send no delivery receipt, so the fifth line
 the TypeScript relay can send does not occur here.
 
-The bridge socket does not run the exchange. Its client presents :func:`bridge_token`, derived
-from the key, in its first frame, so the key crosses neither socket. That token authenticates the
-client only: the bridge server proves nothing, and the private socket directory is what keeps
-another user off that socket.
+The Unix bridge client presents :func:`bridge_token` in a private socket directory. On Windows,
+the same derived key is used as the key of this exchange on the bridge, so both ends prove it
+and neither key crosses the pipe.
 
 The version travels with the key (the launch material's ``controlVersion``, or
 ``COTAL_CONTROL_VERSION`` beside ``COTAL_CONTROL_KEY``), this module speaks exactly one, and a
@@ -44,6 +43,8 @@ import socket
 import stat
 import time
 from typing import Any
+
+from .transport import PipeStream
 
 CONTROL_PROTOCOL_VERSION = 1
 # How long a client waits, from connect, for the server to prove it holds the key.
@@ -164,15 +165,7 @@ def control_key() -> str | None:
             f"this launch carries connection material both in COTAL_LAUNCH_MATERIAL and as {', '.join(both)}; "
             "one launch carries one, so drop one of them"
         )
-    try:
-        if os.name != "nt" and (os.stat(path).st_mode & 0o077):
-            raise ControlConfigError("the launch material is readable beyond its owner")
-        with open(path, encoding="utf-8") as fh:
-            material = json.load(fh)
-    except (OSError, ValueError) as exc:
-        raise ControlConfigError("the launch material cannot be read as JSON") from exc
-    if not isinstance(material, dict):
-        raise ControlConfigError("the launch material is not a JSON object")
+    material = _load_material(path)
     if "controlToken" in material:
         raise ControlConfigError("the launch material carries controlToken, the control key field of a release before the control exchange")
     has_key, has_version = "controlKey" in material, "controlVersion" in material
@@ -184,6 +177,26 @@ def control_key() -> str | None:
     if not has_version or not _is_version(material["controlVersion"]):
         raise ControlConfigError("the launch material's controlVersion is not the control protocol version this plugin speaks")
     return key
+
+
+def _load_material(path: str) -> dict:
+    try:
+        if os.name != "nt" and (os.stat(path).st_mode & 0o077):
+            raise ControlConfigError("the launch material is readable beyond its owner")
+        with open(path, encoding="utf-8") as fh:
+            material = json.load(fh)
+    except (OSError, ValueError) as exc:
+        raise ControlConfigError("the launch material cannot be read as JSON") from exc
+    if not isinstance(material, dict):
+        raise ControlConfigError("the launch material is not a JSON object")
+    return material
+
+
+def asks_permissions() -> bool:
+    """Whether this launch asks the agent's owner before a command Hermes's approval rules stop
+    (``askPermissions`` in the launch material). A launch without material never does."""
+    path = (os.environ.get("COTAL_LAUNCH_MATERIAL") or "").strip(_JS_WHITESPACE)
+    return bool(path) and _load_material(path).get("askPermissions") is True
 
 
 def socket_dir_problem(path: str) -> tuple[bool, str] | None:
@@ -204,7 +217,7 @@ def socket_dir_problem(path: str) -> tuple[bool, str] | None:
     return None
 
 
-def _read_line(sock: socket.socket, buf: bytearray, deadline: float, cap: int) -> bytes:
+def _read_line(sock: socket.socket | PipeStream, buf: bytearray, deadline: float, cap: int) -> bytes:
     """One newline-terminated line, without its newline. A line longer than ``cap`` bytes is refused
     whether or not its newline has arrived, so a whole oversized line in one chunk is refused too."""
     while b"\n" not in buf:
@@ -232,7 +245,7 @@ class ClientExchange:
     """One client exchange on a connected socket. :meth:`open` proves both ends and sends the
     request; :meth:`reply` reads and verifies the one MAC'd reply (control socket only)."""
 
-    def __init__(self, sock: socket.socket, key: str) -> None:
+    def __init__(self, sock: socket.socket | PipeStream, key: str) -> None:
         self._sock = sock
         self._key = key
         self._nc = _b64(secrets.token_bytes(32))
@@ -268,3 +281,8 @@ class ClientExchange:
             return body.decode("utf-8")
         except UnicodeDecodeError as exc:
             raise ExchangeRefused("the reply is not UTF-8") from exc
+
+    def continue_on_pipe(self) -> None:
+        """Return bytes following the proven reply to the persistent stream reader."""
+        if isinstance(self._sock, PipeStream):
+            self._sock.prepend(bytes(self._buf))

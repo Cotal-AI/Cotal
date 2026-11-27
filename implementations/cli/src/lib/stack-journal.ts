@@ -4,10 +4,10 @@
  *  and it grants no PID-only stop authority: recovery requires the launching home, host and exact
  *  process creation pins; ordinary stops still recheck the instance records. */
 import { createHash, randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, rmdirSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, rmdirSync, statSync } from "node:fs";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { acquireLock, writeSecretFileAtomic } from "@cotal-ai/core";
-import { CommandFailure, MANAGER_PIDFILE, acquireMaintenanceLock, codeSpan, admittedControllerRestore, canonicalRoot, commandIsCotalSupervisor, decodeLocalJson, isCommandFailure, isMaintenanceError, loadMeshes, localProcessPath, localProcessPathCandidates, localRecordObject, localStackRoot, maintenancePaths, parsePid, probeLiveness, readContainedRecord, readLocalRecordSource, readMaintenanceJournal, readPidfile, readProcessCommand, readProcessRecord, recordedLocalProcessPaths, releaseMaintenanceLock, removePidPair, serviceOperationId, shellPath, stackJournalPath, maintenanceLockHolder, cotalDirLink, preparedSpaceAt, recordsMovedTo, stackAdoptionBlock, stackElsewhereRemedy, verifyIdentityPin, type ControllerStackView, type MaintenanceLock, type OutputWarning, type ProcessRecord, type ServiceAdapterStopAbandonment } from "@cotal-ai/workspace";
+import { CommandFailure, MANAGER_PIDFILE, NATS_PIDFILE, acquireMaintenanceLock, codeSpan, admittedControllerRestore, canonicalRoot, commandIsCotalSupervisor, decodeLocalJson, hasNonNatsExecutable, isCommandFailure, isMaintenanceError, loadMeshes, localProcessPath, localProcessPathCandidates, localRecordObject, localStackRoot, maintenancePaths, parsePid, probeLiveness, readContainedRecord, readLocalRecordSource, readMaintenanceJournal, readPidfile, readProcessCommand, readProcessRecord, recordedLocalProcessPaths, releaseMaintenanceLock, removePidPair, serviceOperationId, shellPath, stackJournalPath, maintenanceLockHolder, cotalDirLink, preparedSpaceAt, recordsMovedTo, stackAdoptionBlock, stackElsewhereRemedy, verifyIdentityPin, type ControllerStackView, type MaintenanceLock, type OutputWarning, type ProcessRecord, type ServiceAdapterStopAbandonment } from "@cotal-ai/workspace";
 import { localProcessSurface } from "../ext-loader.js";
 import { serviceDefinitionStore, type ServiceDefinitionSnapshot } from "./service-definitions.js";
 import { observeServiceProcess, processServiceHost, serviceInstances, type ServiceInstance, type ServiceInstanceSnapshot } from "./service-instances.js";
@@ -15,8 +15,10 @@ import { abandonableSignalStop, abandonRetainedNativeStop, abandonRetainedSignal
 import { stackRunsRecord, type StackRuns } from "./stack-runs.js";
 import { shellWord } from "./endpoint-errors.js";
 import { readStoreIdentity, type StoreIdentity } from "./store-identity.js";
-import { readMaintenanceLockHolder } from "@cotal-ai/workspace";
+import { assertRecordIdentity, localProcessOwnerStatus, projectRootDisplaced, projectRootProblem, projectRootProblemText, readMaintenanceLockHolder } from "@cotal-ai/workspace";
 import { displayCmd, displayRemedy } from "./self-exec.js";
+import { noteUpProjectCreated } from "../commands/up-project-trust.js";
+import { controlFileProblem } from "./paths.js";
 
 export const STACK_ROLES = ["broker", "auth", "delivery", "manager"] as const;
 export type StackRole = (typeof STACK_ROLES)[number];
@@ -137,7 +139,18 @@ function unreadable(root: string): never {
   });
 }
 
-function validate(input: unknown, root: string): StackJournal {
+/** Match the actual project and its own control directory, not the contents of a copied journal. */
+function stackRootAlias(root: string, recorded: string): boolean {
+  try {
+    return ["", ".cotal"].every((part) => {
+      const here = lstatSync(resolve(root, part), { bigint: true }), there = lstatSync(resolve(recorded, part), { bigint: true });
+      return here.isDirectory() && there.isDirectory() && here.dev > 0n && here.ino > 0n &&
+        here.dev === there.dev && here.ino === there.ino && here.birthtimeNs === there.birthtimeNs;
+    });
+  } catch { return false; }
+}
+
+function validate(input: unknown, root: string, allowRootAlias = false): StackJournal {
   const value = localRecordObject(input, ["schemaVersion", "kind", "root", "space", "server", "mode", "members", "broker", "operation", "updatedAt", "recovery"]);
   // A journal written before the auth-service role existed carries exactly broker, delivery and
   // manager rows. It is read with an explicit not-attempted auth row for auth/open stacks only;
@@ -169,7 +182,7 @@ function validate(input: unknown, root: string): StackJournal {
     const recovery = localRecordObject(value.recovery, ["home", "host"]);
     if (typeof recovery.home !== "string" || !isAbsolute(recovery.home) || typeof recovery.host !== "string" || !/^[0-9a-f]{64}$/.test(recovery.host)) invalid(root);
   }
-  if (value.root !== root) recordedElsewhere(root, value.root as string, value.space as string, members, operation);
+  if (value.root !== root && !(allowRootAlias && stackRootAlias(root, value.root))) recordedElsewhere(root, value.root, value.space as string, members, operation);
   const { broker: _broker, ...rest } = value as unknown as StackJournal;
   return { ...rest, members, ...(broker ? { broker } : {}), operation: operation as unknown as StackJournal["operation"] };
 }
@@ -237,20 +250,27 @@ function brokerInputs(input: unknown, root: string): StackBrokerInputs {
 
 export interface StackJournalSnapshot { journal: StackJournal; sha256: string }
 
-export function readStackJournal(root: string): StackJournalSnapshot | undefined {
+export function readStackJournal(root: string, allowRootAlias = false): StackJournalSnapshot | undefined {
   const canonical = canonicalRoot(root);
   const bytes = readLocalRecordSource(stackJournalPath(canonical), LIMIT, true);
   if (!bytes) return undefined;
   let input: unknown;
   try { input = decodeLocalJson(bytes); }
   catch (error) { if (isCommandFailure(error)) unreadable(canonical); throw error; }
-  return { journal: validate(input, canonical), sha256: createHash("sha256").update(bytes).digest("hex") };
+  return { journal: validate(input, canonical, allowRootAlias), sha256: createHash("sha256").update(bytes).digest("hex") };
 }
 
-/** The refusal for a malformed or unreadable journal. A missing journal does not block startup. */
+/** The refusal for an unusable journal or a file blocking its directory. A missing journal is not a blocker. */
 export function unusableStackJournal(root: string): CommandFailure | undefined {
   try { readStackJournal(root); return undefined; }
-  catch (error) { return isCommandFailure(error) && (error.code === "SCHEMA_INVALID" || error.code === "PERMISSION_DENIED") ? error : undefined; }
+  catch (error) {
+    if (!isCommandFailure(error)) return undefined;
+    if (error.code === "PERMISSION_DENIED") {
+      const block = controlFileProblem(canonicalRoot(root));
+      return block ? new CommandFailure("refused", "TARGET_UNAVAILABLE", block.message, { remedy: block.remedy }) : error;
+    }
+    return error.code === "SCHEMA_INVALID" ? error : undefined;
+  }
 }
 
 /** The stack journal at `root` that another folder recorded, as a copy or a moved folder keeps it, with
@@ -328,8 +348,8 @@ export function adoptStackJournal(root: string, space: string): string {
 /** A controller-owned stack cannot be preserved in this release, so its preserve, and the backup and
  *  restore that need a preserved cut, refuse while validating, before the seed or any effect. A
  *  root with no stack journal keeps its legacy route. */
-export function refuseControllerCut(root: string, action: "down --preserve-state" | "backup create" | "backup restore" | "up --restore"): void {
-  const recorded = readStackJournal(root);
+export function refuseControllerCut(root: string, action: "down --preserve-state" | "backup create" | "backup restore" | "up --restore", allowRootAlias = false): void {
+  const recorded = readStackJournal(root, allowRootAlias);
   if (!recorded) return;
   const preserve = action === "down --preserve-state";
   throw new CommandFailure("refused", "UNSUPPORTED", preserve
@@ -413,7 +433,7 @@ export function acquireStackOperationLock(root: string, operation?: string): Mai
   const paths = maintenancePaths(root);
   const created = [paths.versionDir, paths.maintenanceDir, paths.cotalDir].filter((dir) => !existsSync(dir));
   let lock: MaintenanceLock;
-  try { lock = { ...acquireMaintenanceLock(root, operation ? { operation } : {}), createdDirectories: created }; }
+  try { lock = { ...acquireMaintenanceLock(root, { operation, onControlDirectoryCreated: () => noteUpProjectCreated(root) }), createdDirectories: created }; }
   catch (error) {
     if (!isMaintenanceError(error) || error.code !== "lock-held") throw error;
     const held = readMaintenanceLockHolder(root);
@@ -629,14 +649,14 @@ function retainingRow(rows: readonly ServiceInstanceSnapshot[], requestId: strin
 
 /** The `TARGET_NOT_FOUND` refusal of an `--abandon-stop` ID no member retains, naming each stop
  *  request a member's refusal offers to abandon. When no member retains any stop request, as after
- *  the stop was abandoned, it says so and names the step the stack's state takes: `cotal down` while
- *  a member runs, otherwise `cotal up`. */
+ *  the stop was abandoned, it names the stop if a member runs, or the optional restart for each
+ *  manager choice if the stack is stopped. */
 function stopNotRetained(journal: StackJournal, requestId: string, members: readonly { definition: string; rows: readonly ServiceInstanceSnapshot[] }[]): CommandFailure {
   const target = { root: journal.root, space: journal.space, requestId };
   const values = members.flatMap(({ rows }) => rows.map((entry) => entry.record.value));
   if (!values.some((value) => value.state === "stopping" || retainedStopRequest(value) !== undefined)) {
     const running = values.some((value) => observeServiceProcess(value) === "running");
-    return new CommandFailure("refused", "TARGET_NOT_FOUND", "no member of this stack retains a stop request; nothing was abandoned", { target, given: "requestId", remedy: running ? "the stack is running; stop it with `cotal down`" : "the stack is not running; start it with `cotal up`" });
+    return new CommandFailure("refused", "TARGET_NOT_FOUND", "no member of this stack retains a stop request; nothing was abandoned", { target, given: "requestId", remedy: running ? "the stack is running; stop it with `cotal down`" : "the stack is not running; no further stop is needed. To restart without a manager, run `cotal up --no-manager`; to restart with a manager, run `cotal up`" });
   }
   const pending = members.flatMap(({ definition, rows }) => rows.flatMap((entry) => {
     const route = memberStopRoute(entry.record.value);
@@ -708,6 +728,16 @@ function attemptedRoles(journal: StackJournal): StackRole[] {
   return STACK_ROLES.filter((role) => stackRoleApplies(journal.mode, role) && journal.members.some((row) => row.role === role && row.state !== "not-attempted"));
 }
 
+/** A planned or applying start belongs to this lock owner only when the operation ID and the
+ *  local process birth both match. A later operation or a reused PID is not this startup. */
+export function stackUpInProgress(journal: StackJournal): boolean {
+  const { kind, phase, id } = journal.operation;
+  if (kind !== "up" || phase !== "planned" && phase !== "applying") return false;
+  const holder = readMaintenanceLockHolder(journal.root);
+  return holder?.owner.id === id && holder.process !== undefined && localProcessOwnerStatus(holder.owner) === "alive"
+    && assertRecordIdentity(holder.process).kind === "match";
+}
+
 /** An earlier `up` that ended with no recorded outcome before every member it planned started, or
  *  a `down` that ended so before every member stopped, with the members on each side as their
  *  processes show. A member with no instance record counts as stopped, and `noManager` says the up
@@ -752,6 +782,14 @@ export function stackStartedWithoutManager(journal: StackJournal): boolean {
   return journal.operation.kind === "up" && journal.operation.phase === "completed" && journal.members.some((row) => row.role === "manager" && row.state === "not-attempted");
 }
 
+/** Whether the stack was last started without a manager, as `up --no-manager` records it, whether it
+ *  still runs or a completed `down` stopped it since. That down plans no stop for a manager it has no
+ *  instance of, so the manager stays `not-attempted`. */
+export function stackRecordedWithoutManager(journal: StackJournal): boolean {
+  if (stackStartedWithoutManager(journal)) return true;
+  return journal.operation.kind === "down" && journal.operation.phase === "completed" && journal.members.some((row) => row.role === "manager" && row.state === "not-attempted");
+}
+
 /** Whether the stack's last `up` ended with no recorded outcome and planned no manager, as
  *  `up --no-manager` does. */
 export function interruptedUpLeftManagerOut(journal: StackJournal): boolean {
@@ -776,14 +814,28 @@ function legacyStackManagerRecord(root: string, space: string): ProcessRecord | 
   return readProcessRecord(localProcessPath(MANAGER_PIDFILE, { root: canonical, space }), commandIsCotalSupervisor, probeLiveness, readProcessCommand);
 }
 
+function localSupervisorRunning(root: string, space: string): boolean {
+  return readProcessRecord(
+    localProcessPath(MANAGER_PIDFILE, { root: canonicalRoot(root), space }),
+    commandIsCotalSupervisor,
+    probeLiveness,
+    readProcessCommand,
+  )?.state === "alive";
+}
+
 /** Whether this root records a local stack for `space` with no live manager process: a controller
- *  stack with no running manager instance, or a default `cotal up` stack whose recorded manager PID is
- *  dead. False when it records none or an unreadable one, so a remote mesh keeps its own answer. */
-export function stackManagerAbsent(root: string, space: string): boolean {
+ *  stack with no running manager instance (and no running local standalone supervisor), or a default
+ *  `cotal up` stack whose recorded manager PID is dead. When `unanswered` is true, a stack started
+ *  without a manager (`--no-manager`) does not establish absence because a registered standalone
+ *  manager may have failed to answer. False when it records none or an unreadable one, so a remote
+ *  mesh keeps its own answer. */
+export function stackManagerAbsent(root: string, space: string, opts?: { unanswered?: boolean }): boolean {
   try {
     const journal = readStackJournal(root)?.journal;
     if (journal) {
       if (journal.space !== space) return false;
+      if (localSupervisorRunning(root, space)) return false;
+      if (opts?.unanswered && (stackRecordedWithoutManager(journal) || interruptedUpLeftManagerOut(journal))) return false;
       return !serviceInstances(space, STACK_DEFINITION.manager).some((row) => observeServiceProcess(row.record.value) === "running");
     }
     return legacyStackManagerRecord(root, space)?.state === "dead";
@@ -832,17 +884,42 @@ export function stackDefinitionsAt(space: string, root: string): ServiceDefiniti
   });
 }
 
-/** The folder `space`'s saved stack broker starts in, when that folder is gone: it holds neither its
- *  stack journal nor the broker configuration the definition names, whatever a still-running broker
- *  wrote back into it. Undefined otherwise, or when the definition cannot be read. */
-export function goneStackRoot(space: string): string | undefined {
+/** A failed lookup proves absence only when the path or one of its components is missing. */
+export function stackPathState(path: string): "present" | "absent" | "inaccessible" {
+  try { statSync(path); return "present"; }
+  catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    return code === "ENOENT" || code === "ENOTDIR" ? "absent" : "inaccessible";
+  }
+}
+
+type StackRootRecovery = { root: string; state: "gone" | "inaccessible" };
+
+/** A recorded root that cannot be accessed or lacks both controller records. A running broker
+ *  can recreate its project directory without restoring either record. */
+export function stackRootRecovery(space: string): StackRootRecovery | undefined {
   try {
     const native = loadMeshes().find((entry) => entry.space === space && entry.origin === "up");
-    if (native && !existsSync(native.root)) return native.root;
+    if (native) {
+      const state = stackPathState(native.root);
+      if (state === "absent") return { root: native.root, state: "gone" };
+      if (state === "inaccessible" || projectRootProblem(native.root) === "inaccessible" || projectRootProblem(join(native.root, ".cotal")) === "inaccessible")
+        return { root: native.root, state: "inaccessible" };
+    }
     const launch = serviceDefinitionStore(space).read(STACK_DEFINITION.broker)?.record.value.launch;
     if (launch?.type !== "adapter" || launch.adapter !== STACK_ADAPTER.broker || typeof launch.options.root !== "string" || typeof launch.options.config !== "string") return undefined;
-    return existsSync(stackJournalPath(launch.options.root)) || existsSync(launch.options.config) ? undefined : launch.options.root;
+    const root = launch.options.root;
+    if (projectRootProblem(root) === "inaccessible") return { root, state: "inaccessible" };
+    const paths = [stackPathState(stackJournalPath(root)), stackPathState(launch.options.config)];
+    if (paths.includes("inaccessible")) return { root, state: "inaccessible" };
+    if (paths.every((state) => state === "absent")) return { root, state: "gone" };
   } catch { return undefined; }
+}
+
+/** The recorded root only when its stack records are confirmed absent. */
+export function goneStackRoot(space: string): string | undefined {
+  const recovery = stackRootRecovery(space);
+  return recovery?.state === "gone" ? recovery.root : undefined;
 }
 
 /** Whether `root` is the gone folder of the stack this machine still records for `space`. */
@@ -863,21 +940,30 @@ export function releaseStackDefinitions(root: string, space: string): { released
   try { owned = stackDefinitionsAt(space, root); } catch (error) { return { released: [], kept: { names: [], why: `${(error as Error).message}; inspect them with \`cotal service --space ${space}\`` } }; }
   if (!owned.length) return { released: [] };
   const names = owned.map((row) => row.name);
-  let preserved: boolean;
-  try { preserved = existsSync(root) && readMaintenanceJournal(root) !== undefined; } catch { preserved = true; }
-  if (preserved) return { released: [], kept: { names, why: `${root} holds preserved state that resumes from them` } };
+  const problem = projectRootProblem(root);
+  if (problem === "inaccessible")
+    return { released: [], kept: { names, why: `${root} ${projectRootProblemText(problem)}, so its preserved state could not be checked` } };
+  const displaced = projectRootDisplaced(problem);
+  if (!displaced) {
+    try {
+      if (readMaintenanceJournal(root) !== undefined)
+        return { released: [], kept: { names, why: `${root} holds preserved state that resumes from them` } };
+    } catch {
+      return { released: [], kept: { names, why: `the maintenance journal in ${root} could not be read, so its preserved state could not be checked` } };
+    }
+  }
   try {
     for (const row of owned) removableServiceInstances(space, row.name);
   } catch (error) {
     const route = goneStackRoot(space) === root ? `its folder is gone; \`cotal down --space ${space} --yes\` stops the stack and removes them`
-      : existsSync(root) ? `stop the stack with \`cotal down --yes\` in ${root}, then run \`cotal space forget ${space}\` again`
+      : !displaced ? `stop the stack with \`cotal down --yes\` in ${root}, then run \`cotal space forget ${space}\` again`
       : isCommandFailure(error) && error.remedy || `inspect them with \`cotal service --space ${space}\``;
     return { released: [], kept: { names, why: `${(error as Error).message}; ${route}` } };
   }
   // Read before anything is removed, so the update below replaces only these bytes. A journal this
   // cannot read is left as it is; `up` and `down` there refuse it and name its way out.
   let journal: StackJournalSnapshot | undefined;
-  try { journal = readStackJournal(root); } catch { journal = undefined; }
+  try { journal = displaced ? undefined : readStackJournal(root); } catch { journal = undefined; }
   const store = serviceDefinitionStore(space), released: string[] = [], retired: { definition: string; instanceId: string }[] = [];
   try {
     for (const row of owned) {
@@ -934,6 +1020,20 @@ export const localRecordLine = (row: LocalRecord): string => `${row.name} at ${r
  *  `reused` record fronts nothing, and `up` removes it instead. */
 export function foreignLocalProcesses(root: string, space: string): string[] {
   return localRecords(root, space).filter((row) => row.state === "live").map((row) => `${row.name}${row.pid === undefined ? " (unattributable record)" : ` (pid ${row.pid})`}`);
+}
+
+/** The controller treats a legacy broker PID file as a blocker even when its PID is not a broker. */
+export function legacyBrokerPidfileBlock(root: string): { message: string; remedy: string } | undefined {
+  const path = join(root, ".cotal", NATS_PIDFILE);
+  if (!existsSync(path)) return undefined;
+  const record = readContainedRecord(root, path);
+  const pid = record.state === "content" ? parsePid(record.raw) : undefined;
+  const detail = pid === undefined ? "" : `; it records PID ${pid}${hasNonNatsExecutable(pid) ? ", whose current executable is not nats-server" : ""}`;
+  const inspect = pid === undefined ? "check whether it names a running broker" : `check the executable and command line of PID ${pid}`;
+  return {
+    message: `the legacy broker PID file ${path} blocks controller startup${detail}`,
+    remedy: `Inspect ${path} and ${inspect}. Only if you verify that the file does not belong to a running broker, set it aside outside .cotal and repeat your startup command`,
+  };
 }
 
 /** The live records under the root whose process is a running service instance of the space outside
@@ -1066,7 +1166,12 @@ export function stackScopeRefusals(journal: StackJournal, next: string, { broker
   // to run again once the address is this stack's alone. The forget is never automatic: an active
   // shared space is not safe to stop.
   if (sharing.length) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "another registration names this stack's exact broker address; a shared broker is not stopped in this cut", { target: { server: journal.server, spaces: sharing.map((mesh) => mesh.space) }, remedy: [
-    ...sharing.map((mesh) => `read "${mesh.space}" with \`cotal space show ${mesh.space}\`, stop it in its own folder, then take it off this address with \`cotal space forget ${mesh.space} --plain\``),
+    ...sharing.map(({ space }) => {
+      const name = shellWord(space);
+      const show = space.startsWith("-") ? `cotal space show -- ${name}` : `cotal space show ${name}`;
+      const forget = space.startsWith("-") ? `cotal space forget --plain -- ${name}` : `cotal space forget ${name} --plain`;
+      return `read ${JSON.stringify(space)} with ${codeSpan(show)}, stop it in its own folder, then take it off this address with ${codeSpan(forget)}`;
+    }),
     `then run ${next}`,
   ].join("; ") });
 }

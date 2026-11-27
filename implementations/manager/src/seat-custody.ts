@@ -8,10 +8,12 @@ import { isCustodialRuntime, requireRuntimeReap, RuntimeReapUnproven, watchProve
 import type { RuntimeReference } from "@cotal-ai/core";
 import type { ManagedAgent, ManagerResumeAgent, SupervisedRestart } from "./manager.js";
 import { readSeatRecord, removeReleasedSeatReference, removeSeatRecord, writeSeatRecord, type SeatRecord } from "./resume.js";
+import { optInLaunchFields } from "./harness-resolution.js";
 import { casStaticSlot, readStaticSlot } from "./static-lifecycle.js";
 import { RESTART_WORK_EXIT_MS, withTimeout } from "./manager-timeout.js";
 import type { Manager } from "./manager.js";
 import type { ManagerConfig } from "./manager-config.js";
+import type { ManagerStartState } from "./manager-start-state.js";
 
 /** Keep launch provenance independent of status and runtime wire contracts. */
 export function watchConnectorHolder(handle: AgentHandle, holder: ReturnType<typeof retainConnectorSeat>): void {
@@ -25,7 +27,6 @@ export function watchConnectorHolder(handle: AgentHandle, holder: ReturnType<typ
 /** Manager-owned authority and lifecycle operations used while recording and recovering seats. */
 export interface SeatCustodyDeps {
   staticAuth: () => boolean;
-  instanceId: () => string;
   endpoint: () => CotalEndpoint;
   runtimeFor: (kind: string) => Runtime;
   requiredRuntime: () => Runtime;
@@ -46,7 +47,6 @@ export interface SeatCustodyDeps {
 export function seatCustodyDeps(m: Manager): SeatCustodyDeps {
   return {
     staticAuth: () => !!m["auth"] && !m["userMode"],
-    instanceId: () => m["managerInstanceId"],
     endpoint: () => m["ep"],
     runtimeFor: (kind) => m["runtimeFor"](kind),
     requiredRuntime: () => m["requiredRuntime"],
@@ -65,7 +65,8 @@ export function seatCustodyDeps(m: Manager): SeatCustodyDeps {
 
 /** Seat custody references, successor records, and identity-checked recovery for one manager. */
 export class SeatCustody {
-  constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: SeatCustodyDeps) {}
+  constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: SeatCustodyDeps, private readonly state: ManagerStartState) {}
+  private get managerInstanceId(): string { return this.state.managerInstanceId!; }
 
   /** Re-record the custody reference of a managed agent's CURRENT handle on its active slot: a
    *  same-lifecycle restart or a resume binds a new custody under the old uid, and the successor's
@@ -107,7 +108,7 @@ export class SeatCustody {
    *  own id instead would leave every durable record addressing a seat that does not exist, so the
    *  mismatch tears the new seat down and throws rather than returning an unaddressable handle. */
   async spawnCustodied(runtime: Runtime, name: string, spec: LaunchSpec, cwd: string, reserved: RuntimeReference | undefined): Promise<AgentHandle> {
-    const holder = retainConnectorSeat(this.deps.instanceId(), name);
+    const holder = retainConnectorSeat(this.managerInstanceId, name);
     const handle = runtime.spawn(name, spec, cwd, reserved);
     this.deps.watchConnectorHolder(handle, holder);
     if (reserved === undefined) return handle;
@@ -161,7 +162,7 @@ export class SeatCustody {
       const unresumable = this.deps.inventoryReferenceError(agent);
       if (unresumable) throw new Error(`a successor manager could not restart it: ${unresumable}`);
     }
-    writeSeatRecord(this.config.workspaceRoot, { version: "cotal-seat-record/v1", instanceId: this.deps.instanceId(), ...(policy ? { supervise: policy } : {}), crashes: a.restart?.crashes ?? [], agent });
+    writeSeatRecord(this.config.workspaceRoot, { version: "cotal-seat-record/v1", instanceId: this.managerInstanceId, ...(policy ? { supervise: policy } : {}), crashes: a.restart?.crashes ?? [], agent });
   }
 
   /** Bring a running seat's record up to date after its credential or restart count changed. A
@@ -198,7 +199,7 @@ export class SeatCustody {
     if (record === undefined) return undefined;
     const identity = record.agent.identity;
     if (identity.mode !== "static" || identity.id !== row.actor || identity.lifecycleUid !== row.lifecycleUid) return undefined;
-    if (record.instanceId !== this.deps.instanceId() || record.agent.space !== this.config.space) return undefined;
+    if (record.instanceId !== this.managerInstanceId || record.agent.space !== this.config.space) return undefined;
     let runtimeMatches = record.agent.launch.runtime === row.runtime?.kind;
     if (row.runtime === undefined) {
       // Non-custodial backends such as pty record no slot reference. A custodial backend still
@@ -264,6 +265,7 @@ export class SeatCustody {
         cwd: entry.launch.cwd,
         model: entry.launch.model,
         variant: entry.launch.variant,
+        modes: entry.launch.modes,
         subscribe: entry.launch.subscribe,
         allowSubscribe: entry.launch.allowSubscribe,
         allowPublish: entry.launch.allowPublish,
@@ -271,6 +273,7 @@ export class SeatCustody {
         ...(entry.launch.endpoints?.length ? { endpoints: copyPersonaEndpoints(entry.launch.endpoints) } : {}),
         events: entry.launch.events,
         eventPayloads: this.config.eventPayloadsWithheld ? false : entry.launch.eventPayloads,
+        ...optInLaunchFields(entry.launch),
         shareTools: entry.launch.shareTools,
         forkSource: entry.launch.forkSource,
         ...(entry.launch.resumed ? { resumed: entry.launch.resumed } : {}),

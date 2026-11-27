@@ -97,17 +97,16 @@ function safeFileName(name: string): void {
   if (!isSafeFileName(name)) throw new ArtifactFileFault(null, "invalid-name");
 }
 
-export type ArtifactFault = "missing" | "undeclared" | "mismatch" | "not-regular" | "invalid-name" | "manifest-not-regular" | "manifest-too-large" | "manifest-invalid";
+export type ArtifactFault = "missing" | "undeclared" | "mismatch" | "not-regular" | "unreadable" | "invalid-name" | "manifest-not-regular" | "manifest-too-large" | "manifest-invalid";
 
-/** One artifact file at fault: missing, undeclared, not a regular file, not the declared size and
- *  SHA-256, a declared name that is not a plain name in the folder, or a manifest that is not a
- *  regular file, too large or not valid. `file` is null for a name that is not a valid artifact file
- *  name, so it is never printed, and `reason` never carries a manifest value. */
+/** A fault in an artifact file or its declaration. `file` is null for an invalid name so the
+ *  name is never printed, and `reason` never carries an unvalidated manifest value. */
 export class ArtifactFileFault extends Error {
   constructor(readonly file: string | null, readonly fault: ArtifactFault, reason?: string) {
     super(fault === "missing" ? `backup artifact is missing its declared file ${file}`
       : fault === "undeclared" ? `backup artifact contains an undeclared file ${file ?? "with an invalid name"}`
       : fault === "not-regular" ? `backup artifact file ${file} is not a regular file, such as a symbolic link, FIFO or device; it was not read`
+      : fault === "unreadable" ? `this account cannot read backup artifact file ${file}`
       : fault === "invalid-name" ? "backup manifest declares a file name that is not a plain name in the artifact folder, such as a path with ../ or an absolute path; the name was not printed"
       : fault === "manifest-not-regular" ? "backup artifact manifest.json is not a regular file, such as a symbolic link; it was not read"
       : fault === "manifest-too-large" ? `backup artifact manifest.json is larger than its ${MAX_MANIFEST_BYTES / 1024 / 1024} MiB limit; it was not read`
@@ -115,6 +114,21 @@ export class ArtifactFileFault extends Error {
       : `backup artifact file ${file} does not match its declared size and SHA-256`);
     this.name = "ArtifactFileFault";
   }
+}
+
+class ArtifactReadDenied extends ArtifactFileFault {
+  constructor(file: string, readonly code: "EACCES" | "EPERM") {
+    super(file, "unreadable");
+  }
+}
+
+export function artifactReadRefusal(error: ArtifactFileFault, directory: string, restoreRoot?: string): CommandFailure | undefined {
+  if (!(error instanceof ArtifactReadDenied)) return undefined;
+  return new CommandFailure("refused", "PERMISSION_DENIED", restoreRoot === undefined ? error.message : `${error.message}; nothing was restored`, {
+    target: { directory, file: error.file, fault: error.fault, ...(restoreRoot === undefined ? {} : { root: restoreRoot }) },
+    native: { code: error.code },
+    remedy: `restore read access to that file and retry ${restoreRoot === undefined ? "verification" : "the restore"}, or use a readable copy of the backup`,
+  });
 }
 
 /** A manifest whose content is not a valid inventory. `reason` names no manifest value beyond a
@@ -236,11 +250,18 @@ export function createArtifactWriter(destination: string): ArtifactWriter {
   };
 }
 
-function parseManifest(path: string, pinnedBytes?: Buffer): BackupManifest {
+function readManifestBytes(path: string): Buffer {
+  if (lstatSync(path, { throwIfNoEntry: false })) assertManifestFile(path);
+  const bytes = readLocalRecordSource(path, MAX_MANIFEST_BYTES, false);
+  if (!bytes) throw new Error("backup manifest is absent");
   assertManifestFile(path);
+  return bytes;
+}
+
+function parseManifest(bytes: Buffer): BackupManifest {
   let value: BackupManifest;
   // The parser's own message quotes the input, so only the fact is reported.
-  try { value = JSON.parse(pinnedBytes === undefined ? readFileSync(path, "utf8") : new TextDecoder("utf-8", { fatal: true }).decode(pinnedBytes)) as BackupManifest; }
+  try { value = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)) as BackupManifest; }
   catch { throw new ArtifactFileFault("manifest.json", "manifest-invalid", "it is not UTF-8 JSON"); }
   try { return validManifest(value); }
   catch (error) {
@@ -290,7 +311,7 @@ function validManifest(value: BackupManifest): BackupManifest {
 
 /** Copy or verify a regular file against pinned size and bytes; an incomplete copy stays untrusted. */
 export function copyPinnedFile(source: string, destination: string | undefined, expected: Pick<BackupFileRecord, "path" | "size" | "sha256">): void {
-  const pathStat = lstatSync(source);
+  const pathStat = lstatSync(source, { bigint: true });
   if (!pathStat.isFile() || pathStat.isSymbolicLink()) throw new ArtifactFileFault(expected.path, "not-regular");
   const noFollow = process.platform === "win32" ? 0 : constants.O_NOFOLLOW;
   const sourceFd = openSync(source, constants.O_RDONLY | noFollow | (destination === undefined ? constants.O_NONBLOCK : 0));
@@ -300,7 +321,7 @@ export function copyPinnedFile(source: string, destination: string | undefined, 
   try {
     const before = fstatSync(sourceFd, { bigint: true });
     if (!before.isFile()) throw new ArtifactFileFault(expected.path, "not-regular");
-    if (destination === undefined && (before.dev !== BigInt(pathStat.dev) || before.ino !== BigInt(pathStat.ino))) throw new Error("backup input changed before verification");
+    if (destination === undefined && (before.dev !== pathStat.dev || before.ino !== pathStat.ino)) throw new Error("backup input changed before verification");
     if (destination !== undefined) destinationFd = openSync(destination, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY, 0o600);
     const buffer = Buffer.allocUnsafe(COPY_BUFFER_BYTES);
     for (;;) {
@@ -379,6 +400,19 @@ export function isTrustBound(selection: string, mode: string): boolean {
 /** The receipt line for a trust-bound artifact. */
 export const TRUST_BOUND_TEXT = "only a root that still holds the trust state it was taken under, not another machine or a fresh root";
 
+function copyArtifactFile(directory: string, file: BackupFileRecord, destination?: string): void {
+  const source = join(directory, file.path);
+  try {
+    copyPinnedFile(source, destination, file);
+  } catch (error) {
+    const { code, syscall, path } = error as NodeJS.ErrnoException;
+    // A denied staging write is not a fault in the artifact.
+    if (syscall === "open" && path === source && (code === "EACCES" || code === "EPERM"))
+      throw new ArtifactReadDenied(file.path, code);
+    throw error;
+  }
+}
+
 /** Read the artifact at its canonical path without staging, starting a broker or restoring. */
 export function inspectBackupArtifact(artifact: string, verify: boolean) {
   const volume = parse(artifact).root;
@@ -386,12 +420,10 @@ export function inspectBackupArtifact(artifact: string, verify: boolean) {
   const before = lstatSync(artifact, { bigint: true });
   if (!before.isDirectory() || before.isSymbolicLink()) throw new Error("backup artifact directory changed before inspection");
   const path = join(artifact, "manifest.json");
-  if (lstatSync(path, { throwIfNoEntry: false })) assertManifestFile(path);
-  const bytes = readLocalRecordSource(path, MAX_MANIFEST_BYTES, false);
-  if (!bytes) throw new Error("backup manifest is absent");
-  const manifest = parseManifest(path, bytes);
+  const bytes = readManifestBytes(path);
+  const manifest = parseManifest(bytes);
   validateArtifactInventory(artifact, manifest);
-  if (verify) for (const file of manifest.files) copyPinnedFile(join(artifact, file.path), undefined, file);
+  if (verify) for (const file of manifest.files) copyArtifactFile(artifact, file);
   const after = lstatSync(artifact, { bigint: true });
   const current = readLocalRecordSource(path, MAX_MANIFEST_BYTES, false);
   if (before.dev !== after.dev || before.ino !== after.ino || !current?.equals(bytes)) throw new Error("backup artifact changed during inspection");
@@ -424,7 +456,7 @@ export function stageArtifact(artifactPath: string, parent: string): StagedArtif
   const artifact = resolve(artifactPath);
   const artifactStat = lstatSync(artifact);
   if (!artifactStat.isDirectory() || artifactStat.isSymbolicLink()) throw new Error(`backup artifact is not a real directory: ${artifact}`);
-  const manifest = parseManifest(join(artifact, "manifest.json"));
+  const manifest = parseManifest(readManifestBytes(join(artifact, "manifest.json")));
   validateArtifactInventory(artifact, manifest);
   const parentPath = realpathSync.native(resolve(parent));
   const parentStat = lstatSync(parentPath, { bigint: true });
@@ -436,7 +468,7 @@ export function stageArtifact(artifactPath: string, parent: string): StagedArtif
   const identityStat = lstatSync(directory, { bigint: true });
   const identity = { dev: identityStat.dev, ino: identityStat.ino };
   try {
-    for (const file of manifest.files) copyPinnedFile(join(artifact, file.path), join(directory, file.path), file);
+    for (const file of manifest.files) copyArtifactFile(artifact, file, join(directory, file.path));
     assertArtifactProtected(artifact, manifest);
     writeFileSync(join(directory, "manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`, { flag: "wx", mode: 0o600 });
     fsyncDirectory(directory);

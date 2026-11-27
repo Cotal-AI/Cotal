@@ -2,6 +2,7 @@
 // the endpoint keeps the public methods and forwards to them. Not re-exported by the index.
 import type { ConnectionState } from "./endpoint-connection-state.js";
 import type { EndpointIdentity } from "./endpoint-identity.js";
+import type { EndpointParts } from "./endpoint-parts.js";
 import { randomUUID } from "node:crypto";
 import { headers, PermissionViolationError, TimeoutError } from "@nats-io/transport-node";
 import { JetStreamApiCodes } from "@nats-io/jetstream";
@@ -27,20 +28,16 @@ import type { CotalMessage, EndpointRef, HistoryMessage, Part } from "./types.js
 export interface EndpointMessagingDeps {
   notLiveMsg: () => string;
   ref: () => EndpointRef;
-  publishMsg: (subject: string, msg: CotalMessage) => Promise<void>;
-  streamHistory: (stream: string, subjects: string[], limit: number, before?: number, signal?: AbortSignal) => Promise<{ seq: number; subject: string; msg: HistoryMessage }[]>;
   emitRecoverable: (err: Error) => void;
 }
 
 /** The messaging verbs of one endpoint: multicast (plain and serialized), unicast, anycast, and the
  *  event-payload channel. Internal: `CotalEndpoint` keeps the public methods and forwards to it. */
 export class EndpointMessaging {
-  constructor(private readonly identity: Readonly<EndpointIdentity>, private readonly conn: Readonly<ConnectionState>, private readonly deps: EndpointMessagingDeps) {}
+  constructor(private readonly identity: Readonly<EndpointIdentity>, private readonly conn: Readonly<ConnectionState>, private readonly deps: EndpointMessagingDeps, private readonly parts: Pick<EndpointParts, "history">) {}
 
   private notLiveMsg() { return this.deps.notLiveMsg(); }
   private ref() { return this.deps.ref(); }
-  private publishMsg(subject: string, msg: CotalMessage) { return this.deps.publishMsg(subject, msg); }
-  private streamHistory(stream: string, subjects: string[], limit: number, before?: number, signal?: AbortSignal) { return this.deps.streamHistory(stream, subjects, limit, before, signal); }
   private emitRecoverable(err: Error) { this.deps.emitRecoverable(err); }
 
   /** Multicast: broadcast to everyone on a channel. */
@@ -303,7 +300,7 @@ export class EndpointMessaging {
 
   /** Read payload history through a single native-filtered consumer, never through CHAT. */
   async eventPayloadHistory(owner: string, actor: string, opts?: { limit?: number; signal?: AbortSignal }): Promise<HistoryMessage[]> {
-    return (await this.streamHistory(eventPayloadStream(this.identity.space),
+    return (await this.parts.history.streamHistory(eventPayloadStream(this.identity.space),
       [eventPayloadSubject(this.identity.space, assertValidOwnerToken(owner), assertValidOwnerToken(actor))], opts?.limit ?? 100, undefined, opts?.signal))
       .map(row => row.msg);
   }
@@ -421,6 +418,22 @@ export class EndpointMessaging {
       { msgID: msg.id },
     );
     return { msg, ack: { seq: ack.seq, duplicate: ack.duplicate === true } };
+  }
+
+  private async publishMsg(subject: string, msg: CotalMessage): Promise<void> {
+    if (!this.conn.js) throw new Error(this.notLiveMsg());
+    assertPartsSerializable(msg.parts);
+    // msgID = message id → free server-side dedup across JetStream redelivery.
+    try {
+      await this.conn.js.publish(subject, JSON.stringify(msg), { msgID: msg.id });
+    } catch (error) {
+      if (error instanceof TimeoutError)
+        throw new Error(
+          `${error.message} publishing to ${JSON.stringify(subject)}. The send outcome is unknown: the broker may have stored the message. Check before resending.`,
+          { cause: error },
+        );
+      throw error;
+    }
   }
 }
 

@@ -194,7 +194,18 @@ try {
   check("first enable with malformed JWKS starts no broker and leaves no IdP pin or project state", malformed.status === 2
     && field(malformed.out, "Code", "DEPENDENCY_UNAVAILABLE") && malformed.out.includes("did not serve usable JWKS")
     && !malformed.out.includes("Starting nats-server") && readdirSync(join(root, ".cotal")).length === 0, malformed.out);
-  const up = await cotal(["up", "--user-auth", "--idp", base, "--auth-timeout", "3", "--detach", "--server", SERVER, "--space", SPACE]);
+  const start = ["up", "--user-auth", "--idp", base, "--auth-timeout", "3", "--detach", "--server", SERVER, "--space", SPACE];
+  const open = await cotal(["up", "--open", "--no-manager", "--server", SERVER, "--space", SPACE]);
+  check("the original address hosts an open stack", open.status === 0, open.out);
+  const mismatch = await cotal(start);
+  check("a running stack refuses the auth change and keeps the original startup request", mismatch.status === 2 && field(mismatch.out, "Code", "LIFECYCLE_BLOCKED")
+    && mismatch.out.includes(root) && mismatch.out.includes("down --dry-run") && mismatch.out.includes("down --yes")
+    && mismatch.out.includes("retry the original startup command unchanged from its original folder"), mismatch.out);
+  const preview = await cotal(["down", "--dry-run"]);
+  check("reviewing the stop leaves the original listener up", (preview.status === 0 || preview.status === 4) && await isReachable(SERVER), preview.out);
+  const stopped = await cotal(["down", "--yes"]);
+  check("the reviewed stop closes the open listener", stopped.status === 0 && !await isReachable(SERVER), stopped.out);
+  const up = await cotal(start);
   check("up exits 0 on the same project with the corrected IdP", up.status === 0, up.out);
   check("up announces the user-auth service + login line", up.out.includes("user-auth service up") && up.out.includes(`cotal login --idp ${base}`), up.out);
   check(
@@ -813,6 +824,15 @@ try {
     const refusedText = plain(refusedStart.out);
     check("manager start with no sign-in exits 2 under a Mesh: heading with AUTH_REQUIRED, and Next signs in, then starts it",
       refusedStart.status === 2 && refusedText.includes(`Mesh: ${SPACE}\n`) && field(refusedStart.out, "Code", "AUTH_REQUIRED") && refusedText.includes(`cotal login --idp ${base}, then \`cotal manager start\``), refusedStart.out);
+    for (const words of [["manager", "start"], ["service", "restart", "manager"]]) {
+      const scoped = await cotal([...words, "--space", SPACE, "--dry-run", "--json"], { cwd: root2, env });
+      const retry = /then `cotal ([^`]+)`/.exec(scoped.out)?.[1];
+      const copied = retry === [...words, "--space", SPACE, "--dry-run", "--json"].join(" ")
+        ? await cotal(retry.split(" "), { cwd: root2, env }) : undefined;
+      check(`${words.join(" ")} after sign-in keeps the requested space and JSON preview`, scoped.status === 2 && copied?.status === 2 && copied.out.includes("AUTH_REQUIRED") && copied.out.includes(`\"space\":\"${SPACE}\"`), scoped.out);
+    }
+    const withName = await cotal(["manager", "start", "--space", SPACE, "--name", "fixture", "--json"], { cwd: root2, env });
+    check("the sign-in remedy does not print a manager start stripped of its launch options", withName.status === 2 && withName.out.includes("retry the original command with all its options unchanged"), withName.out);
     const shown = await cotal(["service", "show", "manager"], { cwd: root2, env });
     check("…before anything was saved or launched",
       !refusedText.includes("saved manager") && !refusedText.includes("forgot manager") && shown.status === 2 && field(shown.out, "Code", "TARGET_NOT_FOUND") && !existsSync(managerPid), { start: refusedStart.out, show: shown.out });
@@ -874,7 +894,7 @@ try {
     const revokedRestartText = plain(revokedRestart.out);
     check("with the sign-in revoked, manager restart over the running manager exits 2 with AUTH_REQUIRED, says the running manager was left running, and Next signs in at that IdP, then restarts it",
       revokedRestart.status === 2 && field(revokedRestart.out, "Code", "AUTH_REQUIRED") && revokedRestartText.includes(revokedRunning) && !revokedRestartText.includes("the manager was not attempted") &&
-        revokedRestartText.includes(`cotal login --idp ${base}, then \`cotal manager restart\``), revokedRestart.out);
+        revokedRestartText.includes(`cotal login --idp ${base}, then \`cotal manager restart --yes\``), revokedRestart.out);
     check("…before anything was stopped: the same manager still runs",
       readFileSync(managerPid, "utf8").trim() === String(pid2) && (() => { try { process.kill(pid2, 0); return true; } catch { return false; } })(), revokedRestart.out);
     deleteIdpSession(home2, base);
@@ -1064,7 +1084,7 @@ try {
     const revokedJoinRestartText = plain(revokedJoinRestart.out);
     check("with that sign-in revoked, the participant's manager restart exits 2 with AUTH_REQUIRED, says the running manager was left running, and Next signs in at that IdP, then restarts it",
       revokedJoinRestart.status === 2 && field(revokedJoinRestart.out, "Code", "AUTH_REQUIRED") && revokedJoinRestartText.includes("the IdP rejected this machine's sign-in, which has expired or was revoked; the running manager was left running") &&
-        revokedJoinRestartText.includes(`cotal login --idp ${base}, then \`cotal manager restart\``), revokedJoinRestart.out);
+        revokedJoinRestartText.includes(`cotal login --idp ${base}, then \`cotal manager restart --yes\``), revokedJoinRestart.out);
     check("…and leaves the running manager as it was", joinManagerRuns() && readFileSync(joinManagerPid, "utf8").trim() === joinRunningPid, revokedJoinRestart.out);
     await establishIdpSession({ dir: joinHome, idpUrl: base, clientId: CLIENT_ID, onPrompt: (p: DeviceLoginPrompt) => approve(p.userCode) });
     const joinStopped = await cotal(["manager", "stop", "--yes"], { cwd: joinRoot, env: joinEnv });
@@ -1114,15 +1134,24 @@ try {
   check("the controller stack starts with user auth", stackUp.status === 0 || stackUp.status === 4, stackUp.out);
   const stackDown = await cotal(["down", "--yes"]);
   check("down --yes stops the controller stack", stackDown.status === 0, stackDown.out);
+  const restartFlags = ["--user-auth", "--idp"];
+  const restartCommands = ["cotal", "pnpm cotal"].map((cli) => `\`${cli} up ${restartFlags.join(" ")} <auth base URL>\``);
   const resetPreview = await cotal(["reset", "space", STACK, "--dry-run"]);
+  const restart = restartCommands.find((command) => plain(resetPreview.out).includes(command));
   check("reset space --dry-run names the IdP trust and the actor ledger, and what a later up needs",
-    resetPreview.status === 0 && plain(resetPreview.out).includes("Removes the IdP trust and the actor ledger of this user-auth space, so every actor grant is lost. A later up needs `cotal up --user-auth --idp <auth base URL>`") && !resetPreview.out.includes("a later up starts it with a new identity"), resetPreview.out);
+    resetPreview.status === 0 && restart !== undefined && plain(resetPreview.out).includes("Removes the IdP trust and the actor ledger of this user-auth space, so every actor grant is lost.") && !resetPreview.out.includes("a later up starts it with a new identity"), resetPreview.out);
   const reset = await cotal(["reset", "space", STACK, "--yes"]);
   check("…and its receipt names them the same way",
-    reset.status === 0 && plain(reset.out).includes(`.cotal/auth/${spaceSegment(STACK)} (IdP trust and actor ledger)`) && plain(reset.out).includes("Removed the IdP trust and the actor ledger of this user-auth space") && !reset.out.includes("A later up creates a new local identity"), reset.out);
+    reset.status === 0 && restart !== undefined && plain(reset.out).includes(restart) && plain(reset.out).includes(`.cotal/auth/${spaceSegment(STACK)} (IdP trust and actor ledger)`) && plain(reset.out).includes("Removed the IdP trust and the actor ledger of this user-auth space") && !reset.out.includes("A later up creates a new local identity"), reset.out);
   const bareUp = await cotal(["up"]);
   check("a bare up then refuses and names --user-auth --idp, as the reset said",
-    bareUp.status === 1 && bareUp.out.includes("needs the IdP it trusts") && bareUp.out.includes("cotal up --user-auth --idp <auth base URL>"), bareUp.out);
+    bareUp.status === 1 && restart !== undefined && plain(bareUp.out).includes(restart) && bareUp.out.includes("needs the IdP it trusts"), bareUp.out);
+  const idpOnly = await cotal(["up", "--idp", base]);
+  check("adding only --idp still refuses before starting the broker",
+    idpOnly.status === 1 && idpOnly.out.includes("pair it with --user-auth") && !(await isReachable(SERVER)), idpOnly.out);
+  const restarted = await cotal(["up", ...restartFlags, base]);
+  check("the retry in the reset note starts the recorded user-auth broker and auth service",
+    (restarted.status === 0 || restarted.status === 4) && await isReachable(SERVER) && loadAuthServiceInfo(userAuthStateDir(root, STACK)) !== undefined, restarted.out);
 
   console.log(`\nUSER-AUTH LAUNCH SMOKE ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${pass} passed, ${fail} failed)`);
   if (fail) process.exitCode = 1;

@@ -8,8 +8,9 @@ import { PassThrough, Writable } from "node:stream";
 import React, { act, StrictMode } from "react";
 import { render, Text, useInput } from "ink";
 import { connect, type NatsConnection } from "@nats-io/transport-node";
-import { jetstreamManager } from "@nats-io/jetstream";
-import type { Presence } from "@cotal-ai/core";
+import { jetstream, jetstreamManager } from "@nats-io/jetstream";
+import { Kvm } from "@nats-io/kv";
+import { chatSubject, chatWildcard, openChannelRegistry, presenceBucket, writeChannelConfig, writeChannelDefaults, type Presence } from "@cotal-ai/core";
 import { awaitBrokerReady, countedAssert, emitSentinel, freePort, killAndAwaitExit, SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { useListCursor } from "../dist/console/ui/useListCursor.js";
 import { CommandPalette } from "../dist/console/ui/CommandPalette.js";
@@ -50,7 +51,8 @@ async function terminal(element: React.ReactElement) {
   });
   return {
     key: async (value: string) => { await act(async () => { stdin.write(value); }); await pause(); },
-    screen: (marker: string) => until(() => frame.includes(marker), `Expected ${marker}; saw: ${frame}`),
+    screen: (marker: string | RegExp) => until(
+      () => typeof marker === "string" ? frame.includes(marker) : marker.test(frame), `Expected ${marker}; saw: ${frame}`),
     rerender: async (next: React.ReactElement) => {
       frame = "";
       await act(async () => { app.rerender(<StrictMode>{next}</StrictMode>); });
@@ -198,15 +200,39 @@ try {
   let selected: string | undefined;
   const term = await terminal(<SpacePicker server={servers} onSelect={(space) => { selected = space; }} />);
   try {
-    await term.screen("no spaces found"); await term.key("j"); await term.key("\x1b[B");
+    await term.screen(/no spaces found on this server\. For a local mesh, run `(?:pnpm )?cotal up` and connect to the address it reports\. *(?:│)?$/m);
+    await term.key("j"); await term.key("\x1b[B");
     for (const space of ["alpha", "beta", "gamma"]) {
-      await jsm.streams.add({ name: `CHAT_${space}`, subjects: [`cursor.${space}`] });
+      await jsm.streams.add({ name: `CHAT_${space}`, subjects: [chatWildcard(space)] });
     }
-    await term.key("r"); await term.screen("▸ alpha");
+    const presence = await new Kvm(nc).create(presenceBucket("alpha"));
+    await presence.put("local.manager", JSON.stringify({
+      card: { id: "local.manager", name: "manager", kind: "endpoint" }, status: "idle", ts: Date.now(),
+    } satisfies Presence));
+    await term.key("r"); await term.screen("▸ alpha   0 agents · 0 ch · 0 msgs");
+    await act(async () => { await pause(); });
     await term.key("\r"); assert.equal(selected, "alpha", "Picker refills with its first space selected");
     await term.key("j"); await term.key("\r"); assert.equal(selected, "beta");
     await term.key("\x1b[A"); await term.key("\r"); assert.equal(selected, "alpha");
     console.log("PASS space picker native listSpaces refresh after empty-list navigation");
+
+    await presence.put(peers[0].card.id, JSON.stringify(peers[0]));
+    await term.key("r"); await term.screen("▸ alpha   1 agents · 0 ch · 0 msgs");
+    console.log("PASS space picker counts agents and excludes endpoints");
+
+    const registry = await openChannelRegistry(nc, "alpha", { create: true });
+    await writeChannelDefaults(registry, { replay: false });
+    for (const channel of ["all", "empty", "quiet", "removed", "events.local.alice"])
+      await writeChannelConfig(registry, channel, { description: channel });
+    await registry.delete("removed");
+    await registry.put("invalid", "null");
+    const js = jetstream(nc);
+    for (const channel of ["all", "traffic-only", "events.local.alice"])
+      await js.publish(chatSubject("alpha", "local", "alice", channel), new Uint8Array());
+    await term.key("r"); await term.screen("▸ alpha   1 agents · 4 ch · 3 msgs");
+    await js.publish(chatSubject("alpha", "local", "alice", "empty"), new Uint8Array());
+    await term.key("r"); await term.screen("▸ alpha   1 agents · 4 ch · 4 msgs");
+    console.log("PASS space picker counts configured and retained channels once, excluding event channels");
   } finally { await term.close(); }
 } finally {
   await nc?.close();

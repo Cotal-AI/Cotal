@@ -11,14 +11,9 @@ import {
   renderReport,
   writeResult,
   type OutputWarning,
-  oneLine,
   claimUpdateClosureAccess,
-  updateClosureOwner,
+  updateClosureOwner, withWindowsUpdateIdentity,
   homeCotalDir,
-  preparedRecordSkipped,
-  preparedRecordSpace,
-  readPreparedSpaces,
-  recordOperationWarning,
   readUpdateRecovery,
   clearUpdateRecovery,
   writeUpdateRecovery,
@@ -49,23 +44,25 @@ import {
 import { resumePublishedUpdate, retainUnusableRecovery } from "../lib/update-recovery-state.js";
 import { readUpdatePending } from "../lib/update-pending.js";
 import { snapshotUpdateClosure, type UpdateSnapshot } from "../lib/update-snapshot.js";
-import { assertConfigAncestorProtected, prepareUpdateConnectorConfig, repairCurrentUpdateConnectorSelection, repairUpdateConnectorSelection } from "../lib/update-connector-config.js";
+import { assertConfigAncestorProtected, manifestAccessReporter, prepareUpdateConnectorConfig, repairCurrentUpdateConnectorSelection, repairUpdateConnectorSelection, restoreUpdateManifestAccess } from "../lib/update-connector-config.js";
+import { reclaimPreviousExtensionStages } from "../lib/extension-stage.js";
 import { EXT_UPDATE_PARENT_ENV } from "./ext.js";
 import { collectUpdateCaches } from "./update-caches.js";
+import { repairOfflineExtensions } from "./update-offline.js";
 import { claimExtensionUpdatePass } from "../lib/ext-mutation.js";
 import { selfArgv } from "../lib/self-exec.js";
 import { repairInstallModes } from "../lib/install-umask.js";
 import { cliVersion, installedCliVersion } from "../lib/version.js";
 import { runSeed, compareSemver, seedInstallationCurrent, assertReadableSeedState, readSeedRepairRefusal } from "../seed/reconcile.js";
-import { operatorInstallDiffers } from "../seed/verify.js";
+import { operatorInstallDiffers, operatorUpdateSpec } from "../seed/verify.js";
 import { cliPackageRoot, entryScript, seedWriterKind } from "../seed/paths.js";
-import { refreshConnectorInstalls } from "./setup.js";
+import { refreshClientInstalls, refreshConnectorInstalls } from "./setup.js";
+import { reportCurrentConnectorState } from "./setup-current-connectors.js";
 import { c } from "../ui.js";
 import { refreshOwnedCompletions } from "../lib/completion-install.js";
 import { onFlag } from "../lib/control.js";
 import {
   type CommandResult,
-  RegistryUnavailable,
   STRICT_SEMVER,
   installedUpdatePrefix,
   verifyGlobalEntry,
@@ -79,17 +76,20 @@ import {
 } from "./update-process.js";
 import {
   latestVersion,
-  npmProxyRefused,
+  latestVersionCheckRemedy,
+  latestVersionCheckWarning,
+  handleLatestVersionFailure,
   checkReleaseArchives,
   ReleaseNotAvailable,
   ReleaseDateExcluded,
   DependencyCheckInterrupted,
   DependencyCheckNoSpace,
   registryNetworkFailure,
-  releaseReadError,
+  deferStagingFailure,
+  offlineUpdateMessage,
   waitForReleasePreflight,
 } from "./update-release.js";
-import { refusal, reportRunningManagers } from "./update-continuity.js";
+import { admitReconciliation, refusal, reportRunningManagers, reportUncheckedPreparedRecords } from "./update-continuity.js";
 export { isStoppedLocalMesh, reportRunningManagers, readUpdateManagerContinuity, readManagerContinuity, printLegacyReport } from "./update-continuity.js";
 
 export { parseNpmVersion, installedUpdatePrefix, verifyGlobalEntry } from "./update-process.js";
@@ -113,8 +113,6 @@ export const updateFlags: readonly FlagSpec[] = [
   ...targetFlags,
   onFlag,
 ];
-
-const MISSING_NPM_REMEDY = "Install npm or add it to this command's PATH, then retry.";
 
 export interface ExecutionReplacement {
   readonly entry: string;
@@ -150,13 +148,16 @@ export interface UpdateRuntime {
   version(): string;
   /** Read package consistency only, without refreshing external harness integrations. */
   isCurrent?(): boolean;
-  reconcile(): Promise<void>;
+  reconcile(selfUpdate: boolean): Promise<void>;
   /** Preserve native custody of an authenticated automatic update child before reconciliation. */
   adoptUpdateChild?(): Promise<boolean | void>;
   /** The native updater can survive its daemon's restart and verify automatic activation. */
   automaticGenerationWait?: boolean;
-  /** Bring what connectors installed in their harnesses to this release; one line per connector. */
-  refreshConnectors(): Promise<readonly string[]>;
+  /** Bring what connectors installed in their harnesses to this release; report each completed refresh. */
+  refreshConnectors(report: (line: string) => void, selfUpdate: boolean): Promise<void>;
+  /** Bring the entries client setup wrote in ACP clients to this release, once the operator
+   *  extensions that provide them are current; one line per client. */
+  refreshClients(): Promise<readonly string[]>;
   reportRunningManager(target: Record<string, unknown>): Promise<"none" | "legacy">;
   /** Authenticate and retain an installed same-version repair before its connector writes. */
   prepareReconciliation?(target: Record<string, unknown>): Promise<void>;
@@ -200,12 +201,13 @@ export interface UpdateRuntime {
   err(message: string): void;
   stdout(message: string): void;
   stderr(message: string): void;
+  /** The offline latest-version check selected no release, so there is nothing to activate. */
+  onOfflineVersionCheckSkipped?(): void;
   /** Set when a manual version-changing update has already waited for the installed generation. */
   generationWaited?: boolean;
 }
 
 export { installedCliVersion, repairInstallModes };
-
 export const updateRuntime: UpdateRuntime = {
   env: process.env,
   pid: process.pid,
@@ -222,9 +224,10 @@ export const updateRuntime: UpdateRuntime = {
     } catch { return false; }
   },
   preflightReplacement: async () => { assertReadableSeedState(); },
-  refreshConnectors: refreshConnectorInstalls,
-  reconcile: async () => {
-    await runSeed({ verify: true });
+  refreshConnectors: async (report, selfUpdate) => { await refreshConnectorInstalls(report, selfUpdate); },
+  refreshClients: refreshClientInstalls,
+  reconcile: async (selfUpdate) => {
+    await runSeed({ verify: true }, selfUpdate);
     const completion = refreshOwnedCompletions();
     if (completion.changed.length || completion.preserved.length) process.stdout.write(`${renderReport({ sections: [
       { title: "Owned shell completion", blocks: [
@@ -317,7 +320,7 @@ export async function update(args: ParsedArgs, rt: UpdateRuntime = updateRuntime
   let continuation: string | undefined;
   try {
     for (const env of environments) Object.assign(env, { TMPDIR: scratch, TMP: scratch, TEMP: scratch });
-    continuation = await updateInstallation(args, rt);
+    continuation = await (args.values.self === true ? withWindowsUpdateIdentity(() => updateInstallation(args, rt)) : updateInstallation(args, rt));
   } finally {
     for (const { env, values } of previous) for (const [key, value] of Object.entries(values)) {
       if (value === undefined) delete env[key];
@@ -343,9 +346,12 @@ async function updateInstallation(args: ParsedArgs, rt: UpdateRuntime): Promise<
     });
   }
   let connectorSelection: UnreadableConnectorSelection | undefined;
-  let repairedModes = false;
+  let preflightChanged = false;
+  let permissionsRestored = false;
+  let promotionRecovered = false;
   if (args.values.self === true) {
-    try { repairedModes = rt.preflightExecution?.() === true; }
+    const reportManifestAccess = manifestAccessReporter(line => { preflightChanged = true; rt.out(line); });
+    try { preflightChanged = rt.preflightExecution?.() === true; }
     catch (error) {
       if (isCommandFailure(error)) throw error;
       const refusal = `This installation cannot update itself from this account: ${message(error)}; no changes were made`;
@@ -355,7 +361,7 @@ async function updateInstallation(args: ParsedArgs, rt: UpdateRuntime): Promise<
       });
     }
     try {
-      prepareUpdateConnectorConfig(Boolean(rt.prepareExecution));
+      promotionRecovered = prepareUpdateConnectorConfig(Boolean(rt.prepareExecution), () => { preflightChanged = true; }, () => { permissionsRestored = true; }, reportManifestAccess);
     } catch (error) {
       if (error instanceof UnreadableConnectorSelection) connectorSelection = error;
       else {
@@ -366,12 +372,11 @@ async function updateInstallation(args: ParsedArgs, rt: UpdateRuntime): Promise<
         throw failure;
       }
     }
-    // Built-in self-update skips the extension overlay. Validate its inventory after recovery.
-    if (!connectorSelection) try { loadExtensionsManifest(); }
+    if (!connectorSelection) try { restoreUpdateManifestAccess(Boolean(rt.prepareExecution), reportManifestAccess); }
     catch (error) {
       if (error instanceof UnreadableConnectorSelection) connectorSelection = error;
       else {
-        rt.err(c.red(`✗ ${message(error)}`));
+        rt.err(c.red(`✗ ${refusal(error)}`));
         process.exitCode = 1;
         return;
       }
@@ -397,11 +402,12 @@ async function updateInstallation(args: ParsedArgs, rt: UpdateRuntime): Promise<
   for (const { what, root } of args.values.self === true && rt.prepareExecution ? [] : [...(install ? [{ what: "install", root: install }] : []), { what: "config", root: globalConfigDir() }]) {
     const repaired = (rt.repairInstallModes ?? repairInstallModes)(root);
     if (repaired) {
-      repairedModes = true;
+      preflightChanged = true;
       rt.out(c.green(`✓ removed group and other write from ${repaired} ${repaired === 1 ? "entry" : "entries"} in Cotal's ${what} at ${root}`));
     }
   }
-  const code = await executeUpdate(Boolean(args.values.self), rt, args.values, restored ? undefined : connectorSelection, repairedModes);
+  if (childBinding(rt).kind === "none") reclaimPreviousExtensionStages();
+  const code = await executeUpdate(Boolean(args.values.self), rt, args.values, restored ? undefined : connectorSelection, preflightChanged, promotionRecovered, permissionsRestored);
   if (code !== 0) process.exitCode = code;
   else if (args.values.self !== true && childBinding(rt).kind !== "bound") {
     clearUpdateRecovery();
@@ -539,10 +545,7 @@ function checkUpdate(args: ParsedArgs, rt: UpdateRuntime): void {
     warnings.push({ code: "EXTENSION_INVENTORY_UNREADABLE", target: null, message: "The extension inventory could not be read. It was not repaired or treated as empty." });
   }
   const latest = latestVersion(rt);
-  const missingNpm = !latest.ok && latest.missingNpm;
-  if (!latest.ok) warnings.push(missingNpm
-    ? { code: "NPM_UNAVAILABLE", target: null, message: "npm is not on PATH. Update availability is unknown." }
-    : { code: "LATEST_VERSION_UNAVAILABLE", target: null, message: "The registry did not return a valid latest version. Update availability is unknown." });
+  if (!latest.ok) warnings.push(latestVersionCheckWarning(latest));
   const comparison = latest.ok ? compareSemver(latest.version, current) : null;
   let reconciliation: ReturnType<typeof readUpdatePending>
     | { kind: "seed"; instruction: string }
@@ -563,7 +566,7 @@ function checkUpdate(args: ParsedArgs, rt: UpdateRuntime): void {
     command: "update", target: null, result, warnings,
     ...(warnings.length ? { completeness: "partial" as const, partial: {
       message: reconciliation.kind === "seed" ? "Connector seeding needs reconciliation." : "Some update information could not be established.",
-      remedy: reconciliation.kind === "seed" || reconciliation.kind === "unreadable" && reconciliation.source !== "receipt" ? reconciliation.instruction : missingNpm ? MISSING_NPM_REMEDY : "Check registry access or the unreadable inventory and repeat update --check.",
+      remedy: reconciliation.kind === "seed" || reconciliation.kind === "unreadable" && reconciliation.source !== "receipt" ? reconciliation.instruction : latestVersionCheckRemedy(latest, extensions !== null && reconciliation.kind !== "unreadable"),
     } } : {}),
   }, (r) => ({ sections: [
     ...(r.reconciliation.kind === "none" ? [] : [{ title: "Reconciliation", blocks: [{ kind: "lines" as const, lines: [r.reconciliation.instruction] }] }]),
@@ -572,9 +575,8 @@ function checkUpdate(args: ParsedArgs, rt: UpdateRuntime): void {
     ...(manifestUnreadable ? [] : [{ title: "Next", blocks: [{ kind: "commands" as const, items: [{ command: "cotal update", description: "Reconcile the current generation through the existing guarded updater" }, ...(r.updateAvailable ? [{ command: "cotal update --self", description: rt.checkout() ? "Install the verified latest CLI as a separate global copy and reconcile through it; this checkout does not change" : "Install the verified latest CLI and reconcile its generation" }] : []), { command: "cotal status", description: "Inspect this machine and its selected space" }] }] }]),
   ] }));
 }
-
 /** Injectable command body: production keeps one process seam; the smoke covers every decision branch. */
-export async function executeUpdate(self: boolean, rt: UpdateRuntime = updateRuntime, target: Record<string, unknown> = {}, unreadableSelection?: UnreadableConnectorSelection, repairedModes = false): Promise<number> {
+export async function executeUpdate(self: boolean, rt: UpdateRuntime = updateRuntime, target: Record<string, unknown> = {}, unreadableSelection?: UnreadableConnectorSelection, preflightChanged = false, promotionRecovered = false, permissionsRestored = false): Promise<number> {
   const current = rt.version();
   const child = childBinding(rt);
   if (child.kind === "invalid") {
@@ -598,7 +600,7 @@ export async function executeUpdate(self: boolean, rt: UpdateRuntime = updateRun
     // the package changes, so continuity is only answerable after that restart has settled.
     const journaled = readUpdateRecovery() !== undefined;
     if (journaled) {
-      const result = await reconcileCurrent(current, rt, target, (ok) => ok ? 0 : 1);
+      const result = await reconcileCurrent(current, rt, target, (ok) => ok ? 0 : 1, true);
       if (result !== 0) return result;
       // Only a child whose native custody survived the service boundary can verify activation.
       // Other automatic helpers retain their existing post-exit activation path.
@@ -612,28 +614,16 @@ export async function executeUpdate(self: boolean, rt: UpdateRuntime = updateRun
       rt.err(c.red(`✗ installed daemon generation: ${refusal(error)}`));
       return 1;
     }
-    return journaled ? 0 : reconcileCurrent(current, rt, target, (ok) => ok ? 0 : 1);
+    return journaled ? 0 : reconcileCurrent(current, rt, target, (ok) => ok ? 0 : 1, true);
   }
 
   if (self) {
     const latest = latestVersion(rt);
     if (!latest.ok) {
-      if (latest.missingNpm) {
-        if (rt.env.COTAL_AUTO_UPDATE === "1") recordUpdateDeferral(current, "waiting for npm availability", true);
-        rt.err(c.red(`✗ cotal-ai version check failed: ${latest.error}. ${MISSING_NPM_REMEDY}`));
-        return 1;
-      }
-      if (!latest.npmResult || !(releaseReadError(latest.npmResult, "cotal-ai version check failed") instanceof RegistryUnavailable)) {
-        rt.err(c.red(`✗ cotal-ai version check failed: ${oneLine(latest.error.split(/\r?\n/, 1)[0]!)}`));
-        return 1;
-      }
-      if (rt.env.COTAL_AUTO_UPDATE === "1") recordUpdateDeferral(current, "waiting for registry availability", true);
-      else if (await npmProxyRefused(latest.npmResult, rt.env)) {
-        rt.err("The npm proxy refused the connection (ECONNREFUSED). The update did not start. Check HTTP_PROXY and HTTPS_PROXY, then retry.");
-        return 1;
-      }
-      rt.out(offlineUpdateMessage(repairedModes));
-      return 0;
+      const code = await handleLatestVersionFailure(latest, current, rt, offlineUpdateMessage(preflightChanged), promotionRecovered, permissionsRestored);
+      if (latest.offline && rt.env.COTAL_AUTO_UPDATE !== "1" && !unreadableSelection)
+        await repairOfflineExtensions(current, rt, () => admitReconciliation(current, rt, target));
+      return code;
     }
     const upgrading = compareSemver(latest.version, current) > 0;
     if (rt.env.COTAL_AUTO_UPDATE === "1") {
@@ -646,7 +636,7 @@ export async function executeUpdate(self: boolean, rt: UpdateRuntime = updateRun
       recordUpdateDeferral(current, "waiting for update preflight");
     }
     if (upgrading) {
-      const code = await upgradeAndReconcile(latest.version, current, rt, target, repairedModes);
+      const code = await upgradeAndReconcile(latest.version, current, rt, target, preflightChanged);
       if (code === 0 && rt.env.COTAL_AUTO_UPDATE !== "1") rt.generationWaited = true;
       return code;
     }
@@ -658,7 +648,7 @@ export async function executeUpdate(self: boolean, rt: UpdateRuntime = updateRun
     }
     if (rt.isCurrent?.()) {
       reportUncheckedPreparedRecords(rt, target);
-      rt.out("No newer CLI version; installed package closure is current. No connector reconciliation was run.");
+      await reportCurrentConnectorState(current, rt);
       if (rt.env.COTAL_AUTO_UPDATE === "1") recordUpdateCompletion(current, "up to date", true);
       reportVersion(current, latest.version, rt, false);
       return 0;
@@ -676,7 +666,7 @@ export async function executeUpdate(self: boolean, rt: UpdateRuntime = updateRun
       }
       reportVersion(current, latest.version, rt, reconciled);
       return reconciled ? 0 : 1;
-    });
+    }, true);
   }
 
   return reconcileCurrent(current, rt, target, (reconciled) => {
@@ -686,62 +676,15 @@ export async function executeUpdate(self: boolean, rt: UpdateRuntime = updateRun
   });
 }
 
-function reportUncheckedPreparedRecords(rt: UpdateRuntime, target: Record<string, unknown>): void {
-  if (["server", "creds", "on"].some(key => typeof target[key] === "string")) return;
-  // The installed child may carry a daemon admission receipt and never resolve the project.
-  // Report read failures separately from the Manager custody verdict and package reconciliation.
-  try {
-    for (const error of readPreparedSpaces().unusable) {
-      if (error.refusal !== "PERMISSION_DENIED") continue;
-      if (typeof target.space === "string" && target.space !== preparedRecordSpace(error.file)) continue;
-      recordOperationWarning(preparedRecordSkipped(error));
-      rt.out(c.dim(`  ${error.file}: leaving its records and processes untouched, continuity not checked`));
-    }
-  } catch (error) {
-    rt.err(`Could not check prepared space records: ${message(error)}; continuity not checked`);
-  }
-}
-
 async function reconcileCurrent(
-  current: string,
-  rt: UpdateRuntime,
-  target: Record<string, unknown>,
-  finish: (reconciled: boolean, deferred?: boolean) => number,
+  current: string, rt: UpdateRuntime, target: Record<string, unknown>,
+  finish: (reconciled: boolean, deferred?: boolean) => number, selfUpdate = false,
 ): Promise<number> {
-  try { await rt.prepareReconciliation?.(target); }
-  catch (error) {
-    rt.err(c.red(`✗ installed connector reconciliation admission: ${refusal(error)}`));
-    return finish(false, true);
-  }
-  // OBSERVE BEFORE WRITING. `rt.reconcile()` is `runSeed({force: true})`: it rewrites the
-  // operator-global seed store, manifest and npm prefix. It used to run FIRST, so an
-  // `update --self` against a mesh that predates this release's authority stores rewrote the store
-  // and only then failed its `running manager continuity check`, leaving the machine migrated by a
-  // run that refused to proceed (#1620). The continuity check is a pure read of the running manager
-  // and the selected target; nothing may be written until it has answered.
-  try {
-    if (await rt.reportRunningManager(target) === "legacy") {
-      if (rt.env.COTAL_AUTO_UPDATE === "1") recordUpdateDeferral(current, "waiting for agents to stop");
-      return finish(false, true);
-    }
-  } catch (e) {
-    if (rt.env.COTAL_AUTO_UPDATE === "1") recordUpdateDeferral(current, "waiting for agents to stop");
-    rt.err(c.red(`✗ running manager continuity check: ${refusal(e)}`));
-    return finish(false, true);
-  }
-
-  reportUncheckedPreparedRecords(rt, target);
-
-  try { await rt.preflightReplacement?.(); }
-  catch (error) {
-    if (rt.env.COTAL_AUTO_UPDATE === "1") recordUpdateDeferral(current, "installed daemon preflight refused");
-    rt.err(c.red(`✗ installed daemon preflight: ${refusal(error)}`));
-    return finish(false, true);
-  }
+  if (!await admitReconciliation(current, rt, target)) return finish(false, true);
 
   rt.out(c.bold("Built-in connectors"));
   try {
-    await rt.reconcile();
+    await rt.reconcile(selfUpdate);
   } catch (e) {
     rt.err(c.red(`✗ built-in connectors: ${message(e)}`));
     return finish(false);
@@ -749,7 +692,7 @@ async function reconcileCurrent(
   try {
     rt.out("Refreshing connector integrations");
     const refreshStarted = Date.now();
-    for (const line of await rt.refreshConnectors()) rt.out(c.green(`✓ ${line}`));
+    await rt.refreshConnectors((line) => rt.out(c.green(`✓ ${line}`)), selfUpdate);
     rt.out(`✓ connector integrations refreshed (${((Date.now() - refreshStarted) / 1000).toFixed(1)} s)`);
   } catch (e) {
     rt.err(c.red(`✗ connector installs: ${message(e)}`));
@@ -764,72 +707,96 @@ async function reconcileCurrent(
     return finish(false);
   }
 
+  let code: number;
   try {
-    let ok = true;
-    rt.out(c.bold("Operator extensions"));
-    let entries: readonly InstalledExtension[];
-    try {
-      // Exclude every seeded built-in (the connectors AND the bundled web dashboard) — runSeed already
-      // reconciled them from the bundled store; letting web fall through here reinstalls it from npm on
-      // top of the seed, drops its seeded marker, and makes `cotal update` fail offline on a bundled pkg.
-      const builtIns = new Set(Object.values(SEEDED_EXTENSIONS).map((e) => e.pkg));
-      entries = rt.extensions().filter((entry) => !builtIns.has(entry.pkg));
-    } catch (e) {
-      rt.err(c.red(`✗ could not read installed extensions: ${message(e)}`));
-      return finish(false);
-    }
-    if (!entries.length) rt.out(c.dim("operator extensions: none installed"));
-
-    for (const entry of entries) {
-      if (!entry.pkg.startsWith("@cotal-ai/")) {
-        rt.out(c.dim(`${entry.pkg}@${entry.version} - not auto-updated in v1 (recorded spec: ${entry.spec})`));
-        continue;
-      }
-      let differs: string | undefined;
-      try {
-        differs = rt.verifyExtension(entry, current);
-      } catch (e) {
-        rt.err(c.red(`✗ ${entry.pkg}: ${message(e)}`));
-        ok = false;
-        continue;
-      }
-      if (differs === undefined) {
-        rt.out(c.green(`✓ verified ${entry.pkg}@${current}`) + c.dim(` - current generation (recorded spec: ${entry.spec})`));
-        continue;
-      }
-      rt.err(c.dim(`${entry.pkg}: ${differs}; reinstalling`));
-      const spec = `${entry.pkg}@${current}`;
-      const [bin, ...argv] = rt.selfArgv();
-      const env: NodeJS.ProcessEnv = {
-        ...rt.env,
-        COTAL_SKIP_CONNECTOR_SEED: "1",
-        [EXT_UPDATE_PARENT_ENV]: String(rt.pid),
-      };
-      delete env[UPDATE_TARGET_ENV];
-      delete env[UPDATE_PARENT_ENV];
-      delete env[UPDATE_PARENT_WAITS_ENV];
-      const extensionStarted = Date.now();
-      const result = rt.spawn(bin, [...argv, "ext", "__update-add", entry.pkg, spec], env);
-      rt.out(`✓ extension ${entry.pkg} install finished (${((Date.now() - extensionStarted) / 1000).toFixed(1)} s)`);
-      writeChildOutput(result);
-      if (result.status !== 0) {
-        rt.err(c.red(`✗ ${entry.pkg}: ${failure(result)}`));
-        ok = false;
-        if (result.status === null) {
-          rt.err(c.red("✗ extension replay process ended abnormally; refusing to start another package mutation"));
-          break;
-        }
-        continue;
-      }
-      rt.out(c.green(`✓ ${entry.pkg}@${current}`) + c.dim(` - current generation (recorded spec: ${entry.spec})`));
-    }
+    const ok = await updateOperatorExtensions(rt, current);
     if (ok && rt.env.COTAL_AUTO_UPDATE !== "1") {
       rt.out("Cotal updates the managed pi connector, not your standalone pi extension. If you copied it, wait for the update to succeed, then reinstall `@cotal-ai/pi` at the version shown by `cotal --version` and repeat the copy. See https://docs.cotal.ai/docs/connect-pi/#load-the-extension-into-your-own-host");
     }
-    return finish(ok);
+    code = finish(ok);
   } finally {
     releaseMutation();
   }
+  return code === 0 ? refreshClients(rt) : code;
+}
+
+/** Point the ACP clients' Cotal entries at this Cotal, and return the exit status. A client provider
+ *  ships in an operator extension, so this runs once the pass has made them current, and after the
+ *  pass is released, because loading a provider takes the extension lock the pass holds. */
+async function refreshClients(rt: UpdateRuntime): Promise<number> {
+  try {
+    const lines = await rt.refreshClients();
+    if (lines.length > 0) rt.out(c.bold("Client integrations"));
+    for (const line of lines) rt.out(c.green(`✓ ${line}`));
+    return 0;
+  } catch (e) {
+    rt.err(c.red(`✗ client integrations: ${message(e)}`));
+    return 1;
+  }
+}
+
+/** Bring every first-party operator extension to `current`, under the update pass the caller holds,
+ *  and say whether all of them are. */
+async function updateOperatorExtensions(rt: UpdateRuntime, current: string): Promise<boolean> {
+  let ok = true;
+  rt.out(c.bold("Operator extensions"));
+  let entries: readonly InstalledExtension[];
+  try {
+    // Exclude every seeded built-in (the connectors AND the bundled web dashboard) — runSeed already
+    // reconciled them from the bundled store; letting web fall through here reinstalls it from npm on
+    // top of the seed, drops its seeded marker, and makes `cotal update` fail offline on a bundled pkg.
+    const builtIns = new Set(Object.values(SEEDED_EXTENSIONS).map((e) => e.pkg));
+    entries = rt.extensions().filter((entry) => !builtIns.has(entry.pkg));
+  } catch (e) {
+    rt.err(c.red(`✗ could not read installed extensions: ${message(e)}`));
+    return false;
+  }
+  if (!entries.length) rt.out(c.dim("operator extensions: none installed"));
+  for (const entry of entries) {
+    const recordedSpec = typeof entry.spec === "string" ? ` (recorded spec: ${entry.spec})` : "";
+    if (!entry.pkg.startsWith("@cotal-ai/")) {
+      rt.out(c.dim(`${entry.pkg}@${entry.version} - not auto-updated in v1${recordedSpec}`));
+      continue;
+    }
+    let differs: string | undefined;
+    try {
+      differs = rt.verifyExtension(entry, current);
+    } catch (e) {
+      rt.err(c.red(`✗ ${entry.pkg}: ${message(e)}`));
+      ok = false;
+      continue;
+    }
+    if (differs === undefined) {
+      rt.out(c.green(`✓ verified ${entry.pkg}@${current}`) + c.dim(` - current generation${recordedSpec}`));
+      continue;
+    }
+    rt.err(c.dim(`${entry.pkg}: ${differs}; reinstalling`));
+    const spec = operatorUpdateSpec(entry, current);
+    const [bin, ...argv] = rt.selfArgv();
+    const env: NodeJS.ProcessEnv = {
+      ...rt.env,
+      COTAL_SKIP_CONNECTOR_SEED: "1",
+      [EXT_UPDATE_PARENT_ENV]: String(rt.pid),
+    };
+    delete env[UPDATE_TARGET_ENV];
+    delete env[UPDATE_PARENT_ENV];
+    delete env[UPDATE_PARENT_WAITS_ENV];
+    const extensionStarted = Date.now();
+    const result = rt.spawn(bin, [...argv, "ext", "__update-add", entry.pkg, spec], env);
+    rt.out(`✓ extension ${entry.pkg} install finished (${((Date.now() - extensionStarted) / 1000).toFixed(1)} s)`);
+    writeChildOutput(result);
+    if (result.status !== 0) {
+      rt.err(c.red(`✗ ${entry.pkg}: ${failure(result)}`));
+      ok = false;
+      if (result.status === null) {
+        rt.err(c.red("✗ extension replay process ended abnormally; refusing to start another package mutation"));
+        break;
+      }
+      continue;
+    }
+    rt.out(c.green(`✓ ${entry.pkg}@${current}`) + c.dim(` - current generation${recordedSpec}`));
+  }
+  return ok;
 
   function writeChildOutput(result: CommandResult): void {
     if (result.stderr) rt.stderr(result.stderr);
@@ -848,15 +815,11 @@ export function verifyCurrentExtension(entry: InstalledExtension, generation: st
   return undefined;
 }
 
-function offlineUpdateMessage(repaired: boolean): string {
-  return repaired ? "The registry cannot be reached; no installed packages were replaced." : "The registry cannot be reached; nothing was changed.";
-}
-
 function preflightDetail(error: unknown): string {
   return message(error).replace(/[\r\n\u001b]+/g, " ").replace(/(?:[A-Za-z]:[\\/]|\/)[^\s,;"']+/g, "<config path>").slice(0, 500);
 }
 
-async function upgradeAndReconcile(targetVersion: string, current: string, rt: UpdateRuntime, target: Record<string, unknown>, repairedModes: boolean): Promise<number> {
+async function upgradeAndReconcile(targetVersion: string, current: string, rt: UpdateRuntime, target: Record<string, unknown>, preflightChanged: boolean): Promise<number> {
   try { await rt.preflightReplacement?.(); }
   catch (error) {
     recordUpdateDeferral(targetVersion, "installed daemon preflight refused");
@@ -909,7 +872,7 @@ async function upgradeAndReconcile(targetVersion: string, current: string, rt: U
     }
     if (registryNetworkFailure(e)) {
       recordUpdateDeferral(targetVersion, "waiting for registry access", true);
-      rt.out(offlineUpdateMessage(repairedModes || repairedSelection));
+      rt.out(offlineUpdateMessage(preflightChanged || repairedSelection));
       return 0;
     }
     recordUpdateDeferral(targetVersion, "waiting for registry or extension closure availability", true);
@@ -920,7 +883,7 @@ async function upgradeAndReconcile(targetVersion: string, current: string, rt: U
   let prefix: string | undefined;
   try {
     prefix = rt.installPrefix();
-    if (prefix) {
+    if (prefix && process.platform !== "win32") {
       for (const [key, value] of Object.entries(rt.env)) {
         if (key.toLowerCase() === "npm_config_prefix" && value && realpathSync(value) !== prefix)
           throw new Error("npm's configured prefix differs from the invoked cotal install; run its installer launcher or correct npm_config_prefix");
@@ -944,7 +907,7 @@ async function upgradeAndReconcile(targetVersion: string, current: string, rt: U
 
   if (prefix) {
     try {
-      if (realpathSync(root) !== realpathSync(join(prefix, "lib", "node_modules")))
+      if (realpathSync(root) !== realpathSync(join(prefix, ...(process.platform === "win32" ? [] : ["lib"]), "node_modules")))
         throw new Error("npm's global root does not match the invoked install prefix");
     } catch (e) {
       rt.err(c.red(`✗ could not verify npm's selected global root: ${message(e)}`));
@@ -1005,13 +968,9 @@ async function upgradeAndReconcile(targetVersion: string, current: string, rt: U
     } catch (error) {
       try { execution?.discard?.(); } catch { /* an unpublished copy left behind selects nothing */ }
       releaseGlobal();
-      if (!execution && (error instanceof RegistryUnavailable || message(error).startsWith("target staging failed: ") && registryNetworkFailure(error))) {
-        recordUpdateDeferral(targetVersion, "waiting for registry access", true);
-        rt.out(offlineUpdateMessage(repairedModes || repairedSelection));
-        return 0;
-      }
+      if (!execution && deferStagingFailure(error, targetVersion, rt, preflightChanged || repairedSelection)) return 0;
       recordUpdateDeferral(targetVersion, `staged pre-install check refused: ${preflightDetail(error)}`);
-      rt.err(`staged pre-install check refused: ${message(error)}; ${repairedSelection ? "no installed packages were replaced" : "no installed packages or connector state were changed"}`);
+      rt.err(`staged pre-install check refused: ${message(error)}; no installed packages were replaced`);
       return 1;
     }
   }

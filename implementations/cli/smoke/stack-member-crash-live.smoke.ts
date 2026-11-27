@@ -40,6 +40,11 @@
  *  8. With the delivery member stopped with SIGSTOP again, once its lease expires `status` names
  *     its pid as alive with no lease, starting or not responding, never `cotal up`, and its Next
  *     names `cotal service status stack-delivery`, then `cotal down --yes` and `cotal up`.
+ *  9. An independent read-only dashboard keeps its process and browser session when the same
+ *     broker is recovered.
+ * 10. After a full stop the next up reuses that stack's websocket port. When another process holds
+ *     the port, up starts on a new one and names both. A second space on the same machine takes its
+ *     own port and does not take the first space's.
  *
  * Sandboxes COTAL_HOME and a temp project root, and stops the stack with `cotal down`; it signals
  * only the members its own `up` started and the process it started itself. Needs `nats-server` on PATH.
@@ -110,6 +115,39 @@ let other: ChildProcess | undefined;
 const doc = (r: { stdout: string }): { outcome?: string; warnings?: { code: string; message: string }[]; error?: { code: string; message: string; remedy?: string }; result?: { blockedBy?: unknown } } | undefined => {
   try { return JSON.parse(r.stdout); } catch { return undefined; }
 };
+
+async function repairWithDashboard(brokerPid: number): Promise<void> {
+  const installed = cli("ext", "add", join(WT, "implementations", "web"));
+  check("the checkout's dashboard provider is available", installed.status === 0, installed.out);
+  const port = await freePort();
+  try {
+    const start = cli("service", "start", "web", "--space", "crash", "--no-open", "--port", String(port));
+    const web = runningMember("web");
+    const log = cli("service", "logs", "web", "--space", "crash");
+    const sessionPath = /Private browser bootstrap file: (.+)$/m.exec(log.out)?.[1];
+    if (start.status !== 0 || !web || !sessionPath) throw new Error(`the dashboard did not start: ${start.out}`);
+    const { launchUrl } = JSON.parse(readFileSync(sessionPath, "utf8")) as { launchUrl: string };
+    const exchange = await fetch(launchUrl, { redirect: "manual", signal: AbortSignal.timeout(15_000) });
+    const cookie = exchange.headers.get("set-cookie")?.split(";")[0];
+    if (exchange.status !== 302 || !cookie) throw new Error(`could not authenticate the browser session: HTTP ${exchange.status}`);
+    const browser = (path: string) => fetch(`http://127.0.0.1:${port}${path}`, { headers: { cookie }, signal: AbortSignal.timeout(20_000) });
+    check("the dashboard still blocks whole-stack up while the broker runs", doc(cli("up", "--space", "crash", "--json"))?.error?.code === "LIFECYCLE_BLOCKED");
+    process.kill(brokerPid, "SIGTERM");
+    for (let i = 0; i < 100 && await listenerOpen(PORT); i++) await sleep(100);
+    check("the original browser session stays authenticated during the broker outage", (await browser("/api/meta")).status === 200);
+    check("a broker input change is still blocked by the dashboard", doc(cli("up", "--space", "crash", "--max-payload", "2097152", "--json"))?.error?.code === "LIFECYCLE_BLOCKED");
+    const repair = cli("up", "--space", "crash");
+    const repaired = runningMember("stack-broker"), webAfter = runningMember("web");
+    check("up restarts the stopped broker without replacing the dashboard process or instance", repair.status === 0 && !!repaired && repaired.pid !== brokerPid &&
+      webAfter?.pid === web.pid && webAfter.instanceId === web.instanceId, repair.out);
+    const sent = cli("send", "-c", "general", "message after broker repair");
+    const history = await browser("/api/channels/general/history");
+    check("the original browser session reads new messages from the recovered broker", sent.status === 0 && history.status === 200 && (await history.text()).includes("message after broker repair"), { sendStatus: sent.status, httpStatus: history.status });
+  } finally {
+    const stop = cli("service", "stop", "web", "--space", "crash", "--yes");
+    check("the independent dashboard stops through its own service command", stop.status === 0, stop.out);
+  }
+}
 
 try {
   const created = cli("space", "create", "crash");
@@ -238,7 +276,6 @@ try {
   check("broker-only repair reuses the manager and serves its original WebSocket port",
     brokerRepair.status === 0 && !!repairedBroker && repairedBroker.pid !== broker.pid && managerPid() === repairedManager && managerWsPort(repairedManager) === wsPort &&
     receiptWsPort(brokerRepair.out) === wsPort && await listenerOpen(Number(wsPort)), brokerRepair.out);
-
   // Ctrl-C reaches the manager together with the CLI that publishes the stop request, so a SIGINT
   // without one is ignored. A plain SIGTERM carries no request either, and the manager stops on it.
   const signalled = runningManager();
@@ -381,13 +418,66 @@ try {
     /cotal service status stack-delivery +Read the delivery member's record/.test(next[0] ?? "") && /cotal down --yes +If it stays that way/.test(next[1] ?? "") && /cotal up +Then start the stack again/.test(next[2] ?? ""), next.slice(0, 4));
   const final = cli("down", "--yes");
   check("down --yes stops it", final.status === 0, final.out);
+
+  // A full stop leaves the websocket port on the saved manager definition. The next up uses it when
+  // it is free, and the existing taken-port notice covers a port another process holds.
+  const reusedStart = cli("up");
+  const reusedPort = receiptWsPort(reusedStart.out);
+  check("the stack starts again after its hung member was stopped", reusedStart.status === 0 && reusedPort !== undefined, reusedStart.out);
+  const reusedStop = cli("down", "--yes");
+  check("down --yes stops that stack before the restart", reusedStop.status === 0, reusedStop.out);
+  const restartedUp = cli("up");
+  check("a full restart reuses the stopped stack's websocket port", restartedUp.status === 0 && receiptWsPort(restartedUp.out) === reusedPort, restartedUp.out);
+  const restartedStop = cli("down", "--yes");
+  check("down --yes stops the reused stack", restartedStop.status === 0, restartedStop.out);
+  const portHolder = createServer();
+  await new Promise<void>((done, fail) => portHolder.once("error", fail).listen(Number(reusedPort), "127.0.0.1", done));
+  try {
+    const moved = cli("up");
+    const movedPort = receiptWsPort(moved.out);
+    check("a recorded websocket port held by another process is replaced, and the notice names both ports",
+      moved.status === 0 && movedPort !== undefined && movedPort !== reusedPort
+      && moved.out.includes(`another process took the broker's websocket port ${reusedPort} before the broker bound it; launching the broker again with port ${movedPort}`),
+      moved.out);
+    const otherRoot = join(base, "other-port");
+    mkdirSync(otherRoot, { mode: 0o700 });
+    const otherAnchor = recordSmokeSandbox({ root: otherRoot, cotalHome: home, xdgConfigHome: configDir });
+    const otherCli = (...args: string[]) => {
+      const options = { cwd: otherRoot, env, encoding: "utf8" as const, timeout: 120_000 };
+      assertSmokeSandboxDown(otherAnchor, args, options);
+      const r = spawnSync(TSX, [CLI, ...args], options);
+      return { status: r.status, out: plain(`${r.stdout}${r.stderr}`) };
+    };
+    const otherClient = await freePort();
+    const otherCreated = cli("space", "create", "otherport", "--root", otherRoot);
+    const otherUp = otherCli("up", "--server", `nats://127.0.0.1:${otherClient}`);
+    const otherWs = receiptWsPort(otherUp.out);
+    check("a second space takes its own websocket port and does not take the first space's",
+      otherCreated.status === 0 && otherUp.status === 0 && otherWs !== undefined && otherWs !== reusedPort
+      && !otherUp.out.includes("another process took the broker's websocket port"),
+      otherUp.out);
+    const otherDown = otherCli("down", "--yes");
+    check("down --yes stops the second space", otherDown.status === 0, otherDown.out);
+    const forgotOther = cli("space", "forget", "otherport");
+    const selected = cli("use", "crash");
+    check("the second space is forgotten and the first space is selected again", forgotOther.status === 0 && selected.status === 0, `${forgotOther.out}\n${selected.out}`);
+  } finally {
+    await new Promise<void>((done) => portHolder.close(() => done()));
+  }
+  const movedDown = cli("down", "--yes");
+  check("down --yes stops the stack that replaced its websocket port", movedDown.status === 0, movedDown.out);
+
+  const dashboardStack = cli("up", "--space", "crash");
+  const dashboardBroker = runningMember("stack-broker");
+  if (dashboardStack.status !== 0 || !dashboardBroker) throw new Error(`could not start the dashboard's stack: ${dashboardStack.out}`);
+  await repairWithDashboard(dashboardBroker.pid);
 } finally {
   if (hung !== undefined && alive(hung)) process.kill(hung, "SIGKILL");
   if (other?.pid !== undefined && alive(other.pid)) other.kill("SIGKILL");
   const down = cli("down", "--yes");
   check("down stops the stack", down.status === 0, down.out);
   const forgot = cli("space", "forget", "crash");
-  const prepareAgain = /prepare it again with `cotal space create crash --root (.+?)`/.exec(cli("status").out)?.[1];
+  const prepareAgain = /prepare it again with `(?:pnpm )?cotal space create crash --root (.+?)`/.exec(cli("status").out)?.[1];
   check("after a forget, status names space create --root with the folder quoted", forgot.status === 0 && shellWords(prepareAgain) === `${root}\n`, prepareAgain);
   const prepared = cli("space", "create", "crash");
   cli("use", "crash");
@@ -397,7 +487,7 @@ try {
   cli("space", "forget", "crash");
   const moved = join(base, "moved $x 'q'");
   renameSync(root, moved);
-  const adopt = /adopt it with `cotal space create crash --adopt --root (.+?)`; this machine/.exec(cliIn(moved, "whoami").out)?.[1];
+  const adopt = /adopt it with `(?:pnpm )?cotal space create crash --adopt --root (.+?)`; this machine/.exec(cliIn(moved, "whoami").out)?.[1];
   check("a folder moved with its stack journal names space create --adopt with the new folder quoted", shellWords(adopt) === `${moved}\n`, adopt);
   rmSync(home, { recursive: true, force: true });
   rmSync(base, { recursive: true, force: true });

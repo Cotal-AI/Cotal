@@ -29,9 +29,10 @@ import {
   concreteChannelProblem,
 } from "@cotal-ai/workspace";
 import { credentialEnded } from "../lib/connect.js";
+import { spaceChoiceRemedy } from "../lib/choose-target.js";
 import { c } from "../ui.js";
 import { historyClear } from "./history-clear.js";
-import { historySetupFailureRecords } from "../lib/follow-setup-failure.js";
+import { historySetupFailureRecords } from "../lib/stream-setup-failure.js";
 import { HISTORY_LIMIT_FLAGS, historyLimit, historyLimitRequest } from "./history-limit.js";
 import { declaredFrom } from "./send.js";
 import { completingFlagValue, positionalsForCompletion } from "../lib/completion.js";
@@ -204,13 +205,18 @@ function itemOf(msg: CotalMessage, where: { seq?: number; channel?: string }): H
   };
 }
 
+function historyGrepText(text: string): string {
+  // Greek capital sigma lowercases to final sigma at the end of a word.
+  return text.toLowerCase().replaceAll("ς", "σ");
+}
+
 /** The window filters: `--since` against the sequence or time, `--from` against the sender's name or
  *  id, `--grep` against the text. */
 function keep(item: HistoryItem, since: Since | undefined, from: string | undefined, grep: string | undefined): boolean {
   if (since?.kind === "seq" && (item.seq === null || item.seq <= since.seq)) return false;
   if (since?.kind === "time" && Date.parse(item.ts) <= since.ms) return false;
   if (from !== undefined && item.from.name !== from && item.from.id !== from) return false;
-  if (grep !== undefined && !item.text.toLowerCase().includes(grep.toLowerCase())) return false;
+  if (grep !== undefined && !historyGrepText(item.text).includes(historyGrepText(grep))) return false;
   return true;
 }
 
@@ -311,8 +317,9 @@ export async function history(args: ParsedArgs): Promise<void> {
   } catch (error) {
     if (!v.follow || presentation !== "json" || snapshotWritten) throw error;
     // A refusal before the snapshot still belongs to the follow protocol, not a finite read.
+    const spaceRemedy = isConnectRefusal(error) ? spaceChoiceRemedy(error.cause, "history", args, args.raw) : undefined;
     const failure = isCommandFailure(error) ? error
-      : isConnectRefusal(error) ? error.failure(hasMovedStackRemedy(error.cause) ? displayRemedy : undefined)
+      : isConnectRefusal(error) ? error.failure(spaceRemedy !== undefined ? () => spaceRemedy : hasMovedStackRemedy(error.cause) ? displayRemedy : undefined)
       : isMeshRegistryError(error) ? registryFailure(error)
       : new CommandFailure("unknown", "OPERATION_UNKNOWN", error instanceof Error ? error.message : String(error));
     recordTelemetryFailure(failure.outcome, failure.code, error);
@@ -335,6 +342,7 @@ async function readHistory(v: FlagValues<typeof historyFlags>, channel: string |
     channels: [],
     consume: false,
     registerPresence: false,
+    omitFromLiveMembership: true,
     // A DM carries only its recipient's principal, so the roster names a recipient that sent nothing.
     watchPresence: Boolean(v.dms),
     card: { name: "history", kind: "endpoint" },

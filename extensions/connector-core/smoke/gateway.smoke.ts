@@ -493,6 +493,8 @@ try {
   }
   check("an embedder's bound below one second is refused", threw.includes("waitSeconds"), threw);
 
+  // Drain the initial channel replay so the timeout starts with an empty inbox.
+  await call(a, "cotal_inbox", { connection_id: listener });
   let started = Date.now();
   const quiet = await call(a, "cotal_wait", { connection_id: listener, seconds: 1 });
   const quietMs = Date.now() - started;
@@ -530,6 +532,18 @@ try {
   await call(a, "cotal_inbox", { connection_id: listener });
   const quietRoster = await call(a, "cotal_roster", { connection_id: listener });
   check("the notice is gone once the message is read", !quietRoster.text.includes("new message"), quietRoster);
+
+  await call(a, "cotal_channel_mode", { connection_id: listener, channel: "lobby", mode: "quiet" });
+  await call(a, "cotal_send", { connection_id: talker, text: "quiet-channel-probe", channel: "lobby" });
+  const buffered = await peekFor("quiet-channel-probe");
+  started = Date.now();
+  const heldWait = await call(a, "cotal_wait", { connection_id: listener, seconds: 1 });
+  check("a quiet-channel post does not wake a wait, but the timeout points to the inbox",
+    buffered && Date.now() - started >= 900 && !heldWait.isError &&
+      heldWait.text === "No message woke this wait in 1 second. Buffered messages are waiting. Call cotal_inbox to read them.", heldWait);
+  const pulled = await call(a, "cotal_inbox", { connection_id: listener });
+  check("the quiet-channel post is still available to pull", !pulled.isError && pulled.text.includes("quiet-channel-probe"), pulled);
+  await call(a, "cotal_channel_mode", { connection_id: listener, channel: "lobby", mode: "normal" });
 
   await call(a, "cotal_status", { connection_id: listener, attention: "dnd" });
   const dndWait = call(a, "cotal_wait", { connection_id: listener, seconds: 2 });

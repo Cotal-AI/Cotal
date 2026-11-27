@@ -12,6 +12,7 @@ export * from "./endpoint-grants.js";
 export * from "./endpoint-coverage.js";
 export * from "./registry-contract.js";
 export * from "./agent-endpoint.js";
+export * from "./agent-command-list.js";
 export * from "./registry-client.js";
 export type { RegistryService, RegistryServiceHandle, RegistryServiceInputs } from "./registry-service.js";
 export * from "./endpoint-envelope.js";
@@ -46,6 +47,7 @@ export {
   type EpLedgerAuthority, type EpServeHandle, type EpPrincipalServeContext, type EpPrincipalCommandDef,
   type DescribeView, type DescribeAuthorization, type DescribeAnswer,
 } from "./endpoint-serve.js";
+export { hasStoredOrigin } from "./endpoint-provenance.js";
 export * from "./endpoint-describe-observation.js";
 export * from "./endpoint-verbs.js";
 export * from "./endpoint-invoke.js";
@@ -122,6 +124,7 @@ export * from "./jetstream-missing.js";
 export * from "./endpoint.js";
 export * from "./spaces.js";
 export * from "./connector.js";
+export * from "./launch-choice.js";
 export * from "./connector-setup.js";
 export * from "./command.js";
 export * from "./runtime.js";

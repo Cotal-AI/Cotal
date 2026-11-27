@@ -18,7 +18,7 @@
 import { strict as assert } from "node:assert";
 import { spawn, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readlinkSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -99,8 +99,28 @@ function checkCleanStoreCli(): void {
     const flag = `--store-dir=${fixture}`;
     const data = join(store, "jetstream");
     mkdirSync(data, { recursive: true });
+    const notFolder = join(root, "not-folder");
+    writeFileSync(notFolder, "not a directory\n");
+    const loopA = join(root, "loop-a"), loopB = join(root, "loop-b");
+    symlinkSync("loop-b", loopA);
+    symlinkSync("loop-a", loopB);
     for (const target of ["store", "all"]) {
       for (const mode of ["--dry-run", "--force"]) {
+        const badPath = mode === "--dry-run" ? "./not-folder/child" : "./not-folder/nested/child";
+        const invalid = spawnSync(process.execPath, [cli, "clean", target, mode, "--store-dir", badPath], options);
+        check(`clean ${target} ${mode} names the non-directory ancestor and how to correct the store path`,
+          invalid.status === 1 && invalid.stdout === "" && invalid.stderr.includes("USAGE_INVALID")
+            && invalid.stderr.includes(`${notFolder} is not a directory`)
+            && invalid.stderr.includes("correct --store-dir, or omit it if you intend to use the recorded store")
+            && readFileSync(notFolder, "utf8") === "not a directory\n" && existsSync(data), invalid.stderr);
+        const loop = spawnSync(process.execPath, [cli, "clean", target, mode, "--store-dir", "loop-a/store"], options);
+        check(`clean ${target} ${mode} names the looping store ancestor and how to retry`,
+          loop.status === 1 && loop.stdout === "" && loop.stderr.includes("USAGE_INVALID")
+            && loop.stderr.includes(`the --store-dir path ${join(loopA, "store")} cannot be used: a parent has a symbolic-link loop`)
+            && loop.stderr.includes("Nothing was removed.")
+            && loop.stderr.includes("correct the links or retry with the intended real store path as --store-dir")
+            && !loop.stderr.includes("ELOOP") && readlinkSync(loopA) === "loop-b"
+            && readlinkSync(loopB) === "loop-a" && existsSync(data), loop.stderr);
         const result = spawnSync(process.execPath, [cli, "clean", target, flag, mode, "--attempt", `restore-${randomUUID()}`], options);
         check(`clean ${target} ${mode} rejects --attempt and leaves the store intact`,
           result.status === 1 && result.stdout === "" && result.stderr.includes(`clean ${target} cannot be scoped by --attempt.`) &&

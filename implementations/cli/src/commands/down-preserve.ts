@@ -22,6 +22,7 @@ import { join, resolve as resolvePath } from "node:path";
 import {
   CommandFailure,
   isCommandFailure,
+  isMaintenanceError,
   abortMaintenanceCut,
   acquireMaintenanceLock,
   beginMaintenanceCut,
@@ -50,7 +51,6 @@ import {
   seatCheckpointDir,
   type SeatCheckpoint,
   type JsonValue,
-  restoreLeftOut,
   resolveControlTarget,
   parsePid,
   probeLiveness,
@@ -166,6 +166,16 @@ async function restartFencedDelivery(space: string, server: string, tls: boolean
   }
 }
 
+function acquirePreserveLock(root: string, space: string) {
+  try { return acquireMaintenanceLock(root); }
+  catch (error) {
+    if (!isMaintenanceError(error) || error.code !== "lock-held") throw error;
+    throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `${error.message}; nothing was stopped`, {
+      target: { root, space }, remedy: "after the other operation finishes, repeat `cotal down --preserve-state` from this folder with the same options",
+    });
+  }
+}
+
 export async function preserveStateDown(storeOverride?: string, sessionStores: readonly string[] = []): Promise<void> {
   const root = cotalRoot();
   const matching = loadMeshes().filter((mesh) => mesh.root === root);
@@ -179,7 +189,7 @@ export async function preserveStateDown(storeOverride?: string, sessionStores: r
   const storeDir = storeOverride ? resolveStore(storeOverride) : mesh.storeDir ?? join(root, ".cotal", "nats");
   // The store cap the broker was started with travels with the store, so the resume re-renders it.
   const cap: { maxFileStore?: number } = mesh.maxFileStore !== undefined ? { maxFileStore: mesh.maxFileStore } : {};
-  const lock = acquireMaintenanceLock(root);
+  const lock = acquirePreserveLock(root, mesh.space);
   try {
     const additiveAttempts = listAdditiveTeamAttempts(root);
     if (retainedAdditiveTeamAttempts(additiveAttempts).length || additiveAttempts.refused.length) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "an additive attempt or returned additive deployment remains; preserve-state down did not fold its resources into the retained stack", { target: { root, space: mesh.space, deploymentIds: retainedAdditiveTeamAttempts(additiveAttempts).map((attempt) => attempt.deploymentId), unreadable: additiveAttempts.refused.map(({ path }) => path) } });
@@ -188,7 +198,7 @@ export async function preserveStateDown(storeOverride?: string, sessionStores: r
     const existing = readMaintenanceJournal(root);
     // A completed restore keeps its journal, and a new cut begins only after that journal is retired.
     if (existing && "restore" in existing && existing.state === "active")
-      throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "a completed restore still holds this root's maintenance journal; a new preserve begins only after it is retired, so nothing was stopped", { target: { root, space: mesh.space, attemptId: existing.restore.attemptId }, remedy: restoreNextStep(existing.state, existing.restore.attemptId, restoreLeftOut(existing)) });
+      throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "a completed restore still holds this root's maintenance journal; a new preserve begins only after it is retired, so nothing was stopped", { target: { root, space: mesh.space, attemptId: existing.restore.attemptId }, remedy: restoreNextStep(existing.state, existing.restore.attemptId, existing) });
     if (existing && existing.state !== "cut-intent" && existing.state !== "cut-committed" && existing.state !== "ready")
       throw new Error(`cannot preserve while maintenance state is ${existing.state}`);
     if (existing && (existing.space !== mesh.space || existing.mode !== mesh.mode ||

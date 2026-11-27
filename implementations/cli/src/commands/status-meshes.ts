@@ -15,6 +15,8 @@ import {
   unsettledStackOperation,
   isMeshRegistryError,
   isWorkspaceTargetError,
+  preparedNeverStarted,
+  preflightTarget,
   readCurrent,
   readMeshRegistry,
   preparedRecordSkipped,
@@ -27,7 +29,11 @@ import {
   type MeshEntry,
   type MeshTarget,
   movedProject,
+  operationWarnings,
   spaceStreamsExpected,
+  shellPath,
+  unsearchableFolder,
+  withdrawOperationNote,
 } from "@cotal-ai/workspace";
 import { type DeliveryResponderState } from "../lib/delivery-responder.js";
 import { chatStreamGone, stackState } from "../lib/space-streams.js";
@@ -37,13 +43,39 @@ import { displayCmd, displayRemedy } from "../lib/self-exec.js";
 import { readPersonas, type PersonaEntry } from "../lib/personas.js";
 import { preparedCatalogDiagnostics } from "./sync.js";
 import { serviceInstances } from "../lib/service-instances.js";
-import { readStackJournal, stackRootGone, unusableStackJournal } from "../lib/stack-journal.js";
-import { linkedCotalRemedy } from "../lib/paths.js";
+import { legacyBrokerPidfileBlock, readStackJournal, stackRootGone, stackUpInProgress, unusableStackJournal } from "../lib/stack-journal.js";
+import { linkedCotalRemedy, preparedRootWriteProblem } from "../lib/paths.js";
 import { channelSeedRestartBlock } from "../lib/channel-seed.js";
 import { rootStoreProblem } from "../lib/store-dir.js";
 import { stackStoreWarnings } from "../lib/store-identity.js";
 import { statusFlags, type Selected, type SelectedPreflight, UnregisteredRoot, type PersonaCatalog, type StatusResult, type SelectedResult, Gaps, displayStatusBroker } from "./status-model.js";
 import { servedStack } from "./status-render.js";
+
+export async function readStatusPreflight(selected: Selected, gaps: Gaps, hints: string[]): Promise<{ preflight: SelectedPreflight; pidfileUnreadable: boolean }> {
+  if (!selected.ok || selected.target.mode === "user") return { preflight: undefined, pidfileUnreadable: false };
+  const { root, space } = selected.target;
+  let pidfileUnreadable = false;
+  const preflight = await preflightTarget(selected.target, undefined, (path, error) => {
+    pidfileUnreadable = true;
+    gaps.add("PIDFILE_UNREADABLE", `the nats pidfile could not be read: ${error.message}`, { root, space, process: "nats" });
+    const folder = unsearchableFolder(path);
+    hints.push(`make it readable by you, for example with chmod ${folder === undefined ? "u+r" : "u+rx"} ${shellPath(folder ?? path)}`);
+  });
+  return { preflight, pidfileUnreadable };
+}
+
+/** Replace the current folder's restart banner when its directory or broker store blocks startup. */
+export function reportHeldRestartProblem(root: string, hints: string[]): boolean {
+  const held = operationWarnings().find((warning) => warning.code === "FOLDER_SPACE_NOT_RUNNING")?.target as { space: string; root: string; state: string } | undefined;
+  if (held?.root !== root) return false;
+  const writeProblem = held.state === "stopped" ? preparedRootWriteProblem(root) : undefined;
+  const store = rootStoreProblem(root);
+  if (!writeProblem && !store) return false;
+  withdrawOperationNote("FOLDER_SPACE_NOT_RUNNING", held.space);
+  if (writeProblem) hints.push(`Restart blocked: ${writeProblem.message}. ${writeProblem.remedy}`);
+  else if (store) hints.push(`${store.message}; ${store.remedy}`);
+  return true;
+}
 
 /** Outside a project, only the all-broker report has liveness evidence for the registry fallback. */
 export async function registryFallbackChecks(root: string, values: FlagValues<typeof statusFlags>) {
@@ -83,7 +115,7 @@ export function personaCatalog(root: string, gaps: Gaps): PersonaCatalog {
  *  with its own recorded TLS requirement. A bare TCP/INFO probe would green-light a plaintext broker
  *  that has substituted for a TLS-required mesh — the FAIL1 attack — so a list that only asks "is
  *  anything listening" cannot report on the one property the record claims. */
-export async function readMeshes(cwd: string, selected: Selected, all: boolean, gaps: Gaps, offline: readonly string[], preflight: SelectedPreflight, checks: Awaited<ReturnType<typeof registryFallbackChecks>>): Promise<StatusResult["meshes"]> {
+export async function readMeshes(cwd: string, selected: Selected, all: boolean, gaps: Gaps, offline: readonly string[], preflight: SelectedPreflight, checks: Awaited<ReturnType<typeof registryFallbackChecks>>): Promise<{ meshes: StatusResult["meshes"]; currentJournalUnreadable: boolean }> {
   // A registry file that cannot be read is named, and the readable records are still listed and
   // checked. Only an absent directory or pointer is an empty registry or no current mesh.
   const unreadable: StatusResult["meshes"]["unreadable"] = [];
@@ -142,7 +174,7 @@ export async function readMeshes(cwd: string, selected: Selected, all: boolean, 
     })),
   );
   // The prepared spaces folder, or a record in it, that cannot be read is named the same way.
-  let currentPrepared = false, currentStopped = false, hasPrepared = false;
+  let currentPrepared = false, currentStopped = false, hasPrepared = false, currentJournalUnreadable = false;
   try {
     const prepared = readPreparedSpaces();
     hasPrepared = prepared.spaces.length > 0;
@@ -152,14 +184,17 @@ export async function readMeshes(cwd: string, selected: Selected, all: boolean, 
       unreadable.push({ file: e.file, error: e.message });
       gaps.add(skipped.code, skipped.message, skipped.target);
     }
-    const selected = current !== null && !entries.some((m) => m.space === current) ? prepared.spaces.find((p) => p.space === current) : undefined;
-    currentPrepared = selected !== undefined;
-    currentStopped = selected !== undefined && stoppedStack(selected.root, selected.space) !== undefined && unsettledStackOperation(selected.root, selected.space) === undefined;
+    const saved = current !== null && !entries.some((m) => m.space === current) ? prepared.spaces.find((p) => p.space === current) : undefined;
+    if (saved) {
+      currentJournalUnreadable = journalLifecycleUnknown(unusableStackJournal(saved.root));
+      currentPrepared = !currentJournalUnreadable;
+      currentStopped = currentPrepared && stoppedStack(saved.root, saved.space) !== undefined && unsettledStackOperation(saved.root, saved.space) === undefined;
+    }
   } catch (e) {
     if (!isMeshRegistryError(e)) throw e;
     unread(e.file, e.message);
   }
-  return {
+  const meshes: StatusResult["meshes"] = {
     current,
     currentRecorded: current === null || entries.some((m) => m.space === current),
     currentPrepared,
@@ -170,6 +205,22 @@ export async function readMeshes(cwd: string, selected: Selected, all: boolean, 
     items,
     catalogs: preparedCatalogDiagnostics().map((r) => ({ idp: r.account.idpUrl, account: r.account.sub, state: r.state, error: r.state === "failed" ? (r.error ?? "refresh failed") : null })),
   };
+  return { meshes, currentJournalUnreadable };
+}
+
+function journalLifecycleUnknown(journal: CommandFailure | undefined): boolean {
+  return journal?.code === "SCHEMA_INVALID" || journal?.code === "PERMISSION_DENIED";
+}
+
+function reportSelectedJournal(result: Extract<SelectedResult, { resolved: false }>, journal: CommandFailure, hints: string[]): SelectedResult {
+  if (journalLifecycleUnknown(journal)) {
+    result.code = journal.code;
+    result.message = result.space === undefined ? "The stack lifecycle is unknown because the journal could not be read"
+      : `The stack lifecycle for "${result.space}" is unknown because the journal could not be read`;
+  }
+  const step = journal.remedy === undefined ? journal.message : journal.code === "TARGET_UNAVAILABLE" ? `${journal.message}. ${journal.remedy}` : journal.remedy;
+  if (!hints.includes(step)) hints.push(step);
+  return result;
 }
 
 /** Diagnose the current folder's store and a selected local stack independently of folder trust. */
@@ -194,7 +245,32 @@ function unusableServiceInstances(space: string): CommandFailure | undefined {
   catch (error) { return isCommandFailure(error) && error.code === "SCHEMA_INVALID" ? error : undefined; }
 }
 
-export async function readSelected(selected: Selected, responder: { state: DeliveryResponderState; leased: boolean }, folder: StatusResult["folder"], gaps: Gaps, hints: string[], preflight: SelectedPreflight, all: boolean): Promise<SelectedResult> {
+/** A prepared selection can have a live startup writer at a different project root. */
+export function selectedStackStarting(selected: Selected, folder: StatusResult["folder"], stackStarting: boolean): boolean {
+  if (selected.ok || !isWorkspaceTargetError(selected.error) || selected.error.code !== "not-started") return false;
+  const { root, space, rootMissing, unsettled } = selected.error.details;
+  if (root === undefined || space === undefined || rootMissing || cotalDirLink(root) !== undefined) return false;
+  if (root === folder.root) return stackStarting && Boolean(servedStack(folder, { root, space }));
+  if (unsettled !== "up") return false;
+  try {
+    const journal = readStackJournal(root)?.journal;
+    return journal?.space === space && stackUpInProgress(journal);
+  } catch { return false; } // The selection report names an unusable journal.
+}
+
+/** Report the local recovery observation without treating it as a resolved connection. */
+export function selectedRecovery(hints: string[], members: readonly { role: string; pid: number }[] = []): SelectedResult {
+  const cmd = displayCmd();
+  const pinned = members.length === 1 && members[0]?.role === "broker" ? "pinned broker" : "pinned members";
+  hints.push(`run ${codeSpan(`${cmd} down --dry-run`)} in this project to inspect the ${pinned}, then ${codeSpan(`${cmd} down --yes`)} to stop ${members.length === 1 ? "it" : "them"}`);
+  const roles = members.map((row) => row.role);
+  const running = roles.length === 0 ? "processes are"
+    : roles.length === 1 ? `${roles[0]} process is`
+    : `${roles.slice(0, -1).join(", ")} and ${roles[roles.length - 1]} processes are`;
+  return { resolved: false, code: "not-started", message: `the stack's ${running} running, but its member records are missing from this Cotal home` };
+}
+
+export async function readSelected(selected: Selected, responder: { state: DeliveryResponderState; leased: boolean }, folder: StatusResult["folder"], gaps: Gaps, hints: string[], { preflight, pidfileUnreadable }: Awaited<ReturnType<typeof readStatusPreflight>>, all: boolean, selectedStarting: boolean): Promise<SelectedResult> {
   const cmd = displayCmd();
   if (!selected.ok) {
     const e = selected.error;
@@ -234,14 +310,20 @@ export async function readSelected(selected: Selected, responder: { state: Deliv
     // A copy or a moved folder is reported under the space its records name, as the commands run here
     // refuse under it, and says what the folder holds; Next gives the step they name.
     const elsewhere = e.code === "not-started" ? recordsElsewhereText(d) : undefined;
-    const held = e.code === "not-started" && !d.rootMissing && !d.unsettled && d.root && d.space ? await stackStartAddressProblem(d.root, d.space) : undefined;
+    const held = e.code === "not-started" && !d.rootMissing && !d.unsettled && d.root && d.space
+      ? (d.stopped ? legacyBrokerPidfileBlock(d.root) : undefined) ?? await stackStartAddressProblem(d.root, d.space) : undefined;
     const result: SelectedResult = {
       resolved: false, code: e.code, message: elsewhere ?? (held ? `${message}; ${held.message}` : message),
       ...(e.code === "not-started" && d.space !== undefined && d.root !== undefined && !d.rootMissing ? { space: d.space, root: d.root } : {}),
       ...(elsewhere !== undefined ? { space: targetErrorSpace(d)!, recordedRoot: d.recordedRoot! } : {}),
     };
+    if (selectedStarting) {
+      result.message = `"${result.space}" is prepared and its stack is starting`;
+      return result;
+    }
     // An unwritable store blocks a restart from this root.
     const store = e.code === "not-started" && d.root !== undefined && !d.rootMissing ? rootStoreProblem(d.root) : undefined;
+    const writeProblem = e.code === "not-started" && restartRoot !== undefined && (d.stopped || preparedNeverStarted(d)) ? preparedRootWriteProblem(restartRoot) : undefined;
     const journal = e.code === "not-started" && d.root !== undefined && !d.rootMissing ? unusableStackJournal(d.root) : undefined;
     // So does a service instance record of its space that no command can read, which is also a warning.
     const instances = e.code === "not-started" && !journal && d.space !== undefined ? unusableServiceInstances(d.space) : undefined;
@@ -249,8 +331,9 @@ export async function readSelected(selected: Selected, responder: { state: Deliv
     // This folder's stack cut off with no recorded outcome is named under the selected space, and
     // Next names the step that finishes or settles it. One that neither blocks nor stays part way
     // settles from its members' processes when it starts.
-    if (journal) { const step = journal.remedy ?? journal.message; if (!hints.includes(step)) hints.push(step); }
-    else if (instances) hints.push(instances.remedy ?? instances.message);
+    if (journal) return reportSelectedJournal(result, journal, hints);
+    if (instances) hints.push(instances.remedy ?? instances.message);
+    else if (writeProblem) hints.push(`${d.stopped ? "Restart" : "First start"} blocked: ${writeProblem.message}. ${writeProblem.remedy}`);
     else if (store) hints.push(`${store.message}; ${store.remedy}`);
     else if (restartRoot !== undefined) {
       const block = channelSeedRestartBlock(restartRoot);
@@ -334,10 +417,10 @@ export async function readSelected(selected: Selected, responder: { state: Deliv
     // this machine started keeps its registration, as a connect keeps it, so Next names the `up` that
     // starts it again rather than a registration to repair.
     const offline = preflight.kind === "unreachable" && !overridden && target.origin === "up";
-    const store = offline ? rootStoreProblem(target.root) : undefined;
+    const store = offline && !pidfileUnreadable ? rootStoreProblem(target.root) : undefined;
     let seedBlock: CommandFailure | undefined;
     // A blocked stack refuses that `up`, and Next names the step that clears the block instead.
-    if (preflight.kind === "unreachable" && (overridden || offline || target.origin === "manual") && !(servedStack(folder, base) && folder.stackBlock)) {
+    if (preflight.kind === "unreachable" && (overridden || offline && !pidfileUnreadable || target.origin === "manual") && !(servedStack(folder, base) && folder.stackBlock)) {
       const { message, remedy, restartRoot } = workspaceErrorParts({ kind: "preflight", failure: "unreachable", target, pruned: !offline && preflight.prune });
       seedBlock = store || restartRoot === undefined ? undefined : channelSeedRestartBlock(restartRoot);
       if (store) hints.push(`${store.message}; ${store.remedy}`);

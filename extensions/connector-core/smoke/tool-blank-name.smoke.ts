@@ -67,11 +67,11 @@ async function sent(name: string, recipientStatusAtSend: "offline" | "unrostered
   return (await dm.run(agent, cfg, { to: "local.blank", text: "hi" })).text;
 }
 const offline = await sent(" ", "offline");
-ok(offline.startsWith("Sent to local.blank.") && offline.includes("local.blank is offline") && offline.includes("when local.blank reconnects") && offline.includes("spawned as local.blank"), "a blank DM recipient is the id", offline);
+ok(offline.startsWith("Sent to local.blank. local.blank is offline.") && offline.includes("delivery is not confirmed"), "a blank DM recipient is the id", offline);
 const split = await sent("\n", "offline");
 ok(split.startsWith("Sent to local.blank.") && !split.includes("\n"), "a newline DM recipient stays on one line as the id", split);
 const dmKept = await sent(" ada", "offline");
-ok(dmKept.startsWith("Sent to  ada.") && dmKept.includes("when  ada reconnects") && !dmKept.includes("local.blank"), "a DM recipient with a leading space stays", dmKept);
+ok(dmKept.startsWith("Sent to  ada.  ada is offline.") && !dmKept.includes("local.blank"), "a DM recipient with a leading space stays", dmKept);
 const missing = await sent(" ", "unrostered");
 ok(missing.includes("local.blank has no roster row"), "a blank unrostered recipient is the id", missing);
 

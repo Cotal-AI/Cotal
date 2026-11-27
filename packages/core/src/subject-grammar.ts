@@ -329,20 +329,36 @@ export function parsePrincipalKey(key: string): { owner: string; actor: string }
   return { owner, actor };
 }
 
-/** Validate a connection's **connId** — the single token that fills `_INBOX_<connId>.>`, the private
- *  reply-inbox grant. In dev/static mode connId is the agent's own nkey (56 uppercase base32 chars); in
- *  user mode it is a client-CHOSEN random inbox nonce (the auth callout can't know the NATS-minted
- *  per-connection nkey pre-connect, and the client can't either, so the client picks its own nonce and
- *  passes it via the connection `name`). Because that nonce is untrusted client input, the grant builder
- *  MUST reject any subject metacharacter here: a connId of `>` would mint `_INBOX_>.>` (every inbox) and a
- *  `*`/`.` would widen it too. `[A-Za-z0-9_-]{8,120}` admits nkeys and high-entropy nonces while barring
- *  `* > . space` — so `_INBOX_<connId>.>` can never escalate past one connection's own inbox. Fail-loud. */
+const USER_INBOX_NONCE = /^[A-Za-z0-9_]{8,128}$/;
+const BOUND_USER_INBOX = /^u_[a-z2-7]{26}-[A-Za-z0-9_]+-[A-Za-z0-9_]{8,128}$/;
+
+/** Validate the single literal token in the private reply-inbox grant `_INBOX_<connId>.>`.
+ *  The longer form accommodates a user-auth name containing both principal tokens and a nonce. */
 export function assertInboxConnId(connId: string): string {
-  if (typeof connId !== "string" || !/^[A-Za-z0-9_-]{8,120}$/.test(connId))
+  if (typeof connId !== "string" || (!/^[A-Za-z0-9_-]{8,120}$/.test(connId) &&
+      !(connId.length <= 255 && BOUND_USER_INBOX.test(connId))))
     throw new Error(
-      `invalid connId/inbox nonce ${JSON.stringify(connId)} - must match [A-Za-z0-9_-]{8,120} ` +
-        `(no subject metacharacters; guards the _INBOX_<connId>.> grant against wildcard escalation)`,
+      `invalid connId/inbox nonce ${JSON.stringify(connId)} - must match [A-Za-z0-9_-]{8,255} ` +
+        `with a principal-bound name required above 120 characters (no subject metacharacters)`,
     );
+  return connId;
+}
+
+/** Build the connection name for user auth. A compact random suffix fits the older callout's
+ *  120-character limit with a 64-character actor and a 28-character owner. */
+export function userInboxConnId(owner: string, actor: string, nonce?: string): string {
+  const suffix = nonce ?? BigInt(`0x${globalThis.crypto.randomUUID().replaceAll("-", "")}`).toString(36).padStart(25, "0");
+  if (!USER_INBOX_NONCE.test(suffix)) throw new Error("Use 8 to 128 letters, digits, or underscores for the user inbox nonce.");
+  return assertInboxConnId(`${principalKey(owner, actor).name}-${suffix}`);
+}
+
+/** Admit legacy names during rollout, but never treat a syntactically principal-bound name as
+ *  legacy. Owner, actor, and nonce are dash-free, so the bound form has an unambiguous boundary. */
+export function assertUserInboxConnId(name: string, owner: string, actor: string): string {
+  const connId = assertInboxConnId(name);
+  const prefix = `${principalKey(owner, actor).name}-`;
+  if (BOUND_USER_INBOX.test(connId) && !connId.startsWith(prefix))
+    throw new Error(`The connection name belongs to another principal. Set the connection name to \`${prefix}<nonce>\` and the inbox prefix to \`_INBOX_${prefix}<nonce>\` using the same fresh nonce.`);
   return connId;
 }
 

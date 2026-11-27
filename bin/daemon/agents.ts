@@ -12,7 +12,8 @@ export function parseHostedAgents(value: unknown): HostedAgent[] {
     if (!text(a.name, 128) || !text(a.application, 128) || !text(a.cwd, 4096) ||
       (a.model !== undefined && !text(a.model, 256)) || !text(a.startedAt, 32) ||
       !Number.isFinite(Date.parse(a.startedAt)) || !["running", "exited"].includes(String(a.state))) throw new Error("invalid agent row");
-    return { name: a.name, application: a.application, cwd: a.cwd, startedAt: a.startedAt,
+    if ((a.id !== undefined || a.lifecycleUid !== undefined) && (!text(a.id, 256) || !text(a.lifecycleUid, 128))) throw new Error("invalid agent identity");
+    return { name: a.name, ...(typeof a.id === "string" && typeof a.lifecycleUid === "string" ? { id: a.id, lifecycleUid: a.lifecycleUid } : {}), application: a.application, cwd: a.cwd, startedAt: a.startedAt,
       state: a.state as HostedAgent["state"], ...(a.model !== undefined ? { model: a.model as string } : {}) };
   });
 }

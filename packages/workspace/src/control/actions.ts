@@ -120,10 +120,11 @@ const BEARER_INSTANCE = "owner";
  *  usable: a caller holding state across polls can replace exactly the instances that spoke and
  *  keep only what a silent one last said, which neither a merged list nor a flat rebuild allows.
  *  `cotal ps` prints a silent instance rather than dropping it, and the console must not be the
- *  one surface that quietly answers a narrower question than the one asked. */
+ *  one surface that quietly answers a narrower question than the one asked. A failure's
+ *  `noLiveManager` says the registry was read and lists no live manager, as the scatter reports it. */
 export type PsReply =
   | { ok: true; rows: ManagedRow[]; silent: string[]; gone: string[]; failed: { instanceId: string; error: string }[]; answered: { instanceId: string; rows: ManagedRow[] }[] }
-  | { ok: false; error: string };
+  | { ok: false; error: string; noLiveManager?: true };
 
 /** Fold one ps answer into the rows held per manager instance, which is the only shape that can
  *  both DROP a despawned seat and KEEP a quiet manager's seats.

@@ -1,9 +1,10 @@
-import { registry, type Connector, type ConnectorSetupProvider, type ConnectorStatusRow, type ExtensionRef, type SignedInSpace } from "@cotal-ai/core";
-import { assertRecordIdentity, extensionConnectors, installedExtensionVersion, loadExtensionsManifest, localProcessPath, parsePid, probeLiveness, readPidfile, readWebSession, webBoundUrl, resolveOnPath, serviceWebSessionPath, WEB_PIDFILE, WEB_SERVICE_ADAPTER, WEB_SESSION_FILE, type LocalProcessContext } from "@cotal-ai/workspace";
-import { materializeExtension } from "../ext-loader.js";
+import { registry, type ClientSetupProvider, type Connector, type ConnectorSetupProvider, type ConnectorStatusRow, type ExtensionRef, type SignedInSpace } from "@cotal-ai/core";
+import { assertRecordIdentity, codeSpan, extensionConnectors, installedExtensionVersion, loadExtensionsManifest, localProcessPath, OFFICIAL_CONNECTORS, oneLine, parsePid, probeLiveness, readPidfile, readWebSession, webBoundUrl, serviceWebSessionPath, WEB_PIDFILE, WEB_SERVICE_ADAPTER, WEB_SESSION_FILE, type LocalProcessContext } from "@cotal-ai/workspace";
+import { extensionNames, materializeExtension } from "../ext-loader.js";
 import { findNatsServer, natsServerProblem } from "./nats-bin.js";
 import { displayCmd } from "./self-exec.js";
 import { serviceInstanceStore, serviceInstances } from "./service-instances.js";
+import { missingHarnessExecutables } from "./spawn-defaults.js";
 import { cliVersion } from "./version.js";
 
 // Moved into `@cotal-ai/workspace` (stage 4); re-exported for the CLI's many importers.
@@ -111,7 +112,20 @@ export function connectorHarnesses(): HarnessStatus[] {
     declared.set(connector.name, { requires: connector.requires ?? [], setup: connector.setup ?? null });
   return [...declared]
     .sort(([a], [b]) => a.localeCompare(b))
-    .map(([name, { requires, setup }]) => ({ name, requires, missing: requires.filter((bin) => !resolveOnPath(bin)), setup }));
+    .map(([name, { requires, setup }]) => ({ name, requires, missing: missingHarnessExecutables(requires), setup }));
+}
+
+/** The local prerequisite that blocks a bare spawn, for human Next sections. */
+export function defaultLaunchBlock(harness: string, connectors: readonly Pick<HarnessStatus, "name" | "missing">[]): string | undefined {
+  const connector = connectors.find((row) => row.name === harness);
+  const pkg = Object.hasOwn(OFFICIAL_CONNECTORS, harness) ? OFFICIAL_CONNECTORS[harness] : undefined;
+  if (!connector) {
+    const add = `${displayCmd()} ext add ${pkg ?? "<npm-package>"}`;
+    return `The default application (${oneLine(harness)}) has no installed connector. Install it with ${codeSpan(add)}.`;
+  }
+  if (!connector.missing.length) return undefined;
+  const guide = pkg ? `connect-${harness}` : "connectors";
+  return `The default application (${oneLine(harness)}) needs ${oneLine(connector.missing.join(", "))} on PATH. See https://docs.cotal.ai/docs/${guide}/.`;
 }
 
 /** The rows each connector's setup provider reports about what it installed, for the selected space
@@ -131,6 +145,22 @@ export async function connectorStatusRows(harnesses: readonly HarnessStatus[], s
       rows.push(...(provider.status?.(input) ?? []));
     } catch (e) {
       rows.push({ label: `${harness.name} setup`, state: "error", text: (e as Error).message });
+    }
+  }
+  return rows;
+}
+
+/** The rows each installed client setup provider reports about the entries it wrote, such as one per
+ *  space in an ACP client. A provider that cannot be loaded renders as one red row naming the error. */
+export async function clientStatusRows(signedIn?: SignedInSpace): Promise<ConnectorStatusRow[]> {
+  const input = { version: cliVersion(), skillsRemedy: `${displayCmd()} setup --skills`, ...(signedIn ? { signedIn } : {}) };
+  const rows: ConnectorStatusRow[] = [];
+  for (const name of extensionNames("client-setup")) {
+    try {
+      const provider = await materializeExtension<ClientSetupProvider>({ kind: "client-setup", name });
+      rows.push(...(provider.status?.(input) ?? []));
+    } catch (e) {
+      rows.push({ label: `${name} setup`, state: "error", text: (e as Error).message });
     }
   }
   return rows;

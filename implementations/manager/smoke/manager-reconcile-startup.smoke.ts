@@ -448,7 +448,7 @@ try {
     // The schedule publish is pinned to the serving instance's EPOCH as well as its id (the
     // goal-writer's egress rows), so the hold is minted under the live manager's serve epoch,
     // exactly what the accept path stamps as `holdEpoch`.
-    const serveEpoch = (manager as unknown as { serviceServe?: { grant: { epoch: number } } }).serviceServe?.grant.epoch ?? 0;
+    const serveEpoch = (manager as unknown as { servePlane: { serviceServe?: { grant: { epoch: number } }; } }).servePlane.serviceServe?.grant.epoch ?? 0;
     const seatUid = mintLifecycleUid();
     const runner: EpCaller = { owner: "local", actor: "runner", uid: mintLifecycleUid() };
     // The manager keys a relay, and derives its hold, by the caller triple plus the goal id.
@@ -478,7 +478,7 @@ try {
     // KV, the `.schedule` request over the SERVE connection (the timer row is the serving instance's
     // own, SPEC 13.9; the goal-writer holds none, and minting over it is broker-denied). The yield
     // claims the hold, so a fixture without it is a turn no seat could ever yield.
-    const serveJs = jetstream((manager as unknown as { serviceServe: { nc: Parameters<typeof jetstream>[0] } }).serviceServe.nc);
+    const serveJs = jetstream((manager as unknown as { servePlane: { serviceServe: { nc: Parameters<typeof jetstream>[0] }; } }).servePlane.serviceServe.nc);
     await mintCheckpoint(actx.kv, serveJs, space, {
       ref: { endpoint: MANAGER_ENDPOINT, token: holdTokenOf(goalId) },
       instanceId: doors.managerInstanceId, epoch: serveEpoch,

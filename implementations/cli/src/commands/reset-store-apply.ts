@@ -21,6 +21,7 @@ import type { StackRuns } from "../lib/stack-runs.js";
 import { freshTeamAttemptSettled, listFreshTeamAttempts, listFreshTeamSummaries } from "../lib/team-fresh.js";
 import { listAdditiveTeamAttempts, retainedAdditiveTeamAttempts } from "../lib/team-additive-attempt.js";
 import { reportOnInterrupt } from "../lib/interrupt-report.js";
+import { displayCmd } from "../lib/self-exec.js";
 import { shellWord } from "../lib/endpoint-errors.js";
 import { maintenanceNextStep, preservedSourceState } from "../lib/restore.js";
 
@@ -74,10 +75,10 @@ export function storeRunBlocks(runs: StackRuns | undefined, remedy: string | und
 
 /** The preview's Store contents section, which `reset store` and `reset space` share: what removing
  *  the store at `root` removes, and the runs its last down recorded. None when no store is present. */
-export function storeContentsSection(removed: readonly string[], runs: StackRuns | undefined, root: string): Section[] {
+export function storeContentsSection(removed: readonly string[], runs: StackRuns | undefined, root: string, remedy = `Only the broker reads the store, and it is stopped. To see the runs, run \`cotal up\` and \`cotal run\` from ${root}, then \`cotal down --yes\`.`): Section[] {
   return removed.length ? [{ title: "Store contents", blocks: [
     { kind: "lines", lines: [`Removing the store removes ${storeContentsText(removed)}. A run still waiting for an answer goes with it and cannot be answered or resumed afterwards.`] },
-    ...storeRunBlocks(runs, `Only the broker reads the store, and it is stopped. To see the runs, run \`cotal up\` and \`cotal run\` from ${root}, then \`cotal down --yes\`.`),
+    ...storeRunBlocks(runs, remedy),
   ] }] : [];
 }
 
@@ -87,7 +88,7 @@ function refuseLinkedRoot(root: string, command: ResetCommand): void {
   if (linked) throw linked;
 }
 
-export function selectResetTarget(space: string, command: ResetCommand, dryRun = false): ResetTarget {
+export function selectResetTarget(space: string, command: ResetCommand, dryRun = false, launcher = "cotal"): ResetTarget {
   let entry: ReturnType<typeof findMesh>, prepared: ReturnType<typeof findPreparedSpace>;
   try { entry = findMesh(space); prepared = findPreparedSpace(space); }
   catch { throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "the local registration could not be read; no reset target was inferred", { target: { space } }); }
@@ -116,8 +117,13 @@ export function selectResetTarget(space: string, command: ResetCommand, dryRun =
   if (recorded.journal.space !== space)
     throw new CommandFailure("refused", "TARGET_NOT_FOUND", `${command} needs a space this machine started; this one has no local registration and no stopped controller stack`, { target: { space }, remedy: `${legacy}; \`cotal space\` lists the spaces this machine still registers` });
   const journal = recorded.journal, operation = journal.operation;
-  if (stackNeverStarted(journal))
+  if (stackNeverStarted(journal)) {
+    if (!journal.recovery && journal.broker)
+      throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `${command} needs a completed stop in this root. The stack has a recorded broker store but has not started here. Nothing was removed.`, {
+        target: { space, root }, remedy: `from ${root}, run \`${launcher} up --no-manager\`, then \`${launcher} down --yes\`, then \`${launcher} ${command} ${space} --dry-run\``,
+      });
     throw new CommandFailure("refused", "TARGET_NOT_FOUND", `${command} found nothing to reset: no member of this root's controller stack ever started, so no broker wrote a store; nothing was removed`, { target: { space, root }, remedy: `start it with \`cotal up\` from ${root}` });
+  }
   if (operation.kind !== "down" || operation.phase !== "completed")
     throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `the controller stack's last operation is ${operation.kind} ${operation.phase}, and ${command} needs it stopped by a completed down; nothing was removed`, { target: { space, root }, remedy: `stop it with \`cotal down --yes\` from ${root}, then run \`cotal ${command} ${space} --dry-run\`` });
   if (!journal.broker)
@@ -175,7 +181,7 @@ export function resetStorePath(root: string, storeDir: string | undefined, where
       }
     } catch { linked = undefined; }
     if (linked !== undefined)
-      throw new CommandFailure("refused", "CONFLICT", `the recorded store path ${path} is a link to ${linked}, and a reset removes only a real directory; nothing was removed`, { target: { ...where, storeDir: path, linkTarget: linked }, remedy: `replace the link with the directory it points to, then run \`${review}\` again` });
+      throw new CommandFailure("refused", "CONFLICT", `the recorded store path ${path} is a link to ${linked}, and a reset removes only a real directory; nothing was removed`, { target: { ...where, storeDir: path, linkTarget: linked }, remedy: `move the link aside and restore this space's original store directory at the recorded path, then run \`${review}\` again` });
     throw new CommandFailure("refused", "CONFLICT", `the recorded store path ${path} is not one real directory the reset may remove (${(error as Error).message}); nothing was removed`, { target: { ...where, storeDir: path } });
   }
 }
@@ -226,7 +232,7 @@ export async function assertResetEligible(target: ResetTarget, command: ResetCom
       ? stoppedByDown
         ? `a member exited without a recorded stop: start the stack with \`cotal up\` and stop it with \`cotal down --yes\` from ${root}, then run \`${review}\``
         : `a member exited without a recorded stop: record it with \`cotal down --yes\` from ${root}, then run \`${review}\``
-      : `stop it with \`cotal down\` from ${root}, then ${afterStop}` });
+      : `from ${root}, review the stop with \`cotal down --dry-run\`, confirm it with \`cotal down --yes\`, then ${afterStop}` });
   try {
     assertNoRecordedServiceOwner(space);
     assertNoAdditiveLedger(root, space);
@@ -247,9 +253,11 @@ export async function assertResetEligible(target: ResetTarget, command: ResetCom
 export async function resetStoreApply(space: string, args: ParsedArgs): Promise<void> {
   const presentation = presentationOf(args.values);
   const yes = args.values.yes === true;
-  if (!yes && (!canPrompt() || presentation === "json"))
-    throw new ConfirmationRequired("reset store needs a terminal confirmation or --yes with an exact space name in a script", { target: { space }, remedy: `inspect \`cotal reset store ${space} --dry-run\` first, then run \`cotal reset store ${space} --yes\`` });
-  const selected = selectResetTarget(space, "reset store");
+  if (!yes && (!canPrompt() || presentation === "json")) {
+    const format = presentation === "rich" ? "" : ` --${presentation}`;
+    throw new ConfirmationRequired("reset store needs a terminal confirmation or --yes with an exact space name in a script", { target: { space }, remedy: `inspect \`cotal reset store ${space} --dry-run${format}\` first, then run \`cotal reset store ${space} --yes${format}\`` });
+  }
+  const selected = selectResetTarget(space, "reset store", false, presentation === "json" ? "cotal" : displayCmd());
   if (selected.tlsRequired || /^(?:tls|wss):\/\//i.test(selected.server))
     throw new CommandFailure("refused", "UNSUPPORTED", "a credless broker probe cannot establish that a TLS-first listener is stopped; no store reset was attempted", { target: { space }, remedy: "use a trusted TLS-aware stopped-broker check before a guarded reset can be offered" });
   const root = selected.root;

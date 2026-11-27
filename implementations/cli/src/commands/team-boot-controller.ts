@@ -10,17 +10,18 @@ import { readFileSync } from "node:fs";
 import { resolveAuthProvider, type BrokerTransport } from "@cotal-ai/core";
 import {
   CommandFailure, acquireMaintenanceLock, codeSpan, getCurrent, isCommandFailure, readMaintenanceJournal, releaseMaintenanceLock,
-  workspaceSecretStore, writeResult, type MaintenanceLock, type OutputWarning, type Report,
+  shellPath, workspaceSecretStore, writeResult, type MaintenanceLock, type OutputWarning, type Report,
 } from "@cotal-ai/workspace";
 import { buildLaunchSpec, genRunId, manifestToChannels, writeLaunchSpec } from "../lib/manifest/apply.js";
 import { observeServiceProcess, serviceInstances } from "../lib/service-instances.js";
-import { readStackJournal, STACK_DEFINITION, type StackJournal } from "../lib/stack-journal.js";
+import { readStackJournal, stackStartedWithoutManager, STACK_DEFINITION, type StackJournal } from "../lib/stack-journal.js";
 import { writeFreshTeamAttempt, writeFreshTeamSummary } from "../lib/team-fresh.js";
 import { startControllerStack, stackMembersView, stackUpForegroundNotice } from "./stack-up.js";
 import { assertManagerLogin, assertUserStackTransport, preflightUserStack, userLoginState } from "./stack-user-auth.js";
 import { controllerStackNative, holdForegroundStack, prepareFreshTeamBoot, prepareResumeTeamBoot, recheckFreshTeamBoot, type FreshTeamBootPlan } from "./up.js";
 import { recheckStackResume, stackResumeEligibility, type StackResumeBinding } from "../lib/stack-resume.js";
 import { shellWord } from "../lib/endpoint-errors.js";
+import { displayCmd } from "../lib/self-exec.js";
 import { authModeText } from "../lib/team-text.js";
 
 export interface ControllerTeamBootRequest {
@@ -29,6 +30,7 @@ export interface ControllerTeamBootRequest {
   transport: BrokerTransport;
   foreground: boolean;
   presentation: "rich" | "json" | "plain";
+  retry: () => string;
 }
 
 /** The controller boot's receipt. Evidence fields are the members' own controller receipts; the
@@ -79,7 +81,7 @@ function bootView(data: ControllerTeamBootResult, journal: StackJournal): Report
     { title: "Fresh team boot started", blocks: [{ kind: "fields", rows: [["Space", data.space], ["Deployment", data.deploymentId], ["Root", data.root], ["Broker", data.server], ["Manifest", data.manifestPath], ["Auth mode", authModeText(data.mode)], ["Runtime request", data.runtime], ["Launch spec", data.launchSpec ? `${data.launchSpec.path} (sha256 ${data.launchSpec.sha256.slice(0, 12)}…)` : "not written"], ["Launch summary", data.summaryRecorded ? "recorded" : "not recorded"], ["Lifetime", data.foreground ? "this terminal" : "background"], ["Agent readiness", "not checked"]] }, { kind: "lines", lines: ["The stack's own manager member was started with this exact pinned launch spec. Manager readiness proves the manager, not that each requested agent joined. The launch summary is not stop authority; stop the stack with `cotal down`."] }] },
     ...members.sections,
     { title: "Requested topology", blocks: [data.requestedAgents.length ? { kind: "table", columns: [{ key: "name", label: "Agent" }, { key: "application", label: "Application" }, { key: "role", label: "Role" }], rows: data.requestedAgents.slice(0, 100).map((agent) => ({ ...agent, role: agent.role ?? "none" })) } : { kind: "lines", lines: ["No agents requested."] }, { kind: "lines", lines: data.declaredChannels.length ? data.declaredChannels.slice(0, 100).map((name) => `declared #${name}`) : ["No channels declared."] }] },
-    { title: "Next", blocks: [{ kind: "commands", items: [{ command: `cotal team show ${data.deploymentId}`, description: "Read this local launch summary" }, { command: `cotal ps --space ${data.space}`, description: "List the agents the manager reports" }, { command: `cotal down --space ${data.space} --dry-run`, description: "Preview the guarded whole-stack stop" }] }] },
+    { title: "Next", blocks: [{ kind: "commands", items: [{ command: `cotal team show ${data.deploymentId} --space ${data.space}`, description: "Read this local launch summary" }, { command: `cotal ps --space ${data.space}`, description: "List the agents the manager reports" }, { command: `cd ${shellPath(data.root)} && ${displayCmd({ fromAnyFolder: true })} down --space ${shellWord(data.space)} --dry-run`, description: "Preview the guarded whole-stack stop" }] }] },
   ] };
 }
 
@@ -91,12 +93,16 @@ export async function controllerTeamBoot(request: ControllerTeamBootRequest): Pr
   const recorded = readStackJournal(process.cwd())?.journal;
   let binding: StackResumeBinding | undefined;
   let plan: FreshTeamBootPlan;
-  if (!recorded) plan = await prepareFreshTeamBoot(request.file, { space: request.space, transport: request.transport });
+  if (!recorded) plan = await prepareFreshTeamBoot(request.file, { space: request.space, transport: request.transport, retry: request.retry });
   else {
     // A stack whose last operation started it is up. Say so before the resume checks name the stop
     // it lacks. This manifest may already own cards on the running stack.
-    if (recorded.space === request.space && recorded.operation.kind === "up" && recorded.operation.phase === "completed")
-      throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `"${request.space}" is already up at this root and no \`cotal down\` has stopped it; a team boot starts only a stopped stack, so nothing was booted`, { target: { root: recorded.root, space: request.space, operation: recorded.operation.id }, remedy: `inspect the recorded stack with ${codeSpan(`cotal service --space ${shellWord(request.space)}`)}, or preview a stop with \`cotal down --dry-run\`; after stopping it, restart the recorded stack with \`cotal up\`` });
+    if (recorded.space === request.space && recorded.operation.kind === "up" && recorded.operation.phase === "completed") {
+      const space = shellWord(request.space);
+      const atRoot = `cd ${shellPath(recorded.root)} && cotal`;
+      const restart = `${atRoot} up --space ${space}${stackStartedWithoutManager(recorded) ? " --no-manager" : ""}`;
+      throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `"${request.space}" is already up at this root and no \`cotal down\` has stopped it; a team boot starts only a stopped stack, so nothing was booted`, { target: { root: recorded.root, space: request.space, operation: recorded.operation.id }, remedy: `inspect the recorded stack with ${codeSpan(`cotal service --space ${space}`)}, or preview a stop with ${codeSpan(`${atRoot} down --space ${space} --dry-run`)}. After stopping it, restart the recorded stack with ${codeSpan(restart)}` });
+    }
     binding = stackResumeEligibility(recorded.root, request.space, { server: recorded.server, mode: recorded.mode });
     plan = await prepareResumeTeamBoot(request.file, { space: request.space, transport: request.transport, recorded: { server: binding.server, mode: binding.mode, ...(binding.broker.host ? { host: binding.broker.host } : {}) } });
   }
@@ -117,14 +123,14 @@ export async function controllerTeamBoot(request: ControllerTeamBootRequest): Pr
     await assertManagerLogin(plan.root, plan.space, codeSpan(`cotal team boot ${shellWord(request.file)}`), "nothing was started or written");
   }
   if (readMaintenanceJournal(plan.root)) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "this root retains a maintenance or recovery attempt; team boot cannot substitute an ordinary startup", { target: { root: plan.root, space: plan.space } });
-  const lock = acquireMaintenanceLock(plan.root);
+  const lock = acquireMaintenanceLock(plan.root, { operation: "team boot" });
   let starting = false;
   const start = () => {
     starting = true;
     return startTeamBoot(request, plan, binding, lock);
   };
   try {
-    if (request.foreground) await holdForegroundStack(plan.root, start);
+    if (request.foreground) await holdForegroundStack(plan.root, plan.space, start);
     else await start();
   } finally {
     // A failed foreground claim never entered startTeamBoot to release the lock.

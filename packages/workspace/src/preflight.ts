@@ -2,13 +2,14 @@ import { createConnection } from "node:net";
 import { existsSync } from "node:fs";
 import { dialerFor, mintCreds, newIdentity, probeConnect, isReachable, token } from "@cotal-ai/core";
 import { jetstreamManager } from "@nats-io/jetstream";
-import { brokerAddressKey, brokerUrlKey, readCurrent, loadMeshes } from "./mesh-registry.js";
+import { brokerAddressKey, brokerUrlKey, canonicalRoot, readCurrentSelection, loadMeshes } from "./mesh-registry.js";
 import { isGenuineSpace, type MeshTarget } from "./mesh-target.js";
 import { stoppedLoopbackListener, hasNonNatsExecutable, parsePid, parseRecord, probeLiveness, readPidfile, assertRecordIdentity } from "./pid.js";
 import { localProcessPath, NATS_PIDFILE } from "./local-process.js";
 import { findCotalRoot, stackJournalPath } from "./auth-paths.js";
 import { readLocalRecordSource, decodeLocalJson } from "./protected-records.js";
 import { isCommandFailure } from "./output.js";
+import { projectRootProblem } from "./prepared-spaces.js";
 
 /**
  * Liveness verification for a resolved mesh target — the companion to {@link resolveMeshTarget}
@@ -113,10 +114,12 @@ function addressHolder(target: MeshTarget): string | undefined {
 /** Probe a resolved target and, on failure, classify it — WITHOUT touching the registry. Returns the
  *  decision (incl. whether the caller SHOULD prune); the caller owns the `removeMesh` + message +
  *  exit. Probes with `probeCreds` when given (the caller's `--creds`/minted creds); otherwise mints
- *  a throwaway identity from the target's own trust material to test mere liveness. */
+ *  a throwaway identity from the target's own trust material to test mere liveness. If the caller
+ *  handles denied PID reads, keep probing the address without inferring local process state. */
 export async function preflightTarget(
   target: MeshTarget,
   probeCreds?: string,
+  onUnreadablePidfile?: (path: string, error: Error) => void,
 ): Promise<{ ok: true } | { ok: false; kind: PreflightFailure; prune: boolean; pid?: number; heldBy?: string }> {
   // A user-mode target has no probe credential by design (its auth is a per-connect bearer) — a
   // credless probe would be DENIED by the callout and misclassified as a stale registry entry
@@ -143,13 +146,24 @@ export async function preflightTarget(
         // Unusable local evidence does not prove the broker is gone. Keep the live probe below;
         // status reports the journal's read failure separately as a warning.
       }
-    } else {
-      const rawPid = readPidfile(localProcessPath(NATS_PIDFILE, { root: target.root, space: target.space }));
-      const pid = rawPid === undefined ? undefined : parsePid(rawPid);
-      brokerGone = rawPid === undefined || pid !== undefined && probeLiveness(pid) === "dead";
-      const record = rawPid === undefined ? undefined : parseRecord(rawPid);
-      const registered = loadMeshes().find(mesh => mesh.space === target.space && mesh.root === target.root);
-      ownBroker = record?.kind === "record" && assertRecordIdentity(record.record).kind === "match" && registered !== undefined && brokerAddressKey(registered.server) === brokerAddressKey(target.server);
+    } else if (projectRootProblem(target.root) !== "not-directory") {
+      const path = localProcessPath(NATS_PIDFILE, { root: target.root, space: target.space });
+      let rawPid: string | undefined | null = null;
+      try {
+        rawPid = readPidfile(path);
+      } catch (error) {
+        if (!onUnreadablePidfile || !(error instanceof Error)) throw error;
+        const code = (error.cause as NodeJS.ErrnoException | undefined)?.code;
+        if (code !== "EACCES" && code !== "EPERM") throw error;
+        onUnreadablePidfile(path, error);
+      }
+      if (rawPid !== null) {
+        const pid = rawPid === undefined ? undefined : parsePid(rawPid);
+        brokerGone = rawPid === undefined || pid !== undefined && probeLiveness(pid) === "dead";
+        const record = rawPid === undefined ? undefined : parseRecord(rawPid);
+        const registered = loadMeshes().find(mesh => mesh.space === target.space && mesh.root === target.root);
+        ownBroker = record?.kind === "record" && assertRecordIdentity(record.record).kind === "match" && registered !== undefined && brokerAddressKey(registered.server) === brokerAddressKey(target.server);
+      }
     }
     const host = new URL(target.server).hostname;
     const loopback = host === "127.0.0.1" || host === "localhost" || host === "[::1]";
@@ -350,7 +364,11 @@ export async function brokerAnswers(server: string): Promise<boolean> {
  *  command resolves with, only the records at that address are probed: that resolve reads no other
  *  record's liveness. Other explicitly requested checks, such as status --all, have their own scope. */
 export async function pruneStaleMeshes(server?: string, scope: "brokers" | "targets" = "brokers"): Promise<MeshSweep> {
-  const useInventory = scope === "targets" && server === undefined && readCurrent() === undefined && !isGenuineSpace(findCotalRoot());
+  const resolveTargets = scope === "targets" && server === undefined;
+  const selection = resolveTargets ? readCurrentSelection() : undefined;
+  const root = resolveTargets && selection?.source !== "explicit" ? findCotalRoot() : undefined;
+  const project = root !== undefined && isGenuineSpace(root) ? canonicalRoot(root) : undefined;
+  const useFallbackInventory = resolveTargets && selection === undefined && project === undefined;
   const sweep: MeshSweep = { offline: [] };
   const entries = loadMeshes().filter((m) => server === undefined || m.server === server);
   await Promise.all(
@@ -364,12 +382,14 @@ export async function pruneStaleMeshes(server?: string, scope: "brokers" | "targ
       sweep.offline.push(m.space);
     }),
   );
-  if (useInventory) {
-    const candidates = entries.filter((m) => !sweep.offline.includes(m.space));
+  const folder = selection?.source === "adopted" && project !== undefined
+    ? entries.filter((m) => canonicalRoot(m.root) === project) : [];
+  if (useFallbackInventory || (folder.length > 0 && !folder.some((m) => m.space === selection?.space))) {
+    const candidates = (useFallbackInventory ? entries : folder).filter((m) => !sweep.offline.includes(m.space));
     const inventories = new Map<string, Promise<string[] | undefined>>();
     const openInventory = { served: [] as string[], unserved: [] as string[] };
-    // Inventory can disambiguate a choice, but a lone registration does not need a tie-breaker.
-    if (candidates.length > 1) await Promise.all(candidates.map(async (m) => {
+    // Even one folder registration competes with the adopted selection. A lone fallback does not.
+    if (!useFallbackInventory || candidates.length > 1) await Promise.all(candidates.map(async (m) => {
       if (m.origin === "catalog" || m.mode !== "open" || !m.unchecked) return;
       const tls = m.tlsRequired === true;
       const key = `${tls}:${brokerUrlKey(m.server)}`;

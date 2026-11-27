@@ -124,7 +124,7 @@ function parseFrontmatter(src: string, path: string): Record<string, unknown> {
 }
 
 /** The frontmatter fence {@link loadAgentFile} and a frontmattered `cotal_persona` prompt share. */
-const AGENT_FILE_FENCE = /^---\n([\s\S]*?)\n---[ \t]*(?:\n|$)([\s\S]*)$/;
+const AGENT_FILE_FENCE = /^---(?:\n([\s\S]*?))?\n---[ \t]*(?:\n|$)([\s\S]*)$/;
 
 /** Named error prefix when a persona prompt starts with `---` but is not a closed, valid agent file. */
 export const PROMPT_FRONTMATTER = "prompt-frontmatter";
@@ -160,7 +160,11 @@ export function assertValidKind(kind: unknown, where?: string): EndpointKind {
 /** Load and parse an agent definition file (Markdown + `---` frontmatter). A consumer that
  *  validates the effective role after applying its own overrides can defer role syntax checking. */
 export function loadAgentFile(path: string, options?: { deferRoleValidation?: boolean }): AgentDef {
-  const bytes = readFileSync(path);
+  return parseAgentFileBytes(readFileSync(path), path, options);
+}
+
+/** Parse the bytes read from a file descriptor after the caller checks its source. */
+export function parseAgentFileBytes(bytes: Buffer, path: string, options?: { deferRoleValidation?: boolean }): AgentDef {
   const source = bytes.toString("utf8");
   const encoding = utf8Problem(bytes, source);
   if (encoding) throw new Error(`agent file ${path}: ${encoding}; save it as UTF-8`);
@@ -176,7 +180,7 @@ export function parseAgentFileSource(src: string, path: string, options?: { defe
   const normalized = src.replace(/^\uFEFF/, "").replace(/\r\n/g, "\n");
   const m = AGENT_FILE_FENCE.exec(normalized);
   if (!m) throw new Error(`agent file ${path}: ${normalized.startsWith("---\n") ? 'missing closing "---" frontmatter fence on its own line' : 'missing "---" frontmatter block'}`);
-  const fm = parseFrontmatter(m[1], path);
+  const fm = parseFrontmatter(m[1] ?? "", path);
   const persona = m[2].trim();
 
   const yamlType = (v: unknown): string => v === null ? "null" : Array.isArray(v) ? "array" : typeof v === "object" ? "mapping" : typeof v;
@@ -459,9 +463,12 @@ function dropWireDefaultIfScoped(def: AgentDef): void {
  * Build the AgentDef `definePersona` writes. A leading frontmatter block in `prompt` is parsed
  * and merged: explicit tool arguments win; grants, role, and agent from the prompt survive;
  * `capabilities`, `endpoints` and `owner` from the prompt never do, and only an explicit
- * `capabilities` or `endpoints` argument sets that field. The result is always one frontmatter block
- * once {@link saveAgentFile} writes it. On redefine, prompt grants are not applied (the stored
- * file's policy is preserved) except where an explicit tool argument names a field.
+ * `capabilities` or `endpoints` argument sets that field. `launchOptions` has no wire slot: a
+ * persona saved over the wire carries none, from the prompt or from the file it redefines, so
+ * only the operator's own files and the spawner's own call name a connector's launch surface.
+ * The result is always one frontmatter block once {@link saveAgentFile} writes it. On redefine,
+ * prompt grants are not applied (the stored file's policy is preserved) except where an explicit
+ * tool argument names a field.
  */
 export function composeWirePersona(args: WirePersonaArgs, existing?: AgentDef): AgentDef {
   const parsed = parseLeadingPromptFrontmatter(args.prompt, args.name);
@@ -476,6 +483,7 @@ export function composeWirePersona(args: WirePersonaArgs, existing?: AgentDef): 
     if (args.allowPublish !== undefined) def.allowPublish = args.allowPublish;
     if (args.capabilities !== undefined) def.capabilities = args.capabilities;
     if (args.endpoints !== undefined) def.endpoints = args.endpoints;
+    delete def.launchOptions;
     def.persona = parsed.body;
     dropWireDefaultIfScoped(def);
     return def;
@@ -499,7 +507,6 @@ export function composeWirePersona(args: WirePersonaArgs, existing?: AgentDef): 
     variant: fromPrompt?.variant,
     quiet: fromPrompt?.quiet,
     muted: fromPrompt?.muted,
-    launchOptions: fromPrompt?.launchOptions,
     meta: authored ? fromPrompt?.meta : { scope_source: "wire-default" },
   };
   dropWireDefaultIfScoped(def);
@@ -524,12 +531,12 @@ export function agentFilePath(root: string, nameOrPath: string): string {
 
 /** One local persona catalog entry. A malformed file is an error row, not a throw. */
 export interface PersonaCatalogEntry {
-  /** The filename stem (`.cotal/agents/<name>.md`), which is also the spawn name. */
+  /** The catalog selector, taken from the filename stem in `.cotal/agents/<name>.md`. */
   name: string;
   path: string;
   /** Parsed definition, or undefined when the file failed to parse (see `error`). */
   def?: AgentDef;
-  /** Parse error message, if the file is malformed — surfaced rather than crashing the list. */
+  /** Why the selector or file cannot be used. */
   error?: string;
   /** The encoding problem when the file is not valid UTF-8. */
   encoding?: string;
@@ -578,6 +585,10 @@ export function readPersonaCatalog(root: string): PersonaCatalogEntry[] {
   return files.sort().map((f) => {
     const name = f.slice(0, -3);
     const path = join(dir, f);
+    if (!name.trim()) return {
+      name, path,
+      error: `persona filename has a blank stem: ${path}. Rename the file or launch it with \`cotal spawn --file <persona.md>\`.`,
+    };
     const link = personaLinkTarget(path);
     try {
       // A FIFO or a device would block the read, so only a regular file is opened. A link is

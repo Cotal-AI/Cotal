@@ -4,6 +4,7 @@ import {
   CommandFailure,
   checkIdpUrl,
   clearCurrent,
+  codeSpan,
   getCurrent,
   homeCotalDir,
   jsonFlag,
@@ -20,9 +21,11 @@ import {
   recordMeshes,
   removeMeshes,
   userAuthStateDir,
+  withProjectTrustMigration,
   type MeshEntry,
   type RefusalCode,
 } from "@cotal-ai/workspace";
+import { shellWord } from "../lib/endpoint-errors.js";
 import { checkBundleDocument, type UserBundle } from "./meshes-add.js";
 import { c } from "../ui.js";
 
@@ -192,7 +195,7 @@ export function importAccountComputerSpace(account: AuthSpaceCatalogAccount, row
     throw new Error("a different local registration owns this space name");
   const next = entryFor(account, row, prior, new Date().toISOString());
   writeCatalogCredential(next, row);
-  recordMeshes([next]);
+  withProjectTrustMigration(true, false, () => recordMeshes([next]));
 }
 
 function writeCatalogCredential(entry: MeshEntry, row: CatalogSpace): void {
@@ -508,8 +511,9 @@ export async function sync(args: ParsedArgs): Promise<void> {
   });
   const failed = accounts.filter((a) => a.error !== null);
   const failure = failed.map((a) => `space catalog for ${a.idp} failed: ${a.error}`).join("; ");
+  const retry = values.idp === undefined ? "cotal sync" : `cotal sync --idp ${shellWord(values.idp)}`;
   if (failed.length > 0 && failed.length === accounts.length)
-    throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", failure, { remedy: "check the IdP is reachable and you are signed in (`cotal whoami`), then run `cotal sync` again" });
+    throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", failure, { remedy: `check the IdP is reachable and you are signed in (\`cotal whoami\`), then run ${codeSpan(retry)} again` });
   const warnings: OutputWarning[] = failed.map((a) => ({ code: "CATALOG_UNAVAILABLE", target: { idp: a.idp }, message: `space catalog for ${a.idp} failed: ${a.error}; its last snapshot stays applied` }));
   const result: SyncResult = { kind: "sync", accounts };
   writeResult(

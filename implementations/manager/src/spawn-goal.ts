@@ -1,9 +1,10 @@
-import { bindGoal, canonicalJson, clearGoalIndex, commitGoalResult, createGoal, DEV_OWNER, EpEnvelopeError, goalAlreadyTerminal, goalRefOf, oneLine, parsePrincipalKey, readGoalIndex, readGoalResult, readGoalSpec, recordGoalIndex, rejectionText, settleGoalUncertain, submissionFingerprint } from "@cotal-ai/core";
+import { bindGoal, canonicalJson, clearGoalIndex, commitGoalResult, createGoal, DEV_OWNER, EpEnvelopeError, firstCommandId, goalAlreadyTerminal, goalRefOf, oneLine, parsePrincipalKey, readGoalIndex, readGoalResult, readGoalSpec, recordGoalIndex, rejectionText, settleGoalUncertain, submissionFingerprint } from "@cotal-ai/core";
 import type { ControlReply, EpErrorCode, EpServeContext, GoalIndexEntry, GoalRef } from "@cotal-ai/core";
 import type { Manager } from "./manager.js";
 import type { SpawnAcceptance, SpawnHooks } from "./seat-types.js";
 import { caughtEnvelope, goalKey } from "./turn-relay.js";
 import type { ManagerConfig } from "./manager-config.js";
+import type { ManagerStartState } from "./manager-start-state.js";
 import type { ManagerParts } from "./manager-parts.js";
 
 /** The failed terminal a post-accept fallback commits for `error` and `source`'s optional details.
@@ -28,10 +29,7 @@ function failedTerminal(error: string, source: { details?: unknown } | undefined
  *  assigns after construction is always current, and a Manager method a test replaces is the one that runs. */
 export interface SpawnGoalDeps {
   agentGoals: () => Manager["agentGoals"];
-  managerInstanceId: () => Manager["managerInstanceId"];
   onceWatched: () => Manager["onceWatched"];
-  serviceServe: () => Manager["serviceServe"];
-  userMode: () => Manager["userMode"];
   acceptOnceTurn: (...args: Parameters<Manager["acceptOnceTurn"]>) => ReturnType<Manager["acceptOnceTurn"]>;
   assertGoalWriterEpochCurrent: (...args: Parameters<Manager["assertGoalWriterEpochCurrent"]>) => ReturnType<Manager["assertGoalWriterEpochCurrent"]>;
   commitOnceCancel: (...args: Parameters<Manager["commitOnceCancel"]>) => ReturnType<Manager["commitOnceCancel"]>;
@@ -45,10 +43,7 @@ export interface SpawnGoalDeps {
 export function spawnGoalDeps(m: Manager): SpawnGoalDeps {
   return {
     agentGoals: () => m["agentGoals"],
-    managerInstanceId: () => m["managerInstanceId"],
     onceWatched: () => m["onceWatched"],
-    serviceServe: () => m["serviceServe"],
-    userMode: () => m["userMode"],
     acceptOnceTurn: (...args) => m["acceptOnceTurn"](...args),
     assertGoalWriterEpochCurrent: (...args) => m["assertGoalWriterEpochCurrent"](...args),
     commitOnceCancel: (...args) => m["commitOnceCancel"](...args),
@@ -60,16 +55,15 @@ export function spawnGoalDeps(m: Manager): SpawnGoalDeps {
 
 /** Serving `spawn` and `launch` as goals: acceptance, the cached acceptance a retry reads, and its expiry. */
 export class SpawnGoal {
-  constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: SpawnGoalDeps, private readonly parts: Pick<ManagerParts, "goalWriter">) {}
+  constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: SpawnGoalDeps, private readonly parts: Pick<ManagerParts, "goalWriter" | "servePlane">, private readonly state: ManagerStartState) {}
 
   // The Manager members these bodies read, under their Manager names. Each reads through its dep at
   // use, so a field the Manager assigns later is current and a method a test replaces on the Manager
   // is the one that runs.
   private get agentGoals() { return this.deps.agentGoals(); }
-  private get managerInstanceId() { return this.deps.managerInstanceId(); }
+  private get managerInstanceId() { return this.state.managerInstanceId!; }
   private get onceWatched() { return this.deps.onceWatched(); }
-  private get serviceServe() { return this.deps.serviceServe(); }
-  private get userMode() { return this.deps.userMode(); }
+  private get userMode() { return this.state.userMode; }
   private acceptOnceTurn(...args: Parameters<Manager["acceptOnceTurn"]>): ReturnType<Manager["acceptOnceTurn"]> { return this.deps.acceptOnceTurn(...args); }
   private assertGoalWriterEpochCurrent(...args: Parameters<Manager["assertGoalWriterEpochCurrent"]>): ReturnType<Manager["assertGoalWriterEpochCurrent"]> { return this.deps.assertGoalWriterEpochCurrent(...args); }
   private commitOnceCancel(...args: Parameters<Manager["commitOnceCancel"]>): ReturnType<Manager["commitOnceCancel"]> { return this.deps.commitOnceCancel(...args); }
@@ -105,10 +99,12 @@ export class SpawnGoal {
     if (!this.parts.goalWriter.goalReconcileDone)
       throw new EpEnvelopeError("unavailable", "the manager is still reconciling accepted goals at boot; retry shortly (SPEC 13.6)", undefined, "not-executed");
     const goalId = ctx.request.id;
+    // Derived from the goal id, as the spawn door named it, so a retried spawn answers the same id.
+    const first = (ctx.request.args as { firstCommand?: unknown } | undefined)?.firstCommand !== undefined ? { firstCommand: { id: firstCommandId(goalId) } } : {};
     const { fingerprint } = submissionFingerprint(ctx.request as unknown, ctx.subject);
     const ref = goalRefOf(ctx.subject, goalId);
     const key = goalKey(ref);
-    const executor = { lifecycleUid: this.managerInstanceId, epoch: this.serviceServe?.grant.epoch ?? 0 };
+    const executor = { lifecycleUid: this.managerInstanceId, epoch: this.parts.servePlane.serviceServe?.grant.epoch ?? 0 };
     const epoch = executor.epoch;
     const acceptedAt = Date.now();
 
@@ -126,7 +122,7 @@ export class SpawnGoal {
     if (accepted !== undefined) {
       if (accepted.fingerprint !== fingerprint)
         throw new EpEnvelopeError("failed-precondition", `goal "${goalId}" was accepted under a different submission; one goalId never carries two specs (SPEC 13.6)`, undefined, "not-executed");
-      return prior ?? this.cachedSpawnAcceptance(ref, goalId, fingerprint, executor);
+      return { ...(prior ?? await this.cachedSpawnAcceptance(ref, goalId, fingerprint, executor)), ...first };
     }
 
     let resolveAccept!: (a: SpawnAcceptance) => void;
@@ -325,7 +321,7 @@ export class SpawnGoal {
         return onOutcome({ kind: "failed", data: failedTerminal(rejectionText(e), caughtEnvelope(e)) });
       console.error(`! spawn-as-action async body for ${goalId}: ${rejectionText(e)}`);
     }).catch((e) => console.error(`! goal terminal fallback for ${goalId}: ${rejectionText(e)}`));
-    return acceptP;
+    return acceptP.then((a) => ({ ...a, ...first }));
   }
 
   /** H2: an acceptance served from a WINNER'S durable acceptance floor (the goal-index entry it

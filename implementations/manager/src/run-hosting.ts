@@ -41,7 +41,8 @@ import { drainAndClose } from "@cotal-ai/core";
  * relaxation instead of one being refused.
  */
 import { randomBytes } from "node:crypto";
-import { credsAuthenticator, type NatsConnection } from "@nats-io/transport-node";
+import { setTimeout as delay } from "node:timers/promises";
+import { ClosedConnectionError, ConnectionError, credsAuthenticator, RequestError, TimeoutError, type NatsConnection } from "@nats-io/transport-node";
 import { jetstream, jetstreamManager } from "@nats-io/jetstream";
 import { Kvm, type KV } from "@nats-io/kv";
 import {
@@ -187,6 +188,8 @@ interface HostedRun {
 
 const DEFAULT_CHECKPOINT_TIMEOUT = "1h";
 const TAKE_BACK_RETRY_DELAYS_MS = [1_000, 5_000, 30_000] as const;
+// Keep trying through a 30-minute outage, with a full minute between attempts after the initial backoff.
+const INTERRUPTED_RUN_RETRY_DELAYS_MS = [0, ...TAKE_BACK_RETRY_DELAYS_MS, ...Array<number>(32).fill(60_000)];
 /** How many launches (start or resume) may be in their activation wait at once. Each holds a
  *  standing connection and a minted credential; past this a caller is refused `resource-exhausted`
  *  before anything is written, rather than letting a burst of starts pin unbounded connections for
@@ -1264,16 +1267,8 @@ export class RunHosting {
       await activation.catch(() => undefined);
       await drainAndClose(nc);
       if (mediatorNc) await drainAndClose(mediatorNc);
-      if (recover && !this.stopping) {
-        try {
-          // Read the original admission and replay under fresh attempt authority. Never retry
-          // the ambiguous append or supersede an operator or another manager that took over.
-          await this.resumeRun({ runId: req.runId, timeout: req.timeout }, undefined,
-            { holder: attemptHolder.id, epoch: req.epoch, fencingToken: req.fencingToken });
-        } catch (error) {
-          this.ctx.log(`! run ${req.runId} could not resume after the broker interruption: ${rejectionText(error)}`);
-        }
-      }
+      if (recover) await this.resumeInterruptedRun(req.runId, req.timeout,
+        { holder: attemptHolder.id, epoch: req.epoch, fencingToken: req.fencingToken });
     });
     try {
       await activation;
@@ -1313,6 +1308,29 @@ export class RunHosting {
       }
       if (Date.now() > deadline)
         throw new EpEnvelopeError("unavailable", `run ${req.runId}: its drive has not activated after ${RUN_ACTIVATION_WAIT_MS / 1000}s and was released; \`cotal run\` shows what it recorded, and a \`cotal run resume ${req.runId}\` tries again`);
+    }
+  }
+
+  private async resumeInterruptedRun(runId: string, timeout: string, previous: Pick<RunStatusValue, "holder" | "epoch" | "fencingToken">): Promise<void> {
+    const startedAt = performance.now();
+    for (const [attempt, backoff] of INTERRUPTED_RUN_RETRY_DELAYS_MS.entries()) {
+      const wait = backoff > 0 && performance.now() - startedAt + backoff + 1_000 >= 60_000 ? 60_000 : backoff;
+      if (wait > 0) await delay(wait + Math.random() * 1_000, undefined, { ref: false });
+      if (this.stopping || this.cancelPending(runId)) return;
+      try {
+        // Every retry rechecks the original admission and released fence before launching.
+        await this.resumeRun({ runId, timeout }, undefined, previous);
+        return;
+      } catch (error) {
+        if (this.stopping || this.cancelPending(runId)) return;
+        const reason = rejectionText(error).split(/\r?\n/, 1)[0];
+        if (retryInterruptedRun(error) && attempt + 1 < INTERRUPTED_RUN_RETRY_DELAYS_MS.length) {
+          if (attempt === 0) this.ctx.log(`! run ${runId}: retrying automatic recovery after the broker interruption: ${reason}`);
+          continue;
+        }
+        this.ctx.log(`! run ${runId} could not resume after the broker interruption: ${reason}`);
+        return;
+      }
     }
   }
 
@@ -1357,6 +1375,13 @@ export class RunHosting {
       await drainAndClose(nc);
     }
   }
+}
+
+function retryInterruptedRun(error: unknown): boolean {
+  const request = error instanceof RequestError ? error : error instanceof Error ? error.cause : undefined;
+  return error instanceof TimeoutError || error instanceof ConnectionError || error instanceof ClosedConnectionError
+    || (request instanceof RequestError && request.isNoResponders())
+    || (error instanceof EpEnvelopeError && (error.code === "unavailable" || error.code === "resource-exhausted"));
 }
 
 /** A validation problem without its rendered source frame (the caller holds the source). */

@@ -70,7 +70,7 @@ function resolveFeedbackEmail(explicit: string | undefined, env?: NodeJS.Process
   // A hosted session must not discover a contact in the host repository.
   const args = env === undefined ? ["config", "user.email"] : ["config", "--global", "--includes", "user.email"];
   try {
-    const email = execFileSync("git", args, { encoding: "utf8", env }).trim();
+    const email = execFileSync("git", args, { encoding: "utf8", env, windowsHide: true }).trim();
     return email || undefined;
   } catch {
     return undefined;
@@ -263,11 +263,12 @@ export function managerToolSpecs(config: AgentConfig, source: string, env?: Node
           // The seat launched and only its pin read failed: a partial outcome naming the seat, so the
           // caller knows it is running instead of spawning a second seat.
           if (d?.pinAudit) {
-            const { requested, error, unreported } = d.pinAudit;
+            const { requested, error: auditError, unreported } = d.pinAudit;
             const id = d.id ?? d.actor;
             const manager = d.executor?.lifecycleUid ?? reply.instanceId;
             const state = pending ? "it has not joined the mesh within its readiness window and may still be booting" : "it joined the mesh";
             const audit = unreported ? "was not reported by this manager" : "could not be audited";
+            const error = pinAuditResultError(auditError);
             const message = `${lead} (id ${id}, manager ${manager}${mode ? `, runtime ${mode}` : ""})${d.goalId ? `, accepted goal "${d.goalId}"` : ""}: ${state}, but its model pin ${JSON.stringify(requested)} ${audit} (${error}). ` +
               (pending ? "An identical retry in this session while it is starting returns the same goal. To check on it, inspect it with cotal_invoke on the manager endpoint rather than spawning with different options." : "It is running, so spawning it again would start a second agent. To check which model it runs, inspect it with cotal_invoke on the manager endpoint.");
             return {
@@ -485,7 +486,7 @@ export function managerToolSpecs(config: AgentConfig, source: string, env?: Node
         "Save a persona that cotal_spawn can start by name. Most jobs need a persona written for them. For one job, pass persona to cotal_spawn instead, and save one here only when it is worth reusing. Reuse one from cotal_personas only when it really fits, such as a general reviewer. Every persona you save stays in the user's workspace after the helper stops. No cotal_* tool removes one: remove one you own with cotal_invoke, endpoint `manager`, command `remove-persona`, args `{ name }`; the operator removes any with `cotal persona remove <name>`. " +
         "Name it after what it does, such as review-login-page. Write the prompt about the job: what to do, where the brief is, how to report, and when to stop. Point to sources for facts rather than stating them. Set role when others should reach it through a role. " +
         "List its channels and give it only what the job needs: subscribe for where it starts, allowSubscribe for what it may read, and allowPublish for what it may post to. A wildcard works in all three. For example, review.> covers every channel under review, including ones opened later, and review.* covers one level. If you list subscribe alone, it may read just those channels and can't post anywhere. Leave all three out and it can read and post nowhere, so list the channels it needs. A persona you pass to cotal_spawn differs here: with no channel field it takes your own read and post grants. " +
-        "To give its agent one of your capabilities, list it in capabilities. cotal_orientation shows the ones you hold. To let it call an endpoint command, list it in endpoints, a per-user auth mesh excepted. You can give only capabilities and endpoint commands you hold, and each later spawn of the persona is checked again against its spawner. Only you or an operator can change a persona you saved.\n\n" +
+        "To give its agent one of your capabilities, list it in capabilities. cotal_orientation shows the ones you hold. To let it call an endpoint command, list it in endpoints, a per-user auth mesh excepted. You can give only channels, capabilities and endpoint commands you hold, and each later spawn of the persona is checked again against its spawner. A wire save does not keep launch options. Only you or an operator can change a persona you saved.\n\n" +
         "Before you write one, check what you can give. cotal_orientation shows your own channels and capabilities, and cotal_channels lists the channels in the space. cotal_endpoints lists the endpoints you can call, and cotal_describe shows what one lets a caller do. The agent-files page in cotal_docs lists every persona field.\n\n" +
         "Example:\n\n" +
         "```\n" +
@@ -500,8 +501,8 @@ export function managerToolSpecs(config: AgentConfig, source: string, env?: Node
       schema: {
         name: z
           .string()
-          .regex(/^[A-Za-z0-9_-]+$/, "letters, digits, _ or - only")
-          .describe("Unique name for the persona (also the spawn name): letters, digits, _ or -."),
+          .regex(/^[A-Za-z0-9_][A-Za-z0-9_-]*$/, "use letters, digits, _ or -, starting with a letter, digit or _")
+          .describe("Unique name for the persona (also the spawn name): letters, digits, _ or -, not beginning with -."),
         instance: managerInstanceArg,
         prompt: z.string().max(10_000).describe("The persona: an appended system prompt describing who this agent is. A complete agent file (leading --- frontmatter with subscribe / allowSubscribe / allowPublish) is merged, not wrapped."),
         model: z.string().max(120).optional().describe("Optional model override (e.g. opus, sonnet). Wins over a model: in the prompt's frontmatter."),
@@ -539,15 +540,16 @@ export function managerToolSpecs(config: AgentConfig, source: string, env?: Node
       ) {
         try {
           const reply = await agent.definePersona({ name, prompt, instance, model, role, agent: agentType, subscribe, allowSubscribe, allowPublish, capabilities, endpoints, announce });
+          const target = `\`name\` set to \`${name}\`${instance === undefined ? "" : ` and \`instance\` set to \`${instance}\``}`;
           if (reply.definitionOutcome === "unknown") {
-            const readback = `cotal_personas(name="${name}"${instance === undefined ? "" : `, instance="${instance}"`})`;
+            const readback = `Read back with \`cotal_personas\` on the same manager before acting. Pass ${target}.`;
             const message = `The definition outcome for persona \`${name}\` is unknown: ${reply.error ?? "the manager reply was not observed"}. ` +
               `The file may already have been written or may still be written. Do not re-run this definition or spawn it on this result. ` +
-              `Read back with ${readback} on the same manager before acting. A missing readback alone does not prove the write will not land.`;
+              `${readback} A missing readback alone does not prove the write will not land.`;
             return { text: message, structured: { status: "unknown", name, ...(instance === undefined ? {} : { instance }), next: readback, message } };
           }
           if (!reply.ok) return err(`Couldn't define ${name}: ${reply.error ?? "manager refused"}`);
-          const spawnHint = `spawn it with cotal_spawn(name="${name}"${instance === undefined ? "" : `, instance="${instance}"`}) to bring it online`;
+          const spawnHint = `You can bring it online with \`cotal_spawn\`. Pass ${target}.`;
           // The persona is SAVED whenever we get here, so a failed announcement is a partial success,
           // not a failure. Saying "couldn't define" would name the wrong remediation (the caller
           // would fix its spawn capability, which was never the problem) and invite a retry — and a
@@ -562,16 +564,16 @@ export function managerToolSpecs(config: AgentConfig, source: string, env?: Node
           if (reply.announceError && reply.announceOutcome === "denied")
             return ok(
               `Persona \`${name}\` saved — but the announcement to #${announce} was REFUSED and did not go out: ${reply.announceError}. ` +
-                `The persona is on disk; do not re-run this call. Check your \`allowPublish\` for #${announce}, then post it yourself if you still want to. You can ${spawnHint}.`,
+                `The persona is on disk; do not re-run this call. Check your \`allowPublish\` for #${announce}, then post it yourself if you still want to. ${spawnHint}`,
             );
           if (reply.announceError)
             return ok(
               `Persona \`${name}\` saved — but I could NOT CONFIRM the announcement to #${announce}: ${reply.announceError}. ` +
-                `It may or may not have been delivered. The persona is on disk; do not re-run this call, and READ #${announce} before posting anything yourself — posting blind is how the channel gets it twice. You can ${spawnHint}.`,
+                `It may or may not have been delivered. The persona is on disk; do not re-run this call, and READ #${announce} before posting anything yourself — posting blind is how the channel gets it twice. ${spawnHint}`,
             );
           // Report the destination when there was one, so the caller can tell a silent define from an
           // announced one without having to go read the channel.
-          return ok(`Persona \`${name}\` saved${announce ? ` and announced on #${announce}` : ""} — ${spawnHint}.`);
+          return ok(`Persona \`${name}\` saved${announce ? ` and announced on #${announce}` : ""}. ${spawnHint}`);
         } catch (e) {
           // A rejected `announce` throws before the manager write, so nothing was saved and the
           // remediation is the argument, not a capability. controlFailure's spawn-capability advice
@@ -647,4 +649,11 @@ export function managerToolSpecs(config: AgentConfig, source: string, env?: Node
       },
     },
   ];
+}
+
+/** A broker denial names the caller's principal and the subject it cannot publish to. Neither is actionable. */
+function pinAuditResultError(error: string): string {
+  return /^permission-denied\b/.test(error)
+    ? "permission-denied: this caller may not read the helper's model pin"
+    : error;
 }

@@ -2,10 +2,10 @@
  * Run: pnpm smoke:moved-root:live
  */
 import { spawnSync } from "node:child_process";
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join, resolve } from "node:path";
-import { codeSpan, shellPath } from "@cotal-ai/workspace";
+import { codeSpan, setAdoptedCurrent, shellPath, spaceKey, spaceSegment } from "@cotal-ai/workspace";
 import { assertSmokeSandboxDown, createSuite, freePort, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
 
 const tree = resolve(import.meta.dirname, "../../..");
@@ -22,7 +22,7 @@ mkdirSync(join(other, ".cotal"), { mode: 0o700 });
 const hostEnv = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_")));
 const env = { ...hostEnv, PATH: `${launcherDir}${delimiter}${process.env.PATH ?? ""}`, HOME: home, USERPROFILE: home, COTAL_HOME: cotalHome, XDG_CONFIG_HOME: config, COTAL_SKIP_CONNECTOR_SEED: "1" };
 const { check, finish } = createSuite();
-type Envelope = { result?: { selected?: { rootGone?: boolean; connection?: string; code?: string; message?: string }; rootGone?: boolean; changed?: { observedProcess?: string }[]; preparedRoot?: string; preparedState?: string; lastOperation?: string }; error?: { code?: string; message?: string } };
+type Envelope = { result?: { selected?: { rootGone?: boolean; connection?: string; code?: string; message?: string }; rootGone?: boolean; changed?: { observedProcess?: string }[]; preparedRoot?: string; preparedState?: string; lastOperation?: string; inspectedStorePath?: string; applyVerdict?: { offered: boolean } }; error?: { code?: string; message?: string; remedy?: string } };
 const cli = (cwd: string, ...args: string[]) => {
   const run = spawnSync(process.execPath, [bin, ...args], { cwd, env, encoding: "utf8", timeout: 120_000 });
   console.log(JSON.stringify({ cwd, args, status: run.status, stdout: run.stdout, stderr: run.stderr }));
@@ -40,8 +40,54 @@ check("adopting an empty folder refuses and leaves the folder untouched",
   emptyAdoption.stderr.includes("without --adopt") && readdirSync(empty).length === 0);
 
 const space = "movedroot";
+const outsideAnchor = recordSmokeSandbox({ root: other, cotalHome, xdgConfigHome: config });
+const definitionPath = (space: string) => join(cotalHome, "services", spaceKey(space), "definitions", `${spaceKey("stack-broker")}.json`);
+
+function checkInaccessibleDown(project: string, space: string, records: string[]): void {
+  if (process.platform === "win32" || process.getuid?.() === 0) return;
+  const before = records.map((path) => readFileSync(path));
+  for (const blocked of [project, join(project, ".cotal")]) {
+    const priorMode = statSync(blocked).mode & 0o777;
+    try {
+      chmodSync(blocked, 0o000);
+      for (const flags of [["--yes"], ["--dry-run"], ["--yes", "--with-agents"]]) {
+        const args = ["down", "--space", space, ...flags, "--json"];
+        assertSmokeSandboxDown(outsideAnchor, args, { cwd: other, env });
+        const result = cli(other, ...args);
+        const error = (JSON.parse(result.stdout) as Envelope).error;
+        check(`${flags.join(" ")} refuses denied traversal at ${blocked} before recovery validation`, result.status === 2 && error?.code === "PERMISSION_DENIED" &&
+          error.message?.includes(`${project} could not be accessed`) === true && error.remedy === "restore access to the original project folder, then try again");
+      }
+      if (blocked !== project) {
+        const forgotten = json(other, "space", "forget", space);
+        check("space forget does not remove records behind an inaccessible control directory", forgotten.status === 2);
+        if (records.some((path) => path === join(cotalHome, "meshes", `${spaceSegment(space)}.json`))) {
+          const shown = json(other, "space", "show", space);
+          check("space show does not mark the inaccessible stack root as gone", shown.status === 0 && shown.envelope.result?.rootGone === false);
+        }
+      }
+    } finally { chmodSync(blocked, priorMode); }
+    check(`denied traversal at ${blocked} leaves the stack records byte-identical`, records.every((path, i) => existsSync(path) && readFileSync(path).equals(before[i]!)));
+  }
+}
+
+function checkImplicitComponents(server: string): void {
+  const previousHome = process.env.COTAL_HOME;
+  process.env.COTAL_HOME = cotalHome;
+  try { setAdoptedCurrent("other-stopped"); }
+  finally { if (previousHome === undefined) delete process.env.COTAL_HOME; else process.env.COTAL_HOME = previousHome; }
+  try {
+    const components = cli(moved, "status", "--components");
+    const health = components.stdout.split("Component Health\n")[1] ?? "";
+    check("implicit component status refuses the moved project and preserves its listener observation",
+      components.status === 3 && /target\s+refused/.test(health) && health.includes(`registered ${server} · reachable`)
+      && health.includes(`move this folder back to ${root}`) && !/target\s+absent/.test(health));
+  } finally { check("clear the adopted selection after the implicit check", cli(other, "use", "--clear").status === 0); }
+}
+
 let started = false;
 try {
+  check("prepare another space for the adopted selection", cli(other, "space", "create", "other-stopped").status === 0);
   const created = cli(root, "space", "create", space, "--json");
   check("space create prepares a private project", created.status === 0);
   if (created.status !== 0) throw new Error("private project was not prepared");
@@ -53,6 +99,7 @@ try {
   const healthyShow = json(other, "space", "show", space);
   check("before the move, status connects and the registered root is intact", healthy.status === 0 && healthy.envelope.result?.selected?.connection === "ok" && healthy.envelope.result.selected.rootGone === false);
   check("before the move, space show does not diagnose a missing root", healthyShow.status === 0 && healthyShow.envelope.result?.rootGone !== true);
+  checkInaccessibleDown(root, space, [join(cotalHome, "meshes", `${spaceSegment(space)}.json`), definitionPath(space)]);
   const nested = join(root, "nested"), copy = join(scratch, "copy");
   mkdirSync(nested);
   check("clear the selection while the controller stack is running", cli(other, "use", "--clear").status === 0);
@@ -73,6 +120,7 @@ try {
     noRecord.status === 2 && noRecord.stderr.includes("TARGET_NOT_FOUND") && noRecord.stderr.includes(`"${space}"`) && noRecord.stderr.includes(root) && noRecord.stderr.includes(moved) && !noRecord.stderr.includes("no space is selected"));
   const inside = json(moved, "status", "--space", space);
   check("inside the renamed folder, the existing moved-folder diagnosis remains", inside.envelope.result?.selected?.code === "moved-folder" && inside.envelope.result.selected.message?.includes(root) === true);
+  checkImplicitComponents(server);
   for (const cwd of [moved, other]) {
     const components = cli(cwd, "status", "--components", "--space", space);
     const health = components.stdout.split("Component Health\n")[1] ?? "";
@@ -83,6 +131,10 @@ try {
   }
   for (const recreated of [false, true]) {
     if (recreated) mkdirSync(join(root, ".cotal/nats"), { recursive: true });
+    const adoption = cli(moved, "space", "create", space, "--adopt", "--plain");
+    check(`adoption of a known instance names the move back without a second adoption, recreated=${recreated}`,
+      adoption.status === 2 && adoption.stderr.includes("this machine records instance") && adoption.stderr.includes(`move this folder back to ${root}`)
+        && adoption.stderr.includes("use the stack there without adopting it") && !adoption.stderr.includes("run the command again"));
     const status = json(other, "status", "--space", space);
     const show = json(other, "space", "show", space);
     check(`status diagnoses the missing stack root, recreated=${recreated}`, status.envelope.result?.selected?.rootGone === true && status.envelope.result.selected.connection === "root-gone");
@@ -192,6 +244,7 @@ for (const open of [false, true]) {
   } finally {
     stop(project);
   }
+  checkInaccessibleDown(project, space, [join(cotalHome, "prepared", `${spaceSegment(space)}.json`), definitionPath(space)]);
   cpSync(project, copy, { recursive: true });
   const copiedUp = cli(copy, "up", "--plain");
   const copiedOutput = `${copiedUp.stdout}${copiedUp.stderr}`;
@@ -254,6 +307,17 @@ for (const open of [false, true]) {
   check("following the printed retry prepares the space in the renamed folder",
     printedRetry === adopt && shell(printedRetry).status === 0 &&
       cli(renamed, "space", "show", space, "--plain").stdout.includes(`root:     ${renamed}`));
+  for (const kind of ["store", "space"]) {
+    const preview = json(renamed, "reset", kind, space, "--dry-run");
+    check(`reset ${kind} preview requires a completed stop after adoption without claiming the store is absent`,
+      preview.status === 2 && preview.envelope.error?.code === "LIFECYCLE_BLOCKED" &&
+      preview.envelope.error.message?.includes("needs a completed stop in this root. The stack has a recorded broker store") === true &&
+      preview.envelope.error.remedy === `from ${renamed}, run \`cotal up --no-manager\`, then \`cotal down --yes\`, then \`cotal reset ${kind} ${space} --dry-run\``);
+  }
+  const plainPreview = cli(renamed, "reset", "store", space, "--dry-run", "--plain");
+  check("the plain preview names the broker-only restart, stop and retry from the adopted root",
+    plainPreview.status === 2 && ["cotal", "pnpm cotal"].some((cli) => plainPreview.stderr.includes(
+      `from ${renamed}, run \`${cli} up --no-manager\`, then \`${cli} down --yes\`, then \`${cli} reset store ${space} --dry-run\``)));
   const restarted = cli(renamed, "up", "--no-manager");
   check("the adopted stack starts at the renamed root and recorded broker address", restarted.status === 0 && restarted.stdout.includes(server));
   try {
@@ -264,5 +328,15 @@ for (const open of [false, true]) {
   } finally {
     if (restarted.status === 0) stop(renamed);
   }
+  const preview = json(renamed, "reset", "store", space, "--dry-run");
+  check("reset store previews the adopted store after a completed stop in the renamed root",
+    preview.status === 0 && preview.envelope.result?.inspectedStorePath === join(renamed, ".cotal", "nats") && preview.envelope.result.applyVerdict?.offered === true);
+  check("the stopped project still has a broker definition before deletion", existsSync(definitionPath(space)));
+  rmSync(renamed, { recursive: true });
+  const args = ["down", "--space", space, "--yes"];
+  assertSmokeSandboxDown(outsideAnchor, args, { cwd: other, env });
+  const recovered = cli(other, ...args);
+  check("a deleted controller project still recovers and releases its broker definition", recovered.status === 0 &&
+    recovered.stdout.includes("Stack stopped; its folder was gone") && !existsSync(definitionPath(space)));
 }
 finish();

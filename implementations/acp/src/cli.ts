@@ -9,7 +9,7 @@ import { Readable } from "node:stream";
 import { ndJsonStream } from "@agentclientprotocol/sdk";
 import { mkSecretDir, openPrivateAppend, type ParsedArgs } from "@cotal-ai/core";
 import { homeCotalDir, isConnectRefusal, resolveTargetOrThrow } from "@cotal-ai/workspace";
-import { cotalAgent, type HiddenSessions } from "./agent.js";
+import { cotalAgent, type HiddenSessions, type ThreadLink, type ThreadLinks } from "./agent.js";
 import { openLiveMesh } from "./live-mesh.js";
 
 export const USAGE = "cotal acp [--space <name>] [--server <url>] | cotal acp --auth [--space <name>]";
@@ -38,6 +38,45 @@ export function hiddenStore(dir = join(homeCotalDir(), "acp")): HiddenSessions {
       const fd = openPrivateAppend(path);
       try {
         writeSync(fd, `${lifecycleUid}\n`);
+      } finally {
+        closeSync(fd);
+      }
+    },
+  };
+}
+
+/** The thread links, one JSON line per link, `{ space, thread, lifecycleUid, title? }`, in the order
+ *  they were stored. Every read goes to the file, as for {@link hiddenStore}, and each link is one
+ *  append. A line that does not parse is refused, naming the file, rather than skipped. */
+export function threadStore(dir = join(homeCotalDir(), "acp")): ThreadLinks {
+  const path = join(dir, "threads");
+  return {
+    read(space) {
+      let text: string;
+      try {
+        text = readFileSync(path, "utf8");
+      } catch (e) {
+        if ((e as NodeJS.ErrnoException).code === "ENOENT") return [];
+        throw e;
+      }
+      return text.split("\n").filter((line) => line !== "").flatMap((line, at): ThreadLink[] => {
+        let row: unknown;
+        try {
+          row = JSON.parse(line);
+        } catch {
+          throw new Error(`${path}: line ${at + 1} is not a thread link`);
+        }
+        const { space: s, thread, lifecycleUid, title } = (row ?? {}) as Record<string, unknown>;
+        if (typeof s !== "string" || typeof thread !== "string" || typeof lifecycleUid !== "string" || (title !== undefined && typeof title !== "string"))
+          throw new Error(`${path}: line ${at + 1} is not a thread link`);
+        return s === space ? [{ thread, lifecycleUid, ...(title !== undefined ? { title } : {}) }] : [];
+      });
+    },
+    add(space, link) {
+      mkSecretDir(dir);
+      const fd = openPrivateAppend(path);
+      try {
+        writeSync(fd, `${JSON.stringify({ space, thread: link.thread, lifecycleUid: link.lifecycleUid, title: link.title })}\n`);
       } finally {
         closeSync(fd);
       }
@@ -96,7 +135,7 @@ export async function acp(args: ParsedArgs): Promise<void> {
     process.exit(1);
   };
   const canSignIn = () => signInTarget(space, server).then((target) => !target || target.idp !== undefined, () => false);
-  const app = cotalAgent({ mesh: () => openLiveMesh({ space, server, log, stop }), hidden: hiddenStore(), log, version, canSignIn });
+  const app = cotalAgent({ mesh: () => openLiveMesh({ space, server, log, stop }), hidden: hiddenStore(), links: threadStore(), log, version, canSignIn });
   const connection = app.connect(ndJsonStream(output, input));
   await connection.closed;
 }

@@ -65,10 +65,10 @@ try {
   assert.equal(result.result.startup.state, "not-requested");
   const plugin = join(root, ".cotal", "claude-plugin", "cotal");
   const hooks = JSON.parse(readFileSync(join(plugin, "hooks", "hooks.json"), "utf8")) as { modules: string[] };
-  assert.deepEqual(hooks.modules, ["./native-wake.js"]);
+  assert.deepEqual(hooks.modules, ["./index.js"]);
   const validate = spawnSync(actual, ["plugin", "validate", plugin], { env, encoding: "utf8", timeout: 30_000 });
   assert.equal(validate.status, 0, `${validate.stdout}\n${validate.stderr}`);
-  assert.match(validate.stdout, /native-wake\.js/);
+  assert.match(validate.stdout, /index\.js hooks: .*session\.append\{door=prompt\}.*command\.describe/);
   const health = spawnSync(actual, ["mcp", "list"], { env, encoding: "utf8", timeout: 30_000 });
   assert.equal(health.status, 0, `${health.stdout}\n${health.stderr}`);
   const cotalServer = `${health.stdout}${health.stderr}`.split("\n").find((line) => line.startsWith("cotal:"));

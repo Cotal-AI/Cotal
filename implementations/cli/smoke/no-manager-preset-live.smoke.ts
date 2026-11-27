@@ -18,7 +18,7 @@
  */
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SMOKE_BROKER_TOKEN, assertSmokeSandboxDown, createSuite, freePort, recordSmokeSandbox, skipSuite, type SmokeSandboxAnchor } from "@cotal-ai/smoke-kit";
@@ -62,6 +62,7 @@ const instances = (): Instance[] => (cotal("service", "--space", space, "--json"
 const running = (definition: string) => instances().find((row) => row.definition === definition && row.observedProcess === "running");
 
 try {
+  mkdirSync(join(root, ".cotal"), { mode: 0o700 });
   const prepared = cotal("space", "create", space, "--root", root);
   check("fixture: the space is prepared at the sandbox root", prepared.status === 0, shown(prepared));
   anchor = recordSmokeSandbox({ root, cotalHome: env.COTAL_HOME, xdgConfigHome: env.XDG_CONFIG_HOME });
@@ -73,11 +74,40 @@ try {
   const refusedCap = conflictingStore("2");
   check("a conflicting store refuses without saving the requested seat cap",
     refusedCap.status === 2 && refusedCap.env?.error?.code === "CONFLICT" && refusedCap.env.error.message.includes("recorded broker inputs") && cap() === undefined, { refused: shown(refusedCap), seatCap: cap() });
+  for (const flags of [[], ["--no-manager"]]) {
+    const conflict = cotal("up", ...flags, "--max-file-store", "536870912", "--log-file", join(root, "broker.log"), "--json");
+    const restart = ["up", ...flags], step = codeSpan(`cotal ${restart.join(" ")}`), remedy = conflict.env?.error?.remedy ?? "";
+    check(`broker input conflict with ${step} keeps the same startup in both suggestions`,
+      conflict.status === 2 && conflict.env?.error?.code === "CONFLICT" && remedy.includes(`${step} from ${root}`)
+        && remedy.includes(`then ${step} with the requested log flags`), shown(conflict));
+    if (flags.length && remedy.includes(`${step} from ${root}`)) {
+      const retried = cotal(...restart, "--json");
+      check("keeping the recorded inputs leaves the broker running without a manager", retried.status === 0 && running("stack-broker") !== undefined && running("stack-manager") === undefined, shown(retried));
+    }
+  }
   const added = cotal("service", "add", "mgr", "--preset", "manager", "--root", root, "--runtime", "pty", "--space", space);
+  writeFileSync(join(root, ".cotal", "config.json"), JSON.stringify({ spawn: { env: ["TRUST_SERVICE_TEST"] } }));
+  const blockedStart = cotal("service", "start", "mgr", "--space", space, "--json");
+  const trustRemedy = `cotal trust ${root}`;
+  check("manager service startup refuses to forward an untrusted project environment and creates no running instance",
+    blockedStart.status === 2 && blockedStart.env?.error?.code === "PERMISSION_DENIED"
+    && blockedStart.env.error.remedy?.includes(`\`${trustRemedy}\``) === true && !running("mgr"), shown(blockedStart));
+  const trust = cotal("trust", root);
+  check("the printed trust action accepts the project before the manager start is retried", trust.status === 0, shown(trust));
   const started = cotal("service", "start", "mgr", "--space", space);
   const mgr = running("mgr");
   check("fixture: a manager preset service starts at that root", added.status === 0 && started.status === 0 && mgr !== undefined, { added: shown(added), started: shown(started) });
   const id = mgr?.instanceId ?? "<none>";
+  const trustFile = join(env.XDG_CONFIG_HOME, "cotal", "trusted-projects.json");
+  if (trust.status === 0 && mgr !== undefined) {
+    const trusted = readFileSync(trustFile);
+    try {
+      rmSync(trustFile);
+      const blockedRestart = cotal("service", "restart", "mgr", "--space", space, "--yes", "--json");
+      check("manager service restart refuses before stopping the existing process",
+        blockedRestart.status === 2 && blockedRestart.env?.error?.remedy?.includes(`\`${trustRemedy}\``) === true && running("mgr")?.pid === mgr.pid, shown(blockedRestart));
+    } finally { writeFileSync(trustFile, trusted, { mode: 0o600 }); }
+  }
 
   const status = cotal("status", "--json");
   const folder = status.env?.result?.folder as { noManager?: boolean; managerService?: unknown } | undefined;
@@ -149,6 +179,14 @@ try {
     retire.status === 2 && retire.env?.error?.code === "LIFECYCLE_BLOCKED" && retire.env.error.message.includes("agents from an earlier manager may still be running")
       && retire.env.error.remedy?.includes("131072 bytes") === true && retire.env.error.remedy.includes("263168 bytes") && !retire.env.error.remedy.includes("`cotal up`")
       && retirementPreview.status === 0 && retirementPreview.env?.outcome === "no-op" && retirementPreview.stdout.includes(retire.env.error.message), { apply: shown(retire), preview: shown(retirementPreview) });
+  const absent = cotal("down", "--abandon-stop", randomUUID(), "--yes", "--json");
+  const remedy = absent.env?.error?.remedy ?? "";
+  const restart = /To restart without a manager, run `cotal ([^`]+)`/.exec(remedy)?.[1];
+  check("no retained stop requires no action and distinguishes the two restart commands", absent.status === 2 && absent.env?.error?.code === "TARGET_NOT_FOUND" && remedy.includes("no further stop is needed") && restart === "up --no-manager" && remedy.includes("to restart with a manager, run `cotal up`") && running("stack-broker") === undefined, shown(absent));
+  if (restart === "up --no-manager") {
+    const retried = cotal(...restart.split(" "), "--json");
+    check("the broker-only restart after an absent stop starts no manager", retried.status === 0 && running("stack-broker") !== undefined && running("stack-manager") === undefined, shown(retried));
+  }
 } catch (error) {
   check("scenario completed", false, (error as Error).stack ?? String(error));
 } finally {

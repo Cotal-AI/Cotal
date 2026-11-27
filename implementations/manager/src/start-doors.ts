@@ -1,10 +1,12 @@
 import { MAX_SCHEDULE_MS, parsePrincipalKey, rejectionText } from "@cotal-ai/core";
-import type { ControlReply, EpCaller, InlinePersona } from "@cotal-ai/core";
+import type { ControlReply, EpCaller, FirstCommand, InlinePersona, LaunchModes } from "@cotal-ai/core";
+import { manifestPersonaLaunchOptionsRefusal } from "@cotal-ai/workspace";
 import { authorizeLaunch } from "./authorize.js";
 import { launchAgentToStartOpts, launchSpecForRun, materializePersona, parseLaunchSpec, persistLaunchSpec } from "./launch.js";
 import type { Manager } from "./manager.js";
 import type { SpawnHooks, StartAgentOpts } from "./seat-types.js";
 import type { ManagerConfig } from "./manager-config.js";
+import type { ManagerStartState } from "./manager-start-state.js";
 
 /** A `once` spawn's task deadline when the caller names none: one hour from the spawn's accept. */
 const ONCE_DEFAULT_DEADLINE_MS = 60 * 60_000;
@@ -12,8 +14,6 @@ const ONCE_DEFAULT_DEADLINE_MS = 60 * 60_000;
 /** What {@link StartDoors} reads from the Manager. Every entry is read at use, so a field the Manager
  *  assigns after construction is always current, and a Manager method a test replaces is the one that runs. */
 export interface StartDoorsDeps {
-  remoteAuthority: () => Manager["remoteAuthority"];
-  userMode: () => Manager["userMode"];
   executionRefusal: (...args: Parameters<Manager["executionRefusal"]>) => ReturnType<Manager["executionRefusal"]>;
   startAgent: (...args: Parameters<Manager["startAgent"]>) => ReturnType<Manager["startAgent"]>;
 }
@@ -22,8 +22,6 @@ export interface StartDoorsDeps {
  *  field the Manager assigns later is current and a member a test replaces on the instance is the one that runs. */
 export function startDoorsDeps(m: Manager): StartDoorsDeps {
   return {
-    remoteAuthority: () => m["remoteAuthority"],
-    userMode: () => m["userMode"],
     executionRefusal: (...args) => m["executionRefusal"](...args),
     startAgent: (...args) => m["startAgent"](...args),
   };
@@ -31,13 +29,13 @@ export function startDoorsDeps(m: Manager): StartDoorsDeps {
 
 /** The `start` and `launch` control doors: argument checks and the hand-off to `startAgent`. */
 export class StartDoors {
-  constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: StartDoorsDeps) {}
+  constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: StartDoorsDeps, private readonly state: ManagerStartState) {}
 
   // The Manager members these bodies read, under their Manager names. Each reads through its dep at
   // use, so a field the Manager assigns later is current and a method a test replaces on the Manager
   // is the one that runs.
-  private get remoteAuthority() { return this.deps.remoteAuthority(); }
-  private get userMode() { return this.deps.userMode(); }
+  private get remoteAuthority() { return this.config.remoteAuthority; }
+  private get userMode() { return this.state.userMode; }
   private executionRefusal(...args: Parameters<Manager["executionRefusal"]>): ReturnType<Manager["executionRefusal"]> { return this.deps.executionRefusal(...args); }
   private startAgent(...args: Parameters<Manager["startAgent"]>): ReturnType<Manager["startAgent"]> { return this.deps.startAgent(...args); }
 
@@ -68,6 +66,8 @@ export class StartDoors {
     // before `startAgent` (which mints credentials), so a refusal provisions nothing.
     if (args.eventPayloads !== undefined && typeof args.eventPayloads !== "boolean")
       return Promise.resolve({ ok: false, error: "eventPayloads must be a boolean" });
+    if (args.autoName !== undefined && typeof args.autoName !== "boolean")
+      return Promise.resolve({ ok: false, error: "autoName must be a boolean" });
     const requestedEvents = typeof args.events === "boolean" ? args.events : undefined;
     let eventsNotice: string | undefined;
     let events: boolean | undefined = requestedEvents;
@@ -109,15 +109,20 @@ export class StartDoors {
         ...(typeof args.runId === "string" ? { runId: args.runId } : {}),
         model: args.model as string | undefined,
         variant: args.variant as string | undefined,
+        modes: args.modes as LaunchModes | undefined,
         launchOptions: args.launchOptions as Record<string, unknown> | undefined,
         resume: args.resume as string | undefined,
         resumeClaim: args.resumeClaim as string | undefined,
         resumeAgent: args.resumeAgent as string | undefined,
         events,
         eventPayloads: args.eventPayloads as boolean | undefined,
+        askPermissions: args.askPermissions as boolean | undefined,
+        reasoningEvents: args.reasoningEvents as boolean | undefined,
         eventsNotice,
         cwd: args.cwd as string | undefined,
         prompt: args.prompt as string | undefined,
+        firstCommand: args.firstCommand as FirstCommand | undefined,
+        ...(args.autoName === true ? { autoName: true } : {}),
         subscribe: args.subscribe as string[] | undefined,
         allowSubscribe: args.allowSubscribe as string[] | undefined,
         allowPublish: args.allowPublish as string[] | undefined,
@@ -163,6 +168,9 @@ export class StartDoors {
         spec = parseLaunchSpec(args.spec, `inline launch spec (run ${runId})`);
         if (spec.runId !== runId)
           return { ok: false, error: `inline launch spec runId "${spec.runId}" does not match requested "${runId}"` };
+        const requested = spec.agents.find((a) => a.name === name);
+        const refusal = requested && manifestPersonaLaunchOptionsRefusal(requested.personaPath, requested.launchOptions);
+        if (refusal) return { ok: false, error: refusal };
         hooks?.onEffect?.();
         persistLaunchSpec(this.config.workspaceRoot, spec);
       } catch (e) {

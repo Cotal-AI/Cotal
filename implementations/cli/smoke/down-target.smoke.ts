@@ -311,6 +311,16 @@ try {
 
   process.chdir(neutral);
 
+  const ledgerSelectors: Record<string, string>[] = [{ file: "plan with spaces.yaml" }, { run: "run01" }, { file: "plan with spaces.yaml", run: "run01" }];
+  for (const selectors of ledgerSelectors) for (const format of ["json", "plain"]) {
+    const refusal = await rejection(run([], { ...selectors, "dry-run": true, [format]: true }));
+    check(`a ${format} ledger preview by ${Object.keys(selectors).join(" and ")} keeps the original preview`,
+      refusal?.code === "UNSUPPORTED" && refusal.remedy === `omit --${format} from the original command; keep --dry-run and the same deployment selection`, refusal);
+    const apply = await rejection(run([], { ...selectors, [format]: true }));
+    check(`a ${format} ledger teardown by ${Object.keys(selectors).join(" and ")} keeps the deployment selection`,
+      apply?.code === "UNSUPPORTED" && apply.remedy === `omit --${format} from the original command; keep the same deployment selection`, apply);
+  }
+
   // No meshes recorded anywhere → `down web` has no space to look in. The target resolves before
   // any saved-definition lookup, so it refuses as not found and says how to name a space.
   const noMesh = await rejection(run(["web"]));
@@ -353,6 +363,15 @@ try {
   check("...and its preview refuses the same way, naming the preview to run there",
     previewSpace?.code === "TARGET_NOT_FOUND" && previewSpace.message === bareSpace?.message && (previewSpace.remedy ?? "").includes(`run \`cotal down --dry-run\` in ${meshA.root}`),
     previewSpace && { code: previewSpace.code, message: previewSpace.message, remedy: previewSpace.remedy });
+  if (process.platform !== "win32" && process.getuid?.() !== 0) {
+    chmodSync(meshA.root, 0o000);
+    try {
+      const inaccessible = await rejection(run([], { space: "teamA", yes: true }));
+      check("an inaccessible retained root advises restoring access instead of changing folders",
+        inaccessible?.code === "PERMISSION_DENIED" && inaccessible.message?.includes(`${meshA.root} could not be accessed`) === true &&
+        inaccessible.remedy === "restore access to the original project folder, then try again", inaccessible);
+    } finally { chmodSync(meshA.root, 0o700); }
+  }
   recordMesh({ ...entry("remote", meshB.root), origin: "manual" });
   for (const preview of [false, true]) {
     const remote = await rejection(run([], { space: "remote", ...(preview ? { "dry-run": true } : { yes: true }) }));
@@ -700,14 +719,18 @@ try {
   // step that takes the other registration off the address and the stop to run after it.
   recordMesh({ ...entry("shared-here", stoppedRoot), origin: "up" });
   recordMesh({ ...entry("shared-there", neverRoot), origin: "up" });
+  recordMesh({ ...entry("-old", neverRoot), origin: "manual" });
   const shared = await bareDownIn(stoppedRoot);
   removeMesh("shared-here");
   removeMesh("shared-there");
+  removeMesh("-old");
   check("a second registration at this stack's exact broker address refuses LIFECYCLE_BLOCKED, names that space, and its next step names space show, space forget and the down to run again",
     shared.error?.code === "LIFECYCLE_BLOCKED" && /shared listener/.test(shared.error.message ?? "") &&
       (shared.error as { target?: { otherSpaces?: string[] } } | undefined)?.target?.otherSpaces?.includes("shared-there") === true &&
       /`cotal space show shared-there`/.test(shared.error.remedy ?? "") && /`cotal space forget shared-there`/.test(shared.error.remedy ?? "") &&
       /then run `cotal down` again/.test(shared.error.remedy ?? ""), shared);
+  check("the legacy shared listener guard prints argument-safe commands for a retained dash-leading name",
+    /`cotal space show -- -old`/.test(shared.error?.remedy ?? "") && /`cotal space forget -- -old`/.test(shared.error?.remedy ?? ""), shared);
   // An installed extension may record its process deeper in `.cotal` or under another suffix. While
   // either still runs, bare down does not call the stack stopped, and it leaves both as they were.
   const priorXdg = process.env.XDG_CONFIG_HOME;
@@ -948,6 +971,20 @@ try {
       check(`${label} in an empty folder names the selected legacy stack's space, its root and \`${again}\` there`,
         r.error?.code === "TARGET_NOT_FOUND" && Boolean(r.error.message?.includes(`the selected space "lgs" is a stack rooted at ${lg}`)) && [again, `pnpm ${again}`].some((command) => r.error?.remedy === `run \`${command}\` from ${lg}`), r);
     }
+    // A regular file now at the recorded root cannot be the folder to run `down` from: the remedy
+    // names it and the step to restore the original folder, from a folder with no stack and from one
+    // with its own.
+    const fileRoot = join(realpathSync.native(mkdtempSync(join(tmpdir(), "cotal-file-root-"))), "rootproject");
+    writeFileSync(fileRoot, "replacement file\n");
+    recordMesh({ space: "frs", server: "nats://127.0.0.1:3", root: fileRoot, mode: "open", origin: "up", ts });
+    const restore = (command: string) => `${fileRoot} is not a directory; move what is there aside and restore the original project folder at that path, then run \`${command}\` from it`;
+    for (const [from, code] of [[empty, "TARGET_NOT_FOUND"], [sa, "CONFLICT"]] as const) {
+      const r = await bareDownIn(from, { space: "frs", yes: true });
+      check(`down --yes --space frs from ${from === empty ? "an empty folder" : "another stack's folder"} names the file at its root and the restore step, not a down run inside it`,
+        r.error?.code === code && Boolean(r.error.message?.includes(`--space frs names a stack rooted at ${fileRoot}`)) && ["cotal", "pnpm cotal"].some((prefix) => r.error?.remedy === restore(`${prefix} down --yes`)) && !r.error?.remedy?.startsWith("run "), r);
+    }
+    removeMesh("frs");
+    rmSync(dirname(fileRoot), { recursive: true, force: true });
     setCurrent("sa");
     removeMesh("lgs");
     removeMesh("sa"); removeMesh("sb");

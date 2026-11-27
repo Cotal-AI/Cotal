@@ -576,8 +576,9 @@ try {
     const entered = new Promise<void>((res) => { sawEntry = res; });
     let releaseHandler!: () => void;
     const held = new Promise<void>((res) => { releaseHandler = res; });
-    const realOwnerMemberships = dv.ownerMemberships.bind(dv);
-    (dv as unknown as { ownerMemberships: typeof realOwnerMemberships }).ownerMemberships = async (owner, uid) => {
+    const dvBackstop = (dv as unknown as { durableBackstop: Pick<CotalEndpoint, "ownerMemberships"> }).durableBackstop;
+    const realOwnerMemberships = dvBackstop.ownerMemberships.bind(dvBackstop);
+    dvBackstop.ownerMemberships = async (owner, uid) => {
       sawEntry();                        // "I am inside the handler, past its entry check"
       await held;                        // park here exactly as a slow broker read would
       return realOwnerMemberships(owner, uid);
@@ -592,7 +593,7 @@ try {
     // real failure: the handler WAS admitted, so the caller is owed a named refusal it can retry on.
     check("V6 and it is refused BY NAME rather than dropped or answered with an empty body",
       /stopped serving this shard/.test(vInflight?.error ?? ""), vInflight);
-    (dv as unknown as { ownerMemberships: typeof realOwnerMemberships }).ownerMemberships = realOwnerMemberships;
+    dvBackstop.ownerMemberships = realOwnerMemberships;
   } finally {
     try { await vNc.close(); } catch { /* ignore */ }
     try { await dv.stop(); } catch { /* ignore */ }

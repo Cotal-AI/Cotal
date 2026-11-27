@@ -121,6 +121,7 @@ const PRODUCERS: Record<Profile, () => string[]> = {
   "control-caller-privileged": via("control-caller-privileged"),
   "control-caller-admin": via("control-caller-admin"),
   deployer: via("deployer"),
+  "agent-caller": via("agent-caller"),
   // `permissionsFor` refuses this one BY DESIGN (serve rows are emitted only by mintCreds behind
   // the §13.1 fence), so it is covered through the row builder the mint itself calls — covered,
   // never skipped.

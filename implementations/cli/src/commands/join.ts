@@ -44,7 +44,7 @@ import {
 import { CommandFailure, activateTerminalSeat, issueTerminalSeat, retireTerminalSeat, seatExpiryAt, credsSpace, findMesh, inputDisabledByFlag, isConnectRefusal, preflightOrThrow, reachableOrThrow, readCredsFile, refreshRegistrationPolicy, refuseStaticCredsForKnownUserAuth, resolveTargetOrThrow, connectUserControlOrThrow, endpointAuth, type Connection, type MeshEntry, offlineRecipientNotice } from "@cotal-ai/workspace";
 import { withControlConnection } from "@cotal-ai/workspace/control";
 import { credentialEnded } from "../lib/connect.js";
-import { shellWord } from "../lib/endpoint-errors.js";
+import { grantOption, shellWord } from "../lib/endpoint-errors.js";
 import { FlagValueRefusal } from "../lib/flag-value-refusal.js";
 import { withProvisioner } from "../lib/provisioner.js";
 import { resolveSpace } from "../lib/status.js";
@@ -90,7 +90,7 @@ function joinAuthFailure(e: unknown, space: string, credential?: { lifecycleUid:
 }
 
 function credentialInboxRemedy(space: string, channel: string): string {
-  const read = `--allow-subscribe ${shellWord(channel)}`;
+  const read = grantOption("--allow-subscribe", channel);
   return `ask the space's owner to mint the credential with \`cotal auth mint <name> --provision ${read} --space ${shellWord(space)} --no-persona --out <file>\`, then join with the lifecycle UID that mint reports. To keep the original grants, replace \`${read}\` with \`--identity <original-file>\``;
 }
 
@@ -112,7 +112,7 @@ function checkCredentialJoin(creds: string, space: string, uid: string, channel:
   const history = `$JS.API.CONSUMER.CREATE.${chatStream(space)}.${chatHistDurable(DEV_OWNER, actor, uid)}.${chatSubject(space, "*", "*", channel)}`;
   if (!issuedPermitsPattern(permission, history))
     throw new CommandFailure("refused", "PERMISSION_DENIED", `this credential does not grant read access to #${channel} in ${space}`, {
-      remedy: `ask the space's owner to mint it with \`cotal auth mint <name> --provision --allow-subscribe ${channel}\`, then join with the lifecycle UID that mint reports; add --allow-publish ${channel} if you also need to post`,
+      remedy: `ask the space's owner to mint it with \`cotal auth mint <name> --provision ${grantOption("--allow-subscribe", channel)} --space ${shellWord(space)} --no-persona --out <file>\`, then join with the lifecycle UID that mint reports; add ${grantOption("--allow-publish", channel)} if you also need to post`,
     });
 }
 
@@ -159,8 +159,9 @@ function resolveJoinChannel(flag: string | undefined, linked: string | undefined
 }
 
 function readJoinCreds(path: string, channel: string, space: string | undefined): string {
+  const read = grantOption("--allow-subscribe", channel);
   const replacement = "If you need a replacement, ask the space's owner to mint it with " +
-    `\`cotal auth mint <name> --provision --allow-subscribe ${shellWord(channel)}${space === undefined ? "" : ` --space ${shellWord(space)}`} --no-persona --out <file>\`, then join with --lifecycle-uid set to the new UID that mint reports`;
+    `\`cotal auth mint <name> --provision ${read}${space === undefined ? "" : ` --space ${shellWord(space)}`} --no-persona --out <file>\`, then join with --lifecycle-uid set to the new UID that mint reports`;
   try {
     return readCredsFile(path, { malformedRemedy: `pass the complete credential file as it was issued. ${replacement}` });
   } catch (e) {
@@ -212,13 +213,12 @@ async function joinSpace(args: ParsedArgs): Promise<void> {
     let profile: string | undefined;
     try { profile = credsClaims(auth.creds).name; } catch { /* leave undecodable credentials to preflight */ }
     if (profile === "observer" || profile === "admin") {
-      const ch = shellWord(channel);
       throw new CommandFailure(
         "refused",
         "PERMISSION_DENIED",
         `an ${profile}-profile credential cannot join as a mesh participant: \`cotal join\` requires a provisioned agent credential`,
         {
-          remedy: `mint an agent credential with \`cotal auth mint <name> --provision --allow-subscribe ${ch} --out <file>\`, then join with the --lifecycle-uid that mint reports; add --allow-publish ${ch} if you also need to post`,
+          remedy: `mint an agent credential with \`cotal auth mint <name> --provision ${grantOption("--allow-subscribe", channel)} --out <file>\`, then join with the --lifecycle-uid that mint reports; add ${grantOption("--allow-publish", channel)} if you also need to post`,
         },
       );
     }
@@ -281,7 +281,7 @@ async function joinSpace(args: ParsedArgs): Promise<void> {
     const addressFlags = values.server !== undefined ? (link ? "--server and --link" : "--server") : link ? "--link" : undefined;
     await reachableOrThrow(server, auth, values.creds ? {
       space, path: values.creds, named: values.space !== undefined || link !== undefined || resolved !== undefined,
-      addressFlags, provision: true,
+      addressFlags, landingChannel: channel,
     } : undefined);
     if (values.creds) checkCredentialJoin(auth.creds!, space, lifecycleUid!, channel);
   } else {
@@ -421,7 +421,7 @@ async function joinSpace(args: ParsedArgs): Promise<void> {
   const broadcastDenied = () => `this session is read-only on #${channel}: it lacks publish permission; nothing was sent. ` +
     (userConnection
       ? `ask the space's owner to grant this identity permission to post to #${channel}`
-      : `ask the space's owner to mint a credential with \`cotal auth mint <name> --provision --allow-subscribe ${channel} --allow-publish ${channel} --out <file>\`, then join with the lifecycle UID that mint reports`);
+      : `ask the space's owner to mint a credential with \`cotal auth mint <name> --provision ${grantOption("--allow-subscribe", channel)} ${grantOption("--allow-publish", channel)} --out <file>\`, then join with the lifecycle UID that mint reports`);
 
   // A headless join holds presence and logs mesh events without reading stdin.
   const terminal = process.stdout.isTTY ? process.stdout : process.stderr.isTTY ? process.stderr : undefined;

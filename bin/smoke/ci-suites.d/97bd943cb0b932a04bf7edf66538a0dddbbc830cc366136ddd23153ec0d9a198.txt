@@ -1,0 +1,2 @@
+# User-auth reply inbox bindings and legacy connection compatibility.
+smoke:user-inbox-binding:auth

@@ -142,8 +142,9 @@ try {
   let durableUp = false;
   for (let i = 0; i < 20; i++) { if (dagent.ep.hasDurableMembership("fx51-durable")) { durableUp = true; break; } await sleep(500); }
   check("durable membership established (daemon serving)", durableUp);
-  const discover = dagent.ep.fetchMemberships.bind(dagent.ep);
-  dagent.ep.fetchMemberships = async () => [{ channel: "fx51-durable", generation: 1, activated: true }];
+  const dagentBoot = (dagent.ep as unknown as { bootMemberships: Pick<typeof dagent.ep, "fetchMemberships"> }).bootMemberships;
+  const discover = dagentBoot.fetchMemberships.bind(dagentBoot);
+  dagentBoot.fetchMemberships = async () => [{ channel: "fx51-durable", generation: 1, activated: true }];
   const originalServers = dcfg.servers;
   try {
     for (const hosted of [false, true]) {
@@ -156,7 +157,7 @@ try {
     }
   } finally {
     dcfg.servers = originalServers;
-    dagent.ep.fetchMemberships = discover;
+    dagentBoot.fetchMemberships = discover;
   }
   // Otto also follows the family fx51fam.> from boot: its own membership row covers the durable
   // channel fx51fam.dur, which Otto never joins by name (#5404).

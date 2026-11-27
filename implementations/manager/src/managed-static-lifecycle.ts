@@ -1,8 +1,8 @@
 import { drainAndClose } from "@cotal-ai/core";
 import { rmSync } from "node:fs";
-import { CotalEndpoint, lowerPersonaEndpoints, DEFAULT_SERVER, DEV_OWNER, dialerFor, DeprovisionError, addDeprovisionAccounting, type DeprovisionResourceAccounting, mintCreds, type IssuanceSeam, type IssuedStore, mintLifecycleUid, managedRetirementOpId, newIdentity, principalKey, provisionAgent, grantOverreach, withIssuerSession } from "@cotal-ai/core";
+import { CotalEndpoint, lowerPersonaEndpoints, DEFAULT_SERVER, DEV_OWNER, dialerFor, DeprovisionError, addDeprovisionAccounting, type DeprovisionResourceAccounting, mintCreds, type IssuedStore, mintLifecycleUid, managedRetirementOpId, newIdentity, principalKey, provisionAgent, grantOverreach, withIssuerSession, issuedPermitsPattern, epPrincipalServeGrantRows } from "@cotal-ai/core";
 import { agentLifecycleSecretFilePaths, agentSecretKeyForFile, materializeSecretToFile } from "@cotal-ai/workspace";
-import type { EpCapability, RuntimeReference, SpaceAuth } from "@cotal-ai/core";
+import type { RuntimeReference } from "@cotal-ai/core";
 import { makeManagerEndpointEvictionEvidence } from "./endpoint-evict.js";
 import { inlineSnapshotPath, removeInlineSnapshot } from "./launch.js";
 import { rejectionText, attemptCleanup, describeCleanupFailures, type CleanupFailure } from "@cotal-ai/core";
@@ -21,6 +21,8 @@ import type { TeardownTarget, RetirementHold } from "./retirement.js";
 import type { EvictionResult } from "@cotal-ai/core";
 import { foreignEventChannels } from "./seat-launch.js";
 import type { ManagerConfig } from "./manager-config.js";
+import type { ManagerParts } from "./manager-parts.js";
+import type { ManagerStartState } from "./manager-start-state.js";
 
 
 /** One initial terminal entry plus three re-drives. The short first retry absorbs a one-shot
@@ -50,9 +52,6 @@ const DEPROVISION_TIMEOUT_MS = 15_000;
 
 /** Manager-owned authority, runtime and retirement operations for static lifecycle work. */
 export interface ManagedStaticLifecycleDeps {
-  auth: () => SpaceAuth | undefined;
-  instanceId: () => string;
-  userMode: () => boolean;
   evictor: () => ((principal: string) => Promise<EvictionResult>) | undefined;
   resumeRequired: () => boolean;
   records: () => KV | undefined;
@@ -71,8 +70,6 @@ export interface ManagedStaticLifecycleDeps {
   beginLifecycle: (resumeOperation?: boolean) => (() => void) | undefined;
   maintenanceError: () => string;
   withRetirementSlot: <T>(run: () => Promise<T>) => Promise<T>;
-  managedStaticInstanceReads: (capabilities: readonly string[] | undefined) => EpCapability[];
-  issuanceSeam: (i: { store: IssuedStore; accepted: KV }, mode: "issue" | "renew", a: { name: string; id: string; lifecycleUid: string }, exp: number) => IssuanceSeam;
   refreshSeatRecord: (a: ManagedAgent) => void;
   dial: (opts: Parameters<ReturnType<typeof dialerFor>>[0]) => Promise<NatsConnection>;
   seatRecordFor: (row: StaticManagedSlotRow) => SeatRecord | undefined;
@@ -85,9 +82,6 @@ export interface ManagedStaticLifecycleDeps {
  *  field the Manager assigns later is current and a member a test replaces on the instance is the one that runs. */
 export function managedStaticLifecycleDeps(m: Manager): ManagedStaticLifecycleDeps {
   return {
-    auth: () => m["auth"],
-    instanceId: () => m["managerInstanceId"],
-    userMode: () => m["userMode"],
     evictor: () => m["staticLifecycleEvict"],
     resumeRequired: () => m["resumeRequired"],
     records: () => m["goalWriterComponent"].goalWriter?.ctx.kv,
@@ -106,8 +100,6 @@ export function managedStaticLifecycleDeps(m: Manager): ManagedStaticLifecycleDe
     beginLifecycle: (resumeOperation) => m["beginLifecycle"](resumeOperation),
     maintenanceError: () => m["maintenanceError"](),
     withRetirementSlot: (run) => m["withRetirementSlot"](run),
-    managedStaticInstanceReads: (capabilities) => m["managedStaticInstanceReads"](capabilities),
-    issuanceSeam: (i, mode, a, exp) => m["issuanceSeam"](i, mode, a, exp),
     refreshSeatRecord: (a) => m["refreshSeatRecord"](a),
     dial: (opts) => m["dial"](opts),
     seatRecordFor: (row) => m["seatRecordFor"](row),
@@ -151,7 +143,10 @@ export class ManagedStaticLifecycle {
   private staticReconcileSweepsInFlight = 0;
   private staticReconcileDrainWaiters: Array<() => void> = [];
   private staticReconcileStopping = false;
-  constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: ManagedStaticLifecycleDeps) {}
+  constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: ManagedStaticLifecycleDeps, private readonly state: ManagerStartState, private readonly parts: Pick<ManagerParts, "brokerTransport" | "seatLaunch">) {}
+  private get managerInstanceId(): string { return this.state.managerInstanceId!; }
+  private get auth() { return this.state.auth; }
+  private get userMode() { return this.state.userMode; }
 
   start(): void { this.staticReconcileStopping = false; }
   get stopping(): boolean { return this.staticReconcileStopping; }
@@ -190,7 +185,7 @@ export class ManagedStaticLifecycle {
     const evict = this.deps.evictor() ?? makeManagerEndpointEvictionEvidence({
       space: this.config.space,
       servers: this.config.servers ?? DEFAULT_SERVER,
-      auth: this.deps.auth()!,
+      auth: this.auth!,
       log: (line) => console.error(`static retirement ${a.name}: ${line}`),
       // A daemon credential reload briefly removes its responder while it reconnects.
       unreachableWaitMs: DEPROVISION_TIMEOUT_MS,
@@ -247,7 +242,7 @@ export class ManagedStaticLifecycle {
           t,
           {
             owner: DEV_OWNER, alias: a.name, actor: a.id, lifecycleUid: a.lifecycleUid, opId,
-            managerInstance: this.deps.instanceId(), managerProcessUid: this.config.managerLifecycleUid,
+            managerInstance: this.managerInstanceId, managerProcessUid: this.config.managerLifecycleUid,
           },
           { cleanup: reapThenCleanup, evict, log: (line) => console.error(`static retirement ${a.name}: ${line}`) },
         );
@@ -284,7 +279,7 @@ export class ManagedStaticLifecycle {
    *  any step drives the terminal before the refusal is returned, and the refusal says whether it
    *  completed. */
   async openStaticChatSession(raw: unknown): Promise<{ alias: string; actor: string; lifecycleUid: string; expiresAt: number; sealer: string; sealed: string }> {
-    if (!this.deps.auth() || this.deps.userMode())
+    if (!this.auth || this.userMode)
       throw new EpEnvelopeError("unimplemented", "chat-session-open admits static chat sessions only, and this manager is not a static-auth manager", undefined, "not-executed");
     const input = readChatOpenInput(raw);
     if ("error" in input) throw new EpEnvelopeError("bad-request", input.error, undefined, "not-executed");
@@ -312,10 +307,10 @@ export class ManagedStaticLifecycle {
     }
     try {
       await this.deps.withLifecycleExecutor(pin, (t) =>
-        activateStaticLifecycle(t, { owner: DEV_OWNER, alias, actor: identity.id, lifecycleUid, managerInstance: this.config.managerLifecycleUid, ownerInstanceId: this.deps.instanceId() }),
+        activateStaticLifecycle(t, { owner: DEV_OWNER, alias, actor: identity.id, lifecycleUid, managerInstance: this.config.managerLifecycleUid, ownerInstanceId: this.managerInstanceId }),
       );
       const creds = await this.deps.withProvisioner((prov) =>
-        provisionAgent(prov, this.deps.auth()!, identity, { subscribe: lists.subscribe, allowSubscribe: lists.allowSubscribe, allowPublish: lists.allowPublish, lifecycleUid, expiresAt: exp }),
+        provisionAgent(prov, this.auth!, identity, { subscribe: lists.subscribe, allowSubscribe: lists.allowSubscribe, allowPublish: lists.allowPublish, lifecycleUid, expiresAt: exp }),
       );
       // The same credential id the issuance path derives, so a re-sent identical credential maps to
       // the same row.
@@ -329,7 +324,7 @@ export class ManagedStaticLifecycle {
         await casStaticSlot(t, { ...slot.row, phase: "active" }, slot.revision);
       });
       const { sealer, sealed } = sealChatAdmission({
-        space: this.config.space, managerInstanceId: this.deps.instanceId(), alias, actor: identity.id, lifecycleUid, expiresAt: exp * 1000, sealTo: input.sealTo, creds,
+        space: this.config.space, managerInstanceId: this.managerInstanceId, alias, actor: identity.id, lifecycleUid, expiresAt: exp * 1000, sealTo: input.sealTo, creds,
       });
       this.chatExpiry.arm(lifecycleUid);
       console.error(`chat session ${alias} admitted as ${identity.id} (uid ${lifecycleUid}), expires ${new Date(exp * 1000).toISOString()}`);
@@ -360,7 +355,7 @@ export class ManagedStaticLifecycle {
    *  admits the request. A terminal that cannot complete answers `failed` with the reason, never
    *  success; the slot stays held. The broker keeps accepting the leaf until its expiry either way. */
   async retireStaticChatSession(raw: unknown): Promise<{ outcome: "retired" | "alreadyRetired" | "failed"; reason?: string }> {
-    if (!this.deps.auth() || this.deps.userMode())
+    if (!this.auth || this.userMode)
       throw new EpEnvelopeError("unimplemented", "chat-session-retire retires static chat sessions only, and this manager is not a static-auth manager", undefined, "not-executed");
     const input = readChatRetireInput(raw);
     if ("error" in input) throw new EpEnvelopeError("bad-request", input.error, undefined, "not-executed");
@@ -414,7 +409,7 @@ export class ManagedStaticLifecycle {
     } catch (e) {
       throw new EpEnvelopeError("unavailable", `the durable slot for "${s.alias}" could not be read: ${rejectionText(e)}`, undefined, "not-executed");
     }
-    const refused = chatRetireRefusal(slot?.row, s, this.deps.instanceId());
+    const refused = chatRetireRefusal(slot?.row, s, this.managerInstanceId);
     if (refused) throw new EpEnvelopeError(refused.code, refused.message, undefined, "not-executed");
     if (slot!.row.phase !== "retired") return "admitted";
     this.chatExpiry.forget(s.lifecycleUid);
@@ -439,7 +434,7 @@ export class ManagedStaticLifecycle {
   /** Whether `row` is a chat slot this process registered, at its exact alias, actor and UID,
    *  under this logical instance and this process's incarnation. */
   holdsLiveChatSlot(row: StaticManagedSlotRow): boolean {
-    return row.ownerInstanceId === this.deps.instanceId() && row.managerInstance === this.config.managerLifecycleUid && this.chatExpiry.holdsExact(row);
+    return row.ownerInstanceId === this.managerInstanceId && row.managerInstance === this.config.managerLifecycleUid && this.chatExpiry.holdsExact(row);
   }
 
   /** The stop's retirement of every chat session this process still tracks, through the same
@@ -490,7 +485,7 @@ export class ManagedStaticLifecycle {
    *  lifecycle-keyed file the agent endpoint's source seam re-reads. Never advances the epoch;
    *  renewal remains the THIRD transition. */
   async renewManagedStaticCred(a: ManagedAgent): Promise<void> {
-    if (!this.deps.auth() || !a.seed || !a.secretPaths?.creds) throw new Error("renewManagedStaticCred: not a renewable managed-static agent");
+    if (!this.auth || !a.seed || !a.secretPaths?.creds) throw new Error("renewManagedStaticCred: not a renewable managed-static agent");
     // Admission is synchronous. An accepted renewal publishes its flight before its first caller can
     // terminalize the agent; terminalization rejects later callers and drains this flight before the
     // durable terminal starts, giving renewal-before-terminal and terminal-before-renewal one order.
@@ -520,19 +515,21 @@ export class ManagedStaticLifecycle {
     // ceiling, which `confirm` verifies against the recorded evidence before the ledger append. A
     // changed ceiling is refused there: that is a fresh issuance on a new connection, never a renewal.
     const issued = a.issued;
+    const space = this.config.space;
+    // Resolve this incarnation's original issuance, not its current spawner or a reconstructed run
+    // admission. Old seats and run helpers keep the exact ceiling they were minted with.
+    const caller = { owner: DEV_OWNER, actor: a.id, uid: a.lifecycleUid, generation: issued.generation };
+    const { evidence } = await withIssuerSession({ servers: this.config.servers ?? DEFAULT_SERVER, space, auth: this.auth!, tls: false }, (s) =>
+      s.store.resolve({ space, ...caller }, s.sourceIsLive));
     const endpoints = lowerPersonaEndpoints(a.launch.endpoints);
-    const reads = this.deps.managedStaticInstanceReads(a.launch.capabilities);
-    if (reads.length) {
-      // Resolve this incarnation's original issuance, not its current spawner or a reconstructed
-      // run admission. Old seats and run helpers keep the exact ceiling they were minted with.
-      const caller = { owner: DEV_OWNER, actor: a.id, uid: a.lifecycleUid, generation: issued.generation };
-      const { evidence } = await withIssuerSession({ servers: this.config.servers ?? DEFAULT_SERVER, space: this.config.space, auth: this.deps.auth()!, tls: false }, (s) =>
-        s.store.resolve({ space: this.config.space, ...caller }, s.sourceIsLive));
-      if (!grantOverreach(this.config.space, caller, evidence.permissions, { endpoints: reads }).length)
-        endpoints.push(...reads);
-    }
+    const reads = this.parts.seatLaunch.managedStaticInstanceReads(a.launch.capabilities);
+    if (reads.length && !grantOverreach(space, caller, evidence.permissions, { endpoints: reads }).length)
+      endpoints.push(...reads);
+    // A seat issued before static seats served their `agent` endpoint holds no serve row, and its
+    // renewal adds none (SPEC 13.15).
+    const principalServe = issuedPermitsPattern(evidence.permissions.subscribe, epPrincipalServeGrantRows(space, caller).sub[0]!);
     const creds = await this.deps.withIssuer((i) =>
-      mintCreds(this.deps.auth()!, { id: a.id, seed: a.seed! }, "agent", {
+      mintCreds(this.auth!, { id: a.id, seed: a.seed! }, "agent", {
         eventPayloads: this.config.eventPayloadsWithheld ? false : a.launch.eventPayloads,
         allowSubscribe: a.launch.allowSubscribe,
         allowPublish: a.launch.allowPublish,
@@ -540,9 +537,10 @@ export class ManagedStaticLifecycle {
         capabilities: a.launch.capabilities,
         ...(endpoints.length ? { endpointCapabilities: endpoints } : {}),
         lifecycleUid: a.lifecycleUid,
+        principalServe,
         expiresAt: exp,
         issued,
-        issuance: this.deps.issuanceSeam(i, "renew", a, exp),
+        issuance: this.parts.brokerTransport.issuanceSeam(i, "renew", a, exp),
       }),
     );
     const secrets = this.config.secrets;
@@ -590,9 +588,9 @@ export class ManagedStaticLifecycle {
   /** Read one retry coordinate from the durable slot store. The status snapshot never authorizes a
    *  re-drive: every timer comes through this fresh read before the planner and exact terminal. */
   async readStaticReconcileSlot(alias: string): Promise<StaticManagedSlotRow | undefined> {
-    if (!this.deps.auth()) return undefined;
+    if (!this.auth) return undefined;
     const identity = newIdentity();
-    const creds = await mintCreds(this.deps.auth()!, identity, "provisioner");
+    const creds = await mintCreds(this.auth!, identity, "provisioner");
     const nc = await this.deps.dial({ ...standaloneConnectOpts({ creds, /* not yet wired to a recorded transport */ tls: false }), maxReconnectAttempts: 0 });
     try {
       const recordsKv = await new Kvm(nc).open(recordsBucket(this.config.space));
@@ -683,10 +681,10 @@ export class ManagedStaticLifecycle {
       console.error(`✓ static reconcile recovered alias=${item.alias} phase=retired uid=${item.lifecycleUid} attempts=${item.attempts}/${item.maxAttempts}`);
       return;
     }
-    if (ownedBySibling(row, this.deps.instanceId())) {
+    if (ownedBySibling(row, this.managerInstanceId)) {
       item.disposition = "refused";
       item.remedy = "the owning manager must reconcile or an operator must perform an explicit CAS takeover";
-      item.lastError = `the durable slot belongs to manager instance ${row.ownerInstanceId}, not ${this.deps.instanceId()}`;
+      item.lastError = `the durable slot belongs to manager instance ${row.ownerInstanceId}, not ${this.managerInstanceId}`;
       console.error(`! static reconcile refused alias=${item.alias} phase=${item.phase} uid=${item.lifecycleUid}: ${item.lastError}`);
       return;
     }
@@ -795,7 +793,7 @@ export class ManagedStaticLifecycle {
   }
 
   async reconcileStaticLifecycles(postAdoption = false): Promise<void> {
-    if (!this.deps.auth() || this.staticReconcileStopping) return;
+    if (!this.auth || this.staticReconcileStopping) return;
     // Admission is synchronous with the shutdown fence. Once this increments, stop() must drain the
     // whole accepted sweep even if it is still minting its short-lived provisioner credential.
     this.staticReconcileSweepsInFlight++;
@@ -818,7 +816,7 @@ export class ManagedStaticLifecycle {
       // `status` cannot tell it from a sweep that collected and found nothing.
       try {
         const identity = newIdentity();
-        const creds = await mintCreds(this.deps.auth()!, identity, "provisioner");
+        const creds = await mintCreds(this.auth!, identity, "provisioner");
         const nc = await this.deps.dial({ ...standaloneConnectOpts({ creds, /* not yet wired to a recorded transport */ tls: false }), maxReconnectAttempts: 0 });
         try {
           const jsm = await jetstreamManager(nc);
@@ -855,7 +853,7 @@ export class ManagedStaticLifecycle {
         // hazard, now cross-instance). A legacy row (no owner recorded) predates multi-manager,
         // so this manager is its legitimate single-manager-past successor and reconciles it. An orphaned
         // sibling row is reclaimed only by an explicit operator CAS takeover, never here.
-        if (ownedBySibling(row, this.deps.instanceId())) {
+        if (ownedBySibling(row, this.managerInstanceId)) {
           preservedForeign++;
           continue;
         }

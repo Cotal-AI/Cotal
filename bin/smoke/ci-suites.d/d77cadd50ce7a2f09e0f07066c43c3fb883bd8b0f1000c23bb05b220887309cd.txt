@@ -1,0 +1,3 @@
+# A Jcode seat lists its native session operations as commands, refuses arguments Jcode cannot
+# take before Jcode sees them, and stops a running turn through Jcode's cancel.
+smoke:jcode-commands

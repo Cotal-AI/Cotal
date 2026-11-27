@@ -3,6 +3,7 @@ import type { CotalEndpoint } from "@cotal-ai/core";
 import { existsSync, lstatSync, readdirSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { credRenewIntervalMs } from "./credential-renewal.js";
+import { optInLaunchFields } from "./harness-resolution.js";
 import { inlineSnapshotPath } from "./launch.js";
 import { withTimeout } from "./manager-timeout.js";
 import type { Manager, ManagerPreservationPlan, ManagerPreserveFailure, ManagerPreserveOptions, ManagerPreserveResult, ManagerResumeAgent, ManagerResumeInventory } from "./manager.js";
@@ -11,19 +12,19 @@ import { requireRuntimeReap } from "./runtime/index.js";
 import type { AgentHandle } from "./runtime/index.js";
 import type { ManagedAgent } from "./seat-types.js";
 import type { ManagerConfig } from "./manager-config.js";
+import type { ManagerParts } from "./manager-parts.js";
+import type { ManagerStartState } from "./manager-start-state.js";
 
 /** What {@link Preservation} reads from the Manager. Every entry is read at use, so a field the Manager
  *  assigns after construction is always current, and a Manager method a test replaces is the one that runs. */
 export interface PreservationDeps {
   agents: () => Manager["agents"];
-  auth: () => Manager["auth"];
   credRenewTimer: () => Manager["credRenewTimer"];
   setCredRenewTimer: (value: Manager["credRenewTimer"]) => void;
   ep: () => Manager["ep"];
   lifecycleInFlight: () => Manager["lifecycleInFlight"];
   maintenanceState: () => Manager["maintenanceState"];
   setMaintenanceState: (value: Manager["maintenanceState"]) => void;
-  managerInstanceId: () => Manager["managerInstanceId"];
   meshMode: () => Manager["meshMode"];
   preservationAttemptId: () => Manager["preservationAttemptId"];
   setPreservationAttemptId: (value: Manager["preservationAttemptId"]) => void;
@@ -34,7 +35,6 @@ export interface PreservationDeps {
   resumeCredRenewal: () => Manager["resumeCredRenewal"];
   unverifiedStops: () => Manager["unverifiedStops"];
   setUnverifiedStops: (value: Manager["unverifiedStops"]) => void;
-  userMode: () => Manager["userMode"];
   awaitLifecycleDrain: (...args: Parameters<Manager["awaitLifecycleDrain"]>) => ReturnType<Manager["awaitLifecycleDrain"]>;
   deprovision: (...args: Parameters<Manager["deprovision"]>) => ReturnType<Manager["deprovision"]>;
   dropInlineSnapshot: (...args: Parameters<Manager["dropInlineSnapshot"]>) => ReturnType<Manager["dropInlineSnapshot"]>;
@@ -49,7 +49,6 @@ export interface PreservationDeps {
   resumeEntryOf: (...args: Parameters<Manager["resumeEntryOf"]>) => ReturnType<Manager["resumeEntryOf"]>;
   runtimeFor: (...args: Parameters<Manager["runtimeFor"]>) => ReturnType<Manager["runtimeFor"]>;
   stopHandle: (...args: Parameters<Manager["stopHandle"]>) => ReturnType<Manager["stopHandle"]>;
-  teardownTarget: (...args: Parameters<Manager["teardownTarget"]>) => ReturnType<Manager["teardownTarget"]>;
   validateRetainedAuthority: (...args: Parameters<Manager["validateRetainedAuthority"]>) => ReturnType<Manager["validateRetainedAuthority"]>;
   watchExit: (...args: Parameters<Manager["watchExit"]>) => ReturnType<Manager["watchExit"]>;
   withProvisioner: <T>(fn: (prov: CotalEndpoint) => Promise<T>) => Promise<T>;
@@ -60,14 +59,12 @@ export interface PreservationDeps {
 export function preservationDeps(m: Manager): PreservationDeps {
   return {
     agents: () => m["agents"],
-    auth: () => m["auth"],
     credRenewTimer: () => m["credRenewTimer"],
     setCredRenewTimer: (value) => { m["credRenewTimer"] = value; },
     ep: () => m["ep"],
     lifecycleInFlight: () => m["lifecycleInFlight"],
     maintenanceState: () => m["maintenanceState"],
     setMaintenanceState: (value) => { m["maintenanceState"] = value; },
-    managerInstanceId: () => m["managerInstanceId"],
     meshMode: () => m["meshMode"],
     preservationAttemptId: () => m["preservationAttemptId"],
     setPreservationAttemptId: (value) => { m["preservationAttemptId"] = value; },
@@ -78,7 +75,6 @@ export function preservationDeps(m: Manager): PreservationDeps {
     resumeCredRenewal: () => m["resumeCredRenewal"],
     unverifiedStops: () => m["unverifiedStops"],
     setUnverifiedStops: (value) => { m["unverifiedStops"] = value; },
-    userMode: () => m["userMode"],
     awaitLifecycleDrain: (...args) => m["awaitLifecycleDrain"](...args),
     deprovision: (...args) => m["deprovision"](...args),
     dropInlineSnapshot: (...args) => m["dropInlineSnapshot"](...args),
@@ -93,7 +89,6 @@ export function preservationDeps(m: Manager): PreservationDeps {
     resumeEntryOf: (...args) => m["resumeEntryOf"](...args),
     runtimeFor: (...args) => m["runtimeFor"](...args),
     stopHandle: (...args) => m["stopHandle"](...args),
-    teardownTarget: (...args) => m["teardownTarget"](...args),
     validateRetainedAuthority: (...args) => m["validateRetainedAuthority"](...args),
     watchExit: (...args) => m["watchExit"](...args),
     withProvisioner: (fn) => m["withProvisioner"](fn),
@@ -102,20 +97,20 @@ export function preservationDeps(m: Manager): PreservationDeps {
 
 /** Preserving the manager for a restart: prepare, commit and abort, the cut that releases or tears down each seat, and adoption of released seats at the next start. */
 export class Preservation {
-  constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: PreservationDeps) {}
+  constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: PreservationDeps, private readonly state: ManagerStartState, private readonly parts: Pick<ManagerParts, "seatStop">) {}
 
   // The Manager members these bodies read, under their Manager names. Each reads through its dep at
   // use, so a field the Manager assigns later is current and a method a test replaces on the Manager
   // is the one that runs.
   private get agents() { return this.deps.agents(); }
-  private get auth() { return this.deps.auth(); }
+  private get auth() { return this.state.auth; }
   private get credRenewTimer() { return this.deps.credRenewTimer(); }
   private set credRenewTimer(value: Manager["credRenewTimer"]) { this.deps.setCredRenewTimer(value); }
   private get ep() { return this.deps.ep(); }
   private get lifecycleInFlight() { return this.deps.lifecycleInFlight(); }
   private get maintenanceState() { return this.deps.maintenanceState(); }
   private set maintenanceState(value: Manager["maintenanceState"]) { this.deps.setMaintenanceState(value); }
-  private get managerInstanceId() { return this.deps.managerInstanceId(); }
+  private get managerInstanceId() { return this.state.managerInstanceId!; }
   private get meshMode() { return this.deps.meshMode(); }
   private get preservationAttemptId() { return this.deps.preservationAttemptId(); }
   private set preservationAttemptId(value: Manager["preservationAttemptId"]) { this.deps.setPreservationAttemptId(value); }
@@ -126,7 +121,7 @@ export class Preservation {
   private get resumeCredRenewal() { return this.deps.resumeCredRenewal(); }
   private get unverifiedStops() { return this.deps.unverifiedStops(); }
   private set unverifiedStops(value: Manager["unverifiedStops"]) { this.deps.setUnverifiedStops(value); }
-  private get userMode() { return this.deps.userMode(); }
+  private get userMode() { return this.state.userMode; }
   private awaitLifecycleDrain(...args: Parameters<Manager["awaitLifecycleDrain"]>): ReturnType<Manager["awaitLifecycleDrain"]> { return this.deps.awaitLifecycleDrain(...args); }
   private deprovision(...args: Parameters<Manager["deprovision"]>): ReturnType<Manager["deprovision"]> { return this.deps.deprovision(...args); }
   private dropInlineSnapshot(...args: Parameters<Manager["dropInlineSnapshot"]>): ReturnType<Manager["dropInlineSnapshot"]> { return this.deps.dropInlineSnapshot(...args); }
@@ -141,7 +136,6 @@ export class Preservation {
   private resumeEntryOf(...args: Parameters<Manager["resumeEntryOf"]>): ReturnType<Manager["resumeEntryOf"]> { return this.deps.resumeEntryOf(...args); }
   private runtimeFor(...args: Parameters<Manager["runtimeFor"]>): ReturnType<Manager["runtimeFor"]> { return this.deps.runtimeFor(...args); }
   private stopHandle(...args: Parameters<Manager["stopHandle"]>): ReturnType<Manager["stopHandle"]> { return this.deps.stopHandle(...args); }
-  private teardownTarget(...args: Parameters<Manager["teardownTarget"]>): ReturnType<Manager["teardownTarget"]> { return this.deps.teardownTarget(...args); }
   private validateRetainedAuthority(...args: Parameters<Manager["validateRetainedAuthority"]>): ReturnType<Manager["validateRetainedAuthority"]> { return this.deps.validateRetainedAuthority(...args); }
   private watchExit(...args: Parameters<Manager["watchExit"]>): ReturnType<Manager["watchExit"]> { return this.deps.watchExit(...args); }
   private withProvisioner<T>(fn: (prov: CotalEndpoint) => Promise<T>): Promise<T> { return this.deps.withProvisioner(fn); }
@@ -494,7 +488,7 @@ export class Preservation {
       managed.filter((a) => !a.suppressCleanup).map((a) => {
         // Retired here on every mesh, the open mesh included, which runs no teardown of its own.
         const settled = a.launch.source.kind !== "inline" || this.dropInlineSnapshot(a.name, a.lifecycleUid);
-        return this.deprovision({ ...this.teardownTarget(a), ...(settled ? { snapshotSettled: true as const } : {}) }).catch((e) => console.error(`deprovision ${a.name} (${a.id}) on shutdown: ${rejectionText(e)}`));
+        return this.deprovision({ ...this.parts.seatStop.teardownTarget(a), ...(settled ? { snapshotSettled: true as const } : {}) }).catch((e) => console.error(`deprovision ${a.name} (${a.id}) on shutdown: ${rejectionText(e)}`));
       }),
     );
     if (failures.length)
@@ -635,12 +629,14 @@ export class Preservation {
         cwd: launch.cwd,
         model: launch.model,
         variant: launch.variant,
+        modes: launch.modes,
         subscribe: launch.subscribe,
         allowSubscribe: launch.allowSubscribe,
         allowPublish: launch.allowPublish,
         capabilities: launch.capabilities,
         events: launch.events,
         eventPayloads: launch.eventPayloads,
+        ...optInLaunchFields(launch),
         shareTools: launch.shareTools,
         forkSource: launch.forkSource,
         sessionId: launch.sessionId,

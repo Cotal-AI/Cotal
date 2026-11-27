@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { assertSmokeSandboxDown, freePort, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
 import { repoRoot, wait } from "./_console-pty.js";
+import { installNoVariantConnector, NO_VARIANT_HARNESS } from "./_no-variant-connector.js";
 
 /** Real static-auth CLI launches with recording harnesses. No provider or service manager needed. */
 export async function checkSpawnPreflight(check: (name: string, condition: boolean, detail?: unknown) => void): Promise<void> {
@@ -44,7 +45,7 @@ setInterval(() => {}, 60_000);
     symlinkSync(source, join(prefix, "node_modules", "@cotal-ai", pkg), "dir");
     return { pkg: `@cotal-ai/${pkg}`, version: JSON.parse(readFileSync(join(source, "package.json"), "utf8")).version, commands: [], provides: [{ kind: "connector", name }], connectors: [{ name, requires: [name === "hermes" ? "uv" : name], eventPlane: name !== "hermes", setup: null }] };
   });
-  writeFileSync(join(prefix, "extensions.json"), JSON.stringify({ extensions }));
+  writeFileSync(join(prefix, "extensions.json"), JSON.stringify({ extensions: [...extensions, installNoVariantConnector(prefix)] }));
   const cli = (...args: string[]) => {
     const options = { cwd: root, env, encoding: "utf8" as const, timeout: 90_000 };
     assertSmokeSandboxDown(anchor, args, options);
@@ -65,7 +66,7 @@ setInterval(() => {}, 60_000);
     const invalid: [string, string[], RegExp][] = [
       ["claude", ["--resume=-foo"], /cannot resume/], ["codex", ["--resume=abc"], /resum/], ["opencode", ["--resume=abc"], /resum/],
       ["pi", ["--resume=--help"], /cannot resume/], ["pi", ["--resume=-v"], /cannot resume/], ["pi", ["--prompt=-bad"], /initial prompt cannot start/],
-      ["claude", ["--prompt", "   "], /prompt was given but it is empty/], ["pi", ["--opt", "offline=true"], /launch options.*not implemented/], ["claude", ["--variant", "high"], /model variants/],
+      ["claude", ["--prompt", "   "], /prompt was given but it is empty/], ["pi", ["--opt", "offline=true"], /launch options.*not implemented/], ["claude", ["--variant", "extreme"], /effort level \W+extreme\W+ is not one claude accepts/],
       ["hermes", [], /managed Hermes profile needs a model.*--model.*model:.*COTAL_HERMES_ADOPT_HOME/],
     ];
     for (const [harness, flags, diagnostic] of invalid) {
@@ -76,6 +77,13 @@ setInterval(() => {}, 60_000);
           && !/wrote creds|retired creds|spawning .* on the mesh|OPERATION_UNKNOWN/.test(result.out) && creds() === initialCreds, result.out);
       }
     }
+    // The fixture connector takes no model variant, so a persona's variant is refused there.
+    const variantPersona = join(root, "variant-persona.md");
+    writeFileSync(variantPersona, `---\nname: variant_probe\nagent: ${NO_VARIANT_HARNESS}\nmodel: test-model\nvariant: high\n---\n`);
+    const variantRefusal = cli("spawn", "--file", variantPersona);
+    check("foreground spawn names the persona variant field before provisioning",
+      variantRefusal.status === 1 && variantRefusal.stderr.includes(`remove the \`variant:\` field from ${JSON.stringify(variantPersona)}`)
+      && creds() === initialCreds && JSON.stringify(artifacts()) === JSON.stringify(before), variantRefusal.out);
     const hermesPreview = cli("spawn", "-H", "hermes", "--model", "test-model", "--dry-run");
     check("direct Hermes preview accepts an explicit model without provisioning", hermesPreview.status === 0
       && /Model:\s+test-model/.test(hermesPreview.out) && /Connector arguments:\s+checked/.test(hermesPreview.out)

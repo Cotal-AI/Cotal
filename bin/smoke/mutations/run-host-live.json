@@ -156,8 +156,8 @@
     {
       "name": "a user-auth mesh answers run-start as a booting host instead of naming the refusal",
       "file": "implementations/manager/src/manager.ts",
-      "find": "    if (this.userMode && !this.remoteAuthority?.runHosting)\n      throw new EpEnvelopeError(\"unimplemented\", `user-auth space",
-      "replace": "    if (this.userMode && !this.remoteAuthority?.runHosting && this.runHosting !== undefined)\n      throw new EpEnvelopeError(\"unimplemented\", `user-auth space",
+      "find": "    if (this.userMode && !this.config.remoteAuthority?.runHosting)\n      throw new EpEnvelopeError(\"unimplemented\", `user-auth space",
+      "replace": "    if (this.userMode && !this.config.remoteAuthority?.runHosting && this.runHosting !== undefined)\n      throw new EpEnvelopeError(\"unimplemented\", `user-auth space",
       "afterRestore": "pnpm --filter cotal-ai... build",
       "expectRed": "a user-auth mesh refuses run-start as unimplemented, naming the space",
       "cell": "a user-auth mesh refuses run-start as unimplemented, naming the space: no host stands there, and no `--local` is offered"

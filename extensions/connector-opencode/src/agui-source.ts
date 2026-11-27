@@ -17,12 +17,16 @@
  * `part.id` cursor would be sound only for as long as an unrelated safety ruling keeps user parts
  * out, which is a dependency nobody would remember. The pair is sound either way and costs nothing.
  *
+ * **A tool part is two records.** Its call settles once the tool runs and its result once the tool
+ * has completed or failed, so a call shows while it runs. The call's cursor is the pair with `:call`
+ * after it, and it orders before the part's own.
+ *
  * **Removal is tolerated by construction.** The cursor is compared as an ORDER, never looked up as
  * an identity, so a session whose parts were reverted away resumes from the same position without
  * the record it names having to still exist. That is what makes the ruling implementable: publish
  * on finality, and treat a later removal as a logged divergence rather than a halt.
  */
-import type { DurableSource, SourceRead } from "@cotal-ai/connector-core";
+import type { OrderedSource, SourceRead } from "@cotal-ai/connector-core";
 
 /** The message fields the mapper needs. Deliberately not the whole `Message`: the source hands on
  *  identity, authorship and the turn-level completion mark, and nothing it does not read. */
@@ -30,6 +34,7 @@ export interface OpenCodeMessageInfo {
   id: string;
   role: string;
   time?: { created?: number; completed?: number };
+  error?: unknown;
 }
 
 /** One record: a part, plus the message that owns it. The mapper needs both, because authorship and
@@ -37,6 +42,8 @@ export interface OpenCodeMessageInfo {
 export interface OpenCodeRecord {
   part: OpenCodePart;
   message: OpenCodeMessageInfo;
+  /** The record of a tool part's call, which comes before the part's own record, its result. */
+  call?: true;
 }
 
 /**
@@ -93,36 +100,58 @@ const EMITTING_TYPES = new Set(["text", "reasoning", "tool"]);
  */
 export function isSettled(record: OpenCodeRecord): boolean {
   const { part, message } = record;
-  // AUTHORSHIP FIRST, AND IT IS NOT AN OPTIMISATION. §3.2 rules that no user-authored text is ever
-  // emitted, so a user message produces no frame and cannot gate one. Testing the part type first
-  // would WEDGE EVERY SESSION AT ITS FIRST PROMPT: `UserMessage.time` carries only `created` (no
-  // `completed` field exists on the type, and 0 of 634 user messages carry one), and 659 of 668
-  // user text parts carry no `time` object at all, so neither settle signal can ever arrive for
-  // them. The safety ruling and the liveness of this stream are the same line.
+  // User records can close the previous turn, but carry no completion mark and publish no text.
   if (message.role !== "assistant") return true;
   if (!EMITTING_TYPES.has(part.type)) return true; // emits nothing, so it gates nothing
   if (message.time?.completed !== undefined) return true; // the turn ended: nothing more is coming
+  // A call is final once its tool runs, and its result once the tool has completed or failed.
+  if (part.type === "tool" && record.call) return part.state?.status !== undefined && part.state.status !== "pending";
   if (part.type === "tool") return part.state?.status === "completed" || part.state?.status === "error";
   return part.time?.end !== undefined; // text and reasoning
 }
 
 /** Serialise the ordering key. Ids carry no `:`, so the first one separates the halves. */
 export function cursorOf(record: OpenCodeRecord): string {
-  return `${record.message.id}:${record.part.id}`;
+  return `${record.message.id}:${record.part.id}${record.call ? ":call" : ""}`;
 }
 
-function parseCursor(cursor: string): { messageId: string; partId: string } {
+interface Position {
+  messageId: string;
+  partId: string;
+  call: boolean;
+}
+
+function parseCursor(cursor: string): Position {
   const i = cursor.indexOf(":");
-  if (i <= 0 || i === cursor.length - 1) {
-    throw new Error(`OpenCodeSessionSource: malformed cursor ${JSON.stringify(cursor)} (want <messageId>:<partId>)`);
+  const rest = cursor.slice(i + 1);
+  const call = rest.endsWith(":call");
+  const partId = call ? rest.slice(0, -":call".length) : rest;
+  if (i <= 0 || partId === "" || partId.includes(":")) {
+    throw new Error(`OpenCodeSessionSource: malformed cursor ${JSON.stringify(cursor)} (want <messageId>:<partId>, or <messageId>:<partId>:call)`);
   }
-  return { messageId: cursor.slice(0, i), partId: cursor.slice(i + 1) };
+  return { messageId: cursor.slice(0, i), partId, call };
+}
+
+/** Negative when `x` is before `y`, zero at the same position, positive after. A tool's call comes
+ *  before its result. */
+function comparePositions(x: Position, y: Position): number {
+  if (x.messageId !== y.messageId) return x.messageId < y.messageId ? -1 : 1;
+  if (x.partId !== y.partId) return x.partId < y.partId ? -1 : 1;
+  return Number(!x.call) - Number(!y.call);
+}
+
+/** Negative when position `a` is before `b`, zero at the same position, positive after. The empty
+ *  cursor of an empty session is before every record. */
+export function compareCursors(a: string, b: string): number {
+  if (a === b) return 0;
+  if (a === "") return -1;
+  if (b === "") return 1;
+  return comparePositions(parseCursor(a), parseCursor(b));
 }
 
 /** Strictly after the cursor, comparing the pair rather than either half alone. */
-function isAfter(record: OpenCodeRecord, at: { messageId: string; partId: string }): boolean {
-  if (record.message.id !== at.messageId) return record.message.id > at.messageId;
-  return record.part.id > at.partId;
+function isAfter(record: OpenCodeRecord, at: Position): boolean {
+  return comparePositions({ messageId: record.message.id, partId: record.part.id, call: record.call === true }, at) > 0;
 }
 
 interface OpenCodeSessionSourceOptions {
@@ -147,7 +176,7 @@ interface OpenCodeSessionSourceOptions {
   endedAt?: () => string | undefined;
 }
 
-export class OpenCodeSessionSource implements DurableSource<OpenCodeRecord> {
+export class OpenCodeSessionSource implements OrderedSource<OpenCodeRecord> {
   readonly kind = "opencode-session";
   private readonly read0: ReadSessionMessages;
   private readonly onVanished?: (cursor: string) => void;
@@ -176,11 +205,20 @@ export class OpenCodeSessionSource implements DurableSource<OpenCodeRecord> {
     const messages = await this.read0();
     const ordered: OpenCodeRecord[] = [];
     for (const m of [...messages].sort((a, b) => (a.info.id < b.info.id ? -1 : a.info.id > b.info.id ? 1 : 0))) {
-      for (const part of [...m.parts].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))) {
+      // The assistant header is written before the model call, including for a failed turn that
+      // never writes a part. Its cursor sorts before every native `prt_` part of this message.
+      if (m.info.role === "assistant") ordered.push({ part: { id: m.info.id, messageID: m.info.id, type: "assistant-header" }, message: m.info });
+      const parts = [...m.parts].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+      for (const part of parts) {
+        if (part.type === "tool") ordered.push({ part, message: m.info, call: true });
         ordered.push({ part, message: m.info });
       }
     }
     return ordered;
+  }
+
+  compare(a: string, b: string): number {
+    return compareCursors(a, b);
   }
 
   /** The position of the end: the last record's cursor, or the empty cursor of an empty session,
@@ -206,8 +244,7 @@ export class OpenCodeSessionSource implements DurableSource<OpenCodeRecord> {
     }
 
     const at = parseCursor(cursor);
-    if (this.onVanished && this.reportedVanished !== cursor
-        && !ordered.some((r) => r.message.id === at.messageId && r.part.id === at.partId)) {
+    if (this.onVanished && this.reportedVanished !== cursor && !ordered.some((r) => cursorOf(r) === cursor)) {
       this.reportedVanished = cursor;
       this.onVanished(cursor);
     }

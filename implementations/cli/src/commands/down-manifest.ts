@@ -31,12 +31,13 @@ import {
   unlinkFileNoFollow,
   type EpCaller,
 } from "@cotal-ai/core";
-import { agentLifecycleSecretFilePaths, agentSecretFilePaths, agentSecretKeyForFile, connectTargetOrThrow, getSpaceAuth, isCommandFailure, resolveMeshTarget, userAuthStateDir, userViewAuth, workspaceSecretStore } from "@cotal-ai/workspace";
+import { agentLifecycleSecretFilePaths, agentSecretFilePaths, agentSecretKeyForFile, codeSpan, connectTargetOrThrow, getSpaceAuth, isCommandFailure, resolveMeshTarget, userAuthStateDir, userViewAuth, workspaceSecretStore } from "@cotal-ai/workspace";
 import { c, stderrLine } from "../ui.js";
 import { cotalRoot } from "../lib/paths.js";
 import { connectProbe } from "../lib/manifest/live.js";
 import { readManifestSource } from "../lib/manifest/index.js";
 import { findLedgerByHash, findLedgerByRun, hashManifestSource, ownedCredPath, writeLedger, type MeshLedger } from "../lib/manifest/ledger.js";
+import { displayCmd } from "../lib/self-exec.js";
 
 /** The name a teardown line shows. A missing or whitespace-only name is the id. */
 export function teardownName(name: string, id: string): string {
@@ -98,6 +99,7 @@ export async function downManifest(file: string, flags: DownManifestFlags): Prom
 
   // 4) Best-effort live teardown: stop owned agents (name AND id match) + remove childless owned
   //    channels. If the broker is down, nothing remote is torn down and the ledger is RETAINED.
+  const retryCommand = codeSpan(`${displayCmd()} down --run=${ledger.runId}`);
   const stoppedIds = new Set<string>();
   const removed: string[] = [];
   const openNoFeed: string[] = []; // owned channels removed on an open mesh with no membership proof
@@ -213,10 +215,10 @@ export async function downManifest(file: string, flags: DownManifestFlags): Prom
         finally { await ep.stop(); }
       }
     } catch (e) {
-      console.log(c.yellow(`  ! ${ledger.server}: control plane incomplete (${(e as Error).message}) - unresolved resources are RETAINED for a later \`down -f --run ${ledger.runId}\``));
+      console.log(c.yellow(`  ! ${ledger.server}: control plane incomplete (${(e as Error).message}) - unresolved resources are RETAINED for a later ${retryCommand}`));
     }
   } else {
-    console.log(c.yellow(`  ! ${ledger.server} unreachable - can't stop processes or remove channels; the ledger is RETAINED for a later \`down -f --run ${ledger.runId}\``));
+    console.log(c.yellow(`  ! ${ledger.server} unreachable - can't stop processes or remove channels; the ledger is RETAINED for a later ${retryCommand}`));
   }
 
   // 5) Remote resolution: which owned REMOTE resources are NOT proven handled. An agent is unresolved
@@ -282,7 +284,7 @@ export async function downManifest(file: string, flags: DownManifestFlags): Prom
 
   // 7) Disposition. The ledger is deleted only when EVERY owned resource — remote agents, channels,
   //    AND our own credential files — is removed or proven gone; otherwise it's rewritten DOWN to the
-  //    unresolved set (atomic temp-then-rename) so a later `down -f --run` finishes. Never erase the
+  //    unresolved set (atomic temp-then-rename) so a later `down --run` finishes. Never erase the
   //    only ownership record while anything owned may remain (critic/security/engineer/ux PR2 gate).
   const retainIds = new Set([...unresolvedIds, ...unresolvedCredIds]);
   const complete = retainIds.size === 0 && unresolvedChannels.length === 0;
@@ -306,7 +308,6 @@ export async function downManifest(file: string, flags: DownManifestFlags): Prom
     }
     console.log(c.green(`✓ torn down run ${ledger.runId}`) + (removed.length ? c.dim(` - removed ${removed.length} channel(s): ${removed.map((n) => "#" + n).join(", ")}`) : ""));
   } else {
-    // Partial: rewrite the ledger DOWN to the unresolved resources so a later `down -f --run` finishes.
     const remainAgents = ledger.created.agents.filter((a) => retainIds.has(a.id));
     const remaining: MeshLedger = { ...ledger, created: { channels: unresolvedChannels, agents: remainAgents } };
     writeLedger(root, remaining, { update: true });
@@ -315,7 +316,7 @@ export async function downManifest(file: string, flags: DownManifestFlags): Prom
         c.dim(` - ${remainAgents.length} agent(s) + ${unresolvedChannels.length} channel(s) still owned; ledger kept`),
     );
     if (unresolvedCredIds.size) console.log(c.dim(`  local credential cleanup incomplete for ${unresolvedCredIds.size} agent(s) - ledger kept for retry`));
-    console.log(c.dim(`  finish later (broker up / members gone): \`cotal down -f ${ledger.manifestPath} --run ${ledger.runId}\``));
+    console.log(c.dim(`  finish later (broker up / members gone): ${retryCommand}`));
     process.exitCode = 1; // not a full success
   }
 }

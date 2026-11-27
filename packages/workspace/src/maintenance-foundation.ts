@@ -25,6 +25,8 @@ import { hostname } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { randomUUID } from "node:crypto";
 import { hardenPrivate } from "@cotal-ai/core";
+import { localWriteFailure } from "./local-write.js";
+import { identityRecord, type ProcessIdentityRecord } from "./pid.js";
 import { recordOperationWarning } from "./output.js";
 
 /** Version 1 lives in `<project>/.cotal/maintenance/v1`; the lock is shared across versions. */
@@ -621,6 +623,8 @@ export interface AcquireMaintenanceLockOptions {
   /** What the holder does, such as `backup create`, recorded in the lock so a refused contender can
    *  name it ({@link readMaintenanceLockHolder}). */
   readonly operation?: string;
+  /** Called if this acquisition creates the project control directory. */
+  readonly onControlDirectoryCreated?: () => void;
 }
 
 const noRecourse: readonly MaintenanceRecourse[] = [];
@@ -691,13 +695,14 @@ export function fsyncDirectory(path: string): void {
   }
 }
 
-function ensureDirectory(path: string, harden: boolean): void {
+function ensureDirectory(path: string, harden: boolean, onCreated?: () => void): void {
   if (!existsSync(path)) {
     // A concurrent first operation on this root can create it between the check and the mkdir; the
     // checks below verify what is there, and the lock then names that operation.
     try {
       mkdirSync(path, { mode: 0o700 });
       fsyncDirectory(dirname(path));
+      onCreated?.();
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
     }
@@ -711,8 +716,8 @@ function ensureDirectory(path: string, harden: boolean): void {
   }
 }
 
-export function ensureLayout(paths: MaintenancePaths): void {
-  ensureDirectory(paths.cotalDir, false);
+export function ensureLayout(paths: MaintenancePaths, onControlDirectoryCreated?: () => void): void {
+  ensureDirectory(paths.cotalDir, false, onControlDirectoryCreated);
   ensureDirectory(paths.maintenanceDir, true);
   ensureDirectory(paths.versionDir, true);
 }
@@ -855,7 +860,7 @@ export function assertStoreIdentity(expected: StoreIdentity): StoreIdentity {
   return actual!;
 }
 
-export function writePrivateExclusive(path: string, data: string): void {
+export function writePrivateExclusive(path: string, data: string, classifyFailure?: typeof localWriteFailure): void {
   let fd: number | undefined;
   let created = false;
   try {
@@ -870,9 +875,9 @@ export function writePrivateExclusive(path: string, data: string): void {
   } catch (error) {
     if (fd !== undefined) closeSync(fd);
     if (created) {
-      try { unlinkSync(path); } catch { /* remove only the path this exclusive create owned */ }
+      try { unlinkSync(path); } catch { throw error; } // Cleanup is uncertain; do not advise a retry.
     }
-    throw error;
+    throw classifyFailure?.(error, path) ?? error;
   }
 }
 
@@ -913,7 +918,7 @@ export function parseOwner(value: unknown, label: string): ProcessOwner {
   return o;
 }
 
-function readLockFile(path: string): { token: string; owner: ProcessOwner; operation?: string } {
+function readLockFile(path: string): { token: string; owner: ProcessOwner; operation?: string; process?: ProcessIdentityRecord } {
   let parsed: unknown;
   try {
     const stat = lstatSync(path);
@@ -925,19 +930,21 @@ function readLockFile(path: string): { token: string; owner: ProcessOwner; opera
     if (errno(error) === "ENOENT") throw error;
     maintenanceError("journal-corrupt", "maintenance lock cannot be parsed", { paths: [path] });
   }
-  const lock = parsed as { token?: unknown; owner?: unknown; operation?: unknown };
+  const lock = parsed as { token?: unknown; owner?: unknown; operation?: unknown; processToken?: unknown };
   if (!lock || typeof lock !== "object" || typeof lock.token !== "string" || !lock.token)
     maintenanceError("journal-corrupt", "maintenance lock has no token", { paths: [path] });
   const operation = typeof lock.operation === "string" && /^[a-z][a-z -]{0,63}$/.test(lock.operation) ? lock.operation : undefined;
-  return { token: lock.token, owner: parseOwner(lock.owner, "lock"), ...(operation ? { operation } : {}) };
+  const owner = parseOwner(lock.owner, "lock");
+  const process = typeof lock.processToken === "string" && /^\d{1,20}$/.test(lock.processToken) ? { pid: owner.pid, token: lock.processToken } : undefined;
+  return { token: lock.token, owner, ...(operation ? { operation } : {}), ...(process ? { process } : {}) };
 }
 
 /** The process that holds this root's maintenance lock, and the operation it recorded, for a refused
  *  contender to name. Undefined when no lock is held or it cannot be read. */
-export function readMaintenanceLockHolder(root: string): { readonly owner: ProcessOwner; readonly operation?: string } | undefined {
+export function readMaintenanceLockHolder(root: string): { readonly owner: ProcessOwner; readonly operation?: string; readonly process?: ProcessIdentityRecord } | undefined {
   try {
-    const { owner, operation } = readLockFile(maintenancePaths(root).lock);
-    return { owner, ...(operation ? { operation } : {}) };
+    const { token: _token, ...holder } = readLockFile(maintenancePaths(root).lock);
+    return holder;
   } catch { return undefined; }
 }
 
@@ -969,14 +976,15 @@ export function acquireMaintenanceLock(
   options: AcquireMaintenanceLockOptions = {},
 ): MaintenanceLock {
   const paths = maintenancePaths(root);
-  ensureLayout(paths);
+  ensureLayout(paths, options.onControlDirectoryCreated);
   const owner = options.owner ?? defaultOwner();
   parseOwner(owner, "requested lock");
   const token = randomUUID();
-  const body = `${JSON.stringify({ token, owner, ...(options.operation ? { operation: options.operation } : {}) }, null, 2)}\n`;
+  const identity = options.owner === undefined ? identityRecord(process.pid) : undefined;
+  const body = `${JSON.stringify({ token, owner, ...(options.operation ? { operation: options.operation } : {}), ...(identity && "token" in identity ? { processToken: identity.token } : {}) }, null, 2)}\n`;
 
   try {
-    writePrivateExclusive(paths.lock, body);
+    writePrivateExclusive(paths.lock, body, localWriteFailure);
     return { root: paths.root, path: paths.lock, token, owner };
   } catch (error) {
     if (errno(error) !== "EEXIST") throw error;

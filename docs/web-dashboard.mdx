@@ -49,6 +49,7 @@ The `host` and `port` definition options default to `127.0.0.1` and 7799. Port 0
 A wildcard host is refused when the service starts, and the refusal names the `cotal service remove` and `cotal service add` that change the saved definition.
 Background `cotal service start web` opens an authenticated browser session for a loopback listener.
 Repeating a loopback start reuses the matching process and refreshes the single-use link in the private session record, even without a display or with `--no-open`. Existing browser sessions stay valid.
+If you save the dashboard under another name with `cotal service add <name> --preset web`, use that name for both starts. `--no-open` also works with the saved name.
 It starts no dependency automatically. Use `--no-open` for manual access or a remote listener.
 Without a browser opener, or without a Linux graphical session, startup still succeeds and warns how to find the private session record.
 Readiness confirms the HTTP listener and signal handlers, not a new authenticated endpoint reply.
@@ -88,6 +89,8 @@ A foreground start prints the path in its terminal. A repeat start for that loop
 Read the file and open its single-use link in the browser profile you intend to use.
 The dashboard creates the file for the full service instance and launch request. Output contains only the file path, not the link.
 
+Restarting the dashboard service invalidates its existing browser sessions. If **Disconnected** says your session is invalid, open the new private link instead of reloading the old tab. For a background service, use `cotal service logs web --space main` to find the new session file, substituting your service and space names if they differ. For a foreground service, look in the terminal where the dashboard is running.
+
 <Callout type="warn" title="Keep the session file private">
 
 Do not upload the session file or paste its contents into logs.
@@ -111,16 +114,22 @@ An old cached web command needs the matching extension update, rather than an im
 
 ### Choose a dashboard view
 
-The rail on the left picks a view; the sidebar lists the places in that view with counts and unread
-marks; the content sits in the center; the panel on the right has Members, Agent and Topology tabs.
+The rail on the left picks a view. The sidebar lists the places in that view with counts and unread
+marks. The content sits in the center. The Details panel has Members, Agent and Topology tabs.
+At 1200 pixels or wider, Details has its own column on the right. At narrower widths, it starts
+closed and opens over the page when you select the Members button or the panel button.
 The button at the start of each view's header, or Ctrl+B (Cmd+B on a Mac), collapses the sidebar to
 the rail and opens it again.
-On a phone that button opens the sidebar as a sheet, the panel opens as a sheet too, and a long
-press on a message opens its actions from the bottom.
+On a phone that button opens the sidebar as a sheet. A long press on a message opens its actions
+from the bottom.
+
+To change the theme, choose **Settings** at the foot of the rail, or at the foot of the sidebar on a
+phone. Choose **System** to follow your device, or choose **Light** or **Dark**. The browser remembers
+your choice.
 
 | View | What it shows |
 | --- | --- |
-| Activity | Every message across the space with delivery-mode filters and pause. |
+| Activity | A live feed of messages the dashboard can read, with delivery-mode filters. |
 | Channels | One channel's messages, its working members, and the members tab. |
 | Direct messages | The newest 500 direct messages across the space, one conversation per peer. A conversation whose earlier messages are not loaded says so on its first line. The sidebar lists the ten most recent conversations plus the open one; a button lists the rest. |
 | Agents | Every agent grouped by status or by host, with each working agent's running step. |
@@ -128,7 +137,8 @@ press on a message opens its actions from the bottom.
 | Agent page | One agent at `#/agent/<id>`, with Work, Messages and Profile tabs. |
 
 The roster shows status by shape and color, role, activity, and harness. A role that is only
-whitespace is shown as no role.
+whitespace is shown as no role. A name that does not fit ends with an ellipsis. Hover over it to
+read the full name.
 The agent page, the panel's Agent tab and the waiting cards also show reported conditions,
 how long the status has stood, when the activity was set, and when the last work event occurred.
 Missing stamps stay undated. Ages use the same whole-unit rounding down as the CLI; a heartbeat
@@ -144,8 +154,9 @@ on one colour, the one later in name order takes the next free colour, so every 
 same colours for the same agents. When two live agents share a first letter, both badges take two
 letters (`lead` and `logic` read Le and Lo). A name that is only whitespace is not used, so the
 letter and the colour come from the id. An offline agent's badge turns grey and keeps its
-letter. Below 26 pixels the badge is a colour dot with no letter. A message read from history has no
-verified sender, so its row gets no badge.
+letter. Below 26 pixels the badge is a colour dot with no letter. A message the page only read from
+history has no verified sender, so its row gets no badge. When you open a channel, the page keeps
+using the verified copy of a post it still holds in Activity.
 
 **What moves while an agent works.** A working agent's status dot breathes a ring out from it, and
 its working icon turns wherever its status shows. Under a channel's messages, the working line names
@@ -163,7 +174,7 @@ reload keep it. You reach the page by picking an agent in a channel (the panel's
 peek with the last three steps of its current turn and `Open <name>'s page`), by choosing View work
 on a live message from an agent on the roster (the page opens on Work at that message,
 `#/agent/<id>/work/<message id>`), or by opening the channel `events.<owner>.<actor>` by name. A
-message read from history gets no View work.
+message the page only read from history gets no View work.
 
 Work keeps tool names and times when a tool payload read times out, is refused, or fails.
 It identifies that read failure separately from payloads that were not received, and keeps any inputs or results already shown.
@@ -172,7 +183,8 @@ Work shows what the agent publishes on its [event plane](claude-connector-refere
 its turns with how long each took, its tool calls grouped when no text sits between them, its text,
 and its own posts and direct messages, placed by time with a link back to where they were sent. When
 the agent's connector sends the result marker, each call says whether it is running, done or failed
-and how long it took, and a group says how many failed. Code in its text is highlighted once it is on
+and how long it took, and a group says how many failed. A marker that does not say whether the call
+failed shows it as done. Code in its text is highlighted once it is on
 screen. Work does not show tool inputs, tool output, error text or reasoning. A connector that sends
 no result marker says which tools it called and nothing more, and Work says so above the list. A
 failed turn says the turn failed and that the event plane does not say why; it quotes a reason only
@@ -210,6 +222,7 @@ Live updates take precedence over older startup reads, including older reads tha
 A member following a channel family such as `team.>` links to each durable channel under it, the channels its stored copies cover.
 The view draws those links once it has read each channel's delivery class, including for a channel it first sees after the page loads, in a post or in a membership row that names it.
 Use **hide-offline** to hide durable members that are away.
+When the graph is crowded, hover over an avatar to read the agent's name or select it to open the agent's details.
 
 | Feed state | Meaning |
 | --- | --- |
@@ -221,6 +234,8 @@ Use **hide-offline** to hide durable members that are away.
 Broker-reported membership requires the delivery daemon and is provisioned by a fresh authenticated `cotal up`.
 
 ### Interpret incomplete data
+
+The connected dashboard checks retained channel counts every five seconds. After a channel purge, it updates the sidebar and rereads the open channel if its retained count fell. You do not need to reload the page.
 
 A failed poll keeps the last successful values and marks the affected sources stale.
 For example, `stale: peers, activity` names the sources; hover for the server's reason.
@@ -239,6 +254,8 @@ All-activity reads have an 8000 ms deadline.
 A deadline reports `the read did not finish within <deadline>ms`; a refusal reports `the read failed:` with its error.
 Unfinished history pulls are canceled and their ephemeral consumers removed when the deadline wins.
 If no source answers, the page keeps the last good data with the partial marker.
+
+A channel opens with its newest 200 messages. If the read finds earlier retained messages, the top of the list shows a notice with a `cotal history` command for that channel and space. Raise the command's `--limit` to read further back.
 
 A single channel read uses the same deadline but either returns messages or reports a refusal naming the channel and bound.
 The view keeps its previous messages on refusal.

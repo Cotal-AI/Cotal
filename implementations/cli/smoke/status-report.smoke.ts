@@ -17,9 +17,9 @@
 import { spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
 import { connect } from "node:net";
-import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { delimiter, join } from "node:path";
+import { delimiter, join, sep } from "node:path";
 import { assertSmokeSandboxDown, createSuite, freePort } from "@cotal-ai/smoke-kit";
 import { acquireMaintenanceLock, beginMaintenanceCut, canonicalLocalProcessPath, findMesh, recordMesh, releaseMaintenanceLock, renderReport, WEB_PIDFILE, writeMaintenanceResumeDocument } from "@cotal-ai/workspace";
 import { statusView } from "../src/commands/status.js";
@@ -136,6 +136,51 @@ if (!brokerDisplayOnly && !pidfileOnly) {
   const corrupt = run(["status", "--json"]);
   check("a corrupt cursor names the unreadable file with the existing extension warning", corrupt.status === 4 && corrupt.envelope?.outcome === "partial" && corrupt.envelope.warnings.some(w => w.code === "EXTENSIONS_UNREADABLE" && w.message.includes(cursor)), shown(corrupt));
   check("reading a corrupt cursor does not quarantine or repair it", readFileSync(cursor, "utf8") === "{broken\n");
+}
+if (!brokerDisplayOnly && !pidfileOnly) {
+  const { home, run } = sandbox();
+  const ext = run(["ext", "root"]);
+  const prefix = ext.stdout.trim();
+  if (ext.status !== 0 || !prefix.startsWith(join(home, ".config") + sep)) throw new Error(`extension root is not inside the sandbox: ${JSON.stringify(shown(ext))}`);
+  const manifest = join(prefix, "extensions.json");
+  mkdirSync(prefix, { recursive: true, mode: 0o700 });
+  const original = '{"extensions":[]}\n';
+  writeFileSync(manifest, original, { mode: 0o600 });
+  const control = run(["status", "--json"]);
+  check("valid empty inventory keeps the report complete", control.status === 0 && control.envelope?.completeness === "complete" && control.envelope.result?.extensions?.items?.length === 0, shown(control));
+  if (process.platform !== "win32" && process.getuid && process.getuid() !== 0) {
+    chmodSync(manifest, 0o000);
+    const remedy = "restore this account's read access to the extensions manifest and its path, then retry";
+    try {
+      const json = run(["status", "--json"]);
+      const env = json.envelope;
+      check("an unreadable extension inventory produces one partial infrastructure envelope with no stderr",
+        json.status === 4 && json.stderr === "" && env?.command === "status" && env.outcome === "partial" && env.completeness === "partial"
+        && env.result?.kind === "infrastructure" && env.result.extensions?.items === null && env.result.machine.nats !== "", shown(json));
+      check("the extension warning names the unreadable file and asks to restore access, not repair the inventory",
+        env?.warnings.some(w => w.code === "EXTENSIONS_UNREADABLE" && w.message.includes(manifest) && w.message.includes("EACCES") && w.message.includes(remedy) && !w.message.includes("ext seed --repair")) === true, env?.warnings);
+      const plain = run(["status", "--plain"]);
+      check("plain status keeps readable observations and gives the same access remedy",
+        plain.status === 4 && plain.stdout.includes("This machine") && plain.stderr.includes(manifest) && plain.stderr.includes(remedy) && !plain.stderr.includes("ext seed --repair"), shown(plain));
+      check("status leaves the inventory permissions unchanged", (statSync(manifest).mode & 0o777) === 0);
+    } finally { chmodSync(manifest, 0o600); }
+    check("status leaves the inventory bytes unchanged", readFileSync(manifest, "utf8") === original);
+  }
+  const damaged = "{}\n";
+  writeFileSync(manifest, damaged);
+  const json = run(["status", "--json"]);
+  const env = json.envelope;
+  check("a corrupt extension inventory produces one partial infrastructure envelope with no stderr",
+    json.status === 4 && json.stderr === "" && env?.command === "status" && env.outcome === "partial" && env.completeness === "partial"
+    && env.result?.kind === "infrastructure" && env.result.extensions?.items === null && env.result.machine.nats !== "", shown(json));
+  check("the extension warning names the corrupt file and its repair step",
+    env?.warnings.some(w => w.code === "EXTENSIONS_UNREADABLE" && w.message.includes(manifest) && w.message.includes("ext seed --repair")) === true, env?.warnings);
+  for (const flags of [[], ["--plain"]]) {
+    const text = run(["status", ...flags], { NO_COLOR: "1" });
+    check(`status ${flags.join(" ") || "human"} keeps readable observations and reports the damaged inventory`,
+      text.status === 4 && text.stdout.includes("This machine") && text.stderr.includes("corrupt extensions manifest"), shown(text));
+  }
+  check("status leaves the corrupt inventory unchanged", readFileSync(manifest, "utf8") === damaged);
 }
 // Component pidfile reads share the folder report's path-bearing diagnostics.
 if (!brokerDisplayOnly) {
@@ -518,14 +563,14 @@ if (!brokerDisplayOnly) {
 // ── a folder this account cannot read is the one gap, named with its chmod ───────────────────────
 if (process.platform !== "win32" && process.getuid?.() !== 0) {
   const { home } = sandbox();
-  // No `.cotal` above it, so the folder is its own root, as a fresh project folder is.
   const outside = mkdtempSync(join(tmpdir(), "cotal-status-unreadable-"));
   roots.push(outside);
   const folder = join(outside, "project notes");
   mkdirSync(folder, { mode: 0o700 });
+  mkdirSync(join(folder, ".cotal"), { mode: 0o700 });
   const env = { ...HOST_ENV, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: join(home, ".config"), COTAL_HOME: join(home, ".cotal-home"), COTAL_SKIP_CONNECTOR_SEED: "1" };
-  // The shell enters the folder before its mode drops, as it would for an operator already in it.
-  const r = spawnSync("/bin/sh", ["-c", 'cd "$0" && chmod 000 . && exec "$@"', folder, process.execPath, BIN, "status", "--json"], { env, encoding: "utf8", timeout: 120_000 });
+  // Keep search permission so root discovery sees this project's marker, but deny reads of the root.
+  const r = spawnSync("/bin/sh", ["-c", 'cd "$0" && chmod 100 . && exec "$@"', folder, process.execPath, BIN, "status", "--json"], { env, encoding: "utf8", timeout: 120_000 });
   chmodSync(folder, 0o700);
   const envelope = (r.stdout ?? "").startsWith("{") ? (JSON.parse(r.stdout) as Envelope) : undefined;
   const shownR = { status: r.status, stdout: (r.stdout ?? "").slice(0, 900), stderr: (r.stderr ?? "").slice(0, 600) };
@@ -552,12 +597,24 @@ if (process.platform !== "win32" && process.getuid?.() !== 0) {
   const prepared = run(["space", "create", "component-target", "--root", root]);
   const alternate = run(["space", "create", "component-other", "--root", other]);
   const selected = run(["use", "component-other"]);
-  const refused = run(["status", "--components", "--space", "component-target", "--json"], {}, root);
-  const retry = /`[^`]*?\b(status --components[^`]*)`/.exec(refused.envelope?.error?.remedy ?? "")?.[1];
-  const retried = retry ? run(retry.split(" "), {}, root) : undefined;
-  check("the component retry diagnoses the requested project while another space is selected",
-    [prepared, alternate, selected].every((r) => r.status === 0) && refused.status === 1 && retry === "status --components --space component-target"
-      && retried?.status === 1 && retried.stdout.startsWith("Mesh: component-target\n") && retried.stdout.includes("Component Health"), { refused, retried });
+  for (const flags of [["--json"], ["--json", "--plain"]]) {
+    const refused = run(["status", "--components", "--space", "component-target", ...flags], {}, root);
+    const retry = /`[^`]*?\b(status --components[^`]*)`/.exec(refused.envelope?.error?.remedy ?? "")?.[1];
+    const retried = retry ? run(retry.split(" "), {}, root) : undefined;
+    check(`the component retry for ${flags.join(" ")} diagnoses the requested project while another space is selected`,
+      [prepared, alternate, selected].every((r) => r.status === 0) && refused.status === 1 && retry === "status --components --space component-target"
+        && retried?.status === 1 && retried.stdout.startsWith("Mesh: component-target\n") && retried.stdout.includes("Component Health"), { refused, retried });
+  }
+  const reportArgs = ["status", "--space", "component-target", "--json"];
+  const refused = run([...reportArgs, "--creds", "missing.creds"], {}, other);
+  const retry = run(reportArgs, {}, other);
+  check("infrastructure status refuses --creds and tells the caller to keep the other arguments",
+    refused.status === 2 && refused.stderr === "" && refused.envelope?.outcome === "refused"
+      && refused.envelope.target.space === "component-target" && refused.envelope.error?.code === "UNSUPPORTED"
+      && refused.envelope.error.remedy === "remove --creds and its value, then rerun the same command with the remaining arguments unchanged", shown(refused));
+  check("removing only --creds and its value keeps the requested space and JSON output",
+    retry.status === 0 && retry.stderr === "" && retry.envelope?.outcome === "ok"
+      && retry.envelope.result?.selected.space === "component-target" && retry.envelope.result.meshes.current === "component-other", shown(retry));
   for (const args of [["myagent", "--json", "--plain"], ["myagent", "--wide", "--json"], ["myagent", "--verbose", "--json"], ["myagent", "-v", "--json"]]) {
     const r = run(["status", ...args]);
     check(`status ${args.join(" ")} is refused as USAGE_INVALID before any target lookup, exit 1`, r.status === 1 && r.envelope?.error?.code === "USAGE_INVALID", shown(r));

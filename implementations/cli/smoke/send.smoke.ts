@@ -59,9 +59,10 @@ import {
 import { killAndAwaitExit, SMOKE_BROKER_TOKEN, teardownOnSignal, teardownPathOnSignal } from "@cotal-ai/smoke-kit";
 import { authDir, recordMesh, saveSpaceAuth, setCurrent } from "@cotal-ai/workspace";
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
+import { execWords } from "../src/lib/exec-words.js";
 
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-const EXPECTED = 116;
+const EXPECTED = process.platform === "win32" ? 122 : 124;
 let pass = 0;
 let fail = 0;
 const check = (name: string, cond: boolean, extra?: unknown) => {
@@ -87,7 +88,7 @@ const broker = spawn("nats-server", ["-c", join(storeDir, "server.conf")], { std
 const releaseBroker = teardownOnSignal(broker, storeDir);
 
 const cli = fileURLToPath(new URL("../../../bin/cotal.ts", import.meta.url));
-const tsx = fileURLToPath(import.meta.resolve("tsx"));
+const tsx = import.meta.resolve("tsx");
 
 const home = mkdtempSync(join(tmpdir(), "cotal-send-home-"));
 const releaseHome = teardownPathOnSignal(home);
@@ -110,6 +111,7 @@ const isolatedEnv: NodeJS.ProcessEnv = {
   HOME: home,
   USERPROFILE: home,
   TMPDIR: tmp,
+  ...(process.platform === "win32" ? { APPDATA: home, LOCALAPPDATA: home, TEMP: tmp, TMP: tmp } : {}),
   COTAL_HOME: join(home, ".cotal"),
   XDG_CONFIG_HOME: xdg,
   COTAL_SKIP_CONNECTOR_SEED: "1",
@@ -157,13 +159,13 @@ let carol: CotalEndpoint | undefined;
 let dave: CotalEndpoint | undefined;
 let witness: CotalEndpoint | undefined;
 const expectedSender = `${userInfo().username}@${hostname()}`;
-const got: Array<{ route: string; text: string; fromId: string; fromName: string }> = [];
+const got: Array<{ route: string; text: string; fromId: string; fromName: string; replyTo?: string }> = [];
 // Bob's endpoint options and message handler, kept so the same lifecycle can come back later.
 let bobOptions: ConstructorParameters<typeof CotalEndpoint>[0];
 const onBobMessage = (message: CotalMessage, delivery: Delivery) => {
   const text = message.parts.map((part) => (part.kind === "text" ? part.text : "")).join("");
   const route = message.to ? "DM" : message.toService ? `ANY:${message.toService}` : `#${message.channel ?? ""}`;
-  got.push({ route, text, fromId: message.from.id, fromName: message.from.name });
+  got.push({ route, text, fromId: message.from.id, fromName: message.from.name, replyTo: message.replyTo });
   delivery.ack();
 };
 
@@ -290,6 +292,31 @@ try {
   const laterFresh = await run(["send", "-c", fresh, "two", "--json"]);
   const consumersAfterFresh = await watchConsumers();
   await inspector.close();
+  // A reply names the message it answers on a direct or channel send; a role send has no such field.
+  const answered = `answered-${randomUUID().slice(0, 6)}`;
+  const replyTexts = { dm: `reply-u-${randomUUID().slice(0, 6)}`, msg: `reply-m-${randomUUID().slice(0, 6)}`, ask: `reply-a-${randomUUID().slice(0, 6)}` };
+  const [dmReply, msgReply, askReply, askWithoutBody] = await Promise.all([
+    run(["send", "-t", "bob", replyTexts.dm, "--reply-to", answered, "--json"]),
+    run(["send", "-c", "general", replyTexts.msg, "--reply-to", answered, "--json"]),
+    run(["send", "-r", "reviewer", replyTexts.ask, "--reply-to", answered, "--json"]),
+    run(["send", "--role", "reviewer", "--reply-to", answered, "--json"]),
+  ]);
+  await wait(700);
+  const replied = (reply: typeof dmReply, route: string, text: string) =>
+    reply.code === 0 && (JSON.parse(reply.stdout) as { result: { replyTo: string | null } }).result.replyTo === answered &&
+      got.some((m) => m.route === route && m.text === text && m.replyTo === answered);
+  check("`cotal send -t` and `cotal send -c` with --reply-to store the reply relation and report it in the receipt",
+    replied(dmReply, "DM", replyTexts.dm) && replied(msgReply, "#general", replyTexts.msg), { dmReply, msgReply });
+  check("`cotal send -r` refuses --reply-to with or without a body and explains how to fix the destination or option",
+    [askReply, askWithoutBody].every((reply) => {
+      const error = (JSON.parse(reply.stdout) as { error?: { code: string; message: string; remedy?: string } }).error;
+      return reply.code === 1 && error?.code === "USAGE_INVALID" && error.message === "role sends do not take --reply-to"
+        && error.remedy?.includes("remove --reply-to and its value") && error.remedy.includes("--to or --channel")
+        && !error.remedy.includes("cotal send");
+    }) && !got.some((m) => m.text === replyTexts.ask), { askReply, askWithoutBody });
+  const correctedAsk = await run(["send", "-r", "reviewer", replyTexts.ask, "--json"]);
+  check("the corrected role send stores the task and keeps the JSON receipt",
+    correctedAsk.code === 0 && JSON.parse(correctedAsk.stdout).result.stored === true, correctedAsk);
 
   check(
     "the consumer count reads bob's own presence and channel-registry watches",
@@ -517,18 +544,18 @@ try {
   // quoted body used to be told to choose one body, with a remedy for another destination.
   const dash = await run(["send", "-c", "general", "-", "--json"]);
   check("`cotal send -c general -` is refused, names --stdin and --file -, and suggests the same channel",
-    dash.code === 1 && dash.stdout.includes('"code":"USAGE_INVALID"') && dash.stdout.includes('a lone \\"-\\" is not read as stdin; send stdin with --stdin or --file -') && dash.stdout.includes("run `cotal send -c general --stdin`"), dash);
+    dash.code === 1 && dash.stdout.includes('"code":"USAGE_INVALID"') && dash.stdout.includes('a lone \\"-\\" is not read as stdin; send stdin with --stdin or --file -') && dash.stdout.includes("run `cotal send -c general --json --stdin`"), dash);
   const empty = await run(["send", "-c", "general", "", "--json"]);
   check("an empty quoted body says the message is empty and suggests the same channel",
-    empty.code === 1 && empty.stdout.includes('"message":"the message is empty"') && empty.stdout.includes('run `cotal send -c general \\"<message>\\"`'), empty);
+    empty.code === 1 && empty.stdout.includes('"message":"the message is empty"') && empty.stdout.includes('run `cotal send -c general --json \\"<message>\\"`'), empty);
   // An empty recipient used to be told to choose one body, with a `-t` remedy whatever flag was given.
   const blanks = await Promise.all([["-t", ""], ["--to=", null], ["-r", ""], ["-c", "#"]].map(([option, value]) => run(["send", option!, ...(value === null ? [] : [value!]), "x", "--json"])));
   check("an empty --to, --role or --channel value is refused for that flag, with a remedy that keeps it",
-    blanks.every((r) => r.code === 1 && r.stdout.includes('"code":"USAGE_INVALID"') && !r.stdout.includes("exactly one body"))
-      && blanks[0]!.stdout.includes('"message":"--to/-t is empty; name one agent or full instance id"') && blanks[0]!.stdout.includes('run `cotal send -t <agent> \\"<message>\\"`')
+    blanks.every((r) => r.code === 1 && r.stdout.includes('"code":"USAGE_INVALID"') && r.stdout.includes("in the original command and keep the same message body and options"))
+      && blanks[0]!.stdout.includes('"message":"--to/-t is empty; name one agent or full instance id"') && blanks[0]!.stdout.includes('"remedy":"set --to/-t ')
       && blanks[1]!.stdout.includes('"message":"--to/-t is empty;')
-      && blanks[2]!.stdout.includes('"message":"--role/-r is empty; name one role"') && blanks[2]!.stdout.includes('run `cotal send -r <role> \\"<message>\\"`')
-      && blanks[3]!.stdout.includes('"message":"--channel/-c is empty; name one channel"') && blanks[3]!.stdout.includes('run `cotal send -c <channel> \\"<message>\\"`'), blanks);
+      && blanks[2]!.stdout.includes('"message":"--role/-r is empty; name one role"') && blanks[2]!.stdout.includes('"remedy":"set --role/-r ')
+      && blanks[3]!.stdout.includes('"message":"--channel/-c is empty; name one channel"') && blanks[3]!.stdout.includes('"remedy":"set --channel/-c '), blanks);
   // A channel or role name the subject rules refuse gets their reason; only a wildcard gets the wildcard one.
   const unsafe = await run(["send", "-c", "kanäle", "x", "--json"]);
   check("`cotal send -c` with a name that is not NATS-safe is USAGE_INVALID, exit 1, naming the segment",
@@ -592,12 +619,54 @@ try {
       child.stdin!.on("error", () => {});
       feed(child.stdin!);
     });
+  for (const body of ["", " ", "-"]) {
+    const refused = await run(["send", "-c", "general", "--space", space, "--server", servers, "--json", body]);
+    const remedy = JSON.parse(refused.stdout).error?.remedy as string | undefined;
+    const command = /^run `cotal (.+)`$/.exec(remedy ?? "")?.[1];
+    const args = command ? execWords(command.replace("<message>", "corrected body")) : undefined;
+    const retried = args ? (body === "-" ? await piped(args, (stdin) => stdin.end("corrected-stdin")) : await run(args)) : undefined;
+    const receipt = retried?.stdout.startsWith("{") ? JSON.parse(retried.stdout) : undefined;
+    check(`the retry for ${JSON.stringify(body)} keeps the destination and returns a JSON storage receipt`,
+      refused.code === 1 && refused.stderr === "" && retried?.code === 0 && receipt?.outcome === "ok"
+        && receipt.target?.space === space && receipt.result?.destination === "general" && receipt.result?.stored === true
+        && receipt.result.bodySource === (body === "-" ? "stdin" : "argument"), { refused, retried });
+  }
+  const verboseDash = await run(["send", "-c", "general", "--space", space, "--server", servers, "--plain", "--verbose", "-"]);
+  const verboseCommand = /run `(?:pnpm )?cotal (send [^`]+)`/.exec(verboseDash.stderr)?.[1];
+  const verboseRetry = verboseCommand ? await piped(execWords(verboseCommand), (stdin) => stdin.end("verbose-stdin")) : undefined;
+  check("the plain stdin retry stores the message and keeps the verbose sender details",
+    verboseDash.code === 1 && /Code: +USAGE_INVALID/.test(verboseDash.stderr) && verboseRetry?.code === 0
+      && verboseRetry.stdout.includes("Message stored") && /To: +#general/.test(verboseRetry.stdout)
+      && /^ +Sending principal: +\S+/m.test(verboseRetry.stdout) && /^ +Sender kind: +endpoint$/m.test(verboseRetry.stdout), { verboseDash, verboseRetry });
   const late = await piped(["send", "-c", "general", "--stdin", "--json"], (stdin) => {
     stdin.write("first half, ");
     setTimeout(() => stdin.end("second half after a pause"), 5_000);
   });
   check("`cotal send --stdin` waits for a writer that pauses, then stores the message",
     late.code === 0 && late.stdout.includes('"outcome":"ok"') && late.stdout.includes('"bodySource":"stdin"'), late);
+  const guide = readFileSync(new URL("../../../docs/cli-messaging.mdx", import.meta.url), "utf8");
+  const example = guide.match(/^```powershell\r?\n([^`]*?\$text \| cotal send -c updates --stdin)\r?\n```/m)?.[1];
+  const unicode = "café ✓ → ┌ 🙂\r\n";
+  const sendUtf8 = async (): ReturnType<typeof run> => {
+    if (process.platform !== "win32") return piped(["send", "-c", "updates", "--stdin", "--json"], (stdin) => stdin.end(unicode));
+    writeFileSync(join(operatorShell, "cotal.cmd"), `@"${process.execPath}" --import "${tsx}" "${cli}" %*\r\n`);
+    const script = `$env:Path = "$PWD;$env:Path"
+$root = cotal ext root
+if ($LASTEXITCODE -ne 0 -or -not "$root".StartsWith($env:XDG_CONFIG_HOME + '\\')) { exit 1 }
+$text = 'caf' + [char]0x00E9 + ' ' + [char]0x2713 + ' ' + [char]0x2192 + ' ' + [char]0x250C + ' ' + [char]::ConvertFromUtf32(0x1F642)
+${example}
+exit $LASTEXITCODE`;
+    const powershell = join(process.env.SystemRoot ?? "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
+    return new Promise((resolve) => execFile(powershell,
+      ["-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")],
+      { cwd: operatorShell, env: isolatedEnv, windowsHide: true, timeout: 30_000 },
+      (err, stdout, stderr) => resolve({ code: err && typeof err.code === "number" ? err.code : err ? 1 : 0, stdout, stderr })));
+  };
+  const utf8Send = example ? await sendUtf8() : undefined;
+  const utf8History = await run(["history", "updates", "--json"]);
+  check("the documented UTF-8 stdin send preserves Unicode and CRLF in retained history",
+    utf8Send?.code === 0 && utf8History.code === 0 && JSON.parse(utf8History.stdout).result.items[0]?.text === unicode,
+    { utf8Send, utf8History });
   const endless = await piped(["send", "-c", "general", "--stdin", "--json"], (stdin) => {
     const chunk = "z".repeat(64 * 1024);
     const more = () => { while (!stdin.destroyed && stdin.write(chunk)); };

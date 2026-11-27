@@ -1,8 +1,8 @@
 import { mkdirSync, readFileSync, rmSync } from "node:fs";
 import { hostname } from "node:os";
 import { join, resolve } from "node:path";
-import { agentFilePath, chatStream, checkEventStartup, controlReplyFromThrown, copyPersonaEndpoints, describeCleanupFailures, DEV_OWNER, EpEnvelopeError, eventChannelPrincipal, EventStateConflictError, grantOverreach, isPermissionDenied, lifecycleBlocked, loadCotalConfig, lowerPersonaEndpoints, managedRetirementOpId, mintAcceptedToken, mintGeneration, mintLifecycleUid, modelPolicyRefusal, newIdentity, parsePrincipalKey, principalKey, provisionAgent, rejectionText, renderLifecycleBlocked, resolveReadAcl, saveAgentFile, STANDING_RENEWABLE_TTL_SEC as MANAGED_STATIC_TTL_SEC, STATIC_GENERATION_HORIZON_SEC, type AgentDef, type CleanupFailure, type Connector, type ControlReply, type CotalConfig, type CotalEndpoint, type EpCaller, type EpCapability, type GoalRef, type IssuedStore, type LaunchOpts, type LaunchSpec, type LifecycleStateTransport, type PersonaEndpoint, type UserAuthLaunch } from "@cotal-ai/core";
-import { agentLifecycleSecretFilePaths, agentSecretKeyForFile, materializeSecretToFile, mergeLaunchOptions, retainConnectorSeat } from "@cotal-ai/workspace";
+import { agentFilePath, chatStream, checkEventStartup, controlReplyFromThrown, copyPersonaEndpoints, describeCleanupFailures, DEV_OWNER, EpEnvelopeError, eventChannelPrincipal, EventStateConflictError, grantOverreach, isPermissionDenied, lifecycleBlocked, loadCotalConfig, lowerPersonaEndpoints, managedRetirementOpId, mintAcceptedToken, mintGeneration, mintLifecycleUid, modelPolicyEnv, modelPolicyRefusal, newIdentity, parsePrincipalKey, principalKey, provisionAgent, rejectionText, renderLifecycleBlocked, resolveReadAcl, saveAgentFile, STANDING_RENEWABLE_TTL_SEC as MANAGED_STATIC_TTL_SEC, STATIC_GENERATION_HORIZON_SEC, type AgentDef, type CleanupFailure, type Connector, type ControlReply, type CotalConfig, type CotalEndpoint, type EpCaller, type EpCapability, type GoalRef, type IssuedStore, type LaunchChoice, type LaunchOpts, type LaunchSpec, type LifecycleStateTransport, type PersonaEndpoint, type UserAuthLaunch } from "@cotal-ai/core";
+import { agentLifecycleSecretFilePaths, agentSecretKeyForFile, isTrustedProject, materializeSecretToFile, mergeLaunchOptions, retainConnectorSeat } from "@cotal-ai/workspace";
 import type { KV } from "@nats-io/kv";
 import { CHAT_ALIAS_PREFIX } from "./chat-session.js";
 import { readContinuityAssignment, writeInlineSnapshot } from "./launch.js";
@@ -14,12 +14,14 @@ import { MAX_AGENTS, supervisePolicy } from "./resume.js";
 import type { TeardownTarget } from "./retirement.js";
 import type { AgentHandle, Runtime } from "./runtime/index.js";
 import { watchConnectorHolder } from "./seat-custody.js";
+import { optInLaunchFields } from "./harness-resolution.js";
 import { foreignEventChannels, ownLists, ownPersona, userMeshEndpointsRefusal, type SeatLaunch, type SeatLaunchDeps } from "./seat-launch.js";
 import type { ManagedAgent, SpawnHooks, StartAgentOpts } from "./seat-types.js";
 import { activateStaticLifecycle, casStaticSlot, readStaticSlot } from "./static-lifecycle.js";
 import type { TranscriptClaim } from "./transcript-receive.js";
 import type { ProvisionedUserAgent } from "./user-provision.js";
 import type { ManagerConfig } from "./manager-config.js";
+import type { ManagerStartState } from "./manager-start-state.js";
 
 class LegacyEventCountPermissionError extends Error {}
 
@@ -37,6 +39,17 @@ async function startupFailureDetail(a: ManagedAgent, outcome: "failed" | "exited
   return `${a.name}: ${failure}. See the manager log.`;
 }
 
+/** Why a runtime that starts seats outside this host (`delegatedBy`) cannot take `opts`: a choice
+ *  only this host can honour. Undefined when there is none. */
+function hostOnlyChoice(opts: StartAgentOpts, delegatedBy: string): string | undefined {
+  if (opts.resume) return `${delegatedBy}, so it cannot resume a session held on this host (resume)`;
+  if (opts.autoName) return `${delegatedBy}, so it cannot label the seat from its first message (autoName)`;
+  if (opts.resolved?.continuity === "exact") return `${delegatedBy}, so it cannot reopen a session held on this host (continuity: exact)`;
+  if (typeof opts.cwd === "string" && opts.cwd !== "")
+    return `${delegatedBy}, so it cannot run in a directory on this host's filesystem (cwd); the seat runs in its runtime resource's own directory`;
+  return undefined;
+}
+
 /** The {@link SeatLaunch} methods {@link SeatStart.startActive} calls. Each is read at call time. */
 export interface SeatStartLaunch {
   checkSpawnCwd: (...args: Parameters<SeatLaunch["checkSpawnCwd"]>) => ReturnType<SeatLaunch["checkSpawnCwd"]>;
@@ -52,12 +65,12 @@ export interface SeatStartLaunch {
 
 /** The agent-start path: admission, grant, launch, readiness and the rollback of a failed start. */
 export class SeatStart {
-  constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: SeatLaunchDeps, private readonly parts: Pick<ManagerParts, "connectorInventory">, private readonly launch: SeatStartLaunch) {}
+  constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: SeatLaunchDeps, private readonly parts: Pick<ManagerParts, "brokerTransport" | "connectorInventory" | "harnessResolution" | "namesCapacity" | "personaCatalog">, private readonly launch: SeatStartLaunch, private readonly state: ManagerStartState) {}
 
   // The Manager members startActive reads, under their Manager names. Each reads through its dep
   // at use, so a field the Manager assigns later is current and a method a test replaces on the
   // Manager is the one that runs.
-  private get auth() { return this.deps.auth(); }
+  private get auth() { return this.state.auth; }
   private awaitReadiness(...args: Parameters<Manager["awaitReadiness"]>): ReturnType<Manager["awaitReadiness"]> { return this.deps.awaitReadiness(...args); }
   private awaitStartupOutcome(...args: Parameters<Manager["awaitStartupOutcome"]>): ReturnType<Manager["awaitStartupOutcome"]> { return this.deps.awaitStartupOutcome(...args); }
   private capabilityRefusal(...args: Parameters<Manager["capabilityRefusal"]>): ReturnType<Manager["capabilityRefusal"]> { return this.deps.capabilityRefusal(...args); }
@@ -68,25 +81,21 @@ export class SeatStart {
   private eventsRefusal(...args: Parameters<Manager["eventsRefusal"]>): ReturnType<Manager["eventsRefusal"]> { return this.deps.eventsRefusal(...args); }
   private fileDigest(...args: Parameters<Manager["fileDigest"]>): ReturnType<Manager["fileDigest"]> { return this.deps.fileDigest(...args); }
   private hostLaunchFields(...args: Parameters<Manager["hostLaunchFields"]>): ReturnType<Manager["hostLaunchFields"]> { return this.deps.hostLaunchFields(...args); }
-  private issuanceSeam(...args: Parameters<Manager["issuanceSeam"]>): ReturnType<Manager["issuanceSeam"]> { return this.deps.issuanceSeam(...args); }
-  private launchHarness(...args: Parameters<Manager["launchHarness"]>): ReturnType<Manager["launchHarness"]> { return this.deps.launchHarness(...args); }
   private launchOwner(...args: Parameters<Manager["launchOwner"]>): ReturnType<Manager["launchOwner"]> { return this.deps.launchOwner(...args); }
   private get leaseStopping() { return this.deps.leaseStopping(); }
   private loadSeatRuntime(...args: Parameters<Manager["loadSeatRuntime"]>): ReturnType<Manager["loadSeatRuntime"]> { return this.deps.loadSeatRuntime(...args); }
-  private get managerInstanceId() { return this.deps.managerInstanceId(); }
+  private get managerInstanceId() { return this.state.managerInstanceId!; }
   private get meshMode() { return this.deps.meshMode(); }
   private get namesCapacity() { return this.deps.namesCapacity(); }
   private openOnceDelivery(...args: Parameters<Manager["openOnceDelivery"]>): ReturnType<Manager["openOnceDelivery"]> { return this.deps.openOnceDelivery(...args); }
-  private personaOwner(...args: Parameters<Manager["personaOwner"]>): ReturnType<Manager["personaOwner"]> { return this.deps.personaOwner(...args); }
   private place(...args: Parameters<Manager["place"]>): ReturnType<Manager["place"]> { return this.deps.place(...args); }
   private provisionUserAgent(...args: Parameters<Manager["provisionUserAgent"]>): ReturnType<Manager["provisionUserAgent"]> { return this.deps.provisionUserAgent(...args); }
   private readerRemedy(...args: Parameters<Manager["readerRemedy"]>): ReturnType<Manager["readerRemedy"]> { return this.deps.readerRemedy(...args); }
-  private get remoteAuthority() { return this.deps.remoteAuthority(); }
+  private get remoteAuthority() { return this.config.remoteAuthority; }
   private resolveConnector(...args: Parameters<Manager["resolveConnector"]>): ReturnType<Manager["resolveConnector"]> { return this.deps.resolveConnector(...args); }
   private get retirement() { return this.deps.retirement(); }
   private get runHosting() { return this.deps.runHosting(); }
   private runtimeFor(...args: Parameters<Manager["runtimeFor"]>): ReturnType<Manager["runtimeFor"]> { return this.deps.runtimeFor(...args); }
-  private seatCapRefusal(...args: Parameters<Manager["seatCapRefusal"]>): ReturnType<Manager["seatCapRefusal"]> { return this.deps.seatCapRefusal(...args); }
   private get seatCustody() { return this.deps.seatCustody(); }
   private get sessionRecovery() { return this.deps.sessionRecovery(); }
   private shredUserSecrets(...args: Parameters<Manager["shredUserSecrets"]>): ReturnType<Manager["shredUserSecrets"]> { return this.deps.shredUserSecrets(...args); }
@@ -94,7 +103,7 @@ export class SeatStart {
   private stopAndTrack(...args: Parameters<Manager["stopAndTrack"]>): ReturnType<Manager["stopAndTrack"]> { return this.deps.stopAndTrack(...args); }
   private trackDeprovision(...args: Parameters<Manager["trackDeprovision"]>): ReturnType<Manager["trackDeprovision"]> { return this.deps.trackDeprovision(...args); }
   private get transcripts() { return this.deps.transcripts(); }
-  private get userMode() { return this.deps.userMode(); }
+  private get userMode() { return this.state.userMode; }
   private get userProvision() { return this.deps.userProvision(); }
   private watchExit(...args: Parameters<Manager["watchExit"]>): ReturnType<Manager["watchExit"]> { return this.deps.watchExit(...args); }
   private watchOnceExit(...args: Parameters<Manager["watchOnceExit"]>): ReturnType<Manager["watchOnceExit"]> { return this.deps.watchOnceExit(...args); }
@@ -106,12 +115,50 @@ export class SeatStart {
   private checkSpawnCwd(...args: Parameters<SeatLaunch["checkSpawnCwd"]>): ReturnType<SeatLaunch["checkSpawnCwd"]> { return this.launch.checkSpawnCwd(...args); }
   private harnessUnavailableError(...args: Parameters<SeatLaunch["harnessUnavailableError"]>): ReturnType<SeatLaunch["harnessUnavailableError"]> { return this.launch.harnessUnavailableError(...args); }
   private onceRefusal(...args: Parameters<SeatLaunch["onceRefusal"]>): ReturnType<SeatLaunch["onceRefusal"]> { return this.launch.onceRefusal(...args); }
+
+  /** Why this manager cannot hand a seat a first command, or undefined when it can. The agent runs it
+   *  on its `agent` endpoint, which it serves on every mesh mode, as its first turn. */
+  private firstCommandRefusal(runtime: Runtime, launch: { prompt?: string; once: boolean }): string | undefined {
+    if (runtime.spawnDelegated) return `runtime "${runtime.kind}" starts seats outside this host and carries no first command (firstCommand)`;
+    if (launch.prompt !== undefined) return "a spawn's first turn is its prompt or its first command, not both (prompt, firstCommand)";
+    if (launch.once) return "a once seat's first turn is its task, so it takes no first command (once, firstCommand)";
+    return undefined;
+  }
+  /** Why this launch cannot run its variant or modes: a runtime that starts seats elsewhere carries no
+   *  modes, and the connector's catalog, read with the harness files and spawn.env names the launch
+   *  receives, must list both for the launched model. */
+  private choiceRefusal(connector: Connector, runtime: Runtime, launch: Pick<LaunchOpts, "resolvedBinaries" | "envAllow">, choice: LaunchChoice): string | Promise<string | undefined> {
+    if (choice.modes && runtime.spawnDelegated) return `runtime "${runtime.kind}" starts seats outside this host and carries no modes (modes)`;
+    return this.parts.harnessResolution.catalogRefusal(connector, launch.resolvedBinaries, launch.envAllow, choice);
+  }
   private spawnerName(...args: Parameters<SeatLaunch["spawnerName"]>): ReturnType<SeatLaunch["spawnerName"]> { return this.launch.spawnerName(...args); }
   private spawnPersona(...args: Parameters<SeatLaunch["spawnPersona"]>): ReturnType<SeatLaunch["spawnPersona"]> { return this.launch.spawnPersona(...args); }
   private spawnRun(...args: Parameters<SeatLaunch["spawnRun"]>): ReturnType<SeatLaunch["spawnRun"]> { return this.launch.spawnRun(...args); }
   private staticSpawnBound(...args: Parameters<SeatLaunch["staticSpawnBound"]>): ReturnType<SeatLaunch["staticSpawnBound"]> { return this.launch.staticSpawnBound(...args); }
   private spawnBoundRefusal(...args: Parameters<SeatLaunch["spawnBoundRefusal"]>): ReturnType<SeatLaunch["spawnBoundRefusal"]> { return this.launch.spawnBoundRefusal(...args); }
   private managedStaticInstanceReads(...args: Parameters<SeatLaunch["managedStaticInstanceReads"]>): ReturnType<SeatLaunch["managedStaticInstanceReads"]> { return this.launch.managedStaticInstanceReads(...args); }
+
+  /** Why a delegated runtime cannot start this spawn, or undefined when it can. A delegated seat
+   *  starts outside this host from values alone, so a choice only this host can honour is refused
+   *  before enrollment, and named rather than dropped. */
+  private delegatedRefusal(runtime: Runtime, opts: StartAgentOpts, hostFields: ReturnType<Manager["hostLaunchFields"]>): string | undefined {
+    const delegatedBy = `runtime "${runtime.kind}" starts seats outside this host`;
+    if (!this.remoteAuthority?.enrollManagedAgent)
+      return `${delegatedBy}, which needs a host that enrolls managed agents (remoteAuthority.enrollManagedAgent); a delegated seat has no local grant path`;
+    try {
+      this.userProvision.delegatedMeshRecord();
+    } catch (e) {
+      return rejectionText(e);
+    }
+    const hostOnly = hostOnlyChoice(opts, delegatedBy);
+    if (hostOnly) return hostOnly;
+    if (opts.askPermissions || opts.reasoningEvents)
+      return `${delegatedBy}, and its child launch takes neither askPermissions nor reasoningEvents`;
+    const shared = Object.keys(hostFields.mcpServers!);
+    if (shared.length)
+      return `${delegatedBy}, so it cannot share MCP servers that run on this host (${shared.join(", ")}); pass --share-tools none`;
+    return undefined;
+  }
 
   async startActive(opts: StartAgentOpts, spawner?: string, hooks?: SpawnHooks, authenticatedCaller?: EpCaller): Promise<ControlReply> {
     // Before the first await, so the grant, the launch, the retained form and the restart slot all read
@@ -164,6 +211,11 @@ export class SeatStart {
       if (hooks?.onAccepted) throw new EpEnvelopeError("failed-precondition", error, undefined, "not-executed");
       return { ok: false, error };
     }
+    const connectorLaunchRestriction = connector.launchUnavailable?.({ cwd: this.config.workspaceRoot, resume: opts.resume });
+    if (connectorLaunchRestriction) {
+      if (hooks?.onAccepted) throw new EpEnvelopeError("failed-precondition", connectorLaunchRestriction, undefined, "not-executed");
+      return { ok: false, error: connectorLaunchRestriction };
+    }
     // Read here, beside the connector, so the capacity check and the reserve below take no new await.
     const run = await this.spawnRun(authenticatedCaller, opts.runId);
     if (run !== undefined && "refused" in run) return { ok: false, error: `spawn: ${run.refused}` };
@@ -188,7 +240,7 @@ export class SeatStart {
     // Harness preflight before reserving a slot or minting — a missing `claude`/`opencode` binary
     // fails here with a clear name, not obscurely at process spawn. No fallback. All synchronous, so
     // the reserve gate stays atomic. (The connector itself was resolved up top, before the capacity gate.)
-    const harness = this.launchHarness(connector);
+    const harness = this.parts.harnessResolution.launchHarness(connector);
     if ("refusal" in harness) return { ok: false, error: this.harnessUnavailableError(harness.refusal, opts.route ?? "inst") };
     // Resume is a connector capability: reject an unsupported resume HERE, before the reserve/mint, so
     // it can never provision creds + durables and then throw at buildLaunch (mint-then-orphan). Same
@@ -231,7 +283,7 @@ export class SeatStart {
     let cotalConfig: CotalConfig;
     let hostFields: ReturnType<Manager["hostLaunchFields"]>;
     try {
-      cotalConfig = loadCotalConfig(this.config.workspaceRoot);
+      cotalConfig = loadCotalConfig(this.config.workspaceRoot, isTrustedProject);
       hostFields = this.hostLaunchFields(cotalConfig, agent, opts.shareTools, harness);
     } catch (e) {
       const error = rejectionText(e);
@@ -240,27 +292,8 @@ export class SeatStart {
       if (hooks?.onAccepted) throw new EpEnvelopeError("failed-precondition", error, undefined, "not-executed");
       return { ok: false, error };
     }
-    // A delegated seat starts outside this host from values alone, so a choice only this host can
-    // honour is refused here, before enrollment, and named rather than dropped.
-    if (runtime.spawnDelegated) {
-      const delegatedBy = `runtime "${runtime.kind}" starts seats outside this host`;
-      if (!this.remoteAuthority?.enrollManagedAgent)
-        return { ok: false, error: `${delegatedBy}, which needs a host that enrolls managed agents (remoteAuthority.enrollManagedAgent); a delegated seat has no local grant path` };
-      try {
-        this.userProvision.delegatedMeshRecord();
-      } catch (e) {
-        return { ok: false, error: rejectionText(e) };
-      }
-      if (opts.resume)
-        return { ok: false, error: `${delegatedBy}, so it cannot resume a session held on this host (resume)` };
-      if (opts.resolved?.continuity === "exact")
-        return { ok: false, error: `${delegatedBy}, so it cannot reopen a session held on this host (continuity: exact)` };
-      if (typeof opts.cwd === "string" && opts.cwd !== "")
-        return { ok: false, error: `${delegatedBy}, so it cannot run in a directory on this host's filesystem (cwd); the seat runs in its runtime resource's own directory` };
-      const shared = Object.keys(hostFields.mcpServers!);
-      if (shared.length)
-        return { ok: false, error: `${delegatedBy}, so it cannot share MCP servers that run on this host (${shared.join(", ")}); pass --share-tools none` };
-    }
+    const delegatedRefused = runtime.spawnDelegated ? this.delegatedRefusal(runtime, opts, hostFields) : undefined;
+    if (delegatedRefused) return { ok: false, error: delegatedRefused };
 
     // A placed spawn's cwd is checked on this host BEFORE anything is minted or reserved: an absolute
     // path this manager cannot realpath, or one that is not a directory, is refused here with the
@@ -406,7 +439,7 @@ export class SeatStart {
     const catalogCopy: AgentDef | undefined = inline?.save
       ? {
           name: ref,
-          owner: savedBy !== undefined ? this.personaOwner(principalKey(savedBy.owner, savedBy.actor).key) : spawner === undefined ? undefined : this.personaOwner(spawner),
+          owner: savedBy !== undefined ? this.parts.personaCatalog.personaOwner(principalKey(savedBy.owner, savedBy.actor).key) : spawner === undefined ? undefined : this.parts.personaCatalog.personaOwner(spawner),
           role,
           model,
           variant,
@@ -489,7 +522,9 @@ export class SeatStart {
     // declared name. Refused before any reserve or mint when the connector cannot reopen an exact
     // session or the recorded assignment does not match this declaration.
     const exact = opts.resolved?.continuity === "exact";
-    const unsupported = this.capabilityRefusal(connector, { variant, prompt, exact });
+    const unsupported = this.capabilityRefusal(connector, { variant, modes: opts.modes, prompt, firstCommand: opts.firstCommand, exact, askPermissions: opts.askPermissions, reasoningEvents: opts.reasoningEvents, events })
+      ?? (opts.firstCommand && this.firstCommandRefusal(runtime, { prompt, once: opts.once !== undefined }))
+      ?? await this.choiceRefusal(connector, runtime, hostFields, { model, variant, modes: opts.modes });
     if (unsupported) return { ok: false, error: unsupported };
     const onceRefused = opts.once && this.onceRefusal(connector, runtime, { ...opts, launchOptions, prompt }, spawner, hooks);
     if (onceRefused) return { ok: false, error: onceRefused };
@@ -594,7 +629,7 @@ export class SeatStart {
     // before any of the others reserved, and they all pass. Nothing between here and the reserve
     // awaits. It refuses BEFORE `onEffect`, so the launch states `not-executed` and leaves no
     // name, no mint and no footprint behind.
-    const overCap = this.seatCapRefusal(owner);
+    const overCap = this.parts.namesCapacity.seatCapRefusal(owner);
     if (overCap) return { ok: false, code: overCap.code, error: overCap.message, ...(overCap.details ? { details: overCap.details } : {}) };
     // Set once the agent's footprint (durables + creds, or the user-mode grant + secret files)
     // exists; cleared when a live slot takes ownership. If it survives to `finally`, the spawn threw
@@ -811,7 +846,7 @@ export class SeatStart {
               lifecycleUid,
               expiresAt: exp,
               issued,
-              issuance: this.issuanceSeam(i, "issue", issuedAgent, exp),
+              issuance: this.parts.brokerTransport.issuanceSeam(i, "issue", issuedAgent, exp),
             }),
           ),
         );
@@ -863,7 +898,7 @@ export class SeatStart {
         acceptedToken: issued?.acceptedToken,
         configPath,
         model,
-        variant,
+        variant, modes: opts.modes,
         launchOptions,
         // Fork an existing session into the mesh. Taken straight from `opts.resume` (the imperative
         // control arg), never from `opts.resolved` — so the manifest launch path carries no resume by
@@ -874,6 +909,9 @@ export class SeatStart {
         // A reopened session already had its kickoff turn, so it is not submitted again. A once
         // seat gets its prompt as its one relayed task instead.
         prompt: reopenSession === undefined && opts.once === undefined ? prompt : undefined,
+        // Never recorded on the launch, so no restart or resume runs it again.
+        firstCommand: opts.firstCommand,
+        ...(opts.autoName === true ? { autoName: true } : {}),
         ...(opts.once !== undefined ? { once: true } : {}),
         // The SAME access set the creds were minted from (above) — forwarded so the session's
         // runtime read/post set matches its credentials. Without this a manifest-spawned agent
@@ -888,6 +926,7 @@ export class SeatStart {
         endpoints: copyPersonaEndpoints(personaEndpoints) ?? [],
         events,
         eventPayloads,
+        ...optInLaunchFields(opts),
         cwd,
       };
       // A delegated seat gets no local launch at all: no launch-material file, control token or
@@ -913,7 +952,7 @@ export class SeatStart {
         }
         spec = connector.buildLaunch(launchOpts);
         if (carried) this.transcripts!.consume(opts.resumeClaim!, opts.resume!);
-        spec.env = { ...spec.env, COTAL_MANAGER_INSTANCE: this.managerInstanceId };
+        spec.env = { ...spec.env, COTAL_MANAGER_INSTANCE: this.managerInstanceId, ...modelPolicyEnv(cotalConfig, role) };
         handle = await this.seatCustody.spawnCustodied(runtime, name, spec, cwd, custody);
       }
       if (onceTask && !handle.waitForExit)
@@ -956,7 +995,9 @@ export class SeatStart {
               : { kind: "persona", ref: opts.config ? identityName : ref, configPath, configSha256 },
           cwd,
           model,
-          variant,
+          // Claude omits the variant from its launch when a native effort option takes precedence.
+          variant: connector.name === "claude" && spec ? spec.env?.COTAL_VARIANT : variant,
+          modes: opts.modes,
           // The kickoff prompt is part of the launch form: a stale-restart re-submits it, so the
           // recorded launch must carry it for the restart gate (and preserve) to see it. A once
           // seat's prompt is its task, which no relaunch may submit again.
@@ -968,6 +1009,7 @@ export class SeatStart {
           ...(personaEndpoints?.length ? { endpoints: copyPersonaEndpoints(personaEndpoints) } : {}),
           events,
           eventPayloads,
+          ...optInLaunchFields(opts),
           shareTools: opts.shareTools,
           forkSource: opts.resume,
           ...(opts.resume !== undefined && spec?.resumeRecordPath ? { resumeRecordPath: spec.resumeRecordPath } : {}),

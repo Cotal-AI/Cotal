@@ -13,6 +13,7 @@ import {
   isMeshRegistryError,
   meshFile,
   meshesDir,
+  migrateProjectTrust,
   loadMeshes,
   pinnedFetch,
   PinnedFetchRefused,
@@ -109,6 +110,7 @@ export async function meshes(args: ParsedArgs): Promise<void> {
 async function listMeshes(json: boolean): Promise<void> {
   const sweep = await pruneStaleMeshes();
   const all = loadMeshes();
+  migrateProjectTrust();
   if (all.length === 0) {
     // Zero meshes under --json is zero lines, not a prose line a JSONL reader would choke on.
     if (!json) console.log(c.dim("no meshes registered - `cotal up` starts one here, `cotal meshes add <space> --server <url>` registers one running elsewhere"));
@@ -436,7 +438,7 @@ async function rmMeshes(names: string[], v: Values): Promise<void> {
   let entries: MeshEntry[];
   try { entries = loadMeshes(); }
   catch (error) {
-    if (!isMeshRegistryError(error)) throw error;
+    if (!isMeshRegistryError(error) || error.refusal === "PERMISSION_DENIED") throw error;
     const own = names.find((name) => error.file === meshFile(name)
       || !/^space\.[0-9a-f]+$/.test(encodeURIComponent(name)) && error.file === join(meshesDir(), `${encodeURIComponent(name)}.json`));
     if (!own) throw error;

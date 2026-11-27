@@ -174,6 +174,13 @@ try {
   const afterManualRemoval = run("status", "--json");
   suite.check("clean does not acknowledge a recorded store that was already removed by hand",
     absentClean.status === 0 && !existsSync(store) && afterManualRemoval.status === 4 && Boolean(warning(afterManualRemoval, "STORE_MISSING")), absentClean.text + afterManualRemoval.text);
+  for (const mode of ["--dry-run", "--force"]) {
+    const all = run("clean", "all", mode);
+    suite.check(`controller clean all ${mode} warns when removing trust without recommending backup or restore`,
+      all.status === 0 && all.text.includes("(space trust)")
+      && all.text.includes("Backup creation and restore, including registry-only restore, are unavailable on this controller-owned stack.")
+      && !/backup restore|take a new full backup/i.test(all.text), all.text);
+  }
 } finally {
   if (started) {
     chmodSync(journalPath, 0o600);
@@ -195,9 +202,9 @@ if (process.platform !== "win32" && process.getuid?.() !== 0) {
       const options = { cwd: project, env: isolated, encoding: "utf8" as const, timeout: 120_000 };
       assertSmokeSandboxDown(pin, args, options);
       const result = spawnSync(process.execPath, [bin, ...args], options);
-      let error: { code?: string; remedy?: string } | undefined;
-      try { error = JSON.parse(result.stdout).error; } catch { error = undefined; }
-      return { status: result.status, text: result.stdout + result.stderr, error };
+      let envelope: { error?: { code?: string; remedy?: string }; result?: { kind?: string } } | undefined;
+      try { envelope = JSON.parse(result.stdout); } catch { envelope = undefined; }
+      return { status: result.status, text: result.stdout + result.stderr, error: envelope?.error, result: envelope?.result };
     };
     const must = (args: string[]) => {
       const result = cli(...args);
@@ -251,8 +258,17 @@ if (process.platform !== "win32" && process.getuid?.() !== 0) {
       suite.check(`${route} repaired restart retains history`, history.text.includes("retained-permission-marker"), history.text);
       must(["down", "--yes"]);
       // A reset leaves the stack an empty store its journal records; a clean leaves none.
-      if (route === "prepared") must(["reset", "store", selected, "--yes"]);
-      else must(["clean", "store", "--force", ...(route.startsWith("legacy") ? ["--store-dir", store] : [])]);
+      if (route === "prepared") {
+        const refused = cli("reset", "store", selected, "--json");
+        const commands = [...(refused.error?.remedy ?? "").matchAll(/`cotal ([^`]+)`/g)].map((match) => match[1]!);
+        const jetstream = join(store, "jetstream");
+        suite.check("reset refusal keeps the store and offers JSON preview and confirmation", refused.status === 1 && refused.error?.code === "USAGE_INVALID"
+          && commands.join("\n") === `reset store ${selected} --dry-run --json\nreset store ${selected} --yes --json` && existsSync(jetstream), refused.text);
+        const preview = must(commands[0]?.split(" ") ?? []);
+        suite.check("the printed reset preview returns JSON without changing the store", preview.result?.kind === "reset-local-impact-preview" && existsSync(jetstream), preview.text);
+        const reset = must(commands[1]?.split(" ") ?? []);
+        suite.check("the printed reset confirmation removes JetStream and returns a JSON receipt", reset.result?.kind === "reset-store" && !existsSync(jetstream), reset.text);
+      } else must(["clean", "store", "--force", ...(route.startsWith("legacy") ? ["--store-dir", store] : [])]);
       suite.check(`${route} cleanup succeeds after the exact startup remedy`, route === "prepared" ? existsSync(store) && readdirSync(store).length === 0 : !existsSync(store));
     } finally {
       spawnSync("chmod", ["-R", "u+rwX", project]);

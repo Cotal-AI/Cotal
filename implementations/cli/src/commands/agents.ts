@@ -1,20 +1,30 @@
 import { DEV_OWNER, assertLifecycleToken, peerLabel, type CompletionResult, type FlagSpec, type FlagValues, type ParsedArgs, type Presence } from "@cotal-ai/core";
 import {
+  authDir,
   brokerAddressForDisplay,
   brokerUrlKey,
+  cachedPreferences,
+  canonicalRoot,
   checkServer,
   codeSpan,
   CommandFailure,
+  findCotalRoot,
   findMesh,
   instanceIdShaped,
   isCommandFailure,
   isConnectRefusal,
+  isGenuineSpace,
   isWorkspaceTargetError,
   jsonFlag,
+  legacyStackOtherHome,
+  meshesForRoot,
   oneLine,
   renderReport,
   plainFlag,
+  preparedNeverStarted,
+  preparedSpaceAt,
   presentationOf,
+  projectRootProblem,
   resolveSeatControlTarget,
   targetFlags,
   writeResult,
@@ -29,7 +39,9 @@ import {
   recordOperationSpace,
   resolveControlTarget,
   resolveMeshTarget,
+  resolvePreference,
   retainedLegacyBroker,
+  soleSpaceOf,
   spaceRootTarget,
   stoppedStack,
   workspaceErrorParts,
@@ -39,18 +51,22 @@ import * as prompts from "../lib/prompts.js";
 import { canPrompt } from "./meshes-wizard.js";
 import { presenceFacts } from "../ui.js";
 import { cliControl, onInstance, onFlag, onRerun, refuseControlCreds } from "../lib/control.js";
-import { AgentManagerUnsettled, managerPin, noLiveManager } from "../lib/manager-choice.js";
+import { AgentManagerUnsettled, managerPin, managerRosterHint, noLiveManager } from "../lib/manager-choice.js";
 import { openTransient } from "../lib/transient.js";
 import { attachSeat as attachSeatWith, detachKey, type AttachTarget, type AttachVerdict } from "@cotal-ai/workspace/attach";
 import { completingFlagValue } from "../lib/completion.js";
 import { displayCmd } from "../lib/self-exec.js";
 import { shellWord } from "../lib/endpoint-errors.js";
-import { runningStackManagerPid, stackManagerAbsent, stackManagerStarting, unusableStackJournal } from "../lib/stack-journal.js";
-import { connectorHarnesses } from "../lib/status.js";
+import { targetWords } from "../lib/confirmation-required.js";
+import { legacyBrokerPidfileBlock, runningStackManagerPid, stackManagerAbsent, stackManagerStarting, unusableStackJournal } from "../lib/stack-journal.js";
+import { connectorHarnesses, defaultLaunchBlock } from "../lib/status.js";
+import { defaultPersonaPin, directPersonaPath } from "../lib/spawn-defaults.js";
 import { channelSeedRestartBlock } from "../lib/channel-seed.js";
+import { preparedRootWriteProblem } from "../lib/paths.js";
 import { legacyRestartAddressProblem } from "../lib/broker-service.js";
+import { retainedOpenSpace } from "../lib/legacy-start.js";
 import { rootStoreProblem } from "../lib/store-dir.js";
-import { askManager, scatterManager, managerFailure, readFailure, refuseUnregisteredManager, startStackManagerRemedy, unansweredDescribeRefusal, type ScatterInstanceLiveness, type ScatterInstanceReply, type ManagerPin, managersByInstance, type ManagerCandidate, askYourManagers, locateSeat, managerReadFailure, refusedManagers, seatMissRefusal } from "@cotal-ai/workspace/control";
+import { askManager, scatterManager, managerFailure, readFailure, refuseUnregisteredManager, startStackManagerRemedy, unansweredDescribeRefusal, type ScatterInstanceLiveness, type ScatterInstanceReply, type ScatterReply, type ManagerPin, managersByInstance, type ManagerCandidate, askYourManagers, locateSeat, managerReadFailure, refusedManagers, seatMissRefusal } from "@cotal-ai/workspace/control";
 
 /**
  * The manager's operator clients — thin control-plane request/reply commands (`stop`/`ps`/
@@ -113,7 +129,7 @@ export function managedTarget(args: ParsedArgs, operation: "stop" | "attach", al
   }
   const options = operation === "stop" ? stopRetryWords(v) : v["no-reconnect"] ? ["--no-reconnect"] : [];
   const verb = `cotal ${operation}`;
-  if (typeof on === "string") onInstance(on, name === undefined ? onRerun(`${verb} <name>`, v, options) : onRemedyVerb(verb, { ...v, name }, options));
+  if (typeof on === "string") onInstance(on, name === undefined ? onRerun(`${verb} <name>`, v, options) : onRemedyVerb(verb, { ...v, name }, options), managerRosterHint(v));
   const pin = typeof on === "string" ? ["--on", on] : [];
   const needsName = operation === "stop" ? !name?.trim() : name === undefined && allowPicker && !canPrompt();
   if (needsName && typeof on === "string" && !instanceIdShaped(on)) {
@@ -312,10 +328,11 @@ const stopRetryWords = (v: { force?: unknown; json?: unknown; plain?: unknown })
   ...(v.json === true ? ["--json"] : v.plain === true ? ["--plain"] : []),
 ];
 
-/** The words a terminal input retry needs to keep the original text and Enter behavior. */
-const inputRetryWords = (text: string, noEnter?: boolean): string[] => [
+/** Keep the original text, Enter behavior and receipt format on a terminal input retry. */
+const inputRetryWords = (text: string, v: Pick<FlagValues<typeof inputFlags>, "no-enter" | "json" | "plain">): string[] => [
   text.startsWith("-") ? `--text=${text}` : text,
-  ...(noEnter === true ? ["--no-enter"] : []),
+  ...(v["no-enter"] === true ? ["--no-enter"] : []),
+  ...(v.json === true ? ["--json"] : v.plain === true ? ["--plain"] : []),
 ];
 
 /** Resolve a targeted verb's manager and retain the presence-selected seat for its fresh caller.
@@ -576,7 +593,7 @@ export interface PsResult {
  *  `status`'s reading that no agent application is set up here, so an empty list's Next agrees with
  *  the one `status` gives. `interactive` is whether a terminal is there to answer `setup`'s
  *  questions, as `status` reads it: without one, the Next points at `setup --help` instead. */
-export function psView(result: PsResult, wide: boolean, rowsOf: ReadonlyMap<string, readonly unknown[]> = new Map(), noApplication = false, mode?: string, interactive = true, spawnCommand?: string): Report {
+export function psView(result: PsResult, wide: boolean, rowsOf: ReadonlyMap<string, readonly unknown[]> = new Map(), noApplication = false, mode?: string, interactive = true, spawnCommand?: string, seatCommand?: (verb: "attach" | "stop") => string, launchBlock?: string): Report {
   const empty = result.kind === "slots" ? "No active static slots." : "No managed agents.";
   const blocksFor = (rows: readonly unknown[]): Block[] =>
     !rows.length ? [{ kind: "lines", lines: [{ text: empty, tone: "hint" }] }]
@@ -585,16 +602,19 @@ export function psView(result: PsResult, wide: boolean, rowsOf: ReadonlyMap<stri
   // A single manager that answered is the common case: a flat list, no per-manager grouping noise.
   // Its instance id is still shown, with or without agents, because it is what `--on` takes.
   if (result.managers.length <= 1 && result.managers.every((m) => m.state === "answered")) {
-    const next = result.items.length ? [
-      { command: `${displayCmd()} attach <name>`, description: "Return to an agent's terminal" },
-      { command: `${displayCmd()} stop <name>`, description: "Stop one agent" },
+    const next = result.items.length ? seatCommand === undefined ? [] : [
+      { command: seatCommand("attach"), description: "Return to an agent's terminal" },
+      { command: seatCommand("stop"), description: "Stop one agent" },
     ] : noApplication ? [interactive ? { command: `${displayCmd()} setup`, description: "Set up an agent application" } : { command: `${displayCmd()} setup --help`, description: "See setup flags for scripts. Bare setup needs a terminal." }]
     : spawnCommand === undefined ? [] : [{ command: spawnCommand, description: "Launch your default agent" }];
     const sections: Section[] = [
       { title: result.kind === "slots" ? "Static slots" : "Agents", blocks: blocksFor(result.items) },
       ...result.managers.map((m): Section => ({ title: "Manager", blocks: [{ kind: "fields", rows: [["instance", m.instanceId], ...(m.reportedHost ? [["reported host", m.reportedHost] as [string, string]] : [])] }] })),
     ];
-    if (next.length) sections.push({ title: "Next", blocks: [{ kind: "commands", items: next }] });
+    if (next.length || launchBlock) sections.push({ title: "Next", blocks: [
+      ...(next.length ? [{ kind: "commands" as const, items: next }] : []),
+      ...(launchBlock ? [{ kind: "lines" as const, lines: [{ text: launchBlock, tone: "hint" as const }] }] : []),
+    ] });
     return { sections };
   }
   // Several managers: one section each, named by the FULL instance id, since `--on` takes nothing
@@ -616,20 +636,80 @@ export function psView(result: PsResult, wide: boolean, rowsOf: ReadonlyMap<stri
   };
 }
 
-/** Whether no agent application is set up here, as `status` reports "Agent applications: not set up".
- *  An inventory that cannot be read says nothing, so the Next stays the launch. */
-function noApplicationHere(): boolean {
-  try { return connectorHarnesses().every((harness) => harness.missing.length > 0); } catch { return false; }
+/** Resolve the target of the suggested foreground launch, independently of the manager's defaults. */
+function psLaunchNext(scope: { space?: string; server?: string }, command?: string): { noApplication?: boolean; spawn?: string; block?: string } {
+  let noApplication = false;
+  try {
+    const connectors = connectorHarnesses();
+    noApplication = connectors.every((harness) => harness.missing.length > 0);
+    if (!command || !connectors.length) return { noApplication };
+    const { space, root } = resolveMeshTarget(process.cwd(), { ...scope, readOnly: true });
+    const context = { space, preferences: cachedPreferences() };
+    const persona = resolvePreference("persona", context).winner!;
+    const pin = defaultPersonaPin(directPersonaPath(root, persona.value), persona.source === "default");
+    const harness = resolvePreference("harness", { ...context, pin }).value!;
+    const block = defaultLaunchBlock(harness, connectors);
+    return block ? { noApplication, block } : { spawn: command };
+  } catch {
+    // This is optional advice. An unreadable inventory or persona cannot confirm a launch.
+    return { noApplication };
+  }
+}
+
+function psCommand(v: FlagValues<typeof psFlags>, slots = false): string | undefined {
+  if (v.server !== undefined && brokerAddressForDisplay(v.server) !== v.server) return undefined;
+  const words = [...(slots ? ["--slots"] : []), ...(v.on === undefined ? [] : ["--on", v.on]), ...(v.wide ? ["--wide"] : []), ...(v.json ? ["--json"] : []), ...(v.plain ? ["--plain"] : [])];
+  return onRerun("cotal ps", v, words);
 }
 
 function psRerun(v: FlagValues<typeof psFlags>, slots = false): string {
-  if (v.server !== undefined && brokerAddressForDisplay(v.server) !== v.server) return "the same command";
-  const words = [...(slots ? ["--slots"] : []), ...(v.on === undefined ? [] : ["--on", v.on]), ...(v.wide ? ["--wide"] : []), ...(v.json ? ["--json"] : []), ...(v.plain ? ["--plain"] : [])];
-  return codeSpan(onRerun("cotal ps", v, words));
+  const command = psCommand(v, slots);
+  return command ? codeSpan(command) : "the same command";
 }
 
 function liveSeatsRemedy(v: FlagValues<typeof psFlags>): string {
   return `run ${psRerun(v)} without --slots to list live agents`;
+}
+
+/** Surface an unusable local stack journal when `ps` fails against the local stack or its saved broker address. */
+function psUnusableJournalRefusal(e: unknown, v: FlagValues<typeof psFlags>): CommandFailure | undefined {
+  if (isWorkspaceTargetError(e) && e.code === "not-started" && e.details.root !== undefined && !e.details.rootMissing) {
+    const saved = v.server === undefined ? undefined : e.details.server ?? retainedLegacyBroker(e.details.root)?.server;
+    if (v.server === undefined || (saved !== undefined && brokerUrlKey(v.server) === brokerUrlKey(saved))) {
+      const journal = unusableStackJournal(e.details.root);
+      if (journal) return new CommandFailure("refused", journal.code, journal.message, { target: spaceRootTarget(e.details), remedy: journal.remedy });
+    }
+  }
+  if (v.server === undefined || v.creds !== undefined || !isConnectRefusal(e) || e.code !== "TARGET_UNAVAILABLE") return undefined;
+  if (typeof e.target?.root === "string") {
+    const { root, space } = e.target;
+    if (projectRootProblem(root) !== undefined) return undefined;
+    const entry = typeof space === "string" ? findMesh(space) : undefined;
+    const sameServer = entry
+      ? entry.origin === "up" && canonicalRoot(entry.root) === canonicalRoot(root) && brokerUrlKey(entry.server) === brokerUrlKey(v.server)
+      : isGenuineSpace(root) && (() => {
+          const saved = retainedLegacyBroker(root)?.server;
+          return saved !== undefined && brokerUrlKey(v.server) === brokerUrlKey(saved);
+        })();
+    if (!sameServer) return undefined;
+    const journal = unusableStackJournal(root);
+    if (!journal) return undefined;
+    const targetSpace = entry ? entry.space : v.space ?? preparedSpaceAt(root)?.space;
+    return new CommandFailure("refused", journal.code, journal.message, { target: spaceRootTarget({ space: targetSpace, root }), remedy: journal.remedy });
+  }
+  if (e.target?.root === undefined && v.space !== undefined) {
+    const root = findCotalRoot(process.cwd());
+    if (!isGenuineSpace(root) || projectRootProblem(root) !== undefined || meshesForRoot(root).length > 0 || preparedSpaceAt(root) !== undefined) return undefined;
+    try { if (legacyStackOtherHome(root) !== undefined) return undefined; } catch { return undefined; }
+    const retained = retainedLegacyBroker(root);
+    if (!retained || brokerUrlKey(v.server) !== brokerUrlKey(retained.server)) return undefined;
+    let space: string | undefined;
+    try { space = retained.open ? retainedOpenSpace(root) : soleSpaceOf(authDir(root)); } catch { space = undefined; }
+    if (space !== v.space) return undefined;
+    const journal = unusableStackJournal(root);
+    if (journal) return new CommandFailure("refused", journal.code, journal.message, { target: spaceRootTarget({ space: v.space, root }), remedy: journal.remedy });
+  }
+  return undefined;
 }
 
 export async function ps(args: ParsedArgs): Promise<void> {
@@ -650,23 +730,23 @@ export async function ps(args: ParsedArgs): Promise<void> {
   let on: string | undefined;
   let census: SeatCensus;
   try {
-    on = await managerPin(v, onRerun("cotal ps", v, slots ? ["--slots"] : []));
+    if (v.on !== undefined) {
+      const unpinned = { ...v, on: undefined };
+      const retry = psCommand(unpinned, slots) ?? { remedy: "replace the --on value in the original command with the full manager instance id" };
+      on = await managerPin(v, retry, psCommand(unpinned));
+    }
     census = await readSeats(v, command, on);
   } catch (e) {
-    if (isWorkspaceTargetError(e) && e.code === "not-started" && e.details.root !== undefined && !e.details.rootMissing) {
-      const saved = v.server === undefined ? undefined : e.details.server ?? retainedLegacyBroker(e.details.root)?.server;
-      if (v.server === undefined || (saved !== undefined && brokerUrlKey(v.server) === brokerUrlKey(saved))) {
-        const journal = unusableStackJournal(e.details.root);
-        if (journal) throw new CommandFailure("refused", journal.code, journal.message, { target: spaceRootTarget(e.details), remedy: journal.remedy });
-      }
-    }
+    const journalRefusal = psUnusableJournalRefusal(e, v);
+    if (journalRefusal) throw journalRefusal;
     const parts = isConnectRefusal(e) ? e.parts : isWorkspaceTargetError(e) && e.code === "not-started" ? workspaceErrorParts({ kind: "target", error: e }) : undefined;
     if (parts?.restartRoot !== undefined) {
       const cause = isConnectRefusal(e) ? e.cause : e;
-      const block = channelSeedRestartBlock(parts.restartRoot) ?? (isWorkspaceTargetError(cause) && cause.details.lastRun
+      const writeProblem = isWorkspaceTargetError(cause) && cause.code === "not-started" && (cause.details.stopped || preparedNeverStarted(cause.details)) ? preparedRootWriteProblem(parts.restartRoot) : undefined;
+      const block = writeProblem ?? channelSeedRestartBlock(parts.restartRoot) ?? (isWorkspaceTargetError(cause) && cause.details.lastRun
         ? await legacyRestartAddressProblem(cause.details.server, `${displayCmd()} up`)
         : isWorkspaceTargetError(e) && e.details.stopped && e.details.space !== undefined
-          ? await (await import("./stack-up.js")).stackStartAddressProblem(parts.restartRoot, e.details.space, v.server)
+          ? legacyBrokerPidfileBlock(parts.restartRoot) ?? await (await import("./stack-up.js")).stackStartAddressProblem(parts.restartRoot, e.details.space, v.server)
           : undefined);
       const first = isWorkspaceTargetError(cause) && cause.details.space !== undefined && cause.details.stopped === undefined;
       if (block) throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `${parts.message}. ${first ? "First start" : "Restart"} blocked: ${block.message}`, {
@@ -681,9 +761,15 @@ export async function ps(args: ParsedArgs): Promise<void> {
     if (slots || on !== undefined || !failure || !(failure instanceof NoManagerAnswered || noLiveManager(failure))) throw e;
     return psFromPresence(v, presentation);
   }
-  const spawnCommand = v.server !== undefined && brokerAddressForDisplay(v.server) !== v.server ? undefined
-    : onRerun(`${displayCmd()} spawn`, { space: v.server === undefined ? census.target.space : v.space, server: v.server });
-  const view = (result: PsResult): Report => psView(result, wide, census.rowsOf, !result.items.length && noApplicationHere(), census.mode, presentation === "rich" && canPrompt(), spawnCommand);
+  const scope = v.server !== undefined && brokerAddressForDisplay(v.server) !== v.server ? undefined
+    : { space: v.server === undefined ? census.target.space : v.space, server: v.server };
+  const spawnCommand = scope && onRerun(`${displayCmd()} spawn`, scope);
+  const manager = census.target.managerInstanceId;
+  const seatCommand = scope && ((verb: "attach" | "stop") => onRerun(`${displayCmd()} ${verb} <name>`, scope, manager ? ["--on", manager] : []));
+  const view = (result: PsResult): Report => {
+    const next = result.items.length || result.managers.length > 1 ? {} : psLaunchNext(scope ?? {}, spawnCommand);
+    return psView(result, wide, census.rowsOf, next.noApplication, census.mode, presentation === "rich" && canPrompt(), next.spawn, seatCommand, next.block);
+  };
   writeResult(
     presentation,
     {
@@ -733,14 +819,15 @@ function startManagerNext(root: string | undefined, space: string, named: boolea
   const pid = root === undefined ? undefined : runningStackManagerPid(root, space);
   if (pid !== undefined) return { command: `kill -KILL ${pid}`, description: "End the stack manager that does not answer; bare `cotal up` then starts it again" };
   const entry = findMesh(space);
-  if (root !== undefined && (stackManagerAbsent(root, space) || (entry?.origin === "up" && entry.root === root))) return { command: "cotal up", description: "Start the stack's manager" };
+  if (root !== undefined && (stackManagerAbsent(root, space, { unanswered: true }) || (entry?.origin === "up" && entry.root === root))) return { command: "cotal up", description: "Start the stack's manager" };
   return { command: `cotal manager start${at}`, description: "Start a manager for this space" };
 }
 
 /** Read one named seat from its presence-selected owner. User-auth keeps its authorized census. */
 async function readNamedSeat(values: FlagValues<typeof psFlags>, name: string): Promise<SeatCensus> {
   refuseControlCreds(values.creds, values.space);
-  const on = await managerPin(values, onRemedyVerb("cotal status", { ...values, name }));
+  const output = values.json === true ? ["--json"] : values.plain === true ? ["--plain"] : [];
+  const on = await managerPin(values, onRemedyVerb("cotal status", { ...values, name }, output));
   if (name === "manager") return readSeats(values, "ps", on);
   const { mode } = await connectOrThrow(values, "observer", { readOnly: true });
   if (mode === "user") return readSeats(values, "ps", on);
@@ -764,6 +851,20 @@ function managerItselfRemedy(name: string, openMesh: boolean, { space, server }:
     : codeSpan(onRerun(verb + at, { server }));
   const status = `${name} is this space's manager, which is answering, not an agent it runs. ${read("cotal status")} shows the manager's state.`;
   return openMesh ? status : `${status} ${read("cotal endpoint describe manager")} reads its commands.`;
+}
+
+/** Read the reported model and variant for a seat without a recorded model request. */
+async function observedSeatModel(values: ConnectFlags, row: AgentRow) {
+  const { ep } = await openTransient(values, "status", { throwOnRefusal: true, presenceOnly: true, report: () => {} });
+  try {
+    if (ep.presenceView().state !== "current") return;
+    const id = row.id.includes(".") ? row.id : `${DEV_OWNER}.${row.id}`;
+    const meta = ep.getRoster().find((p) => p.card.id === id && p.lifecycleUid === row.lifecycleUid)?.card.meta;
+    if (typeof meta?.model === "string" && meta.model)
+      return { model: meta.model, variant: typeof meta.variant === "string" && meta.variant ? meta.variant : undefined };
+  } finally {
+    await ep.stop().catch(() => {});
+  }
 }
 
 /** A named-agent detail uses its holding manager's inspect read and checks the selected lifecycle. */
@@ -793,6 +894,8 @@ export async function agentStatus(args: ParsedArgs): Promise<void> {
     catch { managerHint = " --on <manager-instance>"; }
   }
   const projected = item ? agentStatusProjection(item, managerInstanceId) : { identity: null, execution: null, mesh: null, activity: null, details: null };
+  const observed = presentation !== "json" && (item?.agent === "opencode" || item?.agent === "codex") && !item.model && projected.mesh?.presenceState !== null && item.lifecycleUid
+    ? await observedSeatModel(values, item).catch(() => undefined) : undefined;
   writeResult(presentation, {
     command: "status",
     target: { ...census.target, name },
@@ -808,13 +911,15 @@ export async function agentStatus(args: ParsedArgs): Promise<void> {
     ] };
     const identity = result.identity, execution = result.execution, mesh = result.mesh, activity = result.activity;
     const credential: [string, Cell][] = row.authHealth ? [["Credential", { text: row.authHealth, tone: authTone(row) }]] : [];
+    const model = execution.model ? `${execution.model} · requested, not provider-confirmed`
+      : observed ? `${observed.model} · reported by ${row.agent === "codex" ? "Codex" : "OpenCode"}` : "not reported";
     return { sections: [
       { title: "Identity", blocks: [
         ...(census.partial ? [{ kind: "lines" as const, lines: [{ text: "Other managers did not answer. This is one known match, not a complete uniqueness check.", tone: "waiting" as const }] }] : []),
         { kind: "fields", rows: [["Agent", psSeatLabel({ name: identity.name, id: row.id })], ["Space", census.target.space], ["Principal", row.id], ["Owner", identity.owner ?? "not established"], ["Actor", identity.actor ?? "not established"], ["Lifecycle", identity.lifecycleUid ?? "not reported"], ["Role", result.details.role ?? "not reported"]] },
       ] },
       { title: "Execution", blocks: [
-        { kind: "fields", rows: [["Process", processCell(row)], ["Application", execution.harness], ["Model", execution.model ? `${execution.model} · requested, not provider-confirmed` : "not reported"], ["Variant", result.details.variant ?? "not reported"], ["Reported provider", result.details.providerSource === "exact-principal-lifecycle" ? result.details.provider ?? "not reported" : "not established"], ["Name-matched provider", result.details.providerSource === "name-match-unverified" ? result.details.provider ?? "not reported" : "none"], ["Runtime", execution.runtime], ["PID", execution.pid === null ? "not reported" : String(execution.pid)], ["Host", execution.host ?? "not reported"], ["Folder", result.details.cwd ?? "not reported"], ["Manager", execution.managerInstanceId ?? "not reported"], ...credential] },
+        { kind: "fields", rows: [["Process", processCell(row)], ["Application", execution.harness], ["Model", model], ["Variant", result.details.variant ?? observed?.variant ?? "not reported"], ["Reported provider", result.details.providerSource === "exact-principal-lifecycle" ? result.details.provider ?? "not reported" : "not established"], ["Name-matched provider", result.details.providerSource === "name-match-unverified" ? result.details.provider ?? "not reported" : "none"], ["Runtime", execution.runtime], ["PID", execution.pid === null ? "not reported" : String(execution.pid)], ["Host", execution.host ?? "not reported"], ["Folder", result.details.cwd ?? "not reported"], ["Manager", execution.managerInstanceId ?? "not reported"], ...credential] },
         ...(row.authReason ? [{ kind: "lines" as const, lines: [{ text: row.authReason, tone: authTone(row) }] }] : []),
       ] },
       { title: "Mesh", blocks: [
@@ -928,27 +1033,50 @@ export async function readSeats(v: ConnectFlags & FlagValues<typeof psFlags>, co
   // what this command established about it (pin 3).
   const target = { space: t.space, scope: "all-managers" };
   const scatter = await scatterManager(cliControl, t.space, t.server, command, t.auth, t.spaceAuth, undefined, { reportHosts: true });
+  if (!scatter.ok) throwScatterFailure(scatter, target, t, command, v);
+  return seatCensus(target, scatter.instances, command, t.mode, v);
+}
+
+/** Classify a failed `ps` / `slots` scatter against this root's local stack state without
+ *  mistaking an unanswered registered standalone manager for an absent stack manager. */
+export function throwScatterFailure(
+  scatter: Extract<ScatterReply, { ok: false }>,
+  target: { space: string; scope: string },
+  t: { root?: string; space: string; server: string },
+  command: "ps" | "slots",
+  v: FlagValues<typeof psFlags>,
+): never {
   // An empty manager registry on this root's own controller stack, whose manager does not run, is
   // a known boundary with a remedy; the registry's own failure stays the cause. So is a registry
   // that still lists that manager after its process died: no manager answered the read. While an
   // `up` is still starting that manager, the answer is to wait for it, not to start another.
-  if (!scatter.ok && (scatter.code === "failed-precondition" || scatter.unanswered === true) && t.root !== undefined) {
+  if ((scatter.code === "failed-precondition" || scatter.unanswered === true) && t.root !== undefined) {
     const native = { code: scatter.code, ...(scatter.error ? { detail: scatter.error } : {}) };
     if (stackManagerStarting(t.root, t.space))
       throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "the stack's manager is starting, so it has no managed agents to list yet", { target, native, remedy: `run ${psRerun(v, command === "slots")} again once \`cotal up\` reports the manager started` });
-    if (stackManagerAbsent(t.root, t.space))
-      throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "no manager is running for this space, so it has no managed agents to list", { target, native, remedy: startStackManagerRemedy(t.space, t.server) });
+    if (stackManagerAbsent(t.root, t.space, { unanswered: scatter.unanswered === true }))
+      throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "no manager is running for this space, so it has no managed agents to list", { target, native, remedy: psManagerStartRemedy(t) });
   }
-  const silentPid = !scatter.ok && scatter.unanswered === true && t.root !== undefined ? runningStackManagerPid(t.root, t.space) : undefined;
-  if (!scatter.ok && silentPid !== undefined)
+  const silentPid = scatter.unanswered === true && t.root !== undefined ? runningStackManagerPid(t.root, t.space) : undefined;
+  if (silentPid !== undefined)
     throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `this space's stack manager (pid ${silentPid}) is running but did not answer, so no agents were listed`, { target, native: { code: scatter.code, ...(scatter.error ? { detail: scatter.error } : {}) }, remedy: `if it stays unresponsive, end that process with kill -KILL ${silentPid}; then bare \`cotal up\` starts the manager again` });
   // Anywhere else, a registry that was read and lists no live manager is the same boundary: no
   // manager was asked. It is not proof that no manager process runs, since one that is starting or
   // cannot register is not listed, so the refusal says only what the registry showed.
-  if (!scatter.ok && scatter.noLiveManager)
-    throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "no manager is registered for this space, so none was asked and nothing was listed. A manager that is still starting or cannot register has no registration either, so this does not show that no manager process runs", { target, native: { code: scatter.code, ...(scatter.error ? { detail: scatter.error } : {}) }, remedy: startStackManagerRemedy(t.space, t.server) });
-  if (!scatter.ok) throw readFailure(scatter, target);
-  return seatCensus(target, scatter.instances, command, t.mode, v);
+  if (scatter.noLiveManager)
+    throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "no manager is registered for this space, so none was asked and nothing was listed. A manager that is still starting or cannot register has no registration either, so this does not show that no manager process runs", { target, native: { code: scatter.code, ...(scatter.error ? { detail: scatter.error } : {}) }, remedy: psManagerStartRemedy(t) });
+  throw readFailure(scatter, target);
+}
+
+/** Diagnose the channel seed only for the recorded local stack at the broker we asked. */
+function psManagerStartRemedy(t: { root?: string; space: string; server: string }): string {
+  let entry: ReturnType<typeof findMesh>;
+  try { entry = findMesh(t.space); } catch { entry = undefined; }
+  if (entry?.origin === "up" && entry.root === t.root && brokerUrlKey(entry.server) === brokerUrlKey(t.server)) {
+    const block = channelSeedRestartBlock(entry.root);
+    if (block) return `${block.message}. ${block.remedy}`;
+  }
+  return startStackManagerRemedy(t.space, t.server);
 }
 
 /** A census from the slots of a scatter: each answered instance's rows as it returned them, every
@@ -1045,10 +1173,10 @@ async function readYourManagers(v: ConnectFlags & FlagValues<typeof psFlags>, co
   return seatCensus({ space, scope: "your-managers" }, instances, command, mode, v);
 }
 
-/** The remedy for a seat whose runtime streams no terminal, naming what does reach it in this
- *  CLI's own commands. */
-function noTerminalRemedy({ space, name }: { space: string; name: string }): string {
-  return `nothing was attached and the agent was not touched; follow the runtime's own guidance above, or reach the seat over the mesh with ${codeSpan(`${displayCmd()} send -t ${shellWord(name)} "<message>"`)} and ${codeSpan(`${displayCmd()} watch --space ${shellWord(space)}`)}`;
+/** Mesh commands for a seat whose runtime streams no terminal. Keep a private broker address out of the receipt. */
+export function noTerminalCommands(name: string, space: string, server?: string): { send: string; watch: string } {
+  const target = targetWords({ space, server: server !== undefined && brokerAddressForDisplay(server) !== server ? "<original-server>" : server });
+  return { send: `${displayCmd()} send -t ${shellWord(name)} "<message>"${target}`, watch: `${displayCmd()} watch${target}` };
 }
 
 /**
@@ -1063,7 +1191,10 @@ export async function attachSeat(
 ): Promise<AttachVerdict> {
   if (opts.onRefusal === "exit") refuseControlCreds(v.creds, v.space);
   const pin = opts.on === undefined && opts.onRefusal === "exit" ? await pinForTarget(v as never, "cotal attach") : { instanceId: opts.on };
-  return attachSeatWith({ ...v, expectedSeat: pin.expectedSeat ?? v.expectedSeat }, { ...opts, on: pin.instanceId, control: cliControl, verb: "cotal attach", noTerminalRemedy });
+  return attachSeatWith({ ...v, expectedSeat: pin.expectedSeat ?? v.expectedSeat }, { ...opts, on: pin.instanceId, control: cliControl, verb: "cotal attach", noTerminalRemedy: ({ name, space }) => {
+    const { send, watch } = noTerminalCommands(name, space, v.server);
+    return `nothing was attached and the agent was not touched; follow the runtime's own guidance above, or reach the seat over the mesh with ${codeSpan(send)} and ${codeSpan(watch)}`;
+  } });
 }
 
 async function pickAttach(values: FlagValues<typeof attachFlags>): Promise<{ name: string; on: string; expectedTarget: NonNullable<ManagerPin["expectedTarget"]> } | undefined> {
@@ -1077,7 +1208,12 @@ async function pickAttach(values: FlagValues<typeof attachFlags>): Promise<{ nam
     return { name: row.name, on, expectedTarget: { id: row.id, lifecycleUid: row.lifecycleUid }, status: typeof row.status === "string" ? row.status : "not reported" };
   });
   if (census.partial) console.error(renderReport({ space: census.target.space, sections: [{ title: "Agent list is partial", blocks: [{ kind: "lines", lines: [{ text: census.partial.message, tone: "waiting" }] }] }] }, "rich", process.stderr));
-  if (!choices.length) throw new CommandFailure("refused", census.partial ? "TARGET_UNAVAILABLE" : "TARGET_NOT_FOUND", census.partial ? "no attachable agent was returned; some managers did not answer" : "the answering managers report no agents to attach", { target: census.target, remedy: "run `cotal ps`, or launch an agent with `cotal spawn`" });
+  if (!choices.length) {
+    const remedy = values.server !== undefined && brokerAddressForDisplay(values.server) !== values.server
+      ? "list or launch agents on the same broker"
+      : `run ${psRerun(values)}, or launch an agent with ${codeSpan(onRerun("cotal spawn", values, values.on === undefined ? [] : ["--on", values.on]))}`;
+    throw new CommandFailure("refused", census.partial ? "TARGET_UNAVAILABLE" : "TARGET_NOT_FOUND", census.partial ? "no attachable agent was returned; some managers did not answer" : "the answering managers report no agents to attach", { target: census.target, remedy });
+  }
   const choice = await prompts.select({
     message: `Return to an agent in ${oneLine(census.target.space)}`,
     options: choices.map((item, index) => ({ value: index, label: attachChoiceLabel({ name: item.name, id: item.expectedTarget.id, status: item.status }), hint: oneLine(`${item.expectedTarget.id} · manager ${item.on}`) })),
@@ -1102,18 +1238,27 @@ export async function attach(args: ParsedArgs): Promise<void> {
   }
   const v = { ...args.values, name: name ?? selection!.name, ...(selection ? { on: selection.on } : {}) } as FlagValues<typeof attachFlags> & { name: string };
   const reconnecting = v["no-reconnect"] !== true;
-  const on = v.on !== undefined ? (await pinForTarget(v as never, "cotal attach", reconnecting ? [] : ["--no-reconnect"])).instanceId : undefined;
-  // A typed pin the registry does not list is refused at once, as stop refuses it.
-  if (selection === undefined && on !== undefined) {
-    const reader = await resolveControlTarget(v, "control-caller-privileged", on);
-    if (!reader.auth.bearer) await refuseUnregisteredManager(reader.space, reader.server, reader.auth, on);
+  let verdict: AttachVerdict;
+  try {
+    const on = v.on !== undefined ? (await pinForTarget(v as never, "cotal attach", reconnecting ? [] : ["--no-reconnect"])).instanceId : undefined;
+    // A typed pin the registry does not list is refused at once, as stop refuses it.
+    if (selection === undefined && on !== undefined) {
+      const reader = await resolveControlTarget(v, "control-caller-privileged", on);
+      if (!reader.auth.bearer) await refuseUnregisteredManager(reader.space, reader.server, reader.auth, on);
+    }
+    verdict = await attachSeat({ space: v.space, server: v.server, creds: v.creds, name: v.name, ...(selection ? { expectedTarget: selection.expectedTarget } : {}) }, { reconnect: reconnecting, onRefusal: "exit", on });
+  } catch (error) {
+    if (isConnectRefusal(error) && error.code === "PERMISSION_DENIED") throw error.failure();
+    throw error;
   }
-  const verdict = await attachSeat({ space: v.space, server: v.server, creds: v.creds, name: v.name, ...(selection ? { expectedTarget: selection.expectedTarget } : {}) }, { reconnect: reconnecting, onRefusal: "exit", on });
   if (verdict.kind === "failed") throw new CommandFailure("failed", "OPERATION_FAILED", verdict.message);
   const detached = verdict.kind === "ended" && verdict.reason === "detached";
+  const census = v.server !== undefined && brokerAddressForDisplay(v.server) !== v.server
+    ? `${codeSpan(`${displayCmd()} ps`)} with your original space and broker options`
+    : codeSpan(onRerun(`${displayCmd()} ps`, v));
   console.error(renderReport({ sections: [{ title: verdict.kind === "gone" ? "Attach target no longer available" : detached ? "Detached" : "Attach session ended", blocks: [
     { kind: "fields", rows: [["Agent", v.name]] },
-    { kind: "lines", lines: [{ text: verdict.kind === "gone" ? "The selected agent or incarnation was not available to this attach request." : detached ? "Detaching did not send a stop request." : "The terminal session ended. This view sent no agent stop request; run `cotal ps` to check the agent's current state.", tone: "hint" }] },
+    { kind: "lines", lines: [{ text: verdict.kind === "gone" ? "The selected agent or incarnation was not available to this attach request." : detached ? "Detaching did not send a stop request." : `The terminal session ended. This view sent no agent stop request. Run ${census} to check the agent's current state.`, tone: "hint" }] },
   ] }] }, "rich", process.stderr));
 }
 
@@ -1138,7 +1283,7 @@ export function inputArguments(args: ParsedArgs): { name: string; text: string }
   const text = positionalText ?? values.text;
   if (!name?.trim() || /[\u0000-\u001f\u007f]/u.test(name)) throw new CommandFailure("refused", "USAGE_INVALID", "input needs one concrete agent name without terminal control characters");
   if (!text) throw new CommandFailure("refused", "USAGE_INVALID", "input needs nonempty text; use --text for a value beginning with a dash");
-  if (values.on !== undefined) onInstance(values.on, onRemedyVerb("cotal input", { ...values, name }, inputRetryWords(text, values["no-enter"])));
+  if (values.on !== undefined) onInstance(values.on, onRemedyVerb("cotal input", { ...values, name }, inputRetryWords(text, values)), managerRosterHint(values));
   return { name, text };
 }
 
@@ -1146,7 +1291,7 @@ export async function input(args: ParsedArgs): Promise<void> {
   const parsed = inputArguments(args);
   const v = { ...args.values, ...parsed } as FlagValues<typeof inputFlags> & { name: string; text: string };
   refuseControlCreds(v.creds, v.space);
-  const pin = await pinForTarget(v as never, "cotal input", inputRetryWords(v.text, v["no-enter"]), { onRefusal: "throw" });
+  const pin = await pinForTarget(v as never, "cotal input", inputRetryWords(v.text, v), { onRefusal: "throw" });
   const on = pin.instanceId;
   // A typed pin the registry does not list is refused at once, as stop refuses it.
   if (v.on !== undefined && on !== undefined) {

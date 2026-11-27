@@ -1,8 +1,9 @@
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync, existsSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import {
   DEV_OWNER,
   createSpaceAuth,
@@ -110,6 +111,7 @@ function silentExitHandle(name: string): AgentHandle & { exitSilently(): void } 
   };
 }
 
+for (const key of Object.keys(process.env)) if (key.startsWith("COTAL_")) delete process.env[key];
 const root = mkdtempSync(join(tmpdir(), "cotal-preserve-"));
 const agentsDir = join(root, ".cotal", "agents");
 const runDir = join(root, ".cotal", "run");
@@ -258,6 +260,7 @@ const resetCapturedLaunch = () => { capturedLaunch = undefined; };
 const connector: Connector = {
   kind: "connector",
   name: "preserve-connector",
+  supportsModes: true,
   buildLaunch: (opts) => {
     capturedLaunch = opts;
     return { command: "true", args: [], env: {} };
@@ -580,6 +583,19 @@ let openInventory: ManagerResumeAgent;
   check("open resume threads the backfill floor into launch", capturedLaunch?.backfillFloor === 4242, capturedLaunch?.backfillFloor);
 }
 
+{
+  const manager = managerWith((name) => fakeHandle(name));
+  const refusal = "test connector cannot resume on this host";
+  let observedCwd: string | undefined;
+  connector.launchUnavailable = ({ cwd } = {}) => { observedCwd = cwd; return refusal; };
+  resetCapturedLaunch();
+  try {
+    const result = await manager.resumePreserved(inventoryOf(openInventory));
+    check("preserved resume passes the retained cwd to launch preflight and refuses before buildLaunch",
+      !result.ok && (result.agents[0]?.reply.error ?? result.error) === refusal && observedCwd === root && capturedLaunch === undefined, result);
+  } finally { delete connector.launchUnavailable; }
+}
+
 // The wire schema refuses a malformed backfillFloor and accepts an absent one (a pre-fx109
 // inventory, or a remote-authority manager that recorded no floor).
 {
@@ -602,6 +618,40 @@ let openInventory: ManagerResumeAgent;
   let absentAccepted = true;
   try { parseResumeControlArgs(absentArgs); } catch { absentAccepted = false; }
   check("schema accepts an inventory with no backfillFloor", absentAccepted);
+}
+
+// A seat's modes are part of its launch: the cut writes them, the resume schema reads them, and the
+// resumed seat launches with them. A connector that no longer renders modes refuses the resume.
+{
+  const modes = { fast: true, agent: "plan" };
+  const manager = managerWith((name) => fakeHandle(name));
+  const map = (manager as unknown as { agents: Map<string, { launch: Record<string, unknown> }> }).agents;
+  map.set("worker", managed("worker", "open_principal_modes", fakeHandle("worker"), "persona"));
+  map.get("worker")!.launch.modes = modes;
+  const cut = await manager.preparePreservation("modes-cut");
+  check("the cut writes the seat's modes into the inventory", cut.ok && isDeepStrictEqual(cut.inventory.agents[0]?.launch.modes, modes), JSON.stringify(cut.inventory.agents[0]?.launch));
+  manager.abortPreservation("modes-cut");
+
+  const withModes: ManagerResumeAgent = { ...openInventory, launch: { ...openInventory.launch, modes } };
+  let accepted = true;
+  try { parseResumeControlArgs({ attemptId: "modes-schema", inventory: inventoryOf(withModes) }); } catch { accepted = false; }
+  let emptyRefused = false;
+  try { parseResumeControlArgs({ attemptId: "modes-empty", inventory: inventoryOf({ ...withModes, launch: { ...withModes.launch, modes: {} } }) }); } catch (e) { emptyRefused = /modes/.test((e as Error).message); }
+  check("the resume schema reads modes and refuses an empty set", accepted && emptyRefused, { accepted, emptyRefused });
+
+  const resumer = managerWith((name) => fakeHandle(name));
+  resetCapturedLaunch();
+  const resumed = await resumer.resumePreserved(inventoryOf(withModes));
+  const seat = (resumer as unknown as { agents: Map<string, { launch: { modes?: unknown } }> }).agents.get("worker");
+  check("a resumed seat launches with its modes and keeps them on its launch record",
+    resumed.ok && isDeepStrictEqual(capturedLaunch?.modes, modes) && isDeepStrictEqual(seat?.launch.modes, modes), JSON.stringify({ resumed, modes: capturedLaunch?.modes }));
+
+  const noModes: Connector = { kind: "connector", name: "preserve-no-modes", buildLaunch: () => ({ command: "true", args: [] }) };
+  registry.register(noModes);
+  const refusing = managerWith((name) => fakeHandle(name));
+  const refused = await refusing.resumePreserved(inventoryOf({ ...withModes, launch: { ...withModes.launch, connector: "preserve-no-modes" } }));
+  check("a resume whose connector no longer renders modes is refused, not launched without them",
+    !refused.ok && /does not support modes \(modes\)/.test(JSON.stringify(refused)), JSON.stringify(refused));
 }
 
 // A manager replacement after the coordinator fsyncs commit evidence re-adopts the inventory,
@@ -1181,6 +1231,115 @@ let openInventory: ManagerResumeAgent;
   check("a failed static authority commit cannot be finalized", !cannotFinalize.ok && /no successful commit/.test(cannotFinalize.error ?? ""), cannotFinalize.error);
 }
 
+// A resumed seat whose persona file sits in a project folder reads its launch options from that file
+// again, so the same trust rule as start applies: refused while the folder is not trusted, launched
+// once it is. A private config folder holds the trust list for this block only.
+{
+  const prevXdg = process.env.XDG_CONFIG_HOME;
+  process.env.XDG_CONFIG_HOME = mkdtempSync(join(tmpdir(), "cotal-preserve-xdg-"));
+  try {
+    const { trustProject } = await import("@cotal-ai/workspace");
+    const auth = await createSpaceAuth("preserve-smoke");
+    const identity = newIdentity();
+    const credsDir = agentCredsDir(root, "preserve-smoke");
+    mkdirSync(credsDir, { recursive: true });
+    const credsPath = join(credsDir, "options-worker.creds");
+    writeFileSync(credsPath, await mintCreds(auth, identity, "agent", { lifecycleUid: uidFor(identity.id) }), { mode: 0o600 });
+    const optionsPersona = join(agentsDir, "options-worker.md");
+    writeFileSync(optionsPersona, "---\nname: worker\nlaunchOptions:\n  mcp-config: ./servers.json\n---\nworker persona\n");
+    const entry: ManagerResumeAgent = {
+      ...openInventory,
+      name: "options-worker",
+      identity: { mode: "static", id: identity.id, lifecycleUid: uidFor(identity.id), credential: { kind: "file", path: credsPath, sha256: digest(credsPath) } },
+      launch: { ...openInventory.launch, source: { kind: "persona", ref: "worker", configPath: optionsPersona, configSha256: digest(optionsPersona) } },
+      dependencies: [optionsPersona],
+    };
+    const untrusted = managerWith((name) => fakeHandle(name));
+    (untrusted as unknown as { auth: unknown }).auth = auth;
+    resetCapturedLaunch();
+    const refused = await untrusted.resumePreserved(inventoryOf(entry));
+    const refusal = refused.agents[0]?.reply.error ?? refused.error ?? "";
+    check("resume refuses a project persona's launch options while its folder is not trusted",
+      !refused.ok && capturedLaunch === undefined && /launchOptions\.mcp-config/.test(refusal) && refusal.includes(`cotal trust ${root}`), { refusal, launched: capturedLaunch !== undefined });
+
+    trustProject(root);
+    const trusted = managerWith((name) => fakeHandle(name));
+    (trusted as unknown as { auth: unknown }).auth = auth;
+    resetCapturedLaunch();
+    const passed = await trusted.resumePreserved(inventoryOf(entry));
+    check("and resumes it, launch options included, once the folder is trusted",
+      passed.ok && capturedLaunch?.launchOptions?.["mcp-config"] === "./servers.json", { reply: passed.agents[0]?.reply ?? passed.error, launchOptions: capturedLaunch?.launchOptions });
+
+    // A manifest seat's resume reads its launch options from the retained run spec, which merged the
+    // persona's. The persona file that spec names, in a folder that is not trusted, refuses the same way.
+    const otherRoot = mkdtempSync(join(tmpdir(), "cotal-preserve-manifest-"));
+    mkdirSync(join(otherRoot, ".cotal", "agents"), { recursive: true });
+    const manifestPersona = join(otherRoot, ".cotal", "agents", "planted.md");
+    writeFileSync(manifestPersona, "---\nname: planted\nlaunchOptions:\n  mcp-config: ./servers.json\n---\nbody\n");
+    writeFileSync(join(runDir, "r2.json"), JSON.stringify({
+      apiVersion: "cotal-launch/v1", space: "preserve-smoke", runId: "r2",
+      agents: [{ name: "worker", agent: "preserve-connector", subscribe: ["general"], allowSubscribe: ["general"], allowPublish: [], hash: "abc124", launchOptions: { "mcp-config": "./servers.json" }, personaPath: manifestPersona }],
+    }));
+    mkdirSync(join(runDir, "r2", "agents"), { recursive: true });
+    const r2Persona = join(runDir, "r2", "agents", "worker.md");
+    writeFileSync(r2Persona, "---\nname: worker\n---\nworker persona\n");
+    const manifestIdentity = newIdentity();
+    const manifestCreds = join(credsDir, "manifest-worker.creds");
+    writeFileSync(manifestCreds, await mintCreds(auth, manifestIdentity, "agent", { lifecycleUid: uidFor(manifestIdentity.id) }), { mode: 0o600 });
+    const manifestEntry: ManagerResumeAgent = {
+      ...openInventory,
+      name: "manifest-worker",
+      identity: { mode: "static", id: manifestIdentity.id, lifecycleUid: uidFor(manifestIdentity.id), credential: { kind: "file", path: manifestCreds, sha256: digest(manifestCreds) } },
+      launch: { ...openInventory.launch, source: { kind: "manifest", runId: "r2", requested: "worker", hash: "abc124", configPath: r2Persona, configSha256: digest(r2Persona), manifestSha256: digest(join(runDir, "r2.json")) } },
+      dependencies: [join(runDir, "r2.json"), r2Persona],
+    };
+    const manifestUntrusted = managerWith((name) => fakeHandle(name));
+    (manifestUntrusted as unknown as { auth: unknown }).auth = auth;
+    resetCapturedLaunch();
+    const manifestRefused = await manifestUntrusted.resumePreserved(inventoryOf(manifestEntry));
+    const manifestRefusal = manifestRefused.agents[0]?.reply.error ?? manifestRefused.error ?? "";
+    check("a manifest seat's resume refuses launch options its untrusted persona file declares",
+      !manifestRefused.ok && capturedLaunch === undefined && /launchOptions\.mcp-config/.test(manifestRefusal) && manifestRefusal.includes(`cotal trust ${otherRoot}`), { manifestRefusal, launched: capturedLaunch !== undefined });
+    // A persona seat's file judged as read: a link in the trusted project's `.cotal/agents` naming the
+    // untrusted folder's persona refuses on resume.
+    const linkedPersona = join(agentsDir, "linked-worker.md");
+    symlinkSync(manifestPersona, linkedPersona);
+    const linkedEntry: ManagerResumeAgent = { ...entry, launch: { ...entry.launch, source: { kind: "persona", ref: "linked-worker", configPath: linkedPersona, configSha256: digest(linkedPersona) } }, dependencies: [linkedPersona] };
+    const linkedManager = managerWith((name) => fakeHandle(name));
+    (linkedManager as unknown as { auth: unknown }).auth = auth;
+    resetCapturedLaunch();
+    const linkedRefused = await linkedManager.resumePreserved(inventoryOf(linkedEntry));
+    const linkedRefusal = linkedRefused.agents[0]?.reply.error ?? linkedRefused.error ?? "";
+    check("a persona seat whose file links to an untrusted project's persona refuses on resume",
+      !linkedRefused.ok && capturedLaunch === undefined && linkedRefusal.includes(`cotal trust ${otherRoot}`), { linkedRefusal, launched: capturedLaunch !== undefined });
+    // The same seat through a chain whose middle hop is in the untrusted folder's .cotal/agents and
+    // whose file is outside it.
+    mkdirSync(join(otherRoot, "cfg"));
+    writeFileSync(join(otherRoot, "cfg", "x.md"), "---\nname: worker\nlaunchOptions:\n  mcp-config: ./servers.json\n---\nbody\n");
+    symlinkSync("../../cfg/x.md", join(otherRoot, ".cotal", "agents", "hop.md"));
+    const chainedPersona = join(agentsDir, "chained-worker.md");
+    symlinkSync(join(otherRoot, ".cotal", "agents", "hop.md"), chainedPersona);
+    const chainedEntry: ManagerResumeAgent = { ...entry, launch: { ...entry.launch, source: { kind: "persona", ref: "chained-worker", configPath: chainedPersona, configSha256: digest(chainedPersona) } }, dependencies: [chainedPersona] };
+    const chainedManager = managerWith((name) => fakeHandle(name));
+    (chainedManager as unknown as { auth: unknown }).auth = auth;
+    resetCapturedLaunch();
+    const chainedRefused = await chainedManager.resumePreserved(inventoryOf(chainedEntry));
+    const chainedRefusal = chainedRefused.agents[0]?.reply.error ?? chainedRefused.error ?? "";
+    check("a persona seat whose file reaches its persona through an untrusted project's .cotal/agents refuses on resume",
+      !chainedRefused.ok && capturedLaunch === undefined && chainedRefusal.includes(`cotal trust ${otherRoot}`), { chainedRefusal, launched: capturedLaunch !== undefined });
+    trustProject(otherRoot);
+    const manifestTrusted = managerWith((name) => fakeHandle(name));
+    (manifestTrusted as unknown as { auth: unknown }).auth = auth;
+    resetCapturedLaunch();
+    const manifestPassed = await manifestTrusted.resumePreserved(inventoryOf(manifestEntry));
+    check("and resumes the manifest seat with them once that folder is trusted",
+      manifestPassed.ok && capturedLaunch?.launchOptions?.["mcp-config"] === "./servers.json", { reply: manifestPassed.agents[0]?.reply ?? manifestPassed.error, launchOptions: capturedLaunch?.launchOptions });
+  } finally {
+    if (prevXdg === undefined) delete process.env.XDG_CONFIG_HOME;
+    else process.env.XDG_CONFIG_HOME = prevXdg;
+  }
+}
+
 // User mode delegates to the provider's read-only retained validator and never grants a replacement.
 {
   const manager = managerWith((name) => fakeHandle(name));
@@ -1353,6 +1512,67 @@ let openInventory: ManagerResumeAgent;
     (second as unknown as { ep: { getRoster: () => unknown[] } }).ep.getRoster = () => [{ card: { id: back.id, name: "worker" }, lifecycleUid: back.lifecycleUid, status: "idle" }];
     (second as unknown as { logSeatMeshTransitions: () => void }).logSeatMeshTransitions();
     check("renamed back to its alias, the seat keeps no display name", back.displayName === undefined, back.displayName);
+  }
+
+  // SPEC 13.22 `set-model`: the seat keeps the model its own presence marks as an owner's switch, `ps`
+  // reports it, the cut carries it, and the relaunch starts on it.
+  {
+    type Seat = { id: string; lifecycleUid: string; launch: { model?: string; variant?: string } };
+    const first = managerWith((name) => fakeHandle(name), { resumeAttemptId: "model_resume" });
+    (first as unknown as { userMode: boolean }).userMode = true;
+    const resumed = await control(first, "admin", "resumePreserved", { attemptId: "model_resume", inventory: inventoryOf(entry) });
+    const committed = await control(first, "admin", "commitResume", { attemptId: "model_resume" });
+    const seat = (first as unknown as { agents: Map<string, Seat> }).agents.get("worker")!;
+    const ep = (first as unknown as { ep: { getRoster: () => unknown[] } }).ep;
+    const marks = (mark: unknown, lifecycleUid = seat.lifecycleUid): void => {
+      ep.getRoster = () => [{ card: { id: seat.id, name: "worker", meta: { "ai.cotal.model-set": mark } }, lifecycleUid, status: "idle" }];
+      (first as unknown as { logSeatMeshTransitions: () => void }).logSeatMeshTransitions();
+    };
+    check("the resumed seat runs the model its launch named, none here", resumed.ok && committed.ok && seat.launch.model === undefined,
+      JSON.stringify({ resumed: resumed.error, committed: committed.error, model: seat.launch.model }));
+    marks({ model: "big-model", variant: "high" });
+    check("the seat keeps the model and variant its own presence marks as set-model's switch", seat.launch.model === "big-model" && seat.launch.variant === "high", seat.launch);
+    const rows = (first as unknown as { list: () => { name: string; model?: string; variant?: string }[] }).list();
+    const row = rows.find((r) => r.name === "worker");
+    check("ps reports the model and variant it was switched to", row?.model === "big-model" && row.variant === "high", JSON.stringify(row ?? rows));
+    const config = join(root, ".cotal", "config.json");
+    try {
+      writeFileSync(config, JSON.stringify({ spawn: { env: ["COTAL_PRESERVE_MODEL_PROBE"] } }));
+      marks({ model: "not-kept" });
+      check("a trust refusal during the presence watch keeps the last model and does not throw",
+        seat.launch.model === "big-model" && seat.launch.variant === "high", seat.launch);
+    } finally { rmSync(config, { force: true }); }
+    marks({ model: "has space" });
+    marks("big-model");
+    marks({ model: "x", provider: "y" });
+    marks({ model: "intruder" }, uidFor("another-lifecycle"));
+    check("a mark that is not set-model's answer, or that another lifecycle shows, is not kept: the last good one stays",
+      seat.launch.model === "big-model" && seat.launch.variant === "high", seat.launch);
+    const configPath = join(root, ".cotal", "config.json");
+    const warnings: string[] = [];
+    const originalError = console.error;
+    writeFileSync(configPath, "{");
+    try {
+      console.error = (line: string) => { warnings.push(line); };
+      marks({ model: "unreadable-config-model" });
+    } finally {
+      console.error = originalError;
+      rmSync(configPath);
+    }
+    check("an unreadable Cotal configuration warns with the file path and keeps the last good model",
+      warnings.some((line) => line.includes("could not read the Cotal configuration:") && line.includes(configPath))
+      && seat.launch.model === "big-model" && seat.launch.variant === "high", warnings);
+    marks({ model: "small-model" });
+    check("a later switch with no variant leaves none", seat.launch.model === "small-model" && seat.launch.variant === undefined, seat.launch);
+    const cut = await first.preserveState({ attemptId: "model_cut", persistInventory: async () => {} });
+    const carried = cut.inventory?.agents.find((a) => a.name === "worker");
+    check("the preservation cut carries the switched model as the seat's model", cut.ok && carried?.launch.model === "small-model" && carried.launch.variant === undefined, carried?.launch);
+    const second = managerWith((name) => fakeHandle(name));
+    (second as unknown as { userMode: boolean }).userMode = true;
+    resetCapturedLaunch();
+    const relaunched = cut.inventory ? await second.resumePreserved(cut.inventory) : { ok: false, error: "no inventory" };
+    check("a manager that resumes the cut relaunches the seat on the switched model", relaunched.ok && capturedLaunch?.model === "small-model" && capturedLaunch.variant === undefined,
+      { error: relaunched.error, model: capturedLaunch?.model, variant: capturedLaunch?.variant });
   }
 }
 

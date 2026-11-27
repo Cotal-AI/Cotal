@@ -32,6 +32,8 @@ import {
   claimMaintenanceReady,
   cutController,
   getSpaceAuth,
+  maintenancePaths,
+  preparedSpaceAt,
   protectedLocalDirectory,
   readMaintenanceJournal,
   readMaintenanceLockHolder,
@@ -40,12 +42,12 @@ import {
   readStoreIdentity,
   releaseMaintenanceClaim,
   releaseMaintenanceLock,
+  retainedLegacyBroker,
   sameStoreIdentity,
   workspaceSecretStore,
   type MaintenanceLock,
   type MaintenanceReadyRecord,
   type ProcessOwner,
-  restoreLeftOut,
 } from "@cotal-ai/workspace";
 import { artifactStreams, BACKUP_MANIFEST_FORMAT, createArtifactWriter, isTrustBound, missingBackupPath, snapshotFileName, TRUST_BOUND_TEXT, type BackupFileRecord, type BackupStreamRecord } from "../lib/backup-artifact.js";
 import { assertControllerResumeEligible } from "../lib/controller-resume.js";
@@ -60,9 +62,11 @@ import { liveMeshProcesses, localIdentityCleanupTargets } from "./clean.js";
 import { backupMaintenance } from "./backup-maintenance.js";
 import { backupRead } from "./backup-read.js";
 import { backupRestore } from "./backup-restore.js";
+import { controllerStackApplies } from "./stack-up.js";
 import { completingFlagValue, positionalsForCompletion } from "../lib/completion.js";
 import { assertEndpointUnreachable } from "../lib/endpoint-cut.js";
 import { shellWord } from "../lib/endpoint-errors.js";
+import { displayCmd } from "../lib/self-exec.js";
 
 const OPERATION_TIMEOUT_MS = 30 * 60 * 1000;
 
@@ -114,9 +118,13 @@ function backupInterruptNotice(root: string, attemptId: string, destination: str
 
 /** This root has no stopped preserved cut to back up. Nothing was claimed or copied. */
 function notReady(root: string, record: ReturnType<typeof readMaintenanceJournal>): CommandFailure {
-  // Both callers run after the liveness check, so the stack is stopped here, and a plain `cotal down`
-  // records no cut: `down --preserve-state` only works on a running stack (#7330).
-  if (!record) return new CommandFailure("refused", "LIFECYCLE_BLOCKED", "backup requires a stopped preserved cut, and this root records none", { target: { root }, remedy: "a plain `cotal down` records no cut: start the stack with `cotal up`, stop it with `cotal down --preserve-state`, then create the backup" });
+  if (!record) {
+    const prepared = preparedSpaceAt(root);
+    const remedy = prepared && !retainedLegacyBroker(root) && controllerStackApplies(root, prepared.space, {})
+      ? "run `cotal space show` to inspect this prepared space. Its first `cotal up` uses the stack controller, which does not support preservation or backup in this release"
+      : "a plain `cotal down` records no cut: start the stack with `cotal up`, stop it with `cotal down --preserve-state`, then create the backup";
+    return new CommandFailure("refused", "LIFECYCLE_BLOCKED", "backup requires a stopped preserved cut, and this root records none", { target: { root }, remedy });
+  }
   // A restore that still runs is named and waited for; only a stale one is rolled back.
   if (record.state === "restore-ready") {
     const assessment = assessRestoreClaim(record, { unrecordedOwnersDead: attemptProcessesGone(root) });
@@ -124,7 +132,7 @@ function notReady(root: string, record: ReturnType<typeof readMaintenanceJournal
   }
   return new CommandFailure("refused", "LIFECYCLE_BLOCKED", `backup requires the stopped preserved cut; maintenance state is ${record.state}`, {
     target: { root, space: record.space, state: record.state },
-    remedy: "restore" in record ? restoreNextStep(record.state, record.restore.attemptId, restoreLeftOut(record)) : "finish this root's current maintenance attempt first; check it with `cotal status`",
+    remedy: "restore" in record ? restoreNextStep(record.state, record.restore.attemptId, record) : "finish this root's current maintenance attempt first; check it with `cotal status`",
   });
 }
 
@@ -184,7 +192,7 @@ async function inspectionConnection(broker: IsolatedBroker): Promise<NatsConnect
   return connectIsolatedBroker(broker, broker.initialLogin);
 }
 
-async function collectInventory(nc: NatsConnection, space: string, selected: SpaceBackupSelection, held: readonly string[]): Promise<{
+async function collectInventory(nc: NatsConnection, space: string, selected: SpaceBackupSelection, held: readonly string[], openBackup: boolean): Promise<{
   checkpoints: PersistentConsumerCheckpoint[];
 }> {
   const requestPage = async <T>(subject: string, offset: number): Promise<T & { total: number; offset: number; limit: number }> => {
@@ -253,7 +261,7 @@ async function collectInventory(nc: NatsConnection, space: string, selected: Spa
         throw new Error(`${stream}/${consumer.name} has an unsupported stopped KV watcher config: ${JSON.stringify(consumer.config)}`);
     return [stream, consumers.filter((consumer) => !isStoppedKvWatcher(stream, consumer))];
   }));
-  return { checkpoints: validatePersistentConsumerInventory(space, backedConsumers, statesByStream, held) };
+  return { checkpoints: validatePersistentConsumerInventory(space, backedConsumers, statesByStream, held, openBackup) };
 }
 
 export function isStoppedKvWatcher(stream: string, consumer: ConsumerInfo): boolean {
@@ -365,6 +373,21 @@ function canonicalFuturePath(path: string): string {
   return join(realpathSync.native(dirname(absolute)), basename(absolute));
 }
 
+/** Project missing components from the closest existing ancestor, unless it is a dangling link. */
+function canonicalMissingBackupPath(path: string): string | undefined {
+  let ancestor = dirname(path);
+  while (!lstatSync(ancestor, { throwIfNoEntry: false })) {
+    const parent = dirname(ancestor);
+    if (parent === ancestor) return undefined;
+    ancestor = parent;
+  }
+  try { return join(realpathSync.native(ancestor), relative(ancestor, path)); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    return undefined;
+  }
+}
+
 function overlaps(a: string, b: string): boolean {
   const fromA = relative(a, b);
   const fromB = relative(b, a);
@@ -372,12 +395,52 @@ function overlaps(a: string, b: string): boolean {
   return contained(fromA) || contained(fromB);
 }
 
-function assertBackupPaths(root: string, source: string, destination: string): void {
-  const artifact = canonicalFuturePath(destination);
+/** A parent that is not a directory, a link loop, or a folder this account cannot search. */
+function assertDestinationTraversable(destinationPath: string, folder: string): boolean {
+  try { return lstatSync(destinationPath, { throwIfNoEntry: false }) !== undefined; }
+  catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "EACCES") {
+      const withChmod = oneLine(folder) === folder && existsSync(folder)
+        ? ` with ${codeSpan(`chmod u+x ${shellWord(folder)}`)}` : "";
+      throw new CommandFailure("refused", "PERMISSION_DENIED", `this account cannot search ${folder}, so the backup cannot be created in it; nothing was written`, {
+        target: { directory: destinationPath, folder },
+        remedy: `make the path to that folder searchable${withChmod}, or name a destination in a folder this account can write and search`,
+      });
+    }
+    if (code !== "ENOTDIR" && code !== "ELOOP") throw error;
+    const problem = code === "ENOTDIR" ? "contains a parent that is not a directory" : "contains a symbolic-link loop";
+    throw new CommandFailure("refused", "USAGE_INVALID", `the backup destination ${destinationPath} ${problem} (${code}); nothing was written`, { target: { directory: destinationPath, folder }, native: { code }, remedy: "name a destination with an existing directory as its parent", selfContained: true });
+  }
+}
+
+/** Refuse a destination restore would refuse: the journal directory and both lock paths.
+ *  A sibling directly under `.cotal/maintenance` is not one of those paths. */
+function assertReservedMaintenanceDestination(root: string, destinationPath: string, missingFolder: boolean): void {
+  const artifact = missingFolder ? canonicalMissingBackupPath(destinationPath) : canonicalFuturePath(destinationPath);
+  if (!artifact) return;
+  const { versionDir, lock, reaper } = maintenancePaths(root);
+  const reserved = [
+    [versionDir, "this root's maintenance journal directory"],
+    [lock, "this root's maintenance lock path"],
+    [reaper, "this root's maintenance lock recovery path"],
+  ] as const;
+  const hit = reserved.find(([path]) => overlaps(artifact, path));
+  if (!hit) return;
+  const [path, what] = hit;
+  const relation = artifact === path ? "is" : overlaps(path, artifact) ? "is inside" : "holds";
+  throw new CommandFailure("refused", "USAGE_INVALID", `the backup destination ${destinationPath} ${relation} ${what}${relation === "is" ? "" : ` ${path}`}; nothing was written`, { target: { directory: destinationPath, overlaps: path }, remedy: `name a destination outside ${path}`, selfContained: true });
+}
+
+function assertBackupPaths(root: string, source: string, destinationPath: string): void {
+  const artifact = canonicalFuturePath(destinationPath);
   const attempts = resolve(root, ".cotal", "maintenance", "attempts");
   if (overlaps(source, attempts)) throw new Error("preserved source must not overlap the maintenance attempt directory");
   if (overlaps(artifact, source)) throw new Error("backup destination must not overlap the preserved source store");
-  if (overlaps(artifact, attempts)) throw new Error("backup destination must not overlap the maintenance attempt directory");
+  if (overlaps(artifact, attempts))
+    throw new CommandFailure("refused", "USAGE_INVALID", `the backup destination ${destinationPath} overlaps the maintenance attempt directory ${attempts}. No backup was created.`, {
+      target: { directory: destinationPath, attemptId: null, priorClaimAttemptId: null }, remedy: `name a destination outside ${attempts}`, selfContained: true,
+    });
 }
 
 async function snapshotStream(
@@ -471,9 +534,14 @@ function noSpaceFailure(error: unknown, observed: BackupObservation, args: Parse
 /** A displayed retry must name the same paths after terminal escaping. */
 function retryCreateStep(args: ParsedArgs): string {
   const { only, "store-dir": store } = args.values as BackupValues;
+  const destination = resolve(args.positionals[1]!);
+  const windowsWord = (path: string) => !/["%`$!\u2018-\u201E]|\\$/u.test(path);
+  if (process.platform === "win32" && (!windowsWord(destination) || (store !== undefined && !windowsWord(store))))
+    return "rerun your original backup command from the same folder";
+  const quote = process.platform === "win32" ? (path: string) => `"${path}"` : shellWord;
   const selectionFlag = only === undefined ? "" : ` --only ${only}`;
-  const storeFlag = store === undefined ? "" : ` --store-dir${store.startsWith("-") ? "=" : " "}${shellWord(store)}`;
-  const command = `cotal backup create ${shellWord(resolve(args.positionals[1]!))}${selectionFlag}${storeFlag}`;
+  const storeFlag = store === undefined ? "" : ` --store-dir${store.startsWith("-") ? "=" : " "}${quote(store)}`;
+  const command = `${args.values.json === true ? "cotal" : displayCmd()} backup create ${quote(destination)}${selectionFlag}${storeFlag}`;
   return oneLine(command) === command
     ? `run ${codeSpan(command)} again`
     : "rerun your original backup command from the same folder (a path cannot be displayed unchanged)";
@@ -499,6 +567,9 @@ export function validateBackupArguments(args: ParsedArgs): void {
       throw new CommandFailure("refused", "USAGE_INVALID", `backup ${mode} does not accept ${flags}${selection}`);
     }
     throw new CommandFailure("refused", "USAGE_INVALID", mode === "restore" ? "backup restore accepts only --only, --store-dir and --accept-missing-source; the space, broker and runtime come from the preserved cut" : "backup inspection and verification accept no creation, target or restore inputs");
+  }
+  if (maintenance && args.values["dry-run"] && args.values.yes) {
+    throw new CommandFailure("refused", "USAGE_INVALID", `backup ${mode} cannot combine --dry-run and --yes`, { remedy: "use --dry-run to review or --yes to apply" });
   }
   if (mode === "create") selection(args.values.only as string | undefined);
   // The native restore accepts only a registry narrowing and otherwise follows the artifact's own
@@ -567,40 +638,27 @@ async function createBackup(args: ParsedArgs, observed: BackupObservation): Prom
   if (!journal) throw notReady(root, undefined);
   const destinationPath = resolve(destination);
   const folder = dirname(destinationPath);
-  let destinationExists: boolean;
-  try { destinationExists = lstatSync(destinationPath, { throwIfNoEntry: false }) !== undefined; }
-  catch (error) {
-    const code = (error as NodeJS.ErrnoException).code;
-    if (code === "EACCES") {
-      const withChmod = oneLine(folder) === folder && existsSync(folder)
-        ? ` with ${codeSpan(`chmod u+x ${shellWord(folder)}`)}` : "";
-      throw new CommandFailure("refused", "PERMISSION_DENIED", `this account cannot search ${folder}, so the backup cannot be created in it; nothing was written`, {
-        target: { directory: destinationPath, folder },
-        remedy: `make the path to that folder searchable${withChmod}, or name a destination in a folder this account can write and search`,
-      });
-    }
-    if (code !== "ENOTDIR" && code !== "ELOOP") throw error;
-    const problem = code === "ENOTDIR" ? "contains a parent that is not a directory" : "contains a symbolic-link loop";
-    throw new CommandFailure("refused", "USAGE_INVALID", `the backup destination ${destinationPath} ${problem} (${code}); nothing was written`, { target: { directory: destinationPath, folder }, native: { code }, remedy: "name a destination with an existing directory as its parent", selfContained: true });
-  }
-  if (destinationExists) {
+  if (assertDestinationTraversable(destinationPath, folder)) {
     // The partial artifact of an interrupted create is named with the command that removes it.
     const partial = journal.state === "claimed" && journal.claim.ownedPaths?.some((owned) => owned.label === "destination" && owned.path === destinationPath) ? journal.claim.attemptId : undefined;
     throw new CommandFailure("refused", "CONFLICT", partial ? `the backup destination ${destinationPath} is the partial artifact of interrupted backup attempt ${partial}; backup create writes only a new directory` : "the backup destination already exists; backup create writes only a new directory", { target: { directory: destinationPath }, remedy: partial ? `remove it with \`cotal backup recover ${partial} --yes\`, then run this create again` : "name a directory that does not exist yet" });
   }
-  if (missingBackupPath(destinationPath) === "folder")
-    throw new CommandFailure("refused", "TARGET_NOT_FOUND", `there is no folder ${dirname(destinationPath)} to create the backup in; nothing was written`, { target: { directory: destinationPath, folder: dirname(destinationPath), missing: "folder" }, remedy: "create that folder first; backup create makes only the artifact's own folder" });
+  const missingFolder = missingBackupPath(destinationPath) === "folder";
+  assertReservedMaintenanceDestination(root, destinationPath, missingFolder);
+  const artifact = missingFolder ? canonicalMissingBackupPath(destinationPath) : canonicalFuturePath(destinationPath);
   // A destination the preserved store holds, or one in a folder this account cannot write, is refused
   // here, before the lock, so it leaves no attempt behind.
   const preserved = journal.state === "ready" || journal.state === "claimed" ? journal.source.path : undefined;
-  if (preserved && overlaps(canonicalFuturePath(destinationPath), preserved))
+  if (artifact && preserved && overlaps(artifact, preserved))
     throw new CommandFailure("refused", "USAGE_INVALID", `the backup destination ${destinationPath} is inside the preserved store ${preserved} it would copy; nothing was written`, { target: { directory: destinationPath, store: preserved }, remedy: `name a destination outside ${preserved}`, selfContained: true });
   // `clean all` removes the space's identity, material and launch files with whatever they hold, so
   // an artifact among them would be removed with them.
-  const cleaned = Object.values(localIdentityCleanupTargets(canonicalRoot(root), journal.space)).flat().map(canonicalRoot)
-    .find((path) => overlaps(canonicalFuturePath(destinationPath), path));
+  const cleaned = artifact && Object.values(localIdentityCleanupTargets(canonicalRoot(root), journal.space)).flat().map(canonicalRoot)
+    .find((path) => overlaps(artifact, path));
   if (cleaned)
     throw new CommandFailure("refused", "USAGE_INVALID", `the backup destination ${destinationPath} is inside ${cleaned}, which \`cotal clean all\` removes; nothing was written`, { target: { directory: destinationPath, removedBy: cleaned }, remedy: `name a destination outside ${cleaned}`, selfContained: true });
+  if (missingFolder)
+    throw new CommandFailure("refused", "TARGET_NOT_FOUND", `there is no folder ${folder} to create the backup in; nothing was written`, { target: { directory: destinationPath, folder, missing: "folder" }, remedy: "create that folder first; backup create makes only the artifact's own folder" });
   try { accessSync(folder, constants.W_OK | constants.X_OK); }
   catch {
     // Do not offer a command whose operand the terminal would change by escaping invisibles.
@@ -649,7 +707,7 @@ async function createBackup(args: ParsedArgs, observed: BackupObservation): Prom
       observed.mutationAttempted = true;
     }
     ready = requireReady(root, storeDir, values["store-dir"] !== undefined);
-    assertBackupPaths(root, ready.source.path, destination);
+    assertBackupPaths(root, ready.source.path, destinationPath);
     // The journal is ready with no live claim, and the destination is proven disjoint from the
     // attempts directory: any attempts-dir content is dead-attempt residue.
     sweepAttemptResidue(root);
@@ -717,7 +775,7 @@ async function createBackup(args: ParsedArgs, observed: BackupObservation): Prom
     const inspect = await inspectionConnection(broker);
     let checkpoints;
     try {
-      ({ checkpoints } = await collectInventory(inspect, ready.space, selected, held));
+      ({ checkpoints } = await collectInventory(inspect, ready.space, selected, held, ready.mode === "open"));
     } finally {
       await drainAndClose(inspect).catch(() => {});
     }

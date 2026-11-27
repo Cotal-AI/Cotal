@@ -32,7 +32,7 @@ type Envelope = {
   target: unknown;
   result: Record<string, unknown> | null;
   warnings: { code: string; target: { pkg?: string } | null; message: string }[];
-  error?: { code: string; message: string };
+  error?: { code: string; message: string; remedy?: string };
 };
 function run(args: string[], extraEnv: Record<string, string> = {}) {
   const r = spawnSync(process.execPath, [BIN, ...args], {
@@ -83,6 +83,21 @@ let specBody = "";
   check("the CLI hub read to a pipe keeps its Markdown heading and links", piped.status === 0 && piped.stdout.includes("\n# CLI reference\n") && piped.stdout.includes("[CLI usage](cli-usage.mdx#structured-output)"), shown(piped));
   const usage = run(["docs", "cli-usage"]);
   check("a reference page read to a pipe keeps its Markdown table", usage.status === 0 && usage.stdout.includes("\n# CLI usage\n") && /^\|---\|---\|$/m.test(usage.stdout) && /^\| `schemaVersion` \| `1` \|$/m.test(usage.stdout), shown(usage));
+  const structured = usage.stdout.split(/^## Structured output.*$/m)[1]?.split(/^## /m)[0]?.replace(/\s+/g, " ") ?? "";
+  const history = run(["history", "general", "--limit", "--json"]);
+  const follow = run(["history", "general", "--limit", "--follow", "--json"]);
+  const records = follow.stdout.trim().split("\n").filter(Boolean).map((line) => JSON.parse(line));
+  check("the bundled reference distinguishes finite JSON refusals from NDJSON streams",
+    usage.status === 0 && structured.includes("Finite JSON output is one document on stdout") &&
+    structured.includes("newline-delimited JSON (NDJSON)") && /usage error[^.]+finite `--json` output[^.]+`USAGE_INVALID`/.test(structured) &&
+    ["[`history --follow`](cli-messaging.mdx#history)", "[`channel members --follow`](cli-messaging.mdx#channel)", "[`watch`](cli-observation.mdx#observer-stream)"].every((link) => structured.includes(link)) &&
+    history.status === 1 && history.envelope?.outcome === "refused" && history.envelope.error?.code === "USAGE_INVALID" &&
+    follow.status === 1 && records.length === 2 && records[0]?.stream === "history" && records[0]?.type === "error" &&
+    records[0]?.data?.code === "USAGE_INVALID" && records[1]?.type === "end" && records[1]?.data?.reason === "setup-failed", { history: shown(history), follow: shown(follow) });
+  const observation = run(["docs", "cli-observation"]);
+  const watch = observation.stdout.split("\n## watch\n")[1]?.split("\n## ")[0] ?? "";
+  check("the bundled watch reference lists its target selectors and links to observer credential restrictions",
+    observation.status === 0 && /\| `--space <s>`[^\n]+\n\| `--server <url>`[^\n]+\n\| `--creds <path>`[^\n]+off-registry broker[^\n]+\(watch-a-mesh\.mdx#what-each-surface-can-see\)/.test(watch), watch.slice(0, 950));
   const help = run(["help"]);
   const mcpHelp = run(["mcp", "--help"]);
   check("the CLI command table links the MCP entry that help lists",
@@ -93,6 +108,47 @@ let specBody = "";
   const spec = run(["docs", "spec", "--json"]);
   specBody = (spec.envelope?.result as { body?: string } | undefined)?.body ?? "";
   check("spec, lang and schema are pages too", spec.status === 0 && specBody.length > 0 && run(["docs", "lang", "--json"]).status === 0 && run(["docs", "schema", "--json"]).status === 0, shown(spec));
+}
+
+{
+  const docs = run(["docs", "cli-agent-control", "--json"]);
+  const body = docs.envelope?.result?.body;
+  const managedSeats = typeof body === "string"
+    ? (body.split(/^## Managed seats(?: \[#managed-seats\])?$/m)[1]?.split(/^## /m)[0] ?? "").replace(/\s+/g, " ")
+    : "";
+  const startup = run(["docs", "cli-startup.mdx#up", "--json"]);
+  check("the bundled managed seats reference qualifies bare up with the 263168-byte manager payload floor and restart link",
+    docs.status === 0 && startup.status === 0 &&
+    managedSeats.includes("Bare `cotal up` adds the manager when the running broker's `--max-payload` is at least 263168 bytes.") &&
+    managedSeats.includes("below 263168 bytes") &&
+    managedSeats.includes("`cotal down --yes`") &&
+    managedSeats.includes("`cotal up --max-payload 1048576`") &&
+    managedSeats.includes("[startup reference](cli-startup.mdx#up)") &&
+    !managedSeats.includes("Bare `cotal up` adds the manager."),
+    managedSeats);
+  const input = typeof body === "string" ? body.split(/^## input(?: \[#input\])?$/m)[1]?.split(/^## /m)[0] ?? "" : "";
+  const flags = input.split("\n").filter((line) => line.startsWith("|"));
+  const raw = run(["input", "--name", "reviewer", "--text", "/compact", "--no-enter", "--space", "docs-input-ref",
+    "--server", "nats://127.0.0.1:38324", "--creds", "./does-not-exist.creds", "--json"]);
+  check("the bundled input flag table lists space and server but not raw credentials, which input refuses",
+    docs.status === 0 && flags.some((line) => line.includes("`--space <s>`") && line.includes("`--server <url>`")) &&
+    flags.every((line) => !line.includes("--creds")) && raw.status === 2 && raw.envelope?.outcome === "refused" &&
+    raw.envelope.error?.code === "UNSUPPORTED", { flags, raw: shown(raw) });
+}
+
+{
+  const docs = run(["docs", "cli-messaging", "--json"]);
+  const body = docs.envelope?.result?.body;
+  const pending = typeof body === "string" ? body.split(/^## pending(?: \[#pending\])?$/m)[1]?.split(/^## /m)[0] ?? "" : "";
+  const synopsis = /^cotal pending .*$/m.exec(pending)?.[0] ?? "";
+  const help = run(["pending", "--help"]);
+  const usage = help.stdout.split(/^Usage$/m)[1]?.split(/\n\s*\n/)[0] ?? "";
+  const selectors = ["[--server <url>]", "[--creds <private-file>]"];
+  check("pending names both selectors in the bundled reference and help Usage",
+    docs.status === 0 && help.status === 0 && selectors.every((flag) => synopsis.includes(flag) && usage.includes(flag)),
+    { synopsis, usage, stderr: help.stderr });
+  check("the pending reference explains which credential to pair with an unregistered broker",
+    pending.includes("pass its URL with `--server <url>` and a static admin credential with `--creds <private-file>`"), pending);
 }
 
 {
@@ -232,6 +288,22 @@ for (const [args, why] of [
 }
 
 {
+  for (const args of [["cli", "--wibble"], ["--wibble", "cli"]]) {
+    const refused = run(["docs", ...args, "--json"]);
+    const error = refused.envelope?.error;
+    check(`docs ${args.join(" ")} says to drop the unknown option when the page is set`,
+      refused.status === 1 && refused.stderr === "" && refused.envelope?.command === "docs" && refused.envelope.outcome === "refused" &&
+      error?.code === "USAGE_INVALID" && error.message === "Unknown option '--wibble'" && error.remedy === "drop the unknown option", shown(refused));
+  }
+  const retry = run(["docs", "cli", "--json"]);
+  check("dropping the unknown option reads the requested page", retry.status === 0 && retry.stderr === "" &&
+    retry.envelope?.outcome === "ok" && retry.envelope.result?.kind === "docs-page" && retry.envelope.result.slug === "cli", shown(retry));
+  const noPage = run(["docs", "--wibble", "--json"]);
+  check("docs still suggests the separator when no page is set", noPage.status === 1 && noPage.stderr === "" &&
+    noPage.envelope?.error?.remedy === 'to pass a word that starts with "-", put -- before it', shown(noPage));
+}
+
+{
   const config = join(home, "damaged-inventory");
   const extensions = join(config, "cotal", "extensions");
   const manifest = join(extensions, "extensions.json");
@@ -248,9 +320,28 @@ for (const [args, why] of [
   check("plain docs opens with a damaged extension inventory",
     plain.status === 0 && plain.stderr === "" && plain.stdout.startsWith(`bundled v${VERSION}\n\n# CLI usage\n`), shown(plain));
   const list = run(["ext", "list", "--json"], env);
-  check("the extension listing still reports the damage, and docs leaves the manifest unchanged",
-    list.status === 1 && list.stdout === "" && list.stderr.includes('no "extensions" array') &&
+  check("the JSON extension listing reports the damage and leaves the manifest unchanged",
+    list.status === 1 && list.stderr === "" && list.envelope?.command === "ext" &&
+    list.envelope.outcome === "refused" && list.envelope.result === null &&
+    list.envelope.error?.code === "SCHEMA_INVALID" && list.envelope.error.message.includes('no "extensions" array') &&
+    list.envelope.error.remedy?.includes("cotal ext seed --repair") === true &&
     readFileSync(manifest, "utf8") === "{}\n", shown(list));
+
+  writeFileSync(manifest, "{\n");
+  for (const [prefixArgs, suffixArgs] of [
+    [["help", "docs"], ["docs", "--help"]],
+    [["--no-color", "help", "--all", "--", "docs", "cli-usage"], ["docs", "cli-usage", "--help"]],
+  ] satisfies [string[], string[]][]) {
+    const prefix = run(prefixArgs, env);
+    const suffix = run(suffixArgs, env);
+    check(`\`${prefixArgs.join(" ")}\` shows the same docs help without changing the damaged inventory`,
+      prefix.status === 0 && suffix.status === 0 && prefix.stderr === "" && suffix.stderr === "" &&
+      suffix.stdout.includes("Usage\n") && prefix.stdout === suffix.stdout && readFileSync(manifest, "utf8") === "{\n",
+      { prefix: shown(prefix), suffix: shown(suffix) });
+  }
+  const allHelp = run(["help"], env);
+  check("full help reports a corrupt extension inventory",
+    allHelp.status === 1 && allHelp.stdout === "" && allHelp.stderr.includes("corrupt extensions manifest"), shown(allHelp));
 
   const journal = join(config, "cotal", ".extensions-promotion.json");
   writeFileSync(journal, "{}\n", { mode: 0o600 });
@@ -342,6 +433,9 @@ for (const [args, why] of [
 {
   const root = run(["ext", "root"]);
   check("ext root prints only the path", root.status === 0 && root.stdout === `${join(xdg, "cotal", "extensions")}\n`, shown(root));
+  const unknownRootOption = run(["ext", "root", "--jso"]);
+  check("ext root tells the caller to drop an unknown option", unknownRootOption.status === 1 && unknownRootOption.stdout === "" &&
+    /Unknown option '--jso'\n  drop the unknown option\n/.test(unknownRootOption.stderr) && !unknownRootOption.stderr.includes("put -- before it"), shown(unknownRootOption));
   // Only the listing declares structured output, so the other modes refuse its flags as text, and keep
   // their own exits.
   for (const args of [["ext", "root", "--json"], ["ext", "root", "--plain"], ["ext", "remove", "x", "--json"], ["ext", "seed", "--plain"]]) {

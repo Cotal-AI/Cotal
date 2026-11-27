@@ -1,11 +1,15 @@
-import { existsSync, lstatSync, readFileSync, realpathSync } from "node:fs";
+import { lstatSync, readFileSync, realpathSync } from "node:fs";
 import { dirname, isAbsolute, join } from "node:path";
 import {
   CommandFailure,
   isCommandFailure,
   isMeshRegistryError,
+  preparedRecordSkipped,
   preparedRecordSpace,
   preparedSpacesDir,
+  readPreparedSpaces,
+  recordOperationWarning,
+  recordUpdateDeferral,
   logicalExecutionEntry,
   resolveControlTarget,
   ConnectRefusal,
@@ -13,6 +17,7 @@ import {
   isWorkspaceTargetError,
   localMeshesForRoot,
   preparedNeverStarted,
+  projectRootProblemText,
   pruneStaleMeshes,
   renderWorkspaceError,
   resolveMeshTarget, withInstallCustodyRead,
@@ -31,9 +36,10 @@ import { recordedStackRemedy, type RecordedStackRemedy } from "../lib/recorded-s
 import { askManager } from "@cotal-ai/workspace/control";
 import { cliControl } from "../lib/control.js";
 import { managerPin } from "../lib/manager-choice.js";
-import { localUpdateManagers, recordedUpdateManagers, type UpdateManager } from "../lib/update-managers.js";
+import { localUpdateManagers, recordedUpdateManagers, skipUpdateStack, type UpdateManager } from "../lib/update-managers.js";
 import { assertRecordIdentity, brokerAddressKey, brokerUrlKey } from "@cotal-ai/workspace";
 import { message } from "./update-process.js";
+import type { UpdateRuntime } from "./update.js";
 
 /** The "no mesh running" target refusal: no recorded mesh on this machine, or every recorded mesh
  *  down with none selected. Either way no manager is running. A mesh selected with `--space` or
@@ -93,6 +99,51 @@ export function refusal(e: unknown): string {
     : message(e);
   const remedy = e instanceof CommandFailure ? e.remedy : undefined;
   return remedy === undefined ? text : `${text}\n\nNext\n  ${remedy}`;
+}
+
+export function reportUncheckedPreparedRecords(rt: UpdateRuntime, target: Record<string, unknown>): void {
+  if (["server", "creds", "on"].some(key => typeof target[key] === "string")) return;
+  // The installed child may carry a daemon admission receipt and never resolve the project.
+  // Report read failures separately from the Manager custody verdict and package reconciliation.
+  try {
+    for (const error of readPreparedSpaces().unusable) {
+      if (error.refusal !== "PERMISSION_DENIED") continue;
+      if (typeof target.space === "string" && target.space !== preparedRecordSpace(error.file)) continue;
+      recordOperationWarning(preparedRecordSkipped(error));
+      rt.out(c.dim(`  ${error.file}: leaving its records and processes untouched, continuity not checked`));
+    }
+  } catch (error) {
+    rt.err(`Could not check prepared space records: ${message(error)}; continuity not checked`);
+  }
+}
+
+/** Establish Manager continuity and installation ownership before writing the extension prefix. */
+export async function admitReconciliation(current: string, rt: UpdateRuntime, target: Record<string, unknown>): Promise<boolean> {
+  try { await rt.prepareReconciliation?.(target); }
+  catch (error) {
+    rt.err(c.red(`✗ installed connector reconciliation admission: ${refusal(error)}`));
+    return false;
+  }
+  try {
+    if (await rt.reportRunningManager(target) === "legacy") {
+      if (rt.env.COTAL_AUTO_UPDATE === "1") recordUpdateDeferral(current, "waiting for agents to stop");
+      return false;
+    }
+  } catch (e) {
+    if (rt.env.COTAL_AUTO_UPDATE === "1") recordUpdateDeferral(current, "waiting for agents to stop");
+    rt.err(c.red(`✗ running manager continuity check: ${refusal(e)}`));
+    return false;
+  }
+
+  reportUncheckedPreparedRecords(rt, target);
+
+  try { await rt.preflightReplacement?.(); }
+  catch (error) {
+    if (rt.env.COTAL_AUTO_UPDATE === "1") recordUpdateDeferral(current, "installed daemon preflight refused");
+    rt.err(c.red(`✗ installed daemon preflight: ${refusal(error)}`));
+    return false;
+  }
+  return true;
 }
 
 /** The running meshes an `ambiguous-target` named, or undefined when this refusal names none to act
@@ -224,8 +275,7 @@ export async function readManagerContinuity(flags: Record<string, unknown>, opti
   const local = registry.entries.filter(entry => entry.mode !== "user" &&
     (typeof flags.space !== "string" || flags.space === entry.space) &&
     (typeof flags.server !== "string" || brokerAddressKey(flags.server) === brokerAddressKey(entry.server)));
-  const { goneStackRoot } = await import("../lib/stack-journal.js");
-  const gone = typeof flags.creds === "string" ? [] : local.filter(entry => !existsSync(entry.root) || goneStackRoot(entry.space) !== undefined);
+  const gone = typeof flags.creds === "string" ? [] : local.filter(entry => skipUpdateStack(entry.root, entry.space));
   for (const entry of gone) console.log(`  ${entry.space}: folder is gone; leaving its processes untouched, continuity not checked`);
   if (gone.length && gone.length === local.length) return "none";
   if (gone.length) {
@@ -279,9 +329,10 @@ export async function readManagerContinuity(flags: Record<string, unknown>, opti
         return "none";
       }
       // Prepared-only spaces have no registry entry for the gone-root check above.
-      // As with a registered gone root, leave its records and processes untouched.
       if (e.code === "not-started" && e.details.rootMissing === true) {
-        console.log(`  ${e.details.space}: folder is gone; leaving its processes untouched, continuity not checked`);
+        const problem = e.details.rootProblem;
+        const why = problem === undefined || problem === "missing" ? "folder is gone" : `recorded path ${projectRootProblemText(problem)}`;
+        console.log(`  ${e.details.space}: ${why}; leaving its processes untouched, continuity not checked`);
         return "none";
       }
       if (e.code === "not-started" && e.details.recordedRoot !== undefined) {

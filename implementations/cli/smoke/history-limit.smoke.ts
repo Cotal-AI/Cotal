@@ -206,6 +206,20 @@ try {
   const same = (a: HistoryLimit | undefined, b: HistoryLimit) => a !== undefined && a.maxAgeMs === b.maxAgeMs && a.perSubject === b.perSubject;
 
   // ── refusals before any connection ──────────────────────────────────────────────────────────────
+  for (const [sub, flag, message, remedy] of [
+    ["limit", "--server", "`history limit` does not take --server", "omit --server and use --space if you need to select a space"],
+    ["clear", "--max-age", "`history clear` does not take --max-age", "omit --max-age from this command. Use it with `history limit` to change retention"],
+    ["limit", "--max-age", "--max-age needs a value", "write --max-age <age|none>"],
+    ["clear", "--server", "--server needs a value", "write --server <url>"],
+  ] as const) {
+    for (const flags of [[flag, "--json"], ["--json", flag]]) {
+      const r = await run(["history", sub, ...flags]);
+      const error = r.envelope?.error;
+      check(`history ${sub} ${flags.join(" ")} reports the option in the selected subcommand`,
+        r.status === 1 && r.stderr === "" && r.envelope?.outcome === "refused"
+        && error?.code === "USAGE_INVALID" && error.message === message && error.remedy === remedy, shown(r));
+    }
+  }
   for (const [args, what, needle] of [
     [["--max-age", "1m", "--yes"], "an age below 2m", "--max-age: the age must be at least 2m"],
     [["--max-age", "0s", "--yes"], "an age of 0s", "--max-age: the age must be at least 2m"],
@@ -235,11 +249,24 @@ try {
   check("...and no chat stream was created", bareCreated === false);
 
   // ── the read-only call ───────────────────────────────────────────────────────────────────────────
+  const unknown = await run(["history", "limit", "--wibble", "--json", "--space", space]);
+  const error = unknown.envelope?.error;
+  check("history limit tells the caller to drop an unknown option rather than pass an operand",
+    unknown.status === 1 && unknown.stderr === "" && unknown.envelope?.outcome === "refused"
+    && error?.code === "USAGE_INVALID" && error.message === "Unknown option '--wibble'"
+    && error.remedy === "drop the unknown option", shown(unknown));
   const read = await run(["history", "limit", "--json", "--space", space]);
   const expected: Record<HistoryLimitStream, HistoryLimit> = { chat: CHAT_HISTORY_DEFAULT, inbox: INBOX_HISTORY_DEFAULT, dlv: INBOX_HISTORY_DEFAULT, dm: { maxAgeMs: 0, perSubject: NONE } };
   check("with no limit flag, --json without --yes reads the four streams' limits", read.status === 0 && read.envelope?.outcome === "ok" && read.envelope.result?.kind === "history-limits" && (["chat", "inbox", "dlv", "dm"] as const).every((s) => sameView(rowOf(read.envelope, s)?.holds, expected[s])), shown(read));
   const readPlain = await run(["history", "limit", "--plain", "--space", space]);
   check("...and the report names each with no age or no count in words", readPlain.status === 0 && readPlain.stdout.includes("Channel posts") && readPlain.stdout.includes("no age limit, 1000 per sender") && readPlain.stdout.includes("no age limit, 1000 per agent") && readPlain.stdout.includes("no age limit, no count limit"), shown(readPlain));
+  const inboxOnly = await run(["history", "limit", "--inbox-per-agent", "5000", "--yes", "--json", "--space", noAgeSpace], roots.open);
+  const openRead = await run(["history", "limit", "--json", "--space", noAgeSpace], roots.open);
+  check("an open root without signing trust can set and read the inbox count without changing other limits",
+    inboxOnly.status === 0 && inboxOnly.envelope?.result?.changed === true && openRead.status === 0 &&
+    (["inbox", "dlv"] as const).every((s) => sameView(rowOf(openRead.envelope, s)?.holds, { maxAgeMs: 0, perSubject: 5000 })) &&
+    (["chat", "dm"] as const).every((s) => sameView(rowOf(openRead.envelope, s)?.holds, expected[s])),
+    { update: shown(inboxOnly), read: shown(openRead) });
   // An observer on the open broker sees every STREAM.UPDATE request the command sends.
   const updates: string[] = [];
   const watch = onc.subscribe("$JS.API.STREAM.UPDATE.>", { callback: (_e, m) => { updates.push(m.subject); } });

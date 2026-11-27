@@ -151,6 +151,6 @@ function rejection(response: Response, source: KeySource, url: URL): { message: 
 }
 
 function gitEmail(): string | undefined {
-  try { return execFileSync("git", ["config", "user.email"], { encoding: "utf8", timeout: 2_000 }).trim() || undefined; }
+  try { return execFileSync("git", ["config", "user.email"], { encoding: "utf8", timeout: 2_000, windowsHide: true }).trim() || undefined; }
   catch { return undefined; }
 }

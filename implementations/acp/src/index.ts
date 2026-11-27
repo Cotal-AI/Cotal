@@ -1,6 +1,8 @@
 import { registry, type Command } from "@cotal-ai/core";
 import { serverFlag, spaceFlag } from "@cotal-ai/workspace";
 import { acp, USAGE } from "./cli.js";
+import { t3Provider } from "./setup/t3.js";
+import { zedProvider } from "./setup/zed.js";
 
 /**
  * `@cotal-ai/acp`: Cotal as an ACP (Agent Client Protocol) agent, so an ACP client such as T3 Code,
@@ -33,9 +35,13 @@ const acpCommand: Command = {
   run: acp,
 };
 registry.register(acpCommand);
+// `cotal setup` adds a provider for the space it sets up to each of these clients it finds.
+registry.register(t3Provider);
+registry.register(zedProvider);
 
-export { cotalAgent, COMMANDS, promptText, type CotalAgentOptions, type HiddenSessions } from "./agent.js";
+export { cotalAgent, COMMANDS, type CotalAgentOptions, type HiddenSessions, type ThreadLink, type ThreadLinks } from "./agent.js";
 export { FrameMapper, type RunSignal } from "./frames.js";
+export { promptParts } from "./turns.js";
 export { openLiveMesh, frameOf } from "./live-mesh.js";
 export type { Mesh, AgentCatalog, ManagerChoice, SeatRef, SeatRow, SeatFrame, SpawnRequest } from "./mesh.js";
 export { SignInRequired } from "./mesh.js";

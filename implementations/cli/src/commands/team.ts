@@ -2,9 +2,9 @@ import { basename, join, resolve } from "node:path";
 import { CotalEndpoint, DEFAULT_SERVER, isReachable, realDirNoSymlink, subjectMatches, durableCovers, type ChannelDefaults, type CompletionResult, type FlagSpec, type FlagValues, type ParsedArgs } from "@cotal-ai/core";
 import { assertSingleSpaceBroker, recordOperationSpace, authDir, CommandFailure, oneLine, credentialRefusalMessage, brokerAddressForDisplay, canonicalRoot, codeSpan, connectOrThrow, findCotalRoot, findMesh, findPreparedSpace, preparedSpaceAt, jsonFlag, loadMeshes, localMeshesForRoot, nearbyMeshManifest, plainFlag, presentationOf, readMaintenanceJournal, shellPath, spaceFlag, userViewAuth, writeResult, type Report } from "@cotal-ai/workspace";
 import { shellWord } from "../lib/endpoint-errors.js";
-import { personaCatalog } from "../lib/persona-files.js";
-import { formatIssue, loadManifest, ManifestError, type PreparedManifest } from "../lib/manifest/index.js";
-import { UnusableFile } from "../lib/unusable-file.js";
+import { displayCmd } from "../lib/self-exec.js";
+import { personaCatalog, type PersonaCatalog } from "../lib/persona-files.js";
+import { formatIssue, loadManifest, manifestPathFailure, ManifestError, type PreparedManifest } from "../lib/manifest/index.js";
 import { findLedgerByRun, listLedgerFiles, type MeshLedger } from "../lib/manifest/ledger.js";
 import { findFreshTeamAttempt, findFreshTeamSummary, freshTeamAttemptSettled, freshTeamSummaryRecordedElsewhere, listFreshTeamAttempts, listFreshTeamSummaries, type FreshTeamSummary } from "../lib/team-fresh.js";
 import { additiveTeamRecordedState, findAdditiveTeamAttempt, listAdditiveTeamAttempts, removedAdditiveDeploymentIds, retainedAdditiveTeamAttempts, stoppedAttemptEffects, type AdditiveTeamAttempt } from "../lib/team-additive-attempt.js";
@@ -13,6 +13,7 @@ import { cardsWithoutLiveDelivery, inspectTeamDeployment, invalidTeamChannelCard
 import { managerRecordState } from "../lib/manager-proc.js";
 import { authModeText, teamText } from "../lib/team-text.js";
 import { readLocalServiceCensus } from "../lib/service-census.js";
+import { readStackJournal } from "../lib/stack-journal.js";
 import { liveMeshProcesses } from "./clean.js";
 import { preparedUpRoot, recordedBrokerTransport } from "./up.js";
 import { controllerTeamBoot } from "./team-boot-controller.js";
@@ -126,9 +127,11 @@ function cardStepText(phase: string): string {
 
 /** Refuses a summary that reads cleanly but was recorded at another root, as one is after its folder
  *  was moved or copied. It reports only that root's earlier boot. */
-function assertSummaryNotElsewhere(root: string, deploymentId: string): void {
+function assertSummaryNotElsewhere({ root, space }: PersonaCatalog, deploymentId: string): void {
   const recordedRoot = freshTeamSummaryRecordedElsewhere(root, deploymentId);
-  if (recordedRoot) throw new CommandFailure("refused", "CONFLICT", `the fresh launch summary ${deploymentId} was recorded at ${recordedRoot}, not at this folder; the folder was moved or copied since, so it reports only that earlier boot`, { target: { root, recordedRoot, deploymentId }, remedy: "nothing in this folder depends on it; `cotal status` here shows this folder's own stack" });
+  if (!recordedRoot) return;
+  const atRoot = `cd ${shellPath(root)} && `;
+  throw new CommandFailure("refused", "CONFLICT", `the fresh launch summary ${deploymentId} was recorded at ${recordedRoot}, not at this folder; the folder was moved or copied since, so it reports only that earlier boot`, { target: { root, recordedRoot, deploymentId }, remedy: `nothing in this folder depends on it; inspect this project's stack with ${codeSpan(`${atRoot}cotal status --space=${shellWord(space)}`)}` });
 }
 
 function freshRecorded(summary: FreshTeamSummary) {
@@ -159,7 +162,7 @@ export async function team(args: ParsedArgs): Promise<void> {
     if (/^[a-f0-9]{16}$/.test(subject!)) {
       try { summary = findFreshTeamSummary(catalog.root, subject!); }
       catch {
-        assertSummaryNotElsewhere(catalog.root, subject!);
+        assertSummaryNotElsewhere(catalog, subject!);
         throw new CommandFailure("refused", "SCHEMA_INVALID", "the fresh launch summary for this full ID is unreadable; it was not treated as absent", { target: { space: catalog.space, deploymentId: subject } });
       }
       try { additiveAttempt = findAdditiveTeamAttempt(catalog.root, subject!); }
@@ -313,7 +316,7 @@ export async function team(args: ParsedArgs): Promise<void> {
 async function previewDeploy(file: string, values: TeamValues): Promise<void> {
   const dryRun = values["dry-run"] === true;
   // Apply handlers perform their own exact target checks and report the selected space.
-  const { path, prepared } = readTeamFile(file, dryRun ? values.space : undefined);
+  const { path, prepared } = readTeamFile(file, dryRun ? values.space : undefined, dryRun ? "preview" : true);
   if (!dryRun) {
     if (prepared.agents.length) {
       const { applyAgentTeam } = await import("./team-agent-apply.js");
@@ -329,6 +332,12 @@ async function previewDeploy(file: string, values: TeamValues): Promise<void> {
   if (!local) throw stoppedTeamDeploy(waiting) ?? new CommandFailure("refused", "TARGET_UNAVAILABLE", waiting ? "the selected space is only prepared; additive deploy requires an existing registered mesh" : "the selected space has no local registration; no broker or authorization target was inferred", { target: { space }, remedy: "register an existing authorized mesh before reviewing an additive deployment" });
   if (waiting && canonicalRoot(waiting.root) !== canonicalRoot(local.root)) throw new CommandFailure("refused", "CONFLICT", "prepared and registered records disagree on this space's root; no additive target was chosen", { target: { space } });
   const runtimeRequest = values.runtime ?? prepared.manifest.runtime ?? "pty";
+  const auth = prepared.manifest.broker?.auth;
+  const requestedMode = auth === false ? "open" : auth === "user" ? "user" : "auth";
+  const authConflict = auth !== undefined && requestedMode !== local.mode;
+  // Both deploy routes refuse a declared broker bind before any effect, so the
+  // preview names it and lists no creation candidates for that manifest.
+  const brokerHost = prepared.manifest.broker?.host !== undefined;
   const openDurable = local.mode === "open" && prepared.manifest.channels.some((channel) => channel.deliveryClass === "durable");
   const notLive = cardsWithoutLiveDelivery(prepared.manifest.channels);
   let attempts: ReturnType<typeof listAdditiveTeamAttempts>;
@@ -339,13 +348,15 @@ async function previewDeploy(file: string, values: TeamValues): Promise<void> {
     retainedAdditiveAttempts: attempts.valid.map((attempt) => ({ deploymentId: attempt.deploymentId, space: attempt.space, server: brokerAddressForDisplay(attempt.server) ?? "not displayable", createdAt: attempt.createdAt, recordedState: additiveTeamRecordedState(attempt, attempts) })), unreadableAdditiveAttempts: attempts.refused.map(({ path }) => path),
     registrationOrigin: local.origin ?? "not recorded", recordedBroker: brokerAddressForDisplay(local.server) ?? null,
     recordedMode: local.mode, recordedTlsRequired: local.tlsRequired === true,
-    runtimeRequest, native, openDurableUnsupported: openDurable,
+    runtimeRequest, native: authConflict || brokerHost ? { ...native, channels: { ...native.channels, create: [] } } : native, openDurableUnsupported: openDurable,
     agents: prepared.agents.map((agent) => ({ name: agent.name, application: agent.agentType, role: agent.role ?? null, requestedModel: agent.model ?? null })),
     channels: prepared.manifest.channels.map((channel) => ({ name: channel.name, deliveryClass: channel.deliveryClass ?? null, replay: channel.replay ?? null, replayWindow: channel.replayWindow ?? null })),
     targetReachability: "native-reads-established", brokerPolicy: "not-checked", authorization: "read-established-not-deploy-authority", ownershipClassification: "native-roster-and-registry-snapshot", connectorAvailability: "not-checked", effectAttempted: false, persisted: false };
   writeResult(presentationOf(values), { command: "team deploy", target: { space, root: local.root, path }, result,
     completeness: "partial",
-    warnings: [...prepared.warnings.map((warning) => ({ code: "MANIFEST_WARNING", target: { agent: warning.agent }, message: warning.message })),
+    warnings: [...(authConflict ? [{ code: "MANIFEST_WARNING", target: { space }, message: `Apply refuses: broker.auth requests ${authModeText(requestedMode)}, but this space is registered with mode ${authModeText(local.mode)}. Omit broker.auth or set it to match the registered mode.` }] : []),
+      ...(brokerHost ? [{ code: "MANIFEST_WARNING", target: { space }, message: "Apply refuses: broker.host declares a broker bind that team deploy cannot apply. Omit broker.host to deploy additively." }] : []),
+      ...prepared.warnings.map((warning) => ({ code: "MANIFEST_WARNING", target: { agent: warning.agent }, message: warning.message })),
       ...Array.from(invalidCards, ([name, message]) => ({ code: "MANIFEST_WARNING", target: { space, cards: [name] }, message })),
       ...(unverifiedCards.length ? [{ code: "CURRENT_CHANNEL_STATE_UNCHECKED", target: { space, cards: unverifiedCards }, message: "Some declared channels have a retained intent but do not match a verified create receipt. Their ownership is not classified." }] : []),
       ...(openDurable ? [{ code: "OPEN_DURABLE_UNSUPPORTED", target: { space }, message: "The selected running mesh is open and has no delivery daemon; this manifest's durable declaration cannot acquire a per-member backstop." }] : []), ...(notLive ? [{ code: "LIVE_DELIVERY_REQUIRED", target: { space, cards: notLive.names }, message: `Apply refuses: ${notLive.cards} ${notLive.verb} not set deliveryClass: live. To deploy, ${liveDeliveryRemedy(local.mode)}.` }] : []), ...(!native.unmanaged.feedAvailable ? [{ code: "MEMBERSHIP_FEED_UNAVAILABLE", target: { space }, message: "Other readers are a lower bound because the derived membership feed has no observed heartbeat." }] : []), ...(attempts.valid.length || attempts.refused.length ? [{ code: "ADDITIVE_ATTEMPT_REMAINS", target: { root: local.root, space, deploymentIds: attempts.valid.map((attempt) => attempt.deploymentId), unreadable: attempts.refused.map(({ path }) => path) }, message: "An additive deployment intent is retained at this root; the preview does not settle or retry it." }] : [])] }, (data): Report => ({ sections: [
@@ -355,7 +366,10 @@ async function previewDeploy(file: string, values: TeamValues): Promise<void> {
     { title: "Retained additive attempts", blocks: [data.retainedAdditiveAttempts.length ? { kind: "table", columns: [{ key: "id", label: "Deployment" }, { key: "space", label: "Space" }, { key: "state", label: "Recorded state" }], rows: data.retainedAdditiveAttempts.slice(0, 100).map((attempt) => ({ id: attempt.deploymentId, space: attempt.space, state: teamText(attempt.recordedState) })) } : { kind: "lines", lines: ["No readable additive attempt under this root."] }, { kind: "lines", lines: [...data.unreadableAdditiveAttempts.slice(0, 100).map((path) => `Unreadable additive attempt: ${path}`), ...(data.retainedAdditiveAttempts.length > 100 || data.unreadableAdditiveAttempts.length > 100 ? ["Additional records are in JSON."] : []), "A returned receipt records historical channel creation or native agent joins; an unsettled intent remains unknown. Neither grants removal or retry authority."] }] },
     { title: "Existing unmanaged channel metadata", blocks: [data.native.channels.existsUnmanagedPolicy.length ? { kind: "table", columns: [{ key: "name", label: "Channel" }, { key: "difference", label: "Declared fields differing from live" }], rows: data.native.channels.existsUnmanagedPolicy.slice(0, 100).map((row) => ({ name: `#${row.name}`, difference: row.differingDeclaredFields.join(", ") || "none among declared fields" })) } : { kind: "lines", lines: ["No existing unmanaged declared channel cards in this snapshot."] }, { kind: "lines", lines: [...(data.native.channels.existsUnmanagedPolicy.length > 100 ? ["Additional comparisons are in JSON."] : []), "Only field names are shown, not live instructions or descriptions. Unmanaged cards are not patched or adopted; an omitted declaration is not a difference."] }] },
     { title: "Native additive classification", blocks: [{ kind: "fields", rows: [["New channel candidates", String(data.native.channels.create.length)], ["Prior-owned channel records", String(data.native.channels.owned.length)], ["Unmanaged existing channels", String(data.native.channels.existsUnmanaged.length)], ["Present unowned agents", String(data.native.unmanaged.presentUnowned.length)]] }, { kind: "table", columns: [{ key: "name", label: "Declared agent" }, { key: "state", label: "Disposition" }, { key: "running", label: "Prior name present" }], rows: data.native.agents.slice(0, 100).map((agent) => ({ name: agent.name, state: agent.disposition, running: agent.runningByName === null ? "not recorded" : agent.runningByName ? "yes" : "no" })) }, ...(data.native.agents.length > 100 ? [{ kind: "lines" as const, lines: ["Additional classifications are in JSON."] }] : []), { kind: "lines", lines: ["Presence is not an ownership claim. The derived membership feed is display-only and may miss silent readers; this read is not a safe-to-apply plan."] }] },
-    { blocks: [{ kind: "lines", lines: ["Native roster and channel-registry classification is a non-atomic read, not an authorized deployment plan. Manager readiness, runtime and connector availability, write grants and apply effects remain unchecked."] }] },
+    { blocks: [{ kind: "lines", lines: [
+      "Native roster and channel-registry classification is a non-atomic read, not an authorized deployment plan. Manager readiness, runtime and connector availability, write grants and apply effects remain unchecked.",
+      ...(canonicalRoot(findCotalRoot()) !== canonicalRoot(data.root) ? [`Apply from the registered project root ${data.root}.`] : []),
+    ] }] },
   ] }));
 }
 
@@ -433,7 +447,7 @@ async function previewRemove(deploymentId: string, values: TeamValues): Promise<
   let summary: FreshTeamSummary | undefined;
   try { summary = findFreshTeamSummary(catalog.root, deploymentId); }
   catch {
-    assertSummaryNotElsewhere(catalog.root, deploymentId);
+    assertSummaryNotElsewhere(catalog, deploymentId);
     throw new CommandFailure("refused", "SCHEMA_INVALID", "the fresh launch summary for this ID is unreadable; it cannot be treated as absent or as an additive removal target", { target: { space: catalog.space, deploymentId } });
   }
   if (summary) {
@@ -526,17 +540,13 @@ function accessGraph(prepared: PreparedManifest) {
   }));
 }
 
-function readTeamFile(file: string, space?: string): { path: string; prepared: PreparedManifest } {
+function readTeamFile(file: string, space: string | undefined, forLaunch: true | "preview"): { path: string; prepared: PreparedManifest } {
   const path = resolve(file);
   let prepared: PreparedManifest;
-  try { prepared = loadManifest(path); }
+  try { prepared = loadManifest(path, undefined, forLaunch); }
   catch (e) {
     if (e instanceof ManifestError) throw manifestRefusal(e, path);
-    // A folder given as the manifest gets the refusal `up -f` and `topology view` give, naming it.
-    if (e instanceof UnusableFile) throw e;
-    if ((e as NodeJS.ErrnoException).code === "ENOENT" && (e as NodeJS.ErrnoException).path === path)
-      throw new CommandFailure("refused", "TARGET_NOT_FOUND", `the team manifest ${path} was not found; no broker was contacted`, { target: { path }, remedy: "check the file path and run the command again" });
-    throw new CommandFailure("refused", "SCHEMA_INVALID", "the team manifest or referenced persona could not be read and resolved; no broker was contacted", { target: { path }, remedy: "check the manifest schema, persona paths and permission declarations" });
+    throw manifestPathFailure(e, { path }) ?? new CommandFailure("refused", "SCHEMA_INVALID", "the team manifest or referenced persona could not be read and resolved; no broker was contacted", { target: { path }, remedy: "check the manifest schema, persona paths and permission declarations" });
   }
   if (space !== undefined && space !== prepared.manifest.space) throw new CommandFailure("refused", "CONFLICT", "--space must agree with the manifest's recorded target; the file was not rebound");
   return { path, prepared };
@@ -553,7 +563,7 @@ function manifestRefusal(e: ManifestError, path: string): CommandFailure {
 }
 
 async function bootTeam(file: string, values: TeamValues): Promise<void> {
-  const { path, prepared } = readTeamFile(file, values.space), space = prepared.manifest.space;
+  const { path, prepared } = readTeamFile(file, values.space, true), space = prepared.manifest.space;
   let local: ReturnType<typeof findMesh>, waiting: ReturnType<typeof findPreparedSpace>;
   try { local = findMesh(space); waiting = findPreparedSpace(space); }
   catch { throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "the selected local registration or prepared-space record could not be read; no boot root was chosen", { target: { space } }); }
@@ -564,15 +574,20 @@ async function bootTeam(file: string, values: TeamValues): Promise<void> {
   // The service controller owns the fresh boot: the same exact members, journal and stop route as
   // `cotal up`, with the manifest's launch carried by the stack's own manager member.
   const selected = preparedUpRoot(root), previous = process.cwd();
+  const presentation = presentationOf(values), foreground = values.foreground === true;
+  const retry = () => {
+    const retryFile = shellWord(file.startsWith("-") ? `./${file}` : file);
+    return codeSpan(`${presentation === "json" ? "cotal" : displayCmd()} team boot ${retryFile}${foreground ? " --foreground" : ""}${presentation === "rich" ? "" : ` --${presentation}`}`);
+  };
   process.chdir(selected);
   try {
-    await controllerTeamBoot({ file: path, space, transport: recordedBrokerTransport(selected), foreground: values.foreground === true, presentation: presentationOf(values) });
+    await controllerTeamBoot({ file: path, space, transport: recordedBrokerTransport(selected), foreground, presentation, retry });
   } finally { process.chdir(previous); }
 }
 
 async function previewBoot(file: string, values: TeamValues): Promise<void> {
   if (values["dry-run"] !== true) return bootTeam(file, values);
-  const { path, prepared } = readTeamFile(file, values.space);
+  const { path, prepared } = readTeamFile(file, values.space, "preview");
   const space = prepared.manifest.space;
   let local: ReturnType<typeof findMesh>, waiting: ReturnType<typeof findPreparedSpace>;
   try { local = findMesh(space); waiting = findPreparedSpace(space); }
@@ -622,6 +637,15 @@ async function previewBoot(file: string, values: TeamValues): Promise<void> {
   // The apply refuses both, so the preview names the folder's spaces and the route the apply offers.
   const folderSpaces = waiting || local ? [] : [...new Set([...localState.recordedSpaces, ...(localState.controlDir === "real" ? [preparedSpaceAt(root)?.space] : [])])].filter((name): name is string => name !== undefined && name !== space).sort();
   const blockingAdditiveAttempts = retainedAdditiveTeamAttempts(additiveAttempts);
+  let priorBootBlocker: string | undefined;
+  if ((waiting || local) && (bootAttempts.valid.length || bootSummaries.valid.length)) {
+    try {
+      const stack = readStackJournal(root)?.journal;
+      if (stack?.space === space && stack.operation.kind === "down" && stack.operation.phase === "completed")
+        priorBootBlocker = "This stopped root records an earlier team boot. It blocks another team boot even when its summary matches.";
+    } catch { /* This advisory check cannot establish a completed stop from an unreadable journal. */ }
+  }
+  const presentation = presentationOf(values);
   const result = { kind: "fresh-team-boot-preview", dryRun: true, path, space, root,
     rootSource: waiting ? "prepared-local-record" : local ? "local-up-registration" : folderSpaces.length ? "invoking-folder-of-other-space" : "invoking-folder-unprepared",
     localState, serviceCensus,
@@ -642,11 +666,13 @@ async function previewBoot(file: string, values: TeamValues): Promise<void> {
     defaults: prepared.manifest.defaults ?? null,
     channels: prepared.manifest.channels.map((channel) => ({ name: channel.name, deliveryClass: channel.deliveryClass ?? null, replay: channel.replay ?? null, replayWindow: channel.replayWindow ?? null })),
     nativePreflight: "local-read-and-credless-probe-only", openDurableUnsupported: openDurable, effectAttempted: false, persisted: false };
-  writeResult(presentationOf(values), { command: "team boot", target: { space, root, path }, result, completeness: "partial", warnings: [...prepared.warnings.map((warning) => ({ code: "MANIFEST_WARNING", target: { agent: warning.agent }, message: warning.message })), ...(openDurable ? [{ code: "OPEN_DURABLE_UNSUPPORTED", target: { space }, message: "The open manifest declares durable delivery, but its broker has no delivery daemon; fresh apply refuses before writing." }] : []), ...(otherBrokerRegistrations?.length ? [{ code: "BROKER_ADDRESS_SHARED", target: { space, root, otherSpaces: otherBrokerRegistrations.map((row) => row.space) }, message: "Other local registrations name this exact broker address; fresh apply refuses rather than binding over their recorded target." }] : []), ...(additiveRecords.valid.length || additiveRecords.refused.length ? [{ code: "ADDITIVE_OWNERSHIP_REMAINS", target: { space, root, deploymentIds: additiveRecords.valid.map(({ ledger }) => ledger.runId), unreadable: additiveRecords.refused.map(({ path }) => path) }, message: "Additive ledgers remain under this boot root. Fresh apply refuses until their lifecycle is resolved; unreadable ledgers are not absence." }] : []), ...(blockingAdditiveAttempts.length || additiveAttempts.refused.length ? [{ code: "ADDITIVE_ATTEMPT_REMAINS", target: { space, root, deploymentIds: blockingAdditiveAttempts.map((attempt) => attempt.deploymentId), unreadable: additiveAttempts.refused.map(({ path }) => path) }, message: "An unremoved or unreadable additive deployment record blocks fresh boot." }] : [])] }, (data): Report => ({ sections: [
+  writeResult(presentation, { command: "team boot", target: { space, root, path }, result, completeness: "partial", warnings: [
+    ...(priorBootBlocker && presentation === "json" ? [{ code: "LIFECYCLE_BLOCKED", target: { space, root }, message: priorBootBlocker }] : []),
+    ...prepared.warnings.map((warning) => ({ code: "MANIFEST_WARNING", target: { agent: warning.agent }, message: warning.message })), ...(openDurable ? [{ code: "OPEN_DURABLE_UNSUPPORTED", target: { space }, message: "The open manifest declares durable delivery, but its broker has no delivery daemon; fresh apply refuses before writing." }] : []), ...(otherBrokerRegistrations?.length ? [{ code: "BROKER_ADDRESS_SHARED", target: { space, root, otherSpaces: otherBrokerRegistrations.map((row) => row.space) }, message: "Other local registrations name this exact broker address; fresh apply refuses rather than binding over their recorded target." }] : []), ...(additiveRecords.valid.length || additiveRecords.refused.length ? [{ code: "ADDITIVE_OWNERSHIP_REMAINS", target: { space, root, deploymentIds: additiveRecords.valid.map(({ ledger }) => ledger.runId), unreadable: additiveRecords.refused.map(({ path }) => path) }, message: "Additive ledgers remain under this boot root. Fresh apply refuses until their lifecycle is resolved; unreadable ledgers are not absence." }] : []), ...(blockingAdditiveAttempts.length || additiveAttempts.refused.length ? [{ code: "ADDITIVE_ATTEMPT_REMAINS", target: { space, root, deploymentIds: blockingAdditiveAttempts.map((attempt) => attempt.deploymentId), unreadable: additiveAttempts.refused.map(({ path }) => path) }, message: "An unremoved or unreadable additive deployment record blocks fresh boot." }] : [])] }, (data): Report => ({ sections: [
     { title: "Fresh team local impact", blocks: [{ kind: "fields", rows: [["Space", data.space], ["Local root", data.root], ["Root source", data.rootSource === "prepared-local-record" ? "prepared for this space" : data.rootSource === "local-up-registration" ? "registered by `cotal up`" : folderSpaces.length ? `this folder, which belongs to ${folderSpaces.map((name) => `"${name}"`).join(", ")}` : "this folder, not prepared"], ["Control directory", data.localState.controlDir], ["Other locally recorded spaces", data.localState.recordedSpaces.join(", ") || "none"], ["Maintenance", data.localState.maintenance], ["Manager record", data.localState.managerRecord ? `${data.localState.managerRecord.state}${data.localState.managerRecord.pid === null ? "" : ` (pid ${data.localState.managerRecord.pid})`}` : "not checked"], ["Possibly live recorded processes", data.localState.possibleProcesses.join(", ") || "none found"], ["Broker candidate", data.brokerCandidate ?? "host-derived at apply; not probed"], ["Credless broker probe", data.brokerProbe], ["Other exact-address registrations", data.otherBrokerRegistrations === null ? "not checked" : String(data.otherBrokerRegistrations.length)], ["Manifest", data.path], ["Runtime request", data.runtime], ["Lifetime request", data.lifetimeRequest], ["Auth mode request", authModeText(data.authMode)], ...(data.authMode === "open" ? [["Durable delivery on open", data.openDurableUnsupported ? "unsupported at apply" : "not a contradiction"] as [string, string]] : []), ["Agents requested", String(data.agents.length)], ["Channels declared", String(data.channels.length)], ["Saved service definitions", String(data.serviceCensus.serviceDefinitions.length)], ["Saved service instances", String(data.serviceCensus.serviceRecords.length)], ["Supervisor receipts", String(data.serviceCensus.supervisors.length)], ["Retained native attempts", String(data.serviceCensus.nativeAttempts.length)], ["Additive ledgers", data.additiveInventory === "selected-root-local-ledgers" ? String(data.additiveLedgers.length) : "not checked"], ["Unreadable additive ledgers", data.additiveInventory === "selected-root-local-ledgers" ? String(data.unreadableAdditiveLedgers.length) : "not checked"], ["Additive attempts", data.additiveInventory === "selected-root-local-ledgers" ? String(data.additiveAttempts.length) : "not checked"], ["Unreadable additive attempts", data.additiveInventory === "selected-root-local-ledgers" ? String(data.unreadableAdditiveAttempts.length) : "not checked"], ["Fresh boot attempts", data.additiveInventory === "selected-root-local-ledgers" ? String(data.bootAttempts.length) : "not checked"], ["Unsettled fresh attempts", data.additiveInventory === "selected-root-local-ledgers" ? String(data.bootAttempts.filter((attempt) => !attempt.matchedSummary).length) : "not checked"], ["Unreadable fresh records", data.additiveInventory === "selected-root-local-ledgers" ? String(data.unreadableBootRecords.length) : "not checked"]] }, { kind: "lines", lines: [{ text: "A dead manager PID record remains visible here even when the possibly-live list omits it. Neither that record nor a credless probe proves safe reuse, broker absence on a TLS-first address, or authority to stop a leftover process. Bind authority, credentials, provider readiness and startup ownership remain unproved. No process or native resource was started.", tone: "waiting" }] }] },
     { title: "Recorded additive deployments", blocks: [data.additiveLedgers.length ? { kind: "table", columns: [{ key: "id", label: "Deployment" }, { key: "space", label: "Recorded space" }, { key: "agents", label: "Agent rows" }, { key: "channels", label: "Channel rows" }], rows: data.additiveLedgers.slice(0, 100).map((row) => ({ id: row.deploymentId, space: row.space, agents: String(row.agents), channels: String(row.channels) })) } : { kind: "lines", lines: [data.additiveInventory === "selected-root-local-ledgers" ? "No readable additive deployment ledgers in this root." : "The unprepared root has no control directory; additive ownership was not checked."] }, { kind: "lines", lines: [...(data.additiveLedgers.length > 100 ? ["Additional additive ledgers are in JSON."] : []), ...data.unreadableAdditiveLedgers.slice(0, 100).map((path) => `Unreadable ledger: ${path}`), ...(data.unreadableAdditiveLedgers.length > 100 ? ["Additional unreadable ledger paths are in JSON."] : []), "A recorded or unreadable additive ledger blocks fresh apply. The preview neither adopts nor tears down its resources."] }] },
     { title: "Retained additive deployments", blocks: [data.additiveAttempts.length ? { kind: "table", columns: [{ key: "id", label: "Deployment" }, { key: "space", label: "Space" }, { key: "state", label: "Recorded state" }], rows: data.additiveAttempts.slice(0, 100).map((attempt) => ({ id: attempt.deploymentId, space: attempt.space, state: teamText(attempt.recordedState) })) } : { kind: "lines", lines: ["No readable additive attempts in this root."] }, { kind: "lines", lines: [...data.unreadableAdditiveAttempts.slice(0, 100).map((path) => `Unreadable additive attempt: ${path}`), ...(data.additiveAttempts.length > 100 || data.unreadableAdditiveAttempts.length > 100 ? ["Additional attempts or paths are in JSON."] : []), "An unsettled or unremoved additive deployment blocks a fresh boot. A complete matched removal receipt (static agent retirement or channel card deletion) releases only that known blocker; other service, broker and process custody is still checked."] }] },
-    { title: "Fresh boot attempts", blocks: [data.bootAttempts.length ? { kind: "table", columns: [{ key: "id", label: "Deployment" }, { key: "space", label: "Space" }, { key: "summary", label: "Returned summary" }], rows: data.bootAttempts.slice(0, 100).map((attempt) => ({ id: attempt.deploymentId, space: attempt.space, summary: attempt.matchedSummary ? "matched" : "unsettled" })) } : { kind: "lines", lines: ["No readable fresh boot attempts under this root."] }, { kind: "lines", lines: [...(data.bootAttempts.length > 100 ? ["Additional attempts are in JSON."] : []), ...data.unreadableBootRecords.slice(0, 100).map((path) => `Unreadable fresh record: ${path}`), ...(data.unreadableBootRecords.length > 100 ? ["Additional unreadable paths are in JSON."] : []), "An unsettled attempt or unreadable fresh record blocks a new boot. Even a matched summary is not current broker or agent liveness."] }] },
+    { title: "Fresh boot attempts", blocks: [data.bootAttempts.length ? { kind: "table", columns: [{ key: "id", label: "Deployment" }, { key: "space", label: "Space" }, { key: "summary", label: "Returned summary" }], rows: data.bootAttempts.slice(0, 100).map((attempt) => ({ id: attempt.deploymentId, space: attempt.space, summary: attempt.matchedSummary ? "matched" : "unsettled" })) } : { kind: "lines", lines: ["No readable fresh boot attempts under this root."] }, { kind: "lines", lines: [...(data.bootAttempts.length > 100 ? ["Additional attempts are in JSON."] : []), ...data.unreadableBootRecords.slice(0, 100).map((path) => `Unreadable fresh record: ${path}`), ...(data.unreadableBootRecords.length > 100 ? ["Additional unreadable paths are in JSON."] : []), "An unsettled attempt or unreadable fresh record blocks a new boot. Even a matched summary is not current broker or agent liveness.", ...(priorBootBlocker ? [priorBootBlocker] : [])] }] },
     { title: "Recorded broker address matches", blocks: [data.otherBrokerRegistrations === null ? { kind: "lines", lines: ["Broker address is host-derived at apply; exact local registrations were not compared."] } : data.otherBrokerRegistrations.length ? { kind: "table", columns: [{ key: "space", label: "Other space" }, { key: "root", label: "Recorded root" }, { key: "origin", label: "Registration" }], rows: data.otherBrokerRegistrations.slice(0, 100) } : { kind: "lines", lines: ["No other registration uses this exact candidate address in the local workstation registry."] }, { kind: "lines", lines: [...((data.otherBrokerRegistrations?.length ?? 0) > 100 ? ["Additional exact-address matches are in JSON."] : []), "A match blocks fresh apply. No match does not prove an exclusive broker: address aliases, remote tenants and live attachments were not checked."] }] },
     { title: "Selected-space service records", blocks: [data.serviceCensus.serviceRecords.length ? { kind: "table", columns: [{ key: "definition", label: "Definition" }, { key: "instance", label: "Full instance" }, { key: "state", label: "Recorded state" }], rows: data.serviceCensus.serviceRecords.slice(0, 100).map((row) => ({ definition: row.definition, instance: row.instanceId, state: row.recordedState })) } : { kind: "lines", lines: ["No service instance records in this space's workstation store."] }, { kind: "lines", lines: [...(data.serviceCensus.serviceRecords.length > 100 ? ["Additional instance records are in JSON."] : []), "Definitions and supervisor receipts are also in JSON. These space-scoped records are not attributed to this boot root or established as live; a future apply must recheck them before writing."] }] },
     { title: "Retained native attempts", blocks: [data.serviceCensus.nativeAttempts.length ? { kind: "table", columns: [{ key: "kind", label: "Action" }, { key: "instance", label: "Full instance" }, { key: "step", label: "Step" }, { key: "position", label: "Position" }], rows: data.serviceCensus.nativeAttempts.slice(0, 100).map((row) => ({ kind: row.kind, instance: row.instanceId, step: row.step, position: row.position })) } : { kind: "lines", lines: ["No retained native attempts in this space's workstation store."] }, ...(data.serviceCensus.nativeAttempts.length > 100 ? [{ kind: "lines" as const, lines: ["Additional attempts are in JSON."] }] : [])] },
@@ -657,7 +683,7 @@ async function previewBoot(file: string, values: TeamValues): Promise<void> {
 }
 
 async function checkTeam(file: string, values: TeamValues): Promise<void> {
-  const { path, prepared } = readTeamFile(file, values.space);
+  const { path, prepared } = readTeamFile(file, values.space, "preview");
   const openDurable = prepared.manifest.broker?.auth === false && (prepared.manifest.defaults?.deliveryClass === "durable" || prepared.manifest.channels.some((channel) => channel.deliveryClass === "durable"));
   const result = { kind: "team-check", file: path, space: prepared.manifest.space, runtime: prepared.manifest.runtime ?? "pty",
     agents: prepared.agents.map((agent) => ({ name: agent.name, harness: agent.agentType, role: agent.role ?? null, model: agent.model ?? null, policy: agent.policy, inherited: agent.inherited, capabilities: agent.capabilities, capabilitySource: agent.capabilitySource })),

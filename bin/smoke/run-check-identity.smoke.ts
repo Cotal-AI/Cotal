@@ -72,7 +72,14 @@ let up = false;
 try {
   for (const verb of ["check", "migrate"]) for (const flags of [["--adopt", "h1"], ["--release", "h1"], ["--discard-approvals"]]) {
     const out = await call("run", verb, "run-missing", "good.cotal.js", ...flags);
-    check(`${verb} ${flags[0]} refuses before a mesh exists`, out.code === 1 && out.text.includes(`${flags[0]} decides what a commit does`) && !out.text.includes("no mesh"), out.text);
+    check(`${verb} ${flags[0]} refuses before a mesh exists`, out.code === 1 && out.text.includes(`${flags[0]} decides what a commit does`)
+      && out.text.includes(`run the check without ${flags[0]}`) && !out.text.includes("no mesh"), out.text);
+  }
+  for (const verb of ["check", "migrate"]) for (const flag of ["--adopt", "--release"]) for (const after of [[], ["--local"], ["--"]]) {
+    const out = await call("run", verb, "run-missing", "good.cotal.js", flag, ...after);
+    check(`${verb} ${[flag, ...after].join(" ")} tells the user to remove the flag`, out.code === 1
+      && out.text.includes(`does not take ${flag}`) && out.text.includes(`run the check without ${flag}`)
+      && !out.text.includes(`write ${flag}`) && !out.text.includes("no mesh"), out.text);
   }
   const unsupportedFile = await call("run", "resume", "run-example", "--file", "good.cotal.js", "--json");
   const fileRefusal = JSON.parse(unsupportedFile.text);
@@ -102,6 +109,32 @@ try {
   up = true;
   const managers = JSON.parse(await succeed("ps", "--json")).result.managers;
   const selection = ["--space", "project", "--on", managers[0].instanceId];
+  const recoveryServer = `nats://127.0.0.1:${await freePort()}`;
+  const recoveryTarget = ["--space", "recovery-lab", "--server", recoveryServer, "--on", managers[0].instanceId, "--json"];
+  const missingResume = await call("run", "resume", ...recoveryTarget);
+  const resumeError = JSON.parse(missingResume.text).error;
+  assert.equal(missingResume.code, 1, missingResume.text);
+  assert.equal(resumeError.code, "USAGE_INVALID", missingResume.text);
+  const correction = ". Then add a run ID after `run resume` in the original command";
+  const resumeRemedy = resumeError.remedy as string;
+  assert.ok(resumeRemedy.endsWith(correction), resumeRemedy);
+  const resumeLookup = retryWords(resumeRemedy.slice(0, -correction.length));
+  assert.deepEqual(resumeLookup, ["run", "list", ...recoveryTarget]);
+  const recoveryList = await call(...resumeLookup);
+  const recoveryReceipt = JSON.parse(recoveryList.text);
+  check("the missing hosted resume ID lookup reaches the requested broker instead of the project broker",
+    recoveryList.code === 2 && recoveryReceipt.error.code === "TARGET_UNAVAILABLE"
+      && recoveryReceipt.error.message.includes(recoveryServer) && recoveryReceipt.target.space === "recovery-lab", recoveryList.text);
+  const unknownShow = await call("run", "show", "run-missing", "--local", "--space", "project", "--server", server, "--endpoint", "manager", "--json");
+  const unknownShowError = JSON.parse(unknownShow.text).error;
+  assert.equal(unknownShow.code, 2, unknownShow.text);
+  assert.equal(unknownShowError.code, "TARGET_NOT_FOUND", unknownShow.text);
+  const showRetry = retryWords(unknownShowError.remedy);
+  assert.deepEqual(showRetry, ["run", "list", "--local", "--space", "project", "--server", server, "--endpoint", "manager", "--json"]);
+  const listed = JSON.parse(await succeed(...showRetry));
+  check("the local show retry lists the recorded runs on the same target", listed.target.space === "project"
+    && listed.warnings.some((warning: { code: string; target?: { endpoint?: string } }) => warning.code === "ENDPOINT_HAS_NO_RUNS" && warning.target?.endpoint === "manager")
+    && Array.isArray(listed.result.items) && listed.result.items.length === 0, JSON.stringify(listed));
   for (const verb of ["answer", "amend"]) for (const local of [false, true]) {
     const flags = local ? ["--space", "project", "--local", "--by", "operator"] : selection;
     const out = await call("run", verb, "run-missing", "/checkpoint:approve#0", "--value", "true", ...flags, "--json");

@@ -91,6 +91,9 @@ const agent = z.strictObject({
     source,
     model: short.optional(),
     variant: short.min(1).optional(),
+    // Absent on a launch that chose no modes, which is every inventory written before the field.
+    modes: z.record(z.string().min(1).max(128), z.union([z.boolean(), z.string().min(1).max(256)]))
+      .refine((v) => Object.keys(v).length >= 1 && Object.keys(v).length <= 32, "must name 1 to 32 modes").optional(),
     subscribe: stringList.optional(),
     allowSubscribe: stringList,
     allowPublish: stringList.optional(),
@@ -111,6 +114,9 @@ const agent = z.strictObject({
     // Older inventories and seat records carry no payload choice. Preserve that absence so the
     // connector applies its publication default, while an explicit false survives a restart.
     eventPayloads: z.boolean().optional(),
+    // Kept only when the spawn asked, so a record written before these fields reads as not asked.
+    askPermissions: z.literal(true).optional(),
+    reasoningEvents: z.literal(true).optional(),
     // Start takes any declared server key as written, empty or long, so a bound per name here would
     // refuse to preserve an agent that launched. The args byte cap bounds the list.
     shareTools: z.array(z.string()).optional(),

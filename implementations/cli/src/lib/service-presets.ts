@@ -1,7 +1,7 @@
 import { brokerUrlHasUserinfo, registry, type Command, type FlagSpec, type ParsedArgs } from "@cotal-ai/core";
 import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { assertManagerName, brokerUrlCredentialRefusal, cacheServicePreset, codeSpan, CommandFailure, extensionProvides, findMesh, hasUserAuthState, installedExtensionPackage, isCommandFailure, loadExtensionsManifest, oneLine, resolveNativeServiceTarget, runtimeInstallHint, segmentedKey, serviceMetadataDigest, spaceMaterialKey, validateServiceAdapterOptions, validateServiceAdapterPaths, verifiedExtensionServicePresets, WEB_SERVICE_ADAPTER, type ServiceDefinitionInput, type ServicePreset, type ServicePresetDefault } from "@cotal-ai/workspace";
+import { assertManagerName, brokerUrlCredentialRefusal, cacheServicePreset, codeSpan, CommandFailure, extensionProvides, findMesh, hasUserAuthState, installedExtensionPackage, isCommandFailure, loadExtensionsManifest, loadRoster, oneLine, recordOperationWarning, resolveNativeServiceTarget, runtimeInstallHint, segmentedKey, serviceMetadataDigest, spaceMaterialKey, validateServiceAdapterOptions, validateServiceAdapterPaths, verifiedExtensionServicePresets, WEB_SERVICE_ADAPTER, type ServiceDefinitionInput, type ServicePreset, type ServicePresetDefault } from "@cotal-ai/workspace";
 import { installedExtensionsEnabled } from "../ext-loader.js";
 import { metadataPositionals } from "./command-path.js";
 import { shellWord } from "./endpoint-errors.js";
@@ -23,6 +23,19 @@ export function assertManagerStartOptions(space: string, options: Record<string,
   if (!extension) throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", runtimeInstallHint(runtime), { target });
   if (installedExtensionPackage(extension.pkg)?.version !== extension.version || extension.pkg.startsWith("@cotal-ai/") && extension.version !== cliVersion())
     throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", `the installed package for runtime ${JSON.stringify(runtime)} is missing or does not match the required version`, { target, remedy: `check it with \`cotal runtimes\`` });
+}
+
+/** Check the contents of a roster whose path the adapter has already validated. */
+export function checkManagerStartRoster(roster: unknown, target: { space: string; name: string }, preview: boolean): boolean {
+  if (typeof roster !== "string") return true;
+  try { loadRoster(roster); }
+  catch (error) {
+    const message = `the manager roster was not loaded: ${(error as Error).message}`;
+    if (!preview) throw new CommandFailure("failed", "OPERATION_FAILED", message, { target, remedy: "correct the roster and rerun the command" });
+    recordOperationWarning({ code: "SCHEMA_INVALID", target, message: `the real start would fail: ${message}` });
+    return false;
+  }
+  return true;
 }
 
 const reserved = new Set(["help", "no-color", "no-input", "space", "json", "plain", "file", "preset", "exec", "cwd", "yes", "instance", "new-instance", "foreground", "no-open", "with-agents", "dry-run", "tail", "follow"]);
@@ -152,6 +165,12 @@ export function presetUnfilledDefaults(preset: ServicePreset, space: string, roo
   return unfilled;
 }
 
+/** The flag forms a new preset definition needs in this space, with value placeholders. */
+export function presetRequiredInputs(preset: ServicePreset, space: string, root: string): string[] {
+  const flags = servicePresetFlags(preset), missing = new Set(presetMissingOptions(preset, {}));
+  return [...flags.filter((flag) => missing.has(flag.name)).map((flag) => `--${flag.name}${flag.value ? ` ${flag.value}` : ""}`), ...presetUnfilledDefaults(preset, space, root, {}).map((row) => `--${row.name} ${row.value}`)];
+}
+
 /** The option values a preset's defaults supply in `space`, for the options the person did not give.
  *  A default that cannot be resolved refuses with the flag that replaces it; nothing is invented. */
 export function presetDefaultOptions(preset: ServicePreset, space: string, root: string, values: ParsedArgs["values"], migrate = true): Record<string, string | boolean> {
@@ -169,7 +188,12 @@ export function presetDefaultOptions(preset: ServicePreset, space: string, root:
       continue;
     }
     const path = presetMaterialPath(fallback.kind, space, root, migrate);
-    if (!existsSync(path)) throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", `the ${preset.name} preset uses this space's ${fallback.kind} for --${name}, and ${path} does not exist yet; nothing was saved or started`, { target: { space, path }, remedy: `cotal up writes it for this space; or pass --${name} <file>` });
+    if (!existsSync(path)) {
+      if (preset.adapter === WEB_SERVICE_ADAPTER && fallback.kind === "web.creds" && findMesh(space)?.mode === "open") {
+        throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "the web dashboard requires a registered static-auth space, and the selected space is open; nothing was saved or started", { target: { space, path }, remedy: "select or create a registered static-auth space, then rerun the command for that space" });
+      }
+      throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", `the ${preset.name} preset uses this space's ${fallback.kind} for --${name}, and ${path} does not exist yet; nothing was saved or started`, { target: { space, path }, remedy: `cotal up writes it for this space; or pass --${name} <file>` });
+    }
     filled[name] = path;
   }
   return filled;
@@ -234,7 +258,10 @@ export function servicePresetDefinition(preset: ServicePreset, space: string, gi
     const additions = [...missing.map((name) => `--${name} ${flags.find((flag) => flag.name === name)?.value ?? ""}`.trimEnd()), ...unfilled.map((row) => `--${row.name} ${row.value}`)].join(" ");
     const onSpace = given.space === undefined ? "" : ` --space ${shellWord(space)}`;
     const showCommand = !fromCommand || Object.keys(given).every((name) => name === "space" || name === "preset");
-    throw new CommandFailure("refused", "USAGE_INVALID", `the ${preset.name} preset needs ${missing.map((name) => `--${name}`).join(", ")}, which ${missing.length === 1 ? "has" : "have"} no default${unfilled.map((row) => `, and --${row.name}, since ${row.reason}`).join("")}; nothing was saved or started`, { remedy: showCommand ? `${line} ${additions}${onSpace}` : retryWith(additions), selfContained: true, ...(showCommand ? { remedyIsCommand: true } : {}) });
+    const retry = verb === "start" && given["new-instance"]
+      ? `remove ${codeSpan("--new-instance")} and add ${codeSpan(additions)}, keeping the rest of the command unchanged`
+      : retryWith(additions);
+    throw new CommandFailure("refused", "USAGE_INVALID", `the ${preset.name} preset needs ${missing.map((name) => `--${name}`).join(", ")}, which ${missing.length === 1 ? "has" : "have"} no default${unfilled.map((row) => `, and --${row.name}, since ${row.reason}`).join("")}; nothing was saved or started`, { remedy: showCommand ? `${line} ${additions}${onSpace}` : retry, selfContained: true, ...(showCommand ? { remedyIsCommand: true } : {}) });
   }
   const values: ParsedArgs["values"] = { ...presetDefaultOptions(preset, space, root, given, migrate), ...given };
   const options = parsedPresetOptions(preset, values);

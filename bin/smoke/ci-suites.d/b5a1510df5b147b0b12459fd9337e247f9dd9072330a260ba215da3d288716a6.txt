@@ -1,0 +1,3 @@
+# A Hermes launch's variant is the reasoning effort its managed profile sets, checked against
+# the efforts the installed Hermes takes.
+smoke:hermes-effort

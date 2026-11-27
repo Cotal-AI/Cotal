@@ -331,6 +331,18 @@ check(
   unanswered,
 );
 
+const denial = `permission-denied: the describe for manager was REFUSED BY THE BROKER, not unanswered: this caller's credential does not authorize publishing to "cotal.private.ep.inst.manager.${MANAGER}.describe.local.UDI3ASZOF3B5NBVJLT6WGN34JMDEOCMERF5ZLYGEJ4PQSN4V37E6V7QQ.d6s1ej9y6692wtfdndbe4yrg9a5x0uf.raw-denial" (the instance rail for ${MANAGER}: an instance-addressed call needs a credential minted with that instance, not a class-rail one).`;
+const denied = await spawnWith(new Error(denial));
+const safeDenial = "permission-denied: this caller may not read the helper's model pin";
+check(
+  "a broker denial says the caller may not read the model pin, without its principal or subject",
+  denied.isError !== true && denied.text.includes(`model pin "${PIN}" could not be audited (${safeDenial})`)
+    && !denied.text.includes("REFUSED BY THE BROKER") && !denied.text.includes("cotal.private")
+    && denied.structured?.model?.error === safeDenial && denied.structured.message === denied.text
+    && !JSON.stringify(denied.structured).includes("UDI3ASZOF3B5NBVJLT6WGN34JMDEOCMERF5ZLYGEJ4PQSN4V37E6V7QQ"),
+  denied,
+);
+
 const accepted = { name: "rev", owner: "u_x", actor: "rev", uid: "uuuuuuuuuuuuuuuuuuuuuuuuuu", goalId: "g", fingerprint: "f", executor: { lifecycleUid: MANAGER, epoch: 0 } };
 const booting = await spawnWith(new Error("timeout"), { id: "g", ok: false, error: { code: "uncertain", message: "rev did not join within its readiness window" }, data: accepted });
 check(
@@ -445,6 +457,11 @@ const personaTool = cotalToolSpecs(cfg).find((s) => s.name === "cotal_persona") 
   | { schema: { shape: Record<string, unknown> }; run: (agent: MeshAgent, config: AgentConfig, args: Record<string, unknown>) => Promise<{ text: string; isError?: boolean }> }
   | undefined;
 check("cotal_persona schema exposes capabilities", personaTool !== undefined && "capabilities" in personaTool.schema.shape);
+const personaName = personaTool?.schema.shape.name as { safeParse: (name: string) => { success: boolean; error?: Error } } | undefined;
+const invalidPersonaName = personaName?.safeParse("-reviewer");
+check("cotal_persona refuses a leading hyphen and accepts a corrected name",
+  invalidPersonaName?.success === false && invalidPersonaName.error?.message.includes("starting with a letter, digit or _") === true &&
+  personaName?.safeParse("reviewer").success === true, invalidPersonaName);
 const definer = new MeshAgent(cfg);
 const callsDefine = record(definer);
 await personaTool?.run(definer, cfg, { name: "probe", prompt: "You probe.", capabilities: ["spawn"] });
@@ -494,7 +511,7 @@ check(
   onceOn.text,
 );
 
-const EXPECTED_CHECKS = 81;
+const EXPECTED_CHECKS = 83;
 if (checks !== EXPECTED_CHECKS) {
   failures++;
   console.log(`SUITE INCOMPLETE: ${checks} of ${EXPECTED_CHECKS} checks`);

@@ -42,11 +42,9 @@ export function isBundledDesktopRuntime(): boolean {
  */
 
 /**
- * A missing-export failure is a SKEW between two installs, and the remedy depends on which of them is
- * behind. Every caller links this host's peer into the extension (`bindExtensionPeers`) before the
- * import, so the copy that failed is nameable — path and version — and rankable against the extension.
- * Prescribing `cotal ext add` without ranking them tells the operator to reinstall whichever side is
- * CURRENT, and no reinstall of an extension can add an export to an older core.
+ * Identify the missing export and the peer linked by `bindExtensionPeers` before import.
+ * Recommend replacing one side only when its version or the extension's peer range establishes
+ * which side is behind.
  */
 function importFailure(pkg: string, version: string, e: unknown, remedy: string, meta: InstalledExtensionPackage): Error {
   const message = e instanceof Error ? e.message : String(e);
@@ -74,8 +72,8 @@ function importFailure(pkg: string, version: string, e: unknown, remedy: string,
       );
     case "same-version":
       return new Error(
-        `${head}, and ${at}. Same version, different build (${skew.because}): the installed ${peer} predates this ` +
-          `extension's source - rebuild or reinstall the cotal that owns ${skew.peerPath}.`,
+        `${head}, and ${at}. Both packages report ${skew.peerVersion}. ` +
+          `Check the extension's import and the exports of the linked peer before replacing either build.`,
       );
     case "extension-behind":
       return new Error(`${head}, and ${at}. The extension is the older side: ${skew.because} - ${remedy}`);
@@ -87,27 +85,38 @@ function importFailure(pkg: string, version: string, e: unknown, remedy: string,
   }
 }
 
-/** Select the same package-relative entry for on-disk checks and import. */
-export function extensionEntry(meta: InstalledExtensionPackage): string {
-  let entry = meta.main ?? "index.js";
-  const dot = (meta.exports as Record<string, unknown> | undefined)?.["."];
-  if (typeof dot === "string") entry = dot;
-  else if (dot && typeof dot === "object") {
-    const d = dot as Record<string, string>;
-    entry = d.import ?? d.default ?? entry;
-  } else if (typeof meta.exports === "string") entry = meta.exports;
-  return entry;
+/** Select the first entry matching the Node ESM conditions in declaration order. */
+function conditionalEntry(target: unknown): string | undefined {
+  if (typeof target === "string") return target;
+  if (!target || typeof target !== "object" || Array.isArray(target)) return undefined;
+  for (const [condition, value] of Object.entries(target)) {
+    if (condition !== "node" && condition !== "import" && condition !== "default") continue;
+    const entry = conditionalEntry(value);
+    if (entry !== undefined) return entry;
+  }
+  return undefined;
+}
+
+/** Select the package's explicit export, if it has one. */
+function exportedEntry(meta: InstalledExtensionPackage): string | undefined {
+  const exports = meta.exports;
+  if (exports && typeof exports === "object" && Object.keys(exports).some((key) => key.startsWith("."))) {
+    return conditionalEntry((exports as Record<string, unknown>)["."]);
+  }
+  return conditionalEntry(exports);
 }
 
 /**
- * A package entry may name a directory, which Node resolves through that directory's own
- * package.json main and then its index file. ESM `import()` refuses a directory path outright,
- * so resolve it the way `require.resolve` does before importing. When nothing resolves, the
- * directory path itself is imported so Node reports the failure as it did before.
+ * Resolve the entry for both on-disk checks and import. Node allows `main` to omit the file
+ * extension. Directory entries use their own main or index file. Keep the declared path when
+ * neither resolves so the caller can report it as missing or unimportable.
  */
-function resolveEntryFile(dir: string, entry: string): string {
-  const path = join(dir, entry);
-  if (!statSync(path, { throwIfNoEntry: false })?.isDirectory()) return path;
+export function resolveExtensionEntry(dir: string, meta: InstalledExtensionPackage): string {
+  const exported = exportedEntry(meta);
+  const path = join(dir, exported ?? meta.main ?? "index.js");
+  const entry = statSync(path, { throwIfNoEntry: false });
+  if (entry && !entry.isDirectory()) return path;
+  if (!entry && (exported !== undefined || meta.main === undefined)) return path;
   try {
     return createRequire(join(dir, "package.json")).resolve(path);
   } catch {
@@ -122,15 +131,15 @@ function resolveEntryFile(dir: string, entry: string): string {
  * while an add has already rolled its candidate back. `metadata` carries the caller's validated read
  * through entry selection and failure diagnosis; a standalone call reads it once here.
  */
-export async function importExtensionEntry(pkg: string, version: string, remedy: string, metadata?: InstalledExtensionPackage): Promise<void> {
+export async function importExtensionEntry(pkg: string, version: string, remedy: string | (() => string), metadata?: InstalledExtensionPackage): Promise<void> {
+  const advice = () => typeof remedy === "string" ? remedy : remedy();
   const dir = extensionPackageDir(pkg);
   const meta = metadata ?? installedExtensionPackage(pkg);
-  if (!meta) throw new Error(`extension ${pkg} is not installed at ${dir} - ${remedy}`);
+  if (!meta) throw new Error(`extension ${pkg} is not installed at ${dir} - ${advice()}`);
   try {
-    const entry = extensionEntry(meta);
-    await import(pathToFileURL(resolveEntryFile(dir, entry)).href);
+    await import(pathToFileURL(resolveExtensionEntry(dir, meta)).href);
   } catch (e) {
-    throw importFailure(pkg, version, e, remedy, meta);
+    throw importFailure(pkg, version, e, advice(), meta);
   }
 }
 
@@ -192,7 +201,7 @@ async function loadOne(ext: InstalledExtension, advertised: ExtensionRef): Promi
   const pkg = ext.pkg;
   const onDisk = installedExtensionPackage(pkg);
   if (!onDisk) {
-    throw new Error(`extension ${pkg} is in the manifest but not installed at ${extensionPackageDir(pkg)} - \`cotal ext add ${ext.spec}\` again`);
+    throw new Error(`extension ${pkg} is in the manifest but not installed at ${extensionPackageDir(pkg)} - ${extensionReinstallAdvice(ext)}`);
   }
   if (onDisk.version !== ext.version) {
     throw new Error(
@@ -205,13 +214,13 @@ async function loadOne(ext: InstalledExtension, advertised: ExtensionRef): Promi
   // The import self-registers into OUR registry (core is linked); runStaged keeps those
   // registrations invisible until we've validated them, so a throw discards the stage untouched.
   const { staged } = await registry.runStaged(() =>
-    importExtensionEntry(pkg, ext.version, `reinstall it: \`cotal ext add ${ext.spec}\``, onDisk),
+    importExtensionEntry(pkg, ext.version, () => extensionReinstallAdvice(ext), onDisk),
   );
   // Publish ONLY if the package advertised the requested provider. Otherwise commit NONE of its
   // registrations (never leave a package's other keys live when its advertised one is absent).
   if (!staged.some((r) => r.kind === advertised.kind && r.name === advertised.name)) {
     throw new Error(
-      `extension ${pkg}@${ext.version} imported but did not register ${advertised.kind} "${advertised.name}" - re-add it: \`cotal ext add ${ext.spec}\``,
+      `extension ${pkg}@${ext.version} imported but did not register ${advertised.kind} "${advertised.name}" - ${extensionReinstallAdvice(ext)}`,
     );
   }
   registry.commitStaged(staged);

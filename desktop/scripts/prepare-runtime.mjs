@@ -25,7 +25,9 @@ if (!existsSync(join(repo, 'bin', 'dist', 'cotal.js')) || !existsSync(join(repo,
 const version = JSON.parse(readFileSync(join(repo, 'bin', 'package.json'), 'utf8')).version;
 const staging = mkdtempSync(join(native, '.runtime-stage-'));
 const deploy = join(staging, 'runtime');
-const result = spawnSync(process.execPath, [pnpm, '--filter', 'cotal-ai', '--config.node-linker=hoisted', 'deploy', '--prod', '--ignore-scripts', deploy], { cwd: repo, stdio: 'inherit' });
+// The RPM writer can interleave hard-link sets from the pnpm store. The DEB writer copies each resource independently.
+const importMethod = process.platform === 'linux' ? ['--config.package-import-method=copy'] : [];
+const result = spawnSync(process.execPath, [pnpm, '--filter', 'cotal-ai', '--config.node-linker=hoisted', ...importMethod, 'deploy', '--prod', '--ignore-scripts', deploy], { cwd: repo, stdio: 'inherit' });
 if (result.status !== 0) throw new Error(`pnpm deploy failed; retained staging is ${staging}`);
 
 function traceEsm(entry) {
@@ -82,6 +84,36 @@ function prune(dir) {
   }
 }
 prune(deploy);
+
+// A release build signs every Mach-O file of the runtime with the Developer ID before the inventory below hashes
+// it: Tauri signs only Contents/MacOS and the bundle, and notarization refuses unsigned nested code.
+function isMachO(path) {
+  const head = readFileSync(path).subarray(0, 8);
+  if (head.length < 8) return false;
+  const magic = head.readUInt32BE(0);
+  if ([0xcffaedfe, 0xcefaedfe, 0xfeedfacf, 0xfeedface].includes(magic)) return true;
+  return magic === 0xcafebabe && head.readUInt32BE(4) < 45; // fat binary, not a Java class file
+}
+function machOFiles(dir) {
+  return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+    const path = join(dir, entry.name);
+    if (entry.isDirectory()) return machOFiles(path);
+    return entry.isFile() && isMachO(path) ? [path] : [];
+  });
+}
+const identity = process.env.COTAL_RUNTIME_SIGNING_IDENTITY;
+if (identity) {
+  const keychain = process.env.COTAL_RUNTIME_SIGNING_KEYCHAIN;
+  if (process.platform !== 'darwin' || !keychain || !existsSync(keychain)) throw new Error('Runtime signing needs macOS and the imported signing keychain.');
+  const signed = machOFiles(deploy);
+  if (signed.length === 0) throw new Error('Runtime signing found no Mach-O file to sign.');
+  for (const file of signed) {
+    const sign = spawnSync('codesign', ['--force', '--timestamp', '--options', 'runtime', '--keychain', keychain, '--sign', identity, file], { encoding: 'utf8' });
+    const verify = sign.status === 0 && spawnSync('codesign', ['--verify', '--strict', file], { encoding: 'utf8' });
+    if (!verify || verify.status !== 0) throw new Error(`codesign failed for ${relative(deploy, file)}: ${sign.stderr || verify?.stderr || ''}`);
+  }
+  console.log(`Signed ${signed.length} runtime Mach-O files with the release identity: ${signed.map((file) => relative(deploy, file)).join(', ')}`);
+}
 
 const contained = (path) => { const r = relative(deploy, path); return r !== '..' && !r.startsWith(`..${sep}`) && !isAbsolute(r); };
 const hashes = [];

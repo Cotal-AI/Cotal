@@ -2,10 +2,11 @@ import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import * as p from "../lib/prompts.js";
-import { parseCommandArgs, registry, token, writePrivateRecord, type Command, type Connector, type ConnectorAssist, type ConnectorSetupAction, type ConnectorSetupProvider, type ConnectorShareSetupInput, type ConnectorSkillsSetupInput, type FlagSpec, type FlagValues, type ParsedArgs, type RuntimeProvider } from "@cotal-ai/core";
+import { parseCommandArgs, registry, token, writePrivateRecord, type ClientSetupProvider, type Command, type Connector, type ConnectorAssist, type ConnectorSetupAction, type ConnectorSetupProvider, type ConnectorShareSetupInput, type ConnectorSkillsSetupInput, type FlagSpec, type FlagValues, type ParsedArgs, type RuntimeProvider } from "@cotal-ai/core";
 import {
   CommandFailure,
   OFFICIAL_CONNECTORS,
+  cmdSpawnSpec,
   codeSpan,
   isCommandFailure,
   isConnectRefusal,
@@ -48,7 +49,7 @@ import {
   type Presentation,
   type Report,
 } from "@cotal-ai/workspace";
-import { OFFICIAL_RUNTIMES, OFFICIAL_RUNTIME_TOOLS, extensionNames, materializeExtension } from "../ext-loader.js";
+import { OFFICIAL_CLIENT_APPS, OFFICIAL_RUNTIMES, OFFICIAL_RUNTIME_TOOLS, extensionNames, materializeExtension } from "../ext-loader.js";
 import { agentSkillsHome, agentSkillsSkew, canonicalSkillsDir, installAgentSkills, type AgentSkillsResult } from "../lib/agent-skills.js";
 import { cliVersion } from "../lib/version.js";
 import { seedWriterKind } from "../seed/paths.js";
@@ -217,6 +218,15 @@ const SELF_HOSTED_FORM = "cotal setup --destination self-hosted --harness <conne
 /** What to do about a harness setup cannot set up. */
 const HARNESS_REMEDY = "pass one of them with --harness, or install another connector with `cotal ext add <npm-package>`";
 
+function setupLauncher(): string {
+  const launcher = displayCmd();
+  if (process.platform !== "win32") return launcher;
+  if (launcher === "cotal" && resolveOnPath("cotal.cmd")) return "cotal.cmd";
+  if (launcher === "npx cotal-ai") return "npx.cmd -y cotal-ai";
+  if (launcher.startsWith("pnpm ") && resolveOnPath("pnpm.cmd")) return `pnpm.cmd${launcher.slice("pnpm".length)}`;
+  return launcher;
+}
+
 /** Input-only validation before connector seeding or preparation writes. */
 export function validateSetupArguments(args: ParsedArgs): void {
   const values = args.values as SetupValues;
@@ -274,7 +284,7 @@ export async function setup(args: ParsedArgs): Promise<void> {
   const inputs = interactive ? await askInputs(values, runtimes) : scriptedInputs(values, runtimes);
   if (inputs === undefined) return cancelled(presentation, values.space);
   if (values.on !== undefined && inputs.destination !== "self-hosted") throw usage("--on selects a self-hosted manager; local startup pins the manager this root starts");
-  const plan = await planSetup(inputs, runtimes, values.start === true);
+  const plan = await planSetup(inputs, runtimes, values.start === true, presentation);
   await prepare(plan, { demo: Boolean(values.demo) || Boolean(values.full), interactive, presentation, start: values.start === true, detach: values.detach === true, configureOnly: values["configure-only"] === true, managerInstanceId: values.on }).catch(exitOnInterruptedAdd);
 }
 
@@ -300,7 +310,11 @@ function destinationOf(value: string): Destination {
  *  `--runtime` sets up no runtime beyond `pty`. */
 function scriptedInputs(v: SetupValues, choices: readonly RuntimeChoice[]): SetupInputs {
   const missing = REQUIRED.filter((flag) => v[flag] === undefined);
-  if (missing.length > 0) throw new MissingFlags(`setup asks nothing here, so every input is a flag: pass ${missing.map((flag) => `--${flag}`).join(", ")}`, v.destination === "self-hosted" ? SELF_HOSTED_FORM : SCRIPTED_FORM);
+  if (missing.length > 0) {
+    const form = v.destination === "self-hosted" ? SELF_HOSTED_FORM : SCRIPTED_FORM;
+    const remedy = v.json === true ? form : `${setupLauncher()}${form.slice("cotal".length)}`;
+    throw new MissingFlags(`setup asks nothing here, so every input is a flag: pass ${missing.map((flag) => `--${flag}`).join(", ")}`, remedy);
+  }
   const project = resolve(v.project!);
   const createProject = v.destination === "local" && v.yes === true && !existsSync(project);
   if (!isDir(project) && !createProject) throw usage(`--project ${project} is not a directory`, "create the folder first, or pass an existing one");
@@ -589,7 +603,7 @@ interface SetupPlan {
 /** Every check setup makes before it writes: the space name, the application, the preferences
  *  folder it saves the harness in, the space at the destination, and the NATS server if the
  *  invocation explicitly requests local startup. */
-async function planSetup(inputs: SetupInputs, runtimes: readonly RuntimeChoice[], start: boolean): Promise<SetupPlan> {
+async function planSetup(inputs: SetupInputs, runtimes: readonly RuntimeChoice[], start: boolean, presentation: Presentation): Promise<SetupPlan> {
   const target = { space: inputs.space };
   const problem = preferenceSpaceProblem(inputs.space);
   if (problem) {
@@ -601,10 +615,11 @@ async function planSetup(inputs: SetupInputs, runtimes: readonly RuntimeChoice[]
   const candidates = await harnessCandidates(inputs.harness);
   const candidate = candidates.find((c) => c.value === inputs.harness);
   if (!candidate) throw usage(`no harness ${JSON.stringify(inputs.harness)}; known harnesses: ${candidates.map((c) => c.value).join(", ")}`, HARNESS_REMEDY);
+  if (candidate.launchRestriction) throw new CommandFailure("refused", "UNSUPPORTED", candidate.launchRestriction, { target });
   assertPreferencesFolderProtected();
   if (inputs.destination === "self-hosted") return { inputs, runtimes, candidate, space: checkSelfHostedSpace(inputs.space, inputs.project, inputs.connectionFile) };
   if (inputs.connectionFile !== undefined) throw usage("--connection-file registers a self-hosted space", "pass --destination self-hosted, or drop --connection-file");
-  let state: LocalSetupState = checkLocalSpace(inputs.space, inputs.project, "--project", true);
+  let state: LocalSetupState = checkLocalSpace(inputs.space, inputs.project, "--project", true, false, presentation);
   if (state === "started") {
     const registered = findMesh(inputs.space);
     const broker = registered?.origin === "up" && canonicalRoot(registered.root) === canonicalRoot(inputs.project)
@@ -624,6 +639,18 @@ async function planSetup(inputs: SetupInputs, runtimes: readonly RuntimeChoice[]
   return { inputs, runtimes, candidate, space: { kind: "local", state } };
 }
 
+function checkDemoPersonaPaths(inputs: SetupInputs): void {
+  const agents = personaDir(inputs.project);
+  for (const name of Object.keys(DEMO_AGENTS)) {
+    const path = join(agents, `${name}.md`);
+    if (isDir(path)) {
+      throw new CommandFailure("refused", "CONFLICT", `a directory at ${path} blocks the demo persona`, {
+        target: { space: inputs.space, path }, remedy: `move the directory at ${path} aside, then run the same setup again`,
+      });
+    }
+  }
+}
+
 /**
  * Writes what the plan checked: the space, the personas, the `harness` preference, the
  * application's own setup actions, Cotal's skills and the chosen runtimes. A harness or runtime
@@ -633,6 +660,7 @@ async function planSetup(inputs: SetupInputs, runtimes: readonly RuntimeChoice[]
 async function prepare(plan: SetupPlan, opts: { demo: boolean; interactive: boolean; presentation: Presentation; start: boolean; detach: boolean; configureOnly: boolean; managerInstanceId?: string }): Promise<void> {
   const { inputs, candidate } = plan;
   const target = { space: inputs.space };
+  if (opts.demo) checkDemoPersonaPaths(inputs);
   const written: Written[] = [];
   const wrote = (what: string, path: string): void => {
     written.push({ what, path });
@@ -642,7 +670,7 @@ async function prepare(plan: SetupPlan, opts: { demo: boolean; interactive: bool
 
   let spaceState: SetupResult["spaceState"];
   if (plan.space.kind === "add") {
-    const added = await addFromBundle(inputs.space, { file: plan.space.file, root: inputs.project, yes: !opts.interactive }, opts.interactive);
+    const added = await addFromBundle(inputs.space, { file: plan.space.file, root: inputs.project, yes: !opts.interactive }, opts.interactive, opts.presentation, "--connection-file");
     if (added === undefined) return cancelled(opts.presentation, inputs.space);
     warnings.push(...added.warnings);
     written.push({ what: "space registration", path: meshFile(inputs.space) });
@@ -668,7 +696,7 @@ async function prepare(plan: SetupPlan, opts: { demo: boolean; interactive: bool
     if (inputs.createProject && mkdirPrivate(inputs.project, "the project root") !== undefined) {
       wrote("project folder", inputs.project);
     }
-    if (plan.space.state === "created") wrote("prepared space", recordLocalSpace(inputs.space, inputs.project).file);
+    if (plan.space.state === "created") wrote("prepared space", recordLocalSpace(inputs.space, inputs.project, "--project").file);
     spaceState = plan.space.state;
   }
 
@@ -716,6 +744,8 @@ async function prepare(plan: SetupPlan, opts: { demo: boolean; interactive: bool
     if (narrate) p.log.success(`Installed ${skills.installed.length} cross-vendor skill${skills.installed.length !== 1 ? "s" : ""} to ~/.agents/skills; read by Codex, Cursor, OpenCode, Gemini CLI, and Windsurf`);
     for (const b of skills.backedUp) warnings.push({ code: "SKILL_BACKED_UP", target, message: `your edited ${b.name} skill was backed up to ${b.path} before it was refreshed` });
   }
+  const clients = await setUpClients(inputs.space, narrate, opts.interactive, log, wrote);
+  actions.ran.push(...clients.ran);
   const runtimes = await setUpRuntimes(plan.runtimes, inputs.runtimes, narrate, wrote);
   if (!isOnboarded()) {
     markOnboarded(ONBOARD_VERSION);
@@ -725,6 +755,7 @@ async function prepare(plan: SetupPlan, opts: { demo: boolean; interactive: bool
 
   const failed = actions.failed ?? null;
   const local = inputs.destination === "local" && spaceState !== "started";
+  const launcher = opts.presentation === "json" ? displayCmd() : setupLauncher();
   const startup: SetupStartup = { requested: opts.start, requestedManagerInstanceId: opts.managerInstanceId ?? null, state: "not-requested", stackAttempted: false, stack: null, agent: null, joinedAt: null, failure: null };
   const result: SetupResult = {
     kind: "setup",
@@ -739,7 +770,7 @@ async function prepare(plan: SetupPlan, opts: { demo: boolean; interactive: bool
     startup,
     next: candidate.missing.length > 0
       ? { command: `install or repair ${candidate.missing.join(", ")}, then run the same setup again`, cwd: inputs.project }
-      : local ? { command: `${displayCmd()} up`, cwd: inputs.project } : { command: `${displayCmd()} spawn --space ${inputs.space}${opts.managerInstanceId ? ` --on ${opts.managerInstanceId}` : ""}`, cwd: null },
+      : local ? { command: `${launcher} up`, cwd: inputs.project } : { command: `${launcher} spawn --space ${inputs.space}${opts.managerInstanceId ? ` --on ${opts.managerInstanceId}` : ""}`, cwd: null },
   };
   const problems: Problem[] = [
     ...(candidate.missing.length > 0
@@ -747,6 +778,7 @@ async function prepare(plan: SetupPlan, opts: { demo: boolean; interactive: bool
       : failed
         ? [{ message: `${failed.title} did not finish (${failed.message})`, remedy: "fix it, then run the same setup again" }]
         : []),
+    ...clients.problems,
     ...runtimes.problems,
   ];
   const partial = problems.length === 0
@@ -1054,14 +1086,15 @@ function isDir(path: string): boolean {
  *  failure we warn with the manual command and continue; setup never aborts over a PATH convenience. */
 export async function offerGlobalInstall(yes: boolean): Promise<void> {
   if ((!isNpx() && !isPnpmDlx()) || cotalOnPath()) return; // already have `cotal`, or not an ephemeral runner
-  const runnerCmd = isPnpmDlx() ? "pnpm dlx cotal-ai" : "npx cotal-ai";
+  const runnerCmd = setupLauncher();
+  const installCmd = `${process.platform === "win32" ? "npm.cmd" : "npm"} i -g cotal-ai`;
 
   if (!yes && process.stdin.isTTY && !inputDisabledByFlag()) {
     const go = abortIfCancel(
-      await p.confirm({ message: "Install `cotal` globally so you can just type `cotal`?", initialValue: true }),
+      await p.confirm({ message: "Install `cotal` globally?", initialValue: true }),
     );
     if (!go) {
-      p.log.info(`No problem - keep using ${dim(runnerCmd)}. Install later with ${dim("npm i -g cotal-ai")}.`);
+      p.log.info(`Keep using ${codeSpan(runnerCmd)}. Install later with ${codeSpan(installCmd)}.`);
       return;
     }
   }
@@ -1069,16 +1102,21 @@ export async function offerGlobalInstall(yes: boolean): Promise<void> {
   const pkg = `cotal-ai@${runningVersion() ?? "latest"}`;
   const s = p.spinner();
   s.start("Installing cotal globally");
-  const r = withInstallUmask(() => spawnSync("npm", ["install", "-g", pkg], { encoding: "utf8" }));
-  if (r.status === 0) {
-    s.stop("Installed - you can now run `cotal`");
-  } else {
-    s.stop("Couldn't install globally");
-    const tail = `${r.stdout ?? ""}${r.stderr ?? ""}`.trim().split("\n").slice(-3).join("\n");
-    p.log.warn(
-      `${tail ? `${tail}\n\n` : ""}Install it yourself with ${dim("npm i -g cotal-ai")}, or keep using ${dim(runnerCmd)}.`,
-    );
+  let detail: string;
+  try {
+    const { file, args, windowsVerbatimArguments } = cmdSpawnSpec("npm", ["install", "-g", pkg]);
+    const r = withInstallUmask(() => spawnSync(file, args, { encoding: "utf8", windowsHide: true, windowsVerbatimArguments }));
+    if (r.status === 0) {
+      s.stop(`Installed ${codeSpan("cotal-ai")} globally. Run ${codeSpan(setupLauncher())}.`);
+      return;
+    }
+    detail = r.error?.message ?? (`${r.stdout ?? ""}${r.stderr ?? ""}`.trim().split("\n").slice(-3).join("\n") ||
+      (r.signal ? `npm stopped with signal ${r.signal}` : `npm exited with status ${r.status}`));
+  } catch (error) {
+    detail = error instanceof Error ? error.message : String(error);
   }
+  s.stop("Couldn't install globally");
+  p.log.warn(`${detail}\n\nInstall it yourself with ${codeSpan(installCmd)}, or keep using ${codeSpan(runnerCmd)}.`);
 }
 
 /** The version of the running `cotal-ai` package (from the package.json next to the entry script),
@@ -1101,6 +1139,7 @@ export interface SetupConnectorCandidate {
   hint: string;
   missing: string[];
   unavailable: boolean;
+  launchRestriction?: string;
 }
 
 /** Every connector becomes a choice. Its provider owns setup readiness; the connector's launch
@@ -1113,6 +1152,8 @@ export async function setupConnectorCandidates(
   return Promise.all([...connectors]
     .sort((a, b) => a.name.localeCompare(b.name))
     .map(async (connector) => {
+      const launchRestriction = connector.launchUnavailable?.();
+      if (launchRestriction) return { connector, value: connector.name, label: connector.name, missing: [connector.name], unavailable: true, hint: launchRestriction, launchRestriction };
       const provider = await providerFor(connector);
       const available = provider?.available?.();
       const missing = available === undefined
@@ -1168,7 +1209,7 @@ async function availableSetupProvider(connector: Connector): Promise<ConnectorSe
  * compiler checks each call site's pairing of an action with the input it hands it. `NoInfer` infers
  * `I` from the action alone: inferring it from the input too widens it to accept a dropped
  * (`undefined`) input. */
-function actionStep<I>(setup: ConnectorSetupAction<I>, input: NoInfer<I>, provider: ConnectorSetupProvider): Step {
+function actionStep<I>(setup: ConnectorSetupAction<I>, input: NoInfer<I>, provider: Pick<ConnectorSetupProvider, "name" | "requires" | "available">): Step {
   return {
     name: setup.name,
     title: setup.title,
@@ -1236,20 +1277,92 @@ async function reconcileOtherConnectorSkills(
   }
 }
 
-/** Run every present connector's refresh, so what an earlier setup installed in its harness moves to
- *  this release. Returns one line per connector that declares one; a refresh that fails throws. */
-export async function refreshConnectorInstalls(): Promise<string[]> {
+/** Explicit update reports completed refreshes and throws after the pass. Migration stops at the first failure. */
+export async function refreshConnectorInstalls(report?: (line: string) => void, selfUpdate = false): Promise<string[]> {
   const lines: string[] = [];
+  const failures: string[] = [];
   for (const connector of await setupConnectorSurface()) {
     // Refresh owns installed state even when a harness executable disappeared. Its provider must
     // distinguish an absent integration from one it cannot update; availability must not hide it.
     const refresh = (await connectorSetupProvider(connector))?.refresh;
-    if (refresh) {
-      const started = Date.now();
-      console.error(`Refreshing ${refresh.title}`);
-      lines.push(`${refresh.title}: ${await refresh.run({ cotal: selfArgv(), skills: connectorSkillsInput() })}`);
-      console.error(`✓ integration ${connector.name} refreshed (${((Date.now() - started) / 1000).toFixed(1)} s)`);
+    if (!refresh) continue;
+    const input = { cotal: selfArgv(), skills: connectorSkillsInput() };
+    const started = Date.now();
+    console.error(`Refreshing ${refresh.title}`);
+    let detail: string;
+    try {
+      detail = await refresh.run(input);
+    } catch (error) {
+      if (selfUpdate && error instanceof Error && error.name === "ForeignConnectorRegistrationError") {
+        // The explicit refresh reports the skip once, even when seed migration also runs this pass.
+        if (report) console.error(`Skipped ${connector.name} integration refresh: ${error.message}`);
+        continue;
+      }
+      if (!report) throw error;
+      failures.push(`${connector.name}: ${error instanceof Error ? error.message : String(error)}`);
+      continue;
     }
+    console.error(`✓ integration ${connector.name} refreshed (${((Date.now() - started) / 1000).toFixed(1)} s)`);
+    const line = `${refresh.title}: ${detail}`;
+    if (report) report(line);
+    else lines.push(line);
+  }
+  if (failures.length > 0) throw new Error(failures.join("\n"));
+  return lines;
+}
+
+/**
+ * Connects every ACP client on this machine to the space. An official client whose package is not
+ * installed gets it added at this cotal's version when the application is found, the way an official
+ * runtime is. Then each available client provider runs its own setup for the space. Each runs on its
+ * own, so one that fails or does not load leaves the others set up and the result partial.
+ */
+async function setUpClients(space: string, narrate: boolean, interactive: boolean, log: SetupLog, wrote: (what: string, path: string) => void): Promise<{ ran: ActionRun[]; problems: Problem[] }> {
+  const ran: ActionRun[] = [];
+  const problems: Problem[] = [];
+  const installed = new Set(extensionNames("client-setup"));
+  const found = new Map<string, string[]>();
+  for (const [name, app] of Object.entries(OFFICIAL_CLIENT_APPS)) {
+    if (installed.has(name) || (!app.tools.some((tool) => resolveOnPath(tool)) && !app.dirs().some(isDir))) continue;
+    found.set(app.package, [...(found.get(app.package) ?? []), app.title]);
+  }
+  for (const [pkg, titles] of found) {
+    try {
+      // With --json or --plain, stdout carries the result alone.
+      await addExtension(`${pkg}@${cliVersion()}`, pkg, false, narrate ? console.log : (line) => console.error(line));
+    } catch (e) {
+      if (e instanceof ExtensionAddInterrupted) throw e;
+      problems.push({ message: `${titles.join(" and ")} ${titles.length === 1 ? "is" : "are"} on this computer, but ${pkg} did not install (${(e as Error).message.split("\n")[0]})`, remedy: `run \`cotal ext add ${pkg}\`, then run the same setup again` });
+      continue;
+    }
+    wrote(`${titles.join(" and ")} integration`, extensionPackageDir(pkg));
+  }
+  for (const name of extensionNames("client-setup")) {
+    let provider: ClientSetupProvider;
+    try {
+      provider = await materializeExtension<ClientSetupProvider>({ kind: "client-setup", name });
+    } catch (e) {
+      problems.push({ message: `the ${name} client setup did not load (${(e as Error).message.split("\n")[0]})`, remedy: "fix it, then run the same setup again" });
+      continue;
+    }
+    if (!provider.connector || !setupProviderAvailable(provider)) continue;
+    const runner = actionRunner(narrate, interactive, log);
+    await runner.run(provider.name, actionStep(provider.connector, { cotal: selfArgv(), wrote, space }, provider));
+    ran.push(...runner.ran);
+    if (runner.failed) problems.push({ message: `${runner.failed.title} did not finish (${runner.failed.message})`, remedy: "fix it, then run the same setup again" });
+  }
+  return { ran, problems };
+}
+
+/** Run every installed client provider's refresh, so the entries an earlier setup wrote in each
+ *  application run this cotal. `cotal update` calls it once the operator extensions are current, since
+ *  a client provider ships in one. Returns one line per provider that declares a refresh; a refresh
+ *  that fails throws. */
+export async function refreshClientInstalls(): Promise<string[]> {
+  const lines: string[] = [];
+  for (const name of extensionNames("client-setup")) {
+    const refresh = (await materializeExtension<ClientSetupProvider>({ kind: "client-setup", name })).refresh;
+    if (refresh) lines.push(`${refresh.title}: ${await refresh.run({ cotal: selfArgv() })}`);
   }
   return lines;
 }

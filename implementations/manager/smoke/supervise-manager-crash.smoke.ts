@@ -46,6 +46,8 @@ const CELLS = [
   "the spent record is removed",
   "both payload choices are recorded before the crash",
   "both payload choices survive the manager restart and reach the connector",
+  "askPermissions is recorded only for the seat that asked",
+  "askPermissions survives the manager restart and reaches the connector only for the seat that asked",
   "the withheld seat also retires after its restart budget is spent",
 ];
 let pass = 0, fail = 0;
@@ -131,7 +133,7 @@ try {
       ...(opts.target ? { target: { mode: "owner" as const, owner: DEV_OWNER, actor: opts.target.actor, lifecycleUid: opts.target.lifecycleUid } } : {}),
     }, { deadlineMs: 20_000, currentEpoch: async () => 0 }).then((r) => r.reply, asValue);
   const spawned = await call("spawn", { name: "worker", agent: "supervise-crash-stub", cwd: repo, events: false, supervise: { restarts: 1, windowMs: 600_000 } }, { id: "spawn-worker".padEnd(43, "s") });
-  const withheldSpawn = await call("spawn", { name: "withheld", agent: "supervise-crash-stub", cwd: repo, events: false, eventPayloads: false, supervise: { restarts: 1, windowMs: 600_000 } }, { id: "spawn-withheld".padEnd(43, "s") });
+  const withheldSpawn = await call("spawn", { name: "withheld", agent: "supervise-crash-stub", cwd: repo, events: false, eventPayloads: false, askPermissions: true, supervise: { restarts: 1, windowMs: 600_000 } }, { id: "spawn-withheld".padEnd(43, "s") });
   await until(() => readSeatRecord(root, space, "withheld") !== undefined, 60_000);
   const withheldBefore = readSeatRecord(root, space, "withheld");
   // The record is written once the seat is ready and armed, so it is the readiness signal here.
@@ -148,6 +150,8 @@ try {
   check("both payload choices are recorded before the crash",
     (withheldSpawn as { ok?: boolean }).ok === true && before?.agent.launch.eventPayloads === true && withheldBefore?.agent.launch.eventPayloads === false,
     { before, withheldBefore, withheldSpawn });
+  check("askPermissions is recorded only for the seat that asked",
+    withheldBefore?.agent.launch.askPermissions === true && before !== undefined && !("askPermissions" in before.agent.launch), { before, withheldBefore });
   const beforePids = seatPids();
   check("the supervised ptys own two seat processes before the manager crash", beforePids.length === 2, beforePids);
 
@@ -170,7 +174,7 @@ try {
 
   await until(() => successor.stderr().includes("withheld: restarted under the same lifecycle after its manager stopped (1/1)"), 90_000);
   const withheldAfter = readSeatRecord(root, space, "withheld");
-  const launches = readFileSync(join(root, "payload-launches.jsonl"), "utf8").trim().split("\n").map((line) => JSON.parse(line) as { name: string; eventPayloads?: boolean });
+  const launches = readFileSync(join(root, "payload-launches.jsonl"), "utf8").trim().split("\n").map((line) => JSON.parse(line) as { name: string; eventPayloads?: boolean; askPermissions?: boolean });
   check("both payload choices survive the manager restart and reach the connector",
     readSeatRecord(root, space, "worker")?.agent.launch.eventPayloads === true && withheldAfter?.agent.launch.eventPayloads === false &&
     withheldAfter.agent.identity.lifecycleUid === withheldBefore?.agent.identity.lifecycleUid &&
@@ -178,6 +182,10 @@ try {
       const calls = launches.filter((launch) => launch.name === name);
       return calls.length >= 2 && calls.every((launch) => launch.eventPayloads === (name === "worker"));
     }), { withheldBefore, withheldAfter, launches });
+  check("askPermissions survives the manager restart and reaches the connector only for the seat that asked",
+    withheldAfter?.agent.launch.askPermissions === true &&
+    launches.filter((launch) => launch.name === "withheld").every((launch) => launch.askPermissions === true) &&
+    launches.filter((launch) => launch.name === "worker").every((launch) => launch.askPermissions === undefined), { withheldAfter, launches });
 
   const watcherId = newIdentity();
   const watcher = new CotalEndpoint({ space, servers, creds: await mintCreds(auth, watcherId, "observer"), card: { id: watcherId.id, name: "watcher", role: "observer", kind: "endpoint" }, channels: [], consume: false, registerPresence: false, watchPresence: true, watchChannels: false });

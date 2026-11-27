@@ -7,6 +7,7 @@ import { lookup } from "node:dns/promises";
 import { BlockList, createServer, isIP } from "node:net";
 import { homedir } from "node:os";
 import { basename, isAbsolute, join, relative, sep } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import { isReachable, registry, writeSecretFileCreateOnly } from "@cotal-ai/core";
 import {
   CommandFailure, assertRecordIdentity, assertSingleSpaceBroker, authDir, canonicalRoot, codeSpan, decodeLocalJson,
@@ -221,12 +222,34 @@ export async function addressHolder(what: string, host: string, port: number): P
 }
 
 /** An occupied legacy broker bind and the two ways to start without that conflict. */
-export async function brokerAddressConflict(server: string, command: string, bindHost?: string): Promise<{ message: string; remedy: string } | undefined> {
-  const error = await listenerBindError(server, bindHost);
-  if (error === undefined || error === "timeout" || error.code !== "EADDRINUSE") return undefined;
-  const { host, port } = brokerListenAddress(server), address = new URL(server);
-  const { says, frees } = await addressHolder("the broker address", bindHost ?? host, port);
-  return { message: says, remedy: `start it at another address with ${codeSpan(`${command} --server ${address.protocol}//${address.hostname}:<port>`)}, or ${frees} and run ${codeSpan(command)} again` };
+export async function brokerAddressConflict(server: string, command: string | ((server: string, host: string) => Promise<{ original: string; alternate?: string }>), bindHost?: string, onWait?: (address: string, seconds: number) => void): Promise<{ message: string; remedy: string } | undefined> {
+  let deadline: number | undefined;
+  for (;;) {
+    const error = await listenerBindError(server, bindHost);
+    if (error === undefined || error === "timeout" || error.code !== "EADDRINUSE") return undefined;
+    const { host, port } = brokerListenAddress(server), address = new URL(server);
+    const { says, frees, timeWait } = await addressHolder("the broker address", bindHost ?? host, port);
+    if (onWait && timeWait) {
+      if (deadline === undefined) {
+        // Linux can retain the socket briefly after its 60-second TIME-WAIT timer reaches zero.
+        const waitSeconds = 65;
+        deadline = performance.now() + waitSeconds * 1000;
+        onWait(`${bindHost ?? host}:${port}`, waitSeconds);
+      }
+      const remaining = deadline - performance.now();
+      if (remaining > 0) {
+        await delay(Math.min(500, remaining));
+        continue;
+      }
+    }
+    // The socket can clear between the bind and the TCP table read.
+    if (deadline !== undefined && !timeWait && await listenerBindError(server, bindHost) === undefined) return undefined;
+    const { original, alternate } = typeof command === "string"
+      ? { original: command, alternate: `${command} --server ${address.protocol}//${address.hostname}:<port>` }
+      : await command(server, bindHost ?? host);
+    const retry = `${frees} and run ${codeSpan(original)} again`;
+    return { message: says, remedy: alternate ? `start it at another address with ${codeSpan(alternate)}, or ${retry}` : retry };
+  }
 }
 
 /** Bare legacy up binds on loopback. A NATS listener can send that start down its reuse or port-selection path. */
@@ -409,7 +432,7 @@ export const brokerService: LocalProcess = {
     paths: { root: "directory", config: "file", binary: "file" },
     optionsSchema: { type: "object", additionalProperties: false, required: ["root", "config", "binary", "server"], properties: {
       root: { type: "string", minLength: 1, maxLength: 4096, description: "prepared local root whose .cotal holds this space's broker configuration" },
-      config: { type: "string", minLength: 1, maxLength: 4096, description: "explicitly prepared nats-server configuration inside that root's .cotal directory; it is never generated here" },
+      config: { type: "string", minLength: 1, maxLength: 4096, description: "absolute path to an existing nats-server configuration inside that root's .cotal directory. This command does not generate it" },
       binary: { type: "string", minLength: 1, maxLength: 4096, description: "absolute nats-server executable; no PATH lookup is made" },
       server: { type: "string", minLength: 1, maxLength: 4096, description: "the one broker URL this configuration serves" },
       logFile: { type: "string", minLength: 1, maxLength: 4096, description: "the nats-server log file this configuration's log_file names; start makes it owner-private" },

@@ -18,8 +18,8 @@
  *
  * Run: pnpm smoke:history-read
  */
-import { execFile, spawn } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { execFile, spawn, spawnSync } from "node:child_process";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -46,6 +46,7 @@ import {
   mintLifecycleUid,
   newIdentity,
   openChannelRegistry,
+  openServerConfig,
   provisionAgent,
   seedChannelRegistry,
   serverConfig,
@@ -91,12 +92,15 @@ const broker = spawn("nats-server", ["-c", join(storeDir, "server.conf")], { std
 const releaseBroker = teardownOnSignal(broker, storeDir);
 // An open broker for the retention gap, so the auth space's channels stay small.
 const openSpace = `histgap-${randomUUID().slice(0, 8)}`;
+const dottedSpace = `histdotted-${randomUUID().slice(0, 8)}`;
 // A space on the open broker that nothing has set up, so it has no channel registry bucket.
 const bareSpace = `histbare-${randomUUID().slice(0, 8)}`;
 const openPort = await pickFreePort();
 const openServers = `nats://127.0.0.1:${openPort}`;
 const openStore = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
-const openBroker = spawn("nats-server", ["-js", "-a", "127.0.0.1", "-p", String(openPort), "-sd", join(openStore, "js")], { stdio: "ignore" });
+const openConfig = join(openStore, "server.conf");
+writeFileSync(openConfig, openServerConfig({ transport: { kind: "plaintext" }, port: openPort, storeDir: join(openStore, "js") }));
+const openBroker = spawn("nats-server", ["-c", openConfig], { stdio: "ignore" });
 const releaseOpenBroker = teardownOnSignal(openBroker, openStore);
 
 const home = mkdtempSync(join(tmpdir(), "cotal-history-home-"));
@@ -116,9 +120,9 @@ for (const key of Object.keys(cleanEnv)) if (key.startsWith("COTAL_") || key ===
 // Usage telemetry is off: in a fresh home on a terminal it would also print its one-time notice.
 const isolatedEnv: NodeJS.ProcessEnv = { ...cleanEnv, HOME: home, USERPROFILE: home, TMPDIR: home, COTAL_HOME: join(home, ".cotal"), XDG_CONFIG_HOME: xdg, COTAL_SKIP_CONNECTOR_SEED: "1", COTAL_TELEMETRY: "off" };
 
-const run = (args: string[], cwd = shell, extra: NodeJS.ProcessEnv = {}): Promise<{ status: number; stdout: string; stderr: string; envelope?: Envelope }> =>
+const run = (args: string[], cwd = shell, extra: NodeJS.ProcessEnv = {}, timeout = 120_000): Promise<{ status: number; stdout: string; stderr: string; envelope?: Envelope }> =>
   new Promise((resolve) => {
-    execFile(process.execPath, [BIN, ...args], { cwd, env: { ...isolatedEnv, ...extra }, timeout: 120_000 }, (err, stdout, stderr) => {
+    execFile(process.execPath, [BIN, ...args], { cwd, env: { ...isolatedEnv, ...extra }, timeout }, (err, stdout, stderr) => {
       const lines = stdout.split("\n").filter(Boolean);
       const envelope = lines.length === 1 && lines[0]!.startsWith("{") ? (JSON.parse(lines[0]!) as Envelope) : undefined;
       resolve({ status: err && typeof err.code === "number" ? err.code : err ? 1 : 0, stdout, stderr, envelope });
@@ -126,6 +130,40 @@ const run = (args: string[], cwd = shell, extra: NodeJS.ProcessEnv = {}): Promis
   });
 const shown = (r: { status: number; stdout: string; stderr: string }) => ({ status: r.status, stdout: r.stdout.slice(0, 1500), stderr: r.stderr.slice(0, 600) });
 const texts = (r: { envelope?: Envelope }) => (r.envelope?.result?.items ?? []).map((i) => i.text);
+const quotedChannel = (name: string) => process.platform === "win32" ? `"#${name}"` : `'#${name}'`;
+
+async function checkDottedHistory(): Promise<void> {
+  const dotted = "a.".repeat(2047) + "bc";
+  const writer = await connect({ servers: openServers });
+  try {
+    const js = jetstream(writer);
+    const post = (actor: string, channel: string, text: string) => js.publish(chatSubject(dottedSpace, "local", actor, channel), JSON.stringify({
+      id: `${actor}-${text}`, ts: Date.now(), space: dottedSpace, from: { id: `local.${actor}`, name: actor },
+      channel, parts: [{ kind: "text", text }],
+    }));
+    await post("seed", "ordinary", "first");
+    await post("seed", dotted, "dotted");
+    await Promise.all(Array.from({ length: 4 }, async (_, sender) => {
+      for (let i = 0; i < 500; i++) await post(`audit${sender}`, "ordinary", String(i));
+    }));
+  } finally {
+    await writer.close();
+  }
+  const history = (limit: string, ...selection: string[]) =>
+    run(["history", ...selection, "--space", dottedSpace, "--limit", limit, "--json"], shell, {}, 25_000);
+  const named = await history("3000", "ordinary");
+  check("named history reads the ordinary backlog", named.status === 0 && texts(named).length === 2001, shown(named));
+  const all = await history("3000");
+  const rows = all.envelope?.result?.items ?? [];
+  check("all-channel history returns a deep dotted post and the backlog in stream sequence order",
+    all.status === 0 && rows.length === 2002 && rows.every((item, i) => item.seq === i + 1)
+      && rows[1]?.channel === dotted && rows[1]?.text === "dotted", shown(all));
+  const tail = await history("2000", "--dms");
+  const tailRows = tail.envelope?.result?.items ?? [];
+  check("history with DMs selects the newest rows across the split channel windows",
+    tail.status === 0 && tailRows.length === 2000 && tailRows.every((item, i) => item.seq === i + 3)
+      && tail.envelope?.result?.window.olderRetained === true, shown(tail));
+}
 
 async function checkChannelReplayRetry(): Promise<void> {
   const name = "remedy.probe";
@@ -151,6 +189,35 @@ async function checkChannelReplayRetry(): Promise<void> {
     retried?.status === 0 && retried.envelope?.outcome === "ok" && after.status === 0
       && Object.entries(changed).every(([key, value]) => saved?.[key as keyof typeof changed] === value),
     { command, retried: retried && shown(retried), after: shown(after) });
+  const show = await run(["channel", "show", name, "--replay", "off", ...scope]);
+  const read = /^run `(.+)`$/.exec(show.envelope?.error?.remedy ?? "")?.[1];
+  const shownAgain = read ? await run(execWords(read).slice(1)) : undefined;
+  check("a channel show replay refusal suggests a read without replay flags and keeps JSON",
+    show.status === 1 && show.stderr === "" && show.envelope?.error?.code === "USAGE_INVALID"
+      && read === `cotal channel show ${name} --space ${openSpace} --json`
+      && shownAgain?.status === 0 && entry(shownAgain)?.replay === false,
+    { show: shown(show), shownAgain: shownAgain && shown(shownAgain) });
+
+  const explicitScope = ["--space", openSpace, "--server", openServers, "--json"];
+  const leading = await run(["channel", "set", "--replay", "off", "true", "--desc", "replay probe", ...explicitScope]);
+  const retry = /^run `(.+)`$/.exec(leading.envelope?.error?.remedy ?? "")?.[1];
+  const savedLeading = retry ? await run(execWords(retry).slice(1)) : undefined;
+  const target = await run(["channel", "show", "true", ...explicitScope]);
+  const other = await run(["channel", "show", "off", ...explicitScope]);
+  const entries = (r: Awaited<ReturnType<typeof run>>) =>
+    (r.envelope?.result as unknown as { registry?: ChannelRegistryRead } | undefined)?.registry?.channels;
+  check("a replay flag before a boolean-like channel retries the intended channel and replay setting",
+    leading.status === 1 && leading.envelope?.error?.code === "USAGE_INVALID"
+      && retry === `cotal channel set true --no-replay --desc 'replay probe' --space ${openSpace} --server ${openServers} --json`
+      && savedLeading?.status === 0 && savedLeading.envelope?.outcome === "ok"
+      && target.status === 0 && entries(target)?.true?.replay === false && entries(target)?.true?.description === "replay probe"
+      && other.status === 0 && JSON.stringify(entries(other)) === "{}",
+    { leading: shown(leading), retry, saved: savedLeading && shown(savedLeading), target: shown(target), other: shown(other) });
+
+  const ambiguous = await run(["channel", "set", "true", "off", "--replay", ...explicitScope]);
+  check("a boolean word not following the replay flag gets guidance without naming a channel to edit",
+    ambiguous.status === 1 && ambiguous.envelope?.error?.code === "USAGE_INVALID"
+      && ambiguous.envelope.error.remedy?.startsWith("name one channel") === true, shown(ambiguous));
 }
 
 async function checkFollowUsageRefusals(): Promise<void> {
@@ -166,6 +233,10 @@ async function checkFollowUsageRefusals(): Promise<void> {
     const server = `nats://127.0.0.1:${address.port}`;
     const historyTarget = { space: null, channel: "general", dms: false };
     const membershipTarget = { space: "triage", channel: "volume.posts" };
+    const recordsFrom = (stdout: string) => stdout.trim().split("\n").filter(Boolean).map((line) => JSON.parse(line) as {
+      schemaVersion?: number; stream?: string; type?: string; target?: Record<string, unknown>;
+      data?: { code?: string; message?: string; remedy?: string; reason?: string; lastAsOf?: number | null };
+    });
     for (const { base, invalid, stream, target, followAfter } of [
       { base: ["history", "--json"], invalid: ["--limit", "0"], stream: "history", target: { ...historyTarget, channel: null } },
       { base: ["history", "general", "--json"], invalid: ["--limit"], stream: "history", target: historyTarget, followAfter: true },
@@ -176,10 +247,7 @@ async function checkFollowUsageRefusals(): Promise<void> {
       const args = [...base, "--server", server];
       const finite = await run([...args, ...invalid]);
       const followed = await run(followAfter ? [...args, ...invalid, "--follow"] : [...args, "--follow", ...invalid]);
-      const records = followed.stdout.trim().split("\n").filter(Boolean).map((line) => JSON.parse(line) as {
-        schemaVersion?: number; stream?: string; type?: string; target?: Record<string, unknown>;
-        data?: { code?: string; message?: string; remedy?: string; reason?: string; lastAsOf?: number | null };
-      });
+      const records = recordsFrom(followed.stdout);
       const error = finite.envelope?.error;
       check(`${stream} ${invalid.join(" ")} refuses with a receipt for finite reads and error then end for follows`,
         finite.status === 1 && finite.stderr === "" && finite.envelope?.command === (stream === "history" ? "history" : "channel")
@@ -191,6 +259,20 @@ async function checkFollowUsageRefusals(): Promise<void> {
           && records[0]?.data?.code === error.code && records[0]?.data?.message === error.message && records[0]?.data?.remedy === error.remedy
           && records[1]?.data?.reason === "setup-failed" && (stream !== "membership" || records[1].data.lastAsOf === null),
         { follow: shown(followed), finite: shown(finite), connections });
+    }
+    for (const name of ["general", "#true"]) {
+      const followed = await run(["channel", "members", "--replay", "off", name, "--follow", "--space", "triage", "--server", server, "--json"]);
+      const records = recordsFrom(followed.stdout);
+      const retryName = name === "general" ? name : "'#true'";
+      check(`membership follow after a leading replay value names ${name} in its error and end records`,
+        followed.status === 1 && followed.stderr === "" && connections === 0
+          && records.map((record) => record.type).join() === "error,end"
+          && records.every((record) => record.schemaVersion === 1 && record.stream === "membership"
+            && record.target?.space === "triage" && record.target?.channel === name.replace(/^#/, ""))
+          && records[0]?.data?.code === "USAGE_INVALID"
+          && records[0]?.data?.remedy === `run \`cotal channel members ${retryName} --follow --space triage --server ${server} --json\``
+          && records[1]?.data?.reason === "setup-failed" && records[1].data.lastAsOf === null,
+        { follow: shown(followed), connections });
     }
     for (const args of [["history", "--json", "--limit", "--", "--follow"], ["history", "clear", "--json", "--follow", "--limit"],
       ["channel", "show", "volume.posts", "--json", "--follow", "--creds"]]) {
@@ -262,6 +344,21 @@ async function checkEventShapedChannelHistory(): Promise<void> {
   }
 }
 
+async function checkGreekSigmaHistory(): Promise<void> {
+  const target = ["--space", openSpace, "--server", openServers, "--json"];
+  const saved = await run(["channel", "set", "greek", "--desc", "Filter demo", ...target]);
+  const sent = await run(["send", "-c", "greek", "ΟΣ", ...target]);
+  check("fixture: the Greek channel accepts a post", saved.status === 0 && sent.status === 0,
+    { saved: shown(saved), sent: shown(sent) });
+  for (const sigma of ["Σ", "σ", "ς"]) {
+    const history = await run(["history", "greek", "--grep", sigma, ...target]);
+    check(`history --grep ${sigma} matches the retained word-final sigma`,
+      history.status === 0 && history.stderr === "" && history.envelope?.result?.window.read === 1
+        && texts(history).length === 1 && texts(history)[0] === "ΟΣ",
+      shown(history));
+  }
+}
+
 /** A follow child: its stdout lines as they arrive, and a way to wait for one. */
 function follow(args: string[]) {
   const child = spawn(process.execPath, [BIN, ...args], { cwd: shell, env: isolatedEnv, stdio: ["ignore", "pipe", "pipe"] });
@@ -285,6 +382,36 @@ function follow(args: string[]) {
     return false;
   };
   return { child, lines, exited, until, stderr: () => stderr };
+}
+
+async function checkWatchHistoryHint(watchedSpace: string): Promise<void> {
+  const channel = "general";
+  const scope = ["--space", watchedSpace];
+  const text = "x".repeat(16_384) + "END OF LONG POST";
+  const file = join(shell, "long.txt");
+  writeFileSync(file, text);
+  const set = await run(["channel", "set", channel, "--replay", "--delivery", "live", ...scope]);
+  const sent = await run(["send", "-c", channel, "--file", file, ...scope]);
+  check("watch history fixture stores a long post in the observed space", set.status === 0 && sent.status === 0, { set: shown(set), sent: shown(sent) });
+
+  const observer = follow(["watch", "--plain", ...scope]);
+  const marker = /\[16 text code units not shown; `((?:pnpm )?cotal history [^`]+)` carries the whole text\]$/;
+  let hint: string | undefined;
+  try {
+    const isHint = (line: string) => line.startsWith(`[${watchedSpace}]`) && marker.test(line);
+    await observer.until(isHint);
+    hint = observer.lines.find(isHint)?.match(marker)?.[1];
+    check("the truncated watch line prints a history command", hint !== undefined, observer.stderr());
+  } finally {
+    await killAndAwaitExit(observer.child, "SIGINT");
+  }
+  const unscoped = await run(["history", `#${channel}`, "--json"]);
+  const targetSpace = (r: typeof unscoped) => (r.envelope?.target as { space?: string } | null)?.space;
+  check("positive control: unscoped history targets the saved selection", targetSpace(unscoped) === space, shown(unscoped));
+  if (!hint) return;
+  const history = await run(execWords(hint.replace(/^(?:pnpm )?cotal /, "")));
+  check("the printed history command returns the full post from the watched space",
+    history.status === 0 && targetSpace(history) === watchedSpace && texts(history).includes(text), shown(history));
 }
 
 async function checkFollowResume(alice: CotalEndpoint, bob: CotalEndpoint, timestamp: string) {
@@ -354,17 +481,32 @@ try {
   await setupSpaceStreams({ servers, space, creds: provisionerCreds });
   await seedChannelRegistry({ servers, space, creds: provisionerCreds, file: { channels: { general: { replay: true, replayWindow: "24h" }, ops: { replay: false } } } });
   await setupSpaceStreams({ servers: openServers, space: openSpace });
+  await setupSpaceStreams({ servers: openServers, space: dottedSpace });
+  const watchedSpace = `histwatch-${randomUUID().slice(0, 8)}`;
+  await setupSpaceStreams({ servers: openServers, space: watchedSpace });
   saveSpaceAuth(authDir(meshRoot), auth);
   const priorHome = process.env.COTAL_HOME;
   process.env.COTAL_HOME = isolatedEnv.COTAL_HOME;
   try {
     recordMesh({ space, server: servers, root: meshRoot, mode: "auth", origin: "manual", ts: new Date().toISOString() });
     recordMesh({ space: openSpace, server: openServers, root: openRoot, mode: "open", origin: "manual", ts: new Date().toISOString() });
+    recordMesh({ space: dottedSpace, server: openServers, root: openRoot, mode: "open", origin: "manual", ts: new Date().toISOString() });
     recordMesh({ space: bareSpace, server: openServers, root: openRoot, mode: "open", origin: "manual", ts: new Date().toISOString() });
+    recordMesh({ space: watchedSpace, server: openServers, root: openRoot, mode: "open", origin: "manual", ts: new Date().toISOString() });
     setCurrent(space);
   } finally {
     if (priorHome === undefined) delete process.env.COTAL_HOME;
     else process.env.COTAL_HOME = priorHome;
+  }
+  await checkDottedHistory();
+  try { await checkWatchHistoryHint(watchedSpace); }
+  finally {
+    process.env.COTAL_HOME = isolatedEnv.COTAL_HOME;
+    try { removeMesh(watchedSpace); }
+    finally {
+      if (priorHome === undefined) delete process.env.COTAL_HOME;
+      else process.env.COTAL_HOME = priorHome;
+    }
   }
   provisioner = new CotalEndpoint({ space, servers, creds: provisionerCreds, card: { name: "history-provisioner", kind: "endpoint" }, consume: false, watchPresence: false, registerPresence: false });
   await provisioner.start();
@@ -486,6 +628,21 @@ try {
 
   const unavailable = `nats://127.0.0.1:${await pickFreePort()}`;
   await checkUnreachableHistoryFollow(unavailable);
+  if (process.platform !== "win32" && process.getuid?.() !== 0) {
+    const root = mkdtempSync(join(home, "mode-read-"));
+    const dir = join(root, ".cotal", "auth");
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    const args = ["history", "general", "--json", "--space", space, "--server", unavailable, "--creds", join(root, "absent.creds")];
+    try {
+      chmodSync(dir, 0);
+      const refused = await run(args, root);
+      check("an unreadable local authentication mode refuses before reading the missing credential",
+        refused.status === 2 && refused.envelope?.error?.code === "PERMISSION_DENIED" && refused.envelope.error.message.includes("authentication mode")
+          && (refused.envelope.target as { root?: string })?.root === realpathSync(root) && Boolean(refused.envelope.error.remedy), shown(refused));
+    } finally { chmodSync(dir, 0o700); }
+    const missing = await run(args, root);
+    check("a readable empty mode directory reaches the missing credential refusal", missing.status === 2 && missing.envelope?.error?.code === "TARGET_NOT_FOUND", shown(missing));
+  }
   const tooOld = await run(["history", "--since", "999999999999999999999999999999999999999999999999d", "--server", unavailable, "--json"]);
   check("an unrepresentable --since age is a usage error before connecting", tooOld.status === 1 && tooOld.envelope?.error?.code === "USAGE_INVALID", shown(tooOld));
   // A value that starts with a dash used to be refused by the parser as "ambiguous", and a channel
@@ -892,25 +1049,51 @@ try {
       fromCarol.status === 0 && fromCarol.stdout.includes("--from carol searched only the 1000 read; older retained messages were not searched\n"), shown(fromCarol));
   }
 
-  // `channel show` recommends a scoped read even when the channel name is a history verb.
+  // Channel receipts and reads recommend scoped commands even when the channel name is a history verb.
   {
-    const channels = ["clear", "limit", "ordinary"];
+    const channels = ["clear", "limit", "baseline"];
+    const scope = ["--space", openSpace, "--server", openServers];
+    const printedLines = (stdout: string) => stdout.split("\n").map((line) => line.trim().replace(/^pnpm cotal /, "cotal "));
     for (const channel of channels) {
-      const saved = await run(["channel", "set", channel, "--desc", "History hint test", "--space", openSpace]);
+      const saved = await run(["channel", "set", channel, "--desc", "History hint test", ...scope, "--plain"]);
       const posted = await run(["send", "-c", channel, `retained in ${channel}`, "--space", openSpace]);
       if (saved.status !== 0 || posted.status !== 0)
         throw new Error(`could not seed #${channel}: ${JSON.stringify({ saved: shown(saved), posted: shown(posted) })}`);
+      if (channel !== "clear") continue;
+      const suggestion = (verb: string) => printedLines(saved.stdout).find((line) => line.startsWith(`cotal ${verb} `))?.split(/  +/)[0];
+      const inventory = suggestion("ch");
+      const history = suggestion("history");
+      const target = scope.join(" ");
+      const listed = inventory === `cotal ch ${target}` ? await run([...execWords(inventory).slice(1), "--plain"]) : undefined;
+      const read = history === `cotal history ${quotedChannel("clear")} ${target}` ? await run([...execWords(history).slice(1), "--json"]) : undefined;
+      check("channel set receipt inventory keeps the explicit target when another space is selected",
+        listed?.status === 0 && listed.stdout.includes(`Mesh: ${openSpace}`) && listed.stdout.includes("#clear"), { receipt: shown(saved), listed });
+      check("channel set receipt history reads the quoted channel instead of the history verb",
+        read?.status === 0 && texts(read).includes("retained in clear"), { receipt: shown(saved), read });
     }
     for (const channel of channels) {
       const card = await run(["channel", "show", channel, "--space", openSpace, "--plain"]);
-      const [, word, targetSpace] = card.stdout.match(/^\s+cotal history '(#[\w.-]+)' --space (\S+)\s+Read retained messages within your grant$/m) ?? [];
+      const [, command] = card.stdout.match(/^\s+((?:pnpm )?cotal history .+?) {2,}Read retained messages within your grant\r?$/m) ?? [];
       // Only execute the quoted channel form. An unexpected administrative command is a test failure.
-      const read = word === `#${channel}` && targetSpace === openSpace ? await run(["history", word, "--space", targetSpace, "--json"]) : undefined;
-      const messages = read?.envelope?.result?.items;
-      check(`channel show #${channel} recommends a history read for that channel only`,
+      const read = command && ["cotal", "pnpm cotal"].some((cli) => command === `${cli} history ${quotedChannel(channel)} --space ${openSpace}`)
+        ? spawnSync(`${command.replace(/^(?:pnpm )?cotal /, () => `"${process.execPath}" "${BIN}" `)} --json`,
+          { shell: true, cwd: shell, env: isolatedEnv, encoding: "utf8", timeout: 120_000 }) : undefined;
+      const messages = read?.status === 0 ? (JSON.parse(read.stdout) as Envelope).result?.items : undefined;
+      check(`pasting the channel show #${channel} history command reads that channel only`,
         card.status === 0 && read?.status === 0 && messages?.length === 1
           && messages[0]?.channel === channel && messages[0].text === `retained in ${channel}`,
-        { card: shown(card), read: read && shown(read) });
+        { card: shown(card), read: read && { status: read.status, stdout: read.stdout, stderr: read.stderr, error: read.error } });
+    }
+    const writer = join(home, "channel writer.creds");
+    writeFileSync(writer, await mintCreds(auth, newIdentity(), "channel-writer"), { mode: 0o600 });
+    const credentialScope = ["--space", space, "--server", servers, "--creds", writer];
+    const saved = await run(["channel", "set", "receipt-test", "--desc", "Scoped credential", ...credentialScope, "--plain"]);
+    const commands = printedLines(saved.stdout).filter((line) => line.startsWith("cotal ")).map((line) => execWords(line.split(/  +/)[0]!));
+    check("both receipt commands retain the explicit credential path as one argument", saved.status === 0 &&
+      JSON.stringify(commands) === JSON.stringify([["cotal", "ch", ...credentialScope], ["cotal", "history", "#receipt-test", ...credentialScope]]), shown(saved));
+    if (saved.status === 0) {
+      const removed = await run(["channel", "remove", "receipt-test", "--space", space, "--yes", "--json"]);
+      check("the credential receipt fixture is removed", removed.status === 0, shown(removed));
     }
   }
 
@@ -1059,10 +1242,10 @@ try {
       made.status === 0 && partial.status === 4 && partial.envelope?.outcome === "partial" && partial.envelope.error?.code === "OPERATION_PARTIAL"
         && /^The purge reported 0 messages removed, but channel metadata removal was not confirmed\./.test(partial.envelope.error.message) && cleaned.status === 0 && removedOf(cleaned) === true,
       { made: shown(made), partial: shown(partial), cleaned: shown(cleaned) });
-    // The command a missing --yes names keeps the --space and --server it was given (#7564).
+    // The confirmation keeps the requested target, purge scope and output format.
     const asked = await run(["channel", "remove", "general", "--purge", "--space", space, "--server", servers, "--json"]);
-    check("channel remove without --yes names a confirming command that keeps --space and --server",
-      asked.envelope?.error?.remedy === `confirm with \`cotal channel remove general --space ${space} --server ${servers} --purge --yes\``, shown(asked));
+    check("channel remove without --yes names a confirming command that keeps --space, --server, --purge and --json",
+      asked.envelope?.error?.remedy === `confirm with \`cotal channel remove general --space ${space} --server ${servers} --purge --yes --json\``, shown(asked));
   }
 
   // Channel policy labels describe each field's source, including explicit values equal to defaults.
@@ -1175,6 +1358,23 @@ try {
   }
 
   {
+    const target = ["--space", openSpace, "--server", openServers, "--json"];
+    const description = "Output contract test";
+    const typo = await run(["channel", "set", "results", "--description", description, ...target]);
+    const unsupported = await run(["channel", "set", "results", "--mystery-option", ...target]);
+    const retry = await run(["channel", "set", "results", "--desc", description, ...target]);
+    const readback = await run(["channel", "show", "results", ...target]);
+    const result = readback.envelope?.result as { registry?: ChannelRegistryRead } | undefined;
+    check("channel set with a name suggests --desc for --description, not another operand",
+      typo.status === 1 && typo.stderr === "" && typo.envelope?.outcome === "refused"
+        && typo.envelope.error?.code === "USAGE_INVALID" && typo.envelope.error.remedy === "use --desc"
+        && unsupported.status === 1 && unsupported.envelope?.error?.remedy === "drop the unknown option"
+        && retry.status === 0 && retry.envelope?.outcome === "ok" && readback.status === 0
+        && result?.registry?.channels?.results?.description === description,
+      { typo: shown(typo), unsupported: shown(unsupported), retry: shown(retry), readback: shown(readback) });
+  }
+
+  {
     const saved = await run(["channel", "set", "wire.window", "--window", " 24h ", "--space", openSpace, "--json"]);
     const readback = await run(["channel", "show", "wire.window", "--space", openSpace, "--json"]);
     const patch = (saved.envelope?.result as unknown as { patch?: { replayWindow?: string } })?.patch;
@@ -1231,7 +1431,7 @@ try {
     const openCard = await run(["channel", "show", "general", "--space", openSpace, "--plain"]);
     check("channel show explains unavailable membership on an open mesh and still suggests history",
       openCard.status === 0 && openCard.stdout.includes("Broker-observed channel membership is unavailable on open meshes.")
-      && !openCard.stdout.includes("cotal ch members") && openCard.stdout.includes("cotal history '#general'"), shown(openCard));
+      && !openCard.stdout.includes("cotal ch members") && openCard.stdout.includes(`cotal history ${quotedChannel("general")}`), shown(openCard));
     const authCard = await run(["channel", "show", "general", "--space", space, "--plain"]);
     check("channel show still suggests membership on the auth mesh",
       authCard.status === 0 && authCard.stdout.includes("cotal ch members general"), shown(authCard));
@@ -1495,6 +1695,7 @@ try {
     { read: shown(stoppedRead), follow: shown(stoppedFollow) });
   await checkMembershipSetupRefusal(space, "updates", "TARGET_UNAVAILABLE", "--server", servers);
   await checkEventShapedChannelHistory();
+  await checkGreekSigmaHistory();
 } finally {
   for (const ep of endpoints) await ep.stop().catch(() => {});
   await provisioner?.stop().catch(() => {});

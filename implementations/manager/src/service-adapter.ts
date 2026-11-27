@@ -218,7 +218,7 @@ export const managerService: LocalProcess = {
       launch: { type: "string", minLength: 1, maxLength: 4096, description: "existing private resolved native launch spec for the selected space" },
       "launch-sha256": { type: "string", minLength: 64, maxLength: 64, description: "full SHA-256 of the exact resolved launch file; required with launch" },
       roster: { type: "string", minLength: 1, maxLength: 4096, description: "existing roster file whose agents the manager starts at each launch; a resumed manager takes none" },
-      name: { type: "string", minLength: 1, maxLength: 128, description: "manager name for presence and --on; recorded for this root, so later launches keep it" },
+      name: { type: "string", minLength: 1, maxLength: 128, description: "manager name for presence and, on user-auth spaces only, --on. On open and static spaces, use the instance ID from `cotal ps`. Later launches in this root keep the name" },
     } },
   },
   buildServiceLaunch(context) {
@@ -236,6 +236,7 @@ export const managerService: LocalProcess = {
     const extra: string[] = [];
     for (const name of ["console-port", "console-host", "ws-port", "max-sessions"] as const) if (context.options[name] !== undefined) extra.push(`--${name}`, String(context.options[name]));
     if (context.managerSeatCap !== undefined) extra.push("--seat-cap", seatCapText(context.managerSeatCap));
+    if (context.managerIdleExit !== undefined) extra.push("--idle-exit", String(context.managerIdleExit));
     // A controller resume passes only its attempt and, when present, the protected token handoff
     // path and digest. Never the token, and never with a launch spec.
     const attempt = context.attempt === undefined ? undefined : serviceAdapterAttempt(context.attempt, ["resumeCommit"]);

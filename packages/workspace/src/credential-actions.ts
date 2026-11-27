@@ -1,4 +1,4 @@
-import { assertValidOwnerToken, assertValidRole, assertValidChannel, boundedValue, endpointToken, oneLine, type Extension, type FlagSpec, type ParsedArgs } from "@cotal-ai/core";
+import { assertValidOwnerToken, assertValidRole, assertValidChannel, boundedValue, endpointToken, oneLine, type AuthProvider, type Extension, type FlagSpec, type ParsedArgs } from "@cotal-ai/core";
 import { parseCommaList, spaceFlag, serverFlag } from "./flags.js";
 import { CommandFailure, jsonFlag, plainFlag, SHOWN_VALUE_MAX } from "./output.js";
 import { presentationOf } from "./present.js";
@@ -29,6 +29,30 @@ export interface CredentialAction extends Extension {
   readonly name: "mint" | "revoke-credential";
   validate(args: ParsedArgs): void;
   run(args: ParsedArgs): Promise<void>;
+}
+
+/** Local account binding for a resumable conversation, registered under its auth provider name. */
+export interface ConversationAccount extends Extension {
+  readonly kind: "conversation-account";
+  /** Return an opaque key for the current unexpired login's subject, or throw if it has none. */
+  key(idp: string): string;
+  /** Authenticate with the same session whose subject matches the saved key, or send nothing. */
+  request(key: string, input: Parameters<NonNullable<AuthProvider["requestConversationIdentity"]>>[0]): Promise<{ status: number; body: unknown }>;
+}
+
+/** No credentials or authority responses are carried in a sign-out result. */
+export type UnconfirmedConversation = { readonly label: string; readonly space: string } | { readonly label?: never; readonly space?: never };
+
+/** Local cleanup run before the provider session is revoked or cleared. */
+export interface ConversationSignOut extends Extension {
+  readonly kind: "conversation-sign-out";
+  /** `dir` is the Cotal home of the login being cleared. `idp` is the validated URL's origin and
+   *  path without trailing slashes. `accountKey` identifies that session's subject when known.
+   *  Return one entry per candidate whose exact retirement could not be confirmed. An empty
+   *  list means the scan found no unconfirmed retirements, not that other identities were stopped. */
+  retire(opts: { dir: string; idp: string; accountKey?: string }): Promise<readonly UnconfirmedConversation[]>;
+  /** Count saved resumable conversation approvals bound to `accountKey` at `idp`. */
+  count?(opts: { dir: string; idp: string; accountKey: string }): number;
 }
 
 /** The last Unix second a JavaScript date holds (8.64e15 ms). A later expiry has no date that a
@@ -63,8 +87,9 @@ function tokenRefusal(what: "credential label" | "--role", value: string, other:
   const found = new RegExp(other.source, "u").exec(value)?.[0];
   if (found === undefined) return new CommandFailure("refused", "USAGE_INVALID", `the ${what} is empty; ${noun} takes ${allowed}`, { remedy: pass, selfContained: true });
   const fixed = value.replace(new RegExp(other.source, "gu"), "_");
+  const example = what === "--role" && fixed.startsWith("-") ? `\`--role=${fixed}\`` : fixed;
   return new CommandFailure("refused", "USAGE_INVALID", `the ${what} "${oneLine(boundedValue(value, SHOWN_VALUE_MAX))}" has "${oneLine(found)}", which ${noun} cannot hold; ${noun} takes only ${allowed}`, {
-    remedy: [...fixed].length > SHOWN_VALUE_MAX ? pass : `${pass}, such as ${fixed}`,
+    remedy: [...fixed].length > SHOWN_VALUE_MAX ? pass : `${pass}, such as ${example}`,
     selfContained: true,
   });
 }

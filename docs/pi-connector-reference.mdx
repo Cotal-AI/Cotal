@@ -11,11 +11,15 @@ The connector does not include a pi runtime.
 
 ## Host integration
 
-One standalone artifact supports three Pi-hosted surfaces:
+The connector supports three Pi-hosted surfaces:
 
-1. `cotal spawn --harness pi --detach` launches the installed `pi` binary in the manager's PTY. `--prompt` is
-   delivered as Pi's initial message (its first turn); a prompt that is empty or starts with `-` or
-   `@` refuses the launch, since Pi would read it as an option or a file reference.
+1. `cotal spawn --harness pi` launches the npm-installed `pi` binary with Cotal's bundled extension.
+   This also applies with `--detach`, which runs Pi in the manager's PTY.
+   Spawn leaves copies of the released standalone bundle on disk and does not evaluate them.
+   This includes local package entry points and copies found on reload.
+   Other extensions follow Pi's usual discovery and project trust rules.
+   `--prompt` supplies Pi's initial message. Cotal refuses an empty prompt or one that starts with `-` or `@`,
+   since Pi would read it as an option or a file reference.
 2. Interactive Pi discovers a copied `~/.pi/agent/extensions/cotal.js`.
 3. Pi SDK applications using the default resource loader discover that same copy. SDK applications
    must bind Pi's extension lifecycle when they expect an idle session to be driven proactively.
@@ -148,40 +152,100 @@ one when no model with credentials is selected. `interrupt` calls Pi's abort and
 `interrupted` once the turn ended, or `idle` when no turn ran. The stopped turn ends as one its user
 stopped with Escape.
 
+`turn` sends the owner's words to Pi as the user's own message, with `sendUserMessage` and without
+`expandPromptTemplates`, so Pi takes the text as typed, a leading `/` included. Each image follows
+the text in the same message. Pi replaces an image with a placeholder for a model that takes none,
+so a turn with images for such a model, or a turn while no model is selected, ends `refused` with
+`failed-precondition` before Pi sees it. A turn waits in the same queue as commands, and reads
+`started` once its Pi turn starts, or `unknown` when none starts within 5 s.
+
+`usage` reports what Pi's footer shows: the context tokens and window from `getContextUsage()`,
+and the session's cost in USD, summed from the usage Pi records in the session. It leaves out the
+tokens while Pi does not know them, such as right after a compaction, and the cost while it is zero
+or Pi runs on a subscription sign-in, which Pi prices at list prices.
+
 An older Pi ignores `expandPromptTemplates`, so before 0.84.2 `commands` answers
-`supported: false`. Pi has no API that reports its version. The connector reads it from Pi's own
-module, which Pi resolves to itself unless a copy of Pi is installed beside the extension.
+`supported: false`, while `turn`, `usage` and `interrupt` work. Pi has no API that reports its
+version. The connector reads it from Pi's own module, which Pi resolves to itself unless a copy of
+Pi is installed beside the extension.
+
+### Switching the model
+
+On a per-user mesh the owner switches the agent's model with the `agent` endpoint's `set-model`
+command. The connector calls the extension API's `setModel` and `setThinkingLevel` on the open
+session, the calls behind Pi's own `/model` and thinking selector. A model is named
+`<provider>/<id>`, as `cotal models` lists it. The provider ends at the first `/`, since an id
+such as OpenRouter's can hold one. A variant is a Pi thinking level.
+
+A model Pi's registry does not know is refused as `not-found`. A model Pi holds no credentials for
+is refused as `failed-precondition`, and so are a variant that is not a thinking level, a variant
+alone while Pi has no model selected, and a switch while no session is open. A refusal changes
+nothing. Pi clamps a level the model does not take without failing, so the connector reads the
+level back. When Pi clamped it, the connector puts back the model and level Pi ran before and
+refuses the switch as `failed-precondition`. Without a variant, Pi carries its level over to the
+new model, clamped to what that model takes, and the answer names the level Pi runs. Without a
+model, only the level changes.
+
+A switch does not wait in the command queue. One made while a turn runs applies from Pi's next
+request to its model, so the rest of that turn can already run on it. Before Pi 0.84.3,
+`setModel` and `setThinkingLevel` also saved the model and level as the operator's own Pi
+defaults, so an older Pi does not serve `set-model`. When the Manager starts the seat again, such
+as after a crash, it launches Pi on the switched model and level.
 
 ## Event plane
 
-The shared launch and emitter carry payload-withholding safety controls. This release does not
-qualify Pi payload mapping or native payload acceptance. See the
-[payload rules](claude-connector-reference.mdx#event-plane) for the separate rail and current scope.
-
-A managed Pi seat publishes AG-UI runs, completed assistant text messages, and tool start/end
-boundaries to `events.<owner>.<actor>`. The thread id is Pi's native session id. Pi's native
-session JSONL is the durable source; extension hooks only wake the reader after persistence.
+A managed Pi seat publishes AG-UI runs, assistant text as Pi streams it, and tool start/end
+boundaries to `events.<owner>.<actor>`. Each tool call's arguments and its result text publish by
+default on the separate `cotal.<space>.evp.<owner>.<actor>` payload rail, and the channel carries a
+`cotal.toolResult` marker for each finished call with its error flag. A result whose content holds
+anything other than text, such as an image, publishes the whole content array as JSON. Pass
+`--no-event-payloads` to withhold payloads while keeping tool activity. See the
+[payload rules](claude-connector-reference.mdx#event-plane) for admission, cut markers and limits.
+The thread id is Pi's native session id. Pi's native session JSONL is the durable source, read
+together with the thread's [delta journal](connector-runtime-reference.mdx#streamed-text): each text
+delta Pi reports while it writes a reply is journaled, at most one line every 250 ms, and wakes the
+reader. Other extension hooks only wake the reader after persistence. Pi saves a reply before it
+runs the reply's tools, and each tool's start wakes the reader, so a call shows as started while it
+runs.
 The event plane is enabled by default. `--no-events` opts out only on unrestricted spaces.
 A registration that requires events arms the plane independently of the environment flag, and
 the seat must hold the channel's publish grant. An event-enabled launch needs a stable
 workspace root for its write-ahead log. If the event plane stops, the seat keeps running on every
 space, and Pi's log records `AG-UI emitter stopped` with the reason and the delay before the
 extension re-establishes the plane. The re-establish is a fresh start of the same session: it
-settles any frame the outage left pending and rebuilds the mapper from the run and tool calls
-that frame opened, so a tool result written after the outage closes the call the plane came back
-with.
+settles any frame the outage left pending and rebuilds the mapper from the run, tool calls and
+streamed text that frame left open, so a tool result written after the outage closes the call the
+plane came back with, and a reply saved after it ends the message it streamed.
 
 A turn you stop, such as with Escape, ends its run with `RUN_FINISHED` whose outcome is `interrupt`.
 Pi records that stop as an abort, or, when it lands during a tool call, as an error carrying the
 abort text. Any other error ends the run with `RUN_ERROR`.
 
-Text is published at **completed-message granularity**, not as live token deltas. Pi emits
-live text updates before writing the assistant record, so those deltas cannot be recovered
-after a crash. Tool arguments and results, reasoning, usage, branch and compaction entries
-are not published. User text is never published: Pi's native user record cannot separate
+Text streams: each journal line publishes as content of the reply's message, and the saved reply
+sends the rest and ends it. A reply whose saved text does not begin with what streamed, as a
+provider retry leaves, ends the streamed message and publishes the saved text as a message of its
+own. Reasoning is off by default. A seat launched with the `reasoningEvents` field publishes
+Pi's thinking as `REASONING_*` events, streamed the same way. Redacted thinking is never published.
+A reply that streamed nothing publishes from its saved record. Usage, branch and compaction
+entries are not published. User text is never published: Pi's native user record cannot separate
 peer-authored content from human-authored content. A reload keeps the same native session
 and event frontier. A new, resumed or forked session gets its own thread and log on the same
 principal channel.
+
+## Tool permissions [#tool-permissions]
+
+Pi has no permission dialog of its own, so a seat runs every tool call unless it was launched
+with `askPermissions`. Then each call other than `read`, `grep`, `find`, `ls` and the seat's own
+`cotal_*` tools opens a prompt on the agent's [prompt desk](connector-runtime-reference.mdx#prompt-desk)
+before it runs, and Pi waits for the answer. The prompt shows the tool, its input and the seat's
+folder, and offers Allow and Deny. An input over the prompt size limit shows its size and offers
+only Deny. Allow runs the call. Deny blocks it, and the model gets the owner's note, or "The user
+denied this tool call.", as the call's result. Pi finishing the call confirms the answer.
+
+The desk is the one path. When it cannot take the prompt, because the agent endpoint does not
+serve it, it is full, or the prompt closes unanswered, the call is blocked with a reason that
+names the cause, and Pi's log records it. Stopping the turn withdraws the prompt and blocks the
+call. Pi's own UI is never asked.
 
 ## Launch restrictions
 
@@ -192,7 +256,11 @@ principal channel.
   sandbox hooks remain on the normal agent path.
 - `cotal_inbox` destructively pulls quiet ambient while the driver retains ownership of automatic
   traffic; normal focus recall shown alongside it remains read-only.
-- Pi model variants, MCP sharing, and raw launch options fail loudly until implemented.
+- Pi MCP sharing and raw launch options fail loudly until implemented.
+- A model variant is a Pi thinking level (`off`, `minimal`, `low`, `medium`, `high`, `xhigh` or
+  `max`), passed as `--thinking`, and any other value fails the launch. Pi clamps a level to what
+  the model supports. `cotal models` lists the levels Pi offers for each model, as Pi's
+  `get_available_thinking_levels` answers once that model is selected (Pi 0.81.0 or later).
 
 ### Run turns
 

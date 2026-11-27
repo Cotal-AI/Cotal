@@ -55,9 +55,31 @@ try {
   assert.match(dryRun.out, /not a stop plan/); passed++;
   assert.equal(await portOpen(port), true, "the dry run leaves the running broker alone"); passed++;
 
-  logs.foreground = await foregroundCliProbe(cliEntry, tsx, mesh, env, ["up", "--foreground", ...stack]);
-  assert.notEqual(logs.foreground.code, 0, `foreground up over a running stack must not succeed: ${logs.foreground.out}`); passed++;
+  const wrongSpace = "other-legacy-space";
+  const message = `--space "${wrongSpace}" does not match the space "${space}" recorded in this folder; nothing was stopped`;
+  const remedy = `locate the project root for space "${wrongSpace}" before retrying`;
+  for (const format of ["--json", "--plain", "default"]) {
+    const args = ["down", "--space", wrongSpace, ...(format === "default" ? [] : [format])];
+    assertSmokeSandboxDown(sandbox, args, { cwd: mesh, env });
+    const wrong = logs[`wrong-space-${format}`] = await foregroundCliProbe(cliEntry, tsx, mesh, env, args);
+    assert.equal(wrong.code, 2, wrong.out + wrong.err);
+    if (format === "--json") {
+      assert.equal(wrong.err, "");
+      const report = JSON.parse(wrong.out);
+      assert.equal(report.outcome, "refused");
+      assert.deepEqual(report.error, { code: "UNSUPPORTED", message, remedy });
+    } else {
+      assert.equal(wrong.out, "");
+      assert.match(wrong.err, /Code:\s+UNSUPPORTED\n/);
+      assert.ok(wrong.err.includes(`  ${message}\n`) && wrong.err.includes(`Next\n  ${remedy}\n`), wrong.err);
+    }
+    assert.equal(await portOpen(port), true, `the ${format} refusal leaves the running broker alone`); passed++;
+  }
+
+  logs.foreground = await foregroundCliProbe(cliEntry, tsx, base, env, ["up", "--foreground", "--root", mesh, ...stack]);
+  assert.equal(logs.foreground.code, 2, `foreground up over a running stack must not succeed: ${logs.foreground.out}`); passed++;
   assert.match(logs.foreground.err, /already running .* can't keep it in this terminal/, "the refusal names the running stack"); passed++;
+  assert.ok(logs.foreground.err.includes("LIFECYCLE_BLOCKED") && logs.foreground.err.includes(mesh) && logs.foreground.err.includes("down --yes`") && logs.foreground.err.includes("retry the original foreground command unchanged"), logs.foreground.err); passed++;
   assert.doesNotMatch(logs.foreground.out, /already running at/, "no success line is printed over the refusal"); passed++;
   assert.equal(await portOpen(port), true, "the refusal leaves the running broker alone"); passed++;
 
@@ -80,6 +102,10 @@ try {
   logs.manual = await foregroundCliProbe(cliEntry, tsx, manualCaller, manualEnv, ["up", "--foreground", "--server", server, "--space", "other-project"]);
   assert.equal(logs.manual.code, 1, logs.manual.err); passed++;
   assert.match(logs.manual.err, /already in use by a broker not started here/); passed++;
+  logs.manualForeground = await foregroundCliProbe(cliEntry, tsx, manualRoot, manualEnv, ["up", "--foreground", "--server", server, "--space", "manual-registration", "--open"]);
+  assert.equal(logs.manualForeground.code, 2, logs.manualForeground.err); passed++;
+  assert.match(logs.manualForeground.err, /stop the broker with the launcher that started it/); passed++;
+  assert.doesNotMatch(logs.manualForeground.err, /cotal down/); passed++;
   console.log("PASS foreground-up-running");
 } finally {
   try {

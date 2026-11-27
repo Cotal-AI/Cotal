@@ -6,6 +6,7 @@ import { mkSecretDir, writeSecretFile, writeSecretFileAtomic } from "@cotal-ai/c
 import { findCotalRoot, movedRootRemedy, spaceSegment, stackJournalRoot, userAuthStateDir } from "./auth-paths.js";
 import { homeCotalDir } from "./cotal-home.js";
 import { prepareCotalHomeForWrite } from "./protected-records.js";
+import { migrateProjectTrust } from "./trusted-projects.js";
 import { shellPath } from "./local-record-source.js";
 
 export { homeCotalDir, userCotalDir } from "./cotal-home.js";
@@ -312,6 +313,7 @@ export function recordMeshes(entries: Iterable<MeshEntry>): void {
     // local users even though the file contents are private. Keep the dir readable only by us
     // (0700 POSIX / hardened ACL win32).
     prepareCotalHomeForWrite();
+    migrateProjectTrust(true);
     mkSecretDir(meshesDir());
     const file = meshFile(m.space);
     // Per-process temp name so two concurrent `up`s for the same space can't stomp each other's
@@ -662,8 +664,14 @@ function readMeshFile(file: string): MeshEntry | undefined {
   try {
     entry = JSON.parse(readFileSync(file, "utf8")) as MeshEntry;
   } catch (e) {
-    if ((e as NodeJS.ErrnoException).code === "ENOENT") return undefined;
-    if ((e as NodeJS.ErrnoException).code === "EISDIR") throw registryRecordDirectory(file, e);
+    const code = (e as NodeJS.ErrnoException).code;
+    if (code === "ENOENT") return undefined;
+    if (code === "EISDIR") throw registryRecordDirectory(file, e);
+    if (code === "EACCES" || code === "EPERM") {
+      const summary = `mesh registry file ${file} cannot be read by this account`;
+      const remedy = `restore read access to ${shellPath(file)}, then try again. The record is kept.`;
+      throw new MeshRegistryError(file, `${summary}. ${remedy}`, { cause: e, summary, remedy, refusal: "PERMISSION_DENIED" });
+    }
     // No fallback: the writer is tmp-file + atomic rename, so an unparseable .json here is a
     // damaged or foreign document, and skipping it would hide it from `meshes rm` too.
     throw new MeshRegistryError(file, `${file} does not parse as a mesh record (${e instanceof Error ? e.message : String(e)}) - restore it from backup or remove it`, { cause: e });

@@ -27,9 +27,15 @@ export function resolveManifest(src: string, sourcePath: string, logFileOverride
   // Best-effort location: try the exact node, then walk up the path (union/object-level errors
   // often have no node of their own), finally the document root. Diagnostics only — never on the
   // resolved model (engineer, round-6).
-  const locate = (path?: (string | number)[]): { line?: number; col?: number } => {
+  const locate: Locate = (path, key) => {
     if (!path) return {};
     const p = [...path];
+    if (key !== undefined) {
+      const map = doc.getIn(p, true);
+      const written = isMap(map) && map.items.find((pair) => isScalar(pair.key) && pair.key.value === key)?.key;
+      if (isScalar(written) && written.range) return lc.linePos(written.range[0]);
+      p.push(key);
+    }
     for (;;) {
       const node = doc.getIn(p, true) as { range?: [number, number, number] } | undefined;
       if (node?.range) {
@@ -80,6 +86,8 @@ export function resolveManifest(src: string, sourcePath: string, logFileOverride
   for (const name of agentNames)
     try {
       assertValidName(name);
+      if (name.startsWith("-"))
+        throw new Error(`invalid agent name ${JSON.stringify(name)}: a name may not begin with "-". Rename the key under agents to start with a letter, digit or _, and update its channel references`);
     } catch (e) {
       add((e as Error).message, ["agents", name]);
     }
@@ -107,7 +115,7 @@ export function resolveManifest(src: string, sourcePath: string, logFileOverride
   };
 }
 
-type Locate = (path?: (string | number)[]) => { line?: number; col?: number };
+type Locate = (path?: (string | number)[], key?: string) => { line?: number; col?: number };
 
 /** The schema's issues as located problems. An unknown key that misspells a required key left out of
  *  the same object is one problem naming both, where it used to count as two. */
@@ -140,8 +148,8 @@ function schemaIssues(zodIssues: readonly { code: string; path: PropertyKey[]; m
     const unknown = ((iss as { keys?: string[] }).keys ?? []).filter((key) => !paired.some((typo) => typo.key === key));
     // Point the line at the offending unknown key, not just its containing object.
     return [
-      ...paired.map(({ key, meant }) => ({ message: `unknown key "${key}": did you mean "${meant}", which is required?`, path, ...locate([...path, key]) })),
-      ...(unknown.length ? [{ message: paired.length ? `Unrecognized key${unknown.length > 1 ? "s" : ""}: ${unknown.map((key) => `"${key}"`).join(", ")}` : iss.message, path, ...locate([...path, unknown[0]!]) }] : []),
+      ...paired.map(({ key, meant }) => ({ message: `unknown key "${key}": did you mean "${meant}", which is required?`, path, ...locate(path, key) })),
+      ...(unknown.length ? [{ message: paired.length ? `Unrecognized key${unknown.length > 1 ? "s" : ""}: ${unknown.map((key) => `"${key}"`).join(", ")}` : iss.message, path, ...locate(path, unknown[0]!) }] : []),
     ];
   });
 }
@@ -173,9 +181,8 @@ function yamlShape(type: string): string {
   return type === "record" || type === "object" ? "a mapping" : type === "array" ? "a list" : `a ${type}`;
 }
 
-/** Each `agents:` entry that names a persona file: the agent, the file's resolved path and the
- *  entry's location. Diagnostics only, so a manifest that does not parse names none. */
-export function personaReferences(src: string, sourcePath: string): { name: string; persona: string; line?: number; col?: number }[] {
+/** The resolved file and YAML location of each written persona reference. */
+export function personaReferences(src: string, sourcePath: string): { path: string[]; persona: string; line?: number; col?: number }[] {
   const lc = new LineCounter();
   const doc = parseDocument(src, { lineCounter: lc });
   const agents = doc.errors.length ? undefined : doc.get("agents", true);
@@ -184,11 +191,11 @@ export function personaReferences(src: string, sourcePath: string): { name: stri
   return agents.items.flatMap((pair) => {
     const name = isScalar(pair.key) ? pair.key.value : undefined;
     if (typeof name !== "string") return [];
-    const entry = doc.getIn(["agents", name], true);
-    if (!isScalar(entry) && !isMap(entry)) return [];
-    const persona = isScalar(entry) ? entry.value : entry.get("persona");
-    if (typeof persona !== "string" || !persona) return [];
-    return [{ name, persona: isAbsolute(persona) ? persona : resolvePath(dir, persona), ...(entry.range ? lc.linePos(entry.range[0]) : {}) }];
+    const entry = pair.value;
+    const ref = isMap(entry) ? entry.get("persona", true) : entry;
+    if (!isScalar(ref) || typeof ref.value !== "string" || !ref.value) return [];
+    const path = isMap(entry) ? ["agents", name, "persona"] : ["agents", name];
+    return [{ path, persona: isAbsolute(ref.value) ? ref.value : resolvePath(dir, ref.value), ...(ref.range ? lc.linePos(ref.range[0]) : {}) }];
   });
 }
 
@@ -211,10 +218,15 @@ function normalizeChannels(
     const allowSubscribe = entry.allowSubscribe ? dedupe(entry.allowSubscribe) : [...subscribe];
     const allowPublish = dedupe(entry.allowPublish ?? []);
 
-    // Every name listed under a channel must resolve to an `agents:` entry (no silent default).
-    for (const [field, names] of [["subscribe", subscribe], ["allowSubscribe", allowSubscribe], ["allowPublish", allowPublish]] as const)
-      for (const n of names)
-        if (!agentNames.has(n)) add(`"${n}" is not declared in agents:`, ["channels", name, field]);
+    // Report an undeclared name once per written list, at its first occurrence.
+    for (const field of ["subscribe", "allowSubscribe", "allowPublish"] as const) {
+      const reported = new Set<string>();
+      for (const [index, n] of (entry[field] ?? []).entries()) {
+        if (agentNames.has(n) || reported.has(n)) continue;
+        reported.add(n);
+        add(`"${n}" is not declared in agents:`, ["channels", name, field, index]);
+      }
+    }
 
     // An explicit allowSubscribe must be a superset of subscribe (the read-ACL invariant).
     const missing = subscribe.filter((n) => !allowSubscribe.includes(n));

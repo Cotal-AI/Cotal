@@ -68,7 +68,7 @@ symlinkSync(natsServer, join(bin, process.platform === "win32" ? "nats-server.ex
 // Do not expose ambient POSIX tools: `/usr/bin/orca` can be the GNOME screen reader.
 if (process.platform !== "win32") {
   symlinkSync(process.execPath, join(bin, "node"));
-  for (const name of ["npm", "sh", "ps", ...(process.platform === "linux" ? ["getent", "python3"] : [])]) {
+  for (const name of ["npm", "sh", "ps", "mkdir", ...(process.platform === "linux" ? ["getent", "python3"] : [])]) {
     const executable = resolveOnPath(name);
     if (!executable) throw new Error(`setup fixture requires ${name} on the host PATH`);
     symlinkSync(executable, join(bin, name));
@@ -216,6 +216,10 @@ if (seeded.status !== 0) {
 // to the newest fails. Every other package is not found. Set after the seed, so only the runtime
 // installs read it.
 const REPO = join(import.meta.dirname, "..", "..", "..");
+const installationDocs = readFileSync(join(REPO, "docs", "cli-installation.mdx"), "utf8");
+const setupDocs = readFileSync(join(REPO, "docs", "setup.mdx"), "utf8");
+check("the unattended Windows setup guide uses the cmd shim and accepts the npx install prompt",
+  /^```powershell\nnpx\.cmd -y cotal-ai setup --destination local .* --no-input\nnpx\.cmd -y cotal-ai up .*\n```$/m.test(setupDocs));
 const VERSION = (JSON.parse(readFileSync(join(REPO, "bin", "package.json"), "utf8")) as { version: string }).version;
 const NEWER = "99.0.0";
 const packed = mkdtempSync(join(tmpdir(), "cotal-setup-runtimes-"));
@@ -265,6 +269,19 @@ const installed = (pkg: string) => loadExtensionsManifest().extensions.find((e) 
 
 const FULL = (space: string, dir: string, harness = "codex") => ["setup", "--destination", "local", "--harness", harness, "--project", dir, "--space", space];
 
+if (process.getuid && process.getuid() !== 0) {
+  const dir = project("p-readonly");
+  chmodSync(dir, 0o500);
+  try {
+    const setup = await json([...FULL("readonly-test", dir), "--yes"], dir);
+    check("setup recommends --project for a writable destination", refused(setup, 2, "PERMISSION_DENIED")
+      && setup.env?.error?.remedy?.endsWith("pass --project <dir>") && !existsSync(join(dir, ".cotal")), shown(setup));
+    const create = await json(["space", "create", "readonly-test", "--root", dir], dir);
+    check("space create recommends --root for a writable destination", refused(create, 2, "PERMISSION_DENIED")
+      && create.env?.error?.remedy?.endsWith("pass --root <dir>") && !existsSync(join(dir, ".cotal")), shown(create));
+  } finally { chmodSync(dir, 0o700); }
+}
+
 // ── A script names every input, and a refusal writes nothing ──────────────────────────────────────
 {
   const dirs = { cloud: project("p-cloud"), mars: project("p-mars"), harness: project("p-harness"), name: project("p-name"), file: project("p-file"), runtime: project("p-runtime") };
@@ -279,9 +296,13 @@ const FULL = (space: string, dir: string, harness = "codex") => ["setup", "--des
   check("a self-hosted script missing --project gets the self-hosted form, with --connection-file",
     refused(missingHosted, 1, "USAGE_INVALID") && /pass --project$/.test(missingHosted.env?.error?.message ?? "")
       && (missingHosted.env?.error?.remedy ?? "").startsWith("cotal setup --destination self-hosted --harness <connector> --project <dir> --space <name> [--connection-file <bundle.json>]"), shown(missingHosted));
-  const yes = await run(["setup", "--yes"]);
+  const windowsLauncher = process.platform === "win32" ? join(more, "cotal.cmd") : undefined;
+  if (windowsLauncher) writeFileSync(windowsLauncher, `@"${process.execPath}" "${BIN}" %*\r\n`);
+  const yes = await run(["setup", "--yes"], home, windowsLauncher ? withMore : undefined);
+  if (windowsLauncher) rmSync(windowsLauncher);
   check("setup --yes alone is refused the same way, exit 1, with the scripted form and no command help",
-    yes.status === 1 && /pass --destination, --harness, --project, --space/.test(yes.stderr) && /--destination local --harness <connector>/.test(yes.stderr) && !/^Usage$/m.test(yes.stderr), shown(yes));
+    yes.status === 1 && /pass --destination, --harness, --project, --space/.test(yes.stderr) &&
+    yes.stderr.includes(`${windowsLauncher ? "cotal.cmd" : commandPrefix} setup --destination local --harness <connector>`) && !/^Usage$/m.test(yes.stderr), shown(yes));
   const cloud = await json(FULL("c1", dirs.cloud).map((a) => (a === "local" ? "cloud" : a)));
   check("--destination cloud is UNSUPPORTED, exit 2, naming the self-hosted route after cotal login",
     refused(cloud, 2, "UNSUPPORTED") && /no separate Cloud destination/.test(cloud.env?.error?.message ?? "") && /`cotal login`.*--destination self-hosted --space <name>/.test(cloud.env?.error?.remedy ?? ""), shown(cloud));
@@ -406,6 +427,44 @@ if (process.platform !== "win32") {
 }
 
 // ── A harness whose host tool is missing ──────────────────────────────────────────────────────────
+if (process.platform !== "win32") {
+  const example = installationDocs.split(/^```/m)
+    .find((block) => block.startsWith("bash\n") && /^cotal setup --destination local .* --no-input$/m.test(block))
+    ?.slice("bash\n".length);
+  const dir = join(home, "scripted-research");
+  check("the documented local example starts without its project folder", example !== undefined && !existsSync(dir));
+  if (example !== undefined) {
+    const runExample = spawnSync("sh", ["-ec", `node=$1; cli=$2
+cotal() { "$node" "$cli" "$@"; }
+${example.replaceAll("research", "scripted-research")}`, "setup-example", process.execPath, BIN],
+    { cwd: home, env, encoding: "utf8", timeout: 180_000 });
+    check("the documented local example creates its folder and saves preparation before reporting missing Claude",
+      runExample.status === 4 && /saved scripted-research; claude is not set up yet/.test(runExample.stdout) &&
+      existsSync(join(dir, ".cotal", "agents", "default.md")), shown(runExample));
+  }
+} else {
+  const example = installationDocs.split(/^```/m)
+    .find((block) => block.startsWith("powershell\n") && /^cotal\.cmd setup --destination local .* --no-input$/m.test(block))
+    ?.slice("powershell\n".length);
+  const dir = join(home, "scripted research");
+  check("the documented PowerShell example starts without its project folder", example !== undefined && !existsSync(dir));
+  if (example !== undefined) {
+    const script = `$ErrorActionPreference = 'Stop'
+Set-Variable HOME $env:HOME -Force
+$env:Path = "$env:SETUP_EXAMPLE_BIN;$env:Path"
+${example.replace("'research'", "'scripted research'").replace("--space research", "--space ps-research")}
+exit $LASTEXITCODE`;
+    writeFileSync(join(bin, "cotal.cmd"), `@"${process.execPath}" "${BIN}" %*\r\n`);
+    const powershell = join(process.env.SystemRoot ?? "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
+    const runExample = spawnSync(powershell, ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Restricted", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")],
+      { cwd: home, env: { ...env, SETUP_EXAMPLE_BIN: bin }, encoding: "utf8", timeout: 180_000 });
+    rmSync(join(bin, "cotal.cmd"));
+    check("the documented PowerShell example saves preparation under Restricted in a path with spaces",
+      runExample.status === 4 && /saved ps-research; claude is not set up yet/.test(runExample.stdout) &&
+      existsSync(join(dir, ".cotal", "agents", "default.md")), shown(runExample));
+  }
+}
+
 {
   const dir = project("p-claude");
   const partial = await json(FULL("claudespace", dir, "claude"));
@@ -465,6 +524,10 @@ if (process.platform !== "win32") {
   check("a project other than the registration's root is CONFLICT, naming the root", refused(elsewhere, 2, "CONFLICT") && elsewhere.env?.error?.remedy === `pass \`--project ${teamRoot}\``, shown(elsewhere));
   const unknown = await json(hosted("nobody", teamRoot));
   check("an unregistered space with no connection file is TARGET_NOT_FOUND", refused(unknown, 2, "TARGET_NOT_FOUND") && /--connection-file/.test(unknown.env?.error?.remedy ?? ""), shown(unknown));
+  const missingBundle = await json(hosted("nobody", notTeam, ["--connection-file", "./absent.json", "--no-input"]));
+  check("setup names the unreadable connection file and tells the caller what to pass",
+    refused(missingBundle, 1, "USAGE_INVALID") && missingBundle.env?.error?.message === "cannot read --connection-file ./absent.json (ENOENT)" &&
+      missingBundle.env.error.remedy === "pass the path to the exported connection bundle with `--connection-file`", shown(missingBundle));
   const local = await json(hosted("research", join(home, "research")));
   check("a space prepared here is not self-hosted: CONFLICT", refused(local, 2, "CONFLICT") && /--destination local/.test(local.env?.error?.remedy ?? ""), shown(local));
   check("those refusals wrote nothing", JSON.stringify(files()) === JSON.stringify(before));
@@ -523,9 +586,24 @@ if (process.platform !== "win32") {
   const help = await run(["setup", "--help"]);
   check("setup help labels the self-hosted connection-file example as prompting in a terminal",
     help.status === 0 && help.stdout.replace(/\s+/g, " ").includes("cotal setup --destination self-hosted --connection-file <bundle.json> asks for the remaining inputs in a terminal"), shown(help));
-  const docs = readFileSync(join(REPO, "docs", "cli-installation.mdx"), "utf8");
-  const example = /^cotal setup --destination self-hosted .*--connection-file .*$/m.exec(docs)?.[0];
+  const setupLine = /^cotal setup --destination self-hosted .*--connection-file .*$/m;
+  const block = installationDocs.split(/^```/m).find((block) => block.startsWith("bash\n") && setupLine.test(block));
+  const example = setupLine.exec(block ?? "")?.[0];
   check("the installation docs show a scripted self-hosted connection-file example", example !== undefined, { example });
+  if (process.platform !== "win32" && block !== undefined) {
+    const dir = join(home, "scripted-hosted-research");
+    check("the documented self-hosted example starts without its project or bundle",
+      !existsSync(dir) && !existsSync(join(home, "scripted-hosted-research.json")));
+    const runExample = spawnSync("sh", ["-ec", `node=$1; cli=$2
+cotal() { "$node" "$cli" "$@"; }
+${block.slice("bash\n".length).replaceAll("research", "scripted-hosted-research")}`, "setup-example", process.execPath, BIN],
+    { cwd: home, env, encoding: "utf8", timeout: 180_000 });
+    const folder = statSync(dir, { throwIfNoEntry: false });
+    check("the documented self-hosted example creates a private project and reaches the connection file check",
+      runExample.status === 1 && folder !== undefined && folder.isDirectory() && (folder.mode & 0o777) === 0o700 &&
+      /cannot read --connection-file .*scripted-hosted-research\.json \(ENOENT\)/.test(runExample.stderr) &&
+      runExample.stderr.includes("pass the path to the exported connection bundle with `--connection-file`"), shown(runExample));
+  }
   const substitutions: Record<string, string> = { claude: "codex", "~/research": userRoot, research: "hosted", "./research.json": file };
   const exampleArgs = (example ?? "").trim().split(/\s+/).slice(1).map((word) => substitutions[word] ?? word);
   const added = await json(exampleArgs);
@@ -819,6 +897,26 @@ if (process.platform !== "win32") {
   check("rerunning configure-only after moving the file seeds the persona and keeps the prepared record",
     retried.status === 0 && retried.env?.result?.spaceState === "prepared" && retried.env.result.startup?.state === "not-requested"
       && saved !== undefined && findPreparedSpace("blocked-persona")?.ts === saved.ts && existsSync(join(agents, "default.md")), shown(retried));
+}
+
+{
+  const dir = project("blocked-demo");
+  const agents = join(dir, ".cotal", "agents");
+  const path = join(agents, "david.md");
+  mkdirSync(path, { recursive: true, mode: 0o700 });
+  writeFileSync(join(path, "keep"), "untouched");
+  const args = [...FULL("blocked-demo", "."), "--yes", "--demo"];
+  const blocked = await json(args, dir);
+  check("a directory blocking a demo persona refuses before writing space or personas",
+    refused(blocked, 2, "CONFLICT") && blocked.env?.target?.space === "blocked-demo" && blocked.env.target.path === path
+      && blocked.env.error.message.includes(path) && blocked.env.error.remedy === `move the directory at ${path} aside, then run the same setup again`
+      && findPreparedSpace("blocked-demo") === undefined && !existsSync(join(agents, "default.md"))
+      && readFileSync(join(path, "keep"), "utf8") === "untouched", shown(blocked));
+  renameSync(path, `${path}.saved`);
+  const retried = await json(args, dir);
+  check("moving the directory aside lets setup prepare the space and seed the demo team",
+    retried.status === 0 && findPreparedSpace("blocked-demo")?.root === dir
+      && ["default", "david", "sven", "me"].every((name) => existsSync(join(agents, `${name}.md`))), shown(retried));
 }
 
 {
