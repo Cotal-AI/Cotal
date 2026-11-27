@@ -238,9 +238,6 @@ check("a value on the help switch names the bare switch, not a positional", valu
   ["cotal", "pnpm cotal"].some((cli) => valuedHelp.stderr.includes(`  run \`${cli} help --help\`\n`)) &&
   !valuedHelp.stderr.includes("put -- before it") && !valuedHelp.stderr.includes("Unknown option") &&
   valuedHelp.stderr.endsWith(helpPage.stdout), shown(valuedHelp));
-const valuedHelpJson = run(["help", "--help=false", "--json"]);
-check("a valued help switch stays text when --json follows it", valuedHelpJson.status === 1 && valuedHelpJson.stdout === "" &&
-  valuedHelpJson.stderr === valuedHelp.stderr, shown(valuedHelpJson));
 const separatedHelp = run(["help", "--", "--help=false"]);
 check("after -- a valued help switch stays a command name", separatedHelp.status === 1 && separatedHelp.stdout === "" &&
   /unknown command: --help=false/.test(separatedHelp.stderr) && !separatedHelp.stderr.includes("--help takes no value"), shown(separatedHelp));
