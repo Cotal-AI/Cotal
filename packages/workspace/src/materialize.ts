@@ -145,10 +145,12 @@ export function reconcileExtensionScopes(entries?: readonly InstalledExtension[]
 }
 
 /** Why an already imported package cannot be activated at the manifest's current install ID. */
-export function extensionRestartReason(entry: InstalledExtension): string | undefined {
+export function extensionRestartReason(entry: InstalledExtension, manager = false): string | undefined {
   const loaded = loadedPlugins.get(entry.pkg);
-  if (loaded && !sameInstall(loaded.entry, entry))
-    return `installed ${entry.pkg}@${entry.version}, this process loaded ${loaded.entry.version}; restart the process to use that plugin`;
+  if (!loaded || sameInstall(loaded.entry, entry)) return undefined;
+  return manager
+    ? `installed ${entry.pkg}@${entry.version}, this Manager loaded ${loaded.entry.version}; stop its seats and restart the Manager to use that plugin`
+    : `installed ${entry.pkg}@${entry.version}, this process loaded ${loaded.entry.version}; restart the process to use that plugin`;
 }
 
 async function loadFactory(ext: InstalledExtension, onDisk: InstalledExtensionPackage, advertised: ExtensionRef): Promise<void> {
@@ -178,10 +180,10 @@ async function loadFactory(ext: InstalledExtension, onDisk: InstalledExtensionPa
   loaded.scope = commitPlugin(registry, staged);
 }
 
-async function loadOne(ext: InstalledExtension, advertised: ExtensionRef): Promise<void> {
+async function loadOne(ext: InstalledExtension, advertised: ExtensionRef, manager = false): Promise<void> {
   // A successful factory publishes its complete scope. Reuse it for any sibling provider.
   const pkg = ext.pkg;
-  const restart = extensionRestartReason(ext);
+  const restart = extensionRestartReason(ext, manager);
   if (restart) throw new Error(restart);
   if (registry.has(advertised.kind, advertised.name)) return;
   const onDisk = installedExtensionPackage(pkg);
@@ -248,7 +250,7 @@ export async function materializeFromManifest<T extends Extension = Extension>(
               : `extension ${ext.pkg}@${ext.version} differs from this Manager's loaded generation ${opts.expectedGeneration}; run \`cotal update --self\` to reconcile this installation, then stop its seats and restart the Manager from the installed CLI`,
         );
       }
-      await loadOne(ext, ref);
+      await loadOne(ext, ref, opts.expectedGeneration !== undefined);
     }),
   );
   return registry.resolve<T>(ref.kind, ref.name);

@@ -108,7 +108,7 @@ export class ConnectorInventory {
     return {
       entry, requires: connector.requires,
       needsClaudeWake: !!this.settings.machineSetupCommand && connector.name === "claude" && entry?.pkg === OFFICIAL_CONNECTORS.claude,
-      restart: entry && extensionRestartReason(entry),
+      restart: entry && extensionRestartReason(entry, true),
     };
   }
 
