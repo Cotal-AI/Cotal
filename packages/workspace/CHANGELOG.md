@@ -1,5 +1,14 @@
 # @cotal-ai/workspace
 
+## 0.183.1
+
+### Patch Changes
+
+- c049810: Report remaining resumable conversation approvals of the previous account when `cotal login` switches accounts at the same provider.
+- 1514ff7: A backup restore on a host that cannot list process command lines now starts its first listener. If that listener was spawned but its pid was never published, a later attempt refuses instead of starting a second listener. A published pid whose creation time does not match the recorded listener does not block.
+- Updated dependencies [99e5057]
+  - @cotal-ai/core@0.183.1
+
 ## 0.183.0
 
 ### Minor Changes
