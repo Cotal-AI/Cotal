@@ -1,5 +1,5 @@
 import { exchangeRateLimit, readAuthResponseJson, type ExchangeRateLimit } from "./response-json.js";
-import { idpSessionDir, remoteExchangeRetryDeadline } from "./session-context.js";
+import { conversationLogoutLogin, idpSessionDir, remoteExchangeRetryDeadline } from "./session-context.js";
 import { loadManagerAuthorityRoute, managerAuthorityRouteUrl, pinManagerAuthorityRoute } from "./manager-authority-route.js";
 /**
  * The core `auth-provider` extension — how a composition root gets user-mode auth WITHOUT importing
@@ -23,9 +23,9 @@ import { resolve, sep } from "node:path";
 import { AGENT_LIFECYCLE_HELD, AgentGrantConflictError, EP_ERROR_CODES, EpEnvelopeError, agentLifecycleHeld, type AgentLifecycleRelease, type EpEffectOutcome, type EpErrorCode } from "@cotal-ai/core";
 import { parseServiceAuthorityEnvelope, parseServiceAuthorityRequest } from "@cotal-ai/core";
 import { parseRemoteEndpointDeregisterRequest, parseRemoteEndpointDeregisterResult } from "@cotal-ai/core";
-import { CommandFailure } from "@cotal-ai/workspace";
+import { CommandFailure, type ConversationAccount } from "@cotal-ai/workspace";
 import { readRemoteServiceAuthorityInfo, postRemoteServiceAuthority, serviceAuthorityUrl, withServiceAuthorityBudget, assertServiceViewFreshness } from "./service-authority-client.js";
-import { deleteIdpSpaceCatalog, fetchIdpJwt, hasIdpSessions, hasIdpSpaceCatalog, IdpSessionRejectedError, loadIdpSession, normalizeIdpUrl, prepareIdpSpaceCatalogs, probeIdpJwks, requireIdpSession } from "./login.js";
+import { conversationAccountKey, deleteIdpSpaceCatalog, fetchIdpJwt, hasIdpSessions, hasIdpSpaceCatalog, IdpSessionRejectedError, IdpTokenServerError, IdpUnreachableError, loadIdpSession, normalizeIdpUrl, prepareIdpSpaceCatalogs, probeIdpJwks, requireIdpSession } from "./login.js";
 import { deriveOwnerForIdpSubject } from "./derive.js";
 import { findActorUnified, findInteractiveActor, hashActorToken, newActorToken, notGrantedReason, withManagedGrantTransaction } from "./ledger.js";
 import { userAuthTrustFingerprint, validateRetainedManagedAgent } from "./continuity.js";
@@ -143,8 +143,16 @@ export const cotalAuthProvider: AuthProvider = {
     try {
       return await postManagerAuthority(endpoint, idpUrl, authorization, request, "manager run issuance") as RemoteRunAttemptResult;
     } catch (error) {
-      if (error instanceof ManagerAuthorityRefusal && error.status === 503 && request.operator && request.operator.answers === undefined)
-        throw new EpEnvelopeError("unavailable", "the run authority is temporarily unavailable; retry the read in a few seconds", undefined, "not-executed");
+      if (isRunAuthorityOutage(error, request.space)) {
+        if (request.operator && request.operator.answers === undefined) {
+          const message = error instanceof ManagerAuthorityRefusal && isManagerAuthorityOutage(error.status)
+            ? "the run authority is temporarily unavailable; retry the read in a few seconds" : error.message;
+          throw new EpEnvelopeError("unavailable", message, undefined, "not-executed");
+        }
+        if (request.attempt && request.attempt.served === undefined)
+          throw new EpEnvelopeError("unavailable", error.message, undefined,
+            error instanceof IdpTokenServerError || error instanceof IdpUnreachableError ? "not-executed" : "unknown");
+      }
       throw error;
     }
   },
@@ -608,32 +616,7 @@ export const cotalAuthProvider: AuthProvider = {
     return { outcome: "unknown", ...at, status: released.status, ...(typeof reason === "string" ? { reason } : {}) };
   },
 
-  async requestConversationIdentity({ url, idpUrl, method, body }) {
-    const endpoint = new URL(url);
-    if (endpoint.protocol !== "https:" || endpoint.username || endpoint.password || endpoint.hash)
-      throw new Error("conversation identity authority must use HTTPS without userinfo or a fragment");
-    const session = requireIdpSession(idpSessionDir(), idpUrl);
-    let response: Response;
-    try {
-      response = await fetch(endpoint, {
-        method,
-        redirect: "manual",
-        credentials: "omit",
-        headers: { authorization: `Bearer ${session.token}`, ...(body ? { "content-type": "application/json" } : {}),
-          ...(method === "POST" ? { "Cotal-Conversation-Refusals": "1" } : {}) },
-        ...(body ? { body: JSON.stringify(body) } : {}),
-        signal: AbortSignal.timeout(30_000),
-      });
-    } catch {
-      throw new Error("conversation identity request outcome is unknown; retain its saved request and retry that same lifecycle");
-    }
-    if (response.status >= 300 && response.status < 400)
-      throw new Error("conversation identity authority returned a redirect; no redirect was followed");
-    const parsed: unknown = await response.json().catch(() => undefined);
-    if (parsed === undefined)
-      throw new Error("conversation identity authority returned no JSON; retain its saved request for recovery");
-    return { status: response.status, body: parsed };
-  },
+  requestConversationIdentity: sendConversationIdentity,
 
   /** Redeem one pre-minted remote enrollment. The URL itself carries the one-time secret, so this
    *  method names it nowhere, sends no Authorization header, and performs exactly one manual-redirect
@@ -843,7 +826,52 @@ export const cotalAuthProvider: AuthProvider = {
   agentBearerCommand: "agent-bearer",
 };
 
-registry.register(cotalAuthProvider);
+function conversationLogin(idp: string) {
+  return conversationLogoutLogin(normalizeIdpUrl(idp)) ?? requireIdpSession(idpSessionDir(), idp);
+}
+
+function signedInConversationKey(idp: string, session: ReturnType<typeof conversationLogin>): string {
+  const key = conversationAccountKey(idp, session.sub);
+  if (!key || session.expiresAt <= Date.now() / 1000) throw new Error("there is no unexpired sign-in with a known account");
+  return key;
+}
+
+const conversationAccount: ConversationAccount = {
+  kind: "conversation-account", name: AUTH_PROVIDER_NAME,
+  key(idp) { return signedInConversationKey(idp, conversationLogin(idp)); },
+  async request(key, input) { return sendConversationIdentity(input, key); },
+};
+
+async function sendConversationIdentity({ url, idpUrl, method, body }: Parameters<NonNullable<AuthProvider["requestConversationIdentity"]>>[0], key?: string) {
+  const endpoint = new URL(url);
+  if (endpoint.protocol !== "https:" || endpoint.username || endpoint.password || endpoint.hash)
+    throw new Error("conversation identity authority must use HTTPS without userinfo or a fragment");
+  const session = conversationLogin(idpUrl);
+  if (key !== undefined && signedInConversationKey(idpUrl, session) !== key)
+    throw new Error("the sign-in changed to another account before the request; nothing was sent");
+  let response: Response;
+  try {
+    response = await fetch(endpoint, {
+      method,
+      redirect: "manual",
+      credentials: "omit",
+      headers: { authorization: `Bearer ${session.token}`, ...(body ? { "content-type": "application/json" } : {}),
+        ...(method === "POST" ? { "Cotal-Conversation-Refusals": "1" } : {}) },
+      ...(body ? { body: JSON.stringify(body) } : {}),
+      signal: AbortSignal.timeout(30_000),
+    });
+  } catch {
+    throw new Error("conversation identity request outcome is unknown; retain its saved request and retry that same lifecycle");
+  }
+  if (response.status >= 300 && response.status < 400)
+    throw new Error("conversation identity authority returned a redirect; no redirect was followed");
+  const parsed: unknown = await response.json().catch(() => undefined);
+  if (parsed === undefined)
+    throw new Error("conversation identity authority returned no JSON; retain its saved request for recovery");
+  return { status: response.status, body: parsed };
+}
+
+registry.register(cotalAuthProvider, conversationAccount);
 
 /** The pinned exchange base -> the POST target. Same composition as `agent-bearer
  *  --exchange-url` (append `/exchange`, drop search/hash), same transport rule as the
@@ -962,13 +990,17 @@ async function postManagerAuthority(
     headers: { "content-type": "application/json", ...(authorization ? { authorization } : {}) },
     body: JSON.stringify({ idpToken: idpJwt, request }),
     signal: signal ?? AbortSignal.timeout(30_000),
-  }).catch((error) => { throw new Error(`the ${what} endpoint did not answer at ${endpoint} (${error instanceof Error ? error.message : String(error)})`, { cause: error }); });
+  }).catch((error: unknown) => {
+    const message = `the ${what} endpoint did not answer at ${endpoint} (${error instanceof Error ? error.message : String(error)})`;
+    throw isManagerAuthorityTransportOutage(error) ? new ManagerAuthorityTransportError(message, { cause: error }) : new Error(message, { cause: error });
+  });
   if (response.status >= 300 && response.status < 400)
     throw new Error(`the ${what} endpoint answered ${response.status} with redirect Location ${JSON.stringify(response.headers.get("location") ?? "")} - redirects are refused`);
   // A stand-in object would reach the caller as a result the endpoint never sent.
-  const body = await response.json().catch(() => {
+  const body = await response.json().catch((error: unknown) => {
     const message = `the ${what} endpoint at ${endpoint} answered HTTP ${response.status} with a body that could not be read as JSON`;
-    if (response.status === 503) throw new ManagerAuthorityRefusal(message, response.status, undefined);
+    if (isManagerAuthorityOutage(response.status)) throw new ManagerAuthorityRefusal(message, response.status, undefined);
+    if (response.ok && isManagerAuthorityTransportOutage(error)) throw new ManagerAuthorityTransportError(message, { cause: error });
     throw new Error(message);
   });
   signal?.throwIfAborted();
@@ -979,6 +1011,26 @@ async function postManagerAuthority(
 /** This build's version. The release group versions every package in lockstep, so it is also the
  *  version of the manager whose requests this client sends. */
 const COTAL_VERSION = (JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as { version: string }).version;
+
+function isManagerAuthorityOutage(status: number): boolean {
+  return status === 502 || status === 503 || status === 504;
+}
+
+class ManagerAuthorityTransportError extends Error {}
+
+function isManagerAuthorityTransportOutage(error: unknown): boolean {
+  if (error instanceof DOMException && error.name === "TimeoutError") return true;
+  const code = (error as { cause?: { code?: unknown } } | null)?.cause?.code;
+  return typeof code === "string" && ["ECONNREFUSED", "ECONNRESET", "ETIMEDOUT", "EAI_AGAIN", "UND_ERR_CONNECT_TIMEOUT", "UND_ERR_SOCKET"].includes(code);
+}
+
+function isRunAuthorityOutage(error: unknown, space: string): error is Error {
+  if (error instanceof ManagerAuthorityTransportError || error instanceof IdpTokenServerError || error instanceof IdpUnreachableError) return true;
+  if (!(error instanceof ManagerAuthorityRefusal)) return false;
+  // Some issuers report a restart as 403. Only the exact restart refusal is temporary.
+  return isManagerAuthorityOutage(error.status) || (error.status === 403 && (error.body as { error?: unknown } | null)?.error ===
+    `the auth service for space "${space}" is momentarily unavailable (it detected a fault and is restarting); retry shortly`);
+}
 
 /** A host's non-2xx answer to a manager-authority request, with the HTTP status and body it answered. */
 class ManagerAuthorityRefusal extends Error {

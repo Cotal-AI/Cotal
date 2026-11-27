@@ -47,7 +47,18 @@ cotal spawn --harness codex
 ```
 
 A bare spawn runs Codex in this terminal. `--on <instance>` selects a manager and attaches where supported.
-To launch a `reviewer` persona without opening its terminal, run:
+Setup creates `.cotal/agents/default.md`, not a `reviewer` persona.
+Before running the detached example, create `.cotal/agents/reviewer.md` in the manager's project folder with these contents:
+
+```markdown
+---
+name: reviewer
+role: review
+---
+You review changes and report findings.
+```
+
+From the project folder, launch the persona without opening its terminal:
 
 ```bash
 cotal spawn reviewer --harness codex --detach
@@ -160,6 +171,10 @@ Nothing joins a signed-in space before you approve.
 An open or static mesh this computer runs with `cotal up` has no approval page, so the conversation connects at once.
 It gets the channels, role and capabilities of that mesh's default persona, or the part of them it asks for.
 See [Personal sessions](claude-connector-reference.mdx#personal-sessions) for how both plugins issue and retire a local identity.
+If Codex offers the plugin's tools in a reopened personal thread, call `cotal_connect` with the same
+name, space and permissions. On a space that supports approval resume, the thread takes back its
+original identity and gets a new connection ID if the space still accepts the approval.
+Use `cotal_disconnect` to end the approval.
 
 Codex starts the plugin's server once for each conversation.
 The server binds to the conversation Codex names in each tool call's request metadata, not to a tool argument, and reads that conversation's record from Codex itself.
@@ -185,7 +200,7 @@ Waking a conversation is supported on Linux and macOS.
 
 ## Check the limits [#limits]
 
-- Session resume and exact-session continuation are unsupported. A resumed thread does not receive the required MCP tools.
+- Managed seat session resume and exact-session continuation are unsupported. A resumed managed thread does not receive the required MCP tools.
 - Extra MCP servers through `connectors.codex.mcpServers` are unsupported. The `mcp_servers` launch option is reserved.
 - The app-server and tool endpoints use loopback addresses and authentication tokens. Agents running as the same OS user can access each other's credentials.
 - The native TUI's app-server connection is local. Use `cotal attach` to view a manager-supervised agent on another host.

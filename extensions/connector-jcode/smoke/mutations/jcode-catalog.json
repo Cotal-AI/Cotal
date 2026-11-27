@@ -22,7 +22,7 @@
     },
     {
       "name": "models whose every route jcode reports unavailable are listed",
-      "file": "extensions/connector-jcode/src/extension.ts",
+      "file": "extensions/connector-jcode/src/model-catalog.ts",
       "find": "route.model === id && route.available",
       "replace": "route.model === id",
       "expectRed": "drops a model whose every route jcode reports unavailable",
@@ -30,7 +30,7 @@
     },
     {
       "name": "the catalog leaves stdin open for jcode's login prompt",
-      "file": "extensions/connector-jcode/src/extension.ts",
+      "file": "extensions/connector-jcode/src/model-catalog.ts",
       "find": "    child.stdin?.end();",
       "replace": "    void child.stdin;",
       "expectRed": "ends stdin so jcode's login prompt exits, and names jcode's own reason",
@@ -38,9 +38,9 @@
     },
     {
       "name": "the catalog runs jcode with the manager's whole environment",
-      "file": "extensions/connector-jcode/src/extension.ts",
-      "find": "{ encoding: \"utf8\", env: launchEnv(), timeout:",
-      "replace": "{ encoding: \"utf8\", timeout:",
+      "file": "extensions/connector-jcode/src/model-catalog.ts",
+      "find": "launchEnv({ envAllow: opts.envAllow })",
+      "replace": "process.env",
       "expectRed": "runs jcode in the environment a seat's host gets",
       "cell": "runs jcode in the environment a seat's host gets"
     }

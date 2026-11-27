@@ -2,7 +2,8 @@
  * A spawn's variant and modes against the connector's model catalog (Manager revision 58). The
  * served `spawn` input takes `modes`. The Manager refuses a variant or mode the catalog does not list
  * for the launched model, and a value that turns on a mode it marks unavailable, before anything is
- * minted or launched, and reads each catalog once. A value that sets such a mode off launches.
+ * minted or launched, and reads each catalog once. A value that sets such a mode off launches. A
+ * project folder that is not trusted refuses its spawn.env before the catalog is read.
  * Offline: an open-mesh Manager with a fake endpoint and runtime; no broker or harness runs.
  *
  * Run: pnpm smoke:manager-spawn-catalog-choice
@@ -13,6 +14,7 @@ import { join } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { emitSentinel } from "@cotal-ai/smoke-kit";
 import { DEV_OWNER, principalKey, registry, type AgentHandle, type Connector, type LaunchOpts, type ModelCatalog } from "@cotal-ai/core";
+import { trustProject } from "@cotal-ai/workspace";
 import { Manager } from "../src/manager.js";
 import { MANAGER_CONTRACTS, managerShippedSurface } from "../src/manager-service-contract.js";
 
@@ -35,6 +37,8 @@ check("spawn refuses an empty mode value", spawnInput.validate({ name: "worker",
 // --- The Manager's check -------------------------------------------------------------------------
 const root = realpathSync(mkdtempSync(join(tmpdir(), "cotal-catalog-choice-")));
 mkdirSync(join(root, ".cotal", "agents"), { recursive: true });
+// The operator config and the trusted projects record live in this suite's own config folder.
+process.env.XDG_CONFIG_HOME = join(root, "xdg");
 writeFileSync(join(root, ".cotal", "agents", "worker.md"), "---\nname: worker\nrole: worker\n---\nYou work.\n");
 
 const deep = {
@@ -65,6 +69,8 @@ fixture("cat-malformed", () => ({ models: [{ id: "deep", variants: [{ name: "low
 fixture("cat-noreason", () => ({ models: [{ id: "deep", modes: [{ id: "fast", label: "Fast", kind: "toggle", default: false, unavailable: "" }] }] }));
 fixture("cat-blankreason", () => ({ models: [{ id: "deep", modes: [{ id: "fast", label: "Fast", kind: "toggle", default: false, unavailable: "  " }] }] }));
 fixture("cat-blind", undefined);
+let catalogEnv: readonly string[] | undefined;
+fixture("cat-env", undefined, { listModels: async (opts) => { reads["cat-env"] = (reads["cat-env"] ?? 0) + 1; catalogEnv = opts?.envAllow; return { models: [deep] }; } });
 
 const manager = new Manager({ space: "catalog-smoke", runtime: "pty", workspaceRoot: root });
 const agents = (manager as unknown as { agents: Map<string, { id: string; name: string; lifecycleUid?: string; launch: { modes?: unknown } }> }).agents;
@@ -165,6 +171,18 @@ const blind = await spawn("cat-blind", { variant: "high" });
 check("a variant on a connector that lists no catalog is refused", refused(blind, /cat-blind connector lists no model catalog/), blind);
 const blindBare = await spawn("cat-blind", {});
 check("a launch that chooses neither a variant nor modes needs no catalog", blindBare.ok, blindBare);
+
+// The catalog read runs the harness with the project's spawn.env names, so a project folder that is
+// not trusted refuses before the harness is read, and a trusted one reads it with the names its launch gets.
+writeFileSync(join(root, ".cotal", "config.json"), JSON.stringify({ spawn: { env: ["CATALOG_SMOKE_TOKEN"] } }));
+const untrusted = await spawn("cat-env", { model: "deep", variant: "high" });
+check("an untrusted project's spawn.env refuses a variant before the catalog is read",
+  refused(untrusted, /spawn\.env/) && (untrusted.error ?? "").includes(`cotal trust ${root}`) && reads["cat-env"] === undefined, { untrusted, reads });
+trustProject(root);
+const trusted = await spawn("cat-env", { model: "deep", variant: "high" });
+check("a trusted project's catalog is read with the spawn.env names its launch gets",
+  trusted.ok && reads["cat-env"] === 1 && isDeepStrictEqual(catalogEnv, ["CATALOG_SMOKE_TOKEN"]) && isDeepStrictEqual(launched[0]?.envAllow, ["CATALOG_SMOKE_TOKEN"]),
+  { trusted, reads, catalogEnv, envAllow: launched[0]?.envAllow });
 
 rmSync(root, { recursive: true, force: true });
 emitSentinel({ passed, failed });

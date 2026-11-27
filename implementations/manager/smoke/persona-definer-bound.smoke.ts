@@ -41,7 +41,7 @@ import {
   type IssuedCaller,
   type LaunchOpts,
 } from "@cotal-ai/core";
-import { agentLifecycleSecretFilePaths, authDir, mintControlInstrument, recordMesh, saveSpaceAuth, userAuthStateDir, workspaceSecretStore } from "@cotal-ai/workspace";
+import { agentLifecycleSecretFilePaths, authDir, mintControlInstrument, recordMesh, saveSpaceAuth, trustProject, userAuthStateDir, workspaceSecretStore } from "@cotal-ai/workspace";
 import { createSuite } from "@cotal-ai/smoke-kit";
 import { Manager } from "../src/manager.js";
 import { MANAGER_ENDPOINT } from "../src/manager-service-contract.js";
@@ -58,6 +58,7 @@ const { servers: SERVERS, stop: stopBroker } = await bootBroker(auth);
 const dir = mkdtempSync(join(tmpdir(), "cotal-definer-bound-"));
 chmodSync(dir, 0o700);
 process.env.COTAL_HOME = join(dir, "home");
+process.env.XDG_CONFIG_HOME = join(dir, "config");
 mkdirSync(process.env.COTAL_HOME, { recursive: true, mode: 0o700 });
 const root = join(dir, "ws");
 const agents = join(root, ".cotal", "agents");
@@ -184,7 +185,8 @@ try {
   check("control: the spawner's own launch options still reach the connector", insideSpawn.ok && optsOf("inside")?.["add-dir"] === "/spawner", { insideSpawn, opts: optsOf("inside") });
   check("control: and the child holds the persona's channels and not the spawner's others", reads(aclOf(insideSeat), "review") && !reads(aclOf(insideSeat), "secret") && !posts(aclOf(insideSeat), "secret"), aclOf(insideSeat));
 
-  console.log("static mesh: operator files keep both");
+  console.log("static mesh: operator files in a trusted project keep both");
+  trustProject(root);
   const opSpawn = await spawner.spawn("operator_opts");
   const opSeat = await seat("operator_opts");
   check("an operator file's launch options reach the connector", opSpawn.ok && optsOf("operator_opts")?.["add-dir"] === "/operator", { opSpawn, opts: optsOf("operator_opts") });

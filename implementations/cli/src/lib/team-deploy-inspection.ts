@@ -157,7 +157,7 @@ export async function inspectTeamDeployment(root: string, path: string, prepared
     const roster = await presenceSnapshot(conn.server, space, conn.tls, readAuth);
     const channels = await channelRegistrySnapshot(conn.server, space, conn.tls, readAuth);
     const source = readFileSync(path, "utf8");
-    const reloaded = loadManifest(path);
+    const reloaded = loadManifest(path, undefined, "preview");
     if (source !== readFileSync(path, "utf8") || JSON.stringify(reloaded) !== JSON.stringify(prepared)) throw new CommandFailure("refused", "CONFLICT", "the manifest or referenced persona changed during native inspection; no prior ownership was selected", { target });
     const manifestHash = hashManifestSource(source);
     const priors = listLedgers(root).filter(({ ledger }) => ledger.manifestHash === manifestHash && ledger.space === space);

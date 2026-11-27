@@ -1,5 +1,23 @@
 # @cotal-ai/auth
 
+## 0.182.1
+
+### Patch Changes
+
+- 780f723: Explain why live member counts can fall after an upgrade and verify that a scoped user-auth history follower still receives posts without appearing as a member.
+- cdccf6a: When a first user-auth start needs an identity provider, explain how to add it to the original command or manifest without switching projects.
+- 2b296a3: Managers retry interrupted workflow runs when the hosted credential issuer takes longer than the broker to recover.
+- Updated dependencies [8495df7]
+- Updated dependencies [8eead0e]
+- Updated dependencies [5117d48]
+- Updated dependencies [2af983b]
+- Updated dependencies [c27ddc1]
+- Updated dependencies [8a9ffeb]
+- Updated dependencies [287b874]
+  - @cotal-ai/workspace@0.182.1
+  - @cotal-ai/core@0.182.1
+  - @cotal-ai/lang@0.182.1
+
 ## 0.182.0
 
 ### Minor Changes

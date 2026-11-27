@@ -213,9 +213,11 @@ retained name that starts with `-`, use `cotal space show -- -old` and
 so it refuses `UNSUPPORTED`. A stop that refuses or is cancelled before any member stops puts the
 registration back as it was.
 
-A bare `down` stops only the stack of the folder it runs in. In a folder whose root holds no
-stack, when the space named by `--space`, or else the selected space, is a stack this machine
-started in another folder, `down` refuses with `TARGET_NOT_FOUND`, exit 2, and stops nothing. A folder whose
+A bare `down` stops only the stack of the folder it runs in. On Windows, a UNC path and a drive-letter
+path to the same controller project both stop that stack. A copy of the project does not.
+In a folder whose root holds no stack, when the space named by `--space`, or else the selected
+space, is a stack this machine started in another folder, `down` refuses with `TARGET_NOT_FOUND`,
+exit 2, and stops nothing. A folder whose
 own `.cotal` holds no stack, such as one a failed start left, answers for itself unless `--space`
 names another folder's stack. In a folder with its own controller stack, a `--space` that names
 another space refuses with `CONFLICT`, exit 2, and names this folder's stack. Each refusal names
@@ -281,8 +283,10 @@ this whole-stack stop while any of those children still runs, even after the bro
 
 If the Cotal home is removed while a controller stack runs, the project's journal still names
 its members. `status` reports missing member records rather than assuming another home holds
-them. For an open stack started with `--no-manager`, `status` can verify the broker is still
-running from the journal's process creation pin even when no pidfile or service record remains.
+them. When the journal names the current home, `status` and `ps` point to the recovery preview
+instead of asking you to set `COTAL_HOME` again. For an open stack started with `--no-manager`,
+`status` can verify the broker is still running from the journal's process creation pin even when
+no pidfile or service record remains.
 Run `cotal down --dry-run` in that project to inspect the recovery stop, then
 `cotal down --yes`. This Linux recovery route requires the journal's launch-time Cotal home,
 machine, boot, account and each member's process creation pin. A different home, an older journal
@@ -338,7 +342,11 @@ root's `.cotal` is read: a link anywhere on a record's path refuses at the link,
 record that is not a regular file, is larger than a process record, cannot be opened, or changes
 while it is read. Each is named once, at the path where reading stopped. A `.cotal` that is itself
 a link never gives the no-op: on a stopped controller stack `down` refuses at `.cotal`, and on a
-legacy root it refuses `CONFLICT` before any record is read. A template whose `{space}`
+legacy root it refuses `CONFLICT` before any record is read. When the link leads to another
+project's `.cotal`, the Next gives the requested stop with its flags, including `--dry-run` and
+`--yes`. It prints a relative `--store-dir`, `--session-store` or `--file` as an absolute path so
+the retry selects the same path from that project. A link that leads nowhere keeps the refusal
+and does not name that project. A template whose `{space}`
 normalizes away names one path for every space and is read as that path. The refusal lists each
 record by name, path under the root and pid, and its next step names the pids and paths to check.
 It stops, adopts and removes nothing. `--with-agents` reports the same no-op when the last completed
@@ -1038,7 +1046,7 @@ clean-all operation. This route currently requires Linux, a space selected as ab
 plain-NATS loopback listener. It removes a locally started registration; a stopped controller stack
 keeps its prepared record and stack journal. On a user-auth space it also removes the IdP trust and
 the actor ledger, so every actor grant is lost. The preview and the receipt say so on their own
-line: a later `up` needs `cotal up --user-auth --idp <auth base URL>`, and each actor needs
+line: a later `up` from the stack's project folder needs `cotal up --user-auth --idp <auth base URL>`, and each actor needs
 `cotal actor grant` again. TLS-first, remote, shared-root
 and non-Linux targets refuse. It applies the same maintenance, deployment and
 process-custody guards as store reset. It does not stop a process to become

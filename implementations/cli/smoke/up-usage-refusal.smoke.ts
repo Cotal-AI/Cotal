@@ -81,9 +81,9 @@ const env = { ...HOST_ENV, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: join(
 const anchors = new Map<string, SmokeSandboxAnchor>();
 /** Record `at`, which already holds its `.cotal`, as a root a down may run in. */
 const sandbox = (at: string) => anchors.set(at, recordSmokeSandbox({ root: at, cotalHome: env.COTAL_HOME, xdgConfigHome: env.XDG_CONFIG_HOME }));
-const run = (args: string[], cwd = folder) => {
-  assertSmokeSandboxDown(anchors.get(cwd), args, { cwd, env });
-  const r = spawnSync(process.execPath, [BIN, ...args], { cwd, env, encoding: "utf8", timeout: 120_000 });
+const run = (args: string[], cwd = folder, childEnv: NodeJS.ProcessEnv = env) => {
+  assertSmokeSandboxDown(anchors.get(cwd), args, { cwd, env: childEnv });
+  const r = spawnSync(process.execPath, [BIN, ...args], { cwd, env: childEnv, encoding: "utf8", timeout: 120_000 });
   let envelope: Envelope | undefined;
   try { envelope = JSON.parse(r.stdout ?? "") as Envelope; } catch { envelope = undefined; }
   return { status: r.status, stdout: r.stdout ?? "", stderr: r.stderr ?? "", envelope };
@@ -329,6 +329,11 @@ const prepared = mkdtempSync(join(tmpdir(), "cotal-up-usage-prepared-"));
 process.on("exit", () => rmSync(prepared, { recursive: true, force: true }));
 const created = run(["space", "create", "upusage", "--root", prepared, "--json"]);
 check("space create prepares a folder", created.status === 0, shown(created));
+const issuerArgs = ["up", "--root", prepared, "--space", "upusage", "--server", "nats://127.0.0.1:1", "--user-auth", "--no-manager", "--json"];
+const missingIssuer = run(issuerArgs);
+check("missing issuer keeps the original start or manifest in its remedy", missingIssuer.status === 1 && missingIssuer.envelope?.error?.code === "USAGE_INVALID" && missingIssuer.envelope.error.remedy === "add `--idp <auth base URL>` to the original user-auth start. For a manifest, set `broker.idp` in the same file and retry the original command.", shown(missingIssuer));
+const retryIssuer = run([...issuerArgs, "--idp", "http://127.0.0.1:1/auth"]);
+check("adding only the issuer checks it for the selected project before writing a stack", retryIssuer.status === 2 && retryIssuer.envelope?.error?.code === "DEPENDENCY_UNAVAILABLE" && retryIssuer.envelope.target?.root === realpathSync(prepared) && retryIssuer.envelope.target.space === "upusage" && !existsSync(join(prepared, ".cotal", "stack-controller.json")), shown(retryIssuer));
 const upHelp = run(["up", "--help"]);
 check("up help marks every public exchange flag as legacy user-auth only",
   ["exchange-public-port", "exchange-public-url", "exchange-trusted-proxy", "advertised-server", "agent-provisioning-url"].every((flag) =>
@@ -564,6 +569,33 @@ const holder = createServer((socket) => socket.on("error", () => {}));
 const held = await new Promise<number>((resolve) => holder.listen(0, "127.0.0.1", () => resolve((holder.address() as AddressInfo).port)));
 const started = (root: string) => existsSync(join(root, ".cotal", "nats.pid"));
 try {
+  const seedRoot = mkdtempSync(join(tmpdir(), "cotal-up-seed-refusal-"));
+  roots.push(seedRoot);
+  const seedConfig = join(home, "seed-refusal-config");
+  const seedDir = join(seedConfig, "cotal", "seed");
+  const stamp = join(seedDir, "stamp.json");
+  const generation = '{"generation":"999.0.0"}\n';
+  mkdirSync(seedDir, { recursive: true });
+  writeFileSync(stamp, generation);
+  const seedEnv = { ...env, XDG_CONFIG_HOME: seedConfig, COTAL_SKIP_CONNECTOR_SEED: "0", COTAL_NO_UPDATE_CHECK: "1" };
+  const seedArgs = ["up", "--server", `nats://127.0.0.1:${held}`];
+  const help = run([...seedArgs, "--help"], seedRoot, seedEnv);
+  check("up help takes precedence over connector seed refusal", help.status === 0 && /Usage/.test(help.stdout) && help.stderr === "", shown(help));
+  const invalid = run([...seedArgs, "--max-sessions", "0", "--json"], seedRoot, seedEnv);
+  check("up validates arguments before checking connector seed state", invalid.status === 1
+    && invalid.envelope?.error?.code === "USAGE_INVALID" && invalid.stderr === "", shown(invalid));
+  for (const [flags, message] of [
+    [["--no-manager"], /does not move it back to an older one/],
+    [[], /this would migrate the machine-wide store/],
+  ] as const) {
+    const refusal = run([...seedArgs, ...flags, "--json"], seedRoot, seedEnv);
+    check(`up ${flags.length ? "without" : "with"} a manager reports its connector seed refusal as JSON`,
+      refusal.status === 2 && refusal.stderr === "" && refusal.envelope?.outcome === "refused"
+      && refusal.envelope.error?.code === "DEPENDENCY_UNAVAILABLE" && message.test(refusal.envelope.error.message ?? ""), shown(refusal));
+  }
+  check("help, invalid input and seed refusals leave seed and project state intact",
+    readFileSync(stamp, "utf8") === generation && readdirSync(seedDir).join() === "stamp.json" && readdirSync(seedRoot).length === 0);
+
   if (process.platform !== "win32" && process.getuid?.() !== 0) {
     const path = join(realpathSync(prepared), ".cotal");
     const args = ["up", "--foreground", "--server", `nats://127.0.0.1:${held}`];

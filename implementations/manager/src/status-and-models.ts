@@ -1,6 +1,6 @@
 import { EpEnvelopeError, loadCotalConfig, rejectionText, resolveAuthProvider, spawnEnvAllow } from "@cotal-ai/core";
 import type { Connector, ConnectorModelCatalog, ControlReply, EpCaller } from "@cotal-ai/core";
-import { agentAuthState, agentLifecycleSecretFilePaths, managerMachineId, userAuthStateDir } from "@cotal-ai/workspace";
+import { agentAuthState, agentLifecycleSecretFilePaths, isTrustedProject, managerMachineId, userAuthStateDir } from "@cotal-ai/workspace";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { hostname } from "node:os";
@@ -119,7 +119,7 @@ export class StatusAndModels {
     // that cannot be read fails the read, as it refuses a spawn.
     let envAllow: readonly string[] | undefined;
     try {
-      envAllow = spawnEnvAllow(loadCotalConfig(this.config.workspaceRoot));
+      envAllow = spawnEnvAllow(loadCotalConfig(this.config.workspaceRoot, isTrustedProject));
     } catch (e) {
       return { ok: false, error: rejectionText(e) };
     }

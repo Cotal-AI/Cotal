@@ -356,6 +356,38 @@ export interface ConnectorModelCatalog extends ModelCatalog {
   error?: string;
 }
 
+/** How a person installs the harness a connector runs, from its maker. It is data, cached in the
+ *  extensions manifest beside {@link Connector.requires}, so an app can offer the install before it
+ *  imports the connector. The app builds every command from these fields and from nothing else. */
+export interface HarnessInstall {
+  /** The harness as people know it, such as "Claude Code". */
+  readonly title: string;
+  /** Who makes it, such as "Anthropic". */
+  readonly maker: string;
+  /** The maker's installer for each operating system. A system left out has none. */
+  readonly installers: Readonly<Partial<Record<"darwin" | "linux" | "win32", HarnessInstaller>>>;
+  /** The harness's own sign-in, when it has a command that checks it and one that starts it in the
+   *  browser. Each command starts with an executable from {@link Connector.requires}. */
+  readonly signIn?: { readonly status: readonly string[]; readonly login: readonly string[] };
+}
+
+/** One installer script a harness's maker publishes. It runs for the person's own account, with no
+ *  terminal and no administrator rights. */
+export interface HarnessInstaller {
+  /** The script's https address. macOS and Linux pipe it to {@link shell}; Windows runs it in
+   *  PowerShell. */
+  readonly script: string;
+  /** The shell the maker's instructions pipe the script to on macOS and Linux. */
+  readonly shell?: "sh" | "bash";
+  /** Variables the maker documents for a run without a terminal. */
+  readonly env?: Readonly<Record<string, string>>;
+  /** The folder the installer puts the executables in: `~/` starts the home folder, and on Windows
+   *  `%NAME%\` starts a folder variable. An app adds it to PATH when the installer does not. */
+  readonly binDir: string;
+  /** Executables the installer needs on PATH before it runs, such as `node`. */
+  readonly needs?: readonly string[];
+}
+
 /**
  * A bridge that knows how to launch one agent type (Claude Code, OpenCode, the CLI
  * peer …) as a Cotal mesh node — an {@link Extension} of kind `"connector"`.
@@ -371,6 +403,9 @@ export interface Connector extends Extension {
   /** Connector-owned setup surface. The base CLI resolves this through the extension registry and
    * never carries a harness's asset names or native install commands itself. */
   readonly setup?: ExtensionRef;
+  /** Return a host-specific refusal without taking action or writing anything. A defined `cwd`
+   *  means a supervised Manager launch. `buildLaunch` must refuse the same conditions itself. */
+  launchUnavailable?(opts?: Pick<LaunchOpts, "cwd" | "resume">): string | undefined;
   buildLaunch(opts: LaunchOpts): LaunchSpec;
   /** Optional model catalog hook. The manager calls this for selector UIs and keeps the last answer.
    *  A launch may still name a model the catalog does not list, but a variant or modes it names are
@@ -401,6 +436,9 @@ export interface Connector extends Extension {
    *  and fails with a clear error naming a missing one. Optional — omit for connectors
    *  whose harness runs in-process. */
   readonly requires?: readonly string[];
+  /** How a person installs what {@link requires} names, from its maker. Absent: no app offers to
+   *  install it. */
+  readonly install?: HarnessInstall;
   /** Directory of installable editor-plugin assets shipped with the connector
    *  (e.g. a Claude Code plugin dir), when the agent type needs a one-time
    *  plugin install. Consumers (like `cotal setup`) resolve it via the registry

@@ -28,6 +28,7 @@ import {
   terminalWidth,
   wrapWords,
   writeResult,
+  migrateProjectTrust,
   type OutputWarning,
   type RefusalCode,
   type Report,
@@ -224,6 +225,7 @@ export async function launchManagedPersona(
   // A pin the registry does not list is refused at once; only a registered manager is waited on.
   if (on !== undefined && !t.auth.bearer) await refuseUnregisteredManager(t.space, t.server, t.auth, on);
   if (values.runtime !== undefined) await refuseRuntimeHere(values.runtime.trim(), t, on ?? t.auth.managerInstanceId, live);
+  migrateProjectTrust();
   const { ref, from: personaFrom } = spawnPersona(values.config, positionals, { space: t.space, preferences: cachedPreferences() });
   const managerConfigRef = values.config ?? (personaFrom !== undefined ? ref : undefined);
   const defaultAgent = callerHarness(t.space);
@@ -345,7 +347,7 @@ export async function launchManagedPersona(
     // A committed `failed` terminal is the manager's answer: the launch ran and failed, as an agent
     // that exits at once does, and the manager says why.
     if (reply.code === "failed") {
-      const retry = reply.error?.startsWith("Jcode launch failed (model_prefix_rejected):") ? spawnModelRetry(values, positionals) : undefined;
+      const retry = spawnModelRetry(values, positionals, reply.error);
       throw new CommandFailure("failed", "OPERATION_FAILED", reply.error ? oneLine(reply.error) : "the manager reported that the launch failed", {
         target, native, ...(retry ? { remedy: retry, remedyIsCommand: true } : { remedy: "fix what the manager reported, then run the spawn again" }),
       });

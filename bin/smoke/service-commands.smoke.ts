@@ -237,6 +237,13 @@ try {
     check(`cotal ${args.join(" ")} ${showsNoOpen ? "lists" : "omits"} --no-open`,
       result.status === 0 && noOpenOption.test(result.stdout) === showsNoOpen, out(result));
   }
+  const idleExitOption = /^  --idle-exit <seconds>(?: |$)/m;
+  for (const [name, showsIdleExit] of [[undefined, true], ["manager", true], ["web", false], ["broker", false], ["hello", false]] as const) {
+    const args = ["service", "start", ...(name === undefined ? [] : [name]), "--help"];
+    const result = cotal(args);
+    check(`cotal ${args.join(" ")} ${showsIdleExit ? "lists" : "omits"} --idle-exit`,
+      result.status === 0 && idleExitOption.test(result.stdout) === showsIdleExit, out(result));
+  }
 
   for (const args of [["manager", "install", "--help"], ["help", "manager", "install"]]) {
     const installHelp = cotal(args);
@@ -300,6 +307,30 @@ try {
       && managerUnknownError.message === "Unknown option '--wibble'" && managerUnknownError.remedy === "drop the unknown option", out(managerUnknown));
   const added = cotal(addExec);
   check("service add <name> --exec saves a program of your own in one command", added.status === 0 && JSON.stringify(definitions()) === '["hello"]', out(added));
+  const helloStartHelp = cotal(["service", "start", "hello", "--space", SPACE, "--help"]);
+  const helloIdleRefusal = cotal(["service", "start", "hello", "--space", SPACE, "--idle-exit", "5"]);
+  check("a saved non-manager service omits --idle-exit in start help and in its manager-only refusal help",
+    helloStartHelp.status === 0 && !idleExitOption.test(helloStartHelp.stdout)
+    && helloIdleRefusal.status === 1 && helloIdleRefusal.stdout === ""
+    && helloIdleRefusal.stderr.includes("--idle-exit belongs to the manager; no launch was allocated")
+    && helloIdleRefusal.stderr.endsWith(helloStartHelp.stdout) && !idleExitOption.test(helloIdleRefusal.stderr),
+    { help: out(helloStartHelp), refusal: out(helloIdleRefusal) });
+  for (const flags of [["--exec", "--json"], ["--json", "--exec"]]) {
+    const refusedStatus = cotal(["service", "status", "hello", "--space", SPACE, ...flags]);
+    const { outcome, error } = JSON.parse(refusedStatus.stdout);
+    check(`service status ${flags.join(" ")} tells you to omit --exec rather than give it a value`,
+      refusedStatus.status === 1 && refusedStatus.stderr === "" && outcome === "refused" && error?.code === "USAGE_INVALID"
+        && error.message === "`service status` does not take --exec" && error.remedy === "omit --exec", out(refusedStatus));
+  }
+  const retriedStatus = cotal(["service", "status", "hello", "--space", SPACE, "--json"]);
+  const { result: savedStatus } = JSON.parse(retriedStatus.stdout);
+  check("omitting --exec reads the saved service without starting it",
+    retriedStatus.status === 0 && savedStatus?.recordedState === "not started" && savedStatus.instanceId === null, out(retriedStatus));
+  const missingExec = cotal(["service", "add", "hello", "--space", SPACE, "--exec", "--json"]);
+  const { error: missingExecError } = JSON.parse(missingExec.stdout);
+  check("service add still asks for the value of --exec",
+    missingExec.status === 1 && missingExec.stderr === "" && missingExecError?.code === "USAGE_INVALID"
+      && missingExecError.remedy === "write --exec <command>", out(missingExec));
   const show = cotal(["service", "show", "hello", "--space", SPACE, "--json"]);
   let launch: { type?: string; executable?: string; argumentCount?: number; cwd?: string } = {};
   try { launch = (JSON.parse(show.stdout) as { result: { launch: typeof launch } }).result.launch; } catch { /* the cell reports the output */ }
@@ -495,6 +526,17 @@ try {
   // ---- A preset name reaches the space's one service built on it, for show and remove too -------
   const manager = cotal(["service", "add", "m1", "--preset", "manager", "--space", SPACE]);
   check("service add m1 --preset manager saves m1", manager.status === 0, out(manager));
+  for (const args of [["service", "start", "m1", "--space", SPACE, "--help"], ["help", "--", "service", "start", "m1", "--space", SPACE]]) {
+    const m1Help = cotal(args);
+    check(`cotal ${args.join(" ")} lists --idle-exit for a saved manager definition`,
+      m1Help.status === 0 && idleExitOption.test(m1Help.stdout), out(m1Help));
+  }
+  const m1OtherSpace = cotal(["help", "--", "service", "start", "m1", "--space=missing-manager-help-space"]);
+  const m1BadIdle = cotal(["service", "start", "m1", "--space", SPACE, "--idle-exit", "0"]);
+  check("saved manager start help is scoped to its space and stays on usage refusals",
+    m1OtherSpace.status === 0 && !idleExitOption.test(m1OtherSpace.stdout)
+    && m1BadIdle.status === 1 && idleExitOption.test(m1BadIdle.stderr),
+    { otherSpace: out(m1OtherSpace), refusal: out(m1BadIdle) });
   const shown = cotal(["service", "show", "manager", "--space", SPACE]);
   check("service show manager reads m1 and says so on stderr", shown.status === 0 && shown.stderr.includes("manager in space servicecommands is the saved service m1") && /Name: +m1\n/.test(shown.stdout), out(shown));
   // #7072: a dry run with another option used to save m1 again, so the next real start used the

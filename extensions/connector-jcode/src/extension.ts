@@ -1,12 +1,11 @@
-import { execFile } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { resolve } from "node:path";
 import { userJcodeHome } from "@1jehuang/jcode-sdk";
-import { registry, type Connector, type LaunchOpts, type LaunchSpec, type ModelCatalog, type ModelCatalogOpts, type ModelInfo, type OnceSeat } from "@cotal-ai/core";
+import { registry, type Connector, type LaunchOpts, type LaunchSpec, type OnceSeat } from "@cotal-ai/core";
 import { aclEnv, nameEnv, connectorLaunchOptions, controlEndpoint, eventChannel, launchArmsEvents, launchEnv, materialEnv } from "@cotal-ai/connector-core";
 import { JCODE_READINESS_TIMEOUT_MS } from "./readiness-bound.js";
 import { discardOnceReceipt, retireOnceTree } from "./private-lifecycle.js";
-import { bareModelId } from "./route-identity.js";
+import { listJcodeModels } from "./model-catalog.js";
 import { jcodeForkRecordPath, jcodeSeatHome, ownedJcodeFork, readJcodeForkSource } from "./session-fork.js";
 
 const FROM_BUILD = import.meta.url.includes("/dist/");
@@ -15,74 +14,7 @@ const HOST_ENTRY = fileURLToPath(new URL(`./${FROM_BUILD ? "host.js" : "host-mai
 // after a 30 ms signal-acknowledgement window, interrupting the host's own shutdown.
 const HOST_ARGS = FROM_BUILD ? [HOST_ENTRY] : ["--import", import.meta.resolve("tsx"), HOST_ENTRY];
 
-const MODEL_LIST_ARGS = ["model", "list", "--json", "--no-update"];
-const MODEL_LIST_TIMEOUT_MS = 30_000;
-
-/** What `jcode model list --json` prints: the ids `-m` takes, and each provider route that can carry one. */
-interface JcodeModelList {
-  provider: string;
-  models: string[];
-  routes: { model: string; provider: string; available: boolean }[];
-}
-
-function isJcodeModelList(value: unknown): value is JcodeModelList {
-  const list = value as Partial<JcodeModelList> | null;
-  return typeof list?.provider === "string" &&
-    Array.isArray(list.models) && list.models.every((id) => typeof id === "string" && id.length > 0) &&
-    Array.isArray(list.routes) && list.routes.every((route) =>
-      typeof route?.model === "string" && typeof route.provider === "string" && typeof route.available === "boolean");
-}
-
-/** A model is listed when jcode reports an available route for it, and is attributed to the provider
- *  of those routes: the one jcode selected when it has one, else the only one. jcode reports no
- *  per-model reasoning efforts, so no model carries variants. */
-function catalogModels(stdout: string): ModelInfo[] {
-  let list: unknown;
-  try {
-    list = JSON.parse(stdout);
-  } catch {
-    throw new Error("jcode model list --json did not print JSON");
-  }
-  if (!isJcodeModelList(list)) throw new Error("jcode model list --json printed an unexpected shape");
-  const { provider: selected, models, routes } = list;
-  return models.flatMap((id) => {
-    const providers = new Set(routes.filter((route) => route.model === id && route.available).map((route) => route.provider));
-    if (!providers.size) return [];
-    const provider = providers.has(selected) ? selected : providers.size === 1 ? [...providers][0] : undefined;
-    return [{ id, ...(provider ? { provider } : {}) }];
-  });
-}
-
-/** Ask the jcode a seat would run which models it can use, in the environment a seat's host gets. */
-export function listJcodeModels(opts: ModelCatalogOpts = {}): Promise<ModelCatalog> {
-  const bin = opts.resolvedBinaries?.jcode ?? "jcode";
-  return new Promise((fulfill, reject) => {
-    const child = execFile(
-      bin,
-      MODEL_LIST_ARGS,
-      { encoding: "utf8", env: launchEnv(), timeout: MODEL_LIST_TIMEOUT_MS, killSignal: "SIGKILL", maxBuffer: 16 * 1024 * 1024, windowsHide: true },
-      (error, stdout, stderr) => {
-        if (error) {
-          // jcode prints its error last, after any prompt it left unanswered on the same line.
-          const last = stderr.trim().split("\n").at(-1) ?? "";
-          const timedOut = error.killed && error.code !== "ERR_CHILD_PROCESS_STDIO_MAXBUFFER";
-          const reason = timedOut
-            ? `no answer within ${MODEL_LIST_TIMEOUT_MS / 1000} seconds`
-            : last.slice(Math.max(0, last.indexOf("Error: "))).trim() || error.message;
-          return reject(new Error(`jcode model list failed: ${reason}`));
-        }
-        try {
-          fulfill({ source: "jcode model list --json", models: catalogModels(stdout) });
-        } catch (parseError) {
-          reject(parseError);
-        }
-      },
-    );
-    // Without a login, jcode asks for one on stdin. Ending stdin answers it with a skip, so jcode
-    // exits and names `jcode login` instead of waiting out the timeout.
-    child.stdin?.end();
-  });
-}
+export { listJcodeModels } from "./model-catalog.js";
 
 /**
  * Jcode's stable Harness API is the supported integration seam: the host creates one private
@@ -94,6 +26,15 @@ export const jcodeConnector: Connector = {
   kind: "connector",
   name: "jcode",
   requires: ["jcode"],
+  install: {
+    title: "Jcode",
+    maker: "Jeremy Huang",
+    installers: {
+      darwin: { script: "https://jcode.sh/install", shell: "bash", binDir: "~/.local/bin" },
+      linux: { script: "https://jcode.sh/install", shell: "bash", binDir: "~/.local/bin" },
+      win32: { script: "https://jcode.sh/install.ps1", binDir: "%LOCALAPPDATA%\\jcode\\bin" },
+    },
+  },
   // Jcode may download model material, bring up its MCP bridge, then run a provider-backed
   // cotal_orientation turn before it joins. A generic 30s presence window is therefore not a
   // verdict for this connector; keep the manager's wait bounded but long enough for that required
@@ -202,9 +143,6 @@ export const jcodeConnector: Connector = {
       );
 
     if (opts.validateOnly) return { command: "", args: [] };
-    const model = opts.model?.trim();
-    if (model && !bareModelId(model).ok)
-      throw new Error("Jcode launch failed (model_prefix_rejected): use a bare model ID. Select the provider in Jcode's configuration. No Jcode seat was started.");
     // Creds, broker URL and the control token ride a 0600 file written after every refusal above.
     // Its directory is a launch artifact the launcher removes once the child has exited. The control
     // endpoint is minted here too, after every refusal, because minting makes its socket directory.

@@ -770,10 +770,13 @@ export function managerRefusal(command: string, space: string, args: Record<stri
   const resumeBlocked = command === "run-resume" && err?.code === "failed-precondition" && typeof args?.runId === "string";
   const selection = ` --space ${space}${on ? ` --on ${on}` : ""}${typeof args?.endpoint === "string" ? ` --endpoint ${args.endpoint}` : ""}`;
   const missingRun = err?.message?.endsWith(": no run is recorded under that id") === true;
+  // A retry over the caller's own broker, credentials and output format lists what that caller
+  // can act on, so the not-found inventory keeps what `values` carried.
+  const listSelection = `${(["server", "creds"] as const).map((flag) => retryFlag(flag, values[flag])).join("")}${values.json ? " --json" : ""}`;
   const remedy = busy ? { remedy: `wait until one of them has activated, then run ${command === "run-resume" ? "the resume" : "the start"} again; \`cotal run\` lists a run once it has` }
     : resumeBlocked ? { remedy: `read the run's recorded state with \`cotal run show ${args.runId}${selection}\`` }
     : err?.code === "not-found" && command === "run-status" ? { remedy: journalIdRemedy("show", { ...values, space }) }
-    : err?.code !== "not-found" ? {} : { remedy: command === "run-answer" && typeof args?.runId === "string" && !missingRun ? `read the run's ${args.amend === true ? "answers" : "open requests"} with \`cotal run show ${args.runId}${selection}\`` : `list the recorded runs with \`cotal run${selection}\`` };
+    : err?.code !== "not-found" ? {} : { remedy: command === "run-answer" && typeof args?.runId === "string" && !missingRun ? `read the run's ${args.amend === true ? "answers" : "open requests"} with \`cotal run show ${args.runId}${selection}\`` : `list the recorded runs with \`cotal run${selection}${listSelection}\`` };
   if (code) {
     const problems = err?.details?.filter((d) => d.kind === LANG_PROBLEM_DETAIL_KIND);
     if (problems?.length) return new CommandFailure("refused", "SCHEMA_INVALID", message, {
@@ -1259,8 +1262,8 @@ export function workflowArguments(args: ParsedArgs): { values: RunValues; verb: 
     if (!first || !second) usage(`run ${verb} requires a run id and step key`);
   } else if (verb === "revoke" && first === undefined) {
     usage("run revoke takes one identifier", "add a run ID after `run revoke` in the original command. A revoke requires `--local --by <actor> --reason <text>`");
-  } else if (verb === "resume" && !first && values.local === true) {
-    usage("run resume takes one identifier", `${runInventory(values, "local")}. Then add a run ID after \`run resume\` in the original command`);
+  } else if (verb === "resume" && !first) {
+    usage("run resume takes one identifier", `${runInventory(values, values.local ? "local" : "hosted")}. Then add a run ID after \`run resume\` in the original command`);
   } else if (!first || second !== undefined) usage(`run ${raw} takes one identifier`, verb === "yield" ? "`cotal run turns` lists your turns. Run `cotal run yield <turn-id> --status <done|blocked|handoff>`. For a handoff, add `--to <agent>`." : `\`cotal run\` lists the runs; run \`cotal run ${raw} <run-id>\``);
   const scopes: Record<string, readonly string[]> = {
     timeout: ["start", "resume"], by: ["answer", "amend", "revoke"], reason: ["revoke"], value: ["answer", "amend"], artifact: ["answer", "amend"],

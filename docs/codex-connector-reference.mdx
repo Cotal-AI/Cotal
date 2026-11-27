@@ -87,8 +87,9 @@ pipe, which is what lets Codex's own TUI attach to the very thread the mesh is d
   of **whichever process builds the launch**, so set it in the right place:
   - foreground `cotal spawn`: your own shell, per spawn;
   - detached (`-d`): the **manager's** environment, because the manager builds the launch. Set it
-    where you start the manager (`COTAL_CODEX_TUI=0 cotal up`) and it applies to every codex agent
-    that manager supervises. Exporting it in the shell that runs `cotal spawn -d` does nothing.
+    when you start the stack (`COTAL_CODEX_TUI=0 cotal up --detach`). It applies to new Codex seats
+    that manager launches. Changing the value requires restarting the manager. Setting it in the
+    shell that runs `cotal spawn -d` does not affect the launch.
 
   A detached agent gets the manager's pty, which *is* a terminal, so the default there is the TUI,
   which is what `cotal attach` streams.

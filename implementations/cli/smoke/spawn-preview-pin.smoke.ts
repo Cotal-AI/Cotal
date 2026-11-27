@@ -79,11 +79,18 @@ try {
   check.match(bad.envelope.error?.message ?? "", /A manager's name or host is taken only on a user-auth mesh/);
   const roster = `\`cotal ps --space samplemesh --server ${server}\``;
   check.ok(bad.envelope.error?.remedy?.includes(`${roster} prints each manager's instance id`));
+  const ps = ["ps", "--space", "samplemesh", "--server", server];
+  const jsonRoster = `\`cotal ps --json --space samplemesh --server ${server}\``;
   for (const pin of ["", "local.sample", "not-a-pin"]) {
-    const read = preview(["ps", "--space", "samplemesh", "--server", server, "--on", pin, "--json"]);
+    const read = preview([...ps, "--on", pin, "--json"]);
     check.equal(read.status, 1);
-    check.ok(read.envelope.error?.message?.includes(roster));
+    const message = read.envelope.error?.message;
+    check.ok(message?.includes(jsonRoster), message);
   }
+  const textRead = cli([...ps, "--on", ""]);
+  check.equal(textRead.status, 1, textRead.stderr);
+  check.ok(["cotal", "pnpm cotal"].some((launcher) =>
+    textRead.stderr.includes(`\`${launcher} ps --space samplemesh --server ${server}\``)), textRead.stderr);
 
   const empty = preview([...base, "--on", ""]);
   check.equal(empty.status, 1, JSON.stringify(empty.envelope));
