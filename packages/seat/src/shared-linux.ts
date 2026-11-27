@@ -66,7 +66,11 @@ async function observeUnit(scope: string, tag: string, lineage?: string): Promis
   if (values.get("LoadState") === "not-found" && !sharedUnitPopulated(scope)) return undefined;
   const match = /^Cotal shared PTY ([a-f0-9]{64}) (p-[a-f0-9]{64}) (\d+) (\d+) ([a-f0-9-]{36})$/.exec(values.get("Description") ?? "");
   const cgroup = values.get("ControlGroup"), pid = Number(match?.[3]);
-  if (!match || match[1] !== tag || (lineage !== undefined && match[2] !== basename(lineage))) return undefined;
+  if (!match) {
+    if (sharedUnitPopulated(scope)) throw new Error("shared PTY unit identity is unknown");
+    return undefined;
+  }
+  if (match[1] !== tag || (lineage !== undefined && match[2] !== basename(lineage))) return undefined;
   if (values.get("Transient") !== "yes" || (cgroup && cgroup !== sharedUnitCgroup(scope)) || !Number.isSafeInteger(pid) || pid <= 1)
     throw new Error("shared PTY unit identity is unknown");
   return { pid, start: match[4]!, bootId: match[5]! };

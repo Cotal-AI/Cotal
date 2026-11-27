@@ -2,7 +2,7 @@ import { spawnSync } from "node:child_process";
 import { lstatSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { createHash } from "node:crypto";
-import { drainLinuxSharedPty, launchManagedSharedSeat, linuxSharedCustodyAvailable, sharedPtyInstallation, sharedPtyLineage } from "@cotal-ai/seat";
+import { drainLinuxSharedPty, launchManagedSharedSeat, linuxSharedCustodyAvailable, sharedPtyInstallation, sharedPtyLineage, SharedLaunchHeld } from "@cotal-ai/seat";
 import type { AgentHandle, LaunchSpec, Runtime } from "@cotal-ai/core";
 import { executionIdentity } from "@cotal-ai/workspace";
 import { LegacyPtyRuntime } from "./pty.js";
@@ -69,7 +69,7 @@ export async function drainHostedPtyOnStop(runtime: Runtime | undefined, launch:
   await runtime.drainSharedHosts();
   if (held) {
     launch.clearSharedLaunchHolds();
-    console.error("A PTY launch could not be confirmed. Its name was held until the host stopped.");
+    await new Promise<void>(resolve => process.stderr.write(`${SharedLaunchHeld.stoppedNotice}\n`, () => resolve()));
   }
 }
 

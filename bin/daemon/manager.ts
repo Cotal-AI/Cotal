@@ -24,7 +24,7 @@ import { readManagerCleanup, writeManagerCleanup, validateManagerCleanupAuthorit
 import { processBirth } from "./lifetime.js";
 import { probeLiveness } from "@cotal-ai/workspace/liveness";
 import { hostedManagerChildren } from "./manager-children.js";
-import { awaitLinuxSharedPtyPredecessor, drainLinuxSharedPty } from "@cotal-ai/seat";
+import { awaitLinuxSharedPtyPredecessor, drainLinuxSharedPty, SharedLaunchHeld } from "@cotal-ai/seat";
 
 export const daemonManagerRoot = (space: string, home: string) => join(home, "daemon", spaceSegment(space), "manager");
 export const daemonManagerIntentFile = (space: string, home: string) => join(home, "daemon", spaceSegment(space), "manager-host.json");
@@ -68,6 +68,7 @@ export interface Live {
   healthTask?: Promise<void>;
   stopping: boolean;
   stopTask?: Promise<void>;
+  launchHoldDrained?: boolean;
   failures: number;
   healthFailures?: number;
 }
@@ -511,6 +512,7 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
       cwd: root, env: { ...env, COTAL_SKIP_CONNECTOR_SEED: "1" }, windowsHide: true, stdio: ["ignore", "pipe", "pipe", "ipc"],
     });
     l.child = child;
+    l.launchHoldDrained = false;
     l.view = { ...l.view, pid: child.pid };
     let instanceId: string | undefined;
     let ready = false;
@@ -542,8 +544,12 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
     let ended = false;
     l.exited = new Promise<void>((resolve) => {
       child.once("error", (error) => { closeProbeSession(l); nativeReason = safeDiagnostic(error.message).slice(0, 1500); ended = true; resolve(); });
-      child.once("exit", (code, signal) => {
+      child.once("exit", async (code, signal) => {
         closeProbeSession(l);
+        if (l.stopping && child.stderr && !child.stderr.readableEnded) {
+          // Drain the exact child's stop diagnostic without waiting indefinitely on inherited pipes.
+          await Promise.race([new Promise<void>((done) => child.stderr!.once("end", done)), pause(250)]);
+        }
         stdoutLine("", true);
         stderrLine("", true);
         child.stdout?.destroy();
@@ -567,6 +573,7 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
     const stdoutLine = lines(logged);
     const stderrLine = lines((line) => {
       logged(line);
+      if (l.stopping && l.child === child && line.trim() === SharedLaunchHeld.stoppedNotice) l.launchHoldDrained = true;
       stderr = (stderr + line).slice(-8192);
       if (!authorityTerminal && /✗|remote supervision.*refused|the manager did not start/.test(line)) nativeReason = line.slice(0, 1500);
     });
@@ -898,6 +905,7 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
       held.agents = undefined;
       rmSync(refusalFile(space), { force: true });
       notify();
+      if (l?.launchHoldDrained) { l.launchHoldDrained = false; return SharedLaunchHeld.stoppedNotice; }
     },
     async resume() {
       const recordRefusal = (space: string, error: unknown) => {

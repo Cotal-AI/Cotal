@@ -23,6 +23,7 @@ const channels = new Map<string, { host: SharedHostRecord; controller: SharedCon
 const opening = new Map<string, Promise<SharedHostRecord | undefined>>();
 
 export class SharedLaunchHeld extends Error {
+  static readonly stoppedNotice = "A PTY launch could not be confirmed. Its name was held until the host stopped.";
   constructor(readonly releaseHolder?: () => void) { super("A PTY launch could not be confirmed. Its name remains held."); }
 }
 
