@@ -77,7 +77,7 @@ import { registryFailure } from "./lib/registry-errors.js";
 import { FlagValueRefusal } from "./lib/flag-value-refusal.js";
 import { workingFolderRemoved } from "./lib/paths.js";
 import { npmProjectDirectory, preserveUpdatePath } from "./lib/npm-invocation.js";
-import { reportLostOutput, writeAllSync } from "./lib/stdout-owner.js";
+import { reportLostOutput, writeWholeSync } from "./lib/stdout-owner.js";
 import { shellWord } from "./lib/endpoint-errors.js";
 import { displayProjectTrustFailure, displayRemedy, hasMovedStackRemedy } from "./lib/self-exec.js";
 import { asksForHelp, GLOBAL_FLAG_WORDS, leadingInvocation, OUTPUT_FLAG_WORDS, TYPOGRAPHIC_OPTION } from "./lib/leading-flags.js";
@@ -268,7 +268,7 @@ function failureExit(cmd: Command, failure: CommandFailure, json: boolean, plain
       }, failure)
       : cmd.name === "watch" && validationArgs && !plain ? watchSetupFailureRecords(validationArgs, failure) : undefined;
     const lines = records ? records.map((record) => `${JSON.stringify(record)}\n`).join("") : envelopeLine(failureEnvelope(command, failure, warnings, scope));
-    writeAllSync(1, Buffer.from(lines));
+    writeWholeSync(1, Buffer.from(lines));
   } catch (error) {
     const writeError = error as NodeJS.ErrnoException;
     if (writeError.code !== "EPIPE") {
