@@ -1,7 +1,8 @@
 /**
  * The `artifacts` endpoint's wire contract (artifact plane 5.1; endpoint name a draft). The delivery
- * daemon serves it. Every command is untargeted and ephemeral and rides its own capability, and every
- * caller gets the request rows in its baseline: the commands authorize per call against the caller's
+ * daemon serves it. Every command is untargeted and ephemeral. An agent may send a request only when it
+ * was minted with the `artifacts` capability token (`ARTIFACTS_CAPABILITY` in endpoint-grants.ts); no
+ * baseline credential carries these rows. The commands still authorize each call against the caller's
  * live read rule and possession, never against the grant alone.
  *
  * This revision serves `list`: the attachments of one concrete channel the caller may read, paged by
@@ -100,7 +101,7 @@ export const ARTIFACTS_CONTRACTS = TABLE.contracts;
 /** Every contract artifact the endpoint publishes to the contract store at registration. */
 export const artifactsContractArtifactValues = TABLE.artifactValues;
 
-/** The command names this revision serves, for the baseline caller rows. */
+/** The command names this revision serves: the rows the `artifacts` capability token grants. */
 export const ARTIFACTS_COMMANDS: readonly string[] = Object.freeze(ROWS.map((row) => row.name));
 
 /** The cluster document for the served commands. Revision 1: `list`. */
