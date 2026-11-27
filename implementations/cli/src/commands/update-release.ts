@@ -3,15 +3,34 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { isIP, SocketAddress } from "node:net";
 import { join } from "node:path";
-import { oneLine, processStartToken, recordUpdateDeferral } from "@cotal-ai/workspace";
+import { oneLine, processStartToken, recordUpdateDeferral, type OutputWarning } from "@cotal-ai/workspace";
 import { displayRemedy } from "../lib/self-exec.js";
 import { c } from "../ui.js";
 import { type CommandResult, RegistryUnavailable, StagingTimeout, parseNpmVersion, failure, message } from "./update-process.js";
 import type { UpdateRuntime } from "./update.js";
 
 export const MISSING_NPM_REMEDY = "Install npm or add it to this command's PATH, then retry.";
+export const OFFLINE_CHECK_REMEDY = "Disable npm offline mode for this invocation and repeat update --check if you want a live registry check.";
+export const REGISTRY_CHECK_REMEDY = "Check registry access and repeat update --check.";
 
 type LatestVersionFailure = { ok: false; error: string; missingNpm?: true; offline?: true; npmResult?: CommandResult };
+
+export function latestVersionCheckWarning(latest: LatestVersionFailure): OutputWarning {
+  if (latest.missingNpm) return { code: "NPM_UNAVAILABLE", target: null, message: "npm is not on PATH. Update availability is unknown." };
+  if (latest.offline) return { code: "LATEST_VERSION_UNAVAILABLE", target: null, message: "npm is in offline mode. Update availability is unknown." };
+  return { code: "LATEST_VERSION_UNAVAILABLE", target: null, message: "The registry did not return a valid latest version. Update availability is unknown." };
+}
+
+export function latestVersionCheckRemedy(latest: { ok: true; version: string } | LatestVersionFailure, inventoryReadable: boolean): string {
+  if (!latest.ok && latest.missingNpm) return MISSING_NPM_REMEDY;
+  if (!latest.ok && latest.offline) {
+    return inventoryReadable
+      ? OFFLINE_CHECK_REMEDY
+      : "Disable npm offline mode for this invocation, check the unreadable inventory, and repeat update --check.";
+  }
+  if (inventoryReadable) return REGISTRY_CHECK_REMEDY;
+  return latest.ok ? "Check the unreadable inventory and repeat update --check." : "Check registry access or the unreadable inventory and repeat update --check.";
+}
 
 /** The registry's latest tag, read through a throwaway npm cache with npm's log files and update
  *  notifier off, so the read leaves nothing in npm's own cache, log directory or notifier stamp. */
