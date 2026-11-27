@@ -140,6 +140,22 @@ async function checkEnabledPluginRecovery() {
     check("an epoch change replays the new stream without comparing its sequence to the previous frontier",
       nextFrontier === 1 && oldFrontier > nextFrontier && replayed.filter(({ id, historical }) => id === onNewRail.id && historical).length === 1,
       { oldFrontier, nextFrontier, replayed });
+    hold = new Promise<void>((resolve) => { releaseBind = resolve; });
+    atBind = false;
+    const sameEpochRebind = replacement.reconnect();
+    let missedInNewEpoch: CotalMessage;
+    try {
+      if (!(await waitFor(() => atBind))) throw new Error("second epoch bind did not reach the subscription gate");
+      missedInNewEpoch = await writer.multicast("missed after the epoch reset", { channel });
+    } finally {
+      hold = undefined;
+      releaseBind();
+      await sameEpochRebind;
+    }
+    check("same-epoch recovery resumes from the reset frontier without re-emitting join replay",
+      replayed.filter(({ id }) => id === onNewRail.id).length === 1 &&
+      replayed.filter(({ id, historical, durable }) => id === missedInNewEpoch.id && !historical && !durable).length === 1,
+      replayed);
   } finally {
     await fixture.close();
   }
