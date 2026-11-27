@@ -1,0 +1,2 @@
+# A spawn-scoped view makes a launch folder with make-dir or clone, against a real HTTPS git server.
+smoke:manager-project-folders

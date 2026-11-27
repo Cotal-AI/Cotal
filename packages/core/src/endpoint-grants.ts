@@ -435,6 +435,10 @@ export function operatorInstrumentCapabilities(tier: "privileged" | "admin", cal
     { endpoint: BASELINE_LIFECYCLE_ENDPOINT, command: "resolve-cwd" },
     { endpoint: BASELINE_LIFECYCLE_ENDPOINT, command: "list-dir" },
     { endpoint: BASELINE_LIFECYCLE_ENDPOINT, command: "harness-commands" },
+    // The folder a launch starts in, made on the same pinned manager that will spawn there. Like the
+    // reads above, the standing agent `spawn` set does not carry them.
+    { endpoint: BASELINE_LIFECYCLE_ENDPOINT, command: "make-dir" },
+    { endpoint: BASELINE_LIFECYCLE_ENDPOINT, command: "clone" },
     { endpoint: BASELINE_LIFECYCLE_ENDPOINT, command: "define-persona" },
     { endpoint: BASELINE_LIFECYCLE_ENDPOINT, command: "remove-persona" },
     ...CHAT_SESSION_SNAP.map((command) => ({ endpoint: BASELINE_LIFECYCLE_ENDPOINT, command })),

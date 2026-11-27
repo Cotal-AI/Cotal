@@ -1115,7 +1115,7 @@ credential diverge (§2): the principal keys subjects/durables/presence; the con
 
 | Profile | Application publish | Read surface | Notes |
 | --- | --- | --- | --- |
-| `agent` | own `chat.<owner>.<actor>.<ch>` for each `allowPublish` channel (post ACL, default-deny), `inst.*.*.<owner>.<actor>`, `svc.*.<owner>.<actor>`; endpoint request forms per minted capability (`ep.one`/`ep.all`/`ep.inst` with the capability's authz-mode/target pattern, caller triple `<owner>.<actor>.<uid>` pinned; `describe` by default; `epj` submissions for journaled capabilities; §13.9); own presence key | own `_INBOX_<connId>.>` + own endpoint reply rail (`ep.reply.*.*.*.<owner>.<actor>.<uid>.*`, exact arity); channel live tail via native `sub.allow` subscriptions to `chat.*.*.<channel>` per `allowSubscribe` (wildcards preserved); `STREAM.INFO` (stream-level state only, no body read) on `CHAT` and the world-readable KVs, plus `TASK` when the credential carries a `role`; presence and channel-registry KV watches, including create/info of their client-managed ordered consumers on those two streams only, and no `CONSUMER.DELETE` on either; CHAT history via single-filter `chathist_<owner>-<actor>-<uid>` creates, one per `allowSubscribe` channel (ACL-bounded); a credential minted from an interactive ledger row also subscribes `chat.<owner>.*.events.<owner>.*` and holds one `chathist_` create with that filter (§13.21); own lifecycle-scoped `dm_…`/`svc_…` bind-only; durable backstop via own bind-only lifecycle-scoped `dlv_…` DELIVER consumer, **no** grant on the mixed pre-auth fan-out stream; granted record-key/event-topic read subtrees per capability | read bounded by `allowSubscribe`; no watch-consumer delete: the broker removes a watch's ordered consumer at its inactive threshold, and a client treats a refused delete of its own watch consumer as that outcome (Appendix B); durable copies re-authorized (current ACL + membership + lifecycle) by the trusted reader before the `dlv` handoff; no Direct Get; DM/TASK/DLV create denied. The `manager-caller` view narrows this endpoint control set to `ep.inst.manager.<managerInstanceId>.<command>` only, plus the exact instance `describe`, contract reads, own reply/progress rows, and own inbox. It carries no agent messaging, delivery, class, or scatter rows. When the actor holds `spawn`, the view also carries `status`, `models`, `resolve-cwd`, `list-dir`, `harness-commands` and `ps` on that instance. The first five are the reads a launch there needs. `ps` lists the caller's own agents, because the manager bounds it to the caller's owner unless the caller holds `admin`. When the actor holds `admin`, the view also carries the operator instrument set on that instance, which includes these reads and `slots`. No other scope adds any of them, and no view gains `slots` from `spawn`. A view minted from an interactive ledger row carries `inspect` and `ps` on that instance whatever its scope, and owner-mode `despawn`, `attach`, `input` and `interrupt`, the target owner pinned to the caller's own (§13.21). |
+| `agent` | own `chat.<owner>.<actor>.<ch>` for each `allowPublish` channel (post ACL, default-deny), `inst.*.*.<owner>.<actor>`, `svc.*.<owner>.<actor>`; endpoint request forms per minted capability (`ep.one`/`ep.all`/`ep.inst` with the capability's authz-mode/target pattern, caller triple `<owner>.<actor>.<uid>` pinned; `describe` by default; `epj` submissions for journaled capabilities; §13.9); own presence key | own `_INBOX_<connId>.>` + own endpoint reply rail (`ep.reply.*.*.*.<owner>.<actor>.<uid>.*`, exact arity); channel live tail via native `sub.allow` subscriptions to `chat.*.*.<channel>` per `allowSubscribe` (wildcards preserved); `STREAM.INFO` (stream-level state only, no body read) on `CHAT` and the world-readable KVs, plus `TASK` when the credential carries a `role`; presence and channel-registry KV watches, including create/info of their client-managed ordered consumers on those two streams only, and no `CONSUMER.DELETE` on either; CHAT history via single-filter `chathist_<owner>-<actor>-<uid>` creates, one per `allowSubscribe` channel (ACL-bounded); a credential minted from an interactive ledger row also subscribes `chat.<owner>.*.events.<owner>.*` and holds one `chathist_` create with that filter (§13.21); own lifecycle-scoped `dm_…`/`svc_…` bind-only; durable backstop via own bind-only lifecycle-scoped `dlv_…` DELIVER consumer, **no** grant on the mixed pre-auth fan-out stream; granted record-key/event-topic read subtrees per capability | read bounded by `allowSubscribe`; no watch-consumer delete: the broker removes a watch's ordered consumer at its inactive threshold, and a client treats a refused delete of its own watch consumer as that outcome (Appendix B); durable copies re-authorized (current ACL + membership + lifecycle) by the trusted reader before the `dlv` handoff; no Direct Get; DM/TASK/DLV create denied. The `manager-caller` view narrows this endpoint control set to `ep.inst.manager.<managerInstanceId>.<command>` only, plus the exact instance `describe`, contract reads, own reply/progress rows, and own inbox. It carries no agent messaging, delivery, class, or scatter rows. When the actor holds `spawn`, the view also carries `status`, `models`, `resolve-cwd`, `list-dir`, `harness-commands`, `make-dir`, `clone` and `ps` on that instance. The first five are the reads a launch there needs, and `make-dir` and `clone` make the folder it starts in. `ps` lists the caller's own agents, because the manager bounds it to the caller's owner unless the caller holds `admin`. When the actor holds `admin`, the view also carries the operator instrument set on that instance, which includes these reads and `slots`. No other scope adds any of them, and no view gains `slots` from `spawn`. A view minted from an interactive ledger row carries `inspect` and `ps` on that instance whatever its scope, and owner-mode `despawn`, `attach`, `input` and `interrupt`, the target owner pinned to the caller's own (§13.21). |
 | `observer` | none | chat, CHAT history, presence, channel registry | DMs invisible |
 | `admin` | none | whole space live tap plus DM history | plaintext god-view, opt-in |
 | `transfer-writer` | one carried transcript's chunk and meta subjects in one manager instance's transfer bucket (§8) | a last-message Direct Get on those two subjects | one-shot per CLI call, minted after the transcript is hashed; no consumer and no other object |
@@ -1165,7 +1165,48 @@ path. Broken and non-directory symlinks MUST be omitted. Roots MUST list existin
 Windows (a root whose inspection fails MUST be omitted), `/` and `/Volumes` on macOS, and `/` on other hosts. Invalid or inaccessible directories
 MUST refuse with `failed-precondition`. Delegated execution MUST refuse before any filesystem
 lookup with the same execution-mode refusal as `resolve-cwd`; NONE MUST refuse with `unimplemented`.
-The Manager cluster revision is 57. The closed `spawn` input accepts optional boolean
+
+The `make-dir` and `clone` commands are untargeted ephemeral `manager.spawn` commands that make
+the folder a launch starts in. They MUST be minted where `list-dir` is, and MUST NOT be added to
+standing agent spawn or workflow placement grants. Each takes `parent`, an absolute directory on
+the Manager's host, which it resolves as `resolve-cwd` does. A relative or missing parent,
+delegated execution and NONE refuse as for `list-dir`. A `name` MUST be one folder name: not
+empty, `.` or `..`, and without `/` or `\`. Any other name MUST be refused with `bad-request`
+before any effect.
+
+`make-dir` takes the closed input `{parent: string, name: string}` and creates the empty folder
+`name` in the parent. Its closed output is `{path: string}`, the folder's canonical path. A name
+that exists MUST be refused with `already-exists` and `not-executed`, and the existing folder
+MUST NOT be changed.
+
+`clone` takes the closed input `{url: string, parent: string, name?: string, ref?: string}` and
+clones the repository at `url` into `name` in the parent with the git on the Manager's host. Its
+closed output is `{path: string, head: string | null, ref: string | null, existing: boolean}`: the
+canonical path, the checked-out commit (null before a repository's first commit), the checked-out
+branch (null when detached, as a tag is), and whether an existing clone answered. The `url` MUST
+be `https://`, `ssh://` or git's `user@host:path`. Any other URL, one whose user or host starts
+with `-`, and one carrying a password MUST be refused with `bad-request` and `not-executed` before
+git runs. An absent `name` is the URL's last path segment without `.git`. `ref` names the branch
+or tag to check out in place of the remote's default branch.
+
+Git MUST run as the Manager's host user, with that user's credentials and configuration, with no
+terminal and every prompt off, and MUST be limited to the `https` and `ssh` transports, including
+for a URL the host's configuration rewrites. A request carries no credential. A repository those
+credentials cannot read is refused with `failed-precondition` and the detail kind
+`ai.cotal.manager.git-access-refused`. Any other git failure is `failed-precondition` with git's
+message. A clone still running at the caller's deadline, less time to reply, is stopped and refused
+with `deadline-exceeded`. A failed or stopped clone MUST leave nothing under `name`: git writes into
+a hidden staging folder in the parent, which takes the name only once the clone is complete and is
+otherwise removed. A Manager that stops during a clone can leave that staging folder, whose name
+starts with `.cotal-clone-`.
+
+When `name` exists, `clone` answers it with `existing: true` only when it is the top level of a git
+repository whose `origin` is the same string as `url` and, when `ref` is given, whose checked-out
+commit is the commit `ref` names there. It reads that folder and never changes it. Any other
+existing folder MUST be refused with `already-exists` and `not-executed`. A retried or concurrent
+clone of one URL into one name therefore answers the same folder.
+
+The Manager cluster revision is 59. The closed `spawn` input accepts optional boolean
 `eventPayloads`; revision 48 rejects this field. Revision 50 required `permissionRequests` on every
 `status.connectors` row. Revision 51 removes that field, and its closed status schema rejects a row
 that carries it. Revision 52 requires `prompts` on every `status.connectors` row (§13.7), and the
@@ -1202,6 +1243,7 @@ spawn that sets such a mode off, `false` or the choice's `default`, launches. It
 host. It checks against the last catalog it
 read and reads one only when it holds none for the harness files it would launch. A resumed seat
 replays its recorded modes, and a connector that no longer renders them refuses the resume.
+Revision 59 adds the `make-dir` and `clone` commands.
 
 On such a runtime, a caller-supplied persona `config` override MUST be refused before resolving,
 checking or reading its host path. Every path shape MUST receive `failed-precondition` and the
@@ -8446,6 +8488,7 @@ Normative revisions of this document, newest first. Dated snapshots per §11; th
 
 | Date | Revision |
 | --- | --- |
+| 2026-11-27 | **A launcher makes the folder a project starts in (§9), additive.** The Manager cluster advances to revision 59 with `make-dir` and `clone`, untargeted `manager.spawn` commands granted where `list-dir` is. `make-dir` creates an empty folder under a parent directory on the Manager's host and refuses a name that exists. `clone` clones an `https://`, `ssh://` or `user@host:path` URL there with the host user's own git credentials, at an optional branch or tag, and answers `{ path, head, ref, existing }`. A request carries no credential, git never prompts and is limited to https and ssh, a failed or late clone leaves nothing, and an existing clone of the same URL answers with `existing: true`. Earlier commands, schemas and digests are unchanged. No subject changes. |
 | 2026-11-26 | **Targeted session evictions run outside the in-order admin chain (Appendix B).** A slow eviction can hold one slot without holding the other targeted requests. A delivery daemon runs at most four `evictSessionConnections` requests at once, alongside other admin commands. The verb's request and reply are unchanged. |
 | 2026-11-25 | **A spawn runs only the variant and modes its model catalog lists (§13.6), breaking.** The Manager cluster advances to revision 58. A variant the catalog does not list was launched and then run at another effort by the harness; it is now refused. `spawn` takes `modes`, a map of mode ids to a toggle's boolean or a choice's option id. A `models` row MAY carry `isDefault`, `defaultVariant` and `modes`. Before anything is minted, the Manager refuses a variant or mode the connector's catalog does not list for the launched model, or for the default row when none is named, and refuses `modes` for a connector that does not render them or a runtime that starts seats elsewhere. A seat's modes are recorded with its launch and replayed on resume. A launch that names no variant and no mode is unchanged. |
 | 2026-11-25 | **The owner labels an agent (§6, §13.21, §13.22, Appendix B), additive.** The `agent` cluster advances to revision 7 with `set-label`, capability `agent.profile.write`, `authorities: ["owner"]`, input `{ label }` of any string and output `{ label }`. It sets `meta["ai.cotal.label"]`, which readers show in place of the name, and leaves `card.name`, so `@mentions`, direct messages and name lookups still resolve it. It refuses as `bad-request`, `not-executed`, a label that breaks the rule a label from the first message meets: the shared name rule, at most 40 code points, and single spaces between words. It runs in turn with `set-name`, and a `set-label` before naming settles ends naming with the owner's label. An interactive ledger row's mint and a static `agent-caller` mint add the `owner` row for `set-label`; no `grant` row admits it. Earlier commands and their digests are unchanged. No subject changes. |
