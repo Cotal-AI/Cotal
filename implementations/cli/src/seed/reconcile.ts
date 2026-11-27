@@ -28,7 +28,7 @@ import {
   type InstalledExtensionPackage,
 } from "@cotal-ai/workspace";
 import { c } from "../ui.js";
-import { selfArgv, verifiedCotalExecutables } from "../lib/self-exec.js";
+import { displayCmd, selfArgv, verifiedCotalExecutables } from "../lib/self-exec.js";
 import { claimExtensionMutation } from "../lib/ext-mutation.js";
 import { recoverExtensionPromotion } from "../lib/extension-stage.js";
 import { exitInterrupted, handOverStartupNotice, INTERRUPT_SIGNALS, type InterruptSignal } from "../lib/interrupt-notice.js";
@@ -215,6 +215,10 @@ async function reconcileUnderClosure(mode: Mode, automatic: boolean, resumeFirst
     // interrupted. A LIVE lock holder ⇒ it is in flight: fall through and WAIT on the lock, then
     // re-check the fast path (it will have stamped). No live holder ⇒ it crashed → fail loud.
     if (cursor || recoveryPending()) {
+      if (automatic && extensionsInventoryMissing()) {
+        console.error(`the extensions inventory is missing. Run \`${displayCmd()} update\` to register built-in packages still on disk.`);
+        return NOOP;
+      }
       if (!reconcileLockActive()) {
         const child = seedChildStatus();
         if (child.kind === "live")
@@ -238,6 +242,9 @@ async function reconcileUnderClosure(mode: Mode, automatic: boolean, resumeFirst
         }
         if (!resumeFirstSeed || !interruptedFirstSeed(cursor, generation)) throw seedRepairRefusal(cursor, generation);
       }
+    } else if (automatic && extensionsInventoryMissing()) {
+      console.error(`the extensions inventory is missing. Run \`${displayCmd()} update\` to register built-in packages still on disk.`);
+      return NOOP;
     } else if (readWitness() && authorityIntact() && builtinsAccounted() && builtinsMetadataCurrent() && !extensionsInventoryMissing() && officialExtensionsCurrent(generation) && readStamp()?.generation === generation && !reconcileLockActive()) {
       // Steady state AND no reconcile in flight. The lock check is LAST (immediately before NOOP) so
       // it is the linearization point: a `--force` that link-publishes the lock during the slower
@@ -376,6 +383,16 @@ function builtinsAccounted(): boolean {
   }
 }
 
+/** Operator packages still installed after a missing inventory is rebuilt. Their registration was in that
+ *  inventory, so their files stay on disk and are named rather than registered from the package alone. */
+function unregisteredOperatorPackages(builtIns: ReadonlySet<string>): string[] {
+  const root = join(extensionsDir(), "node_modules", "@cotal-ai");
+  let names: string[] = [];
+  try { names = readdirSync(root); } catch { return []; }
+  return names.filter((name) => !builtIns.has(`@cotal-ai/${name}`) && lstatSync(join(root, name), { throwIfNoEntry: false })?.isDirectory() === true)
+    .map((name) => `@cotal-ai/${name}`).sort();
+}
+
 /** A witnessed prefix whose inventory file is gone while npm still has packages installed. A prefix
  *  that was never seeded, or an empty prefix, is not this state: there is no inventory to restore. */
 function extensionsInventoryMissing(): boolean {
@@ -470,14 +487,17 @@ async function runUnderLocks(mode: Mode, generation: string, nonce: string, refr
   let repairAllSeeded = false;
   if (mode === "repair" || mode === "reset") {
     ({ manifestRebuilt, repairAllSeeded } = prepareMaintenanceState(mode));
-  } else if ((mode === "verify" || mode === "auto") && extensionsInventoryMissing()) {
+  } else if (mode === "verify" && extensionsInventoryMissing()) {
+    writeRecovery({ rebuildFromDisk: true });
     manifestRebuilt = true;
   }
 
   // Health preamble — BEFORE the stamp fast path. A cursor OR a recovery obligation means a prior
   // seed/repair was interrupted. In maintenance mode they are kept and cleared only at the final commit.
   const cursor = readCursor();
-  if (cursor) {
+  if (cursor && mode === "verify" && extensionsInventoryMissing()) {
+    clearCursor();
+  } else if (cursor) {
     if (mode === "auto" && cursor.failed) throw failedSeed(cursor);
     if (mode === "auto")
       throw new Error(
@@ -499,7 +519,6 @@ async function runUnderLocks(mode: Mode, generation: string, nonce: string, refr
     !cursor &&
     !recoveryPending() &&
     readWitness() &&
-    !extensionsInventoryMissing() &&
     builtinsMetadataCurrent() &&
     officialExtensionsCurrent(generation) &&
     readStamp()?.generation === generation &&
@@ -612,12 +631,7 @@ async function runUnderLocks(mode: Mode, generation: string, nonce: string, refr
   }
 
   const builtIns = new Set(Object.values(SEEDED_EXTENSIONS).map((entry) => entry.pkg));
-  if (manifestRebuilt && extensionsInventoryMissing()) {
-    // Every built-in was absent, so nothing above wrote a manifest. The lock or module tree still proves
-    // this prefix had one. An empty inventory is the recovered fact, and a later seed must not call it current.
-    saveExtensionsManifest({ extensions: [] });
-    console.error(c.dim("the extensions inventory is missing; built-in packages still on disk are registered again. Operator packages that were only recorded in that inventory need `cotal ext add` with their original spec"));
-  }
+  const inventoryWasMissing = manifestRebuilt && extensionsInventoryMissing();
   const operators = mode === "reset" ? [] : loadExtensionsManifest().extensions.filter((entry) =>
     entry.pkg.startsWith("@cotal-ai/") && !builtIns.has(entry.pkg) && (
       mode === "verify"
@@ -659,6 +673,11 @@ async function runUnderLocks(mode: Mode, generation: string, nonce: string, refr
   // stamping the generation: a failed refresh must remain an incomplete upgrade on the next boot.
   if (migrationFrom) await refreshInstalls();
   await checkInterrupted(true);
+  if (inventoryWasMissing && extensionsInventoryMissing()) {
+    if (!staged.length) saveExtensionsManifest({ extensions: [] });
+    const unregistered = unregisteredOperatorPackages(builtIns);
+    console.log(`the extensions inventory was missing. Built-in packages still on disk are registered again.${unregistered.length ? ` ${unregistered.join(", ")} remain on disk but are not registered. Run \`${displayCmd()} ext add\` with the original spec to register one.` : ""}`);
+  }
 
   // Commit: authority (+ backup) → witness → stamp (LAST); THEN drop the cursor + recovery obligation
   // and GC old stores. A crash above (including a repair that quarantined then died mid-reinstall)

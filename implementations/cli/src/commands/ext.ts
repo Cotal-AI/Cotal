@@ -13,6 +13,7 @@ import { withInstallUmask } from "../lib/install-umask.js";
 import { npmInvocation, npmLifecycleEnvironment } from "../lib/npm-invocation.js";
 import { assertExtensionCorePeer } from "../lib/extension-core-peer.js";
 import { runSeed } from "../seed/reconcile.js";
+import { readUpdatePending } from "../lib/update-pending.js";
 import { assertStageVerifier, stageExtensions } from "../lib/extension-stage.js";
 import { connectorConfigDir, extensionReinstallAdvice, isExtensionPathSpec as isPathSpec, resolveExtensionEntry } from "@cotal-ai/workspace";
 import { codeSpan, CorruptExtensionPackageError, CorruptExtensionsManifestError, inspectLock, extensionNpmMutationPath, oneLine, windowsShellWord, type OutputWarning } from "@cotal-ai/workspace";
@@ -715,7 +716,10 @@ async function removeUnlocked(pkg: string): Promise<void> {
   const manifest = loadExtensionsManifest();
   const entry = manifest.extensions.find((e) => e.pkg === pkg);
   if (!entry) {
-    console.log(`${pkg} is already absent. Nothing was removed.`);
+    const installed = lstatSync(extensionPackageDir(pkg), { throwIfNoEntry: false })?.isDirectory() === true;
+    console.log(installed
+      ? `${pkg} is not registered, and its files remain in ${extensionPackageDir(pkg)}. Nothing was removed. Run \`${displayCmd()} ext add\` with its original spec to register it.`
+      : `${pkg} is already absent. Nothing was removed.`);
     return;
   }
   assertExtensionServiceInstancesStopped(pkg);
@@ -854,7 +858,11 @@ function list(presentation: Presentation): void {
     if (presentation !== "json" || !(error instanceof CorruptExtensionsManifestError)) throw error;
     throw new CommandFailure("refused", "SCHEMA_INVALID", error.diagnosis, { remedy: error.remedy, cause: error });
   }
-  const warnings = entries.flatMap((entry): OutputWarning[] => {
+  const pending = readUpdatePending(cliVersion());
+  const missing = pending.kind === "inventory-missing"
+    ? [{ code: "DEPENDENCY_UNAVAILABLE" as const, target: null, message: pending.instruction }]
+    : [];
+  const warnings = [...missing, ...entries.flatMap((entry): OutputWarning[] => {
     const dir = extensionPackageDir(entry.pkg);
     const path = join(dir, "package.json");
     let problem: string;
@@ -871,11 +879,11 @@ function list(presentation: Presentation): void {
         : `could not be checked: ${path} is unreadable`;
     }
     return [{ code: "DEPENDENCY_UNAVAILABLE", target: { pkg: entry.pkg }, message: `Extension ${entry.pkg} ${problem}. ${extensionReinstallAdvice(entry)}` }];
-  });
+  })];
   writeResult(presentation, {
     command: "ext", target: null, result: { kind: "extensions", root: extensionsDir(), items: entries.map(extensionRow) },
     warnings,
-    ...(warnings.length ? { completeness: "partial", partial: { message: "Some recorded extension packages could not be verified." } } : {}),
+    ...(warnings.length > missing.length ? { completeness: "partial", partial: { message: "Some recorded extension packages could not be verified." } } : {}),
   }, extensionsView);
 }
 

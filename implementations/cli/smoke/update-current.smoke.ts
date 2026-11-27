@@ -1,7 +1,7 @@
 import "./update-isolation.js";
 import strictAssert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, realpathSync, renameSync, rmdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, realpathSync, renameSync, rmdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join, parse } from "node:path";
@@ -457,55 +457,114 @@ if (process.platform === "linux") {
   const home = mkdtempSync(join(tmpdir(), "cotal-missing-inventory-"));
   try {
     const repoBin = join(import.meta.dirname, "../../../bin");
+    const version = JSON.parse(readFileSync(join(repoBin, "package.json"), "utf8")).version as string;
+    const prefix = join(home, "prefix");
+    const installed = join(prefix, "lib/node_modules/cotal-ai");
+    const launcher = join(prefix, "bin/cotal");
+    for (const directory of [join(prefix, "bin"), join(installed, "dist"), join(installed, "scripts")]) mkdirSync(directory, { recursive: true });
+    copyFileSync(join(repoBin, "package.json"), join(installed, "package.json"));
+    copyFileSync(join(repoBin, "scripts/pin-npm-node.cjs"), join(installed, "scripts/pin-npm-node.cjs"));
+    symlinkSync(join(repoBin, "dist/cotal.js"), join(installed, "dist/cotal.js"));
+    symlinkSync("../lib/node_modules/cotal-ai/dist/cotal.js", launcher);
+    const pin = spawnSync(process.execPath, [join(installed, "scripts/pin-npm-node.cjs")], {
+      cwd: home, env: Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^cotal_/i.test(key))), encoding: "utf8",
+    });
+    assert.equal(pin.status, 0, pin.stdout + pin.stderr);
+    const entry = readFileSync(launcher, "utf8").startsWith("#!/usr/bin/env -S ") ? launcher : process.execPath;
+    const argv = entry === launcher ? [launcher] : [process.execPath, join(repoBin, "dist/cotal.js")];
+    const npmBin = join(home, "npm-bin");
+    const npmRoot = join(npmBin, "node_modules", "npm");
+    const npmCli = join(npmRoot, "bin", "npm-cli.js");
+    const npmRecord = join(home, "npm-calls");
+    mkdirSync(dirname(npmCli), { recursive: true });
+    writeFileSync(join(npmRoot, "package.json"), JSON.stringify({ name: "npm", version: "10.9.2", bin: { npm: "bin/npm-cli.js" }, engines: { node: process.version } }));
+    writeFileSync(npmCli, `#!/usr/bin/env node
+const fs = require('node:fs');
+fs.appendFileSync(${JSON.stringify(npmRecord)}, process.argv.slice(2).join(' ') + '\\n');
+if (process.argv.includes('version')) { console.log(JSON.stringify(${JSON.stringify(version)})); process.exit(0); }
+process.exit(0);
+`, { mode: 0o755 });
+    symlinkSync(npmCli, join(npmBin, "npm"));
+    const config = join(home, "xdg");
+    const extensions = join(config, "cotal", "extensions");
+    const seed = join(config, "cotal", "seed");
+    const builtIn = SEED_BUILTINS[0]!;
+    mkdirSync(join(extensions, "node_modules", "@cotal-ai", builtIn), { recursive: true });
+    writeFileSync(join(extensions, "node_modules", "@cotal-ai", builtIn, "package.json"), JSON.stringify({ name: `@cotal-ai/${builtIn}`, version }));
+    mkdirSync(join(extensions, "node_modules", "@cotal-ai", "tmux"), { recursive: true });
+    mkdirSync(seed, { recursive: true });
+    writeFileSync(join(extensions, "node_modules", "@cotal-ai", "tmux", "package.json"), JSON.stringify({ name: "@cotal-ai/tmux", version, main: "index.js" }));
+    writeFileSync(join(extensions, "node_modules", "@cotal-ai", "tmux", "index.js"), "");
+    writeFileSync(join(extensions, "package.json"), JSON.stringify({ name: "cotal-extensions", private: true }));
+    writeFileSync(join(extensions, "package-lock.json"), JSON.stringify({ name: "cotal-extensions", lockfileVersion: 3, packages: { "": {} } }));
+    writeFileSync(join(extensions, "extensions.json"), JSON.stringify({ extensions: [{ pkg: "@cotal-ai/tmux", version, source: "operator", commands: [] }] }));
+    writeFileSync(join(seed, "authority.json"), JSON.stringify({ everSeeded: SEED_BUILTINS }));
+    writeFileSync(join(seed, "witness.json"), JSON.stringify({ initialized: true, firstGeneration: version }));
+    writeFileSync(join(seed, "stamp.json"), JSON.stringify({ generation: version }));
     const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^(?:cotal_|npm_config_)/i.test(key)));
     Object.assign(env, {
-      HOME: home, USERPROFILE: home, COTAL_HOME: join(home, "cotal"), XDG_CONFIG_HOME: join(home, "xdg"),
-      XDG_RUNTIME_DIR: home, COTAL_TELEMETRY: "off", COTAL_NO_UPDATE_CHECK: "1", COTAL_ALLOW_CHECKOUT_SEED: "1",
+      HOME: home, USERPROFILE: home, COTAL_HOME: join(home, "cotal"), XDG_CONFIG_HOME: config, XDG_RUNTIME_DIR: home,
+      COTAL_TELEMETRY: "off", COTAL_NO_UPDATE_CHECK: "1", COTAL_ALLOW_CHECKOUT_SEED: "1", PATH: `${npmBin}:${env.PATH ?? ""}`,
     });
-    const cli = (...args: string[]) => spawnSync(process.execPath, [join(repoBin, "dist/cotal.js"), ...args], {
-      cwd: home, encoding: "utf8", timeout: 180_000, env,
-    });
-    const seeded = cli("ext", "seed");
-    assert.equal(seeded.status, 0, seeded.stdout + seeded.stderr);
-    const added = cli("ext", "add", "@cotal-ai/tmux");
-    assert.equal(added.status, 0, added.stdout + added.stderr);
-    const root = cli("ext", "root");
-    assert.equal(root.status, 0, root.stdout + root.stderr);
-    const prefix = root.stdout.trim();
-    const manifest = join(prefix, "extensions.json");
-    const aside = join(home, "extensions.json.saved");
-    renameSync(manifest, aside);
-    const first = cli("update", "--self");
-    assert.equal(first.status, 0, first.stdout + first.stderr);
-    assert.doesNotMatch(first.stdout + first.stderr, /installed package closure is current/);
-    assert.match(first.stdout + first.stderr, /extensions inventory is missing/);
-    assert.match(first.stdout + first.stderr, /cotal ext add/);
+    const cli = (...args: string[]) => spawnSync(entry, [...argv.slice(1), ...args], { cwd: home, encoding: "utf8", timeout: 60_000, env });
+    const manifest = join(extensions, "extensions.json");
+    const calls = (): string => existsSync(npmRecord) ? readFileSync(npmRecord, "utf8") : "";
+    const before = calls();
+    const ordinary = cli("clean");
+    assert.notEqual(ordinary.status, 0, ordinary.stdout + ordinary.stderr);
+    assert.match(ordinary.stdout + ordinary.stderr, /clean needs a target/);
+    assert.doesNotMatch(ordinary.stdout + ordinary.stderr, /inventory is missing|Reconciling built-in/);
+    rmSync(manifest);
+    const hinted = cli("clean");
+    assert.notEqual(hinted.status, 0, hinted.stdout + hinted.stderr);
+    assert.match(hinted.stdout + hinted.stderr, /clean needs a target/);
+    assert.match(hinted.stdout + hinted.stderr, /extensions inventory is missing/);
+    assert.doesNotMatch(hinted.stdout + hinted.stderr, /Reconciling built-in/);
+    assert.equal(calls(), before, "an ordinary command does not call npm");
+    assert.equal(existsSync(manifest), false);
     const listed = cli("ext", "list", "--plain");
     assert.equal(listed.status, 0, listed.stdout + listed.stderr);
-    assert.match(listed.stdout, /@cotal-ai\/connector-claude-code/);
-    assert.doesNotMatch(listed.stdout, /@cotal-ai\/tmux/);
-    assert.equal(existsSync(join(prefix, "node_modules", "@cotal-ai", "tmux")), true);
+    assert.match(listed.stdout + listed.stderr, /extensions inventory is missing/);
+    const versioned = cli("version");
+    assert.equal(versioned.status, 0, versioned.stdout + versioned.stderr);
+    assert.match(versioned.stdout + versioned.stderr, /extensions inventory is missing/);
+    const checked = cli("update", "--check");
+    assert.equal(checked.status, 0, checked.stdout + checked.stderr);
+    assert.match(checked.stdout + checked.stderr, /extensions inventory is missing/);
+    const removed = cli("ext", "remove", "@cotal-ai/tmux");
+    assert.equal(removed.status, 0, removed.stdout + removed.stderr);
+    assert.match(removed.stdout, /not registered/);
+    assert.equal(existsSync(join(extensions, "node_modules", "@cotal-ai", "tmux")), true);
+    rmSync(manifest, { force: true });
+    const failed = cli("update", "--self");
+    assert.equal(failed.status, 0, failed.stdout + failed.stderr);
+    assert.match(failed.stdout + failed.stderr, /extensions inventory was missing/);
     assert.equal(existsSync(manifest), true);
-    assert.match(readFileSync(manifest, "utf8"), /@cotal-ai\/connector-claude-code/);
-    assert.doesNotMatch(readFileSync(manifest, "utf8"), /@cotal-ai\/tmux/);
-    assert.match(readFileSync(aside, "utf8"), /@cotal-ai\/tmux/);
+    assert.match(failed.stdout + failed.stderr, /@cotal-ai\/tmux/);
     const second = cli("update", "--self");
     assert.equal(second.status, 0, second.stdout + second.stderr);
-    assert.doesNotMatch(second.stdout + second.stderr, /extensions inventory is missing/);
-    rmSync(join(prefix, "node_modules"), { recursive: true, force: true });
+    assert.match(second.stdout + second.stderr, /installed package closure is current/);
+    assert.doesNotMatch(second.stdout + second.stderr, /Reconciling built-in/);
+    rmSync(join(extensions, "node_modules"), { recursive: true, force: true });
     rmSync(manifest);
-    assert.equal(existsSync(join(prefix, "package-lock.json")), true);
     const lockOnly = cli("update", "--self");
     assert.equal(lockOnly.status, 0, lockOnly.stdout + lockOnly.stderr);
-    assert.doesNotMatch(lockOnly.stdout + lockOnly.stderr, /installed package closure is current/);
-    assert.match(lockOnly.stdout + lockOnly.stderr, /extensions inventory is missing/);
+    assert.match(lockOnly.stdout + lockOnly.stderr, /extensions inventory was missing/);
     assert.equal(existsSync(manifest), true);
-    assert.doesNotMatch(readFileSync(manifest, "utf8"), /@cotal-ai\/tmux/);
+    assert.doesNotMatch(readFileSync(manifest, "utf8"), /tmux/);
     rmSync(manifest);
-    const seededAgain = cli("ext", "seed");
-    assert.equal(seededAgain.status, 0, seededAgain.stdout + seededAgain.stderr);
-    assert.doesNotMatch(seededAgain.stdout + seededAgain.stderr, /built-in connectors up to date/);
+    const repaired = cli("ext", "seed", "--repair");
+    assert.equal(repaired.status, 0, repaired.stdout + repaired.stderr);
+    assert.match(repaired.stdout + repaired.stderr, /extensions inventory was missing/);
     assert.equal(existsSync(manifest), true);
+    const bare = mkdtempSync(join(home, "bare-"));
+    const bareResult = spawnSync(entry, [...argv.slice(1), "config"], {
+      cwd: bare, encoding: "utf8", timeout: 60_000,
+      env: { ...env, HOME: bare, USERPROFILE: bare, COTAL_HOME: join(bare, "cotal"), XDG_CONFIG_HOME: join(bare, "xdg"), XDG_RUNTIME_DIR: bare },
+    });
+    assert.equal(bareResult.status, 0, bareResult.stdout + bareResult.stderr);
+    assert.doesNotMatch(bareResult.stdout + bareResult.stderr, /inventory is missing/);
+    assert.equal(existsSync(join(bare, "xdg", "cotal", "extensions", "extensions.json")), false);
   } finally { rmSync(home, { recursive: true, force: true }); }
 }
 emitSentinel({ passed: counted.cells(), failed: 0 });

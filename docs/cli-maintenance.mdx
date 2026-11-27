@@ -50,10 +50,15 @@ On Linux, when `cotal update --self` finds no newer CLI version and proves the i
 current, it skips package replacement, full connector reconciliation, and the running Manager continuity
 check. It does not restart a running daemon.
 A prefix that was seeded and still has packages installed is not current when `extensions.json` is
-missing. The same is true when the packages are gone but `package-lock.json` remains. Self-update
-registers the built-in packages that are still on disk, or writes an empty inventory when none remain,
-and says that an operator package recorded only in the missing inventory needs `cotal ext add` with its
-original spec.
+missing. The same is true when the packages are gone but `package-lock.json` remains.
+`cotal update`, `cotal version`, and `cotal update --check` say the inventory is missing.
+Self-update registers the built-in packages that are still on disk, or writes an empty
+inventory when none remain, and names any operator package left on disk without a
+registration. Register one again with `cotal ext add` and its original spec.
+`cotal ext remove` says the package is not registered and leaves its files.
+An ordinary command that still reconciles names `cotal update` and does not rebuild the
+inventory. A command that only reads, such as `cotal config`, does not print it. A prefix
+that was never seeded, and an empty prefix, are unchanged.
 A manual `cotal update --self` also repairs a complete Codex marketplace moved into the current
 Cotal home when Codex still points to the missing old path. Run `cotal update` to refresh other
 harness integrations. If the package closure needs repair, the usual continuity guards still apply.
