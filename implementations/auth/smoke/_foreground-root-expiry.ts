@@ -9,7 +9,7 @@ import { workspaceSecretStore } from "@cotal-ai/workspace";
 import { openAuthorityClient } from "../src/authority-client.js";
 import { findManagedActor } from "../src/ledger.js";
 import { openLifecycleRegistry } from "../src/lifecycle-registry.js";
-import { cotalAuthProvider } from "../src/provider.js";
+import { cotalAuthProvider } from "@cotal-ai/auth";
 import { ensureRootCredential, ROOT_CREDENTIAL_TTL_MS } from "../src/root-credential.js";
 
 /** Model only the native application; spawn, bearer exchange and broker admission stay live. */
