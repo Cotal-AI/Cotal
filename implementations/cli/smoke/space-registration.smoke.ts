@@ -266,9 +266,11 @@ setCurrent("keep");
   check("control: send to an answering registered broker stores the message", sent.status === 0 && sent.env?.outcome === "ok" && sent.env.result?.stored === true, shown(sent));
 
   const conflictingServer = await json(["space", "add", "open1", "--server", DEAD, "--root", root]);
-  check("adding a registered name at a different broker is CONFLICT, exit 2, naming forget and --force",
-    refused(conflictingServer, 2, "CONFLICT") && /space forget open1/.test(conflictingServer.env?.error?.remedy ?? "") &&
-    /--force/.test(conflictingServer.env?.error?.remedy ?? "") && findMesh("open1")?.server === LIVE, shown(conflictingServer));
+  const conflictStep = conflictingServer.env?.error?.remedy ?? "";
+  check("a conflicting manual add explains the unchecked replacement, its verification and what forgetting clears",
+    refused(conflictingServer, 2, "CONFLICT") && conflictStep.includes("without checking the broker") &&
+    conflictStep.includes("repeat the same add without --force to verify it") && conflictStep.includes("`cotal space forget open1`") &&
+    conflictStep.includes("selection, per-space preferences and remembered chat sessions") && findMesh("open1")?.server === LIVE, shown(conflictingServer));
   const replaced = await json(["space", "add", "open1", "--server", DEAD, "--root", root, "--force"]);
   check("--force replaces a registration added by hand, unchecked", replaced.status === 0 && replaced.env?.result.replaced === true && replaced.env.result.verified === false && replaced.env.result.space.check === "not-checked" && findMesh("open1")?.server === DEAD, shown(replaced));
 

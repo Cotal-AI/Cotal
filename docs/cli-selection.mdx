@@ -136,7 +136,7 @@ A refusal writes nothing and carries its code: `USAGE_INVALID` or `SCHEMA_INVALI
 input, and `CONFLICT`, `TARGET_UNAVAILABLE`, `TARGET_NOT_FOUND`, `DEPENDENCY_UNAVAILABLE`,
 `UNSUPPORTED`, `AUTH_REQUIRED` or `PERMISSION_DENIED` (exit 2) for what the checks found. A name
 that is already registered is a `CONFLICT` unless `--server` checks a matching manual registration
-in place or `--force` replaces a manual registration. A broker that does not answer is a
+in place or `--force` replaces a manual registration. Replacing it in place keeps the selection, per-space preferences and remembered chat sessions. Forgetting it before adding it again clears them. After replacing a direct `--server` registration with `--force`, repeat the same add without `--force` to verify the broker. A broker that does not answer is a
 `TARGET_UNAVAILABLE`. For a new registration, its remedy offers `--force`.
 When adding a broker that requires auth, a `--root` that holds another space's trust gives
 `DEPENDENCY_UNAVAILABLE` and names the space the folder holds.
