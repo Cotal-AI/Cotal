@@ -2,11 +2,14 @@
  * Seat behavior cells plus worker-death survival and wait-exit close settlement.
  */
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { connect } from "node:net";
+import assert from "node:assert/strict";
+import { chmodSync, existsSync, lstatSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { connect, type Socket } from "node:net";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { adoptSeatSync, launchSeat, processStartToken, reapSeat, seatId, SeatClient } from "../src/index.js";
+import { adoptSeatSync, launchSeat, linuxSharedCustodyAvailable, processStartToken, reapSeat, seatId, SeatClient } from "../src/index.js";
+import { sharedCgroupAvailable } from "../src/shared-cgroup.js";
+import { isSharedScope, readPrivateRecord, readSharedHost, recordedProcess, sharedHostSocket } from "../src/shared-record.js";
 import { makeSeatRoot } from "@cotal-ai/smoke-kit";
 
 if (process.platform !== "linux") {
@@ -837,6 +840,163 @@ try {
   }
   rmSync(root, { recursive: true, force: true });
 }
+
+function nativeSharedSkip(): string | undefined {
+  if (!linuxSharedCustodyAvailable()) return "systemd user manager or systemd-run unavailable";
+  if (!sharedCgroupAvailable()) return "unified cgroup v2 memory controller unavailable";
+  if (typeof (process as typeof process & { execve?: unknown }).execve !== "function") return "Node process.execve unavailable";
+  return undefined;
+}
+
+function removeNativeScratch(path: string): void {
+  if (lstatSync(path).isDirectory()) {
+    chmodSync(path, 0o700);
+    for (const name of readdirSync(path)) removeNativeScratch(join(path, name));
+  }
+}
+
+async function sharedAmbiguousLaunchCell(
+  api: typeof import("../src/shared-managed.js"), lineage: string, base: string,
+  host: ReturnType<typeof readSharedHost>, wire: Socket,
+): Promise<void> {
+  const id = seatId();
+  const marker = join(base, "ambiguous-payload-ran");
+  const liveHost = () => recordedProcess(host.pid, host.start, host.bootId) === "live";
+  assert(liveHost() && !wire.destroyed && wire.writable);
+  process.kill(host.pid, "SIGSTOP");
+  try {
+    assert(await until(() => liveHost() && state(host.pid) === "T", 2000), "fixture host did not stop");
+    const bytesBefore = wire.bytesWritten;
+    const started = performance.now();
+    const attempt = api.launchManagedSharedSeat(lineage, { root: lineage, id, name: "ambiguous-launch", cwd: base,
+      spec: { command: "/usr/bin/touch", args: [marker] } });
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const deadline = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new Error("ambiguous launch exceeded 27 seconds")), 27_000);
+    });
+    let sent: boolean;
+    try {
+      [sent] = await Promise.race([Promise.all([
+        until(() => wire.bytesWritten > bytesBefore, 4000), assert.rejects(attempt, api.SharedLaunchHeld),
+      ]), deadline]);
+    } finally { clearTimeout(timer); }
+    const elapsed = performance.now() - started;
+    check("v2 launch sent without a reply is held, not returned as fallback", sent && !existsSync(marker) &&
+      elapsed >= 17_500 && elapsed < 25_000, { sent, elapsed });
+  } finally {
+    if (liveHost()) process.kill(host.pid, "SIGCONT");
+  }
+}
+
+async function sharedCustodyCell(): Promise<void> {
+  const entry = new URL("../dist/index.js", import.meta.url).href;
+  const absent = spawnSync(process.execPath, ["--input-type=module", "-e",
+    `const { linuxSharedCustodyAvailable } = await import(${JSON.stringify(entry)}); process.exitCode = linuxSharedCustodyAvailable() ? 1 : 0;`], {
+    env: { ...process.env, DBUS_SESSION_BUS_ADDRESS: "unix:path=/nonexistent/cotal-smoke-user-bus", XDG_RUNTIME_DIR: "/nonexistent/cotal-smoke-runtime" },
+    timeout: 5000,
+  });
+  check("Linux without an answering user manager does not enable shared PTY custody", absent.status === 0);
+  const skip = nativeSharedSkip();
+  if (skip) {
+    console.log(`  SKIP v2 shared PTY lifecycle: ${skip}`);
+    return;
+  }
+  const api: typeof import("../src/shared-managed.js") = await import(new URL("../dist/shared-managed.js", import.meta.url).href);
+  const { SharedController }: typeof import("../src/shared-controller.js") = await import(new URL("../dist/shared-controller.js", import.meta.url).href);
+  const base = makeSeatRoot("cotal-v2-lifecycle-");
+  const lineage = join(base, `p-${seatId()}${seatId()}`);
+  const id = seatId();
+  type Handle = NonNullable<Awaited<ReturnType<typeof api.launchManagedSharedSeat>>>;
+  const handles: Handle[] = [];
+  let transport: Socket | undefined;
+  const connectController = SharedController.prototype.connect;
+  SharedController.prototype.connect = async function (this: InstanceType<typeof SharedController>) {
+    await connectController.call(this);
+    // Capture the authenticated client fd without replacing the real controller or protocol.
+    transport = (this as unknown as { current?: { socket: Socket } }).current?.socket;
+  };
+  try {
+    const handle = await api.launchManagedSharedSeat(lineage, { root: lineage, id, name: "reconnect", cwd: base,
+      spec: { command: "/bin/sh", args: ["-c", "while IFS= read -r line; do printf 'reply:%s\\n' \"$line\"; done"] } });
+    const roots = nativeGenerations(lineage);
+    if (!handle && roots.length === 1 && existsSync(join(roots[0]!, "execution.json")) && !existsSync(join(roots[0]!, "host.json"))) {
+      console.log("  SKIP v2 shared PTY lifecycle: user manager did not publish a host with delegated memory cgroups");
+      return;
+    }
+    assert(handle, "managed v2 launch did not admit the fixture");
+    handles.push(handle);
+    assert.equal(roots.length, 1);
+    const generation = roots[0]!;
+    const host = readSharedHost(generation);
+    const child = handle.childIdentity;
+    assert(child);
+    const terminal = handle.attach();
+    let output = "", exits = 0;
+    terminal.onData(data => { output = (output + data.toString()).slice(-8192); });
+    terminal.onExit(() => { exits++; });
+    const reply = async (seat: Handle, marker: string, received: () => string): Promise<boolean> => {
+      const deadline = Date.now() + 5000;
+      do {
+        assert.equal(await seat.write(`${marker}\n`), marker.length + 1);
+        if (await until(() => received().includes(`reply:${marker}`), 350)) return true;
+      } while (Date.now() < deadline);
+      return false;
+    };
+    assert(await reply(handle, "before-drop", () => output), "original attachment never received its initial reply");
+    const wire = transport;
+    assert(wire && !wire.destroyed);
+    const socket = sharedHostSocket(generation);
+    assert(Buffer.byteLength(socket) > 108);
+    renameSync(socket, `${socket}.away`);
+    try {
+      const dropped = new Promise<void>(resolve => wire.once("close", () => resolve()));
+      wire.destroy();
+      await dropped;
+      await assert.rejects(api.reopenManagedSharedSeat(generation, id));
+      check("v2 socket loss and refused reopen do not report a live seat exited", exits === 0 && handle.status() === "running");
+    } finally { renameSync(`${socket}.away`, socket); }
+    check("v2 reconnect receives fresh PTY output on the original attachment", await reply(handle, "on-original-attachment", () => output) && transport !== wire && exits === 0);
+    const reopened = await api.reopenManagedSharedSeat(generation, id);
+    handles.push(reopened);
+    assert.deepEqual(reopened.childIdentity, child);
+    assert.deepEqual(readSharedHost(generation), host);
+    const newTerminal = reopened.attach();
+    let reopenedOutput = "";
+    newTerminal.onData(data => { reopenedOutput = (reopenedOutput + data.toString()).slice(-8192); });
+    check("v2 reopen reaches the same live host and seat", reopened.status() === "running" &&
+      await reply(reopened, "after-reopen", () => reopenedOutput));
+    assert(transport && transport !== wire);
+    await sharedAmbiguousLaunchCell(api, lineage, base, host, transport);
+    assert.equal(recordedProcess(host.pid, host.start, host.bootId), "live");
+    process.kill(host.pid, "SIGKILL");
+    check("v2 host death ends the exact child and reports exit to the original attachment", await until(() =>
+      recordedProcess(child.pid, child.start, child.boot) === "gone" && exits === 1 && reopened.status() === "exited", 10_000));
+  } finally {
+    SharedController.prototype.connect = connectController;
+    for (const handle of handles) handle.close();
+    await cleanNativeSharedFixture(base, lineage);
+  }
+}
+
+function nativeGenerations(lineage: string): string[] {
+  return existsSync(lineage) ? readdirSync(lineage).filter(name => /^[a-f0-9]{64}$/.test(name)).map(name => join(lineage, name)) : [];
+}
+
+async function cleanNativeSharedFixture(base: string, lineage: string): Promise<void> {
+  for (const root of nativeGenerations(lineage)) {
+    const pin = join(root, "execution.json");
+    if (!existsSync(pin)) continue;
+    const { scope } = readPrivateRecord(pin) as { scope: unknown };
+    assert(isSharedScope(scope));
+    const group = `/sys/fs/cgroup/user.slice/user-${process.getuid!()}.slice/user@${process.getuid!()}.service/app.slice/${scope}`;
+    spawnSync("/usr/bin/systemctl", ["--user", "--no-ask-password", "stop", "--", scope], { timeout: 8000, stdio: "ignore" });
+    assert(await until(() => !existsSync(group), 10_000), `fixture unit still present: ${scope}`);
+  }
+  removeNativeScratch(base);
+  rmSync(base, { recursive: true });
+}
+
+await sharedCustodyCell();
 
 console.log(`\nSEAT LIFECYCLE ${fail === 0 ? "OK" : "FAILED"} (${pass} passed, ${fail} failed)`);
 process.exitCode = fail === 0 ? 0 : 1;

@@ -131,6 +131,11 @@ try {
 
   const seatImport = run(process.execPath, ["--input-type=module", "-e", "await import('@cotal-ai/seat')"], installRoot);
   check("fresh installed @cotal-ai/seat import succeeds", seatImport.status === 0, output(seatImport));
+  for (const entry of ["shared-custodian.js", "shared-linux.js", "shared-host-v2.js", "shared-exec-gate.js"]) {
+    const path = join(installRoot, "node_modules", "@cotal-ai", "seat", "dist", entry);
+    check(`installed seat includes ${entry}`, existsSync(path));
+  }
+  check("installed seat contains only the multiplexed shared host", !existsSync(join(installRoot, "node_modules", "@cotal-ai", "seat", "dist", "shared-launch.js")));
   const managerImport = run(process.execPath, ["--input-type=module", "-e", "await import('@cotal-ai/manager')"], installRoot);
   check("fresh installed @cotal-ai/manager import succeeds", managerImport.status === 0, output(managerImport));
   const help = run(process.execPath, [join(installRoot, "node_modules", "cotal-ai", "dist", "cotal.js"), "--help"], installRoot, true);
@@ -143,7 +148,7 @@ try {
     help.status === 0 && /^cotal - lateral agent coordination over NATS$/m.test(banner),
     output(help),
   );
-  check("all installed-distribution assertions ran", passed + failed === 27 + 2 * needed.size, { passed, failed, closureMembers: needed.size });
+  check("all installed-distribution assertions ran", passed + failed === 32 + 2 * needed.size, { passed, failed, closureMembers: needed.size });
 } catch (error) {
   if (failed === 0) check("installed-distribution fixture completed", false, error);
   else console.error(error);

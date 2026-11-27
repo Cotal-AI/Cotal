@@ -4,7 +4,9 @@ import {
   type CotalEndpoint, type LaunchSpec, type LifecycleStateTransport, type StaticManagedSlotRow,
 } from "@cotal-ai/core";
 import { agentLifecycleSecretFilePaths, agentSecretKeyForFile, retainConnectorSeat } from "@cotal-ai/workspace";
+import { SharedLaunchHeld } from "@cotal-ai/seat";
 import { isCustodialRuntime, requireRuntimeReap, RuntimeReapUnproven, watchProvedExit, type AgentHandle, type Runtime } from "./runtime/index.js";
+import { SharedPtyRuntime } from "./runtime/shared-pty.js";
 import type { RuntimeReference } from "@cotal-ai/core";
 import type { ManagedAgent, ManagerResumeAgent, SupervisedRestart } from "./manager.js";
 import { readSeatRecord, removeReleasedSeatReference, removeSeatRecord, writeSeatRecord, type SeatRecord } from "./resume.js";
@@ -107,9 +109,19 @@ export class SeatCustody {
   /** Spawn under a reserved reference and prove the runtime honoured it. A runtime that minted its
    *  own id instead would leave every durable record addressing a seat that does not exist, so the
    *  mismatch tears the new seat down and throws rather than returning an unaddressable handle. */
-  async spawnCustodied(runtime: Runtime, name: string, spec: LaunchSpec, cwd: string, reserved: RuntimeReference | undefined): Promise<AgentHandle> {
-    const holder = retainConnectorSeat(this.managerInstanceId, name);
-    const handle = runtime.spawn(name, spec, cwd, reserved);
+  async spawnCustodied(runtime: Runtime, name: string, spec: LaunchSpec, cwd: string, reserved: RuntimeReference | undefined, share = false): Promise<AgentHandle> {
+    const shared = share && runtime instanceof SharedPtyRuntime && reserved === undefined;
+    const holder = retainConnectorSeat(this.managerInstanceId, name, shared);
+    const handle = await (async () => {
+      try {
+        return shared && holder.sharedEligible
+          ? await runtime.spawnShared(name, spec, cwd, child => holder.bindSharedChild(child))
+          : runtime.spawn(name, spec, cwd, reserved);
+      } catch (error) {
+        if (error instanceof SharedLaunchHeld) throw new SharedLaunchHeld(() => holder.ended());
+        throw error;
+      }
+    })();
     this.deps.watchConnectorHolder(handle, holder);
     if (reserved === undefined) return handle;
     const got = handle.reference;

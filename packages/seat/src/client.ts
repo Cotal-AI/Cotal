@@ -38,11 +38,16 @@ export class SeatClient {
   private pendingExit = false;
   private pendingExitInfo: SeatExit | undefined;
   private closed = false;
+  private connection: Promise<HelloInfo> | undefined;
 
-  constructor(private readonly record: SeatRecord) {}
+  constructor(private readonly record: SeatRecord, private readonly verifyPeer?: (socket: Socket) => void) {}
 
-  async connect(): Promise<HelloInfo> {
-    if (this.helloInfo) return this.helloInfo;
+  connect(): Promise<HelloInfo> {
+    if (this.helloInfo) return Promise.resolve(this.helloInfo);
+    return this.connection ??= this.open().finally(() => { this.connection = undefined; });
+  }
+
+  private async open(): Promise<HelloInfo> {
     if (this.closed) throw new Error("seat client is closed");
     const sock = await new Promise<Socket>((resolve, reject) => {
       const s = connect(this.record.socket);
@@ -55,22 +60,39 @@ export class SeatClient {
         this.connecting = undefined;
         reject(err);
       });
+      s.once("close", () => reject(new Error("custodian socket closed")));
     });
     if (this.closed) {
       sock.destroy();
       throw new Error("seat client is closed");
     }
+    try { this.verifyPeer?.(sock); }
+    catch (e) { sock.destroy(); throw e; }
     this.sock = sock;
+    this.reader = new FrameReader();
     sock.on("data", (chunk) => {
-      for (const raw of this.reader.push(chunk)) this.dispatch(raw);
+      if (this.sock !== sock) return;
+      try { for (const raw of this.reader.push(chunk)) this.dispatch(raw); }
+      catch { sock.destroy(); }
     });
-    sock.on("close", () => this.failAll(new Error("custodian socket closed")));
+    const lost = (error: Error) => {
+      if (this.sock !== sock) return;
+      this.sock = undefined;
+      this.failAll(error);
+    };
+    sock.on("close", () => lost(new Error("custodian socket closed")));
     sock.on("error", (err) => {
       if (this.closed && (err as NodeJS.ErrnoException).code === "ECONNRESET") return;
-      this.failAll(err);
+      lost(err);
     });
-    const reply = await this.request({ op: "hello", token: this.record.token });
-    if (!reply.ok || reply.op !== "hello") throw new Error(reply.ok ? "unexpected hello reply" : reply.error);
+    const reply = await this.request({ op: "hello", token: this.record.token }).catch((error: unknown) => {
+      sock.destroy();
+      throw error;
+    });
+    if (!reply.ok || reply.op !== "hello") {
+      sock.destroy();
+      throw new Error(reply.ok ? "unexpected hello reply" : reply.error);
+    }
     this.helloInfo = {
       name: reply.name,
       pid: reply.pid,
@@ -86,6 +108,8 @@ export class SeatClient {
     if (!this.helloInfo) throw new Error("seat client is not connected");
     return this.helloInfo;
   }
+
+  connected(): boolean { return this.sock !== undefined && this.helloInfo !== undefined; }
 
   async snapshot(): Promise<{ data: string; cols: number; rows: number }> {
     const reply = await this.request({ op: "snapshot" });
@@ -157,10 +181,10 @@ export class SeatClient {
     return reply.exit;
   }
 
-  async health(): Promise<{ pid: number; status: "running" | "exited"; protocol: number }> {
+  async health(): Promise<{ pid: number; status: "running" | "exited"; protocol: number; startup?: import("./startup-confirm.js").StartupOutcome }> {
     const reply = await this.request({ op: "health" });
     if (!reply.ok || reply.op !== "health") throw new Error(reply.ok ? "unexpected health reply" : reply.error);
-    return { pid: reply.pid, status: reply.status, protocol: reply.protocol };
+    return { pid: reply.pid, status: reply.status, protocol: reply.protocol, startup: reply.startup };
   }
 
   close(): void {
@@ -170,16 +194,18 @@ export class SeatClient {
     this.sock?.destroy();
     this.sock = undefined;
     this.failAll(new Error("seat client is closed"));
+    this.exits.clear();
   }
 
   private request<T extends Omit<ClientRequest, "id">>(body: T): Promise<ServerReply> {
     if (!this.sock || this.closed) return Promise.reject(new Error("seat client is closed"));
+    const socket = this.sock;
     const id = this.nextId++;
     const req = { ...body, id } as ClientRequest;
     return new Promise((resolve, reject) => {
       this.pending.set(id, { op: body.op, resolve, reject });
       try {
-        this.sock!.write(encodeFrame(req));
+        socket.write(encodeFrame(req));
       } catch (e) {
         this.pending.delete(id);
         reject(e as Error);
@@ -196,15 +222,7 @@ export class SeatClient {
         return;
       }
       if (msg.event === "exit") {
-        if (this.helloInfo) {
-          this.helloInfo.status = "exited";
-          if (msg.exit) this.helloInfo.exit = msg.exit;
-        } else {
-          this.pendingExit = true;
-          if (msg.exit) this.pendingExitInfo = msg.exit;
-        }
-        for (const fn of this.exits) fn();
-        this.exits.clear();
+        this.emitExit(msg.exit);
       }
       return;
     }
@@ -212,6 +230,17 @@ export class SeatClient {
     if (!pending) return;
     this.pending.delete(msg.id);
     pending.resolve(msg);
+  }
+
+  private emitExit(exit: SeatExit | undefined): void {
+    this.pendingExit = true;
+    if (exit) this.pendingExitInfo = exit;
+    if (this.helloInfo) {
+      this.helloInfo.status = "exited";
+      if (exit) this.helloInfo.exit = exit;
+    }
+    for (const fn of this.exits) fn();
+    this.exits.clear();
   }
 
   private failAll(err: Error): void {

@@ -249,6 +249,13 @@ The configuration directory holds settings, installed extensions, and the built-
 The directory is `$XDG_CONFIG_HOME/cotal` when `XDG_CONFIG_HOME` is non-empty. Otherwise it is `%APPDATA%\Cotal` on Windows when `APPDATA` is set, or `~/.config/cotal`.
 For complete removal, back up any settings you want to keep, then delete that directory only if no other Cotal installation or running Cotal process uses it.
 
+On Linux, retained PTY runtimes are stored in `~/.cotal/seats/host-runtime/` by default. Each copy
+includes a Node binary and can use over 100 MB. When a Manager first prepares a runtime for a
+shared PTY launch, it checks for old copies and can remove unused ones at least 24 hours old.
+There is no background cleanup. For complete removal, delete this directory only after stopping all
+Cotal installations and shared PTY hosts that use it. If you set `COTAL_SEAT_ROOT`, use the
+`host-runtime` directory under that seat root instead.
+
 Deleting `~/.cotal` also deletes machine-local mesh records, agent data, and credentials.
 Keep or back up that data unless you intend to remove it.
 

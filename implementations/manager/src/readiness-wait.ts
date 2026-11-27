@@ -179,8 +179,9 @@ export class ReadinessWait {
         })();
       };
       // A process this runtime owns reports its own exit, so one still running here is running.
+      const terminalStatus = () => { try { return a.handle.status(); } catch { return undefined; } };
       const uncertain = (): void => {
-        const running = s !== undefined && a.handle.status() === "running";
+        const running = s !== undefined && terminalStatus() === "running";
         finish({
           ok: false,
           uncertain: true,
@@ -191,7 +192,7 @@ export class ReadinessWait {
         });
       };
       if (opts.operator !== undefined && s)
-        operatorTimer = setTimeout(() => { if (a.handle.status() === "running") finish({ ok: true, operator: opts.operator }); }, OPERATOR_READINESS_MS);
+        operatorTimer = setTimeout(() => { if (terminalStatus() === "running") finish({ ok: true, operator: opts.operator }); }, OPERATOR_READINESS_MS);
       // The exit poll read the runtime up to a poll ago, and a window can be shorter than a poll, so
       // the window closes on a fresh read: a child that exited by then is reported as exited. Nothing
       // bounds how long a runtime's proof takes, so it gets one more poll before the launch is uncertain.
@@ -211,7 +212,7 @@ export class ReadinessWait {
       this.config.shutdownReadiness.signal.addEventListener("abort", onShutdown, { once: true });
       // Subscribe-then-check (TOCTOU): a join or an exit that already landed before we subscribed.
       if (this.config.shutdownReadiness.signal.aborted) onShutdown();
-      else if (s && a.handle.status() === "exited") onExit();
+      else if (s && terminalStatus() === "exited") onExit();
       else onPresence();
     });
   }

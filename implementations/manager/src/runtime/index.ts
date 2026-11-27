@@ -14,6 +14,7 @@ import {
 import { CustodialPtyRuntime } from "./custodial-pty.js";
 import { LegacyPtyRuntime } from "./pty.js";
 import { unsupportedTransport } from "@cotal-ai/seat";
+import { SharedPtyRuntime } from "./shared-pty.js";
 
 export type { Runtime, RuntimeKind, AgentHandle, AttachSession } from "@cotal-ai/core";
 
@@ -121,6 +122,13 @@ class PtyRuntime extends LegacyPtyRuntime {
   }
 }
 
+class HostedPtyRuntime extends SharedPtyRuntime {
+  private readonly legacy = new PtyRuntime();
+
+  override adopt(reference: RuntimeReference): AgentHandle { return this.legacy.adopt(reference); }
+  reap(reference: RuntimeReference): Promise<RuntimeReapEvidence> { return this.legacy.reap(reference); }
+}
+
 /** How a manager picks its backend. `auto` is the deterministic default — always `pty`. External
  *  runtimes are never auto-selected; choose one explicitly, which resolves
  *  the integration from the registry and fails loud if it isn't imported. No fallbacks. */
@@ -129,8 +137,9 @@ export type RuntimeMode = RuntimeKind | "auto";
 /** Build the runtime a manager will spawn through. `pty` ships with the manager and is what `auto`
  *  resolves to. Every other name resolves a self-registered {@link RuntimeProvider}; an explicit
  *  provider that is absent or unreachable throws, never a silent fallback to pty. */
-export function createRuntime(mode: RuntimeMode, session: string): Runtime {
-  return ownLaunchArtifacts(createBackend(mode, session));
+export function createRuntime(mode: RuntimeMode, session: string, hosted?: { space: string; install: string; home: string }): Runtime {
+  const legacy = createBackend(mode, session);
+  return ownLaunchArtifacts(hosted && legacy.kind === "pty" && process.platform === "linux" ? new HostedPtyRuntime(hosted.space, hosted.install, hosted.home) : legacy);
 }
 
 /** The bundled Linux node-pty can import on musl but crash the manager on its first spawn. */
@@ -215,6 +224,20 @@ function ownLaunchArtifacts(runtime: Runtime): Runtime {
     if (spec.artifacts?.length) discardOnExit(name, handle, spec.artifacts);
     return handle;
   };
+  if (runtime instanceof SharedPtyRuntime) {
+    const spawnShared = runtime.spawnShared.bind(runtime);
+    runtime.spawnShared = async (name, spec, cwd, onReceipt) => {
+      let handle: AgentHandle;
+      try {
+        handle = await spawnShared(name, reclaimWithChild(spec), cwd, onReceipt);
+      } catch (e) {
+        if (e instanceof SpawnRefused) removeOwned(name, spec.artifacts);
+        throw e;
+      }
+      if (spec.artifacts?.length) discardOnExit(name, handle, spec.artifacts);
+      return handle;
+    };
+  }
   return runtime;
 }
 
@@ -281,7 +304,12 @@ export function watchProvedExit(handle: AgentHandle, onExit: () => void, watchin
   // A session may replay its exit during subscription, before returning its disposer.
   if (finished) unsubscribe();
   // A child that exited before the subscription may fire no event for it.
-  else if (handle.status() === "exited") finish();
+  else {
+    let exited = false;
+    try { exited = handle.status() === "exited"; }
+    catch { /* Unknown custody leaves the exit subscription in place. */ }
+    if (exited) finish();
+  }
   return true;
 }
 

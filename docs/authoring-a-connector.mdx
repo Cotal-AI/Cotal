@@ -142,7 +142,7 @@ The watcher removes the files after the child exits, even if the launcher was ki
 It looks up `sleep` and `rm` on the system's default utility path and leaves the child's `PATH` unchanged.
 It retries failed removal every five seconds, but exits if it cannot run a utility or sleep fails.
 
-The in-process PTY runtime reports exit to the manager.
+The built-in PTY runtime reports exit to the Manager, whether the PTY is held in-process or in the shared Linux host.
 For runtimes without streamed exit events, including tmux, cmux, Orca, and Herdr, the manager also polls for exit proof.
 Failed removal remains owned and is retried.
 
