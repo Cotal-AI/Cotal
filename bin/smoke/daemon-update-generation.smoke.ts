@@ -1,7 +1,7 @@
 import strictAssert from "node:assert/strict";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -15,14 +15,22 @@ import { waitForInstalledDaemonGeneration } from "../daemon/update-generation.js
 import { installedDaemonIdentity, preflightInstalledDaemon, reconcileMissingShellRuntime, unitReceiptFile } from "../daemon/install.js";
 import { currentParentWaits } from "../daemon/update-entry.js";
 import { executeUpdate, update, updateRuntime, type UpdateRuntime } from "@cotal-ai/cli/update";
-import { linuxSharedCustodyAvailable, processStatFields, processStartToken } from "@cotal-ai/seat";
+import { processStatFields, processStartToken } from "@cotal-ai/seat";
 
 const counted = countedAssert(strictAssert);
 const assert: typeof strictAssert = counted.assert as typeof strictAssert;
-const userBusAvailable = linuxSharedCustodyAvailable();
-const userBus = process.env.DBUS_SESSION_BUS_ADDRESS ?? (process.env.XDG_RUNTIME_DIR ? `unix:path=${join(process.env.XDG_RUNTIME_DIR, "bus")}` : undefined);
 const root = realpathSync(mkdtempSync(join(tmpdir(), "ug-")));
-process.env.XDG_RUNTIME_DIR = mkdtempSync("/tmp/cotal-ug-");
+const userRuntime = process.env.XDG_RUNTIME_DIR || `/run/user/${process.getuid?.()}`;
+const privateRuntime = mkdtempSync("/tmp/cotal-ug-");
+if (process.platform === "linux") {
+  // Keep the daemon socket private. systemctl can discover its native user transport here.
+  for (const name of ["systemd", "bus"]) {
+    const source = join(userRuntime, name);
+    if (existsSync(source)) symlinkSync(source, join(privateRuntime, name));
+  }
+}
+process.on("exit", () => rmSync(privateRuntime, { recursive: true, force: true }));
+process.env.XDG_RUNTIME_DIR = privateRuntime;
 process.env.COTAL_HOME = join(root, "home");
 
 type Reply = Awaited<ReturnType<NonNullable<Parameters<typeof waitForInstalledDaemonGeneration>[1]>["query"] & {}>>;
@@ -110,7 +118,6 @@ if (process.platform === "linux") {
   const version = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version as string;
   const env: NodeJS.ProcessEnv = {
     ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_"))),
-    ...(userBusAvailable && userBus ? { DBUS_SESSION_BUS_ADDRESS: userBus } : {}),
     HOME: home, COTAL_HOME: cotalHome, XDG_CONFIG_HOME: join(home, ".config"), TMPDIR: directory, CLAUDE_CONFIG_DIR: home,
     PATH: `${native}:${process.env.PATH}`, DO_NOT_TRACK: "1", COTAL_TELEMETRY: "off", COTAL_NO_UPDATE_CHECK: "1",
     COTAL_ALLOW_CHECKOUT_SEED: "1", COTAL_SKIP_CONNECTOR_SEED: "1",
@@ -124,10 +131,9 @@ if (process.platform === "linux") {
   writeFileSync(join(home, ".claude.json"), JSON.stringify({ mcpServers: { cotal: { command: "cotal", args: [] } } }), { mode: 0o600 });
   const seed = spawnSync(process.execPath, [entry, "ext", "seed"], { env, cwd: project, encoding: "utf8", timeout: 180_000 });
   assert.equal(seed.status, 0, `${seed.error ?? ""}\n${seed.stdout}${seed.stderr}`);
-  const linger = userBusAvailable && spawnSync("/usr/bin/loginctl", ["show-user", "--property=Linger", "--value", "--", String(process.getuid?.())], { encoding: "utf8", timeout: 2_000 });
-  const sharedProof = Boolean(linger && linger.status === 0 && linger.stdout.trim() === "yes" && typeof (process as typeof process & { execve?: unknown }).execve === "function");
-  if (sharedProof) addPtyFixture(entry, project, directory, env);
-  else console.log(`Hosted shared PTY cases skipped: ${!userBusAvailable ? "no reachable Linux systemd user manager with cgroup v2" : !linger || linger.status !== 0 || linger.stdout.trim() !== "yes" ? "the test account does not have confirmed linger" : "Node does not expose process.execve"}`);
+  const sharedSkip = hostedSharedSkipReason(env, project);
+  if (sharedSkip === undefined) addPtyFixture(entry, project, directory, env);
+  else console.log(`Hosted shared PTY cases skipped: ${sharedSkip}`);
   const fixture = new URL("../../implementations/auth/smoke/update-participant.fixture.ts", import.meta.url).href;
   const participant = spawn(process.execPath, [...process.execArgv, "--input-type=module", "-e", `
     import { prepareUpdateParticipant } from ${JSON.stringify(fixture)};
@@ -170,7 +176,7 @@ if (process.platform === "linux") {
     await start();
     const before = await managerViaDaemon({ paths }, { op: "manager-start", space });
     assert.equal(before.state, "answering", JSON.stringify(before));
-    if (sharedProof) {
+    if (sharedSkip === undefined) {
       await proveHostedPtyFailures({ start, daemon: () => daemon!, paths, space, entry, project, home, env });
       await start();
       const restored = await managerViaDaemon({ paths }, { op: "manager-start", space });
@@ -204,6 +210,18 @@ if (process.platform === "linux") {
 }
 
 if (process.platform !== "linux") console.log("Hosted shared PTY cases skipped: requires Linux and a systemd user manager");
+
+function hostedSharedSkipReason(env: NodeJS.ProcessEnv, cwd: string): string | undefined {
+  const probe = spawnSync(process.execPath, ["--input-type=module", "-e", `
+    import { linuxSharedCustodyAvailable } from ${JSON.stringify(import.meta.resolve("@cotal-ai/seat"))};
+    process.exitCode = !linuxSharedCustodyAvailable() ? 40 : typeof process.execve !== "function" ? 41 : 0;
+  `], { env, cwd, timeout: 10_000, encoding: "utf8" });
+  if (probe.status === 40) return "the daemon environment cannot reach a Linux systemd user manager with cgroup v2";
+  if (probe.status === 41) return "the daemon's Node does not expose process.execve";
+  if (probe.status !== 0) throw new Error(`the hosted shared PTY capability probe did not complete: ${probe.stderr?.trim() ?? ""}`, { cause: probe.error });
+  const linger = spawnSync("/usr/bin/loginctl", ["show-user", "--property=Linger", "--value", "--", String(process.getuid?.())], { env, cwd, encoding: "utf8", timeout: 2_000 });
+  if (linger.status !== 0 || linger.stdout.trim() !== "yes") return "the test account does not have confirmed linger";
+}
 
 function addPtyFixture(entry: string, project: string, directory: string, env: NodeJS.ProcessEnv): void {
   const fixture = join(directory, "shared-fixture");

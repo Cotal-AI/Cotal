@@ -74,10 +74,12 @@ const command: Command = {
       }
     };
     const { "session-directory": _, ...values } = args.values;
-    const sharedPty = (values.runtime === "pty" || values.runtime === "auto" || values.runtime === undefined) && linuxSharedCustodyAvailable();
+    const linuxPty = process.platform === "linux" && (values.runtime === "pty" || values.runtime === "auto" || values.runtime === undefined);
+    const sharedPty = linuxPty && linuxSharedCustodyAvailable();
     const install = sharedPty ? await sharedInstallEntry() : undefined;
     if (!sharedPty) process.off("message", receiveInstall);
     if (parentGone || !process.connected) throw new CommandFailure("refused", "USAGE_INVALID", "the machine Manager requires its daemon's session directory and parent channel");
+    if (linuxPty && !sharedPty) process.stderr.write("Shared PTY custody is unavailable because the Linux user service manager or cgroup v2 is unavailable. Seats run inside the Manager and cannot survive a restart.\n");
     const machineSetup = typeof values.space === "string" ? daemonCommandCopy("setup", home, [["--space", values.space]]) : undefined;
     await withIdpSessionDir(home, () => stock.run({ ...args, values: { ...values, "machine-parent": true, "machine-setup-command": machineSetup, machineHostedPty: install, machineHostedPtyHome: install ? home : undefined } }));
   },
