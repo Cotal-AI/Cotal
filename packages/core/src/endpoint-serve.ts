@@ -422,6 +422,12 @@ export interface EpServeHandle {
   /** Drain every serve subscription, then await every in-flight handler: after `stop()`
    *  resolves this incarnation performs no further effects and publishes no further replies. */
   stop(): Promise<void>;
+  /** Resolve once the broker has accepted every serve subscription this handle installed; reject
+   *  with `permission-denied` when it refused any of them. The broker writes a refused
+   *  subscription's `-ERR` before the `PONG` that answers the flush, so a credential missing a
+   *  serve row cannot read as bound. Serving stays up either way: the caller decides whether a
+   *  rejection means `stop()`. */
+  bound(): Promise<void>;
 }
 
 /**
@@ -682,9 +688,14 @@ export function serveEndpoint(
     replySubject: (parsed) => deriveReplySubject(space, parsed, identity),
   };
 
+  let refusal: Error | undefined;
   for (const def of defs) {
     const cmd = def.command;
-    const cb = (_err: unknown, msg: Pick<Msg, "subject" | "data" | "headers">) => {
+    const cb = (err: unknown, msg: Pick<Msg, "subject" | "data" | "headers">) => {
+      if (err) {
+        refusal ??= new EpEnvelopeError("permission-denied", `the broker refused a serve subscription for "${identity.endpoint}.${cmd}": ${(err as Error)?.message ?? String(err)}. The serve credential holds no row for it (SPEC 13.9)`);
+        return;
+      }
       if (carriesStoredProvenance(msg)) return;
       const run = runRequest(nc, steps, () => def, msg).catch(() => { /* runRequest() reports via the reply; never unhandled */ });
       pending.add(run);
@@ -702,6 +713,10 @@ export function serveEndpoint(
   }
 
   return {
+    async bound() {
+      await nc.flush();
+      if (refusal !== undefined) throw refusal;
+    },
     async stop() {
       // No new deliveries. A drain settles on the server's PONG, and nats-core rejects no pending
       // flush when the connection closes, so a close mid-drain would strand stop() forever: each

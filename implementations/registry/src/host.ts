@@ -79,6 +79,7 @@ export async function startRegistryService(inputs: RegistryServiceInputs): Promi
   let stopping: Promise<void> | undefined;
   return {
     refuse,
+    bound: () => handle.bound(),
     stop: () => {
       refuse();
       return stopping ??= (async () => {

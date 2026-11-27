@@ -211,7 +211,7 @@ export class ServePlane {
     // Reusing the incarnation queues keeps overlap single-delivery. Do not await the old
     // handlers here: the status or launch that discovered the application can be one of them.
     const drained = serving.handle.stop();
-    serving.handle = { stop: async () => { await Promise.all([replacement.stop(), drained]); } };
+    serving.handle = { stop: async () => { await Promise.all([replacement.stop(), drained]); }, bound: () => replacement.bound() };
   }
 
   /** #2073: re-mint the SAME `endpoint-serve` identity through the SAME scoped one-shot executor and
