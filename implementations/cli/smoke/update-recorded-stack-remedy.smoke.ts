@@ -9,6 +9,7 @@ import { delimiter, dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { assertSmokeSandboxDown, countedAssert, emitSentinel, freePort, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
 import { resolveOnPath } from "@cotal-ai/workspace";
+import { writePluginFixture } from "../../../scripts/plugin-fixture.mjs";
 import { shellWord } from "../src/lib/endpoint-errors.js";
 
 const counted = countedAssert(strictAssert);
@@ -37,11 +38,16 @@ await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
 const address = server.address();
 if (!address || typeof address === "string") throw new Error("no private registry port");
 const registry = `http://127.0.0.1:${address.port}`;
-const core = packed ? pathToFileURL(join(dirname(packed), "../node_modules/@cotal-ai/core/dist/index.js")).href : pathToFileURL(join(repo, "packages/core/dist/index.js")).href;
+const coreDir = packed ? join(dirname(packed), "../node_modules/@cotal-ai/core") : join(repo, "packages/core");
+const core = pathToFileURL(join(coreDir, "dist/index.js")).href;
+const coreVersion = JSON.parse(readFileSync(join(coreDir, "package.json"), "utf8")).version as string;
 const seat = join(fixture, "seat.mjs");
-writeFileSync(join(fixture, "package.json"), JSON.stringify({ name: "cotal-stack-remedy-fixture", version: "0.0.1", type: "module", main: "index.js", peerDependencies: { "@cotal-ai/core": "*" } }));
 writeFileSync(seat, `import{CotalEndpoint}from${JSON.stringify(core)};const e=process.env;const ep=new CotalEndpoint({space:e.COTAL_SPACE,servers:e.COTAL_SERVERS,card:{id:e.COTAL_ID,name:e.COTAL_NAME,role:'worker',kind:'agent'},lifecycleUid:e.COTAL_LIFECYCLE_UID,channels:[],consume:false,registerPresence:true});await ep.start();setInterval(()=>{},1000);for(const s of['SIGINT','SIGTERM'])process.on(s,()=>ep.stop().finally(()=>process.exit(0)));`);
-writeFileSync(join(fixture, "index.js"), `import{registry}from${JSON.stringify(core)};registry.register({kind:'connector',name:'stack-remedy-seat',requires:['node'],buildLaunch:o=>({command:process.execPath,args:[${JSON.stringify(seat)}],env:{...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('COTAL_'))),COTAL_SPACE:o.space,COTAL_SERVERS:String(o.servers),COTAL_ID:String(o.id),COTAL_NAME:o.name,COTAL_LIFECYCLE_UID:String(o.lifecycleUid)}})});`);
+const connector = { kind: "connector", name: "stack-remedy-seat", requires: ["node"] };
+writePluginFixture(fixture, {
+  name: "cotal-stack-remedy-fixture", version: "0.0.1", core: coreVersion, provides: [connector],
+  factorySource: `export default host => host.register({...${JSON.stringify(connector)},buildLaunch:o=>({command:process.execPath,args:[${JSON.stringify(seat)}],env:{...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('COTAL_'))),COTAL_SPACE:o.space,COTAL_SERVERS:String(o.servers),COTAL_ID:String(o.id),COTAL_NAME:o.name,COTAL_LIFECYCLE_UID:String(o.lifecycleUid)}})});`,
+});
 let started = false;
 async function cli(args: string[], mode: "default" | "registry" | "replay" = "default"): Promise<{ code: number | null; output: string }> {
   const commandEnv: NodeJS.ProcessEnv = { ...env, ...(mode === "default" ? {} : { npm_config_registry: registry }) };

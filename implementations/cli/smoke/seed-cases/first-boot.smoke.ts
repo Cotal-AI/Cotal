@@ -1,4 +1,4 @@
-import { existsSync, statSync, join, boot, check, cotal, freshCfg, seedDir, readJson, track, finishScenario } from "./harness.js";
+import { existsSync, statSync, join, boot, check, cotal, dashboardInstalled, freshCfg, seedDir, readJson, track, finishScenario } from "./harness.js";
 
 try {
   // ── 1. first-run auto-seed + state files ─────────────────────────────────────────────────────────
@@ -9,11 +9,11 @@ try {
     const names = ["claude", "opencode", "codex", "hermes", "jcode", "pi"].filter((n) => listed.includes(`connector:${n}`));
     if (names.length !== 6) console.log(`[diag] auto-seed status=${first.status}\n--stdout--\n${listed}\n--stderr--\n${first.stderr}`);
     check("auto-seed: all six connectors seeded on first command", names.length === 6, names);
-    check("auto-seed: the web dashboard seeded on first command (service-preset:web)", listed.includes("service-preset:web"), listed);
+    check("auto-seed: the built-in dashboard is available without an extension entry", dashboardInstalled(cfg) && !listed.includes("@cotal-ai/web"), listed);
     const sd = seedDir(cfg);
     check("auto-seed: authority/witness/stamp written", ["authority.json", "witness.json", "stamp.json"].every((f) => existsSync(join(sd, f))));
     const ever = readJson(join(sd, "authority.json")).everSeeded.slice().sort();
-    check("auto-seed: authority records all seven first-party exts", ever.join(",") === "claude,codex,hermes,jcode,opencode,pi,web", ever);
+    check("auto-seed: authority records all six seeded connectors", ever.join(",") === "claude,codex,hermes,jcode,opencode,pi", ever);
 
     // The operator-global seed-store write must not be silent (#593): re-seeding `~/.config/cotal/seed/store`
     // from a non-released checkout makes those bytes the machine-wide payload for the version key, so the

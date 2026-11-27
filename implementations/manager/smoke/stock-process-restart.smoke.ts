@@ -15,6 +15,7 @@
  * Run: tsx implementations/manager/smoke/stock-process-restart.smoke.ts
  */
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
+import { writeDeclaredConnector } from "./_declared-connector.js";
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -149,15 +150,6 @@ writeFileSync(join(root, ".cotal", "membership-observer.creds"), await mintMembe
 writeFileSync(join(root, ".cotal", "connection-evictor.creds"), await mintConnectionEvictorCreds(auth, newIdentity()), { mode: 0o600 });
 writeFileSync(join(root, ".cotal", "membership.json"), JSON.stringify({ accountId: auth.account.pub }), { mode: 0o600 });
 
-// Write scripted-sdk connector extension into xdg
-const extensionRoot = join(xdg, "cotal", "extensions");
-const extensionDir = join(extensionRoot, "node_modules", "scripted-sdk-extension");
-mkdirSync(extensionDir, { recursive: true });
-writeFileSync(join(extensionDir, "package.json"), JSON.stringify({
-  name: "scripted-sdk-extension", version: "1.0.0", type: "module", main: "index.js",
-  peerDependencies: { "@cotal-ai/core": "*" },
-}, null, 2));
-
 import { pathToFileURL } from "node:url";
 const childScriptPath = join(root, "child-script.mjs");
 const childReadyFile = join(root, "child-ready");
@@ -242,9 +234,8 @@ try {
 }
 `);
 
-writeFileSync(join(extensionDir, "index.js"), `
-import { registry } from "@cotal-ai/core";
-registry.register({
+writeDeclaredConnector(join(xdg, "cotal", "extensions"), "scripted-sdk-extension", "scripted-sdk", `
+export default host => host.register({
   kind: "connector", name: "scripted-sdk", readinessTimeoutMs: 20000,
   buildLaunch(opts) {
     return {
@@ -260,13 +251,6 @@ registry.register({
   },
 });
 `);
-
-mkdirSync(extensionRoot, { recursive: true });
-writeFileSync(join(extensionRoot, "extensions.json"), JSON.stringify({ extensions: [{
-  pkg: "scripted-sdk-extension", version: "1.0.0", spec: "file:scripted-sdk-extension",
-  provides: [{ kind: "connector", name: "scripted-sdk" }], commands: [],
-  connectors: [{ name: "scripted-sdk", requires: [], eventPlane: false }],
-}] }, null, 2));
 
 // Write persona file with explicit allowSubscribe for general and dynamic channels
 mkdirSync(join(root, ".cotal", "agents"), { recursive: true });

@@ -94,6 +94,7 @@ function writeReconcilePlugin(name: string, source: string, providesRuntime = fa
     contract: 1,
     provides: [{ kind: "connector", name, aliases: [] }, ...(providesRuntime ? [{ kind: "runtime", name, aliases: [] }] : [])],
     commands: [],
+    localProcesses: [], servicePresets: [],
     connectors: [{ name, requires: [], eventPlane: false, prompts: false, askPermissions: false, reasoningEvents: false, setup: null }],
   };
   writeFileSync(join(dir, "package.json"), JSON.stringify({ name, version: "1.0.0", type: "module", main: "index.js", cotal }));
@@ -112,6 +113,8 @@ async function checkManifestReconcile(): Promise<void> {
       buildLaunch:()=>{throw Error('observer launch was reached')},
       listModels:()=>({models:[{id:registry.has('connector','reconcile-target')?'target-present':'target-absent'}]})});`);
   const publish = (...extensions: InstalledExtension[]) => saveExtensionsManifest({ extensions });
+  for (const [persona, agent] of [["stale-target", target.pkg], ["stale-backend", observer.pkg], ["rail-probe", "reconcile-new"]])
+    writeFileSync(join(workspaceRoot, ".cotal", "agents", `${persona}.md`), `---\nname: ${persona}\nagent: ${agent}\n---\n`);
   publish(target, observer);
   const space = "harness-scope";
   const manager = new Manager({ space, servers, runtime: "pty", workspaceRoot, installedExtensions: true });

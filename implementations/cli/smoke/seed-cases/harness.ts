@@ -61,6 +61,11 @@ function cotal(cfg: string, args: string[], extraEnv: Record<string, string> = {
   });
   return { status: r.status ?? -1, stdout: r.stdout ?? "", stderr: r.stderr ?? "" };
 }
+export function dashboardInstalled(cfg: string): boolean {
+  const { stdout } = cotal(cfg, ["status", "--json"]);
+  try { return JSON.parse(stdout).result?.machine?.web?.installed === true; }
+  catch { return false; }
+}
 function fakeCotal(path: string, version: string): void {
   mkdirSync(join(path, ".."), { recursive: true });
   writeFileSync(path, `#!/bin/sh\nprintf '%s\\n' 'cotal-ai ${version}'\n`);

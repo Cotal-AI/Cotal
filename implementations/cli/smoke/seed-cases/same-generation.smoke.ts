@@ -1,4 +1,5 @@
-import { boot, existsSync, mkdirSync, rmSync, writeFileSync, join, check, cotal, freshCfg, seedDir, manifestPath, readJson, writeJson, listNames, seedGeneration, track, finishScenario } from "./harness.js";
+import { writePluginFixture } from "../../../../scripts/plugin-fixture.mjs";
+import { boot, existsSync, mkdirSync, rmSync, join, check, cotal, freshCfg, seedDir, manifestPath, readJson, writeJson, listNames, seedGeneration, track, finishScenario } from "./harness.js";
 
 try {
   // ── 8b. a built-in added at an UNCHANGED generation still seeds (fast-path coverage) ─────────────
@@ -42,11 +43,11 @@ try {
     const referenced = join(store, "0.0.1-referenced");
     const stale = join(store, "0.0.1-stale");
     const fixture = join(referenced, "fixture");
-    mkdirSync(fixture, { recursive: true });
-    writeJson(join(fixture, "package.json"), { name: pkg, version, type: "module", peerDependencies: { "@cotal-ai/core": "*" } });
-    writeFileSync(join(fixture, "index.js"), `import { registry } from "@cotal-ai/core";
-registry.register({ kind: "command", name: "spec-less-fixture", summary: "Test extension", run() {} });
-`);
+    const command = { kind: "command", name: "spec-less-fixture", summary: "Test extension" };
+    writePluginFixture(fixture, {
+      name: pkg, version, core: version, provides: [command],
+      factorySource: `export default host => host.register({ ...${JSON.stringify(command)}, run() {} });\n`,
+    });
     const offline = { npm_config_offline: "true" };
     const added = cotal(cfg, ["ext", "add", fixture], offline);
     check("install spec fixture: real npm installs the operator package", added.status === 0, added.stderr);

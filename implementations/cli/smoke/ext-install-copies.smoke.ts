@@ -10,6 +10,17 @@ import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, re
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { emitSentinel } from "@cotal-ai/smoke-kit";
+import { writePluginFixture } from "../../../scripts/plugin-fixture.mjs";
+
+function commandFixture(dir: string, name: string, word: string, options: {
+  entry?: string; packageFields?: Record<string, unknown>; run?: string; prelude?: string;
+} = {}): void {
+  const command = { kind: "command", name: word, summary: "Fixture command" };
+  writePluginFixture(dir, {
+    name, version: "1.0.0", provides: [command], entry: options.entry, packageFields: options.packageFields,
+    factorySource: `${options.prelude ?? ""}\nexport default host => host.register({ ...${JSON.stringify(command)}, run() { ${options.run ?? ""} } });\n`,
+  });
+}
 
 function recordNpmSpawns(dir: string): { record: string; env: NodeJS.ProcessEnv } {
   const record = join(dir, "npm-spawn.jsonl");
@@ -36,14 +47,9 @@ function checkMissingLocalTarball(
   cli: (args: string[], extra?: NodeJS.ProcessEnv) => { status: number | null; stderr: string },
 ): void {
   const source = join(dir, "bad-dependency");
-  mkdirSync(source);
-  writeFileSync(join(source, "package.json"), JSON.stringify({
-    name: "cotal-bad-dependency-demo", version: "1.0.0", type: "module", main: "./greeting.mjs",
-    peerDependencies: { "@cotal-ai/core": "*" }, dependencies: { "missing-library": "file:./missing-library.tgz" },
-  }));
-  writeFileSync(join(source, "greeting.mjs"), `import { registry } from "@cotal-ai/core";
-registry.register({ kind: "command", name: "demo-bad-dependency", summary: "Print a greeting", run() {} });
-`);
+  commandFixture(source, "cotal-bad-dependency-demo", "demo-bad-dependency", {
+    entry: "greeting.mjs", packageFields: { dependencies: { "missing-library": "file:./missing-library.tgz" } },
+  });
   const files = ["package.json", "package-lock.json", "extensions.json"].map(name => join(prefix, name));
   const before = files.map(file => readFileSync(file));
   const refused = cli(["ext", "add", "./bad-dependency"], { npm_config_offline: "true" });
@@ -65,7 +71,6 @@ function main(): void {
   const digest = (path: string) => createHash("sha256").update(readFileSync(path)).digest("hex");
   const sourceEntry = join(source, "dist", "index.js");
   const sourceDigest = digest(sourceEntry);
-  const hostCore = realpathSync(join(repo, "packages", "core"));
   const root = realpathSync(mkdtempSync(join(tmpdir(), "cotal-ext-copies-")));
   let passed = 0, failed = 0;
   const check = (name: string, value: boolean): void => {
@@ -108,19 +113,19 @@ function main(): void {
       const listed = child([entry, "ext", "--json"]);
       check("installed root is the retained prefix before initial seeding", before.status === 0 && before.stdout.trim() === expected && listed.status === 0 && JSON.parse(listed.stdout).result.root === expected);
       check("reading the fresh installed root creates no prefix", !existsSync(expected));
-      const added = child([entry, "ext", "add", join(repo, "implementations", "acp")]);
+      const added = child([entry, "ext", "add", join(repo, "extensions", "tmux")]);
       assert.equal(added.status, 0, added.stdout + added.stderr);
-      const helpBefore = child([entry, "acp", "--help"]);
-      assert.equal(helpBefore.status, 0, helpBefore.stdout + helpBefore.stderr);
+      const installedBefore = child([entry, "ext", "list", "--json"]);
+      assert.equal(installedBefore.status, 0, installedBefore.stdout + installedBefore.stderr);
+      assert.ok(JSON.parse(installedBefore.stdout).result.items.some((item: { pkg: string }) => item.pkg === "@cotal-ai/tmux"));
       const seeded = child([entry, "ext", "seed"]);
       assert.equal(seeded.status, 0, seeded.stdout + seeded.stderr);
       const after = child([entry, "ext", "root"]);
       check("initial seeding keeps the advertised installed root", after.status === 0 && after.stdout === before.stdout && existsSync(expected));
-      const helpAfter = child([entry, "acp", "--help"]);
-      check("initial seeding keeps the installed ACP command", helpAfter.status === 0 && helpAfter.stdout === helpBefore.stdout);
+      check("initial seeding keeps the tmux runtime's installed entry", existsSync(join(expected, "node_modules", "@cotal-ai", "tmux", "dist", "index.js")));
       const listAfter = child([entry, "ext", "list", "--json"]);
       const items = listAfter.status === 0 ? JSON.parse(listAfter.stdout).result.items as { pkg: string; seeded: boolean }[] : [];
-      check("initial seeding keeps ACP alongside the seven built-ins", items.some(item => item.pkg === "@cotal-ai/acp" && !item.seeded) && items.filter(item => item.seeded).length === 7);
+      check("initial seeding keeps tmux alongside the six seeded connectors", items.some(item => item.pkg === "@cotal-ai/tmux" && !item.seeded) && items.filter(item => item.seeded).length === 6);
     }
     {
       const dir = join(root, "remove");
@@ -140,9 +145,7 @@ function main(): void {
       check("remove: installed bytes match built source", before === sourceDigest);
       const siblingName = "@_cotal-test/_copy-remove";
       const sibling = join(dir, "sibling");
-      mkdirSync(sibling);
-      writeFileSync(join(sibling, "package.json"), JSON.stringify({ name: siblingName, version: "1.0.0", type: "module", main: "index.js", peerDependencies: { "@cotal-ai/core": "*" } }));
-      writeFileSync(join(sibling, "index.js"), `import { registry } from "@cotal-ai/core"; registry.register({ kind: "command", name: "copy-sibling", summary: "fixture", run: async () => {} });\n`);
+      commandFixture(sibling, siblingName, "copy-sibling");
       const installed = cli(["ext", "add", sibling]);
       assert.equal(installed.status, 0, installed.stderr.slice(-800));
       check("remove: adding a sibling preserves the built-in copy", !lstatSync(kept).isSymbolicLink());
@@ -155,7 +158,7 @@ function main(): void {
       const manifest = JSON.parse(readFileSync(join(prefix, "extensions.json"), "utf8")) as { extensions: { pkg: string }[] };
       check("remove: manifest keeps only the built-in", manifest.extensions.length === 1 && manifest.extensions[0]?.pkg === keptName);
       check("remove: source package remains unchanged", digest(sourceEntry) === sourceDigest);
-      check("remove: retained core peer matches the running CLI", realpathSync(join(kept, "node_modules", "@cotal-ai", "core")) === hostCore);
+      check("remove: no core peer was linked into the retained connector", !existsSync(join(kept, "node_modules", "@cotal-ai", "core")));
     }
     // A fresh seed child installs in place. The renamed Claude bundle already owns the same
     // providers, so the real seed refuses after npm installs the candidate and must remove it.
@@ -165,7 +168,8 @@ function main(): void {
       const alternateName = "cotal-ext-copy-claude";
       const alternate = join(dir, alternateName);
       mkdirSync(alternate);
-      writeFileSync(join(alternate, "package.json"), JSON.stringify({ name: alternateName, version: "1.0.0", type: "module", main: "index.js", peerDependencies: { "@cotal-ai/core": "*" } }));
+      const declaration = JSON.parse(readFileSync(join(source, "package.json"), "utf8")).cotal;
+      writeFileSync(join(alternate, "package.json"), JSON.stringify({ name: alternateName, version: "1.0.0", type: "module", main: "index.js", cotal: declaration }));
       cpSync(sourceEntry, join(alternate, "index.js"));
       const added = cli(["ext", "add", alternate]);
       assert.equal(added.status, 0, added.stderr);
@@ -188,7 +192,7 @@ function main(): void {
       const kept = join(modules, alternateName);
       check("seed: the installed connector stays a copy with unchanged bytes",
         !lstatSync(kept).isSymbolicLink() && digest(join(kept, "index.js")) === sourceDigest);
-      check("seed: the surviving core peer matches the running CLI", realpathSync(join(kept, "node_modules", "@cotal-ai", "core")) === hostCore);
+      check("seed: no core peer was linked into the surviving connector", !existsSync(join(kept, "node_modules", "@cotal-ai", "core")));
     }
     for (const [form, exports] of [
       ["nested", { ".": { import: "./greet.mjs" } }],
@@ -198,25 +202,21 @@ function main(): void {
       const dir = join(root, `exports-entry-${form}`);
       const { prefix, cli } = sandbox(dir);
       const source = join(dir, "example-extension");
-      mkdirSync(source);
       const name = "cotal-example-greet";
-      const meta = { name, version: "1.0.0", type: "module", exports, peerDependencies: { "@cotal-ai/core": "*" } };
+      commandFixture(source, name, "greet-example", {
+        entry: "greet.mjs", packageFields: { exports }, run: 'console.log("Hello from the extension");',
+      });
+      const meta = JSON.parse(readFileSync(join(source, "package.json"), "utf8"));
+      delete meta.main;
       writeFileSync(join(source, "package.json"), JSON.stringify(meta));
-      writeFileSync(join(source, "greet.mjs"), `import { registry } from "@cotal-ai/core";
-registry.register({ kind: "command", name: "greet-example", summary: "Print a greeting", run() { console.log("Hello from the extension"); } });
-`);
       if (form === "node-conditional") {
-        writeFileSync(join(source, "fallback.mjs"), `import { registry } from "@cotal-ai/core";
-registry.register({ kind: "command", name: "greet-example", summary: "Print a fallback greeting", run() { console.log("Hello from the fallback"); } });
-registry.register({ kind: "command", name: "greet-fallback", summary: "Fallback provider", run() {} });
-`);
+        writeFileSync(join(source, "fallback.mjs"), 'throw new Error("unexpected default export branch");\n');
       }
       const { record, env } = recordNpmSpawns(dir);
       const added = cli(["ext", "add", "./example-extension"], env);
       assert.equal(added.status, 0, `${form} exports-only ext add failed: ${added.stderr.slice(-800)}`);
       if (form === "node-conditional") {
-        check("ext add records the Node import providers instead of the default providers",
-          added.stdout.includes("command:greet-example") && !added.stdout.includes("command:greet-fallback"));
+        check("ext add reports the declared provider without evaluating either export", added.stdout.includes("command:greet-example"));
       }
       check(`ext add passes windowsHide to the actual npm install for the ${form} root export`, existsSync(record) && readFileSync(record, "utf8").trim().split("\n").every(line => JSON.parse(line).windowsHide === true));
       const greeted = cli(["greet-example"]);
@@ -253,9 +253,7 @@ registry.register({ kind: "command", name: "greet-fallback", summary: "Fallback 
       writeFileSync(join(lib, "bin", "shared-bin.js"), "#!/usr/bin/env node\n");
       const extension = (name: string): string => {
         const pkg = join(dir, name);
-        mkdirSync(pkg);
-        writeFileSync(join(pkg, "package.json"), JSON.stringify({ name, version: "1.0.0", type: "module", main: "index.js", peerDependencies: { "@cotal-ai/core": "*" }, dependencies: { "shared-bin-lib": `file:${lib}` } }));
-        writeFileSync(join(pkg, "index.js"), `import { registry } from "@cotal-ai/core"; registry.register({ kind: "command", name: "${name}", summary: "fixture", run: async () => {} });\n`);
+        commandFixture(pkg, name, name, { packageFields: { dependencies: { "shared-bin-lib": `file:${lib}` } } });
         return pkg;
       };
       const link = join(prefix, "node_modules", ".bin", "shared-bin");
@@ -271,20 +269,24 @@ registry.register({ kind: "command", name: "greet-fallback", summary: "Fallback 
           existsSync(join(prefix, "node_modules", "cotal-ext-bin-first")) && existsSync(join(prefix, "node_modules", "cotal-ext-bin-second")));
       check("shared bin: the bin link still reaches the shared package", symlinked() && existsSync(link));
     }
-    // Add uses one candidate metadata snapshot too, even when the entry changes its own file.
+    // Add reads the declaration without evaluating an entry that would mutate the install.
     for (const damage of [false, true]) {
       const dir = join(root, damage ? "metadata-changed" : "metadata-control");
       const { prefix, cli } = sandbox(dir);
       const name = damage ? "cotal-ext-metadata-changed" : "cotal-ext-metadata-control";
       const source = join(dir, name);
-      mkdirSync(source);
-      writeFileSync(join(source, "package.json"), JSON.stringify({ name, version: "1.0.0", type: "module", main: "index.js", peerDependencies: { "@cotal-ai/core": "*", "@cotal-ai/workspace": ">=99.0.0" } }));
-      writeFileSync(join(source, "index.js"), `import { writeFileSync } from "node:fs";\nimport { registry } from "@cotal-ai/core";\nvoid registry;\n${damage ? 'writeFileSync(new URL("./package.json", import.meta.url), "{corrupt");' : ''}\nawait import("./missing-export.mjs");\n`);
-      writeFileSync(join(source, "missing-export.mjs"), 'import { notAnExportOfWorkspace } from "@cotal-ai/workspace";\nvoid notAnExportOfWorkspace;\n');
+      const marker = join(dir, "evaluated");
+      commandFixture(source, name, name, {
+        prelude: `import { writeFileSync } from "node:fs";
+writeFileSync(${JSON.stringify(marker)}, "evaluated");
+${damage ? 'writeFileSync(new URL("./package.json", import.meta.url), "{corrupt");' : ''}
+throw new Error("fixture import failed");`,
+      });
       const added = cli(["ext", "add", source]);
-      check(`${name}: missing-export add refuses`, added.status === 1 && added.stderr.includes("notAnExportOfWorkspace"));
-      check(`${name}: diagnosis keeps the validated peer floor`, added.stderr.includes("The installed @cotal-ai/workspace is BEHIND") && added.stderr.includes(">=99.0.0") && !added.stderr.includes("is corrupt or unreadable"));
-      check(`${name}: failed add leaves no installed candidate`, !existsSync(join(prefix, "node_modules", name)));
+      check(`${name}: metadata-only add succeeds`, added.status === 0 && !existsSync(marker), added.stderr);
+      check(`${name}: npm installed a valid declaration`, JSON.parse(readFileSync(join(prefix, "node_modules", name, "package.json"), "utf8")).cotal.contract === 1);
+      const invoked = cli([name]);
+      check(`${name}: first use evaluates the entry and reports its failure`, invoked.status !== 0 && existsSync(marker) && invoked.stderr.includes("fixture import failed"));
     }
   } finally {
     rmSync(root, { recursive: true, force: true });

@@ -13,6 +13,7 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createSuite } from "@cotal-ai/smoke-kit";
+import { writePluginFixture } from "../../../scripts/plugin-fixture.mjs";
 
 const BIN = join(import.meta.dirname, "..", "..", "..", "bin", "dist", "cotal.js");
 if (!existsSync(BIN)) {
@@ -100,13 +101,14 @@ const ansi = /\x1b\[/;
   const root = mkdtempSync(join(tmpdir(), "cotal-probe-runtime-"));
   roots.push(root);
   const pkg = join(root, "package");
-  mkdirSync(pkg);
-  writeFileSync(join(pkg, "package.json"), JSON.stringify({ name: "probe-runtime", version: "1.0.0", type: "module", main: "index.js", peerDependencies: { "@cotal-ai/core": "*" } }));
-  writeFileSync(join(pkg, "index.js"), `import { registry } from "@cotal-ai/core";
-registry.register({ kind: "runtime", name: "probe", available() {
+  const runtime = { kind: "runtime", name: "probe" };
+  writePluginFixture(pkg, {
+    name: "probe-runtime", version: "1.0.0", provides: [runtime],
+    factorySource: `export default host => host.register({ ...${JSON.stringify(runtime)}, available() {
   if (process.env.PROBE_FAIL) throw new Error("probe configuration missing");
   return false;
-}, create() { throw new Error("runtime is not running"); } });`);
+}, create() { throw new Error("runtime is not running"); } });`,
+  });
   const run = sandbox();
   const added = run(["ext", "add", pkg], { npm_config_offline: "true", npm_config_cache: join(root, "cache") });
   check("the probe runtime installs from its local package", added.status === 0, shown(added));

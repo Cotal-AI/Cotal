@@ -8,8 +8,10 @@ import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { delimiter, join, resolve } from "node:path";
 import { emitSentinel } from "@cotal-ai/smoke-kit";
+import { resolveOnPath } from "@cotal-ai/workspace";
+import { writePluginFixture } from "../../../scripts/plugin-fixture.mjs";
 
 const repo = resolve(import.meta.dirname, "../../..");
 const binary = join(repo, "bin", "dist", "cotal.js");
@@ -37,22 +39,24 @@ try {
     npm_config_globalconfig: join(root, "global.npmrc"), npm_config_update_notifier: "false",
     EXT_INTERRUPT_HELD: held, EXT_INTERRUPT_RELEASE: release,
   };
-  // The package's postinstall marks that npm is running it, then holds npm until the release file exists.
+  const realNpm = resolveOnPath("npm", process.env);
+  assert.ok(realNpm, "real npm must be available before adding the test shim");
+  const tools = join(root, "tools"), npmHold = join(root, "npm-hold.cjs");
+  mkdirSync(tools);
+  writeFileSync(npmHold, `const {existsSync,writeFileSync}=require('node:fs');
+writeFileSync(process.env.EXT_INTERRUPT_HELD,'held');
+const end=Date.now()+60000;
+const wait=setInterval(()=>{if(existsSync(process.env.EXT_INTERRUPT_RELEASE)||Date.now()>=end)clearInterval(wait)},50);
+`);
+  const quote = (arg: string) => `'${arg.replaceAll("'", `'"'"'`)}'`;
+  writeFileSync(join(tools, "npm"), `#!/bin/sh\n${quote(realNpm)} "$@" || exit $?\n[ "$1" != install ] || exec ${quote(process.execPath)} ${quote(npmHold)}\n`, { mode: 0o700 });
+  writeFileSync(join(tools, "npm.cmd"), `@echo off\r\ncall "${realNpm}" %*\r\nif errorlevel 1 exit /b %errorlevel%\r\nif /i "%~1"=="install" "${process.execPath}" "${npmHold}"\r\n`);
+  env.PATH = `${tools}${delimiter}${env.PATH ?? ""}`;
   const build = (version: string): string => {
     const dir = join(root, `ext-${version}`);
-    mkdirSync(dir);
-    writeFileSync(join(dir, "package.json"), JSON.stringify({ name, version, type: "module", main: "index.js", peerDependencies: { "@cotal-ai/core": "*" }, scripts: { postinstall: "node hold.mjs" } }));
-    writeFileSync(join(dir, "index.js"), `import { registry } from "@cotal-ai/core"; registry.register({ kind: "command", name: "interrupt-probe", summary: "fixture", run: async () => {} });\n`);
-    writeFileSync(join(dir, "hold.mjs"), [
-      `import { chmodSync, existsSync, readdirSync, writeFileSync } from "node:fs";`,
-      `import { dirname, join } from "node:path";`,
-      `if (${JSON.stringify(version)} === "3.0.0" && process.platform !== "win32" && process.getuid?.() !== 0) {`,
-      `  const parent = dirname(${JSON.stringify(join(xdg, "cotal", "extensions"))});`,
-      `  for (const entry of readdirSync(parent)) if (entry.startsWith(".extensions.rollback-")) chmodSync(join(parent, entry, "extensions", "read-only"), 0o555);`,
-      `}`,
-      `writeFileSync(process.env.EXT_INTERRUPT_HELD, "held");`,
-      `for (const end = Date.now() + 60000; !existsSync(process.env.EXT_INTERRUPT_RELEASE) && Date.now() < end;) await new Promise((r) => setTimeout(r, 50));`,
-    ].join("\n") + "\n");
+    const provider = { kind: "command", name: "interrupt-probe", summary: "fixture" };
+    writePluginFixture(dir, { name, version, provides: [provider],
+      factorySource: `export default host => host.register({ ...${JSON.stringify(provider)}, run: async () => {} });\n` });
     return dir;
   };
   const add = (dir: string) => spawnSync(process.execPath, [binary, "ext", "add", dir], { cwd: root, env, encoding: "utf8", timeout: 180_000 });
@@ -66,19 +70,26 @@ try {
   assert.equal(first.status, 0, `the first add failed: ${first.stderr.slice(-800)}`);
   check("1.0.0 is installed and recorded", recorded() === "1.0.0" && installed() === "1.0.0");
 
-  // SIGTERM reaches the CLI only, while npm runs the 2.0.0 postinstall.
+  // Interrupt the CLI before its npm subprocess exits. On Windows a parent kill is forceful,
+  // so deliver the notification inside the CLI rather than asking the OS to terminate it.
   rmSync(release);
-  rmSync(held); // the 1.0.0 postinstall wrote it
+  rmSync(held);
   const v2 = build("2.0.0");
-  const child = spawn(process.execPath, [binary, "ext", "add", v2], { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] });
+  const interrupt = join(root, "interrupt.cjs");
+  writeFileSync(interrupt, `const {existsSync,writeFileSync}=require('node:fs');
+const clock=setInterval(()=>{if(!existsSync(${JSON.stringify(held)}))return;clearInterval(clock);process.emit('SIGTERM');writeFileSync(${JSON.stringify(release)},'');},20);clock.unref();\n`);
+  const nodeArgs = process.platform === "win32" ? ["--require", interrupt] : [];
+  const child = spawn(process.execPath, [...nodeArgs, binary, "ext", "add", v2], { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] });
   let out = "", err = "";
   child.stdout.on("data", (chunk) => { out += chunk; });
   child.stderr.on("data", (chunk) => { err += chunk; });
   const exited = new Promise<number | null>((done) => child.once("close", (code) => done(code)));
   for (const end = Date.now() + 120_000; !existsSync(held) && Date.now() < end;) await new Promise((r) => setTimeout(r, 50));
-  assert.ok(existsSync(held), "npm reached the 2.0.0 postinstall");
-  child.kill("SIGTERM");
-  writeFileSync(release, "");
+  assert.ok(existsSync(held), "real npm installed 2.0.0 and its wrapper is holding open");
+  if (process.platform !== "win32") {
+    child.kill("SIGTERM");
+    writeFileSync(release, "");
+  }
   const code = await exited;
   check("the interrupted add exits 130", code === 130, `exit ${code}\n${out.slice(-800)}${err.slice(-800)}`);
   check("the interrupted add never announces 2.0.0", !(out + err).includes(`added ${name}@2.0.0`), out);
@@ -88,8 +99,7 @@ try {
   check("the next add announces 2.0.0 once", again.stdout.split(`added ${name}@2.0.0`).length === 2, again.stdout);
 
   if (readOnlyCell) {
-    // The owned postinstall makes the actual snapshot read-only after cpSync. Node may
-    // add owner-write permission while copying, so source permissions alone do not inject failure.
+    // Promotion renames the live prefix whole into the rollback location, preserving its mode.
     const locked = join(prefix, "read-only");
     mkdirSync(join(locked, "inner"), { recursive: true });
     writeFileSync(join(locked, "inner", "file"), "");

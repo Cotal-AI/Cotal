@@ -5,6 +5,7 @@ import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
+import { writePluginFixture } from "../../../scripts/plugin-fixture.mjs";
 import {
   beginExtensionNpmMutation,
   beginGlobalUpdateChild,
@@ -383,14 +384,12 @@ if (process.platform !== "win32") {
   let npmPid: number | undefined;
   let releasePass: (() => void) | undefined;
   try {
-    mkdirSync(fixture, { recursive: true });
     mkdirSync(fakeBin, { recursive: true });
-    writeFileSync(join(fixture, "package.json"), JSON.stringify({
-      name: pkg,
-      version: "1.0.0",
-      type: "module",
-      peerDependencies: { "@cotal-ai/core": "*" },
-    }));
+    const runtime = { kind: "runtime", name: "orphan-smoke" };
+    writePluginFixture(fixture, {
+      name: pkg, version: "1.0.0", provides: [runtime],
+      factorySource: `export default host => host.register(${JSON.stringify(runtime)});\n`,
+    });
     const fakeNpm = join(fakeBin, "npm");
     writeFileSync(fakeNpm, `#!/usr/bin/env node
 import { existsSync, readFileSync, writeFileSync } from "node:fs";

@@ -1,6 +1,7 @@
 import { randomBytes } from "node:crypto";
-import { bindExtensionPeers } from "@cotal-ai/workspace";
-import { boot, existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync, tmpdir, join, check, cotal, freshCfg, seedDir, manifestPath, readJson, writeJson, track, finishScenario } from "./harness.js";
+import { writePluginFixture } from "../../../../scripts/plugin-fixture.mjs";
+import { checkBuiltInRetirement } from "./builtin-retirement.js";
+import { boot, existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, tmpdir, join, check, cotal, freshCfg, seedDir, manifestPath, readJson, writeJson, track, finishScenario } from "./harness.js";
 
 // A third-party extension recorded in the manifest whose package directory is gone: never installed
 // there, or pruned by npm as extraneous because the prefix's package.json does not list it. Either
@@ -13,9 +14,8 @@ const BUILTINS = [
   "@cotal-ai/connector-hermes",
   "@cotal-ai/connector-jcode",
   "@cotal-ai/pi",
-  "@cotal-ai/web",
 ];
-const META = { name: PKG, version: "1.0.0", type: "module", main: "index.js", peerDependencies: { "@cotal-ai/core": "*" } };
+const connector = { kind: "connector", name: "fixture-absent" };
 // A recorded spec can be a URL that carries a credential, so no warning may print it. The prefix's
 // package.json lists no dependency, so npm never resolves this one.
 const TOKEN = randomBytes(16).toString("hex");
@@ -30,23 +30,24 @@ function fixture(onDisk: boolean): { cfg: string; dir: string } {
   writeJson(join(prefix, "package.json"), { name: "cotal-extensions", private: true, dependencies: {} });
   writeJson(manifestPath(cfg), {
     extensions: [{
-      pkg: PKG, version: "1.0.0", spec: SPEC, commands: [],
-      provides: [{ kind: "connector", name: "fixture-absent" }],
+      pkg: PKG, version: "1.0.0", spec: SPEC, installId: randomBytes(16).toString("hex"), commands: [],
+      provides: [{ ...connector, aliases: [] }],
       connectors: [{ name: "fixture-absent", requires: [], eventPlane: false, setup: null }],
     }],
   });
   const dir = join(prefix, "node_modules", "@fixture", "cotal-absent-ext");
   if (onDisk) {
-    mkdirSync(dir, { recursive: true });
-    writeJson(join(dir, "package.json"), META);
-    writeFileSync(join(dir, "index.js"), "export {};\n");
+    writePluginFixture(dir, {
+      name: PKG, version: "1.0.0", provides: [connector],
+      factorySource: `export default host => host.register({ ...${JSON.stringify(connector)}, buildLaunch() { throw new Error('fixture must not launch'); } });\n`,
+    });
   }
   return { cfg, dir };
 }
 const recorded = (cfg: string): string[] => (readJson(manifestPath(cfg)) as { extensions: { pkg: string }[] }).extensions.map((e) => e.pkg);
 const cursorPath = (cfg: string): string => join(seedDir(cfg), "reconcile.cursor.json");
 const warned = (run: { stdout: string; stderr: string }, dir: string): boolean =>
-  run.stderr.includes(`! ${PKG} is in the extensions manifest but not installed at ${dir}, so its shared peers were not linked`) &&
+  run.stderr.includes(`! ${PKG} is in the extensions manifest but not installed at ${dir}`) &&
   run.stderr.includes("`cotal ext add <original-spec>` reinstalls it") &&
   run.stderr.includes(`\`cotal ext remove '${PKG}'\` drops the entry`) &&
   !`${run.stdout}${run.stderr}`.includes(TOKEN);
@@ -59,7 +60,7 @@ try {
     const reset = cotal(cfg, ["ext", "seed", "--reset"]);
     check("absent extension: --reset exits 0", reset.status === 0, reset.stderr);
     check("absent extension: --reset names the package, its path and both remedies, never its spec", warned(reset, dir), reset.stderr);
-    check("absent extension: --reset seeds all seven built-ins and clears its cursor", seededAll(cfg), recorded(cfg));
+    check("absent extension: --reset seeds all six connectors and clears its cursor", seededAll(cfg), recorded(cfg));
     check("absent extension: its manifest entry is kept", recorded(cfg).includes(PKG));
   }
 
@@ -70,7 +71,7 @@ try {
     check("extraneous extension: --reset exits 0", reset.status === 0, reset.stderr);
     check("extraneous extension: npm pruned the package the prefix does not list", !existsSync(dir));
     check("extraneous extension: --reset names the package, its path and both remedies, never its spec", warned(reset, dir), reset.stderr);
-    check("extraneous extension: --reset seeds all seven built-ins and keeps its entry", seededAll(cfg) && recorded(cfg).includes(PKG), recorded(cfg));
+    check("extraneous extension: --reset seeds all six connectors and keeps its entry", seededAll(cfg) && recorded(cfg).includes(PKG), recorded(cfg));
   }
 
   // ── a failed seed beside an absent package: repair, remove, reset ────────────────────────────────
@@ -86,7 +87,7 @@ try {
       refused.status !== 0 && /a previous connector seed failed \(package "claude", phase add\)/.test(refused.stderr) && /cotal ext seed --repair/.test(refused.stderr), refused.stderr);
     const repair = cotal(cfg, ["ext", "seed", "--repair"]);
     check("absent extension recovery: --repair exits 0 and names the absent package, never its spec", repair.status === 0 && warned(repair, dir), repair.stderr);
-    check("absent extension recovery: --repair seeds all seven built-ins and clears the cursor", seededAll(cfg), recorded(cfg));
+    check("absent extension recovery: --repair seeds all six connectors and clears the cursor", seededAll(cfg), recorded(cfg));
     const remove = cotal(cfg, ["ext", "remove", PKG]);
     check("absent extension recovery: remove then drops the entry", remove.status === 0 && !recorded(cfg).includes(PKG), remove.stderr);
     const reset = cotal(cfg, ["ext", "seed", "--reset"]);
@@ -99,7 +100,7 @@ try {
     const first = cotal(cfg, ["ext", "seed", "--reset"]);
     const prefix = join(cfg, "cotal", "extensions");
     const hermes = join(prefix, "node_modules", "@cotal-ai", "connector-hermes");
-    // Still a prefix dependency: npm restores it during the first add, before any relink reads it.
+    // Still a prefix dependency: npm restores it during the first add, before it is verified.
     rmSync(hermes, { recursive: true, force: true });
     const listed = cotal(cfg, ["ext", "seed", "--reset"]);
     check("absent built-in the prefix lists: --reset restores and verifies it",
@@ -116,47 +117,7 @@ try {
         unlisted.stderr.includes("`cotal ext seed --repair` reinstalls it") &&
         existsSync(join(hermes, "dist", "index.js")) && seededAll(cfg), unlisted.stderr);
   }
-
-  // ── the binder skips only a directory that does not exist, and only when asked ───────────────────
-  {
-    const cfg = track(freshCfg());
-    const prior = process.env.XDG_CONFIG_HOME;
-    process.env.XDG_CONFIG_HOME = cfg;
-    try {
-      const modules = join(cfg, "cotal", "extensions", "node_modules", "@fixture");
-      const failure = (owners: string[], operation: string, onAbsent?: (owner: string) => void): string => {
-        try {
-          bindExtensionPeers(owners, operation, { force: true, onAbsent });
-          return "";
-        } catch (e) {
-          return (e as Error).message;
-        }
-      };
-      mkdirSync(join(modules, "present"), { recursive: true });
-      writeJson(join(modules, "present", "package.json"), { ...META, name: "@fixture/present" });
-      const skipped: string[] = [];
-      const bound = bindExtensionPeers(["@fixture/gone", "@fixture/present"], "@fixture/op", { force: true, onAbsent: (owner) => skipped.push(owner) });
-      check("binder: an absent owner is reported and the others still bound",
-        skipped.join() === "@fixture/gone" && bound.some((link) => link.owner === "@fixture/present" && link.peer === "@cotal-ai/core"), { skipped, bound });
-      check("binder: without onAbsent an absent owner still fails",
-        /extension @fixture\/gone is not installed at /.test(failure(["@fixture/gone"], "@fixture/op")));
-      check("binder: the operation's own absent package is never skipped",
-        /extension @fixture\/gone is not installed at /.test(failure(["@fixture/gone"], "@fixture/gone", () => {})));
-      mkdirSync(join(modules, "hollow"), { recursive: true });
-      check("binder: a directory without package.json still fails",
-        /extension @fixture\/hollow has a corrupt package.json .*file is missing/.test(failure(["@fixture/hollow"], "@fixture/op", () => {})));
-      symlinkSync(join(cfg, "nowhere"), join(modules, "dangling"));
-      check("binder: a dangling package link still fails",
-        /extension @fixture\/dangling has a corrupt package.json .*file is missing/.test(failure(["@fixture/dangling"], "@fixture/op", () => {})));
-      mkdirSync(join(modules, "corrupt"), { recursive: true });
-      writeFileSync(join(modules, "corrupt", "package.json"), "{ not json");
-      check("binder: a corrupt package.json still fails",
-        /extension @fixture\/corrupt has a corrupt package.json /.test(failure(["@fixture/corrupt"], "@fixture/op", () => {})));
-    } finally {
-      if (prior === undefined) delete process.env.XDG_CONFIG_HOME;
-      else process.env.XDG_CONFIG_HOME = prior;
-    }
-  }
+  await checkBuiltInRetirement();
 } finally {
   finishScenario();
 }

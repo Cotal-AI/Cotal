@@ -12,7 +12,7 @@ import { spawnSync } from "node:child_process";
 import { chmodSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { pathToFileURL } from "node:url";
+import { writePluginFixture } from "../../../scripts/plugin-fixture.mjs";
 import { isDeepStrictEqual } from "node:util";
 import { createSuite } from "@cotal-ai/smoke-kit";
 import { resolveComspec, resolveOnPath } from "@cotal-ai/workspace";
@@ -503,17 +503,12 @@ channels:
 {
   const { home, xdg, run } = sandbox();
   const fixture = join(home, "read-extension");
-  mkdirSync(fixture);
-  writeFileSync(join(fixture, "package.json"), JSON.stringify({
-    name: "read-cache-fixture", version: "1.0.0", type: "module", main: "index.js",
-    peerDependencies: { "@cotal-ai/core": "*" },
-  }));
-  const core = pathToFileURL(join(import.meta.dirname, "..", "..", "..", "packages", "core", "dist", "index.js")).href;
-  writeFileSync(join(fixture, "index.js"), `import { registry } from ${JSON.stringify(core)};
-registry.register({ kind: "command", name: "inspect-read-cache", summary: "owned read fixture", reads: true,
-  positionals: "[list | write]", subcommands: [{ name: "list", summary: "read list", reads: true }, { name: "write", summary: "non-read control" }],
-  run: async () => console.log("fixture-read-ran") });
-`);
+  const command = { kind: "command", name: "inspect-read-cache", summary: "owned read fixture", reads: true,
+    positionals: "[list | write]", subcommands: [{ name: "list", summary: "read list", reads: true }, { name: "write", summary: "non-read control" }] };
+  writePluginFixture(fixture, {
+    name: "read-cache-fixture", version: "1.0.0", provides: [command],
+    factorySource: `export default host => host.register({ ...${JSON.stringify(command)}, run: async () => console.log("fixture-read-ran") });\n`,
+  });
   const added = run(["ext", "add", fixture], { COTAL_SKIP_CONNECTOR_SEED: "1" });
   check("control: real ext add caches the owned read extension", added.status === 0 && existsSync(join(xdg, "cotal", "extensions", "extensions.json")), shown(added));
   const bare = run(["inspect-read-cache"]);

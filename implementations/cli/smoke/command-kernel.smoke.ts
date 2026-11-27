@@ -13,11 +13,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { commandUsage, findCommand, parseCommandArgs, registry, type Command } from "@cotal-ai/core";
 import type { InstalledExtension } from "@cotal-ai/workspace";
+import { writePluginFixture } from "../../../scripts/plugin-fixture.mjs";
 import "../src/index.js"; // self-register the CLI commands (for the completion check)
 import { complete } from "../src/commands/completion.js";
 import { scaffoldCheckCommand } from "../src/commands/endpoint-authoring.js";
 import { EXT_UPDATE_PARENT_ENV, ext } from "../src/commands/ext.js";
-import { hostPackageDir, isCommandFailure, MeshTargetError, seededCommandsMismatch, telemetrySettingsPath, writeUpdateRecovery, readUpdateRecovery, clearUpdateRecovery } from "@cotal-ai/workspace";
+import { isCommandFailure, MeshTargetError, seededCommandsMismatch, telemetrySettingsPath, writeUpdateRecovery, readUpdateRecovery, clearUpdateRecovery } from "@cotal-ai/workspace";
 import { executeUpdate, installedUpdatePrefix, parseNpmVersion, printLegacyReport, reportRunningManagers, update, validateUpdateArguments, verifyCurrentExtension, verifyGlobalEntry, type UpdateRuntime } from "../src/commands/update.js";
 import { runNpmAsync } from "../src/commands/update-process.js";
 import { supervisorMayServe } from "../src/lib/manager-proc.js";
@@ -997,10 +998,9 @@ if (process.platform !== "win32") {
 
 // --- a seeded package must claim the words its seed entry declares, aliases included -------------
 {
-  assert.equal(seededCommandsMismatch("@cotal-ai/web", [{ name: "__service-web" }]), undefined, "the web package's hidden service child matches its seed declaration");
-  assert.match(seededCommandsMismatch("@cotal-ai/web", [{ name: "__service-web", aliases: ["w"] }]) ?? "", /claiming \[__service-web, w\].*declares \[__service-web\]/, "an undeclared alias of a seeded command passed the seed check");
-  assert.match(seededCommandsMismatch("@cotal-ai/web", [{ name: "__service-web" }, { name: "dash" }]) ?? "", /declares \[__service-web\]/, "an undeclared seeded command passed the seed check");
-  assert.match(seededCommandsMismatch("@cotal-ai/web", []) ?? "", /declares \[__service-web\]/, "a seeded package that dropped its command passed the seed check");
+  const seeded = "@cotal-ai/connector-claude-code";
+  assert.equal(seededCommandsMismatch(seeded, []), undefined, "the seeded connector declares no commands");
+  assert.match(seededCommandsMismatch(seeded, [{ name: "extra", aliases: ["e"] }]) ?? "", /claiming \[extra, e\].*declares \[\]/, "a seeded connector cannot claim an undeclared command or alias");
   assert.equal(seededCommandsMismatch("@example/not-seeded", [{ name: "x", aliases: ["y"] }]), undefined, "a package that is not seeded has no declared words");
 }
 
@@ -1113,10 +1113,10 @@ if (process.platform !== "win32") {
   assert.equal(await executeUpdate(false, rt), 0, "update replays first-party extensions at the current binary generation");
   const replay = events.find((event) => event.startsWith("spawn:"));
   assert.ok(replay?.includes("ext __update-add @cotal-ai/orca @cotal-ai/orca@0.13.1"));
-  assert.equal(events.filter((event) => event.startsWith("spawn:")).length, 1, "seeded web + third-party extension are not operator-replayed");
+  assert.equal(events.filter((event) => event.startsWith("spawn:")).length, 1, "built-in web and third-party extensions are not operator-replayed");
   assert.ok(
     !events.some((event) => event.startsWith("spawn:") && event.includes("@cotal-ai/web")),
-    "the seeded web dashboard is reconciled by the seed pass, never operator-replayed from npm",
+    "the built-in dashboard is never operator-replayed from npm",
   );
   assert.ok(events.some((event) => event.includes("third-party-ext@1.2.3 - not auto-updated")));
   assert.ok(events.indexOf("reconcile") < events.findIndex((event) => event.startsWith("npm:view")), "default reconciles before npm check");
@@ -1147,18 +1147,21 @@ if (process.platform !== "win32") {
   const installedDir = join(prefix, "node_modules", "@cotal-ai", "orca");
   const prefixAt = (version: string, onDisk = version): void => {
     rmSync(prefix, { recursive: true, force: true });
-    mkdirSync(installedDir, { recursive: true });
-    const meta = { name: pkg, version, peerDependencies: { "@cotal-ai/core": "*" } };
+    const runtime = { kind: "runtime", name: "orca" };
+    writePluginFixture(installedDir, {
+      name: pkg, version: onDisk, core: onDisk, provides: [runtime],
+      factorySource: `export default host => host.register(${JSON.stringify(runtime)});\n`,
+    });
+    const meta = { name: pkg, version };
     writeFileSync(join(prefix, "package.json"), JSON.stringify({ name: "cotal-extensions", private: true, dependencies: { [pkg]: `^${version}` } }));
     writeFileSync(join(prefix, "package-lock.json"), JSON.stringify({
       name: "cotal-extensions", lockfileVersion: 3,
       packages: { "": { name: "cotal-extensions", dependencies: { [pkg]: `^${version}` } }, [`node_modules/${pkg}`]: meta },
     }));
-    writeFileSync(join(installedDir, "package.json"), JSON.stringify({ ...meta, version: onDisk }));
-    writeFileSync(join(installedDir, "index.js"), "export {};\n");
+
   };
   const run = async (entry: InstalledExtension) => {
-    const r = updateRuntime({ extensions: [entry], verifyExtension: verifyCurrentExtension });
+    const r = updateRuntime({ extensions: [{ ...entry, installId: "update-smoke" }], verifyExtension: verifyCurrentExtension });
     assert.equal(await executeUpdate(false, r.rt), 0);
     return { ...r, replays: r.events.filter((event) => event.startsWith("spawn:")) };
   };
@@ -1167,11 +1170,7 @@ if (process.platform !== "win32") {
     const current = await run(installed(pkg, "0.13.1", `${pkg}@0.13.1`));
     assert.deepEqual(current.replays, [], "an extension recorded and installed at this generation starts no reinstall child");
     assert.ok(current.events.some((event) => event.startsWith("out:") && event.includes(`✓ verified ${pkg}@0.13.1`)), "the kept extension is reported as verified");
-    assert.equal(
-      realpathSync(join(installedDir, "node_modules", "@cotal-ai", "core")),
-      realpathSync(hostPackageDir("@cotal-ai/core")),
-      "the kept extension's shared peer is bound to this binary's copy, as its reinstall would bind it",
-    );
+    assert.ok(!existsSync(join(installedDir, "node_modules", "@cotal-ai", "core")), "verification does not link a host core peer");
 
     for (const [why, setup, entry, reason] of [
       ["recorded at an older version", () => prefixAt("0.13.0"), installed(pkg, "0.13.0", `${pkg}@0.13.0`), "recorded at 0.13.0, not 0.13.1"],
@@ -1780,7 +1779,7 @@ for (const code of ["ENETUNREACH", "EHOSTUNREACH", "ENETDOWN", "EHOSTDOWN", "ECO
         return { status: 0, stdout: JSON.stringify({ name: spec.slice(0, at), version: spec.slice(at + 1), dist: { tarball: "https://registry.example/package.tgz", integrity: "sha512-fixture" } }) };
       },
     });
-    if (phase === "closure") fixture.rt.extensions = () => [{ pkg: "@cotal-ai/web", version: "0.13.1", spec: "@cotal-ai/web@0.13.1", commands: [] }];
+    if (phase === "closure") fixture.rt.extensions = () => [{ pkg: "@cotal-ai/tmux", version: "0.13.1", spec: "@cotal-ai/tmux@0.13.1", commands: [] }];
     if (phase === "staging" || phase === "preflight") fixture.rt.prepareExecution = async () => {
       if (phase === "staging") throw new Error(`target staging failed: ${failed.stderr}`);
       return { entry: "/target/cotal.js", journal: "/target/journal", async preflight() { throw new Error(failed.stderr); }, publish() {}, restore() {}, verify() {}, discard() { fixture.events.push("discard"); } };

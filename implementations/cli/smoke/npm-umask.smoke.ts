@@ -15,6 +15,7 @@ import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { countedAssert, emitSentinel, skipSuite } from "@cotal-ai/smoke-kit";
 import { claimExtensionUpdatePass, extensionsDir } from "@cotal-ai/workspace";
+import { writePluginFixture } from "../../../scripts/plugin-fixture.mjs";
 import { EXT_UPDATE_PARENT_ENV } from "../src/commands/ext.js";
 import { repairInstallModes, withInstallUmask } from "../src/lib/install-umask.js";
 
@@ -65,8 +66,11 @@ try {
   const xdg = join(root, "xdg");
   const fixture = join(root, "fixture");
   const pkg = "@cotal-ai/umask-smoke";
-  mkdirSync(fixture);
-  writeFileSync(join(fixture, "package.json"), JSON.stringify({ name: pkg, version: "1.0.0", type: "module", peerDependencies: { "@cotal-ai/core": "*" } }));
+  const runtime = { kind: "runtime", name: "umask-smoke" };
+  writePluginFixture(fixture, {
+    name: pkg, version: "1.0.0", provides: [runtime],
+    factorySource: `export default host => host.register(${JSON.stringify(runtime)});\n`,
+  });
   process.env.XDG_CONFIG_HOME = xdg;
   releasePass = claimExtensionUpdatePass();
   const cli = join(import.meta.dirname, "..", "..", "..", "bin", "cotal.ts");

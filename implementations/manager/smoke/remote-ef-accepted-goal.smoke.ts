@@ -15,6 +15,7 @@
  * Run: pnpm exec tsx implementations/manager/smoke/remote-ef-accepted-goal.smoke.ts
  */
 import assert from "node:assert/strict";
+import { writeDeclaredConnector } from "./_declared-connector.js";
 import { spawn, type ChildProcess } from "node:child_process";
 import { createRequire } from "node:module";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -267,12 +268,9 @@ try {
   mkdirSync(join(partHome, "xdg"), { recursive: true });
   // Labelled fixture connector extension + persona (operator-installed, like `cotal ext add`).
   const extRoot = join(partHome, "xdg", "cotal", "extensions");
-  const extDir = join(extRoot, "node_modules", "ef-sdk-fixture-extension");
-  mkdirSync(extDir, { recursive: true });
-  writeFileSync(join(extDir, "package.json"), JSON.stringify({ name: "ef-sdk-fixture-extension", version: "1.0.0", type: "module", main: "index.js", peerDependencies: { "@cotal-ai/core": "*" } }));
-  writeFileSync(join(extDir, "index.js"), `
-import { registry, eventChannel } from "@cotal-ai/core";
-registry.register({
+  writeDeclaredConnector(extRoot, "ef-sdk-fixture-extension", "ef-sdk-fixture", `
+import { eventChannel } from ${JSON.stringify(new URL("../../../packages/core/dist/index.js", import.meta.url).href)};
+export default host => host.register({
   kind: "connector", name: "ef-sdk-fixture", readinessTimeoutMs: 30000,
   // The events-required mesh policy needs a connector that declares its event channel.
   eventChannel: (principal) => eventChannel(principal),
@@ -291,11 +289,7 @@ registry.register({
     };
   },
 });
-`);
-  writeFileSync(join(extRoot, "extensions.json"), JSON.stringify({ extensions: [{
-    pkg: "ef-sdk-fixture-extension", version: "1.0.0", spec: "file:ef-sdk-fixture-extension",
-    provides: [{ kind: "connector", name: "ef-sdk-fixture" }], commands: [], connectors: [{ name: "ef-sdk-fixture", requires: [], eventPlane: false }],
-  }] }));
+`, true);
   mkdirSync(join(partRoot, ".cotal", "agents"), { recursive: true });
   writeFileSync(join(partRoot, ".cotal", "agents", "sdkfixture.md"), "---\nname: sdkfixture\nagent: ef-sdk-fixture\n---\nlabelled scripted SDK fixture\n");
 

@@ -19,6 +19,7 @@ if (process.env.COTAL_OWNER_NATIVE_ACCEPTANCE !== "1")
   throw new Error("hosted remote manager producer acceptance is owner-only; set COTAL_OWNER_NATIVE_ACCEPTANCE=1");
 
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { writeDeclaredConnector } from "./_declared-connector.js";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -239,19 +240,14 @@ const stopProcess = async (child: ChildProcess | undefined): Promise<boolean> =>
 
 import { pathToFileURL } from "node:url";
 
-const coreDistUrl = pathToFileURL(join(repoRoot, "packages/core/dist/index.js")).href;
 const deliveryDistUrl = pathToFileURL(join(repoRoot, "implementations/delivery/dist/index.js")).href;
 const workspaceDistUrl = pathToFileURL(join(repoRoot, "packages/workspace/dist/index.js")).href;
 
 // A connector declaration lets a genuine spawn pass admission, but cannot launch a child.
 // No manager, auth-provider, broker permission, or host ledger behavior is replaced.
 const extensions = join(xdg, "cotal", "extensions");
-const extensionDir = join(extensions, "node_modules", "remote-reader-test");
-mkdirSync(extensionDir, { recursive: true });
-writeFileSync(join(extensionDir, "package.json"), JSON.stringify({ name: "remote-reader-test", version: "1.0.0", type: "module", main: "index.js", peerDependencies: { "@cotal-ai/core": "*" } }));
-writeFileSync(join(extensionDir, "index.js"), `import { registry } from ${JSON.stringify(coreDistUrl)};
-registry.register({ kind: "connector", name: "remote-reader-test", buildLaunch() { throw new Error("fixture refuses child launch"); } });\n`);
-writeFileSync(join(extensions, "extensions.json"), JSON.stringify({ extensions: [{ pkg: "remote-reader-test", version: "1.0.0", spec: "file:remote-reader-test", provides: [{ kind: "connector", name: "remote-reader-test" }], commands: [], connectors: [{ name: "remote-reader-test", requires: [], eventPlane: false }] }] }));
+writeDeclaredConnector(extensions, "remote-reader-test", "remote-reader-test", `
+export default host => host.register({ kind: "connector", name: "remote-reader-test", buildLaunch() { throw new Error("fixture refuses child launch"); } });\n`);
 for (const [index, root] of [partRootA, partRootB].entries()) {
   const dir = join(root, ".cotal", "agents");
   mkdirSync(dir, { recursive: true });

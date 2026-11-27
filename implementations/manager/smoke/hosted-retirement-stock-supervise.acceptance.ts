@@ -114,6 +114,7 @@ if (subcommand === "auth-service" || subcommand === "agent-bearer") {
 }
 
 import { createHash } from "node:crypto";
+import { writeDeclaredConnector } from "./_declared-connector.js";
 import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
@@ -557,15 +558,8 @@ try {
 
   const xdg = join(home, "xdg");
   const extensionRoot = join(xdg, "cotal", "extensions");
-  const extensionDir = join(extensionRoot, "node_modules", "stock-acceptance-extension");
-  mkdirSync(extensionDir, { recursive: true });
-  writeFileSync(join(extensionDir, "package.json"), JSON.stringify({
-    name: "stock-acceptance-extension", version: "1.0.0", type: "module", main: "index.js",
-    peerDependencies: { "@cotal-ai/core": "*" },
-  }, null, 2));
-  writeFileSync(join(extensionDir, "index.js"), `
-import { registry } from "@cotal-ai/core";
-registry.register({
+  writeDeclaredConnector(extensionRoot, "stock-acceptance-extension", "stock-acceptance", `
+export default host => host.register({
   kind: "connector", name: "stock-acceptance", readinessTimeoutMs: 20000,
   buildLaunch(opts) {
     if (!opts.userAuth || !opts.lifecycleUid) throw new Error("stock acceptance requires retained user authority");
@@ -591,12 +585,6 @@ registry.register({
   },
 });
 `);
-  mkdirSync(extensionRoot, { recursive: true });
-  writeFileSync(join(extensionRoot, "extensions.json"), JSON.stringify({ extensions: [{
-    pkg: "stock-acceptance-extension", version: "1.0.0", spec: "file:stock-acceptance-extension",
-    provides: [{ kind: "connector", name: "stock-acceptance" }], commands: [],
-    connectors: [{ name: "stock-acceptance", requires: [], eventPlane: false }],
-  }] }, null, 2));
 
   const supervisorEnv: NodeJS.ProcessEnv = {};
   for (const [key, value] of Object.entries(process.env)) if (!key.startsWith("COTAL_")) supervisorEnv[key] = value;

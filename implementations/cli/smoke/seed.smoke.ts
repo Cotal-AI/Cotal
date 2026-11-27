@@ -3,7 +3,7 @@
  * `XDG_CONFIG_HOME` dirs so the reconcile, its crash-safety spine, and the publish-path resolution are
  * retained as CI evidence (not just an ad-hoc script). Covers, per the review panel's blockers:
  *
- *  - first-run auto-seed of the seven first-party exts (six connectors + the web dashboard) + idempotent no-op + removability (removed stays removed)
+ *  - first-run auto-seed of six connectors + idempotent no-op + removability (removed stays removed)
  *  - crash cursor → auto fails loud → `--repair` re-installs the interrupted connector
  *  - a seed that fails reports its reason; the next boot says it failed, not that it was interrupted
  *  - a recorded third-party package whose directory is gone (never there, or pruned by npm) is
@@ -17,7 +17,7 @@
  *  - the binary invoked through a bin SYMLINK (how every global install runs) still resolves its
  *    generation and payloads
  *  - `cotal update` removes group write from a config folder an earlier seed left group-writable, and
- *    the web seed still refuses a group-writable folder above it
+ *    the seed still refuses a group-writable folder above it
  *
  * Requires the binary built (`pnpm --filter cotal-ai... build`); `pnpm smoke:seed` does that first.
  * Run: pnpm smoke:seed

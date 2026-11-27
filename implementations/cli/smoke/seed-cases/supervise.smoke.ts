@@ -21,8 +21,7 @@ try {
       stdio: "ignore",
     });
     const deadline = Date.now() + 90000;
-    // Wait for the COMPLETE seed commit (the stamp lands after all seven extensions + authority),
-    // not the connector subtotal — killing mid-commit would tear the web seed / cursor state.
+    // Wait for the stamp: killing after the last connector but before authority commits can tear seed state.
     try {
       while (Date.now() < deadline && !(seededOnDisk() >= 6 && existsSync(join(seedDir(cfg), "stamp.json"))))
         await new Promise((r) => setTimeout(r, 1000));

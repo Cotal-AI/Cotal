@@ -1,8 +1,8 @@
 import { realpathSync } from "node:fs";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, symlinkSync, writeFileSync, tmpdir, delimiter, join, REPO, HOST_ENV, check, cotal, freshCfg, readJson, track, finishScenario } from "./harness.js";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, symlinkSync, writeFileSync, tmpdir, delimiter, join, REPO, HOST_ENV, check, cotal, dashboardInstalled, freshCfg, readJson, track, finishScenario } from "./harness.js";
 
 // An earlier seed run under a umask of 0002 left Cotal's config folder and its extension tree
-// group-writable, and the web seed's protected-path check refused them, failing `cotal update`.
+// group-writable, and the seed's protected-path check refused them, failing `cotal update`.
 // The update removes that write from the folders Cotal owns, as it does for its install, and the
 // check still refuses a folder above them. PATH holds only node and npm, so `getent` is missing and
 // the private-group proof is unavailable on every host, as it is under SSSD.
@@ -34,7 +34,7 @@ try {
     check("config modes: update repairs Cotal's group-writable config folder and exits 0", run.status === 0 && !run.stderr.includes("not protected against other local writers"), run.stderr);
     check("config modes: the repair is reported as the install repair is", run.stdout.includes(repairLine(cfg)), run.stdout);
     check("config modes: the config folder and its extension tree are 0755 after the repair", tree.every((path) => mode(path) === 0o755), tree.map(mode));
-    check("config modes: the web dashboard was seeded into the repaired tree", cotal(cfg, ["ext", "list"]).stdout.includes("service-preset:web"));
+    check("config modes: status exposes the built-in dashboard through the repaired tree", dashboardInstalled(cfg));
   }
 
   {
@@ -83,7 +83,7 @@ try {
     symlinkSync(real, link);
     const run = cotal(link, ["update"], env);
     check("config modes: update accepts an owned private config root reached through a symlink", run.status === 0 && !run.stderr.includes("symbolic link"), run.stderr);
-    check("config modes: the web dashboard was seeded through the symlinked config root", cotal(link, ["ext", "list"]).stdout.includes("service-preset:web"));
+    check("config modes: status exposes the built-in dashboard through the symlinked config root", dashboardInstalled(link));
   }
 } finally {
   finishScenario();

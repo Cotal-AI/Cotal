@@ -5,6 +5,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSyn
 import { delimiter, dirname, join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { emitSentinel, skipSuite } from '@cotal-ai/smoke-kit';
+import { writePluginFixture } from '../../../scripts/plugin-fixture.mjs';
 
 // Real CLI/natives/npm path. Only the second requested package install is refused by a transparent
 // package-manager fixture, so the failure happens after the first connector's ordinary transaction.
@@ -43,9 +44,11 @@ const digest = (directory: string): string => {
 const missing = ['hello-ext', '@fixture/missing-ext'];
 for (const pkg of [...missing, 'kept-ext']) {
   const source = join(root, pkg.replace('/', '-'));
-  mkdirSync(source);
-  writeFileSync(join(source, 'package.json'), JSON.stringify({ name: pkg, version: '1.0.0', type: 'module', main: 'index.js', peerDependencies: { '@cotal-ai/core': '*' } }));
-  writeFileSync(join(source, 'index.js'), `import { registry } from '@cotal-ai/core'; registry.register({ kind: 'command', name: '${pkg.split('/').pop()}', summary: 'fixture', async run() {} });\n`);
+  const command = { kind: 'command', name: pkg.slice(pkg.lastIndexOf('/') + 1), summary: 'fixture' };
+  writePluginFixture(source, {
+    name: pkg, version: '1.0.0', provides: [command],
+    factorySource: `export default host => host.register({ ...${JSON.stringify(command)}, async run() {} });\n`,
+  });
   const added = run(['ext', 'add', source]);
   assert.equal(added.status, 0, added.stderr);
   rmSync(source, { recursive: true });

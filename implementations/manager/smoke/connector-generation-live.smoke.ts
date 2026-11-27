@@ -22,6 +22,7 @@ function installFixture(prefix: string, reports: string, pkg: string, name: stri
   mkdirSync(dir, { recursive: true, mode: 0o700 });
   const declaration = {
     contract: 1, ...(seeded ? { core: version } : {}), provides: [{ kind: "connector", name, aliases: [] }],
+    localProcesses: [], servicePresets: [],
     commands: [] as never[], connectors: [{ name, requires: ["node"], eventPlane: false, prompts: false, askPermissions: false, reasoningEvents: false, setup: null }],
   };
   writeFileSync(join(dir, "package.json"), JSON.stringify({ name: pkg, version: generation, type: "module", main: "index.js", cotal: declaration }));

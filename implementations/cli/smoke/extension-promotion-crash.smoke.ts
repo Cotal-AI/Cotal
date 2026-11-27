@@ -4,6 +4,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, wr
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { emitSentinel, skipSuite } from "@cotal-ai/smoke-kit";
+import { writePluginFixture } from "../../../scripts/plugin-fixture.mjs";
 
 if (process.platform === "win32") {
   skipSuite("extension promotion killed-writer fixture: not run on Windows, requires SIGKILL");
@@ -17,9 +18,12 @@ try {
     const env = { ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_"))), HOME: home, COTAL_HOME: join(home, ".cotal"), XDG_CONFIG_HOME: config, COTAL_SKIP_CONNECTOR_SEED: "1", COTAL_NO_UPDATE_CHECK: "1" };
     const run = (args: string[], extra = {}) => spawnSync(process.execPath, [bin, ...args], { cwd: home, env: { ...env, ...extra }, encoding: "utf8", timeout: 120000 });
     const source = (version: string) => {
-      const dir = join(home, `source-${version}`); mkdirSync(dir);
-      writeFileSync(join(dir, "package.json"), JSON.stringify({ name: "promotion-crash-fixture", version, type: "module", main: "index.js", peerDependencies: { "@cotal-ai/core": "*" } }));
-      writeFileSync(join(dir, "index.js"), 'import {registry} from "@cotal-ai/core"; registry.register({kind:"command",name:"promotion-crash-fixture",summary:"fixture",run:async()=>{}});');
+      const dir = join(home, `source-${version}`);
+      const command = { kind: "command", name: "promotion-crash-fixture", summary: "fixture" };
+      writePluginFixture(dir, {
+        name: command.name, version, provides: [command],
+        factorySource: `export default host => host.register({ ...${JSON.stringify(command)}, async run() {} });\n`,
+      });
       writeFileSync(join(dir, "whole-generation"), version);
       return dir;
     };
