@@ -6,7 +6,7 @@ import { join, resolve } from "node:path";
 import { CotalEndpoint, accountFromCreds, DEFAULT_SERVER, DEV_OWNER, injectedSecretStoreIdentity, type DeprovisionResourceAccounting, type IssuedBinding, type IssuedStore, mintLifecycleUid, parsePrincipalKey, principalKey, probeConnect, resolveAuthProvider } from "@cotal-ai/core";
 import { retainConnectorSeat } from "@cotal-ai/workspace";
 import { agentSecretKeyForFile, DEFAULT_SEAT_CAP, findCotalRoot, loadManagerInstanceIdentity, manifestExtensionNames, materializeFromManifest, runtimeInstallHint, spaceKey, userAuthStateDir, workspaceSecretStore, type ManagerInstanceIdentity, type SeatCap } from "@cotal-ai/workspace";
-import type { PersonaEndpoint, RunAdmission, Connector, ControlReply, EpCaller, LaunchSpec, Presence, RuntimeProvider, RuntimeReference, SecretStore, SpaceAuth, StartupOutcome } from "@cotal-ai/core";
+import type { PersonaEndpoint, RunAdmission, Connector, LaunchModes, ControlReply, EpCaller, LaunchSpec, Presence, RuntimeProvider, RuntimeReference, SecretStore, SpaceAuth, StartupOutcome } from "@cotal-ai/core";
 import {
   createRuntime,
   isCustodialRuntime,
@@ -399,6 +399,7 @@ export interface ManagerResumeAgent {
       | { kind: "manifest"; runId?: string; requested: string; hash: string; configPath: string; configSha256: string; manifestSha256?: string };
     model?: string;
     variant?: string;
+    modes?: LaunchModes;
     /** Kickoff prompt from the persona/manifest launch form; a stale-restart re-submits it. */
     prompt?: string;
     subscribe?: string[];
