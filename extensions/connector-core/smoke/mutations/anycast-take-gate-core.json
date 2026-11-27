@@ -19,7 +19,7 @@
     {
       "name": "a take waits on its own reply subscription only",
       "file": "packages/core/src/endpoint-anycast.ts",
-      "find": "      const m = await this.requestBoundReply(nc, subject, JSON.stringify(body), `${subject}.reply.${randomUUID()}`, ANYCAST_TAKE_TIMEOUT_MS);",
+      "find": "      const m = await this.parts.controlPlane.requestBoundReply(nc, subject, JSON.stringify(body), `${subject}.reply.${randomUUID()}`, ANYCAST_TAKE_TIMEOUT_MS);",
       "replace": "      const m = await nc.request(subject, JSON.stringify(body), { timeout: ANYCAST_TAKE_TIMEOUT_MS, noMux: true, reply: `${subject}.reply.${randomUUID()}` });",
       "afterRestore": "pnpm --filter @cotal-ai/core build",
       "expectRed": "11a a read waiting on that take ends with the old link, well before its wait runs out, and shows nothing",

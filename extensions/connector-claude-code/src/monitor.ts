@@ -2,7 +2,8 @@
  * The Cotal plugin's wake reader. The native hooks module runs it for the session's life and
  * submits validated notifications or complete inline messages with plugin attribution. Private
  * admission receipts travel back over the session's local socket, never through model text.
- * A session Cotal launched has its own channel, so there it exits.
+ * A session Cotal launched has its own channel, so there it exits. With `--hold` it is instead the
+ * silent hold that keeps an Agent SDK host's session running (`sdk-hold.ts`).
  */
 import { createConnection } from "node:net";
 import { hasIdentity } from "@cotal-ai/connector-core/relay";
@@ -10,6 +11,7 @@ import { WAKE_ID, wakeSockets, nativeSocketPath } from "./wake-feed.js";
 import { approvalEvent, approvalFrame } from "./approval-notice.js";
 import { INLINE_FRAME_LIMIT, isNativeInlineFrame } from "./native-deliveries.js";
 import { bindPersonalSession, readPersonalBinding } from "./native-binding.js";
+import { HOLD_MS, HOLD_SESSION, holdCommand, holdEnded, markHold } from "./sdk-hold.js";
 import type { RenderedInboxPreview } from "@cotal-ai/connector-core";
 
 /** How often to look for a server that opened its feed since. */
@@ -58,8 +60,30 @@ async function relayInline(claude: number, session: string | undefined): Promise
   process.stdout.write(`${JSON.stringify(result)}\n`);
 }
 
+/** A hold (`sdk-hold.ts`) for `session`: mark itself, run silently, then print the line that starts
+ *  the next. It ends when the shell the session started it in goes, so it never outlives the session. */
+function hold(session: string): void {
+  if (!HOLD_SESSION.test(session)) throw new Error("--hold needs this conversation's session id");
+  markHold(session);
+  const parent = process.ppid;
+  const ended = setTimeout(() => {
+    process.stdout.write(`${holdEnded(holdCommand(process.execPath, process.argv[1] ?? "", session))}\n`);
+    process.exit(0);
+  }, HOLD_MS);
+  setInterval(() => {
+    if (process.ppid === parent) return;
+    clearTimeout(ended);
+    process.exit(0);
+  }, 60_000).unref();
+}
+
 function main(): void {
   if (hasIdentity()) return;
+  const holdAt = process.argv.indexOf("--hold");
+  if (holdAt >= 0) {
+    hold(process.argv[holdAt + 1] ?? "");
+    return;
+  }
   // A native process.spawn child and the MCP server have the same host parent. Classic plugin
   // monitors instead receive that host's pid in CLAUDE_PID.
   const claude = process.argv.includes("--native") ? process.ppid : Number(process.env.CLAUDE_PID);
