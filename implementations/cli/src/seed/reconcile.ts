@@ -19,6 +19,7 @@ import {
   inheritConnectorConfig,
   isBundledDesktopRuntime,
   loadExtensionsManifest,
+  saveExtensionsManifest,
   logicalExecutionEntry,
   provenance,
   quarantineExtensionsManifest,
@@ -469,7 +470,7 @@ async function runUnderLocks(mode: Mode, generation: string, nonce: string, refr
   let repairAllSeeded = false;
   if (mode === "repair" || mode === "reset") {
     ({ manifestRebuilt, repairAllSeeded } = prepareMaintenanceState(mode));
-  } else if (mode === "verify" && extensionsInventoryMissing()) {
+  } else if ((mode === "verify" || mode === "auto") && extensionsInventoryMissing()) {
     manifestRebuilt = true;
   }
 
@@ -498,6 +499,7 @@ async function runUnderLocks(mode: Mode, generation: string, nonce: string, refr
     !cursor &&
     !recoveryPending() &&
     readWitness() &&
+    !extensionsInventoryMissing() &&
     builtinsMetadataCurrent() &&
     officialExtensionsCurrent(generation) &&
     readStamp()?.generation === generation &&
@@ -611,6 +613,9 @@ async function runUnderLocks(mode: Mode, generation: string, nonce: string, refr
 
   const builtIns = new Set(Object.values(SEEDED_EXTENSIONS).map((entry) => entry.pkg));
   if (manifestRebuilt && extensionsInventoryMissing()) {
+    // Every built-in was absent, so nothing above wrote a manifest. The lock or module tree still proves
+    // this prefix had one. An empty inventory is the recovered fact, and a later seed must not call it current.
+    saveExtensionsManifest({ extensions: [] });
     console.error(c.dim("the extensions inventory is missing; built-in packages still on disk are registered again. Operator packages that were only recorded in that inventory need `cotal ext add` with their original spec"));
   }
   const operators = mode === "reset" ? [] : loadExtensionsManifest().extensions.filter((entry) =>
