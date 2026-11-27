@@ -31,6 +31,7 @@
  */
 import { fromPublic } from "@nats-io/nkeys";
 import type { Presence, PresenceAgentEndpoint, PresenceStatus } from "./types.js";
+import { classifyChannel, PLUGIN_CHANNEL_ROOT } from "./plugin-channel-route.js";
 import {
   token,
   ROOT,
@@ -60,6 +61,7 @@ export {
   assertValidRole,
   chatSubject,
   chatSubjectPrefix,
+  chatStream,
   isConcreteChannel,
   isChannelFamily,
   familiesCovering,
@@ -466,15 +468,15 @@ export type DeliveryMode = "chat" | "anycast" | "unicast";
 /** A subject parsed into its routing parts (owner+actor grammar, Shape A). `owner`/`actor` are the
  *  publishing principal's two tokens; `sender` is their canonical dot-form `<owner>.<actor>` (=
  *  {@link principalKey}`.key`), so guards that compare `msg.from.id === parsed.sender` keep working
- *  verbatim once `from.id` carries the principal dot-form. `rest` is the channel (chat) or the routed
+ *  verbatim once `from.id` carries the principal dot-form. `rest` is the logical channel (CHAT or plugin) or the routed
  *  target/role/service (inst → recipient principal dot-form; svc → role; ctl → service). */
 export interface ParsedSubject {
-  kind: "chat" | "evp" | "inst" | "svc" | "ctl";
+  kind: "chat" | typeof PLUGIN_CHANNEL_ROOT | "evp" | "inst" | "svc" | "ctl";
   owner: string;
   actor: string;
   /** The sender principal in canonical dot-form `<owner>.<actor>`. */
   sender: string;
-  /** chat → channel (possibly hierarchical); inst → recipient principal `<owner>.<actor>`; svc → role; ctl → service. */
+  /** chat/ext → logical channel (possibly hierarchical); inst → recipient principal `<owner>.<actor>`; svc → role; ctl → service. */
   rest: string;
 }
 
@@ -482,12 +484,13 @@ export interface ParsedSubject {
  * The single authority on the subject layout — every reader of a wire subject goes through this, so the
  * owner+actor sender positions live in exactly one place (`kind` stays at [2]):
  *   chat.<owner>.<actor>.<channel…>              sender owner[3] actor[4], channel is everything after
+ *   ext.<owner>.<actor>.<plugin>.<resource…>    same sender slots, restore `ext.` to the logical channel
  *   inst.<recipOwner>.<recipActor>.<sndOwner>.<sndActor>   sender owner[5] actor[6], recipient = [3].[4]
  *   svc.<role>.<owner>.<actor>                   sender owner[4] actor[5], role = [3]
  *   ctl.<service>.<owner>.<actor>                sender owner[4] actor[5], service = [3]
- * Validates the prefix and per-kind arity first and returns `null` on anything else, so a malformed
- * subject can never be read as if it carried a principal. This SPLITS ONLY (no owner-token validation)
- * — the broker already forge-locked the identity slots via the minted grant; a reader recovers them.
+ * Legacy subjects retain their structural parse. The plugin rail also checks token syntax and
+ * requires a literal plugin ID and a resource path. Parsing a subject does not authenticate its sender,
+ * authorize the route, or say whether the space uses it.
  */
 export function parseSubject(subject: string): ParsedSubject | null {
   const parts = subject.split(".");
@@ -503,6 +506,19 @@ export function parseSubject(subject: string): ParsedSubject | null {
     if (parts.length < 6) return null; // cotal.<space>.chat.<owner>.<actor>.<channel…>
     return mk(kind, parts[3], parts[4], parts.slice(5).join("."));
   }
+  if (kind === PLUGIN_CHANNEL_ROOT) {
+    const space = parts[1];
+    if (parts.length < 7 || !space || space !== token(space)) return null;
+    const rest = `${PLUGIN_CHANNEL_ROOT}.${parts.slice(5).join(".")}`;
+    try {
+      ownerToken(parts[3]);
+      ownerToken(parts[4]);
+      classifyChannel(rest);
+    } catch {
+      return null;
+    }
+    return mk(kind, parts[3], parts[4], rest);
+  }
   if (kind === "inst") {
     if (parts.length !== 7) return null; // cotal.<space>.inst.<recipOwner>.<recipActor>.<sndOwner>.<sndActor>
     return mk(kind, parts[5], parts[6], `${parts[3]}.${parts[4]}`);
@@ -515,8 +531,8 @@ export function parseSubject(subject: string): ParsedSubject | null {
 }
 
 /**
- * Classify a subject's delivery mode, or `null` for control/trace/etc. A thin map over
- * {@link parseSubject}. Observers (e.g. a feed) use this instead of re-parsing the layout.
+ * Classify a subject's legacy delivery mode, or `null` for other rails. A thin map over
+ * {@link parseSubject}. Plugin channels need a scoped route, not the legacy observer mode.
  */
 export function deliveryOf(subject: string): DeliveryMode | null {
   const p = parseSubject(subject);
@@ -878,11 +894,6 @@ export function partition(n: number, key: string): number {
 }
 
 // ---- JetStream streams (the durable backing for the three delivery modes) ----
-
-/** Stream capturing `chat.>` — multicast backlog + history. */
-export function chatStream(space: string): string {
-  return `CHAT_${token(space)}`;
-}
 
 /** Stream capturing `inst.>` — per-instance direct-message inboxes. */
 export function dmStream(space: string): string {

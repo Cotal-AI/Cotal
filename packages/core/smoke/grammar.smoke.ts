@@ -13,14 +13,14 @@
  */
 import {
   chatSubject, unicastSubject, anycastSubject, controlServiceSubject, dinboxSubject,
-  parseSubject, principalKey, parsePrincipalKey, parseDinboxPrincipal, unicastRecvFilter,
+  parseSubject, deliveryOf, channelFromChatSubscription, principalKey, parsePrincipalKey, parseDinboxPrincipal, unicastRecvFilter,
   anycastServeFilter, dmDurable, isPrincipalOwnerToken, assertInboxConnId, principalTags,
   principalFromTags, patternCovers, patternInAllow, DEV_OWNER,
 } from "../src/index.js";
-import { subjectMatches } from "../src/subject-grammar.js";
+import { MAX_CHANNEL_LENGTH, subjectMatches } from "../src/subject-grammar.js";
 import {
   PLUGIN_CHANNEL_ROOT, PLUGIN_FANOUT_DURABLE, channelRoute, classifyChannel, legacyPluginChannelFilters,
-  parsePluginChannelSubject, pluginChannelFilter, pluginChannelStream, pluginChannelSubject,
+  pluginChannelFilter, pluginChannelStream, pluginChannelSubject,
 } from "../src/plugin-channel-route.js";
 
 let ok = 0, fail = 0;
@@ -44,21 +44,23 @@ const pluginWire = `cotal.demo.${familyRoot}`;
 const issue = `${linear}.agtec-6270.thread`;
 const pluginSubject = pluginChannelSubject("demo", "u_abc", "act1", issue);
 c("plugin subject pins owner then actor", pluginSubject === `${pluginWire}.u_abc.act1.linear.agtec-6270.thread`);
-const parsedPlugin = parsePluginChannelSubject(pluginSubject);
-c("plugin parser restores the logical channel", parsedPlugin?.kind === familyRoot && parsedPlugin.space === "demo" &&
+const parsedPlugin = parseSubject(pluginSubject);
+c("shared parser restores the plugin logical channel", parsedPlugin?.kind === familyRoot &&
   parsedPlugin.owner === "u_abc" && parsedPlugin.actor === "act1" && parsedPlugin.sender === "u_abc.act1" && parsedPlugin.rest === issue);
-c("existing parser does not dispatch the isolated family", parseSubject(pluginSubject) === null);
-c("plugin parser leaves ordinary chat alone", parsePluginChannelSubject(cs) === null);
 const legacyPlugin = chatSubject("demo", "u_abc", "act1", `${linear}.inbox`);
-c("legacy plugin address remains chat", parseSubject(legacyPlugin)?.kind === "chat" && parsePluginChannelSubject(legacyPlugin) === null);
+c("legacy plugin address remains CHAT with its original logical name", parseSubject(legacyPlugin)?.kind === "chat" &&
+  parseSubject(legacyPlugin)?.rest === `${linear}.inbox`);
+c("legacy delivery classifier does not include plugin traffic", deliveryOf(legacyPlugin) === "chat" && deliveryOf(pluginSubject) === null);
+c("legacy subscription extraction does not include plugin traffic", channelFromChatSubscription("demo", legacyPlugin) === `${linear}.inbox` &&
+  channelFromChatSubscription("demo", pluginSubject) === null);
 for (const resource of [">", "*", "agtec-6270.>"]) {
   const pattern = `${linear}.${resource}`;
   const family = classifyChannel(pattern);
   const filter = pluginChannelSubject("demo", "*", "*", pattern);
-  const parsed = parsePluginChannelSubject(filter);
+  const parsed = parseSubject(filter);
   c(`plugin filter round trip: ${pattern}`, family.kind === familyRoot && family.plugin === "linear" &&
     filter === `${pluginWire}.*.*.linear.${resource}` && family.resource === resource && parsed?.owner === "*" &&
-    parsed.actor === "*" && parsed.rest === pattern);
+    parsed.actor === "*" && parsed.kind === familyRoot && parsed.sender === "*.*" && parsed.rest === pattern);
 }
 for (const ordinary of [">", "*", "*.linear.>", `team.${linear}`, `${familyRoot.toUpperCase()}.linear.inbox`, `${familyRoot}-other.linear.inbox`]) {
   c(`only the literal reserved root selects the plugin family: ${ordinary}`, classifyChannel(ordinary).kind === "chat");
@@ -69,8 +71,11 @@ for (const invalid of [familyRoot, linear, `${familyRoot}.>`, `${familyRoot}.*.>
 }
 for (const bad of [`${pluginWire}.u_abc.act1.linear`, `${pluginWire}.u_abc.act1.*.inbox`,
   `${pluginWire}.u_abc.act-1.linear.inbox`, `cotal..${familyRoot}.u_abc.act1.linear.inbox`,
-  `${pluginWire}.u_abc.act1.linear.>.inbox`, `${pluginWire}.u_abc.act1.linear.in box`]) {
-  c(`plugin parser rejects ${bad}`, parsePluginChannelSubject(bad) === null);
+  `${pluginWire}.u_abc.act1.linear.>.inbox`, `${pluginWire}.u_abc.act1.linear.in box`,
+  `wrong.demo.${familyRoot}.u_abc.act1.linear.inbox`, `cotal.de mo.${familyRoot}.u_abc.act1.linear.inbox`,
+  `${pluginWire}..act1.linear.inbox`, `${pluginWire}.u_abc.act*.linear.inbox`, `${pluginWire}.*.*.*.>`,
+  `${pluginWire}.>`, `${pluginWire}.*.*.linear.`, `${pluginWire}.*.*.linear.${"x".repeat(MAX_CHANNEL_LENGTH)}`]) {
+  c(`shared parser rejects ${bad.length > 90 ? `${bad.slice(0, 90)}…` : bad}`, parseSubject(bad) === null);
 }
 c("plugin subject builder rejects an ordinary channel", rejects(() => pluginChannelSubject("demo", "u_abc", "act1", "team.backend")));
 c("plugin subject builder rejects a dotted owner", rejects(() => pluginChannelSubject("demo", "u_abc.extra", "act1", `${linear}.inbox`)));
