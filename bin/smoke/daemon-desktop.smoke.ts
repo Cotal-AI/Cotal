@@ -43,8 +43,11 @@ const root = mkdtempSync(join(tmpdir(), "cotal-desktop-")); chmodSync(root, 0o70
 // Restoration-only entries, never a child environment.
 const saved = Object.entries(process.env);
 for (const key of Object.keys(process.env)) if (key.startsWith("COTAL_")) delete process.env[key];
-for (const name of ["home", "runtime", "config", "data", "cache"]) mkdirSync(join(root, name), { mode: 0o700 });
-Object.assign(process.env, { HOME: join(root, "home"), XDG_RUNTIME_DIR: join(root, "runtime"), XDG_CONFIG_HOME: join(root, "config"), XDG_DATA_HOME: join(root, "data"), XDG_CACHE_HOME: join(root, "cache"), DO_NOT_TRACK: "1" });
+for (const name of ["home", "config", "data", "cache"]) mkdirSync(join(root, name), { mode: 0o700 });
+// A selected daemon home's socket is `<runtime>/cotal/home-<16 hex>/daemon.sock`, and Linux allows 107 bytes.
+// Under a 39-byte TMPDIR that path was 108, so the runtime directory sits directly under /tmp, whatever TMPDIR is.
+const runtime = mkdtempSync("/tmp/cotal-rt-");
+Object.assign(process.env, { HOME: join(root, "home"), XDG_RUNTIME_DIR: runtime, XDG_CONFIG_HOME: join(root, "config"), XDG_DATA_HOME: join(root, "data"), XDG_CACHE_HOME: join(root, "cache"), DO_NOT_TRACK: "1" });
 process.env.COTAL_HOME = join(root, "home", ".cotal");
 const paths = daemonPaths();
 const native = desktopNativeFixture(root);
@@ -288,4 +291,5 @@ try {
   for (const key of Object.keys(process.env)) if (!saved.some(([name]) => name === key)) delete process.env[key];
   for (const [key, value] of saved) process.env[key] = value;
   rmSync(root, { recursive: true, force: true });
+  rmSync(runtime, { recursive: true, force: true });
 }

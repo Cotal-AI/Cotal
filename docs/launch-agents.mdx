@@ -105,6 +105,8 @@ See the [Security model](security.mdx).
 </Callout>
 
 Claude renders an option as `--key value`, or bare `--key` for an empty value.
+A nonempty native `model` option takes precedence over the `--model` flag and the persona pin.
+The Claude seat reports that choice in orientation and in `cotal who`.
 OpenCode merges options into its agent configuration.
 Codex passes each option as a `-c key=value` configuration override.
 Hermes, Jcode, and pi expose no option mechanism and refuse them.

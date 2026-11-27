@@ -98,6 +98,16 @@ export const codexConnector: Connector = {
   setup: { kind: "connector-setup", name: "codex" },
   supportsFreshStart: true,
   requires: ["codex"],
+  install: {
+    title: "Codex",
+    maker: "OpenAI",
+    installers: {
+      darwin: { script: "https://chatgpt.com/codex/install.sh", shell: "sh", env: { CODEX_NON_INTERACTIVE: "1" }, binDir: "~/.local/bin" },
+      linux: { script: "https://chatgpt.com/codex/install.sh", shell: "sh", env: { CODEX_NON_INTERACTIVE: "1" }, binDir: "~/.local/bin" },
+      win32: { script: "https://chatgpt.com/codex/install.ps1", env: { CODEX_NON_INTERACTIVE: "1" }, binDir: "%LOCALAPPDATA%\\Programs\\OpenAI\\Codex\\bin" },
+    },
+    signIn: { status: ["codex", "login", "status"], login: ["codex", "login"] },
+  },
   readinessTimeoutMs: 35_000, // leave room for the app-server's 30s listen timeout and teardown
   supportsModelVariant: true, // variant = Codex reasoning effort (minimal|low|medium|high|xhigh)
   supportsToolListAnnounce: true, // MCP McpServer.registerTool; SDK fires tools/list_changed

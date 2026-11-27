@@ -166,12 +166,39 @@ for (const s of all) {
   const prompt = { id: "msg_1", type: "user", time: { created: 31 }, text: "[user 1]" } as OpenCode2Message;
   const refused: OpenCode2Message = { id: "msg_2", type: "assistant", time: { created: 32, completed: 33 }, content: [] };
   const idle: OpenCode2Message = { id: "msg_3", type: "idle", time: { created: 34 }, outcome: "succeeded" };
-  const none = [map({ message: prompt, index: -1 }), map({ message: refused, index: -1 })];
+  const started = map({ message: prompt, index: -1 });
+  const none = map({ message: refused, index: -1 });
   const closed = map({ message: idle, index: -1 });
   const again = map({ message: { ...idle, id: "msg_4", time: { created: 35 } }, index: -1 });
-  const types = closed && "events" in closed ? closed.events.map((e) => [e.type, (e as { timestamp?: number }).timestamp]) : [];
-  check("empty-turn:a turn with no element publishes a run at its idle, started at its prompt, and a second idle closes nothing",
-    none.every((u) => u === null) && JSON.stringify(types) === JSON.stringify([[T.RUN_STARTED, 31], [T.RUN_FINISHED, 34]]) && again === null, { none, closed, again });
+  const types = (u: typeof started) => u && "events" in u ? u.events.map((e) => [e.type, e.timestamp]) : [];
+  check("empty-turn:the prompt starts a run without assistant elements, and only the first idle closes it",
+    JSON.stringify(types(started)) === JSON.stringify([[T.RUN_STARTED, 31]]) && none === null &&
+      JSON.stringify(types(closed)) === JSON.stringify([[T.RUN_FINISHED, 34]]) && again === null, { started, none, closed, again });
+}
+
+{
+  let n = 0;
+  const { map } = createOpenCode2Mapper({ threadId: THREAD, mintRunId: () => `steered-${++n}` });
+  const first: OpenCode2Message = { id: "msg_2", type: "assistant", time: { created: 42 }, content: [{ type: "text", text: "first reply" }] };
+  const refused: OpenCode2Message = { id: "msg_4", type: "assistant", time: { created: 44, completed: 45 }, content: [] };
+  const units = [
+    map({ message: { id: "msg_1", type: "user", time: { created: 41 } }, index: -1 }),
+    map({ message: first, index: 0, element: first.content![0] }),
+    map({ message: { id: "msg_3", type: "user", time: { created: 43 } }, index: -1 }),
+    map({ message: refused, index: -2 }),
+    map({ message: refused, index: -1 }),
+    map({ message: { id: "msg_5", type: "idle", time: { created: 46 }, outcome: "failed" }, index: -1 }),
+  ];
+  const shape = units.map((u) => u && "events" in u ? [u.runId, u.events.map((e) => [e.type, e.timestamp])] : u);
+  check("steered-refusal:with no output, the failed idle opens and closes a distinct run stamped at the steered prompt",
+    JSON.stringify(shape) === JSON.stringify([
+      ["steered-1", [[T.RUN_STARTED, 41]]],
+      ["steered-1", TEXT.map((type) => [type, 42])],
+      ["steered-1", [[T.RUN_FINISHED, 43]]],
+      null,
+      null,
+      ["steered-2", [[T.RUN_STARTED, 43], [T.RUN_ERROR, 46]]],
+    ]), shape);
 }
 
 {
@@ -237,6 +264,6 @@ for (const s of all) {
     { types: done.types, violation });
 }
 
-const EXPECTED = 25;
+const EXPECTED = 26;
 check(`meta:every cell ran - ${EXPECTED} expected`, passed() + failed() === EXPECTED, `${passed() + failed()} cells reported`);
 finish();

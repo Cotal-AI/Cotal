@@ -146,10 +146,12 @@ If a broker outage prevents a hosted run's final status write, the manager retri
 while the attempt's connection remains open, including when NATS returns before JetStream
 can answer. The program does not advance during this repair.
 Once JetStream answers, `run` and `run show` report the recorded state. If the outage also
-interrupted a journal append, the same manager can resume the run after recording the release.
-It replays the journal under a new attempt instead of retrying the interrupted append. It does
-not take over a run that was revoked or that another attempt already holds. If the manager
-stops first, its next boot takes back runs still recorded `running`.
+interrupted a journal append, the same manager tries to resume the run after recording the release.
+It retries temporary failures for at least 30 minutes after recording the release. After the
+first minute it waits at least a minute between attempts. The manager logs the first failure it
+will retry and any failure that ends retries. It replays the journal under a new attempt instead
+of retrying the interrupted append. A revoked run or a run that another attempt already holds ends
+retries immediately. If the manager stops first, its next boot takes back runs still recorded `running`.
 The manager scans run records in batches. It checks programs, admissions and journals only for
 runs recorded `running`, so finished runs do not each require a separate broker round trip.
 
@@ -259,8 +261,9 @@ material, and is the path on a bare broker with no manager or for a run with no 
 `resume --local` refuses with `TARGET_NOT_FOUND`, exits 2 and points to `cotal run list --local`
 for the same space and any explicit broker, credential or endpoint. If a local `resume`, `answer` or `amend` has a
 malformed run ID, use `cotal run list --local` with the same target options. Then replace only the run
-ID in the original command. A hosted `resume` with a malformed ID points to the run list for the
-requested space, broker and manager. For a local `resume` with no run ID, use the local list and add the ID.
+ID in the original command. A hosted `resume` with a missing or malformed ID points to the run list
+with the original target options and output format. Add or replace the ID in the original command
+without changing its options. For a local `resume` with no run ID, use the local list and add the ID.
 `answer --local` and `amend --local` take
 `--by <who>` and print the same receipt as the hosted path, and `start --local` requires
 `--admit-read` and `--admit-publish` (comma-separated

@@ -2,7 +2,7 @@ import { mkdirSync, readFileSync, rmSync } from "node:fs";
 import { hostname } from "node:os";
 import { join, resolve } from "node:path";
 import { agentFilePath, chatStream, checkEventStartup, controlReplyFromThrown, copyPersonaEndpoints, describeCleanupFailures, DEV_OWNER, EpEnvelopeError, eventChannelPrincipal, EventStateConflictError, grantOverreach, isPermissionDenied, lifecycleBlocked, loadCotalConfig, lowerPersonaEndpoints, managedRetirementOpId, mintAcceptedToken, mintGeneration, mintLifecycleUid, modelPolicyEnv, modelPolicyRefusal, newIdentity, parsePrincipalKey, principalKey, provisionAgent, rejectionText, renderLifecycleBlocked, resolveReadAcl, saveAgentFile, STANDING_RENEWABLE_TTL_SEC as MANAGED_STATIC_TTL_SEC, STATIC_GENERATION_HORIZON_SEC, type AgentDef, type CleanupFailure, type Connector, type ControlReply, type CotalConfig, type CotalEndpoint, type EpCaller, type EpCapability, type GoalRef, type IssuedStore, type LaunchChoice, type LaunchOpts, type LaunchSpec, type LifecycleStateTransport, type PersonaEndpoint, type UserAuthLaunch } from "@cotal-ai/core";
-import { agentLifecycleSecretFilePaths, agentSecretKeyForFile, materializeSecretToFile, mergeLaunchOptions, retainConnectorSeat } from "@cotal-ai/workspace";
+import { agentLifecycleSecretFilePaths, agentSecretKeyForFile, isTrustedProject, materializeSecretToFile, mergeLaunchOptions, retainConnectorSeat } from "@cotal-ai/workspace";
 import type { KV } from "@nats-io/kv";
 import { CHAT_ALIAS_PREFIX } from "./chat-session.js";
 import { readContinuityAssignment, writeInlineSnapshot } from "./launch.js";
@@ -211,6 +211,11 @@ export class SeatStart {
       if (hooks?.onAccepted) throw new EpEnvelopeError("failed-precondition", error, undefined, "not-executed");
       return { ok: false, error };
     }
+    const connectorLaunchRestriction = connector.launchUnavailable?.({ cwd: this.config.workspaceRoot, resume: opts.resume });
+    if (connectorLaunchRestriction) {
+      if (hooks?.onAccepted) throw new EpEnvelopeError("failed-precondition", connectorLaunchRestriction, undefined, "not-executed");
+      return { ok: false, error: connectorLaunchRestriction };
+    }
     // Read here, beside the connector, so the capacity check and the reserve below take no new await.
     const run = await this.spawnRun(authenticatedCaller, opts.runId);
     if (run !== undefined && "refused" in run) return { ok: false, error: `spawn: ${run.refused}` };
@@ -278,7 +283,7 @@ export class SeatStart {
     let cotalConfig: CotalConfig;
     let hostFields: ReturnType<Manager["hostLaunchFields"]>;
     try {
-      cotalConfig = loadCotalConfig(this.config.workspaceRoot);
+      cotalConfig = loadCotalConfig(this.config.workspaceRoot, isTrustedProject);
       hostFields = this.hostLaunchFields(cotalConfig, agent, opts.shareTools, harness);
     } catch (e) {
       const error = rejectionText(e);

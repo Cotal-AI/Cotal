@@ -2,7 +2,7 @@
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
-import { infrastructureMaintenancePermissions, startIsolatedBroker } from "../src/lib/isolated-broker.js";
+import { connectIsolatedBroker, infrastructureMaintenancePermissions, startIsolatedBroker } from "../src/lib/isolated-broker.js";
 import { endpointPlaneStreamNames, hardenedAuthorityStreamNames } from "@cotal-ai/core";
 import { createSuite } from "@cotal-ai/smoke-kit";
 
@@ -50,9 +50,42 @@ try {
 }
 check("an invalid maintenance stream name is rejected", invalid.includes("invalid maintenance stream name"), invalid);
 
+{
+  const root = realpathSync.native(mkdtempSync(join(tmpdir(), "cotal-smoke-isolated-watchdog-")));
+  const options = {
+    root, storeDir: join(root, "store"), space: "watchdog", mode: "open", label: "backup",
+    deadline: new Date(Date.now() + 60_000), initialScope: { profile: "infrastructure", streams: ["WATCHDOG"] },
+  } satisfies Parameters<typeof startIsolatedBroker>[0];
+  const preload = join(root, "fail-watchdog.cjs");
+  writeFileSync(preload, "throw new Error('watchdog startup diagnostic');\n");
+  const nodeOptions = process.env.NODE_OPTIONS;
+  let detail = "";
+  try {
+    process.env.NODE_OPTIONS = `--require ${JSON.stringify(preload.replaceAll("\\", "/"))}`;
+    try { await (await startIsolatedBroker(options)).stop(); }
+    catch (error) { detail = (error as Error).message; }
+  } finally {
+    if (nodeOptions === undefined) delete process.env.NODE_OPTIONS;
+    else process.env.NODE_OPTIONS = nodeOptions;
+  }
+  try {
+    check("a watchdog startup failure includes its diagnostic", detail.includes("watchdog startup diagnostic"), detail);
+    const broker = await startIsolatedBroker(options);
+    try {
+      const next = await broker.addLogin(options.initialScope);
+      const current = await connectIsolatedBroker(broker, next);
+      await current.close();
+      let retired = false;
+      try { await (await connectIsolatedBroker(broker, broker.initialLogin)).close(); }
+      catch { retired = true; }
+      check("the isolated broker installs the next login and retires its initial login", retired);
+    } finally { await broker.stop(); }
+  } finally { rmSync(root, { recursive: true, force: true }); }
+}
+
 // A listener that stays alive but never accepts connections must end at the 15 s boot bound, not
 // at the operation deadline backup, restore and quarantine pass (30 minutes in the CLI).
-{
+if (process.platform !== "win32") {
   const root = realpathSync.native(mkdtempSync(join(tmpdir(), "cotal-isolated-boot-")));
   const pidFile = join(root, "fake.pid");
   const bin = join(root, "bin");

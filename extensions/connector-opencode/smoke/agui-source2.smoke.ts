@@ -88,7 +88,7 @@ const tool = (id: string, status: "streaming" | "running" | "completed"): OpenCo
   const src = new OpenCode2SessionSource({ page: s.page });
   s.set([user("msg_1"), step("msg_2", []), { id: "msg_3", type: "model-switched", time: { created: 4 } }]);
   const first = await src.read("");
-  check("hold:a step that has written nothing yet holds every record after it", keys(first.records) === "msg_1:-1", keys(first.records));
+  check("hold:a step with no output yields its header and holds every later record", keys(first.records) === "msg_1:-1 msg_2:-2", keys(first.records));
   s.set([user("msg_1"), step("msg_2", [text("a")], { streamed: 5, completed: 6 }), { id: "msg_3", type: "model-switched", time: { created: 4 } }]);
   const second = await src.read(first.cursor);
   check("hold:once it writes and finishes, its element comes before the record it held", keys(second.records) === "msg_2:0 msg_3:-1", keys(second.records));
@@ -100,7 +100,7 @@ const tool = (id: string, status: "streaming" | "running" | "completed"): OpenCo
   s.set([user("msg_1"), step("msg_2", [tool("call_1", "completed"), text(""), tool("call_2", "running")])]);
   const first = await src.read("");
   check("settle:a finished tool's call and result are handed over before its step has finished streaming",
-    keys(first.records) === "msg_1:-1 msg_2:0:call msg_2:0", keys(first.records));
+    keys(first.records) === "msg_1:-1 msg_2:-2 msg_2:0:call msg_2:0", keys(first.records));
   s.set([user("msg_1"), step("msg_2", [tool("call_1", "completed"), text("b"), tool("call_2", "running")], { streamed: 5 })]);
   const second = await src.read(first.cursor);
   check("settle:text is handed over once its step has streamed, and a running tool hands over its call and holds its result",
@@ -115,7 +115,7 @@ const tool = (id: string, status: "streaming" | "running" | "completed"): OpenCo
   const src = new OpenCode2SessionSource({ page: s.page });
   s.set([user("msg_1"), step("msg_2", [tool("call_1", "streaming")])]);
   const first = await src.read("");
-  check("call:a tool still streaming its input holds the read, call and all", keys(first.records) === "msg_1:-1", keys(first.records));
+  check("call:a tool still streaming its input holds the read at the header", keys(first.records) === "msg_1:-1 msg_2:-2", keys(first.records));
   s.set([user("msg_1"), step("msg_2", [tool("call_1", "completed")], { streamed: 5, completed: 6 }), idle("msg_3")]);
   const resumed = await src.read("msg_2:0:call").catch((e: Error) => ({ records: [], cursor: e.message }));
   check("call:a read resumed at a tool's call hands over its result next, then what follows",
@@ -127,7 +127,7 @@ const tool = (id: string, status: "streaming" | "running" | "completed"): OpenCo
   s.set([user("msg_1"), step("msg_2", [text("")]), idle("msg_3")]);
   const read = await new OpenCode2SessionSource({ page: s.page }).read("");
   check("turn-end:a turn that ended settles an element its own marks never did",
-    keys(read.records) === "msg_1:-1 msg_2:0 msg_3:-1", keys(read.records));
+    keys(read.records) === "msg_1:-1 msg_2:-2 msg_2:0 msg_3:-1", keys(read.records));
 }
 
 {
@@ -154,10 +154,10 @@ const tool = (id: string, status: "streaming" | "running" | "completed"): OpenCo
   const again = await src.read(first.cursor);
   await src.read(first.cursor);
   check("revert:a cursor whose record was removed is reported once and the read goes on by order",
-    first.cursor === "msg_2:0" && again.records.length === 0 && vanished.join(" ") === "msg_2:0", { cursor: first.cursor, vanished });
+    first.cursor === "msg_2:0" && keys(again.records) === "msg_4:-2" && vanished.join(" ") === "msg_2:0", { cursor: first.cursor, vanished });
   s.set([user("msg_1"), step("msg_4", [text("c")], { streamed: 7, completed: 8 })]);
   const after = await src.read(first.cursor);
-  check("revert:what is written after the revert is read", keys(after.records) === "msg_4:0", keys(after.records));
+  check("revert:what is written after the revert is read", keys(after.records) === "msg_4:-2 msg_4:0", keys(after.records));
 }
 
 {
@@ -174,7 +174,7 @@ const tool = (id: string, status: "streaming" | "running" | "completed"): OpenCo
 {
   const src = new OpenCode2SessionSource({ page: server(200).page });
   let refused = 0;
-  for (const bad of ["msg_1", ":0", "msg_1:", "msg_1:01", "msg_1:-2", "msg_1:x", "msg_1:0:x", "msg_1:-1:call", "msg_1:0:call:call"]) await src.read(bad).catch(() => (refused += 1));
+  for (const bad of ["msg_1", ":0", "msg_1:", "msg_1:01", "msg_1:-2:call", "msg_1:x", "msg_1:0:x", "msg_1:-1:call", "msg_1:0:call:call"]) await src.read(bad).catch(() => (refused += 1));
   check("cursor:a malformed cursor is refused, never guessed at", refused === 9, refused);
 }
 

@@ -1,5 +1,15 @@
 # @cotal-ai/connector-core
 
+## 0.182.1
+
+### Patch Changes
+
+- 938d757: The `set-model` policy refusal and configuration read warning now refer to the Cotal configuration without implying that you should run a command.
+- daf0755: The Claude and Codex guides show how to create the named personas before launching them in the background.
+- a5adbcd: MCP connections now choose the next free suffixed name even when the requested name is already at the length limit.
+- cefeea9: When `cotal_wait` times out with quiet channel messages buffered, it tells you to read them with `cotal_inbox`.
+- f017c32: Show how to preserve Unicode when piping text into `cotal send --stdin` from Windows PowerShell 5.1.
+
 ## 0.182.0
 
 ### Minor Changes

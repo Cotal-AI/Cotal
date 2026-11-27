@@ -314,6 +314,12 @@ leaves the installation unchanged without failing `update --self`.
 On Linux and macOS, an installed self-update restores owner write access to its own connector
 directories before staging a release. If it cannot make those directories writable, it names the
 directory to fix and stops before staging.
+On Linux and macOS, `cotal update --self` can restore owner read access to its extensions manifest
+and owner search access to folders on its path inside the Cotal config. It does this only for a
+regular manifest and real folders owned by your account. It reports the repair and continues without
+changing ownership, group or other permissions, or the manifest contents. If it cannot safely
+restore access, the update still stops and tells you what to fix. Commands such as `cotal status`
+report unreadable inventory without changing permissions.
 If you move your home or configuration directory while Cotal and its updates are stopped, an
 installed CLI at the same path can use the moved connector set. The former configuration folder
 must be absent, and the private connector set must still be at the same relative path under the
@@ -414,7 +420,9 @@ It leaves that registration unchanged and continues the CLI upgrade and the othe
 ### Manager continuity
 
 When `update --self` finds no newer release and verifies the installed package closure is current,
-it reports that no connector reconciliation ran and skips the running Manager continuity check.
+it skips full connector reconciliation and the running Manager continuity check. A manual update
+can still repair a Codex marketplace you moved into the current Cotal home. It leaves other
+harness registrations unchanged and reports the result of the Codex repair separately.
 An unreadable Manager from another installation does not block this result.
 If a first-party operator extension is missing its entry file, `cotal update --self` runs
 reconciliation to restore it even when the CLI is already current.
@@ -553,10 +561,13 @@ proxy settings and retry. For a refused proxy set in npm configuration, the comm
 neither prints the proxy URL nor bypasses it. An unavailable registry without a confirmed proxy
 refusal remains a no-op.
 If npm is in offline mode and the latest-version lookup misses Cotal's temporary cache,
-`cotal update --self` reports that the check was skipped and exits 0. The skipped check does not
-retry with network access or start a new install. Before the lookup, the updater can still recover an
-interrupted update or finish a pending extension promotion. It reports a completed promotion
-separately. Run the command with npm offline mode disabled to check for a newer release.
+`cotal update --self` reports that the check was skipped and exits 0. It does not retry with network
+access or replace the CLI. A manual run can repair damaged first-party extensions installed from npm
+at the running CLI's version, using npm's existing cache and the usual continuity checks. It names
+any extensions it could not repair and does not stop agents or restart the daemon for this repair.
+Before the lookup, the updater can still recover an interrupted update or finish a pending
+extension promotion. It reports a completed promotion separately. Run the command with npm offline
+mode disabled to check for a newer release.
 For other non-network failures in the latest-version check, `cotal update --self` reports npm's
 first diagnostic line and exits with status 1.
 
@@ -644,7 +655,14 @@ and names `chmod g-w <path>` as the next step.
 
 ### Update limits
 
-Third-party extensions are listed with their installed version and recorded spec but are not
+When an operator-installed first-party extension has no recorded install spec, `cotal update`
+verifies it against the installed version and npm lock. If it needs repair, the command uses the
+package name at this Cotal release's version. A built-in without a recorded spec is repaired from
+the shipped payload.
+Seed cleanup keeps old generations that the extension inventory or npm metadata still reference.
+If cleanup cannot remove an old generation, the command warns and continues the update.
+
+Third-party extensions are listed with their installed version and any recorded spec but are not
 auto-updated in v1. Floating third-party updates require `@cotal-ai/*` peer-range validation and are
 a future follow-up. When `update --self` cannot reach the registry before selecting a release,
 it exits 0 without reconciling packages, inspecting Manager custody or creating an update recovery
@@ -838,10 +856,17 @@ An unsupported source spelling returns `USAGE_INVALID` before installation.
 A package can declare its entry through a root `exports` entry such as
 `"exports": { ".": { "import": "./greet.mjs" } }` without also declaring `main`.
 The shorthand `"exports": { "import": "./greet.mjs" }` selects the same entry.
+For conditional root exports, Cotal checks `node`, `import` and `default` in the order they appear,
+including inside nested conditions. For example, `"node": { "import": "./greet.mjs" }` before
+`"default": "./fallback.mjs"` selects `greet.mjs` both at installation and when loading the extension.
 An npm `main` such as `"./greet"` can resolve to `greet.js` without naming the suffix.
 If the installed npm package is missing its entry, `add` reports the path relative to that package.
 For a local extension, check the package contents with `npm pack --dry-run ./example-extension`.
 Include the entry in `files` or generate it before running `cotal ext add ./example-extension` again.
+If npm cannot open a tarball named in a local extension's relative `file:` dependency, `add` names the dependency.
+Use `npm pack --dry-run ./example-extension` to check the source package contents.
+For local use, set the `file:` dependency to the absolute path of an existing archive and run `cotal ext add ./example-extension` again.
+For distribution, use a dependency npm can install from a registry.
 Give `remove` the package name as listed by `cotal ext list`, without a version.
 For a scoped package such as `@acme/_helper`, include the scope and the leading underscore.
 If the package is already absent, `remove` reports that nothing was removed and exits 0.
@@ -860,13 +885,23 @@ selective `down`. Removing an additional runtime extension, one the manager was 
 refuses the next seat that names it; the manager's own runtime and the seats already running stay
 as they are. `remove` and `list` manage them. The `@cotal-ai/web` dashboard is the
 canonical service preset and local-process example. Installed packages and their location are described in
-[config](config.mdx). When a package needs an export its linked `@cotal-ai/*` peer does not have,
+[config](config.mdx). Before importing a local or third-party extension, `add` checks its declared
+`@cotal-ai/core` peer range against the core it will link, even if the package marks that peer optional.
+It refuses an invalid or incompatible range without changing the installed extensions. Choose an
+extension build that supports your core or a CLI release that satisfies the declared range.
+`*` allows any version. The check compares prerelease versions at their actual precedence and ignores
+build metadata. In a source checkout, a `0.0.0` placeholder, with or without a prerelease label, cannot
+establish a mismatch. This check does not apply to official `@cotal-ai/*` releases selected by
+registry name, version, range, or tag. Seeding and self-update reconciliation do not apply this check.
+
+When a package needs an export its linked `@cotal-ai/*` peer does not have,
 `add` rolls back. Both `add` and a later load name the missing export and identify the older install
 when the versions establish one. If the versions match, check the extension's import against the
 exports of the linked peer before replacing either build.
 On POSIX shells, a reinstall command printed for a local extension quotes paths with spaces as one argument.
-When a failed load calls for reinstalling an operator-installed extension but its recorded install spec
-cannot be used in a command, the advice names `cotal ext remove <package>` instead.
+When an operator-installed first-party extension has no recorded install spec, the advice gives
+`cotal ext add <package>`. The bare package name selects this CLI's version. In other cases where
+the original spec cannot be used in a command, the advice names `cotal ext remove <package>` instead.
 Each load or add reads the installed package's metadata once, using that same result for its version,
 peer links, entry and import diagnosis. Corrupt or unreadable metadata refuses before import; an entry
 that later changes its own `package.json` cannot change the peer range used to diagnose that import.
@@ -902,7 +937,8 @@ rather than weakening its shell-file ownership checks.
 Bare `ext --json` (or `ext list --json`) writes one JSON document: `result.root` is the install
 prefix and `result.items` holds one row per installed extension with `pkg`, `version`, `spec` (what
 `ext add` was given), `seeded` (`true` for an entry the built-in seed installed) and `provides` (the
-`kind:name` refs the table shows). An empty prefix is an empty list. `--plain` writes the same report
+`kind:name` refs the table shows). If the install spec was not recorded, the row omits `spec`.
+An empty prefix is an empty list. `--plain` writes the same report
 without color. The other `ext` subcommands refuse `--json` and `--plain` with `USAGE_INVALID`.
 `ext root` stays a raw path for `$(cotal ext root)`, even if the manifest is corrupt.
 If the manifest is corrupt, `ext list --json` exits 1 with a `SCHEMA_INVALID` refusal and names
@@ -1226,13 +1262,14 @@ candidate that holds a control character, such as a persona file name with an es
 newline in it, is not offered. `persona` still lists that file with the characters escaped. A
 persona catalog folder that cannot be read fails the completion of a persona name, or of a channel
 or role its personas declare, so the shell offers none, and with `COTAL_COMPLETE_DEBUG=1` it prints
-the folder. A persona file that does not parse fails a channel or role completion the same way, and
+the folder. `persona show` offers only readable, valid persona files, not links.
+A persona file that does not parse fails a channel or role completion the same way, and
 that flag names the file, because the declared set would be incomplete. A record it skips, such as a
 prepared space record that does not parse, is named on stderr only under that flag too. The stubs
 discard stderr, so run the completion by hand to see it, as
 `COTAL_COMPLETE_DEBUG=1 cotal __complete persona show ''` does. The bash
-and zsh stubs complete file names where a value takes a path. The fish stub offers only cotal's own
-candidates.
+and zsh stubs complete file names where a value takes a path. In Bash, a candidate with spaces is
+inserted as one argument. The fish stub offers only cotal's own candidates.
 
 In bash and zsh, a file argument such as `team check <file>`, `up -f <file>`, `--channels <path>`,
 `--creds <path>`, `run start --file <program>` or `auth mint --out <private-file>` completes from the
@@ -1385,6 +1422,21 @@ The first interactive run at `regular` prints one notice to stderr. `COTAL_TELEM
 anything but a level refuses `USAGE_INVALID`. A settings file that does not validate refuses
 `SCHEMA_INVALID` on `cotal telemetry` and on every command that reports usage, until it is fixed or
 moved away. Under the environment opt-outs above nothing reads it, so it stops no command.
+
+## trust [#trust]
+
+```bash
+cotal trust <path> [--hex] [--json|--plain]
+```
+
+Trusts one project folder, so its `.cotal/config.json` may declare MCP servers and `spawn.env`
+names, and its persona files may declare `launchOptions`, for agents spawned there. The folder's
+canonical path is recorded in `trusted-projects.json` in the operator config folder. Trusting a
+folder that is already trusted is a `no-op`. A path that is not a folder refuses `TARGET_NOT_FOUND`.
+A folder whose `.cotal` another account owns refuses `PERMISSION_DENIED`.
+The refusal for an untrusted project prints a command you can copy into your shell. The command
+uses `--hex` when a path contains characters that a shell might interpret.
+[Trusted project folders](config.mdx#trusted-project-folders) describes the rule.
 
 
 ### Preparation [#preparation]

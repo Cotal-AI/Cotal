@@ -229,6 +229,8 @@ try {
     check("entry resolution keeps an exact file ahead of a suffixed sibling", resolveExtensionEntry(dir, meta) === join(dir, "entry"));
     check("entry resolution keeps a root import export ahead of main", resolveExtensionEntry(dir, { ...meta, exports: { ".": { import: "./export.js" } } }) === join(dir, "export.js"));
     check("entry resolution accepts a default root export in shorthand", resolveExtensionEntry(dir, { ...meta, exports: { default: "./export.js" } }) === join(dir, "export.js"));
+    check("entry resolution keeps default ahead of a later import", resolveExtensionEntry(dir, { ...meta, exports: { ".": { default: "./export.js", import: "./entry" } } }) === join(dir, "export.js"));
+    check("entry resolution tries the next condition when a nested node branch does not match", resolveExtensionEntry(dir, { ...meta, exports: { ".": { node: { require: "./entry" }, default: "./export.js" } } }) === join(dir, "export.js"));
     check("entry resolution keeps main when exports declare only a subpath", resolveExtensionEntry(dir, { ...meta, exports: { "./import": "./export.js" } }) === join(dir, "entry"));
     check("entry resolution keeps an exported directory's index", resolveExtensionEntry(dir, { ...meta, exports: "./dist" }) === join(dir, "dist", "index.js"));
     check("entry resolution does not expand a missing explicit export", resolveExtensionEntry(dir, { ...meta, exports: "./export" }) === join(dir, "export"));

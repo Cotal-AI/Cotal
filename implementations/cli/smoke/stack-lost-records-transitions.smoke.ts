@@ -18,7 +18,7 @@ function check(name: string, ok: boolean, detail?: unknown): void {
   if (ok) { passed++; console.log(`  ✓ ${name}`); }
   else { failed++; console.log(`  ✗ ${name}${detail === undefined ? "" : `: ${JSON.stringify(detail)}`}`); }
 }
-for (const scenario of ["forget", "managerless", "settled", "repeat", "broker-only"]) {
+for (const scenario of ["forget", "managerless", "settled", "repeat", "broker-only", "manager-backed"]) {
   const fixture = join(base, scenario), home = join(fixture, "home"), root = join(fixture, "project");
   for (const path of [fixture, home, root]) mkdirSync(path, { mode: 0o700 });
   const env = { ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_") && !["NODE_OPTIONS", "NODE_PATH"].includes(key))), HOME: fixture, XDG_CONFIG_HOME: join(fixture, "xdg"), COTAL_HOME: home, COTAL_SKIP_CONNECTOR_SEED: "1", DO_NOT_TRACK: "1" };
@@ -73,6 +73,12 @@ for (const scenario of ["forget", "managerless", "settled", "repeat", "broker-on
       check("missing home: status names the lost records and recommends preview then stop, not cleanup or recreation",
         !lost.selected.resolved && lost.selected.message.includes("member records are missing") &&
         /`(?:pnpm )?cotal down --dry-run`.*`(?:pnpm )?cotal down --yes`/.test(next) && !/clean store|reset store|space create/.test(next), lost);
+      const components = spawnSync(process.execPath, [binary, "status", "--components"], { cwd: root, env, encoding: "utf8", timeout: 150_000 });
+      const health = components.stdout.split("Component Health")[1] ?? "";
+      check("component health refuses the service check and reports the same running broker pin and recovery step",
+        components.status === 3 && /target\s+refused/.test(health) && !/target\s+absent/.test(health) &&
+        health.includes("broker process is running") && health.includes(`broker pid ${pin.pid}`) &&
+        /`(?:pnpm )?cotal down --dry-run`.*`(?:pnpm )?cotal down --yes`/.test(health), components.stdout + components.stderr);
       const preview = cli(["down", "--dry-run"]);
       const result = preview.data.result as { kind?: string; signalled?: boolean; members?: { role: string; process: string; pid: number }[] };
       check("recovery preview agrees with status and neither writes the journal nor signals the broker",
@@ -81,6 +87,41 @@ for (const scenario of ["forget", "managerless", "settled", "repeat", "broker-on
         readFileSync(file, "utf8") === before && !gone(pin), preview);
       must(["down", "--yes"]);
       check("after recovery status does not report the exited broker as running", gone(pin) && status().broker?.state !== "running");
+      continue;
+    }
+    if (scenario === "manager-backed") {
+      must(["up", "--open", "--space", scenario, "--server", `nats://127.0.0.1:${await freePort()}`]);
+      const started = journal();
+      const manager = started.members.find((row) => row.role === "manager")?.process;
+      const broker = started.members.find((row) => row.role === "broker")?.process;
+      if (!manager || !broker || gone(manager) || gone(broker)) throw new Error("expected live manager and broker pins");
+      hide();
+      const before = readFileSync(file, "utf8");
+      const lost = cli(["status"]);
+      const report = lost.data.result as StatusResult;
+      const managerRow = report.folder.processes?.find((row) => row.name === "manager");
+      const brokerRow = report.folder.processes?.find((row) => row.name === "nats");
+      check("missing home: status shows the creation-pinned manager and broker running",
+        lost.exit === 0 && report.folder.processSpace === scenario && managerRow?.state === "running" && managerRow.pid === manager.pid &&
+        brokerRow?.state === "running" && brokerRow.pid === broker.pid && brokerRow.ownedService === null, { managerRow, brokerRow, selected: report.selected });
+      check("missing home: status names both running processes and keeps the preview",
+        report.selected.resolved === false && report.selected.message.includes("manager and broker processes are running") &&
+        /`(?:pnpm )?cotal down --dry-run`.*`(?:pnpm )?cotal down --yes`/.test(report.hints.join("\n")), report.selected);
+      const components = spawnSync(process.execPath, [binary, "status", "--components"], { cwd: root, env, encoding: "utf8", timeout: 150_000 });
+      const health = components.stdout.split("Component Health")[1] ?? "";
+      check("component health refuses the service check and names both running pins",
+        components.status === 3 && /target\s+refused/.test(health) && !/target\s+absent/.test(health) &&
+        health.includes("manager and broker processes are running") && health.includes(`manager pid ${manager.pid}`) &&
+        health.includes(`broker pid ${broker.pid}`) && /`(?:pnpm )?cotal down --dry-run`.*`(?:pnpm )?cotal down --yes`/.test(health), components.stdout + components.stderr);
+      const preview = cli(["down", "--dry-run"]);
+      const result = preview.data.result as { kind?: string; signalled?: boolean; members?: { role: string; process: string; pid: number }[] };
+      check("recovery preview agrees with status and writes nothing",
+        preview.exit === 0 && result.kind === "missing-records-stack-stop-preview" && result.signalled === false &&
+        result.members?.some((row) => row.role === "manager" && row.process === "running" && row.pid === manager.pid) === true &&
+        result.members?.some((row) => row.role === "broker" && row.process === "running" && row.pid === broker.pid) === true &&
+        readFileSync(file, "utf8") === before && !gone(manager) && !gone(broker), preview);
+      must(["down", "--yes"]);
+      check("after recovery neither pinned process is still running", gone(manager) && gone(broker));
       continue;
     }
     must(["up", "--server", `nats://127.0.0.1:${await freePort()}`]);

@@ -192,6 +192,25 @@ try {
     const catalog = join(machineHome, "space-catalogs.json");
     if (existsSync(catalog)) unlinkSync(catalog);
   }
+
+  saveIdpSession(machineHome, idp, selected);
+  const requestId = "A".repeat(32);
+  const recoveryRoot = join(machineHome, "app-identities");
+  const recordDir = join(recoveryRoot, `unconfirmed-${requestId}`);
+  mkdirSync(recoveryRoot, { mode: 0o700 });
+  mkdirSync(recordDir, { mode: 0o700 });
+  writeFileSync(join(recordDir, "identity.json"), JSON.stringify({
+    v: 1, requestId, state: "retiring", label: "saved_conversation", space: "isolated-absent-space",
+    root: machineHome, session: "fixture-conversation", token: "A".repeat(43), trust: "",
+    consumer: { pid: process.pid }, remote: { idpUrl: idp, url: `${origin}/unused` },
+  }), { mode: 0o600 });
+  const unconfirmed = await exchangeDesktopRequest({ paths }, request);
+  secretFree(unconfirmed);
+  assert.ok(unconfirmed.ok && "result" in unconfirmed);
+  assert.deepEqual(unconfirmed.result, { kind: "logout", serverRevoked: true, localLoginCleared: true, removedRegistrations: [], skippedServices: [],
+    unconfirmedConversations: [{ label: "saved_conversation", space: "isolated-absent-space" }] });
+  assert.equal(signOuts, 5);
+  assert.ok(existsSync(join(recordDir, "identity.json")), "unreachable retirement stays available for recovery");
 } finally {
   try { await daemon?.close(); }
   finally {

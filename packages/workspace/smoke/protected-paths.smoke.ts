@@ -18,7 +18,7 @@ import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { strict as nodeAssert } from "node:assert";
 import { countedAssert, emitSentinel, skipSuite } from "@cotal-ai/smoke-kit";
-import { chmodSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, statSync as nodeStat, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, chownSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, statSync as nodeStat, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { isConnectRefusal, readCredsFile } from "../src/connect.js";
@@ -308,6 +308,32 @@ try {
     try { readLocalRecordSource(path, 1024, true); } catch (error) { read = error; }
     assert.ok(read instanceof CommandFailure && read.code === "PERMISSION_DENIED" && read.message === text && (read.target as { path?: unknown } | undefined)?.path === path, `${path} (mode ${mode.toString(8)}) is refused naming it\n${String(read)}`);
   }
+  // 5c. A saved record this account owns but other accounts can read, as a backup restored with
+  //     ordinary file permissions leaves a stack journal, refuses with the chmod from its folder. The
+  //     foreign-owner branch runs only as root, the one account that can create a file another account
+  //     owns; neither refusal changes the file.
+  chmodSync(creds, 0o644);
+  let groupRead: unknown;
+  try { readLocalRecordSource(creds, 1024, true); } catch (error) { groupRead = error; }
+  assert.ok(groupRead instanceof CommandFailure && groupRead.code === "PERMISSION_DENIED"
+    && groupRead.message === `the saved local record ${creds} is not owned and private`, `a group-readable record this account owns refuses\n${String(groupRead)}`);
+  assert.equal((groupRead as CommandFailure).remedy, `from the folder that holds it, run chmod 600 ${shellPath(creds)}, then retry this command`, "its Next is the chmod that makes the file private again, quoted when a shell would split it");
+  if (process.getuid!() === 0) {
+    const owned = realpathSync(mkdtempSync(join(realpathSync(process.platform === "linux" ? "/tmp" : tmpdir()), "cotal-foreign-record-")));
+    try {
+      const foreign = join(owned, "foreign.json");
+      writeFileSync(foreign, "{}", { mode: 0o600 });
+      chownSync(foreign, 1, process.getgid!());
+      let foreignRead: unknown;
+      try { readLocalRecordSource(foreign, 1024, true); } catch (error) { foreignRead = error; }
+      assert.ok(foreignRead instanceof CommandFailure && foreignRead.code === "PERMISSION_DENIED"
+        && foreignRead.message === `the saved local record ${foreign} is not owned and private`, `a record owned by another account refuses\n${String(foreignRead)}`);
+      assert.match((foreignRead as CommandFailure).remedy ?? "", /^the record needs to be restored with the correct owner: it is owned by uid [0-9]+, not this account \(uid [0-9]+\), so it was not read or changed$/, "its Next names the restore it needs rather than a chmod");
+    } finally {
+      rmSync(owned, { recursive: true, force: true });
+    }
+  }
+  chmodSync(creds, 0o600);
 } finally {
   rmSync(dir, { recursive: true, force: true });
 }

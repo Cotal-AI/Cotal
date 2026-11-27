@@ -3,13 +3,17 @@
  * list, and one command's or subcommand's help. Every renderer reads local metadata only: it never
  * connects, writes, seeds or imports an extension.
  */
+import { parseArgs } from "node:util";
 import { commandUsage, findSubcommand, type Command, type Subcommand } from "@cotal-ai/core";
-import { cachedPreferences, canonicalRoot, displayWidth, findCotalRoot, findPreparedSpace, folderSpace, folderSpaceHeld, folderSpaceStopped, getCurrent, readCurrentSelection, heldSpaceNote, loadMeshes, loadPreparedSpaces, localeIsUtf8, nearbyMeshManifest, plainPunctuation, readMesh, recordsElsewhereError, recordsElsewhereText, paintFor, renderReport, resolvePreference, rootHidesNoManifest, terminalWidth, wrapWords, type Section, type Style } from "@cotal-ai/workspace";
+import { cachedPreferences, canonicalRoot, displayWidth, findCotalRoot, findPreparedSpace, folderSpace, folderSpaceHeld, folderSpaceStopped, getCurrent, readCurrentSelection, heldSpaceNote, loadMeshes, loadPreparedSpaces, localeIsUtf8, nearbyMeshManifest, plainPunctuation, readMesh, recordsElsewhereError, recordsElsewhereText, paintFor, renderReport, resolvePreference, rootHidesNoManifest, terminalWidth, wrapWords, type Section, type ServiceDefinitionInput, type Style } from "@cotal-ai/workspace";
+import { parserOptions } from "./lib/command-path.js";
 import { shellWord } from "./lib/endpoint-errors.js";
 import { unknownSubcommandMessage } from "./lib/nearest-word.js";
 import { workingFolderRemoved } from "./lib/paths.js";
+import { personaCatalog } from "./lib/persona-files.js";
 import { displayCmd, displayRemedy } from "./lib/self-exec.js";
-import { serviceStartAllowsNoOpen } from "./lib/service-start-options.js";
+import { serviceDefinitionStore } from "./lib/service-definitions.js";
+import { serviceStartAllowsIdleExit, serviceStartAllowsNoOpen } from "./lib/service-start-options.js";
 import { recordTelemetryFailure } from "./telemetry.js";
 import { c, hang } from "./ui.js";
 
@@ -311,8 +315,21 @@ export function printCommandHelp(cmd: Command, sub?: Subcommand, out: (line: str
   out(renderReport({ sections }, style, width));
 }
 
+/** Scoped help stays available without a usable space or definition. */
+function savedLaunchForHelp(cmd: Command, name: string, argv?: readonly string[]): ServiceDefinitionInput["launch"] | undefined {
+  if (argv === undefined) return undefined;
+  try {
+    const { values } = parseArgs({ args: [...argv], options: parserOptions(cmd), strict: false, allowPositionals: true });
+    if (values.space !== undefined && typeof values.space !== "string") return undefined;
+    const { space } = personaCatalog({ space: values.space });
+    return serviceDefinitionStore(space).read(name)?.record.value.launch;
+  } catch {
+    return undefined;
+  }
+}
+
 /** Resolve declared subcommands and aliases, then use operands to scope their help where applicable. */
-export function printHelpPath(cmd: Command, words: readonly string[], out: (line: string) => void = console.log, width = terminalWidth(process.stdout), style: Style = "rich"): void {
+export function printHelpPath(cmd: Command, words: readonly string[], out: (line: string) => void = console.log, width = terminalWidth(process.stdout), style: Style = "rich", argv?: readonly string[]): void {
   if (cmd.positionals !== undefined && !cmd.subcommands?.length) return printCommandHelp(cmd, undefined, out, width, style);
   let surface: Pick<Command, "subcommands"> = cmd;
   let selected: Subcommand | undefined;
@@ -336,12 +353,15 @@ export function printHelpPath(cmd: Command, words: readonly string[], out: (line
     if (!sub.subcommands?.length) break;
   }
   if (cmd.name === "service" && selected?.name === "start" && words[1] !== undefined) {
-    const manager = words[1] === "manager", broker = words[1] === "broker";
+    const name = words[1], manager = name === "manager", broker = name === "broker";
+    const launch = savedLaunchForHelp(cmd, name, argv);
+    const noOpen = serviceStartAllowsNoOpen(name, launch);
+    const idleExit = serviceStartAllowsIdleExit(name, launch);
     selected = {
       ...selected,
       usage: broker ? "cotal service start broker [<preset options>] [--instance <id>] [--dry-run]" : manager ? selected.usage?.replace("|--new-instance]", "]") : selected.usage,
       ...(broker ? { examples: [{ command: "cotal service start broker --config <file> --binary <file> --server <url>", note: "start the broker in the background" }] } : {}),
-      flagNames: selected.flagNames?.filter((flag) => (flag !== "no-open" || serviceStartAllowsNoOpen(words[1])) && (flag !== "new-instance" || !(manager || broker)) && (flag !== "foreground" || !broker)),
+      flagNames: selected.flagNames?.filter((flag) => (flag !== "no-open" || noOpen) && (flag !== "idle-exit" || idleExit) && (flag !== "new-instance" || !(manager || broker)) && (flag !== "foreground" || !broker)),
     };
   }
   printCommandHelp(cmd, selected ? { ...selected, name: path.join(" ") } : undefined, out, width, style);

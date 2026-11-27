@@ -182,12 +182,13 @@ check("the waiting view keeps the agent-only signal scope", waitingReport.includ
   const row = marker(feedLine({ ...post, text: cut.text, omittedCodeUnits: cut.omittedCodeUnits }, space));
   const dm = marker(feedLine({ ...post, delivery: "unicast", channel: undefined, toIds: [ids.bob], text: cut.text, omittedCodeUnits: cut.omittedCodeUnits }, space));
   const carries = (target: string) => `; \`cotal history ${target} --json --space ${space}\` carries the whole text`;
+  const quotedChannel = (channel: string) => process.platform === "win32" ? `"#${channel}"` : `'#${channel}'`;
   check("a watch line cut at the row bound names the code units not shown and the history read that carries the whole text",
-    whole?.[1] === String(lost) && whole[2] === carries("'#general'") && !feedLine(post, space).includes("END-MARK"));
-  check("a stream row already cut keeps the count it lost", row?.[1] === String(lost) && row[2] === carries("'#general'"));
+    whole?.[1] === String(lost) && whole[2] === carries(quotedChannel("general")) && !feedLine(post, space).includes("END-MARK"));
+  check("a stream row already cut keeps the count it lost", row?.[1] === String(lost) && row[2] === carries(quotedChannel("general")));
   for (const channel of ["clear", "limit"]) {
     const hint = marker(feedLine({ ...post, channel }, space));
-    check(`a cut #${channel} post names a channel read, not a history verb`, hint?.[2] === carries(`'#${channel}'`));
+    check(`a cut #${channel} post names a channel read, not a history verb`, hint?.[2] === carries(quotedChannel(channel)));
   }
   check("a cut direct message points at a scoped JSON DM history read", dm?.[1] === String(lost) && dm[2] === carries("--dms"));
   check("control: a message within the bound has no marker", marker(feedLine({ ...post, text: "short" }, space)) === null);
@@ -256,6 +257,45 @@ check("a real roster name is kept, including surrounding spaces", named.nameOf("
 check("an unknown id stays an eight-character prefix", named.nameOf("local.unknown12") === "local.un");
 
 await view.stop();
+
+// Deletion can complete while the startup chat reads are still in flight.
+{
+  let finishHistory!: () => void;
+  const historyGate = new Promise<void>((resolve) => { finishHistory = resolve; });
+  let beginHistory!: () => void;
+  const historyStarted = new Promise<void>((resolve) => { beginHistory = resolve; });
+  let finishPrefill!: () => void;
+  const prefillDone = new Promise<void>((resolve) => { finishPrefill = resolve; });
+  const requested: string[] = [];
+  class PendingHistory extends MockEndpoint {
+    override async listChannels() {
+      return ["deleted", "kept"].map((channel) => ({ channel, messages: 1 }));
+    }
+    override async channelHistory(channel = "") {
+      requested.push(channel);
+      if (requested.length === 2) beginHistory();
+      const retained = msg(ids.alice, "alice", { channel }, `history from ${channel}`, channel);
+      await historyGate;
+      return [retained];
+    }
+    override async dmHistory() {
+      finishPrefill();
+      return [];
+    }
+  }
+  const source = new PendingHistory();
+  const pendingView = new MeshView(source as unknown as CotalEndpoint);
+  await pendingView.start();
+  await Promise.race([historyStarted, wait(2_000)]);
+  check("prefill requested both channels before deletion", requested.includes("deleted") && requested.includes("kept"));
+  pendingView.discardChatHistory("deleted");
+  finishHistory();
+  await Promise.race([prefillDone, wait(2_000)]);
+  const rows = pendingView.snapshot().feed;
+  check("prefill keeps unrelated history without restoring the deleted channel",
+    rows.some((row) => row.channel === "kept") && !rows.some((row) => row.channel === "deleted"));
+  await pendingView.stop();
+}
 
 // ---- stop after the connection is closed for good ----
 {

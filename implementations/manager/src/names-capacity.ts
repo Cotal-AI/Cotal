@@ -1,5 +1,5 @@
 import { rmSync } from "node:fs";
-import { DEV_OWNER, firstFreeName, managedRetirementOpId, parsePrincipalKey, seatCapRefused, spawnNameError, type EpEnvelopeError, type Presence } from "@cotal-ai/core";
+import { DEV_OWNER, firstFreeName, managedRetirementOpId, parsePrincipalKey, rejectionText, seatCapRefused, spawnNameError, type EpEnvelopeError, type Presence } from "@cotal-ai/core";
 import { SEAT_CAP_UNLIMITED } from "@cotal-ai/workspace";
 import { MAX_AGENTS } from "./resume.js";
 import type { ManagedAgent, FreeSlotCause, StartAgentOpts } from "./manager.js";
@@ -202,7 +202,14 @@ export class NamesCapacity {
     // retirement is confirmed. Dropping it here let a refused retirement leave the lifecycle active
     // with nothing left for that manager to adopt.
     if (!this.deps.releasedSeatPending(a)) this.deps.dropSeatRecord(a);
-    if (a.seatHome) rmSync(a.seatHome, { recursive: true, force: true });
+    if (a.seatHome) {
+      try {
+        rmSync(a.seatHome, { recursive: true, force: true, maxRetries: 3 });
+      } catch (error) {
+        // Local home cleanup must not prevent the manager from retiring this lifecycle.
+        console.error(`could not remove the private seat home ${a.seatHome}: ${rejectionText(error)}`);
+      }
+    }
     // End any live §13.6 attach session bound to THIS incarnation with the reason its cause names.
     // Fires once per agent on every free path (despawn / self-stop / reap / exit) via the `agents`
     // guard above; a no-op when no plane or no live session for the target.

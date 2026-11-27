@@ -361,13 +361,20 @@ mkdirSync(linked);
 symlinkSync(linkTarget, linkPath);
 sandbox(home);
 const linkedUp = run(["up", "--json"], linked), linkedDown = runLinkedDown(["down", "--yes", "--json"], linked);
-const linkRefused = (r: ReturnType<typeof run>, command: "up" | "down", effect: string, here: string) => r.status === 2 && r.envelope?.error?.code === "CONFLICT"
+const linkRefused = (r: ReturnType<typeof run>, command: "up" | "down", effect: string, here: string, retry: string = command) => r.status === 2 && r.envelope?.error?.code === "CONFLICT"
   && r.envelope.error.message === `${linkPath} is a link to ${linkTarget}, and a stack runs only from a folder whose .cotal is its own directory; nothing was ${effect}`
-  && r.envelope.error.remedy === `run \`cotal ${command}\` from ${root}, whose .cotal this links to, or ${here}`;
+  && r.envelope.error.remedy === `run \`cotal ${retry}\` from ${root}, whose .cotal this links to, or ${here}`;
 check("up in a folder whose .cotal is a link refuses CONFLICT, naming the link, where it leads and that project",
   linkRefused(linkedUp, "up", "started", `remove the link and prepare this folder with \`cotal space create <space> --root '${linked}'\``), shown(linkedUp));
 check("down --yes --json there refuses the same way, with no stack trace",
-  linkRefused(linkedDown, "down", "stopped", "remove the link, then run `cotal down` again") && !linkedDown.stderr.includes("    at "), shown(linkedDown));
+  linkRefused(linkedDown, "down", "stopped", "remove the link, then run `cotal down` again", "down --yes --json") && !linkedDown.stderr.includes("    at "), shown(linkedDown));
+{
+  const store = join(linked, "custom 'store'");
+  const requested = runLinkedDown(["down", "--dry-run", "--store-dir", "custom 'store'"], linked);
+  const next = /Next\n  run `([^`]+)` from (.*), whose \.cotal this links to, or /.exec(requested.stderr);
+  check("down --dry-run --store-dir there keeps the preview and prints the store as an absolute path",
+    requested.status === 2 && /Code:\s+CONFLICT/.test(requested.stderr) && next?.[2] === root && next[1]?.endsWith(` down --store-dir '${store.replaceAll("'", `'\\''`)}' --dry-run`) === true && readlinkSync(linkPath) === linkTarget && !existsSync(store), shown(requested));
+}
 const linkedStatus = run(["status", "--json"], linked);
 const linkedCodes = (linkedStatus.envelope?.warnings ?? []).map((w) => w.code);
 check("status there warns once that it did not read the attempt inventories through the link, with the next step",

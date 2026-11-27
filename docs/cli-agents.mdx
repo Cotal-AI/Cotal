@@ -342,7 +342,7 @@ line names `--file <persona.md>` for a persona file elsewhere. A missing `defaul
 names the command that writes one: `cotal up` in the root of a space this machine started, or
 `cotal persona create default --file <persona.md>` for any other space. The file must name the
 persona `default`. Add `--space <name>` if the target space is not selected. If you use `--prompt`
-or `--from` instead of `--file`, pass `--subscribe` explicitly (use `--subscribe ""` for no channels).
+or `--from` instead of `--file`, pass `--subscribe` explicitly (use `--subscribe=` for no channels).
 For an ordinary launch in this terminal, a missing catalog default is written from the shipped
 template when the persona is omitted or named as `default`. The preview uses that template and
 reports the planned write without creating the file. If `default.md` is a symbolic link to a
@@ -538,8 +538,8 @@ a result with `cotal spawn --model <id> --variant <v> --mode <mode>=<value>`, wh
 model id as the catalog printed it. A launch is refused a variant or mode its model's row does not
 list. Codex ids are bare (`gpt-6.2-sol`, not `openai/gpt-6.2-sol`). Do not prepend the
 separately reported provider. OpenCode ids are `provider/model`, and pi ids are `provider/id`.
-Jcode ids are bare (`opus-5`, not `cliproxy/opus-5`), because the provider is selected by the
-operator's Jcode config and a prefixed id is refused at launch with the bare form named.
+For Jcode, keep any slash that is part of the listed ID. Do not prepend a provider name, because
+Jcode's configuration selects the provider.
 
 
 ## persona [#persona]
@@ -614,8 +614,8 @@ such as a missing frontmatter block, the renamed `channels` key or a `subscribe`
 `allowSubscribe`. A YAML error names only its line and column, not the parser's text.
 They cannot be combined with
 `--role`, `--model`, `--harness`, `--subscribe`, `--allow-subscribe` or `--allow-publish`. Body
-input requires an explicit `--subscribe` declaration, including `--subscribe ""` for no channels,
-and accepts `--role`, `--model` and `--harness`. `--allow-subscribe` sets the channels the persona
+input requires an explicit `--subscribe` declaration and accepts `--role`, `--model` and `--harness`.
+Use `--subscribe=` for no channels. `--allow-subscribe` sets the channels the persona
 may read, and an omitted or empty one reads as the `--subscribe` set. `--allow-publish` sets the
 channels it may post to, and without it the persona posts nowhere. Both take a comma list, as the
 [agent file](agent-files.mdx) fields `allowSubscribe` and `allowPublish` do. Both refuse control
@@ -689,8 +689,10 @@ Create, edit and remove refuse a catalog folder you cannot write, such as one se
 with `PERMISSION_DENIED`, and leave it and its files as they were. An edit whose save fails for
 this or any other reason keeps your edited draft and names it, so the edit is not lost.
 `--no-input` refuses editing before an editor opens. Under `--json`, the editor's output goes to
-stderr so stdout carries only the JSON receipt. That `--no-input` refusal, and a removal
-refused for want of `--yes`, give the fix without the command's help.
+stderr so stdout carries only the JSON receipt. On POSIX, when a plain editor command or one with
+literal arguments is not found, the JSON receipt reports the lookup failure without the shell's
+diagnostic. The `--no-input` refusal, and a removal refused for want of `--yes`, give the fix without
+the command's help.
 
 A catalog file that is not a regular file, such as a FIFO, is not opened: show, edit and remove
 refuse it with `PERMISSION_DENIED`, and the list marks it unreadable and names it in a

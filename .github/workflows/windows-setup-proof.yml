@@ -376,26 +376,38 @@ jobs:
             assert.equal(process.env.CONTROL_RESULT, 'success', `stock-ui-control job result was ${process.env.CONTROL_RESULT}`);
             const expected = JSON.parse(process.env.EXPECTED_JOBS || '[]');
             assert(Array.isArray(expected) && expected.length >= 8, 'expected job list is missing or incomplete');
-            const listJobs = () => github.paginate(github.rest.actions.listJobsForWorkflowRun, {
-              ...context.repo,
-              run_id: context.runId,
-              filter: 'latest',
-              per_page: 100,
-            });
-            // The job list can show a job this verdict already depends on as running for some seconds after it ended.
+            const listJobs = async () => {
+              const rows = await github.paginate(github.rest.actions.listJobsForWorkflowRun, {
+                ...context.repo,
+                run_id: context.runId,
+                filter: 'all',
+                per_page: 100,
+              });
+              const byName = new Map();
+              for (const job of rows) {
+                const current = byName.get(job.name);
+                // Queued duplicates can coexist with a completed row for the same job and attempt.
+                if (!current || job.run_attempt > current.run_attempt || (job.run_attempt === current.run_attempt &&
+                    job.status === 'completed' && (current.status !== 'completed' || job.conclusion !== 'success'))) {
+                  byName.set(job.name, job);
+                }
+              }
+              return byName;
+            };
+            const unfinished = jobs => expected.some(name => jobs.get(name)?.status !== 'completed') ||
+              [...jobs.values()].some(job => job.name !== 'verdict' && job.status !== 'completed');
             let jobs = await listJobs();
-            for (let read = 1; read < 18 && jobs.some(job => job.name !== 'verdict' && job.status !== 'completed'); read++) {
+            for (let read = 1; read < 18 && unfinished(jobs); read++) {
               await new Promise(resolve => setTimeout(resolve, 10_000));
               jobs = await listJobs();
             }
-            const byName = new Map(jobs.map(job => [job.name, job]));
             for (const name of expected) {
-              const job = byName.get(name);
+              const job = jobs.get(name);
               assert(job, `expected job did not run: ${name}`);
               assert.equal(job.status, 'completed', `job did not complete: ${name} (${job.status})`);
               assert.equal(job.conclusion, 'success', `job was not green: ${name} (${job.conclusion})`);
             }
-            for (const job of jobs) {
+            for (const job of jobs.values()) {
               if (job.name === 'verdict') continue;
               assert.equal(job.status, 'completed', `unexpected incomplete job: ${job.name} (${job.status})`);
               assert.equal(job.conclusion, 'success', `skipped, cancelled, or failed job: ${job.name} (${job.conclusion})`);

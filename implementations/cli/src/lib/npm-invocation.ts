@@ -41,8 +41,8 @@ function npmEngine(file: string): { entry: string; range: string; corepack: bool
   } catch { return undefined; }
 }
 
-function corepackNpmRange(entry: string, cwd: string, env: NodeJS.ProcessEnv): string | undefined {
-  const result = spawnSync(process.execPath, [entry, "--version", "--loglevel=warn", "--color=false"], {
+function corepackNpmRange(node: string, entry: string, cwd: string, env: NodeJS.ProcessEnv): string | undefined {
+  const result = spawnSync(node, [entry, "--version", "--loglevel=warn", "--color=false"], {
     cwd, env, encoding: "utf8", timeout: 2000, killSignal: "SIGKILL", windowsHide: true,
   });
   // npm can print its version and exit successfully even on an unsupported Node.
@@ -73,14 +73,14 @@ function probeNode(file: string, cwd: string, env: NodeJS.ProcessEnv): { path: s
   } catch { return undefined; }
 }
 
-function compatibleNode(candidate: string, directory: string, cwd: string, env: NodeJS.ProcessEnv, supports: (version: string) => boolean): string | undefined {
+function compatibleNode(candidate: string, directory: string, cwd: string, env: NodeJS.ProcessEnv, supports: (version: string) => boolean) {
   // Version-manager shims can select the tool by the invoked filename.
   const selected = probeNode(candidate, directory, env);
   if (!selected || !supports(selected.version)) return;
-  if (directory === cwd && candidate === selected.path) return selected.path;
+  if (directory === cwd && candidate === selected.path) return selected;
   // npm uses the same executable from its isolated cwd without the shim.
   const verified = probeNode(selected.path, cwd, env);
-  if (verified?.path === selected.path && verified.version === selected.version) return verified.path;
+  if (verified?.path === selected.path && verified.version === selected.version) return verified;
 }
 
 function pathVariable(env: NodeJS.ProcessEnv): string {
@@ -103,7 +103,16 @@ export function npmUpdateChildEnvironment(env: NodeJS.ProcessEnv): NodeJS.Proces
   return { ...env, [UPDATE_NPM_NODE]: node, [pathKey]: bin.includes(delimiter) || path.split(delimiter).includes(bin) ? path : `${path}${delimiter}${bin}` };
 }
 
-export function npmInvocation(env: NodeJS.ProcessEnv, args: string[]) {
+interface NpmCommand {
+  file: string;
+  args: string[];
+  env: NodeJS.ProcessEnv;
+  cwd: string;
+  node?: string;
+  lifecycleNode?: boolean;
+}
+
+export function npmInvocation(env: NodeJS.ProcessEnv, args: string[]): NpmCommand {
   const cwd = parse(homedir()).root;
   const pathKey = pathVariable(env);
   const inheritedNode = env[UPDATE_NPM_NODE];
@@ -129,10 +138,19 @@ export function npmInvocation(env: NodeJS.ProcessEnv, args: string[]) {
   const engine = npmEngine(file);
   const withNode = (node: string, preserveLiteral = literal !== undefined) => preserveLiteral && dirname(node).includes(delimiter) ? env
     : { ...env, [pathKey]: `${dirname(node)}${delimiter}${path}` };
-  const npmRange = engine?.corepack && satisfies(process.version, engine.range)
-    ? corepackNpmRange(engine.entry, cwd, withNode(process.execPath, true)) : undefined;
-  const supports = (version: string) => !!engine && satisfies(version, engine.range) && (!npmRange || satisfies(version, npmRange));
-  if (engine && !supports(process.version)) {
+  const currentSupportsEngine = !!engine && satisfies(process.version, engine.range);
+  let npmRange = engine?.corepack && currentSupportsEngine
+    ? corepackNpmRange(process.execPath, engine.entry, cwd, withNode(process.execPath, true)) : undefined;
+  if (engine && (!currentSupportsEngine || (npmRange && !satisfies(process.version, npmRange)))) {
+    const supports = (version: string) => satisfies(version, engine.range) && (!npmRange || satisfies(version, npmRange));
+    let fallback: NpmCommand | undefined;
+    const invocation = (file: string, version: string, node?: string) => {
+      const npm = { file, args: [engine.entry, ...args], env: withNode(file, node ? true : undefined), cwd, node };
+      if (engine.corepack && !npmRange) npmRange = corepackNpmRange(file, engine.entry, cwd, npm.env);
+      if (!npmRange || satisfies(version, npmRange)) return npm;
+      // npm may still complete an operation on a Node outside its declared range.
+      if (!currentSupportsEngine) fallback ??= npm;
+    };
     const current = realpathSync(process.execPath);
     const probeEnv = { ...env };
     delete probeEnv.NODE_OPTIONS;
@@ -143,7 +161,10 @@ export function npmInvocation(env: NodeJS.ProcessEnv, args: string[]) {
         (directories.includes(inheritedBin) || (!windows && inheritedBin.includes(delimiter))) &&
         resolveOnPath(inheritedNode, env) === inheritedNode) {
       const node = compatibleNode(inheritedNode, cwd, cwd, probeEnv, supports);
-      if (node === inheritedNode) return { file: node, args: [engine.entry, ...args], env: withNode(node, true), cwd, node };
+      if (node?.path === inheritedNode) {
+        const npm = invocation(node.path, node.version, node.path);
+        if (npm) return npm;
+      }
     }
     const seen = new Set<string>();
     const candidates: string[] = [];
@@ -153,14 +174,20 @@ export function npmInvocation(env: NodeJS.ProcessEnv, args: string[]) {
       try { if (realpathSync(candidate) === current) continue; } catch { continue; }
       candidates.push(candidate);
       const node = project === undefined ? undefined : compatibleNode(candidate, project, cwd, probeEnv, supports);
-      if (node) return { file: node, args: [engine.entry, ...args], env: withNode(node, true), cwd, node };
+      if (node) {
+        const npm = invocation(node.path, node.version, node.path);
+        if (npm) return npm;
+      }
     }
     for (const candidate of candidates) {
       // Keep the shim's invocation name and environment for npm if isolated version lookup succeeds.
       const version = spawnSync(candidate, ["--version"], { cwd, env: probeEnv, encoding: "utf8", timeout: 1000, killSignal: "SIGKILL", windowsHide: true });
-      if (version.status === 0 && supports(version.stdout.trim()))
-        return { file: candidate, args: [engine.entry, ...args], env: withNode(candidate), cwd };
+      if (version.status === 0 && supports(version.stdout.trim())) {
+        const npm = invocation(candidate, version.stdout.trim());
+        if (npm) return npm;
+      }
     }
+    if (fallback) return fallback;
   }
   if (windows) return { file: "npm", args, env, cwd };
   const node = resolveOnPath("node", lookup);

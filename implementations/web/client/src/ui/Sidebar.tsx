@@ -21,6 +21,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "#client/ui/shadcn/toolt
 import { Avatar } from "./Avatar.tsx";
 import { useBadgeOf } from "./identity.js";
 import { Unverified } from "./MessageRow.tsx";
+import { Settings } from "./Rail.tsx";
 import { SkeletonPlaces } from "./Skeleton.tsx";
 import { StaleMarker } from "./StaleMarker.tsx";
 
@@ -263,6 +264,13 @@ export function Sidebar({ store, route, msgPerSecond }: { store: Store<Dashboard
         </SidebarContent>
       )}
       <SidebarFooter>
+        {isMobile && (
+          <SidebarMenu>
+            <SidebarMenuItem>
+              <Settings side="top" />
+            </SidebarMenuItem>
+          </SidebarMenu>
+        )}
         <Item size="xs">
           <ItemMedia>
             <InitialsAvatar size="sm">

@@ -1,5 +1,92 @@
 # cotal-ai
 
+## 0.182.1
+
+### Patch Changes
+
+- 8d02ac0: Derive the required-argument census totals from reviewed per-file counts so changes in different files do not conflict over a shared total.
+- 8eead0e: The desktop app has an Agent apps screen. It lists the application each connector runs (Claude Code, Codex, OpenCode, pi, Hermes and Jcode) with its logo, version and whether it is signed in, and installs a missing one with its maker's own installer in one click, with no terminal. Before you install, each app says which site it downloads from, and a connector that is not one of Cotal's own also shows its package name. When an installer leaves its folder off PATH, the app adds it, and the background service picks the application up. Claude Code and Codex sign in from the app through their own browser sign-in. A connector declares all this in a new `install` field beside `requires`, which the extensions manifest caches and checks.
+- e4bef3d: Stop running agents or open them in the system terminal from the desktop agent list, which now shows their state, elapsed time, application and model.
+- daf0755: The Claude and Codex guides show how to create the named personas before launching them in the background.
+- 92aaa61: On Linux, `cotal daemon install` tells you to create a missing `--daemon-home` directory with mode 0700 when there is no service to recover.
+- e0b4c97: When a hosted workflow resume is missing its run ID, the suggested run list keeps the original target and output format.
+- 572cb42: Detached Jcode spawns now show a retry with a bare model ID when a persona supplies a prefixed model.
+- a5adbcd: MCP connections now choose the next free suffixed name even when the requested name is already at the length limit.
+- 6b0da46: Fix Windows updates in a separate Cotal home when another home's daemon is running under the same account.
+- 074c49a: Reclaim the unfinished connector recovery snapshot when retrying an interrupted self-update.
+- e6a468a: Self-update removes abandoned extension copies left behind when promotion is interrupted before its journal is written.
+- 0e36096: `cotal service status` tells you to omit a bare `--exec` instead of asking you to give it a value.
+- b850fa8: Fix Windows updates when a stopped daemon left a lock file in this Cotal home and another home's daemon is running.
+- Updated dependencies [f9729db]
+- Updated dependencies [a47c69b]
+- Updated dependencies [fba35eb]
+- Updated dependencies [24b89fe]
+- Updated dependencies [e64eec6]
+- Updated dependencies [938d757]
+- Updated dependencies [8495df7]
+- Updated dependencies [54ecd82]
+- Updated dependencies [5100dc5]
+- Updated dependencies [8eead0e]
+- Updated dependencies [e4bef3d]
+- Updated dependencies [1508bf3]
+- Updated dependencies [daf0755]
+- Updated dependencies [c368daa]
+- Updated dependencies [c788d9f]
+- Updated dependencies [35b74b7]
+- Updated dependencies [ed3b78e]
+- Updated dependencies [20f474c]
+- Updated dependencies [d757524]
+- Updated dependencies [780f723]
+- Updated dependencies [e0b4c97]
+- Updated dependencies [572cb42]
+- Updated dependencies [985638b]
+- Updated dependencies [41baead]
+- Updated dependencies [1260ff7]
+- Updated dependencies [364a6d1]
+- Updated dependencies [5117d48]
+- Updated dependencies [63c1509]
+- Updated dependencies [a5adbcd]
+- Updated dependencies [bc7731a]
+- Updated dependencies [cdccf6a]
+- Updated dependencies [2af983b]
+- Updated dependencies [c27ddc1]
+- Updated dependencies [41c615a]
+- Updated dependencies [57b3b2d]
+- Updated dependencies [412c202]
+- Updated dependencies [8a9ffeb]
+- Updated dependencies [fab8c5f]
+- Updated dependencies [d9a8109]
+- Updated dependencies [e6a468a]
+- Updated dependencies [287b874]
+- Updated dependencies [4fb5871]
+- Updated dependencies [e819f05]
+- Updated dependencies [74b4870]
+- Updated dependencies [b4af2aa]
+- Updated dependencies [0e36096]
+- Updated dependencies [938cd61]
+- Updated dependencies [2b296a3]
+- Updated dependencies [b8e8c3e]
+- Updated dependencies [ee55746]
+- Updated dependencies [82fd7c4]
+- Updated dependencies [5767c3a]
+- Updated dependencies [cefeea9]
+- Updated dependencies [b2f1a77]
+- Updated dependencies [8401965]
+- Updated dependencies [32b79a6]
+- Updated dependencies [f017c32]
+- Updated dependencies [e4cca2e]
+- Updated dependencies [ac8c75e]
+  - @cotal-ai/cli@0.182.1
+  - @cotal-ai/connector-core@0.182.1
+  - @cotal-ai/manager@0.182.1
+  - @cotal-ai/workspace@0.182.1
+  - @cotal-ai/core@0.182.1
+  - @cotal-ai/auth@0.182.1
+  - @cotal-ai/runtime@0.182.1
+  - @cotal-ai/seat@0.182.1
+  - @cotal-ai/delivery@0.182.1
+  - @cotal-ai/registry@0.182.1
+
 ## 0.182.0
 
 ### Patch Changes

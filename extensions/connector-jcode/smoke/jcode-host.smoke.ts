@@ -281,10 +281,10 @@ async function callJcodeMcpRaw(
 
 try {
   mkdirSync(shimDir, { recursive: true });
-  writeFileSync(shim, `#!/bin/sh\nexec "${process.execPath}" "${fake}" "$@"\n`);
+  writeFileSync(shim, `#!/bin/sh\nif [ "$1" = model ]; then\n  printf '%s\\n' '{"provider":"fake-provider","models":["fake-model"],"routes":[{"model":"fake-model","provider":"fake-provider","available":true}]}'\n  exit 0\nfi\nexec "${process.execPath}" "${fake}" "$@"\n`);
   chmodSync(shim, 0o755);
   for (let i = 0; i < 100 && !(await isReachable(servers)); i++) await sleep(50);
-  await seedChannelRegistry({ servers, space: "jcodehost", file: { defaults: { replay: false }, channels: { team: { replay: false } } } });
+  await seedChannelRegistry({ servers, space: "jcodehost", file: { defaults: { replay: false }, channels: { team: { replay: false }, fold: { replay: false } } } });
   operator = new CotalEndpoint({ space: "jcodehost", servers, card: { name: "operator", kind: "agent", id: "operator" }, channels: ["team"] });
   operator.on("error", () => {});
   operator.on("message", (message: { parts: unknown[] }) => {
@@ -453,9 +453,9 @@ try {
       COTAL_NAME: "foldpeer",
       COTAL_ID: "foldpeer",
       COTAL_SERVERS: servers,
-      COTAL_SUBSCRIBE: "team",
-      COTAL_ALLOW_SUBSCRIBE: "team",
-      COTAL_ALLOW_PUBLISH: "team",
+      COTAL_SUBSCRIBE: "fold",
+      COTAL_ALLOW_SUBSCRIBE: "fold",
+      COTAL_ALLOW_PUBLISH: "fold",
       COTAL_JCODE_HOME: root,
       COTAL_WORKSPACE_ROOT: root,
       COTAL_JCODE_TUI: "0",
@@ -502,7 +502,9 @@ try {
     "Jcode journal fold priming idle",
     () => foldStatuses.slice(foldStatusStart).includes("idle") ? true : undefined,
   );
-  await operator.unicast(foldPeerId!, foldMarker);
+  // Presence can show idle before the host releases dispatch. Ambient work waits for its own turn
+  // instead of being steered into the priming turn while that boundary settles.
+  await operator.multicast(foldMarker, { channel: "fold" });
   await waitFor(
     "Jcode journal fold request",
     () =>
@@ -1451,7 +1453,7 @@ try {
       model: "cliproxy/fake-model",
       code: "model_prefix_rejected",
       env: {},
-      request: "create_session",
+      request: undefined,
     },
     {
       name: "refusedmodel",
@@ -1492,13 +1494,17 @@ try {
     const failedCode = failed.exitCode;
     await stopHostTree(failed, "SIGKILL");
     const logPath = connectorLogPath(managedHome("jcodehost", modelCase.name));
-    const expected = `[cotal-jcode] fatal: Jcode startup failed (${modelCase.code}); workspace log: ${logPath}\n`;
+    const expected = modelCase.request === undefined
+      ? `[cotal-jcode] fatal: Jcode launch failed (${modelCase.code}): Workspace log: ${logPath}. Select the provider in Jcode's configuration and use the model ID from the catalog. Retry with \`--model fake-model\`.\n`
+      : `[cotal-jcode] fatal: Jcode startup failed (${modelCase.code}); workspace log: ${logPath}\n`;
     const persisted = readFileSync(logPath, "utf8");
     check(`${modelCase.code} names the connector-owned refusal and its private log`, failedCode === 1 && failedErr.includes(expected), { failedCode, failedErr });
     check(`${modelCase.code} fatal is persisted in the seat connector log`, persisted.includes(expected), persisted);
     check(`${modelCase.code} keeps downstream model text scrubbed`, !failedErr.includes(modelCanary) && !persisted.includes(modelCanary), { failedErr, persisted });
-    const caseEntries = readFileSync(caseLog, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line)) as Array<{ ev?: string; frame?: { req?: string } }>;
-    check(`${modelCase.code} reaches its real startup boundary`, caseEntries.some((entry) => entry.ev === "request" && entry.frame?.req === modelCase.request), caseEntries);
+    const caseEntries = readJsonLines<{ ev?: string; frame?: { req?: string } }>(caseLog);
+    check(`${modelCase.code} reaches its real startup boundary`, modelCase.request === undefined
+      ? !existsSync(caseLog)
+      : caseEntries.some((entry) => entry.ev === "request" && entry.frame?.req === modelCase.request), caseEntries);
   }
 
   // #845 reproduction: `MeshAgent.start()` retries in the background. A post-join notice sent
