@@ -424,6 +424,8 @@ export interface IssuedBinding {
 export interface MintOpts {
   /** Routing decision from trusted space state. Omission preserves legacy channel grants. */
   pluginChannelsEnabled?: boolean;
+  /** One-shot provisioner mint for creating the disabled channel-routing record. */
+  initializePluginChannelState?: boolean;
   /** Trusted issuance restriction: exclude the tool-payload publish rail when false. */
   eventPayloads?: boolean;
   /** The owner+actor principal to mint for. Omitted ⇒ the no-login dev default (owner `"local"`, actor
@@ -612,8 +614,8 @@ export interface MintOpts {
   transferWriter?: { instanceId: string; hex: string };
   /** `transfer-reader` profile only: the manager instance whose own transfer bucket this reads. */
   transferReader?: { instanceId: string };
-  /** `teardown` profile only: the space's transfer streams, listed before the mint, that this
-   *  teardown may inspect and delete by name ({@link deleteSpace} lists and names them). */
+  /** `teardown` profile only: observed transfer streams and the exact plugin history stream of
+   *  this space. Teardown may inspect and delete only those requested by name. */
   transferStreams?: string[];
   /** `backup` profile only: one discriminated inspector or snapshot phase. */
   backup?: BackupPermissionScope;
@@ -734,7 +736,7 @@ export async function mintCreds(
   const validDates = userValidDates(profile, opts);
   const listing = await prepareStaticListing(auth.space, profile, pr, opts, validDates.exp);
   const perms = profile === "endpoint-serve"
-    ? endpointServePermissions(auth.space, pr, opts)
+    ? withLegacyPluginChannelDeny(auth.space, endpointServePermissions(auth.space, pr, opts), opts.pluginChannelsEnabled)
     : listing?.permissions ?? permissionsFor(profile, auth.space, pr, opts);
   const userJwt = await encodeUser(
     profile,
@@ -888,7 +890,7 @@ export async function mintPublicUserJwt(
     ...(opts.lifecycleUid ? { lifecycleUid: opts.lifecycleUid } : {}),
   };
   const perms = profile === "endpoint-serve"
-    ? endpointServePermissions(auth.space, pr, opts)
+    ? withLegacyPluginChannelDeny(auth.space, endpointServePermissions(auth.space, pr, opts), opts.pluginChannelsEnabled)
     : permissionsFor(profile, auth.space, pr, opts);
   const validDates = userValidDates(profile, opts);
   if (validDates.exp === undefined) throw new Error(`mintPublicUserJwt: profile "${profile}" must be bounded`);

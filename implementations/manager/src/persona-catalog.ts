@@ -1,8 +1,10 @@
-import { agentFilePath, capabilityWithin, composeWirePersona, copyPersonaEndpoints, EpEnvelopeError, listPersonaCatalog, loadAgentFile, lowerPersonaEndpoints, parsePersonaEndpoints, parsePrincipalKey, patternInAllow, personaCatalogDescription, personaCatalogReadable, rejectionText, resolveAuthProvider, resolveReadAcl, saveAgentFile } from "@cotal-ai/core";
+import { agentFilePath, capabilityWithin, composeWirePersona, copyPersonaEndpoints, EpEnvelopeError, listPersonaCatalog, loadAgentFile, lowerPersonaEndpoints, parsePersonaEndpoints, parsePrincipalKey, patternInAllow, personaCatalogDescription, personaCatalogReadable, readPluginChannelSpaceState, rejectionText, resolveAuthProvider, resolveReadAcl, saveAgentFile } from "@cotal-ai/core";
 import type { AgentDef, ControlReply, EpCaller, EpCapability, PersonaEndpoint } from "@cotal-ai/core";
+import { grantOverreach } from "@cotal-ai/core";
 import { userAuthStateDir } from "@cotal-ai/workspace";
 import { existsSync, readFileSync, rmSync } from "node:fs";
 import { parse as parseYaml } from "yaml";
+import { jetstreamManager } from "@nats-io/jetstream";
 import type { Manager } from "./manager.js";
 import { userMeshEndpointsRefusal } from "./seat-launch.js";
 import type { ManagerConfig } from "./manager-config.js";
@@ -46,6 +48,7 @@ export interface PersonaCatalogDeps {
   nameError: (...args: Parameters<Manager["nameError"]>) => ReturnType<Manager["nameError"]>;
   spawnRun: (...args: Parameters<Manager["spawnRun"]>) => ReturnType<Manager["spawnRun"]>;
   staticSpawnBound: (...args: Parameters<Manager["staticSpawnBound"]>) => ReturnType<Manager["staticSpawnBound"]>;
+  readPluginChannelsEnabled: () => Promise<boolean>;
 }
 
 /** Builds the {@link PersonaCatalogDeps} for a Manager. It reads Manager members by name at each use, so a
@@ -59,6 +62,8 @@ export function personaCatalogDeps(m: Manager): PersonaCatalogDeps {
     nameError: (...args) => m["nameError"](...args),
     spawnRun: (...args) => m["spawnRun"](...args),
     staticSpawnBound: (...args) => m["staticSpawnBound"](...args),
+    readPluginChannelsEnabled: () => m["withEndpointServeExecutor"](async ({ nc }) =>
+      (await readPluginChannelSpaceState(await jetstreamManager(nc), m["config"].space)).state.enabled),
   };
 }
 
@@ -213,8 +218,16 @@ export class PersonaCatalog {
     if (this.meshMode === "static") {
       const run = await this.spawnRun(authenticated, undefined);
       const bound = await this.staticSpawnBound(authenticated, run !== undefined && "admission" in run ? run : undefined);
-      return ({ capabilities, endpoints, allowSubscribe, allowPublish }) =>
-        this.parts.seatLaunch.spawnBoundRefusal(bound, { capabilities, allowSubscribe, allowPublish, ...(endpoints.length ? { endpoints } : {}) }, false, "define-persona");
+      const routed = bound.kind === "bounded" && await this.deps.readPluginChannelsEnabled();
+      return ({ capabilities, endpoints, allowSubscribe, allowPublish }) => {
+        const grant = { capabilities, allowSubscribe, allowPublish, ...(endpoints.length ? { endpoints } : {}) };
+        if (!routed || bound.kind !== "bounded")
+          return this.parts.seatLaunch.spawnBoundRefusal(bound, grant, false, "define-persona");
+        try {
+          const over = grantOverreach(this.config.space, bound.caller, bound.ceiling, grant, true);
+          return over.length ? `define-persona: this persona grants more than the definer holds: ${over.map(({ field, value }) => `${field} ${value}`).join(", ")}.` : undefined;
+        } catch (e) { return `define-persona: ${rejectionText(e)}`; }
+      };
     }
     if (this.remoteAuthority)
       return ({ capabilities, namesEndpoints, allowSubscribe, allowPublish }) => namesEndpoints
@@ -224,12 +237,16 @@ export class PersonaCatalog {
           : undefined;
     const p = parsePrincipalKey(caller);
     const held = p ? await resolveAuthProvider().actorGrant({ dir: userAuthStateDir(this.config.workspaceRoot, this.config.space), owner: p.owner, actor: p.actor }) : undefined;
+    const pluginChannelsEnabled = held !== undefined && await this.deps.readPluginChannelsEnabled();
     return ({ capabilities, namesEndpoints, allowSubscribe, allowPublish }) => {
       if (namesEndpoints) return userMeshEndpointsRefusal("define-persona");
-      if (held?.scope.includes("admin")) return undefined;
-      const overCaps = capabilities.filter((c) => !capabilityWithin(held?.scope ?? [], c));
-      const overSub = allowSubscribe.filter((ch) => !patternInAllow(held?.allowSubscribe ?? [], ch));
-      const overPub = allowPublish.filter((ch) => !patternInAllow(held?.allowPublish ?? [], ch));
+      const admin = held?.scope.includes("admin") === true;
+      if (admin && !pluginChannelsEnabled) return undefined;
+      const overCaps = admin ? [] : capabilities.filter((c) => !capabilityWithin(held?.scope ?? [], c));
+      const exceeds = (allow: string[] | undefined, ch: string) =>
+        !(admin && patternInAllow([">"], ch, pluginChannelsEnabled)) && !patternInAllow(allow ?? [], ch, pluginChannelsEnabled);
+      const overSub = allowSubscribe.filter((ch) => exceeds(held?.allowSubscribe, ch));
+      const overPub = allowPublish.filter((ch) => exceeds(held?.allowPublish, ch));
       const named: Array<[string, string[], string[]]> = [["capabilities", overCaps, held?.scope ?? []], ["allowSubscribe", overSub, held?.allowSubscribe ?? []], ["allowPublish", overPub, held?.allowPublish ?? []]];
       const over = named.filter(([, entries]) => entries.length);
       if (!over.length) return undefined;

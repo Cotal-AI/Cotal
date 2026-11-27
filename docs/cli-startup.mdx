@@ -129,6 +129,7 @@ itself, whose `.cotal` holds this machine's own records, `up` refuses `CONFLICT`
 folder, as `space create` does there. In a folder that is, or is in, a control directory, `up`
 refuses `CONFLICT` before anything is started or written and names the project folder to run it from. A home that already holds a stack an earlier release started
 there keeps starting it in place, and `up --root <dir>` from the home starts that prepared project.
+If a file occupies `.cotal` in the requested project, startup leaves it untouched. Use another prepared project or restore the project's `.cotal` directory before retrying.
 When `--root` names another prepared project, run bare
 `cotal down` from that project folder: bare down
 stops the folder's stack, and `down --space` is not a remote replacement for that scope. With no

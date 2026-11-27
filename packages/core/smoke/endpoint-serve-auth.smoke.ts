@@ -45,6 +45,7 @@ import {
   type EpIssuanceGate, type EpIssuanceBarrier, type IssuedStore,
 } from "../src/index.js";
 import { makeIssuanceGate, type IssuanceGateInit } from "./_issuance-gate.js";
+import { PLUGIN_CHANNEL_ROOT, pluginChannelSubject } from "../src/plugin-channel-route.js";
 
 let ok = 0, fail = 0;
 const c = (n: string, v: boolean, extra?: unknown) => { if (v) { ok++; console.log(`  ✓ ${n}`); } else { fail++; console.log("  ✗ FAIL:", n, extra ?? ""); } };
@@ -198,8 +199,13 @@ try {
   // ---- mint the restricted profiles (each mint wins its own CAS on the open gate) ----
   const serveId = newIdentity();
   const serveCreds = await mintCreds(auth, serveId, "endpoint-serve", {
-    principal: { owner: "u_op", actor: "mgr" }, endpointServe: serveGrant, serveIssuance: gate.seam,
+    principal: { owner: "u_op", actor: "mgr" }, endpointServe: serveGrant, serveIssuance: gate.seam, pluginChannelsEnabled: true,
   });
+  const pluginChannel = `${PLUGIN_CHANNEL_ROOT}.linear.inbox`;
+  c("a routed serve-only login cannot publish on a plugin channel",
+    await probe(serveCreds, serveId.id, (nc) => nc.publish(pluginChannelSubject(space, "u_op", "mgr", pluginChannel))) === "denied");
+  c("a routed serve-only login cannot subscribe to a plugin channel",
+    await probe(serveCreds, serveId.id, (nc) => { nc.subscribe(pluginChannelSubject(space, "*", "*", pluginChannel)); }) === "denied");
   c("the mint STAGED its credential-ledger row and WON the gate CAS (one active row)",
     gate.active() === 1 && gate.revoked() === 0);
   c("the staged ledger row carries the NORMATIVE §13.1 fields (per-JWT credentialId + nkey credentialKey, holderPrincipal, lifecycleUid, ['root'] lineage, state, exp)",

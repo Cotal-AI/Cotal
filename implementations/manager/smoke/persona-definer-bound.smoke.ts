@@ -214,12 +214,14 @@ try {
   const U = new Manager({ space, servers: SERVERS, runtime: "pty", workspaceRoot: userRoot });
   const M = U as unknown as {
     userMode: boolean;
+    auth: typeof auth;
     config: { remoteAuthority?: unknown };
     managerInstanceId: string;
     agents: Map<string, { name: string }>;
     opDefinePersona: (args: Record<string, unknown>, caller: string, admin: boolean) => Promise<ControlReply>;
   };
   M.userMode = true;
+  M.auth = auth;
   M.managerInstanceId = mintLifecycleUid();
   (U as unknown as { runtime: unknown }).runtime = {
     kind: "pty",

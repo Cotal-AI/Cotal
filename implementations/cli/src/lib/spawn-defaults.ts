@@ -1,6 +1,6 @@
-import { lstatSync, statSync } from "node:fs";
-import { dirname, isAbsolute, join, relative } from "node:path";
-import { agentFilePath, personaDir, personaLinkTarget } from "@cotal-ai/core";
+import { accessSync, constants, lstatSync, realpathSync, statSync } from "node:fs";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { agentFilePath, oneLine, personaDir, personaLinkTarget } from "@cotal-ai/core";
 import { cachedPreferences, canonicalRoot, CommandFailure, describeLayer, isWorkspaceTargetError, loadLaunchPersonaFile, OFFICIAL_CONNECTORS, preparedNeverStarted, pruneStaleMeshes, resolveMeshTarget, resolveOnPath, resolvePreference, resolveReadsLiveness, type MeshTarget, type PreferenceContext } from "@cotal-ai/workspace";
 import { defaultPersonaFix } from "./default-persona.js";
 
@@ -13,6 +13,28 @@ export function spawnPersona(configFlag: string | undefined, positionals: readon
   if (explicit !== undefined) return { ref: explicit };
   const winner = resolvePreference("persona", ctx).winner!;
   return winner.source === "default" ? { ref: winner.value } : { ref: winner.value, from: describeLayer(winner) };
+}
+
+/** Resolve the directory a foreground child will enter. Listing its contents is not required. */
+export function directSpawnCwd(value: string, space?: string): string {
+  let path = value, reason = "is not a directory";
+  try {
+    path = resolve(value);
+    const cwd = realpathSync(path);
+    if (statSync(cwd).isDirectory()) {
+      accessSync(cwd, constants.X_OK);
+      return cwd;
+    }
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "EACCES" || code === "EPERM") throw new CommandFailure("refused", "PERMISSION_DENIED", `this account cannot enter --cwd ${JSON.stringify(path)}. Nothing was launched.`, {
+      target: { space, path }, native: { code }, remedy: "choose a directory your account can enter, or restore search access and retry",
+    });
+    reason = code === "ENOENT" ? "does not exist" : code === "ENOTDIR" ? "is not a directory" : `cannot be used (${oneLine((error as Error).message)})`;
+  }
+  throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `--cwd ${JSON.stringify(path)} ${reason}. Nothing was launched.`, {
+    target: { space, path }, remedy: "pass an existing directory to --cwd, or omit --cwd to use the current directory",
+  });
 }
 
 /** A positional or preferred catalog entry takes precedence over a same-named legacy path. */
