@@ -47,6 +47,7 @@ const deliveryCommands: Command[] = [
       { name: "shard", type: "string", value: "<n>", description: "shard index (N=1 only; non-zero is rejected)" },
       { name: "shards", type: "string", value: "<n>", description: "shard count (N=1 only; >1 is rejected)" },
       { name: "dev-mint", type: "boolean", description: "standalone dev: mint a scoped delivery cred from the local signer" },
+      { name: "serve", type: "string", value: "<endpoints>", description: "also serve these endpoints (comma-separated), each bound once the signer holder registers it and asks the daemon to adopt its credential; not given means none" },
       { name: "limit", type: "string", value: "<n>", description: "pending: max recent candidate ids to print (default 20)" },
       { name: "durable", type: "string", value: "<name>", description: "pending: read this exact DM durable (a live read's printed name) instead of resolving <name>" },
       { ...jsonFlag, description: "pending: use the `cotal pending` JSON receipt, including candidates and refusals" },

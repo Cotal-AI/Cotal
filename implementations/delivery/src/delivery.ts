@@ -27,6 +27,7 @@ import { DeliveryTransportHealth } from "./transport-health.js";
 import { executeEviction, executeEvictions, executePlaneLiveness, executePrincipalLiveness, validateScanTargetAdmission, type ScanTarget } from "./evict-exec.js";
 import { healConnectionEvictor } from "./sys-creds.js";
 import { acquireShardLease, ownLeaseReader, requireReachableBroker } from "./delivery-startup.js";
+import { parseServeFlag, ServedEndpoints, type ServedEndpointCatalog } from "./served-endpoints.js";
 import type { KickAuthority } from "./kick-authority.js";
 import type { HostedContextInputs, HostedServiceHandle, HostedServiceState, SpaceLane } from "@cotal-ai/workspace";
 import {
@@ -95,8 +96,13 @@ export async function runDelivery(args: ParsedArgs, store?: SecretStore, onStart
 /** One data-account connection a hosted delivery context holds. The label says which part of the
  *  context holds it and is not an authority. */
 export interface DeliveryNativeConnection extends NativeConnectionBinding {
-  label: "endpoint" | "membership-rw" | "timer-writer";
+  /** `endpoint` is the daemon's own connection; `<name>-serve` a served endpoint's serve connection. */
+  label: "endpoint" | "membership-rw" | "timer-writer" | `${string}-serve`;
 }
+
+/** The endpoints this daemon can be asked to serve with `--serve` (or hosted `endpoints`). Each
+ *  entry builds its contract and handlers; a name outside the table is refused at start. */
+export const SERVED_ENDPOINT_CATALOG: ServedEndpointCatalog = Object.freeze({});
 
 /** A hosted delivery context, with the native bindings of its data-account connections. */
 export interface DeliveryServiceHandle extends HostedServiceHandle {
@@ -244,6 +250,9 @@ async function runStartedDelivery(
   // the source now needs the space that this check must precede; the check is therefore split out
   // and stays here, ahead of everything ambient.
   assertNoLocalCredSourceFlags(v, store);
+  // `--serve` (or hosted `endpoints`) is parsed here, before anything is read or dialed, so an unknown
+  // endpoint name is refused without touching the broker. Not asked means nothing new is served.
+  const serveNames = parseServeFlag(hosted?.endpoints !== undefined ? hosted.endpoints.join(",") || undefined : v.serve, SERVED_ENDPOINT_CATALOG);
   // Every workstation read below (cred, registry, $SYS pair, membership feed, pidfile) uses this one
   // root. A hosted context names its own state directory and borrows no cwd.
   const root = hosted?.stateDir ?? (owner.kind === "lane" ? owner.root : daemonRoot(v, store));
@@ -474,6 +483,9 @@ async function runStartedDelivery(
   /** Set once close() released the lease and proved every connection closed. */
   let closedClean = false;
   let membership: MembershipFeedHandle | undefined;
+  /** The endpoints this daemon was asked to serve; built once Plane-3 is about to bind. Declared here
+   *  so a close during start-up can read it before it exists. */
+  let served: ServedEndpoints | undefined;
   let membershipRetry: ReturnType<typeof setTimeout> | undefined;
   let membershipAttempt: Promise<void> | undefined;
   let timerWriter: { handle: TimerWriterHandle; nc: Awaited<ReturnType<ReturnType<typeof dialerFor>>>; native: ReturnType<typeof watchNativeConnection> } | undefined;
@@ -570,6 +582,7 @@ async function runStartedDelivery(
     unrecordPid?.();
     closePromise = (async () => {
       try { await ep.quiescePlane3(); } catch { /* stop still releases the connection */ }
+      try { await served?.close(); } catch { /* each serve connection closes on its own */ }
       // A release that did not commit rejects. Otherwise the row the broker holds afterwards is the
       // verdict: while one is there, a successor is refused.
       const release = async () => {
@@ -673,6 +686,16 @@ async function runStartedDelivery(
   // underneath the membership start and the lease watch that are still pending on it.
   let startedUp = false;
 
+  // Built only when asked. The signer holder writes each endpoint's material into the store the
+  // delivery credential comes from, and the daemon reads it back on every adoption.
+  served = serveNames.length === 0 ? undefined : new ServedEndpoints({
+    space, servers: server, tls, names: serveNames, catalog: SERVED_ENDPOINT_CATALOG,
+    store: store ?? workspaceSecretStore(root),
+    jsm: () => ep.deliveryJetStreamManager(),
+    log: (line) => log.err(line),
+  });
+  const servedNow = served;
+
   // Host Plane-3 (fan-out writer + trusted reader) AND serve the ctl.delivery runtime durable ops. The
   // reader re-authorizes each entry against the durable ACL registry, read FRESH per entry. The
   // delivery-admin rail's `reloadCreds` (explicit class-2 adoption) also reloads the membership feed's
@@ -707,6 +730,7 @@ async function runStartedDelivery(
     reloadStoreIdentity: () => reloadStoreIdentity,
     onDeliveryCredsAdopted: () => health.adopted(),
     startupComplete: () => startedUp,
+    ...(servedNow !== undefined ? { servedEndpoints: { adopt: (endpoint: string, opId: string) => servedNow.adopt(endpoint, opId), state: (endpoint: string) => servedNow.state(endpoint) } } : {}),
   });
   // The peer-readable liveness responder (#1577), bound BEFORE the ready flip below and
   // deliberately so. It answers from the lease at PROBE time, so during the window between binding
@@ -727,6 +751,9 @@ async function runStartedDelivery(
   log.out(owner.kind === "lane"
     ? `✓ delivery lane up (space ${space})`
     : `✓ delivery daemon up (space ${space}${shards > 1 ? `, shard ${shard}/${shards}` : ""}) — stop with: \`cotal down\``);
+  // Asked-for endpoints start unbound: the signer holder registers each one now that the eviction
+  // oracle answers, then asks this daemon to adopt the credential it minted.
+  log.err(servedNow === undefined ? "• delivery: serves no endpoint (not asked with --serve)" : `• delivery: asked to serve ${servedNow.describe()}`);
 
   // Broker-sourced graph membership: a SEPARATE module on its OWN connections (system-account CONNZ
   // reader + data-account feed writer), isolated from Plane-3. Retry a missing derived store
@@ -889,6 +916,7 @@ async function runStartedDelivery(
       // token that may be out of date. No row, or not ours: nothing to release, and the TTL remains
       // the crash-safe authority for anything this path cannot reach.
       try { await releaseOwnLease(); } catch { /* broker may be gone - the bucket TTL is the crash-safe release authority */ }
+      try { await served?.close(); } catch { /* broker may be gone */ }
       try { await membership?.stop(); } catch { /* broker may be gone */ }
       try { await timerWriter?.handle.stop(); } catch { /* broker may be gone */ }
       try { if (timerWriter) await drainAndClose(timerWriter.nc); } catch { /* broker may be gone */ }
@@ -960,6 +988,9 @@ async function runStartedDelivery(
     if (stopping) return;
     try { await ep.rearmPlane3(); }
     catch (e) { log.err(`! delivery: ${why} but could not resume Plane-3 (${(e as Error).message})`); return; }
+    // A served endpoint does not rebind by itself: ownership is proven again, and the signer holder's
+    // next adoption binds a credential at the current epoch.
+    served?.leaseRegained();
     // `ready` MEANS "THE RESPONDER IS UP", and it is what `ensureDelivery` waits on and what the
     // `cotal_channels` health surface reports. Startup flips it only after binding, for exactly that
     // reason, and a re-acquire creates the row afresh, which `acquireDeliveryLease` deliberately
@@ -1016,6 +1047,7 @@ async function runStartedDelivery(
      // durable with whoever took the row. Same edge announcement, same not-ready withdrawal.
      try {
        await ep.quiescePlane3();
+       await served?.quiesce("the daemon stopped serving its shard while it re-checks the lease");
        if (revision !== undefined) {
          try { revision = await ep.markDeliveryLeaseNotReady(shard, revision); }
          catch { /* the row has moved on; the ownership read below is what decides */ }
@@ -1108,6 +1140,7 @@ async function runStartedDelivery(
         // code did not have this window because it simply exited on the first renew failure.
         try {
           await ep.quiescePlane3();
+          await served?.quiesce("the daemon stopped serving its shard while it re-checks the lease");
           // WITHDRAW THE READINESS CLAIM TOO. `ready` asserts the responder is up; it is now down, so
           // leaving it set would tell every `ensureDelivery` waiter in the space to keep waiting on a
           // daemon that is deliberately not answering. Best-effort: the renew that just failed means
@@ -1189,7 +1222,7 @@ async function runStartedDelivery(
     if (closePromise !== undefined) {
       if (!closedClean) throw unsettled("the context is closing, or its close did not succeed");
       // close() swallows each part's teardown fault, so each part is asked what it still holds.
-      if (ep.nativeConnections().length > 0 || (membership?.nativeDataConnections().length ?? 0) > 0 || timerWriterConns.size > 0)
+      if (ep.nativeConnections().length > 0 || (membership?.nativeDataConnections().length ?? 0) > 0 || timerWriterConns.size > 0 || (served?.nativeConnections().length ?? 0) > 0)
         throw unsettled("the context closed but a connection has not closed");
       return [];
     }
@@ -1201,6 +1234,7 @@ async function runStartedDelivery(
       ...ep.nativeConnections().map((binding) => ({ label: "endpoint" as const, ...binding })),
       ...(membership?.nativeDataConnections() ?? []).map((binding) => ({ label: "membership-rw" as const, ...binding })),
       { label: "timer-writer" as const, ...timerWriter.native.binding() },
+      ...(served?.nativeConnections() ?? []).map(({ endpoint, binding }) => ({ label: `${endpoint}-serve` as const, ...binding })),
     ];
   };
 

@@ -578,6 +578,27 @@ export class EndpointDeliveryPlane {
     });
   }
 
+  /** A daemon-served endpoint (A1) on the delivery-admin rail. `adoptEndpointCreds` re-reads that
+   *  endpoint's serve credential and binds it only after the daemon's own checks; `serveState` reports
+   *  what is bound now, with the bound credential's fingerprint and the adoption op id, and is
+   *  read-only. */
+  private async deliveryServedEndpoint(req: ControlRequest): Promise<ControlReply> {
+    if (!this.plane3?.servedEndpoints)
+      return { ok: false, error: `${req.op}: this daemon serves no endpoint (start it with --serve)` };
+    const endpoint = typeof req.args?.endpoint === "string" ? req.args.endpoint : "";
+    if (!endpoint) return { ok: false, error: `${req.op}: endpoint must be a non-blank string` };
+    try {
+      if (req.op === "serveState") return { ok: true, data: this.plane3.servedEndpoints.state(endpoint) };
+      if (this.plane3.startupComplete?.() === false)
+        return { ok: false, error: "adoptEndpointCreds: this daemon has not finished starting; nothing adopted" };
+      const opId = typeof req.args?.adoptionOpId === "string" ? req.args.adoptionOpId : "";
+      if (!opId) return { ok: false, error: "adoptEndpointCreds: adoptionOpId must be a non-blank string" };
+      return { ok: true, data: await this.plane3.servedEndpoints.adopt(endpoint, opId) };
+    } catch (e) {
+      return { ok: false, error: (e as Error).message };
+    }
+  }
+
   /** Serve one PRIVILEGED delivery-admin request (the D5 rail-split). The cred layer is the caller
    *  boundary — only the supervisor profile can publish here — and `serveControl`'s sender check +
    *  bounded reply still apply on top. `reloadCreds` is the class-2 renewal ADOPTION step: re-read
@@ -636,25 +657,7 @@ export class EndpointDeliveryPlane {
         : { ok: true, data: { delivery, membership } };
     }
     if (req.op === "evictSessionConnections") return this.deliveryEvictSessionConnections(req);
-    if (req.op === "adoptEndpointCreds" || req.op === "serveState") {
-      // A daemon-served endpoint (A1). `adoptEndpointCreds` re-reads that endpoint's serve credential
-      // and binds it only after the daemon's own checks; `serveState` reports what is bound now, with
-      // the bound credential's fingerprint and the adoption op id, and is read-only.
-      if (!this.plane3?.servedEndpoints)
-        return { ok: false, error: `${req.op}: this daemon serves no endpoint (start it with --serve)` };
-      const endpoint = typeof req.args?.endpoint === "string" ? req.args.endpoint : "";
-      if (!endpoint) return { ok: false, error: `${req.op}: endpoint must be a non-blank string` };
-      try {
-        if (req.op === "serveState") return { ok: true, data: this.plane3.servedEndpoints.state(endpoint) };
-        if (this.plane3.startupComplete?.() === false)
-          return { ok: false, error: "adoptEndpointCreds: this daemon has not finished starting; nothing adopted" };
-        const opId = typeof req.args?.adoptionOpId === "string" ? req.args.adoptionOpId : "";
-        if (!opId) return { ok: false, error: "adoptEndpointCreds: adoptionOpId must be a non-blank string" };
-        return { ok: true, data: await this.plane3.servedEndpoints.adopt(endpoint, opId) };
-      } catch (e) {
-        return { ok: false, error: (e as Error).message };
-      }
-    }
+    if (req.op === "adoptEndpointCreds" || req.op === "serveState") return this.deliveryServedEndpoint(req);
     if (req.op === "evictPrincipal") return this.deliveryEvictPrincipal(req);
     if (req.op === "evictPrincipals") {
       // The same executor over a SET: one shared sweep instead of one request and one scan per
