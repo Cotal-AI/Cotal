@@ -2,7 +2,7 @@ import type { HelloInfo } from "./client.js";
 import type { SharedController } from "./shared-controller.js";
 import type { SharedSeatRequestBody } from "./shared-control-protocol.js";
 import { PROTOCOL_VERSION, type SeatExit, type ServerEvent, type StopMode } from "./protocol.js";
-import type { SharedSeatRecord } from "./shared-record.js";
+import type { SeatRecord } from "./record.js";
 
 /** A seat view of its Manager's single host connection. A new epoch authenticates each seat again. */
 export class SharedSeatClient {
@@ -18,7 +18,7 @@ export class SharedSeatClient {
   private readonly offEvent: () => void;
   private readonly offDisconnect: () => void;
 
-  constructor(private readonly controller: SharedController, private readonly row: SharedSeatRecord) {
+  constructor(private readonly controller: SharedController, private readonly row: Pick<SeatRecord, "id" | "name" | "childPid" | "token">) {
     this.offEvent = controller.onSeatEvent(row.id, message => this.event(message));
     this.offDisconnect = controller.onDisconnect(() => {
       this.hello = undefined;

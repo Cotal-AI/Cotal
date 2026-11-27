@@ -4,7 +4,8 @@ import { resolve } from "node:path";
 import { SeatClient } from "./client.js";
 import { seatHandle, type SeatHandle, type SeatHandleClient } from "./handle.js";
 import { PROTOCOL_VERSION, type SeatExit, type StopMode } from "./protocol.js";
-import { exitPath } from "./record.js";
+import { exitPath, type SeatRecord } from "./record.js";
+import type { ExactIdentity, ProcessObservation } from "./shared-platform.js";
 import { proveSharedHost, proveSharedSeat, verifySeatPeer } from "./shared-launch.js";
 import { readPrivateRecord, readSharedHost, readSharedSeat, recordedProcess, sharedSeatRecord, shortSocketPath, type SharedSeatRecord } from "./shared-record.js";
 import type { StartupOutcome } from "./startup-confirm.js";
@@ -17,10 +18,19 @@ function hostLife(row: SharedSeatRecord): "live" | "gone" | undefined {
   return recordedProcess(row.custodianPid, row.custodianStart, row.bootId);
 }
 
-export type SharedHandle = SeatHandle & {
+type LinuxChildIdentity = ExactIdentity & { boot: string };
+
+export type SharedHandle<I extends ExactIdentity = LinuxChildIdentity> = SeatHandle & {
   startupOutcome(): StartupOutcome;
-  readonly childIdentity?: Readonly<{ pid: number; start: string; boot: string }>;
+  readonly childIdentity?: Readonly<I>;
 };
+
+interface SharedHandleProof<I extends ExactIdentity> {
+  childIdentity?: I;
+  childLife(): ProcessObservation;
+  hostLife(): ProcessObservation;
+  terminalEvidence(): SeatExit | undefined;
+}
 
 export function openSharedSeat(root: string, id: string, adopting = false): SharedHandle {
   root = resolve(root);
@@ -52,6 +62,15 @@ function terminalEvidence(path: string | undefined): SeatExit | undefined {
 }
 
 export function observeSharedHandle(row: SharedSeatRecord, client: SeatHandleClient & Pick<SeatClient, "connected" | "health">, terminalPath?: string): SharedHandle {
+  return observeNativeSharedHandle(row, client, {
+    ...(row.childStart ? { childIdentity: { pid: row.childPid, start: row.childStart, boot: row.bootId } } : {}),
+    childLife: () => childLife(row) ?? "unknown", hostLife: () => hostLife(row) ?? "unknown",
+    terminalEvidence: () => terminalEvidence(terminalPath),
+  });
+}
+
+export function observeNativeSharedHandle<I extends ExactIdentity>(row: SeatRecord,
+  client: SeatHandleClient & Pick<SeatClient, "connected" | "health">, proof: SharedHandleProof<I>): SharedHandle<I> {
   const base = seatHandle(row, client, true);
   let released = false, exited = false, startup: StartupOutcome = "pending";
   let pending = false, watchStartup = true;
@@ -68,9 +87,9 @@ export function observeSharedHandle(row: SharedSeatRecord, client: SeatHandleCli
     listeners.clear();
   };
   const observe = () => {
-    if (goneAt !== undefined || childLife(row) === "gone") {
+    if (goneAt !== undefined || proof.childLife() === "gone") {
       goneAt ??= Date.now();
-      if (hostLife(row) !== "live" || terminalEvidence(terminalPath) || Date.now() - goneAt >= 1_000) {
+      if (proof.hostLife() !== "live" || proof.terminalEvidence() || Date.now() - goneAt >= 1_000) {
         markExited();
         return;
       }
@@ -97,14 +116,14 @@ export function observeSharedHandle(row: SharedSeatRecord, client: SeatHandleCli
   const release = () => { released = true; unsub(); clearInterval(poll); listeners.clear(); base.close(); };
   return {
     ...base,
-    ...(row.childStart ? { childIdentity: Object.freeze({ pid: row.childPid, start: row.childStart, boot: row.bootId }) } : {}),
+    ...(proof.childIdentity ? { childIdentity: Object.freeze({ ...proof.childIdentity }) } : {}),
     status() {
-      const child = childLife(row);
+      const child = proof.childLife();
       if (exited || child === "gone") return "exited";
-      if (child !== "live" || hostLife(row) !== "live") throw new Error("shared PTY seat lifetime is unknown");
+      if (child !== "live" || proof.hostLife() !== "live") throw new Error("shared PTY seat lifetime is unknown");
       return "running";
     },
-    exitInfo: () => base.exitInfo() ?? (exited ? terminalEvidence(terminalPath) : undefined),
+    exitInfo: () => base.exitInfo() ?? (exited ? proof.terminalEvidence() : undefined),
     release, close: release,
     stop(opts) {
       if (!released && !exited) {

@@ -9,7 +9,7 @@ import { lockExclusiveNb } from "./host.js";
 import { FrameReader, encodeFrame } from "./protocol.js";
 import { bootToken, capabilityToken, isSeatId, processStartToken } from "./record.js";
 import { isSharedScope, privateDirectory, readPrivateRecord, readSharedHost, recordedProcess, sharedHostRecord, sharedHostSocket, sharedScopeMatches, sharedSeatRecord, sharedSeatSocket, SHARED_HOST_VERSION, SHARED_PROTOCOL_VERSION, writePrivateRecord, type SharedHostRecord } from "./shared-record.js";
-import { serveMultiplexedHost } from "./shared-host-v2.js";
+import { serveLinuxSharedHost } from "./shared-host-linux.js";
 import { verifySharedRuntimeClosure, verifyStagedSharedRuntime } from "./shared-runtime-closure.js";
 import { acquireSharedExecutionLease } from "./shared-execution-lease.js";
 import { acquireSharedClosureLease } from "./shared-closure-lease.js";
@@ -133,7 +133,7 @@ async function runRetainedHost(root: string, scope: string, store: string, diges
       throw new Error("shared PTY host runtime is not retained");
     hold?.assertCurrent();
     copy.assertCurrent();
-    await serveMultiplexedHost(root, scope);
+    await serveLinuxSharedHost(root, scope);
   } finally { hold?.release(); copy.release(); }
 }
 

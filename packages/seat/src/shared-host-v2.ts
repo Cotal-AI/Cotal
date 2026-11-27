@@ -1,132 +1,107 @@
-import { closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync, rmSync } from "node:fs";
 import type { Socket } from "node:net";
-import { basename, dirname, join } from "node:path";
-import { runCustodian } from "./custodian.js";
-import { lockExclusiveNb } from "./host.js";
-import { DEFAULT_COLS, DEFAULT_ROWS } from "./protocol.js";
+import { join } from "node:path";
+import { runCustodian, type CustodianIdentity } from "./custodian.js";
 import { capabilityToken } from "./record.js";
-import { initializeSharedHostCgroup } from "./shared-cgroup.js";
-import { readControllerClaim, sharedGenerationAcceptsLaunch, validSharedGeneration } from "./shared-controller-claim.js";
-import { createHostControl, type SharedSeatAcceptor } from "./shared-control-server.js";
-import { linuxHostTransport, linuxWriterProof } from "./shared-control-linux.js";
+import { createHostControl, type SharedSeatAcceptor, type SharedWriterProof } from "./shared-control-server.js";
 import type { SharedLaunchPayload } from "./shared-control-protocol.js";
-import { createSharedExecLaunch } from "./shared-exec-launch.js";
-import { privateDirectory, readSharedHost, recordedProcess, sharedHostRecord, sharedHostSocket, sharedSeatRecord, SHARED_MULTIPLEX_VERSION, writePrivateRecord, writeSharedSeatRefusal, type SharedHostRecord } from "./shared-record.js";
+import type { ExactIdentity, HostListener, HostRecords, HostTransport, SeatIsolation, SeatReservation } from "./shared-platform.js";
+import type { PreparedSeat } from "./shared-prepared-seat.js";
 
-function eligiblePayload(launch: SharedLaunchPayload): boolean {
-  const spec = launch.spec;
-  return typeof launch.name === "string" && !!launch.name && typeof launch.cwd === "string" && launch.cwd.startsWith("/") &&
-    typeof launch.artifactRoot === "string" && launch.artifactRoot.startsWith("/") && typeof spec?.command === "string" &&
-    Array.isArray(spec.args) && spec.args.every(arg => typeof arg === "string");
-}
-
-function clearDeadSocket(root: string, socket: string): void {
-  let dead = false;
-  try {
-    const prior = readSharedHost(root);
-    dead = recordedProcess(prior.pid, prior.start, prior.bootId) === "gone";
-    if (!dead) throw new Error("shared PTY host lifetime is unknown");
-  } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
-  const stat = lstatSync(socket, { throwIfNoEntry: false });
-  if (!stat) return;
-  if (!dead || !stat.isSocket() || stat.uid !== process.getuid?.()) throw new Error("unknown shared PTY socket");
-  rmSync(socket);
+interface SharedHostOptions<Claim extends ExactIdentity, Child extends ExactIdentity, Address, Host, Peer> {
+  host: ExactIdentity & { token: string };
+  generation: string;
+  socket: string;
+  address: Address;
+  transport: HostTransport<Address, Host, Peer>;
+  writer: SharedWriterProof<Claim, Peer>;
+  records: HostRecords<Claim>;
+  childIdentity?: CustodianIdentity<Child>;
+  eligiblePayload(payload: SharedLaunchPayload): boolean;
+  isolate(id: string, reservation: SeatReservation): SeatIsolation<Child>;
 }
 
 function logFault(error: unknown): void {
   try { console.error("shared PTY host:", error); } catch { /* The service log must not stop a host. */ }
 }
 
-export async function serveMultiplexedHost(root: string, scope: string): Promise<void> {
-  const generation = basename(root), lineage = dirname(root);
-  if (!validSharedGeneration(generation)) throw new Error("invalid shared PTY generation");
-  privateDirectory(root);
-  process.chdir(root);
-  const fd = openSync(join(root, "host.lock"), constants.O_CREAT | constants.O_RDWR | constants.O_NOFOLLOW | constants.O_NONBLOCK, 0o600);
-  try {
-    const lock = fstatSync(fd);
-    if (!lock.isFile() || lock.uid !== process.getuid?.() || (lock.mode & 0o777) !== 0o600 || !lockExclusiveNb(fd)) return;
-    const cgroup = initializeSharedHostCgroup(scope), socket = sharedHostSocket(root);
-    clearDeadSocket(root, socket);
-    const identity = linuxWriterProof.current();
-    if (!identity) throw new Error("shared PTY host identity is unavailable");
-    const host: SharedHostRecord = { ...identity, version: SHARED_MULTIPLEX_VERSION, protocol: SHARED_MULTIPLEX_VERSION, scope, token: capabilityToken() };
-    const sessions = new Map<string, SharedSeatAcceptor>();
-    const connections = new Set<Socket>();
-    let held = 0, closing = false, idle: ReturnType<typeof setTimeout>;
-    const armIdle = () => { idle = setTimeout(() => {
-      if (held) return;
-      closing = true;
-      server.close();
-      for (const connection of connections) connection.destroy();
-    }, 5_000); };
-    const launch = async (id: string, payload: SharedLaunchPayload, authorize: () => void): Promise<"admitted" | "not-admitted" | "unknown"> => {
-      const claimant = readControllerClaim(lineage);
-      const record = sharedSeatRecord(root, id), directory = dirname(record);
-      if (lstatSync(directory, { throwIfNoEntry: false })) return "unknown";
-      const refuse = () => {
-        try { writeSharedSeatRefusal(root, id, host); } catch (error) { logFault(error); }
-        return "not-admitted" as const;
-      };
-      try { mkdirSync(directory, { mode: 0o700 }); }
-      catch { return "not-admitted"; }
-      if (closing || !sharedGenerationAcceptsLaunch(claimant, generation) || !eligiblePayload(payload)) return refuse();
-      let leaf: ReturnType<typeof cgroup.createSeat>;
-      try { leaf = cgroup.createSeat(id); }
-      catch { return refuse(); }
-      let gate: Awaited<ReturnType<typeof createSharedExecLaunch>> | undefined, cleaned = false;
-      ++held;
-      clearTimeout(idle);
-      const settled = () => {
-        if (cleaned) return;
-        cleaned = true;
-        sessions.delete(id);
-        void leaf.killAndRemove().then(() => { if (--held === 0) armIdle(); }, logFault);
-      };
-      const { spec, name, cwd, artifactRoot } = payload;
-      try {
-        await runCustodian({ ...spec, id, name, cwd, artifactRoot, env: spec.env ?? {}, socket,
-          token: capabilityToken(), recordPath: record, logPath: join(directory, "custodian.log") }, {
-          bind: accept => sessions.set(id, accept),
-          settled,
-          record: row => writePrivateRecord(record, { ...row, protocol: host.protocol, scope }),
-          prepare: async () => {
-            const staged = gate = await createSharedExecLaunch({ directory, leaf, cwd: root, cols: DEFAULT_COLS, rows: DEFAULT_ROWS,
-              payload: { command: spec.command, args: spec.args, env: { ...spec.env, PWD: cwd, TERM: spec.env?.TERM ?? "xterm-256color" }, cwd } });
-            return { ...staged, get commitAttempted() { return staged.commitAttempted; }, commit(record) { return staged.commit(() => {
-              authorize();
-              const current = readControllerClaim(lineage);
-              if (!sharedGenerationAcceptsLaunch(current, generation) || current.pid !== claimant.pid || current.start !== claimant.start ||
-                  current.bootId !== claimant.bootId) throw new Error("shared PTY controller lifetime is unknown");
-              // This check, publication and dispatch are one synchronous host turn. The
-              // writer epoch cannot change between them in this host.
-              record();
-            }); } };
-          },
-        });
-        return "admitted";
-      } catch (error) {
-        logFault(error);
-        if (gate?.commitAttempted) return "unknown";
-        gate?.abort();
-        settled();
-        return refuse();
-      }
+export async function serveSharedHost<Claim extends ExactIdentity, Child extends ExactIdentity, Address, Host, Peer>(
+  options: SharedHostOptions<Claim, Child, Address, Host, Peer>,
+): Promise<void> {
+  const { generation, host, records, writer, socket, address, transport } = options;
+  const sessions = new Map<string, SharedSeatAcceptor>();
+  const connections = new Set<Socket>();
+  let server: HostListener;
+  let held = 0, closing = false, idle: ReturnType<typeof setTimeout>;
+  const armIdle = () => { idle = setTimeout(() => {
+    if (held) return;
+    closing = true;
+    server.close();
+    for (const connection of connections) connection.destroy();
+  }, 5_000); };
+  const launch = async (id: string, payload: SharedLaunchPayload, authorize: () => void): Promise<"admitted" | "not-admitted" | "unknown"> => {
+    const claimant = records.readClaim(), reservation = records.reserve(id);
+    if (typeof reservation === "string") return reservation;
+    const refuse = () => {
+      try { reservation.refuse(); } catch (error) { logFault(error); }
+      return "not-admitted" as const;
     };
-    const handle = createHostControl({ host, writer: linuxWriterProof, closing: () => closing, authorized: () => readControllerClaim(lineage), acceptSeat: id => sessions.get(id), launch,
-      // Launch creates the private reservation synchronously before its first await. A probe
-      // on this epoch is ordered after its launch frames, and a closed epoch cannot dispatch.
-      launchState: id => lstatSync(dirname(sharedSeatRecord(root, id)), { throwIfNoEntry: false }) ? "unknown" : "absent",
-    });
-    const server = linuxHostTransport.listen(socket, (connection, peer) => {
+    if (closing || !records.acceptsLaunch(claimant, generation) || !options.eligiblePayload(payload)) return refuse();
+    let isolation: SeatIsolation<Child>;
+    try { isolation = options.isolate(id, reservation); }
+    catch { return refuse(); }
+    let gate: PreparedSeat<Child> | undefined, cleaned = false;
+    ++held;
+    clearTimeout(idle);
+    const settled = () => {
+      if (cleaned) return;
+      cleaned = true;
+      sessions.delete(id);
+      void isolation.drain().then(() => { if (--held === 0) armIdle(); }, logFault);
+    };
+    const { spec, name, cwd, artifactRoot } = payload;
+    try {
+      await runCustodian({ ...spec, id, name, cwd, artifactRoot, env: spec.env ?? {}, socket,
+        token: capabilityToken(), recordPath: reservation.recordPath, logPath: join(reservation.directory, "custodian.log") }, {
+        bind: accept => sessions.set(id, accept),
+        settled,
+        record: reservation.publish,
+        identity: options.childIdentity,
+        ...(reservation.publishExit && { publishExit: reservation.publishExit }),
+        ...(reservation.appendLog && { appendLog: reservation.appendLog }),
+        prepare: async () => {
+          const staged = gate = await isolation.prepare(payload);
+          return { ...staged, get commitAttempted() { return staged.commitAttempted; }, commit(record) { return staged.commit(() => {
+            authorize();
+            const current = records.readClaim();
+            if (!records.acceptsLaunch(current, generation) || !writer.same(current, claimant))
+              throw new Error("shared PTY controller lifetime is unknown");
+            // Writer verification, record publication and dispatch occupy one synchronous turn.
+            record();
+          }); } };
+        },
+      });
+      return "admitted";
+    } catch (error) {
+      logFault(error);
+      if (gate?.commitAttempted || (!gate && isolation.prepareFailure(error) === "unknown")) return "unknown";
+      try { gate?.abort(); }
+      catch (rollback) { logFault(rollback); return "unknown"; }
+      settled();
+      return refuse();
+    }
+  };
+  const accept = createHostControl({ host, writer, closing: () => closing, authorized: () => records.readClaim(), acceptSeat: id => sessions.get(id), launch,
+    launchState: id => records.launchState(id),
+  });
+  process.on("uncaughtException", logFault);
+  try {
+    const serverLifetime = transport.listen(address, (connection, peer) => {
       connections.add(connection);
       connection.once("close", () => connections.delete(connection));
-      handle(connection, peer);
-    }, () => { writePrivateRecord(sharedHostRecord(root), host); armIdle(); });
-    process.on("uncaughtException", logFault);
-    try {
-      await server.closed;
-      rmSync(sharedHostRecord(root), { force: true });
-    } finally { process.off("uncaughtException", logFault); }
-  } finally { closeSync(fd); }
+      accept(connection, peer);
+    }, () => { records.publishHost(); armIdle(); });
+    server = serverLifetime;
+    await serverLifetime.closed;
+    records.removeHost();
+  } finally { process.off("uncaughtException", logFault); }
 }

@@ -8,11 +8,15 @@ import { executionIdentity } from "@cotal-ai/workspace";
 import { custodyRoot } from "./custodial-pty.js";
 import { LegacyPtyRuntime } from "./pty.js";
 
+interface HostedSharedExecution {
+  lineage: string;
+  executionGeneration: string;
+  staged?: { root: string; inventorySha256: string };
+  loaded?: { root: string; stamp: string };
+}
+
 export class SharedPtyRuntime extends LegacyPtyRuntime {
-  private readonly lineage: string | undefined;
-  private readonly executionGeneration: string | undefined;
-  private readonly staged?: { root: string; inventorySha256: string };
-  private readonly loaded?: { root: string; stamp: string };
+  private readonly execution?: HostedSharedExecution;
   constructor(space: string, install?: string) {
     super();
     try {
@@ -21,10 +25,12 @@ export class SharedPtyRuntime extends LegacyPtyRuntime {
       const { logicalEntry, loadedEntry } = identity;
       const root = resolve(dirname(loadedEntry), "..");
       const key = createHash("sha256").update(JSON.stringify([install ?? logicalEntry, process.getuid?.(), space])).digest("hex");
-      this.lineage = resolve(custodyRoot(), `p-${key}`);
-      this.executionGeneration = createHash("sha256").update(JSON.stringify([loadedEntry, identity.loaded.version])).digest("hex");
-      if (identity.inventorySha256) this.staged = { root, inventorySha256: identity.inventorySha256 };
-      else this.loaded = { root, stamp: identity.loaded.stamp };
+      this.execution = {
+        lineage: resolve(custodyRoot(), `p-${key}`),
+        executionGeneration: createHash("sha256").update(JSON.stringify([loadedEntry, identity.loaded.version])).digest("hex"),
+        ...(identity.inventorySha256 ? { staged: { root, inventorySha256: identity.inventorySha256 } }
+          : { loaded: { root, stamp: identity.loaded.stamp } }),
+      };
     } catch { /* An unverified installation cannot share custody. */ }
   }
 
@@ -32,10 +38,10 @@ export class SharedPtyRuntime extends LegacyPtyRuntime {
   async spawnShared(name: string, spec: LaunchSpec, cwd: string, onReceipt: (child: Readonly<{ pid: number; start: string; boot: string }> | undefined) => void): Promise<AgentHandle> {
     // Eligibility can change while the Manager is running. Fall back only before
     // dispatch, since a failed shared request could already have launched the seat.
-    if (!this.lineage || !this.executionGeneration || !currentUserHasLinger() || !linuxSharedCustodyAvailable())
-      return super.spawn(name, spec, cwd);
-    if (this.loaded && !stillLoaded(this.loaded)) return super.spawn(name, spec, cwd);
-    const handle = await launchManagedSharedSeat(this.lineage, { root: this.lineage, name, spec, cwd }, this.executionGeneration, this.staged);
+    const execution = probeHostedSharedEligibility(this.execution);
+    if (!execution) return super.spawn(name, spec, cwd);
+    const { lineage, executionGeneration, staged } = execution;
+    const handle = await launchManagedSharedSeat(lineage, { root: lineage, name, spec, cwd }, executionGeneration, staged);
     if (handle === undefined) return super.spawn(name, spec, cwd);
     // Released lifecycle transactions are admitted separately from process custody.
     // Keep today's Manager stop and update policy until that transaction is enabled.
@@ -43,6 +49,13 @@ export class SharedPtyRuntime extends LegacyPtyRuntime {
     onReceipt(childIdentity);
     return controlled;
   }
+}
+
+/** Recheck hosted eligibility immediately before launch. This does not claim or start a host. */
+function probeHostedSharedEligibility(execution: HostedSharedExecution | undefined): HostedSharedExecution | undefined {
+  if (!execution || !currentUserHasLinger() || !linuxSharedCustodyAvailable()) return undefined;
+  if (execution.loaded && !stillLoaded(execution.loaded)) return undefined;
+  return execution;
 }
 
 function stillLoaded({ root, stamp }: { root: string; stamp: string }): boolean {

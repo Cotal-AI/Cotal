@@ -26,6 +26,8 @@ import { RECORD_VERSION, appendPrivate, bootToken, exitPath, processStartToken, 
 import { StartupConfirmGate } from "./startup-confirm.js";
 import { SharedScreen } from "./shared-screen.js";
 import { recordedProcess } from "./shared-record.js";
+import type { ExactIdentity, ProcessObservation } from "./shared-platform.js";
+import type { PreparedSeat, SeatStopMode, SeatTerminal } from "./shared-prepared-seat.js";
 
 export interface CustodianLaunch {
   id: string;
@@ -78,23 +80,27 @@ function send(sock: CustodianChannel, msg: ServerMessage): void {
 }
 
 /** A shared host owns the process lifetime; each seat still owns its own socket and exit record. */
-interface SharedCustodianLifetime {
+export interface SharedCustodianLifetime<I extends ExactIdentity = LinuxPreparedIdentity> {
   readonly settled: () => void;
   readonly record: (record: SeatRecord) => void;
   readonly listenPath?: string;
   readonly bind?: (accept: (channel: CustodianChannel) => CustodianSession) => void;
-  readonly prepare?: () => Promise<PreparedPty>;
+  readonly prepare?: () => Promise<PreparedSeat<I>>;
+  readonly identity?: CustodianIdentity<I>;
+  readonly publishExit?: (exit: SeatExit) => void;
+  readonly appendLog?: (line: string) => void;
 }
 
-interface PreparedPty {
-  readonly proc: pty.IPty;
-  readonly ready: Promise<{ pid: number; start: string; boot: string }>;
-  readonly commitAttempted: boolean;
-  commit(beforeDispatch: () => void): Promise<void>;
-  abort(): void;
+type LinuxPreparedIdentity = ExactIdentity & { boot: string };
+type CustodyIdentityFields = Pick<SeatRecord, "custodianStart" | "childStart" | "bootId">;
+
+export interface CustodianIdentity<I extends ExactIdentity> {
+  capture(custodianPid: number, childPid: number): CustodyIdentityFields;
+  matches(identity: I, record: Readonly<SeatRecord>): boolean;
+  observe(record: Readonly<SeatRecord>): ProcessObservation;
 }
 
-async function openPty(launch: CustodianLaunch, shared: SharedCustodianLifetime | undefined): Promise<{ proc: pty.IPty; gate?: PreparedPty }> {
+async function openPty<I extends ExactIdentity>(launch: CustodianLaunch, shared: SharedCustodianLifetime<I> | undefined): Promise<{ proc: SeatTerminal; gate?: PreparedSeat<I> }> {
   if (shared?.prepare) {
     const gate = await shared.prepare();
     return { proc: gate.proc, gate };
@@ -104,8 +110,8 @@ async function openPty(launch: CustodianLaunch, shared: SharedCustodianLifetime 
   }) };
 }
 
-export async function runCustodian(launch: CustodianLaunch, shared?: SharedCustodianLifetime): Promise<void> {
-  if (process.platform !== "linux") {
+export async function runCustodian<I extends ExactIdentity = LinuxPreparedIdentity>(launch: CustodianLaunch, shared?: SharedCustodianLifetime<I>): Promise<void> {
+  if (process.platform !== "linux" && !(shared?.bind && shared.prepare && shared.identity)) {
     throw new Error(`custody transport unsupported on ${process.platform}`);
   }
 
@@ -125,7 +131,8 @@ export async function runCustodian(launch: CustodianLaunch, shared?: SharedCusto
   };
   const note = (line: string): void => {
     try {
-      if (launch.logPath) appendPrivate(launch.logPath, line);
+      if (shared?.appendLog) shared.appendLog(line);
+      else if (launch.logPath) appendPrivate(launch.logPath, line);
       else process.stderr.write(line);
     } catch {
       /* the seat directory may already be gone */
@@ -133,8 +140,8 @@ export async function runCustodian(launch: CustodianLaunch, shared?: SharedCusto
   };
 
   let confirmGate: StartupConfirmGate | undefined;
-  let proc: pty.IPty;
-  let gate: PreparedPty | undefined;
+  let proc: SeatTerminal;
+  let gate: PreparedSeat<I> | undefined;
   try {
     // Built before the child exists, so a prompt that cannot match starts nothing.
     if ((launch.confirmBefore?.length || launch.confirmReady?.length || launch.confirmBlockers?.length) && launch.confirm === undefined) throw new Error("startup choices require a final confirmation prompt");
@@ -152,10 +159,14 @@ export async function runCustodian(launch: CustodianLaunch, shared?: SharedCusto
   // that inherited the pid. A zombie still reports its start token, a reaped pid does not: a child
   // whose exec failed can be gone already, and then the record carries no child identity, which a
   // reader takes as "exited before custody began" (its exit is observed below like any other).
-  const custodianStart = processStartToken(process.pid);
-  if (custodianStart === undefined) throw new Error(`cannot read the process start identity of custodian ${process.pid} from /proc`);
-  const childStart = processStartToken(proc.pid);
-  const bootId = bootToken();
+  const identity = shared?.identity;
+  const { custodianStart, childStart, bootId } = identity ? identity.capture(process.pid, proc.pid) : captureLinuxIdentity();
+
+  function captureLinuxIdentity() {
+    const custodianStart = processStartToken(process.pid);
+    if (custodianStart === undefined) throw new Error(`cannot read the process start identity of custodian ${process.pid} from /proc`);
+    return { custodianStart, childStart: processStartToken(proc.pid), bootId: bootToken() };
+  }
 
   const term = new Headless.Terminal({
     cols: DEFAULT_COLS,
@@ -203,6 +214,7 @@ export async function runCustodian(launch: CustodianLaunch, shared?: SharedCusto
   };
 
   const childGone = (): boolean => {
+    if (identity) return identity.observe(record) === "gone";
     if (shared) return childStart !== undefined && bootId !== undefined && recordedProcess(proc.pid, childStart, bootId) === "gone";
     const fields = processStatFields(proc.pid);
     return fields === undefined || fields[0] === "Z" || (childStart !== undefined && fields[19] !== childStart);
@@ -297,7 +309,7 @@ export async function runCustodian(launch: CustodianLaunch, shared?: SharedCusto
         // exit: without this the stop below kills the child and the settle refuses, which is the
         // orphan again with a dead child instead of a live one.
         seenClient = true;
-        stopChild("graceful");
+        stopChildInBackground();
         // The settle runs off the child's exit. If the child ignores SIGTERM, `stopChild`'s own
         // SIGKILL escalation takes it within GRACE_MS and `markExited` follows from that.
         return;
@@ -339,15 +351,18 @@ export async function runCustodian(launch: CustodianLaunch, shared?: SharedCusto
     // sees half a record.
     const exitFile = exitPath(launch.recordPath);
     try {
-      writePrivate(`${exitFile}.tmp`, `${JSON.stringify(exit)}\n`);
-      renameSync(`${exitFile}.tmp`, exitFile);
+      if (shared?.publishExit) shared.publishExit(exit);
+      else {
+        writePrivate(`${exitFile}.tmp`, `${JSON.stringify(exit)}\n`);
+        renameSync(`${exitFile}.tmp`, exitFile);
+      }
     } catch (e) {
       // A seat directory that is already gone has nobody left to read the record. Any other failure
       // loses the only account a later reap has, so it is said where an operator can find it, and
       // the reap reports the record missing or unreadable.
       if ((e as NodeJS.ErrnoException).code !== "ENOENT") {
         try {
-          unlinkSync(`${exitFile}.tmp`);
+          if (!shared?.publishExit) unlinkSync(`${exitFile}.tmp`);
         } catch {
           /* never created */
         }
@@ -411,7 +426,12 @@ export async function runCustodian(launch: CustodianLaunch, shared?: SharedCusto
   }, 50);
   reap.unref();
 
-  const stopChild = (mode: "graceful" | "hard"): void => {
+  const stopChild = (mode: SeatStopMode): void | Promise<void> => {
+    // Native isolation can still contain descendants after the root exits.
+    if (gate?.stop) {
+      try { return gate.stop(mode); }
+      catch (error) { return Promise.reject(error); }
+    }
     if (!alive) return;
     if (mode === "hard") {
       proc.kill("SIGKILL");
@@ -420,6 +440,10 @@ export async function runCustodian(launch: CustodianLaunch, shared?: SharedCusto
     proc.kill("SIGTERM");
     if (killTimer) clearTimeout(killTimer);
     killTimer = setTimeout(() => alive && proc.kill("SIGKILL"), GRACE_MS);
+  };
+
+  const stopChildInBackground = (): void => {
+    void stopChild("graceful")?.catch(error => note(`native stop failed: ${String(error)}\n`));
   };
 
   confirmGate?.arm(diagnostic, {
@@ -432,7 +456,7 @@ export async function runCustodian(launch: CustodianLaunch, shared?: SharedCusto
       }
       note(`${message}\n`);
     },
-    stop: () => stopChild("graceful"),
+    stop: stopChildInBackground,
   }, {
     read: () => alive ? Array.from({ length: term.rows }, (_, row) => term.buffer.active.getLine(term.buffer.active.baseY + row)?.translateToString(true) ?? "").join("\n") : undefined,
     key: (key) => proc.write(key === "Down" ? "\x1b[B" : "\r"),
@@ -585,8 +609,13 @@ export async function runCustodian(launch: CustodianLaunch, shared?: SharedCusto
         return;
       }
       case "stop": {
-        stopChild(req.mode);
-        send(sock, { id: req.id, ok: true, op: "stop" });
+        const stopping = stopChild(req.mode);
+        if (stopping) {
+          void stopping.then(
+            () => send(sock, { id: req.id, ok: true, op: "stop" }),
+            error => send(sock, { id: req.id, ok: false, error: error instanceof Error ? error.message : String(error) }),
+          );
+        } else send(sock, { id: req.id, ok: true, op: "stop" });
         return;
       }
       case "wait-exit": {
@@ -623,7 +652,9 @@ export async function runCustodian(launch: CustodianLaunch, shared?: SharedCusto
   try {
     if (gate) {
       const placed = await gate.ready;
-      if (placed.pid !== record.childPid || placed.start !== childStart || placed.boot !== bootId) throw new Error("shared PTY placement could not be proved");
+      const matches = identity ? identity.matches(placed, record) :
+        placed.start === childStart && "boot" in placed && placed.boot === bootId;
+      if (placed.pid !== record.childPid || !matches) throw new Error("shared PTY placement could not be proved");
     }
     if (shared?.bind) shared.bind(accept);
     else {
