@@ -70,10 +70,11 @@ test('welcome page comes forward when the app window is already open', () => {
   const welcome = source.indexOf('!insertmacro MUI_PAGE_WELCOME');
   assert.ok(show > 0 && show < welcome);
   const body = source.slice(source.indexOf('Function WelcomeShow'), source.indexOf('FunctionEnd', source.indexOf('Function WelcomeShow')));
-  assert.ok(body.indexOf('FindProcessCurrentUser "${MAINBINARYNAME}.exe"') > 0);
-  assert.ok(body.indexOf('RunAsUser "$INSTDIR\\${MAINBINARYNAME}.exe" ""') > body.indexOf('FindProcessCurrentUser'));
-  assert.ok(body.indexOf('BringToFront') > body.indexOf('RunAsUser'));
-  assert.equal(body.indexOf('AllowSetForegroundWindow'), -1);
+  const attach = body.indexOf('AttachThreadInput(i r1, i r3, i 1)');
+  const front = body.indexOf('BringToFront');
+  const detach = body.indexOf('AttachThreadInput(i r1, i r3, i 0)');
+  assert.ok(attach > 0 && front > attach && detach > front);
+  assert.equal(body.indexOf('RunAsUser'), -1);
   const laterShow = source.indexOf('MUI_PAGE_CUSTOMFUNCTION_SHOW', welcome + 1);
   const later = source.slice(laterShow).split('\n', 1)[0];
   assert.equal(later, 'MUI_PAGE_CUSTOMFUNCTION_SHOW un.ConfirmShow');
