@@ -934,7 +934,7 @@ test('matrix includes each requested source, state and method', () => {
 test('project-trust-migration option validates coordinate shape and hooks into composition lifecycle', async () => {
   const source = readFileSync(new URL('./automatic-update-platform-baseline.mjs', import.meta.url), 'utf8');
   assert(source.includes("const projectTrustMigration = options['project-trust-migration'] === 'true'"));
-  assert(source.includes('prepareProjectTrustMigration({ env, project, pkg, root, config, cotalHome, prefix, call, cotal, daemon, check, report, output, cli, launcher, options })'));
+  assert(source.includes('prepareProjectTrustMigration({ env, project, pkg, root, config, cotalHome, prefix, call, cotal, daemon, check, report, output, cli, launcher, options, adoptCleanup: cleanup => { compositionCleanup = cleanup; } })'));
   for (const invalid of [
     { 'project-trust-migration': 'false', layout: 'npm', state: 'configured', method: 'self' },
     { 'project-trust-migration': 'true', layout: 'installer', state: 'configured', method: 'self' },

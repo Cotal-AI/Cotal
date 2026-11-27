@@ -638,7 +638,7 @@ export async function matrixCell(options) {
       compositionCleanup = await options.prepare({ env, project, pkg, root, config, cotalHome, prefix, call, cotal, daemon, check, report, output, cli, options });
       assert(compositionCleanup === undefined || typeof compositionCleanup === 'function', 'composition prepare returns an optional owned cleanup callback');
     } else if (projectTrustMigration) {
-      compositionCleanup = await prepareProjectTrustMigration({ env, project, pkg, root, config, cotalHome, prefix, call, cotal, daemon, check, report, output, cli, launcher, options });
+      compositionCleanup = await prepareProjectTrustMigration({ env, project, pkg, root, config, cotalHome, prefix, call, cotal, daemon, check, report, output, cli, launcher, options, adoptCleanup: cleanup => { compositionCleanup = cleanup; } });
     }
     if (containerManager) {
       assert(report.participant?.remote === true && report.participant?.localManagerStarted === false, 'container Manager regression requires a selected remote-user participant composition, not a local host control');
@@ -1554,7 +1554,14 @@ export async function matrixCell(options) {
       catch (error) { report.cleanupFailure = error.message; report.result = 'failed'; }
     }
     if (overlay) report.registryRequests = await overlay.close();
-    report.cleanupSafety = { required: true, uncertain, ownedStackExit: report.ownedStackCleanup?.exit, hostedAgentStopExit: report.managerHost?.stop?.exit, nativeUninstallExit: report.nativeUninstall?.exit, container: report.foreignContainerCleanup, passed: !uncertain && !report.cleanupFailure && (!installedService || report.cleanup === 'receipt-guarded native removal confirmed') && (!stackStarted || report.ownedStackCleanup?.exit === 0) && (!container || report.foreignStackEnd?.passed === true) && (!daemonHostedManager || report.managerHost?.stop?.exit === 0) };
+    const compositionStopped = !compositionCleanup || report.compositionCleanup === 'owned composition stopped before reporting';
+    const cleanupPassed = !uncertain && !report.cleanupFailure
+      && (!installedService || report.cleanup === 'receipt-guarded native removal confirmed')
+      && (!stackStarted || report.ownedStackCleanup?.exit === 0)
+      && (!container || report.foreignStackEnd?.passed === true)
+      && (!daemonHostedManager || report.managerHost?.stop?.exit === 0)
+      && compositionStopped;
+    report.cleanupSafety = { required: true, uncertain, ownedStackExit: report.ownedStackCleanup?.exit, hostedAgentStopExit: report.managerHost?.stop?.exit, nativeUninstallExit: report.nativeUninstall?.exit, container: report.foreignContainerCleanup, compositionCleanup: report.compositionCleanup ?? null, passed: cleanupPassed };
     if (!report.cleanupSafety.passed) { report.result = 'failed'; report.cleanupFailure ??= 'cleanup safety not established; retained for disposable runner teardown'; }
     if (!report.refusal && report.result === 'failed') report.refusal = report.cleanupFailure;
     if (options['expect-recovery-refusal'] === 'true') report.expectedRefusal = { kind: 'paused-snapshot reconciliation', passed: expectedRecoveryRefusal(report) };

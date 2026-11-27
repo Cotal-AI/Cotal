@@ -5,6 +5,9 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, s
 import { createServer } from 'node:net';
 import { delimiter, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { compareVersions } from './upgrade-matrix-plan.mjs';
+
+const FIRST_TRUST_RELEASE = '0.183.0';
 
 export const EXPECTED_PROJECT_TRUST_ENV = 'forwarded-project-env-10672';
 export const EXPECTED_PROJECT_TRUST_OPTION = 'default';
@@ -23,12 +26,16 @@ async function freeLoopbackPort() {
   return port;
 }
 
-// Same decision as trustProjectCommand in packages/core/src/connector-config.ts: a plain path
-// prints unquoted, a path with spaces or backslashes prints quoted, and anything else is hex.
-export function expectedTrustRemedy(canonicalRoot) {
-  if (/^[A-Za-z0-9_./:-]+$/.test(canonicalRoot) && !canonicalRoot.startsWith('-')) return `cotal trust ${canonicalRoot}`;
-  if (/^[A-Za-z0-9_./:\\ -]+$/.test(canonicalRoot) && !/\\\\|\\$/.test(canonicalRoot)) return `cotal trust -- "${canonicalRoot}"`;
-  return `cotal trust --hex ${Buffer.from(canonicalRoot, 'utf8').toString('hex')}`;
+// The product builds the command in trustProjectCommand, then displayProjectTrustFailure swaps the
+// leading `cotal` for the launcher on PATH. An npm install on Windows resolves that to cotal.cmd.
+export function expectedTrustRemedy(canonicalRoot, platform = process.platform) {
+  const launcher = platform === 'win32' ? 'cotal.cmd' : 'cotal';
+  const command = /^[A-Za-z0-9_./:-]+$/.test(canonicalRoot) && !canonicalRoot.startsWith('-')
+    ? `cotal trust ${canonicalRoot}`
+    : /^[A-Za-z0-9_./:\\ -]+$/.test(canonicalRoot) && !/\\\\|\\$/.test(canonicalRoot)
+      ? `cotal trust -- "${canonicalRoot}"`
+      : `cotal trust --hex ${Buffer.from(canonicalRoot, 'utf8').toString('hex')}`;
+  return `${launcher}${command.slice('cotal'.length)}`;
 }
 
 export function buildStandinClaude(binDir, platform = process.platform) {
@@ -55,8 +62,10 @@ export function buildStandinClaude(binDir, platform = process.platform) {
     'const raw = arg("--mcp-config");',
     'const cfg = raw === "<missing>" ? {} : JSON.parse(fs.existsSync(raw) ? fs.readFileSync(raw, "utf8") : raw);',
     'const servers = cfg.mcpServers || {};',
-    'if (servers.trustProbe && servers.trustProbe.command) {',
-    '  const res = spawnSync(servers.trustProbe.command, servers.trustProbe.args || [], { stdio: "inherit", windowsHide: true });',
+    'const probe = servers.trustProbe;',
+    'if (probe && probe.command) {',
+    '  const probeArgs = (probe.args || []).map((arg) => arg === "$TRUST_PROBE_LOG" ? report : arg);',
+    '  const res = spawnSync(probe.command, probeArgs, { stdio: "inherit", windowsHide: true });',
     '  if (res.status !== 0) process.exit(res.status || 1);',
     '}',
     'const record = {',
@@ -141,7 +150,7 @@ export function buildStandinClaude(binDir, platform = process.platform) {
   return { binDir, executable, probeScript };
 }
 
-function writeTrustedProjectFiles(projectDir, probeScript, probeLogPath) {
+function writeTrustedProjectFiles(projectDir, probeScript) {
   mkdirSync(join(projectDir, '.cotal', 'agents'), { recursive: true, mode: 0o700 });
   writeFileSync(join(projectDir, '.cotal', 'agents', 'probe.md'), [
     '---',
@@ -166,7 +175,7 @@ function writeTrustedProjectFiles(projectDir, probeScript, probeLogPath) {
     connectors: {
       claude: {
         mcpServers: {
-          trustProbe: { command: process.execPath, args: [probeScript, probeLogPath] },
+          trustProbe: { command: process.execPath, args: [probeScript, '$TRUST_PROBE_LOG'] },
         },
       },
     },
@@ -236,16 +245,43 @@ export function validProjectTrustLaunchRecord(record, expectedMode = 'foreground
     && record.probe === EXPECTED_PROJECT_TRUST_MCP;
 }
 
-export function validProjectTrustRefusalRecord(refusal) {
+export function validProjectTrustRefusalRecord(refusal, platform = process.platform) {
   return Boolean(refusal)
     && typeof refusal.canonicalRoot === 'string' && refusal.canonicalRoot.length > 0
-    && typeof refusal.expectedRemedy === 'string' && refusal.expectedRemedy === expectedTrustRemedy(refusal.canonicalRoot)
+    && typeof refusal.expectedRemedy === 'string' && refusal.expectedRemedy === expectedTrustRemedy(refusal.canonicalRoot, platform)
     && Number.isInteger(refusal.probeExit) && refusal.probeExit !== 0
     && Number.isInteger(refusal.plainExit) && refusal.plainExit !== 0
     && typeof refusal.probeOutput === 'string' && refusal.probeOutput.includes(refusal.expectedRemedy) && refusal.probeOutput.includes(refusal.canonicalRoot)
     && typeof refusal.plainOutput === 'string' && refusal.plainOutput.includes(refusal.expectedRemedy) && refusal.plainOutput.includes(refusal.canonicalRoot)
     && refusal.probeLogCreated === false
     && refusal.plainLogCreated === false;
+}
+
+function trustSnapshot(seedPath, storePath) {
+  if (!existsSync(seedPath) || !existsSync(storePath)) return null;
+  const seed = JSON.parse(readFileSync(seedPath, 'utf8'));
+  const store = JSON.parse(readFileSync(storePath, 'utf8'));
+  const roots = [...store.roots].sort();
+  assert(seed.completedAt !== undefined && roots.length > 0, 'a present trust seed must be complete and name roots');
+  return { seed, roots };
+}
+
+function sameRoots(snapshot, seedPath, storePath) {
+  const again = trustSnapshot(seedPath, storePath);
+  return again !== null
+    && again.seed.completedAt === snapshot.seed.completedAt
+    && again.seed.attemptedAt === snapshot.seed.attemptedAt
+    && again.roots.length === snapshot.roots.length
+    && again.roots.every((root, index) => root === snapshot.roots[index]);
+}
+
+function assertTrustProfile(data, name, sourceAlreadyTrusted, absentKey, recordedKey) {
+  const section = data[name];
+  assert.equal(section?.[absentKey], !sourceAlreadyTrusted);
+  assert.equal(section?.[recordedKey], true);
+  assert.equal(section?.trustUnchanged, sourceAlreadyTrusted ? true : undefined);
+  assert(Array.isArray(section?.trustedRoots) && section.trustedRoots.includes(section.canonicalRoot), `${name} root missing from trusted store`);
+  assert(validProjectTrustLaunchRecord(section?.foreground, 'foreground'), `invalid ${name} launch`);
 }
 
 export function verifyProjectTrustEvidence({ report, cell, output }) {
@@ -316,41 +352,47 @@ export function verifyProjectTrustEvidence({ report, cell, output }) {
   assert(validProjectTrustLaunchRecord(data.preUpdate?.statusFirst, 'foreground'), 'invalid pre-update status-first launch');
   assert(validProjectTrustLaunchRecord(data.preUpdate?.spawnFirst, 'foreground'), 'invalid pre-update spawn-first launch');
   assert(validProjectTrustLaunchRecord(data.preUpdate?.symlink, 'foreground'), 'invalid pre-update symlink launch');
-  assert.equal(data.preUpdate?.seedAbsentBeforeUpdate, true);
+  const sourceAlreadyTrusted = data.trustCase === 'source-already-trusted';
+  assert(['source-without-trust', 'source-already-trusted'].includes(data.trustCase), 'the cell must name which trust case it ran');
+  assert.equal(data.preUpdate?.seedAbsentBeforeUpdate, !sourceAlreadyTrusted);
+  assert.equal(data.preUpdate?.trustUnchanged, sourceAlreadyTrusted ? true : undefined);
 
-  assert.equal(data.statusFirst?.seedAbsentAfterUpdateBeforeStatus, true);
+  assert.equal(data.statusFirst?.seedAbsentAfterUpdateBeforeStatus, !sourceAlreadyTrusted);
   assert.equal(data.statusFirst?.seedRecordedByStatus, true);
+  assert.equal(data.statusFirst?.trustUnchanged, sourceAlreadyTrusted ? true : undefined);
   assert(Array.isArray(data.statusFirst?.trustedRoots) && data.statusFirst.trustedRoots.includes(data.statusFirst.canonicalRoot), 'status-first root missing from trusted store');
   assert(!data.statusFirst.trustedRoots.includes(data.refusals?.legacyUnregisteredWithPeers?.canonicalRoot), 'unregistered legacy root was seeded');
   assert(validProjectTrustLaunchRecord(data.statusFirst?.foreground, 'foreground'), 'invalid post-update status-first foreground launch');
   assert(validProjectTrustLaunchRecord(data.statusFirst?.managed, 'managed'), 'invalid post-update background Manager launch');
   assert.equal(data.statusFirst?.managedSeatJoined, true, 'background Manager seat did not join');
 
-  assert.equal(data.spawnFirst?.seedAbsentBeforeSpawn, true);
-  assert.equal(data.spawnFirst?.storeAbsentBeforeSpawn, true);
-  assert.equal(data.spawnFirst?.seedRecordedBySpawn, true);
-  assert(Array.isArray(data.spawnFirst?.trustedRoots) && data.spawnFirst.trustedRoots.includes(data.spawnFirst.canonicalRoot), 'spawn-first root missing from trusted store');
-  assert(validProjectTrustLaunchRecord(data.spawnFirst?.foreground, 'foreground'), 'invalid post-update spawn-first foreground launch');
+  assertTrustProfile(data, 'spawnFirst', sourceAlreadyTrusted, 'seedAbsentBeforeSpawn', 'seedRecordedBySpawn');
+  assert.equal(data.spawnFirst?.storeAbsentBeforeSpawn, !sourceAlreadyTrusted);
+  assertTrustProfile(data, 'preparedStatusFirst', sourceAlreadyTrusted, 'seedAbsentBeforeStatus', 'seedRecordedByStatus');
+  assertTrustProfile(data, 'preparedUpFirst', sourceAlreadyTrusted, 'seedAbsentBeforeUp', 'seedRecordedByUp');
 
-  assert.equal(data.preparedStatusFirst?.seedAbsentBeforeStatus, true);
-  assert.equal(data.preparedStatusFirst?.seedRecordedByStatus, true);
-  assert(Array.isArray(data.preparedStatusFirst?.trustedRoots) && data.preparedStatusFirst.trustedRoots.includes(data.preparedStatusFirst.canonicalRoot));
-  assert(validProjectTrustLaunchRecord(data.preparedStatusFirst?.foreground, 'foreground'), 'invalid prepared-status-first launch');
-
-  assert.equal(data.preparedUpFirst?.seedAbsentBeforeUp, true);
-  assert.equal(data.preparedUpFirst?.seedRecordedByUp, true);
-  assert(Array.isArray(data.preparedUpFirst?.trustedRoots) && data.preparedUpFirst.trustedRoots.includes(data.preparedUpFirst.canonicalRoot));
-  assert(validProjectTrustLaunchRecord(data.preparedUpFirst?.foreground, 'foreground'), 'invalid prepared-up-first launch');
-
-  assert.equal(data.symlink?.seedAbsentBeforeSpawn, true);
+  assert.equal(data.symlink?.seedAbsentBeforeSpawn, !sourceAlreadyTrusted);
+  assert.equal(data.symlink?.trustUnchanged, sourceAlreadyTrusted ? true : undefined);
   assert.notEqual(data.symlink?.linkPath, data.symlink?.canonicalRoot, 'symlink entry must differ from canonical target');
   assert(Array.isArray(data.symlink?.trustedRoots) && data.symlink.trustedRoots.includes(data.symlink.canonicalRoot), 'canonical symlink target missing from trusted store');
   assert(!data.symlink.trustedRoots.includes(data.symlink.linkPath), 'non-canonical symlink spelling must not be stored');
   assert(validProjectTrustLaunchRecord(data.symlink?.foreground, 'foreground'), 'invalid post-update symlink launch');
+  const spellings = data.preUpdate?.spellings;
+  if (cell.platform === 'win32') {
+    assert.equal(spellings?.platform, 'win32');
+    for (const name of ['driveLower', 'leafUpper', 'trailingSeparator', 'forwardSlash', 'shortName', 'windowsSymlink']) {
+      const entry = spellings.spellings?.[name];
+      assert(entry, `missing ${name} path spelling`);
+      assert(entry.ran === true || typeof entry.reason === 'string' && entry.reason.length > 0, `${name} neither ran nor said why`);
+      if (entry.ran) assert.equal(entry.canonical, spellings.canonical, `${name} resolved to a different root`);
+    }
+  } else {
+    assert.equal(typeof spellings?.notRun, 'string');
+  }
 
-  assert(validProjectTrustRefusalRecord(data.refusals?.legacyUnregisteredWithPeers), 'invalid legacy unregistered refusal with peers');
-  assert(validProjectTrustRefusalRecord(data.refusals?.postUpdateCreated), 'invalid post-update new project refusal');
-  assert(validProjectTrustRefusalRecord(data.refusals?.legacyUnregisteredEmptyHome), 'invalid legacy unregistered refusal in empty home');
+  assert(validProjectTrustRefusalRecord(data.refusals?.legacyUnregisteredWithPeers, cell.platform), 'invalid legacy unregistered refusal with peers');
+  assert(validProjectTrustRefusalRecord(data.refusals?.postUpdateCreated, cell.platform), 'invalid post-update new project refusal');
+  assert(validProjectTrustRefusalRecord(data.refusals?.legacyUnregisteredEmptyHome, cell.platform), 'invalid legacy unregistered refusal in empty home');
   assert.equal(data.cleanup?.stacksStopped, true, 'owned project-trust stacks were not confirmed stopped');
 
   return { 'project-trust-migrated': true };
@@ -376,18 +418,20 @@ async function buildProjectTrustWorkspace({ env, root, pkg, call, ok, invokeCli 
   const standin = buildStandinClaude(join(workRoot, 'bin'), process.platform);
 
   const pathKey = Object.keys(env).find(key => key.toLowerCase() === 'path') ?? 'PATH';
-  env[pathKey] = `${standin.binDir}${delimiter}${env[pathKey] ?? ''}`;
-  env.TRUST_MATRIX_ENV = EXPECTED_PROJECT_TRUST_ENV;
-  env.COTAL_NO_PROMPT = '1';
-  env.COTAL_NO_UPDATE_CHECK = '1';
+  const probeEnv = {
+    ...env,
+    [pathKey]: `${standin.binDir}${delimiter}${env[pathKey] ?? ''}`,
+    TRUST_MATRIX_ENV: EXPECTED_PROJECT_TRUST_ENV,
+  };
 
   const profiles = {
-    spawnFirst: buildIsolatedProfile(env, join(workRoot, 'profiles', 'spawn-first'), standin.binDir),
-    preparedStatusFirst: buildIsolatedProfile(env, join(workRoot, 'profiles', 'prepared-status-first'), standin.binDir),
-    preparedUpFirst: buildIsolatedProfile(env, join(workRoot, 'profiles', 'prepared-up-first'), standin.binDir),
-    symlink: buildIsolatedProfile(env, join(workRoot, 'profiles', 'symlink'), standin.binDir),
-    emptyHome: buildIsolatedProfile(env, join(workRoot, 'profiles', 'empty-home'), standin.binDir),
-    brokerOnly: buildIsolatedProfile(env, join(workRoot, 'profiles', 'broker-only'), standin.binDir),
+    primary: buildIsolatedProfile(probeEnv, join(workRoot, 'profiles', 'primary'), standin.binDir),
+    spawnFirst: buildIsolatedProfile(probeEnv, join(workRoot, 'profiles', 'spawn-first'), standin.binDir),
+    preparedStatusFirst: buildIsolatedProfile(probeEnv, join(workRoot, 'profiles', 'prepared-status-first'), standin.binDir),
+    preparedUpFirst: buildIsolatedProfile(probeEnv, join(workRoot, 'profiles', 'prepared-up-first'), standin.binDir),
+    symlink: buildIsolatedProfile(probeEnv, join(workRoot, 'profiles', 'symlink'), standin.binDir),
+    emptyHome: buildIsolatedProfile(probeEnv, join(workRoot, 'profiles', 'empty-home'), standin.binDir),
+    brokerOnly: buildIsolatedProfile(probeEnv, join(workRoot, 'profiles', 'broker-only'), standin.binDir),
   };
 
   const projectsDir = join(workRoot, 'projects');
@@ -418,7 +462,7 @@ async function buildProjectTrustWorkspace({ env, root, pkg, call, ok, invokeCli 
     projects.legacyUnregPeers,
     projects.legacyUnregEmpty,
   ]) {
-    writeTrustedProjectFiles(dir, standin.probeScript, join(dir, 'probe.log'));
+    writeTrustedProjectFiles(dir, standin.probeScript);
   }
   symlinkSync(projects.symlinkReal, projects.symlinkEntry, process.platform === 'win32' ? 'junction' : 'dir');
 
@@ -445,6 +489,45 @@ async function buildProjectTrustWorkspace({ env, root, pkg, call, ok, invokeCli 
     ok(await invokeCli(`seed isolated profile ${name}`, ['ext', 'seed'], { cwd: workRoot, env: profile.env }), `seed ${name}`);
   }
   return { workRoot, standin, profiles, projects };
+}
+
+async function windowsPathSpellings(projectDir) {
+  const canonical = realpathSync.native(projectDir);
+  if (process.platform !== 'win32') return { platform: process.platform, notRun: 'path spellings beyond the symlink run on Windows only' };
+  const drive = canonical.slice(0, 1);
+  const rest = canonical.slice(1);
+  const leaf = canonical.slice(canonical.lastIndexOf('\\') + 1);
+  const spellings = {
+    driveLower: `${drive.toLowerCase()}${rest}`,
+    leafUpper: `${canonical.slice(0, -leaf.length)}${leaf.toUpperCase()}`,
+    trailingSeparator: `${canonical}\\`,
+    forwardSlash: canonical.replaceAll('\\', '/'),
+  };
+  const result = {};
+  for (const [name, spelling] of Object.entries(spellings)) {
+    try { result[name] = { spelling, canonical: realpathSync.native(spelling), ran: true }; }
+    catch (error) { result[name] = { spelling, ran: false, reason: error.message }; }
+  }
+  result.shortName = await shortNameSpelling(canonical);
+  result.windowsSymlink = await windowsSymlinkSpelling(canonical);
+  for (const entry of Object.values(result)) if (entry.ran) assert.equal(entry.canonical, canonical, `${entry.spelling} resolved to a different root`);
+  return { platform: 'win32', canonical, spellings: result };
+}
+
+async function shortNameSpelling(canonical) {
+  try {
+    const short = execFileSync('cmd', ['/c', 'for %I in ("' + canonical + '") do @echo %~sI'], { encoding: 'utf8', windowsHide: true }).trim();
+    if (!short || short.toLowerCase() === canonical.toLowerCase()) return { ran: false, reason: `no 8.3 short name for ${canonical}` };
+    return { spelling: short, canonical: realpathSync.native(short), ran: true };
+  } catch (error) { return { ran: false, reason: error.message }; }
+}
+
+function windowsSymlinkSpelling(canonical) {
+  const link = `${canonical}-link`;
+  try {
+    symlinkSync(canonical, link, 'dir');
+    return { spelling: link, canonical: realpathSync.native(link), ran: true };
+  } catch (error) { return { spelling: link, ran: false, reason: error.message }; }
 }
 
 function stackControls(invokeCli, ok) {
@@ -475,7 +558,7 @@ const runForegroundProbe = async (invokeCli, ok, label, cwd, space, baseRunEnv, 
 
 const runRefusalCheck = async (invokeCli, cwd, space, baseRunEnv, prefixLabel) => {
   const canonical = realpathSync.native(cwd);
-  const expectedRemedy = expectedTrustRemedy(canonical);
+  const expectedRemedy = expectedTrustRemedy(canonical, process.platform);
   const logPath = join(canonical, 'probe.log');
   rmSync(logPath, { force: true });
   const probeEnv = { ...baseRunEnv, TRUST_PROBE_LOG: logPath, TRUST_LAUNCH_MODE: 'foreground' };
@@ -504,13 +587,27 @@ export async function prepareProjectTrustMigration(context) {
   const probe = (label, cwd, space, runEnv, logPath) => runForegroundProbe(invokeCli, ok, label, cwd, space, runEnv, logPath);
   const refusal = (label, cwd, space, runEnv) => runRefusalCheck(invokeCli, cwd, space, runEnv, label);
 
+  let allStacksStopped = false;
+  const cleanup = async () => {
+    const failures = [];
+    for (const stack of [...activeStacks].reverse()) {
+      if (stack.stopped) continue;
+      const result = await invokeCli(`project-trust cleanup ${stack.space}`, ['down', '--space', stack.space, '--with-agents', '--yes'], { cwd: stack.cwd, env: stack.env });
+      if (result.exit === 0 && result.signal === null && result.timeout === false) stack.stopped = true;
+      else failures.push(`${stack.space} exit ${result.exit}`);
+    }
+    allStacksStopped = activeStacks.every(stack => stack.stopped);
+    assert(allStacksStopped, `owned project-trust stacks still running: ${failures.join(', ')}`);
+  };
+  context.adoptCleanup?.(cleanup);
+
   const preBroker = await startOpenStack('project-trust pre-update broker up', projects.brokerHost, 'shared-broker', profiles.brokerOnly.env, { server: sharedServer, withManager: false });
 
-  const primarySeedPath = join(context.cotalHome, 'trusted-projects-seed.json');
-  const primaryStorePath = join(context.config, 'trusted-projects.json');
+  const primarySeedPath = profiles.primary.seedPath;
+  const primaryStorePath = profiles.primary.storePath;
 
-  ok(await invokeCli('project-trust register status-first', ['space', 'add', 'registered', '--root', projects.statusFirst, '--server', sharedServer, '--mode', 'open', '--force', '--yes'], { cwd: projects.statusFirst, env }), 'register status-first');
-  const preStatusFirst = await probe('project-trust pre-update status-first spawn', projects.statusFirst, 'registered', env);
+  ok(await invokeCli('project-trust register status-first', ['space', 'add', 'registered', '--root', projects.statusFirst, '--server', sharedServer, '--mode', 'open', '--force', '--yes'], { cwd: projects.statusFirst, env: profiles.primary.env }), 'register status-first');
+  const preStatusFirst = await probe('project-trust pre-update status-first spawn', projects.statusFirst, 'registered', profiles.primary.env);
 
   ok(await invokeCli('project-trust register spawn-first', ['space', 'add', 'registered', '--root', projects.spawnFirst, '--server', sharedServer, '--mode', 'open', '--force', '--yes'], { cwd: projects.spawnFirst, env: profiles.spawnFirst.env }), 'register spawn-first');
   const preSpawnFirst = await probe('project-trust pre-update spawn-first spawn', projects.spawnFirst, 'registered', profiles.spawnFirst.env);
@@ -520,42 +617,39 @@ export async function prepareProjectTrustMigration(context) {
 
   ok(await invokeCli('project-trust register symlink space', ['space', 'add', 'linked', '--root', projects.symlinkEntry, '--server', sharedServer, '--mode', 'open', '--force', '--yes'], { cwd: projects.symlinkEntry, env: profiles.symlink.env }), 'register symlink');
   const preSymlink = await probe('project-trust pre-update symlink spawn', projects.symlinkEntry, 'linked', profiles.symlink.env, join(projects.symlinkReal, 'probe.log'));
+  const spellings = await windowsPathSpellings(projects.statusFirst);
 
   await stopOpenStack('project-trust pre-update broker down', preBroker.entry);
 
-  const seedAbsentBeforeUpdate = !existsSync(primarySeedPath)
-    && !existsSync(primaryStorePath)
-    && Object.values(profiles).every(p => !existsSync(p.seedPath) && !existsSync(p.storePath));
-  assert(seedAbsentBeforeUpdate, 'no trust seed or store should exist on the pre-trust published release');
+  const sourceAlreadyTrusted = compareVersions(report.source, FIRST_TRUST_RELEASE) >= 0;
+  const primaryBefore = trustSnapshot(primarySeedPath, primaryStorePath);
+  const profileBefore = Object.fromEntries(Object.entries(profiles).map(([name, profile]) => [name, trustSnapshot(profile.seedPath, profile.storePath)]));
+  const recorded = [primaryBefore, ...Object.values(profileBefore)].filter(Boolean).length;
+  assert.equal(recorded, sourceAlreadyTrusted ? Object.keys(profiles).length + 1 : 0, sourceAlreadyTrusted
+    ? 'a source with project trust must have recorded every registered home before the update'
+    : 'a source without project trust must not have recorded trust before the update');
+  console.log(`project-trust case: ${sourceAlreadyTrusted ? 'source-already-trusted' : 'source-without-trust'} (source ${report.source})`);
 
   const evidence = {
     platform: process.platform,
     sourceVersion: report.source,
     targetVersion: null,
+    trustCase: sourceAlreadyTrusted ? 'source-already-trusted' : 'source-without-trust',
     preUpdate: {
-      seedAbsentBeforeUpdate,
+      seedAbsentBeforeUpdate: !sourceAlreadyTrusted,
+      ...(sourceAlreadyTrusted ? { trustUnchanged: true } : {}),
       statusFirst: preStatusFirst,
       spawnFirst: preSpawnFirst,
       symlink: preSymlink,
+      spellings,
     },
-  };
-
-  let allStacksStopped = false;
-  const cleanup = async () => {
-    for (const stack of [...activeStacks].reverse()) {
-      if (!stack.stopped) {
-        ok(await invokeCli(`project-trust cleanup ${stack.space}`, ['down', '--space', stack.space, '--with-agents', '--yes'], { cwd: stack.cwd, env: stack.env }), `cleanup ${stack.space}`);
-        stack.stopped = true;
-      }
-    }
-    allStacksStopped = activeStacks.every(stack => stack.stopped);
   };
 
   return Object.assign(cleanup, {
     afterUpdate: update => verifyProjectTrustAfterUpdate(update, {
       env, pkg, call, check, report, output, workRoot, standin, profiles, projects,
       sharedServer, activeStacks, startOpenStack, stopOpenStack, probe, refusal,
-      invokeCli, ok, primarySeedPath, primaryStorePath, cleanup, evidence,
+      invokeCli, ok, primarySeedPath, primaryStorePath, primaryBefore, profileBefore, sourceAlreadyTrusted, cleanup, evidence,
       stacksStopped: () => allStacksStopped,
     }),
   });
@@ -563,18 +657,18 @@ export async function prepareProjectTrustMigration(context) {
 
 async function collectProjectTrustRefusals({ env, pkg, call, ok, invokeCli, refusal, standin, profiles, projects, sharedServer, reconcileConnectorsOnly }) {
   // A folder that already carried a .cotal but had no space registered or prepared before the update.
-  ok(await invokeCli('project-trust register legacy unreg peers', ['space', 'add', 'unreg', '--root', projects.legacyUnregPeers, '--server', sharedServer, '--mode', 'open', '--force', '--yes'], { cwd: projects.legacyUnregPeers, env }), 'register legacy unreg peers');
-  const legacyUnregisteredWithPeers = await refusal('project-trust legacy unreg peers', projects.legacyUnregPeers, 'unreg', env);
+  ok(await invokeCli('project-trust register legacy unreg peers', ['space', 'add', 'unreg', '--root', projects.legacyUnregPeers, '--server', sharedServer, '--mode', 'open', '--force', '--yes'], { cwd: projects.legacyUnregPeers, env: profiles.primary.env }), 'register legacy unreg peers');
+  const legacyUnregisteredWithPeers = await refusal('project-trust legacy unreg peers', projects.legacyUnregPeers, 'unreg', profiles.primary.env);
 
   // A project created after the update.
   mkdirSync(projects.postUpdate, { recursive: true, mode: 0o700 });
-  writeTrustedProjectFiles(projects.postUpdate, standin.probeScript, join(projects.postUpdate, 'probe.log'));
+  writeTrustedProjectFiles(projects.postUpdate, standin.probeScript);
   if (process.platform === 'win32') {
     const coreHref = pathToFileURL(join(pkg, 'node_modules/@cotal-ai/core/dist/index.js')).href;
     ok(await call('harden post-update project directory', process.execPath, ['--input-type=module', '-e', `const {mkSecretDir}=await import(${JSON.stringify(coreHref)});mkSecretDir(${JSON.stringify(projects.postUpdate)});`]), 'Windows post-update ACL hardening');
   }
-  ok(await invokeCli('project-trust register post-update project', ['space', 'add', 'postnew', '--root', projects.postUpdate, '--server', sharedServer, '--mode', 'open', '--force', '--yes'], { cwd: projects.postUpdate, env }), 'register post-update');
-  const postUpdateCreated = await refusal('project-trust post-update created', projects.postUpdate, 'postnew', env);
+  ok(await invokeCli('project-trust register post-update project', ['space', 'add', 'postnew', '--root', projects.postUpdate, '--server', sharedServer, '--mode', 'open', '--force', '--yes'], { cwd: projects.postUpdate, env: profiles.primary.env }), 'register post-update');
+  const postUpdateCreated = await refusal('project-trust post-update created', projects.postUpdate, 'postnew', profiles.primary.env);
 
   // The same pre-existing folder in a home that had no spaces at all before the update.
   await reconcileConnectorsOnly('empty-home', profiles.emptyHome);
@@ -584,11 +678,30 @@ async function collectProjectTrustRefusals({ env, pkg, call, ok, invokeCli, refu
   return { legacyUnregisteredWithPeers, postUpdateCreated, legacyUnregisteredEmptyHome };
 }
 
+async function runManagedProbe({ invokeCli, ok, projects, profiles, startOpenStack, stopOpenStack }) {
+  ok(await invokeCli('project-trust forget manual status-first space', ['space', 'forget', 'registered'], { cwd: projects.statusFirst, env: profiles.primary.env }), 'forget manual status-first');
+  const managedLogPath = join(projects.statusFirst, 'managed-probe.log');
+  rmSync(managedLogPath, { force: true });
+  const managerEnv = { ...profiles.primary.env, TRUST_PROBE_LOG: managedLogPath, TRUST_LAUNCH_MODE: 'managed' };
+  const managedStack = await startOpenStack('project-trust start background Manager stack', projects.statusFirst, 'registered', managerEnv, { withManager: true });
+  rmSync(managedLogPath, { force: true });
+  ok(await invokeCli('project-trust status-first managed spawn', ['spawn', '--detach', 'probe', '--name', 'trust_mgr_worker', '--space', 'registered', '--agent', 'claude', '--no-events'], { cwd: projects.statusFirst, env: managerEnv }), 'managed spawn');
+  const managedDeadline = Date.now() + 30_000;
+  while (!existsSync(managedLogPath) && Date.now() < managedDeadline) await new Promise(done => setTimeout(done, 250));
+  assert(existsSync(managedLogPath), 'background Manager launch wrote no probe log');
+  const psAfterManaged = ok(await invokeCli('project-trust status-first ps', ['ps', '--space', 'registered', '--json'], { cwd: projects.statusFirst, env: managerEnv }), 'ps after managed spawn');
+  const psData = JSON.parse(psAfterManaged.stdout).result;
+  const seatJoined = psData?.kind === 'seats' && Array.isArray(psData.items) && psData.items.some(item => item.name === 'trust_mgr_worker');
+  const record = JSON.parse(readFileSync(managedLogPath, 'utf8').trim());
+  await stopOpenStack('project-trust stop background Manager stack', managedStack.entry);
+  return { record, seatJoined };
+}
+
 async function verifyProjectTrustAfterUpdate(update, ctx) {
   const {
     env, pkg, call, check, report, output, workRoot, standin, profiles, projects,
     sharedServer, startOpenStack, stopOpenStack, probe, refusal, invokeCli, ok,
-    primarySeedPath, primaryStorePath, cleanup, evidence, stacksStopped,
+    primarySeedPath, primaryStorePath, primaryBefore, profileBefore, sourceAlreadyTrusted, cleanup, evidence, stacksStopped,
   } = ctx;
   assert.equal(update.exit, 0, 'upgrade under test must exit 0 before project-trust verification');
   evidence.targetVersion = report.target;
@@ -599,33 +712,21 @@ async function verifyProjectTrustAfterUpdate(update, ctx) {
 
       // 3a + 6: status-first in primary home, followed by foreground spawn AND background Manager detached spawn.
       const seedAbsentAfterUpdateBeforeStatus = !existsSync(primarySeedPath) && !existsSync(primaryStorePath);
-      ok(await invokeCli('project-trust status-first status', ['status', '--plain'], { cwd: projects.statusFirst, env }), 'status-first status');
+      ok(await invokeCli('project-trust status-first status', ['status', '--plain'], { cwd: projects.statusFirst, env: profiles.primary.env }), 'status-first status');
       const seedRecordedByStatus = existsSync(primarySeedPath) && existsSync(primaryStorePath);
       const statusFirstRoots = seedRecordedByStatus ? JSON.parse(readFileSync(primaryStorePath, 'utf8')).roots : [];
-      const postStatusFirstFg = await probe('project-trust status-first foreground spawn', projects.statusFirst, 'registered', env);
-
-      // Background service/Manager read path: forget manual broker registration and start a real background Manager stack on statusFirst.
-      ok(await invokeCli('project-trust forget manual status-first space', ['space', 'forget', 'registered'], { cwd: projects.statusFirst, env }), 'forget manual status-first');
-      const managedLogPath = join(projects.statusFirst, 'managed-probe.log');
-      rmSync(managedLogPath, { force: true });
-      const managerEnv = { ...env, TRUST_PROBE_LOG: managedLogPath, TRUST_LAUNCH_MODE: 'managed' };
-      const managedStack = await startOpenStack('project-trust start background Manager stack', projects.statusFirst, 'registered', managerEnv, { withManager: true });
-      rmSync(managedLogPath, { force: true });
-      ok(await invokeCli('project-trust status-first managed spawn', ['spawn', '--detach', 'probe', '--name', 'trust_mgr_worker', '--space', 'registered', '--agent', 'claude', '--no-events'], { cwd: projects.statusFirst, env: managerEnv }), 'managed spawn');
-      const psAfterManaged = ok(await invokeCli('project-trust status-first ps', ['ps', '--space', 'registered', '--json'], { cwd: projects.statusFirst, env: managerEnv }), 'ps after managed spawn');
-      const psData = JSON.parse(psAfterManaged.stdout).result;
-      const managedSeatJoined = psData?.kind === 'seats' && Array.isArray(psData.items) && psData.items.some(item => item.name === 'trust_mgr_worker');
-      const postStatusFirstManaged = existsSync(managedLogPath) ? JSON.parse(readFileSync(managedLogPath, 'utf8').trim()) : null;
-      await stopOpenStack('project-trust stop background Manager stack', managedStack.entry);
+      const postStatusFirstFg = await probe('project-trust status-first foreground spawn', projects.statusFirst, 'registered', profiles.primary.env);
+      const managed = await runManagedProbe({ invokeCli, ok, projects, profiles, startOpenStack, stopOpenStack });
 
       evidence.statusFirst = {
         canonicalRoot: realpathSync.native(projects.statusFirst),
         seedAbsentAfterUpdateBeforeStatus,
         seedRecordedByStatus,
+        ...(sourceAlreadyTrusted ? { trustUnchanged: sameRoots(primaryBefore, primarySeedPath, primaryStorePath) } : {}),
         trustedRoots: statusFirstRoots,
         foreground: postStatusFirstFg,
-        managed: postStatusFirstManaged,
-        managedSeatJoined,
+        managed: managed.record,
+        managedSeatJoined: managed.seatJoined,
       };
 
       const reconcileConnectorsOnly = async (name, profile) => {
@@ -647,6 +748,7 @@ async function verifyProjectTrustAfterUpdate(update, ctx) {
         seedAbsentBeforeSpawn: spawnFirstSeedAbsent,
         storeAbsentBeforeSpawn: spawnFirstStoreAbsent,
         seedRecordedBySpawn: spawnFirstSeedRecorded,
+        ...(sourceAlreadyTrusted ? { trustUnchanged: sameRoots(profileBefore.spawnFirst, profiles.spawnFirst.seedPath, profiles.spawnFirst.storePath) } : {}),
         trustedRoots: spawnFirstSeedRecorded ? JSON.parse(readFileSync(profiles.spawnFirst.storePath, 'utf8')).roots : [],
         foreground: postSpawnFirst,
       };
@@ -663,6 +765,7 @@ async function verifyProjectTrustAfterUpdate(update, ctx) {
         canonicalRoot: realpathSync.native(projects.preparedStatusFirst),
         seedAbsentBeforeStatus: prepStatusSeedAbsent,
         seedRecordedByStatus: prepStatusSeedRecorded,
+        ...(sourceAlreadyTrusted ? { trustUnchanged: sameRoots(profileBefore.preparedStatusFirst, profiles.preparedStatusFirst.seedPath, profiles.preparedStatusFirst.storePath) } : {}),
         trustedRoots: prepStatusSeedRecorded ? JSON.parse(readFileSync(profiles.preparedStatusFirst.storePath, 'utf8')).roots : [],
         foreground: postPrepStatusFg,
       };
@@ -678,6 +781,7 @@ async function verifyProjectTrustAfterUpdate(update, ctx) {
         canonicalRoot: realpathSync.native(projects.preparedUpFirst),
         seedAbsentBeforeUp: prepUpSeedAbsent,
         seedRecordedByUp: prepUpSeedRecorded,
+        ...(sourceAlreadyTrusted ? { trustUnchanged: sameRoots(profileBefore.preparedUpFirst, profiles.preparedUpFirst.seedPath, profiles.preparedUpFirst.storePath) } : {}),
         trustedRoots: prepUpSeedRecorded ? JSON.parse(readFileSync(profiles.preparedUpFirst.storePath, 'utf8')).roots : [],
         foreground: postPrepUpFg,
       };
@@ -692,6 +796,7 @@ async function verifyProjectTrustAfterUpdate(update, ctx) {
         linkPath: projects.symlinkEntry,
         canonicalRoot: realpathSync.native(projects.symlinkReal),
         seedAbsentBeforeSpawn: symlinkSeedAbsent,
+        ...(sourceAlreadyTrusted ? { trustUnchanged: sameRoots(profileBefore.symlink, profiles.symlink.seedPath, profiles.symlink.storePath) } : {}),
         trustedRoots: symlinkSeedRecorded ? JSON.parse(readFileSync(profiles.symlink.storePath, 'utf8')).roots : [],
         foreground: postSymlinkFg,
       };

@@ -81,11 +81,15 @@ the update. It does not launch a Claude Code seat.
 
 The project-trust migration cells prepare real `.cotal` project configurations with MCP servers,
 `spawn.env` names and persona `launchOptions` on the published source release, verify pre-update
-launches, and run `cotal update --self`. After the update they verify `status`-first migration,
-`spawn`-first migration without a prior `status`, foreground and background Manager `spawn --detach`
-launches, a prepared space that was never started before the update, canonical root seeding through
-a symbolic link or Windows junction, and refusals with `cotal trust` remedies for unregistered
-pre-existing `.cotal` folders and projects created after the update.
+launches, and run `cotal update --self`. The cell names which case it ran. A source without project
+trust (0.182.1 and older) must have no trust seed before the update and must gain one from the first
+post-update command. A source with project trust (0.183.0 and newer) must already have recorded every
+registered home, and that record must survive the update unchanged. After the update both cases verify
+`status`-first migration, `spawn`-first migration without a prior `status`, a foreground launch and a
+background Manager launch from `cotal up --detach` (no native service is installed), a prepared space
+that was never started before the update, canonical root seeding through a symbolic link or Windows
+junction, and refusals for unregistered pre-existing `.cotal` folders and projects created after the
+update. The refusal prints `cotal.cmd trust` on Windows and `cotal trust` elsewhere.
 
 The killed-updater cells use the installed target's public updater and native service. They hold the
 snapshot owner alive with `SIGSTOP`, verify that custody remains held, then kill that owner.

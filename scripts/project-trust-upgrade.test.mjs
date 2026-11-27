@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -29,8 +29,8 @@ function makeLaunchRecord(mode = 'foreground') {
   };
 }
 
-function makeRefusalRecord(canonicalRoot) {
-  const expectedRemedy = expectedTrustRemedy(canonicalRoot);
+function makeRefusalRecord(canonicalRoot, platform) {
+  const expectedRemedy = expectedTrustRemedy(canonicalRoot, platform);
   return {
     canonicalRoot,
     expectedRemedy,
@@ -63,11 +63,15 @@ function makeFixture(platform = 'linux') {
     platform,
     sourceVersion: '0.182.1',
     targetVersion: '0.183.0',
+    trustCase: 'source-without-trust',
     preUpdate: {
       seedAbsentBeforeUpdate: true,
       statusFirst: makeLaunchRecord('foreground'),
       spawnFirst: makeLaunchRecord('foreground'),
       symlink: makeLaunchRecord('foreground'),
+      spellings: platform === 'win32'
+        ? { platform, canonical: roots.statusFirst, spellings: Object.fromEntries(['driveLower', 'leafUpper', 'trailingSeparator', 'forwardSlash', 'shortName', 'windowsSymlink'].map(name => [name, { ran: true, canonical: roots.statusFirst }])) }
+        : { platform, notRun: 'path spellings beyond the symlink run on Windows only' },
     },
     statusFirst: {
       canonicalRoot: roots.statusFirst,
@@ -110,9 +114,9 @@ function makeFixture(platform = 'linux') {
       foreground: makeLaunchRecord('foreground'),
     },
     refusals: {
-      legacyUnregisteredWithPeers: makeRefusalRecord(roots.unregPeers),
-      postUpdateCreated: makeRefusalRecord(roots.postUpdate),
-      legacyUnregisteredEmptyHome: makeRefusalRecord(roots.unregEmpty),
+      legacyUnregisteredWithPeers: makeRefusalRecord(roots.unregPeers, platform),
+      postUpdateCreated: makeRefusalRecord(roots.postUpdate, platform),
+      legacyUnregisteredEmptyHome: makeRefusalRecord(roots.unregEmpty, platform),
     },
     cleanup: { stacksStopped: true },
   };
@@ -150,11 +154,14 @@ function makeFixture(platform = 'linux') {
   return { output, evidence, report, cell, writeArtifact };
 }
 
-test('expectedTrustRemedy matches the product quoting: plain, quoted, and hex', () => {
-  assert.equal(expectedTrustRemedy('/var/tmp/project-a'), 'cotal trust /var/tmp/project-a');
-  assert.equal(expectedTrustRemedy('C:\\Users\\runneradmin\\project space'), 'cotal trust -- "C:\\Users\\runneradmin\\project space"');
+test('expectedTrustRemedy matches the product quoting and the launcher on PATH', () => {
+  assert.equal(expectedTrustRemedy('/var/tmp/project-a', 'linux'), 'cotal trust /var/tmp/project-a');
+  assert.equal(expectedTrustRemedy('C:\\Users\\runneradmin\\project space', 'linux'), 'cotal trust -- "C:\\Users\\runneradmin\\project space"');
   const special = '/var/tmp/project$HOME!';
-  assert.equal(expectedTrustRemedy(special), `cotal trust --hex ${Buffer.from(special).toString('hex')}`);
+  assert.equal(expectedTrustRemedy(special, 'linux'), `cotal trust --hex ${Buffer.from(special).toString('hex')}`);
+  assert.equal(expectedTrustRemedy('/var/tmp/project-a', 'win32'), 'cotal.cmd trust /var/tmp/project-a');
+  assert.equal(expectedTrustRemedy('C:\\Users\\runneradmin\\project space', 'win32'), 'cotal.cmd trust -- "C:\\Users\\runneradmin\\project space"');
+  assert.equal(expectedTrustRemedy(special, 'win32'), `cotal.cmd trust --hex ${Buffer.from(special).toString('hex')}`);
 });
 
 test('stand-in claude records env, launchOptions and MCP execution cleanly', () => {
@@ -171,7 +178,7 @@ test('stand-in claude records env, launchOptions and MCP execution cleanly', () 
     writeFileSync(mcpCfg, JSON.stringify({
       mcpServers: {
         cotal: { command: process.execPath, args: ['-e', 'process.exit(0)'] },
-        trustProbe: { command: process.execPath, args: [standin.probeScript, probeLog] },
+        trustProbe: { command: process.execPath, args: [standin.probeScript, '$TRUST_PROBE_LOG'] },
       },
     }));
     execFileSync(standin.executable, ['--mcp-config', mcpCfg, '--permission-mode', EXPECTED_PROJECT_TRUST_OPTION], {
@@ -183,6 +190,13 @@ test('stand-in claude records env, launchOptions and MCP execution cleanly', () 
     assert(!validProjectTrustLaunchRecord({ ...record, env: '<absent>' }, 'foreground'));
     assert(!validProjectTrustLaunchRecord({ ...record, permissionMode: '<missing>' }, 'foreground'));
     assert(!validProjectTrustLaunchRecord({ ...record, probe: '<missing>' }, 'foreground'));
+    const managedLog = join(root, 'managed-probe.log');
+    const broken = { mcpServers: { trustProbe: { command: process.execPath, args: ['-e', 'process.exit(1)'] } } };
+    assert.throws(() => execFileSync(standin.executable, ['--mcp-config', JSON.stringify(broken), '--permission-mode', EXPECTED_PROJECT_TRUST_OPTION], {
+      env: { ...process.env, TRUST_PROBE_LOG: managedLog, TRUST_MATRIX_ENV: EXPECTED_PROJECT_TRUST_ENV, TRUST_LAUNCH_MODE: 'foreground' },
+      stdio: 'pipe',
+    }));
+    assert.equal(existsSync(managedLog), false);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -245,6 +259,26 @@ test('verifyProjectTrustEvidence accepts complete cross-platform evidence and re
     assert.throws(() => verifyProjectTrustEvidence(tampered));
   } finally {
     rmSync(tampered.output, { recursive: true, force: true });
+  }
+
+  const trusted = makeFixture('linux');
+  try {
+    trusted.evidence.trustCase = 'source-already-trusted';
+    trusted.evidence.preUpdate.seedAbsentBeforeUpdate = false;
+    trusted.evidence.preUpdate.trustUnchanged = true;
+    for (const section of ['statusFirst', 'spawnFirst', 'preparedStatusFirst', 'preparedUpFirst', 'symlink']) {
+      const absent = Object.keys(trusted.evidence[section]).find(key => key.startsWith('seedAbsent') || key.startsWith('storeAbsent'));
+      for (const key of Object.keys(trusted.evidence[section])) if (key.startsWith('seedAbsent') || key.startsWith('storeAbsent')) trusted.evidence[section][key] = false;
+      trusted.evidence[section].trustUnchanged = true;
+      assert(absent, `${section} records a seed observation`);
+    }
+    trusted.report.projectTrustMigration = trusted.writeArtifact(trusted.evidence);
+    assert.deepEqual(verifyProjectTrustEvidence(trusted), { 'project-trust-migrated': true });
+    trusted.evidence.statusFirst.trustUnchanged = false;
+    trusted.report.projectTrustMigration = trusted.writeArtifact(trusted.evidence);
+    assert.throws(() => verifyProjectTrustEvidence(trusted));
+  } finally {
+    rmSync(trusted.output, { recursive: true, force: true });
   }
 });
 
