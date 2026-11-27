@@ -1380,7 +1380,7 @@ async function runUp(args: ParsedArgs, invokedFrom: string, inheritedLock?: Main
         ? { kind: "unreadable" as const, why: "no process-argv source on win32" }
         : processesNaming(restoredAttempt.attemptId);
       const blockingPid = naming.kind === "unreadable" ? unreadableUnboundRestorePid() : undefined;
-      if (blockingPid !== undefined)
+      if (naming.kind === "unreadable" && blockingPid !== undefined)
         throw new Error(`restore attempt ${resumeAttempt} re-entry has no bound listener proof, and this host cannot show that no listener it started still runs (${naming.why}). Published listener pid ${blockingPid} is not proven dead. Stop it if it is the restore listener, then run \`${displayCmd()} up\` again. If another process reused that pid, this refusal stays until that process ends; preserving recovery state`);
       if (naming.kind === "pids" && naming.pids.length)
         throw new Error(`restore attempt ${resumeAttempt} re-entry has no bound listener proof, and process ${naming.pids.join(", ")} started for it still runs; stop it, then run \`${displayCmd()} up\` again; preserving recovery state`);
