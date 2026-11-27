@@ -337,6 +337,34 @@ export async function update(args: ParsedArgs, rt: UpdateRuntime = updateRuntime
   if (args.values.self === true && !process.exitCode && childBinding(rt).kind === "none") collectUpdateCaches(dirname(scratch));
 }
 
+function ownedInstallRoot(rt: UpdateRuntime): string | undefined {
+  const launcher = launcherInstallRoot();
+  if (launcher) return launcher;
+  if (process.platform === "win32") return undefined;
+  const logical = logicalExecutionEntry();
+  if (!logical || rt.checkout()) return undefined;
+  const packageRoot = dirname(dirname(logical));
+  if (existsSync(join(packageRoot, "desktop-runtime.json"))) return undefined;
+  try {
+    return installedUpdatePrefix(packageRoot, logical) ? packageRoot : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function repairOwnedModes(rt: UpdateRuntime): boolean {
+  const install = ownedInstallRoot(rt);
+  let changed = false;
+  for (const { what, root } of [...(install ? [{ what: "install", root: install }] : []), { what: "config", root: globalConfigDir() }]) {
+    const repaired = (rt.repairInstallModes ?? repairInstallModes)(root);
+    if (repaired) {
+      changed = true;
+      rt.out(c.green(`✓ removed group and other write from ${repaired} ${repaired === 1 ? "entry" : "entries"} in Cotal's ${what} at ${root}`));
+    }
+  }
+  return changed;
+}
+
 async function updateInstallation(args: ParsedArgs, rt: UpdateRuntime): Promise<string | undefined> {
   if (args.values.check === true) { await checkUpdate(args, rt); return; }
   if (args.values.self === true && existsSync(join(cliPackageRoot(), "desktop-runtime.json"))) {
@@ -397,14 +425,7 @@ async function updateInstallation(args: ParsedArgs, rt: UpdateRuntime): Promise<
   // Removing group and other write from Cotal's install and config folder changes nothing a running
   // manager reads, so their modes are repaired before the continuity check rather than only when the
   // reconcile is allowed to run.
-  const install = launcherInstallRoot();
-  for (const { what, root } of args.values.self === true && rt.prepareExecution ? [] : [...(install ? [{ what: "install", root: install }] : []), { what: "config", root: globalConfigDir() }]) {
-    const repaired = (rt.repairInstallModes ?? repairInstallModes)(root);
-    if (repaired) {
-      preflightChanged = true;
-      rt.out(c.green(`✓ removed group and other write from ${repaired} ${repaired === 1 ? "entry" : "entries"} in Cotal's ${what} at ${root}`));
-    }
-  }
+  if (!(args.values.self === true && rt.prepareExecution) && repairOwnedModes(rt)) preflightChanged = true;
   if (childBinding(rt).kind === "none") reclaimPreviousExtensionStages();
   const code = await executeUpdate(Boolean(args.values.self), rt, args.values, restored ? undefined : connectorSelection, preflightChanged, promotionRecovered, permissionsRestored);
   if (code !== 0) process.exitCode = code;
@@ -642,6 +663,7 @@ export async function executeUpdate(self: boolean, rt: UpdateRuntime = updateRun
       if (code === 0 && rt.env.COTAL_AUTO_UPDATE !== "1") rt.generationWaited = true;
       return code;
     }
+    if (rt.prepareExecution) repairOwnedModes(rt);
     if (unreadableSelection) {
       const repaired = repairCurrentUpdateConnectorSelection(Boolean(rt.prepareExecution), unreadableSelection, line => rt.err(line));
       rt.out(repaired ? "No newer CLI version." : "No newer CLI version. No connector reconciliation was run.");

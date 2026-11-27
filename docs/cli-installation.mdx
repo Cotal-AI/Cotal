@@ -637,12 +637,15 @@ explains the wait, keeps its update lock and does not send terminal interrupts i
 processes that are replacing packages. An install or reconcile failure still reports its own
 nonzero result. Force-killing the process or closing its terminal is not a supported cancellation.
 
-Run through the installer's `cotal` launcher, `update` first removes group and other write from the
+Run through the installer's `cotal` launcher, `update` removes group and other write from the
 folders and files you own in Cotal's install root, without following links. An installer from before
 it set its own umask, run under a umask of 0002, left that tree group-writable. Running the installer
-again repairs it the same way. Permission repair preserves the selected CLI generation, including
-when an older updater hands reconciliation to the new release. Before reporting a successful
-self-update, the updater verifies the selected version again after reconciliation.
+again repairs it the same way. From a global npm installation, `update` and `update --self` remove
+group and other write from the folders and files you own in the installed `cotal-ai` package,
+without following links, including when the installed version is already current. Permission repair
+preserves the selected CLI generation, including when an older updater hands reconciliation to the
+new release. Before reporting a successful self-update, the updater verifies the selected version
+again after reconciliation.
 
 `update` also removes group and other write from the folders and files you own in Cotal's config
 directory, `$XDG_CONFIG_HOME/cotal` or `~/.config/cotal`, which holds the extension prefix and the

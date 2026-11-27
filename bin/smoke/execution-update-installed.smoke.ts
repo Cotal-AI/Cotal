@@ -18,6 +18,20 @@ function inventory(root: string): { path: string; hash?: string; link?: string }
   return rows;
 }
 
+function sharedWriteEntries(root: string): string[] {
+  if (process.platform === "win32" || typeof process.getuid !== "function") return [];
+  const uid = process.getuid();
+  const found: string[] = [];
+  const walk = (path: string, name: string): void => {
+    const info = lstatSync(path);
+    if (info.isSymbolicLink() || info.uid !== uid) return;
+    if ((info.mode & 0o022) !== 0 && (info.isDirectory() || info.isFile())) found.push(name || ".");
+    if (info.isDirectory()) for (const item of readdirSync(path).sort()) walk(join(path, item), name ? `${name}/${item}` : item);
+  };
+  walk(root, "");
+  return found;
+}
+
 const mutableExecutionFiles = new Set(["dist/cotal.js", "dist/cotal-npm"]);
 
 /** Installed-mode acceptance is driven with normal packed candidates by the existing upgrade matrix. */
@@ -71,6 +85,7 @@ export async function installedExecutionUpdate(input: { cli: string; installed: 
   assert.equal(verboseStatus.status, 0, verboseStatus.stderr);
   assert.ok(verboseStatus.stdout.includes(`npm lists ${input.current}; in use ${input.target}`));
   assert.deepEqual(inventory(input.installed).filter(row => !mutableExecutionFiles.has(row.path)), before);
+  assert.deepEqual(sharedWriteEntries(input.installed), [], "self-update leaves no group- or world-writable owned entries in the installed package");
   if (link !== undefined) assert.equal(readlinkSync(input.cli), link, "self-update keeps the original npm bin link");
   const output = process.env.COTAL_EXECUTION_ACCEPTANCE_OUTPUT;
   if (output) writeFileSync(output, JSON.stringify({ records, probes: probes.length, canonicalProductUnchanged: true }, null, 2));
