@@ -1218,9 +1218,12 @@ is `{path: string, branch: string, base: string, head: string}`: the canonical p
 before git runs. A branch name `git check-ref-format --branch` refuses, and an unknown base, are
 `bad-request`. An existing `name` and an existing branch MUST be refused with `already-exists` and
 `not-executed`, and neither is changed: a branch is never reused or reset. Git runs as for `clone`,
-until the caller's deadline less time to reply. A worktree that fails or is stopped MUST be removed
-with the branch it made, and the refusal is `failed-precondition` with git's message or
-`deadline-exceeded`. A Manager that stops while making a worktree can leave it and its branch.
+until the caller's deadline less time to reply. Unlike `clone`'s check of an existing folder, which
+only reads, the checkout runs the repository's `post-checkout` hook and checkout filters (such as an
+LFS smudge) as the host user. A worktree that fails or is stopped MUST be removed with the branch it
+made, and the refusal is `failed-precondition` with git's message or `deadline-exceeded`. When that
+cleanup cannot remove the folder or the branch, the refusal names what it left and its outcome is
+`unknown`. A Manager that stops while making a worktree can leave it and its branch.
 
 The Manager cluster revision is 59. The closed `spawn` input accepts optional boolean
 `eventPayloads`; revision 48 rejects this field. Revision 50 required `permissionRequests` on every

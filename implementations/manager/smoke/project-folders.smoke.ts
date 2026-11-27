@@ -31,7 +31,7 @@ const cell = (name: string, ok: boolean, seen?: unknown) => {
   failed++; console.log("FAIL " + name + (seen === undefined ? "" : " - " + JSON.stringify(seen)));
 };
 const FOLDER_COMMANDS = ["make-dir", "clone", "worktree"];
-const EXPECTED_CELLS = 72;
+const EXPECTED_CELLS = 73;
 const managerRows = (rows: string[]) => rows.flatMap((row) => {
   const m = /\.ep\.(one|all|inst)\.manager\.(.+)$/.exec(row);
   if (!m) return [];
@@ -304,7 +304,18 @@ try {
   git(filtered, "config", "filter.broken.smudge", "false"); git(filtered, "config", "filter.broken.required", "true");
   const halfMade = await call(launcher, "worktree", { repo: filtered, parent: trees, name: "broken" });
   cell("worktree: a checkout that fails part way removes the worktree and the branch it made",
-    refused(halfMade, "failed-precondition", /smudge filter broken failed/) && unchanged(filtered, "broken", "broken"), halfMade);
+    refused(halfMade, "failed-precondition", /smudge filter broken failed/) && !/left .* behind/.test(halfMade.kind === "manager-refused" ? halfMade.error.message : "")
+      && unchanged(filtered, "broken", "broken"), halfMade);
+
+  // The hook fails the add and holds the new branch's ref lock, so the cleanup cannot delete the branch.
+  const locked = join(fx.dir, "wt-locked"), lockHooks = join(fx.dir, "wt-locked-hooks");
+  git(fx.dir, "init", "-q", "-b", "main", locked); commit(locked, "--allow-empty", "-m", "empty");
+  mkdirSync(lockHooks); writeFileSync(join(lockHooks, "post-checkout"), "#!/bin/sh\ntouch " + JSON.stringify(join(locked, ".git", "refs", "heads", "held.lock")) + "\nexit 1\n");
+  chmodSync(join(lockHooks, "post-checkout"), 0o700); git(locked, "config", "core.hooksPath", lockHooks);
+  const held = await call(launcher, "worktree", { repo: locked, parent: trees, name: "held" });
+  cell("worktree: a cleanup that cannot delete the branch names it, with outcome unknown",
+    refused(held, "failed-precondition", /its cleanup left the branch held behind/) && held.kind === "manager-refused" && held.error.outcome === "unknown"
+      && branchAt(locked, "held") !== null && !existsSync(join(trees, "held")), held);
 
   const slow = join(fx.dir, "wt-slow"), hooks = join(fx.dir, "wt-slow-hooks");
   git(fx.dir, "init", "-q", "-b", "main", slow); commit(slow, "--allow-empty", "-m", "empty");

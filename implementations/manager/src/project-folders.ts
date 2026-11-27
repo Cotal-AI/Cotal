@@ -228,13 +228,28 @@ async function worktreeStart(repo: string, branch: string, base: string | undefi
   return start.stdout;
 }
 
-/** Remove what a failed `git worktree add` left: its registration, its files and, unless the branch
- *  was already someone else's, the branch it made, deleted only while it is still at `commit`. */
-async function abandonWorktree(repo: string, target: string, branch: string | undefined, commit: string): Promise<void> {
+/** Remove what a failed `git worktree add` left: its files, its registration and, unless the branch
+ *  was already someone else's, the branch it made, deleted only while it is still at `commit`. Each
+ *  step is checked, and what is still there is returned for the refusal to name. */
+async function abandonWorktree(repo: string, target: string, branch: string | undefined, commit: string): Promise<string[]> {
   const git = gitIn(repo, performance.now() + CLEANUP_MS);
-  await git("worktree", "remove", "--force", "--force", "--", target);
-  await rm(target, { recursive: true, force: true, maxRetries: 3 });
-  if (branch !== undefined) await git("update-ref", "-d", `refs/heads/${branch}`, commit);
+  const left: string[] = [];
+  await git("worktree", "remove", "--force", "--force", "--", target).catch(() => undefined);
+  await rm(target, { recursive: true, force: true, maxRetries: 3 }).catch(() => undefined);
+  if (await exists(target)) left.push(`the folder ${JSON.stringify(target)}`);
+  if (branch !== undefined) {
+    await git("update-ref", "-d", `refs/heads/${branch}`, commit).catch(() => undefined);
+    const still = await git("rev-parse", "--verify", "--quiet", `refs/heads/${branch}`).catch(() => undefined);
+    if (still === undefined || still.stdout === commit) left.push(`the branch ${branch}`);
+  }
+  return left;
+}
+
+/** The refusal for a failed add, naming what its cleanup could not remove. */
+function failedAdd(error: EpEnvelopeError, left: string[]): EpEnvelopeError {
+  if (left.length === 0) return error;
+  const said = error.message.replace(/, and nothing was kept$/, "");
+  return new EpEnvelopeError(error.code, `${said}; its cleanup left ${left.join(" and ")} behind`, error.details, "unknown");
 }
 
 /** Check `branch`, made at `commit`, out in the empty folder `target`. A failed or stopped add is
@@ -244,16 +259,16 @@ async function addWorktree(repo: string, target: string, branch: string, commit:
   try {
     run = await gitIn(repo, endsAt)("worktree", "add", "-b", branch, "--", target, commit);
   } catch (error) {
-    await abandonWorktree(repo, target, branch, commit);
-    throw error;
+    const left = await abandonWorktree(repo, target, branch, commit);
+    throw error instanceof EpEnvelopeError ? failedAdd(error, left) : error;
   }
   if (run.code === 0) return;
   // Another call made the branch since it was checked: it is theirs, so it is not removed.
   const taken = /^fatal: a branch named '.*' already exists\.?$/im.test(run.stderr);
-  await abandonWorktree(repo, target, taken ? undefined : branch, commit);
-  if (taken) branchTaken(repo, branch);
+  const left = await abandonWorktree(repo, target, taken ? undefined : branch, commit);
+  if (taken && left.length === 0) branchTaken(repo, branch);
   const said = run.stderr.split("\n").map((line) => line.trim()).filter(Boolean).slice(-3).join("; ") || "git exited without a message";
-  throw new EpEnvelopeError("failed-precondition", `git worktree add in ${JSON.stringify(repo)} failed: ${said}`);
+  throw failedAdd(new EpEnvelopeError(taken ? "already-exists" : "failed-precondition", `git worktree add in ${JSON.stringify(repo)} failed: ${said}`), left);
 }
 
 /** Make the worktree `name` under `parent`: a new branch of `repo`, default `name`, checked out at
