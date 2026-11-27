@@ -230,7 +230,6 @@ export async function service(args: ParsedArgs, commandName = "service"): Promis
   }
   if (mode === "show") {
     const row = savedService(suppliedName!);
-    if (!row) throw new CommandFailure("refused", "TARGET_NOT_FOUND", "no saved service definition has this full name in the selected space", { target: { ...target, name: suppliedName }, remedy: `see the saved definitions with ${codeSpan(`cotal service${targetWords({ space })}`)}` });
     writeResult(presentation, { command: "service", target: { ...target, name: row.name }, result: { ...serviceDefinitionProjection(row), rootMatch: definitionRootMatch(row.record.value, root) } }, (result): Report => ({ sections: [
       { title: "Service definition", blocks: [{ kind: "fields", rows: [["Name", result.name], ["Space", result.space], ["Execution host", "this machine"], ["Revision", result.revision], ["Launch", result.launch.type], ...(result.launch.type === "process" ? [["Executable", result.launch.executable], ["Arguments", `${result.launch.argumentCount} declared; values omitted`], ["Working directory", result.launch.cwd]] as const : [["Adapter", result.launch.adapter], ["Options", `${result.launch.optionCount} declared; values omitted`]] as const), ["Readiness policy", result.readiness.type], ["Readiness deadline", `${result.readiness.timeoutMs} ms`], ["Environment references", Object.entries(result.environmentReferences).map(([destination, source]) => `${destination} from ${source}`).join(", ") || "none"], ["Caller reference", result.credentialRef ? "protected file reference; not checked" : "none"], ["Added in", result.root === null ? "root not recorded" : result.rootMatch === "inherited" ? `${result.root}, not this space's root; it does not start here` : result.root], ["Live state", "not checked"]] }, { kind: "lines", lines: [{ text: "Saved policy is not proof of process ownership, OS supervision or endpoint registration. Argument bodies, adapter option values and credential contents are omitted.", tone: "hint" }] }] },
     ] }));
@@ -238,7 +237,6 @@ export async function service(args: ParsedArgs, commandName = "service"): Promis
   }
   if (mode === "remove") {
     const row = savedService(suppliedName!);
-    if (!row) throw new CommandFailure("refused", "TARGET_NOT_FOUND", "no saved service definition has this full name in the selected space", { target: { ...target, name: suppliedName }, remedy: `see the saved definitions with ${codeSpan(`cotal service${targetWords({ space })}`)}` });
     if ((Object.values(STACK_DEFINITION) as string[]).includes(row.name)) {
       const remedy = stackMemberRemovalRemedy(root, space, presentation === "json");
       if (args.values.instance !== undefined) throw new CommandFailure("refused", "UNSUPPORTED", "a controller stack member's instance records stay with its stack; nothing was removed", { target: { ...target, name: row.name, instanceId: String(args.values.instance) }, remedy });
@@ -345,11 +343,17 @@ export async function service(args: ParsedArgs, commandName = "service"): Promis
     { title: "Next", blocks: [{ kind: "commands", items: [{ command: `cotal svc start ${name}${onSpace}`, description: "Start it; dependencies are not started for it" }, { command: `cotal svc show ${name}${onSpace}`, description: "Read its saved launch and readiness policy" }] }] }] }));
   /** The definition `show` or `remove` acts on: the one of this name, else the space's one service
    *  built on the preset of this name, said on stderr as the other actions say it. */
-  function savedService(requested: string): ServiceDefinitionSnapshot | undefined {
-    const exact = store.read(requested), preset = exact ? undefined : findServicePreset(requested);
+  function savedService(requested: string): ServiceDefinitionSnapshot {
+    const exact = store.read(requested);
+    if (exact) return exact;
+    const preset = findServicePreset(requested);
     const row = preset && presetDefinition(space, root, preset, requested, mode);
-    if (preset && row) announcePresetTarget({ requested, name: row.name, preset: preset.name, saved: null }, space, presentation, args.values.space !== undefined);
-    return exact ?? row;
+    if (!row) {
+      const inventory = `cotal service${targetWords({ space })}${presentation === "rich" ? "" : ` --${presentation}`}`;
+      throw new CommandFailure("refused", "TARGET_NOT_FOUND", "no saved service definition has this full name in the selected space", { target: { ...target, name: requested }, remedy: `see the saved definitions with ${codeSpan(inventory)}` });
+    }
+    announcePresetTarget({ requested, name: row.name, preset: preset.name, saved: null }, space, presentation, args.values.space !== undefined);
+    return row;
   }
   function cancelled(title: string): void { writeResult(presentation, { command: "service", target, result: { kind: "service-definition-change", changed: false }, noOp: true }, () => ({ sections: [{ title, blocks: [{ kind: "lines", lines: ["No service definition, process or OS unit was changed."] }] }] })); }
 }
