@@ -278,7 +278,9 @@ export async function installAgentApp(name: string, emit: Emit): Promise<AgentAp
   const before = await accountPath();
   const missingNeeds = installer.needs?.filter(command => !resolveOnPath(command, { ...process.env, PATH: before })) ?? [];
   if (missingNeeds.length) throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", `the ${app.install.title} installer needs ${missingNeeds.join(" and ")} on PATH`, { native: { code: "INSTALLER_NEEDS", detail: missingNeeds.join(",") } });
-  emit(`Downloading the ${app.install.title} installer from ${new URL(installer.script).host}`);
+  // Name what is downloaded: Hermes runs through uv, so its installer is uv's.
+  const installs = app.requires.every(command => command === app.name) ? app.install.title : new Intl.ListFormat("en", { type: "conjunction" }).format(app.requires);
+  emit(`Downloading the ${installs} installer from ${new URL(installer.script).host}`);
   const ran = await runInstaller(installer, before, emit);
   if (ran.timedOut) throw new CommandFailure("failed", "OPERATION_FAILED", `the ${app.install.title} installer did not finish within 15 minutes and was stopped`, { native: { code: "INSTALLER_FAILED", detail: ran.tail.join("\n") } });
   // On Windows the last line is the reason the script gave; elsewhere the output is in Details.

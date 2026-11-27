@@ -127,6 +127,14 @@ try {
     check(again.ok === true && again.result!.pathAdded === undefined, "a second install finds claude on PATH and adds nothing");
     for (const file of startup) check(readFileSync(join(target.home, file), "utf8").split("export PATH=\"$HOME/.local/bin:$PATH\"").length === 2, `${file} still has one PATH line`);
   }
+  // Cell 3b: Hermes runs through uv, so its install downloads uv's installer and says so.
+  {
+    installer(target, "astral.sh", "uv", `echo "uv 0.13.10"`);
+    const frames = await request(target, { op: "agent-app-install", name: "hermes" });
+    const end = resultOf(frames);
+    check(end.ok === true && (end.result!.app as App).state === "installed", `hermes installs uv: ${JSON.stringify(end)}`);
+    check(progressOf(frames, "hermes")[0] === "Downloading the uv installer from astral.sh", `the download names uv: ${progressOf(frames, "hermes")[0]}`);
+  }
   // Cell 4: browser sign-in through the harness's own command, then its status check.
   {
     const frames = await request(target, { op: "agent-app-sign-in", name: "claude" });
