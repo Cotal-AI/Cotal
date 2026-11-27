@@ -64,6 +64,7 @@ export class EndpointDurable {
   ): Promise<number> {
     if (!this.conn.js || !this.conn.jsm || toSeqIncl <= fromSeqExcl) return 0;
     const route = endpointChannelRoute(this.identity.space, this.conn.pluginChannelsEnabled, channel);
+    if (route.kind !== "chat") return 0;
     const subject = route.subject("*", "*");
     const family = isChannelFamily(channel);
     const durableClass = new Map<string, Promise<boolean>>();

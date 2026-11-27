@@ -515,6 +515,9 @@ export interface MessageMeta {
   kind: "channel" | "dm" | "anycast";
 }
 
+/** Data part key used by delivery for a bodyless plugin channel mention. */
+export const PLUGIN_MENTION_POINTER_KEY = "cotalPluginMention";
+
 /**
  * Delivery control handed to "message" listeners alongside each {@link CotalMessage}.
  * The message stays on its JetStream stream until {@link Delivery.ack} is called — so

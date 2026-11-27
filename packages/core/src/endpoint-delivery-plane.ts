@@ -12,7 +12,7 @@ import { ARTIFACT_PART_KIND, isArtifactPart } from "./artifact.js";
 import { DELIVERY_LIMIT_HEADER, HISTORY_NO_COUNT } from "./backup-config.js";
 import { isRestoredConsumer } from "./backup.js";
 import { ackWaitOf, authenticatedChannelMessage, durableDelivery, isRecord } from "./endpoint-inbound.js";
-import { channelSubjectInSpace, isRoutedPluginChannel } from "./endpoint-channel-route.js";
+import { channelSubjectInSpace, isRoutedPluginChannel, PLUGIN_CHANNEL_CATCHUP_AGE_MS } from "./endpoint-channel-route.js";
 import { isFromSubjectSender } from "./endpoint-messages.js";
 import { hasStoredOrigin } from "./endpoint-provenance.js";
 import { deliveryLimitOf, fitHistoryPage, type HistoryPage } from "./endpoint-options.js";
@@ -21,10 +21,11 @@ import { issuedPermitsSubject } from "./issued-authority.js";
 import { isConsumerAlreadyExists, isJetStreamMissing } from "./jetstream-missing.js";
 import { deleteMember, durableEligible, listLifecycleMemberChannels, listMembers, membersForFanout, membershipFamilies, readMember } from "./members.js";
 import { parseSecretStoreIdentity, type SecretStoreIdentity } from "./secret-store.js";
-import { PLUGIN_CHANNEL_ROOT } from "./plugin-channel-route.js";
-import { fanoutDurableConfig, inboxReaderConfig } from "./streams.js";
-import { CONTROL_DELIVERY, CONTROL_DELIVERY_ADMIN, FANOUT_DURABLE, INBOX_READER_DURABLE, assertLifecycleToken, assertValidChannel, channelInAllow, chatStream, dlvDurable, dlvStream, dlvSubject, inboxStream, isChannelFamily, isConcreteChannel, membershipInAllow, parseDinboxPrincipal, parsePrincipalKey, parseSubject } from "./subjects.js";
+import { PLUGIN_CHANNEL_ROOT, PLUGIN_FANOUT_DURABLE, pluginChannelStream } from "./plugin-channel-route.js";
+import { fanoutDurableConfig, inboxReaderConfig, pluginFanoutDurableConfig } from "./streams.js";
+import { CONTROL_DELIVERY, CONTROL_DELIVERY_ADMIN, FANOUT_DURABLE, INBOX_READER_DURABLE, assertLifecycleToken, assertValidChannel, channelInAllow, chatStream, dlvDurable, dlvStream, dlvSubject, inboxStream, isChannelFamily, isConcreteChannel, membershipInAllow, parseDinboxPrincipal, parsePrincipalKey, parseSubject, unicastSubject } from "./subjects.js";
 import type { ControlReply, ControlRequest, CotalMessage, MessageMeta, Plane3Entry } from "./types.js";
+import { PLUGIN_MENTION_POINTER_KEY } from "./types.js";
 import { JetStreamApiCodes, type ConsumerConfig, type JsMsg } from "@nats-io/jetstream";
 import { headers } from "@nats-io/transport-node";
 
@@ -294,6 +295,7 @@ export class EndpointDeliveryPlane {
     if (!membershipInAllow(acl.allowSubscribe, channel, this.conn.pluginChannelsEnabled) ||
         (isRoutedPluginChannel(this.conn.pluginChannelsEnabled, channel) && !membershipInAllow(acl.issuedAllowSubscribe, channel, true)))
       return { ok: false, error: `channel "${channel}" is not within your read ACL [${acl.allowSubscribe.join(", ")}]` };
+    if (isRoutedPluginChannel(this.conn.pluginChannelsEnabled, channel)) return { ok: true, data: { durable: false } };
     const uid = acl.lifecycleUid;
     // The lookup above may be stale by the time the row is written (a retirement can fence and purge
     // this lifecycle meanwhile), so the write re-checks the exact ACL row itself (`aclFence`).
@@ -815,6 +817,9 @@ export class EndpointDeliveryPlane {
   private async runFanout(): Promise<void> {
     const space = this.identity.space;
     await this.bindChannelFanout(chatStream(space), FANOUT_DURABLE, "chat", fanoutDurableConfig(space, { ackWaitMs: this.identity.ackWaitMs }));
+    if (this.conn.pluginChannelsEnabled) {
+      await this.bindChannelFanout(pluginChannelStream(space), PLUGIN_FANOUT_DURABLE, PLUGIN_CHANNEL_ROOT, pluginFanoutDurableConfig(space));
+    }
   }
 
   private async bindChannelFanout(
@@ -861,7 +866,7 @@ export class EndpointDeliveryPlane {
     // them can resume after a successor owns the shard. Re-ask immediately before the first WRITE,
     // and again return without acking so the entry redelivers rather than being consumed here.
     if (!this.plane3MayAct()) return;
-    const durable = (await this.parts.durableBackstop.deliveryClassFresh(channel)) === "durable";
+    const durable = kind === "chat" && (await this.parts.durableBackstop.deliveryClassFresh(channel)) === "durable";
     // Each mention is resolved once. A live channel delivers to the agents among them that may read
     // it, and on either class a mention of an agent that may not read the channel is reported to the
     // sender below, so a post never claims a reader it cannot have.
@@ -899,11 +904,15 @@ export class EndpointDeliveryPlane {
           ...(rec.channel !== channel ? { row: rec.channel } : {}),
         });
       }
-    } else {
+    } else if (kind === "chat") {
       for (const { owner, lifecycleUid, readable } of mentioned) {
         if (!readable) continue;
         if (!this.plane3MayAct()) return;   // same rule on the live-mention path
         await this.parts.durableBackstop.publishDinbox(owner, lifecycleUid, { msg: normalizedMsg, channel, seq, reason: "live-mention", generation: 0 });
+      }
+    } else {
+      for (const { owner, lifecycleUid, readable } of mentioned) {
+        if (readable) await this.sendPluginMentionPointer(owner, lifecycleUid, channel, msg, seq);
       }
     }
     const unreadable = mentioned.filter(({ readable }) => !readable).map(({ name }) => name);
@@ -916,6 +925,24 @@ export class EndpointDeliveryPlane {
     // the successor never sees the entry and the message is lost outright rather than duplicated.
     if (!this.plane3MayAct()) return;
     m.ack();
+  }
+
+  private async sendPluginMentionPointer(owner: string, lifecycleUid: string, channel: string, msg: CotalMessage, seq: number): Promise<void> {
+    const recipient = parsePrincipalKey(owner);
+    if (!recipient || !this.conn.js || typeof msg.id !== "string") return;
+    if (!Number.isFinite(msg.ts) || Date.now() - msg.ts > PLUGIN_CHANNEL_CATCHUP_AGE_MS) return;
+    const acl = (await readAcl(await this.parts.durableBackstop.aclRegistry(), owner, lifecycleUid))?.record;
+    if (!acl || !channelInAllow(acl.allowSubscribe, channel, true) || !channelInAllow(acl.issuedAllowSubscribe ?? [], channel, true)) return;
+    if (!this.plane3MayAct()) return;
+    const notice: CotalMessage = {
+      id: `plugin-mention.${seq}.${msg.id}.${owner}.${lifecycleUid}`,
+      ts: msg.ts,
+      space: this.identity.space,
+      from: { id: this.identity.card.id, name: this.identity.card.name },
+      to: owner,
+      parts: [{ kind: "data", data: { [PLUGIN_MENTION_POINTER_KEY]: { channel, message: msg.id, seq } } }],
+    };
+    await this.conn.js.publish(unicastSubject(this.identity.space, recipient.owner, recipient.actor, this.identity.owner, this.identity.actor), JSON.stringify(notice), { msgID: notice.id });
   }
 
   /** The DLV count the trusted writer stamps on a copy (SPEC §8): the stream's `max_msgs_per_subject`,
@@ -982,6 +1009,10 @@ export class EndpointDeliveryPlane {
     let entry: Plane3Entry;
     try { entry = m.json<Plane3Entry>(); } catch { m.ack(); return; } // undecodable — drop
     if (!isRecord(entry)) { m.ack(); return; } // non-object envelope — permanently invalid
+    if (typeof entry.channel === "string" && isRoutedPluginChannel(this.conn.pluginChannelsEnabled, entry.channel)) {
+      m.ack();
+      return;
+    }
     const redeliveries = m.info?.deliveryCount ?? 1; // JsMsg delivery attempts (1 on first delivery)
     // Lifecycle-exact ACL re-auth (SPEC 13.1): the entry was addressed to pr.lifecycleUid's inbox, so
     // the row read is that lifecycle's exact key — a retired lifecycle's purged row reads as unknown
@@ -1041,11 +1072,6 @@ export class EndpointDeliveryPlane {
     // KNOWN owner whose CURRENT ACL no longer covers the channel — a revocation/narrowing. Drop: the
     // entry is no longer authorized (SPEC §7 current-ACL gate before surfacing).
     if (!channelInAllow(acl, entry.channel, this.conn.pluginChannelsEnabled)) { m.ack(); return; }
-    if (isRoutedPluginChannel(this.conn.pluginChannelsEnabled, entry.channel)) {
-      const row = (await readAcl(await this.parts.durableBackstop.aclRegistry(), owner, pr.lifecycleUid))?.record;
-      if (!row || !channelInAllow(row.allowSubscribe, entry.channel, true) ||
-          !channelInAllow(row.issuedAllowSubscribe ?? [], entry.channel, true)) { m.ack(); return; }
-    }
     // INTERVAL re-auth (not a current-member boolean): a pre-leave entry (seq ≤ leaveCursor) stays
     // deliverable; seq > leaveCursor (or after a rejoin's newer joinCursor) is the hard cut. Any of the
     // lifecycle's rows that cover the channel may hold the post, whichever row addressed the copy.
@@ -1166,6 +1192,7 @@ export class EndpointDeliveryPlane {
           try { m.term(); } catch { /* draining */ }
           continue;
         }
+        if (isRoutedPluginChannel(this.conn.pluginChannelsEnabled, raw.channel)) { m.ack(); continue; }
         const msg = authenticatedChannelMessage(raw.msg, raw.channel);
         if (msg.from?.id === this.identity.card.id) { m.ack(); continue; } // own echo (defensive)
         this.emit("message", msg, durableDelivery(m, ackWaitMs), { historical: false, kind: "channel" } satisfies MessageMeta);

@@ -10,7 +10,7 @@ import { isConsumerAlreadyExists, isConsumerNotFound } from "./jetstream-missing
 import { effectiveReplay, effectiveReplayWindowMs, readChannelConfig, readChannelDefaults } from "./channels.js";
 import { isPermissionDenied } from "./permission-denied.js";
 import { hasStoredOrigin } from "./endpoint-provenance.js";
-import { channelSubjectInSpace, endpointChannelRoute, isRoutedPluginChannel } from "./endpoint-channel-route.js";
+import { channelSubjectInSpace, endpointChannelRoute, isRoutedPluginChannel, PLUGIN_CHANNEL_CATCHUP_AGE_MS } from "./endpoint-channel-route.js";
 import type { CotalMessage, DmHistoryRead, HistoryMessage, Delivery, MessageMeta } from "./types.js";
 import type { HistoryPage } from "./endpoint.js";
 
@@ -975,6 +975,8 @@ export class EndpointHistory {
           out.push(m);
           if (opts.limit !== undefined && out.length >= opts.limit) return out;
         }
+        if (got < want && stream !== chatStream(this.identity.space))
+          throw new Error("plugin channel history read ended before the requested window was complete");
         if (got < want) break; // drained early
         pending -= got;
       }
@@ -990,6 +992,29 @@ export class EndpointHistory {
     await this.parts.consumers.manager();
     const rows = await this.collectHistory(route.subject("*", "*"), { last: true }, { limit: 1 }, route.stream);
     return rows[0]?.seq ?? 0;
+  }
+
+  /** Read plugin posts from their authoritative stream, without a stored-copy ACK. */
+  async recoverPluginHistory(channel: string, after: number, through: number, stillJoined: () => boolean): Promise<void> {
+    if (after < through) await this.emitPluginHistory(channel, { seq: after + 1 }, through, stillJoined, false);
+  }
+
+  private async emitPluginHistory(channel: string, start: { seq: number } | { time: Date }, through: number,
+    stillJoined: () => boolean, initialReplay: boolean): Promise<number> {
+    const route = endpointChannelRoute(this.identity.space, this.conn.pluginChannelsEnabled, channel);
+    if (route.kind === "chat" || through < 1) return 0;
+    const subject = route.subject("*", "*");
+    const rows = await this.collectHistory(subject, start, { untilSeq: through }, route.stream);
+    const delivery: Delivery = { ack: () => {}, nak: () => {}, durable: false };
+    let emitted = 0;
+    for (const row of rows) {
+      if (!stillJoined()) break;
+      const msg = this.deps.decodeHistory(row);
+      if (!msg || msg.from.id === this.identity.card.id) continue;
+      this.deps.emit("message", msg, delivery, { historical: initialReplay || Date.now() - msg.ts > PLUGIN_CHANNEL_CATCHUP_AGE_MS, kind: "channel" } satisfies MessageMeta);
+      if (++emitted % 128 === 0) await delay(0);
+    }
+    return emitted;
   }
 
 
@@ -1149,8 +1174,16 @@ export class EndpointHistory {
     let total = 0;
     for (const [ch, frontier] of frontiers) {
       const policy = await this.joinPolicyFresh(ch);
-      const floor = isRoutedPluginChannel(this.conn.pluginChannelsEnabled, ch) ? undefined : floorSeq;
-      if (policy.replay) total += await this.backfillChannel(ch, frontier, policy.windowMs, floor);
+      if (!policy.replay) continue;
+      if (isRoutedPluginChannel(this.conn.pluginChannelsEnabled, ch)) {
+        const stillJoined = this.parts.consumers.pluginReplayFence(ch);
+        if (!stillJoined()) continue;
+        const since = policy.windowMs === undefined ? 0 : Date.now() - policy.windowMs;
+        total += await this.emitPluginHistory(ch, since > 0 ? { time: new Date(since) } : { seq: 1 }, frontier,
+          stillJoined, true);
+      } else {
+        total += await this.backfillChannel(ch, frontier, policy.windowMs, floorSeq);
+      }
     }
     return total;
   }

@@ -21,6 +21,8 @@ import { listMembers } from "./members.js";
 import { chatStream, dmStream, isChannelFamily, isConcreteChannel, isPrincipalOwnerToken, membershipBucket, MEMBERSHIP_FEED_KEY, parseSubject, patternInAllow, subjectMatches } from "./subjects.js";
 import type { ChannelConfig, ChannelMembership, MembershipChange, MembershipEntry, MembershipSnapshot, Presence } from "./types.js";
 
+const PLUGIN_HISTORY_ONLY_REASON = "plugin channel posts are retained in channel history, not stored as individual copies";
+
 /** One feed entry, decoded the way {@link CotalEndpoint.readMembership} decodes it: the reserved
  *  heartbeat key carries `asOf`, every other key is one agent's record, and an undecodable record
  *  is a member change with no record (never a crash in the consumer callback). */
@@ -96,8 +98,10 @@ export class EndpointSubscriptions {
     channel: string,
   ): Promise<{ joined: boolean; backfilled: number; durable: boolean; reason?: string }> {
     if (!this.conn.jsm) throw new Error(this.notLiveMsg());
+    const pluginHistoryOnly = isRoutedPluginChannel(this.conn.pluginChannelsEnabled, channel);
     if (this.identity.channels.includes(channel))
-      return { joined: false, backfilled: 0, durable: this.delivery.plane3Channels.has(channel) };
+      return { joined: false, backfilled: 0, durable: this.delivery.plane3Channels.has(channel),
+        ...(pluginHistoryOnly ? { reason: PLUGIN_HISTORY_ONLY_REASON } : {}) };
     // The delivery class below comes from the cache, so a seat reads it current before joining.
     if (this.parts.channelDiscovery.readsChannelsOnDemand) await this.parts.channelDiscovery.readChannels();
     // Arm the watermark BEFORE going live: the backfill reads ≤ frontier and the core-sub only ever
@@ -133,7 +137,9 @@ export class EndpointSubscriptions {
     let durable = false;
     let reason: string | undefined;
     const family = isChannelFamily(channel);
-    if (!family && !isConcreteChannel(channel))
+    if (pluginHistoryOnly) {
+      reason = PLUGIN_HISTORY_ONLY_REASON;
+    } else if (!family && !isConcreteChannel(channel))
       reason = "a pattern with * or the root > has no stored copies; follow a concrete channel or a family such as review.>";
     else if (family || effectiveDeliveryClass(this.channelRegistry.channelConfigs.get(channel), this.channelRegistry.channelDefaults) === "durable") {
       try {
@@ -151,6 +157,8 @@ export class EndpointSubscriptions {
       }
     }
     const backfilled = await this.parts.history.backfillArmed(armed);
+    const frontier = armed.get(channel);
+    if (frontier !== undefined) this.parts.consumers.rememberPluginHistory(channel, frontier);
     return { joined: true, backfilled, durable, ...(reason !== undefined ? { reason } : {}) };
   }
 
@@ -171,7 +179,8 @@ export class EndpointSubscriptions {
     // tombstone can't be confirmed propagates (live sub stays up, mirror intact) for the caller to retry
     // — reporting `left` while the trusted reader keeps transferring to DLV is the fail-open leak. A
     // genuine no-responder (open / no delivery daemon, no Plane-3) means there is no membership to tombstone.
-    if (this.authed && (isChannelFamily(channel) || isConcreteChannel(channel))) {
+    if (this.authed && !isRoutedPluginChannel(this.conn.pluginChannelsEnabled, channel) &&
+        (isChannelFamily(channel) || isConcreteChannel(channel))) {
       const memberships = await this.parts.bootMemberships.fetchMemberships(channel);
       if (memberships === undefined && this.delivery.plane3Channels.has(channel))
         await this.parts.durable.durableLeaveChannel(channel, this.delivery.plane3Channels.get(channel));

@@ -1,6 +1,9 @@
 import { channelRoute, PLUGIN_CHANNEL_ROOT } from "./plugin-channel-route.js";
 import { chatStream, chatSubject, spacePrefix } from "./subjects.js";
 
+/** History recovery uses the same freshness boundary as stored channel copies. */
+export const PLUGIN_CHANNEL_CATCHUP_AGE_MS = 5 * 60_000;
+
 /** A literal reserved root selects the plugin rail only while the space has switched on. */
 export function isRoutedPluginChannel(enabled: boolean | undefined, channel: string): boolean {
   return enabled === true && (channel === PLUGIN_CHANNEL_ROOT || channel.startsWith(`${PLUGIN_CHANNEL_ROOT}.`));
