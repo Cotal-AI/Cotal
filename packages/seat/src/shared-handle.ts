@@ -3,10 +3,10 @@ import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { SeatClient } from "./client.js";
 import { seatHandle, type SeatHandle } from "./handle.js";
-import { PROTOCOL_VERSION } from "./protocol.js";
+import { PROTOCOL_VERSION, type SeatExit, type StopMode } from "./protocol.js";
 import { exitPath } from "./record.js";
 import { proveSharedHost, proveSharedSeat, verifySeatPeer } from "./shared-launch.js";
-import { readSharedHost, readSharedSeat, recordedProcess, sharedSeatRecord, shortSocketPath, type SharedSeatRecord } from "./shared-record.js";
+import { readPrivateRecord, readSharedHost, readSharedSeat, recordedProcess, sharedSeatRecord, shortSocketPath, type SharedSeatRecord } from "./shared-record.js";
 import type { StartupOutcome } from "./startup-confirm.js";
 
 function childLife(row: SharedSeatRecord): "live" | "gone" | undefined {
@@ -31,14 +31,29 @@ export function openSharedSeat(root: string, id: string, adopting = false): Shar
     proveSharedHost(root, host);
     proveSharedSeat(root, id);
   }
-  const client = new SeatClient(row, socket => verifySeatPeer(row, socket), () => shortSocketPath(row.socket));
-  return observeHandle(row, client);
+  const client = new SeatClient(row, socket => verifySeatPeer(row, socket), () => shortSocketPath(row.socket), true);
+  return observeSharedHandle(row, client, exitPath(localRecord));
 }
 
-function observeHandle(row: SharedSeatRecord, client: SeatClient): SharedHandle {
-  const base = seatHandle(row, client);
+function terminalEvidence(path: string | undefined): SeatExit | undefined {
+  if (!path) return undefined;
+  try {
+    const value = readPrivateRecord(path) as SeatExit | null;
+    if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+    return {
+      ...(Number.isInteger(value.code) ? { code: value.code } : {}),
+      ...(Number.isInteger(value.signal) ? { signal: value.signal } : {}),
+      ...(typeof value.diagnostic === "string" ? { diagnostic: value.diagnostic } : {}),
+    };
+  } catch { return undefined; }
+}
+
+export function observeSharedHandle(row: SharedSeatRecord, client: SeatClient, terminalPath?: string): SharedHandle {
+  const base = seatHandle(row, client, true);
   let released = false, exited = false, startup: StartupOutcome = "pending";
-  let pending = false, authenticated = false, watchStartup = true;
+  let pending = false, watchStartup = true;
+  let requestedStop: StopMode | undefined;
+  let goneAt: number | undefined;
   const listeners = new Set<() => void>();
   const markExited = () => {
     if (released || exited) return;
@@ -48,22 +63,31 @@ function observeHandle(row: SharedSeatRecord, client: SeatClient): SharedHandle 
     listeners.clear();
   };
   const observe = () => {
-    if (childLife(row) === "gone" && hostLife(row) !== "live") { markExited(); return; }
-    if (released || pending || (authenticated && !watchStartup)) return;
+    if (goneAt !== undefined || childLife(row) === "gone") {
+      goneAt ??= Date.now();
+      if (hostLife(row) !== "live" || terminalEvidence(terminalPath) || Date.now() - goneAt >= 1_000) {
+        markExited();
+        return;
+      }
+    }
+    if (released || pending || (client.connected() && !watchStartup && !requestedStop)) return;
     pending = true;
-    void client.health().then(report => {
-      if (report.protocol !== PROTOCOL_VERSION || report.pid !== row.childPid) { authenticated = false; client.close(); return; }
-      authenticated = true;
+    void client.health().then(async report => {
+      if (report.protocol !== PROTOCOL_VERSION || report.pid !== row.childPid) { client.close(); return; }
       startup = report.startup ?? startup;
       watchStartup = report.startup === "pending";
-      if (report.status === "exited") markExited();
+      if (report.status === "exited") { markExited(); return; }
+      const stop = requestedStop;
+      if (stop && !released) {
+        await client.stop(stop);
+        if (requestedStop === stop) requestedStop = undefined;
+      }
     }).catch(() => {}).finally(() => { pending = false; });
   };
   const poll = setInterval(observe, 250);
   poll.unref();
   const unsub = client.onExit(() => {
-    authenticated = false;
-    if (childLife(row) === "gone" || (hostLife(row) === "live" && client.exitInfo() !== undefined)) markExited();
+    markExited();
   });
   const release = () => { released = true; unsub(); clearInterval(poll); listeners.clear(); base.close(); };
   return {
@@ -74,13 +98,17 @@ function observeHandle(row: SharedSeatRecord, client: SeatClient): SharedHandle 
       if (child !== "live" || hostLife(row) !== "live") throw new Error("shared PTY seat lifetime is unknown");
       return "running";
     },
+    exitInfo: () => base.exitInfo() ?? (exited ? terminalEvidence(terminalPath) : undefined),
     release, close: release,
+    stop(opts) {
+      if (!released && !exited) {
+        if (requestedStop !== "hard") requestedStop = opts?.graceful === false ? "hard" : "graceful";
+        observe();
+      }
+    },
     startupOutcome: () => startup,
     async waitForExit() {
-      while (!released && !exited) {
-        if (childLife(row) === "gone") { markExited(); break; }
-        await delay(50);
-      }
+      while (!released && !exited) { observe(); if (!exited) await delay(50); }
       if (!exited) throw new Error("shared PTY seat released before exit was proved");
       base.close();
     },

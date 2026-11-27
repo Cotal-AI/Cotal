@@ -2,11 +2,14 @@
  * Seat behavior cells plus worker-death survival and wait-exit close settlement.
  */
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
-import { existsSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { connect } from "node:net";
+import { existsSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { connect, type Socket } from "node:net";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { adoptSeatSync, launchSeat, linuxSharedCustodyAvailable, openSharedSeat, processStartToken, reapSeat, seatId, SeatClient } from "../src/index.js";
+import { observeSharedHandle } from "../src/shared-handle.js";
+import { verifySeatPeer } from "../src/shared-launch.js";
+import { shortSocketPath } from "../src/shared-record.js";
 import { readSharedHost, readSharedSeat, recordedProcess, sharedHostRecord, sharedScopeMatches } from "../src/shared-record.js";
 import { makeSeatRoot } from "@cotal-ai/smoke-kit";
 
@@ -893,6 +896,7 @@ async function sharedCustodyCell(): Promise<void> {
       try { openSharedSeat(shared, id[0]!, true).close(); } catch { rejected = true; }
       check("unknown host record version cannot claim or stop a live PTY", rejected && replacements.every(handle => handle.status() === "running"));
     } finally { writeFileSync(record, JSON.stringify(host)); }
+    await sharedSocketLossCell(shared, rows[0]!);
     process.kill(host.pid, "SIGKILL");
     check("after host death, both verified PTY processes are gone", await until(() => rows.every(row => recordedProcess(row.childPid, row.childStart!, row.bootId) === "gone"), 10_000));
     check("after host death, attached handles report exited", replacements.every(handle => handle.status() === "exited"));
@@ -908,6 +912,36 @@ async function sharedCustodyCell(): Promise<void> {
     for (const row of rows) if (row.childStart && recordedProcess(row.childPid, row.childStart, row.bootId) === "live") process.kill(row.childPid, "SIGKILL");
     if (await until(() => (!host || recordedProcess(host.pid, host.start, host.bootId) === "gone") && rows.every(row => !row.childStart || recordedProcess(row.childPid, row.childStart, row.bootId) === "gone"), 10_000)) rmSync(base, { recursive: true });
     else throw new Error("shared PTY fixture cleanup could not prove exit");
+  }
+}
+
+async function sharedSocketLossCell(root: string, row: ReturnType<typeof readSharedSeat>): Promise<void> {
+  let connected: Socket | undefined;
+  const client = new SeatClient(row, socket => { verifySeatPeer(row, socket); connected = socket; }, () => shortSocketPath(row.socket), true);
+  const handle = observeSharedHandle(row, client);
+  const terminal = handle.attach();
+  let exited = false;
+  const offExit = terminal.onExit(() => { exited = true; });
+  const unavailable = `${row.socket}.away`;
+  try {
+    await terminal.backlog();
+    renameSync(row.socket, unavailable);
+    try {
+      connected!.destroy();
+      check("shared transport reports disconnected", await until(() => !client.connected(), 2_000));
+      let refused = false;
+      try { openSharedSeat(root, row.id, true).close(); } catch { refused = true; }
+      await wait(500);
+      check("lost socket and a refused reopen never emit exit for the live child", refused && !exited && processStartToken(row.childPid) === row.childStart);
+    } finally { renameSync(unavailable, row.socket); }
+    check("same handle reconnects when its authenticated socket returns", await until(() => client.connected(), 5_000));
+    const marker = `reconnect-${row.id}`;
+    await handle.write(`${marker}\r`);
+    await wait(100);
+    check("restored transport keeps the same seat and supports I/O", !exited && (await terminal.backlog()).includes(marker) && processStartToken(row.childPid) === row.childStart);
+  } finally {
+    offExit();
+    handle.close();
   }
 }
 

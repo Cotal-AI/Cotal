@@ -290,7 +290,12 @@ export function watchProvedExit(handle: AgentHandle, onExit: () => void, watchin
   // A session may replay its exit during subscription, before returning its disposer.
   if (finished) unsubscribe();
   // A child that exited before the subscription may fire no event for it.
-  else if (handle.status() === "exited") finish();
+  else {
+    let exited = false;
+    try { exited = handle.status() === "exited"; }
+    catch { /* Unknown custody leaves the exit subscription in place. */ }
+    if (exited) finish();
+  }
   return true;
 }
 
