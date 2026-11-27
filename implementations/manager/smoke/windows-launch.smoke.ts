@@ -25,7 +25,7 @@
  *   G. a managed listener whose endpoint is squatted exits(1) — fatal bind, no degraded plane. [WS3,
  *      win32-only: a named pipe is the only transport where a live squatter yields EADDRINUSE]
  */
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, delimiter } from "node:path";
 import { connect, createServer } from "node:net";
@@ -42,6 +42,7 @@ import { controlSession } from "../src/control-session.js";
 import { WindowsSeatStop } from "../src/runtime/windows-stop.js";
 import type { Win32ProcessPin, Win32TreePin } from "@cotal-ai/workspace";
 import { createRuntime } from "../src/index.js";
+import { SharedPtyRuntime } from "../src/runtime/shared-pty.js";
 import { windowsSeatCommandLine, windowsSeatEnvironmentBlock } from "../../../packages/seat/src/shared-job-conpty-win32.js";
 
 const isWin = process.platform === "win32";
@@ -66,6 +67,34 @@ function throws(label: string, fn: () => unknown): void {
   check(label, threw);
 }
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+
+// The packed Windows bootstrap attests its entry, but only Linux supplies a loaded stamp.
+// Exercise the real runtime constructor with that shape. No host or task is started by this cell.
+{
+  const profile = realpathSync.native(mkdtempSync(join(tmpdir(), "cotal-windows-hosted-")));
+  const runtime = join(profile, "runtime");
+  const entry = join(runtime, "dist", "cotal.js");
+  const key = Symbol.for("cotal.execution.identity");
+  const previous = Object.getOwnPropertyDescriptor(globalThis, key);
+  const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
+  try {
+    mkdirSync(dirname(entry), { recursive: true });
+    writeFileSync(entry, "");
+    writeFileSync(join(runtime, "package.json"), JSON.stringify({ name: "cotal-ai", bin: { cotal: "./dist/cotal.js" } }));
+    writeFileSync(join(runtime, "desktop-runtime.json"), "{}");
+    Object.defineProperty(globalThis, key, { configurable: true, value: Object.freeze({ logicalEntry: entry, loadedEntry: entry }) });
+    Object.defineProperty(process, "platform", { ...platform, value: "win32" });
+    eq("verified Windows hosted PTY selects retained custody without a Linux loaded stamp", Reflect.get(new SharedPtyRuntime("fixture", entry), "windows"), { installation: profile, space: "fixture" });
+    eq("Windows hosted PTY without a matching daemon install still selects legacy", Reflect.get(new SharedPtyRuntime("fixture", `${entry}.other`), "windows"), undefined);
+    Object.defineProperty(process, "platform", { ...platform, value: "linux" });
+    eq("Linux hosted PTY still requires the loaded stamp", Reflect.get(new SharedPtyRuntime("fixture", entry), "execution"), undefined);
+  } finally {
+    Object.defineProperty(process, "platform", platform);
+    if (previous) Object.defineProperty(globalThis, key, previous);
+    else Reflect.deleteProperty(globalThis, key);
+    rmSync(profile, { recursive: true, force: true });
+  }
+}
 
 // =================================================================================================
 // A. resolver — env-aware, .exe-over-.cmd

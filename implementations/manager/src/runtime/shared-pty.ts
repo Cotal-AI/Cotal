@@ -23,14 +23,14 @@ export class SharedPtyRuntime extends LegacyPtyRuntime {
     super();
     try {
       const identity = executionIdentity();
-      if (!identity?.loaded) return;
       if (process.platform === "win32") {
-        if (install === identity.logicalEntry) {
+        if (identity && install === identity.logicalEntry) {
           const root = dirname(dirname(install));
           this.windows = { installation: lstatSync(resolve(root, "desktop-runtime.json"), { throwIfNoEntry: false })?.isFile() ? dirname(root) : root, space };
         }
         return;
       }
+      if (!identity?.loaded) return;
       const { logicalEntry, loadedEntry } = identity;
       const root = resolve(dirname(loadedEntry), "..");
       const key = createHash("sha256").update(JSON.stringify([install ?? logicalEntry, process.getuid?.(), space])).digest("hex");
