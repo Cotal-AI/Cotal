@@ -271,8 +271,10 @@ export function releaseReadError(result: CommandResult, detail: string, { instal
       const error = (JSON.parse(result.stdout) as { error?: { code?: unknown; summary?: unknown; detail?: unknown } }).error;
       if (error?.code === "ETARGET" && [error.summary, error.detail].some(text => typeof text === "string" && /with a date before\b/i.test(text)))
         return new ReleaseDateExcluded(`${detail}: npm's min-release-age or before setting excludes this release. Adjust that date filter and run \`cotal update --self\` again`);
-      // A first-party scoped read can fail while the public registry still answers.
-      if (!detail.includes("@cotal-ai/") && (typeof error?.code === "string" && NETWORK_ERROR_CODE.test(error.code) || registryFetchTimeout(error?.code, error?.summary))) return new RegistryUnavailable(detail);
+      // A timeout means the registry accepted the connection and never answered, including a
+      // first-party scoped read. A refusal, a 4xx, or a TLS or authentication error on a scoped
+      // read can still happen while the public registry answers, so those keep the scoped remedy.
+      if (registryFetchTimeout(error?.code, error?.summary) || (!detail.includes("@cotal-ai/") && typeof error?.code === "string" && NETWORK_ERROR_CODE.test(error.code))) return new RegistryUnavailable(detail);
       if (error?.code === "E404" || error?.code === "ETARGET") {
         if (error.code === "E404" && metadataSpec?.startsWith("@cotal-ai/")) {
           const request = typeof error.summary === "string" ? /\bGET (https?:\/\/\S+) - /.exec(error.summary)?.[1] : undefined;
