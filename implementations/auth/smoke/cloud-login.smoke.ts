@@ -191,8 +191,9 @@ try {
     switchedLogin.stdout.on('data', collectSwitch); switchedLogin.stderr.on('data', collectSwitch);
     const switchDeadline = setTimeout(() => { switchTimedOut = true; switchedLogin.kill('SIGTERM'); }, 30_000);
     try {
-      assert.equal(await new Promise(resolve => switchedLogin.on('close', resolve)), 0, switchedText);
+      const switched = await new Promise(resolve => switchedLogin.on('close', resolve));
       assert.equal(switchTimedOut, false, `login was killed by its own 30s deadline before it finished:\n${switchedText}`);
+      assert.equal(switched, 0, switchedText);
       await switchedApproved;
       const expectedLine = `The previous account still has 1 resumable conversation approval on this computer. Sign in to that account with \`cotal login --idp ${base}\` and run \`cotal logout --idp ${base}\`, or revoke it at the space authority, to end it.`;
       assert.equal(switchedText.includes(expectedLine), expectNotice, switchedText);
