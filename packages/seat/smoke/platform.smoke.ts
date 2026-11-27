@@ -10,7 +10,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, sep } from "node:path";
 import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
-import { unsupportedTransport } from "../src/protocol.js";
+import { assertSocketPathFits, unsupportedTransport } from "../src/protocol.js";
 import { nativeHelperPath, unsupportedNativeArch } from "../src/peercred.js";
 import { acquireSharedClosureLease, collectSharedRuntimeClosures } from "../src/shared-closure-lease.js";
 import { acquireSharedExecutionLease } from "../src/shared-execution-lease.js";
@@ -31,6 +31,13 @@ const childEnv = (extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv => {
   for (const key of Object.keys(env)) if (key.startsWith("COTAL_")) delete env[key];
   return env;
 };
+
+for (const [platform, max] of [["darwin", 103], ["linux", 108]] as const) {
+  const path = `/${"a".repeat(max - 3)}é`;
+  check(`${platform} accepts a UTF-8 path of exactly ${max} bytes`, assertSocketPathFits(path, platform) === path);
+  assert.throws(() => assertSocketPathFits(`${path}a`, platform), new RegExp(`${max + 1} bytes, over the ${max}-byte limit`));
+  check(`${platform} rejects one UTF-8 byte over its limit`, true);
+}
 
 if (process.platform === "linux" && existsSync("/usr/bin/flock") &&
     [0xef53, 0x58465342, 0x9123683e, 0x01021994].includes(statfsSync(tmpdir()).type >>> 0)) {
