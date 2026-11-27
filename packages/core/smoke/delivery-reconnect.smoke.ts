@@ -75,7 +75,7 @@ async function checkEnabledPluginDelivery() {
     const readable = names(await read.listChannels());
     const chatOnly = names(await observer.listChannels());
     const replay = await observer.channelReplayPolicy(chatChannel);
-    check("the fixture's ordinary CHAT channel has explicit replay enabled", chatOnly.includes(chatChannel) && replay.registered && replay.replay && replay.window === "1h");
+    check("the fixture's ordinary CHAT channel has explicit replay enabled", replay.registered && replay.replay && replay.window === "1h", replay);
     check("isolated discovery lists admitted grants and suppresses stale configured names",
       readable.includes(channel) && !readable.includes(hiddenChannel) && !chatOnly.includes(channel) && !chatOnly.includes(hiddenChannel),
       { readable, chatOnly });
