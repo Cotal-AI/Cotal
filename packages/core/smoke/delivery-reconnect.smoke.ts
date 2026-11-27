@@ -37,10 +37,16 @@ const reconnected = (ep: CotalEndpoint): Promise<void> => new Promise((resolve) 
 let pass = 0, fail = 0;
 const check = (name: string, cond: boolean, extra?: unknown) => { if (cond) { pass++; console.log(`  ✓ ${name}`); } else { fail++; console.log(`  ✗ FAIL: ${name}`, extra ?? ""); } };
 
-async function checkPluginProjection(space: string, provisioner: string, creds: string, lifecycleUid: string, viewerCreds: string): Promise<void> {
+async function checkPluginProjection(space: string, provisioner: string, creds: string, lifecycleUid: string, viewerCreds: string, probeCreds: string): Promise<void> {
   const writer = await connect({ servers: SERVERS, ...standaloneConnectOpts({ creds: provisioner, tls: false }) });
   const key = PLUGIN_CHANNEL_PROJECTION_KEY;
   const kv = await openChannelRegistry(writer, space);
+  const probe = new CotalEndpoint({ space, servers: SERVERS, creds: probeCreds, card: { name: "projection-ungranted", kind: "endpoint" },
+    readChannelRoutingProjection: true, consume: false, watchPresence: false, registerPresence: false });
+  try {
+    await probe.start();
+    check("endpoint without a projection grant binds without claiming legacy or isolated mode", probe.channelRoutingMode() === undefined);
+  } finally { await probe.stop(); }
   const opened: NatsConnection[] = [];
   const ready: { wire: NatsConnection | undefined; epoch: number | undefined; enabled: boolean }[] = [];
   const warnings: string[] = [];
@@ -509,7 +515,8 @@ try {
   await daemon.releaseDeliveryLease(0, notReadyRev);
 
   await checkStopWhileRedialing(dir, space);
-  await checkPluginProjection(space, mgrCreds, aCreds, uidA, await mintCreds(auth, newIdentity(), "observer"));
+  await checkPluginProjection(space, mgrCreds, aCreds, uidA,
+    await mintCreds(auth, newIdentity(), "observer"), await mintCreds(auth, newIdentity(), "probe"));
 
   console.log(`\nDELIVERY-RECONNECT SMOKE ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${pass} passed, ${fail} failed)`);
   if (fail) process.exitCode = 1;

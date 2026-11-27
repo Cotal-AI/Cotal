@@ -22,9 +22,10 @@ import { type IssuedSubjectPermission, importNativeSubjectPermissions, issuedPer
 import { isStreamNotFound } from "./jetstream-missing.js";
 import { type NativeConnectionBinding, nativeBindingAfter, nativeConnectionBinding, watchNativeConnection } from "./native-connection.js";
 import { nextHeartbeat } from "./presence-heartbeat.js";
+import { isPermissionDenied } from "./permission-denied.js";
 import { readPluginChannelRouteProjection } from "./plugin-channel-projection.js";
 import { PRESENCE_STORAGE } from "./streams.js";
-import { presenceBucket, dmStream, dmDurable, parseSubject } from "./subjects.js";
+import { channelBucket, presenceBucket, dmStream, dmDurable, parseSubject } from "./subjects.js";
 import { isFromSubjectSender, authenticatedMessage, isReadableMessagePart } from "./endpoint-messages.js";
 import { hasStoredOrigin } from "./endpoint-provenance.js";
 import type { CotalMessage } from "./types.js";
@@ -98,7 +99,9 @@ export class EndpointConnection {
    *  rail or epoch over the old subscriptions. That requires the full bind path. */
   private async validatePluginChannelProjection(nc: NatsConnection): Promise<boolean> {
     if (this.lifecycle.stopped || this.conn.nc !== nc || nc.isClosed()) return false;
-    if (!this.authed || this.identity.dmOnly || (this.identity.card.kind !== "agent" && !this.identity.readChannelRoutingProjection)) return true;
+    const optional = this.identity.card.kind === "endpoint";
+    if (!this.authed || this.identity.dmOnly || (optional && !this.identity.readChannelRoutingProjection)) return true;
+    if (optional && this.projectionReadKnownDenied(nc)) return this.withoutViewerProjection(nc);
     let wire = this.projectionWires.get(nc);
     if (!wire) {
       wire = watchNativeConnection(nc, "plugin channel projection");
@@ -117,7 +120,10 @@ export class EndpointConnection {
     } catch {
       return false;
     }
-    if ("error" in result) throw result.error;
+    if ("error" in result) {
+      if (optional && isPermissionDenied(result.error)) return this.withoutViewerProjection(nc);
+      throw result.error;
+    }
     const { enabled, epoch } = result.projection;
     if (this.conn.pluginChannelEpoch !== undefined &&
         (epoch !== this.conn.pluginChannelEpoch || enabled !== this.conn.pluginChannelsEnabled))
@@ -125,6 +131,16 @@ export class EndpointConnection {
     this.conn.pluginChannelsEnabled = enabled;
     this.conn.pluginChannelEpoch = epoch;
     this.admittedProjection.set(nc, { serverId, cid });
+    return true;
+  }
+
+  private projectionReadKnownDenied(nc: NatsConnection): boolean {
+    const permission = this.conn.watchDeletePermissions.get(nc)?.();
+    return permission !== undefined && !issuedPermitsSubject(permission, `$JS.API.STREAM.MSG.GET.KV_${channelBucket(this.identity.space)}`);
+  }
+
+  private withoutViewerProjection(nc: NatsConnection): true {
+    if (this.admittedProjection.has(nc)) throw new Error("channel routing projection access changed; a full endpoint bind is required");
     return true;
   }
 
