@@ -60,7 +60,8 @@ async function checkEnabledPluginDelivery() {
     const live: CotalMessage[] = [], tapped: CotalMessage[] = [], notices: CotalMessage[] = [];
     read.on("message", (msg: CotalMessage, delivery: Delivery, meta: MessageMeta) => {
       if (meta.kind === "channel" && !meta.historical && !delivery.durable) live.push(msg);
-      if (msg.parts.some((p) => p.kind === "data" && p.data && Object.hasOwn(p.data, PLUGIN_MENTION_POINTER_KEY))) notices.push(msg);
+      if (msg.parts.some((p) => p.kind === "data" && typeof p.data === "object" && p.data !== null &&
+        Object.hasOwn(p.data, PLUGIN_MENTION_POINTER_KEY))) notices.push(msg);
       delivery.ack();
     });
     read.tap((_subject, msg) => { if (msg) tapped.push(msg); }, { subject: pluginChannelSubject(space, "*", "*", channel) });
