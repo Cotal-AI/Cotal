@@ -888,6 +888,53 @@ async function deadBoundListenerReplacementScenario(): Promise<void> {
   }
 }
 
+async function firstUnreadableRestoreScenario(): Promise<void> {
+  const root = realpathSync.native(mkdtempSync(join(tmpdir(), "cotal-restore-unreadable-root-")));
+  const home = realpathSync.native(mkdtempSync(join(tmpdir(), "cotal-restore-unreadable-home-")));
+  const artifact = join(root, "registry-backup");
+  const port = await freePort();
+  const server = `nats://127.0.0.1:${port}`;
+  const space = "backup_unreadable_first";
+  const { run, env, sandbox } = sandboxRun(root, home);
+  const journalPath = join(root, ".cotal", "maintenance", "v1", "journal.json");
+  const unreadable = { ...env, COTAL_SMOKE_UNREADABLE_PROCESSES: "1" };
+  const pidPath = join(root, ".cotal", "nats.pid");
+  let listenerPid: number | undefined;
+  try {
+    assert.equal(run("up", "--detach", "--open", "--server", server, "--space", space).status, 0);
+    assert.equal(run("down", "--preserve-state").status, 0);
+    assert.equal(run("backup", "create", artifact, "--only", "registry").status, 0);
+    const spawned = spawnSync(tsx, [cliPath, "up", "--restore", artifact, "--detach", "--server", server, "--space", space], {
+      cwd: root, env: { ...unreadable, COTAL_SMOKE_EXIT_AFTER_RESTORE_LISTENER_SPAWN: "1" }, encoding: "utf8", timeout: 240_000,
+    });
+    assert.equal(spawned.status, 87, `first restore passed the unreadable process scan and spawned\nstdout:\n${spawned.stdout}\nstderr:\n${spawned.stderr}`);
+    listenerPid = Number(readFileSync(pidPath, "utf8"));
+    await waitUntil(async () => (await probeConnect(server, { timeoutMs: 250 })).ok, "published unbound listener");
+    const refused = spawnSync(tsx, [cliPath, "up", "--detach", "--server", server, "--space", space], {
+      cwd: root, env: unreadable, encoding: "utf8", timeout: 240_000,
+    });
+    assert.notEqual(refused.status, 0);
+    assert.ok(/cannot show that no listener it started still runs/.test(refused.stderr), refused.stderr);
+    assert.equal((await probeConnect(server, { timeoutMs: 250 })).ok, true, "the refusal leaves the published listener running");
+    process.kill(listenerPid, "SIGTERM");
+    await waitUntil(() => { try { process.kill(listenerPid!, 0); return false; } catch { return true; } }, "published listener exit");
+    await waitUntil(async () => !(await probeConnect(server, { timeoutMs: 200 })).ok, "published listener port release");
+    listenerPid = undefined;
+    const recovered = spawnSync(tsx, [cliPath, "up", "--detach", "--server", server, "--space", space], {
+      cwd: root, env: unreadable, encoding: "utf8", timeout: 240_000,
+    });
+    assert.equal(recovered.status, 0, `retry starts once the published listener is dead\nstdout:\n${recovered.stdout}\nstderr:\n${recovered.stderr}`);
+    assert.equal((JSON.parse(readFileSync(journalPath, "utf8")) as { state: string }).state, "active");
+    assert.equal(run("down", "--yes").status, 0);
+  } finally {
+    if (listenerPid !== undefined) { try { process.kill(listenerPid, "SIGTERM"); } catch { /* already gone */ } }
+    assertSmokeSandboxDown(sandbox, ["down", "--yes"], { cwd: root, env });
+    run("down", "--yes");
+    rmSync(root, { recursive: true, force: true });
+    rmSync(home, { recursive: true, force: true });
+  }
+}
+
 async function unboundRestoreReentryScenario(detached: boolean): Promise<void> {
   const label = detached ? "detached" : "foreground";
   const root = realpathSync.native(mkdtempSync(join(tmpdir(), `cotal-restore-unbound-${label}-root-`)));
@@ -1925,5 +1972,6 @@ await ordinaryResumeReentryScenario("resume-finalize");
 await deadBoundListenerReplacementScenario();
 await unboundRestoreReentryScenario(true);
 await unboundRestoreReentryScenario(false);
+await firstUnreadableRestoreScenario();
 await boundForeignListenerScenario();
 console.log("backup/restore live smoke: ok");

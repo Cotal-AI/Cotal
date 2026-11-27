@@ -222,7 +222,7 @@ export function readProcessCommand(pid: number): ProcessCommand {
  * caller never takes "could not look" for "none runs".
  */
 export function processesNaming(token: string): { kind: "pids"; pids: number[] } | { kind: "unreadable"; why: string } {
-  if (process.platform === "win32" || !process.getuid) return { kind: "unreadable", why: "no process-argv source on win32" };
+  if (process.env.COTAL_SMOKE_UNREADABLE_PROCESSES === "1" || process.platform === "win32" || !process.getuid) return { kind: "unreadable", why: "no process-argv source on win32" };
   const uid = process.getuid();
   const pids: number[] = [];
   if (process.platform === "linux") {

@@ -39,6 +39,10 @@ import {
   localProcessOwnerStatus,
   parsePositiveIntegerFlag,
   readMaintenanceJournal,
+  readPidfile,
+  parsePid,
+  probeLiveness,
+  NATS_PIDFILE,
   restoreLeftOut,
   restoreOtherAccounts,
   restoreReplacedNewerCut,
@@ -76,6 +80,7 @@ import { attemptProcessesGone, ensurePrivateAttemptsDir, startIsolatedBroker, sw
 import { inspectPreviousStore, readRegistryDefault, readRunJournals, rolledBackRuns } from "./rolled-back-runs.js";
 import { noticeOnInterrupt } from "./interrupt-notice.js";
 import { displayCmd } from "./self-exec.js";
+import { cotalPath } from "./paths.js";
 import { assertEndpointUnreachable } from "./endpoint-cut.js";
 import { acquireStackOperationLock } from "./stack-journal.js";
 import { checkStorePath, foreignEntriesRefusal, missingRestoreStoreParent, oldStoreForeignEntries } from "./store-dir.js";
@@ -248,6 +253,14 @@ export function replacePreparedDeadRestoreListener(prepared: PreparedRestore, he
   } finally {
     if (!heldLock) releaseMaintenanceLock(lock);
   }
+}
+
+/** An unbound restore whose process scan cannot be read still starts, unless this root's published
+ *  listener pid is not proven dead. No pid file means this attempt has not published a listener. */
+export function unreadableUnboundRestoreBlocks(): boolean {
+  const text = readPidfile(cotalPath(NATS_PIDFILE));
+  const pid = text === undefined ? undefined : parsePid(text);
+  return pid !== undefined && probeLiveness(pid) !== "dead";
 }
 
 /** Return a restore with no bound listener to commit intent before its listener starts (#7127). The

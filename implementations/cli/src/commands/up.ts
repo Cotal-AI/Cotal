@@ -133,6 +133,7 @@ import {
   rehydratePreparedRestore,
   journaledMaxFileStore,
   rearmUnboundRestore,
+  unreadableUnboundRestoreBlocks,
   replacePreparedDeadRestoreListener,
   type PreparedRestore,
   type RestoreFlags,
@@ -1370,14 +1371,13 @@ async function runUp(args: ParsedArgs, invokedFrom: string, inheritedLock?: Main
         throw new Error(`restore attempt ${resumeAttempt} refuses the occupied foreign listener at ${restoredAttempt.server}`);
       replacePreparedDeadRestoreListener(restoredAttempt, startupLock);
     } else if (restoredAttempt) {
-      // No listener is bound to this attempt. A listener that an interrupted run spawned and never
-      // bound may still be opening the restored store, and a second one would open it beside it, so
-      // every process that names the attempt must be gone. Then the attempt starts its listener,
-      // from commit intent (#7127).
+      // No listener is bound. An interrupted spawn may still be opening the restored store, so a
+      // process naming the attempt must be gone. When command lines cannot be read, a published
+      // listener pid that is not proven dead still blocks; the first launch has published none.
       const naming = processesNaming(restoredAttempt.attemptId);
-      if (naming.kind === "unreadable")
+      if (naming.kind === "unreadable" && unreadableUnboundRestoreBlocks())
         throw new Error(`restore attempt ${resumeAttempt} re-entry has no bound listener proof, and this host cannot show that no listener it started still runs (${naming.why}); preserving recovery state`);
-      if (naming.pids.length)
+      if (naming.kind === "pids" && naming.pids.length)
         throw new Error(`restore attempt ${resumeAttempt} re-entry has no bound listener proof, and process ${naming.pids.join(", ")} started for it still runs; stop it, then run \`${displayCmd()} up\` again; preserving recovery state`);
       if (await isReachable(restoredAttempt.server))
         throw new Error(`restore attempt ${resumeAttempt} refuses the occupied foreign listener at ${restoredAttempt.server}`);
