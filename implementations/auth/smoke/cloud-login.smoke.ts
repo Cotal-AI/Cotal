@@ -1,5 +1,6 @@
 import { createServer } from 'node:http';
 import { spawn } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -11,6 +12,8 @@ import { deviceAuthorization } from 'better-auth/plugins/device-authorization';
 import { bearer } from 'better-auth/plugins/bearer';
 import { toNodeHandler } from 'better-auth/node';
 import { chooseAccount } from '../src/commands.js';
+import { conversationAccountKey } from '../src/login.js';
+import { createResumeProof } from '../../cli/src/lib/conversation-resume.js';
 import { COTAL_CLOUD_IDP } from '@cotal-ai/workspace';
 import { approveDevice } from './_device-approval.js';
 
@@ -70,6 +73,7 @@ try {
   await approval;
   clearTimeout(timer);
   assert.equal(code, 0, output);
+  assert.equal(output.includes('previous account still has'), false, output);
   assert.doesNotMatch(output, /wrote operator-global seed store payload|added @cotal-ai\//);
   assert.equal(existsSync(join(env.XDG_CONFIG_HOME!, 'cotal', 'seed')), false);
   assert.equal(existsSync(join(env.XDG_CONFIG_HOME!, 'cotal', 'extensions.json')), false);
@@ -149,6 +153,49 @@ try {
       if (!cell.expected) { assert.match(text, /cotal use <name>/); assert.match(text, /team_0/); assert.match(text, /team_1/); }
       console.log(`Real provider landing ${cell.shape}${cell.previous ? ' preserves existing selection' : ''}: passed`);
     } finally { clearTimeout(deadline); }
+  }
+
+  shape = 'personal';
+  const appRoot = join(env.COTAL_HOME!, 'app-identities');
+  const readyDir = join(appRoot, createHash('sha256').update('personal\0conv-ready').digest('hex'));
+  const pendingDir = join(appRoot, createHash('sha256').update('personal\0conv-pending').digest('hex'));
+  mkdirSync(readyDir, { recursive: true, mode: 0o700 });
+  mkdirSync(pendingDir, { recursive: true, mode: 0o700 });
+  const accountKey = conversationAccountKey(base, sub)!;
+  const readyBase = { v: 1, space: 'personal', root: home, trust: 'a'.repeat(64), session: 'conv-ready', requestId: 'R'.repeat(32), label: 'ready_conv', state: 'ready', consumer: { pid: process.pid } };
+  const readyResume = createResumeProof(readyBase)!;
+  writeFileSync(join(readyDir, 'identity.json'), JSON.stringify({
+    ...readyBase, accountKey, proof: readyResume.proof, token: readyResume.tokenHash,
+    remote: { url: `https://127.0.0.1:1/api/spaces/personal/conversation-identities`, idpUrl: base, material: { actor: 'pa_ready' } },
+  }), { mode: 0o600 });
+  const pendingBase = { v: 1, space: 'personal', root: home, trust: 'a'.repeat(64), session: 'conv-pending', requestId: 'P'.repeat(32), label: 'pending_conv', state: 'creating', consumer: { pid: process.pid } };
+  const pendingResume = createResumeProof(pendingBase)!;
+  writeFileSync(join(pendingDir, 'identity.json'), JSON.stringify({
+    ...pendingBase, accountKey, proof: pendingResume.proof, token: pendingResume.tokenHash,
+    remote: { url: `https://127.0.0.1:1/api/spaces/personal/conversation-identities`, idpUrl: base, approval: {} },
+  }), { mode: 0o600 });
+
+  const secondUser = await ba.api.signUpEmail({ body: { email: 'second@example.test', password: 'lane-only-second-password', name: 'Second User' }, returnHeaders: true });
+  sub = secondUser.response.user.id;
+  const secondCookie = secondUser.headers.get('set-cookie')!.split(';')[0]!;
+  for (const [attempt, expectNotice] of [['switch', true], ['same-account', false]] as const) {
+    let switchedText = '';
+    let switchedApproved: Promise<void> | undefined;
+    const switchedLogin = spawn(process.execPath, ['bin/dist/cotal.js', 'login', '--idp', base, '--plain'], { env, stdio: ['ignore', 'pipe', 'pipe'] });
+    const collectSwitch = (chunk: Buffer) => {
+      switchedText += chunk.toString();
+      const match = switchedText.match(/Approval code:\s+(\S+)/);
+      if (match && !switchedApproved) switchedApproved = approveDevice({ base, cookie: secondCookie, origin }, match[1]!);
+    };
+    switchedLogin.stdout.on('data', collectSwitch); switchedLogin.stderr.on('data', collectSwitch);
+    const switchDeadline = setTimeout(() => switchedLogin.kill('SIGTERM'), 30_000);
+    try {
+      assert.equal(await new Promise(resolve => switchedLogin.on('close', resolve)), 0, switchedText);
+      await switchedApproved;
+      const expectedLine = `The previous account still has 1 resumable conversation approval on this computer. Sign in to that account with \`cotal login --idp ${base}\` and run \`cotal logout --idp ${base}\`, or revoke it at the space authority, to end it.`;
+      assert.equal(switchedText.includes(expectedLine), expectNotice, switchedText);
+    } finally { clearTimeout(switchDeadline); }
+    console.log(`Account login (${attempt}) conversation approval notice: passed`);
   }
 } finally {
   clearTimeout(timer);
