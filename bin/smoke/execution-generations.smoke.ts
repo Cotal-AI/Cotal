@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { chmodSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, renameSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import ts from "typescript";
 import { executionBinding, executionLaunchBinding, executionDescriptorPath, executionStore, selectExecutionProgram } from "../cotal.js";
@@ -213,6 +213,48 @@ try {
     for (const path of directories) assert.equal(lstatSync(path).mode & 0o777, 0o700);
     assert.equal(retained.version, "0.2.0");
     rmSync(executionStore(root), { recursive: true });
+  });
+  check("a Windows layout repairs its prefix and leaves the folder above it untouched", () => {
+    const prefix = join(scratch, "windows-prefix"), installed = join(prefix, "node_modules/cotal-ai");
+    packageAt(installed, "0.1.0", "windows layout");
+    const parent = dirname(prefix);
+    chmodSync(prefix, 0o555);
+    chmodSync(parent, 0o555);
+    try {
+      assert.equal(retainExecutionGeneration(installed, source).version, "0.2.0");
+      assert.equal(lstatSync(prefix).mode & 0o777, 0o755);
+      assert.equal(lstatSync(parent).mode & 0o777, 0o555, "the folder above a Windows prefix stays untouched");
+    } finally {
+      chmodSync(parent, 0o755);
+      chmodSync(prefix, 0o755);
+      rmSync(executionStore(installed), { recursive: true, force: true });
+      rmSync(prefix, { recursive: true, force: true });
+    }
+  });
+  check("a linked npm prefix retains a generation", () => {
+    const real = join(scratch, "linked-real"), link = join(scratch, "linked-prefix"), installed = join(link, "lib/node_modules/cotal-ai");
+    packageAt(join(real, "lib/node_modules/cotal-ai"), "0.1.0", "linked prefix");
+    symlinkSync(real, link);
+    const retained = retainExecutionGeneration(installed, source);
+    assert.equal(retained.version, "0.2.0");
+    assert.equal(lstatSync(link).isSymbolicLink(), true);
+    rmSync(executionStore(installed), { recursive: true, force: true });
+    rmSync(link); rmSync(real, { recursive: true, force: true });
+  });
+  check("a linked npm prefix whose real directory is not writable refuses", () => {
+    const real = join(scratch, "unwritable-real"), link = join(scratch, "unwritable-link"), installed = join(link, "lib/node_modules/cotal-ai");
+    packageAt(join(real, "lib/node_modules/cotal-ai"), "0.1.0", "unwritable linked prefix");
+    symlinkSync(real, link);
+    chmodSync(real, 0o555);
+    try {
+      assert.throws(() => retainExecutionGeneration(installed, source), new RegExp(`installation is not writable; have an administrator run: (?:sudo|doas) npm install -g --prefix '${link.replaceAll("'", "'\\\\''")}'`));
+      assert.equal(lstatSync(real).mode & 0o777, 0o555);
+      assert.equal(lstatSync(link).isSymbolicLink(), true);
+      assert.equal(existsSync(executionStore(installed)), false);
+    } finally {
+      chmodSync(real, 0o755);
+      rmSync(link); rmSync(real, { recursive: true, force: true });
+    }
   });
   // Homebrew keeps `lib` group-writable and npm under a umask of 0002 creates the package that way.
   const managed = [root, join(scratch, "prefix/lib/node_modules"), join(scratch, "prefix/lib")];

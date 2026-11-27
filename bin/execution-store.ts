@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
-import { accessSync, chmodSync, closeSync, constants, cpSync, existsSync, fchmodSync, fstatSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { accessSync, chmodSync, closeSync, constants, cpSync, existsSync, fchmodSync, fstatSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { claimGlobalNpmUpdateLock, readUpdateRecovery, resolveOnPath } from "@cotal-ai/workspace";
 import { inspectLock, processStartToken } from "@cotal-ai/core";
 import { executionBinding, executionDescriptorPath, executionInventory, executionLocation, executionRecord, executionSha256, executionShared, executionStore, protectedExecutionEntry, type ExecutionDescriptor } from "./cotal.js";
@@ -21,10 +21,24 @@ export function unwritableInstallation(installedRoot: string, directory?: string
   return new Error(`installation is not writable${directory ? `: ${directory}` : ""}; have an administrator ${administrator}; then run \`cotal update\` ${normalAccount}`);
 }
 
-export function assertWritableExecutionDirectory(path: string, installed: string, setMode?: (mode: number) => void): boolean {
-  const stat = lstatSync(path);
+/** The POSIX directory npm itself replaces: `<prefix>/lib/node_modules/cotal-ai`. A Windows
+ *  prefix is the parent of `node_modules`, which is already checked, so it is not named here. */
+export function executionUpdatePrefix(installed: string): string | undefined {
+  const modules = dirname(installed);
+  if (basename(modules) !== "node_modules" || basename(installed) !== "cotal-ai" || basename(dirname(modules)) !== "lib") return;
+  return dirname(dirname(modules));
+}
+
+export function executionUpdateDestinations(installed: string): string[] {
+  const destinations = [installed, join(installed, "dist"), dirname(installed), dirname(dirname(installed))];
+  const prefix = executionUpdatePrefix(installed);
+  if (prefix && !destinations.includes(prefix)) destinations.push(prefix);
+  return destinations;
+}
+
+export function assertWritableExecutionDirectory(path: string, installed: string, setMode?: (mode: number) => void, prefix = false): boolean {
+  const stat = prefix && lstatSync(path).isSymbolicLink() ? statSync(path) : lstatSync(path);
   const owned = stat.uid === process.getuid?.();
-  const prefix = path === dirname(dirname(dirname(installed)));
   const restoreWrite = owned && stat.isDirectory() && (stat.mode & 0o200) === 0 && !prefix;
   try {
     if (restoreWrite) {
@@ -82,13 +96,15 @@ export function retainExecutionGeneration(installedRoot: string, verifiedSource:
   }
   executionLocation(installedRoot);
   protectedExecutionEntry(verifiedSource);
-  for (const path of [installedRoot, join(installedRoot, "dist"), dirname(installedRoot), dirname(dirname(installedRoot)), dirname(dirname(dirname(installedRoot)))]) {
-    const stat = lstatSync(path);
-    if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error(`unsafe staged update destination: ${path}`);
-    executionLocation(path);
+  const destinations = executionUpdateDestinations(installedRoot);
+  const prefix = executionUpdatePrefix(installedRoot);
+  for (const path of destinations) {
+    const stat = path === prefix && lstatSync(path).isSymbolicLink() ? statSync(path) : lstatSync(path);
+    if (!stat.isDirectory() || (path !== prefix && stat.isSymbolicLink())) throw new Error(`unsafe staged update destination: ${path}`);
+    executionLocation(path, path === prefix);
   }
-  for (const path of [installedRoot, join(installedRoot, "dist"), dirname(installedRoot), dirname(dirname(installedRoot)), dirname(dirname(dirname(installedRoot)))])
-    assertWritableExecutionDirectory(path, installedRoot);
+  for (const path of destinations)
+    assertWritableExecutionDirectory(path, installedRoot, undefined, path === prefix);
   const shared = executionShared(installedRoot), store = writableExecutionStore(installedRoot, shared);
   const before = executionInventory(verifiedSource);
   const staging = mkdtempSync(join(store, ".preparing-"));

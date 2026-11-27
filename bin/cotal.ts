@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { createHash } from "node:crypto";
 import * as fs from "node:fs";
-import { chmodSync, closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, readlinkSync, realpathSync, unlinkSync } from "node:fs";
+import { chmodSync, closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, readlinkSync, realpathSync, statSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -98,9 +98,10 @@ export function protectedExecutionEntry(path: string): void {
 /** The installed package folder and the folders above it belong to the package manager. An account
  *  that can write one of them can already replace this bootstrap, so their modes are no boundary:
  *  Homebrew keeps `lib` group-writable, and npm under a umask of 0002 creates the package
- *  group-writable. Only another account's ownership is refused. */
-export function executionLocation(path: string): void {
-  const info = lstatSync(path);
+ *  group-writable. Only another account's ownership is refused. A version manager may link the
+ *  prefix itself; that link is followed. */
+export function executionLocation(path: string, followLink = false): void {
+  const info = followLink && lstatSync(path).isSymbolicLink() ? statSync(path) : lstatSync(path);
   if (process.platform !== "win32" && (typeof process.getuid !== "function" || (info.uid !== process.getuid() && info.uid !== 0)))
     throw new Error(`execution location belongs to another account: ${path}`);
 }

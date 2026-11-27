@@ -1,8 +1,8 @@
 import { randomBytes } from "node:crypto";
-import { chmodSync, existsSync, lstatSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { executionBinding, executionLaunchBinding, executionDescriptorPath, executionLocation, executionRecord, executionSha256, executionShared, executionStore, protectedExecutionEntry, selectExecutionProgram, type ExecutionBinding, type ExecutionDescriptor } from "./cotal.js";
-import { assertWritableExecutionDirectory, retainExecutionGeneration, type RetainedExecutionGeneration, writableExecutionStore, writeExecutionDescriptor } from "./execution-store.js";
+import { assertWritableExecutionDirectory, executionUpdateDestinations, executionUpdatePrefix, retainExecutionGeneration, type RetainedExecutionGeneration, writableExecutionStore, writeExecutionDescriptor } from "./execution-store.js";
 
 interface ExecutionTransaction {
   v: 1;
@@ -13,18 +13,24 @@ interface ExecutionTransaction {
   target: RetainedExecutionGeneration;
 }
 
-/** Restore owner write on owned update directories before creating staging, records or configuration. */
+function executionDestination(path: string, prefix: boolean): void {
+  const stat = prefix && lstatSync(path).isSymbolicLink() ? statSync(path) : lstatSync(path);
+  if (!stat.isDirectory() || (!prefix && stat.isSymbolicLink())) throw new Error(`unsafe staged update destination: ${path}`);
+  executionLocation(path, prefix);
+}
+
+/** Restore owner write on owned update directories before creating staging, records or configuration.
+ *  A version manager or Homebrew may link the prefix itself. That link is followed and its real
+ *  directory is checked. The package, dist, node_modules, and lib must stay real directories. */
 export function assertExecutionDestination(installed: string): boolean {
   if (existsSync(join(installed, "desktop-runtime.json"))) throw new Error("staged execution updates are unavailable on the desktop runtime");
   if (process.platform !== "linux" && process.platform !== "darwin") throw new Error("staged execution updates are unavailable on this platform");
-  for (const path of [installed, join(installed, "dist"), dirname(installed), dirname(dirname(installed)), dirname(dirname(dirname(installed)))]) {
-    const stat = lstatSync(path);
-    if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error(`unsafe staged update destination: ${path}`);
-    executionLocation(path);
-  }
+  const destinations = executionUpdateDestinations(installed);
+  const prefix = executionUpdatePrefix(installed);
+  for (const path of destinations) executionDestination(path, path === prefix);
   let repaired = false;
-  for (const path of [installed, join(installed, "dist"), dirname(installed), dirname(dirname(installed)), dirname(dirname(dirname(installed)))])
-    if (assertWritableExecutionDirectory(path, installed)) repaired = true;
+  for (const path of destinations)
+    if (assertWritableExecutionDirectory(path, installed, undefined, path === prefix)) repaired = true;
   selectExecutionProgram(installed);
   return repaired;
 }
