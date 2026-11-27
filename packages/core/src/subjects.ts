@@ -31,6 +31,7 @@
  */
 import { fromPublic } from "@nats-io/nkeys";
 import type { Presence, PresenceAgentEndpoint, PresenceStatus } from "./types.js";
+import { classifyChannel, PLUGIN_CHANNEL_ROOT } from "./plugin-channel-route.js";
 import {
   token,
   ROOT,
@@ -96,13 +97,24 @@ export {
 } from "./subject-grammar.js";
 export type { DeprovisionTarget } from "./subject-grammar.js";
 
+function sameChannelRail(cap: string, pattern: string): boolean {
+  try {
+    const held = classifyChannel(cap), requested = classifyChannel(pattern);
+    return held.kind === PLUGIN_CHANNEL_ROOT
+      ? requested.kind === PLUGIN_CHANNEL_ROOT && held.plugin === requested.plugin
+      : requested.kind === held.kind;
+  } catch {
+    return false;
+  }
+}
+
 /** Is `channel` within a read/post ACL `allow` (a list of channel patterns)? True when some
  *  entry covers it — exact, or a wildcard subtree (`team.>` covers `team.backend`). Channels are
  *  dotted token strings, so this rides {@link subjectMatches}. The single covering rule shared by
  *  the load-time invariant (`subscribe ⊆ allowSubscribe`), the connector subset check, and the
  *  manager's mediated-join validation (`channel ∈ allowSubscribe`) so they can't drift. */
-export function channelInAllow(allow: string[], channel: string): boolean {
-  return allow.some((a) => subjectMatches(a, channel));
+export function channelInAllow(allow: readonly string[], channel: string, pluginChannelsEnabled = false): boolean {
+  return allow.some((a) => (!pluginChannelsEnabled || sameChannelRail(a, channel)) && subjectMatches(a, channel));
 }
 
 /** The read ACL an agent's lists resolve to: an omitted or empty `allowSubscribe` reads exactly
@@ -110,10 +122,10 @@ export function channelInAllow(allow: string[], channel: string): boolean {
  *  and a pattern must lie inside one entry ({@link patternInAllow}), as `cotal_join` checks it, so
  *  `perm.>` is outside `perm.*`. Every site that resolves an agent's read list calls this, so a
  *  launcher, the session it starts and the provisioner cannot disagree on the default. */
-export function resolveReadAcl(subscribe: string[], allowSubscribe: string[] | undefined): string[] {
+export function resolveReadAcl(subscribe: string[], allowSubscribe: string[] | undefined, pluginChannelsEnabled = false): string[] {
   const allow = allowSubscribe?.length ? allowSubscribe : subscribe;
   for (const ch of subscribe)
-    if (!(isConcreteChannel(ch) ? channelInAllow : patternInAllow)(allow, ch))
+    if (!(isConcreteChannel(ch) ? channelInAllow : patternInAllow)(allow, ch, pluginChannelsEnabled))
       throw new Error(`subscribe "${ch}" is not within allowSubscribe [${allow.join(", ")}]`);
   return allow;
 }
@@ -124,7 +136,12 @@ export function resolveReadAcl(subscribe: string[], allowSubscribe: string[] | u
  *  ({@link patternInAllow}): where {@link channelInAllow} asks "is this concrete channel readable
  *  under this ACL", this asks "is this ACL *entry* grantable under this ACL" — pattern vs pattern,
  *  so `review.>` is within `review.>` but exceeds `review.pua`. */
-export function patternCovers(cap: string, pattern: string): boolean {
+export function patternCovers(cap: string, pattern: string, pluginChannelsEnabled = false): boolean {
+  return (!pluginChannelsEnabled || sameChannelRail(cap, pattern)) && subjectPatternCovers(cap, pattern);
+}
+
+/** Check containment of two NATS subject filters without interpreting them as channel names. */
+export function subjectPatternCovers(cap: string, pattern: string): boolean {
   const c = cap.split(".");
   const p = pattern.split(".");
   // A non-terminal '>' is outside the policy grammar (assertValidChannel) — fail closed on BOTH
@@ -146,15 +163,15 @@ export function patternCovers(cap: string, pattern: string): boolean {
  *  entries is deliberately NOT considered (`[a.b, a.c]` does not admit `a.*`): per-entry containment
  *  is conservative — it can refuse a technically-covered pattern, never admit an uncovered one —
  *  and keeps the refusal explainable ("name the entry that covers it, or widen the grant"). */
-export function patternInAllow(allow: string[], pattern: string): boolean {
-  return allow.some((a) => patternCovers(a, pattern));
+export function patternInAllow(allow: readonly string[], pattern: string, pluginChannelsEnabled = false): boolean {
+  return allow.some((a) => patternCovers(a, pattern, pluginChannelsEnabled));
 }
 
 /** Does read ACL `allow` admit a durable membership on `channel`? A family must lie inside one entry
  *  ({@link patternInAllow}), so every channel under it is readable; a concrete channel must be covered
  *  ({@link channelInAllow}). */
-export function membershipInAllow(allow: string[], channel: string): boolean {
-  return isChannelFamily(channel) ? patternInAllow(allow, channel) : channelInAllow(allow, channel);
+export function membershipInAllow(allow: readonly string[], channel: string, pluginChannelsEnabled = false): boolean {
+  return isChannelFamily(channel) ? patternInAllow(allow, channel, pluginChannelsEnabled) : channelInAllow(allow, channel, pluginChannelsEnabled);
 }
 
 // ---- Principal-keyed channel grants ----

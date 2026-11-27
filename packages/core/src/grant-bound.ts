@@ -58,9 +58,9 @@ type MintExtra = Parameters<typeof permissionsFor>[3];
 
 /** Each part of a grant, with the mint options that project it alone. `project` is absent for a
  *  token no mint maps, which nothing can be shown to hold. */
-function partsOf(grant: DelegatedGrant): { part: GrantOverreach; project?: MintExtra }[] {
+function partsOf(grant: DelegatedGrant, pluginChannelsEnabled = false): { part: GrantOverreach; project?: MintExtra }[] {
   const out: { part: GrantOverreach; project?: MintExtra }[] = [];
-  for (const ch of resolveReadAcl([...(grant.subscribe ?? [])], grant.allowSubscribe ? [...grant.allowSubscribe] : undefined))
+  for (const ch of resolveReadAcl([...(grant.subscribe ?? [])], grant.allowSubscribe ? [...grant.allowSubscribe] : undefined, pluginChannelsEnabled))
     out.push({ part: { field: "allowSubscribe", value: ch }, project: { allowSubscribe: [ch] } });
   for (const ch of grant.allowPublish ?? []) out.push({ part: { field: "allowPublish", value: ch }, project: { allowPublish: [ch] } });
   if (grant.role !== undefined) out.push({ part: { field: "role", value: grant.role }, project: { role: grant.role } });
@@ -72,6 +72,8 @@ function partsOf(grant: DelegatedGrant): { part: GrantOverreach; project?: MintE
     out.push({ part: { field: "endpoints", value: personaEndpointPartName(cap) }, project: { endpointCapabilities: [{ ...cap }] } });
   return out;
 }
+
+type ProjectedRows = { pub: { allow: string[]; deny?: string[] }; sub: { allow: string[]; deny?: string[] } };
 
 /** Every part of `grant`, named as {@link grantOverreach} names a refusal: what a spawner that holds
  *  no evidence is refused when it asks for any of it. Throws on a malformed grant. */
@@ -93,27 +95,26 @@ export function grantOverreach(
   caller: EpCaller,
   ceiling: IssuedSubjectPermissions,
   grant: DelegatedGrant,
+  pluginChannelsEnabled = false,
 ): GrantOverreach[] {
   // One coordinate, one connection id and one accepted token for every projection, so the rows
   // the coordinate alone produces are identical across projections and cancel exactly.
   const pr = { owner: caller.owner, actor: caller.actor, connId: caller.actor, lifecycleUid: caller.uid };
   const issued = isIssuedCaller(caller) ? { issued: { generation: caller.generation, acceptedToken: mintAcceptedToken() } } : {};
   const rows = (extra: MintExtra) => {
-    const perms = permissionsFor("agent", space, pr, { lifecycleUid: caller.uid, ...issued, ...extra }) as {
-      pub: { allow: string[] };
-      sub: { allow: string[] };
-    };
-    return { pub: new Set(perms.pub.allow), sub: new Set(perms.sub.allow) };
+    return permissionsFor("agent", space, pr, { lifecycleUid: caller.uid, pluginChannelsEnabled, ...issued, ...extra }) as ProjectedRows;
   };
   const empty = rows({});
+  const emptyPub = new Set(empty.pub.allow), emptySub = new Set(empty.sub.allow);
   const held = (extra: MintExtra): boolean => {
     const projected = rows(extra);
-    const pub = [...projected.pub].filter((r) => !empty.pub.has(r));
-    const sub = [...projected.sub].filter((r) => !empty.sub.has(r));
+    const pub = projected.pub.allow.filter((r) => !emptyPub.has(r));
+    const sub = projected.sub.allow.filter((r) => !emptySub.has(r));
     if (pub.length + sub.length === 0) return false;
-    return pub.every((r) => issuedPermitsPattern(ceiling.publish, r)) && sub.every((r) => issuedPermitsPattern(ceiling.subscribe, r));
+    return pub.every((r) => issuedPermitsPattern(ceiling.publish, r, pluginChannelsEnabled ? projected.pub.deny : undefined))
+      && sub.every((r) => issuedPermitsPattern(ceiling.subscribe, r, pluginChannelsEnabled ? projected.sub.deny : undefined));
   };
-  return partsOf(grant).filter(({ project }) => project === undefined || !held(project)).map(({ part }) => part);
+  return partsOf(grant, pluginChannelsEnabled).filter(({ project }) => project === undefined || !held(project)).map(({ part }) => part);
 }
 
 /**
@@ -122,16 +123,19 @@ export function grantOverreach(
  * so {@link grantOverreach} measures the run's helpers as it measures a hosted starter's. No
  * channels in a direction is `none`. Throws on a malformed channel or a coordinate the mint refuses.
  */
-export function channelCeiling(space: string, caller: EpCaller, read: readonly string[], publish: readonly string[]): IssuedSubjectPermissions {
+export function channelCeiling(space: string, caller: EpCaller, read: readonly string[], publish: readonly string[], pluginChannelsEnabled = false): IssuedSubjectPermissions {
   const pr = { owner: caller.owner, actor: caller.actor, connId: caller.actor, lifecycleUid: caller.uid };
-  const rows = (extra: MintExtra) => permissionsFor("agent", space, pr, { lifecycleUid: caller.uid, ...extra }) as { pub: { allow: string[] }; sub: { allow: string[] } };
+  const rows = (extra: MintExtra) => permissionsFor("agent", space, pr, { lifecycleUid: caller.uid, pluginChannelsEnabled, ...extra }) as ProjectedRows;
   const empty = rows({});
   const named = rows({ allowSubscribe: [...read], allowPublish: [...publish] });
   const added = (all: string[], base: string[]): IssuedSubjectAllow => {
     const patterns = all.filter((r) => !base.includes(r));
     return patterns.length ? { mode: "patterns", patterns } : { mode: "none" };
   };
-  return { publish: { allow: added(named.pub.allow, empty.pub.allow), deny: [] }, subscribe: { allow: added(named.sub.allow, empty.sub.allow), deny: [] } };
+  return {
+    publish: { allow: added(named.pub.allow, empty.pub.allow), deny: pluginChannelsEnabled ? named.pub.deny ?? [] : [] },
+    subscribe: { allow: added(named.sub.allow, empty.sub.allow), deny: pluginChannelsEnabled ? named.sub.deny ?? [] : [] },
+  };
 }
 
 /** How a static spawner stands toward the bound. */

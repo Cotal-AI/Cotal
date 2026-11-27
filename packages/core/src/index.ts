@@ -175,3 +175,18 @@ export * from "./service-gate.js";
 
 export { parseClosureManifest } from "./contract-manifest.js";
 export { armRenewal, jitteredBackoffMs } from "./renewal.js";
+
+export {
+  channelRoute,
+  classifyChannel,
+  legacyPluginChannelFilters,
+  PLUGIN_CHANNEL_ROOT,
+  PLUGIN_FANOUT_DURABLE,
+  pluginChannelFilter,
+  pluginChannelStream,
+} from "./plugin-channel-route.js";
+export {
+  initializePluginChannelSpaceState,
+  readPluginChannelSpaceState,
+  type PluginChannelSpaceSnapshot,
+} from "./plugin-channel-space-state.js";
