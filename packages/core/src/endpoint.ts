@@ -2,7 +2,6 @@ import { EndpointHistory, type ChannelHistoryPageOptions } from "./endpoint-hist
 export { MULTI_FILTER_BATCH, MULTI_FILTER_READ_CONCURRENCY } from "./endpoint-history.js";
 import { type NativeConnectionBinding } from "./native-connection.js";
 import { EventEmitter } from "node:events";
-import { randomUUID } from "node:crypto";
 import {
   type NatsConnection,
 } from "@nats-io/transport-node";
@@ -19,13 +18,10 @@ import { BIND_SPLIT_REISSUES, resolveService, type ResolvedService, type SubmitA
 import { EpEnvelopeError, respondedButUnbound, replyRefusedBeforeEffect, replyTargetUnmapped } from "./endpoint-envelope.js";
 import { isRepeatSafeCommand } from "./endpoint-grants.js";
 import type { EpCaller, EpPrincipal, IssuedCaller, PrincipalAuthority } from "./endpoint-subjects.js";
-import { assertRuntimeToken, endpointToken } from "./endpoint-subjects.js";
 import { type EpPrincipalCommandDef } from "./endpoint-serve.js";
 import { epPrincipalCall } from "./endpoint-call.js";
 import type { EndpointReply } from "./endpoint-envelope.js";
 import type { CompiledContract } from "./schema-profile.js";
-import { AGENT_CLUSTER, AGENT_ENDPOINT } from "./agent-endpoint.js";
-import { processRuntime } from "./process-runtime.js";
 import { issuedPermitsSubject } from "./issued-authority.js";
 import type { RegistryEndpointsInput, RegistryEndpointsOutput } from "./registry-contract.js";
 import { listRegistryEndpoints } from "./registry-client.js";
@@ -90,14 +86,8 @@ import { newChannelRegistryState, type ChannelRegistryState } from "./endpoint-c
 import { newDeliveryState, type DeliveryState } from "./endpoint-delivery-state.js";
 import type { AnycastStatus } from "./anycast-requests.js";
 import {
-  controlServiceSubject,
-  CONTROL_DELIVERY_ADMIN,
-  dmStream,
   MEMBERSHIP_FEED_KEY,
-  parsePrincipalKey,
   spaceWildcard,
-  unicastSubject,
-  unicastRecvFilter,
 } from "./subjects.js";
 
 import { isPermissionDenied } from "./permission-denied.js";
@@ -294,30 +284,7 @@ export class CotalEndpoint extends EventEmitter {
   }
 
   start(): Promise<void> {
-    if (this.lifecycle.startPromise) return this.lifecycle.startPromise;
-    const flight = this.startOnce().finally(() => {
-      if (this.lifecycle.startPromise === flight) this.lifecycle.startPromise = undefined;
-    });
-    this.lifecycle.startPromise = flight;
-    return flight;
-  }
-
-  private async startOnce(): Promise<void> {
-    // A stopped dial is not a teardown failure. The stopped fence still closes any late epoch.
-    try {
-      await this.connection.connectAndBind();
-    } catch (error) {
-      if (!this.lifecycle.stopped) throw error;
-    }
-    // stop() can finish while the INITIAL connectAndBind is still awaiting its broker work. The
-    // rebuild path already closes that race; initial start needs the same fence or the late bind
-    // leaves a fresh nc, heartbeat, consumers, and presence live on an endpoint already stopped.
-    // superviseConnection below: nats.js auto-reconnects transient drops, and when it exhausts its
-    // attempts and the connection closes for good we rebuild from scratch, so an in-process agent
-    // (e.g. the OpenCode plugin) recovers without a host respawn. Armed only after a successful
-    // first connect; a first-connect failure throws to the caller's connect-retry loop instead.
-    if (await this.connection.tearDownIfStopped()) return;
-    this.connection.superviseConnection();
+    return this.connection.start();
   }
 
   /**
@@ -409,15 +376,8 @@ export class CotalEndpoint extends EventEmitter {
    *  is now, not in retryMs. Throws if stopped. On failure, leaves {@link EndpointConnection.reestablishLoop}
    *  running in the background so the endpoint never stays dead, and rethrows so the caller
    *  can report it. */
-  async reconnect(): Promise<void> {
-    if (this.lifecycle.stopped) throw new Error("endpoint stopped - cannot reconnect");
-    this.reconnection.kickBackoff();
-    try {
-      await this.reconnection.rebuild();
-    } catch (e) {
-      void this.connection.reestablishLoop(); // background retry until success or stop
-      throw e;
-    }
+  reconnect(): Promise<void> {
+    return this.reconnection.reconnect();
   }
 
   /** Stop the endpoint and close its connection.
@@ -800,13 +760,8 @@ export class CotalEndpoint extends EventEmitter {
    *  holds the request-publish grant, so an agent calling this gets a broker denial, not a handler
    *  refusal. NoResponders (no daemon) surfaces as the thrown request error — callers decide whether
    *  that degrades (renewal falls back to the daemon's 75% re-read backstop) or fails. */
-  async requestDeliveryAdmin(op: string, args: Record<string, unknown>, timeoutMs = 5000): Promise<ControlReply> {
-    if (!this.conn.nc) throw new Error(this.notLiveMsg());
-    const reqSubject = controlServiceSubject(this.space, CONTROL_DELIVERY_ADMIN, this.identity.owner, this.identity.actor);
-    const reply = `${reqSubject}.reply.${randomUUID()}`;
-    const body: ControlRequest = { op, args, from: this.ref() };
-    const m = await this.controlPlane.requestBoundReply(this.conn.nc, reqSubject, JSON.stringify(body), reply, timeoutMs);
-    return m.json<ControlReply>();
+  requestDeliveryAdmin(op: string, args: Record<string, unknown>, timeoutMs = 5000): Promise<ControlReply> {
+    return this.controlPlane.requestDeliveryAdmin(op, args, timeoutMs);
   }
 
   // ---- presence ------------------------------------------------------------
@@ -1220,29 +1175,8 @@ export class CotalEndpoint extends EventEmitter {
    *  the read to other principals' DMs. The broker filters on the DM subject, so every row's `to` or
    *  `from.id` is one of them. Only an `admin` credential may read the DM backlog. Where
    *  {@link dmHistory} returns an empty list for any other, this returns `denied`. */
-  async dmHistoryOf(principals: readonly string[], opts?: { limit?: number; signal?: AbortSignal }): Promise<DmHistoryRead> {
-    const keys = [...new Set(principals)].map((p) => {
-      const key = parsePrincipalKey(p);
-      if (!key) throw new Error(`dmHistoryOf: "${p}" is not a principal <owner>.<actor>`);
-      return key;
-    });
-    if (!keys.length) return { state: "read", items: [] };
-    const limit = opts?.limit ?? 100;
-    const read = (subjects: string[]) => this.history.streamHistory(dmStream(this.space), subjects, limit, undefined, opts?.signal);
-    let rows: { seq: number; msg: HistoryMessage }[];
-    try {
-      // A consumer refuses overlapping filters, and a DM between two of these principals matches a
-      // recipient filter and a sender filter, so each direction is its own read.
-      rows = (await Promise.all([
-        read(keys.map((k) => unicastRecvFilter(this.space, k.owner, k.actor))),
-        read(keys.map((k) => unicastSubject(this.space, "*", "*", k.owner, k.actor))),
-      ])).flat();
-    } catch (e) {
-      if (isPermissionDenied(e)) return { state: "denied", reason: (e as Error).message };
-      throw e;
-    }
-    const bySeq = new Map(rows.map((r) => [r.seq, r.msg]));
-    return { state: "read", items: [...bySeq].sort(([a], [b]) => a - b).slice(-limit).map(([, msg]) => msg) };
+  dmHistoryOf(principals: readonly string[], opts?: { limit?: number; signal?: AbortSignal }): Promise<DmHistoryRead> {
+    return this.history.dmHistoryOf(principals, opts);
   }
 
   // ---- internals -----------------------------------------------------------
@@ -1809,37 +1743,7 @@ export class CotalEndpoint extends EventEmitter {
    * handlers' `signal`, and waits for each handler in flight until its request's deadline at most.
    */
   servePrincipal(spec: { handlers: EpPrincipalCommandDef[] }): PrincipalServe {
-    if ("endpoint" in spec || "cluster" in spec)
-      throw new Error(`servePrincipal serves only the "${AGENT_ENDPOINT}" endpoint with AGENT_CLUSTER and takes handlers alone; an endpoint or cluster is refused, never ignored (SPEC 13.22)`);
-    const serve = { endpoint: AGENT_ENDPOINT, cluster: AGENT_CLUSTER, handlers: spec.handlers };
-    const uid = this.identity.ownLifecycleUid;
-    if (uid === undefined)
-      throw new Error("serving the principal route needs this endpoint's lifecycleUid: the subject names it (SPEC 13.21)");
-    const nc = this.conn.nc;
-    if (!nc) throw new Error(this.notLiveMsg());
-    endpointToken(serve.endpoint);
-    if (this.delivery.principalServes.has(serve.endpoint))
-      throw new Error(`this endpoint already serves "${serve.endpoint}" on the principal route`);
-    const self: EpPrincipal = { owner: this.identity.owner, actor: this.identity.actor, uid, runtimeId: assertRuntimeToken(processRuntime(uid).id) };
-    const serverKey = `${this.space}\n${self.runtimeId}\n${serve.endpoint}`;
-    if (principalServers.has(serverKey))
-      throw new Error(`another endpoint in this process already serves "${serve.endpoint}" for lifecycle ${uid}: both would subscribe the same principal-route subject and answer one request twice (SPEC 13.21); stop that one first`);
-    let resolveReady!: () => void, rejectReady!: (e: Error) => void, resolveFailed!: (e: Error) => void;
-    const ready = new Promise<void>((resolve, reject) => { resolveReady = resolve; rejectReady = reject; });
-    ready.catch(() => { /* the caller observes it; this keeps an unobserved refusal from being unhandled */ });
-    const failed = new Promise<Error>((resolve) => { resolveFailed = resolve; });
-    const intent: PrincipalServeIntent = {
-      serve, self, serverKey, handles: [], ended: false, readySettled: false, resolveReady, rejectReady, resolveFailed,
-    };
-    // Construction refuses an invalid cluster before anything is kept or subscribed.
-    const handle = this.principalServe.bindPrincipalHandle(intent, nc);
-    this.delivery.principalServes.set(serve.endpoint, intent);
-    principalServers.set(serverKey, intent);
-    // A fresh `seq` per serve: the last serve may have ended with prompts open, and the pair
-    // `(runtime.id, seq)` it showed then must not name this serve's empty list (SPEC §6).
-    if (serve.endpoint === AGENT_ENDPOINT) this.principalServe.openPrompts();
-    void this.principalServe.armPrincipalServe(intent, nc, handle);
-    return { ready, failed, stop: () => this.principalServe.stopPrincipalServe(intent) };
+    return this.principalServe.servePrincipal(spec);
   }
 
   /** The principal serve and prompts of this endpoint. Every dependency is read when it is used, and
