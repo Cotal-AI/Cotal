@@ -2,17 +2,9 @@ import { spawnSync } from "node:child_process";
 import { lstatSync, readdirSync, readFileSync, realpathSync, statSync, type Dirent } from "node:fs";
 import { join, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
-import { SEEDED_EXTENSIONS, extensionPackageDir, extensionsDir, hostPackageDir, installedExtensionPackage, isExtensionPathSpec, resolveExtensionEntry, type InstalledExtension } from "@cotal-ai/workspace";
+import { SEEDED_EXTENSIONS, extensionPackageDir, extensionsDir, installedExtensionPackage, isExtensionPathSpec, matchesInstalledPluginDeclaration, readPluginDeclaration, resolveExtensionEntry, type InstalledExtension, type InstalledExtensionPackage } from "@cotal-ai/workspace";
 import { seedStorePath, shippedSourceDir } from "./paths.js";
 import { sharedPlacements, type SharedPlacement } from "./shared.js";
-
-/** Check the links installed by the peer binder without changing the extension tree. */
-export function seededPeerLinksCurrent(pkg: string): boolean {
-  const installed = installedExtensionPackage(pkg);
-  return installed !== undefined && Object.keys(installed.peerDependencies ?? {}).every(peer =>
-    !peer.startsWith("@cotal-ai/") ||
-    realpathSync(join(extensionPackageDir(pkg), "node_modules", peer)) === realpathSync(hostPackageDir(peer)));
-}
 
 /**
  * Why `cotal update` still has to reinstall a seeded built-in that is recorded at this generation, or
@@ -76,6 +68,15 @@ export function operatorUpdateSpec(entry: InstalledExtension, generation: string
   return entry.version === generation && typeof entry.spec === "string" && isExtensionPathSpec(entry.spec) ? entry.spec : `${entry.pkg}@${generation}`;
 }
 
+/** Compare the package declaration with the generation and the cached installation receipt. */
+export function installedDeclarationDiffers(entry: InstalledExtension, installed: InstalledExtensionPackage, generation: string): string | undefined {
+  try {
+    const declared = readPluginDeclaration(installed.cotal);
+    if (!entry.installId || declared.core !== generation) return "plugin declaration does not match this release";
+    if (!matchesInstalledPluginDeclaration(declared, entry)) return "plugin declaration does not match the installed manifest";
+  } catch { return "plugin declaration is absent or invalid"; }
+}
+
 /**
  * Why `cotal update` still has to reinstall a first-party operator extension, or undefined when npm's
  * own record in the prefix proves it installed at this generation: the entry is recorded at this
@@ -98,12 +99,14 @@ export function operatorInstallDiffers(entry: InstalledExtension, generation: st
   const installed = installedExtensionPackage(entry.pkg);
   if (!installed) return "not installed on disk";
   if (installed.version !== generation) return `installed at ${installed.version}, not ${generation}`;
+  const declarationProblem = installedDeclarationDiffers(entry, installed, generation);
+  if (declarationProblem) return declarationProblem;
   const path = resolveExtensionEntry(extensionPackageDir(entry.pkg), installed);
   const file = statSync(path, { throwIfNoEntry: false });
   if (!file?.isFile()) return "entry file is missing";
   if (file.size === 0) return "entry file is empty";
   // Import in a fresh process so registrations and Node's module cache stay out of the updater.
-  const probe = spawnSync(process.execPath, ["--input-type=module", "-e", "await import(process.argv[1]); process.exit(0)", pathToFileURL(path).href], {
+  const probe = spawnSync(process.execPath, ["--input-type=module", "-e", "const entry = await import(process.argv[1]); process.exit(typeof entry.default === 'function' ? 0 : 1)", pathToFileURL(path).href], {
     stdio: "ignore", timeout: 15_000, killSignal: "SIGKILL", windowsHide: true,
   });
   return probe.status === 0 ? undefined : "entry file failed to load";

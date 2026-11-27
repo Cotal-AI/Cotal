@@ -26,12 +26,10 @@ import {
   recordUpdateRefusal,
   recordUpdateReplacement,
   setUpdateSetting,
-  bindExtensionPeers,
   claimGlobalNpmUpdateLock,
   launcherInstallRoot,
   logicalExecutionEntry,
   loadExtensionsManifest,
-  provenance,
   SEEDED_EXTENSIONS,
   BUILT_IN_PACKAGES,
   type InstalledExtension,
@@ -804,14 +802,9 @@ async function updateOperatorExtensions(rt: UpdateRuntime, current: string): Pro
 }
 
 /** Keep a first-party extension that npm's record in the prefix proves installed at `generation`,
- *  rebinding its shared peers to this binary's copies as its reinstall would; otherwise say why it
- *  still needs that reinstall. The update pass calls it under its own claim, so it needs no child. */
+ *  without reinstalling it, or say why it needs a reinstall. The update pass holds the writer claim. */
 export function verifyCurrentExtension(entry: InstalledExtension, generation: string): string | undefined {
-  const differs = operatorInstallDiffers(entry, generation);
-  if (differs !== undefined) return differs;
-  for (const link of bindExtensionPeers([entry.pkg], entry.pkg))
-    provenance.wrote(`${link.peer} link (${link.owner} → this CLI's copy)`, link.destination);
-  return undefined;
+  return operatorInstallDiffers(entry, generation);
 }
 
 function preflightDetail(error: unknown): string {

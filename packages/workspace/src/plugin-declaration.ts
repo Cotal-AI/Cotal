@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { canonicalJson, type Subcommand } from "@cotal-ai/core";
-import { cacheLocalProcess } from "./extensions.js";
+import { cacheLocalProcess, extensionProvides, type InstalledExtension } from "./extensions.js";
 import { checkedHarnessInstall } from "./harness-install.js";
 import type { LocalProcess } from "./local-process.js";
 import type { PluginDeclaration } from "./plugin-manifest.js";
@@ -89,4 +89,14 @@ export function readPluginDeclaration(raw: unknown): PluginDeclaration {
 /** Compare serializable declarations independently of object property order. */
 export function samePluginDeclaration(a: PluginDeclaration, b: PluginDeclaration): boolean {
   return canonicalJson(JSON.parse(JSON.stringify(a))) === canonicalJson(JSON.parse(JSON.stringify(b)));
+}
+
+/** Verify every cached provider and read surface against the package declaration. */
+export function matchesInstalledPluginDeclaration(declared: PluginDeclaration, entry: InstalledExtension): boolean {
+  return samePluginDeclaration(declared, {
+    contract: declared.contract, core: declared.core,
+    provides: extensionProvides(entry).map(({ kind, name, aliases }) => ({ kind, name, aliases: aliases ?? [] })),
+    commands: entry.commands, connectors: entry.connectors ?? [],
+    localProcesses: entry.localProcesses ?? [], servicePresets: entry.servicePresets ?? [],
+  });
 }

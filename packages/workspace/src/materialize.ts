@@ -4,7 +4,6 @@ import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { commitPlugin, registry, stagePlugin, type Extension, type ExtensionRef } from "@cotal-ai/core";
 import {
-  bindExtensionPeers,
   extensionPackageDir,
   extensionProvides,
   extensionReinstallAdvice,
@@ -15,12 +14,12 @@ import {
   type InstalledExtensionPackage,
 } from "./extensions.js";
 import { claimExtensionMutationLockAsync } from "./extension-mutation.js";
-import { diagnosePeerSkew, upgradeRemedy } from "./import-diagnosis.js";
 import { SEEDED_EXTENSIONS } from "./official-connectors.js";
 import { connectorConfigDir } from "./connector-retention.js";
-import { readPluginDeclaration, samePluginDeclaration } from "./plugin-declaration.js";
+import { matchesInstalledPluginDeclaration, readPluginDeclaration, samePluginDeclaration } from "./plugin-declaration.js";
 import { checkPluginCore } from "./plugin-core.js";
 import { pluginDeclaration } from "./plugin-manifest.js";
+import { BUILT_IN_PACKAGES } from "./built-in-packages.js";
 
 /** Whether this process is running from the desktop app's bundled runtime (`desktop-runtime.json`). */
 export function isBundledDesktopRuntime(): boolean {
@@ -34,59 +33,6 @@ export function isBundledDesktopRuntime(): boolean {
     }
   } catch { /* Non-installed host or unresolvable peer root is not a bundled desktop runtime. */ }
   return false;
-}
-
-/**
- * The generic manifest-materialize primitive: verify an installed package's version pin, resolve
- * its entry, and dynamic-`import()` it (which self-registers its extensions into the shared core
- * {@link registry}). It lives here — below `@cotal-ai/cli` — because both the CLI dispatcher and the
- * manager supervisor must materialize manifest extensions, and neither the manager nor this package
- * may import the CLI. It knows nothing about connectors or any other kind; callers supply the
- * name→package hint used to phrase a not-found error.
- */
-
-/**
- * Identify the missing export and the peer linked by `bindExtensionPeers` before import.
- * Recommend replacing one side only when its version or the extension's peer range establishes
- * which side is behind.
- */
-function importFailure(pkg: string, version: string, e: unknown, remedy: string, meta: InstalledExtensionPackage): Error {
-  const message = e instanceof Error ? e.message : String(e);
-  const missing = /The requested module '([^']+)' does not provide an export named '([^']+)'/.exec(message);
-  // Any other import failure (a syntax error, an unresolvable specifier) is the extension's own file
-  // being wrong, not a skew: the caller's remedy for that build applies, and no side claim is warranted.
-  if (!missing) return new Error(`extension ${pkg}@${version} failed to import: ${message} - ${remedy}`);
-
-  const [, peer, symbol] = missing;
-  const head = `extension ${pkg}@${version} failed to import: it needs \`${symbol}\` from ${peer}`;
-  const skew = diagnosePeerSkew(pkg, version, peer, meta.peerDependencies?.[peer]);
-  if (!skew) {
-    return new Error(
-      `${head}, which the linked ${peer} does not export. This cotal cannot locate its own ${peer} to compare against, ` +
-        `so neither side can be named as behind - compare the two installs before reinstalling either.`,
-    );
-  }
-  const at = `the linked ${peer} ${skew.peerVersion} at ${skew.peerPath} does not export it`;
-  switch (skew.side) {
-    case "peer-behind":
-      return new Error(
-        `${head}, and ${at}. The installed ${peer} is BEHIND: ${skew.because} - ` +
-          `${upgradeRemedy(skew.peerPath, skew.needsAtLeast)}. Reinstalling the extension cannot add an export to an ` +
-          `older ${peer}.`,
-      );
-    case "same-version":
-      return new Error(
-        `${head}, and ${at}. Both packages report ${skew.peerVersion}. ` +
-          `Check the extension's import and the exports of the linked peer before replacing either build.`,
-      );
-    case "extension-behind":
-      return new Error(`${head}, and ${at}. The extension is the older side: ${skew.because} - ${remedy}`);
-    case "unrankable":
-      return new Error(
-        `${head}, and ${at}. Neither side can be named as behind: ${skew.because} - compare the two installs before ` +
-          `reinstalling either.`,
-      );
-  }
 }
 
 /** Select the first entry matching the Node ESM conditions in declaration order. */
@@ -128,27 +74,7 @@ export function resolveExtensionEntry(dir: string, meta: InstalledExtensionPacka
   }
 }
 
-/**
- * Import an installed package's declared entry so it self-registers. `cotal ext add` and every later
- * load import through here, so a missing peer export is reported as a ranked skew on both paths.
- * `remedy` closes a failure the extension's own build must fix: an installed extension is reinstalled,
- * while an add has already rolled its candidate back. `metadata` carries the caller's validated read
- * through entry selection and failure diagnosis; a standalone call reads it once here.
- */
-export async function importExtensionEntry(pkg: string, version: string, remedy: string | (() => string), metadata?: InstalledExtensionPackage): Promise<void> {
-  const advice = () => typeof remedy === "string" ? remedy : remedy();
-  const dir = extensionPackageDir(pkg);
-  const meta = metadata ?? installedExtensionPackage(pkg);
-  if (!meta) throw new Error(`extension ${pkg} is not installed at ${dir} - ${advice()}`);
-  try {
-    await import(pathToFileURL(resolveExtensionEntry(dir, meta)).href);
-  } catch (e) {
-    throw importFailure(pkg, version, e, advice(), meta);
-  }
-}
-
-/** Process-wide single-flight serializer: two `import()`s must not share a staging/validation window,
- *  so their advertised-key checks can't interleave. */
+/** Serialize staging and validation so concurrent loads do not interleave registry writes. */
 let loadChain: Promise<void> = Promise.resolve();
 
 function enqueueLoad(load: () => Promise<void>): Promise<void> {
@@ -181,22 +107,20 @@ async function withExtensionLock(load: () => Promise<void>): Promise<void> {
 
 /**
  * Verify the pin, resolve the entry, and import the package TRANSACTIONALLY and INVISIBLY. The
- * import's self-registrations are STAGED (never resolvable while it runs); they publish atomically
- * only after `advertised` is confirmed present among them. A package that registers a key then throws
- * (a rejected top-level await) commits NOTHING; a package that imports cleanly but never advertises
- * the requested provider commits NONE of its registrations. Serialized so concurrent loads never
- * share a validation window.
+ * factory's registrations stay private until they agree with the declaration and installed inventory.
  */
 export async function importInstalledExtension(ext: InstalledExtension, advertised: ExtensionRef): Promise<void> {
-  reconcileExtensionScopes();
-  if (registry.has(advertised.kind, advertised.name)) return;
-  return enqueueLoad(async () => {
-    if (registry.has(advertised.kind, advertised.name)) return;
-    await withExtensionLock(() => loadOne(ext, advertised));
-  });
+  return enqueueLoad(() => withExtensionLock(async () => {
+    const entries = loadExtensionsManifest().extensions;
+    reconcileExtensionScopes(entries);
+    const current = entries.find((entry) => entry.pkg === ext.pkg);
+    if (!current || !sameInstall(current, ext))
+      throw new Error(`extension ${ext.pkg} changed while the command was selected; retry the command`);
+    await loadOne(current, advertised);
+  }));
 }
 
-const loadedPlugins = new Map<string, { entry: InstalledExtension; scope?: { dispose(): void } }>();
+const loadedPlugins = new Map<string, { entry: InstalledExtension; scope?: { dispose(): void }; invalidImport?: Error }>();
 
 function sameInstall(a: InstalledExtension, b: InstalledExtension): boolean {
   return a.version === b.version && a.installId === b.installId;
@@ -207,7 +131,7 @@ export function reconcileExtensionScopes(entries?: readonly InstalledExtension[]
   if (!loadedPlugins.size) return false;
   const snapshot = entries ?? loadExtensionsManifest().extensions;
   const journal = join(connectorConfigDir(), ".extensions-promotion.json");
-  if (!entries && !snapshot.length && existsSync(journal)) return false;
+  if (!snapshot.length && existsSync(journal)) return false;
   const installed = new Map(snapshot.map((item) => [item.pkg, item]));
   let changed = false;
   for (const [pkg, loaded] of loadedPlugins) {
@@ -220,27 +144,32 @@ export function reconcileExtensionScopes(entries?: readonly InstalledExtension[]
   return changed;
 }
 
+/** Why an already imported package cannot be activated at the manifest's current install ID. */
+export function extensionRestartReason(entry: InstalledExtension): string | undefined {
+  const loaded = loadedPlugins.get(entry.pkg);
+  if (loaded && !sameInstall(loaded.entry, entry))
+    return `installed ${entry.pkg}@${entry.version}, this process loaded ${loaded.entry.version}; restart the process to use that plugin`;
+}
+
 async function loadFactory(ext: InstalledExtension, onDisk: InstalledExtensionPackage, advertised: ExtensionRef): Promise<void> {
   const { pkg } = ext;
   const entry = resolveExtensionEntry(extensionPackageDir(pkg), onDisk);
   const declared = readPluginDeclaration(onDisk.cotal);
-  const installed = {
-    contract: declared.contract,
-    core: declared.core,
-    provides: extensionProvides(ext).map((row) => ({ kind: row.kind, name: row.name, aliases: row.aliases ?? [] })),
-    commands: ext.commands,
-    connectors: ext.connectors ?? [],
-    localProcesses: ext.localProcesses ?? [],
-    servicePresets: ext.servicePresets ?? [],
-  };
-  if (!samePluginDeclaration(declared, installed))
+  if (!matchesInstalledPluginDeclaration(declared, ext))
     throw new Error(`the plugin declaration does not match the installed manifest. ${extensionReinstallAdvice(ext)}`);
   checkPluginCore(pkg, onDisk, declared, entry);
   // Record any attempted import. Node can retain evaluated dependencies even when an entry throws.
   const loaded = loadedPlugins.get(pkg) ?? { entry: ext };
   loadedPlugins.set(pkg, loaded);
-  const { value: { default: factory }, staged: importWrites } = await registry.runStaged(() => import(pathToFileURL(entry).href));
-  if (importWrites.length) throw new Error("the plugin entry registered outside its factory");
+  if (loaded.invalidImport) throw loaded.invalidImport;
+  const imported = await registry.runStaged(() => import(pathToFileURL(entry).href)).catch((error: unknown) => {
+    throw new Error(`failed to import: ${error instanceof Error ? error.message : String(error)} - ${extensionReinstallAdvice(ext)}`, { cause: error });
+  });
+  const { value: { default: factory }, staged: importWrites } = imported;
+  if (importWrites.length) {
+    loaded.invalidImport = new Error("the plugin entry registered outside its factory");
+    throw loaded.invalidImport;
+  }
   if (typeof factory !== "function") throw new Error("the plugin entry must export a default factory");
   const staged = await stagePlugin(registry, factory);
   const actual = pluginDeclaration(staged, declared.core);
@@ -250,15 +179,10 @@ async function loadFactory(ext: InstalledExtension, onDisk: InstalledExtensionPa
 }
 
 async function loadOne(ext: InstalledExtension, advertised: ExtensionRef): Promise<void> {
-  // Idempotent: if a prior load (a concurrent first call now serialized ahead of us on loadChain, or an
-  // earlier one) already published the advertised provider, we're done. Re-import()ing an
-  // already-evaluated module is a cache hit with NO registration side effects, so its stage would be
-  // empty and wrongly read as "did not register"; the live check short-circuits that. commitStaged
-  // publishes ALL of a package's keys, so a sibling ref requested concurrently is live here too.
+  // A successful factory publishes its complete scope. Reuse it for any sibling provider.
   const pkg = ext.pkg;
-  const loaded = loadedPlugins.get(pkg);
-  if (loaded && !sameInstall(loaded.entry, ext))
-    throw new Error(`installed ${pkg}@${ext.version}, this process loaded ${loaded.entry.version}; restart the process to use that plugin`);
+  const restart = extensionRestartReason(ext);
+  if (restart) throw new Error(restart);
   if (registry.has(advertised.kind, advertised.name)) return;
   const onDisk = installedExtensionPackage(pkg);
   if (!onDisk) {
@@ -269,27 +193,12 @@ async function loadOne(ext: InstalledExtension, advertised: ExtensionRef): Promi
       `extension ${pkg} is ${onDisk.version} on disk but the manifest pinned ${ext.version} (its cached command surface may be stale). ${extensionReinstallAdvice(ext)}`,
     );
   }
-  if (onDisk.cotal !== undefined) {
-    try { await loadFactory(ext, onDisk, advertised); }
-    catch (error) { throw new Error(`extension ${pkg}@${ext.version}: ${(error as Error).message}`, { cause: error }); }
-    return;
+  if (onDisk.cotal === undefined) {
+    const remedy = pkg.startsWith("@cotal-ai/") ? extensionReinstallAdvice(ext) : `run \`cotal ext add ${pkg}@latest\`, or \`cotal ext remove ${pkg}\` to remove it`;
+    throw new Error(`extension ${pkg}@${ext.version} was built for the old contract. ${remedy}`);
   }
-  // The prefix is machine-global, but global installs, npx, and source worktrees are distinct hosts.
-  // Rebind before the first import in this process so registration lands in this host's core registry.
-  bindExtensionPeers([pkg], pkg, { operationMetadata: onDisk });
-  // The import self-registers into OUR registry (core is linked); runStaged keeps those
-  // registrations invisible until we've validated them, so a throw discards the stage untouched.
-  const { staged } = await registry.runStaged(() =>
-    importExtensionEntry(pkg, ext.version, () => extensionReinstallAdvice(ext), onDisk),
-  );
-  // Publish ONLY if the package advertised the requested provider. Otherwise commit NONE of its
-  // registrations (never leave a package's other keys live when its advertised one is absent).
-  if (!staged.some((r) => r.kind === advertised.kind && r.name === advertised.name)) {
-    throw new Error(
-      `extension ${pkg}@${ext.version} imported but did not register ${advertised.kind} "${advertised.name}" - ${extensionReinstallAdvice(ext)}`,
-    );
-  }
-  registry.commitStaged(staged);
+  try { await loadFactory(ext, onDisk, advertised); }
+  catch (error) { throw new Error(`extension ${pkg}@${ext.version}: ${(error as Error).message}`, { cause: error }); }
 }
 
 /**
@@ -301,7 +210,7 @@ async function loadOne(ext: InstalledExtension, advertised: ExtensionRef): Promi
  */
 export function manifestExtensionNames(kind: string): string[] {
   const names = new Set<string>();
-  for (const ext of loadExtensionsManifest().extensions)
+  for (const ext of loadExtensionsManifest().extensions.filter((entry) => !Object.hasOwn(BUILT_IN_PACKAGES, entry.pkg)))
     for (const ref of extensionProvides(ext)) if (ref.kind === kind) names.add(ref.name);
   return [...names].sort();
 }
@@ -322,7 +231,7 @@ export async function materializeFromManifest<T extends Extension = Extension>(
       const extensions = loadExtensionsManifest().extensions;
       reconcileExtensionScopes(extensions);
       const ext = extensions.find((candidate) =>
-        extensionProvides(candidate).some((provided) => provided.kind === ref.kind && provided.name === ref.name),
+        !Object.hasOwn(BUILT_IN_PACKAGES, candidate.pkg) && extensionProvides(candidate).some((provided) => provided.kind === ref.kind && provided.name === ref.name),
       );
       if (!ext) {
         throw new Error(

@@ -1,12 +1,21 @@
 import { randomUUID } from "node:crypto";
 import { registry } from "@cotal-ai/core";
 import {
-  RESERVED_CONNECTOR_NAMES, cacheDeclaredServiceMetadata, extensionProvides, providedWords, readPluginDeclaration,
+  BUILT_IN_PACKAGES, RESERVED_CONNECTOR_NAMES, cacheDeclaredServiceMetadata, extensionProvides, providedWords, readPluginDeclaration,
   seededCommandsMismatch, type InstalledExtension, type InstalledExtensionPackage,
 } from "@cotal-ai/workspace";
 
 /** Verify claims and construct the installed entry from package metadata alone. */
 export function declaredExtensionEntry(pkg: string, spec: string, metadata: InstalledExtensionPackage, recorded: readonly InstalledExtension[], seeded: boolean): InstalledExtension {
+  if (metadata.cotal === undefined) {
+    const reinstall = pkg.startsWith("@cotal-ai/") ? pkg : `${pkg}@latest`;
+    throw new Error(`${pkg} was built for the old contract; run \`cotal ext add ${reinstall}\` to install a compatible version`);
+  }
+  if (Object.hasOwn(BUILT_IN_PACKAGES, pkg)) throw new Error(`${pkg} is built into this CLI.`);
+  for (const name of [...Object.keys(metadata.dependencies ?? {}), ...Object.keys(metadata.peerDependencies ?? {})]) {
+    if (name === "@cotal-ai/workspace" || Object.hasOwn(BUILT_IN_PACKAGES, name))
+      throw new Error(`${pkg} declares ${name}; that package shares process state with the CLI and cannot be a plugin dependency or peer`);
+  }
   const declaration = readPluginDeclaration(metadata.cotal);
   for (const provided of declaration.provides) {
     for (const word of providedWords(provided)) {
@@ -14,7 +23,7 @@ export function declaredExtensionEntry(pkg: string, spec: string, metadata: Inst
         throw new Error(`contributes connector "${word}", which is a reserved name`);
       if (registry.has(provided.kind, word) || registry.provides(provided.kind, word))
         throw new Error(`contributes ${provided.kind} "${word}", already provided by this CLI`);
-      const other = recorded.find((entry) => entry.pkg !== pkg && extensionProvides(entry).some((ref) => ref.kind === provided.kind && providedWords(ref).includes(word)));
+      const other = recorded.find((entry) => entry.pkg !== pkg && !Object.hasOwn(BUILT_IN_PACKAGES, entry.pkg) && extensionProvides(entry).some((ref) => ref.kind === provided.kind && providedWords(ref).includes(word)));
       if (other) throw new Error(`contributes ${provided.kind} "${word}", already provided by installed extension ${other.pkg}@${other.version}; run \`cotal ext remove ${other.pkg}\` first if you want this one`);
     }
   }

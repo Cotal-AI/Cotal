@@ -15,13 +15,14 @@ function packageVersion(file: string): string {
 
 /** Verify the bundled or resolved core without importing the plugin. */
 export function checkPluginCore(pkg: string, meta: InstalledExtensionPackage, declaration: PluginDeclaration, entry: string, hostCore = packageVersion(join(hostPackageDir("@cotal-ai/core"), "package.json"))): void {
-  if (hostCore === "0.0.0") return;
+  if (hostCore === "0.0.0" || hostCore.startsWith("0.0.0-")) return;
   if (pkg.startsWith("@cotal-ai/")) {
-    if (declaration.core !== hostCore)
+    if (meta.version !== hostCore || declaration.core !== hostCore)
       throw new Error(`plugin ${pkg}@${meta.version} bundles core ${declaration.core ?? "not declared"}, this CLI uses ${hostCore}; run \`cotal update --self\``);
     return;
   }
   let pluginCore = declaration.core;
+  if (pluginCore === undefined && meta.dependencies?.["@cotal-ai/core"] === undefined) return;
   if (pluginCore === undefined) {
     try { pluginCore = packageVersion(createRequire(entry).resolve("@cotal-ai/core/package.json")); }
     catch (error) { throw new Error(`plugin ${pkg} has no readable core version; run \`cotal ext add ${pkg}@latest\``, { cause: error }); }

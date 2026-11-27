@@ -16,7 +16,7 @@ export { BUILT_IN_PACKAGES } from "./built-in-packages.js";
 export * from "./official-runtimes.js";
 export * from "./extensions.js";
 export { pluginManifest, type PluginDeclaration } from "./plugin-manifest.js";
-export { readPluginDeclaration } from "./plugin-declaration.js";
+export { matchesInstalledPluginDeclaration, readPluginDeclaration } from "./plugin-declaration.js";
 export { checkPluginCore } from "./plugin-core.js";
 export * from "./harness-install.js";
 export * from "./connector-retention.js";

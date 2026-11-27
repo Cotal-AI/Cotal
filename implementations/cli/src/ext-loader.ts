@@ -17,6 +17,7 @@ import {
   isBundledDesktopRuntime,
   loadExtensionsManifest,
   materializeFromManifest,
+  reconcileExtensionScopes,
   type CachedCommand,
   type InstalledExtension,
   type LocalProcess,
@@ -46,7 +47,7 @@ export const OFFICIAL_RUNTIME_TOOLS: Readonly<Record<string, { readonly names: r
  * Discipline (design-review conditions):
  *  - Help and `__complete` see extension commands as manifest-cached STUBS (display surface only;
  *    a <TAB> or `--help` never imports an extension).
- *  - Running one imports its package lazily, which self-registers the LIVE command; parsing then
+ *  - Running one invokes its package's factory lazily and resolves the live command; parsing then
  *    uses the live specs — the cache never drives `run`'s input.
  *  - The pinned `name@version` is verified before the import; skew is a loud error prescribing
  *    `cotal ext add` again.
@@ -55,8 +56,8 @@ export const OFFICIAL_RUNTIME_TOOLS: Readonly<Record<string, { readonly names: r
  *    builtin command NEVER throws over the collision.
  */
 
-/** A metadata stub for help, completion and the read-only seed decision. Running it resolves the
- *  real command: verify pin → import (self-registers) → re-resolve → parse live specs → run. */
+/** A metadata stub for help, completion and the read-only seed decision. Dispatch verifies the pin
+ * and activates the factory before parsing the live command's flags. */
 function stubFor(ext: InstalledExtension, cached: CachedCommand): Command {
   return {
     kind: "command",
@@ -168,9 +169,7 @@ export function overlayExtensions(reg: Registry, warn = (message: string) => con
   return commands;
 }
 
-/** Swap an extension STUB for its live command: verify the version pin, import the package (it
- *  self-registers), and return the freshly-registered command. Every failure is loud and names
- *  the package. */
+/** Load the installed factory and resolve the live command behind its cached stub. */
 export async function materializeExtensionCommand(stub: Command): Promise<Command> {
   const pkg = (stub as Command & { extension?: string }).extension;
   if (!pkg) return stub; // not a stub — already live
@@ -183,7 +182,7 @@ export async function materializeExtensionCommand(stub: Command): Promise<Comman
     }
     throw new Error(`${ext.pkg} is ${ext.version} and this cotal is ${cliVersion()} - run \`${seeded ? "cotal ext seed" : "cotal update --self"}\` to ${seeded ? "bring it to this version" : "reconcile this installation"}`);
   }
-  await importInstalledExtension(ext, { kind: "command", name: stub.name }); // throws if the import doesn't advertise the stubbed command
+  await importInstalledExtension(ext, { kind: "command", name: stub.name });
   return registry.resolve<Command>("command", stub.name);
 }
 
@@ -191,6 +190,7 @@ export async function materializeExtensionCommand(stub: Command): Promise<Comman
  *  The registered short-circuit and the composition-root gate stay here (CLI process state); the
  *  actual manifest read + transactional import is the shared workspace primitive. */
 export async function materializeExtension<T extends Extension = Extension>(ref: ExtensionRef): Promise<T> {
+  if (installedEnabled) reconcileExtensionScopes();
   const registered = registry.all().find((ext) => ext.kind === ref.kind && ext.name === ref.name);
   if (registered) return registered as T;
   if (registry.provides(ref.kind, ref.name)) return registry.load<T>(ref.kind, ref.name);

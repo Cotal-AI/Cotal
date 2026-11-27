@@ -10,7 +10,6 @@ import {
   CorruptExtensionsManifestError,
   BUILT_IN_PACKAGES,
   SEEDED_EXTENSIONS,
-  bindExtensionPeers,
   connectorConfigDir,
   connectorMetadataStale,
   extensionPackageDir,
@@ -21,7 +20,6 @@ import {
   isBundledDesktopRuntime,
   loadExtensionsManifest,
   logicalExecutionEntry,
-  provenance,
   quarantineExtensionsManifest,
   repairConnectorSelection,
   type InstalledExtension,
@@ -64,7 +62,7 @@ import {
   type Stamp,
 } from "./authority.js";
 import { gcSeedStore, stageSeedPayload } from "./store.js";
-import { prefixLockDiffers, seededInstallDiffers, operatorInstallDiffers, operatorUpdateSpec, seededPeerLinksCurrent } from "./verify.js";
+import { installedDeclarationDiffers, prefixLockDiffers, seededInstallDiffers, operatorInstallDiffers, operatorUpdateSpec } from "./verify.js";
 import { assertAutomaticSeedManagers } from "./manager-guard.js";
 
 /**
@@ -121,7 +119,7 @@ export async function reconcileSeededConnectors(resumeFirstSeed = false): Promis
   await reconcile("auto", true, resumeFirstSeed);
 }
 
-/** Whether the seed journal, authority, installed built-in payloads and shared peers need no repair. */
+/** Whether the seed journal, authority and installed payloads need no repair. */
 export function seedInstallationCurrent(): boolean {
   try {
     const generation = seedGeneration();
@@ -130,7 +128,7 @@ export function seedInstallationCurrent(): boolean {
     const entries = SEED_BUILTINS.map(name => ({ name, entry: installedEntry(name) }));
     if (entries.some(({ entry }) => entry !== undefined) && prefixLockDiffers() !== undefined) return false;
     return entries.every(({ name, entry }) => entry === undefined ||
-      (seededInstallDiffers(name, generation, entry) === undefined && seededPeerLinksCurrent(entry.pkg)));
+      seededInstallDiffers(name, generation, entry) === undefined);
   } catch {
     return false;
   }
@@ -383,7 +381,7 @@ function builtinsAccounted(): boolean {
 function builtinsMetadataCurrent(generation: string = seedGeneration()): boolean {
   for (const name of SEED_BUILTINS) {
     const entry = installedEntry(name);
-    if (entry && (entry.source !== "seeded" || entry.version !== generation || connectorMetadataStale(entry))) return false;
+    if (entry && (entry.source !== "seeded" || entry.version !== generation || !entry.installId || connectorMetadataStale(entry))) return false;
   }
   return true;
 }
@@ -401,7 +399,7 @@ function operatorPackageDiffers(entry: InstalledExtension, generation: string): 
   if (!installed) return "not installed on disk";
   if (installed.version !== generation) return `installed at ${installed.version}, not ${generation}`;
   if (!entryPresent(entry.pkg, installed)) return "entry file is missing";
-  return undefined;
+  return installedDeclarationDiffers(entry, installed, generation);
 }
 
 /** Whether every operator-installed official `@cotal-ai/*` extension is recorded and on disk at `generation`. */
@@ -564,20 +562,14 @@ async function runUnderLocks(mode: Mode, generation: string, nonce: string, refr
       // disk (a partial tear can leave package.json while a required file is gone).
       const isSeeded = entry.source === "seeded";
       const torn = mode === "repair" && isSeeded && (repairAllSeeded || typeof entry.spec !== "string" || installState(name) !== "intact");
-      const metadataStale = !isSeeded || entry.version !== generation || connectorMetadataStale(entry);
+      const metadataStale = !isSeeded || entry.version !== generation || !entry.installId || connectorMetadataStale(entry);
       let refresh = mode === "force" || torn || metadataStale || isStrictlyNewer(generation, stampGen);
       if (mode === "auto" && refresh && !torn && !metadataStale && entry.version === generation && seededInstallDiffers(name, generation, entry) === undefined) {
-        for (const link of bindExtensionPeers([entry.pkg], entry.pkg))
-          provenance.wrote(`${link.peer} link (${link.owner} → this CLI's copy)`, link.destination);
         refresh = false;
       }
       if (mode === "verify" && !refresh) {
         const differs = unverifiable() ?? seededInstallDiffers(name, generation, entry);
         if (differs === undefined) {
-          // Proven identical to the shipped payload. The reinstall it replaces also rebinds the shared
-          // peers to this binary's copies, so a stale link is rebound here too, under the same locks.
-          for (const link of bindExtensionPeers([entry.pkg], entry.pkg))
-            provenance.wrote(`${link.peer} link (${link.owner} → this CLI's copy)`, link.destination);
           verified.push(name);
         } else {
           if (!voided) console.error(c.dim(`${name}: ${differs}; reinstalling`));
@@ -937,6 +929,9 @@ function verifyInstalled(name: string, generation: string): void {
     throw new Error(`connector "${name}" (${pkg}) installed at version ${installed.version} but the seed generation is ${generation} (a version-skewed payload) - rerun \`cotal ext seed --repair\``);
   if (!entryPresent(pkg, installed))
     throw new Error(`connector "${name}" (${pkg}) is installed but its entry file is missing (a torn install) - rerun \`cotal ext seed --repair\``);
+  const declarationProblem = installedDeclarationDiffers(entry, installed, generation);
+  if (declarationProblem)
+    throw new Error(`connector "${name}" (${pkg}): ${declarationProblem} - rerun \`cotal ext seed --repair\``);
 }
 
 function verifyOperatorInstalled(pkg: string, generation: string): void {

@@ -45,8 +45,8 @@ const COMPUTED_LOADS = new Map([
   ['@cotal-ai/seat/dist/peercred.js/path', 'shipped native binding path'],
   ['@cotal-ai/workspace/dist/darwin-process.js/fileURLToPath(path)', 'shipped native binding file URL'],
   ['@cotal-ai/workspace/dist/win32-process.js/fileURLToPath(path)', 'shipped native binding file URL'],
-  ['@cotal-ai/workspace/dist/extensions.js/name', 'declared peer of an operator-installed extension'],
-  ['@cotal-ai/workspace/dist/materialize.js/pathToFileURL(resolveExtensionEntry(dir, meta)).href', 'operator-installed extension entry'],
+  ['@cotal-ai/workspace/dist/extensions.js/name', 'resolution of the host package metadata'],
+  ['@cotal-ai/workspace/dist/materialize.js/pathToFileURL(entry).href', 'operator-installed extension factory entry'],
 ]);
 
 export function runtimeDependencyExemption(name, file, specifier) {

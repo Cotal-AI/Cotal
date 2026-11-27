@@ -1,6 +1,6 @@
 /**
  * The first-party runtimes, name → npm package. This is NOT authority: registration is still
- * explicit (`cotal ext add` installs the package; importing it self-registers the provider). It is
+ * explicit (`cotal ext add` installs the package; the host activates its factory on demand). It is
  * the operator-UX source of truth so an uninstalled runtime refusal names a REAL package, a typo
  * says "unknown" instead of inventing `@cotal-ai/<typo>`, and `cotal runtimes` can list what is one
  * `cotal ext add` away. A third-party runtime installs under its own package name and, once added,

@@ -1,4 +1,4 @@
-import { closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { basename, dirname, isAbsolute, join } from "node:path";
 import { shellPath } from "./local-record-source.js";
@@ -331,15 +331,7 @@ export function extensionPackageDir(pkg: string): string {
   return join(extensionsDir(), "node_modules", pkg);
 }
 
-export interface BoundExtensionPeer {
-  readonly owner: string;
-  readonly peer: string;
-  readonly source: string;
-  readonly destination: string;
-}
-
-/** Locate a shared package in this host's module graph. Exported so a failed import can name the
- *  EXACT peer copy the binder linked, rather than a second resolution that might not be the same one. */
+/** Locate a package in the host's own module graph. */
 export function hostPackageDir(name: string): string {
   let dir = dirname(fileURLToPath(import.meta.resolve(name)));
   for (;;) {
@@ -351,73 +343,6 @@ export function hostPackageDir(name: string): string {
   }
 }
 
-/** Bind installed extensions' shared peers to the current host. Callers must hold the extension lock.
- *  `onAbsent` receives another owner whose package directory does not exist, which has no links to
- *  keep, instead of the bind failing on it. Without it, or for `operationPkg` itself, an absent
- *  package throws like any other unreadable one. `operationMetadata` reuses the operation's already
- *  validated package read; other owners are read through {@link installedExtensionPackage}. */
-export function bindExtensionPeers(
-  owners: readonly string[],
-  operationPkg: string,
-  opts: { force?: boolean; onAbsent?: (owner: string) => void; operationMetadata?: InstalledExtensionPackage } = {},
-): readonly BoundExtensionPeer[] {
-  const planned: BoundExtensionPeer[] = [];
-  for (const owner of owners) {
-    const meta = owner === operationPkg && opts.operationMetadata !== undefined
-      ? opts.operationMetadata
-      : installedExtensionPackage(owner);
-    if (!meta) {
-      // Only a directory that does not exist is absent. A dangling link, or a directory left without
-      // its package.json, is a damaged install and still fails.
-      const dir = extensionPackageDir(owner);
-      if (!lstatSync(dir, { throwIfNoEntry: false })) {
-        if (opts.onAbsent && owner !== operationPkg) {
-          opts.onAbsent(owner);
-          continue;
-        }
-        throw new Error(`extension ${owner} is not installed at ${dir} - re-add it with \`cotal ext add\``);
-      }
-      throw new CorruptExtensionPackageError(owner, join(dir, "package.json"), "file is missing from the installed package");
-    }
-    if (meta.cotal !== undefined) continue;
-    for (const peer of Object.keys(meta.peerDependencies ?? {}).filter((name) => name.startsWith("@cotal-ai/"))) {
-      let source: string;
-      try {
-        source = realpathSync(hostPackageDir(peer));
-      } catch {
-        throw new Error(`${operationPkg}: ${owner} peer-depends on ${peer}, which this cotal binary does not carry - the peer can't be linked`);
-      }
-      planned.push({
-        owner,
-        peer,
-        source,
-        destination: join(extensionPackageDir(owner), "node_modules", ...peer.split("/")),
-      });
-    }
-  }
-
-  const bound: BoundExtensionPeer[] = [];
-  for (const link of planned) {
-    let current: string | undefined;
-    try {
-      current = realpathSync(link.destination);
-    } catch {
-      // Missing and dangling links are both repaired below.
-    }
-    if (!opts.force && current === link.source) continue;
-    try {
-      rmSync(link.destination, { recursive: true, force: true });
-      mkdirSync(dirname(link.destination), { recursive: true });
-      symlinkSync(link.source, link.destination, "junction");
-      if (realpathSync(link.destination) !== link.source) throw new Error("the resulting link resolves to a different package");
-    } catch (e) {
-      throw new Error(`${operationPkg} could not link ${link.peer} for ${link.owner}: ${(e as Error).message}`);
-    }
-    bound.push(link);
-  }
-  return bound;
-}
-
 /** An installed extension's package.json is present but is not JSON or names no version: the package
  *  is installed and damaged, so it must never read as not installed. */
 export class CorruptExtensionPackageError extends Error {
@@ -426,7 +351,7 @@ export class CorruptExtensionPackageError extends Error {
   }
 }
 
-/** One installed package metadata read, shared by version checks, peer binding and entry loading. */
+/** One installed package metadata read, shared by validation and entry loading. */
 export interface InstalledExtensionPackage {
   version: string;
   main: string | undefined;
@@ -441,12 +366,17 @@ export interface InstalledExtensionPackage {
  *  not installed; one that cannot be reached or read throws, and one that is not JSON or has no version
  *  throws {@link CorruptExtensionPackageError}. Pass this snapshot through one load or add. */
 export function installedExtensionPackage(pkg: string): InstalledExtensionPackage | undefined {
-  const path = join(extensionPackageDir(pkg), "package.json");
+  const dir = extensionPackageDir(pkg);
+  const path = join(dir, "package.json");
   let raw: string;
   try {
     raw = readFileSync(path, "utf8");
   } catch (e) {
-    if ((e as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") {
+      if (lstatSync(dir, { throwIfNoEntry: false }))
+        throw new CorruptExtensionPackageError(pkg, path, "file is missing from the installed package");
+      return undefined;
+    }
     throw e;
   }
   let version: unknown;

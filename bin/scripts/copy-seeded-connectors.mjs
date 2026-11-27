@@ -49,6 +49,9 @@ for (const [name, { pkg, srcDir: srcSubdir }] of Object.entries(SEEDED_EXTENSION
   if (meta.version !== umbrellaVersion) {
     throw new Error(`seeded extension ${pkg} is version "${meta.version}" but cotal-ai is "${umbrellaVersion}" - the fixed changeset group must version every bundled extension in lockstep with the umbrella`);
   }
+  if (meta.cotal?.contract !== 1 || meta.cotal.core !== meta.version) {
+    throw new Error(`seeded extension ${pkg} does not declare its bundled core at ${meta.version}; build the package before packing cotal-ai`);
+  }
   if (!existsSync(join(srcDir, "dist"))) {
     throw new Error(`first-party extension ${pkg} is not built (no dist at ${srcDir}) - run \`pnpm build\` before packing cotal-ai`);
   }
