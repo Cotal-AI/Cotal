@@ -14,6 +14,7 @@ import {
 import { CustodialPtyRuntime } from "./custodial-pty.js";
 import { LegacyPtyRuntime } from "./pty.js";
 import { unsupportedTransport } from "@cotal-ai/seat";
+import { SharedPtyRuntime } from "./shared-pty.js";
 
 export type { Runtime, RuntimeKind, AgentHandle, AttachSession } from "@cotal-ai/core";
 
@@ -121,6 +122,13 @@ class PtyRuntime extends LegacyPtyRuntime {
   }
 }
 
+class HostedPtyRuntime extends SharedPtyRuntime {
+  private readonly legacy = new PtyRuntime();
+
+  override adopt(reference: RuntimeReference): AgentHandle { return this.legacy.adopt(reference); }
+  reap(reference: RuntimeReference): Promise<RuntimeReapEvidence> { return this.legacy.reap(reference); }
+}
+
 /** How a manager picks its backend. `auto` is the deterministic default — always `pty`. External
  *  runtimes are never auto-selected; choose one explicitly, which resolves
  *  the integration from the registry and fails loud if it isn't imported. No fallbacks. */
@@ -129,8 +137,9 @@ export type RuntimeMode = RuntimeKind | "auto";
 /** Build the runtime a manager will spawn through. `pty` ships with the manager and is what `auto`
  *  resolves to. Every other name resolves a self-registered {@link RuntimeProvider}; an explicit
  *  provider that is absent or unreachable throws, never a silent fallback to pty. */
-export function createRuntime(mode: RuntimeMode, session: string): Runtime {
-  return ownLaunchArtifacts(createBackend(mode, session));
+export function createRuntime(mode: RuntimeMode, session: string, hosted = false): Runtime {
+  const legacy = createBackend(mode, session);
+  return ownLaunchArtifacts(hosted && legacy.kind === "pty" && process.platform === "linux" ? new HostedPtyRuntime() : legacy);
 }
 
 /** The bundled Linux node-pty can import on musl but crash the manager on its first spawn. */

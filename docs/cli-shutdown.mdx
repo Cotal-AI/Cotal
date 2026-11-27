@@ -585,7 +585,7 @@ progress while the owner is live, calls the reservation stale only when the owne
 not a pid, and otherwise refuses without advising deletion because the owner's liveness could not be
 confirmed.
 When a manager starts shutdown, it cancels outstanding readiness waits before draining admitted
-launches. Its default stop then stops its in-process PTY seats, waits for their exit, including
+launches. Its default stop then stops the built-in PTY seats it cannot release, waits for their exit, including
 runtime escalation for a seat that ignores SIGTERM, and deprovisions them before the manager exits.
 
 Whole-stack shutdown keeps delivery credentials until every required component has stopped.

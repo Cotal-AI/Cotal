@@ -1,16 +1,18 @@
 # @cotal-ai/seat
 
-Local PTY seat custody: a one-shot launcher, one detached custodian process per seat, and the
-authenticated local protocol a manager worker uses to adopt that handle.
+Local PTY seat custody for Linux. One shared host in a transient systemd user service owns the PTYs for
+daemon-hosted Managers. Each seat uses an authenticated private Unix socket and has its own
+versioned custody and exit records.
 
 **Tier:** `packages/` (leaf). Depends on PTY and terminal-mirror libraries, not on
-`@cotal-ai/core`, workspace, implementations, connectors, or NATS. The manager's `pty` runtime
-calls it only to adopt and reap seats an earlier manager left under a custodian.
+`@cotal-ai/core`, workspace, implementations, connectors, or NATS. Linux Managers can also adopt
+and reap seats held by earlier single-seat custodians.
 
 Linux is the production transport in this cut. `create`/`spawn`/`adopt` in this package throw a
 named `custody transport unsupported on <platform>` error on darwin and win32. There is no
-in-process node-pty fallback here. The manager's `pty` runtime spawns in-process on every
-platform. Its custodial `adopt` and `reap` are Linux-only and throw that named error elsewhere.
+in-process fallback in this package. Standalone Managers and Linux sessions without an answering
+systemd user manager use the in-process runtime. Other platforms use their existing runtime.
+The shared host does not change update admission or provide automatic Manager recovery.
 
 `peerCredentials(socket)` and its `PeerCredentials` type are exported from the package root.
 For a connected Linux Unix socket, the function returns the kernel's peer `pid`, `uid` and
@@ -76,7 +78,7 @@ Gating install would skip the package on darwin and win32 and break that path. A
 non-Linux host that reaches `peerCredentials` throws; there is no compile fallback and no
 silent degrade. First use of the helper is the right place for that refusal.
 
-The launcher owns no PTY and exits after writing a permissioned per-seat record. Each custodian
+The legacy launcher owns no PTY and exits after writing a permissioned per-seat record. Each legacy custodian
 owns exactly one `node-pty` object, its child relationship, its screen mirror, and exit
 observation. A manager worker connects to that custodian over a 0600 filesystem Unix socket
 authenticated by `SO_PEERCRED` uid match plus a per-seat capability token. Path possession is

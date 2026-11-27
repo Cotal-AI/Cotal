@@ -2,11 +2,12 @@
  * Seat behavior cells plus worker-death survival and wait-exit close settlement.
  */
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { connect } from "node:net";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { adoptSeatSync, launchSeat, processStartToken, reapSeat, seatId, SeatClient } from "../src/index.js";
+import { adoptSeatSync, launchSeat, linuxSharedCustodyAvailable, openSharedSeat, processStartToken, reapSeat, seatId, SeatClient } from "../src/index.js";
+import { readSharedHost, readSharedSeat, recordedProcess, sharedHostRecord, sharedScopeMatches } from "../src/shared-record.js";
 import { makeSeatRoot } from "@cotal-ai/smoke-kit";
 
 if (process.platform !== "linux") {
@@ -837,6 +838,80 @@ try {
   }
   rmSync(root, { recursive: true, force: true });
 }
+
+async function sharedCustodyCell(): Promise<void> {
+  const entry = fileURLToPath(new URL("../dist/index.js", import.meta.url));
+  const absent = spawnSync(process.execPath, ["--input-type=module", "-e",
+    `const { linuxSharedCustodyAvailable } = await import(${JSON.stringify(`file://${entry}`)}); process.exitCode = linuxSharedCustodyAvailable() ? 1 : 0;`], {
+    env: { ...process.env, DBUS_SESSION_BUS_ADDRESS: "unix:path=/nonexistent/cotal-smoke-user-bus", XDG_RUNTIME_DIR: "/nonexistent/cotal-smoke-runtime" },
+    timeout: 5000,
+  });
+  check("Linux without an answering user manager does not enable shared PTY custody", absent.status === 0);
+  if (!linuxSharedCustodyAvailable()) {
+    console.log("Shared PTY service cell requires an answering systemd user manager.");
+    return;
+  }
+  const base = makeSeatRoot("cotal-shared-pty-");
+  const shared = join(base, "deep".repeat(25));
+  mkdirSync(shared, { mode: 0o700 });
+  const id = [seatId(), seatId()];
+  const source = `const { launchSharedSeat, openSharedSeat } = await import(${JSON.stringify(`file://${entry}`)});
+    for (const id of ${JSON.stringify(id)}) {
+      const root = ${JSON.stringify(shared)};
+      launchSharedSeat({ root, id, name: id, spec: { command: '/bin/sh', args: ['-c', 'trap "" HUP TERM; exec /usr/bin/cat'] }, cwd: root });
+      await openSharedSeat(root, id).attach().backlog();
+    }
+    console.log('SHARED_SEATS_READY'); setInterval(() => {}, 1000);`;
+  const controller = spawn(process.execPath, ["--input-type=module", "-e", source], { stdio: ["ignore", "pipe", "inherit"] });
+  const ended = new Promise<void>(resolve => controller.once("close", () => resolve()));
+  let host: ReturnType<typeof readSharedHost> | undefined;
+  let rows: ReturnType<typeof readSharedSeat>[] = [];
+  const replacements: ReturnType<typeof openSharedSeat>[] = [];
+  try {
+    let output = "";
+    controller.stdout.on("data", chunk => { output = (output + chunk).slice(-1000); });
+    if (!await until(() => output.includes("SHARED_SEATS_READY") || controller.exitCode !== null, 30_000) || !output.includes("SHARED_SEATS_READY")) throw new Error("controller did not start two shared PTYs");
+    host = readSharedHost(shared);
+    rows = id.map(seat => readSharedSeat(shared, seat));
+    check("one host owns two isolated PTYs in its independent service despite a deep custody directory", rows.every(row => Buffer.byteLength(row.socket) > 108 && row.custodianPid === host!.pid && sharedScopeMatches(row.childPid, host!.scope)) && rows[0]!.childPid !== rows[1]!.childPid);
+    controller.kill("SIGKILL");
+    await ended;
+    check("SIGKILL of controller does not change host or any PTY process start identity", processStartToken(host.pid) === host.start && rows.every(row => processStartToken(row.childPid) === row.childStart));
+    for (const seat of id) {
+      const handle = openSharedSeat(shared, seat, true);
+      replacements.push(handle);
+      const marker = `shared-${seat}`;
+      check("reattached client can write its own PTY", await handle.write(`${marker}\r`) === marker.length + 1);
+      const terminal = handle.attach();
+      await wait(100);
+      check("reattached client reads its PTY screen", (await terminal.backlog()).includes(marker));
+    }
+    const record = sharedHostRecord(shared);
+    writeFileSync(record, JSON.stringify({ ...host, version: 2 }));
+    try {
+      let rejected = false;
+      try { openSharedSeat(shared, id[0]!, true).close(); } catch { rejected = true; }
+      check("unknown host record version cannot claim or stop a live PTY", rejected && replacements.every(handle => handle.status() === "running"));
+    } finally { writeFileSync(record, JSON.stringify(host)); }
+    process.kill(host.pid, "SIGKILL");
+    check("after host death, both verified PTY processes are gone", await until(() => rows.every(row => recordedProcess(row.childPid, row.childStart!, row.bootId) === "gone"), 10_000));
+    check("after host death, attached handles report exited", replacements.every(handle => handle.status() === "exited"));
+  } finally {
+    controller.kill("SIGKILL");
+    await ended;
+    for (const handle of replacements) handle.close();
+    try { host ??= readSharedHost(shared); } catch { /* No host was published. */ }
+    for (const seat of id) {
+      try { if (!rows.some(row => row.id === seat)) rows.push(readSharedSeat(shared, seat)); } catch { /* No child was published. */ }
+    }
+    if (host && recordedProcess(host.pid, host.start, host.bootId) === "live") process.kill(host.pid, "SIGKILL");
+    for (const row of rows) if (row.childStart && recordedProcess(row.childPid, row.childStart, row.bootId) === "live") process.kill(row.childPid, "SIGKILL");
+    if (await until(() => (!host || recordedProcess(host.pid, host.start, host.bootId) === "gone") && rows.every(row => !row.childStart || recordedProcess(row.childPid, row.childStart, row.bootId) === "gone"), 10_000)) rmSync(base, { recursive: true });
+    else throw new Error("shared PTY fixture cleanup could not prove exit");
+  }
+}
+
+await sharedCustodyCell();
 
 console.log(`\nSEAT LIFECYCLE ${fail === 0 ? "OK" : "FAILED"} (${pass} passed, ${fail} failed)`);
 process.exitCode = fail === 0 ? 0 : 1;

@@ -134,6 +134,7 @@ export type ServerReply =
       pid: number;
       status: "running" | "exited";
       protocol: number;
+      startup?: import("./startup-confirm.js").StartupOutcome;
     }
   | { id: number; ok: false; error: string };
 

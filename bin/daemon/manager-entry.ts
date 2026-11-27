@@ -2,6 +2,7 @@
 import { registry, resolveAuthProvider, type Command } from "@cotal-ai/core";
 import { IdpSessionRejectedError, withIdpSessionDir } from "@cotal-ai/auth";
 import { CommandFailure } from "@cotal-ai/workspace";
+import { linuxSharedCustodyAvailable, processStatFields } from "@cotal-ai/seat";
 import { checkDir } from "./endpoint.js";
 import { bindManagerCleanup } from "./manager-cleanup.js";
 import { daemonCommandCopy } from "./guidance.js";
@@ -13,8 +14,15 @@ function report(frame: object): void {
 }
 
 let parentGone = false;
+let sharedPtyParent: { pid: number; start: string } | undefined;
 process.once("disconnect", () => {
   parentGone = true;
+  // An orderly stop disconnects this channel while its parent still owns the service.
+  // A dead parent cannot complete that stop. Leave independent PTYs to their host.
+  if (sharedPtyParent) {
+    const actual = processStatFields(sharedPtyParent.pid);
+    if (actual?.[19] !== sharedPtyParent.start || actual[0] === "Z" || actual[0] === "X") process.exit(0);
+  }
   if (process.listenerCount("SIGTERM") === 0) process.exit(0);
   process.emit("SIGTERM", "SIGTERM");
 });
@@ -45,8 +53,11 @@ const command: Command = {
       }
     };
     const { "session-directory": _, ...values } = args.values;
+    const sharedPty = (values.runtime === "pty" || values.runtime === "auto" || values.runtime === undefined) && linuxSharedCustodyAvailable();
+    const pid = process.ppid, start = sharedPty ? processStatFields(pid)?.[19] : undefined;
+    if (pid > 1 && start) sharedPtyParent = { pid, start };
     const machineSetup = typeof values.space === "string" ? daemonCommandCopy("setup", home, [["--space", values.space]]) : undefined;
-    await withIdpSessionDir(home, () => stock.run({ ...args, values: { ...values, "machine-parent": true, "machine-setup-command": machineSetup } }));
+    await withIdpSessionDir(home, () => stock.run({ ...args, values: { ...values, "machine-parent": true, "machine-setup-command": machineSetup, machineHostedPty: sharedPtyParent !== undefined } }));
   },
 };
 registry.register(command);

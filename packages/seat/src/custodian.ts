@@ -40,6 +40,7 @@ export interface CustodianLaunch {
   confirmBefore?: readonly import("./startup-confirm.js").StartupReply[];
   confirmReady?: readonly string[];
   confirmBlockers?: readonly import("./startup-confirm.js").StartupBlocker[];
+  confirmNotice?: string;
   /** Who started this custodian: the launcher's run marker, carried so a census can attribute an
    *  orphan to its run without walking `/proc/*\/cwd` (#1648). */
   run?: string;
@@ -56,10 +57,19 @@ export interface CustodianLaunch {
 
 function send(sock: Socket, msg: ServerMessage): void {
   if (!sock.writable) return;
-  sock.write(encodeFrame(msg));
+  if (sock.writableLength > MAX_FRAME_SIZE) { sock.destroy(); return; }
+  try { sock.write(encodeFrame(msg)); }
+  catch { sock.destroy(); }
 }
 
-export async function runCustodian(launch: CustodianLaunch): Promise<void> {
+/** A shared host owns the process lifetime; each seat still owns its own socket and exit record. */
+interface SharedCustodianLifetime {
+  readonly settled: () => void;
+  readonly record: (record: SeatRecord) => void;
+  readonly listenPath: string;
+}
+
+export async function runCustodian(launch: CustodianLaunch, shared?: SharedCustodianLifetime): Promise<void> {
   if (process.platform !== "linux") {
     throw new Error(`custody transport unsupported on ${process.platform}`);
   }
@@ -94,7 +104,7 @@ export async function runCustodian(launch: CustodianLaunch): Promise<void> {
   try {
     // Built before the child exists, so a prompt that cannot match starts nothing.
     if ((launch.confirmBefore?.length || launch.confirmReady?.length || launch.confirmBlockers?.length) && launch.confirm === undefined) throw new Error("startup choices require a final confirmation prompt");
-    confirmGate = launch.confirm === undefined ? undefined : new StartupConfirmGate(launch.confirm, launch.confirmBefore, launch.confirmReady, launch.confirmBlockers);
+    confirmGate = launch.confirm === undefined ? undefined : new StartupConfirmGate(launch.confirm, launch.confirmBefore, launch.confirmReady, launch.confirmBlockers, launch.confirmNotice);
     proc = pty.spawn(launch.command, launch.args, {
       name: "xterm-256color",
       cols: DEFAULT_COLS,
@@ -164,8 +174,8 @@ export async function runCustodian(launch: CustodianLaunch): Promise<void> {
   };
 
   const childGone = (): boolean => {
-    const state = processStatFields(proc.pid)?.[0];
-    return state === undefined || state === "Z";
+    const fields = processStatFields(proc.pid);
+    return fields === undefined || fields[0] === "Z" || (childStart !== undefined && fields[19] !== childStart);
   };
 
   /**
@@ -238,7 +248,8 @@ export async function runCustodian(launch: CustodianLaunch): Promise<void> {
     }
     // The custody record is retained on disk until verified reaping can consume it;
     // reapSeat proves kernel process identities and removes the record directory.
-    process.exit(0);
+    if (shared) shared.settled();
+    else process.exit(0);
   };
 
   /**
@@ -252,7 +263,7 @@ export async function runCustodian(launch: CustodianLaunch): Promise<void> {
    * reader of its PTY; the settle that follows its exit is the ordinary one.
    */
   const armUnattended = (): void => {
-    if (settling || !ready || unattendedTimer || controllers.size > 0) return;
+    if (shared || settling || !ready || unattendedTimer || controllers.size > 0) return;
     unattendedTimer = setTimeout(() => {
       unattendedTimer = undefined;
       if (settling || controllers.size > 0) return;
@@ -335,9 +346,12 @@ export async function runCustodian(launch: CustodianLaunch): Promise<void> {
       }
       if (ready) {
         try {
-          const tmp = `${launch.recordPath}.tmp`;
-          writeRecord(tmp, record);
-          renameSync(tmp, launch.recordPath);
+          if (shared) shared.record(record);
+          else {
+            const tmp = `${launch.recordPath}.tmp`;
+            writeRecord(tmp, record);
+            renameSync(tmp, launch.recordPath);
+          }
         } catch (e) {
           note(`${(e as Error).message}\n`);
         }
@@ -557,6 +571,8 @@ export async function runCustodian(launch: CustodianLaunch): Promise<void> {
         return;
       }
       case "resize": {
+        if (shared && (!Number.isInteger(req.cols) || !Number.isInteger(req.rows) || req.cols > 500 || req.rows > 300))
+          throw new Error("shared PTY resize exceeds the terminal bounds");
         if (req.cols > 0 && req.rows > 0) {
           cols = req.cols;
           rows = req.rows;
@@ -596,6 +612,7 @@ export async function runCustodian(launch: CustodianLaunch): Promise<void> {
           pid: proc.pid,
           status: alive ? "running" : "exited",
           protocol: PROTOCOL_VERSION,
+          ...(shared && confirmGate ? { startup: confirmGate.outcome } : {}),
         });
         return;
       }
@@ -608,9 +625,10 @@ export async function runCustodian(launch: CustodianLaunch): Promise<void> {
 
   const listening = server;
   if (!listening) throw new Error("custodian server missing");
+  const listenPath = shared?.listenPath ?? launch.socket;
   await new Promise<void>((resolve, reject) => {
     listening.once("error", reject);
-    listening.listen(launch.socket, () => {
+    listening.listen(listenPath, () => {
       // EVERY throw in here must reach `reject`. A callback is not on the promise's call stack, so an
       // exception raised inside it becomes an UNCAUGHT exception: it bypasses the `.catch` at the
       // bottom of this file that writes the log, and the process dies having explained nothing. The
@@ -622,28 +640,29 @@ export async function runCustodian(launch: CustodianLaunch): Promise<void> {
         // path up front, but a custodian can also be started directly, so verify what was actually
         // created rather than trusting that listen succeeded on the name we asked for.
         const bound = listening.address();
-        if (typeof bound === "string" && bound !== launch.socket)
-          throw new Error(`custodian bound ${bound} but was asked for ${launch.socket}; the path was truncated, so it would clean up a socket it never created`);
+        if (typeof bound === "string" && bound !== listenPath)
+          throw new Error(`custodian bound ${bound} but was asked for ${listenPath}; the path was truncated, so it would clean up a socket it never created`);
         chmodSync(launch.socket, 0o600);
-        writeRecord(launch.recordPath, record);
+        if (shared) shared.record(record);
+        else writeRecord(launch.recordPath, record);
         ready = true;
         const announced = `${JSON.stringify({ ready: true, childPid: proc.pid, custodianPid: process.pid })}\n`;
         if (launch.logPath) note(announced);
-        else process.stdout.write(announced);
+        else if (!shared) process.stdout.write(announced);
         armUnobservedHandoff();
         armUnattended();
         settleTerminal();
         resolve();
-      } catch (e) {
-        // The child outlives this process otherwise: nothing else holds its PTY.
-        try {
-          proc.kill("SIGKILL");
-        } catch {
-          /* already gone */
-        }
-        reject(e as Error);
-      }
+      } catch (e) { reject(e as Error); }
     });
+  }).catch((e: unknown) => {
+    confirmGate?.disarm();
+    clearInterval(reap);
+    if (listening.listening) listening.close();
+    for (const client of clients) client.destroy();
+    try { if (alive) proc.kill("SIGKILL"); } catch { /* the child ended */ }
+    if (shared) { ready = true; seenClient = true; settleTerminal(); }
+    throw e;
   });
 }
 

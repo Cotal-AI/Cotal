@@ -180,7 +180,9 @@ Pause automatic restarts and new managed launches when the applicable migration 
 
 <Callout type="warn" title="Check shutdown and backup limits first">
 
-Built-in `pty` seats stop with their manager, including a normal `cotal down`.
+Built-in `pty` seats stop during an orderly Manager shutdown, including a normal `cotal down`.
+On Linux a shared PTY host can keep seats alive after a daemon or Manager crash. An update still
+does not hand those seats to a successor Manager.
 An older manager may also have different shutdown guarantees.
 Read [Stop the stack](run-a-mesh.mdx#stop-the-stack) before choosing the stop command.
 

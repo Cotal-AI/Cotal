@@ -711,6 +711,7 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode, service
       eventsRequired,
       eventPayloadsWithheld,
       runtime,
+      machineHostedPty: args.values.machineHostedPty === true && args.values["machine-parent"] === true && process.connected === true,
       execution,
       consolePort,
       wsPort,

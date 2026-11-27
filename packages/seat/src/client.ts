@@ -39,14 +39,17 @@ export class SeatClient {
   private pendingExitInfo: SeatExit | undefined;
   private closed = false;
 
-  constructor(private readonly record: SeatRecord) {}
+  constructor(private readonly record: SeatRecord, private readonly verifyPeer?: (socket: Socket) => void,
+    private readonly socketPath?: () => { path: string; close(): void }) {}
 
   async connect(): Promise<HelloInfo> {
     if (this.helloInfo) return this.helloInfo;
     if (this.closed) throw new Error("seat client is closed");
     const sock = await new Promise<Socket>((resolve, reject) => {
-      const s = connect(this.record.socket);
+      const short = this.socketPath?.();
+      const s = connect(short?.path ?? this.record.socket);
       this.connecting = s;
+      s.once("close", () => short?.close());
       s.once("connect", () => {
         this.connecting = undefined;
         resolve(s);
@@ -60,9 +63,12 @@ export class SeatClient {
       sock.destroy();
       throw new Error("seat client is closed");
     }
+    try { this.verifyPeer?.(sock); }
+    catch (e) { sock.destroy(); throw e; }
     this.sock = sock;
     sock.on("data", (chunk) => {
-      for (const raw of this.reader.push(chunk)) this.dispatch(raw);
+      try { for (const raw of this.reader.push(chunk)) this.dispatch(raw); }
+      catch { sock.destroy(); }
     });
     sock.on("close", () => this.failAll(new Error("custodian socket closed")));
     sock.on("error", (err) => {
@@ -157,10 +163,10 @@ export class SeatClient {
     return reply.exit;
   }
 
-  async health(): Promise<{ pid: number; status: "running" | "exited"; protocol: number }> {
+  async health(): Promise<{ pid: number; status: "running" | "exited"; protocol: number; startup?: import("./startup-confirm.js").StartupOutcome }> {
     const reply = await this.request({ op: "health" });
     if (!reply.ok || reply.op !== "health") throw new Error(reply.ok ? "unexpected health reply" : reply.error);
-    return { pid: reply.pid, status: reply.status, protocol: reply.protocol };
+    return { pid: reply.pid, status: reply.status, protocol: reply.protocol, startup: reply.startup };
   }
 
   close(): void {

@@ -1,7 +1,7 @@
 import strictAssert from "node:assert/strict";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -15,6 +15,7 @@ import { waitForInstalledDaemonGeneration } from "../daemon/update-generation.js
 import { installedDaemonIdentity, preflightInstalledDaemon, reconcileMissingShellRuntime, unitReceiptFile } from "../daemon/install.js";
 import { currentParentWaits } from "../daemon/update-entry.js";
 import { executeUpdate, update, updateRuntime, type UpdateRuntime } from "@cotal-ai/cli/update";
+import { linuxSharedCustodyAvailable, processStatFields, processStartToken } from "@cotal-ai/seat";
 
 const counted = countedAssert(strictAssert);
 const assert: typeof strictAssert = counted.assert as typeof strictAssert;
@@ -120,6 +121,8 @@ if (process.platform === "linux") {
   writeFileSync(join(home, ".claude.json"), JSON.stringify({ mcpServers: { cotal: { command: "cotal", args: [] } } }), { mode: 0o600 });
   const seed = spawnSync(process.execPath, [entry, "ext", "seed"], { env, cwd: project, encoding: "utf8", timeout: 180_000 });
   assert.equal(seed.status, 0, `${seed.error ?? ""}\n${seed.stdout}${seed.stderr}`);
+  const sharedProof = linuxSharedCustodyAvailable();
+  if (sharedProof) addPtyFixture(entry, project, directory, env);
   const fixture = new URL("../../implementations/auth/smoke/update-participant.fixture.ts", import.meta.url).href;
   const participant = spawn(process.execPath, [...process.execArgv, "--input-type=module", "-e", `
     import { prepareUpdateParticipant } from ${JSON.stringify(fixture)};
@@ -162,6 +165,10 @@ if (process.platform === "linux") {
     await start();
     const before = await managerViaDaemon({ paths }, { op: "manager-start", space });
     assert.equal(before.state, "answering", JSON.stringify(before));
+    if (sharedProof) {
+      await proveHostedPtyFailures({ start, daemon: () => daemon!, paths, space, entry, project, home, env });
+      await start();
+    }
     await killAndAwaitExit(daemon!, "SIGTERM");
     release = claimUpdateClosureAccess();
     writeUpdateRecovery({ previous: "0.0.0", target: version, installed: version, phase: "verified-ready", reason: "waiting for hosted readiness", owner: updateClosureOwner() });
@@ -186,6 +193,117 @@ if (process.platform === "linux") {
       try { assert.equal(await participantStopped, 0, "participant fixture shut down cleanly"); }
       finally { clearTimeout(timer); }
     }
+  }
+}
+
+function addPtyFixture(entry: string, project: string, directory: string, env: NodeJS.ProcessEnv): void {
+  const fixture = join(directory, "shared-fixture");
+  mkdirSync(fixture, { mode: 0o700 });
+  writeFileSync(join(fixture, "package.json"), JSON.stringify({ name: "cotal-shared-pty-smoke", version: "1.0.0", main: "index.js", type: "module", peerDependencies: { "@cotal-ai/core": "*" } }));
+  writeFileSync(join(fixture, "index.js"), `import { registry } from '@cotal-ai/core';
+    registry.register({kind:'connector', name:'shared-pty-smoke', requires:['node'], waitsForOperator:()=> 'test terminal',
+    buildLaunch:()=>({command:'/bin/sh',args:['-c','trap "" HUP TERM; exec /usr/bin/cat'],env:{PATH:'/usr/bin:/bin'}})});`);
+  const added = spawnSync(process.execPath, [entry, "ext", "add", fixture], { env, cwd: project, encoding: "utf8", timeout: 90_000 });
+  assert.equal(added.status, 0, `${added.error ?? ""}\n${added.stdout}${added.stderr}`);
+}
+
+type HostedPtyProof = {
+  start(): Promise<void>;
+  daemon(): ChildProcess;
+  paths: ReturnType<typeof daemonPaths>;
+  space: string;
+  entry: string;
+  project: string;
+  home: string;
+  env: NodeJS.ProcessEnv;
+};
+
+async function proveHostedPtyFailures(ctx: HostedPtyProof): Promise<void> {
+  const getManager = async () => {
+    for (let i = 0; i < 150; i++) {
+      const answer = await managerViaDaemon({ paths: ctx.paths }, { op: "manager-start", space: ctx.space });
+      if (answer.state === "answering" && "instanceId" in answer && answer.instanceId && answer.pid) return { id: answer.instanceId, pid: answer.pid };
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+    throw new Error("the hosted Manager did not answer");
+  };
+  const key = createHash("sha256").update(ctx.entry).digest("hex").slice(0, 12);
+  const root = join(ctx.home, ".cotal", "seats", `p-${key}`);
+  const known: { pid: number; start: string }[] = [];
+  const readHost = () => {
+    const host = JSON.parse(readFileSync(join(root, "host.json"), "utf8")) as { pid: number; start: string };
+    if (!known.some(row => row.pid === host.pid)) known.push(host);
+    return host;
+  };
+  let baseline = new Set<string>();
+  const launchPair = async (label: string) => {
+    const manager = await getManager();
+    baseline = new Set(existsSync(root) ? readdirSync(root) : []);
+    for (const n of [1, 2]) {
+      const launched = spawnSync(process.execPath, [ctx.entry, "spawn", "--agent", "shared-pty-smoke", "--name", `${label}_${n}`, "--space", ctx.space, "--on", manager.id, "--detach", "--no-events"], { cwd: ctx.project, env: ctx.env, encoding: "utf8", timeout: 45_000 });
+      assert.equal(launched.status, 0, `${launched.error ?? ""}\n${launched.stdout}${launched.stderr}`);
+    }
+    const host = readHost();
+    const rows = readdirSync(root).filter(id => /^[0-9a-f]{32}$/.test(id) && !baseline.has(id)).map(id => {
+      const row = JSON.parse(readFileSync(join(root, id, "shared.json"), "utf8")) as { childPid: number; childStart: string; custodianPid: number };
+      assert.equal(row.custodianPid, host.pid);
+      return { pid: row.childPid, start: row.childStart };
+    });
+    assert.equal(rows.length, 2);
+    known.push(...rows);
+    return { manager, host, rows };
+  };
+  const stillLive = (row: typeof known[number]) => processStartToken(row.pid) === row.start && !["Z", "X"].includes(processStatFields(row.pid)?.[0] ?? "");
+  const waitGone = async (rows: typeof known) => {
+    for (let i = 0; i < 150 && rows.some(stillLive); i++) await new Promise(resolve => setTimeout(resolve, 100));
+    assert.ok(rows.every(row => !stillLive(row)), "owned process lifetimes ended");
+  };
+  const activeRows = async () => {
+    const current = await queryDaemon({ paths: ctx.paths });
+    assert.ok(current.ok);
+    const inventory = current.result.agents?.find(row => row.space === ctx.space);
+    assert.equal(inventory?.state, "read", "hosted Manager answered the agent inventory");
+    return inventory?.agents ?? [];
+  };
+  const stopHost = async (host: typeof known[number], rows: typeof known) => {
+    assert.ok(stillLive(host));
+    process.kill(host.pid, "SIGKILL");
+    await waitGone([host, ...rows]);
+  };
+  try {
+    const first = await launchPair("manager_death");
+    const originalManager = { pid: first.manager.pid, start: processStartToken(first.manager.pid)! };
+    assert.ok(originalManager.start);
+    process.kill(originalManager.pid, "SIGKILL");
+    await waitGone([originalManager]);
+    assert.ok([first.host, ...first.rows].every(stillLive), "Manager SIGKILL preserves host and both PTY PID/start identities");
+    await stopHost(first.host, first.rows);
+    const second = await launchPair("daemon_death");
+    const ownedManager = { pid: second.manager.pid, start: processStartToken(second.manager.pid)! };
+    assert.ok(ownedManager.start);
+    await killAndAwaitExit(ctx.daemon(), "SIGKILL");
+    await waitGone([ownedManager]);
+    assert.ok([second.host, ...second.rows].every(stillLive), "daemon SIGKILL preserves both PTY lifetimes after Manager disconnect");
+    await stopHost(second.host, second.rows);
+    await ctx.start();
+    const third = await launchPair("host_death");
+    assert.equal((await activeRows()).filter(row => row.name.startsWith("host_death_") && row.state === "running").length, 2);
+    await stopHost(third.host, third.rows);
+    const status = await managerViaDaemon({ paths: ctx.paths }, { op: "manager-status", space: ctx.space });
+    assert.equal(status.state, "answering", "Manager still answers after the shared PTY host died");
+    assert.ok((await activeRows()).filter(row => row.name.startsWith("host_death_")).every(row => row.state === "exited"), "the Manager reports the two previously observed PTYs exited or retired");
+    await killAndAwaitExit(ctx.daemon(), "SIGTERM");
+    console.log("Hosted shared PTY: Manager crash, daemon crash, host death and cleanup verified");
+  } finally {
+    try { readHost(); } catch { /* An unpublished host has no admitted PTY. */ }
+    if (existsSync(root)) for (const id of readdirSync(root).filter(id => /^[0-9a-f]{32}$/.test(id))) {
+      const record = join(root, id, "shared.json");
+      if (!existsSync(record)) continue;
+      const row = JSON.parse(readFileSync(record, "utf8")) as { childPid: number; childStart?: string };
+      if (row.childStart && !known.some(knownRow => knownRow.pid === row.childPid && knownRow.start === row.childStart)) known.push({ pid: row.childPid, start: row.childStart });
+    }
+    for (const row of known) if (stillLive(row)) process.kill(row.pid, "SIGKILL");
+    await waitGone(known);
   }
 }
 
