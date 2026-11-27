@@ -338,6 +338,24 @@ check("two leading typographic flags keep the first diagnosis in a version JSON 
   twoDashVersion.stderr === "" && twoDashVersion.envelope?.command === "version" && twoDashVersion.envelope.outcome === "refused" &&
   twoDashVersion.envelope.error?.code === "USAGE_INVALID" && twoDashVersion.envelope.error.message === dashMessage &&
   twoDashVersion.envelope.error.remedy === dashRemedy, shown(twoDashVersion));
+const plainWords = "\u2013\u2013plain";
+const dashPlainMessage = `${plainWords} starts with a typographic dash, so it is not an option`;
+for (const second of ["\u2013\u2013help", "\u2013h", "\u2013\u2013version", "\u2013V"]) {
+  const r = run([dashFlag, second, "version", "--json"]);
+  check(`${dashFlag} ${second} version --json keeps the JSON refusal and reports the first flag`, r.status === 1 && r.stderr === "" &&
+    r.envelope?.command === "version" && r.envelope.outcome === "refused" && r.envelope.error?.code === "USAGE_INVALID" &&
+    r.envelope.error.message === dashMessage && r.envelope.error.remedy === dashRemedy, shown(r));
+}
+const jsonPlain = run(["status", "--json", plainWords]);
+check("a mistyped plain option with --json says to omit it, not to retype it beside --json", jsonPlain.status === 1 &&
+  jsonPlain.stderr === "" && jsonPlain.envelope?.command === "status" && jsonPlain.envelope.outcome === "refused" &&
+  jsonPlain.envelope.error?.code === "USAGE_INVALID" && jsonPlain.envelope.error.message === dashPlainMessage &&
+  jsonPlain.envelope.error.remedy === "omit the mistyped plain option", shown(jsonPlain));
+const jsonLeadingPlain = run([plainWords, "status", "--json"]);
+check("a leading mistyped plain option with --json gets the same omit remedy", jsonLeadingPlain.status === 1 &&
+  jsonLeadingPlain.stderr === "" && jsonLeadingPlain.envelope?.command === "status" && jsonLeadingPlain.envelope.outcome === "refused" &&
+  jsonLeadingPlain.envelope.error?.code === "USAGE_INVALID" && jsonLeadingPlain.envelope.error.message === dashPlainMessage &&
+  jsonLeadingPlain.envelope.error.remedy === "omit the mistyped plain option", shown(jsonLeadingPlain));
 for (const args of [
   [dashFlag, "config", "get", "harness", "--", "--json"],
   ["--json", "--", dashFlag, "config", "get", "harness"],
