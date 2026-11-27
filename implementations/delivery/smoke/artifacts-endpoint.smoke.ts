@@ -15,7 +15,8 @@
  *  - a gate frozen, or a registration revision moved, at an unchanged epoch refuses the bind and the
  *    re-mint, while last-good keeps answering;
  *  - a re-registration of the same instance is a takeover through the real verify-evict, the epoch
- *    advances, and list answers at the new epoch;
+ *    advances, and list answers at the new epoch; a genuine serve credential for the superseded
+ *    epoch is then refused by claims equality;
  *  - nativeConnections lists artifacts-serve, artifact-data and artifact-sweeper beside the rest.
  *
  * The caller's `artifacts list` row comes from the `artifacts` capability token (option A): the
@@ -43,7 +44,7 @@ import { SMOKE_BROKER_TOKEN, createSuite, teardownOnSignal } from "@cotal-ai/smo
 import { startDeliveryService, type DeliveryServiceHandle } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
 
-const EXPECTED_CELLS = 22;
+const EXPECTED_CELLS = 23;
 const { check, finish, passed, failed } = createSuite();
 
 class MemoryStore implements SecretStore {
@@ -254,6 +255,18 @@ try {
     (await readDaemonEndpointServeId(store, space, ARTIFACTS_ENDPOINT)) === oldServeId);
   const afterTakeover = (await member.invokeService(ARTIFACTS_ENDPOINT, ARTIFACTS_LIST_COMMAND, { channel, limit: 1 })).reply;
   check("list answers at the new epoch after the takeover", afterTakeover.ok, afterTakeover);
+
+  // ---- a genuine serve credential for the superseded epoch: claims equality refuses it ----
+  // `renewedCreds` was minted behind the fence at the old epoch. Its reply and egress rows name that
+  // epoch, so against the grant the daemon now derives (the new epoch) the rows differ, and it never
+  // dials. The serving connection stays the one at the new epoch.
+  const servingNow = (await admin.requestDeliveryAdmin("serveState", { endpoint: ARTIFACTS_ENDPOINT }, 10_000)).data as { state?: { credentialFingerprint: string; epoch: number } };
+  await store.put(daemonEndpointKey(space, ARTIFACTS_ENDPOINT, DAEMON_ENDPOINT_SERVE_CREDS_KIND), renewedCreds!);
+  const staleAdopt = await admin.requestDeliveryAdmin("adoptEndpointCreds", { endpoint: ARTIFACTS_ENDPOINT, adoptionOpId: mintLifecycleUid() }, 20_000);
+  const servingStill = (await admin.requestDeliveryAdmin("serveState", { endpoint: ARTIFACTS_ENDPOINT }, 10_000)).data as { state?: { credentialFingerprint: string; epoch: number } };
+  check("a real serve credential pinned to the superseded epoch is refused by claims equality, naming the row mismatch",
+    !staleAdopt.ok && /exactly the rows|missing|extra/.test(staleAdopt.error ?? "")
+      && servingStill.state?.credentialFingerprint === servingNow.state?.credentialFingerprint && servingStill.state?.epoch === restarted.epoch, { staleAdopt });
 
   // ---- native inventory ----
   let labels = "";
