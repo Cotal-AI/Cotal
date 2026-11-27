@@ -73,6 +73,9 @@ const COMPLETE_MS = 2000;
 
 const described = new Map();
 let turnId;
+// Message count where the uninterrupted main-turn chain began, so a later prompt in the chain
+// does not move the slice past tools an abort already moved to the background.
+let since;
 // The owner's model switch (SPEC 13.22): `{ model, effort? }`, which every step of each main turn
 // that starts after it goes out on. It lives in this session alone, because Claude Code's own
 // /model and /effort save the person's settings.
@@ -137,14 +140,12 @@ async function run($, { command: name, args }) {
   return { op: 'run', outcome: 'started' };
 }
 
-const isPrompt = (message) => message.role === 'user' && message.text && !message.toolResults?.length;
-
-// Stops each tool the abort moved to the background, which are the aborted turn's: everything after
-// the last prompt. Says why when a stop was refused.
-async function stopBackgrounded($) {
+// Stops each tool an abort moved to the background from `from` onwards. Says why when a stop was
+// refused.
+async function stopBackgrounded($, from) {
   const messages = await $.session.messages();
   const tasks = new Set();
-  for (const message of messages.slice(messages.findLastIndex(isPrompt) + 1)) {
+  for (const message of messages.slice(from)) {
     for (const { result } of message.toolResults ?? []) {
       if (result?.backgroundedByTurnAbort === true && typeof result.backgroundTaskId === 'string') tasks.add(result.backgroundTaskId);
     }
@@ -175,6 +176,7 @@ function completion($, id) {
 async function interrupt($) {
   if (turnId === undefined) return { op: 'interrupt', outcome: 'idle' };
   const stopping = turnId;
+  const from = since ?? 0;
   // Claude records the tool results an abort moved to the background after the abort resolves, so
   // they are read once the aborted turn completed.
   const completed = completion($, stopping);
@@ -188,7 +190,7 @@ async function interrupt($) {
     const reason = `the aborted turn did not complete within ${COMPLETE_MS / 1000} s, so tools it moved to the background may still run`;
     return { op: 'interrupt', outcome: 'interrupted', reason };
   }
-  const reason = await stopBackgrounded($).catch((error) => `could not stop the tools the interrupt left running: ${messageOf(error)}`);
+  const reason = await stopBackgrounded($, from).catch((error) => `could not stop the tools the interrupt left running: ${messageOf(error)}`);
   return { op: 'interrupt', outcome: 'interrupted', ...(reason ? { reason } : {}) };
 }
 
@@ -272,8 +274,10 @@ export function register(on) {
   });
   on('turn.start', { turnId: /./ }, async ($, e, next) => {
     if (e.agentId === undefined) {
+      const mark = since ?? (await $.session.messages()).length;
       turnId = e.turnId;
       running = wanted;
+      since = mark;
     }
     return next(e);
   });
@@ -295,6 +299,7 @@ export function register(on) {
     const completed = await next(e);
     if (e.agentId === undefined) {
       if (e.turnId === turnId) turnId = undefined;
+      if (!e.isAborted || completions.has(e.turnId)) since = undefined;
       completions.get(e.turnId)?.();
     }
     return completed;
