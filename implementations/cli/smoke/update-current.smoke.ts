@@ -221,7 +221,7 @@ async function npmNodeEngine(): Promise<void> {
     copyFileSync(process.execPath, alternate);
     const version = JSON.parse(readFileSync(join(repoBin, "package.json"), "utf8")).version;
     const record = join(root, "npm-runtime");
-    type NpmLaunch = { node: string; cwd: string; pathHead: string };
+    type NpmLaunch = { node: string; cwd: string; pathHead: string; source?: string };
     const recordedLaunches = (): NpmLaunch[] => readFileSync(record, "utf8").trim().split(/\r?\n/).map(line => JSON.parse(line));
     writeFileSync(join(npmRoot, "package.json"), JSON.stringify({ name: "npm", bin: { npm: "bin/npm-cli.js" }, engines: { node: process.version } }));
     writeFileSync(cli, `#!/usr/bin/env node
@@ -309,6 +309,78 @@ require(${JSON.stringify(cli)});
         [realpathSync(alternate)], "npm's Corepack entry runs on the compatible Node");
     }
     renameSync(alternate, `${alternate}.gone`);
+    {
+      const corepackProject = join(root, "corepack-project");
+      const corepackCache = join(root, "corepack-cache");
+      const cachedNpmRoot = join(corepackCache, "v1", "npm", "10.9.11");
+      const cachedNpmCli = join(cachedNpmRoot, "bin", "npm-cli.js");
+      const fallbackNpmDir = join(root, "fallback-npm-bin");
+      const fallbackNpmRoot = join(fallbackNpmDir, "node_modules", "npm");
+      const fallbackNpmCli = join(fallbackNpmRoot, "bin", "npm-cli.js");
+      for (const dir of [corepackProject, dirname(cachedNpmCli), dirname(fallbackNpmCli)])
+        mkdirSync(dir, { recursive: true });
+      for (const [pkgRoot, script, source] of [
+        [cachedNpmRoot, cachedNpmCli, "corepack-project"],
+        [fallbackNpmRoot, fallbackNpmCli, "path-fallback"],
+      ] as const) {
+        writeFileSync(join(pkgRoot, "package.json"), JSON.stringify({ name: "npm", bin: { npm: "bin/npm-cli.js" }, engines: { node: "*" } }));
+        writeFileSync(script, `#!/usr/bin/env node
+require('node:fs').appendFileSync(${JSON.stringify(record)}, JSON.stringify({
+  node: process.execPath, cwd: process.cwd(), pathHead: (process.env.PATH ?? '').split(require('node:path').delimiter)[0], source: ${JSON.stringify(source)},
+}) + '\\n');
+console.log(JSON.stringify(${JSON.stringify(version)}));
+`, { mode: 0o755 });
+      }
+      if (process.platform === "win32") {
+        writeFileSync(join(dirname(cachedNpmCli), "npm.cmd"), '@node "%~dp0npm-cli.js" %*\r\n');
+        writeFileSync(join(fallbackNpmDir, "npm.cmd"), '@node "%~dp0node_modules\\npm\\bin\\npm-cli.js" %*\r\n');
+      } else {
+        symlinkSync(cachedNpmCli, join(dirname(cachedNpmCli), "npm"));
+        symlinkSync(fallbackNpmCli, join(fallbackNpmDir, "npm"));
+      }
+      writeFileSync(corepackNpm, `#!/usr/bin/env node
+const { existsSync, readFileSync } = require('node:fs');
+const { join } = require('node:path');
+let pkg;
+try { pkg = JSON.parse(readFileSync(join(process.cwd(), 'package.json'), 'utf8')); } catch {}
+if (pkg?.packageManager === 'npm@10.9.11' && process.argv.includes('--version')) {
+  console.log('10.9.11');
+  process.exit(0);
+}
+console.error(${JSON.stringify(`npm warn cli npm v12.2.3 does not support Node.js ${incompatibleVersion}. This version of npm supports the following node versions: \`${process.version}\`.`)});
+if (process.argv.includes('--version')) console.log('12.2.3');
+process.exit(process.argv.includes('--version') ? 0 : 1);
+`, { mode: 0o755 });
+      writeFileSync(join(corepackProject, "package.json"), JSON.stringify({
+        name: "lts22-app",
+        private: true,
+        packageManager: "npm@10.9.11",
+      }));
+      const beforeProject = recordedLaunches().length;
+      const viaProjectCorepack = spawnSync(join(onlyNode, exe), [entry, "update", "--self"], {
+        cwd: corepackProject, encoding: "utf8", timeout: 60_000,
+        env: { ...cliEnv([], corepackDir), COREPACK_HOME: corepackCache },
+      });
+      assert.equal(viaProjectCorepack.status, 0, viaProjectCorepack.stdout + viaProjectCorepack.stderr);
+      assert.match(viaProjectCorepack.stdout, /Registry latest:/);
+      assert.deepEqual(recordedLaunches().slice(beforeProject).map(item => ({ source: item.source, cwd: item.cwd })),
+        [{ source: "corepack-project", cwd: parse(root).root }], "Corepack project npm runs outside the project when no newer Node is installed");
+
+      writeFileSync(join(corepackProject, "package.json"), JSON.stringify({
+        name: "pnpm-app",
+        private: true,
+        packageManager: "pnpm@11.0.0",
+      }));
+      const beforeFallback = recordedLaunches().length;
+      const viaPathFallback = spawnSync(join(onlyNode, exe), [entry, "update", "--self"], {
+        cwd: corepackProject, encoding: "utf8", timeout: 60_000,
+        env: { ...cliEnv([fallbackNpmDir], corepackDir), COREPACK_HOME: corepackCache },
+      });
+      assert.equal(viaPathFallback.status, 0, viaPathFallback.stdout + viaPathFallback.stderr);
+      assert.match(viaPathFallback.stdout, /Registry latest:/);
+      assert.deepEqual(recordedLaunches().slice(beforeFallback).map(item => ({ source: item.source, cwd: item.cwd })),
+        [{ source: "path-fallback", cwd: parse(root).root }], "a compatible npm later on PATH runs outside the project when Corepack selects an incompatible npm");
+    }
     if (process.platform !== "win32") {
       const shimDir = join(root, "shim-bin");
       mkdirSync(shimDir);

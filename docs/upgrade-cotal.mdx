@@ -127,6 +127,9 @@ If that npm requires a different Node version, Cotal tries the Node recorded by 
 launcher, when present, and then looks for a compatible Node alongside npm or on `PATH`.
 Cotal checks whether the Node it chooses for Corepack can also run the npm that Corepack selects.
 If npm requires a different Node version, Cotal keeps looking for one that can run both.
+When no installed Node can run the npm that Corepack selects outside the project, Cotal uses a
+compatible npm configured by the project for Corepack, or a compatible npm later on `PATH`, and
+still runs it outside the project.
 The search can also use Volta's `node` shim.
 If the `node` shim on `PATH` selects a compatible version from the current project, as with asdf,
 Cotal verifies that executable and runs npm with it outside the project, including during
