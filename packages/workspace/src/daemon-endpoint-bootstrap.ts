@@ -19,9 +19,11 @@
  * here falls back to serving without the daemon's proof.
  */
 import {
+  ARTIFACTS_ENDPOINT, artifactsClusterArtifacts, artifactsContractArtifactValues,
   mintCreds, mintLifecycleUid, newIdentity, type ControlReply, type Profile, type SecretStore, type SpaceAuth,
 } from "@cotal-ai/core";
 import {
+  ARTIFACT_DATA_CREDS_KIND, ARTIFACT_SWEEPER_CREDS_KIND,
   daemonEndpointKey, DAEMON_ENDPOINT_SERVE_CREDS_KIND, loadOrCreateDaemonEndpointInstanceId,
   loadOrCreateDaemonEndpointServeIdentity,
 } from "./daemon-endpoint-material.js";
@@ -39,6 +41,19 @@ export interface DaemonEndpointStoreCred {
 export interface DaemonEndpointBootstrap extends DaemonEndpointContract {
   storeCreds: readonly DaemonEndpointStoreCred[];
 }
+
+/** The endpoints the signer holder can bootstrap for a delivery daemon, by the name `--serve` takes. */
+export const DAEMON_ENDPOINT_BOOTSTRAPS: Readonly<Record<string, () => DaemonEndpointBootstrap>> = Object.freeze({
+  [ARTIFACTS_ENDPOINT]: () => ({
+    endpoint: ARTIFACTS_ENDPOINT,
+    cluster: artifactsClusterArtifacts(),
+    artifactValues: artifactsContractArtifactValues,
+    storeCreds: [
+      { profile: "artifact-data" as const, kind: ARTIFACT_DATA_CREDS_KIND },
+      { profile: "artifact-sweeper" as const, kind: ARTIFACT_SWEEPER_CREDS_KIND },
+    ],
+  }),
+});
 
 /** Send one delivery-admin request on a scoped, short-lived `endpoint-evictor` credential: the one
  *  profile that publishes exactly that rail and nothing else. */

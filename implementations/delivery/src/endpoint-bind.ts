@@ -39,12 +39,20 @@ import {
   type EpServeHandle, type NativeConnectionBinding, type ServiceNameAuthority,
 } from "@cotal-ai/core";
 
-/** What a daemon-served endpoint brings to its bind: its name, its built-in contract, and the
- *  handlers for its registered commands. `defs` takes the fence so every handler can check it. */
+/** What a daemon-served endpoint brings to its bind: its name, its built-in contract, the handlers for
+ *  its registered commands, and the connections those handlers use. `defs` takes the serving
+ *  connection's generation and the fence, so every handler can check them. */
 export interface DaemonServedEndpoint {
   endpoint: string;
   cluster: { document: ClusterDocument; rootDigest: string; manifest: ContractClosureManifest; closureDigest: string };
+  /** Open or refresh what the handlers need, from the store material, before a candidate binds.
+   *  Runs on every adoption; a throw refuses the bind and keeps last-good. */
+  prepare?: () => Promise<void>;
   defs: (scope: ServeScope) => EpCommandDef[];
+  /** The connections the handlers hold, labelled for the native inventory. */
+  nativeConnections?: () => { label: string; binding: NativeConnectionBinding }[];
+  /** Close what `prepare` opened. */
+  close?: () => Promise<void>;
 }
 
 /** The pinned tuple of an `open` gate. */
@@ -231,6 +239,7 @@ export class DaemonEndpointBinder {
     const servePrincipal = principalKey(DEV_OWNER, args.serveId).key;
     const grant = await deriveDaemonServeGrant(await this.opts.jsm(), { space: this.opts.space, endpoint: this.opts.endpoint, instanceId: args.instanceId, servePrincipal });
     assertServeCandidateClaims(args.creds, grant, args.serveId);
+    await this.opts.endpoint.prepare?.();
     const nc = await dialerFor(this.opts.servers)({
       servers: this.opts.servers,
       ...standaloneConnectOpts({ creds: args.creds, tls: this.opts.tls }),
@@ -296,13 +305,18 @@ export class DaemonEndpointBinder {
     this.leaseHeld = true;
   }
 
-  /** The serve connection, for the native inventory, when one is bound. */
-  nativeConnections(): NativeConnectionBinding[] {
-    return this.served ? [this.served.native.binding()] : [];
+  /** The serve connection and the handlers' own connections, for the native inventory. */
+  nativeConnections(): { label: string; binding: NativeConnectionBinding }[] {
+    const { endpoint } = this.opts.endpoint;
+    return [
+      ...(this.served ? [{ label: `${endpoint}-serve`, binding: this.served.native.binding() }] : []),
+      ...(this.opts.endpoint.nativeConnections?.() ?? []),
+    ];
   }
 
   async close(): Promise<void> {
     await this.quiesce("the daemon is stopping");
+    await this.opts.endpoint.close?.();
   }
 }
 

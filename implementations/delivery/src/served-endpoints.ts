@@ -13,13 +13,25 @@
  * (`endpoint-bind.ts`).
  */
 import type { JetStreamManager } from "@nats-io/jetstream";
-import type { NativeConnectionBinding, SecretStore } from "@cotal-ai/core";
+import type { CotalEndpoint, NativeConnectionBinding, SecretStore } from "@cotal-ai/core";
 import { daemonEndpointKey, DAEMON_ENDPOINT_SERVE_CREDS_KIND, readDaemonEndpointInstanceId, readDaemonEndpointServeId } from "@cotal-ai/workspace";
 import { DaemonEndpointBinder, type DaemonServedEndpoint, type ServeState } from "./endpoint-bind.js";
 
 /** Every endpoint a delivery daemon knows how to serve, by name. A name outside this table is refused
- *  at start, before anything dials. */
-export type ServedEndpointCatalog = Readonly<Record<string, () => DaemonServedEndpoint>>;
+ *  at start, before anything dials. Each factory gets what it needs to open its own connections. */
+export type ServedEndpointCatalog = Readonly<Record<string, (ctx: ServedEndpointContext) => DaemonServedEndpoint>>;
+
+/** What a served endpoint's factory is handed: where to dial, the store holding its material, the
+ *  daemon's own endpoint for fresh ACL reads, and the daemon's log. */
+export interface ServedEndpointContext {
+  space: string;
+  servers: string;
+  tls: boolean;
+  store: SecretStore;
+  /** The daemon's delivery endpoint: the live read ACL by alias rides its connection. */
+  delivery: Pick<CotalEndpoint, "aclForAlias">;
+  log: (line: string) => void;
+}
 
 /** Parse `--serve <a,b>` into endpoint names: deduplicated, each one in the catalog. */
 export function parseServeFlag(raw: string | undefined, catalog: ServedEndpointCatalog): string[] {
@@ -44,14 +56,16 @@ export class ServedEndpoints {
     catalog: ServedEndpointCatalog;
     /** The store the signer holder writes each endpoint's material to: the delivery cred's store. */
     store: SecretStore;
+    delivery: Pick<CotalEndpoint, "aclForAlias">;
     jsm: () => Promise<JetStreamManager>;
     log: (line: string) => void;
   }) {
+    const ctx: ServedEndpointContext = { space: opts.space, servers: opts.servers, tls: opts.tls, store: opts.store, delivery: opts.delivery, log: opts.log };
     for (const name of opts.names) {
       const factory = opts.catalog[name];
       if (factory === undefined) throw new Error(`delivery: no served endpoint named ${name}`);
       this.binders.set(name, new DaemonEndpointBinder({
-        space: opts.space, servers: opts.servers, tls: opts.tls, endpoint: factory(), jsm: opts.jsm, log: opts.log,
+        space: opts.space, servers: opts.servers, tls: opts.tls, endpoint: factory(ctx), jsm: opts.jsm, log: opts.log,
       }));
     }
   }
@@ -102,8 +116,8 @@ export class ServedEndpoints {
     for (const b of this.binders.values()) b.leaseRegained();
   }
 
-  nativeConnections(): { endpoint: string; binding: NativeConnectionBinding }[] {
-    return [...this.binders.entries()].flatMap(([endpoint, b]) => b.nativeConnections().map((binding) => ({ endpoint, binding })));
+  nativeConnections(): { label: string; binding: NativeConnectionBinding }[] {
+    return [...this.binders.values()].flatMap((b) => b.nativeConnections());
   }
 
   async close(): Promise<void> {

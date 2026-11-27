@@ -28,6 +28,7 @@ import { executeEviction, executeEvictions, executePlaneLiveness, executePrincip
 import { healConnectionEvictor } from "./sys-creds.js";
 import { acquireShardLease, ownLeaseReader, requireReachableBroker } from "./delivery-startup.js";
 import { parseServeFlag, ServedEndpoints, type ServedEndpointCatalog } from "./served-endpoints.js";
+import { artifactsServedEndpoint } from "./artifacts-endpoint.js";
 import type { KickAuthority } from "./kick-authority.js";
 import type { HostedContextInputs, HostedServiceHandle, HostedServiceState, SpaceLane } from "@cotal-ai/workspace";
 import {
@@ -96,13 +97,14 @@ export async function runDelivery(args: ParsedArgs, store?: SecretStore, onStart
 /** One data-account connection a hosted delivery context holds. The label says which part of the
  *  context holds it and is not an authority. */
 export interface DeliveryNativeConnection extends NativeConnectionBinding {
-  /** `endpoint` is the daemon's own connection; `<name>-serve` a served endpoint's serve connection. */
-  label: "endpoint" | "membership-rw" | "timer-writer" | `${string}-serve`;
+  /** `endpoint` is the daemon's own connection; a served endpoint adds `<name>-serve` and the labels
+   *  of its own store connections (for `artifacts`: `artifact-data`, `artifact-sweeper`). */
+  label: "endpoint" | "membership-rw" | "timer-writer" | (string & {});
 }
 
 /** The endpoints this daemon can be asked to serve with `--serve` (or hosted `endpoints`). Each
  *  entry builds its contract and handlers; a name outside the table is refused at start. */
-export const SERVED_ENDPOINT_CATALOG: ServedEndpointCatalog = Object.freeze({});
+export const SERVED_ENDPOINT_CATALOG: ServedEndpointCatalog = Object.freeze({ artifacts: artifactsServedEndpoint });
 
 /** A hosted delivery context, with the native bindings of its data-account connections. */
 export interface DeliveryServiceHandle extends HostedServiceHandle {
@@ -691,6 +693,7 @@ async function runStartedDelivery(
   served = serveNames.length === 0 ? undefined : new ServedEndpoints({
     space, servers: server, tls, names: serveNames, catalog: SERVED_ENDPOINT_CATALOG,
     store: store ?? workspaceSecretStore(root),
+    delivery: ep,
     jsm: () => ep.deliveryJetStreamManager(),
     log: (line) => log.err(line),
   });
@@ -1234,7 +1237,7 @@ async function runStartedDelivery(
       ...ep.nativeConnections().map((binding) => ({ label: "endpoint" as const, ...binding })),
       ...(membership?.nativeDataConnections() ?? []).map((binding) => ({ label: "membership-rw" as const, ...binding })),
       { label: "timer-writer" as const, ...timerWriter.native.binding() },
-      ...(served?.nativeConnections() ?? []).map(({ endpoint, binding }) => ({ label: `${endpoint}-serve` as const, ...binding })),
+      ...(served?.nativeConnections() ?? []).map(({ label, binding }) => ({ label, ...binding })),
     ];
   };
 
