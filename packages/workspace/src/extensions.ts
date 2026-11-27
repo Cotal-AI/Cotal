@@ -2,7 +2,7 @@ import { closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, open
 import { randomBytes } from "node:crypto";
 import { basename, dirname, isAbsolute, join } from "node:path";
 import { shellPath } from "./local-record-source.js";
-import { codeSpan } from "./text-wrap.js";
+import { codeSpan, windowsShellWord } from "./text-wrap.js";
 import { CommandFailure } from "./output.js";
 import { fileURLToPath } from "node:url";
 import type { Command, CommandExample, Connector, Extension, ExtensionRef, FlagSpec, HarnessInstall, OutputMode, Subcommand } from "@cotal-ai/core";
@@ -82,8 +82,8 @@ export interface InstalledExtension {
   readonly pkg: string;
   /** Exact installed version, pinned at add time and verified at run-import. */
   readonly version: string;
-  /** The spec the operator passed to `ext add` (registry range, file:, tarball…) — for re-adds. */
-  readonly spec: string;
+  /** The original install spec, when recorded. */
+  readonly spec?: string;
   /** `"seeded"` iff installed by the built-in-connector reconcile (not an operator `ext add`). Keys
    *  refresh-gating and import-failure hints on the marker rather than trusting the spec path. */
   readonly source?: "seeded";
@@ -113,6 +113,10 @@ export function isExtensionPathSpec(spec: string, absolute: (p: string) => boole
 export function extensionReinstallAdvice(entry: InstalledExtension): string {
   if (entry.source === "seeded") return "Run `cotal ext seed --repair` to reinstall it.";
   const { spec } = entry;
+  if (typeof spec !== "string" && /^@cotal-ai\/[a-zA-Z0-9._~-]+$/.test(entry.pkg)) {
+    const pkg = process.platform === "win32" ? windowsShellWord(entry.pkg) : shellPath(entry.pkg);
+    if (pkg) return `Run ${codeSpan(`cotal ext add ${pkg}`)} to reinstall it.`;
+  }
   if (typeof spec === "string" && (isExtensionPathSpec(spec) || /^(?:@[a-z0-9._~-]+\/)?[a-z0-9._~-]+(?:@[a-z0-9._~^*<>=|+ -]+)?$/i.test(spec)))
     return `Run ${codeSpan(`cotal ext add ${shellPath(spec)}`)} to reinstall it.`;
   return `Run ${codeSpan(`cotal ext remove ${shellPath(entry.pkg)}`)} to drop the record, or reinstall with the original spec.`;

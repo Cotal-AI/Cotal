@@ -21,6 +21,7 @@ import { console_ } from "./commands/console.js";
 import { spawn, spawnComplete, spawnFlags, spawnRequiredExtensions, validateSpawnArguments } from "./commands/spawn.js";
 import { refuseRemovedStart } from "./commands/removed-start.js";
 import { appIdentity, appIdentityFlags } from "./commands/app-identity.js";
+import { conversationSignOut } from "./lib/app-user-identity.js";
 import { attach, attachFlags, input, inputFlags, inputArguments, managedAgentComplete, managedTarget, ps, psFlags, stop, stopFlags, validateStopArguments } from "./commands/agents.js";
 import { models, modelsComplete, modelsFlags, validateModelsArguments } from "./commands/models.js";
 import { watch, watchComplete, watchFlags, validateWatchArguments } from "./commands/watch.js";
@@ -29,6 +30,7 @@ import { personas, personasComplete } from "./commands/personas.js";
 import { completion, completionComplete, completionFlags, complete, validateCompletionArguments } from "./commands/completion.js";
 import { config, configComplete, configFlags, configSubcommands, validateConfigArguments } from "./commands/config.js";
 import { telemetry, telemetryFlags, validateTelemetryArguments } from "./commands/telemetry.js";
+import { trust, trustFlags, validateTrustArguments } from "./commands/trust.js";
 import { mint } from "./commands/mint.js";
 import { revokeCredential } from "./commands/revoke-credential.js";
 import { channels, channelArguments, channelComplete, channelFlags } from "./commands/channels.js";
@@ -158,6 +160,20 @@ const baseCommands: Command[] = [
     examples: [{ command: "cotal telemetry", note: "show the telemetry level in force" }, { command: "cotal telemetry off", note: "send no usage data" }, { command: "cotal telemetry minimal", note: "send only the command, outcome and version" }],
     validate: validateTelemetryArguments,
     run: telemetry,
+  },
+  {
+    kind: "command",
+    name: "trust",
+    group: "Setup",
+    summary: "trust a project folder, so its .cotal may declare MCP servers, spawn.env names and persona launch options",
+    usage: "cotal trust <path> [--hex] [--json|--plain]",
+    positionals: "<path>",
+    flags: trustFlags,
+    outputs: ["json", "plain"],
+    prepareMeshTarget: false,
+    examples: [{ command: "cotal trust .", note: "trust the project in this folder" }, { command: "cotal trust <path>", note: "trust the project at a path" }],
+    validate: validateTrustArguments,
+    run: trust,
   },
   {
     kind: "command",
@@ -916,7 +932,7 @@ const baseProcesses: LocalProcess[] = [
 
 const credentialMintAction: CredentialAction = { kind: "credential-action", name: "mint", validate: validateCredentialMintArguments, run: mint };
 const credentialRevokeAction: CredentialAction = { kind: "credential-action", name: "revoke-credential", validate: validateCredentialRevokeArguments, run: revokeCredential };
-registry.register(...baseCommands, ...baseProcesses, credentialMintAction, credentialRevokeAction);
+registry.register(...baseCommands, ...baseProcesses, credentialMintAction, credentialRevokeAction, conversationSignOut);
 
 export { runCli } from "./command.js";
 export { stdoutError } from "./lib/stdout-owner.js";

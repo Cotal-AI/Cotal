@@ -188,8 +188,8 @@ interface HostedRun {
 
 const DEFAULT_CHECKPOINT_TIMEOUT = "1h";
 const TAKE_BACK_RETRY_DELAYS_MS = [1_000, 5_000, 30_000] as const;
-// The broker can recover before the hosted issuer. Allow several minutes for both to answer.
-const INTERRUPTED_RUN_RETRY_DELAYS_MS = [0, ...TAKE_BACK_RETRY_DELAYS_MS, 60_000, 60_000, 60_000, 60_000] as const;
+// Keep trying through a 30-minute outage, with a full minute between attempts after the initial backoff.
+const INTERRUPTED_RUN_RETRY_DELAYS_MS = [0, ...TAKE_BACK_RETRY_DELAYS_MS, ...Array<number>(32).fill(60_000)];
 /** How many launches (start or resume) may be in their activation wait at once. Each holds a
  *  standing connection and a minted credential; past this a caller is refused `resource-exhausted`
  *  before anything is written, rather than letting a burst of starts pin unbounded connections for
@@ -1312,7 +1312,9 @@ export class RunHosting {
   }
 
   private async resumeInterruptedRun(runId: string, timeout: string, previous: Pick<RunStatusValue, "holder" | "epoch" | "fencingToken">): Promise<void> {
-    for (const [attempt, wait] of INTERRUPTED_RUN_RETRY_DELAYS_MS.entries()) {
+    const startedAt = performance.now();
+    for (const [attempt, backoff] of INTERRUPTED_RUN_RETRY_DELAYS_MS.entries()) {
+      const wait = backoff > 0 && performance.now() - startedAt + backoff + 1_000 >= 60_000 ? 60_000 : backoff;
       if (wait > 0) await delay(wait + Math.random() * 1_000, undefined, { ref: false });
       if (this.stopping || this.cancelPending(runId)) return;
       try {
@@ -1320,8 +1322,13 @@ export class RunHosting {
         await this.resumeRun({ runId, timeout }, undefined, previous);
         return;
       } catch (error) {
-        if (retryInterruptedRun(error) && attempt + 1 < INTERRUPTED_RUN_RETRY_DELAYS_MS.length) continue;
-        this.ctx.log(`! run ${runId} could not resume after the broker interruption: ${rejectionText(error)}`);
+        if (this.stopping || this.cancelPending(runId)) return;
+        const reason = rejectionText(error).split(/\r?\n/, 1)[0];
+        if (retryInterruptedRun(error) && attempt + 1 < INTERRUPTED_RUN_RETRY_DELAYS_MS.length) {
+          if (attempt === 0) this.ctx.log(`! run ${runId}: retrying automatic recovery after the broker interruption: ${reason}`);
+          continue;
+        }
+        this.ctx.log(`! run ${runId} could not resume after the broker interruption: ${reason}`);
         return;
       }
     }

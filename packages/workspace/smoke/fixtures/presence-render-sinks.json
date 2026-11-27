@@ -1,10 +1,10 @@
 {
   "expected": {
-    "total": 1151,
+    "total": 1154,
     "honest-text": 71,
     "presence-only-glyph/count": 138,
     "command-ack": 13,
-    "non-render/control": 929
+    "non-render/control": 932
   },
   "classRationales": {
     "non-render/control": "This candidate handles presence state without making a human work-progress claim. Status tokens, routing, component inputs and presentation metadata are control data; exceptions that report a different kind of status carry an entry-specific reason."
@@ -6580,6 +6580,20 @@
       "rationale": "Conversation identity discovery failure: the discovery document's HTTP status; not agent presence."
     },
     {
+      "path": "implementations/cli/src/lib/conversation-resume.ts",
+      "kind": "derived-output",
+      "anchor": "`the conversation resume exchange did not confirm its approval (HTTP ${response.status}); the saved identity was retained.${hint}`",
+      "class": "non-render/control",
+      "rationale": "The HTTP response status is the outcome of an authority check, not an agent's presence or work progress."
+    },
+    {
+      "path": "implementations/cli/src/lib/conversation-resume.ts",
+      "kind": "derived-output",
+      "anchor": "` Wait at least ${seconds} seconds before trying again.`",
+      "class": "non-render/control",
+      "rationale": "The authority's retry delay advises when to repeat the probe and says nothing about an agent's work or presence."
+    },
+    {
       "path": "implementations/cli/src/commands/use.ts",
       "kind": "status-token",
       "anchor": "ent, problem))}`, tone: \"waiting\" }\n    : s.preparedState",
@@ -6634,6 +6648,13 @@
       "anchor": "`the seed child exited with status ${r.status}`",
       "class": "non-render/control",
       "rationale": "Connector seed failure: the seed child's exit status; process state, not agent presence."
+    },
+    {
+      "path": "implementations/cli/src/seed/store.ts",
+      "kind": "derived-output",
+      "anchor": "`Warning: could not remove old seed-store generation at ${oneLine(genDir)} (${status}). The old copy was left in place.`",
+      "class": "non-render/control",
+      "rationale": "Seed-store cleanup warning: status is a filesystem removal error, not agent presence."
     },
     {
       "path": "implementations/cli/src/commands/backup-maintenance.ts",

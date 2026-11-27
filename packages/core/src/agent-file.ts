@@ -160,7 +160,11 @@ export function assertValidKind(kind: unknown, where?: string): EndpointKind {
 /** Load and parse an agent definition file (Markdown + `---` frontmatter). A consumer that
  *  validates the effective role after applying its own overrides can defer role syntax checking. */
 export function loadAgentFile(path: string, options?: { deferRoleValidation?: boolean }): AgentDef {
-  const bytes = readFileSync(path);
+  return parseAgentFileBytes(readFileSync(path), path, options);
+}
+
+/** Parse the bytes read from a file descriptor after the caller checks its source. */
+export function parseAgentFileBytes(bytes: Buffer, path: string, options?: { deferRoleValidation?: boolean }): AgentDef {
   const source = bytes.toString("utf8");
   const encoding = utf8Problem(bytes, source);
   if (encoding) throw new Error(`agent file ${path}: ${encoding}; save it as UTF-8`);
