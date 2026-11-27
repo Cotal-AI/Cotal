@@ -590,20 +590,15 @@ try {
     && fixedShow.status === 0 && fixedShow.stderr === "" && JSON.parse(fixedShow.stdout).outcome === "ok",
     { unknownShow: unknownShow.stdout, fixedShow: fixedShow.stdout });
   const dashName = "-review";
-  const legalName = "review";
   const dashRefused = native(["persona", "create", dashName, "--prompt", "Review the patch.", "--subscribe=", "--json"], offlineRoot);
   const dashError = JSON.parse(dashRefused.stdout || "{}").error;
   const printed = typeof dashError?.remedy === "string" ? /`(?:pnpm cotal|cotal) persona ([^`]+)`/.exec(dashError.remedy)?.[1] : undefined;
   const printedWords = printed === undefined ? [] : [...printed.matchAll(/'([^']*)'|"([^"]*)"|(\S+)/g)].map((match) => match[1] ?? match[2] ?? match[3]!);
-  const runnable = printedWords.map((word) => word === dashName ? legalName : word);
-  const dashCreated = runnable.length ? native(["persona", ...runnable], offlineRoot) : dashRefused;
-  const dashShown = dashCreated.status === 0 ? native(["persona", "show", "--json", "--", legalName], offlineRoot) : dashCreated;
-  check("the printed persona separator guidance, run with a legal name, saves the persona",
-    dashRefused.status === 1 && dashRefused.stderr === "" && printedWords.at(-2) === "--" && printedWords.at(-1) === dashName
-    && printedWords.indexOf("--prompt") < printedWords.indexOf("--")
-    && dashCreated.status === 0 && dashCreated.stderr === "" && dashShown.status === 0
-    && JSON.parse(dashShown.stdout).result?.definition?.persona === "Review the patch.",
-    dashRefused.stdout + dashCreated.stdout + dashCreated.stderr + dashShown.stdout + dashShown.stderr);
+  check("a persona name that starts with - keeps its flags and is not reprinted",
+    dashRefused.status === 1 && dashRefused.stderr === "" && dashError?.remedy?.includes("starts with a letter, digit or _")
+    && printedWords[0] === "create" && printedWords.includes("--prompt") && printedWords.includes("Review the patch.")
+    && printedWords.at(-1) === "<name>" && !printedWords.includes(dashName),
+    dashRefused.stdout + dashRefused.stderr);
   const literal = native(["persona", "show", "review", "--json", "--", "--json"], offlineRoot);
   const literalError = JSON.parse(literal.stdout || "{}").error;
   check("a declared flag after -- stays a positional",

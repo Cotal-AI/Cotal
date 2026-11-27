@@ -713,7 +713,11 @@ function personaSeparatorRemedy(cmd: Command, rest: readonly string[]): string |
   const dashed = names.find((word) => word.startsWith("-") && word !== "-");
   if (dashed === undefined) return undefined;
   const kept = names.filter((word) => word !== dashed);
-  return `repeat it as \`cotal persona ${[...kept, ...flags, "--", shellWord(dashed)].join(" ")}\``;
+  const line = `cotal persona ${[...kept, ...flags].join(" ")}`;
+  // A catalog name cannot start with `-`, so reprinting one would refuse again.
+  if (names[0] === "create" || names[0] === "edit" || names[0] === "remove")
+    return `choose a catalog name that starts with a letter, digit or _, then repeat \`${line} <name>\``;
+  return `repeat it as \`${line} -- ${shellWord(dashed)}\``;
 }
 
 /** A parse error as a refusal. A mistyped option names its spelling. A word that starts with `-`
