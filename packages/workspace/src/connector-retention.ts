@@ -404,7 +404,10 @@ export function restoreConnectorManifestAccessForUpdate(search: boolean): boolea
   return restoreManifestAccess(resolve(globalConfigDir()), selectedConnectorConfig, search);
 }
 
-/** The selected update's validated rollback source for this installation. */
+/**
+ * The selected update's validated rollback source for this installation. `snapshotConfig` accepts
+ * only the top-level connector config folder or a private version folder beside the selected set.
+ */
 export function previousUpdateConnectorConfig(): string | undefined {
   const id = identity();
   if (!id || readUpdateRecovery()) return;
