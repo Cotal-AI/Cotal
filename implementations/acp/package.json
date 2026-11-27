@@ -1,7 +1,7 @@
 {
   "name": "@cotal-ai/acp",
   "description": "Cotal as an Agent Client Protocol agent: spawn and manage mesh agents from T3 Code, Zed and other ACP clients.",
-  "version": "0.183.1",
+  "version": "0.184.0",
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
