@@ -1,5 +1,6 @@
 import { statSync } from "node:fs";
 import {
+  CorruptExtensionPackageError,
   claimExtensionMutationLock,
   extensionPackageDir,
   installedExtensionPackage,
@@ -9,6 +10,7 @@ import {
   type InstalledExtension,
 } from "@cotal-ai/workspace";
 import { SEED_BUILTINS } from "../seed/paths.js";
+import { acquireReconcileLock } from "../seed/lock.js";
 import { operatorInstallDiffers } from "../seed/verify.js";
 import { stageSeedPayload } from "../seed/store.js";
 import { c } from "../ui.js";
@@ -19,55 +21,88 @@ import type { UpdateRuntime } from "./update.js";
 /** Repair installed packages at this release from local payloads, without activating a new generation. */
 export async function repairOfflineExtensions(current: string, rt: UpdateRuntime, admit: () => Promise<boolean>): Promise<void> {
   const builtIns = new Set(Object.values(SEEDED_EXTENSIONS).map(entry => entry.pkg));
-  const repairs = (): ExtensionInstallRequest[] => {
-    const seeded = seededRepairs(current, rt);
-    const operators = rt.extensions().flatMap(entry => offlineNpmRepair(entry, current, builtIns)
-      ? [{ pkg: entry.pkg, version: current, spec: `${entry.pkg}@${current}` }] : []);
-    return [...seeded, ...operators];
-  };
-  let packages: string | undefined;
-  const report = (detail: string) => rt.err(c.yellow(`Offline extension repair${packages ? ` for ${packages}` : ""} did not finish: ${detail}`));
+  const report = (pkg: string, detail: string) => rt.err(c.yellow(`Offline extension repair for ${pkg}@${current} did not finish: ${detail}`));
+  let names: string[];
   try {
-    let requests = repairs();
-    if (!requests.length) return;
-    packages = requests.map(entry => `${entry.pkg}@${entry.version}`).join(", ");
-    if (!await admit()) return report("continuity or installation checks did not permit changes.");
-    const release = claimExtensionMutationLock();
-    try {
-      requests = repairs();
-      if (!requests.length) return;
-      packages = requests.map(entry => `${entry.pkg}@${entry.version}`).join(", ");
-      await installExtensionSet(requests, line => rt.err(line), { offline: true });
-    } finally { release(); }
-  } catch (error) { report(message(error)); }
+    names = repairNames(current, rt, builtIns);
+  } catch (error) {
+    rt.err(c.yellow(`Offline extension repair did not finish: ${message(error)}`));
+    return;
+  }
+  if (!names.length) return;
+  if (!await admit()) {
+    for (const pkg of names) report(pkg, "continuity or installation checks did not permit changes.");
+    return;
+  }
+  const reconcile = acquireReconcileLock();
+  const release = claimExtensionMutationLock();
+  try {
+    const operators = operatorRepairs(current, rt, builtIns);
+    const seeded = stagedSeedRepairs(current, rt, report);
+    for (const request of [...seeded, ...operators]) {
+      try {
+        await installExtensionSet([request], line => rt.err(line), { offline: true });
+      } catch (error) {
+        report(request.pkg, message(error));
+      }
+    }
+  } finally {
+    release();
+    reconcile.release();
+  }
 }
 
-/** Bundled built-ins recorded at this release whose installed copy is missing or has no entry file. */
-function seededRepairs(current: string, rt: UpdateRuntime): ExtensionInstallRequest[] {
+/** Packages a repair would touch. This reads the installed copies and writes nothing. */
+function repairNames(current: string, rt: UpdateRuntime, builtIns: ReadonlySet<string>): string[] {
+  const entries = rt.extensions();
+  const seeded = SEED_BUILTINS.flatMap(name => {
+    const pkg = SEEDED_EXTENSIONS[name].pkg;
+    const entry = entries.find(item => item.pkg === pkg);
+    return entry !== undefined && bundledInstallTorn(pkg, entry, current) ? [pkg] : [];
+  });
+  const operators = entries.flatMap(entry => offlineNpmRepair(entry, current, builtIns) ? [entry.pkg] : []);
+  return [...seeded, ...operators];
+}
+
+/** Copy each torn built-in's shipped payload and return its install request. One missing payload does not stop the others. */
+function stagedSeedRepairs(current: string, rt: UpdateRuntime, report: (pkg: string, detail: string) => void): ExtensionInstallRequest[] {
   const entries = rt.extensions();
   return SEED_BUILTINS.flatMap(name => {
     const pkg = SEEDED_EXTENSIONS[name].pkg;
     const entry = entries.find(item => item.pkg === pkg);
     if (entry === undefined || !bundledInstallTorn(pkg, entry, current)) return [];
-    return [{ pkg, version: current, spec: stageSeedPayload(current, name), source: "seeded" as const }];
+    try {
+      return [{ pkg, version: current, spec: stageSeedPayload(current, name, { force: true }), source: "seeded" as const }];
+    } catch (error) {
+      report(pkg, message(error));
+      return [];
+    }
   });
 }
 
-/** A recorded built-in at this release whose package or entry file is not usable. */
-function bundledInstallTorn(pkg: string, entry: InstalledExtension, current: string): boolean {
-  if (entry.version !== current) return false;
-  try {
-    const installed = installedExtensionPackage(pkg);
-    if (!installed || installed.version !== current) return true;
-    const file = statSync(resolveExtensionEntry(extensionPackageDir(pkg), installed), { throwIfNoEntry: false });
-    return !file?.isFile() || file.size === 0;
-  } catch {
-    return true;
-  }
+/** First-party npm extensions recorded at this release whose install is not the one npm would restore. */
+function operatorRepairs(current: string, rt: UpdateRuntime, builtIns: ReadonlySet<string>): ExtensionInstallRequest[] {
+  return rt.extensions().flatMap(entry => offlineNpmRepair(entry, current, builtIns)
+    ? [{ pkg: entry.pkg, version: current, spec: `${entry.pkg}@${current}` }] : []);
 }
 
-/** A first-party npm extension recorded at this release whose install is not the one npm would restore.
- *  A path spec keeps its own source. A missing spec or a tag or range installs `pkg@version` from the cache. */
+/** A recorded built-in at this release whose package or entry file is not usable.
+ *  A permission error is not damage: the online install check reports that the same way. */
+function bundledInstallTorn(pkg: string, entry: InstalledExtension, current: string): boolean {
+  if (entry.version !== current) return false;
+  let installed: ReturnType<typeof installedExtensionPackage>;
+  try {
+    installed = installedExtensionPackage(pkg);
+  } catch (error) {
+    if (error instanceof CorruptExtensionPackageError) return true;
+    throw error;
+  }
+  if (!installed || installed.version !== current) return true;
+  const file = statSync(resolveExtensionEntry(extensionPackageDir(pkg), installed), { throwIfNoEntry: false });
+  return !file?.isFile() || file.size === 0;
+}
+
+/** A path spec keeps its own source. A missing spec or a tag or range installs `pkg@version` from the cache. */
 function offlineNpmRepair(entry: InstalledExtension, current: string, builtIns: ReadonlySet<string>): boolean {
   if (!entry.pkg.startsWith("@cotal-ai/") || builtIns.has(entry.pkg) || entry.version !== current) return false;
   if (typeof entry.spec === "string" && isExtensionPathSpec(entry.spec)) return false;

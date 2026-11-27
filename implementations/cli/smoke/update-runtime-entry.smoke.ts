@@ -1,7 +1,7 @@
 // After building, run with pnpm exec tsx implementations/cli/smoke/update-runtime-entry.smoke.ts.
 import strictAssert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, truncateSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, truncateSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -85,13 +85,14 @@ export async function repairRuntimeEntry(assert: typeof strictAssert): Promise<v
     const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as { extensions: { pkg: string; spec?: string }[] };
     const recorded = manifest.extensions.find(entry => entry.pkg === pkg);
     assert.equal(recorded?.spec, `${pkg}@${version}`);
-    recorded!.spec = `${pkg}@latest`;
-    writeFileSync(manifestPath, JSON.stringify(manifest));
     const entry = join(extroot, "node_modules", pkg, "dist/index.js");
     const original = readFileSync(entry);
     assert.ok(original.length > 0);
     const offlineCli = (...args: string[]) => run([cliEntry, ...args], home, { ...env, COTAL_SKIP_CONNECTOR_SEED: "1", CI: "false" });
-    await assertOfflineRuntimeRepair(assert, offlineCli, env, entry, original, registryRequests);
+    await assertOfflineExactSpec(assert, offlineCli, env, entry, original, registryRequests);
+    recorded!.spec = `${pkg}@latest`;
+    writeFileSync(manifestPath, JSON.stringify(manifest));
+    await assertOfflineRuntimeRepair(assert, offlineCli, env, manifestPath, pkg, version, entry, original, registryRequests);
     const brokenImport = 'import { notAnExportOfCore } from "@cotal-ai/core";\nvoid notAnExportOfCore;\n';
     for (const damage of ["missing", "empty", "import"]) {
       if (damage === "missing") renameSync(entry, join(home, "tmux-index.saved"));
@@ -123,15 +124,35 @@ export async function repairRuntimeEntry(assert: typeof strictAssert): Promise<v
       assert.equal(repeated.status, 0, repeated.output);
       assert.match(repeated.output, currentClosure);
     }
+    await assertOfflineBundledRepair(assert, cli, env, config, version, registryRequests);
   } finally {
     if (registry.listening) await new Promise<void>(resolveClose => registry.close(() => resolveClose()));
     rmSync(home, { recursive: true, force: true });
   }
 }
 
-async function assertOfflineRuntimeRepair(
+async function assertOfflineExactSpec(
   assert: typeof strictAssert, cli: (...args: string[]) => ReturnType<typeof run>,
   env: NodeJS.ProcessEnv, entry: string, original: Buffer, requests: readonly string[],
+): Promise<void> {
+  const count = requests.length;
+  truncateSync(entry, 0);
+  writeFileSync(env.npm_config_userconfig!, "offline=true\n");
+  const repaired = await cli("update", "--self");
+  assert.equal(repaired.status, 0, repaired.output);
+  assert.match(repaired.stdout, /The latest-version check was skipped/);
+  assert.doesNotMatch(repaired.output, /Offline extension repair.*did not finish/);
+  assert.deepEqual(readFileSync(entry), original);
+  const repeated = await cli("update", "--self");
+  assert.equal(repeated.status, 0, repeated.output);
+  assert.equal(repeated.output.trim(), "npm is in offline mode. The latest-version check was skipped.");
+  assert.deepEqual(requests.slice(count), []);
+  rmSync(env.npm_config_userconfig!);
+}
+
+async function assertOfflineRuntimeRepair(
+  assert: typeof strictAssert, cli: (...args: string[]) => ReturnType<typeof run>,
+  env: NodeJS.ProcessEnv, manifestPath: string, pkg: string, version: string, entry: string, original: Buffer, requests: readonly string[],
 ): Promise<void> {
   const count = requests.length;
   const warmCache = env.npm_config_cache!;
@@ -148,6 +169,8 @@ async function assertOfflineRuntimeRepair(
   const runtimes = await cli("runtimes", "--plain");
   assert.equal(runtimes.status, 0, runtimes.output);
   assert.match(runtimes.output, /tmux\s+installed - (?:un)?reachable/);
+  const pinned = JSON.parse(readFileSync(manifestPath, "utf8")) as { extensions: { pkg: string; spec?: string }[] };
+  assert.equal(pinned.extensions.find(item => item.pkg === pkg)?.spec, `${pkg}@${version}`);
 
   const repeated = await cli("update", "--self");
   assert.equal(repeated.status, 0, repeated.output);
@@ -167,6 +190,88 @@ async function assertOfflineRuntimeRepair(
   writeFileSync(entry, original);
   env.npm_config_cache = warmCache;
   delete env.npm_config_offline;
+}
+
+async function assertOfflineBundledRepair(
+  assert: typeof strictAssert, cli: (...args: string[]) => ReturnType<typeof run>,
+  env: NodeJS.ProcessEnv, config: string, version: string, requests: readonly string[],
+): Promise<void> {
+  const builtin = "@cotal-ai/connector-claude-code";
+  const seedCli = (...args: string[]) => run([join(import.meta.dirname, "../../../bin/dist/cotal.js"), ...args], config, env);
+  // The fixture records every built-in as already seeded, and --force still leaves a missing one
+  // removed. Drop only this connector so the seed installs it; the others stay removed.
+  const releaseClaude = () => {
+    const everSeeded = SEED_BUILTINS.filter(name => name !== "claude");
+    for (const name of ["authority.json", "authority.bak.json"]) {
+      writeFileSync(join(config, "cotal", "seed", name), JSON.stringify({ everSeeded }));
+    }
+  };
+  releaseClaude();
+  const seeded = await seedCli("ext", "seed", "--force");
+  assert.equal(seeded.status, 0, seeded.output);
+  const root = (await cli("ext", "root")).stdout.trim();
+  const manifestPath = join(root, "extensions.json");
+  const readManifest = () => JSON.parse(readFileSync(manifestPath, "utf8")) as { extensions: { pkg: string; spec?: string; version?: string }[] };
+  const row = () => readManifest().extensions.find(entry => entry.pkg === builtin);
+  assert.equal(row()?.version, version);
+  const dir = join(root, "node_modules", builtin);
+  const store = join(config, "cotal", "seed", "store", version, "claude");
+  const entryFile = () => {
+    const meta = JSON.parse(readFileSync(join(dir, "package.json"), "utf8")) as { main?: string };
+    return join(dir, meta.main ?? "dist/index.js");
+  };
+  const offline = { ...env, npm_config_offline: "true", npm_config_cache: join(config, "..", "empty-builtin-cache"), COTAL_SKIP_CONNECTOR_SEED: "1", CI: "false" };
+  const self = () => run([join(import.meta.dirname, "../../../bin/dist/cotal.js"), "update", "--self"], config, offline);
+  const count = requests.length;
+  rmSync(dir, { recursive: true, force: true });
+  const missing = await self();
+  assert.equal(missing.status, 0, missing.output);
+  assert.match(missing.stdout, /The latest-version check was skipped/);
+  assert.match(missing.output, /Offline extension repair for @cotal-ai\/tmux@\d+\.\d+\.\d+ did not finish/);
+  assert.doesNotMatch(missing.output, /Offline extension repair for @cotal-ai\/connector-claude-code/);
+  assert.ok(readFileSync(entryFile()).length > 0);
+  offline.npm_config_cache = join(config, "..", "cache");
+  const restored = readFileSync(entryFile());
+  truncateSync(entryFile(), 0);
+  const empty = await self();
+  assert.equal(empty.status, 0, empty.output);
+  assert.deepEqual(readFileSync(entryFile()), restored);
+  writeFileSync(join(dir, "package.json"), "{");
+  const corrupt = await self();
+  assert.equal(corrupt.status, 0, corrupt.output);
+  assert.doesNotMatch(corrupt.output, /did not finish/);
+  assert.equal(JSON.parse(readFileSync(join(dir, "package.json"), "utf8")).name, builtin);
+  const removed = await cli("ext", "remove", builtin);
+  assert.equal(removed.status, 0, removed.output);
+  const stayed = await self();
+  assert.equal(stayed.status, 0, stayed.output);
+  assert.equal(stayed.output.trim(), "npm is in offline mode. The latest-version check was skipped.");
+  assert.equal(row(), undefined);
+  releaseClaude();
+  const reseeded = await seedCli("ext", "seed", "--force");
+  assert.equal(reseeded.status, 0, reseeded.output);
+  rmSync(dir, { recursive: true, force: true });
+  writeFileSync(join(store, "package.json"), JSON.stringify({ name: "damaged-store", version }));
+  const forced = await self();
+  assert.equal(forced.status, 0, forced.output);
+  assert.equal(JSON.parse(readFileSync(join(dir, "package.json"), "utf8")).name, builtin);
+  rmSync(dir, { recursive: true, force: true });
+  const before = readFileSync(join(store, "package.json"));
+  const saved = { ...process.env };
+  Object.assign(process.env, offline);
+  try {
+    const { repairOfflineExtensions } = await import("../dist/commands/update-offline.js");
+    const { updateRuntime } = await import("../dist/commands/update.js");
+    const lines: string[] = [];
+    await repairOfflineExtensions(version, { ...updateRuntime, env: offline, err: line => { lines.push(line); } }, async () => false);
+    assert.match(lines.join("\n"), new RegExp(`Offline extension repair for ${builtin.replace("/", "\\/")}@${version}`));
+  } finally {
+    for (const key of Object.keys(process.env)) if (!(key in saved)) delete process.env[key];
+    Object.assign(process.env, saved);
+  }
+  assert.deepEqual(readFileSync(join(store, "package.json")), before);
+  assert.equal(existsSync(dir), false);
+  assert.deepEqual(requests.slice(count), ["GET /@cotal-ai%2ftmux [install]", "GET /tmux.tgz [install]"]);
 }
 
 if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) {
