@@ -49,7 +49,7 @@ import type { DaemonPaths } from "../daemon/endpoint.js";
 import { assertScheduledEntry, renderDaemonUnit, planUninstall, refreshedDaemonPath, type NativeResult, type NativeRun, type UnitReceipt } from "../daemon/install.js";
 import { nativeRun } from "../daemon/install-native-run.js";
 import { launchAgentLabel, launchAgentService, missingLaunchAgentProgram, renderLaunchAgent, xmlText } from "../daemon/install-darwin.js";
-import { planDarwinSeatHost } from "../daemon/seat-host-darwin.js";
+import { admitDarwinSeatHost, planDarwinSeatHost } from "../daemon/seat-host-darwin.js";
 import { assertServiceRepairPair, sourceDigest, type ServiceRepairIntent } from "../daemon/service-repair.js";
 import { renderScheduledTask, scheduledTaskName, scheduledTaskService, windowsArgument } from "../daemon/install-win32.js";
 
@@ -178,19 +178,24 @@ try {
 
   console.log("N2 LaunchAgent lifecycle");
   if (process.platform !== "win32") {
-    const input = { root: join(root, "seats"), installation: join(root, "installation"), lineage: "1".repeat(64),
+    const input = { cotalHome: join(root, ".cotal"), installedRoot: join(root, "installation"), space: "team",
       generation: "2".repeat(64), argv: [node, join(root, "entry.js"), "root & name"] as const };
     const plan = planDarwinSeatHost(input);
     check("PTY host job is on demand without an automatic restart or inherited environment", plan.bytes.includes("<key>RunAtLoad</key><true/>") &&
-      !/KeepAlive|AbandonProcessGroup|EnvironmentVariables/.test(plan.bytes));
+      plan.bytes.includes("<key>KeepAlive</key><false/>") && plan.bytes.includes("<key>Umask</key><integer>63</integer>") &&
+      !/AbandonProcessGroup|EnvironmentVariables/.test(plan.bytes));
     check("PTY host job escapes arguments, uses a private path and scopes its label to lineage and generation",
-      plan.bytes.includes("root &amp; name") && plan.plist === join(input.root, `${plan.label}.plist`) &&
+      plan.bytes.includes("root &amp; name") && plan.source === join(input.cotalHome, "daemon", "pty-host-launchd", `${plan.label}.plist`) &&
+      plan.receipt === join(dirname(plan.source), `${plan.label}.json`) && plan.label === `ai.cotal.pty.${plan.id}` &&
       plan.label === planDarwinSeatHost(input).label &&
-      [planDarwinSeatHost({ ...input, lineage: "3".repeat(64) }), planDarwinSeatHost({ ...input, generation: "3".repeat(64) }),
-        planDarwinSeatHost({ ...input, installation: join(root, "second") })].every(other => other.label !== plan.label));
+      [planDarwinSeatHost({ ...input, space: "other" }), planDarwinSeatHost({ ...input, generation: "3".repeat(64) }),
+        planDarwinSeatHost({ ...input, daemonHome: join(root, "desktop-daemon") }),
+        planDarwinSeatHost({ ...input, installedRoot: join(root, "Cotal.app", "Contents", "Resources", "runtime") })]
+        .every(other => other.label !== plan.label));
     check("PTY host source refuses the automatic login-items directory and relative executables",
-      code(() => planDarwinSeatHost({ ...input, root: join(root, "Library/LaunchAgents") })) !== "none" &&
+      code(() => planDarwinSeatHost({ ...input, cotalHome: join(root, "Library/LaunchAgents") })) !== "none" &&
       code(() => planDarwinSeatHost({ ...input, argv: ["node", input.argv[1]] })) !== "none");
+    check("an ordinary caller cannot admit itself as the receipt-bound host", code(() => admitDarwinSeatHost(plan)) !== "none");
   }
   // Windows has no user id for a launchd GUI domain, so the adapter refuses there before it reads
   // anything, and the lifecycle cells, which drive it with injected launchctl answers, do not run.

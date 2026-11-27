@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { spawn, type ChildProcess } from "node:child_process";
 import { appendFileSync, chmodSync, existsSync, lstatSync, readFileSync, readdirSync, renameSync, rmSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { Worker } from "node:worker_threads";
+import { retainHostedAppRuntime } from "./manager-runtime.js";
 import {
   assertLifecycleToken, BASELINE_LIFECYCLE_ENDPOINT, controlReplyFrom, dialerFor, drainAndClose,
   invokeRepairingSplit, issuedUserCaller, jwtFromCreds, mkSecretDir, parseRemoteEndpointDeregisterResult,
@@ -114,12 +114,7 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
   let reconcileTask: Promise<void> | undefined;
   const reconcile = () => reconcileTask ??= reconcileHostedConnectors(version).finally(() => { reconcileTask = undefined; });
   let runtimeTask: Promise<string> | undefined;
-  const retainAppRuntime = (source: string): Promise<string> => runtimeTask ??= new Promise<string>((resolve, reject) => {
-    const worker = new Worker(new URL("./manager-runtime-worker.js", import.meta.url), { workerData: { home, source }, execArgv: [] });
-    worker.once("message", resolve);
-    worker.once("error", reject);
-    worker.once("exit", (code) => reject(new Error(`desktop Manager runtime worker exited without a result (${code})`)));
-  }).finally(() => { runtimeTask = undefined; });
+  const retainAppRuntime = (source: string): Promise<string> => runtimeTask ??= retainHostedAppRuntime(home, source).finally(() => { runtimeTask = undefined; });
   const connectors = (data: unknown): HostedManager["connectors"] => (data as { connectors?: HostedManager["connectors"] } | undefined)?.connectors;
   const live = new Map<string, Live>();
   let closed = false;

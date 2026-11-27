@@ -1,13 +1,17 @@
-import { createHash, randomBytes } from "node:crypto";
-import { closeSync, constants, fstatSync, fsyncSync, linkSync, lstatSync, openSync, readSync, realpathSync, unlinkSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { lstatSync, realpathSync } from "node:fs";
 import type { Socket } from "node:net";
 import { isAbsolute, join, resolve } from "node:path";
-import { darwinBootSession, darwinLaunchdJob, localPeerCredentials, processStartTime } from "@cotal-ai/seat";
-import { checkDir, daemonPaths, daemonPathsFor } from "./endpoint.js";
+import { assertSystemdSource, createSystemdSource } from "@cotal-ai/cli";
+import { writeSecretFileCreateOnly } from "@cotal-ai/core";
+import { darwinBootSession, darwinLaunchdJob, darwinUserCacheDir, localPeerCredentials, processStartTime } from "@cotal-ai/seat";
+import { homeCotalDir, readLocalRecordSource } from "@cotal-ai/workspace";
+import { assertSocketPathFits, checkDir, daemonPaths, daemonPathsFor, ensureDir } from "./endpoint.js";
 import { launchAgentLabel } from "./install-darwin.js";
-import { planUninstall } from "./install.js";
+import { daemonStartedByOwnedService } from "./install.js";
 import { xmlText } from "./install-xml.js";
 import { nativeRun } from "./install-native-run.js";
+import { launchUpdatePid } from "./update-launchd.js";
 
 const launchctl = "/bin/launchctl";
 const limit = 64 * 1024;
@@ -15,11 +19,14 @@ const digest = (data: string): string => createHash("sha256").update(data).diges
 const refusal = (): Error => new Error("could not verify the macOS PTY host job");
 
 interface DarwinSeatHostPlan {
-  readonly root: string;
-  readonly label: string;
-  readonly plist: string;
-  readonly argv: readonly string[];
+  readonly cotalHome: string;
   readonly daemonHome?: string;
+  readonly id: string;
+  readonly label: string;
+  readonly source: string;
+  readonly receipt: string;
+  readonly sha256: string;
+  readonly argv: readonly string[];
   readonly bytes: string;
 }
 
@@ -29,33 +36,38 @@ export interface DarwinSeatHostLifetime {
   readonly boot: string;
 }
 
-/** Derive a job label from the hosted Manager lineage and retained execution generation. */
+function canonical(path: string): boolean {
+  return isAbsolute(path) && resolve(path) === path && !/[\u0000-\u001f\u007f]/u.test(path);
+}
+
+/** Derive the host identity from the daemon home, logical install, exact space and generation. */
 export function planDarwinSeatHost(input: {
-  root: string;
-  installation: string;
-  lineage: string;
-  generation: string;
+  cotalHome: string;
   daemonHome?: string;
+  installedRoot: string;
+  space: string;
+  generation: string;
   argv: readonly [node: string, entry: string, ...args: string[]];
 }): DarwinSeatHostPlan {
-  const { root, installation, lineage, generation, daemonHome, argv } = input;
-  if (![root, installation, argv[0], argv[1], ...(daemonHome === undefined ? [] : [daemonHome])].every(path => isAbsolute(path) && resolve(path) === path) ||
-      !/^[a-f0-9]{64}$/.test(lineage) || !/^[a-f0-9]{64}$/.test(generation)) throw refusal();
-  if (/[\u0000-\u001f\u007f]/u.test(root) || /(?:^|\/)Library\/LaunchAgents(?:\/|$)/i.test(root)) throw refusal();
-  const label = `ai.cotal.pty.${digest(JSON.stringify([installation, lineage, generation])).slice(0, 32)}`;
+  const { cotalHome, daemonHome, installedRoot, space, generation, argv } = input;
+  const state = daemonHome ?? join(cotalHome, "daemon");
+  if (![cotalHome, state, installedRoot, argv[0], argv[1]].every(canonical) ||
+      /(?:^|\/)Library\/LaunchAgents(?:\/|$)/i.test(cotalHome) || !space || !generation ||
+      [space, generation].some(value => /[\u0000-\u001f\u007f]/u.test(value))) throw refusal();
+  const id = digest(JSON.stringify([state, installedRoot, space, generation])).slice(0, 32);
+  const label = `ai.cotal.pty.${id}`;
+  const directory = join(cotalHome, "daemon", "pty-host-launchd");
+  const source = join(directory, `${label}.plist`);
   const args = argv.map(value => `<string>${xmlText(value)}</string>`).join("");
   const bytes = [
-    '<?xml version="1.0" encoding="UTF-8"?>',
-    '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">',
-    '<plist version="1.0"><dict>',
-    `<key>Label</key><string>${label}</string>`,
-    `<key>ProgramArguments</key><array>${args}</array>`,
-    '<key>RunAtLoad</key><true/>',
-    '</dict></plist>',
-    '',
+    '<?xml version="1.0" encoding="UTF-8"?>', '<plist version="1.0"><dict>',
+    `<key>Label</key><string>${label}</string>`, `<key>ProgramArguments</key><array>${args}</array>`,
+    '<key>RunAtLoad</key><true/>', '<key>KeepAlive</key><false/>', '<key>Umask</key><integer>63</integer>',
+    '</dict></plist>', '',
   ].join("\n");
   if (Buffer.byteLength(bytes) > limit) throw refusal();
-  return { root, label, plist: join(root, `${label}.plist`), argv: [...argv], ...(daemonHome === undefined ? {} : { daemonHome }), bytes };
+  return { cotalHome, ...(daemonHome === undefined ? {} : { daemonHome }), id, label, source,
+    receipt: join(directory, `${label}.json`), sha256: digest(bytes), argv: [...argv], bytes };
 }
 
 function uid(): number {
@@ -64,92 +76,111 @@ function uid(): number {
   return id;
 }
 
-function verifyRoot(plan: DarwinSeatHostPlan): void {
-  checkDir(plan.root);
-  if (realpathSync.native(plan.root) !== plan.root ||
-      /(?:^|\/)Library\/LaunchAgents(?:\/|$)/i.test(plan.root)) throw refusal();
+/** The name is independent of per-seat state and of the daemon's configured home. */
+export function darwinSeatHostSocket(id: string): string {
+  const owner = uid();
+  if (!/^[a-f0-9]{32}$/.test(id)) throw refusal();
+  const cache = resolve(darwinUserCacheDir());
+  checkDir(cache, owner);
+  const directory = join(cache, "cotal");
+  checkDir(directory, owner);
+  if (realpathSync.native(directory) !== join(realpathSync.native(cache), "cotal")) throw refusal();
+  const path = join(directory, `p-${id}.sock`);
+  assertSocketPathFits(path, "darwin");
+  return path;
 }
 
-function checkSource(plan: DarwinSeatHostPlan): void {
-  verifyRoot(plan);
-  const fd = openSync(plan.plist, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
-  try {
-    const stat = fstatSync(fd);
-    if (!stat.isFile() || stat.uid !== uid() || (stat.mode & 0o777) !== 0o600 || stat.size > limit) throw refusal();
-    const expected = Buffer.from(plan.bytes);
-    if (stat.size !== expected.length) throw refusal();
-    const bytes = Buffer.alloc(expected.length + 1);
-    let count = 0;
-    while (count < bytes.length) {
-      const read = readSync(fd, bytes, count, bytes.length - count, null);
-      if (read === 0) break;
-      count += read;
-    }
-    if (!bytes.subarray(0, count).equals(expected)) throw refusal();
-  } finally { closeSync(fd); }
+function checkHome(plan: DarwinSeatHostPlan, create = false): string {
+  const actual = realpathSync.native(plan.cotalHome);
+  if (plan.cotalHome !== actual || (create && actual !== realpathSync.native(homeCotalDir()))) throw refusal();
+  checkDir(actual);
+  const daemon = join(actual, "daemon");
+  if (create) ensureDir(daemon);
+  else checkDir(daemon);
+  return join(daemon, "pty-host-launchd");
 }
 
-function publish(plan: DarwinSeatHostPlan): void {
-  verifyRoot(plan);
-  const temporary = join(plan.root, `.plist-${randomBytes(16).toString("hex")}`);
-  const fd = openSync(temporary, "wx", 0o600);
-  try {
-    try { writeFileSync(fd, plan.bytes); fsyncSync(fd); }
-    finally { closeSync(fd); }
-    linkSync(temporary, plan.plist);
-  } finally { unlinkSync(temporary); }
-  checkSource(plan);
+function receiptBytes(plan: DarwinSeatHostPlan): string {
+  return `${JSON.stringify({ label: plan.label, source: plan.source, sha256: plan.sha256, argv: plan.argv })}\n`;
 }
 
-function observeLife(pid: number): DarwinSeatHostLifetime {
+function checkReceipt(plan: DarwinSeatHostPlan): void {
+  checkDir(checkHome(plan));
+  const record = readLocalRecordSource(plan.receipt, limit, true);
+  if (!record?.equals(Buffer.from(receiptBytes(plan)))) throw refusal();
+  assertSystemdSource(plan.source, plan.sha256, true);
+}
+
+function observeJob(label: string): number | undefined {
+  const list = nativeRun(launchctl, ["list"], undefined, 1500);
+  if (list.status !== 0) throw refusal();
+  return launchUpdatePid(list.stdout, label);
+}
+
+function requireOwnedDaemon(plan: DarwinSeatHostPlan): void {
+  uid();
+  if (plan.cotalHome !== realpathSync.native(homeCotalDir())) throw refusal();
+  const home = plan.daemonHome;
+  const paths = home === undefined ? daemonPaths(process.env, plan.cotalHome) : daemonPathsFor(home);
+  const label = launchAgentLabel(home);
+  if (daemonStartedByOwnedService(paths, home).state !== "owned" || observeJob(label) !== process.pid) throw refusal();
+  const observed = darwinLaunchdJob(label);
+  if (observed.state !== "loaded" || observed.job.label !== label || observed.job.pid !== process.pid) throw refusal();
+}
+
+/** Only the installed daemon in the GUI domain can publish and bootstrap a new sibling. */
+export function bootstrapDarwinSeatHost(plan: DarwinSeatHostPlan): void {
+  requireOwnedDaemon(plan);
+  const domain = `gui/${uid()}`;
+  if (nativeRun(launchctl, ["print", `${domain}/${plan.label}`], undefined, 1500).status !== 113 ||
+      observeJob(plan.label) !== undefined || darwinLaunchdJob(plan.label).state !== "absent") throw refusal();
+  for (const path of plan.argv.slice(0, 2)) {
+    if (!lstatSync(path).isFile() || realpathSync.native(path) !== path) throw refusal();
+  }
+  ensureDir(checkHome(plan, true));
+  const receipt = receiptBytes(plan);
+  if (Buffer.byteLength(receipt) > limit) throw refusal();
+  createSystemdSource(plan.source, plan.bytes, plan.sha256, true);
+  writeSecretFileCreateOnly(plan.receipt, receipt);
+  checkReceipt(plan);
+  requireOwnedDaemon(plan);
+  // Keep the receipt and source if submission is ambiguous. Do not retry or start a detached child.
+  if (nativeRun(launchctl, ["bootstrap", domain, plan.source], undefined, 5000).status !== 0) throw refusal();
+}
+
+/** The future host entry calls this before opening a master, listener or shared custody record. */
+export function admitDarwinSeatHost(plan: DarwinSeatHostPlan): void {
+  uid();
+  if (process.ppid !== 1 || process.argv.length !== plan.argv.length ||
+      process.argv.some((arg, index) => arg !== plan.argv[index])) throw refusal();
+  checkReceipt(plan);
+}
+
+/** Inspect from the verified GUI daemon; the lookup is not an SSH cross-session proof. */
+export function readDarwinSeatHostLifetime(plan: DarwinSeatHostPlan): DarwinSeatHostLifetime {
+  requireOwnedDaemon(plan);
+  checkReceipt(plan);
+  const pid = observeJob(plan.label);
+  const detected = darwinLaunchdJob(plan.label);
+  if (pid === undefined || pid <= 1 || detected.state !== "loaded" || detected.job.label !== plan.label ||
+      detected.job.pid !== pid || detected.job.program !== plan.argv[0] ||
+      JSON.stringify(detected.job.programArguments) !== JSON.stringify(plan.argv)) throw refusal();
   const start = processStartTime(pid);
   if (!start) throw refusal();
   return { pid, start, boot: darwinBootSession() };
 }
 
-/** A Manager can request bootstrap only while its exact background daemon is still its parent. */
-function checkParent(plan: DarwinSeatHostPlan): DarwinSeatHostLifetime {
-  uid();
-  const home = plan.daemonHome;
-  const label = launchAgentLabel(home);
-  const paths = home === undefined ? daemonPaths() : daemonPathsFor(home);
-  const recorded = planUninstall(paths, home);
-  const detected = darwinLaunchdJob(label);
-  if (recorded.mechanism !== "launchd-agent" || recorded.unit !== label || detected.state !== "loaded" ||
-      detected.job.label !== label || detected.job.pid !== process.ppid || detected.job.pid <= 1) throw refusal();
-  return observeLife(detected.job.pid);
-}
-
-/** Register only a new job. Existing or uncertain jobs are left alone for authenticated adoption. */
-export function bootstrapDarwinSeatHost(plan: DarwinSeatHostPlan): void {
-  const parent = checkParent(plan);
-  const domain = `gui/${uid()}`;
-  if (nativeRun(launchctl, ["print", `${domain}/${plan.label}`], undefined, 1500).status !== 113) throw refusal();
-  for (const path of plan.argv.slice(0, 2)) {
-    if (!lstatSync(path).isFile() || realpathSync.native(path) !== path) throw refusal();
-  }
-  publish(plan);
-  // An ambiguous bootstrap may have executed. Retain the source and never retry it here.
-  const current = checkParent(plan);
-  if (current.start !== parent.start || current.boot !== parent.boot || current.pid !== parent.pid ||
-      nativeRun(launchctl, ["bootstrap", domain, plan.plist], undefined, 5000).status !== 0) throw refusal();
-}
-
-/** Inspect a freshly started sibling. This is a candidate identity, not socket authentication. */
-export function readDarwinSeatHostLifetime(plan: DarwinSeatHostPlan): DarwinSeatHostLifetime {
-  checkSource(plan);
-  if (nativeRun(launchctl, ["print", `gui/${uid()}/${plan.label}`], undefined, 1500).status !== 0) throw refusal();
-  const detected = darwinLaunchdJob(plan.label);
-  if (detected.state !== "loaded" || detected.job.label !== plan.label || detected.job.program !== plan.argv[0] ||
-      JSON.stringify(detected.job.programArguments) !== JSON.stringify(plan.argv) ||
-      detected.job.pid === undefined || detected.job.pid <= 1) throw refusal();
-  return observeLife(detected.job.pid);
-}
-
-/** Check the recorded launch and the connected host before the shared protocol sends a byte. */
+/** The serving daemon checks the job; the shared controller still authenticates its own socket. */
 export function verifyDarwinSeatHostPeer(plan: DarwinSeatHostPlan, expected: DarwinSeatHostLifetime, socket: Socket): void {
   const peer = localPeerCredentials(socket);
   if (peer.uid !== uid() || peer.pid !== expected.pid) throw refusal();
   const live = readDarwinSeatHostLifetime(plan);
   if (live.pid !== peer.pid || live.start !== expected.start || live.boot !== expected.boot) throw refusal();
+}
+
+/** The consented removal coordinator calls this with a fenced, authenticated live host. */
+export function bootoutVerifiedDarwinSeatHost(plan: DarwinSeatHostPlan, expected: DarwinSeatHostLifetime, socket: Socket): void {
+  verifyDarwinSeatHostPeer(plan, expected, socket);
+  if (nativeRun(launchctl, ["bootout", `gui/${uid()}/${plan.label}`], undefined, 5000).status !== 0) throw refusal();
+  // Return only the native acknowledgement. The caller must still prove terminal outcomes.
 }

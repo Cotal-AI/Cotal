@@ -1,9 +1,10 @@
 import { createHash } from "node:crypto";
 import { chmodSync, closeSync, constants, fstatSync, lstatSync, mkdtempSync, openSync, readSync, readdirSync, realpathSync, renameSync, rmSync } from "node:fs";
-import { dirname, isAbsolute, join, relative, sep } from "node:path";
-import { executionInventory, protectedExecutionEntry } from "../cotal.js";
+import { basename, dirname, isAbsolute, join, relative, sep } from "node:path";
+import { executionInventory, protectedExecutionEntry, selectExecutionProgram } from "../cotal.js";
 import { checkDir, ensureDir } from "./endpoint.js";
 import { nativeRun } from "./install-native-run.js";
+import { retainHostedAppRuntime } from "./manager-runtime.js";
 
 interface RetainedDarwinSeatRuntime {
   readonly generation: string;
@@ -37,11 +38,6 @@ function copy(source: string, destination: string): void {
     throw new Error("could not retain the macOS PTY host runtime");
 }
 
-function signature(path: string): void {
-  if (nativeRun("/usr/bin/codesign", ["--verify", "--strict", path], undefined, 10_000).status !== 0)
-    throw new Error("the macOS PTY host Node signature did not verify");
-}
-
 /** A copied Node binary must not load mutable dylibs from the original installation. */
 function requireStandaloneNode(path: string): void {
   const dependencies = nativeRun("/usr/bin/otool", ["-arch", "all", "-L", path], undefined, 10_000);
@@ -50,49 +46,78 @@ function requireStandaloneNode(path: string): void {
     throw new Error("the macOS PTY host Node depends on files outside the retained runtime");
 }
 
+function quarantine(path: string): string | undefined {
+  const tool = "/usr/bin/xattr", name = "com.apple.quarantine";
+  const listed = nativeRun(tool, [path], undefined, 5000);
+  if (listed.status !== 0) throw new Error("could not inspect macOS PTY runtime quarantine");
+  if (!listed.stdout.split(/\r?\n/).includes(name)) return undefined;
+  const value = nativeRun(tool, ["-px", name, path], undefined, 5000);
+  if (value.status !== 0) throw new Error("could not read macOS PTY runtime quarantine");
+  return value.stdout.replace(/\s/g, "");
+}
+
 /** Stage a protected, immutable closure outside the install that npm or the app can replace. */
-export function retainDarwinSeatRuntime(input: {
+export async function retainDarwinSeatRuntime(input: {
   home: string;
+  installedRoot: string;
   node: string;
   root: string;
   entry: string;
   desktop: boolean;
-}): RetainedDarwinSeatRuntime {
+}): Promise<RetainedDarwinSeatRuntime> {
   if (process.platform !== "darwin") throw new Error("macOS PTY runtime retention is unavailable");
   const root = realpathSync.native(input.root), node = realpathSync.native(input.node), entry = realpathSync.native(input.entry);
   const suffix = relative(root, entry);
   if (!suffix || suffix === ".." || suffix.startsWith(`..${sep}`) || isAbsolute(suffix) || !lstatSync(entry).isFile() || !lstatSync(node).isFile())
     throw new Error("the macOS PTY host entry is outside its runtime closure");
+  const home = realpathSync.native(input.home);
+  const underSource = relative(root, home);
+  if ((!isAbsolute(underSource) && underSource !== ".." && !underSource.startsWith(`..${sep}`)) || input.home !== home)
+    throw new Error("the macOS PTY runtime store has an unverified parent");
+  checkDir(home);
+  if (input.desktop) {
+    if (node !== realpathSync.native(process.execPath) || !lstatSync(join(root, "desktop-runtime.json")).isFile())
+      throw new Error("the macOS PTY host must retain the running desktop runtime");
+    const before = quarantine(node);
+    const retained = await retainHostedAppRuntime(home, root);
+    const executable = join(retained, "cotal-node");
+    if (quarantine(node) !== before || quarantine(executable) !== before)
+      throw new Error("the macOS PTY host Node quarantine differs from the installed app");
+    return { generation: basename(retained), node: executable, entry: join(retained, "runtime", suffix) };
+  }
+  const current = selectExecutionProgram(realpathSync.native(input.installedRoot));
+  if (current.root !== root) throw new Error("the macOS PTY host runtime is not the verified CLI generation");
+  return retainCliRuntime(home, node, root, suffix, current.retained);
+}
+
+function retainCliRuntime(home: string, node: string, root: string, suffix: string, retainedPackage: boolean): RetainedDarwinSeatRuntime {
   const hash = nodeDigest(node);
   const inventory = JSON.stringify(executionInventory(root));
-  const underSource = relative(root, input.home);
-  if ((!isAbsolute(underSource) && underSource !== ".." && !underSource.startsWith(`..${sep}`)) || input.home !== realpathSync.native(input.home))
-    throw new Error("the macOS PTY runtime store has an unverified parent");
-  checkDir(input.home);
-  const store = join(input.home, "pty-host-runtimes");
+  const store = join(home, "pty-host-runtimes");
   ensureDir(store);
-  const generation = createHash("sha256").update(JSON.stringify([hash, suffix, inventory, input.desktop])).digest("hex");
+  const generation = createHash("sha256").update(JSON.stringify([hash, suffix, inventory, retainedPackage ? root : null])).digest("hex");
   const retained = join(store, generation);
+  const executable = { generation, node: join(retained, "node", "cotal-node"), entry: join(retainedPackage ? root : join(retained, "runtime"), suffix) };
   if (lstatSync(retained, { throwIfNoEntry: false })) {
-    verifyRuntime(retained, hash, inventory, input.desktop);
-    return { generation, node: join(retained, "node", "cotal-node"), entry: join(retained, "runtime", suffix) };
+    verifyRuntime(retained, hash, inventory, retainedPackage ? root : undefined);
+    return executable;
   }
   const staging = mkdtempSync(join(store, ".copy-"));
   try {
     const stagedNode = join(staging, "node", "cotal-node");
     ensureDir(dirname(stagedNode));
     copy(node, stagedNode);
-    copy(root, join(staging, "runtime"));
+    if (!retainedPackage) copy(root, join(staging, "runtime"));
     if (nodeDigest(node) !== hash || JSON.stringify(executionInventory(root)) !== inventory) throw new Error("the macOS PTY runtime changed during retention");
-    verifyRuntime(staging, hash, inventory, input.desktop);
+    verifyRuntime(staging, hash, inventory, retainedPackage ? root : undefined);
     immutableTree(dirname(stagedNode));
-    immutableTree(join(staging, "runtime"));
+    if (!retainedPackage) immutableTree(join(staging, "runtime"));
     try { renameSync(staging, retained); }
     catch (error) {
       if (!["EEXIST", "ENOTEMPTY"].includes((error as NodeJS.ErrnoException).code ?? "")) throw error;
-      verifyRuntime(retained, hash, inventory, input.desktop);
+      verifyRuntime(retained, hash, inventory, retainedPackage ? root : undefined);
     }
-    return { generation, node: join(retained, "node", "cotal-node"), entry: join(retained, "runtime", suffix) };
+    return executable;
   } finally {
     // A concurrent publisher may leave our not-yet-published copy. Only ever remove that copy.
     if (lstatSync(staging, { throwIfNoEntry: false })) {
@@ -102,15 +127,14 @@ export function retainDarwinSeatRuntime(input: {
   }
 }
 
-function verifyRuntime(directory: string, hash: string, inventory: string, desktop: boolean): void {
+function verifyRuntime(directory: string, hash: string, inventory: string, retainedPackage?: string): void {
   if (!lstatSync(directory).isDirectory()) throw new Error("the retained PTY runtime is not a real directory");
   protectedExecutionEntry(directory);
-  const executable = join(directory, "node", "cotal-node"), runtime = join(directory, "runtime");
+  const executable = join(directory, "node", "cotal-node"), runtime = retainedPackage ?? join(directory, "runtime");
   if (realpathSync.native(executable) !== executable || realpathSync.native(runtime) !== runtime ||
       nodeDigest(executable) !== hash || JSON.stringify(executionInventory(runtime)) !== inventory)
     throw new Error("the retained PTY runtime differs from its execution generation");
   requireStandaloneNode(executable);
-  if (desktop) signature(executable);
 }
 
 function makeWritable(path: string): void {
