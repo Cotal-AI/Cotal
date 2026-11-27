@@ -12,12 +12,14 @@ import { jetstreamManager, JetStreamApiCodes, type JetStreamManager, type JsMsg,
 import { Kvm, type KV, type KvEntry } from "@nats-io/kv";
 import { Bucket, KvWatchInclude } from "@nats-io/kv/internal";
 import { effectiveDeliveryClass } from "./channels.js";
+import { projectChannelGrants } from "./channel-grants.js";
 import { isRoutedPluginChannel } from "./endpoint-channel-route.js";
 import { isPublishPermissionDenied } from "./endpoint-dial.js";
 import type { ChannelMember } from "./endpoint-options.js";
 import { isJetStreamMissing } from "./jetstream-missing.js";
 import { lastKvEntries } from "./kv-scan.js";
 import { listMembers } from "./members.js";
+import { PLUGIN_CHANNEL_ROOT } from "./plugin-channel-route.js";
 import { chatStream, dmStream, isChannelFamily, isConcreteChannel, isPrincipalOwnerToken, membershipBucket, MEMBERSHIP_FEED_KEY, parseSubject, patternInAllow, subjectMatches } from "./subjects.js";
 import type { ChannelConfig, ChannelMembership, MembershipChange, MembershipEntry, MembershipSnapshot, Presence } from "./types.js";
 
@@ -255,9 +257,10 @@ export class EndpointSubscriptions {
    *  entry (configured-but-empty), each tagged with its {@link ChannelConfig}. Works even on
    *  observer endpoints (no consumers needed). */
   async listChannels(): Promise<{ channel: string; messages: number; config?: ChannelConfig }[]> {
-    if (!this.conn.nc) throw new Error(this.notLiveMsg());
+    const nc = this.conn.nc;
+    if (!nc) throw new Error(this.notLiveMsg());
     if (this.parts.channelDiscovery.readsChannelsOnDemand) await this.parts.channelDiscovery.readChannels();
-    const mgr = await jetstreamManager(this.conn.nc);
+    const mgr = await jetstreamManager(nc);
     // Subjects carry the sender (chat.<sender>.<channel>), so collapse across senders: sum
     // each channel's counts regardless of who published.
     const counts = new Map<string, number>();
@@ -279,21 +282,26 @@ export class EndpointSubscriptions {
       // and must stay loud rather than returning a valid-looking registry-only subset.
       if (!isJetStreamMissing(e, JetStreamApiCodes.StreamNotFound)) throw e;
     }
+    if (this.conn.nc !== nc) throw new Error("connection changed while listing channels");
     const channels = new Set<string>([...counts.keys(), ...this.channelRegistry.channelConfigs.keys()]);
-    if (this.conn.pluginChannelsEnabled) {
-      const isPlugin = (channel: string) => isRoutedPluginChannel(true, channel);
-      for (const channel of channels) if (isPlugin(channel)) channels.delete(channel);
-      const grants = (this.identity.allowSubscribe ?? []).filter(isPlugin);
-      for (const channel of grants) channels.add(channel);
-      for (const channel of [...this.identity.channels, ...this.delivery.plane3Channels.keys()]) {
-        if (isPlugin(channel) && patternInAllow(grants, channel, true)) channels.add(channel);
+    const isolated = this.conn.pluginChannelsEnabled;
+    if (isolated) for (const channel of channels) {
+      if (isRoutedPluginChannel(true, channel)) channels.delete(channel);
+    }
+    const permissions = this.parts.connection.admittedPluginPermissions(nc);
+    if (permissions) {
+      const grants = projectChannelGrants(permissions, { space: this.identity.space, mode: "isolated" })
+        .read.filter(({ kind }) => kind === PLUGIN_CHANNEL_ROOT).map(({ channel }) => channel);
+      for (const grant of grants) channels.add(grant);
+      for (const channel of [...(this.identity.allowSubscribe ?? []), ...this.identity.channels, ...this.delivery.plane3Channels.keys()]) {
+        if (isRoutedPluginChannel(true, channel) && patternInAllow(grants, channel, true)) channels.add(channel);
       }
     }
     return [...channels]
       .map((channel) => ({
         channel,
-        messages: isRoutedPluginChannel(this.conn.pluginChannelsEnabled, channel) ? 0 : counts.get(channel) ?? 0,
-        config: isRoutedPluginChannel(this.conn.pluginChannelsEnabled, channel) ? undefined : this.channelRegistry.channelConfigs.get(channel),
+        messages: isRoutedPluginChannel(isolated, channel) ? 0 : counts.get(channel) ?? 0,
+        config: isRoutedPluginChannel(isolated, channel) ? undefined : this.channelRegistry.channelConfigs.get(channel),
       }))
       .sort((a, b) => a.channel.localeCompare(b.channel));
   }

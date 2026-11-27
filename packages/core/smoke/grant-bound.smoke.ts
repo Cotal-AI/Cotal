@@ -2,7 +2,7 @@
  *  coordinate, and each part it does not hold is named. Each ceiling here is the evidence an agent
  *  mint records (provision.ts imports the minted permissions verbatim). No broker. */
 import { createSpaceAuth, mintCreds, permissionsFor, type MintOpts } from "../src/provision.js";
-import { mintLifecycleUid, newIdentity, projectChannelGrants } from "../src/index.js";
+import { decodeChannelGrantClaims, mintLifecycleUid, newIdentity, projectChannelGrants } from "../src/index.js";
 import type { IssuanceSeam } from "../src/issued-authority.js";
 import { importNativeSubjectPermissions, issuedPermitsPattern, issuedPermitsSubject, mintAcceptedToken, mintGeneration, type IssuedEvidence, type IssuedSubjectPermissions } from "../src/issued-authority.js";
 import { capabilityWithin, grantOverreach, grantParts, issuedSpawnerStanding, type DelegatedGrant, type GrantOverreach } from "../src/grant-bound.js";
@@ -203,6 +203,50 @@ console.log("channel grant projection");
     ok(`${profile}: only the explicitly scoped agent yields plugin history`,
       projectChannelGrants(permissions, scope).history.some(row => row.kind === PLUGIN_CHANNEL_ROOT) === (profile === "agent"));
   }
+}
+
+console.log("offline channel claims");
+{
+  const channel = `${PLUGIN_CHANNEL_ROOT}.linear.issue`;
+  const principal = { owner: caller.owner, actor: caller.actor };
+  const chatRead = chatSubject(space, "*", "*", channel);
+  const pluginRead = pluginChannelSubject(space, "*", "*", channel);
+  const chatPost = chatSubject(space, principal.owner, principal.actor, channel);
+  const pluginPost = pluginChannelSubject(space, principal.owner, principal.actor, channel);
+  const permissions = importNativeSubjectPermissions({
+    pub: { allow: [chatPost, pluginPost, pluginRead], deny: [pluginPost] },
+    sub: { allow: [chatRead, pluginRead, pluginRead, pluginChannelSubject("another-space", "*", "*", channel), ">"],
+      deny: [...legacyPluginChannelFilters(space)] },
+  });
+  const claimed = decodeChannelGrantClaims(permissions, space);
+  ok("offline claims keep the same logical spelling on distinct physical rails",
+    same(claimed.read.map(row => `${row.kind}:${row.channel}`), [`chat:${channel}`, `${PLUGIN_CHANNEL_ROOT}:${channel}`])
+    && same(claimed.read.map(row => row.subject), [chatRead, pluginRead]));
+  ok("offline claims preserve publisher pins without reporting effective access",
+    same(claimed.post.map(row => row.subject), [chatPost, pluginPost])
+    && claimed.post.every(row => row.owner === principal.owner && row.actor === principal.actor)
+    && same([...claimed.deny.publish], [pluginPost]) && same([...claimed.deny.subscribe], [...legacyPluginChannelFilters(space)]));
+  const isolated = projectChannelGrants(permissions, { space, principal, mode: "isolated" });
+  ok("bound projection still rejects stale chat and a denied plugin post",
+    same(isolated.read.map(row => row.subject), [pluginRead]) && isolated.post.length === 0);
+  const legacy = projectChannelGrants(permissions, { space, principal, mode: "legacy" });
+  ok("legacy bound projection still selects only the physical chat rail and honors denies",
+    legacy.read.length === 0 && same(legacy.post.map(row => row.subject), [chatPost]));
+  const generic = decodeChannelGrantClaims(importNativeSubjectPermissions({}), space);
+  ok("offline unrestricted rows do not invent explicit channel claims", generic.read.length === 0 && generic.post.length === 0);
+  const stream = pluginChannelStream(space);
+  const consumer = chatHistDurable(principal.owner, principal.actor, caller.uid);
+  const create = `$JS.API.CONSUMER.CREATE.${stream}.${consumer}.${pluginRead}`;
+  const unsafeCreate = importNativeSubjectPermissions({ pub: { allow: [create, `$JS.API.CONSUMER.CREATE.${stream}`, `$JS.API.CONSUMER.CREATE.${chatStream(space)}.${consumer}.${pluginRead}`], deny: [create] } });
+  const hints = decodeChannelGrantClaims(unsafeCreate, space, principal).history;
+  ok("plugin-only offline create claims supply a lifecycle hint even when denied", hints.length === 1
+    && hints[0]?.kind === PLUGIN_CHANNEL_ROOT && hints[0].stream === stream && hints[0].consumer === consumer
+    && hints[0].subject === pluginRead && hints[0].lifecycleUid === caller.uid);
+  ok("offline history hints require the matching principal and optional lifecycle",
+    decodeChannelGrantClaims(unsafeCreate, space).history.length === 0
+    && decodeChannelGrantClaims(unsafeCreate, space, { ...principal, actor: "another-actor" }).history.length === 0
+    && decodeChannelGrantClaims(unsafeCreate, space, { ...principal, lifecycleUid: mintLifecycleUid() }).history.length === 0);
+  ok("a denied history hint cannot become a bound reader", projectChannelGrants(unsafeCreate, { space, principal, mode: "isolated" }).history.length === 0);
 }
 
 console.log("role");
