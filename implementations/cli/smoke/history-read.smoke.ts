@@ -32,6 +32,7 @@ import {
   CHANNEL_DEFAULTS_KEY,
   CHAT_HISTORY_DEFAULT,
   CotalEndpoint,
+  PLUGIN_CHANNEL_ROOT,
   channelBucket,
   chatStream,
   chatSubject,
@@ -163,6 +164,49 @@ async function checkDottedHistory(): Promise<void> {
   check("history with DMs selects the newest rows across the split channel windows",
     tail.status === 0 && tailRows.length === 2000 && tailRows.every((item, i) => item.seq === i + 3)
       && tail.envelope?.result?.window.olderRetained === true, shown(tail));
+}
+
+async function checkDisabledPluginNameHistory(): Promise<void> {
+  const channel = `${PLUGIN_CHANNEL_ROOT}.linear.legacy`;
+  const writer = await connect({ servers: openServers });
+  const args = ["history", channel, "--space", dottedSpace, "--json"];
+  try {
+    const js = jetstream(writer);
+    const post = (destination: string, text: string) => js.publish(chatSubject(dottedSpace, "local", "legacy", destination), JSON.stringify({
+      id: text, ts: Date.now(), space: dottedSpace, from: { id: "local.legacy", name: "legacy" },
+      channel: destination, parts: [{ kind: "text", text }],
+    }));
+    const before = await post(channel, "legacy before cursor");
+    const between = await post("ordinary", "interleaved ordinary channel");
+    const after = await post(channel, "legacy after cursor");
+    const cursor = before.seq;
+    check("with plugin channels off, an ext name shares the ordinary CHAT sequence", between.seq === cursor + 1 && after.seq === cursor + 2);
+    const result = await run([...args, "--since", String(cursor)]);
+    const items = result.envelope?.result?.items;
+    check("with plugin channels off, named history resumes from the same CHAT sequence",
+      result.status === 0 && items?.length === 1 && items[0]?.seq === cursor + 2 && items[0].text === "legacy after cursor", shown(result));
+    const live = follow([...args, "--follow", "--since", String(cursor)]);
+    try {
+      const ready = await live.until((line) => line.includes('"type":"snapshot"'));
+      await post("ordinary", "outside legacy follow");
+      const sent = await run(["send", "-c", channel, "inside legacy follow", "--space", dottedSpace, "--json"]);
+      const event = await live.until((line) => line.includes('"text":"inside legacy follow"'));
+      check("with plugin channels off, send and follow use the legacy channel and not another CHAT channel",
+        ready && sent.status === 0 && sent.envelope?.outcome === "ok" && event && !live.lines.some((line) => line.includes("outside legacy follow")),
+        { sent: shown(sent), lines: live.lines });
+    } finally {
+      await killAndAwaitExit(live.child, "SIGINT");
+    }
+    const watch = follow(["watch", "--view", "channels", "--space", dottedSpace, "--json"]);
+    try {
+      const shownChannel = await watch.until((line) => line.includes('"type":"snapshot"') && line.includes(`"${channel}"`));
+      check("with plugin channels off, watch lists the same retained legacy CHAT channel", shownChannel, watch.lines.slice(-3));
+    } finally {
+      await killAndAwaitExit(watch.child, "SIGINT");
+    }
+  } finally {
+    await writer.close();
+  }
 }
 
 async function checkChannelReplayRetry(): Promise<void> {
@@ -499,6 +543,7 @@ try {
     else process.env.COTAL_HOME = priorHome;
   }
   await checkDottedHistory();
+  await checkDisabledPluginNameHistory();
   try { await checkWatchHistoryHint(watchedSpace); }
   finally {
     process.env.COTAL_HOME = isolatedEnv.COTAL_HOME;
@@ -873,12 +918,19 @@ try {
   const restricted = join(home, "retained-reader.creds");
   try {
     const chat = chatSubject(space, "*", "*", "general");
+    const projectionRead = `$JS.API.STREAM.MSG.GET.KV_${channelBucket(space)}`;
     const jwt = await encodeUser("observer", fromPublic(retainedReader.id), fromPublic(auth.account.pub), {
-      pub,
+      pub: { ...pub, allow: (pub?.allow ?? []).filter((row) => row !== projectionRead), deny: [...(pub?.deny ?? []), projectionRead] },
       sub: { allow: [...(sub?.allow ?? []).filter((row) => !row.startsWith(`cotal.${space}.chat.`)), chat] },
     }, { signer, exp: Math.floor(Date.now() / 1000) + 600 });
     writeFileSync(restricted, credsFromJwt(jwt, retainedReader), { mode: 0o600 });
   } finally { signer.clear(); }
+  // The withheld KV get also covers replay metadata; it must not block retained CHAT messages.
+  const ordinaryWithoutProjection = await run(["history", "general", "--json", "--creds", restricted]);
+  check("an ordinary channel still reads when this credential cannot read the plugin routing projection",
+    ordinaryWithoutProjection.status === 4 && ordinaryWithoutProjection.envelope?.outcome === "partial" &&
+      ordinaryWithoutProjection.envelope.warnings.map((warning) => warning.code).join() === "REPLAY_UNREAD" &&
+      texts(ordinaryWithoutProjection).includes("inside scoped follow"), shown(ordinaryWithoutProjection));
   const refusedFollow = follow(["history", "--follow", "--json", "--creds", restricted]);
   try {
     const ended = await refusedFollow.until((line) => line.includes('"type":"end"'));

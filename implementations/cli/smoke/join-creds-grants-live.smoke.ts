@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import {
-  CotalEndpoint, createSpaceAuth, mintCreds, mintLifecycleUid,
+  CotalEndpoint, PLUGIN_CHANNEL_ROOT, createSpaceAuth, mintCreds, mintLifecycleUid,
   newIdentity, seedChannelRegistry, setupSpaceStreams,
 } from "@cotal-ai/core";
 import { authDir, recordMesh, saveSpaceAuth } from "@cotal-ai/workspace";
@@ -81,8 +81,8 @@ try {
     assert.ok(uid, "mint did not report its lifecycle UID");
     return { file, uid };
   }
-  async function refused(name: string, file: string, uid: string, expected: RegExp) {
-    const run = cli("join", "--space", space, "--creds", file, "--lifecycle-uid", uid, "--name", name, "--channel", "general");
+  async function refused(name: string, file: string, uid: string, expected: RegExp, channel = "general") {
+    const run = cli("join", "--space", space, "--creds", file, "--lifecycle-uid", uid, "--name", name, "--channel", channel);
     await until(() => run.proc.exitCode !== null);
     const code = await run.exited;
     const out = run.output();
@@ -204,6 +204,15 @@ try {
   await joins("allowed", allowed.file, allowed.uid, "general");
   // Read grants alone suffice for joining, and wildcard coverage must not be mistaken for denial.
   await joins("wildcard", other.file, other.uid, "review.code");
+  const legacyChannel = `${PLUGIN_CHANNEL_ROOT}.linear.legacy`;
+  const legacy = await mint("legacy_plugin_name", "--allow-subscribe", legacyChannel, "--allow-publish", legacyChannel);
+  await joins("legacy-plugin-name", legacy.file, legacy.uid, legacyChannel);
+  const whoami = cli("whoami", "--creds", legacy.file, "--json");
+  check("whoami succeeds for the credential that joined the legacy channel", await whoami.exited === 0, whoami.output());
+  const identity = JSON.parse(whoami.output()).result;
+  check("whoami reports only the legacy channel's read and post grants", JSON.stringify(identity.read) === JSON.stringify([legacyChannel]) &&
+    JSON.stringify(identity.post) === JSON.stringify([legacyChannel]) && identity.dms === "own", whoami.output());
+  await refused("legacy no-read", other.file, other.uid, /does not grant read access to #ext\.linear\.legacy/, legacyChannel);
   const unpaired = cli("join", "--space", space, "--creds", allowed.file);
   await until(() => unpaired.proc.exitCode !== null);
   check("missing lifecycle explains pairing and the provisioning mint", await unpaired.exited === 1 && /lifecycle-paired/.test(unpaired.output()) && /--lifecycle-uid/.test(unpaired.output()) && /auth mint.*--provision/.test(unpaired.output()), unpaired.output());
