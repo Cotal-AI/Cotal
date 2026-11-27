@@ -632,6 +632,12 @@ export function deliveryPermissions(space: string, pr: MintPrincipal): Record<st
     `$JS.API.STREAM.MSG.GET.${eptStreamName(space)}`,
     `$JS.API.STREAM.INFO.KV_${recordsBucket(space)}`,
     `$JS.API.STREAM.MSG.GET.KV_${recordsBucket(space)}`,
+    // A delivery-served endpoint's bind (the `artifacts` service): before it serves on a credential
+    // the daemon re-proves the instance's issuance gate with two leader-served point reads of the
+    // `epgate` key. Read-only and body-selected: the same named residual the auth profile accepts for
+    // its gate read above. No auth-store write of any shape.
+    `$JS.API.STREAM.INFO.KV_${epAuthBucket(space)}`,
+    `$JS.API.STREAM.MSG.GET.KV_${epAuthBucket(space)}`,
     `${p}.ept.*.*.*.*.armed`,
     // Plane-3 data writes: dinbox (fan-out target) + dlv (post-auth handoff) for ANY lifecycle — the
     // identity slots widen to `.*.*.*` (owner+actor+lifecycleUid: dinbox/dlv are per-LIFECYCLE now,
