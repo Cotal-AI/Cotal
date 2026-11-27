@@ -504,6 +504,25 @@ export const conversationSignOut: ConversationSignOut = {
     }
     return failures;
   },
+  count({ dir: home, idp, accountKey }) {
+    const root = join(home, "app-identities");
+    if (!existsSync(root)) return 0;
+    try { privateDir(root); } catch { return 0; }
+    let total = 0;
+    for (const entry of readdirSync(root)) {
+      const setAside = isUnconfirmedDirectory(entry);
+      if (!/^[a-f0-9]{64}$/.test(entry) && !setAside) continue;
+      const dir = join(root, entry);
+      if (!existsSync(join(dir, RECORD))) continue;
+      try {
+        const r = read(dir);
+        if (r.remote?.material && idpKey(r.remote.idpUrl) === idp && r.accountKey === accountKey && r.proof &&
+            matchesResumeBinding(r, r.proof) && (!setAside || matchesUnconfirmed(entry, r)))
+          total++;
+      } catch { /* unreadable entry does not block sign-in */ }
+    }
+    return total;
+  },
 };
 
 function isUnconfirmedDirectory(entry: string): boolean {

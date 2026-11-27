@@ -131,7 +131,7 @@ try {
   check("STATE 2 unknown: fail-safe wording, cause included", unk.includes("cannot confirm the previous auth plane") && unk.includes("FAIL-SAFE"));
   check("STATE 2 NEVER says to stop the other process (the ghost-chase class)", !unk.includes("stop the other"));
   const raildown = await rejects(() => acquirePlaneClaim({ nc: b2.nc, space, ledger: c2.ledger.tuple, records: c2.records.tuple, oracle: verdictOracle("unknown", "unknown", false, "the delivery-admin rail is unreachable (no responders)"), log: quiet }));
-  check("STATE 2 rail-down variant names the delivery daemon and the two-step recovery", raildown.includes("delivery daemon") && raildown.includes("cotal up"));
+  check("STATE 2 rail-down variant names the delivery daemon and cotal up", raildown.includes("delivery daemon") && raildown.includes("`cotal up` starts the delivery daemon before this service"));
   const contradictory = await rejects(() => acquirePlaneClaim({ nc: b2.nc, space, ledger: c2.ledger.tuple, records: c2.records.tuple, oracle: verdictOracle("gone", "gone", false), log: quiet }));
   check("a gone verdict under an INCOMPLETE sweep never reclaims (refuses as state 2)", contradictory.includes("cannot confirm"));
   const foreign = await rejects(() => acquirePlaneClaim({ nc: b2.nc, space, ledger: c2.ledger.tuple, records: c2.records.tuple, oracle: foreignEchoOracle, log: quiet }));
