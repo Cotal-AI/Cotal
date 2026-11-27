@@ -561,6 +561,8 @@ if (process.platform !== "win32") {
   check("while the selected space's folder no longer exists, a bare up refuses TARGET_UNAVAILABLE and does not start the folder's name",
     preparedMoved.status === 0 && selected.status === 0 && afterMove.status === 2 && afterMove.envelope?.error?.code === "TARGET_UNAVAILABLE"
       && afterMove.envelope.error.message === `the selected space "moved" is prepared in ${source}, which no longer exists, and this folder names no space, so up did not start "epsilon" here` && !records(join(desktop, "epsilon")), shown(afterMove));
+  check("recovering a moved selection keeps the requested startup options for either space",
+    afterMove.envelope?.error?.remedy === 'if this is that folder moved, forget it with `cotal space forget moved`, prepare it here with `cotal space create moved`, then repeat your startup command with the same options; to start "epsilon" here instead, add `--space epsilon` to your original command', shown(afterMove));
   for (const space of ["delta", "projspace", "moved"]) run(["space", "forget", space]);
 }
 
