@@ -211,6 +211,14 @@ try {
     unconfirmedConversations: [{ label: "saved_conversation", space: "isolated-absent-space" }] });
   assert.equal(signOuts, 5);
   assert.ok(existsSync(join(recordDir, "identity.json")), "unreachable retirement stays available for recovery");
+
+  saveIdpSession(machineHome, idp, selected);
+  const repeatedLogout = await exchangeDesktopRequest({ paths }, request);
+  secretFree(repeatedLogout);
+  assert.ok(repeatedLogout.ok && "result" in repeatedLogout);
+  assert.deepEqual(repeatedLogout.result, { kind: "logout", serverRevoked: true, localLoginCleared: true, removedRegistrations: [], skippedServices: [] });
+  assert.equal(signOuts, 6);
+  assert.ok(existsSync(join(recordDir, "identity.json")), "set-aside record remains saved without repeating the sign-out warning");
 } finally {
   try { await daemon?.close(); }
   finally {

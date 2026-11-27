@@ -342,6 +342,9 @@ space's grant ledger, the refusal names the operator's `cotal actor grant` comma
 Signing in as a different account at the same provider removes the previous account's discovered
 spaces and deletes their sentinel credential files; manual registrations and their files stay. A
 file that cannot be deleted is named, and the login exits 4 (`OPERATION_PARTIAL`) after signing in.
+The previous account's resumable conversation approvals stay active at their space authorities until
+that account signs in again and runs `cotal logout` or revokes them there, and `cotal login` prints
+how many remain.
 After a login, every command on that mesh works under your identity: each connect takes a fresh IdP
 proof, exchanges it locally for a short-lived bearer, and is authorized against the actor
 ledger at connect time. A rate-limited `/token` read retries once when the IdP supplies a valid
@@ -715,7 +718,8 @@ machine identity, those files can derive the actor credential for the ordinary e
 is revoked. Protect the backup as a credential. Disconnect conversations you no longer use. An
 approval can last until disconnect, sign-out or revocation, with no idle expiry on the client.
 `cotal logout` attempts to retire the account's resumable conversations before clearing its login
-and registrations. It names any retirement it cannot confirm. Resume requires an unexpired local
+and registrations. It names any retirement it cannot confirm, and reports an older set-aside record
+without a resume proof at most once. Resume requires an unexpired local
 sign-in for the account that requested the approval. `cotal meshes rm` and `cotal space forget`
 leave the resumable identities live at their authorities.
 

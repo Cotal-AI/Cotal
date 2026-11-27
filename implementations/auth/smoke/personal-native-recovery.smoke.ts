@@ -35,10 +35,13 @@ if (["agent-bearer", "auth-service", "app-identity"].includes(process.argv[2] ??
   mkdirSync(root);
   for (const key of Object.keys(process.env)) if (key.startsWith("COTAL_")) delete process.env[key];
   process.env.COTAL_HOME = home;
-  const { CotalEndpoint, createSpaceAuth, isReachable, mintCreds, newIdentity, serverConfig, setupSpaceStreams } = await import("@cotal-ai/core");
+  const { CotalEndpoint, createSpaceAuth, isReachable, mintCreds, newIdentity, registry, serverConfig, setupSpaceStreams } = await import("@cotal-ai/core");
   const { authDir, assertUserAuthInfo, findMesh, recordMesh, saveSpaceAuth, userAuthStateDir, workspaceSecretStore } = await import("@cotal-ai/workspace");
   const { cotalAuthProvider, grantActor, loadCalloutAuth, revokeManagedActor } = await import("@cotal-ai/auth");
   const { deleteIdpSpaceCatalog, loadIdpSession, saveIdpSession } = await import("../src/login.js");
+  const { previousAccountConversationsNotice } = await import("../src/logout.js");
+  const { conversationSignOut } = await import("../../cli/src/lib/app-user-identity.js");
+  if (!registry.all("conversation-sign-out").some((h) => h.name === conversationSignOut.name)) registry.register(conversationSignOut);
   const { pickFreePort } = await import("./_free-port.js");
   const { EMPTY, startApprovalAuthority } = await import("./_approval-authority.js");
   type Child = import("node:child_process").ChildProcess;
@@ -349,6 +352,10 @@ if (["agent-bearer", "auth-service", "app-identity"].includes(process.argv[2] ??
       check("another account of the same provider cannot probe, replace or change the saved approval", otherAccount.error &&
         otherAccount.text.includes("approved by another account") && counts.resumeProbes === probes && counts.posts === requestsBeforeSwitch &&
         readFileSync(recoveryFile, "utf8") === ready && await granted(oldActor), otherAccount.text);
+      const switchNotice = previousAccountConversationsNotice(home, idpUrl, login.sub!);
+      check("switching accounts counts the previous account's remaining resumable approvals and names how to end them",
+        switchNotice === `The previous account still has 2 resumable conversation approvals on this computer. Sign in to that account with \`cotal login --idp ${idpUrl}\` and run \`cotal logout --idp ${idpUrl}\`, or revoke them at the space authority, to end them.` &&
+        previousAccountConversationsNotice(home, idpUrl, "different-recovery-account") === undefined, switchNotice);
       saveIdpSession(home, idpUrl, { ...login, expiresAt: 1 });
       const expired = await g7.call("cotal_connect", { name: recoveryName, context: recoverySession });
       check("an expired login cannot resume a ready approval", expired.error && expired.text.includes("Sign in again") && actorOf(recoverySession) === oldActor, expired.text);
@@ -410,6 +417,24 @@ if (["agent-bearer", "auth-service", "app-identity"].includes(process.argv[2] ??
         retirementAttemptsAtRevocation > attemptsBeforeCatalog && retirementAttemptsAtRevocation === counts.retirementAttempts, catalogLogout);
       check("sign-out retires a live lifecycle in a round-one set-aside folder", !existsSync(setAside) &&
         !await granted(replacement) && footprint(replacement) === "terminal");
+      const legacyId = "L".repeat(32);
+      const legacyDir = join(home, "app-identities", `unconfirmed-${legacyId}`);
+      mkdirSync(legacyDir, { mode: 0o700 });
+      writeFileSync(join(legacyDir, "identity.json"), JSON.stringify({
+        v: 1, requestId: legacyId, state: "retiring", label: "legacy_set_aside", space: "absent-legacy-space",
+        root, session: "legacy-session", token: "T".repeat(43), trust: "0".repeat(64),
+        consumer: { pid: process.pid }, remote: { idpUrl, url: `${authority.base}/api/spaces/absent-legacy-space/conversation-identities` },
+      }), { mode: 0o600 });
+      authority.availability.humanSession = true;
+      saveIdpSession(home, idpUrl, login);
+      const firstLegacyLogout = await signOut();
+      authority.availability.humanSession = true;
+      saveIdpSession(home, idpUrl, { ...login, sub: "different-recovery-account", token: "different-fixture-session" });
+      const secondLegacyLogout = await signOut();
+      check("sign-out reports an unretirable pre-resume set-aside record once and keeps its recovery file",
+        firstLegacyLogout.includes("legacy_set_aside") && !secondLegacyLogout.includes("unconfirmedConversations") &&
+        JSON.parse(readFileSync(join(legacyDir, "identity.json"), "utf8")).signOutReported === true,
+        { firstLegacyLogout, secondLegacyLogout });
       console.log(`personal-native-recovery: ${checks} real-broker resume checks passed`);
     } else {
     // The reported sequence: disconnect while the authority reports retirement pending, then

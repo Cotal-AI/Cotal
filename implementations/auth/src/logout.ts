@@ -1,5 +1,5 @@
 import { registry } from "@cotal-ai/core";
-import { CommandFailure, removeCatalogMeshes, type ConversationSignOut, type UnconfirmedConversation } from "@cotal-ai/workspace";
+import { CommandFailure, isCotalCloudIdp, loginRecoveryCommand, removeCatalogMeshes, type ConversationSignOut, type UnconfirmedConversation } from "@cotal-ai/workspace";
 import { clearSharedServiceSessions } from "./service-sessions.js";
 import { conversationAccountKey, deleteIdpSession, deleteIdpSpaceCatalog, loadIdpSession, normalizeIdpUrl, revokeIdpSession, withIdpSessionLock } from "./login.js";
 import { withConversationLogoutSession, withIdpSessionDir } from "./session-context.js";
@@ -28,6 +28,22 @@ async function retireConversations(dir: string, idp: string, session: NonNullabl
     ...(unavailable ? { conversationCheck: "unavailable" } : {}),
     ...(unconfirmedConversations.length ? { unconfirmedConversations } : {}),
   };
+}
+
+export function previousAccountConversationsNotice(dir: string, idp: string, sub: string): string | undefined {
+  const normalized = normalizeIdpUrl(idp);
+  const accountKey = conversationAccountKey(normalized, sub);
+  if (!accountKey) return undefined;
+  let count = 0;
+  for (const hook of registry.all<ConversationSignOut>("conversation-sign-out")) {
+    try { count += hook.count?.({ dir, idp: normalized, accountKey }) ?? 0; } catch {}
+  }
+  if (count < 1) return undefined;
+  const login = loginRecoveryCommand(normalized);
+  const logout = isCotalCloudIdp(normalized) ? "cotal logout" : `cotal logout --idp ${normalized}`;
+  const noun = count === 1 ? "approval" : "approvals";
+  const pronoun = count === 1 ? "it" : "them";
+  return `The previous account still has ${count} resumable conversation ${noun} on this computer. Sign in to that account with \`${login}\` and run \`${logout}\`, or revoke ${pronoun} at the space authority, to end ${pronoun}.`;
 }
 
 export function conversationLogoutWarnings(result: ConversationCleanupResult): string[] {
