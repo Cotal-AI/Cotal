@@ -357,6 +357,13 @@ if (["agent-bearer", "auth-service", "app-identity"].includes(process.argv[2] ??
       const throttled = await g7.call("cotal_connect", { name: recoveryName, context: recoverySession });
       check("a throttled resume reports the authority's wait and keeps the original approval", throttled.error &&
         throttled.text.includes("Wait at least 37 seconds") && readFileSync(recoveryFile, "utf8") === ready, throttled.text);
+      for (const retryAfter of ["-5", "1.5", "0", "99999999999999", "tomorrow"]) {
+        authority.availability.resumeReply = { status: 429, retryAfter };
+        const malformed = await g7.call("cotal_connect", { name: recoveryName, context: recoverySession });
+        check(`a Retry-After of ${JSON.stringify(retryAfter)} is treated as absent and keeps the original approval`, malformed.error &&
+          malformed.text.includes("Wait before trying again") && !malformed.text.includes("at least 0 seconds") &&
+          !/at least \d+ seconds/.test(malformed.text) && readFileSync(recoveryFile, "utf8") === ready, malformed.text);
+      }
       authority.availability.resumeReply = { status: 503 };
       const unavailable = await g7.call("cotal_connect", { name: recoveryName, context: recoverySession });
       check("a resume outage asks the caller to wait and does not replace the approval", unavailable.error &&

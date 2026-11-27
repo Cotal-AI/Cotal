@@ -34,7 +34,9 @@ recreate a retired lifecycle, or extend an approval. It returns HTTP 200 with
 Its definitive refusal is HTTP 401 with `{ "v": 1, "lifecycleUid": "<uid>", "status": "refused" }`.
 An unknown or malformed answer proves neither outcome. The authority sends `Retry-After` on
 HTTP 429. The client retains the approval on 429 or 5xx and reports that it can be retried
-later, including the wait when provided. An accepted resume still uses the ordinary actor
+later, including the wait when provided: only whole seconds (one to eight digits, above zero)
+or an IMF-fixdate at most about three years ahead count, and anything else is treated as
+missing. An accepted resume still uses the ordinary actor
 exchange and broker authorization to connect. The native client MUST have an unexpired local
 sign-in for the same provider and subject that requested the approval. A record without an
 approving account cannot resume. The account binding is local and does not change the probe.
