@@ -69,7 +69,7 @@ function rootRepair(row: (ActorRow & { kind: ActorKind }) | undefined, space: st
     return `Ask the space operator to re-grant exactly the same access with \`${grantCommandLine(row.owner, row.actor, row)}${parent} ${spaceFlag}\` on the machine that holds the grant.`;
   }
   if (row?.kind === "interactive") return "Ask the space operator to re-grant this actor with the same access and event payload restriction.";
-  if (row?.custody?.kind === "foreground") return "End this foreground launch. Rerun its original `cotal spawn` command with `--name <new-name>` to launch a new actor. A same-name restart does not replace the root.";
+  if (row?.custody?.kind === "foreground") return "End this foreground launch. In the original `cotal spawn` command, change `--name` to `<new_name>`, or add `--name <new_name>` if it had none. Rerun the command to start a new agent. The old name stays taken, and no command in this release frees it. The old agent's permissions don't move. Messages to its old name and direct messages already queued for it won't reach the new agent.";
   if (row?.custody) return `Find this lifecycle's seat with \`cotal ps --wide --on ${row.custody.instanceId} ${spaceFlag}\` and stop that seat on the same manager. Then rerun its original \`cotal spawn\` command.`;
   return NO_REPAIR_COORDINATES;
 }

@@ -63,7 +63,7 @@ registry.register({kind:"connector",name:"expiry-fixture",eventChannel,
     const refused = run(["agent-bearer", "--dir", dir, "--space", space, "--owner", owner, "--actor", actor, "--token-file", token]);
     assert.equal(await refused.closed, 1, refused.output());
     assert.ok(refused.output().includes(`expired at ${new Date(expiredAt).toISOString()} (UTC).`), refused.output());
-    assert.match(refused.output(), /End this foreground launch\. Rerun its original `cotal spawn` command with `--name <new-name>`/);
+    assert.ok(refused.output().includes("End this foreground launch. In the original `cotal spawn` command, change `--name` to `<new_name>`, or add `--name <new_name>` if it had none. Rerun the command to start a new agent. The old name stays taken, and no command in this release frees it. The old agent's permissions don't move. Messages to its old name and direct messages already queued for it won't reach the new agent."), refused.output());
   } finally {
     // Mirror foreground exit's owned grant cleanup; this deliberately does not retire the alias.
     await cotalAuthProvider.revokeAgent({ dir, owner, actor, lifecycleUid: uid, actorToken });
