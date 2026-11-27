@@ -100,14 +100,6 @@ export function clearCursor(): void {
   rmSync(reconcileCursorPath(), { force: true });
 }
 
-/** Drop the cursor the run under `nonce` wrote when that run changed no live prefix. A verify pass
- *  journals before it stages, and a staged install that never promotes leaves the prefix as it was.
- *  Keeping that cursor would refuse later commands for a seed that did not happen. A cursor another
- *  run left is kept as it is. */
-export function clearUnpromotedCursor(nonce: string): void {
-  if (readCursor()?.nonce === nonce) clearCursor();
-}
-
 /**
  * A seed child's liveness marker. The PARENT records `pending` BEFORE it spawns (so the window never
  * opens ownerless); the CHILD upgrades it to `live` with its own PID + start token as its first act;

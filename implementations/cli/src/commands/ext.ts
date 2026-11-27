@@ -123,7 +123,7 @@ export async function ext(args: ParsedArgs): Promise<void> {
   throw usage(EXT_USAGE);
 }
 
-async function npm(args: string[], prefix: string, seeding = false, offline = false): Promise<{ status: number | null; output: string }> {
+async function npm(args: string[], prefix: string, seeding = false): Promise<{ status: number | null; output: string }> {
   // On Windows `npm` is `npm.cmd`; Node refuses to spawn a `.cmd` without a shell (CVE-2024-27980),
   // and a naive shell re-parses cmd metachars, so run it through cmd.exe with a byte-for-byte command
   // line (shared with the manager's PtyRuntime launch).
@@ -134,7 +134,7 @@ async function npm(args: string[], prefix: string, seeding = false, offline = fa
   // Select the extension prefix explicitly so Corepack never treats its ancestors as a project.
   const env = { ...process.env };
   delete env[EXT_UPDATE_PARENT_ENV];
-  const npm = npmInvocation(env, [...args, "--prefix", prefix, "--include=optional", "--legacy-peer-deps", ...(offline ? ["--offline"] : [])]);
+  const npm = npmInvocation(env, [...args, "--prefix", prefix, "--include=optional", "--legacy-peer-deps"]);
   const { file, args: spawnArgs, windowsVerbatimArguments } = cmdSpawnSpec(npm.file, npm.args, npm.env);
   const seedGroup = seeding && process.platform === "linux";
   const mutation = beginExtensionNpmMutation(undefined, seedGroup);
@@ -273,33 +273,6 @@ export interface ExtensionInstallRequest {
   readonly source?: "seeded";
 }
 
-/** Registry specs need a fetch. A path or a `file:` spec is already on disk. */
-function registrySpec(spec: string): boolean {
-  return !isPathSpec(spec) && !spec.startsWith("file:");
-}
-
-function offlineLeftOut(pkg: string): string {
-  const cli = displayCmd();
-  return c.yellow(`! ${pkg} is recorded but not installed, so this offline repair left it out`) +
-    c.dim(` - \`${cli} ext add ${pkg}\` reinstalls it, or \`${cli} ext remove ${shellWord(pkg)}\` drops the entry`);
-}
-
-/** The requests npm can install without a fetch. A recorded registry package that is not on disk
- *  stays recorded while npm is offline: fetching it would fail the whole set. */
-async function stageableRequests(
-  requests: readonly ExtensionInstallRequest[],
-  prefix: string,
-  announce: (line: string) => void,
-): Promise<{ installing: ExtensionInstallRequest[]; offline: boolean }> {
-  const offline = await npmOffline();
-  if (!offline) return { installing: [...requests], offline };
-  const held = requests.filter((request) => registrySpec(request.spec) &&
-    lstatSync(join(prefix, "node_modules", request.pkg), { throwIfNoEntry: false }) === undefined);
-  for (const request of held) announce(offlineLeftOut(request.pkg));
-  const installing = requests.filter((request) => !held.some((item) => item.pkg === request.pkg));
-  return { installing: [...installing], offline };
-}
-
 // Out-of-prefix extraneous entries describe another tree, not dependencies of this prefix.
 function dropForeignLockEntries(lock: { packages?: Record<string, { extraneous?: boolean }> }): void {
   for (const [key, entry] of Object.entries(lock.packages ?? {})) {
@@ -312,8 +285,8 @@ export async function installExtensionSet(
   requests: readonly ExtensionInstallRequest[],
   announce: (line: string) => void = console.error,
   opts?: { isolate?: boolean; localOperand?: string; offline?: true; checkCorePeer?: boolean },
-): Promise<readonly string[]> {
-  if (!requests.length) return [];
+): Promise<void> {
+  if (!requests.length) return;
   const ownerConfig = connectorConfigDir();
   const owner = inspectLock(join(ownerConfig, ".extensions.lock"));
   if (owner.state !== "active" || owner.owner.pid !== process.pid) throw new Error("extension set requires its caller's prefix writer lock");
@@ -321,7 +294,6 @@ export async function installExtensionSet(
   const manifestBefore = loadExtensionsManifest();
   const closing: string[] = [];
   const originalConfig = process.env.XDG_CONFIG_HOME;
-  let leftOut: readonly string[] = [];
   let interrupted = false;
   const interrupt = (): void => { interrupted = true; };
   process.on("SIGINT", interrupt); process.on("SIGTERM", interrupt);
@@ -329,16 +301,12 @@ export async function installExtensionSet(
     // npm reads installed package paths physically. Use that spelling for its prefix and local file specs.
     const npmPrefix = realpathSync(stage.prefix);
     const livePrefix = join(realpathSync(ownerConfig), "extensions");
-    const stagedSet = await stageableRequests(requests, stage.prefix, announce);
-    const installing = stagedSet.installing;
-    leftOut = requests.filter((request) => !installing.some((item) => item.pkg === request.pkg)).map((request) => request.pkg);
-    if (!installing.length) return leftOut;
     // npm's hidden lock describes the copied node_modules at its original path.
     rmSync(join(npmPrefix, "node_modules", ".package-lock.json"), { force: true });
     // Keep missing local extensions in the inventory for explicit repair/removal, but do not ask npm
     // to reinstall them while reconciling other packages. Their original download directory may be gone.
     const absent = manifestBefore.extensions.filter(entry =>
-      !installing.some(request => request.pkg === entry.pkg) &&
+      !requests.some(request => request.pkg === entry.pkg) &&
       lstatSync(join(stage.prefix, "node_modules", entry.pkg), { throwIfNoEntry: false }) === undefined);
     // Make all local dependency specs independent of the stage directory's later promotion.
     for (const name of ["package.json", "package-lock.json"]) {
@@ -352,14 +320,7 @@ export async function installExtensionSet(
       if (name === "package-lock.json") dropForeignLockEntries(value);
       const dependencies = name === "package.json" ? value.dependencies : value.packages?.[""]?.dependencies;
       for (const entry of absent) {
-        // A missing local spec has no directory npm can reinstall from. A missing registry spec is
-        // the same while the command is repairing other packages offline: npm would fetch it, and
-        // the fetch failing stops the repair of everything else. The manifest entry stays, so the
-        // operator can still reinstall or remove it.
-        const spec = dependencies?.[entry.pkg];
-        const local = spec?.startsWith("file:") === true;
-        const registryOffline = (opts?.offline === true || stagedSet.offline) && typeof spec === "string" && !local;
-        if (!dependencies || !local && !registryOffline) continue;
+        if (!dependencies?.[entry.pkg]?.startsWith("file:")) continue;
         delete dependencies[entry.pkg];
         for (const key of Object.keys(value.packages ?? {})) {
           if (key === `node_modules/${entry.pkg}` || key.startsWith(`node_modules/${entry.pkg}/node_modules/`)) delete value.packages![key];
@@ -367,12 +328,12 @@ export async function installExtensionSet(
       }
       writeFileSync(path, JSON.stringify(value, null, 2) + "\n");
     }
-    for (const request of installing) {
+    for (const request of requests) {
       if (packageNameFromSpec(request.spec, isPathSpec(request.spec)) !== request.pkg) throw new Error("extension set spec does not match its package");
       rmSync(join(stage.prefix, "node_modules", request.pkg), { recursive: true, force: true });
     }
     const mutationPath = extensionNpmMutationPath();
-    const specs = installing.map(({ spec }) => isPathSpec(spec) ? realpathSync(spec) : spec);
+    const specs = requests.map(({ spec }) => isPathSpec(spec) ? realpathSync(spec) : spec);
     // npm's own update notifier can query the registry even in offline mode.
     const cacheOnly = opts?.offline ? ["--offline", "--update-notifier=false"] : [];
     const result = await npm(["install", "--save", "--no-audit", "--no-fund", "--install-links", ...cacheOnly, ...specs], npmPrefix);
@@ -380,10 +341,10 @@ export async function installExtensionSet(
     if (interrupted) throw new ExtensionAddInterrupted(requests[0]!.pkg);
     if (result.status !== 0) {
       const localFailure = opts?.localOperand === undefined ? undefined : localTarballFailure(result.output, npmPrefix, requests[0]!, opts.localOperand);
-      throw new Error(localFailure ?? `extension set npm install failed: ${npmInstallFailure(result.output)}`);
+      throw new Error(localFailure ?? `extension set npm install failed: ${npmInstallFailure(result.output)}`, { cause: result.output });
     }
     process.env.XDG_CONFIG_HOME = stage.config;
-    for (const request of installing) {
+    for (const request of requests) {
       const meta = installedExtensionPackage(request.pkg);
       if (!meta || request.version !== undefined && meta.version !== request.version) throw new Error(`extension set installed an unexpected version of ${request.pkg}`);
       if (opts?.checkCorePeer) assertExtensionCorePeer(request.pkg, meta.peerDependencies?.["@cotal-ai/core"]);
@@ -400,8 +361,8 @@ export async function installExtensionSet(
         throw new Error(`${message} Check the package with ${pack}, then include the entry in \`files\` or generate it before rerunning ${retry}.`);
       }
     }
-    const invocation = installing.length > 1 || opts?.isolate ? selfArgv() : undefined;
-    for (const request of installing) {
+    const invocation = requests.length > 1 || opts?.isolate ? selfArgv() : undefined;
+    for (const request of requests) {
       if (!invocation) {
         closing.push(...await verifyCandidate(request.pkg, request.spec, stage.prefix, loadExtensionsManifest().extensions, request.source === "seeded", false, console.error));
         continue;
@@ -416,7 +377,7 @@ export async function installExtensionSet(
     }
     // The verifiers wrote one complete inventory inside the stage. Rebind every retained package,
     // including packages not changed by this pass, just as each former individual add did.
-    linkExtensionPeers(loadExtensionsManifest().extensions, installing[0]!.pkg, console.error);
+    linkExtensionPeers(loadExtensionsManifest().extensions, requests[0]!.pkg, console.error);
     for (const name of ["package.json", "package-lock.json"]) {
       const path = join(stage.prefix, name);
       if (!existsSync(path)) continue;
@@ -443,7 +404,6 @@ export async function installExtensionSet(
     else process.env.XDG_CONFIG_HOME = originalConfig;
     stage.discard();
   }
-  return leftOut;
 }
 
 /** An `ext add` stopped by SIGINT or SIGTERM. `addExtension` throws it once the prefix and manifest
@@ -576,15 +536,10 @@ async function addTransaction(pkg: string, resolved: string, expectedPkg: string
  *  no other extension. `note` takes warnings as they happen; the returned lines announce the add, for
  *  the caller to print once it has committed. */
 async function installCandidate(pkg: string, resolved: string, dir: string, recorded: readonly InstalledExtension[], seeding: boolean, staged: boolean, note: (line: string) => void): Promise<string[]> {
-  // A repair reinstalls one built-in into the live prefix. A recorded registry package whose
-  // directory is gone has nothing npm can reuse, and fetching it would fail the whole repair.
-  // Offline, leave that entry recorded and install the built-in from what is already on disk.
-  const offline = seeding && await npmOffline();
-  if (offline) dropAbsentRegistryDeps(dir, recorded, note);
   console.error(c.dim(`installing ${resolved} into ${dir} …`));
   // --install-links: a file:/path spec is COPIED into the prefix, not symlinked — a symlink's
   // realpath would escape the prefix and Node could no longer resolve the linked core from it.
-  const r = await npm(["install", "--save", "--no-audit", "--no-fund", "--install-links", resolved], dir, seeding, offline);
+  const r = await npm(["install", "--save", "--no-audit", "--no-fund", "--install-links", resolved], dir, seeding);
   if (r.status !== 0) {
     fail(pkg, `npm install failed: ${npmInstallFailure(r.output)}`);
   }
@@ -721,38 +676,6 @@ function npmInstallFailure(output: string): string {
   if (lines.some((line) => /^spawn error: spawn npm ENOENT\b/.test(line))) return "npm is not on PATH";
   const tail = lines.slice(-8).join(" ");
   return tail || "npm install produced no output";
-}
-
-async function npmOffline(): Promise<boolean> {
-  const answer = await npm(["config", "get", "offline", "--location=project"], process.cwd());
-  return answer.status === 0 && /^(?:true|1)$/i.test(answer.output.trim().split("\n").at(-1) ?? "");
-}
-
-/** Take recorded registry packages that are not on disk out of this prefix's install list. Their
- *  manifest entries stay, and the note names how to put each one back or drop it. */
-function dropAbsentRegistryDeps(dir: string, recorded: readonly InstalledExtension[], note: (line: string) => void): void {
-  for (const name of ["package.json", "package-lock.json"]) {
-    const path = join(dir, name);
-    if (!existsSync(path)) continue;
-    const value = JSON.parse(readFileSync(path, "utf8")) as {
-      dependencies?: Record<string, string>;
-      packages?: Record<string, { dependencies?: Record<string, string> }>;
-    };
-    const dependencies = name === "package.json" ? value.dependencies : value.packages?.[""]?.dependencies;
-    let changed = false;
-    for (const entry of recorded) {
-      const spec = dependencies?.[entry.pkg];
-      if (typeof spec !== "string" || spec.startsWith("file:")) continue;
-      if (lstatSync(join(dir, "node_modules", entry.pkg), { throwIfNoEntry: false }) !== undefined) continue;
-      delete dependencies![entry.pkg];
-      for (const key of Object.keys(value.packages ?? {})) {
-        if (key === `node_modules/${entry.pkg}` || key.startsWith(`node_modules/${entry.pkg}/node_modules/`)) delete value.packages![key];
-      }
-      changed = true;
-      note(offlineLeftOut(entry.pkg));
-    }
-    if (changed) writeFileSync(path, JSON.stringify(value, null, 2) + "\n");
-  }
 }
 
 function fail(p: string, why: string): never {

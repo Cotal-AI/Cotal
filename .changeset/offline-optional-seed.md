@@ -2,4 +2,4 @@
 "@cotal-ai/cli": patch
 ---
 
-An offline update of a missing optional extension no longer leaves a failed connector seed. The extension stays recorded, and removing it, repairing the seed, or starting the space is not blocked on a fetch.
+A missing optional extension no longer makes an update reinstall every built-in connector or leave a failed seed cursor. `cotal update` reports that one extension and exits non-zero. An ordinary command prints one warning and runs, and the next command installs the extension once the registry answers. `cotal ext remove` can still drop the entry, except while a recovery journal is pending.

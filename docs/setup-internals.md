@@ -568,15 +568,18 @@ inspection does not invoke `ps`. Each inspection reads the owner record once and
 with the observed inode. Reclaim checks both again under its sentinel before it removes the lock
 file it judged.
 
-The reconcile journals a crash cursor before each connector mutation. A verify pass installs into a
-stage and promotes it once, at the end. When that install fails before the promotion, the live
-prefix is unchanged, so the pass drops the cursor it wrote and the failure stands on its own.
-While npm is offline, a verify or repair does not fetch a recorded registry extension that is not
-on disk. The manifest entry stays, so a later `cotal ext add` or `cotal ext remove` can put it
-back or drop it. On a setup retry, reconcile checks the staged add and the seed records under both
-locks. When those records identify an interrupted first install and no installer is active or
-ambiguous, setup uses the same verified reinstall as `cotal ext seed --repair`. A missing
-generation stamp alone is not enough.
+The reconcile journals a crash cursor before each connector mutation. A verify pass installs the
+built-ins and the optional extensions together, into one stage, and promotes that stage once.
+A missing operator package does not void the proof of a built-in that is already identical, so
+the built-ins are not reinstalled and no cursor is written for that package. `cotal update`
+reports the operator reinstall itself, loud and non-zero, naming the package. The automatic
+reconcile that runs before an ordinary command prints one warning when that fetch cannot
+complete, either because the package is not cached or because the registry cannot be reached,
+and lets the command run. It does not advance the stamp, so the next command with the registry
+reachable installs the package. On a setup retry, reconcile checks the staged add and the seed
+records under both locks. When those records identify an interrupted first install and no
+installer is active or ambiguous, setup uses the same verified reinstall as `cotal ext seed
+--repair`. A missing generation stamp alone is not enough.
 When reconcile cannot establish safe recovery, it keeps the cursor and reports the repair command.
 A SIGTERM to the seed command lets the current transaction finish, then stops
 before another starts. If an ordinary install verified, cancellation clears the cursor without

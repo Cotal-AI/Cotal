@@ -66,7 +66,7 @@ import {
 import { recoverExtensionPromotion } from "./lib/extension-stage.js";
 import { SeedChildFailure, deferredSeedRefusal, reconcileSeededConnectors, seedDowngradeRefusal } from "./seed/reconcile.js";
 import { deferSeedToLaunch } from "./seed/launch.js";
-import { isAuthenticSeedChild, readCursor, reconcileLockActive, seedChildStatus } from "./seed/lock.js";
+import { isAuthenticSeedChild, readCursor, reconcileLockActive, recoveryPending, seedChildStatus } from "./seed/lock.js";
 import { printHelpPath, printEntry } from "./help.js";
 import { historySetupFailureRecords, membershipSetupFailureRecords, watchSetupFailureRecords } from "./lib/stream-setup-failure.js";
 import { HISTORY_LIMIT_FLAGS } from "./commands/history-limit.js";
@@ -376,7 +376,7 @@ function skipsSeed(name: string, sub: string | undefined, argv: readonly string[
 function extRemoveKeepsSeed(): boolean {
   try {
     const cursor = readCursor();
-    if (!cursor?.failed || reconcileLockActive()) return false;
+    if (!cursor?.failed || recoveryPending() || reconcileLockActive()) return false;
     const child = seedChildStatus();
     return child.kind !== "live" && child.kind !== "ambiguous";
   } catch {

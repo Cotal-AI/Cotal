@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { lstatSync, readdirSync, readFileSync, realpathSync, statSync, type Dirent } from "node:fs";
-import { join, resolve, sep } from "node:path";
+import { basename, dirname, join, posix, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import { SEEDED_EXTENSIONS, extensionPackageDir, extensionsDir, hostPackageDir, installedExtensionPackage, isExtensionPathSpec, resolveExtensionEntry, type InstalledExtension } from "@cotal-ai/workspace";
 import { seedStorePath, shippedSourceDir } from "./paths.js";
@@ -44,6 +44,10 @@ export function seededInstallDiffers(name: string, generation: string, entry: In
   const shipped = shippedSourceDir(name);
   const own = payloadFiles(shipped);
   if (typeof own === "string") return `the shipped payload ${own}`;
+  // npm --install-links copies the published file set, not a checkout's source and tests. A checkout
+  // still ships those files beside the payload, so the proof compares the set the install holds.
+  const packed = packedFiles(shipped, own);
+  if (typeof packed === "string") return `the shipped payload ${packed}`;
   // A published payload's docs data ships once in the shared directory; each copy is compared with that.
   let shared: SharedPlacement[];
   try {
@@ -51,7 +55,7 @@ export function seededInstallDiffers(name: string, generation: string, entry: In
   } catch (e) {
     return (e as Error).message;
   }
-  const sources = new Map(own.map((file) => [file, join(shipped, file)]));
+  const sources = new Map(packed.map((file) => [file, join(shipped, file)]));
   for (const { rel, source } of shared) {
     const file = join(...rel.split("/"));
     if (sources.has(file)) return `the shipped payload holds ${file} and also ships it shared`;
@@ -61,7 +65,7 @@ export function seededInstallDiffers(name: string, generation: string, entry: In
   for (const [copy, label] of [[store, "the seed store copy"], [installed, "the installed copy"]] as const) {
     const listed = payloadFiles(copy);
     if (typeof listed === "string") return `${label} ${listed}`;
-    const have = [...listed].sort();
+    const have = label === "the seed store copy" ? listed.filter((file) => sources.has(file)).sort() : [...listed].sort();
     if (have.length !== files.length) return `${label} holds ${have.length} files, the shipped payload ${files.length}`;
     for (let i = 0; i < files.length; i++) {
       if (have[i] !== files[i]) return `${label} has ${have[i]} where the shipped payload has ${files[i]}`;
@@ -116,6 +120,23 @@ export function operatorInstallDiffers(entry: InstalledExtension, generation: st
  * built-in, so an update that skips a reinstall still leaves no missing or skewed dependency behind.
  */
 export function prefixLockDiffers(): string | undefined {
+  return lockDiffers();
+}
+
+/** Why a built-in's own lock entries are not the tree on disk, or undefined when they are. An
+ *  operator package the lock records and the disk does not hold is that package's own reinstall,
+ *  not a reason to throw away the proof of every built-in. */
+export function builtInLockDiffers(builtInPackages: ReadonlySet<string>): string | undefined {
+  return lockDiffers((key, recorded) => {
+    const name = key.startsWith("node_modules/") ? key.slice("node_modules/".length) : key;
+    if (builtInPackages.has(name)) return true;
+    // A built-in's optional platform package is its own lock entry. One this host does not install
+    // is already excused below, and it is not the operator package that is missing.
+    return recorded.optional === true && name.split("node_modules/").some((part) => builtInPackages.has(part));
+  });
+}
+
+function lockDiffers(include: (key: string, recorded: LockEntry) => boolean = () => true): string | undefined {
   const prefix = extensionsDir();
   let lock: { packages?: Record<string, LockEntry> };
   try {
@@ -125,7 +146,7 @@ export function prefixLockDiffers(): string | undefined {
   }
   if (!lock.packages || typeof lock.packages !== "object") return "the prefix lock records no packages";
   for (const [key, recorded] of Object.entries(lock.packages)) {
-    if (key === "" || recorded.link === true) continue;
+    if (key === "" || recorded.link === true || !include(key, recorded)) continue;
     if (typeof recorded.version !== "string") return `the prefix lock records no version for ${key}`;
     let actual: unknown;
     try {
@@ -139,6 +160,46 @@ export function prefixLockDiffers(): string | undefined {
     if (actual !== recorded.version) return `${key} is ${String(actual)} on disk and ${recorded.version} in the prefix lock`;
   }
   return undefined;
+}
+
+/** The files `npm pack` keeps from a checkout payload (`files`, `main`, `bin`, and the root readme
+ *  and license), or every file when the payload is already that packed tree. A checkout keeps the
+ *  docs files the prepack lifts into the shared directory, and the comparison adds those for a
+ *  packed tree. A `files` entry this function cannot read is a reason, not a guess that the whole
+ *  tree ships. */
+function packedFiles(root: string, files: readonly string[]): string[] | string {
+  if (basename(dirname(root)) === "seeded-connectors") return [...files];
+  let meta: { files?: unknown; main?: unknown; bin?: unknown };
+  try {
+    meta = JSON.parse(readFileSync(join(root, "package.json"), "utf8")) as typeof meta;
+  } catch (e) {
+    return `package.json is unreadable: ${(e as Error).message}`;
+  }
+  if (meta.files !== undefined && !(Array.isArray(meta.files) && meta.files.every((entry) => typeof entry === "string")))
+    return "files field is not a list of paths";
+  const patterns: string[] = Array.isArray(meta.files) ? [...meta.files] : [];
+  if (typeof meta.main === "string") patterns.push(meta.main);
+  if (typeof meta.bin === "string") patterns.push(meta.bin);
+  else if (meta.bin && typeof meta.bin === "object") {
+    for (const entry of Object.values(meta.bin)) if (typeof entry === "string") patterns.push(entry);
+  }
+  return files.filter((file) => packs(file, patterns));
+}
+
+/** Whether `npm pack` keeps `file` (posix, relative): a root readme, license, copying notice, or
+ *  `package.json`, or a `files`/`main`/`bin` entry. A directory entry covers its contents and a
+ *  glob is read the way the packer reads it. */
+function packs(file: string, patterns: readonly string[]): boolean {
+  const rel = file.split(sep).join("/");
+  const name = posix.basename(rel).toLowerCase();
+  if (!rel.includes("/") && (name === "package.json" || /^(?:readme|license|licence|copying)(?:\.|$)/.test(name))) return true;
+  return patterns.some((pattern) => {
+    let rule = pattern.startsWith("./") ? pattern.slice(2) : pattern;
+    if (rule.endsWith("/*")) rule = `${rule.slice(0, -1)}*`;
+    rule = posix.normalize(rule).replace(/\/$/, "");
+    if (!/[?*[]/.test(rule)) return rel === rule || rel.startsWith(`${rule}/`);
+    return posix.matchesGlob(rel, rule) || posix.matchesGlob(rel, `${rule}/**`);
+  });
 }
 
 /** The payload's regular files, sorted, relative to `root`, with nested `node_modules` and `.git`
