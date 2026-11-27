@@ -198,6 +198,12 @@ async function checkEnabledPluginDelivery() {
     check("isolated discovery lists admitted grants and suppresses stale configured names",
       readable.includes(channel) && !readable.includes(hiddenChannel) && !chatOnly.includes(channel) && !chatOnly.includes(hiddenChannel),
       { readable, chatOnly });
+    await fixture.seedMembership(reader.principal, { live: [chatChannel, channel], durable: [chatChannel] });
+    const snapshot = await observer.readMembership();
+    const member = snapshot.members.find(({ id }) => id === reader.principal);
+    check("the fixture seeds both rails in the broker-backed raw membership snapshot",
+      member?.live.join() === [chatChannel, channel].join() && member.durable.join() === chatChannel &&
+      snapshot.asOf === member.observedAt, snapshot);
     const post = await write.multicast("retained plugin body", { channel });
     check("the real broker delivers the post to an exact scoped live subscriber and native tap",
       await waitFor(() => live.some(({ id }) => id === post.id) && tapped.some(({ id }) => id === post.id)));

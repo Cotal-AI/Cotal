@@ -5,10 +5,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { connect, type NatsConnection } from "@nats-io/transport-node";
 import { jetstreamManager } from "@nats-io/jetstream";
+import { Kvm } from "@nats-io/kv";
 import { SMOKE_BROKER_TOKEN, awaitBrokerReady, killAndAwaitExit, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import {
-  CotalEndpoint, DEV_OWNER, createSpaceAuth, isReachable, mintCreds, mintLifecycleUid, newIdentity, principalKey,
-  serverConfig, setupSpaceStreams, standaloneConnectOpts,
+  CotalEndpoint, DEV_OWNER, MEMBERSHIP_FEED_KEY, createSpaceAuth, isReachable, membershipBucket, mintCreds,
+  mintLifecycleUid, newIdentity, parsePrincipalKey, principalKey, serverConfig, setupSpaceStreams,
+  standaloneConnectOpts, type ChannelMembership,
 } from "../../src/index.js";
 import { openChannelRegistry, writeChannelConfig } from "../../src/channels.js";
 import { PLUGIN_CHANNEL_PROJECTION_KEY } from "../../src/plugin-channel-projection.js";
@@ -81,6 +83,20 @@ export async function startEnabledPluginSpace() {
       return { creds, lifecycleUid, owner: DEV_OWNER, actor, principal };
     };
     const mintObserver = () => mintCreds(auth, newIdentity(), "observer", { pluginChannelsEnabled: true });
+    /** Seed the display-only feed, not the durable members registry. The write uses no system connection. */
+    const seedMembership = async (id: string, row: Pick<ChannelMembership, "live" | "durable">) => {
+      if (!parsePrincipalKey(id)) throw new Error("fixture membership requires an agent principal key");
+      const creds = await mintCreds(auth, newIdentity(), "membership-rw");
+      const connection = await connect({ servers, ...standaloneConnectOpts({ creds, tls: false }) });
+      try {
+        const feed = await new Kvm(connection).open(membershipBucket(space));
+        const observedAt = Date.now();
+        await feed.put(id, JSON.stringify({ live: row.live, durable: row.durable, observedAt }));
+        await feed.put(MEMBERSHIP_FEED_KEY, JSON.stringify({ observedAt }));
+      } finally {
+        await connection.close();
+      }
+    };
     const startDelivery = async () => {
       const creds = await mintCreds(auth, newIdentity(), "delivery", { pluginChannelsEnabled: true });
       const ep = endpoint({ creds, channels: [], consume: false, registerPresence: false, watchPresence: true,
@@ -105,7 +121,7 @@ export async function startEnabledPluginSpace() {
       await jsm.jetstream().publish(pluginChannelSpaceStateSubject(space), new TextEncoder().encode(JSON.stringify({ version: 1, enabled: true, epoch: 2 })));
       await registry.put(PLUGIN_CHANNEL_PROJECTION_KEY, JSON.stringify({ enabled: true, epoch: 2 }));
     };
-    return { servers, space, channel, hiddenChannel, chatChannel, endpoint, mintAgent, mintObserver, startDelivery, removePluginHistory,
+    return { servers, space, channel, hiddenChannel, chatChannel, endpoint, mintAgent, mintObserver, seedMembership, startDelivery, removePluginHistory,
       recreatePluginHistoryAtNextEpoch, provisioner, jsm, close };
   } catch (error) {
     await close();
