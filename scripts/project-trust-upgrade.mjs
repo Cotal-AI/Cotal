@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
+import { Buffer } from 'node:buffer';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { delimiter, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -185,6 +186,18 @@ function writeTrustedProjectFiles(projectDir, probeScript) {
   }, null, 2) + '\n', { mode: 0o600 });
 }
 
+// The connector binds tmpdir()/cotal-ctl-<22>/ctl.sock. That tail is 42 bytes and
+// sun_path holds 108 on Linux, 104 on macOS. The cell temp is join(root, 'tmp'), four
+// more bytes, so the root may be 62 on Linux and 58 on macOS. A real runner root is shorter.
+export const CONTROL_SOCKET_TAIL_BYTES = '/cotal-ctl-'.length + 22 + '/ctl.sock'.length;
+export const SUN_PATH_LIMIT_BYTES = { linux: 108, darwin: 104 };
+
+export function controlSocketBytes(cellRoot, platform) {
+  const separator = platform === 'win32' ? '\\' : '/';
+  const socket = `${cellRoot}${separator}tmp${separator}cotal-ctl-${'a'.repeat(22)}${separator}ctl.sock`;
+  return Buffer.byteLength(socket);
+}
+
 function buildIsolatedProfile(baseEnv, profileRoot, binDir, tmp) {
   const env = { ...baseEnv };
   for (const key of Object.keys(env)) if (key.startsWith('COTAL_') && key !== 'COTAL_ALLOW_CHECKOUT_SEED') delete env[key];
@@ -195,9 +208,6 @@ function buildIsolatedProfile(baseEnv, profileRoot, binDir, tmp) {
   const xdgCache = join(profileRoot, 'cache');
   const xdgState = join(profileRoot, 'xdg-state');
   const runtimeDir = join(profileRoot, 'runtime');
-  // A per-profile tmp under the cell root makes the control socket
-  // (tmpdir/cotal-ctl-<22>/ctl.sock, 42 bytes) longer than sun_path on the
-  // GitHub runner: 108 on Linux, 104 on macOS. One shared short directory fits both.
   const localAppData = join(home, 'AppData', 'Local');
   const appData = join(home, 'AppData', 'Roaming');
   for (const dir of [profileRoot, home, cotalHome, xdgConfig, xdgData, xdgCache, xdgState, runtimeDir, tmp, localAppData, appData]) {
@@ -426,11 +436,10 @@ async function buildProjectTrustWorkspace({ env, root, pkg, call, ok, invokeCli 
     TRUST_MATRIX_ENV: EXPECTED_PROJECT_TRUST_ENV,
   };
 
-  const shortTmp = join(root, 't');
-  mkdirSync(shortTmp, { recursive: true, mode: 0o700 });
-  // The cell env also carries the long cell tmp. Launches read TMPDIR from the profile.
-  for (const key of ['TMPDIR', 'TEMP', 'TMP']) probeEnv[key] = shortTmp;
-  const profile = (name) => buildIsolatedProfile(probeEnv, join(workRoot, 'profiles', name), standin.binDir, shortTmp);
+  // The cell already sets TMPDIR to join(root, 'tmp'). A profile temp directory under
+  // the cell root makes the control socket longer than sun_path, so every profile uses that same directory.
+  const cellTmp = env.TMPDIR;
+  const profile = (name) => buildIsolatedProfile(probeEnv, join(workRoot, 'profiles', name), standin.binDir, cellTmp);
   const profiles = {
     primary: profile('primary'),
     spawnFirst: profile('spawn-first'),
@@ -537,6 +546,34 @@ function windowsSymlinkSpelling(canonical) {
   } catch (error) { return { spelling: link, ran: false, reason: error.message }; }
 }
 
+function recordedPids(cwd) {
+  const dir = join(cwd, '.cotal');
+  if (!existsSync(dir)) return [];
+  const pids = [];
+  for (const name of readdirSync(dir)) {
+    if (!/^(nats|manager\.[0-9a-f]+|auth-service\.[0-9a-f]+|delivery\.[0-9a-f]+)\.pid$/.test(name)) continue;
+    const first = readFileSync(join(dir, name), 'utf8').trim().split(/\s+/)[0];
+    const pid = Number(first);
+    if (Number.isInteger(pid) && pid > 1) pids.push(pid);
+  }
+  return pids;
+}
+
+function pidGone(pid) {
+  try { process.kill(pid, 0); return false; }
+  catch (error) { return error.code === 'ESRCH'; }
+}
+
+export async function waitUntilGone(pids, alive = pidGone, wait = ms => new Promise(done => setTimeout(done, ms))) {
+  const pending = new Set(pids);
+  const deadline = Date.now() + 15_000;
+  while (pending.size > 0 && Date.now() < deadline) {
+    for (const pid of pending) if (alive(pid)) pending.delete(pid);
+    if (pending.size > 0) await wait(200);
+  }
+  assert.equal(pending.size, 0, `owned processes still running: ${[...pending].join(', ')}`);
+}
+
 function stackControls(invokeCli, ok) {
   const activeStacks = [];
   const startOpenStack = async (label, cwd, space, runEnv, { server, withManager = false } = {}) => {
@@ -552,9 +589,12 @@ function stackControls(invokeCli, ok) {
     // A broker-only stack is the space recorded at its own root. 0.182.1 stops
     // that with bare `cotal down`; current also accepts it, and rejects
     // --with-agents together with --space. A stack that started a manager names
-    // its space and stops its agents.
+    // its space and stops its agents. `down` returns before the pids exit, so the
+    // recorded pids are read first and the stop is not done until they are gone.
+    const pids = recordedPids(stack.cwd);
     const argv = stack.withAgents ? ['down', '--with-agents', '--yes'] : ['down', '--yes'];
     ok(await invokeCli(label, argv, { cwd: stack.cwd, env: stack.env }), label);
+    await waitUntilGone(pids);
     stack.stopped = true;
   };
   return { activeStacks, startOpenStack, stopOpenStack };
@@ -605,8 +645,12 @@ export async function prepareProjectTrustMigration(context) {
     for (const stack of [...activeStacks].reverse()) {
       if (stack.stopped) continue;
       const argv = stack.withAgents ? ['down', '--with-agents', '--yes'] : ['down', '--yes'];
+      const pids = recordedPids(stack.cwd);
       const result = await invokeCli(`project-trust cleanup ${stack.space}`, argv, { cwd: stack.cwd, env: stack.env });
-      if (result.exit === 0 && result.signal === null && result.timeout === false) stack.stopped = true;
+      if (result.exit === 0 && result.signal === null && result.timeout === false) {
+        await waitUntilGone(pids);
+        stack.stopped = true;
+      }
       else failures.push(`${stack.space} exit ${result.exit}`);
     }
     allStacksStopped = activeStacks.every(stack => stack.stopped);

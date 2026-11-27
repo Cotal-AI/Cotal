@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { Buffer } from 'node:buffer';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -14,6 +15,10 @@ import {
   validProjectTrustLaunchRecord,
   validProjectTrustRefusalRecord,
   verifyProjectTrustEvidence,
+  CONTROL_SOCKET_TAIL_BYTES,
+  SUN_PATH_LIMIT_BYTES,
+  controlSocketBytes,
+  waitUntilGone,
 } from './project-trust-upgrade.mjs';
 import { planRelease, verifyResults } from './upgrade-matrix-plan.mjs';
 
@@ -280,6 +285,36 @@ test('verifyProjectTrustEvidence accepts complete cross-platform evidence and re
   } finally {
     rmSync(trusted.output, { recursive: true, force: true });
   }
+});
+
+test('the control socket fits the longest cell root each platform allows', () => {
+  assert.equal(CONTROL_SOCKET_TAIL_BYTES, 42);
+  const overhead = '/tmp'.length + CONTROL_SOCKET_TAIL_BYTES;
+  for (const [platform, limit] of Object.entries(SUN_PATH_LIMIT_BYTES)) {
+    const longest = limit - overhead;
+    const root = `/${'r'.repeat(longest - 1)}`;
+    assert.equal(Buffer.byteLength(root), longest);
+    assert.equal(controlSocketBytes(root, platform), limit);
+    const over = `${root}x`;
+    assert(controlSocketBytes(over, platform) > limit, `${platform} must refuse a root past ${longest} bytes`);
+  }
+  const runner = { linux: '/home/runner/work/_temp/cell-xxxxxx', darwin: '/Users/runner/work/_temp/cell-xxxxxx' };
+  for (const [platform, root] of Object.entries(runner)) {
+    assert(controlSocketBytes(root, platform) <= SUN_PATH_LIMIT_BYTES[platform], platform);
+  }
+  const perProfile = `${runner.linux}/project-trust/profiles/primary`;
+  assert(controlSocketBytes(perProfile, 'linux') > SUN_PATH_LIMIT_BYTES.linux);
+});
+
+test('cleanup is not done while a recorded process is still alive', async () => {
+  let checks = 0;
+  await assert.rejects(
+    () => waitUntilGone([4321], () => { checks += 1; return false; }, () => Promise.resolve()),
+    /owned processes still running: 4321/,
+  );
+  assert(checks > 1, 'the wait retried instead of trusting the stop command');
+  let seen = false;
+  await waitUntilGone([4321], () => { const gone = seen; seen = true; return gone; }, () => Promise.resolve());
 });
 
 test('both phases require Linux, macOS and Windows project-trust-migration cells', () => {
