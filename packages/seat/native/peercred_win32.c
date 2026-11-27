@@ -757,6 +757,7 @@ static napi_value Init(napi_env env, napi_value exports) {
   Export(env, exports, "pipeConnect", PipeConnect);
   Export(env, exports, "seatPtyLaunch", SeatPtyLaunch);
   Export(env, exports, "seatPtyResume", SeatPtyResume);
+  Export(env, exports, "seatPtyAbort", SeatPtyAbort);
   Export(env, exports, "seatPtyPoll", SeatPtyPoll);
   Export(env, exports, "seatPtyResize", SeatPtyResize);
   Export(env, exports, "seatPtyDispose", SeatPtyDispose);
