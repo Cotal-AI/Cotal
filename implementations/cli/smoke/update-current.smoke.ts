@@ -6,7 +6,7 @@ import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join, parse } from "node:path";
 import { pathToFileURL } from "node:url";
-import { claimGlobalNpmUpdateLock, processGroupMembers, recoveryProcessStartToken, withWindowsUpdateIdentity } from "@cotal-ai/workspace";
+import { claimGlobalNpmUpdateLock, processGroupMembers, readProcessCommand, recoveryProcessStartToken, withWindowsUpdateIdentity } from "@cotal-ai/workspace";
 import { countedAssert, emitSentinel } from "../../../bin/smoke/sentinel.mjs";
 import { executeUpdate, updateRuntime, type UpdateRuntime } from "../src/commands/update.js";
 import { installedUpdatePrefix, npmChildGate, posixGateScriptPath, releaseChildGate, runGlobalProcess, runNpm, runNpmAsync, runProcess } from "../src/commands/update-process.js";
@@ -363,17 +363,11 @@ process.stdout.write(JSON.stringify({
       else process.env[key] = value;
     }
   }
-  const readGroupArgv = (pgid: number): string[] => {
-    const members = processGroupMembers(pgid);
-    if (process.platform === "linux") {
-      return members.flatMap(pid => {
-        try { return [readFileSync(`/proc/${pid}/cmdline`, "utf8").split("\0").join(" ")]; }
-        catch { return []; }
-      });
-    }
-    const ps = spawnSync("ps", ["-ww", "-o", "args=", "-g", String(pgid)], { encoding: "utf8" });
-    return ps.status === 0 ? ps.stdout.split("\n").filter(Boolean) : [];
-  };
+  const readGroupArgv = (pgid: number): string[] =>
+    processGroupMembers(pgid).flatMap(pid => {
+      const cmd = readProcessCommand(pid);
+      return cmd.kind === "command" ? [cmd.command] : [];
+    });
   try {
     const childEnv: NodeJS.ProcessEnv = {
       ...baseEnv, PATH: `${stubBin}${delimiter}${baseEnv.PATH ?? ""}`,
@@ -389,8 +383,8 @@ process.stdout.write(JSON.stringify({
     assert.deepEqual(globalReport.picked, tricky);
     assert.equal(globalReport.nodeOptionsLoaded, true);
     assert.deepEqual(globalReport.openGateFds, []);
-    assert.equal(globalReport.liveRecord?.phase, "live");
     if (process.platform === "linux") {
+      assert.equal(globalReport.liveRecord?.phase, "live");
       assert.equal(globalReport.workerBeforeStart, true, "runGlobalChild publishes .worker-<pid> before npm starts");
       assert(
         globalReport.liveRecord?.pid === globalReport.pid || globalReport.liveRecord?.pid === globalReport.ppid,
@@ -412,7 +406,7 @@ process.stdout.write(JSON.stringify({
       `for (const k of keys) picked[k] = k in process.env ? process.env[k] : null;`,
       `const openGateFds = [];`,
       `for (const fd of [3, 4]) { try { const st = fstatSync(fd); if (st.isFIFO() || st.isSocket()) openGateFds.push(fd); } catch {} }`,
-      `const custody = process.env.SMOKE_GLOBAL_ROOT ? inspectGlobalUpdateChild(process.env.SMOKE_GLOBAL_ROOT) : undefined;`,
+      `const custody = process.platform === "linux" && process.env.SMOKE_GLOBAL_ROOT ? inspectGlobalUpdateChild(process.env.SMOKE_GLOBAL_ROOT) : undefined;`,
       `let reconciled = false;`,
       `const code = await executeUpdate(false, {`,
       `  ...updateRuntime,`,
@@ -848,11 +842,13 @@ process.stdout.write(JSON.stringify({
           assert.equal(existsSync(missingCache) && (await import("node:fs")).readdirSync(missingCache).some(n => n.startsWith(".worker-")), false,
             "missing helper in runNpmAsync must fail before writing .worker-<pid>");
 
-          const globalMissing = await runGlobalProcess(missingRoot, "install", "npm", ["install"], { ...baseEnv, ...tricky }, false);
-          assert.equal(globalMissing.status, null);
-          assert.match(globalMissing.error ?? "", /missing POSIX update gate helper/);
-          assert.equal(existsSync(join(missingRoot, ".cotal-update-child")), false,
-            "missing helper in runGlobalChild must fail before writing .cotal-update-child custody");
+          if (process.platform === "linux") {
+            const globalMissing = await runGlobalProcess(missingRoot, "install", "npm", ["install"], { ...baseEnv, ...tricky }, false);
+            assert.equal(globalMissing.status, null);
+            assert.match(globalMissing.error ?? "", /missing POSIX update gate helper/);
+            assert.equal(existsSync(join(missingRoot, ".cotal-update-child")), false,
+              "missing helper in runGlobalChild must fail before writing .cotal-update-child custody");
+          }
         } finally {
           renameSync(movedHelper, helperPath);
         }

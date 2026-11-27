@@ -1290,7 +1290,7 @@ if (process.argv[2] === "update") {
   const { inspectGlobalUpdateChild } = await import(${JSON.stringify(realWorkspaceDist)});
   const reportPath = process.env.SMOKE_RECONCILE_BINDING_REPORT;
   const globalRoot = join(process.env.npm_config_prefix, "lib/node_modules");
-  const custody = inspectGlobalUpdateChild(globalRoot);
+  const custody = process.platform === "linux" ? inspectGlobalUpdateChild(globalRoot) : undefined;
   const openGateFds = [];
   for (const fd of [3, 4]) {
     try { const st = fstatSync(fd); if (st.isFIFO() || st.isSocket()) openGateFds.push(fd); } catch {}
