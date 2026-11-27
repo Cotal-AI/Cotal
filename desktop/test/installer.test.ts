@@ -187,6 +187,22 @@ test('setup inventory skips service bookkeeping and names any other file that di
     ['install/update-check.json', 'file'],
     ['install/update-check.lock.0123456789abcdef.tmp', 'file'],
     ['install/update-check.123.tmp', 'file'],
+    ['install/meshes', 'dir'],
+    ['install/meshes/space.json', 'file'],
+    ['install/trusted-projects-seed.json', 'file'],
+    ['install/idp-sessions.json', 'file'],
+    ['install/acp', 'dir'],
+    ['install/acp/session.json', 'file'],
+    ['install/agent-skills.json', 'file'],
+    ['install/app-identities', 'dir'],
+    ['install/catalog', 'dir'],
+    ['install/chat-sessions', 'dir'],
+    ['install/current-mesh', 'file'],
+    ['install/linear', 'dir'],
+    ['install/onboarded.json', 'file'],
+    ['install/prepared', 'dir'],
+    ['install/service-launchd', 'dir'],
+    ['install/services', 'dir'],
     ['install/update-example.json', 'file'],
   ]);
   const gone = new Set<string>();
@@ -209,6 +225,10 @@ test('setup inventory skips service bookkeeping and names any other file that di
   assert.equal(inventory().map(row => row.file).join('\n'), 'node.exe\nruntime/cotal.js\nruntime/update-check.lock\nupdate-example.json');
   assert.equal(read.has('install/daemon/daemon.log'), false);
   assert.equal(read.has('install/update-check.lock'), false);
+  assert.equal(read.has('install/meshes/space.json'), false);
+  assert.equal(read.has('install/trusted-projects-seed.json'), false);
+  assert.equal(read.has('install/acp/session.json'), false);
+  assert.equal(read.has('install/current-mesh'), false);
   gone.add('install/runtime/cotal.js');
   assert.throws(() => inventory(), { message: 'Installed file disappeared during inventory: runtime/cotal.js' });
   gone.delete('install/runtime/cotal.js');

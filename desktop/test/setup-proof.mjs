@@ -273,6 +273,21 @@ const serviceState = new Set([
   'update-windows-paused.json', // pause after an interrupted Windows helper
   'update-windows-clear.json', // request that clears that pause
   'update-windows-activation.json', // result of activating the replaced Windows service
+  'meshes', // registered mesh records rewritten while the service answers
+  'trusted-projects-seed.json', // project-trust seed written when the service records a mesh
+  'idp-sessions.json', // signed-in sessions kept beside the service
+  'idp-sessions.lock', // lock around those signed-in sessions
+  'acp', // account and connector session records
+  'agent-skills.json', // reconciled skill record
+  'app-identities', // desktop app identity records
+  'catalog', // signed-in space catalog
+  'chat-sessions', // remembered desktop chat sessions
+  'current-mesh', // mesh selected by the running service
+  'linear', // Linear connector state
+  'onboarded.json', // onboarding marker read at service start
+  'prepared', // spaces prepared on this machine
+  'service-launchd', // retained service launch records
+  'services', // connected service records
 ]);
 function serviceOwned(file) {
   const name = file.split('/')[0];
