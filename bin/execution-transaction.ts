@@ -23,7 +23,7 @@ export function assertExecutionDestination(installed: string): boolean {
     executionLocation(path);
   }
   let repaired = false;
-  for (const path of [installed, join(installed, "dist"), dirname(installed), dirname(dirname(installed))])
+  for (const path of [installed, join(installed, "dist"), dirname(installed), dirname(dirname(installed)), dirname(dirname(dirname(installed)))])
     if (assertWritableExecutionDirectory(path, installed)) repaired = true;
   selectExecutionProgram(installed);
   return repaired;

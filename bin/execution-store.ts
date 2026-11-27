@@ -24,7 +24,8 @@ export function unwritableInstallation(installedRoot: string, directory?: string
 export function assertWritableExecutionDirectory(path: string, installed: string, setMode?: (mode: number) => void): boolean {
   const stat = lstatSync(path);
   const owned = stat.uid === process.getuid?.();
-  const restoreWrite = owned && stat.isDirectory() && (stat.mode & 0o200) === 0;
+  const prefix = path === dirname(dirname(dirname(installed)));
+  const restoreWrite = owned && stat.isDirectory() && (stat.mode & 0o200) === 0 && !prefix;
   try {
     if (restoreWrite) {
       const mode = (stat.mode & 0o7777) | 0o200;
@@ -33,7 +34,7 @@ export function assertWritableExecutionDirectory(path: string, installed: string
     accessSync(path, constants.W_OK);
     return restoreWrite;
   } catch {
-    if (owned) throw new Error(`installation directory is not writable: ${path}; restore write access to this user-owned directory, then run \`cotal update --self\` again without sudo`);
+    if (owned && !prefix) throw new Error(`installation directory is not writable: ${path}; restore write access to this user-owned directory, then run \`cotal update --self\` again without sudo`);
     throw unwritableInstallation(installed, setMode ? path : undefined);
   }
 }
@@ -81,12 +82,12 @@ export function retainExecutionGeneration(installedRoot: string, verifiedSource:
   }
   executionLocation(installedRoot);
   protectedExecutionEntry(verifiedSource);
-  for (const path of [installedRoot, join(installedRoot, "dist"), dirname(installedRoot), dirname(dirname(installedRoot))]) {
+  for (const path of [installedRoot, join(installedRoot, "dist"), dirname(installedRoot), dirname(dirname(installedRoot)), dirname(dirname(dirname(installedRoot)))]) {
     const stat = lstatSync(path);
     if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error(`unsafe staged update destination: ${path}`);
     executionLocation(path);
   }
-  for (const path of [installedRoot, join(installedRoot, "dist"), dirname(installedRoot), dirname(dirname(installedRoot))])
+  for (const path of [installedRoot, join(installedRoot, "dist"), dirname(installedRoot), dirname(dirname(installedRoot)), dirname(dirname(dirname(installedRoot)))])
     assertWritableExecutionDirectory(path, installedRoot);
   const shared = executionShared(installedRoot), store = writableExecutionStore(installedRoot, shared);
   const before = executionInventory(verifiedSource);

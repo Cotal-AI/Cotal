@@ -145,6 +145,19 @@ try {
     check.equal(readFileSync(join(installed, "package.json"), "utf8"), packageBefore);
     check.equal(existsSync(join(prefix, "lib/.cotal-generations")), false);
   }
+  // The npm prefix is the directory npm itself must replace. Restoring its write bit would hide the
+  // condition that leaves the retained generation and the installed package on different versions.
+  chmodSync(prefix, 0o555);
+  const prefixRefused = run(offlineRegistry);
+  check.equal(prefixRefused.status, 2, prefixRefused.stderr);
+  check.match(prefixRefused.stderr, /installation is not writable;/);
+  check.ok(prefixRefused.stderr.includes(`--prefix '${prefix.replaceAll("'", "'\\''")}'`), prefixRefused.stderr);
+  check.match(prefixRefused.stderr, /no changes were made/);
+  check.doesNotMatch(prefixRefused.stdout, /Checking .*release archives|new version installed|in use and reconciled/);
+  check.equal(lstatSync(prefix).mode & 0o777, 0o555, "the prefix write bit stays removed");
+  check.equal(readFileSync(join(installed, "package.json"), "utf8"), packageBefore);
+  check.equal(existsSync(join(prefix, "lib/.cotal-generations")), false);
+  chmodSync(prefix, 0o755);
   checkManifestAccess();
   // The verified prefix is already live. Only a directory in the old rollback tree needs repair.
   const journal = join(connectorRoot, ".extensions-promotion.json");
