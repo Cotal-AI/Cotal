@@ -126,6 +126,7 @@
  * Run: pnpm smoke:transport-liveness
  */
 import type { Status } from "@nats-io/transport-node";
+import { CotalEndpoint } from "../../../packages/core/dist/index.js";
 import { MeshAgent } from "../src/agent.js";
 import type { AgentConfig } from "../src/config.js";
 
@@ -235,6 +236,9 @@ let unexpected: unknown;
 try {
 console.log("transport lifecycle is separate from full-bind readiness:");
 const agent = new MeshAgent(cfg);
+// The core cells grade the endpoint `pnpm --filter @cotal-ai/core build` writes to dist; an agent
+// holding any other copy would leave them untested.
+if (!(agent.ep instanceof CotalEndpoint)) throw new Error("MeshAgent did not construct the built core CotalEndpoint");
 const endpointEvents: Array<{ connected: boolean; server?: string }> = [];
 const agentEvents: Array<{ connected: boolean; server?: string }> = [];
 const endpointErrors: string[] = [];
