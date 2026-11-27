@@ -1,5 +1,28 @@
 # cotal-ai
 
+## 0.183.1
+
+### Patch Changes
+
+- c049810: Report remaining resumable conversation approvals of the previous account when `cotal login` switches accounts at the same provider.
+- 2d8f5c8: Bind staged `cotal update --self` execution descriptors to the Node installation prefix's `bin` entry instead of transient version-manager shell symlinks such as `fnm_multishells`, so switching Node versions does not revert the active CLI generation or break concurrent shells.
+- 6f8e092: When `cotal update --self` refreshes the npm launcher and the recorded Node is no longer on disk, record the supported Node that ran the update so the launcher still starts when Node is not on PATH.
+- Updated dependencies [c049810]
+- Updated dependencies [ce4a8db]
+- Updated dependencies [99e5057]
+- Updated dependencies [8740d71]
+- Updated dependencies [98aed81]
+  - @cotal-ai/auth@0.183.1
+  - @cotal-ai/cli@0.183.1
+  - @cotal-ai/workspace@0.183.1
+  - @cotal-ai/core@0.183.1
+  - @cotal-ai/connector-core@0.183.1
+  - @cotal-ai/manager@0.183.1
+  - @cotal-ai/delivery@0.183.1
+  - @cotal-ai/runtime@0.183.1
+  - @cotal-ai/registry@0.183.1
+  - @cotal-ai/seat@0.183.1
+
 ## 0.183.0
 
 ### Minor Changes
