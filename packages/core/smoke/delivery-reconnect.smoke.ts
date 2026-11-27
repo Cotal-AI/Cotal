@@ -77,8 +77,8 @@ async function checkEnabledPluginRecovery() {
     const live = await writer.multicast("received before rebinding", { channel });
     check("recovery control receives initial live post before disconnect", await waitFor(() => received.some(({ id }) => id === live.id)));
     const old = readWire;
-    const gate = Promise.withResolvers<void>();
-    hold = gate.promise;
+    let releaseBind!: () => void;
+    hold = new Promise<void>((resolve) => { releaseBind = resolve; });
     atBind = false;
     const rebinding = reader.reconnect();
     let recent: CotalMessage;
@@ -92,7 +92,7 @@ async function checkEnabledPluginRecovery() {
         received.every(({ id }) => id !== recent.id && id !== aged.id));
     } finally {
       hold = undefined;
-      gate.resolve();
+      releaseBind();
       await rebinding;
     }
     const of = (id: string) => received.filter((row) => row.id === id);

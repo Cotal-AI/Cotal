@@ -1040,6 +1040,8 @@ export class EndpointHistory {
       if (!stillJoined()) break;
       const msg = this.deps.decodeHistory(row);
       if (!msg || msg.from.id === this.identity.card.id) continue;
+      const unseen = this.parts.consumers.recordPluginReceipt(row.subject, msg.id);
+      if (!initialReplay && !unseen) continue;
       this.deps.emit("message", msg, delivery, { historical: initialReplay || Date.now() - msg.ts > PLUGIN_CHANNEL_CATCHUP_AGE_MS, kind: "channel" } satisfies MessageMeta);
       if (++emitted % 128 === 0) await delay(0);
     }
