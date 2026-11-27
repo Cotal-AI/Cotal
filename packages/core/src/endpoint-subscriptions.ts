@@ -6,19 +6,19 @@ import type { LifecycleState } from "./endpoint-lifecycle-state.js";
 import type { ChannelRegistryState } from "./endpoint-channel-registry-state.js";
 import type { ConnectionState } from "./endpoint-connection-state.js";
 import type { EndpointIdentity } from "./endpoint-identity.js";
+import type { EndpointParts } from "./endpoint-parts.js";
 import { ClosedConnectionError, TimeoutError } from "@nats-io/transport-node";
-import { jetstreamManager, JetStreamApiCodes, type ConsumerInfo, type JetStreamManager, type JsMsg, type PushConsumer } from "@nats-io/jetstream";
+import { jetstreamManager, JetStreamApiCodes, type JetStreamManager, type JsMsg, type PushConsumer } from "@nats-io/jetstream";
 import { Kvm, type KV, type KvEntry } from "@nats-io/kv";
 import { Bucket, KvWatchInclude } from "@nats-io/kv/internal";
 import { effectiveDeliveryClass } from "./channels.js";
 import { isPublishPermissionDenied } from "./endpoint-dial.js";
 import type { ChannelMember } from "./endpoint-options.js";
-import type { EndpointPresence } from "./endpoint-presence.js";
 import { isJetStreamMissing } from "./jetstream-missing.js";
 import { lastKvEntries } from "./kv-scan.js";
 import { listMembers } from "./members.js";
 import { chatStream, dmStream, isChannelFamily, isConcreteChannel, isPrincipalOwnerToken, membershipBucket, MEMBERSHIP_FEED_KEY, parseSubject, subjectMatches } from "./subjects.js";
-import type { ChannelConfig, ChannelMembership, DeliveryClass, MembershipChange, MembershipEntry, MembershipSnapshot, Presence } from "./types.js";
+import type { ChannelConfig, ChannelMembership, MembershipChange, MembershipEntry, MembershipSnapshot, Presence } from "./types.js";
 
 /** One feed entry, decoded the way {@link CotalEndpoint.readMembership} decodes it: the reserved
  *  heartbeat key carries `asOf`, every other key is one agent's record, and an undecodable record
@@ -54,24 +54,12 @@ export type MembershipFeedWatch = {
 };
 /** What the subscriptions component reads from its endpoint. State is read when it is used, never
  *  copied, and every method is looked up on the endpoint at call time, so a test that replaces one
- *  of those methods on the endpoint is seen here. */
+ *  of those methods on the endpoint is seen here. A peer part is read from the parts record at call time. */
 export interface EndpointSubscriptionsDeps {
   authed: () => boolean;
-  readsChannelsOnDemand: () => boolean;
   notLiveMsg: () => string;
-  readChannels: () => Promise<void>;
   armJoin: (channels: string[]) => Promise<Map<string, number>>;
   backfillArmed: (frontiers: Map<string, number>, floorSeq?: number) => Promise<number>;
-  subscribeChat: (channel: string) => void;
-  unsubscribeChat: (channel: string) => void;
-  confirmChatSub: () => Promise<void>;
-  durableJoinChannel: (channel: string) => Promise<{ durable: boolean; reason?: string; generation?: number }>;
-  durableLeaveChannel: (channel: string, generation?: number, lifecycleUid?: string) => Promise<void>;
-  fetchMemberships: (channel?: string) => Promise<{ channel: string; generation: number; activated: boolean; lifecycleUid?: string }[] | undefined>;
-  presence: () => EndpointPresence;
-  membersRegistry: () => Promise<KV>;
-  deliveryClassFresh: (channel: string) => Promise<DeliveryClass>;
-  recordOwnWatchConsumer: (info: ConsumerInfo) => string;
   watchConsumerDeleteDenied: (stream: string, name: string, owner: object | undefined) => boolean;
   deleteMembershipConsumer: (jsm: JetStreamManager, stream: string, name: string) => Promise<boolean>;
   emit: (event: string, ...args: unknown[]) => boolean;
@@ -81,24 +69,12 @@ export interface EndpointSubscriptionsDeps {
  *  listings, and the membership feed's snapshot read and watches with their consumer cleanup.
  *  Internal: `CotalEndpoint` keeps the public methods and forwards to it. */
 export class EndpointSubscriptions {
-  constructor(private readonly identity: Readonly<EndpointIdentity>, private readonly conn: ConnectionState, private readonly lifecycle: Readonly<LifecycleState>, private readonly channelRegistry: Readonly<ChannelRegistryState>, private readonly delivery: Readonly<DeliveryState>, private readonly deps: EndpointSubscriptionsDeps) {}
+  constructor(private readonly identity: Readonly<EndpointIdentity>, private readonly conn: ConnectionState, private readonly lifecycle: Readonly<LifecycleState>, private readonly channelRegistry: Readonly<ChannelRegistryState>, private readonly delivery: Readonly<DeliveryState>, private readonly deps: EndpointSubscriptionsDeps, private readonly parts: Pick<EndpointParts, "bootMemberships" | "channelDiscovery" | "connection" | "consumers" | "durable" | "durableBackstop" | "presence">) {}
 
   private get authed() { return this.deps.authed(); }
-  private get readsChannelsOnDemand() { return this.deps.readsChannelsOnDemand(); }
   private notLiveMsg() { return this.deps.notLiveMsg(); }
-  private readChannels() { return this.deps.readChannels(); }
   private armJoin(channels: string[]) { return this.deps.armJoin(channels); }
   private backfillArmed(frontiers: Map<string, number>, floorSeq?: number) { return this.deps.backfillArmed(frontiers, floorSeq); }
-  private subscribeChat(channel: string) { this.deps.subscribeChat(channel); }
-  private unsubscribeChat(channel: string) { this.deps.unsubscribeChat(channel); }
-  private confirmChatSub() { return this.deps.confirmChatSub(); }
-  private durableJoinChannel(channel: string) { return this.deps.durableJoinChannel(channel); }
-  private durableLeaveChannel(channel: string, generation?: number, lifecycleUid?: string) { return this.deps.durableLeaveChannel(channel, generation, lifecycleUid); }
-  private fetchMemberships(channel?: string) { return this.deps.fetchMemberships(channel); }
-  private get presence() { return this.deps.presence(); }
-  private membersRegistry() { return this.deps.membersRegistry(); }
-  private deliveryClassFresh(channel: string) { return this.deps.deliveryClassFresh(channel); }
-  private recordOwnWatchConsumer(info: ConsumerInfo) { return this.deps.recordOwnWatchConsumer(info); }
   private watchConsumerDeleteDenied(stream: string, name: string, owner: object | undefined) { return this.deps.watchConsumerDeleteDenied(stream, name, owner); }
   private deleteMembershipConsumer(jsm: JetStreamManager, stream: string, name: string) { return this.deps.deleteMembershipConsumer(jsm, stream, name); }
   private emit(event: string, ...args: unknown[]) { return this.deps.emit(event, ...args); }
@@ -124,7 +100,7 @@ export class EndpointSubscriptions {
     if (this.identity.channels.includes(channel))
       return { joined: false, backfilled: 0, durable: this.delivery.plane3Channels.has(channel) };
     // The delivery class below comes from the cache, so a seat reads it current before joining.
-    if (this.readsChannelsOnDemand) await this.readChannels();
+    if (this.parts.channelDiscovery.readsChannelsOnDemand) await this.parts.channelDiscovery.readChannels();
     // Arm the watermark BEFORE going live: the backfill reads ≤ frontier and the core-sub only ever
     // delivers post-subscribe live messages (> frontier), so the two never overlap.
     const armed = await this.armJoin([channel]);
@@ -132,19 +108,19 @@ export class EndpointSubscriptions {
     // sub.allow. This is what lets an agent join a channel's live feed on its own. The sub.allow
     // refusal is async — broker-confirm before committing local join state; the subscribe handler
     // ALSO drops a channel on ANY refusal (incl. a late one), so this is not a timing gamble (#13).
-    this.subscribeChat(channel);
+    this.parts.consumers.subscribeChat(channel);
     try {
-      await this.confirmChatSub();
+      await this.parts.consumers.confirmChatSub();
     } catch (e) {
       // The confirm boundary (flush) failed — the connection drained/closed mid-join, so we have NO
       // confirmation the subscribe was accepted. Fail closed: undo the half-open join rather than
       // returning as if it were confirmed (a reconnect re-confirms from this.channels, which we never
       // pushed to). unsubscribeChat clears chatSubs.
-      this.unsubscribeChat(channel);
+      this.parts.consumers.unsubscribeChat(channel);
       throw new Error(`cannot join "${channel}": live subscription could not be confirmed (${(e as Error).message})`);
     }
     if (this.delivery.chatSubDenied.has(channel)) {
-      this.unsubscribeChat(channel);
+      this.parts.consumers.unsubscribeChat(channel);
       throw new Error(`cannot join "${channel}": not within this agent's read ACL (allowSubscribe)`);
     }
     this.identity.channels.push(channel);
@@ -162,7 +138,7 @@ export class EndpointSubscriptions {
       reason = "a pattern with * or the root > has no stored copies; follow a concrete channel or a family such as review.>";
     else if (family || effectiveDeliveryClass(this.channelRegistry.channelConfigs.get(channel), this.channelRegistry.channelDefaults) === "durable") {
       try {
-        const r = await this.durableJoinChannel(channel);
+        const r = await this.parts.durable.durableJoinChannel(channel);
         if (r.durable) {
           this.delivery.plane3Channels.set(channel, r.generation ?? 0);
           durable = true;
@@ -197,20 +173,20 @@ export class EndpointSubscriptions {
     // — reporting `left` while the trusted reader keeps transferring to DLV is the fail-open leak. A
     // genuine no-responder (open / no delivery daemon, no Plane-3) means there is no membership to tombstone.
     if (this.authed && (isChannelFamily(channel) || isConcreteChannel(channel))) {
-      const memberships = await this.fetchMemberships(channel);
+      const memberships = await this.parts.bootMemberships.fetchMemberships(channel);
       if (memberships === undefined && this.delivery.plane3Channels.has(channel))
-        await this.durableLeaveChannel(channel, this.delivery.plane3Channels.get(channel));
+        await this.parts.durable.durableLeaveChannel(channel, this.delivery.plane3Channels.get(channel));
       for (const member of memberships ?? []) {
         // A daemon before 0.166.0 answers with this lifecycle's rows and no lifecycleUid, so it cannot
         // show an earlier lifecycle's row. Refuse with the remedy rather than leave that row open.
         if (member.lifecycleUid === undefined)
           throw new Error(legacyDiscoveryMessage ?? "the delivery daemon predates lifecycle-aware membership discovery, so this durable leave was not applied and the channel stays joined; restart the daemon at this version (`cotal up` runs it)");
-        await this.durableLeaveChannel(channel, member.generation, member.lifecycleUid);
+        await this.parts.durable.durableLeaveChannel(channel, member.generation, member.lifecycleUid);
         left = true;
       }
       if (memberships !== undefined) this.delivery.plane3Channels.delete(channel);
     }
-    this.unsubscribeChat(channel);
+    this.parts.consumers.unsubscribeChat(channel);
     const i = this.identity.channels.indexOf(channel);
     if (i >= 0) this.identity.channels.splice(i, 1);
     return { left };
@@ -272,7 +248,7 @@ export class EndpointSubscriptions {
    *  observer endpoints (no consumers needed). */
   async listChannels(): Promise<{ channel: string; messages: number; config?: ChannelConfig }[]> {
     if (!this.conn.nc) throw new Error(this.notLiveMsg());
-    if (this.readsChannelsOnDemand) await this.readChannels();
+    if (this.parts.channelDiscovery.readsChannelsOnDemand) await this.parts.channelDiscovery.readChannels();
     const mgr = await jetstreamManager(this.conn.nc);
     // Subjects carry the sender (chat.<sender>.<channel>), so collapse across senders: sum
     // each channel's counts regardless of who published.
@@ -323,11 +299,11 @@ export class EndpointSubscriptions {
   async channelMembers(
     channel?: string,
   ): Promise<ChannelMember[] | Map<string, ChannelMember[]>> {
-    const members = (await listMembers(await this.membersRegistry())).filter(
+    const members = (await listMembers(await this.parts.durableBackstop.membersRegistry())).filter(
       (r) => r.leaveCursor === undefined && r.activated === true,
     );
     const byId = new Map<string, Presence>();
-    for (const p of this.presence.values()) byId.set(p.card.id, p);
+    for (const p of this.parts.presence.values()) byId.set(p.card.id, p);
     const memberForId = (id: string): ChannelMember => {
       const p = byId.get(id);
       return p
@@ -337,7 +313,7 @@ export class EndpointSubscriptions {
     const byName = (a: ChannelMember, b: ChannelMember) => a.name.localeCompare(b.name);
 
     if (channel !== undefined) {
-      const stored = (await this.deliveryClassFresh(channel)) === "durable";
+      const stored = (await this.parts.durableBackstop.deliveryClassFresh(channel)) === "durable";
       const ids = new Set(
         members
           .filter((r) => r.channel === channel || (stored && isChannelFamily(r.channel) && subjectMatches(r.channel, channel)))
@@ -459,7 +435,7 @@ export class EndpointSubscriptions {
     const cc = kv._buildCC(">", KvWatchInclude.LastValue, { headers_only: false });
     const consumer = await kv.js.consumers.getPushConsumer(kv.stream, cc);
     const info = await consumer.info(true);
-    this.recordOwnWatchConsumer(info);
+    this.parts.connection.recordOwnWatchConsumer(info);
     // The broker resource exists now. Record its identity BEFORE consume() so a concurrent stop or
     // connection close always leaves enough state for strict cleanup or fresh-epoch retry.
     watch.consumer = consumer;
