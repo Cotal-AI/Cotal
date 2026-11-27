@@ -1,4 +1,4 @@
-import { writeSync } from "node:fs";
+import { fstatSync, ftruncateSync, writeSync } from "node:fs";
 import { Socket } from "node:net";
 import type { Writable } from "node:stream";
 
@@ -29,6 +29,33 @@ export function writeAllSync(fd: number, chunk: Buffer): void {
     const wrote = writeSync(fd, chunk, done, chunk.length - done);
     if (wrote === 0) throw Object.assign(new Error("stdout took no bytes"), { code: "EIO" });
     done += wrote;
+  }
+}
+
+/**
+ * Write a complete structured document synchronously to `fd`, or restore a regular file's previous
+ * size when a partial write stops short and rethrow the write error.
+ */
+export function writeWholeSync(fd: number, chunk: Buffer): void {
+  let initialSize: number | undefined;
+  try {
+    const stat = fstatSync(fd);
+    if (stat.isFile()) initialSize = stat.size;
+  } catch { /* non-file or unreadable fd, so writeSync reports the real error */ }
+  let done = 0;
+  try {
+    while (done < chunk.length) {
+      const wrote = writeSync(fd, chunk, done, chunk.length - done);
+      if (wrote === 0) throw Object.assign(new Error("stdout took no bytes"), { code: "EIO" });
+      done += wrote;
+    }
+  } catch (error) {
+    if (done > 0 && initialSize !== undefined) {
+      try {
+        if (fstatSync(fd).size === initialSize + done) ftruncateSync(fd, initialSize);
+      } catch { /* keep the original write error */ }
+    }
+    throw error;
   }
 }
 

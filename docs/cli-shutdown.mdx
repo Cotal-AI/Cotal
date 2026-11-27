@@ -342,7 +342,11 @@ root's `.cotal` is read: a link anywhere on a record's path refuses at the link,
 record that is not a regular file, is larger than a process record, cannot be opened, or changes
 while it is read. Each is named once, at the path where reading stopped. A `.cotal` that is itself
 a link never gives the no-op: on a stopped controller stack `down` refuses at `.cotal`, and on a
-legacy root it refuses `CONFLICT` before any record is read. A template whose `{space}`
+legacy root it refuses `CONFLICT` before any record is read. When the link leads to another
+project's `.cotal`, the Next gives the requested stop with its flags, including `--dry-run` and
+`--yes`. It prints a relative `--store-dir`, `--session-store` or `--file` as an absolute path so
+the retry selects the same path from that project. A link that leads nowhere keeps the refusal
+and does not name that project. A template whose `{space}`
 normalizes away names one path for every space and is read as that path. The refusal lists each
 record by name, path under the root and pid, and its next step names the pids and paths to check.
 It stops, adopts and removes nothing. `--with-agents` reports the same no-op when the last completed
