@@ -357,16 +357,17 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
     // has carried a `tls:boolean` in this same inventory all along: the CLIENT half of TLS shipped
     // long ago and the SERVER half did not, which is this whole feature in one line.
     // `--root` (2026-10): name the workspace root instead of inheriting it from the cwd walk.
+    // `--serve` (2026-11): also serve the named endpoints (the artifacts plane); not given means none.
     flags: [
       "creds:string", "dev-mint:boolean", "durable:string", "json:boolean:j", "limit:string",
-      "root:string", "server:string", "shard:string", "shards:string", "space:string", "spaces:string", "tls:boolean",
+      "root:string", "serve:string", "server:string", "shard:string", "shards:string", "space:string", "spaces:string", "tls:boolean",
     ],
     positionals: true,
   },
   "__daemon-deliver": {
     flags: [
       "creds:string", "dev-mint:boolean", "durable:string", "json:boolean:j", "limit:string",
-      "root:string", "server:string", "shard:string", "shards:string", "space:string", "spaces:string", "tls:boolean",
+      "root:string", "serve:string", "server:string", "shard:string", "shards:string", "space:string", "spaces:string", "tls:boolean",
     ],
     positionals: true,
   },
