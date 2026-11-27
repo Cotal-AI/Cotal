@@ -370,6 +370,74 @@ require(${JSON.stringify(cli)});
       const viaIsolatedShim = run("--check", [shimDir], npmBin, project);
       assert.equal(viaIsolatedShim.status, 0, viaIsolatedShim.stdout + viaIsolatedShim.stderr);
       assert.equal(realpathSync(recordedLaunches().at(-1)!.node), realpathSync(`${alternate}.gone`), "the same shim can select Node from the isolated npm directory");
+
+      const asdfData = join(root, "asdf-data"), asdfShims = join(asdfData, "shims"), asdfBin = join(root, "asdf-bin");
+      const asdfPluginShim = join(asdfData, "plugins", "nodejs", "shims", "npm");
+      const asdfInstall = join(asdfData, "installs", "nodejs", process.versions.node);
+      for (const dir of [asdfShims, asdfBin, dirname(asdfPluginShim), join(asdfInstall, "bin")]) mkdirSync(dir, { recursive: true });
+      copyFileSync(process.execPath, join(asdfInstall, "bin", "node"));
+      symlinkSync(cli, join(asdfInstall, "bin", "npm"));
+      const asdfExe = join(asdfBin, "asdf");
+      writeFileSync(asdfExe, `#!/bin/sh
+if [ ! -f .tool-versions ]; then
+  printf '%s\\n' 'No version is set for nodejs; please run \`asdf set [options] nodejs <version>\`' >&2
+  exit 1
+fi
+case "$1:$2" in
+  which:npm) printf '%s\\n' ${JSON.stringify(asdfPluginShim)} ;;
+  where:nodejs) cat .tool-versions ;;
+  exec:npm) shift 2; exec ${JSON.stringify(asdfPluginShim)} "$@" ;;
+  *) exit 2 ;;
+esac
+`, { mode: 0o755 });
+      writeFileSync(asdfPluginShim, `#!/bin/sh\ninstalled=$(${JSON.stringify(asdfExe)} where nodejs) || exit $?\nexec "$installed/bin/npm" "$@"\n`, { mode: 0o755 });
+      writeFileSync(join(asdfShims, "npm"), `#!/bin/sh\n# asdf-plugin: nodejs ${process.versions.node}\nexec asdf exec "npm" "$@"`, { mode: 0o755 });
+      const asdfExtra = [asdfBin, "/usr/bin", "/bin"];
+      const asdfBaseEnv = { ...cliEnv(asdfExtra, asdfShims), ASDF_DATA_DIR: asdfData };
+      writeFileSync(join(project, ".tool-versions"), `${asdfInstall}\n`);
+
+      const standaloneAsdf = spawnSync(join(onlyNode, exe), [entry, "update", "--self"], {
+        cwd: project, encoding: "utf8", timeout: 60_000, env: { ...asdfBaseEnv, NODE_OPTIONS: undefined },
+      });
+      assert.equal(standaloneAsdf.status, 0, standaloneAsdf.stdout + standaloneAsdf.stderr);
+      assert.match(standaloneAsdf.stdout, /Registry latest:/);
+      assert.deepEqual(recordedLaunches().at(-1), {
+        node: realpathSync(join(onlyNode, exe)), cwd: parse(root).root, pathHead: onlyNode,
+      }, "project-selected asdf npm runs outside the project on Cotal's standalone compatible Node");
+
+      const unsetAsdf = spawnSync(join(onlyNode, exe), [entry, "update", "--self"], {
+        cwd: root, encoding: "utf8", timeout: 60_000, env: { ...asdfBaseEnv, NODE_OPTIONS: undefined },
+      });
+      assert.equal(unsetAsdf.status, 1, unsetAsdf.stdout + unsetAsdf.stderr);
+      assert.match(unsetAsdf.stderr, /No version is set for nodejs/);
+
+      const compatibleAsdf = spawnSync(join(onlyNode, exe), [entry, "update", "--self"], {
+        cwd: project, encoding: "utf8", timeout: 60_000, env: asdfBaseEnv,
+      });
+      assert.equal(compatibleAsdf.status, 0, compatibleAsdf.stdout + compatibleAsdf.stderr);
+      assert.match(compatibleAsdf.stdout, /Registry latest:/);
+      assert.deepEqual(recordedLaunches().at(-1), {
+        node: realpathSync(join(asdfInstall, "bin", "node")), cwd: parse(root).root, pathHead: join(asdfInstall, "bin"),
+      }, "project-selected asdf npm uses its compatible Node when Cotal's Node does not satisfy npm's range");
+
+      const release = claimGlobalNpmUpdateLock(root);
+      try {
+        for (const installName of ["asdf runtime", "asdf:runtime"]) {
+          const customInstall = join(root, installName);
+          mkdirSync(join(customInstall, "bin"), { recursive: true });
+          symlinkSync(cli, join(customInstall, "bin", "npm"));
+          writeFileSync(join(project, ".tool-versions"), `${customInstall}\n`);
+          const childEnv = { ...asdfBaseEnv, NODE_OPTIONS: undefined };
+          const childFile = join(onlyNode, exe), childArgs = [entry, "update", "--check"];
+          for (const launch of [() => runGlobalProcess(root, "reconcile", childFile, childArgs, childEnv), () => runProcess(childFile, childArgs, childEnv)]) {
+            const child = await npmProjectDirectory.run(project, () => launch());
+            assert.equal(child.status, 0, child.stdout + child.stderr);
+            assert.deepEqual(recordedLaunches().at(-1), {
+              node: realpathSync(join(onlyNode, exe)), cwd: parse(root).root, pathHead: onlyNode,
+            }, `reconcile and seed children retain the resolved asdf npm from ${installName}`);
+          }
+        }
+      } finally { release(); }
     }
     const updated = run("--self");
     assert.equal(updated.status, 0, updated.stdout + updated.stderr);

@@ -8,6 +8,7 @@ import { logicalExecutionEntry, protectedLocalDirectory, resolveOnPath } from "@
 
 const { satisfies } = createRequire(import.meta.url)("semver") as { satisfies: (version: string, range: string) => boolean };
 export const npmProjectDirectory = new AsyncLocalStorage<string | undefined>();
+const UPDATE_NPM = "COTAL_UPDATE_NPM";
 const UPDATE_NPM_NODE = "COTAL_UPDATE_NPM_NODE";
 const windows = process.platform === "win32";
 
@@ -87,20 +88,102 @@ function pathVariable(env: NodeJS.ProcessEnv): string {
   return windows ? Object.keys(env).find(key => key.toLowerCase() === "path") ?? "PATH" : "PATH";
 }
 
+function callerDirectory(cwd: string): string | undefined {
+  const store = npmProjectDirectory.getStore();
+  if (store !== undefined) return store;
+  try {
+    const current = process.cwd();
+    return current === cwd ? undefined : current;
+  } catch { return undefined; }
+}
+
+function validInherited(candidate: string | undefined, directories: string[], env: NodeJS.ProcessEnv): string | undefined {
+  if (!candidate || !isAbsolute(candidate)) return;
+  const bin = dirname(candidate);
+  if ((directories.includes(bin) || (!windows && bin.includes(delimiter))) &&
+      resolveOnPath(candidate, env) === candidate) return candidate;
+}
+
+function asdfShimExecutable(file: string, env: NodeJS.ProcessEnv): string | undefined {
+  try {
+    const entry = realpathSync(file);
+    const info = lstatSync(entry);
+    if (!info.isFile() || info.size > 16_384) return;
+    const text = readFileSync(entry, "utf8");
+    if (!/^# asdf-plugin:/m.test(text)) return;
+    const raw = /^exec[ \t]+(.+?)[ \t]+exec[ \t]+(?:"npm"|'npm'|npm)[ \t]+(?:"\$@"|\$@)[ \t]*\r?$/m.exec(text)?.[1]?.trim();
+    if (!raw) return;
+    let candidate = (raw.startsWith('"') && raw.endsWith('"')) || (raw.startsWith("'") && raw.endsWith("'"))
+      ? raw.slice(1, -1) : raw;
+    if (/^\$\{?ASDF_DIR\}?\/bin\/asdf$/.test(candidate))
+      candidate = env.ASDF_DIR && isAbsolute(env.ASDF_DIR) ? join(env.ASDF_DIR, "bin", "asdf") : "asdf";
+    if (candidate === "asdf" || (isAbsolute(candidate) && basename(candidate) === "asdf")) return candidate;
+  } catch { return undefined; }
+}
+
+function resolveAsdfNpm(
+  asdfCommand: string,
+  findOnPath: (bin: string) => string | undefined,
+  directory: string | undefined,
+  cwd: string,
+  probeEnv: NodeJS.ProcessEnv,
+  env: NodeJS.ProcessEnv,
+): string | undefined {
+  const asdf = asdfCommand === "asdf"
+    ? findOnPath("asdf")
+    : resolveOnPath(asdfCommand, env) === asdfCommand ? asdfCommand : findOnPath("asdf");
+  if (!asdf) return;
+  const runAsdf = (args: string[]) => {
+    const first = spawnSync(asdf, args, {
+      cwd: directory ?? cwd, env: probeEnv, encoding: "utf8", timeout: 2000, killSignal: "SIGKILL", windowsHide: true,
+    });
+    if (directory && directory !== cwd && (first.error as NodeJS.ErrnoException | undefined)?.code === "ENOENT") {
+      return spawnSync(asdf, args, {
+        cwd, env: probeEnv, encoding: "utf8", timeout: 2000, killSignal: "SIGKILL", windowsHide: true,
+      });
+    }
+    return first;
+  };
+  const result = runAsdf(["which", "npm"]);
+  if (result.status !== 0) return;
+  const line = result.stdout.trim();
+  if (!line || line.includes("\n") || !isAbsolute(line)) return;
+  let resolved = resolve(line);
+  // asdf-nodejs points `which npm` at its reshim wrapper, which still calls `asdf where` from cwd.
+  if (!npmEngine(resolved) && basename(dirname(resolved)) === "shims" &&
+      basename(dirname(dirname(dirname(resolved)))) === "plugins") {
+    const where = runAsdf(["where", basename(dirname(dirname(resolved)))]);
+    const installed = where.status === 0 ? where.stdout.trim() : "";
+    if (!installed || installed.includes("\n") || !isAbsolute(installed)) return;
+    resolved = join(resolve(installed), "bin", "npm");
+  }
+  return resolveOnPath(resolved, env) === resolved ? resolved : undefined;
+}
+
 export function npmUpdateChildEnvironment(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
-  if (!npmProjectDirectory.getStore() && env[UPDATE_NPM_NODE] === undefined) return env;
-  const { node } = npmInvocation(env, []);
-  if (!node) {
-    if (env[UPDATE_NPM_NODE] === undefined) return env;
+  if (!npmProjectDirectory.getStore() && env[UPDATE_NPM_NODE] === undefined && env[UPDATE_NPM] === undefined) return env;
+  const { node, npm } = npmInvocation(env, []);
+  if (!node && !npm) {
+    if (env[UPDATE_NPM_NODE] === undefined && env[UPDATE_NPM] === undefined) return env;
     const next = { ...env };
     delete next[UPDATE_NPM_NODE];
+    delete next[UPDATE_NPM];
     return next;
   }
   const pathKey = pathVariable(env);
-  const path = env[pathKey]!;
-  const bin = dirname(node);
+  let path = env[pathKey]!;
+  for (const selected of [npm, node]) {
+    if (!selected) continue;
+    const bin = dirname(selected);
+    if (!bin.includes(delimiter) && !path.split(delimiter).includes(bin)) path = `${path}${delimiter}${bin}`;
+  }
   // Older reconcile and rollback children can find Node on PATH without shadowing the selected npm.
-  return { ...env, [UPDATE_NPM_NODE]: node, [pathKey]: bin.includes(delimiter) || path.split(delimiter).includes(bin) ? path : `${path}${delimiter}${bin}` };
+  const next: NodeJS.ProcessEnv = { ...env, [pathKey]: path };
+  if (node) next[UPDATE_NPM_NODE] = node;
+  else delete next[UPDATE_NPM_NODE];
+  if (npm) next[UPDATE_NPM] = npm;
+  else delete next[UPDATE_NPM];
+  return next;
 }
 
 interface NpmCommand {
@@ -109,15 +192,18 @@ interface NpmCommand {
   env: NodeJS.ProcessEnv;
   cwd: string;
   node?: string;
+  npm?: string;
   lifecycleNode?: boolean;
 }
 
 export function npmInvocation(env: NodeJS.ProcessEnv, args: string[]): NpmCommand {
   const cwd = parse(homedir()).root;
   const pathKey = pathVariable(env);
+  const inheritedNpm = env[UPDATE_NPM];
   const inheritedNode = env[UPDATE_NPM_NODE];
-  if (inheritedNode !== undefined) {
+  if (inheritedNpm !== undefined || inheritedNode !== undefined) {
     env = { ...env };
+    delete env[UPDATE_NPM];
     delete env[UPDATE_NPM_NODE];
   }
   const path = env[pathKey];
@@ -127,26 +213,47 @@ export function npmInvocation(env: NodeJS.ProcessEnv, args: string[]): NpmComman
   const lookup = literal ? env : { ...env, [pathKey]: directories.join(delimiter) };
   const inDirectory = (dir: string, bin: string) => literal
     ? resolveOnPath(join(dir, bin)) : resolveOnPath(bin, { ...env, [pathKey]: dir });
-  let file: string | undefined;
-  if (literal) {
+  const findOnPath = (bin: string) => {
+    if (!literal) return resolveOnPath(bin, windows ? env : lookup);
     for (const dir of literal) {
-      file = inDirectory(dir, "npm");
-      if (file) break;
+      const found = inDirectory(dir, bin);
+      if (found) return found;
     }
-  } else file = resolveOnPath("npm", windows ? env : lookup);
+  };
+  let file = findOnPath("npm");
   if (!file) return { file: "npm", args, env, cwd };
-  const engine = npmEngine(file);
+  let engine = npmEngine(file);
+  let selectedNpm: string | undefined;
+  const project = npmProjectDirectory.getStore();
+  const asdfCommand = !engine && !windows ? asdfShimExecutable(file, env) : undefined;
+  if (asdfCommand) {
+    const asdfEnv = { ...lookup };
+    delete asdfEnv.NODE_OPTIONS;
+    const resolved = validInherited(inheritedNpm, directories, env)
+      ?? resolveAsdfNpm(asdfCommand, findOnPath, callerDirectory(cwd), cwd, asdfEnv, env);
+    if (resolved) {
+      try {
+        if (realpathSync(resolved) !== realpathSync(file)) {
+          selectedNpm = file = resolved;
+          engine = npmEngine(file);
+        }
+      } catch { /* keep the original shim if its target disappeared */ }
+    }
+  }
   const withNode = (node: string, preserveLiteral = literal !== undefined) => preserveLiteral && dirname(node).includes(delimiter) ? env
     : { ...env, [pathKey]: `${dirname(node)}${delimiter}${path}` };
   const currentSupportsEngine = !!engine && satisfies(process.version, engine.range);
   let npmRange = engine?.corepack && currentSupportsEngine
     ? corepackNpmRange(process.execPath, engine.entry, cwd, withNode(process.execPath, true)) : undefined;
   if (engine && (!currentSupportsEngine || (npmRange && !satisfies(process.version, npmRange)))) {
-    const supports = (version: string) => satisfies(version, engine.range) && (!npmRange || satisfies(version, npmRange));
+    const engineEntry = engine.entry;
+    const engineRange = engine.range;
+    const engineCorepack = engine.corepack;
+    const supports = (version: string) => satisfies(version, engineRange) && (!npmRange || satisfies(version, npmRange));
     let fallback: NpmCommand | undefined;
     const invocation = (file: string, version: string, node?: string) => {
-      const npm = { file, args: [engine.entry, ...args], env: withNode(file, node ? true : undefined), cwd, node };
-      if (engine.corepack && !npmRange) npmRange = corepackNpmRange(file, engine.entry, cwd, npm.env);
+      const npm: NpmCommand = { file, args: [engineEntry, ...args], env: withNode(file, node ? true : undefined), cwd, node, npm: selectedNpm };
+      if (engineCorepack && !npmRange) npmRange = corepackNpmRange(file, engineEntry, cwd, npm.env);
       if (!npmRange || satisfies(version, npmRange)) return npm;
       // npm may still complete an operation on a Node outside its declared range.
       if (!currentSupportsEngine) fallback ??= npm;
@@ -154,14 +261,11 @@ export function npmInvocation(env: NodeJS.ProcessEnv, args: string[]): NpmComman
     const current = realpathSync(process.execPath);
     const probeEnv = { ...env };
     delete probeEnv.NODE_OPTIONS;
-    const project = npmProjectDirectory.getStore();
     // A POSIX directory with a colon travels in the absolute hint, not PATH.
-    const inheritedBin = inheritedNode ? dirname(inheritedNode) : "";
-    if (inheritedNode && isAbsolute(inheritedNode) &&
-        (directories.includes(inheritedBin) || (!windows && inheritedBin.includes(delimiter))) &&
-        resolveOnPath(inheritedNode, env) === inheritedNode) {
-      const node = compatibleNode(inheritedNode, cwd, cwd, probeEnv, supports);
-      if (node?.path === inheritedNode) {
+    const verifiedInheritedNode = validInherited(inheritedNode, directories, env);
+    if (verifiedInheritedNode) {
+      const node = compatibleNode(verifiedInheritedNode, cwd, cwd, probeEnv, supports);
+      if (node?.path === verifiedInheritedNode) {
         const npm = invocation(node.path, node.version, node.path);
         if (npm) return npm;
       }
@@ -192,13 +296,13 @@ export function npmInvocation(env: NodeJS.ProcessEnv, args: string[]): NpmComman
   if (windows) return { file: "npm", args, env, cwd };
   const node = resolveOnPath("node", lookup);
   if (node && realpathSync(node) === realpathSync(process.execPath))
-    return { file: literal ? file : "npm", args, env, cwd };
+    return { file: literal || selectedNpm ? file : "npm", args, env, cwd, npm: selectedNpm };
   const bin = dirname(process.execPath);
   // Prepending the runtime directory cannot satisfy npm's shebang without a `node` entry.
-  if (!node && engine && (bin.includes(delimiter) || !inDirectory(bin, "node")))
-    return { file: process.execPath, args: [engine.entry, ...args], env: withNode(process.execPath, true), cwd,
+  if ((!node || selectedNpm) && engine && (bin.includes(delimiter) || !inDirectory(bin, "node")))
+    return { file: process.execPath, args: [engine.entry, ...args], env: withNode(process.execPath, true), cwd, npm: selectedNpm,
       lifecycleNode: args[0] === "install" && !args.includes("--ignore-scripts") };
-  return { file, args, env: withNode(process.execPath), cwd };
+  return { file, args, env: withNode(process.execPath), cwd, npm: selectedNpm };
 }
 
 /** Give lifecycle shells a `node` command when npm itself is launched by absolute Node path. */
