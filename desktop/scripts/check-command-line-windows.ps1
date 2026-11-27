@@ -117,17 +117,18 @@ try {
     Removed 'uninstall' $root
     Check 'uninstall puts the user PATH back exactly' (Read-UserPath).value $original.value
 
-    # A cotal already on PATH (npm puts its launchers in a user PATH folder) keeps running.
+    # A cotal already on PATH (npm puts its launchers in a user PATH folder) keeps running. This
+    # PATH ends with a semicolon, as Windows writes its default one, and must come back exactly.
     $other = Join-Path $Out 'other-cotal'
     New-Item -ItemType Directory -Force -Path $other | Out-Null
     Set-Content -LiteralPath (Join-Path $other 'cotal.cmd') -Value '@echo other-cotal' -Encoding ascii
-    $withOther = @{ value = $(if ($original.value) { "$($original.value.TrimEnd(';'));$other" } else { $other }); kind = $(if ($original.kind) { $original.kind } else { [Microsoft.Win32.RegistryValueKind]::ExpandString }) }
+    $withOther = @{ value = $(if ($original.value) { "$($original.value.TrimEnd(';'));$other;" } else { "$other;" }); kind = $(if ($original.kind) { $original.kind } else { [Microsoft.Win32.RegistryValueKind]::ExpandString }) }
     Write-UserPath $withOther
     Run-Installer $Setup @('/S')
     Installed 'install with another cotal on PATH' $root (Join-Path $other 'cotal.cmd')
     Check 'the other cotal still runs in a new Command Prompt' (Fresh 'cmd' 'cotal').text 'other-cotal'
     Uninstall-Nsis
-    Check 'uninstall leaves the other cotal on the user PATH' (Read-UserPath).value $withOther.value
+    Check 'uninstall puts a user PATH ending in a semicolon back exactly, the other cotal included' (Read-UserPath).value $withOther.value
     Write-UserPath $original
 
     if ($Msi) {

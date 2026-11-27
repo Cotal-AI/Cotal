@@ -16,11 +16,14 @@ fn same_entry(entry: &str, dir: &str, expand: &dyn Fn(&str) -> String) -> bool {
     !entry.is_empty() && key(entry) == key(dir)
 }
 
-/// A Windows PATH value with `dir` appended, or `None` when it already names `dir`.
+/// A Windows PATH value with `dir` after its last entry, or `None` when it already names `dir`.
+/// Trailing semicolons stay at the end (Windows writes its default user PATH with one), so
+/// taking `dir` out again gives back the value exactly.
 pub fn windows_path_with(path: &str, dir: &str, expand: &dyn Fn(&str) -> String) -> Option<String> {
     if path.split(';').any(|entry| same_entry(entry, dir, expand)) { return None; }
+    if path.is_empty() { return Some(dir.to_string()); }
     let kept = path.trim_end_matches(';');
-    Some(if kept.is_empty() { dir.to_string() } else { format!("{kept};{dir}") })
+    Some(format!("{kept};{dir}{}", &path[kept.len()..]))
 }
 
 /// A Windows PATH value without `dir`, or `None` when it does not name `dir`. Every other entry
@@ -184,7 +187,7 @@ mod tests {
     #[test]
     fn windows_path_appends_once_after_every_existing_entry() {
         assert_eq!(windows_path_with(r"%USERPROFILE%\npm;C:\tools", DIR, &expand).as_deref(), Some(r"%USERPROFILE%\npm;C:\tools;C:\Users\Ada\AppData\Local\Cotal\bin"));
-        assert_eq!(windows_path_with(r"C:\tools;", DIR, &expand).as_deref(), Some(r"C:\tools;C:\Users\Ada\AppData\Local\Cotal\bin"));
+        assert_eq!(windows_path_with(r"C:\tools;", DIR, &expand).as_deref(), Some(r"C:\tools;C:\Users\Ada\AppData\Local\Cotal\bin;"));
         assert_eq!(windows_path_with("", DIR, &expand).as_deref(), Some(DIR));
         for present in [r"C:\tools;c:\users\ada\appdata\local\cotal\BIN\", r"%LOCALAPPDATA%\Cotal\bin;C:\tools", DIR] {
             assert_eq!(windows_path_with(present, DIR, &expand), None, "{present}");
@@ -197,6 +200,15 @@ mod tests {
         assert_eq!(windows_path_without(r"C:\tools;%LOCALAPPDATA%\Cotal\bin\", DIR, &expand).as_deref(), Some(r"C:\tools"));
         assert_eq!(windows_path_without(DIR, DIR, &expand).as_deref(), Some(""));
         assert_eq!(windows_path_without(r"C:\Program Files\Cotal\bin;C:\tools", DIR, &expand), None);
+    }
+
+    #[test]
+    fn windows_path_uninstall_gives_back_the_value_exactly() {
+        // Windows writes its default user PATH with a trailing semicolon.
+        for path in [r"%USERPROFILE%\AppData\Local\Microsoft\WindowsApps;", r"C:\tools", r"C:\tools;;C:\bin;;", ";", ""] {
+            let installed = windows_path_with(path, DIR, &expand).unwrap();
+            assert_eq!(windows_path_without(&installed, DIR, &expand).as_deref(), Some(path), "{path}");
+        }
     }
 
     #[test]
