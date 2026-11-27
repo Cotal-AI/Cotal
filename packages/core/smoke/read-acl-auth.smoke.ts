@@ -34,6 +34,7 @@ import {
   createSpaceAuth,
   credsClaims,
   credsFromJwt,
+  decodeChannelGrantClaims,
   importNativeSubjectPermissions,
   mintCreds,
   provisionAgent,
@@ -117,9 +118,11 @@ async function checkPluginGrants(): Promise<void> {
     const nc = await connect({ servers: SERVERS, authenticator: credsAuthenticator(enc(creds)), inboxPrefix: `_INBOX_${id.id}`, reconnect: false });
     clients.push(nc);
     const { pub, sub } = credsClaims(creds).nats ?? {};
-    const grants = projectChannelGrants(importNativeSubjectPermissions({ ...(pub && { pub }), ...(sub && { sub }) }),
-      { space, mode: enabled ? "isolated" : "legacy", principal: { owner: DEV_OWNER, actor: id.id, lifecycleUid: uid } });
-    return { nc, id: id.id, history: chatHistDurable(DEV_OWNER, id.id, uid), grants };
+    const permissions = importNativeSubjectPermissions({ ...(pub && { pub }), ...(sub && { sub }) });
+    const principal = { owner: DEV_OWNER, actor: id.id };
+    const claims = decodeChannelGrantClaims(permissions, space, principal);
+    const grants = projectChannelGrants(permissions, { space, mode: enabled ? "isolated" : "legacy", principal: { ...principal, lifecycleUid: uid } });
+    return { nc, id: id.id, history: chatHistDurable(DEV_OWNER, id.id, uid), uid, claims, grants };
   };
   const publishProbe = async (nc: NatsConnection, subject: string) =>
     jetstream(nc, { timeout: 800 }).publish(subject, enc("plugin boundary")).then(ack => ack.stream, (error: unknown) => {
@@ -167,6 +170,9 @@ async function checkPluginGrants(): Promise<void> {
     check("signed credential inverse omits plugin taps for a broad chat grant", broad.grants.read.every(row => row.kind !== PLUGIN_CHANNEL_ROOT));
     check("signed credential inverse pins the named plugin tap and lifecycle history reader", grantedTap?.subject === readFilter(exact)
       && grantedHistory?.subject === grantedTap.subject && grantedHistory.consumer === narrow.history && grantedHistory.stream === stream);
+    check("signed plugin-only credential yields an offline lifecycle hint without assuming a routing mode", narrow.claims.history.length === 1
+      && narrow.claims.history[0]?.consumer === narrow.history && narrow.claims.history[0].lifecycleUid === narrow.uid
+      && narrow.claims.history[0].kind === PLUGIN_CHANNEL_ROOT);
     if (!grantedTap || !grantedHistory) throw new Error("signed credential did not project its scoped plugin read");
 
     check("routed provisioner can track the canonical history stream", (await (await jetstreamManager(admin.nc)).streams.info(stream)).config.name === stream);
