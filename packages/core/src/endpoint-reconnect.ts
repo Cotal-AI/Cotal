@@ -31,6 +31,17 @@ export class EndpointReconnect {
 
   private emit(event: string, ...args: unknown[]) { return this.deps.emit(event, ...args); }
 
+  async reconnect(): Promise<void> {
+    if (this.lifecycle.stopped) throw new Error("endpoint stopped - cannot reconnect");
+    this.kickBackoff();
+    try {
+      await this.rebuild();
+    } catch (e) {
+      void this.parts.connection.reestablishLoop(); // background retry until success or stop
+      throw e;
+    }
+  }
+
   /** Single serialized rebuild: drain the old connection and rebind via {@link EndpointConnection.connectAndBind},
    *  guarded so concurrent triggers (manual {@link reconnect}, the supervisor's closed(), the
    *  retry loop) coalesce onto ONE in-flight rebuild instead of racing two connectAndBinds and
