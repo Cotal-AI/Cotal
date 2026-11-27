@@ -3,6 +3,7 @@
 // endpoint-serve executor, deprovisioner, delivery, membership and connection-evictor profiles.
 // provision-permission-builders.ts re-exports each of them, so import paths are unchanged.
 import { eventPayloadStream } from "./event-payloads.js";
+import { artifactIndexStreamNames } from "./artifact-index-stores.js";
 import { TTL_RECONCILE_CANARY_KEY, ttlBuckets } from "./streams.js";
 import { BROKER_USER_INFO_SUBJECT } from "./broker-identity.js";
 import { spacePrefix, principalKey, deprovisionTargetPrincipal, unicastSubject, artifactBucket, objectStoreStream, chatStream, dmStream, taskStream, dlvStream, inboxStream, dmDurable, dlvDurable, presenceBucket, channelBucket, membersBucket, aclBucket, aclKey, memberKey, assertLifecycleToken, type DeprovisionTarget, membershipBucket, deliveryBucket, managerBucket, connzRequestSubject, accountConnectSubject, accountDisconnectSubject, MEMBERSHIP_INBOX_PREFIX, INBOX_READER_DURABLE, livenessServeFilter, livenessReplyGrant, takeServeFilter, takeReplyGrant, anycastBucket } from "./subjects.js";
@@ -100,7 +101,9 @@ export function provisionerPermissions(space: string, pr: MintPrincipal): Record
   // object-store client reads by creating an ephemeral PUSH consumer with a caller-chosen
   // `deliver_subject`, so a CONSUMER.CREATE here would be an exporter of every artifact in the space.
   const OBJ = objectStoreStream(artifactBucket(space));
-  const streamSetup = [CHAT, DM, TASK, INBOX, DLV, eventPayloadStream(space), OBJ, ...endpointPlaneStreamNames(space), ...buckets].flatMap((s) => [
+  // The three artifact index buckets: create-or-verify only, exactly like the object store above. The
+  // provisioner holds no value write and no read on them; the artifacts service is their only writer.
+  const streamSetup = [CHAT, DM, TASK, INBOX, DLV, eventPayloadStream(space), OBJ, ...artifactIndexStreamNames(space), ...endpointPlaneStreamNames(space), ...buckets].flatMap((s) => [
     `$JS.API.STREAM.CREATE.${s}`,
     `$JS.API.STREAM.INFO.${s}`,
   ]);

@@ -1,0 +1,1 @@
+smoke:artifact-grant-shape

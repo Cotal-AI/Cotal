@@ -1,4 +1,5 @@
 import { drainAndClose } from "./connection-cleanup.js";
+import { ensureArtifactIndexStores } from "./artifact-index-stores.js";
 import { eventPayloadStream } from "./event-payloads.js";
 import {
   jetstream,
@@ -984,6 +985,8 @@ export async function setupSpaceStreams(opts: {
     // Artifact Object Store (SPEC section 5): the bytes an `artifact` reference part points at.
     // Create-or-VERIFY, drift fails loud - see ensureArtifactStore for why create alone is not enough.
     await ensureArtifactStore(nc, opts.space);
+    // The three artifact index stores beside it (attachments, possession, reservations).
+    await ensureArtifactIndexStores(jsm, kvm, opts.space);
   } finally {
     await drainAndClose(nc);
   }

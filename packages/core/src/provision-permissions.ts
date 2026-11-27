@@ -10,6 +10,7 @@ import { acceptedReadGrant } from "./issued-authority.js";
 import { REGISTRY_ENDPOINTS_GRANT } from "./registry-contract.js";
 import { runDriverGrants, runMediatorGrants, runOperatorGrants } from "./run-driver-grants.js";
 import { transferReaderGrants, transferWriterGrants } from "./transfer.js";
+import { artifactDataPermissions, artifactSweeperPermissions } from "./artifact-permissions.js";
 import { environmentManagerPermissions, isEnvironmentManagerProfile } from "./environment-manager-grants.js";
 import { backupProfilePermissions, restoreProfilePermissions } from "./backup.js";
 import type { MintOpts, MintPrincipal } from "./provision-jwt.js";
@@ -33,6 +34,10 @@ export type Profile =
   | "backup"
   | "restore"
   | "delivery"
+  // The delivery daemon's artifacts service: the request-path store credential and the lease
+  // holder's sweeper. Never issuable to a peer ({@link artifactDataPermissions}).
+  | "artifact-data"
+  | "artifact-sweeper"
   | "membership-rw"
   // The scoped CLI-surface profiles.
   | "space-quiescence-reader" // host-only one-shot idle-work census
@@ -215,6 +220,8 @@ export function permissionsFor(
   if (isEnvironmentManagerProfile(profile)) return environmentManagerPermissions(profile, space, pr, opts.environmentManager);
   if (opts.environmentManager) throw new Error(`permissionsFor: environmentManager pins cannot ride ${profile}`);
   if (profile === "delivery") return deliveryPermissions(space, pr); // scoped server-side Plane-3 infra
+  if (profile === "artifact-data") return artifactDataPermissions(space, pr);
+  if (profile === "artifact-sweeper") return artifactSweeperPermissions(space, pr);
   if (profile === "manager-caller") return managerCallerPermissions(space, pr, opts);
   if (profile === "agent-caller") return agentCallerPermissions(space, pr);
   if (profile === "membership-rw") return membershipRwPermissions(space, pr); // scoped graph-feed reader/writer

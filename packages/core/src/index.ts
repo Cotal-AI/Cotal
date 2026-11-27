@@ -142,6 +142,7 @@ export * from "./endpoint-capability-policy.js";
 export * from "./delegated-recovery.js";
 export * from "./canonical.js";
 export * from "./artifact.js";
+export * from "./artifact-index-stores.js";
 export * from "./parts.js";
 export * from "./agui-kind.js";
 export * from "./event-channel.js";

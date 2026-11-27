@@ -15,6 +15,7 @@ import {
 } from "./endpoint-binding.js";
 import { issuedStoreDefinitions } from "./issued-authority.js";
 import { admissionStoreDefinition } from "./run-admission.js";
+import { artifactIndexBuckets, artifactIndexStoreDefinition } from "./artifact-index-stores.js";
 import {
   anycastStoreDefinition,
   artifactStoreDefinition,
@@ -26,7 +27,7 @@ import {
 
 export type SpaceResourceDefinition =
   | { kind: "stream"; stream: string; config: Partial<StreamConfig> & { name: string }; verification: "canonical-backup" | "declared-fields" | "contract" }
-  | { kind: "kv"; stream: string; bucket: string; createOptions: NonNullable<Parameters<Kvm["create"]>[1]>; hardenAfterCreate?: Partial<StreamConfig>; verification: "native-runtime-check-required" | "records" | "auth" | "sessions" | "issued" | "admission" }
+  | { kind: "kv"; stream: string; bucket: string; createOptions: NonNullable<Parameters<Kvm["create"]>[1]>; hardenAfterCreate?: Partial<StreamConfig>; verification: "native-runtime-check-required" | "records" | "auth" | "sessions" | "issued" | "admission" | "artifact-index" }
   | { kind: "object-store"; stream: string; bucket: string; createOptions: NonNullable<Parameters<Objm["create"]>[1]>; verification: "artifact" };
 
 /** Project only explicit public KV/object option fields used by native bootstrap. No SDK
@@ -94,6 +95,7 @@ export function spaceResourceDefinitions(space: string, options: EndpointStreamO
     ...issuedStoreDefinitions(space).map((definition) => ({ ...definition, verification: "issued" as const })),
     { ...admissionStoreDefinition(space), verification: "admission" as const },
     { ...endpointSessionStoreDefinition(space), verification: "sessions" as const },
+    ...artifactIndexBuckets(space).map((bucket) => ({ ...artifactIndexStoreDefinition(bucket), verification: "artifact-index" as const })),
   ];
   const artifact = artifactStoreDefinition(space);
   const resources: SpaceResourceDefinition[] = [

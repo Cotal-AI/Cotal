@@ -20,6 +20,7 @@ import {
   mintCreds,
   newIdentity,
   reconcileSpaceMemoryBuckets,
+  reconcileArtifactIndexStores,
   LEASE_TTL_MS,
   type AuthPrepared,
   type SpaceAuth,
@@ -1631,6 +1632,8 @@ async function runUp(args: ParsedArgs, invokedFrom: string, inheritedLock?: Main
           console.log(c.dim(r.recreated
             ? `  re-created ${r.stream}: it is Memory-backed and was lost when the broker restarted`
             : `  reconciled ${r.stream} TTL ${r.fromMs === 0 ? "none" : `${r.fromMs}ms`} -> ${r.toMs}ms`));
+        for (const stream of await reconcileArtifactIndexStores({ servers: server, space: held.space, creds: reconcileCreds }))
+          console.log(c.dim(`  created ${stream}: the space predates the artifact index stores`));
         // The dashboard cred is minted on a refresh too: a space that predates it may never boot again.
         if (held.mode === "auth" && spaceAuth) await provisionWebCreds(spaceAuth, root, held.space);
       } catch (e) {
