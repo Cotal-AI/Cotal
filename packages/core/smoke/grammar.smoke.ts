@@ -90,7 +90,7 @@ c("named plugin subtree routes to plugin history", routedFilter.rail.kind === fa
   routedFilter.subject === `${pluginWire}.*.*.linear.>` && subjectMatches(routedFilter.subject, pluginSubject));
 c("isolated mode rejects a wide reserved-root filter", rejects(() => channelRoute("demo", "*", "*", `${familyRoot}.>`, "isolated")));
 c("legacy mode still validates channel grammar", rejects(() => channelRoute("demo", "*", "*", `${linear}..inbox`, "legacy")));
-c("plugin history stream and fan-out name are stable", pluginChannelStream("demo") === "BRIDGE_demo" && PLUGIN_FANOUT_DURABLE === "fanout");
+c("plugin history stream and fan-out name are stable", pluginChannelStream("demo") === "EXT_demo" && PLUGIN_FANOUT_DURABLE === "fanout");
 const anotherPluginPost = pluginChannelSubject("demo", "u_abc", "act1", `${familyRoot}.other.inbox`);
 c("history capture includes both plugins but not CHAT", pluginChannelFilter("demo") === `${pluginWire}.*.*.*.>` &&
   subjectMatches(pluginChannelFilter("demo"), anotherPluginPost) && !subjectMatches(pluginChannelFilter("demo"), legacyPlugin));

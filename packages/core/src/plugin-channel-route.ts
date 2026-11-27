@@ -77,7 +77,7 @@ export function parsePluginChannelSubject(subject: string): ParsedPluginChannelS
 }
 
 export function pluginChannelStream(space: string): string {
-  return `BRIDGE_${token(space)}`;
+  return `${PLUGIN_CHANNEL_ROOT.toUpperCase()}_${token(space)}`;
 }
 
 /** Privileged history capture or per-plugin purge. Agent reads need an admitted channel pattern. */
