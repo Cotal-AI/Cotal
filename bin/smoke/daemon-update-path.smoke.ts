@@ -1,7 +1,7 @@
 /** Live shipped update against an owned daemon socket and recording native service. */
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdtempSync, mkdirSync, writeFileSync, existsSync, readFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, existsSync, readFileSync, rmSync } from "node:fs";
 import { createServer } from "node:http";
 import { connect, createServer as createSocketServer, type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -142,7 +142,9 @@ const control = createServer(async (request, response) => {
     } else if (request.url === "/show") {
       calls.pop();
       response.end(String(refusal === "--foreign-native" ? process.pid : mainPid)); return;
-    } else if (request.url !== "/daemon-reload") throw new Error("unexpected native operation");
+    } else if (request.url === "/daemon-reload") {
+      if (existsSync(join(root, "fail-daemon-reload"))) { response.writeHead(500).end("daemon-reload denied"); return; }
+    } else throw new Error("unexpected native operation");
     response.end("ok");
   } catch (error) { response.writeHead(500).end(String(error)); }
 });
@@ -174,7 +176,8 @@ if(args.join(' ')==='--user --no-ask-password --no-pager show cotal-daemon.servi
 if(args.includes('show') && args.includes('cotal-daemon.service')) {
   get('show').then(r=>r.text()).then(pid => {
     const live = pid !== '0';
-    const fields={Id:'cotal-daemon.service',LoadState:'loaded',FragmentPath:${JSON.stringify(unitPath)},DropInPaths:'',NeedDaemonReload:'no',Transient:'no',MainPID:pid,ControlPID:'0',ActiveState:live?'active':'inactive',SubState:live?'running':'dead',UnitFileState:enablement(),InvocationID:live?'1'.repeat(32):'',WorkingDirectory:'',Job:'0',ExecStop:'',ExecStopPost:''};
+    const needReload = fs.existsSync(${JSON.stringify(join(root, "need-daemon-reload"))}) ? 'yes' : 'no';
+    const fields={Id:'cotal-daemon.service',LoadState:'loaded',FragmentPath:${JSON.stringify(unitPath)},DropInPaths:'',NeedDaemonReload:needReload,Transient:'no',MainPID:pid,ControlPID:'0',ActiveState:live?'active':'inactive',SubState:live?'running':'dead',UnitFileState:enablement(),InvocationID:live?'1'.repeat(32):'',WorkingDirectory:'',Job:'0',ExecStop:'',ExecStopPost:''};
     for (const flag of args.filter(x=>x.startsWith('--property='))) { const key=flag.slice(11); if (!(key in fields)) process.exit(99); console.log(key+'='+fields[key]); }
   }).catch(()=>process.exit(99));
 } else {
@@ -284,8 +287,8 @@ try {
     console.log("PASS bounded generation wait refuses before connector writes and names recovery");
   } else if (generationRace) {
     const after = await status();
-    if (code !== 0 || calls.join(",") !== "/daemon-reload" || !transition || after.result.version !== version || !output.includes("Built-in connectors") || !readFileSync(unitPath, "utf8").includes("OOMPolicy=continue")) throw new Error(`replacement reconcile raced activation: ${JSON.stringify({ code, calls, output })}`);
-    console.log("PASS replacement reconcile waits through endpoint loss without a second restart");
+    if (code !== 0 || calls.length !== 0 || !transition || after.result.version !== version || !output.includes("Built-in connectors") || readFileSync(unitPath, "utf8") !== bytes) throw new Error(`replacement reconcile raced activation or mutated unit inside open transaction: ${JSON.stringify({ code, calls, output })}`);
+    console.log("PASS replacement reconcile waits through endpoint loss without mutating unit inside open transaction");
   } else if (process.argv.includes("--unrecorded")) {
     const after = await status();
     console.log("unrecorded daemon update", JSON.stringify({ code, calls, after, output }));
@@ -350,6 +353,33 @@ try {
         }
         console.log(`PASS ${nonEnabledState} owned daemon left stopped and reported by update --self`);
       }
+      // Failed daemon-reload during shipped `cotal update` keeps exit 0, prints one concise warning line, and retries daemon-reload on the next `cotal update` when NeedDaemonReload=yes.
+      writeFileSync(unitPath, bytes, { mode: 0o600 });
+      writeFileSync(join(paths.state, "service-unit.json"), JSON.stringify({ v: 1, unit: "cotal-daemon.service", unitPath, unitSha256: createHash("sha256").update(bytes).digest("hex"), installedAt: new Date().toISOString() }), { mode: 0o600 });
+      writeFileSync(join(root, "fail-daemon-reload"), "1", { mode: 0o600 });
+      calls.length = 0;
+      const failedReloadChild = spawn(process.execPath, [join(repo, "bin/dist/cotal.js"), "update"], { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] });
+      let failedReloadOut = "";
+      failedReloadChild.stdout.on("data", b => failedReloadOut += String(b));
+      failedReloadChild.stderr.on("data", b => failedReloadOut += String(b));
+      const failedReloadCode = await new Promise(resolve => failedReloadChild.once("exit", resolve));
+      const warningLines = failedReloadOut.split("\n").filter(line => line.includes("updated with OOMPolicy=continue, but systemctl --user daemon-reload failed"));
+      if (failedReloadCode !== 0 || warningLines.length !== 1 || !calls.includes("/daemon-reload") || !readFileSync(unitPath, "utf8").includes("OOMPolicy=continue")) {
+        throw new Error(`failed daemon-reload did not exit 0 with one warning line: ${JSON.stringify({ failedReloadCode, warningLines, calls, failedReloadOut })}`);
+      }
+      rmSync(join(root, "fail-daemon-reload"));
+      writeFileSync(join(root, "need-daemon-reload"), "1", { mode: 0o600 });
+      calls.length = 0;
+      const retryReloadChild = spawn(process.execPath, [join(repo, "bin/dist/cotal.js"), "update"], { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] });
+      let retryReloadOut = "";
+      retryReloadChild.stdout.on("data", b => retryReloadOut += String(b));
+      retryReloadChild.stderr.on("data", b => retryReloadOut += String(b));
+      const retryReloadCode = await new Promise(resolve => retryReloadChild.once("exit", resolve));
+      rmSync(join(root, "need-daemon-reload"));
+      if (retryReloadCode !== 0 || calls.join(",") !== "/daemon-reload" || retryReloadOut.includes("daemon-reload failed")) {
+        throw new Error(`subsequent update did not retry daemon-reload cleanly: ${JSON.stringify({ retryReloadCode, calls, retryReloadOut })}`);
+      }
+      console.log("PASS failed daemon-reload reports one warning line and retries on next update");
     }
   }
   }

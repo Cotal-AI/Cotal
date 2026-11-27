@@ -32,10 +32,15 @@ if (basename(process.argv[1]) === "loginctl") {
   operation = "unit-read";
   const unit = args[args.indexOf("show") + 1];
   if (!context.units.includes(unit)) process.exit(89);
-  console.log(`Id=${unit}\nLoadState=loaded\nFragmentPath=${context.config}/systemd/user/${unit}\nDropInPaths=${context.dropInPaths ?? ""}\nNeedDaemonReload=no`);
+  if (args.includes("--value") && args.includes("--property=UnitFileState")) console.log(context.unitFileState ?? "enabled");
+  else console.log(`Id=${unit}\nLoadState=loaded\nFragmentPath=${context.config}/systemd/user/${unit}\nDropInPaths=${context.dropInPaths ?? ""}\nNeedDaemonReload=${context.needDaemonReload ?? "no"}`);
 } else {
   operation = ["daemon-reload", "enable", "disable", "start", "stop"].find((op) => args.includes(op));
   if (!operation || (operation !== "daemon-reload" && !context.units.includes(args.at(-1)))) process.exit(89);
+  if (operation === "daemon-reload" && context.failDaemonReload) {
+    appendFileSync(context.calls, JSON.stringify({ operation }) + "\n");
+    process.exit(1);
+  }
   if (operation === "stop" && context.changeSourceDuringStop) appendFileSync(context.changeSourceDuringStop, "\n# changed during stop\n");
   if (operation === "start" && context.nativeEntry) {
     spawnSync(process.execPath, [context.nativeEntry, "daemon", "serve"], {

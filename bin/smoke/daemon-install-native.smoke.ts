@@ -38,7 +38,7 @@
  * Run: tsx bin/smoke/daemon-install-native.smoke.ts   (POSIX; the Windows adapter runs on its fake)
  */
 import { createHash } from "node:crypto";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -46,8 +46,9 @@ import { fileURLToPath } from "node:url";
 import { CommandFailure, spaceSegment } from "@cotal-ai/workspace";
 import { mkSecretDir } from "@cotal-ai/core";
 import type { DaemonPaths } from "../daemon/endpoint.js";
-import { assertScheduledEntry, reconcileInstalledSystemdOomPolicy, renderDaemonUnit, planUninstall, refreshedDaemonPath, type NativeResult, type NativeRun, type UnitReceipt } from "../daemon/install.js";
+import { assertScheduledEntry, reconcileInstalledSystemdOomPolicy, repairMissingInstalledProgram, renderDaemonUnit, planUninstall, refreshedDaemonPath, type NativeResult, type NativeRun, type UnitReceipt } from "../daemon/install.js";
 import { upgradedSystemdOomPolicy } from "../daemon/install-linux-repair.js";
+import { readServiceRepair } from "../daemon/service-repair.js";
 import { nativeRun } from "../daemon/install-native-run.js";
 import { launchAgentLabel, launchAgentService, missingLaunchAgentProgram, renderLaunchAgent, xmlText } from "../daemon/install-darwin.js";
 import { assertServiceRepairPair, sourceDigest, type ServiceRepairIntent } from "../daemon/service-repair.js";
@@ -1084,18 +1085,111 @@ try {
         writeFileSync(configFile, JSON.stringify({ ...context, dropInPaths: `${unitPath}.d/operator.conf` }), { mode: 0o600 });
         let before = readFileSync(context.calls, "utf8").length;
         check("N8 drop-in skips in-place OOMPolicy rewrite", reconcileInstalledSystemdOomPolicy({ state: daemonHome }, daemonHome) === false && readFileSync(unitPath, "utf8") === legacySource && !operationsSince(before).includes("daemon-reload") && !operationsSince(before).includes("stop"));
-        // 2. Hand-edited unit (digest mismatch): leave untouched without native unit-read or reload.
+        // 2. NeedDaemonReload=yes on a legacy unit skips the rewrite without sweeping un-reloaded edits into daemon-reload.
+        writeLegacy();
+        writeFileSync(configFile, JSON.stringify({ ...context, needDaemonReload: "yes" }), { mode: 0o600 });
+        before = readFileSync(context.calls, "utf8").length;
+        check("N8 NeedDaemonReload=yes skips in-place OOMPolicy rewrite", reconcileInstalledSystemdOomPolicy({ state: daemonHome }, daemonHome) === false && readFileSync(unitPath, "utf8") === legacySource && !operationsSince(before).includes("daemon-reload"));
+        // 3. Hand-edited unit (digest mismatch): leave untouched without native unit-read or reload.
         writeFileSync(configFile, JSON.stringify(context), { mode: 0o600 });
         writeFileSync(unitPath, `${legacySource}# operator edit\n`, { mode: 0o600 });
         before = readFileSync(context.calls, "utf8").length;
         check("N8 hand-edited unit skips in-place OOMPolicy rewrite without native calls", reconcileInstalledSystemdOomPolicy({ state: daemonHome }, daemonHome) === false && readFileSync(unitPath, "utf8").endsWith("# operator edit\n") && operationsSince(before).length === 0);
-        // 3. Foreign installation unit: leave untouched without daemon-reload.
+        // 4. Foreign installation unit: leave untouched without daemon-reload.
         for (const name of ["node", "cotal.js"]) writeFileSync(join(dir, "foreign", name), "", { mode: 0o700 });
         const foreignSource = `[Service]\nExecStart="${join(dir, "foreign", "node")}" "${join(dir, "foreign", "cotal.js")}" daemon serve --daemon-home "${daemonHome}"\nRestart=always\n`;
         writeLegacy(foreignSource);
         before = readFileSync(context.calls, "utf8").length;
         check("N8 foreign installation unit is not rewritten", reconcileInstalledSystemdOomPolicy({ state: daemonHome }, daemonHome) === false && readFileSync(unitPath, "utf8") === foreignSource && !operationsSince(before).includes("daemon-reload"));
-        // 4. Unmodified stock pre-fix unit: rewritten in place + receipt updated + daemon-reload only (never stop/start).
+        // 5. Held service-repair.lock from another live process skips immediately (<1s) instead of waiting 30s.
+        writeLegacy();
+        const lockFile = join(daemonHome, "service-repair.lock");
+        const holder = spawn(process.execPath, ["-e", `
+          const fs = require("node:fs");
+          const stat = fs.readFileSync("/proc/" + process.pid + "/stat", "utf8");
+          const start = stat.slice(stat.lastIndexOf(")") + 2).split(" ")[19];
+          fs.writeFileSync(${JSON.stringify(lockFile)}, JSON.stringify({ pid: process.pid, start, nonce: "a".repeat(24), ts: Date.now(), label: "service-repair" }) + "\\n", { mode: 0o600 });
+          process.stdout.write("held\\n");
+          setInterval(() => {}, 60_000);
+        `], { stdio: ["ignore", "pipe", "ignore"] });
+        await new Promise<void>((resolve, reject) => {
+          holder.once("error", reject);
+          holder.stdout!.once("data", () => resolve());
+        });
+        try {
+          before = readFileSync(context.calls, "utf8").length;
+          const startedAt = Date.now();
+          const skipped = reconcileInstalledSystemdOomPolicy({ state: daemonHome }, daemonHome);
+          const elapsedMs = Date.now() - startedAt;
+          check("N8 held service-repair.lock skips immediately without blocking",
+            skipped === false && elapsedMs < 2000 && readFileSync(unitPath, "utf8") === legacySource && operationsSince(before).length === 0,
+            { skipped, elapsedMs });
+        } finally {
+          holder.kill("SIGKILL");
+          await new Promise<void>(resolve => holder.once("close", () => resolve()));
+          rmSync(lockFile, { force: true });
+        }
+        // 6. Real SIGKILL between writing unitPath and updating service-unit.json leaves service-repair.json and recovers cleanly on the next run (and via repairMissingInstalledProgram).
+        const crashLoader = join(dir, "kill-after-unit-write.mjs");
+        writeFileSync(crashLoader, `
+          import fs from "node:fs";
+          import { syncBuiltinESMExports } from "node:module";
+          const origRenameSync = fs.renameSync;
+          fs.renameSync = (oldPath, newPath) => {
+            origRenameSync(oldPath, newPath);
+            if (String(newPath) === ${JSON.stringify(unitPath)}) process.kill(process.pid, "SIGKILL");
+          };
+          syncBuiltinESMExports();
+        `, { mode: 0o600 });
+        const compiledInstallUrl = new URL("../dist/daemon/install.js", import.meta.url).href;
+        for (const recoverVia of ["reconcile", "repair"] as const) {
+          writeLegacy();
+          const killed = spawnSync(process.execPath, [
+            "--import", crashLoader, "--input-type=module", "-e",
+            `process.execArgv = []; process.argv = [process.execPath, ${JSON.stringify(cli)}]; const { reconcileInstalledSystemdOomPolicy } = await import(${JSON.stringify(compiledInstallUrl)}); reconcileInstalledSystemdOomPolicy({ state: ${JSON.stringify(daemonHome)} }, ${JSON.stringify(daemonHome)});`,
+          ], { cwd: dir, env: cleanEnv, encoding: "utf8", timeout: 15_000 });
+          const journalAfterCrash = readServiceRepair(daemonHome);
+          check(`N8 SIGKILL between unit and receipt writes (${recoverVia}) records service-repair.json with new unit and old receipt`,
+            killed.signal === "SIGKILL" && journalAfterCrash !== undefined
+            && readFileSync(unitPath, "utf8") === modernSource
+            && (JSON.parse(readFileSync(receiptPath, "utf8")) as UnitReceipt).unitSha256 === sha(legacySource),
+            { status: killed.status, signal: killed.signal, stderr: killed.stderr });
+          before = readFileSync(context.calls, "utf8").length;
+          if (recoverVia === "reconcile") {
+            const recovered = reconcileInstalledSystemdOomPolicy({ state: daemonHome }, daemonHome);
+            check("N8 next OOMPolicy reconcile reclaims stale lock, completes interrupted journal, and reloads",
+              recovered === true && readServiceRepair(daemonHome) === undefined && !existsSync(lockFile)
+              && (JSON.parse(readFileSync(receiptPath, "utf8")) as UnitReceipt).unitSha256 === sha(modernSource)
+              && operationsSince(before).includes("daemon-reload"));
+          } else {
+            const repaired = await repairMissingInstalledProgram({ state: daemonHome, socket: join(daemonHome, "d.sock"), lock: join(daemonHome, "daemon.lock") }, daemonHome);
+            check("N8 repairMissingInstalledProgram finishes interrupted OOMPolicy journal without reporting missing program",
+              repaired === false && readServiceRepair(daemonHome) === undefined && !existsSync(lockFile)
+              && (JSON.parse(readFileSync(receiptPath, "utf8")) as UnitReceipt).unitSha256 === sha(modernSource)
+              && operationsSince(before).includes("daemon-reload"));
+          }
+        }
+        // 7. Failed daemon-reload emits one concise warning line, keeps upgraded unit+receipt, and retries daemon-reload on a later run when NeedDaemonReload=yes.
+        writeLegacy();
+        writeFileSync(configFile, JSON.stringify({ ...context, failDaemonReload: true }), { mode: 0o600 });
+        const reportedLines: string[] = [];
+        before = readFileSync(context.calls, "utf8").length;
+        const reloadFailed = reconcileInstalledSystemdOomPolicy({ state: daemonHome }, daemonHome, line => reportedLines.push(line));
+        check("N8 failed daemon-reload reports one concise line while preserving upgraded unit and receipt",
+          reloadFailed === false && reportedLines.length === 1 && !reportedLines[0]!.includes("\n")
+          && reportedLines[0]!.includes(unit) && reportedLines[0]!.includes("daemon-reload failed")
+          && readFileSync(unitPath, "utf8") === modernSource
+          && (JSON.parse(readFileSync(receiptPath, "utf8")) as UnitReceipt).unitSha256 === sha(modernSource)
+          && operationsSince(before).includes("daemon-reload"),
+          reportedLines);
+        writeFileSync(configFile, JSON.stringify({ ...context, needDaemonReload: "yes" }), { mode: 0o600 });
+        before = readFileSync(context.calls, "utf8").length;
+        const retriedLines: string[] = [];
+        const reloadRetried = reconcileInstalledSystemdOomPolicy({ state: daemonHome }, daemonHome, line => retriedLines.push(line));
+        check("N8 subsequent update retries daemon-reload when upgraded unit still reports NeedDaemonReload=yes",
+          reloadRetried === true && retriedLines.length === 0 && operationsSince(before).includes("daemon-reload"));
+        writeFileSync(configFile, JSON.stringify(context), { mode: 0o600 });
+        // 8. Unmodified stock pre-fix unit: rewritten in place + receipt updated + daemon-reload only (never stop/start).
         writeLegacy();
         before = readFileSync(context.calls, "utf8").length;
         check("N8 unmodified stock unit upgrades OOMPolicy=continue in place with daemon-reload only",
@@ -1104,9 +1198,11 @@ try {
           && (JSON.parse(readFileSync(receiptPath, "utf8")) as UnitReceipt).unitSha256 === sha(modernSource)
           && operationsSince(before).includes("daemon-reload")
           && !operationsSince(before).some(op => op === "stop" || op === "start"));
-        // 5. Idempotent second run makes no native calls.
+        // 9. Idempotent second run does not rewrite, reload or restart.
         before = readFileSync(context.calls, "utf8").length;
-        check("N8 upgraded unit needs no second rewrite or reload", reconcileInstalledSystemdOomPolicy({ state: daemonHome }, daemonHome) === false && operationsSince(before).length === 0);
+        check("N8 upgraded unit needs no second rewrite or reload",
+          reconcileInstalledSystemdOomPolicy({ state: daemonHome }, daemonHome) === false
+          && !operationsSince(before).some(op => op === "daemon-reload" || op === "stop" || op === "start"));
       } finally {
         process.argv[1] = savedEntry!;
         process.execArgv = savedExecArgv;

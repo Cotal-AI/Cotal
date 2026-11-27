@@ -141,9 +141,19 @@ async function collectConnectorSets(): Promise<void> {
 }
 
 function reconcileInstalledLinuxPolicy(): void {
-  if (process.platform !== "linux") return;
-  try { reconcileInstalledSystemdOomPolicy({ state: join(homeCotalDir(), "daemon") }); }
+  if (process.platform !== "linux" || process.env.COTAL_UPDATE_PARENT || process.env.COTAL_UPDATE_CLOSURE_TRANSACTION || readUpdateRecovery()) return;
+  try { reconcileInstalledSystemdOomPolicy({ state: join(homeCotalDir(), "daemon") }, undefined, line => console.log(line)); }
   catch { /* Unreachable or modified units retain their existing policy without failing update. */ }
+}
+
+function refreshPinnedLauncher(): void {
+  try {
+    const installed = executionInstallRoot();
+    if (existsSync(join(installed, "dist/cotal-npm"))) {
+      const selected = selectExecutionProgram(installed);
+      if (selected.retained) execFileSync(process.execPath, [join(selected.root, "scripts/pin-npm-node.cjs"), "--refresh", installed], { stdio: "ignore", timeout: 15_000, killSignal: "SIGKILL", windowsHide: true });
+    }
+  } catch { /* Refresh is optional after successful reconciliation. */ }
 }
 
 function preflightExecutionWithCleanup(): boolean {
@@ -636,16 +646,9 @@ const composed: Command = { ...command, async run(args) {
   if (!(staged && args.values.self === true) && logicalExecutionEntry() && !updateRuntime.checkout() && args.values.check !== true && !args.values.auto && !args.values.notify && !process.env.COTAL_UPDATE_PARENT) cleanupExecutionStore(executionInstallRoot());
   await update(args, runtime);
   if (args.values.check === true || args.values.auto || args.values.notify || process.exitCode || packageCheck === "offline") return;
-  reconcileInstalledLinuxPolicy(); if (packageCheck !== "current") await collectConnectorSets();
-  if (admission && recoveryAdmission?.execution && recoveryAdmission.phase !== "restoring" && process.env.COTAL_UPDATE_PARENT === String(process.ppid)) {
-    try {
-      const installed = executionInstallRoot();
-      if (existsSync(join(installed, "dist/cotal-npm"))) {
-        const selected = selectExecutionProgram(installed);
-        if (selected.retained) execFileSync(process.execPath, [join(selected.root, "scripts/pin-npm-node.cjs"), "--refresh", installed], { stdio: "ignore", timeout: 15_000, killSignal: "SIGKILL", windowsHide: true });
-      }
-    } catch { /* Refresh is optional after successful reconciliation. */ }
-  }
+  reconcileInstalledLinuxPolicy();
+  if (packageCheck !== "current") await collectConnectorSets();
+  if (admission && recoveryAdmission?.execution && recoveryAdmission.phase !== "restoring" && process.env.COTAL_UPDATE_PARENT === String(process.ppid)) refreshPinnedLauncher();
   // The daemon started this update and restarts itself once this process has exited. A restart
   // asked for from here would stop this process with the rest of the service.
   if (admission?.disposition === "deferred") {

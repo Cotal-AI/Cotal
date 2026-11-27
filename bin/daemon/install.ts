@@ -49,7 +49,7 @@ import { excludeLifetime, processBirth, readLifetimeRecord } from "./lifetime.js
 import { darwinLaunchdJob, lockExclusiveNb, windowsUserSid } from "@cotal-ai/seat";
 import { encode, type DaemonResponse } from "./protocol.js";
 import { launchAgentService, missingLaunchAgentProgram, renderLaunchAgent, xmlText } from "./install-darwin.js";
-import { missingSystemdProgram, observeSystemdRepairUnit, systemdUnitAllowsInPlacePolicyUpgrade, upgradedSystemdOomPolicy } from "./install-linux-repair.js";
+import { completeInPlaceOomPolicyIntent, isInPlaceOomPolicyIntent, missingSystemdProgram, observeSystemdRepairUnit, reconcileInstalledSystemdOomPolicy as reconcileSystemdOomPolicy } from "./install-linux-repair.js";
 import { scheduledTaskName, scheduledTaskService } from "./install-win32.js";
 import { daemonCommandCopy, windowsDaemonFirstStart } from "./guidance.js";
 import { recoverPausedTask } from "./restart-recovery.js";
@@ -589,31 +589,8 @@ function reconcileShellRuntime(paths: Pick<DaemonPaths, "state">, root: string):
 }
 
 /** Upgrade an unmodified same-installation Linux unit's OOMPolicy in place without restarting running seats. */
-export function reconcileInstalledSystemdOomPolicy(paths: Pick<DaemonPaths, "state">, daemonHome?: string): boolean {
-  if (process.platform !== "linux") return false;
-  const existing = readReceipt(paths);
-  if (!existing || (existing.mechanism ?? "systemd-user") !== "systemd-user") return false;
-  const raw = readLocalRecordSource(existing.unitPath, 64 * 1024, true)?.toString("utf8");
-  if (!raw || sourceDigest(raw) !== existing.unitSha256 || !upgradedSystemdOomPolicy(raw)) return false;
-  const lock = acquireLock(join(paths.state, "service-repair.lock"));
-  try {
-    const recorded = recordedUnit(paths, daemonHome);
-    if (!recordedDaemonIdentity(recorded).same) return false;
-    const { receipt, plan } = recorded;
-    const source = readFileSync(receipt.unitPath, "utf8");
-    const next = upgradedSystemdOomPolicy(source);
-    if (!next) return false;
-    const env = daemonUserServiceEnv();
-    if (!systemdUnitAllowsInPlacePolicyUpgrade(nativeRun, plan.unit, receipt.unitPath, env)) return false;
-    const sha256 = createHash("sha256").update(next).digest("hex");
-    if (recordedUnit(paths, daemonHome).receipt.unitSha256 !== receipt.unitSha256) throw new CommandFailure("refused", "CONFLICT", "the recorded daemon service changed during update");
-    writeSecretFileAtomic(receipt.unitPath, next);
-    try { writeSecretFileAtomic(unitReceiptFile(paths), `${JSON.stringify({ ...receipt, unitSha256: sha256 })}\n`); }
-    catch (error) { writeSecretFileAtomic(receipt.unitPath, source); throw error; }
-    assertSystemdSource(receipt.unitPath, sha256);
-    submitSystemdUnitRegistration("reload", plan.unit, env);
-    return true;
-  } finally { lock.release(); }
+export function reconcileInstalledSystemdOomPolicy(paths: Pick<DaemonPaths, "state">, daemonHome?: string, report?: (line: string) => void): boolean {
+  return reconcileSystemdOomPolicy(paths, daemonHome, daemonUnitName(daemonHome), report);
 }
 
 /** The executable and entry pinned by the verified native source, compared with this CLI. */
@@ -683,6 +660,7 @@ export async function repairMissingInstalledProgram(paths: DaemonPaths, daemonHo
   };
   try {
     let intent = readServiceRepair(paths.state);
+    if (linux && intent && isInPlaceOomPolicyIntent(intent)) { completeInPlaceOomPolicyIntent(paths, daemonHome, daemonUnitName(daemonHome)); return false; }
     if (intent) {
       const actual = readReceipt(paths)!;
       if (!actual || actual.daemonHome !== daemonHome || intent.receipt.daemonHome !== daemonHome || (intent.receipt.mechanism ?? "systemd-user") !== (linux ? "systemd-user" : "launchd-agent")) throw new Error("the repair intent names another daemon home or service mechanism");

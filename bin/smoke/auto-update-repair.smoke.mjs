@@ -3,7 +3,7 @@ import { countedAssert, emitSentinel } from './sentinel.mjs';
 const { assert, cells } = countedAssert(strictAssert);
 import { createServer } from 'node:http';
 import { createHash } from 'node:crypto';
-import { mkdirSync, writeFileSync, readFileSync, mkdtempSync, existsSync, rmSync } from 'node:fs';
+import { mkdirSync, writeFileSync, readFileSync, readdirSync, mkdtempSync, existsSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -13,21 +13,36 @@ const repo = fileURLToPath(new URL('../../', import.meta.url));
 const previous = JSON.parse(readFileSync(join(repo, 'bin/package.json'), 'utf8')).version;
 const originalEnv = { ...process.env }, originalCwd = process.cwd();
 const terminal = process.argv.includes('--terminal-output');
-for (const scenario of terminal ? ['terminal'] : process.argv.includes('--release-hold') ? ['release-hold'] : ['retry', 'rollback', 'paused', 'preflight', 'notarget-manual', 'notarget-auto', 'closure-auto', 'release-hold']) {
+for (const scenario of terminal ? ['terminal'] : process.argv.includes('--release-hold') ? ['release-hold'] : process.argv.includes('--legacy-unit-rollback') ? ['legacy-unit-rollback'] : ['retry', 'rollback', 'paused', 'preflight', 'notarget-manual', 'notarget-auto', 'closure-auto', 'release-hold', ...(process.platform === 'linux' ? ['legacy-unit-rollback'] : [])]) {
  const root = mkdtempSync(join(tmpdir(), 'autoupd-repair-'));
  const home = join(root, 'home'), prefix = join(root, 'prefix');
  for (const dir of [home, prefix, join(root, 'config/cotal'), join(root, '.cotal'), join(root, 'payload/package/dist')]) mkdirSync(dir, { recursive: true, mode: 0o700 });
  const notarget = scenario.startsWith('notarget');
  const closure = scenario === 'closure-auto';
  const releaseHold = scenario === 'release-hold';
- const first = '99.0.0', second = '99.0.1', hour = 3_600_000;
+ const legacyUnitRollback = scenario === 'legacy-unit-rollback';
+ const first = legacyUnitRollback ? '0.151.3' : '99.0.0', second = '99.0.1', hour = 3_600_000;
+ const baseVersion = legacyUnitRollback ? '0.151.2' : previous;
  const archives = {};
- for (const version of [first, previous, ...(releaseHold ? [second] : [])]) {
-  writeFileSync(join(root, 'payload/package/package.json'), JSON.stringify({ name: 'cotal-ai', version, bin: { cotal: 'dist/cotal.js' } }));
-  const code = version === previous ? (scenario === 'paused' ? 'process.exit(43)' : 'console.log("previous reconciled")') : notarget || closure || terminal || releaseHold ? 'console.log("release reconciled")' : scenario === 'retry' ? `const fs=require('node:fs');const p=${JSON.stringify(join(root, 'once'))};if(!fs.existsSync(p)){fs.writeFileSync(p,'1');process.exit(42)}console.log('retry reconciled')` : 'process.exit(42)';
-  writeFileSync(join(root, 'payload/package/dist/cotal.js'), '#!/usr/bin/env node\n' + code + '\n', { mode: 0o755 });
-  assert.equal(spawnSync('tar', ['-czf', join(root, version + '.tgz'), '-C', join(root, 'payload'), 'package']).status, 0);
-  archives[version] = readFileSync(join(root, version + '.tgz'));
+ if (legacyUnitRollback) {
+  const fixtureDir = join(root, 'upgrade-fixture');
+  const built = spawnSync(process.execPath, [join(repo, 'bin/smoke/build-daemon-upgrade-fixture.mjs'), fixtureDir, '--workspace-source'], { cwd: repo, encoding: 'utf8' });
+  assert.equal(built.status, 0, built.stderr || built.stdout);
+  for (const version of [baseVersion, first]) archives[version] = readFileSync(join(fixtureDir, `cotal-ai-${version}.tgz`));
+ } else {
+  for (const version of [first, previous, ...(releaseHold ? [second] : [])]) {
+   writeFileSync(join(root, 'payload/package/package.json'), JSON.stringify({ name: 'cotal-ai', version, bin: { cotal: 'dist/cotal.js' } }));
+   const code = version === previous
+    ? (scenario === 'paused' ? 'process.exit(43)' : 'console.log("previous reconciled")')
+    : notarget || closure || terminal || releaseHold
+     ? 'console.log("release reconciled")'
+     : scenario === 'retry'
+      ? `const fs=require('node:fs');const p=${JSON.stringify(join(root, 'once'))};if(!fs.existsSync(p)){fs.writeFileSync(p,'1');process.exit(42)}console.log('retry reconciled')`
+      : 'process.exit(42)';
+   writeFileSync(join(root, 'payload/package/dist/cotal.js'), '#!/usr/bin/env node\n' + code + '\n', { mode: 0o755 });
+   assert.equal(spawnSync('tar', ['-czf', join(root, version + '.tgz'), '-C', join(root, 'payload'), 'package']).status, 0);
+   archives[version] = readFileSync(join(root, version + '.tgz'));
+  }
  }
  let origin, missing = false, arriving = notarget, armed = false, latest = first;
  const fetchedArchives = [];
@@ -184,6 +199,135 @@ for (const scenario of terminal ? ['terminal'] : process.argv.includes('--releas
     assert.equal(completed.code, 0, completed.output);
     assert.equal(installedVersion(), '99.0.0');
     assert.equal(recovery(), null);
+   }
+  } else if (legacyUnitRollback) {
+   const runtime = join(root, 'rt'), native = join(root, 'native');
+   mkdirSync(runtime, { mode: 0o700 });
+   mkdirSync(native, { mode: 0o700 });
+   env.XDG_RUNTIME_DIR = runtime;
+   env.PATH = `${native}:${env.PATH}`;
+   const initial = await run('npm', ['install', '-g', `cotal-ai@${baseVersion}`]);
+   assert.equal(initial.code, 0, initial.output);
+   const installedPkg = join(prefix, 'lib/node_modules/cotal-ai');
+   const installedEntry = join(installedPkg, 'dist/cotal.js');
+   const daemonPidFile = join(root, 'daemon.pid');
+   const unitDir = join(root, 'config/systemd/user');
+   mkdirSync(unitDir, { recursive: true, mode: 0o700 });
+   const unitPath = join(unitDir, 'cotal-daemon.service');
+   const legacyUnit = `[Unit]\nDescription=Cotal machine daemon\n\n[Service]\nType=notify\nNotifyAccess=all\nTimeoutStartSec=60\nEnvironment=PATH="${env.PATH}"\nEnvironment=COTAL_DAEMON_NATIVE_SERVICE=1\nExecStart="${process.execPath}" "${installedEntry}" daemon serve\nRestart=always\nRestartSec=2\nTimeoutStopSec=90\nKillMode=mixed\n\n[Install]\nWantedBy=default.target\n`;
+   writeFileSync(unitPath, legacyUnit, { mode: 0o600 });
+   mkdirSync(join(home, 'daemon'), { recursive: true, mode: 0o700 });
+   const receiptPath = join(home, 'daemon/service-unit.json');
+   const legacySha = createHash('sha256').update(legacyUnit).digest('hex');
+   const originalReceipt = JSON.stringify({ v: 1, mechanism: 'systemd-user', unit: 'cotal-daemon.service', unitPath, unitSha256: legacySha, installedAt: new Date().toISOString() });
+   writeFileSync(receiptPath, originalReceipt + '\n', { mode: 0o600 });
+   const daemonEnv = { ...env, COTAL_DAEMON_NATIVE_SERVICE: '1' };
+   writeFileSync(join(native, 'systemctl'), `#!${process.execPath}
+const fs = require('node:fs');
+const { spawn } = require('node:child_process');
+const args = process.argv.slice(2);
+if (args.join(' ') === '--user show-environment') { console.log(${JSON.stringify(`XDG_CONFIG_HOME=${join(root, 'config')}`)}); process.exit(0); }
+if (args.includes('show') && args.includes('cotal-daemon.service')) {
+ const pid = fs.existsSync(${JSON.stringify(daemonPidFile)}) ? fs.readFileSync(${JSON.stringify(daemonPidFile)}, 'utf8').trim() : '0';
+ const live = pid !== '0' && (() => { try { process.kill(Number(pid), 0); return true; } catch { return false; } })();
+ if (args.includes('--value') && args.includes('--property=UnitFileState')) { console.log('enabled'); process.exit(0); }
+ const fields = { Id: 'cotal-daemon.service', LoadState: 'loaded', FragmentPath: ${JSON.stringify(unitPath)}, DropInPaths: '', NeedDaemonReload: 'no', Transient: 'no', MainPID: live ? pid : '0', ControlPID: '0', ActiveState: live ? 'active' : 'inactive', SubState: live ? 'running' : 'dead', UnitFileState: 'enabled', InvocationID: live ? '1'.repeat(32) : '', WorkingDirectory: '', Job: '0' };
+ if (args.includes('--value') && args.length === 6 && args[5].startsWith('--property=')) { console.log(fields[args[5].slice(11)] ?? ''); process.exit(0); }
+ for (const f of args.filter(x => x.startsWith('--property='))) console.log(f.slice(11) + '=' + (fields[f.slice(11)] ?? ''));
+ process.exit(0);
+}
+if (args.includes('daemon-reload')) process.exit(0);
+if (args.includes('stop')) {
+ try { process.kill(Number(fs.readFileSync(${JSON.stringify(daemonPidFile)}, 'utf8').trim()), 'SIGTERM'); } catch {}
+ fs.writeFileSync(${JSON.stringify(daemonPidFile)}, '0');
+ process.exit(0);
+}
+if (args.includes('start')) {
+ // Only start when no retained generation (0.151.3) is active; fail fast when .active-*.json exists so target activation fails and rolls back immediately.
+ const storeDir = ${JSON.stringify(join(prefix, 'lib/.cotal-generations'))};
+ const active = fs.existsSync(storeDir) && fs.readdirSync(storeDir).some(name => name.startsWith('.active-'));
+ if (active) { console.error('target 0.151.3 native start failed'); process.exit(99); }
+ const child = spawn(${JSON.stringify(process.execPath)}, [${JSON.stringify(installedEntry)}, 'daemon', 'serve'], { cwd: ${JSON.stringify(root)}, env: ${JSON.stringify(daemonEnv)}, detached: true, stdio: 'ignore' });
+ fs.writeFileSync(${JSON.stringify(daemonPidFile)}, String(child.pid));
+ child.unref();
+ process.exit(0);
+}
+process.exit(99);
+`, { mode: 0o700 });
+   writeFileSync(join(native, 'busctl'), `#!${process.execPath}
+const fs = require('node:fs');
+if (process.argv.slice(-3).join(' ') !== 'ExecStartEx ExecStopEx ExecStopPostEx') process.exit(99);
+const pid = fs.existsSync(${JSON.stringify(daemonPidFile)}) ? Number(fs.readFileSync(${JSON.stringify(daemonPidFile)}, 'utf8').trim()) : 0;
+const argv = [${JSON.stringify(process.execPath)}, ${JSON.stringify(installedEntry)}, 'daemon', 'serve'];
+for (const data of [[[argv[0], argv, [], 0, 0, 0, 0, pid, 0, 0]], [], []]) console.log(JSON.stringify({ type: 'a(sasasttttuii)', data }));
+`, { mode: 0o700 });
+   const seedDir = join(root, 'config/cotal/seed');
+   mkdirSync(seedDir, { recursive: true, mode: 0o700 });
+   for (const file of ['authority.json', 'authority.bak.json']) writeFileSync(join(seedDir, file), JSON.stringify({ everSeeded: ['claude', 'opencode', 'codex', 'hermes', 'jcode', 'pi', 'web'] }), { mode: 0o600 });
+   writeFileSync(join(seedDir, 'witness.json'), JSON.stringify({ initialized: true, firstGeneration: baseVersion }), { mode: 0o600 });
+   writeFileSync(join(seedDir, 'stamp.json'), JSON.stringify({ generation: baseVersion }), { mode: 0o600 });
+   writeFileSync(join(home, 'update-settings.json'), JSON.stringify({ v: 1, auto: true, notify: true }), { mode: 0o600 });
+   writeFileSync(join(home, 'update-attempt.json'), JSON.stringify({ version: first, failures: 0, result: 'due', next: Date.now() + hour }), { mode: 0o600 });
+   writeFileSync(join(home, 'update-check.json'), JSON.stringify({ v: 1, latest: first, attemptedAt: Date.now(), checkedAt: Date.now(), firstSeenAt: Date.now() - hour - 1000 }), { mode: 0o600 });
+   const daemon = spawn(process.execPath, [installedEntry, 'daemon', 'serve'], { cwd: root, env: daemonEnv, stdio: ['ignore', 'pipe', 'pipe'] });
+   writeFileSync(daemonPidFile, String(daemon.pid), { mode: 0o600 });
+   let daemonOut = '';
+   daemon.stdout.on('data', b => daemonOut += b);
+   daemon.stderr.on('data', b => daemonOut += b);
+   try {
+    for (let i = 0; i < 100; i++) {
+     if (daemonOut.includes('daemon ready at') && daemonOut.includes('native ownership owned: verified')) break;
+     if (daemon.exitCode !== null) throw new Error(`daemon exited early: ${daemonOut}`);
+     await new Promise(r => setTimeout(r, 100));
+    }
+    assert.match(daemonOut, /native ownership owned: verified/);
+    // Simulate systemd restarting the service when 0.151.3 activates: stop 0.151.2 so the updater tries `systemctl --user start`, which fails for 0.151.3 and succeeds once rolled back to 0.151.2.
+    const storeDir = join(prefix, 'lib/.cotal-generations');
+    const watchTimer = setInterval(() => {
+     if (daemon.exitCode === null && existsSync(storeDir) && readdirSync(storeDir).some(name => name.startsWith('.active-'))) {
+      clearInterval(watchTimer);
+      try { daemon.kill('SIGTERM'); } catch {}
+      writeFileSync(daemonPidFile, '0');
+     }
+    }, 50);
+    const autoRun = await new Promise((resolve, reject) => {
+     const c = spawn(process.execPath, [installedEntry, 'update', '--self'], { cwd: root, env, stdio: ['ignore', 'pipe', 'pipe'] });
+     let out = '';
+     c.stdout.on('data', b => out += b);
+     c.stderr.on('data', b => out += b);
+     c.once('error', reject);
+     c.once('close', code => resolve({ code, output: out }));
+    });
+    clearInterval(watchTimer);
+    assert.notEqual(autoRun.code, 0, autoRun.output);
+    assert.match(autoRun.output, /Restoring verified cotal-ai@/);
+    assert.equal(recovery(), null, autoRun.output);
+    // Legacy unit and receipt must remain untouched so the rolled-back pre-fix daemon still sees an owned unit and keeps automatic updates enabled.
+    assert.equal(readFileSync(unitPath, 'utf8'), legacyUnit);
+    assert.equal(JSON.parse(readFileSync(receiptPath, 'utf8')).unitSha256, legacySha);
+    // Wait briefly for the restored daemon's async native ownership worker to settle, then assert automatic updates remain enabled.
+    let parsedStatus;
+    for (let i = 0; i < 60; i++) {
+     const statusAfter = await run(process.execPath, [installedEntry, 'daemon', 'status', '--json']);
+     if (statusAfter.code === 0) {
+      parsedStatus = JSON.parse(statusAfter.output);
+      if (parsedStatus.result?.update?.lastResult !== 'verifying native service ownership') break;
+     }
+     await new Promise(r => setTimeout(r, 100));
+    }
+    assert.ok(parsedStatus, 'rolled-back daemon did not answer daemon status');
+    assert.equal(parsedStatus.result.version, baseVersion);
+    assert.equal(parsedStatus.result.update.automatic, true, JSON.stringify(parsedStatus.result.update));
+    console.log('LEGACY UNIT ROLLBACK PRESERVED AUTO UPDATE:', JSON.stringify(parsedStatus.result.update));
+   } finally {
+    if (daemon.exitCode === null) { daemon.kill('SIGTERM'); await new Promise(r => daemon.once('close', r)); }
+    if (existsSync(daemonPidFile)) {
+     const pid = Number(readFileSync(daemonPidFile, 'utf8').trim());
+     if (pid > 0) {
+      try { process.kill(pid, 'SIGTERM'); } catch {}
+      for (let i = 0; i < 50; i++) { try { process.kill(pid, 0); await new Promise(r => setTimeout(r, 50)); } catch { break; } }
+     }
+    }
    }
   } else {
    const { code, output } = await command();
