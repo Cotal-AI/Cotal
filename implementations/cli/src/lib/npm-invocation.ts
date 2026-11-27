@@ -12,6 +12,7 @@ const UPDATE_NPM_NODE = "COTAL_UPDATE_NPM_NODE";
 const windows = process.platform === "win32";
 
 let updatePath: { value: string; directories: string[] } | undefined;
+let bundledNoticePrinted = false;
 
 export function preserveUpdatePath(): void {
   const path = process.env.PATH;
@@ -90,14 +91,12 @@ function pathVariable(env: NodeJS.ProcessEnv): string {
 /** The npm package shipped beside the Node that launched this process, not a file named npm in its bin folder. */
 function bundledNpm(): { entry: string; range: string } | undefined {
   if (windows) return;
-  // A shell launcher can exec the bare name `node` after finding it on PATH. The invoked
-  // absolute path still wins when it names a copied runtime whose execPath points elsewhere.
-  const invoked = isAbsolute(process.argv0) ? process.argv0 : process.execPath;
-  if (!isAbsolute(invoked)) return;
-  const root = dirname(dirname(invoked));
+  let root: string;
+  try { root = dirname(dirname(isAbsolute(process.execPath) ? process.execPath : realpathSync(process.execPath))); } catch { return; }
   if (root.includes(delimiter)) return;
-  const engine = npmEngine(join(root, "lib", "node_modules", "npm", "bin", "npm-cli.js"));
-  return engine && !engine.corepack && satisfies(process.version, engine.range) ? engine : undefined;
+  const candidate = join(root, "lib", "node_modules", "npm", "bin", "npm-cli.js");
+  const engine = npmEngine(candidate);
+  return engine && !engine.corepack && satisfies(process.version, engine.range) ? { entry: candidate, range: engine.range } : undefined;
 }
 
 export function npmUpdateChildEnvironment(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
@@ -202,21 +201,20 @@ export function npmInvocation(env: NodeJS.ProcessEnv, args: string[]): NpmComman
     }
     if (fallback) return fallback;
   }
-  const pathNpmMissing = !file || !engine;
+  const pathNpmMissing = !file;
   const pathNpmReportsUnsupported = !!npmRange && !satisfies(process.version, npmRange);
-  // A declared engine mismatch can still run on this Node. Only a missing npm, an
-  // unrecognised file, or npm's own unsupported-Node report selects the bundled package.
+  // A file named npm whose engine cannot be read is still the npm on PATH. Only a missing
+  // file, or npm's own unsupported-Node report, selects the package shipped with this Node.
   if (!windows && (pathNpmMissing || pathNpmReportsUnsupported)) {
     const bundled = bundledNpm();
-    if (bundled) {
+    if (bundled && !bundledNoticePrinted) {
+      bundledNoticePrinted = true;
       const why = pathNpmReportsUnsupported ? `the npm on PATH does not support Node ${process.version}` : "npm is not on PATH";
       process.stderr.write(`Using the npm shipped with ${process.version} because ${why}.\n`);
+    }
+    if (bundled) {
       return { file: process.execPath, args: [bundled.entry, ...args], env, cwd,
         lifecycleNode: args[0] === "install" && !args.includes("--ignore-scripts") };
-    }
-    if (pathNpmReportsUnsupported) {
-      const why = `The npm on PATH does not support Node ${process.version} and this Node has no bundled npm.`;
-      return { file: process.execPath, args: ["-e", "console.error(process.argv[1]); process.exit(1)", why], env, cwd };
     }
   }
   if (!file) return { file: "npm", args, env, cwd };
