@@ -82,9 +82,10 @@ export function darwinSeatHostSocket(id: string): string {
   if (!/^[a-f0-9]{32}$/.test(id)) throw refusal();
   const cache = resolve(darwinUserCacheDir());
   checkDir(cache, owner);
-  const directory = join(cache, "cotal");
+  // Darwin can report /var even though the physical cache path starts with /private/var.
+  const directory = join(realpathSync.native(cache), "cotal");
   checkDir(directory, owner);
-  if (realpathSync.native(directory) !== join(realpathSync.native(cache), "cotal")) throw refusal();
+  if (realpathSync.native(directory) !== directory) throw refusal();
   const path = join(directory, `p-${id}.sock`);
   assertSocketPathFits(path, "darwin");
   return path;
@@ -170,12 +171,26 @@ export function readDarwinSeatHostLifetime(plan: DarwinSeatHostPlan): DarwinSeat
   return { pid, start, boot: darwinBootSession() };
 }
 
-/** The serving daemon checks the job; the shared controller still authenticates its own socket. */
+function verifyDarwinSeatHostLifetime(plan: DarwinSeatHostPlan, expected: DarwinSeatHostLifetime): void {
+  const live = readDarwinSeatHostLifetime(plan);
+  if (live.pid !== expected.pid || live.start !== expected.start || live.boot !== expected.boot) throw refusal();
+}
+
+/** Only the owned GUI daemon can supply job proof. The dialer still checks its actual peer. */
+export function darwinSeatHostAuthority(plan: DarwinSeatHostPlan) {
+  requireOwnedDaemon(plan);
+  const address = darwinSeatHostSocket(plan.id);
+  return Object.freeze({ address, verify(identity: Readonly<{ pid: number; start: string; bootId: string; uid: number }>): void {
+    if (identity.uid !== uid() || address !== darwinSeatHostSocket(plan.id)) throw refusal();
+    verifyDarwinSeatHostLifetime(plan, { pid: identity.pid, start: identity.start, boot: identity.bootId });
+  } });
+}
+
+/** The serving daemon checks the job and the actual socket before allowing native teardown. */
 export function verifyDarwinSeatHostPeer(plan: DarwinSeatHostPlan, expected: DarwinSeatHostLifetime, socket: Socket): void {
   const peer = localPeerCredentials(socket);
   if (peer.uid !== uid() || peer.pid !== expected.pid) throw refusal();
-  const live = readDarwinSeatHostLifetime(plan);
-  if (live.pid !== peer.pid || live.start !== expected.start || live.boot !== expected.boot) throw refusal();
+  verifyDarwinSeatHostLifetime(plan, expected);
 }
 
 /** The consented removal coordinator calls this with a fenced, authenticated live host. */
