@@ -1,17 +1,18 @@
 // The principal serve and prompts of CotalEndpoint, as an internal component: binding and arming each
 // principal-route serve, confirming it, re-binding it on a new connection, ending and stopping it, the
 // `prompts` presence field and its `seq`, and calling a principal. Moved verbatim from endpoint.ts. The
-// component owns the `prompts` presence field; the endpoint keeps servePrincipal, which a smoke replaces,
-// and the shared fields, and forwards to these. Not re-exported by the index.
+// component owns the `prompts` presence field; the endpoint keeps the shared fields and a servePrincipal
+// forwarder, which a smoke replaces on an instance, and forwards to these. Not re-exported by the index.
 import type { DeliveryState } from "./endpoint-delivery-state.js";
 import type { ConnectionState } from "./endpoint-connection-state.js";
 import type { EndpointIdentity } from "./endpoint-identity.js";
-import { AGENT_CONTRACTS, AGENT_ENDPOINT } from "./agent-endpoint.js";
+import type { EndpointParts } from "./endpoint-parts.js";
+import { AGENT_CLUSTER, AGENT_CONTRACTS, AGENT_ENDPOINT } from "./agent-endpoint.js";
 import { epPrincipalCall } from "./endpoint-call.js";
 import { EpEnvelopeError, type EndpointReply } from "./endpoint-envelope.js";
-import type { PrincipalServeIntent } from "./endpoint-options.js";
-import { servePrincipalRoute, describeContracts, type EpPrincipalServeHandle } from "./endpoint-serve.js";
-import type { EpCaller, EpPrincipal, PrincipalAuthority } from "./endpoint-subjects.js";
+import type { PrincipalServe, PrincipalServeIntent } from "./endpoint-options.js";
+import { servePrincipalRoute, describeContracts, type EpPrincipalCommandDef, type EpPrincipalServeHandle } from "./endpoint-serve.js";
+import { assertRuntimeToken, endpointToken, type EpCaller, type EpPrincipal, type PrincipalAuthority } from "./endpoint-subjects.js";
 import { processRuntime } from "./process-runtime.js";
 import type { CompiledContract } from "./schema-profile.js";
 import { spacePrefix } from "./subjects.js";
@@ -25,10 +26,10 @@ const promptsSeqs = new Map<string, number>();
 
 /** What the principal-serve component reads from its endpoint. State is read when it is used, never
  *  copied, a field it reassigns is written back through its setter, and every method is looked up on the
- *  endpoint at call time, so a member a caller replaced on the endpoint is the one that runs. */
+ *  endpoint at call time, so a member a caller replaced on the endpoint is the one that runs. A peer part
+ *  is read from the parts record at call time. */
 export interface EndpointPrincipalServeDeps {
   principalServers: () => Map<string, PrincipalServeIntent>;
-  publishPresence: () => Promise<void>;
   emitRecoverable: (err: Error) => void;
   requireLifecycleUid: (what: string) => string;
   notLiveMsg: () => string;
@@ -44,13 +45,46 @@ export class EndpointPrincipalServe {
    *  same gate as `prompts`. */
   private agentEndpointPresence?: PresenceAgentEndpoint;
 
-  constructor(private readonly identity: Readonly<EndpointIdentity>, private readonly conn: Readonly<ConnectionState>, private readonly delivery: Readonly<DeliveryState>, private readonly deps: EndpointPrincipalServeDeps) {}
+  constructor(private readonly identity: Readonly<EndpointIdentity>, private readonly conn: Readonly<ConnectionState>, private readonly delivery: Readonly<DeliveryState>, private readonly deps: EndpointPrincipalServeDeps, private readonly parts: Pick<EndpointParts, "presence">) {}
 
   private get principalServers() { return this.deps.principalServers(); }
-  private publishPresence(): Promise<void> { return this.deps.publishPresence(); }
   private emitRecoverable(err: Error): void { return this.deps.emitRecoverable(err); }
   private requireLifecycleUid(what: string): string { return this.deps.requireLifecycleUid(what); }
   private notLiveMsg(): string { return this.deps.notLiveMsg(); }
+
+  servePrincipal(spec: { handlers: EpPrincipalCommandDef[] }): PrincipalServe {
+    if ("endpoint" in spec || "cluster" in spec)
+      throw new Error(`servePrincipal serves only the "${AGENT_ENDPOINT}" endpoint with AGENT_CLUSTER and takes handlers alone; an endpoint or cluster is refused, never ignored (SPEC 13.22)`);
+    const serve = { endpoint: AGENT_ENDPOINT, cluster: AGENT_CLUSTER, handlers: spec.handlers };
+    const uid = this.identity.ownLifecycleUid;
+    if (uid === undefined)
+      throw new Error("serving the principal route needs this endpoint's lifecycleUid: the subject names it (SPEC 13.21)");
+    const nc = this.conn.nc;
+    if (!nc) throw new Error(this.notLiveMsg());
+    endpointToken(serve.endpoint);
+    if (this.delivery.principalServes.has(serve.endpoint))
+      throw new Error(`this endpoint already serves "${serve.endpoint}" on the principal route`);
+    const self: EpPrincipal = { owner: this.identity.owner, actor: this.identity.actor, uid, runtimeId: assertRuntimeToken(processRuntime(uid).id) };
+    const serverKey = `${this.identity.space}\n${self.runtimeId}\n${serve.endpoint}`;
+    if (this.principalServers.has(serverKey))
+      throw new Error(`another endpoint in this process already serves "${serve.endpoint}" for lifecycle ${uid}: both would subscribe the same principal-route subject and answer one request twice (SPEC 13.21); stop that one first`);
+    let resolveReady!: () => void, rejectReady!: (e: Error) => void, resolveFailed!: (e: Error) => void;
+    const ready = new Promise<void>((resolve, reject) => { resolveReady = resolve; rejectReady = reject; });
+    ready.catch(() => { /* the caller observes it; this keeps an unobserved refusal from being unhandled */ });
+    const failed = new Promise<Error>((resolve) => { resolveFailed = resolve; });
+    const intent: PrincipalServeIntent = {
+      serve, self, serverKey, handles: [], ended: false, readySettled: false, resolveReady, rejectReady, resolveFailed,
+    };
+    // Construction refuses an invalid cluster before anything is kept or subscribed.
+    const handle = this.bindPrincipalHandle(intent, nc);
+    this.delivery.principalServes.set(serve.endpoint, intent);
+    this.principalServers.set(serverKey, intent);
+    // A fresh `seq` per serve: the last serve may have ended with prompts open, and the pair
+    // `(runtime.id, seq)` it showed then must not name this serve's empty list (SPEC §6).
+    if (serve.endpoint === AGENT_ENDPOINT) this.openPrompts();
+    void this.armPrincipalServe(intent, nc, handle);
+    return { ready, failed, stop: () => this.stopPrincipalServe(intent) };
+  }
 
   /** Subscribe `intent` on `nc`. */
   bindPrincipalHandle(intent: PrincipalServeIntent, nc: NatsConnection): EpPrincipalServeHandle {
@@ -99,7 +133,7 @@ export class EndpointPrincipalServe {
       intent.readySettled = true;
       intent.resolveReady();
     }
-    if (intent.serve.endpoint === AGENT_ENDPOINT) this.publishPresence().catch((e) => this.emitRecoverable(e as Error));
+    if (intent.serve.endpoint === AGENT_ENDPOINT) this.parts.presence.publishPresence().catch((e) => this.emitRecoverable(e as Error));
   }
 
   /** Re-bind every principal serve on a replaced connection (a rebuild), or re-run the check on the
@@ -140,7 +174,7 @@ export class EndpointPrincipalServe {
     for (const handle of intent.handles) void handle.stop();
     if (intent.serve.endpoint === AGENT_ENDPOINT) {
       this.promptsPresence = this.agentEndpointPresence = undefined;
-      this.publishPresence().catch((e) => this.emitRecoverable(e as Error));
+      this.parts.presence.publishPresence().catch((e) => this.emitRecoverable(e as Error));
     }
     // `ready` already carried a refusal that came before it settled; a later one is reported here.
     if (wasReady) this.emitRecoverable(new Error(`stopped serving "${intent.serve.endpoint}" on the principal route: ${err.message}`, { cause: err }));
@@ -167,7 +201,7 @@ export class EndpointPrincipalServe {
       }
       if (intent.serve.endpoint === AGENT_ENDPOINT) {
         this.promptsPresence = this.agentEndpointPresence = undefined;
-        if (republish) this.publishPresence().catch((e) => this.emitRecoverable(e as Error));
+        if (republish) this.parts.presence.publishPresence().catch((e) => this.emitRecoverable(e as Error));
       }
     }
     await Promise.all(intent.handles.map((handle) => handle.stop()));
@@ -192,7 +226,7 @@ export class EndpointPrincipalServe {
       throw new RangeError(`prompts.seq ${prompts.seq} is below ${used}, which this process already used under runtime ${intent.self.runtimeId}: seq never goes back under one runtime id (SPEC §6)`);
     promptsSeqs.set(intent.self.runtimeId, prompts.seq);
     this.promptsPresence = { open: prompts.open, seq: prompts.seq };
-    await this.publishPresence();
+    await this.parts.presence.publishPresence();
   }
 
   /**
@@ -211,7 +245,7 @@ export class EndpointPrincipalServe {
     const next = { interrupt: served.interrupt, turn: served.turn, images: served.images, usage: served.usage, setModel: served.setModel ?? false };
     if (was && (Object.keys(next) as (keyof PresenceAgentEndpoint)[]).every((k) => was[k] === next[k])) return;
     this.agentEndpointPresence = next;
-    await this.publishPresence();
+    await this.parts.presence.publishPresence();
   }
 
   /** Show `open: 0` with a fresh `seq` for a new serve of the `agent` endpoint. */

@@ -1,12 +1,13 @@
 // The durable consumers of CotalEndpoint, as an internal component: the JetStream manager, binding the DM
 // inbox, chat and task consumers and pumping them, the DM-only bind, the per-channel chat subscriptions, and
 // the consumer and stream reads. Moved verbatim from endpoint.ts. It owns the task epoch, the first-connect
-// flag and the chat subscription refusals; the endpoint keeps the shared fields and chatFrontier and forwards
+// flag and the chat subscription refusals; the endpoint keeps the shared fields and forwards
 // to these. Not re-exported by the index.
 import type { DeliveryState } from "./endpoint-delivery-state.js";
 import type { LifecycleState } from "./endpoint-lifecycle-state.js";
 import type { ConnectionState } from "./endpoint-connection-state.js";
 import type { EndpointIdentity } from "./endpoint-identity.js";
+import type { EndpointParts } from "./endpoint-parts.js";
 import { withDeadline } from "./deadline.js";
 import { ackWaitOf, durableDelivery, isRecord } from "./endpoint-inbound.js";
 import { authenticatedMessage, kindFromParsed, isUsableMessageId, isFromSubjectSender, dmOnlyDelivery } from "./endpoint-messages.js";
@@ -14,26 +15,21 @@ import { hasStoredOrigin } from "./endpoint-provenance.js";
 import { DmDurableMissingError, type DmOnlyOptions, DmBindRefusedError } from "./endpoint-options.js";
 import { isConsumerNotFound, isJetStreamMissing, isStreamNotFound } from "./jetstream-missing.js";
 import { taskDurableConfig } from "./streams.js";
-import { dmDurable, dmStream, taskStream, taskDurable, type ParsedSubject, parseSubject, chatSubject } from "./subjects.js";
-import type { AnycastTakeOutcome, MessageMeta, CotalMessage, Delivery } from "./types.js";
+import { dmDurable, dmStream, taskStream, taskDurable, type ParsedSubject, parseSubject, chatStream, chatSubject } from "./subjects.js";
+import type { MessageMeta, CotalMessage, Delivery } from "./types.js";
 import { type JetStreamManager, type ConsumerMessages, jetstreamManager, type Consumer, type JsMsg, JetStreamApiCodes, type ConsumerInfo } from "@nats-io/jetstream";
 import { PermissionViolationError } from "@nats-io/transport-node";
 
 /** What the consumers component reads from its endpoint. State is read when it is used, never copied, a
  *  field it reassigns is written back through its setter, and every method is looked up on the endpoint
- *  at call time, so a member a caller replaced on the endpoint is the one that runs. */
+ *  at call time, so a member a caller replaced on the endpoint is the one that runs. A peer part is read
+ *  from the parts record at call time. */
 export interface EndpointConsumersDeps {
   authed: () => boolean;
   notLiveMsg: () => string;
   requireLifecycleUid: (what: string) => string;
-  ensureDmDurable: (owner: string, actor: string, lifecycleUid: string, opts: { ackWaitMs?: number; inactiveThresholdMs?: number }) => Promise<void>;
-  pumpDlv: () => Promise<void>;
   armJoin: (channels: string[]) => Promise<Map<string, number>>;
-  backfillArmed: (frontiers: Map<string, number>, floorSeq?: number) => Promise<number>;
-  armBootDurableMemberships: () => Promise<void>;
-  takeAnycast: (role: string, seq: number, id: string, count: number, epoch: string, nak: () => void) => Promise<AnycastTakeOutcome>;
   emitRecoverable: (err: Error) => void;
-  closeRefusedMembership: (channel: string, generation: number) => Promise<void>;
   emit: (event: string, ...args: unknown[]) => boolean;
 }
 
@@ -53,19 +49,13 @@ export class EndpointConsumers {
    *  connection status, so the callback owns it (see {@link EndpointConsumers.subscribeChat}) and watchStatus skips it. */
   private readonly chatSubRefusals = new WeakSet<PermissionViolationError>();
 
-  constructor(private readonly identity: Readonly<EndpointIdentity>, private readonly conn: ConnectionState, private readonly lifecycle: Readonly<LifecycleState>, private readonly delivery: DeliveryState, private readonly deps: EndpointConsumersDeps) {}
+  constructor(private readonly identity: Readonly<EndpointIdentity>, private readonly conn: ConnectionState, private readonly lifecycle: Readonly<LifecycleState>, private readonly delivery: DeliveryState, private readonly deps: EndpointConsumersDeps, private readonly parts: Pick<EndpointParts, "anycastRail" | "bootMemberships" | "deliveryPlane" | "durable" | "history" | "provisioning">) {}
 
   private get authed() { return this.deps.authed(); }
   private notLiveMsg(): string { return this.deps.notLiveMsg(); }
   private requireLifecycleUid(what: string): string { return this.deps.requireLifecycleUid(what); }
-  private ensureDmDurable(owner: string, actor: string, lifecycleUid: string, opts: { ackWaitMs?: number; inactiveThresholdMs?: number }): Promise<void> { return this.deps.ensureDmDurable(owner, actor, lifecycleUid, opts); }
-  private pumpDlv(): Promise<void> { return this.deps.pumpDlv(); }
   private armJoin(channels: string[]): Promise<Map<string, number>> { return this.deps.armJoin(channels); }
-  private backfillArmed(frontiers: Map<string, number>, floorSeq?: number): Promise<number> { return this.deps.backfillArmed(frontiers, floorSeq); }
-  private armBootDurableMemberships(): Promise<void> { return this.deps.armBootDurableMemberships(); }
-  private takeAnycast(role: string, seq: number, id: string, count: number, epoch: string, nak: () => void): Promise<AnycastTakeOutcome> { return this.deps.takeAnycast(role, seq, id, count, epoch, nak); }
   private emitRecoverable(err: Error): void { return this.deps.emitRecoverable(err); }
-  private closeRefusedMembership(channel: string, generation: number): Promise<void> { return this.deps.closeRefusedMembership(channel, generation); }
   private emit(event: string, ...args: unknown[]) { return this.deps.emit(event, ...args); }
 
   /** Whether a live chat subscription's own callback already received this refusal. */
@@ -93,7 +83,7 @@ export class EndpointConsumers {
       // Open-mode self-create rides the SAME per-lifecycle ensure as the privileged pre-create: an
       // existing `dm_…-<uid>` durable (this lifecycle's own restart) is kept with its ORIGINAL
       // activation frontier; a fresh lifecycle captures its frontier at creation.
-      await this.ensureDmDurable(this.identity.owner, this.identity.actor, ownUid, {
+      await this.parts.provisioning.ensureDmDurable(this.identity.owner, this.identity.actor, ownUid, {
         ackWaitMs: this.identity.ackWaitMs,
         inactiveThresholdMs: this.identity.inactiveThresholdMs,
       });
@@ -111,7 +101,7 @@ export class EndpointConsumers {
     // Plane-3 (SPEC §8): bind + pump our per-member DELIVER durable (`dlv_<id>`) — the re-authorized
     // durable-backstop channel copies the trusted reader transfers to us. No-op when it isn't present
     // (open mode / un-provisioned). Auth-only feature; the pump self-guards on the durable's existence.
-    await this.pumpDlv();
+    await this.parts.deliveryPlane.pumpDlv();
 
     // Multicast: open a native CORE subscription for each channel (live, manager-free, broker-enforced
     // by sub.allow) — boot + runtime joins use the SAME path; there is no per-instance chat durable.
@@ -128,12 +118,12 @@ export class EndpointConsumers {
       const armed = this.firstConnect ? await this.armJoin(this.identity.channels) : undefined;
       for (const ch of this.identity.channels) this.subscribeChat(ch);
       await this.confirmChatSub();
-      if (armed) await this.backfillArmed(armed, this.identity.backfillFloor);
+      if (armed) await this.parts.history.backfillArmed(armed, this.identity.backfillFloor);
     }
     // First connect, auth mode: self-join BOOT durable channels via the server-side delivery daemon
     // (it owns membership now — there is no manager-written boot membership). Seeds plane3Channels so a
     // later leave can tombstone the §7 boundary; idempotent on relaunch. Open mode has no Plane-3.
-    if (this.firstConnect && this.authed && this.identity.channels.length) await this.armBootDurableMemberships();
+    if (this.firstConnect && this.authed && this.identity.channels.length) await this.parts.bootMemberships.armBootDurableMemberships();
     this.firstConnect = false;
 
     // Anycast: a shared work-queue consumer for our role — one instance grabs each task.
@@ -175,7 +165,7 @@ export class EndpointConsumers {
         const role = opts.takeRole;
         if (role !== undefined) {
           const epoch = this.taskEpoch!;
-          delivery.take = () => this.takeAnycast(role, m.seq, msg.id, m.info.deliveryCount, epoch, () => m.nak());
+          delivery.take = () => this.parts.anycastRail.takeAnycast(role, m.seq, msg.id, m.info.deliveryCount, epoch, () => m.nak());
         }
         this.emit("message", authenticatedMessage(msg, parsed), delivery, {
           historical: false,
@@ -370,7 +360,7 @@ export class EndpointConsumers {
             // succeeds, clearing the mirror only then; while pending it is surfaced via cotal_channels —
             // never a silent drop, never lost retry state.
             const gen = this.delivery.plane3Channels.get(channel);
-            if (gen !== undefined) void this.closeRefusedMembership(channel, gen);
+            if (gen !== undefined) void this.parts.durable.closeRefusedMembership(channel, gen);
             this.emit(
               "error",
               new Error(`left channel "${channel}": its live subscription was refused by the broker`, { cause: err }),
@@ -448,6 +438,13 @@ export class EndpointConsumers {
     } catch (e) {
       if (!isJetStreamMissing(e, JetStreamApiCodes.ConsumerNotFound, JetStreamApiCodes.StreamNotFound)) throw e;
     }
+  }
+
+  /** Current frontier (last sequence) of the chat stream, read through the lazily obtained
+   *  {@link manager}. */
+  async chatFrontier(): Promise<number> {
+    const jsm = await this.manager();
+    return (await jsm.streams.info(chatStream(this.identity.space))).state.last_seq;
   }
 
   /** Whether this connection's account has a JetStream stream of this name. A missing stream is

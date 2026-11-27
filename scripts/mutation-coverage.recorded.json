@@ -131,14 +131,6 @@
     "sha256": "1cbe296913f4d2a2d7f726ee5354c35d86be62c346da97aa1fe539ea1755ff42",
     "refusal": "mutation \"W1 the nonzero-frontier-carries-its-cursor guard is dropped, so a recovery adopts at the current end and the unread appended record is skipped with no seq gap\" is missing \"cell\""
   },
-  "extensions/connector-core/smoke/fixtures/transport-liveness-broker.mutations.json": {
-    "sha256": "e50d11948ee9608b75aa193e28cbe84fa9505cc637112b6b2292cb0d884d1da3",
-    "refusal": "mutation \"a stop landing mid-bind still announces the connection it then tears down\" targets packages/core/src/endpoint.ts, which none of [extensions/connector-core/smoke/transport-liveness-broker.smoke.ts] imports by source path, reaches through a declared assembled tree, nor reaches through a declared subprocess entrypoint. A by-name import resolves that package to dist. Use a suite in packages/core that reaches into ../src, declare the copied source tree in \"assembles\", declare the spawned repo entrypoint in \"executes\" with the target package built by the command, or record the mutation as unkillable with its reason."
-  },
-  "extensions/connector-core/smoke/fixtures/transport-liveness.mutations.json": {
-    "sha256": "ba68b5d67464980390b056267f4abc43539af1ddec9dee84b23c3d3bbb819061",
-    "refusal": "mutation \"old status iterators may overwrite the current connection epoch\" targets packages/core/src/endpoint.ts, which none of [extensions/connector-core/smoke/transport-liveness.smoke.ts] imports by source path, reaches through a declared assembled tree, nor reaches through a declared subprocess entrypoint. A by-name import resolves that package to dist. Use a suite in packages/core that reaches into ../src, declare the copied source tree in \"assembles\", declare the spawned repo entrypoint in \"executes\" with the target package built by the command, or record the mutation as unkillable with its reason."
-  },
   "extensions/connector-core/smoke/mutations/agui-holder.json": {
     "sha256": "f98004ee4864329b28220d2d0ce2f072961bb9a74c33eec22879a1b6d3ec97d9",
     "refusal": "mutation \"H1 both start-once guards removed in one contiguous span, because they are adjacent and one find covers them\" is missing \"cell\""

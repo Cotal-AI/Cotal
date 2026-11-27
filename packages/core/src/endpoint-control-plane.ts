@@ -6,6 +6,7 @@ import type { LifecycleState } from "./endpoint-lifecycle-state.js";
 import type { CredentialState } from "./endpoint-credential-state.js";
 import type { ConnectionState } from "./endpoint-connection-state.js";
 import type { EndpointIdentity } from "./endpoint-identity.js";
+import type { EndpointParts } from "./endpoint-parts.js";
 import { randomUUID } from "node:crypto";
 import { ClosedConnectionError, type Msg, type NatsConnection } from "@nats-io/transport-node";
 import { withDeadline } from "./deadline.js";
@@ -20,7 +21,7 @@ import type { EpCaller, IssuedCaller } from "./endpoint-subjects.js";
 import { REGISTRY_ENDPOINT, REGISTRY_ENDPOINTS_COMMAND, type RegistryEndpointsInput, type RegistryEndpointsOutput } from "./registry-contract.js";
 import { listRegistryEndpoints, registryListingCaller } from "./registry-client.js";
 import type { EpVerbTarget, EpAttributedReply } from "./endpoint-verbs.js";
-import { controlServiceSubject, parseSubject } from "./subjects.js";
+import { CONTROL_DELIVERY, CONTROL_DELIVERY_ADMIN, controlServiceSubject, parseSubject } from "./subjects.js";
 import type { ControlReply, ControlRequest, ControlRequestInit, EndpointRef } from "./types.js";
 
 /** What the control plane reads from its endpoint. State is read when it is used, never copied, and
@@ -29,7 +30,6 @@ export interface EndpointControlPlaneDeps {
   authed: () => boolean;
   notLiveMsg: () => string;
   requireLifecycleUid: (what: string) => string;
-  reportSubscriptionDenial: (error: unknown) => boolean;
   ref: () => EndpointRef;
   reconnect: () => Promise<void>;
   emit: (event: string, ...args: unknown[]) => boolean;
@@ -57,12 +57,11 @@ export class EndpointControlPlane {
    *  enable is not there when the thing you needed it for happened. */
   private splitsRecovered = 0;
 
-  constructor(private readonly identity: Readonly<EndpointIdentity>, private readonly conn: Readonly<ConnectionState>, private readonly lifecycle: Readonly<LifecycleState>, private readonly cred: Readonly<CredentialState>, private readonly delivery: Readonly<DeliveryState>, private readonly deps: EndpointControlPlaneDeps) {}
+  constructor(private readonly identity: Readonly<EndpointIdentity>, private readonly conn: Readonly<ConnectionState>, private readonly lifecycle: Readonly<LifecycleState>, private readonly cred: Readonly<CredentialState>, private readonly delivery: Readonly<DeliveryState>, private readonly deps: EndpointControlPlaneDeps, private readonly parts: Pick<EndpointParts, "connection">) {}
 
   private get authed() { return this.deps.authed(); }
   private notLiveMsg() { return this.deps.notLiveMsg(); }
   private requireLifecycleUid(what: string) { return this.deps.requireLifecycleUid(what); }
-  private reportSubscriptionDenial(error: unknown) { return this.deps.reportSubscriptionDenial(error); }
   private ref() { return this.deps.ref(); }
   private reconnect() { return this.deps.reconnect(); }
   private emit(event: string, ...args: unknown[]) { return this.deps.emit(event, ...args); }
@@ -123,7 +122,7 @@ export class EndpointControlPlane {
         else inOrder = inOrder.then(answer).catch((e) => { this.emit("error", e as Error); });
       }
     })().catch((e) => {
-      if (!this.reportSubscriptionDenial(e)) this.emit("error", e as Error);
+      if (!this.parts.connection.reportSubscriptionDenial(e)) this.emit("error", e as Error);
     });
     return sub;
   }
@@ -203,6 +202,35 @@ export class EndpointControlPlane {
     } finally {
       pending.delete(rejectClosed);
     }
+  }
+
+  /** Send a durable-membership request to the SERVER-SIDE delivery daemon (`ctl.delivery`) and await its
+   *  reply. The reply rides a subject UNDER `ctl.delivery.<id>.>` (not the per-id `_INBOX`), so the
+   *  scoped delivery cred can answer without broad inbox-publish — see
+   *  CONTROL_DELIVERY. `noMux` lets us name the reply subject while keeping NoResponders detection (so a
+   *  caller can fail-closed vs. degrade to live-only when no daemon is present). */
+  async requestDelivery(op: string, args: Record<string, unknown>, timeoutMs = 5000): Promise<ControlReply> {
+    if (!this.conn.nc) throw new Error(this.notLiveMsg());
+    const reqSubject = controlServiceSubject(this.identity.space, CONTROL_DELIVERY, this.identity.owner, this.identity.actor); // ctl.delivery.<owner>.<actor>
+    // Reply rides the sender's OWN subtree so the daemon's serveControl boundReply guard accepts it
+    // (`${reqSubject}.reply.…`). The sender-bound guard is the COMPLETE confused-deputy closure. The
+    // random suffix is genuine defense-in-depth (NOT cosmetic): `noMux` subscribes this SPECIFIC named
+    // reply subject (not a standing `.reply.>` wildcard), so a predictable suffix would let a peer target
+    // an in-flight reply subscription — randomUUID brings it to parity with the nuid-protected `_INBOX`
+    // model. Keep both; don't regress to a counter. (Confirmed by the review panel's fact-check.)
+    const reply = `${reqSubject}.reply.${randomUUID()}`;
+    const body: ControlRequest = { op, args, from: this.ref() };
+    const m = await this.requestBoundReply(this.conn.nc, reqSubject, JSON.stringify(body), reply, timeoutMs);
+    return m.json<ControlReply>();
+  }
+
+  async requestDeliveryAdmin(op: string, args: Record<string, unknown>, timeoutMs = 5000): Promise<ControlReply> {
+    if (!this.conn.nc) throw new Error(this.notLiveMsg());
+    const reqSubject = controlServiceSubject(this.identity.space, CONTROL_DELIVERY_ADMIN, this.identity.owner, this.identity.actor);
+    const reply = `${reqSubject}.reply.${randomUUID()}`;
+    const body: ControlRequest = { op, args, from: this.ref() };
+    const m = await this.requestBoundReply(this.conn.nc, reqSubject, JSON.stringify(body), reply, timeoutMs);
+    return m.json<ControlReply>();
   }
 
   /** Send a control request to a service and await its reply (client side). Like {@link requestDelivery},

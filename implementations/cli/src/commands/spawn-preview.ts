@@ -1,11 +1,10 @@
-import { realpathSync, statSync } from "node:fs";
 import { hostname } from "node:os";
 import { resolve } from "node:path";
 import { connectorServers, loadCotalConfig, parseAgentFileSource, parseShareSelection, ProjectConfigTrustError, spawnEnvAllow, token, type AgentDef, type Connector, type FlagValues, type ParsedArgs } from "@cotal-ai/core";
 import { CommandFailure, findMesh, isCommandFailure, recordOperationSpace, brokerAddressForDisplay, cachedPreferences, isWorkspaceTargetError, previewPersonaReader, projectTrustForPreview, personaDir, PersonaSourceError, presentationOf, pruneStaleMeshes, resolveAgentType, resolveMeshTarget, resolvePreference, resolveReadsLiveness, targetErrorCode, workspaceErrorParts, writeResult, type MeshTarget, type OutputWarning, type Report } from "@cotal-ai/workspace";
-import { mergeLaunchOptions, parseLaunchOptions } from "@cotal-ai/workspace";
+import { mergeLaunchOptions, parseLaunchModes, parseLaunchOptions } from "@cotal-ai/workspace";
 import { extensionNames, materializeExtension, preflightRuntime } from "../ext-loader.js";
-import { brokenPersonaLink, callerHarness, checkSpawnExpiryTarget, directPersonaPath, missingConnector, missingPersonaFailure, nonDirectoryPersonaPath, spawnPersona, spawnUsesManager, type PersonaSite } from "../lib/spawn-defaults.js";
+import { brokenPersonaLink, callerHarness, checkSpawnExpiryTarget, directPersonaPath, directSpawnCwd, missingConnector, missingPersonaFailure, nonDirectoryPersonaPath, spawnPersona, spawnUsesManager, type PersonaSite } from "../lib/spawn-defaults.js";
 import { managerPin } from "../lib/manager-choice.js";
 import { unreadablePersona } from "../lib/persona-files.js";
 import { refuseDirectSpawnName, spawnRerun, unsupportedVariantRemedy } from "./spawn-flags.js";
@@ -136,18 +135,7 @@ export async function spawnLaunchPreview(args: Pick<ParsedArgs, "positionals"> &
   }
   if (personaRefusal) throw new CommandFailure("refused", "PERMISSION_DENIED", personaRefusal, { target: { ...target, path } });
   const config = readPreviewConfig(root, { ...target, path }, trusted);
-  let cwd: string;
-  let requestedCwd = values.cwd || ".";
-  try {
-    requestedCwd = resolve(requestedCwd);
-    cwd = realpathSync(requestedCwd);
-    if (!statSync(cwd).isDirectory()) throw new Error();
-  }
-  catch {
-    throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `the direct launch's local working directory ${JSON.stringify(requestedCwd)} is unavailable. No directory was created.`, {
-      target: { space, path: requestedCwd }, remedy: "pass an existing directory to --cwd, or omit --cwd to use the current directory",
-    });
-  }
+  const cwd = directSpawnCwd(values.cwd ?? ".", space);
   const harness = resolveAgentType({ flag: values.agent, pin: definition.agent, callerDefault: callerHarness(space) });
   try { checkHarness(harness); }
   catch (error) {
@@ -170,7 +158,7 @@ export async function spawnLaunchPreview(args: Pick<ParsedArgs, "positionals"> &
         connector.buildLaunch({
           validateOnly: true, space, name: requestedName, role: values.role ?? definition.role,
           configPath: personaWrite === "none" && !blockedDefault ? path : undefined,
-          model: values.model ?? definition.model, variant,
+          model: values.model ?? definition.model, variant, modes: parseLaunchModes(values.mode),
           launchOptions: mergeLaunchOptions(definition.launchOptions, parseLaunchOptions(values.opt)),
           prompt: values.prompt, resume: values.resume, events: values.events || (!values["no-events"] && !!connector.eventChannel),
           mcpServers: connectorServers(config, harness, shareTools), mcpServersExclusive: shareTools !== undefined,
