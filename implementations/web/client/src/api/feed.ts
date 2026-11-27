@@ -1,15 +1,15 @@
 // The live feed: one `EventSource` on `/feed`, each event decoded and handed to a handler. The
 // handlers are the dashboard's (state/boot.ts wires them to the controller), so this module knows
 // the wire and nothing about the state.
+import { sessionInvalid } from "./http.js";
 import type { AgentFrame, FeedMessage, MembershipSnapshot, PresenceView, RosterEntry } from "./types.js";
 
 export interface FeedHandlers {
   open(): void;
   /** The connection failed and the browser is retrying it. */
   error(): void;
-  /** The browser failed the connection for good (a non-200 answer, such as the gate's 401 after a
-   *  restart or an expired session) and will not retry. */
-  closed(): void;
+  /** The browser failed the connection for good and will not retry. */
+  closed(sessionCheck?: Promise<boolean>): void;
   roster(r: RosterEntry[]): void;
   presenceView(v: PresenceView): void;
   membership(m: MembershipSnapshot): void;
@@ -45,12 +45,18 @@ const CLOSED = 2;
 const nativeSource = (url: string): FeedSource => new EventSource(url) as unknown as FeedSource;
 
 /** Open the feed and return the function that closes it. */
-export function openFeed(handlers: FeedHandlers, make: (url: string) => FeedSource = nativeSource): () => void {
+export function openFeed(handlers: FeedHandlers, make: (url: string) => FeedSource = nativeSource, checkSession = sessionInvalid): () => void {
   const es = make("/feed");
+  let checking = false;
   es.onopen = () => handlers.open();
   // The same `error` event covers both outcomes, and only `readyState` tells them apart: a network
   // drop leaves it at CONNECTING because the browser retries, a refused answer leaves it CLOSED.
-  es.onerror = () => (es.readyState === CLOSED ? handlers.closed() : handlers.error());
+  es.onerror = () => {
+    if (checking) return;
+    if (es.readyState !== CLOSED) return handlers.error();
+    checking = true;
+    handlers.closed(checkSession());
+  };
   const on = <T>(type: string, fn: (data: T) => void) => es.addEventListener(type, (e) => fn(JSON.parse(e.data) as T));
   on<RosterEntry[]>("roster", (d) => handlers.roster(d));
   on<PresenceView>("presence-view", (d) => handlers.presenceView(d));
@@ -59,5 +65,8 @@ export function openFeed(handlers: FeedHandlers, make: (url: string) => FeedSour
   on<FeedMessage>("message", (d) => handlers.message(d));
   on<{ feed: string }>("hello", (d) => handlers.hello(d.feed));
   on<AgentFrame>("agent-frame", (d) => handlers.agentFrame(d));
-  return () => es.close();
+  return () => {
+    es.onerror = null;
+    es.close();
+  };
 }

@@ -5,8 +5,8 @@
  * digest on every request, and a request against a changed inventory is refused before dispatch.
  *
  * Every command needs the one `linear.mcp` capability. That is a call permission on the endpoint,
- * not per-tool authorization: what a call can reach upstream is decided by the account's Linear
- * token and mode (`readonly` serves `/mcp/readonly`).
+ * not per-tool authorization: what a call can reach upstream is bounded by the account's optional
+ * `allowedTools`, Linear token and mode (`readonly` serves `/mcp/readonly`).
  *
  * `inventory` is paged so every reply fits a broker message. Each page is bounded in bytes, carries
  * every entry verbatim (an entry is never cut or dropped; one that cannot fit a reply refuses the
@@ -254,7 +254,8 @@ export const LINEAR_COMMANDS: readonly string[] = ROWS.map((r) => r.name);
 function resultOrThrow(reply: UpstreamReply): { result: Record<string, unknown>; inventoryDigest: string } {
   if (reply.kind === "result") return { result: reply.result, inventoryDigest: reply.inventoryDigest };
   if (reply.kind === "refused") {
-    const code: EpErrorCode = reply.reason === "queue-full" ? "resource-exhausted"
+    const code: EpErrorCode = reply.reason === "tool-not-allowed" ? "permission-denied"
+      : reply.reason === "queue-full" ? "resource-exhausted"
       : reply.reason === "unknown-tool" ? "not-found"
       : reply.reason === "not-advertised" ? "unimplemented"
       : reply.reason === "stale-inventory" ? "failed-precondition"

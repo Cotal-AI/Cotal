@@ -3,7 +3,7 @@
     "implementations/manager/smoke/registration-executor-resume.smoke.ts"
   ],
   "guard": "manager boot gives post-heal re-registration fresh scoped authority and resumes the same registration operation, re-sending its credential family as one eviction request",
-  "command": "pnpm smoke:registration-executor-resume",
+  "command": "pnpm --filter @cotal-ai/core build && tsx implementations/manager/smoke/registration-executor-resume.smoke.ts",
   "completionMarker": "ISSUE 1335 COMPRESSED LIFETIME",
   "proveWith": "node scripts/mutation-proof.mjs --config implementations/manager/smoke/mutations/registration-executor-resume.json",
   "why": [
@@ -19,9 +19,9 @@
   "mutations": [
     {
       "name": "remove the fresh-authority boundary after boot heal",
-      "file": "implementations/manager/src/manager.ts",
-      "find": "      await retryExpiredExecutor(\"boot-heal\", () => this.withEndpointServeExecutor(async ({ recordsKv, authKv, nc: execNc }) => {\n        await publishAndProvision({ recordsKv, authKv, nc: execNc });\n        if (auth) {\n          await this.healFrozenRegistrationGate(authKv, iid, auth, recordsKv);\n        }\n      }));\n      registration = await retryExpiredExecutor(\"registration\", () => this.withEndpointServeExecutor(completeRegistration));\n",
-      "replace": "      registration = await this.withEndpointServeExecutor(async (ctx) => {\n        await publishAndProvision(ctx);\n        if (auth) {\n          await this.healFrozenRegistrationGate(ctx.authKv, iid, auth, ctx.recordsKv);\n        }\n        return completeRegistration(ctx);\n      });\n",
+      "file": "implementations/manager/src/serve-plane.ts",
+      "find": "      await retryExpiredExecutor(\"boot-heal\", () => this.deps.withEndpointServeExecutor(async ({ recordsKv, authKv, nc: execNc }) => {\n        await publishAndProvision({ recordsKv, authKv, nc: execNc });\n        if (auth) {\n          await this.deps.healFrozenRegistrationGate(authKv, iid, auth, recordsKv);\n        }\n      }));\n      registration = await retryExpiredExecutor(\"registration\", () => this.deps.withEndpointServeExecutor(completeRegistration));\n",
+      "replace": "      registration = await this.deps.withEndpointServeExecutor(async (ctx) => {\n        await publishAndProvision(ctx);\n        if (auth) {\n          await this.deps.healFrozenRegistrationGate(ctx.authKv, iid, auth, ctx.recordsKv);\n        }\n        return completeRegistration(ctx);\n      });\n",
       "expectRed": "compressed-lifetime takeover converges under fresh authority",
       "cell": "compressed-lifetime takeover converges under fresh authority",
       "note": "Without a new executor after the eight-holder boot heal, the six-second registration window is already exhausted and the takeover cannot converge."

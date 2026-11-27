@@ -20,6 +20,8 @@ function same(actual: ReturnType<Authenticator>, expected: ReturnType<Authentica
 }
 function refused(fn: () => unknown) { try { fn(); return false; } catch { return true; } }
 const auth = await createSpaceAuth(`native-creds-${randomUUID().slice(0, 8)}`);
+const owner = `u_${"a".repeat(26)}`;
+const bearer = `fixture.${Buffer.from(JSON.stringify({ sub: owner, act: { actor: "fixture" } })).toString("base64url")}.fixture`;
 const credentials: string[] = [];
 for (let key = 0; key < 4; key++) {
   const creds = await mintCreds(auth, newIdentity(), "observer");
@@ -31,11 +33,11 @@ for (let key = 0; key < 4; key++) {
   }
   const options = standaloneConnectOpts({ creds, tls: false });
   same((options.authenticator as Authenticator)("standalone"), credsAuthenticator(new TextEncoder().encode(creds))("standalone"));
-  const user = standaloneConnectOpts({ bearer: "test-bearer", sentinelCreds: creds, tls: true });
+  const user = standaloneConnectOpts({ bearer, sentinelCreds: creds, tls: true });
   const callbacks = user.authenticator as Authenticator[];
   same(callbacks[0]!("user"), credsAuthenticator(new TextEncoder().encode(creds))("user"));
-  check("auth_token" in callbacks[1]!()! && (callbacks[1]!() as { auth_token: string }).auth_token === "test-bearer", "bearer remains separate");
-  check(typeof user.name === "string" && user.inboxPrefix === `_INBOX_${user.name}`, "user inbox uses the connection nonce");
+  check("auth_token" in callbacks[1]!()! && (callbacks[1]!() as { auth_token: string }).auth_token === bearer, "bearer remains separate");
+  check(typeof user.name === "string" && user.name.startsWith(`${owner}-fixture-`) && user.inboxPrefix === `_INBOX_${user.name}`, "user inbox uses the bearer principal and connection nonce");
   check(typeof user.tls === "object", "TLS intent survives authentication selection");
 }
 let current = credentials[0]!;

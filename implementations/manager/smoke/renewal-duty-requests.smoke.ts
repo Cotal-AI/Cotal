@@ -78,10 +78,9 @@ type InventorySeat = {
 };
 type Internals = {
   agents: Map<string, InventorySeat>;
-  ep: { nc: NatsConnection; requestDeliveryAdmin(op: string, args: Record<string, unknown>, timeoutMs: number): Promise<unknown> };
-  serviceServe?: { nc: NatsConnection; creds?: string; grant: { epoch: number } };
-  goalWriter?: { nc: NatsConnection };
-  sessionLedgerConn?: { nc: NatsConnection };
+  ep: { conn: { nc: NatsConnection }; requestDeliveryAdmin(op: string, args: Record<string, unknown>, timeoutMs: number): Promise<unknown> };
+  servePlane: { sessionLedgerConn?: { nc: NatsConnection }; serviceServe?: { nc: NatsConnection; creds?: string; grant: { epoch: number } }; };
+  goalWriterComponent: { goalWriter?: { nc: NatsConnection }; };
 };
 type Observation = {
   id: string; command: string; start: number; end?: number; ok?: boolean;
@@ -217,7 +216,9 @@ try {
   });
   const traced = manager as unknown as {
     withEndpointServeExecutor: (...args: unknown[]) => Promise<unknown>;
-    sessionServingCredentials: () => Record<string, (...args: unknown[]) => unknown>;
+    servePlane: {
+      sessionServingCredentials: () => Record<string, (...args: unknown[]) => unknown>;
+    };
   };
   const executor = traced.withEndpointServeExecutor;
   traced.withEndpointServeExecutor = async function (...args) {
@@ -225,9 +226,9 @@ try {
     try { const result = await executor.apply(this, args); record("executor-exit", { id }); return result; }
     catch (error) { record("executor-error", { id, error: String(error) }); throw error; }
   };
-  const servingCredentials = traced.sessionServingCredentials;
-  traced.sessionServingCredentials = function () {
-    const seam = servingCredentials.call(this);
+  const servingCredentials = traced.servePlane.sessionServingCredentials;
+  traced.servePlane.sessionServingCredentials = function () {
+    const seam = servingCredentials.call(traced.servePlane);
     for (const method of ["observeGate", "stage", "open"] as const) {
       const original = seam[method]!;
       seam[method] = async function (...args) {
@@ -242,10 +243,10 @@ try {
   const m = manager as unknown as Internals;
   const dispatchObserved = new WeakSet<NatsConnection>();
   const instrument = () => {
-    for (const [duty, nc] of [["supervisor", m.ep.nc], ["serve", m.serviceServe?.nc],
-      ["goalWriter", m.goalWriter?.nc], ["sessionLedger", m.sessionLedgerConn?.nc]] as const)
+    for (const [duty, nc] of [["supervisor", m.ep.conn.nc], ["serve", m.servePlane.serviceServe?.nc],
+      ["goalWriter", m.goalWriterComponent.goalWriter?.nc], ["sessionLedger", m.servePlane.sessionLedgerConn?.nc]] as const)
       if (nc) observeConnection(nc, duty);
-    const nc = m.serviceServe?.nc;
+    const nc = m.servePlane.serviceServe?.nc;
     if (!nc || dispatchObserved.has(nc)) return;
     dispatchObserved.add(nc);
     // Fixture-only observation of the installed client's actual dispatch boundary.
@@ -270,8 +271,8 @@ try {
   instrument();
   // start() installs subscriptions synchronously, but their SUB frames may still be buffered.
   // Establish broker-side interest before the first measured caller on another connection.
-  assert.ok(m.serviceServe, "SETUP: Manager must install the real service");
-  await m.serviceServe.nc.flush();
+  assert.ok(m.servePlane.serviceServe, "SETUP: Manager must install the real service");
+  await m.servePlane.serviceServe.nc.flush();
   const callerIdentity = newIdentity();
   const caller: EpCaller = { owner, actor: callerIdentity.id, uid: mintLifecycleUid() };
   const callerNc = await connect({ servers, ...standaloneConnectOpts({ tls: false,
@@ -408,7 +409,7 @@ try {
   record("summary", { renewals, requests: calls.length, missing: missing.length, refusals: refusals.length, brokerErrors: errors.length });
   console.log(JSON.stringify({ renewals, requests: calls.length, missing: missing.length, refusals: refusals.length, brokerErrors: errors.length, evidence }));
   assert.ok(renewals >= REQUIRED, `only ${renewals} real authority renewals before deadline`);
-  assert.equal(m.serviceServe?.creds, lastIssuedServe, "last issued family must actually be adopted");
+  assert.equal(m.servePlane.serviceServe?.creds, lastIssuedServe, "last issued family must actually be adopted");
   assert.ok(calls.some((c) => c.command === "stop" && c.executionAt), "real self-stop must execute");
   assert.ok(calls.some((c) => c.command === "despawn" && c.executionAt), "real despawn must execute");
   assert.equal(missing.length, 0, "public requests lost across real renewals, see timestamped evidence");

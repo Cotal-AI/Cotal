@@ -7,9 +7,9 @@
  *  and one in a folder this account cannot write. A `--store-dir` that is not the cut's store
  *  refuses CONFLICT naming both. */
 import assert from "node:assert/strict";
-import { spawn, spawnSync } from "node:child_process";
+import { spawn, spawnSync, type SpawnSyncReturns } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import {
@@ -36,7 +36,7 @@ const BACKUP_STAGES = {
   close: /smoke-injected failure after snapshot close/,
   manifest: /smoke-injected failure before manifest publication/,
   // A full disk names its cause and directory, what was and was not written, and a retry.
-  nospace: /ran out of disk space \(ENOSPC\) writing the backup in [^\n]*artifact-nospace; it removed the partial backup and published none, and the preserved cut is still ready[\s\S]*free space on the disk that holds [^\n]*artifact-nospace, then run `cotal backup create [^\n]*artifact-nospace` again/,
+  nospace: /ran out of disk space \(ENOSPC\) writing the backup in [^\n]*artifact-nospace; it removed the partial backup and published none, and the preserved cut is still ready/,
 } as const;
 
 const journalState = (root: string): string | undefined => {
@@ -48,6 +48,7 @@ const journalState = (root: string): string | undefined => {
 interface ClaimedJournal {
   state: string;
   restore?: { attemptId: string };
+  listenerProof?: unknown;
   claim?: { attemptId?: string; deadline: string; owners: unknown[]; coordinator: { startedAt: string } };
 }
 
@@ -95,6 +96,149 @@ const attemptResidue = (root: string): string[] => {
   return existsSync(attempts) ? readdirSync(attempts) : [];
 };
 
+function assertAttemptsDestinationRefusal(root: string, run: (...args: string[]) => SpawnSyncReturns<string>): void {
+  const attempts = join(root, ".cotal", "maintenance", "attempts");
+  mkdirSync(attempts, { mode: 0o700, recursive: true });
+  const destination = join(attempts, "forbidden");
+  const journal = join(root, ".cotal", "maintenance", "v1", "journal.json");
+  const journalBefore = readFileSync(journal);
+  const attemptsBefore = attemptResidue(root).sort();
+  const message = `the backup destination ${destination} overlaps the maintenance attempt directory ${attempts}. No backup was created.`;
+  const remedy = `name a destination outside ${attempts}`;
+  const plain = run("backup", "create", ".cotal/maintenance/attempts/forbidden", "--plain");
+  assert.equal(plain.status, 1, plain.stderr);
+  assert.match(plain.stderr, /Code:\s+USAGE_INVALID/);
+  assert.ok(plain.stderr.includes(message) && plain.stderr.includes(remedy), plain.stderr);
+  assert.doesNotMatch(plain.stderr, /LIFECYCLE_BLOCKED|before recovery|Usage:/);
+  const json = run("backup", "create", destination, "--json");
+  assert.equal(json.status, 1, `${json.stdout}${json.stderr}`);
+  const envelope = JSON.parse(json.stdout);
+  assert.equal(envelope.outcome, "refused");
+  assert.equal(envelope.error.code, "USAGE_INVALID");
+  assert.equal(envelope.error.message, message);
+  assert.equal(envelope.error.remedy, remedy);
+  assert.deepEqual(envelope.target, { directory: destination, attemptId: null, priorClaimAttemptId: null });
+  assert.deepEqual(readFileSync(journal), journalBefore);
+  assert.deepEqual(attemptResidue(root).sort(), attemptsBefore);
+  assert.equal(existsSync(destination), false);
+  assert.equal(existsSync(join(root, ".cotal", "maintenance", "lock.json")), false);
+}
+
+function assertReservedMaintenanceDestinationRefusal(root: string, run: (...args: string[]) => SpawnSyncReturns<string>): void {
+  const maintenance = join(root, ".cotal", "maintenance");
+  const journalDir = join(maintenance, "v1");
+  const lock = join(maintenance, "lock.json");
+  const reaper = join(maintenance, "lock-reaper.json");
+  const journal = join(journalDir, "journal.json");
+  const journalBefore = readFileSync(journal);
+  const attemptsBefore = attemptResidue(root).sort();
+  const cases = [
+    [".cotal/maintenance/v1/private-artifact", `is inside this root's maintenance journal directory ${journalDir}`, journalDir],
+    [".cotal/maintenance/lock.json", "is this root's maintenance lock path", lock],
+    [".cotal/maintenance/lock.json/nested", `is inside this root's maintenance lock path ${lock}`, lock],
+    [".cotal/maintenance/lock-reaper.json", "is this root's maintenance lock recovery path", reaper],
+  ] as const;
+  for (const [relativePath, relation, reserved] of cases) {
+    const destination = resolve(root, relativePath);
+    const message = `the backup destination ${destination} ${relation}; nothing was written`;
+    const remedy = `name a destination outside ${reserved}`;
+    const plain = run("backup", "create", relativePath, "--only", "registry", "--plain");
+    assert.equal(plain.status, 1, plain.stderr);
+    assert.match(plain.stderr, /Code:\s+USAGE_INVALID/);
+    assert.ok(plain.stderr.includes(message) && plain.stderr.includes(remedy), plain.stderr);
+    const json = run("backup", "create", relativePath, "--json");
+    assert.equal(json.status, 1, `${json.stdout}${json.stderr}`);
+    const envelope = JSON.parse(json.stdout);
+    assert.equal(envelope.outcome, "refused");
+    assert.equal(envelope.error.code, "USAGE_INVALID");
+    assert.equal(envelope.error.message, message);
+    assert.equal(envelope.error.remedy, remedy);
+    assert.deepEqual(envelope.target, { directory: destination, overlaps: reserved });
+    assert.equal(existsSync(destination), false);
+  }
+  assert.deepEqual(readFileSync(journal), journalBefore);
+  assert.deepEqual(attemptResidue(root).sort(), attemptsBefore);
+  assert.equal(existsSync(lock), false);
+  assert.equal(existsSync(reaper), false);
+}
+
+function assertMissingCleanupDestinationRefusal(root: string, run: (...args: string[]) => SpawnSyncReturns<string>): void {
+  const auth = join(root, ".cotal", "auth");
+  const journal = join(root, ".cotal", "maintenance", "v1", "journal.json");
+  const journalBefore = readFileSync(journal);
+  const attemptsBefore = attemptResidue(root).sort();
+  const controlLink = join(root, "control-link");
+  assert.equal(existsSync(auth), false, "the unprepared open space has no auth folder");
+  symlinkSync(join(root, ".cotal"), controlLink, "junction");
+  for (const [path, flag] of [[".cotal/auth/new", "--plain"], [join(controlLink, "auth", "nested", "new"), "--json"]] as const) {
+    const result = run("backup", "create", path, flag);
+    const output = result.stdout + result.stderr;
+    assert.equal(result.status, 1, output);
+    const remedy = `name a destination outside ${auth}`;
+    if (flag === "--json") {
+      const envelope = JSON.parse(result.stdout);
+      assert.equal(envelope.error.code, "USAGE_INVALID");
+      assert.equal(envelope.error.remedy, remedy);
+      assert.deepEqual(envelope.target, { directory: path, removedBy: auth });
+    } else {
+      assert.match(output, /Code:\s+USAGE_INVALID/);
+      assert.ok(output.includes(remedy), output);
+    }
+    assert.doesNotMatch(output, /create that folder first/);
+  }
+  assert.equal(existsSync(auth), false);
+  assert.deepEqual(readFileSync(journal), journalBefore);
+  assert.deepEqual(attemptResidue(root).sort(), attemptsBefore);
+  assert.equal(existsSync(join(root, ".cotal", "maintenance", "lock.json")), false);
+}
+
+function assertBackupUsage(run: (...args: string[]) => SpawnSyncReturns<string>): void {
+  const restore = run("backup", "restore", "--help");
+  const refused = run("backup", "restore", "sample-backup", "--only", "full");
+  assert.equal(restore.status, 0, restore.stderr);
+  assert.equal(refused.status, 1, refused.stderr);
+  assert.match(refused.stderr, /backup restore accepts only --only registry/);
+  for (const help of [restore.stdout, refused.stderr]) {
+    assert.match(help, /^\s+--only <selection>\s+/m);
+    assert.match(help.replace(/\s+/g, " "), /Restore takes only registry and follows the artifact's selection if omitted/);
+    assert.doesNotMatch(help, /<full\|registry>/);
+  }
+  const create = run("backup", "create", "--help");
+  assert.equal(create.status, 0, create.stderr);
+  assert.match(create.stdout, /\[--only full\|registry\]/);
+  assert.match(create.stdout.replace(/\s+/g, " "), /create takes full \(default\) or registry/);
+
+  const attempt = "restore-00000000-0000-4000-8000-000000000000";
+  const cleanup = run("backup", "cleanup-fallback", attempt, "--store-dir", ".cotal/nats", "--yes", "--plain");
+  assert.equal(cleanup.status, 1, cleanup.stderr);
+  assert.match(cleanup.stderr, /backup cleanup-fallback does not accept --store-dir\. The full attempt ID alone selects its recorded fallback/);
+  assert.match(cleanup.stderr, /Code:\s+USAGE_INVALID/);
+  const recover = run("backup", "recover", attempt, "--discard-history", "--yes", "--plain");
+  assert.equal(recover.status, 1, recover.stderr);
+  assert.match(recover.stderr, /backup recover does not accept --discard-history/);
+  assert.match(recover.stderr, /Code:\s+USAGE_INVALID/);
+}
+
+function assertArtifactSearchRefusal(root: string, folder: string, artifact: string, run: (...args: string[]) => SpawnSyncReturns<string>): void {
+  const journal = join(root, ".cotal", "maintenance", "v1", "journal.json");
+  const before = readFileSync(journal, "utf8");
+  const attempts = attemptResidue(root).sort();
+  chmodSync(folder, 0o600);
+  try {
+    for (const verb of ["inspect", "verify", "restore"]) {
+      const denied = run("backup", verb, artifact, "--plain");
+      assert.equal(denied.status, 2, denied.stderr);
+      assert.match(denied.stderr, /Code:\s+PERMISSION_DENIED/);
+      assert.ok(denied.stderr.includes(artifact) && denied.stderr.includes(`chmod u+x '${folder}'`), denied.stderr);
+      assert.doesNotMatch(denied.stderr, /Outcome unconfirmed|cotal status/);
+    }
+    assert.equal(readFileSync(journal, "utf8"), before, "the refusal leaves the cut unchanged");
+    assert.deepEqual(attemptResidue(root).sort(), attempts, "the refusal starts no restore attempt");
+  } finally {
+    chmodSync(folder, 0o700);
+  }
+}
+
 /** Parse a published artifact as a real consumer would: the format tag, the exact stream inventory
  *  for the selection, and a files list whose recorded SHA-256 matches the bytes on disk. */
 function assertValidManifest(directory: string, space: string, selection: SpaceBackupSelection): BackupManifest {
@@ -139,11 +283,34 @@ async function backupStageFaultScenario(): Promise<void> {
   };
   const sourcePath = join(root, ".cotal", "nats");
   try {
+    assertBackupUsage(run);
     must("up", run("up", "--detach", "--open", "--server", server, "--space", space));
     must("seed registry", run("channel", "set", "preserved", "--desc", "survives every fault", "--space", space));
     must("preserve cut", run("down", "--preserve-state"));
     assert.equal(journalState(root), "ready");
     const sourceBefore = lstatSync(sourcePath, { bigint: true });
+
+    if (process.getuid && process.getuid() !== 0) {
+      const folder = join(root, "no search");
+      const destination = join(folder, "archive");
+      const journal = join(root, ".cotal", "maintenance", "v1", "journal.json");
+      const before = readFileSync(journal, "utf8");
+      mkdirSync(folder, { mode: 0o600 });
+      const denied = run("backup", "create", destination, "--plain");
+      assert.equal(denied.status, 2, denied.stderr);
+      assert.match(denied.stderr, /Code:\s+PERMISSION_DENIED/);
+      assert.ok(denied.stderr.includes(`cannot search ${folder}`), denied.stderr);
+      assert.equal(readFileSync(journal, "utf8"), before, "the refusal leaves the cut unchanged");
+      const command = /\nNext\n +make the path to that folder searchable with (`+)(chmod u\+x .+?)\1,/.exec(denied.stderr)?.[2];
+      assert.ok(command, `Next shows a copyable chmod command\n${denied.stderr}`);
+      must("apply the printed chmod", spawnSync("sh", ["-c", command], { cwd: root, env, encoding: "utf8", timeout: 10_000 }));
+      assert.ok(!existsSync(destination), "the refusal writes no backup");
+      must("create in the searchable folder", run("backup", "create", destination, "--only", "registry"));
+      assertArtifactSearchRefusal(root, folder, destination, run);
+      must("inspect the backup once search access is restored", run("backup", "inspect", destination));
+      must("verify the backup in the searchable folder", run("backup", "verify", destination));
+      console.log("backup destination search permission: ok");
+    }
 
     // A path that names nothing is refused before any lock, saying whether its folder or the
     // artifact is missing.
@@ -154,6 +321,7 @@ async function backupStageFaultScenario(): Promise<void> {
     assert.equal(created.error?.code, "TARGET_NOT_FOUND", "a create into a missing folder is TARGET_NOT_FOUND");
     assert.equal(created.target?.missing, "folder", "it says the folder is missing");
     assert.match(created.error?.message ?? "", /there is no folder \S*no-such-folder to create the backup in/, "it names that folder");
+    assertMissingCleanupDestinationRefusal(root, run);
     if (process.platform !== "win32") {
       const notFolder = join(root, "parent-file"), loop = join(root, "loop-a");
       writeFileSync(notFolder, "owned fixture");
@@ -169,6 +337,21 @@ async function backupStageFaultScenario(): Promise<void> {
       }
       const plain = run("backup", "create", join(notFolder, "backup"));
       assert.ok(plain.status === 1 && plain.stderr.includes("ENOTDIR") && !plain.stderr.includes("Usage"), `the path refusal prints no command help\n${plain.stderr}`);
+
+      symlinkSync("self-loop", join(root, "self-loop"));
+      const beforeAttempts = attemptResidue(root).sort();
+      for (const path of [join(root, "self-loop", "backup"), join(loop, "backup")]) {
+        for (const command of [["backup", "inspect", path], ["backup", "verify", path], ["backup", "restore", path], ["up", "--restore", path, "--detach"]]) {
+          const refused = run(...command, "--plain");
+          const output = refused.stdout + refused.stderr;
+          assert.equal(refused.status, 1, `${command.join(" ")} refuses the loop\n${output}`);
+          assert.match(output, /Code:\s+USAGE_INVALID/);
+          assert.ok(output.includes(path) && output.includes("symbolic-link loop (ELOOP)") && output.includes("fix the symbolic link"), output);
+          assert.doesNotMatch(output, /Outcome unconfirmed|cotal status/);
+        }
+      }
+      assert.equal(createHash("sha256").update(readFileSync(journal)).digest("hex"), prior, "looped artifact paths leave the preservation journal unchanged");
+      assert.deepEqual(attemptResidue(root).sort(), beforeAttempts, "looped artifact paths leave no restore attempt");
     }
     for (const [path, missing] of [[nowhere, "folder"], [join(root, "no-such-artifact"), "artifact"]] as const) {
       const restore = run("backup", "restore", path, "--json");
@@ -207,6 +390,8 @@ async function backupStageFaultScenario(): Promise<void> {
     assert.ok(inside.status === 1 && insideEnvelope.error?.code === "USAGE_INVALID" && (insideEnvelope.error.message ?? "").includes(`is inside the preserved store ${sourcePath}`), `a destination inside the store is a usage refusal\n${inside.stdout}${inside.stderr}`);
     const insidePlain = run("backup", "create", join(sourcePath, "bk1"));
     assert.ok(insidePlain.status === 1 && !insidePlain.stderr.includes("Usage"), `that refusal prints no command help\n${insidePlain.stderr}`);
+    assertAttemptsDestinationRefusal(root, run);
+    assertReservedMaintenanceDestinationRefusal(root, run);
     // So is one inside the space's material folder, which `clean all` removes with whatever it
     // holds, named directly or through a link outside `.cotal`.
     const material = readdirSync(join(root, ".cotal")).find((entry) => entry.startsWith("space."));
@@ -219,12 +404,31 @@ async function backupStageFaultScenario(): Promise<void> {
       assert.ok(!existsSync(join(root, ".cotal", material, "bk")) && !existsSync(join(root, ".cotal", material, "bk2")), `that refusal writes nothing in ${material}`);
     }
     rmSync(join(root, "material-link"));
-    if (process.getuid?.() !== 0) {
-      const locked = join(root, "locked");
-      mkdirSync(locked, { mode: 0o500 });
-      const denied = run("backup", "create", join(locked, "bk"), "--json");
-      const deniedEnvelope = JSON.parse(denied.stdout) as { error?: { code?: string; message?: string; remedy?: string } };
-      assert.ok(denied.status === 2 && deniedEnvelope.error?.code === "PERMISSION_DENIED" && (deniedEnvelope.error.message ?? "").includes(`cannot write ${locked}`) && (deniedEnvelope.error.remedy ?? "").includes(`chmod u+w ${locked}`), `an unwritable folder is refused by name\n${denied.stdout}${denied.stderr}`);
+    if (process.getuid && process.getuid() !== 0) {
+      const journal = join(root, ".cotal", "maintenance", "v1", "journal.json");
+      for (const [folder, flags] of [["read only", []], ["operator's `archive` …", ["--plain"]]] as const) {
+        const locked = join(root, folder);
+        const destination = join(locked, "archive");
+        mkdirSync(locked, { mode: 0o500 });
+        const before = readFileSync(journal, "utf8");
+        const denied = run("backup", "create", destination, ...flags);
+        assert.equal(denied.status, 2, denied.stderr);
+        assert.match(denied.stderr, /PERMISSION_DENIED/);
+        assert.ok(denied.stderr.includes(`cannot write ${join(root, folder.replace("…", "..."))}`), "the refusal names the folder");
+        assert.ok(!existsSync(destination), "the refusal writes no backup");
+        assert.equal(readFileSync(journal, "utf8"), before, "the refusal leaves the cut unchanged");
+        const command = /\nNext\n +make that folder writable with (`+)(chmod u\+w .+?)\1,/.exec(denied.stderr)?.[2];
+        assert.ok(command, `Next shows a copyable chmod command\n${denied.stderr}`);
+        must("apply the printed chmod", spawnSync("sh", ["-c", command], { cwd: root, env, encoding: "utf8", timeout: 10_000 }));
+        assert.equal(lstatSync(locked).mode & 0o777, 0o700, "chmod changed the named folder");
+        must("create in the repaired folder", run("backup", "create", destination));
+        must("verify the backup in the repaired folder", run("backup", "verify", destination));
+      }
+      const invisible = join(root, "read\u200donly");
+      mkdirSync(invisible, { mode: 0o500 });
+      const denied = run("backup", "create", join(invisible, "archive"), "--plain");
+      assert.equal(denied.status, 2, denied.stderr);
+      assert.match(denied.stderr, /make that folder writable, or name a destination/);
     }
     // A --store-dir that is not the cut's store is a conflict naming both stores.
     const emptyStore = join(root, "empty-store");
@@ -236,8 +440,9 @@ async function backupStageFaultScenario(): Promise<void> {
     assert.deepEqual(attemptResidue(root), [], "the refused create and restores leave nothing in the attempts dir");
 
     for (const [stage, injected] of Object.entries(BACKUP_STAGES)) {
-      const destination = join(root, `artifact-${stage}`);
-      const faulted = spawnSync(tsx, [cliPath, "backup", "create", destination], {
+      const noSpace = stage === "nospace";
+      const destination = join(root, noSpace ? "disk`full\u2026 artifact-nospace" : `artifact-${stage}`);
+      const faulted = spawnSync(tsx, [cliPath, "backup", "create", destination, ...(noSpace ? ["--plain"] : [])], {
         cwd: root,
         env: { ...env, COTAL_SMOKE_FAIL_BACKUP_STAGE: stage },
         encoding: "utf8",
@@ -245,9 +450,10 @@ async function backupStageFaultScenario(): Promise<void> {
       });
       assert.notEqual(faulted.status, 0, `${stage} fault must fail the backup\nstdout:\n${faulted.stdout}`);
       assert.match(faulted.stderr, injected, `${stage} fault reports its injected failure`);
-      // The cleanup completed, so the next step is the same create, not a recovery.
-      assert.match(faulted.stderr, new RegExp(`then run \`cotal backup create \\S*artifact-${stage}\` again`), `${stage} fault names the same create as its next step`);
-      if (stage !== "nospace") assert.match(faulted.stderr, /the preserved cut is still ready; fix the cause in the native detail/, `${stage} fault says the cut is still ready`);
+      if (!noSpace) {
+        assert.match(faulted.stderr, new RegExp(`then run \`(?:pnpm )?cotal backup create \\S*artifact-${stage}\` again`), `${stage} fault names the same create as its next step`);
+        assert.match(faulted.stderr, /the preserved cut is still ready; fix the cause in the native detail/, `${stage} fault says the cut is still ready`);
+      }
       assert.equal(journalState(root), "ready", `${stage} fault returns the maintenance journal to ready`);
       assert.equal(existsSync(destination), false, `${stage} fault leaves no unpublished artifact at the destination`);
       assert.deepEqual(attemptResidue(root), [], `${stage} fault leaves no clone, config, or broker residue in the attempts dir`);
@@ -255,8 +461,19 @@ async function backupStageFaultScenario(): Promise<void> {
       assert.equal(sourceAfter.dev, sourceBefore.dev, `${stage} fault leaves the preserved source device unchanged`);
       assert.equal(sourceAfter.ino, sourceBefore.ino, `${stage} fault leaves the preserved source inode unchanged`);
 
-      // The retry is the point: a faulted attempt must not poison its own destination path.
-      must(`${stage} retry at the same destination`, run("backup", "create", destination));
+      if (noSpace) {
+        assert.equal(faulted.status, 5, `disk-full failure exits 5\n${faulted.stderr}`);
+        const next = faulted.stderr.split("\nNext\n")[1] ?? "";
+        const retry = /then run (`{2,})((?:pnpm )?cotal backup create .+?)\1 again/.exec(next)?.[2];
+        assert.ok(retry, `Next gives a copyable retry after freeing space\n${faulted.stderr}`);
+        must("paste the disk-full retry", spawnSync("sh", ["-c", `cotal() { "$COTAL_TEST_TSX" "$COTAL_TEST_CLI" "$@"; }; pnpm() { "$@"; }\n${retry}`], {
+          cwd: root, env: { ...env, COTAL_TEST_TSX: tsx, COTAL_TEST_CLI: cliPath }, encoding: "utf8", timeout: 240_000,
+        }));
+        must("verify at the original disk-full destination", run("backup", "verify", destination));
+        assert.match(next, /free space on that disk/);
+      } else {
+        must(`${stage} retry at the same destination`, run("backup", "create", destination));
+      }
       assertValidManifest(destination, space, "full");
       assert.equal(journalState(root), "ready", `${stage} retry leaves the cut ready`);
       assert.deepEqual(attemptResidue(root), [], `${stage} retry leaves no attempt residue`);
@@ -464,6 +681,10 @@ async function interruptedRestoreScenario(): Promise<void> {
     assert.ok(stderr.includes(`Interrupted: restore attempt ${attemptId} stopped before it committed`) && stderr.includes(recover), `the interrupt names what it left and its recovery\n${stderr}`);
     assert.equal(journalState(root), "restore-ready", "the interrupted restore leaves its pre-commit claim");
     assertRecoveryNext(run, recover);
+    const legacy = run("clean", "restore-fallback", "--attempt", attemptId, "--force");
+    assert.equal(legacy.status, 2, legacy.stderr);
+    assert.ok(legacy.stderr.includes(`restore attempt ${attemptId} is still pre-commit`) && legacy.stderr.includes(recover), legacy.stderr);
+    assert.equal(journalState(root), "restore-ready", "fallback cleanup does not advance a pre-commit attempt");
     // The brokers' watchdog stops them once the restore process is gone; recovery waits for that only.
     let recovered = run("backup", "recover", attemptId, "--yes");
     for (let i = 0; i < 50 && recovered.status !== 0; i++) { await sleep(200); recovered = run("backup", "recover", attemptId, "--yes"); }
@@ -471,8 +692,51 @@ async function interruptedRestoreScenario(): Promise<void> {
     assert.ok(/Next\s+cotal up\s+Resume the space from its preserved state\s+cotal backup restore <directory>\s+Try the restore again/.test(recovered.stdout), `the recovery receipt names resume and a retried restore as its next steps\n${recovered.stdout}`);
     assert.ok(Date.now() < Date.parse(deadline), "recovery ran before the claim deadline");
     assert.equal(journalState(root), "ready", "recovery returns the cut to ready");
-    must("ordinary resume after recovery", run("up", "--detach", "--open", "--server", server, "--space", space));
-    must("down", run("down", "--yes"));
+    // Send a real SIGTERM after publishing commit intent. Node can dispatch it only after the
+    // synchronous preparation returns, so it exercises the handoff without racing a journal poll.
+    const signalAtCommit = join(root, "signal-at-commit.cjs");
+    const journalPath = join(root, ".cotal", "maintenance", "v1", "journal.json");
+    writeFileSync(signalAtCommit, `
+      const fs = require("node:fs");
+      const rename = fs.renameSync;
+      fs.renameSync = (from, to) => {
+        rename(from, to);
+        if (to !== ${JSON.stringify(journalPath)}) return;
+        const journal = JSON.parse(fs.readFileSync(to, "utf8"));
+        if (journal.state === "commit-intent" && !journal.listenerProof) {
+          process.kill(process.pid, "SIGTERM");
+        }
+      };
+      require("node:module").syncBuiltinESMExports();
+    `);
+    const committed = spawnSync(process.execPath,
+      ["--require", signalAtCommit, "--import", tsxImport, cliPath, "up", "--foreground", "--restore", artifact, "--store-dir", join(root, "new store")],
+      { cwd: root, env, encoding: "utf8", timeout: 240_000 });
+    const intent = readJournal(root);
+    assert.equal(intent?.state, "commit-intent", "SIGTERM leaves commit intent intact");
+    assert.equal(intent.listenerProof, undefined, "the signal precedes the listener bind");
+    assert.ok(intent.restore);
+    assert.equal(committed.status, 143, `SIGTERM exits 143\n${committed.stderr}`);
+    const launch = /^\s{2}(.+) <command> \[options\]$/m.exec(run().stdout)?.[1];
+    assert.ok(launch);
+    assert.ok(committed.stderr.includes(`Interrupted: restore attempt ${intent.restore.attemptId} committed before it stopped`) && committed.stderr.includes(`bare \`${launch} up\``), committed.stderr);
+    assert.doesNotMatch(committed.stderr, /backup recover/);
+    const resumed = spawn(process.execPath, ["--import", tsxImport, cliPath, "up"], { cwd: root, env, stdio: ["ignore", "ignore", "pipe"] });
+    let resumeErrors = "";
+    resumed.stderr!.on("data", (chunk: Buffer) => { resumeErrors += chunk.toString(); });
+    const resumedExit = new Promise<number | null>((resolveExit) => resumed.once("close", resolveExit));
+    const timeout = setTimeout(() => resumed.kill("SIGKILL"), 120_000);
+    try {
+      while (journalState(root) !== "active" && resumed.exitCode === null && resumed.signalCode === null) await sleep(50);
+      assert.equal(journalState(root), "active", `bare up continues the committed restore\n${resumeErrors}`);
+      assert.equal(readJournal(root)?.restore?.attemptId, intent.restore.attemptId);
+      must("down", run("down", "--yes"));
+      assert.equal(await resumedExit, 0, resumeErrors);
+    } finally {
+      clearTimeout(timeout);
+      resumed.kill("SIGKILL");
+      await resumedExit;
+    }
   } finally {
     run("down", "--yes");
     rmSync(root, { recursive: true, force: true });
@@ -492,6 +756,7 @@ async function interruptedCreateScenario(): Promise<void> {
   const configDir = join(home, "xdg");
   const sandbox = recordSmokeSandbox({ root, cotalHome: home, xdgConfigHome: configDir });
   const destination = join(root, "interrupted-backup");
+  const store = join(root, "private store");
   const port = await freePort();
   const server = `nats://127.0.0.1:${port}`;
   const space = "backup_faults_int_create";
@@ -505,9 +770,16 @@ async function interruptedCreateScenario(): Promise<void> {
     assert.equal(result.status, 0, `interrupted create ${label}\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`);
   };
   try {
-    must("up", run("up", "--detach", "--open", "--server", server, "--space", space));
-    assert.ok(existsSync(join(root, ".cotal", "nats")), "up resolved this root");
-    must("preserve cut", run("down", "--preserve-state"));
+    must("up", run("up", "--detach", "--open", "--server", server, "--space", space, "--store-dir", store));
+    assert.ok(existsSync(join(store, "jetstream")), "up opened the custom store");
+    const wrongStore = run("down", "--preserve-state", "--yes", "--store-dir", "./different store", "--session-store", ".");
+    assert.equal(wrongStore.status, 2, wrongStore.stderr);
+    const option = wrongStore.stderr.match(/omit --store-dir, or pass (--store-dir .+)$/m)?.[1];
+    assert.equal(option, `--store-dir '${store}'`, wrongStore.stderr);
+    // Let the shell parse the printed option, then run the guarded CLI with those arguments.
+    const parsed = spawnSync("sh", ["-c", `printf '%s\\n' ${option}`], { encoding: "utf8" });
+    assert.equal(parsed.status, 0, parsed.stderr);
+    must("preserve cut with the printed store option", run("down", "--preserve-state", "--yes", ...parsed.stdout.trimEnd().split("\n"), "--session-store", "."));
 
     // Its own process group, as a terminal runs it, so the SIGINT below is the one Ctrl-C sends.
     const child = spawn(process.execPath, ["--import", tsxImport, cliPath, "backup", "create", destination], { cwd: root, env, detached: true, stdio: ["ignore", "ignore", "pipe"] });
@@ -538,6 +810,20 @@ async function interruptedCreateScenario(): Promise<void> {
     const verified = run("backup", "verify", destination);
     assert.equal(verified.status, 1, `verify refuses the partial artifact\n${verified.stderr}`);
     assert.ok(verified.stderr.includes("has no manifest.json, so it is an incomplete artifact"), `verify calls the partial artifact incomplete\n${verified.stderr}`);
+    assert.ok(verified.stderr.includes(recover), `verify names the owning attempt's recovery\n${verified.stderr}`);
+    const parked = join(root, "parked-backup");
+    renameSync(destination, parked);
+    try {
+      const empty = readdirSync(parked).length === 0;
+      cpSync(parked, destination, { recursive: true });
+      const replacement = run("backup", "verify", destination);
+      assert.equal(replacement.status, empty ? 2 : 1, replacement.stderr);
+      assert.match(replacement.stderr, empty ? /Code:\s+TARGET_NOT_FOUND/ : /verify another intact copy/);
+      assert.doesNotMatch(replacement.stderr, /backup recover/);
+    } finally {
+      rmSync(destination, { recursive: true, force: true });
+      renameSync(parked, destination);
+    }
     const samePath = run("backup", "create", destination);
     assert.equal(samePath.status, 2, `a create at the partial artifact refuses\n${samePath.stderr}`);
     assert.ok(samePath.stderr.includes(`is the partial artifact of interrupted backup attempt ${attemptId}`) && samePath.stderr.includes(recover), `that refusal names the attempt and its recovery\n${samePath.stderr}`);
@@ -552,6 +838,15 @@ async function interruptedCreateScenario(): Promise<void> {
     assert.deepEqual(attemptResidue(root), [], "recovery leaves no clone or broker files");
     must("create at the same destination after recovery", run("backup", "create", destination));
     assertValidManifest(destination, space, "full");
+    must("verify the completed backup", run("backup", "verify", destination));
+    const copy = join(root, "copy-without-manifest");
+    cpSync(destination, copy, { recursive: true });
+    rmSync(join(copy, "manifest.json"));
+    const incomplete = run("backup", "verify", copy);
+    assert.equal(incomplete.status, 1, incomplete.stderr);
+    assert.match(incomplete.stderr, /SCHEMA_INVALID/);
+    assert.match(incomplete.stderr, /verify another intact copy/);
+    assert.doesNotMatch(incomplete.stderr, /backup recover/);
     must("ordinary resume after recovery", run("up", "--detach", "--open", "--server", server, "--space", space));
     must("down", run("down", "--yes"));
   } finally {

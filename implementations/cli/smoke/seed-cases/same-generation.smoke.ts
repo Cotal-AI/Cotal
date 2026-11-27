@@ -1,4 +1,4 @@
-import { boot, existsSync, rmSync, join, check, cotal, freshCfg, seedDir, manifestPath, readJson, writeJson, listNames, track, finishScenario } from "./harness.js";
+import { boot, existsSync, mkdirSync, rmSync, writeFileSync, join, check, cotal, freshCfg, seedDir, manifestPath, readJson, writeJson, listNames, seedGeneration, track, finishScenario } from "./harness.js";
 
 try {
   // ── 8b. a built-in added at an UNCHANGED generation still seeds (fast-path coverage) ─────────────
@@ -32,6 +32,53 @@ try {
     check("same-generation built-in add: auto reconcile seeds the missing built-in", names.includes("codex"), names);
     check("provenance: a re-seed that reuses an intact payload announces no seed-store write",
       !reseed.stderr.includes("seed store payload"), reseed.stderr);
+  }
+  {
+    const cfg = track(freshCfg());
+    listNames(cfg);
+    const pkg = "@cotal-ai/spec-less-fixture";
+    const version = seedGeneration();
+    const store = join(seedDir(cfg), "store");
+    const referenced = join(store, "0.0.1-referenced");
+    const stale = join(store, "0.0.1-stale");
+    const fixture = join(referenced, "fixture");
+    mkdirSync(fixture, { recursive: true });
+    writeJson(join(fixture, "package.json"), { name: pkg, version, type: "module", peerDependencies: { "@cotal-ai/core": "*" } });
+    writeFileSync(join(fixture, "index.js"), `import { registry } from "@cotal-ai/core";
+registry.register({ kind: "command", name: "spec-less-fixture", summary: "Test extension", run() {} });
+`);
+    const offline = { npm_config_offline: "true" };
+    const added = cotal(cfg, ["ext", "add", fixture], offline);
+    check("install spec fixture: real npm installs the operator package", added.status === 0, added.stderr);
+    const mp = manifestPath(cfg);
+    const manifest = readJson(mp);
+    const operator = manifest.extensions.find((entry: { pkg: string }) => entry.pkg === pkg);
+    delete operator.spec;
+    writeJson(mp, manifest);
+    mkdirSync(stale);
+    const updated = cotal(cfg, ["update"], offline);
+    check("update verifies the installed first-party operator package without its spec",
+      updated.status === 0 && updated.stdout.includes(`verified ${pkg}@${version}`), updated.stdout + updated.stderr);
+    check("update collects only the unreferenced old generation with a spec-less npm file dependency",
+      updated.status === 0 && !existsSync(stale) && existsSync(join(fixture, "package.json")), updated.stdout + updated.stderr);
+
+    const after = readJson(mp);
+    const builtin = after.extensions.find((entry: { pkg: string }) => entry.pkg === "@cotal-ai/connector-claude-code");
+    delete builtin.spec;
+    writeJson(mp, after);
+    const repaired = cotal(cfg, ["update"], offline);
+    const restored = readJson(mp).extensions.find((entry: { pkg: string }) => entry.pkg === builtin.pkg);
+    check("update repairs a missing built-in spec from the shipped payload",
+      repaired.status === 0 && restored?.spec === join(seedDir(cfg), "store", version, "claude"), repaired.stdout + repaired.stderr);
+
+    const stalePin = readJson(mp);
+    stalePin.extensions.find((entry: { pkg: string }) => entry.pkg === pkg).version = "0.0.1";
+    writeJson(mp, stalePin);
+    const listed = cotal(cfg, ["ext", "list", "--json"], offline);
+    const advice = listed.status === 4 && JSON.parse(listed.stdout).warnings.find((warning: { target?: { pkg?: string } }) => warning.target?.pkg === pkg)?.message;
+    const operand = process.platform === "win32" ? `"${pkg}"` : `'${pkg}'`;
+    check("a spec-less first-party entry with a stale pin gets a reinstall command for this CLI",
+      typeof advice === "string" && advice.includes(`\`cotal ext add ${operand}\``), listed.stdout + listed.stderr);
   }
 } finally {
   finishScenario();

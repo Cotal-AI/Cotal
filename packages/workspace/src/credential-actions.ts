@@ -1,7 +1,8 @@
-import { assertValidOwnerToken, assertValidRole, assertValidChannel, boundedValue, endpointToken, oneLine, type Extension, type FlagSpec, type ParsedArgs } from "@cotal-ai/core";
-import { spaceFlag, serverFlag } from "./flags.js";
+import { assertValidOwnerToken, assertValidRole, assertValidChannel, boundedValue, endpointToken, oneLine, type AuthProvider, type Extension, type FlagSpec, type ParsedArgs } from "@cotal-ai/core";
+import { parseCommaList, spaceFlag, serverFlag } from "./flags.js";
 import { CommandFailure, jsonFlag, plainFlag, SHOWN_VALUE_MAX } from "./output.js";
 import { presentationOf } from "./present.js";
+import { shellPath } from "./local-record-source.js";
 
 export const privateOutputFlag = { name: "out", type: "string", value: "<private-file>", description: "private output file; required for signer export and endpoint caller issuance", completion: "files" } as const satisfies FlagSpec;
 export const credentialMintFlags = [
@@ -28,6 +29,30 @@ export interface CredentialAction extends Extension {
   readonly name: "mint" | "revoke-credential";
   validate(args: ParsedArgs): void;
   run(args: ParsedArgs): Promise<void>;
+}
+
+/** Local account binding for a resumable conversation, registered under its auth provider name. */
+export interface ConversationAccount extends Extension {
+  readonly kind: "conversation-account";
+  /** Return an opaque key for the current unexpired login's subject, or throw if it has none. */
+  key(idp: string): string;
+  /** Authenticate with the same session whose subject matches the saved key, or send nothing. */
+  request(key: string, input: Parameters<NonNullable<AuthProvider["requestConversationIdentity"]>>[0]): Promise<{ status: number; body: unknown }>;
+}
+
+/** No credentials or authority responses are carried in a sign-out result. */
+export type UnconfirmedConversation = { readonly label: string; readonly space: string } | { readonly label?: never; readonly space?: never };
+
+/** Local cleanup run before the provider session is revoked or cleared. */
+export interface ConversationSignOut extends Extension {
+  readonly kind: "conversation-sign-out";
+  /** `dir` is the Cotal home of the login being cleared. `idp` is the validated URL's origin and
+   *  path without trailing slashes. `accountKey` identifies that session's subject when known.
+   *  Return one entry per candidate whose exact retirement could not be confirmed. An empty
+   *  list means the scan found no unconfirmed retirements, not that other identities were stopped. */
+  retire(opts: { dir: string; idp: string; accountKey?: string }): Promise<readonly UnconfirmedConversation[]>;
+  /** Count saved resumable conversation approvals bound to `accountKey` at `idp`. */
+  count?(opts: { dir: string; idp: string; accountKey: string }): number;
 }
 
 /** The last Unix second a JavaScript date holds (8.64e15 ms). A later expiry has no date that a
@@ -62,10 +87,55 @@ function tokenRefusal(what: "credential label" | "--role", value: string, other:
   const found = new RegExp(other.source, "u").exec(value)?.[0];
   if (found === undefined) return new CommandFailure("refused", "USAGE_INVALID", `the ${what} is empty; ${noun} takes ${allowed}`, { remedy: pass, selfContained: true });
   const fixed = value.replace(new RegExp(other.source, "gu"), "_");
+  const example = what === "--role" && fixed.startsWith("-") ? `\`--role=${fixed}\`` : fixed;
   return new CommandFailure("refused", "USAGE_INVALID", `the ${what} "${oneLine(boundedValue(value, SHOWN_VALUE_MAX))}" has "${oneLine(found)}", which ${noun} cannot hold; ${noun} takes only ${allowed}`, {
-    remedy: [...fixed].length > SHOWN_VALUE_MAX ? pass : `${pass}, such as ${fixed}`,
+    remedy: [...fixed].length > SHOWN_VALUE_MAX ? pass : `${pass}, such as ${example}`,
     selfContained: true,
   });
+}
+
+function channelOptionExample(flag: string, pattern: string): string {
+  return `${flag}${pattern.startsWith("-") ? "=" : " "}${shellPath(pattern)}`;
+}
+
+function channelPatternRefusal(flag: "--allow-subscribe" | "--allow-publish", entry: string, error: unknown): CommandFailure {
+  const shown = oneLine(boundedValue(entry, SHOWN_VALUE_MAX));
+  if (entry.startsWith("#")) {
+    const stripped = entry.replace(/^#+/, "");
+    let validStripped = false;
+    try { assertValidChannel(stripped); validStripped = [...stripped].length <= SHOWN_VALUE_MAX; } catch { validStripped = false; }
+    return new CommandFailure(
+      "refused",
+      "USAGE_INVALID",
+      `the ${flag} channel "${shown}" starts with "#", which is not part of a channel name`,
+      {
+        remedy: validStripped
+          ? `drop the leading "#", for example \`${channelOptionExample(flag, stripped)}\``
+          : `pass channel names or patterns without a leading "#", such as \`${flag} general\` or \`${flag} 'team.>'\``,
+        selfContained: true,
+      },
+    );
+  }
+  const fixed = entry
+    .replace(/\.{2,}/g, ".")
+    .replace(/^\.+|\.+$/g, "")
+    .split(".")
+    .map((seg, idx, arr) => (seg === "*" || (seg === ">" && idx === arr.length - 1) ? seg : seg.replace(/[^A-Za-z0-9_-]/gu, "_")))
+    .join(".");
+  let validFixed = false;
+  try { assertValidChannel(fixed); validFixed = [...fixed].length <= SHOWN_VALUE_MAX; } catch { validFixed = false; }
+  const reason = (error as Error).message.replace(/^invalid channel "[^"]*":\s*/, "");
+  return new CommandFailure(
+    "refused",
+    "USAGE_INVALID",
+    `the ${flag} channel "${shown}" is not a valid channel pattern: ${oneLine(boundedValue(reason, SHOWN_VALUE_MAX))}`,
+    {
+      remedy: validFixed
+        ? `use dot-separated channel tokens of letters, digits, _ and - (or * and a trailing > for wildcards), such as \`${channelOptionExample(flag, fixed)}\``
+        : `use dot-separated channel tokens of letters, digits, _ and - (or * and a trailing > for wildcards), such as \`${flag} general\` or \`${flag} 'team.>'\``,
+      selfContained: true,
+    },
+  );
 }
 
 export function validateCredentialMintArguments(args: ParsedArgs): void {
@@ -96,13 +166,29 @@ export function validateCredentialMintArguments(args: ParsedArgs): void {
   const profile = values.profile ?? "agent";
   if (!["agent", "observer", "admin"].includes(String(profile))) throw new CommandFailure("refused", "USAGE_INVALID", "auth mint supports agent, observer or admin; internal service profiles are not exposed");
   if (profile !== "agent" && ["allow-subscribe", "allow-publish", "role", "provision", "no-persona"].some((key) => values[key] !== undefined)) throw new CommandFailure("refused", "USAGE_INVALID", "channel ACL, role and provisioning inputs belong only to the agent profile; a fixed profile was not silently widened");
+  for (const key of ["allow-subscribe", "allow-publish"] as const) {
+    const raw = values[key];
+    if (raw === undefined) continue;
+    if (typeof raw !== "string" || raw.length > 16384) throw new CommandFailure("refused", "USAGE_INVALID", `--${key} must be bounded text; no input coercion was used`);
+    for (const channel of parseCommaList(raw)) {
+      try { assertValidChannel(channel); }
+      catch (error) { throw channelPatternRefusal(`--${key}`, channel, error); }
+    }
+  }
   if (values["expires-in"] !== undefined && values["expires-at"] !== undefined) throw new CommandFailure("refused", "USAGE_INVALID", "choose --expires-in or --expires-at, not both");
   if (values["no-expiry"] !== undefined && (values["expires-in"] !== undefined || values["expires-at"] !== undefined)) throw new CommandFailure("refused", "USAGE_INVALID", "--no-expiry issues a credential with no expiry, so it takes no --expires-in or --expires-at", { remedy: "pass one of --expires-in, --expires-at or --no-expiry" });
-  for (const key of ["expires-in", "expires-at"] as const) if (values[key] !== undefined && (typeof values[key] !== "string" || !/^[0-9]+$/.test(values[key]) || !Number.isSafeInteger(Number(values[key])) || Number(values[key]) < (key === "expires-in" ? 1 : 0))) throw new CommandFailure("refused", "USAGE_INVALID", "credential expiry needs an integer in native seconds; the supplied value was not echoed");
+  for (const key of ["expires-in", "expires-at"] as const) if (values[key] !== undefined && (typeof values[key] !== "string" || !/^[0-9]+$/.test(values[key]) || !Number.isSafeInteger(Number(values[key])))) throw new CommandFailure("refused", "USAGE_INVALID", "credential expiry needs an integer in native seconds; the supplied value was not echoed");
+  // The provisioning path already checks its own minimum before resolving the root.
+  if (!values.provision && Number(values["expires-in"]) === 0) throw new CommandFailure("refused", "USAGE_INVALID", "--expires-in must be at least 1 second for a file-only mint", {
+    remedy: "use --expires-in 1 or a larger whole number, or use --no-expiry instead to mint without an expiry",
+    selfContained: true,
+  });
   assertExpiryInRange(values);
   // A past or present expiry writes a credential the broker already refuses, under a label that is
   // then taken.
   if (values["expires-at"] !== undefined && Number(values["expires-at"]) <= Math.floor(Date.now() / 1000)) throw new CommandFailure("refused", "USAGE_INVALID", "--expires-at is not in the future, so the credential would already be expired; nothing was written", { remedy: "give a later Unix time in seconds, or a lifetime with --expires-in <seconds>" });
-  if (values.replace !== undefined && values.out !== undefined) throw new CommandFailure("refused", "USAGE_INVALID", "--replace replaces the label's standing credential, so it takes no --out; an --out file is re-minted with its matching --identity", { remedy: "drop --out to replace the standing credential, or pass the --out file's own --identity" });
+  if (values.replace !== undefined && values.out !== undefined) throw new CommandFailure("refused", "USAGE_INVALID", "--replace replaces the label's standing credential, so it takes no --out", {
+    remedy: "drop --out to replace the standing credential, or drop --replace to re-mint an existing export using the same file for --out and --identity",
+  });
   for (const key of ["identity", "out"] as const) if (values[key] !== undefined && (typeof values[key] !== "string" || !values[key].trim() || /[\u0000-\u001f\u007f]/u.test(values[key]))) throw new CommandFailure("refused", "USAGE_INVALID", "credential paths must be nonempty and contain no terminal controls");
 }

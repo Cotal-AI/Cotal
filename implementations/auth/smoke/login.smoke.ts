@@ -20,7 +20,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
 import { performance } from "node:perf_hooks";
 import { AGENT_LIFECYCLE_HELD, mintLifecycleUid } from "@cotal-ai/core";
-import { jwtVerify } from "jose";
+import { exportJWK, generateKeyPair, jwtVerify } from "jose";
 import { betterAuth } from "better-auth";
 import { memoryAdapter } from "better-auth/adapters/memory";
 import { jwt } from "better-auth/plugins/jwt";
@@ -909,6 +909,44 @@ await rejects("a deny at the verification page is a legible throw, not a retry l
   s2.close();
 }
 
+console.log("D2) a poll the provider could not answer waits for the next one, until the code's own expiry");
+{
+  // A scripted IdP whose second /device/token poll fails the way a restarting edge does, then approves.
+  // `down` fails every poll after the first, so the code expires while the provider is unreachable.
+  let polls = 0;
+  let failure: "html521" | "drop" | "down" | "plain" = "plain";
+  const jwtFor = (sub: string) =>
+    `${Buffer.from(JSON.stringify({ alg: "none" })).toString("base64url")}.${Buffer.from(JSON.stringify({ sub, iss: "x" })).toString("base64url")}.sig`;
+  const idp = createServer((req, res) => {
+    const route = new URL(req.url!, "http://x").pathname;
+    const send = (status: number, body: unknown) => { res.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify(body)); };
+    if (route === "/api/auth/device/code")
+      return send(200, { device_code: "d", user_code: "u", verification_uri: "v", verification_uri_complete: "vc", expires_in: failure === "down" ? 4 : 30, interval: 1 });
+    if (route === "/api/auth/device/token") {
+      polls++;
+      if (polls >= 2 && failure === "down") return void res.writeHead(502, { "content-type": "text/html" }).end("<html>Bad gateway</html>");
+      if (polls === 2 && failure === "html521") return void res.writeHead(521, { "content-type": "text/html" }).end("<html>Web server is down</html>");
+      if (polls === 2 && failure === "drop") return void req.socket.destroy();
+      return polls >= 3 ? send(200, { access_token: "opaque-unanswered-session", expires_in: 3600 }) : send(400, { error: "authorization_pending" });
+    }
+    if (route === "/api/auth/token") return send(200, { token: jwtFor("unanswered-user") });
+    send(404, {});
+  });
+  await new Promise<void>((r) => idp.listen(0, "127.0.0.1", r));
+  const uBase = `http://127.0.0.1:${(idp.address() as AddressInfo).port}/api/auth`;
+  for (const kind of ["html521", "drop"] as const) {
+    polls = 0; failure = kind;
+    const session = await deviceLogin({ idpUrl: uBase, clientId: CLIENT_ID, onPrompt: () => {} }).then((r) => r, (e) => e);
+    check(`a ${kind === "html521" ? "proxy's HTTP 521 page" : "dropped connection"} on one poll does not end the sign-in, the next poll completes it`,
+      !(session instanceof Error) && session.token === "opaque-unanswered-session" && polls === 3, { session: String(session?.message ?? session?.token), polls });
+  }
+  polls = 0; failure = "down";
+  const down = await deviceLogin({ idpUrl: uBase, clientId: CLIENT_ID, onPrompt: () => {} }).then(() => undefined, (e) => e);
+  check("a provider still unanswered when the code expires is refused as unreachable, not as an expiry the person caused",
+    down instanceof IdpUnreachableError && /HTTP 502 while waiting for approval/.test(down.message) && polls >= 2, { err: String(down), polls });
+  idp.close();
+}
+
 // ---- a hostile / broken IdP: the client must refuse, never spin or cache ----
 console.log("E) hostile-IdP responses");
 {
@@ -1296,6 +1334,14 @@ console.log("H) /token is posted once per (IdP, session) within the hold, never 
 // points to gets no request. A key set served at <base>/jwks itself still passes.
 {
   const hits: string[] = [];
+  const pair = await generateKeyPair("EdDSA", { extractable: true });
+  const key = await exportJWK(pair.publicKey), privateKey = await exportJWK(pair.privateKey);
+  const other = await exportJWK((await generateKeyPair("ES256")).publicKey);
+  const keys: Record<string, unknown[]> = {
+    "/d/jwks": [other, key], "/empty/jwks": [], "/wrong-alg/jwks": [other, { ...key, alg: "ES256" }],
+    "/malformed/jwks": [{ ...key, x: "bad" }], "/private/jwks": [privateKey], "/encryption/jwks": [{ ...key, use: "enc" }],
+    "/missing-verify/jwks": [{ ...key, key_ops: ["sign"] }],
+  };
   const elsewhere = createServer((req, res) => { hits.push(`elsewhere ${req.url}`); res.writeHead(200, { "content-type": "application/json" }).end('{"keys":[]}'); });
   await new Promise<void>((r) => elsewhere.listen(0, "127.0.0.1", r));
   const elsewhereBase = `http://127.0.0.1:${(elsewhere.address() as AddressInfo).port}`;
@@ -1303,7 +1349,7 @@ console.log("H) /token is posted once per (IdP, session) within the hold, never 
     hits.push(`pinned ${req.url}`);
     if (req.url === "/x/jwks") res.writeHead(302, { location: `${elsewhereBase}/jwks` }).end();
     else if (req.url === "/s/jwks") res.writeHead(302, { location: "/real/jwks" }).end();
-    else res.writeHead(200, { "content-type": "application/json" }).end('{"keys":[]}');
+    else res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ keys: keys[req.url ?? ""] ?? [] }));
   });
   await new Promise<void>((r) => pinned.listen(0, "127.0.0.1", r));
   const pinnedBase = `http://127.0.0.1:${(pinned.address() as AddressInfo).port}`;
@@ -1314,7 +1360,12 @@ console.log("H) /token is posted once per (IdP, session) within the hold, never 
   const same = await preflight("/s");
   check("  and one to the same origin, whose target gets no request",
     !same.ok && same.reason === "unavailable" && same.message.includes("HTTP 302, a redirect; redirects are refused") && !hits.includes("pinned /real/jwks"), { same, hits });
-  check("  a key set served at <base>/jwks still passes", (await preflight("/d")).ok, hits);
+  check("  a key set with an Ed25519 verification key and other algorithms passes", (await preflight("/d")).ok, hits);
+  for (const path of ["/empty", "/wrong-alg", "/malformed", "/private", "/encryption", "/missing-verify"]) {
+    const verdict = await preflight(path);
+    check(`  ${path} refuses when its set has no usable Ed25519 key`, !verdict.ok && verdict.reason === "unavailable"
+      && verdict.message.includes("did not return a usable Ed25519 signing key"), verdict);
+  }
   pinned.close();
   elsewhere.close();
 }

@@ -77,7 +77,7 @@
  */
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { closeSync, cpSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer, connect as tcpConnect, type Socket } from "node:net";
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
@@ -134,10 +134,10 @@ const BIN = join(import.meta.dirname, "..", "..", "..", "bin", "cotal.ts");
 /** How the child ENDED rides in the result: a launch failure, a signal death, or this suite's own
  *  timeout each produce output that would otherwise be graded as if the command had spoken. */
 type Run = { status: number | null; out: string; stdout: string; timedOut: boolean; signal: NodeJS.Signals | null; launchError?: string };
-function cotal(args: string[], cwd: string, timeoutMs = 90_000): Promise<Run> {
+function cotal(args: string[], cwd: string, timeoutMs = 90_000, stdin: number | "ignore" = "ignore"): Promise<Run> {
   return new Promise((res) => {
     const child = spawn(TSX, [BIN, ...args], {
-      cwd, env: { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: join(home, "xdg"), COTAL_SKIP_CONNECTOR_SEED: "1" }, stdio: ["ignore", "pipe", "pipe"],
+      cwd, env: { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: join(home, "xdg"), COTAL_SKIP_CONNECTOR_SEED: "1" }, stdio: [stdin, "pipe", "pipe"],
     });
     let out = "", stdout = "", timedOut = false, settled = false;
     let status: number | null = null, signal: NodeJS.Signals | null = null;
@@ -179,7 +179,56 @@ function envelopeOf(r: Run): PsEnvelope | undefined {
   try { return JSON.parse(lines[0]!) as PsEnvelope; } catch { return undefined; }
 }
 
+async function checkRelativeDirectoryRefusals(root: string, instance: string): Promise<void> {
+  const relative = "../relative-directory-probe";
+  const remedy = "pass an absolute path on the manager host";
+  for (const [command, arg] of [["resolve-cwd", "cwd"], ["list-dir", "path"]] as const) {
+    const args = ["endpoint", "invoke", "manager", command, "--space", space, "--on", instance, "--args", JSON.stringify({ [arg]: relative })];
+    const plain = await cotal([...args, "--plain"], root);
+    mustHaveRun(plain, `${command} relative path in plain mode`);
+    check(`${command} refuses a relative path with a fixed Next and no argument echo`,
+      plain.status === 2 && /^Next\n\s+(.+)$/m.exec(plain.out)?.[1] === remedy && !plain.out.includes(relative), plain);
+    const json = await cotal([...args, "--json"], root);
+    mustHaveRun(json, `${command} relative path in JSON mode`);
+    const env = JSON.parse(json.stdout);
+    check(`${command} confirms the relative path did not execute and retains the answering instance`,
+      json.status === 2 && env.outcome === "refused" && env.error?.code === "LIFECYCLE_BLOCKED" && env.error.remedy === remedy
+      && env.error.cause?.code === "failed-precondition" && env.error.cause.outcome === "not-executed"
+      && env.error.cause.detail?.responder?.instanceId === instance && !json.out.includes(relative), json);
+  }
+}
+
 type MgrPriv = { managerInstanceId: string };
+
+async function checkInvokeSpawnRefusal(root: string, managerRoot: string, instance: string): Promise<void> {
+  const args = ["endpoint", "invoke", "manager", "spawn", "--space", space, "--on", instance];
+  const spawnArgs = [...args, "--args", JSON.stringify({ name: "nowhere", agent: "opencode" })];
+  const reason = `no persona "nowhere" in the catalog of manager ${instance} on host ${hostname()}: ${join(managerRoot, ".cotal", "agents", "nowhere.md")} not found; create it there`;
+  for (const format of [[], ["--plain"]]) {
+    const run = await cotal([...spawnArgs, ...format], root);
+    mustHaveRun(run, "native spawn refusal in human output");
+    check(`endpoint invoke ${format[0] ?? "rich"} shows the Manager's reason and create step`,
+      run.status === 2 && strip(run.out).replace(/\s+/g, " ").includes(reason), run);
+  }
+  const json = await cotal([...spawnArgs, "--json"], root);
+  mustHaveRun(json, "native spawn refusal in JSON");
+  const env = JSON.parse(json.stdout);
+  check("endpoint invoke JSON keeps the refusal outcome and puts the Manager's reason in error.message",
+    json.status === 2 && env.outcome === "refused" && env.error?.code === "LIFECYCLE_BLOCKED" && env.error.message === reason
+    && env.error.cause?.code === "failed-precondition" && env.error.cause.outcome === "not-executed"
+    && env.error.cause.detail?.responder?.instanceId === instance, json);
+
+  const privateValues = [`u_${"a".repeat(26)}`, randomUUID(), "eyJfixture.credential.signature"];
+  const config = join(managerRoot, ...privateValues, "missing.md");
+  for (const format of ["--plain", "--json"]) {
+    const run = await cotal([...args, "--args", JSON.stringify({ name: "nowhere", config }), format], root);
+    mustHaveRun(run, "native refusal with private values in its diagnostic");
+    check(`endpoint invoke ${format} keeps the reason but omits credentials and IDs from it`,
+      run.status === 2 && run.out.includes("agent file not found:") && run.out.includes("missing.md")
+      && privateValues.every((value) => !run.out.includes(value)), { status: run.status });
+  }
+}
+
 let m1: InstanceType<typeof Manager> | undefined;
 let m2: InstanceType<typeof Manager> | undefined;
 let m3: InstanceType<typeof Manager> | undefined;
@@ -207,6 +256,7 @@ try {
   // would satisfy "answered by the instance it names". Assert the split exists FIRST.
   console.log("1. the mesh really is multi-manager (without this, a pin proves nothing)");
   check("two managers registered DISTINCT instance ids", IID1 !== IID2, { IID1, IID2 });
+  await checkRelativeDirectoryRefusals(root1, IID1);
 
   const unpinned = await cotal(["ps", "--space", space], root1);
   mustHaveRun(unpinned, "the unpinned `ps`");
@@ -237,6 +287,21 @@ try {
     [IID1, IID2].every((iid) => unpinnedOut.includes(`manager ${iid} · reports host ${hostname()}`)) &&
       census?.result?.managers.every((m) => m.reportedHost === hostname()) === true,
     { host: hostname(), out: unpinnedOut.slice(-400), managers: census?.result?.managers });
+
+  const directStatus = await cotal(["endpoint", "invoke", "manager", "status", "--space", space, "--json"], root1);
+  const deniedScatter = await cotal(["endpoint", "invoke", "ep:manager", "status", "--all", "--space", space, "--json"], root1);
+  const allowedScatter = await cotal(["endpoint", "invoke", "manager", "ps", "--all", "--space", space, "--json"], root1);
+  const direct = JSON.parse(directStatus.stdout);
+  const denied = JSON.parse(deniedScatter.stdout);
+  const allowed = JSON.parse(allowedScatter.stdout);
+  check("a direct status answers but a status scatter without its grant is refused before sending",
+    directStatus.status === 0 && [IID1, IID2].includes(direct.result?.responder?.instanceId) &&
+    deniedScatter.status === 2 && denied.outcome === "refused" && denied.error?.code === "PERMISSION_DENIED" &&
+    denied.error.message.includes("no class scatter grant for manager status") && denied.result === null,
+    { direct: directStatus.status, denied });
+  check("a granted class scatter still returns both attributed replies",
+    allowedScatter.status === 0 && allowed.result?.coverageComplete === true &&
+    JSON.stringify(allowed.result.replies.map((row: { instanceId: string }) => row.instanceId).sort()) === JSON.stringify([IID1, IID2].sort()), allowed);
 
   // An unpinned `models` goes to the one manager the class queue picks. It names the other as not
   // asked, and an empty catalog list says the answering manager has no application installed.
@@ -275,10 +340,17 @@ try {
     bogus.status !== 0 && /not a valid lifecycle token/i.test(strip(bogus.out)),
     { status: bogus.status, tail: strip(bogus.out).slice(-300) });
 
+  const describePinRefusal = (out: string): boolean =>
+    out.includes("--on needs the full instance ID of the selected endpoint.")
+    && ["cotal", "pnpm cotal"].some((cli) =>
+      out.includes(`For the native Manager, use \`${cli} ps --space ${space}\`.`)
+      && out.includes(`Retry with \`${cli} endpoint describe manager --space ${space} --on <instance>\`.`))
+    && !/not a valid lifecycle token|no managed agent|no describe reply|did not answer/i.test(out);
+
   const bogusDescribe = await cotal(["describe", "manager", "--on", "4ik6rb0e", "--space", space], root1);
   mustHaveRun(bogusDescribe, "`describe manager --on <malformed>`");
   check("a malformed instance id on describe is REFUSED, not silently widened (#554)",
-    bogusDescribe.status !== 0 && /not a valid lifecycle token/i.test(strip(bogusDescribe.out)),
+    bogusDescribe.status === 1 && describePinRefusal(strip(bogusDescribe.out)),
     { status: bogusDescribe.status, tail: strip(bogusDescribe.out).slice(-300) });
 
   // A roster PRINCIPAL id (`local.U…`) is the mismatch #423 reports: an operator pins by the id
@@ -295,8 +367,8 @@ try {
     mustHaveRun(r, `\`${site.what}\``);
     const out = strip(r.out);
     check(site.what,
-      r.status !== 0
-        && /--on wants the manager INSTANCE id as `cotal ps` prints it/.test(out)
+      site.argv[0] === "describe" ? r.status === 1 && describePinRefusal(out) : r.status !== 0
+        && out.includes(`--on wants the manager INSTANCE id as \`cotal ps${site.argv[0] === "ps" ? ` --space ${space}` : ""}\` prints it`)
         && /not the roster's principal id/.test(out)
         && /is a principal id/.test(out)
         && !/no describe reply|did not answer/i.test(out),
@@ -339,12 +411,30 @@ try {
   // answered, not the queue winner (#554). Exit 0 alone is satisfied by the class queue; the
   // equality of the report's "Answering instance" field is the claim.
   for (const [label, iid] of [["IID1", IID1], ["IID2", IID2]] as const) {
-    const r = await cotal(["describe", "manager", "--on", iid, "--space", space], root1);
-    mustHaveRun(r, `\`describe manager --on ${label}\``);
+    const r = await cotal(["endpoint", "describe", "manager", "--space", space, "--on", iid], root1);
+    mustHaveRun(r, `\`endpoint describe manager --space ${space} --on ${label}\``);
     const out = strip(r.out);
     check(`describe --on ${label} SUCCEEDS and its attribution line names ${label}: the pinned instance answered, not the queue winner (#554)`,
       r.status === 0 && new RegExp(`^ +Answering instance: +${iid}$`, "m").test(out),
       { status: r.status, tail: out.slice(-300) });
+  }
+  {
+    const missingAttach = await cotal(["attach", `no-such-agent-${randomUUID().slice(0, 6)}`, "--on", IID1, "--space", space], root1);
+    mustHaveRun(missingAttach, "`attach <missing> --on IID1`");
+    const out = strip(missingAttach.out);
+    check("attach <missing> --on <live-instance> refuses as TARGET_NOT_FOUND (exit 2), not OPERATION_UNKNOWN (#7612)",
+      missingAttach.status === 2 && /Outcome:\s+refused/.test(out) && /Code:\s+TARGET_NOT_FOUND/.test(out) && out.includes(`Manager:     ${IID1}`) && out.includes(`run \`cotal ps --on ${IID1} --space ${space}\``),
+      { status: missingAttach.status, tail: out.slice(-400) });
+  }
+  {
+    const refreshDescribe = await cotal(["endpoint", "describe", "manager", "--refresh", "--on", IID1, "--json", "--space", space], root1);
+    mustHaveRun(refreshDescribe, "`endpoint describe manager --refresh --on IID1 --json`");
+    let parsed: { outcome?: string; result?: { kind?: string; contractSource?: string; responder?: { instanceId?: string } } } | undefined;
+    try { parsed = JSON.parse(refreshDescribe.stdout); } catch { parsed = undefined; }
+    check("endpoint describe manager --refresh exits 0 and returns fresh-native-resolution (#7600)",
+      refreshDescribe.status === 0 && parsed?.outcome === "ok" && parsed.result?.kind === "endpoint-contract" &&
+        parsed.result.contractSource === "fresh-native-resolution" && parsed.result.responder?.instanceId === IID1,
+      { status: refreshDescribe.status, stdout: refreshDescribe.stdout.slice(0, 400) });
   }
 
   // ---- 4. THE PIN ROUTES: IT DOES NOT FALL THROUGH TO THE CLASS QUEUE -------------------------
@@ -441,6 +531,11 @@ try {
       { status: r.status, tail: out.slice(-400) });
     check(`...and ${site.what}'s headline names the instance, not an unreachable mesh`,
       !/no manager reachable/i.test(out), out.slice(-300));
+    if (site.what === "describe") {
+      check("a pinned describe names the unanswered instance and recommends the live inventory",
+        r.status === 2 && out.includes(`pinned instance ${absent} of manager did not answer its contract read`) &&
+        out.includes(`cotal endpoint list --live --space ${space}`) && !out.includes("start the service"), out);
+    }
     // The launch and attach blocks name the space as a field; only the refusal's heading names the mesh.
     if (site.what === "spawn --detach" || site.what === "attach")
       check(`...and ${site.what} names the mesh once, in the refusal's heading`,
@@ -468,7 +563,8 @@ try {
     mustHaveRun(r, `\`${site.what} --on ""\``);
     const out = strip(r.out);
     check(`${site.what} --on "" is REFUSED at the flag (exit non-zero, the up-front text, not the mint's token error, not a seat miss)`,
-      r.status !== 0 && emptyRefused.test(out) && !/not a valid lifecycle token/i.test(out) && !/no managed agent/i.test(out),
+      site.what === "describe" ? r.status === 1 && describePinRefusal(out)
+        : r.status !== 0 && emptyRefused.test(out) && !/not a valid lifecycle token/i.test(out) && !/no managed agent/i.test(out),
       { status: r.status, tail: out.slice(-300) });
   }
 
@@ -510,6 +606,21 @@ try {
     createdText.status === 0 && /Local files:\s+\S*remote-rev2\.md, written by the manager in this root's catalog/.test(receipt) &&
       /cotal p show remote-rev2\s/.test(receipt) && !receipt.includes("cotal p show remote-rev2 --on") && receipt.includes(`cotal spawn remote-rev2 --on ${IID2}`),
     { status: createdText.status, out: receipt.slice(-900) });
+  const card = join(dir, "reviewer-card.md");
+  writeFileSync(card, "---\nname: stdin-reviewer\nrole: reviewer\nsubscribe: []\n---\nReview changes carefully.\n");
+  const stdin = openSync(card, "r");
+  let createdStdin: Run;
+  try {
+    createdStdin = await cotal(["persona", "create", "stdin-reviewer", "--file", "-", "--on", IID2, "--space", space, "--plain"], root2, undefined, stdin);
+  } finally { closeSync(stdin); }
+  mustHaveRun(createdStdin, "`persona create --file - --on` with redirected stdin");
+  const stdinPersona = join(root2, ".cotal", "agents", "stdin-reviewer.md");
+  const stdinReceipt = strip(createdStdin.out);
+  const savedFromStdin = existsSync(stdinPersona) ? readFileSync(stdinPersona, "utf8") : "";
+  check("persona create --file - sends the card from stdin to the exact manager with its role and body",
+    createdStdin.status === 0 && stdinReceipt.includes("Persona saved on manager") && new RegExp(`Answering manager:\\s+${IID2}`).test(stdinReceipt) &&
+      /^role: reviewer$/m.test(savedFromStdin) && /^Review changes carefully\.$/m.test(savedFromStdin),
+    { status: createdStdin.status, out: stdinReceipt.slice(-900) });
   const shownRemote = await cotal(["persona", "show", "remote-rev", "--on", IID2, "--space", space], root2);
   mustHaveRun(shownRemote, "`persona show --on` by a later caller");
   check("a later show --on is refused not-found and names the local show for the file in this root",
@@ -555,6 +666,7 @@ try {
   const mixedManager = new VariantManager({ space, servers: SERVERS, runtime: "pty", workspaceRoot: root3 });
   m2 = mixedManager;
   await mixedManager.start();
+  const mixedManagerId = (mixedManager as unknown as MgrPriv).managerInstanceId;
   const seatA = await m1.startAgent({ name: "census-a", agent: "ps-census-stub", cwd: repoRoot, events: false });
   const seatB = await mixedManager.startAgent({ name: "census-b", agent: "ps-census-stub", cwd: repoRoot, events: false });
   check("both real managers started a seat", seatA.ok === true && seatB.ok === true, { seatA, seatB });
@@ -632,8 +744,18 @@ try {
       rowOf("models-unlisted")?.supported === false &&
       every.env.warnings.filter((w) => w.code === "MODEL_CATALOG_UNREADABLE").map((w) => w.target.agent).join() === "models-broken",
     { status: every.run.status, stdout: every.run.stdout.slice(-900) });
-  const unlistedHuman = await cotal(["models", "--harness", "models-unlisted", "--space", space], root1);
+  const unlistedHuman = await cotal(["models", "--harness", "models-unlisted", "--refresh", "--space", space, "--server", SERVERS], root1);
   mustHaveRun(unlistedHuman, "`models --harness models-unlisted`");
+  const otherManager = /Not asked: +(\S+)/.exec(strip(unlistedHuman.out))?.[1];
+  check("the other-manager command keeps the selected catalog, refresh request and broker",
+    otherManager !== undefined && strip(unlistedHuman.out).includes(`cotal models --space ${space} --harness models-unlisted --refresh --server ${SERVERS} --on ${otherManager}`),
+    { status: unlistedHuman.status, out: strip(unlistedHuman.out) });
+  const answeringManager = /Answering manager: +(\S+)/.exec(strip(unlistedHuman.out))?.[1];
+  check("refresh on the answering manager keeps the application and explicit broker",
+    (answeringManager === IID1 || answeringManager === mixedManagerId) && strip(unlistedHuman.out).includes(`cotal models --space ${space} --harness models-unlisted --refresh --server ${SERVERS} --on ${answeringManager}`),
+    { status: unlistedHuman.status, liveManagerIds: [IID1, mixedManagerId], out: strip(unlistedHuman.out) });
+  check("a read of all catalogs leaves the application as a placeholder for the refresh",
+    modelsOut.includes(`cotal models --space ${space} -H <application> --refresh --on ${asked}`), modelsOut.slice(-900));
   check("the report gives the reason the install lists no catalog and no failure",
     unlistedHuman.status === 0 && strip(unlistedHuman.out).includes("this fixture install lists no catalog; pass --model") && !/could not be read/.test(strip(unlistedHuman.out)),
     { status: unlistedHuman.status, out: strip(unlistedHuman.out).slice(-400) });
@@ -727,6 +849,7 @@ try {
     nowhere.status === 2 && nowhereOut.includes(`no persona "nowhere" in the catalog of manager ${IID6} on host ${hostname()}`) &&
       nowhereOut.includes("nothing was launched; create that file on the manager's host, then run the spawn again") && !nowhereOut.includes("--config"),
     { status: nowhere.status, out: nowhereOut.slice(-900) });
+  await checkInvokeSpawnRefusal(root1, root6, IID6);
 
   // `--timeout` is one deadline for the call, the contract read included. Nothing serves `nosuch`, so
   // its contract read is never answered and the refusal comes when the flag's 1000ms run out. The
@@ -735,7 +858,8 @@ try {
   // names the flag and offers a longer one. Without the flag it keeps its message and Next.
   console.log("\n13. invoke --timeout bounds the contract read of an endpoint nothing serves");
   const unservedMessage = "no instance of nosuch answered its contract read within the 1000ms --timeout, so nothing is serving it, none could be reached, or the deadline was too short";
-  const unservedRemedy = `start the service that serves nosuch, then run the command again, or rerun it with a longer --timeout such as \`cotal invoke nosuch ping --timeout 10000\`; \`cotal service --space ${space}\` lists this space's services`;
+  const timeoutRemedy = "rerun the original command with `--timeout 10000`, keeping all other arguments and flags unchanged";
+  const unservedRemedy = `start the service that serves nosuch, then run the command again, or ${timeoutRemedy}. \`cotal service --space ${space}\` lists this space's services`;
   let startedAt = performance.now();
   const unserved = await cotal(["invoke", "nosuch", "ping", "--timeout", "1000", "--space", space], root1);
   const unservedMs = Math.round(performance.now() - startedAt);
@@ -773,11 +897,29 @@ try {
       nextOf(flaglessOut) === `start the service that serves nosuch, then run the command again; \`cotal service --space ${space}\` lists this space's services`,
     { status: flagless.status, out: flaglessOut.slice(-900) });
 
+  const resolveCwd = ["endpoint", "invoke", "manager", "resolve-cwd", "--space", space, "--server", SERVERS, "--args", JSON.stringify({ cwd: root1 })];
+  const resolveCwdShort = await cotal([...resolveCwd, "--timeout", "1"], root1);
+  mustHaveRun(resolveCwdShort, "resolve-cwd with a 1ms timeout");
+  const resolveCwdOut = strip(resolveCwdShort.out);
+  const resolveCwdNext = nextOf(resolveCwdOut);
+  // A 1ms budget ends before the describe is answered (cell 13's refusal, exit 2) or after it (cell
+  // 14's and 15's failure, exit 5), depending on the machine. Both give the same retry advice.
+  const resolveCwdTimedOut = resolveCwdShort.status === 2 ? /Code:\s+TARGET_UNAVAILABLE/.test(resolveCwdOut) : resolveCwdShort.status === 5 && /Code:\s+OPERATION_FAILED/.test(resolveCwdOut);
+  check("a timed-out resolve-cwd says to keep the original arguments and target flags without printing the argument body",
+    resolveCwdTimedOut &&
+      resolveCwdNext.includes(timeoutRemedy) &&
+      !resolveCwdNext.includes("cotal endpoint invoke") && !resolveCwdOut.includes(root1),
+    { status: resolveCwdShort.status, next: resolveCwdNext });
+  const resolveCwdRetry = await cotal([...resolveCwd, "--timeout", "10000"], root1);
+  mustHaveRun(resolveCwdRetry, "resolve-cwd with only the timeout changed");
+  check("resolve-cwd succeeds when only its timeout changes",
+    resolveCwdRetry.status === 0 && strip(resolveCwdRetry.out).includes(`"cwd": ${JSON.stringify(realpathSync(root1))}`),
+    { status: resolveCwdRetry.status, out: strip(resolveCwdRetry.out).slice(-900) });
+
   // The manager serves, so a contract read that runs out of `--timeout` after its describe was
   // answered is the flag's deadline, not a missing service. A budget that short can also end before
   // the describe is answered, which is cell 13's refusal, so the budget starts at 1ms and doubles
-  // until the describe was answered. `invoke` and `endpoint invoke` share this path and name
-  // themselves in the Next.
+  // until the describe was answered. `invoke` and `endpoint invoke` share the retry advice.
   console.log("\n14. invoke --timeout says it ran out during the contract read of an endpoint that is served");
   const ranOut = async (argv: string[]): Promise<{ ms: number; run: Run }> => {
     for (let ms = 1; ; ms *= 2) {
@@ -791,7 +933,7 @@ try {
   check("invoke manager ps whose contract read outruns --timeout fails OPERATION_FAILED, exit 5, naming the flag, the read and a longer --timeout",
     short.run.status === 5 && /Code:\s+OPERATION_FAILED/.test(shortOut) &&
       shortOut.includes(`the ${short.ms}ms --timeout ran out during the endpoint contract read; no command was published`) &&
-      /^Next\n\s+rerun it with a longer --timeout and the same other flags, such as `cotal invoke manager ps --timeout 10000`$/m.test(shortOut),
+      nextOf(shortOut) === timeoutRemedy,
     { timeoutMs: short.ms, status: short.run.status, out: shortOut.slice(-900) });
   const shortJson = await ranOut(["endpoint", "invoke", "manager", "ps", "--json"]);
   let shortEnv: { target?: { requestId?: unknown } } | undefined;
@@ -799,7 +941,7 @@ try {
   const expectedShortEnv = {
     schemaVersion: 1, command: "endpoint", target: { space, endpoint: "manager", command: "ps", requestedInstanceId: null, requestId: "<id>", accepted: null },
     outcome: "failed", completeness: "not-checked", result: null, warnings: [],
-    error: { code: "OPERATION_FAILED", message: `the ${shortJson.ms}ms --timeout ran out during the endpoint contract read; no command was published`, remedy: "rerun it with a longer --timeout and the same other flags, such as `cotal endpoint invoke manager ps --timeout 10000`", cause: { code: "deadline-exceeded" } },
+    error: { code: "OPERATION_FAILED", message: `the ${shortJson.ms}ms --timeout ran out during the endpoint contract read; no command was published`, remedy: timeoutRemedy, cause: { code: "deadline-exceeded" } },
   };
   check("...and endpoint invoke --json carries that failure, its Next as the remedy and the native deadline-exceeded cause",
     shortJson.run.status === 5 && typeof shortEnv?.target?.requestId === "string" &&
@@ -826,13 +968,13 @@ try {
   const lateOut = strip(late.run.out);
   check("invoke manager ps whose --timeout runs out before the publish fails OPERATION_FAILED, exit 5, and its Next names a longer --timeout",
     late.run.status === 5 && /Code:\s+OPERATION_FAILED/.test(lateOut) && lateOut.includes(published(late.ms)) &&
-      /^Next\n\s+rerun it with a longer --timeout and the same other flags, such as `cotal invoke manager ps --timeout 10000`$/m.test(lateOut),
+      nextOf(lateOut) === timeoutRemedy,
     { timeoutMs: late.ms, status: late.run.status, out: lateOut.slice(-900) });
   const lateJson = await beforePublish(["endpoint", "invoke", "manager", "ps", "--json"]);
   let lateEnv: { error?: unknown } | undefined;
   try { lateEnv = JSON.parse(lateJson.run.stdout); } catch { lateEnv = undefined; }
   check("...and endpoint invoke --json carries that failure with the longer --timeout as its remedy",
-    lateJson.run.status === 5 && JSON.stringify(lateEnv?.error) === JSON.stringify({ code: "OPERATION_FAILED", message: published(lateJson.ms), remedy: "rerun it with a longer --timeout and the same other flags, such as `cotal endpoint invoke manager ps --timeout 10000`" }),
+    lateJson.run.status === 5 && JSON.stringify(lateEnv?.error) === JSON.stringify({ code: "OPERATION_FAILED", message: published(lateJson.ms), remedy: timeoutRemedy }),
     { timeoutMs: lateJson.ms, status: lateJson.run.status, stdout: lateJson.run.stdout.slice(-900) });
 
   // A pinned spawn follows its accepted goal by reading `goal-result` from the accepting instance.
@@ -886,7 +1028,7 @@ try {
   m3 = new Manager({ space, servers: `nats://127.0.0.1:${relayPort}`, runtime: "pty", workspaceRoot: root7 });
   await m3.start();
   const IID7 = (m3 as unknown as MgrPriv).managerInstanceId;
-  const epoch7 = () => (m3 as unknown as { serviceServe?: { grant: { epoch: number } } }).serviceServe?.grant.epoch;
+  const epoch7 = () => (m3 as unknown as { servePlane: { serviceServe?: { grant: { epoch: number } }; } }).servePlane.serviceServe?.grant.epoch;
   const epochBefore = epoch7();
   relayArmed = true;
   const gap = await cotal(["spawn", "gap", "--detach", "--on", IID7, "--harness", "ps-census-stub", "--no-events", "--space", space, "--json"], root1);

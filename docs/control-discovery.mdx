@@ -18,6 +18,12 @@ nonce, so the broker polices who is calling in the subject grammar itself. See
 [SPEC §13.2](../SPEC.md#132-grammar) for the grammar and [§13.5](../SPEC.md#135-verbs) for
 the verbs (`call`, `cast`, `watch`, `claim`, `scatter`).
 
+A fourth route, `prin`, addresses one process of a principal by its owner, actor, lifecycle UID
+and runtime id, and carries the command set that principal serves about itself, such as the
+`agent` endpoint. Its replies ride `prin-reply`. The registry does not list it, and `describe` and
+`invoke` do not reach it; a caller finds the address in presence. See
+[SPEC §13.21](../SPEC.md#1321-principal-route).
+
 ## Journal action coverage
 
 The core journal action rail is public API, but the shipped manager does not use it for
@@ -102,6 +108,8 @@ or zero-valued fallback.
 The manager's `resolve-cwd` command is in the `manager.spawn` capability class. It accepts an
 absolute path on that manager's host and returns its canonical directory plus the host name. It
 refuses a relative, missing or non-directory path with `failed-precondition`; it creates nothing.
+For a relative path, `cotal endpoint invoke` reports a refusal before execution and asks for an
+absolute path on the manager host. It does not resolve the path against your local directory.
 `spawn` applies the same check at admission, before any credentials or durables are minted. It is
 minted beside `spawn` in the operator instruments, which are the caller on a static mesh, and in a
 `spawn` holder's `manager-caller` view. The standing agent `spawn` capability does not carry it.
@@ -117,7 +125,8 @@ agent spawn credentials or workflow placement credentials. A team member cannot 
 another member's remote Manager merely by joining the space.
 
 Call `cotal invoke manager list-dir --on <instance> --args '{}'` to start at the Manager user's
-home. Input accepts an absolute `path`, `includeHidden` (default false) and `limit` (default 200,
+home. The same absolute path requirement and CLI refusal apply to a supplied `path`. Input also
+accepts `includeHidden` (default false) and `limit` (default 200,
 maximum 1000). The response contains canonical `path`, nullable `parent`, sorted child
 `directories` with `name` and `symlink`, `truncated`, and platform `roots`. A root has null parent.
 Windows roots list drives whose root can be inspected; unavailable drives are omitted. macOS roots include `/` and `/Volumes`; other hosts return `/`.
@@ -129,6 +138,26 @@ A truncated listing contains the first names in locale-independent string order.
 still type an absolute path that was not listed. The command creates nothing. Missing, relative,
 non-directory and inaccessible paths refuse with `failed-precondition`. Delegated execution refuses
 before any host filesystem lookup, using the same execution-mode refusal as `resolve-cwd`.
+
+## Harness commands before launch [#harness-commands]
+
+The manager's `harness-commands` command is granted where `list-dir` is. It lists the commands and
+skills a harness would offer an agent started in a directory on the Manager's host, before any agent
+exists:
+
+```sh
+cotal invoke manager harness-commands --on <instance> --args '{"agent":"claude","cwd":"/abs/project"}'
+```
+
+It answers `{ agent, cwd, supported: true, commands }`, each entry `{ name, target, description?,
+inputHint? }` under the name the agent's `command` takes, or `{ agent, cwd, supported: false, reason }`
+for a harness whose agents run no commands. The Manager asks the harness itself in that directory
+and starts no agent. A harness loads the directory's configuration as it would for a spawn there.
+A harness that did not answer is `unavailable`. Pass the chosen entry to `spawn` as
+`firstCommand: { target, name, args? }`. The acceptance names `firstCommand.id`, and `command-state`
+on the new agent reads how far it got. What each harness lists is in the
+[connector reference](connector-runtime-reference.mdx#commands-before-launch), and the contract is in
+[SPEC §13.22](../SPEC.md#1322-the-agent-endpoint).
 
 ## Spawn input resolution [#agent-selection-and-spawn-inputs]
 
@@ -179,10 +208,14 @@ the whole id, because both surfaces take nothing else.
 On a user-auth mesh, manager commands obtain a short-lived `manager-caller` view from the
 exchange. It authorizes one concrete manager instance using the caller's current actor grant and
 the host's registered service records. Discovery and invocation both use that instance's `inst`
-route. This view grants no registry scan or class queue. It adds four reads for an actor that
-holds `spawn`. The view may call `status`, `models` and `resolve-cwd` on that instance, the reads a
-launch needs, subject to the execution-mode limit above. It may also call `ps` there to list the
-caller's own agents. A `run`-only or no-scope view may not, and `slots` stays with `admin`. A user
+route. This view grants no registry scan or class queue. It adds six reads for an actor that
+holds `spawn`. The view may call `status`, `models`, `resolve-cwd`, `list-dir` and `harness-commands` on that instance,
+the reads a launch needs, subject to the execution-mode limit above. It may also call `ps` there to
+list the caller's own agents. An `admin` actor's view carries the operator reads there, `slots`
+included. A `run`-only or no-scope agent view gets none of them. A
+person's own view, minted from their sign-in, calls `inspect` and `ps` there whatever its scope,
+with owner-mode `despawn`, `attach`, `input` and `interrupt`
+([your own agents](identity-user-auth.mdx#delegation)). A user
 mesh's co-located manager answers every owner's view, so its `status` counts and its `ps` lists only
 the caller's own seats, unless the caller holds `admin`. An absent,
 ambiguous or unauthorized selection refuses before the command is sent. An ambiguous one lists the
@@ -338,6 +371,15 @@ or determine placement. Use the verified responder's `instanceId` for attributio
 must accept status payloads that omit either field and leave the missing value unknown.
 The optional fields advance the Manager cluster revision to 28.
 
+The reply also carries `machine`, and the Manager's presence card carries it as `meta.machine`.
+It is an HMAC-SHA256 of the host's OS machine identity, keyed by that identity over
+`cotal manager host`, so it does not reveal the identity. A caller on the same machine computes
+the same value with `managerMachineId()` from `@cotal-ai/workspace` and recognises its own
+Managers by it. A host name can change while a Manager runs, as macOS renames a machine when its
+network changes, so `host` cannot do this. A Manager that cannot read its machine identity, as in
+a container without `/etc/machine-id`, omits `machine`, and a caller treats it as running on
+another machine. The field advances the Manager cluster revision to 55.
+
 A manager whose boot inventory marked every declared connector unavailable does not subscribe
 `spawn` or `launch` on the class `one` rail. Those commands stay on scatter and on this
 instance's `inst` rail, so a sibling that can launch them can take an unpinned spawn, and a
@@ -348,7 +390,9 @@ the skip member while `spawn` lands on a sibling, the command was not run, and t
 re-issues or pins `--on`. `status` reports `classSpawn: false` when that skip is in effect.
 When no manager takes the class queue, the broker answers an unpinned `spawn` with no
 responders, and the caller classifies that `not-executed` (SPEC 13.3).
-A manager that can launch some connectors keeps the class rail. If the queue hands it a
+A launch, model catalog or status read rechecks unavailable applications on the Manager's PATH.
+When the first application becomes available, the Manager subscribes to class `spawn` and `launch`
+without restarting. A manager that can launch some connectors keeps the class rail. If the queue hands it a
 harness its inventory marked unavailable, the refusal names `--on` because the standing serve
 credential cannot read sibling inventories. Pin the capable instance (the whole id, as `ps`
 prints it).
@@ -437,8 +481,10 @@ not distinguish the two states either. Each of these refusals carries
 `kind = ai.cotal.ep.foreign-slot-held` in `error.details[]` with the holder's instance id and the
 `condition` that refused: `in-flight` for a holder gate still at the stamp, or `no-seam`,
 `unreadable`, `garbled` or `behind` when the registration could not read that gate or read it below
-the stamp. A remote manager asks its host to reconcile the holder only on `in-flight`, the one
-condition a gate repair can clear.
+the stamp. A remote Manager briefly retries registration on `in-flight` using exponential backoff
+with jitter. Each attempt reads the governance head again. If the holder is still in flight when
+the retry budget runs out, the Manager can ask its host for a guarded gate reconciliation. A
+definite governance-slot CAS loss still reports a conflict.
 
 For the instance that cannot cooperate, an operator names it:
 `cotal endpoint deregister <endpoint> <full-instance-id>`

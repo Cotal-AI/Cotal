@@ -3,13 +3,17 @@ import { Kvm } from "@nats-io/kv";
 import { jetstreamManager, JetStreamApiCodes } from "@nats-io/jetstream";
 import {
   CHANNEL_DEFAULTS_KEY, CotalEndpoint, channelBucket, decodeChannelEntry, dialerFor,
-  isJetStreamMissing, liveKvEntries, presenceBucket, standaloneConnectOpts,
-  type ChannelRegistryFile, type Presence,
+  isJetStreamMissing, liveKvEntries, presenceBucket, standaloneConnectOpts, validateChannelConfig,
+  type ChannelConfig, type ChannelRegistryFile, type Presence,
 } from "@cotal-ai/core";
-import { canonicalRoot, CommandFailure, connectOrThrow, serviceMetadataDigest, userViewAuth } from "@cotal-ai/workspace";
+import { canonicalRoot, codeSpan, CommandFailure, connectOrThrow, oneLine, serviceMetadataDigest, userViewAuth, type MeshEntry, type PreparedSpace } from "@cotal-ai/workspace";
+import { canonicalServer } from "./broker-service.js";
+import { readStackJournal } from "./stack-journal.js";
 import { hashManifestSource, listLedgers } from "./manifest/ledger.js";
 import { classifyAgents, classifyChannels, detectUnmanagedActors } from "./manifest/spawn-plan.js";
 import { loadManifest, type PreparedManifest } from "./manifest/index.js";
+import { cardOf } from "./manifest/apply.js";
+import { listAdditiveTeamAttempts, retainedAdditiveTeamAttempts } from "./team-additive-attempt.js";
 
 async function presenceSnapshot(server: string, space: string, tls: boolean, auth: { creds?: string; bearer?: string; sentinelCreds?: string }): Promise<Presence[]> {
   const nc = await dialerFor(server)({ servers: server, ...standaloneConnectOpts({ ...auth, tls }), timeout: 2_000, reconnect: false, maxReconnectAttempts: 0 });
@@ -89,16 +93,52 @@ export function cardsWithoutLiveDelivery(channels: readonly { name: string; deli
 }
 
 /** What to do about the cards {@link cardsWithoutLiveDelivery} names. */
-export const LIVE_DELIVERY_REMEDY = "set `deliveryClass: live` on each card, or create a durable channel with `cotal channel set <name> --delivery durable`";
+export function liveDeliveryRemedy(mode: MeshEntry["mode"]): string {
+  const live = "set `deliveryClass: live` on each card";
+  return mode === "open"
+    ? `${live}. Durable channels require a different authenticated mesh with a delivery service`
+    : `${live}, or create a durable channel with \`cotal channel set <name> --delivery durable\``;
+}
+
+/** Keep the native validation rules and attach the declaration path to their diagnostics. */
+export function invalidTeamChannelCards(channels: PreparedManifest["manifest"]["channels"]): Map<string, string> {
+  const invalid = new Map<string, string>();
+  for (const channel of channels) {
+    const card = cardOf(channel);
+    for (const field of Object.keys(card) as (keyof ChannelConfig)[]) {
+      try { validateChannelConfig({ [field]: card[field] }); }
+      catch (error) {
+        const reason = error instanceof Error ? oneLine(error.message) : "invalid channel card value";
+        invalid.set(channel.name, `channels.${channel.name}.${field}: ${reason}`);
+        break;
+      }
+    }
+  }
+  return invalid;
+}
+
+/** A prepared record permits restart guidance only for its exact, cleanly stopped stack. */
+export function stoppedTeamDeploy(prepared: PreparedSpace | undefined, root?: string): CommandFailure | undefined {
+  if (!prepared || root !== undefined && canonicalRoot(prepared.root) !== root) return undefined;
+  let journal: ReturnType<typeof readStackJournal>;
+  try { journal = readStackJournal(prepared.root); } catch { return undefined; }
+  const stack = journal?.journal;
+  if (stack?.space !== prepared.space || stack.operation.kind !== "down" || stack.operation.phase !== "completed" || !stack.members.some((member) => member.instanceId !== null)) return undefined;
+  const noManager = stack.members.some((member) => member.role === "manager" && member.state === "not-attempted");
+  return new CommandFailure("refused", "TARGET_UNAVAILABLE", "the selected local stack is stopped; additive deploy requires it to be running", {
+    target: { root: stack.root, space: stack.space }, remedy: `start it again with ${codeSpan(noManager ? "cotal up --no-manager" : "cotal up")} in ${stack.root}`,
+  });
+}
 
 /** Read-only additive classification. The membership feed is display-only and never grants apply. */
-export async function inspectTeamDeployment(root: string, path: string, prepared: PreparedManifest, runtime: string) {
+export async function inspectTeamDeployment(root: string, path: string, prepared: PreparedManifest, runtime: string,
+  attempts: ReturnType<typeof listAdditiveTeamAttempts>, invalidCards: ReadonlyMap<string, string>) {
   const space = prepared.manifest.space;
   const target = { space, root, path };
   const conn = await connectOrThrow({ space }, "deployer", { readOnly: true });
   if (!conn.root || canonicalRoot(conn.root) !== canonicalRoot(root))
     throw new CommandFailure("refused", "CONFLICT", "the registered broker belongs to another root; no additive deployment was classified", { target });
-  if (prepared.manifest.broker?.servers && prepared.manifest.broker.servers !== conn.server)
+  if (prepared.manifest.broker?.servers && canonicalServer(prepared.manifest.broker.servers) !== canonicalServer(conn.server))
     throw new CommandFailure("refused", "CONFLICT", "the manifest broker differs from the registered connection; no alternate broker was adopted", { target });
   let user: Awaited<ReturnType<typeof userViewAuth>> | undefined;
   if (conn.mode === "user") {
@@ -117,24 +157,47 @@ export async function inspectTeamDeployment(root: string, path: string, prepared
     const roster = await presenceSnapshot(conn.server, space, conn.tls, readAuth);
     const channels = await channelRegistrySnapshot(conn.server, space, conn.tls, readAuth);
     const source = readFileSync(path, "utf8");
-    const reloaded = loadManifest(path);
+    const reloaded = loadManifest(path, undefined, "preview");
     if (source !== readFileSync(path, "utf8") || JSON.stringify(reloaded) !== JSON.stringify(prepared)) throw new CommandFailure("refused", "CONFLICT", "the manifest or referenced persona changed during native inspection; no prior ownership was selected", { target });
     const manifestHash = hashManifestSource(source);
     const priors = listLedgers(root).filter(({ ledger }) => ledger.manifestHash === manifestHash && ledger.space === space);
     if (priors.length > 1) throw new CommandFailure("refused", "CONFLICT", "several prior additive ledgers claim this manifest; no deployment ownership was selected", { target });
     const prior = priors[0]?.ledger;
-    const channelPlan = classifyChannels(prepared.manifest.channels, channels, new Set(prior?.created.channels ?? []));
+    const matching = retainedAdditiveTeamAttempts(attempts).filter((row) => row.space === space && row.manifestHash === manifestHash && row.declaredChannels.length);
+    const retained = matching.length === 1 ? matching[0] : undefined;
+    const receipt = retained && attempts.returned.find((row) => row.deploymentId === retained.deploymentId);
+    const unverifiedCards = new Set(matching.flatMap((row) => row.declaredChannels));
+    const owned = new Set(prior?.created.channels ?? []);
+    let priorDeploymentId = prior?.runId ?? null;
+    if (receipt && !attempts.refused.length && receipt.root === root && receipt.server === conn.server && receipt.authMode === conn.mode && receipt.tlsRequired === conn.tls) {
+      const names = receipt.createdChannels.map((row) => row.name);
+      const declared = prepared.manifest.channels;
+      if (JSON.stringify(names) === JSON.stringify(declared.map((row) => row.name))) {
+        let revisions: Awaited<ReturnType<typeof readOwnedChannelRevisions>> = [];
+        try { revisions = await readOwnedChannelRevisions(conn.server, space, conn.tls, readAuth, names, { leader: true }); }
+        catch { /* An unavailable leader read is not evidence of foreign ownership or absence. */ }
+        for (const [index, row] of revisions.entries()) {
+          const expected = receipt.createdChannels[index];
+          if (expected?.name === row.name && row.revision === expected.revision && row.cardSha256 === serviceMetadataDigest(cardOf(declared[index]!)) && Object.hasOwn(channels.channels ?? {}, row.name)) {
+            owned.add(row.name);
+            unverifiedCards.delete(row.name);
+            priorDeploymentId ??= receipt.deploymentId;
+          }
+        }
+      }
+    }
+    const channelPlan = classifyChannels(prepared.manifest.channels.filter((channel) => !unverifiedCards.has(channel.name)), channels, owned);
     const agentPlan = classifyAgents(prepared.agents, roster, prior);
     let membership: Awaited<ReturnType<typeof ep.readMembership>> | null = null;
     try { membership = await ep.readMembership(); } catch { /* only a lower bound on unmanaged readers */ }
     const unmanaged = detectUnmanagedActors(prepared.manifest.channels.map((channel) => channel.name), membership, roster,
       { ids: new Set((prior?.created.agents ?? []).map((agent) => agent.id)), names: new Set((prior?.created.agents ?? []).map((agent) => agent.name)) });
-    return {
-      kind: "native-additive-team-inspection" as const, space, root, runtime, priorDeploymentId: prior?.runId ?? null,
+    const native = {
+      kind: "native-additive-team-inspection" as const, space, root, runtime, priorDeploymentId,
       roster: "complete-native-presence-scan" as const, registry: "complete-native-scan" as const,
       managerReadiness: "not-checked" as const, runtimeAvailability: "not-checked" as const,
       channels: {
-        create: channelPlan.create.map((channel) => channel.name), owned: channelPlan.owned.map((channel) => channel.name),
+        create: channelPlan.create.filter((channel) => !invalidCards.has(channel.name)).map((channel) => channel.name), owned: channelPlan.owned.map((channel) => channel.name),
         existsUnmanaged: channelPlan.existsUnmanaged.map(({ channel }) => channel.name),
         existsUnmanagedPolicy: channelPlan.existsUnmanaged.map(({ channel, live }) => ({ name: channel.name,
           differingDeclaredFields: (["description", "instructions", "replay", "replayWindow", "deliveryClass"] as const).filter((field) => channel[field] !== undefined && channel[field] !== live[field]),
@@ -147,6 +210,7 @@ export async function inspectTeamDeployment(root: string, path: string, prepared
         presentUnowned: unmanaged.presentUnowned.map((peer) => ({ id: peer.id, name: peer.name })) },
       effectAttempted: false as const,
     };
+    return { native, unverifiedCards: [...unverifiedCards] };
   } catch (error) {
     if (error instanceof CommandFailure) throw error;
     throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "the native registry, roster or prior ledger read did not finish; no additive effect was prepared", { target });

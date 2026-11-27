@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { existsSync, openSync, closeSync, readFileSync, readSync, statSync } from "node:fs";
+import { existsSync, openSync, closeSync, readFileSync, readSync, statSync, rmSync } from "node:fs";
 import {
   DEFAULT_SERVER,
   LEASE_TTL_MS,
@@ -14,7 +14,7 @@ import { DELIVERY_PROCESS, DELIVERY_CREDS_KIND, DELIVERY_LOGFILE, DELIVERY_PIDFI
 import { daemonArgv, displayCmd } from "./self-exec.js";
 import { resolveRuntimeSpace } from "./status.js";
 import { cotalRoot } from "./paths.js";
-import { clearManagerArtifacts, ensureManager, managerHasDeliveryMarker, managerRecordState, recordSeams, stopManager, type RecordSeams } from "./manager-proc.js";
+import { clearManagerArtifacts, ensureManager, managerHasDeliveryMarker, managerRecordState, recordSeams, stopManager, type ManagerStartOpts, type RecordSeams } from "./manager-proc.js";
 import { stopLocalProcess } from "./local-process-stop.js";
 import { RESPONDER_UNBOUND_CONSEQUENCE } from "./delivery-responder.js";
 import { seedBeforeLaunch } from "../seed/launch.js";
@@ -24,6 +24,8 @@ import { seedBeforeLaunch } from "../seed/launch.js";
  *  one daemon by filename; every helper below therefore takes the space it is answering about. */
 const folderSpace = (): string => resolveRuntimeSpace(process.cwd());
 const ctx = (space: string): LocalProcessContext => ({ root: cotalRoot(), space });
+/** Intentional manager omission, pinned to the broker incarnation that started without it. */
+export const MANAGER_OMITTED = "manager.{space}.not-started";
 /** READ-resolving: also names a pre-segmentation `delivery.pid` when that is what is on disk. */
 const PID_PATH = (space: string = folderSpace(), root: string = cotalRoot()): string => localProcessPath(DELIVERY_PIDFILE, { root, space });
 // The daemon's cred goes through the secret-store seam; its key comes from workspace's per-kind
@@ -47,7 +49,7 @@ const deliveryCredsKeysToClear = (space: string) => [segmentedKey(DELIVERY_CREDS
  *  the launch (foreground `up`) can act on it.
  *  `open` is the mesh's mode, decided by the caller. An open mesh runs no delivery daemon, whatever
  *  trust material the root still holds from an earlier static stack. */
-type Opts = { space?: string; server?: string; tls?: boolean; open?: boolean; spawn?: string[]; runtime?: string; launch?: string; attachHost?: string; resumeAttempt?: string; resumeCommit?: { path: string; sha256: string }; wsPort?: number; maxSessions?: number; noManager?: boolean; onDeliveryExit?: (code: number | null, signal: NodeJS.Signals | null) => void };
+type Opts = { space?: string; server?: string; tls?: boolean; open?: boolean; spawn?: string[]; runtime?: string; launch?: string; attachHost?: string; resumeAttempt?: string; resumeCommit?: { path: string; sha256: string }; wsPort?: number; maxSessions?: number; managerName?: string; managerSeatCap?: ManagerStartOpts["managerSeatCap"]; noManager?: boolean; onDeliveryExit?: (code: number | null, signal: NodeJS.Signals | null) => void };
 
 /** The recorded daemon, attributed by {@link readProcessRecord} to a `cotal deliver` process.
  *  Same order as {@link managerRecordState}: the space and root, then the test seams. */
@@ -211,7 +213,7 @@ export function startDeliveryDetached(o: Opts = {}): number {
   ];
   // Internal child re-exec (the `up` that reached here already seeded); the delivery daemon does not
   // launch agents, so it skips the connector seed on boot (a direct `cotal deliver` still seeds).
-  const child = spawn(node, args, { detached: true, stdio: ["ignore", fd, fd], env: { ...process.env, COTAL_SKIP_CONNECTOR_SEED: "1" } });
+  const child = spawn(node, args, { detached: true, stdio: ["ignore", fd, fd], env: { ...process.env, COTAL_SKIP_CONNECTOR_SEED: "1" }, windowsHide: true });
   closeSync(fd);
   if (o.onDeliveryExit) child.on("exit", o.onDeliveryExit);
   child.unref();
@@ -436,7 +438,15 @@ export async function ensureControlPlane(
   // This phase also runs in broker-only mode; it is not a manager-start callback.
   if (afterDelivery) await afterDelivery();
   const deliveryStarted = { started: delivery.started ?? false, ...(delivery.pid !== undefined ? { pid: delivery.pid } : {}) };
-  if (o.noManager) return { running: false, delivery: deliveryStarted, responderBound: delivery.responderBound };
+  const omitted = canonicalLocalProcessPath(MANAGER_OMITTED, ctx(space));
+  if (o.noManager) {
+    const brokerPath = canonicalLocalProcessPath("nats.pid", ctx(space));
+    const brokerPid = existsSync(brokerPath) ? parsePid(readFileSync(brokerPath, "utf8")) : undefined;
+    if (brokerPid !== undefined) writePidPair(omitted, brokerPid);
+    return { running: false, delivery: deliveryStarted, responderBound: delivery.responderBound };
+  }
+  rmSync(omitted, { force: true });
+  rmSync(`${omitted}.identity`, { force: true });
   // `started`/`pid` distinguish a manager `ensureManager` just launched from one it found already
   // alive (#883) — carried through unchanged so the caller can name a restore instead of reprinting
   // the same line for both.

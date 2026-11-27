@@ -2,14 +2,15 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir, userInfo } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { peerCredentials } from "@cotal-ai/seat";
-import { skipSuite } from "@cotal-ai/smoke-kit";
+import { killAndAwaitExit, skipSuite } from "@cotal-ai/smoke-kit";
 import { filterDesktopApplicationPath, windowsApplicationPath } from "../daemon/desktop-path.js";
 import { daemonPaths } from "../daemon/endpoint.js";
+import { queryDaemon } from "../daemon/client.js";
 import { excludeLifetime } from "../daemon/lifetime.js";
 import { serveDaemon } from "../daemon/server.js";
 
@@ -53,8 +54,8 @@ interface Frame {
   ok?: boolean;
   line?: string;
   progress?: { step: string; outcome: string; detail: string };
-  error?: { code: string; message: string; remedy?: string; native?: { code: string; detail?: unknown } };
-  result?: { installed: boolean; status: { state: string; pid: number }; omittedRelativePathEntries?: string[] };
+  error?: { code: string; message: string; remedy?: string; native?: { code: string; detail?: unknown }; detail?: { installed?: boolean } };
+  result?: { installed: boolean; status: { state: string; pid: number }; omittedRelativePathEntries?: string[]; text?: string };
 }
 async function requestFrames(target: Isolated, body: string | Record<string, unknown>, timeoutMs = 35_000): Promise<Frame[]> {
   const payload = typeof body === "string" ? { op: body } : body;
@@ -91,17 +92,70 @@ function checkInstallation(target: Isolated): void {
   assert.equal(receipt.unitSha256, createHash("sha256").update(readFileSync(target.unit)).digest("hex"));
 }
 
-// A real account-shell failure must remain actionable before any service operation.
-const shellFailure = isolated("shell-failure");
-for (const profile of [".bash_profile", ".bashrc", ".zprofile", ".zshrc", ".profile"]) writeFileSync(join(shellFailure.dir, "home", profile), "exit 1\n", { mode: 0o600 });
-const refusedPath = await request(shellFailure, "install");
-assert.equal(refusedPath.ok, false);
-assert.equal(refusedPath.error?.code, "DEPENDENCY_UNAVAILABLE");
-assert.equal(refusedPath.error?.message, "the account's application PATH could not be read; no service was changed");
-assert.equal(refusedPath.error?.remedy, "check that your login shell starts successfully, then choose Check again");
-assert.deepEqual(operations(shellFailure.calls), [], "PATH refusal precedes service-manager calls");
-assert.ok(!existsSync(shellFailure.receipt) && !existsSync(shellFailure.unit), "PATH refusal creates no installation");
-console.log("install PATH refusal preserves its message/remedy without service effects");
+async function checkRestartLog(): Promise<void> {
+  const target = isolated("log-restart");
+  const paths = daemonPaths(target.env, target.env.COTAL_HOME);
+  const logPath = join(paths.state, "daemon.log");
+  const env = { ...target.env, COTAL_DAEMON_NATIVE_SERVICE: "1", COTAL_SKIP_CONNECTOR_SEED: "1" };
+  const args = [cli, "daemon", "serve"];
+  const held = excludeLifetime(paths.lock);
+  try {
+    const first = spawnSync(process.execPath, args, { cwd: target.dir, env, stdio: "ignore", timeout: 10_000 });
+    assert.equal(first.status, 2, "the first launch refuses on the fixture's lifetime lock");
+  } finally { held.release(); }
+  const before = (await request(target, "log")).result?.text ?? "";
+  assert.match(before, /^daemon service launch \S+\ndaemon startup refused: .*held by a live process/);
+
+  const next = spawn(process.execPath, args, { cwd: target.dir, env, stdio: "ignore" });
+  try {
+    const deadline = Date.now() + 10_000;
+    while (true) {
+      const status = await queryDaemon({ paths }).catch(() => undefined);
+      if (status?.ok && status.result?.state === "ready" && status.result.pid === next.pid) break;
+      assert.ok(next.exitCode === null && Date.now() < deadline, "the replacement daemon must answer ready");
+      await sleep(50);
+    }
+    const current = readFileSync(logPath, "utf8");
+    assert.match(current, /^daemon service launch \S+\ndaemon ready at /);
+    assert.doesNotMatch(current, /daemon startup refused:/, "the current log stays scoped to this attempt");
+    const after = (await request(target, "log")).result?.text ?? "";
+    assert.ok(after.startsWith(`Previous launch:\n${before}`), "Settings retains the first launch's refusal");
+    assert.match(after, /Current launch:\ndaemon service launch \S+\ndaemon ready at /);
+    console.log("native restart: Settings shows the previous refusal and the current ready launch");
+  } finally {
+    await killAndAwaitExit(next, "SIGTERM");
+    rmSync(target.dir, { recursive: true, force: true });
+  }
+}
+
+await checkRestartLog();
+
+// A real account-shell failure must remain actionable before any service operation: the refusal names the shell,
+// how it ended and its last error output, so the person can fix that startup file.
+const shellCases = [
+  { name: "shell-failure", profile: "exit 1\n", reason: "exited with status 1" },
+  { name: "shell-error-output", profile: "printf '\\033[31mbrew: \"command\" isn'\\''t `found`\\033[0m\\n' >&2\nexit 127\n",
+    reason: "exited with status 127", lastLine: "brew: ’command’ isn’t ’found’" },
+  { name: "shell-noisy-start", profile: "head -c 70000 /dev/zero | tr '\\0' x\n", reason: "printed more than 64 KiB while starting" },
+];
+for (const shellCase of shellCases) {
+  const shellFailure = isolated(shellCase.name);
+  for (const profile of [".bash_profile", ".bashrc", ".zprofile", ".zshrc", ".profile"]) writeFileSync(join(shellFailure.dir, "home", profile), shellCase.profile, { mode: 0o600 });
+  const refusedPath = await request(shellFailure, "install");
+  assert.equal(refusedPath.ok, false);
+  assert.equal(refusedPath.error?.code, "DEPENDENCY_UNAVAILABLE");
+  const message = refusedPath.error?.message ?? "";
+  const prefix = `the account's application PATH could not be read: the login shell ${userInfo().shell} ${shellCase.reason}`;
+  assert.ok(message.startsWith(prefix), message);
+  // Bash can report its own job-control warnings before reading the profile when there is no terminal.
+  const tail = /^(?:; its last error output was "([^"'`\x00-\x1f\x7f]{1,300})")?; no service was changed$/.exec(message.slice(prefix.length));
+  assert.ok(tail, message);
+  if (shellCase.lastLine) assert.equal(tail[1]?.split(" / ").at(-1), shellCase.lastLine);
+  assert.equal(refusedPath.error?.remedy, "check that your login shell starts successfully, then choose Check again");
+  assert.deepEqual(operations(shellFailure.calls), [], "PATH refusal precedes service-manager calls");
+  assert.ok(!existsSync(shellFailure.receipt) && !existsSync(shellFailure.unit), "PATH refusal creates no installation");
+}
+console.log(`install PATH refusal names the shell's failure without service effects (${shellCases.length} cases)`);
 
 // A Windows non-timeout PATH read refusal never mentions a login shell, and a Windows timeout advises waiting and retrying.
 const winRoot = join(root, "win-system-root");
@@ -115,7 +169,7 @@ try {
     () => windowsApplicationPath(),
     (err: { code?: string; message?: string; remedy?: string }) => {
       assert.equal(err.code, "DEPENDENCY_UNAVAILABLE");
-      assert.equal(err.message, "the account's application PATH could not be read; no service was changed");
+      assert.equal(err.message, "the account's application PATH could not be read: PowerShell exited with status 1; no service was changed");
       assert.equal(err.remedy, "choose Try again, or run `cotal daemon install` in a terminal for diagnostics");
       assert.ok(!String(err.remedy).includes("login shell"), "Windows remedy must not mention a login shell");
       return true;
@@ -233,6 +287,7 @@ const control = isolated("control");
 const absent = await request(control, "status");
 assert.equal(absent.error?.code, "NOT_RUNNING");
 assert.equal(absent.error?.message, "The daemon is not running. Install its background service first.");
+assert.equal(absent.error?.detail, undefined, "a service not set up yet carries no installed mark");
 assert.ok(!existsSync(control.receipt));
 const installing = request(control, "install");
 // Observe rejection immediately even if a later setup assertion throws before we await it.
@@ -279,6 +334,8 @@ const beforeStatus = operations(control.calls);
 const stopped = await request(control, "status");
 assert.equal(stopped.error?.code, "NOT_RUNNING");
 assert.equal(stopped.error?.message, "The background service is installed but stopped. Choose Start service to start it.");
+// The app shows Start service for this one, and stays quiet before the first sign-in for the one above.
+assert.deepEqual(stopped.error?.detail, { installed: true });
 // Status validates the recorded source without planning or starting a service.
 assert.deepEqual(operations(control.calls).slice(beforeStatus.length), ["directory-read"], "a status request reads the installation and starts nothing");
 console.log("installed and stopped: status names the stopped service, not a missing installation");
@@ -372,4 +429,25 @@ try {
   setupHeld.release();
   await oldDaemon.close();
 }
+// The app's uninstallers send remove-service: nothing recorded is left alone, and this installation's
+// recorded service is removed through the shipped uninstall. Another installation's is kept (Windows setup proof).
+{
+  const none = isolated("remove-absent");
+  const absentRemoval = await request(none, "remove-service");
+  assert.equal(absentRemoval.ok, true, JSON.stringify(absentRemoval));
+  assert.equal((absentRemoval.result as { state?: string } | undefined)?.state, "absent");
+  assert.deepEqual(operations(none.calls), [], "with no recorded service, removal runs no native step");
+  checkInstallation(control);
+  const before = operations(control.calls).length;
+  const removal = await request(control, "remove-service", 150_000);
+  assert.equal(removal.ok, true, JSON.stringify(removal));
+  assert.equal((removal.result as { state?: string } | undefined)?.state, "removed");
+  const steps = operations(control.calls).slice(before);
+  assert.ok(steps.includes("stop") && steps.includes("disable"), `removal stops and disables the recorded unit: ${steps.join(",")}`);
+  assert.ok(!existsSync(control.receipt) && !existsSync(control.unit), "removal deletes the receipt and the unit");
+  const again = await request(control, "remove-service");
+  assert.equal((again.result as { state?: string } | undefined)?.state, "absent", "a second removal finds nothing");
+  console.log("remove-service: nothing recorded is left alone; this installation's service is removed");
+}
+
 console.log(`daemon-desktop-install: passed; isolated evidence retained at ${root}`);

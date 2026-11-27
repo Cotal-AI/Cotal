@@ -6,6 +6,7 @@ import {
   EP_UNANSWERED,
   EpEnvelopeError,
   GOAL_BEARING_COMMANDS,
+  MANAGER_START_PAYLOAD_FLOOR,
   goalFollowRefusal,
   epProbeInstanceInterest,
   freezeExpectedSet,
@@ -45,10 +46,15 @@ import {
 } from "@cotal-ai/core";
 import { PermissionViolationError, type NatsConnection } from "@nats-io/transport-node";
 import { jetstreamManager } from "@nats-io/jetstream";
+import { readBrokerPolicy } from "../broker-policy.js";
 import { c } from "../colors.js";
+import { shellPath } from "../local-record-source.js";
+import { MANAGER_MACHINE_ID } from "../machine-identity.js";
 import { controlCaller, type ControlAuth } from "../control-target.js";
 import { staleStoreHint } from "../maintenance.js";
+import { brokerUrlKey, findMesh } from "../mesh-registry.js";
 import { CommandFailure, isCommandFailure, nativeEndpointRefusal, type RefusalCode } from "../output.js";
+import { codeSpan } from "../text-wrap.js";
 import { presenceSeat } from "./seat-presence.js";
 import { DIAL_TIMEOUT_MS, DialNotAdmitted, dialWithRetry, notAdmittedRefusal } from "./dial-retry.js";
 
@@ -75,7 +81,7 @@ export const START_TIMEOUT_MS = 40_000;
 /** v0.3 ctl op → v0.4 typed command (P2 item 1, 1c.2b): the wire names the manager REGISTERS
  *  (manager-service-contract ROWS). `start` is creation (`spawn`), a NAMED `stop` is the one
  *  owner/any-mode terminal (`despawn`), the per-agent `status` read is `inspect`; the camelCase
- *  admin family maps to its kebab-case wire names. `targeted` marks the three commands whose
+ *  admin family maps to its kebab-case wire names. `targeted` marks the commands whose
  *  `{name}` argument becomes a §13.2 target block (resolved to the agent's principal triple via
  *  the name-keyed `inspect` read — it rides the spawn capability arm, so resolution reach equals
  *  despawn/attach reach; the wire target is (owner, actor, lifecycleUid), never an alias). */
@@ -88,6 +94,7 @@ const EP_COMMANDS: Record<string, { command: string; targeted?: boolean; self?: 
   stopSelf: { command: "stop", self: true },
   attach: { command: "attach", targeted: true },
   input: { command: "input", targeted: true },
+  interrupt: { command: "interrupt", targeted: true },
   status: { command: "inspect" },
   ps: { command: "ps" },
   slots: { command: "slots" },
@@ -207,10 +214,11 @@ async function askManagerEp(
         return { ...refused, preSubmitRefusal: true, managerInstanceId: info.responder.instanceId, managerEpoch: info.responder.epoch, error: `could not resolve "${name}": ${refused.error}` };
       }
       const row = info.reply.data as { id: string; lifecycleUid: string };
+      // The caller's own pin is checked first, so a run the caller chose that was replaced says so.
+      if (pin?.expectedTarget && (row.id !== pin.expectedTarget.id || row.lifecycleUid !== pin.expectedTarget.lifecycleUid))
+        return { ok: false, code: "not-found", error: `${name} was replaced by a new run since it was selected, so nothing was sent; refresh the agent list and try again`, preSubmitRefusal: true, selectedSeatChanged: true };
       if (selected && ((row.id !== selected.id && `${caller.owner}.${row.id}` !== selected.id) || row.lifecycleUid !== selected.lifecycleUid))
         return { ok: false, code: "expired", error: `${name} changed lifecycle after owner resolution, so nothing was sent`, preSubmitRefusal: true, selectedSeatChanged: true };
-      if (pin?.expectedTarget && (row.id !== pin.expectedTarget.id || row.lifecycleUid !== pin.expectedTarget.lifecycleUid))
-        return { ok: false, code: "not-found", error: `${name} was replaced by a new run since it was selected, so nothing was sent; refresh the agent list and try again` };
       // A STATIC row's `id` is the bare actor under the caller's own owner; a USER-mode row's `id`
       // is the composite `owner.actor` principal key - split it (an embedded dot would break the
       // target block's subject arity). Mode `any` spans owners (operator reach); mode `owner` pins
@@ -322,13 +330,13 @@ export type ManagerReply = ControlReply & {
 /** Classify only a proved pre-effect refusal as refused; a missing effect outcome is not proof.
  *  Every message names the agent when the target carries one and ends with the manager's own
  *  reason, kept to one line. */
-export function managerFailure(reply: ManagerReply, operation: string, target: unknown): CommandFailure {
+export function managerFailure(reply: ManagerReply, operation: string, target: unknown, rosterCommand = "cotal ps"): CommandFailure {
   const native = { code: reply.code, outcome: reply.nativeOutcome, ...(reply.preSubmitRefusal ? { detail: { phase: "target-resolution", actionSubmitted: false } } : reply.request || reply.intent ? { detail: { request: reply.request ?? null, intent: reply.intent ?? null, observation: reply.observationCause ?? null } } : {}) };
   const code = reply.preSubmitRefusal ? reply.targetRefusal ?? nativeEndpointRefusal(reply.code) : nativeEndpointRefusal(reply.code);
   const agent = (target as { agent?: unknown } | null)?.agent;
   const what = typeof agent === "string" ? `${operation} for agent "${oneLine(agent)}"` : operation;
   const reason = reply.error ? `: ${oneLine(reply.error)}` : "";
-  if (reply.preSubmitRefusal && code) return new CommandFailure("refused", code, reply.error ? oneLine(reply.error) : `${operation} was not submitted because its target could not be resolved`, { target, native, remedy: "run `cotal ps` to check the selected manager and agent name" });
+  if (reply.preSubmitRefusal && code) return new CommandFailure("refused", code, reply.error ? oneLine(reply.error) : `${operation} was not submitted because its target could not be resolved`, { target, native, remedy: `run ${codeSpan(rosterCommand)} to check the selected manager and agent name` });
   if (reply.nativeOutcome === "not-executed" && code) return new CommandFailure("refused", code, `the manager refused ${what} before execution${reason}`, { target, native, remedy: "nothing ran; fix what the manager reported, then run the command again" });
   if (reply.nativeOutcome === "executed" && !reply.unanswered) return new CommandFailure("failed", "OPERATION_FAILED", `the manager reported that ${what} failed${reason}`, { target, native });
   return new CommandFailure("unknown", "OPERATION_UNKNOWN", `the manager did not confirm the outcome of ${what}; it was not submitted again${reason}`, { target, native, remedy: "inspect the recorded manager, request and target before retrying" });
@@ -355,7 +363,11 @@ export function describeUnanswered(reply: ManagerReply): boolean {
  *  to type a flag it does not have. Absence of a pin therefore never means "not passed". */
 export interface ManagerPin {
   instanceId?: string;
-  /** The live presence row used to select this manager before minting its caller instrument. */
+  /** The seat row that selected this manager before minting its caller instrument: a live presence
+   *  row, or the row the pinned manager listed. It skips the presence lookup by name. The manager's
+   *  own `inspect` still finds the seat by `name`, which must be the manager's exact name for it, and
+   *  the answer must carry this id and lifecycle before anything is sent. An `expectedTarget` is
+   *  checked first. */
   expectedSeat?: { name: string; id: string; lifecycleUid: string };
   /** A picker-selected incarnation, checked after name resolution and before publication. */
   expectedTarget?: { id: string; lifecycleUid: string };
@@ -503,14 +515,11 @@ export type ScatterReply = { ok: true; instances: ScatterInstanceReply[] } | { o
  *  the scatter's TWO connections cannot drift in their connect options: they differ in credential
  *  and in nothing else. The selected dialer matters because the raw node transport refuses a
  *  `wss://` mesh behind an HTTPS edge even when the other endpoint rails can reach it. */
-export async function withControlConnection<T>(server: string, auth: ControlAuth, fn: (nc: NatsConnection) => Promise<T>): Promise<T> {
-  const nc = await dialerFor(server)({
-    servers: server,
-    ...standaloneConnectOpts(auth.creds ? { creds: auth.creds, tls: auth.tls === true } : auth.bearer ? { bearer: auth.bearer, sentinelCreds: auth.sentinelCreds, tls: auth.tls === true } : { tls: auth.tls === true }),
-    maxReconnectAttempts: 0,
-  });
+export async function withControlConnection<T>(server: string, auth: ControlAuth, fn: (nc: NatsConnection, name: string) => Promise<T>): Promise<T> {
+  const connectOpts = standaloneConnectOpts(auth.creds ? { creds: auth.creds, tls: auth.tls === true } : auth.bearer ? { bearer: auth.bearer, sentinelCreds: auth.sentinelCreds, tls: auth.tls === true } : { tls: auth.tls === true });
+  const nc = await dialerFor(server)({ servers: server, ...connectOpts, maxReconnectAttempts: 0 });
   try {
-    return await fn(nc);
+    return await fn(nc, String(connectOpts.name));
   } finally {
     await drainAndClose(nc);
   }
@@ -869,6 +878,25 @@ export async function scatterManager(
   return askManagerScatterEp(client, space, server, op, { ...auth, epCaller: who.caller }, spaceAuth, timeoutMs, opts.reportHosts === true);
 }
 
+/** Name the local project only when this machine started the stack at the broker we asked. */
+export function startStackManagerRemedy(space: string, server: string): string {
+  let recorded: ReturnType<typeof findMesh>;
+  try { recorded = findMesh(space); } catch { recorded = undefined; }
+  if (!recorded || recorded.origin === "manual" || recorded.origin === "catalog" || brokerUrlKey(recorded.server) !== brokerUrlKey(server))
+    return "start this space's manager where its stack runs; a stack started with --no-manager has none";
+
+  let maxPayload: number | undefined;
+  try {
+    maxPayload = readBrokerPolicy(recorded.root)?.maxPayload;
+  } catch (error) {
+    return `check the stack's broker policy before starting its manager: ${oneLine(String(error))}`;
+  }
+  if (maxPayload !== undefined && maxPayload < MANAGER_START_PAYLOAD_FLOOR) {
+    return `bare \`cotal up\` cannot add a manager: the broker's payload limit is ${maxPayload} bytes, below the manager's minimum of ${MANAGER_START_PAYLOAD_FLOOR} bytes. The limit is fixed while the broker runs. In ${shellPath(recorded.root)}, run \`cotal down --yes\`, then \`cotal up --foreground --max-payload 1048576\`.`;
+  }
+  return `start the stack's manager with bare \`cotal up\` in ${recorded.root}; a stack started with --no-manager has none`;
+}
+
 /** The refusal `ps` gives, raised before an unpinned operator read when the registry lists no live
  *  manager, rather than after the read's describe has waited out its whole deadline. Only the
  *  operator instrument holds the registry rows, so a caller passes a user's manager view or a pinned
@@ -880,27 +908,31 @@ export async function refuseWithoutLiveManager(space: string, server: string, au
     return await liveManagerIds(space, server, auth);
   } catch (e) {
     if (!(e instanceof EpEnvelopeError) || !noLiveInstances(e)) return undefined;
-    throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `no manager is running for this space to ${purpose}`, { target, native: { code: e.code, detail: `${e.code}: ${e.message}` }, remedy: "start the stack's manager with bare `cotal up`; a stack started with --no-manager has none" });
+    throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `no manager is running for this space to ${purpose}`, { target, native: { code: e.code, detail: `${e.code}: ${e.message}` }, remedy: startStackManagerRemedy(space, server) });
   }
 }
 
-/** The host one manager instance reports in its own `status`, the name `cotal ps` prints as its
- *  reported host, or undefined when it does not answer or names no well-formed host. Presence
- *  carries no instance id off a user-auth mesh, so this read is where a pinned manager's host comes
- *  from there. The view is the caller's own and is not kept.
+/** The host and the machine one manager instance reports in its own `status`: the name `cotal ps`
+ *  prints as its reported host, and its `managerMachineId`. Each is absent when the manager does
+ *  not answer or names none that is well formed. Presence carries no instance id off a user-auth
+ *  mesh, so this read is where a pinned manager's host comes from there. The view is the caller's
+ *  own and is not kept.
  *
  *  It takes the ordinary control deadline, NOT {@link REPORTED_HOST_BUDGET_MS}. That budget belongs
  *  to the census above, where a host name is display metadata and a slow instance is listed without
  *  one. Here the answer decides whether a launch stops to ask the operator a question, so a read
  *  that gives up early does not lose a column, it asks about a manager that is on this host.
  *  Measured: under heavy load the 2s budget expired and the question came back. */
-export async function reportedManagerHost(client: ControlClient, space: string, server: string, auth: ControlAuth, instanceId: string): Promise<string | undefined> {
+export async function reportedManagerHost(client: ControlClient, space: string, server: string, auth: ControlAuth, instanceId: string): Promise<{ host?: string; machine?: string }> {
   let reply: ManagerReply;
   try {
     reply = await askManager(client, space, server, "managerStatus", undefined, auth, "owner", undefined, { instanceId });
-  } catch { return undefined; }
-  const host = reply.ok ? (reply.data as { host?: unknown } | undefined)?.host : undefined;
-  return typeof host === "string" && HOST_NAME.test(host) ? host : undefined;
+  } catch { return {}; }
+  const { host, machine } = (reply.ok ? reply.data as { host?: unknown; machine?: unknown } | undefined : undefined) ?? {};
+  return {
+    ...(typeof host === "string" && HOST_NAME.test(host) ? { host } : {}),
+    ...(typeof machine === "string" && MANAGER_MACHINE_ID.test(machine) ? { machine } : {}),
+  };
 }
 
 /** A pinned instance the space's registry does not list has nothing behind it to answer, so the
@@ -918,7 +950,7 @@ export async function refuseUnregisteredManager(space: string, server: string, a
   const target = { space, requestedManagerInstance: on };
   // With none running this is the unpinned refusal, which names the same way out.
   if (running.length === 0)
-    throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `no manager is running for this space, so --on ${on} names none. Nothing was sent`, { target, remedy: "start the stack's manager with bare `cotal up`; a stack started with --no-manager has none" });
+    throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `no manager is running for this space, so --on ${on} names none. Nothing was sent`, { target, remedy: startStackManagerRemedy(space, server) });
   const which = running.length === 1 ? `the one running is ${running[0]}` : `the ones running are ${running.join(", ")}`;
   throw new CommandFailure("refused", "TARGET_NOT_FOUND", `--on ${on} names no manager running for space ${space}; ${which}. Nothing was sent`, {
     target,
@@ -937,10 +969,15 @@ export async function managerRailGone(space: string, server: string, auth: Contr
   if ("refusal" in who || signal?.aborted) return false;
   const aborted = new Promise<false>((resolve) => signal?.addEventListener("abort", () => resolve(false), { once: true }));
   try {
-    return await withControlConnection(server, auth, (nc) => Promise.race([
-      epProbeInstanceInterest(nc, space, BASELINE_LIFECYCLE_ENDPOINT, instanceId, who.caller, { deadlineMs: PROBE_DEADLINE_MS }).then((verdict) => verdict === "gone"),
-      aborted,
-    ]));
+    return await withControlConnection(server, auth, async (nc, name) => {
+      // A logged-in user's pinned view probes on the issued rail, as a manager call does; its
+      // generation is read back from this connection's accepted row.
+      const probe = async () => {
+        const caller = auth.bearer !== undefined && auth.managerInstanceId !== undefined ? await issuedUserCaller(nc, space, name, who.caller) : who.caller;
+        return (await epProbeInstanceInterest(nc, space, BASELINE_LIFECYCLE_ENDPOINT, instanceId, caller, { deadlineMs: PROBE_DEADLINE_MS })) === "gone";
+      };
+      return Promise.race([probe(), aborted]);
+    });
   } catch {
     return false;
   }

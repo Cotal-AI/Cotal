@@ -8,9 +8,14 @@ import type { ConversationApprovalPending, ConversationGrant, ConversationPendin
 import { createClaudeHandle, type ClaudeHooks } from "./hooks.js";
 import { createClaudeEventPlane } from "./claude-events.js";
 import { createBoundClaudeTranscriptSource } from "./agui-source.js";
+import type { CommandFeed } from "./command-feed.js";
+import { claudeCommands, commandTurns } from "./commands.js";
 
+const warn = (msg: string): void => void process.stderr.write(`[cotal-connector] ${msg}\n`);
 const PLUMBING_MS = 60_000;
 const JOIN_MS = 20_000;
+/** How long a disconnect waits for the event plane's queued work before it stops the agent. */
+const PLANE_SETTLE_MS = 3_000;
 /** How often a pending request is replayed to the authority while the person decides, and how long
  *  past its expiry a replay may still bring the recorded decision before the host stops asking. */
 const WATCH = { pollMs: 10_000, graceMs: 60_000 };
@@ -29,6 +34,8 @@ interface AppHostOptions {
   participate?: (connection: GatewayConnection) => Promise<NativeTurnParticipationLease>;
   /** Deliver one pending workflow turn through the bound native session wake feed. */
   turn?: (session: string, connectionId: string, text: string) => boolean;
+  /** This Claude Code process's command socket, which serves each connection's agent commands. */
+  commands?: CommandFeed;
   watch?: typeof WATCH;
 }
 
@@ -42,6 +49,8 @@ interface NativeBinding { session: string; path: string; event: HookEvent }
 interface Held {
   conn: GatewayConnection;
   dir?: string;
+  resumable?: boolean;
+  retireRequested?: boolean;
   session?: string;
   hooks?: ClaudeHooks;
   plane?: ReturnType<typeof createClaudeEventPlane>;
@@ -52,7 +61,7 @@ interface Held {
 }
 
 type Reply = { ok: true; env: Record<string, string>; retire?: { dir: string }; grant?: ConversationGrant }
-  | ({ ok: false; pending: true } & ConversationPending)
+  | ({ ok: false; pending: true; error?: string } & ConversationPending)
   | { ok: false; pending?: false; taken?: true; error?: string; refused?: "denied" | "expired" | "refused"; retryable?: boolean };
 
 /** A bound session's request the person has not decided. The host replays it until the authority
@@ -87,6 +96,24 @@ function unfinished(id: string, why: string): string {
     `Call cotal_disconnect with connection_id ${id} to retry it now, or cotal_connect to retry it and then connect again.`;
 }
 
+/** Stop a conversation's event plane before its agent stops, waiting at most {@link PLANE_SETTLE_MS}
+ *  for the holder's queued work. That work is a flush still publishing, and while the mesh is down
+ *  it ends only when its publish fails, so an unbounded wait kept a disconnect from reaching the
+ *  agent stop. Work still running when the wait ends is not cancelled: the agent stop that follows
+ *  closes the connection under it, and its events stay in the transcript. */
+async function closePlane(plane: ReturnType<typeof createClaudeEventPlane> | undefined): Promise<void> {
+  if (!plane) return;
+  plane.stop();
+  let timer: NodeJS.Timeout | undefined;
+  const settled = await Promise.race([
+    plane.events.close().then(() => true, () => true),
+    new Promise<false>((resolve) => { timer = setTimeout(() => resolve(false), PLANE_SETTLE_MS); }),
+  ]);
+  clearTimeout(timer);
+  if (!settled)
+    process.stderr.write(`[cotal-connector] the event plane did not settle within ${PLANE_SETTLE_MS / 1000} s of the disconnect; stopping the connection anyway, and unpublished events stay in the transcript\n`);
+}
+
 function launchEnv(base: NodeJS.ProcessEnv, printed: Record<string, string>): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {};
   for (const [k, v] of Object.entries(base)) if (!k.startsWith("COTAL_") || k === "COTAL_HOME") env[k] = v;
@@ -114,7 +141,7 @@ export function createAppHost(o: AppHostOptions): AppHost {
   let reapSpace: string | undefined;
   const plumbing = (args: string[]): Promise<Reply> => new Promise((resolve, reject) => {
     const cotal = o.cotal();
-    execFile(cotal[0]!, [...cotal.slice(1), "app-identity", ...args], { cwd: o.cwd, env: o.env, timeout: PLUMBING_MS }, (_error, stdout, stderr) => {
+    execFile(cotal[0]!, [...cotal.slice(1), "app-identity", ...args], { cwd: o.cwd, env: o.env, timeout: PLUMBING_MS, windowsHide: true }, (_error, stdout, stderr) => {
       try { resolve(JSON.parse(stdout.trim().split("\n").at(-1) ?? "") as Reply); }
       catch {
         reject(new Error(/Unknown option ['"]--require-approval['"]/.test(stderr)
@@ -239,7 +266,7 @@ export function createAppHost(o: AppHostOptions): AppHost {
       if (reply.pending) {
         // A bound session can be told the decision, so the host follows the request for it.
         if (binding) startWatch(binding.session, name, args, reply.approval);
-        throw new ApprovalRequired({ requestId: reply.requestId, approval: reply.approval, proposed: reply.proposed }, space);
+        throw new ApprovalRequired({ requestId: reply.requestId, approval: reply.approval, proposed: reply.proposed }, space, reply.error);
       }
       if ((reply.refused || reply.retryable === false) && binding) stopWatch(binding.session);
       if (reply.taken) throw new NameTaken(name);
@@ -259,42 +286,46 @@ export function createAppHost(o: AppHostOptions): AppHost {
       // secret for a manager-call view, so manager calls carry only what its grant holds.
       config.turnRelay = false;
       if (eventPlaneArmed(config, env) && !binding) throw new Error("this mesh requires a bound native event source");
-      agent = new MeshAgent(config, env, { withholdProcessCwd: true });
+      let hooks: ClaudeHooks | undefined;
+      agent = new MeshAgent(config, env, {
+        withholdProcessCwd: true,
+        ...(o.commands ? { commands: claudeCommands({ feed: () => o.commands, interrupting: () => hooks?.interrupting(agent!), warn, onStop: (stop) => agent!.once("stopping", stop) }) } : {}),
+      });
+      const turns = o.commands ? commandTurns(agent) : undefined;
       agent.on("error", () => process.stderr.write("[cotal-connector] personal connection error; inspect cotal_connection_status\n"));
       if (eventPlaneArmed(config, env)) plane = createClaudeEventPlane(agent, config, env, source);
       // Native ingress owns messages. Lifecycle forwarding has no command-hook reply consumer,
       // so it must not acquire a second delivery hold for context that nobody can receive.
-      const hooks = binding ? createClaudeHandle({ env, events: () => plane?.events, delivery: false, turns: true }) : undefined;
+      hooks = binding ? createClaudeHandle({ env, events: () => plane?.events, delivery: false, turns: true, idle: () => turns?.idle() }) : undefined;
       hooks?.adoptTranscript(binding!.path, "resume");
       void agent.start();
       for (let waited = 0; !agent.connected && waited < JOIN_MS; waited += 100) await new Promise((resolve) => setTimeout(resolve, 100));
       if (!agent.connected) throw new Error(`the personal conversation did not join within ${JOIN_MS / 1000} s; its identity was retained for exact cleanup`);
       const conn: GatewayConnection = { id: randomUUID(), agent, config, ...(reply.grant ? { tools: grantedTools(reply.grant) } : {}) };
-      held.set(conn.id, { conn, dir, session: binding?.session, hooks, plane });
+      held.set(conn.id, { conn, dir, resumable: !!reply.env.COTAL_CONVERSATION_APPROVAL, session: binding?.session, hooks, plane });
       if (binding && hooks) await hooks.handle(agent, binding.event);
       if (config.userAuth) reap(config.space);
       return conn;
     } catch (error) {
-      plane?.stop();
-      await plane?.events.close().catch(() => {});
+      await closePlane(plane);
       await agent?.stop().catch(() => {});
-      try { await retire(dir); }
+      try { if (reply.env.COTAL_CONVERSATION_APPROVAL !== "resumed") await retire(dir); }
       catch { if (context && dir) pending.set(context, dir); }
       throw error;
     }
   };
-  const close = async (id: string): Promise<boolean> => {
+  const close = async (id: string, release = false): Promise<boolean> => {
     const h = held.get(id);
     if (!h) return false;
+    if (!release) h.retireRequested = true;
     if (h.closing) return h.closing;
     h.closing = (async () => {
       if (!h.stopped) {
-        h.plane?.stop();
-        await h.plane?.events.close();
+        await closePlane(h.plane);
         await h.conn.agent.stop();
         h.stopped = true;
       }
-      try { await retire(h.dir); }
+      try { if (h.retireRequested || !h.resumable) await retire(h.dir); }
       catch (error) { h.unfinished = reason(error); throw new Error(unfinished(id, h.unfinished)); }
       held.delete(id);
       return true;
@@ -333,7 +364,7 @@ export function createAppHost(o: AppHostOptions): AppHost {
         const context = (reply?.hookSpecificOutput as { additionalContext?: unknown } | undefined)?.additionalContext;
         if (event.hook_event_name === "SessionStart" && typeof context === "string")
           h.hooks?.onReply(bound, o.turn?.(session, id, context) === true);
-        if (event.hook_event_name === "SessionEnd") await close(id);
+        if (event.hook_event_name === "SessionEnd") await close(id, true);
       }
       if (event.hook_event_name === "SessionEnd") {
         bindings.delete(session);
@@ -349,8 +380,11 @@ export function createAppHost(o: AppHostOptions): AppHost {
     },
     async closeAll() {
       refusals.clear();
-      for (const session of [...watches.keys()]) stopWatch(session);
-      const results = await Promise.allSettled([...held.keys()].map(close));
+      const unclaimed = [...watches.keys()].flatMap((session) => stopWatch(session)?.issued ?? []);
+      const results = await Promise.allSettled([...held.keys()].map((id) => close(id, true)));
+      for (const dir of unclaimed) {
+        try { await serial(() => retire(dir)); } catch (error) { results.push({ status: "rejected", reason: error }); }
+      }
       if (results.some((r) => r.status === "rejected") || pending.size)
         throw new Error("some personal identities have pending cleanup; their saved lifecycle records were retained");
     },

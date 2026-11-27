@@ -104,8 +104,10 @@ try {
   // The manager's retirement broker phase, with each inventory it reads recorded and an optional step
   // run after that read and before the deprovisioner.
   const m = manager as unknown as {
-    deprovisionBroker(a: { id: string; name: string; lifecycleUid: string }): Promise<DeprovisionResourceAccounting>;
     lifecycleMembershipInventory(a: { id: string; lifecycleUid: string }): Promise<{ complete: boolean; channels: string[]; reason?: string }>;
+    retirement: {
+      deprovisionBroker(a: { id: string; name: string; lifecycleUid: string }): Promise<DeprovisionResourceAccounting>;
+    };
   };
   const readInventory = m.lifecycleMembershipInventory.bind(m);
   const listings = new Map<string, { complete: boolean; channels: string[]; fenced: boolean }>();
@@ -119,7 +121,7 @@ try {
     if (step) await step();
     return r;
   };
-  const retire = (s: Seat) => m.deprovisionBroker({ id: s.id.id, name: s.name, lifecycleUid: s.uid });
+  const retire = (s: Seat) => m.retirement.deprovisionBroker({ id: s.id.id, name: s.name, lifecycleUid: s.uid });
   const listedOnly = (s: Seat, channels: string[]) => {
     const l = listings.get(s.uid);
     return l !== undefined && l.complete && l.fenced && JSON.stringify(l.channels) === JSON.stringify(channels);
@@ -144,11 +146,11 @@ try {
     const t0 = Date.now();
     const a = await seat("prune-a");
     await a.ep.durableJoinChannel("lane.a");
-    const d = daemon.ep as unknown as { aclForAlias(p: string): Promise<{ allowSubscribe: string[]; lifecycleUid: string } | undefined>; retiringLifecycles: Map<string, Set<string>> };
-    const lookup = d.aclForAlias.bind(d);
+    const d = daemon.ep as unknown as { durableBackstop: { aclForAlias(p: string): Promise<{ allowSubscribe: string[]; lifecycleUid: string } | undefined> }; deliveryPlane: { retiringLifecycles: Map<string, Set<string>> } };
+    const lookup = d.durableBackstop.aclForAlias.bind(d.durableBackstop);
     const h = held();
     let armed = true;
-    d.aclForAlias = async (p) => {
+    d.durableBackstop.aclForAlias = async (p) => {
       const result = await lookup(p);
       if (p === a.principal && armed) { armed = false; h.enter(); await h.released; }
       return result;
@@ -160,10 +162,10 @@ try {
     // ACL row the deprovisioner retired.
     const a2 = await seat("prune-a", a.id);
     const a2Listing = await supervisor.requestDeliveryAdmin("lifecycleMemberships", { principal: a2.principal, lifecycleUid: a2.uid }, 30_000);
-    const markRemoved = a2Listing.ok && d.retiringLifecycles.get(a.principal)?.has(a.uid) === false;
+    const markRemoved = a2Listing.ok && d.deliveryPlane.retiringLifecycles.get(a.principal)?.has(a.uid) === false;
     h.release();
     const lateOutcome = await late;
-    d.aclForAlias = lookup;
+    d.durableBackstop.aclForAlias = lookup;
     const left = await rows(a);
     retained += left.length;
     check("PRUNE: the retirement fenced the ACL row before its inventory, which listed the 1 row then on the broker",
@@ -241,10 +243,10 @@ try {
     const c = await seat("handover-c");
     await c.ep.durableJoinChannel("lane.a");
     const old = daemon;
-    const oldEp = old.ep as unknown as { durableJoinFor(...args: unknown[]): Promise<unknown> };
-    const joinFor = oldEp.durableJoinFor.bind(oldEp);
+    const oldEp = old.ep as unknown as { durableBackstop: { durableJoinFor(...args: unknown[]): Promise<unknown> } };
+    const joinFor = oldEp.durableBackstop.durableJoinFor.bind(oldEp.durableBackstop);
     const h = held();
-    oldEp.durableJoinFor = async (...args) => {
+    oldEp.durableBackstop.durableJoinFor = async (...args) => {
       if (args[0] === c.principal && args[1] === "lane.after") { h.enter(); await h.released; }
       return joinFor(...args);
     };
@@ -270,7 +272,7 @@ try {
     const t0 = Date.now();
     const e = await seat("postwrite-e");
     await e.ep.durableJoinChannel("lane.a");
-    const members = await (daemon.ep as unknown as { membersRegistry(): Promise<KV> }).membersRegistry();
+    const members = await (daemon.ep as unknown as { durableBackstop: { membersRegistry(): Promise<KV> } }).durableBackstop.membersRegistry();
     const create = members.create.bind(members);
     const key = memberKey("lane.after", e.principal, e.uid);
     const h = held();
@@ -315,8 +317,8 @@ try {
     endpoints.push(p);
     p.on("error", () => {});
     await p.start();
-    const oldEp = daemon.ep as unknown as { aclAllows(o: string, u: string, c: string): Promise<boolean>; membersRegistry(): Promise<KV> };
-    const members = await oldEp.membersRegistry();
+    const oldEp = daemon.ep as unknown as { durable: { aclAllows(o: string, u: string, c: string): Promise<boolean> }; durableBackstop: { membersRegistry(): Promise<KV> } };
+    const members = await oldEp.durableBackstop.membersRegistry();
     const create = members.create.bind(members);
     const key = memberKey("lane.after", d.principal, d.uid);
     const h = held();
@@ -325,11 +327,11 @@ try {
       return create(k, data, ...rest);
     };
     // The daemon dies before its post-write read: that read never answers while the witness runs.
-    const allows = oldEp.aclAllows.bind(oldEp);
+    const allows = oldEp.durable.aclAllows.bind(oldEp.durable);
     let dies!: () => void;
     const death = new Promise<boolean>((r) => { dies = () => r(false); });
     let reads = 0;
-    oldEp.aclAllows = async (o, u, c) => {
+    oldEp.durable.aclAllows = async (o, u, c) => {
       if (o === d.principal && c === "lane.after" && ++reads === 2) return death;
       return allows(o, u, c);
     };
@@ -357,7 +359,7 @@ try {
     check("DEATH: the message fanned out against that row, and the reader that dropped its entry removed the row: 0 rows remain", left.length === 0, left);
     dies();
     const lateOutcome = await late;
-    oldEp.aclAllows = allows;
+    oldEp.durable.aclAllows = allows;
     check("DEATH: the dead daemon's join, had it lived, would have refused without recreating the row", /narrowed or retired while the row was written/.test(lateOutcome) && (await rows(d)).length === 0, lateOutcome);
     console.log(`DEATH_WITNESS rowLeftByDeath=${leftBefore.length} retainedRows=${left.length} ms=${Date.now() - t0}`);
   }
@@ -367,7 +369,7 @@ try {
     const t0 = Date.now();
     const f = await seat("tombstone-f");
     const joined = await f.ep.durableJoinChannel("lane.a");
-    const members = await (daemon.ep as unknown as { membersRegistry(): Promise<KV> }).membersRegistry();
+    const members = await (daemon.ep as unknown as { durableBackstop: { membersRegistry(): Promise<KV> } }).durableBackstop.membersRegistry();
     const update = members.update.bind(members);
     const key = memberKey("lane.a", f.principal, f.uid);
     const h = held();
@@ -411,7 +413,7 @@ try {
       { listing, acl: acl?.record.allowSubscribe, members: accounting.members });
     check("SKEW: a late join on the same daemon process is refused by the lifecycle's in-memory mark", /is retiring/.test(lateOutcome), lateOutcome);
     check("SKEW: 0 rows of the retired lifecycle remain", left.length === 0, left);
-    const marks = (daemon.ep as unknown as { retiringLifecycles: Map<string, Set<string>> }).retiringLifecycles;
+    const marks = (daemon.ep as unknown as { deliveryPlane: { retiringLifecycles: Map<string, Set<string>> } }).deliveryPlane.retiringLifecycles;
     check("SKEW: the daemon keeps its mark for the lifecycle the unfenced inventory named (#4996)", marks.get(g.principal)?.has(g.uid) === true, [...marks.entries()].map(([p, s]) => [p, [...s]]));
     console.log(`SKEW_WITNESS narrowed=false inventoryListed=${channels.length} lateJoinAccepted=${lateOutcome === "accepted"} retainedRows=${left.length} ms=${Date.now() - t0}`);
   }
@@ -423,7 +425,7 @@ try {
     const t0 = Date.now();
     const f = await seat("fenced-f");
     await f.ep.durableJoinChannel("lane.a");
-    const marks = (daemon.ep as unknown as { retiringLifecycles: Map<string, Set<string>> }).retiringLifecycles;
+    const marks = (daemon.ep as unknown as { deliveryPlane: { retiringLifecycles: Map<string, Set<string>> } }).deliveryPlane.retiringLifecycles;
     const accounting = await retire(f);
     const marked = marks.get(f.principal)?.has(f.uid) === true;
     const lateOutcome = await outcome(f.ep.durableJoinChannel("lane.late"));
@@ -441,14 +443,14 @@ try {
   {
     const t0 = Date.now();
     const r = await seat("readfail-r");
-    const oldEp = daemon.ep as unknown as { aclAllows(o: string, u: string, c: string): Promise<boolean>; membersRegistry(): Promise<KV> };
-    const allows = oldEp.aclAllows.bind(oldEp);
+    const oldEp = daemon.ep as unknown as { durable: { aclAllows(o: string, u: string, c: string): Promise<boolean> }; durableBackstop: { membersRegistry(): Promise<KV> } };
+    const allows = oldEp.durable.aclAllows.bind(oldEp.durable);
     let reads = 0;
-    oldEp.aclAllows = async (o, u, c) => {
+    oldEp.durable.aclAllows = async (o, u, c) => {
       if (o === r.principal && c === "lane.r" && ++reads === 2) throw new Error("injected: the post-write ACL read failed");
       return allows(o, u, c);
     };
-    const members = await oldEp.membersRegistry();
+    const members = await oldEp.durableBackstop.membersRegistry();
     const purge = members.purge.bind(members);
     const key = memberKey("lane.r", r.principal, r.uid);
     const h = held();
@@ -462,7 +464,7 @@ try {
     const retry = await r.ep.durableJoinChannel("lane.r");
     h.release();
     const firstOutcome = await first;
-    oldEp.aclAllows = allows;
+    oldEp.durable.aclAllows = allows;
     members.purge = purge;
     const kept = await readMember(kv, "lane.r", r.principal, r.uid);
     const liveRows = (await rows(r)).length;

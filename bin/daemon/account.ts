@@ -7,8 +7,27 @@ import { accountComputerId } from "./account-identity.js";
 import type { AccountComputerStatus } from "./account-state.js";
 import type { createAccountReconciler } from "./account-reconcile.js";
 
+type AccountContext = { state: AccountComputerStatus; etag?: string; lastHeartbeat: number; sentManagers?: string; snapshot?: SpaceCatalogSnapshot; revision?: number; bindingRevisions?: Record<string, number>; abort: AbortController; work?: Promise<void> };
+
+async function recoverAccountSpace(home: string, reconciler: ReturnType<typeof createAccountReconciler>, contexts: Map<string, AccountContext>, tick: () => Promise<void>, space: string, candidate: string, holder: string) {
+  await tick();
+  await Promise.all([...contexts.values()].map(item => item.work));
+  const account = signedInMachineAccounts(home).find(item => item.ownerKey === candidate);
+  if (!account) throw new Error("Sign in again before moving this connection.");
+  const context = contexts.get(candidate);
+  const previous = context?.snapshot;
+  if (context) { delete context.etag; await tick(); await context.work; }
+  const snapshot = context?.snapshot;
+  const row = snapshot?.spaces.find(item => item.slug === space);
+  if (!context || context.abort.signal.aborted || !snapshot || snapshot === previous || !row || "unavailable" in row || context.state.message || context.state.mode !== "account")
+    throw new Error("Refresh this account's spaces before moving the connection.");
+  await reconciler.transfer(space, account, holder, context.abort.signal);
+  await withIdpSessionDir(home, () => reconciler.apply(account, snapshot, context.revision!, context.bindingRevisions!, true, context.abort.signal));
+}
+
 /** Poll account intent without interpreting transport failure as an empty desired set. */
-export function createAccountComputer(home: string, version: string, reconciler: ReturnType<typeof createAccountReconciler>) {
+export function createAccountComputer(home: string, version: string, reconciler: ReturnType<typeof createAccountReconciler>, onChange?: () => void) {
+  const notify = () => { try { onChange?.(); } catch {} };
   let vitals: ComputerVitals | undefined;
   let vitalsError: string | undefined;
   let sampling: Promise<void> | undefined;
@@ -22,7 +41,7 @@ export function createAccountComputer(home: string, version: string, reconciler:
   }
   const pendingNames = new Set<string>();
   let state: AccountComputerStatus = { mode: "signed-out", hostSupport: "unknown", spaces: [] };
-  const contexts = new Map<string, { state: AccountComputerStatus; etag?: string; lastHeartbeat: number; sentManagers?: string; snapshot?: SpaceCatalogSnapshot; revision?: number; bindingRevisions?: Record<string, number>; abort: AbortController; work?: Promise<void> }>();
+  const contexts = new Map<string, AccountContext>();
   const tasks = new Set<Promise<void>>();
   let stopped = false;
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -42,7 +61,7 @@ export function createAccountComputer(home: string, version: string, reconciler:
       contexts.set(account.ownerKey, context);
       state = context.state;
       if (context.work || context.state.mode === "per-space" || context.state.mode === "sign-in-required") return;
-      context.work = poll().catch((error: unknown) => { context.state.message = error instanceof Error && error.message.startsWith("invalid computer") ? error.message : "account computer request failed; existing connections are unchanged"; }).finally(() => { tasks.delete(context.work!); context.work = undefined; if (!stopped && pendingNames.delete(account.ownerKey)) void tick().catch(() => {}); });
+      context.work = poll().then(() => { reconciler.accountHealth(account.ownerKey, context.state.mode !== "sign-in-required"); }).catch((error: unknown) => { if (!context.abort.signal.aborted && !abort.signal.aborted) reconciler.accountHealth(account.ownerKey, false); context.state.message = error instanceof Error && error.message.startsWith("invalid computer") ? error.message : "account computer request failed; existing connections are unchanged"; }).finally(() => { tasks.delete(context.work!); context.work = undefined; notify(); if (!stopped && pendingNames.delete(account.ownerKey)) void tick().catch(() => {}); });
       tasks.add(context.work);
       async function poll() {
     const state = context.state;
@@ -95,6 +114,7 @@ export function createAccountComputer(home: string, version: string, reconciler:
     if (stopped || work) return;
     work = tick().catch(() => { if (!stopped) { state.message = "account computer request failed; existing connections are unchanged"; } }).finally(() => {
       work = undefined;
+      notify();
       if (!stopped) { timer = setTimeout(run, 5000); timer.unref(); }
     });
   };
@@ -146,6 +166,7 @@ export function createAccountComputer(home: string, version: string, reconciler:
   return {
     /** Start polling and settle every account's initial attempt before saved hosting resumes. */
     async start() { run(); await work; await Promise.all([...tasks]); if (!vitals && !vitalsError) void sample(); }, intent,
+    recover: (space: string, candidate: string, holder: string) => recoverAccountSpace(home, reconciler, contexts, tick, space, candidate, holder).then(notify),
     vitals: () => vitals,
     vitalsError: () => vitalsError,
     name: () => name,
@@ -158,13 +179,16 @@ export function createAccountComputer(home: string, version: string, reconciler:
         context.lastHeartbeat = 0; context.state.computer = name;
       }
       // Polling owns network work. Saving a local preference never waits for a host.
+      notify();
       void tick().catch(() => { state.message = "account computer request failed; existing connections are unchanged"; });
       return name;
     },
-    signedIn() { for (const context of contexts.values()) context.abort.abort(); contexts.clear(); if (timer) clearTimeout(timer); run(); },
+    signedIn() { for (const context of contexts.values()) context.abort.abort(); contexts.clear(); if (timer) clearTimeout(timer); notify(); run(); },
     status: (): AccountComputerStatus => {
       const ordered = [...contexts.values()].sort((a, b) => Number(b.state.hostSupport === "supported") - Number(a.state.hostSupport === "supported") || (a.state.idpUrl ?? "").localeCompare(b.state.idpUrl ?? "") || (a.state.sub ?? "").localeCompare(b.state.sub ?? ""));
-      return { ...(ordered[0]?.state ?? state), accounts: [...contexts.values()].map(context => ({ ...context.state, spaces: reconciler.view().filter(row => context.snapshot?.spaces.some(space => space.slug === row.space) || !row.desired) })), spaces: reconciler.view() };
+      const computers = new Map<string | undefined, typeof ordered[number]>();
+      for (const context of ordered) if (!computers.has(context.state.machineId)) computers.set(context.state.machineId, context);
+      return { ...(ordered[0]?.state ?? state), accounts: [...computers.values()].map(context => ({ ...context.state, spaces: reconciler.view().filter(row => context.snapshot?.spaces.some(space => space.slug === row.space) || !row.desired) })), spaces: reconciler.view() };
     },
     async close() { stopped = true; if (timer) clearTimeout(timer); abort.abort(); await work; await Promise.all([...tasks]); await reconciler.settled(); },
   };

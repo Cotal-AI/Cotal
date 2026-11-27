@@ -32,13 +32,13 @@ const check = (name: string, condition: boolean, detail?: unknown) => {
 for (const mask of [0o022, 0o002, 0o077, 0o777]) {
   const previous = process.umask(mask);
   try {
-    const child = spawnBroker(process.execPath, ["-e", "console.log(process.umask().toString(8))"], { stdio: ["ignore", "pipe", "inherit"] });
+    const child = spawnBroker(process.execPath, ["-e", "console.log(process.umask().toString(8))"], { stdio: ["ignore", "pipe", "inherit"], windowsHide: true });
     check("broker spawn restores caller umask immediately", process.umask() === mask);
     let output = "";
     child.stdout!.setEncoding("utf8").on("data", (data: string) => { output += data; });
     const [code] = await once(child, "close");
     check("broker child inherits private umask without relaxing stricter bits", code === 0 && output.trim() === (mask | 0o077).toString(8), output);
-    assert.throws(() => spawnBroker("", [], {}));
+    assert.throws(() => spawnBroker("", [], { windowsHide: true }));
     check("synchronous spawn refusal restores caller umask", process.umask() === mask);
   } finally { process.umask(previous); }
 }
@@ -105,9 +105,11 @@ async function runCase(mode: "open" | "auth", manifest = false) {
     const prepared = cliRun("space", "create", "logrot", "--root", root);
     check("space preparation succeeds", prepared.status === 0, { stdout: prepared.stdout, stderr: prepared.stderr });
     const file = join(root, "cotal.yaml");
-    if (manifest) writeFileSync(file, `apiVersion: cotal/v1\nkind: Mesh\nspace: logrot\nbroker:\n  auth: ${mode !== "open"}\n  servers: ${server}\n  logFile: ${JSON.stringify(logFile)}\n  logfileSizeLimit: 2048\n  logfileMaxNum: 3\nchannels: {}\nagents: {}\n`);
-    const restartArgs = manifest ? ["-f", file] : [];
+    if (manifest) writeFileSync(file, `apiVersion: cotal/v1\nkind: Mesh\nspace: logrot\nruntime: example-uninstalled-runtime\nbroker:\n  auth: ${mode !== "open"}\n  servers: ${server}\n  logfileSizeLimit: 2048\n  logfileMaxNum: 3\nchannels: {}\nagents: {}\n`);
+    const restartArgs = manifest ? ["-f", file, "--log-file", "./logs/broker.log"] : [];
     if (!manifest) {
+      const missing = cliRun("up", "--no-manager", "--server", server, "--logfile-size-limit", "2048");
+      check("rotation without any log path refuses before preparing the broker", missing.status === 1 && missing.stderr.includes("require --log-file") && readStackJournal(root) === undefined && !await portOpen(), missing.stderr);
       const withoutLog = cliRun("up", "--no-manager", "--server", server, ...(mode === "open" ? ["--open"] : []));
       check(`${label} initial start without native logging succeeds`, withoutLog.status === 0, withoutLog.stderr);
       const journalBefore = readFileSync(join(root, ".cotal/stack-controller.json"), "utf8");
@@ -165,7 +167,7 @@ async function runCase(mode: "open" | "auth", manifest = false) {
         return text.includes(`log_file: ${JSON.stringify(replacementLog)}`) && text.includes("logfile_size_limit: 4096") && text.includes("logfile_max_num: 2") && broker?.logFile === replacementLog && broker.logfileSizeLimit === 4096 && broker.logfileMaxNum === 2;
       };
       check("changed logging is rendered, persisted and owner-private", expected() && (statSync(replacementLog).mode & 0o777) === 0o600);
-      for (const flags of [["--log-file", logFile], ["--log-file", replacementLog, "--logfile-size-limit", "8192"], ["--log-file", replacementLog, "--logfile-max-num", "4"]]) {
+      for (const flags of [["--log-file", logFile], ["--logfile-size-limit", "8192"], ["--logfile-max-num", "4"]]) {
         const journalBefore = readFileSync(join(root, ".cotal/stack-controller.json"), "utf8");
         const configBefore = readFileSync(config, "utf8");
         const refused = cliRun("up", "--no-manager", ...flags, "--json");
@@ -180,6 +182,13 @@ async function runCase(mode: "open" | "auth", manifest = false) {
       const retained = readStackJournal(root)?.journal.broker;
       check("path-only change keeps omitted rotation settings", pathOnly.status === 0 && retained?.logFile === logFile && retained.logfileSizeLimit === 4096 && retained.logfileMaxNum === 2 && readFileSync(config, "utf8").includes("logfile_size_limit: 4096") && readFileSync(config, "utf8").includes("logfile_max_num: 2"), pathOnly.stderr);
       check("stop after path-only change succeeds", cliRun("down", "--yes").status === 0);
+      const rotationOnly = cliRun("up", "--no-manager", "--logfile-size-limit", "1048576");
+      const rotatedBroker = readStackJournal(root)?.journal.broker;
+      const rotatedConfig = readFileSync(config, "utf8");
+      check("rotation-only restart reuses the saved path and retention count", rotationOnly.status === 0 && await portOpen()
+        && rotatedBroker?.logFile === logFile && rotatedBroker.logfileSizeLimit === 1048576 && rotatedBroker.logfileMaxNum === 2
+        && rotatedConfig.includes(`log_file: ${JSON.stringify(logFile)}`) && rotatedConfig.includes("logfile_size_limit: 1048576")
+        && rotatedConfig.includes("logfile_max_num: 2"), rotationOnly.stderr);
     }
     console.log(`broker-logging-live ${label}: OK (rotation_count=${rotated.length}; startup_rotation_count=${startupRotated.length})`);
   } finally {

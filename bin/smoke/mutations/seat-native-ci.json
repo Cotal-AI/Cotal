@@ -15,7 +15,7 @@
     {
       "name": "PR pack stops downloading the arm64 artifact",
       "file": ".github/workflows/ci.yml",
-      "find": "      - uses: actions/download-artifact@v4\n        with:\n          name: seat-native-linux-arm64\n          path: ${{ runner.temp }}/seat-native-linux-arm64\n      - name: Assemble natives and pack\n",
+      "find": "      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4\n        with:\n          name: seat-native-linux-arm64\n          path: ${{ runner.temp }}/seat-native-linux-arm64\n      - name: Assemble natives and pack\n",
       "replace": "      - name: Assemble natives and pack\n",
       "expectRed": "ci.yml seat-pack downloads both native linux artifacts",
       "cell": "ci.yml seat-pack downloads both native linux artifacts"

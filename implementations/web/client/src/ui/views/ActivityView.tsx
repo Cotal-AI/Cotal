@@ -91,7 +91,7 @@ export function ActivityView({ store }: { store: Store<DashboardState> }) {
   const shown = filter === "all" ? listed : listed.filter(({ e }) => e.mode === filter);
   return (
     <>
-      <header className="ui-bar">
+      <header className="ui-bar ui-bar-activity">
         <SidebarToggle />
         <h1>Activity</h1>
         {!partial && <StaleMarker store={store} inHeader />}

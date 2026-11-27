@@ -17,18 +17,9 @@
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { addedLegacySuites, fragmentFileName, parseCiSuites, CI_SUITES_PATH } from "./ci-suites.mjs";
+import { createSuite } from "@cotal-ai/smoke-kit";
 
-let pass = 0;
-let fail = 0;
-const check = (name: string, cond: boolean, extra?: unknown) => {
-  if (cond) {
-    pass++;
-    console.log(`  ✓ ${name}`);
-  } else {
-    fail++;
-    console.log(`  ✗ FAIL: ${name}`, extra ?? "");
-  }
-};
+const { check, finish, passed, failed } = createSuite();
 
 const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
 
@@ -134,9 +125,9 @@ if (!base || !head || base === zero || head === zero) {
 const EXPECTED = 9;
 check(
   `every cell ran - ${EXPECTED} expected, so a cell that stops existing is not mistaken for one that passed`,
-  pass + fail === EXPECTED,
-  `${pass + fail} cells reported`,
+  passed() + failed() === EXPECTED,
+  `${passed() + failed()} cells reported`,
 );
 
-console.log(`CI SUITES FREEZE SMOKE ${fail === 0 ? "OK" : "FAILED"} (${pass} passed, ${fail} failed)`);
-if (fail) process.exitCode = 1;
+console.log(`CI SUITES FREEZE SMOKE ${failed() === 0 ? "OK" : "FAILED"} (${passed()} passed, ${failed()} failed)`);
+finish();

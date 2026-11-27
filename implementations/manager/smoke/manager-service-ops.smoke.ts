@@ -136,7 +136,6 @@ const M = mgr as unknown as {
   managerInstanceId: string;
   userMode: boolean;
   agents: Map<string, { id: string; lifecycleUid: string; secretPaths?: { creds?: string }; issued?: { generation: string; acceptedToken: string } }>;
-  goalWriter?: { ctx: { kv: { get: (key: string) => Promise<unknown> } } };
   withLifecycleExecutor: <T>(
     pin: { owner: string; actor: string; lifecycleUid: string; alias: string },
     fn: (transport: import("@cotal-ai/core").LifecycleStateTransport) => Promise<T>,
@@ -144,6 +143,7 @@ const M = mgr as unknown as {
   // The real signature takes the spawn hooks as a third parameter; this hand-written view had
   // only two, so the mock below could pass `hooks` that the type said would never arrive.
   startAgent: (opts: Record<string, unknown>, spawner?: string, hooks?: SpawnHooks) => Promise<ControlReply>;
+  goalWriterComponent: { goalWriter?: { ctx: { kv: { get: (key: string) => Promise<unknown> } } }; };
 };
 
 /** Plant the authentic stranded-retirement pair after manager boot, so startup reconcile cannot
@@ -506,7 +506,7 @@ try {
       strandedRow);
 
     {
-      const kvForSlots = M.goalWriter?.ctx.kv;
+      const kvForSlots = M.goalWriterComponent.goalWriter?.ctx.kv;
       if (!kvForSlots) throw new Error("manager goal-writer KV is not standing");
       const originalSlotsGet = kvForSlots.get;
       kvForSlots.get = async (): Promise<unknown> => { throw new Error("simulated store outage"); };
@@ -535,7 +535,7 @@ try {
     }
 
     const torn = await plantStrandedSlot("torn-inspect");
-    const kv = M.goalWriter?.ctx.kv;
+    const kv = M.goalWriterComponent.goalWriter?.ctx.kv;
     if (!kv) throw new Error("manager goal-writer KV is not standing");
     const originalGet = kv.get;
     let advancedBetweenReads = false;
@@ -614,7 +614,7 @@ try {
     const psE = await A.call("ps");
     check("a whitespace-only persona model is refused at load, not launched without a pin",
       parserRefusal.includes('"model" must not be empty')
-      && rE.reply.ok === false && refusal.includes(`persona file ${emodelPath} has invalid native frontmatter`) && refusal.includes("selectors")
+      && rE.reply.ok === false && refusal.includes(`invalid persona definition ${emodelPath}: "model" must not be empty`)
       && psE.reply.ok === true && !((psE.reply.data as Array<{ name: string }>) ?? []).some((x) => x.name === "emodel"),
       { parserRefusal, reply: rE.reply });
   }
@@ -760,9 +760,11 @@ try {
     check("the defining seat is cleaned up", seatStopped.reply.ok === true, seatStopped.reply);
 
     // The cells below grade a definer's ownership, so they run as a user-auth space would: there
-    // every caller's principal is stable, and what it defines is its own.
+    // every caller's principal is stable, and what it defines is its own. A user-auth definer is
+    // bounded by its ledger row, so this one's row holds every channel and no capability.
     const staticUserMode = M.userMode;
     M.userMode = true;
+    registry.register({ kind: "auth-provider", name: "smoke-every-channel", actorScope: async () => [], actorGrant: async () => ({ scope: [], allowSubscribe: [">"], allowPublish: [">"] }) } as never);
     const rDef = await A.call("define-persona", { name: "eppersona", persona: "You are the ep persona.", model: "m9" });
     check("definePersona creates the persona (content-only write)", rDef.reply.ok === true && existsSync(join(workspaceRoot, ".cotal", "agents", "eppersona.md")), rDef.reply);
     // The tool takes no scope argument by design, so a peer cannot name its own channels here. The
@@ -835,6 +837,7 @@ try {
     check("show-persona returns the owned card body",
       rShow.reply.ok === true && (rShow.reply.data as { persona?: string }).persona?.includes("widened by the operator") === true, rShow.reply);
     M.userMode = staticUserMode;
+    registry.unregister("auth-provider", "smoke-every-channel");
     const rShowMiss = await A.call("show-persona", { name: "ghost-persona" });
     check("show-persona of an unknown name is not-found",
       rShowMiss.reply.ok === false && rShowMiss.reply.error?.code === "not-found", rShowMiss.reply);
@@ -877,6 +880,16 @@ try {
     const rRemoveInvalid = await A.call("remove-persona", { name: invalidName });
     check("remove-persona deletes an owned 69-character legacy entry that cannot be spawned",
       rRemoveInvalid.reply.ok === true && !existsSync(invalidPath), rRemoveInvalid.reply);
+
+    // A legacy filename remains readable and removable under the catalog's ownership rules.
+    const dashPath = join(workspaceRoot, ".cotal", "agents", "-legacydash.md");
+    writeFileSync(dashPath, `---\nname: -legacydash\nowner: ${A.principal}\nsubscribe: []\n---\nkept from an earlier release\n`);
+    const rShowDash = await A.call("show-persona", { name: "-legacydash" });
+    check("show-persona reads an owned stored file whose name begins with \"-\"",
+      rShowDash.reply.ok === true && (rShowDash.reply.data as { persona?: string }).persona?.includes("kept from an earlier release") === true, rShowDash.reply);
+    const rRemoveDash = await A.call("remove-persona", { name: "-legacydash" });
+    check("…and remove-persona deletes it",
+      rRemoveDash.reply.ok === true && !existsSync(dashPath), rRemoveDash.reply);
 
     const rModels = await A.call("models", {});
     const catalogs = (rModels.reply.data as { catalogs: Array<{ agent: string; supported: boolean }> })?.catalogs;

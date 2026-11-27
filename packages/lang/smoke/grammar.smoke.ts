@@ -485,6 +485,17 @@ try {
   ok("a NUL byte is refused as source that does not parse, with no claim about semicolons",
     err?.code === "L1008" && err.cause.includes("not valid JavaScript") && err.cause.includes("Unexpected character") && err.fix === "Fix the syntax at the marked position.", err ?? e);
 }
+try {
+  validate("const answer = 42\nconst broken =\n  )\n", "syntax.cotal.js");
+  throw new Error("expected invalid syntax to be refused");
+} catch (e) {
+  if (!(e instanceof LangErrors)) throw e;
+  const [err] = e.errors;
+  ok("a syntax error gives its one-based position in the span and keeps the parser reason",
+    e.errors.length === 1 && err?.code === "L1008"
+    && err.span.file === "syntax.cotal.js" && err.span.line === 3 && err.span.column === 3
+    && err.cause === "This program is not valid JavaScript, so none of the language rules could be checked: Unexpected token.", err);
+}
 rejects(
   "a return whose value is on the next line is a hazard",
   "L1008",

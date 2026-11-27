@@ -18,9 +18,9 @@
   "mutations": [
     {
       "name": "the hold is minted over the goal-writer connection again",
-      "file": "implementations/manager/src/manager.ts",
-      "find": "      await mintCheckpoint(gw.ctx.kv, jetstream(serve.nc), this.space, {",
-      "replace": "      await mintCheckpoint(gw.ctx.kv, gw.ctx.js, this.space, {",
+      "file": "implementations/manager/src/turn-relay.ts",
+      "find": "      await mintCheckpoint(gw.ctx.kv, jetstream(serve.nc), this.deps.space, {",
+      "replace": "      await mintCheckpoint(gw.ctx.kv, gw.ctx.js, this.deps.space, {",
       "expectRed": "the run instrument's turn is ACCEPTED (the request row is granted; the hold's schedule published)",
       "cell": "the run instrument's turn is ACCEPTED (the request row is granted; the hold's schedule published)",
       "note": "The goal-writer profile holds no `ept` row; the `.schedule` publish is broker-denied and the accept unwinds with a failed terminal."
@@ -57,7 +57,7 @@
     },
     {
       "name": "the sweep never expires the hold it owns",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/turn-relay.ts",
       "find": "        const settle = await this.expireTurnHold(p);\n        if (settle?.settle === \"expired\") await this.commitTurnDeadline(p);",
       "replace": "        void p;",
       "expectRed": "the goal's terminal is the deadline deny, reason `turn-deadline`",
@@ -66,16 +66,16 @@
     },
     {
       "name": "the sweep reads the settle but never produces it",
-      "file": "implementations/manager/src/manager.ts",
-      "find": "    return expireCheckpoint(gw.ctx.kv, gw.ctx.js, gw.ctx.jsm, this.space, { ref: { endpoint: p.ref.endpoint, token: p.holdToken! }, now: Date.now() });",
-      "replace": "    return readCheckpointSettle(gw.ctx.jsm, this.space, { endpoint: p.ref.endpoint, token: p.holdToken! });",
+      "file": "implementations/manager/src/turn-relay.ts",
+      "find": "    return expireCheckpoint(gw.ctx.kv, gw.ctx.js, gw.ctx.jsm, this.deps.space, { ref: { endpoint: p.ref.endpoint, token: p.holdToken! }, now: Date.now() });",
+      "replace": "    return readCheckpointSettle(gw.ctx.jsm, this.deps.space, { endpoint: p.ref.endpoint, token: p.holdToken! });",
       "expectRed": "the goal's terminal is the deadline deny, reason `turn-deadline`",
       "cell": "the goal's terminal is the deadline deny, reason `turn-deadline`",
       "note": "A read-only sweep waits for a settle nobody writes: the manager holds no grant to consume the broker's fire, so the settle it reads for is one it has to produce."
     },
     {
       "name": "an ended goal is re-admitted to the accept path",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/turn-relay.ts",
       "find": "    const ended = await readGoalResult(gw.ctx, ref);\n    if (ended !== undefined)\n      throw new EpEnvelopeError(\"failed-precondition\", `goal \"${goalId}\" already ended ${ended.state}; a bound goal is never accepted again (SPEC 13.6)`);",
       "replace": "",
       "expectRed": "a retry of the unwound accept is refused naming the terminal, never handed a live acceptance",
@@ -84,8 +84,8 @@
     },
     {
       "name": "the unwind commits the failed terminal without the seat's currency",
-      "file": "implementations/manager/src/manager.ts",
-      "find": "          executor: { lifecycleUid: t.lifecycleUid, epoch: 0 },\n          resolveCurrentEpoch: (target) => this.agents.get(a.name)?.lifecycleUid === target.lifecycleUid ? 0 : null,\n        });\n        await clearGoalIndex(gw.ctx, ref);",
+      "file": "implementations/manager/src/turn-relay.ts",
+      "find": "          executor: { lifecycleUid: t.lifecycleUid, epoch: 0 },\n          resolveCurrentEpoch: (current) => this.deps.turnExecutorEpoch(name, t.owner, t.actor, current.lifecycleUid),\n        });\n        await clearGoalIndex(gw.ctx, ref);",
       "replace": "        });\n        await clearGoalIndex(gw.ctx, ref);",
       "expectRed": "the accept unwinds: refused to the caller, with a failed terminal committed on the bound goal",
       "cell": "the accept unwinds: refused to the caller, with a failed terminal committed on the bound goal",
@@ -93,9 +93,9 @@
     },
     {
       "name": "the unwind leaves its index entry behind",
-      "file": "implementations/manager/src/manager.ts",
-      "find": "          resolveCurrentEpoch: (target) => this.agents.get(a.name)?.lifecycleUid === target.lifecycleUid ? 0 : null,\n        });\n        await clearGoalIndex(gw.ctx, ref);",
-      "replace": "          resolveCurrentEpoch: (target) => this.agents.get(a.name)?.lifecycleUid === target.lifecycleUid ? 0 : null,\n        });",
+      "file": "implementations/manager/src/turn-relay.ts",
+      "find": "          resolveCurrentEpoch: (current) => this.deps.turnExecutorEpoch(name, t.owner, t.actor, current.lifecycleUid),\n        });\n        await clearGoalIndex(gw.ctx, ref);",
+      "replace": "          resolveCurrentEpoch: (current) => this.deps.turnExecutorEpoch(name, t.owner, t.actor, current.lifecycleUid),\n        });",
       "expectRed": "and no index entry remains for the ended goal, so no sweep finds a relay to adopt",
       "cell": "and no index entry remains for the ended goal, so no sweep finds a relay to adopt",
       "note": "The index entry was recorded before the bind; an unwind that does not take it back leaves a relay record pointing at an ended goal for every later boot sweep to read."

@@ -526,13 +526,13 @@ try {
       const firstPage = await held.channelHistoryPage("general");
       check("the predecessor connection can read before retirement",
         firstPage.items.some((m) => m.parts.some((p) => p.kind === "text" && p.text === historyText)));
-      const internals = held as unknown as { nc: import("@nats-io/transport-node").NatsConnection; js: import("@nats-io/jetstream").JetStreamClient };
-      const predecessor = internals.nc;
-      const get = internals.js.consumers.get.bind(internals.js.consumers);
+      const internals = held as unknown as { conn: { nc: import("@nats-io/transport-node").NatsConnection; js: import("@nats-io/jetstream").JetStreamClient } };
+      const predecessor = internals.conn.nc;
+      const get = internals.conn.js.consumers.get.bind(internals.conn.js.consumers);
       let enteredPull!: () => void;
       const entered = new Promise<void>((resolve) => { enteredPull = resolve; });
       const release = new Promise<void>((resolve) => { releasePull = resolve; });
-      internals.js.consumers.get = async (...args) => {
+      internals.conn.js.consumers.get = async (...args) => {
         const consumer = await get(...args);
         enteredPull();
         await release;
@@ -578,7 +578,7 @@ try {
       await busy.start();
       const { jetstreamManager } = await import("@nats-io/jetstream");
       const { chatStream, chatHistDurable, chatSubject } = await import("@cotal-ai/core");
-      const api = await jetstreamManager((busy as unknown as { nc: import("@nats-io/transport-node").NatsConnection }).nc);
+      const api = await jetstreamManager((busy as unknown as { conn: { nc: import("@nats-io/transport-node").NatsConnection } }).conn.nc);
       const name = chatHistDurable(current.epCaller!.owner, current.epCaller!.actor, current.epCaller!.uid);
       try {
         await api.consumers.add(chatStream(SPACE), { name, description: "fixture-busy-owner",
@@ -747,10 +747,12 @@ try {
     const signedOutStatus = await cotal(["status", "--space", signedOutSpace], 30_000);
     console.log(`   #1832 signed-out bare status (exit=${signedOutStatus.status}):\n` +
       signedOutStatus.out.split("\n").filter((l) => /login|live snapshot/.test(l.replace(/\x1b\[[0-9;]*m/g, ""))).map((l) => `   | ${l}`).join("\n"));
-    check("discovered space, signed out: status says not signed in with the exact login command",
+    // The source CLI uses bare cotal with an installed executable on PATH and pnpm cotal otherwise.
+    const pinnedIdp = base.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    check("manual remote space, signed out: status says not signed in with the pinned login command",
       signedOutStatus.status === 0 &&
         /^ +Account: +● not signed in$/m.test(signedOutStatus.out) &&
-        new RegExp(`^Next\n(?: .*\n)* +cotal login --idp ${base.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} +Sign in to the selected space$`, "m").test(signedOutStatus.out) &&
+        new RegExp(`^Next\n(?: .*\n)* +(?:pnpm )?cotal login --idp ${pinnedIdp} +Sign in to the selected space$`, "m").test(signedOutStatus.out) &&
         !signedOutStatus.out.includes("no user-auth material"),
       signedOutStatus.out.slice(-600));
     const signedOutPs = await cotal(["ps", "--json", "--space", signedOutSpace], 30_000);

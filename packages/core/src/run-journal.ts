@@ -793,7 +793,7 @@ function assertMayActivate(t: RunTakeover, held: RunJournalActivation | undefine
 }
 
 /** The last activation in a replayed prefix, i.e. whoever currently holds the run. */
-function lastActivation(records: readonly StoredRunJournalRecord[]): RunJournalActivation | undefined {
+export function lastActivation(records: readonly StoredRunJournalRecord[]): RunJournalActivation | undefined {
   for (let i = records.length - 1; i >= 0; i -= 1) {
     const r = records[i]!.record;
     if (r.kind === "activation") return r;

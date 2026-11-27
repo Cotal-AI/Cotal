@@ -1,32 +1,46 @@
 import type { RunFailure, RunJournalRow, RunListRow, RunStatusView } from "@cotal-ai/core";
-import { oneLine, presentationOf, writeResult, type Report, type Styled } from "@cotal-ai/workspace";
+import { brokerAddressForDisplay, oneLine, presentationOf, shellPath, writeResult, type Report, type Styled } from "@cotal-ai/workspace";
 
-interface OutputValues { json?: boolean; plain?: boolean; on?: string; limit?: string; local?: boolean }
+interface OutputValues { json?: boolean; plain?: boolean; on?: string; limit?: string; local?: boolean; endpoint?: string; space?: string; server?: string; creds?: string }
 const recordedState = (state: string | undefined, failure?: RunFailure): Styled => ({ text: state === "failed" && failure?.code ? `failed (${failure.code})` : state ?? "not recorded", tone: state === "completed" ? "ok" : state === "failed" ? "failed" : state === "released" || state === "held" ? "waiting" : "hint" });
 const managerPin = (values: OutputValues) => values.on ? ` --on ${values.on}` : "";
 const runToken = (value: string | undefined) => value && /^run-[0-9a-f]{32}$/.test(value) ? value : "<run-id>";
+const runRoute = (values: OutputValues) => (values.local ? " --local" : "") +
+  (["endpoint", "space", "server", "creds"] as const).flatMap((flag) => {
+    const value = values[flag];
+    return value === undefined ? [] : [` --${flag} ${shellPath(value)}`];
+  }).join("");
 
 /** `unmatched` is given when `--endpoint` matched no run: that endpoint, and the endpoints this view
  *  records runs under. */
-export function printRunList(space: string | undefined, items: readonly RunListRow[], values: OutputValues, unmatched?: { endpoint: string; recordedUnder: readonly string[] }): void {
+export function printRunList(space: string | undefined, items: readonly RunListRow[], values: OutputValues, unmatched?: { endpoint: string; recordedUnder: readonly string[] }, open = false, brokerOnly = false): void {
   const unread = items.filter((row) => row.revocationUnreadable !== undefined);
   const nowhere = unmatched && !items.length
     ? `no run record in this view lives under endpoint ${oneLine(unmatched.endpoint)}; ${unmatched.recordedUnder.length ? `runs are recorded under ${unmatched.recordedUnder.map(oneLine).join(", ")}` : "it holds no run record under any endpoint"}`
     : undefined;
-  writeResult(presentationOf(values), {
-    command: "run", target: { space: space ?? null, requestedManagerInstance: values.on ?? null }, result: { kind: "runs", items },
+  const presentation = presentationOf(values);
+  const target = { space: space ?? null, requestedManagerInstance: values.on ?? null };
+  writeResult(presentation, {
+    command: "run", target, result: { kind: "runs", items },
     warnings: [...unread.map((row) => ({ code: "REVOCATION_NOT_CHECKED", target: { run: row.runId, endpoint: row.endpoint }, message: "The revocation marker could not be read; the recorded state does not establish that this run may continue." })),
+      ...(brokerOnly && presentation === "json" ? [{ code: "TARGET_UNAVAILABLE", target, message: "No manager is running to serve workflow records. Add `--local` to this command to read workflow records directly from the broker." }] : []),
       ...(nowhere ? [{ code: "ENDPOINT_HAS_NO_RUNS", target: { endpoint: unmatched!.endpoint, recordedUnder: unmatched!.recordedUnder }, message: nowhere }] : [])],
-    ...(unread.length ? { completeness: "partial" as const, partial: { message: "Some run revocation markers could not be read." } } : {}),
+    ...(brokerOnly ? { completeness: "not-checked" as const } : unread.length ? { completeness: "partial" as const, partial: { message: "Some run revocation markers could not be read." } } : {}),
   }, (result): Report => ({ sections: [
     { title: "Workflow runs", blocks: [
       { kind: "fields", rows: [["Space", space ?? "not reported"], ...(values.on ? [["Requested manager", values.on]] as [string, string][] : [])] },
-      result.items.length ? { kind: "table", columns: [{ key: "run", label: "Run" }, { key: "endpoint", label: "Endpoint" }, { key: "state", label: "Recorded state" }, { key: "journal", label: "Journal" }], rows: result.items.map((row) => ({ run: row.runId, endpoint: row.endpoint, state: row.revoked ? { text: "admission revoked", tone: "failed" } : row.revocationUnreadable !== undefined ? { text: "revocation not checked", tone: "waiting" } : recordedState(row.state, row.failure), journal: row.journalHigh === undefined ? "not reported" : String(row.journalHigh) })) } : { kind: "lines", lines: ["No workflow runs in this authorized record view."] },
+      result.items.length ? { kind: "table", columns: [{ key: "run", label: "Run" }, { key: "endpoint", label: "Endpoint" }, { key: "state", label: "Recorded state" }, { key: "journal", label: "Journal" }], rows: result.items.map((row) => ({ run: row.runId, endpoint: row.endpoint, state: row.revoked ? { text: "admission revoked", tone: "failed" } : row.revocationUnreadable !== undefined ? { text: "revocation not checked", tone: "waiting" } : recordedState(row.state, row.failure), journal: row.journalHigh === undefined ? "not reported" : String(row.journalHigh) })) } : { kind: "lines", lines: [brokerOnly ? "No manager is running to serve workflow records." : "No workflow runs in this authorized record view."] },
       // The state column says a run is revoked; who revoked it and why go under the table.
       ...(result.items.some((row) => row.revoked) ? [{ kind: "lines" as const, lines: result.items.flatMap((row) => row.revoked ? [`${row.runId}: revoked by ${oneLine(row.revoked.by)} (${oneLine(row.revoked.reason)})`] : []) }] : []),
       { kind: "lines", lines: [{ text: "Recorded workflow state, not a live agent-progress report. Revoking admission is not task cancellation.", tone: "hint" }] },
+      ...(open ? [{ kind: "lines" as const, lines: ["Open meshes cannot host workflow runs."] }] : []),
     ] },
-    { title: "Next", blocks: [{ kind: "commands", items: [{ command: `cotal r show <run-id>${managerPin(values)}`, description: "Read state, open requests and journal steps" }, { command: `cotal r start <file>${managerPin(values)}`, description: "Start a new workflow on the selected manager" }] }] },
+    { title: "Next", blocks: [{ kind: "commands", items: [
+      ...(!open || values.local ? [{ command: `cotal r show <run-id>${managerPin(values)}${runRoute(values)}`, description: "Read state, open requests and journal steps" }] : []),
+      ...(brokerOnly ? [{ command: `cotal r list${runRoute({ ...values, local: true, server: values.server === undefined ? undefined : brokerAddressForDisplay(values.server) })}`, description: "Read workflow records directly from the broker" }] : []),
+      open ? { command: "cotal r simulate <file>", description: "Test a workflow offline" }
+        : { command: `cotal r start <file>${managerPin(values)}`, description: "Start a new workflow on the selected manager" },
+    ] }] },
   ] }));
 }
 
@@ -94,11 +108,14 @@ export function printRunDetail(space: string, view: RunStatusView, values: Outpu
   const errored = [...steps.values()].filter((row) => row.errorMessage !== undefined);
   const failure = view.status?.state === "failed" ? view.status.failure : undefined;
   const failedStep = failure && errored.find((row) => row.errorMessage === failure.message);
-  // A failure raised outside any step is in no journal row; a hosted run's manager logged its cause.
+  // A failure raised outside any step is in no journal row.
   const unrecorded = view.status?.state === "failed" && !errored.length;
   // A released status carries no reason or log location. Do not infer its execution host from a read.
   const released = view.status?.state === "released";
   const unreadable = view.revocationUnreadable !== undefined;
+  const route = runRoute(values);
+  const showJson = `cotal r show ${runToken(view.runId)}${route} --json${managerPin(values)}`;
+  const answerCommand = `cotal r answer ${runToken(view.runId)} '<step-key>' --value '<json>'${route}${values.local ? " --by '<who>'" : managerPin(values)}`;
   writeResult(presentationOf(values), {
     command: "run", target: { space, endpoint: view.endpoint, run: view.runId, requestedManagerInstance: values.on ?? null }, result: { kind: "run", view },
     warnings: unreadable ? [{ code: "REVOCATION_NOT_CHECKED", target: { run: view.runId, endpoint: view.endpoint }, message: "The revocation marker could not be read; the recorded state does not establish that this run may continue." }] : [],
@@ -121,11 +138,12 @@ export function printRunDetail(space: string, view: RunStatusView, values: Outpu
     ...(failure ? [{ title: "Failure", blocks: [{ kind: "lines" as const, lines: failedStep
       ? [{ text: `${failedStep.step} failed the run; its error is under Step errors.`, tone: "failed" as const }]
       : failure.message.split("\n").map((line) => ({ text: oneLine(line), tone: "failed" as const })) }] }]
-      : unrecorded ? [{ title: "Failure", blocks: [{ kind: "lines" as const, lines: ["No journal row records why this run failed, so the program raised it outside any step. A hosted run's cause is in its manager's log."] }] }] : []),
+      : unrecorded ? [{ title: "Failure", blocks: [{ kind: "lines" as const, lines: ["No journal row records why this run failed, so the program raised it outside any step."] }] }] : []),
     ...(released ? [{ title: "Released", blocks: [{ kind: "lines" as const, lines: ["The recorded driver released this run; its status does not record why. For a hosted run, inspect the executing manager's log. For a locally driven run, inspect the driving process's output."] }] }] : []),
     ...(errored.length ? [{ title: "Step errors", blocks: [{ kind: "lines" as const, lines: errored.flatMap((row) => [{ text: `${row.step}  ${row.outcome}`, tone: "failed" as const }, ...row.errorMessage!.split("\n").map((line) => `  ${oneLine(line)}`)]) }] }] : []),
     { title: `Journal · last ${shown.length} of ${view.journal.length}`, blocks: [shown.length ? { kind: "table", columns: [{ key: "number", label: "Entry" }, { key: "step", label: "Step" }, { key: "outcome", label: "Recorded outcome" }], rows: shown.map((row) => ({ number: String(row.n), step: row.kind === "activation" ? "holder activation" : row.step, outcome: row.kind === "activation" ? `epoch ${row.epoch}` : row.winner !== undefined ? `${row.outcome}, ${row.winner} won` : row.outcome === "cancelled" && row.lostRace !== undefined ? `cancelled, ${winners.get(row.lostRace) ?? "another branch"} won ${row.lostRace}` : row.outcome })) } : { kind: "lines", lines: ["No journal entries in this view."] }, { kind: "lines", lines: [{ text: "Use --limit <n> for up to 1000 rows, or --json for the full returned journal. A step outcome is not proof that every external task succeeded.", tone: "hint" }] }] },
-    { title: "Next", blocks: [{ kind: "commands", items: [...(needsAnswer.length && !view.revoked ? [{ command: `cotal r answer ${runToken(view.runId)} '<step-key>' --value '<json>'${managerPin(values)}`, description: "Answer an open request under the native caller policy" }] : []), { command: `cotal r show ${runToken(view.runId)} --json${managerPin(values)}`, description: "Read the complete returned status and journal" }, ...(unrecorded ? [{ command: `cotal service logs stack-manager --space ${space}`, description: "Read the stack manager's log, where a hosted run's failure outside any step is recorded" }] : [])] }] },
+    { title: "Next", blocks: [{ kind: "commands", items: [...(needsAnswer.length && !view.revoked ? [{ command: answerCommand, description: "Answer an open request" }] : []), { command: showJson, description: "Read the complete returned status and journal" }, ...(unrecorded && !values.local ? [{ command: `cotal service logs stack-manager --space ${space}`, description: "Read the stack manager's log, where a hosted run's failure outside any step is recorded" }] : [])] },
+      ...(unrecorded && values.local ? [{ kind: "lines" as const, lines: ["If this run was driven locally, check the driving process's output for the failure."] }] : [])] },
   ] }));
 }
 
@@ -147,6 +165,6 @@ export function runReceipt(action: string, space: string | undefined, result: un
   const cut = valueGiven && valueCut(answer);
   writeResult(presentationOf(values), { command: "run", target: { space: space ?? null, requestedManagerInstance: values.on ?? null, ...(runId ? { run: runId } : {}) }, result: { kind: "run-receipt", action, result, ...(answer ? { answer: { ...answer, valueGiven } } : {}) } }, () => ({ sections: [
     { title: action === "start" ? "Workflow started" : action === "resume" ? "Workflow resumed" : action === "amend" ? "Amendment recorded" : "Answer accepted", blocks: [{ kind: "fields", rows: [["Space", space ?? "not reported"], ...(runId ? [["Run", runId]] as [string, string][] : []), ...(values.on ? [["Requested manager", values.on]] as [string, string][] : []), ...answerRows] }, { kind: "lines", lines: [...(cut ? [{ text: `A value longer than ${ANSWER_VALUE_SHOWN} characters is cut here; --json carries it whole.`, tone: "hint" as const }] : []), { text: "The native host accepted this operation. This receipt does not claim workflow completion.", tone: "hint" }] }] },
-    { title: "Next", blocks: [{ kind: "commands", items: [{ command: `cotal r show ${runToken(runId)}${values.local ? " --local" : managerPin(values)}`, description: "Read the recorded outcome and pending requests" }] }] },
+    { title: "Next", blocks: [{ kind: "commands", items: [{ command: `cotal r show ${runToken(runId)}${runRoute(values)}${managerPin(values)}`, description: "Read the recorded outcome and pending requests" }] }] },
   ] }));
 }

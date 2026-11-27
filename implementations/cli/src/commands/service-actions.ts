@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { serviceWebSessionPath, readLocalRecordSource, webBoundUrl } from "@cotal-ai/workspace";
+import { codeSpan, serviceWebSessionPath, readLocalRecordSource, WEB_SERVICE_ADAPTER, webBoundUrl } from "@cotal-ai/workspace";
 import * as prompts from "../lib/prompts.js";
 import { lstatSync, readlinkSync } from "node:fs";
 import type { ParsedArgs } from "@cotal-ai/core";
@@ -13,20 +13,23 @@ import { installSystemdService } from "../lib/service-systemd-install.js";
 import { uninstallSystemdService } from "../lib/service-systemd-uninstall.js";
 import { controlSystemdService } from "../lib/service-systemd-control.js";
 import { reserveStoppedServiceInstance } from "../lib/service-stopped-allocation.js";
-import { selfArgv } from "../lib/self-exec.js";
+import { displayCmd, selfArgv } from "../lib/self-exec.js";
+import { shellWord } from "../lib/endpoint-errors.js";
+import { seedWriterKind } from "../seed/paths.js";
 import { serviceInstallIntentFor, serviceInstallIntentProjection } from "../lib/service-install-intent.js";
 import { serviceUninstallIntentFor, serviceUninstallIntentProjection } from "../lib/service-uninstall-intent.js";
 import { serviceUnitActionFor } from "../lib/service-unit-action.js";
 import { followServiceJournal, readServiceJournal } from "../lib/service-journal.js";
 import { followServiceLog } from "./service-log-follow.js";
 import { canPrompt } from "./meshes-wizard.js";
-import { yesRequired } from "../lib/confirmation-required.js";
+import { serviceConfirmCommand, yesRequired } from "../lib/confirmation-required.js";
 import { fullStoreStopRefusal, jetStreamDisabled, jetStreamDisabledRefusal, recordedStore, storeRefusedWrite } from "../lib/broker-store-health.js";
 import { brokerStopBlocked } from "../lib/broker-service.js";
 import { controlsRecordedAdapter, resolveServiceAdapter } from "../lib/service-adapters.js";
 import { assertDefinitionRoot, serviceDefinitionStore, type ServiceDefinitionSnapshot } from "../lib/service-definitions.js";
-import { addedDefinitionStep, stackMemberFor } from "../lib/stack-journal.js";
-import { adapterInstallRefusal, type PresetServiceTarget } from "../lib/service-preset-target.js";
+import { addedDefinitionStep, stackMemberFor, STACK_ADAPTER } from "../lib/stack-journal.js";
+import { assertManagerStartOptions, checkManagerStartRoster } from "../lib/service-presets.js";
+import { adapterInstallRefusal, stopPreviewStep, type PresetServiceTarget } from "../lib/service-preset-target.js";
 import { definitionListeners, exposedPlaintext, listenerRow } from "../lib/stack-listeners.js";
 import { instanceProjection, observeServiceProcess, serviceInstances, serviceInstanceStore, type ServiceInstanceSnapshot } from "../lib/service-instances.js";
 import { assertNoServiceUnitAttempts, assertRestartAdmitted, PROCESS_STOP_GRACE_MS, prepareKernelServiceStop, prepareNativeServiceStop, prepareProcessService, readinessAddressSurvivors, readServiceLog, retainedStopRequest, selectServiceInstance, startProcessService, stopProcessService } from "../lib/service-process.js";
@@ -43,7 +46,7 @@ function runningExecutable(row: ReturnType<typeof instanceProjection>): string |
 }
 
 function instanceView(row: ReturnType<typeof instanceProjection> & { executable?: string | null }, title: string): Report {
-  return { sections: [{ title, blocks: [{ kind: "fields", rows: [["Definition", row.definition], ["Space", row.space], ["Instance", row.instanceId], ["Execution host", row.executionHost], ["Recorded state", row.startInterrupted ? "start interrupted: the command that started it ended before readiness was established" : row.recordedState],["Process observation", row.observedProcess], ["PID", row.pid === null ? "not established" : String(row.pid)], ...(row.executable !== undefined ? [["Executable", row.executable ?? (row.observedProcess === "running" ? "not readable on this host" : "no running process")]] as const : []), ["Readiness observation", row.readinessObservation], ["Readiness as of", row.readinessAsOf], ["Stop policy", row.stopPolicy], ["Serving endpoint", !row.nativeEndpoint ? "not checked" : row.nativeEvidence === "local-process-receipt" ? "child-reported local receipt; not an attributed endpoint response" : "adapter-checked observation; not a fresh status query"], ["Adapter", row.adapter ? `${row.adapter.name} · ${row.adapter.package ?? "composition root"}@${row.adapter.version}` : "generic process"], ...(row.nativeEndpoint ? [["Endpoint class", row.nativeEndpoint.endpoint], ["Native instance", row.nativeEndpoint.instanceId], ["Native principal", `${row.nativeEndpoint.owner}.${row.nativeEndpoint.actor}`], ["Native lifecycle", row.nativeEndpoint.lifecycleUid], ["Native epoch", String(row.nativeEndpoint.epoch)], ["Adapter observed at", row.adapterObservedAt ?? "not recorded"]] as const : []), ...(row.nativeStop ? [["Native stop", "returned for the original request"], ["Native stop request", row.nativeStop.requestId], ["Native cleanup", row.nativeStop.cleanup]] as const : []), ...(row.stopPolicy === "process" ? row.processStop ? [["Process stop evidence", "recorded signal and original process exit"], ["Recorded stop signal", row.processStop.signal], ["Recorded stop request", row.processStop.requestId], ["Exit observed at", row.processStop.observedAt]] as const : [["Process stop evidence", "not recorded"]] as const : []), ...(row.reportedListener ? [["Reported listener", row.reportedListener.nats.join(", ")], ["Listener evidence", "the pinned child's own launch-bound ports file; not JetStream, trust or endpoint readiness"]] as const : []), ...(row.kernelStop ? [["Broker stop", "exact process exit observed"], ["Broker stop request", row.kernelStop.requestId], ["Broker shutdown trace", row.kernelStop.brokerShutdownTrace], ["Broker cleanup", row.kernelStop.cleanup]] as const : []), ["Recorded supervisor", row.supervisor], ["Supervisor discovery", row.supervisorObservation], ["Recorded unit", row.supervisorRecord.unit ?? "none recorded"], ["Unit file", row.supervisorRecord.fileObservation], ["OS unit state", row.supervisorRecord.osState], ["Autostart", row.supervisorRecord.autostart], ...(row.supervisorRecord.seededGeneration ? [["Private store generation", row.supervisorRecord.seededGeneration]] as const : []), ["Request", row.requestId], ["Original launch", row.launchRequestId]] }, { kind: "lines", lines: ["A process proof is not a serving endpoint. HTTP readiness proves reachability, not listener ownership. An adapter observation names only its checked native lifecycle as of the recorded time. Only the creation-pinned direct process is controlled; this is not a process sandbox or a claim that arbitrary descendants are gone. No recorded supervisor means none assigned by this controller, not a verified absence of external OS supervision. Matching recorded unit bytes prove neither active supervision nor enabled autostart; missing or modified files do not authorize direct-process fallback."] }] }] };
+  return { sections: [{ title, blocks: [{ kind: "fields", rows: [["Definition", row.definition], ["Space", row.space], ["Instance", row.instanceId], ["Execution host", row.executionHost], ["Recorded state", row.startInterrupted ? "start interrupted: the command that started it ended before readiness was established" : row.recordedState],["Process observation", row.observedProcess], ...(row.idleExited ? [["Stopped", `by itself at ${row.idleExited.observedAt}, after ${row.idleExited.idleSeconds} s with no agents`]] as const : row.managerIdleExit !== null && row.observedProcess === "running" ? [["Idle exit", `after ${row.managerIdleExit} s with no agents or pending work; \`cotal status --components\` shows pending work`]] as const : []), ["PID", row.pid === null ? "not established" : String(row.pid)], ...(row.executable !== undefined ? [["Executable", row.executable ?? (row.observedProcess === "running" ? "not readable on this host" : "no running process")]] as const : []), ["Readiness observation", row.readinessObservation], ["Readiness as of", row.readinessAsOf], ["Stop policy", row.stopPolicy], ["Serving endpoint", !row.nativeEndpoint ? "not checked" : row.nativeEvidence === "local-process-receipt" ? "child-reported local receipt; not an attributed endpoint response" : "adapter-checked observation; not a fresh status query"], ["Adapter", row.adapter ? `${row.adapter.name} · ${row.adapter.package ?? "composition root"}@${row.adapter.version}` : "generic process"], ...(row.nativeEndpoint ? [["Endpoint class", row.nativeEndpoint.endpoint], ["Native instance", row.nativeEndpoint.instanceId], ["Native principal", `${row.nativeEndpoint.owner}.${row.nativeEndpoint.actor}`], ["Native lifecycle", row.nativeEndpoint.lifecycleUid], ["Native epoch", String(row.nativeEndpoint.epoch)], ["Adapter observed at", row.adapterObservedAt ?? "not recorded"]] as const : []), ...(row.nativeStop ? [["Native stop", "returned for the original request"], ["Native stop request", row.nativeStop.requestId], ["Native cleanup", row.nativeStop.cleanup]] as const : []), ...(row.stopPolicy === "process" ? row.processStop ? [["Process stop evidence", "recorded signal and original process exit"], ["Recorded stop signal", row.processStop.signal], ["Recorded stop request", row.processStop.requestId], ["Exit observed at", row.processStop.observedAt]] as const : [["Process stop evidence", "not recorded"]] as const : []), ...(row.reportedListener ? [["Reported listener", row.reportedListener.nats.join(", ")], ["Listener evidence", "the pinned child's own launch-bound ports file; not JetStream, trust or endpoint readiness"]] as const : []), ...(row.kernelStop ? [["Broker stop", "exact process exit observed"], ["Broker stop request", row.kernelStop.requestId], ["Broker shutdown trace", row.kernelStop.brokerShutdownTrace], ["Broker cleanup", row.kernelStop.cleanup]] as const : []), ["Recorded supervisor", row.supervisor], ["Supervisor discovery", row.supervisorObservation], ["Recorded unit", row.supervisorRecord.unit ?? "none recorded"], ["Unit file", row.supervisorRecord.fileObservation], ["OS unit state", row.supervisorRecord.osState], ["Autostart", row.supervisorRecord.autostart], ...(row.supervisorRecord.seededGeneration ? [["Private store generation", row.supervisorRecord.seededGeneration]] as const : []), ["Request", row.requestId], ["Original launch", row.launchRequestId]] }, { kind: "lines", lines: ["A process proof is not a serving endpoint. HTTP readiness proves reachability, not listener ownership. An adapter observation names only its checked native lifecycle as of the recorded time. Only the creation-pinned direct process is controlled; this is not a process sandbox or a claim that arbitrary descendants are gone. No recorded supervisor means none assigned by this controller, not a verified absence of external OS supervision. Matching recorded unit bytes prove neither active supervision nor enabled autostart; missing or modified files do not authorize direct-process fallback."] }] }] };
 }
 
 export function nativeImpactView(plan: ServiceAdapterStopPlan): Report {
@@ -150,31 +153,89 @@ function interruptedStart(name: string, space: string, selected: string | undefi
 
 /** The next step for a name that resolves to no saved definition and to no member of the space's
  *  controller stack. */
-export function unsavedServiceStep(name: string, mode: string): string {
-  return name === "web" ? "the web dashboard is an extension: add it with `cotal ext add @cotal-ai/web`, then start it with `cotal service start web`" : mode === "stop" ? "list this space's saved definitions with `cotal service`" : "add a supported service definition explicitly before starting it";
+export function unsavedServiceStep(name: string, mode: string, space: string): string {
+  return name === "web" ? "the web dashboard is an extension: add it with `cotal ext add @cotal-ai/web`, then start it with `cotal service start web`" : mode === "stop" ? `list this space's saved definitions with \`cotal service --space ${shellWord(space)}\`` : "add a supported service definition explicitly before starting it";
+}
+
+function missingServiceDefinition(space: string, name: string, mode: string, commandName: string, values: ParsedArgs["values"]): CommandFailure {
+  const stackName = stackMemberFor(space, name);
+  const reading = mode === "logs" || mode === "status";
+  const effect = reading ? "nothing was read" : `no process or extension was ${mode === "stop" ? "stopped" : "started"}`;
+  const verb = commandName === "down" ? "down" : `${commandName} ${mode}`;
+  const remedy = mode === "stop" && values["dry-run"]
+    ? stopPreviewStep(space, values, stackName ? { name: stackName, verb } : undefined)
+    : stackName ? `this space's controller stack names it ${stackName}: use \`cotal ${verb} ${stackName} --space ${space}\`${mode === "stop" ? ", or bare `cotal down` to stop the whole stack" : ""}`
+    : reading ? `list this space's saved definitions with \`cotal service --space ${shellWord(space)}\`` : unsavedServiceStep(name, mode, space);
+  return new CommandFailure("refused", "TARGET_NOT_FOUND", `no saved service definition resolves this name in the selected space; ${effect}`, { target: { space, name }, remedy });
+}
+
+async function handoffDashboardBrowser(space: string, name: string, instance: ServiceInstanceSnapshot, foreground: boolean, noOpen: boolean) {
+  const browserWarnings: { code: string; message: string; target: { space: string; name: string } }[] = [];
+  const serviceTarget = `${shellWord(name)} --space ${shellWord(space)}`;
+  const sessionSource = foreground ? "the original foreground terminal" : codeSpan(`cotal service logs ${serviceTarget}`);
+  const noBrowser = (message = `No browser was opened. Find the private session record in ${sessionSource} and open its single-use link locally.`) => browserWarnings.push({ code: "BROWSER_NOT_OPENED", target: { space, name }, message });
+  let refreshedSessionPath: string | undefined;
+  const value = instance.record.value;
+  try {
+    const path = serviceWebSessionPath({ space, instanceId: value.instanceId, launchRequestId: value.launchRequestId, stateDirectory: serviceInstanceStore(space).directory()! });
+    const bytes = readLocalRecordSource(path, 16384, true);
+    const session = JSON.parse(bytes!.toString("utf8"));
+    if (session.instanceId !== value.instanceId || session.launchRequestId !== value.launchRequestId || session.process?.pid !== value.process?.pid || session.process?.token !== value.process?.token || typeof session.launchNonce !== "string") throw new Error("session mismatch");
+    if (observeServiceProcess(value) !== "running") throw new Error("browser launch requires a live listener");
+    if (["127.0.0.1", "::1"].includes(session.host)) {
+      const response = await fetch(new URL("/api/browser-launch", webBoundUrl(session.host, session.port)), { method: "POST", headers: { "x-cotal-browser-launch": session.launchNonce }, redirect: "manual", signal: AbortSignal.timeout(5000) });
+      if (!response.ok) throw new Error("browser handoff refused");
+      const { launchUrl } = await response.json() as { launchUrl: string };
+      const url = new URL(launchUrl);
+      if (url.origin !== new URL(session.launchUrl).origin || url.protocol !== "http:" || url.username || url.password || url.pathname !== "/" || !url.searchParams.get("k")) throw new Error("invalid launch URL");
+      refreshedSessionPath = path;
+      if (!noOpen) {
+        if (process.platform === "linux" && !process.env.DISPLAY && !process.env.WAYLAND_DISPLAY) noBrowser();
+        else {
+          const executable = process.platform === "darwin" ? "open" : process.platform === "win32" ? "cmd" : "xdg-open";
+          const child = spawn(executable, process.platform === "win32" ? ["/c", "start", "", launchUrl] : [launchUrl], { stdio: "ignore", detached: true, windowsHide: true });
+          await new Promise<void>((resolve, reject) => { child.once("spawn", resolve); child.once("error", reject); });
+          child.unref();
+        }
+      }
+    } else if (!noOpen) {
+      throw new Error("browser launch requires a local listener");
+    }
+  } catch (error) {
+    const missingOpener = (error as NodeJS.ErrnoException).code === "ENOENT" && (error as NodeJS.ErrnoException).syscall?.startsWith("spawn ");
+    const retry = codeSpan(`cotal service start ${serviceTarget}`);
+    if (!missingOpener && name === "web") throw new CommandFailure("partial", "OPERATION_PARTIAL", refreshedSessionPath ? "the dashboard is running, but its browser session could not be opened" : "the dashboard is running, but a fresh browser link was not confirmed", { target: { space, name, instanceId: value.instanceId }, remedy: refreshedSessionPath ? `find the private session record in ${sessionSource}, or retry ${retry}` : `inspect ${sessionSource} before retrying ${retry}` });
+    // The custom-name start succeeds once its dashboard is running, even if the browser handoff fails.
+    noBrowser(missingOpener || refreshedSessionPath ? undefined : `A fresh browser link was not confirmed. Check ${sessionSource} before retrying ${retry}.`);
+  }
+  return { refreshedSessionPath, browserWarnings };
 }
 
 /** `root` is the selected space's root, where a definition must have been added to launch. */
 export async function serviceAction(args: ParsedArgs, space: string, root: string, commandName = "service", resolved?: PresetServiceTarget): Promise<void> {
   const [mode, name] = args.positionals as [string, string];
-  const values = args.values as { instance?: string; "new-instance"?: boolean; foreground?: boolean; "with-agents"?: boolean; "dry-run"?: boolean; yes?: boolean; tail?: string; follow?: boolean; json?: boolean };
+  const values = args.values as { instance?: string; "new-instance"?: boolean; foreground?: boolean; "idle-exit"?: string; "with-agents"?: boolean; "dry-run"?: boolean; yes?: boolean; tail?: string; follow?: boolean; json?: boolean };
   const presentation = presentationOf(args.values);
   const store = serviceDefinitionStore(space, addedDefinitionStep), definition = store.read(name);
-  if (!definition) {
-    const stackName = stackMemberFor(space, name);
-    throw new CommandFailure("refused", "TARGET_NOT_FOUND", `no saved service definition resolves this name in the selected space; no process or extension was ${mode === "stop" ? "stopped" : "started"}`, { target: { space, name }, remedy: stackName ? `this space's controller stack names it ${stackName}: use \`cotal ${commandName === "down" ? "down" : `${commandName} ${mode}`} ${stackName} --space ${space}\`${mode === "stop" ? ", or bare `cotal down` to stop the whole stack" : ""}` : unsavedServiceStep(name, mode) });
-  }
+  if (!definition) throw missingServiceDefinition(space, name, mode, commandName, args.values);
   if (mode === "start" || mode === "restart" || mode === "install") assertDefinitionRoot(definition, space, root, mode);
   const rows = serviceInstances(space, name);
   let id = values.instance;
+  if (mode === "restart" && id === undefined && rows.length === 0) {
+    const cli = presentation === "json" ? "cotal" : displayCmd();
+    const output = presentation === "json" ? " --json" : presentation === "plain" ? " --plain" : "";
+    const preview = values["dry-run"] ? ` --dry-run${output}` : "";
+    throw new CommandFailure("refused", "TARGET_NOT_FOUND", "no instance is recorded for this service definition", { target: { space, name }, remedy: `${cli} service start ${shellWord(name)} --space ${shellWord(space)}${preview}`, remedyIsCommand: true });
+  }
   if (!id && rows.length > 1 && !values["new-instance"] && canPrompt() && presentation !== "json") {
     const selected = await prompts.select({ message: `Choose the full owned instance of ${oneLine(name)}`, options: rows.map((row) => ({ value: row.name, label: row.name, hint: `${row.record.value.host.name} · ${observeServiceProcess(row.record.value)}` })) });
     if (prompts.isCancel(selected)) return cancelled();
     id = selected;
   }
-  const selected = values["new-instance"] ? undefined : selectServiceInstance(rows, id, mode === "start" || mode === "install");
   // A preset name resolved to another saved name keeps the name the person typed beside it.
-  const target = { space, name, instanceId: selected?.name ?? null, ...(resolved && resolved.requested !== name ? { requested: resolved.requested } : {}) };
+  const scope = { space, name, ...(resolved && resolved.requested !== name ? { requested: resolved.requested } : {}) };
+  const selected = values["new-instance"] ? undefined : selectServiceInstance(rows, scope, id, mode === "start" || mode === "stop" || mode === "install" || mode === "status" || mode === "logs");
+  const target = { ...scope, instanceId: selected?.name ?? null };
   if (["start", "stop", "restart"].includes(mode)) assertNoServiceUnitAttempts(space, name);
   // The owned unit entry runs only a direct process, so an adapter definition's install refuses
   // before anything is allocated.
@@ -210,7 +271,7 @@ export async function serviceAction(args: ParsedArgs, space: string, root: strin
   }
   if (mode === "uninstall") {
     if (process.platform !== "linux") throw new CommandFailure("refused", "UNSUPPORTED", "native service removal currently needs the supported Linux user manager; no unit or private store was touched", { target });
-    if (!values.yes && (!canPrompt() || presentation === "json")) throw new ConfirmationRequired(yesRequired("native uninstall", presentation === "json"), { target, remedy: `confirm with \`cotal svc uninstall ${name} --yes\`, or inspect it with --dry-run` });
+    if (!values.yes && (!canPrompt() || presentation === "json")) throw new ConfirmationRequired(yesRequired("native uninstall", presentation === "json"), { target, remedy: `confirm with \`${serviceConfirmCommand("uninstall", name, space, values)}\`, or inspect it with --dry-run` });
     if (!values.yes) {
       const answer = await prompts.confirm({ message: `Disable and remove the exact owned unit for ${oneLine(name)} instance ${selected!.name}? The saved definition remains.`, initialValue: false });
       if (prompts.isCancel(answer) || !answer) return cancelled();
@@ -223,17 +284,22 @@ export async function serviceAction(args: ParsedArgs, space: string, root: strin
     return;
   }
   if (mode === "status") {
-    const result = instanceProjection(selected!);
-    const pending = serviceInstallIntentFor(space, selected!.name)?.record.value;
+    if (!selected) {
+      const result = { kind: "service-status", space, definition: name, instanceId: null, recordedState: "not started" };
+      writeResult(presentation, { command: commandName, target, result }, (row): Report => ({ sections: [{ title: "Service status", blocks: [{ kind: "fields", rows: [["Definition", row.definition], ["Space", row.space], ["Recorded state", row.recordedState]] }] }] }));
+      return;
+    }
+    const result = instanceProjection(selected);
+    const pending = serviceInstallIntentFor(space, selected.name)?.record.value;
     const installIntent = pending ? serviceInstallIntentProjection(pending) : null;
-    const removal = serviceUninstallIntentFor(space, selected!.name)?.record.value;
+    const removal = serviceUninstallIntentFor(space, selected.name)?.record.value;
     const uninstallIntent = removal ? serviceUninstallIntentProjection(removal) : null;
-    const action = serviceUnitActionFor(space, selected!.name)?.record.value;
+    const action = serviceUnitActionFor(space, selected.name)?.record.value;
     const unitAction = action ? { attemptId: action.attemptId, unit: action.unit, unitPath: action.unitPath, operation: action.operation, position: action.position, targetGeneration: action.targetGeneration ?? null, updatedAt: action.updatedAt } : null;
     const installObservation = pending ? observeSystemdAttempt(pending) : null;
     const uninstallObservation = removal ? observeSystemdAttempt(removal) : null;
     const actionObservation = action ? observeSystemdAttempt(action) : null;
-    const nativeSupervisor = observeRecordedSupervisor(selected!.record.value, result.supervisorRecord);
+    const nativeSupervisor = observeRecordedSupervisor(selected.record.value, result.supervisorRecord);
     const incomplete = installIntent !== null || uninstallIntent !== null || unitAction !== null || result.supervisorRecord.mechanism !== "none-recorded" && (nativeSupervisor.state !== "observed" || nativeSupervisor.daemonReloadRequired || nativeSupervisor.dropInsReported || nativeSupervisor.mainProcessAttribution === "different-or-unattributed" || nativeSupervisor.mainProcessAttribution === "not-reported" && result.observedProcess === "running");
     writeResult(presentation, { command: commandName, target, result: { kind: "service-status", ...result, listeners: result.observedProcess === "running" ? definitionListeners(definition) ?? null : [], executable: runningExecutable(result), nativeSupervisor, installIntent, uninstallIntent, unitAction, installObservation, uninstallObservation, actionObservation }, warnings: await readinessAddressSurvivors(space, [name]), ...(incomplete ? { completeness: "partial" as const, partial: { message: installIntent ? "A service installation attempt is retained; its submitted or acknowledged effects are not a completed owned supervisor. Inspect its private store and native unit before any retry." : uninstallIntent ? "A native removal attempt is retained; a disabled or missing unit is not proof its private store and receipt were cleaned. Inspect each named step before reconciliation." : unitAction ? "A native service action is retained; its submission and unit state require reconciliation before a new control request." : "The recorded supervisor could not be established as the unchanged complete loaded configuration with an attributed main process. No direct-process fallback or readiness was inferred." } } : {}) }, (row): Report => ({ sections: [
       ...instanceView(row, "Service instance").sections,
@@ -249,11 +315,18 @@ export async function serviceAction(args: ParsedArgs, space: string, root: strin
       ...(row.actionObservation ? [{ title: "Action unit observation", blocks: [{ kind: "fields" as const, rows: [["Unit source", row.actionObservation.file], ["Private directory", row.actionObservation.privateStore], ["User manager", row.actionObservation.native], ["Load state", row.actionObservation.loadState ?? "not checked"], ["Active state", row.actionObservation.activeState ?? "not checked"], ["Unit-file state", row.actionObservation.unitFileState ?? "not checked"], ["Fragment", row.actionObservation.fragment], ["Reload needed", row.actionObservation.daemonReloadRequired === null ? "not checked" : row.actionObservation.daemonReloadRequired ? "reported yes" : "reported no"], ["Observed", row.actionObservation.observedAt]] as const }, { kind: "lines" as const, lines: [row.actionObservation.reason ?? "This read does not establish whether a submitted start, stop or reseed committed its own terminal result."] }] }] : []),
       ...(row.supervisorRecord.mechanism === "none-recorded" ? [] : [{ title: "Native supervisor observation", blocks: [{ kind: "fields" as const, rows: [["Observation", row.nativeSupervisor.state], ["Observed at", row.nativeSupervisor.observedAt], ["Unit", row.nativeSupervisor.unit ?? "not established"], ["Load state", row.nativeSupervisor.loadState ?? "not established"], ["Active state", row.nativeSupervisor.activeState ?? "not established"], ["Substate", row.nativeSupervisor.subState ?? "not established"], ["Unit-file state", row.nativeSupervisor.unitFileState ?? "not established"], ["Main PID", row.nativeSupervisor.mainPid === null ? "not reported or not established" : String(row.nativeSupervisor.mainPid)], ["Main process attribution", row.nativeSupervisor.mainProcessAttribution], ["Invocation", row.nativeSupervisor.invocationId ?? "not reported"], ["Reload required", row.nativeSupervisor.daemonReloadRequired === null ? "not checked" : row.nativeSupervisor.daemonReloadRequired ? "reported yes" : "reported no"], ["Drop-ins", row.nativeSupervisor.dropInsReported === null ? "not checked" : row.nativeSupervisor.dropInsReported ? "reported; contents not verified" : "none reported"]] as const }, { kind: "lines" as const, lines: [row.nativeSupervisor.reason ?? "This is one native user-manager observation, not a process/endpoint readiness response or a reservation. Unit-file state is reported as received; it is not independently proved login/reboot autostart. No reload, unit action or process signal was performed."] }] }]),
       // A process that ended after readiness has no observed exit code or signal; name its log.
-      ...(row.recordedState === "running" && row.observedProcess === "gone" && row.supervisorRecord.mechanism === "none-recorded" && !row.foreground ? [{ title: "Next", blocks: [{ kind: "commands" as const, items: [{ command: `cotal service logs ${row.definition} --space ${oneLine(row.space)} --instance ${row.instanceId}`, description: "Its process ended with no recorded stop, exit code or signal; read what it logged" }] }] }] : []),
+      ...(row.idleExited ? [{ title: "Next", blocks: [{ kind: "commands" as const, items: [{ command: row.definition === "manager" ? `cotal manager start --space ${shellWord(row.space)}` : `cotal service start ${shellWord(row.definition)} --space ${shellWord(row.space)}`, description: "Start it again" }] }] }] : []),
+      ...(row.recordedState === "running" && row.observedProcess === "gone" && row.supervisorRecord.mechanism === "none-recorded" && !row.foreground && !row.idleExited ? [{ title: "Next", blocks: [{ kind: "commands" as const, items: [{ command: `cotal service logs ${row.definition} --space ${oneLine(row.space)} --instance ${row.instanceId}`, description: "Its process ended with no recorded stop, exit code or signal; read what it logged" }] }] }] : []),
     ] }));
     return;
   }
   if (mode === "logs") {
+    if (!selected) {
+      const cli = seedWriterKind() === "checkout" ? selfArgv().map(shellWord).join(" ") : displayCmd();
+      throw new CommandFailure("refused", "TARGET_NOT_FOUND", "no instance is recorded for this service definition, so there is no log to read. An instance must run before it can produce a log.", {
+        remedy: `${cli} service status ${shellWord(name)} --space ${shellWord(space)} --plain`, remedyIsCommand: true,
+      });
+    }
     const recorded = instanceProjection(selected!).supervisorRecord;
     if (recorded.mechanism !== "none-recorded") {
       const tail = values.tail === undefined ? 100 : Number(values.tail);
@@ -267,13 +340,13 @@ export async function serviceAction(args: ParsedArgs, space: string, root: strin
       return;
     }
     if (definition.record.value.launch.type === "adapter") {
-      const launch = definition.record.value.launch, adapter = resolveServiceAdapter(launch.adapter, launch.options);
+      const launch = definition.record.value.launch, adapter = resolveServiceAdapter(launch.adapter, launch.options, false);
       if (!controlsRecordedAdapter(selected!.record.value, adapter) || !adapter.declaration.capabilities.logs) throw new CommandFailure("refused", "UNSUPPORTED", "the pinned adapter does not declare log access through this controller, or its declaration changed; no different provider was loaded", { target });
     }
     const tail = values.tail === undefined ? 100 : Number(values.tail);
     if (values.follow) return followServiceLog(selected!, presentation, tail);
     // A tail that returned every line asked for is complete, even when earlier bytes were not read.
-    const row = instanceProjection(selected!), log = readServiceLog(space, selected!.name, tail);
+    const row = instanceProjection(selected!), log = readServiceLog(space, selected!.name, tail, !row.foreground);
     writeResult(presentation, { command: commandName, target, result: { kind: "service-logs", instance: row, ...log, encoding: "utf8-with-replacement", collection: row.foreground ? "foreground output is not captured in this log" : "owned background stdout/stderr" }, ...(log.omittedBytes && log.lines.length < tail ? { completeness: "partial", partial: { message: "The 16 MiB bounded read holds fewer lines than the requested tail; earlier bytes were omitted." } } : {}) }, (result): Report => ({ sections: [{ title: "Service log tail", blocks: [{ kind: "fields", rows: [["Definition", name], ["Instance", row.instanceId], ["Host", row.executionHost], ["Collection", result.collection], ["Encoding", result.encoding]] }, { kind: "lines", lines: result.lines.length ? result.lines : ["No captured log lines in this bounded read."] }, { kind: "lines", lines: [{ text: "Service-produced output may contain secrets. This is a local authorized read, not a secret-redacted log or an upload.", tone: "hint" }] }] }] }));
     return;
   }
@@ -287,7 +360,7 @@ export async function serviceAction(args: ParsedArgs, space: string, root: strin
       writeResult(presentation, { command: commandName, target, result: { kind: "service-native-operation-preview", operation: mode, dryRun: true, instance: row, native, changed: false }, completeness: "partial", partial: { message: "This exact-unit status read reserves no native state or process identity. A real action rechecks its receipt, source and native invocation before submission." } }, (): Report => ({ sections: [{ title: "Native service operation preview", blocks: [{ kind: "fields", rows: [["Action", mode], ["Definition", name], ["Instance", selected!.name], ["Unit", row.supervisorRecord.unit ?? "not recorded"], ["Unit state", native.activeState ?? native.state], ["Autostart", native.unitFileState ?? "not checked"], ["Process", row.observedProcess]] }, { kind: "lines", lines: ["No native request, process signal or private-store seed ran. This observation does not authorize a later action without fresh checks."] }] }] }));
       return;
     }
-    if ((mode === "stop" || mode === "restart") && !values.yes && (!canPrompt() || presentation === "json")) throw new ConfirmationRequired(`${mode} requires --yes outside an interactive terminal`, { target, remedy: `confirm with \`cotal svc ${mode} ${name} --yes\`, or preview it with --dry-run` });
+    if ((mode === "stop" || mode === "restart") && !values.yes && (!canPrompt() || presentation === "json")) throw new ConfirmationRequired(`${mode} requires --yes outside an interactive terminal`, { target, remedy: `confirm with \`${serviceConfirmCommand(mode, name, space, values)}\`, or preview it with --dry-run` });
     if ((mode === "stop" || mode === "restart") && !values.yes) {
       const answer = await prompts.confirm({ message: `${mode === "stop" ? "Stop" : "Restart"} the exact owned unit ${supervisor.unit} for ${oneLine(name)} instance ${selected!.name}?`, initialValue: false });
       if (prompts.isCancel(answer) || !answer) return cancelled();
@@ -312,11 +385,23 @@ export async function serviceAction(args: ParsedArgs, space: string, root: strin
   const prepared = mode === "start" || mode === "restart" ? prepareProcessService(definition) : undefined;
   if (prepared?.adapter) {
     const adapter = prepared.adapter;
-    if (values["new-instance"] && !adapter.declaration.capabilities.multiInstance || values.foreground && !adapter.declaration.capabilities.foreground) throw new CommandFailure("refused", "UNSUPPORTED", "the adapter does not declare the requested multi-instance or foreground capability; no provider code was loaded", { target });
+    const unsupported = [values["new-instance"] && !adapter.declaration.capabilities.multiInstance ? "--new-instance" : null, values.foreground && !adapter.declaration.capabilities.foreground ? "--foreground" : null].filter(Boolean).join(" and ");
+    if (unsupported) throw new CommandFailure("refused", "UNSUPPORTED", `The adapter does not support ${unsupported}. No provider code was loaded.${values["dry-run"] ? ` Retry without ${unsupported}, keeping --dry-run and the rest of the command unchanged.` : ""}`, { target });
     if (selected && !controlsRecordedAdapter(selected.record.value, adapter)) throw new CommandFailure("refused", "CONFLICT", "the selected instance pins a different adapter declaration or package version; it was not stopped or adopted", { target });
   }
   const declaredStop = prepared?.adapter ?? (definition.record.value.launch.type === "adapter" ? resolveServiceAdapter(definition.record.value.launch.adapter, definition.record.value.launch.options, false) : undefined);
   if (values["with-agents"] && declaredStop?.declaration.stop !== "native") throw new CommandFailure("refused", "UNSUPPORTED", "--with-agents requires this selected adapter's native stop policy; generic descendant signals are not supported", { target });
+  if (mode === "stop" && !selected) {
+    const result = { kind: "service-stop", space, definition: name, instanceId: null, dryRun: values["dry-run"] === true };
+    writeResult(presentation, { command: commandName, target, result, noOp: true }, (): Report => ({ sections: [{ title: "Service was not running; nothing was stopped", blocks: [{ kind: "fields", rows: [["Definition", name], ["Instance", "not recorded"]] }] }] }));
+    return;
+  }
+  const launch = definition.record.value.launch;
+  let rosterValid = true;
+  if (launch.type === "adapter" && launch.adapter === STACK_ADAPTER.manager && (mode === "restart" || mode === "start" && (!selected || observeServiceProcess(selected.record.value) !== "running"))) {
+    assertManagerStartOptions(space, launch.options);
+    if (mode === "start" && !resolved?.saved) rosterValid = checkManagerStartRoster(values["dry-run"] ? args.values.roster ?? launch.options.roster : launch.options.roster, target, values["dry-run"] === true);
+  }
   if (values["dry-run"]) {
     const row = selected ? instanceProjection(selected) : null;
     if (row && !["running", "gone", "previous-boot", "foreign-pid"].includes(row.observedProcess)) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "the selected instance is unresolved or foreign; a safe process effect cannot be previewed", { target });
@@ -329,15 +414,14 @@ export async function serviceAction(args: ParsedArgs, space: string, root: strin
       : null;
     // A broker's stop refuses while it would cut off another service of the space. The preview reads
     // the same records and names that refusal as a warning, as bare `down --dry-run` names its own.
-    const launch = definition.record.value.launch;
     const blocked = mode !== "start" && row?.observedProcess === "running" && launch.type === "adapter" && launch.adapter === "nats-broker" ? brokerStopBlocked(canonicalRoot(String(launch.options.root)), space, selected!.name) : undefined;
     const warnings = blocked ? [{ code: blocked.code, target: blocked.target, message: `the real ${mode} would refuse: ${blocked.message}; ${blocked.remedy}` }] : [];
-    writeResult(presentation, { command: commandName, target, result: { kind: "service-operation-preview", operation: mode, dryRun: true, instance: row, newInstanceWouldBeAllocated: mode === "start" && !selected, allocated: false, signalled: false, launch: definition.record.value.launch.type, readiness: definition.record.value.readiness.type, osSupervisor: "not-checked", recordedSupervisor: row?.supervisor ?? null, adapter: prepared?.adapter?.pin ?? selected?.record.value.adapter ?? null, providerCodeLoaded: false, stopSignal }, ...(warnings.length ? { warnings } : {}) }, (result): Report => ({ sections: [{ title: "Service operation preview", blocks: [{ kind: "fields", rows: [["Action", result.operation], ["Definition", name], ["Space", space], ["Instance", row?.instanceId ?? "would be assigned; not allocated"], ["Process observation", row?.observedProcess ?? "no instance selected"], ["Readiness policy", result.readiness], ["Recorded supervisor", result.recordedSupervisor ?? "no instance selected"], ["Supervisor discovery", result.osSupervisor], ...(stopSignal ? [["Stop signal", stopSignalText(stopSignal)] as [string, string]] : [])] }, { kind: "lines", lines: [...(stopSignal?.scope === "process-group" ? ["The stop signals the whole process group, so a descendant still in it, such as a server its shell backgrounded, stops too. One that left the group, such as with setsid, is not signalled."] : []), "No provider code was imported, no process was launched or signalled and no instance record was created. Cached adapter metadata is not a resolved executable launch plan. No native endpoint readiness, manager-impact query or descendant cleanup was inferred. A native stop still requires its live caller-scoped preflight and confirmation."] }] }] }));
+    writeResult(presentation, { command: commandName, target, result: { kind: "service-operation-preview", operation: mode, dryRun: true, instance: row, newInstanceWouldBeAllocated: mode === "start" && !selected && rosterValid, allocated: false, signalled: false, launch: definition.record.value.launch.type, readiness: definition.record.value.readiness.type, osSupervisor: "not-checked", recordedSupervisor: row?.supervisor ?? null, adapter: prepared?.adapter?.pin ?? selected?.record.value.adapter ?? null, providerCodeLoaded: false, stopSignal }, ...(warnings.length ? { warnings } : {}) }, (result): Report => ({ sections: [{ title: "Service operation preview", blocks: [{ kind: "fields", rows: [["Action", result.operation], ["Definition", name], ["Space", space], ["Instance", row?.instanceId ?? (rosterValid ? "would be assigned; not allocated" : "would not be allocated")], ["Process observation", row?.observedProcess ?? "no instance selected"], ["Readiness policy", result.readiness], ["Recorded supervisor", result.recordedSupervisor ?? "no instance selected"], ["Supervisor discovery", result.osSupervisor], ...(stopSignal ? [["Stop signal", stopSignalText(stopSignal)] as [string, string]] : [])] }, { kind: "lines", lines: [...(stopSignal?.scope === "process-group" ? ["The stop signals the whole process group, so a descendant still in it, such as a server its shell backgrounded, stops too. One that left the group, such as with setsid, is not signalled."] : []), "No provider code was imported, no process was launched or signalled and no instance record was created. Cached adapter metadata is not a resolved executable launch plan. No native endpoint readiness, manager-impact query or descendant cleanup was inferred. A native stop still requires its live caller-scoped preflight and confirmation."] }] }] }));
     return;
   }
   // A restart whose original process is already gone stops nothing, so it asks for nothing.
   const confirmStop = mode === "stop" || mode === "restart" && !["gone", "previous-boot", "foreign-pid"].includes(observeServiceProcess(selected!.record.value));
-  if (confirmStop && !values.yes && (!canPrompt() || presentation === "json")) throw new ConfirmationRequired(yesRequired(mode, presentation === "json"), { target, remedy: `confirm with \`cotal svc ${mode} ${name} --yes\`, or preview it with --dry-run` });
+  if (confirmStop && !values.yes && (!canPrompt() || presentation === "json")) throw new ConfirmationRequired(yesRequired(mode, presentation === "json"), { target, remedy: `confirm with \`${serviceConfirmCommand(mode, name, space, values, presentation === "json" ? "json" : "rich")}\`, or preview it with --dry-run` });
   if (mode === "restart") assertRestartAdmitted(definition);
   let nativePlan: Awaited<ReturnType<typeof prepareNativeServiceStop>> | undefined;
   try { nativePlan = mode === "stop" || mode === "restart" ? await prepareNativeServiceStop(definition, selected!, values["with-agents"] === true) : undefined; }
@@ -390,46 +474,26 @@ export async function serviceAction(args: ParsedArgs, space: string, root: strin
     } finally { hold.release(); }
   } else {
     const release = values.foreground ? undefined : reportOnInterrupt(presentation, commandName, () => interruptedStart(name, space, selected?.name));
-    try { started = await startProcessService(definition, { ...(id ? { instance: id } : {}), newInstance: values["new-instance"] === true, foreground: values.foreground === true }); }
+    try { started = await startProcessService(definition, { ...(id ? { instance: id } : {}), newInstance: values["new-instance"] === true, foreground: values.foreground === true, ...(values["idle-exit"] !== undefined ? { managerIdleExit: Number(values["idle-exit"]) } : {}) }); }
     finally { release?.(); }
   }
   const result = instanceProjection(started.instance);
-  const browserWarnings: { code: string; message: string; target: { space: string; name: string } }[] = [];
-  const noBrowser = () => browserWarnings.push({ code: "BROWSER_NOT_OPENED", target: { space, name }, message: `No browser was opened; use \`cotal service logs web --space ${space}\` for the private session record and open its single-use launchUrl locally.` });
-  if (mode === "start" && name === "web" && prepared?.adapter?.pin.name === "web-service" && !values.foreground && !args.values["no-open"]) {
-    try {
-      const value = started.instance.record.value;
-      const path = serviceWebSessionPath({ space, instanceId: value.instanceId, launchRequestId: value.launchRequestId, stateDirectory: serviceInstanceStore(space).directory()! });
-      const bytes = readLocalRecordSource(path, 16384, true);
-      const session = JSON.parse(bytes!.toString("utf8"));
-      if (session.instanceId !== value.instanceId || session.launchRequestId !== value.launchRequestId || session.process?.pid !== value.process?.pid || session.process?.token !== value.process?.token || typeof session.launchNonce !== "string") throw new Error("session mismatch");
-      if (observeServiceProcess(value) !== "running" || !["127.0.0.1", "::1"].includes(session.host)) throw new Error("browser launch requires a live local listener");
-      if (process.platform === "linux" && !process.env.DISPLAY && !process.env.WAYLAND_DISPLAY) noBrowser();
-      else {
-      const response = await fetch(new URL("/api/browser-launch", webBoundUrl(session.host, session.port)), { method: "POST", headers: { "x-cotal-browser-launch": session.launchNonce }, redirect: "manual", signal: AbortSignal.timeout(5000) });
-      if (!response.ok) throw new Error("browser handoff refused");
-      const { launchUrl } = await response.json() as { launchUrl: string };
-      const url = new URL(launchUrl);
-      if (url.origin !== new URL(session.launchUrl).origin || url.protocol !== "http:" || url.username || url.password || url.pathname !== "/" || !url.searchParams.get("k")) throw new Error("invalid launch URL");
-      const executable = process.platform === "darwin" ? "open" : process.platform === "win32" ? "cmd" : "xdg-open";
-      const child = spawn(executable, process.platform === "win32" ? ["/c", "start", "", launchUrl] : [launchUrl], { stdio: "ignore", detached: true });
-      await new Promise<void>((resolve, reject) => { child.once("spawn", resolve); child.once("error", reject); });
-      child.unref();
-      }
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT" && (error as NodeJS.ErrnoException).syscall?.startsWith("spawn ")) noBrowser();
-      else throw new CommandFailure("partial", "OPERATION_PARTIAL", "the dashboard is running, but its browser session could not be opened", { target: { space, name, instanceId: result.instanceId }, remedy: `use \`cotal service logs web --space ${space}\` for the private session record, or install a browser opener and retry \`cotal service start web\`; --no-open keeps access manual` });
-    }
-  }
-  writeResult(presentation, { command: commandName, target: { ...target, instanceId: result.instanceId }, result: { kind: mode === "restart" ? "service-restart" : "service-start", ...result, ...(mode === "restart" ? { originalStopImpact: nativePlan ?? kernelPlan ?? null } : {}), ...(resolved ? { presetDefinition: resolved.saved } : {}) }, noOp: started.noOp && !(mode === "start" && name === "web" && prepared?.adapter?.pin.name === "web-service" && !values.foreground && !args.values["no-open"]), warnings: browserWarnings }, (row) => {
+  const noOpen = args.values["no-open"] === true;
+  const { refreshedSessionPath, browserWarnings } = mode === "start" && prepared?.adapter?.pin.name === WEB_SERVICE_ADAPTER && !values.foreground && (!noOpen || started.noOp)
+    ? await handoffDashboardBrowser(space, name, started.instance, result.foreground, noOpen)
+    : { refreshedSessionPath: undefined, browserWarnings: [] };
+  writeResult(presentation, { command: commandName, target: { ...target, instanceId: result.instanceId }, result: { kind: mode === "restart" ? "service-restart" : "service-start", ...result, ...(mode === "restart" ? { originalStopImpact: nativePlan ?? kernelPlan ?? null } : {}), ...(resolved ? { presetDefinition: resolved.saved } : {}) }, noOp: started.noOp && !refreshedSessionPath, warnings: browserWarnings }, (row) => {
     const view = instanceView(row, started.noOp ? "Already running; nothing was started" : row.nativeEndpoint ? "Owned process running; native adapter readiness recorded" : row.reportedListener ? "Owned broker process reported its listener" : row.readinessObservation === "http-reachable" ? "Owned process running; HTTP reachable" : "Owned service process running");
     // A background child reports how to reach it, such as the dashboard's bootstrap file, in its own log.
     if (values.foreground) return view;
     // One instance of a definition needs no instance or space on the line that reads it. A space named
-    // with --space stays on the stop line, since a bare one from this folder can resolve to another (#7346).
+    // with --space stays on the stop line and the manager's lines, since a bare one from this folder can
+    // resolve to another (#7346, #7642).
     const only = serviceInstances(space, name).length === 1;
-    const logs = commandName === "manager" ? "cotal manager logs" : only && !args.values.space ? `cotal service logs ${row.definition}` : `cotal service logs ${row.definition} --space ${oneLine(row.space)} --instance ${row.instanceId}`;
-    const stop = commandName === "manager" ? "cotal manager stop" : `cotal service stop ${row.definition}${args.values.space ? ` --space ${oneLine(row.space)}` : ""}`;
+    const named = args.values.space ? ` --space ${oneLine(row.space)}` : "";
+    const logs = commandName === "manager" ? `cotal manager logs${named}` : only && !args.values.space ? `cotal service logs ${row.definition}` : `cotal service logs ${row.definition} --space ${oneLine(row.space)} --instance ${row.instanceId}`;
+    const stop = commandName === "manager" ? `cotal manager stop${named}` : `cotal service stop ${row.definition}${named}`;
+    if (row.foreground) return { sections: [...view.sections, { title: "Next", blocks: [{ kind: "lines", lines: [refreshedSessionPath ? `Private browser bootstrap file: ${oneLine(refreshedSessionPath)}` : "Read the service's startup output in the original foreground terminal."] }, { kind: "commands", items: [{ command: stop, description: "Stop it" }] }] }] };
     return { sections: [...view.sections, { title: "Next", blocks: [{ kind: "commands", items: [{ command: logs, description: "Read the service's own startup output, including how to reach it when it reports that" }, { command: stop, description: "Stop it" }] }] }] };
   });
   if (values.foreground && started.child && started.exit) {
@@ -459,9 +523,15 @@ export async function serviceAction(args: ParsedArgs, space: string, root: strin
       await Promise.race([started.exit.done, shutdownDone]);
       if (shutdown) await shutdown;
       if (signal && !started.exit.observed()) { process.exitCode = signal === "SIGINT" ? 130 : 143; return; }
-      const exit = started.exit.result(), current = serviceInstanceStore(space).read(started.instance.name);
-      // A retained native stop keeps its record: only that stop's own receipt settles it.
-      if (current && current.record.value.process?.pid === started.instance.record.value.process?.pid && current.record.value.process?.token === started.instance.record.value.process?.token && !retainedStopRequest(current.record.value)) serviceInstanceStore(space).commit(current.name, current, { ...current.record.value, state: "stopped", readiness: "not-checked", adapterReadiness: undefined, exit, updatedAt: new Date().toISOString() });
+      const exit = started.exit.result();
+      // Wait for a concurrent stop to record its receipt before adding the child's exit status.
+      const hold = store.pin(definition);
+      try {
+        const instances = serviceInstanceStore(space), current = instances.read(started.instance.name);
+        const value = current?.record.value, startedValue = started.instance.record.value;
+        // A stop still unsettled after releasing the hold keeps its record.
+        if (current && value && value.launchRequestId === startedValue.launchRequestId && value.process?.pid === startedValue.process?.pid && value.process?.token === startedValue.process?.token && value.state !== "stopping" && !retainedStopRequest(value)) instances.commit(current.name, current, { ...value, state: "stopped", readiness: "not-checked", adapterReadiness: undefined, exit, updatedAt: new Date().toISOString() });
+      } finally { hold.release(); }
       process.exitCode = signal === "SIGINT" ? 130 : signal === "SIGTERM" ? 143 : exit.code === 0 ? 0 : 5;
     } catch (error) {
       if (isCommandFailure(error)) process.stderr.write(`${renderReport(commandFailureReport(error), presentation === "plain" ? "plain" : "rich", process.stderr)}\n`);

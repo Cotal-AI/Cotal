@@ -27,21 +27,23 @@ import { basename, dirname, isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { registry, type Command, type FlagSpec, type ParsedArgs } from "@cotal-ai/core";
 import { CommandFailure, logicalExecutionEntry, codeSpan, homeCotalDir, keptCatalogCredentials, jsonFlag, plainFlag, presentationOf, recordOperationContext, renderReport, writeResult, type Report } from "@cotal-ai/workspace";
-import { cloudAuthUrl, openLoginBrowser, isDiscoveryName, resolveDiscoveryLogin } from "@cotal-ai/workspace";
+import { cloudAuthUrl, isCotalCloudIdp, openLoginBrowser, isDiscoveryName, resolveDiscoveryLogin } from "@cotal-ai/workspace";
 import { chooseAccountChoice, IdpConfigurationError, normalizeIdpUrl } from "@cotal-ai/auth";
-import { EndpointRefusal, defaultPeerUid, defaultPeerPid, checkDir, daemonPaths, daemonPathsFor, type DaemonPaths, type EndpointProblemCode } from "./endpoint.js";
+import { EndpointRefusal, defaultPeerUid, defaultPeerPid, checkDir, daemonPaths, daemonPathsFor, ensureStateDir, type DaemonPaths, type EndpointProblemCode } from "./endpoint.js";
 import { serveDaemon } from "./server.js";
 import { loginFromCli } from "./cli-login.js";
 import { connectCheckViaDaemon, managerViaDaemon, queryDaemon, registerViaDaemon, serviceViaDaemon } from "./client.js";
-import { admitWindowsNativeDaemon, applyInstall, applyUninstall, observeDaemonOwnedService, type DaemonOwnershipObservation, planInstall, planUninstall, startInstalled } from "./install.js";
+import { admitWindowsNativeDaemon, applyInstall, applyUninstall, observeDaemonOwnedService, type DaemonOwnershipObservation, planInstall, planUninstall, repairMissingInstalledProgram, startInstalled } from "./install.js";
 import { exchangeDesktopRequest, runDesktopBridge } from "./desktop.js";
-import { runAccountSetup, runSetup } from "./setup.js";
-import { daemonCommandCopy } from "./guidance.js";
+import { installedUnitForSetup, runAccountSetup, runSetup } from "./setup.js";
+import { daemonCommandCopy, daemonServiceRequirement, windowsDaemonFirstStart, windowsDaemonHomeAccess, windowsDaemonRemedy } from "./guidance.js";
 import { forgetHostedManagerIntents } from "./manager.js";
 import { automaticUpdates } from "./auto-update.js";
 import { watchDaemonGeneration } from "./generation.js";
-import { SPACE_PATTERN } from "./protocol.js";
+import { isDaemonSpaceName, SPACE_PATTERN } from "./protocol.js";
 import { nativeDaemonLog } from "./native-log.js";
+import { readReceipt } from "./install-receipt.js";
+import { processBirth, readLifetimeRecord } from "./lifetime.js";
 import { liveUpdateClosureOwner, readUpdateRecovery } from "@cotal-ai/workspace";
 import type { ConnectCheckResult, DaemonStatus, RegisterResult, ServiceConnectionResult } from "./protocol.js";
 
@@ -52,7 +54,7 @@ const daemonFlags = [
   { name: "no-browser", type: "boolean", description: "print approval instructions without opening a browser" },
   { name: "idp", type: "string", value: "<auth URL or name>", description: "the provider's auth base URL or issuer-authorized discovery hostname" },
   { name: "client-id", type: "string", value: "<id>", description: "the OAuth device-flow client id" },
-  { name: "daemon-home", type: "string", value: "<abs dir>", completion: "files", description: "run or reach the daemon whose state lives in this directory (absolute, yours, mode 0700, not the Cotal home): its own sign-in, identity and registration, its own socket and lifetime lock. Without it, run or reach the default daemon, whose state lives in the Cotal home." },
+  { name: "daemon-home", type: "string", value: "<abs dir>", completion: "files", description: "run or reach the daemon whose state lives in this separate absolute directory, not the Cotal home. Use mode 0700 and your own account as owner on POSIX. On Windows, use an ACL that grants access only to you, SYSTEM or Administrators, with one of those as owner. Without this flag, use the default daemon in the Cotal home." },
   { name: "refresh", type: "boolean", description: "spaces: refresh catalogs through the daemon-held sign-in" },
   { name: "dry-run", type: "boolean", description: "install, uninstall: report the unit it would write or remove, and change nothing" },
   { name: "yes", type: "boolean", short: "y", description: "uninstall: confirm in a script" },
@@ -75,12 +77,12 @@ const peerUid = defaultPeerUid;
 const peerPid = defaultPeerPid;
 
 /** The daemon this invocation targets: the default one, or the one whose state lives in an explicit
- *  `--daemon-home`. The home must already exist as a real 0700 directory owned by this uid, and may
+ *  `--daemon-home`. The home must already exist as a real private directory for this user, and may
  *  not be the Cotal home itself. Linux install/uninstall may resolve a missing leaf only when its
  *  surviving native service verifies ownership; other operations never create, repair or migrate it. Mesh lookup always stays
  *  the shared Cotal home's registry. */
 interface Target { readonly paths: DaemonPaths; readonly home?: string }
-function target(args: ParsedArgs, recoverMissingHome = false): Target {
+function target(args: ParsedArgs, recoverMissingHome?: "install" | "uninstall"): Target {
   const raw = (args.values as { "daemon-home"?: string })["daemon-home"];
   if (raw === undefined) return { paths: daemonPaths() };
   if (!raw || !isAbsolute(raw)) throw new CommandFailure("refused", "USAGE_INVALID", "--daemon-home needs an absolute directory path");
@@ -96,10 +98,17 @@ function target(args: ParsedArgs, recoverMissingHome = false): Target {
   try { cotalHome = realpathSync(homeCotalDir()); } catch (e) { if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e; }
   if (home === cotalHome) throw new CommandFailure("refused", "USAGE_INVALID", "--daemon-home cannot be the Cotal home; name a separate directory for this daemon's state");
   const paths = daemonPathsFor(home);
-  if (missing) planUninstall(paths, home);
+  if (missing) planUninstall(paths, home, recoverMissingHome === "install" ? missingDaemonHome : undefined);
   return { paths, home };
 }
-function resolveTarget(args: ParsedArgs, recoverMissingHome = false): Target {
+function missingDaemonHome(): CommandFailure {
+  return process.platform === "win32"
+    ? new CommandFailure("refused", "TARGET_NOT_FOUND", "the --daemon-home directory does not exist", {
+      remedy: `create the directory, then in File Explorer open Properties > Security > Advanced. Give your account an explicit Full control grant, choose Disable inheritance and remove inherited permissions. Remove any remaining grants except those for your account, SYSTEM and Administrators. Verify the owner as well: ${windowsDaemonHomeAccess}`,
+    })
+    : new CommandFailure("refused", "TARGET_NOT_FOUND", "the --daemon-home directory does not exist; create it with mode 0700 first");
+}
+function resolveTarget(args: ParsedArgs, recoverMissingHome?: "install" | "uninstall"): Target {
   try {
     const resolved = target(args, recoverMissingHome);
     // Native user-service tools need the same validated runtime as the socket client.
@@ -107,16 +116,16 @@ function resolveTarget(args: ParsedArgs, recoverMissingHome = false): Target {
     return resolved;
   }
   catch (e) {
-    if ((e as NodeJS.ErrnoException).code === "ENOENT") throw new CommandFailure("refused", "TARGET_NOT_FOUND", "the --daemon-home directory does not exist; create it with mode 0700 first");
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") throw missingDaemonHome();
     throw asFailure(e);
   }
 }
 
-const REFUSAL: Record<EndpointProblemCode, { code: "UNSUPPORTED" | "TARGET_UNAVAILABLE" | "CONFLICT" | "PERMISSION_DENIED"; remedy?: string }> = {
+const REFUSAL: Record<EndpointProblemCode, { code: "UNSUPPORTED" | "TARGET_UNAVAILABLE" | "CONFLICT" | "PERMISSION_DENIED"; remedy?: string | ((home?: string) => string) }> = {
   UNSUPPORTED_PLATFORM: { code: "UNSUPPORTED" },
-  NO_RUNTIME_DIR: { code: "TARGET_UNAVAILABLE", remedy: "run as the intended operating-system user with its private runtime directory available" },
-  NOT_RUNNING: { code: "TARGET_UNAVAILABLE", remedy: "start it with `cotal daemon serve`" },
-  ALREADY_RUNNING: { code: "CONFLICT", remedy: "run `cotal daemon status` for the same daemon home; inspect the conflicting endpoint with your operating system before changing it. No foreign endpoint was removed" },
+  NO_RUNTIME_DIR: { code: "TARGET_UNAVAILABLE", remedy: "Use a private runtime directory provisioned by systemd-logind or pam_rundir, or create one owned by your user with mode 0700 and set XDG_RUNTIME_DIR to it" },
+  NOT_RUNNING: { code: "TARGET_UNAVAILABLE", remedy: home => `start it with ${codeSpan(daemonCommandCopy("serve", home))}` },
+  ALREADY_RUNNING: { code: "CONFLICT", remedy: home => `run ${codeSpan(daemonCommandCopy("status", home))} for the same daemon home; inspect the conflicting endpoint with your operating system before changing it. No foreign endpoint was removed` },
   DIR_NOT_DIRECTORY: { code: "PERMISSION_DENIED", remedy: "inspect the path; nothing was changed" },
   DIR_SYMLINK: { code: "PERMISSION_DENIED", remedy: "inspect the path; nothing was changed" },
   DIR_WRONG_OWNER: { code: "PERMISSION_DENIED", remedy: "inspect the path; nothing was changed" },
@@ -126,15 +135,23 @@ const REFUSAL: Record<EndpointProblemCode, { code: "UNSUPPORTED" | "TARGET_UNAVA
   SOCKET_WRONG_MODE: { code: "PERMISSION_DENIED", remedy: "inspect the endpoint owner and protection with your operating system; its permissions differ from the daemon contract and were not repaired" },
   PEER_UID_MISMATCH: { code: "PERMISSION_DENIED", remedy: "another user's process holds the daemon endpoint; nothing was sent" },
   PEER_NOT_LOCK_OWNER: { code: "PERMISSION_DENIED", remedy: "inspect the conflicting listener with your operating system. For the default daemon use its COTAL_HOME. For an explicit --daemon-home use the same directory as the intended daemon. No process was stopped" },
-  LOCK_HELD: { code: "CONFLICT", remedy: "a daemon already holds this lifetime lock; run `cotal daemon status`, with the same --daemon-home when you passed one" },
+  LOCK_HELD: { code: "CONFLICT", remedy: home => `a daemon already holds this lifetime lock; run ${codeSpan(daemonCommandCopy("status", home))}` },
 };
 
-function asFailure(e: unknown): unknown {
+function asFailure(e: unknown, home?: string): unknown {
   if (e instanceof IdpConfigurationError) return new CommandFailure("refused", "USAGE_INVALID", e.message, { remedy: "correct COTAL_IDP_TIMEOUT_MS in the daemon environment before starting it again" });
   if (!(e instanceof EndpointRefusal)) return e;
   const r = REFUSAL[e.code];
-  const remedy = e.remedy ?? r.remedy;
+  const remedy = e.remedy ?? (typeof r.remedy === "function" ? r.remedy(home) : r.remedy);
   return new CommandFailure("refused", r.code, e.message, { ...(remedy ? { remedy } : {}), native: { code: e.code } });
+}
+
+function otherRuntimeRefusal(error: unknown, paths: DaemonPaths, home?: string): unknown {
+  if (process.platform !== "linux" || !(error instanceof EndpointRefusal) || (error.code !== "NOT_RUNNING" && error.code !== "LOCK_HELD")) return error;
+  const holder = readLifetimeRecord(paths.lock);
+  if (!holder?.socket || holder.socket.path === paths.socket || !holder.start || processBirth(holder.pid) !== holder.start) return error;
+  return new EndpointRefusal(error.code, `${error.message}. The live daemon recorded a socket in a different runtime directory.`,
+    `use the same XDG_RUNTIME_DIR as the running daemon, then run ${codeSpan(daemonCommandCopy("status", home))}`);
 }
 
 function capacityText(total: number, free: number): string {
@@ -150,7 +167,7 @@ function statusView(s: DaemonStatus): Report {
     ...(s.vitals ? [{ title: "Computer vitals", blocks: [{ kind: "fields" as const, rows: [["Sampled", s.vitals.sampledAt], ["CPU", `${s.vitals.cpu.logicalCount} logical, ${s.vitals.cpu.utilisationPercent.toFixed(1)}% over ${s.vitals.cpu.intervalMs}ms`], ...(s.vitals.cpu.load1 !== undefined ? [["Load (1/5/15m)", `${s.vitals.cpu.load1} / ${s.vitals.cpu.load5} / ${s.vitals.cpu.load15}`]] : []), ["Memory", capacityText(s.vitals.memory.totalBytes, s.vitals.memory.availableBytes)], ["System uptime", uptimeText(s.vitals.uptimeSeconds)], ...s.vitals.filesystems.map(fs => [fs.mount, capacityText(fs.totalBytes, fs.freeBytes)])] as [string, string][] }] }] : []),
     ...(s.vitalsError ? [{ title: "Computer vitals error", blocks: [{ kind: "lines" as const, lines: [s.vitalsError] }] }] : []),
     ...(s.update ? [{ title: "Updates", blocks: [{ kind: "fields" as const, rows: [["Current", s.update.current], ["Latest seen", s.update.latest ?? "unknown"], ["Last check", s.update.lastCheck ?? "not checked"], ["Automatic updates", s.update.automatic ? "on" : "off"], ["Last result", s.update.lastResult], ["Failures", String(s.update.failures)], ["Next attempt", s.update.nextAttempt ?? "none"]] as [string, string][] }] }] : []),
-    ...(s.account ? (s.account.accounts?.length ? s.account.accounts : [s.account]).map(account => ({ title: `Account computer${account.machineId ? `: ${account.machineId}` : ""}`, blocks: [{ kind: "fields" as const, rows: [["Computer", account.machineId ?? "not registered"], ["Mode", account.mode], ["Host support", account.hostSupport], ["Last registration", account.lastRegistration ?? "none"], ["Desired revision", String(account.desiredRevision ?? "unknown")], ...(account.message ? [["Next", account.message]] : []), ...(account.spaces.some(space => space.lastRefusal === "no available application") ? [["Next", `Install an agent application, then run \`cotal daemon setup${(s.account?.accounts?.length ?? 0) > 1 && account.idpUrl ? ` --idp ${account.idpUrl}` : ""}\` again in a terminal that finds it.`]] : []), ...account.spaces.map((space) => [space.space, `${space.desired ? "desired" : "connected here, not in the account's list"}: ${space.observed}${space.lastRefusal ? ` (${space.lastRefusal})` : ""}${space.machineService === "approval-pending" ? "; machine status service waits for the space owner's approval" : space.machineService ? `; machine status service ${space.machineService}` : ""}`])] as [string, string][] }] })) : []),
+    ...(s.account ? (s.account.accounts?.length ? s.account.accounts : [s.account]).map(account => ({ title: `Account computer${account.machineId ? `: ${account.machineId}` : ""}`, blocks: [{ kind: "fields" as const, rows: [["Computer", account.machineId ?? "not registered"], ["Mode", account.mode], ["Host support", account.hostSupport], ["Last registration", account.lastRegistration ?? "none"], ["Desired revision", String(account.desiredRevision ?? "unknown")], ...(account.message ? [["Next", account.message]] : []), ...(account.spaces.some(space => space.lastRefusal === "no available application") ? [["Next", `Install an agent application, then run \`cotal daemon setup${(s.account?.accounts?.length ?? 0) > 1 && account.idpUrl ? ` --idp ${account.idpUrl}` : ""}\` again in a terminal that finds it.`]] : []), ...account.spaces.map((space) => [space.space, `${space.desired ? "desired" : "connected here, not in the account's list"}: ${space.observed}${space.lastRefusal ? ` (${space.lastRefusal})` : ""}${space.custodyRecovery ? "; open the app and choose Use signed-in account to confirm moving this connection" : ""}${space.machineService === "approval-pending" ? "; machine status service waits for the space owner's approval" : space.machineService ? `; machine status service ${space.machineService}` : ""}`])] as [string, string][] }] })) : []),
     ...(s.agents ?? []).map(inventory => ({ title: `Agents: ${inventory.space}`, blocks: inventory.state === "unreadable"
       ? [{ kind: "lines" as const, lines: [inventory.message] }]
       : inventory.agents.length ? inventory.agents.map(agent => ({ kind: "fields" as const, rows: [["Name", agent.name], ["Application", agent.application], ["Model", agent.model ?? "not pinned"], ["Space", inventory.space], ["Folder", agent.cwd], ["Started", agent.startedAt], ["State", agent.state]] as [string, string][] }))
@@ -161,21 +178,36 @@ function statusView(s: DaemonStatus): Report {
 
 async function status(args: ParsedArgs): Promise<void> {
   const presentation = presentationOf(args.values);
+  const space = (args.values as { space?: string }).space;
+  if (space !== undefined && !isDaemonSpaceName(space)) throw new CommandFailure("refused", "USAGE_INVALID", "space must be 1-64 characters of [A-Za-z0-9_-]", { native: { code: "BAD_FIELD" } });
   const { paths, home } = resolveTarget(args);
   let reply;
   try {
+    await repairMissingInstalledProgram(paths, home);
     reply = await queryDaemon({ paths, peerUid, peerPid });
   } catch (e) {
-    if (process.platform === "win32" && e instanceof EndpointRefusal && e.code === "NOT_RUNNING") {
+    const refusal = otherRuntimeRefusal(e, paths, home);
+    if (refusal !== e) throw asFailure(refusal, home);
+    const installed = process.platform === "linux" && e instanceof EndpointRefusal && e.code === "NOT_RUNNING" ? readReceipt(paths) : undefined;
+    if (e instanceof EndpointRefusal && installed && /^cotal-daemon(?:-[a-f0-9]{16})?\.service$/.test(installed.unit)) {
       throw new CommandFailure("refused", "TARGET_UNAVAILABLE", e.message, {
-        remedy: `start the owned task with ${daemonCommandCopy("start", home)}; read ${nativeDaemonLog(paths.state)} for its last launch output, and inspect the task's state and last result in Task Scheduler if no log was created`,
+        remedy: `inspect the recorded service with ${codeSpan(`systemctl --user status ${installed.unit}`)}; run ${codeSpan(daemonCommandCopy("install", home))} to verify its installation and read its repair guidance, then ${codeSpan(daemonCommandCopy("start", home))}`,
         native: { code: e.code },
       });
     }
-    throw asFailure(e);
+    if (process.platform === "win32" && e instanceof EndpointRefusal && e.code === "NOT_RUNNING") {
+      const receipt = readReceipt(paths);
+      const recorded = receipt?.mechanism === "scheduled-task" && receipt.daemonHome === home;
+      throw new CommandFailure("refused", "TARGET_UNAVAILABLE", e.message, {
+        remedy: recorded
+          ? `if the recorded task is still registered, start it with ${windowsDaemonRemedy("start", home)}. Read ${nativeDaemonLog(paths.state)} for its last launch output. If no log was created, inspect the task's state and last result in Task Scheduler`
+          : `no scheduled task installation is recorded for this daemon. To start it, ${windowsDaemonFirstStart(home)}`,
+        native: { code: e.code },
+      });
+    }
+    throw asFailure(e, home);
   }
   if (!reply.ok) throw new CommandFailure("failed", "OPERATION_FAILED", `the daemon refused the status request: ${reply.error.code} ${reply.error.message}`);
-  const space = (args.values as { space?: string }).space;
   const result = space ? { ...reply.result, agents: reply.result.agents?.filter(row => row.space === space), managers: [await managerViaDaemon({ paths, peerUid, peerPid }, { op: "manager-status", space }) as import("./protocol.js").HostedManager] } : reply.result;
   writeResult(presentation, { command: "daemon status", target: space ? { space } : null, result }, statusView);
 }
@@ -249,12 +281,12 @@ async function connectCheckCommand(args: ParsedArgs): Promise<void> {
   const presentation = presentationOf(args.values);
   const space = (args.values as { space?: string }).space;
   if (typeof space !== "string" || !space) throw new CommandFailure("refused", "USAGE_INVALID", "cotal daemon connect-check needs --space <s>");
-  const { paths } = resolveTarget(args);
+  const { paths, home } = resolveTarget(args);
   let reply;
   try {
     reply = await connectCheckViaDaemon({ paths, peerUid, peerPid, space });
   } catch (e) {
-    throw asFailure(e);
+    throw asFailure(e, home);
   }
   if (!reply.ok) throw new CommandFailure("refused", "USAGE_INVALID", `the daemon refused the connect check: ${reply.code} ${reply.message}`, { native: { code: reply.code } });
   const r: ConnectCheckResult = reply.result;
@@ -314,12 +346,13 @@ async function serviceCommand(args: ParsedArgs, op: "service-connect" | "service
   const presentation = presentationOf(args.values);
   const space = (args.values as { space?: string }).space;
   if (typeof space !== "string" || !space) throw new CommandFailure("refused", "USAGE_INVALID", `cotal daemon ${op} needs --space <s>`);
-  const { paths } = resolveTarget(args);
+  if (!isDaemonSpaceName(space)) throw new CommandFailure("refused", "USAGE_INVALID", "space must be 1-64 characters of [A-Za-z0-9_-]", { native: { code: "BAD_FIELD" } });
+  const { paths, home } = resolveTarget(args);
   let reply;
   try {
     reply = await serviceViaDaemon({ paths, peerUid, peerPid, space, op });
   } catch (e) {
-    throw asFailure(e);
+    throw asFailure(e, home);
   }
   if (!reply.ok) throw new CommandFailure("refused", "USAGE_INVALID", `the daemon refused the service request: ${reply.code} ${reply.message}`, { native: { code: reply.code } });
   const r: ServiceConnectionResult = reply.result;
@@ -350,10 +383,21 @@ async function serviceCommand(args: ParsedArgs, op: "service-connect" | "service
 /** Install or remove the daemon's platform user service. Both forms report the exact unit. */
 async function unitCommand(args: ParsedArgs, op: "install" | "uninstall"): Promise<void> {
   const presentation = presentationOf(args.values);
-  const values = args.values as { "dry-run"?: boolean; yes?: boolean };
-  const { paths, home } = resolveTarget(args, true);
+  const values = args.values as { "dry-run"?: boolean; yes?: boolean; "daemon-home"?: string };
+  if (op === "install" && (values["daemon-home"] === undefined || isAbsolute(values["daemon-home"]))) {
+    const requirement = daemonServiceRequirement(values["daemon-home"]);
+    if (requirement) throw requirement;
+  }
+  const { paths, home } = resolveTarget(args, op);
   if (op === "install") {
     const dry = values["dry-run"] === true;
+    if (!dry && await repairMissingInstalledProgram(paths, home)) {
+      const result = { ...planUninstall(paths, home), state: "repaired" };
+      writeResult(presentation, { command: "daemon install", target: { unit: result.unit }, result }, () => ({ sections: [
+        { title: "Repaired", blocks: [{ kind: "lines", lines: ["The recorded service's missing program was replaced with this Cotal installation. An operator-disabled service remains stopped."] }] },
+      ] }));
+      return;
+    }
     const r = dry ? { ...planInstall(paths, home), state: "would-install" as const } : applyInstall(paths, home);
     writeResult(presentation, { command: "daemon install", target: { unit: r.unit }, result: r }, () => ({ sections: [
       { title: r.alreadyInstalled ? "Already installed" : dry ? "Would install" : "Installed", blocks: [
@@ -385,44 +429,35 @@ async function unitCommand(args: ParsedArgs, op: "install" | "uninstall"): Promi
 
 /** Connect a headless machine with one command: install, sign in, register, connect. */
 async function setupCommand(args: ParsedArgs): Promise<void> {
-  const { claimUpdateClosureAccess } = await import("@cotal-ai/workspace");
-  const release = claimUpdateClosureAccess();
-  try { await setupUnderClosure(args); }
-  finally { release(); }
-}
-
-async function setupUnderClosure(args: ParsedArgs): Promise<void> {
   const presentation = presentationOf(args.values);
-  const values = args.values as { space?: string; idp?: string; "client-id"?: string; wait?: string; "no-manager"?: boolean };
+  const values = args.values as { space?: string; idp?: string; "client-id"?: string; wait?: string; "no-manager"?: boolean; "daemon-home"?: string };
   const space = values.space;
   if (!space && (values["no-manager"] || values.wait !== undefined)) throw new CommandFailure("refused", "USAGE_INVALID", "--no-manager and --wait require --space <s>");
   if (space && !SPACE_PATTERN.test(space)) throw new CommandFailure("refused", "USAGE_INVALID", "space must be 1-64 characters of [A-Za-z0-9_-]", { native: { code: "BAD_FIELD" } });
   if (args.values.cloud && values.idp !== undefined) throw new CommandFailure("refused", "USAGE_INVALID", "--cloud and --idp cannot be combined");
-  let choice = values.idp !== undefined || args.values.cloud === true ? await daemonAccountChoice(args) : undefined;
-  let idp = choice?.url;
   if (values["client-id"] !== undefined && !values["client-id"].trim()) throw new CommandFailure("refused", "USAGE_INVALID", "--client-id cannot be empty");
   const waitSeconds = values.wait === undefined ? 900 : Number(values.wait);
-  if (!Number.isInteger(waitSeconds) || waitSeconds < 0 || waitSeconds > 86400) throw new CommandFailure("refused", "USAGE_INVALID", "--wait takes whole seconds from 0 to 86400");
+  if (values.wait?.trim() === "" || !Number.isInteger(waitSeconds) || waitSeconds < 0 || waitSeconds > 86400) throw new CommandFailure("refused", "USAGE_INVALID", "--wait takes whole seconds from 0 to 86400", { remedy: "omit --wait to set up a Manager, or use --no-manager with --wait <seconds> to wait for machine approval" });
   if (values.wait !== undefined && values["no-manager"] !== true) throw new CommandFailure("refused", "USAGE_INVALID", "--wait requires --no-manager; Manager setup never waits for machine approval");
+  if (values["daemon-home"] === undefined || isAbsolute(values["daemon-home"])) {
+    const requirement = daemonServiceRequirement(values["daemon-home"]);
+    if (requirement) throw requirement;
+  }
+  let choice = values.idp !== undefined || args.values.cloud === true ? await daemonAccountChoice(args) : undefined;
+  let idp = choice?.url;
   const { paths, home } = resolveTarget(args);
   let newSignIn = values.idp !== undefined || args.values.cloud === true;
-  if (!space && !idp) {
-    let installed = true;
-    try { planUninstall(paths, home); } catch { installed = false; }
-    if (!installed) {
-      choice = await daemonAccountChoice(args);
-      idp = choice?.url;
-      if (idp === undefined) return;
-      newSignIn = true;
-    }
+  if (!space && !idp && installedUnitForSetup(paths, home) === undefined) {
+    choice = await daemonAccountChoice(args);
+    idp = choice?.url;
+    if (idp === undefined) return;
+    newSignIn = true;
   }
   const plain = presentation === "plain";
   // Progress goes to stderr so a --json caller still reads one document on stdout.
   const report = (line: string) => { process.stderr.write(`${line}\n`); };
   if (!space) {
     if (!idp) {
-      try { planUninstall(paths, home); }
-      catch { throw new CommandFailure("refused", "USAGE_INVALID", "No daemon is installed; pass --idp <url> to connect an account"); }
       let discovery;
       try { discovery = await exchangeDesktopRequest({ paths, peerUid, peerPid }, { op: "spaces", refresh: true }); }
       catch { throw new CommandFailure("refused", "AUTH_REQUIRED", "The daemon cannot report its sign-in; pass --idp <url> to connect an account"); }
@@ -436,9 +471,17 @@ async function setupUnderClosure(args: ParsedArgs): Promise<void> {
       ...(values["client-id"] !== undefined ? { clientId: values["client-id"] } : {}),
       onPrompt: p => { process.stderr.write(`Approve this machine\nOpen: ${p.verificationUriComplete}\nApproval code: ${p.userCode}\n`); openLoginBrowser(p.verificationUriComplete, args.values); },
     });
-    writeResult(presentation, { command: "daemon setup", target: { idp: idp! }, result: r }, () => ({ sections: [
+    const guidance = r.spaces.length ? undefined : {
+      message: "No space uses this computer yet, so no agents can be launched on it until you connect a space.",
+      next: { command: daemonCommandCopy("setup", home, [["--space", "<space>"], ["--idp", idp!]]), description: "Replace <space> with your space's name to connect it to this computer." },
+      dashboard: isCotalCloudIdp(idp!)
+        ? "Or open the Machines page in the Cotal Cloud dashboard, find this computer under Account computers, and turn on a space."
+        : "You can also choose spaces for this computer in your provider's dashboard.",
+    };
+    writeResult(presentation, { command: "daemon setup", target: { idp: idp! }, result: { ...r, ...guidance } }, () => ({ sections: [
       { title: "Connected to your account", blocks: [{ kind: "fields", rows: [["Account", r.label || "Signed in"], ["Computer", r.computer]] },
-        { kind: "lines", lines: [r.spaces.length ? `Spaces using this computer: ${r.spaces.join(", ")}` : "Turn on the spaces that can use this computer in the dashboard."] }] },
+        { kind: "lines", lines: [guidance?.message ?? `Spaces using this computer: ${r.spaces.join(", ")}`] }] },
+      ...(guidance ? [{ title: "Next", blocks: [{ kind: "commands" as const, items: [guidance.next] }, { kind: "lines" as const, lines: [guidance.dashboard] }] }] : []),
     ] }));
     return;
   }
@@ -472,7 +515,20 @@ async function setupUnderClosure(args: ParsedArgs): Promise<void> {
   ] }));
 }
 
+/** Protect the log launchd writes, or capture a private copy of native service output. */
+async function privateServiceLog(args: ParsedArgs): Promise<void> {
+  let paths: DaemonPaths;
+  // serve resolves the same target again and refuses an unusable one with its full diagnosis.
+  try { ({ paths } = resolveTarget(args)); } catch { return; }
+  const log = await import("./native-log.js");
+  ensureStateDir(paths);
+  if (process.platform === "darwin") log.privateLaunchdLog(paths.state);
+  else log.captureNativeDaemonOutput(paths.state);
+}
+
 async function serve(args: ParsedArgs): Promise<void> {
+  // The app's Background service log reads a private daemon.log; set it up before anything below can fail.
+  if (process.env.COTAL_DAEMON_NATIVE_SERVICE === "1" && process.platform !== "win32") await privateServiceLog(args);
   const { recoverInterruptedUpdate, updateRuntime } = await import("@cotal-ai/cli/update");
   const { recoverExecutionUpdate, executionInstallRoot } = await import("./execution-update.js");
   const { cleanupExecutionStore } = await import("../execution-store.js");
@@ -493,10 +549,13 @@ async function serve(args: ParsedArgs): Promise<void> {
   let running;
   let updates: ReturnType<typeof automaticUpdates> | undefined;
   let owned = false;
+  let ownershipPending = process.env.COTAL_DAEMON_NATIVE_SERVICE === "1";
   let provenance = new AbortController();
   const loggedReasons = new Set<string>();
   const observe = async (): Promise<DaemonOwnershipObservation> => {
-    const result = await observeDaemonOwnedService(paths, home, provenance.signal).catch(() => ({ state: "unknown", reason: "worker-failed" } as const));
+    const signal = provenance.signal;
+    const result = await observeDaemonOwnedService(paths, home, signal).catch(() => ({ state: "unknown", reason: "worker-failed" } as const));
+    if (!signal.aborted) ownershipPending = false;
     if (result.state === "owned") owned = true;
     if (!loggedReasons.has(result.reason)) {
       loggedReasons.add(result.reason);
@@ -521,9 +580,9 @@ async function serve(args: ParsedArgs): Promise<void> {
       log: (l) => process.stderr.write(`${l}\n`), ...(home !== undefined ? { sessionDir: home } : {}) });
   } catch (e) {
     if (process.env.COTAL_DAEMON_NATIVE_SERVICE === "1") process.stderr.write(`daemon startup refused: ${e instanceof Error ? e.message : String(e)}\n`);
-    throw asFailure(e);
+    throw asFailure(otherRuntimeRefusal(e, paths, home), home);
   }
-  updates = automaticUpdates({ version: binVersion(), eligible: () => home === undefined && owned, prepare: async () => { const seats = await running.generationSeats(); if (seats.some(row => row.seats > 0)) throw new Error("running agents remain"); }, abort: async () => {}, report: line => process.stderr.write(`${line}\n`) });
+  updates = automaticUpdates({ version: binVersion(), eligible: () => home === undefined && (owned || (ownershipPending ? "pending" : false)), prepare: async () => { const seats = await running.generationSeats(); if (seats.some(row => row.seats > 0)) throw new Error("running agents remain"); }, abort: async () => {}, report: line => process.stderr.write(`${line}\n`) });
   if (process.platform === "linux" && process.env.COTAL_DAEMON_NATIVE_SERVICE === "1" && process.env.NOTIFY_SOCKET) {
     // The helper stays in this unit's cgroup. NotifyAccess=all permits its readiness
     // message, and the default notification barrier waits for systemd to consume it.
@@ -607,14 +666,15 @@ async function run(args: ParsedArgs): Promise<void> {
     const space = args.values.space;
     if (subcommand.flagNames?.includes("space") && typeof space === "string" && space.trim()) recordOperationContext({ target: { space } });
   }
+  if (mode !== "desktop") presentationOf(args.values);
   if (mode === "desktop") {
     return runDesktopBridge({ resolveTarget: () => target(args), version: binVersion(), peerUid, peerPid });
   }
   if (mode === "name") {
-    const { paths } = resolveTarget(args);
+    const { paths, home } = resolveTarget(args);
     let reply;
     try { reply = await exchangeDesktopRequest({ paths, peerUid, peerPid }, { op: "name", ...(rest[0] !== undefined ? { name: rest[0] } : {}) }); }
-    catch (error) { throw asFailure(error); }
+    catch (error) { throw asFailure(error, home); }
     if (!reply.ok) throw new CommandFailure("refused", "USAGE_INVALID", reply.error.message);
     if ("event" in reply || !("computer" in reply.result) || typeof reply.result.computer !== "string") throw new CommandFailure("failed", "OPERATION_FAILED", "the daemon returned no computer name");
     const result = { computer: reply.result.computer };
@@ -622,10 +682,10 @@ async function run(args: ParsedArgs): Promise<void> {
     return;
   }
   if (mode === "spaces") {
-    const { paths } = resolveTarget(args);
+    const { paths, home } = resolveTarget(args);
     let reply;
     try { reply = await exchangeDesktopRequest({ paths, peerUid, peerPid }, { op: "spaces", refresh: args.values.refresh === true }); }
-    catch (error) { throw asFailure(error); }
+    catch (error) { throw asFailure(error, home); }
     if (!reply.ok) {
       if (reply.error.code === "DEPENDENCY_UNAVAILABLE") throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", reply.error.message, { remedy: reply.error.remedy, native: { code: reply.error.code } });
       throw new CommandFailure("failed", "OPERATION_FAILED", "the daemon could not read its spaces", { native: { code: reply.error.code } });
@@ -666,8 +726,11 @@ const daemonCommand: Command = {
   name: "daemon",
   group: "Manager",
   summary: "connect this computer to an account, manage its persistent daemon, or host a space's Manager",
+  usage: "cotal daemon <name|setup|start|status|serve|install|uninstall|login|spaces|connect-check|register|service-connect|service-disconnect|service-status|desktop> [--daemon-home <dir>] [--json|--plain]",
   positionals: "<name|setup|start|status|serve|install|uninstall|login|spaces|connect-check|register|service-connect|service-disconnect|service-status|desktop>",
   flags: daemonFlags,
+  flagNames: ["daemon-home", "json", "plain"],
+  outputs: ["json", "plain"],
   subcommands: [
     { name: "name", usage: "cotal daemon name [<name>] [--daemon-home <dir>] [--json|--plain]", summary: "read or change this computer's saved name", examples: [{ command: "cotal daemon name", note: "print the saved computer name" }], flagNames: ["daemon-home", "json", "plain"], outputs: ["json", "plain"], prepareMeshTarget: false },
     { name: "spaces", usage: "cotal daemon spaces [--refresh] [--daemon-home <dir>] [--json|--plain]", examples: [{ command: "cotal daemon spaces", note: "list registered spaces" }, { command: "cotal daemon spaces --refresh", note: "refresh catalogs before listing spaces" }], summary: "list registered spaces; optionally refresh catalogs using the daemon-held sign-in", flagNames: ["refresh", "daemon-home", "json", "plain"], outputs: ["json", "plain"], prepareMeshTarget: false },

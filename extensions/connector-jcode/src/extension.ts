@@ -1,12 +1,11 @@
-import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { join, resolve } from "node:path";
+import { resolve } from "node:path";
 import { userJcodeHome } from "@1jehuang/jcode-sdk";
-import { registry, type Connector, type LaunchOpts, type LaunchSpec, type ModelCatalog, type ModelInfo, type OnceSeat } from "@cotal-ai/core";
-import { aclEnv, connectorLaunchOptions, controlEndpoint, eventChannel, launchArmsEvents, launchEnv, materialEnv } from "@cotal-ai/connector-core";
-import { parse as parseToml } from "smol-toml";
+import { registry, type Connector, type LaunchOpts, type LaunchSpec, type OnceSeat } from "@cotal-ai/core";
+import { aclEnv, nameEnv, connectorLaunchOptions, controlEndpoint, eventChannel, launchArmsEvents, launchEnv, materialEnv } from "@cotal-ai/connector-core";
 import { JCODE_READINESS_TIMEOUT_MS } from "./readiness-bound.js";
 import { discardOnceReceipt, retireOnceTree } from "./private-lifecycle.js";
+import { listJcodeModels } from "./model-catalog.js";
 import { jcodeForkRecordPath, jcodeSeatHome, ownedJcodeFork, readJcodeForkSource } from "./session-fork.js";
 
 const FROM_BUILD = import.meta.url.includes("/dist/");
@@ -15,87 +14,7 @@ const HOST_ENTRY = fileURLToPath(new URL(`./${FROM_BUILD ? "host.js" : "host-mai
 // after a 30 ms signal-acknowledgement window, interrupting the host's own shutdown.
 const HOST_ARGS = FROM_BUILD ? [HOST_ENTRY] : ["--import", import.meta.resolve("tsx"), HOST_ENTRY];
 
-type JcodeCatalogConfig = {
-  providers?: Record<string, {
-    model_catalog?: unknown;
-    models?: unknown;
-  }>;
-};
-
-function stringList(value: unknown): string[] | undefined {
-  if (value === undefined) return undefined;
-  if (!Array.isArray(value) || value.some((item) => typeof item !== "string" || !item.trim()))
-    throw new Error("reasoning_efforts must be an array of non-empty strings");
-  return value.map((item) => item.trim());
-}
-
-/** Read the same operator config Jcode copies into each private instance. This is a DECLARED local
- *  catalog, not a provider acceptance probe: live providers on the same host have rejected tiers
- *  declared here, so the metadata marks that distinction instead of presenting it as authority. */
-export function listJcodeModels(): ModelCatalog {
-  const path = join(userJcodeHome(), "config.toml");
-  let text: string;
-  try {
-    text = readFileSync(path, "utf8");
-  } catch (error) {
-    const code = (error as NodeJS.ErrnoException).code;
-    throw new Error(`jcode model catalog could not read Jcode config: unreadable${code ? ` (${code})` : ""}`);
-  }
-
-  let raw: JcodeCatalogConfig;
-  try {
-    raw = parseToml(text) as JcodeCatalogConfig;
-  } catch {
-    throw new Error("jcode model catalog could not parse Jcode config: malformed TOML");
-  }
-
-  const providers = raw.providers;
-  if (!providers || typeof providers !== "object")
-    throw new Error("jcode model catalog has no [providers] table in Jcode config");
-
-  const models: ModelInfo[] = [];
-  const seen = new Set<string>();
-  let enabledProviders = 0;
-  for (const [provider, config] of Object.entries(providers)) {
-    if (!config || typeof config !== "object" || config.model_catalog !== true) continue;
-    enabledProviders++;
-    if (!Array.isArray(config.models))
-      throw new Error(`jcode model catalog provider ${provider} enables model_catalog but has no [[providers.${provider}.models]] entries`);
-    for (const [index, value] of config.models.entries()) {
-      if (!value || typeof value !== "object" || Array.isArray(value))
-        throw new Error(`jcode model catalog provider ${provider} entry ${index + 1} is not a table`);
-      const entry = value as Record<string, unknown>;
-      const id = typeof entry.id === "string" ? entry.id.trim() : "";
-      if (!id) throw new Error(`jcode model catalog provider ${provider} entry ${index + 1} has no non-empty id`);
-      const key = `${provider}\0${id}`;
-      if (seen.has(key)) throw new Error(`jcode model catalog repeats ${provider}/${id}`);
-      seen.add(key);
-      const efforts = stringList(entry.reasoning_efforts);
-      models.push({
-        id,
-        provider,
-        ...(efforts?.length
-          ? {
-              variants: efforts.map((name) => ({
-                name,
-                options: {
-                  provenance: "declared-config",
-                  authoritative: false,
-                  warning: "declared by Jcode config; provider acceptance is validated only at launch",
-                },
-              })),
-            }
-          : {}),
-      });
-    }
-  }
-
-  if (!enabledProviders)
-    throw new Error("jcode model catalog has no provider with model_catalog = true in Jcode config");
-  if (!models.length)
-    throw new Error(`jcode model catalog enabled ${enabledProviders} provider(s) in Jcode config but declared no models`);
-  return { source: "declared Jcode config", models };
-}
+export { listJcodeModels } from "./model-catalog.js";
 
 /**
  * Jcode's stable Harness API is the supported integration seam: the host creates one private
@@ -107,6 +26,15 @@ export const jcodeConnector: Connector = {
   kind: "connector",
   name: "jcode",
   requires: ["jcode"],
+  install: {
+    title: "Jcode",
+    maker: "Jeremy Huang",
+    installers: {
+      darwin: { script: "https://jcode.sh/install", shell: "bash", binDir: "~/.local/bin" },
+      linux: { script: "https://jcode.sh/install", shell: "bash", binDir: "~/.local/bin" },
+      win32: { script: "https://jcode.sh/install.ps1", binDir: "%LOCALAPPDATA%\\jcode\\bin" },
+    },
+  },
   // Jcode may download model material, bring up its MCP bridge, then run a provider-backed
   // cotal_orientation turn before it joins. A generic 30s presence window is therefore not a
   // verdict for this connector; keep the manager's wait bounded but long enough for that required
@@ -134,6 +62,7 @@ export const jcodeConnector: Connector = {
   listModels: listJcodeModels,
   launchHint: "starting Jcode and joining the mesh (first boot can take several minutes)",
 
+  supportsLaunchValidation: true,
   buildLaunch(opts: LaunchOpts): LaunchSpec {
     if (process.platform === "win32")
       throw new Error("jcode connector is not supported on Windows — Jcode's released Harness API bridge is a Unix-socket surface");
@@ -148,13 +77,14 @@ export const jcodeConnector: Connector = {
     if (opts.mcpServers && Object.keys(opts.mcpServers).length > 0)
       throw new Error("jcode connector: tool-sharing (connectors.jcode.mcpServers) is not implemented — the connector owns the private MCP configuration that carries cotal_*");
 
-    const control = controlEndpoint(opts.space, opts.name);
+    // The launch's artifact list (core launch-artifacts): the launcher removes every entry once the
+    // child has exited.
+    const artifacts: string[] = [];
     const env: Record<string, string> = {
       ...launchEnv({ envAllow: opts.envAllow }),
       ...aclEnv(opts),
       COTAL_SPACE: opts.space,
-      COTAL_NAME: opts.name,
-      COTAL_CONTROL_SOCKET: control.path,
+      ...nameEnv(opts),
       COTAL_JCODE_HOME: opts.workspaceRoot ?? process.cwd(),
     };
     if (opts.resolvedBinaries?.jcode) env.COTAL_JCODE_BIN = opts.resolvedBinaries.jcode;
@@ -212,10 +142,13 @@ export const jcodeConnector: Connector = {
         `jcode connector: launch options are not supported by the Harness API host (first option: ${launchOptions[0][0]})`,
       );
 
+    if (opts.validateOnly) return { command: "", args: [] };
     // Creds, broker URL and the control token ride a 0600 file written after every refusal above.
-    // Its directory is a launch artifact the launcher removes once the child has exited.
-    const artifacts: string[] = [];
-    Object.assign(env, materialEnv({ creds: opts.creds, servers: opts.servers, controlToken: control.token, eventsRequired: opts.eventsRequired, eventPayloads: opts.eventPayloads, userAuth: opts.userAuth }, artifacts));
+    // Its directory is a launch artifact the launcher removes once the child has exited. The control
+    // endpoint is minted here too, after every refusal, because minting makes its socket directory.
+    const control = controlEndpoint(opts.space, opts.name, artifacts);
+    env.COTAL_CONTROL_SOCKET = control.path;
+    Object.assign(env, materialEnv({ creds: opts.creds, servers: opts.servers, control, eventsRequired: opts.eventsRequired, eventPayloads: opts.eventPayloads, userAuth: opts.userAuth }, artifacts));
 
     // The fork's provenance is the seat's own record of it, written when the host forks.
     return {

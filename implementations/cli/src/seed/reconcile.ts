@@ -1,4 +1,4 @@
-import { existsSync, renameSync } from "node:fs";
+import { existsSync, readdirSync, renameSync } from "node:fs";
 import { spawn, spawnSync, type SpawnSyncReturns } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { join } from "node:path";
@@ -7,24 +7,31 @@ import {
   claimUpdateClosureAccess,
   waitForUpdateClosure,
   CorruptExtensionPackageError,
+  CorruptExtensionsManifestError,
   SEEDED_EXTENSIONS,
   bindExtensionPeers,
+  connectorConfigDir,
   connectorMetadataStale,
   extensionPackageDir,
   extensionsDir,
   installedExtensionPackage,
+  resolveExtensionEntry,
   inheritConnectorConfig,
   isBundledDesktopRuntime,
   loadExtensionsManifest,
   logicalExecutionEntry,
   provenance,
   quarantineExtensionsManifest,
+  repairConnectorSelection,
   type InstalledExtension,
+  type InstalledExtensionPackage,
 } from "@cotal-ai/workspace";
 import { c } from "../ui.js";
 import { selfArgv, verifiedCotalExecutables } from "../lib/self-exec.js";
 import { claimExtensionMutation } from "../lib/ext-mutation.js";
-import { assertReleasedSeedWriter, entryScript, isValidSemver, parseSemver, SEED_BUILTINS, seedDir, seedGeneration, stampPath } from "./paths.js";
+import { recoverExtensionPromotion } from "../lib/extension-stage.js";
+import { exitInterrupted, handOverStartupNotice, INTERRUPT_SIGNALS, type InterruptSignal } from "../lib/interrupt-notice.js";
+import { assertReleasedSeedWriter, entryScript, isValidSemver, parseSemver, SEED_BUILTINS, seedDir, seedGeneration, seedStoreDir, seedStorePath, stampPath } from "./paths.js";
 import {
   acquireReconcileLock,
   clearChildMarker,
@@ -55,7 +62,8 @@ import {
   type Stamp,
 } from "./authority.js";
 import { gcSeedStore, stageSeedPayload } from "./store.js";
-import { prefixLockDiffers, seededInstallDiffers, operatorInstallDiffers } from "./verify.js";
+import { prefixLockDiffers, seededInstallDiffers, operatorInstallDiffers, operatorUpdateSpec, seededPeerLinksCurrent } from "./verify.js";
+import { assertAutomaticSeedManagers } from "./manager-guard.js";
 
 /**
  * The connector seeding reconcile: makes the four first-party connectors present on a fresh install
@@ -107,11 +115,11 @@ export class SeedChildFailure extends Error {
 }
 
 /** Auto reconcile for the boot gate: silent no-op when the stamp is current and healthy. */
-export async function reconcileSeededConnectors(): Promise<void> {
-  await reconcile("auto");
+export async function reconcileSeededConnectors(resumeFirstSeed = false): Promise<void> {
+  await reconcile("auto", true, resumeFirstSeed);
 }
 
-/** Whether the seed journal, authority and installed built-in payloads need no package repair. */
+/** Whether the seed journal, authority, installed built-in payloads and shared peers need no repair. */
 export function seedInstallationCurrent(): boolean {
   try {
     const generation = seedGeneration();
@@ -119,7 +127,8 @@ export function seedInstallationCurrent(): boolean {
     if (!readWitness() || !authorityIntact() || !builtinsAccounted() || !builtinsMetadataCurrent() || readStamp()?.generation !== generation) return false;
     const entries = SEED_BUILTINS.map(name => ({ name, entry: installedEntry(name) }));
     if (entries.some(({ entry }) => entry !== undefined) && prefixLockDiffers() !== undefined) return false;
-    return entries.every(({ name, entry }) => entry === undefined || seededInstallDiffers(name, generation, entry) === undefined);
+    return entries.every(({ name, entry }) => entry === undefined ||
+      (seededInstallDiffers(name, generation, entry) === undefined && seededPeerLinksCurrent(entry.pkg)));
   } catch {
     return false;
   }
@@ -131,10 +140,21 @@ export function assertReadableSeedState(): void {
   readRecovery();
 }
 
+/** Read the refusal for an unfinished seed that needs manual repair, without running reconcile. */
+export function readSeedRepairRefusal(generation: string): Error | undefined {
+  const cursor = readCursor();
+  if ((!cursor && !readRecovery()) || reconcileLockActive()) return;
+  const child = seedChildStatus();
+  if (child.kind === "ambiguous") return ambiguousSeedChild(child.path);
+  if (child.kind !== "none") return;
+  if (cursor && interruptedUpgrade(cursor, generation)) return;
+  return seedRepairRefusal(cursor, generation);
+}
+
 /** `cotal ext seed [--repair|--reset|--force]`: the maintenance entry. Prints a summary. */
-export async function runSeed(flags: SeedFlags): Promise<void> {
+export async function runSeed(flags: SeedFlags, selfUpdate = false): Promise<void> {
   const mode: Mode = flags.reset ? "reset" : flags.repair ? "repair" : flags.force ? "force" : flags.verify ? "verify" : "auto";
-  const result = await reconcile(mode);
+  const result = await reconcile(mode, false, false, selfUpdate);
   if (result.noop) {
     console.log(c.green("✓ built-in connectors up to date"));
     return;
@@ -149,11 +169,11 @@ export async function runSeed(flags: SeedFlags): Promise<void> {
 
 const NOOP: ReconcileResult = { noop: true, seeded: [], refreshed: [], verified: [], removedKept: [] };
 
-async function reconcile(mode: Mode): Promise<ReconcileResult> {
+async function reconcile(mode: Mode, automatic = false, resumeFirstSeed = false, selfUpdate = false): Promise<ReconcileResult> {
   if (waitForUpdateClosure()) {
     if (process.env.COTAL_UPDATE_REEXEC === "1") throw new Error("another Cotal update finished while this command waited; run the command again");
     console.error("Cotal update finished; restarting command with the installed CLI");
-    const child = spawn(process.execPath, process.argv.slice(1), { env: { ...process.env, COTAL_UPDATE_REEXEC: "1" }, stdio: "inherit" });
+    const child = spawn(process.execPath, process.argv.slice(1), { env: { ...process.env, COTAL_UPDATE_REEXEC: "1" }, stdio: "inherit", windowsHide: true });
     const forward = (signal: NodeJS.Signals) => child.kill(signal);
     const onInt = () => forward("SIGINT"), onTerm = () => forward("SIGTERM");
     process.on("SIGINT", onInt); process.on("SIGTERM", onTerm);
@@ -165,12 +185,25 @@ async function reconcile(mode: Mode): Promise<ReconcileResult> {
     if (result.signal) { process.kill(process.pid, result.signal); await new Promise(() => {}); }
     process.exit(result.code ?? 1);
   }
-  return reconcileUnderClosure(mode);
+  return reconcileUnderClosure(mode, automatic, resumeFirstSeed, selfUpdate);
 }
 
-async function reconcileUnderClosure(mode: Mode): Promise<ReconcileResult> {
-  inheritConnectorConfig();
+async function reconcileUnderClosure(mode: Mode, automatic: boolean, resumeFirstSeed: boolean, selfUpdate: boolean): Promise<ReconcileResult> {
   const generation = seedGeneration();
+  const downgrade = seedDowngradeRefusal(generation);
+  if (downgrade) throw downgrade;
+  if (mode === "repair" && !automatic) {
+    assertReleasedSeedWriter(generation, "reconcile");
+    const release = claimUpdateClosureAccess();
+    try {
+      repairConnectorSelection(() => {
+        const sourceDowngrade = seedDowngradeRefusal(generation);
+        if (sourceDowngrade) throw sourceDowngrade;
+      });
+      recoverExtensionPromotion();
+    } finally { release(); }
+  }
+  inheritConnectorConfig();
   // Cheap lock-free pre-check: the steady state (stamp current, authority intact) is the common case
   // on EVERY command and must not pay a lock acquire. Health checks run FIRST so a lost authority or a
   // crashed reconcile is caught before the stamp is trusted.
@@ -185,35 +218,23 @@ async function reconcileUnderClosure(mode: Mode): Promise<ReconcileResult> {
         if (child.kind === "live")
           throw new Error(`a connector seed child (pid ${child.pid}) is still installing - retry once it finishes`);
         if (child.kind === "ambiguous")
-          throw new Error(`a connector seed may be mid-flight (marker ${child.path}) - if no cotal process is running, remove it, then run \`cotal ext seed --repair\``);
+          throw ambiguousSeedChild(child.path);
         const migration = cursor ? interruptedUpgrade(cursor, generation) : undefined;
         if (child.kind === "stale") {
-          await reconcile("repair");
+          await reconcile("repair", automatic);
           return NOOP;
         }
         if (migration && cursor) {
-          console.error(
+          if (!automatic) console.error(
             c.dim(
               `resuming ${cursor.failed ? "a failed" : "an interrupted"} connector upgrade (seed store ${migration.from} -> ${generation}; ` +
                 `package "${cursor.package}", phase ${cursor.phase}) …`,
             ),
           );
-          await reconcile("repair");
+          await reconcile("repair", automatic);
           return NOOP;
         }
-        if (cursor?.failed) throw failedSeed(cursor);
-        if (cursor) {
-          const storeGeneration = readStamp()?.generation ?? "absent";
-          throw new Error(
-            `a previous connector seed was interrupted (package "${cursor.package}", phase ${cursor.phase}; ` +
-              `seed store generation ${storeGeneration}, running generation ${generation}; ` +
-              "no live reconcile or seed child found) - run `cotal ext seed --repair`",
-          );
-        }
-        throw new Error(
-          "a previous connector repair was interrupted (recovery journal present; no live reconcile or seed child found) - " +
-            "run `cotal ext seed --repair`",
-        );
+        if (!resumeFirstSeed || !interruptedFirstSeed(cursor, generation)) throw seedRepairRefusal(cursor, generation);
       }
     } else if (readWitness() && authorityIntact() && builtinsAccounted() && builtinsMetadataCurrent() && officialExtensionsCurrent(generation) && readStamp()?.generation === generation && !reconcileLockActive()) {
       // Steady state AND no reconcile in flight. The lock check is LAST (immediately before NOOP) so
@@ -224,8 +245,36 @@ async function reconcileUnderClosure(mode: Mode): Promise<ReconcileResult> {
     }
   }
   const releaseClosure = claimUpdateClosureAccess();
+  let interrupted: InterruptSignal | undefined;
+  const onInterrupt = (signal: InterruptSignal): void => { interrupted ??= signal; };
+  const cancelled = new Error("connector seed interrupted");
+  let retryMode = mode;
+  const checkInterrupted = async (verifiedInstall = false): Promise<void> => {
+    if (automatic || mode === "verify") return;
+    // spawnSync cannot dispatch a signal. Poll before looking at it or starting another install.
+    for (let turn = 0; turn < 2; turn++) await new Promise((resolve) => setImmediate(resolve));
+    if (interrupted === undefined) return;
+    // A verified ordinary install needs no crash recovery. Maintenance can have an earlier
+    // recovery obligation, so keep its journals for a retry of that maintenance command.
+    if (mode === "auto") {
+      if (verifiedInstall) clearCursor();
+      else retryMode = "repair";
+    }
+    throw cancelled;
+  };
   try {
   assertReleasedSeedWriter(generation, "reconcile");
+  if ((mode === "auto" || automatic) && readStamp()?.generation !== undefined && readStamp()?.generation !== generation) {
+    // Validate the selected prefix before treating a Manager observation failure as a hold.
+    connectorConfigDir();
+    try { await assertAutomaticSeedManagers(generation); }
+    catch (error) {
+      if (!automatic) throw error;
+      const detail = (error instanceof Error ? error.message : String(error)).split(/[\r\n;]/, 1)[0]!.trim();
+      console.error(`${detail || "A local Manager could not be identified"}; its connectors stay at their existing version until the Manager is restarted`);
+      return NOOP;
+    }
+  }
   const lock = acquireReconcileLock();
   try {
     // Claim the mutation lock INSIDE the reconcile lock's finally: if it throws (an operator `cotal
@@ -234,6 +283,10 @@ async function reconcileUnderClosure(mode: Mode): Promise<ReconcileResult> {
     // themselves fail fast.
     let releaseMutation = claimExtensionMutation({ waitMs: 30000 });
     try {
+      if (!automatic && mode !== "verify") {
+        for (const signal of INTERRUPT_SIGNALS) process.on(signal, onInterrupt);
+        handOverStartupNotice();
+      }
       return await runUnderLocks(mode, generation, lock.nonce, async () => {
         // Provider imports take their own extension lock. Keep the reconcile lock and unfinished
         // cursor, but release our writer while the harness refresh uses the normal loader.
@@ -241,16 +294,18 @@ async function reconcileUnderClosure(mode: Mode): Promise<ReconcileResult> {
         releaseMutation();
         releaseMutation = () => {};
         const { refreshConnectorInstalls } = await import("../commands/setup.js");
-        for (const line of await refreshConnectorInstalls()) console.error(c.dim(`→ ${line}`));
+        for (const line of await refreshConnectorInstalls(undefined, selfUpdate)) console.error(c.dim(`→ ${line}`));
         releaseMutation = claimExtensionMutation({ waitMs: 30000 });
         if (JSON.stringify(loadExtensionsManifest()) !== before)
           throw new Error("installed extensions changed during connector refresh; retry the upgrade before committing its generation");
-      });
+      }, checkInterrupted, resumeFirstSeed);
     } catch (e) {
       // This process is alive to see the failure, so the cursor it leaves says so: the next run
       // reports why the seed failed, not an interruption. Failing to note it leaves that cursor as an
       // interruption, and the seed's own error is still the one reported.
-      try { markCursorFailed(lock.nonce, e instanceof Error ? e.message : String(e)); } catch { /* reported below */ }
+      if (e !== cancelled) {
+        try { markCursorFailed(lock.nonce, e instanceof Error ? e.message : String(e)); } catch { /* reported below */ }
+      }
       throw e;
     } finally {
       releaseMutation();
@@ -258,7 +313,14 @@ async function reconcileUnderClosure(mode: Mode): Promise<ReconcileResult> {
   } finally {
     lock.release();
   }
-  } finally { releaseClosure(); }
+  } catch (e) {
+    if (e !== cancelled || interrupted === undefined) throw e;
+  } finally {
+    for (const signal of INTERRUPT_SIGNALS) process.off(signal, onInterrupt);
+    releaseClosure();
+  }
+  const retry = retryMode === "auto" ? "cotal ext seed" : `cotal ext seed --${retryMode}`;
+  exitInterrupted(interrupted, `Connector seed interrupted. Run \`${retry}\` to finish seeding.`);
 }
 
 /** A cursor left while the durable stamp still names an older generation is evidence that this
@@ -271,6 +333,19 @@ function interruptedUpgrade(cursor: ReconcileCursor, generation: string): { read
   const stamp = readStamp();
   if (!stamp || !isValidSemver(stamp.generation) || !isStrictlyNewer(generation, stamp.generation)) return undefined;
   return { from: stamp.generation };
+}
+
+/** An absent stamp is not enough: look for the current staged add and rule out a prior seed or repair. */
+function interruptedFirstSeed(cursor: ReconcileCursor | undefined, generation: string): boolean {
+  if (!cursor || cursor.phase !== "add" || cursor.failed !== undefined ||
+      readStamp() || readWitness() || everSeededUnion() || recoveryPending() ||
+      !existsSync(join(seedStorePath(generation, cursor.package), "package.json"))) return false;
+  return readdirSync(seedStoreDir()).every((entry) => entry === generation) &&
+    loadExtensionsManifest().extensions.every((entry) => {
+      const name = officialNameOfPkg(entry.pkg);
+      return name !== undefined && entry.source === "seeded" && entry.version === generation &&
+        entry.spec === seedStorePath(generation, name);
+    });
 }
 
 /** Authority present, readable, and structurally valid (a corrupt one is NOT intact — it routes to
@@ -312,7 +387,7 @@ function builtinsMetadataCurrent(generation: string = seedGeneration()): boolean
 }
 
 /** Why an operator-installed official extension needs to be brought to `generation`, or undefined when
- *  it is recorded and installed on disk at `generation` with its main entry present. */
+ *  it is recorded and installed on disk at `generation` with its entry present. */
 function operatorPackageDiffers(entry: InstalledExtension, generation: string): string | undefined {
   if (entry.version !== generation) return `recorded at ${entry.version}, not ${generation}`;
   let installed: ReturnType<typeof installedExtensionPackage>;
@@ -323,7 +398,7 @@ function operatorPackageDiffers(entry: InstalledExtension, generation: string): 
   }
   if (!installed) return "not installed on disk";
   if (installed.version !== generation) return `installed at ${installed.version}, not ${generation}`;
-  if (!mainEntryPresent(entry.pkg, installed.main)) return "main entry file is missing";
+  if (!entryPresent(entry.pkg, installed)) return "entry file is missing";
   return undefined;
 }
 
@@ -339,7 +414,7 @@ function officialExtensionsCurrent(generation: string): boolean {
   }
 }
 
-async function runUnderLocks(mode: Mode, generation: string, nonce: string, refreshInstalls: () => Promise<void>): Promise<ReconcileResult> {
+async function runUnderLocks(mode: Mode, generation: string, nonce: string, refreshInstalls: () => Promise<void>, checkInterrupted: (verifiedInstall?: boolean) => Promise<void>, resumeFirstSeed: boolean): Promise<ReconcileResult> {
   // Refuse to touch the prefix while an orphaned seed child (a crashed parent's still-running
   // installer) is mutating it. Reclaiming the lock does not stop that process. An unprovable
   // pending marker or corrupt record stays fail-loud.
@@ -368,6 +443,9 @@ async function runUnderLocks(mode: Mode, generation: string, nonce: string, refr
   // must not replace a newer machine-wide generation. Check before any maintenance quarantine.
   const downgrade = seedDowngradeRefusal(generation);
   if (downgrade) throw downgrade;
+
+  // A competing writer may have changed the cursor or committed while setup waited for the locks.
+  if (mode === "auto" && resumeFirstSeed && interruptedFirstSeed(readCursor(), generation)) mode = "repair";
 
   // Maintenance modes must survive a corrupt manifest / corrupt seed state: quarantine the unreadable
   // file(s) aside so the reads below (and the commit) can't wedge on them. `manifestRebuilt` ⇒ reconcile
@@ -427,8 +505,18 @@ async function runUnderLocks(mode: Mode, generation: string, nonce: string, refr
   const verified: string[] = [];
   const removedKept: string[] = [];
   const staged: { name: string; pkg: string; spec: string; version: string; source: "seeded" }[] = [];
-  const install = (name: string, force: boolean): void => {
-    if (mode !== "verify") { seedOne(name, generation, nonce, force); verifyInstalled(name, generation); return; }
+  const install = async (name: string, force: boolean): Promise<void> => {
+    if (mode !== "verify") {
+      try {
+        seedOne(name, generation, nonce, force);
+        verifyInstalled(name, generation);
+      } catch (error) {
+        await checkInterrupted();
+        throw error;
+      }
+      await checkInterrupted(true);
+      return;
+    }
     console.error(c.dim(`Reconciling built-in ${name}@${generation}`));
     writeCursor({ nonce, package: name, phase: "copy" });
     const spec = stageSeedPayload(generation, name, { force });
@@ -458,20 +546,20 @@ async function runUnderLocks(mode: Mode, generation: string, nonce: string, refr
       // The interrupted package (the cursor only ever names an ADD in progress — removals never write
       // it): re-install it regardless of current manifest state, whether the crash tore the files or
       // died before the manifest commit. Verified below before the cursor is cleared.
-      install(name, true);
+      await install(name, true);
       everSeeded.add(name);
       refreshed.push(name);
     } else if (!wasSeeded) {
-      install(name, mode === "reset" || mode === "force");
+      await install(name, mode === "reset" || mode === "force");
       everSeeded.add(name);
       seeded.push(name);
     } else if (entry) {
       // Refresh policy: any --force; a strictly-newer generation; an entry whose version or seeded
       // provenance differs from the running generation; on an unknown-cursor --repair (repairAllSeeded)
       // every seeded built-in; and on an ordinary --repair a seeded entry that is not fully intact on
-      // disk (a partial tear — main may survive while a required file is gone).
+      // disk (a partial tear can leave package.json while a required file is gone).
       const isSeeded = entry.source === "seeded";
-      const torn = mode === "repair" && isSeeded && (repairAllSeeded || installState(name) !== "intact");
+      const torn = mode === "repair" && isSeeded && (repairAllSeeded || typeof entry.spec !== "string" || installState(name) !== "intact");
       const metadataStale = !isSeeded || entry.version !== generation || connectorMetadataStale(entry);
       let refresh = mode === "force" || torn || metadataStale || isStrictlyNewer(generation, stampGen);
       if (mode === "auto" && refresh && !torn && !metadataStale && entry.version === generation && seededInstallDiffers(name, generation, entry) === undefined) {
@@ -493,14 +581,14 @@ async function runUnderLocks(mode: Mode, generation: string, nonce: string, refr
         }
       }
       if (refresh) {
-        install(name, true);
+        await install(name, true);
         refreshed.push(name);
       }
     } else if (manifestRebuilt && installState(name) !== "absent") {
       // The manifest was corrupt and quarantined, but this connector is STILL on disk: its entry was
       // lost with the manifest, not removed. Re-seed it to rebuild the record (a quarantined manifest
       // carries no reliable "removed" fact — only on-disk presence can distinguish the two).
-      install(name, true);
+      await install(name, true);
       refreshed.push(name);
     } else {
       removedKept.push(name); // seeded before, deliberately removed (or absent on disk) → leave removed
@@ -514,7 +602,7 @@ async function runUnderLocks(mode: Mode, generation: string, nonce: string, refr
         ? operatorInstallDiffers(entry, generation) !== undefined
         : mode === "force" || (mode === "repair" && repairAllSeeded) || operatorPackageDiffers(entry, generation) !== undefined
     ),
-  ).map((entry) => ({ pkg: entry.pkg, spec: `${entry.pkg}@${generation}`, version: generation }));
+  ).map((entry) => ({ pkg: entry.pkg, spec: operatorUpdateSpec(entry, generation), version: generation }));
 
   if (mode === "verify") {
     const { installExtensionSet } = await import("../commands/ext.js");
@@ -548,11 +636,11 @@ async function runUnderLocks(mode: Mode, generation: string, nonce: string, refr
   // An npm upgrade reaches this path before the command runs. Refresh harness-owned copies before
   // stamping the generation: a failed refresh must remain an incomplete upgrade on the next boot.
   if (migrationFrom) await refreshInstalls();
+  await checkInterrupted(true);
 
   // Commit: authority (+ backup) → witness → stamp (LAST); THEN drop the cursor + recovery obligation
-  // and GC old stores. The cursor and recovery marker are cleared only here, so an interruption
-  // anywhere above (including a repair that quarantined then died mid-reinstall) is still a detectable,
-  // recoverable partial run on the next boot.
+  // and GC old stores. A crash above (including a repair that quarantined then died mid-reinstall)
+  // remains detectable and recoverable on the next boot.
   writeAuthority(everSeeded);
   ensureWitness(generation);
   const committedStamp = writeStamp(generation, entryScript());
@@ -611,7 +699,7 @@ export function seedDowngradeRefusal(generation: string = seedGeneration()): Err
     const stampProvenance = describeStampProvenance(readStamp());
     return new Error(
       `the connector seed store ${seedDir()} is at generation ${storeGeneration}${stampProvenance}, and this cotal ${generation} does not move it back to an older one - ` +
-        `to run this cotal, restore that store and the extensions folder ${extensionsDir()} from a backup taken before the store moved to ${storeGeneration}${newer}`,
+        `run \`cotal update --self\` to upgrade the CLI; to run this cotal, restore that store and the extensions folder ${extensionsDir()} from a backup taken before the store moved to ${storeGeneration}${newer}`,
     );
   }
   return undefined;
@@ -659,7 +747,8 @@ function prepareMaintenanceState(mode: Mode): { manifestRebuilt: boolean; repair
     try {
       loadExtensionsManifest();
       return false;
-    } catch {
+    } catch (error) {
+      if (!(error instanceof CorruptExtensionsManifestError)) throw error;
       return true;
     }
   })();
@@ -779,8 +868,8 @@ function seedOne(name: string, generation: string, nonce: string, force: boolean
   writeCursor({ nonce, package: name, phase: "add" });
   writePendingChildMarker(nonce);
   const r = spawnSync(bin, [...argv, "ext", "add", storePath], {
-    encoding: "utf8",
-    env: { ...process.env, COTAL_EXT_SEEDING: nonce, COTAL_EXT_SEEDING_PARENT: String(process.pid) },
+    encoding: "utf8", windowsHide: true,
+    env: { ...process.env, COTAL_TELEMETRY_DISABLED: "1", COTAL_EXT_SEEDING: nonce, COTAL_EXT_SEEDING_PARENT: String(process.pid) },
   });
   clearChildMarker(); // parent survived the child: the marker's job is done (child also clears its own)
   // The child's `✓ added …` line is seeding progress, not the invoking command's output: the boot gate
@@ -811,9 +900,27 @@ function failedSeed(cursor: ReconcileCursor): Error {
   return new Error(`a previous connector seed failed (package "${cursor.package}", phase ${cursor.phase}): ${cursor.failed} - fix that, then run \`cotal ext seed --repair\``);
 }
 
+function ambiguousSeedChild(path: string): Error {
+  return new Error(`a connector seed may be mid-flight (marker ${path}) - if no cotal process is running, remove it, then run \`cotal ext seed --repair\``);
+}
+
+function seedRepairRefusal(cursor: ReconcileCursor | undefined, generation: string): Error {
+  if (cursor?.failed) return failedSeed(cursor);
+  if (!cursor) return new Error(
+    "a previous connector repair was interrupted (recovery journal present; no live reconcile or seed child found) - " +
+      "run `cotal ext seed --repair`",
+  );
+  const storeGeneration = readStamp()?.generation ?? "absent";
+  return new Error(
+    `a previous connector seed was interrupted (package "${cursor.package}", phase ${cursor.phase}; ` +
+      `seed store generation ${storeGeneration}, running generation ${generation}; ` +
+      "no live reconcile or seed child found) - run `cotal ext seed --repair`",
+  );
+}
+
 /** Confirm a connector the reconcile claims to have (re)installed is recorded AND on disk at the
  *  seed generation with its entry file resolvable — so `--repair` can never clear the cursor and stamp
- *  success over a half-installed prefix (a surviving package.json with a missing main is still broken)
+ *  success over a half-installed prefix (a surviving package.json with a missing entry is still broken)
  *  or a version-skewed payload (installed version != generation) that would silently mismatch core. */
 function verifyInstalled(name: string, generation: string): void {
   const pkg = SEEDED_EXTENSIONS[name].pkg;
@@ -824,7 +931,7 @@ function verifyInstalled(name: string, generation: string): void {
     throw new Error(`connector "${name}" (${pkg}) is recorded but not installed on disk - rerun \`cotal ext seed --repair\``);
   if (installed.version !== generation)
     throw new Error(`connector "${name}" (${pkg}) installed at version ${installed.version} but the seed generation is ${generation} (a version-skewed payload) - rerun \`cotal ext seed --repair\``);
-  if (!mainEntryPresent(pkg, installed.main))
+  if (!entryPresent(pkg, installed))
     throw new Error(`connector "${name}" (${pkg}) is installed but its entry file is missing (a torn install) - rerun \`cotal ext seed --repair\``);
 }
 
@@ -835,14 +942,14 @@ function verifyOperatorInstalled(pkg: string, generation: string): void {
   if (differs) throw new Error(`extension ${pkg} after reconciliation is ${differs}`);
 }
 
-/** The package's declared main entry file exists on disk (`main`, else the CommonJS default). Used to
+/** The package's resolved entry file exists on disk. Used to
  *  detect a torn install where package.json survived a partial npm copy but the built dist did not. */
-function mainEntryPresent(pkg: string, main: string | undefined): boolean {
-  return existsSync(join(extensionPackageDir(pkg), main ?? "index.js"));
+function entryPresent(pkg: string, installed: InstalledExtensionPackage): boolean {
+  return existsSync(resolveExtensionEntry(extensionPackageDir(pkg), installed));
 }
 
 /** A seeded built-in's install on disk. It is intact only with a package.json carrying a version AND
- *  its main entry file present; a partial tear (main gone, package.json kept) or a corrupt package.json
+ *  its entry file present; a partial tear (entry gone, package.json kept) or a corrupt package.json
  *  is torn, which a maintenance run reinstalls rather than stopping on. */
 function installState(name: string): "absent" | "torn" | "intact" {
   const pkg = SEEDED_EXTENSIONS[name].pkg;
@@ -854,7 +961,7 @@ function installState(name: string): "absent" | "torn" | "intact" {
     throw e;
   }
   if (!installed) return "absent";
-  return mainEntryPresent(pkg, installed.main) ? "intact" : "torn";
+  return entryPresent(pkg, installed) ? "intact" : "torn";
 }
 
 function installedEntry(name: string): InstalledExtension | undefined {

@@ -1,14 +1,20 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
-  discardLaunchArtifacts, EpEnvelopeError, rejectionText,
+  discardLaunchArtifacts, EpEnvelopeError, loadCotalConfig, modelPolicyEnv, rejectionText,
   type AttachSession, type Connector, type CotalEndpoint, type LaunchOpts, type LaunchSpec, type RuntimeReference,
 } from "@cotal-ai/core";
+import type { ControlEndpoint } from "@cotal-ai/core";
+import { isTrustedProject } from "@cotal-ai/workspace";
 import type { ForkProvenance, FreeSlotCause, ManagedAgent, ManagerResumeAgent } from "./manager.js";
 import type { AgentHandle, Runtime } from "./runtime/index.js";
 import { writeContinuityAssignment } from "./launch.js";
 import { controlSession } from "./control-session.js";
 import { RESTART_WORK_EXIT_MS, withTimeout } from "./manager-timeout.js";
+import type { Manager } from "./manager.js";
+import type { ManagerConfig } from "./manager-config.js";
+import type { ManagerParts } from "./manager-parts.js";
+import type { ManagerStartState } from "./manager-start-state.js";
 
 const SESSION_RESTART_LIMIT = 3;
 const SESSION_RESTART_WINDOW_MS = 120_000;
@@ -17,10 +23,7 @@ type Readiness = { ok: true; operator?: string } | { ok: false; uncertain?: bool
 
 /** Lifecycle and runtime operations used to prove and recover one managed host session. */
 export interface SessionRecoveryDeps {
-  workspaceRoot: () => string;
-  execution: () => "runtime" | "none";
   executionRefusal: () => string;
-  instanceId: () => string;
   endpoint: () => CotalEndpoint;
   beginLifecycle: () => (() => void) | undefined;
   freeSlot: (agent: ManagedAgent, floor: boolean, cause: FreeSlotCause) => void;
@@ -35,18 +38,44 @@ export interface SessionRecoveryDeps {
   recordSlotCustody: (agent: { name: string; id: string; lifecycleUid: string }, reference: RuntimeReference) => Promise<void>;
   spawnCustodied: (runtime: Runtime, name: string, spec: LaunchSpec, cwd: string, reserved: RuntimeReference | undefined) => Promise<AgentHandle>;
   awaitReadiness: (agent: ManagedAgent, timeoutMs: number, opts: { reapOnExit?: boolean; joinedAfter?: number }) => Promise<Readiness>;
-  readinessTimeoutMs: () => number;
   recordSlotRuntime: (agent: ManagedAgent) => Promise<void>;
   refreshSeatRecord: (agent: ManagedAgent) => void;
   watchExit: (agent: ManagedAgent) => void;
   tail: (session: AttachSession) => Promise<string>;
   stopHandle: (agent: ManagedAgent, graceful: boolean, cause: FreeSlotCause) => void;
-  trackStoppedHandle: (agent: ManagedAgent, floor: boolean, cause: FreeSlotCause) => void;
+}
+
+/** Builds the {@link SessionRecoveryDeps} for a Manager. It reads Manager members by name at each use, so a
+ *  field the Manager assigns later is current and a member a test replaces on the instance is the one that runs. */
+export function sessionRecoveryDeps(m: Manager): SessionRecoveryDeps {
+  return {
+    executionRefusal: () => m["executionRefusal"](),
+    endpoint: () => m["ep"],
+    beginLifecycle: () => m["beginLifecycle"](),
+    freeSlot: (agent, floor, cause) => m["freeSlot"](agent, floor, cause),
+    reapChildrenOf: (principal) => m["reapChildrenOf"](principal),
+    managedPrincipal: (agent) => m["managedPrincipal"](agent),
+    inlineSnapshotChange: (agent) => m["inlineSnapshotChange"](agent),
+    agentFor: (name) => m["agents"].get(name),
+    maintenanceState: () => m["maintenanceState"],
+    resolveConnector: (name) => m["resolveConnector"](name),
+    runtimeFor: (kind) => m["runtimeFor"](kind),
+    reserveCustody: (runtime) => m["reserveCustody"](runtime),
+    recordSlotCustody: (agent, reference) => m["recordSlotCustody"](agent, reference),
+    spawnCustodied: (runtime, name, spec, cwd, reserved) => m["spawnCustodied"](runtime, name, spec, cwd, reserved),
+    awaitReadiness: (agent, timeoutMs, opts) => m["awaitReadiness"](agent, timeoutMs, opts),
+    recordSlotRuntime: (agent) => m["recordSlotRuntime"](agent),
+    refreshSeatRecord: (agent) => m["refreshSeatRecord"](agent),
+    watchExit: (agent) => m["watchExit"](agent),
+    tail: (session) => m["tail"](session),
+    stopHandle: (agent, graceful, cause) => m["stopHandle"](agent, graceful, cause),
+  };
 }
 
 /** Session-state proof, transcript provenance, continuity assignments and bounded crash recovery. */
 export class SessionRecovery {
-  constructor(private readonly deps: SessionRecoveryDeps) {}
+  constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: SessionRecoveryDeps, private readonly state: ManagerStartState, private readonly parts: Pick<ManagerParts, "seatStop">) {}
+  private get managerInstanceId(): string { return this.state.managerInstanceId!; }
 
   readSessionStatePath(path: string):
     | { sessionId: string; status: "running" | "quit" }
@@ -81,7 +110,7 @@ export class SessionRecovery {
   retainedSessionId(entry: ManagerResumeAgent, connector: Connector): string | undefined {
     if (entry.launch.sessionId) return entry.launch.sessionId;
     if (!connector.supportsSessionContinuation) return undefined;
-    const path = join(this.deps.workspaceRoot(), ".cotal", "pi-sessions", `${entry.name}-${entry.identity.lifecycleUid}.json`);
+    const path = join(this.config.workspaceRoot, ".cotal", "pi-sessions", `${entry.name}-${entry.identity.lifecycleUid}.json`);
     try {
       const state = this.readSessionStatePath(path);
       if (state.status === "prompt")
@@ -152,7 +181,7 @@ export class SessionRecovery {
     if (refused === undefined || a.terminalizing || a.handle.status() === "exited") return;
     console.error(`! ${refused}; stopping it`);
     this.deps.stopHandle(a, false, "carried-fork-refused");
-    this.deps.trackStoppedHandle(a, true, "carried-fork-refused");
+    this.parts.seatStop.trackStoppedHandle(a, true, "carried-fork-refused");
   }
 
   readManagedSession(a: ManagedAgent): string {
@@ -165,7 +194,7 @@ export class SessionRecovery {
   /** Re-record an exact seat's assignment at a proven session, so crash recovery, a preserved resume
    *  and the next manifest launch never pick different sessions. */
   recordContinuity(a: ManagedAgent, sessionId: string): void {
-    if (a.continuity) writeContinuityAssignment(this.deps.workspaceRoot(), { ...a.continuity, sessionId });
+    if (a.continuity) writeContinuityAssignment(this.config.workspaceRoot, { ...a.continuity, sessionId });
   }
 
   /** At a stop boundary the connector's session record is the last proof of the session an exact
@@ -216,7 +245,7 @@ export class SessionRecovery {
     a: ManagedAgent,
     expected: string,
     handle: AgentHandle = a.handle,
-    control: { path: string; token: string } | undefined = a.control,
+    control: ControlEndpoint | undefined = a.control,
   ): Promise<void> {
     const deadline = Date.now() + 15_000;
     let last = "control endpoint not ready";
@@ -241,7 +270,7 @@ export class SessionRecovery {
    *  comes from `restart.policy` when spawn carried `supervise`; otherwise the Pi session-recovery
    *  constants. Spending the budget falls through to normal retirement. */
   recoverManagedSession(a: ManagedAgent): void {
-    if (this.deps.execution() === "none") throw new EpEnvelopeError("unimplemented", this.deps.executionRefusal());
+    if (this.config.execution === "none") throw new EpEnvelopeError("unimplemented", this.deps.executionRefusal());
     const restart = a.restart;
     if (!restart || !restart.armed || restart.recovering || a.terminalizing) return;
     const release = this.deps.beginLifecycle();
@@ -286,12 +315,17 @@ export class SessionRecovery {
         if (this.deps.agentFor(a.name) !== a || a.terminalizing || this.deps.maintenanceState() !== "active") return;
         const connector = await this.deps.resolveConnector(a.agent);
         if (this.deps.agentFor(a.name) !== a || a.terminalizing || this.deps.maintenanceState() !== "active") return;
+        const unavailable = connector.launchUnavailable?.({ cwd: a.launch.cwd });
+        if (unavailable !== undefined) throw new Error(unavailable);
         const continueSession = connector.supportsSessionContinuation ? this.readManagedSession(a) : undefined;
-        const opts: LaunchOpts = continueSession !== undefined
-          ? { ...restart.opts, resume: undefined, reopenSession: undefined, prompt: undefined, continueSession }
-          : { ...restart.opts, resume: undefined, reopenSession: undefined, prompt: undefined };
+        // The seat starts again under the name it last showed, which `set-name` may have changed since
+        // launch, and on the model it runs, which `set-model` may have switched. A seat labels itself
+        // at its first launch only.
+        const named = { ...restart.opts, displayName: a.displayName, model: a.launch.model, variant: a.launch.variant, resume: undefined, reopenSession: undefined, prompt: undefined, firstCommand: undefined, autoName: undefined };
+        const opts: LaunchOpts = continueSession !== undefined ? { ...named, continueSession } : named;
+        const policyEnv = modelPolicyEnv(loadCotalConfig(this.config.workspaceRoot, isTrustedProject), a.role);
         const spec = connector.buildLaunch(opts);
-        spec.env = { ...spec.env, COTAL_MANAGER_INSTANCE: this.deps.instanceId() };
+        spec.env = { ...spec.env, COTAL_MANAGER_INSTANCE: this.managerInstanceId, ...policyEnv };
         const wanted = this.deps.managedPrincipal(a);
         const joinedAfter = this.deps.endpoint().getRoster()
           .filter((p) => p.card.id === wanted && p.lifecycleUid === a.lifecycleUid)
@@ -317,7 +351,7 @@ export class SessionRecovery {
           a.handle = handle;
           a.control = spec.control;
           try {
-            const readiness = await this.deps.awaitReadiness(a, connector.readinessTimeoutMs ?? this.deps.readinessTimeoutMs(), {
+            const readiness = await this.deps.awaitReadiness(a, connector.readinessTimeoutMs ?? this.config.readinessTimeoutMs, {
               reapOnExit: false,
               joinedAfter,
             });

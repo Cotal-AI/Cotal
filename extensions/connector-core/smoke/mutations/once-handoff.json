@@ -35,14 +35,14 @@
     },
     {
       "name": "M3 a claimed task is offered again",
-      "file": "extensions/connector-core/src/agent.ts",
+      "file": "extensions/connector-core/src/agent-turns.ts",
       "find": "    return t.once === undefined || onceHandoffState(this.onceUid(), t.goalId) === \"pending\";",
       "replace": "    return t.once === undefined || onceHandoffState(this.onceUid(), t.goalId) !== \"sealed\";",
       "expectRed": "a claimed task is offered by no peek and wakes nothing, so a held task drives no blank retry"
     },
     {
       "name": "M4 a settle seals only a claimed task",
-      "file": "extensions/connector-core/src/agent.ts",
+      "file": "extensions/connector-core/src/agent-turns.ts",
       "find": "    if (t.once !== undefined) endOnceHandoff(this.onceUid(), t.goalId);",
       "replace": "    if (t.once !== undefined) sealOnceHandoff(this.onceUid(), t.goalId);",
       "expectRed": "the settle ends the handoff, and a dispatch queued behind a gate is refused its permit"
@@ -56,14 +56,14 @@
     },
     {
       "name": "M6 noting the dispatch leaves the handoff timer running",
-      "file": "extensions/connector-core/src/agent.ts",
+      "file": "extensions/connector-core/src/agent-turns.ts",
       "find": "    for (const id of goalIds) if (this.activeTurns.get(id)?.once !== undefined) stopOnceHandoffTimer(this.onceUid(), id);\n",
       "replace": "",
       "expectRed": "noting the dispatch stops the timer, so a slow first response is never ended by it"
     },
     {
       "name": "M7 a report that never lands leaves the seat running",
-      "file": "extensions/connector-core/src/agent.ts",
+      "file": "extensions/connector-core/src/agent-turns.ts",
       "find": "        if (await exitOnceSeat()) return;\n",
       "replace": "",
       "expectRed": "a report that cannot land within the bound starts the seat's graceful shutdown and then exits its process"
@@ -91,35 +91,35 @@
     },
     {
       "name": "M11 a declined exit ends the report",
-      "file": "extensions/connector-core/src/agent.ts",
+      "file": "extensions/connector-core/src/agent-turns.ts",
       "find": "        if (await exitOnceSeat()) return;\n",
       "replace": "        await exitOnceSeat();\n        return;\n",
       "expectRed": "past the bound the exit is asked once, declines, and the report goes on, waits growing to a minute and no longer"
     },
     {
       "name": "M12 the report after a declined exit keeps the ten-second cap",
-      "file": "extensions/connector-core/src/agent.ts",
+      "file": "extensions/connector-core/src/agent-turns.ts",
       "find": "      delay = Math.min(delay * 2, exitTried ? 60_000 : 10_000);\n",
       "replace": "      delay = Math.min(delay * 2, 10_000);\n",
       "expectRed": "past the bound the exit is asked once, declines, and the report goes on, waits growing to a minute and no longer"
     },
     {
       "name": "M13 the report outlives its stopped agent",
-      "file": "extensions/connector-core/src/agent.ts",
+      "file": "extensions/connector-core/src/agent-turns.ts",
       "find": "      if (this._stopping) return;\n      await new Promise((resolve) => setTimeout(resolve, delay));\n",
       "replace": "      await new Promise((resolve) => setTimeout(resolve, delay));\n",
       "expectRed": "...and an agent that stops ends the loop with it"
     },
     {
       "name": "M14 a pull answered stop is ignored",
-      "file": "extensions/connector-core/src/agent.ts",
+      "file": "extensions/connector-core/src/agent-turns.ts",
       "find": "        void exitOnceSeat();\n",
       "replace": "",
       "expectRed": "a pull answered `stop` asks the seat's exit; a declined one leaves the seat running, and the next `stop` asks again"
     },
     {
       "name": "M15 a seat that cannot confirm its wake arms no claim bound",
-      "file": "extensions/connector-core/src/agent.ts",
+      "file": "extensions/connector-core/src/agent-turns.ts",
       "find": "        if (once !== undefined && !surfaced && this.options.onceClaimBound) this.boundOnceClaim(t.goalId);\n",
       "replace": "",
       "expectRed": "the pull arms the bound"

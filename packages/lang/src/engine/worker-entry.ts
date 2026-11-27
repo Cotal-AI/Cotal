@@ -221,6 +221,7 @@ async function run(): Promise<WorkerRunResult> {
     ...(seam.journal !== undefined ? { journal: seam.journal } : {}),
     ...(request.seed !== undefined ? { seed: request.seed } : {}),
     ...(request.effectCeiling !== undefined ? { effectCeiling: request.effectCeiling } : {}),
+    ...(request.ceilings !== undefined ? { ceilings: request.ceilings } : {}),
     ...(request.stepBudget !== undefined ? { stepBudget: request.stepBudget } : {}),
     onLog: (line) => postLog(line.scope, [...line.values]),
   });

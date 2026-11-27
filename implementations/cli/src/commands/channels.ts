@@ -2,25 +2,28 @@ import { readFileSync, statSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import * as prompts from "../lib/prompts.js";
 import {
+  CHANNEL_DEFAULTS_KEY,
   assertValidChannel, clearChannel, deleteChannels, effectiveDeliveryClass, effectiveReplay,
   ChannelRegistryConflict, ChannelRegistryRemovalFailed, channelBucket, isConcreteChannel, isPublishPermissionDenied, readChannelRegistry, seedChannelRegistry, UndecodableRegistryEntry, validateChannelConfig,
   type ChannelConfig, type ChannelRegistryFile, type ChannelRegistryRead, type CompletionResult, type FlagSpec, type FlagValues, type ParsedArgs,
 } from "@cotal-ai/core";
 import {
   ConfirmationRequired,
-  CommandFailure, findMesh, jsonFlag, plainFlag, presentationOf, recordOperationWarning, targetFlags, writeResult,
+  checkServer, codeSpan, CommandFailure, findMesh, jsonFlag, plainFlag, presentationOf, recordOperationWarning, targetFlags, writeResult,
   type Presentation, type Report,
 } from "@cotal-ai/workspace";
 import { connectOrThrow, userViewAuthOrExit } from "../lib/connect.js";
 import { batchedRead } from "../lib/transient.js";
 import { MAX_BUFFER } from "@cotal-ai/workspace/chat";
 import { canPrompt } from "./meshes-wizard.js";
-import { yesRequired } from "../lib/confirmation-required.js";
+import { targetWords, yesRequired } from "../lib/confirmation-required.js";
 import { channelMembers } from "./channel-members.js";
 import { earlierMessages } from "./send.js";
 import { deniedWrite } from "../lib/denied-write.js";
 import { completingFlagValue, positionalsForCompletion } from "../lib/completion.js";
 import { listDeclaredChannels } from "../lib/personas.js";
+import { channelHistoryCommand } from "../lib/history-command.js";
+import { shellWord } from "../lib/endpoint-errors.js";
 import { declaredFrom } from "./send.js";
 
 export const channelFlags = [
@@ -59,7 +62,7 @@ function patch(values: Values): ChannelConfig {
   return {
     ...(values.replay !== undefined ? { replay: values.replay } : {}),
     ...(values["no-replay"] ? { replay: false } : {}),
-    ...(values.window !== undefined ? { replayWindow: values.window } : {}),
+    ...(values.window !== undefined ? { replayWindow: values.window.trim() } : {}),
     ...(delivery !== undefined ? { deliveryClass: delivery } : {}),
     ...(values.desc !== undefined ? { description: values.desc } : {}),
     ...(values.instructions !== undefined ? { instructions: values.instructions } : {}),
@@ -74,11 +77,36 @@ export function channelArguments(args: ParsedArgs): { action: string; name?: str
   if (!["list", "show", "members", "set", "defaults", "remove"].includes(action))
     throw usage("channel takes show, members, set, defaults or remove; run it bare to list saved channels");
   const named = ["show", "members", "set", "remove"].includes(action);
-  // `--replay` takes no value, so `--replay off` left `off` behind as a second channel name.
+  const replay = values.replay !== undefined ? "--replay" : values["no-replay"] !== undefined ? "--no-replay" : undefined;
+  const booleanWord = /^(on|off|true|false|yes|no)$/i;
   const stray = named ? (extra.length === 1 ? extra[0] : undefined) : rawName;
-  if ((values.replay !== undefined || values["no-replay"] !== undefined) && stray !== undefined && /^(on|off|true|false|yes|no)$/i.test(stray)) {
-    const flag = /^(off|false|no)$/i.test(stray) ? "--no-replay" : "--replay";
-    throw new CommandFailure("refused", "USAGE_INVALID", `--replay takes no value, so "${stray}" was read as a channel name; --replay turns replay on and --no-replay turns it off`, { remedy: `run \`cotal channel ${action}${named && rawName ? ` ${rawName}` : ""} ${flag}\`` });
+  const [firstIndex, secondIndex] = args.positionalIndices?.slice(1) ?? [];
+  const followsReplay = (index: number | undefined) => replay !== undefined && index !== undefined && args.raw[index - 1] === replay;
+  const valueFirst = named && extra.length === 1 && rawName !== undefined && booleanWord.test(rawName) && followsReplay(firstIndex);
+  const replayWord = valueFirst ? rawName : stray;
+  if (replay && replayWord !== undefined && booleanWord.test(replayWord)) {
+    const output = values.json ? " --json" : values.plain ? " --plain" : "";
+    const server = values.server === undefined ? undefined : checkServer(values.server, "--server");
+    if (server && !server.ok) throw new CommandFailure("refused", "USAGE_INVALID", server.message.replace(/^✗ /, ""), { remedy: server.remedy });
+    if (named && ((!valueFirst && !followsReplay(secondIndex)) || (values.replay !== undefined && values["no-replay"] !== undefined))) {
+      const remedy = action === "set" ? "name one channel and use `--replay` or `--no-replay` without a value" : "name one channel and omit the replay flags";
+      throw new CommandFailure("refused", "USAGE_INVALID", `cotal channel ${action} takes one channel name`, { remedy });
+    }
+    const flag = /^(off|false|no)$/i.test(replayWord) ? "--no-replay" : "--replay";
+    const retryName = valueFirst ? stray : named ? rawName : undefined;
+    const word = retryName ? ` ${shellWord(retryName.startsWith("-") ? `#${retryName}` : retryName)}` : "";
+    if (action !== "set" && action !== "defaults") {
+      const follow = action === "members" && values.follow ? " --follow" : "";
+      const retry = action === "remove" ? "remove the replay flag and its value from this command"
+        : `run ${codeSpan(`cotal channel${action === "list" ? "" : ` ${action}`}${word}${follow}${targetWords(values)}${output}`)}`;
+      const target = valueFirst && follow && values.json ? { channel: retryName } : undefined;
+      throw new CommandFailure("refused", "USAGE_INVALID", "replay settings belong to channel set/defaults", { remedy: retry, target });
+    }
+    const edits = (["window", "delivery", "desc", "instructions"] as const).map((key) => {
+      const value = values[key];
+      return value === undefined ? "" : ` --${key}${value.startsWith("-") ? "=" : " "}${shellWord(value)}`;
+    }).join("");
+    throw new CommandFailure("refused", "USAGE_INVALID", `${replay} takes no value, so "${replayWord}" was read as a channel name; --replay turns replay on and --no-replay turns it off`, { remedy: `run ${codeSpan(`cotal channel ${action}${word} ${flag}${edits}${targetWords(values)}${output}`)}` });
   }
   if (extra.length || (named ? !rawName : rawName !== undefined))
     throw usage(named ? `cotal channel ${action} takes one channel name` : `cotal channel ${action} takes no channel name`);
@@ -121,8 +149,9 @@ export async function channels(args: ParsedArgs): Promise<void> {
   const options = { servers: connection.server, space: connection.space, ...auth };
   const target = { space: connection.space, ...(name ? { channel: name } : {}) };
   if (!writes) {
-    const registry = await readChannelRegistry({ ...options, directGet: batchedRead(connection, channelBucket(connection.space)) });
-    writeResult(presentation, { command: "channel", target, result: { action, name, space: connection.space, registry, scope: "configured channel metadata" } }, registryView);
+    const full = await readChannelRegistry({ ...options, directGet: batchedRead(connection, channelBucket(connection.space)) });
+    const registry = action === "show" ? namedRegistry(full, name!) : action === "defaults" ? defaultsRegistry(full) : full;
+    writeResult(presentation, { command: "channel", target, result: { action, name, space: connection.space, registry, scope: "configured channel metadata" } }, (result) => registryView(result, connection.mode === "open", values));
     return;
   }
   if (action === "remove") await refuseUnknownChannel(name!, values, target, "remove");
@@ -146,8 +175,10 @@ export async function channels(args: ParsedArgs): Promise<void> {
     // The purge went through and the registry step did not: report the partial outcome below.
     if (error instanceof ChannelRegistryRemovalFailed) purged = error.purged;
     // A write that kept losing the revision race to other writers saved nothing.
-    if (error instanceof ChannelRegistryConflict)
-      throw new CommandFailure("refused", "CONFLICT", `${error.message}; this change was not saved`, { target, remedy: "read the channel with `cotal ch show`, then repeat the change" });
+    if (error instanceof ChannelRegistryConflict) {
+      const read = name === undefined ? "defaults" : `show ${shellWord(name.startsWith("-") ? `#${name}` : name)}`;
+      throw new CommandFailure("refused", "CONFLICT", `${error.message}; this change was not saved`, { target, remedy: `read the current settings with ${codeSpan(`cotal ch ${read}${targetWords(values)}`)}, then repeat the change` });
+    }
     if (error instanceof UndecodableRegistryEntry)
       throw new CommandFailure("refused", "CONFLICT", error.message, { target, remedy: "read the key and replace the value; the bytes were left as they are" });
     // A write the broker refused before any purge was acknowledged applied nothing.
@@ -164,12 +195,13 @@ export async function channels(args: ParsedArgs): Promise<void> {
   // entry that already holds every value a set gives.
   const unchanged = action === "remove" ? !removed && !purged : !wrote;
   const result = { action, name, space: connection.space, patch: action === "remove" ? null : patch(values), purged: purged ?? null, removed: action === "remove" ? removed : null };
+  const scope = targetWords({ ...values, space: result.space });
   writeResult(presentation, { command: "channel", target, result, noOp: unchanged }, (r) => ({ sections: [
     { title: action !== "remove" ? action === "defaults" ? unchanged ? "Channel defaults unchanged" : "Channel defaults saved" : unchanged ? `Channel unchanged · #${name}` : `Channel saved · #${name}` : removed ? `Channel removed · #${name}` : unchanged ? `Nothing removed · #${name}` : `Channel history purged · #${name}`, blocks: [
       { kind: "fields", rows: [["Space", r.space], ...(action === "remove" ? [["Metadata", removed ? "removed" : "no saved entry"], ["History", r.purged === null ? "kept" : `${r.purged} retained messages purged`]] as [string, string][] : Object.entries(r.patch!).map(savedRow))] },
       { kind: "lines", lines: [{ text: action !== "remove" ? unchanged ? `${action === "defaults" ? "The space defaults already hold" : `#${name} already holds`} every value given, so nothing was written.` : "Metadata does not grant read or post access. Replay controls backfill, not confidentiality." : unchanged ? `${connection.space} has no saved entry for #${name}, so nothing changed.` : "This does not stop members or revoke access. Future posts can create new retained history.", tone: "hint" }] },
     ] },
-    { title: "Next", blocks: [{ kind: "commands", items: [{ command: "cotal ch", description: "See saved channel metadata" }, { command: "cotal history <channel>", description: "Read retained messages within your grant" }] }] },
+    { title: "Next", blocks: [{ kind: "commands", items: [{ command: `cotal ch${scope}`, description: "See saved channel metadata" }, { command: `${name ? channelHistoryCommand(name) : "cotal history <channel>"}${scope}`, description: "Read retained messages within your grant" }] }] },
   ] }));
 }
 
@@ -215,9 +247,15 @@ export async function refuseUnknownChannel(name: string, values: Values, target:
   if (saved.has(name) || (await earlierMessages(values, name)) !== false) return;
   const spelled = registered.find((channel) => channel.toLowerCase() === name.toLowerCase());
   const known = registered.length ? `registered channels: ${registered.map((channel) => `#${channel}`).join(", ")}` : "this space registers no channels";
+  const word = spelled === undefined ? undefined : shellWord(spelled.startsWith("-") ? `#${spelled}` : spelled);
+  const output = values.json ? " --json" : values.plain ? " --plain" : "";
+  const scope = targetWords({ ...values, space: reader.space });
+  const remedy = word === undefined ? `name a channel the space has; ${codeSpan(`cotal ch${scope}`)} lists the registered ones`
+    : action === "remove" ? `inspect the registered spelling: ${codeSpan(`cotal channel show ${word}${scope}`)}`
+    : `name it as registered: ${codeSpan(`cotal channel members ${word}${targetWords(values)}${output}`)}`;
   throw new CommandFailure("refused", "TARGET_NOT_FOUND",
     `#${name} has ${action === "members" ? "no observed members, " : ""}no saved entry and no retained messages; ${spelled ? `channel names are case-sensitive, and the registered one is #${spelled}` : known}`,
-    { target, remedy: spelled ? `name it as registered: \`cotal channel ${action} ${spelled}\`` : "name a channel the space has; `cotal ch` lists the registered ones" });
+    { target, remedy });
 }
 
 /** A saved setting in the receipt, in the words `channel show` uses for it. */
@@ -244,23 +282,41 @@ function policyFields(config: ChannelConfig | undefined, defaults: ChannelRegist
   ];
 }
 
-function registryView(result: { action: string; name?: string; space: string; registry: ChannelRegistryRead }): Report {
+function namedRegistry({ defaults, channels, undecodable }: ChannelRegistryRead, name: string): ChannelRegistryRead {
+  const entry = channels && Object.hasOwn(channels, name) ? channels[name] : undefined;
+  const errors = undecodable?.filter(({ key }) => key === name || key === CHANNEL_DEFAULTS_KEY);
+  return { defaults, channels: entry === undefined ? {} : { [name]: entry }, ...(errors?.length ? { undecodable: errors } : {}) };
+}
+
+function defaultsRegistry({ defaults, undecodable }: ChannelRegistryRead): ChannelRegistryRead {
+  const errors = undecodable?.filter(({ key }) => key === CHANNEL_DEFAULTS_KEY);
+  return { defaults, ...(errors?.length ? { undecodable: errors } : {}) };
+}
+
+function registryView(result: { action: string; name?: string; space: string; registry: ChannelRegistryRead }, open: boolean, values: Values): Report {
   const { registry, name } = result;
   const bad = (key: string) => registry.undecodable?.find((entry) => entry.key === key);
+  const scope = targetWords({ ...values, space: result.space });
   if (result.action === "show") {
     const config = Object.hasOwn(registry.channels ?? {}, name!) ? registry.channels![name!] : undefined;
     const undecodable = bad(name!);
     return { sections: [
       { title: `Channel · #${name}`, blocks: [{ kind: "fields", rows: [["Space", result.space], ["Metadata", undecodable ? "not decoded" : config ? "configured" : "no saved entry"], ...policyFields(config, registry.defaults), ["Description", config?.description || "not set"]] }, ...(undecodable ? [{ kind: "lines" as const, lines: [{ text: `The saved entry does not decode (${undecodable.error}). The key was left as it is, and the channel resolves to the default policy.`, tone: "waiting" as const }] }] : [])] },
       ...(config?.instructions ? [{ title: "Instructions · advisory", blocks: [{ kind: "lines" as const, lines: config.instructions.split(/\r?\n/) }] }] : []),
-      { title: "Next", blocks: [{ kind: "commands", items: [{ command: `cotal ch members ${name}`, description: "Read broker-observed membership" }, { command: `cotal history ${name}`, description: "Read retained messages within your grant" }] }] },
+      { title: "Next", blocks: [
+        ...(open ? [{ kind: "lines" as const, lines: ["Broker-observed channel membership is unavailable on open meshes."] }] : []),
+        { kind: "commands", items: [
+          ...(open ? [] : [{ command: `cotal ch members ${shellWord(name!.startsWith("-") ? `#${name}` : name!)}${scope}`, description: "Read broker-observed membership" }]),
+          { command: `${channelHistoryCommand(name!)}${scope}`, description: "Read retained messages within your grant" },
+        ] },
+      ] },
     ] };
   }
   if (result.action === "defaults") {
     const undecodable = bad("=defaults");
     return { sections: [
       { title: "Channel defaults", blocks: [{ kind: "fields", rows: [["Space", result.space], ...(undecodable ? [["Saved entry", "not decoded"] as [string, string]] : []), ...policyFields(registry.defaults, undefined)] }, { kind: "lines", lines: [{ text: undecodable ? `The saved defaults do not decode (${undecodable.error}). The key was left as it is, and channels inherit the built-in policy.` : "Per-channel settings override these defaults. Replay is not an access control.", tone: undecodable ? "waiting" : "hint" }] }] },
-      { title: "Next", blocks: [{ kind: "commands", items: [{ command: "cotal ch defaults --replay --window 24h", description: "Set defaults for this space" }] }] },
+      { title: "Next", blocks: [{ kind: "commands", items: [{ command: `cotal ch defaults --replay --window 24h${scope}`, description: "Set defaults for this space" }] }] },
     ] };
   }
   const entries = Object.entries(registry.channels ?? {}).sort(([a], [b]) => a.localeCompare(b));
@@ -272,16 +328,16 @@ function registryView(result: { action: string; name?: string; space: string; re
     } : { kind: "lines", lines: ["No saved channel metadata."] }, { kind: "lines", lines: [{ text: "Configured entries only. Channels with traffic but no saved metadata are not included.", tone: "hint" }] }] },
     ...(undecodable.length ? [{ title: "Not decoded", blocks: [{ kind: "table" as const, columns: [{ key: "key", label: "Key" }, { key: "error", label: "Error" }], rows: undecodable.map((entry) => ({ key: entry.key === "=defaults" ? "defaults" : `#${entry.key}`, error: entry.error })), }, { kind: "lines" as const, lines: [{ text: "These keys stay in the registry. Their channels resolve to the default policy until the value decodes.", tone: "hint" as const }] }] }] : []),
     { title: "Next", blocks: [{ kind: "commands", items: [
-      { command: "cotal ch show <name>", description: "Read policy and advisory instructions" },
-      { command: 'cotal ch set <name> --desc "…"', description: "Save channel metadata without changing access" },
-      { command: "cotal ch defaults", description: "See inherited replay and delivery settings" },
+      { command: `cotal ch show <name>${scope}`, description: "Read policy and advisory instructions" },
+      { command: `cotal ch set <name> --desc "…"${scope}`, description: "Save channel metadata without changing access" },
+      { command: `cotal ch defaults${scope}`, description: "See inherited replay and delivery settings" },
     ] }] },
   ] };
 }
 
 async function confirmRemoval(name: string, space: string, values: Values, presentation: Presentation): Promise<boolean> {
   if (values.yes) return true;
-  if (presentation === "json" || !canPrompt()) throw new ConfirmationRequired(`${yesRequired("channel removal", presentation === "json")}; --purge also deletes retained history for that channel`, { remedy: `confirm with \`cotal channel remove ${name}${values.purge ? " --purge" : ""} --yes\`` });
+  if (presentation === "json" || !canPrompt()) throw new ConfirmationRequired(`${yesRequired("channel removal", presentation === "json")}; --purge also deletes retained history for that channel`, { remedy: `confirm with ${codeSpan(`cotal channel remove ${shellWord(name.startsWith("-") ? `#${name}` : name)}${targetWords(values)}${values.purge ? " --purge" : ""} --yes${presentation === "rich" ? "" : ` --${presentation}`}`)}` });
   const question = `Remove #${name} from ${space}? ${values.purge ? "Its retained history will also be deleted." : "Its retained history will be kept."} Access grants and members are unchanged.`;
   if (presentation === "plain") return (await prompts.askLine(`${question}\n1) Cancel\n2) Remove\nChoice [1]: `))?.trim() === "2";
   const answer = await prompts.confirm({ message: question, initialValue: false });

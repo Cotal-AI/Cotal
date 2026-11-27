@@ -16,6 +16,8 @@ import { decodeIndex, encodeIndex } from "../src/docs-index-core.js";
 const dist = fileURLToPath(new URL("../dist", import.meta.url));
 const CORPUS = "docs-bundle.bin";
 const INDEX = "docs-index.bin";
+/** A data file that is not the module's own is refused, and the refusal says a restart loads the matching pair. */
+const BUILT = /is not the one built with it for Cotal [^:]+: .*Restart the session to read the docs of the installed version/;
 let checks = 0;
 const check = (label: string, run: () => void): void => { run(); checks++; console.log(`✓ ${label}`); };
 
@@ -37,14 +39,22 @@ try {
 
   const changes = (good: Buffer): [string, RegExp, (file: string) => void][] => [
     ["missing", /ENOENT/, file => rmSync(file)],
-    ["replaced by other bytes of the same length", /is not the one built with it/, file => writeFileSync(file, Buffer.alloc(good.length, 7))],
-    ["replaced by another valid gzip file", /is not the one built with it/, file => writeFileSync(file, gzipSync(Buffer.from("not this data")))],
-    ["one byte flipped", /is not the one built with it/, file => { const bytes = Buffer.from(good); bytes[bytes.length >> 1] ^= 1; writeFileSync(file, bytes); }],
-    ["truncated", /is not the one built with it/, file => writeFileSync(file, good.subarray(0, good.length - 1))],
-    ["empty", /is not the one built with it/, file => writeFileSync(file, "")],
-    ["with trailing bytes", /is not the one built with it/, file => writeFileSync(file, Buffer.concat([good, Buffer.from([0])]))],
+    ["replaced by other bytes of the same length", BUILT, file => writeFileSync(file, Buffer.alloc(good.length, 7))],
+    ["replaced by another valid gzip file", BUILT, file => writeFileSync(file, gzipSync(Buffer.from("not this data")))],
+    ["one byte flipped", BUILT, file => { const bytes = Buffer.from(good); bytes[bytes.length >> 1] ^= 1; writeFileSync(file, bytes); }],
+    ["truncated", BUILT, file => writeFileSync(file, good.subarray(0, good.length - 1))],
+    ["empty", BUILT, file => writeFileSync(file, "")],
+    ["with trailing bytes", BUILT, file => writeFileSync(file, Buffer.concat([good, Buffer.from([0])]))],
   ];
   // The corpus file serves pages and search; the index file serves search only. Menu and metadata read neither.
+  // An update in place replaces the files under a session that loaded the module before. The files are
+  // read lazily, so its first page read meets the new release's corpus and is told to restart.
+  const live = await copyOf(() => undefined);
+  writeFileSync(join(roots[roots.length - 1]!, CORPUS), gzipSync(Buffer.from(JSON.stringify("another release") + "\n")));
+  await assert.rejects(live.runDocs({ page: "architecture" }), BUILT, "a corpus replaced after the module loaded");
+  checks++;
+  console.log("✓ a corpus replaced after the module loaded is refused with the restart remedy");
+
   for (const [file, pageWorks] of [[CORPUS, false], [INDEX, true]] as const) {
     for (const [name, message, change] of changes(readFileSync(join(dist, file)))) {
       const docs = await copyOf(root => change(join(root, file)));

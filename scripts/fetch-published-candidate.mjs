@@ -28,8 +28,8 @@ export async function fetchPublishedCandidate({ version, source, sourceRoot, out
   assert.equal(realpathSync(git(['rev-parse', '--show-toplevel'])), root, 'source must be Git root');
   assert.equal(git(['rev-parse', 'HEAD']), source, 'source checkout must match H');
   assert.equal(git(['status', '--porcelain', '--untracked-files=all', '--ignore-submodules=none']), '', 'source must be clean');
-  assert.equal(expected.length, 24);
-  assert.equal(new Set(expected).size, 24);
+  assert.equal(expected.length, 25);
+  assert.equal(new Set(expected).size, 25);
   const staging = mkdtempSync(join(dirname(output), `.${basename(output)}-`));
   const save = (name, value) => writeFileSync(join(staging, name), JSON.stringify(value, null, 2) + '\n', { flag: 'wx' });
   const get = async url => {

@@ -14,7 +14,7 @@
  *
  * The caller side runs the two core entry points a placed spawn actually uses — `resolveService`
  * with an `instanceId`, then `invokeCommand` for `resolve-cwd` and `spawn` (mesh-handler.ts
- * `manager()` and `resolveCwd()`) — over the scoped connection. No subject is built by hand here;
+ * `manager()` and mesh-spawn.ts `resolveCwd()`) — over the scoped connection. No subject is built by hand here;
  * if the production reach changed rails, the positive control would go red with it.
  *
  * Run: pnpm smoke:runtime-placement-grants   (needs nats-server on PATH)

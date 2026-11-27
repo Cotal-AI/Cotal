@@ -253,14 +253,14 @@ What the held step's first dispatch armed is the host's to end, inside the hold'
 hosted runtime claims the open attempt's pause (§6.1). `SimHandler` arms nothing.
 
 The hosted `ask` also relays each attempt to its seat as a `turn` goal under the attempt's token
-(`relayAsk` in `mesh-handler.ts`), and nothing withdraws a relay goal today: the manager serves no
+(`relayAsk` in `mesh-turn-ask.ts`), and nothing withdraws a relay goal today: the manager serves no
 `cancel` for one, and a discharged `ask` leaves its relay as well (#2596). The hold leaves it too,
 so the seat may still be shown that turn until it yields or the relay's deadline, the ask's
 recorded `deadlineAt`, passes. The relay is one goal per attempt and is never submitted again, so a
 write the seat makes in that turn is the first dispatch's one write, and the hold is its only
 settle. The seat answers that turn with the command the relay renders,
 `cotal run answer <run> <step-key>` (`renderAskRequest` in
-`extensions/connector-core/src/agent.ts`), which reads the step's pause as every answer does
+`extensions/connector-core/src/agent-turns.ts`), which reads the step's pause as every answer does
 (§6.1). Before the hold's first bind that is the claimed attempt pause, which refuses it. After the
 bind it is the hold, and the manager refuses the answer of a baseline seat: a baseline seat may
 answer only the pause its pending relay names, and this relay names the attempt's token
@@ -360,7 +360,7 @@ change.
   - `performEffect`: the `pending` case under a `once` frame calls the new `performHold` instead of
     `perform`. `performHold` does §4.3 and nothing else. Its catch is `performEffect`'s minus the
     `refused` settle (§4.3, 5).
-  - The L4028 refusal (§4.2): `dispatchPrimitive` makes one test before its `switch`, refusing a
+  - The L4028 refusal (§4.2): `dispatchPrimitive` (in `packages/lang/src/perform-dispatch.ts`) makes one test before its `switch`, refusing a
     primitive whose `kind` is neither null nor in `HOLDABLE_KINDS` when the frame's path
     (`frame.keys.path`) has a `once` frame, so no arm reaches `performEffect` or `performWaitUntil`
     for a refused kind; `performScope` refuses kind `conclave`, testing `scopeKey.scope` before its

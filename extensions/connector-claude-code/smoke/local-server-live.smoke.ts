@@ -30,8 +30,8 @@ for (const built of [CLI, MCP, MONITOR, HOOK]) assert(existsSync(built), `build 
 const dir = mkdtempSync(join(tmpdir(), "cotal-claude-local-"));
 const home = join(dir, "home"), config = join(dir, "config"), tmp = join(dir, "tmp");
 mkdirSync(tmp, { mode: 0o700 });
-// Every process here, this one included, keeps its sockets, session records and credential
-// directories in the suite's own temp directory.
+// Every process here, this one included, keeps its sockets and session records in the suite's own
+// temp directory, and its credential directories under the suite's own Cotal home.
 process.env.TMPDIR = tmp;
 const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("COTAL_") && !k.startsWith("CLAUDE")));
 Object.assign(env, { HOME: dir, COTAL_HOME: home, XDG_CONFIG_HOME: config, XDG_DATA_HOME: join(dir, "data"), XDG_CACHE_HOME: join(dir, "cache"),
@@ -50,26 +50,29 @@ const check = (name: string, condition: unknown, observed?: string) => {
   pass++;
   console.log(`  ✓ ${name}`);
 };
-/** The credential directories local provisions made for `space`, with their records. */
-const identities = (space?: string) => readdirSync(tmp).filter((n) => n.startsWith("cotal-app-identity-")).flatMap((n) => {
+/** The credential directories local provisions made for `space`, with their records: under the Cotal
+ *  home, where provision makes them, or in the temp dir, where earlier versions did. */
+const identities = (space?: string) => [join(home, "app-identities"), tmp].flatMap((parent) => (existsSync(parent) ? readdirSync(parent) : []).filter((n) => n.startsWith("cotal-app-identity-")).flatMap((n) => {
   try {
-    const record = JSON.parse(readFileSync(join(tmp, n, "identity.json"), "utf8")) as { space: string; id: string; owner: number; session?: string };
-    return space === undefined || record.space === space ? [{ dir: join(tmp, n), ...record }] : [];
+    const record = JSON.parse(readFileSync(join(parent, n, "identity.json"), "utf8")) as { space: string; id: string; owner: number; session?: string };
+    return space === undefined || record.space === space ? [{ dir: join(parent, n), ...record }] : [];
   } catch { return []; }
-});
+}));
 const secretShaped = /BEGIN NATS|NKEY SEED|-----BEGIN|\bSU[A-Z2-7]{50,}|agent\.creds/;
 const plugin = (name: string, recorded: boolean) => {
   const dist = join(dir, name, "dist");
   mkdirSync(dist, { recursive: true });
   copyFileSync(MCP, join(dist, "mcp.cjs"));
+  // An installed plugin carries its monitor beside the server, which names it as the hold.
+  copyFileSync(MONITOR, join(dist, "monitor.cjs"));
   if (recorded) writeFileSync(join(dist, "cli.json"), JSON.stringify({ argv: [process.execPath, CLI] }));
   return join(dist, "mcp.cjs");
 };
 interface Served { p: ChildProcess; exited: Promise<number | null>; instructions: string; tools: string[]; call(name: string, args: object): Promise<string> }
 const children: ChildProcess[] = [];
 const servers: Served[] = [];
-async function serve(script: string, flags: string[] = [], cwd = dir): Promise<Served> {
-  const p = spawn(process.execPath, [script, ...flags], { cwd, env, stdio: ["pipe", "pipe", "pipe"] });
+async function serve(script: string, flags: string[] = [], cwd = dir, extra: NodeJS.ProcessEnv = {}): Promise<Served> {
+  const p = spawn(process.execPath, [script, ...flags], { cwd, env: { ...env, ...extra }, stdio: ["pipe", "pipe", "pipe"] });
   children.push(p);
   const exited = new Promise<number | null>((r) => p.once("exit", r));
   let buf = "", id = 0;
@@ -165,6 +168,8 @@ try {
     const codeA = await serve(installed, [], root);
     const codeB = await serve(installed, [], root);
     check("a personal session receives gateway tools and local-server instructions", ["cotal_connect", "cotal_disconnect", "cotal_dm"].every((name) => codeA.tools.includes(name)) && codeA.instructions.startsWith("This is the Cotal server on this computer"));
+    check("the plugin prefers its own signed-in connection unless the person chooses hosted access",
+      /including signed-in remote spaces/.test(codeA.instructions) && /use this one unless the person asks for the hosted one/.test(codeA.instructions), codeA.instructions);
     const sessionA = bindSession(root), sessionB = bindSession(root);
     const readA = reader(sessionA), readB = reader(sessionB);
     const connectedB = await codeB.call("cotal_connect", { name: "claude_b", space, context: sessionB });
@@ -249,9 +254,53 @@ try {
     check("a server that ends retires the identity it still held", identities(space).length === 0);
     for (const r of [readA, readB]) r.p.kill("SIGTERM");
 
+    // An Agent SDK host such as T3 Code stops an idle session's process, so there connect asks
+    // the conversation to keep a silent hold running as a background task.
+    check("a Code session's connect asks for no hold", !connectedB.includes("--hold"), connectedB);
+    const codeC = await serve(installed, [], root, { CLAUDE_CODE_ENTRYPOINT: "sdk-ts" });
+    const sessionC = bindSession(root), readC = reader(sessionC);
+    const connectedC = await codeC.call("cotal_connect", { name: "claude_sdk", space, context: sessionC });
+    const hold = /timeout set to 7200000: (.+ --hold [A-Za-z0-9_-]+)\n/.exec(connectedC)?.[1];
+    check("an Agent SDK host's connect asks for a hold of this conversation", connectedC.includes("Connected as claude_sdk") && hold?.endsWith(` --hold ${sessionC}`) === true, connectedC);
+    const idC = /connection_id: ([0-9a-f-]{36})/.exec(connectedC)![1]!;
+    // The plugin's Stop hook, as Claude Code runs it when this conversation's turn would end.
+    const stop = (fields: object = {}, entrypoint = "sdk-ts") => {
+      const r = spawnSync(process.execPath, [HOOK], { cwd: dir, env: { ...hostEnv, CLAUDE_CODE_ENTRYPOINT: entrypoint },
+        input: JSON.stringify({ hook_event_name: "Stop", session_id: sessionC, ...fields }), encoding: "utf8", timeout: 10_000 });
+      return r.stdout.trim();
+    };
+    const blocked = stop();
+    check("a turn that would end with a connection and no hold continues to start one",
+      /"decision":"block"/.test(blocked) && blocked.includes(`--hold ${sessionC}`), blocked);
+    check("  but not once a block already continued it", stop({ stop_hook_active: true }) === "");
+    check("  and not outside an Agent SDK host", stop({}, "cli") === "");
+    // Its own process group, which Claude Code stops whole, as it does a background command.
+    const holding = spawn("sh", ["-c", hold!], { env, stdio: ["ignore", "pipe", "pipe"], detached: true });
+    children.push(holding);
+    let holdOut = "", holdErr = "";
+    holding.stderr!.on("data", (d: Buffer) => { holdErr += d.toString(); });
+    holding.stdout!.on("data", (d: Buffer) => { holdOut += d.toString(); });
+    await sleep(2_000);
+    check("  and that hold runs silently", holding.exitCode === null && holdOut === "", `${hold}\n${holdOut}${holdErr}`);
+    check("a turn ends freely while its hold runs", stop() === "");
+    process.kill(-holding.pid!, "SIGTERM");
+    await new Promise((r) => holding.exitCode === null ? holding.once("exit", r) : r(undefined));
+    await sleep(500);
+    check("once the hold is gone, the next turn asks for another", /"decision":"block"/.test(stop()));
+    check("a conversation that disconnected is not asked", (await codeC.call("cotal_disconnect", { connection_id: idC })).includes("Disconnected") && stop() === "");
+    codeC.p.stdin!.end();
+    check("  and the server closes cleanly", await within(codeC.exited) === 0 && identities(space).length === 0);
+    readC.p.kill("SIGTERM");
+
     // Desktop chat supplies no native session, so even with this one mesh running it opens nothing.
     const desktop = await serve(installed, ["--desktop"]);
-    check("the Desktop server sends a signed-in space to its hosted connector", /cannot join a signed-in Cotal space/.test(desktop.instructions) && !/use this one unless/.test(desktop.instructions));
+    check("the Desktop server still names its own signed-in connection limit", /cannot join a signed-in Cotal space/.test(desktop.instructions), desktop.instructions);
+    check("the Desktop server prefers the plugin for a signed-in space when both servers are present",
+      /For a signed-in space, if the cotal plugin server is present in this session, use that server\./.test(desktop.instructions), desktop.instructions);
+    check("the Desktop server offers hosted access only otherwise or at the person's request",
+      /Otherwise, or if the person asks for it, use the space's hosted Cotal connector/.test(desktop.instructions), desktop.instructions);
+    check("both servers keep one Cotal path per conversation",
+      /conversation uses one Cotal path/.test(codeA.instructions) && /conversation uses one Cotal path/.test(desktop.instructions));
     const chat = await desktop.call("cotal_connect", { name: "desktop_chat" });
     check("Desktop chat, with no native session, opens no identity", /native session/.test(chat) && !/Connected as/.test(chat) && identities().length === 0, chat);
     const action = await desktop.call("cotal_send", { connection_id: "unapproved", text: "must-not-send", channel: "general" });

@@ -54,6 +54,8 @@ import {
   readRunRecord,
   renderLifecycleBlocked,
   replayRunJournal,
+  lastActivation,
+  type RunJournalActivation,
   resolveService,
   runDriverCaller,
   RUN_LAUNCH_DEADLINE_MS,
@@ -73,7 +75,9 @@ import {
 } from "@cotal-ai/core";
 import { CATALOG, CheckpointNotAmendable, CheckpointNotOpen, DurationError, isDuration, LangErrors, parseDuration, programHashOf, RunHeld, type JournalEntry, type RunPins } from "@cotal-ai/lang";
 import {
+  brokerAddressForDisplay,
   boundedValue,
+  codeSpan,
   CommandFailure,
   commandFailureReport,
   failureEnvelope,
@@ -97,7 +101,9 @@ import {
   connectOrThrow,
   isConnectRefusal,
   SHOWN_VALUE_MAX,
+  shellPath,
 } from "@cotal-ai/workspace";
+import { startStackManagerRemedy } from "@cotal-ai/workspace/control";
 import { offlineWorkflow, sourceOf } from "./offline-command.js";
 import { seatTurnCommand } from "./seat-turn-command.js";
 import { openRequestKeys, printRunDetail, printRunList, runReceipt } from "./workflow-views.js";
@@ -369,8 +375,15 @@ async function revoke(values: RunValues, runId: string | undefined): Promise<voi
     const kv = await new Kvm(nc).open(admissionBucket(conn.space));
     // The marker sits beside the run's admission. With no admission there is no run here to revoke,
     // so refuse before anything is written.
-    if (await kv.get(admissionKey(endpoint, runId)) === null)
-      throw new CommandFailure("refused", "TARGET_NOT_FOUND", `run ${runId} has no admission on endpoint ${endpoint}, so there is nothing to revoke; nothing was written`, { target: { space: conn.space, endpoint, run: runId }, remedy: "list the recorded runs with `cotal run`" });
+    if (await kv.get(admissionKey(endpoint, runId)) === null) {
+      const selectors = retryFlag("space", conn.space) + (["server", "creds", "endpoint"] as const).map((flag) => retryFlag(flag, values[flag])).join("");
+      const privateServer = values.server !== undefined && brokerAddressForDisplay(values.server) !== oneLine(values.server);
+      throw new CommandFailure("refused", "TARGET_NOT_FOUND", `run ${runId} has no admission on endpoint ${endpoint}, so there is nothing to revoke; nothing was written`, {
+        target: { space: conn.space, endpoint, run: runId },
+        remedy: privateServer ? "change the original subcommand to `list` and remove the run ID, `--by` and `--reason` with their values"
+          : `list the recorded runs with ${codeSpan(`cotal run list --local${selectors}`)}`,
+      });
+    }
     await revokeRunAdmission(kv, endpoint, { version: 1, runId, reason: values.reason, by: values.by, revokedAt: Date.now() });
     const view = await readRunAdmission(await jetstreamManager(nc), conn.space, endpoint, runId);
     console.log(`run ${runId} on ${endpoint}: revoked by ${view.revoked!.by} (${view.revoked!.reason}); its hosts refuse the next channel effect, and it is not resumed or taken back`);
@@ -393,17 +406,20 @@ async function resume(values: RunValues, runId: string | undefined): Promise<voi
   const endpoint = values.endpoint ?? "manager";
   // The record and the recorded program are READ under a one-shot operator credential, since the
   // driver's own credential is minted for an epoch the record decides.
-  const reader = await openPlanes(values, "run-operator", { runOperator: { endpoint, runId, takeoverId: newTakeoverId() } });
+  const readerTakeover = newTakeoverId();
+  const reader = await openPlanes(values, "run-operator", { runOperator: { endpoint, runId, takeoverId: readerTakeover } });
   let source: string;
   let status: RunStatusValue | undefined;
+  let activation: RunJournalActivation | undefined;
   let admission: RunAdmissionView;
   try {
     const record = await readRunRecord(reader.kv, endpoint, runId);
     if (record === undefined) {
-      console.error(`run ${runId}: no record on endpoint ${endpoint}; a run that was never started cannot be resumed`);
-      process.exit(1);
+      throw new CommandFailure("refused", "TARGET_NOT_FOUND", `run ${runId}: no record on endpoint ${endpoint}; a run that was never started cannot be resumed`, {
+        target: { space: reader.space, endpoint, run: runId },
+        remedy: runInventory({ ...values, space: reader.space }, "local"),
+      });
     }
-    source = await resumeSource(values, reader, endpoint, runId);
     status = record.status?.value;
     // The ORIGINAL admission (SPEC 14.8): a resume continues under it, never under a new one.
     admission = await readRunAdmission(reader.jsm, reader.space, endpoint, runId);
@@ -411,15 +427,19 @@ async function resume(values: RunValues, runId: string | undefined): Promise<voi
       console.error(`run ${runId}: revoked by ${admission.revoked.by} (${admission.revoked.reason}); a revoked run is not resumed`);
       process.exit(1);
     }
+    if (status?.state === "completed" || status?.state === "failed")
+      throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `run ${runId} ${status.state === "completed" ? "is already completed" : "has already failed"}, so there is nothing to resume`, { target: { space: reader.space, endpoint, run: runId } });
+    source = await resumeSource(values, reader, endpoint, runId);
+    activation = lastActivation((await replayRunJournal(reader.js, reader.jsm, reader.space, runId, readerTakeover)).records);
   } finally {
     await reader.close();
   }
   const who = cliHolder();
-  const epoch = (status?.epoch ?? 0) + 1;
+  const epoch = Math.max(status?.epoch ?? 0, activation?.epoch ?? 0) + 1;
   const takeoverId = newTakeoverId();
   const planes = await openPlanes(values, "run-driver", { runDriver: { endpoint, runId, takeoverId, instanceId: who.instanceId, epoch } });
   try {
-    await drive(values, planes, { endpoint, runId, source, who, epoch, fencingToken: (status?.fencingToken ?? 0) + 1, takeoverId, mode: "existing", admission });
+    await drive(values, planes, { endpoint, runId, source, who, epoch, fencingToken: Math.max(status?.fencingToken ?? 0, activation?.fencingToken ?? 0) + 1, takeoverId, mode: "existing", admission });
   } finally {
     await planes.close();
   }
@@ -488,17 +508,26 @@ async function ps(values: RunValues, planes: Planes): Promise<void> {
   const rows = await runHost.list(planes, values.endpoint !== undefined ? { endpoint: values.endpoint } : {});
   // An endpoint no run lives under is named, with the endpoints that hold runs.
   const unmatched = values.endpoint !== undefined && !rows.length ? { endpoint: values.endpoint, recordedUnder: recordedUnder(await runHost.list(planes, {})) } : undefined;
-  printRunList(planes.space, rows, values, unmatched);
+  printRunList(planes.space, rows, values, unmatched, planes.connection.mode === "open");
 }
 
-async function journal(values: RunValues, planes: Planes, endpoint: string, runId: string | undefined, takeoverId: string): Promise<void> {
+async function journal(values: RunValues, planes: RunHostPlanes, endpoint: string, runId: string | undefined, takeoverId: string): Promise<void> {
   if (runId === undefined) {
     console.error(USAGE);
     process.exit(1);
   }
   // The replay durable is named by the takeover id this call's credential was minted for.
   const view = await runHost.status(planes, { endpoint, runId, takeoverId });
-  if (!view) throw new CommandFailure("refused", "TARGET_NOT_FOUND", "no workflow record was returned for this run", { target: { space: planes.space, endpoint, run: runId } });
+  if (!view) {
+    const selectors = retryFlag("space", planes.space) + (["server", "creds", "endpoint"] as const).map((flag) => retryFlag(flag, values[flag])).join("");
+    const output = values.json ? " --json" : values.plain ? " --plain" : "";
+    const privateServer = values.server !== undefined && brokerAddressForDisplay(values.server) !== oneLine(values.server);
+    throw new CommandFailure("refused", "TARGET_NOT_FOUND", "no workflow record was returned for this run", {
+      target: { space: planes.space, endpoint, run: runId },
+      remedy: privateServer ? "replace the subcommand and run ID with `list` in the original command, and omit `--limit` if given"
+        : `list the recorded runs with ${codeSpan(`cotal run list --local${selectors}${output}`)}`,
+    });
+  }
   printRunDetail(planes.space, view, values);
 }
 
@@ -517,7 +546,7 @@ async function answer(values: RunValues, reader: Planes, runId: string | undefin
     { runId, stepKey, takeoverId },
   ).catch((e: unknown) => {
     // Locating writes nothing, so a pause it does not find is refused as the hosted answer refuses it.
-    if (e instanceof CheckpointNotOpen) throw new CommandFailure("refused", "TARGET_NOT_FOUND", e.message, { target: { space: reader.space, endpoint, run: runId }, remedy: `read the run's open requests with \`cotal run show ${runId} --local\`` });
+    if (e instanceof CheckpointNotOpen) throw new CommandFailure("refused", "TARGET_NOT_FOUND", e.message, { target: { space: reader.space, endpoint, run: runId }, remedy: e.why === "no-run" ? runInventory({ ...values, space: reader.space }, "local") : `read the run's open requests with \`cotal run show ${runId} --local --space ${reader.space}${values.endpoint ? ` --endpoint ${endpoint}` : ""}\`` });
     throw e;
   });
   // Resume is holder-bound (SPEC 13.10) and the CLI is not the driver: the resolver presents as
@@ -560,7 +589,7 @@ async function amend(values: RunValues, reader: Planes, runId: string | undefine
     { runId, stepKey, takeoverId },
   ).catch((e: unknown) => {
     // Locating writes nothing, so an answer it does not find is refused as the hosted amend refuses it.
-    if (e instanceof CheckpointNotAmendable) throw new CommandFailure("refused", "TARGET_NOT_FOUND", e.message, { target: { space: reader.space, endpoint, run: runId }, remedy: `read the run's answers with \`cotal run show ${runId} --local\`` });
+    if (e instanceof CheckpointNotAmendable) throw new CommandFailure("refused", "TARGET_NOT_FOUND", e.message, { target: { space: reader.space, endpoint, run: runId }, remedy: e.why === "no-run" ? runInventory({ ...values, space: reader.space }, "local") : `read the run's answers with \`cotal run show ${runId} --local --space ${reader.space}${values.endpoint ? ` --endpoint ${endpoint}` : ""}\`` });
     throw e;
   });
   const writer = await openPlanes(values, "run-operator", { runOperator: { endpoint, takeoverId: newTakeoverId(), answers: { token: accepted.token } } });
@@ -603,23 +632,18 @@ async function migrate(values: RunValues, planes: Planes, runId: string | undefi
     console.error("run check: <runId> and <program> are required");
     process.exit(1);
   }
-  // Commit-side overrides, refused by name: each one records a person's decision on a report the
-  // commit would file, and a check that accepted one would be reporting a decision nobody filed.
-  for (const [flag, what] of [
-    ["adopt", "--adopt <handle>"],
-    ["release", "--release <handle>"],
-    ["discard-approvals", "--discard-approvals"],
-  ] as const) {
-    if (values[flag] !== undefined) {
-      console.error(`run check: ${what} decides what a COMMIT does with an orphan, and this verb only checks; nothing was written`);
-      process.exit(1);
-    }
-  }
   const endpoint = values.endpoint ?? "manager";
   const record = await readRunRecord(planes.kv, endpoint, runId);
   // A run ID nothing records is refused as `run show` refuses it; the check writes nothing either way.
-  if (record === undefined)
-    throw new CommandFailure("refused", "TARGET_NOT_FOUND", `run ${runId}: no record on endpoint ${endpoint}; a run that was never started cannot be checked`, { target: { space: planes.space, endpoint, run: runId }, remedy: "list the recorded runs with `cotal run`" });
+  if (record === undefined) {
+    const selectors = retryFlag("space", planes.space) + (["server", "creds", "endpoint"] as const).map((flag) => retryFlag(flag, values[flag])).join("");
+    const privateServer = values.server !== undefined && brokerAddressForDisplay(values.server) !== oneLine(values.server);
+    throw new CommandFailure("refused", "TARGET_NOT_FOUND", `run ${runId}: no record on endpoint ${endpoint}; a run that was never started cannot be checked`, {
+      target: { space: planes.space, endpoint, run: runId },
+      remedy: privateServer ? "change the original subcommand to `list`, remove the run ID and program file (including `--file` if used), and add `--local` if missing"
+        : `list the recorded runs with ${codeSpan(`cotal run list --local${selectors}`)}`,
+    });
+  }
   const recorded = await readRunProgram(planes.kv, endpoint, runId);
   const replay = await replayRunJournal(planes.js, planes.jsm, planes.space, runId, takeoverId);
   const source = sourceOf(values.file);
@@ -732,8 +756,9 @@ const localJournal = (args: Record<string, unknown> | undefined): string => `cot
 
 /** A manager refusal under the CLI's outcome table, with the manager's own sentence. Any other code
  *  leaves a read failed and a start, resume or answer unconfirmed, because the manager may have
- *  recorded it. `on` is the caller's explicit manager pin, which a suggested command keeps. */
-export function managerRefusal(command: string, space: string, args: Record<string, unknown> | undefined, err: EpError | undefined, on?: string): CommandFailure {
+ *  recorded it. */
+export function managerRefusal(command: string, space: string, args: Record<string, unknown> | undefined, err: EpError | undefined, values: RunValues = {}): CommandFailure {
+  const { on } = values;
   const message = renderLifecycleBlocked(err?.message ?? err?.code ?? "the manager refused", err);
   const options = { target: { space }, native: { code: err?.code ?? "unreported" } };
   // A manager at its launch limit refuses `resource-exhausted` before writing anything, and says
@@ -743,10 +768,22 @@ export function managerRefusal(command: string, space: string, args: Record<stri
   // A resume refused as a precondition, such as of a completed or failed run, appended nothing, so
   // the run's recorded state is what to read next.
   const resumeBlocked = command === "run-resume" && err?.code === "failed-precondition" && typeof args?.runId === "string";
+  const selection = ` --space ${space}${on ? ` --on ${on}` : ""}${typeof args?.endpoint === "string" ? ` --endpoint ${args.endpoint}` : ""}`;
+  const missingRun = err?.message?.endsWith(": no run is recorded under that id") === true;
+  // A retry over the caller's own broker, credentials and output format lists what that caller
+  // can act on, so the not-found inventory keeps what `values` carried.
+  const listSelection = `${(["server", "creds"] as const).map((flag) => retryFlag(flag, values[flag])).join("")}${values.json ? " --json" : ""}`;
   const remedy = busy ? { remedy: `wait until one of them has activated, then run ${command === "run-resume" ? "the resume" : "the start"} again; \`cotal run\` lists a run once it has` }
-    : resumeBlocked ? { remedy: `read the run's recorded state with \`cotal run show ${args.runId}${on ? ` --on ${on}` : ""}\`` }
-    : err?.code !== "not-found" ? {} : { remedy: command === "run-answer" && typeof args?.runId === "string" ? `read the run's open requests with \`cotal run show ${args.runId}\`` : "list the recorded runs with `cotal run`" };
-  if (code) return new CommandFailure("refused", err!.details?.some((d) => d.kind === LANG_PROBLEM_DETAIL_KIND) ? "SCHEMA_INVALID" : code, message, { ...options, ...remedy });
+    : resumeBlocked ? { remedy: `read the run's recorded state with \`cotal run show ${args.runId}${selection}\`` }
+    : err?.code === "not-found" && command === "run-status" ? { remedy: journalIdRemedy("show", { ...values, space }) }
+    : err?.code !== "not-found" ? {} : { remedy: command === "run-answer" && typeof args?.runId === "string" && !missingRun ? `read the run's ${args.amend === true ? "answers" : "open requests"} with \`cotal run show ${args.runId}${selection}\`` : `list the recorded runs with \`cotal run${selection}${listSelection}\`` };
+  if (code) {
+    const problems = err?.details?.filter((d) => d.kind === LANG_PROBLEM_DETAIL_KIND);
+    if (problems?.length) return new CommandFailure("refused", "SCHEMA_INVALID", message, {
+      ...options, ...remedy, native: { ...options.native, detail: problems },
+    });
+    return new CommandFailure("refused", code, message, { ...options, ...remedy });
+  }
   // A reply too large for the broker changed nothing; the local read takes no reply.
   if (command === "run-status" && err?.code === "resource-exhausted")
     return new CommandFailure("refused", "UNSUPPORTED", message, { ...options, remedy: `read the run from its project folder with ${localJournal(args)}` });
@@ -780,13 +817,15 @@ function reportInterruptedStart(values: RunValues, space: string): () => void {
   return () => { process.off("SIGINT", onInterrupt); process.off("SIGTERM", onTerminate); };
 }
 
+const OPEN_READ_WITHOUT_MANAGER = Symbol();
+
 /** One command to the mesh's manager over the endpoint rails: a fresh resolve (describe, store
  *  fetch, digest-verified recompile), then the invoke, re-issued after a bind split
  *  ({@link invokeRepairingSplit}). The reply's data on success; a refusal throws as
  *  {@link managerRefusal} classifies it. */
-async function askHost(values: RunValues, command: string, args: Record<string, unknown> | undefined, resolved?: (space: string) => void): Promise<unknown> {
+async function askHost(values: RunValues, command: string, args: Record<string, unknown> | undefined, resolved: (target: ControlTarget) => void, firstJournalRun?: string): Promise<unknown> {
   const { target: t, seat } = await resolveRunControlTarget(values);
-  resolved?.(t.space);
+  resolved(t);
   const who = controlCaller(t.auth);
   // A raw --creds file carries no endpoint-caller triple, and this route cannot mint one. Without
   // --creds the CLI mints the one-shot caller from the space's trust or the signed-in login.
@@ -795,13 +834,28 @@ async function askHost(values: RunValues, command: string, args: Record<string, 
       target: { space: t.space },
       remedy: "run it again without --creds: in the mesh's project folder, or with --space naming its registry entry, the CLI mints the one-shot caller itself",
     });
+  if (command === "run-start" && t.mode === "open")
+    throw new CommandFailure("refused", "UNSUPPORTED", "an open mesh cannot host workflow runs because it does not issue caller authority or record run admission", {
+      target: { space: t.space },
+      remedy: "test the program offline with `cotal r simulate <file>`, or use a static-auth mesh to host the run",
+    });
   const auth: ControlAuth = t.auth;
   const connectOpts = standaloneConnectOpts(auth.creds ? { creds: auth.creds, tls: auth.tls === true } : auth.bearer ? { bearer: auth.bearer, sentinelCreds: auth.sentinelCreds, tls: auth.tls === true } : { tls: auth.tls === true });
   const nc = await dialerFor(t.server)({ servers: t.server, ...connectOpts, maxReconnectAttempts: 0 });
   try {
     // Only the operator's own unpinned instrument holds the registry rows `ps` scatters on; a seat's
     // credential and a user's manager view hold none.
-    if (!seat && auth.bearer === undefined && (auth.managerInstanceId === undefined || values.on !== undefined)) await refuseWithoutLiveManager(nc, t.space, values.on);
+    if (!seat && auth.bearer === undefined && (auth.managerInstanceId === undefined || values.on !== undefined)) {
+      const openRead = t.mode === "open" && values.on === undefined && (
+        (command === "run-ps" && values.page !== true) || firstJournalRun !== undefined
+      );
+      if (await refuseWithoutLiveManager(nc, t, values.on, openRead)) {
+        if (firstJournalRun !== undefined) await journal({ ...values, local: true }, {
+          nc, space: t.space, js: jetstream(nc), jsm: await jetstreamManager(nc), kv: await openRecordsBucket(nc, t.space),
+        }, values.endpoint ?? "manager", firstJournalRun, newTakeoverId());
+        return OPEN_READ_WITHOUT_MANAGER;
+      }
+    }
     // A logged-in user's manager view is issued at the callout (SPEC 13.15): its generation is read
     // back from this connection's accepted row, and every request rides `ep.v1` under it.
     const caller = auth.bearer !== undefined && auth.managerInstanceId !== undefined
@@ -836,8 +890,8 @@ async function askHost(values: RunValues, command: string, args: Record<string, 
       const err = r.reply.error;
       // A validation refusal carries every problem as the language's own records; print them the
       // way the validator would, so the fix is the same edit either way.
-      for (const d of err?.details ?? []) if (d.kind === LANG_PROBLEM_DETAIL_KIND) console.error(renderLangProblem(d));
-      throw managerRefusal(command, t.space, args, err, values.on);
+      if (!values.json) for (const d of err?.details ?? []) if (d.kind === LANG_PROBLEM_DETAIL_KIND) console.error(renderLangProblem(d));
+      throw managerRefusal(command, t.space, args, err, values);
     }
     return r.reply.data;
   } catch (e) {
@@ -876,17 +930,19 @@ async function chatStreamGone(nc: NatsConnection, space: string): Promise<boolea
 /** A hosted verb on a space whose registry lists no live manager is refused here, as `ps` refuses
  *  it, rather than after the describe has waited out its whole deadline for an answer no manager
  *  can send. So is an `on` pin that names none of the live managers, with the ones that run. Any
- *  other registry outcome, an unreadable registry included, leaves the describe to decide. */
-async function refuseWithoutLiveManager(nc: NatsConnection, space: string, on?: string): Promise<void> {
+ *  other registry outcome, an unreadable registry included, leaves the describe to decide. An
+ *  unpinned list or journal read on a known open mesh can proceed without a manager. */
+async function refuseWithoutLiveManager(nc: NatsConnection, { space, server }: ControlTarget, on?: string, openRead = false): Promise<true | undefined> {
   let live: Awaited<ReturnType<typeof freezeExpectedSet>>;
   try {
     live = await freezeExpectedSet(await jetstreamManager(nc, { checkAPI: false }), space, BASELINE_LIFECYCLE_ENDPOINT);
   } catch (e) {
     if (!(e instanceof EpEnvelopeError) || !noLiveInstances(e)) return;
+    if (openRead) return true;
     throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "no manager is running for this space to host or read its workflow runs", {
       target: { space },
       native: { code: e.code, detail: `${e.code}: ${e.message}` },
-      remedy: "start the stack's manager with bare `cotal up`; a stack started with --no-manager has none",
+      remedy: startStackManagerRemedy(space, server),
     });
   }
   // A pin that names none of the running managers can only wait out its describe, so it is refused
@@ -930,7 +986,9 @@ export function renderLangProblem(d: EpErrorDetail): string {
 
 async function hosted(values: RunValues, verb: string, a: string | undefined, b: string | undefined): Promise<void> {
   let space: string | undefined;
-  const ask = (command: string, args: Record<string, unknown> | undefined) => askHost(values, command, args, (resolved) => { space = resolved; });
+  let open = false;
+  const ask = (command: string, args: Record<string, unknown> | undefined, firstJournalRun?: string) =>
+    askHost(values, command, args, (target) => { space = target.space; open = target.mode === "open"; }, firstJournalRun);
   const endpoint = values.endpoint !== undefined ? { endpoint: values.endpoint } : {};
   // A hosted drive is recorded under the manager's own endpoint; a caller cannot choose another,
   // so an `--endpoint` here is refused rather than dropped.
@@ -960,10 +1018,6 @@ async function hosted(values: RunValues, verb: string, a: string | undefined, b:
   }
   if (verb === "resume") {
     if (a === undefined) { console.error(USAGE); process.exit(1); }
-    if (values.file !== undefined) {
-      console.error(`run resume: the manager resumes a run from its recorded program, so --file is not taken; a run with no recorded program is resumed with \`cotal run resume ${a} --local --file <program>\``);
-      process.exit(1);
-    }
     const resumed = await ask("run-resume", { runId: a, ...(values.timeout !== undefined ? { timeout: values.timeout } : {}) }) as { runId: string };
     runReceipt("resume", space, resumed, values);
     return;
@@ -983,9 +1037,15 @@ async function hosted(values: RunValues, verb: string, a: string | undefined, b:
       }
       return;
     }
-    const rows = await ask("run-ps", Object.keys(endpoint).length ? endpoint : undefined) as RunListRow[];
-    const unmatched = values.endpoint !== undefined && !rows.length ? { endpoint: values.endpoint, recordedUnder: recordedUnder(await ask("run-ps", undefined) as RunListRow[]) } : undefined;
-    printRunList(space, rows, values, unmatched);
+    const listed = await ask("run-ps", Object.keys(endpoint).length ? endpoint : undefined);
+    if (listed === OPEN_READ_WITHOUT_MANAGER) {
+      printRunList(space, [], values, undefined, true, true);
+      return;
+    }
+    const rows = listed as RunListRow[];
+    const all = values.endpoint !== undefined && !rows.length ? await ask("run-ps", undefined) : undefined;
+    const unmatched = Array.isArray(all) ? { endpoint: values.endpoint!, recordedUnder: recordedUnder(all) } : undefined;
+    printRunList(space, rows, values, unmatched, open);
     return;
   }
   if (verb === "journal") {
@@ -995,7 +1055,9 @@ async function hosted(values: RunValues, verb: string, a: string | undefined, b:
     const rows: RunJournalRow[] = [];
     let view: RunStatusView;
     do {
-      view = await ask("run-status", { runId: a, ...endpoint, journal: { offset: rows.length } }) as RunStatusView;
+      const reply = await ask("run-status", { runId: a, ...endpoint, journal: { offset: rows.length } }, rows.length === 0 ? a : undefined);
+      if (reply === OPEN_READ_WITHOUT_MANAGER) return;
+      view = reply as RunStatusView;
       if (view.journalTotal === undefined) throw new CommandFailure("failed", "OPERATION_FAILED", "the manager answered the journal read without a page; the journal was not read", { target: { space: space ?? null, run: a } });
       if (view.journal.length === 0 && rows.length < view.journalTotal) throw new CommandFailure("failed", "OPERATION_FAILED", `the manager returned no journal rows at row ${rows.length} of ${view.journalTotal}; the journal was not read completely`, { target: { space: space ?? null, run: a } });
       rows.push(...view.journal);
@@ -1026,6 +1088,15 @@ async function hosted(values: RunValues, verb: string, a: string | undefined, b:
   runReceipt(verb, space, result, values, a, { step: b, ...(values.value !== undefined ? { value } : {}), ...(values.artifact !== undefined ? { artifact: values.artifact } : {}) });
 }
 
+/** Render a retry flag without splitting its argument or printing terminal control characters. */
+function retryFlag(flag: string, value: string | undefined): string {
+  if (value === undefined) return "";
+  // Bash ANSI-C quoting keeps even multiline arguments copyable on one line.
+  const word = oneLine(value) === value ? shellPath(value)
+    : `$'${[...value].map((ch) => oneLine(ch) !== ch ? `\\U${ch.codePointAt(0)!.toString(16).padStart(8, "0")}` : ch.replace(/[\\']/g, "\\$&")).join("")}'`;
+  return ` --${flag}${value.startsWith("-") ? "=" : " "}${word}`;
+}
+
 /** A step key the run has no open request at, answered with the open keys whose step name it matches,
  *  as `frage` matches `/checkpoint:frage#0`. A run that cannot be read leaves the refusal as it was. */
 export async function withMatchingKeys(error: unknown, runId: string, stepKey: string, values: RunValues, read: () => Promise<RunStatusView>): Promise<unknown> {
@@ -1038,9 +1109,17 @@ export async function withMatchingKeys(error: unknown, runId: string, stepKey: s
   if (!matches.length) return error;
   // A step name comes from the program, so it is escaped and quoted before the terminal shows it.
   const quoted = (key: string) => `'${oneLine(key).replaceAll("'", `'\\''`)}'`;
-  const remedy = matches.length === 1
-    ? `the open request ${quoted(matches[0]!)} matches; answer it with \`cotal run answer ${runId} ${quoted(matches[0]!)} --value '<json>'${values.on ? ` --on ${values.on}` : ""}\``
-    : `the open requests that match are ${matches.map(quoted).join(", ")}; pass one of them as the step`;
+  let remedy: string;
+  if (matches.length === 1) {
+    const key = quoted(matches[0]!);
+    const flags = (["value", "artifact", "space", "server", "creds", "endpoint", "on"] as const).map((flag) => retryFlag(flag, values[flag])).join("");
+    const output = values.json ? " --json" : values.plain ? " --plain" : "";
+    remedy = `the open request ${key} matches; answer it with ${codeSpan(`cotal run answer ${runId} ${key}${flags}${output}`)}`;
+    if (values.server !== undefined && brokerAddressForDisplay(values.server) !== oneLine(values.server))
+      remedy = `the open request ${key} matches; replace the step in the original command with ${key}`;
+  } else {
+    remedy = `the open requests that match are ${matches.map(quoted).join(", ")}; pass one of them as the step`;
+  }
   return new CommandFailure(error.outcome, error.code, error.message, { remedy, target: error.target, ...(error.native ? { native: error.native } : {}) });
 }
 
@@ -1118,6 +1197,24 @@ function checkAnswerValue(text: string, usage: (message: string) => never): void
   }
 }
 
+function journalIdRemedy(verb: string, values: RunValues): string {
+  if (values.server !== undefined && brokerAddressForDisplay(values.server) !== values.server)
+    return "list the runs with the same broker and target options, then give the original command one ID from that list";
+  const target = (values.local ? " --local" : "") + (["space", "server", "creds", "endpoint", "on"] as const).map((flag) => retryFlag(flag, values[flag])).join("");
+  const output = values.json ? " --json" : values.plain ? " --plain" : "";
+  return `${codeSpan(`cotal run${target}${output}`)} lists the runs; run ${codeSpan(`cotal run ${verb} <run-id>${target}${retryFlag("limit", values.limit)}${output}`)}`;
+}
+
+function runInventory(values: RunValues, mode: "local" | "hosted"): string {
+  const list = mode === "local" ? "cotal run list --local" : "cotal run list";
+  const output = values.json ? " --json" : values.plain ? " --plain" : "";
+  if (values.server !== undefined && brokerAddressForDisplay(values.server) !== values.server)
+    return `run ${codeSpan(`${list}${output}`)} with the original target options`;
+  const target = (["space", "server", "creds", "endpoint"] as const).map((flag) => retryFlag(flag, values[flag])).join("");
+  const manager = mode === "hosted" ? retryFlag("on", values.on) : "";
+  return `list the recorded runs with ${codeSpan(`${list}${target}${manager}${output}`)}`;
+}
+
 /** Public workflow grammar, before catalog preparation or native requests. */
 export function workflowArguments(args: ParsedArgs): { values: RunValues; verb: string; a?: string; b?: string } {
   const values = { ...args.values } as RunValues;
@@ -1126,11 +1223,22 @@ export function workflowArguments(args: ParsedArgs): { values: RunValues; verb: 
   const verb = ({ list: "ps", show: "journal", check: "migrate" } as Record<string, string>)[raw] ?? raw;
   // A refusal that names its own fix prints that fix and no help; any other prints the help.
   const usage = (message: string, remedy?: string): never => { throw new CommandFailure("refused", "USAGE_INVALID", message, remedy === undefined ? {} : { remedy, selfContained: true }); };
+  if (verb === "journal" && values.limit !== undefined) {
+    if (!/^[1-9][0-9]*$/.test(values.limit) || Number(values.limit) > 1000) usage(`run ${raw}: --limit must be between 1 and 1000`);
+    if (values.json) usage(`run ${raw}: --limit bounds the text view, and --json returns the whole journal`, "omit --json for a limited text view, or omit --limit for the full JSON journal");
+  }
+  if (verb === "journal" && (first === undefined || second !== undefined)) usage(`run ${raw} takes one identifier`, journalIdRemedy(raw, values));
   if (extra.length || !["start", "resume", "ps", "journal", "answer", "amend", "revoke", "migrate", "validate", "plan", "simulate", "turns", "yield"].includes(verb)) usage("choose a declared run command; run it bare to list workflows");
   // A run id is an id token, so a malformed one is refused here, before any contact, rather than
   // by whichever plane reads it first.
   if (["journal", "resume", "revoke", "answer", "amend", "migrate"].includes(verb) && first !== undefined) {
-    try { assertIdToken(first, "run id"); } catch { usage(`run ${raw}: ${JSON.stringify(boundedValue(first, SHOWN_VALUE_MAX))} is not a run id, which is 1 to 64 letters, digits, "_" or "-"; \`cotal run\` lists them`); }
+    try { assertIdToken(first, "run id"); } catch {
+      const message = `run ${raw}: ${JSON.stringify(boundedValue(first, SHOWN_VALUE_MAX))} is not a run id, which is 1 to 64 letters, digits, "_" or "-"`;
+      if (verb === "journal") usage(message, journalIdRemedy(raw, values));
+      if (verb === "migrate" || verb === "resume" || (values.local === true && ["answer", "amend", "revoke"].includes(verb)))
+        usage(message, `${runInventory(values, verb === "resume" && !values.local ? "hosted" : "local")}. Then replace only the run ID in the original command`);
+      usage(`${message}; \`cotal run\` lists them`);
+    }
   }
   let a: string | undefined = first;
   let b: string | undefined = second;
@@ -1152,18 +1260,36 @@ export function workflowArguments(args: ParsedArgs): { values: RunValues; verb: 
     if (first !== undefined) usage(`run ${raw} takes no positional argument`);
   } else if (verb === "answer" || verb === "amend") {
     if (!first || !second) usage(`run ${verb} requires a run id and step key`);
-  } else if (!first || second !== undefined) usage(`run ${raw} takes one identifier`, verb === "yield" ? "`cotal run turns` lists your turns; run `cotal run yield <turn-id>`" : `\`cotal run\` lists the runs; run \`cotal run ${raw} <run-id>\``);
+  } else if (verb === "revoke" && first === undefined) {
+    usage("run revoke takes one identifier", "add a run ID after `run revoke` in the original command. A revoke requires `--local --by <actor> --reason <text>`");
+  } else if (verb === "resume" && !first) {
+    usage("run resume takes one identifier", `${runInventory(values, values.local ? "local" : "hosted")}. Then add a run ID after \`run resume\` in the original command`);
+  } else if (!first || second !== undefined) usage(`run ${raw} takes one identifier`, verb === "yield" ? "`cotal run turns` lists your turns. Run `cotal run yield <turn-id> --status <done|blocked|handoff>`. For a handoff, add `--to <agent>`." : `\`cotal run\` lists the runs; run \`cotal run ${raw} <run-id>\``);
   const scopes: Record<string, readonly string[]> = {
     timeout: ["start", "resume"], by: ["answer", "amend", "revoke"], reason: ["revoke"], value: ["answer", "amend"], artifact: ["answer", "amend"],
-    "admit-read": ["start"], "admit-publish": ["start"], adopt: ["migrate"], release: ["migrate"], "discard-approvals": ["migrate"],
+    "admit-read": ["start"], "admit-publish": ["start"], adopt: [], release: [], "discard-approvals": [],
   };
+  for (const flag of ["adopt", "release", "discard-approvals"] as const)
+    if (verb === "migrate" && values[flag] !== undefined)
+      usage(`run check: --${flag} decides what a commit does with an orphan, and this verb only checks; nothing was written`, `run the check without --${flag}`);
   for (const [flag, modes] of Object.entries(scopes)) if (args.values[flag] !== undefined && !modes.includes(verb)) usage(`--${flag} is not taken by this run command`);
   // The limit of every checkpoint, ask and turn that sets none of its own, so a zero expires each at once.
-  if (values.timeout !== undefined && !(isDuration(values.timeout) && parseDuration(values.timeout) > 0))
-    usage(isDuration(values.timeout) ? "--timeout must be longer than zero, or every checkpoint, ask and turn that sets no limit of its own expires at once" : `--timeout ${new DurationError(values.timeout).message}`);
-  if (verb === "journal" && values.limit !== undefined) {
-    if (!/^[1-9][0-9]*$/.test(values.limit) || Number(values.limit) > 1000) usage(`run ${raw}: --limit must be between 1 and 1000`);
-    if (values.json) usage(`run ${raw}: --limit bounds the text view, and --json returns the whole journal`);
+  const timeout = values.timeout;
+  if (timeout !== undefined) {
+    if (!isDuration(timeout)) usage(`--timeout ${new DurationError(timeout).message}`);
+    const outOfRange = () => usage(`--timeout ${JSON.stringify(boundedValue(timeout, SHOWN_VALUE_MAX))} is out of range; use at most ${Number.MAX_SAFE_INTEGER} milliseconds`);
+    let ms: number;
+    try { ms = parseDuration(timeout); }
+    catch (error) {
+      if (error instanceof DurationError) throw outOfRange();
+      throw error;
+    }
+    if (!Number.isSafeInteger(ms)) outOfRange();
+    if (ms === 0) usage("--timeout must be longer than zero, or every checkpoint, ask and turn that sets no limit of its own expires at once");
+  }
+  if (verb === "journal") {
+    const paging = [values.page !== undefined ? "--page" : undefined, values.cursor !== undefined ? "--cursor" : undefined].filter(Boolean).join(" and ");
+    if (paging) usage(`run ${raw}: diagnostic inventory options are not available here`, `remove ${paging} to read the journal, or use \`cotal run --page --on <instance>\` for diagnostic inventory`);
   } else if (values.page !== undefined || values.limit !== undefined || values.cursor !== undefined) {
     if (verb !== "ps" || values.local === true || values.page !== true || values.on === undefined)
       usage("diagnostic paging requires run --page --on <instance> without --local");
@@ -1178,6 +1304,8 @@ export function workflowArguments(args: ParsedArgs): { values: RunValues; verb: 
   // `a b`, would admit a channel nobody named.
   for (const flag of ["admit-read", "admit-publish"] as const) {
     const entries = (values[flag] ?? "").split(",").map((s) => s.trim()).filter((s) => s.length > 0);
+    if (verb === "start" && values.local === true && entries.length === 0)
+      usage(`run start --local requires --${flag} <channels>; a local run is admitted under the ceiling you name`, `pass --${flag} <channels> (comma-separated channel patterns, or \`none\`)`);
     if (entries.length === 1 && entries[0] === "none") continue;
     for (const entry of entries) {
       try { assertValidChannel(entry); } catch (error) { usage(`--${flag}: ${oneLine((error as Error).message)}`); }
@@ -1192,13 +1320,17 @@ export function workflowArguments(args: ParsedArgs): { values: RunValues; verb: 
     }
   }
   if (verb === "revoke" && (values.local !== true || !values.by?.trim() || !values.reason?.trim())) usage("run revoke requires --local --by <actor> --reason <text> under the existing trust checks");
-  if ((verb === "answer" || verb === "amend") && values.local === true && !values.by)
+  if ((verb === "answer" || verb === "amend") && values.local === true && !values.by?.trim())
     usage(`run ${verb} --local requires --by <who>; nothing was written`, "add --by <who> to name the local answerer");
   if (values.by !== undefined && values.local !== true) usage("the hosted manager records the authenticated caller; --by is only for the local path");
   if ((verb === "start" || verb === "resume") && values.endpoint !== undefined && values.local !== true) usage("a hosted run uses the manager's endpoint; --endpoint is only for the local path");
+  if (verb === "resume" && values.file !== undefined && values.local !== true)
+    usage("run resume: the manager resumes a run from its recorded program, so --file is not taken", `remove only --file and its value from the original command, then rerun it to resume the recorded program. A run with no recorded program uses \`cotal run resume ${a} --local --file <program>\``);
   if (values.value !== undefined) checkAnswerValue(values.value, usage);
   if (values.artifact !== undefined && !values.artifact.trim()) usage("--artifact names the artifact the answer cites, so it cannot be empty");
   if (values.handler !== undefined && verb !== "simulate") usage("--handler belongs to run simulate");
+  if (verb === "simulate" && values.handler !== undefined && !values.handler.trim())
+    usage("--handler names the simulation results file, so it cannot be empty", "pass `--handler <results.json>` to name the results file, or omit `--handler` when no results file is needed");
   if ((values.status !== undefined || values.to !== undefined || values.note !== undefined) && verb !== "yield") usage("--status, --to and --note belong to run yield");
   if (verb === "yield") {
     if (!["done", "blocked", "handoff"].includes(values.status ?? "")) usage("run yield requires --status done, blocked or handoff");
@@ -1217,9 +1349,17 @@ export function workflowArguments(args: ParsedArgs): { values: RunValues; verb: 
   // flag, and the same command without it where none does.
   if ((values.json || values.plain) && values.local && !["ps", "journal", "answer", "amend"].includes(verb)) {
     const flag = values.json ? "--json" : "--plain";
-    if (verb === "start" || verb === "resume")
-      usage(`run ${raw} --local prints no ${flag} output`, `drop --local to ${raw} it on the manager, which takes ${flag}: \`cotal run ${verb === "start" ? "start <file>" : `resume ${a}`} ${flag}\``);
-    usage(`run ${raw} prints no ${flag} output`, `run it without ${flag}: ${verb === "revoke" ? `cotal run revoke ${a} --local --by <who> --reason <text>` : `cotal run check ${a} <program>`}`);
+    if (verb === "start" || verb === "resume") {
+      const localRetry = `remove ${flag} from the original command to keep driving it locally`;
+      const pins = (["space", "server", "creds", "timeout"] as const).map((key) => retryFlag(key, values[key])).join("");
+      const hosted = `cotal run ${verb === "start" ? `start${retryFlag("file", values.file)}` : `resume ${a}`} ${flag}${pins}`;
+      usage(`run ${raw} --local prints no ${flag} output`, values.server !== undefined && brokerAddressForDisplay(values.server) !== values.server
+        ? localRetry : `${localRetry}, or ${raw} it on the manager with ${codeSpan(hosted)}`);
+    }
+    if (verb === "revoke" || (verb === "migrate" && values.server !== undefined && brokerAddressForDisplay(values.server) !== oneLine(values.server)))
+      usage(`run ${raw} prints no ${flag} output`, `remove ${flag} from the original command and rerun it`);
+    const retry = codeSpan(`cotal run check ${a}${(["file", "space", "server", "creds", "endpoint"] as const).map((key) => retryFlag(key, values[key])).join("")}${args.values.local === true ? " --local" : ""}`);
+    usage(`run ${raw} prints no ${flag} output`, `run it without ${flag}: ${retry}`);
   }
   return { values, verb, ...(a === undefined ? {} : { a }), ...(b === undefined ? {} : { b }) };
 }

@@ -217,18 +217,20 @@ type Agent = {
 type RetirementHold = { target: { lifecycleUid: string }; lastError?: string };
 const M = mgr as unknown as {
   agents: Map<string, Agent>;
-  retiring: Map<string, RetirementHold>;
   renewManagedStaticCred(agent: Agent): Promise<void>;
   renewDaemonCreds(): Promise<void>;
   despawnAuthorized(agent: Agent, graceful: boolean, trackNonAdmin: boolean): { ok: boolean };
-  driveStaticRetirement(target: { name: string }, surfaceFailure?: boolean): Promise<void>;
+  staticLifecycle: { driveStaticRetirement(target: { name: string }, surfaceFailure?: boolean): Promise<void> };
+  retirement: {
+    retiring: Map<string, RetirementHold>;
+  };
 };
 
 // What each alias's static terminal was handed: its teardown target, which must carry the accepted
 // renewal as a declared field and none of the live record's own fields.
 const terminalTargets = new Map<string, Record<string, unknown>>();
-const driveStaticRetirement = M.driveStaticRetirement.bind(mgr);
-M.driveStaticRetirement = (target, surfaceFailure) => {
+const driveStaticRetirement = M.staticLifecycle.driveStaticRetirement.bind(M.staticLifecycle);
+M.staticLifecycle.driveStaticRetirement = (target, surfaceFailure) => {
   terminalTargets.set(target.name, target);
   return driveStaticRetirement(target, surfaceFailure);
 };
@@ -337,7 +339,7 @@ try {
         terminalEntered = handles.get(name)?.exitNaturally() === true && !M.agents.has(name);
       check(`${name}: ${scenario.terminal} enters the terminal path`, terminalEntered);
       check(`${name}: the terminal latch closes synchronously`, agent.terminalizing === true);
-      check(`${name}: terminalization registers the lifecycle hold`, M.retiring.get(name)?.target.lifecycleUid === agent.lifecycleUid, M.retiring.get(name));
+      check(`${name}: terminalization registers the lifecycle hold`, M.retirement.retiring.get(name)?.target.lifecycleUid === agent.lifecycleUid, M.retirement.retiring.get(name));
       await until(() => terminalTargets.has(name), 1_000);
       const terminalTarget = terminalTargets.get(name);
       check(`${name}: the static terminal is handed the accepted renewal`, acceptedFlight !== undefined && terminalTarget?.staticCredentialRenewal === acceptedFlight);
@@ -356,10 +358,10 @@ try {
 
       const terminalMovedWhilePaused = await until(async () => {
         const slot = await readStaticSlot(view.transport, DEV_OWNER, name);
-        const hold = M.retiring.get(name);
+        const hold = M.retirement.retiring.get(name);
         return slot?.row.phase !== "active" || hold === undefined || hold.lastError !== undefined;
       }, 3_000);
-      check(`${name}: the durable terminal does not pass an accepted renewal still in flight`, !terminalMovedWhilePaused, M.retiring.get(name));
+      check(`${name}: the durable terminal does not pass an accepted renewal still in flight`, !terminalMovedWhilePaused, M.retirement.retiring.get(name));
 
       pause.release();
       const acceptedOutcome = await bounded(accepted, 10_000);
@@ -367,8 +369,8 @@ try {
       const flightReleased = await until(() => agent.staticCredentialRenewal === undefined, 1_000);
       check(`${name}: a settled renewal releases its single-flight slot`, flightReleased);
 
-      const retired = await until(() => !M.retiring.has(name), 10_000);
-      check(`${name}: retirement drains the accepted renewal and reaches its terminal`, retired, M.retiring.get(name));
+      const retired = await until(() => !M.retirement.retiring.has(name), 10_000);
+      check(`${name}: retirement drains the accepted renewal and reaches its terminal`, retired, M.retirement.retiring.get(name));
 
       const slot = await readStaticSlot(view.transport, DEV_OWNER, name);
       const gate = await gateObserve(view.transport, agent.lifecycleUid);

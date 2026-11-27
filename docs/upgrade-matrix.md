@@ -47,9 +47,14 @@ cancellation, so one new head or publication cannot evict an older qualification
 
 ## Required release set
 
+The separate Linux Corepack check runs the frozen release's own `cotal update --self` against a
+loopback registry with no newer version. The npm launcher's recorded Node can run Corepack but not
+the npm it selects. The update must reach the registry through a later Node on `PATH` twice and
+leave the Node running Cotal unchanged. The check uploads its own transcript.
+
 At plan time both phases read public npm metadata and freeze the newest stable published version
 strictly below the target. The plan records that source and its registry observation. Missing registry
-metadata or a missing predecessor fails without a fixed-version fallback. Each phase runs 42 isolated
+metadata or a missing predecessor fails without a fixed-version fallback. Each phase runs isolated
 product coordinates:
 
 | Coordinates | Count |
@@ -60,6 +65,7 @@ product coordinates:
 | Linux stand-in agent with public stop consent, separately daemon-hosted and standalone | 2 |
 | Linux paused record pointing to a real snapshot under another config home | 1 |
 | Linux host update with a foreign-UID container's bare `cotal supervise` | 1 |
+| Linux npm upgrade followed by interruption during a connector snapshot copy and two self-update retries | 1 |
 | The target release's own manual updater to a synthetic next version, with the service installed, on all three platforms | 3 |
 | The target release's own manual updater to a synthetic next version after stopping the installed native service, on all three platforms | 3 |
 | POSIX manual updater to a synthetic next version with the recorded user service disabled (`systemctl --user disable --now` on Linux, `launchctl disable` + `launchctl bootout` on macOS), staying stopped and reporting `service is disabled; not started` | 2 |
@@ -67,6 +73,10 @@ product coordinates:
 | POSIX post-update follow-on actions (second self-update, manual `npm i -g`, and installer rerun) to a second synthetic version | 6 |
 | Permanently pinned source 0.164.10 manual-service escape chains through the target to the synthetic next version | 3 |
 | POSIX target-owned updater stopped at its real snapshot, then killed, followed by an unassisted self-update to the synthetic next version | 2 |
+
+The Linux hosted stop-consent cell also puts a Claude Code executable fixture on the service's
+PATH. It checks that the hosted Manager resolves the official Claude Code connector before and after
+the update. It does not launch a Claude Code seat.
 
 The killed-updater cells use the installed target's public updater and native service. They hold the
 snapshot owner alive with `SIGSTOP`, verify that custody remains held, then kill that owner.
@@ -104,7 +114,7 @@ scheduled check finishes a pending extension reconciliation at the second synthe
 `cotal update --self` completes, requiring everything at the second synthetic version. The manual npm and
 installer follow-on cells must finish on
 the in-place route at the second synthetic version. All
-complete 24-package closures stay readable through a paired registry. The source entry and package
+complete 25-package closures stay readable through a paired registry. The source entry and package
 hashes, archive receipts, actual command and native before/after state are bound to the result.
 A target daemon that answers while its updater exits non-zero or times out is not a passing next hop.
 
@@ -112,7 +122,7 @@ The synthetic packer logs the start and elapsed time of each phase: verifying A,
 the stamped build, packing, output verification and the final unchanged-A check. A failed phase
 is named before the error is rethrown. Archive inspection hashes every member in one traversal
 per archive, without a `tar` subprocess per file. Both synthetic versions still build separately.
-Archive hashes, the complete 24-package closure, member hashes and native guards remain required.
+Archive hashes, the complete 25-package closure, member hashes and native guards remain required.
 
 Source 0.164.10 has the closing-step defect tracked in [#6842](https://github.com/Cotal-AI/Cotal/issues/6842).
 Its five manual-service layouts and daemon-hosted consent cell preserve the first hop's raw refusal
@@ -148,8 +158,11 @@ and lock observations independently of the updater's output. The macOS socket ob
 native `/var/folders` alias only when it resolves to the matching `/private/var/folders` parent,
 then checks ownership, the socket leaf and its recorded inode without following a leaf symlink.
 The launchd disabled observer accepts native boolean or `enabled`/`disabled` states for the selected
-unit. Unknown or duplicate entries remain errors. Missing, unreadable, timed-out or
-truncated observations remain explicit. Diagnostics never turn an update failure into a pass.
+unit. Unknown or duplicate entries remain errors. The after-update public `cotal daemon status --json`
+capture on macOS has a 15-second deadline to allow for slow CLI startup on a busy runner. Its
+artifact records the start and finish times. A timeout still fails the independent final-state check.
+Missing, unreadable, timed-out or truncated observations remain explicit. Diagnostics never turn an
+update failure into a pass.
 The daemon-hosted consent failure tracked in [#6822](https://github.com/Cotal-AI/Cotal/issues/6822)
 is a product failure, not a known refusal.
 The standalone cell starts with `up --detach` and records its
@@ -173,7 +186,7 @@ asserts the stock trust-policy refresh before a daemon-hosted Manager starts. Th
 guard is unchanged. The composed hosted container upgrade
 still needs its own original result before it can be called a reproduction or a passing fix.
 
-The packed phase builds the exact PR head's six native targets, assembles all 24 fixed-group
+The packed phase builds the exact PR head's six native targets, assembles all 25 fixed-group
 packages and retains native, prepublish and prepack guards. Its read-only loopback registry serves
 the hash-verified candidate closure and installed-version metadata. Candidate version must be newer
 than public latest. Installer reruns use the candidate source's receipt-bound script.
@@ -234,6 +247,10 @@ node scripts/automatic-update-platform-baseline.mjs --list linux
 node scripts/automatic-update-platform-baseline.mjs --source <source-version> --layout npm --state configured --method self --expected-target <version> --output ./upgrade-evidence
 node scripts/automatic-update-platform-baseline.mjs --summary ./upgrade-evidence
 ```
+
+You can also pass a symlink to the matrix driver in these commands. Leave
+`--preserve-symlinks-main` off when the symlink is outside `scripts/`, so Node can resolve the
+driver's imports from the script directory.
 
 `--expected-target` freezes public latest at both resolutions. Omit it only for an explicitly
 runtime-latest diagnostic. A same-version result is not a version-changing upgrade. Optional shell

@@ -69,7 +69,9 @@ optional provider first (`cotal ext add @cotal-ai/orca`, `@cotal-ai/tmux`, `@cot
 select it explicitly. A missing provider or app fails loudly; there is no fallback. See [Deploy](deploy.mdx).
 Boot inventory decides whether this process takes unpinned `spawn`/`launch` on the class rail:
 if every declared connector is unavailable, those commands stay on this instance rail only
-(`status` reports `classSpawn: false`). `describe` still answers on the class rail, so an
+(`status` reports `classSpawn: false`). A launch, model catalog or status read checks unavailable
+applications again. Finding the first available application enables the class rail without a restart.
+`describe` still answers on the class rail, so an
 unpinned spawn can bind-fence against a skip member; re-issue, or pin `--on`. With no member
 on the class rail, an unpinned spawn is refused and names the agent application to add. A partial
 inventory keeps the class rail and names `--on` on a harness refusal, because sibling
@@ -333,6 +335,23 @@ Windows adds the account's SID and a custodian that holds the service's job, des
 refuses another platform instead of using PID-only ownership. It launches executable and argv
 separately without a shell. No broker, manager or other dependency is started implicitly.
 
+A background service outlives the terminal or app that started it. On Linux and macOS its process
+leads a session and process group of its own, so a signal to the starting command's group does not
+reach it. On Linux, when the systemd user manager answers, `start` also runs it in a user scope of its own,
+`cotal-<space hash>-<instance>-<launch>-<nonce>.scope`, through `systemd-run --user --scope`. Each
+launch draws its own nonce, so a retry under the same instance and launch IDs never meets an
+earlier attempt's scope that a process it left behind still holds. An app that
+runs each agent in a scope and stops that scope when the agent's session ends, as T3 Code does,
+then leaves a service the agent started running. The process keeps its PID, output and
+environment, and systemd adds `INVOCATION_ID`. No stop removes the scope: a seat that a stopped
+manager released for the next manager to adopt keeps running in it, and systemd removes the scope
+once its last process exits. If the scope cannot be made, the start fails with
+systemd-run's error as the last line logged, and the service is not launched without a scope. With
+no user manager, as with no `XDG_RUNTIME_DIR`, no `systemd-run` or no user bus, nothing scopes the
+starting command either, and the service starts without a scope. Cotal queries the user manager
+only when the session bus address is set or the runtime directory contains a user bus or systemd
+socket.
+
 On Windows each background instance runs under its own custodian. The custodian is a detached
 Cotal process that creates the program inside a new job object. The job ends every member when its
 last handle closes and allows no breakaway, and only the custodian holds that handle. So a
@@ -403,8 +422,8 @@ controller's final provider check. Providers still run as the current OS user, n
 Process readiness waits up to one second, or its deadline when that is shorter, for the process to
 exit. One that exits by then fails the start with `OPERATION_FAILED`, exit 5, and its exit code is
 recorded; a restart whose replacement exits so is partial, exit 4, and names that exit code. A
-background start also quotes the last line the process logged during that launch, and says its log
-records the cause when it logged nothing. A line over 1000 characters is quoted by its start and its
+background start quotes the last line it could read from that launch. If no line is available,
+it still names the instance log. A line over 1000 characters is quoted by its start and its
 last `; next:` step. A foreground start says its output went to this terminal
 and was not captured in its log, and names no log to read. A live
 creation-pinned direct process is reported Running. HTTP readiness uses
@@ -446,7 +465,9 @@ replacement. `--dry-run` creates no instance and sends no process signal.
 cannot adopt an already running background instance into the terminal. Before allocation it prints
 the terminal lifetime and output policy on stderr. Native auth and Linear presets use their installed signal
 handlers through this same flow; neither endpoint readiness nor native cleanup is inferred from
-process exit. A foreground manager stops through the same request-bound native stop as
+process exit. After an external `service stop` of a foreground process service, the stop records
+its receipt before the foreground command adds the child's exit code or signal.
+A foreground manager stops through the same request-bound native stop as
 `service stop`, keeping its agents: the SIGINT or SIGTERM the CLI receives is the confirmation.
 Ctrl-C also reaches the native child, which ignores a `SIGINT` that carries no stop request and
 prints one warning line for it. A plain `SIGTERM` stops it with the default agent policy.
@@ -540,8 +561,17 @@ without treating an option's value as another command word.
 Daemon command discovery does not load the Manager implementation. Computer vitals sampling and
 hosted Manager registration cleanup load their Manager helpers when those operations run.
 
+A hosted Manager that finds Claude Code on its `PATH` installs Cotal's Claude Code plugin and
+registers the user-scope `cotal` MCP entry if the entry is missing. This also works when Claude Code
+appears in a directory already on the running Manager's `PATH`. The Manager leaves existing `cotal`
+entries alone and does not prepare a local space. Claude Code stays unavailable until registration
+succeeds. If it fails, correct the cause reported by `cotal daemon status --space <space>` and
+retry the launch. If you need to refresh the daemon's `PATH`, let any seats on that Manager stop
+and run `cotal daemon setup --space <space>` on that computer.
+
 A recorded native machine daemon checks for updates daily with up to one hour of jitter.
-A newly seen release waits one hour before installation. Automatic installation uses
+A newly seen release waits one hour before installation. If the final npm check sees a different
+newer release, no update is installed and that release starts its own hold. Automatic installation uses
 `cotal update --self` and waits until every hosted Manager is empty, then holds its admission
 fence through the update. Running agents are not stopped to make room for an update.
 An explicit daemon home or a daemon not started by its recorded native service does not install
@@ -552,6 +582,9 @@ object in JSON and desktop status replies. Its fields are `current`, `latest`, `
 `lastResult`, `nextAttempt`, `automatic`, `notify`, `failures` and `channel`. The channel is `npm` for
 standalone installations and `desktop` for the app's bundled runtime. Desktop runtimes keep registry
 checks but report automatic installation off and direct updates to the signed app installer.
+During native service verification, status reports enabled automatic updates as on and names the
+verification in `lastResult`. An explicit off preference still reports off. The daemon cannot
+install an automatic update until it verifies ownership of the native service.
 Older daemons may omit the object, channel or notification preference.
 The closed local request `update-settings` reads the shared preferences and accepts optional
 Boolean `auto` and `notify` fields. It uses the same preferences as the update CLI.
@@ -598,13 +631,39 @@ cotal daemon service-disconnect --space <s> [--daemon-home <dir>] [--json|--plai
 cotal daemon service-status --space <s> [--daemon-home <dir>] [--json|--plain]
 ```
 
-On Linux, daemon installation reads its unit directory from the systemd user manager.
+`service-connect`, `service-disconnect` and `service-status` reject malformed space names with
+`USAGE_INVALID` before contacting the daemon. Use 1 to 64 ASCII letters, digits, underscores or hyphens.
+
+On Linux, daemon installation and setup require a systemd host and `systemctl` on PATH.
+On Linux without systemd, run `cotal daemon serve` under your own supervisor, such as OpenRC,
+runit or s6. Use `cotal update --self` for manual updates.
+If your login does not provide `XDG_RUNTIME_DIR`, use a runtime directory owned by your user
+with mode 0700 and set `XDG_RUNTIME_DIR` to its path.
+
+Daemon installation reads its unit directory from the systemd user manager.
+An owned group-writable unit directory can be used when an ancestor owned by you or root denies
+search permission to group and other accounts, such as an owned `.config` directory with mode 0700.
 Shell-quoted home and config paths, including spaces, are decoded without running a shell.
 Relative paths, control characters and malformed quoting are refused.
 
 On Linux, repeating `cotal daemon install` verifies an unchanged recorded service from this installation and reports `Already installed`. It leaves the unit, receipt and running daemon unchanged. A modified source or another installation still refuses.
 
+On Linux, if a daemon already answers but there is no install receipt or service unit, desktop
+installation reports a conflict and leaves the running daemon alone.
+
+Daemon launches keep the invoked Node path when it resolves to the running Node in the same
+directory, including a distribution's stable `node` symlink. Links through another directory,
+such as a version manager's per-shell directory, use the resolved runtime instead.
+Changing a same-directory link to the next supported Node version does
+not require reinstalling the service. An older unit can still pin a removed versioned Node file.
+In that case, `daemon install` refuses without rewriting it and names the selected daemon's
+uninstall and install commands to replace it explicitly. When an installed Linux daemon is not
+answering, `daemon status` points to its recorded systemd service and installation check rather
+than a foreground daemon. It retains the absent-endpoint refusal even when the unit file is gone
+or the user manager cannot answer; the recorded service name is guidance, not verified ownership.
+
 On Linux, `daemon install` and `daemon uninstall` can recover after the daemon's local home was deleted when the surviving service source matches this installation. They verify the protected unit file and the user manager's loaded fragment, and refuse modified sources or drop-ins. A missing explicit `--daemon-home` leaf can also recover when its parent resolves and the surviving service verifies that same home; other daemon commands still require the directory. Installation restarts that verified service to rebuild its local state.
+For a first install with `--daemon-home`, create the directory with mode 0700 first. If the directory is absent and no unit survives for it, `daemon install` points to the missing directory.
 
 Connect this computer to Cotal Cloud with `cotal daemon setup --cloud`, or use
 `cotal daemon setup --idp <url>` for another host. With no known provider, bare
@@ -612,7 +671,14 @@ Connect this computer to Cotal Cloud with `cotal daemon setup --cloud`, or use
 It installs or uses the
 recorded daemon service, asks for one device approval when needed, and registers the computer
 with your account without turning on a space. The result names your account and computer.
-Turn on the spaces that can use it in the provider's dashboard.
+With no space turned on, it says: "No space uses this computer yet, so no agents can be launched
+on it until you connect a space." Under Next, it prints `cotal daemon setup --space '<space>'
+--idp <url>`. Replace `<space>` with your space's name. The command keeps the signed-in provider
+and any explicit `--daemon-home`. You can also choose spaces in your provider's dashboard.
+For Cotal Cloud, the result names the Machines page and its Account computers section.
+Other providers get no assumed page or section name. JSON carries the same explanation in
+`result.message`, the command and its description in `result.next`, and the dashboard alternative
+in `result.dashboard`.
 
 Run `cotal daemon setup` from a terminal that finds newly installed agent applications to
 refresh the service's PATH when the daemon is signed in to one provider. The provider comes
@@ -623,19 +689,30 @@ Several known providers require an explicit choice. Use `--cloud` or `--idp <url
 one explicitly. With an installed daemon and no sign-in or
 several signed-in providers, pass an explicit provider; the several-provider refusal lists
 the choices. An explicit provider keeps the installation and sign-in flow. The result lists
-spaces already turned on for this computer, or asks you to turn them on in the dashboard.
+spaces already turned on for this computer, or explains that no agents can be launched yet
+and prints the space setup command under Next. An enabled-space result omits that guidance.
 Hosted Managers pick up newly installed applications after the guarded service restart.
 Active seats block that restart until they stop. When a desired space has no available
 application, `daemon status` shows this recovery under Next.
 
-To connect directly to a space, use `cotal daemon setup --space <s> [--idp <url>]`.
+To connect directly to a user-auth participant space, use `cotal daemon setup --space <s> [--idp <url>]`.
+For a local static-auth or open space, run `cotal up` in the folder that hosts it. The local stack
+runs its Manager. For these local spaces, `daemon setup` and `daemon connect-check` report
+`UNSUPPORTED` (`NOT_USER_AUTH`) and point to `cotal up`, even if the stack is not running.
+Daemon setup reports this before it checks for an installed daemon service, including when a
+foreground daemon is running. It does not turn the space on or record a hosted Manager refusal.
 `--no-manager` and `--wait` require `--space`; `--wait` also requires `--no-manager`.
+Pass a whole number of seconds from 0 to 86400. Use `--wait 0` to skip the wait. A blank value is invalid.
 Space-specific daemon commands require an explicit `--space <s>` even when `cotal use`
 has selected a space. `daemon status` can omit it to read the daemon and all hosted Managers.
+If supplied, the name must be 1 to 64 characters using ASCII letters, digits, underscores or
+hyphens. Status rejects a malformed name with `USAGE_INVALID` before contacting the daemon.
 After setup, use `cotal daemon service-status --space <s>` to read the machine connection and
 `cotal daemon service-disconnect --space <s>` to close it and remove its local service credentials
 and identity records. The command lists the records it removed. A remote computer record may remain;
 remove the computer in the dashboard to revoke its authority there.
+Disconnecting a space with no connection, Manager or retained Manager records does not add a
+Manager to status or suggest hosting one again.
 Setup prints these commands with `--space=<s>` so names beginning with a hyphen also work.
 
 The daemon owns this computer's name. Read it with `cotal daemon name`, or set it with
@@ -652,7 +729,8 @@ the damaged record and clears the warning.
 
 After sign-in, the daemon registers an account computer with hosts that support it.
 With several accounts, the status summary prefers a supported provider and breaks ties by
-provider URL, then subject. The `accounts` list retains each account's state. Catalog refresh
+provider URL, then subject. The `accounts` list reports each computer UUID once, preferring a
+supported provider when several sign-in addresses identify the same account. Catalog refresh
 replies include an optional `failedProviders` list of provider URLs. The desktop app reports
 other providers' failures as a notice when the active provider refreshed successfully.
 Each issuer and subject pair has its own protected, persisted computer UUID. It sends a metadata
@@ -698,6 +776,15 @@ the daemon's machine status service needs the space owner's approval. Until then
 nothing and the daemon asks again every 30 seconds.
 A host without the route reports account computers unsupported and keeps per-space behavior.
 Authentication refusal asks you to sign in again. Network failures retain existing connections.
+When another account holds a local space connection, the daemon does not transfer it automatically.
+Status names the holding account's sign-in address when the retained identity is known.
+If the holding account is signed out or three consecutive account-computer
+polls fail, the space row can offer **Use signed-in account**.
+Cancel leaves custody unchanged. Confirmation requires a fresh, available catalog registration
+for the space from the signed-in account and rechecks the holder before moving custody.
+A holder that answers again clears its failure count and cannot be replaced through a stale
+action. `cotal daemon status` names the holder and points to the app action when it is available.
+This moves only this computer's connection. It does not grant space membership or remote authority.
 
 On hosts that support account computers, setup with `--space` and local connect write the
 computer's account intent with a fresh revision. A conflicting revision is read again and retried
@@ -773,6 +860,17 @@ platform; where none is built or shipped, daemon endpoint operations refuse `UNS
 The default daemon and CLI share the sign-in in the same Cotal home, so signing in through either one does not require a second approval in the other. An explicit `--daemon-home` keeps its own sign-in, separate from the CLI's Cotal home.
 
 `start` starts the recorded, unchanged service without restarting an instance that is already running.
+On Linux and macOS, `daemon status`, `daemon install` and an explicit `update --self` repair a recorded
+systemd user unit or LaunchAgent whose program is missing. They verify its unchanged source, receipt and native job
+before moving it to the current CLI installation. The repair preserves sign-in and hosting records,
+refuses to stop occupied or unreadable Managers, and keeps an operator-disabled service stopped.
+An interrupted repair retains its source and receipt intent for the next command to finish.
+A modified or unrecorded unit is never adopted by its label.
+On macOS, a validated repair-preparation refusal shows the Manager's code, message and any next step.
+JSON puts the cause in `error.cause` and the next step in `error.remedy`. The outcome is `unknown`
+(`OPERATION_UNKNOWN`, exit 3). Malformed, mismatched and event replies do not supply a cause or next step.
+If the CLI cannot inspect the recorded unit file, keep its install receipt. Restore access to the
+file’s directory or correct its path, then retry the preview.
 `spaces` lists the registry through the daemon; `--refresh` uses the daemon-held sign-in to refresh
 its catalogs. Catalog rows in the `spaces` reply include optional `kind` and `role` fields from the saved catalog entry. Local entries omit these fields. With no cached sign-in, a refresh reports `not-signed-in`; the CLI refuses with
 `AUTH_REQUIRED` (exit 2) and directs you to `cotal daemon login --idp <url>`. Saved spaces remain
@@ -790,6 +888,7 @@ The desktop app uses these same controls. Its source and native build instructio
 If desktop preferences cannot be parsed, the app keeps the original file beside `presence.json`
 with a fresh `.invalid.<number>` suffix, opens with defaults, and reports the saved file's location.
 Recovery leaves Open at login unchanged until the person chooses that setting explicitly.
+On Windows, Open at login applies only to the current user, even when the desktop app runs as an administrator.
 Its first run offers Continue with Cotal Cloud or a custom host, opens browser approval after a
 click, then offers Connect this computer. Its four steps are Welcome, Sign in, Connect and Ready.
 A connection link prefills its host and space without starting setup. The app selects the linked
@@ -814,14 +913,18 @@ or changing connector state. Space names use 1 to 64 letters, digits, underscore
 It makes a computer ready to launch agents from a space with one command. It installs the user
 service, discovers the space through the daemon-held sign-in, signs in by device code when needed,
 and asks the daemon to start the space's Manager. Before starting it, the daemon reconciles stock
-connectors in its own environment and refuses if that preparation fails. The hosted Manager gets
+connectors in its own environment, allowing up to ten minutes for a cold home before starting the
+separate Manager readiness wait. If preparation fails, the refusal names the exit code or signal
+on one line. A timeout also names the reconciliation bound. The hosted Manager gets
 the stock default persona in its own catalog, without replacing an existing file, so
 `cotal spawn --on <instance> --space <space>` can launch it. Setup succeeds when that registered
 instance answers `status` with an available connector. With no available connector it refuses with
 `no available connector` and a harness-install next step. Connector availability is read from the
-daemon-hosted Manager. Install an application named in the remedy and confirm it runs in the
-terminal that runs setup, then run the same setup command again. On Linux and macOS, when that
-terminal resolves an application the Manager cannot find, setup refreshes the service's pinned PATH.
+daemon-hosted Manager. Install an application named in the remedy. If its directory is already
+on the service's PATH, the Manager discovers it on the next launch, model catalog or status read
+without a restart. If the directory is not on the service's PATH, confirm the application runs in
+the terminal that runs setup, then run the same setup command again. On Linux and macOS, setup
+refreshes the service's pinned PATH.
 Terminal directories come first, followed by existing service directories without duplicates.
 Setup updates the recorded service source and digest, reloads it, and checks availability again.
 On macOS, reload waits up to ten seconds for the old LaunchAgent to unload before loading the plist.
@@ -890,6 +993,7 @@ successful Manager readiness probe.
 Manager state stays under the daemon's own per-space directory. Its `manager.log` captures stdout
 and stderr with mode `0600`, rotates at 1 MiB, and retains one previous file as `manager.log.1`.
 Status includes `lastExit` after a crash and `lastStop` for graceful, terminated or killed shutdowns.
+A successful pinned Manager status probe clears a superseded `lastRefusal` from current status.
 A Manager that exits before readiness reports its exit code or signal and its last stderr line.
 A stopped row keeps its instance and last observation, clears the PID, and names setup as its next
 step. Status emits a PID only for a retained child, never from a saved refusal record.
@@ -956,6 +1060,11 @@ A failed reconcile refuses the
 space with its cause and repair command and retries from five seconds up to five minutes.
 The serving Manager never runs first-use seeding. A child rejects a handed generation that differs
 from the Manager implementation it loaded.
+On macOS and Linux, a desktop app daemon starts its Managers from a verified private copy of
+its runtime. Daemon status remains available while the copy is prepared or verified. A running
+Manager can load an installed connector and launch new seats after the app path disappears.
+This does not change the service's recorded program or repair a missing app.
+Status does not wait for a starting Manager to report its hosted agents.
 Every Manager using installed extensions checks each first-party connector's manifest version
 against the generation loaded by that Manager before a new launch, including a connector already
 loaded in that process. This includes Managers started by `up` and `manager start`. A mismatch names
@@ -965,8 +1074,9 @@ This readiness check does not prove login or reboot autostart on any OS.
 After a successful `cotal update --self`, a running default daemon from the same installation
 is restarted when its version differs, including older daemons that host no Managers.
 On Linux without `XDG_RUNTIME_DIR`, update checks the existing private `/run/user/<effective uid>`
-for the default daemon endpoint. If that runtime directory is absent, it continues with the ordinary
-Manager continuity and installation checks.
+for both the default daemon endpoint and native user-service commands. If that runtime directory
+is absent, it continues with the ordinary Manager continuity and installation checks. A recorded
+systemd service still needs an answer from its user manager.
 Update reports and skips hosted records with no live child, including stopped or refused Managers.
 A live child whose custody cannot be confirmed still blocks update and names service-disconnect
 for that space before retrying.
@@ -994,10 +1104,12 @@ the setup command with the pinned provider. This applies to both Manager and `--
 An expired or revoked session rejected by the provider needs a new device sign-in, even when a
 cached session remains on disk. A provider outage or unusable response stops setup with
 `DEPENDENCY_UNAVAILABLE`, without asking for a new sign-in or reporting the session as valid.
-A daemon that is already answering while no installed unit is recorded for it refuses `CONFLICT`
-(`RUNNING_WITHOUT_UNIT`): installing then would start a second daemon that the lifetime lock
-refuses, and the running one is not a persistent service. Stop it and run `setup` again, or keep it
-and use `register` and `service-connect` by hand.
+If setup needs the machine daemon and it is already answering without an installed unit on record,
+setup refuses `CONFLICT` (`RUNNING_WITHOUT_UNIT`). The lifetime lock refuses a second daemon, and
+the running one is not a persistent service. Stop it and run setup again. For a user-auth
+participant space, you can instead keep it and use `register` and `service-connect` by hand.
+If the install receipt exists but setup cannot verify the unit, setup reports the unit inspection
+error. It keeps the receipt and does not offer a new installation or sign-in.
 
 `install` runs the daemon as the signed-in user's own service, through the native supervisor of
 each OS. It runs as that user, never as root or LocalSystem. A system-wide headless profile, such as
@@ -1013,6 +1125,10 @@ linger enabled, because other user services may rely on it. The unit and its rec
 before enabling linger. If linger cannot be enabled, the unit stays recorded for `uninstall` and
 is not enabled or started.
 
+On Linux and Windows, each service launch writes up to 64 KiB of output to a fresh `daemon.log`
+in the daemon's state directory. It saves the preceding launch in `daemon.previous.log`. The
+Background service log in Settings shows up to 8 KiB from each launch, with the current launch last.
+
 On macOS it is a LaunchAgent. It writes a plist to `~/Library/LaunchAgents`, then loads it into the
 user's GUI domain with `launchctl enable` and `launchctl bootstrap`. launchd starts the daemon when
 the job loads and at each login, and starts it again whenever it exits. Its output goes to
@@ -1020,7 +1136,8 @@ the job loads and at each login, and starts it again whenever it exits. Its outp
 GUI domain that does not answer refuses `TARGET_UNAVAILABLE`, and so does running it as root.
 `uninstall` boots the job out and removes the plist.
 
-On Windows it is a scheduled task. It writes the task definition to `service-task.xml` in the
+On Windows it is a scheduled task. Installation waits up to 60 seconds for Task Scheduler to
+confirm that the task name is unused. It writes the task definition to `service-task.xml` in the
 daemon's state directory and registers it with `schtasks /Create /XML`, then runs it. The stock CLI
 task starts the packaged `daemon-native.js` entry, which marks the native launch before loading
 the CLI. The task starts at this user's logon and runs with the user's own token at least privilege, so no password is
@@ -1048,10 +1165,13 @@ The updated Windows native runtime checks its recorded source under the lifetime
 publishing. Uninstall holds that same lock through its final endpoint check and removal of both
 the source and receipt, so a delayed updated native child cannot publish after removal.
 
-The task's native entry writes its output to `daemon.log` in the daemon's state directory,
-replacing the previous launch's log and retaining at most 64 KiB of output. When the daemon does
-not answer on Windows, `status` names that log and Task Scheduler's state and last result. If the
-entry cannot load at all, Task Scheduler's last result is the diagnostic and no new log exists.
+When the daemon does not answer on Windows and a scheduled task installation is recorded,
+`status` shows how to run `cotal daemon start` if the task is still registered. It names the log and
+directs you to Task Scheduler for the task's state and last result if no log was created. Without
+an installation record, `status` and `start` direct you to `cotal daemon install` for a scheduled task or
+`cotal daemon serve` to run in a terminal. These remedies keep the selected `--daemon-home` and
+quote a path with spaces for PowerShell and Command Prompt. If a path needs PowerShell quoting,
+the remedy names PowerShell.
 Install refuses before preparing a task if its launch entry is missing or is not a file.
 Task lookup imports ScheduledTasks and Microsoft.PowerShell.Utility by name before querying the
 task and serializing its result, avoiding automatic module discovery for those commands.
@@ -1128,13 +1248,21 @@ same facts. `service-status` reports the machine connection and Manager separate
 `state: "ready"` means only that the
 local control listener is bound and verified, not that a mesh or Cloud connection exists.
 
-On Linux the endpoint is `$XDG_RUNTIME_DIR/cotal/daemon.sock`. Without `XDG_RUNTIME_DIR` both forms
-refuse `TARGET_UNAVAILABLE` (`NO_RUNTIME_DIR`). On macOS it is `cotal/daemon.sock` in your cache
+On Linux the endpoint is `$XDG_RUNTIME_DIR/cotal/daemon.sock`. The configured directory must already
+exist. If `XDG_RUNTIME_DIR` is unset, the daemon and its clients use `/run/user/<effective uid>` if it
+is a private directory owned by that user with mode `0700`. If the selected path is missing or
+`XDG_RUNTIME_DIR` points to a file, `serve` and `status` refuse `TARGET_UNAVAILABLE`
+(`NO_RUNTIME_DIR`) before creating the socket or its lifetime lock. Set
+`XDG_RUNTIME_DIR` to an existing private directory you own with mode `0700` before retrying.
+On macOS the endpoint is `cotal/daemon.sock` in your cache
 directory under `/var/folders`, the one `confstr(_CS_DARWIN_USER_CACHE_DIR)` names. No environment
 variable changes it, so the LaunchAgent and your terminal reach the same socket. A socket path longer
 than the kernel accepts (107 bytes on Linux, 103 on macOS) refuses `TARGET_UNAVAILABLE`
-(`NO_RUNTIME_DIR`). On both, the forms refuse `PERMISSION_DENIED` for a runtime directory
-that is a symlink, not a directory, not owned by you, or not mode `0700`. `status` also refuses
+(`NO_RUNTIME_DIR`). On Linux, set `XDG_RUNTIME_DIR` to a shorter directory you own with mode
+`0700` and use the same value for the daemon and its clients. Shortening the daemon home or
+Cotal home does not shorten the socket path. On both platforms, the daemon refuses
+`PERMISSION_DENIED` for a daemon socket directory that is a symlink, not a directory, not owned by
+you, or not mode `0700`. `status` also refuses
 `PERMISSION_DENIED` for an endpoint entry that is not a socket, not yours, or not mode `0600`. For
 a socket of another mode (`SOCKET_WRONG_MODE`), Next says to find the process listening there with
 `ss -xlp` and stop it, then start the daemon with `cotal daemon serve`.
@@ -1153,11 +1281,17 @@ Each local JSON request line is limited to 64 KiB of UTF-8 text, including its n
 line receives `LINE_TOO_LONG` and the connection closes without processing later requests. This
 also applies to an unfinished tail after valid requests. Multiple valid lines are checked separately.
 Already accepted finite replies have up to five seconds to flush before close. Device sign-in streams
-are cancelled on close.
+are cancelled on close. A local client can send `status-watch` with only `v`, `id`, and `op`.
+The daemon replies with a `status` event carrying the request `id` and the status snapshot in
+`result`. The daemon pushes another snapshot when its computer name, account state, hosted
+Manager state, hosted agent inventory, update status or pending generation changes. The stream
+ends when the connection closes.
 
 `status` with no daemon running refuses `TARGET_UNAVAILABLE` (`NOT_RUNNING`).
 SIGTERM and SIGINT shut down cleanly and remove only the daemon's own socket. SIGKILL or SIGHUP,
-including closing the terminal, leaves a stale socket, and the next `serve` recovers it by itself.
+including closing the terminal, leaves a stale socket. On Linux, a `serve` in a different runtime
+directory also removes the recorded stale socket if it can verify the old private path and that
+nothing listens there. A missing, inaccessible or foreign endpoint there does not block the start.
 
 That recovery rests on the lifetime lock below. Each `serve` holds a kernel lock on its lock file
 (`flock` on Linux and macOS, `LockFileEx` on Windows), which the system releases when the holder
@@ -1187,17 +1321,28 @@ or clear the default selected space. Its space list still shows the shared regis
 `cotal sync` from the shared Cotal home to apply that home's signed-in catalogs there. Its socket is
 `$XDG_RUNTIME_DIR/cotal/home-<16 hex>/daemon.sock` (on macOS the same name under the cache
 directory, on Windows the pipe `\\.\pipe\cotal-daemon-<SID>-home-<16 hex>`), derived from the
-directory, so it runs beside the default daemon. `<dir>` must already exist as an absolute
-directory you own with mode `0700`, and cannot be the Cotal home. On Windows it must be owned by
-you, SYSTEM or Administrators, and its access list may grant nothing to anyone else. A relative path or the Cotal home refuses `USAGE_INVALID`, a missing
+directory, so it runs beside the default daemon. `<dir>` must already exist as a real directory
+at an absolute path and cannot be the Cotal home. On Linux and macOS, you must own it and set
+mode `0700`. On Windows, you, SYSTEM or Administrators must own it, and the Windows ACL may
+grant access only to those accounts. For a new directory, open **Properties > Security > Advanced**
+in File Explorer. Give your account an explicit **Full control** grant. Choose **Disable
+inheritance** and remove inherited permissions. Remove any remaining grants except those for
+your account, SYSTEM and Administrators, and verify the owner.
+
+A relative path or the Cotal home refuses `USAGE_INVALID`, a missing
 directory `TARGET_NOT_FOUND`, and a symlinked, foreign or loose one `PERMISSION_DENIED`. Nothing is
 created or repaired. Bash and Zsh completion offer file paths for `--daemon-home`, including
 existing directories; the directory checks still apply when the command runs.
+On Linux, when a foreground daemon is stopped, `daemon status` and `daemon service-connect`
+name the `cotal daemon serve` command for the selected home, including `--daemon-home` if supplied.
+If the daemon is running but its socket is in a different runtime directory, `status` and a second
+`serve` tell you to use the running daemon's `XDG_RUNTIME_DIR` before checking status again.
 
 `serve` holds the lifetime lock `<dir>/daemon.lock` while it runs. The default daemon holds the
 same lock at `<COTAL_HOME>/daemon/daemon.lock`. A second `serve` for the same daemon refuses
-`CONFLICT` (`LOCK_HELD`), naming the live holder and when it started. A start that fails for any
-other reason releases the lock again. Every client command sends nothing unless the process at its
+`CONFLICT` (`LOCK_HELD`), naming the live holder and when it started. When a lock or socket conflict
+suggests checking status, the command includes the `--daemon-home` you supplied. A start that fails
+for any other reason releases the lock again. Every client command sends nothing unless the process at its
 socket is the live owner (same pid and process start) of its daemon's lock: `<dir>/daemon.lock`
 with `--daemon-home`, and `<COTAL_HOME>/daemon/daemon.lock` in the client's own Cotal home without
 it. Otherwise it refuses `PERMISSION_DENIED` (`PEER_NOT_LOCK_OWNER`). So a client whose
@@ -1266,6 +1411,8 @@ step instead of reporting a generic spaces failure. Signing in again cannot repa
 The sign-in cache check includes provider keys and session records, not only the file's JSON shape.
 
 `connect-check` asks the running daemon whether it could register with a space as its own service.
+If the selected daemon is stopped, the refusal gives a foreground startup command that keeps the
+chosen `--daemon-home`. Run that command, then retry the check.
 The daemon is not a Manager and never borrows a Manager's identity or authority. The check reads
 the space's registration on this machine and validates the daemon's sign-in through the provider's
 token exchange, then reads the space's public account identity from its auth service
@@ -1383,12 +1530,16 @@ A sign-in proof returned by the provider that has already expired by this machin
 same `credential-expired` diagnosis. `connect-check`, registration and setup stop before contacting
 the space authority. Other unusable proofs retain their existing refusal.
 
-Every other answer is a refusal and nothing is connected. Not yet approved is `LIFECYCLE_BLOCKED`
+Every other answer is a refusal and nothing is connected. An unregistered space is
+`TARGET_NOT_FOUND` (`NOT_REGISTERED`). Check the name or run `cotal space` to list registered spaces.
+For a registered static-auth or open space, `service-connect` refuses `UNSUPPORTED` and points to
+`cotal up` in the folder that hosts the space. The local stack runs its Manager.
+Not yet approved is `LIFECYCLE_BLOCKED`
 (`APPROVAL_PENDING`). A refused registration is `PERMISSION_DENIED`, and so is a space that ended the
 daemon's authority, with its code as the native code, such as `APPROVAL_REVOKED`; connecting again
 does not reconnect it. A space or broker that cannot be reached is `DEPENDENCY_UNAVAILABLE`, and
-connecting again retries the same requests. Without a register request the answer is
-`TARGET_NOT_FOUND`.
+connecting again retries the same requests. A user-auth space without a register request reports
+`TARGET_NOT_FOUND` (`NOT_REQUESTED`).
 
 While the daemon runs, the connection renews itself and reconnects on its own. The access bearer
 lives at most 60 seconds, so the broker drops the connection when each one expires and the daemon
@@ -1411,8 +1562,13 @@ A broker connection lost during startup's ready call is also retried. Recovery n
 retries. Disconnect and shutdown cancel them. An ended connection is remembered only until the
 daemon stops.
 `service-status` reads the daemon's current answer without contacting the space. With no current
-answer, it reports `NOT_REQUESTED` (`TARGET_NOT_FOUND`) when this daemon has no saved register
-request for the space, including after a restart. A saved request alone reports `disconnected`;
+answer or saved register request, a space that is not registered locally reports `NOT_REGISTERED`
+(`TARGET_NOT_FOUND`). Check the name or run `cotal space` to list registered spaces. A registered
+user-auth space without a request reports `NOT_REQUESTED` (`TARGET_NOT_FOUND`), including after a
+restart. A registered static-auth or open space instead
+reports `UNSUPPORTED` and points to `cotal up`. `service-disconnect` clears any old daemon hosting
+refusal for that space without stopping its local stack or recommending setup again.
+A saved request alone reports `disconnected`;
 it does not prove approval or a connection. A registration
 awaiting approval reports `approval-pending` for the rest of that daemon process, until another
 registration or connection attempt updates it or an explicit disconnect clears it. Registration
@@ -1422,7 +1578,8 @@ credentials, ready records, registration request and service identity. It lists 
 without their contents. A later connection needs a new registration and approval. Stopping the
 daemon alone closes its connections without removing these records. The lifetime lock remains;
 its empty file is not a credential. Local cleanup does not revoke remote authority: remove the
-computer in the dashboard for that, since its remote record may remain.
+computer in the dashboard for that, since its remote record may remain. For a registered open or
+static-auth space with no service records to remove, disconnect reports that there was nothing to do.
 Disconnect and graceful shutdown cancel an in-flight service authority or sign-in proof request,
 including a startup resume, before waiting for the connection attempt to settle.
 This also applies to a pending `daemon register`. If removing any service record fails, disconnect

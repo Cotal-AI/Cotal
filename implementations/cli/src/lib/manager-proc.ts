@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from "node:child_process";
-import { closeSync, fstatSync, readFileSync, readdirSync, readlinkSync, realpathSync, rmSync } from "node:fs";
+import { closeSync, existsSync, fstatSync, readFileSync, readdirSync, readlinkSync, realpathSync, rmSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative } from "node:path";
 import { DEFAULT_SERVER, openPrivateAppend, writePrivateRecord } from "@cotal-ai/core";
 import { daemonArgv } from "./self-exec.js";
@@ -12,14 +12,15 @@ import {
   readPidfile, readProcessCommand, readProcessRecord, reclaimDeadPreUpgradeRecord,
   MANAGER_DELIVERY_AWARE_MARKER, MANAGER_LOGFILE, MANAGER_PIDFILE, MANAGER_SHUTDOWN_INTENT, MANAGER_SPARE_CAPABILITY,
   type CommandReader, type LivenessProbe, type LocalProcess, type LocalProcessContext, type ManagerSpareSeats, type ProcessIdentityRecord,
-  type ProcessRecord, type ProcessRecordState,
-  parsePositiveIntegerFlag, verifyIdentityPin, writePidPair,
+  type ProcessRecord, type ProcessRecordState, type SeatCap,
+  parsePositiveIntegerFlag, seatCapText, verifyIdentityPin, writePidPair,
 } from "@cotal-ai/workspace";
 import { c } from "../ui.js";
 import { stopLocalProcess } from "./local-process-stop.js";
 import { listManagerSeatsForSpare, printLegacyManagerSpareUncertainty, printSparedAgents, type SpareSeatRow } from "./teardown-spare.js";
 import { seedBeforeLaunch } from "../seed/launch.js";
 import { lastLoggedLine, type LogStart } from "./private-log.js";
+import { withManagerName } from "./up-manager-name.js";
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -151,6 +152,7 @@ export function managerUp(space: string = folderSpace(), root: string = cotalRoo
  *  A supervisor whose environment cannot be read or names no space counts, and a process table that
  *  cannot be listed proves nothing. */
 export function supervisorMayServe(space: string, installedEntry?: string): boolean {
+  if (process.platform === "win32") return windowsSupervisorMayServe(space, installedEntry);
   let lines: string[];
   if (process.platform === "linux") {
     lines = readdirSync("/proc").filter(name => /^\d+$/.test(name)).flatMap(name => {
@@ -165,7 +167,7 @@ export function supervisorMayServe(space: string, installedEntry?: string): bool
       }
     });
   } else {
-    const ps = spawnSync("ps", ["-A", "-ww", "-o", "pid=,uid=,args="], { encoding: "utf8" });
+    const ps = spawnSync("ps", ["-A", "-ww", "-o", "pid=,uid=,args="], { encoding: "utf8", windowsHide: true });
     if (ps.error || ps.status !== 0) throw new Error("local Manager continuity cannot be established: the process table could not be listed; restore process inspection before retrying");
     lines = ps.stdout.split("\n");
   }
@@ -187,6 +189,41 @@ export function supervisorMayServe(space: string, installedEntry?: string): bool
     const selected = named ?? environmentSpace(pid);
     if (selected !== undefined && selected !== space) return false;
     if (scope === "unknown") throw new Error(`local Manager continuity cannot be established: supervise pid ${pid}, user ${uid} has no proven CLI entry for this installation; inspect this process, then stop it through its original host or run \`kill -TERM ${pid}\` as user ${uid} before retrying; no Manager instance was guessed`);
+    return true;
+  });
+}
+
+function windowsSupervisorMayServe(space: string, installedEntry?: string): boolean {
+  const shell = join(process.env.SystemRoot ?? "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
+  const script = "$ErrorActionPreference = 'Stop'; [Console]::OutputEncoding = [Text.Encoding]::UTF8; " +
+    "ConvertTo-Json -Compress -InputObject @(Get-CimInstance Win32_Process -Property ProcessId,Name,CommandLine | Select-Object ProcessId,Name,CommandLine)";
+  const result = spawnSync(shell, ["-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")], {
+    encoding: "utf8", timeout: 15_000, maxBuffer: 8 * 1024 * 1024, windowsHide: true,
+  });
+  const inspect = 'Check Windows process inspection with `powershell.exe -NoProfile -Command "Get-CimInstance Win32_Process"`.';
+  const failed = () => new Error(`local Manager continuity cannot be established: Windows process inspection could not list the process table. ${inspect}`);
+  if (result.error || result.status !== 0) throw failed();
+  let rows: { ProcessId: number; Name: string; CommandLine: string | null }[];
+  try { rows = JSON.parse(result.stdout); } catch { throw failed(); }
+  if (!Array.isArray(rows) || !rows.some(row => row?.ProcessId === process.pid && row.CommandLine)) throw failed();
+  const entry = installedEntry === undefined ? thisCliEntry() : realpathSync(installedEntry);
+  return rows.some(row => {
+    const { ProcessId: pid, Name: name, CommandLine: command } = row;
+    if (pid === process.pid) return false;
+    if (typeof command !== "string" || !command) {
+      if (["node.exe", "cotal.exe", basename(process.execPath).toLowerCase()].includes(name.toLowerCase()))
+        throw new Error(`local Manager continuity cannot be established: Windows process ${pid} has no readable command line. ${inspect}`);
+      return false;
+    }
+    const argv = [...command.matchAll(/"([^"]*)"|([^\s"]+)/g)].map(match => match[1] ?? match[2]!);
+    const subcommand = argv.findIndex(word => commandIsCotalSupervisor(word));
+    if (subcommand < 1) return false;
+    const named = argv.slice(subcommand + 1).flatMap((word, index) => word === "--space" ? [argv[subcommand + index + 2]] :
+      word.startsWith("--space=") ? [word.slice("--space=".length)] : []);
+    if (named.length > 0 && named.every(value => value && value !== space)) return false;
+    const scope = supervisorInstallScope(pid, 0, argv.slice(0, subcommand), entry);
+    if (scope === "foreign") return false;
+    if (scope === "unknown") throw new Error(`local Manager continuity cannot be established: Windows process ${pid} has no proven CLI entry. Inspect it and stop it through its original host before retrying.`);
     return true;
   });
 }
@@ -313,6 +350,8 @@ export type ManagerStartOpts = {
   wsPort?: number;
   /** Live-session ceiling forwarded as `supervise --max-sessions`. */
   maxSessions?: number;
+  managerName?: string;
+  managerSeatCap?: SeatCap;
 };
 
 export function startManagerDetached(
@@ -359,6 +398,7 @@ export function startManagerDetached(
     // P2 item 6: the broker ws listener port (loopback) for the console session client's wsUrl.
     ...(o.wsPort !== undefined ? ["--ws-port", String(o.wsPort)] : []),
     ...(o.maxSessions !== undefined ? ["--max-sessions", String(o.maxSessions)] : []),
+    ...(o.managerSeatCap !== undefined ? ["--seat-cap", seatCapText(o.managerSeatCap)] : []),
   ];
   // This is an INTERNAL child re-exec: the `up`/`spawn` that reached here already ran the first-run
   // connector seed, so the manager skips it on boot (a direct `cotal supervise` still seeds).
@@ -368,7 +408,7 @@ export function startManagerDetached(
       const info = fstatSync(fd);
       onLogStart({ offset: info.size, dev: info.dev, ino: info.ino });
     }
-    child = spawn(node, args, { detached: true, stdio: ["ignore", fd, fd], env: { ...process.env, COTAL_SKIP_CONNECTOR_SEED: "1" } });
+    child = spawn(node, args, { detached: true, stdio: ["ignore", fd, fd], env: { ...process.env, COTAL_SKIP_CONNECTOR_SEED: "1" }, windowsHide: true });
   } finally { closeSync(fd); }
   child.unref();
   // CANONICAL path, never a pre-upgrade one: a start that kept writing the root-scoped name would
@@ -471,10 +511,12 @@ export async function ensureManager(
   if (state === "alive") return { running: true, started: false };
   assertManagerRecordReplaceable(space, root, seams); // refuses on unknown / unattributable, reports foreign
   await seedBeforeLaunch();
-  let logStart: LogStart | undefined;
-  const pid = startManagerDetached(o, (start) => { logStart = start; });
-  await awaitManagerUp(space, identityRecord(pid), logStart);
-  return { running: true, started: true, pid };
+  return withManagerName({ root, space }, o.managerName, async () => {
+    let logStart: LogStart | undefined;
+    const pid = startManagerDetached(o, (start) => { logStart = start; });
+    await awaitManagerUp(space, identityRecord(pid), logStart);
+    return { running: true, started: true, pid };
+  });
 }
 
 /** A signal, injectable for the same reason the probe is: `EPERM` from `kill` is producible only by
@@ -504,7 +546,7 @@ export const MANAGER_PROCESS = {
  *  component stopped, and every other caller through {@link clearManagerArtifacts}. */
 export async function stopManager(
   space: string = folderSpace(),
-  { withAgents = false, pid, root = cotalRoot() }: { withAgents?: boolean; pid?: number; root?: string } = {},
+  { withAgents = false, pid, root = cotalRoot(), onRetired }: { withAgents?: boolean; pid?: number; root?: string; onRetired?: () => void } = {},
 ): Promise<boolean> {
   const context = { root, space };
   let spared: SpareSeatRow[] | undefined;
@@ -533,6 +575,11 @@ export async function stopManager(
     // Disarmed by the attempt that armed it, inside its reservation: a stop refused the reservation
     // never reaches this, so it cannot remove the intent of the stop that holds it.
     afterFailedSignal: withAgents ? () => disarmManagerShutdownIntent(context) : undefined,
+    afterExit: withAgents && onRetired ? () => {
+      // The manager claims the intent to select the policy and drops its pid record only after
+      // shutdown succeeds. The CLI's cleanup of a forced or failed stop is not that evidence.
+      if (readPidfile(PID_PATH(space, root)) === undefined && !existsSync(localProcessPath(MANAGER_SHUTDOWN_INTENT, context))) onRetired();
+    } : undefined,
   });
   if (!found) return false;
   if (legacyManagerSpareUnverified) printLegacyManagerSpareUncertainty();

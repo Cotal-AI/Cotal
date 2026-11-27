@@ -55,6 +55,15 @@ try{
  const logs:string[]=[];
  for(const [index,name]of ['project','other'].entries()){
   const child=spawn(process.execPath,[entry,'supervise','--space',space,'--name',name],{cwd:join(root,name),env,stdio:['ignore','pipe','pipe']});children.push(child);logs[index]='';child.stdout!.on('data',bytes=>{logs[index]+=bytes;});child.stderr!.on('data',bytes=>{logs[index]+=bytes;});
+  // Stagger the starts until concurrent Manager registration is fixed (#10803).
+  if(index===0)await new Promise<void>((resolve,reject)=>{
+   const activated=()=>{if(logs[index].includes('service endpoint activated')){cleanup();resolve();}};
+   const closed=()=>fail('First Manager exited before activation');
+   const timer=setTimeout(()=>fail('Timed out waiting for first Manager activation'),45000);
+   function cleanup(){clearTimeout(timer);child.stderr!.off('data',activated);child.off('close',closed);}
+   function fail(message:string){cleanup();reject(new Error(`${message}\n${logs[index]}`));}
+   child.stderr!.on('data',activated);child.once('close',closed);
+  });
  }
  const ids:string[]=[];
  for(let attempt=0;attempt<180;attempt++){
@@ -75,6 +84,14 @@ try{
  const liveReads:string[]=[];
  check.equal(await reportRunningManagers({},async flags=>{liveReads.push(String(flags.on));return readManagerContinuity(flags,{installedEntry:entry,readOnly:true,retainGraph:true});},flags=>recordedUpdateManagers(flags,entry)),'none','dead registrations do not prevent reading live local custody');
  check.deepEqual(liveReads,[ids[0]],'install-wide update still reads the actual local Manager beside dead registrations');
+ const sessions=join(env.COTAL_HOME!,'idp-sessions.json'),savedSessions=sessions+'.held';
+ renameSync(sessions,savedSessions);
+ try{
+  await check.rejects(readManagerContinuity({space,on:ids[0]},{installedEntry:entry,readOnly:true,retainGraph:true}),error=>(error as {cause?:{code?:string}}).cause?.code==='signed-out','real control resolve confirms own-home missing session');
+  check.equal(await reportRunningManagers({space},flags=>readManagerContinuity(flags,{installedEntry:entry,readOnly:true,retainGraph:true}),()=>recordedUpdateManagers({space},entry),{retainGraph:true}),'none','retained own-home signed-out update leaves Manager running');
+  check.equal(recordedUpdateManagers({space},entry)[0]?.instanceId,ids[0],'same native Manager identity survives signed-out read');
+  check.equal(children[0].exitCode,null,'signed-out read does not stop Manager');
+ }finally{renameSync(savedSessions,sessions);}
  const otherInstall=join(root,'tmp','other-install');mkdirSync(join(otherInstall,'dist'),{recursive:true,mode:0o700});
  writeFileSync(join(otherInstall,'package.json'),JSON.stringify({name:'cotal-ai',bin:{cotal:'dist/cotal.js'}}));writeFileSync(join(otherInstall,'dist','cotal.js'),'');
  const otherEntry=join(otherInstall,'dist','cotal.js');

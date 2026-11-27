@@ -8,7 +8,7 @@
   "mutations": [
     {
       "name": "references into the dead zone resolve silently, the shipped defect",
-      "file": "packages/lang/src/grammar.ts",
+      "file": "packages/lang/src/grammar-resolve.ts",
       "find": "      if (scope.refersToPending(name)) {",
       "replace": "      if (false) {",
       "expectRed": "a block reference above a shadowing `let` is the dead zone, not the outer binding",
@@ -18,7 +18,7 @@
     },
     {
       "name": "a function boundary no longer defers the dead zone, so mutual recursion is refused",
-      "file": "packages/lang/src/grammar.ts",
+      "file": "packages/lang/src/grammar-shared.ts",
       "find": "      if (s.fnBoundary) crossedFn = true;",
       "replace": "",
       "expectRed": "a nested function may reference a binding declared later: it runs later",
@@ -28,7 +28,7 @@
     },
     {
       "name": "parameters bind all-at-once instead of left to right",
-      "file": "packages/lang/src/grammar.ts",
+      "file": "packages/lang/src/grammar-resolve.ts",
       "find": "          inner.declare(n, \"param\");\n          inner.pending.add(n);",
       "replace": "          inner.declare(n, \"param\");",
       "expectRed": "a parameter default may not read a LATER parameter",
@@ -38,7 +38,7 @@
     },
     {
       "name": "a named function expression does not bind its own name",
-      "file": "packages/lang/src/grammar.ts",
+      "file": "packages/lang/src/grammar-resolve.ts",
       "find": "        inner.declare(fname, \"const\", node);\n      }",
       "replace": "      }",
       "expectRed": "a named function expression recurses through its own name",
@@ -58,7 +58,7 @@
     },
     {
       "name": "the parallel/race worktree check is gone, so two branches share one tree",
-      "file": "packages/lang/src/grammar.ts",
+      "file": "packages/lang/src/grammar-resolve.ts",
       "find": "  if (branchSet) {",
       "replace": "  if (false) {",
       "expectRed": "two parallel branches spawning into one literal worktree",
@@ -68,7 +68,7 @@
     },
     {
       "name": "the fanOut worktree check is gone, so every branch spawns into one tree",
-      "file": "packages/lang/src/grammar.ts",
+      "file": "packages/lang/src/grammar-resolve.ts",
       "find": "  if (!branchSet && sharedBody !== undefined && isNode(sharedBody) && spec.scope !== null && scopeTraits(spec.scope)?.assembles) {",
       "replace": "  if (false) {",
       "expectRed": "a fanOut whose function spawns a literal worktree runs it in every branch",
@@ -78,7 +78,7 @@
     },
     {
       "name": "the same-branch exemption is gone, so one branch reusing its own tree is refused",
-      "file": "packages/lang/src/grammar.ts",
+      "file": "packages/lang/src/grammar-resolve.ts",
       "find": "        if (prior !== undefined && prior !== branch) {",
       "replace": "        if (prior !== undefined) {",
       "expectRed": "one branch spawning the same worktree twice runs alone in it",
@@ -88,7 +88,7 @@
     },
     {
       "name": "a named branch is not resolved, so its spawns are invisible to the check",
-      "file": "packages/lang/src/grammar.ts",
+      "file": "packages/lang/src/grammar-resolve.ts",
       "find": "      .map((branch) => resolveFunction(branch, v, scope) ?? branch);",
       "replace": "      .map((branch) => branch);",
       "expectRed": "named branch functions are branches too: two of them into one literal worktree",
@@ -98,7 +98,7 @@
     },
     {
       "name": "a named fanOut function is not resolved",
-      "file": "packages/lang/src/grammar.ts",
+      "file": "packages/lang/src/grammar-resolve.ts",
       "find": "    const fn = resolveFunction(sharedBody, v, scope) ?? sharedBody;",
       "replace": "    const fn = sharedBody;",
       "expectRed": "a named fanOut function that spawns a literal worktree runs it in every branch",
@@ -108,7 +108,7 @@
     },
     {
       "name": "a destructuring target is checked as a single node, the shipped defect",
-      "file": "packages/lang/src/grammar.ts",
+      "file": "packages/lang/src/grammar-resolve.ts",
       "find": "  patternTargets(target, targets);\n  for (const t of targets) {\n    if (t.type === \"Identifier\" && scope.lookup(t.name as string) === \"const\") {",
       "replace": "  targets.push(target);\n  for (const t of targets) {\n    if (t.type === \"Identifier\" && scope.lookup(t.name as string) === \"const\") {",
       "expectRed": "const cannot be an array destructuring target",
@@ -118,7 +118,7 @@
     },
     {
       "name": "a non-declaration for-of target is not checked, the shipped defect",
-      "file": "packages/lang/src/grammar.ts",
+      "file": "packages/lang/src/grammar-resolve.ts",
       "find": "      if (node.type === \"ForOfStatement\" && (node.left as AnyNode).type !== \"VariableDeclaration\") {\n        checkConstWrite(node.left as AnyNode, scope, v);",
       "replace": "      if (false) {\n        checkConstWrite(node.left as AnyNode, scope, v);",
       "expectRed": "const cannot be a for-of target",

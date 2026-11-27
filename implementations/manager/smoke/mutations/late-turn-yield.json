@@ -8,7 +8,7 @@
   "mutations": [
     {
       "name": "a late yield after the deadline committed hears not-found instead of the deny",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/turn-relay.ts",
       "find": "      if (settled.ref !== undefined && this.goalWriter) {\n        const ended = await readGoalResult(this.goalWriter.ctx, settled.ref);\n        if (ended !== undefined) {\n          this.rememberSettledTurn(key, ended.state, ended.ts);\n          return { goalId, state: ended.state };\n        }\n      }",
       "replace": "      if (settled.ref !== undefined && this.goalWriter) {\n        void settled.ref;\n      }",
       "expectRed": "a yield after the deny committed, before the index drop, is told the turn ended failed, never `not-found`",

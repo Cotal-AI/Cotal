@@ -3,6 +3,7 @@ import { type ParsedArgs } from "@cotal-ai/core";
 import { isCommandFailure } from "@cotal-ai/workspace";
 import { loadManifest, renderTopology, ManifestError, type PreparedManifest } from "../lib/manifest/index.js";
 import { c, stderrLine } from "../ui.js";
+import { displayProjectTrustFailure } from "../lib/self-exec.js";
 
 /**
  * `cotal topology view -f cotal.yaml` — validate a mesh manifest and print its access graph:
@@ -18,13 +19,17 @@ export async function topology(args: ParsedArgs): Promise<void> {
     console.error(c.dim("cotal topology view -f <cotal.yaml>"));
     process.exit(1);
   }
+  if (positionals.length > (values.file === undefined ? 1 : 0)) {
+    stderrLine("✗ ", "pass exactly one manifest path, either positionally or with --file/-f", c.red);
+    process.exit(1);
+  }
   const file = values.file ?? positionals[0];
   if (!file) {
     stderrLine("✗ ", "a manifest file is required - `cotal topology view -f <cotal.yaml>`", c.red);
     process.exit(1);
   }
   try {
-    const prepared = loadManifest(resolve(file));
+    const prepared = loadManifest(resolve(file), undefined, "preview");
     console.log(renderTopology(prepared));
   } catch (e) {
     failManifest(e);
@@ -41,7 +46,7 @@ export function refuseManifestSpaceMismatch(prepared: PreparedManifest, space: s
 
 /** Print a manifest/file error as one red block (located issues for a ManifestError) and exit 1. */
 export function failManifest(e: unknown): never {
-  if (e instanceof ManifestError) console.error(c.red(e.message));
+  if (e instanceof ManifestError) console.error(c.red(displayProjectTrustFailure(e.message)));
   else if ((e as NodeJS.ErrnoException)?.code === "ENOENT")
     stderrLine("✗ ", `manifest file not found: ${(e as NodeJS.ErrnoException).path ?? ""}`, c.red);
   else {

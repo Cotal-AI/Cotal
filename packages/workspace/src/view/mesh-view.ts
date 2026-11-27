@@ -200,6 +200,7 @@ export class MeshView extends EventEmitter {
   private channelCounts = new Map<string, number>();
   private arrivals = new Map<string, number>();
   private feed: FeedEntry[] = [];
+  private chatPrefillDiscards?: Set<string | undefined>;
   private seen = new Set<string>(); // feed ids, for prefill ∪ live dedupe-by-id
   private pending = new Map<string, Burst>();
   private dmLog: RawDm[] = []; // raw unicast for the DM roll-up
@@ -225,6 +226,7 @@ export class MeshView extends EventEmitter {
   private readonly tapSubject?: string;
   private readonly chatOnly: boolean;
   private timers: ReturnType<typeof setInterval>[] = [];
+  private stopped = false;
 
   private readonly onRoster = (r: Presence[]) => this.setRoster(r);
   private readonly onPresence = (ev: unknown) => this.emit("presence", ev);
@@ -272,6 +274,7 @@ export class MeshView extends EventEmitter {
   }
 
   async start(): Promise<void> {
+    if (this.stopped) return;
     // The error listener MUST be attached before start() — async faults surface as events.
     this.ep.on("error", this.onError);
     this.ep.on("warning", this.onWarning);
@@ -281,6 +284,8 @@ export class MeshView extends EventEmitter {
     this.ep.on("presence", this.onPresence);
     this.ep.on("presence-view", this.onPresenceView);
     await this.ep.start();
+    // A cancelled endpoint start can resolve after stop has cleared the view's timers.
+    if (this.stopped) return;
     this.bound = true;
     this.setRoster(this.ep.getRoster());
     this.ep.tap(
@@ -298,6 +303,7 @@ export class MeshView extends EventEmitter {
   }
 
   async stop(): Promise<void> {
+    this.stopped = true;
     for (const t of this.timers) clearInterval(t);
     this.timers = [];
     for (const b of this.pending.values()) clearTimeout(b.timer); // bursts hold live timers
@@ -365,6 +371,17 @@ export class MeshView extends EventEmitter {
         ? { snapshot: { asOf: undefined, members: [] } }
         : { ...this.membership, unreadable: (e as Error).message };
     }
+    this.dirty = true;
+  }
+
+  /** Discard local chat for one channel, or all chat if no channel is given, after a confirmed purge. */
+  discardChatHistory(channel?: string): void {
+    this.chatPrefillDiscards?.add(channel);
+    this.feed = this.feed.filter((entry) => {
+      if (entry.delivery !== "multicast" || (channel !== undefined && entry.channel !== channel)) return true;
+      if (entry.id) this.seen.delete(entry.id);
+      return false;
+    });
     this.dirty = true;
   }
 
@@ -509,15 +526,22 @@ export class MeshView extends EventEmitter {
     if (this.dmLog.length > DM_LOG_CAP) this.dmLog.splice(0, this.dmLog.length - DM_LOG_CAP);
   }
 
-  /** One-shot backlog: prefill each channel's history (multicast), plus the DM backlog when DMs
-   *  are visible (god-view — `dmHistory` needs an admin cred), deduped by id, oldest-first. */
+  /** One-shot backlog: prefill chat and, when visible, DMs. */
   private async prefill(): Promise<void> {
-    let chans: { channel: string; messages: number }[];
+    const discarded = this.chatPrefillDiscards = new Set<string | undefined>();
     try {
-      chans = await this.ep.listChannels();
-    } catch {
-      return;
+      const chans = await this.ep.listChannels().catch(() => undefined);
+      if (!chans) return;
+      await this.prefillChat(chans, discarded);
+    } finally {
+      this.chatPrefillDiscards = undefined;
     }
+    if (!this.chatOnly) await this.prefillDms();
+  }
+
+  /** Merge channel history, deduped by id, unless a purge invalidated the read. */
+  private async prefillChat(chans: { channel: string }[], discarded: ReadonlySet<string | undefined>): Promise<void> {
+    if (discarded.has(undefined)) return;
     // THE FILTER RUNS BEFORE THE HISTORY READ, AND THE ORDER IS THE WHOLE POINT.
     //
     // `listChannels()` derives an entry from every RETAINED CONCRETE SUBJECT, and the chat stream
@@ -526,16 +550,17 @@ export class MeshView extends EventEmitter {
     // fetch would enumerate every one of them, issue a `channelHistory` round trip each, and then
     // throw the results away: unbounded work to display nothing. That is a performance defect
     // rather than a cosmetic one, which is why it is filtered here and not in the loop below.
-    const chat = chans.filter((c) => !isEventChannel(c.channel));
+    const chat = chans.filter((c) => !isEventChannel(c.channel) && !discarded.has(c.channel));
     const batches = await Promise.all(
       chat.map((c) =>
         this.ep.channelHistory(c.channel, { limit: HISTORY_LIMIT }).catch(() => [] as CotalMessage[]),
       ),
     );
+    if (discarded.has(undefined)) return;
     const history: FeedEntry[] = [];
     for (const msgs of batches)
       for (const msg of msgs) {
-        if (!msg.channel || (msg.id && this.seen.has(msg.id))) continue;
+        if (!msg.channel || discarded.has(msg.channel) || (msg.id && this.seen.has(msg.id))) continue;
         if (msg.id) this.seen.add(msg.id);
         history.push({
           id: msg.id,
@@ -552,7 +577,6 @@ export class MeshView extends EventEmitter {
       this.trim();
       this.dirty = true;
     }
-    if (!this.chatOnly) await this.prefillDms();
   }
 
   /** Best-effort DM backlog for the roll-up — only meaningful for a god-view cred; a non-admin

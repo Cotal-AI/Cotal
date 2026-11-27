@@ -35,7 +35,7 @@ import { idpSessionDir } from "./session-context.js";
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { decodeJwt } from "jose";
+import { createLocalJWKSet, decodeJwt } from "jose";
 import { isCredentialTransportUrl, mkSecretDir, writeSecretFileAtomic, type AuthSpaceCatalogAccount, type AuthSpaceCatalogResult } from "@cotal-ai/core";
 import { loginRecoveryCommand, serviceLoginRecovery, CommandFailure, acquireLock, chatNameProblem, credentialFailure, checkIdpUrl } from "@cotal-ai/workspace";
 
@@ -124,6 +124,11 @@ export function normalizeIdpUrl(idpUrl: string): string {
   return checked.url.origin + checked.url.pathname.replace(/\/+$/, "");
 }
 
+/** Stable within an IdP, without saving the provider's raw subject in conversation records. */
+export function conversationAccountKey(idp: string, subject: string | undefined): string | undefined {
+  return subject ? createHash("sha256").update(JSON.stringify([normalizeIdpUrl(idp), subject])).digest("hex") : undefined;
+}
+
 interface OAuthError {
   error?: string;
   error_description?: string;
@@ -162,6 +167,9 @@ export function idpTimeoutMs(): number {
 
 /** An IdP request that got no answer: the transport failed or the per-request timeout fired. */
 export class IdpUnreachableError extends Error {}
+
+/** The IdP answered a token request with a server error. */
+export class IdpTokenServerError extends Error {}
 
 /** The provider refused the initial device-code request, before approval or persistence. */
 export class IdpDeviceAuthorizationRefusedError extends Error {}
@@ -246,13 +254,10 @@ async function idpJson<T>(url: string, res: Response, cancel?: AbortSignal): Pro
   }
 }
 
-/** Best-effort reachability + shape check of an IdP's JWKS. Used at the FIRST `--user-auth` enable
- *  so a dead or typo'd `--idp` fails loud BEFORE a space is provisioned around it, instead of only
- *  surfacing far away at the first user connect (the pin is written but the JWKS is fetched lazily).
- *  Normalizes the URL exactly as the pin does (`<base>/jwks`). Throws a legible sentence on an
- *  unreachable host, a redirect, a non-2xx, or a body that is not a JWKS key set. A redirect is
- *  refused because it could move the check onto another host or onto plaintext, away from the URL
- *  the space pins. */
+/** Reachability and signing-key check of an IdP's JWKS. Used at the FIRST `--user-auth` enable
+ *  so the CLI can refuse an unreachable IdP or a set without an importable Ed25519 verification
+ *  key before it provisions a space. Checks the same `<base>/jwks` URL the space pins and does
+ *  not follow redirects. */
 export async function probeIdpJwks(idpUrl: string): Promise<void> {
   const jwksUri = `${normalizeIdpUrl(idpUrl)}/jwks`; // a bad scheme throws its own message here
   const res = await idpFetch(jwksUri, { redirect: "manual" });
@@ -260,9 +265,19 @@ export async function probeIdpJwks(idpUrl: string): Promise<void> {
     throw new Error(`the IdP at ${idpUrl} answered ${jwksUri} with HTTP ${res.status}, a redirect; redirects are refused, so its target was not fetched. Check --idp <auth base URL>; it must serve <base>/jwks itself.`);
   if (!res.ok)
     throw new Error(`the IdP at ${idpUrl} did not serve a JWKS: ${jwksUri} returned HTTP ${res.status}. Check --idp <auth base URL>.`);
-  const body = await idpJson<{ keys?: unknown }>(jwksUri, res);
-  if (!Array.isArray(body.keys))
+  const body = await idpJson<{ keys?: unknown } | null>(jwksUri, res);
+  if (!Array.isArray(body?.keys) || body.keys.some((key) => !key || typeof key !== "object" || Array.isArray(key)))
     throw new Error(`the IdP at ${idpUrl} did not return a JWKS key set at ${jwksUri}. Check --idp <auth base URL>; it must expose <base>/jwks.`);
+  for (const key of body.keys) {
+    if (key.crv !== "Ed25519") continue;
+    try {
+      await createLocalJWKSet({ keys: [key] })({ alg: "EdDSA" });
+      return;
+    } catch {
+      // One unusable candidate does not disqualify another public verification key.
+    }
+  }
+  throw new Error(`the IdP at ${idpUrl} did not return a usable Ed25519 signing key at ${jwksUri}. Check --idp <auth base URL>; its JWKS must expose a public Ed25519 verification key.`);
 }
 
 /** True if `s` parses as a JWT — used to REJECT a JWT where an opaque session token is required.
@@ -340,19 +355,42 @@ export async function deviceLogin(opts: DeviceLoginOpts): Promise<IdpSession> {
   }
 
   // RFC 8628 §3.5: poll at the server's interval; `slow_down` adds 5s to it, permanently.
+  // A poll the provider could not answer (no connection, a 5xx such as a proxy's error page) says
+  // nothing about the approval, so polling goes on until the code's own expiry. If the provider was
+  // still unreachable then, that is the refusal, not an expiry the person could not have caused.
   let intervalSec = Math.max(1, grant.interval || 5);
+  let unanswered: IdpUnreachableError | undefined;
   for (;;) {
     await sleepUnlessCancelled(intervalSec * 1000, opts.signal);
-    if (Date.now() > deadline) throw new Error(expired);
-    const poll = await idpFetch(`${base}/device/token`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        grant_type: "urn:ietf:params:oauth:grant-type:device_code",
-        device_code: grant.device_code,
-        client_id: opts.clientId,
-      }),
-    }, opts.signal);
+    if (Date.now() > deadline) throw unanswered ?? new Error(expired);
+    let poll: Response;
+    try {
+      poll = await idpFetch(`${base}/device/token`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          grant_type: "urn:ietf:params:oauth:grant-type:device_code",
+          device_code: grant.device_code,
+          client_id: opts.clientId,
+        }),
+      }, opts.signal);
+    } catch (e) {
+      if (!(e instanceof IdpUnreachableError)) throw e;
+      unanswered = new IdpUnreachableError(`idp login: ${base} could not be reached while waiting for approval, and the device code expired - ${e.message}`);
+      continue;
+    }
+    if (poll.status >= 500) {
+      await poll.body?.cancel().catch(() => {});
+      throwIfCancelled(opts.signal);
+      unanswered = new IdpUnreachableError(`idp login: ${base} answered HTTP ${poll.status} while waiting for approval, and the device code expired - run \`${retry}\` again once it answers`);
+      continue;
+    }
+    unanswered = undefined;
+    if (poll.status === 429) {
+      await poll.body?.cancel().catch(() => {});
+      intervalSec += 5;
+      continue;
+    }
     if (poll.ok) {
       const tok = await idpJson<{ access_token: string; expires_in: number }>(`${base}/device/token`, poll, opts.signal);
       // Bound the session lifetime like the device grant's timing fields above (finite, positive,
@@ -473,7 +511,10 @@ async function fetchIdpJwtUncached(base: string, sessionToken: string, cancel?: 
       throw new IdpSessionRejectedError(
         `idp session: ${base} rejected the cached session (expired or revoked) - ${serviceLoginRecovery(base, idpSessionDir())}`,
       );
-    if (!res.ok) throw new Error(`idp session: ${base}/token failed (HTTP ${res.status})`);
+    if (!res.ok) {
+      const message = `idp session: ${base}/token failed (HTTP ${res.status})`;
+      throw res.status >= 500 ? new IdpTokenServerError(message) : new Error(message);
+    }
     const body = await idpJson<{ token?: string }>(`${base}/token`, res, cancel);
     if (typeof body.token !== "string" || !body.token) throw new Error(`idp session: ${base}/token returned no token`);
     return { jwt: body.token, response: res };
@@ -705,6 +746,11 @@ async function discoverAdvertisement(state: CatalogAccountState, session: IdpSes
     advertisementCheckedAt: new Date().toISOString(),
     ...(catalogUrl ? { catalogUrl } : { catalogUrl: undefined }),
   };
+}
+
+/** Retained account identities, including signed-out holders. No session proofs are returned. */
+export function knownMachineAccounts(dir: string): AuthSpaceCatalogAccount[] {
+  return Object.values(readCatalogsFile(dir).accounts).map(accountView);
 }
 
 /** Account identities available to a machine client. Session proofs stay inside this module. */
@@ -974,13 +1020,13 @@ interface SessionsFile {
 
 function readSessionsFile(dir: string): SessionsFile {
   const f = join(dir, SESSIONS_FILE);
-  if (!existsSync(f)) return { ver: SESSIONS_VER, sessions: {} };
   // A torn write or a hand-edit must not reach requireIdpSession (the no-fallback gate) as a raw
   // "SyntaxError: Unexpected token" — say what's wrong and how to recover, like everywhere else.
   let parsed: SessionsFile;
   try {
     parsed = JSON.parse(readFileSync(f, "utf8")) as SessionsFile;
   } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") return { ver: SESSIONS_VER, sessions: {} };
     throw new Error(`${f}: the session cache is not valid JSON (${e instanceof Error ? e.message : String(e)}) - delete it and run \`cotal login\` again`);
   }
   if (parsed === null || typeof parsed !== "object")

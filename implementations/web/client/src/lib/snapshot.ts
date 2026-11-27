@@ -19,19 +19,27 @@
 // thing actually read and why the refresh did not land. The next successful read replaces the value
 // and clears the mark.
 
+/** A JSON read refused by HTTP, keeping the status and server reason separate from the message. */
+export class HttpReadRefusal extends Error {
+  constructor(message: string, readonly status: number, readonly reason: string | undefined) {
+    super(message);
+  }
+}
+
 /** Parse a JSON response, refusing a non-200 rather than handing its body back as data. The
  *  refusal names the source and the status, and carries the server's own `error` text when the
  *  body has one, so a caller that only logs it still says something true. */
 export async function readJson<T>(res: Response, what: string): Promise<T> {
   if (!res.ok) {
-    let detail = "";
+    let reason: string | undefined;
     try {
       const body = (await res.json()) as { error?: unknown } | null;
-      if (body && typeof body.error === "string") detail = `: ${body.error}`;
+      if (body && typeof body.error === "string") reason = body.error;
     } catch {
       /* a refusal need not be JSON; the status is the fact that matters */
     }
-    throw new Error(`${what} refused with HTTP ${res.status}${detail}`);
+    const detail = reason === undefined ? "" : `: ${reason}`;
+    throw new HttpReadRefusal(`${what} refused with HTTP ${res.status}${detail}`, res.status, reason);
   }
   return res.json() as Promise<T>;
 }

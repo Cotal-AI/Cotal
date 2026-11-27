@@ -1,54 +1,21 @@
 import { randomUUID } from "node:crypto";
-import { drainAndClose } from "@cotal-ai/core";
 import {
-  constants,
-  fsyncSync,
   lstatSync,
   mkdirSync,
-  openSync,
   realpathSync,
-  readSync,
-  closeSync,
   rmSync,
-  writeSync,
+  statSync,
 } from "node:fs";
 import { hostname } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
-import { jetstreamManager } from "@nats-io/jetstream";
-import { Kvm } from "@nats-io/kv";
 import {
-  anycastStoreDefinition,
-  canonicalBackupStreamConfig,
-  historyLimitOf,
-  historyLimitRestoreStaging,
-  historyLimitStreamOf,
   consumerConfigFromCheckpoint,
-  deliveryBucket,
-  downloadStreamSnapshot,
-  finalizeStreamRestore,
   hardenPrivate,
-  initiateStreamRestore,
-  LEASE_TTL_MS,
-  managerBucket,
-  MANAGER_LEASE_TTL_MS,
-  membershipStoreDefinition,
-  PRESENCE_STORAGE,
-  presenceBucket,
-  recreateConsumerCheckpoint,
   spaceBackupInventory,
-  uploadStreamRestoreChunk,
   validateSpaceAuth,
-  validateSpaceBackupInventory,
   validateBackupStreamState,
   validateCanonicalBackupStreamConfig,
-  type PersistentConsumerCheckpoint,
-  createEndpointStreams,
-  ensureArtifactStore,
-  hardenedAuthorityStreamNames,
-  setHistoryLimit,
   wfjStreamName,
-  type HistoryLimit,
-  type HistoryLimitStream,
 } from "@cotal-ai/core";
 import {
   CommandFailure,
@@ -60,6 +27,7 @@ import {
   codeSpan,
   cutController,
   getSpaceAuth,
+  maintenancePaths,
   markRestoreActive,
   settleTokenHandoff,
   markRestoreDegraded,
@@ -68,7 +36,14 @@ import {
   prepareMissingSourceRestore,
   prepareSamePathRestore,
   rearmUnboundRestoreCommitIntent,
-  localProcessOwnerStatus, parsePositiveIntegerFlag, readMaintenanceJournal, restoreLeftOut, restoreOtherAccounts, restoreReplacedNewerCut, restoreRolledBackRuns, storeAccounts,
+  localProcessOwnerStatus,
+  parsePositiveIntegerFlag,
+  readMaintenanceJournal,
+  restoreLeftOut,
+  restoreOtherAccounts,
+  restoreReplacedNewerCut,
+  restoreRolledBackRuns,
+  storeAccounts,
   readMaintenanceResumeDocument,
   recordRestoreAttemptResources,
   recordRestoreManagerCommit,
@@ -93,24 +68,24 @@ import {
   type RestoreManagerCommittedRecord,
   type RestoreReadyRecord,
   readStoreIdentity,
+  preparedSpaceAt,
+  retainedLegacyBroker,
   type StoreIdentity,
 } from "@cotal-ai/workspace";
-import { ArtifactFileFault, artifactStreams, BACKUP_MANIFEST_FORMAT_V1, missingBackupPath, missingBackupPathText, notAnArtifactRefusal, readStagedCheckpoints, stageArtifact, type BackupManifest, type StagedArtifact } from "./backup-artifact.js";
+import { controllerStackApplies } from "../commands/stack-up.js";
+import { ArtifactFileFault, artifactReadRefusal, artifactStreams, BACKUP_MANIFEST_FORMAT_V1, inspectBackupArtifact, missingBackupPath, missingBackupPathText, notAnArtifactRefusal, readStagedCheckpoints, stageArtifact, type BackupManifest, type StagedArtifact } from "./backup-artifact.js";
 import { authorityFingerprint } from "./maintenance-files.js";
-import { attemptProcessesGone, connectIsolatedBroker, ensurePrivateAttemptsDir, startIsolatedBroker, sweepAttemptResidue, type IsolatedBroker } from "./isolated-broker.js";
-import { readPreviousRunJournals, readRunJournals, rolledBackRuns } from "./rolled-back-runs.js";
+import { attemptProcessesGone, ensurePrivateAttemptsDir, startIsolatedBroker, sweepAttemptResidue, type IsolatedBroker } from "./isolated-broker.js";
+import { inspectPreviousStore, readRegistryDefault, readRunJournals, rolledBackRuns } from "./rolled-back-runs.js";
 import { noticeOnInterrupt } from "./interrupt-notice.js";
 import { displayCmd } from "./self-exec.js";
 import { assertEndpointUnreachable } from "./endpoint-cut.js";
 import { acquireStackOperationLock } from "./stack-journal.js";
-import { foreignEntriesRefusal, oldStoreForeignEntries } from "./store-dir.js";
+import { checkStorePath, foreignEntriesRefusal, missingRestoreStoreParent, oldStoreForeignEntries } from "./store-dir.js";
 import { admitAndRestoreSeatCheckpoints } from "./seat-resume.js";
 import { assertControllerRestorable, reconfigureControllerBroker, rollbackRestoreWithBroker } from "./controller-restore.js";
 import { assertControllerCoupling, newControllerAttemptLaunch } from "./controller-resume.js";
-
-const RESTORE_TIMEOUT_MS = 30 * 60 * 1000;
-const CHUNK_BYTES = 1024 * 1024;
-
+import { RESTORE_TIMEOUT_MS, sanitizeStreamSnapshot, applyRecordedAge, restoreAndValidate } from "./restore-streams.js";
 export interface RestoreFlags {
   restore: string;
   "restore-only"?: string;
@@ -153,6 +128,8 @@ export interface PreparedRestore {
   journalState: "commit-intent" | "manager-committed" | "active" | "degraded";
   managerCommit?: ManagerCommitEvidence;
   listenerProof?: ListenerProof;
+  /** A new restore hands its interrupt notice to the startup that continues it. */
+  releaseInterruptNotice?(): void;
   cleanupStage(): void;
 }
 
@@ -362,13 +339,17 @@ function contains(parent: string, child: string): boolean {
   return path === "" || (path !== ".." && !path.startsWith(`..${separator}`) && !isAbsolute(path));
 }
 
-/** The refusal for a restore artifact that is, holds or sits inside the store the restore replaces
- *  or this root's maintenance folder, where it stages its attempt, or `undefined` when it is clear
- *  of both. `artifact` and `store` are real paths. */
+/** Refuse artifacts that overlap the preserved store or maintenance paths restore writes or sweeps.
+ *  `artifact` and `store` are real paths. */
 function artifactOverlapRefusal(root: string, artifact: string, store: string): CommandFailure | undefined {
+  const { maintenanceDir, versionDir, lock, reaper } = maintenancePaths(root);
+  const maintenance = realpathSync.native(maintenanceDir);
   for (const [path, what, why] of [
     [store, "the preserved store", " it would replace"],
-    [realpathSync.native(join(root, ".cotal", "maintenance")), "this root's maintenance folder", ", where it stages its attempt"],
+    [join(maintenance, "attempts"), "this root's maintenance attempt directory", ", where it stages its attempt"],
+    [join(maintenance, basename(versionDir)), "this root's maintenance journal directory", ""],
+    [join(maintenance, basename(lock)), "this root's maintenance lock path", ""],
+    [join(maintenance, basename(reaper)), "this root's maintenance lock recovery path", ""],
   ] as const) {
     if (!contains(path, artifact) && !contains(artifact, path)) continue;
     const relation = artifact === path ? "is" : contains(path, artifact) ? "is inside" : "holds";
@@ -377,48 +358,31 @@ function artifactOverlapRefusal(root: string, artifact: string, store: string): 
   return undefined;
 }
 
-/** An explicit `--store-dir` names the directory a restore creates and owns for its rollback, so it
- *  must not exist yet and its parent must. Either mistake is a usage refusal before anything is
- *  staged. The preserved source itself is the same-path restore. */
+/** An explicit `--store-dir` names the directory a restore creates and owns for its rollback.
+ *  Its parent must resolve to a directory, and the target must be absent unless it is the preserved store. */
 function assertNewStorePath(target: string, source: string): void {
-  const present = (path: string) => {
-    try { lstatSync(path); return true; }
-    catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return false; throw error; }
-  };
+  if (!statSync(dirname(target), { throwIfNoEntry: false })?.isDirectory()) throw missingRestoreStoreParent(target);
   const remedy = "name a --store-dir path that does not exist yet, inside an existing directory; the restore creates it";
-  if (!present(dirname(target)))
-    throw new CommandFailure("refused", "USAGE_INVALID", `the --store-dir parent ${dirname(target)} does not exist; nothing was restored`, { target: { storeDir: target }, remedy });
-  if (target !== source && present(target))
+  if (target !== source && lstatSync(target, { throwIfNoEntry: false }))
     throw new CommandFailure("refused", "USAGE_INVALID", `the --store-dir path ${target} already exists, and a restore creates its store directory itself; nothing was restored`, { target: { storeDir: target }, remedy });
 }
 
-function assertRestoreTargetPath(source: string, artifact: string, attempts: string, target: string): void {
-  const canonicalTarget = canonicalFuturePath(target);
+function assertRestoreTargetPath(source: string, artifact: string, attempts: string, target: string, explicit: boolean): void {
+  const canonicalTarget = explicit ? checkStorePath(target, "restore", () => canonicalFuturePath(target)) : canonicalFuturePath(target);
   if (canonicalTarget !== source && (contains(source, canonicalTarget) || contains(canonicalTarget, source)))
-    throw new Error("restore target must not overlap the preserved source store");
+    throw new CommandFailure("refused", "USAGE_INVALID", "restore target must not overlap the preserved source store. No restore started.", {
+      target: { storeDir: target },
+      remedy: "choose an absent `--store-dir` path outside the preserved source store, under an existing writable directory",
+      selfContained: true,
+    });
   if (contains(attempts, canonicalTarget) || contains(canonicalTarget, attempts))
     throw new Error("restore target must not overlap the maintenance attempt directory");
   if (contains(artifact, canonicalTarget) || contains(canonicalTarget, artifact))
-    throw new Error("restore target must not overlap the backup artifact");
-}
-
-function dataStateFingerprint(input: Readonly<Record<string, unknown>>): string {
-  const state = validateBackupStreamState(input);
-  return JSON.stringify({
-    messages: state.messages,
-    bytes: state.bytes,
-    // An empty stream is its last sequence: the validator admits it only as initial (0 and 0) or
-    // exhausted (last_seq + 1), and nats-server 2.15 restores an initial one as exhausted.
-    first_seq: state.messages === 0 ? state.last_seq + 1 : state.first_seq,
-    last_seq: state.last_seq,
-    deleted: [...(state.deleted ?? [])].sort((a, b) => a - b),
-    num_deleted: state.num_deleted ?? 0,
-  });
-}
-
-function assertRestoredState(stream: string, expected: Readonly<Record<string, unknown>>, actual: Readonly<Record<string, unknown>>): void {
-  if (dataStateFingerprint(expected) !== dataStateFingerprint(actual))
-    throw new Error(`${stream} restored message state does not match the backup manifest`);
+    throw new CommandFailure("refused", "USAGE_INVALID", "restore target must not overlap the backup artifact. No restore started.", {
+      target: { storeDir: target },
+      remedy: "choose an absent `--store-dir` path outside the backup artifact, under an existing writable directory",
+      selfContained: true,
+    });
 }
 
 async function validateManifest(
@@ -436,9 +400,6 @@ async function validateManifest(
   if (manifest.space !== ready.space)
     throw new CommandFailure("refused", "CONFLICT", `backup belongs to space ${JSON.stringify(manifest.space)}, not ${JSON.stringify(ready.space)}; the preserved cut was not changed`, { target: { space: ready.space, backupSpace: manifest.space }, remedy: `restore it on the root that preserved ${JSON.stringify(manifest.space)}, or use a backup of ${JSON.stringify(ready.space)}` });
   if (manifest.mode !== ready.mode) throw new Error(`backup auth mode ${manifest.mode} does not match preserved source mode ${ready.mode}`);
-  if (flags.space && flags.space !== manifest.space) throw new Error(`--space ${JSON.stringify(flags.space)} does not match backup space ${JSON.stringify(manifest.space)}`);
-  if (flags.open && manifest.mode !== "open") throw new Error("--open conflicts with the backup auth mode");
-  if (flags["user-auth"] && manifest.mode !== "user") throw new Error("--user-auth conflicts with the backup auth mode");
   const held = artifactStreams(manifest);
   const selected = flags["restore-only"] === "registry" ? spaceBackupInventory(manifest.space).registry : held;
   const actual = manifest.streams.map((entry) => entry.stream);
@@ -476,283 +437,6 @@ async function validateManifest(
             : "a full backup restores only into a root that still holds the trust state it was taken under: restore it there, or use a full backup taken on this root") + registry,
         });
     }
-  }
-}
-
-type RestorePass = "quarantine" | "target";
-
-/** Smoke hook: `COTAL_SMOKE_FAIL_RESTORE_STREAM=<stream>` fires on any pass; `<pass>:<stream>`
- *  fires only on that pass (so the target pass is reachable after quarantine succeeded), and
- *  `age:<stream>` as the restore applies that stream's recorded age. */
-function smokeFailRestoreStream(pass: RestorePass | "age", stream: string): boolean {
-  const spec = process.env.COTAL_SMOKE_FAIL_RESTORE_STREAM;
-  if (!spec) return false;
-  const separator = spec.indexOf(":");
-  if (separator < 0) return spec === stream;
-  return spec.slice(0, separator) === pass && spec.slice(separator + 1) === stream;
-}
-
-/** The history limit the backup recorded, when `record` is CHAT's, INBOX's, DLV's or DM's. Every
- *  restore check holds that stream at {@link historyLimitRestoreStaging} of it, which keeps the
- *  recorded count and sets no age, so nothing expires while the restored state is compared. */
-function recordedHistoryLimit(space: string, record: BackupManifest["streams"][number]): { kind: HistoryLimitStream; limit: HistoryLimit } | undefined {
-  const kind = historyLimitStreamOf(space, record.stream);
-  return kind && { kind, limit: historyLimitOf(record.config) };
-}
-
-async function restoreStream(
-  broker: IsolatedBroker,
-  space: string,
-  snapshotDir: string,
-  pass: RestorePass,
-  stream: BackupManifest["streams"][number],
-): Promise<void> {
-  const recorded = recordedHistoryLimit(space, stream);
-  const initLogin = await broker.addLogin({
-    profile: "restore",
-    scope: { operation: "initiate", stream: stream.stream },
-  });
-  const init = await connectIsolatedBroker(broker, initLogin);
-  let session;
-  try {
-    session = await initiateStreamRestore(
-      init,
-      space,
-      stream.stream,
-      canonicalBackupStreamConfig(space, stream.stream, recorded && historyLimitRestoreStaging(recorded.kind, recorded.limit)),
-      stream.state as unknown as Readonly<Record<string, unknown>>,
-      RESTORE_TIMEOUT_MS,
-    );
-  } finally {
-    await drainAndClose(init).catch(() => {});
-  }
-  const uploadLogin = await broker.addLogin({
-    profile: "restore",
-    scope: { operation: "upload", stream: stream.stream, deliverSubject: session.deliverSubject },
-  });
-  if (smokeFailRestoreStream(pass, stream.stream))
-    throw new Error(`smoke-injected exact-ID chunk handoff timeout for ${stream.stream} (${pass})`);
-  const upload = await connectIsolatedBroker(broker, uploadLogin);
-  const fd = openSync(join(snapshotDir, stream.snapshot), constants.O_RDONLY);
-  try {
-    const buffer = Buffer.allocUnsafe(CHUNK_BYTES);
-    for (;;) {
-      const count = readSync(fd, buffer, 0, buffer.length, null);
-      if (count === 0) break;
-      await uploadStreamRestoreChunk(upload, session, buffer.subarray(0, count), RESTORE_TIMEOUT_MS);
-    }
-    const restored = await finalizeStreamRestore(upload, session, RESTORE_TIMEOUT_MS);
-    validateCanonicalBackupStreamConfig(space, stream.stream, restored.config, { restoreStagingFor: recorded?.limit });
-    assertRestoredState(stream.stream, stream.state as unknown as Readonly<Record<string, unknown>>, restored.state as unknown as Readonly<Record<string, unknown>>);
-  } finally {
-    closeSync(fd);
-    await drainAndClose(upload).catch(() => {});
-  }
-}
-
-/** Re-snapshot one validated quarantine stream (`no_consumers` native form) into an attempt-owned
- *  pinned file. The real target is instantiated ONLY from these sanitized bytes, never from the
- *  archive-supplied snapshot. */
-async function sanitizeStreamSnapshot(
-  broker: IsolatedBroker,
-  space: string,
-  stream: BackupManifest["streams"][number],
-  destination: string,
-): Promise<void> {
-  const exact = await broker.addLogin((connId) => ({
-    profile: "backup",
-    scope: {
-      operation: "snapshot",
-      stream: stream.stream,
-      deliverSubject: `_INBOX_${connId}.sanitize.${randomUUID().replaceAll("-", "")}`,
-    },
-  }));
-  const deliverSubject = (exact.scope as { profile: "backup"; scope: { deliverSubject: string } }).scope.deliverSubject;
-  const nc = await connectIsolatedBroker(broker, exact);
-  const fd = openSync(destination, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY, 0o600);
-  try {
-    const metadata = await downloadStreamSnapshot(nc, stream.stream, {
-      deliverSubject,
-      timeoutMs: RESTORE_TIMEOUT_MS,
-      checkMessages: true,
-      onChunk: (chunk) => {
-        let offset = 0;
-        while (offset < chunk.byteLength) {
-          const written = writeSync(fd, chunk, offset, chunk.byteLength - offset);
-          if (written <= 0) throw new Error("sanitized snapshot write made no progress");
-          offset += written;
-        }
-      },
-    });
-    validateCanonicalBackupStreamConfig(space, stream.stream, metadata.config, { restoreStagingFor: recordedHistoryLimit(space, stream)?.limit });
-    assertRestoredState(stream.stream, stream.state as unknown as Readonly<Record<string, unknown>>, metadata.state as unknown as Readonly<Record<string, unknown>>);
-    fsyncSync(fd);
-  } finally {
-    closeSync(fd);
-    await drainAndClose(nc).catch(() => {});
-  }
-}
-
-async function validateRestoredStream(
-  broker: IsolatedBroker,
-  space: string,
-  record: BackupManifest["streams"][number],
-  expectedConsumers: number,
-): Promise<void> {
-  const login = await broker.addLogin({
-    profile: "restore",
-    scope: { operation: "validate", stream: record.stream },
-  });
-  const nc = await connectIsolatedBroker(broker, login);
-  try {
-    const response = await nc.request(`$JS.API.STREAM.INFO.${record.stream}`, "{}", { timeout: RESTORE_TIMEOUT_MS });
-    const info = JSON.parse(response.string()) as {
-      config?: Record<string, unknown>;
-      state?: Record<string, unknown> & { consumer_count: number };
-      error?: { description?: string };
-    };
-    if (info.error) throw new Error(info.error.description ?? `${record.stream} validation failed`);
-    if (!info.config || !info.state) throw new Error(`${record.stream} validation returned an incomplete response`);
-    validateCanonicalBackupStreamConfig(space, record.stream, info.config as unknown as Record<string, unknown>, { restoreStagingFor: recordedHistoryLimit(space, record)?.limit });
-    assertRestoredState(record.stream, record.state as unknown as Readonly<Record<string, unknown>>, info.state as unknown as Readonly<Record<string, unknown>>);
-    if (info.state.consumer_count !== expectedConsumers)
-      throw new Error(`${record.stream} has ${info.state.consumer_count} consumers after restore; expected ${expectedConsumers}`);
-  } finally {
-    await drainAndClose(nc).catch(() => {});
-  }
-}
-
-/** Give a restored CHAT, INBOX, DLV or DM stream the age the backup recorded, after the target's last
- *  check, and read it back; a failure fails the restore. No full-state comparison runs after it,
- *  since the broker may expire entries as soon as it lands. A process that dies before this write
- *  leaves the target at age 0, before commit intent, so the attempt rolls back with it. Each login
- *  reaches its one stream alone and only updates it. */
-async function applyRecordedAge(broker: IsolatedBroker, space: string, record: BackupManifest["streams"][number]): Promise<void> {
-  const recorded = recordedHistoryLimit(space, record);
-  if (!recorded || recorded.limit.maxAgeMs === 0) return;
-  if (smokeFailRestoreStream("age", record.stream)) throw new Error(`smoke-injected failure applying the recorded age of ${record.stream}`);
-  const login = await broker.addLogin({ profile: "infrastructure", streams: [record.stream], updateStreams: [record.stream] });
-  const nc = await connectIsolatedBroker(broker, login);
-  try {
-    await setHistoryLimit(await jetstreamManager(nc), space, recorded.kind, recorded.limit, historyLimitRestoreStaging(recorded.kind, recorded.limit));
-  } finally {
-    await drainAndClose(nc).catch(() => {});
-  }
-}
-
-async function recreateCheckpoint(
-  broker: IsolatedBroker,
-  space: string,
-  checkpoint: PersistentConsumerCheckpoint,
-): Promise<void> {
-  const expected = consumerConfigFromCheckpoint(space, checkpoint);
-  const login = await broker.addLogin({
-    profile: "restore",
-    scope: { operation: "checkpoint", checkpoint },
-  });
-  const nc = await connectIsolatedBroker(broker, login);
-  try {
-    const info = await recreateConsumerCheckpoint(nc, space, checkpoint, RESTORE_TIMEOUT_MS);
-    if (info.config.opt_start_seq !== expected.opt_start_seq || info.config.deliver_policy !== expected.deliver_policy)
-      throw new Error(`${checkpoint.stream}/${checkpoint.name} did not preserve its conservative checkpoint floor`);
-    // A fresh durable can report a zero ACK floor or effectiveStart - 1. The start policy
-    // above preserves the replay position in either case. No delivery or pending ACK may
-    // have advanced the new consumer, and no other stream floor is accepted.
-    const bornFloor = Math.max(expected.opt_start_seq ?? 1, checkpoint.streamState.first_seq || 1) - 1;
-    const floor = info.ack_floor.stream_seq;
-    if ((floor !== 0 && floor !== bornFloor) || info.ack_floor.consumer_seq !== 0 ||
-        info.delivered?.consumer_seq !== 0 || info.num_ack_pending !== 0)
-      throw new Error(`${checkpoint.stream}/${checkpoint.name} was not recreated as an unused checkpoint with stream ACK floor 0 or ${bornFloor}`);
-  } finally {
-    await drainAndClose(nc).catch(() => {});
-  }
-}
-
-async function createOmittedInfrastructure(
-  broker: IsolatedBroker,
-  space: string,
-  restored: readonly string[],
-): Promise<void> {
-  const inventory = spaceBackupInventory(space);
-  // The workflow stores are endpoint stores: createEndpointStreams below creates the ones the
-  // artifact did not hold and verifies the restored ones.
-  const workflow = inventory.backedUp.filter((entry) => entry.class === "workflow").map((entry) => entry.name);
-  const create = inventory.full.filter((name) => !restored.includes(name) && !workflow.includes(name));
-  const excluded = [...workflow, ...inventory.excluded.map((entry) => entry.name)];
-  const login = await broker.addLogin({
-    profile: "infrastructure",
-    streams: [...create, ...excluded],
-    // createEndpointStreams hardens each fresh authority store with one STREAM.UPDATE right after
-    // KVM creates it. Core names those stores in one list, so this login and the provisioner cannot
-    // disagree about which they are; the update grant stays separate from the wider create/info
-    // set so restored message streams remain immutable.
-    updateStreams: hardenedAuthorityStreamNames(space),
-  });
-  const nc = await connectIsolatedBroker(broker, login);
-  try {
-    const jsm = await jetstreamManager(nc);
-    for (const stream of create) await jsm.streams.add(canonicalBackupStreamConfig(space, stream));
-    const kvm = new Kvm(nc);
-    await kvm.create(presenceBucket(space), { ttl: 6_000, storage: PRESENCE_STORAGE });
-    const membership = membershipStoreDefinition(space);
-    await kvm.create(membership.bucket, membership.createOptions);
-    const anycast = anycastStoreDefinition(space);
-    await kvm.create(anycast.bucket, anycast.createOptions);
-    await kvm.create(deliveryBucket(space), { ttl: LEASE_TTL_MS });
-    await kvm.create(managerBucket(space), { ttl: MANAGER_LEASE_TTL_MS });
-    // The other endpoint stores are nonportable control state. Recreate them empty, with any workflow
-    // store the artifact did not hold, through the same production seam as ordinary space setup,
-    // which verifies the restored workflow stores.
-    await createEndpointStreams(jsm, kvm, space);
-    // The artifact Object Store is EXCLUDED from the backup artifact, which does not mean restore
-    // ignores it: the assertion below covers `excluded` too, so a restored space must come back
-    // with an EMPTY store rather than none. Excluding a stream and forgetting to recreate it is the
-    // failure that only appears at restore - the one moment nobody is watching for a new defect.
-    // Create-or-verify (not a bare create): a restore target that already holds a drifted store must
-    // refuse rather than adopt it, which matters more here than at setup - a restore is exactly when
-    // an operator is least able to tell an inherited config from a fresh one.
-    await ensureArtifactStore(nc, space);
-    for (const stream of [...create, ...excluded]) await jsm.streams.info(stream);
-    // The normal listener is exposed only over a complete space: assert the exact stream inventory
-    // (restored + created + excluded transient) before the coordinator may write commit intent.
-    const names: string[] = [];
-    for (let offset = 0;;) {
-      const message = await nc.request("$JS.API.STREAM.NAMES", JSON.stringify({ offset }), { timeout: RESTORE_TIMEOUT_MS });
-      const page = JSON.parse(message.string()) as { streams?: string[]; total?: number; offset?: number; error?: { description?: string } };
-      if (page.error) throw new Error(`post-restore inventory listing failed: ${page.error.description ?? "JetStream error"}`);
-      if (!Number.isSafeInteger(page.total) || !Number.isSafeInteger(page.offset))
-        throw new Error("post-restore inventory listing returned an invalid page");
-      names.push(...(page.streams ?? []));
-      const next = page.offset! + (page.streams?.length ?? 0);
-      if (next >= page.total!) break;
-      if (next <= offset) throw new Error("post-restore inventory pagination made no progress");
-      offset = next;
-    }
-    validateSpaceBackupInventory(space, names);
-  } finally {
-    await drainAndClose(nc).catch(() => {});
-  }
-}
-
-async function restoreAndValidate(
-  broker: IsolatedBroker,
-  space: string,
-  staged: StagedArtifact,
-  snapshotDir: string,
-  pass: RestorePass,
-  onlyRegistry: boolean,
-  checkpoints: readonly PersistentConsumerCheckpoint[],
-  completeInfrastructure: boolean,
-): Promise<void> {
-  const wanted = onlyRegistry ? spaceBackupInventory(space).registry : artifactStreams(staged.manifest);
-  for (const name of wanted) await restoreStream(broker, space, snapshotDir, pass, staged.manifest.streams.find((entry) => entry.stream === name)!);
-  for (const name of wanted)
-    await validateRestoredStream(broker, space, staged.manifest.streams.find((entry) => entry.stream === name)!, 0);
-  if (completeInfrastructure) await createOmittedInfrastructure(broker, space, wanted);
-  if (!onlyRegistry) for (const checkpoint of checkpoints) await recreateCheckpoint(broker, space, checkpoint);
-  if (!onlyRegistry) for (const name of wanted) {
-    const count = checkpoints.filter((checkpoint) => checkpoint.stream === name).length;
-    await validateRestoredStream(broker, space, staged.manifest.streams.find((entry) => entry.stream === name)!, count);
   }
 }
 
@@ -823,22 +507,28 @@ export function restoreComposition(space: string, restored: readonly string[], m
 const USER_MODE_NO_RUNS = "A user-mode backup holds no workflow runs, because the records store's lifecycle heads name credential rows in the auth store, which a backup does not carry; the workflow run stores were recreated empty.";
 const OLDER_FORMAT_NO_RUNS = "This backup was made before full backups held workflow runs, so it holds none; the workflow run stores were recreated empty.";
 
-/** The step that moves a full restore attempt on from `state`, for a refusal to name. A committed or
- *  degraded attempt goes forward through bare `up`, which continues it. `leftOut` is what the restore
- *  left only in its previous store ({@link restoreLeftOut}). */
-export function restoreNextStep(state: string, attemptId: string, leftOut?: string): string {
-  if (state === "restore-ready") return `roll the pre-commit attempt back with \`cotal backup recover ${attemptId} --yes\`; preview it first with --dry-run`;
-  // That restore's cleanup also deletes the store that holds the only copy of what it left out, so
-  // it runs only with --discard-history.
-  if (state === "active" && leftOut) return `the restore completed: \`cotal backup cleanup-fallback ${attemptId} --yes --discard-history\` retires its journal and deletes the previous store, the only copy of the ${leftOut} it left out; preview it first with --dry-run`;
-  if (state === "active") return `the restore completed: retire its journal with \`cotal backup cleanup-fallback ${attemptId} --yes\`; preview it first with --dry-run`;
-  return `recover forward with bare \`cotal up\` from this root, which continues attempt ${attemptId}; fallback cleanup follows once it is active`;
+/** The step that moves a restore attempt on from `state`. A committed or degraded attempt goes
+ *  forward through bare `up`. A preview can carry an explicit discard flag without deleting data.
+ *  `cleanupRoot` is the project to enter when an active restore was started from another root. */
+export function restoreNextStep(state: string, attemptId: string, journal?: Parameters<typeof restoreLeftOut>[0], { cleanupRoot, cmd = "cotal", previewDiscard = false }: { cleanupRoot?: string | undefined; cmd?: string; previewDiscard?: boolean } = {}): string {
+  if (state === "restore-ready") return `roll the pre-commit attempt back with ${codeSpan(`${cmd} backup recover ${attemptId} --yes`)}; preview it first with --dry-run`;
+  if (state === "active") {
+    const leftOut = journal?.restore.previousSource ? restoreLeftOut(journal) : undefined;
+    const cleanup = `${cleanupRoot ? `cd ${shellPath(cleanupRoot)} && ` : ""}${cmd} backup cleanup-fallback ${attemptId}`;
+    if (leftOut || previewDiscard) {
+      const preview = codeSpan(`${cleanup} --dry-run${previewDiscard ? " --discard-history" : ""}`);
+      const history = leftOut ? `. Deleting the previous store requires --discard-history and removes the only copy of the ${leftOut} it left out.` : "";
+      return `the restore completed: preview cleanup with ${preview}${history}`;
+    }
+    const note = journal?.restore.selection === "registry" ? ". Chat and DM history and workflow runs start empty after a registry-only restore." : "";
+    return `the restore completed: retire its journal with ${codeSpan(`${cleanup} --yes`)}; preview it first with --dry-run${note}`;
+  }
+  return `recover forward with bare ${codeSpan(`${cmd} up`)} from this root, which continues attempt ${attemptId}; fallback cleanup follows once it is active`;
 }
 
 /** A ready journal's next step. Resume and backup use the store at its recorded path, so a folder
  *  moved after the cut is told to move back, and a missing store is named. */
-function readyNextStep(root: string, source: Parameters<typeof preservedSourceState>[1]): string {
-  const where = preservedSourceState(root, source);
+function readyNextStep(source: StoreIdentity, where: ReturnType<typeof preservedSourceState>): string {
   if (where.state === "moved") return `this folder was moved from ${where.recordedRoot} after its state was preserved: move it back there, then create a backup or resume with bare \`${displayCmd()} up\``;
   if (where.state === "missing") return `the preserved store recorded at ${source.path} is missing: if this folder was moved, move it back; if the store is lost, restore a backup with \`${displayCmd()} backup restore <dir> --accept-missing-source\``;
   return `create a backup with \`${displayCmd()} backup create <dir>\`, or resume with bare \`${displayCmd()} up\``;
@@ -855,10 +545,13 @@ function claimedNextStep(root: string, claim: MaintenanceClaim): string {
 
 /** The attempt a root's maintenance journal holds and the step that moves it on, as `cotal status`
  *  shows it and a command that refuses over that journal names it. */
-export function maintenanceNextStep(root: string, journal: NonNullable<ReturnType<typeof readMaintenanceJournal>>): { attemptId: string; next: string | null } {
+export function maintenanceNextStep(root: string, journal: NonNullable<ReturnType<typeof readMaintenanceJournal>>): { attemptId: string; next: string | null; sourceMissing?: true } {
   const attemptId = "restore" in journal ? journal.restore.attemptId : journal.state === "claimed" ? journal.claim.attemptId : journal.cut.attemptId;
-  const next = "restore" in journal ? restoreNextStep(journal.state, attemptId, restoreLeftOut(journal))
-    : journal.state === "ready" ? readyNextStep(root, journal.source)
+  if (journal.state === "ready") {
+    const source = preservedSourceState(root, journal.source);
+    return { attemptId, next: readyNextStep(journal.source, source), ...(source.state === "missing" ? { sourceMissing: true } : {}) };
+  }
+  const next = "restore" in journal ? restoreNextStep(journal.state, attemptId, journal)
     : journal.state === "claimed" ? claimedNextStep(root, journal.claim) : null;
   return { attemptId, next };
 }
@@ -880,17 +573,24 @@ export function heldClaim(root: string, attemptId: string, claim: { readonly dea
   return new CommandFailure("refused", "LIFECYCLE_BLOCKED", `${command} is refused: ${kind} attempt ${attemptId} holds this root until ${deadline}, and ${holder}; nothing was changed`, { target: { root, attemptId, deadline, holderPid: coordinator.pid }, remedy });
 }
 
-/** What a restore attempt left only in the store it set aside ({@link restoreLeftOut}), whether that
- *  includes what was written after its artifact ({@link restoreReplacedNewerCut}) or another
- *  account's streams ({@link restoreOtherAccounts}), and that store, as the root's journal records
- *  them. Undefined when it left nothing out or the journal no longer names the attempt. */
-export function restoreOnlyCopy(root: string, attemptId: string): { leftOut: string; newer: boolean; otherAccounts: string[]; rolledBack: ReturnType<typeof restoreRolledBackRuns>; previousStore?: string } | undefined {
+interface RestoreOnlyCopy {
+  leftOut: string;
+  newer: boolean;
+  otherAccounts: string[];
+  rolledBack: ReturnType<typeof restoreRolledBackRuns>;
+  previousStore?: string;
+}
+
+/** The history evidence recorded for this attempt, including what remains only in the fallback. */
+export function restoreHistory(root: string, attemptId: string): { onlyCopy?: RestoreOnlyCopy; emptyNote?: string } {
   try {
     const journal = readMaintenanceJournal(root);
-    if (!journal || !("restore" in journal) || journal.restore.attemptId !== attemptId) return undefined;
+    if (!journal || !("restore" in journal) || journal.restore.attemptId !== attemptId) return {};
     const leftOut = restoreLeftOut(journal);
-    return leftOut ? { leftOut, newer: restoreReplacedNewerCut(journal), otherAccounts: restoreOtherAccounts(journal), rolledBack: restoreRolledBackRuns(journal), ...(journal.restore.previousSource ? { previousStore: journal.restore.previousSource.identity.path } : {}) } : undefined;
-  } catch { return undefined; }
+    const onlyCopy = leftOut ? { leftOut, newer: restoreReplacedNewerCut(journal), otherAccounts: restoreOtherAccounts(journal), rolledBack: restoreRolledBackRuns(journal), ...(journal.restore.previousSource ? { previousStore: journal.restore.previousSource.identity.path } : {}) } : undefined;
+    const emptyNote = "launch" in journal && journal.launch.previousCutNewer === false ? "The previous store held no additional backed-up state for the restored space." : undefined;
+    return { onlyCopy, emptyNote };
+  } catch { return {}; }
 }
 
 /** What a restore over a newer cut says about each run it rolled back ({@link restoreRolledBackRuns}):
@@ -914,12 +614,13 @@ export function rolledBackNotes(rolledBack: ReturnType<typeof restoreRolledBackR
  *  that what was written after the artifact is not restored. One whose replaced store also held
  *  another account's streams says those are not restored. The store it set aside holds the only
  *  copy, which cleanup-fallback deletes only with `--discard-history`. */
-export function leftOutNotes(attemptId: string, selection: string, onlyCopy: ReturnType<typeof restoreOnlyCopy>): string[] {
+export function leftOutNotes(attemptId: string, selection: string, onlyCopy: RestoreOnlyCopy | undefined, cleanupRoot?: string, cmd = "cotal"): string[] {
   if (!onlyCopy) return [];
   const accounts = onlyCopy.otherAccounts;
-  const kept = onlyCopy.previousStore ? `The previous store at ${onlyCopy.previousStore} holds the only copy of ${selection === "registry" && !accounts.length ? "them" : `the ${onlyCopy.leftOut}`}. \`cotal backup cleanup-fallback ${attemptId}\` deletes it only with --discard-history.` : undefined;
+  const cleanup = codeSpan(`${cleanupRoot ? `cd ${shellPath(cleanupRoot)} && ` : ""}${cmd} backup cleanup-fallback ${attemptId}`);
+  const kept = onlyCopy.previousStore ? `The previous store at ${onlyCopy.previousStore} holds the only copy of ${selection === "registry" && !accounts.length ? "them" : `the ${onlyCopy.leftOut}`}. ${cleanup} deletes it only with --discard-history.` : undefined;
   const other = accounts.length ? [`The store this restore replaced also held streams of ${accounts.length === 1 ? "account" : "accounts"} ${accounts.join(", ")}, which this backup does not hold, so they are not restored.`] : [];
-  if (selection !== "registry") return [...(onlyCopy.newer ? ["This backup was made before the state it replaced was preserved, so the chat and DM history and workflow runs written after it are not restored.", ...rolledBackNotes(onlyCopy.rolledBack)] : []), ...other, ...(kept ? [kept] : [])];
+  if (selection !== "registry") return [...(onlyCopy.newer ? ["This backup was made before the state it replaced was preserved. Later changes to channel settings, access grants, membership, history limits, message history, and workflow runs are not restored.", ...rolledBackNotes(onlyCopy.rolledBack)] : []), ...other, ...(kept ? [kept] : [])];
   return ["A registry-only restore brings back channel settings only, so chat and DM history and workflow runs start empty.", ...other, kept ?? "No previous store was retained."];
 }
 
@@ -929,20 +630,60 @@ export function heldRestoreAttempt(root: string): { attemptId: string; journalSt
   let journal: ReturnType<typeof readMaintenanceJournal>;
   try { journal = readMaintenanceJournal(root); } catch { return undefined; }
   if (!journal || !("restore" in journal)) return undefined;
-  return { attemptId: journal.restore.attemptId, journalState: journal.state, remedy: restoreNextStep(journal.state, journal.restore.attemptId, restoreLeftOut(journal)) };
+  return { attemptId: journal.restore.attemptId, journalState: journal.state, remedy: restoreNextStep(journal.state, journal.restore.attemptId, journal) };
 }
 
 /** A root with no stopped preserved cut to restore into. Nothing was staged, moved or claimed. */
 function notRestorable(root: string, journal: ReturnType<typeof readMaintenanceJournal>): CommandFailure {
-  const remedy = !journal ? "restore needs the stopped preserved cut from `cotal down --preserve-state` on this root"
-    : "restore" in journal ? restoreNextStep(journal.state, journal.restore.attemptId, restoreLeftOut(journal))
+  // `down --preserve-state` only cuts a running stack, so a stack a plain `cotal down` stopped is
+  // started first (#7330).
+  if (!journal) {
+    const prepared = preparedSpaceAt(root);
+    const remedy = prepared && !retainedLegacyBroker(root) && controllerStackApplies(root, prepared.space, {})
+      ? "run `cotal space show` to inspect this prepared space. Its first `cotal up` uses the stack controller, which does not support preservation or restore in this release"
+      : "restore needs the stopped preserved cut from `cotal down --preserve-state` on this root, and a plain `cotal down` records none: start a stopped stack with `cotal up` first, then stop it with `cotal down --preserve-state` and run the restore again";
+    return new CommandFailure("refused", "LIFECYCLE_BLOCKED", "restore requires stable ready maintenance state, found none", { target: { root }, remedy });
+  }
+  const remedy = "restore" in journal ? restoreNextStep(journal.state, journal.restore.attemptId, journal)
     : "this root's maintenance attempt must finish first; check it with `cotal status`";
-  return new CommandFailure("refused", "LIFECYCLE_BLOCKED", `restore requires stable ready maintenance state, found ${journal?.state ?? "none"}`, { target: { root, ...(journal ? { state: journal.state } : {}) }, remedy });
+  return new CommandFailure("refused", "LIFECYCLE_BLOCKED", `restore requires stable ready maintenance state, found ${journal.state}`, { target: { root, state: journal.state }, remedy });
 }
 
-/** `progress` receives the seat admission lines. `up --restore` leaves them on stdout; `backup restore`
- *  routes them to stderr so its receipt stays the only stdout document. */
-export async function prepareRestore(root: string, flags: RestoreFlags, progress?: (line: string) => void): Promise<PreparedRestore> {
+type RestoreLaunch = Pick<PreparedRestore, "root" | "targetPath" | "space" | "mode" | "server" | "host" | "runtime" | "maxFileStore">;
+
+/** Check the named artifact without taking a lock or staging it. */
+export function restoreArtifactPath(root: string, dir: string, source: string): string {
+  const named = resolve(dir);
+  const missing = missingBackupPath(named);
+  if (missing) throw new CommandFailure("refused", "TARGET_NOT_FOUND", `${missingBackupPathText(named, missing)}; nothing was restored`, { target: { root, directory: named, folder: dirname(named), missing }, remedy: "name an existing backup artifact folder; `cotal backup verify <dir>` checks one before a restore" });
+  const path = realpathSync.native(named);
+  const problem = artifactOverlapRefusal(root, path, source) ?? notAnArtifactRefusal(root, path, "nothing was restored", { root });
+  if (problem) throw problem;
+  return path;
+}
+
+/** The launch that will open the restored store, derived without creating it. */
+export function restoreLaunch(root: string, flags: RestoreFlags, journal: MaintenanceReadyRecord) {
+  const controller = cutController(journal.cut);
+  const defaultStore = join(root, ".cotal", "nats");
+  const source = preservedSourceState(root, journal.source);
+  const targetPath = resolve(flags["store-dir"] ?? (controller || source.state === "missing" || linksTo(defaultStore, journal.source.path) ? journal.source.path : defaultStore));
+  const resume = readMaintenanceResumeDocument(root, journal.resume);
+  const agents = (resume.inventory as { agents?: Array<{ launch?: { runtime?: unknown } }> }).agents ?? [];
+  const runtimes = [...new Set(agents.map((agent) => agent.launch?.runtime).filter((value): value is string => typeof value === "string"))];
+  if (runtimes.length > 1) throw new Error(`resume inventory requires multiple runtimes: ${runtimes.join(", ")}`);
+  const launch = resume.launch as { server?: unknown; maxFileStore?: unknown } | undefined;
+  const server = canonicalServerEndpoint(controller ? journal.cut.launch.server : flags.server ?? (typeof launch?.server === "string" ? launch.server : "nats://127.0.0.1:4222"));
+  const host = (!controller ? flags.host : undefined) ?? new URL(server).hostname;
+  const runtime = flags.runtime ?? runtimes[0] ?? "pty";
+  const maxFileStore = parsePositiveIntegerFlag("--max-file-store", flags["max-file-store"])
+    ?? (controller ? undefined : journaledMaxFileStore(launch?.maxFileStore));
+  return { launch: { root, targetPath, space: journal.space, mode: journal.mode, server, host, runtime, ...(maxFileStore !== undefined ? { maxFileStore } : {}) } satisfies RestoreLaunch, resume, preservedRuntime: runtimes[0], source };
+}
+
+/** Recheck the validated launch under the operation lock, before staging. `progress` receives the
+ *  seat admission lines, which `backup restore` routes to stderr to keep stdout for its receipt. */
+export async function prepareRestore(root: string, flags: RestoreFlags, validateLaunch?: (launch: RestoreLaunch, controller: boolean) => Promise<void>, progress?: (line: string) => void): Promise<PreparedRestore> {
   const attemptId = `restore-${randomUUID()}`;
   const serverNonce = randomUUID().replaceAll("-", "");
   const serverName = `${attemptId}-${serverNonce}`;
@@ -955,16 +696,7 @@ export async function prepareRestore(root: string, flags: RestoreFlags, progress
   const recorded = readMaintenanceJournal(root);
   if (!recorded) throw notRestorable(root, undefined);
   // A path that names nothing is refused here too, saying whether its folder or the artifact is missing.
-  const named = resolve(flags.restore);
-  const missing = missingBackupPath(named);
-  if (missing) throw new CommandFailure("refused", "TARGET_NOT_FOUND", `${missingBackupPathText(named, missing)}; nothing was restored`, { target: { root, directory: named, folder: dirname(named), missing }, remedy: "name an existing backup artifact folder; `cotal backup verify <dir>` checks one before a restore" });
-  // So is a path that cannot be an artifact, saying what it is: one that is, holds or sits inside
-  // the store the restore replaces or the folder it stages in, a file, or a folder no create wrote.
-  const namedPath = realpathSync.native(named);
-  const overlap = artifactOverlapRefusal(root, namedPath, recorded.source.path);
-  if (overlap) throw overlap;
-  const notArtifact = notAnArtifactRefusal(root, namedPath, "nothing was restored", { root });
-  if (notArtifact) throw notArtifact;
+  restoreArtifactPath(root, flags.restore, recorded.source.path);
   let lock = acquireStackOperationLock(root, "restore");
   let staged: StagedArtifact | undefined;
   let transitioned = false;
@@ -985,6 +717,7 @@ export async function prepareRestore(root: string, flags: RestoreFlags, progress
   };
   // From here an interrupt leaves whatever this attempt journaled; the notice names it and its recovery.
   const releaseNotice = noticeOnInterrupt(() => restoreInterruptNotice(root, attemptId));
+  let handedOff = false;
   try {
     let journal = readMaintenanceJournal(root);
     if (journal?.state === "restore-ready") {
@@ -996,9 +729,10 @@ export async function prepareRestore(root: string, flags: RestoreFlags, progress
       journal = rollbackRestoreWithBroker(lock, { unrecordedOwnersDead });
     }
     if (!journal || journal.state !== "ready") throw notRestorable(root, journal);
+    const { launch, resume, preservedRuntime, source } = restoreLaunch(root, flags, journal);
+    const { server: effectiveServer, host: effectiveHost, runtime: effectiveRuntime, maxFileStore } = launch;
     // A preserved store gone from its recorded path either moved with this folder, which no restore
     // here may replace, or is lost, which only --accept-missing-source restores over.
-    const source = preservedSourceState(root, journal.source);
     if (source.state === "moved") throw movedFolderRefusal(root, journal.space, journal.source.path, source, "run the restore");
     if (source.state === "missing" && !flags["accept-missing-source"])
       throw new CommandFailure("refused", "TARGET_NOT_FOUND", `the preserved store recorded at ${journal.source.path} is missing; the restore did not start`, { target: { root, space: journal.space, recordedStore: journal.source.path }, remedy: "if this folder was moved, move it back so that path exists again; pass --accept-missing-source only after verifying disaster recovery intent" });
@@ -1013,12 +747,17 @@ export async function prepareRestore(root: string, flags: RestoreFlags, progress
         throw new CommandFailure("refused", "USAGE_INVALID", "a controller restore takes its broker address from the cut; --host is refused", { target: { root, space: journal.space } });
       assertControllerRestorable(root, journal, controller, flags["store-dir"]);
     }
+    await validateLaunch?.(launch, Boolean(controller));
+    if (flags.space && flags.space !== journal.space)
+      throw new CommandFailure("refused", "USAGE_INVALID", `--space ${JSON.stringify(flags.space)} does not match the preserved space ${JSON.stringify(journal.space)}; nothing was restored`, { remedy: "omit --space to use the preserved space" });
+    const wrongMode = flags.open && journal.mode !== "open" ? "--open" : flags["user-auth"] && journal.mode !== "user" ? "--user-auth" : undefined;
+    if (wrongMode)
+      throw new CommandFailure("refused", "USAGE_INVALID", `${wrongMode} conflicts with the preserved auth mode; nothing was restored`, { remedy: `omit ${wrongMode} to use the preserved auth mode` });
     const auth = journal.mode === "open" ? undefined : await getSpaceAuth(workspaceSecretStore(root), journal.space);
     if (journal.mode !== "open") validateSpaceAuth(auth, journal.space);
     // Compute user-provider continuity before staging too. The later manifest comparison reuses this
     // value, so malformed trust cannot create an attempt target or move the preserved source first.
     const currentAuthority = await authorityFingerprint(root, journal.space, journal.mode);
-    const stageParent = ensurePrivateAttemptsDir(root).path;
     const artifactPath = realpathSync.native(resolve(flags.restore));
     // Again under the lock: a link in the path may name another folder now, and the journal is reread.
     const lockedOverlap = artifactOverlapRefusal(root, artifactPath, journal.source.path);
@@ -1026,13 +765,13 @@ export async function prepareRestore(root: string, flags: RestoreFlags, progress
     // The cut records its source by real path, so a default .cotal/nats that links there is that
     // source and is restored in place, not taken for an alternate target. A missing source is rebuilt
     // where the cut records it, the only target its disaster restore takes (#7049).
-    const defaultStore = join(root, ".cotal", "nats");
     const rebuild = source.state === "missing";
-    targetPath = resolve(flags["store-dir"] ?? (controller || rebuild || linksTo(defaultStore, journal.source.path) ? journal.source.path : defaultStore));
+    targetPath = launch.targetPath;
     if (rebuild && targetPath !== journal.source.path)
       throw new CommandFailure("refused", "USAGE_INVALID", `a restore over a missing preserved store rebuilds it at its recorded path ${journal.source.path}, and --store-dir names another; the restore did not start`, { target: { root, space: journal.space, recordedStore: journal.source.path }, remedy: "omit --store-dir, or pass the recorded path" });
-    if (flags["store-dir"] !== undefined) assertNewStorePath(targetPath, journal.source.path);
-    assertRestoreTargetPath(journal.source.path, artifactPath, stageParent, targetPath);
+    const explicitStore = flags["store-dir"] !== undefined;
+    if (explicitStore) checkStorePath(targetPath, "restore", () => assertNewStorePath(launch.targetPath, journal.source.path));
+    assertRestoreTargetPath(journal.source.path, artifactPath, join(root, ".cotal", "maintenance", "attempts"), targetPath, explicitStore);
     // A restore into the preserved store's own path moves that store aside whole, so a file in it that
     // no Cotal store writes would move with it; it is refused before anything moves. A store restored
     // elsewhere stays where it is, and its cleanup refuses instead.
@@ -1040,25 +779,27 @@ export async function prepareRestore(root: string, flags: RestoreFlags, progress
       const foreign = oldStoreForeignEntries(journal.source.path);
       if (foreign.length) throw foreignEntriesRefusal(journal.source.path, foreign, "the preserved store", "a restore into it moves that store aside whole, so nothing was restored", "the restore", { root, space: journal.space });
     }
-    // The journal is ready with no live claim, and the artifact/target are proven disjoint from
-    // the attempts directory: any attempts-dir content is dead-attempt residue.
-    sweepAttemptResidue(root);
+    const assertRuntime = (selection: string) => {
+      if (flags["restore-only"] !== "registry" && selection !== "registry" && flags.runtime && preservedRuntime && flags.runtime !== preservedRuntime)
+        throw new CommandFailure("refused", "USAGE_INVALID", `--runtime ${JSON.stringify(flags.runtime)} contradicts the preserved agent runtime ${JSON.stringify(preservedRuntime)}; nothing was restored`, { remedy: "omit --runtime or restore only the registry with --restore-only registry" });
+    };
+    let stageParent: string;
     let artifact: StagedArtifact;
     // A faulty artifact is refused before anything moves, naming the file and fault verify names.
-    try { artifact = stageArtifact(artifactPath, stageParent); }
-    catch (error) {
+    try {
+      if (flags["restore-only"] !== "registry" && flags.runtime && preservedRuntime && flags.runtime !== preservedRuntime)
+        assertRuntime(inspectBackupArtifact(artifactPath, false).selection);
+      stageParent = ensurePrivateAttemptsDir(root).path;
+      // The journal is ready with no live claim, and the artifact/target are disjoint from attempts.
+      sweepAttemptResidue(root);
+      artifact = stageArtifact(artifactPath, stageParent);
+    } catch (error) {
       if (!(error instanceof ArtifactFileFault)) throw error;
-      throw new CommandFailure("refused", "SCHEMA_INVALID", `${error.message}; nothing was restored`, { target: { root, directory: artifactPath, file: error.file, fault: error.fault }, remedy: "this copy cannot be restored as it is: check it with `cotal backup verify`, or restore another copy of the same artifact; the preserved cut is unchanged" });
+      throw artifactReadRefusal(error, artifactPath, root) ?? new CommandFailure("refused", "SCHEMA_INVALID", `${error.message}; nothing was restored`, { target: { root, directory: artifactPath, file: error.file, fault: error.fault }, remedy: `this copy cannot be restored as it is: check it with ${codeSpan(`cotal backup verify ${shellPath(artifactPath)}`)}, or restore another copy of the same artifact; the preserved cut is unchanged` });
     }
     staged = artifact;
     await validateManifest(artifact.manifest, flags, journal, currentAuthority);
     const checkpoints = readStagedCheckpoints(artifact);
-    const resume = readMaintenanceResumeDocument(root, journal.resume);
-    const inventoryAgents = (resume.inventory as { agents?: Array<{ launch?: { runtime?: unknown } }> }).agents ?? [];
-    const inventoryRuntimes = [...new Set(inventoryAgents
-      .map((agent) => agent.launch?.runtime)
-      .filter((value): value is string => typeof value === "string"))];
-    if (inventoryRuntimes.length > 1) throw new Error(`resume inventory requires multiple runtimes: ${inventoryRuntimes.join(", ")}`);
     // The partial selection is a property of the artifact, not only of the flag: a registry-only
     // artifact restored without --restore-only registry must still create omitted infrastructure.
     const onlyRegistry = flags["restore-only"] === "registry" || artifact.manifest.selection === "registry";
@@ -1066,9 +807,7 @@ export async function prepareRestore(root: string, flags: RestoreFlags, progress
     const selection = onlyRegistry ? "registry" as const : "full" as const;
     // Retained agents relaunch under their preserved runtime; a contradicting override must fail
     // in preflight, before any mutation or listener exposure.
-    if (!onlyRegistry && flags.runtime && inventoryRuntimes[0] && flags.runtime !== inventoryRuntimes[0])
-      throw new Error(`--runtime ${flags.runtime} contradicts the preserved agent runtime ${inventoryRuntimes[0]}; omit it or restore registry-only`);
-    const effectiveRuntime = flags.runtime ?? inventoryRuntimes[0] ?? "pty";
+    assertRuntime(artifact.manifest.selection);
     const wanted = onlyRegistry ? spaceBackupInventory(journal.space).registry : artifactStreams(artifact.manifest);
     for (const checkpoint of onlyRegistry ? [] : checkpoints) {
       if (!wanted.includes(checkpoint.stream)) throw new Error(`checkpoint ${checkpoint.stream}/${checkpoint.name} is outside the restored selection`);
@@ -1080,14 +819,12 @@ export async function prepareRestore(root: string, flags: RestoreFlags, progress
         first_seq: snapshotState.first_seq,
         last_seq: snapshotState.last_seq,
       })) throw new Error(`checkpoint ${checkpoint.stream}/${checkpoint.name} does not match its snapshot stream state`);
-      consumerConfigFromCheckpoint(journal.space, checkpoint);
+      consumerConfigFromCheckpoint(journal.space, checkpoint, artifact.manifest.mode === "open");
     }
     const authorityBeforeMutation = await authorityFingerprint(root, journal.space, journal.mode);
     if (JSON.stringify(authorityBeforeMutation) !== JSON.stringify(currentAuthority))
       throw new Error("current trust state changed during restore validation");
     await validateManifest(artifact.manifest, flags, journal, authorityBeforeMutation);
-    const resumeLaunch = (resume.launch ?? {}) as { server?: unknown };
-    const effectiveServer = canonicalServerEndpoint(controller ? journal.cut.launch.server : flags.server ?? (typeof resumeLaunch.server === "string" ? resumeLaunch.server : "nats://127.0.0.1:4222"));
     // The restored broker binds this address after commit intent, so another listener there would
     // leave the attempt degraded. It is refused here, before anything moves, as backup create does.
     await assertEndpointUnreachable(effectiveServer).catch((error: Error) => {
@@ -1210,19 +947,20 @@ export async function prepareRestore(root: string, flags: RestoreFlags, progress
     releaseMaintenanceLock(lock);
     lock = undefined as never;
     await restoreAndValidate(broker, journal.space, artifact, sanitized!.path, "target", onlyRegistry, checkpoints, true);
-    // A cut preserved after this artifact was made holds history the artifact lacks, and the store
-    // this restore sets aside keeps its only copy. The runs it rolled back are named from the step
-    // journals of both stores: the restored one here, the set-aside one from a private clone.
+    // A newer cut can hold state the artifact lacks. Inspect the set-aside store on a private
+    // clone before waiving consent, and use both brokers' journals to name rolled-back runs.
     const previousCutNewer = sourceExists && Date.parse(journal.cut.intentAt) > Date.parse(artifact.manifest.createdAt);
     const restoredRuns = previousCutNewer && wanted.includes(wfjStreamName(journal.space)) ? await readRunJournals(broker, journal.space) : undefined;
     for (const record of artifact.manifest.streams)
       if (wanted.includes(record.stream)) await applyRecordedAge(broker, journal.space, record);
+    const restoredDefault = restoredRuns ? await readRegistryDefault(broker, journal.space) : undefined;
     await broker.stop();
     broker = undefined;
     const previousStore = restoredRuns ? (readMaintenanceJournal(root) as RestoreReadyRecord | undefined)?.restore.previousSource?.identity.path : undefined;
-    const rolledBack = restoredRuns && previousStore
-      ? rolledBackRuns(await readPreviousRunJournals({ root, previousStore, attemptId, space: journal.space, mode: journal.mode, ...(auth ? { auth } : {}), deadline, record: recordResources }), restoredRuns)
+    const previous = previousStore
+      ? await inspectPreviousStore({ root, previousStore, attemptId, space: journal.space, mode: journal.mode, auth, restoredDefault, recordedStreams: artifact.manifest.streams, deadline, record: recordResources })
       : undefined;
+    const rolledBack = previous && restoredRuns ? rolledBackRuns(previous.runs, restoredRuns) : undefined;
 
     // The seats this restore is about to resume owe the same admission and the same restore as an
     // ordinary one: the retained inventory here is this root's own preserved cut, and the manager
@@ -1240,13 +978,9 @@ export async function prepareRestore(root: string, flags: RestoreFlags, progress
     // A controller alternate restore rewrites the broker definition to the target before commit
     // intent, so a failure up to here still rolls the definition back first.
     if (controller && sourceExists && targetPath !== journal.source.path) reconfigureControllerBroker(lock);
-    const effectiveHost = controller ? new URL(effectiveServer).hostname : flags.host ?? (() => {
-      try { return new URL(effectiveServer).hostname; } catch { return "127.0.0.1"; }
-    })();
     // The controller binding journals each member start before it.
     const controllerLaunch = controller ? newControllerAttemptLaunch() : undefined;
     // The restored broker starts with this cap, so the journal keeps it for a re-entry that adopts it.
-    const maxFileStore = parsePositiveIntegerFlag("--max-file-store", flags["max-file-store"]);
     writeRestoreCommitIntent(lock, {
       attemptId,
       targetPath,
@@ -1261,7 +995,8 @@ export async function prepareRestore(root: string, flags: RestoreFlags, progress
       restoreOnly: flags["restore-only"] ?? artifact.manifest.selection,
       restoredStreams: [...wanted],
       acceptMissingSource: Boolean(flags["accept-missing-source"]),
-      ...(previousCutNewer ? { previousCutNewer: true } : {}),
+      // On a newer cut, only a proof that no backed-up state is unique to it clears the warning.
+      ...(previousCutNewer ? { previousCutNewer: previous?.noUniqueState !== true } : {}),
       ...(otherAccounts.length ? { otherAccounts } : {}),
       ...(rolledBack?.runs.length ? { rolledBackRuns: rolledBack.runs as unknown as JsonValue, ...(rolledBack.more ? { rolledBackRunsMore: rolledBack.more } : {}) } : {}),
       serverName,
@@ -1277,6 +1012,7 @@ export async function prepareRestore(root: string, flags: RestoreFlags, progress
     if (controller) assertControllerCoupling(root, controller, journal.cut.launch.server, journal.source.path, { stackOperationId: controllerLaunch!.controller.stackOperationId, attemptId });
     releaseMaintenanceLock(lock);
     lock = undefined as never;
+    handedOff = true;
     return {
       root,
       attemptId,
@@ -1295,6 +1031,7 @@ export async function prepareRestore(root: string, flags: RestoreFlags, progress
       serverNonce,
       reentry: false,
       journalState: "commit-intent",
+      releaseInterruptNotice: releaseNotice,
       cleanupStage: () => {
         artifact.cleanup();
         if (sanitized) removeOwnedDirectory(sanitized.path, sanitized.identity);
@@ -1327,18 +1064,19 @@ export async function prepareRestore(root: string, flags: RestoreFlags, progress
       throw new Error(`${error instanceof Error ? error.message : String(error)}; pre-commit rollback also failed: ${rollbackFailure.message}`);
     throw error;
   } finally {
-    releaseNotice();
+    if (!handedOff) releaseNotice();
     if (lock) releaseMaintenanceLock(lock);
   }
 }
 
 /** What an interrupted restore left, read from the journal at the moment of the signal. */
-function restoreInterruptNotice(root: string, attemptId: string): string {
+export function restoreInterruptNotice(root: string, attemptId: string): string {
   const journal = readMaintenanceJournal(root);
   const ours = journal !== undefined && "restore" in journal && journal.restore.attemptId === attemptId;
   if (ours && journal.state === "restore-ready")
     return `Interrupted: restore attempt ${attemptId} stopped before it committed, and nothing was restored.\nRoll it back with \`cotal backup recover ${attemptId} --yes\`, or run the restore again, which rolls it back first.`;
-  if (ours) return `Interrupted: restore attempt ${attemptId} committed before it stopped. Continue it with bare \`cotal up\` from ${root}.`;
+  if (ours && journal.state === "active") return `Interrupted after restore attempt ${attemptId} finished. Check it with ${codeSpan(`${displayCmd()} status`)} from ${root}.`;
+  if (ours) return `Interrupted: restore attempt ${attemptId} committed before it stopped. Continue it with bare ${codeSpan(`${displayCmd()} up`)} from ${root}.`;
   return `Interrupted: restore attempt ${attemptId} stopped before it claimed this root; nothing was restored.`;
 }
 

@@ -37,11 +37,11 @@ const previousHome = process.env.COTAL_HOME;
 const home = realpathSync(mkdtempSync(join(tmpdir(), "cotal-home-records-")));
 try {
   process.env.COTAL_HOME = home;
-  for (const entry of ["daemon", join("daemon", "retained", "deep"), join("services", "retained")]) {
+  for (const entry of [".update-closure.lock", join(".update-closure.lock", "nested"), "daemon", join("daemon", "retained", "deep"), join("services", "retained")]) {
     const problem = rootControlProblem(join(home, entry));
     check(`${entry} is protected as a machine-home record`, problem?.controlDirectory === home && problem.project === undefined, problem);
   }
-  for (const entry of ["project", "daemon-project", join("projects", "web")]) {
+  for (const entry of ["project", "daemon-project", ".update-closure-project", join("projects", "web")]) {
     const problem = rootControlProblem(join(home, entry));
     check(`${entry} remains an ordinary project path`, problem === undefined, problem);
   }

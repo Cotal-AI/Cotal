@@ -163,7 +163,7 @@ function AgentRow({ row, grouping, selected, onPick, live }: {
       >
         <Avatar vendor={row.harness} status={row.status} size={36} badge={badgeOf(row.id)} />
         <span>
-          <span className="v3-aname"><b>{row.name}</b><span>{roleLine(row)}</span></span>
+          <span className="v3-aname"><b title={row.name}>{row.name}</b><span>{roleLine(row)}</span></span>
           <span className="v3-aact" style={waiting ? { color: "var(--gold-ink)" } : undefined}>{activityText(row, grouping)}</span>
           {live && <LiveStep store={live.store} controller={live.controller} row={row} />}
         </span>

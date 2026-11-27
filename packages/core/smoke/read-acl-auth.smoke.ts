@@ -235,11 +235,11 @@ try {
         }
       };
       const occupant = await occupy("test-owner");
-      const internals = one as unknown as { jsm: import("@nats-io/jetstream").JetStreamManager; js: import("@nats-io/jetstream").JetStreamClient };
-      const originalAdd = internals.jsm.consumers.add.bind(internals.jsm.consumers);
+      const internals = one as unknown as { conn: { jsm: import("@nats-io/jetstream").JetStreamManager; js: import("@nats-io/jetstream").JetStreamClient } };
+      const originalAdd = internals.conn.jsm.consumers.add.bind(internals.conn.jsm.consumers);
       let observedCollision!: () => void;
       const collision = new Promise<void>((resolve) => { observedCollision = resolve; });
-      internals.jsm.consumers.add = async (...args) => {
+      internals.conn.jsm.consumers.add = async (...args) => {
         try { return await originalAdd(...args); }
         catch (e) { observedCollision(); throw e; }
       };
@@ -249,7 +249,7 @@ try {
       const collided = await Promise.race([collision.then(() => true), blocked.then(() => false)]);
       if (!collided) {
         check("J4: occupied read and cancellation never change or delete the other owner's consumer", false, "the occupied name was taken over");
-        internals.jsm.consumers.add = originalAdd;
+        internals.conn.jsm.consumers.add = originalAdd;
         return;
       }
       const beforeAbort = await api.consumers.info(CHAT, chatHistD);
@@ -259,7 +259,7 @@ try {
       check("J4: occupied read and cancellation never change or delete the other owner's consumer",
         cancelled === "cancel occupied read" && beforeAbort.created === occupant.created && afterAbort?.created === occupant.created &&
         afterAbort.config.description === "test-owner", { cancelled, before: beforeAbort.config.description, after: afterAbort?.config.description });
-      internals.jsm.consumers.add = originalAdd;
+      internals.conn.jsm.consumers.add = originalAdd;
       await api.consumers.delete(CHAT, chatHistD); // the fixture releases its own occupant
 
       // Pause a completed reader before its final INFO, let native expiry replace its consumer,
@@ -267,8 +267,8 @@ try {
       let atInfo!: () => void, resumeInfo!: () => void;
       const infoReached = new Promise<void>((resolve) => { atInfo = resolve; });
       const infoRelease = new Promise<void>((resolve) => { resumeInfo = resolve; });
-      const originalGet = internals.js.consumers.get.bind(internals.js.consumers);
-      internals.js.consumers.get = async (...args) => {
+      const originalGet = internals.conn.js.consumers.get.bind(internals.conn.js.consumers);
+      internals.conn.js.consumers.get = async (...args) => {
         const consumer = await originalGet(...args);
         const info = consumer.info.bind(consumer);
         consumer.info = async (...infoArgs) => { atInfo(); await infoRelease; return info(...infoArgs); };
@@ -278,7 +278,7 @@ try {
       const reachedInfo = await Promise.race([infoReached.then(() => true), stale.then(() => false)]);
       if (!reachedInfo) {
         check("J5: a delayed old reader detects replacement and leaves the successor intact", false, "reader skipped its final ownership check");
-        internals.js.consumers.get = originalGet;
+        internals.conn.js.consumers.get = originalGet;
         return;
       }
       const successor = await occupy("successor");
@@ -288,14 +288,14 @@ try {
       check("J5: a delayed old reader detects replacement and leaves the successor intact",
         /ownership was lost/.test(staleResult) && surviving.created === successor.created && surviving.config.description === "successor",
         { staleResult, surviving: surviving.config.description });
-      internals.js.consumers.get = originalGet;
+      internals.conn.js.consumers.get = originalGet;
       await api.consumers.delete(CHAT, chatHistD); // fixture-owned successor only
       const reread = await one.channelHistoryPage("allowed");
       check("J6: a successful reread retains all own messages after interference", reread.complete && reread.items.length === 5, reread);
 
       // End a real broker-backed pull after one delivery through the client's native stop API.
       // A clean iterator end must not masquerade as a complete five-row snapshot.
-      internals.js.consumers.get = async (...args) => {
+      internals.conn.js.consumers.get = async (...args) => {
         const consumer = await originalGet(...args);
         const consume = consumer.consume.bind(consumer);
         consumer.consume = async (...consumeArgs) => {
@@ -310,15 +310,15 @@ try {
       };
       const short = await one.channelHistoryPage("allowed").then(() => "succeeded", (e: Error) => e.message);
       check("J7: a pull ending before its captured pending count is a cut-short error, never a page", /window was cut short/.test(short), short);
-      internals.js.consumers.get = originalGet;
+      internals.conn.js.consumers.get = originalGet;
       const [whole, empty] = await Promise.all([one.channelHistoryPage("allowed"), two.channelHistoryPage("other")]);
       check("J8: independent same-lifecycle readers serialize on the broker without cross-feeding channels",
         whole.complete && whole.items.length === 5 && whole.items.every((m) => m.channel === "allowed") && empty.complete && empty.items.length === 0,
         { whole, empty });
       // Both native creates are in flight before the first creator proceeds to pull. Healthy
       // readers conflict; an identical marker would idempotently bind both to one pending window.
-      const twoInternals = two as unknown as { jsm: import("@nats-io/jetstream").JetStreamManager };
-      const twoAdd = twoInternals.jsm.consumers.add.bind(twoInternals.jsm.consumers);
+      const twoInternals = two as unknown as { conn: { jsm: import("@nats-io/jetstream").JetStreamManager } };
+      const twoAdd = twoInternals.conn.jsm.consumers.add.bind(twoInternals.conn.jsm.consumers);
       let observedBoth!: () => void;
       const bothAttempted = new Promise<void>((resolve) => { observedBoth = resolve; });
       let attempts = 0;
@@ -326,13 +326,13 @@ try {
         try { return await add(...args); }
         finally { if (++attempts >= 2) observedBoth(); await bothAttempted; }
       };
-      internals.jsm.consumers.add = gateAdd(originalAdd);
-      twoInternals.jsm.consumers.add = gateAdd(twoAdd);
+      internals.conn.jsm.consumers.add = gateAdd(originalAdd);
+      twoInternals.conn.jsm.consumers.add = gateAdd(twoAdd);
       const same = await Promise.all([one, two].map((ep) => ep.channelHistoryPage("allowed").catch((e: Error) => e)));
       check("J9: simultaneous same-channel connections each receive a whole independent page",
         same.every((p) => !(p instanceof Error) && p.complete && p.items.length === 5), same);
-      internals.jsm.consumers.add = originalAdd;
-      twoInternals.jsm.consumers.add = twoAdd;
+      internals.conn.jsm.consumers.add = originalAdd;
+      twoInternals.conn.jsm.consumers.add = twoAdd;
 
       const { jetstream } = await import("@nats-io/jetstream");
       const publisher = jetstream(ag);

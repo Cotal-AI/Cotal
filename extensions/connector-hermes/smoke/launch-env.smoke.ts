@@ -8,15 +8,20 @@
  * Run: pnpm --filter @cotal-ai/connector-hermes test
  */
 import { strict as nodeAssert } from "node:assert";
-import type { ChildProcess } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { spawn, spawnSync, type ChildProcess } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { connect } from "node:net";
+import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { skipSuite } from "@cotal-ai/smoke-kit";
+import { dirname, join } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { CONTROL_PROTOCOL_VERSION, controlCall, discardLaunchArtifacts, readLaunchMaterial, writeLaunchMaterial, type LaunchOpts } from "@cotal-ai/core";
 import { hermesUvCommand, spawnHermesGateway } from "../src/binary.js";
 import { hermesConnector } from "../src/extension.js";
+import { bridgeToken, startBridgeServer } from "../src/bridge.js";
 import { ADOPT_HOME_ENV, LaunchRefused, adoptedHome, assertHermesVersion, setupAdoptedProfile, setupProfile } from "../src/launch.js";
-import { briefing } from "@cotal-ai/connector-core";
+import { windowsHostFromPreload } from "../src/windows-gateway.js";
+import { briefing, DeltaJournal, type AgentConfig, type MeshAgent } from "@cotal-ai/connector-core";
 
 /**
  * Count every assertion, so the terminal tally is derived from what actually ran.
@@ -48,9 +53,98 @@ const assert: typeof nodeAssert = new Proxy(nodeAssert, {
  * guarantee is the false-green shape this package keeps being bitten by. Pinning the floor turns a
  * smaller green into a red. Raise it deliberately when you add a cell; a drop means one vanished.
  */
-const EXPECTED_CELLS = 168;
+const EXPECTED_CELLS = 193;
+const EXPECTED_WINDOWS_CELLS = 29;
 
-if (process.platform === "win32") skipSuite("the Hermes connector is Unix-only; buildLaunch throws");
+if (process.platform === "win32") {
+  await checkWindowsLaunch();
+  if (cells !== EXPECTED_WINDOWS_CELLS) throw new Error(`expected ${EXPECTED_WINDOWS_CELLS} Windows checks, got ${cells}`);
+  console.log(`COTAL_SMOKE_SENTINEL cells=${cells} passed=${cells} failed=0`);
+  process.exit(0);
+}
+
+async function checkWindowsLaunch(): Promise<void> {
+  // The packaged smoke receives the CLI preload and independently packed launcher as paths.
+  const hostUrl = process.argv[2] ? pathToFileURL(process.argv[2]) : new URL("../../../implementations/cli/dist/lib/hermes-windows-preload.js", import.meta.url);
+  assert.equal(windowsHostFromPreload(), undefined);
+  await import(hostUrl.href);
+  const host = windowsHostFromPreload();
+  assert.ok(host, "the CLI preload supplies both native operations");
+  const { listenOwnerPipe, startProcess } = host;
+  const root = mkdtempSync(join(tmpdir(), "cotal-hermes-availability-"));
+  const savedPath = process.env.PATH;
+  const savedAdopt = process.env.COTAL_HERMES_ADOPT_HOME;
+  const opts = { space: "smoke", name: "hermes", model: "smoke-model", events: false, validateOnly: true };
+  const endpoint = { path: `\\\\.\\pipe\\cotal-hermes-smoke-${randomUUID()}`, token: randomUUID(), version: CONTROL_PROTOCOL_VERSION };
+  let reached = 0;
+  const agent = { on() {}, inboxPreview: () => [] } as unknown as MeshAgent;
+  const config: AgentConfig = { space: "smoke", name: "hermes", servers: "", subscribe: [], allowSubscribe: [], allowPublish: [], kind: "agent", tls: false };
+  const bridge = startBridgeServer(agent, config, endpoint.path, endpoint, { onSubscribe: () => { reached++; } }, listenOwnerPipe);
+  const signed = { ...endpoint, token: bridgeToken(endpoint) };
+  const limit = { timeoutMs: 2_000, maxReplyBytes: 16 };
+  try {
+    checkWindowsLauncherRefusal(root, hostUrl);
+    const deltaPath = join(root, "deltas.jsonl");
+    const deltaOptions = { path: deltaPath, createPrivateOnWindows: true, anchor: () => "", onWrite() {}, onError(error: Error) { throw error; } };
+    DeltaJournal.open(deltaOptions).close();
+    assert.equal(readFileSync(deltaPath, "utf8"), "");
+    assert.throws(() => DeltaJournal.open(deltaOptions), { code: "EEXIST" });
+    delete process.env.COTAL_HERMES_ADOPT_HOME;
+    const log = join(root, "gateway.log");
+    const child = startProcess(process.execPath, ["-e", "console.error('host-process-smoke'); process.exit(17)"], process.env, log);
+    try { assert.equal(await child.exited, 17); } finally { await child.stop(); }
+    assert.match(readFileSync(log, "utf8"), /host-process-smoke/);
+    process.env.PATH = root;
+    writeFileSync(join(root, "uv.cmd"), "");
+    assert.equal(hermesConnector.launchUnavailable?.(), "Hermes on Windows needs uv.exe on PATH. Install uv before launching Hermes.");
+    const managedRefusal = hermesConnector.launchUnavailable?.({ cwd: root, resume: "session" });
+    assert.match(managedRefusal ?? "", /does not support detached or manager-attached launches/);
+    assert.throws(() => hermesConnector.buildLaunch({ ...opts, cwd: root, resume: "session" }), { message: managedRefusal });
+    writeFileSync(join(root, "uv.exe"), "");
+    assert.deepEqual(hermesConnector.buildLaunch(opts), { command: "", args: [] });
+    const launch = hermesConnector.buildLaunch({ ...opts, validateOnly: false });
+    try {
+      assert.equal(launch.env?.COTAL_HERMES_UV_BIN, join(root, "uv.exe"));
+      assert.equal(launch.command, process.execPath);
+      assert.match(launch.args[0] ?? "", /[\\/]dist[\\/]launch\.js$/);
+    }
+    finally { discardLaunchArtifacts(launch.artifacts); }
+    assert.throws(() => hermesConnector.buildLaunch({ ...opts, resume: "session" }), /does not support session resume/);
+    process.env.COTAL_HERMES_ADOPT_HOME = root;
+    assert.throws(() => hermesConnector.buildLaunch(opts), /does not support adopted profiles/);
+    assert.throws(() => listenOwnerPipe(endpoint.path, () => {}, () => {}), { code: "EADDRINUSE" });
+    await assert.rejects(controlCall(endpoint, { t: "subscribe" }, limit));
+    await assert.rejects(controlCall(signed, { t: "tool" }, limit));
+    assert.equal(reached, 0);
+    assert.equal(await controlCall(signed, { t: "subscribe" }, limit), "{}");
+    assert.equal(reached, 1);
+  } finally {
+    await bridge.close();
+    if (savedPath === undefined) delete process.env.PATH;
+    else process.env.PATH = savedPath;
+    if (savedAdopt === undefined) delete process.env.COTAL_HERMES_ADOPT_HOME;
+    else process.env.COTAL_HERMES_ADOPT_HOME = savedAdopt;
+    rmSync(root, { recursive: true, force: true });
+  }
+  await assert.rejects(controlCall(signed, { t: "subscribe" }, limit));
+}
+
+function checkWindowsLauncherRefusal(root: string, oldArg: URL): void {
+  const launcher = process.argv[3] ?? fileURLToPath(new URL("../dist/launch.js", import.meta.url));
+  const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^(?:COTAL_|(?:NODE_OPTIONS|TMP|TEMP)$)/i.test(key)));
+  const bare = { ...env, TMP: root, TEMP: root };
+  const run = (args: string[], env: NodeJS.ProcessEnv) => spawnSync(process.execPath, args, { env, encoding: "utf8", timeout: 15_000 });
+  const inert = run([launcher], bare);
+  assert.equal(inert.status, 0, inert.stderr);
+  assert.match(inert.stderr, /not a managed session/);
+  const incompatible = `data:text/javascript,${encodeURIComponent('Object.defineProperty(globalThis, Symbol.for("cotal.hermes.windows-host.v1"), { value: {} })')}`;
+  for (const args of [[launcher, fileURLToPath(oldArg)], ["--import", incompatible, launcher]]) {
+    const refused = run(args, { ...bare, COTAL_NAME: "smoke-hermes-host" });
+    assert.equal(refused.status, 1, refused.stderr);
+    assert.match(refused.stderr, /needs its matching Cotal CLI\. Update Cotal and retry the foreground launch\./);
+  }
+  assert.deepEqual(readdirSync(root), [], "refused launches leave no material in the private temp directory");
+}
 
 /** The provider keys this connector declares. They must still arrive. */
 const PROVIDER_KEYS = [
@@ -75,8 +169,8 @@ const HOST_MARKERS = [
 
 /** One name from every per-session family a connector assigns conditionally. None may cross. */
 const PER_SESSION = [
-  "COTAL_LAUNCH_MATERIAL", "COTAL_CREDS", "COTAL_SERVERS", "COTAL_CONTROL_TOKEN",
-  "COTAL_CONTROL_SOCKET", "COTAL_OWNER", "COTAL_ACTOR", "COTAL_SENTINEL_CREDS", "COTAL_BEARER_CMD",
+  "COTAL_CREDS", "COTAL_SERVERS", "COTAL_CONTROL_KEY",
+  "COTAL_OWNER", "COTAL_ACTOR", "COTAL_SENTINEL_CREDS", "COTAL_BEARER_CMD",
   "COTAL_HERMES_UV_BIN",
   "COTAL_LIFECYCLE_UID", "COTAL_ID", "COTAL_ROLE", "COTAL_MODEL", "COTAL_VARIANT",
   "COTAL_AGENT_FILE", "COTAL_LINK", "COTAL_SUBSCRIBE", "COTAL_ALLOW_SUBSCRIBE",
@@ -90,9 +184,33 @@ const OPERATOR_KNOBS = ["COTAL_HOME", "COTAL_FEEDBACK_KEY", "COTAL_CODEX_BIN"] a
 for (const k of [...PROVIDER_KEYS, ...FORMERLY_EXCLUDED, ...HOST_MARKERS]) process.env[k] = `smoke-${k}`;
 for (const k of [...PER_SESSION, ...OPERATOR_KNOBS]) process.env[k] = `parent-${k}`;
 process.env.SOME_UNRELATED_SECRET = "smoke-unrelated";
+process.env.COTAL_CONTROL_SOCKET = "parent-control.sock";
+process.env.COTAL_LAUNCH_MATERIAL = "parent-material.json";
+process.env.COTAL_HERMES_SEAT_HOME = "parent-profile";
+const owned: string[] = [];
+process.once("exit", () => discardLaunchArtifacts(owned));
+function buildLaunch(opts: LaunchOpts) {
+  const spec = hermesConnector.buildLaunch({ events: false, ...opts });
+  owned.push(...spec.artifacts ?? []);
+  return spec;
+}
 
 // ── Default allow-list (no operator extras declared) ─────────────────────────────────────────────
-const env = hermesConnector.buildLaunch({ space: "smoke", name: "hermes-1" }).env ?? {};
+const spec = buildLaunch({ space: "smoke", name: "hermes-1" });
+const env = spec.env!;
+assert.notEqual(env.COTAL_CONTROL_SOCKET, process.env.COTAL_CONTROL_SOCKET, "the child receives its own socket");
+assert.notEqual(env.COTAL_LAUNCH_MATERIAL, process.env.COTAL_LAUNCH_MATERIAL, "the child receives its own carrier");
+assert.ok(spec.artifacts?.includes(dirname(env.COTAL_CONTROL_SOCKET!)), "the socket directory is tracked");
+assert.ok(spec.artifacts?.includes(dirname(env.COTAL_LAUNCH_MATERIAL!)), "the carrier directory is tracked");
+assert.ok(spec.artifacts?.includes(dirname(dirname(env.COTAL_HERMES_SEAT_HOME!))), "the disposable profile is tracked");
+assert.notEqual(env.COTAL_HERMES_SEAT_HOME, process.env.COTAL_HERMES_SEAT_HOME, "the child receives its own profile");
+assert.ok(readLaunchMaterial(env.COTAL_LAUNCH_MATERIAL!).controlKey, "the same carrier contains the control key");
+assert.equal(hermesConnector.supportsReasoningEvents, true, "the connector takes reasoningEvents: its journal records the reasoning a provider returns");
+assert.equal(readLaunchMaterial(env.COTAL_LAUNCH_MATERIAL!).reasoningEvents, undefined, "a launch that does not ask carries no reasoningEvents");
+{
+  const reasoned = buildLaunch({ space: "smoke", name: "hermes-reasoning", events: undefined, workspaceRoot: "/srv/smoke-root", reasoningEvents: true });
+  assert.equal(readLaunchMaterial(reasoned.env!.COTAL_LAUNCH_MATERIAL!).reasoningEvents, true, "a launch that asks carries reasoningEvents to the seat");
+}
 
 for (const k of PROVIDER_KEYS)
   assert.equal(env[k], `smoke-${k}`, `${k} must reach the child: this connector declares it`);
@@ -112,13 +230,21 @@ assert.ok(env.PATH !== undefined, "PATH is forwarded so the seat can still launc
 for (const k of OPERATOR_KNOBS)
   assert.equal(env[k], `parent-${k}`, `${k} is a machine-wide operator knob and must cross`);
 
+// The event plane is armed unless the launch opts out, and its state needs the workspace root.
+assert.equal(env.COTAL_EVENTS, undefined, "events: false leaves the event plane unarmed");
+const armed = buildLaunch({ space: "smoke", name: "hermes-events", events: undefined, workspaceRoot: "/srv/smoke-root" }).env ?? {};
+assert.equal(armed.COTAL_EVENTS, "1", "a launch that does not opt out arms the event plane");
+assert.equal(armed.COTAL_WORKSPACE_ROOT, "/srv/smoke-root", "the event plane's write-ahead log lives under the workspace root");
+assert.throws(() => hermesConnector.buildLaunch({ space: "smoke", name: "hermes-events" }), /workspace root/, "an armed launch without a workspace root is refused");
+
 // A floor request DOES forward, distinct from the per-session ambient reset asserted above.
-const withFloor = hermesConnector.buildLaunch({ space: "smoke", name: "hermes-1", backfillFloor: 42 }).env ?? {};
+const withFloor = buildLaunch({ space: "smoke", name: "hermes-1", backfillFloor: 42 }).env ?? {};
 assert.equal(withFloor.COTAL_BACKFILL_FLOOR, "42", "a requested backfill floor is forwarded");
 
 // ── Allow-list extras (the operator declared `spawn.env`) ─────────────────────────────────────────
-const confined = hermesConnector.buildLaunch({ space: "smoke", name: "hermes-2", envAllow: ["NOUS_API_KEY"] }).env ?? {};
+const confined = buildLaunch({ space: "smoke", name: "hermes-2", envAllow: ["NOUS_API_KEY"] }).env ?? {};
 
+assert.notEqual(confined.COTAL_LAUNCH_MATERIAL, process.env.COTAL_LAUNCH_MATERIAL, "containment does not reuse the parent carrier");
 assert.equal(confined.NOUS_API_KEY, "smoke-NOUS_API_KEY", "a declared name is forwarded under containment");
 assert.ok(!("GH_TOKEN" in confined), "an undeclared name is withheld under containment");
 assert.ok(!("SOME_UNRELATED_SECRET" in confined), "containment means the OS allow-list plus the declared names, nothing else");
@@ -129,24 +255,27 @@ for (const k of HOST_MARKERS)
   assert.ok(!(k in confined), `${k} must stay withheld when spawn.env names something else`);
 
 // Opt-in: a persona / operator that names a host marker gets it. The default path never does.
-const opted = hermesConnector.buildLaunch({ space: "smoke", name: "hermes-4", envAllow: ["CLAUDE_CODE_CHILD_SESSION"] }).env ?? {};
+const opted = buildLaunch({ space: "smoke", name: "hermes-4", envAllow: ["CLAUDE_CODE_CHILD_SESSION"] }).env ?? {};
 assert.equal(opted.CLAUDE_CODE_CHILD_SESSION, "smoke-CLAUDE_CODE_CHILD_SESSION", "a host marker named on spawn.env is the explicit opt-in");
 assert.ok(!("CLAUDECODE" in opted), "an unnamed host marker stays withheld even when a sibling is opted in");
 
 // An empty array is a POLICY (the OS allow-list alone), not "unset". If this were read as unset the
 // child would inherit everything, which is the one way the opt-in could silently fail open.
-const bare = hermesConnector.buildLaunch({ space: "smoke", name: "hermes-3", envAllow: [] }).env ?? {};
+const bare = buildLaunch({ space: "smoke", name: "hermes-3", envAllow: [] }).env ?? {};
+assert.notEqual(bare.COTAL_CONTROL_SOCKET, process.env.COTAL_CONTROL_SOCKET, "an empty allow-list does not reuse the parent socket");
 assert.equal(bare.NOUS_API_KEY, "smoke-NOUS_API_KEY", "empty spawn.env does not drop connector-declared provider keys");
 assert.ok(!("GH_TOKEN" in bare), "empty spawn.env still withholds undeclared names");
 assert.ok(bare.PATH !== undefined, "an empty spawn.env still carries the OS allow-list");
 
+assert.equal(buildLaunch({ space: "smoke", name: "hermes-1", prompt: "  greet the operator\n" }).env?.COTAL_HERMES_PROMPT, "greet the operator", "an initial prompt reaches the launcher, which submits it as the first turn");
+assert.equal(env.COTAL_HERMES_PROMPT, undefined, "a launch without a prompt carries none");
 assert.throws(
-  () => hermesConnector.buildLaunch({ space: "smoke", name: "hermes-1", prompt: "greet the operator" }),
-  /initial prompt/,
-  "a prompt the connector cannot submit must refuse the launch",
+  () => buildLaunch({ space: "smoke", name: "hermes-1", prompt: "   " }),
+  /empty initial prompt/,
+  "an empty prompt would start no turn, so it refuses the launch",
 );
 
-const bootResolved = hermesConnector.buildLaunch({
+const bootResolved = buildLaunch({
   space: "smoke",
   name: "hermes-boot-resolved",
   resolvedBinaries: { uv: "/manager/boot/uv" },
@@ -315,7 +444,10 @@ assert.equal(readFileSync(join(opBare, "config.yaml"), "utf8"), BARE_CONFIG, "a 
 // holds no key for that provider only found out mid-turn, from a provider refusal whose advice pointed
 // at their own credentials. A launch with no model is refused, naming what sets one, and writes no
 // profile at all, so nothing is left behind that a later spawn could take for a working one.
-const mgdConfig = { name: "reviewer", role: "review", space: "smoke" };
+const mgdConfig = {
+  name: "reviewer", role: "review", space: "smoke", servers: "nats://127.0.0.1:4222", kind: "agent" as const, tls: false,
+  subscribe: [], allowSubscribe: [], allowPublish: [],
+};
 const mgdNone = mkdtempSync(join(tmpdir(), "cotal-hermes-managed-none-"));
 assert.throws(
   () => setupProfile(mgdNone, { model: undefined, config: mgdConfig }),
@@ -331,9 +463,40 @@ rmSync(mgdFresh, { recursive: true, force: true });
 assert.throws(() => setupProfile(mgdFresh, { model: undefined, config: mgdConfig }), LaunchRefused, "the refusal is the connector's own class, so the launcher prints it as a diagnosis rather than a stack");
 assert.equal(existsSync(mgdFresh), false, "a profile directory that did not exist before the refusal does not exist after it");
 
+// The launcher's own COTAL_EVENTS, which the connector sets only for an armed plane, decides
+// whether a profile streams; the leak cells above left a stand-in value there.
+delete process.env.COTAL_EVENTS;
 const mgdSet = mkdtempSync(join(tmpdir(), "cotal-hermes-managed-set-"));
 setupProfile(mgdSet, { model: "vendor/some-model", config: mgdConfig });
 assert.match(readFileSync(join(mgdSet, "config.yaml"), "utf8"), /^model: "vendor\/some-model"$/m, "a resolved model is written as a quoted scalar");
+assert.doesNotMatch(readFileSync(join(mgdSet, "config.yaml"), "utf8"), /^streaming:/m, "with no event plane to stream to, the profile leaves Hermes's streaming off");
+// The gateway inherits the launcher's folder, but Hermes runs its terminal and file tools in
+// `terminal.cwd` and gives a gateway with none set the home folder.
+const seatFolder = mkdtempSync(join(tmpdir(), 'cotal-hermes-seat "folder"-'));
+const mgdCwd = mkdtempSync(join(tmpdir(), "cotal-hermes-managed-cwd-"));
+const smokeCwd = process.cwd();
+process.chdir(seatFolder);
+const seatCwd = process.cwd();
+try {
+  setupProfile(mgdCwd, { model: "vendor/some-model", config: mgdConfig });
+} finally {
+  process.chdir(smokeCwd);
+}
+assert.match(
+  readFileSync(join(mgdCwd, "config.yaml"), "utf8"),
+  new RegExp(`^terminal:\\n  cwd: ${JSON.stringify(seatCwd).replace(/[\\^$.*+?()[\]{}|]/g, "\\$&")}$`, "m"),
+  "the profile runs Hermes's terminal and file tools in the folder the seat was launched in",
+);
+rmSync(mgdCwd, { recursive: true, force: true });
+rmSync(seatFolder, { recursive: true, force: true });
+const mgdStream = mkdtempSync(join(tmpdir(), "cotal-hermes-managed-stream-"));
+setupProfile(mgdStream, { model: "vendor/some-model", config: { ...mgdConfig, eventsRequired: true } });
+assert.match(
+  readFileSync(join(mgdStream, "config.yaml"), "utf8"),
+  /^streaming:\n  enabled: true\n  transport: draft\n  cursor: ""\n  edit_interval: 0\.25$/m,
+  "an armed event plane turns on Hermes's draft streaming, which hands the adapter a reply as the model writes it",
+);
+rmSync(mgdStream, { recursive: true, force: true });
 const mgdPersona = mkdtempSync(join(tmpdir(), "cotal-hermes-managed-persona-"));
 setupProfile(mgdPersona, { model: "vendor/some-model", persona: "I review changes.", config: mgdConfig });
 const soul = readFileSync(join(mgdPersona, "SOUL.md"), "utf8");
@@ -345,10 +508,10 @@ rmSync(mgdSet, { recursive: true, force: true });
 // The opt-in has to survive the launch env or the launcher never sees it: every other COTAL_* name
 // is deliberately reset per session, and this one would be stripped with them.
 process.env.COTAL_HERMES_ADOPT_HOME = "/srv/op/.hermes";
-const adoptEnv = hermesConnector.buildLaunch({ space: "smoke", name: "hermes-adopt" }).env ?? {};
+const adoptEnv = buildLaunch({ space: "smoke", name: "hermes-adopt" }).env ?? {};
 assert.equal(adoptEnv.COTAL_HERMES_ADOPT_HOME, "/srv/op/.hermes", "the adopt-home opt-in reaches the launcher");
 delete process.env.COTAL_HERMES_ADOPT_HOME;
-const plainEnv = hermesConnector.buildLaunch({ space: "smoke", name: "hermes-plain" }).env ?? {};
+const plainEnv = buildLaunch({ space: "smoke", name: "hermes-plain" }).env ?? {};
 assert.ok(!("COTAL_HERMES_ADOPT_HOME" in plainEnv), "without the opt-in the child gets the managed default");
 
 rmSync(opAdopt, { recursive: true, force: true });
@@ -366,6 +529,102 @@ console.log(
     `${FORMERLY_EXCLUDED.length + HOST_MARKERS.length + 1} undeclared names withheld, ` +
     `${PER_SESSION.length} per-session names reset, ${OPERATOR_KNOBS.length} operator knobs crossed, both modes held`,
 );
+
+// ---- the launcher's stop: the control socket's directory goes only once the gateway is gone -----
+// Drives the real launcher (src/launch.ts) with an adopted profile and a stand-in `uv` whose
+// gateway ignores SIGTERM, so the stop has to kill its process tree, which needs `ps`.
+const launcher = fileURLToPath(new URL("../src/launch.ts", import.meta.url));
+const stopRoot = mkdtempSync(join(tmpdir(), "cotal-hermes-stop-"));
+const bin = join(stopRoot, "bin");
+const noPs = join(stopRoot, "no-ps");
+const home = join(stopRoot, "home");
+for (const d of [bin, noPs, home]) mkdirSync(d);
+writeFileSync(
+  join(bin, "uv"),
+  "#!/bin/sh\ncase \"$*\" in\n  *\"python -c\"*) echo 0.19.0 ;;\n  *\"gateway run\"*) trap '' TERM; echo $$ > \"$FAKE_GW_PID\"; i=0; while [ $i -lt 40 ]; do sleep 0.25; i=$((i+1)); done ;;\n  *) exit 2 ;;\nesac\n",
+  { mode: 0o755 },
+);
+writeFileSync(join(noPs, "ps"), "#!/bin/sh\necho 'ps: unavailable' >&2\nexit 1\n", { mode: 0o755 });
+writeFileSync(join(home, "config.yaml"), "plugins:\n  enabled: [cotal]\ngateway:\n  platforms:\n    cotal:\n      enabled: true\n");
+writeFileSync(join(home, "SOUL.md"), OP_SOUL);
+const guide = readFileSync(new URL("../../../docs/connect-hermes.mdx", import.meta.url), "utf8");
+const example = /`\.cotal\/agents\/([\w-]+\.md)`[^\n]*\n\n```markdown\n([\s\S]+?)\n```[\s\S]+?^cotal spawn --foreground --harness hermes --file \.cotal\/agents\/\1$/m.exec(guide);
+if (!example) throw new Error("The Hermes guide must show the agent file selected by its adopted-profile launch");
+const agentFile = join(stopRoot, example[1]);
+writeFileSync(agentFile, `${example[2]}\n`);
+const alive = (pid: number): boolean => {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+};
+const waitFor = async (ok: () => boolean, ms: number): Promise<boolean> => {
+  for (const end = Date.now() + ms; Date.now() < end; await new Promise((r) => setTimeout(r, 50))) if (ok()) return true;
+  return ok();
+};
+/** Start the launcher, stop it with SIGTERM, and report what was left. */
+const stopRun = async (label: string, opts: { psFails: boolean; holdBridge: boolean; agentFile?: string }) => {
+  // The launcher's own temp dir, kept short: the control socket's path has to fit in sun_path.
+  const tmp = mkdtempSync(join(tmpdir(), "chs-"));
+  const pidFile = join(tmp, "gateway.pid");
+  const outer = process.env.TMPDIR;
+  process.env.TMPDIR = tmp;
+  const material = writeLaunchMaterial({ servers: "nats://127.0.0.1:9" });
+  if (outer === undefined) delete process.env.TMPDIR;
+  else process.env.TMPDIR = outer;
+  const child = spawn(process.execPath, ["--import", "tsx", launcher], {
+    env: {
+      PATH: opts.psFails ? `${noPs}:${process.env.PATH}` : (process.env.PATH ?? ""),
+      HOME: process.env.HOME ?? "",
+      TMPDIR: tmp,
+      COTAL_NAME: label,
+      COTAL_SPACE: "stop",
+      COTAL_LAUNCH_MATERIAL: material,
+      COTAL_HERMES_ADOPT_HOME: home,
+      COTAL_HERMES_UV_BIN: join(bin, "uv"),
+      COTAL_AGENT_FILE: opts.agentFile,
+      FAKE_GW_PID: pidFile,
+    },
+    stdio: ["ignore", "ignore", "pipe"],
+  });
+  let stderr = "";
+  child.stderr.setEncoding("utf8").on("data", (d: string) => (stderr += d));
+  const exited = new Promise<void>((r) => child.once("exit", () => r()));
+  const started = await waitFor(() => existsSync(pidFile) && readFileSync(pidFile, "utf8").trim() !== "", 15_000);
+  const gateway = started ? Number(readFileSync(pidFile, "utf8").trim()) : 0;
+  const dir = readdirSync(tmp).filter((n) => n.startsWith("cotal-ctl-")).map((n) => join(tmp, n))[0] ?? "";
+  let heldClosedWithDir: boolean | undefined;
+  if (opts.holdBridge && dir) {
+    await waitFor(() => existsSync(join(dir, "ctl.bridge.sock")), 5_000);
+    const held = connect(join(dir, "ctl.bridge.sock"));
+    held.on("error", () => {});
+    held.once("close", () => (heldClosedWithDir = existsSync(dir)));
+    await new Promise((r) => held.once("connect", r));
+  }
+  child.kill("SIGTERM");
+  await Promise.race([exited, new Promise((r) => setTimeout(r, 15_000))]);
+  await new Promise((r) => setTimeout(r, 200));
+  const report = { started, dirKept: dir !== "" && existsSync(dir), gatewayAlive: gateway > 0 && alive(gateway), heldClosedWithDir, stderr, dir };
+  if (report.gatewayAlive) process.kill(gateway, "SIGKILL");
+  rmSync(tmp, { recursive: true, force: true });
+  return report;
+};
+
+const unproven = await stopRun("ps-fails", { psFails: true, holdBridge: false });
+assert.ok(unproven.started && unproven.dir, `stop: the launcher started its gateway: ${unproven.stderr}`);
+assert.ok(unproven.gatewayAlive, "stop: with `ps` failing, the gateway that ignores SIGTERM is still running after the launcher exits");
+assert.ok(unproven.dirKept, `stop: a drain that cannot prove the gateway exited leaves the control socket's directory in place: ${unproven.stderr}`);
+assert.ok(/could not prove the gateway exited/.test(unproven.stderr) && unproven.stderr.includes(unproven.dir), `stop: and the log names the directory it left: ${unproven.stderr}`);
+
+const held = await stopRun("held-bridge", { psFails: false, holdBridge: true, agentFile });
+assert.ok(held.started, `the guide's agent file starts the gateway on the adopted profile: ${held.stderr}`);
+assert.equal(readFileSync(join(home, "SOUL.md"), "utf8"), OP_SOUL, "the guide's adopted launch preserves SOUL.md byte-for-byte");
+assert.equal(held.heldClosedWithDir, true, `stop: the sidecar ends an accepted bridge connection before the directory goes: ${held.stderr}`);
+assert.ok(!held.dirKept && !held.gatewayAlive, `stop: once the gateway's exit is proved, the directory is removed: ${held.stderr}`);
+rmSync(stopRoot, { recursive: true, force: true });
+console.log("stop: the control socket's directory is kept without proof of the gateway's exit, and removed after it");
 
 // Terminal sentinel, last line of output, with the count taken from the counting proxy above.
 // Any assertion that threw would have aborted before this line, so reaching it means every

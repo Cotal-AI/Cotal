@@ -27,22 +27,13 @@ import { readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import ts from "typescript";
+import { createSuite } from "@cotal-ai/smoke-kit";
 
 const repo = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
 const srcRoot = join(repo, "implementations", "manager", "src");
 const skipDirs = new Set(["dist", "smoke", "test", "tests", "fixtures", "node_modules"]);
 
-let ok = 0;
-let fail = 0;
-const check = (label: string, cond: boolean, detail?: unknown): void => {
-  if (cond) {
-    ok++;
-    console.log(`  ✓ ${label}`);
-  } else {
-    fail++;
-    console.log(`  ✗ FAIL: ${label}`, detail ?? "");
-  }
-};
+const { check, finish, passed, failed } = createSuite();
 
 function* walk(path: string): Generator<string> {
   const stat = statSync(path);
@@ -198,5 +189,5 @@ check(
   unboundUses.map((row) => ({ file: rel(row.file), text: row.text })),
 );
 
-console.log(`\nMAX-AGENTS SINGLE-SOURCE SMOKE ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${ok} passed, ${fail} failed; scanned ${files.length} files)`);
-if (fail > 0) process.exitCode = 1;
+console.log(`\nMAX-AGENTS SINGLE-SOURCE SMOKE ${failed() === 0 ? "OK ✅" : "FAILED ❌"}  (${passed()} passed, ${failed()} failed; scanned ${files.length} files)`);
+finish();

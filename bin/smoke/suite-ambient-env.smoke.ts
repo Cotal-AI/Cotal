@@ -750,8 +750,6 @@ const REVIEWED: Record<string, string> = {
     "the in-process sibling of this census: its ambient spreads occur only in fixture strings it feeds to a parser, and it spawns nothing",
   "bin/smoke/suite-own-process-material.smoke.ts":
     "the connection-material census: same shape, its ambient spreads are fixture strings handed to a parser and it spawns nothing",
-  "implementations/cli/smoke/command-kernel.smoke.ts":
-    "spawns the cotal CLI for an ext-update path; the child consumes COTAL_UPDATE_* and COTAL_SKIP_CONNECTOR_SEED and never calls configFromEnv/controlFromEnv",
   "implementations/cli/smoke/update-concurrency.smoke.ts":
     "same ext-update shape: self-reentered node helpers reading COTAL_UPDATE_* / XDG_CONFIG_HOME, no connection material read",
   "bin/smoke/herdr-e2e-live.smoke.ts":
@@ -814,10 +812,6 @@ const FROZEN: readonly string[] = [
   "bin/smoke/dogfood-live.smoke.ts",
   "bin/smoke/ext-live.smoke.ts",
   "bin/smoke/orca-extension-live.smoke.ts",
-  "bin/smoke/seed-tarball-live.smoke.ts",
-  "bin/smoke/setup-pure-live.smoke.ts",
-  "bin/smoke/spawn-detach-live.smoke.ts",
-  "bin/smoke/up-stack-live.smoke.ts",
   "bin/smoke/up-tls-routes-live.smoke.ts",
   "extensions/connector-core/smoke/feedback.smoke.ts",
   "implementations/auth/smoke/down-manifest-usermode.smoke.ts",

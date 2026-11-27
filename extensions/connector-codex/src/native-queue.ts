@@ -78,7 +78,7 @@ export class CodexController {
     if (this.ready) return this.ready;
     const env: NodeJS.ProcessEnv = { ...this.o.env, CODEX_HOME: this.o.codexHome };
     for (const key of Object.keys(env)) if (key.startsWith("COTAL_")) delete env[key];
-    const child = spawn(this.o.bin, ["app-server"], { env, stdio: ["pipe", "pipe", "ignore"] });
+    const child = spawn(this.o.bin, ["app-server"], { env, stdio: ["pipe", "pipe", "ignore"], windowsHide: true });
     this.child = child;
     const fail = (error: Error) => {
       if (this.child !== child) return;
