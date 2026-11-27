@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmodSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -68,6 +68,45 @@ if (["linux", "darwin"].includes(process.platform)) {
     utimesSync(join(installed, "package.json"), 1, 1);
     assert.equal(repairExecutionInstallModes(installed, () => repairInstallModes(join(scratch, "prefix"))), 0);
     assert.deepEqual(readFileSync(executionDescriptorPath(installed)), published, "a no-op repair leaves the active descriptor unchanged after a manifest touch");
+    {
+      const prefix = join(scratch, "prefix"), binEntry = join(prefix, "bin/cotal");
+      const otherPrefix = join(scratch, "other-prefix"), otherRoot = join(otherPrefix, "lib/node_modules/cotal-ai");
+      const shells = join(scratch, "fnm_multishells"), shell1 = join(shells, "1"), shell2 = join(shells, "2");
+      mkdirSync(join(prefix, "bin"), { recursive: true });
+      mkdirSync(join(otherRoot, "dist"), { recursive: true });
+      mkdirSync(join(otherPrefix, "bin"), { recursive: true });
+      cpSync(join(installed, "dist/cotal.js"), join(otherRoot, "dist/cotal.js"));
+      writeFileSync(join(otherRoot, "dist/cotal-program.js"), "console.log('other installation');\n");
+      writeFileSync(join(otherRoot, "package.json"), oldManifest);
+      symlinkSync("../lib/node_modules/cotal-ai/dist/cotal.js", binEntry);
+      symlinkSync("../lib/node_modules/cotal-ai/dist/cotal.js", join(otherPrefix, "bin/cotal"));
+      mkdirSync(shells, { recursive: true });
+      symlinkSync(prefix, shell1);
+      symlinkSync(prefix, shell2);
+      try {
+        const current = JSON.parse(published.toString("utf8"));
+        const info = lstatSync(shell1, { bigint: true });
+        writeFileSync(executionDescriptorPath(installed), `${JSON.stringify({
+          ...current,
+          launch: { entry: join(shell1, "bin/cotal"), path: shell1, dev: String(info.dev), ino: String(info.ino), birth: String(info.birthtimeNs), ctime: String(info.ctimeNs) },
+        })}\n`, { mode: 0o644 });
+        chmodSync(executionDescriptorPath(installed), 0o644);
+        assert.equal(repairExecutionInstallModes(installed, () => 0), 0);
+        const migrated = JSON.parse(readFileSync(executionDescriptorPath(installed), "utf8"));
+        assert.equal(migrated.launch.entry, join(realpathSync.native(prefix), "bin/cotal"));
+        assert.equal(migrated.launch.path, join(realpathSync.native(installed), "package.json"));
+        rmSync(shell1); symlinkSync(otherPrefix, shell1);
+        const viaShell2 = spawnSync(process.execPath, [join(shell2, "bin/cotal"), "--version"], { encoding: "utf8", cwd: scratch, timeout: 15_000 });
+        assert.equal(viaShell2.status, 0, viaShell2.stderr);
+        assert.equal(viaShell2.stdout.trim(), "new generation");
+      } finally {
+        writeFileSync(executionDescriptorPath(installed), published);
+        chmodSync(executionDescriptorPath(installed), 0o644);
+        rmSync(join(prefix, "bin"), { recursive: true, force: true });
+        rmSync(otherPrefix, { recursive: true, force: true });
+        rmSync(shells, { recursive: true, force: true });
+      }
+    }
     assert.equal(retireSupersededExecutionDescriptor(installed), false, "active matching descriptor is never retired");
     for (const [path, mode] of [[join(installed, "dist/cotal.js"), 0o755], [store, 0o755], [executionDescriptorPath(installed), 0o644]] as const)
       assert.equal(lstatSync(path).mode & 0o777, mode, `${path} stays readable by the other accounts that run this package`);

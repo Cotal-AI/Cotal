@@ -10,16 +10,16 @@
     {
       "name": "stopped initial dial retains its connection failure",
       "file": "packages/core/src/endpoint.ts",
-      "find": "    try {\n      await this.connectAndBind();\n    } catch (error) {\n      if (!this.lifecycle.stopped) throw error;\n    }",
-      "replace": "    await this.connectAndBind();",
+      "find": "    try {\n      await this.connection.connectAndBind();\n    } catch (error) {\n      if (!this.lifecycle.stopped) throw error;\n    }",
+      "replace": "    await this.connection.connectAndBind();",
       "expectRed": "hosted_custody_lifecycle",
       "afterRestore": "pnpm --filter @cotal-ai/connector-claude-code... --filter @cotal-ai/auth... build"
     },
     {
       "name": "stopped rebuild dial retains its connection failure",
       "file": "packages/core/src/endpoint-reconnect.ts",
-      "find": "      try {\n        await this.connectAndBind();\n      } catch (error) {\n        if (!this.lifecycle.stopped) throw error;\n      }",
-      "replace": "      await this.connectAndBind();",
+      "find": "      try {\n        await this.parts.connection.connectAndBind();\n      } catch (error) {\n        if (!this.lifecycle.stopped) throw error;\n      }",
+      "replace": "      await this.parts.connection.connectAndBind();",
       "expectRed": "hosted_rebuild-stop_lifecycle",
       "afterRestore": "pnpm --filter @cotal-ai/connector-claude-code... --filter @cotal-ai/auth... build"
     },
@@ -58,8 +58,8 @@
     {
       "name": "initial start hides a live bind failure",
       "file": "packages/core/src/endpoint.ts",
-      "find": "    try {\n      await this.connectAndBind();\n    } catch (error) {\n      if (!this.lifecycle.stopped) throw error;\n    }",
-      "replace": "    await this.connectAndBind().catch(() => {});",
+      "find": "    try {\n      await this.connection.connectAndBind();\n    } catch (error) {\n      if (!this.lifecycle.stopped) throw error;\n    }",
+      "replace": "    await this.connection.connectAndBind().catch(() => {});",
       "expectRed": "a bind failure before stop still rejects the caller",
       "afterRestore": "pnpm --filter @cotal-ai/connector-claude-code... --filter @cotal-ai/auth... build"
     }
