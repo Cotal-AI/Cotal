@@ -224,7 +224,12 @@ export async function refreshServiceForApplication(opts: InstallOptions, dirs: r
 
 async function refreshApplicationsUnderClosure(opts: InstallOptions, steps: SetupStep[]): Promise<boolean> {
   const installation = installedDaemonIdentity(opts.paths, opts.daemonHome);
-  if (!installation.same) throw new CommandFailure("refused", "CONFLICT", `the daemon at ${installation.installed} cannot refresh applications from this installation`, { remedy: `run setup from ${installation.installed}` });
+  // A Windows task pins no PATH: restarted unchanged, its daemon reads the current user PATH, whichever
+  // installation registered it, and keeps the version it runs. A unit or LaunchAgent is rewritten, which
+  // only its own installation does. The message names no command line; the terminal remedy still does.
+  if (!installation.same && process.platform !== "win32") throw new CommandFailure("refused", "CONFLICT", "the background service was set up by another Cotal installation, so this one cannot refresh it", { remedy: `run setup from ${installation.installed}` });
+  const { version: _version, ...unversioned } = opts;
+  const expected: InstallOptions = installation.same ? opts : unversioned;
   const refresh = planInstalledPathRefresh(opts.paths, opts.daemonHome);
   if (!refresh && process.platform !== "win32") return false;
   opts.report("service: waiting for hosted Managers to confirm readiness and an idle restart fence; readiness observation waits up to 15s", { step: "manager", outcome: "running", detail: "waiting for hosted Managers to confirm readiness and an idle restart fence" });
@@ -235,7 +240,7 @@ async function refreshApplicationsUnderClosure(opts: InstallOptions, steps: Setu
   }
   try {
     refresh?.();
-    await restartInstalled(opts.paths, opts.daemonHome, true, opts.version, restartProgress(opts));
+    await restartInstalled(opts.paths, opts.daemonHome, true, expected.version, restartProgress(opts));
   } catch (error) {
     try { if (process.platform !== "win32") await managerViaDaemon(opts, { op: "managers-abort-restart" }); }
     catch { /* Preserve the installation or native service failure. */ }
@@ -244,7 +249,7 @@ async function refreshApplicationsUnderClosure(opts: InstallOptions, steps: Setu
   const detail = process.platform === "win32" ? "restarted the service to read the current user PATH" : "refreshed the pinned PATH from this invocation, keeping existing directories";
   steps.push({ step: "install", outcome: "path-refreshed", detail });
   opts.report(`service: ${detail}`, steps.at(-1));
-  await waitForDaemon(opts, 60);
+  await waitForDaemon(expected, 60);
   return true;
 }
 

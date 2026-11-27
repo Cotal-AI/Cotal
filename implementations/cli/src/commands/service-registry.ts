@@ -123,6 +123,13 @@ function stackMemberRemovalRemedy(root: string, space: string, json: boolean): s
   return `from ${oneLine(root)}, run ${stop}, then run ${forget}`;
 }
 
+/** The refusal for a `show` or `remove` whose name matches no saved definition and no preset. Its
+ *  remedy names the inventory command in the caller's output mode. */
+function missingSavedService(target: { space: string; executionHost: string }, requested: string, space: string, presentation: ReturnType<typeof presentationOf>): CommandFailure {
+  const inventory = `cotal service${targetWords({ space })}${presentation === "rich" ? "" : ` --${presentation}`}`;
+  return new CommandFailure("refused", "TARGET_NOT_FOUND", "no saved service definition has this full name in the selected space", { target: { ...target, name: requested }, remedy: `see the saved definitions with ${codeSpan(inventory)}` });
+}
+
 export async function service(args: ParsedArgs, commandName = "service"): Promise<void> {
   validateServiceArguments(args);
   const presentation = presentationOf(args.values);
@@ -348,10 +355,7 @@ export async function service(args: ParsedArgs, commandName = "service"): Promis
     if (exact) return exact;
     const preset = findServicePreset(requested);
     const row = preset && presetDefinition(space, root, preset, requested, mode);
-    if (!row) {
-      const inventory = `cotal service${targetWords({ space })}${presentation === "rich" ? "" : ` --${presentation}`}`;
-      throw new CommandFailure("refused", "TARGET_NOT_FOUND", "no saved service definition has this full name in the selected space", { target: { ...target, name: requested }, remedy: `see the saved definitions with ${codeSpan(inventory)}` });
-    }
+    if (!row) throw missingSavedService(target, requested, space, presentation);
     announcePresetTarget({ requested, name: row.name, preset: preset.name, saved: null }, space, presentation, args.values.space !== undefined);
     return row;
   }
