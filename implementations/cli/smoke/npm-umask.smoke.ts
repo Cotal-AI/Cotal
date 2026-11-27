@@ -219,6 +219,32 @@ async function verifyUnreadableOwnedModeRepairWarning(
   }
 }
 
+async function verifyWritableExtensionStagesSkipped(
+  stageParent: string, stageNames: readonly string[], workDir: string, cleanEnv: NodeJS.ProcessEnv,
+): Promise<void> {
+  const stages = stageNames.map(name => join(stageParent, name));
+  try {
+    for (const stage of stages) {
+      mkdirSync(stage, { mode: 0o700 });
+      writeFileSync(join(stage, "marker.txt"), "foreign-or-unverified\n");
+      chmodSync(join(stage, "marker.txt"), 0o664);
+      chmodSync(stage, 0o777);
+    }
+    for (const pass of [1, 2]) {
+      const res = await runShell("022", "cotal update --self", workDir, cleanEnv);
+      assert.equal(res.status, 0, `stage skip pass ${pass}: ${res.stdout + res.stderr}`);
+      assert.doesNotMatch(res.stdout, /removed group and other write/, `stage skip pass ${pass} leaves stage modes untouched`);
+    }
+    for (const stage of stages) {
+      assert.ok(existsSync(stage), `${stage} survives two already-current cotal update --self runs`);
+      assert.equal(statSync(stage).mode & 0o777, 0o777, `${stage} keeps mode 0777`);
+      assert.equal(statSync(join(stage, "marker.txt")).mode & 0o777, 0o664, `${stage} is not descended into`);
+    }
+  } finally {
+    for (const stage of stages) rmSync(stage, { recursive: true, force: true });
+  }
+}
+
 async function verifyGlobalNpmSelfUpdateModes(): Promise<void> {
   const sandbox = mkdtempSync(join(tmpdir(), "cotal-self-update-modes-"));
   chmodSync(sandbox, 0o700);
@@ -280,6 +306,7 @@ async function verifyGlobalNpmSelfUpdateModes(): Promise<void> {
     const quietRetry = await runShell("022", "cotal update --self", workDir, cleanEnv);
     assert.equal(quietRetry.status, 0, quietRetry.stdout + quietRetry.stderr);
     assert.doesNotMatch(quietRetry.stdout, /removed group and other write/);
+    await verifyWritableExtensionStagesSkipped(cfgCotal, [".extensions.stage-Ab1234"], workDir, cleanEnv);
 
     rmSync(prefix, { recursive: true, force: true });
     mkdirSync(prefix, { recursive: true, mode: 0o755 });
@@ -315,6 +342,11 @@ async function verifyGlobalNpmSelfUpdateModes(): Promise<void> {
     const verAfterCurrentRepair = await runShell("022", "cotal --version", workDir, cleanEnv);
     assert.equal(verAfterCurrentRepair.status, 0, verAfterCurrentRepair.stderr);
     assert.equal(verAfterCurrentRepair.stdout.split("\n")[0], `cotal-ai ${currentVersion}`, "manifest mode repair on an already-current retained generation preserves launcher selection");
+
+    const installKeys = readdirSync(join(cfgCotal, "installs"));
+    assert.equal(installKeys.length, 1, "retained connector reconciliation creates one installation key");
+    const setCotalDir = join(cfgCotal, "installs", installKeys[0]!, "sets", currentVersion, "cotal");
+    await verifyWritableExtensionStagesSkipped(setCotalDir, [".extensions.stage-Cd5678", ".extensions.stage-Ef9012.ready"], workDir, cleanEnv);
 
     await verifyUnreadableOwnedModeRepairWarning(workDir, prefix, installed, cfgCotal, currentVersion, cleanEnv);
   } finally {

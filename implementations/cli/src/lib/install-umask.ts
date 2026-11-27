@@ -1,5 +1,15 @@
-import { chmodSync, lstatSync, readdirSync } from "node:fs";
-import { join } from "node:path";
+import { chmodSync, lstatSync, readdirSync, realpathSync } from "node:fs";
+import { isAbsolute, join, relative, resolve, sep } from "node:path";
+import { globalConfigDir } from "@cotal-ai/core";
+
+function holdsExtensionStages(dir: string, base: string): boolean {
+  if (dir === base) return true;
+  const rel = relative(base, dir);
+  if (!rel || rel.startsWith("..") || isAbsolute(rel)) return false;
+  const parts = rel.split(sep);
+  return parts.length === 5 && parts[0] === "installs" && parts[2] === "sets" &&
+    (parts[4] === ".retired-cotal" || /^cotal(?:-[a-f0-9]{16})?$/.test(parts[4]!));
+}
 
 /** Run an npm spawn with 022 added to the process umask, keeping any stricter bits, then put the
  *  previous umask back as soon as the spawn call returns. The child takes its umask when it is
@@ -16,13 +26,22 @@ export function withInstallUmask<T>(spawn: () => T): T {
 }
 
 /** Remove group and other write from every folder and file under `root` this account owns, without
- *  following a link, and return how many changed; a missing `root` changes nothing. An installer from
+ *  following a link, and return how many changed; a missing `root` changes nothing. Unpublished
+ *  `.extensions.stage-*` directories at the config root and under retained version sets keep their
+ *  modes and are not entered so stage cleanup can test their origin. An installer from
  *  before its 022 umask, or a seed run before its npm children got one, left Cotal's install or its
  *  config folder group-writable under a umask of 0002, and a folder another account can write makes
  *  the protected-path rule refuse what is under it, such as the runtime Node selected as a handler or
  *  a seeded extension. */
 export function repairInstallModes(root: string, onError?: (error: NodeJS.ErrnoException) => void): number {
   if (process.platform === "win32") return 0;
+  const normalize = (p: string): string => isAbsolute(p) ? resolve(p) : p;
+  const rootBase = normalize(root);
+  const configRaw = globalConfigDir();
+  const stageBases = new Set<string>([rootBase, normalize(configRaw)]);
+  try { stageBases.add(realpathSync.native(configRaw)); } catch {}
+  let realRoot: string | undefined;
+  try { realRoot = realpathSync.native(root); } catch {}
   let changed = 0;
   const walk = (path: string): void => {
     let stat;
@@ -50,7 +69,14 @@ export function repairInstallModes(root: string, onError?: (error: NodeJS.ErrnoE
         if (onError) { onError(error as NodeJS.ErrnoException); return; }
         throw error;
       }
-      for (const name of names) walk(join(path, name));
+      const dir = normalize(path);
+      const sub = relative(rootBase, dir);
+      const realDir = realRoot ? (sub ? join(realRoot, sub) : realRoot) : undefined;
+      const skipStages = [...stageBases].some(base => holdsExtensionStages(dir, base) || (realDir !== undefined && holdsExtensionStages(realDir, base)));
+      for (const name of names) {
+        if (skipStages && name.startsWith(".extensions.stage-")) continue;
+        walk(join(path, name));
+      }
     }
   };
   walk(root);

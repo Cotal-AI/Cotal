@@ -27,23 +27,16 @@ function errorCode(error: unknown): string | undefined {
   return typeof code === "string" && code ? code : undefined;
 }
 
-/** Harden owned modes in Cotal's install and config roots while reporting filesystem failures as warnings. */
+/** Harden owned modes in Cotal's install and config roots while reporting walk failures as warnings. */
 export function repairOwnedModes(rt: UpdateRuntime): boolean {
   const install = ownedInstallRoot(rt);
   let changed = false;
   for (const { what, root } of [...(install ? [{ what: "install", root: install }] : []), { what: "config", root: globalConfigDir() }]) {
-    let repaired = 0;
     let failedCode: string | undefined;
     const onError = (error: NodeJS.ErrnoException): void => {
       failedCode ??= errorCode(error) ?? "UNKNOWN";
     };
-    try {
-      repaired = rt.repairInstallModes ? rt.repairInstallModes(root, onError) : repairInstallModes(root, onError);
-    } catch (error) {
-      const code = errorCode(error);
-      if (!code) throw error;
-      failedCode ??= code;
-    }
+    const repaired = rt.repairInstallModes ? rt.repairInstallModes(root, onError) : repairInstallModes(root, onError);
     if (repaired > 0) {
       changed = true;
       rt.out(c.green(`✓ removed group and other write from ${repaired} ${repaired === 1 ? "entry" : "entries"} in Cotal's ${what} at ${root}`));
