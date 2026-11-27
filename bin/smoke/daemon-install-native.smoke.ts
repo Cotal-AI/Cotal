@@ -46,7 +46,8 @@ import { fileURLToPath } from "node:url";
 import { CommandFailure, spaceSegment } from "@cotal-ai/workspace";
 import { mkSecretDir } from "@cotal-ai/core";
 import type { DaemonPaths } from "../daemon/endpoint.js";
-import { assertScheduledEntry, renderDaemonUnit, planUninstall, refreshedDaemonPath, type NativeResult, type NativeRun, type UnitReceipt } from "../daemon/install.js";
+import { assertScheduledEntry, reconcileInstalledSystemdOomPolicy, renderDaemonUnit, planUninstall, refreshedDaemonPath, type NativeResult, type NativeRun, type UnitReceipt } from "../daemon/install.js";
+import { upgradedSystemdOomPolicy } from "../daemon/install-linux-repair.js";
 import { nativeRun } from "../daemon/install-native-run.js";
 import { launchAgentLabel, launchAgentService, missingLaunchAgentProgram, renderLaunchAgent, xmlText } from "../daemon/install-darwin.js";
 import { assertServiceRepairPair, sourceDigest, type ServiceRepairIntent } from "../daemon/service-repair.js";
@@ -137,6 +138,11 @@ try {
       const unit = renderDaemonUnit(join(root, "units"), undefined);
       check("systemd bounds startup and accepts the in-unit readiness helper", unit.bytes.includes("Type=notify\nNotifyAccess=all\nTimeoutStartSec=60\n"));
       check("systemd allows retirement and signals only daemon first", unit.bytes.includes("TimeoutStopSec=90\n") && unit.bytes.includes("KillMode=mixed\n"));
+      check("systemd keeps daemon, Manager and seats running when a child is OOM-killed", unit.bytes.includes("KillMode=mixed\nOOMPolicy=continue\n"));
+      const legacy = unit.bytes.replace("OOMPolicy=continue\n", "");
+      check("stock pre-fix unit upgrades to exact OOMPolicy=continue bytes", upgradedSystemdOomPolicy(legacy) === unit.bytes);
+      check("older Restart=always stock unit upgrades OOMPolicy=continue", upgradedSystemdOomPolicy("[Service]\nExecStart=\"/bin/node\" \"/cotal.js\" daemon serve\nRestart=always\n")?.includes("Restart=always\nOOMPolicy=continue\n") === true);
+      check("unit with explicit OOMPolicy is left unchanged", upgradedSystemdOomPolicy(unit.bytes) === undefined && upgradedSystemdOomPolicy(legacy + "OOMPolicy=stop\n") === undefined);
     } finally { process.argv[1] = entry!; process.execArgv = execArgv; process.env.PATH = path; }
   }
   {
@@ -1037,6 +1043,78 @@ try {
       }
     }
     chmodSync(root, 0o700);
+    {
+      const dir = join(root, "oom-policy-reconcile");
+      for (const name of ["", "home", "cotal", "daemon", "config", "native", "foreign"]) mkdirSync(join(dir, name), { mode: 0o700 });
+      const daemonHome = join(dir, "daemon");
+      const unit = `cotal-daemon-${sha(daemonHome).slice(0, 16)}.service`;
+      const unitPath = join(dir, "config", "systemd", "user", unit);
+      const receiptPath = join(daemonHome, "service-unit.json");
+      const context = { home: join(dir, "home"), config: join(dir, "config"), calls: join(dir, "calls.jsonl"), units: [unit], dropInPaths: "" };
+      const configFile = join(dir, "context.json");
+      writeFileSync(configFile, JSON.stringify(context), { mode: 0o600 });
+      for (const name of ["systemctl", "loginctl"]) writeFileSync(join(dir, "native", name), `#!${process.execPath}\n${tool}`, { mode: 0o700 });
+      const cleanEnv = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_") && !["NODE_OPTIONS", "NODE_PATH"].includes(key)));
+      Object.assign(cleanEnv, { USER: "smoke", LOGNAME: "smoke", HOME: context.home, COTAL_HOME: join(dir, "cotal"), XDG_CONFIG_HOME: context.config, XDG_RUNTIME_DIR: root, XDG_CACHE_HOME: join(dir, "cache"), XDG_STATE_HOME: join(dir, "state"), XDG_DATA_HOME: join(dir, "data"), PATH: `${join(dir, "native")}:/usr/bin:/bin`, DAEMON_UNIT_FIXTURE: configFile, COTAL_SKIP_CONNECTOR_SEED: "1", COTAL_NO_UPDATE_CHECK: "1", DO_NOT_TRACK: "1", NO_COLOR: "1" });
+      const savedEnv = { PATH: process.env.PATH, DAEMON_UNIT_FIXTURE: process.env.DAEMON_UNIT_FIXTURE, XDG_RUNTIME_DIR: process.env.XDG_RUNTIME_DIR };
+      const savedEntry = process.argv[1], savedExecArgv = process.execArgv;
+      const installed = spawnSync(process.execPath, [cli, "daemon", "install", "--daemon-home", daemonHome, "--json"], {
+        cwd: dir,
+        env: cleanEnv,
+        encoding: "utf8",
+        timeout: 30_000,
+      });
+      check("N8 OOMPolicy reconcile fixture installs cleanly", installed.status === 0, { status: installed.status, stdout: installed.stdout, stderr: installed.stderr });
+      const modernSource = readFileSync(unitPath, "utf8");
+      const legacySource = modernSource.replace("OOMPolicy=continue\n", "");
+      const receipt = JSON.parse(readFileSync(receiptPath, "utf8")) as UnitReceipt;
+      const writeLegacy = (text = legacySource) => {
+        writeFileSync(unitPath, text, { mode: 0o600 });
+        writeFileSync(receiptPath, `${JSON.stringify({ ...receipt, unitSha256: sha(text) })}\n`, { mode: 0o600 });
+      };
+      const operationsSince = (offset: number): string[] => readFileSync(context.calls, "utf8").slice(offset).trim().split("\n").filter(Boolean).map(line => (JSON.parse(line) as { operation: string }).operation);
+      try {
+        process.env.PATH = `${join(dir, "native")}:/usr/bin:/bin`;
+        process.env.DAEMON_UNIT_FIXTURE = configFile;
+        process.env.XDG_RUNTIME_DIR = root;
+        process.execArgv = [];
+        process.argv[1] = cli;
+        // 1. Operator drop-in present: leave untouched without daemon-reload or restart.
+        writeLegacy();
+        writeFileSync(configFile, JSON.stringify({ ...context, dropInPaths: `${unitPath}.d/operator.conf` }), { mode: 0o600 });
+        let before = readFileSync(context.calls, "utf8").length;
+        check("N8 drop-in skips in-place OOMPolicy rewrite", reconcileInstalledSystemdOomPolicy({ state: daemonHome }, daemonHome) === false && readFileSync(unitPath, "utf8") === legacySource && !operationsSince(before).includes("daemon-reload") && !operationsSince(before).includes("stop"));
+        // 2. Hand-edited unit (digest mismatch): leave untouched without native unit-read or reload.
+        writeFileSync(configFile, JSON.stringify(context), { mode: 0o600 });
+        writeFileSync(unitPath, `${legacySource}# operator edit\n`, { mode: 0o600 });
+        before = readFileSync(context.calls, "utf8").length;
+        check("N8 hand-edited unit skips in-place OOMPolicy rewrite without native calls", reconcileInstalledSystemdOomPolicy({ state: daemonHome }, daemonHome) === false && readFileSync(unitPath, "utf8").endsWith("# operator edit\n") && operationsSince(before).length === 0);
+        // 3. Foreign installation unit: leave untouched without daemon-reload.
+        for (const name of ["node", "cotal.js"]) writeFileSync(join(dir, "foreign", name), "", { mode: 0o700 });
+        const foreignSource = `[Service]\nExecStart="${join(dir, "foreign", "node")}" "${join(dir, "foreign", "cotal.js")}" daemon serve --daemon-home "${daemonHome}"\nRestart=always\n`;
+        writeLegacy(foreignSource);
+        before = readFileSync(context.calls, "utf8").length;
+        check("N8 foreign installation unit is not rewritten", reconcileInstalledSystemdOomPolicy({ state: daemonHome }, daemonHome) === false && readFileSync(unitPath, "utf8") === foreignSource && !operationsSince(before).includes("daemon-reload"));
+        // 4. Unmodified stock pre-fix unit: rewritten in place + receipt updated + daemon-reload only (never stop/start).
+        writeLegacy();
+        before = readFileSync(context.calls, "utf8").length;
+        check("N8 unmodified stock unit upgrades OOMPolicy=continue in place with daemon-reload only",
+          reconcileInstalledSystemdOomPolicy({ state: daemonHome }, daemonHome) === true
+          && readFileSync(unitPath, "utf8") === modernSource
+          && (JSON.parse(readFileSync(receiptPath, "utf8")) as UnitReceipt).unitSha256 === sha(modernSource)
+          && operationsSince(before).includes("daemon-reload")
+          && !operationsSince(before).some(op => op === "stop" || op === "start"));
+        // 5. Idempotent second run makes no native calls.
+        before = readFileSync(context.calls, "utf8").length;
+        check("N8 upgraded unit needs no second rewrite or reload", reconcileInstalledSystemdOomPolicy({ state: daemonHome }, daemonHome) === false && operationsSince(before).length === 0);
+      } finally {
+        process.argv[1] = savedEntry!;
+        process.execArgv = savedExecArgv;
+        for (const [key, value] of Object.entries(savedEnv)) {
+          if (value === undefined) delete process.env[key]; else process.env[key] = value;
+        }
+      }
+    }
   } else console.log(`  ○ UNTESTED N8: Linux unit-directory preflight; this is ${process.platform}`);
 } finally {
   if (savedHome === undefined) delete process.env.HOME; else process.env.HOME = savedHome;

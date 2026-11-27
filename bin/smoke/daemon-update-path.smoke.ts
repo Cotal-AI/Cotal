@@ -284,7 +284,7 @@ try {
     console.log("PASS bounded generation wait refuses before connector writes and names recovery");
   } else if (generationRace) {
     const after = await status();
-    if (code !== 0 || calls.length || !transition || after.result.version !== version || !output.includes("Built-in connectors")) throw new Error(`replacement reconcile raced activation: ${JSON.stringify({ code, calls, output })}`);
+    if (code !== 0 || calls.join(",") !== "/daemon-reload" || !transition || after.result.version !== version || !output.includes("Built-in connectors") || !readFileSync(unitPath, "utf8").includes("OOMPolicy=continue")) throw new Error(`replacement reconcile raced activation: ${JSON.stringify({ code, calls, output })}`);
     console.log("PASS replacement reconcile waits through endpoint loss without a second restart");
   } else if (process.argv.includes("--unrecorded")) {
     const after = await status();
@@ -293,7 +293,7 @@ try {
     console.log("PASS unrecorded daemon update finishes without native calls");
   } else if (process.argv.includes("--start-fails")) {
     console.log("R2-12 failed native start", JSON.stringify({ code, calls, output }));
-    if (code === 0 || calls.join(",") !== "/stop,/start" || !output.includes("owned native start denied") || !output.includes("cotal daemon start")) throw new Error("R2-12 native failure or recovery command missing");
+    if (code === 0 || (process.argv.includes("--setup-start-fails") ? calls.join(",") !== "/stop,/start" : calls.join(",") !== "/daemon-reload,/stop,/start") || !output.includes("owned native start denied") || !output.includes("cotal daemon start")) throw new Error("R2-12 native failure or recovery command missing");
     console.log("PASS R2-12 native error and daemon start recovery retained");
   } else {
   const after = await status();
@@ -319,8 +319,10 @@ try {
       console.log("PASS stopped foreign installation is left stopped and named by update --self");
     }
   } else {
-    if (code !== 0 || !calls.includes("/stop") || !calls.includes("/start") || after.result.version === "0.0.0") throw new Error(`R2-5 empty daemon not reloaded: ${JSON.stringify({ code, calls, after, output })}`);
-    console.log("PASS R2-5 empty default daemon reload through shipped update");
+    const upgradedUnit = readFileSync(unitPath, "utf8");
+    const upgradedReceipt = JSON.parse(readFileSync(join(paths.state, "service-unit.json"), "utf8"));
+    if (code !== 0 || !calls.includes("/daemon-reload") || !calls.includes("/stop") || !calls.includes("/start") || after.result.version === "0.0.0" || !upgradedUnit.includes("OOMPolicy=continue\n") || upgradedReceipt.unitSha256 !== createHash("sha256").update(upgradedUnit).digest("hex")) throw new Error(`R2-5 empty daemon not reloaded: ${JSON.stringify({ code, calls, after, output, upgradedUnit })}`);
+    console.log("PASS R2-5 empty default daemon reload and OOMPolicy=continue upgrade through shipped update");
     if (!process.argv.includes("--childless")) {
       if (replacement) { await killAndAwaitExit(replacement, "SIGTERM"); replacement = undefined; }
       calls.length = 0;

@@ -12,7 +12,7 @@ import { brokerAddressKey, assertRecordIdentity, CommandFailure, homeCotalDir, r
 import { askManager } from "@cotal-ai/workspace/control";
 import { daemonPaths, daemonUserServiceEnv, EndpointRefusal, type DaemonPaths } from "./endpoint.js";
 import { managerViaDaemon, queryDaemon } from "./client.js";
-import { installedDaemonIdentity, linuxMissingProgram, planUninstall, preflightInstalledDaemon, reconcileMissingShellRuntime, repairMissingInstalledProgram, restartInstalled, startEnabledInstalled, unitReceiptFile } from "./install.js";
+import { installedDaemonIdentity, linuxMissingProgram, planUninstall, preflightInstalledDaemon, reconcileInstalledSystemdOomPolicy, reconcileMissingShellRuntime, repairMissingInstalledProgram, restartInstalled, startEnabledInstalled, unitReceiptFile } from "./install.js";
 import { excludeLifetime, processBirth, readLifetimeRecord } from "./lifetime.js";
 import { isDaemonStatusInterrupted, waitForInstalledDaemonGeneration } from "./update-generation.js";
 import { cleanupExecutionStore } from "../execution-store.js";
@@ -138,6 +138,12 @@ async function collectConnectorSets(): Promise<void> {
       pruneRetainedConnectorConfig(holders);
     } finally { release(); }
   } catch { /* An incomplete inventory or failed collection never fails the update. */ }
+}
+
+function reconcileInstalledLinuxPolicy(): void {
+  if (process.platform !== "linux") return;
+  try { reconcileInstalledSystemdOomPolicy({ state: join(homeCotalDir(), "daemon") }); }
+  catch { /* Unreachable or modified units retain their existing policy without failing update. */ }
 }
 
 function preflightExecutionWithCleanup(): boolean {
@@ -630,7 +636,7 @@ const composed: Command = { ...command, async run(args) {
   if (!(staged && args.values.self === true) && logicalExecutionEntry() && !updateRuntime.checkout() && args.values.check !== true && !args.values.auto && !args.values.notify && !process.env.COTAL_UPDATE_PARENT) cleanupExecutionStore(executionInstallRoot());
   await update(args, runtime);
   if (args.values.check === true || args.values.auto || args.values.notify || process.exitCode || packageCheck === "offline") return;
-  if (packageCheck !== "current") await collectConnectorSets();
+  reconcileInstalledLinuxPolicy(); if (packageCheck !== "current") await collectConnectorSets();
   if (admission && recoveryAdmission?.execution && recoveryAdmission.phase !== "restoring" && process.env.COTAL_UPDATE_PARENT === String(process.ppid)) {
     try {
       const installed = executionInstallRoot();

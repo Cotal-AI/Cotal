@@ -67,3 +67,26 @@ export function observeSystemdRepairUnit(run: NativeRun, receipt: UnitReceipt, s
   if (needsReload !== "no" && !settled) throw conflict();
   return { pid, settled, enabled: enabled === "enabled", invocation };
 }
+
+/** Add OOMPolicy=continue to an unmodified stock unit that has not yet configured OOMPolicy. */
+export function upgradedSystemdOomPolicy(source: string): string | undefined {
+  if (/^[ \t]*OOMPolicy=/m.test(source)) return undefined;
+  if (/^KillMode=mixed$/m.test(source)) return source.replace(/^KillMode=mixed$/m, "KillMode=mixed\nOOMPolicy=continue");
+  if (/^Restart=always$/m.test(source)) return source.replace(/^Restart=always$/m, "Restart=always\nOOMPolicy=continue");
+  return undefined;
+}
+
+/** Skip in-place OOMPolicy rewrite when the user manager reports drop-ins on the unit. */
+export function systemdUnitAllowsInPlacePolicyUpgrade(run: NativeRun, unit: string, unitPath: string, env?: NodeJS.ProcessEnv): boolean {
+  const fields = ["Id", "LoadState", "FragmentPath", "DropInPaths", "NeedDaemonReload"];
+  const read = run("systemctl", ["--user", "--no-ask-password", "--no-pager", "show", unit, "--all", ...fields.map(field => `--property=${field}`)], env, 5000);
+  if (read.status !== 0) return false;
+  const values = new Map<string, string>();
+  for (const line of read.stdout.split("\n").filter(Boolean)) {
+    const at = line.indexOf("="), field = line.slice(0, at), value = line.slice(at + 1);
+    if (at < 1 || !fields.includes(field) || values.has(field) || /[\u0000-\u001f\u007f]/u.test(value)) return false;
+    values.set(field, value);
+  }
+  return values.size === fields.length && values.get("Id") === unit && values.get("LoadState") === "loaded"
+    && values.get("FragmentPath") === unitPath && values.get("DropInPaths") === "";
+}
