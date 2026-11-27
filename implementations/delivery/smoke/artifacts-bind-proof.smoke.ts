@@ -124,7 +124,7 @@ const adoptWhileQuiesced = new DaemonEndpointBinder({ space, servers: "nats://12
 await adoptWhileQuiesced.quiesce("lost the lease");
 let quiescedAdopt: string | undefined;
 try { await adoptWhileQuiesced.adopt({ creds: credsWith0, instanceId, serveId: serve.id, adoptionOpId: "op" }); } catch (e) { quiescedAdopt = (e as Error).message; }
-check("an adoption while the lease is not held binds nothing and says so", quiescedAdopt !== undefined && /not serving its shard/.test(quiescedAdopt), quiescedAdopt);
+check("an adoption while the lease is not held binds nothing and says so", quiescedAdopt !== undefined && /stopped serving its shard before the bind started; nothing was bound/.test(quiescedAdopt), quiescedAdopt);
 
 // ---- the key builders (S13) ----
 const digest = `sha256:${"a".repeat(64)}`;

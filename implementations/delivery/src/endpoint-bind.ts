@@ -40,19 +40,31 @@ import {
 } from "@cotal-ai/core";
 
 /** What a daemon-served endpoint brings to its bind: its name, its built-in contract, the handlers for
- *  its registered commands, and the connections those handlers use. `defs` takes the serving
- *  connection's generation and the fence, so every handler can check them. */
+ *  its registered commands, and the store connections those handlers use. `defs` takes the serving
+ *  connection's generation and the fence, so every handler can check them.
+ *
+ *  Store connections follow the serve candidate (E12): `stage` opens a candidate set from the store
+ *  material without touching what serves now, and proves it (every stream the handlers need exists and
+ *  is reachable on those connections). The binder installs the set with `commit` only after the serve
+ *  candidate is broker-confirmed, and discards it on any refusal, so last-good keeps its serve
+ *  connection AND its store connections. */
 export interface DaemonServedEndpoint {
   endpoint: string;
   cluster: { document: ClusterDocument; rootDigest: string; manifest: ContractClosureManifest; closureDigest: string };
-  /** Open or refresh what the handlers need, from the store material, before a candidate binds.
-   *  Runs on every adoption; a throw refuses the bind and keeps last-good. */
-  prepare?: () => Promise<void>;
+  stage?: () => Promise<StagedStores>;
   defs: (scope: ServeScope) => EpCommandDef[];
   /** The connections the handlers hold, labelled for the native inventory. */
   nativeConnections?: () => { label: string; binding: NativeConnectionBinding }[];
-  /** Close what `prepare` opened. */
+  /** Close the installed store connections. */
   close?: () => Promise<void>;
+}
+
+/** A staged, proven set of store connections, not yet serving. */
+export interface StagedStores {
+  /** Make this set the one the handlers use, and retire the set it replaces. */
+  commit(): Promise<void>;
+  /** Close this set without serving from it. */
+  discard(): Promise<void>;
 }
 
 /** The pinned tuple of an `open` gate. */
@@ -204,7 +216,11 @@ export class DaemonEndpointBinder {
   private served: Served | undefined;
   private unbound: string;
   private leaseHeld = true;
-  private binding: Promise<ServeState> | undefined;
+  /** Moves on every quiesce and close (E11). A bind captures it before its first await and refuses at
+   *  every step once it moved, so a bind started under one lease never installs under the next. */
+  private incarnation = 0;
+  private closed = false;
+  private binding: Promise<unknown> | undefined;
 
   constructor(private readonly opts: {
     space: string;
@@ -229,39 +245,56 @@ export class DaemonEndpointBinder {
    *  any refusal. Binds run one at a time. */
   adopt(args: { creds: string; instanceId: string; serveId: string; adoptionOpId: string }): Promise<ServeState> {
     const run = (this.binding ?? Promise.resolve()).catch(() => undefined).then(() => this.bindCandidate(args));
-    this.binding = run;
+    this.binding = run.catch(() => undefined);
     return run;
   }
 
   private async bindCandidate(args: { creds: string; instanceId: string; serveId: string; adoptionOpId: string }): Promise<ServeState> {
     const { endpoint } = this.opts.endpoint;
-    if (!this.leaseHeld) throw new EpEnvelopeError("unavailable", `${endpoint}: this daemon is not serving its shard; nothing binds`);
+    // Captured BEFORE any await: every await below can span a quiesce and a rearm, and only a bind that
+    // started under the incarnation that still holds may install.
+    const incarnation = this.incarnation;
+    const stillOurs = (step: string): void => {
+      if (this.closed || !this.leaseHeld || this.incarnation !== incarnation)
+        throw new EpEnvelopeError("unavailable", `${endpoint}: the daemon stopped serving its shard ${step}; nothing was bound`);
+    };
+    stillOurs("before the bind started");
     const servePrincipal = principalKey(DEV_OWNER, args.serveId).key;
     const grant = await deriveDaemonServeGrant(await this.opts.jsm(), { space: this.opts.space, endpoint: this.opts.endpoint, instanceId: args.instanceId, servePrincipal });
     assertServeCandidateClaims(args.creds, grant, args.serveId);
-    await this.opts.endpoint.prepare?.();
-    const nc = await dialerFor(this.opts.servers)({
-      servers: this.opts.servers,
-      ...standaloneConnectOpts({ creds: args.creds, tls: this.opts.tls }),
-      name: `cotal-delivery-${endpoint}-serve`,
-      maxReconnectAttempts: -1,
-    });
-    // The candidate's own generation is live from its first request: a request it takes before
-    // `bound()` settles is served by the same handlers against the same stores, and its reply row was
-    // proven by the claims check above. A quiesce during the bind ends it like any other.
-    const generation = ++this.nextGeneration;
-    this.live.add(generation);
+    stillOurs("while the grant was derived");
+    // Stage the store candidates and prove them before anything dials the serve candidate. Nothing that
+    // serves now is touched until the whole set is confirmed.
+    const staged = await this.opts.endpoint.stage?.();
+    let nc: NatsConnection | undefined;
     let handle: EpServeHandle | undefined;
+    // The generation exists, and is live, before the candidate can take a request: a quiesce from here
+    // on ends it.
+    const generation = ++this.nextGeneration;
     try {
+      stillOurs("while the store candidates were proven");
+      this.live.add(generation);
+      nc = await dialerFor(this.opts.servers)({
+        servers: this.opts.servers,
+        ...standaloneConnectOpts({ creds: args.creds, tls: this.opts.tls }),
+        name: `cotal-delivery-${endpoint}-serve`,
+        maxReconnectAttempts: -1,
+      });
+      stillOurs("while the serve candidate dialed");
+      // A request the candidate takes before `bound()` settles is served by the same handlers, against
+      // the last-good store connections until the commit below; its reply row was proven by the claims
+      // check above.
       handle = serveEndpoint(nc, this.opts.space, grant, this.opts.endpoint.defs({ generation, fence: this.fence }), { public: true });
       await handle.bound();
-      if (!this.live.has(generation) || !this.leaseHeld)
-        throw new EpEnvelopeError("unavailable", `${endpoint}: the daemon stopped serving its shard while the candidate bound`);
+      stillOurs("while the serve candidate bound");
+      if (!this.live.has(generation)) throw new EpEnvelopeError("unavailable", `${endpoint}: the candidate's generation ended while it bound`);
+      await staged?.commit();
     } catch (error) {
       this.live.delete(generation);
       try { await handle?.stop(); } catch { /* the connection closes below */ }
-      try { await drainAndClose(nc); } catch { /* already gone */ }
-      this.opts.log(`! ${endpoint}: the candidate serve credential did not bind (${(error as Error).message}); ${this.served ? "the last-good one keeps serving" : "the endpoint stays unbound"}`);
+      if (nc) try { await drainAndClose(nc); } catch { /* already gone */ }
+      try { await staged?.discard(); } catch { /* best effort: the staged set never served */ }
+      this.opts.log(`! ${endpoint}: the candidate did not bind (${(error as Error).message}); ${this.served ? "the last-good serve and store connections keep serving" : "the endpoint stays unbound"}`);
       throw error;
     }
     const state: ServeState = {
@@ -293,6 +326,7 @@ export class DaemonEndpointBinder {
    *  binds again once the lease is proven. */
   async quiesce(cause: string): Promise<void> {
     this.leaseHeld = false;
+    this.incarnation++;
     this.live.clear();
     const served = this.served;
     this.served = undefined;
@@ -302,7 +336,7 @@ export class DaemonEndpointBinder {
 
   /** The lease is proven again. Nothing rebinds by itself: the signer holder's next adoption does. */
   leaseRegained(): void {
-    this.leaseHeld = true;
+    if (!this.closed) this.leaseHeld = true;
   }
 
   /** The serve connection and the handlers' own connections, for the native inventory. */
@@ -314,8 +348,12 @@ export class DaemonEndpointBinder {
     ];
   }
 
+  /** Stop for good: a bind in flight refuses at its next step and is waited for, so nothing it dialed
+   *  outlives the close; then the store connections close. */
   async close(): Promise<void> {
+    this.closed = true;
     await this.quiesce("the daemon is stopping");
+    await this.binding;
     await this.opts.endpoint.close?.();
   }
 }

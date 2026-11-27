@@ -34,17 +34,17 @@ import {
   ARTIFACTS_CAPABILITY, ARTIFACTS_ENDPOINT, ARTIFACTS_LIST_COMMAND, CotalEndpoint, DEV_OWNER, RECORD_KINDS, SERVICE_READY,
   artifactAttachBucket, composeSpaceAuth, createBrokerAuth, createSpaceAccountAuth, credsFingerprint, idFromCreds, provisionAgentDurables,
   isReachable, mintConnectionEvictorCreds, mintCreds, mintLifecycleUid, mintMembershipObserverCreds, newIdentity, readSvcRecordLeader, recordStatusKey,
-  serverConfig, setupSpaceStreams, epAuthBucket, epgateKey, type SecretStore,
+  serverConfig, setupSpaceStreams, epAuthBucket, epgateKey, EpEnvelopeError, type SecretStore,
 } from "@cotal-ai/core";
 import {
-  DAEMON_ENDPOINT_BOOTSTRAPS, DAEMON_ENDPOINT_SERVE_CREDS_KIND, bootstrapDaemonEndpoint, daemonEndpointKey,
+  DAEMON_ENDPOINT_BOOTSTRAPS, DAEMON_ENDPOINT_SERVE_CREDS_KIND, ARTIFACT_SWEEPER_CREDS_KIND, bootstrapDaemonEndpoint, daemonEndpointKey,
   deliveryCredsKey, membershipObserverCredsKey, membershipRwCredsKey, connectionEvictorCredsKey, readDaemonEndpointInstanceId, readDaemonEndpointServeId, renewDaemonEndpoint,
 } from "@cotal-ai/workspace";
 import { SMOKE_BROKER_TOKEN, createSuite, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { startDeliveryService, type DeliveryServiceHandle } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
 
-const EXPECTED_CELLS = 23;
+const EXPECTED_CELLS = 27;
 const { check, finish, passed, failed } = createSuite();
 
 class MemoryStore implements SecretStore {
@@ -140,9 +140,15 @@ try {
   const attach = await new Kvm(sweeperNc).open(artifactAttachBucket(space));
   for (const [i, d] of digests.entries())
     await attach.put(`${channel}.${d.slice(7)}`, JSON.stringify({ state: "attached", confirmerLifecycleUid: "x", name: `f${i}.txt`, mediaType: "text/plain", size: 10 + i, createdAt: now, expiresAt: now + 86_400_000, pinned: false }));
-  // A deeper channel's row and an index row must never appear in this channel's list.
-  await attach.put(`${channel}.deeper.${digests[0]!.slice(7)}`, JSON.stringify({ state: "attached", confirmerLifecycleUid: "x", name: "no", mediaType: "text/plain", size: 1, createdAt: now, expiresAt: now + 1, pinned: false }));
-  await attach.put(`=d.${digests[0]!.slice(7)}.${channel}`, JSON.stringify({}));
+  // A deeper channel's row and an index row, both LIVE and well-formed (E16), must never appear in this
+  // channel's list. The deeper row is a real attachment of `work.artifacts.deeper`, listed there.
+  await attach.put(`${channel}.deeper.${digests[0]!.slice(7)}`, JSON.stringify({ state: "attached", confirmerLifecycleUid: "x", name: "deeper-only.txt", mediaType: "text/plain", size: 1, createdAt: now, expiresAt: now + 86_400_000, pinned: false }));
+  await attach.put(`=d.${digests[0]!.slice(7)}.${channel}`, JSON.stringify({ channel }));
+  // E14: an unpinned row past its expiry, not yet swept, and a pinned row whose expiry is also past.
+  const expiredDigest = digestOf("expired"), pinnedDigest = digestOf("pinned");
+  const expiryChannel = "work.expiry";
+  await attach.put(`${expiryChannel}.${expiredDigest.slice(7)}`, JSON.stringify({ state: "attached", confirmerLifecycleUid: "x", name: "stale.txt", mediaType: "text/plain", size: 1, createdAt: now - 10, expiresAt: now - 1, pinned: false }));
+  await attach.put(`${expiryChannel}.${pinnedDigest.slice(7)}`, JSON.stringify({ state: "attached", confirmerLifecycleUid: "x", name: "kept.txt", mediaType: "text/plain", size: 1, createdAt: now - 10, expiresAt: now - 1, pinned: true }));
 
   const agentOf = async (actor: string, allowSubscribe: string[], token = true) => {
     const uid = mintLifecycleUid();
@@ -169,8 +175,17 @@ try {
   const p2 = page2.ok ? page2.data as { rows: { digest: string }[]; next?: string } : undefined;
   check("after pages to the remaining row and the last page carries no next",
     p2 !== undefined && p2.rows.length === 1 && p2.rows[0]!.digest === digests[2] && p2.next === undefined, page2);
-  check("the list names neither the deeper channel's row nor the digest-index row",
-    [...(p1?.rows ?? []), ...(p2?.rows ?? [])].every((r) => !("name" in r) || (r as { name: string }).name !== "no"));
+  check("the list holds exactly this channel's three rows: no deeper-channel row, no digest-index row",
+    JSON.stringify([...(p1?.rows ?? []), ...(p2?.rows ?? [])].map((r) => r.digest)) === JSON.stringify(digests)
+      && [...(p1?.rows ?? []), ...(p2?.rows ?? [])].every((r) => (r as { name?: string }).name !== "deeper-only.txt"));
+  const deeperMember = await agentOf("deeper", [`${channel}.deeper`]);
+  const deeperList = (await deeperMember.invokeService(ARTIFACTS_ENDPOINT, ARTIFACTS_LIST_COMMAND, { channel: `${channel}.deeper` })).reply;
+  check("the deeper row is live and listed on its own channel, so its absence above is not vacuous",
+    deeperList.ok && JSON.stringify((deeperList.data as { rows: { name: string }[] }).rows.map((r) => r.name)) === JSON.stringify(["deeper-only.txt"]), deeperList);
+  const expiryMember = await agentOf("expiry", [expiryChannel]);
+  const expiryList = (await expiryMember.invokeService(ARTIFACTS_ENDPOINT, ARTIFACTS_LIST_COMMAND, { channel: expiryChannel })).reply;
+  check("an unpinned row past its expiry is not listed before any sweep, and a pinned row past its expiry still is",
+    expiryList.ok && JSON.stringify((expiryList.data as { rows: { digest: string }[] }).rows.map((r) => r.digest)) === JSON.stringify([pinnedDigest]), expiryList);
 
   // ---- a peer outside the channel is refused at the read gate ----
   const peer = await agentOf("outsider", ["other"]);
@@ -183,14 +198,19 @@ try {
     JSON.stringify(unknownChannel.ok ? unknownChannel : unknownChannel.error) === JSON.stringify(refused.ok ? refused : refused.error), unknownChannel);
 
   // ---- an agent with no `artifacts` token cannot even send the request: the broker refuses it ----
+  // E16: pinned to the broker's refusal, not any permission-shaped text. The reply the client builds for
+  // a broker publish denial is `permission-denied` with outcome `not-executed`, and no responder is
+  // attributed because the request never reached one.
   const untokened = await agentOf("untokened", [channel], false);
-  let brokerRefused: string | undefined;
+  let tokenless: { code?: string; outcome?: string; responder?: unknown; thrown?: string } = {};
   try {
-    const r = (await untokened.invokeService(ARTIFACTS_ENDPOINT, ARTIFACTS_LIST_COMMAND, { channel })).reply;
-    if (r.ok) brokerRefused = undefined; else brokerRefused = `${r.error?.code}: ${r.error?.message}`;
-  } catch (e) { brokerRefused = (e as Error).message; }
-  check("an agent that may read the channel but holds no artifacts token is refused before any handler runs",
-    brokerRefused !== undefined && /permission|denied|not permitted|violation/i.test(brokerRefused), brokerRefused);
+    const attributed = await untokened.invokeService(ARTIFACTS_ENDPOINT, ARTIFACTS_LIST_COMMAND, { channel });
+    tokenless = { ...(attributed.reply.ok ? {} : { code: attributed.reply.error?.code, outcome: attributed.reply.error?.outcome }), responder: attributed.responder };
+  } catch (e) {
+    tokenless = e instanceof EpEnvelopeError ? { code: e.code, outcome: e.outcome, thrown: e.message } : { thrown: (e as Error).message };
+  }
+  check("an agent that may read the channel but holds no artifacts token is refused by the broker, not-executed, with no responder",
+    tokenless.code === "permission-denied" && tokenless.outcome === "not-executed" && tokenless.responder === undefined, tokenless);
 
   // ---- a candidate with an extra row never binds; last-good keeps answering ----
   const good = minted!;
@@ -202,15 +222,37 @@ try {
     !badAdopt.ok && (stillGood.data as { state?: { credentialFingerprint?: string } }).state?.credentialFingerprint === credsFingerprint(good), { badAdopt, stillGood });
   const again = (await member.invokeService(ARTIFACTS_ENDPOINT, ARTIFACTS_LIST_COMMAND, { channel, limit: 1 })).reply;
   check("the last-good serve connection still answers list after the refused candidate", again.ok, again);
+  await store.put(daemonEndpointKey(space, ARTIFACTS_ENDPOINT, DAEMON_ENDPOINT_SERVE_CREDS_KIND), good);
+
+  // ---- E12: an under-granted STORE candidate refuses the bind, and last-good keeps BOTH its serve and
+  //      its store connections: an agent's list still answers afterwards. ----
+  const goodSweeper = (await store.get(daemonEndpointKey(space, ARTIFACTS_ENDPOINT, ARTIFACT_SWEEPER_CREDS_KIND)))!;
+  const servedBeforeStore = (await admin.requestDeliveryAdmin("serveState", { endpoint: ARTIFACTS_ENDPOINT }, 10_000)).data as { state?: { credentialFingerprint: string } };
+  // An observer credential dials and authenticates but reads none of the index streams.
+  await store.put(daemonEndpointKey(space, ARTIFACTS_ENDPOINT, ARTIFACT_SWEEPER_CREDS_KIND), await mintCreds(auth, newIdentity(), "observer"));
+  const storeAdopt = await admin.requestDeliveryAdmin("adoptEndpointCreds", { endpoint: ARTIFACTS_ENDPOINT, adoptionOpId: mintLifecycleUid() }, 20_000);
+  const servedAfterStore = (await admin.requestDeliveryAdmin("serveState", { endpoint: ARTIFACTS_ENDPOINT }, 10_000)).data as { state?: { credentialFingerprint: string } };
+  check("a store candidate that cannot read the index streams refuses the bind, naming the store proof, and serveState is unchanged",
+    !storeAdopt.ok && /store credentials do not prove|cannot read stream/.test(storeAdopt.error ?? "")
+      && servedAfterStore.state?.credentialFingerprint === servedBeforeStore.state?.credentialFingerprint, storeAdopt);
+  const afterStoreRefusal = (await member.invokeService(ARTIFACTS_ENDPOINT, ARTIFACTS_LIST_COMMAND, { channel, limit: 1 })).reply;
+  check("after the refused store candidate an agent's list still answers on the last-good store connection",
+    afterStoreRefusal.ok && (afterStoreRefusal.data as { rows: unknown[] }).rows.length === 1, afterStoreRefusal);
+  await store.put(daemonEndpointKey(space, ARTIFACTS_ENDPOINT, ARTIFACT_SWEEPER_CREDS_KIND), goodSweeper);
 
   // ---- renewal: the same registration, the same epoch, a new credential, adopted on proof ----
   const target = { auth, servers, space, store, log: (l: string) => log.push(l) };
+  // The serve identity persists and the grant is unchanged, and a JWT's `iat` is whole seconds: a
+  // re-mint in the same second as the first mint is byte-identical to it. Cross a second boundary so
+  // "a new credential, not last-good" is decidable rather than timing-dependent.
+  await new Promise((r) => setTimeout(r, 1_050 - (Date.now() % 1_000)));
   const renewed = await renewDaemonEndpoint(target, DAEMON_ENDPOINT_BOOTSTRAPS[ARTIFACTS_ENDPOINT]!());
   const afterRenew = (await admin.requestDeliveryAdmin("serveState", { endpoint: ARTIFACTS_ENDPOINT }, 10_000)).data as { state?: { epoch: number; credentialFingerprint: string } };
   const renewedCreds = await store.get(daemonEndpointKey(space, ARTIFACTS_ENDPOINT, DAEMON_ENDPOINT_SERVE_CREDS_KIND));
   check("renewal re-mints at the same epoch and the daemon binds the new credential, not last-good",
     renewed.epoch === bound.epoch && afterRenew.state?.epoch === bound.epoch && renewedCreds !== undefined
-      && afterRenew.state.credentialFingerprint === credsFingerprint(renewedCreds) && renewedCreds !== good, { renewed, afterRenew });
+      && afterRenew.state.credentialFingerprint === credsFingerprint(renewedCreds) && renewedCreds !== good,
+    { renewed, afterRenew, storedFp: renewedCreds && credsFingerprint(renewedCreds), goodFp: credsFingerprint(good), sameAsGood: renewedCreds === good });
   const afterRenewList = (await member.invokeService(ARTIFACTS_ENDPOINT, ARTIFACTS_LIST_COMMAND, { channel, limit: 1 })).reply;
   check("list answers on the renewed serve connection", afterRenewList.ok, afterRenewList);
 

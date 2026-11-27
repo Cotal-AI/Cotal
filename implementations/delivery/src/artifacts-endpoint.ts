@@ -16,17 +16,21 @@
  * any index read, and every refusal before an effect says `not-executed`.
  */
 import { Kvm, type KV } from "@nats-io/kv";
+import { jetstreamManager } from "@nats-io/jetstream";
 import type { NatsConnection } from "@nats-io/transport-node";
 import {
-  AmbiguousAclAlias, ARTIFACTS_CONTRACTS, ARTIFACTS_ENDPOINT, ARTIFACTS_LIST_COMMAND, ARTIFACTS_LIST_PAGE_LIMIT,
-  artifactAttachBucket, artifactsClusterArtifacts, assertLifecycleToken, channelInAllow, dialerFor, drainAndClose,
-  EpEnvelopeError, liveKvEntries, principalKey, standaloneConnectOpts, watchNativeConnection,
+  AmbiguousAclAlias, ARTIFACTS_COMMANDS, ARTIFACTS_CONTRACTS, ARTIFACTS_ENDPOINT, ARTIFACTS_LIST_COMMAND, ARTIFACTS_LIST_PAGE_LIMIT,
+  artifactAttachBucket, artifactBucket, artifactIndexStreamNames, artifactPossessBucket, artifactReserveBucket,
+  artifactsClusterArtifacts, assertLifecycleToken, channelInAllow, dialerFor, drainAndClose,
+  EpEnvelopeError, liveKvEntries, objectStoreStream, principalKey, standaloneConnectOpts, watchNativeConnection,
   type ArtifactsListInput, type ArtifactsListOutput, type ArtifactsListRow, type EpCaller, type EpServeContext,
   type NativeConnectionBinding,
 } from "@cotal-ai/core";
 import { ARTIFACT_DATA_CREDS_KIND, ARTIFACT_SWEEPER_CREDS_KIND, daemonEndpointKey } from "@cotal-ai/workspace";
 import { attachmentKeyDigest, channelAttachmentsFilter, concreteChannel } from "./artifact-keys.js";
-import type { DaemonServedEndpoint, ServeScope } from "./endpoint-bind.js";
+import { ArtifactIndex } from "./artifact-index.js";
+import { ArtifactObjects } from "./artifact-objects.js";
+import type { DaemonServedEndpoint, ServeScope, StagedStores } from "./endpoint-bind.js";
 import type { ServedEndpointContext } from "./served-endpoints.js";
 
 /** The largest `list` reply this handler builds. The broker's own payload limit still applies. */
@@ -66,14 +70,15 @@ export async function assertMayReadChannel(
   if (!channelInAllow(acl.allowSubscribe, channel) || !channelInAllow(acl.issuedAllowSubscribe, channel)) throw refused;
 }
 
-/** Parse one attachment row into a `list` row; a row that does not parse is skipped, never listed. */
-function listRow(digest: string, raw: unknown): ArtifactsListRow | undefined {
+/** Parse one attachment row into a `list` row; a row that does not parse, is not attached, or is
+ *  unpinned and past its expiry at `now` is skipped, never listed. */
+function listRow(digest: string, raw: unknown, now: number): ArtifactsListRow | undefined {
   const r = raw as Record<string, unknown> | null;
   if (r === null || typeof r !== "object" || r.state !== "attached") return undefined;
   const int = (v: unknown): v is number => typeof v === "number" && Number.isSafeInteger(v) && v >= 0;
   if (typeof r.name !== "string" || typeof r.mediaType !== "string" || !int(r.size) || !int(r.createdAt) || typeof r.pinned !== "boolean")
     return undefined;
-  if (!r.pinned && !int(r.expiresAt)) return undefined;
+  if (!r.pinned && (!int(r.expiresAt) || (r.expiresAt as number) <= now)) return undefined;
   return {
     digest, name: r.name, mediaType: r.mediaType, size: r.size, attachedAt: r.createdAt, pinned: r.pinned,
     ...(r.pinned ? {} : { expiresAt: r.expiresAt as number }),
@@ -82,8 +87,8 @@ function listRow(digest: string, raw: unknown): ArtifactsListRow | undefined {
 
 /** Build the `artifacts` served endpoint over its store material. */
 export function artifactsServedEndpoint(ctx: ServedEndpointContext): DaemonServedEndpoint {
-  const conns: { data?: StoreConn; sweeper?: StoreConn } = {};
-  let attachScan: KV | undefined;
+  /** The installed set: what the handlers read and write now. Replaced only by a committed stage. */
+  let installed: StoreSet | undefined;
 
   const open = async (label: "artifact-data" | "artifact-sweeper", kind: string): Promise<StoreConn> => {
     const creds = await ctx.store.get(daemonEndpointKey(ctx.space, ARTIFACTS_ENDPOINT, kind));
@@ -93,24 +98,52 @@ export function artifactsServedEndpoint(ctx: ServedEndpointContext): DaemonServe
     });
     return { creds, nc, native: watchNativeConnection(nc, `delivery ${label} connection`) };
   };
-  /** Swap to a re-minted credential: dial the new one and bind what it serves first, and only then
-   *  publish it and close the old one, so a failed dial or bind leaves the last-good connection in use.
-   *  Store credentials carry no epoch, so a store connection on a newer credential serves a last-good
-   *  serve connection unchanged. */
-  const refresh = async (slot: "data" | "sweeper", label: "artifact-data" | "artifact-sweeper", kind: string): Promise<boolean> => {
-    const current = conns[slot];
-    const stored = await ctx.store.get(daemonEndpointKey(ctx.space, ARTIFACTS_ENDPOINT, kind));
-    if (current !== undefined && stored === current.creds) return false;
-    const next = await open(label, kind);
-    let scan: KV | undefined;
-    if (slot === "sweeper") {
-      try { scan = await new Kvm(next.nc).open(artifactAttachBucket(ctx.space)); }
-      catch (e) { await drainAndClose(next.nc).catch(() => {}); throw e; }
+
+  /** Open a candidate set from the store material and prove it, without touching the installed set
+   *  (E12, E13). The proof is one STREAM.INFO per stream the handlers need, each on the credential
+   *  that will use it: the three index buckets and the object stream on `artifact-data`, the three
+   *  index buckets on `artifact-sweeper`. A missing stream or an under-granted credential refuses here,
+   *  before the serve candidate dials. A credential that has not changed reuses its live connection. */
+  const stage = async (): Promise<StagedStores> => {
+    const opened: NatsConnection[] = [];
+    const reuseOrOpen = async (slot: "data" | "sweeper", label: "artifact-data" | "artifact-sweeper", kind: string): Promise<StoreConn> => {
+      const current = installed?.[slot];
+      const stored = await ctx.store.get(daemonEndpointKey(ctx.space, ARTIFACTS_ENDPOINT, kind));
+      if (current !== undefined && stored === current.creds) return current;
+      const next = await open(label, kind);
+      opened.push(next.nc);
+      return next;
+    };
+    try {
+      const data = await reuseOrOpen("data", "artifact-data", ARTIFACT_DATA_CREDS_KIND);
+      const sweeper = await reuseOrOpen("sweeper", "artifact-sweeper", ARTIFACT_SWEEPER_CREDS_KIND);
+      await proveStreams(data.nc, [...artifactIndexStreamNames(ctx.space), objectStoreStream(artifactBucket(ctx.space))], "artifact-data");
+      await proveStreams(sweeper.nc, artifactIndexStreamNames(ctx.space), "artifact-sweeper");
+      const kvmData = new Kvm(data.nc);
+      const set: StoreSet = {
+        data, sweeper,
+        attachScan: await new Kvm(sweeper.nc).open(artifactAttachBucket(ctx.space)),
+        index: new ArtifactIndex({
+          attach: await kvmData.open(artifactAttachBucket(ctx.space)),
+          possess: await kvmData.open(artifactPossessBucket(ctx.space)),
+          reserve: await kvmData.open(artifactReserveBucket(ctx.space)),
+        }),
+        objects: new ArtifactObjects(data.nc, ctx.space),
+      };
+      return {
+        commit: async () => {
+          const previous = installed;
+          installed = set;
+          // Retire only connections the new set does not reuse.
+          for (const conn of [previous?.data, previous?.sweeper])
+            if (conn && conn !== set.data && conn !== set.sweeper) await drainAndClose(conn.nc).catch(() => {});
+        },
+        discard: async () => { for (const nc of opened) await drainAndClose(nc).catch(() => {}); },
+      };
+    } catch (e) {
+      for (const nc of opened) await drainAndClose(nc).catch(() => {});
+      throw new Error(`${ARTIFACTS_ENDPOINT}: the store credentials do not prove: ${(e as Error).message}`);
     }
-    conns[slot] = next;
-    if (scan !== undefined) attachScan = scan;
-    if (current) await drainAndClose(current.nc).catch(() => {});
-    return true;
   };
 
   const list = (scope: ServeScope) => async (sctx: EpServeContext): Promise<ArtifactsListOutput> => {
@@ -121,16 +154,21 @@ export function artifactsServedEndpoint(ctx: ServedEndpointContext): DaemonServe
     catch (e) { throw notExecuted("bad-request", `list: ${(e as Error).message}`); }
     await assertMayReadChannel(ctx.delivery, sctx.subject.caller, channel, "list");
     fence.check(generation, "the attachment scan");
-    const kv = attachScan;
+    const kv = installed?.attachScan;
     if (kv === undefined) throw notExecuted("unavailable", "list: the artifacts store connection is not open; retry");
+    if (!sctx.replyFits) throw notExecuted("unavailable", "list: this serving connection cannot measure a reply, so no page is sent");
+    const fitsFn = sctx.replyFits;
     const entries = await liveKvEntries(kv, channelAttachmentsFilter(channel));
+    // Expiry is applied at READ time (E14): an unpinned row past its expiresAt is not listed even
+    // before the sweep turns it into a tombstone.
+    const now = Date.now();
     const rows: ArtifactsListRow[] = [];
     for (const e of entries) {
       let digest: string;
       try { digest = attachmentKeyDigest(channel, e.key); } catch { continue; }
       let parsed: unknown;
       try { parsed = e.json(); } catch { continue; }
-      const row = listRow(digest, parsed);
+      const row = listRow(digest, parsed, now);
       if (row !== undefined) rows.push(row);
     }
     rows.sort((a, b) => (a.digest < b.digest ? -1 : a.digest > b.digest ? 1 : 0));
@@ -138,37 +176,59 @@ export function artifactsServedEndpoint(ctx: ServedEndpointContext): DaemonServe
     const start = after === undefined ? 0 : rows.findIndex((r) => r.digest > after);
     const remaining = start < 0 ? [] : rows.slice(start);
     const limit = Math.min(args.limit ?? ARTIFACTS_LIST_PAGE_LIMIT, ARTIFACTS_LIST_PAGE_LIMIT);
+    const envelope = (candidate: ArtifactsListRow[]): ArtifactsListOutput =>
+      candidate.length < remaining.length && candidate.length > 0 ? { rows: candidate, next: candidate[candidate.length - 1].digest } : { rows: candidate };
+    // Cut the page until the ACTUAL envelope (rows plus `next`) fits one broker message. A page that
+    // will not fit even as one row is the named floor refusal, never an unchecked send (E14).
     let page = remaining.slice(0, limit);
-    const fits = (candidate: ArtifactsListRow[]): boolean => {
-      const more = candidate.length < remaining.length;
-      const out: ArtifactsListOutput = more && candidate.length > 0 ? { rows: candidate, next: candidate[candidate.length - 1].digest } : { rows: candidate };
-      return sctx.replyFits ? sctx.replyFits(out, LIST_REPLY_CEILING) : true;
-    };
-    // Cut the page until it fits one broker message; one row always fits a sane broker.
-    while (page.length > 1 && !fits(page)) page = page.slice(0, Math.max(1, Math.floor(page.length / 2)));
+    while (page.length > 0 && !fitsFn(envelope(page), LIST_REPLY_CEILING)) page = page.slice(0, page.length === 1 ? 0 : Math.max(1, Math.floor(page.length / 2)));
+    if (page.length === 0 && remaining.length > 0)
+      throw notExecuted("failed-precondition", "list: one row does not fit the broker's message limit, so no page can be sent");
+    if (!fitsFn(envelope(page), LIST_REPLY_CEILING))
+      throw notExecuted("failed-precondition", "list: an empty page does not fit the broker's message limit");
     fence.check(generation, "the list reply");
-    const more = page.length < remaining.length;
-    return more && page.length > 0 ? { rows: page, next: page[page.length - 1].digest } : { rows: page };
+    return envelope(page);
   };
 
   return {
     endpoint: ARTIFACTS_ENDPOINT,
     cluster: artifactsClusterArtifacts(),
-    prepare: async () => {
-      await refresh("data", "artifact-data", ARTIFACT_DATA_CREDS_KIND);
-      await refresh("sweeper", "artifact-sweeper", ARTIFACT_SWEEPER_CREDS_KIND);
-    },
-    defs: (scope) => [{ command: ARTIFACTS_LIST_COMMAND, contract: ARTIFACTS_CONTRACTS[ARTIFACTS_LIST_COMMAND]!, handler: list(scope) }],
+    stage,
+    // Every ephemeral command in the contract needs a def (SPEC 13.9). The put, fetch, confirm and pin
+    // handlers land at checkpoint 2; until then each refuses before any effect.
+    defs: (scope) => ARTIFACTS_COMMANDS.map((command) => ({
+      command, contract: ARTIFACTS_CONTRACTS[command]!,
+      handler: command === ARTIFACTS_LIST_COMMAND ? list(scope) : async () => {
+        throw new EpEnvelopeError("unimplemented", `${command}: not served yet`, undefined, "not-executed");
+      },
+    })),
     nativeConnections: () => [
-      ...(conns.data ? [{ label: "artifact-data", binding: conns.data.native.binding() }] : []),
-      ...(conns.sweeper ? [{ label: "artifact-sweeper", binding: conns.sweeper.native.binding() }] : []),
+      ...(installed ? [{ label: "artifact-data", binding: installed.data.native.binding() }] : []),
+      ...(installed ? [{ label: "artifact-sweeper", binding: installed.sweeper.native.binding() }] : []),
     ],
     close: async () => {
-      const { data, sweeper } = conns;
-      conns.data = undefined;
-      conns.sweeper = undefined;
-      attachScan = undefined;
-      await Promise.all([data, sweeper].map((c) => (c ? drainAndClose(c.nc).catch(() => {}) : undefined)));
+      const set = installed;
+      installed = undefined;
+      if (set) for (const conn of [set.data, set.sweeper]) await drainAndClose(conn.nc).catch(() => {});
     },
   };
+}
+
+/** One installed or staged set of store connections and the handles bound on them. */
+interface StoreSet {
+  data: StoreConn;
+  sweeper: StoreConn;
+  attachScan: KV;
+  index: ArtifactIndex;
+  objects: ArtifactObjects;
+}
+
+/** One STREAM.INFO per stream, on this connection: each proves the stream exists and this credential may
+ *  reach it. The first failure names the stream. */
+async function proveStreams(nc: NatsConnection, streams: readonly string[], label: string): Promise<void> {
+  const jsm = await jetstreamManager(nc, { checkAPI: false });
+  for (const stream of streams) {
+    try { await jsm.streams.info(stream); }
+    catch (e) { throw new Error(`${label} cannot read stream ${stream} (${(e as Error).message})`); }
+  }
 }
