@@ -18,6 +18,7 @@ interface SharedHostOptions<Claim extends ExactIdentity, Child extends ExactIden
   childIdentity?: CustodianIdentity<Child>;
   eligiblePayload(payload: SharedLaunchPayload): boolean;
   pinArtifacts?(payload: SharedLaunchPayload): (paths: readonly string[] | undefined) => void;
+  initialIdleMs?: number;
   isolate(id: string, reservation: SeatReservation): SeatIsolation<Child>;
 }
 
@@ -33,12 +34,12 @@ export async function serveSharedHost<Claim extends ExactIdentity, Child extends
   const connections = new Set<Socket>();
   let server: HostListener;
   let held = 0, closing = false, idle: ReturnType<typeof setTimeout>;
-  const armIdle = () => { idle = setTimeout(() => {
+  const armIdle = (ms = 5_000) => { idle = setTimeout(() => {
     if (held) return;
     closing = true;
     server.close();
     for (const connection of connections) connection.destroy();
-  }, 5_000); };
+  }, ms); };
   const launch = async (id: string, payload: SharedLaunchPayload, authorize: () => void): Promise<"admitted" | "not-admitted" | "unknown"> => {
     const claimant = records.readClaim(), reservation = records.reserve(id);
     if (typeof reservation === "string") return reservation;
@@ -102,7 +103,7 @@ export async function serveSharedHost<Claim extends ExactIdentity, Child extends
       connections.add(connection);
       connection.once("close", () => connections.delete(connection));
       accept(connection, peer);
-    }, () => { records.publishHost(); armIdle(); });
+    }, () => { records.publishHost(); armIdle(options.initialIdleMs); });
     server = serverLifetime;
     await serverLifetime.closed;
     records.removeHost();

@@ -124,6 +124,8 @@ async function serve(root: string, name: string): Promise<void> {
       writeWindowsPrivateRecord(windowsBootstrapReceipt(root), { attempt: attempt.value, outcome, host }, 2048);
     const records = windowsHostRecords(slot, host);
     await serveSharedHost({ host, generation: slot.generation, socket: slot.pipe, address: { pipe: slot.pipe, session },
+      // Task Scheduler observation runs in a bounded child process before the dial can authenticate.
+      initialIdleMs: 15_000,
       transport: { ...windowsHostTransport, listen(address, accept, ready) {
         return windowsHostTransport.listen(address, accept, ready, () => recordBootstrap("refused"));
       } },
