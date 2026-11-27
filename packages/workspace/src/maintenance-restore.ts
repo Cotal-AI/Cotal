@@ -507,6 +507,26 @@ export function rearmUnboundRestoreCommitIntent(lock: MaintenanceLock): CommitIn
   }) as CommitIntentRecord;
 }
 
+/**
+ * Record whether an unbound restore has spawned its listener. The write is synced before it
+ * returns, so a caller can spawn after `started` is durable. A bound listener is left unchanged.
+ * Commit intent begins at `not-started`. An older journal has neither value.
+ */
+export function setRestoreListenerSpawn(
+  lock: MaintenanceLock,
+  listenerSpawn: "not-started" | "started",
+): CommitIntentRecord | undefined {
+  const record = currentJournal(lock);
+  if (record.state !== "commit-intent" || record.listenerProof) return undefined;
+  if (record.launch.listenerSpawn === listenerSpawn) return record as CommitIntentRecord;
+  return writeJournal(lock, record, {
+    ...readyFrom(record), state: "commit-intent", restore: record.restore,
+    launch: { ...record.launch, listenerSpawn },
+    ...(record.listenerReplacements ? { listenerReplacements: record.listenerReplacements } : {}),
+    ...carriedTokenHandoff(record),
+  }) as CommitIntentRecord;
+}
+
 /** Fsync the manager's suppression-retaining commit token before requesting finalization. */
 export function recordRestoreManagerCommit(
   lock: MaintenanceLock,
