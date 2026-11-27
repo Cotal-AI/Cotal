@@ -1,5 +1,5 @@
 import { spawn as spawnProcess } from "node:child_process";
-import { realpathSync, rmSync, statSync } from "node:fs";
+import { rmSync } from "node:fs";
 import { constants as osConstants } from "node:os";
 import { resolve as resolvePath } from "node:path";
 import {
@@ -85,7 +85,7 @@ import { askSpawnPlace } from "../lib/manager-choice.js";
 import { canPrompt } from "./meshes-wizard.js";
 import { listDeclaredChannels, listDeclaredRoles, listPersonaNames } from "../lib/personas.js";
 import { personaCatalog, unreadablePersona } from "../lib/persona-files.js";
-import { brokenPersonaLink, callerHarness, checkSpawnExpiryTarget, directPersonaPath, missingConnector, missingHarnessExecutables, missingPersona, missingPersonaFailure, nonDirectoryPersonaPath, spawnPersona, spawnUsesManager, type PersonaSite } from "../lib/spawn-defaults.js";
+import { brokenPersonaLink, callerHarness, checkSpawnExpiryTarget, directPersonaPath, directSpawnCwd, missingConnector, missingHarnessExecutables, missingPersona, missingPersonaFailure, nonDirectoryPersonaPath, spawnPersona, spawnUsesManager, type PersonaSite } from "../lib/spawn-defaults.js";
 import { writeDefaultPersonaForLaunch } from "../lib/default-persona.js";
 import { spawnLaunchPreview } from "./spawn-preview.js";
 import { protectedCredentialReference, readLocalRecordSource } from "../lib/protected-records.js";
@@ -487,21 +487,7 @@ export async function spawn(args: ParsedArgs): Promise<void> {
     stderrLine("✗ ", "a foreground spawn does not take --creds; omit it to launch in this terminal", c.red);
     process.exit(1);
   }
-  let launchCwd: string | undefined;
-  if (values.cwd !== undefined) {
-    const requestedCwd = resolvePath(values.cwd);
-    let reason: string | undefined;
-    try {
-      launchCwd = realpathSync(requestedCwd);
-      if (!statSync(launchCwd).isDirectory()) reason = "is not a directory";
-    } catch (error) {
-      const code = (error as NodeJS.ErrnoException).code;
-      reason = code === "ENOENT" ? "does not exist" : code === "ENOTDIR" ? "is not a directory" : `cannot be used (${oneLine((error as Error).message)})`;
-    }
-    if (reason !== undefined) throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `--cwd ${JSON.stringify(requestedCwd)} ${reason}. Nothing was launched.`, {
-      target: { path: requestedCwd }, remedy: "pass an existing directory to --cwd",
-    });
-  }
+  const launchCwd = values.cwd === undefined ? undefined : directSpawnCwd(values.cwd, values.space);
 
   // An enrollment may bootstrap the stock remote user-mesh record before normal target resolution.
   // Redeem only when the named space is not registered; an existing entry defers redemption until
