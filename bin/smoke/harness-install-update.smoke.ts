@@ -20,7 +20,8 @@ const root = mkdtempSync(join(tmpdir(), "harness-install-update-"));
 let checks = 0;
 const check = (ok: unknown, what: string) => { assert.ok(ok, what); checks++; };
 
-const registry = createServer((_request, response) => { response.setHeader("content-type", "application/json"); response.end(JSON.stringify({ name: "cotal-ai", "dist-tags": { latest: version }, versions: { [version]: { name: "cotal-ai", version } } })); });
+let served = 0;
+const registry = createServer((_request, response) => { served++; response.setHeader("content-type", "application/json"); response.end(JSON.stringify({ name: "cotal-ai", "dist-tags": { latest: version }, versions: { [version]: { name: "cotal-ai", version } } })); });
 await new Promise<void>(resolve => registry.listen(0, "127.0.0.1", resolve));
 for (const leaf of ["home", "cotal", "config", "rt", "cache", "data", "state", "tmp"]) mkdirSync(join(root, leaf), { mode: 0o700 });
 const env: NodeJS.ProcessEnv = {
@@ -30,6 +31,17 @@ const env: NodeJS.ProcessEnv = {
   COTAL_ALLOW_CHECKOUT_SEED: "1", COTAL_TELEMETRY: "off", DO_NOT_TRACK: "1", NO_COLOR: "1",
 };
 const cotal = (args: string[], extra: NodeJS.ProcessEnv = {}) => spawnSync(process.execPath, [cli, ...args], { env: { ...env, ...extra }, cwd: root, encoding: "utf8", timeout: 300_000 });
+/** For `update`, which reads the registry this process serves: spawnSync would block the event loop that answers it. */
+function cotalAsync(args: string[], extra: NodeJS.ProcessEnv): Promise<{ status: number | null; output: string }> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [cli, ...args], { env: { ...env, ...extra }, cwd: root, stdio: ["ignore", "pipe", "pipe"], timeout: 300_000 });
+    let output = "";
+    child.stdout.on("data", (chunk: Buffer) => { output += chunk; });
+    child.stderr.on("data", (chunk: Buffer) => { output += chunk; });
+    child.once("error", reject);
+    child.once("close", status => resolve({ status, output }));
+  });
+}
 const manifest = () => JSON.parse(readFileSync(join(root, "config", "cotal", "extensions", "extensions.json"), "utf8")) as { extensions: Array<{ pkg: string; connectors?: unknown }> };
 const entry = () => manifest().extensions.find(ext => ext.pkg === "cotal-connector-oldbad");
 
@@ -54,14 +66,15 @@ try {
   const before = JSON.stringify(entry());
   check((entry()?.connectors as Array<Record<string, unknown>> | undefined)?.length === 1 && !("install" in (entry()!.connectors as Array<Record<string, unknown>>)[0]!), `the cached connector carries no install: ${before}`);
 
-  const update = cotal(["update"], { npm_config_registry: `http://127.0.0.1:${(registry.address() as AddressInfo).port}` });
-  const output = `${update.stdout}${update.stderr}`;
+  const update = await cotalAsync(["update"], { npm_config_registry: `http://127.0.0.1:${(registry.address() as AddressInfo).port}` });
+  const output = update.output;
+  check(served > 0 && output.includes(`Registry latest: ${version}`), `cotal update read this smoke's registry (${served} requests): ${output}`);
   if (update.status !== 0 && /running manager continuity check:/.test(output) && !/invalid install/.test(output)) {
     // The census reads every Manager on the machine, so another home's running Manager stops `update` before its reseed.
     // This smoke starts none. The forced reseed below is the step `update` runs (`runSeed({ force: true })`).
     console.log(`SKIP cotal update exit: a Manager outside this smoke runs on this machine (${/Manager pid \d+/.exec(output)?.[0] ?? "named in the refusal"})`);
   } else {
-    check(update.status === 0 && /Registry latest:/.test(output), `cotal update succeeds with the extension installed: ${output}`);
+    check(update.status === 0, `cotal update succeeds with the extension installed: ${output}`);
   }
   const reseed = cotal(["ext", "seed", "--force"]);
   check(reseed.status === 0, `the forced reseed succeeds: ${reseed.stderr}`);

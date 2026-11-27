@@ -1,10 +1,11 @@
 import type { LifecycleState } from "./endpoint-lifecycle-state.js";
 import type { ConnectionState } from "./endpoint-connection-state.js";
 import type { EndpointIdentity } from "./endpoint-identity.js";
+import type { EndpointParts } from "./endpoint-parts.js";
 import type { ConsumerInfo } from "@nats-io/jetstream";
 import type { KV, KvEntry } from "@nats-io/kv";
 import { TimeoutError } from "@nats-io/transport-node";
-import type { Presence, PresenceAgentEndpoint, PresenceStatus, PresenceCondition, PresencePrompts, AttentionMode, ChannelMode } from "./types.js";
+import type { Presence, PresenceAgentEndpoint, PresenceStatus, PresenceCondition, AttentionMode, ChannelMode } from "./types.js";
 import { processRuntime } from "./process-runtime.js";
 import { lastKvEntries } from "./kv-scan.js";
 import { TTL_RECONCILE_CANARY_KEY } from "./streams.js";
@@ -17,10 +18,6 @@ type PresenceWatch = Awaited<ReturnType<KV["watch"]>>;
 
 /** Live connection dependencies shared with the endpoint's other broker readers. */
 export interface EndpointPresenceDeps {
-  /** The `prompts` field this process's presence carries now, or none (SPEC §6). */
-  prompts: () => PresencePrompts | undefined;
-  /** The `agentEndpoint` field this process's presence carries now, or none (SPEC §6). */
-  agentEndpoint: () => PresenceAgentEndpoint | undefined;
   notLiveMsg: () => string;
   bindWatch: (kv: KV) => Promise<{ iter: PresenceWatch; info: ConsumerInfo } | undefined>;
   retireWatch: (iter: PresenceWatch) => void;
@@ -162,7 +159,7 @@ export class EndpointPresence {
    *  `DrainingConnectionError` out of `reset()` on a timer nothing awaits. */
   private presenceWatchIter?: Awaited<ReturnType<KV["watch"]>>;
 
-  constructor(private readonly identity: Readonly<EndpointIdentity>, private readonly conn: Readonly<ConnectionState>, private readonly lifecycle: Readonly<LifecycleState>, private readonly deps: EndpointPresenceDeps) {}
+  constructor(private readonly identity: Readonly<EndpointIdentity>, private readonly conn: Readonly<ConnectionState>, private readonly lifecycle: Readonly<LifecycleState>, private readonly deps: EndpointPresenceDeps, private readonly parts: Pick<EndpointParts, "principalServe">) {}
 
   private notLiveMsg() { return this.deps.notLiveMsg(); }
   private bindKvWatch(kv: KV) { return this.deps.bindWatch(kv); }
@@ -435,8 +432,8 @@ export class EndpointPresence {
       activeAt: this.activeAt,
       attention: this.attentionMode,
       channelModes: this.channelModes,
-      prompts: this.deps.prompts(),
-      agentEndpoint: this.deps.agentEndpoint(),
+      prompts: this.parts.principalServe.servedPrompts(),
+      agentEndpoint: this.parts.principalServe.servedAgentEndpoint(),
       ts: Date.now(),
     };
     // Wire contract (SPEC §6): an OFFLINE record must not carry the advisory attention fields or
