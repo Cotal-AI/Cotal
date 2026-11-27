@@ -1,7 +1,7 @@
 import "./update-isolation.js";
 import strictAssert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { copyFileSync, cpSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, realpathSync, renameSync, rmdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, realpathSync, renameSync, rmdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join, parse } from "node:path";
@@ -9,7 +9,7 @@ import { pathToFileURL } from "node:url";
 import { claimGlobalNpmUpdateLock, recoveryProcessStartToken, withWindowsUpdateIdentity } from "@cotal-ai/workspace";
 import { countedAssert, emitSentinel } from "../../../bin/smoke/sentinel.mjs";
 import { executeUpdate, updateRuntime, type UpdateRuntime } from "../src/commands/update.js";
-import { installedUpdatePrefix, runGlobalProcess, runNpm, runProcess } from "../src/commands/update-process.js";
+import { installedUpdatePrefix, npmChildGate, runGlobalProcess, runNpm, runNpmAsync, runProcess } from "../src/commands/update-process.js";
 import { npmProjectDirectory } from "../src/lib/npm-invocation.js";
 import { SEED_BUILTINS } from "../src/seed/paths.js";
 import { repairRuntimeEntry } from "./update-runtime-entry.smoke.js";
@@ -183,6 +183,131 @@ assert.equal(cacheUpdate.code, 0, "real CLI and npm update succeed with a user-o
 if (["linux", "darwin"].includes(process.platform)) {
   const lifecycleUpdate = await registryArrivalCell({ scenario: "version-named-node" });
   assert.equal(lifecycleUpdate.code, 0, lifecycleUpdate.output);
+  const gateEnvUpdate = await registryArrivalCell({ scenario: "gate-env" });
+  assert.equal(gateEnvUpdate.code, 0, gateEnvUpdate.output);
+  await assertPosixChildGate();
+}
+
+async function assertPosixChildGate(): Promise<void> {
+  const root = mkdtempSync(join(tmpdir(), "cotal-gate-env-"));
+  const stubBin = join(root, "bin"), archiveCache = join(root, "archive-cache");
+  const globalRoot = join(root, "global-modules"), staging = join(root, "staging"), eqDir = join(root, "eq=dir");
+  for (const dir of [stubBin, archiveCache, globalRoot, staging, eqDir]) mkdirSync(dir, { recursive: true, mode: 0o700 });
+  symlinkSync(process.execPath, join(stubBin, "node"));
+  const probeScript = `#!/usr/bin/env node
+const fs = require("node:fs");
+const path = require("node:path");
+if (process.env.SMOKE_RAN_MARKER) fs.writeFileSync(process.env.SMOKE_RAN_MARKER, String(process.pid));
+let isGroupLeader = false;
+try { process.kill(-process.pid, 0); isGroupLeader = true; } catch {}
+const checkDir = process.env.SMOKE_WORKER_DIR || process.env.npm_config_cache || "";
+const workerBeforeStart = checkDir ? fs.existsSync(path.join(checkDir, ".worker-" + process.pid)) : false;
+let liveRecord = null;
+if (process.env.SMOKE_GLOBAL_ROOT) {
+  try { liveRecord = JSON.parse(fs.readFileSync(path.join(process.env.SMOKE_GLOBAL_ROOT, ".cotal-update-child"), "utf8")); } catch {}
+}
+const stdinText = process.env.SMOKE_READ_STDIN ? fs.readFileSync(0, "utf8") : "";
+const keys = JSON.parse(process.env.SMOKE_KEYS || "[]");
+const picked = Object.fromEntries(keys.map(k => [k, process.env[k]]));
+const leaked = Object.keys(process.env).filter(k => k.startsWith("COTAL_GATE_ENV_") && !keys.includes(k));
+process.stdout.write(JSON.stringify({ pid: process.pid, argv: process.argv.slice(2), stdinText, isGroupLeader, workerBeforeStart, liveRecord, picked, leaked }));
+`;
+  writeFileSync(join(stubBin, "npm"), probeScript, { mode: 0o755 });
+  const eqCmd = join(eqDir, "probe=cmd");
+  writeFileSync(eqCmd, probeScript, { mode: 0o755 });
+  const tricky: Record<string, string> = {
+    "npm_config_//127.0.0.1:4873/:_authToken": "-lead\nline2'single\"double$(echo bad)`bad`*",
+    "npm_config_@cotal-ai:registry": "https://127.0.0.1:4874/\n'\"-scope",
+    "npm_config_strict-ssl": "false",
+    "npm_config_https-proxy": "-http://proxy'\"example:8080",
+    COTAL_GATE_ENV_0: "-caller\n'\"carrier",
+  };
+  const keysJson = JSON.stringify(Object.keys(tricky));
+  const baseEnv = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("COTAL_")));
+  const savedEnv = new Map<string, string | undefined>();
+  const patchKeys = ["PATH", "SMOKE_WORKER_DIR", "SMOKE_KEYS", ...Object.keys(tricky)];
+  for (const key of patchKeys) savedEnv.set(key, process.env[key]);
+  try {
+    process.env.PATH = `${stubBin}${delimiter}${baseEnv.PATH ?? ""}`;
+    process.env.SMOKE_WORKER_DIR = archiveCache;
+    process.env.SMOKE_KEYS = keysJson;
+    Object.assign(process.env, tricky);
+    const asyncResult = await runNpmAsync(["view", "-leading", "a'b\"c\nd"], archiveCache);
+    assert.equal(asyncResult.status, 0, asyncResult.stderr || asyncResult.error);
+    const asyncReport = JSON.parse(asyncResult.stdout);
+    assert.equal(asyncReport.workerBeforeStart, true, "runNpmAsync publishes .worker-<pid> before npm starts");
+    assert.equal(asyncReport.isGroupLeader, true, "runNpmAsync keeps detached process group across exec");
+    assert.deepEqual(asyncReport.argv, ["view", "-leading", "a'b\"c\nd"]);
+    assert.deepEqual(asyncReport.picked, tricky);
+    assert.deepEqual(asyncReport.leaked, []);
+  } finally {
+    for (const [key, value] of savedEnv) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+  try {
+    const childEnv: NodeJS.ProcessEnv = {
+      ...baseEnv, PATH: `${stubBin}${delimiter}${baseEnv.PATH ?? ""}`,
+      SMOKE_GLOBAL_ROOT: globalRoot, SMOKE_KEYS: keysJson, ...tricky,
+    };
+    const globalResult = await runGlobalProcess(globalRoot, "install", "npm", ["install", "-leading", "x'y\"z\nw"], childEnv, false, false, staging);
+    assert.equal(globalResult.status, 0, globalResult.stderr || globalResult.error);
+    const globalReport = JSON.parse(globalResult.stdout);
+    assert.equal(globalReport.isGroupLeader, true);
+    assert.deepEqual(globalReport.argv, ["install", "-leading", "x'y\"z\nw"]);
+    assert.deepEqual(globalReport.picked, tricky);
+    assert.deepEqual(globalReport.leaked, []);
+    assert.equal(globalReport.liveRecord?.phase, "live");
+    if (process.platform === "linux") {
+      assert.equal(globalReport.workerBeforeStart, true, "runGlobalChild publishes .worker-<pid> before npm starts");
+      assert.equal(globalReport.liveRecord?.pid, globalReport.pid, "runGlobalChild marks the exact exec'd npm pid live before permit");
+    }
+    const shells = ["/bin/sh", ...["/bin/dash", "/usr/bin/dash"].filter(s => existsSync(s) && realpathSync(s) !== realpathSync("/bin/sh"))];
+    for (const sh of shells) {
+      for (const denied of [undefined, "refuse\n"]) {
+        const ranMarker = join(root, `denied-${denied ? "token" : "eof"}-${shells.indexOf(sh)}`);
+        const launch = npmChildGate(true, "cotal-gate-smoke", eqCmd, ["should-not-run"], {
+          ...baseEnv, PATH: `${stubBin}${delimiter}${baseEnv.PATH ?? ""}`, SMOKE_RAN_MARKER: ranMarker, ...tricky,
+        });
+        const child = spawn(sh, launch.args, { env: launch.env, detached: true, stdio: ["ignore", "pipe", "pipe", "pipe"] });
+        const permit = child.stdio[3] as import("node:stream").Writable;
+        permit.end(denied);
+        const status = await new Promise<number | null>(resolve => child.once("close", resolve));
+        assert.equal(status, 1, `refused/closed permit under ${sh} must exit 1`);
+        assert.equal(existsSync(ranMarker), false, `refused/closed permit under ${sh} must not start target`);
+      }
+      const fdCheck = npmChildGate(true, "cotal-gate-smoke", "/bin/sh", ["-c", "(: <&3) 2>/dev/null && exit 9 || exit 0"], {
+        ...baseEnv, ...tricky,
+      });
+      const fdChild = spawn(sh, fdCheck.args, { env: fdCheck.env, detached: true, stdio: ["ignore", "pipe", "pipe", "pipe"] });
+      (fdChild.stdio[3] as import("node:stream").Writable).end("run\n");
+      assert.equal(await new Promise<number | null>(resolve => fdChild.once("close", resolve)), 0, `${sh} gate closes fd 3 before exec`);
+      const workerDir = mkdtempSync(join(root, "direct-worker-"));
+      const launch = npmChildGate(true, "cotal-gate-smoke", eqCmd, ["-leading", "q'w\"e\nr"], {
+        ...baseEnv, PATH: `${stubBin}${delimiter}${baseEnv.PATH ?? ""}`, SMOKE_WORKER_DIR: workerDir, SMOKE_KEYS: keysJson, SMOKE_READ_STDIN: "1", ...tricky,
+      });
+      const child = spawn(sh, launch.args, { env: launch.env, detached: true, stdio: ["pipe", "pipe", "pipe", "pipe"] });
+      let stdout = "";
+      child.stdout?.on("data", chunk => { stdout += chunk.toString(); });
+      child.stdin?.end("stdin-payload\n");
+      const spawnedPid = child.pid!;
+      writeFileSync(join(workerDir, `.worker-${spawnedPid}`), "", { mode: 0o600 });
+      (child.stdio[3] as import("node:stream").Writable).end("run\n");
+      const status = await new Promise<number | null>(resolve => child.once("close", resolve));
+      assert.equal(status, 0, `${sh} gate failed: ${stdout}`);
+      const report = JSON.parse(stdout);
+      assert.equal(report.pid, spawnedPid, `${sh} exec keeps published gate pid`);
+      assert.equal(report.workerBeforeStart, true);
+      assert.equal(report.isGroupLeader, true);
+      assert.equal(report.stdinText, "stdin-payload\n");
+      assert.deepEqual(report.argv, ["-leading", "q'w\"e\nr"]);
+      assert.deepEqual(report.picked, tricky);
+      assert.deepEqual(report.leaked, []);
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 }
 
 function assertSlowProbeFallback(root: string, dispatcher: string, executable: string, path: string,
