@@ -9,15 +9,24 @@ function privateDirectory(info: Stats, uid: number | undefined): boolean {
   return info.isDirectory() && info.uid === uid && (info.mode & 0o077) === 0;
 }
 
-function idleCompileTree(directory: string, cutoff: number): boolean {
+function idleCacheTree(directory: string, cutoff: number, uid?: number): boolean {
   return readdirSync(directory).every(name => {
     const path = join(directory, name);
     const info = lstatSync(path);
-    return info.mtimeMs < cutoff && (info.isDirectory() ? idleCompileTree(path, cutoff) : info.isFile());
+    return info.mtimeMs < cutoff && (uid === undefined || (info.uid === uid && (info.mode & 0o022) === 0)) &&
+      (info.isDirectory() ? idleCacheTree(path, cutoff, uid) : info.isFile());
   });
 }
 
-function removeExpiredCompileScratch(scratch: string, mtimeMs: number, removeReconcileCache: (path: string) => boolean): boolean {
+function idleNpmCache(path: string, cutoff: number, uid: number | undefined): boolean {
+  const info = lstatSync(path);
+  return uid !== undefined && info.isDirectory() && info.uid === uid && (info.mode & 0o022) === 0 &&
+    info.mtimeMs < cutoff && readdirSync(path).every(name =>
+      (name === "content-v2" || name === "index-v5" || name === "tmp") && lstatSync(join(path, name)).isDirectory()) &&
+    idleCacheTree(path, cutoff, uid);
+}
+
+function removeExpiredCompileScratch(scratch: string, mtimeMs: number, removeReconcileCache: (path: string, cutoff: number) => boolean): boolean {
   const cutoff = Date.now() - 60 * 60_000;
   if (mtimeMs >= cutoff) return false;
   const entries = readdirSync(scratch);
@@ -25,13 +34,13 @@ function removeExpiredCompileScratch(scratch: string, mtimeMs: number, removeRec
   if (!entries.includes(compile) || entries.length > 2) return false;
   const cache = join(scratch, compile);
   const info = lstatSync(cache);
-  if (!info.isDirectory() || info.mtimeMs >= cutoff || !idleCompileTree(cache, cutoff)) return false;
+  if (!info.isDirectory() || info.mtimeMs >= cutoff || !idleCacheTree(cache, cutoff)) return false;
 
   const npm = entries.find(name => name !== compile);
   if (npm !== undefined) {
     if (process.platform !== "linux" || !reconcileCacheName.test(npm)) return false;
     const reconcile = join(scratch, npm);
-    if (lstatSync(reconcile).mtimeMs >= cutoff || !removeReconcileCache(reconcile)) return false;
+    if (lstatSync(reconcile).mtimeMs >= cutoff || !removeReconcileCache(reconcile, cutoff)) return false;
   }
   rmSync(cache, { recursive: true, force: true, maxRetries: 3 });
   rmdirSync(scratch);
@@ -62,14 +71,16 @@ export function collectUpdateCaches(parent: string): void {
     }
     catch (error) { return (error as NodeJS.ErrnoException).code === "ESRCH"; }
   };
-  function removeReconcileCache(cache: string): boolean {
+  function removeReconcileCache(cache: string, cutoff: number): boolean {
     if (!privateDirectory(lstatSync(cache), uid)) return false;
     protectedLocalDirectory(cache, "the update cache");
     const files = readdirSync(cache);
     const worker = files.find(name => /^\.worker-[1-9]\d*$/.test(name));
-    if (files.length !== 2 || !worker || !deadOwner(cache) || !absentGroup(Number(worker.slice(".worker-".length)))) return false;
+    if (!worker || files.some(name => name !== ".owner" && name !== worker && name !== "_cacache") ||
+        !deadOwner(cache) || !absentGroup(Number(worker.slice(".worker-".length)))) return false;
     const info = lstatSync(join(cache, worker));
     if (!info.isFile() || info.uid !== uid || info.size !== 0 || (info.mode & 0o077) !== 0) return false;
+    if (files.includes("_cacache") && !idleNpmCache(join(cache, "_cacache"), cutoff, uid)) return false;
     rmSync(cache, { recursive: true, force: true, maxRetries: 3 });
     return true;
   }

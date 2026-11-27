@@ -28,11 +28,25 @@ function reconciliationScratch(parent, worker) {
       symlinkSync(cache, link);
       lutimesSync(link, old, old);
     } else if (shape !== 'compile-only' && shape !== 'fresh-deep') {
-      const recorded = ['dead', 'live', 'pending', 'fresh-recorded'].includes(shape);
+      const populated = ['live', 'pending', 'fresh-npm', 'foreign-npm', 'linked-npm'].includes(shape);
+      const recorded = populated || ['dead', 'fresh-recorded'].includes(shape);
       const npm = mkdtempSync(join(outer, recorded ? 'cotal-update-reconcile-' : 'cotal-update-npm-'));
       if (recorded) {
         writeFileSync(join(npm, '.owner'), '2147483647\nexpired\n', { mode: 0o600 });
         if (shape !== 'pending') writeFileSync(join(npm, `.worker-${shape === 'live' ? worker : 2147483647}`), '', { mode: 0o600 });
+      }
+      if (populated) {
+        const cacache = join(npm, '_cacache');
+        if (shape === 'linked-npm') {
+          symlinkSync(cache, cacache);
+        } else {
+          const content = join(cacache, 'content-v2');
+          const entry = join(content, 'blob');
+          mkdirSync(content, { recursive: true });
+          writeFileSync(entry, 'cached data');
+          if (shape === 'foreign-npm') writeFileSync(join(cacache, 'keep'), 'other content');
+          for (const path of [cacache, content, ...(shape === 'fresh-npm' ? [] : [entry])]) utimesSync(path, old, old);
+        }
       }
       if (shape === 'nonempty') writeFileSync(join(npm, '.keep'), 'other content');
       if (shape === 'shared') chmodSync(npm, 0o750);
@@ -45,7 +59,7 @@ function reconciliationScratch(parent, worker) {
   };
   const expired = ['compile-only', ...(worker ? ['dead'] : [])].map(fixture);
   const retained = ['empty', 'fresh-deep', ...(process.getuid ? ['nonempty', 'shared', 'link', 'mixed', 'recent'] : []),
-    ...(worker ? ['pending', 'fresh-recorded'] : [])]
+    ...(worker ? ['pending', 'fresh-recorded', 'fresh-npm', 'foreign-npm', 'linked-npm'] : [])]
     .map(fixture).map(path => [path, readdirSync(path, { recursive: true }).sort()]);
   return { expired, retained, live: worker && fixture('live') };
 }
@@ -128,8 +142,9 @@ export async function registryArrivalCell({ scenario, entry = join(repo, 'bin/di
     const contention = scenario === 'concurrent'
       ? `if (process.argv.includes('update')) { const deadline = Date.now() + 30000; while (!existsSync(${JSON.stringify(join(root, 'waiter-observed'))})) { if (Date.now() >= deadline) throw new Error('competing updater did not reach the reservation'); Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20); } }\n`
       : '';
-    const hold = reconcileInterrupted && version === target ? `if (process.argv[2] === 'update' && !existsSync(${JSON.stringify(ready)})) { writeFileSync(${JSON.stringify(ready)}, String(process.pid)); ${reconcileOrphan ? `const deadline = Date.now() + 60000; const timer = setInterval(() => { if (existsSync(${JSON.stringify(releaseReconcile)}) || Date.now() >= deadline) clearInterval(timer); }, 20);` : 'setTimeout(() => process.exit(99), 60000);'} }\n` : '';
-    writeFileSync(join(root, 'payload/package/dist/cotal.js'), `#!/usr/bin/env node\nimport { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";\nimport { tmpdir } from "node:os";\nimport { join } from "node:path";\n${contention}${hold}const scratch = mkdtempSync(join(tmpdir(), "reconcile-child-"));\nrmSync(scratch, { recursive: true });\nconsole.log("fixture reconciled with writable temporary directory");\n`, { mode: 0o755 });
+    const fillCache = reconcileOrphan ? `execFileSync('npm', ['cache', 'add', ${JSON.stringify(join(root, `${target}.tgz`))}], { stdio: 'inherit', timeout: 20000 });` : '';
+    const hold = reconcileInterrupted && version === target ? `if (process.argv[2] === 'update' && !existsSync(${JSON.stringify(ready)})) { ${fillCache} writeFileSync(${JSON.stringify(ready)}, String(process.pid)); ${reconcileOrphan ? `const deadline = Date.now() + 60000; const timer = setInterval(() => { if (existsSync(${JSON.stringify(releaseReconcile)}) || Date.now() >= deadline) clearInterval(timer); }, 20);` : 'setTimeout(() => process.exit(99), 60000);'} }\n` : '';
+    writeFileSync(join(root, 'payload/package/dist/cotal.js'), `#!/usr/bin/env node\nimport { execFileSync } from "node:child_process";\nimport { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";\nimport { tmpdir } from "node:os";\nimport { join } from "node:path";\n${contention}${hold}const scratch = mkdtempSync(join(tmpdir(), "reconcile-child-"));\nrmSync(scratch, { recursive: true });\nconsole.log("fixture reconciled with writable temporary directory");\n`, { mode: 0o755 });
     if (staged) {
       const fail = scenario === 'selection-rollback' && version === target
         ? `if (process.argv.includes('update')) { console.error('fixture reconciliation failed'); process.exit(7); }\n` : '';
@@ -857,9 +872,11 @@ exec npm "$@"
         assert.match(readFileSync(join(custody, '.owner'), 'utf8'), new RegExp(`^${updater.pid}\\n[^\\n]+\\n$`));
         assert(existsSync(join(custody, `.worker-${record.pid}`)), 'the running child has a published cache record');
         if (reconcileOrphan) {
-          updater.kill('SIGKILL');
+          const npmCache = join(custody, '_cacache');
+          assert(readdirSync(join(npmCache, 'content-v2'), { recursive: true }).length > 0, 'npm populated the reconciliation cache');
+          updater.kill('SIGHUP');
           writeFileSync(releaseReconcile, 'finish');
-          assert.equal((await first).signal, 'SIGKILL');
+          assert.equal((await first).signal, 'SIGHUP');
           assert.throws(() => process.kill(record.owner, 0), { code: 'ESRCH' });
           const childExited = () => {
             try { return /^[ZX] /.test(readFileSync(`/proc/${record.pid}/stat`, 'utf8').split(') ').at(-1)); }
@@ -872,8 +889,9 @@ exec npm "$@"
           const compile = join(reconcileScratch, 'node-compile-cache');
           mkdirSync(compile, { recursive: true });
           const old = new Date(Date.now() - 61 * 60_000);
-          for (const name of readdirSync(compile, { recursive: true })) utimesSync(join(compile, name), old, old);
-          for (const path of [compile, custody, reconcileScratch]) utimesSync(path, old, old);
+          for (const tree of [compile, npmCache])
+            for (const name of readdirSync(tree, { recursive: true })) utimesSync(join(tree, name), old, old);
+          for (const path of [compile, npmCache, custody, reconcileScratch]) utimesSync(path, old, old);
           // A different installation may run collection while the original update journal remains.
           const otherPrefix = join(root, 'other-prefix');
           mkdirSync(otherPrefix, { mode: 0o700 });
