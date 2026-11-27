@@ -34,7 +34,7 @@ import {
 import { CLI_USER_ACTOR, CommandFailure, agentGrants, checkServer, codeSpan, connectOrThrow, connectSpace, endpointAuth, recordOperationSpace, jsonFlag, plainFlag, presentationOf, writeResult, targetFlags, userAuthStateDir, workspaceSecretStore, type Connection, type ConnectFlags, type OutputWarning, concreteChannelProblem, offlineRecipientNotice, payloadRefused, spaceStreamsExpected } from "@cotal-ai/workspace";
 import { DIAL_TIMEOUT_MS } from "@cotal-ai/workspace/control";
 import { completedFlagValue, completingFlagValue } from "../lib/completion.js";
-import { batchedRead, openTransient, streamGoneAt } from "../lib/transient.js";
+import { batchedRead, namedChannelMode, openTransient, streamGoneAt } from "../lib/transient.js";
 import { streamsAbsent } from "../lib/space-streams.js";
 import { listDeclaredChannels, listDeclaredRoles } from "../lib/personas.js";
 import { personaCatalog } from "../lib/persona-files.js";
@@ -476,19 +476,23 @@ export async function send(args: ParsedArgs): Promise<void> {
     channelPolicy: { registered: boolean; replay: boolean; window: string | null; delivery: string } | null;
   } | undefined;
   let failure: unknown;
+  let bodyPending = !("text" in body);
   try {
     // Check the destination's expected stream. Confirmed absence refuses before publication.
     // An unread check does not refuse, and a missing stream only matters to its own rail.
     // An open space that runs elsewhere gets its streams from its first participant, and this send
     // may be that participant, as a chat session is when it starts (#7045).
-    const route = input.mode === "msg" ? channelRoute(space, ep.principal.owner, ep.principal.actor, input.target, ep.channelRoutingMode() ?? "legacy") : undefined;
+    const route = input.mode === "msg" ? channelRoute(space, ep.principal.owner, ep.principal.actor, input.target,
+      namedChannelMode(ep.channelRoutingMode(), input.target, space)) : undefined;
     const storedOn = route?.stream ?? (input.mode === "dm" ? dmStream(space) : taskStream(space));
     if (spaceStreamsExpected(space, connection.mode)) {
       // The isolated publish requires an acknowledgement from its expected stream. A caller's
       // plugin grant does not include a stream-wide metadata read.
       if ((!route || route.rail.kind === "chat") && await streamGoneAt(connection, storedOn)) throw streamsAbsent(connection);
     } else if (!connection.creds && !connection.bearer) await ep.ensureOpenSpaceStreams();
-    const rest = await bodyRest(body, ep.maxPayload, refusal);
+    const maxPayload = ep.maxPayload;
+    bodyPending = false;
+    const rest = await bodyRest(body, maxPayload, refusal);
     if ("over" in rest) throw tooLarge(ep.maxPayload, rest.over, target);
     const { text } = rest;
     const bytes = Buffer.byteLength(text, "utf8");
@@ -560,6 +564,7 @@ export async function send(args: ParsedArgs): Promise<void> {
     }
     receipt = { kind: "send", messageId, sequence, destination: peer?.card.id ?? input.target, sender: { principal: ep.card.id, kind: ep.card.kind }, stored: true, delivery: null, acceptance: null, completion: null, replyListener: false, replyTo: values["reply-to"] ?? null, bodySource: input.source, mentions: [...new Set(mentions)], channelPolicy: policy };
   } catch (error) { failure = error; }
+  if (bodyPending && !("text" in body) && body.file !== undefined) closeSync(body.fd);
   try { await ep.stop(); }
   catch { warnings.push({ code: "SENDER_CLEANUP_NOT_CONFIRMED", target, message: "Transient observer cleanup was not confirmed. This does not change the storage acknowledgement." }); }
   if (failure !== undefined) throw failure;

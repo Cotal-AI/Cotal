@@ -218,7 +218,7 @@ async function visibleChannelMetadata(connection: Connection, registry: ChannelR
   viewer.on("error", () => {});
   try {
     await viewer.start();
-    if (viewer.channelRoutingMode() !== "isolated") return registry;
+    if (viewer.channelRoutingMode() === "legacy") return registry;
     const channels = Object.fromEntries(Object.entries(registry.channels ?? {}).filter(([name]) => !hasReservedRoot(name)));
     const undecodable = registry.undecodable?.filter(({ key }) => !hasReservedRoot(key));
     return { defaults: registry.defaults, channels, ...(undecodable?.length ? { undecodable } : {}) };

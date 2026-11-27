@@ -50,6 +50,7 @@ import { grantOption, shellWord } from "../lib/endpoint-errors.js";
 import { FlagValueRefusal } from "../lib/flag-value-refusal.js";
 import { withProvisioner } from "../lib/provisioner.js";
 import { resolveSpace } from "../lib/status.js";
+import { namedChannelMode } from "../lib/transient.js";
 import { activityDetail, c, presenceDetail, statusBadge, stderrLine } from "../ui.js";
 
 /** The name a join line shows for another participant. A blank name is not one, so the line uses the id. */
@@ -112,8 +113,8 @@ async function checkCredentialJoin(creds: string, space: string, uid: string, ch
       remedy: "pass --lifecycle-uid with the lifecycle UID that `cotal auth mint <name> --provision` reported for this credential; a different UID cannot bind its inbox",
     });
   const pluginName = channel === PLUGIN_CHANNEL_ROOT || channel.startsWith(`${PLUGIN_CHANNEL_ROOT}.`);
-  const mode = pluginName ? await modeForPlugin() : "legacy";
-  const route = channelRoute(space, "*", "*", channel, mode ?? "legacy");
+  const mode = pluginName ? namedChannelMode(await modeForPlugin(), channel, space) : "legacy";
+  const route = channelRoute(space, "*", "*", channel, mode);
   const history = `$JS.API.CONSUMER.CREATE.${route.stream}.${chatHistDurable(DEV_OWNER, actor, uid)}.${route.subject}`;
   const canRead = route.rail.kind === PLUGIN_CHANNEL_ROOT
     ? projectChannelGrants(permissions, { space, mode: "isolated", principal: { owner: DEV_OWNER, actor, lifecycleUid: uid } })
@@ -438,8 +439,13 @@ async function joinSpace(args: ParsedArgs): Promise<void> {
   const publishPermission = auth.creds === undefined ? undefined
     : importNativeSubjectPermissions(publishClaims === undefined ? {} : { pub: publishClaims }).publish;
   const concreteChannel = isConcreteChannel(channel);
-  const canBroadcast = () => concreteChannel && (publishPermission === undefined ||
-    issuedPermitsSubject(publishPermission, channelRoute(space, ep.principal.owner, ep.principal.actor, channel, ep.channelRoutingMode() ?? "legacy").subject));
+  const canBroadcast = () => {
+    if (!concreteChannel) return false;
+    const mode = ep.channelRoutingMode();
+    if (mode === undefined && (channel === PLUGIN_CHANNEL_ROOT || channel.startsWith(`${PLUGIN_CHANNEL_ROOT}.`))) return false;
+    return publishPermission === undefined || issuedPermitsSubject(publishPermission,
+      channelRoute(space, ep.principal.owner, ep.principal.actor, channel, mode ?? "legacy").subject);
+  };
   const patternBroadcastNotice = "Broadcasts need a concrete channel, not a subscription pattern.";
   const broadcastDenied = () => `this session is read-only on #${channel}: it lacks publish permission; nothing was sent. ` +
     (userConnection

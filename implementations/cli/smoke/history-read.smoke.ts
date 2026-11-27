@@ -221,7 +221,8 @@ async function checkEnabledPluginHistory(): Promise<void> {
   };
   try {
     const daemon = await fixture.startDelivery();
-    const viewer = save("plugin-reader.creds", (await fixture.mintAgent({ read: [channel], post: [channel] })).creds);
+    const reader = await fixture.mintAgent({ read: [channel], post: [channel] });
+    const viewer = save("plugin-reader.creds", reader.creds);
     const writer = save("plugin-writer.creds", (await fixture.mintAgent({ post: [channel, hiddenChannel] })).creds);
     const send = (destination: string, text: string) => run(["send", "-c", destination, text, "--creds", writer, ...scope]);
     const kept = await send(channel, "retained plugin message");
@@ -232,6 +233,9 @@ async function checkEnabledPluginHistory(): Promise<void> {
     const history = (destination: string) => run(["history", destination, "--creds", viewer, ...scope]);
     const retained = await history(channel);
     check("named history reads through the scoped plugin reader", retained.status === 0 && texts(retained).includes("retained plugin message"), shown(retained));
+    const numericPlugin = await run(["history", channel, "--since", "1", "--creds", viewer, ...scope]);
+    check("a CHAT sequence is not interpreted in the isolated plugin stream", numericPlugin.status === 1 &&
+      numericPlugin.envelope?.error?.code === "USAGE_INVALID" && numericPlugin.envelope.error.message.includes("give --since a time"), shown(numericPlugin));
     const denied = await history(hiddenChannel);
     check("a different plugin destination is refused without returning its post",
       denied.status === 2 && denied.envelope?.error?.code === "PERMISSION_DENIED" && !denied.stdout.includes("outside plugin grant"), shown(denied));
@@ -247,7 +251,8 @@ async function checkEnabledPluginHistory(): Promise<void> {
     const grant = whoami.envelope?.result as unknown as { read?: string[]; post?: string[] } | undefined;
     check("offline whoami reads the signed credential's scoped plugin claims", whoami.status === 0 &&
       grant?.read?.join() === channel && grant.post?.join() === channel, shown(whoami));
-    await checkEnabledObserverIsChatOnly(fixture, scope, save, send);
+    await fixture.seedMembership(reader.principal, { live: [fixture.chatChannel, channel], durable: [fixture.chatChannel, hiddenChannel] });
+    await checkEnabledObserverIsChatOnly(fixture, scope, save, send, reader.principal);
 
     const live = follow(["history", channel, "--follow", "--creds", viewer, ...scope]);
     try {
@@ -277,6 +282,7 @@ async function checkEnabledPluginHistory(): Promise<void> {
 async function checkEnabledObserverIsChatOnly(
   fixture: Awaited<ReturnType<typeof startEnabledPluginSpace>>, scope: string[], save: (name: string, creds: string) => string,
   sendPlugin: (destination: string, text: string) => Promise<{ status: number | null }>,
+  member: string,
 ): Promise<void> {
   const observer = save("plugin-negative-observer.creds", await fixture.mintObserver());
   const writer = save("plugin-negative-chat-writer.creds", (await fixture.mintAgent({ post: [fixture.chatChannel] })).creds);
@@ -286,8 +292,12 @@ async function checkEnabledObserverIsChatOnly(
     const outside = await sendPlugin(fixture.channel, "plugin post outside observer scope");
     const chat = await run(["send", "-c", fixture.chatChannel, "ordinary observer live control", "--creds", writer, ...scope]);
     const delivered = ready && await watch.until((line) => line.includes('"type":"event"') && line.includes("ordinary observer live control"));
-    check("an ordinary observer receives CHAT but does not discover either isolated plugin channel or see its posts",
-      outside.status === 0 && chat.status === 0 && delivered && !watch.lines.some((line) =>
+    const ordinaryMembership = await watch.until((line) => {
+      const snapshot = JSON.parse(line).data?.membership?.snapshot as { members?: { id: string; live: string[]; durable: string[] }[] } | undefined;
+      return snapshot?.members?.some((row) => row.id === member && row.live.includes(fixture.chatChannel) && row.durable.includes(fixture.chatChannel)) === true;
+    });
+    check("an ordinary observer receives CHAT and its membership without seeing isolated posts or membership names",
+      outside.status === 0 && chat.status === 0 && delivered && ordinaryMembership && !watch.lines.some((line) =>
         line.includes(fixture.channel) || line.includes(fixture.hiddenChannel) || line.includes("plugin post outside observer scope")), watch.lines.slice(-5));
   } finally {
     await killAndAwaitExit(watch.child, "SIGINT");
@@ -1033,6 +1043,13 @@ try {
     ordinaryWithoutProjection.status === 4 && ordinaryWithoutProjection.envelope?.outcome === "partial" &&
       ordinaryWithoutProjection.envelope.warnings.map((warning) => warning.code).join() === "REPLAY_UNREAD" &&
       texts(ordinaryWithoutProjection).includes("inside scoped follow"), shown(ordinaryWithoutProjection));
+  const unknownRail = await run(["history", `${PLUGIN_CHANNEL_ROOT}.fixture.issue`, "--json", "--creds", restricted]);
+  check("a named plugin history request without mode proof refuses rather than choosing CHAT", unknownRail.status === 2 &&
+    unknownRail.envelope?.error?.code === "PERMISSION_DENIED" && unknownRail.envelope.error.message === "This credential cannot see plugin channels." &&
+    unknownRail.envelope.error.remedy === undefined, shown(unknownRail));
+  const unknownSend = await run(["send", "-c", `${PLUGIN_CHANNEL_ROOT}.fixture.issue`, "unrouted post", "--json", "--creds", restricted]);
+  check("a named plugin send without mode proof refuses before publication", unknownSend.status === 2 &&
+    unknownSend.envelope?.error?.code === "PERMISSION_DENIED" && unknownSend.envelope.error.message === unknownRail.envelope?.error?.message, shown(unknownSend));
   const refusedFollow = follow(["history", "--follow", "--json", "--creds", restricted]);
   try {
     const ended = await refusedFollow.until((line) => line.includes('"type":"end"'));

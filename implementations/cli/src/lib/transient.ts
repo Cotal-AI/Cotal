@@ -1,4 +1,4 @@
-import { CotalEndpoint, DEV_OWNER, channelBucket, chatStream, credsClaims, dmStream, isPublishPermissionDenied, mintCreds, newIdentity, presenceBucket, subjectMatches, taskStream } from "@cotal-ai/core";
+import { CotalEndpoint, DEV_OWNER, PLUGIN_CHANNEL_ROOT, channelBucket, chatStream, credsClaims, dmStream, isPublishPermissionDenied, mintCreds, newIdentity, presenceBucket, subjectMatches, taskStream } from "@cotal-ai/core";
 import { CommandFailure, endpointAuth, type Connection } from "@cotal-ai/workspace";
 import { c } from "../ui.js";
 import { connectOrExit, connectOrThrow } from "./connect.js";
@@ -19,6 +19,15 @@ export interface ConnectValues {
   space?: string;
   server?: string;
   creds?: string;
+}
+
+/** Require routing proof for a named plugin operation, not for ordinary CHAT. */
+export function namedChannelMode(mode: ReturnType<CotalEndpoint["channelRoutingMode"]>, channel: string, space: string): "legacy" | "isolated" {
+  if (mode !== undefined) return mode;
+  if (channel !== PLUGIN_CHANNEL_ROOT && !channel.startsWith(`${PLUGIN_CHANNEL_ROOT}.`)) return "legacy";
+  throw new CommandFailure("refused", "PERMISSION_DENIED", "This credential cannot see plugin channels.", {
+    target: { space, channel },
+  });
 }
 
 /** Resolve where to connect + with what credentials (`--creds` → raw off-registry; user-auth mesh →

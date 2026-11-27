@@ -220,7 +220,6 @@ export class MeshView extends EventEmitter {
   private warning?: string;
   private dirty = true;
   private membership: MembershipView = {};
-  private isolatedMembership = false;
   private membershipWatch?: { stop(): Promise<void> };
   private membershipTimer?: ReturnType<typeof setTimeout>;
 
@@ -288,7 +287,6 @@ export class MeshView extends EventEmitter {
     // A cancelled endpoint start can resolve after stop has cleared the view's timers.
     if (this.stopped) return;
     this.bound = true;
-    this.isolatedMembership = this.chatOnly && this.ep.channelRoutingMode() === "isolated";
     this.setRoster(this.ep.getRoster());
     const receive = (subject: string, msg: CotalMessage | undefined) => {
       if (msg) this.ingest(subject, msg);
@@ -380,10 +378,7 @@ export class MeshView extends EventEmitter {
   }
 
   private scopeMembership(snapshot: MembershipSnapshot): MembershipSnapshot {
-    if (!this.chatOnly) return snapshot;
-    const mode = this.ep.channelRoutingMode();
-    if (mode !== undefined) this.isolatedMembership = mode === "isolated";
-    if (!this.isolatedMembership) return snapshot;
+    if (!this.chatOnly || this.ep.channelRoutingMode() === "legacy") return snapshot;
     const allowed = observerChannelTapSubjects(this.ep) ?? [];
     const visible = (channel: string): boolean => {
       if (channel !== PLUGIN_CHANNEL_ROOT && !channel.startsWith(`${PLUGIN_CHANNEL_ROOT}.`)) return true;

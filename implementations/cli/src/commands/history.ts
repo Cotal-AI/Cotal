@@ -38,6 +38,7 @@ import { declaredFrom } from "./send.js";
 import { completingFlagValue, positionalsForCompletion } from "../lib/completion.js";
 import { listDeclaredChannels } from "../lib/personas.js";
 import { streamsAbsent } from "../lib/space-streams.js";
+import { namedChannelMode } from "../lib/transient.js";
 import { brokerStoreWrite, storeDamageNotice } from "../lib/broker-store-health.js";
 import { scriptLine } from "../watch-data.js";
 import { registryFailure } from "../lib/registry-errors.js";
@@ -379,7 +380,10 @@ async function readHistory(v: FlagValues<typeof historyFlags>, channel: string |
   }
   let stopping = false;
   try {
-    const mode = ep.channelRoutingMode();
+    const admitted = ep.channelRoutingMode();
+    const mode = channel === undefined ? admitted : namedChannelMode(admitted, channel, conn.space);
+    if (mode === "isolated" && channel !== undefined && classifyChannel(channel).kind === PLUGIN_CHANNEL_ROOT && since?.kind === "seq")
+      throw usage("a chat stream sequence cannot select plugin history; give --since a time");
     const chatCursor = mode === "isolated" && channel === undefined && since?.kind === "seq";
     // A follow taps before it reads, so nothing sent between the read and the tap is lost; the
     // snapshot and the live feed are reconciled by message id.
