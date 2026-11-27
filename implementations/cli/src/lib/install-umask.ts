@@ -21,17 +21,37 @@ export function withInstallUmask<T>(spawn: () => T): T {
  *  config folder group-writable under a umask of 0002, and a folder another account can write makes
  *  the protected-path rule refuse what is under it, such as the runtime Node selected as a handler or
  *  a seeded extension. */
-export function repairInstallModes(root: string): number {
+export function repairInstallModes(root: string, onError?: (error: NodeJS.ErrnoException) => void): number {
   if (process.platform === "win32") return 0;
   let changed = 0;
   const walk = (path: string): void => {
-    const stat = lstatSync(path, { throwIfNoEntry: false });
+    let stat;
+    try {
+      stat = lstatSync(path, { throwIfNoEntry: false });
+    } catch (error) {
+      if (onError) { onError(error as NodeJS.ErrnoException); return; }
+      throw error;
+    }
     if (!stat || stat.isSymbolicLink() || stat.uid !== process.getuid!()) return;
     if ((stat.mode & 0o022) !== 0 && (stat.isDirectory() || stat.isFile())) {
-      chmodSync(path, stat.mode & 0o7755);
-      changed++;
+      try {
+        chmodSync(path, stat.mode & 0o7755);
+        changed++;
+      } catch (error) {
+        if (onError) onError(error as NodeJS.ErrnoException);
+        else throw error;
+      }
     }
-    if (stat.isDirectory()) for (const name of readdirSync(path)) walk(join(path, name));
+    if (stat.isDirectory()) {
+      let names: string[];
+      try {
+        names = readdirSync(path);
+      } catch (error) {
+        if (onError) { onError(error as NodeJS.ErrnoException); return; }
+        throw error;
+      }
+      for (const name of names) walk(join(path, name));
+    }
   };
   walk(root);
   return changed;

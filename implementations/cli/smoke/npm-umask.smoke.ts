@@ -181,6 +181,44 @@ async function startSelfUpdateRegistry(sandbox: string, repoBin: string, version
   return { server, serverUrl };
 }
 
+async function verifyUnreadableOwnedModeRepairWarning(
+  workDir: string, prefix: string, installed: string, cfgCotal: string, currentVersion: string, cleanEnv: NodeJS.ProcessEnv,
+): Promise<void> {
+  const unreadablePkgDir = join(installed, "unreadable-owned");
+  const unreadableCfgDir = join(cfgCotal, "unreadable-owned");
+  const unreadableLauncherDir = join(prefix, "unreadable-owned");
+  mkdirSync(unreadablePkgDir, { mode: 0o700 });
+  mkdirSync(unreadableCfgDir, { mode: 0o700 });
+  mkdirSync(unreadableLauncherDir, { mode: 0o700 });
+  chmodSync(unreadablePkgDir, 0o000);
+  chmodSync(unreadableCfgDir, 0o000);
+  chmodSync(unreadableLauncherDir, 0o000);
+  chmodSync(join(installed, "package.json"), 0o664);
+  try {
+    const pkgAndCfgWarn = await runShell("022", "cotal update --self", workDir, cleanEnv);
+    assert.equal(pkgAndCfgWarn.status, 0, pkgAndCfgWarn.stdout + pkgAndCfgWarn.stderr);
+    assert.match(pkgAndCfgWarn.stdout, /removed group and other write from 1 entry in Cotal's install at /);
+    assert.ok(pkgAndCfgWarn.stderr.includes(`Could not finish permission repair in Cotal's install at ${installed} (EACCES).`), pkgAndCfgWarn.stderr);
+    assert.ok(pkgAndCfgWarn.stderr.includes(`Could not finish permission repair in Cotal's config at ${cfgCotal} (EACCES).`), pkgAndCfgWarn.stderr);
+    assert.equal(statSync(join(installed, "package.json")).mode & 0o777, 0o644);
+    const verAfterWarn = await runShell("022", "cotal --version", workDir, cleanEnv);
+    assert.equal(verAfterWarn.status, 0, verAfterWarn.stderr);
+    assert.equal(verAfterWarn.stdout.split("\n")[0], `cotal-ai ${currentVersion}`);
+
+    chmodSync(unreadablePkgDir, 0o700);
+    rmSync(unreadablePkgDir, { recursive: true, force: true });
+    const launcherEnv = { ...cleanEnv, COTAL_LAUNCHER: "1", npm_config_prefix: prefix };
+    const launcherWarn = await runShell("022", "cotal update --self", workDir, launcherEnv);
+    assert.equal(launcherWarn.status, 0, launcherWarn.stdout + launcherWarn.stderr);
+    assert.ok(launcherWarn.stderr.includes(`Could not finish permission repair in Cotal's install at ${prefix} (EACCES).`), launcherWarn.stderr);
+  } finally {
+    for (const dir of [unreadablePkgDir, unreadableCfgDir, unreadableLauncherDir]) {
+      try { chmodSync(dir, 0o700); } catch {}
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+}
+
 async function verifyGlobalNpmSelfUpdateModes(): Promise<void> {
   const sandbox = mkdtempSync(join(tmpdir(), "cotal-self-update-modes-"));
   chmodSync(sandbox, 0o700);
@@ -192,19 +230,30 @@ async function verifyGlobalNpmSelfUpdateModes(): Promise<void> {
   try {
     symlinkSync(join(repoBin, "node_modules"), join(sandbox, "node_modules"));
     for (const dir of ["home", "cotal", "config", "runtime", "tmp", "cache", "work"]) mkdirSync(join(sandbox, dir), { recursive: true, mode: 0o700 });
-    const prefix = join(sandbox, "prefix"), installed = join(prefix, "lib", "node_modules", "cotal-ai");
-    mkdirSync(join(prefix, "bin"), { recursive: true, mode: 0o755 });
-    mkdirSync(join(installed, "dist"), { recursive: true, mode: 0o755 });
-    mkdirSync(join(installed, "scripts"), { recursive: true, mode: 0o755 });
-    cpSync(join(repoBin, "dist"), join(installed, "dist"), { recursive: true });
-    copyFileSync(join(repoBin, "package.json"), join(installed, "package.json"));
-    copyFileSync(join(repoBin, "scripts", "pin-npm-node.cjs"), join(installed, "scripts", "pin-npm-node.cjs"));
-    chmodSync(join(installed, "dist", "cotal.js"), 0o755);
-    symlinkSync("../lib/node_modules/cotal-ai/dist/cotal.js", join(prefix, "bin", "cotal"));
+    const prefix = join(sandbox, "prefix"), installed = join(prefix, "lib", "node_modules", "cotal-ai"), workDir = join(sandbox, "work");
+    mkdirSync(prefix, { recursive: true, mode: 0o755 });
+    const cleanEnv: NodeJS.ProcessEnv = {
+      ...Object.fromEntries(Object.entries(process.env).filter(([k]) => !/^(?:cotal_|npm_config_)/i.test(k))),
+      HOME: join(sandbox, "home"), COTAL_HOME: join(sandbox, "cotal"), XDG_CONFIG_HOME: join(sandbox, "config"),
+      XDG_RUNTIME_DIR: join(sandbox, "runtime"), TMPDIR: join(sandbox, "tmp"), DO_NOT_TRACK: "1", COTAL_TELEMETRY: "off",
+      COTAL_NO_UPDATE_CHECK: "1", PATH: `${join(prefix, "bin")}${delimiter}${process.env.PATH ?? ""}`,
+      npm_config_registry: serverUrl, npm_config_cache: join(sandbox, "cache"), npm_config_audit: "false", npm_config_fund: "false",
+    };
+
+    const initialInstall = await runShell("002", `npm install -g --prefix '${prefix}' cotal-ai@${currentVersion}`, workDir, cleanEnv);
+    assert.equal(initialInstall.status, 0, initialInstall.stdout + initialInstall.stderr);
+    assert.ok(ownedSharedWriteEntries(installed).length > 0, "real npm install -g under umask 002 creates group-writable package entries");
     const siblingFile = join(prefix, "lib", "node_modules", "other-pkg", "index.js");
     mkdirSync(join(prefix, "lib", "node_modules", "other-pkg"), { recursive: true, mode: 0o775 });
     writeFileSync(siblingFile, "module.exports = 1;\n");
     chmodSync(siblingFile, 0o664);
+    const outsideFile = join(sandbox, "outside-file.txt"), outsideDir = join(sandbox, "outside-dir");
+    writeFileSync(outsideFile, "outside\n");
+    chmodSync(outsideFile, 0o664);
+    mkdirSync(outsideDir, { mode: 0o775 });
+    chmodSync(outsideDir, 0o775);
+    symlinkSync(outsideFile, join(installed, "external-file-link.txt"));
+    symlinkSync(outsideDir, join(installed, "external-dir-link"));
 
     const cfgCotal = join(sandbox, "config", "cotal");
     const seed = join(cfgCotal, "seed"), extDir = join(cfgCotal, "extensions");
@@ -214,62 +263,60 @@ async function verifyGlobalNpmSelfUpdateModes(): Promise<void> {
     writeFileSync(join(seed, "witness.json"), JSON.stringify({ initialized: true, firstGeneration: currentVersion }));
     writeFileSync(join(seed, "stamp.json"), JSON.stringify({ generation: currentVersion }));
     writeFileSync(join(extDir, "extensions.json"), JSON.stringify({ extensions: [] }));
-    for (const [p, m] of [[installed, 0o775], [join(installed, "dist"), 0o775], [join(installed, "package.json"), 0o664], [join(installed, "dist", "cotal-program.js"), 0o664], [extDir, 0o775], [join(extDir, "extensions.json"), 0o664]] as const) chmodSync(p, m);
+    for (const [p, m] of [[extDir, 0o775], [join(extDir, "extensions.json"), 0o664]] as const) chmodSync(p, m);
 
-    const cleanEnv: NodeJS.ProcessEnv = {
-      ...Object.fromEntries(Object.entries(process.env).filter(([k]) => !/^(?:cotal_|npm_config_)/i.test(k))),
-      HOME: join(sandbox, "home"), COTAL_HOME: join(sandbox, "cotal"), XDG_CONFIG_HOME: join(sandbox, "config"),
-      XDG_RUNTIME_DIR: join(sandbox, "runtime"), TMPDIR: join(sandbox, "tmp"), DO_NOT_TRACK: "1", COTAL_TELEMETRY: "off",
-      COTAL_NO_UPDATE_CHECK: "1", PATH: `${join(prefix, "bin")}${delimiter}${process.env.PATH ?? ""}`,
-      npm_config_registry: serverUrl, npm_config_cache: join(sandbox, "cache"), npm_config_audit: "false", npm_config_fund: "false",
-    };
-
-    const currentRun = await runShell("002", "cotal update --self", join(sandbox, "work"), cleanEnv);
+    const currentRun = await runShell("002", "cotal update --self", workDir, cleanEnv);
     assert.equal(currentRun.status, 0, currentRun.stdout + currentRun.stderr);
     assert.match(currentRun.stdout, /removed group and other write from \d+ (?:entry|entries) in Cotal's install at /);
     assert.match(currentRun.stdout, /removed group and other write from \d+ (?:entry|entries) in Cotal's config at /);
     assert.deepEqual(ownedSharedWriteEntries(installed), [], "already-current self-update hardens the global npm package under umask 002");
     assert.deepEqual(ownedSharedWriteEntries(cfgCotal), [], "already-current self-update hardens config under umask 002");
     assert.equal(statSync(siblingFile).mode & 0o777, 0o664, "unrelated packages in the npm prefix are untouched");
+    assert.equal(statSync(outsideFile).mode & 0o777, 0o664, "file symlink inside package pointing outside keeps target mode");
+    assert.equal(statSync(outsideDir).mode & 0o777, 0o775, "directory symlink inside package pointing outside keeps target mode");
+    rmSync(join(installed, "external-file-link.txt"));
+    rmSync(join(installed, "external-dir-link"));
 
-    const quietRetry = await runShell("022", "cotal update --self", join(sandbox, "work"), cleanEnv);
+    const quietRetry = await runShell("022", "cotal update --self", workDir, cleanEnv);
     assert.equal(quietRetry.status, 0, quietRetry.stdout + quietRetry.stderr);
     assert.doesNotMatch(quietRetry.stdout, /removed group and other write/);
 
+    rmSync(prefix, { recursive: true, force: true });
+    mkdirSync(prefix, { recursive: true, mode: 0o755 });
+    const oldInstall = await runShell("002", `npm install -g --prefix '${prefix}' cotal-ai@${oldVersion}`, workDir, cleanEnv);
+    assert.equal(oldInstall.status, 0, oldInstall.stdout + oldInstall.stderr);
     const oldCliDir = join(installed, "node_modules", "@cotal-ai", "cli");
     mkdirSync(oldCliDir, { recursive: true, mode: 0o775 });
     cpSync(join(repoCli, "dist"), join(oldCliDir, "dist"), { recursive: true });
     symlinkSync(join(repoCli, "node_modules"), join(oldCliDir, "node_modules"));
     const cliPkg = JSON.parse(readFileSync(join(repoCli, "package.json"), "utf8")) as Record<string, unknown>;
     writeFileSync(join(oldCliDir, "package.json"), JSON.stringify({ ...cliPkg, version: oldVersion }, null, 2) + "\n");
-    writeFileSync(join(installed, "package.json"), JSON.stringify({
-      name: "cotal-ai", version: oldVersion, type: "module",
-      bin: { cotal: "./dist/cotal.js" },
-      cotalPreinstall: { v: 1, entry: "./dist/execution-preinstall.js" },
-    }, null, 2) + "\n");
     writeFileSync(join(seed, "witness.json"), JSON.stringify({ initialized: true, firstGeneration: oldVersion }));
     writeFileSync(join(seed, "stamp.json"), JSON.stringify({ generation: oldVersion }));
-    for (const [p, m] of [[installed, 0o775], [join(installed, "dist"), 0o775], [join(installed, "package.json"), 0o664], [join(installed, "dist", "cotal-program.js"), 0o664], [oldCliDir, 0o775], [join(oldCliDir, "package.json"), 0o664], [join(extDir, "extensions.json"), 0o664]] as const) chmodSync(p, m);
+    for (const [p, m] of [[oldCliDir, 0o775], [join(oldCliDir, "package.json"), 0o664], [join(extDir, "extensions.json"), 0o664]] as const) chmodSync(p, m);
+    assert.ok(ownedSharedWriteEntries(installed).length > 0, "real npm install -g of oldVersion under umask 002 creates group-writable entries");
     latest = currentVersion;
-    const upgradeRun = await runShell("002", "cotal update --self", join(sandbox, "work"), cleanEnv);
+    const upgradeRun = await runShell("002", "cotal update --self", workDir, cleanEnv);
     assert.equal(upgradeRun.status, 0, upgradeRun.stdout + upgradeRun.stderr);
     assert.match(upgradeRun.stdout, /removed group and other write from \d+ (?:entry|entries) in Cotal's install at /);
     assert.ok(upgradeRun.stdout.includes(`cotal-ai@${currentVersion} in use and reconciled`), upgradeRun.stdout);
     assert.deepEqual(ownedSharedWriteEntries(installed), [], "staged upgrade hardens the live npm package under umask 002");
     assert.deepEqual(ownedSharedWriteEntries(join(prefix, "lib", ".cotal-generations")), [], "retained generation store has no group- or world-writable entries");
     assert.deepEqual(ownedSharedWriteEntries(cfgCotal), [], "staged upgrade hardens config under umask 002");
-    const verAfterUpgrade = await runShell("002", "cotal --version", join(sandbox, "work"), cleanEnv);
+    const verAfterUpgrade = await runShell("002", "cotal --version", workDir, cleanEnv);
     assert.equal(verAfterUpgrade.status, 0, verAfterUpgrade.stderr);
     assert.equal(verAfterUpgrade.stdout.split("\n")[0], `cotal-ai ${currentVersion}`);
 
     chmodSync(join(installed, "package.json"), 0o664);
-    const postUpgradeCurrent = await runShell("022", "cotal update --self", join(sandbox, "work"), cleanEnv);
+    const postUpgradeCurrent = await runShell("022", "cotal update --self", workDir, cleanEnv);
     assert.equal(postUpgradeCurrent.status, 0, postUpgradeCurrent.stdout + postUpgradeCurrent.stderr);
     assert.match(postUpgradeCurrent.stdout, /removed group and other write from 1 entry in Cotal's install at /);
     assert.equal(statSync(join(installed, "package.json")).mode & 0o777, 0o644);
-    const verAfterCurrentRepair = await runShell("022", "cotal --version", join(sandbox, "work"), cleanEnv);
+    const verAfterCurrentRepair = await runShell("022", "cotal --version", workDir, cleanEnv);
     assert.equal(verAfterCurrentRepair.status, 0, verAfterCurrentRepair.stderr);
     assert.equal(verAfterCurrentRepair.stdout.split("\n")[0], `cotal-ai ${currentVersion}`, "manifest mode repair on an already-current retained generation preserves launcher selection");
+
+    await verifyUnreadableOwnedModeRepairWarning(workDir, prefix, installed, cfgCotal, currentVersion, cleanEnv);
   } finally {
     server.closeAllConnections();
     await new Promise<void>(done => server.close(() => done()));

@@ -1,7 +1,7 @@
 import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
-import { globalConfigDir, type FlagSpec, type ParsedArgs } from "@cotal-ai/core";
+import { type FlagSpec, type ParsedArgs } from "@cotal-ai/core";
 import {
   CommandFailure,
   isCommandFailure,
@@ -28,7 +28,6 @@ import {
   setUpdateSetting,
   bindExtensionPeers,
   claimGlobalNpmUpdateLock,
-  launcherInstallRoot,
   logicalExecutionEntry,
   loadExtensionsManifest,
   provenance,
@@ -48,6 +47,7 @@ import { assertConfigAncestorProtected, manifestAccessReporter, prepareUpdateCon
 import { reclaimPreviousExtensionStages } from "../lib/extension-stage.js";
 import { EXT_UPDATE_PARENT_ENV } from "./ext.js";
 import { collectUpdateCaches } from "./update-caches.js";
+import { repairOwnedModes } from "./update-modes.js";
 import { repairOfflineExtensions } from "./update-offline.js";
 import { claimExtensionUpdatePass } from "../lib/ext-mutation.js";
 import { selfArgv } from "../lib/self-exec.js";
@@ -140,7 +140,7 @@ export interface UpdateRuntime {
   preflightExecution?(): boolean | void;
   executionGlobalRoot?(): string;
   /** Preserve the selected execution binding while hardening installer-owned modes. */
-  repairInstallModes?(root: string): number;
+  repairInstallModes?(root: string, onError?: (error: NodeJS.ErrnoException) => void): number;
   /** Prepare a complete retained target under the held global root lock, without publication. */
   prepareExecution?(version: string, root: string): Promise<ExecutionReplacement>;
   /** Reopen only a journal already validated against this logical installation. */
@@ -336,34 +336,6 @@ export async function update(args: ParsedArgs, rt: UpdateRuntime = updateRuntime
     rt.generationWaited = true;
   }
   if (args.values.self === true && !process.exitCode && childBinding(rt).kind === "none") collectUpdateCaches(dirname(scratch));
-}
-
-function ownedInstallRoot(rt: UpdateRuntime): string | undefined {
-  const launcher = launcherInstallRoot();
-  if (launcher) return launcher;
-  if (process.platform === "win32") return undefined;
-  const logical = logicalExecutionEntry();
-  if (!logical || rt.checkout()) return undefined;
-  const packageRoot = dirname(dirname(logical));
-  if (existsSync(join(packageRoot, "desktop-runtime.json"))) return undefined;
-  try {
-    return installedUpdatePrefix(packageRoot, logical) ? packageRoot : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
-function repairOwnedModes(rt: UpdateRuntime): boolean {
-  const install = ownedInstallRoot(rt);
-  let changed = false;
-  for (const { what, root } of [...(install ? [{ what: "install", root: install }] : []), { what: "config", root: globalConfigDir() }]) {
-    const repaired = (rt.repairInstallModes ?? repairInstallModes)(root);
-    if (repaired) {
-      changed = true;
-      rt.out(c.green(`✓ removed group and other write from ${repaired} ${repaired === 1 ? "entry" : "entries"} in Cotal's ${what} at ${root}`));
-    }
-  }
-  return changed;
 }
 
 async function updateInstallation(args: ParsedArgs, rt: UpdateRuntime): Promise<string | undefined> {
