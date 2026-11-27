@@ -41,12 +41,81 @@ function npmEngine(file: string): { entry: string; range: string; corepack: bool
   } catch { return undefined; }
 }
 
+const NPM_NODE_WARNING = /^(?:npm warn cli npm v\S+ does not support|ERROR: npm v\S+ is known not to run on) Node\.js \S+\. +This version of npm supports the following node versions: `([^`\r\n]+)`/m;
+
 function corepackNpmRange(node: string, entry: string, cwd: string, env: NodeJS.ProcessEnv): string | undefined {
   const result = spawnSync(node, [entry, "--version", "--loglevel=warn", "--color=false"], {
     cwd, env, encoding: "utf8", timeout: 2000, killSignal: "SIGKILL", windowsHide: true,
   });
   // npm can print its version and exit successfully even on an unsupported Node.
-  return /^(?:npm warn cli npm v\S+ does not support|ERROR: npm v\S+ is known not to run on) Node\.js \S+\. +This version of npm supports the following node versions: `([^`\r\n]+)`/m.exec(result.stderr ?? "")?.[1];
+  return NPM_NODE_WARNING.exec(result.stderr ?? "")?.[1];
+}
+
+function workingDirectory(): string | undefined {
+  try { return process.cwd(); } catch { return undefined; }
+}
+
+function projectCorepackDirectory(start: string | undefined): string | undefined {
+  if (!start) return;
+  for (let dir = resolve(start); ;) {
+    try {
+      const manifest = JSON.parse(readFileSync(join(dir, "package.json"), "utf8")) as {
+        packageManager?: unknown;
+        devEngines?: { packageManager?: unknown };
+      };
+      if (manifest.packageManager !== undefined && manifest.packageManager !== null)
+        return typeof manifest.packageManager === "string" && manifest.packageManager.startsWith("npm@") ? dir : undefined;
+      const dev = manifest.devEngines?.packageManager;
+      if (dev !== undefined && dev !== null) {
+        const entries = Array.isArray(dev) ? dev : [dev];
+        return entries.some(item => typeof item === "object" && item !== null && (item as { name?: unknown }).name === "npm") ? dir : undefined;
+      }
+    } catch { /* ancestor may have no readable package.json */ }
+    const parent = dirname(dir);
+    if (parent === dir) return;
+    dir = parent;
+  }
+}
+
+function corepackCacheRoots(projectDir: string, env: NodeJS.ProcessEnv): string[] {
+  if (env.COREPACK_HOME) return [resolve(projectDir, env.COREPACK_HOME)];
+  const home = homedir();
+  return windows
+    ? [join(env.LOCALAPPDATA || join(home, "AppData", "Local"), "node", "corepack")]
+    : [
+        ...(env.XDG_CACHE_HOME ? [join(env.XDG_CACHE_HOME, "node", "corepack")] : []),
+        join(home, ".cache", "node", "corepack"),
+        ...(process.platform === "darwin" ? [join(home, "Library", "Caches", "node", "corepack")] : []),
+      ];
+}
+
+function projectCorepackNpm(
+  node: string,
+  nodeVersion: string,
+  corepackEntry: string,
+  projectDir: string,
+  env: NodeJS.ProcessEnv,
+): { entry: string; prefixArgs: string[]; npmDirectory?: string } | undefined {
+  const probeEnv = { ...env, COREPACK_ENABLE_DOWNLOAD_PROMPT: env.COREPACK_ENABLE_DOWNLOAD_PROMPT ?? "0" };
+  const result = spawnSync(node, [corepackEntry, "--version", "--loglevel=warn", "--color=false"], {
+    cwd: projectDir, env: probeEnv, encoding: "utf8", timeout: 15_000, killSignal: "SIGKILL", windowsHide: true,
+  });
+  if (result.status !== 0) return;
+  const range = NPM_NODE_WARNING.exec(result.stderr ?? "")?.[1];
+  if (range && !satisfies(nodeVersion, range)) return;
+  const version = result.stdout?.trim() ?? "";
+  if (!/^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)*$/.test(version)) return;
+  for (const root of corepackCacheRoots(projectDir, probeEnv)) {
+    for (const segments of [["v1", "npm", version], ["npm", version]]) {
+      const cached = npmEngine(join(root, ...segments, "bin", "npm-cli.js"));
+      if (cached && !cached.corepack && satisfies(nodeVersion, cached.range))
+        return { entry: cached.entry, prefixArgs: [], npmDirectory: dirname(cached.entry) };
+    }
+  }
+  const cli = join(dirname(corepackEntry), "corepack.js");
+  try {
+    if (lstatSync(cli).isFile()) return { entry: cli, prefixArgs: [`npm@${version}`] };
+  } catch { /* Corepack CLI sibling is optional in synthetic fixtures */ }
 }
 
 function recordedNode(): string | undefined {
@@ -89,18 +158,29 @@ function pathVariable(env: NodeJS.ProcessEnv): string {
 
 export function npmUpdateChildEnvironment(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   if (!npmProjectDirectory.getStore() && env[UPDATE_NPM_NODE] === undefined) return env;
-  const { node } = npmInvocation(env, []);
-  if (!node) {
+  const { node, npmDirectory } = npmInvocation(env, []);
+  const pathKey = pathVariable(env);
+  const path = env[pathKey];
+  const npmBin = npmDirectory && !npmDirectory.includes(delimiter) ? npmDirectory : undefined;
+  if (!node && !npmBin) {
     if (env[UPDATE_NPM_NODE] === undefined) return env;
     const next = { ...env };
     delete next[UPDATE_NPM_NODE];
     return next;
   }
-  const pathKey = pathVariable(env);
-  const path = env[pathKey]!;
+  let nextPath = path ?? "";
+  if (npmBin && nextPath.split(delimiter)[0] !== npmBin)
+    nextPath = nextPath ? `${npmBin}${delimiter}${nextPath}` : npmBin;
+  if (!node) {
+    const next = { ...env, [pathKey]: nextPath };
+    delete next[UPDATE_NPM_NODE];
+    return next;
+  }
   const bin = dirname(node);
+  if (!bin.includes(delimiter) && !nextPath.split(delimiter).includes(bin))
+    nextPath = nextPath ? `${nextPath}${delimiter}${bin}` : bin;
   // Older reconcile and rollback children can find Node on PATH without shadowing the selected npm.
-  return { ...env, [UPDATE_NPM_NODE]: node, [pathKey]: bin.includes(delimiter) || path.split(delimiter).includes(bin) ? path : `${path}${delimiter}${bin}` };
+  return { ...env, [UPDATE_NPM_NODE]: node, [pathKey]: nextPath };
 }
 
 interface NpmCommand {
@@ -109,7 +189,116 @@ interface NpmCommand {
   env: NodeJS.ProcessEnv;
   cwd: string;
   node?: string;
+  npmDirectory?: string;
   lifecycleNode?: boolean;
+}
+
+function directNpmOnCurrentNode(
+  entry: string,
+  prefixArgs: string[],
+  args: string[],
+  env: NodeJS.ProcessEnv,
+  lookup: NodeJS.ProcessEnv,
+  inDirectory: (dir: string, bin: string) => string | undefined,
+  withNode: (node: string, preserveLiteral?: boolean) => NodeJS.ProcessEnv,
+  cwd: string,
+  npmDirectory?: string,
+): NpmCommand {
+  const node = resolveOnPath("node", lookup);
+  const sameNode = !!node && realpathSync(node) === realpathSync(process.execPath);
+  const bin = dirname(process.execPath);
+  const missingNode = !node && (bin.includes(delimiter) || !inDirectory(bin, "node"));
+  return {
+    file: process.execPath,
+    args: [entry, ...prefixArgs, ...args],
+    env: sameNode ? env : withNode(process.execPath, missingNode ? true : undefined),
+    cwd,
+    npmDirectory,
+    lifecycleNode: missingNode && args[0] === "install" && !args.includes("--ignore-scripts"),
+  };
+}
+
+interface CorepackFallbackContext {
+  primaryFile: string;
+  corepack: { entry: string; range: string };
+  currentSupportsEngine: boolean;
+  project: string | undefined;
+  directories: string[];
+  inDirectory: (dir: string, bin: string) => string | undefined;
+  lookup: NodeJS.ProcessEnv;
+  probeEnv: NodeJS.ProcessEnv;
+  withNode: (node: string, preserveLiteral?: boolean) => NodeJS.ProcessEnv;
+  inheritedNode: string | undefined;
+  candidates: string[];
+  args: string[];
+  env: NodeJS.ProcessEnv;
+  cwd: string;
+}
+
+function alternativeNodes(
+  ctx: CorepackFallbackContext,
+  supports: (version: string) => boolean,
+): Array<{ file: string; version: string; node?: string }> {
+  const found: Array<{ file: string; version: string; node?: string }> = [];
+  if (ctx.inheritedNode) {
+    const node = compatibleNode(ctx.inheritedNode, ctx.cwd, ctx.cwd, ctx.probeEnv, supports);
+    if (node?.path === ctx.inheritedNode) found.push({ file: node.path, version: node.version, node: node.path });
+  }
+  for (const candidate of ctx.candidates) {
+    const fromProject = ctx.project === undefined ? undefined : compatibleNode(candidate, ctx.project, ctx.cwd, ctx.probeEnv, supports);
+    if (fromProject) { found.push({ file: fromProject.path, version: fromProject.version, node: fromProject.path }); continue; }
+    const version = spawnSync(candidate, ["--version"], { cwd: ctx.cwd, env: ctx.probeEnv, encoding: "utf8", timeout: 1000, killSignal: "SIGKILL", windowsHide: true });
+    if (version.status === 0 && supports(version.stdout.trim())) found.push({ file: candidate, version: version.stdout.trim() });
+  }
+  return found;
+}
+
+function corepackNpmFallback(ctx: CorepackFallbackContext): NpmCommand | undefined {
+  const projectDir = projectCorepackDirectory(ctx.project ?? workingDirectory());
+  if (projectDir) {
+    if (ctx.currentSupportsEngine) {
+      const probe = { ...ctx.withNode(process.execPath, true) };
+      delete probe.NODE_OPTIONS;
+      const selected = projectCorepackNpm(process.execPath, process.version, ctx.corepack.entry, projectDir, probe);
+      if (selected)
+        return directNpmOnCurrentNode(selected.entry, selected.prefixArgs, ctx.args, ctx.env, ctx.lookup, ctx.inDirectory, ctx.withNode, ctx.cwd, selected.npmDirectory);
+    }
+    for (const item of alternativeNodes(ctx, v => satisfies(v, ctx.corepack.range))) {
+      const nextEnv = ctx.withNode(item.file, item.node ? true : undefined);
+      const probe = { ...nextEnv };
+      delete probe.NODE_OPTIONS;
+      const selected = projectCorepackNpm(item.file, item.version, ctx.corepack.entry, projectDir, probe);
+      if (selected)
+        return { file: item.file, args: [selected.entry, ...selected.prefixArgs, ...ctx.args], env: nextEnv, cwd: ctx.cwd, node: item.node, npmDirectory: selected.npmDirectory };
+    }
+  }
+  const seenNpm = new Set<string>();
+  try { seenNpm.add(realpathSync(ctx.primaryFile)); } catch { /* ignore unreadable link */ }
+  for (const dir of ctx.directories) {
+    const alt = ctx.inDirectory(dir, "npm");
+    if (!alt) continue;
+    let resolvedAlt: string;
+    try { resolvedAlt = realpathSync(alt); } catch { continue; }
+    if (seenNpm.has(resolvedAlt)) continue;
+    seenNpm.add(resolvedAlt);
+    const altEngine = npmEngine(alt);
+    if (!altEngine) continue;
+    const okWith = (nodeBin: string, nodeVer: string, checkEnv: NodeJS.ProcessEnv) => {
+      if (!satisfies(nodeVer, altEngine.range)) return false;
+      if (!altEngine.corepack) return true;
+      const probe = { ...checkEnv };
+      delete probe.NODE_OPTIONS;
+      const range = corepackNpmRange(nodeBin, altEngine.entry, ctx.cwd, probe);
+      return !range || satisfies(nodeVer, range);
+    };
+    if (okWith(process.execPath, process.version, ctx.withNode(process.execPath, true)))
+      return directNpmOnCurrentNode(altEngine.entry, [], ctx.args, ctx.env, ctx.lookup, ctx.inDirectory, ctx.withNode, ctx.cwd);
+    for (const item of alternativeNodes(ctx, v => satisfies(v, altEngine.range))) {
+      const nextEnv = ctx.withNode(item.file, item.node ? true : undefined);
+      if (okWith(item.file, item.version, nextEnv))
+        return { file: item.file, args: [altEngine.entry, ...ctx.args], env: nextEnv, cwd: ctx.cwd, node: item.node };
+    }
+  }
 }
 
 export function npmInvocation(env: NodeJS.ProcessEnv, args: string[]): NpmCommand {
@@ -157,11 +346,12 @@ export function npmInvocation(env: NodeJS.ProcessEnv, args: string[]): NpmComman
     const project = npmProjectDirectory.getStore();
     // A POSIX directory with a colon travels in the absolute hint, not PATH.
     const inheritedBin = inheritedNode ? dirname(inheritedNode) : "";
-    if (inheritedNode && isAbsolute(inheritedNode) &&
+    const validInherited = inheritedNode && isAbsolute(inheritedNode) &&
         (directories.includes(inheritedBin) || (!windows && inheritedBin.includes(delimiter))) &&
-        resolveOnPath(inheritedNode, env) === inheritedNode) {
-      const node = compatibleNode(inheritedNode, cwd, cwd, probeEnv, supports);
-      if (node?.path === inheritedNode) {
+        resolveOnPath(inheritedNode, env) === inheritedNode ? inheritedNode : undefined;
+    if (validInherited) {
+      const node = compatibleNode(validInherited, cwd, cwd, probeEnv, supports);
+      if (node?.path === validInherited) {
         const npm = invocation(node.path, node.version, node.path);
         if (npm) return npm;
       }
@@ -186,6 +376,13 @@ export function npmInvocation(env: NodeJS.ProcessEnv, args: string[]): NpmComman
         const npm = invocation(candidate, version.stdout.trim());
         if (npm) return npm;
       }
+    }
+    if (engine.corepack) {
+      const alternateNpm = corepackNpmFallback({
+        primaryFile: file, corepack: engine, currentSupportsEngine, project, directories, inDirectory,
+        lookup, probeEnv, withNode, inheritedNode: validInherited, candidates, args, env, cwd,
+      });
+      if (alternateNpm) return alternateNpm;
     }
     if (fallback) return fallback;
   }

@@ -1192,6 +1192,45 @@ async function corepackNodeFallbackCell(entry, parent) {
       assert.deepEqual(requests.slice(before), ['/cotal-ai'], 'npm reaches the registry without changing the caller Node');
     }
     assert.match(await ok(executable, ['status']), /Node v22\.10\.0/);
+
+    const sysbin = join(root, 'sysbin');
+    mkdirSync(sysbin, { mode: 0o700 });
+    for (const [dir, bin] of [['/usr/bin', 'env'], ['/bin', 'sh']]) {
+      if (existsSync(join(dir, bin))) symlinkSync(join(dir, bin), join(sysbin, bin));
+    }
+    env.COREPACK_ENABLE_DOWNLOAD_PROMPT = '0';
+    delete env.COREPACK_DEFAULT_TO_LATEST;
+    writeFileSync(join(project, 'package.json'), JSON.stringify({
+      name: 'lts22-app',
+      private: true,
+      packageManager: 'npm@10.9.11',
+    }));
+    env.PATH = [dirname(executable), shims, dirname(recorded), sysbin].join(delimiter);
+    assert.equal((await ok('node', ['--version'])).trim(), 'v22.11.0');
+    assert.equal((await ok('npm', ['--version'])).trim(), '10.9.11');
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const before = requests.length;
+      const output = await ok(executable, ['update', '--self']);
+      assert.match(output, /Registry latest:/);
+      assert.deepEqual(requests.slice(before), ['/cotal-ai'], 'Corepack project npm reaches the registry on Node 22.11.0 without Node 24');
+    }
+    assert.match(await ok(executable, ['status', '--plain']), /Node v22\.11\.0/);
+
+    const fallbackNpm = join(root, 'fallback-npm');
+    mkdirSync(fallbackNpm, { mode: 0o700 });
+    symlinkSync(join(env.COREPACK_HOME, 'v1/npm/10.9.11/bin/npm-cli.js'), join(fallbackNpm, 'npm'));
+    writeFileSync(join(project, 'package.json'), JSON.stringify({
+      name: 'pnpm-app',
+      private: true,
+      packageManager: 'pnpm@11.0.0',
+    }));
+    env.PATH = [dirname(executable), shims, fallbackNpm, dirname(recorded), sysbin].join(delimiter);
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const before = requests.length;
+      const output = await ok(executable, ['update', '--self']);
+      assert.match(output, /Registry latest:/);
+      assert.deepEqual(requests.slice(before), ['/cotal-ai'], 'compatible npm later on PATH reaches the registry when Corepack cannot run on Node 22.11.0');
+    }
     return { scenario: 'corepack-node-fallback', cotal: version, node: '22.10.0', npm: '12.2.3', registryLookups: requests.length };
   } finally {
     server.closeAllConnections();
