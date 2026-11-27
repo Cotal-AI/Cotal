@@ -134,6 +134,7 @@ The CLI sends usage telemetry by default. Run `cotal telemetry off` to disable i
 Use npm in PowerShell, Command Prompt, or Git Bash. The shell installer works inside WSL, not in a native Windows shell.
 PowerShell can pick `npm.ps1` and `cotal.ps1` for the bare commands. If your execution policy blocks
 these scripts, use `npm.cmd` and `cotal.cmd` without changing the policy.
+When the npm launcher is on PATH, `cotal.cmd status` and the entry card suggest commands that use `cotal.cmd`.
 
 Use a short, writable npm global prefix and put that directory on PATH. Run `npm.cmd prefix -g` to see the current prefix.
 If the current prefix is suitable, run:
