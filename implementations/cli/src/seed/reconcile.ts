@@ -1,4 +1,4 @@
-import { existsSync, readdirSync, renameSync } from "node:fs";
+import { existsSync, lstatSync, readdirSync, renameSync } from "node:fs";
 import { spawn, spawnSync, type SpawnSyncReturns } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { join } from "node:path";
@@ -125,6 +125,7 @@ export function seedInstallationCurrent(): boolean {
     const generation = seedGeneration();
     if (readCursor() || readRecovery() || seedChildStatus().kind !== "none" || reconcileLockActive()) return false;
     if (!readWitness() || !authorityIntact() || !builtinsAccounted() || !builtinsMetadataCurrent() || readStamp()?.generation !== generation) return false;
+    if (extensionsInventoryMissing()) return false;
     const entries = SEED_BUILTINS.map(name => ({ name, entry: installedEntry(name) }));
     if (entries.some(({ entry }) => entry !== undefined) && prefixLockDiffers() !== undefined) return false;
     return entries.every(({ name, entry }) => entry === undefined ||
@@ -236,7 +237,7 @@ async function reconcileUnderClosure(mode: Mode, automatic: boolean, resumeFirst
         }
         if (!resumeFirstSeed || !interruptedFirstSeed(cursor, generation)) throw seedRepairRefusal(cursor, generation);
       }
-    } else if (readWitness() && authorityIntact() && builtinsAccounted() && builtinsMetadataCurrent() && officialExtensionsCurrent(generation) && readStamp()?.generation === generation && !reconcileLockActive()) {
+    } else if (readWitness() && authorityIntact() && builtinsAccounted() && builtinsMetadataCurrent() && !extensionsInventoryMissing() && officialExtensionsCurrent(generation) && readStamp()?.generation === generation && !reconcileLockActive()) {
       // Steady state AND no reconcile in flight. The lock check is LAST (immediately before NOOP) so
       // it is the linearization point: a `--force` that link-publishes the lock during the slower
       // health/stamp reads is still caught here, and we fall through to acquire/wait rather than
@@ -374,6 +375,17 @@ function builtinsAccounted(): boolean {
   }
 }
 
+/** A witnessed prefix whose inventory file is gone while npm still has packages installed. A prefix
+ *  that was never seeded, or an empty prefix, is not this state: there is no inventory to restore. */
+function extensionsInventoryMissing(): boolean {
+  if (!readWitness()) return false;
+  const manifest = join(extensionsDir(), "extensions.json");
+  if (lstatSync(manifest, { throwIfNoEntry: false })) return false;
+  const prefix = extensionsDir();
+  return lstatSync(join(prefix, "package-lock.json"), { throwIfNoEntry: false })?.isFile() === true
+    || lstatSync(join(prefix, "node_modules"), { throwIfNoEntry: false })?.isDirectory() === true;
+}
+
 /** A package can add a registry provider without changing the seed generation in a source checkout.
  * The fast path must not preserve an older manifest that advertises only a subset of what the packed
  * built-in now registers, or lazy materialization of the new provider can never find its owner. An
@@ -457,6 +469,8 @@ async function runUnderLocks(mode: Mode, generation: string, nonce: string, refr
   let repairAllSeeded = false;
   if (mode === "repair" || mode === "reset") {
     ({ manifestRebuilt, repairAllSeeded } = prepareMaintenanceState(mode));
+  } else if (mode === "verify" && extensionsInventoryMissing()) {
+    manifestRebuilt = true;
   }
 
   // Health preamble — BEFORE the stamp fast path. A cursor OR a recovery obligation means a prior
@@ -596,6 +610,9 @@ async function runUnderLocks(mode: Mode, generation: string, nonce: string, refr
   }
 
   const builtIns = new Set(Object.values(SEEDED_EXTENSIONS).map((entry) => entry.pkg));
+  if (manifestRebuilt && extensionsInventoryMissing()) {
+    console.error(c.dim("the extensions inventory is missing; built-in packages still on disk are registered again. Operator packages that were only recorded in that inventory need `cotal ext add` with their original spec"));
+  }
   const operators = mode === "reset" ? [] : loadExtensionsManifest().extensions.filter((entry) =>
     entry.pkg.startsWith("@cotal-ai/") && !builtIns.has(entry.pkg) && (
       mode === "verify"
@@ -662,7 +679,7 @@ export function deferredSeedRefusal(): Error | undefined {
   const generation = seedGeneration();
   let current = false;
   try {
-    current = !readCursor() && !recoveryPending() && !!readWitness() && authorityIntact() && builtinsAccounted() && builtinsMetadataCurrent() && officialExtensionsCurrent(generation) && readStamp()?.generation === generation;
+    current = !readCursor() && !recoveryPending() && !!readWitness() && authorityIntact() && builtinsAccounted() && builtinsMetadataCurrent() && !extensionsInventoryMissing() && officialExtensionsCurrent(generation) && readStamp()?.generation === generation;
   } catch {
     current = false; // unreadable seed state: the deferred reconcile reports it
   }
@@ -752,6 +769,7 @@ function prepareMaintenanceState(mode: Mode): { manifestRebuilt: boolean; repair
       return true;
     }
   })();
+  const inventoryMissing = extensionsInventoryMissing();
   const cursorCorrupt = (() => {
     try {
       readCursor();
@@ -760,7 +778,7 @@ function prepareMaintenanceState(mode: Mode): { manifestRebuilt: boolean; repair
       return true;
     }
   })();
-  manifestRebuilt = manifestRebuilt || manifestCorrupt;
+  manifestRebuilt = manifestRebuilt || manifestCorrupt || inventoryMissing;
   repairAllSeeded = repairAllSeeded || cursorCorrupt;
 
   // Persist the obligation BEFORE any destructive quarantine below, so a crash in between still leaves
