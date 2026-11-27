@@ -1,5 +1,28 @@
 # cotal-ai
 
+## 0.184.0
+
+### Patch Changes
+
+- 6d18757: Fix the Linux desktop RPM so it installs the bundled CLI files correctly and the CLI starts on Fedora.
+- e8065d4: Bind staged `cotal update --self` execution descriptors to the Node installation prefix's `bin` entry instead of transient version-manager shell symlinks such as `fnm_multishells`, so switching Node versions does not revert the active CLI generation or break concurrent shells.
+- 7f6adb7: Set `OOMPolicy=continue` on the Linux `cotal-daemon` systemd user unit so an out-of-memory kill of one seat child process does not cause systemd to stop the daemon, Manager, and other running seats, and upgrade an unmodified default-home `cotal-daemon.service` unit in place during `cotal update` without restarting running seats when no loaded user unit has a pending reload. `cotal update` and automatic updates leave the existing unit alone during the update that installs this release and write `OOMPolicy=continue` on the next update run by this release, while upgrading through the installer script writes `OOMPolicy=continue` during that install.
+- 70ce98b: When `cotal update --self` refreshes the npm launcher and the recorded Node is no longer on disk, record the supported Node that ran the update so the launcher still starts when Node is not on PATH.
+- Updated dependencies [68fc37d]
+- Updated dependencies [e693bb2]
+- Updated dependencies [56ff3d1]
+- Updated dependencies [6e28100]
+  - @cotal-ai/core@0.184.0
+  - @cotal-ai/workspace@0.184.0
+  - @cotal-ai/manager@0.184.0
+  - @cotal-ai/cli@0.184.0
+  - @cotal-ai/connector-core@0.184.0
+  - @cotal-ai/auth@0.184.0
+  - @cotal-ai/delivery@0.184.0
+  - @cotal-ai/registry@0.184.0
+  - @cotal-ai/runtime@0.184.0
+  - @cotal-ai/seat@0.184.0
+
 ## 0.183.1
 
 ### Patch Changes
