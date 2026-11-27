@@ -12,7 +12,7 @@ import {
 } from "../../src/index.js";
 import { openChannelRegistry, writeChannelConfig } from "../../src/channels.js";
 import { PLUGIN_CHANNEL_PROJECTION_KEY } from "../../src/plugin-channel-projection.js";
-import { PLUGIN_CHANNEL_ROOT } from "../../src/plugin-channel-route.js";
+import { PLUGIN_CHANNEL_ROOT, pluginChannelStream } from "../../src/plugin-channel-route.js";
 import { pluginChannelSpaceStateSubject } from "../../src/plugin-channel-space-state.js";
 import { pickFreePort } from "../_free-port.js";
 
@@ -89,7 +89,17 @@ export async function startEnabledPluginSpace() {
       await ep.startPlane3((target, uid) => ep.aclForOwner(target, uid), { readPluginChannelAuthority: true });
       return ep;
     };
-    return { servers, space, channel, hiddenChannel, chatChannel, endpoint, mintAgent, mintObserver, startDelivery, provisioner, jsm, close };
+    const removePluginHistory = async () => {
+      const stream = pluginChannelStream(space);
+      const creds = await mintCreds(auth, newIdentity(), "teardown", { lifecycleUid: mintLifecycleUid(), transferStreams: [stream] });
+      const teardown = await connect({ servers, ...standaloneConnectOpts({ creds, tls: false }) });
+      try {
+        if (!(await (await jetstreamManager(teardown)).streams.delete(stream))) throw new Error("fixture plugin history stream was not deleted");
+      } finally {
+        await teardown.close();
+      }
+    };
+    return { servers, space, channel, hiddenChannel, chatChannel, endpoint, mintAgent, mintObserver, startDelivery, removePluginHistory, provisioner, jsm, close };
   } catch (error) {
     await close();
     throw error;

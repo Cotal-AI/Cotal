@@ -27,6 +27,7 @@ import { PLUGIN_CHANNEL_ROOT } from "../src/plugin-channel-route.js";
 import { chatStream, dlvStream, inboxStream, type CotalMessage, type PluginMentionPointer } from "../src/index.js";
 import { pluginChannelStream, pluginChannelSubject } from "../src/plugin-channel-route.js";
 import { PLUGIN_MENTION_POINTER_KEY } from "../src/types.js";
+import { isStreamNotFound } from "../src/jetstream-missing.js";
 import { startEnabledPluginSpace } from "./fixtures/enabled-plugin-space.js";
 
 const PORT = await pickFreePort();
@@ -110,6 +111,12 @@ async function checkEnabledPluginDelivery() {
     }
     check("mention processing still leaves ordinary INBOX and DLV without plugin copies",
       (await state(inboxStream(space))).messages === 0 && (await state(dlvStream(space))).messages === 0);
+    await daemon.stop();
+    await fixture.removePluginHistory();
+    check("a removed plugin stream is broker-confirmed absence, not an empty page or a CHAT fallback",
+      read.channelRoutingMode() === "isolated" &&
+      await read.channelHistory(channel, { limit: 10 }).then(() => false, isStreamNotFound) &&
+      (await state(chatStream(space))).messages === 0);
   } finally {
     await fixture.close();
   }
