@@ -2,7 +2,7 @@ import { existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync } from "no
 import { dirname, join } from "node:path";
 import { acquireLock, globalConfigDir, token, utf16Problem, writeSecretFileAtomic } from "@cotal-ai/core";
 import { CommandFailure, isCommandFailure, type OutputWarning } from "./output.js";
-import { localRecordAccess, protectedLocalDirectory, shellPath } from "./protected-records.js";
+import { localRecordAccess, assertProtectedLinkWrite, shellPath } from "./protected-records.js";
 import { DEFAULT_CONNECTOR, OFFICIAL_CONNECTORS } from "./official-connectors.js";
 import { chatNameProblem } from "./chat-name.js";
 import { localWriteFailure } from "./local-write.js";
@@ -221,33 +221,28 @@ function assertPreferencesNotLinked(path: string): void {
 }
 
 /** Refuse a preferences write into a folder another local account could write, by the rule every
- *  protected path follows (see {@link protectedLocalDirectory}): that account could replace the file,
- *  and `editor` runs as a shell command. A folder not made yet is checked from the nearest one above
- *  it that exists. */
+ *  protected path follows (see {@link assertProtectedLinkWrite}): that account could replace the file,
+ *  and `editor` runs as a shell command. A symbolic link is followed when its physical folder and
+ *  every link parent are protected, the same way a write under the Cotal home is. A folder not made
+ *  yet is checked from the nearest one above it that exists. */
 export function assertPreferencesFolderProtected(): void {
-  let dir = globalConfigDir();
-  while (!lstatSync(dir, { throwIfNoEntry: false }) && dirname(dir) !== dir) dir = dirname(dir);
-  try {
-    protectedLocalDirectory(dir, "the preferences folder");
-  } catch (e) {
-    if (!isCommandFailure(e) || e.code !== "PERMISSION_DENIED") throw e;
-    throw new CommandFailure(e.outcome, e.code, `${e.message}; nothing was changed`, { remedy: e.remedy, target: e.target });
-  }
+  assertProtectedLinkWrite(globalConfigDir(), "the preferences folder", "nothing was changed");
 }
 
 /** The warning a command gives when the preferences file it read sits in a folder another local
  *  account could write, and the change that fixes the folder; undefined when there is no file or the
- *  folder is protected. The saved values still apply, and a write is refused (see
- *  {@link assertPreferencesFolderProtected}). */
+ *  folder is protected. A symbolic link whose physical folder is protected is not a warning. The
+ *  saved values still apply, and a write is refused (see {@link assertPreferencesFolderProtected}). */
 export function preferencesFolderWarning(): { warning: OutputWarning; remedy: string } | undefined {
   if (!lstatSync(preferencesPath(), { throwIfNoEntry: false })) return undefined;
   try {
-    protectedLocalDirectory(globalConfigDir(), "the preferences folder");
+    assertProtectedLinkWrite(globalConfigDir(), "the preferences folder");
     return undefined;
   } catch (e) {
     if (!isCommandFailure(e) || e.code !== "PERMISSION_DENIED") throw e;
     const remedy = e.remedy ?? `make ${globalConfigDir()} a folder only you can write`;
-    return { warning: { code: "PREFERENCES_FOLDER_UNPROTECTED", target: e.target, message: `${e.message}; the saved preferences still apply, and a write to them is refused until this is fixed: ${remedy}` }, remedy };
+    const message = e.message.replace(/; nothing was written$/, "");
+    return { warning: { code: "PREFERENCES_FOLDER_UNPROTECTED", target: e.target, message: `${message}; the saved preferences still apply, and a write to them is refused until this is fixed: ${remedy}` }, remedy };
   }
 }
 

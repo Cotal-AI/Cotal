@@ -7,7 +7,8 @@
  * them the same way, a FIFO stopping them without being opened, a `COTAL_HOME` that is not a directory
  * stopping them the same way, a config folder that is a file stopping every command but help, version,
  * docs and completion, a folder other accounts can write refusing a write and warning on a read, a
- * relative `COTAL_HOME` refused, a home other accounts can write taking no write and one they can only
+ * config folder reached through an owned private symlink taking the same write a physical folder
+ * takes, a relative `COTAL_HOME` refused, a home other accounts can write taking no write and one they can only
  * read made private on the write, a stale write refused, a persona the space's catalog does not hold
  * saved with a warning that names the catalog, two concurrent writers both landing, and the consumers
  * outside `spawn`: color, the `personas edit` editor and the detach key. A file that begins with a UTF-8 byte-order mark reads, and the next write leaves the
@@ -568,6 +569,24 @@ if (process.platform !== "win32") {
   check("a write whose folder would be made in a world-writable parent is refused, and nothing is created",
     fresh.status === 2 && fresh.envelope?.error?.code === "PERMISSION_DENIED" && fresh.envelope.error.remedy === `chmod o-w ${open}` && readdirSync(open).length === 0, shown(fresh));
   chmodSync(open, 0o700);
+  // An owned private folder reached through a symlink is the same folder a physical path names.
+  const physical = mkdtempSync(join(home, "physical-config-"));
+  chmodSync(physical, 0o700);
+  const linked = join(home, "linked-config");
+  symlinkSync(physical, linked);
+  const through = run(["config", "set", "color", "never", "--json"], { XDG_CONFIG_HOME: linked });
+  const linkedFile = join(physical, "cotal", "preferences.json");
+  const linkedSaved = () => JSON.parse(readFileSync(linkedFile, "utf8")) as { defaults: Record<string, string> };
+  check("a write through an owned private config symlink is saved in the physical folder",
+    through.status === 0 && through.envelope?.outcome === "ok" && existsSync(linkedFile) && linkedSaved().defaults.color === "never", shown(through));
+  const read = run(["config", "--json"], { XDG_CONFIG_HOME: linked });
+  check("a read through that symlink applies the saved value and does not warn",
+    read.status === 0 && settingOf(read, "color")?.value === "never" && read.envelope?.warnings.every((w) => w.code !== "PREFERENCES_FOLDER_UNPROTECTED") === true, shown(read));
+  chmodSync(physical, 0o757);
+  const refusedLink = run(["config", "set", "color", "always", "--json"], { XDG_CONFIG_HOME: linked });
+  check("a symlink to a world-writable config folder is still refused, naming the physical folder",
+    refusedLink.status === 2 && refusedLink.envelope?.error?.code === "PERMISSION_DENIED" && (refusedLink.envelope.error.message ?? "").includes(`${physical} is writable by every local account`) && refusedLink.envelope.error.remedy === `chmod o-w ${physical}`, shown(refusedLink));
+  chmodSync(physical, 0o700);
 }
 
 // ── a file a Windows editor saved with a UTF-8 byte-order mark reads, and the next write drops it ──

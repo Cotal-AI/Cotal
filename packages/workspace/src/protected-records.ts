@@ -61,18 +61,25 @@ export function prepareCotalHomeForWrite(): void {
 /** Verify the Cotal home path for a write without creating or tightening any directory. */
 export function assertCotalHomeWriteProtection(): string {
   const home = homeCotalDir();
-  if (localRecordAccess() === "posix") {
-    let dir = home;
-    while (!lstatSync(dir, { throwIfNoEntry: false }) && dirname(dir) !== dir) dir = dirname(dir);
-    try {
-      if (dir === home) protectedLocalEntry(join(protectedResolvedDirectory(dirname(home), "the Cotal home"), basename(home)), "the Cotal home");
-      else protectedResolvedDirectory(dir, "the Cotal home");
-    } catch (e) {
-      if (!isCommandFailure(e) || e.code !== "PERMISSION_DENIED") throw e;
-      throw new CommandFailure(e.outcome, e.code, `${e.message}; nothing was written`, { remedy: e.remedy, target: e.target });
-    }
-  }
+  assertProtectedLinkWrite(home, "the Cotal home");
   return home;
+}
+
+/** Refuse a write under `path` while another local account could replace a folder on the way, and
+ *  follow a symbolic link whose physical folder and every link parent are protected. A folder not
+ *  made yet is checked from the nearest one above it that exists. Windows keeps its access-list
+ *  model, so only POSIX checks. `suffix` is appended to a refusal, such as "nothing was written". */
+export function assertProtectedLinkWrite(path: string, what: string, suffix = "nothing was written"): void {
+  if (localRecordAccess() !== "posix") return;
+  let dir = path;
+  while (!lstatSync(dir, { throwIfNoEntry: false }) && dirname(dir) !== dir) dir = dirname(dir);
+  try {
+    if (dir === path) protectedLocalEntry(join(protectedResolvedDirectory(dirname(path), what), basename(path)), what);
+    else protectedResolvedDirectory(dir, what);
+  } catch (e) {
+    if (!isCommandFailure(e) || e.code !== "PERMISSION_DENIED") throw e;
+    throw new CommandFailure(e.outcome, e.code, `${e.message}; ${suffix}`, { remedy: e.remedy, target: e.target });
+  }
 }
 
 /** A permission error reading the record store at `path`, as the refusal that names the folder
