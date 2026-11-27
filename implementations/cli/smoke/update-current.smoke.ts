@@ -492,6 +492,20 @@ if (process.platform === "linux") {
     const second = cli("update", "--self");
     assert.equal(second.status, 0, second.stdout + second.stderr);
     assert.doesNotMatch(second.stdout + second.stderr, /extensions inventory is missing/);
+    rmSync(join(prefix, "node_modules"), { recursive: true, force: true });
+    rmSync(manifest);
+    assert.equal(existsSync(join(prefix, "package-lock.json")), true);
+    const lockOnly = cli("update", "--self");
+    assert.equal(lockOnly.status, 0, lockOnly.stdout + lockOnly.stderr);
+    assert.doesNotMatch(lockOnly.stdout + lockOnly.stderr, /installed package closure is current/);
+    assert.match(lockOnly.stdout + lockOnly.stderr, /extensions inventory is missing/);
+    assert.equal(existsSync(manifest), true);
+    assert.doesNotMatch(readFileSync(manifest, "utf8"), /@cotal-ai\/tmux/);
+    rmSync(manifest);
+    const seededAgain = cli("ext", "seed");
+    assert.equal(seededAgain.status, 0, seededAgain.stdout + seededAgain.stderr);
+    assert.doesNotMatch(seededAgain.stdout + seededAgain.stderr, /built-in connectors up to date/);
+    assert.equal(existsSync(manifest), true);
   } finally { rmSync(home, { recursive: true, force: true }); }
 }
 emitSentinel({ passed: counted.cells(), failed: 0 });
