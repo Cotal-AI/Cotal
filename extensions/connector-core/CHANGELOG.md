@@ -1,5 +1,14 @@
 # @cotal-ai/connector-core
 
+## 0.183.0
+
+### Patch Changes
+
+- a0e9aae: Run a foreground Hermes seat with a disposable managed profile in Windows PowerShell or Command Prompt.
+- 3cceeab: Name the tools and arguments in `cotal_persona` results instead of spelling out their call syntax.
+- e08738d: A refused model-pin audit says the caller may not read the helper's model pin, without the broker's raw permission denial.
+- a7b8614: Point Windows readers to setup commands that work in Windows PowerShell and Command Prompt.
+
 ## 0.182.1
 
 ### Patch Changes
