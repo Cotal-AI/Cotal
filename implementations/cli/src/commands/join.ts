@@ -2,6 +2,7 @@ import { userInfo } from "node:os";
 import * as readline from "node:readline";
 import {
   CotalEndpoint,
+  PLUGIN_CHANNEL_ROOT,
   assertValidChannel,
   parseJoinLink,
   resolvePeer,
@@ -28,12 +29,13 @@ import {
   DEV_OWNER,
   dmStream,
   dmDurable,
-  chatStream,
+  channelRoute,
   chatHistDurable,
-  chatSubject,
   importNativeSubjectPermissions,
   issuedPermitsPattern,
   issuedPermitsSubject,
+  projectChannelGrants,
+  subjectPatternCovers,
   type Delivery,
   type EndpointKind,
   type PresenceStatus,
@@ -96,24 +98,45 @@ function credentialInboxRemedy(space: string, channel: string): string {
 
 /** Diagnose the lifecycle-keyed grants of a static agent credential. The broker still
  * authenticates it first and enforces admission, provisioning and the current ACL. */
-function checkCredentialJoin(creds: string, space: string, uid: string, channel: string): void {
-  const pub = credsClaims(creds).nats?.pub;
+async function checkCredentialJoin(creds: string, space: string, uid: string, channel: string, modeForPlugin: () => Promise<ReturnType<CotalEndpoint["channelRoutingMode"]>>): Promise<void> {
+  const { pub, sub } = credsClaims(creds).nats ?? {};
   const actor = idFromCreds(creds);
   const inboxPrefix = `$JS.API.CONSUMER.INFO.${dmStream(space)}.dm_${DEV_OWNER}-${actor}-`;
   // Other profiles do not carry an agent's lifecycle-keyed inbox. Leave their refusal
   // to the broker rather than interpreting their unrelated grants as a wrong UID.
   if (!pub?.allow?.some((subject) => subject.startsWith(inboxPrefix))) return;
-  const permission = importNativeSubjectPermissions({ pub }).publish;
+  const permissions = importNativeSubjectPermissions({ pub, ...(sub ? { sub } : {}) });
   const inbox = `$JS.API.CONSUMER.INFO.${dmStream(space)}.${dmDurable(DEV_OWNER, actor, uid)}`;
-  if (!issuedPermitsPattern(permission, inbox))
+  if (!issuedPermitsPattern(permissions.publish, inbox))
     throw new CommandFailure("refused", "PERMISSION_DENIED", `this credential does not grant inbox access for lifecycle ${uid} in ${space}`, {
       remedy: "pass --lifecycle-uid with the lifecycle UID that `cotal auth mint <name> --provision` reported for this credential; a different UID cannot bind its inbox",
     });
-  const history = `$JS.API.CONSUMER.CREATE.${chatStream(space)}.${chatHistDurable(DEV_OWNER, actor, uid)}.${chatSubject(space, "*", "*", channel)}`;
-  if (!issuedPermitsPattern(permission, history))
+  const pluginName = channel === PLUGIN_CHANNEL_ROOT || channel.startsWith(`${PLUGIN_CHANNEL_ROOT}.`);
+  const mode = pluginName ? await modeForPlugin() : "legacy";
+  const route = channelRoute(space, "*", "*", channel, mode ?? "legacy");
+  const history = `$JS.API.CONSUMER.CREATE.${route.stream}.${chatHistDurable(DEV_OWNER, actor, uid)}.${route.subject}`;
+  const canRead = route.rail.kind === PLUGIN_CHANNEL_ROOT
+    ? projectChannelGrants(permissions, { space, mode: "isolated", principal: { owner: DEV_OWNER, actor, lifecycleUid: uid } })
+      .history.some((row) => row.kind === route.rail.kind && subjectPatternCovers(row.subject, route.subject)) && issuedPermitsPattern(permissions.subscribe, route.subject)
+    : issuedPermitsPattern(permissions.publish, history);
+  if (!canRead)
     throw new CommandFailure("refused", "PERMISSION_DENIED", `this credential does not grant read access to #${channel} in ${space}`, {
       remedy: `ask the space's owner to mint it with \`cotal auth mint <name> --provision ${grantOption("--allow-subscribe", channel)} --space ${shellWord(space)} --no-persona --out <file>\`, then join with the lifecycle UID that mint reports; add ${grantOption("--allow-publish", channel)} if you also need to post`,
     });
+}
+
+async function preflightChannelMode(space: string, servers: string, creds: string, tls: boolean | undefined): Promise<ReturnType<CotalEndpoint["channelRoutingMode"]>> {
+  const ep = new CotalEndpoint({
+    space, servers, creds, tls, consume: false, registerPresence: false, watchPresence: false, watchChannels: false,
+    readChannelRoutingProjection: true, card: { name: "join-preflight", kind: "endpoint" },
+  });
+  ep.on("error", () => {});
+  try {
+    await ep.start();
+    return ep.channelRoutingMode();
+  } finally {
+    await ep.stop().catch(() => {});
+  }
 }
 
 /** Refresh a manual user-auth registration's policy before anything is dialed. A refresh that fails
@@ -283,7 +306,7 @@ async function joinSpace(args: ParsedArgs): Promise<void> {
       space, path: values.creds, named: values.space !== undefined || link !== undefined || resolved !== undefined,
       addressFlags, landingChannel: channel,
     } : undefined);
-    if (values.creds) checkCredentialJoin(auth.creds!, space, lifecycleUid!, channel);
+    if (values.creds) await checkCredentialJoin(auth.creds!, space, lifecycleUid!, channel, () => preflightChannelMode(space, server, auth.creds!, auth.tls));
   } else {
     // Self-mint: a bare `cotal join` becomes a console on the running mesh. In auth mode it self-provisions
     // exactly like the manager does at spawn — open a short-lived `provisioner`, pre-create THIS console's
@@ -415,8 +438,8 @@ async function joinSpace(args: ParsedArgs): Promise<void> {
   const publishPermission = auth.creds === undefined ? undefined
     : importNativeSubjectPermissions(publishClaims === undefined ? {} : { pub: publishClaims }).publish;
   const concreteChannel = isConcreteChannel(channel);
-  const canBroadcast = concreteChannel && (publishPermission === undefined ||
-    issuedPermitsSubject(publishPermission, chatSubject(space, ep.card.owner!, ep.card.actor!, channel)));
+  const canBroadcast = () => concreteChannel && (publishPermission === undefined ||
+    issuedPermitsSubject(publishPermission, channelRoute(space, ep.principal.owner, ep.principal.actor, channel, ep.channelRoutingMode() ?? "legacy").subject));
   const patternBroadcastNotice = "Broadcasts need a concrete channel, not a subscription pattern.";
   const broadcastDenied = () => `this session is read-only on #${channel}: it lacks publish permission; nothing was sent. ` +
     (userConnection
@@ -608,7 +631,7 @@ async function joinSpace(args: ParsedArgs): Promise<void> {
   );
   terminal.write(
     c.dim(
-      `${!concreteChannel ? patternBroadcastNotice : canBroadcast ? "Type to broadcast." : `Read-only on #${channel}; this credential has no publish permission.`} Commands: /who  /dm <name> <msg>  /anycast <role> <msg>  /working [x]  /waiting [x]  /idle  /me <activity>  /quit\n\n`,
+      `${!concreteChannel ? patternBroadcastNotice : canBroadcast() ? "Type to broadcast." : `Read-only on #${channel}; this credential has no publish permission.`} Commands: /who  /dm <name> <msg>  /anycast <role> <msg>  /working [x]  /waiting [x]  /idle  /me <activity>  /quit\n\n`,
     ),
   );
   setTimeout(() => {
@@ -690,7 +713,7 @@ async function joinSpace(args: ParsedArgs): Promise<void> {
         }
       } else {
         if (!concreteChannel) print(c.red(`! ${patternBroadcastNotice} Nothing was sent.`));
-        else if (!canBroadcast) print(c.red(`! ${broadcastDenied()}`));
+        else if (!canBroadcast()) print(c.red(`! ${broadcastDenied()}`));
         else {
           try {
             await ep.multicast(line, { channel });

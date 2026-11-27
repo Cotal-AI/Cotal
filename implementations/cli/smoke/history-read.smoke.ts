@@ -59,6 +59,7 @@ import {
 import { awaitBrokerReady, createSuite, killAndAwaitExit, SMOKE_BROKER_TOKEN, teardownOnSignal, teardownPathOnSignal } from "@cotal-ai/smoke-kit";
 import { authDir, clearCurrent, recordMesh, removeMesh, saveSpaceAuth, setCurrent } from "@cotal-ai/workspace";
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
+import { startEnabledPluginSpace } from "../../../packages/core/smoke/fixtures/enabled-plugin-space.js";
 import { execWords } from "../src/lib/exec-words.js";
 import { clean, nodePty } from "./_console-pty.js";
 import { credentialEnded } from "../src/lib/connect.js";
@@ -207,6 +208,106 @@ async function checkDisabledPluginNameHistory(): Promise<void> {
   } finally {
     await writer.close();
   }
+}
+
+async function checkEnabledPluginHistory(): Promise<void> {
+  const fixture = await startEnabledPluginSpace();
+  const { space, servers, channel, hiddenChannel } = fixture;
+  const scope = ["--space", space, "--server", servers, "--json"];
+  const save = (name: string, creds: string) => {
+    const file = join(home, name);
+    writeFileSync(file, creds, { mode: 0o600 });
+    return file;
+  };
+  try {
+    const daemon = await fixture.startDelivery();
+    const viewer = save("plugin-reader.creds", (await fixture.mintAgent({ read: [channel], post: [channel] })).creds);
+    const writer = save("plugin-writer.creds", (await fixture.mintAgent({ post: [channel, hiddenChannel] })).creds);
+    const send = (destination: string, text: string) => run(["send", "-c", destination, text, "--creds", writer, ...scope]);
+    const kept = await send(channel, "retained plugin message");
+    const hidden = await send(hiddenChannel, "outside plugin grant");
+    check("send stores posts on both granted isolated destinations", kept.status === 0 && hidden.status === 0,
+      { kept: shown(kept), hidden: shown(hidden) });
+
+    const history = (destination: string) => run(["history", destination, "--creds", viewer, ...scope]);
+    const retained = await history(channel);
+    check("named history reads through the scoped plugin reader", retained.status === 0 && texts(retained).includes("retained plugin message"), shown(retained));
+    const denied = await history(hiddenChannel);
+    check("a different plugin destination is refused without returning its post",
+      denied.status === 2 && denied.envelope?.error?.code === "PERMISSION_DENIED" && !denied.stdout.includes("outside plugin grant"), shown(denied));
+    const deniedSend = await run(["send", "-c", hiddenChannel, "must not be stored", "--creds", viewer, ...scope]);
+    const postGrant = (deniedSend.envelope?.target as { post?: string[] } | undefined)?.post;
+    check("a refused plugin send names only the caller's admitted post grant",
+      deniedSend.status === 2 && deniedSend.envelope?.error?.code === "PERMISSION_DENIED" && postGrant?.join() === channel, shown(deniedSend));
+
+    const inventory = await run(["history", "--creds", viewer, ...scope]);
+    check("history discovery includes the permitted isolated channel and no hidden plugin name",
+      inventory.envelope?.result?.channels.includes(channel) === true && !inventory.stdout.includes(hiddenChannel), shown(inventory));
+    const whoami = await run(["whoami", "--creds", viewer, "--json"]);
+    const grant = whoami.envelope?.result as unknown as { read?: string[]; post?: string[] } | undefined;
+    check("offline whoami reads the signed credential's scoped plugin claims", whoami.status === 0 &&
+      grant?.read?.join() === channel && grant.post?.join() === channel, shown(whoami));
+    await checkEnabledObserverIsChatOnly(fixture, scope, save, send);
+
+    const live = follow(["history", channel, "--follow", "--creds", viewer, ...scope]);
+    try {
+      await live.until((line) => line.includes('"type":"snapshot"') || line.includes('"type":"error"'));
+      const ready = live.lines.some((line) => line.includes('"type":"snapshot"') && line.includes("retained plugin message"));
+      await send(hiddenChannel, "hidden live plugin message");
+      const posted = await send(channel, "visible live plugin message");
+      if (ready) await live.until((line) => line.includes("visible live plugin message") || line.includes('"type":"error"'));
+      const delivered = live.lines.some((line) => line.includes('"type":"event"') && line.includes("visible live plugin message"));
+      check("a named follow receives the scoped plugin post and no outside message",
+        ready && posted.status === 0 && delivered && !live.lines.some((line) => line.includes("hidden live plugin message")), live.lines);
+    } finally {
+      await killAndAwaitExit(live.child, "SIGINT");
+    }
+    await checkEnabledChatCursor(fixture, scope, save);
+    await daemon.stop();
+    await fixture.removePluginHistory();
+    const absent = await history(channel);
+    check("a confirmed missing isolated history stream refuses rather than reading CHAT",
+      absent.status === 2 && absent.envelope?.error?.code === "TARGET_UNAVAILABLE" &&
+      absent.envelope.error.message.includes("plugin channel's history stream") && !absent.stdout.includes("create them again"), shown(absent));
+  } finally {
+    await fixture.close();
+  }
+}
+
+async function checkEnabledObserverIsChatOnly(
+  fixture: Awaited<ReturnType<typeof startEnabledPluginSpace>>, scope: string[], save: (name: string, creds: string) => string,
+  sendPlugin: (destination: string, text: string) => Promise<{ status: number | null }>,
+): Promise<void> {
+  const observer = save("plugin-negative-observer.creds", await fixture.mintObserver());
+  const writer = save("plugin-negative-chat-writer.creds", (await fixture.mintAgent({ post: [fixture.chatChannel] })).creds);
+  const watch = follow(["watch", "--view", "messages", "--creds", observer, ...scope]);
+  try {
+    const ready = await watch.until((line) => line.includes('"type":"snapshot"') && line.includes('"connected":true'));
+    const outside = await sendPlugin(fixture.channel, "plugin post outside observer scope");
+    const chat = await run(["send", "-c", fixture.chatChannel, "ordinary observer live control", "--creds", writer, ...scope]);
+    const delivered = ready && await watch.until((line) => line.includes('"type":"event"') && line.includes("ordinary observer live control"));
+    check("an ordinary observer receives CHAT but does not discover either isolated plugin channel or see its posts",
+      outside.status === 0 && chat.status === 0 && delivered && !watch.lines.some((line) =>
+        line.includes(fixture.channel) || line.includes(fixture.hiddenChannel) || line.includes("plugin post outside observer scope")), watch.lines.slice(-5));
+  } finally {
+    await killAndAwaitExit(watch.child, "SIGINT");
+  }
+}
+
+async function checkEnabledChatCursor(fixture: Awaited<ReturnType<typeof startEnabledPluginSpace>>, scope: string[], save: (name: string, creds: string) => string): Promise<void> {
+  const { chatChannel: channel } = fixture;
+  const writer = save("enabled-chat-writer.creds", (await fixture.mintAgent({ post: [channel] })).creds);
+  const observer = save("enabled-chat-observer.creds", await fixture.mintObserver());
+  const send = (text: string) => run(["send", "-c", channel, text, "--creds", writer, ...scope]);
+  const history = (...args: string[]) => run(["history", channel, "--creds", observer, ...scope, ...args]);
+  const first = await send("ordinary before cursor");
+  const second = await send("ordinary after cursor");
+  const before = await history();
+  const cursor = before.envelope?.result?.items.find((row) => row.text === "ordinary before cursor")?.seq;
+  const after = await history("--since", String(cursor));
+  check("ordinary history keeps its CHAT stream cutoff when plugin history is enabled",
+    first.status === 0 && second.status === 0 && typeof cursor === "number" && after.status === 0 &&
+    texts(after).join() === "ordinary after cursor", { before: shown(before), after: shown(after) });
 }
 
 async function checkChannelReplayRetry(): Promise<void> {
@@ -544,6 +645,7 @@ try {
   }
   await checkDottedHistory();
   await checkDisabledPluginNameHistory();
+  await checkEnabledPluginHistory();
   try { await checkWatchHistoryHint(watchedSpace); }
   finally {
     process.env.COTAL_HOME = isolatedEnv.COTAL_HOME;

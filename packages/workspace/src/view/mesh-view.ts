@@ -2,7 +2,8 @@
 
 import { EventEmitter } from "node:events";
 import type { CotalEndpoint, CotalMessage, DeliveryClass, EndpointRef, MembershipChange, MembershipSnapshot, Presence, PresenceStatus, TransportState } from "@cotal-ai/core";
-import { deliveryOf, chatWildcard, isEventChannel, partsToText } from "@cotal-ai/core";
+import { PLUGIN_CHANNEL_ROOT, deliveryOf, chatWildcard, isEventChannel, parseSubject, partsToText } from "@cotal-ai/core";
+import { observerChannelTapSubjects } from "./observer.js";
 
 // ---- the model the surfaces render -----------------------------------------
 
@@ -269,7 +270,6 @@ export class MeshView extends EventEmitter {
     super();
     this.window = opts.window ?? DEFAULT_WINDOW;
     this.tapSubject = opts.tapSubject;
-    // DMs are hidden only when the tap is narrowed to the chat subtree.
     this.chatOnly = opts.tapSubject === chatWildcard(ep.space);
   }
 
@@ -288,12 +288,15 @@ export class MeshView extends EventEmitter {
     if (this.stopped) return;
     this.bound = true;
     this.setRoster(this.ep.getRoster());
-    this.ep.tap(
-      (subject, msg) => {
-        if (msg) this.ingest(subject, msg);
-      },
-      this.tapSubject ? { subject: this.tapSubject } : undefined,
-    );
+    const receive = (subject: string, msg: CotalMessage | undefined) => {
+      if (msg) this.ingest(subject, msg);
+    };
+    const subjects = this.chatOnly ? observerChannelTapSubjects(this.ep) : undefined;
+    if (subjects !== undefined) {
+      for (const subject of subjects) this.ep.tap(receive, { subject });
+    } else {
+      this.ep.tap(receive, this.tapSubject ? { subject: this.tapSubject } : undefined);
+    }
     void this.prefill();
     void this.refreshChannels();
     void this.startMembership();
@@ -427,7 +430,9 @@ export class MeshView extends EventEmitter {
  *  from.name is sender-chosen display text, not identity (#1399): the roster is the only writer
  *  of id→name, so a spoofed name can never re-key a thread or a label. */
   private ingest(subject: string, msg: CotalMessage): void {
-    const kind = deliveryOf(subject);
+    const parsed = this.chatOnly ? parseSubject(subject) : null;
+    if (parsed?.kind === PLUGIN_CHANNEL_ROOT && this.ep.channelRoutingMode() !== "isolated") return;
+    const kind = parsed?.kind === PLUGIN_CHANNEL_ROOT ? "chat" : deliveryOf(subject);
     if (!kind) return;
     const now = Date.now();
     this.recentTs.push(now);
@@ -439,7 +444,7 @@ export class MeshView extends EventEmitter {
       ts: msg.ts,
       from: msg.from,
       delivery: kind === "anycast" ? "anycast" : "multicast", // "chat" → multicast
-      channel: kind === "anycast" ? undefined : msg.channel,
+      channel: kind === "anycast" ? undefined : parsed?.kind === PLUGIN_CHANNEL_ROOT ? parsed.rest : msg.channel,
       toService: kind === "anycast" ? msg.toService : undefined,
       // MARKED, NEVER DROPPED. The channel-list filter below keeps event channels out of the tab
       // strip and out of the history prefill, for a cost reason; the live feed is a different

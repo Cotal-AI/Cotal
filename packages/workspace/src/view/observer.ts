@@ -1,4 +1,4 @@
-import { CotalEndpoint, credsClaims, mintLifecycleUid } from "@cotal-ai/core";
+import { CotalEndpoint, credsClaims, importNativeSubjectPermissions, mintLifecycleUid, projectChannelGrants } from "@cotal-ai/core";
 import { CommandFailure } from "../output.js";
 import type { UserViewAuth } from "../connect.js";
 
@@ -26,11 +26,21 @@ export interface ObserverOptions {
   lifecycleUid?: string;
 }
 
+const observerPermissions = new WeakMap<CotalEndpoint, ReturnType<typeof importNativeSubjectPermissions>>();
+
+/** Scoped static channel taps for this admitted observer. Undefined keeps the legacy tap. */
+export function observerChannelTapSubjects(ep: CotalEndpoint): readonly string[] | undefined {
+  const permissions = observerPermissions.get(ep);
+  if (!permissions || ep.channelRoutingMode() !== "isolated") return undefined;
+  return projectChannelGrants(permissions, { space: ep.space, mode: "isolated" }).read.map(({ subject }) => subject);
+}
+
 /** A read-only endpoint over one space, invisible to peers: it registers no presence, binds no
  *  durables, and reads through tap, history and presence watch. It is returned unstarted; the
  *  caller's `MeshView` or lifecycle owns `start` and `stop`. */
 export function openObserver({ space, server, name, auth = {}, operator = false, lifecycleUid }: ObserverOptions): CotalEndpoint {
-  if (auth.creds && credsClaims(auth.creds).name === "agent") {
+  const claims = auth.creds ? credsClaims(auth.creds) : undefined;
+  if (claims?.name === "agent") {
     throw new CommandFailure("refused", "PERMISSION_DENIED", "an agent-profile credential cannot watch the space's chat feed", {
       remedy: "mint a separate observer credential with `cotal auth mint <label> --profile observer --out <file>`, then pass that file with --creds",
     });
@@ -51,7 +61,14 @@ export function openObserver({ space, server, name, auth = {}, operator = false,
     consume: false,
     registerPresence: false,
     watchPresence: true,
+    readChannelRoutingProjection: true,
   });
+  if (claims !== undefined) {
+    const { pub, sub } = claims.nats ?? {};
+    try {
+      observerPermissions.set(ep, importNativeSubjectPermissions({ ...(pub ? { pub } : {}), ...(sub ? { sub } : {}) }));
+    } catch { /* An unrecognized permission shape cannot add a plugin tap. */ }
+  }
   ep.on("error", () => {});
   return ep;
 }

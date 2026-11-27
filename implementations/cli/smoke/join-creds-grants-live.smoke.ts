@@ -15,6 +15,7 @@ import {
 import { authDir, recordMesh, saveSpaceAuth } from "@cotal-ai/workspace";
 import { emitSentinel, freePort, killAndAwaitExit } from "@cotal-ai/smoke-kit";
 import { bootBroker } from "../../manager/smoke/_boot-broker.js";
+import { startEnabledPluginSpace } from "../../../packages/core/smoke/fixtures/enabled-plugin-space.js";
 import { cotalPty, clean, type Pty } from "./_console-pty.js";
 
 const tree = resolve(import.meta.dirname, "../../..");
@@ -52,6 +53,32 @@ function check(name: string, condition: boolean, detail?: string) {
   assert.ok(condition, `${name}${detail ? `: ${detail}` : ""}`);
   passed++;
   console.log(`  ✓ ${name}`);
+}
+
+async function checkEnabledJoin(): Promise<void> {
+  const fixture = await startEnabledPluginSpace();
+  const { space, servers, channel, hiddenChannel } = fixture;
+  try {
+    await fixture.startDelivery();
+    const { creds, lifecycleUid } = await fixture.mintAgent({ read: [channel], post: [channel] });
+    const file = join(dir, "isolated-join.creds");
+    writeFileSync(file, creds, { mode: 0o600 });
+    const args = ["join", "--space", space, "--server", servers, "--creds", file, "--lifecycle-uid", lifecycleUid, "--name", "plugin-reader"];
+    const accepted = cli(...args, "--channel", channel);
+    try {
+      await until(() => accepted.output().includes("holding presence") || accepted.proc.exitCode !== null);
+      check("an explicit scoped credential joins the named isolated plugin channel",
+        accepted.proc.exitCode === null && accepted.output().includes("holding presence"), accepted.output());
+    } finally {
+      await killAndAwaitExit(accepted.proc);
+      await accepted.exited;
+    }
+    const denied = cli(...args, "--channel", hiddenChannel);
+    check("the same credential cannot join the other isolated channel", await denied.exited === 2 &&
+      denied.output().includes("PERMISSION_DENIED") && denied.output().includes(`does not grant read access to #${hiddenChannel}`), denied.output());
+  } finally {
+    await fixture.close();
+  }
 }
 
 const auth = await createSpaceAuth(space);
@@ -213,6 +240,7 @@ try {
   check("whoami reports only the legacy channel's read and post grants", JSON.stringify(identity.read) === JSON.stringify([legacyChannel]) &&
     JSON.stringify(identity.post) === JSON.stringify([legacyChannel]) && identity.dms === "own", whoami.output());
   await refused("legacy no-read", other.file, other.uid, /does not grant read access to #ext\.linear\.legacy/, legacyChannel);
+  await checkEnabledJoin();
   const unpaired = cli("join", "--space", space, "--creds", allowed.file);
   await until(() => unpaired.proc.exitCode !== null);
   check("missing lifecycle explains pairing and the provisioning mint", await unpaired.exited === 1 && /lifecycle-paired/.test(unpaired.output()) && /--lifecycle-uid/.test(unpaired.output()) && /auth mint.*--provision/.test(unpaired.output()), unpaired.output());

@@ -103,7 +103,7 @@ function jetStreamUnanswered(conn: Connection): CommandFailure {
 export async function openTransient(
   values: ConnectValues,
   name: string,
-  opts: { throwOnRefusal?: boolean; senderActor?: string; watch?: boolean; presenceOnly?: boolean; report?: (level: "error" | "warning", e: Error) => void } = {},
+  opts: { throwOnRefusal?: boolean; senderActor?: string; watch?: boolean; presenceOnly?: boolean; readChannelRoutingProjection?: boolean; report?: (level: "error" | "warning", e: Error) => void } = {},
 ): Promise<{ ep: CotalEndpoint; space: string; connection: Connection }> {
   const conn = opts.throwOnRefusal ? await connectOrThrow(values, "operator", { operatorActor: opts.senderActor }) : await resolveConnect(values);
   // Match the principal just minted by this connection's account signer, never a launch identity.
@@ -131,6 +131,7 @@ export async function openTransient(
         registerPresence: false,
         watchPresence: true,
         watchChannels: !opts.presenceOnly,
+        readChannelRoutingProjection: opts.readChannelRoutingProjection,
         readOnce: once,
         transportConnectTimeoutMs: DIAL_TIMEOUT_MS,
         onConnection: () => { opened = true; },

@@ -3,14 +3,15 @@ import { isAbsolute, join } from "node:path";
 import * as prompts from "../lib/prompts.js";
 import {
   CHANNEL_DEFAULTS_KEY,
+  CotalEndpoint, PLUGIN_CHANNEL_ROOT,
   assertValidChannel, clearChannel, deleteChannels, effectiveDeliveryClass, effectiveReplay,
   ChannelRegistryConflict, ChannelRegistryRemovalFailed, channelBucket, isConcreteChannel, isPublishPermissionDenied, readChannelRegistry, seedChannelRegistry, UndecodableRegistryEntry, validateChannelConfig,
   type ChannelConfig, type ChannelRegistryFile, type ChannelRegistryRead, type CompletionResult, type FlagSpec, type FlagValues, type ParsedArgs,
 } from "@cotal-ai/core";
 import {
-  ConfirmationRequired,
+  ConfirmationRequired, endpointAuth,
   checkServer, codeSpan, CommandFailure, findMesh, jsonFlag, plainFlag, presentationOf, recordOperationWarning, targetFlags, writeResult,
-  type Presentation, type Report,
+  type Connection, type Presentation, type Report,
 } from "@cotal-ai/workspace";
 import { connectOrThrow, userViewAuthOrExit } from "../lib/connect.js";
 import { batchedRead } from "../lib/transient.js";
@@ -150,7 +151,8 @@ export async function channels(args: ParsedArgs): Promise<void> {
   const target = { space: connection.space, ...(name ? { channel: name } : {}) };
   if (!writes) {
     const full = await readChannelRegistry({ ...options, directGet: batchedRead(connection, channelBucket(connection.space)) });
-    const registry = action === "show" ? namedRegistry(full, name!) : action === "defaults" ? defaultsRegistry(full) : full;
+    const visible = action === "defaults" ? full : await visibleChannelMetadata(connection, full);
+    const registry = action === "show" ? namedRegistry(visible, name!) : action === "defaults" ? defaultsRegistry(visible) : visible;
     writeResult(presentation, { command: "channel", target, result: { action, name, space: connection.space, registry, scope: "configured channel metadata" } }, (result) => registryView(result, connection.mode === "open", values));
     return;
   }
@@ -203,6 +205,26 @@ export async function channels(args: ParsedArgs): Promise<void> {
     ] },
     { title: "Next", blocks: [{ kind: "commands", items: [{ command: `cotal ch${scope}`, description: "See saved channel metadata" }, { command: `${name ? channelHistoryCommand(name) : "cotal history <channel>"}${scope}`, description: "Read retained messages within your grant" }] }] },
   ] }));
+}
+
+async function visibleChannelMetadata(connection: Connection, registry: ChannelRegistryRead): Promise<ChannelRegistryRead> {
+  const hasReservedRoot = (channel: string) => channel === PLUGIN_CHANNEL_ROOT || channel.startsWith(`${PLUGIN_CHANNEL_ROOT}.`);
+  if (!Object.keys(registry.channels ?? {}).some(hasReservedRoot) && !registry.undecodable?.some(({ key }) => hasReservedRoot(key))) return registry;
+  const viewer = new CotalEndpoint({
+    space: connection.space, servers: connection.server, ...endpointAuth(connection),
+    consume: false, registerPresence: false, watchPresence: false, watchChannels: false,
+    readChannelRoutingProjection: true, card: { name: "channel", kind: "endpoint" },
+  });
+  viewer.on("error", () => {});
+  try {
+    await viewer.start();
+    if (viewer.channelRoutingMode() !== "isolated") return registry;
+    const channels = Object.fromEntries(Object.entries(registry.channels ?? {}).filter(([name]) => !hasReservedRoot(name)));
+    const undecodable = registry.undecodable?.filter(({ key }) => !hasReservedRoot(key));
+    return { defaults: registry.defaults, channels, ...(undecodable?.length ? { undecodable } : {}) };
+  } finally {
+    await viewer.stop().catch(() => {});
+  }
 }
 
 /** Warn when the root's default seed, `.cotal/channels.json`, names what this write changed. A start
