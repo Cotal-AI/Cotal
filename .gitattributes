@@ -17,3 +17,11 @@ packages/workspace/scripts/native-contract.mjs text eol=lf
 
 # The reviewed upstream NSIS template is digest-pinned before applying the service guard.
 desktop/src-tauri/installers/tauri-2.12.4.nsi text eol=lf
+
+# The desktop app's cotal launchers: cmd.exe finds labels reliably only in CRLF batch files, and the
+# shell launchers and package scripts run on Linux and macOS.
+desktop/src-tauri/installers/command-line/cotal.cmd text eol=crlf
+desktop/src-tauri/installers/command-line/cotal-linux text eol=lf
+desktop/src-tauri/installers/command-line/cotal-macos text eol=lf
+desktop/src-tauri/installers/command-line/linux-postinst text eol=lf
+desktop/src-tauri/installers/command-line/linux-postrm text eol=lf

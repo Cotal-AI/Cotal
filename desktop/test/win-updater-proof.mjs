@@ -132,6 +132,13 @@ const quitApp = async name => {
   await until(name, () => { try { process.kill(current.pid, 0); return false; } catch { return true; } }, Boolean, 30_000);
 };
 const installed = () => JSON.parse(readFileSync(join(runtime, 'package.json'), 'utf8')).version;
+// A new terminal: PATH from the registry, the machine PATH then the user PATH, as Explorer builds it.
+// The installer puts the app's cotal command on the user PATH.
+const terminalCotal = async () => {
+  const path = (await run(ps, ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', "[Environment]::GetEnvironmentVariable('Path','Machine') + ';' + [Environment]::GetEnvironmentVariable('Path','User')"])).trim();
+  const fresh = Object.fromEntries(Object.entries(env).filter(([key]) => key.toUpperCase() !== 'PATH'));
+  return (await run(join(process.env.SystemRoot, 'System32', 'cmd.exe'), ['/d', '/c', 'cotal --version'], { env: { ...fresh, Path: path } })).trim();
+};
 const readSetupResult = () => {
   const file = join(setupHome, 'result.json');
   if (!existsSync(file)) return null;
@@ -148,6 +155,8 @@ try {
   await run(join(root, 'N-setup.exe'), ['/S']);
   appInstalled = true;
   assert.equal(installed(), '0.164.8');
+  record('cotal command N in a new terminal', await terminalCotal());
+  assert.equal((await terminalCotal()).includes('0.164.8'), true);
   const initial = await call('daemon', 'status');
   record('initial daemon status', initial);
   assert.equal(initial.ok, false, 'Default native service must be absent');
@@ -342,6 +351,8 @@ try {
   const hop1Service = await until('Hop 1 service and Manager ready on 0.164.9', () => call('daemon', 'status'), reply => reply.ok && reply.result.version === '0.164.9' && reply.result.state === 'ready' && reply.result.managers?.every(item => item.state === 'answering' && item.connectors?.some(connector => connector.state === 'available')));
   await until('Hop 1 app confirms Updated to Cotal 0.164.9.', () => ui('text', 'applied-update'), text => text === 'Updated to Cotal 0.164.9.');
   record('Hop 1 completed', { version: installed(), servicePid: hop1Service.result.pid });
+  record('cotal command after Hop 1 in a new terminal', await terminalCotal());
+  assert.equal((await terminalCotal()).includes('0.164.9'), true);
 
   await quitApp('first 0.164.9 app exited');
   // Start 0.164.9 with --background, then show via single-instance so Hop 2 tests Restart to update overriding --background on relaunch.
@@ -369,6 +380,8 @@ try {
   record('Hop 2 explicit restart completed', { app: hop2VisibleApp, setup: hop2Setup, servicePid: hop2Service.result.pid });
 
   assert.equal((await run(node, [cli, '--version'])).trim().includes('0.164.10'), true);
+  record('cotal command after Hop 2 in a new terminal', await terminalCotal());
+  assert.equal((await terminalCotal()).includes('0.164.10'), true);
   const inventory = JSON.parse(readFileSync(join(runtime, 'desktop-runtime.json'), 'utf8'));
   assert.equal(inventory.version, '0.164.10');
   for (const file of inventory.files) {

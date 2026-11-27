@@ -360,7 +360,13 @@ pub fn run() {
             window.set_background_color(Some(tauri::window::Color(255, 252, 238, 255)))?;
             #[cfg(target_os = "macos")]
             app.handle().set_activation_policy(tauri::ActivationPolicy::Accessory)?;
-            app.manage(native_presence::load(app.handle())?);
+            #[allow(unused_mut)]
+            let mut presence = native_presence::load(app.handle())?;
+            #[cfg(target_os = "macos")]
+            if let Err(reason) = crate::command_line::ensure_on_shell_path(app.handle()) {
+                presence.1 = Some(match presence.1.take() { Some(notice) => format!("{notice}\n{reason}"), None => reason });
+            }
+            app.manage(presence);
             let status = MenuItem::with_id(app, "status", "Checking connection…", false, None::<&str>)?;
             let settings = MenuItem::with_id(app, "settings", "Settings…", true, None::<&str>)?;
             let dashboard = MenuItem::with_id(app, "dashboard", "Open dashboard", true, None::<&str>)?;

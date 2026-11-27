@@ -194,6 +194,16 @@ fn main() {
         }
     }
     #[cfg(windows)]
+    for (flag, present) in [("--add-command-line", true), ("--remove-command-line", false)] {
+        if std::env::args().nth(1).as_deref() == Some(flag) {
+            // The installers read this line: what changed on success, the reason otherwise.
+            match cotal_desktop::command_line::set_on_user_path(present) {
+                Ok(state) => { println!("{state}"); std::process::exit(0) }
+                Err(message) => { println!("{message}"); std::process::exit(1) }
+            }
+        }
+    }
+    #[cfg(windows)]
     if std::env::args().nth(1).as_deref() == Some("--daemon") {
         std::process::exit(serve_windows_daemon().unwrap_or(1));
     }

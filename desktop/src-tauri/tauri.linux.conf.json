@@ -1,1 +1,19 @@
-{ "bundle": { "targets": ["deb", "rpm"] } }
+{
+  "bundle": {
+    "targets": ["deb", "rpm"],
+    "resources": {
+      "runtime/": "runtime/",
+      "installers/command-line/cotal-linux": "bin/cotal"
+    },
+    "linux": {
+      "deb": {
+        "postInstallScript": "installers/command-line/linux-postinst",
+        "postRemoveScript": "installers/command-line/linux-postrm"
+      },
+      "rpm": {
+        "postInstallScript": "installers/command-line/linux-postinst",
+        "postRemoveScript": "installers/command-line/linux-postrm"
+      }
+    }
+  }
+}

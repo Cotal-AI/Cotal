@@ -1,0 +1,11 @@
+#!/bin/sh
+# Links /usr/bin/cotal to the app's command. A /usr/bin/cotal this package did not create belongs
+# to another installation (npm with a /usr prefix), so it is left as it is.
+link=/usr/bin/cotal
+target=/usr/lib/Cotal/bin/cotal
+if [ -L "$link" ] && [ "$(readlink "$link")" = "$target" ]; then exit 0; fi
+if [ -e "$link" ] || [ -L "$link" ]; then
+  echo "Cotal: $link belongs to another installation and was left as it is. This app's command is $target." >&2
+  exit 0
+fi
+ln -s "$target" "$link"

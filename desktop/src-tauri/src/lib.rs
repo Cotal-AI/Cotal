@@ -9,6 +9,7 @@ mod native_presence;
 #[cfg(feature = "desktop")]
 pub mod updater;
 pub mod app_activity;
+pub mod command_line;
 #[cfg(any(feature = "desktop", test))]
 mod terminal;
 pub mod update_receipt;

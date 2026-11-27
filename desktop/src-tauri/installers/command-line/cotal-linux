@@ -1,0 +1,3 @@
+#!/bin/sh
+# The cotal command of the Cotal desktop app: the app's bundled CLI on its own Node.
+exec /usr/bin/cotal-node /usr/lib/Cotal/runtime/dist/cotal.js "$@"

@@ -4,6 +4,7 @@ import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { mkdirSync, readFileSync, readdirSync, writeFileSync, existsSync, chmodSync } from 'node:fs';
 import { delimiter, dirname, isAbsolute, join, resolve } from 'node:path';
+import { homedir, userInfo } from 'node:os';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -98,6 +99,8 @@ const quitApp = async name => {
   await until(name, () => { try { process.kill(current.pid, 0); return false; } catch { return true; } }, Boolean, 30_000);
 };
 const installed = () => JSON.parse(readFileSync(join(runtime, 'package.json'), 'utf8')).version;
+// A new Terminal window: the account's login shell with launchd's PATH. The app puts its cotal command on it.
+const terminalCotal = async () => (await execute(userInfo().shell, ['-l', '-i', '-c', 'cotal --version'], { env: { HOME: homedir(), USER: userInfo().username, TERM: 'xterm-256color', PATH: '/usr/bin:/bin:/usr/sbin:/sbin' }, timeout: 60_000 })).stdout.trim();
 let fixture, seat, manager;
 let serviceInstalled = false;
 let cleanupError;
@@ -132,6 +135,7 @@ try {
   await run('/usr/bin/open', ['-n', app]);
   const firstApp = await until('visible N app', () => ax('describe'), value => value.visible);
   record('app N kernel lifetime', { ...firstApp, birth: lifetime.processBirth(firstApp.pid) });
+  await until('cotal command N in a new login shell', terminalCotal, text => text.includes('0.164.8'), 30_000);
   await ax('settings');
   await until('initial publication gap', () => ax('text', 'settings-update-summary'), text => text.includes('still being prepared'));
   mode = 'valid';
@@ -264,6 +268,8 @@ try {
   assert.ok(!secondResult.nodes.some(item => item.text.includes('Updated to Cotal 0.164.9.')), 'The result line is first-session only');
   record('second start result retired', { version: installed() });
   assert.equal((await run(node, [cli, '--version'])).trim().includes('0.164.9'), true);
+  record('cotal command after the update in a new login shell', await terminalCotal());
+  assert.equal((await terminalCotal()).includes('0.164.9'), true);
   const inventory = JSON.parse(readFileSync(join(runtime, 'desktop-runtime.json'), 'utf8'));
   for (const file of inventory.files) assert.equal(createHash('sha256').update(readFileSync(join(runtime, file.path))).digest('hex'), file.sha256);
   const seeded = join(runtime, 'seeded-connectors');
