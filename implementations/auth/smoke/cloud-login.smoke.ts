@@ -64,7 +64,7 @@ const capture = (chunk: Buffer) => {
 child.stdout.on('data',capture); child.stderr.on('data',capture);
 const timer = setTimeout(()=>child.kill('SIGTERM'),30_000);
 try {
-  const code = await new Promise<number|null>(resolve=>child.on('close',resolve));
+  const code = await new Promise<number|null>((resolve, reject) => { child.on('close', (status, signal) => signal ? reject(new Error(`login was killed by its own 30s deadline before it finished:\n${output}`)) : resolve(status)); });
   await approval;
   clearTimeout(timer);
   assert.equal(code, 0, output);
@@ -77,6 +77,17 @@ try {
   assert.equal(readFileSync(join(env.COTAL_HOME!, 'current-mesh'), 'utf8').trim(), 'personal');
   assert.equal(readFileSync(join(env.COTAL_HOME!, 'current-mesh.adopted'), 'utf8').trim(), 'personal');
   console.log('Real Better Auth approval through CLI selects personal space and names next commands.');
+  let seeded = '';
+  const seed = spawn('./node_modules/.bin/tsx', ['bin/cotal.ts', 'ps', '--plain'], { env, stdio: ['ignore', 'pipe', 'pipe'] });
+  seed.stdout.on('data', chunk => { seeded += chunk.toString(); });
+  seed.stderr.on('data', chunk => { seeded += chunk.toString(); });
+  const seedLimit = setTimeout(() => seed.kill('SIGTERM'), 180_000);
+  try {
+    const seedExit = await new Promise(resolve => seed.on('close', (code, signal) => resolve({ code, signal })));
+    const seedEnded = seedExit as { code: number | null, signal: NodeJS.Signals | null };
+    assert.equal(seedEnded.signal, null, `the seed of this home was killed by its own deadline after 180s:\n${seeded}`);
+    assert.notEqual(seedEnded.code, null, seeded);
+  } finally { clearTimeout(seedLimit); }
   revoked = true;
   const catalogPath = join(env.COTAL_HOME!, 'space-catalogs.json');
   const cache = JSON.parse(readFileSync(catalogPath, 'utf8'));
@@ -91,8 +102,9 @@ try {
       ps.stderr.on('data', chunk => { refusal += chunk.toString(); });
       const psDeadline = setTimeout(() => ps.kill('SIGTERM'), 30_000);
       try {
-        const exit = await new Promise(resolve => ps.on('close', resolve));
-        if (command !== 'status') assert.notEqual(exit, 0, refusal);
+        const ended = await new Promise<{ code: number | null, signal: NodeJS.Signals | null }>(resolve => ps.on('close', (code, signal) => resolve({ code, signal })));
+        assert.equal(ended.signal, null, `${command} ${mode} was killed by its own 30s deadline before it finished:\n${refusal}`);
+        if (command !== 'status') assert.notEqual(ended.code, 0, refusal);
         assert.match(refusal, new RegExp(`cotal login --idp ${base.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`), refusal);
         assert.equal(readFileSync(join(env.COTAL_HOME!, 'idp-sessions.json'), 'utf8'), sessionBefore);
         for (const session of Object.values(JSON.parse(sessionBefore).sessions) as { token: string }[]) assert.equal(refusal.includes(session.token), false);
@@ -121,7 +133,7 @@ try {
     login.stdout.on('data', collect); login.stderr.on('data', collect);
     const deadline = setTimeout(() => login.kill('SIGTERM'), 30_000);
     try {
-      assert.equal(await new Promise(resolve => login.on('close', resolve)), 0, text);
+      assert.equal(await new Promise((resolve, reject) => login.on('close', (status, signal) => signal ? reject(new Error(`login was killed by its own 30s deadline before it finished:\n${text}`)) : resolve(status))), 0, text);
       await approved;
       const selected = existsSync(join(dir, 'current-mesh')) ? readFileSync(join(dir, 'current-mesh'), 'utf8').trim() : undefined;
       assert.equal(selected, cell.expected, text);
