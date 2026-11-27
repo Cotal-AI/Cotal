@@ -1,4 +1,4 @@
-import { accessSync, constants, existsSync, lstatSync, readFileSync } from "node:fs";
+import { accessSync, constants, existsSync, lstatSync } from "node:fs";
 import { join } from "node:path";
 import { applicationsBeyondRecordedService } from "../lib/service-application.js";
 import {

@@ -398,12 +398,11 @@ async function unitCommand(args: ParsedArgs, op: "install" | "uninstall"): Promi
       ] }));
       return;
     }
-    const installed = dry ? { ...planInstall(paths, home), state: "would-install" as const } : applyInstall(paths, home);
-    const r = installed;
+    const r = dry ? { ...planInstall(paths, home), state: "would-install" as const } : applyInstall(paths, home);
     writeResult(presentation, { command: "daemon install", target: { unit: r.unit }, result: r }, () => ({ sections: [
       { title: r.alreadyInstalled ? "Already installed" : dry ? "Would install" : "Installed", blocks: [
         { kind: "fields", rows: [["Unit", r.unit], ["Path", r.unitPath], ["Digest", r.sha256], ["User", r.user], ...(r.mechanism === "systemd-user" ? [["Linger", r.lingerAlready ? "already enabled" : dry ? "would be enabled" : "enabled by this install"] as [string, string]] : []), ["Restart", r.restart], ["Started by", r.wantedBy], ...(r.daemonHome ? [["Daemon home", r.daemonHome] as [string, string]] : [])] },
-        { kind: "lines", lines: [{ text: [dry
+        { kind: "lines", lines: [{ text: dry
           ? "Nothing was written, enabled or started."
           : `${r.mechanism === "systemd-user" ? "It starts at login, restarts on its own, and keeps running after you log out." : "It starts at login and recovers after an exit while you are signed in."} Read it with ${codeSpan(daemonCommandCopy("status", home))}, and remove it with ${codeSpan(daemonCommandCopy("uninstall", home))}.`, tone: "hint" }] },
       ] },

@@ -18,9 +18,10 @@ import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { once } from "node:events";
 import { connect } from "node:net";
-import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { delimiter, join, sep } from "node:path";
+import { fileURLToPath } from "node:url";
+import { delimiter, dirname, join, sep } from "node:path";
 import { assertSmokeSandboxDown, createSuite, freePort } from "@cotal-ai/smoke-kit";
 import { acquireMaintenanceLock, beginMaintenanceCut, canonicalLocalProcessPath, findMesh, recordMesh, releaseMaintenanceLock, renderReport, WEB_PIDFILE, writeMaintenanceResumeDocument } from "@cotal-ai/workspace";
 import { statusView } from "../src/commands/status.js";
@@ -967,9 +968,14 @@ if (process.platform === "linux" && !brokerDisplayOnly && !pidfileOnly) {
   mkdirSync(bin);
   writeFileSync(join(bin, "aa-bin"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
   const manifest = join(home, ".config", "cotal", "extensions");
-  mkdirSync(manifest, { recursive: true });
+  mkdirSync(join(manifest, "node_modules", "@fixture", "aa", "node_modules", "@cotal-ai"), { recursive: true });
+  writeFileSync(join(manifest, "node_modules", "@fixture", "aa", "package.json"), JSON.stringify({ name: "@fixture/aa", version: VERSION, type: "module" }));
+  writeFileSync(join(manifest, "node_modules", "@fixture", "aa", "index.js"), `import { registry } from "@cotal-ai/core";
+registry.register({ kind: "connector", name: "aa", requires: ["aa-bin"], buildLaunch: () => ({ command: "aa-bin", args: [] }) });
+`);
+  symlinkSync(dirname(fileURLToPath(import.meta.resolve("@cotal-ai/core"))), join(manifest, "node_modules", "@fixture", "aa", "node_modules", "@cotal-ai", "core"));
   writeFileSync(join(manifest, "extensions.json"), JSON.stringify({ extensions: [{
-    pkg: "@rig/aa", version: VERSION, spec: `@rig/aa@${VERSION}`,
+    pkg: "@fixture/aa", version: VERSION, spec: `@fixture/aa@${VERSION}`,
     provides: [{ kind: "connector", name: "aa" }], commands: [],
     connectors: [{ name: "aa", requires: ["aa-bin"], eventPlane: false, setup: null }],
   }] }));
@@ -990,19 +996,35 @@ if (process.platform === "linux" && !brokerDisplayOnly && !pidfileOnly) {
   const status = run(["status", "--space", "nosuch", "--plain"], onPath);
   check("status names an application the recorded service cannot see and the repair command",
     status.status === 0 && (status.stdout.split("\n").find(line => /^ {2}Agent applications:/.test(line)) ?? "").includes(repair), shown(status));
-  const aligned = run(["status", "--space", "nosuch", "--plain"], { PATH: `/usr/bin:/bin${delimiter}${bin}` });
-  check("status stays quiet when the shell PATH matches the recorded service",
+  const pinned = `[Service]\nEnvironment=PATH="${bin}:/usr/bin:/bin"\nExecStart="/bin/true"\n`;
+  writeFileSync(unitPath, pinned, { mode: 0o600 });
+  writeFileSync(join(daemonHome, "daemon", "service-unit.json"), JSON.stringify({
+    v: 1, mechanism: "systemd-user", unit: "cotal-daemon.service", unitPath,
+    unitSha256: createHash("sha256").update(pinned).digest("hex"), installedAt: new Date().toISOString(),
+  }), { mode: 0o600 });
+  const aligned = run(["status", "--space", "nosuch", "--plain"], onPath);
+  check("status stays quiet when the recorded service can see the application",
     aligned.status === 0 && !aligned.stdout.includes("background service cannot see"), shown(aligned));
+  writeFileSync(unitPath, unit, { mode: 0o600 });
+  writeFileSync(join(daemonHome, "daemon", "service-unit.json"), JSON.stringify({
+    v: 1, mechanism: "systemd-user", unit: "cotal-daemon.service", unitPath,
+    unitSha256: createHash("sha256").update(unit).digest("hex"), installedAt: new Date().toISOString(),
+  }), { mode: 0o600 });
   const setup = spawnSync(process.execPath, [BIN, "setup", "--destination", "local", "--harness", "aa", "--project", project, "--space", "seen", "--no-input", "--plain"], {
     cwd: project,
     env: { ...HOST_ENV, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: join(home, ".config"), COTAL_HOME: daemonHome, COTAL_SKIP_CONNECTOR_SEED: "1", ...onPath, NO_COLOR: "1" },
     encoding: "utf8", timeout: 120_000,
   });
   check("setup names the same application and the same repair command",
-    setup.status === 0 && (setup.stdout ?? "").includes(`application: aa · ${repair}`), { status: setup.status, stdout: (setup.stdout ?? "").slice(0, 900), stderr: (setup.stderr ?? "").slice(0, 600) });
+    setup.status === 0 && (setup.stdout ?? "").includes(ascii(`application: aa · ${repair}`)), { status: setup.status, stdout: (setup.stdout ?? "").slice(0, 900), stderr: (setup.stderr ?? "").slice(0, 600) });
+  writeFileSync(unitPath, pinned, { mode: 0o600 });
+  writeFileSync(join(daemonHome, "daemon", "service-unit.json"), JSON.stringify({
+    v: 1, mechanism: "systemd-user", unit: "cotal-daemon.service", unitPath,
+    unitSha256: createHash("sha256").update(pinned).digest("hex"), installedAt: new Date().toISOString(),
+  }), { mode: 0o600 });
   const hidden = spawnSync(process.execPath, [BIN, "setup", "--destination", "local", "--harness", "aa", "--project", project, "--space", "seen", "--no-input", "--plain"], {
     cwd: project,
-    env: { ...HOST_ENV, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: join(home, ".config"), COTAL_HOME: daemonHome, COTAL_SKIP_CONNECTOR_SEED: "1", PATH: `/usr/bin:/bin${delimiter}${bin}`, NO_COLOR: "1" },
+    env: { ...HOST_ENV, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: join(home, ".config"), COTAL_HOME: daemonHome, COTAL_SKIP_CONNECTOR_SEED: "1", PATH: `${bin}${delimiter}/usr/bin:/bin`, NO_COLOR: "1" },
     encoding: "utf8", timeout: 120_000,
   });
   check("setup stays quiet when the recorded service can see the application",
