@@ -25,7 +25,9 @@ if (!existsSync(join(repo, 'bin', 'dist', 'cotal.js')) || !existsSync(join(repo,
 const version = JSON.parse(readFileSync(join(repo, 'bin', 'package.json'), 'utf8')).version;
 const staging = mkdtempSync(join(native, '.runtime-stage-'));
 const deploy = join(staging, 'runtime');
-const result = spawnSync(process.execPath, [pnpm, '--filter', 'cotal-ai', '--config.node-linker=hoisted', 'deploy', '--prod', '--ignore-scripts', deploy], { cwd: repo, stdio: 'inherit' });
+// The RPM writer can interleave hard-link sets from the pnpm store. The DEB writer copies each resource independently.
+const importMethod = process.platform === 'linux' ? ['--config.package-import-method=copy'] : [];
+const result = spawnSync(process.execPath, [pnpm, '--filter', 'cotal-ai', '--config.node-linker=hoisted', ...importMethod, 'deploy', '--prod', '--ignore-scripts', deploy], { cwd: repo, stdio: 'inherit' });
 if (result.status !== 0) throw new Error(`pnpm deploy failed; retained staging is ${staging}`);
 
 function traceEsm(entry) {
