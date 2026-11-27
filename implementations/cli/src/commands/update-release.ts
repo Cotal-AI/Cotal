@@ -66,6 +66,7 @@ export function reportConnectorAccessRestored(rt: UpdateRuntime, permissionsRest
 export async function handleLatestVersionFailure(latest: LatestVersionFailure, current: string, rt: UpdateRuntime, unavailable: string, promotionRecovered: boolean, permissionsRestored = false): Promise<number> {
   if (latest.missingNpm) {
     if (rt.env.COTAL_AUTO_UPDATE === "1") recordUpdateDeferral(current, "waiting for npm availability", true);
+    reportConnectorAccessRestored(rt, permissionsRestored);
     rt.err(c.red(`✗ cotal-ai version check failed: ${latest.error}. ${MISSING_NPM_REMEDY}`));
     return 1;
   }
@@ -77,6 +78,7 @@ export async function handleLatestVersionFailure(latest: LatestVersionFailure, c
     rt.out(`${latest.error}. The latest-version check was skipped.`);
     return 0;
   }
+  reportConnectorAccessRestored(rt, permissionsRestored);
   if (!latest.npmResult || !(releaseReadError(latest.npmResult, "cotal-ai version check failed") instanceof RegistryUnavailable)) {
     rt.err(c.red(`✗ cotal-ai version check failed: ${oneLine(latest.error.split(/\r?\n/, 1)[0]!)}`));
     return 1;
