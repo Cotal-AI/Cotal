@@ -149,23 +149,29 @@ export function bootstrapDarwinSeatHost(plan: DarwinSeatHostPlan): void {
   if (nativeRun(launchctl, ["bootstrap", domain, plan.source], undefined, 5000).status !== 0) throw refusal();
 }
 
-/** The future host entry calls this before opening a master, listener or shared custody record. */
+function verifiedJobPid(plan: DarwinSeatHostPlan): number {
+  const pid = observeJob(plan.label);
+  const detected = darwinLaunchdJob(plan.label);
+  if (pid === undefined || pid <= 1 || detected.state !== "loaded" || detected.job.label !== plan.label ||
+      detected.job.pid !== pid || detected.job.program !== plan.argv[0] ||
+      JSON.stringify(detected.job.programArguments) !== JSON.stringify(plan.argv)) throw refusal();
+  return pid;
+}
+
+/** Check this launchd job before opening a master, listener or shared custody record. */
 export function admitDarwinSeatHost(plan: DarwinSeatHostPlan): void {
   uid();
   if (process.ppid !== 1 || process.argv.length !== plan.argv.length ||
       process.argv.some((arg, index) => arg !== plan.argv[index])) throw refusal();
   checkReceipt(plan);
+  if (verifiedJobPid(plan) !== process.pid) throw refusal();
 }
 
 /** Inspect from the verified GUI daemon; the lookup is not an SSH cross-session proof. */
 export function readDarwinSeatHostLifetime(plan: DarwinSeatHostPlan): DarwinSeatHostLifetime {
   requireOwnedDaemon(plan);
   checkReceipt(plan);
-  const pid = observeJob(plan.label);
-  const detected = darwinLaunchdJob(plan.label);
-  if (pid === undefined || pid <= 1 || detected.state !== "loaded" || detected.job.label !== plan.label ||
-      detected.job.pid !== pid || detected.job.program !== plan.argv[0] ||
-      JSON.stringify(detected.job.programArguments) !== JSON.stringify(plan.argv)) throw refusal();
+  const pid = verifiedJobPid(plan);
   const start = processStartTime(pid);
   if (!start) throw refusal();
   return { pid, start, boot: darwinBootSession() };
