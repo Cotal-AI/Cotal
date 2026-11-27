@@ -1,32 +1,23 @@
 // The rebuild and retry pacing of CotalEndpoint, as an internal component: the single serialized rebuild,
 // its transition onto a fresh connection, the capped retry delay, and the backoff and membership pauses.
 // Moved verbatim from endpoint.ts. It owns the retry attempt count and the backoff, and clears the endpoint's
-// ConnectionState around a rebuild; the endpoint keeps the
-// supervisor and the retry loop and forwards to these. Not re-exported by the index.
+// ConnectionState around a rebuild; the connection part runs the
+// supervisor and the retry loop and calls these. Not re-exported by the index.
 import type { LifecycleState } from "./endpoint-lifecycle-state.js";
 import type { ConnectionState } from "./endpoint-connection-state.js";
-import type { NatsConnection } from "@nats-io/transport-node";
 import type { TransportState } from "./endpoint-options.js";
-import type { EndpointDeliveryLease } from "./endpoint-delivery-lease.js";
+import type { EndpointParts } from "./endpoint-parts.js";
 
 /** What the reconnect component reads from its endpoint. State is read when it is used, never copied, a
  *  field it reassigns is written back through its setter, and every method is looked up on the endpoint
- *  at call time, so a member a caller replaced on the endpoint is the one that runs. */
+ *  at call time, so a member a caller replaced on the endpoint is the one that runs. A peer part is read
+ *  from the parts record at call time. */
 export interface EndpointReconnectDeps {
-  deliveryLease: () => EndpointDeliveryLease;
-  disableLibraryReconnect: (nc: NatsConnection) => void;
-  clearConnectionScoped: () => void;
-  settleDeliveryLeaseWatches: () => Promise<void>;
-  settleKvWatches: () => Promise<void>;
-  closeWithoutLibraryReconnect: (nc: NatsConnection | undefined) => Promise<void>;
-  connectAndBind: () => Promise<void>;
-  tearDownIfStopped: () => Promise<boolean>;
-  superviseConnection: () => void;
   emit: (event: string, ...args: unknown[]) => boolean;
 }
 
 /** One endpoint's rebuild and retry pacing. Internal: it owns the retry count and the backoff, and
- *  `CotalEndpoint` keeps the other shared fields, the supervisor and the retry loop, and forwards to it. */
+ *  `CotalEndpoint` keeps the other shared fields, {@link EndpointConnection} runs the supervisor and the retry loop, and both call it. */
 export class EndpointReconnect {
   private readonly retryMs = 3000;
   /** Consecutive failed rebuilds, driving {@link nextRetryDelayMs}. Reset on every success. */
@@ -36,20 +27,11 @@ export class EndpointReconnect {
   private backoffResolve?: () => void;
   private backoffTimer?: ReturnType<typeof setTimeout>;
 
-  constructor(private readonly conn: ConnectionState, private readonly lifecycle: LifecycleState, private readonly deps: EndpointReconnectDeps) {}
+  constructor(private readonly conn: ConnectionState, private readonly lifecycle: LifecycleState, private readonly deps: EndpointReconnectDeps, private readonly parts: Pick<EndpointParts, "connection" | "credentials" | "deliveryLease">) {}
 
-  private get deliveryLease() { return this.deps.deliveryLease(); }
-  private disableLibraryReconnect(nc: NatsConnection) { void this.deps.disableLibraryReconnect(nc); }
-  private clearConnectionScoped() { void this.deps.clearConnectionScoped(); }
-  private settleDeliveryLeaseWatches() { return this.deps.settleDeliveryLeaseWatches(); }
-  private settleKvWatches() { return this.deps.settleKvWatches(); }
-  private closeWithoutLibraryReconnect(nc: NatsConnection | undefined) { return this.deps.closeWithoutLibraryReconnect(nc); }
-  private connectAndBind() { return this.deps.connectAndBind(); }
-  private tearDownIfStopped() { return this.deps.tearDownIfStopped(); }
-  private superviseConnection() { void this.deps.superviseConnection(); }
   private emit(event: string, ...args: unknown[]) { return this.deps.emit(event, ...args); }
 
-  /** Single serialized rebuild: drain the old connection and rebind via {@link connectAndBind},
+  /** Single serialized rebuild: drain the old connection and rebind via {@link EndpointConnection.connectAndBind},
    *  guarded so concurrent triggers (manual {@link reconnect}, the supervisor's closed(), the
    *  retry loop) coalesce onto ONE in-flight rebuild instead of racing two connectAndBinds and
    *  leaking a connection. Returns the shared promise; a second caller gets the in-flight one. */
@@ -68,15 +50,15 @@ export class EndpointReconnect {
    *  idempotent, so connectAndBind's own call here is a noop. */
   private async doRebuild(): Promise<void> {
     const oldNc = this.conn.nc;
-    if (oldNc) this.disableLibraryReconnect(oldNc);
+    if (oldNc) this.parts.credentials.disableLibraryReconnect(oldNc);
     this.lifecycle.reconnecting = true;
     try {
-      this.clearConnectionScoped();
+      this.parts.connection.clearConnectionScoped();
       // Manual reconnect still has a live old epoch: complete broker-consumer cleanup before close.
       // Terminal self-heal has an already-closed epoch: disarm retains stream/name for fresh cleanup,
       // and the KV watch consumers that closed with it are left to the broker's inactive threshold.
       if (oldNc && !oldNc.isClosed())
-        await Promise.all([...[...this.conn.membershipFeedWatches].map((watch) => watch.arm), this.settleDeliveryLeaseWatches(), this.settleKvWatches()]);
+        await Promise.all([...[...this.conn.membershipFeedWatches].map((watch) => watch.arm), this.parts.deliveryLease.settleDeliveryLeaseWatches(), this.parts.connection.settleKvWatches()]);
       this.conn.nc = undefined;
       this.conn.js = undefined;
       this.conn.jsm = undefined;
@@ -88,7 +70,7 @@ export class EndpointReconnect {
       this.conn.membersKv = undefined;
       this.conn.aclKv = undefined;
       this.conn.membershipFeedKv = undefined;
-      this.deliveryLease.resetConnection();
+      this.parts.deliveryLease.resetConnection();
       // The manager's liveness-lease handle too: left bound to the old connection, every renew and
       // re-read after a reconnect times out, and the manager reports its lease unknown for good.
       this.conn.managerLeaseKv = undefined;
@@ -98,13 +80,13 @@ export class EndpointReconnect {
       // the authoritative raw-liveness edge for the no-nc window until the new watcher seeds true.
       this.emit("transport", { connected: false } satisfies TransportState);
       this.emit("connection", { connected: false });
-      await this.closeWithoutLibraryReconnect(oldNc);
+      await this.parts.credentials.closeWithoutLibraryReconnect(oldNc);
       // stop() can arrive while the old epoch closes. Do not start another authentication
       // handshake after it: a terminal credential may already have expired in that window.
       // Keep old-epoch and late-epoch close failures outside this dial-only catch.
       if (this.lifecycle.stopped) return;
       try {
-        await this.connectAndBind();
+        await this.parts.connection.connectAndBind();
       } catch (error) {
         if (!this.lifecycle.stopped) throw error;
       }
@@ -112,8 +94,8 @@ export class EndpointReconnect {
       // supervisor on a stopped endpoint. (Reads this.nc in its own scope — a bare `this.nc`
       // here in doRebuild narrows to `never` via TS inlining connectAndBind's assignment.)
       // Re-arm on the fresh nc only after this stopped fence accepts it.
-      if (await this.tearDownIfStopped()) return;
-      this.superviseConnection();
+      if (await this.parts.connection.tearDownIfStopped()) return;
+      this.parts.connection.superviseConnection();
     } finally {
       this.lifecycle.reconnecting = false;
     }

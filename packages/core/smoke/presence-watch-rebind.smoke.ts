@@ -220,35 +220,35 @@ try {
     await ep.start();
     const internal = ep as unknown as {
       conn: { kv: unknown };
-      publishPresence(): Promise<void>;
+      presence: { publishPresence(): Promise<void> };
       presenceWriteFailure(): { consecutiveFailures: number; stuck: boolean } | undefined;
     };
     const liveKv = internal.conn.kv;
     internal.conn.kv = { put: () => Promise.reject(new Error("store refused presence write")) };
-    await internal.publishPresence().catch(() => {});
-    await internal.publishPresence().catch(() => {});
+    await internal.presence.publishPresence().catch(() => {});
+    await internal.presence.publishPresence().catch(() => {});
     ok("4.4 two immediate refused writes do not escalate before one full TTL",
       internal.presenceWriteFailure()?.stuck === false &&
       internal.presenceWriteFailure()?.consecutiveFailures === 2,
       internal.presenceWriteFailure());
     await wait(TTL_MS + 100);
-    await internal.publishPresence().catch(() => {});
+    await internal.presence.publishPresence().catch(() => {});
     const escalation = warnings.find((message) => /presence writes .* failed 3 consecutive times/.test(message));
     ok("4.5 consecutive presence write failures crossing one TTL raise the named non-transient condition once",
       escalation !== undefined &&
       internal.presenceWriteFailure()?.stuck === true &&
       new PresenceWriteStuckError("bucket", 0, 2, TTL_MS).transient === false,
       { warnings, failure: internal.presenceWriteFailure() });
-    await internal.publishPresence().catch(() => {});
+    await internal.presence.publishPresence().catch(() => {});
     ok("4.6 later refused heartbeats do not flood the named stuck condition",
       warnings.filter((message) => /presence writes .* consecutive times/.test(message)).length === 1,
       warnings);
     internal.conn.kv = liveKv;
-    await internal.publishPresence();
+    await internal.presence.publishPresence();
     ok("4.7 the next successful presence write clears the stuck condition and resets the consecutive count",
       internal.presenceWriteFailure() === undefined, internal.presenceWriteFailure());
     internal.conn.kv = { put: () => Promise.reject(new Error("new refused run")) };
-    await internal.publishPresence().catch(() => {});
+    await internal.presence.publishPresence().catch(() => {});
     ok("4.8 a refusal after recovery starts a fresh run at one and is not already stuck",
       internal.presenceWriteFailure()?.consecutiveFailures === 1 &&
       internal.presenceWriteFailure()?.stuck === false,
