@@ -65,7 +65,7 @@ if (process.platform === "win32") {
   const bin = dirname(dirname(BIN));
   const manifest = readFileSync(join(bin, "package.json"), "utf8");
   const dependencies = (JSON.parse(manifest) as { dependencies: Record<string, string> }).dependencies;
-  for (const prefix of ["npm's private prefix", "npm $literal prefix"]) {
+  for (const prefix of ["npm's private [1] prefix", "npm $literal %TEMP% !bang! ^hat caf\u00e9 [1] prefix"]) {
     const modules = join(home, prefix, "node_modules"), pkg = join(modules, "cotal-ai");
     mkdirSync(pkg, { recursive: true });
     writeFileSync(join(pkg, "package.json"), manifest);
@@ -85,13 +85,23 @@ if (process.platform === "win32") {
     check(`installed status prints setup help for ${prefix} with Cotal off PATH`,
       status.status === 0 && !resolveOnPath("cotal", env) && Boolean(command), status);
     if (!command) continue;
-    const script = "$ErrorActionPreference = 'Stop'; Invoke-Expression $env:PRINTED_COMMAND; exit $LASTEXITCODE";
-    const ps = spawnSync(powershell, ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Restricted", "-Command", script],
-      { ...options, env: { ...env, PRINTED_COMMAND: command } });
+    const ps = spawnSync(powershell, ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Restricted",
+      "-EncodedCommand", Buffer.from(`${command}\nexit $LASTEXITCODE`, "utf16le").toString("base64")], options);
     const prompt = spawnSync(cmd, [`/d /s /c "${command}"`], { ...options, windowsVerbatimArguments: true });
     for (const [shell, result] of [["Restricted PowerShell", ps], ["Command Prompt", prompt]] as const) {
       check(`the command for ${prefix} opens setup help unchanged in ${shell}`,
         result.status === 0 && /^cotal setup\r?$/m.test(result.stdout) && result.stderr === "", result);
+    }
+    const launcher = command.slice(0, -" setup --help".length);
+    const useDash = `${launcher} use --json -- -missing-space`;
+    const psUse = spawnSync(powershell, ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Restricted",
+      "-EncodedCommand", Buffer.from(`${useDash}\nexit $LASTEXITCODE`, "utf16le").toString("base64")], options);
+    const cmdUse = spawnSync(cmd, [`/d /s /c "${useDash}"`], { ...options, windowsVerbatimArguments: true });
+    for (const [shell, result] of [["Restricted PowerShell", psUse], ["Command Prompt", cmdUse]] as const) {
+      const receipt = result.stdout ? JSON.parse(result.stdout) : undefined;
+      check(`the launcher for ${prefix} preserves -- and -missing-space in ${shell}`,
+        result.status === 2 && receipt?.command === "use" && receipt?.error?.code === "TARGET_NOT_FOUND" &&
+        receipt?.error?.message?.includes('"-missing-space"') === true, result);
     }
   }
 }

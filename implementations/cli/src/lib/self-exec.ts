@@ -220,21 +220,26 @@ export function displayCmd({ fromAnyFolder = false } = {}): string {
   return "pnpm cotal";
 }
 
-function windowsDisplayCommand([file, ...args]: readonly string[]): string {
-  // A fully quoted executable is a string in PowerShell. Leave the drive or UNC prefix outside
-  // the quotes to start a command token in both shells, without a shell-specific call operator.
-  const split = /^([A-Za-z]:|\\\\(?![?.]\\))(.+)$/.exec(file!);
-  const words = args.map(windowsShellWord);
-  if (split && windowsShellWord(file!) !== undefined && words.every(word => word !== undefined)) {
+/** Format a Windows `[executable, ...args]` prefix so PowerShell and Command Prompt run it directly. */
+export function windowsDisplayCommand([file, ...args]: readonly string[]): string {
+  // A fully quoted executable is a string in PowerShell. Leave the drive prefix outside the quotes
+  // to start a command token in both shells when every runtime path is printable ASCII.
+  const ascii = (value: string) => /^[\x20-\x7e]+$/.test(value) ? windowsShellWord(value) : undefined;
+  const split = /^([A-Za-z]:)(.+)$/.exec(file!);
+  const words = args.map(ascii);
+  if (split && ascii(file!) !== undefined && words.every(word => word !== undefined)) {
     return [`${split[1]}"${split[2]}"`, ...words].join(" ");
   }
 
-  // Keep shell interpolation out of literal runtime paths even when common quoting cannot.
-  const literal = (value: string) => value.split(/(["$`%!\u2018-\u201e])/u)
-    .map((part, i) => i % 2 === 0 ? `'${part.replaceAll("'", "''")}'` : `[char]${part.charCodeAt(0)}`)
-    .join("+");
-  const prefix = [file!, ...args].map(value => `(${literal(value)})`).join(" ");
-  return `powershell.exe -NoProfile -Command "function Invoke-Cotal { & ${prefix} @args; exit (Get-Variable LASTEXITCODE -ValueOnly) }; Invoke-Cotal"`;
+  // Keep `$`, `"`, `%`, `!`, `^`, backticks, smart quotes, and non-ASCII bytes out of `-Command`
+  // so neither outer shell expands anything, and end the script with `#` so PowerShell ignores any
+  // appended CLI arguments on `-Command` while reading their exact argv tokens from the OS command line.
+  const literal = (value: string) => value.split(/(["$`%!^\x00-\x1f\x7f-\uffff])/u)
+    .flatMap((part, i) => part ? [i % 2 === 0 ? `'${part.replaceAll("'", "''")}'` : `[char]${part.charCodeAt(0)}`] : [])
+    .join("+") || "''";
+  const prefix = args.length ? `@(${args.map(literal).join(",")}) + ` : "";
+  const body = `Set-Variable ErrorActionPreference Stop; Set-Variable a (${prefix}([Environment]::GetCommandLineArgs() | Select-Object -Skip 4)); & (${literal(file!)}) @a; exit (Get-Variable LASTEXITCODE -ValueOnly) #`;
+  return `powershell.exe -NoProfile -Command "${body}"`;
 }
 
 /** Give the ticked commands in a workspace remedy the CLI's launcher, keeping each command whole. */
