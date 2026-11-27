@@ -210,14 +210,18 @@ async function cloneProject(args: Record<string, unknown>, launch: ParentResolve
   }
 }
 
+const branchTaken = (repo: string, branch: string): never =>
+  refuse("already-exists", `branch ${branch} already exists in ${JSON.stringify(repo)}; choose another branch`);
+
 /** The commit a new worktree of `repo` starts at, after checking that `repo` is the top level of a
- *  work tree and that `branch` is a branch name git accepts. Nothing is written. */
+ *  work tree and that `branch` is a new branch name git accepts. Nothing is written. */
 async function worktreeStart(repo: string, branch: string, base: string | undefined, endsAt: number): Promise<string> {
   const git = gitIn(repo, endsAt);
   if ((await git("rev-parse", "--show-toplevel")).code !== 0)
     refuse("failed-precondition", `${JSON.stringify(repo)} is not the top level of a git work tree on this host`);
   const valid = await git("check-ref-format", "--branch", branch);
   if (valid.code !== 0 || valid.stdout !== branch) refuse("bad-request", `${JSON.stringify(branch)} is not a valid branch name`);
+  if ((await git("show-ref", "--verify", "--quiet", `refs/heads/${branch}`)).code === 0) branchTaken(repo, branch);
   const start = await git("rev-parse", "--verify", "--quiet", "--end-of-options", `${base ?? "HEAD"}^{commit}`);
   if (start.code !== 0)
     refuse(base === undefined ? "failed-precondition" : "bad-request", `${JSON.stringify(base ?? "HEAD")} names no commit in ${JSON.stringify(repo)}`);
@@ -244,9 +248,10 @@ async function addWorktree(repo: string, target: string, branch: string, commit:
     throw error;
   }
   if (run.code === 0) return;
+  // Another call made the branch since it was checked: it is theirs, so it is not removed.
   const taken = /^fatal: a branch named '.*' already exists\.?$/im.test(run.stderr);
   await abandonWorktree(repo, target, taken ? undefined : branch, commit);
-  if (taken) refuse("already-exists", `branch ${branch} already exists in ${JSON.stringify(repo)}; choose another branch`);
+  if (taken) branchTaken(repo, branch);
   const said = run.stderr.split("\n").map((line) => line.trim()).filter(Boolean).slice(-3).join("; ") || "git exited without a message";
   throw new EpEnvelopeError("failed-precondition", `git worktree add in ${JSON.stringify(repo)} failed: ${said}`);
 }

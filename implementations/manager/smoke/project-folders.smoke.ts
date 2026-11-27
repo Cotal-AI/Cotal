@@ -31,7 +31,7 @@ const cell = (name: string, ok: boolean, seen?: unknown) => {
   failed++; console.log("FAIL " + name + (seen === undefined ? "" : " - " + JSON.stringify(seen)));
 };
 const FOLDER_COMMANDS = ["make-dir", "clone", "worktree"];
-const EXPECTED_CELLS = 71;
+const EXPECTED_CELLS = 72;
 const managerRows = (rows: string[]) => rows.flatMap((row) => {
   const m = /\.ep\.(one|all|inst)\.manager\.(.+)$/.exec(row);
   if (!m) return [];
@@ -267,10 +267,15 @@ try {
     refused(taken, "already-exists", /taken/) && taken.kind === "manager-refused" && taken.error.outcome === "not-executed" && readdirSync(join(trees, "taken")).join() === "kept.txt"
       && branchAt(repo, "taken-branch") === null && registered(repo).length === 3, taken);
   git(repo, "branch", "existing");
-  const existing = await ask({ name: "dup", branch: "existing" });
-  cell("worktree: an existing branch is already-exists, not-executed, and is neither reused nor reset",
-    refused(existing, "already-exists", /branch existing already exists/) && existing.kind === "manager-refused" && existing.error.outcome === "not-executed" && branchAt(repo, "existing") === head
-      && !existsSync(join(trees, "dup")) && registered(repo).length === 3, existing);
+  const trace = join(fx.dir, "git-trace");
+  for (const branch of ["existing", "main"]) {
+    rmSync(trace, { force: true }); process.env.GIT_TRACE = trace;
+    const result = await ask({ name: "dup", branch });
+    delete process.env.GIT_TRACE;
+    cell("worktree: existing branch " + branch + " is already-exists, not-executed, refused before git writes, and neither reused nor reset",
+      refused(result, "already-exists", new RegExp("branch " + branch + " already exists")) && result.kind === "manager-refused" && result.error.outcome === "not-executed"
+        && branchAt(repo, branch) === head && !existsSync(join(trees, "dup")) && registered(repo).length === 3 && !/worktree add|update-ref/.test(readFileSync(trace, "utf8")), result);
+  }
   const nobase = await ask({ name: "nobase", base: "no-such-ref" });
   cell("worktree: an unknown base is bad-request and nothing changes", refused(nobase, "bad-request", /no-such-ref/) && branchAt(repo, "nobase") === null && !existsSync(join(trees, "nobase")), nobase);
 
@@ -281,7 +286,6 @@ try {
       refused(result, "failed-precondition", path === "relative" ? /absolute path/ : /not the top level of a git work tree/) && !existsSync(join(trees, "not-here")), result);
   }
 
-  const trace = join(fx.dir, "git-trace");
   for (const shaped of [{ name: "-x" }, { name: "opt-1", branch: "-f" }, { name: "opt-2", branch: "--detach" }, { name: "opt-3", base: "--orphan=x" }, { name: "opt-4", base: "-" }, { name: "opt-5", branch: "a b" }]) {
     rmSync(trace, { force: true }); process.env.GIT_TRACE = trace;
     const result = await ask(shaped);
