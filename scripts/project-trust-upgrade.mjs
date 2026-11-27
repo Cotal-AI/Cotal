@@ -190,20 +190,28 @@ function writeTrustedProjectFiles(projectDir, probeScript) {
   }, null, 2) + '\n', { mode: 0o600 });
 }
 
-// The connector binds tmpdir()/cotal-ctl-<22>/ctl.sock. The cell sets TMPDIR to
-// join(root, 'tmp') in the baseline, and every profile reuses that directory,
-// so the socket is the cell root plus this 46-byte tail. sun_path holds 108
+// The connector binds tmpdir()/cotal-ctl-<22>/ctl.sock (controlEndpoint in
+// extensions/connector-core/src/runtime.ts). The cell sets TMPDIR to
+// join(root, 'tmp') and every profile reuses that directory, so the socket is
+// that temp directory plus the 22-character id and ctl.sock. sun_path holds 108
 // on Linux and 104 on macOS. The hosted roots that produced the first evidence
 // are 35 bytes on Linux and 36 on macOS, so the macOS socket is 82.
-export const CONTROL_SOCKET_TAIL_BYTES = '/tmp'.length + '/cotal-ctl-'.length + 22 + '/ctl.sock'.length;
 export const SUN_PATH_LIMIT_BYTES = { linux: 108, darwin: 104 };
 export const HOSTED_CELL_ROOT_BYTES = { linux: 35, darwin: 36 };
+const CONTROL_SOCKET_ID_BYTES = 22;
+const CONTROL_SOCKET_NAME = 'ctl.sock';
 
-export function cellControlSocket(cellRoot, platform) {
-  const separator = platform === 'win32' ? '\\' : '/';
-  const temp = join(cellRoot, 'tmp');
-  const socket = `${temp}${separator}cotal-ctl-${'a'.repeat(22)}${separator}ctl.sock`;
-  return Buffer.byteLength(socket);
+export function cellRootLikeSafeRoot(parent, leaf) {
+  return join(parent, `cell-${leaf}`);
+}
+
+export function cellTempDirectory(cellRoot) {
+  return join(cellRoot, 'tmp');
+}
+
+export function cellControlSocket(cellRoot) {
+  const temp = cellTempDirectory(cellRoot);
+  return join(temp, `cotal-ctl-${'a'.repeat(CONTROL_SOCKET_ID_BYTES)}`, CONTROL_SOCKET_NAME);
 }
 
 function buildIsolatedProfile(baseEnv, profileRoot, binDir, tmp) {
@@ -454,9 +462,10 @@ async function buildProjectTrustWorkspace({ env, root, pkg, call, ok, invokeCli 
     TRUST_MATRIX_ENV: EXPECTED_PROJECT_TRUST_ENV,
   };
 
-  // The cell already sets TMPDIR to join(root, 'tmp'). A profile temp directory under
-  // the cell root makes the control socket longer than sun_path, so every profile uses that same directory.
-  const cellTmp = env.TMPDIR;
+  // The cell already sets TMPDIR to cellTempDirectory(root). A profile temp
+  // directory under the cell root makes the control socket longer than sun_path,
+  // so every profile uses that same directory.
+  const cellTmp = cellTempDirectory(root);
   const profile = (name) => buildIsolatedProfile(probeEnv, join(workRoot, 'profiles', name), standin.binDir, cellTmp);
   const profiles = {
     primary: profile('primary'),
@@ -591,10 +600,10 @@ function pidGone(pid) {
   catch (error) { return error.code === 'ESRCH'; }
 }
 
-export async function waitUntilGone(pids, alive = pidGone, wait = ms => new Promise(done => setTimeout(done, ms))) {
+export async function waitUntilGone(pids, alive = pidGone, wait = ms => new Promise(done => setTimeout(done, ms)), now = Date.now) {
   const pending = new Set(pids);
-  const deadline = Date.now() + 15_000;
-  while (pending.size > 0 && Date.now() < deadline) {
+  const deadline = now() + 15_000;
+  while (pending.size > 0 && now() < deadline) {
     for (const pid of pending) if (alive(pid)) pending.delete(pid);
     if (pending.size > 0) await wait(200);
   }

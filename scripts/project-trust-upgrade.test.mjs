@@ -15,10 +15,11 @@ import {
   validProjectTrustLaunchRecord,
   validProjectTrustRefusalRecord,
   verifyProjectTrustEvidence,
-  CONTROL_SOCKET_TAIL_BYTES,
   SUN_PATH_LIMIT_BYTES,
   HOSTED_CELL_ROOT_BYTES,
   cellControlSocket,
+  cellRootLikeSafeRoot,
+  cellTempDirectory,
   shortNameSpelling,
   recordedPids,
   waitUntilGone,
@@ -302,23 +303,23 @@ test('verifyProjectTrustEvidence accepts complete cross-platform evidence and re
 });
 
 test('the control socket follows the cell temp directory and stays under the hosted limit', () => {
-  assert.equal(CONTROL_SOCKET_TAIL_BYTES, 46);
-  assert.deepEqual(HOSTED_CELL_ROOT_BYTES, { linux: 35, darwin: 36 });
-  const hosted = {
-    linux: `/${'r'.repeat(HOSTED_CELL_ROOT_BYTES.linux - 1)}`,
-    darwin: `/${'r'.repeat(HOSTED_CELL_ROOT_BYTES.darwin - 1)}`,
-  };
+  const parents = { linux: '/home/runner/work/_temp', darwin: '/Users/runner/work/_temp' };
+  const leaf = 'rG0DwP';
   for (const [platform, limit] of Object.entries(SUN_PATH_LIMIT_BYTES)) {
-    const root = hosted[platform];
+    const root = cellRootLikeSafeRoot(parents[platform], leaf);
+    assert.equal(root, `${parents[platform]}/cell-${leaf}`);
     assert.equal(Buffer.byteLength(root), HOSTED_CELL_ROOT_BYTES[platform]);
-    assert.equal(join(root, 'tmp'), `${root}/tmp`);
-    const bytes = cellControlSocket(root, platform);
-    assert.equal(bytes, HOSTED_CELL_ROOT_BYTES[platform] + CONTROL_SOCKET_TAIL_BYTES);
+    const temp = cellTempDirectory(root);
+    assert.equal(temp, `${root}/tmp`);
+    const socket = cellControlSocket(root);
+    assert.equal(socket, `${temp}/cotal-ctl-${'a'.repeat(22)}/ctl.sock`);
+    const bytes = Buffer.byteLength(socket);
     assert(bytes <= limit, `${platform} hosted socket is ${bytes}, over ${limit}`);
   }
-  assert.equal(SUN_PATH_LIMIT_BYTES.darwin - cellControlSocket(hosted.darwin, 'darwin'), 22);
-  const perProfile = `${hosted.linux}/project-trust/profiles/primary`;
-  assert(cellControlSocket(perProfile, 'linux') > SUN_PATH_LIMIT_BYTES.linux, 'a per-profile temp would exceed the limit');
+  const darwin = cellRootLikeSafeRoot(parents.darwin, leaf);
+  assert.equal(SUN_PATH_LIMIT_BYTES.darwin - Buffer.byteLength(cellControlSocket(darwin)), 22);
+  const perProfile = `${cellRootLikeSafeRoot(parents.linux, leaf)}/project-trust/profiles/primary`;
+  assert(Buffer.byteLength(cellControlSocket(perProfile)) > SUN_PATH_LIMIT_BYTES.linux, 'a per-profile temp would exceed the limit');
 });
 
 test('the 8.3 short name is asked for without quotes around the path', async () => {
@@ -349,13 +350,15 @@ test('cleanup reads the seat pid the stand-in records in the space root', () => 
 
 test('cleanup is not done while a recorded process is still alive', async () => {
   let checks = 0;
+  let clock = 0;
   await assert.rejects(
-    () => waitUntilGone([4321], () => { checks += 1; return false; }, () => Promise.resolve()),
+    () => waitUntilGone([4321], () => { checks += 1; return false; }, () => { clock += 200; return Promise.resolve(); }, () => clock),
     /owned processes still running: 4321/,
   );
   assert(checks > 1, 'the wait retried instead of trusting the stop command');
   let seen = false;
-  await waitUntilGone([4321], () => { const gone = seen; seen = true; return gone; }, () => Promise.resolve());
+  clock = 0;
+  await waitUntilGone([4321], () => { const gone = seen; seen = true; return gone; }, () => { clock += 200; return Promise.resolve(); }, () => clock);
 });
 
 test('both phases require Linux, macOS and Windows project-trust-migration cells', () => {
