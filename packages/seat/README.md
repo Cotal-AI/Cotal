@@ -1,8 +1,8 @@
 # @cotal-ai/seat
 
-Local PTY seat custody for Linux. One shared host in a transient systemd user service owns the PTYs for
-daemon-hosted Managers. Each seat uses an authenticated private Unix socket and has its own
-versioned custody and exit records.
+Local PTY seat custody for Linux. A shared host in a transient systemd user service owns PTYs for one
+daemon-hosted Manager lineage and runtime generation. The Manager multiplexes seats over a single
+authenticated private Unix socket. Each seat has its own cgroup, custody record and exit record.
 
 **Tier:** `packages/` (leaf). Depends on PTY and terminal-mirror libraries, not on
 `@cotal-ai/core`, workspace, implementations, connectors, or NATS. Linux Managers can also adopt
@@ -10,8 +10,9 @@ and reap seats held by earlier single-seat custodians.
 
 Linux is the production transport in this cut. `create`/`spawn`/`adopt` in this package throw a
 named `custody transport unsupported on <platform>` error on darwin and win32. There is no
-in-process fallback in this package. Standalone Managers and Linux sessions without an answering
-systemd user manager use the in-process runtime. Other platforms use their existing runtime.
+in-process fallback in this package. Standalone Managers and Linux sessions without verified runtime
+retention, linger and delegated systemd seat cgroups use the in-process runtime. Other platforms use
+their existing runtime.
 The shared host does not change update admission or provide automatic Manager recovery.
 
 `peerCredentials(socket)` and its `PeerCredentials` type are exported from the package root.

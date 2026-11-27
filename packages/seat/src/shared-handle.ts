@@ -2,7 +2,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { SeatClient } from "./client.js";
-import { seatHandle, type SeatHandle } from "./handle.js";
+import { seatHandle, type SeatHandle, type SeatHandleClient } from "./handle.js";
 import { PROTOCOL_VERSION, type SeatExit, type StopMode } from "./protocol.js";
 import { exitPath } from "./record.js";
 import { proveSharedHost, proveSharedSeat, verifySeatPeer } from "./shared-launch.js";
@@ -17,7 +17,10 @@ function hostLife(row: SharedSeatRecord): "live" | "gone" | undefined {
   return recordedProcess(row.custodianPid, row.custodianStart, row.bootId);
 }
 
-export type SharedHandle = SeatHandle & { startupOutcome(): StartupOutcome };
+export type SharedHandle = SeatHandle & {
+  startupOutcome(): StartupOutcome;
+  readonly childIdentity?: Readonly<{ pid: number; start: string; boot: string }>;
+};
 
 export function openSharedSeat(root: string, id: string, adopting = false): SharedHandle {
   root = resolve(root);
@@ -48,7 +51,7 @@ function terminalEvidence(path: string | undefined): SeatExit | undefined {
   } catch { return undefined; }
 }
 
-export function observeSharedHandle(row: SharedSeatRecord, client: SeatClient, terminalPath?: string): SharedHandle {
+export function observeSharedHandle(row: SharedSeatRecord, client: SeatHandleClient & Pick<SeatClient, "connected" | "health">, terminalPath?: string): SharedHandle {
   const base = seatHandle(row, client, true);
   let released = false, exited = false, startup: StartupOutcome = "pending";
   let pending = false, watchStartup = true;
@@ -59,7 +62,9 @@ export function observeSharedHandle(row: SharedSeatRecord, client: SeatClient, t
     if (released || exited) return;
     exited = true;
     clearInterval(poll);
-    for (const listener of listeners) listener();
+    for (const listener of listeners) {
+      try { listener(); } catch { /* Other exit observers must still receive the same evidence. */ }
+    }
     listeners.clear();
   };
   const observe = () => {
@@ -92,6 +97,7 @@ export function observeSharedHandle(row: SharedSeatRecord, client: SeatClient, t
   const release = () => { released = true; unsub(); clearInterval(poll); listeners.clear(); base.close(); };
   return {
     ...base,
+    ...(row.childStart ? { childIdentity: Object.freeze({ pid: row.childPid, start: row.childStart, boot: row.bootId }) } : {}),
     status() {
       const child = childLife(row);
       if (exited || child === "gone") return "exited";

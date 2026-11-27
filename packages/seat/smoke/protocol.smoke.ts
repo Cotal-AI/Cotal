@@ -2,12 +2,18 @@
  * Length-prefixed protocol and connect-auth cells. Isolated. No fleet.
  */
 import { createServer, connect, type Socket } from "node:net";
-import { readFileSync, rmSync } from "node:fs";
-import { join } from "node:path";
+import { once } from "node:events";
+import { chmodSync, lstatSync, mkdirSync, readFileSync, rmSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { FrameReader, MAX_FRAME_SIZE, encodeFrame } from "../src/protocol.js";
 import { peerCredentials } from "../src/peercred.js";
 import { launchSeat } from "../src/index.js";
 import { makeSeatRoot } from "@cotal-ai/smoke-kit";
+import { bootToken, capabilityToken, processStartToken, seatId } from "../src/record.js";
+import { SHARED_CONTROL_PROTOCOL, type SharedControlReply, type SharedControlRequest } from "../src/shared-control-protocol.js";
+import { hostControl } from "../src/shared-control-server.js";
+import { publishControllerClaim, readControllerClaim, sharedGenerationAcceptsLaunch } from "../src/shared-controller-claim.js";
+import { sharedHostSocket, sharedSeatRecord, type SharedHostRecord } from "../src/shared-record.js";
 
 let pass = 0;
 let fail = 0;
@@ -20,6 +26,129 @@ const check = (name: string, condition: boolean, detail?: unknown): void => {
   fail++;
   console.log(`  ✗ FAIL: ${name}${detail === undefined ? "" : ` ${JSON.stringify(detail)}`}`);
 };
+
+/** One outstanding request per fixture client. Undefined means the peer closed before its reply. */
+function controlRequest(sock: Socket, request: SharedControlRequest): Promise<SharedControlReply | undefined> {
+  return new Promise((resolve, reject) => {
+    const reader = new FrameReader();
+    const remove = () => {
+      clearTimeout(timer);
+      sock.off("data", data).off("close", close).off("error", error);
+    };
+    const close = () => { remove(); resolve(undefined); };
+    const error = (cause: Error) => { remove(); reject(cause); };
+    const data = (chunk: Buffer) => {
+      try {
+        for (const value of reader.push(chunk)) {
+          const reply = value as SharedControlReply;
+          if (reply.id === request.id) { remove(); resolve(reply); return; }
+        }
+      } catch (cause) { error(cause as Error); }
+    };
+    const timer = setTimeout(() => error(new Error("shared control fixture reply timed out")), 2_000);
+    sock.on("data", data).once("close", close).once("error", error);
+    sock.write(encodeFrame(request));
+  });
+}
+
+function deferred<T>(): { promise: Promise<T>; resolve(value: T): void } {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>(done => { resolve = done; });
+  return { promise, resolve };
+}
+
+async function sharedControlCell(): Promise<void> {
+  const start = processStartToken(process.pid), bootId = bootToken();
+  if (!start || !bootId) throw new Error("shared control fixture requires Linux process identity");
+  const root = makeSeatRoot("cotal-seat-v2-"), path = sharedHostSocket(root);
+  const generation = "a".repeat(64), next = "b".repeat(64);
+  const held = seatId(), neverDispatched = seatId(), uncertain = seatId(), accepts: string[] = [];
+  const reservation = (id: string) => dirname(sharedSeatRecord(root, id));
+  const rendezvous = deferred<void>(), release = deferred<void>(), finished = deferred<boolean>();
+  const host: SharedHostRecord = { version: 2, protocol: SHARED_CONTROL_PROTOCOL, pid: process.pid, start, bootId,
+    scope: `cotal-pty-${seatId()}.service`, token: capabilityToken() };
+  const handle = hostControl({
+    host, authorized: () => readControllerClaim(root), acceptSeat: () => undefined, closing: () => false,
+    launchState: id => lstatSync(reservation(id), { throwIfNoEntry: false }) ? "unknown" : "absent",
+    async launch(id, _payload, authorize) {
+      if (!sharedGenerationAcceptsLaunch(readControllerClaim(root), generation)) return "not-admitted";
+      mkdirSync(reservation(id), { mode: 0o700 });
+      if (id === uncertain) return "unknown";
+      if (id === held) { rendezvous.resolve(); await release.promise; }
+      try { authorize(); } catch {
+        if (id === held) finished.resolve(false);
+        return "not-admitted";
+      }
+      accepts.push(id);
+      if (id === held) finished.resolve(true);
+      return "admitted";
+    },
+  });
+  const connections = new Set<Socket>(), clients = new Set<Socket>();
+  let firstPeer: Socket | undefined;
+  const server = createServer(sock => {
+    firstPeer ??= sock;
+    connections.add(sock);
+    sock.once("close", () => connections.delete(sock));
+    handle(sock);
+  });
+  const dial = async () => {
+    const sock = connect(path);
+    clients.add(sock);
+    sock.on("error", () => {}); // Errors are asserted by the dial/request that owns the socket.
+    await once(sock, "connect", { signal: AbortSignal.timeout(2_000) });
+    return sock;
+  };
+  const hello: SharedControlRequest = { id: 1, op: "hello", protocol: host.protocol, token: host.token };
+  const launch = (id: number, seat: string): SharedControlRequest => ({ id, op: "launch", seat,
+    launch: { name: "fixture", cwd: root, artifactRoot: root, spec: { command: "/bin/false", args: [] } } });
+  try {
+    if (!publishControllerClaim(root, generation)) throw new Error("could not publish fixture controller claim");
+    server.listen(path);
+    await once(server, "listening", { signal: AbortSignal.timeout(2_000) });
+    chmodSync(path, 0o600);
+    const owner = await dial();
+    const first = await controlRequest(owner, hello);
+    check("v2 authenticates the exact live controller", first?.ok === true && first.op === "hello" && first.pid === host.pid && first.start === start);
+    const contender = await dial();
+    const busy = await controlRequest(contender, hello);
+    check("v2 refuses a second authenticated writer even from the same PID", busy?.ok === false && busy.outcome === "not-admitted");
+
+    const pending = controlRequest(owner, launch(2, held));
+    const entered = await Promise.race([rendezvous.promise.then(() => true), pending.then(() => false)]);
+    if (!entered || !firstPeer) throw new Error("fixture launch did not reach its pre-commit barrier");
+    const peerClosed = once(firstPeer, "close", { signal: AbortSignal.timeout(2_000) });
+    owner.destroy();
+    await peerClosed;
+    check("v2 disconnect after submission carries no definite launch reply", await pending === undefined);
+    const successor = await controlRequest(contender, { ...hello, id: 2 });
+    check("v2 writer handover succeeds after the previous socket closes", successor?.ok === true && successor.op === "hello");
+    const heldState = await controlRequest(contender, { id: 3, op: "launch-state", seat: held });
+    check("v2 replacement sees the still-reserved launch as unknown", heldState?.ok === true && heldState.op === "launch-state" && heldState.state === "unknown");
+    const absentState = await controlRequest(contender, { id: 4, op: "launch-state", seat: neverDispatched });
+    check("v2 replacement sees a never-dispatched launch as absent without reserving it", absentState?.ok === true && absentState.op === "launch-state" &&
+      absentState.state === "absent" && !lstatSync(reservation(neverDispatched), { throwIfNoEntry: false }));
+    release.resolve();
+    check("v2 cannot commit a delayed launch from the closed epoch", !(await finished.promise) && !accepts.includes(held));
+
+    const ambiguous = await controlRequest(contender, launch(5, uncertain));
+    check("v2 preserves an explicit unknown launch outcome", ambiguous?.ok === false && ambiguous.outcome === "unknown");
+    const admitted = seatId();
+    const current = await controlRequest(contender, launch(6, admitted));
+    check("v2 permits a new launch while the host generation is current", current?.ok === true && current.op === "launch" && accepts.includes(admitted));
+    if (!publishControllerClaim(root, next)) throw new Error("could not advance fixture controller generation");
+    const stale = seatId();
+    const refused = await controlRequest(contender, launch(7, stale));
+    check("v2 reports definite non-admission for an old-generation launch", refused?.ok === false && refused.outcome === "not-admitted" && !accepts.includes(stale));
+  } finally {
+    release.resolve();
+    const socketCloses = [...clients].filter(sock => !sock.closed).map(sock => once(sock, "close"));
+    for (const sock of [...clients, ...connections]) sock.destroy();
+    if (server.listening) await new Promise<void>(resolve => server.close(() => resolve()));
+    await Promise.all(socketCloses);
+    rmSync(root, { recursive: true, force: true });
+  }
+}
 
 {
   const reader = new FrameReader();
@@ -161,6 +290,8 @@ if (process.platform !== "linux") {
   });
   server.close();
   rmSync(dir, { recursive: true, force: true });
+  try { await sharedControlCell(); }
+  catch (error) { check("v2 shared control fixture completed", false, (error as Error).message); }
 
   const wait = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
   const state = (pid: number): string => {

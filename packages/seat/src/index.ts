@@ -20,6 +20,8 @@ export { connectPipe, darwinLaunchdJob, darwinUserCacheDir, listenPipe, localPee
 export { runCustodian, type CustodianLaunch } from "./custodian.js";
 export { launchSharedSeat, linuxSharedCustodyAvailable } from "./shared-launch.js";
 export { openSharedSeat, type SharedHandle } from "./shared-handle.js";
+export { launchManagedSharedSeat, reopenManagedSharedSeat } from "./shared-managed.js";
+export { acquireSharedExecutionLease, type SharedExecutionLease } from "./shared-execution-lease.js";
 export { SEAT_OOM_SCORE_ADJ, preferSeatForOomKill, type OomPreference } from "./oom.js";
 export { ConnectorDiagnosticReader } from "./diagnostic.js";
 export { StartupConfirmGate, StartupConfirmMatcher, StartupConfirmSequence, type StartupReply, type StartupBlocker, type StartupOutcome, type StartupWatchOutcome, normalizeConfirmText, unmatchedConfirmMessage } from "./startup-confirm.js";

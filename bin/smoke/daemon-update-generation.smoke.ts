@@ -1,7 +1,7 @@
 import strictAssert from "node:assert/strict";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -19,6 +19,8 @@ import { linuxSharedCustodyAvailable, processStatFields, processStartToken } fro
 
 const counted = countedAssert(strictAssert);
 const assert: typeof strictAssert = counted.assert as typeof strictAssert;
+const userBusAvailable = linuxSharedCustodyAvailable();
+const userBus = process.env.DBUS_SESSION_BUS_ADDRESS ?? (process.env.XDG_RUNTIME_DIR ? `unix:path=${join(process.env.XDG_RUNTIME_DIR, "bus")}` : undefined);
 const root = realpathSync(mkdtempSync(join(tmpdir(), "ug-")));
 process.env.XDG_RUNTIME_DIR = mkdtempSync("/tmp/cotal-ug-");
 process.env.COTAL_HOME = join(root, "home");
@@ -108,6 +110,7 @@ if (process.platform === "linux") {
   const version = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version as string;
   const env: NodeJS.ProcessEnv = {
     ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_"))),
+    ...(userBusAvailable && userBus ? { DBUS_SESSION_BUS_ADDRESS: userBus } : {}),
     HOME: home, COTAL_HOME: cotalHome, XDG_CONFIG_HOME: join(home, ".config"), TMPDIR: directory, CLAUDE_CONFIG_DIR: home,
     PATH: `${native}:${process.env.PATH}`, DO_NOT_TRACK: "1", COTAL_TELEMETRY: "off", COTAL_NO_UPDATE_CHECK: "1",
     COTAL_ALLOW_CHECKOUT_SEED: "1", COTAL_SKIP_CONNECTOR_SEED: "1",
@@ -121,7 +124,8 @@ if (process.platform === "linux") {
   writeFileSync(join(home, ".claude.json"), JSON.stringify({ mcpServers: { cotal: { command: "cotal", args: [] } } }), { mode: 0o600 });
   const seed = spawnSync(process.execPath, [entry, "ext", "seed"], { env, cwd: project, encoding: "utf8", timeout: 180_000 });
   assert.equal(seed.status, 0, `${seed.error ?? ""}\n${seed.stdout}${seed.stderr}`);
-  const sharedProof = linuxSharedCustodyAvailable();
+  const linger = userBusAvailable && spawnSync("/usr/bin/loginctl", ["show-user", "--property=Linger", "--value", "--", String(process.getuid?.())], { encoding: "utf8", timeout: 2_000 });
+  const sharedProof = Boolean(linger && linger.status === 0 && linger.stdout.trim() === "yes" && typeof (process as typeof process & { execve?: unknown }).execve === "function");
   if (sharedProof) addPtyFixture(entry, project, directory, env);
   const fixture = new URL("../../implementations/auth/smoke/update-participant.fixture.ts", import.meta.url).href;
   const participant = spawn(process.execPath, [...process.execArgv, "--input-type=module", "-e", `
@@ -168,6 +172,8 @@ if (process.platform === "linux") {
     if (sharedProof) {
       await proveHostedPtyFailures({ start, daemon: () => daemon!, paths, space, entry, project, home, env });
       await start();
+      const restored = await managerViaDaemon({ paths }, { op: "manager-start", space });
+      assert.equal(restored.state, "answering", "the fixture restored hosting intent after the ordinary stop cell");
     }
     await killAndAwaitExit(daemon!, "SIGTERM");
     release = claimUpdateClosureAccess();
@@ -227,29 +233,45 @@ async function proveHostedPtyFailures(ctx: HostedPtyProof): Promise<void> {
     }
     throw new Error("the hosted Manager did not answer");
   };
-  const key = createHash("sha256").update(ctx.entry).digest("hex").slice(0, 12);
-  const root = join(ctx.home, ".cotal", "seats", `p-${key}`);
+  const key = createHash("sha256").update(JSON.stringify([realpathSync(ctx.entry), process.getuid?.(), ctx.space])).digest("hex");
+  const lineage = join(ctx.home, ".cotal", "seats", `p-${key}`);
+  const store = join(ctx.home, ".cotal", "seats", "host-runtime");
+  const cleanupClosure = (path: string) => {
+    chmodSync(path, 0o700);
+    for (const entry of readdirSync(path, { withFileTypes: true })) if (entry.isDirectory()) cleanupClosure(join(path, entry.name));
+  };
+  const knownRoots = new Set<string>();
+  const findRoot = (): string => {
+    const roots = readdirSync(lineage).filter(name => /^[0-9a-f]{64}$/.test(name));
+    assert.equal(roots.length, 1, "one retained generation owns this hosted Manager's new PTYs");
+    const root = join(lineage, roots[0]!);
+    knownRoots.add(root);
+    return root;
+  };
   const known: { pid: number; start: string }[] = [];
-  const readHost = () => {
+  const readHost = (root: string) => {
     const host = JSON.parse(readFileSync(join(root, "host.json"), "utf8")) as { pid: number; start: string };
     if (!known.some(row => row.pid === host.pid)) known.push(host);
     return host;
   };
-  let baseline = new Set<string>();
   const launchPair = async (label: string) => {
     const manager = await getManager();
-    baseline = new Set(existsSync(root) ? readdirSync(root) : []);
+    const before = existsSync(lineage) && readdirSync(lineage).some(name => /^[0-9a-f]{64}$/.test(name)) ? findRoot() : undefined;
+    const baseline = new Set(before ? readdirSync(before) : []);
     for (const n of [1, 2]) {
       const launched = spawnSync(process.execPath, [ctx.entry, "spawn", "--agent", "shared-pty-smoke", "--name", `${label}_${n}`, "--space", ctx.space, "--on", manager.id, "--detach", "--no-events"], { cwd: ctx.project, env: ctx.env, encoding: "utf8", timeout: 45_000 });
       assert.equal(launched.status, 0, `${launched.error ?? ""}\n${launched.stdout}${launched.stderr}`);
     }
-    const host = readHost();
+    const root = findRoot(), host = readHost(root);
     const rows = readdirSync(root).filter(id => /^[0-9a-f]{32}$/.test(id) && !baseline.has(id)).map(id => {
       const row = JSON.parse(readFileSync(join(root, id, "shared.json"), "utf8")) as { childPid: number; childStart: string; custodianPid: number };
       assert.equal(row.custodianPid, host.pid);
       return { pid: row.childPid, start: row.childStart };
     });
     assert.equal(rows.length, 2);
+    const memberships = rows.map(row => readFileSync(`/proc/${row.pid}/cgroup`, "utf8").trim());
+    assert.equal(new Set(memberships).size, 2, "the two seats occupy separate cgroups");
+    assert.ok(memberships.every(path => /\/seat-[a-f0-9]{32}$/.test(path)), "both children entered the proved seat cgroups");
     known.push(...rows);
     return { manager, host, rows };
   };
@@ -270,6 +292,19 @@ async function proveHostedPtyFailures(ctx: HostedPtyProof): Promise<void> {
     process.kill(host.pid, "SIGKILL");
     await waitGone([host, ...rows]);
   };
+  const proveUnresponsiveHost = async ({ host, rows }: { host: typeof known[number]; rows: typeof known }) => {
+    assert.ok(stillLive(host));
+    process.kill(host.pid, "SIGSTOP");
+    try {
+      for (let i = 0; i < 50 && processStatFields(host.pid)?.[0] !== "T"; i++) await new Promise(resolve => setTimeout(resolve, 20));
+      assert.equal(processStatFields(host.pid)?.[0], "T");
+      assert.equal((await activeRows()).filter(row => row.name.startsWith("host_death_") && row.state === "running").length, 2);
+      await assert.rejects(managerViaDaemon({ paths: ctx.paths }, { op: "managers-prepare-restart" }), /SEATS_ACTIVE/);
+      assert.ok(stillLive(host) && rows.every(stillLive), "an unresponsive host does not retire or signal either live seat");
+    } finally {
+      if (stillLive(host)) process.kill(host.pid, "SIGCONT");
+    }
+  };
   try {
     const first = await launchPair("manager_death");
     const originalManager = { pid: first.manager.pid, start: processStartToken(first.manager.pid)! };
@@ -288,15 +323,22 @@ async function proveHostedPtyFailures(ctx: HostedPtyProof): Promise<void> {
     await ctx.start();
     const third = await launchPair("host_death");
     assert.equal((await activeRows()).filter(row => row.name.startsWith("host_death_") && row.state === "running").length, 2);
+    await proveUnresponsiveHost(third);
     await stopHost(third.host, third.rows);
     const status = await managerViaDaemon({ paths: ctx.paths }, { op: "manager-status", space: ctx.space });
     assert.equal(status.state, "answering", "Manager still answers after the shared PTY host died");
     assert.ok((await activeRows()).filter(row => row.name.startsWith("host_death_")).every(row => row.state === "exited"), "the Manager reports the two previously observed PTYs exited or retired");
+    const fourth = await launchPair("ordinary_stop");
+    assert.equal((await activeRows()).filter(row => row.name.startsWith("ordinary_stop_") && row.state === "running").length, 2);
+    await assert.rejects(managerViaDaemon({ paths: ctx.paths }, { op: "managers-prepare-restart" }), /SEATS_ACTIVE/);
+    assert.ok(fourth.rows.every(stillLive), "generation preparation kept both live PTYs");
+    await managerViaDaemon({ paths: ctx.paths }, { op: "managers-stop" });
+    await waitGone(fourth.rows);
     await killAndAwaitExit(ctx.daemon(), "SIGTERM");
-    console.log("Hosted shared PTY: Manager crash, daemon crash, host death and cleanup verified");
+    console.log("Hosted shared PTY: Manager crash, daemon crash, unresponsive host, host death, ordinary stop and cleanup verified");
   } finally {
-    try { readHost(); } catch { /* An unpublished host has no admitted PTY. */ }
-    if (existsSync(root)) for (const id of readdirSync(root).filter(id => /^[0-9a-f]{32}$/.test(id))) {
+    try { readHost(findRoot()); } catch { /* An unpublished host has no admitted PTY. */ }
+    for (const root of knownRoots) for (const id of readdirSync(root).filter(id => /^[0-9a-f]{32}$/.test(id))) {
       const record = join(root, id, "shared.json");
       if (!existsSync(record)) continue;
       const row = JSON.parse(readFileSync(record, "utf8")) as { childPid: number; childStart?: string };
@@ -304,6 +346,7 @@ async function proveHostedPtyFailures(ctx: HostedPtyProof): Promise<void> {
     }
     for (const row of known) if (stillLive(row)) process.kill(row.pid, "SIGKILL");
     await waitGone(known);
+    if (existsSync(store)) cleanupClosure(store);
   }
 }
 

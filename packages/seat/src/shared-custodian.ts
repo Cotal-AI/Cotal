@@ -8,7 +8,11 @@ import { peerCredentials } from "./peercred.js";
 import { lockExclusiveNb } from "./host.js";
 import { FrameReader, encodeFrame } from "./protocol.js";
 import { bootToken, capabilityToken, isSeatId, processStartToken } from "./record.js";
-import { isSharedScope, privateDirectory, readSharedHost, recordedProcess, sharedHostRecord, sharedHostSocket, sharedScopeMatches, sharedSeatRecord, sharedSeatSocket, SHARED_HOST_VERSION, SHARED_PROTOCOL_VERSION, writePrivateRecord, type SharedHostRecord } from "./shared-record.js";
+import { isSharedScope, privateDirectory, readPrivateRecord, readSharedHost, recordedProcess, sharedHostRecord, sharedHostSocket, sharedScopeMatches, sharedSeatRecord, sharedSeatSocket, SHARED_HOST_VERSION, SHARED_PROTOCOL_VERSION, writePrivateRecord, type SharedHostRecord } from "./shared-record.js";
+import { serveMultiplexedHost } from "./shared-host-v2.js";
+import { verifySharedRuntimeClosure, verifyStagedSharedRuntime } from "./shared-runtime-closure.js";
+import { acquireSharedExecutionLease } from "./shared-execution-lease.js";
+import { acquireSharedClosureLease } from "./shared-closure-lease.js";
 
 export type SharedRequest = { protocol: number; token: string } & (
   { op: "proof" } | { op: "launch"; id: string; name: string; cwd: string; spec: SeatLaunchSpec; artifactRoot: string }
@@ -111,8 +115,33 @@ function prepareHostFiles(root: string, socket: string): void {
   } catch (e) { if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e; }
 }
 
+async function runRetainedHost(root: string, scope: string, store: string, digest: string, stagedRoot?: string, inventorySha256?: string): Promise<void> {
+  let hold: ReturnType<typeof acquireSharedExecutionLease> | undefined;
+  const copy = acquireSharedClosureLease(store, digest);
+  try {
+    if (Boolean(stagedRoot) !== Boolean(inventorySha256)) throw new Error("unknown staged execution inventory");
+    const pin = readPrivateRecord(join(root, "execution.json"), 4096) as { version?: number; root?: string; inventorySha256?: string; digest?: string; scope?: string;
+      dev?: string; ino?: string; copyDev?: string; copyIno?: string } | null;
+    if (pin?.version !== 1 || pin.digest !== digest || pin.scope !== scope || pin.copyDev !== copy.dev || pin.copyIno !== copy.ino ||
+        pin.root !== stagedRoot || pin.inventorySha256 !== inventorySha256) throw new Error("unknown retained execution inventory");
+    if (stagedRoot && inventorySha256) {
+      hold = acquireSharedExecutionLease(stagedRoot, "shared", inventorySha256);
+      if (pin.dev !== hold.dev || pin.ino !== hold.ino) throw new Error("unknown staged execution inventory");
+    }
+    const closure = stagedRoot && inventorySha256 ? verifyStagedSharedRuntime(store, digest, { root: stagedRoot, inventorySha256 }) : verifySharedRuntimeClosure(store, digest);
+    if (closure.entryPath !== process.argv[1] || closure.nodePath !== process.execPath)
+      throw new Error("shared PTY host runtime is not retained");
+    hold?.assertCurrent();
+    copy.assertCurrent();
+    await serveMultiplexedHost(root, scope);
+  } finally { hold?.release(); copy.release(); }
+}
+
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  const [, , root, scope] = process.argv;
-  if (!root || !scope || !isAbsolute(root)) process.exitCode = 1;
-  else void serveSharedCustodian(root, scope).catch(() => { process.exitCode = 1; });
+  const [, , root, scope, store, digest, stagedRoot, inventorySha256] = process.argv;
+  if (!root || !scope || !isAbsolute(root) || Boolean(store) !== Boolean(digest)) process.exitCode = 1;
+  else {
+    const host = store && digest ? runRetainedHost(root, scope, store, digest, stagedRoot, inventorySha256) : serveSharedCustodian(root, scope);
+    void host.catch(() => { process.exitCode = 1; });
+  }
 }

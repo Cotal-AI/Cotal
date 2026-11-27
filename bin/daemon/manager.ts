@@ -456,10 +456,12 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
       chmodSync(logFile, 0o600);
     };
     let [node, ...argv] = daemonArgv();
+    let desktopInstall: string | undefined;
     const source = dirname(dirname(argv.at(-1)!));
     if ((process.platform === "darwin" || process.platform === "linux") && existsSync(join(source, "desktop-runtime.json"))) {
       const retained = await retainAppRuntime(source);
       if (closed || generationPending || l.stopping) return l.view;
+      desktopInstall = argv.at(-1);
       node = join(retained, "cotal-node");
       argv[argv.length - 1] = join(retained, "runtime", "dist", "cotal.js");
     }
@@ -512,6 +514,10 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
     child.on("message", (message: unknown) => {
       if (!message || typeof message !== "object") return;
       const frame = message as { kind?: unknown; instanceId?: unknown; reason?: unknown; terminal?: unknown; status?: unknown };
+      if (frame.kind === "machine-pty-install-request") {
+        if (process.platform === "linux" && desktopInstall && child.connected) child.send({ kind: "machine-pty-install", entry: desktopInstall }, () => {});
+        return;
+      }
       if (frame.kind === "manager-refusal" && typeof frame.reason === "string") {
         nativeReason = safeDiagnostic(frame.reason).slice(0, 1500);
         authorityTerminal = frame.terminal === true;

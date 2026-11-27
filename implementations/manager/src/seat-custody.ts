@@ -5,6 +5,7 @@ import {
 } from "@cotal-ai/core";
 import { agentLifecycleSecretFilePaths, agentSecretKeyForFile, retainConnectorSeat } from "@cotal-ai/workspace";
 import { isCustodialRuntime, requireRuntimeReap, RuntimeReapUnproven, watchProvedExit, type AgentHandle, type Runtime } from "./runtime/index.js";
+import { SharedPtyRuntime } from "./runtime/shared-pty.js";
 import type { RuntimeReference } from "@cotal-ai/core";
 import type { ManagedAgent, ManagerResumeAgent, SupervisedRestart } from "./manager.js";
 import { readSeatRecord, removeReleasedSeatReference, removeSeatRecord, writeSeatRecord, type SeatRecord } from "./resume.js";
@@ -108,8 +109,11 @@ export class SeatCustody {
    *  own id instead would leave every durable record addressing a seat that does not exist, so the
    *  mismatch tears the new seat down and throws rather than returning an unaddressable handle. */
   async spawnCustodied(runtime: Runtime, name: string, spec: LaunchSpec, cwd: string, reserved: RuntimeReference | undefined): Promise<AgentHandle> {
-    const holder = retainConnectorSeat(this.managerInstanceId, name);
-    const handle = runtime.spawn(name, spec, cwd, reserved);
+    const shared = runtime instanceof SharedPtyRuntime && reserved === undefined;
+    const holder = retainConnectorSeat(this.managerInstanceId, name, shared);
+    const handle = shared && holder.sharedEligible
+      ? await runtime.spawnShared(name, spec, cwd, child => holder.bindSharedChild(child))
+      : runtime.spawn(name, spec, cwd, reserved);
     this.deps.watchConnectorHolder(handle, holder);
     if (reserved === undefined) return handle;
     const got = handle.reference;

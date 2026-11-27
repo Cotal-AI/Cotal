@@ -34,7 +34,9 @@ export function adoptSeatSync(record: SeatRecord, verifyPeer?: (socket: Socket) 
   return seatHandle(record, new SeatClient(record, verifyPeer));
 }
 
-export function seatHandle(record: SeatRecord, client: SeatClient, reconnectable = false): SeatHandle {
+export type SeatHandleClient = Pick<SeatClient, "connect" | "onExit" | "exitInfo" | "stop" | "waitExit" | "interrupt" | "write" | "snapshot" | "subscribeOutput" | "resize" | "close">;
+
+export function seatHandle(record: SeatRecord, client: SeatHandleClient, reconnectable = false): SeatHandle {
   const ready = client.connect();
   let status: "running" | "exited" = "running";
   let exit: SeatExit | undefined;
@@ -43,7 +45,7 @@ export function seatHandle(record: SeatRecord, client: SeatClient, reconnectable
   let helloGeometryApplied = false;
   const liveUnsubs = new Set<() => void>();
 
-  const whenReady = (): Promise<SeatClient> =>
+  const whenReady = (): Promise<SeatHandleClient> =>
     (reconnectable ? client.connect() : ready).then((hello) => {
       // Hello reports spawn size. Re-applying it on every later() overwrites a
       // resize that already updated these fields (mesh-attach-plane resize cell).
@@ -56,7 +58,7 @@ export function seatHandle(record: SeatRecord, client: SeatClient, reconnectable
       exit ??= hello.exit;
       return client;
     });
-  const later = (fn: (c: SeatClient) => Promise<unknown> | unknown): void => {
+  const later = (fn: (c: SeatHandleClient) => Promise<unknown> | unknown): void => {
     void whenReady()
       .then(fn)
       .catch(() => undefined);

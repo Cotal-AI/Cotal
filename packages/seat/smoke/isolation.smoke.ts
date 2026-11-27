@@ -1,9 +1,12 @@
 /**
- * Two seats, kill one custodian, the other seat still reads and writes.
+ * Isolate screen mirror faults and custodian death from another seat's I/O.
  */
 import { readFileSync, rmSync } from "node:fs";
+import Headless from "@xterm/headless";
+import { SerializeAddon } from "@xterm/addon-serialize";
 import { adoptSeatSync, launchSeat } from "../src/index.js";
 import { makeSeatRoot } from "@cotal-ai/smoke-kit";
+import { SharedScreen } from "../src/shared-screen.js";
 
 if (process.platform !== "linux") {
   console.log(`SEAT ISOLATION COMPLETE on ${process.platform}: custody transport unsupported (no skip-as-pass)`);
@@ -64,6 +67,55 @@ sess.onData((c) => {
 hb.write("keep\n");
 await wait(400);
 check("beta received a write before the adversarial kill", buf.includes("echo:keep"), buf);
+
+const sharedScreenIsolation = async (): Promise<void> => {
+  const firstTerm = new Headless.Terminal({ allowProposedApi: true });
+  const secondTerm = new Headless.Terminal({ allowProposedApi: true });
+  const firstSerializer = new SerializeAddon();
+  const secondSerializer = new SerializeAddon();
+  firstTerm.loadAddon(firstSerializer);
+  secondTerm.loadAddon(secondSerializer);
+  const injected = new Error("fixture serialization fault");
+  const faults: Array<{ error: unknown; operation: string }> = [];
+  const onFault = (error: unknown, operation: string): void => { faults.push({ error, operation }); };
+  let serializeCalls = 0;
+  const first = new SharedScreen(firstTerm, {
+    serialize: () => {
+      if (++serializeCalls > 1) throw injected;
+      return firstSerializer.serialize();
+    },
+  }, onFault);
+  const second = new SharedScreen(secondTerm, secondSerializer, onFault);
+  let output = "";
+  const unsubscribe = sess.onData((chunk) => {
+    const data = chunk.toString("utf8");
+    second.write(data);
+    output += data;
+  });
+  try {
+    first.write("first mirror live");
+    const before = await first.snapshot();
+    const dropped = await first.snapshot();
+    first.write("ignored");
+    first.resize(90, 30);
+    const disabled = await first.snapshot();
+
+    const expected = "echo:screen-isolation";
+    hb.write("screen-isolation\n");
+    for (let attempt = 0; attempt < 100 && !output.includes(expected); attempt++) await wait(20);
+    const surviving = await second.snapshot();
+    check("a shared screen fault drops only that mirror and reports once",
+      before.includes("first mirror live") && dropped === "" && disabled === "" && serializeCalls === 2 &&
+      faults.length === 1 && faults[0]?.error === injected && faults[0]?.operation === "snapshot" &&
+      output.includes(expected) && surviving.includes(expected),
+      { before, dropped, disabled, serializeCalls, faults: faults.map(({ operation }) => operation), output, surviving });
+  } finally {
+    unsubscribe();
+    firstTerm.dispose();
+    secondTerm.dispose();
+  }
+};
+await sharedScreenIsolation();
 
 process.kill(a.custodianPid, "SIGKILL");
 await wait(300);

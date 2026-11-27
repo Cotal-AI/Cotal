@@ -116,7 +116,7 @@ export interface ManagerOptions {
   name?: string;
   /** Spawn backend. `auto` (default) → pty; external runtimes are explicit-only. */
   runtime?: RuntimeMode;
-  machineHostedPty?: boolean; // Native daemon composition may put Linux PTYs in a sibling user service.
+  machineHostedPty?: string; // Stable installation entry for native daemon-hosted Linux PTYs.
   workspaceRoot?: string;
   /** Trusted embedding hook after native identity selection, before endpoint construction. It receives no credential or readiness claim. */
   onServiceIdentity?: (identity: ManagerServiceIdentity) => void | Promise<void>;
@@ -845,7 +845,7 @@ export class Manager {
         }
       }
     }
-    if (this.config.execution === "runtime") this.runtime = createRuntime(opts.runtime ?? "auto", `cotal-${this.config.space}`, opts.machineHostedPty);
+    if (this.config.execution === "runtime") this.runtime = createRuntime(opts.runtime ?? "auto", `cotal-${this.config.space}`, opts.machineHostedPty && !opts.pooled ? { space: this.config.space, install: opts.machineHostedPty } : undefined);
     if (opts.pooled && this.config.execution === "runtime" && isCustodialRuntime(this.requiredRuntime))
       throw new Error(`pooled control refuses custodial runtime "${this.requiredRuntime.kind}" before starting agents`);
     config.preserveStopTimeoutMs = opts.preserveStopTimeoutMs ?? PRESERVE_STOP_TIMEOUT_MS;

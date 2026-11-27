@@ -2,6 +2,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync, realpathSync, rmSync } from "node:fs";
 import { dirname, join, basename } from "node:path";
 import { logicalExecutionEntry, executionIdentity } from "@cotal-ai/workspace";
+import { acquireSharedExecutionLease } from "@cotal-ai/seat";
 import { updateRuntime, verifyGlobalEntry, type ExecutionReplacement } from "@cotal-ai/cli/update";
 import { cleanupExecutionStore } from "../execution-store.js";
 import { completeExecutionTransaction, assertExecutionDestination, executionStagingPrefix, journalExecutionTransaction, publishExecutionTransaction, readExecutionTransaction, retainExecutionGeneration, retireSupersededExecutionDescriptor } from "../execution-transaction.js";
@@ -90,7 +91,20 @@ export async function prepareExecutionUpdate(version: string, globalRoot: string
       catch (error) { process.stderr.write(`execution store cleanup: ${error instanceof Error ? error.message.replace(/[\r\n]+/g, " ") : "could not finish publication journal"}\n`); return; }
       cleanupExecutionStore(installed);
     },
-    discard() { if (!journal) rmSync(dirname(generation.root), { recursive: true, force: true }); },
+    discard() {
+      if (journal) return;
+      const container = dirname(generation.root);
+      if (process.platform !== "linux") { rmSync(container, { recursive: true, force: true }); return; }
+      // A target preinstall may already have started a host. Keep the unpublished target if its
+      // lease is busy or cannot be proven. No new collector acts on retained generations.
+      let lease: ReturnType<typeof acquireSharedExecutionLease> | undefined;
+      try {
+        lease = acquireSharedExecutionLease(generation.root, "exclusive", generation.inventorySha256);
+        lease.assertCurrent();
+      } catch { lease?.release(); return; }
+      try { rmSync(container, { recursive: true, force: true }); }
+      finally { lease.release(); }
+    },
   };
 }
 

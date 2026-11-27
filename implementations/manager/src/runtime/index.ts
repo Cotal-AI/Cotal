@@ -137,9 +137,9 @@ export type RuntimeMode = RuntimeKind | "auto";
 /** Build the runtime a manager will spawn through. `pty` ships with the manager and is what `auto`
  *  resolves to. Every other name resolves a self-registered {@link RuntimeProvider}; an explicit
  *  provider that is absent or unreachable throws, never a silent fallback to pty. */
-export function createRuntime(mode: RuntimeMode, session: string, hosted = false): Runtime {
+export function createRuntime(mode: RuntimeMode, session: string, hosted?: { space: string; install: string }): Runtime {
   const legacy = createBackend(mode, session);
-  return ownLaunchArtifacts(hosted && legacy.kind === "pty" && process.platform === "linux" ? new HostedPtyRuntime() : legacy);
+  return ownLaunchArtifacts(hosted && legacy.kind === "pty" && process.platform === "linux" ? new HostedPtyRuntime(hosted.space, hosted.install) : legacy);
 }
 
 /** The bundled Linux node-pty can import on musl but crash the manager on its first spawn. */
@@ -224,6 +224,20 @@ function ownLaunchArtifacts(runtime: Runtime): Runtime {
     if (spec.artifacts?.length) discardOnExit(name, handle, spec.artifacts);
     return handle;
   };
+  if (runtime instanceof SharedPtyRuntime) {
+    const spawnShared = runtime.spawnShared.bind(runtime);
+    runtime.spawnShared = async (name, spec, cwd, onReceipt) => {
+      let handle: AgentHandle;
+      try {
+        handle = await spawnShared(name, reclaimWithChild(spec), cwd, onReceipt);
+      } catch (e) {
+        if (e instanceof SpawnRefused) removeOwned(name, spec.artifacts);
+        throw e;
+      }
+      if (spec.artifacts?.length) discardOnExit(name, handle, spec.artifacts);
+      return handle;
+    };
+  }
   return runtime;
 }
 

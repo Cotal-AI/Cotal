@@ -82,7 +82,7 @@ try {
 `], { env: { ...childEnv, XDG_CONFIG_HOME: join(root, "repair-config"), COTAL_HOME: join(root, "repair-home") }, encoding: "utf8", timeout: 30_000 });
   assert.equal(repair.status, 0, `${repair.stdout}${repair.stderr}`);
   passed++;
-  for (const scenario of ["unfinished-root", "unfinished-holders", "unfinished-seat", "unfinished-live-seat", "unfinished-dead-seat", "unfinished-link", "unselected-holder", "seat-holder", "unknown-set", "unknown-seat", "previous-read", "previous-wrong-entry", "previous-wrong-root", "previous-wrong-version", "previous-linked-ancestor", "previous-nonprivate-ancestor", "retain", "linked-config", "moved-config", "pnpm-dlx-refresh", "no-identity", "invalid-selection", "linked-prefix", "linked-parent", "stage-root", "next-version", "live-holder", "removal-failure", "orphan-child", "interrupted-lineage", "interrupted-canonical-move", "interrupted-canonical-cleanup", "initial-inherit", "checkout", "desktop", "windows"] as const) {
+  for (const scenario of ["unfinished-root", "unfinished-holders", "unfinished-seat", "unfinished-live-seat", "unfinished-dead-seat", "unfinished-link", "unselected-holder", "shared-holder", "seat-holder", "unknown-set", "unknown-seat", "previous-read", "previous-wrong-entry", "previous-wrong-root", "previous-wrong-version", "previous-linked-ancestor", "previous-nonprivate-ancestor", "retain", "linked-config", "moved-config", "pnpm-dlx-refresh", "no-identity", "invalid-selection", "linked-prefix", "linked-parent", "stage-root", "next-version", "live-holder", "removal-failure", "orphan-child", "interrupted-lineage", "interrupted-canonical-move", "interrupted-canonical-cleanup", "initial-inherit", "checkout", "desktop", "windows"] as const) {
     const config = join(root, scenario);
     mkdirSync(join(config, "cotal/seed/store/0.162.0"), { recursive: true, mode: 0o700 });
     mkdirSync(join(config, "cotal/extensions/node_modules/old"), { recursive: true, mode: 0o700 });
@@ -269,6 +269,48 @@ assert.equal(fs.existsSync(aside),false);
 ` : ""}
 ${scenario === "pnpm-dlx-refresh" ? `currentDlx=join(dlxB,'dist/cotal.js');assert.equal(connectorConfigDir(),selected,'refreshed pnpm dlx cache instance reuses the retained connector directory');assert.equal(retainConnectorConfig(),selected,'refreshed pnpm dlx cache instance does not create a second retained tree');assert.equal(fs.readdirSync(join(original,'installs')).length,1,'pnpm dlx cache refresh keeps one installs/<key> directory');` : ""}
 ${scenario === "unselected-holder" ? `const {retainConnectorSeat,pruneRetainedConnectorConfig}=await import(${JSON.stringify(module)});const before=snapshot(dirname(selected));writeFileSync(metadata,JSON.stringify({name:'cotal-ai',version:'0.165.5',bin:{cotal:'./dist/cotal.js'}}));assert.equal(connectorConfigDir(),selected,'unselected version reads predecessor');const holder=retainConnectorSeat('manager-B','worker');assert.equal(holder.active,false,'unselected version must not reserve a holder');holder.launched(process.pid);holder.ended();pruneRetainedConnectorConfig([]);assert.deepEqual(snapshot(dirname(selected)),before,'unselected version neither writes predecessor nor prunes');assert.equal(fs.existsSync(join(dirname(dirname(selected)),'0.165.5')),false,'unselected version creates no set');` : ""}
+${scenario === "shared-holder" ? `
+const { retainConnectorSeat, pruneRetainedConnectorConfig } = await import(${JSON.stringify(module)});
+const dir = join(dirname(selected), 'holders');
+const holder = retainConnectorSeat('manager-A', 'worker', true);
+assert.equal(holder.active && holder.sharedEligible, true);
+const [name] = fs.readdirSync(dir), file = join(dir, name);
+const reservation = readFileSync(file, 'utf8');
+assert.equal(JSON.parse(reservation).custody, undefined);
+const child = { pid: process.pid, start: 'receipt-start', boot: 'receipt-boot' };
+holder.bindSharedChild(child);
+holder.launched(process.pid);
+assert.deepEqual(JSON.parse(readFileSync(file, 'utf8')).custody, child);
+holder.ended();
+assert.equal(fs.existsSync(file), false);
+const stale = retainConnectorSeat('manager-A', 'worker', true);
+const [staleName] = fs.readdirSync(dir), staleFile = join(dir, staleName);
+writeFileSync(staleFile + '.replacement', reservation, { mode: 0o600 });
+fs.renameSync(staleFile + '.replacement', staleFile);
+stale.bindSharedChild(child);
+stale.ended();
+assert.equal(readFileSync(staleFile, 'utf8'), reservation, 'a replaced reservation cannot be rebound or removed');
+fs.chmodSync(dir, 0o755);
+try { assert.equal(retainConnectorSeat('manager-A', 'worker', true).sharedEligible, false); }
+finally { fs.chmodSync(dir, 0o700); }
+rmSync(staleFile);
+const unknown = retainConnectorSeat('manager-A', 'unacknowledged', true);
+assert.equal(unknown.active && unknown.sharedEligible, true);
+const [unknownName] = fs.readdirSync(dir), unknownFile = join(dir, unknownName);
+const oldMetadata = readFileSync(metadata);
+writeFileSync(metadata, JSON.stringify({ ...JSON.parse(oldMetadata), version: '0.165.5' }));
+retainConnectorConfig();
+pruneRetainedConnectorConfig(['0.165.5']);
+assert(fs.existsSync(unknownFile), 'pre-dispatch reservation pins old connectors before receipt');
+unknown.bindSharedChild(undefined);
+unknown.launched(process.pid);
+assert.equal(JSON.parse(readFileSync(unknownFile, 'utf8')).custody, undefined);
+pruneRetainedConnectorConfig(['0.165.5']);
+assert(fs.existsSync(unknownFile), 'unknown receipt keeps the identity-less reservation');
+unknown.ended();
+pruneRetainedConnectorConfig(['0.165.5']);
+assert(!fs.existsSync(selected), 'proved exit releases the identity-less holder');
+` : ""}
 ${scenario === "seat-holder" ? `const {retainConnectorSeat,pruneRetainedConnectorConfig}=await import(${JSON.stringify(module)});const {launchSeat,reapSeat,identityVerdict}=await import(${JSON.stringify(pathToFileURL(join(import.meta.dirname, "../../seat/dist/index.js")).href)});const custody=join(process.env.HOME,'custody-${scenario}');const holder=retainConnectorSeat('manager-A','worker');const rec=launchSeat({root:custody,name:'worker',cwd:process.env.HOME,spec:{command:process.execPath,args:['-e','setInterval(()=>{},1000)']}});holder.launched(rec.childPid);try{writeFileSync(metadata,JSON.stringify({name:'cotal-ai',version:'0.165.5',bin:{cotal:'./dist/cotal.js'}}));retainConnectorConfig();pruneRetainedConnectorConfig(['0.165.5']);assert(fs.existsSync(join(selected,'extensions/node_modules/old/lazy.js')),'orphan seat keeps its plugin');assert.equal(identityVerdict(rec.childPid,rec.childStart,rec.bootId),'live');await reapSeat(custody,rec.id);pruneRetainedConnectorConfig(['0.165.5']);assert(!fs.existsSync(selected),'dead custody identity releases its set without Manager cleanup');}finally{await reapSeat(custody,rec.id);}` : ""}
 ${scenario === "unknown-set" || scenario === "unknown-seat" ? `const {retainConnectorSeat,pruneRetainedConnectorConfig}=await import(${JSON.stringify(module)});${scenario === "unknown-set" ? "rmSync(join(dirname(selected),'holders-v1.json'));" : "const holder=retainConnectorSeat('manager-A','worker');holder.launched();"}writeFileSync(metadata,JSON.stringify({name:'cotal-ai',version:'0.165.5',bin:{cotal:'./dist/cotal.js'}}));retainConnectorConfig();pruneRetainedConnectorConfig(['0.165.5']);assert(fs.existsSync(selected),'unknown provenance keeps the old set');${scenario === "unknown-seat" ? "holder.ended();pruneRetainedConnectorConfig(['0.165.5']);assert(!fs.existsSync(selected),'only the owning Manager releases an identity-less holder');" : ""}` : ""}
 ${scenario === "live-holder" ? `const {pruneRetainedConnectorConfig}=await import(${JSON.stringify(module)});const {homeCotalDir}=await import(${JSON.stringify(pathToFileURL(join(import.meta.dirname, "../src/cotal-home.ts")).href)});mkdirSync(join(homeCotalDir(),'daemon'),{recursive:true,mode:0o700});writeFileSync(join(homeCotalDir(),'daemon/daemon.lock'),JSON.stringify({v:1,pid:process.pid}),{mode:0o600});writeFileSync(metadata,JSON.stringify({name:'cotal-ai',version:'0.165.5',bin:{cotal:'./dist/cotal.js'}}));const next=retainConnectorConfig();assert(fs.existsSync(selected),'live unversioned daemon preserves every set');pruneRetainedConnectorConfig(['0.165.4']);assert(fs.existsSync(selected),'authenticated older holder keeps its set');pruneRetainedConnectorConfig([undefined]);assert(fs.existsSync(selected),'unknown holder keeps every set');pruneRetainedConnectorConfig(['0.165.5']);assert(!fs.existsSync(selected),'older set retires once all authenticated holders use current');assert.equal(connectorConfigDir(),next);` : ""}

@@ -1,6 +1,7 @@
 ---
 "@cotal-ai/seat": patch
 "@cotal-ai/manager": patch
+"@cotal-ai/workspace": patch
 "cotal-ai": patch
 ---
 
