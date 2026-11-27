@@ -1,8 +1,8 @@
 import { spawnSync } from "node:child_process";
 import { accessSync, constants, readFileSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
-import { delimiter, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
-import { cmdSpawnSpec, codeSpan, isWorkspaceTargetError, logicalExecutionEntry, resolveOnPath } from "@cotal-ai/workspace";
+import { delimiter, dirname, isAbsolute, join, relative, resolve, sep, win32 } from "node:path";
+import { cmdSpawnSpec, codeSpan, isWorkspaceTargetError, logicalExecutionEntry, resolveOnPath, windowsShellWord } from "@cotal-ai/workspace";
 import { cliPackageRoot, entryScript, seedWriterKind } from "../seed/paths.js";
 import { shellWord } from "./endpoint-errors.js";
 import { workingFolderRemoved } from "./paths.js";
@@ -205,9 +205,11 @@ export function displayCmd({ fromAnyFolder = false } = {}): string {
   if (isNpx()) return "npx cotal-ai";
   if (isPnpmDlx()) return "pnpm dlx cotal-ai";
   if (runsCliEntry() && (fromAnyFolder || seedWriterKind() === "released")) {
-    if (seedWriterKind() !== "released") return selfArgv().map(shellWord).join(" ");
-    const command = [process.execPath, entryScript()].map(shellWord).join(" ");
-    if (process.platform !== "win32" && process.env.COTAL_LAUNCHER === "1") {
+    const released = seedWriterKind() === "released";
+    const argv = released ? [process.execPath, entryScript()] : selfArgv();
+    if (process.platform === "win32") return windowsDisplayCommand(argv) ?? argv.map(shellWord).join(" ");
+    const command = argv.map(shellWord).join(" ");
+    if (released && process.env.COTAL_LAUNCHER === "1") {
       const prefix = process.env.npm_config_prefix;
       if (!prefix) throw new Error("the installer launcher did not provide its npm prefix");
       // Match install.sh's pinned runtime and install destination without copying the whole PATH.
@@ -216,6 +218,49 @@ export function displayCmd({ fromAnyFolder = false } = {}): string {
     return command;
   }
   return "pnpm cotal";
+}
+
+/** Format a Windows `[executable, ...args]` prefix so PowerShell and Command Prompt run it directly. */
+function windowsDisplayCommand([file, ...args]: readonly string[]): string | undefined {
+  // A fully quoted executable is a string in PowerShell, `[` or `]` in the executable token is a
+  // PowerShell wildcard, and PowerShell 5.1 splits a bare `-name.ext` parameter token at `.`.
+  const ascii = (value: string) => {
+    const word = /^[\x20-\x7e]+$/.test(value) ? windowsShellWord(value) : undefined;
+    return word === value && value.startsWith("-") && value.includes(".") ? `"${value}"` : word;
+  };
+  const commandToken = (exe: string) => {
+    const split = /^([A-Za-z]:)([^\[\]]+)$/.exec(exe);
+    return split && ascii(exe) !== undefined ? `${split[1]}"${split[2]}"` : undefined;
+  };
+  const exe = commandToken(file!);
+  const words = args.map(ascii);
+  if (exe !== undefined && words.every(word => word !== undefined)) {
+    return [exe, ...words].join(" ");
+  }
+
+  const systemRoot = Object.entries(process.env).find(([key]) => key.toLowerCase() === "systemroot")?.[1];
+  const psFile = systemRoot ? win32.join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe") : undefined;
+  const ps = psFile ? commandToken(psFile) : undefined;
+  if (ps === undefined) return undefined;
+  try {
+    accessSync(psFile!);
+  } catch {
+    return undefined;
+  }
+
+  // Encode `$`, `"`, `%`, `!`, `^`, backticks, control characters, and non-ASCII code units as `[char]`
+  // values so neither outer shell expands `-Command`, wrap each array element in `(...)` so `+` binds
+  // before `,`, escape wildcards on `&`, and end with `#` so PowerShell reads appended CLI words from
+  // the OS argv instead of re-parsing them as script.
+  const literal = (value: string) => {
+    const parts = value.split(/(["$`%!^\x00-\x1f\x7f-\uffff])/)
+      .flatMap((part, i) => part ? [i % 2 === 0 ? `'${part.replaceAll("'", "''")}'` : `[char]${part.charCodeAt(0)}`] : []);
+    if (parts.length === 0) return "''";
+    return `${parts[0]!.startsWith("[char]") ? "''+" : ""}${parts.join("+")}`;
+  };
+  const prefix = args.length ? `@(${args.map(arg => `(${literal(arg)})`).join(",")}) + ` : "";
+  const body = `Set-Variable ErrorActionPreference Stop; Set-Variable a (${prefix}@([Environment]::GetCommandLineArgs() | Select-Object -Skip 4)); & ([WildcardPattern]::Escape(${literal(file!)})) @a; exit (Get-Variable LASTEXITCODE -ValueOnly) #`;
+  return `${ps} -NoProfile -Command "${body}"`;
 }
 
 /** Give the ticked commands in a workspace remedy the CLI's launcher, keeping each command whole. */

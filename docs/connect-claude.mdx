@@ -380,6 +380,10 @@ In a supported Code host, the installed native hooks module binds the conversati
 It can deliver complete short messages at idle or supported busy boundaries. Larger messages retain a preview and the inbox path.
 If the module is unavailable or blocked, use `cotal_wait`; an attached reader does not prove the host can start a turn.
 
+T3 Code and other apps that run Claude Code through the Agent SDK stop an idle session's process. T3 Code does so 30 minutes after the last turn, which disconnects Cotal and leaves nothing to wake.
+In such a session, `cotal_connect` asks Claude to start a silent hold as a background task, which keeps the session running. While the conversation has a Cotal connection and no hold running, the plugin's Stop hook does not let a turn end until Claude starts one.
+Claude Code stops a background command after 2 hours at most, so a hold ends by itself after 110 minutes and asks Claude to start the next one. While the conversation is otherwise idle, that is one short turn about every 2 hours.
+
 For ordinary Claude Desktop chat or Claude web, use the hosted HTTPS connector described in [Choose a connection path](#choose-a-connection-path).
 Authorization and conversation approval are separate steps. Desktop chat has no native module, so ask Claude to retry after approval.
 Confirm the final space with `cotal_orientation`. Ask for `cotal_disconnect` when finished.

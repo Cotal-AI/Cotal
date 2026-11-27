@@ -60,12 +60,12 @@ try {
   });
   // Count inventory requests as the daemon's rail hands them to its handler.
   let arrived = 0;
-  const d = daemon.ep as unknown as { deliveryPlane: { handleDeliveryAdmin(req: ControlRequest): Promise<ControlReply> }; membersRegistry(): Promise<KV> };
+  const d = daemon.ep as unknown as { deliveryPlane: { handleDeliveryAdmin(req: ControlRequest): Promise<ControlReply> }; durableBackstop: { membersRegistry(): Promise<KV> } };
   const handle = d.deliveryPlane.handleDeliveryAdmin.bind(d.deliveryPlane);
   d.deliveryPlane.handleDeliveryAdmin = (req) => { if (req.op === "lifecycleMemberships") arrived++; return handle(req); };
   // Count the inventory's passes over the bucket on the daemon's own members handle, and let the suite
   // hold a pass at its start or fail it.
-  const consumers = (await d.membersRegistry() as unknown as { js: { consumers: { getPushConsumer: (...a: unknown[]) => Promise<unknown> } } }).js.consumers;
+  const consumers = (await d.durableBackstop.membersRegistry() as unknown as { js: { consumers: { getPushConsumer: (...a: unknown[]) => Promise<unknown> } } }).js.consumers;
   const bind = consumers.getPushConsumer.bind(consumers);
   let passes = 0;
   let passHeld: { entered: () => void; release: Promise<void> } | undefined;
@@ -179,10 +179,10 @@ try {
   const rowsOf = async (s: Seat) => (await listMembers(kv, { owner: s.principal })).filter((r) => r.lifecycleUid === s.uid);
   const outcome = (p: Promise<unknown>) => p.then(() => "ok", (e: Error) => e.message);
   // Hold the daemon's next durable join at its start, after the ACL authorized it.
-  const dj = daemon.ep as unknown as { durableJoinFor(...args: unknown[]): Promise<unknown>; deliveryPlane: { deliveryServeSub: { getReceived(): number }; retiringLifecycles: Map<string, Set<string>> } };
-  const joinFor = dj.durableJoinFor.bind(dj);
+  const dj = daemon.ep as unknown as { durableBackstop: { durableJoinFor(...args: unknown[]): Promise<unknown> }; deliveryPlane: { deliveryServeSub: { getReceived(): number }; retiringLifecycles: Map<string, Set<string>> } };
+  const joinFor = dj.durableBackstop.durableJoinFor.bind(dj.durableBackstop);
   let joinHeld: { entered: () => void; release: Promise<void> } | undefined;
-  dj.durableJoinFor = async (...args) => {
+  dj.durableBackstop.durableJoinFor = async (...args) => {
     const h = joinHeld;
     joinHeld = undefined;
     if (h) { h.entered(); await h.release; }

@@ -2,7 +2,8 @@
 // endpoint.ts; the endpoint keeps the public methods and forwards to them. Not re-exported by the index.
 import type { ConnectionState } from "./endpoint-connection-state.js";
 import type { EndpointIdentity } from "./endpoint-identity.js";
-import { JetStreamApiCodes, type JetStreamManager } from "@nats-io/jetstream";
+import type { EndpointParts } from "./endpoint-parts.js";
+import { JetStreamApiCodes } from "@nats-io/jetstream";
 import { isJetStreamMissing } from "./jetstream-missing.js";
 import { isPermissionDenied } from "./permission-denied.js";
 import { createSpaceStreams, dmDurableConfig, dlvDurableConfig, taskDurableConfig } from "./streams.js";
@@ -13,18 +14,16 @@ import { dlvStream, dmDurable, dmStream, taskStream } from "./subjects.js";
 export interface EndpointProvisioningDeps {
   authed: () => boolean;
   notLiveMsg: () => string;
-  manager: () => Promise<JetStreamManager>;
 }
 
 /** One endpoint's stream creation and its privileged durable provisioning: the space's backing
  *  streams, and the DM inbox, DELIVER and TASK durables an agent binds without creating.
  *  Internal: `CotalEndpoint` keeps the public methods and forwards to it. */
 export class EndpointProvisioning {
-  constructor(private readonly identity: Readonly<EndpointIdentity>, private readonly conn: Readonly<ConnectionState>, private readonly deps: EndpointProvisioningDeps) {}
+  constructor(private readonly identity: Readonly<EndpointIdentity>, private readonly conn: Readonly<ConnectionState>, private readonly deps: EndpointProvisioningDeps, private readonly parts: Pick<EndpointParts, "consumers">) {}
 
   private get authed() { return this.deps.authed(); }
   private notLiveMsg() { return this.deps.notLiveMsg(); }
-  private manager() { return this.deps.manager(); }
 
   /** Create the three backing streams for this space (idempotent). Open-mode lazy create;
    *  the same definitions are used by `cotal up` at privileged setup. */
@@ -39,7 +38,7 @@ export class EndpointProvisioning {
    *  not create them, so this throws there. */
   async ensureOpenSpaceStreams(): Promise<void> {
     if (this.authed) throw new Error(`the streams of ${this.identity.space} come from its broker's setup on an authenticated space; a sender does not create them`);
-    await createSpaceStreams(await this.manager(), this.identity.space);
+    await createSpaceStreams(await this.parts.consumers.manager(), this.identity.space);
   }
 
   // (v3) The old `provisionMembership` — manager/provisioner-written boot membership at spawn — is GONE.
@@ -79,7 +78,7 @@ export class EndpointProvisioning {
     lifecycleUid: string,
     opts: { ackWaitMs?: number; inactiveThresholdMs?: number },
   ): Promise<void> {
-    const jsm = await this.manager();
+    const jsm = await this.parts.consumers.manager();
     const stream = dmStream(this.identity.space);
     const name = dmDurable(owner, actor, lifecycleUid);
     try {
@@ -114,7 +113,7 @@ export class EndpointProvisioning {
    * acks them via native JetStream (SPEC §8). Idempotent. The caller must be permissive on DLV.
    */
   async provisionDlvInbox(owner: string, actor: string, lifecycleUid: string): Promise<void> {
-    const jsm = await this.manager();
+    const jsm = await this.parts.consumers.manager();
     await jsm.consumers.add(dlvStream(this.identity.space), dlvDurableConfig(this.identity.space, owner, actor, lifecycleUid));
   }
 
@@ -125,7 +124,7 @@ export class EndpointProvisioning {
    * Idempotent per role. The caller must be permissive on TASK_<space>.
    */
   async provisionTaskQueue(role: string): Promise<void> {
-    const jsm = await this.manager();
+    const jsm = await this.parts.consumers.manager();
     await jsm.consumers.add(taskStream(this.identity.space), taskDurableConfig(this.identity.space, role));
   }
 }

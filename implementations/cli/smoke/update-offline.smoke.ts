@@ -87,6 +87,117 @@ async function assertOfflineSelfUpdate(assert: typeof strictAssert): Promise<voi
   }
 }
 
+async function assertOfflineUpdateCheck(assert: typeof strictAssert): Promise<void> {
+  const root = mkdtempSync(join(tmpdir(), "update-check-offline-"));
+  const current = (JSON.parse(readFileSync(join(import.meta.dirname, "../../../bin/package.json"), "utf8")) as { version: string }).version;
+  const requests: string[] = [];
+  let failRegistry = false;
+  const server = createServer((req, res) => {
+    requests.push(`${req.method} ${req.url}`);
+    if (failRegistry) {
+      res.writeHead(500, { "Content-Type": "application/json" }).end('{"error":"upstream unavailable"}');
+      return;
+    }
+    res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify({
+      name: "cotal-ai",
+      "dist-tags": { latest: current },
+      versions: { [current]: { name: "cotal-ai", version: current } },
+    }));
+  });
+  const env: NodeJS.ProcessEnv = Object.fromEntries(Object.entries(process.env)
+    .filter(([key]) => !/^(?:cotal_|npm_config_|(?:https?_proxy|all_proxy|proxy|no_proxy)$)/i.test(key)));
+  Object.assign(env, {
+    HOME: root, USERPROFILE: root, COTAL_HOME: join(root, "cotal"), XDG_CONFIG_HOME: join(root, "config"),
+    APPDATA: join(root, "config"), LOCALAPPDATA: join(root, "local"), XDG_RUNTIME_DIR: root,
+    npm_config_userconfig: join(root, "user.npmrc"), npm_config_globalconfig: join(root, "global.npmrc"),
+    npm_config_prefix: join(root, "prefix"), npm_config_cache: join(root, "cache"),
+    COTAL_TELEMETRY: "off", COTAL_NO_UPDATE_CHECK: "1", NO_COLOR: "1",
+  });
+  const entry = join(import.meta.dirname, "../../../bin/dist/cotal.js");
+  const runCheck = (flags: string[], extra: NodeJS.ProcessEnv = {}) => new Promise<{ code: string | number; stdout: string; stderr: string }>(resolve => {
+    execFile(process.execPath, [entry, "update", "--check", ...flags], { cwd: root, env: { ...env, ...extra }, timeout: 30_000 },
+      (error, stdout, stderr) => resolve({ code: error?.code ?? (error ? -1 : 0), stdout, stderr }));
+  });
+  const offlineWarning = "npm is in offline mode. Update availability is unknown.";
+  const offlineRemedy = "Disable npm offline mode for this invocation and repeat update --check if you want a live registry check.";
+  try {
+    await new Promise<void>((resolve, reject) => server.once("error", reject).listen(0, "127.0.0.1", resolve));
+    env.npm_config_registry = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+
+    const extDir = join(env.XDG_CONFIG_HOME!, "cotal", "extensions");
+    const manifest = join(extDir, "extensions.json");
+    for (const populated of [false, true]) {
+      if (populated) {
+        mkdirSync(extDir, { recursive: true, mode: 0o700 });
+        writeFileSync(manifest, JSON.stringify({
+          extensions: [{ pkg: "offline-check-fixture", version: "1.2.3", spec: "offline-check-fixture@1.2.3", commands: [] }],
+        }), { mode: 0o600 });
+      }
+      for (const extra of [{ npm_config_offline: "true" }, {}]) {
+        if (!extra.npm_config_offline) writeFileSync(env.npm_config_userconfig!, "offline=true\n");
+        else rmSync(env.npm_config_userconfig!, { force: true });
+
+        for (const flags of [[], ["--plain"]]) {
+          const text = await runCheck(flags, extra);
+          assert.equal(text.code, 4, text.stdout + text.stderr);
+          assert.match(text.stdout, /Registry latest:\s+not established/);
+          assert.match(text.stdout, /CLI update:\s+unknown/);
+          assert.match(text.stdout, populated ? /offline-check-fixture/ : /No extensions in the recorded inventory\./);
+          assert.ok(text.stderr.includes(`! ${offlineWarning}`), text.stderr);
+          assert.ok(text.stderr.includes(offlineRemedy), text.stderr);
+          assert.doesNotMatch(text.stderr, /The registry did not return a valid latest version|unreadable inventory|Check registry access/);
+        }
+
+        const json = await runCheck(["--json"], extra);
+        assert.equal(json.code, 4, json.stdout + json.stderr);
+        assert.equal(json.stderr, "");
+        const report = JSON.parse(json.stdout);
+        assert.equal(report.outcome, "partial");
+        assert.equal(report.completeness, "partial");
+        assert.equal(report.result.current, current);
+        assert.equal(report.result.latest, null);
+        assert.equal(report.result.updateAvailable, null);
+        assert.equal(report.result.installationChanged, false);
+        assert.equal(report.result.processesRestarted, false);
+        assert.equal(report.result.extensions.length, populated ? 1 : 0);
+        assert.deepEqual(report.warnings, [{ code: "LATEST_VERSION_UNAVAILABLE", target: null, message: offlineWarning }]);
+        assert.deepEqual(report.error, {
+          code: "OPERATION_PARTIAL",
+          message: "Some update information could not be established.",
+          remedy: offlineRemedy,
+        });
+        assert.deepEqual(requests, []);
+      }
+    }
+
+    const onlineJson = await runCheck(["--json"], { npm_config_offline: "false" });
+    assert.equal(onlineJson.code, 0, onlineJson.stdout + onlineJson.stderr);
+    assert.equal(onlineJson.stderr, "");
+    const onlineReport = JSON.parse(onlineJson.stdout);
+    assert.equal(onlineReport.outcome, "ok");
+    assert.equal(onlineReport.completeness, "complete");
+    assert.equal(onlineReport.result.latest, current);
+    assert.equal(onlineReport.result.updateAvailable, false);
+    assert.deepEqual(onlineReport.warnings, []);
+    assert.equal(requests.length > 0, true);
+
+    failRegistry = true;
+    const registryError = await runCheck(["--json"], { npm_config_offline: "false" });
+    assert.equal(registryError.code, 4, registryError.stdout + registryError.stderr);
+    const registryReport = JSON.parse(registryError.stdout);
+    assert.deepEqual(registryReport.warnings, [{
+      code: "LATEST_VERSION_UNAVAILABLE",
+      target: null,
+      message: "The registry did not return a valid latest version. Update availability is unknown.",
+    }]);
+    assert.equal(registryReport.error.remedy, "Check registry access and repeat update --check.");
+  } finally {
+    if (server.listening) await new Promise<void>(resolve => server.close(() => resolve()));
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
 const counted = countedAssert(strictAssert);
 await assertOfflineSelfUpdate(counted.assert as typeof strictAssert);
+await assertOfflineUpdateCheck(counted.assert as typeof strictAssert);
 emitSentinel({ passed: counted.cells(), failed: 0 });

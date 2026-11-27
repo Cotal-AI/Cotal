@@ -171,11 +171,11 @@ try {
   const raceAgent = new MeshAgent({ ...cfg, name: `transport-live-race-${port}` });
   const raceEdges: Array<{ connected: boolean }> = [];
   raceAgent.ep.on("connection", (event: { connected: boolean }) => raceEdges.push(event));
-  const raceEp = raceAgent.ep as unknown as { armPlane3(): Promise<void> };
+  const raceEp = raceAgent.ep as unknown as { deliveryPlane: { armPlane3(): Promise<void> } };
   let bindAtFinalStep = false;
   let releaseBind: () => void = () => {};
   const bindGate = new Promise<void>((resolve) => { releaseBind = resolve; });
-  raceEp.armPlane3 = async () => { bindAtFinalStep = true; await bindGate; };
+  raceEp.deliveryPlane.armPlane3 = async () => { bindAtFinalStep = true; await bindGate; };
   const raceStart = raceAgent.start(100).catch(() => {});
   // A real dial and bind on a loaded runner, not a local poll, so this gets the same budget as
   // the terminal-close cell. It returns the moment the bind arrives, so the cost is only paid
@@ -256,11 +256,11 @@ try {
     await until(() => rebuildAgent!.connected, 30_000) && rebuildEdges.some((event) => event.connected === true),
     { ready: rebuildAgent.connected, rebuildEdges },
   );
-  const rebuildEp = rebuildAgent.ep as unknown as { armPlane3(): Promise<void>; reconnect(): Promise<void> };
+  const rebuildEp = rebuildAgent.ep as unknown as { deliveryPlane: { armPlane3(): Promise<void> }; reconnect(): Promise<void> };
   let rebuildBindAtFinalStep = false;
   let releaseRebuildBind: () => void = () => {};
   const rebuildBindGate = new Promise<void>((resolve) => { releaseRebuildBind = resolve; });
-  rebuildEp.armPlane3 = async () => { rebuildBindAtFinalStep = true; await rebuildBindGate; };
+  rebuildEp.deliveryPlane.armPlane3 = async () => { rebuildBindAtFinalStep = true; await rebuildBindGate; };
   const rebuildEdgesBeforeReconnect = rebuildEdges.length;
   const rebuildWork = rebuildEp.reconnect().catch(() => {});
   const reachedRebuildFinalStep = await until(() => rebuildBindAtFinalStep, 30_000);
@@ -308,7 +308,7 @@ try {
   const staleEp = staleAgent.ep as unknown as {
     conn: { kv?: unknown };
     identity: { servers: string };
-    publishPresence(): Promise<void>;
+    presence: { publishPresence(): Promise<void> };
     presenceWriteFailure(): { forMs: number; bucket: string } | undefined;
     reconnect(): Promise<void>;
   };
@@ -316,7 +316,7 @@ try {
   // Drive the REAL publishPresence catch: only the put is replaced, so the recording, the clearing and
   // the guard under test all run as shipped.
   staleEp.conn.kv = { put: () => Promise.reject(new Error("timeout")) };
-  await staleEp.publishPresence().catch(() => {});
+  await staleEp.presence.publishPresence().catch(() => {});
   check(
     "a refused presence write IS recorded while the transport is genuinely up (the fix must not delete the diagnosis)",
     staleEp.presenceWriteFailure() !== undefined && staleAgent.transportConnected === true,
@@ -402,7 +402,7 @@ try {
   await until(() => inflightAgent!.connected, 30_000);
   const inflightEp = inflightAgent.ep as unknown as {
     conn: { kv?: unknown };
-    publishPresence(): Promise<void>;
+    presence: { publishPresence(): Promise<void> };
     presenceWriteFailure(): { forMs: number; bucket: string } | undefined;
     reconnect(): Promise<void>;
   };
@@ -410,7 +410,7 @@ try {
   let settleAfterStop: ((e: Error) => void) | undefined;
   const liveInflightKv = inflightEp.conn.kv;
   inflightEp.conn.kv = { put: () => new Promise<void>((_resolve, reject) => (settleAfterStop = reject)) };
-  const heldAcrossStop = inflightEp.publishPresence().catch(() => {});
+  const heldAcrossStop = inflightEp.presence.publishPresence().catch(() => {});
   await until(() => settleAfterStop !== undefined, 10_000);
   // Restore the real kv BEFORE tearing down. stop() makes a best-effort offline publishPresence of its
   // own, and leaving the never-settling stub in place deadlocks the teardown this cell is measuring
@@ -434,14 +434,14 @@ try {
   await until(() => inflightAgent!.connected, 30_000);
   const rebindEp = inflightAgent.ep as unknown as {
     conn: { kv?: unknown };
-    publishPresence(): Promise<void>;
+    presence: { publishPresence(): Promise<void> };
     presenceWriteFailure(): { forMs: number; bucket: string } | undefined;
     reconnect(): Promise<void>;
   };
   let settleAfterRebuild: ((e: Error) => void) | undefined;
   const liveRebindKv = rebindEp.conn.kv;
   rebindEp.conn.kv = { put: () => new Promise<void>((_resolve, reject) => (settleAfterRebuild = reject)) };
-  const heldAcrossRebuild = rebindEp.publishPresence().catch(() => {});
+  const heldAcrossRebuild = rebindEp.presence.publishPresence().catch(() => {});
   await until(() => settleAfterRebuild !== undefined, 10_000);
   rebindEp.conn.kv = liveRebindKv;
   await rebindEp.reconnect();
@@ -471,7 +471,7 @@ try {
   await until(() => overlapAgent!.connected, 30_000);
   const overlapEp = overlapAgent.ep as unknown as {
     conn: { kv?: unknown };
-    publishPresence(): Promise<void>;
+    presence: { publishPresence(): Promise<void> };
     presenceWriteFailure(): { since?: number; error?: string } | undefined;
   };
   const heldSameEpoch: Array<{ resolve: () => void; reject: (e: Error) => void }> = [];
@@ -488,9 +488,9 @@ try {
     return heldSameEpoch.shift()!;
   };
   // Put A is held open across put B's rejection.
-  const putAPromise = overlapEp.publishPresence().catch(() => {});
+  const putAPromise = overlapEp.presence.publishPresence().catch(() => {});
   const putA = await takePut();
-  const putBPromise = overlapEp.publishPresence().catch(() => {});
+  const putBPromise = overlapEp.presence.publishPresence().catch(() => {});
   const putB = await takePut();
   putB.reject(new Error("bucket refuses writes"));
   await putBPromise;
@@ -504,7 +504,7 @@ try {
   // the cell no longer controls. After the C leg the cell drains every held put and only then
   // restores the real kv, so stop()'s best-effort offline publish never touches the stub (the
   // shipped cell's note) and no promise is left parked inside a stopped endpoint.
-  const putCPromise = overlapEp.publishPresence().catch(() => {});
+  const putCPromise = overlapEp.presence.publishPresence().catch(() => {});
   const putC = await takePut();
   putC.resolve();
   await putCPromise;
@@ -536,16 +536,16 @@ try {
   await until(() => blockerAgent!.connected, 30_000);
   const b1Ep = blockerAgent.ep as unknown as {
     conn: { kv?: unknown };
-    publishPresence(): Promise<void>;
+    presence: { publishPresence(): Promise<void> };
     presenceWriteFailure(): { error?: string } | undefined;
   };
   const heldB1: Array<{ resolve: () => void; reject: (e: Error) => void }> = [];
   const liveB1Kv = b1Ep.conn.kv;
   b1Ep.conn.kv = { put: () => new Promise<void>((resolve, reject) => heldB1.push({ resolve, reject })) };
   const takeB1 = async () => { await until(() => heldB1.length > 0, 10_000); return heldB1.shift()!; };
-  const b1A = b1Ep.publishPresence().catch(() => {});
+  const b1A = b1Ep.presence.publishPresence().catch(() => {});
   const b1PutA = await takeB1();
-  b1Ep.publishPresence().catch(() => {});
+  b1Ep.presence.publishPresence().catch(() => {});
   await takeB1();
   b1PutA.reject(new Error("bucket refuses writes"));
   await b1A;
@@ -568,21 +568,21 @@ try {
   await until(() => blocker2Agent!.connected, 30_000);
   const b2Ep = blocker2Agent.ep as unknown as {
     conn: { kv?: unknown };
-    publishPresence(): Promise<void>;
+    presence: { publishPresence(): Promise<void> };
     presenceWriteFailure(): { error?: string } | undefined;
   };
   const heldB2: Array<{ resolve: () => void; reject: (e: Error) => void }> = [];
   const liveB2Kv = b2Ep.conn.kv;
   b2Ep.conn.kv = { put: () => new Promise<void>((resolve, reject) => heldB2.push({ resolve, reject })) };
   const takeB2 = async () => { await until(() => heldB2.length > 0, 10_000); return heldB2.shift()!; };
-  const b2Seed = b2Ep.publishPresence().catch(() => {});
+  const b2Seed = b2Ep.presence.publishPresence().catch(() => {});
   const b2SeedPut = await takeB2();
   b2SeedPut.reject(new Error("bucket refuses writes"));
   await b2Seed;
   const b2Refusal = b2Ep.presenceWriteFailure();
-  const b2A = b2Ep.publishPresence().catch(() => {});
+  const b2A = b2Ep.presence.publishPresence().catch(() => {});
   const b2PutA = await takeB2();
-  b2Ep.publishPresence().catch(() => {});
+  b2Ep.presence.publishPresence().catch(() => {});
   await takeB2();
   b2PutA.resolve();
   await b2A;
