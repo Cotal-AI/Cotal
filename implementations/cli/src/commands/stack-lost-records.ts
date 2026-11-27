@@ -2,7 +2,7 @@
  * The root journal must retain its launch-time home, host and member creation pins. */
 import { resolve } from "node:path";
 import type { ParsedArgs } from "@cotal-ai/core";
-import { CommandFailure, ConfirmationRequired, assertRecordIdentity, homeCotalDir, loadMeshes, localProcessOwnerStatus, presentationOf, probeLiveness, readMaintenanceLockHolder, recordOperationSpace, releaseMaintenanceLock, stackHomeRemedy, writeResult, type Report } from "@cotal-ai/workspace";
+import { CommandFailure, ConfirmationRequired, assertRecordIdentity, homeCotalDir, isWorkspaceTargetError, loadMeshes, localProcessOwnerStatus, presentationOf, probeLiveness, readMaintenanceLockHolder, recordOperationSpace, releaseMaintenanceLock, stackHomeRemedy, writeResult, type Report } from "@cotal-ai/workspace";
 import { serviceInstances, serviceInstanceStore } from "../lib/service-instances.js";
 import { assertNoServiceUnitAttempts } from "../lib/service-process.js";
 import { acquireStackOperationLock, newStackOperation, readStackJournal, recordedProcessesUnder, stackMaintenanceFence, stackOperationUnsettled, stackRecoveryHost, stackStartedWithoutManager, writeStackJournal, type StackJournal, type StackJournalSnapshot, type StackMember } from "../lib/stack-journal.js";
@@ -60,15 +60,35 @@ function members(journal: StackJournal): StackMember[] {
   return rows.sort((a, b) => ORDER.indexOf(a.role) - ORDER.indexOf(b.role));
 }
 
+/** Creation-pinned members whose processes still match, when a completed stack has lost its home records.
+ *  Empty unless every pinned member can be checked and the recovery scope would accept a stop. A
+ *  broker-only stack is the one member; a Manager-backed stack is manager and broker. */
+export function lostRecordsMembers(journal: StackJournal): { role: string; pid: number }[] {
+  if (journal.operation.kind !== "up" || journal.operation.phase !== "completed") return [];
+  const pinned = journal.members.filter((row) => row.instanceId !== null);
+  if (pinned.length === 0 || pinned.some((row) => row.process === undefined)) return [];
+  try {
+    const rows = members(journal);
+    if (rows.length !== pinned.length || rows.some((row) => assertRecordIdentity(row.process!).kind !== "match")) return [];
+    return rows.map((row) => ({ role: row.role, pid: row.process!.pid }));
+  } catch { /* A recovery refusal cannot establish running members from missing records. */ }
+  return [];
+}
+
+/** Verified members when this folder's unresolved stack has lost its home records. */
+export function lostRecordsRecovery(journal: StackJournal | undefined, unresolved: unknown, root: string): { role: string; pid: number }[] | undefined {
+  if (!journal || !isWorkspaceTargetError(unresolved) || unresolved.code !== "not-started") return undefined;
+  const details = unresolved.details;
+  if (details.stackSpace !== journal.space || details.root !== root) return undefined;
+  const rows = lostRecordsMembers(journal);
+  return rows.length > 0 ? rows : undefined;
+}
+
 /** The exact live broker in a completed, broker-only open stack that has lost its home records. */
 export function lostRecordsBroker(journal: StackJournal): number | undefined {
   if (journal.mode !== "open" || !stackStartedWithoutManager(journal)) return undefined;
-  const pinned = journal.members.filter((row) => row.instanceId !== null);
-  if (pinned.length !== 1 || pinned[0]?.role !== "broker" || pinned[0].process === undefined) return undefined;
-  try {
-    if (members(journal).length === 1 && assertRecordIdentity(pinned[0].process).kind === "match") return pinned[0].process.pid;
-  } catch { /* A recovery refusal cannot establish a running broker from missing records. */ }
-  return undefined;
+  const rows = lostRecordsMembers(journal);
+  return rows.length === 1 && rows[0]?.role === "broker" ? rows[0].pid : undefined;
 }
 
 /** Recovery never recreates service authority or runs a native adapter with inferred records. */

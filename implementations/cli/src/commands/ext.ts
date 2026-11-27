@@ -334,7 +334,7 @@ export async function installExtensionSet(
       rmSync(join(stage.prefix, "node_modules", request.pkg), { recursive: true, force: true });
     }
     if (!opts?.offline) {
-      for (const incomplete of packagesMissingOptionalDependencies(stage.prefix)) rmSync(incomplete, { recursive: true, force: true });
+      for (const incomplete of packagesMissingOptionalDependencies(stage.prefix, livePrefix)) rmSync(incomplete, { recursive: true, force: true });
     }
     const mutationPath = extensionNpmMutationPath();
     const specs = requests.map(({ spec }) => isPathSpec(spec) ? realpathSync(spec) : spec);
@@ -382,7 +382,7 @@ export async function installExtensionSet(
     // The verifiers wrote one complete inventory inside the stage. Rebind every retained package,
     // including packages not changed by this pass, just as each former individual add did.
     linkExtensionPeers(loadExtensionsManifest().extensions, requests[0]!.pkg, console.error);
-    for (const name of ["package.json", "package-lock.json"]) {
+    for (const name of ["package.json", "package-lock.json", join("node_modules", ".package-lock.json")]) {
       const path = join(stage.prefix, name);
       if (!existsSync(path)) continue;
       const value = JSON.parse(readFileSync(path, "utf8"), (_key, item: unknown) => {
@@ -390,7 +390,7 @@ export async function installExtensionSet(
         const destination = resolve(npmPrefix, item.slice(5));
         return `file:${relative(livePrefix, destination).split(sep).join("/")}`;
       });
-      if (name === "package-lock.json") dropForeignLockEntries(value);
+      if (name !== "package.json") dropForeignLockEntries(value);
       writeFileSync(path, JSON.stringify(value, null, 2) + "\n");
     }
     const verified = loadExtensionsManifest();

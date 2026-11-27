@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmodSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -27,13 +27,108 @@ const home = join(root, "home"), config = join(root, "config"), cotal = join(roo
 for (const path of [home, config, cotal, runtime]) mkdirSync(path, { mode: 0o700 });
 const clean = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_")));
 const env: NodeJS.ProcessEnv = { ...clean, HOME: home, XDG_CONFIG_HOME: config, XDG_RUNTIME_DIR: runtime, COTAL_HOME: cotal, COTAL_NO_UPDATE_CHECK: "1", DO_NOT_TRACK: "1", NO_COLOR: "1", npm_config_prefix: prefix };
-const run = (overrides: NodeJS.ProcessEnv = {}) => spawnSync(process.execPath, [join(installed, "dist/cotal.js"), "update", "--self"], { cwd: root, env: { ...env, ...overrides }, encoding: "utf8", timeout: 30_000 });
+const run = (overrides: NodeJS.ProcessEnv = {}, args = ["update", "--self"]) => spawnSync(process.execPath, [join(installed, "dist/cotal.js"), ...args], { cwd: root, env: { ...env, ...overrides }, encoding: "utf8", timeout: 30_000 });
 const offlineRegistry = { npm_config_registry: "http://127.0.0.1:1", npm_config_fetch_retries: "0", npm_config_fetch_timeout: "1000" };
 const packagesKept = "The registry cannot be reached; no installed packages were replaced.";
 const noChange = "The registry cannot be reached; nothing was changed.";
 const packageBefore = readFileSync(join(installed, "package.json"), "utf8");
 const connectorRoot = join(config, "cotal"), extensions = join(connectorRoot, "extensions"), seed = join(connectorRoot, "seed");
 mkdirSync(extensions, { recursive: true, mode: 0o700 });
+function checkManifestAccess(): void {
+  const manifest = join(extensions, "extensions.json"), inventory = '{"extensions":[]}', mode = 0o204;
+  const restored = "Restored owner access to the extensions manifest.";
+  const assertRepaired = (result: ReturnType<typeof run>) => {
+    check.equal(result.status, 0, result.stderr);
+    check.equal(result.stdout.trim(), `${restored}\n${packagesKept}`);
+  };
+  const assertRefused = (result: ReturnType<typeof run>) => {
+    check.equal(result.status, 1, result.stderr);
+    check.ok(result.stderr.includes(`cannot read the extensions manifest at ${manifest} (EACCES)`), result.stderr);
+    check.match(result.stderr, /restore this account's read access to the extensions manifest and its path, then retry/);
+    check.doesNotMatch(result.stderr, /ext seed --repair/);
+    check.doesNotMatch(result.stdout, /Restored owner access/);
+  };
+  writeFileSync(manifest, inventory, { mode: 0o600 });
+  const { ino, uid } = lstatSync(manifest);
+  chmodSync(manifest, mode);
+  try {
+    const status = run(offlineRegistry, ["status", "--plain"]);
+    check.equal(status.status, 4, status.stderr);
+    check.match(status.stderr, /the extensions manifest could not be read/);
+    const checkOnly = run(offlineRegistry, ["update", "--check", "--plain"]);
+    check.equal(checkOnly.status, 4, checkOnly.stderr);
+    check.equal(lstatSync(manifest).mode & 0o777, mode);
+    assertRepaired(run(offlineRegistry));
+    check.equal(lstatSync(manifest).mode & 0o777, mode | 0o400);
+    check.equal(lstatSync(manifest).ino, ino);
+    check.equal(lstatSync(manifest).uid, uid);
+    check.equal(readFileSync(manifest, "utf8"), inventory);
+    const retry = run(offlineRegistry);
+    check.equal(retry.status, 0, retry.stderr);
+    check.equal(retry.stdout.trim(), noChange);
+
+    chmodSync(extensions, 0o600);
+    try {
+      assertRepaired(run(offlineRegistry));
+      check.equal(lstatSync(extensions).mode & 0o777, 0o700);
+      check.equal(lstatSync(manifest).mode & 0o777, mode | 0o400);
+    } finally { chmodSync(extensions, 0o700); }
+
+    // Simulate foreign ownership on runners that cannot chown, with the real denied read.
+    const foreign = join(root, "foreign-manifest.mjs");
+    writeFileSync(foreign, `import fs from 'node:fs'; import { syncBuiltinESMExports } from 'node:module';
+const ino = ${ino};
+for (const name of ['fstatSync', 'lstatSync']) {
+  const stat = fs[name];
+  fs[name] = (...args) => { const entry = stat(...args); if (entry?.ino === ino) entry.uid = 0; return entry; };
+}
+syncBuiltinESMExports();\n`);
+    chmodSync(manifest, 0);
+    assertRefused(run({ ...offlineRegistry, NODE_OPTIONS: `${env.NODE_OPTIONS ?? ""} --import=${pathToFileURL(foreign).href}` }));
+    check.equal(lstatSync(manifest).mode & 0o777, 0);
+    check.equal(lstatSync(manifest).ino, ino);
+
+    if (process.platform === "linux") {
+      const readOnlyManifest = join(root, "read-only-manifest.mjs");
+      writeFileSync(readOnlyManifest, `import fs from 'node:fs'; import { syncBuiltinESMExports } from 'node:module';
+const chmod = fs.chmodSync;
+fs.chmodSync = (path, mode) => { if (fs.statSync(path).ino === ${ino}) throw Object.assign(new Error('read-only filesystem'), { code: 'EROFS' }); return chmod(path, mode); };
+syncBuiltinESMExports();\n`);
+      assertRefused(run({ ...offlineRegistry, NODE_OPTIONS: `${env.NODE_OPTIONS ?? ""} --import=${pathToFileURL(readOnlyManifest).href}` }));
+      check.equal(lstatSync(manifest).mode & 0o777, 0);
+    }
+
+    const alias = join(root, "hard-linked-manifest.json");
+    linkSync(manifest, alias);
+    try {
+      assertRefused(run(offlineRegistry));
+      check.equal(lstatSync(alias).mode & 0o777, 0);
+    } finally { unlinkSync(alias); }
+  } finally { chmodSync(manifest, 0o600); }
+
+  const outside = join(root, "outside-manifest.json");
+  renameSync(manifest, outside);
+  chmodSync(outside, 0);
+  symlinkSync(outside, manifest);
+  try {
+    assertRefused(run(offlineRegistry));
+    check.equal(lstatSync(outside).mode & 0o777, 0);
+    check.equal(lstatSync(outside).ino, ino);
+    check.ok(lstatSync(manifest).isSymbolicLink());
+    chmodSync(extensions, 0o600);
+    const blocked = run(offlineRegistry);
+    check.equal(blocked.status, 2, blocked.stderr);
+    check.match(blocked.stderr, /cannot be accessed for updates by this account/);
+    check.equal(lstatSync(extensions).mode & 0o777, 0o600);
+    check.equal(lstatSync(outside).mode & 0o777, 0);
+  } finally {
+    chmodSync(extensions, 0o700);
+    unlinkSync(manifest);
+    renameSync(outside, manifest);
+    chmodSync(manifest, 0o600);
+  }
+  check.equal(readFileSync(manifest, "utf8"), inventory);
+}
 try {
   const directories = [installed, join(installed, "dist"), join(prefix, "lib/node_modules"), join(prefix, "lib")];
   for (const paths of [directories, [join(prefix, "lib/node_modules")], [extensions], []]) {
@@ -50,20 +145,7 @@ try {
     check.equal(readFileSync(join(installed, "package.json"), "utf8"), packageBefore);
     check.equal(existsSync(join(prefix, "lib/.cotal-generations")), false);
   }
-  const manifest = join(extensions, "extensions.json"), inventory = '{"extensions":[]}';
-  writeFileSync(manifest, inventory);
-  const { ino } = lstatSync(manifest);
-  chmodSync(manifest, 0);
-  try {
-    const unreadable = run(offlineRegistry);
-    check.equal(unreadable.status, 1, unreadable.stderr);
-    check.ok(unreadable.stderr.includes(`cannot read the extensions manifest at ${manifest} (EACCES)`), unreadable.stderr);
-    check.match(unreadable.stderr, /restore this account's read access to the extensions manifest and its path, then retry/);
-    check.doesNotMatch(unreadable.stderr, /ext seed --repair/);
-    check.equal(lstatSync(manifest).mode & 0o777, 0);
-    check.equal(lstatSync(manifest).ino, ino);
-  } finally { chmodSync(manifest, 0o600); }
-  check.equal(readFileSync(manifest, "utf8"), inventory);
+  checkManifestAccess();
   // The verified prefix is already live. Only a directory in the old rollback tree needs repair.
   const journal = join(connectorRoot, ".extensions-promotion.json");
   const old = join(connectorRoot, ".extensions.rollback-fixture"), oldChild = join(old, "child");

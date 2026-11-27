@@ -14,9 +14,10 @@
  *   - the views that must finish their own shutdown, and `down`, which must finish its stops, own
  *     stdout's errors and attach no listener of their own to process.stdout;
  *   - with stdout in a file under a file-size limit, a write cut short is reported as EFBIG and
- *     exits 3. With no limit the whole write lands. The built CLI keeps the refusal exit code and
- *     prints a text refusal on stderr if the limit cuts its JSON short. The file-size-limited cells
- *     need `bash` on PATH.
+ *     exits 3. With no limit the whole write lands. When the limit cuts a built CLI JSON refusal
+ *     short, the file is restored to its prior size, the CLI keeps the refusal exit code, and it
+ *     prints the EFBIG line and text refusal on stderr. The file-size-limited cells need `bash` on
+ *     PATH.
  *   - a built CLI JSON refusal reaches a pipe that accepts only a few bytes per write.
  * The views themselves (chat, watch, service logs, the service journal) and `down` are not driven here.
  *
@@ -191,10 +192,11 @@ if (mode !== undefined) {
   console.log("5. a stdout that is a file writes each chunk whole or fails");
   {
     /** Run Node with stdout in a fresh file, optionally with a file-size limit and SIGXFSZ ignored. */
-    const runToFile = (entry: string[], limit?: 0 | 1): Promise<{ code: number | null; stderr: string; bytes: number }> => {
+    const runToFile = (entry: string[], limit?: 0 | 1, prefix = ""): Promise<{ code: number | null; stderr: string; bytes: number }> => {
       const dir = mkdtempSync(join(tmpdir(), "cotal-stdout-file-"));
       const path = join(dir, "out.json");
-      const fd = openSync(path, "w", 0o600);
+      if (prefix) writeFileSync(path, prefix);
+      const fd = openSync(path, prefix ? "a" : "w", 0o600);
       const node = [process.execPath, ...entry];
       const [cmd, ...args] = limit === undefined ? node : ["bash", "-c", `ulimit -f ${limit}; trap "" XFSZ; exec "$0" "$@"`, ...node];
       return new Promise((resolve) => {
@@ -218,13 +220,51 @@ if (mode !== undefined) {
     const whole = await runToFile(entry);
     check("with no limit the whole document is written and the process runs on", whole.code === 0 && whole.bytes === 3001 && whole.stderr.includes("still running"), whole);
     const run = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "bin", "run.ts"), "utf8");
-    check("the binary makes its stdout write whole chunks to a file", /^completeFileWrites\(\);$/m.test(run));
+    check("the binary makes its stdout write whole chunks to a file", /^\s*completeFileWrites\(\);$/m.test(run));
 
     const cli = join(import.meta.dirname, "../../../bin/dist/cotal.js");
     const refused = await runToFile([cli, "docs", "xyz-not-a-real-page", "--json"], 1);
-    check("a short JSON refusal keeps exit 1 and writes the EFBIG diagnostic and text refusal to stderr",
-      refused.code === 1 && refused.bytes === 1024 && refused.stderr.startsWith("✗ could not write to stdout: EFBIG: file too large, write\n")
+    check("a short JSON refusal restores the file to 0 bytes, keeps exit 1 and writes the EFBIG diagnostic and text refusal to stderr",
+      refused.code === 1 && refused.bytes === 0 && refused.stderr.startsWith("✗ could not write to stdout: EFBIG: file too large, write\n")
         && refused.stderr.includes('no docs page "xyz-not-a-real-page"'), refused);
+    const appended = await runToFile([cli, "docs", "xyz-not-a-real-page", "--json"], 1, "keep\n");
+    check("a short JSON refusal appended to a file keeps existing bytes, removes its own partial output, keeps exit 1 and writes the text refusal to stderr",
+      appended.code === 1 && appended.bytes === 5 && appended.stderr.startsWith("✗ could not write to stdout: EFBIG: file too large, write\n")
+        && appended.stderr.includes('no docs page "xyz-not-a-real-page"'), appended);
+    const sharedDir = mkdtempSync(join(tmpdir(), "cotal-stdout-concurrent-"));
+    try {
+      const sharedPath = join(sharedDir, "shared.json");
+      const concurrentHook = join(sharedDir, "concurrent-write.cjs");
+      writeFileSync(sharedPath, "keep\n");
+      writeFileSync(concurrentHook, `
+const fs = require("node:fs");
+const { syncBuiltinESMExports } = require("node:module");
+const writeSync = fs.writeSync;
+let first = true;
+fs.writeSync = (fd, chunk, ...args) => {
+  if (fd !== 1) return writeSync(fd, chunk, ...args);
+  if (!first) throw Object.assign(new Error("ENOSPC: no space left on device, write"), { code: "ENOSPC" });
+  first = false;
+  if (typeof chunk === "string") chunk = Buffer.from(chunk);
+  const [offset = 0] = args;
+  const wrote = writeSync(fd, chunk, offset, 32);
+  fs.appendFileSync(${JSON.stringify(sharedPath)}, "peer\\n");
+  return wrote;
+};
+syncBuiltinESMExports();
+`);
+      const sharedFd = openSync(sharedPath, "a", 0o600);
+      const concurrent = spawnSync(process.execPath, ["--require", concurrentHook, cli, "docs", "xyz-not-a-real-page", "--json"],
+        { stdio: ["ignore", sharedFd, "pipe"], encoding: "utf8", timeout: 20_000 });
+      closeSync(sharedFd);
+      const text = readFileSync(sharedPath, "utf8");
+      check("when another writer appends meanwhile, ftruncateSync does not discard the other writer's bytes",
+        concurrent.status === 1 && text.length === 42 && text.startsWith("keep\n") && text.endsWith("peer\n")
+          && concurrent.stderr.startsWith("✗ could not write to stdout: ENOSPC: no space left on device, write\n")
+          && concurrent.stderr.includes('no docs page "xyz-not-a-real-page"'), { status: concurrent.status, length: text.length, stderr: concurrent.stderr });
+    } finally {
+      rmSync(sharedDir, { recursive: true, force: true });
+    }
 
     const dir = mkdtempSync(join(tmpdir(), "cotal-invalid-workflow-"));
     try {
@@ -268,6 +308,10 @@ syncBuiltinESMExports();
         whole.status === 1 && whole.stderr === "" && whole.stdout.includes("xyz-not-a-real-page-é") && whole.stdout.includes('"outcome":"refused"'), whole);
       check("short writes to a pipe preserve every byte and keep stderr empty and exit 1",
         short.status === 1 && short.stderr === "" && short.stdout === whole.stdout, short);
+      const closedPartway = spawnSync("bash", ["-o", "pipefail", "-c", '"$@" | head -c 6', "bash", process.execPath, "--require", hook, ...args],
+        { encoding: "utf8", timeout: 20_000 });
+      check("a reader that closes a short-writing pipe partway still leaves stderr empty and exits 1",
+        closedPartway.status === 1 && closedPartway.stderr === "" && closedPartway.stdout === whole.stdout.slice(0, 6), closedPartway);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

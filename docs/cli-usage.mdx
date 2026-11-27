@@ -325,7 +325,8 @@ The version command does not repair the manifest itself.
 Diagnostics stay on stderr. A command with finite JSON output reports a refusal or failure with the
 envelope alone and writes no text report on stderr. If the reader closes stdout early, the command
 keeps its exit code without printing a text report. Other failures to write the envelope send the
-text report to stderr and keep the same exit code. A usage error under
+text report to stderr and keep the same exit code. If that write stops partway into a regular file,
+the file is restored to its prior size so no partial JSON document remains. A usage error under
 finite `--json` output is a `refused` envelope with code `USAGE_INVALID`, and the help it names stays off stdout.
 This also applies when `-j` comes before a short option that is unknown or needs a value, as in
 `cotal config get harness -jZ` or `cotal config get harness -js`.

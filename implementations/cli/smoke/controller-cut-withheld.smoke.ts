@@ -3,7 +3,8 @@
  * `down --preserve-state`, `backup create`, `backup restore` and `up --restore` refuse `UNSUPPORTED`
  * (exit 2) while validating, before the confirmation, the seed or any manager request, and leave the
  * root's files as they were. The remedy names plain `cotal down`. One cell set runs per stack mode.
- * A root with no stack journal is not refused this way.
+ * A root with no stack journal is not refused this way. A journal that other accounts can read, as a
+ * restored backup leaves it, refuses `doctor auth` and `ps` with the chmod from the project root.
  *
  * The journal is written by hand in the shape a completed `cotal up` leaves; the refusal reads only
  * the journal, so no member is started. Driven through the built binary in a sandboxed COTAL_HOME,
@@ -14,7 +15,7 @@
  */
 import { spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { assertSmokeSandboxDown, createSuite, recordSmokeSandbox, type SmokeSandboxAnchor } from "@cotal-ai/smoke-kit";
@@ -117,6 +118,42 @@ for (const mode of ["auth", "open", "user"]) {
 const legacy = newRoot("project-legacy");
 const legacyBackup = run(legacy, ["backup", "create", join(home, "artifact-legacy"), "--json"]);
 check("control: a root with no stack journal is not refused as controller-owned", legacyBackup.envelope?.outcome !== undefined && legacyBackup.envelope.error?.code !== "UNSUPPORTED" && !/controller-owned/.test(`${legacyBackup.stdout}${legacyBackup.stderr}`), shown(legacyBackup));
+
+// A stack journal that other accounts can read, as a project backup restored with ordinary file
+// permissions leaves it, refuses the read-only `doctor auth` and `ps` with the chmod from the project
+// root, in the report and in the envelope, and changes no file. The journal is the completed open-stack
+// shape with every member already stopped, so nothing is started and no broker is dialed.
+{
+  const sandbox = newRoot("project-shared");
+  const { root } = sandbox;
+  const space = "cw-shared";
+  const now = new Date().toISOString();
+  const journal = join(root, ".cotal", "stack-controller.json");
+  writeFileSync(journal, JSON.stringify({
+    schemaVersion: 1, kind: "cotal-stack-controller", root, space, server: "nats://127.0.0.1:24712", mode: "open",
+    members: ["broker", "auth", "delivery", "manager"].map((role) => ({ role, definition: `stack-${role}`, instanceId: null, state: role === "broker" || role === "manager" ? "stopped" : "not-attempted" })),
+    operation: { id: randomUUID(), kind: "down", phase: "completed", recordedAt: now, withAgents: false },
+    updatedAt: now,
+  }, null, 2) + "\n", { mode: 0o600 });
+  chmodSync(journal, 0o644);
+  const sharedTree = tree(root);
+  const refusal = (r: ReturnType<typeof run>, label: string) => {
+    check(`${label}: refuses PERMISSION_DENIED, exit 2, naming the journal`, r.status === 2
+      && ((r.envelope?.outcome === "refused" && r.envelope.error?.code === "PERMISSION_DENIED" && r.envelope.error.message === `the saved local record ${journal} is not owned and private`)
+        || (r.envelope === undefined && /Code:\s+PERMISSION_DENIED\n/.test(r.stderr) && r.stderr.includes(`  the saved local record ${journal} is not owned and private\n`))), shown(r));
+    check(`${label}: the remedy is the chmod from the project root, then a retry`, (r.envelope?.error?.remedy ?? "") === `from the folder that holds it, run chmod 600 ${journal}, then retry this command`
+      || /Next\n\s+from the folder that holds it, run chmod 600 /.test(r.stderr), r.envelope?.error ?? r.stderr);
+    check(`${label}: the report shows the same next step`, /Next\n\s+from the folder that holds it, run chmod 600 /.test(r.stderr) || (r.envelope !== undefined && r.envelope.error?.remedy === `from the folder that holds it, run chmod 600 ${journal}, then retry this command`), r.stderr);
+    check(`${label}: no file under the root changed`, tree(root) === sharedTree, root);
+  };
+  refusal(run(sandbox, ["doctor", "auth", "--json"]), "doctor auth json");
+  refusal(run(sandbox, ["doctor", "auth", "--plain"]), "doctor auth plain");
+  refusal(run(sandbox, ["ps", "--json"]), "ps json");
+  refusal(run(sandbox, ["ps", "--plain"]), "ps plain");
+  chmodSync(journal, 0o600);
+  const readableDoctor = run(sandbox, ["doctor", "auth", "--json"]);
+  check("with the journal private again, doctor auth completes", readableDoctor.status === 0 && readableDoctor.envelope?.outcome !== undefined && readableDoctor.envelope.error === undefined, shown(readableDoctor));
+}
 
 finish();
 process.exit(process.exitCode ?? 0);

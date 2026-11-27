@@ -4,7 +4,7 @@
 import { strict as assert } from "node:assert";
 import { spawn, type ChildProcess } from "node:child_process";
 import { createRequire } from "node:module";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -106,6 +106,25 @@ try {
     check(`${name}: matching lifecycle and read grant join successfully`, run.proc.exitCode === null && run.output().includes("holding presence"), run.output());
     await killAndAwaitExit(run.proc);
     await run.exited;
+  }
+
+  // #10691: the missing read-grant refusal's Next is a complete owner mint that writes a private
+  // file for the guest (space + --out), not a standing credential under the space's project.
+  {
+    const denied = cli("join", "--space", space, "--creds", empty.file, "--lifecycle-uid", empty.uid, "--name", "no_read_fix", "--channel", "general");
+    const code = await denied.exited;
+    const out = denied.output();
+    const advice = /`cotal auth mint (<name> [^`]+)`/.exec(out)?.[1];
+    assert.ok(advice?.includes(`--provision --allow-subscribe general --space ${space} --no-persona --out <file>`), out);
+    check("no-read: the remedy mints to a private file in the named space", code === 2 && /Code: +PERMISSION_DENIED/.test(out), out);
+    const granted = join(dir, "no-read-repair.creds");
+    const repair = cli("auth", "mint", ...advice!.split(" ").map((arg) => arg === "<name>" ? "no_read_repair" : arg === "<file>" ? granted : arg));
+    check("no-read: the printed remedy mints a private file the guest can join with", await repair.exited === 0 &&
+      new RegExp(`Private file: +${granted.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`).test(repair.output()), repair.output());
+    const grantedUid = /^\s*Lifecycle:\s+(\S+)/m.exec(repair.output())?.[1];
+    assert.ok(grantedUid && grantedUid !== empty.uid, repair.output());
+    check("no-read: the remedy writes no standing credential under the label", !existsSync(join(project, ".cotal", "auth", "creds", `space.${Buffer.from(space).toString("hex")}`, "no_read_repair.creds")), repair.output());
+    await joins("no-read-repair", granted, grantedUid, "general");
   }
   const truncated = join(dir, "truncated.creds");
   writeFileSync(truncated, readFileSync(other.file, "utf8").split("\n").slice(0, 2).join("\n") + "\n", { mode: 0o600 });

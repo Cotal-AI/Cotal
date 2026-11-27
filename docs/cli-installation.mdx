@@ -314,9 +314,12 @@ leaves the installation unchanged without failing `update --self`.
 On Linux and macOS, an installed self-update restores owner write access to its own connector
 directories before staging a release. If it cannot make those directories writable, it names the
 directory to fix and stops before staging.
-If `cotal update --self` cannot read the extensions manifest because of a permission error, it
-leaves the manifest untouched. Restore your account's read access to the manifest and its path,
-then retry.
+On Linux and macOS, `cotal update --self` can restore owner read access to its extensions manifest
+and owner search access to folders on its path inside the Cotal config. It does this only for a
+regular manifest and real folders owned by your account. It reports the repair and continues without
+changing ownership, group or other permissions, or the manifest contents. If it cannot safely
+restore access, the update still stops and tells you what to fix. Commands such as `cotal status`
+report unreadable inventory without changing permissions.
 If you move your home or configuration directory while Cotal and its updates are stopped, an
 installed CLI at the same path can use the moved connector set. The former configuration folder
 must be absent, and the private connector set must still be at the same relative path under the
@@ -397,8 +400,8 @@ npm's own record in the extensions prefix. One recorded at the binary's exact ve
 `update` installs (`<package>@<version>`) is kept when the prefix lock records it at that version
 and every package the lock records is on disk at its recorded version. When npm's `package-lock`
 setting is false, update checks npm's installed-tree record and declared optional dependencies
-instead of a missing or stale public lockfile, and still verifies each built-in against the shipped
-payload. The extension's entry file must also be present
+when the public lockfile is missing, stale, or incomplete, and still verifies each built-in against
+the shipped payload. The extension's entry file must also be present
 and loadable. The extension check does not compare file contents. Cotal keeps a working
 local-path extension at the binary's version under the same lock and entry checks. If it needs
 repair at that version, Cotal reinstalls it from the recorded path. A registry extension that

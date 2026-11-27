@@ -272,6 +272,26 @@ try {
     !M.agents.has("fail") && logs.some((l) => l.includes("this manager retired it after a supervised restart failed")),
     logs.filter((l) => /fail|reap|restart/i.test(l)).slice(-6));
 
+  writeFileSync(join(workspaceRoot, ".cotal", "agents", "restricted.md"), "---\nname: restricted\n---\n");
+  const restricted = await manager.startAgent({ name: "restricted", agent: "supervise-stub", cwd: repoRoot, events: false, supervise: { restarts: 2, windowMs: 60_000 } });
+  const restrictedPid = M.agents.get("restricted")?.handle.pid;
+  c("a supervised seat joins before its host preflight changes", restricted.ok && typeof restrictedPid === "number", restricted);
+  const refusal = "test connector cannot restart on this host";
+  let observedCwd: string | undefined;
+  const launches = spawnedOpts.length;
+  const restrictedLogs: string[] = [];
+  try {
+    stubCon.launchUnavailable = ({ cwd } = {}) => { observedCwd = cwd; return refusal; };
+    console.error = (...args: unknown[]) => { restrictedLogs.push(args.join(" ")); origErr(...args); };
+    if (typeof restrictedPid === "number") process.kill(restrictedPid, "SIGKILL");
+    await waitFor(() => !M.agents.has("restricted"), "host refused restart", 15_000);
+    c("crash recovery passes a managed cwd, preserves the refusal, and skips buildLaunch",
+      !!observedCwd && spawnedOpts.length === launches && restrictedLogs.some((line) => line.includes(refusal)), restrictedLogs);
+  } finally {
+    delete stubCon.launchUnavailable;
+    console.error = origErr;
+  }
+
   // The budget is the manager's to enforce, not only the wire's: the exported `startAgent` refuses
   // what the spawn schema refuses, before anything launches (#3298).
   const badPolicies: [string, { restarts: number; windowMs: number }, string][] = [
@@ -342,7 +362,7 @@ try {
   else process.env.COTAL_HOME = prevHome;
 }
 
-const EXPECTED = 32;
+const EXPECTED = 35;
 const ran = ok + fail;
 console.log(`supervise restart smoke: ${ok} passed, ${fail} failed`);
 if (ran !== EXPECTED) {

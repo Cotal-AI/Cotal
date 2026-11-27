@@ -1239,6 +1239,12 @@ if (process.platform !== "win32") {
   c("a hosted missing journal lists and reads on the selected broker and manager in JSON", missing.code === "TARGET_NOT_FOUND" && missing.remedy === `\`cotal run ${selection}\` lists the runs; run \`cotal run show <run-id> ${selection}\``, missing);
   c("the Next keeps an explicit --on", managerRefusal("run-resume", "s", { runId: "run-1" }, finished, { on: "mgr-1" }).remedy === "read the run's recorded state with `cotal run show run-1 --space s --on mgr-1`");
   c("a start refused as a precondition gets no run show Next", managerRefusal("run-start", "s", { source: "log(1)" }, { code: "failed-precondition", message: "no" }).remedy === undefined);
+  const unknown = { code: "not-found", message: "run unknown-workflow-id: no record on endpoint manager; a run that was never started cannot be resumed" };
+  const hostedList = managerRefusal("run-resume", "project", { runId: "unknown-workflow-id" }, unknown, { server: "nats://127.0.0.1:37200", json: true });
+  c("an unknown hosted run lists the same broker in the caller's output format",
+    hostedList.remedy === "list the recorded runs with `cotal run --space project --server 'nats://127.0.0.1:37200' --json`", hostedList);
+  const bare = managerRefusal("run-resume", "s", { runId: "run-1" }, { code: "not-found", message: "run run-1: no record on endpoint manager" });
+  c("with no broker or format given the list Next names the space alone", bare.remedy === "list the recorded runs with `cotal run --space s`", bare);
 }
 
 // A validation problem a hosted start prints quotes the program, so a step name's control characters
