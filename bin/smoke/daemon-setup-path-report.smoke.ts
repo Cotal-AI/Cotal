@@ -189,6 +189,8 @@ fetch(${JSON.stringify(`http://127.0.0.1:${controlPort}/`)} + op).then(async r =
       cwd: dir,
       env,
       stdio: ["ignore", "pipe", "pipe"],
+      timeout: 30_000,
+      killSignal: "SIGKILL",
     });
     let stdout = "", stderr = "";
     child.stdout.on("data", chunk => { stdout += String(chunk); });
@@ -224,7 +226,7 @@ fetch(${JSON.stringify(`http://127.0.0.1:${controlPort}/`)} + op).then(async r =
         `service: ${unit} is already installed`,
         `service: the daemon answers at ${paths.socket}`,
         "service: waiting for hosted Managers to confirm readiness and an idle restart fence; readiness observation waits up to 15s",
-        `service: updating ${unit} to add new PATH directories`,
+        `service: updating ${unit} pinned PATH`,
         `service: restarted ${unit} with the updated PATH`,
       ], `${opts.name}: exact line order when refresh and restart both succeed`);
       assert.deepEqual(nativeCalls, ["/daemon-reload", "/stop", "/start"], `${opts.name}: reload, stop, start ran in order`);
@@ -247,7 +249,7 @@ fetch(${JSON.stringify(`http://127.0.0.1:${controlPort}/`)} + op).then(async r =
       `service: ${unit} is already installed`,
       `service: the daemon answers at ${paths.socket}`,
       "service: waiting for hosted Managers to confirm readiness and an idle restart fence; readiness observation waits up to 15s",
-      `service: updating ${unit} to add new PATH directories`,
+      `service: updating ${unit} pinned PATH`,
     ], `${opts.name}: exact line order when refresh succeeds and restart fails (no 'restarted' line)`);
     assert.ok(!stderr.includes(`restarted ${unit} with the updated PATH`), `${opts.name}: must not claim unit restarted when start failed`);
     assert.deepEqual(nativeCalls, ["/daemon-reload", "/stop", "/start"], `${opts.name}: reload, stop, start attempted`);

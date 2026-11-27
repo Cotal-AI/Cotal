@@ -236,7 +236,7 @@ async function refreshApplicationsUnderClosure(opts: InstallOptions, steps: Setu
   }
   try {
     if (refresh) {
-      const updating = `updating ${unit} to add new PATH directories`;
+      const updating = `updating ${unit} pinned PATH`;
       opts.report(`service: ${updating}`, { step: "install", outcome: "running", detail: updating });
       refresh();
     }
