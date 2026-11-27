@@ -69,8 +69,13 @@ test('welcome page comes forward when the app window is already open', () => {
   const show = source.indexOf('!define MUI_PAGE_CUSTOMFUNCTION_SHOW WelcomeShow');
   const welcome = source.indexOf('!insertmacro MUI_PAGE_WELCOME');
   assert.ok(show > 0 && show < welcome);
-  const body = source.slice(source.indexOf('Function WelcomeShow'), source.indexOf('FunctionEnd', source.indexOf('Function WelcomeShow')));
-  assert.equal(body.split('SetWindowPos(p $hwndparent, p -1, i 0, i 0, i 0, i 0, i 0x13)').length, 2);
+  const body = source.slice(source.indexOf('Function WelcomePlace'), source.indexOf('FunctionEnd', source.indexOf('Function WelcomeShow')));
+  const place = body.indexOf('Function WelcomePlace');
+  const kill = body.indexOf('nsDialogs::KillTimer $0');
+  const above = body.indexOf('SetWindowPos(p $hwndparent, p -1, i 0, i 0, i 0, i 0, i 0x13)');
+  const shown = body.indexOf('Function WelcomeShow');
+  const timer = body.indexOf('nsDialogs::CreateTimer $0 1');
+  assert.ok(place >= 0 && kill > place && above > kill && shown > above && timer > shown);
   assert.equal(body.indexOf(', p -2,'), -1);
   assert.equal(body.indexOf('AttachThreadInput'), -1);
   assert.equal(body.indexOf('RunAsUser'), -1);
