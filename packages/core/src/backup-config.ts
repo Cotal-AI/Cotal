@@ -9,8 +9,9 @@ import { nanos } from "@nats-io/transport-node";
 import { endpointAuthorityStoreDefinitions, endpointPlaneStreamNames, recordsKvStreamName, wfjStreamName } from "./endpoint-binding.js";
 import { recordsBucket } from "./endpoint-records.js";
 import { admissionBucket, admissionStoreDefinition } from "./run-admission.js";
-import { spaceDeletionStreams } from "./space-deletion-targets.js";
+import { spaceDeletionStreams, spacePluginStreams } from "./space-deletion-targets.js";
 import { eventPayloadStream } from "./event-payloads.js";
+import { pluginChannelFilter, pluginChannelStream } from "./plugin-channel-route.js";
 import {
   aclBucket,
   anycastBucket,
@@ -69,8 +70,9 @@ export interface SpaceBackupInventory {
  * teardown grant names, and this throws when they differ. Without that, a stream added to the
  * deletion set alone, or classified here alone, would leave backup and teardown disagreeing about
  * what the space owns, and only the backup side is ever checked against a live space. */
-export function spaceBackupInventory(space: string): SpaceBackupInventory {
+export function spaceBackupInventory(space: string, pluginChannels = false): SpaceBackupInventory {
   const registry = `KV_${channelBucket(space)}`;
+  const pluginStreams = pluginChannels ? spacePluginStreams(space) : [];
   const backedUp: SpaceBackupStream[] = [
     { name: registry, class: "registry" },
     { name: chatStream(space), class: "messages" },
@@ -79,6 +81,7 @@ export function spaceBackupInventory(space: string): SpaceBackupInventory {
     { name: taskStream(space), class: "messages" },
     { name: inboxStream(space), class: "messages" },
     { name: dlvStream(space), class: "messages" },
+    ...pluginStreams.map((name) => ({ name, class: "messages" as const })),
     { name: `KV_${aclBucket(space)}`, class: "authorization" },
     { name: `KV_${membersBucket(space)}`, class: "authorization" },
     { name: wfjStreamName(space), class: "workflow" },
@@ -96,7 +99,7 @@ export function spaceBackupInventory(space: string): SpaceBackupInventory {
     { name: objectStoreStream(artifactBucket(space)), class: "artifact" },
   ];
   const classified = [...backedUp, ...excluded].map((s) => s.name);
-  const owned = spaceDeletionStreams(space);
+  const owned = spaceDeletionStreams(space, pluginStreams);
   const unclassified = owned.filter((name) => !classified.includes(name));
   const unowned = classified.filter((name) => !owned.includes(name));
   if (unclassified.length || unowned.length || classified.length !== owned.length)
@@ -123,9 +126,9 @@ export function spaceBackupInventory(space: string): SpaceBackupInventory {
 export function validateSpaceBackupInventory(
   space: string,
   actualNames: readonly string[],
-  options: { atRest?: boolean } = {},
+  options: { atRest?: boolean; pluginChannels?: boolean } = {},
 ): SpaceBackupInventory {
-  const fixed = spaceBackupInventory(space);
+  const fixed = spaceBackupInventory(space, options.pluginChannels);
   // A resume transfer bucket exists per receiving manager instance, so it is matched by name shape.
   // Its objects are deleted once staged and are not state to restore.
   const transfers = actualNames.filter((name) => isTransferStream(space, name));
@@ -211,6 +214,7 @@ export const DELIVERY_LIMIT_HEADER = "Cotal-Delivery-Limit";
 
 /** The message streams a history limit applies to: CHAT, INBOX, DLV and DM. */
 export type HistoryLimitStream = "chat" | "inbox" | "dlv" | "dm";
+export type StoredHistoryLimitStream = HistoryLimitStream | "plugin-history";
 
 /** How long a message stream keeps an entry (SPEC §8): until it is older than `maxAgeMs`, or until
  *  `perSubject` newer entries share its subject, whichever comes first. A subject is one sender on
@@ -237,21 +241,22 @@ export const DM_HISTORY_DEFAULT: Readonly<HistoryLimit> = Object.freeze({ maxAge
 export const HISTORY_MAX_AGE_MS = 3650 * 86_400_000;
 
 /** The limit a new space's `stream` is created with. */
-export function historyLimitDefault(stream: HistoryLimitStream): Readonly<HistoryLimit> {
+export function historyLimitDefault(stream: StoredHistoryLimitStream): Readonly<HistoryLimit> {
   if (stream === "chat") return CHAT_HISTORY_DEFAULT;
+  if (stream === "plugin-history") return { maxAgeMs: 30 * 86_400_000, perSubject: CHAT_HISTORY_DEFAULT.perSubject };
   return stream === "dm" ? DM_HISTORY_DEFAULT : INBOX_HISTORY_DEFAULT;
 }
 
 /** The shortest age `stream` may hold: its duplicate window, which the broker requires `max_age` not
  *  to undercut. 2 minutes for CHAT and DM, 2 hours for INBOX and DLV. */
-export function historyLimitMinAgeMs(stream: HistoryLimitStream): number {
+export function historyLimitMinAgeMs(stream: StoredHistoryLimitStream): number {
   return stream === "inbox" || stream === "dlv" ? BACKUP_PLANE3_DEDUP_WINDOW_MS : DEFAULT_DUPLICATE_WINDOW_MS;
 }
 
 /** Why `stream` may not hold `limit`, or undefined when it may. An age is none (0) or one
  *  {@link historyAgeProblem} accepts; a count is none ({@link HISTORY_NO_COUNT}) or at least 1. None
  *  for both is allowed. */
-export function historyLimitProblem(stream: HistoryLimitStream, limit: HistoryLimit): string | undefined {
+export function historyLimitProblem(stream: StoredHistoryLimitStream, limit: HistoryLimit): string | undefined {
   if (limit.perSubject !== HISTORY_NO_COUNT && (!Number.isSafeInteger(limit.perSubject) || limit.perSubject < 1))
     return `the count must be a whole number of at least 1, or none, not ${limit.perSubject}`;
   return limit.maxAgeMs === 0 ? undefined : historyAgeProblem(stream, limit.maxAgeMs);
@@ -260,7 +265,7 @@ export function historyLimitProblem(stream: HistoryLimitStream, limit: HistoryLi
 /** Why `stream` may not hold an age of `maxAgeMs`, or undefined when it may: whole seconds from the
  *  stream's duplicate window to 3650 days, so its nanosecond `max_age` stays an exact integer. Here
  *  0 is an age, below every window; only a {@link HistoryLimit} spells none as 0. */
-export function historyAgeProblem(stream: HistoryLimitStream, maxAgeMs: number): string | undefined {
+export function historyAgeProblem(stream: StoredHistoryLimitStream, maxAgeMs: number): string | undefined {
   if (!Number.isSafeInteger(maxAgeMs) || maxAgeMs % 1000 !== 0) return "the age must be a whole number of seconds";
   if (maxAgeMs < historyLimitMinAgeMs(stream))
     return `the age must be at least ${stream === "inbox" || stream === "dlv" ? "2h" : "2m"}, the stream's duplicate window, or none`;
@@ -278,7 +283,7 @@ export function historyLimitOf(config: Readonly<Record<string, unknown>>): Histo
  *  recorded count and no age, so nothing expires before the messages, bytes and sequences are
  *  compared. The recorded age is applied after the last check. The recorded limit is checked here
  *  first, so staging never admits a limit no stream may hold. */
-export function historyLimitRestoreStaging(stream: HistoryLimitStream, recorded: HistoryLimit): HistoryLimit {
+export function historyLimitRestoreStaging(stream: StoredHistoryLimitStream, recorded: HistoryLimit): HistoryLimit {
   const problem = historyLimitProblem(stream, recorded);
   if (problem)
     throw new Error(`the backup records a ${stream} history limit no stream may hold (${problem}): max_age ${recorded.maxAgeMs}ms, ${recorded.perSubject} per subject`);
@@ -286,18 +291,20 @@ export function historyLimitRestoreStaging(stream: HistoryLimitStream, recorded:
 }
 
 /** Which history limit `stream` of `space` carries, or undefined for a stream without one. */
-export function historyLimitStreamOf(space: string, stream: string): HistoryLimitStream | undefined {
+export function historyLimitStreamOf(space: string, stream: string): StoredHistoryLimitStream | undefined {
   if (stream === chatStream(space)) return "chat";
   if (stream === inboxStream(space)) return "inbox";
   if (stream === dlvStream(space)) return "dlv";
   if (stream === dmStream(space)) return "dm";
+  if (stream === pluginChannelStream(space)) return "plugin-history";
   return undefined;
 }
 
 /** The stream name of `space`'s `stream`. */
-export function historyLimitStreamName(space: string, stream: HistoryLimitStream): string {
+export function historyLimitStreamName(space: string, stream: StoredHistoryLimitStream): string {
   if (stream === "chat") return chatStream(space);
   if (stream === "inbox") return inboxStream(space);
+  if (stream === "plugin-history") return pluginChannelStream(space);
   return stream === "dlv" ? dlvStream(space) : dmStream(space);
 }
 
@@ -356,6 +363,7 @@ export function canonicalBackupStreamConfig(
   }
   if (target === "inbox") return { ...baseConfig(stream, [`${p}.dinbox.>`]), ...limits, duplicate_window: PLANE3_DUPLICATE_WINDOW };
   if (target === "dlv") return { ...baseConfig(stream, [`${p}.dlv.>`]), ...limits, duplicate_window: PLANE3_DUPLICATE_WINDOW };
+  if (target === "plugin-history") return { ...baseConfig(stream, [pluginChannelFilter(space)]), ...limits };
   if (stream === wfjStreamName(space)) return baseConfig(stream, [`${p}.wfj.*`]);
   // The records and admission stores are KV buckets hardened after creation, as their own
   // definitions say.
