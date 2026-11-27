@@ -2,14 +2,11 @@ import { closeSync, constants, fstatSync, fsyncSync, lstatSync, mkdirSync, openS
 import { basename, dirname, join } from "node:path";
 import { assertSeatId, bootToken, processStatFields, seatId, type SeatRecord } from "./record.js";
 
-export const SHARED_HOST_VERSION = 1;
-export const SHARED_PROTOCOL_VERSION = 1;
 export const SHARED_MULTIPLEX_VERSION = 2;
-type SharedProtocol = typeof SHARED_PROTOCOL_VERSION | typeof SHARED_MULTIPLEX_VERSION;
 
 export interface SharedHostRecord {
-  version: typeof SHARED_HOST_VERSION | typeof SHARED_MULTIPLEX_VERSION;
-  protocol: SharedProtocol;
+  version: typeof SHARED_MULTIPLEX_VERSION;
+  protocol: typeof SHARED_MULTIPLEX_VERSION;
   pid: number;
   start: string;
   bootId: string;
@@ -18,7 +15,7 @@ export interface SharedHostRecord {
 }
 
 export interface SharedSeatRecord extends SeatRecord {
-  protocol: SharedProtocol;
+  protocol: typeof SHARED_MULTIPLEX_VERSION;
   scope: string;
   bootId: string;
   custodianStart: string;
@@ -30,7 +27,6 @@ export const sharedHostSocket = (root: string): string => join(root, "host.sock"
 export const sharedControllerClaim = (root: string): string => join(root, "controller.json");
 export const sharedSeatRecord = (root: string, id: string): string => join(root, assertSeatId(id), "shared.json");
 const sharedSeatRefusal = (root: string, id: string): string => join(dirname(sharedSeatRecord(root, id)), "not-admitted.json");
-export const sharedSeatSocket = (root: string, id: string): string => join(root, `s-${assertSeatId(id)}.sock`);
 
 export function writeSharedSeatRefusal(root: string, id: string, host: SharedHostRecord): void {
   writePrivateRecord(sharedSeatRefusal(root, id), { pid: host.pid, start: host.start, bootId: host.bootId, scope: host.scope });
@@ -91,7 +87,7 @@ export function readSharedHost(root: string): SharedHostRecord {
   if (!directory.isDirectory() || directory.uid !== process.getuid?.() || (directory.mode & 0o777) !== 0o700)
     throw new Error("unknown shared PTY host directory");
   const record = readPrivateRecord(sharedHostRecord(root)) as Partial<SharedHostRecord> | null;
-  if (!record || !sharedVersion(record.version, record.protocol) ||
+  if (!record || record.version !== SHARED_MULTIPLEX_VERSION || record.protocol !== SHARED_MULTIPLEX_VERSION ||
       !Number.isSafeInteger(record.pid) || record.pid! <= 1 || !/^\d+$/.test(record.start ?? "") ||
       !/^[0-9a-f-]{36}$/.test(record.bootId ?? "") || !isSharedScope(record.scope) || !/^[0-9a-f]{64}$/.test(record.token ?? ""))
     throw new Error("unknown shared PTY host record");
@@ -103,17 +99,12 @@ export function readSharedSeat(root: string, id: string): SharedSeatRecord {
   if (!directory.isDirectory() || directory.uid !== process.getuid?.() || (directory.mode & 0o777) !== 0o700)
     throw new Error("unknown shared PTY seat directory");
   const record = readPrivateRecord(sharedSeatRecord(root, id)) as Partial<SharedSeatRecord> | null;
-  if (!record || record.version !== SHARED_HOST_VERSION || (record.protocol !== SHARED_PROTOCOL_VERSION && record.protocol !== SHARED_MULTIPLEX_VERSION) || record.id !== id ||
-      typeof record.name !== "string" || !record.name || record.socket !== (record.protocol === SHARED_MULTIPLEX_VERSION ? sharedHostSocket(root) : sharedSeatSocket(root, id)) || !/^[0-9a-f]{64}$/.test(record.token ?? "") ||
+  if (!record || record.version !== 1 || record.protocol !== SHARED_MULTIPLEX_VERSION || record.id !== id ||
+      typeof record.name !== "string" || !record.name || record.socket !== sharedHostSocket(root) || !/^[0-9a-f]{64}$/.test(record.token ?? "") ||
       !Number.isSafeInteger(record.custodianPid) || record.custodianPid! <= 1 || !Number.isSafeInteger(record.childPid) || record.childPid! <= 1 ||
       !/^\d+$/.test(record.custodianStart ?? "") || (record.childStart !== undefined && !/^\d+$/.test(record.childStart)) ||
       !/^[0-9a-f-]{36}$/.test(record.bootId ?? "") || !isSharedScope(record.scope)) throw new Error("unknown shared PTY seat record");
   return record as SharedSeatRecord;
-}
-
-function sharedVersion(version: unknown, protocol: unknown): boolean {
-  return (version === SHARED_HOST_VERSION && protocol === SHARED_PROTOCOL_VERSION) ||
-    (version === SHARED_MULTIPLEX_VERSION && protocol === SHARED_MULTIPLEX_VERSION);
 }
 
 export function isSharedScope(scope: unknown): scope is string {
@@ -132,12 +123,11 @@ export function recordedProcess(pid: number, start: string, boot: string): "live
   return undefined;
 }
 
-export function sharedScopeMatches(pid: number, scope: string, protocol = SHARED_PROTOCOL_VERSION as SharedProtocol): boolean {
+export function sharedScopeMatches(pid: number, scope: string): boolean {
   try {
     const path = /^0::([^\n]+)\n?$/m.exec(readFileSync(`/proc/${pid}/cgroup`, "utf8"))?.[1];
     const uid = process.getuid?.();
     const base = `/user.slice/user-${uid}.slice/user@${uid}.service/`;
-    if (protocol === SHARED_MULTIPLEX_VERSION) return path === `${base}app.slice/${scope}/host`;
-    return path !== undefined && basename(path) === scope && path.startsWith(base);
+    return path === `${base}app.slice/${scope}/host`;
   } catch { return false; }
 }

@@ -1,5 +1,6 @@
 import { join } from "node:path";
 import { withIdpSessionDir } from "@cotal-ai/auth";
+import { linuxSharedPtyMayBeActive } from "@cotal-ai/seat";
 import { homeCotalDir, resolveControlTarget, type UpdateAdmission } from "@cotal-ai/workspace";
 import { askManager } from "@cotal-ai/workspace/control";
 import { queryDaemon } from "./client.js";
@@ -25,9 +26,10 @@ export async function readExecutionPreinstall(request: ExecutionPreinstallReques
     const state = { state: join(homeCotalDir(), "daemon") };
     const recorded = preflightInstalledDaemon(state, undefined, request.daemonArgv);
     if (!daemon) {
-      // No daemon runs, so nothing is hosted and nothing can be interrupted. The installed lifecycle
-      // goes on to start a recorded service, or to report why it stays stopped.
-      admission = { disposition: "restart-empty", occupied: 0, hostedSpaces: [] };
+      // A stopped daemon can still have a draining native PTY unit. Preinstall observes it but
+      // never signals it. An idle installation may go on to start its recorded service.
+      admission = linuxSharedPtyMayBeActive(request.installedEntry, homeCotalDir())
+        ? deferred("the previous hosted PTY processes are still stopping") : { disposition: "restart-empty", occupied: 0, hostedSpaces: [] };
     } else if (!recorded || !installedDaemonIdentity(state, undefined, request.daemonArgv).same) {
       admission = deferred("the running daemon belongs to another installation or has no recorded service; it and its Managers were left running");
     } else {
@@ -49,7 +51,8 @@ export async function readExecutionPreinstall(request: ExecutionPreinstallReques
           const status = await askManager(client, manager.space, target.server, "managerStatus", undefined, target.auth, "owner", 3000, { instanceId });
           if (!status.ok) throw new Error(status.error ?? `Manager ${manager.space} did not answer`);
           if ((status.data as { instanceId?: unknown }).instanceId !== instanceId || processBirth(manager.pid!) !== birth) throw new Error(`Manager ${manager.space} identity changed`);
-          const count = (status.data as { agentCount?: unknown }).agentCount;
+          const { agentCount: count, stopImpact } = status.data as { agentCount?: unknown; stopImpact?: { reservedLaunches?: number } };
+          if ((stopImpact?.reservedLaunches ?? 0) > 0) throw new Error("the hosted Manager has an unsettled launch");
           if (!Number.isSafeInteger(count) || (count as number) < 0) throw new Error(`Manager ${manager.space} work count is unknown`);
           occupied += count as number;
           if (count === 0) return;
@@ -60,7 +63,9 @@ export async function readExecutionPreinstall(request: ExecutionPreinstallReques
         });
       }
       const hostedSpaces = active.map(manager => manager.space);
-      admission = occupied === 0 ? { disposition: "restart-empty", occupied: 0, hostedSpaces } : { disposition: "consent-stop", occupied, hostedSpaces, inventory };
+      admission = occupied > 0 ? { disposition: "consent-stop", occupied, hostedSpaces, inventory }
+        : (active.length === 0 || active.length !== reply.result.managers.length) && linuxSharedPtyMayBeActive(request.installedEntry, homeCotalDir()) ? deferred("the previous hosted PTY processes are still stopping")
+          : { disposition: "restart-empty", occupied: 0, hostedSpaces };
     }
   } catch (error) {
     admission = deferred(`machine daemon custody could not be checked: ${error instanceof Error ? error.message : String(error)}`);

@@ -2,7 +2,7 @@
 import { registry, resolveAuthProvider, type Command } from "@cotal-ai/core";
 import { IdpSessionRejectedError, withIdpSessionDir } from "@cotal-ai/auth";
 import { CommandFailure, executionIdentity } from "@cotal-ai/workspace";
-import { linuxSharedCustodyAvailable, processStatFields } from "@cotal-ai/seat";
+import { linuxSharedCustodyAvailable } from "@cotal-ai/seat";
 import { existsSync, realpathSync } from "node:fs";
 import { dirname, isAbsolute, join } from "node:path";
 import { checkDir } from "./endpoint.js";
@@ -16,7 +16,6 @@ function report(frame: object): void {
 }
 
 let parentGone = false;
-let sharedPtyParent: { pid: number; start: string } | undefined;
 let desktopInstall: string | undefined;
 let completeInstall: (() => void) | undefined;
 const receiveInstall = (raw: unknown) => {
@@ -45,12 +44,6 @@ async function sharedInstallEntry(): Promise<string | undefined> {
 }
 process.once("disconnect", () => {
   parentGone = true;
-  // An orderly stop disconnects this channel while its parent still owns the service.
-  // A dead parent cannot complete that stop. Leave independent PTYs to their host.
-  if (sharedPtyParent) {
-    const actual = processStatFields(sharedPtyParent.pid);
-    if (actual?.[19] !== sharedPtyParent.start || actual[0] === "Z" || actual[0] === "X") process.exit(0);
-  }
   if (process.listenerCount("SIGTERM") === 0) process.exit(0);
   process.emit("SIGTERM", "SIGTERM");
 });
@@ -84,10 +77,9 @@ const command: Command = {
     const sharedPty = (values.runtime === "pty" || values.runtime === "auto" || values.runtime === undefined) && linuxSharedCustodyAvailable();
     const install = sharedPty ? await sharedInstallEntry() : undefined;
     if (!sharedPty) process.off("message", receiveInstall);
-    const pid = process.ppid, start = install ? processStatFields(pid)?.[19] : undefined;
-    if (pid > 1 && start) sharedPtyParent = { pid, start };
+    if (parentGone || !process.connected) throw new CommandFailure("refused", "USAGE_INVALID", "the machine Manager requires its daemon's session directory and parent channel");
     const machineSetup = typeof values.space === "string" ? daemonCommandCopy("setup", home, [["--space", values.space]]) : undefined;
-    await withIdpSessionDir(home, () => stock.run({ ...args, values: { ...values, "machine-parent": true, "machine-setup-command": machineSetup, machineHostedPty: sharedPtyParent ? install : undefined } }));
+    await withIdpSessionDir(home, () => stock.run({ ...args, values: { ...values, "machine-parent": true, "machine-setup-command": machineSetup, machineHostedPty: install ? { install, home } : undefined } }));
   },
 };
 registry.register(command);

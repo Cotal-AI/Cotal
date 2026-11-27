@@ -2,26 +2,38 @@ import { spawnSync } from "node:child_process";
 import { lstatSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { createHash } from "node:crypto";
-import { launchManagedSharedSeat, linuxSharedCustodyAvailable } from "@cotal-ai/seat";
-import type { AgentHandle, LaunchSpec } from "@cotal-ai/core";
+import { drainLinuxSharedPty, launchManagedSharedSeat, linuxSharedCustodyAvailable, sharedPtyInstallation, sharedPtyLineage } from "@cotal-ai/seat";
+import type { AgentHandle, LaunchSpec, Runtime } from "@cotal-ai/core";
 import { executionIdentity } from "@cotal-ai/workspace";
-import { custodyRoot } from "./custodial-pty.js";
 import { LegacyPtyRuntime } from "./pty.js";
 
+const sharedSeatHandles = new WeakSet<AgentHandle>();
+
+export function needsProvedPtyStop(handle: AgentHandle): boolean {
+  return sharedSeatHandles.has(handle) || (process.platform === "win32" && handle.kind === "pty");
+}
+
+export function machineHostedPty(value: unknown, fromParent: boolean): { install: string; home: string } | undefined {
+  if (!fromParent || !process.connected || !value || typeof value !== "object") return;
+  const { install, home } = value as Partial<{ install: string; home: string }>;
+  if (typeof install === "string" && typeof home === "string") return { install, home };
+}
+
 export class SharedPtyRuntime extends LegacyPtyRuntime {
+  private launching = 0;
+  get sharedLaunchesInFlight(): number { return this.launching; }
   private readonly lineage: string | undefined;
   private readonly executionGeneration: string | undefined;
   private readonly staged?: { root: string; inventorySha256: string };
   private readonly loaded?: { root: string; stamp: string };
-  constructor(space: string, install?: string) {
+  constructor(private readonly space: string, private readonly install: string, private readonly home: string) {
     super();
     try {
       const identity = executionIdentity();
       if (!identity?.loaded) return;
-      const { logicalEntry, loadedEntry } = identity;
+      const { loadedEntry } = identity;
       const root = resolve(dirname(loadedEntry), "..");
-      const key = createHash("sha256").update(JSON.stringify([install ?? logicalEntry, process.getuid?.(), space])).digest("hex");
-      this.lineage = resolve(custodyRoot(), `p-${key}`);
+      this.lineage = sharedPtyLineage(install, space);
       this.executionGeneration = createHash("sha256").update(JSON.stringify([loadedEntry, identity.loaded.version])).digest("hex");
       if (identity.inventorySha256) this.staged = { root, inventorySha256: identity.inventorySha256 };
       else this.loaded = { root, stamp: identity.loaded.stamp };
@@ -35,13 +47,29 @@ export class SharedPtyRuntime extends LegacyPtyRuntime {
     if (!this.lineage || !this.executionGeneration || !currentUserHasLinger() || !linuxSharedCustodyAvailable())
       return super.spawn(name, spec, cwd);
     if (this.loaded && !stillLoaded(this.loaded)) return super.spawn(name, spec, cwd);
-    const handle = await launchManagedSharedSeat(this.lineage, { root: this.lineage, name, spec, cwd }, this.executionGeneration, this.staged);
+    this.launching++;
+    const handle = await launchManagedSharedSeat(this.lineage, { root: this.lineage, name, spec, cwd }, this.executionGeneration, this.staged, sharedPtyInstallation(this.install, this.home)).finally(() => { this.launching--; });
     if (handle === undefined) return super.spawn(name, spec, cwd);
     // Released lifecycle transactions are admitted separately from process custody.
     // Keep today's Manager stop and update policy until that transaction is enabled.
     const { release: _release, reference: _reference, childIdentity, ...controlled } = handle;
+    sharedSeatHandles.add(controlled);
     onReceipt(childIdentity);
     return controlled;
+  }
+
+  async drainSharedHosts(): Promise<void> {
+    if (this.lineage) await drainLinuxSharedPty(this.install, this.space, true, undefined, this.home);
+  }
+}
+
+export async function drainHostedPtyOnStop(runtime: Runtime | undefined, launch: { sharedLaunchHoldCount: number; clearSharedLaunchHolds(): void }): Promise<void> {
+  if (!(runtime instanceof SharedPtyRuntime)) return;
+  const held = launch.sharedLaunchHoldCount > 0;
+  await runtime.drainSharedHosts();
+  if (held) {
+    launch.clearSharedLaunchHolds();
+    console.error("A PTY launch could not be confirmed. Its name was held until the host stopped.");
   }
 }
 

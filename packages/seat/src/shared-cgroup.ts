@@ -2,7 +2,7 @@ import { spawnSync } from "node:child_process";
 import { accessSync, closeSync, constants, lstatSync, mkdirSync, openSync, readFileSync, realpathSync, rmdirSync, statfsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { assertSeatId, processStatFields } from "./record.js";
-import { isSharedScope } from "./shared-record.js";
+import { isSharedScope, recordedProcess, type SharedSeatRecord } from "./shared-record.js";
 
 const mount = "/sys/fs/cgroup";
 const cgroup2 = 0x63677270;
@@ -47,6 +47,26 @@ function pinDirectory(path: string): () => void {
     if (identity.dev !== current.dev || identity.ino !== current.ino)
       throw new Error("shared PTY cgroup directory changed");
   };
+}
+
+export function sharedSeatPopulated(row: SharedSeatRecord): boolean {
+  const leaf = join(mount, unitPath(row.scope), `seat-${assertSeatId(row.id)}`);
+  try {
+    const events = read(leaf, "cgroup.events").split("\n");
+    if (events.includes("populated 0")) return false;
+    if (events.includes("populated 1")) return true;
+    throw new Error("shared PTY seat population is unknown");
+  } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return false; throw error; }
+}
+
+/** A requested stop can reach the one recorded leaf even while the host is unresponsive. */
+export function killRecordedSharedSeat(row: SharedSeatRecord): void {
+  const path = unitPath(row.scope), leaf = join(mount, path, `seat-${assertSeatId(row.id)}`);
+  const check = pinDirectory(leaf);
+  if (recordedProcess(row.custodianPid, row.custodianStart, row.bootId) !== "live" || unifiedPath(row.custodianPid) !== `${path}/${hostLeaf}`)
+    return; // A dead host's whole control group belongs to systemd's stop job.
+  check();
+  write(leaf, "cgroup.kill", "1");
 }
 
 function hasMemory(controllers: string): boolean {

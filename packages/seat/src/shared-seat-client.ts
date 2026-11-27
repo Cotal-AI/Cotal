@@ -48,7 +48,10 @@ export class SharedSeatClient {
   }
   async health() {
     const reply = await this.request({ op: "health" });
-    if (!reply.ok || reply.op !== "health" || reply.pid !== this.row.childPid || reply.protocol !== PROTOCOL_VERSION) throw new Error("unexpected health reply");
+    if (!reply.ok || reply.op !== "health" || reply.pid !== this.row.childPid || reply.protocol !== PROTOCOL_VERSION) {
+      this.controller.reconnect();
+      throw new Error("unexpected health reply");
+    }
     for (const output of this.outputs) if (output.id === undefined) await this.registerOutput(output, true);
     return { pid: reply.pid, status: reply.status, protocol: reply.protocol, startup: reply.startup };
   }

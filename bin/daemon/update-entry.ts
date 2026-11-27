@@ -552,7 +552,8 @@ const composed: Command = { ...command, async run(args) {
         return askManager({ versionSkew: (text: string) => text, roster: async () => [] }, manager.space, target.server, "managerStatus", undefined, target.auth, "owner", 3000, { instanceId: manager.instanceId });
       });
       if (!reply.ok) throw new Error(reply.error ?? "hosted Manager status did not answer");
-      const status = reply.data as { agentCount?: number; custody?: string };
+      const status = reply.data as { agentCount?: number; custody?: string; stopImpact?: { reservedLaunches?: number } };
+      if ((status.stopImpact?.reservedLaunches ?? 0) > 0) throw new Error("the hosted Manager has an unsettled launch");
       if (status.custody === "legacy" && status.agentCount !== 0) {
         const instanceId = manager.instanceId;
         const inventory = await withIdpSessionDir(homeCotalDir(), async () => {

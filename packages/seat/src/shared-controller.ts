@@ -14,9 +14,8 @@ const REQUEST_MS = 8_000;
 const MAX_PENDING = 128;
 const MAX_QUEUED_BYTES = 2 * (MAX_FRAME_SIZE + 4);
 
-// Accept the v2 protocol before the shared-record reader is switched to v2. The caller pins the
-// whole tuple, not just a path that might later point at a different host.
-type HostIdentity = Readonly<Omit<SharedHostRecord, "protocol"> & { protocol: number }>;
+// Pin the whole tuple, not just a path that might later point at a different host.
+type HostIdentity = Readonly<SharedHostRecord>;
 
 export class SharedControlError extends Error {
   constructor(readonly outcome: SharedControlOutcome, message: string) {
@@ -112,10 +111,12 @@ export class SharedController {
 
   close(): void {
     this.closed = true;
-    if (this.current) this.drop(this.current);
+    this.reconnect();
     this.events.clear();
     this.disconnects.clear();
   }
+
+  reconnect(): void { if (this.current) this.drop(this.current); }
 
   private async forSeat(seat: string): Promise<Connection> {
     if (!isSeatId(seat)) throw new SharedControlError("not-admitted", "invalid shared PTY seat id");
@@ -135,7 +136,7 @@ export class SharedController {
       const peer = peerCredentials(socket);
       if (peer.uid !== uid || peer.pid !== host.pid) throw new Error("shared PTY host peer does not match its record");
     }
-    if (recordedProcess(host.pid, host.start, host.bootId) !== "live" || !sharedScopeMatches(host.pid, host.scope, SHARED_CONTROL_PROTOCOL))
+    if (recordedProcess(host.pid, host.start, host.bootId) !== "live" || !sharedScopeMatches(host.pid, host.scope))
       throw new Error("shared PTY host identity or scope is not verified");
   }
 

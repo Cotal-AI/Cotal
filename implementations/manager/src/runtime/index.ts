@@ -137,9 +137,9 @@ export type RuntimeMode = RuntimeKind | "auto";
 /** Build the runtime a manager will spawn through. `pty` ships with the manager and is what `auto`
  *  resolves to. Every other name resolves a self-registered {@link RuntimeProvider}; an explicit
  *  provider that is absent or unreachable throws, never a silent fallback to pty. */
-export function createRuntime(mode: RuntimeMode, session: string, hosted?: { space: string; install: string }): Runtime {
+export function createRuntime(mode: RuntimeMode, session: string, hosted?: { space: string; install: string; home: string }): Runtime {
   const legacy = createBackend(mode, session);
-  return ownLaunchArtifacts(hosted && legacy.kind === "pty" && process.platform === "linux" ? new HostedPtyRuntime(hosted.space, hosted.install) : legacy);
+  return ownLaunchArtifacts(hosted && legacy.kind === "pty" && process.platform === "linux" ? new HostedPtyRuntime(hosted.space, hosted.install, hosted.home) : legacy);
 }
 
 /** The bundled Linux node-pty can import on musl but crash the manager on its first spawn. */

@@ -687,4 +687,6 @@ export class SeatLaunch {
 
   /** {@link SeatStart.startActive}. */
   startActive(...args: Parameters<SeatStart["startActive"]>): ReturnType<SeatStart["startActive"]> { return this.seatStart.startActive(...args); }
+  get sharedLaunchHoldCount(): number { return this.seatStart.sharedLaunchHoldCount; }
+  clearSharedLaunchHolds(): void { this.seatStart.clearSharedLaunchHolds(); }
 }

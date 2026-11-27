@@ -7,7 +7,7 @@ import { DEFAULT_COLS, DEFAULT_ROWS } from "./protocol.js";
 import { bootToken, capabilityToken, processStartToken } from "./record.js";
 import { initializeSharedHostCgroup } from "./shared-cgroup.js";
 import { readControllerClaim, sharedGenerationAcceptsLaunch, validSharedGeneration } from "./shared-controller-claim.js";
-import { hostControl, type SharedSeatAcceptor } from "./shared-control-server.js";
+import { hostControl, type SharedManagerIdentity, type SharedSeatAcceptor } from "./shared-control-server.js";
 import type { SharedLaunchPayload } from "./shared-control-protocol.js";
 import { createSharedExecLaunch } from "./shared-exec-launch.js";
 import { privateDirectory, readSharedHost, recordedProcess, sharedHostRecord, sharedHostSocket, sharedSeatRecord, SHARED_MULTIPLEX_VERSION, writePrivateRecord, writeSharedSeatRefusal, type SharedHostRecord } from "./shared-record.js";
@@ -36,10 +36,15 @@ function logFault(error: unknown): void {
   try { console.error("shared PTY host:", error); } catch { /* The service log must not stop a host. */ }
 }
 
-export async function serveMultiplexedHost(root: string, scope: string): Promise<void> {
+function sameManager(a: SharedManagerIdentity | undefined, b: SharedManagerIdentity): boolean {
+  return a?.pid === b.pid && a.start === b.start && a.bootId === b.bootId;
+}
+
+export async function serveMultiplexedHost(root: string, scope: string, owner: SharedManagerIdentity): Promise<void> {
   const generation = basename(root), lineage = dirname(root);
   if (!validSharedGeneration(generation)) throw new Error("invalid shared PTY generation");
   privateDirectory(root);
+  if (!sameManager(readControllerClaim(lineage), owner) || recordedProcess(owner.pid, owner.start, owner.bootId) !== "live") return;
   process.chdir(root);
   const fd = openSync(join(root, "host.lock"), constants.O_CREAT | constants.O_RDWR | constants.O_NOFOLLOW | constants.O_NONBLOCK, 0o600);
   try {
@@ -69,7 +74,7 @@ export async function serveMultiplexedHost(root: string, scope: string): Promise
       };
       try { mkdirSync(directory, { mode: 0o700 }); }
       catch { return "not-admitted"; }
-      if (closing || !sharedGenerationAcceptsLaunch(claimant, generation) || !eligiblePayload(payload)) return refuse();
+      if (closing || !sharedGenerationAcceptsLaunch(claimant, generation) || !sameManager(claimant, owner) || !eligiblePayload(payload)) return refuse();
       let leaf: ReturnType<typeof cgroup.createSeat>;
       try { leaf = cgroup.createSeat(id); }
       catch { return refuse(); }
@@ -112,7 +117,10 @@ export async function serveMultiplexedHost(root: string, scope: string): Promise
         return refuse();
       }
     };
-    const handle = hostControl({ host, closing: () => closing, authorized: () => readControllerClaim(lineage), acceptSeat: id => sessions.get(id), launch,
+    const handle = hostControl({ host, closing: () => closing, authorized: () => {
+      const claim = readControllerClaim(lineage);
+      return sameManager(claim, owner) ? claim : undefined;
+    }, acceptSeat: id => sessions.get(id), launch,
       // Launch creates the private reservation synchronously before its first await. A probe
       // on this epoch is ordered after its launch frames, and a closed epoch cannot dispatch.
       launchState: id => lstatSync(dirname(sharedSeatRecord(root, id)), { throwIfNoEntry: false }) ? "unknown" : "absent",
@@ -124,6 +132,12 @@ export async function serveMultiplexedHost(root: string, scope: string): Promise
     });
     server.maxConnections = 128;
     process.on("uncaughtException", logFault);
+    const observeOwner = setInterval(() => {
+      // systemd drains this service's whole control group when its main process exits.
+      // A transport failure and an unreadable process identity are not death evidence.
+      if (recordedProcess(owner.pid, owner.start, owner.bootId) === "gone") process.exit(0);
+    }, 250);
+    observeOwner.unref();
     try {
       await new Promise<void>((resolve, reject) => {
         server.once("error", reject);
@@ -134,6 +148,6 @@ export async function serveMultiplexedHost(root: string, scope: string): Promise
         });
       });
       rmSync(sharedHostRecord(root), { force: true });
-    } finally { process.off("uncaughtException", logFault); }
+    } finally { clearInterval(observeOwner); clearTimeout(idle!); process.off("uncaughtException", logFault); }
   } finally { closeSync(fd); }
 }

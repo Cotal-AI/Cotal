@@ -13,7 +13,7 @@ import {
 import { daemonArgv } from "@cotal-ai/cli/self-exec";
 import { writeDefaultPersonaForLaunch } from "@cotal-ai/cli/default-persona";
 import { loadIdpSession, retainManagerAuthorityRoute, withIdpSessionDir } from "@cotal-ai/auth";
-import { CommandFailure, controlCaller, findMesh, homeCotalDir, isCommandFailure, liveUpdateClosureOwner, readUpdateRecovery, resolveControlTarget, spaceFromSegment, spaceSegment, userAuthStateDir, workspaceSecretStore } from "@cotal-ai/workspace";
+import { CommandFailure, controlCaller, findMesh, homeCotalDir, isCommandFailure, liveUpdateClosureOwner, logicalExecutionEntry, readUpdateRecovery, resolveControlTarget, spaceFromSegment, spaceSegment, userAuthStateDir, workspaceSecretStore } from "@cotal-ai/workspace";
 import { DIAL_TIMEOUT_MS, DialNotAdmitted, askManager, dialWithRetry, epRailFailure, managerFailure, notAdmittedRefusal } from "@cotal-ai/workspace/control";
 import { installedGenerationVersion, reconcileHostedConnectors, ReplacedDaemonGeneration } from "./generation.js";
 import { daemonPaths, daemonPathsFor } from "./endpoint.js";
@@ -24,6 +24,7 @@ import { readManagerCleanup, writeManagerCleanup, validateManagerCleanupAuthorit
 import { processBirth } from "./lifetime.js";
 import { probeLiveness } from "@cotal-ai/workspace/liveness";
 import { hostedManagerChildren } from "./manager-children.js";
+import { awaitLinuxSharedPtyPredecessor, drainLinuxSharedPty } from "@cotal-ai/seat";
 
 export const daemonManagerRoot = (space: string, home: string) => join(home, "daemon", spaceSegment(space), "manager");
 export const daemonManagerIntentFile = (space: string, home: string) => join(home, "daemon", spaceSegment(space), "manager-host.json");
@@ -108,6 +109,7 @@ function hostedAgentActions(home: string, live: ReadonlyMap<string, Live>) {
 
 export function createHostedManagers(home = homeCotalDir(), version = installedGenerationVersion(), daemonHome?: string, onChange?: () => void) {
   const notify = () => { try { onChange?.(); } catch {} };
+  const install = process.platform === "linux" ? logicalExecutionEntry() : undefined;
   const { generationCall, isRateLimited, closeProbeSession, stopChild, spaces } = hostedManagerChildren({ home, notify });
   const homeArg = daemonHome === undefined ? undefined : /^[A-Za-z0-9_./-]+$/.test(daemonHome) ? daemonHome : JSON.stringify(daemonHome);
   const command = (text: string) => homeArg === undefined ? text : text.replace(/cotal daemon (setup|status|login|serve)\b(?! --daemon-home)/g, (match) => `${match} --daemon-home ${homeArg}`);
@@ -399,6 +401,7 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
     if (!entry) return refuse(l, "this space is no longer registered on this machine", `run \`cotal daemon setup --space ${space} --idp <url>\` to discover it again`);
     if (entry.mode !== "user" || entry.userAuth?.remote !== true) return refuse(l, "hosted Managers require a registered user-auth participant space", "use `cotal manager start` from the folder that hosts the space");
     if (!loadIdpSession(home, entry.userAuth.idp.url)) return refuse(l, "the daemon has no sign-in for this space's provider", `run \`cotal daemon login --idp ${entry.userAuth.idp.url}\`, then \`cotal daemon setup --space ${space}\``);
+    await awaitLinuxSharedPtyPredecessor(install, space, home);
     try { await reconcile(); }
     catch (error) {
       const reason = `hosted connector reconciliation failed: ${error instanceof Error ? error.message : String(error)}`;
@@ -726,6 +729,7 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
       return { prepared: generationPrepared, managers: rows };
     },
     async generationSeats(): Promise<{ space: string; seats: number }[]> {
+      await drainLinuxSharedPty(install, undefined, false, new Set([...live.values()].flatMap(l => l.child?.pid ?? [])), home);
       return Promise.all([...live.values()].filter((l) => l.child).map(async (l) => {
         const child = l.child!;
         const seats = await generationCall(child, randomUUID(), "inspect");
@@ -749,6 +753,7 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
           generationAttempts.delete(child);
         }
         await Promise.all([...live.values()].map((l) => l.starting));
+        await drainLinuxSharedPty(install, undefined, false, new Set([...live.values()].flatMap(l => l.child?.pid ?? [])), home);
         for (const l of live.values()) {
           if (!l.child) continue;
           const seats = await generationCall(l.child, randomUUID(), "inspect");
@@ -783,6 +788,7 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
           generationAttempts.set(l.child, attemptId);
           await generationCall(l.child, attemptId, "prepare");
         }
+        await drainLinuxSharedPty(install, undefined, false, new Set([...generationAttempts.keys()].flatMap(child => child.pid ?? [])), home);
         // Keep empty-manager admission fences held through the caller's close.
         generationPrepared = true;
         generationOwners.add(owner);
@@ -818,6 +824,7 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
         await l.healthTask;
         await l.starting;
       }
+      await drainLinuxSharedPty(install, space, false, undefined, home);
       const held = l ?? { view: status(space), stopping: true, failures: 0 };
       let instanceId = held.view.instanceId ?? readManagerCleanup(home, space)?.instanceId;
       const remedy = () => instanceId
@@ -932,6 +939,7 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
         await l.starting;
         await l.refreshing;
       }));
+      await drainLinuxSharedPty(install, undefined, false, undefined, home);
     },
   };
 }

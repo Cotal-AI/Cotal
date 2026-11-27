@@ -23,7 +23,6 @@ interface Pending {
   op: ClientRequest["op"];
   resolve: (reply: ServerReply) => void;
   reject: (err: Error) => void;
-  timer?: ReturnType<typeof setTimeout>;
 }
 
 export class SeatClient {
@@ -41,8 +40,7 @@ export class SeatClient {
   private closed = false;
   private connection: Promise<HelloInfo> | undefined;
 
-  constructor(private readonly record: SeatRecord, private readonly verifyPeer?: (socket: Socket) => void,
-    private readonly socketPath?: () => { path: string; close(): void }, private readonly reconnectable = false) {}
+  constructor(private readonly record: SeatRecord, private readonly verifyPeer?: (socket: Socket) => void) {}
 
   connect(): Promise<HelloInfo> {
     if (this.helloInfo) return Promise.resolve(this.helloInfo);
@@ -52,10 +50,8 @@ export class SeatClient {
   private async open(): Promise<HelloInfo> {
     if (this.closed) throw new Error("seat client is closed");
     const sock = await new Promise<Socket>((resolve, reject) => {
-      const short = this.socketPath?.();
-      const s = connect(short?.path ?? this.record.socket);
+      const s = connect(this.record.socket);
       this.connecting = s;
-      s.once("close", () => short?.close());
       s.once("connect", () => {
         this.connecting = undefined;
         resolve(s);
@@ -82,7 +78,6 @@ export class SeatClient {
     const lost = (error: Error) => {
       if (this.sock !== sock) return;
       this.sock = undefined;
-      if (this.reconnectable) { this.helloInfo = undefined; this.output.clear(); }
       this.failAll(error);
     };
     sock.on("close", () => lost(new Error("custodian socket closed")));
@@ -98,10 +93,6 @@ export class SeatClient {
       sock.destroy();
       throw new Error(reply.ok ? "unexpected hello reply" : reply.error);
     }
-    if (this.reconnectable && reply.pid !== this.record.childPid) {
-      sock.destroy();
-      throw new Error("unexpected hello reply");
-    }
     this.helloInfo = {
       name: reply.name,
       pid: reply.pid,
@@ -110,7 +101,6 @@ export class SeatClient {
       status: this.pendingExit ? "exited" : reply.status,
       ...((reply.exit ?? this.pendingExitInfo) ? { exit: reply.exit ?? this.pendingExitInfo } : {}),
     };
-    if (this.reconnectable && this.helloInfo.status === "exited") this.emitExit(this.helloInfo.exit);
     return this.helloInfo;
   }
 
@@ -192,7 +182,6 @@ export class SeatClient {
   }
 
   async health(): Promise<{ pid: number; status: "running" | "exited"; protocol: number; startup?: import("./startup-confirm.js").StartupOutcome }> {
-    if (this.reconnectable) await this.connect();
     const reply = await this.request({ op: "health" });
     if (!reply.ok || reply.op !== "health") throw new Error(reply.ok ? "unexpected health reply" : reply.error);
     return { pid: reply.pid, status: reply.status, protocol: reply.protocol, startup: reply.startup };
@@ -214,14 +203,11 @@ export class SeatClient {
     const id = this.nextId++;
     const req = { ...body, id } as ClientRequest;
     return new Promise((resolve, reject) => {
-      const timer = this.reconnectable && (body.op === "hello" || body.op === "health" || body.op === "stop")
-        ? setTimeout(() => socket.destroy(), 2_000) : undefined;
-      this.pending.set(id, { op: body.op, resolve, reject, timer });
+      this.pending.set(id, { op: body.op, resolve, reject });
       try {
         socket.write(encodeFrame(req));
       } catch (e) {
         this.pending.delete(id);
-        clearTimeout(timer);
         reject(e as Error);
       }
     });
@@ -243,7 +229,6 @@ export class SeatClient {
     const pending = this.pending.get(msg.id);
     if (!pending) return;
     this.pending.delete(msg.id);
-    clearTimeout(pending.timer);
     pending.resolve(msg);
   }
 
@@ -260,7 +245,6 @@ export class SeatClient {
 
   private failAll(err: Error): void {
     for (const [id, pending] of this.pending) {
-      clearTimeout(pending.timer);
       if (pending.op === "wait-exit" && (this.helloInfo?.status === "exited" || this.pendingExit)) {
         pending.resolve({ id, ok: true, op: "wait-exit", exit: this.helloInfo?.exit });
       } else {
@@ -268,7 +252,7 @@ export class SeatClient {
       }
     }
     this.pending.clear();
-    if (!this.reconnectable && this.helloInfo?.status !== "exited") {
+    if (this.helloInfo?.status !== "exited") {
       for (const fn of this.exits) fn();
       this.exits.clear();
     }
