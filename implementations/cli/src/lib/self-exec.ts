@@ -2,7 +2,7 @@ import { spawnSync } from "node:child_process";
 import { accessSync, constants, readFileSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { delimiter, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
-import { cmdSpawnSpec, codeSpan, isWorkspaceTargetError, logicalExecutionEntry, resolveOnPath } from "@cotal-ai/workspace";
+import { cmdSpawnSpec, codeSpan, isWorkspaceTargetError, logicalExecutionEntry, resolveOnPath, windowsShellWord } from "@cotal-ai/workspace";
 import { cliPackageRoot, entryScript, seedWriterKind } from "../seed/paths.js";
 import { shellWord } from "./endpoint-errors.js";
 import { workingFolderRemoved } from "./paths.js";
@@ -204,9 +204,11 @@ export function displayCmd({ fromAnyFolder = false } = {}): string {
   if (isNpx()) return "npx cotal-ai";
   if (isPnpmDlx()) return "pnpm dlx cotal-ai";
   if (runsCliEntry() && (fromAnyFolder || seedWriterKind() === "released")) {
-    if (seedWriterKind() !== "released") return selfArgv().map(shellWord).join(" ");
-    const command = [process.execPath, entryScript()].map(shellWord).join(" ");
-    if (process.platform !== "win32" && process.env.COTAL_LAUNCHER === "1") {
+    const released = seedWriterKind() === "released";
+    const argv = released ? [process.execPath, entryScript()] : selfArgv();
+    if (process.platform === "win32") return windowsDisplayCommand(argv);
+    const command = argv.map(shellWord).join(" ");
+    if (released && process.env.COTAL_LAUNCHER === "1") {
       const prefix = process.env.npm_config_prefix;
       if (!prefix) throw new Error("the installer launcher did not provide its npm prefix");
       // Match install.sh's pinned runtime and install destination without copying the whole PATH.
@@ -215,6 +217,23 @@ export function displayCmd({ fromAnyFolder = false } = {}): string {
     return command;
   }
   return "pnpm cotal";
+}
+
+function windowsDisplayCommand([file, ...args]: readonly string[]): string {
+  // A fully quoted executable is a string in PowerShell. Leave the drive or UNC prefix outside
+  // the quotes to start a command token in both shells, without a shell-specific call operator.
+  const split = /^([A-Za-z]:|\\\\(?![?.]\\))(.+)$/.exec(file!);
+  const words = args.map(windowsShellWord);
+  if (split && windowsShellWord(file!) !== undefined && words.every(word => word !== undefined)) {
+    return [`${split[1]}"${split[2]}"`, ...words].join(" ");
+  }
+
+  // Keep shell interpolation out of literal runtime paths even when common quoting cannot.
+  const literal = (value: string) => value.split(/(["$`%!\u2018-\u201e])/u)
+    .map((part, i) => i % 2 === 0 ? `'${part.replaceAll("'", "''")}'` : `[char]${part.charCodeAt(0)}`)
+    .join("+");
+  const prefix = [file!, ...args].map(value => `(${literal(value)})`).join(" ");
+  return `powershell.exe -NoProfile -Command "function Invoke-Cotal { & ${prefix} @args; exit (Get-Variable LASTEXITCODE -ValueOnly) }; Invoke-Cotal"`;
 }
 
 /** Give the ticked commands in a workspace remedy the CLI's launcher, keeping each command whole. */
