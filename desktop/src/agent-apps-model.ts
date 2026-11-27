@@ -55,11 +55,14 @@ export function rowView(app: AgentApp, activity: Activity | undefined, platform:
   return { tone: "missing", status: `Not installed · ${installsFrom(app)}`, action: { kind: "install", label: "Install" } };
 }
 
-/** What the app says once an install finished, including when the background service could not pick it up yet. */
-export function installedMessage(title: string, result: { service?: string; serviceError?: string; pathAdded?: string }): string {
-  if (result.service === "waiting") return `${title} is installed. Your spaces can start it once the agents running on this computer stop.`;
-  if (result.service === "failed") return `${title} is installed, but the background service has not picked it up yet: ${result.serviceError ?? "it did not say why"}. Choose Check again to try once more.`;
-  return result.pathAdded ? `${title} is installed. Cotal added its folder to PATH in ${result.pathAdded}.` : `${title} is installed.`;
+/** What the app says once an install finished, and again once the sign-in that follows it finished, so
+ *  a background service that has not picked the app up yet is still said, with its reason. */
+export function installedMessage(title: string, result: { service?: string; serviceError?: string; pathAdded?: string }, signedIn = false): string {
+  const state = signedIn ? "signed in" : "installed";
+  if (result.service === "waiting") return `${title} is ${state}. Your spaces can start it once the agents running on this computer stop.`;
+  if (result.service === "failed") return `${title} is ${state}, but the background service has not picked it up yet: ${result.serviceError ?? "it did not say why"}. Choose Check again to try once more.`;
+  const done = signedIn ? `${title} is ready.` : `${title} is installed.`;
+  return result.pathAdded ? `${done} Cotal added its folder to PATH in ${result.pathAdded}.` : done;
 }
 
 /** Where Install downloads from, said before the click: the executables when they are not the app's

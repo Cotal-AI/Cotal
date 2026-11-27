@@ -66,4 +66,9 @@ test("a finished install says it is installed, also when the background service 
   assert.equal(installedMessage("Codex", { service: "none", pathAdded: "your user PATH" }), "Codex is installed. Cotal added its folder to PATH in your user PATH.");
   assert.equal(installedMessage("Pi", { service: "waiting" }), "Pi is installed. Your spaces can start it once the agents running on this computer stop.");
   assert.equal(installedMessage("Hermes", { service: "failed", serviceError: "the daemon did not answer within 60s" }), "Hermes is installed, but the background service has not picked it up yet: the daemon did not answer within 60s. Choose Check again to try once more.");
+  // The sign-in that follows an install keeps what the service has not done yet.
+  assert.equal(installedMessage("Codex", {}, true), "Codex is ready.");
+  assert.equal(installedMessage("Codex", { service: "refreshed", pathAdded: "your user PATH" }, true), "Codex is ready. Cotal added its folder to PATH in your user PATH.");
+  assert.equal(installedMessage("Claude Code", { service: "waiting" }, true), "Claude Code is signed in. Your spaces can start it once the agents running on this computer stop.");
+  assert.equal(installedMessage("Claude Code", { service: "failed", serviceError: "x" }, true), "Claude Code is signed in, but the background service has not picked it up yet: x. Choose Check again to try once more.");
 });

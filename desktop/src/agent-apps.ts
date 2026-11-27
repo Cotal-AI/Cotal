@@ -111,6 +111,8 @@ export class AgentApps {
   private message = "";
   /** An install the service could not pick up while agents ran. Checked again once they stop. */
   waitingForAgents = false;
+  /** The message says the service has not picked an install up; a refresh that succeeds clears it. */
+  private servicePending = false;
   constructor(private readonly host: AgentAppsHost) {}
 
   get busy(): boolean { return [...this.activity.values()].some(item => item.kind === "installing" || item.kind === "signing-in"); }
@@ -123,7 +125,7 @@ export class AgentApps {
       try {
         const result = await appRequest({ op: "agent-apps", ...(refresh || this.waitingForAgents ? { refresh: true } : {}) });
         this.apps = orderedApps(result.apps ?? []); this.error = undefined;
-        if (result.service === "refreshed" || result.service === "unchanged") { if (this.waitingForAgents) this.message = ""; this.waitingForAgents = false; }
+        if (result.service === "refreshed" || result.service === "unchanged") { if (this.servicePending) this.message = ""; this.servicePending = false; this.waitingForAgents = false; }
       } catch (error) { this.error = refusalMessage(error); }
       finally { this.loading = undefined; this.host.changed(); }
     })();
@@ -153,16 +155,18 @@ export class AgentApps {
       this.activity.delete(name);
       if (result.app) this.replace(result.app);
       this.waitingForAgents = result.service === "waiting";
+      this.servicePending = result.service === "waiting" || result.service === "failed";
       this.message = installedMessage(title, result);
       this.host.announce(this.message);
-      if (result.app?.state === "signed-out") await this.signIn(name);
+      if (result.app?.state === "signed-out") await this.signIn(name, result);
     } catch (error) {
       this.activity.set(name, { kind: "failed", action: "install", message: refusalMessage(error), ...(refusalDetail(error) ? { detail: refusalDetail(error)! } : {}) });
       this.host.announce(`${title} could not be installed.`);
     } finally { this.host.changed(); }
   }
 
-  async signIn(name: string): Promise<void> {
+  /** `installed` is the install this sign-in follows, whose service state the message keeps. */
+  async signIn(name: string, installed: AppResult = {}): Promise<void> {
     if (this.busy) return;
     const title = this.apps?.find(app => app.name === name)?.title ?? name;
     this.activity.set(name, { kind: "signing-in" }); this.host.changed();
@@ -172,7 +176,7 @@ export class AgentApps {
       this.activity.delete(name);
       if (result.app) this.replace(result.app);
       if (result.app?.state === "signed-out") this.activity.set(name, { kind: "failed", action: "sign-in", message: "the sign-in finished, but the app still reports it is signed out" });
-      else { this.message = `${title} is ready.`; this.host.announce(this.message); }
+      else { this.message = installedMessage(title, installed, true); this.host.announce(this.message); }
     } catch (error) {
       this.activity.set(name, { kind: "failed", action: "sign-in", message: refusalMessage(error), ...(refusalDetail(error) ? { detail: refusalDetail(error)! } : {}) });
       this.host.announce(`${title} sign-in did not finish.`);
