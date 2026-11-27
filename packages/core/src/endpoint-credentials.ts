@@ -5,6 +5,7 @@ import type { LifecycleState } from "./endpoint-lifecycle-state.js";
 import type { CredentialState } from "./endpoint-credential-state.js";
 import type { ConnectionState } from "./endpoint-connection-state.js";
 import type { EndpointIdentity } from "./endpoint-identity.js";
+import type { EndpointParts } from "./endpoint-parts.js";
 import { randomUUID } from "node:crypto";
 import type { NatsConnection } from "@nats-io/transport-node";
 import { decodeBearerPrincipal, bearerExpiryMs, bearerRenewalDeadlineMs, bearerLifetimeMs, retryAfterMs, dialerFor, authOpts, probeConnect } from "./endpoint-dial.js";
@@ -19,7 +20,6 @@ import { requestSafeReconnect } from "./request-safe-reconnect.js";
  *  the endpoint at call time. */
 export interface EndpointCredentialsDeps {
   emitRecoverable: (err: Error) => void;
-  kickBackoff: () => void;
   reconnect: () => Promise<void>;
   emit: (event: string, ...args: unknown[]) => boolean;
   on: (event: "transport", listener: (state: TransportState) => void) => void;
@@ -38,10 +38,9 @@ export class EndpointCredentials {
   private credsTxn: Promise<unknown> = Promise.resolve();
   private credsTimer?: NodeJS.Timeout;
 
-  constructor(private readonly identity: Readonly<EndpointIdentity>, private readonly conn: Readonly<ConnectionState>, private readonly lifecycle: Readonly<LifecycleState>, private readonly cred: CredentialState, private readonly deps: EndpointCredentialsDeps) {}
+  constructor(private readonly identity: Readonly<EndpointIdentity>, private readonly conn: Readonly<ConnectionState>, private readonly lifecycle: Readonly<LifecycleState>, private readonly cred: CredentialState, private readonly deps: EndpointCredentialsDeps, private readonly parts: Pick<EndpointParts, "reconnection">) {}
 
   private emitRecoverable(err: Error) { void this.deps.emitRecoverable(err); }
-  private kickBackoff() { void this.deps.kickBackoff(); }
   private reconnect() { return this.deps.reconnect(); }
   private emit(event: string, ...args: unknown[]) { return this.deps.emit(event, ...args); }
   private on(event: "transport", listener: (state: TransportState) => void) { void this.deps.on(event, listener); }
@@ -132,7 +131,7 @@ export class EndpointCredentials {
     await this.refreshBearer();
     if (this.lifecycle.stopped || this.cred.currentBearer === held) return;
     if (this.conn.nc && !this.conn.nc.isClosed()) await this.swapConnectionOntoFreshCreds();
-    else this.kickBackoff();
+    else this.parts.reconnection.kickBackoff();
   }
 
   /** The cached bearer, checked: every (re)connect attempt reads it, the reconnects nats.js runs

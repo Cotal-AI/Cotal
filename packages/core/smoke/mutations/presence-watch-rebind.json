@@ -52,7 +52,7 @@
     {
       "name": "R7 clearConnectionScoped no longer moves the epoch, so an old epoch's late bind overwrites the fresh epoch's watch after a reconnect",
       "file": "packages/core/src/endpoint-connection.ts",
-      "find": "    this.delivery.streamMsgs.length = 0;\n    this.lifecycle.presenceEpoch++;\n    this.presence.cancelRebind();\n",
+      "find": "    this.delivery.streamMsgs.length = 0;\n    this.lifecycle.presenceEpoch++;\n    this.parts.presence.cancelRebind();\n",
       "replace": "    this.delivery.streamMsgs.length = 0;\n",
       "expectRed": "7.3 the old epoch's late bind does not overwrite the fresh watch",
       "cell": "7.3 the old epoch's late bind does not overwrite the fresh watch"

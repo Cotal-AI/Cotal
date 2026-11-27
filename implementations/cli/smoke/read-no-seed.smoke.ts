@@ -9,12 +9,13 @@
  * Run: pnpm smoke:read-no-seed
  */
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { isDeepStrictEqual } from "node:util";
 import { createSuite } from "@cotal-ai/smoke-kit";
+import { resolveComspec, resolveOnPath } from "@cotal-ai/workspace";
 import { displayCmd } from "../src/lib/self-exec.js";
 import { shellWord } from "../src/lib/endpoint-errors.js";
 
@@ -47,6 +48,62 @@ function sandbox() {
     return { status: r.status, stdout: r.stdout ?? "", stderr: r.stderr ?? "" };
   };
   return { home, xdg, run };
+}
+
+if (process.platform === "win32") {
+  const { home, xdg } = sandbox();
+  const system = process.env.SystemRoot ?? "C:\\Windows";
+  const cmd = resolveComspec(), powershell = join(system, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
+  const env = {
+    ...Object.fromEntries(Object.entries(HOST_ENV).filter(([name]) => !/^(?:COTAL_.*|PATH|APPDATA|LOCALAPPDATA|TEMP|TMP)$/i.test(name))),
+    PATH: [join(system, "System32"), dirname(powershell)].join(";"),
+    USERPROFILE: home, HOME: home, APPDATA: home, LOCALAPPDATA: home, TEMP: home, TMP: home,
+    COTAL_HOME: join(home, ".cotal"), XDG_CONFIG_HOME: xdg, COTAL_SKIP_CONNECTOR_SEED: "1",
+    DO_NOT_TRACK: "1", NO_COLOR: "1",
+  };
+  const options = { cwd: home, env, encoding: "utf8" as const, timeout: 60_000, windowsHide: true };
+  const bin = dirname(dirname(BIN));
+  const manifest = readFileSync(join(bin, "package.json"), "utf8");
+  const dependencies = (JSON.parse(manifest) as { dependencies: Record<string, string> }).dependencies;
+  for (const prefix of ["npm's & ( [1] prefix", "npm $v %TEMP% !b `t 'q & ( [ caf\u00e9 prefix"]) {
+    const modules = join(home, prefix, "node_modules"), pkg = join(modules, "cotal-ai");
+    mkdirSync(pkg, { recursive: true });
+    writeFileSync(join(pkg, "package.json"), manifest);
+    cpSync(join(bin, "dist"), join(pkg, "dist"), { recursive: true });
+    for (const name of Object.keys(dependencies)) {
+      const link = join(modules, name);
+      mkdirSync(dirname(link), { recursive: true });
+      symlinkSync(realpathSync(join(bin, "node_modules", name)), link, "junction");
+    }
+    const entry = join(pkg, "dist", "cotal.js");
+    const root = spawnSync(process.execPath, [entry, "ext", "root"], options);
+    const safeRoot = root.status === 0 && root.stdout.trim() === join(xdg, "cotal", "extensions");
+    check(`installed ext root stays inside the sandbox for ${prefix}`, safeRoot, root);
+    if (!safeRoot) continue;
+    const status = spawnSync(process.execPath, [entry, "status"], options);
+    const command = /^  (.+? setup --help) +See setup flags for scripts\./m.exec(status.stdout)?.[1];
+    check(`installed status prints setup help for ${prefix} with Cotal off PATH`,
+      status.status === 0 && !resolveOnPath("cotal", env) && Boolean(command), status);
+    if (!command) continue;
+    const ps = spawnSync(powershell, ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Restricted",
+      "-EncodedCommand", Buffer.from(`${command}\nexit $LASTEXITCODE`, "utf16le").toString("base64")], options);
+    const prompt = spawnSync(cmd, [`/d /s /c "${command}"`], { ...options, windowsVerbatimArguments: true });
+    for (const [shell, result] of [["Restricted PowerShell", ps], ["Command Prompt", prompt]] as const) {
+      check(`the command for ${prefix} opens setup help unchanged in ${shell}`,
+        result.status === 0 && /^cotal setup\r?$/m.test(result.stdout) && result.stderr === "", result);
+    }
+    const launcher = command.slice(0, -" setup --help".length);
+    const useDash = `${launcher} use --json -- -missing-space`;
+    const psUse = spawnSync(powershell, ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Restricted",
+      "-EncodedCommand", Buffer.from(`${useDash}\nexit $LASTEXITCODE`, "utf16le").toString("base64")], options);
+    const cmdUse = spawnSync(cmd, [`/d /s /c "${useDash}"`], { ...options, windowsVerbatimArguments: true });
+    for (const [shell, result] of [["Restricted PowerShell", psUse], ["Command Prompt", cmdUse]] as const) {
+      const receipt = result.stdout ? JSON.parse(result.stdout) : undefined;
+      check(`the launcher for ${prefix} preserves -- and -missing-space in ${shell}`,
+        result.status === 2 && receipt?.command === "use" && receipt?.error?.code === "TARGET_NOT_FOUND" &&
+        receipt?.error?.message?.includes('"-missing-space"') === true, result);
+    }
+  }
 }
 const shown = (r: { status: number | null; stdout: string; stderr: string }) => ({ status: r.status, stdout: r.stdout.slice(0, 400), stderr: r.stderr.slice(0, 600) });
 const GATE = /refusing to reconcile the operator-global seed store/;
