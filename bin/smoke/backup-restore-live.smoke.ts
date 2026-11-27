@@ -7,11 +7,11 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { hostname } from "node:os";
 import { aclBucket, channelBucket, chatStream, commitAcl, createSpaceAuth, dmDurableConfig, dmStream, eventPayloadStream, mintCreds, mintLifecycleUid, newIdentity, openAclRegistry, probeConnect, readAcl, rotateSystemAccount, standaloneConnectOpts, taskStream, type PersistentConsumerCheckpoint, type SpaceAuth } from "@cotal-ai/core";
-import { canonicalBackupStreamConfig, openRecordsBucket, pluginFanoutDurableConfig, recordsBucket, spacePluginStreams } from "@cotal-ai/core";
+import { canonicalBackupStreamConfig, downloadStreamSnapshot, openRecordsBucket, pluginFanoutDurableConfig, recordsBucket, spacePluginStreams } from "@cotal-ai/core";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { DeliverPolicy, jetstream, jetstreamManager, type JetStreamManager } from "@nats-io/jetstream";
-import { connect } from "@nats-io/transport-node";
+import { connect, type NatsConnection } from "@nats-io/transport-node";
 import type { BackupManifest } from "../../implementations/cli/src/lib/backup-artifact.js";
 import {
   acquireMaintenanceLock,
@@ -2189,6 +2189,23 @@ function preparedBackupGuidance(): void {
   }
 }
 
+async function addPluginSnapshot(nc: NatsConnection, history: string, original: string, artifact: string): Promise<void> {
+  cpSync(original, artifact, { recursive: true });
+  const manifestPath = join(artifact, "manifest.json");
+  const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as BackupManifest;
+  const chunks: Buffer[] = [];
+  const { config, state } = await downloadStreamSnapshot(nc, history, {
+    deliverSubject: "_INBOX_plugin_backup_fixture.snapshot",
+    onChunk: (chunk) => { chunks.push(Buffer.from(chunk)); },
+  });
+  const path = "plugin-history.snap";
+  const bytes = Buffer.concat(chunks);
+  writeFileSync(join(artifact, path), bytes, { mode: 0o600 });
+  manifest.streams.push({ stream: history, snapshot: path, config, state });
+  manifest.files.push({ path, kind: "snapshot", stream: history, size: bytes.length, sha256: createHash("sha256").update(bytes).digest("hex") });
+  writeFileSync(manifestPath, JSON.stringify(manifest));
+}
+
 async function pluginHistoryScenario(): Promise<void> {
   const root = realpathSync.native(mkdtempSync(join(tmpdir(), "cotal-plugin-backup-root-")));
   const home = realpathSync.native(mkdtempSync(join(tmpdir(), "cotal-plugin-backup-home-")));
@@ -2219,10 +2236,11 @@ async function pluginHistoryScenario(): Promise<void> {
     const provisioner = newIdentity(), author = newIdentity();
     const subject = pluginChannelSubject(space, provisioner.id, author.id, `${PLUGIN_CHANNEL_ROOT}.alpha.work`);
     const records = recordsBucket(space);
+    const bearing = join(root, "artifact-with-plugin-history");
     const fixture = () => openSigned(server, auth, "plugin_backup_fixture", {
       pub: { allow: ["$JS.API.INFO", `$JS.API.STREAM.CREATE.${history}`, `$JS.API.STREAM.INFO.${history}`,
         `$JS.API.STREAM.INFO.KV_${records}`, `$JS.API.STREAM.INFO.${chatStream(space)}`, `$JS.API.CONSUMER.CREATE.${history}.>`,
-        `$JS.API.CONSUMER.INFO.${history}.${PLUGIN_FANOUT_DURABLE}`, pluginChannelSpaceStateSubject(space), subject] },
+        `$JS.API.CONSUMER.INFO.${history}.${PLUGIN_FANOUT_DURABLE}`, `$JS.API.STREAM.SNAPSHOT.${history}`, `$JS.SNAPSHOT.ACK.${history}.>`, pluginChannelSpaceStateSubject(space), subject] },
       sub: { allow: ["_INBOX_plugin_backup_fixture.>"] },
     });
     const seed = await fixture();
@@ -2230,15 +2248,45 @@ async function pluginHistoryScenario(): Promise<void> {
       const manager = await jetstreamManager(seed);
       await manager.streams.add(canonicalBackupStreamConfig(space, history!));
       await manager.consumers.add(history!, pluginFanoutDurableConfig(space));
-      await (await openRecordsBucket(seed, space)).put(PLUGIN_CHANNEL_SPACE_STATE_KEY, JSON.stringify({ version: 1, epoch: 1, enabled: true }));
       const published = await jetstream(seed).publish(subject, new Uint8Array([42]));
       assert.equal(published.stream, history);
+      await addPluginSnapshot(seed, history!, older, bearing);
     } finally { await seed.close(); }
     const refusesWith = (reason: RegExp, ...args: string[]) => {
       const result = run(...args);
       assert.notEqual(result.status, 0, `${args.join(" ")} unexpectedly succeeded`);
       assert.match(`${result.stdout}\n${result.stderr}`, reason);
     };
+    must("down", "--preserve-state");
+    const journal = join(root, ".cotal", "maintenance", "v1", "journal.json");
+    const attempts = join(root, ".cotal", "maintenance", "attempts");
+    const readAttempts = () => existsSync(attempts) ? readdirSync(attempts).sort() : null;
+    const stamp = (path: string) => {
+      if (!existsSync(path)) return null;
+      const { dev, ino, mtimeNs } = lstatSync(path, { bigint: true });
+      return { dev, ino, mtimeNs };
+    };
+    const before = readFileSync(journal), beforeJournalStamp = stamp(journal);
+    const beforeAttempts = readAttempts(), beforeAttemptsStamp = stamp(attempts);
+    const assertUnchanged = () => {
+      assert.deepEqual(readFileSync(journal), before, "the preserved journal is byte-identical");
+      assert.deepEqual(stamp(journal), beforeJournalStamp, "the journal was not written or replaced");
+      assert.deepEqual(readAttempts(), beforeAttempts, "restore refusal leaves no new clone or staging file");
+      assert.deepEqual(stamp(attempts), beforeAttemptsStamp, "restore refusal never creates scratch entries");
+    };
+    const refusedArtifact = /the backup contains plugin channel history, but the destination does not have plugin channels enabled/;
+    refusesWith(refusedArtifact, "backup", "restore", bearing, "--plain");
+    assertUnchanged();
+    refusesWith(refusedArtifact, "backup", "restore", bearing, "--only", "registry", "--plain");
+    assertUnchanged();
+    must("up", "--detach");
+    const stateWriter = await fixture();
+    try {
+      const recordsKv = await openRecordsBucket(stateWriter, space);
+      await recordsKv.put(PLUGIN_CHANNEL_SPACE_STATE_KEY, JSON.stringify({ version: 1, epoch: "invalid", enabled: false }));
+      refusesWith(/could not read plugin channel state in records store .*invalid or unsupported plugin channel space state/s, "history", "clear", "--yes", "--plain");
+      await recordsKv.put(PLUGIN_CHANNEL_SPACE_STATE_KEY, JSON.stringify({ version: 1, epoch: 1, enabled: true }));
+    } finally { await stateWriter.close(); }
     const refuses = (...args: string[]) => refusesWith(/this release does not support enabled plugin channels/, ...args);
     refuses("history", "limit", "--plain");
     refuses("history", "limit", "--per-sender", "50", "--yes", "--plain");
@@ -2264,7 +2312,55 @@ async function pluginHistoryScenario(): Promise<void> {
   }
 }
 
+async function legacyMissingRecordsScenario(): Promise<void> {
+  const root = realpathSync.native(mkdtempSync(join(tmpdir(), "cotal-legacy-records-root-")));
+  const home = realpathSync.native(mkdtempSync(join(tmpdir(), "cotal-legacy-records-home-")));
+  const { env, sandbox } = sandboxRun(root, home);
+  const space = "legacy_missing_records";
+  const server = `nats://127.0.0.1:${await freePort()}`;
+  const run = (...args: string[]) => {
+    const options = { cwd: root, env, encoding: "utf8" as const, timeout: 240_000 };
+    assertSmokeSandboxDown(sandbox, args, options);
+    return spawnSync(process.execPath, [join(worktree, "bin", "dist", "cotal.js"), ...args], options);
+  };
+  const must = (...args: string[]) => {
+    const result = run(...args);
+    assert.equal(result.status, 0, `${args.join(" ")}\n${result.stdout}\n${result.stderr}`);
+    return result;
+  };
+  try {
+    must("up", "--detach", "--no-manager", "--server", server, "--space", space);
+    const auth = loadSoleSpaceAuth(authDir(root));
+    assert.ok(auth);
+    const records = `KV_${recordsBucket(space)}`;
+    const fixture = await openSigned(server, auth, "legacy_records_fixture", {
+      pub: { allow: ["$JS.API.INFO", `$JS.API.STREAM.DELETE.${records}`] },
+      sub: { allow: ["_INBOX_legacy_records_fixture.>"] },
+    });
+    try { assert.equal(await (await jetstreamManager(fixture)).streams.delete(records), true); }
+    finally { await fixture.close(); }
+    must("history", "limit", "--json");
+    must("history", "clear", "--yes", "--json");
+    must("clean", "history", "--force");
+    must("down", "--preserve-state");
+    const artifact = join(root, "missing-records-backup");
+    const backup = run("backup", "create", artifact, "--plain");
+    assert.notEqual(backup.status, 0);
+    assert.ok(`${backup.stdout}\n${backup.stderr}`.includes(`space backup inventory mismatch: missing [${records}]`), backup.stderr);
+    assert.equal(existsSync(artifact), false);
+    assert.equal(readMaintenanceJournal(root)?.state, "ready");
+    console.log("plugin history: a missing legacy records store still allows local retention and both chat purges");
+  } finally {
+    try { run("down", "--yes"); }
+    finally {
+      rmSync(root, { recursive: true, force: true });
+      rmSync(home, { recursive: true, force: true });
+    }
+  }
+}
+
 await pluginHistoryScenario();
+await legacyMissingRecordsScenario();
 if (process.argv.includes("--plugin-history-only")) process.exit(0);
 preparedBackupGuidance();
 await missingPidfileListenerScenario();

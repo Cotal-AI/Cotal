@@ -18,6 +18,9 @@ import {
 import { withDeadline } from "./deadline.js";
 import { recordsKvStreamName, wfjStreamName } from "./endpoint-binding.js";
 import { DEFAULT_OPEN_DM_INACTIVE_MS } from "./endpoint-options.js";
+import { isStreamNotFound } from "./jetstream-missing.js";
+import { EpEnvelopeError } from "./endpoint-error.js";
+import { boundedValue, oneLine } from "./one-line.js";
 import {
   dlvDurableConfig,
   dmDurableConfig,
@@ -27,7 +30,7 @@ import {
   taskDurableConfig,
 } from "./streams.js";
 import { PLUGIN_FANOUT_DURABLE, pluginChannelStream } from "./plugin-channel-route.js";
-import { readPluginChannelSpaceState } from "./plugin-channel-space-state.js";
+import { readPluginChannelSpaceState, type PluginChannelSpaceSnapshot } from "./plugin-channel-space-state.js";
 import {
   FANOUT_DURABLE,
   INBOX_READER_DURABLE,
@@ -109,8 +112,15 @@ function assertBackupStream(space: string, stream: string): string {
 }
 
 /** Read the protected plugin routing state on a maintenance connection without a broad API probe. */
-export async function readPluginMaintenanceState(nc: NatsConnection, space: string) {
-  return readPluginChannelSpaceState(await jetstreamManager(nc, { checkAPI: false }), space);
+export async function readPluginMaintenanceState(nc: NatsConnection, space: string): Promise<PluginChannelSpaceSnapshot> {
+  try {
+    return await readPluginChannelSpaceState(await jetstreamManager(nc, { checkAPI: false }), space);
+  } catch (error) {
+    if (isStreamNotFound(error)) return { state: { version: 1, epoch: 0, enabled: false }, revision: 0 };
+    const reason = error instanceof EpEnvelopeError ? "the protected record could not be decoded or was deleted"
+      : error instanceof Error ? oneLine(boundedValue(error.message, 200)) : "unknown read failure";
+    throw new Error(`could not read plugin channel state in records store ${recordsKvStreamName(space)}: ${reason}`, { cause: error });
+  }
 }
 
 /** Download a no-consumer native snapshot through one ordered, deadline-bounded sink. Each ackable

@@ -25,6 +25,12 @@ function scopedDeletionStream(space: string, name: string): boolean {
   return isTransferStream(space, name) || spacePluginStreams(space).includes(name);
 }
 
+function pluginDeletionFailure(space: string, streams: readonly string[], action: string): CommandFailure | undefined {
+  const plugin = spacePluginStreams(space).find((name) => streams.includes(name));
+  if (!plugin) return undefined;
+  return new CommandFailure("refused", "AUTH_REQUIRED", `could not ${action} plugin channel history stream ${codeSpan(plugin)}; no delete request was submitted`, { target: { space } });
+}
+
 async function assertPluginDeletionState(entry: MeshEntry, space: string, auth: SpaceAuth, serverId: string): Promise<void> {
   const target = { space };
   const identity = newIdentity();
@@ -34,10 +40,8 @@ async function assertPluginDeletionState(entry: MeshEntry, space: string, auth: 
     if (reader.info?.server_id !== serverId || (await observeBrokerConnectionIdentity(reader, { user: identity.id, account: auth.account.pub })).state !== "matched")
       throw new CommandFailure("refused", "CONFLICT", "the state reader did not reach the same authenticated broker", { target });
     try { await readPluginMaintenanceState(reader, space); }
-    catch (error) {
-      // A repeated or partially completed teardown can have already deleted the records store.
-      if (!isJetStreamMissing(error, JetStreamApiCodes.StreamNotFound))
-        throw new CommandFailure("refused", "CONFLICT", "plugin channel state is unsupported or could not be verified; no delete request was submitted", { target });
+    catch {
+      throw new CommandFailure("refused", "CONFLICT", `plugin channel state is unsupported or could not be verified in records store ${codeSpan(`KV_${recordsBucket(space)}`)}; no delete request was submitted`, { target });
     }
   } finally { await reader.close(); }
 }
@@ -242,7 +246,9 @@ async function readSpaceDeletion(name: string, entry = resolveSpaceDeletionEntry
       // The first credential can enumerate names but cannot inspect an optional store it did
       // not name at mint. Mint a second, exact-name grant; do not widen the first connection.
       const identity = newIdentity();
-      const creds = await mintCreds(auth, identity, "teardown", { lifecycleUid: mintLifecycleUid(), transferStreams: transfers });
+      const creds = await mintCreds(auth, identity, "teardown", { lifecycleUid: mintLifecycleUid(), transferStreams: transfers }).catch((error: unknown) => {
+        throw pluginDeletionFailure(name, transfers, "mint the exact credential for") ?? error;
+      });
       transferConnection = await dialerFor(entry.server)({ servers: entry.server, ...standaloneConnectOpts({ creds, tls: entry.tlsRequired === true }), inboxPrefix: `_INBOX_${identity.id}`, timeout: 2_000, reconnect: false, maxReconnectAttempts: 0 });
       if (transferConnection.info?.server_id !== info.server_id || transferConnection.info?.auth_required !== true)
         throw new CommandFailure("refused", "CONFLICT", "the exact-transfer reader did not reach the same authenticated broker; no combined impact was inferred", { target });
@@ -258,7 +264,8 @@ async function readSpaceDeletion(name: string, entry = resolveSpaceDeletionEntry
         const observed = await (scopedDeletionStream(name, stream) && transferManager ? transferManager : jsm).streams.info(stream);
         streams.push({ name: stream, kind, state: "present", messages: observed.state.messages });
       } catch (error) {
-        if (!isJetStreamMissing(error, JetStreamApiCodes.StreamNotFound)) throw error;
+        if (!isJetStreamMissing(error, JetStreamApiCodes.StreamNotFound))
+          throw pluginDeletionFailure(name, [stream], "inspect") ?? error;
         streams.push({ name: stream, kind, state: "absent", messages: null });
       }
     }
@@ -340,7 +347,7 @@ async function applySpaceDeletion(observed: DeletionObservation, progress: Delet
     try {
       const identity = newIdentity();
       credential = { creds: await mintCreds(auth, identity, "teardown", { lifecycleUid: mintLifecycleUid(), transferStreams: transfers }), id: identity.id, account: auth.account.pub };
-    } catch { throw new CommandFailure("refused", "AUTH_REQUIRED", "the exact-scope teardown credential could not be minted; no delete request was submitted", { target }); }
+    } catch { throw pluginDeletionFailure(result.space, transfers, "mint the exact credential for") ?? new CommandFailure("refused", "AUTH_REQUIRED", "the exact-scope teardown credential could not be minted; no delete request was submitted", { target }); }
   }
   let nc: NatsConnection;
   try {

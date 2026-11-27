@@ -13,17 +13,21 @@
  * Run: pnpm smoke:delete-space-auth   (needs nats-server on PATH)
  */
 import { spawn } from "node:child_process";
+import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { connect } from "@nats-io/transport-node";
-import { JetStreamApiCodes, JetStreamApiError, jetstreamManager } from "@nats-io/jetstream";
+import { JetStreamApiCodes, JetStreamApiError, jetstream, jetstreamManager } from "@nats-io/jetstream";
 import {
-  createSpaceAuth, deleteSpace, isReachable, mintCreds, mintLifecycleUid, newIdentity, serverConfig, setupSpaceStreams,
+  canonicalBackupStreamConfig, createSpaceAuth, deleteSpace, isReachable, isStreamNotFound, mintCreds, mintLifecycleUid, newIdentity,
+  pluginFanoutDurableConfig, serverConfig, setupSpaceStreams,
   spaceDeletionStreams, standaloneConnectOpts,
 } from "../src/index.js";
+import { PLUGIN_CHANNEL_ROOT, PLUGIN_FANOUT_DURABLE, pluginChannelStream, pluginChannelSubject } from "../src/plugin-channel-route.js";
 import { SMOKE_BROKER_TOKEN, awaitBrokerReady, emitSentinel, killAndAwaitExit, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { pickFreePort } from "./_free-port.js";
+import { openSigned } from "./_snapshot-ack.js";
 
 let passed = 0, failed = 0;
 async function check(name: string, run: () => Promise<void>): Promise<void> {
@@ -63,6 +67,50 @@ async function present(): Promise<string[]> {
   }
 }
 
+async function pluginTeardown(): Promise<void> {
+  const other = `${space}_other`;
+  const history = pluginChannelStream(space), decoy = pluginChannelStream(other);
+  const actor = newIdentity().id;
+  const subject = (name: string) => pluginChannelSubject(name, actor, actor, `${PLUGIN_CHANNEL_ROOT}.fixture.post`);
+  const nc = await openSigned(servers, auth, "plugin_teardown_fixture", {
+    pub: { allow: ["$JS.API.INFO", subject(space), subject(other), ...[history, decoy].flatMap((name) => [
+      `$JS.API.STREAM.CREATE.${name}`, `$JS.API.STREAM.INFO.${name}`, `$JS.API.STREAM.MSG.GET.${name}`,
+      `$JS.API.CONSUMER.CREATE.${name}.>`, `$JS.API.CONSUMER.INFO.${name}.${PLUGIN_FANOUT_DURABLE}`,
+    ])] },
+    sub: { allow: ["_INBOX_plugin_teardown_fixture.>"] },
+  });
+  const mint = (transferStreams: string[]) => mintCreds(auth, newIdentity(), "teardown", { lifecycleUid: mintLifecycleUid(), transferStreams });
+  try {
+    const jsm = await jetstreamManager(nc);
+    for (const name of [space, other]) {
+      const stream = pluginChannelStream(name);
+      await jsm.streams.add(canonicalBackupStreamConfig(name, stream));
+      await jsm.consumers.add(stream, pluginFanoutDurableConfig(name));
+      assert.equal((await jetstream(nc).publish(subject(name), new Uint8Array([42]))).stream, stream);
+    }
+    const unscoped = await connect({ servers, ...standaloneConnectOpts({ creds: await mint([]), tls: false }) });
+    try {
+      const observer = await jetstreamManager(unscoped, { timeout: 1_000 });
+      assert.ok((await observer.streams.names().next()).includes(history));
+      await assert.rejects(() => observer.streams.info(history), /permissions violation/i);
+      await assert.rejects(() => observer.streams.delete(history), /permissions violation/i);
+    } finally { await unscoped.close(); }
+    await assert.rejects(() => mint([decoy]), /teardown transferStreams names/);
+    const exact = await connect({ servers, ...standaloneConnectOpts({ creds: await mint([history]), tls: false }) });
+    try {
+      const observer = await jetstreamManager(exact, { timeout: 1_000 });
+      assert.equal((await observer.streams.info(history)).state.messages, 1);
+      await assert.rejects(() => observer.streams.delete(decoy), /permissions violation/i);
+    } finally { await exact.close(); }
+    await deleteSpace({ servers, auth, space });
+    await assert.rejects(() => jsm.streams.info(history), isStreamNotFound);
+    await assert.rejects(() => jsm.consumers.info(history, PLUGIN_FANOUT_DURABLE), isStreamNotFound);
+    assert.equal((await jsm.streams.getMessage(decoy, { last_by_subj: subject(other) }))?.data[0], 42);
+    assert.equal((await jsm.consumers.info(decoy, PLUGIN_FANOUT_DURABLE)).num_pending, 1);
+    await deleteSpace({ servers, auth, space });
+  } finally { await nc.close(); }
+}
+
 try {
   await awaitBrokerReady(() => isReachable(servers), { servers, attempts: 50, delayMs: 100 });
   await setupSpaceStreams({ servers, space, creds: await mintCreds(auth, newIdentity(), "provisioner") });
@@ -93,6 +141,7 @@ try {
   await check("a second delete of the gone space resolves", async () => {
     await deleteSpace({ servers, auth, space });
   });
+  await check("authenticated teardown remints for only the observed plugin history and removes it, not another space's history", pluginTeardown);
 } finally {
   await killAndAwaitExit(broker);
   releaseBroker();
@@ -100,4 +149,4 @@ try {
 
 console.log(`\ndelete-space-auth.smoke: ${passed} passed, ${failed} failed`);
 emitSentinel({ passed, failed });
-if (failed > 0 || passed !== 3) process.exitCode = 1;
+if (failed > 0 || passed !== 4) process.exitCode = 1;

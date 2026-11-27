@@ -443,23 +443,20 @@ async function validateManifest(
   }
 }
 
-async function readRestorePluginState(lock: MaintenanceLock, ready: MaintenanceReadyRecord, auth: SpaceAuth, attemptId: string, deadline: Date): Promise<Awaited<ReturnType<typeof readPluginMaintenanceState>>> {
-  const root = lock.root;
-  const probeId = `${attemptId}-plugin-state`;
-  const path = join(ensurePrivateAttemptsDir(root).path, `${probeId}-clone`);
-  recordRestoreAttemptResources(lock, { ownedPaths: [{ label: "clone", path }] });
-  const clone = createAttemptClone(root, ready.source.path, probeId);
-  recordRestoreAttemptResources(lock, { ownedPaths: [{ label: "clone", path, dev: clone.identity.dev.toString(), ino: clone.identity.ino.toString() }] });
-  const broker = await startIsolatedBroker({ root, storeDir: path, space: ready.space, mode: ready.mode, auth, deadline, label: "previous", initialScope: { profile: "backup", scope: { operation: "plugin-state" } }, attemptId: probeId });
+function assertOffRestoreArtifact(space: string, streams: readonly { stream: string }[]): void {
+  if (spacePluginStreams(space).some((name) => streams.some(({ stream }) => stream === name)))
+    throw new CommandFailure("refused", "CONFLICT", "the backup contains plugin channel history, but the destination does not have plugin channels enabled; nothing was restored");
+}
+
+async function readRestorePluginState(root: string, ready: MaintenanceReadyRecord, auth: SpaceAuth, clone: ReturnType<typeof createAttemptClone>, attemptId: string, deadline: Date): ReturnType<typeof readPluginMaintenanceState> {
+  const broker = await startIsolatedBroker({ root, storeDir: clone.path, space: ready.space, mode: ready.mode, auth, deadline, label: "previous", initialScope: { profile: "backup", scope: { operation: "plugin-state" } }, attemptId });
   try {
-    recordRestoreAttemptResources(lock, { owners: [broker.brokerOwner, broker.watchdogOwner], ownedPaths: broker.runFiles.map((file) => ({ label: "config" as const, ...file })) });
     const nc = await connectIsolatedBroker(broker, broker.initialLogin);
     try {
       return await readPluginMaintenanceState(nc, ready.space);
     } finally { await nc.close(); }
   } finally {
     await broker.stop();
-    clone.cleanup();
   }
 }
 
@@ -737,6 +734,7 @@ export async function prepareRestore(root: string, flags: RestoreFlags, validate
   restoreArtifactPath(root, flags.restore, recorded.source.path);
   let lock = acquireStackOperationLock(root, "restore");
   let staged: StagedArtifact | undefined;
+  let sourceClone: ReturnType<typeof createAttemptClone> | undefined;
   let transitioned = false;
   let targetBound = false;
   let targetIdentity: { dev: bigint; ino: bigint } | undefined;
@@ -825,8 +823,10 @@ export async function prepareRestore(root: string, flags: RestoreFlags, validate
     let artifact: StagedArtifact;
     // A faulty artifact is refused before anything moves, naming the file and fault verify names.
     try {
-      if (flags["restore-only"] !== "registry" && flags.runtime && preservedRuntime && flags.runtime !== preservedRuntime)
-        assertRuntime(inspectBackupArtifact(artifactPath, false).selection);
+      const inspected = inspectBackupArtifact(artifactPath, false);
+      if (inspected.space === journal.space) assertOffRestoreArtifact(journal.space, inspected.streams);
+      assertRuntime(inspected.selection);
+      if (!attemptProcessesGone(root)) throw new Error("an isolated maintenance process is not proven stopped; the preserved cut was not changed");
       stageParent = ensurePrivateAttemptsDir(root).path;
       // The journal is ready with no live claim, and the artifact/target are disjoint from attempts.
       sweepAttemptResidue(root);
@@ -837,6 +837,7 @@ export async function prepareRestore(root: string, flags: RestoreFlags, validate
     }
     staged = artifact;
     await validateManifest(artifact.manifest, flags, journal, currentAuthority);
+    assertOffRestoreArtifact(journal.space, artifact.manifest.streams);
     const checkpoints = readStagedCheckpoints(artifact);
     // The partial selection is a property of the artifact, not only of the flag: a registry-only
     // artifact restored without --restore-only registry must still create omitted infrastructure.
@@ -864,6 +865,14 @@ export async function prepareRestore(root: string, flags: RestoreFlags, validate
         throw error;
       }
     })();
+    const previousCutNewer = sourceExists && Date.parse(journal.cut.intentAt) > Date.parse(artifact.manifest.createdAt);
+    if (auth && sourceExists) {
+      const probeId = `${attemptId}-plugin-state`;
+      sourceClone = createAttemptClone(root, journal.source.path, probeId);
+      await readRestorePluginState(root, journal, auth, sourceClone, probeId, deadline);
+      sourceClone.cleanup();
+      sourceClone = undefined;
+    }
     // The store can also hold another account's streams, such as an open mesh's beside a static
     // space's. The artifact holds only this space's account, so the store this restore sets aside
     // keeps their only copy; they are read before it moves.
@@ -888,11 +897,6 @@ export async function prepareRestore(root: string, flags: RestoreFlags, validate
       prepareAlternateRestore(lock, { attemptId, targetPath, claim, selection });
     }
     transitioned = true;
-    const holdsPluginHistory = spacePluginStreams(journal.space).some((stream) => artifact.manifest.streams.some((entry) => entry.stream === stream));
-    const pluginState = auth && sourceExists ? await readRestorePluginState(lock, journal, auth, attemptId, deadline) : undefined;
-    const pluginChannels = pluginState?.state.enabled === true;
-    if (holdsPluginHistory && !pluginChannels)
-      throw new CommandFailure("refused", "CONFLICT", "the backup contains plugin channel history, but the destination does not have plugin channels enabled; nothing was restored");
     if (sourceExists && targetPath === journal.source.path) moveSamePathRestoreSource(lock);
     createOwnedDirectory(targetPath);
     const targetStat = lstatSync(targetPath, { bigint: true });
@@ -978,15 +982,10 @@ export async function prepareRestore(root: string, flags: RestoreFlags, validate
     });
     releaseMaintenanceLock(lock);
     lock = undefined as never;
-    await restoreAndValidate(broker, journal.space, artifact, sanitized!.path, "target", onlyRegistry, checkpoints, true, pluginChannels);
-    if (journal.mode === "auth" && !onlyRegistry) {
-      const restored = await restoredPluginState(broker, journal.space);
-      if (restored.state.enabled !== pluginChannels || (pluginChannels && restored.state.epoch !== pluginState?.state.epoch))
-        throw new Error("the restored plugin channel state does not match the preserved destination epoch");
-    }
+    await restoreAndValidate(broker, journal.space, artifact, sanitized!.path, "target", onlyRegistry, checkpoints, true);
+    if (journal.mode === "auth" && !onlyRegistry) await restoredPluginState(broker, journal.space);
     // A newer cut can hold state the artifact lacks. Inspect the set-aside store on a private
     // clone before waiving consent, and use both brokers' journals to name rolled-back runs.
-    const previousCutNewer = sourceExists && Date.parse(journal.cut.intentAt) > Date.parse(artifact.manifest.createdAt);
     const restoredRuns = previousCutNewer && wanted.includes(wfjStreamName(journal.space)) ? await readRunJournals(broker, journal.space) : undefined;
     for (const record of artifact.manifest.streams)
       if (wanted.includes(record.stream)) await applyRecordedAge(broker, journal.space, record);
@@ -1089,6 +1088,7 @@ export async function prepareRestore(root: string, flags: RestoreFlags, validate
     if (quarantine) removeOwnedDirectory(quarantine.path, quarantine.identity);
     if (sanitized) removeOwnedDirectory(sanitized.path, sanitized.identity);
     if (!lock) lock = acquireMaintenanceLock(root);
+    if (!transitioned && sourceClone && attemptProcessesGone(root)) sourceClone.cleanup();
     if (transitioned && !targetBound && targetIdentity) {
       removeOwnedDirectory(targetPath!, targetIdentity);
       targetIdentity = undefined;

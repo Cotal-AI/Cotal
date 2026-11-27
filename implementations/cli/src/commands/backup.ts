@@ -717,6 +717,7 @@ async function createBackup(args: ParsedArgs, observed: BackupObservation): Prom
     assertBackupPaths(root, ready.source.path, destinationPath);
     // The journal is ready with no live claim, and the destination is proven disjoint from the
     // attempts directory: any attempts-dir content is dead-attempt residue.
+    if (!attemptProcessesGone(root)) throw new Error("an isolated maintenance process is not proven stopped; the preserved cut was not changed");
     sweepAttemptResidue(root);
     const auth = ready.mode === "open" ? undefined : await getSpaceAuth(workspaceSecretStore(root), ready.space);
     if (ready.mode !== "open" && (!auth || auth.space !== ready.space))
