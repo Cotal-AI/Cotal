@@ -280,6 +280,36 @@ static napi_value LockExclusiveNb(napi_env env, napi_callback_info info) {
 
 /* ---- directory security ---- */
 
+static napi_value CreatePrivateDir(napi_env env, napi_callback_info info) {
+  size_t argc = 1;
+  napi_value argv[1], out;
+  napi_get_cb_info(env, info, &argc, argv, NULL, NULL);
+  if (argc != 1) { napi_throw_type_error(env, NULL, "path required"); return NULL; }
+  wchar_t* path = arg_utf16(env, argv[0]);
+  if (path == NULL) return NULL;
+  LPWSTR sid = NULL;
+  const char* step = "";
+  DWORD err = current_sid(&sid, &step);
+  PSECURITY_DESCRIPTOR sd = NULL;
+  if (err == ERROR_SUCCESS) {
+    wchar_t sddl[256];
+    swprintf_s(sddl, _countof(sddl), L"D:P(A;OICI;FA;;;%ls)(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)", sid);
+    step = "ConvertStringSecurityDescriptorToSecurityDescriptorW";
+    if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(sddl, SDDL_REVISION_1, &sd, NULL)) err = GetLastError();
+  }
+  if (err == ERROR_SUCCESS) {
+    SECURITY_ATTRIBUTES attributes = { sizeof(attributes), sd, FALSE };
+    step = "CreateDirectoryW";
+    if (!CreateDirectoryW(path, &attributes)) err = GetLastError();
+  }
+  if (sd != NULL) LocalFree(sd);
+  if (sid != NULL) LocalFree(sid);
+  free(path);
+  if (err != ERROR_SUCCESS && err != ERROR_ALREADY_EXISTS) return throw_win32(env, step, err);
+  napi_get_undefined(env, &out);
+  return out;
+}
+
 /* { directory, reparse, owner, aces } of `path`, read through a handle opened with
  * FILE_FLAG_OPEN_REPARSE_POINT, so a junction or symlink is reported as itself and never followed.
  * `aces` is null for a NULL DACL (which grants everyone everything); each entry is
@@ -718,6 +748,7 @@ static napi_value Init(napi_env env, napi_value exports) {
   Export(env, exports, "observeProcess", ObserveProcess);
   Export(env, exports, "lockExclusiveNb", LockExclusiveNb);
   Export(env, exports, "inspectDir", InspectDir);
+  Export(env, exports, "createPrivateDir", CreatePrivateDir);
   Export(env, exports, "pipeListen", PipeListen);
   Export(env, exports, "pipeAccept", PipeAccept);
   Export(env, exports, "pipeClose", PipeClose);

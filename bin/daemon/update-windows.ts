@@ -4,7 +4,7 @@ import { closeSync, constants, existsSync, fchmodSync, lstatSync, openSync, read
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { writeSecretFileAtomic, writeSecretFileCreateOnly } from "@cotal-ai/core";
-import { lockExclusiveNb } from "@cotal-ai/seat";
+import { lockExclusiveNb, verifyWindowsDemandTask } from "@cotal-ai/seat";
 import { homeCotalDir, claimUpdateClosureAccess, readLocalRecordSource, windowsBootDisposition, windowsUpdateManuallyCleared, WINDOWS_INTERRUPTED_UPDATE, UPDATE_HOUR_MS, win32ProcessBinding } from "@cotal-ai/workspace";
 import { daemonStartedByOwnedService } from "./install.js";
 import { daemonPaths } from "./endpoint.js";
@@ -57,8 +57,8 @@ const taskPrelude = "$ErrorActionPreference='Stop'; $s=New-Object -ComObject Sch
 interface Task { present: boolean; state?: number; instances?: number; enabled?: boolean; xml?: string; }
 function task(r: WindowsUpdateReceipt, operation: "read" | "disable" | "delete" = "read"): Task {
   assertSource(r);
-  const script = taskPrelude + "if($t.Count -eq 0){'{\"present\":false}';exit 0}; $d=$t[0].Definition; $sid=[string]$d.Principal.UserId; if($sid -notmatch '^S-1-'){$sid=([Security.Principal.NTAccount]::new($sid)).Translate([Security.Principal.SecurityIdentifier]).Value}; " +
-    "if($d.Actions.Count -ne 1){throw 'automatic update task has extra actions'}; $a=$d.Actions.Item(1); if($a.Type -ne 0 -or [string]$a.Path -cne $env:COTAL_UPDATE_COMMAND -or [string]$a.Arguments -cne $env:COTAL_UPDATE_ARGUMENTS -or [string]$a.WorkingDirectory -cne $env:COTAL_UPDATE_DIRECTORY -or $sid -cne $env:COTAL_UPDATE_SID -or $d.Principal.LogonType -ne 3 -or $d.Principal.RunLevel -ne 0 -or $d.Triggers.Count -ne 0 -or $d.Settings.RestartCount -ne 0 -or $d.Settings.MultipleInstances -ne 2 -or $d.Settings.ExecutionTimeLimit -ne 'PT0S' -or -not $d.Settings.AllowDemandStart){throw 'registered automatic update task differs from receipt'}; " +
+  const script = verifyWindowsDemandTask + taskPrelude + "if($t.Count -eq 0){'{\"present\":false}';exit 0}; $d=$t[0].Definition; " +
+    "if($d.Actions.Count -ne 1){throw 'automatic update task has extra actions'}; if(-not (Test-CotalDemandTask $d $env:COTAL_UPDATE_COMMAND $env:COTAL_UPDATE_ARGUMENTS $env:COTAL_UPDATE_DIRECTORY $env:COTAL_UPDATE_SID)){throw 'registered automatic update task differs from receipt'}; " +
     (operation === "disable" ? "$t[0].Enabled=$false; " : operation === "delete" ? "if($t[0].GetInstances(0).Count -ne 0 -or $t[0].State -notin @(1,3)){throw 'update task still has custody'}; $f.DeleteTask($env:COTAL_UPDATE_TASK,0); '{\"present\":false}';exit 0; " : "") +
     "ConvertTo-Json -Compress -InputObject @{present=$true;state=[int]$t[0].State;instances=[int]$t[0].GetInstances(0).Count;enabled=[bool]$t[0].Enabled}";
   const result = JSON.parse(powershell(script, { COTAL_UPDATE_TASK: r.name, COTAL_UPDATE_COMMAND: r.argv[0]!, COTAL_UPDATE_ARGUMENTS: r.argv.slice(1).map(windowsArgument).join(" "), COTAL_UPDATE_DIRECTORY: homeCotalDir(), COTAL_UPDATE_SID: win32ProcessBinding().userSid() })) as Task;

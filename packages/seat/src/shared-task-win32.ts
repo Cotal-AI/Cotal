@@ -1,16 +1,18 @@
 import { spawnSync } from "node:child_process";
-import { createHash } from "node:crypto";
-import { realpathSync } from "node:fs";
+import { lstatSync, realpathSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { windowsUserSid } from "./host.js";
 import { checkWindowsCustodyPath, checkWindowsCustodyRoot } from "./shared-files-win32.js";
+import type { WindowsSeatSlot } from "./shared-slot-win32.js";
+import { verifyWindowsDemandTask } from "./windows-demand-task.js";
 
 type TaskState = { present: false } | { present: true; enabled: boolean; instances: number };
 
 /** Use COM create-only registration and exact-name lookup, not a process launched by the service.
- * The task's fixed bootstrap starts the verified retained executable. No credentials enter the task
+ * The action runs the verified retained executable directly. No credentials enter the task
  * definition. The caller holds the custody start lock for each task operation. */
-export function windowsCustodyTask(root: string, runtime: { root: string; program: string; entry: string }, session: number) {
+export function windowsCustodyTask(slot: WindowsSeatSlot, runtime: { root: string; key: string; program: string; entry: string }, session: number) {
+  let { root } = slot;
   checkWindowsCustodyRoot(root);
   root = realpathSync.native(root);
   if (/["%\x00-\x1f]/.test(root)) throw new Error("Windows PTY task path cannot be passed unchanged");
@@ -18,23 +20,19 @@ export function windowsCustodyTask(root: string, runtime: { root: string; progra
   const program = retainedPath(runtime.root, runtime.program);
   const script = retainedPath(runtime.root, runtime.entry);
   if (!Number.isInteger(session) || session <= 0 || session > 0x7fffffff) throw new Error("Windows PTY custody needs an interactive session");
-  const sid = windowsUserSid();
-  const key = createHash("sha256").update(sid).update("\0").update(root.toLowerCase()).digest("hex").slice(0, 32);
-  const name = `cotal-pty-${key}`;
+  const { key, name, sid } = slot;
+  if (sid !== windowsUserSid() || !/^[0-9a-f]{32}$/.test(key) || name !== `cotal-pty-${key}-${sid}` || slot.generation !== runtime.key ||
+      resolve(root, "..", "..") !== dirname(realpathSync.native(runtime.root))) throw new Error("unknown Windows PTY task slot");
   const source = `Cotal local PTY custody ${key}`;
   const systemRoot = process.env.SystemRoot;
   if (!systemRoot || !/^[a-z]:\\/i.test(systemRoot)) throw new Error("Windows directory is unavailable");
   const shell = join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
-  // Task Scheduler inherits the user's environment and cannot set an action's environment block.
-  // A fixed, profile-free bootstrap drops inherited Node configuration before invoking Node.
-  const quote = (part: string) => "'" + part.replaceAll("'", "''") + "'";
-  const bootstrap = `$ErrorActionPreference='Stop'\n` +
-    `foreach ($key in @('NODE_OPTIONS','NODE_PATH','NODE_V8_COVERAGE','NODE_COMPILE_CACHE')) { [Environment]::SetEnvironmentVariable($key,$null,'Process') }\n` +
-    `$env:DO_NOT_TRACK='1'\n& ${[program, script, root, name].map(quote).join(" ")}\nexit $LASTEXITCODE\n`;
-  const args = `-NoLogo -NoProfile -NonInteractive -WindowStyle Hidden -EncodedCommand ${Buffer.from(bootstrap, "utf16le").toString("base64")}`;
+  const args = [script, root, name].map(value => /\s/.test(value) ? `"${value}"` : value).join(" ");
+  const receipt = join(root, "task.xml");
   function run(op: "inspect" | "start" | "remove"): TaskState {
+    if (lstatSync(receipt, { throwIfNoEntry: false })) checkWindowsCustodyPath(receipt, false);
     const result = spawnSync(shell, ["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", SCRIPT], {
-      input: Buffer.from(JSON.stringify({ op, name, program: shell, args, root, sid, source, session }).replace(/[^\x00-\x7f]/g, c => `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`), "ascii"),
+      input: Buffer.from(JSON.stringify({ op, name, program, args, root, sid, source, session, receipt }).replace(/[^\x00-\x7f]/g, c => `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`), "ascii"),
       stdio: ["pipe", "pipe", "ignore"], encoding: "utf8", timeout: 8000, windowsHide: true, maxBuffer: 16_384,
     });
     if (result.error || result.status !== 0) throw new Error("Windows PTY task ownership or disposition is unknown");
@@ -58,7 +56,7 @@ function retainedPath(root: string, path: string): string {
   return path;
 }
 
-const SCRIPT = Buffer.from(String.raw`
+const SCRIPT = Buffer.from(verifyWindowsDemandTask + String.raw`
 $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
 $a = [Console]::In.ReadToEnd() | ConvertFrom-Json
@@ -75,19 +73,17 @@ function Find-Exact {
 }
 function Assert-Owned($task) {
     $d = $task.Definition
-    $p = $d.Principal
     $s = $d.Settings
-    $sid = [string]$p.UserId
-    if ($sid -notmatch '^S-1-') { $sid = ([Security.Principal.NTAccount]::new($sid)).Translate([Security.Principal.SecurityIdentifier]).Value }
     if ($task.Path -cne ('\' + $a.name) -or $d.RegistrationInfo.Source -cne $a.source -or
-        $d.Triggers.Count -ne 0 -or $d.Actions.Count -ne 1 -or $sid -cne $a.sid -or $p.LogonType -ne 3 -or $p.RunLevel -ne 0 -or
-        $s.MultipleInstances -ne 2 -or !$s.AllowDemandStart -or $s.DisallowStartIfOnBatteries -or $s.StopIfGoingOnBatteries -or
-        $s.ExecutionTimeLimit -cne 'PT0S' -or $s.RestartCount -ne 0 -or $s.RunOnlyIfIdle -or $s.RunOnlyIfNetworkAvailable) { throw 'Foreign task definition' }
-    $action = $d.Actions.Item(1)
-    if ($action.Type -ne 0 -or $action.Path -cne $a.program -or $action.Arguments -cne $a.args -or $action.WorkingDirectory -cne $a.root) { throw 'Foreign task action' }
+        -not (Test-CotalDemandTask $d $a.program $a.args $a.root $a.sid) -or
+        $s.DisallowStartIfOnBatteries -or $s.StopIfGoingOnBatteries -or $s.RunOnlyIfIdle -or $s.RunOnlyIfNetworkAvailable) { throw 'Foreign task definition' }
+    $info = Get-Item -LiteralPath $a.receipt -Force
+    if ($info.Length -gt 65536 -or $info.PSIsContainer -or ($info.Attributes -band [IO.FileAttributes]::ReparsePoint) -or
+        [IO.File]::ReadAllText($a.receipt) -cne [string]$task.Xml) { throw 'Foreign task source' }
 }
 $task = Find-Exact
 if (!$task -and $a.op -eq 'start') {
+    if (Test-Path -LiteralPath $a.receipt) { throw 'Prior task disposition is unknown' }
     $d = $scheduler.NewTask(0)
     $d.RegistrationInfo.Source = $a.source
     $d.Principal.UserId = $a.sid
@@ -105,6 +101,10 @@ if (!$task -and $a.op -eq 'start') {
     $null = $folder.RegisterTaskDefinition($a.name, $d, 2, $a.sid, $null, 3, $null)
     $task = Find-Exact
     if (!$task) { throw 'Task registration not observed' }
+    $bytes = [Text.Encoding]::UTF8.GetBytes([string]$task.Xml)
+    if ($bytes.Length -gt 65536) { throw 'Unexpected task XML size' }
+    $file = [IO.File]::Open($a.receipt, [IO.FileMode]::CreateNew)
+    try { $file.Write($bytes, 0, $bytes.Length); $file.Flush($true) } finally { $file.Dispose() }
 }
 if (!$task) { '{"present":false}'; exit 0 }
 Assert-Owned $task
@@ -113,6 +113,7 @@ if ($a.op -eq 'remove') {
     if ($count -ne 0) { throw 'Task is active' }
     $folder.DeleteTask($a.name, 0)
     if (Find-Exact) { throw 'Task removal not observed' }
+    [IO.File]::Delete($a.receipt)
     '{"present":false}'; exit 0
 }
 if ($a.op -eq 'start' -and !$task.Enabled) { throw 'Task is disabled' }

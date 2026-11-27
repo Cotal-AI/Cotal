@@ -72,6 +72,7 @@ type HostNative = {
   userCacheDir?: () => string;
   currentUserSid?: () => string;
   inspectDir?: (path: string) => WindowsDirSecurity;
+  createPrivateDir?: (path: string) => void;
   pipeListen?: (name: string) => object;
   pipeAccept?: (listener: object) => Promise<PipePeer | PipeRefused>;
   pipeClose?: (listener: object) => void;
@@ -148,6 +149,11 @@ export function windowsUserSid(): string {
 /** Windows: the owner and DACL of `path`, read without following a reparse point. */
 export function windowsDirSecurity(path: string): WindowsDirSecurity {
   return native("inspectDir")(path);
+}
+
+/** Create with a protected owner/SYSTEM/Administrators DACL. Leave an existing path untouched. */
+export function createWindowsPrivateDir(path: string): void {
+  native("createPrivateDir")(path);
 }
 
 /** Windows: serve pipe `name` to this user only. Throws code `EADDRINUSE` when anything already

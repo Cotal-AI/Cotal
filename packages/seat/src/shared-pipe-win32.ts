@@ -1,14 +1,6 @@
-import { createHash } from "node:crypto";
-import { closeSync, realpathSync } from "node:fs";
+import { closeSync } from "node:fs";
 import { Socket } from "node:net";
 import { connectPipe, listenPipe, observeWindowsProcess, windowsUserSid, type PipePeer } from "./host.js";
-
-/** A stable local name for this host directory, scoped to the token SID. */
-export function sharedWindowsPipe(root: string): string {
-  const sid = windowsUserSid();
-  const key = createHash("sha256").update(sid).update("\0").update(realpathSync.native(root).toLowerCase()).digest("hex").slice(0, 32);
-  return `\\\\.\\pipe\\cotal-pty-${key}`;
-}
 
 function adopt(fd: number): Socket {
   try { return new Socket({ fd, readable: true, writable: true }); }

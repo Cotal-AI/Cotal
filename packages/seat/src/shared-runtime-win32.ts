@@ -1,10 +1,11 @@
 import { createHash } from "node:crypto";
 import { closeSync, constants, copyFileSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, realpathSync, renameSync, rmSync } from "node:fs";
 import { createRequire } from "node:module";
-import { dirname, isAbsolute, join, relative, sep } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { checkWindowsCustodyPath, checkWindowsCustodyRoot, makeWindowsCustodyDirectory } from "./shared-files-win32.js";
 import { seatId } from "./record.js";
+import { windowsSeatStore } from "./shared-slot-win32.js";
 
 const seatPackage = dirname(dirname(fileURLToPath(import.meta.url)));
 const requireHere = createRequire(import.meta.url);
@@ -14,11 +15,11 @@ const MAX_BYTES = 512 * 1024 * 1024;
 type Entry = { name: string; source: string; bytes: number; sha256: string };
 
 /** Only the host's execution closure, not a copy of the CLI, connector set or dependency cache.
- * The caller supplies the protected custody root and the install tree the installer may replace.
+ * The caller supplies the install tree the installer may replace. Host state lives beside the
+ * inventory, never inside it.
  * Publish a complete, verified generation by rename. This function does not prune generations. */
-export function retainWindowsSeatRuntime(store: string, install: string) {
-  checkWindowsCustodyRoot(store);
-  if (inside(realpathSync.native(install), realpathSync.native(store))) throw new Error("Windows PTY runtime store is inside the installation");
+export function retainWindowsSeatRuntime(install: string) {
+  const store = windowsSeatStore(install);
   const native = `win32-${process.arch}`;
   if (native !== "win32-x64" && native !== "win32-arm64") throw new Error("Windows PTY runtime architecture is unsupported");
   const pty = packageRoot("@lydell/node-pty", requireHere);
@@ -37,18 +38,15 @@ export function retainWindowsSeatRuntime(store: string, install: string) {
   for (const [name, path] of dependencies) scan.tree(path, `node_modules/${name}`);
   const entries = scan.entries.sort((a, b) => a.name.localeCompare(b.name, "en"));
   const key = createHash("sha256").update(JSON.stringify(entries.map(({ name, bytes, sha256 }) => [name, bytes, sha256]))).digest("hex");
-  const root = join(store, key);
+  const generation = join(store, key);
+  makeWindowsCustodyDirectory(generation);
+  const root = join(generation, "runtime");
   try { verify(root, entries); }
   catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT" || exists(root)) throw error;
-    publish(store, root, entries);
+    publish(generation, root, entries);
   }
   return { root, key, program: join(root, "node.exe"), entry: join(root, "seat", "dist", "shared-custodian.js") };
-}
-
-function inside(root: string, path: string): boolean {
-  const rel = relative(root, path);
-  return !isAbsolute(rel) && rel !== ".." && !rel.startsWith(`..${sep}`);
 }
 
 function exists(path: string): boolean {
