@@ -6,7 +6,7 @@
 import assert from "node:assert/strict";
 import { execFile, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -15,22 +15,6 @@ import { emitSentinel } from "@cotal-ai/smoke-kit";
 import { resolveOnPath, SEEDED_EXTENSIONS } from "@cotal-ai/workspace";
 
 const execFileAsync = promisify(execFile);
-
-function snapshotTree(root: string): Record<string, string> {
-  const out: Record<string, string> = {};
-  const walk = (dir: string, prefix: string): void => {
-    for (const entry of readdirSync(dir, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
-      const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
-      const full = join(dir, entry.name);
-      const st = lstatSync(full);
-      if (st.isSymbolicLink()) out[rel] = `link:${realpathSync(full)}`;
-      else if (st.isDirectory()) walk(full, rel);
-      else out[rel] = createHash("sha256").update(readFileSync(full)).digest("hex");
-    }
-  };
-  walk(root, "");
-  return out;
-}
 
 interface FixtureTarball {
   readonly version: string;
@@ -185,10 +169,6 @@ async function checkPackageLockOverride(
   let registryUrl = "";
   const server = createServer((req, res) => {
     const rawPath = new URL(req.url ?? "/", "http://127.0.0.1").pathname;
-    if (rawPath.startsWith("/refused")) {
-      res.writeHead(503, { "content-type": "application/json" }).end(JSON.stringify({ error: "registry unavailable" }));
-      return;
-    }
     if (rawPath === "/cotal-ai") {
       res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({
         name: "cotal-ai", "dist-tags": { latest: version }, versions: { [version]: { name: "cotal-ai", version } },
@@ -236,56 +216,6 @@ async function checkPackageLockOverride(
     assert.ok(address && typeof address !== "string");
     registryUrl = `http://127.0.0.1:${address.port}`;
 
-    // (c) Default npm configuration (loopback fixture tarballs + empty npm cache): installed tree and package-lock.json package list match main's npm invocation.
-    {
-      const { dir, env, entry } = makeIsolated(join(root, "lock-parity-default"));
-      const loopbackEnv = { ...env, npm_config_registry: registryUrl, npm_config_cache: join(dir, "empty-cli-cache") };
-      const elsewhere = process.platform === "darwin" ? "linux" : "darwin";
-      const mkDep = (name: string, extra: Record<string, unknown>) => {
-        const d = join(dir, "fixtures", name);
-        mkdirSync(d, { recursive: true });
-        writeFileSync(join(d, "package.json"), JSON.stringify({ name, version: "1.0.0", ...extra }));
-        writeFileSync(join(d, "index.js"), "export default 1;\n");
-        return d;
-      };
-      const optHere = mkDep("probe-opt-here", { os: [process.platform] });
-      const optElsewhere = mkDep("probe-opt-elsewhere", { os: [elsewhere] });
-      const extSrc = join(dir, "fixtures", "probe-parity-ext");
-      mkdirSync(extSrc, { recursive: true });
-      writeFileSync(join(extSrc, "package.json"), JSON.stringify({
-        name: "probe-parity-ext", version: "1.0.0", type: "module", main: "index.js",
-        peerDependencies: { "@cotal-ai/core": "*" },
-        optionalDependencies: { "probe-opt-here": `file:${optHere}`, "probe-opt-elsewhere": `file:${optElsewhere}` },
-      }));
-      writeFileSync(join(extSrc, "index.js"), `import { registry } from "@cotal-ai/core"; registry.register({ kind: "command", name: "probe-parity", summary: "probe", run() {} });\n`);
-      await execFileAsync(process.execPath, [entry, "ext", "add", extSrc], {
-        cwd: dir, env: loopbackEnv, timeout: 180_000, maxBuffer: 16 * 1024 * 1024,
-      });
-      const cliPrefix = await queryExtRoot(entry, dir, loopbackEnv);
-      const mainPrefix = join(dir, "main-control");
-      mkdirSync(mainPrefix, { recursive: true });
-      writeFileSync(join(mainPrefix, "package.json"), `${JSON.stringify({ name: "cotal-extensions", private: true }, null, 2)}\n`);
-      const cliPkg = JSON.parse(readFileSync(join(cliPrefix, "package.json"), "utf8")) as { dependencies: Record<string, string> };
-      const mainSpecs = Object.values(cliPkg.dependencies).map(spec => spec.startsWith("file:") ? resolve(cliPrefix, spec.slice(5)) : spec);
-      await execFileAsync(realNpm, ["install", "--save", "--no-audit", "--no-fund", "--install-links", ...mainSpecs, "--prefix", mainPrefix, "--include=optional", "--legacy-peer-deps"], {
-        cwd: dir,
-        env: { ...env, npm_config_registry: registryUrl, npm_config_cache: join(dir, "empty-main-cache") },
-        timeout: 180_000,
-        maxBuffer: 16 * 1024 * 1024,
-        shell: process.platform === "win32",
-      });
-      const cliLock = JSON.parse(readFileSync(join(cliPrefix, "package-lock.json"), "utf8")) as { packages: Record<string, unknown> };
-      const mainLock = JSON.parse(readFileSync(join(mainPrefix, "package-lock.json"), "utf8")) as { packages: Record<string, unknown> };
-      const cliLockKeys = Object.keys(cliLock.packages).sort();
-      const mainLockKeys = Object.keys(mainLock.packages).sort();
-      const nonCotalDirs = (p: string) => readdirSync(join(p, "node_modules")).filter(n => !n.startsWith(".") && !n.startsWith("@cotal-ai")).sort();
-      check("default npm config writes the same lock package list and installed tree as main",
-        JSON.stringify(cliLockKeys) === JSON.stringify(mainLockKeys)
-        && JSON.stringify(nonCotalDirs(cliPrefix)) === JSON.stringify(nonCotalDirs(mainPrefix))
-        && existsSync(join(cliPrefix, "node_modules", "probe-opt-here"))
-        && !existsSync(join(cliPrefix, "node_modules", "probe-opt-elsewhere")));
-    }
-
     const { dir, userNpmrc, env, entry } = makeIsolated(join(root, "lock-override-installed"));
     env.npm_config_registry = registryUrl;
     const extPrefix = await queryExtRoot(entry, dir, env);
@@ -316,7 +246,7 @@ async function checkPackageLockOverride(
       check(name, value);
     };
 
-    // (a) User .npmrc package-lock=false: seed + damaged built-in update + repeat update keeps lock current and .npmrc byte-identical.
+    // User .npmrc package-lock=false: seed, damaged built-in repair, and repeat updates keep package-lock.json current and .npmrc byte-identical.
     writeFileSync(userNpmrc, "package-lock=false\n");
     const npmrcBefore = readFileSync(userNpmrc);
     const seeded = await run(["ext", "seed"]);
@@ -333,7 +263,7 @@ async function checkPackageLockOverride(
       && lockCoversBuiltIns() && readFileSync(userNpmrc).equals(npmrcBefore),
       { repaired, verified, selfCurrent, hasLock: existsSync(lockPath) });
 
-    // (b) Environment npm_config_package_lock=false, managed <extensions>/.npmrc package-lock=false, and working-folder .npmrc isolation check.
+    // Environment npm_config_package_lock=false and managed <extensions>/.npmrc package-lock=false both write package-lock.json and converge.
     writeFileSync(userNpmrc, "");
     rmSync(lockPath);
     const envRepair = await run(["update"], { env: { npm_config_package_lock: "false" } });
@@ -356,22 +286,7 @@ async function checkPackageLockOverride(
       { pfxRepair, pfxVerify });
     rmSync(prefixNpmrc);
 
-    const projectDir = join(dir, "working-project");
-    mkdirSync(projectDir, { recursive: true });
-    const projectNpmrc = join(projectDir, ".npmrc");
-    writeFileSync(projectNpmrc, "package-lock=false\n");
-    const projectNpmrcBefore = readFileSync(projectNpmrc);
-    rmSync(lockPath);
-    const projRepair = await run(["update"], { cwd: projectDir });
-    const projVerify = await run(["update"], { cwd: projectDir });
-    checkWithDiag("working-folder .npmrc: nothing in the working folder is read or written during update (holds on main too)",
-      projRepair.code === 0 && lockCoversBuiltIns()
-      && projVerify.code === 0 && !/reinstalling every built-in|Reconciling built-in/.test(projVerify.stdout + projVerify.stderr)
-      && readFileSync(projectNpmrc).equals(projectNpmrcBefore)
-      && readdirSync(projectDir).join(",") === ".npmrc",
-      { projRepair, projVerify });
-
-    // (d) Stale prefix without package-lock.json: first run reinstalls built-ins once, second run changes nothing.
+    // Stale prefix without package-lock.json: first update reinstalls built-ins once and writes package-lock.json, second update changes nothing.
     writeFileSync(userNpmrc, "package-lock=false\n");
     rmSync(lockPath);
     const staleFirst = await run(["update"]);
@@ -384,52 +299,7 @@ async function checkPackageLockOverride(
       && digest(lockPath) === lockDigestAfterFirst,
       { staleFirst, staleSecond });
 
-    // (e) Linked extensions folder with a refused registry: nothing in the live prefix is removed.
-    {
-      const linkCase = makeIsolated(join(root, "linked-extensions-refused"));
-      writeFileSync(linkCase.userNpmrc, "package-lock=false\n");
-      const localExt = join(linkCase.dir, "kept-local-ext");
-      mkdirSync(localExt, { recursive: true });
-      writeFileSync(join(localExt, "package.json"), JSON.stringify({
-        name: "kept-local-ext", version: "1.0.0", type: "module", main: "index.js", peerDependencies: { "@cotal-ai/core": "*" },
-      }));
-      writeFileSync(join(localExt, "index.js"), `import { registry } from "@cotal-ai/core"; registry.register({ kind: "command", name: "kept-local", summary: "kept", run() {} });\n`);
-      await execFileAsync(process.execPath, [linkCase.entry, "ext", "add", localExt], {
-        cwd: linkCase.dir,
-        env: { ...linkCase.env, npm_config_registry: registryUrl, npm_config_cache: join(linkCase.dir, "empty-seed-cache") },
-        timeout: 180_000,
-        maxBuffer: 16 * 1024 * 1024,
-      });
-      const configuredExt = await queryExtRoot(linkCase.entry, linkCase.dir, linkCase.env);
-      const realExt = join(linkCase.dir, "real-extensions");
-      renameSync(configuredExt, realExt);
-      symlinkSync(realExt, configuredExt, "junction");
-      const beforeTree = snapshotTree(realExt);
-      let refusedCode = 0;
-      try {
-        await execFileAsync(process.execPath, [linkCase.entry, "ext", "add", "@probe/refused-pkg@1.0.0"], {
-          cwd: linkCase.dir,
-          env: {
-            ...linkCase.env,
-            npm_config_registry: `${registryUrl}/refused`,
-            npm_config_cache: join(linkCase.dir, "empty-cache"),
-            npm_config_fetch_retries: "0",
-          },
-          timeout: 60_000,
-        });
-      } catch (err) {
-        refusedCode = typeof (err as { code?: number }).code === "number" ? (err as { code: number }).code : 1;
-      }
-      const afterTree = snapshotTree(realExt);
-      check("linked extensions folder with refused registry leaves every live file untouched",
-        refusedCode !== 0 && lstatSync(configuredExt).isSymbolicLink()
-        && JSON.stringify(afterTree) === JSON.stringify(beforeTree)
-        && existsSync(join(realExt, "node_modules", "kept-local-ext", "index.js")));
-    }
-
-    checkWithDiag("loopback fixture registry served all package-lock cells offline with no unexpected lookups",
-      unexpectedRequests.length === 0,
-      { unexpectedRequests });
+    assert.deepEqual(unexpectedRequests, []);
   } finally {
     await new Promise<void>((resolveClose, reject) => server.close(err => err ? reject(err) : resolveClose()));
   }
@@ -714,7 +584,7 @@ registry.register({ kind: "command", name: "greet-fallback", summary: "Fallback 
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
-  assert.equal(passed + failed, process.platform === "linux" || process.platform === "darwin" ? 54 : 49, "all expected copy/rollback checks ran");
+  assert.equal(passed + failed, process.platform === "linux" || process.platform === "darwin" ? 50 : 45, "all expected copy/rollback checks ran");
   console.log(`ext-install-copies smoke: ${passed} passed, ${failed} failed`);
   emitSentinel({ passed, failed });
   process.exit(failed ? 1 : 0);

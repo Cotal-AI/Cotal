@@ -131,7 +131,7 @@ async function checkPackageLockCellsAndUpgrade(
   );
   const realNpm = resolveOnPath("npm", noNpmEnv);
   if (!realNpm) throw new Error("the smoke needs npm on PATH");
-  const root = mkdtempSync(join(tmpdir(), "cotal-r4-lock-"));
+  const root = mkdtempSync(join(tmpdir(), "cotal-package-lock-"));
   const builtInPkgs = [
     "@cotal-ai/connector-claude-code", "@cotal-ai/connector-opencode", "@cotal-ai/connector-codex",
     "@cotal-ai/connector-hermes", "@cotal-ai/connector-jcode", "@cotal-ai/pi", "@cotal-ai/web",
@@ -308,32 +308,32 @@ async function checkPackageLockCellsAndUpgrade(
       return out.stdout.trim();
     };
 
-    // 3a & 3b & 3c: built CLI over published layout with user .npmrc, env, project .npmrc, and default config parity.
+    // Built CLI over published layout: user .npmrc, environment, prefix .npmrc, working-folder .npmrc isolation, and default config parity.
     {
       serveMode = "current";
-      const c3a = makeCase("cell-3ab");
-      c3a.env.npm_config_registry = overlayUrl;
-      writeFileSync(c3a.userNpmrc, "package-lock=false\n");
-      const npmrcBytes = readFileSync(c3a.userNpmrc);
-      await exec(process.execPath, [entry, "ext", "seed"], { cwd: c3a.dir, env: c3a.env, timeout: 240_000 });
-      const extDir = await queryExtRoot(entry, c3a.dir, c3a.env);
+      const overrideCase = makeCase("lock-override-cases");
+      overrideCase.env.npm_config_registry = overlayUrl;
+      writeFileSync(overrideCase.userNpmrc, "package-lock=false\n");
+      const npmrcBytes = readFileSync(overrideCase.userNpmrc);
+      await exec(process.execPath, [entry, "ext", "seed"], { cwd: overrideCase.dir, env: overrideCase.env, timeout: 240_000 });
+      const extDir = await queryExtRoot(entry, overrideCase.dir, overrideCase.env);
       const lockPath = join(extDir, "package-lock.json");
       const claudeIdx = join(extDir, "node_modules/@cotal-ai/connector-claude-code/dist/index.js");
       writeFileSync(claudeIdx, `${readFileSync(claudeIdx, "utf8")}\n`);
-      const u1 = await exec(process.execPath, [entry, "update"], { cwd: c3a.dir, env: c3a.env, timeout: 240_000 });
-      const u2 = await exec(process.execPath, [entry, "update"], { cwd: c3a.dir, env: c3a.env, timeout: 240_000 });
-      check("3a: user .npmrc package-lock=false updates cleanly, writes current package-lock.json, and keeps .npmrc byte-identical",
+      const u1 = await exec(process.execPath, [entry, "update"], { cwd: overrideCase.dir, env: overrideCase.env, timeout: 240_000 });
+      const u2 = await exec(process.execPath, [entry, "update"], { cwd: overrideCase.dir, env: overrideCase.env, timeout: 240_000 });
+      check("user .npmrc package-lock=false updates cleanly, writes current package-lock.json, and keeps .npmrc byte-identical",
         /refreshed claude\b/.test(u1.stdout + u1.stderr)
         && !/reinstalling every built-in|Reconciling built-in/.test(u2.stdout + u2.stderr)
         && lockHasAllBuiltIns(lockPath, version)
-        && readFileSync(c3a.userNpmrc).equals(npmrcBytes),
+        && readFileSync(overrideCase.userNpmrc).equals(npmrcBytes),
         { u1: u1.stdout + u1.stderr, u2: u2.stdout + u2.stderr });
 
-      writeFileSync(c3a.userNpmrc, "");
+      writeFileSync(overrideCase.userNpmrc, "");
       rmSync(lockPath);
-      const env1 = await exec(process.execPath, [entry, "update"], { cwd: c3a.dir, env: { ...c3a.env, npm_config_package_lock: "false" }, timeout: 240_000 });
-      const env2 = await exec(process.execPath, [entry, "update"], { cwd: c3a.dir, env: { ...c3a.env, npm_config_package_lock: "false" }, timeout: 240_000 });
-      check("3b (env): npm_config_package_lock=false writes current package-lock.json and converges",
+      const env1 = await exec(process.execPath, [entry, "update"], { cwd: overrideCase.dir, env: { ...overrideCase.env, npm_config_package_lock: "false" }, timeout: 240_000 });
+      const env2 = await exec(process.execPath, [entry, "update"], { cwd: overrideCase.dir, env: { ...overrideCase.env, npm_config_package_lock: "false" }, timeout: 240_000 });
+      check("env npm_config_package_lock=false writes current package-lock.json and converges",
         lockHasAllBuiltIns(lockPath, version)
         && !/reinstalling every built-in|Reconciling built-in/.test(env2.stdout + env2.stderr),
         { env1: env1.stdout + env1.stderr, env2: env2.stdout + env2.stderr });
@@ -342,131 +342,131 @@ async function checkPackageLockCellsAndUpgrade(
       writeFileSync(prefixRc, "package-lock=false\n");
       const prefixRcBytes = readFileSync(prefixRc);
       rmSync(lockPath);
-      const pfx1 = await exec(process.execPath, [entry, "update"], { cwd: c3a.dir, env: c3a.env, timeout: 240_000 });
-      const pfx2 = await exec(process.execPath, [entry, "update"], { cwd: c3a.dir, env: c3a.env, timeout: 240_000 });
-      check("3b (extensions/.npmrc): prefix .npmrc package-lock=false writes current package-lock.json, converges, and leaves prefix .npmrc byte-identical",
+      const pfx1 = await exec(process.execPath, [entry, "update"], { cwd: overrideCase.dir, env: overrideCase.env, timeout: 240_000 });
+      const pfx2 = await exec(process.execPath, [entry, "update"], { cwd: overrideCase.dir, env: overrideCase.env, timeout: 240_000 });
+      check("extensions/.npmrc package-lock=false writes current package-lock.json, converges, and leaves prefix .npmrc byte-identical",
         lockHasAllBuiltIns(lockPath, version)
         && !/reinstalling every built-in|Reconciling built-in/.test(pfx2.stdout + pfx2.stderr)
         && readFileSync(prefixRc).equals(prefixRcBytes),
         { pfx1: pfx1.stdout + pfx1.stderr, pfx2: pfx2.stdout + pfx2.stderr });
       rmSync(prefixRc);
 
-      const workProject = join(c3a.dir, "project-cwd");
+      const workProject = join(overrideCase.dir, "project-cwd");
       mkdirSync(workProject, { recursive: true });
       const projRc = join(workProject, ".npmrc");
       writeFileSync(projRc, "package-lock=false\n");
       const projRcBytes = readFileSync(projRc);
       rmSync(lockPath);
-      const prj1 = await exec(process.execPath, [entry, "update"], { cwd: workProject, env: c3a.env, timeout: 240_000 });
-      const prj2 = await exec(process.execPath, [entry, "update"], { cwd: workProject, env: c3a.env, timeout: 240_000 });
-      check("3b (working-folder .npmrc, holds on main too): nothing in the working folder is read or written during update",
+      const prj1 = await exec(process.execPath, [entry, "update"], { cwd: workProject, env: overrideCase.env, timeout: 240_000 });
+      const prj2 = await exec(process.execPath, [entry, "update"], { cwd: workProject, env: overrideCase.env, timeout: 240_000 });
+      check("working-folder .npmrc: nothing in the working folder is read or written during update (holds on main too)",
         lockHasAllBuiltIns(lockPath, version)
         && !/reinstalling every built-in|Reconciling built-in/.test(prj2.stdout + prj2.stderr)
         && readFileSync(projRc).equals(projRcBytes)
         && readdirSync(workProject).join(",") === ".npmrc",
         { prj1: prj1.stdout + prj1.stderr, prj2: prj2.stdout + prj2.stderr });
 
-      // 3c: default npm configuration: compare lock package list and installed tree against main's npm flags.
-      const c3c = makeCase("cell-3c-default");
-      c3c.env.npm_config_registry = overlayUrl;
-      await exec(process.execPath, [entry, "ext", "seed"], { cwd: c3c.dir, env: c3c.env, timeout: 240_000 });
-      const defaultExtDir = await queryExtRoot(entry, c3c.dir, c3c.env);
+      // Default npm configuration: compare lock package list and installed tree against main's npm flags.
+      const defaultCase = makeCase("default-npm-config");
+      defaultCase.env.npm_config_registry = overlayUrl;
+      await exec(process.execPath, [entry, "ext", "seed"], { cwd: defaultCase.dir, env: defaultCase.env, timeout: 240_000 });
+      const defaultExtDir = await queryExtRoot(entry, defaultCase.dir, defaultCase.env);
       const defaultLock = JSON.parse(readFileSync(join(defaultExtDir, "package-lock.json"), "utf8")) as {
         packages: Record<string, unknown>;
       };
       const defaultPkgJson = JSON.parse(readFileSync(join(defaultExtDir, "package.json"), "utf8")) as {
         dependencies: Record<string, string>;
       };
-      const controlDir = join(c3c.dir, "main-control-prefix");
+      const controlDir = join(defaultCase.dir, "main-control-prefix");
       mkdirSync(controlDir, { recursive: true });
       writeFileSync(join(controlDir, "package.json"), `${JSON.stringify({ name: "cotal-extensions", private: true }, null, 2)}\n`);
       const specs = Object.values(defaultPkgJson.dependencies).map(spec => spec.startsWith("file:") ? resolve(defaultExtDir, spec.slice(5)) : spec);
       await runNpm(["install", "--save", "--no-audit", "--no-fund", "--install-links", ...specs, "--prefix", controlDir, "--include=optional", "--legacy-peer-deps"], {
-        cwd: c3c.dir, env: c3c.env, timeout: 240_000,
+        cwd: defaultCase.dir, env: defaultCase.env, timeout: 240_000,
       });
       const controlLock = JSON.parse(readFileSync(join(controlDir, "package-lock.json"), "utf8")) as {
         packages: Record<string, unknown>;
       };
       const topInstalled = (dir: string) => readdirSync(join(dir, "node_modules/@cotal-ai")).sort();
-      check("3c: default npm configuration produces the same lock package list and installed tree as main",
+      check("default npm configuration produces the same lock package list and installed tree as main",
         JSON.stringify(Object.keys(defaultLock.packages).sort()) === JSON.stringify(Object.keys(controlLock.packages).sort())
         && JSON.stringify(topInstalled(defaultExtDir)) === JSON.stringify(topInstalled(controlDir)),
         { defaultCount: Object.keys(defaultLock.packages).length, controlCount: Object.keys(controlLock.packages).length });
     }
 
-    // 3d: Stale prefix made without package-lock.json (from published cotal-ai when already on npm, else packed head with lock removed): first run reinstalls once, second changes nothing.
+    // Stale prefix without package-lock.json (seeded by published cotal-ai when on npm, else packed head with lock removed): first update reinstalls once, second changes nothing.
     {
-      const c3d = makeCase("cell-3d-stale-prefix");
-      writeFileSync(c3d.userNpmrc, "package-lock=false\n");
-      const npmrcBefore = readFileSync(c3d.userNpmrc);
+      const staleCase = makeCase("stale-prefix-without-lock");
+      writeFileSync(staleCase.userNpmrc, "package-lock=false\n");
+      const npmrcBefore = readFileSync(staleCase.userNpmrc);
       const curPublished = (await fetch(`https://registry.npmjs.org/cotal-ai/${version}`, { signal: AbortSignal.timeout(30_000) })).ok;
       const cotalCurTgz = join(packedTgzDir, readdirSync(packedTgzDir).find(f => /^cotal-ai-\d/.test(f))!);
       if (curPublished) {
-        await runNpm(["install", "-g", "--prefix", c3d.globalPrefix, `cotal-ai@${version}`, "--no-audit", "--no-fund"], {
-          cwd: c3d.dir, env: c3d.env, timeout: 240_000,
+        await runNpm(["install", "-g", "--prefix", staleCase.globalPrefix, `cotal-ai@${version}`, "--no-audit", "--no-fund"], {
+          cwd: staleCase.dir, env: staleCase.env, timeout: 240_000,
         });
-        const pubVer = (await runGlobalCli(c3d.globalPrefix, ["--version"], { cwd: c3d.dir, env: c3d.env })).stdout.trim();
-        check(`3d: installed published cotal-ai@${version}`, pubVer.split("\n")[0] === `cotal-ai ${version}`, pubVer);
-        await runGlobalCli(c3d.globalPrefix, ["ext", "seed"], { cwd: c3d.dir, env: c3d.env, timeout: 240_000 });
+        const pubVer = (await runGlobalCli(staleCase.globalPrefix, ["--version"], { cwd: staleCase.dir, env: staleCase.env })).stdout.trim();
+        check(`stale-prefix setup: installed published cotal-ai@${version}`, pubVer.split("\n")[0] === `cotal-ai ${version}`, pubVer);
+        await runGlobalCli(staleCase.globalPrefix, ["ext", "seed"], { cwd: staleCase.dir, env: staleCase.env, timeout: 240_000 });
       } else {
         serveMode = "current";
-        await runNpm(["install", "-g", "--prefix", c3d.globalPrefix, cotalCurTgz, "--no-audit", "--no-fund"], {
-          cwd: c3d.dir, env: { ...c3d.env, npm_config_registry: overlayUrl }, timeout: 240_000,
+        await runNpm(["install", "-g", "--prefix", staleCase.globalPrefix, cotalCurTgz, "--no-audit", "--no-fund"], {
+          cwd: staleCase.dir, env: { ...staleCase.env, npm_config_registry: overlayUrl }, timeout: 240_000,
         });
-        const pubVer = (await runGlobalCli(c3d.globalPrefix, ["--version"], { cwd: c3d.dir, env: c3d.env })).stdout.trim();
-        check(`3d: installed packed cotal-ai@${version}`, pubVer.split("\n")[0] === `cotal-ai ${version}`, pubVer);
-        await runGlobalCli(c3d.globalPrefix, ["ext", "seed"], { cwd: c3d.dir, env: { ...c3d.env, npm_config_registry: overlayUrl }, timeout: 240_000 });
-        rmSync(join(await queryGlobalExtRoot(c3d.globalPrefix, c3d.dir, c3d.env), "package-lock.json"));
+        const pubVer = (await runGlobalCli(staleCase.globalPrefix, ["--version"], { cwd: staleCase.dir, env: staleCase.env })).stdout.trim();
+        check(`stale-prefix setup: installed packed cotal-ai@${version}`, pubVer.split("\n")[0] === `cotal-ai ${version}`, pubVer);
+        await runGlobalCli(staleCase.globalPrefix, ["ext", "seed"], { cwd: staleCase.dir, env: { ...staleCase.env, npm_config_registry: overlayUrl }, timeout: 240_000 });
+        rmSync(join(await queryGlobalExtRoot(staleCase.globalPrefix, staleCase.dir, staleCase.env), "package-lock.json"));
       }
-      const staleExtDir = await queryGlobalExtRoot(c3d.globalPrefix, c3d.dir, c3d.env);
+      const staleExtDir = await queryGlobalExtRoot(staleCase.globalPrefix, staleCase.dir, staleCase.env);
       const staleLockPath = join(staleExtDir, "package-lock.json");
-      check(`3d: stale ${version} extension prefix has no package-lock.json before repair`,
+      check(`stale ${version} extension prefix has no package-lock.json before repair`,
         !existsSync(staleLockPath) && existsSync(join(staleExtDir, "extensions.json")));
 
       if (curPublished) {
         serveMode = "current";
-        await runNpm(["install", "-g", "--prefix", c3d.globalPrefix, cotalCurTgz, "--no-audit", "--no-fund"], {
-          cwd: c3d.dir, env: { ...c3d.env, npm_config_registry: overlayUrl, npm_config_cache: join(c3d.dir, "head-cache") }, timeout: 240_000,
+        await runNpm(["install", "-g", "--prefix", staleCase.globalPrefix, cotalCurTgz, "--no-audit", "--no-fund"], {
+          cwd: staleCase.dir, env: { ...staleCase.env, npm_config_registry: overlayUrl, npm_config_cache: join(staleCase.dir, "head-cache") }, timeout: 240_000,
         });
       }
-      const run1 = await runGlobalCli(c3d.globalPrefix, ["update"], { cwd: c3d.dir, env: { ...c3d.env, npm_config_registry: overlayUrl }, timeout: 240_000 });
-      console.log("=== 3d stale-prefix run 1 ===\n" + (run1.stdout + run1.stderr).trim());
+      const run1 = await runGlobalCli(staleCase.globalPrefix, ["update"], { cwd: staleCase.dir, env: { ...staleCase.env, npm_config_registry: overlayUrl }, timeout: 240_000 });
+      console.log("=== stale-prefix repair update 1 ===\n" + (run1.stdout + run1.stderr).trim());
       const lockShaAfterRun1 = existsSync(staleLockPath) ? createHash("sha256").update(readFileSync(staleLockPath)).digest("hex") : "";
-      const run2 = await runGlobalCli(c3d.globalPrefix, ["update"], { cwd: c3d.dir, env: { ...c3d.env, npm_config_registry: overlayUrl }, timeout: 240_000 });
-      console.log("=== 3d stale-prefix run 2 ===\n" + (run2.stdout + run2.stderr).trim());
+      const run2 = await runGlobalCli(staleCase.globalPrefix, ["update"], { cwd: staleCase.dir, env: { ...staleCase.env, npm_config_registry: overlayUrl }, timeout: 240_000 });
+      console.log("=== stale-prefix verify update 2 ===\n" + (run2.stdout + run2.stderr).trim());
       const lockShaAfterRun2 = existsSync(staleLockPath) ? createHash("sha256").update(readFileSync(staleLockPath)).digest("hex") : "";
-      check(`3d: first run on stale ${version} prefix reinstalls built-ins once and writes package-lock.json`,
+      check(`first update on stale ${version} prefix reinstalls built-ins once and writes package-lock.json`,
         /reinstalling every built-in: the prefix lock is unreadable/.test(run1.stdout + run1.stderr)
         && /connectors reconciled - refreshed /.test(run1.stdout + run1.stderr)
         && lockHasAllBuiltIns(staleLockPath, version),
         run1.stdout + run1.stderr);
-      check("3d: second run changes nothing and keeps user .npmrc byte-identical",
+      check("second update on repaired prefix changes nothing and keeps user .npmrc byte-identical",
         !/reinstalling every built-in|Reconciling built-in/.test(run2.stdout + run2.stderr)
         && /connectors reconciled - verified /.test(run2.stdout + run2.stderr)
         && lockShaAfterRun2 === lockShaAfterRun1
-        && readFileSync(c3d.userNpmrc).equals(npmrcBefore),
+        && readFileSync(staleCase.userNpmrc).equals(npmrcBefore),
         run2.stdout + run2.stderr);
     }
 
-    // 3e: Linked extensions folder with a refused registry: nothing in the live prefix is removed.
+    // Linked extensions folder with a refused registry: failed ext add removes nothing from the live prefix.
     {
-      const c3e = makeCase("cell-3e-linked-extensions-refused");
-      c3e.env.npm_config_registry = overlayUrl;
-      writeFileSync(c3e.userNpmrc, "package-lock=false\n");
-      await exec(process.execPath, [entry, "ext", "seed"], { cwd: c3e.dir, env: c3e.env, timeout: 240_000 });
-      const liveExtLink = await queryExtRoot(entry, c3e.dir, c3e.env);
-      const realLiveExt = join(c3e.dir, "moved-extensions-target");
+      const linkedCase = makeCase("linked-extensions-refused");
+      linkedCase.env.npm_config_registry = overlayUrl;
+      writeFileSync(linkedCase.userNpmrc, "package-lock=false\n");
+      await exec(process.execPath, [entry, "ext", "seed"], { cwd: linkedCase.dir, env: linkedCase.env, timeout: 240_000 });
+      const liveExtLink = await queryExtRoot(entry, linkedCase.dir, linkedCase.env);
+      const realLiveExt = join(linkedCase.dir, "moved-extensions-target");
       renameSync(liveExtLink, realLiveExt);
       symlinkSync(realLiveExt, liveExtLink, "junction");
       const snapshotBefore = snapshotTree(realLiveExt);
       let refusedStatus = 0;
       try {
         await exec(process.execPath, [entry, "ext", "add", "@probe/refused-live@1.0.0"], {
-          cwd: c3e.dir,
+          cwd: linkedCase.dir,
           env: {
-            ...c3e.env,
+            ...linkedCase.env,
             npm_config_registry: `${overlayUrl}/refused`,
-            npm_config_cache: join(c3e.dir, "empty-cache"),
+            npm_config_cache: join(linkedCase.dir, "empty-cache"),
             npm_config_fetch_retries: "0",
           },
           timeout: 60_000,
@@ -475,55 +475,55 @@ async function checkPackageLockCellsAndUpgrade(
         refusedStatus = typeof (err as { code?: number }).code === "number" ? (err as { code: number }).code : 1;
       }
       const snapshotAfter = snapshotTree(realLiveExt);
-      check("3e: linked extensions folder with refused registry removes nothing from the live prefix",
+      check("linked extensions folder with refused registry removes nothing from the live prefix",
         refusedStatus !== 0 && lstatSync(liveExtLink).isSymbolicLink()
         && JSON.stringify(snapshotAfter) === JSON.stringify(snapshotBefore));
     }
 
-    // 4: Real upgrade live: install published cotal-ai@0.183.0 with package-lock=false in user .npmrc, update to packed head, load a built-in connector.
+    // Real self-update from published cotal-ai@0.183.0 with package-lock=false in user .npmrc to packed head, then load a built-in connector.
     {
-      const c4 = makeCase("item-4-real-upgrade");
-      writeFileSync(c4.userNpmrc, "package-lock=false\n");
-      const npmrcBefore = readFileSync(c4.userNpmrc);
-      await runNpm(["install", "-g", "--prefix", c4.globalPrefix, "cotal-ai@0.183.0", "--no-audit", "--no-fund"], {
-        cwd: c4.dir, env: c4.env, timeout: 240_000,
+      const upgradeCase = makeCase("published-release-self-update");
+      writeFileSync(upgradeCase.userNpmrc, "package-lock=false\n");
+      const npmrcBefore = readFileSync(upgradeCase.userNpmrc);
+      await runNpm(["install", "-g", "--prefix", upgradeCase.globalPrefix, "cotal-ai@0.183.0", "--no-audit", "--no-fund"], {
+        cwd: upgradeCase.dir, env: upgradeCase.env, timeout: 240_000,
       });
-      await runGlobalCli(c4.globalPrefix, ["ext", "seed"], { cwd: c4.dir, env: c4.env, timeout: 240_000 });
-      const beforeVer = (await runGlobalCli(c4.globalPrefix, ["--version"], { cwd: c4.dir, env: c4.env })).stdout.trim();
-      console.log("=== Item 4 versions BEFORE upgrade ===\n" + beforeVer);
-      check("4: installed published cotal-ai@0.183.0 with package-lock=false before upgrade",
+      await runGlobalCli(upgradeCase.globalPrefix, ["ext", "seed"], { cwd: upgradeCase.dir, env: upgradeCase.env, timeout: 240_000 });
+      const beforeVer = (await runGlobalCli(upgradeCase.globalPrefix, ["--version"], { cwd: upgradeCase.dir, env: upgradeCase.env })).stdout.trim();
+      console.log("=== versions before self-update ===\n" + beforeVer);
+      check("installed published cotal-ai@0.183.0 with package-lock=false before self-update",
         beforeVer.split("\n")[0] === "cotal-ai 0.183.0"
         && beforeVer.split("\n").slice(1).every(line => line.trim().endsWith(" 0.183.0")),
         beforeVer);
 
       serveMode = "candidate";
-      const globalBinDir = process.platform === "win32" ? c4.globalPrefix : join(c4.globalPrefix, "bin");
+      const globalBinDir = process.platform === "win32" ? upgradeCase.globalPrefix : join(upgradeCase.globalPrefix, "bin");
       const upgradeEnv: NodeJS.ProcessEnv = {
-        ...c4.env,
+        ...upgradeCase.env,
         npm_config_registry: overlayUrl,
-        PATH: `${globalBinDir}${delimiter}${c4.env.PATH ?? ""}`,
+        PATH: `${globalBinDir}${delimiter}${upgradeCase.env.PATH ?? ""}`,
       };
-      const upgraded = await runGlobalCli(c4.globalPrefix, ["update", "--self"], { cwd: c4.dir, env: upgradeEnv, timeout: 300_000 });
-      const afterVer = (await runGlobalCli(c4.globalPrefix, ["--version"], { cwd: c4.dir, env: upgradeEnv })).stdout.trim();
-      console.log("=== Item 4 versions AFTER upgrade ===\n" + afterVer);
-      const upgradedExtDir = await queryGlobalExtRoot(c4.globalPrefix, c4.dir, upgradeEnv);
+      const upgraded = await runGlobalCli(upgradeCase.globalPrefix, ["update", "--self"], { cwd: upgradeCase.dir, env: upgradeEnv, timeout: 300_000 });
+      const afterVer = (await runGlobalCli(upgradeCase.globalPrefix, ["--version"], { cwd: upgradeCase.dir, env: upgradeEnv })).stdout.trim();
+      console.log("=== versions after self-update ===\n" + afterVer);
+      const upgradedExtDir = await queryGlobalExtRoot(upgradeCase.globalPrefix, upgradeCase.dir, upgradeEnv);
       const upgradedLockPath = join(upgradedExtDir, "package-lock.json");
-      check(`4: real upgrade with package-lock=false reaches ${targetVer}, writes current package-lock.json, and leaves .npmrc untouched`,
+      check(`self-update from 0.183.0 with package-lock=false reaches ${targetVer}, writes current package-lock.json, and leaves .npmrc untouched`,
         afterVer.split("\n")[0] === `cotal-ai ${targetVer}`
         && afterVer.split("\n").slice(1).every(line => line.trim().endsWith(` ${targetVer}`))
         && /connectors reconciled/.test(upgraded.stdout + upgraded.stderr)
         && lockHasAllBuiltIns(upgradedLockPath, targetVer)
-        && readFileSync(c4.userNpmrc).equals(npmrcBefore),
+        && readFileSync(upgradeCase.userNpmrc).equals(npmrcBefore),
         { afterVer, out: upgraded.stdout + upgraded.stderr });
 
-      const repeatSelf = await runGlobalCli(c4.globalPrefix, ["update", "--self"], { cwd: c4.dir, env: upgradeEnv, timeout: 180_000 });
-      check("4: repeat update --self after real upgrade is current without reinstalling",
+      const repeatSelf = await runGlobalCli(upgradeCase.globalPrefix, ["update", "--self"], { cwd: upgradeCase.dir, env: upgradeEnv, timeout: 180_000 });
+      check("repeat update --self after self-update is current without reinstalling",
         repeatSelf.stdout.includes("installed package closure is current"),
         repeatSelf.stdout + repeatSelf.stderr);
 
-      const probeProject = join(c4.dir, "connector-load-project");
+      const probeProject = join(upgradeCase.dir, "connector-load-project");
       mkdirSync(probeProject, { recursive: true });
-      await runGlobalCli(c4.globalPrefix, ["space", "create", "upgrade-probe", "--root", "."], {
+      await runGlobalCli(upgradeCase.globalPrefix, ["space", "create", "upgrade-probe", "--root", "."], {
         cwd: probeProject, env: upgradeEnv, timeout: 120_000,
       });
       writeFileSync(
@@ -531,16 +531,16 @@ async function checkPackageLockCellsAndUpgrade(
         "---\nname: probe\nrole: developer\nmodel: claude-opus-5-5\n---\nVerify built-in connector load after upgrade.\n",
       );
       const previewOut = await runGlobalCli(
-        c4.globalPrefix,
+        upgradeCase.globalPrefix,
         ["spawn", "--file", "./probe.md", "--dry-run", "--space", "upgrade-probe", "--harness", "claude", "--json"],
         { cwd: probeProject, env: upgradeEnv, timeout: 120_000 },
       );
-      console.log("=== Item 4 built-in connector load (spawn --dry-run) ===\n" + previewOut.stdout.trim());
+      console.log("=== built-in connector load after self-update (spawn --dry-run) ===\n" + previewOut.stdout.trim());
       const previewJson = JSON.parse(previewOut.stdout) as {
         outcome?: string;
         result?: { harness?: string; model?: string; connectorArgumentValidation?: string };
       };
-      check("4: upgraded CLI loads built-in claude connector cleanly and validates its arguments",
+      check("upgraded CLI loads built-in claude connector cleanly and validates its arguments",
         previewJson.outcome === "ok"
         && previewJson.result?.harness === "claude"
         && previewJson.result?.model === "claude-opus-5-5"
