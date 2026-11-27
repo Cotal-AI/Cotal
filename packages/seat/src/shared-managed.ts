@@ -53,14 +53,14 @@ async function ensureManagedHost(root: string, store: string, closure: SharedRun
     copy.assertCurrent();
     writePrivateRecord(join(root, "execution.json"), { version: 1, digest: closure.digest, scope, copyDev: copy.dev, copyIno: copy.ino,
       ...(staged && hold ? { root: staged.root, inventorySha256: staged.inventorySha256, dev: hold.dev, ino: hold.ino } : {}) });
-    await run("/usr/bin/systemd-run", ["--user", "--quiet", "--collect", "--service-type=exec", `--unit=${scope}`, `--description=${sharedUnitDescription(tag, dirname(root), owner)}`,
+    const args = ["--user", "--quiet", "--collect", "--service-type=exec", `--unit=${scope}`, `--description=${sharedUnitDescription(tag, dirname(root), owner)}`,
       "--property=Delegate=memory", "--property=OOMPolicy=continue", "--property=KillMode=control-group", "--property=TimeoutStopSec=3s", "--property=Restart=no",
       "--property=UnsetEnvironment=NODE_OPTIONS NODE_PATH LD_PRELOAD LD_LIBRARY_PATH", "--setenv=PATH=/usr/bin:/bin",
       `--setenv=HOME=${homedir()}`, `--setenv=TMPDIR=${tmpdir()}`,
       ...(process.env.DO_NOT_TRACK === "1" ? ["--setenv=DO_NOT_TRACK=1"] : []),
       "--", pinned.nodePath, pinned.entryPath, root, scope, store, closure.digest, String(owner.pid), owner.start, owner.bootId,
-      ...(staged ? [staged.root, staged.inventorySha256] : [])],
-    { timeout: 5_000 });
+      ...(staged ? [staged.root, staged.inventorySha256] : [])];
+    await run("/usr/bin/systemd-run", args, { timeout: 5_000 });
     for (let n = 0; n < 60; n++) {
       const host = currentHost(root);
       if (host) { copy.assertCurrent(); hold?.assertCurrent(); return host; }

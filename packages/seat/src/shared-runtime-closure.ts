@@ -245,8 +245,8 @@ function sourcePlan(stagedRoot?: string): { files: Source[]; identities: string[
     refuse("expected built seat package");
   const seatInfo = addPackage(seat, SEAT_DIR, SEAT);
   if (seatInfo.type !== "module") refuse("expected built ESM seat package");
-  const direct = (name: string, entry: string) => {
-    const resolved = fileURLToPath(import.meta.resolve(name));
+  const direct = (name: string, entry: string, url: string) => {
+    const resolved = fileURLToPath(url);
     if (!workspace) return dependency(install, from, name, entry, resolved);
     if (typeof seatInfo.dependencies?.[name] !== "string") refuse(`workspace seat does not declare ${name}`);
     return workspaceDependency(store, join(seat, "node_modules"), name, entry, resolved, identities);
@@ -265,7 +265,7 @@ function sourcePlan(stagedRoot?: string): { files: Source[]; identities: string[
   const arch = `linux-${process.arch}`;
   add(seat, SEAT_DIR, `build/Release/${arch}/peercred.node`);
 
-  const pty = direct(PTY, "index.js");
+  const pty = direct(PTY, "index.js", import.meta.resolve("@lydell/node-pty"));
   const ptyInfo = addPackage(pty, PTY_DIR, PTY);
   if (workspace && seatInfo.dependencies?.[PTY] !== ptyInfo.version) refuse("workspace node-pty version does not match seat manifest");
   add(pty, PTY_DIR, "index.js");
@@ -297,8 +297,11 @@ function sourcePlan(stagedRoot?: string): { files: Source[]; identities: string[
   if (lookup(join(native, helper))) add(native, nativeTarget, helper, 0o500);
 
   // addon-serialize's browser xterm peer is used only for types, not by its shipped JS.
-  for (const [name, entry] of [[HEADLESS, HEADLESS_ENTRY], [SERIALIZE, SERIALIZE_ENTRY]]) {
-    const root = direct(name, entry);
+  for (const [name, entry, url] of [
+    [HEADLESS, HEADLESS_ENTRY, import.meta.resolve("@xterm/headless")],
+    [SERIALIZE, SERIALIZE_ENTRY, import.meta.resolve("@xterm/addon-serialize")],
+  ]) {
+    const root = direct(name, entry, url);
     addPackage(root, `${MODULES}/${name}`, name);
     add(root, `${MODULES}/${name}`, entry);
   }
@@ -476,9 +479,9 @@ export function prepareStagedSharedRuntime(store: string, source: VerifiedStaged
 function probeRuntime(node: string, entry: string, seat: string, cwd: string): void {
   const entryURL = JSON.stringify(pathToFileURL(entry).href);
   const peer = JSON.stringify(join(seat, `build/Release/linux-${process.arch}/peercred.node`));
-  const probe = spawnSync(node, ["--no-global-search-paths", "--input-type=module", "--eval",
-    `import { createRequire } from 'node:module';\nawait import(${entryURL});\ncreateRequire(${entryURL})(${peer});`,
-  ], { cwd, env: {}, stdio: "ignore", timeout: 5000, killSignal: "SIGKILL" });
+  const script = `import { createRequire } from 'node:module';\nawait import(${entryURL});\ncreateRequire(${entryURL})(${peer});`;
+  const probe = spawnSync(node, ["--no-global-search-paths", "--input-type=module", "--eval", script],
+    { cwd, env: {}, stdio: "ignore", timeout: 5000, killSignal: "SIGKILL" });
   if (probe.status !== 0) refuse("copied Node or host runtime failed its load check");
 }
 
