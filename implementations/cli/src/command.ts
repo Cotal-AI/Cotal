@@ -621,6 +621,11 @@ function switchValueRefusal(flag: string, cmd?: Command, rest: readonly string[]
   return { message: `${flag} takes no value`, remedy: `omit ${flag}${acceptsFlag ? " or pass it without a value" : ""}` };
 }
 
+/** `--help` takes no value. Name the bare switch, not a positional that starts with `-`. */
+function helpSwitchValueRefusal(cmd: Command) {
+  return { message: "--help takes no value", remedy: displayRemedy(`run \`cotal ${cmd.name} --help\``) };
+}
+
 /** Positional word limit for the separator remedy only, counting subcommand words. Commands with
  *  variable or unspecified arity keep their own grammar. */
 function operandLimit(cmd: Command, selected: Command | Subcommand, first: string | undefined, rest: readonly string[]): number {
@@ -693,6 +698,8 @@ function parseRefusal(error: Error & { code?: string }, cmd: Command, rest: read
     const reason = error.message.replace(/'\. To specify a positional argument starting with a '-', place it at the end of the command after '--', as in '-- "(?:[^"\\]|\\.)*"$/u, "'");
     const option = /^Unknown option '(--.+)'$/su.exec(reason)?.[1];
     if (option && GLOBAL_FLAG_WORDS.has(option) && !takesWordsRaw(cmd)) return switchValueRefusal(option);
+    // `--help` is a switch, not a command flag, so a value on it is not an unknown option.
+    if (option === "--help" && !takesWordsRaw(cmd)) return helpSwitchValueRefusal(cmd);
     if (cmd.name === "help" && option === "--preset") {
       const [service, verb] = metadataPositionals(cmd, rest).positionals;
       if (findCommand(commandSurface(), service?.value)?.name === "service" && verb?.value === "add")
