@@ -540,7 +540,7 @@ test('workflow bounds diagnostics and preserves every immutable release head wit
     if (done.has(name)) return;
     const job = workflow.jobs[name];
     assert(job, `unknown dependency ${name}`);
-    if (job.strategy) assert(job.strategy['max-parallel'] <= (name === 'release-cells' ? 50 : 6), `${name} exceeds its matrix bound`);
+    if (job.strategy) assert(job.strategy['max-parallel'] <= (name === 'release-cells' ? 53 : 6), `${name} exceeds its matrix bound`);
     if (!['priority', 'scheduler-proof', 'installer-proof', 'transition-native', 'mac-controls-proof', 'windows-baseline', 'next-release-macos', 'windows-job-facts', 'select'].includes(name)) assert(job.needs, `${name} bypasses priority ordering`);
     visiting.add(name);
     for (const dependency of [job.needs ?? []].flat()) visit(dependency);
@@ -944,4 +944,17 @@ test('project-trust-migration option validates coordinate shape and hooks into c
   ]) {
     await assert.rejects(() => baseline.matrixCell(invalid));
   }
+});
+
+test('composition cleanup is the callback returning, not the sentence a cell reports', () => {
+  const outcomes = [
+    'owned composition stopped before reporting',
+    'owned composition stopped after confirmed hosted Manager removal',
+    'owned composition stopped; hosted Manager removal not confirmed',
+  ];
+  for (const sentence of outcomes) {
+    assert.equal(baseline.compositionCleanupConfirmed({ compositionCleanup: true, returned: true, sentence }), true, sentence);
+  }
+  assert.equal(baseline.compositionCleanupConfirmed({ compositionCleanup: undefined, returned: false }), true);
+  assert.equal(baseline.compositionCleanupConfirmed({ compositionCleanup: true, returned: false, sentence: outcomes[0] }), false);
 });

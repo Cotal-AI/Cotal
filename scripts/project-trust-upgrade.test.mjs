@@ -288,8 +288,9 @@ test('both phases require Linux, macOS and Windows project-trust-migration cells
       { inputs: { phase, source_sha: 'a'.repeat(40), target_version: '0.183.0', profile: 'bounded' } },
       { eventName: 'workflow_dispatch', sourceVersion: '0.182.1' },
     );
-    const cells = plan.cells.filter(c => c.scenario === 'project-trust-migration');
-    assert.deepEqual(cells.map(c => c.platform), ['linux', 'darwin', 'win32']);
+    const cells = plan.cells.filter(c => c.scenario === 'project-trust-migration' || c.scenario === 'project-trust-migration-0.182.1');
+    assert.deepEqual(cells.filter(c => c.scenario === 'project-trust-migration').map(c => c.platform), ['linux', 'darwin', 'win32']);
+    assert.deepEqual(cells.filter(c => c.pinnedTrustSource).map(c => [c.platform, c.sourceVersion]), [['linux', '0.182.1'], ['darwin', '0.182.1'], ['win32', '0.182.1']]);
     for (const cell of cells) {
       assert.equal(cell.channel, 'npm');
       assert.equal(cell.required, true);

@@ -16,7 +16,7 @@ const program = summary.split("<<'NODE'\n")[1].split('\nNODE')[0];
 test('all required release coordinates fit in the concurrency budget without waiting for macOS', () => {
   const plan = planRelease({ inputs: { phase: 'candidate', source_sha: 'a'.repeat(40), target_version: '0.164.9', profile: 'bounded' } }, { eventName: 'workflow_dispatch', sourceVersion: '0.164.8' });
   const cells = workflow.jobs['release-cells'];
-  assert.equal(plan.matrix.include.length, 50);
+  assert.equal(plan.matrix.include.length, 53);
   assert.equal(cells.strategy['max-parallel'], plan.matrix.include.length);
   assert.deepEqual(cells.needs, ['select', 'release-pack', 'release-next']);
   assert.equal(cells.strategy['fail-fast'], false);
@@ -40,7 +40,7 @@ test('paired next-hop builders are explicit in both phases and stamp B and C bef
   assert(!next.steps.some(step => step.run?.includes('pnpm --workspace-concurrency 3 build')));
   assert(next.steps.some(step => step.run?.includes('node scripts/pack-candidate-next.mjs --source-root')));
   assert(next.steps.some(step => step.run?.includes('--offset 2000')));
-  assert.equal(workflow.jobs['release-cells'].strategy['max-parallel'], 50);
+  assert.equal(workflow.jobs['release-cells'].strategy['max-parallel'], 53);
   for (const job of ['release-native', 'release-pack', 'release-next']) assert(workflow.jobs[job]);
 });
 test('Corepack Node fallback runs on the frozen source independently of the upgrade coordinates', () => {
@@ -74,7 +74,7 @@ test('paired routes preserve ordinary published arguments and bind artifact rece
   assert(download.if.includes("matrix.scenario == 'candidate-next-foreign-config-recovery'"));
   assert(run.includes("'candidate-next-foreign-config-recovery': 'recovery'"));
   assert(run.includes("['foreign-config-recovery', 'candidate-next-foreign-config-recovery'].includes(cell.scenario)) args.push('--foreign-config-snapshot', 'true')"));
-  assert(run.includes("if (cell.scenario === 'project-trust-migration') args.push('--project-trust-migration', 'true')"));
+  assert(run.includes("if (['project-trust-migration', 'project-trust-migration-0.182.1'].includes(cell.scenario)) args.push('--project-trust-migration', 'true')"));
   assert(program.includes("'project-trust-migrated'"));
   assert(program.includes('verifyProjectTrustEvidence'));
   for (const name of ['candidate-next-origin.json', 'EXPECTED_NEXT_ARTIFACT', 'EXPECTED_NEXT_DIGEST', 'EXPECTED_FOLLOW_ON_ARTIFACT', 'EXPECTED_FOLLOW_ON_DIGEST', 'sourceManifestSha256', 'targetManifestSha256', 'followOnManifestSha256', 'verifyCandidateNextEvidence', "'candidate-source-identity'", "'candidate-next-target'", "'next-hop-success'", "'stopped-daemon-before-update'", "'disabled-daemon-before-update'", "'stopped-desktop-beside-cli'", "'follow-on-target'", "'follow-on-success'", "'exact-source-refusal'", "'intermediate-whole-machine'"]) assert(program.includes(name), name);

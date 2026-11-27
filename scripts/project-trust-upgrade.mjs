@@ -536,13 +536,18 @@ function stackControls(invokeCli, ok) {
     const chosenServer = server ?? `nats://127.0.0.1:${await freeLoopbackPort()}`;
     const args = ['up', '--space', space, '--open', '--server', chosenServer, '--detach', ...(withManager ? [] : ['--no-manager'])];
     ok(await invokeCli(label, args, { cwd, env: runEnv }), label);
-    const entry = { cwd, space, env: runEnv, stopped: false };
+    const entry = { cwd, space, env: runEnv, stopped: false, withAgents: withManager };
     activeStacks.push(entry);
     return { server: chosenServer, entry };
   };
   const stopOpenStack = async (label, stack) => {
     if (stack.stopped) return;
-    ok(await invokeCli(label, ['down', '--space', stack.space, '--with-agents', '--yes'], { cwd: stack.cwd, env: stack.env }), label);
+    // A broker-only stack is the space recorded at its own root. 0.182.1 stops
+    // that with bare `cotal down`; current also accepts it, and rejects
+    // --with-agents together with --space. A stack that started a manager names
+    // its space and stops its agents.
+    const argv = stack.withAgents ? ['down', '--with-agents', '--yes'] : ['down', '--yes'];
+    ok(await invokeCli(label, argv, { cwd: stack.cwd, env: stack.env }), label);
     stack.stopped = true;
   };
   return { activeStacks, startOpenStack, stopOpenStack };
@@ -592,7 +597,8 @@ export async function prepareProjectTrustMigration(context) {
     const failures = [];
     for (const stack of [...activeStacks].reverse()) {
       if (stack.stopped) continue;
-      const result = await invokeCli(`project-trust cleanup ${stack.space}`, ['down', '--space', stack.space, '--with-agents', '--yes'], { cwd: stack.cwd, env: stack.env });
+      const argv = stack.withAgents ? ['down', '--with-agents', '--yes'] : ['down', '--yes'];
+      const result = await invokeCli(`project-trust cleanup ${stack.space}`, argv, { cwd: stack.cwd, env: stack.env });
       if (result.exit === 0 && result.signal === null && result.timeout === false) stack.stopped = true;
       else failures.push(`${stack.space} exit ${result.exit}`);
     }
@@ -601,32 +607,47 @@ export async function prepareProjectTrustMigration(context) {
   };
   context.adoptCleanup?.(cleanup);
 
-  const preBroker = await startOpenStack('project-trust pre-update broker up', projects.brokerHost, 'shared-broker', profiles.brokerOnly.env, { server: sharedServer, withManager: false });
+  // Name the broker after its folder so bare `cotal down` matches the space both
+  // 0.182.1 and current record at that root.
+  const preBroker = await startOpenStack('project-trust pre-update broker up', projects.brokerHost, 'broker-host', profiles.brokerOnly.env, { server: sharedServer, withManager: false });
 
   const primarySeedPath = profiles.primary.seedPath;
   const primaryStorePath = profiles.primary.storePath;
 
   ok(await invokeCli('project-trust register status-first', ['space', 'add', 'registered', '--root', projects.statusFirst, '--server', sharedServer, '--mode', 'open', '--force', '--yes'], { cwd: projects.statusFirst, env: profiles.primary.env }), 'register status-first');
-  const preStatusFirst = await probe('project-trust pre-update status-first spawn', projects.statusFirst, 'registered', profiles.primary.env);
-
   ok(await invokeCli('project-trust register spawn-first', ['space', 'add', 'registered', '--root', projects.spawnFirst, '--server', sharedServer, '--mode', 'open', '--force', '--yes'], { cwd: projects.spawnFirst, env: profiles.spawnFirst.env }), 'register spawn-first');
-  const preSpawnFirst = await probe('project-trust pre-update spawn-first spawn', projects.spawnFirst, 'registered', profiles.spawnFirst.env);
-
   ok(await invokeCli('project-trust prepare status-first space', ['space', 'create', 'prepared', '--root', projects.preparedStatusFirst], { cwd: projects.preparedStatusFirst, env: profiles.preparedStatusFirst.env }), 'prepare status-first');
   ok(await invokeCli('project-trust prepare up-first space', ['space', 'create', 'prepared', '--root', projects.preparedUpFirst], { cwd: projects.preparedUpFirst, env: profiles.preparedUpFirst.env }), 'prepare up-first');
-
   ok(await invokeCli('project-trust register symlink space', ['space', 'add', 'linked', '--root', projects.symlinkEntry, '--server', sharedServer, '--mode', 'open', '--force', '--yes'], { cwd: projects.symlinkEntry, env: profiles.symlink.env }), 'register symlink');
+
+  const sourceAlreadyTrusted = compareVersions(report.source, FIRST_TRUST_RELEASE) >= 0;
+  if (sourceAlreadyTrusted) {
+    const trusted = [
+      ['status-first', projects.statusFirst, profiles.primary],
+      ['spawn-first', projects.spawnFirst, profiles.spawnFirst],
+      ['prepared-status-first', projects.preparedStatusFirst, profiles.preparedStatusFirst],
+      ['prepared-up-first', projects.preparedUpFirst, profiles.preparedUpFirst],
+      ['symlink', projects.symlinkReal, profiles.symlink],
+    ];
+    for (const [name, dir, profile] of trusted) {
+      ok(await invokeCli(`project-trust record ${name}`, ['trust', dir], { cwd: dir, env: profile.env }), `record ${name}`);
+    }
+  }
+
+  const preStatusFirst = await probe('project-trust pre-update status-first spawn', projects.statusFirst, 'registered', profiles.primary.env);
+  const preSpawnFirst = await probe('project-trust pre-update spawn-first spawn', projects.spawnFirst, 'registered', profiles.spawnFirst.env);
   const preSymlink = await probe('project-trust pre-update symlink spawn', projects.symlinkEntry, 'linked', profiles.symlink.env, join(projects.symlinkReal, 'probe.log'));
   const spellings = await windowsPathSpellings(projects.statusFirst);
 
   await stopOpenStack('project-trust pre-update broker down', preBroker.entry);
 
-  const sourceAlreadyTrusted = compareVersions(report.source, FIRST_TRUST_RELEASE) >= 0;
   const primaryBefore = trustSnapshot(primarySeedPath, primaryStorePath);
   const profileBefore = Object.fromEntries(Object.entries(profiles).map(([name, profile]) => [name, trustSnapshot(profile.seedPath, profile.storePath)]));
-  const recorded = [primaryBefore, ...Object.values(profileBefore)].filter(Boolean).length;
-  assert.equal(recorded, sourceAlreadyTrusted ? Object.keys(profiles).length + 1 : 0, sourceAlreadyTrusted
-    ? 'a source with project trust must have recorded every registered home before the update'
+  // primaryBefore is the same home as profiles.primary. Count homes, not both copies.
+  const recorded = Object.values(profileBefore).filter(Boolean).length;
+  const recordedHomes = sourceAlreadyTrusted ? 5 : 0;
+  assert.equal(recorded, recordedHomes, sourceAlreadyTrusted
+    ? 'a source with project trust must have recorded every home the user trusted before the update'
     : 'a source without project trust must not have recorded trust before the update');
   console.log(`project-trust case: ${sourceAlreadyTrusted ? 'source-already-trusted' : 'source-without-trust'} (source ${report.source})`);
 
@@ -683,13 +704,13 @@ async function runManagedProbe({ invokeCli, ok, projects, profiles, startOpenSta
   const managedLogPath = join(projects.statusFirst, 'managed-probe.log');
   rmSync(managedLogPath, { force: true });
   const managerEnv = { ...profiles.primary.env, TRUST_PROBE_LOG: managedLogPath, TRUST_LAUNCH_MODE: 'managed' };
-  const managedStack = await startOpenStack('project-trust start background Manager stack', projects.statusFirst, 'registered', managerEnv, { withManager: true });
+  const managedStack = await startOpenStack('project-trust start background Manager stack', projects.statusFirst, 'status-first-registered', managerEnv, { withManager: true });
   rmSync(managedLogPath, { force: true });
-  ok(await invokeCli('project-trust status-first managed spawn', ['spawn', '--detach', 'probe', '--name', 'trust_mgr_worker', '--space', 'registered', '--agent', 'claude', '--no-events'], { cwd: projects.statusFirst, env: managerEnv }), 'managed spawn');
+  ok(await invokeCli('project-trust status-first managed spawn', ['spawn', '--detach', 'probe', '--name', 'trust_mgr_worker', '--space', 'status-first-registered', '--agent', 'claude', '--no-events'], { cwd: projects.statusFirst, env: managerEnv }), 'managed spawn');
   const managedDeadline = Date.now() + 30_000;
   while (!existsSync(managedLogPath) && Date.now() < managedDeadline) await new Promise(done => setTimeout(done, 250));
   assert(existsSync(managedLogPath), 'background Manager launch wrote no probe log');
-  const psAfterManaged = ok(await invokeCli('project-trust status-first ps', ['ps', '--space', 'registered', '--json'], { cwd: projects.statusFirst, env: managerEnv }), 'ps after managed spawn');
+  const psAfterManaged = ok(await invokeCli('project-trust status-first ps', ['ps', '--space', 'status-first-registered', '--json'], { cwd: projects.statusFirst, env: managerEnv }), 'ps after managed spawn');
   const psData = JSON.parse(psAfterManaged.stdout).result;
   const seatJoined = psData?.kind === 'seats' && Array.isArray(psData.items) && psData.items.some(item => item.name === 'trust_mgr_worker');
   const record = JSON.parse(readFileSync(managedLogPath, 'utf8').trim());
@@ -708,7 +729,7 @@ async function verifyProjectTrustAfterUpdate(update, ctx) {
 
       // Restart the shared broker on the exact same port in the isolated brokerOnly profile so
       // spawn-first and symlink profiles can run `cotal spawn` as their very first post-update command.
-      const postBroker = await startOpenStack('project-trust post-update broker up', projects.brokerHost, 'shared-broker', profiles.brokerOnly.env, { server: sharedServer, withManager: false });
+      const postBroker = await startOpenStack('project-trust post-update broker up', projects.brokerHost, 'broker-host', profiles.brokerOnly.env, { server: sharedServer, withManager: false });
 
       // 3a + 6: status-first in primary home, followed by foreground spawn AND background Manager detached spawn.
       const seedAbsentAfterUpdateBeforeStatus = !existsSync(primarySeedPath) && !existsSync(primaryStorePath);

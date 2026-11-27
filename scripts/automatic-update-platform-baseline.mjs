@@ -458,7 +458,7 @@ export async function matrixCell(options) {
   env.PATH = [dirname(launcher), join(prefix, process.platform === 'win32' ? '' : 'bin'), join(home, '.local/bin'), env.PATH].join(delimiter);
   const [npm, npmPrefix] = npmCommand();
   let bootstrapEnvironment;
-  let uncertain = false, installedService = false, stackStarted = false, plan, receipt, holderPromise, releaseHolder, overlay, restoreRegistry, launchdObserver, offInventory, killControl, finalDaemon, container, compositionCleanup;
+  let uncertain = false, installedService = false, stackStarted = false, plan, receipt, holderPromise, releaseHolder, overlay, restoreRegistry, launchdObserver, offInventory, killControl, finalDaemon, container, compositionCleanup, compositionCleanupReturned = false;
   let removeClaudeFixture;
   const transcript = [];
   async function captureServiceEvidence(stage) {
@@ -1461,7 +1461,11 @@ export async function matrixCell(options) {
       report.nextHop.passed = report.nextHop.passed === true && report.assertions.every(row => row.passed);
     }
     if (compositionCleanup && !daemonHostedManager) {
-      try { await compositionCleanup(); report.compositionCleanup = 'owned composition stopped before reporting'; }
+      try {
+        await compositionCleanup();
+        compositionCleanupReturned = true;
+        report.compositionCleanup = 'owned composition stopped before reporting';
+      }
       catch (error) { uncertain = true; report.cleanupFailure = error.message; report.result = 'failed'; }
     }
     if (container) {
@@ -1539,6 +1543,7 @@ export async function matrixCell(options) {
     if (compositionCleanup && daemonHostedManager) {
       try {
         await compositionCleanup();
+        compositionCleanupReturned = true;
         report.compositionCleanup = report.managerHost?.stop?.exit === 0
           ? 'owned composition stopped after confirmed hosted Manager removal'
           : 'owned composition stopped; hosted Manager removal not confirmed';
@@ -1554,7 +1559,7 @@ export async function matrixCell(options) {
       catch (error) { report.cleanupFailure = error.message; report.result = 'failed'; }
     }
     if (overlay) report.registryRequests = await overlay.close();
-    const compositionStopped = !compositionCleanup || report.compositionCleanup === 'owned composition stopped before reporting';
+    const compositionStopped = compositionCleanupConfirmed({ compositionCleanup, returned: compositionCleanupReturned });
     const cleanupPassed = !uncertain && !report.cleanupFailure
       && (!installedService || report.cleanup === 'receipt-guarded native removal confirmed')
       && (!stackStarted || report.ownedStackCleanup?.exit === 0)
@@ -1574,6 +1579,12 @@ export async function matrixCell(options) {
     if (process.env.GITHUB_STEP_SUMMARY) writeFileSync(process.env.GITHUB_STEP_SUMMARY, `| Cell | Target | Result | Exact refusal |\n|---|---|---|---|\n| ${id} | ${report.target ?? 'unresolved'} | ${report.result} | ${(report.refusal ?? '').replaceAll('|', '\\|').replaceAll('\n', '<br>')} |\n`, { flag: 'a' });
   }
   return report;
+}
+
+/** Cleanup passed when there was no owned composition, or its callback returned without throwing.
+ *  The sentence a cell writes afterwards is a report, not the fact. */
+export function compositionCleanupConfirmed({ compositionCleanup, returned }) {
+  return !compositionCleanup || returned === true;
 }
 
 export function bootstrapVersion(latest, direction) {
