@@ -46,6 +46,7 @@ export const launchFlags = [
   { name: "role", type: "string", value: "<r>", description: "role override (wins over the agent file's role:)" },
   { name: "model", short: "m", type: "string", value: "<m>", description: "model override (wins over the agent file's model:)" },
   { name: "variant", type: "string", value: "<v>", description: "model variant override (connector-defined; wins over the agent file's variant:)" },
+  { name: "mode", type: "string", multiple: true, value: "<id=value>", description: "model mode (repeatable): true or false for a toggle, an option id for a choice; `cotal models` lists them" },
   { name: "opt", type: "string", multiple: true, value: "<k=v>", description: "connector-specific launch option (repeatable); wins per-key over the agent file's launchOptions:" },
   { name: "cwd", short: "C", type: "string", value: "<dir>", description: "working directory to root the agent at" },
   { name: "prompt", short: "p", type: "string", value: "<text>", description: "initial prompt auto-submitted at start" },
@@ -73,6 +74,23 @@ export function parseLaunchOptions(pairs: string[] | undefined): Record<string, 
     if (!key) throw new Error(`--opt has an empty key (got "${raw}")`);
     if (key in out) throw new Error(`--opt "${key}" given more than once`);
     out[key] = raw.slice(eq + 1);
+  }
+  return out;
+}
+
+/** Parse repeated `--mode id=value` pairs into a launch's modes: `true` and `false` set a toggle, and
+ *  any other value names a choice's option. Fails loud on a missing `=`, an empty id or value, or an
+ *  id given twice. Returns undefined when there are none. */
+export function parseLaunchModes(pairs: string[] | undefined): Record<string, boolean | string> | undefined {
+  if (!pairs?.length) return undefined;
+  const out: Record<string, boolean | string> = {};
+  for (const raw of pairs) {
+    const eq = raw.indexOf("=");
+    const id = eq === -1 ? "" : raw.slice(0, eq).trim();
+    const value = eq === -1 ? "" : raw.slice(eq + 1).trim();
+    if (!id || !value) throw new Error(`--mode must be id=value, such as fast=true (got "${raw}")`);
+    if (Object.hasOwn(out, id)) throw new Error(`--mode "${id}" given more than once`);
+    out[id] = value === "true" ? true : value === "false" ? false : value;
   }
   return out;
 }

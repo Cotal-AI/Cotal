@@ -51,6 +51,7 @@ import {
   recordOperationSpace,
   resolveMeshTarget,
   resolveControlTarget,
+  parseLaunchModes,
 } from "@cotal-ai/workspace";
 import { readManagedLaunch, requestManagedLaunch, type ManagedLaunchResult } from "@cotal-ai/workspace/launch";
 import { c, stderrLine } from "../ui.js";
@@ -255,6 +256,7 @@ export async function launchManagedPersona(
     config: managerConfigRef,
     model: values.model,
     variant: values.variant,
+    modes: parseLaunchModes(values.mode),
     ...(values.restarts !== undefined ? { supervise: { restarts: Number(values.restarts), windowMs: Number(values["restart-window"]) } } : {}),
     launchOptions,
     cwd,
