@@ -70,9 +70,8 @@ test('welcome page comes forward when the app window is already open', () => {
   const welcome = source.indexOf('!insertmacro MUI_PAGE_WELCOME');
   assert.ok(show > 0 && show < welcome);
   const body = source.slice(source.indexOf('Function WelcomeShow'), source.indexOf('FunctionEnd', source.indexOf('Function WelcomeShow')));
-  const above = body.indexOf('SetWindowPos(p $hwndparent, p -1, i 0, i 0, i 0, i 0, i 0x13)');
-  const clear = body.indexOf('SetWindowPos(p $hwndparent, p -2, i 0, i 0, i 0, i 0, i 0x13)');
-  assert.ok(above > 0 && clear > above);
+  assert.equal(body.split('SetWindowPos(p $hwndparent, p -1, i 0, i 0, i 0, i 0, i 0x13)').length, 2);
+  assert.equal(body.indexOf(', p -2,'), -1);
   assert.equal(body.indexOf('AttachThreadInput'), -1);
   assert.equal(body.indexOf('RunAsUser'), -1);
   const laterShow = source.indexOf('MUI_PAGE_CUSTOMFUNCTION_SHOW', welcome + 1);
