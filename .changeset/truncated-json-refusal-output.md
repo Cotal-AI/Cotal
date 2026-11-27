@@ -3,4 +3,4 @@
 "cotal-ai": patch
 ---
 
-Remove partial file output, keep only the one-line stdout write error on stderr, and exit 3 when a JSON refusal write is cut short.
+Restore a regular stdout file to its prior size when a JSON refusal write stops partway, while keeping the refusal exit status and the text report on stderr.

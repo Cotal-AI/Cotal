@@ -15,8 +15,9 @@
  *     stdout's errors and attach no listener of their own to process.stdout;
  *   - with stdout in a file under a file-size limit, a write cut short is reported as EFBIG and
  *     exits 3. With no limit the whole write lands. When the limit cuts a built CLI JSON refusal
- *     short, the partial output is removed, only the one-line EFBIG error is written to stderr, and
- *     the CLI exits 3. The file-size-limited cells need `bash` on PATH.
+ *     short, the file is restored to its prior size, the CLI keeps the refusal exit code, and it
+ *     prints the EFBIG line and text refusal on stderr. The file-size-limited cells need `bash` on
+ *     PATH.
  *   - a built CLI JSON refusal reaches a pipe that accepts only a few bytes per write.
  * The views themselves (chat, watch, service logs, the service journal) and `down` are not driven here.
  *
@@ -223,11 +224,47 @@ if (mode !== undefined) {
 
     const cli = join(import.meta.dirname, "../../../bin/dist/cotal.js");
     const refused = await runToFile([cli, "docs", "xyz-not-a-real-page", "--json"], 1);
-    check("a truncated JSON refusal removes partial output, writes only the EFBIG line to stderr and exits 3",
-      refused.code === 3 && refused.bytes === 0 && refused.stderr === "✗ could not write to stdout: EFBIG: file too large, write\n", refused);
+    check("a short JSON refusal restores the file to 0 bytes, keeps exit 1 and writes the EFBIG diagnostic and text refusal to stderr",
+      refused.code === 1 && refused.bytes === 0 && refused.stderr.startsWith("✗ could not write to stdout: EFBIG: file too large, write\n")
+        && refused.stderr.includes('no docs page "xyz-not-a-real-page"'), refused);
     const appended = await runToFile([cli, "docs", "xyz-not-a-real-page", "--json"], 1, "keep\n");
-    check("a truncated JSON refusal appended to a file keeps existing bytes and removes its own partial output",
-      appended.code === 3 && appended.bytes === 5 && appended.stderr === "✗ could not write to stdout: EFBIG: file too large, write\n", appended);
+    check("a short JSON refusal appended to a file keeps existing bytes, removes its own partial output, keeps exit 1 and writes the text refusal to stderr",
+      appended.code === 1 && appended.bytes === 5 && appended.stderr.startsWith("✗ could not write to stdout: EFBIG: file too large, write\n")
+        && appended.stderr.includes('no docs page "xyz-not-a-real-page"'), appended);
+    const sharedDir = mkdtempSync(join(tmpdir(), "cotal-stdout-concurrent-"));
+    try {
+      const sharedPath = join(sharedDir, "shared.json");
+      const concurrentHook = join(sharedDir, "concurrent-write.cjs");
+      writeFileSync(sharedPath, "keep\n");
+      writeFileSync(concurrentHook, `
+const fs = require("node:fs");
+const { syncBuiltinESMExports } = require("node:module");
+const writeSync = fs.writeSync;
+let first = true;
+fs.writeSync = (fd, chunk, ...args) => {
+  if (fd !== 1) return writeSync(fd, chunk, ...args);
+  if (!first) throw Object.assign(new Error("ENOSPC: no space left on device, write"), { code: "ENOSPC" });
+  first = false;
+  if (typeof chunk === "string") chunk = Buffer.from(chunk);
+  const [offset = 0] = args;
+  const wrote = writeSync(fd, chunk, offset, 32);
+  fs.appendFileSync(${JSON.stringify(sharedPath)}, "peer\\n");
+  return wrote;
+};
+syncBuiltinESMExports();
+`);
+      const sharedFd = openSync(sharedPath, "a", 0o600);
+      const concurrent = spawnSync(process.execPath, ["--require", concurrentHook, cli, "docs", "xyz-not-a-real-page", "--json"],
+        { stdio: ["ignore", sharedFd, "pipe"], encoding: "utf8", timeout: 20_000 });
+      closeSync(sharedFd);
+      const text = readFileSync(sharedPath, "utf8");
+      check("when another writer appends meanwhile, ftruncateSync does not discard the other writer's bytes",
+        concurrent.status === 1 && text.length === 42 && text.startsWith("keep\n") && text.endsWith("peer\n")
+          && concurrent.stderr.startsWith("✗ could not write to stdout: ENOSPC: no space left on device, write\n")
+          && concurrent.stderr.includes('no docs page "xyz-not-a-real-page"'), { status: concurrent.status, length: text.length, stderr: concurrent.stderr });
+    } finally {
+      rmSync(sharedDir, { recursive: true, force: true });
+    }
 
     const dir = mkdtempSync(join(tmpdir(), "cotal-invalid-workflow-"));
     try {

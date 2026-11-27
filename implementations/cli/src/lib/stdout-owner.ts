@@ -33,11 +33,10 @@ export function writeAllSync(fd: number, chunk: Buffer): void {
 }
 
 /**
- * Write a complete structured document synchronously to `fd`. Returns `undefined` when every byte
- * lands, or the write error and whether some bytes were written first, after restoring a regular
- * file's previous size so no partial document remains.
+ * Write a complete structured document synchronously to `fd`, or restore a regular file's previous
+ * size when a partial write stops short and rethrow the write error.
  */
-export function writeWholeSync(fd: number, chunk: Buffer): { error: NodeJS.ErrnoException; partial: boolean } | undefined {
+export function writeWholeSync(fd: number, chunk: Buffer): void {
   let initialSize: number | undefined;
   try {
     const stat = fstatSync(fd);
@@ -50,14 +49,13 @@ export function writeWholeSync(fd: number, chunk: Buffer): { error: NodeJS.Errno
       if (wrote === 0) throw Object.assign(new Error("stdout took no bytes"), { code: "EIO" });
       done += wrote;
     }
-    return undefined;
   } catch (error) {
     if (done > 0 && initialSize !== undefined) {
       try {
         if (fstatSync(fd).size === initialSize + done) ftruncateSync(fd, initialSize);
       } catch { /* keep the original write error */ }
     }
-    return { error: error as NodeJS.ErrnoException, partial: done > 0 };
+    throw error;
   }
 }
 
