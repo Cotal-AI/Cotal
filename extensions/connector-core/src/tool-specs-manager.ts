@@ -539,15 +539,16 @@ export function managerToolSpecs(config: AgentConfig, source: string, env?: Node
       ) {
         try {
           const reply = await agent.definePersona({ name, prompt, instance, model, role, agent: agentType, subscribe, allowSubscribe, allowPublish, capabilities, endpoints, announce });
+          const target = `\`name\` set to \`${name}\`${instance === undefined ? "" : ` and \`instance\` set to \`${instance}\``}`;
           if (reply.definitionOutcome === "unknown") {
-            const readback = `cotal_personas(name="${name}"${instance === undefined ? "" : `, instance="${instance}"`})`;
+            const readback = `Read back with \`cotal_personas\` on the same manager before acting. Pass ${target}.`;
             const message = `The definition outcome for persona \`${name}\` is unknown: ${reply.error ?? "the manager reply was not observed"}. ` +
               `The file may already have been written or may still be written. Do not re-run this definition or spawn it on this result. ` +
-              `Read back with ${readback} on the same manager before acting. A missing readback alone does not prove the write will not land.`;
+              `${readback} A missing readback alone does not prove the write will not land.`;
             return { text: message, structured: { status: "unknown", name, ...(instance === undefined ? {} : { instance }), next: readback, message } };
           }
           if (!reply.ok) return err(`Couldn't define ${name}: ${reply.error ?? "manager refused"}`);
-          const spawnHint = `spawn it with cotal_spawn(name="${name}"${instance === undefined ? "" : `, instance="${instance}"`}) to bring it online`;
+          const spawnHint = `You can bring it online with \`cotal_spawn\`. Pass ${target}.`;
           // The persona is SAVED whenever we get here, so a failed announcement is a partial success,
           // not a failure. Saying "couldn't define" would name the wrong remediation (the caller
           // would fix its spawn capability, which was never the problem) and invite a retry — and a
@@ -562,16 +563,16 @@ export function managerToolSpecs(config: AgentConfig, source: string, env?: Node
           if (reply.announceError && reply.announceOutcome === "denied")
             return ok(
               `Persona \`${name}\` saved — but the announcement to #${announce} was REFUSED and did not go out: ${reply.announceError}. ` +
-                `The persona is on disk; do not re-run this call. Check your \`allowPublish\` for #${announce}, then post it yourself if you still want to. You can ${spawnHint}.`,
+                `The persona is on disk; do not re-run this call. Check your \`allowPublish\` for #${announce}, then post it yourself if you still want to. ${spawnHint}`,
             );
           if (reply.announceError)
             return ok(
               `Persona \`${name}\` saved — but I could NOT CONFIRM the announcement to #${announce}: ${reply.announceError}. ` +
-                `It may or may not have been delivered. The persona is on disk; do not re-run this call, and READ #${announce} before posting anything yourself — posting blind is how the channel gets it twice. You can ${spawnHint}.`,
+                `It may or may not have been delivered. The persona is on disk; do not re-run this call, and READ #${announce} before posting anything yourself — posting blind is how the channel gets it twice. ${spawnHint}`,
             );
           // Report the destination when there was one, so the caller can tell a silent define from an
           // announced one without having to go read the channel.
-          return ok(`Persona \`${name}\` saved${announce ? ` and announced on #${announce}` : ""} — ${spawnHint}.`);
+          return ok(`Persona \`${name}\` saved${announce ? ` and announced on #${announce}` : ""}. ${spawnHint}`);
         } catch (e) {
           // A rejected `announce` throws before the manager write, so nothing was saved and the
           // remediation is the argument, not a capability. controlFailure's spawn-capability advice
