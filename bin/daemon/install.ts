@@ -492,7 +492,12 @@ export function planInstalledPathRefresh(paths: DaemonPaths, daemonHome?: string
   const { receipt, plan } = recordedUnit(paths, daemonHome);
   if (plan.mechanism === "scheduled-task") return undefined;
   const source = readFileSync(receipt.unitPath, "utf8");
-  const next = refreshedDaemonPath(plan.mechanism, source, serviceApplicationPath(process.env.PATH ?? "", plan.mechanism === "launchd-agent" ? "darwin" : "linux"))!;
+  const os = plan.mechanism === "launchd-agent" ? "darwin" : "linux";
+  const merged = [...new Set([
+    ...pinnedPath(process.env.PATH ?? "", posix).split(posix.delimiter),
+    ...pinnedPath(pinnedPathMatch(plan.mechanism, source).old, posix).split(posix.delimiter),
+  ])].join(posix.delimiter);
+  const next = refreshedDaemonPath(plan.mechanism, source, serviceApplicationPath(merged, os))!;
   const sha256 = createHash("sha256").update(next).digest("hex");
   return () => {
     const lock = process.platform === "darwin" || process.platform === "linux" ? acquireLock(join(paths.state, "service-repair.lock")) : undefined;

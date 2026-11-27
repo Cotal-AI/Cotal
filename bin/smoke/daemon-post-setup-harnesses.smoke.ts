@@ -8,6 +8,7 @@
  * LaunchAgent plist).
  */
 import { execFile, spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -16,7 +17,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { resolveOnPath } from "@cotal-ai/workspace";
 import { createSuite, killAndAwaitExit, skipSuite } from "@cotal-ai/smoke-kit";
 import { daemonPaths } from "../daemon/endpoint.js";
-import { renderDaemonUnit } from "../daemon/install.js";
+import { planInstalledPathRefresh, renderDaemonUnit } from "../daemon/install.js";
 import { launchAgentService } from "../daemon/install-darwin.js";
 import { serviceApplicationPath } from "../daemon/desktop-path.js";
 import { createFixtureSpace } from "./_fixture-space.mjs";
@@ -30,8 +31,14 @@ for (const key of Object.keys(process.env)) if (key.startsWith("COTAL_")) delete
 const { check, finish, passed, failed } = createSuite();
 const runtime = fileURLToPath(new URL("..", import.meta.url));
 const cli = join(runtime, "dist", "cotal.js");
+if (!existsSync(cli)) {
+  console.error(`✗ ${cli} missing - build first: pnpm --filter cotal-ai... build`);
+  process.exit(1);
+}
 const root = mkdtempSync(join(tmpdir(), "post-setup-harnesses-"));
-const savedEnv = Object.fromEntries(["HOME", "COTAL_HOME", "XDG_CONFIG_HOME", "XDG_RUNTIME_DIR", "PATH"].map(key => [key, process.env[key]]));
+const savedEnv = Object.fromEntries(["HOME", "COTAL_HOME", "XDG_CONFIG_HOME", "XDG_RUNTIME_DIR", "PATH", "NATS_SERVER_BIN"].map(key => [key, process.env[key]]));
+const resolvedNatsServer = process.env.NATS_SERVER_BIN || resolveOnPath("nats-server", process.env);
+if (resolvedNatsServer) process.env.NATS_SERVER_BIN = resolvedNatsServer;
 
 const home = join(root, "home");
 const cotalHome = join(root, "cotal");
@@ -52,7 +59,7 @@ process.env.XDG_RUNTIME_DIR = runDir;
 process.env.PATH = callerPath;
 
 const env: NodeJS.ProcessEnv = {
-  ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_") && !["NODE_OPTIONS", "NODE_PATH"].includes(key))),
+  ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_") && !["NODE_OPTIONS", "NODE_PATH", "NOTIFY_SOCKET"].includes(key))),
   HOME: home,
   COTAL_HOME: cotalHome,
   XDG_CONFIG_HOME: configHome,
@@ -126,6 +133,45 @@ try {
     pinnedServicePath === [...callerPath.split(":"), ...expectedSuffix].join(":"),
     pinnedServicePath,
   );
+
+  if (process.platform === "linux") {
+    const refreshRoot = join(root, "refresh-check");
+    const refreshConfig = join(refreshRoot, "config");
+    const refreshState = join(refreshRoot, "state");
+    const fakeSys = join(refreshRoot, "sys");
+    for (const dir of [join(refreshConfig, "systemd", "user"), refreshState, fakeSys]) mkdirSync(dir, { recursive: true, mode: 0o700 });
+    writeFileSync(
+      join(fakeSys, "systemctl"),
+      `#!/bin/sh\nif [ "$1" = "--user" ] && [ "$2" = "show-environment" ]; then printf 'XDG_CONFIG_HOME=%s\\n' ${JSON.stringify(refreshConfig)}; exit 0; fi\nexit 0\n`,
+      { mode: 0o700 },
+    );
+    const oldUnitPath = join(refreshConfig, "systemd", "user", "cotal-daemon.service");
+    const oldUnit = `[Service]\nEnvironment=PATH="/old-only:/usr/bin:/bin"\nExecStart="${process.execPath}" "${cli}" "daemon" "serve"\n`;
+    writeFileSync(oldUnitPath, oldUnit, { mode: 0o600 });
+    writeFileSync(
+      join(refreshState, "service-unit.json"),
+      `${JSON.stringify({ v: 1, mechanism: "systemd-user", unit: "cotal-daemon.service", unitPath: oldUnitPath, unitSha256: createHash("sha256").update(oldUnit).digest("hex"), installedAt: "2026-11-27T00:00:00.000Z" })}\n`,
+      { mode: 0o600 },
+    );
+    const prevPath = process.env.PATH;
+    const prevXdg = process.env.XDG_CONFIG_HOME;
+    try {
+      process.env.XDG_CONFIG_HOME = refreshConfig;
+      process.env.PATH = `${fakeSys}:/new-term:/usr/bin:/bin`;
+      const applyRefresh = planInstalledPathRefresh({ dir: refreshState, socket: join(refreshState, "daemon.sock"), state: refreshState, lock: join(refreshState, "daemon.lock") }, undefined);
+      applyRefresh?.();
+      const rewritten = readFileSync(oldUnitPath, "utf8");
+      const expectedRefreshed = [fakeSys, "/new-term", "/usr/bin", "/bin", "/old-only", ...expectedSuffix].join(":");
+      check(
+        "refreshing an older unit appends installer folders after both terminal and older pinned entries",
+        rewritten.includes(`Environment=PATH="${expectedRefreshed}"\n`),
+        rewritten,
+      );
+    } finally {
+      process.env.PATH = prevPath;
+      process.env.XDG_CONFIG_HOME = prevXdg;
+    }
+  }
 
   fixture = await createFixtureSpace({ root: join(root, "space"), machineHome: cotalHome, runtime, node: process.execPath, env });
 

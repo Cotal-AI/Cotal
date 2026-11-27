@@ -14,9 +14,8 @@ import { createHash } from "node:crypto";
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, sep } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
-import { registry } from "@cotal-ai/core";
-import { checkedHarnessInstall, SEEDED_EXTENSIONS, SEEDED_SHARED_DIR, SEEDED_SHARED_FILES } from "@cotal-ai/workspace";
+import { fileURLToPath } from "node:url";
+import { SEEDED_EXTENSIONS, SEEDED_SHARED_DIR, SEEDED_SHARED_FILES } from "@cotal-ai/workspace";
 
 const binRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 const repoRoot = join(binRoot, "..");
@@ -96,19 +95,5 @@ for (const name of Object.keys(SEEDED_EXTENSIONS)) {
   }
 }
 writeFileSync(join(sharedRoot, "placements.json"), `${JSON.stringify({ v: 1, files, placements }, null, 2)}\n`);
-const installers = {};
-for (const [name, { srcDir: srcSubdir }] of Object.entries(SEEDED_EXTENSIONS)) {
-  if (name === "web") continue;
-  await import(pathToFileURL(join(repoRoot, srcSubdir, "dist", "index.js")).href);
-}
-for (const connector of registry.all("connector")) {
-  if (!Object.hasOwn(SEEDED_EXTENSIONS, connector.name) || !connector.install) continue;
-  const checked = checkedHarnessInstall(connector.name, connector.requires ?? [], connector.install);
-  const dirs = Object.fromEntries(
-    ["darwin", "linux"].flatMap((os) => (checked.installers[os] ? [[os, checked.installers[os].binDir]] : [])),
-  );
-  if (Object.keys(dirs).length) installers[connector.name] = dirs;
-}
-writeFileSync(join(sharedRoot, "installers.json"), `${JSON.stringify({ v: 1, installers }, null, 2)}\n`);
 const placed = Object.values(placements).flat().length;
 console.log(`seeded-connectors/${SEEDED_SHARED_DIR}  <-  ${Object.keys(files).length} shared files for ${placed} placements`);
