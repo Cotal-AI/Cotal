@@ -1257,6 +1257,7 @@
   "env:COTAL_CODEX_PROMPT": "internal:connector plumbing the launcher sets for one harness",
   "env:COTAL_CODEX_REMOTE_TOKEN": "internal:connector plumbing the launcher sets for one harness",
   "env:COTAL_CODEX_RESOLVED_BIN": "internal:connector plumbing the launcher sets for one harness",
+  "env:COTAL_CODEX_SERVICE_TIER": "internal:connector plumbing the launcher sets for one harness",
   "env:COTAL_CODEX_TUI": "pending:config",
   "env:COTAL_COMPLETE_DEBUG": "pending:config",
   "env:COTAL_CONTROL_KEY": "internal:connector plumbing the launcher sets for one harness",

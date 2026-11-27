@@ -171,6 +171,7 @@
     "smoke:pi-standalone-spawn:live": "tsx bin/smoke/pi-standalone-spawn-live.smoke.ts",
     "smoke:pi-once": "tsx extensions/pi/smoke/once-handoff.smoke.ts",
     "smoke:codex-args": "tsx extensions/connector-codex/smoke/codex-args.smoke.ts",
+    "smoke:codex-model-catalog": "tsx extensions/connector-codex/smoke/model-catalog.smoke.ts",
     "smoke:codex-prompts": "tsx extensions/connector-codex/smoke/prompts.smoke.ts",
     "smoke:codex-ask-permissions": "tsx extensions/connector-codex/smoke/ask-permissions.smoke.ts",
     "smoke:codex-reasoning-events": "tsx extensions/connector-codex/smoke/reasoning-events.smoke.ts",

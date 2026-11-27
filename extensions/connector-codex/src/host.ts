@@ -284,7 +284,7 @@ export async function runCodexHost(): Promise<void> {
   const codexBin = process.env.COTAL_CODEX_BIN?.trim() || process.env.COTAL_CODEX_RESOLVED_BIN?.trim() || undefined;
   // Validate the operator's launch config BEFORE anything is listening, so a bad launch throws
   // with nothing left behind to reap.
-  const baseOverrides = configOverrides(model, variant, config.askPermissions === true);
+  const baseOverrides = configOverrides(model, variant, config.askPermissions === true, process.env.COTAL_CODEX_SERVICE_TIER?.trim() || undefined);
   const agent = new MeshAgent(config, undefined, {
     commands: codexCommands(() => driver),
     naming: codexNaming({ bin: codexBin ?? "codex", codexHome, overrides: baseOverrides, model: () => driver.model, launchPrompt: process.env.COTAL_CODEX_PROMPT }),
