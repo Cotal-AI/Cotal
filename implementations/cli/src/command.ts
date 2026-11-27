@@ -34,6 +34,7 @@ import {
   outputDeclarationProblems,
   oneLine,
   paintFor,
+  plainFlag,
   preferencesFolderWarning,
   recordOperationWarning,
   renderReport,
@@ -461,7 +462,7 @@ function usageRefusal(failure: CommandFailure, plain: boolean, cmd?: Command, wo
   }
   if (!cmd) return;
   if (report) console.error("");
-  paintFor(process.stderr, () => printHelpPath(cmd, helpPath(cmd, words).path, (line) => console.error(line), terminalWidth(process.stderr), plain ? "plain" : "rich"));
+  paintFor(process.stderr, () => printHelpPath(cmd, helpPath(cmd, words).path, (line) => console.error(line), terminalWidth(process.stderr), plain ? "plain" : "rich", words));
 }
 
 /** Recover the requested stream output and target for a refusal, without running the command. */
@@ -496,9 +497,14 @@ function streamRefusalArgs(cmd: Command, words: readonly string[]): ParsedArgs |
 
 /** An unreadable extension surface refuses dispatch, using the known built-in output mode if available. */
 function overlayFailureExit(error: unknown, builtin: Command | undefined, words: readonly string[], wantsHelp: boolean, scope: OperationScope): never {
-  if (error instanceof CorruptExtensionsManifestError && builtin && !wantsHelp && !takesWordsRaw(builtin) && asksForJson(builtin, words)) {
-    const failure = new CommandFailure("refused", "SCHEMA_INVALID", error.diagnosis, { remedy: error.remedy, cause: error });
-    failureExit(builtin, failure, true, false, scope, words, streamRefusalArgs(builtin, words));
+  const denied = isCommandFailure(error) && error.code === "PERMISSION_DENIED" ? error : undefined;
+  const corrupt = error instanceof CorruptExtensionsManifestError
+    ? new CommandFailure("refused", "SCHEMA_INVALID", error.diagnosis, { remedy: error.remedy, cause: error }) : undefined;
+  const failure = denied ?? corrupt;
+  if (failure && builtin && !wantsHelp && !takesWordsRaw(builtin)) {
+    const end = words.indexOf("--");
+    const plain = (end === -1 ? words : words.slice(0, end)).includes("--plain");
+    if (asksForJson(builtin, words) || plain || denied) failureExit(builtin, failure, asksForJson(builtin, words), plain, scope, words, streamRefusalArgs(builtin, words));
   }
   stderrLine("✗ ", (error as Error).message, c.red);
   process.exit(1);
@@ -571,13 +577,17 @@ function misspelledOption(cmd: Command, rest: readonly string[], flagNames: read
       return { message: `${word} gives -${short[1]} the value "=${value}"`, remedy: `write ${correction}${windows && common === undefined ? " in PowerShell" : ""}` };
     }
     const typed = positionals.has(index) ? recognize(word) : undefined;
-    if (typed && (cmd.name === "ext" || cmd.name === "endpoint") && typed.flagName && typed.flagName !== "help") {
+    if (typed && (cmd.name === "ext" || cmd.name === "endpoint" || cmd.name === "history") && typed.flagName && typed.flagName !== "help") {
       const first = metadataPositionals(cmd, rest, { optionSpelling: (arg) => recognize(arg)?.spelling }).positionals[0]?.value;
       const sub = findSubcommand(cmd, first);
       const accepted = sub ? sub.flagNames : cmd.flagNames;
-      if ((cmd.name === "ext" || sub?.name === "check") && accepted && !accepted.includes(typed.flagName))
+      if (cmd.name === "history" && sub?.name === "clear" && HISTORY_LIMIT_FLAGS.some((name) => name === typed.flagName))
+        return { message: typed.message, remedy: `omit --${typed.flagName} from \`history clear\` and keep the other arguments. Use it with \`history limit\` to change retention` };
+      if ((cmd.name === "ext" || (cmd.name === "endpoint" && sub?.name === "check")) && accepted && !accepted.includes(typed.flagName))
         return { message: typed.message, remedy: `omit this option; \`cotal ${cmd.name}${sub ? ` ${sub.name}` : ""}\` does not take --${typed.flagName}` };
     }
+    if (typed && typed.flagName === "plain" && asksForJson(cmd, rest))
+      return { message: typed.message, remedy: "omit the mistyped plain option" };
     if (typed) return typed;
   }
   return undefined;
@@ -619,6 +629,11 @@ function switchValueRefusal(flag: string, cmd?: Command, rest: readonly string[]
     ? !json && (findSubcommand(cmd, first) ?? cmd).outputs?.includes("plain")
     : structured(cmd, first)));
   return { message: `${flag} takes no value`, remedy: `omit ${flag}${acceptsFlag ? " or pass it without a value" : ""}` };
+}
+
+/** `--help` takes no value. Name the bare switch, not a positional that starts with `-`. */
+function helpSwitchValueRefusal(cmd: Command) {
+  return { message: "--help takes no value", remedy: displayRemedy(`run \`cotal ${cmd.name} --help\``) };
 }
 
 /** Positional word limit for the separator remedy only, counting subcommand words. Commands with
@@ -684,6 +699,42 @@ function operandLimit(cmd: Command, selected: Command | Subcommand, first: strin
   }
 }
 
+/** A persona invocation whose unknown word starts with `-`. Flags stay before `--` and only that
+ *  word follows it, which is the form the command can parse. Undefined when there is no such word. */
+function personaSeparatorRemedy(cmd: Command, rest: readonly string[]): string | undefined {
+  const end = rest.indexOf("--");
+  const head = end === -1 ? rest : rest.slice(0, end);
+  const flags: string[] = [];
+  const names: string[] = [];
+  for (let index = 0; index < head.length; index++) {
+    const word = head[index]!;
+    if (word === "--") continue;
+    const inline = /^--([^=]+)=/.exec(word)?.[1];
+    const long = inline ?? (/^--([^=]+)$/.exec(word)?.[1]);
+    const letter = /^-([^-])$/.exec(word)?.[1];
+    const flag = long !== undefined ? cmd.flags?.find((item) => item.name === long)
+      : letter === undefined ? undefined : cmd.flags?.find((item) => item.short === letter);
+    if (flag) {
+      flags.push(word);
+      const next = head[index + 1];
+      if (!inline && flag.type === "string" && next !== undefined && !next.startsWith("--") && (next === "-" || /^-\d/.test(next) || !next.startsWith("-"))) {
+        flags.push(shellWord(next));
+        index++;
+      }
+      continue;
+    }
+    names.push(word);
+  }
+  const dashed = names.find((word) => word.startsWith("-") && word !== "-");
+  if (dashed === undefined) return undefined;
+  const kept = names.filter((word) => word !== dashed);
+  const line = `cotal persona ${[...kept, ...flags].join(" ")}`;
+  // A catalog name cannot start with `-`, so reprinting one would refuse again.
+  if (names[0] === "create" || names[0] === "edit" || names[0] === "remove")
+    return `choose a catalog name that starts with a letter, digit or _, then repeat \`${line} <name>\``;
+  return `repeat it as \`${line} -- ${shellWord(dashed)}\``;
+}
+
 /** A parse error as a refusal. A mistyped option names its spelling. A word that starts with `-`
  *  goes after `--` only where the command has room for an operand and there is no spelling suggestion.
  *  An option value that starts with `-` is written `--name=value`, and an option given with no value,
@@ -693,6 +744,8 @@ function parseRefusal(error: Error & { code?: string }, cmd: Command, rest: read
     const reason = error.message.replace(/'\. To specify a positional argument starting with a '-', place it at the end of the command after '--', as in '-- "(?:[^"\\]|\\.)*"$/u, "'");
     const option = /^Unknown option '(--.+)'$/su.exec(reason)?.[1];
     if (option && GLOBAL_FLAG_WORDS.has(option) && !takesWordsRaw(cmd)) return switchValueRefusal(option);
+    // `--help` is a switch, not a command flag, so a value on it is not an unknown option.
+    if (option === "--help" && !takesWordsRaw(cmd)) return helpSwitchValueRefusal(cmd);
     if (cmd.name === "help" && option === "--preset") {
       const [service, verb] = metadataPositionals(cmd, rest).positionals;
       if (findCommand(commandSurface(), service?.value)?.name === "service" && verb?.value === "add")
@@ -707,9 +760,10 @@ function parseRefusal(error: Error & { code?: string }, cmd: Command, rest: read
       return { message: reason, remedy: `drop the unknown option${value}; --${flag.name} is already set` };
     }
     const message = spellings ? `${reason} - did you mean ${spellings}?` : reason;
-    const remedy = cmd.name === "completion" ? "drop the unknown option"
+    const personaSeparator = cmd.name === "persona" && !operandsFull() ? personaSeparatorRemedy(cmd, rest) : undefined;
+    const remedy = personaSeparator ?? (cmd.name === "completion" ? "drop the unknown option"
       : !takesOperands ? undefined : spellings ? `use ${spellings}`
-      : operandsFull() ? "drop the unknown option" : "to pass a word that starts with \"-\", put -- before it";
+      : operandsFull() ? "drop the unknown option" : "to pass a word that starts with \"-\", put -- before it");
     return { message, remedy };
   }
   if (error.code === "ERR_PARSE_ARGS_UNEXPECTED_POSITIONAL") {
@@ -935,7 +989,7 @@ async function serviceSurface(found: Command | undefined, words: string[], forRe
 /** Recover the command and output mode for a malformed leading switch without dispatching it. */
 async function unknownInvocationExit(commands: readonly Command[], word: string, args: string[], output: string[], beforeSeparator: boolean, warnings: OutputWarning[]): Promise<never> {
   const typed = typographicOption(word, new Set(LEADING_FLAGS.map((flag) => flag.slice(2))), [
-    jsonFlag, { name: "help", short: "h", type: "boolean" }, { name: "version", short: "V", type: "boolean" },
+    jsonFlag, plainFlag, { name: "help", short: "h", type: "boolean" }, { name: "version", short: "V", type: "boolean" },
   ]);
   const equals = word.indexOf("=");
   const flag = equals === -1 ? word : word.slice(0, equals);
@@ -950,11 +1004,16 @@ async function unknownInvocationExit(commands: readonly Command[], word: string,
   const words = [...output, ...retry.leading.filter((item) => OUTPUT_FLAG_WORDS.has(item)), ...retry.args];
   const { cmd, rest } = await serviceSurface(takesWordsRaw(found) ? undefined : found, words, true);
   const json = cmd !== undefined && asksForJson(cmd, rest);
+  // With JSON chosen, correcting a mistyped `--plain` would ask for both outputs at once, so the
+  // remedy drops the word instead of retyping it.
+  const plainRefusal = typed?.flagName === "plain" && json
+    ? { ...typed, remedy: "omit the mistyped plain option" }
+    : typed;
   if (typed && !json) return textExit();
   routeCollisionWarnings(warnings, cmd, rest, false);
   const end = rest.indexOf("--");
   const plain = (end === -1 ? rest : rest.slice(0, end)).includes("--plain");
-  const refusal = typed ?? switchValueRefusal(flag, cmd, rest, json);
+  const refusal = plainRefusal ?? switchValueRefusal(flag, cmd, rest, json);
   return usageExit(refusal.message, cmd, json, plain, refusal.remedy, rest);
 }
 

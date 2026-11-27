@@ -17,7 +17,7 @@ import { isManagerCommitResult, isManagerFinalizeResult, movedFolderRefusal, pre
 import { authorityFingerprint } from "../src/lib/maintenance-files.js";
 import { assertEndpointUnreachable } from "../src/lib/endpoint-cut.js";
 import { consumerConfigFromCheckpoint, createSpaceAuth, dmStream, eventPayloadStream, rotateSystemAccount, spaceBackupInventory, taskStream } from "@cotal-ai/core";
-import { acquireMaintenanceLock, authDir, beginMaintenanceCut, claimMaintenanceReady, completeMaintenanceCut, ensureStoreIdentity, isCommandFailure, readMaintenanceJournal, recordMaintenanceClaimResources, recordPreservationManagerCommit, releaseMaintenanceLock, saveSpaceAuth, writeMaintenanceResumeDocument } from "@cotal-ai/workspace";
+import { acquireMaintenanceLock, authDir, beginMaintenanceCut, claimMaintenanceReady, completeMaintenanceCut, ensureStoreIdentity, isCommandFailure, readMaintenanceJournal, recordMaintenanceClaimResources, recordPreparedSpace, recordPreservationManagerCommit, releaseMaintenanceLock, saveSpaceAuth, writeMaintenanceResumeDocument } from "@cotal-ai/workspace";
 import { DeliverPolicy, type ConsumerInfo } from "@nats-io/jetstream";
 const counted = countedAssert(nodeAssert);
 const assert: typeof nodeAssert = counted.assert;
@@ -541,6 +541,17 @@ try {
       "a create with no preserved cut on a stopped stack says so and names the start before the preserve",
     );
     assert.equal(existsSync(join(createRoot, ".cotal", "maintenance")), false, "that refusal created no maintenance state");
+    const preparedRoot = join(root, "prepared-restore-root");
+    mkdirSync(join(preparedRoot, ".cotal"), { recursive: true });
+    recordPreparedSpace({ space: "prepared-restore", root: realpathSync(preparedRoot), ts: new Date().toISOString() });
+    process.chdir(preparedRoot);
+    await assert.rejects(
+      backup({ positionals: ["restore", destination], values: {}, raw: [] }),
+      (error: unknown) => isCommandFailure(error) && error.outcome === "refused" && error.code === "LIFECYCLE_BLOCKED" && error.message === "restore requires stable ready maintenance state, found none" && error.remedy === "run `cotal space show` to inspect this prepared space. Its first `cotal up` uses the stack controller, which does not support preservation or restore in this release",
+      "backup restore on a prepared controller root points to space show instead of down --preserve-state",
+    );
+    assert.equal(existsSync(join(preparedRoot, ".cotal", "maintenance")), false, "prepared-root restore refusal created no maintenance state");
+    process.chdir(createRoot);
     const createStore = join(createRoot, ".cotal", "nats");
     mkdirSync(createStore, { recursive: true });
     const createLock = acquireMaintenanceLock(createRoot);

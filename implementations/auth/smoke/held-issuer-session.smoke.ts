@@ -192,6 +192,13 @@ async function kick(acct: HostedAuthAccount, name: string): Promise<number> {
   for (const c of found) await evictor.request(serverKickSubject(serverId), enc(JSON.stringify({ cid: c.cid })), { timeout: 2000 });
   return found.length;
 }
+/** Close connection ids on `serverId`. Returns how many requests were sent. */
+async function closeIds(acct: HostedAuthAccount, serverId: string, ids: readonly number[]): Promise<number> {
+  if (ids.length === 0) return 0;
+  const { evictor } = await sys(acct);
+  for (const cid of ids) await evictor.request(serverKickSubject(serverId), enc(JSON.stringify({ cid })), { timeout: 2000 });
+  return ids.length;
+}
 async function until(cond: () => Promise<boolean>, ms = 5000): Promise<boolean> {
   for (const end = Date.now() + ms; Date.now() < end; await wait(50)) if (await cond()) return true;
   return cond();
@@ -320,8 +327,24 @@ try {
   ok(closedA.length >= 2 && closedA.every((c) => c.reason === "Client Closed"), "every replaced issuer connection was drained by A; the broker expired none", closedA.map((c) => c.reason));
 
   // ---- 4. a lost connection is dialed again ----
-  const before = (await named(a.acct, a.issuerName)).conns.map((c) => c.cid);
-  ok(await kick(a.acct, a.issuerName) >= 1, "A's held issuer connection was kicked");
+  // Issue, wait until a connection is open, and close that connection. The kick fails when it closes nothing.
+  let kicked = 0;
+  let before: number[] = [];
+  for (let attempt = 0; attempt < 8 && kicked === 0; attempt++) {
+    await issueOnce(a);
+    let seen: { serverId: string; cid: number } | undefined;
+    await until(async () => {
+      const open = await named(a.acct, a.issuerName);
+      const cid = open.conns[0]?.cid;
+      if (cid === undefined) return false;
+      seen = { serverId: open.serverId, cid };
+      return true;
+    });
+    if (!seen) break;
+    before = [seen.cid];
+    kicked = await closeIds(a.acct, seen.serverId, before);
+  }
+  ok(kicked >= 1, "A's held issuer connection was kicked", { before, kicked });
   await until(async () => (await named(a.acct, a.issuerName)).conns.every((c) => !before.includes(c.cid)));
   await issueOnce(a);
   const after = (await named(a.acct, a.issuerName)).conns;

@@ -1948,7 +1948,7 @@ async function linkedStoreScenario(): Promise<void> {
   }
 }
 
-/** A prepared controller root cannot make the preserved cut that a backup needs. */
+/** A prepared controller root cannot make the preserved cut that backup or restore needs. */
 function preparedBackupGuidance(): void {
   const root = realpathSync.native(mkdtempSync(join(tmpdir(), "cotal-backup-prepared-root-")));
   const home = realpathSync.native(mkdtempSync(join(tmpdir(), "cotal-backup-prepared-home-")));
@@ -1957,6 +1957,19 @@ function preparedBackupGuidance(): void {
     const space = "docs-backup-retry";
     const prepared = run("space", "create", space, "--root", ".");
     assert.equal(prepared.status, 0, prepared.stderr);
+    for (const args of [
+      ["backup", "restore", "./space-backup", "--plain"],
+      ["up", "--restore", "./space-backup", "--plain"],
+    ] as const) {
+      const restore = run(...args);
+      assert.equal(restore.status, 2, restore.stderr);
+      assert.match(restore.stderr, /LIFECYCLE_BLOCKED/);
+      assert.match(restore.stderr, /restore requires stable ready maintenance state, found none/);
+      assert.match(restore.stderr, /run `cotal space show` to inspect this prepared space/);
+      assert.match(restore.stderr, /does not support preservation or restore in this release/);
+      assert.doesNotMatch(restore.stderr, /down --preserve-state/);
+    }
+    assert.equal(existsSync(join(root, ".cotal", "maintenance")), false);
     const selected = run("use", space);
     assert.equal(selected.status, 0, selected.stderr);
     const backup = run("backup", "create", "./space-backup", "--only", "registry", "--plain");

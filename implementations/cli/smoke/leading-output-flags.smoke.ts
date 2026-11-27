@@ -231,6 +231,18 @@ const malformedText = run(["--no-input=", ...search.slice(0, -1)]);
 check("an empty attached value still gets the switch remedy in text", malformedText.status === 1 && malformedText.stdout === "" &&
   malformedText.stderr.includes("--no-input takes no value") && malformedText.stderr.includes("omit --no-input or pass it without a value"), shown(malformedText));
 
+const helpPage = run(["help", "--help"]);
+const valuedHelp = run(["help", "--help=false"]);
+check("a value on the help switch names the bare switch, not a positional", valuedHelp.status === 1 && valuedHelp.stdout === "" &&
+  valuedHelp.stderr.startsWith("✗ --help takes no value\n") &&
+  ["cotal", "pnpm cotal"].some((cli) => valuedHelp.stderr.includes(`  run \`${cli} help --help\`\n`)) &&
+  !valuedHelp.stderr.includes("put -- before it") && !valuedHelp.stderr.includes("Unknown option") &&
+  valuedHelp.stderr.endsWith(helpPage.stdout), shown(valuedHelp));
+const separatedHelp = run(["help", "--", "--help=false"]);
+check("after -- a valued help switch stays a command name", separatedHelp.status === 1 && separatedHelp.stdout === "" &&
+  /unknown command: --help=false/.test(separatedHelp.stderr) && !separatedHelp.stderr.includes("--help takes no value"), shown(separatedHelp));
+check("the bare help switch still prints the help page", helpPage.status === 0 && helpPage.stderr === "" && helpPage.stdout.length > 0, shown(helpPage));
+
 for (const [flag, ...tail] of [
   ["--no-color", "--no-input=false", "status", "--json"],
   ["--no-input", "-j", "--no-color=false", "--", "status"],
@@ -326,6 +338,24 @@ check("two leading typographic flags keep the first diagnosis in a version JSON 
   twoDashVersion.stderr === "" && twoDashVersion.envelope?.command === "version" && twoDashVersion.envelope.outcome === "refused" &&
   twoDashVersion.envelope.error?.code === "USAGE_INVALID" && twoDashVersion.envelope.error.message === dashMessage &&
   twoDashVersion.envelope.error.remedy === dashRemedy, shown(twoDashVersion));
+const plainWords = "\u2013\u2013plain";
+const dashPlainMessage = `${plainWords} starts with a typographic dash, so it is not an option`;
+for (const second of ["\u2013\u2013help", "\u2013h", "\u2013\u2013version", "\u2013V"]) {
+  const r = run([dashFlag, second, "version", "--json"]);
+  check(`${dashFlag} ${second} version --json keeps the JSON refusal and reports the first flag`, r.status === 1 && r.stderr === "" &&
+    r.envelope?.command === "version" && r.envelope.outcome === "refused" && r.envelope.error?.code === "USAGE_INVALID" &&
+    r.envelope.error.message === dashMessage && r.envelope.error.remedy === dashRemedy, shown(r));
+}
+const jsonPlain = run(["status", "--json", plainWords]);
+check("a mistyped plain option with --json says to omit it, not to retype it beside --json", jsonPlain.status === 1 &&
+  jsonPlain.stderr === "" && jsonPlain.envelope?.command === "status" && jsonPlain.envelope.outcome === "refused" &&
+  jsonPlain.envelope.error?.code === "USAGE_INVALID" && jsonPlain.envelope.error.message === dashPlainMessage &&
+  jsonPlain.envelope.error.remedy === "omit the mistyped plain option", shown(jsonPlain));
+const jsonLeadingPlain = run([plainWords, "status", "--json"]);
+check("a leading mistyped plain option with --json gets the same omit remedy", jsonLeadingPlain.status === 1 &&
+  jsonLeadingPlain.stderr === "" && jsonLeadingPlain.envelope?.command === "status" && jsonLeadingPlain.envelope.outcome === "refused" &&
+  jsonLeadingPlain.envelope.error?.code === "USAGE_INVALID" && jsonLeadingPlain.envelope.error.message === dashPlainMessage &&
+  jsonLeadingPlain.envelope.error.remedy === "omit the mistyped plain option", shown(jsonLeadingPlain));
 for (const args of [
   [dashFlag, "config", "get", "harness", "--", "--json"],
   ["--json", "--", dashFlag, "config", "get", "harness"],

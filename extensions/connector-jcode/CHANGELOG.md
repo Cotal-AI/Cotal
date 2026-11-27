@@ -1,5 +1,11 @@
 # @cotal-ai/connector-jcode
 
+## 0.183.0
+
+### Patch Changes
+
+- 297bd76: Detached Jcode spawns now show the corrected `--model` retry when a provider prefix precedes a catalog model ID that contains a slash.
+
 ## 0.182.1
 
 ### Patch Changes
