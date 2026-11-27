@@ -20,14 +20,16 @@ import { EVICT_PRINCIPALS_MAX, type KickTarget } from "./evict.js";
 import { issuedPermitsSubject } from "./issued-authority.js";
 import { isConsumerAlreadyExists, isJetStreamMissing } from "./jetstream-missing.js";
 import { deleteMember, durableEligible, listLifecycleMemberChannels, listMembers, membersForFanout, membershipFamilies, readMember } from "./members.js";
+import { watchNativeConnection, type NativeConnectionBinding } from "./native-connection.js";
 import { parseSecretStoreIdentity, type SecretStoreIdentity } from "./secret-store.js";
 import { PLUGIN_CHANNEL_ROOT, PLUGIN_FANOUT_DURABLE, pluginChannelStream } from "./plugin-channel-route.js";
+import { readPluginChannelSpaceAuthority } from "./plugin-channel-space-state.js";
 import { fanoutDurableConfig, inboxReaderConfig, pluginFanoutDurableConfig } from "./streams.js";
 import { CONTROL_DELIVERY, CONTROL_DELIVERY_ADMIN, FANOUT_DURABLE, INBOX_READER_DURABLE, assertLifecycleToken, assertValidChannel, channelInAllow, chatStream, dlvDurable, dlvStream, dlvSubject, inboxStream, isChannelFamily, isConcreteChannel, membershipInAllow, parseDinboxPrincipal, parsePrincipalKey, parseSubject, unicastSubject } from "./subjects.js";
 import type { ControlReply, ControlRequest, CotalMessage, MessageMeta, Plane3Entry } from "./types.js";
 import { PLUGIN_MENTION_POINTER_KEY } from "./types.js";
-import { JetStreamApiCodes, type ConsumerConfig, type JsMsg } from "@nats-io/jetstream";
-import { headers } from "@nats-io/transport-node";
+import { JetStreamApiCodes, jetstreamManager, type ConsumerConfig, type JsMsg } from "@nats-io/jetstream";
+import { headers, type NatsConnection } from "@nats-io/transport-node";
 
 const PLANE3_FRAME_HEADER = "Cotal-Delivery-Frame";
 
@@ -134,11 +136,14 @@ export class EndpointDeliveryPlane {
   /** True once {@link quiescePlane3} has stopped serving this shard pending an ownership answer.
    *  Guards {@link armPlane3} so a RECONNECT cannot silently resume serving mid-question. */
   private plane3Quiesced = false;
+  private daemonRouteWire?: { nc: NatsConnection; watch: ReturnType<typeof watchNativeConnection>; admitted?: NativeConnectionBinding; validating?: symbol };
   /** When set, this endpoint hosts the Plane-3 fan-out writer + trusted reader (the server-side delivery
    *  daemon). `aclFor` maps an owner id to its current read ACL (`allowSubscribe`) for the reader's
    *  re-authorization — read FRESH per entry from the durable ACL registry KV, hence async. */
   plane3?: {
     aclFor: (owner: string, lifecycleUid: string) => MaybePromise<string[] | undefined>;
+    /** The delivery composition authenticates with the scoped leader-read credential. */
+    readPluginChannelAuthority?: boolean;
     /** Composition-root hook: reload+reconnect the membership feed's rw connection as part of an
      *  explicit `reloadCreds` (the feed owns its own connections, outside this endpoint). `expected`
      *  is the renewal owner's generation token for the rw cred (see {@link reloadCreds}). */
@@ -176,7 +181,7 @@ export class EndpointDeliveryPlane {
   private readonly notLiveMsg: EndpointDeliveryPlaneDeps["notLiveMsg"];
   private readonly emit: EndpointDeliveryPlaneDeps["emit"];
 
-  constructor(private readonly identity: Readonly<EndpointIdentity>, private readonly conn: Readonly<ConnectionState>, private readonly lifecycle: Readonly<LifecycleState>, private readonly cred: Readonly<CredentialState>, private readonly delivery: Readonly<DeliveryState>, private readonly deps: EndpointDeliveryPlaneDeps, private readonly parts: Pick<EndpointParts, "anycastRail" | "consumers" | "controlPlane" | "credentials" | "deliveryLease" | "durableBackstop" | "history">) {
+  constructor(private readonly identity: Readonly<EndpointIdentity>, private readonly conn: ConnectionState, private readonly lifecycle: Readonly<LifecycleState>, private readonly cred: Readonly<CredentialState>, private readonly delivery: Readonly<DeliveryState>, private readonly deps: EndpointDeliveryPlaneDeps, private readonly parts: Pick<EndpointParts, "anycastRail" | "consumers" | "controlPlane" | "credentials" | "deliveryLease" | "durableBackstop" | "history">) {
     this.notLiveMsg = deps.notLiveMsg;
     this.emit = deps.emit;
   }
@@ -192,11 +197,49 @@ export class EndpointDeliveryPlane {
    *  is required, not optional (the responder would otherwise be lost on a broker blip). */
   async startPlane3(
     aclFor: (owner: string, lifecycleUid: string) => MaybePromise<string[] | undefined>,
-    opts: { reloadMembershipCreds?: (expected?: string) => Promise<unknown>; evictPrincipal?: (principal: string, connections?: KickTarget[]) => Promise<unknown>; evictPrincipals?: (principals: string[]) => Promise<unknown>; planeConnLiveness?: (query: unknown) => Promise<unknown>; principalLiveness?: (principal: string) => Promise<unknown>; reloadStoreIdentity?: () => SecretStoreIdentity; onDeliveryCredsAdopted?: () => void; startupComplete?: () => boolean } = {},
+    opts: Omit<NonNullable<EndpointDeliveryPlane["plane3"]>, "aclFor"> = {},
   ): Promise<void> {
     if (!this.conn.js) throw new Error(this.notLiveMsg());
-    this.plane3 = { aclFor, reloadMembershipCreds: opts.reloadMembershipCreds, evictPrincipal: opts.evictPrincipal, evictPrincipals: opts.evictPrincipals, planeConnLiveness: opts.planeConnLiveness, principalLiveness: opts.principalLiveness, reloadStoreIdentity: opts.reloadStoreIdentity, onDeliveryCredsAdopted: opts.onDeliveryCredsAdopted, startupComplete: opts.startupComplete };
+    this.plane3 = { ...opts, aclFor };
     await this.armPlane3();
+  }
+
+  private onDaemonRouteWire(nc: NatsConnection, binding: NativeConnectionBinding): boolean {
+    const wire = this.daemonRouteWire;
+    if (this.lifecycle.stopped || this.conn.nc !== nc || wire?.nc !== nc) return false;
+    try {
+      const current = wire.watch.binding();
+      return current.serverId === binding.serverId && current.cid === binding.cid;
+    } catch {
+      return false;
+    }
+  }
+
+  /** Native reconnect keeps the old consumers. Only a full bind can change their rail or epoch. */
+  async validateDaemonPluginRoute(nc: NatsConnection): Promise<boolean> {
+    if (!this.plane3?.readPluginChannelAuthority) return true;
+    if (this.lifecycle.stopped || this.conn.nc !== nc || nc.isClosed()) return false;
+    if (this.daemonRouteWire?.nc !== nc)
+      this.daemonRouteWire = { nc, watch: watchNativeConnection(nc, "delivery plugin channel authority") };
+    const wire = this.daemonRouteWire;
+    let binding: NativeConnectionBinding;
+    try { binding = wire.watch.binding(); }
+    catch { return false; }
+    const validation = Symbol();
+    wire.validating = validation;
+    const result = await jetstreamManager(nc, { checkAPI: false })
+      .then((jsm) => readPluginChannelSpaceAuthority(jsm, this.identity.space))
+      .then((snapshot) => ({ snapshot }), (error: unknown) => ({ error }));
+    if (this.daemonRouteWire !== wire || wire.validating !== validation || !this.onDaemonRouteWire(nc, binding)) return false;
+    if ("error" in result) throw result.error;
+    const { enabled, epoch } = result.snapshot.state;
+    if (wire.admitted !== undefined && (this.conn.pluginChannelEpoch !== epoch || this.conn.pluginChannelsEnabled !== enabled))
+      throw new Error("delivery plugin channel authority changed; a full endpoint bind is required");
+    this.conn.pluginChannelsEnabled = enabled;
+    this.conn.pluginChannelEpoch = epoch;
+    wire.admitted = binding;
+    wire.validating = undefined;
+    return true;
   }
 
   /** Whether an ALREADY-DISPATCHED unit of Plane-3 work may still take effect.
@@ -214,7 +257,16 @@ export class EndpointDeliveryPlane {
    *  message is not lost by refusing: a stopped consumer redelivers it to whoever holds the shard
    *  next, which is the same property quiescing already relies on. */
   plane3MayAct(): boolean {
-    return !this.plane3Quiesced;
+    if (this.plane3Quiesced) return false;
+    if (!this.plane3?.readPluginChannelAuthority) return true;
+    const wire = this.daemonRouteWire;
+    return wire?.admitted !== undefined && wire.validating === undefined && this.onDaemonRouteWire(wire.nc, wire.admitted);
+  }
+
+  private plane3DispatchFence(nc: NatsConnection | undefined): () => boolean {
+    const admitted = this.daemonRouteWire?.admitted;
+    return () => this.conn.nc === nc && this.plane3MayAct() &&
+      (!this.plane3?.readPluginChannelAuthority || this.daemonRouteWire?.admitted === admitted);
   }
 
   /** Serve one runtime durable-membership control request (the server-side delivery daemon). The caller
@@ -539,11 +591,15 @@ export class EndpointDeliveryPlane {
     // and silently resuming there would restore exactly the double-serving this guards against
     // while the ownership question is still open.
     if (this.plane3Quiesced) return;
+    const nc = this.conn.nc;
+    if (!nc || !(await this.validateDaemonPluginRoute(nc))) throw new Error("transport changed during delivery plugin channel authority validation");
     await this.parts.consumers.manager(); // the manager runs consume:false, so this.conn.jsm is lazy — ensure it
+    if (this.conn.nc !== nc || !this.plane3MayAct()) throw new Error("delivery transport or lease changed before Plane-3 could bind");
     this.armDeliveryControl();
     await this.parts.anycastRail.armAnycastRequests();
     await this.runFanout();
     await this.runReader();
+    if (this.conn.nc !== nc || !this.plane3MayAct()) throw new Error("delivery transport or lease changed while Plane-3 was binding");
   }
 
   /** (Re)register the `ctl.delivery` control responder on the CURRENT connection. A reconnect drains the
@@ -829,14 +885,19 @@ export class EndpointDeliveryPlane {
     config: Partial<ConsumerConfig>,
   ): Promise<void> {
     if (!this.conn.js || !this.conn.jsm) return;
+    const nc = this.conn.nc;
     await this.addPlane3Durable(stream, config);
     const consumer = await this.conn.js.consumers.get(stream, name);
     const msgs = await consumer.consume();
     this.delivery.streamMsgs.push(msgs);
     void (async () => {
       for await (const m of msgs) {
-        try { await this.fanOutMessage(m, kind); }
-        catch (e) { if (!this.lifecycle.stopped) this.emit("error", e as Error); try { m.nak(); } catch { /* draining */ } }
+        const mayAct = this.plane3DispatchFence(nc);
+        try { await this.fanOutMessage(m, kind, mayAct); }
+        catch (e) {
+          if (!this.lifecycle.stopped) this.emit("error", e as Error);
+          if (mayAct()) try { m.nak(); } catch { /* draining */ }
+        }
       }
     })().catch((e) => { if (!this.lifecycle.stopped) this.emit("error", e as Error); });
   }
@@ -845,13 +906,13 @@ export class EndpointDeliveryPlane {
    *  members within interval; `live` channel → `@mention` targets authorized to read it (ACL only).
    *  On either class, a mention of an agent whose read ACL excludes the channel is reported to the
    *  sender with a mention notice. Fan-out checks the broker's membership revision before routing. */
-  private async fanOutMessage(m: JsMsg, kind: "chat" | typeof PLUGIN_CHANNEL_ROOT): Promise<void> {
+  private async fanOutMessage(m: JsMsg, kind: "chat" | typeof PLUGIN_CHANNEL_ROOT, mayAct: () => boolean): Promise<void> {
     // FENCE, and NOT followed by an ack: this unit was dispatched before the quiesce and is resuming
     // after it, so writing the fan-out now would put entries in member inboxes on behalf of a shard
     // this daemon no longer serves. Returning WITHOUT acking is the whole point - a stopped consumer
     // redelivers to whoever holds the shard next, so refusing here loses no message, while acking it
     // would consume the successor's work.
-    if (!this.plane3MayAct()) return;
+    if (!mayAct()) return;
     const parsed = parseSubject(m.subject);
     if (!parsed || parsed.kind !== kind || !channelSubjectInSpace(this.identity.space, m.subject) || hasStoredOrigin(m.headers)) { m.ack(); return; }
     const channel = parsed.rest;
@@ -865,7 +926,7 @@ export class EndpointDeliveryPlane {
     // the class read and the member scan below both hit the broker, and a daemon descheduled inside
     // them can resume after a successor owns the shard. Re-ask immediately before the first WRITE,
     // and again return without acking so the entry redelivers rather than being consumed here.
-    if (!this.plane3MayAct()) return;
+    if (!mayAct()) return;
     const durable = kind === "chat" && (await this.parts.durableBackstop.deliveryClassFresh(channel)) === "durable";
     // Each mention is resolved once. A live channel delivers to the agents among them that may read
     // it, and on either class a mention of an agent that may not read the channel is reported to the
@@ -898,7 +959,7 @@ export class EndpointDeliveryPlane {
         // to fifty members can straddle a quiesce in its middle. Stopping part-way is safe where
         // stopping late is not - the entry is never acked here, so the successor redelivers it and
         // re-sends the whole set; publishDinbox is idempotent per (owner, lifecycle, msgID).
-        if (!this.plane3MayAct()) return;
+        if (!mayAct()) return;
         await this.parts.durableBackstop.publishDinbox(rec.owner, rec.lifecycleUid, {
           msg: normalizedMsg, channel, seq, reason: "durable-channel", generation: rec.generation,
           ...(rec.channel !== channel ? { row: rec.channel } : {}),
@@ -907,33 +968,33 @@ export class EndpointDeliveryPlane {
     } else if (kind === "chat") {
       for (const { owner, lifecycleUid, readable } of mentioned) {
         if (!readable) continue;
-        if (!this.plane3MayAct()) return;   // same rule on the live-mention path
+        if (!mayAct()) return;   // same rule on the live-mention path
         await this.parts.durableBackstop.publishDinbox(owner, lifecycleUid, { msg: normalizedMsg, channel, seq, reason: "live-mention", generation: 0 });
       }
     } else {
       for (const { owner, lifecycleUid, readable } of mentioned) {
-        if (readable) await this.sendPluginMentionPointer(owner, lifecycleUid, channel, msg, seq);
+        if (readable) await this.sendPluginMentionPointer(owner, lifecycleUid, channel, msg, seq, mayAct);
       }
     }
     const unreadable = mentioned.filter(({ readable }) => !readable).map(({ name }) => name);
     if (unreadable.length) {
-      if (!this.plane3MayAct()) return;
+      if (!mayAct()) return;
       await this.parts.anycastRail.sendMentionNotice(msg, channel, seq, unreadable);
     }
     // FINAL FENCE, BEFORE THE ACK ITSELF, which is the real commit: acking tells the stream this
     // shard's work is done. A daemon that stopped serving mid-fan-out must not make that claim, or
     // the successor never sees the entry and the message is lost outright rather than duplicated.
-    if (!this.plane3MayAct()) return;
+    if (!mayAct()) return;
     m.ack();
   }
 
-  private async sendPluginMentionPointer(owner: string, lifecycleUid: string, channel: string, msg: CotalMessage, seq: number): Promise<void> {
+  private async sendPluginMentionPointer(owner: string, lifecycleUid: string, channel: string, msg: CotalMessage, seq: number, mayAct: () => boolean): Promise<void> {
     const recipient = parsePrincipalKey(owner);
     if (!recipient || !this.conn.js || typeof msg.id !== "string") return;
     if (!Number.isFinite(msg.ts) || Date.now() - msg.ts > PLUGIN_CHANNEL_CATCHUP_AGE_MS) return;
     const acl = (await readAcl(await this.parts.durableBackstop.aclRegistry(), owner, lifecycleUid))?.record;
     if (!acl || !channelInAllow(acl.allowSubscribe, channel, true) || !channelInAllow(acl.issuedAllowSubscribe ?? [], channel, true)) return;
-    if (!this.plane3MayAct()) return;
+    if (!mayAct()) return;
     const notice: CotalMessage = {
       id: `plugin-mention.${seq}.${msg.id}.${owner}.${lifecycleUid}`,
       ts: msg.ts,
@@ -960,14 +1021,19 @@ export class EndpointDeliveryPlane {
    *  + transfer each entry. */
   private async runReader(): Promise<void> {
     if (!this.conn.js || !this.conn.jsm) return;
+    const nc = this.conn.nc;
     await this.addPlane3Durable(inboxStream(this.identity.space), inboxReaderConfig(this.identity.space, { ackWaitMs: this.identity.ackWaitMs }));
     const consumer = await this.conn.js.consumers.get(inboxStream(this.identity.space), INBOX_READER_DURABLE);
     const msgs = await consumer.consume();
     this.delivery.streamMsgs.push(msgs);
     void (async () => {
       for await (const m of msgs) {
-        try { await this.readerHandle(m); }
-        catch (e) { if (!this.lifecycle.stopped) this.emit("error", e as Error); try { m.nak(); } catch { /* draining */ } }
+        const mayAct = this.plane3DispatchFence(nc);
+        try { await this.readerHandle(m, mayAct); }
+        catch (e) {
+          if (!this.lifecycle.stopped) this.emit("error", e as Error);
+          if (mayAct()) try { m.nak(); } catch { /* draining */ }
+        }
       }
     })().catch((e) => { if (!this.lifecycle.stopped) this.emit("error", e as Error); });
   }
@@ -999,10 +1065,10 @@ export class EndpointDeliveryPlane {
   /** Re-authorize ONE mixed-inbox entry and transfer it to the owner's DELIVER store. Deny (drop) on a
    *  revoked/narrowed ACL or out-of-interval seq; on transfer success, ack the mixed entry (durability
    *  has moved to DLV — an §8 equivalent per-member at-least-once mechanism). The agent acks DLV. */
-  private async readerHandle(m: JsMsg): Promise<void> {
+  private async readerHandle(m: JsMsg, mayAct: () => boolean): Promise<void> {
     // FENCE, same rule as the fan-out writer: no effect and no ack once this daemon has stopped
     // serving the shard. The entry redelivers to the holder rather than being consumed here.
-    if (!this.plane3MayAct()) return;
+    if (!mayAct()) return;
     const pr = parseDinboxPrincipal(m.subject);
     if (!pr || hasStoredOrigin(m.headers)) { m.ack(); return; }
     const owner = `${pr.owner}.${pr.actor}`; // the member principal dot-form (acl/member keys, msgID)
@@ -1018,13 +1084,14 @@ export class EndpointDeliveryPlane {
     // the row read is that lifecycle's exact key — a retired lifecycle's purged row reads as unknown
     // and its residual entries are removed below, never authorized against the successor's row.
     const acl = await this.plane3?.aclFor(owner, pr.lifecycleUid);
+    if (!mayAct()) return;
     if (acl === undefined) {
       // RETIRED lifecycle: its exact ACL key carries retirement's tombstone, so no attempt can ever
       // deliver this entry. Drop it AND remove it from the store. Deferring it to the ceiling and
       // keeping it would make every reader that starts from a fresh cursor pay the same sweep again.
       // An ACL row that is merely absent proves nothing and still defers below.
       if (await aclRetired(await this.parts.durableBackstop.aclRegistry(), owner, pr.lifecycleUid)) {
-        if (!this.plane3MayAct()) return;
+        if (!mayAct()) return;
         // Remove BEFORE the ack. The ack ends the reader's work on this entry, so acking first and
         // then failing the delete would keep the entry with nothing left to remove it. A failed delete
         // stays pending and retries, bounded by the same ceiling; an entry the stream no longer holds
@@ -1035,7 +1102,7 @@ export class EndpointDeliveryPlane {
         // FENCE AFTER THE DELETE, which is broker I/O. A daemon that stopped serving while it was in
         // flight leaves the entry to the holder: a term here would move the shared durable past an entry
         // the failed delete left stored, so the holder would never retry it.
-        if (!this.plane3MayAct()) return;
+        if (!mayAct()) return;
         if (failure) {
           if (redeliveries >= READER_MAX_REDELIVERIES) {
             m.term();
@@ -1051,7 +1118,7 @@ export class EndpointDeliveryPlane {
         // removes each copy. Remove the row where that cost is paid, by its exact key, only when it
         // exists: a purge of an absent key would write a marker per dropped entry.
         if (entry.reason === "durable-channel") await this.removeRetiredMemberRow(entry.row ?? entry.channel, owner, pr.lifecycleUid);
-        if (!this.plane3MayAct()) return;
+        if (!mayAct()) return;
         m.ack();
         return;
       }
@@ -1061,6 +1128,7 @@ export class EndpointDeliveryPlane {
       // ceiling stops one perma-unknown owner from head-of-lining the shared reader.
       // (Follow-up: the manager does not yet rehydrate its managed set across a process restart — until
       // it does, a long-unknown owner's entries term after the ceiling; tracked, not a silent ack-drop.)
+      if (!mayAct()) return;
       if (redeliveries >= READER_MAX_REDELIVERIES) {
         m.term();
         this.emit("error", new Error(`plane-3 reader: gave up on entry for unknown owner ${owner} after ${redeliveries} redeliveries`));
@@ -1075,12 +1143,15 @@ export class EndpointDeliveryPlane {
     // INTERVAL re-auth (not a current-member boolean): a pre-leave entry (seq ≤ leaveCursor) stays
     // deliverable; seq > leaveCursor (or after a rejoin's newer joinCursor) is the hard cut. Any of the
     // lifecycle's rows that cover the channel may hold the post, whichever row addressed the copy.
-    if (entry.reason === "durable-channel" && !(await this.lifecycleCoversPost(owner, pr.lifecycleUid, entry.channel, entry.seq))) { m.ack(); return; }
+    if (entry.reason === "durable-channel" && !(await this.lifecycleCoversPost(owner, pr.lifecycleUid, entry.channel, entry.seq))) {
+      if (mayAct()) m.ack();
+      return;
+    }
     // COMMIT-POINT FENCE. Everything above this line is broker I/O - the ACL read and the member
     // re-read - so the entry check at the top of the handler is stale by now if this unit was
     // descheduled inside either. The transfer below is the effect that must not happen on behalf of
     // a shard we no longer serve; returning without acking leaves it for the holder.
-    if (!this.plane3MayAct()) return;
+    if (!mayAct()) return;
     try {
       // DLV has no original chat subject, so preserve the channel the trusted fan-out reader derived
       // from CHAT. Never let the publisher-controlled payload label choose connector attention.
@@ -1093,7 +1164,7 @@ export class EndpointDeliveryPlane {
       frameHeaders.set(PLANE3_FRAME_HEADER, "1");
       // The count read may be broker I/O, so the fence is asked again before the write.
       frameHeaders.set(DELIVERY_LIMIT_HEADER, await this.deliveryLimitStamp());
-      if (!this.plane3MayAct()) return;
+      if (!mayAct()) return;
       // Lifecycle-keyed subject + msgID (ours): the DLV consumer filters on the lifecycle-scoped
       // subject (streams.ts filter_subject), and a predecessor's transferred copy must never suppress
       // a successor's under the same alias (disjoint lifecycles, stream-wide dedupe).
@@ -1102,6 +1173,7 @@ export class EndpointDeliveryPlane {
         headers: frameHeaders,
       });
     } catch {
+      if (!mayAct()) return;
       // EVERY transfer failure is deliberately a retry, never a successful result. Keep the entry
       // pending (redeliver), bounded by the same ceiling so a poison
       // entry can't head-of-line the shared reader forever.
@@ -1117,7 +1189,7 @@ export class EndpointDeliveryPlane {
     // whether THIS daemon may retire the source entry. If it stopped serving mid-transfer, leave the
     // entry pending - the successor re-transfers and stream-wide dedupe on the msgID collapses the
     // duplicate, which is the recoverable direction. Acking here is the unrecoverable one.
-    if (!this.plane3MayAct()) return;
+    if (!mayAct()) return;
     m.ack();
   }
 

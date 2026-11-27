@@ -627,6 +627,7 @@ export class EndpointConnection {
           this.parts.credentials.armAuthExpiryReconnectFence(nc);
           try {
             if (!(await this.validatePluginChannelProjection(nc))) continue;
+            if (!(await this.parts.deliveryPlane.validateDaemonPluginRoute(nc))) continue;
           } catch (error) {
             if (this.lifecycle.stopped || this.conn.nc !== nc) continue;
             this.conn.nativeBound = false;

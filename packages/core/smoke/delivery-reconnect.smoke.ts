@@ -178,7 +178,17 @@ try {
 
   daemon = new CotalEndpoint({ space, servers: SERVERS, creds: await mintCreds(auth, newIdentity(), "delivery"), channels: [], consume: false, watchPresence: true, registerPresence: false, card: { name: "delivery", role: "delivery", kind: "endpoint" } });
   daemon.on("error", () => {}); await daemon.start();
-  await daemon.startPlane3((owner, lifecycleUid) => daemon!.aclForOwner(owner, lifecycleUid));
+  await daemon.startPlane3((owner, lifecycleUid) => daemon!.aclForOwner(owner, lifecycleUid), { readPluginChannelAuthority: true });
+  const daemonState = (daemon as unknown as { conn: ConnectionState }).conn;
+  const initialDaemonWire = daemonState.nc!;
+  check("scoped delivery credential reads absent authority before Plane-3 starts",
+    daemonState.pluginChannelEpoch === 0 && !daemonState.pluginChannelsEnabled);
+  let nativeReady = 0;
+  daemon.on("transport", (event) => { if (event.connected && daemonState.nc === initialDaemonWire) nativeReady++; });
+  await initialDaemonWire.reconnect();
+  for (let i = 0; i < 100 && nativeReady === 0 && !initialDaemonWire.isClosed(); i++) await wait(50);
+  check("same authority admits the same native delivery connection after reconnect",
+    nativeReady === 1 && daemonState.nc === initialDaemonWire && daemonState.pluginChannelEpoch === 0);
 
   // The dashboard/observer is the membership-feed reader in production. Use its real admin grant:
   // the delivery cred writes the feed but deliberately cannot create the ordered consumer a KV watch needs.
