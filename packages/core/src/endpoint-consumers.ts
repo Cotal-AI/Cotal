@@ -21,6 +21,8 @@ import type { MessageMeta, CotalMessage, Delivery } from "./types.js";
 import { type JetStreamManager, type ConsumerMessages, jetstreamManager, type Consumer, type JsMsg, JetStreamApiCodes, type ConsumerInfo } from "@nats-io/jetstream";
 import { PermissionViolationError } from "@nats-io/transport-node";
 
+const PLUGIN_RECENT_RECEIPTS = 8192;
+
 /** What the consumers component reads from its endpoint. State is read when it is used, never copied, a
  *  field it reassigns is written back through its setter, and every method is looked up on the endpoint
  *  at call time, so a member a caller replaced on the endpoint is the one that runs. A peer part is read
@@ -46,6 +48,8 @@ export class EndpointConsumers {
    *  signal now that there is no per-instance chat durable. */
   private firstConnect = true;
   private readonly pluginHistoryFrontiers = new Map<string, number>();
+  private readonly pluginReceipts = new Set<string>();
+  private pluginReceiptEpoch?: number;
   private pluginHistoryRecovery?: Promise<void>;
   /** The refusals a channel's live subscription callback received. nats.js hands a subscription
    *  refusal to the refused subscription's callback and then dispatches that same instance on the
@@ -158,6 +162,20 @@ export class EndpointConsumers {
   rememberPluginHistory(channel: string, frontier: number): void {
     if (isRoutedPluginChannel(this.conn.pluginChannelsEnabled, channel) && !this.delivery.chatSubDenied.has(channel))
       this.pluginHistoryFrontiers.set(channel, frontier);
+  }
+
+  /** A live core message has no stream sequence. Coalesce by authenticated subject and ID
+   * instead of moving the recovery cursor past rows that might never have been delivered. */
+  recordPluginReceipt(subject: string, id: string): boolean {
+    if (this.pluginReceiptEpoch !== this.conn.pluginChannelEpoch) {
+      this.pluginReceiptEpoch = this.conn.pluginChannelEpoch;
+      this.pluginReceipts.clear();
+    }
+    const key = JSON.stringify([subject, id]);
+    if (this.pluginReceipts.has(key)) return false;
+    this.pluginReceipts.add(key);
+    if (this.pluginReceipts.size > PLUGIN_RECENT_RECEIPTS) this.pluginReceipts.delete(this.pluginReceipts.values().next().value!);
+    return true;
   }
 
   recoverPluginChannels(stillCurrent: () => boolean = () => true): Promise<void> {
@@ -386,8 +404,12 @@ export class EndpointConsumers {
     this.delivery.chatSubDenied.delete(channel);
     const route = endpointChannelRoute(this.identity.space, this.conn.pluginChannelsEnabled, channel);
     const subject = route.subject("*", "*");
-    const sub = this.conn.nc.subscribe(subject, {
+    const nc = this.conn.nc;
+    const epoch = this.conn.pluginChannelEpoch;
+    const sub = nc.subscribe(subject, {
       callback: (err, m) => {
+        if (route.kind !== "chat" && (this.conn.nc !== nc || !this.conn.pluginChannelsEnabled ||
+          this.conn.pluginChannelEpoch !== epoch || this.delivery.chatSubs.get(channel) !== sub || this.lifecycle.stopped)) return;
         if (err) {
           // async sub.allow refusal (or sub error): the live feed for this channel is dead — never a
           // leak (the broker refused it). Drop the channel from local joined state even if it was
@@ -429,6 +451,7 @@ export class EndpointConsumers {
         if (!isRecord(msg) || !isUsableMessageId(msg.id)) return; // malformed envelope (SPEC sec 5) — live is at-most-once: drop
         if (!isFromSubjectSender(msg, parsed)) return; // spoof/malformed/old-shape-alias — drop (at-most-once)
         if (msg.from.id === this.identity.card.id) return; // our own echo
+        if (route.kind !== "chat" && !this.recordPluginReceipt(m.subject, msg.id)) return;
         const delivery: Delivery = { ack: () => {}, nak: () => {}, durable: false }; // live = at-most-once, not acked
         this.emit("message", authenticatedMessage(msg, parsed), delivery, {
           historical: false,

@@ -15,6 +15,7 @@ import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { connect, type NatsConnection } from "@nats-io/transport-node";
+import { jetstream } from "@nats-io/jetstream";
 import { Kvm } from "@nats-io/kv";
 import { CotalEndpoint, isReachable, createSpaceAuth, mintCreds, provisionAgent, mintLifecycleUid, serverConfig, newIdentity, setupSpaceStreams, principalKey, DEV_OWNER, membershipBucket, MEMBERSHIP_FEED_KEY, standaloneConnectOpts, dlvDurable, type MembershipChange } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
@@ -42,6 +43,87 @@ const reconnected = (ep: CotalEndpoint): Promise<void> => new Promise((resolve) 
 });
 let pass = 0, fail = 0;
 const check = (name: string, cond: boolean, extra?: unknown) => { if (cond) { pass++; console.log(`  ✓ ${name}`); } else { fail++; console.log(`  ✗ FAIL: ${name}`, extra ?? ""); } };
+
+async function checkEnabledPluginRecovery() {
+  const fixture = await startEnabledPluginSpace();
+  const { channel, endpoint, mintAgent, space } = fixture;
+  try {
+    const sender = await mintAgent({ post: [channel] });
+    const recipient = await mintAgent({ read: [channel] });
+    let writerWire: NatsConnection | undefined;
+    const writer = endpoint({ creds: sender.creds, lifecycleUid: sender.lifecycleUid, consume: false,
+      registerPresence: false, watchPresence: false, card: { kind: "agent", name: "recovery-writer" },
+      onConnection: (nc) => { writerWire = nc; } });
+    let readWire: NatsConnection | undefined;
+    let hold: Promise<void> | undefined;
+    let atBind = false;
+    const reader = endpoint({ creds: recipient.creds, lifecycleUid: recipient.lifecycleUid, channels: [channel],
+      registerPresence: false, watchPresence: false, card: { kind: "agent", name: "recovery-reader" },
+      onConnection: (nc) => { readWire = nc; }, beforeBind: async () => { atBind = true; await hold; } });
+    const capture = (ep: typeof reader) => {
+      const deliveries: Array<{ id: string; historical: boolean; durable: boolean }> = [];
+      ep.on("message", (msg: CotalMessage, delivery: Delivery, meta: MessageMeta) => {
+        if (meta.kind === "channel" && msg.channel === channel) deliveries.push({ id: msg.id, historical: meta.historical, durable: delivery.durable });
+        delivery.ack();
+      });
+      return deliveries;
+    };
+    const received = capture(reader);
+    const waitFor = async (condition: () => boolean) => {
+      for (let i = 0; i < 120 && !condition(); i++) await wait(50);
+      return condition();
+    };
+    await Promise.all([reader.start(), writer.start()]);
+    const live = await writer.multicast("received before rebinding", { channel });
+    check("recovery control receives initial live post before disconnect", await waitFor(() => received.some(({ id }) => id === live.id)));
+    const old = readWire;
+    let releaseBind!: () => void;
+    hold = new Promise<void>((resolve) => { releaseBind = resolve; });
+    atBind = false;
+    const rebinding = reader.reconnect();
+    let recent: CotalMessage;
+    const aged = { ...live, id: randomUUID(), ts: Date.now() - 6 * 60_000, parts: [{ kind: "text", text: "aged during rebind" }] };
+    try {
+      if (!(await waitFor(() => atBind)) || !old?.isClosed() || readWire === old) throw new Error("recovery reader did not reach a new transport before consumers bound");
+      recent = await writer.multicast("fresh during rebind", { channel });
+      await jetstream(writerWire!).publish(pluginChannelSubject(space, sender.owner, sender.actor, channel), JSON.stringify(aged),
+        { msgID: aged.id, expect: { streamName: pluginChannelStream(space) } });
+      check("neither retained post leaks onto the reader while its new bind is held",
+        received.every(({ id }) => id !== recent.id && id !== aged.id));
+    } finally {
+      hold = undefined;
+      releaseBind();
+      await rebinding;
+    }
+    const of = (id: string) => received.filter((row) => row.id === id);
+    check("same-process rebind emits fresh missed post as live and aged missed post as historical, with no copy ACK",
+      of(recent.id).length === 1 && !of(recent.id)[0].historical && !of(recent.id)[0].durable &&
+      of(aged.id).length === 1 && of(aged.id)[0].historical && !of(aged.id)[0].durable, received);
+    check("same-process recovery does not re-emit a post already received on the previous live tail", of(live.id).length === 1, received);
+    await reader.reconnect();
+    check("another rebind without new rows does not replay the same missed window", of(recent.id).length === 1 && of(aged.id).length === 1, received);
+
+    const left = await reader.leaveChannel(channel);
+    const afterLeave = await writer.multicast("retained after leave", { channel });
+    await reader.reconnect();
+    check("leave removes the recovery subscription despite retained history still being readable", left.left &&
+      !reader.joinedChannels().includes(channel) && of(afterLeave.id).length === 0 &&
+      (await reader.channelHistory(channel, { limit: 10 })).some(({ id }) => id === afterLeave.id));
+    await reader.stop();
+
+    const replacement = endpoint({ creds: recipient.creds, lifecycleUid: recipient.lifecycleUid, channels: [channel],
+      backfillFloor: 10_000, registerPresence: false, watchPresence: false, card: { kind: "agent", name: "recovery-reader" } });
+    const replayed = capture(replacement);
+    await replacement.start();
+    check("a replacement uses ordinary join replay on the plugin rail, not the prior frontier or the CHAT floor",
+      [live.id, recent.id, aged.id, afterLeave.id].every((id) => replayed.filter((row) => row.id === id && row.historical && !row.durable).length === 1), replayed);
+    const liveAgain = await writer.multicast("live after replacement replay", { channel });
+    check("the replacement receives new posts through its live tail after replay", await waitFor(() =>
+      replayed.some(({ id, historical, durable }) => id === liveAgain.id && !historical && !durable)));
+  } finally {
+    await fixture.close();
+  }
+}
 
 async function checkEnabledPluginDelivery() {
   const fixture = await startEnabledPluginSpace();
@@ -616,6 +698,7 @@ try {
   await checkPluginProjection(space, mgrCreds, aCreds, uidA,
     await mintCreds(auth, newIdentity(), "observer"), await mintCreds(auth, newIdentity(), "probe"));
   await checkEnabledPluginDelivery();
+  await checkEnabledPluginRecovery();
 
   console.log(`\nDELIVERY-RECONNECT SMOKE ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${pass} passed, ${fail} failed)`);
   if (fail) process.exitCode = 1;
