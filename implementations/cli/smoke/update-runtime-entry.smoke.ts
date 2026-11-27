@@ -271,6 +271,24 @@ async function assertOfflineBundledRepair(
   }
   assert.deepEqual(readFileSync(join(store, "package.json")), before);
   assert.equal(existsSync(dir), false);
+  const repo = join(import.meta.dirname, "../../..");
+  const hidden: [string, string][] = [];
+  const hide = (from: string, to: string) => {
+    if (!existsSync(from)) return;
+    renameSync(from, to);
+    hidden.push([to, from]);
+  };
+  hide(join(repo, "extensions/connector-claude-code"), join(config, "..", "hidden-claude-payload"));
+  hide(join(repo, "bin/seeded-connectors/claude"), join(config, "..", "hidden-claude-published"));
+  try {
+    rmSync(dir, { recursive: true, force: true });
+    const absent = await self();
+    assert.equal(absent.status, 0, absent.output);
+    assert.match(absent.output, /Offline extension repair for @cotal-ai\/connector-claude-code@\d+\.\d+\.\d+ did not finish: no shipped payload/);
+    assert.equal(existsSync(dir), false);
+  } finally {
+    for (const [from, to] of hidden.reverse()) renameSync(from, to);
+  }
   assert.deepEqual(requests.slice(count), ["GET /@cotal-ai%2ftmux [install]", "GET /tmux.tgz [install]"]);
 }
 
