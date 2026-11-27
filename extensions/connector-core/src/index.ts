@@ -44,10 +44,4 @@ export {
   type Delivery, type Evidence, type PromptDesk, type PromptHold, type PromptHooks, type PromptSpec, type PromptVerdict,
 } from "./prompt-desk.js";
 export { registerOnceExit } from "./once.js";
-export {
-  danglingSymbolicLinkTarget,
-  isConfigPermissionError,
-  isConfigProtected,
-  isDirectoryProtected,
-  isExistingPathProtected,
-} from "./setup-permissions.js";
+export { isConfigPermissionError, isConfigProtected, isDirectoryProtected } from "./setup-permissions.js";

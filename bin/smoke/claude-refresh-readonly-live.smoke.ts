@@ -173,6 +173,7 @@ function runNonwritableParentPair(kind: "claude" | "codex") {
 
   if (kind === "claude") {
     const plugins = join(home, ".claude", "plugins");
+    const claudeSkills = join(market, "cotal-skills");
     mkdirSync(plugins, { recursive: true, mode: 0o700 });
     writeFileSync(join(plugins, "installed_plugins.json"), JSON.stringify({ version: 2, plugins: { "cotal@cotal-mesh": [{ scope: "user", version: "0.1.0" }] } }));
     writeFileSync(claudeConfig, "{}");
@@ -180,12 +181,19 @@ function runNonwritableParentPair(kind: "claude" | "codex") {
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 const args = process.argv.slice(2);
 const manifestPath = ${JSON.stringify(join(claudePlugin, ".claude-plugin", "plugin.json"))};
+const skillsManifestPath = ${JSON.stringify(join(claudeSkills, ".claude-plugin", "plugin.json"))};
 const version = existsSync(manifestPath) ? JSON.parse(readFileSync(manifestPath, "utf8")).version : "0.1.0";
+const entries = [{ id: "cotal@cotal-mesh", scope: "user", enabled: true, version, readFromFolder: ${JSON.stringify(claudePlugin)} }];
+if (existsSync(skillsManifestPath)) {
+  entries.push({ id: "cotal-skills@cotal-mesh", scope: "user", enabled: true, version: JSON.parse(readFileSync(skillsManifestPath, "utf8")).version, readFromFolder: ${JSON.stringify(claudeSkills)} });
+}
 switch (args.slice(0, 3).join(" ")) {
   case "--version": console.log("2.0.0"); break;
-  case "plugin list --json": console.log(JSON.stringify([{ id: "cotal@cotal-mesh", scope: "user", enabled: true, version, readFromFolder: ${JSON.stringify(claudePlugin)} }])); break;
+  case "plugin list --json": console.log(JSON.stringify(entries)); break;
   case "plugin marketplace list": console.log(JSON.stringify([{ name: "cotal-mesh", source: "directory", path: ${JSON.stringify(market)} }])); break;
-  case "plugin marketplace add": case "plugin marketplace update": case "plugin install cotal@cotal-mesh": case "plugin update cotal@cotal-mesh": break;
+  case "plugin marketplace add": case "plugin marketplace update":
+  case "plugin install cotal@cotal-mesh": case "plugin update cotal@cotal-mesh":
+  case "plugin install cotal-skills@cotal-mesh": case "plugin update cotal-skills@cotal-mesh": break;
   case "mcp remove --scope": writeFileSync(${JSON.stringify(claudeConfig)}, "{}"); break;
   case "mcp add --scope": writeFileSync(${JSON.stringify(claudeConfig)}, JSON.stringify({ mcpServers: { cotal: { command: args[6], args: args.slice(7) } } })); break;
   default: process.exit(1);
@@ -238,27 +246,28 @@ else if (args === "plugin add cotal@cotal-mesh") {
       rmSync(join(codexCache, newVersion), { recursive: true, force: true });
       mkdirSync(join(codexCache, "0.1.0"), { recursive: true, mode: 0o700 });
     }
-    chmodSync(market, 0o500);
-    const deferredUpdate = execCli("update");
-    assert.equal(deferredUpdate.status, 0, deferredUpdate.output);
-    const expectedUpdate = kind === "claude"
-      ? `Claude integration refresh deferred because ${market} is read-only.`
-      : `Codex plugin refresh deferred because ${market} is read-only. cotal@cotal-mesh remains at 0.1.0.`;
-    assert.ok(deferredUpdate.output.includes(expectedUpdate), deferredUpdate.output);
-    assert.ok(
-      ["cotal update", "pnpm cotal update"].some((cmd) => deferredUpdate.output.includes(`Make that directory writable, then run \`${cmd}\`.`)),
-      deferredUpdate.output,
-    );
+    for (const mode of [0o500, 0o600] as const) {
+      chmodSync(market, mode);
+      const deferredUpdate = execCli("update");
+      assert.equal(deferredUpdate.status, 0, deferredUpdate.output);
+      const expectedUpdate = kind === "claude"
+        ? `Claude integration refresh deferred because ${market} is read-only.`
+        : `Codex plugin refresh deferred because ${market} is read-only. cotal@cotal-mesh remains at 0.1.0.`;
+      assert.ok(deferredUpdate.output.includes(expectedUpdate), deferredUpdate.output);
+      assert.ok(
+        ["cotal update", "pnpm cotal update"].some((cmd) => deferredUpdate.output.includes(`Make that directory writable and searchable, then run \`${cmd}\`.`)),
+        deferredUpdate.output,
+      );
 
-    const failedSetup = execCli("setup", "--destination", "local", "--harness", kind, "--project", project, "--space", "alpha", "--yes");
-    assert.notEqual(failedSetup.status, 0, failedSetup.output);
-    assert.ok(failedSetup.output.includes(`${market} is read-only.`), failedSetup.output);
-    assert.ok(
-      ["cotal setup", "pnpm cotal setup"].some((cmd) => failedSetup.output.includes(`Make that directory writable, then run \`${cmd}\`.`)),
-      failedSetup.output,
-    );
-
-    chmodSync(market, 0o700);
+      const failedSetup = execCli("setup", "--destination", "local", "--harness", kind, "--project", project, "--space", "alpha", "--yes");
+      assert.notEqual(failedSetup.status, 0, failedSetup.output);
+      assert.ok(failedSetup.output.includes(`${market} is read-only.`), failedSetup.output);
+      assert.ok(
+        ["cotal setup", "pnpm cotal setup"].some((cmd) => failedSetup.output.includes(`Make that directory writable and searchable, then run \`${cmd}\`.`)),
+        failedSetup.output,
+      );
+      chmodSync(market, 0o700);
+    }
     const recoveredUpdate = execCli("update");
     assert.equal(recoveredUpdate.status, 0, recoveredUpdate.output);
     assert.doesNotMatch(recoveredUpdate.output, /deferred because/);
@@ -266,7 +275,37 @@ else if (args === "plugin add cotal@cotal-mesh") {
     assert.equal(recoveredVersion, newVersion);
     if (kind === "codex") assert.deepEqual(readdirSync(codexCache), [newVersion]);
 
-    // 3. Dangling symbolic link marketplace: update defers naming the link and target; explicit setup fails naming the same link and target.
+    // 2b. A 0400 .setup.lock in the writable marketplace is reclaimed: both cotal setup and cotal update exit 0 and complete.
+    const marketLock = join(market, ".setup.lock");
+    writeFileSync(marketLock, "{}", { mode: 0o400 });
+    const setupOverMarketLock = execCli("setup", "--destination", "local", "--harness", kind, "--project", project, "--space", "alpha", "--yes");
+    assert.equal(setupOverMarketLock.status, 0, setupOverMarketLock.output);
+    assert.equal(existsSync(marketLock), false);
+
+    if (kind === "claude") {
+      writeFileSync(manifestPath, JSON.stringify({ name: "cotal", version: "0.1.0" }));
+    } else {
+      rmSync(join(codexCache, newVersion), { recursive: true, force: true });
+      mkdirSync(join(codexCache, "0.1.0"), { recursive: true, mode: 0o700 });
+    }
+    writeFileSync(marketLock, "{}", { mode: 0o400 });
+    const updateOverMarketLock = execCli("update");
+    assert.equal(updateOverMarketLock.status, 0, updateOverMarketLock.output);
+    assert.doesNotMatch(updateOverMarketLock.output, /deferred because/);
+    assert.equal((JSON.parse(readFileSync(manifestPath, "utf8")) as { version: string }).version, newVersion);
+    assert.equal(existsSync(marketLock), false);
+
+    if (kind === "claude") {
+      for (const lockDir of [home, join(home, ".claude", "plugins")]) {
+        const claudeLock = join(lockDir, ".cotal-setup.lock");
+        writeFileSync(claudeLock, "{}", { mode: 0o400 });
+        const setupOverClaudeLock = execCli("setup", "--destination", "local", "--harness", "claude", "--project", project, "--space", "alpha", "--yes");
+        assert.equal(setupOverClaudeLock.status, 0, setupOverClaudeLock.output);
+        assert.equal(existsSync(claudeLock), false);
+      }
+    }
+
+    // 3. Dangling symbolic link and symbolic-link loop marketplace: update defers naming the broken link; explicit setup fails naming the same broken link.
     rmSync(market, { recursive: true, force: true });
     const missingTarget = join(base, `missing-${kind}-marketplace`);
     symlinkSync(missingTarget, market);
@@ -282,6 +321,15 @@ else if (args === "plugin add cotal@cotal-mesh") {
       danglingSetup.output.includes(`${market} is a symbolic link to a missing target (${missingTarget}).`),
       danglingSetup.output,
     );
+    rmSync(market, { force: true });
+
+    symlinkSync(market, market);
+    const loopUpdate = execCli("update");
+    assert.equal(loopUpdate.status, 0, loopUpdate.output);
+    assert.ok(loopUpdate.output.includes(`${market} is a symbolic-link loop.`), loopUpdate.output);
+    const loopSetup = execCli("setup", "--destination", "local", "--harness", kind, "--project", project, "--space", "alpha", "--yes");
+    assert.notEqual(loopSetup.status, 0, loopSetup.output);
+    assert.ok(loopSetup.output.includes(`${market} is a symbolic-link loop.`), loopSetup.output);
     rmSync(market, { force: true });
     passed++;
     console.log(`PASS parent-pair-${kind}: 0555 home parent refreshes; read-only or dangling-link marketplace defers update, fails explicit setup, and refreshes after repair`);

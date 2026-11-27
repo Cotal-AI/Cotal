@@ -144,7 +144,7 @@ switch (args.slice(0, 3).join(" ")) {
       assert.ok(!row().text.includes(config));
     } finally { rmSync(executable, { force: true }); }
   });
-  if (process.platform !== "win32" && process.getuid?.() !== 0) await check("a read-only Cotal marketplace directory, lock file, or broken link defers refresh and fails explicit setup", async () => {
+  if (process.platform !== "win32" && process.getuid?.() !== 0) await check("a read-only or broken-link Cotal marketplace defers refresh and fails explicit setup while 0400 lock files are reclaimed", async () => {
     for (const [pluginId, expected] of [
       ["cotal@cotal-mesh", "Claude integration refresh"],
       ["cotal-skills@cotal-mesh", "Claude skills refresh"],
@@ -155,53 +155,78 @@ switch (args.slice(0, 3).join(" ")) {
       mkdirSync(f.plugins, { recursive: true });
       mkdirSync(market, { recursive: true, mode: 0o700 });
       writeFileSync(f.records, JSON.stringify({ version: 2, plugins: { [pluginId]: [{ scope: "user", version: "0.1.0" }] } }));
-      chmodSync(market, 0o500);
-      try {
-        const detail = await refresh();
-        assert.equal(detail, `${expected} deferred because ${market} is read-only. Make that directory writable, then run \`cotal update\`.`);
-        await assert.rejects(
-          async () => claudeSetupProvider.connector!.run({ cotal: [process.execPath, join(root, "cotal.js")] }),
-          new Error(`${market} is read-only. Make that directory writable, then run \`cotal setup\`.`),
-        );
-        assert.equal(statSync(market).mode & 0o777, 0o500);
-        assert.deepEqual(readdirSync(market), []);
-        assert.equal(existsSync(join(f.config, ".cotal-setup.lock")), false);
-        assert.equal(existsSync(join(f.plugins, ".cotal-setup.lock")), false);
-      } finally {
-        chmodSync(market, 0o700);
+      for (const mode of [0o500, 0o600] as const) {
+        chmodSync(market, mode);
+        try {
+          const detail = await refresh();
+          assert.equal(detail, `${expected} deferred because ${market} is read-only. Make that directory writable and searchable, then run \`cotal update\`.`);
+          await assert.rejects(
+            async () => claudeSetupProvider.connector!.run({ cotal: [process.execPath, join(root, "cotal.js")] }),
+            new Error(`${market} is read-only. Make that directory writable and searchable, then run \`cotal setup\`.`),
+          );
+          assert.equal(statSync(market).mode & 0o777, mode);
+          assert.deepEqual(readdirSync(market), []);
+          assert.equal(existsSync(join(f.config, ".cotal-setup.lock")), false);
+          assert.equal(existsSync(join(f.plugins, ".cotal-setup.lock")), false);
+        } finally {
+          chmodSync(market, 0o700);
+        }
       }
     }
-    const f = fixture("readonly-lock-and-link", true);
+    const f = fixture("reclaim-lock-and-link", true);
     const market = join(process.env.COTAL_HOME!, "claude-plugin");
+    const plugin = join(market, "cotal");
     const lock = join(market, ".setup.lock");
+    const config = join(f.config, ".claude.json");
+    const executable = join(emptyBin, "claude");
     mkdirSync(f.config, { recursive: true });
     mkdirSync(f.plugins, { recursive: true });
     mkdirSync(market, { recursive: true, mode: 0o700 });
     writeFileSync(f.records, JSON.stringify({ version: 2, plugins: { "cotal@cotal-mesh": [{ scope: "user", version: "0.1.0" }] } }));
-    writeFileSync(lock, "{}", { mode: 0o400 });
+    writeFileSync(config, "{}");
+    writeFileSync(executable, `#!${process.execPath}
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+const args = process.argv.slice(2);
+const manifestPath = ${JSON.stringify(join(plugin, ".claude-plugin", "plugin.json"))};
+const version = existsSync(manifestPath) ? JSON.parse(readFileSync(manifestPath, "utf8")).version : "0.1.0";
+switch (args.slice(0, 3).join(" ")) {
+  case "--version": console.log("2.0.0"); break;
+  case "plugin list --json": console.log(JSON.stringify([{ id: "cotal@cotal-mesh", scope: "user", enabled: true, version, readFromFolder: ${JSON.stringify(plugin)} }])); break;
+  case "plugin marketplace list": console.log(JSON.stringify([{ name: "cotal-mesh", source: "directory", path: ${JSON.stringify(market)} }])); break;
+  case "plugin marketplace add": case "plugin marketplace update": case "plugin install cotal@cotal-mesh": case "plugin update cotal@cotal-mesh": break;
+  case "mcp remove --scope": writeFileSync(${JSON.stringify(config)}, "{}"); break;
+  case "mcp add --scope": writeFileSync(${JSON.stringify(config)}, JSON.stringify({ mcpServers: { cotal: { command: args[6], args: args.slice(7) } } })); break;
+  default: process.exit(1);
+}
+`, { mode: 0o700 });
     try {
-      assert.equal(
-        await refresh(),
-        `Claude integration refresh deferred because ${lock} is read-only. Make that file writable, then run \`cotal update\`.`,
-      );
-      await assert.rejects(
-        async () => claudeSetupProvider.connector!.run({ cotal: [process.execPath, join(root, "cotal.js")] }),
-        new Error(`${lock} is read-only. Make that file writable, then run \`cotal setup\`.`),
-      );
+      // A 0400 .setup.lock in a writable marketplace is reclaimed by both setup and refresh, matching main.
+      writeFileSync(lock, "{}", { mode: 0o400 });
+      const setupDetail = await claudeSetupProvider.connector!.run({ cotal: [process.execPath, join(root, "cotal.js")] });
+      assert.match(setupDetail, /^cotal@cotal-mesh \(user scope\)/);
+      assert.equal(existsSync(lock), false);
+
+      writeFileSync(lock, "{}", { mode: 0o400 });
+      const refreshDetail = await claudeSetupProvider.refresh!.run({ cotal: [process.execPath, join(root, "updated-cotal.js")] });
+      assert.doesNotMatch(refreshDetail, /deferred/);
+      assert.match(refreshDetail, /cotal@cotal-mesh/);
+      assert.equal(existsSync(lock), false);
+
+      // A 0400 lock in the profile or plugin cache is reclaimed by explicit setup and defers refresh, matching main.
+      for (const dir of [f.config, f.plugins]) {
+        const otherLock = join(dir, ".cotal-setup.lock");
+        writeFileSync(otherLock, "{}", { mode: 0o400 });
+        assert.equal(
+          await refresh(),
+          `Claude integration refresh deferred because ${dir} is read-only. Make that directory writable and searchable, then run \`cotal update\`.`,
+        );
+        const recoveredSetup = await claudeSetupProvider.connector!.run({ cotal: [process.execPath, join(root, "cotal.js")] });
+        assert.match(recoveredSetup, /^cotal@cotal-mesh \(user scope\)/);
+        assert.equal(existsSync(otherLock), false);
+      }
     } finally {
-      chmodSync(lock, 0o600);
+      rmSync(executable, { force: true });
       rmSync(market, { recursive: true, force: true });
-    }
-    const profileLock = join(f.config, ".cotal-setup.lock");
-    writeFileSync(profileLock, "{}", { mode: 0o400 });
-    try {
-      assert.equal(
-        await refresh(),
-        `Claude integration refresh deferred because ${profileLock} is read-only. Make that file writable, then run \`cotal update\`.`,
-      );
-    } finally {
-      chmodSync(profileLock, 0o600);
-      rmSync(profileLock, { force: true });
     }
     const missingTarget = join(f.home, "missing-claude-marketplace");
     symlinkSync(missingTarget, market);
@@ -213,6 +238,19 @@ switch (args.slice(0, 3).join(" ")) {
       await assert.rejects(
         async () => claudeSetupProvider.connector!.run({ cotal: [process.execPath, join(root, "cotal.js")] }),
         new Error(`${market} is a symbolic link to a missing target (${missingTarget}). Restore the link's target or replace the broken link, then run \`cotal setup\`.`),
+      );
+    } finally {
+      rmSync(market, { force: true });
+    }
+    symlinkSync(market, market);
+    try {
+      assert.equal(
+        await refresh(),
+        `Claude integration refresh deferred because ${market} is a symbolic-link loop. Replace the broken link with a writable and searchable directory, then run \`cotal update\`.`,
+      );
+      await assert.rejects(
+        async () => claudeSetupProvider.connector!.run({ cotal: [process.execPath, join(root, "cotal.js")] }),
+        new Error(`${market} is a symbolic-link loop. Replace the broken link with a writable and searchable directory, then run \`cotal setup\`.`),
       );
     } finally {
       rmSync(market, { force: true });

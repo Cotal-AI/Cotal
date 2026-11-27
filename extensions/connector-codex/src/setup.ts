@@ -5,17 +5,12 @@
  */
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { acquireLock, registry, type ConnectorSetupInput, type ConnectorSetupProvider, type ConnectorStatusInput, type ConnectorStatusRow } from "@cotal-ai/core";
-import {
-  danglingSymbolicLinkTarget,
-  isConfigProtected,
-  isDirectoryProtected,
-  isExistingPathProtected,
-} from "@cotal-ai/connector-core";
+import { isConfigProtected, isDirectoryProtected } from "@cotal-ai/connector-core";
 import { CLI_RECORD } from "./cli-record.js";
 
 const PACKAGE_ROOT = fileURLToPath(new URL("..", import.meta.url));
@@ -264,25 +259,25 @@ function repairMovedMarketplace(previous: string): string | undefined {
 
 function protectedMarketplaceCause(remedyCommand: string): { cause: string; remedy: string } | undefined {
   const market = codexMarketplaceDir();
-  const dangling = danglingSymbolicLinkTarget(market);
-  if (dangling !== undefined) {
-    return {
-      cause: `${market} is a symbolic link to a missing target (${dangling})`,
-      remedy: `Restore the link's target or replace the broken link, then run \`${remedyCommand}\`.`,
-    };
+  if (!isDirectoryProtected(market)) return undefined;
+  try {
+    const link = lstatSync(market, { throwIfNoEntry: false });
+    if (link?.isSymbolicLink() && !statSync(market, { throwIfNoEntry: false })) {
+      const target = readlinkSync(market);
+      return {
+        cause: `${market} is a symbolic link to a missing target (${target})`,
+        remedy: `Restore the link's target or replace the broken link, then run \`${remedyCommand}\`.`,
+      };
+    }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ELOOP") {
+      return {
+        cause: `${market} is a symbolic-link loop`,
+        remedy: `Replace the broken link with a writable and searchable directory, then run \`${remedyCommand}\`.`,
+      };
+    }
   }
-  const lock = join(market, ".setup.lock");
-  if (isDirectoryProtected(market)) {
-    return { cause: `${market} is read-only`, remedy: `Make that directory writable, then run \`${remedyCommand}\`.` };
-  }
-  if (isExistingPathProtected(lock)) {
-    return { cause: `${lock} is read-only`, remedy: `Make that file writable, then run \`${remedyCommand}\`.` };
-  }
-  if (isConfigProtected(lock)) {
-    const parent = dirname(market);
-    return { cause: `${parent} is read-only`, remedy: `Make that directory writable, then run \`${remedyCommand}\`.` };
-  }
-  return undefined;
+  return { cause: `${market} is read-only`, remedy: `Make that directory writable and searchable, then run \`${remedyCommand}\`.` };
 }
 
 function withLock<T>(run: () => T): T {
@@ -362,7 +357,12 @@ export const codexSetupProvider: ConnectorSetupProvider = {
       const blocked = protectedMarketplaceCause("cotal update");
       if (blocked) {
         const installed = readInstalledForRefresh(false);
-        if (typeof installed === "string") return installed;
+        if (typeof installed === "string") {
+          if (installed === "not installed" || installed.startsWith("Codex not installed")) return installed;
+          const desired = resolve(codexMarketplaceDir());
+          if (!installed.includes(`at ${desired},`)) return installed;
+          return `Codex plugin refresh deferred because ${blocked.cause}. ${blocked.remedy}`;
+        }
         return `Codex plugin refresh deferred because ${blocked.cause}. ${PLUGIN}@${MARKETPLACE} remains at ${installed.version}. ${blocked.remedy}`;
       }
       return withLock(() => {
@@ -372,7 +372,7 @@ export const codexSetupProvider: ConnectorSetupProvider = {
         const cache = pluginCache();
         if (installed.version !== version && isConfigProtected(cache)) {
           const protectedCache = isDirectoryProtected(cache) ? cache : dirname(cache);
-          return `Codex plugin refresh deferred because ${protectedCache} is read-only. ${PLUGIN}@${MARKETPLACE} remains at ${installed.version}. Make that directory writable, then run \`cotal update\`.`;
+          return `Codex plugin refresh deferred because ${protectedCache} is read-only. ${PLUGIN}@${MARKETPLACE} remains at ${installed.version}. Make that directory writable and searchable, then run \`cotal update\`.`;
         }
         materializeCodexPlugin(cotal, version);
         const marketplace = configuredMarketplace();
