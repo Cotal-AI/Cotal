@@ -225,7 +225,7 @@ function completeInPlaceOomPolicyIntent(paths: Pick<DaemonPaths, "state">, daemo
   if (actual.unitSha256 !== nextSha) writeSecretFileAtomic(unitReceiptFile(paths), `${JSON.stringify(nextReceipt)}\n`);
   rmSync(servicePolicyRepairFile(paths.state), { force: true });
   const state = readSystemdPolicyUnitState(nativeRun, nextReceipt.unit, nextReceipt.unitPath, env);
-  if (state.loaded && !state.needsReload && state.oomPolicy === "continue") return false;
+  if (state.loaded && !state.needsReload && state.oomPolicy === "continue" && !(state.dropInPaths === "" && state.dropInDirOnDisk)) return false;
   return reloadUpgradedPolicyIfSafe(paths, nextReceipt, env, report, state);
 }
 
@@ -286,7 +286,8 @@ export function reconcileInstalledSystemdOomPolicy(paths: Pick<DaemonPaths, "sta
     const next = upgradedSystemdOomPolicy(source);
     const state = readSystemdPolicyUnitState(nativeRun, receipt.unit, receipt.unitPath, env);
     if (!next) {
-      if (!/^[ \t]*OOMPolicy=continue$/m.test(source) || !state.loaded || !state.needsReload) return false;
+      if (!/^[ \t]*OOMPolicy=continue$/m.test(source) || !state.loaded || (!state.needsReload && !state.dropInDirOnDisk)) return false;
+      if (!state.needsReload && state.dropInPaths !== "") return false;
       return reloadUpgradedPolicyIfSafe(paths, receipt, env, report, state);
     }
     if (!state.loaded || state.needsReload || state.dropInPaths !== "" || state.dropInDirOnDisk) return false;
