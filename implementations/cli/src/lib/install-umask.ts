@@ -1,6 +1,18 @@
-import { chmodSync, lstatSync, readdirSync, realpathSync } from "node:fs";
-import { isAbsolute, join, relative, resolve, sep } from "node:path";
+import { createHash } from "node:crypto";
+import { chmodSync, existsSync, lstatSync, readdirSync, realpathSync } from "node:fs";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { globalConfigDir } from "@cotal-ai/core";
+import { logicalExecutionEntry } from "@cotal-ai/workspace";
+
+function ownInstallKey(): string | undefined {
+  const logical = logicalExecutionEntry();
+  if (!logical) return undefined;
+  const root = dirname(dirname(logical));
+  if (basename(root) === "bin" && (existsSync(join(dirname(root), "implementations")) || existsSync(join(dirname(root), "pnpm-workspace.yaml")))) return undefined;
+  if (existsSync(join(root, "desktop-runtime.json"))) return undefined;
+  const normalized = logical.replace(/([/\\]pnpm[/\\]dlx[/\\][^/\\]+[/\\])[^/\\]+(?=[/\\]node_modules[/\\])/, "$1*");
+  return createHash("sha256").update(normalized).digest("hex");
+}
 
 function holdsExtensionStages(dir: string, base: string): boolean {
   if (dir === base) return true;
@@ -28,7 +40,8 @@ export function withInstallUmask<T>(spawn: () => T): T {
 /** Remove group and other write from every folder and file under `root` this account owns, without
  *  following a link, and return how many changed; a missing `root` changes nothing. Unpublished
  *  `.extensions.stage-*` directories at the config root and under retained version sets keep their
- *  modes and are not entered so stage cleanup can test their origin. An installer from
+ *  modes and are not entered so stage cleanup can test their origin, and other installations'
+ *  retained trees under `installs/` are left alone. An installer from
  *  before its 022 umask, or a seed run before its npm children got one, left Cotal's install or its
  *  config folder group-writable under a umask of 0002, and a folder another account can write makes
  *  the protected-path rule refuse what is under it, such as the runtime Node selected as a handler or
@@ -38,8 +51,10 @@ export function repairInstallModes(root: string, onError?: (error: NodeJS.ErrnoE
   const normalize = (p: string): string => isAbsolute(p) ? resolve(p) : p;
   const rootBase = normalize(root);
   const configRaw = globalConfigDir();
-  const stageBases = new Set<string>([rootBase, normalize(configRaw)]);
-  try { stageBases.add(realpathSync.native(configRaw)); } catch {}
+  const configBases = new Set<string>([normalize(configRaw)]);
+  try { configBases.add(realpathSync.native(configRaw)); } catch {}
+  const stageBases = new Set<string>([rootBase, ...configBases]);
+  const installKey = ownInstallKey();
   let realRoot: string | undefined;
   try { realRoot = realpathSync.native(root); } catch {}
   let changed = 0;
@@ -73,8 +88,11 @@ export function repairInstallModes(root: string, onError?: (error: NodeJS.ErrnoE
       const sub = relative(rootBase, dir);
       const realDir = realRoot ? (sub ? join(realRoot, sub) : realRoot) : undefined;
       const skipStages = [...stageBases].some(base => holdsExtensionStages(dir, base) || (realDir !== undefined && holdsExtensionStages(realDir, base)));
+      const skipForeignInstalls = installKey !== undefined && [...configBases].some(base =>
+        dir === join(base, "installs") || realDir === join(base, "installs"));
       for (const name of names) {
         if (skipStages && name.startsWith(".extensions.stage-")) continue;
+        if (skipForeignInstalls && name !== installKey) continue;
         walk(join(path, name));
       }
     }

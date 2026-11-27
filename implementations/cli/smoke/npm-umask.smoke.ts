@@ -372,6 +372,14 @@ async function verifyGlobalNpmSelfUpdateModes(): Promise<void> {
     assert.equal(installKeys.length, 1, "retained connector reconciliation creates one installation key");
     const setCotalDir = join(cfgCotal, "installs", installKeys[0]!, "sets", currentVersion, "cotal");
     await verifyWritableExtensionStagesSkipped(setCotalDir, [".extensions.stage-Cd5678", ".extensions.stage-Ef9012.ready"], workDir, cleanEnv);
+    const foreignSetFile = join(cfgCotal, "installs", "f".repeat(64), "sets", "0.0.0-foreign", "cotal", "extensions", "package.json");
+    mkdirSync(join(cfgCotal, "installs", "f".repeat(64), "sets", "0.0.0-foreign", "cotal", "extensions"), { recursive: true, mode: 0o775 });
+    writeFileSync(foreignSetFile, "{}\n");
+    chmodSync(foreignSetFile, 0o664);
+    const foreignPass = await runShell("022", "cotal update --self", workDir, cleanEnv);
+    assert.equal(foreignPass.status, 0, foreignPass.stdout + foreignPass.stderr);
+    assert.equal(statSync(foreignSetFile).mode & 0o777, 0o664, "another installation's retained set under installs/ is untouched");
+    rmSync(join(cfgCotal, "installs", "f".repeat(64)), { recursive: true, force: true });
     await verifyReadonlyGenerationsModeRepairWarning(workDir, prefix, installed, currentVersion, cleanEnv);
 
     await verifyUnreadableOwnedModeRepairWarning(workDir, prefix, installed, cfgCotal, currentVersion, cleanEnv);
