@@ -172,7 +172,7 @@ export class CotalEndpoint extends EventEmitter {
     notLiveMsg: (...args) => this.notLiveMsg(...args),
     emit: (event, ...args) => this.emit(event, ...args),
   }, this.parts);
-  private readonly history = new EndpointHistory(this.identity, this.conn, {
+  private readonly history = new EndpointHistory(this.identity, this.conn, this.lifecycle, {
     notLiveMsg: () => this.notLiveMsg(),
     requireLifecycleUid: (operation) => this.requireLifecycleUid(operation),
     emit: (event, ...args) => this.emit(event, ...args),

@@ -1,6 +1,5 @@
 ---
 "@cotal-ai/core": patch
-"@cotal-ai/connector-core": patch
 ---
 
-Keep connectors responsive while they replay retained channel history during a join.
+Keep channel joins responsive by streaming retained history in bounded pages and avoiding duplicate replay for overlapping subscriptions.

@@ -39,42 +39,98 @@ function withSenderClock<T>(offset: number, send: () => T): T {
   try { return send(); } finally { Date.now = now; }
 }
 
+async function wideReader(manager: CotalEndpoint, name: string, subscribe: string[], allowSubscribe = [">"]) {
+  const id = newIdentity();
+  const lifecycleUid = mintLifecycleUid();
+  const creds = await provisionAgent(manager, auth, id, { subscribe, allowSubscribe, lifecycleUid });
+  const agent = new MeshAgent({
+    space, servers, tls: false, name, id: id.id, creds, lifecycleUid,
+    subscribe, allowSubscribe, allowPublish: [], kind: "agent",
+  });
+  agents.push(agent);
+  return agent;
+}
+
 async function checkWideReplay(manager: CotalEndpoint, publisher: CotalEndpoint) {
   const count = 12_000;
   const channels = Array.from({ length: 16 }, (_, i) => `replay.wide.c${i}`);
-  const text = "x".repeat(4_096);
+  const text = "x".repeat(16_384);
   for (let i = 0; i < count; i += 4) {
-    await Promise.all(channels.slice(0, 4).map((_, j) =>
+    await Promise.all(Array.from({ length: 4 }, (_, j) =>
       publisher.multicast(text, { channel: channels[(i + j) % channels.length] }),
     ));
   }
 
-  const subscribe = [">", "replay.wide.>"];
-  const id = newIdentity();
-  const lifecycleUid = mintLifecycleUid();
-  const creds = await provisionAgent(manager, auth, id, { subscribe, allowSubscribe: [">"], lifecycleUid });
-  const agent = new MeshAgent({
-    space, servers, tls: false, name: "wide-reader", id: id.id, creds, lifecycleUid,
-    subscribe, allowSubscribe: [">"], allowPublish: [], kind: "agent",
-  });
-  agents.push(agent);
-  let replayed = 0;
-  let nextTurn: Promise<{ elapsedMs: number; replayed: number }> | undefined;
+  const agent = await wideReader(manager, "wide-reader", [">", "replay.wide.>"]);
+  const began = performance.now();
+  const rssBefore = Math.max(process.memoryUsage.rss(), process.resourceUsage().maxRSS * 1024);
+  let peakBytes = 0, replayed = 0, turnCount = 0, maxTurnCount = 0, maxTurnMs = 0;
   agent.ep.on("message", (message, _delivery, meta) => {
     if (!meta.historical || !message.channel?.startsWith("replay.wide.")) return;
-    replayed++;
-    if (replayed !== 1) return;
-    const began = performance.now();
-    nextTurn = new Promise(resolve => setImmediate(() => resolve({ elapsedMs: performance.now() - began, replayed })));
+    if (replayed++ === 0) peakBytes = process.memoryUsage().arrayBuffers;
+    if (turnCount++ !== 0) return;
+    const started = performance.now();
+    setImmediate(() => {
+      maxTurnMs = Math.max(maxTurnMs, performance.now() - started);
+      maxTurnCount = Math.max(maxTurnCount, turnCount);
+      peakBytes = Math.max(peakBytes, process.memoryUsage().arrayBuffers);
+      turnCount = 0;
+    });
   });
   await agent.start();
-  assert(nextTurn, "the join must replay retained history");
-  const firstTurn = await nextTurn;
-  assert.equal(replayed, 2 * count, "the root and the overlapping family both replay their full history");
-  assert(firstTurn.replayed <= 256 && firstTurn.elapsedMs < 250,
-    `first event-loop turn after replay starts must run within 250 ms and 256 posts: ${JSON.stringify(firstTurn)}`);
+  const joinMs = performance.now() - began;
+  await new Promise<void>(resolve => setImmediate(resolve));
+  const rssGrowthMiB = Math.max(0, process.resourceUsage().maxRSS * 1024 - rssBefore) / 2 ** 20;
+  const peakBufferMiB = peakBytes / 2 ** 20;
+  const measured = { count, channels: channels.length, replayed, joinMs, rssGrowthMiB, peakBufferMiB, maxTurnMs, maxTurnCount };
+  console.log(`wide channel replay: ${JSON.stringify(measured)}`);
+  assert(peakBufferMiB < 128 && rssGrowthMiB < 192, "joining must not retain the 187.5 MiB replay payload");
+  assert.equal(replayed, count, "the root and covered family must deliver each historical post once");
+  assert(maxTurnCount > 0 && maxTurnCount <= 256 && maxTurnMs < 250,
+    "each replay turn must handle at most 256 posts and take less than 250 ms");
+  assert(joinMs < 30_000, "12,000 posts must replay and bind in under 30 seconds");
   assert(agent.peekInbox("pull-only").some(item => item.historical && item.channel?.startsWith("replay.wide.")));
-  console.log(`PASS wide join: ${count} posts on ${channels.length} channels, first replay yield ${firstTurn.elapsedMs.toFixed(1)} ms after ${firstTurn.replayed} posts`);
+  await agent.stop();
+}
+
+async function checkOverlappingWindows(manager: CotalEndpoint, publisher: CotalEndpoint, creds: string) {
+  const overlap = "replay.policy.a.b", sideA = "replay.policy.a.c", sideB = "replay.policy.c.b", outside = "replay.policy.c.c";
+  const filters = ["replay.policy.*.b", "replay.policy.a.*", overlap];
+  const agent = await wideReader(manager, "replay-windows", filters, filters);
+  await seedChannelRegistry({ servers, space, creds, file: {
+    defaults: { replayWindow: "2s" }, channels: { [overlap]: { replayWindow: "1h" } },
+  } });
+  const olderOverlap = await publisher.multicast("older overlap", { channel: overlap });
+  await publisher.multicast("outside the time window", { channel: sideB });
+  await sleep(2_100);
+  const expected = [olderOverlap.id];
+  for (const ch of [sideA, overlap, sideB]) expected.push((await publisher.multicast("current history", { channel: ch })).id);
+  await publisher.multicast("outside both filters", { channel: outside });
+  const replayed: string[] = [];
+  agent.ep.on("message", (message, _delivery, meta) => { if (meta.historical) replayed.push(message.id); });
+  await agent.start();
+  assert.deepEqual(replayed.sort(), expected.sort(), "overlap keeps the longer concrete window and excludes unrelated history");
+  await agent.stop();
+}
+
+async function checkInterruptedReplay(manager: CotalEndpoint) {
+  const agent = await wideReader(manager, "replay-reconnect", []);
+  await agent.start();
+  let replayed = 0;
+  let reconnect: Promise<void> | undefined;
+  let disconnected = false;
+  agent.on("transport", ({ connected }) => { if (!connected) disconnected = true; });
+  agent.ep.on("message", (_message, _delivery, meta) => {
+    if (!meta.historical) return;
+    if (++replayed === 1) reconnect = agent.ep.reconnect();
+  });
+  const result = await agent.joinChannel(">").then(() => undefined, (error: Error) => error);
+  assert(reconnect, "replay must start and trigger a real connection rebuild");
+  await reconnect;
+  assert(disconnected && agent.connected, "the endpoint must replace its connection");
+  assert(replayed >= 256 && replayed < 12_000, `receive the fetched page before failing, got ${replayed}`);
+  assert.equal(result?.message, `channel history replay did not complete. Delivered ${replayed} messages before the read ended.`);
+  console.log(`interrupted channel replay: ${replayed} historical posts received; ${result!.message}`);
   await agent.stop();
 }
 
@@ -114,7 +170,7 @@ try {
     await agent.start();
     return agent;
   }
-  const alice = await identity([channel, "replay.wide.>"]);
+  const alice = await identity([channel, "replay.wide.>", "replay.policy.>"]);
   const publisher = new CotalEndpoint({
     space, servers, creds: alice.creds, lifecycleUid: alice.uid, channels: [channel],
     consume: false, watchPresence: false, registerPresence: false,
@@ -207,10 +263,12 @@ try {
   await replayOffSeat.stop();
   await seedChannelRegistry({ servers, space, creds, file: { defaults: { replay: true }, channels: {} } });
   await checkWideReplay(manager, publisher);
+  await checkInterruptedReplay(manager);
+  await checkOverlappingWindows(manager, publisher, creds);
 } finally {
   for (const agent of agents.reverse()) await agent.stop();
   for (const endpoint of endpoints.reverse()) await endpoint.stop();
   await killAndAwaitExit(broker);
   release();
 }
-emitSentinel({ passed: 7, failed: 0 });
+emitSentinel({ passed: 9, failed: 0 });
