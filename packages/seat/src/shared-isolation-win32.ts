@@ -7,6 +7,13 @@ import type { SeatStopMode, SeatTerminal } from "./shared-prepared-seat.js";
 
 const POLL_MS = 25;
 
+function readSeatIdentity(pid: number, start: string): WindowsSharedIdentity {
+  const child = observeWindowsProcess(pid), host = observeWindowsProcess(process.pid);
+  if (!child || child.birth !== start || !host || child.user !== host.user || child.session !== host.session)
+    throw new Error("suspended Windows seat identity is unknown");
+  return { pid, start, user: child.user, session: child.session };
+}
+
 /** One reservation owns exactly one private job. Native drain and terminal EOF are separate proofs. */
 export function createWindowsSeatIsolation(runtime: string): SeatIsolation<WindowsSharedIdentity> {
   let used = false, unconfirmed = false;
@@ -34,15 +41,7 @@ export function createWindowsSeatIsolation(runtime: string): SeatIsolation<Windo
       let graceful: Promise<void> | undefined;
       let endGrace: (() => void) | undefined;
       let terminated = false;
-      // Use the exact birth pinned by the native process handle, even on the observation path.
-      const readIdentity = (): WindowsSharedIdentity => {
-        const child = observeWindowsProcess(pid);
-        const host = observeWindowsProcess(process.pid);
-        if (!child || child.birth !== start || !host || child.user !== host.user || child.session !== host.session)
-          throw new Error("suspended Windows seat identity is unknown");
-        return { pid, start, user: child.user, session: child.session };
-      };
-      const ready = Promise.resolve().then(readIdentity);
+      const ready = Promise.resolve().then(() => readSeatIdentity(pid, start));
       void ready.catch(() => {});
 
       const exitListeners = new Set<(event: { exitCode: number }) => void>();
@@ -140,7 +139,7 @@ export function createWindowsSeatIsolation(runtime: string): SeatIsolation<Windo
         async commit(beforeDispatch) {
           const expected = await ready;
           if (closed || attempted || input.destroyed || output.destroyed) throw new Error("Windows seat is not ready to dispatch");
-          const child = readIdentity();
+          const child = readSeatIdentity(pid, start);
           if (child.user !== expected.user || child.session !== expected.session) throw new Error("Windows seat identity changed before dispatch");
           beforeDispatch();
           attempted = true;

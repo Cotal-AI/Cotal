@@ -107,6 +107,15 @@ async function reconcileDaemonStatus(paths: DaemonPaths, expected = false): Retu
   }
 }
 
+async function anyLegacyOutsideHostedSpaces(flags: Record<string, unknown>, active: readonly { space: string }[]): Promise<boolean> {
+  const { readMeshRegistry } = await import("@cotal-ai/workspace");
+  for (const entry of readMeshRegistry().entries) {
+    if (active.some(manager => manager.space === entry.space)) continue;
+    if (await updateRuntime.reportRunningManager({ ...flags, space: entry.space }) === "legacy") return true;
+  }
+  return false;
+}
+
 async function collectConnectorSets(): Promise<void> {
   try {
     const entry = logicalExecutionEntry();
@@ -605,13 +614,7 @@ const composed: Command = { ...command, async run(args) {
         if (await readUpdateManagerContinuity(manager, flags, reportsRetainedExecution() ? retainedReads : readManagerContinuity, { retainGraph: reportsRetainedExecution() }) === "legacy") localVerdict = "legacy";
       }
     }
-    if (process.platform !== "linux" && typeof flags.space !== "string") {
-      const { readMeshRegistry } = await import("@cotal-ai/workspace");
-      for (const entry of readMeshRegistry().entries) {
-        if (active.some(manager => manager.space === entry.space)) continue;
-        if (await updateRuntime.reportRunningManager({ ...flags, space: entry.space }) === "legacy") return "legacy";
-      }
-    }
+    if (process.platform !== "linux" && typeof flags.space !== "string" && await anyLegacyOutsideHostedSpaces(flags, active)) return "legacy";
     if (localVerdict === "legacy" || (packageCheck === "offline" && blockedAgents.length > 0)) return "legacy";
     if (blockedAgents.length) {
       const summary = blockedAgents.map(row => `${row.space}: ${row.describe}`).join("; ");
