@@ -46,9 +46,8 @@ import { readUpdatePending } from "../lib/update-pending.js";
 import { snapshotUpdateClosure, type UpdateSnapshot } from "../lib/update-snapshot.js";
 import { assertConfigAncestorProtected, manifestAccessReporter, prepareUpdateConnectorConfig, repairCurrentUpdateConnectorSelection, repairUpdateConnectorSelection, restoreUpdateManifestAccess } from "../lib/update-connector-config.js";
 import { reclaimPreviousExtensionStages } from "../lib/extension-stage.js";
-import { EXT_UPDATE_PARENT_ENV, exitOnInterruptedAdd } from "./ext.js";
+import { EXT_UPDATE_PARENT_ENV } from "./ext.js";
 import { collectUpdateCaches } from "./update-caches.js";
-import { repairOfflineExtensions } from "./update-offline.js";
 import { claimExtensionUpdatePass } from "../lib/ext-mutation.js";
 import { selfArgv } from "../lib/self-exec.js";
 import { repairInstallModes } from "../lib/install-umask.js";
@@ -622,7 +621,7 @@ export async function executeUpdate(self: boolean, rt: UpdateRuntime = updateRun
     if (!latest.ok) {
       const code = await handleLatestVersionFailure(latest, current, rt, offlineUpdateMessage(preflightChanged), promotionRecovered, permissionsRestored);
       if (latest.offline && rt.env.COTAL_AUTO_UPDATE !== "1" && !unreadableSelection)
-        await repairOfflineExtensions(current, rt, () => admitReconciliation(current, rt, target)).catch(exitOnInterruptedAdd);
+        await rt.reconcile(true);
       return code;
     }
     const upgrading = compareSemver(latest.version, current) > 0;
