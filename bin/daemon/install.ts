@@ -1127,10 +1127,10 @@ async function applyUninstallUnlocked(paths: DaemonPaths, daemonHome: string | u
       throw uncertain("the daemon lifetime changed while its endpoint was opened");
     if (owner?.start && processBirth(owner.pid) === owner.start && !socket)
       throw uncertain("the recorded daemon has no verified answering endpoint");
+    custody = acquireWindowsCustodyCleanup();
     if (!socket) exclusion = excludeLifetime(paths.lock);
     // The supervisor can close this connection during the synchronous native step.
     socket?.on("error", () => {});
-    custody = acquireWindowsCustodyCleanup();
     const occupied = custody?.occupancy();
     if (occupied === "unknown") throw uncertain("Windows PTY custody could not be verified before uninstall");
     if (custody && occupied === "held") {

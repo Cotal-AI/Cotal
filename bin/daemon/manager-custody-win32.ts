@@ -3,7 +3,7 @@ import { dirname, join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { setTimeout as delay } from "node:timers/promises";
 import { acquireWindowsSeatStoreFence, cleanupWindowsIdleTasks, inspectWindowsSeatOccupancy } from "@cotal-ai/seat";
-import { CommandFailure, executionIdentity } from "@cotal-ai/workspace";
+import { claimUpdateClosureAccess, CommandFailure, executionIdentity } from "@cotal-ai/workspace";
 
 /** A local, read-only generation gate. Does not signal a host or depend on the mesh. */
 export function windowsDetachedSeatOccupancy(installation?: string, mode: "occupancy" | "retention" = "occupancy"): "empty" | "held" | "unknown" {
@@ -25,9 +25,14 @@ export function acquireWindowsCustodyCleanup() {
   if (process.platform !== "win32") return undefined;
   const installation = loadedWindowsInstallation();
   if (!installation) return undefined;
-  const release = acquireWindowsSeatStoreFence(installation);
-  if (!release) return undefined;
-  return { release, occupancy: () => inspectWindowsSeatOccupancy(installation), async cleanup() {
+  // The installation lock also excludes the first producer, before there is a store lock file.
+  const releaseInstallation = claimUpdateClosureAccess();
+  let releaseStore: (() => void) | undefined;
+  try { releaseStore = acquireWindowsSeatStoreFence(installation); }
+  catch (error) { releaseInstallation(); throw error; }
+  return { release() { try { releaseStore?.(); } finally { releaseInstallation(); } }, occupancy: () => inspectWindowsSeatOccupancy(installation), async cleanup() {
+    releaseStore ??= acquireWindowsSeatStoreFence(installation);
+    if (!releaseStore) return;
     const deadline = Date.now() + 7_000;
     while (inspectWindowsSeatOccupancy(installation, "retention") !== "empty") {
       if (Date.now() >= deadline) throw new Error("Windows PTY hosts did not confirm idle retirement");

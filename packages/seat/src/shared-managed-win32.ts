@@ -144,24 +144,36 @@ async function reconcileLaunch(slot: WindowsSeatSlot, id: string, host: WindowsH
 type WindowsLaunch = { state: "ready"; handle: WindowsSharedHandle } | { state: "ineligible" };
 const ineligible = { state: "ineligible" } as const;
 
+function beginWindowsLaunch(installation: string, space: string, session: number) {
+  let slot: WindowsSeatSlot;
+  try {
+    const runtime = retainWindowsSeatRuntime(installation);
+    slot = windowsSeatSlot(installation, space, runtime.key);
+    prepareWindowsSeatSlot(slot);
+  } catch { return undefined; }
+  if (!publishWindowsControllerClaim(slot, slot.generation)) throw new Error("Windows PTY controller custody is unknown");
+  let active = opening.get(slot.root);
+  if (!active) {
+    // The synchronous start request happens before the proof polling yields.
+    active = ensureHost(slot, session).finally(() => opening.delete(slot.root));
+    opening.set(slot.root, active);
+  }
+  return { slot, active };
+}
+
 /** Only a known pre-dispatch refusal permits legacy fallback. An unresolved admission stays held. */
 export async function launchManagedWindowsSeat(installation: string, space: string, opts: Pick<LaunchSeatOpts, "name" | "spec" | "cwd" | "id">, holdInstallation: () => () => void): Promise<WindowsLaunch> {
   if (process.platform !== "win32") return ineligible;
   const self = windowsWriterProof.current();
   if (!self || self.session <= 0) return ineligible;
   if (inspectWindowsAliasHold(installation, space, opts.name) !== "clear") throw new Error("Windows PTY alias custody is held or unknown");
-  let slot: WindowsSeatSlot;
+  const releaseStart = holdInstallation();
+  let openingHost: ReturnType<typeof beginWindowsLaunch>;
   try {
-    const runtime = retainWindowsSeatRuntime(installation);
-    slot = windowsSeatSlot(installation, space, runtime.key);
-    prepareWindowsSeatSlot(slot);
-  } catch { return ineligible; }
-  if (!publishWindowsControllerClaim(slot, slot.generation)) throw new Error("Windows PTY controller custody is unknown");
-  let active = opening.get(slot.root);
-  if (!active) {
-    active = ensureHost(slot, self.session).finally(() => opening.delete(slot.root));
-    opening.set(slot.root, active);
-  }
+    openingHost = beginWindowsLaunch(installation, space, self.session);
+  } finally { releaseStart(); }
+  if (!openingHost) return ineligible;
+  const { slot, active } = openingHost;
   const bootstrap = await active;
   if (bootstrap.state === "ineligible") return ineligible;
   if (bootstrap.state === "unknown") throw new Error("Windows PTY task startup could not be confirmed");
