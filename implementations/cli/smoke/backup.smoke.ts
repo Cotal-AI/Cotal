@@ -177,7 +177,22 @@ try {
   const stagingParent = join(root, "staging");
   mkdirSync(stagingParent, { mode: 0o700 });
   if (process.geteuid && process.geteuid() !== 0) {
-    for (const file of [snapshot.path, checkpoints.path]) checkUnreadableArtifactFile(realpathSync(destination), file, stagingParent);
+    const directory = realpathSync(destination);
+    for (const file of [snapshot.path, checkpoints.path]) checkUnreadableArtifactFile(directory, file, stagingParent);
+    const originalMode = statSync(directory).mode & 0o777;
+    for (const mode of [0o400, 0o100]) {
+      chmodSync(directory, mode);
+      try {
+        for (const verb of ["inspect", "verify"])
+          assert.throws(() => backupRead({ positionals: [verb, directory], values: {}, raw: [] }), (error: unknown) => {
+            if (!isCommandFailure(error)) return false;
+            assert.deepEqual(error.target, { directory });
+            return error.code === "PERMISSION_DENIED" && /^(EACCES|EPERM)$/.test(error.native?.code ?? "") &&
+              error.remedy?.includes("read and search access") === true;
+          });
+      } finally { chmodSync(directory, originalMode); }
+    }
+    assert.equal(inspectBackupArtifact(directory, true).integrity, "matched-declared-sizes-and-sha256");
   }
   const staged = stageArtifact(destination, stagingParent);
   assert.deepEqual(readFileSync(join(staged.directory, "stream-a.snap")), Buffer.from([1, 2, 3]));
