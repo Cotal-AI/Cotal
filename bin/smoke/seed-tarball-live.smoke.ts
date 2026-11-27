@@ -338,6 +338,19 @@ async function checkPackageLockCellsAndUpgrade(
         && !/reinstalling every built-in|Reconciling built-in/.test(env2.stdout + env2.stderr),
         { env1: env1.stdout + env1.stderr, env2: env2.stdout + env2.stderr });
 
+      const prefixRc = join(extDir, ".npmrc");
+      writeFileSync(prefixRc, "package-lock=false\n");
+      const prefixRcBytes = readFileSync(prefixRc);
+      rmSync(lockPath);
+      const pfx1 = await exec(process.execPath, [entry, "update"], { cwd: c3a.dir, env: c3a.env, timeout: 240_000 });
+      const pfx2 = await exec(process.execPath, [entry, "update"], { cwd: c3a.dir, env: c3a.env, timeout: 240_000 });
+      check("3b (extensions/.npmrc): prefix .npmrc package-lock=false writes current package-lock.json, converges, and leaves prefix .npmrc byte-identical",
+        lockHasAllBuiltIns(lockPath, version)
+        && !/reinstalling every built-in|Reconciling built-in/.test(pfx2.stdout + pfx2.stderr)
+        && readFileSync(prefixRc).equals(prefixRcBytes),
+        { pfx1: pfx1.stdout + pfx1.stderr, pfx2: pfx2.stdout + pfx2.stderr });
+      rmSync(prefixRc);
+
       const workProject = join(c3a.dir, "project-cwd");
       mkdirSync(workProject, { recursive: true });
       const projRc = join(workProject, ".npmrc");
@@ -346,10 +359,11 @@ async function checkPackageLockCellsAndUpgrade(
       rmSync(lockPath);
       const prj1 = await exec(process.execPath, [entry, "update"], { cwd: workProject, env: c3a.env, timeout: 240_000 });
       const prj2 = await exec(process.execPath, [entry, "update"], { cwd: workProject, env: c3a.env, timeout: 240_000 });
-      check("3b (project .npmrc): working-folder package-lock=false writes current prefix lock and leaves project untouched",
+      check("3b (working-folder .npmrc, holds on main too): nothing in the working folder is read or written during update",
         lockHasAllBuiltIns(lockPath, version)
         && !/reinstalling every built-in|Reconciling built-in/.test(prj2.stdout + prj2.stderr)
-        && readFileSync(projRc).equals(projRcBytes) && !existsSync(join(workProject, "package-lock.json")),
+        && readFileSync(projRc).equals(projRcBytes)
+        && readdirSync(workProject).join(",") === ".npmrc",
         { prj1: prj1.stdout + prj1.stderr, prj2: prj2.stdout + prj2.stderr });
 
       // 3c: default npm configuration: compare lock package list and installed tree against main's npm flags.
@@ -514,7 +528,7 @@ async function checkPackageLockCellsAndUpgrade(
       });
       writeFileSync(
         join(probeProject, "probe.md"),
-        "---\nname: probe\nrole: developer\nmodel: opus\n---\nVerify built-in connector load after upgrade.\n",
+        "---\nname: probe\nrole: developer\nmodel: claude-opus-5-5\n---\nVerify built-in connector load after upgrade.\n",
       );
       const previewOut = await runGlobalCli(
         c4.globalPrefix,
@@ -529,7 +543,7 @@ async function checkPackageLockCellsAndUpgrade(
       check("4: upgraded CLI loads built-in claude connector cleanly and validates its arguments",
         previewJson.outcome === "ok"
         && previewJson.result?.harness === "claude"
-        && previewJson.result?.model === "opus"
+        && previewJson.result?.model === "claude-opus-5-5"
         && previewJson.result?.connectorArgumentValidation === "checked",
         previewOut.stdout);
     }
