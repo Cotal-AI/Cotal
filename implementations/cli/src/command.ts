@@ -77,7 +77,7 @@ import { registryFailure } from "./lib/registry-errors.js";
 import { FlagValueRefusal } from "./lib/flag-value-refusal.js";
 import { workingFolderRemoved } from "./lib/paths.js";
 import { npmProjectDirectory, preserveUpdatePath } from "./lib/npm-invocation.js";
-import { reportLostOutput, writeAllSync } from "./lib/stdout-owner.js";
+import { reportLostOutput, writeWholeSync } from "./lib/stdout-owner.js";
 import { shellWord } from "./lib/endpoint-errors.js";
 import { displayProjectTrustFailure, displayRemedy, hasMovedStackRemedy } from "./lib/self-exec.js";
 import { asksForHelp, GLOBAL_FLAG_WORDS, leadingInvocation, OUTPUT_FLAG_WORDS, TYPOGRAPHIC_OPTION } from "./lib/leading-flags.js";
@@ -243,8 +243,9 @@ function failureExit(cmd: Command, failure: CommandFailure, json: boolean, plain
   };
   const writeReport = () => writeSync(2, `${scope ? runOperation(scope, report) : report()}
 `);
-  // Under --json the envelope alone reports the failure. Its text report goes to stderr only when the
-  // envelope cannot be written for a reason other than a closed pipe. The exit status stands either way.
+  // Under --json the envelope alone reports the failure. A partial non-pipe write removes regular-file
+  // bytes, reports the write error alone on stderr, and exits 3. A zero-byte failure adds the text report.
+  let truncated = false;
   if (!json) writeReport();
   else try {
     const recognize = cmd.name === "backup" ? typographicOptions(cmd) : undefined;
@@ -268,16 +269,20 @@ function failureExit(cmd: Command, failure: CommandFailure, json: boolean, plain
       }, failure)
       : cmd.name === "watch" && validationArgs && !plain ? watchSetupFailureRecords(validationArgs, failure) : undefined;
     const lines = records ? records.map((record) => `${JSON.stringify(record)}\n`).join("") : envelopeLine(failureEnvelope(command, failure, warnings, scope));
-    writeAllSync(1, Buffer.from(lines));
+    const failed = writeWholeSync(1, Buffer.from(lines));
+    if (failed) throw failed;
   } catch (error) {
-    const writeError = error as NodeJS.ErrnoException;
+    const { error: writeError, partial } = error && typeof error === "object" && "partial" in error
+      ? error as { error: NodeJS.ErrnoException; partial: boolean }
+      : { error: error as NodeJS.ErrnoException, partial: false };
     if (writeError.code !== "EPIPE") {
       reportLostOutput(writeError);
-      try { writeReport(); } catch { /* stderr failed too; the exit status still says so */ }
+      if (partial) truncated = true;
+      else try { writeReport(); } catch { /* stderr failed too; the exit status still says so */ }
     }
   }
   debugStacks(failure);
-  process.exit(exitCode(failure.outcome, failure.code));
+  process.exit(truncated ? 3 : exitCode(failure.outcome, failure.code));
 }
 
 type ConfigFolderProblem = NonNullable<ReturnType<typeof globalConfigDirProblem>>;
