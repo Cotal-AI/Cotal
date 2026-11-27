@@ -1,5 +1,11 @@
 # @cotal-ai/connector-hermes
 
+## 0.183.0
+
+### Patch Changes
+
+- a0e9aae: Run a foreground Hermes seat with a disposable managed profile in Windows PowerShell or Command Prompt.
+
 ## 0.182.1
 
 ### Patch Changes
