@@ -1,0 +1,435 @@
+/**
+ * Issue #10805: a hosted Manager that loses its connection to its space. The machine daemon's live
+ * status feed (`status-watch`, what the desktop app reads) must report the loss by itself, within
+ * one health check and without anyone asking for a full status, and must report the Manager
+ * answering again once the network is back. Only this computer's paths to the space (broker TCP,
+ * exchange, IdP) are cut; the broker and its services stay up, as they do when a laptop goes offline.
+ * The first cells drive the shipped lookup that tells "no internet" from "the space is not answering".
+ */
+import assert from "node:assert/strict";
+import { createServer as createHttpServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { type AddressInfo } from "node:net";
+import { createHash } from "node:crypto";
+import { createConnection, createServer as createTcpServer, type Socket } from "node:net";
+import { chmodSync, cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import { spawn, type ChildProcess } from "node:child_process";
+import { createRequire } from "node:module";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import {
+  SERVICE_AUTHORITY_MAX_BYTES, composeSpaceAuth, createBrokerAuth, createSpaceAccountAuth,
+  isReachable, mintCreds, mintLifecycleUid, mkSecretDir, newIdentity, serverConfig,
+  setupSpaceStreams, writeSecretFileAtomic, mintMembershipObserverCreds, mintConnectionEvictorCreds,
+  type SecretStore,
+} from "@cotal-ai/core";
+import {
+  deriveOwnerForIdpSubject, ensureCalloutAuth, ensureIssuer, ensureOwnerSecret, ensurePinnedIdp,
+  grantActor, loadOwnerSecret, saveIdpSession, saveServiceKeys, startAuthService,
+  mintServiceCallerPayloadObserverCreds, type AuthServiceHandle,
+} from "@cotal-ai/auth";
+import {
+  connectionEvictorCredsKey, deliveryCredsKey, membershipObserverCredsKey, membershipRwCredsKey,
+  recordMesh, userAuthStateDir, type MeshEntry,
+} from "@cotal-ai/workspace";
+import { startDeliveryService } from "@cotal-ai/delivery";
+import { freePort, killAndAwaitExit, skipSuite, teardownOnSignal, SMOKE_BROKER_TOKEN } from "@cotal-ai/smoke-kit";
+import { daemonPaths } from "../daemon/endpoint.js";
+import { unitReceiptFile } from "../daemon/install.js";
+import { queryDaemon } from "../daemon/client.js";
+import { lostConnection } from "../daemon/lost-connection.js";
+import type { HostedManager } from "../daemon/protocol.js";
+
+if (process.platform !== "linux") skipSuite(`daemon-lost-connection smoke: Linux only; skipped on ${process.platform}`);
+for (const key of Object.keys(process.env)) if (key.startsWith("COTAL_")) delete process.env[key];
+
+const here = dirname(fileURLToPath(import.meta.url));
+const repo = join(here, "..", "..");
+const targetVersion = (JSON.parse(readFileSync(join(repo, "bin/package.json"), "utf8")) as { version: string }).version;
+
+const authRequire = createRequire(join(repo, "implementations", "auth", "package.json"));
+type Jose = {
+  generateKeyPair(alg: string): Promise<{ publicKey: CryptoKey; privateKey: CryptoKey }>;
+  exportJWK(key: CryptoKey): Promise<Record<string, unknown>>;
+  SignJWT: new (payload: Record<string, unknown>) => {
+    setProtectedHeader(h: Record<string, unknown>): any; setIssuer(v: string): any; setAudience(v: string): any; setSubject(v: string): any;
+    setIssuedAt(v: number): any; setExpirationTime(v: number): any; sign(k: CryptoKey): Promise<string>;
+  };
+};
+const { SignJWT, exportJWK, generateKeyPair } = await import(pathToFileURL(authRequire.resolve("jose")).href) as Jose;
+
+const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+let pass = 0, fail = 0;
+const check = (name: string, cond: boolean, extra?: unknown) => {
+  if (cond) { pass++; console.log(`  ✓ ${name}`); }
+  else { fail++; console.log(`  ✗ FAIL: ${name}`, JSON.stringify(extra ?? "")?.slice(0, 600)); }
+};
+
+// The shipped lookup, with the system resolver replaced so each answer is chosen.
+{
+  let calls = 0;
+  const counted = (answer: () => Promise<unknown>) => (_host: string) => { calls++; return answer(); };
+  const failure = (code: string) => () => Promise.reject(Object.assign(new Error(code), { code }));
+  const ip = await lostConnection("nats://127.0.0.1:4222", counted(failure("ENOTFOUND")));
+  const ip6 = await lostConnection("nats://[::1]:4222", counted(failure("ENOTFOUND")));
+  check("U1 a broker at an address needs no lookup: the space is not answering", calls === 0 && ip.state === "unreachable" && ip.reason === "127.0.0.1 is not answering" && ip6.state === "unreachable" && ip6.reason === "::1 is not answering", { calls, ip, ip6 });
+  const notFound = await lostConnection("wss://cloud.example.test/nats", counted(failure("ENOTFOUND")));
+  const again = await lostConnection("nats://dns-again.example.test:4222", counted(failure("EAI_AGAIN")));
+  check("U2 a failed lookup means no internet connection, naming the host and the code", notFound.state === "offline" && notFound.reason === "this computer cannot look up cloud.example.test (ENOTFOUND)" && again.state === "offline" && again.reason.endsWith("(EAI_AGAIN)"), { notFound, again });
+  const found = await lostConnection("tls://up.example.test:4222", counted(() => Promise.resolve({ address: "192.0.2.1", family: 4 })));
+  check("U3 a working lookup means the space is not answering", found.state === "unreachable" && found.reason === "up.example.test is not answering", found);
+  calls = 0;
+  const stalled = counted(() => new Promise(() => {}));
+  const t = Date.now();
+  const [first, second] = await Promise.all([lostConnection("nats://stalled.example.test:4222", stalled), lostConnection("nats://stalled.example.test:4222", stalled)]);
+  const third = await lostConnection("nats://stalled.example.test:4222", stalled);
+  check("U4 a lookup that does not finish means no internet connection, and a host keeps one lookup in flight", first.state === "offline" && first.reason.endsWith("(ETIMEOUT)") && second.state === "offline" && third.state === "offline" && calls === 1 && Date.now() - t < 10_000, { first, calls, ms: Date.now() - t });
+}
+
+class MemoryStore implements SecretStore {
+  readonly values = new Map<string, string>();
+  constructor(readonly identity: { kind: "injected"; coordinate: string }) {}
+  async get(k: string) { return this.values.get(k); }
+  async put(k: string, v: string) { this.values.set(k, v); }
+  async create(k: string, v: string) { if (this.values.has(k)) return false; this.values.set(k, v); return true; }
+  async delete(k: string) { this.values.delete(k); }
+}
+
+const root = mkdtempSync(join(tmpdir(), "dlc-"));
+chmodSync(root, 0o700);
+const privateCliDir = join(root, "cli");
+mkdirSync(privateCliDir, { recursive: true, mode: 0o700 });
+cpSync(join(repo, "bin", "package.json"), join(privateCliDir, "package.json"));
+cpSync(join(repo, "bin", "dist"), join(privateCliDir, "dist"), { recursive: true });
+symlinkSync(join(repo, "bin", "node_modules"), join(privateCliDir, "node_modules"));
+const cliEntry = join(privateCliDir, "dist", "cotal.js");
+const home = join(root, "home");
+const participant = join(root, "participant");
+const rtDir = join(root, "rt");
+const configDir = join(root, "config");
+const jsDir = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}dlc-js-`));
+for (const d of [home, participant, rtDir, configDir]) mkdirSync(d, { recursive: true, mode: 0o700 });
+
+process.env.HOME = home;
+process.env.COTAL_HOME = home;
+process.env.XDG_CONFIG_HOME = configDir;
+process.env.XDG_RUNTIME_DIR = rtDir;
+process.env.XDG_DATA_HOME = join(root, "data");
+process.env.XDG_CACHE_HOME = join(root, "cache");
+
+const paths = daemonPaths({ XDG_RUNTIME_DIR: rtDir });
+
+const key = await generateKeyPair("EdDSA");
+const jwk = { ...await exportJWK(key.publicKey), kid: "dlc-idp" };
+const SESSION = "dlc-session-handle-not-a-secret";
+let idpOrigin = "";
+
+const idp = createHttpServer(async (req: IncomingMessage, res: ServerResponse) => {
+  if (offline) { req.socket.destroy(); return; }
+  res.setHeader("content-type", "application/json");
+  if (req.url?.startsWith("/api/cli/machines/") || req.url?.startsWith("/api/machines/")) {
+    res.writeHead(404); res.end("{}"); return;
+  }
+  if (req.url === "/api/auth/jwks") {
+    res.end(JSON.stringify({ keys: [jwk] })); return;
+  }
+  if (req.url === "/api/auth/token" && (req.headers.authorization ?? "") === `Bearer ${SESSION}`) {
+    const now = Math.floor(Date.now() / 1000);
+    const token = await new SignJWT({ email: "operator@example.test" })
+      .setProtectedHeader({ alg: "EdDSA", kid: jwk.kid })
+      .setIssuer(idpOrigin).setAudience(idpOrigin).setSubject("machine-owner")
+      .setIssuedAt(now).setExpirationTime(now + 300).sign(key.privateKey);
+    res.end(JSON.stringify({ token })); return;
+  }
+  res.writeHead(401); res.end("{}");
+});
+await new Promise<void>((r) => idp.listen(0, "127.0.0.1", () => r()));
+idpOrigin = `http://127.0.0.1:${(idp.address() as AddressInfo).port}`;
+const idpUrl = `${idpOrigin}/api/auth`;
+
+// This computer's network. The broker and its services stay up; only the participant's paths to
+// them (broker TCP, exchange, IdP) drop while offline.
+let offline = false;
+const tcpLinks = new Set<Socket>();
+const tcpRelays: ReturnType<typeof createTcpServer>[] = [];
+async function createTcpRelay(target: number): Promise<number> {
+  const server = createTcpServer((client) => {
+    if (offline) { client.destroy(); return; }
+    const upstream = createConnection(target, "127.0.0.1");
+    for (const s of [client, upstream]) { tcpLinks.add(s); s.on("close", () => tcpLinks.delete(s)); s.on("error", () => {}); }
+    client.pipe(upstream); upstream.pipe(client);
+    client.on("close", () => upstream.destroy()); upstream.on("close", () => client.destroy());
+  });
+  await new Promise<void>((r) => server.listen(0, "127.0.0.1", () => r()));
+  tcpRelays.push(server);
+  return (server.address() as AddressInfo).port;
+}
+const relays: ReturnType<typeof createHttpServer>[] = [];
+async function createRelay(targetUrl: string): Promise<string> {
+  const server = createHttpServer(async (req: IncomingMessage, res: ServerResponse) => {
+    if (offline) { req.socket.destroy(); return; }
+    const chunks: Buffer[] = [];
+    for await (const c of req) chunks.push(Buffer.from(c));
+    const rawBody = Buffer.concat(chunks);
+    const up = await fetch(`${targetUrl}${req.url}`, {
+      method: req.method,
+      headers: { "content-type": req.headers["content-type"] ?? "application/json" },
+      body: rawBody.length ? rawBody : undefined,
+      redirect: "manual",
+    });
+    const respBytes = Buffer.from(await up.arrayBuffer());
+    const headers: Record<string, string> = {};
+    up.headers.forEach((v, k) => {
+      if (k !== "content-length" && k !== "transfer-encoding") headers[k] = v;
+    });
+    res.writeHead(up.status, headers);
+    res.end(respBytes);
+  });
+  await new Promise<void>((r) => server.listen(0, "127.0.0.1", () => r()));
+  relays.push(server);
+  return `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+}
+
+const broker = await createBrokerAuth("dlc-broker");
+const stamp = Date.now();
+const spaces = [`dlc-${stamp}`] as const;
+const [SPACE] = spaces;
+const accounts = await Promise.all(spaces.map((s) => createSpaceAccountAuth(broker, s)));
+const handles: AuthServiceHandle[] = [];
+const deliveries: Awaited<ReturnType<typeof startDeliveryService>>[] = [];
+let nats: ChildProcess | undefined;
+let releaseNats: (() => void) | undefined;
+let daemonChild: ChildProcess | undefined;
+
+try {
+  const ctx = await Promise.all(spaces.map(async (space, i) => {
+    const auth = composeSpaceAuth(broker, accounts[i]!);
+    const store = new MemoryStore({ kind: "injected", coordinate: `memory:${space}` });
+    const callout = await ensureCalloutAuth(store, { space, operatorSeed: broker.operator.seed!, accountPub: auth.account.pub });
+    await ensureIssuer(store, space);
+    await ensureOwnerSecret(store, space);
+    await saveServiceKeys(store, space, { dataAccount: { pub: auth.account.pub, signingSeed: auth.account.signingSeed! } });
+    const stateDir = join(root, `state-${i}`);
+    mkdirSync(stateDir, { mode: 0o700 });
+    ensurePinnedIdp(stateDir, idpUrl);
+    return { space, auth, store, stateDir, callout };
+  }));
+
+  const port = await freePort();
+  const servers = `nats://127.0.0.1:${port}`;
+  writeFileSync(
+    join(jsDir, "server.conf"),
+    serverConfig(broker, accounts, {
+      transport: { kind: "plaintext" },
+      port,
+      storeDir: jsDir,
+      maxPayload: SERVICE_AUTHORITY_MAX_BYTES + 1024,
+      extraAccounts: ctx.map((c) => ({ pub: c.callout.account.pub, jwt: c.callout.account.jwt })),
+    }),
+  );
+  nats = spawn(process.env.NATS_SERVER_BIN || "nats-server", ["-c", join(jsDir, "server.conf")], { stdio: "ignore" });
+  releaseNats = teardownOnSignal(nats, jsDir);
+  for (let i = 0; i < 50 && !(await isReachable(servers)); i++) await sleep(200);
+  for (const c of ctx) {
+    await setupSpaceStreams({ servers, space: c.space, creds: await mintCreds(c.auth, newIdentity(), "provisioner") });
+    const owner = deriveOwnerForIdpSubject((await loadOwnerSecret(c.store, c.space))!, idpOrigin, "machine-owner");
+    grantActor(c.stateDir, { owner, actor: "cli", scope: ["supervise", "spawn", "run", "role:default"], allowSubscribe: [">"], allowPublish: [">"] });
+  }
+
+  for (const c of ctx) {
+    const svc = await startAuthService({
+      context: { accountPublicKey: c.auth.account.pub, lifecycleUid: mintLifecycleUid() },
+      space: c.space,
+      servers,
+      store: c.store,
+      storeIdentity: c.store.identity,
+      stateDir: c.stateDir,
+      publicFace: { port: 0, trustedProxy: false },
+      serviceEndpoints: {
+        startup: { kind: "normal" as const },
+        callerPayload: { observerCreds: () => mintServiceCallerPayloadObserverCreds({ pub: c.auth.sys.pub, signingSeed: c.auth.sys.signingSeed! }) },
+      },
+    });
+    handles.push(svc);
+
+    const deliveryStore = new MemoryStore({ kind: "injected", coordinate: `memory:delivery:${c.space}` });
+    const composition = { injected: true } as const;
+    await deliveryStore.put(deliveryCredsKey(c.space, composition), await mintCreds(c.auth, newIdentity(), "delivery"));
+    await deliveryStore.put(membershipRwCredsKey(c.space, composition), await mintCreds(c.auth, newIdentity(), "membership-rw"));
+    await deliveryStore.put(membershipObserverCredsKey(c.space, composition), await mintMembershipObserverCreds(c.auth, newIdentity()));
+    await deliveryStore.put(connectionEvictorCredsKey(c.space, composition), await mintConnectionEvictorCreds(c.auth, newIdentity()));
+    const deliv = await startDeliveryService({
+      context: { accountPublicKey: c.auth.account.pub, lifecycleUid: mintLifecycleUid() },
+      space: c.space,
+      servers,
+      store: deliveryStore,
+      storeIdentity: deliveryStore.identity,
+      stateDir: join(root, `delivery-${c.space}`),
+    });
+    deliveries.push(deliv);
+  }
+
+  for (const [i, c] of ctx.entries()) {
+    const face = await createRelay(handles[i]!.publicUrl!.replace(/\/$/, ""));
+    const bundle = await (await fetch(`${handles[i]!.publicUrl!.replace(/\/$/, "")}/.well-known/cotal-mesh`)).json() as { server: string; userAuth: MeshEntry["userAuth"]; sentinelCreds: string };
+    const dir = userAuthStateDir(participant, c.space);
+    mkSecretDir(dir);
+    const sentinelCredsPath = join(dir, "sentinel.creds");
+    writeSecretFileAtomic(sentinelCredsPath, bundle.sentinelCreds);
+    recordMesh({
+      space: c.space,
+      server: `nats://127.0.0.1:${await createTcpRelay(port)}`,
+      root: participant,
+      mode: "user",
+      origin: "manual",
+      tlsRequired: false,
+      policyCheckedAt: new Date(Date.now() + 3600_000).toISOString(),
+      userAuth: {
+        ...bundle.userAuth!,
+        endpoints: { ...bundle.userAuth!.endpoints, url: face },
+        remote: true,
+        sentinelCredsPath,
+      },
+      ts: new Date().toISOString(),
+    });
+  }
+  saveIdpSession(home, idpUrl, { token: SESSION, expiresAt: Math.floor(Date.now() / 1000) + 3600, sub: "machine-owner" });
+
+  const extPrefix = join(configDir, "cotal", "extensions");
+  const pkg = join(extPrefix, "node_modules", "daemon-smoke-connector");
+  mkdirSync(pkg, { recursive: true, mode: 0o700 });
+  const coreUrl = pathToFileURL(join(repo, "packages/core/dist/index.js")).href;
+  writeFileSync(join(pkg, "package.json"), JSON.stringify({ name: "daemon-smoke-connector", version: "1.0.0", type: "module", main: "index.js", peerDependencies: { "@cotal-ai/core": ">=0.1.0" } }));
+  writeFileSync(join(pkg, "index.js"), `import {registry} from ${JSON.stringify(coreUrl)}; registry.register({kind:"connector",name:"daemon-smoke",requires:["node"],buildLaunch:()=>({command:process.execPath,args:["-e","setInterval(()=>{},1000)"]})});\n`);
+  writeFileSync(join(extPrefix, "extensions.json"), JSON.stringify({ extensions: [{ pkg: "daemon-smoke-connector", version: "1.0.0", spec: "daemon-smoke-connector@1.0.0", provides: [{ kind: "connector", name: "daemon-smoke" }], commands: [], connectors: [{ name: "daemon-smoke", requires: ["node"], eventPlane: false }] }] }));
+
+  const seedDir = join(configDir, "cotal", "seed");
+  mkdirSync(seedDir, { recursive: true, mode: 0o700 });
+  for (const file of ["authority.json", "authority.bak.json"]) {
+    writeFileSync(join(seedDir, file), JSON.stringify({ everSeeded: ["claude", "opencode", "codex", "hermes", "jcode", "pi", "web"] }));
+  }
+  writeFileSync(join(seedDir, "witness.json"), JSON.stringify({ initialized: true, firstGeneration: targetVersion }));
+  writeFileSync(join(seedDir, "stamp.json"), JSON.stringify({ generation: targetVersion }));
+
+  const nativeBin = join(root, "native-bin");
+  mkdirSync(nativeBin, { recursive: true, mode: 0o700 });
+  const cleanPath = `${nativeBin}:${(process.env.PATH ?? "").split(":").filter((p) => p.startsWith("/")).join(":")}`;
+  process.env.PATH = cleanPath;
+
+  const unit = "cotal-daemon.service";
+  const unitPath = join(configDir, "systemd", "user", unit);
+  mkdirSync(join(configDir, "systemd", "user"), { recursive: true, mode: 0o700 });
+  const unitBytes = `[Unit]\nDescription=Cotal machine daemon\n\n[Service]\nType=simple\nExecStart="${process.execPath}" "${cliEntry}" daemon serve\nEnvironment=COTAL_DAEMON_NATIVE_SERVICE=1\nRestart=always\n\n[Install]\nWantedBy=default.target\n`;
+  writeFileSync(unitPath, unitBytes, { mode: 0o600 });
+  mkdirSync(paths.state, { recursive: true, mode: 0o700 });
+  writeFileSync(unitReceiptFile(paths), `${JSON.stringify({ v: 1, unit, unitPath, unitSha256: createHash("sha256").update(unitBytes).digest("hex"), installedAt: new Date().toISOString() })}\n`, { mode: 0o600 });
+
+  const childEnv: NodeJS.ProcessEnv = {
+    USER: "smoke",
+    LOGNAME: "smoke",
+    PATH: cleanPath,
+    HOME: home,
+    COTAL_HOME: home,
+    XDG_CONFIG_HOME: configDir,
+    XDG_DATA_HOME: join(root, "data"),
+    XDG_CACHE_HOME: join(root, "cache"),
+    XDG_RUNTIME_DIR: rtDir,
+    TMPDIR: root,
+    COTAL_SKIP_CONNECTOR_SEED: "1",
+    COTAL_ALLOW_CHECKOUT_SEED: "1",
+    DO_NOT_TRACK: "1",
+    COTAL_TELEMETRY: "off",
+    NO_COLOR: "1",
+  };
+
+  const startDaemonProcess = async (): Promise<ChildProcess> => {
+    const child = spawn(process.execPath, [cliEntry, "daemon", "serve"], {
+      cwd: participant,
+      env: { ...childEnv, COTAL_DAEMON_NATIVE_SERVICE: "1" },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    for (let i = 0; i < 100; i++) {
+      try {
+        const r = await queryDaemon({ paths });
+        if (r.ok) return child;
+      } catch {}
+      await sleep(100);
+    }
+    throw new Error("daemon did not start");
+  };
+
+  writeFileSync(join(nativeBin, "systemctl"), `#!${process.execPath}\nif (process.argv.slice(2).join(" ") === "--user show-environment") console.log(${JSON.stringify(`XDG_CONFIG_HOME=${configDir}`)});\nelse process.exit(99);\n`, { mode: 0o700 });
+
+  daemonChild = await startDaemonProcess();
+
+  for (const space of [SPACE]) {
+    const setupProc = spawn(process.execPath, [cliEntry, "daemon", "setup", "--space", space, "--json"], {
+      cwd: participant,
+      env: childEnv,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let out = "", err = "";
+    setupProc.stdout.on("data", (b) => { out += String(b); });
+    setupProc.stderr.on("data", (b) => { err += String(b); });
+    const code = await new Promise<number | null>((r) => setupProc.once("exit", r));
+    assert.equal(code, 0, `setup for ${space} failed (${code}): ${err || out}`);
+  }
+
+  // Watch the way the desktop app does: one status-watch connection, frames pushed by the daemon.
+  type Frame = { at: number; state?: string; connection?: HostedManager["connection"] };
+  const frames: Frame[] = [];
+  const watch = createConnection(paths.socket!);
+  let buffered = "";
+  watch.on("data", (chunk) => {
+    buffered += String(chunk);
+    for (let i = buffered.indexOf("\n"); i >= 0; i = buffered.indexOf("\n")) {
+      const line = buffered.slice(0, i);
+      buffered = buffered.slice(i + 1);
+      const frame = JSON.parse(line) as { event?: string; result?: { managers?: HostedManager[] } };
+      if (frame.event !== "status") continue;
+      const m = frame.result?.managers?.find((row) => row.space === SPACE);
+      frames.push({ at: Date.now(), state: m?.state, connection: m?.connection });
+    }
+  });
+  watch.on("error", () => {});
+  watch.write(`${JSON.stringify({ v: 1, id: "dlc-watch", op: "status-watch" })}\n`);
+  const until = async (ms: number, done: () => boolean) => { for (const end = Date.now() + ms; Date.now() < end && !done(); ) await sleep(250); return done(); };
+  check("C0 the hosted Manager answers before the network is cut", await until(30_000, () => frames.at(-1)?.state === "answering" && !frames.at(-1)?.connection), frames.at(-1));
+
+  offline = true;
+  for (const link of tcpLinks) link.destroy();
+  const cutAt = Date.now();
+  const lost = await until(15_000, () => frames.some((f) => f.at >= cutAt && f.connection !== undefined));
+  const lostFrame = frames.find((f) => f.at >= cutAt && f.connection !== undefined);
+  check("C1 within 15 s of the cut, the live feed reports the lost connection without any status request", lost && lostFrame?.connection?.state === "unreachable" && lostFrame.connection.reason === "127.0.0.1 is not answering", { frames: frames.length, lostFrame });
+  check("C2 the Manager itself still answers its daemon, so local actions keep working", lostFrame?.state === "answering", lostFrame);
+
+  // A full status read during the outage fails its own probe. What it changes reaches the feed too.
+  const asked = await queryDaemon({ paths });
+  const askedRow = asked.ok ? asked.result.managers?.find((row) => row.space === SPACE) : undefined;
+  const readAt = Date.now();
+  check("C3 a full status read reports the lost connection and its failed probe", askedRow?.connection?.state === "unreachable" && askedRow.state === "starting", askedRow);
+  check("C4 the state that read changed reaches the live feed", await until(5_000, () => frames.some((f) => f.at >= readAt - 1000 && f.state === "starting")), frames.slice(-3));
+
+  offline = false;
+  const backAt = Date.now();
+  const back = await until(60_000, () => { const last = frames.at(-1); return last !== undefined && last.at >= backAt && last.state === "answering" && last.connection === undefined; });
+  check("C5 once the network is back, the live feed reports the Manager answering with no lost connection", back, { last: frames.at(-1), seconds: Math.round((Date.now() - backAt) / 1000) });
+  watch.destroy();
+} finally {
+  if (daemonChild) await killAndAwaitExit(daemonChild, "SIGTERM").catch(() => {});
+  for (const d of deliveries) await d.close().catch(() => {});
+  for (const h of handles) await h.close().catch(() => {});
+  for (const r of relays) r.close();
+  for (const r of tcpRelays) r.close();
+  for (const link of tcpLinks) link.destroy();
+  idp.close();
+  if (nats) await killAndAwaitExit(nats, "SIGTERM").catch(() => {});
+  releaseNats?.();
+  rmSync(jsDir, { recursive: true, force: true });
+  rmSync(root, { recursive: true, force: true });
+}
+
+console.log(`\n=== daemon-lost-connection smoke: ${pass} passed, ${fail} failed ===`);
+if (fail > 0 || pass !== 10) process.exit(1);
+process.exit(0);

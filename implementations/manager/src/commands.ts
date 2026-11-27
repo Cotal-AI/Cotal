@@ -747,6 +747,10 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode, service
         catch { process.send?.({ kind: "machine-agents-result", attemptId: frame.attemptId, ok: false }); }
         return;
       }
+      if (frame.kind === "machine-connection" && typeof frame.attemptId === "string" && /^[A-Za-z0-9-]{1,64}$/.test(frame.attemptId)) {
+        process.send?.({ kind: "machine-connection-result", attemptId: frame.attemptId, ok: true, bound: mgr.serveBound() });
+        return;
+      }
       if (frame.kind !== "machine-generation" || typeof frame.attemptId !== "string" || !["inspect", "prepare", "abort"].includes(String(frame.op))) return;
       const attemptId = frame.attemptId;
       pending = pending.then(async () => {

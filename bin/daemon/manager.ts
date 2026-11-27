@@ -19,7 +19,8 @@ import { installedGenerationVersion, reconcileHostedConnectors, ReplacedDaemonGe
 import { daemonPaths, daemonPathsFor } from "./endpoint.js";
 import { daemonStartedByOwnedService, installedDaemonIdentity, unitReceiptFile } from "./install.js";
 import type { HostedManager, HostedAgents } from "./protocol.js";
-import { readHostedAgents } from "./agents.js";
+import { readHostedAgents, readServeBound } from "./agents.js";
+import { lostConnection } from "./lost-connection.js";
 import { readManagerCleanup, writeManagerCleanup, validateManagerCleanupAuthority, managerCleanupFile } from "./manager-cleanup.js";
 import { processBirth } from "./lifetime.js";
 import { probeLiveness } from "@cotal-ai/workspace/liveness";
@@ -295,7 +296,7 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
     if (generationPending && l?.child) return { ...status(space), state: "starting", reason: "an installed generation transition is pending", next: command(`wait for activation or read \`cotal daemon status --space ${space}\``) };
     if (!l?.child || !l.view.instanceId || l.stopping || l.starting || recordError(space)) return status(space);
     return l.refreshing ??= (async () => {
-      const child = l.child!, selected = l.view.instanceId!;
+      const child = l.child!, selected = l.view.instanceId!, before = l.view.state;
       let deadline: ReturnType<typeof setTimeout> | undefined;
       try {
         // This includes caller issuance, broker admission and contract resolution, not only status.
@@ -312,8 +313,33 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
           }
         }
       } finally { if (deadline) clearTimeout(deadline); }
+      // A status read that changed what this Manager reports reaches the live feed too.
+      if (l.view.state !== before) notify();
       return status(space);
     })().finally(() => { l.refreshing = undefined; });
+  };
+  /** The Manager's own grade of its serve connection. A Manager that came up and then lost it reports
+   *  why. Once it reconnects the problem clears, and a Manager a failed status probe left `starting`
+   *  proves itself again. */
+  const observeConnection = async (l: Live, child: ChildProcess, current: () => boolean) => {
+    if (l.starting || !l.view.instanceId) return;
+    let bound: boolean;
+    try { bound = await readServeBound(child); } catch { return; }
+    if (!current()) return;
+    if (bound) {
+      if (!l.view.connection) return;
+      l.view = { ...l.view, connection: undefined };
+      notify();
+      if (l.view.state !== "answering") void refresh(l.view.space).catch(() => {});
+      return;
+    }
+    const server = findMesh(l.view.space)?.server;
+    if (!server) return;
+    const connection = await lostConnection(server).catch(() => undefined);
+    if (!connection || !current() || l.starting) return;
+    if (l.view.connection?.state === connection.state && l.view.connection.reason === connection.reason) return;
+    l.view = { ...l.view, connection };
+    notify();
   };
   const observe = (l: Live) => {
     if (l.healthTimer) clearTimeout(l.healthTimer);
@@ -349,6 +375,7 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
                 if (prevState !== "unreadable") notify();
               }
             }
+            await observeConnection(l, child, current);
           }
         } catch (error) {
           if (!current()) return;
@@ -545,7 +572,7 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
         resolve();
         const lastLine = stderr.trim().split("\n").pop()?.slice(-500);
         const exitReason = `Manager exited (${signal ?? `code ${code}`})${lastLine ? `: ${lastLine}` : ""}`;
-        l.view = { ...l.view, pid: undefined, lastExit: l.stopping && code === 0 && signal === null ? undefined : exitReason };
+        l.view = { ...l.view, pid: undefined, connection: undefined, lastExit: l.stopping && code === 0 && signal === null ? undefined : exitReason };
         if (!nativeReason) nativeReason = exitReason;
         if (!l.stopping && !closed && (l.view.state === "answering" || (l.view.state === "starting" && !l.starting))) {
           l.view = { ...l.view, reason: exitReason };

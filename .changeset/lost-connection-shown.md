@@ -1,0 +1,7 @@
+---
+"cotal-ai": patch
+"@cotal-ai/manager": patch
+"@cotal-ai/desktop": patch
+---
+
+The desktop app now notices when this computer goes offline or a space stops answering. It used to keep showing Connected. A hosted Manager tells the machine daemon whether its connection to the space is up, on the health check that already runs every five seconds. When the connection drops, `cotal daemon status` and the app's live status show a `connection` problem. It reads `offline` when this computer cannot look up the space's host, and `unreachable` when it can but the space is not answering. The app says "No internet connection" or "Can't reach your space", and the tray says "Offline" or "Can't connect". The problem clears by itself once the Manager reconnects. A full status read that changes a Manager's state now reaches the live status too.
