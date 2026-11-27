@@ -11,7 +11,6 @@ import type { ControlReply } from "./types.js";
  *  copied, and every method is looked up on the endpoint at call time. A peer part is read from the
  *  parts record at call time. */
 export interface EndpointBootMembershipsDeps {
-  requestDelivery: (op: string, args: Record<string, unknown>, timeoutMs?: number) => Promise<ControlReply>;
   requireLifecycleUid: (what: string) => string;
   emitRecoverable: (err: Error) => void;
 }
@@ -28,9 +27,8 @@ export class EndpointBootMemberships {
    *  via {@link hasDurableMembership} (a joined durable channel NOT yet a member renders degraded). */
   private readonly pendingBootJoins = new Set<string>();
 
-  constructor(private readonly identity: Readonly<EndpointIdentity>, private readonly lifecycle: Readonly<LifecycleState>, private readonly delivery: Readonly<DeliveryState>, private readonly deps: EndpointBootMembershipsDeps, private readonly parts: Pick<EndpointParts, "anycastRail" | "durable" | "durableBackstop" | "reconnection">) {}
+  constructor(private readonly identity: Readonly<EndpointIdentity>, private readonly lifecycle: Readonly<LifecycleState>, private readonly delivery: Readonly<DeliveryState>, private readonly deps: EndpointBootMembershipsDeps, private readonly parts: Pick<EndpointParts, "anycastRail" | "controlPlane" | "durable" | "durableBackstop" | "reconnection">) {}
 
-  private requestDelivery(op: string, args: Record<string, unknown>, timeoutMs?: number) { return this.deps.requestDelivery(op, args, timeoutMs); }
   private requireLifecycleUid(what: string) { return this.deps.requireLifecycleUid(what); }
   private emitRecoverable(err: Error) { this.deps.emitRecoverable(err); }
 
@@ -41,7 +39,7 @@ export class EndpointBootMemberships {
   async fetchMemberships(channel?: string): Promise<{ channel: string; generation: number; activated: boolean; lifecycleUid?: string }[] | undefined> {
     let reply: ControlReply;
     try {
-      reply = await this.requestDelivery("listMemberships", { lifecycleUid: this.requireLifecycleUid("listing durable memberships"), ...(channel === undefined ? {} : { channel }) }, 5_000);
+      reply = await this.parts.controlPlane.requestDelivery("listMemberships", { lifecycleUid: this.requireLifecycleUid("listing durable memberships"), ...(channel === undefined ? {} : { channel }) }, 5_000);
     } catch (e) {
       if (this.parts.anycastRail.isNoResponders(e)) return undefined; // no delivery daemon — open / daemon-less, no Plane-3
       throw e; // responder present but errored — surface it (leaveChannel fails closed)

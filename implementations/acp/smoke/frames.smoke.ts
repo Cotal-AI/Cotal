@@ -41,7 +41,7 @@ import { FrameMapper } from "../src/frames.js";
 import { patchDiffs } from "../src/tools.js";
 import { agentCatalogs, answeredReads, frameOf, listedChoice, managerChoice, managerPlan, namesDeregister, runningManagers } from "../src/live-mesh.js";
 import { launchManagers } from "../src/manager-start.js";
-import { applyOption, configOptions, initialSelection, modelState, noMachine, refusal, type Offer } from "../src/options.js";
+import { applyOption, configOptions, initialSelection, modelState, noMachine, refusal, spawnModel, type Offer } from "../src/options.js";
 import { NoLaunchManager } from "../src/mesh.js";
 import type { AguiEventLike, ManagerChoice, SeatFrame } from "../src/mesh.js";
 
@@ -455,6 +455,13 @@ const HERE = "1".repeat(64), THERE = "2".repeat(64);
   const alone = offerOf([{ id: "default", variants: [{ name: "high" }] }]);
   const reasoning = configOptions(alone, initialSelection(alone)).find((o) => o.id === "variant") as unknown as { options: { value: string }[] } | undefined;
   check("where it is the only model, the Reasoning select holds its variants", JSON.stringify(reasoning?.options.map((o) => o.value)) === JSON.stringify(["default", "high"]), reasoning);
+  // The Manager checks a variant against the model a launch names, or the catalog's marked default
+  // when it names none, so a variant chosen on <agent>/default launches naming the model it came from.
+  const chosen = applyOption(offer, selection, "variant", "high");
+  check("a variant chosen on <agent>/default launches naming the model default, with that variant", spawnModel(offer, chosen.model) === "default" && chosen.variant === "high", chosen);
+  const plainOffer = offerOf([{ id: "a", variants: [{ name: "low" }] }]);
+  check("where no catalog model is named default, <agent>/default launches naming no model", spawnModel(plainOffer, initialSelection(plainOffer).model) === undefined);
+  check("a named model launches as itself", spawnModel(offer, "hermes/a") === "a");
 }
 
 // A Jcode whose `jcode model list` lists models, as its catalog reads them on an install with no
