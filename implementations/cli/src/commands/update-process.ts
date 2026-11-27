@@ -323,13 +323,17 @@ export function runProcess(file: string, args: string[], env: NodeJS.ProcessEnv,
   };
 }
 
-export function runGlobalProcess(
+export async function runGlobalProcess(
   ...args: Parameters<typeof runGlobalChild>
 ): Promise<CommandResult> {
   const [root, operation, file, argv, env, inherit = false, verbatim = false] = args;
-  return process.platform === "win32" && operation === "install"
-    ? runWindowsInstall(root, file, argv, env, inherit, verbatim)
-    : runGlobalChild(...args);
+  if (process.platform === "win32" && operation === "install")
+    return runWindowsInstall(root, file, argv, env, inherit, verbatim);
+  if (process.platform === "linux") {
+    try { pinPosixGateIfNeeded(env); }
+    catch (e) { return { status: null, stdout: "", stderr: "", error: message(e) }; }
+  }
+  return runGlobalChild(...args);
 }
 
 async function runGlobalChild(
@@ -343,16 +347,15 @@ async function runGlobalChild(
   staging?: string,
 ): Promise<CommandResult> {
   const gated = process.platform === "linux";
-  if (gated) {
-    try { pinPosixGateIfNeeded(env); }
-    catch (e) { return { status: null, stdout: "", stderr: "", error: message(e) }; }
-  }
   const mutation = beginGlobalUpdateChild(root, operation, gated);
   let cache: string | undefined;
   let lifecycle: ReturnType<typeof npmLifecycleEnvironment>;
-  let published = false, preservePending = false;
+  let published = false;
+  let preservePending = false;
   const watchers: FSWatcher[] = [];
-  let timers: ReturnType<typeof armStagingTimeout> | undefined;
+  let elapsed: ReturnType<typeof setTimeout> | undefined;
+  let idle: ReturnType<typeof setTimeout> | undefined;
+  let stopping: Promise<void> | undefined;
   try {
     if (operation === "reconcile") env = npmUpdateChildEnvironment(env);
     const pipeConsole = process.platform === "win32" && inherit;
@@ -378,8 +381,8 @@ async function runGlobalChild(
       // npm is quiet during a download. Its private cache receives the archive bytes and
       // the private prefix changes as packages unpack. Neither depends on terminal output.
       for (const path of [cache, staging]) {
-        const watcher = watch(path, { recursive: true }, () => timers?.refreshIdle());
-        watcher.on("error", () => { timers?.clearIdle(); watcher.close(); });
+        const watcher = watch(path, { recursive: true }, () => idle?.refresh());
+        watcher.on("error", () => { clearTimeout(idle); idle = undefined; watcher.close(); });
         watchers.push(watcher);
       }
     }
@@ -394,7 +397,9 @@ async function runGlobalChild(
       windowsVerbatimArguments,
       stdio: launch?.envPayload ? [...Array<"inherit" | "pipe">(3).fill(inherit ? "inherit" : "pipe"), "pipe", "pipe"] : updateChildStdio(gated, inherit, pipeConsole),
     }));
-    let error = "", stdout = "", stderr = "";
+    let error = "";
+    let stdout = "";
+    let stderr = "";
     child.stdout?.on("data", (chunk: Buffer | string) => { if (pipeConsole) process.stdout.write(chunk); else stdout += chunk.toString(); });
     child.stderr?.on("data", (chunk: Buffer | string) => { if (pipeConsole) process.stderr.write(chunk); else stderr += chunk.toString(); });
     child.once("error", (e) => { error = e.message; });
@@ -418,11 +423,46 @@ async function runGlobalChild(
       rejectClose = reject;
       child.once("close", (status, signal) => resolveClose({ status, signal }));
     });
-    if (staging !== undefined && child.pid !== undefined) timers = armStagingTimeout(child, child.pid, err => rejectClose(err));
+    if (staging !== undefined && child.pid !== undefined) {
+      const pgid = child.pid;
+      const signalGroup = (signal: NodeJS.Signals) => {
+        try { process.kill(-pgid, signal); }
+        catch (error) { if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error; }
+      };
+      const grace = 2000;
+      const reap = 1000;
+      const stop = () => {
+        if (stopping) return;
+        clearTimeout(elapsed);
+        clearTimeout(idle);
+        stopping = (async () => {
+          signalGroup("SIGTERM");
+          await new Promise(resolve => setTimeout(resolve, grace));
+          if (processGroupMembers(pgid).length) signalGroup("SIGKILL");
+          const deadline = performance.now() + reap;
+          while (processGroupMembers(pgid).length) {
+            if (performance.now() >= deadline) throw new Error(`could not stop staging npm process group ${pgid}`);
+            await new Promise(resolve => setTimeout(resolve, 25));
+          }
+        })();
+        void stopping.catch(error => {
+          child.stdin?.destroy();
+          child.stdout?.destroy();
+          child.stderr?.destroy();
+          child.unref();
+          rejectClose(error);
+        });
+      };
+      // Leave room for TERM and KILL within the five-minute staging budget. Idle time
+      // covers three 15-second fetch attempts plus their one- and two-second backoffs.
+      elapsed = setTimeout(stop, 300_000 - grace - reap);
+      idle = setTimeout(stop, 50_000);
+    }
     const closed = await close;
-    timers?.clear();
-    if (timers?.stopping) {
-      await timers.stopping;
+    clearTimeout(elapsed);
+    clearTimeout(idle);
+    if (stopping) {
+      await stopping;
       if (published) mutation.clear();
       throw new StagingTimeout(`${stderr}\n${stdout}`);
     }
@@ -439,57 +479,12 @@ async function runGlobalChild(
     return { status: null, stdout: "", stderr: "", error: message(e) };
   } finally {
     for (const watcher of watchers) watcher.close();
-    timers?.clear();
+    clearTimeout(elapsed);
+    clearTimeout(idle);
     if (!published && !preservePending) mutation.clear();
     lifecycle?.dispose();
     if (cache) rmSync(cache, { recursive: true, force: true, maxRetries: 3 });
   }
-}
-
-function armStagingTimeout(
-  child: import("node:child_process").ChildProcess,
-  pgid: number,
-  onStopError: (error: unknown) => void,
-): { stopping: Promise<void> | undefined; refreshIdle(): void; clearIdle(): void; clear(): void } {
-  const signalGroup = (signal: NodeJS.Signals) => {
-    try { process.kill(-pgid, signal); }
-    catch (error) { if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error; }
-  };
-  const grace = 2000, reap = 1000;
-  let stopping: Promise<void> | undefined;
-  let idle: ReturnType<typeof setTimeout> | undefined;
-  const stop = () => {
-    if (stopping) return;
-    clearTimeout(elapsed);
-    clearTimeout(idle);
-    stopping = (async () => {
-      signalGroup("SIGTERM");
-      await new Promise(resolve => setTimeout(resolve, grace));
-      if (processGroupMembers(pgid).length) signalGroup("SIGKILL");
-      const deadline = performance.now() + reap;
-      while (processGroupMembers(pgid).length) {
-        if (performance.now() >= deadline) throw new Error(`could not stop staging npm process group ${pgid}`);
-        await new Promise(resolve => setTimeout(resolve, 25));
-      }
-    })();
-    void stopping.catch(error => {
-      child.stdin?.destroy();
-      child.stdout?.destroy();
-      child.stderr?.destroy();
-      child.unref();
-      onStopError(error);
-    });
-  };
-  // Leave room for TERM and KILL within the five-minute staging budget. Idle time
-  // covers three 15-second fetch attempts plus their one- and two-second backoffs.
-  const elapsed = setTimeout(stop, 300_000 - grace - reap);
-  idle = setTimeout(stop, 50_000);
-  return {
-    get stopping() { return stopping; },
-    refreshIdle() { idle?.refresh(); },
-    clearIdle() { clearTimeout(idle); idle = undefined; },
-    clear() { clearTimeout(elapsed); clearTimeout(idle); },
-  };
 }
 
 function updateChildStdio(gated: boolean, inherit: boolean, pipeConsole: boolean): import("node:child_process").StdioOptions | undefined {

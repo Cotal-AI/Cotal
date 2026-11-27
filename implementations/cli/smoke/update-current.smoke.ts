@@ -1,14 +1,14 @@
 import "./update-isolation.js";
 import strictAssert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { chmodSync, copyFileSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, realpathSync, renameSync, rmdirSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, realpathSync, renameSync, rmdirSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join, parse } from "node:path";
 import { pathToFileURL } from "node:url";
 import { claimGlobalNpmUpdateLock, processGroupMembers, processStartToken, readProcessCommand, recoveryProcessStartToken, withWindowsUpdateIdentity } from "@cotal-ai/workspace";
 import { countedAssert, emitSentinel } from "../../../bin/smoke/sentinel.mjs";
-import { executeUpdate, update, updateRuntime, type UpdateRuntime } from "../src/commands/update.js";
+import { executeUpdate, updateRuntime, type UpdateRuntime } from "../src/commands/update.js";
 import { collectUpdateCaches } from "../src/commands/update-caches.js";
 import { installedUpdatePrefix, npmChildGate, posixGateScriptPath, releaseChildGate, runGlobalProcess, runNpm, runNpmAsync, runProcess } from "../src/commands/update-process.js";
 import { npmProjectDirectory } from "../src/lib/npm-invocation.js";
@@ -594,9 +594,9 @@ process.stdout.write(JSON.stringify({
       skipCell("Linux .cotal-update-child gate custody assertions", `runGlobalChild gates only on Linux; running on ${process.platform}`);
     }
 
-    // Review 2 Finding 2: running CLI pins its own gate helper once before custody into a private 0600 file in the
-    // update's own private scratch (removed at update end), so replacing the package tree's helper between install
-    // and reconcile still completes the update with non-identifier names preserved.
+    // Built CLI pins its own dist/commands/update-posix-gate.js once before custody into a private 0600
+    // update-posix-gate.mjs in the update's private scratch (removed at update end), so replacing the package
+    // tree's built helper between install and reconcile still completes the update with non-identifier names preserved.
     {
       const replaceRoot = join(root, "replace-helper-global");
       mkdirSync(join(replaceRoot, "cotal-ai", "dist"), { recursive: true, mode: 0o700 });
@@ -604,127 +604,136 @@ process.stdout.write(JSON.stringify({
       const replaceEntry = join(replaceRoot, "cotal-ai", "dist", "cotal.js");
       copyFileSync(reconcileEntry, replaceEntry);
       const replaceReportPath = join(root, "replace-helper-reconcile.json");
+      const replaceMetaPath = join(root, "replace-helper-meta.json");
       const replaceHome = join(root, "replace-helper-home");
       for (const sub of ["home", "cotal", "config/cotal", "runtime", "tmp"]) mkdirSync(join(replaceHome, sub), { recursive: true, mode: 0o700 });
-      const liveTreeHelper = posixGateScriptPath();
-      const savedHelperBytes = readFileSync(liveTreeHelper);
+      const replaceCliPkg = join(root, "replace-cli-pkg");
+      mkdirSync(replaceCliPkg, { recursive: true, mode: 0o700 });
+      cpSync(join(import.meta.dirname, "../dist"), join(replaceCliPkg, "dist"), { recursive: true });
+      copyFileSync(join(import.meta.dirname, "../package.json"), join(replaceCliPkg, "package.json"));
+      symlinkSync(join(import.meta.dirname, "../node_modules"), join(replaceCliPkg, "node_modules"));
+      if (existsSync(join(import.meta.dirname, "../cotal-skills"))) {
+        symlinkSync(join(import.meta.dirname, "../cotal-skills"), join(replaceCliPkg, "cotal-skills"));
+      }
+      const builtTreeHelper = join(replaceCliPkg, "dist", "commands", "update-posix-gate.js");
+      assert.equal(existsSync(builtTreeHelper), true, "built dist/commands/update-posix-gate.js must exist");
+      const savedHelperBytes = readFileSync(builtTreeHelper);
       const shDrops = spawnSync(
         "/bin/sh",
         ["-c", 'exec "$@"', "probe", process.execPath, "-e", 'process.exit(process.env["cotal_gate_probe:1"] === "1" ? 0 : 1)'],
         { env: { "cotal_gate_probe:1": "1" }, stdio: "ignore" },
       ).status !== 0;
-      let observedScratch = "", observedPinned = "", helperSabotaged = false;
-      const savedHomeEnv = new Map<string, string | undefined>();
-      for (const k of ["HOME", "COTAL_HOME", "XDG_CONFIG_HOME", "XDG_RUNTIME_DIR", "TMPDIR", "DO_NOT_TRACK", "COTAL_TELEMETRY", "COTAL_NO_UPDATE_CHECK", "COTAL_SKIP_CONNECTOR_SEED", ...Object.keys(tricky)]) {
-        savedHomeEnv.set(k, process.env[k]);
-      }
-      const prevExitCode = process.exitCode;
-      process.exitCode = undefined;
-      try {
-        process.env.HOME = join(replaceHome, "home");
-        process.env.COTAL_HOME = join(replaceHome, "cotal");
-        process.env.XDG_CONFIG_HOME = join(replaceHome, "config");
-        process.env.XDG_RUNTIME_DIR = join(replaceHome, "runtime");
-        process.env.TMPDIR = join(replaceHome, "tmp");
-        process.env.DO_NOT_TRACK = "1";
-        process.env.COTAL_TELEMETRY = "off";
-        process.env.COTAL_NO_UPDATE_CHECK = "1";
-        process.env.COTAL_SKIP_CONNECTOR_SEED = "1";
-        Object.assign(process.env, tricky);
-        const replaceOut: string[] = [], replaceErr: string[] = [];
-        const replaceRt: UpdateRuntime = {
-          ...updateRuntime,
-          env: {
-            ...baseEnv,
-            PATH: `${stubBin}${delimiter}${baseEnv.PATH ?? ""}`,
-            HOME: process.env.HOME,
-            COTAL_HOME: process.env.COTAL_HOME,
-            XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME,
-            XDG_RUNTIME_DIR: process.env.XDG_RUNTIME_DIR,
-            TMPDIR: process.env.TMPDIR,
-            DO_NOT_TRACK: "1",
-            COTAL_TELEMETRY: "off",
-            COTAL_NO_UPDATE_CHECK: "1",
-            COTAL_SKIP_CONNECTOR_SEED: "1",
-            SMOKE_KEYS: keysJson,
-            SMOKE_GLOBAL_ROOT: replaceRoot,
-            SMOKE_RECONCILE_REPORT: replaceReportPath,
-            NODE_OPTIONS: `--require ${JSON.stringify(nodeOptPreload)}`,
-            ...tricky,
-          },
-          version: () => "0.183.0",
-          checkout: () => true,
-          installPrefix: () => undefined,
-          preflightReplacement: async () => {},
-          reportRunningManager: async () => "none",
-          waitForInstalledGeneration: async () => {},
-          extensions: () => [],
-          npm: (args) => args[0] === "view" ? { status: 0, stdout: '"99.0.0"\n', stderr: "" } : args[0] === "root" ? { status: 0, stdout: `${realpathSync(replaceRoot)}\n`, stderr: "" } : { status: 0, stdout: "", stderr: "" },
-          npmAsync: async (args) => args[0] === "view" ? { status: 0, stdout: JSON.stringify({ name: "cotal-ai", version: args[1]!.endsWith("@99.0.0") ? "99.0.0" : "0.183.0", dependencies: {}, dist: { tarball: "http://127.0.0.1:1/pkg.tgz", integrity: "sha512-AA==" } }), stderr: "" } : { status: 0, stdout: "", stderr: "" },
-          spawnGlobal: async (r, op, f, a, e, inh, verb, stg) => {
-            if (op === "install") {
-              observedScratch = process.env.TMPDIR ?? "";
-              observedPinned = join(observedScratch, liveTreeHelper.endsWith(".ts") ? "update-posix-gate.mts" : "update-posix-gate.mjs");
-              if (shDrops) {
-                assert.equal(existsSync(observedPinned), true, "helper copy pinned in update scratch before custody");
-                assert.equal(lstatSync(observedPinned).mode & 0o777, 0o600, "pinned helper copy in scratch must be mode 0600");
-              }
-              const installRes = await runGlobalProcess(r, op, process.execPath, ["-e", `require("node:fs").writeFileSync(${JSON.stringify(join(replaceRoot, "cotal-ai", "package.json"))}, JSON.stringify({ name: "cotal-ai", version: "99.0.0", bin: { cotal: "dist/cotal.js" } }))`], e, false, verb, stg);
-              // Replace the package tree's helper with a failing script BETWEEN install and reconcile!
-              writeFileSync(liveTreeHelper, 'process.stderr.write("REPLACED_PACKAGE_TREE_HELPER_RAN\\n"); process.exit(99);\n', { mode: 0o600 });
-              helperSabotaged = true;
-              return installRes;
-            }
-            return runGlobalProcess(r, op, f, a, e, inh, verb, stg);
-          },
-          out: line => replaceOut.push(line),
-          err: line => replaceErr.push(line),
-          stdout: line => replaceOut.push(line),
-          stderr: line => replaceErr.push(line),
-        };
-        await update({ values: { self: true }, positionals: [], raw: ["--self"] }, replaceRt);
-        assert.equal(helperSabotaged, true, "package tree helper was replaced between install and reconcile");
-        assert.equal(process.exitCode, undefined, `update with replaced package-tree helper failed:\n${replaceErr.join("\n")}\n${replaceOut.join("\n")}`);
-        assert(!replaceErr.join("\n").includes("REPLACED_PACKAGE_TREE_HELPER_RAN"), "reconcile must run pinned scratch helper, never replaced package-tree helper");
-        const rep = JSON.parse(readFileSync(replaceReportPath, "utf8"));
-        assert.equal(rep.code, 0);
-        assert.equal(rep.reconciled, true);
-        assert.equal(rep.ppid, process.pid);
-        assert.deepEqual(rep.picked, tricky, "update completed with non-identifier names preserved after helper replacement");
-        if (observedPinned) assert.equal(existsSync(observedPinned), false, "pinned 0600 helper copy removed at end of update");
-        if (observedScratch) assert.equal(existsSync(observedScratch), false, "private update scratch removed at end of update");
+      const replaceRunner = join(replaceRoot, "cotal-ai", "replace-helper-runner.mjs");
+      const coreDistUrl = pathToFileURL(join(import.meta.dirname, "../../../packages/core/dist/index.js")).href;
+      const pkgIndexUrl = pathToFileURL(join(replaceCliPkg, "dist/index.js")).href;
+      const pkgCommandUrl = pathToFileURL(join(replaceCliPkg, "dist/command.js")).href;
+      const pkgUpdateUrl = pathToFileURL(join(replaceCliPkg, "dist/commands/update.js")).href;
+      const pkgProcessUrl = pathToFileURL(join(replaceCliPkg, "dist/commands/update-process.js")).href;
+      writeFileSync(replaceRunner, [
+        `import assert from "node:assert/strict";`,
+        `import { existsSync, lstatSync, writeFileSync } from "node:fs";`,
+        `import { join } from "node:path";`,
+        `import { registry } from ${JSON.stringify(coreDistUrl)};`,
+        `import ${JSON.stringify(pkgIndexUrl)};`,
+        `import { runCli } from ${JSON.stringify(pkgCommandUrl)};`,
+        `import { updateRuntime } from ${JSON.stringify(pkgUpdateUrl)};`,
+        `import { posixGateScriptPath, runGlobalProcess } from ${JSON.stringify(pkgProcessUrl)};`,
+        `assert.equal(posixGateScriptPath(), ${JSON.stringify(realpathSync(builtTreeHelper))}, "unpinned built CLI helper resolves dist/commands/update-posix-gate.js");`,
+        `let observedScratch = "", observedPinned = "", pinnedChecked = false, helperSabotaged = false;`,
+        `Object.assign(updateRuntime, {`,
+        `  version: () => "0.183.0",`,
+        `  checkout: () => true,`,
+        `  installPrefix: () => undefined,`,
+        `  preflightReplacement: async () => {},`,
+        `  reportRunningManager: async () => "none",`,
+        `  waitForInstalledGeneration: async () => {},`,
+        `  extensions: () => [],`,
+        `  npm: (args) => args[0] === "view" ? { status: 0, stdout: '"99.0.0"\\n', stderr: "" } : args[0] === "root" ? { status: 0, stdout: ${JSON.stringify(`${realpathSync(replaceRoot)}\n`)}, stderr: "" } : { status: 0, stdout: "", stderr: "" },`,
+        `  npmAsync: async (args) => args[0] === "view" ? { status: 0, stdout: JSON.stringify({ name: "cotal-ai", version: args[1].endsWith("@99.0.0") ? "99.0.0" : "0.183.0", dependencies: {}, dist: { tarball: "http://127.0.0.1:1/pkg.tgz", integrity: "sha512-AA==" } }), stderr: "" } : { status: 0, stdout: "", stderr: "" },`,
+        `  spawnGlobal: async (r, op, f, a, e, inh, verb, stg) => {`,
+        `    if (op === "install") {`,
+        `      observedScratch = process.env.TMPDIR ?? "";`,
+        `      observedPinned = join(observedScratch, "update-posix-gate.mjs");`,
+        `      if (${JSON.stringify(shDrops)}) {`,
+        `        assert.equal(posixGateScriptPath(), observedPinned, "active scratch scope pins built .js helper to update-posix-gate.mjs");`,
+        `        assert.equal(existsSync(observedPinned), true, "built .mjs helper copy pinned in update scratch before custody");`,
+        `        assert.equal(lstatSync(observedPinned).mode & 0o777, 0o600, "pinned .mjs helper copy in scratch must be mode 0600");`,
+        `        pinnedChecked = true;`,
+        `      }`,
+        `      const installRes = await runGlobalProcess(r, op, process.execPath, ["-e", ${JSON.stringify(`require("node:fs").writeFileSync(${JSON.stringify(join(replaceRoot, "cotal-ai", "package.json"))}, JSON.stringify({ name: "cotal-ai", version: "99.0.0", bin: { cotal: "dist/cotal.js" } }))`)}], e, false, verb, stg);`,
+        `      writeFileSync(${JSON.stringify(builtTreeHelper)}, 'process.stderr.write("REPLACED_PACKAGE_TREE_HELPER_RAN\\\\n"); process.exit(99);\\n', { mode: 0o600 });`,
+        `      helperSabotaged = true;`,
+        `      return installRes;`,
+        `    }`,
+        `    return runGlobalProcess(r, op, f, a, e, inh, verb, stg);`,
+        `  },`,
+        `});`,
+        `await runCli(registry, ["update", "--self"]);`,
+        `writeFileSync(${JSON.stringify(replaceMetaPath)}, JSON.stringify({ runnerPid: process.pid, observedScratch, observedPinned, pinnedChecked, helperSabotaged }));`,
+      ].join("\n"), { mode: 0o700 });
+      const replaceCli = spawnSync(process.execPath, [replaceRunner], {
+        cwd: replaceHome,
+        encoding: "utf8",
+        env: {
+          ...baseEnv,
+          NO_COLOR: "1",
+          PATH: `${stubBin}${delimiter}${baseEnv.PATH ?? ""}`,
+          HOME: join(replaceHome, "home"),
+          COTAL_HOME: join(replaceHome, "cotal"),
+          XDG_CONFIG_HOME: join(replaceHome, "config"),
+          XDG_RUNTIME_DIR: join(replaceHome, "runtime"),
+          TMPDIR: join(replaceHome, "tmp"),
+          DO_NOT_TRACK: "1",
+          COTAL_TELEMETRY: "off",
+          COTAL_NO_UPDATE_CHECK: "1",
+          COTAL_SKIP_CONNECTOR_SEED: "1",
+          SMOKE_KEYS: keysJson,
+          SMOKE_GLOBAL_ROOT: replaceRoot,
+          SMOKE_RECONCILE_REPORT: replaceReportPath,
+          NODE_OPTIONS: `--require ${JSON.stringify(nodeOptPreload)}`,
+          ...tricky,
+        },
+      });
+      assert.equal(replaceCli.status, 0, `built CLI update with replaced dist/commands/update-posix-gate.js failed:\n${replaceCli.stderr}\n${replaceCli.stdout}`);
+      assert.equal(replaceCli.signal, null);
+      assert(!replaceCli.stderr.includes("REPLACED_PACKAGE_TREE_HELPER_RAN"), "reconcile must run pinned scratch .mjs helper, never replaced dist/commands/update-posix-gate.js");
+      const meta = JSON.parse(readFileSync(replaceMetaPath, "utf8")) as {
+        runnerPid: number; observedScratch: string; observedPinned: string; pinnedChecked: boolean; helperSabotaged: boolean;
+      };
+      assert.equal(meta.helperSabotaged, true, "built package-tree helper was replaced between install and reconcile");
+      assert.match(meta.observedPinned, /\/update-posix-gate\.mjs$/, "pinned helper filename is built update-posix-gate.mjs");
+      if (shDrops) assert.equal(meta.pinnedChecked, true, "verified 0600 pinned update-posix-gate.mjs before custody");
+      const rep = JSON.parse(readFileSync(replaceReportPath, "utf8"));
+      assert.equal(rep.code, 0);
+      assert.equal(rep.reconciled, true);
+      assert.equal(rep.ppid, meta.runnerPid);
+      assert.deepEqual(rep.picked, tricky, "built CLI update completed with non-identifier names preserved after dist helper replacement");
+      if (meta.observedPinned) assert.equal(existsSync(meta.observedPinned), false, "pinned 0600 .mjs helper copy removed at end of update");
+      if (meta.observedScratch) assert.equal(existsSync(meta.observedScratch), false, "private update scratch removed at end of update");
 
-        // Also prove collectUpdateCaches reclaims an aged interrupted cotal-update-* scratch that still holds a 0600
-        // pinned update-posix-gate.mjs alongside node-compile-cache, while keeping one whose helper is group-writable.
-        const agedParent = mkdtempSync(join(root, "aged-scratch-"));
-        const makeScratchWithPinnedGate = (gateMode: number) => {
-          const s = mkdtempSync(join(agedParent, "cotal-update-"));
-          const cc = join(s, "node-compile-cache");
-          mkdirSync(cc, { mode: 0o700 });
-          const ccEntry = join(cc, "compiled");
-          writeFileSync(ccEntry, "cache", { mode: 0o600 });
-          const gateCopy = join(s, "update-posix-gate.mjs");
-          writeFileSync(gateCopy, savedHelperBytes, { mode: gateMode });
-          const old = new Date(Date.now() - 61 * 60_000);
-          for (const p of [ccEntry, cc, gateCopy, s]) {
-            chmodSync(p, p === gateCopy ? gateMode : p === ccEntry ? 0o600 : 0o700);
-            utimesSync(p, old, old);
-          }
-          return s;
-        };
-        const reclaimableScratch = makeScratchWithPinnedGate(0o600);
-        const sharedGateScratch = makeScratchWithPinnedGate(0o640);
-        collectUpdateCaches(agedParent);
-        assert.equal(existsSync(reclaimableScratch), false, "collectUpdateCaches reclaims aged scratch with 0600 pinned helper");
-        if (process.getuid) assert.equal(existsSync(sharedGateScratch), true, "collectUpdateCaches retains scratch with non-0600 helper");
-      } finally {
-        writeFileSync(liveTreeHelper, savedHelperBytes);
-        process.exitCode = prevExitCode;
-        for (const [k, v] of savedHomeEnv) {
-          if (v === undefined) delete process.env[k];
-          else process.env[k] = v;
+      // Also prove collectUpdateCaches reclaims an aged interrupted cotal-update-* scratch that still holds a 0600
+      // pinned update-posix-gate.mjs alongside node-compile-cache, while keeping one whose helper is group-writable.
+      const agedParent = mkdtempSync(join(root, "aged-scratch-"));
+      const makeScratchWithPinnedGate = (gateMode: number) => {
+        const s = mkdtempSync(join(agedParent, "cotal-update-"));
+        const cc = join(s, "node-compile-cache");
+        mkdirSync(cc, { mode: 0o700 });
+        const ccEntry = join(cc, "compiled");
+        writeFileSync(ccEntry, "cache", { mode: 0o600 });
+        const gateCopy = join(s, "update-posix-gate.mjs");
+        writeFileSync(gateCopy, savedHelperBytes, { mode: gateMode });
+        const old = new Date(Date.now() - 61 * 60_000);
+        for (const p of [ccEntry, cc, gateCopy, s]) {
+          chmodSync(p, p === gateCopy ? gateMode : p === ccEntry ? 0o600 : 0o700);
+          utimesSync(p, old, old);
         }
-      }
+        return s;
+      };
+      const reclaimableScratch = makeScratchWithPinnedGate(0o600);
+      const sharedGateScratch = makeScratchWithPinnedGate(0o640);
+      collectUpdateCaches(agedParent);
+      assert.equal(existsSync(reclaimableScratch), false, "collectUpdateCaches reclaims aged scratch with 0600 pinned helper");
+      if (process.getuid) assert.equal(existsSync(sharedGateScratch), true, "collectUpdateCaches retains scratch with non-0600 helper");
     }
 
     const candidateShells = ["/bin/sh", "/bin/dash", "/usr/bin/dash", "/bin/bash", "/usr/bin/bash"];
@@ -883,6 +892,94 @@ process.stdout.write(JSON.stringify({
             assert(!truncErr.includes(secretNeedle), "unreadable payload stderr must never leak secret");
             await waitPidGone(truncChild.pid);
           }
+        }
+
+        // Release-check preflight (update-release.ts) surfaces `<label>: gate environment unreadable` to the operator
+        // on both metadata view and archive cache-add steps without leaking values or starting install.
+        const relSubHome = join(root, `rel-trunc-home-${shells.indexOf(sh)}`);
+        const relPkgDir = join(root, `rel-trunc-pkg-${shells.indexOf(sh)}`, "cotal-ai");
+        mkdirSync(join(relPkgDir, "dist"), { recursive: true, mode: 0o700 });
+        writeFileSync(join(relPkgDir, "package.json"), JSON.stringify({ name: "cotal-ai", version: "0.183.0", bin: { cotal: "dist/cotal.js" } }), { mode: 0o600 });
+        writeFileSync(join(relPkgDir, "dist", "cotal.js"), "console.log('ok');\n", { mode: 0o700 });
+        for (const sub of ["home", "cotal", "config/cotal", "runtime", "tmp"]) mkdirSync(join(relSubHome, sub), { recursive: true, mode: 0o700 });
+        const relCoreUrl = pathToFileURL(join(import.meta.dirname, "../../../packages/core/dist/index.js")).href;
+        const relIndexUrl = pathToFileURL(join(import.meta.dirname, "../dist/index.js")).href;
+        const relCommandUrl = pathToFileURL(join(import.meta.dirname, "../dist/command.js")).href;
+        const relUpdateUrl = pathToFileURL(join(import.meta.dirname, "../dist/commands/update.js")).href;
+        const relProcessUrl = pathToFileURL(join(import.meta.dirname, "../dist/commands/update-process.js")).href;
+        for (const [step, corruption] of [["view", "truncated"], ["cache", "absent"]] as const) {
+          const relNeverRan = join(root, `rel-never-ran-${step}-${corruption}-${shells.indexOf(sh)}`);
+          const relRunner = join(relPkgDir, `rel-trunc-runner-${step}-${corruption}.mjs`);
+          const relGateEnv = { ...baseEnv, PATH: `${stubBin}${delimiter}${baseEnv.PATH ?? ""}`, SMOKE_RAN_MARKER: relNeverRan, ...tricky };
+          writeFileSync(relRunner, [
+            `import { spawn } from "node:child_process";`,
+            `import { writeFileSync } from "node:fs";`,
+            `import { join } from "node:path";`,
+            `import { registry } from ${JSON.stringify(relCoreUrl)};`,
+            `import ${JSON.stringify(relIndexUrl)};`,
+            `import { runCli } from ${JSON.stringify(relCommandUrl)};`,
+            `import { updateRuntime } from ${JSON.stringify(relUpdateUrl)};`,
+            `import { npmChildGate, releaseChildGate } from ${JSON.stringify(relProcessUrl)};`,
+            `Object.assign(updateRuntime, {`,
+            `  version: () => "0.183.0",`,
+            `  checkout: () => true,`,
+            `  installPrefix: () => undefined,`,
+            `  preflightReplacement: async () => {},`,
+            `  reportRunningManager: async () => "none",`,
+            `  extensions: () => [],`,
+            `  npm: (args) => args[0] === "view" ? { status: 0, stdout: '"99.0.0"\\n', stderr: "" } : { status: 0, stdout: "", stderr: "" },`,
+            `  npmAsync: async (args, cache) => {`,
+            `    if (${JSON.stringify(step)} === "cache" && args[0] === "view") {`,
+            `      return { status: 0, stdout: JSON.stringify({ name: "cotal-ai", version: "99.0.0", dependencies: {}, dist: { tarball: "http://127.0.0.1:1/pkg.tgz", integrity: "sha512-AA==" } }), stderr: "" };`,
+            `    }`,
+            `    const launch = npmChildGate("cotal-release-check", ${JSON.stringify(eqCmd)}, args, ${JSON.stringify(relGateEnv)}, ${JSON.stringify(sh)});`,
+            `    const child = spawn(launch.file, launch.args, { env: launch.env, detached: true, stdio: ["ignore", "pipe", "pipe", "pipe", "pipe"] });`,
+            `    let stdout = "", stderr = "";`,
+            `    child.stdout.on("data", chunk => { stdout += chunk.toString(); });`,
+            `    child.stderr.on("data", chunk => { stderr += chunk.toString(); });`,
+            `    if (cache && child.pid !== undefined) writeFileSync(join(cache, ".worker-" + child.pid), "", { mode: 0o600 });`,
+            `    if (${JSON.stringify(corruption)} === "truncated") {`,
+            `      releaseChildGate(child, true, launch.envPayload.subarray(0, launch.envPayload.length - 3), () => {}, launch.groupCleanup);`,
+            `    } else {`,
+            `      child.stdio[4].end();`,
+            `      child.stdio[3].end("run\\n");`,
+            `    }`,
+            `    const [status, signal] = await new Promise(resolve => child.once("close", (c, s) => resolve([c, s])));`,
+            `    return { status, signal, stdout, stderr };`,
+            `  },`,
+            `  spawnGlobal: async () => { throw new Error("spawnGlobal must not run on preflight failure"); },`,
+            `});`,
+            `await runCli(registry, ["update", "--self"]);`,
+          ].join("\n"), { mode: 0o700 });
+          const relRes = spawnSync(process.execPath, [relRunner], {
+            cwd: relSubHome,
+            encoding: "utf8",
+            env: {
+              ...baseEnv,
+              NO_COLOR: "1",
+              PATH: `${stubBin}${delimiter}${baseEnv.PATH ?? ""}`,
+              HOME: join(relSubHome, "home"),
+              COTAL_HOME: join(relSubHome, "cotal"),
+              XDG_CONFIG_HOME: join(relSubHome, "config"),
+              XDG_RUNTIME_DIR: join(relSubHome, "runtime"),
+              TMPDIR: join(relSubHome, "tmp"),
+              DO_NOT_TRACK: "1",
+              COTAL_TELEMETRY: "off",
+              COTAL_NO_UPDATE_CHECK: "1",
+              COTAL_SKIP_CONNECTOR_SEED: "1",
+              ...tricky,
+            },
+          });
+          assert.equal(relRes.status, 1, `release-check ${corruption} payload (${step}) must exit 1:\n${relRes.stdout}\n${relRes.stderr}`);
+          assert.equal(relRes.signal, null);
+          assert.equal(existsSync(relNeverRan), false, `release-check ${corruption} payload (${step}) must not run target`);
+          const expectedDetail = step === "view"
+            ? "metadata for cotal-ai@99.0.0 is unavailable: cotal-release-check: gate environment unreadable"
+            : "archives for cotal-ai@99.0.0 could not be downloaded and verified: cotal-release-check: gate environment unreadable";
+          assert.deepEqual(relRes.stderr.trim().split("\n").filter(Boolean), [
+            `✗ cotal-ai@99.0.0 update preflight failed: ${expectedDetail}. No global install was attempted. Correct the reported failure, then run \`cotal update --self\` again.`,
+          ], `release-check (${step}/${corruption}) prints cotal-release-check: gate environment unreadable`);
+          assert(!(relRes.stdout + relRes.stderr).includes(secretNeedle), "release-check unreadable payload output must never leak secret");
         }
       }
 
