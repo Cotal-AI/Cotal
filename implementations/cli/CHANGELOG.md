@@ -1,5 +1,40 @@
 # @cotal-ai/cli
 
+## 0.183.0
+
+### Minor Changes
+
+- 335d8e9: Launches that use a project's MCP servers, `spawn.env` or persona launch options now require a trusted project folder, so review the folder and run `cotal trust <path>` before retrying.
+  
+  SDK callers of `loadCotalConfig` must pass a project trust check as the second argument, such as `isTrustedProject` from `@cotal-ai/workspace`.
+  
+  The workspace exports `projectTrustForPreview` and `previewPersonaReader` for read-only plans that predict the legacy upgrade without recording or granting trust. Do not use them to authorize a launch.
+
+### Patch Changes
+
+- a0e9aae: Run a foreground Hermes seat with a disposable managed profile in Windows PowerShell or Command Prompt.
+- 297bd76: Detached Jcode spawns now show the corrected `--model` retry when a provider prefix precedes a catalog model ID that contains a slash.
+- 5906e3b: `cotal ext add` refuses a local or third-party extension whose declared core peer range does not match the bundled core, without changing the installed extensions.
+- 318896e: Reclaim abandoned extension staging copies from the previous connector configuration without removing its installed connectors.
+- e21aff3: Running `cotal update --self` repairs a moved Codex marketplace even when the CLI packages are already current.
+- 6930623: Resume a signed-in native conversation on the same computer without asking for approval again when the space still accepts its original approval.
+- 0c10988: Self-update restores missing owner read or folder search permissions on a verified, owned extensions manifest path and continues.
+- e4e22eb: Split CLI dispatch into smaller steps without changing how commands run or report results.
+- 0c45ecf: Report an unreadable or invalid extension inventory as the existing permission or corrupt-manifest refusal, without changing the file.
+- 06629ca: Cotal can update when an extension has no recorded install spec, keeping verified packages and repairing packages that need it.
+- 02dac11: Manual `cotal update --self` can repair damaged first-party extensions from npm's cache without checking for a newer release when npm is offline.
+- da7db7e: On Windows, status and the entry card suggest `cotal.cmd` when the npm launcher is on PATH, so the commands run in PowerShell without changing execution policy.
+- Updated dependencies [a0e9aae]
+- Updated dependencies [335d8e9]
+- Updated dependencies [318896e]
+- Updated dependencies [6930623]
+- Updated dependencies [0c10988]
+- Updated dependencies [0c45ecf]
+- Updated dependencies [06629ca]
+  - @cotal-ai/core@0.183.0
+  - @cotal-ai/workspace@0.183.0
+  - @cotal-ai/seat@0.183.0
+
 ## 0.182.1
 
 ### Patch Changes

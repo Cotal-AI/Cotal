@@ -1,5 +1,53 @@
 # cotal-ai
 
+## 0.183.0
+
+### Minor Changes
+
+- 335d8e9: Launches that use a project's MCP servers, `spawn.env` or persona launch options now require a trusted project folder, so review the folder and run `cotal trust <path>` before retrying.
+  
+  SDK callers of `loadCotalConfig` must pass a project trust check as the second argument, such as `isTrustedProject` from `@cotal-ai/workspace`.
+  
+  The workspace exports `projectTrustForPreview` and `previewPersonaReader` for read-only plans that predict the legacy upgrade without recording or granting trust. Do not use them to authorize a launch.
+
+### Patch Changes
+
+- 297bd76: Detached Jcode spawns now show the corrected `--model` retry when a provider prefix precedes a catalog model ID that contains a slash.
+- 5906e3b: `cotal ext add` refuses a local or third-party extension whose declared core peer range does not match the bundled core, without changing the installed extensions.
+- 3cceeab: Name the tools and arguments in `cotal_persona` results instead of spelling out their call syntax.
+- 318896e: Reclaim abandoned extension staging copies from the previous connector configuration without removing its installed connectors.
+- 6930623: Resume a signed-in native conversation on the same computer without asking for approval again when the space still accepts its original approval.
+- 02dac11: Manual `cotal update --self` can repair damaged first-party extensions from npm's cache without checking for a newer release when npm is offline.
+- a7b8614: Point Windows readers to setup commands that work in Windows PowerShell and Command Prompt.
+- Updated dependencies [a0e9aae]
+- Updated dependencies [297bd76]
+- Updated dependencies [5906e3b]
+- Updated dependencies [3cceeab]
+- Updated dependencies [335d8e9]
+- Updated dependencies [318896e]
+- Updated dependencies [e21aff3]
+- Updated dependencies [6930623]
+- Updated dependencies [040b05d]
+- Updated dependencies [e08738d]
+- Updated dependencies [0c10988]
+- Updated dependencies [e4e22eb]
+- Updated dependencies [eb9fd3d]
+- Updated dependencies [0c45ecf]
+- Updated dependencies [06629ca]
+- Updated dependencies [02dac11]
+- Updated dependencies [a7b8614]
+- Updated dependencies [da7db7e]
+  - @cotal-ai/core@0.183.0
+  - @cotal-ai/cli@0.183.0
+  - @cotal-ai/connector-core@0.183.0
+  - @cotal-ai/manager@0.183.0
+  - @cotal-ai/workspace@0.183.0
+  - @cotal-ai/auth@0.183.0
+  - @cotal-ai/runtime@0.183.0
+  - @cotal-ai/delivery@0.183.0
+  - @cotal-ai/registry@0.183.0
+  - @cotal-ai/seat@0.183.0
+
 ## 0.182.1
 
 ### Patch Changes
