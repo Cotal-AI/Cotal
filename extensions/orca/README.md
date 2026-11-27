@@ -37,10 +37,13 @@ cotal ext add @cotal-ai/orca
 cotal supervise --runtime orca
 ```
 
-Library composition roots can still import it explicitly:
+Library composition roots can register the provider explicitly:
 
 ```ts
-import "@cotal-ai/orca"; // self-registers
+import { registry } from "@cotal-ai/core";
+import { orcaRuntimeProvider } from "@cotal-ai/orca";
+
+registry.register(orcaRuntimeProvider);
 ```
 
 The runtime can also be selected with `runtime: orca` in a mesh manifest.

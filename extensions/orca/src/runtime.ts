@@ -4,7 +4,6 @@ import { tmpdir } from "node:os";
 import {
   hardenPrivate,
   launcherSource,
-  registry,
   SpawnRefused,
   confirmWatch,
   writeSecretFile,
@@ -185,13 +184,10 @@ export class OrcaRuntime implements Runtime {
   }
 }
 
-/** Self-registering runtime provider — `import "@cotal-ai/orca"` makes the manager's `orca`
- *  runtime available without the manager depending on this package. */
+/** Runtime provider contributed by the Orca plugin factory. */
 export const orcaRuntimeProvider: RuntimeProvider = {
   kind: "runtime",
   name: "orca",
   available: () => orca.available(),
   create: () => new OrcaRuntime(),
 };
-
-registry.register(orcaRuntimeProvider);

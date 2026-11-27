@@ -10,6 +10,7 @@ import { dirname, join } from "node:path";
 import { registry, type RuntimeProvider } from "@cotal-ai/core";
 import * as orca from "./src/driver.js";
 import { OrcaRuntime, orcaRuntimeProvider, privateLauncher } from "./src/runtime.js";
+import registerOrca from "./src/index.js";
 
 const LIVE_CHECK_COUNT = 13;
 const requireLive = process.argv.includes("--live") || process.env.COTAL_ORCA_LIVE === "1";
@@ -23,6 +24,9 @@ function ok(label: string, cond: unknown, detail?: unknown): void {
 }
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+ok("import leaves the Orca provider unregistered", !registry.has("runtime", "orca"));
+registerOrca({ contract: 1, register: (...providers) => registry.register(...providers) });
 
 async function rejects(label: string, fn: () => Promise<unknown>, pattern?: RegExp): Promise<void> {
   try {
@@ -519,7 +523,7 @@ else if (args[0] === "terminal" && args[1] === "read") {
 }
 
 const resolved = registry.resolve<RuntimeProvider>("runtime", "orca");
-ok("orcaRuntimeProvider registered as 'runtime/orca'", resolved === orcaRuntimeProvider);
+ok("the factory registers 'runtime/orca' with its host", resolved === orcaRuntimeProvider);
 // Declared, not discovered by catching the throw from attach(): a caller reads this to decide
 // whether to ask for an attach at all, so a foreground `cotal spawn` on this runtime launches the
 // seat and stops there instead of failing on an attach that cannot open. Graded above the live

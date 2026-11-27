@@ -20,20 +20,42 @@
   "scripts": {
     "test": "tsx package.smoke.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.smoke.json",
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.json --emitDeclarationOnly && esbuild src/index.ts --bundle --minify-whitespace --platform=node --format=esm --target=node20 --outfile=dist/index.js --banner:js=\"import { createRequire as __cotalCreateRequire } from 'node:module'; const require = __cotalCreateRequire(import.meta.url);\" && pnpm run manifest",
+    "manifest": "node ../../scripts/plugin-manifest.mjs",
     "prepublishOnly": "pnpm run build"
   },
   "peerDependencies": {
     "@cotal-ai/core": "*"
   },
+  "peerDependenciesMeta": {
+    "@cotal-ai/core": {
+      "optional": true
+    }
+  },
   "devDependencies": {
     "@cotal-ai/core": "workspace:*",
     "@cotal-ai/smoke-kit": "workspace:*",
+    "esbuild": "^0.28.0",
     "tsx": "^4.22.4"
   },
   "files": [
     "dist"
   ],
+  "cotal": {
+    "contract": 1,
+    "core": "0.183.1",
+    "provides": [
+      {
+        "kind": "runtime",
+        "name": "orca",
+        "aliases": []
+      }
+    ],
+    "commands": [],
+    "connectors": [],
+    "localProcesses": [],
+    "servicePresets": []
+  },
   "publishConfig": {
     "access": "public"
   }
