@@ -18,7 +18,7 @@ import { withDeadline } from "./deadline.js";
 import { bearerRenewalDeadlineMs, RepeatedRefusal, dialerFor, authOpts, describeStatusError, expiryAwareErrorEvent, isAuthRejection, kvWatchConsumer } from "./endpoint-dial.js";
 import type { TransportState } from "./endpoint-options.js";
 import { credsRenewalDelayMs, credsClaims } from "./identity.js";
-import { type IssuedSubjectPermission, importNativeSubjectPermissions, issuedPermitsSubject, readAcceptedRow } from "./issued-authority.js";
+import { type IssuedSubjectPermission, type IssuedSubjectPermissions, importNativeSubjectPermissions, issuedPermitsSubject, readAcceptedRow } from "./issued-authority.js";
 import { isStreamNotFound } from "./jetstream-missing.js";
 import { type NativeConnectionBinding, nativeBindingAfter, nativeConnectionBinding, watchNativeConnection } from "./native-connection.js";
 import { nextHeartbeat } from "./presence-heartbeat.js";
@@ -87,7 +87,8 @@ export class EndpointConnection {
    *  the same two paths wait for these first. */
   private readonly kvWatchBinds = new Set<Promise<unknown>>();
   private readonly projectionWires = new WeakMap<NatsConnection, ReturnType<typeof watchNativeConnection>>();
-  private readonly admittedProjection = new WeakMap<NatsConnection, NativeConnectionBinding>();
+  private readonly admittedProjection = new WeakMap<NatsConnection, NativeConnectionBinding & { permissions?: IssuedSubjectPermissions }>();
+  private readonly presentedPermissions = new WeakMap<NatsConnection, () => IssuedSubjectPermissions | undefined>();
 
   constructor(private readonly identity: Readonly<EndpointIdentity>, private readonly conn: ConnectionState, private readonly lifecycle: LifecycleState, private readonly cred: CredentialState, private readonly channelRegistry: ChannelRegistryState, private readonly delivery: Readonly<DeliveryState>, private readonly deps: EndpointConnectionDeps, private readonly parts: Pick<EndpointParts, "anycastRail" | "channelDiscovery" | "consumers" | "credentials" | "deliveryLease" | "deliveryPlane" | "liveness" | "presence" | "principalServe" | "provisioning" | "reconnection" | "subscriptions">) {}
 
@@ -109,6 +110,7 @@ export class EndpointConnection {
       this.projectionWires.set(nc, wire);
     }
     const { serverId, cid } = wire.binding();
+    const permissions = this.presentedPermissions.get(nc)?.();
     const result = await readPluginChannelRouteProjection(nc, this.identity.space).then(
       (projection) => ({ projection }),
       (error: unknown) => ({ error }),
@@ -131,7 +133,7 @@ export class EndpointConnection {
       throw new Error("plugin channel routing changed; a full endpoint bind is required");
     this.conn.pluginChannelsEnabled = enabled;
     this.conn.pluginChannelEpoch = epoch;
-    this.admittedProjection.set(nc, { serverId, cid });
+    this.admittedProjection.set(nc, { serverId, cid, permissions });
     return true;
   }
 
@@ -158,6 +160,12 @@ export class EndpointConnection {
     } catch {
       return undefined;
     }
+  }
+
+  /** Only the credential presented on this admitted wire can contribute plugin discovery rows. */
+  admittedPluginPermissions(nc: NatsConnection): IssuedSubjectPermissions | undefined {
+    if (this.conn.nc !== nc || this.channelRoutingMode() !== "isolated") return undefined;
+    return this.admittedProjection.get(nc)?.permissions;
   }
 
   private recoverPluginChannelsOnNativeReconnect(nc: NatsConnection): void {
@@ -225,6 +233,7 @@ export class EndpointConnection {
     // library closes that attempt, and the reestablish loop's capped backoff re-enters here — where
     // the source re-fetch above is what recovers a renewable endpoint.
     let watchDeletePermission: IssuedSubjectPermission | undefined;
+    let presentedPermissions: IssuedSubjectPermissions | undefined;
     this.conn.nc = await dialerFor(this.identity.servers)({
       servers: this.identity.servers,
       // Keep native failures without eagerly capturing a request-origin stack on every operation.
@@ -256,10 +265,13 @@ export class EndpointConnection {
       ...authOpts({ token: this.identity.token, user: this.identity.user, pass: this.identity.pass, creds: this.cred.currentCreds !== undefined || this.identity.credsSource ? () => this.parts.credentials.presentCreds() : undefined, bearer: this.identity.userMode ? () => this.parts.credentials.presentBearer() : undefined, sentinelCreds: this.identity.sentinelCreds, tls: this.identity.tls,
         onCreds: (creds) => {
           watchDeletePermission = undefined;
+          presentedPermissions = undefined;
           try {
             const nats = credsClaims(creds).nats;
             if (nats?.pub !== undefined)
               watchDeletePermission = importNativeSubjectPermissions({ pub: nats.pub }).publish;
+            if (nats?.sub !== undefined)
+              presentedPermissions = importNativeSubjectPermissions({ ...(nats.pub === undefined ? {} : { pub: nats.pub }), sub: nats.sub });
           } catch {
             // Unknown/malformed claims cannot prove a denial. Keep the existing broker check.
           }
@@ -269,6 +281,7 @@ export class EndpointConnection {
     // SPEC §13.12: the control surface requires nats-server >= 2.12; this runs on every
     // fresh connection, including the reconnects the library performs on its own here.
     this.conn.watchDeletePermissions.set(this.conn.nc, () => watchDeletePermission);
+    this.presentedPermissions.set(this.conn.nc, () => presentedPermissions);
     this.conn.ownedConnections.add(this.conn.nc);
     const owned = this.conn.nc;
     void owned.closed().then(() => this.conn.ownedConnections.delete(owned));

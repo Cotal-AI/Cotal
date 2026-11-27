@@ -24,6 +24,10 @@ import type { ConnectionState } from "../src/endpoint-connection-state.js";
 import { recordsBucket } from "../src/endpoint-records.js";
 import { PLUGIN_CHANNEL_PROJECTION_KEY } from "../src/plugin-channel-projection.js";
 import { PLUGIN_CHANNEL_ROOT } from "../src/plugin-channel-route.js";
+import { chatStream, dlvStream, inboxStream, type CotalMessage, type PluginMentionPointer } from "../src/index.js";
+import { pluginChannelStream, pluginChannelSubject } from "../src/plugin-channel-route.js";
+import { PLUGIN_MENTION_POINTER_KEY } from "../src/types.js";
+import { startEnabledPluginSpace } from "./fixtures/enabled-plugin-space.js";
 
 const PORT = await pickFreePort();
 const MON = await pickFreePort();
@@ -37,6 +41,77 @@ const reconnected = (ep: CotalEndpoint): Promise<void> => new Promise((resolve) 
 });
 let pass = 0, fail = 0;
 const check = (name: string, cond: boolean, extra?: unknown) => { if (cond) { pass++; console.log(`  ✓ ${name}`); } else { fail++; console.log(`  ✗ FAIL: ${name}`, extra ?? ""); } };
+
+async function checkEnabledPluginDelivery() {
+  const fixture = await startEnabledPluginSpace();
+  const { channel, hiddenChannel, space, endpoint, mintAgent, jsm } = fixture;
+  try {
+    const daemon = await fixture.startDelivery();
+    const reader = await mintAgent({ read: [channel] });
+    const writer = await mintAgent({ post: [channel] });
+    const read = endpoint({ creds: reader.creds, lifecycleUid: reader.lifecycleUid, channels: [channel],
+      allowSubscribe: [channel, hiddenChannel], card: { kind: "agent", name: "scoped-reader" } });
+    const write = endpoint({ creds: writer.creds, lifecycleUid: writer.lifecycleUid, channels: [],
+      consume: false, registerPresence: false, watchPresence: false, card: { kind: "agent", name: "scoped-writer" } });
+    const observer = endpoint({ creds: await fixture.mintObserver(), channels: [], consume: false,
+      readChannelRoutingProjection: true, registerPresence: false, watchPresence: false,
+      allowSubscribe: [channel, hiddenChannel], card: { kind: "endpoint", name: "chat-observer" } });
+    const live: CotalMessage[] = [], tapped: CotalMessage[] = [], notices: CotalMessage[] = [];
+    read.on("message", (msg, delivery, meta) => {
+      if (meta.kind === "channel" && !meta.historical && !delivery.durable) live.push(msg);
+      if (msg.parts.some((p) => p.kind === "data" && p.data && Object.hasOwn(p.data, PLUGIN_MENTION_POINTER_KEY))) notices.push(msg);
+      delivery.ack();
+    });
+    read.tap((_subject, msg) => { if (msg) tapped.push(msg); }, { subject: pluginChannelSubject(space, "*", "*", channel) });
+    await Promise.all([read.start(), write.start(), observer.start()]);
+    const waitFor = async (condition: () => boolean) => {
+      for (let i = 0; i < 120 && !condition(); i++) await wait(50);
+      return condition();
+    };
+    check("the signed writer, reader and CHAT observer admit the isolated routing projection",
+      [read, write, observer].every((ep) => ep.channelRoutingMode() === "isolated"));
+    const names = (rows: Awaited<ReturnType<typeof read.listChannels>>) => rows.map((row) => row.channel);
+    const readable = names(await read.listChannels());
+    const chatOnly = names(await observer.listChannels());
+    check("isolated discovery lists admitted grants and suppresses stale configured names",
+      readable.includes(channel) && !readable.includes(hiddenChannel) && !chatOnly.includes(channel) && !chatOnly.includes(hiddenChannel),
+      { readable, chatOnly });
+    const post = await write.multicast("retained plugin body", { channel });
+    check("the real broker delivers the post to an exact scoped live subscriber and native tap",
+      await waitFor(() => live.some(({ id }) => id === post.id) && tapped.some(({ id }) => id === post.id)));
+    check("the scoped reader reads the retained post from its named filtered consumer",
+      (await read.channelHistory(channel, { limit: 10 })).some(({ id }) => id === post.id));
+    const frontier = await read.channelFrontier(channel);
+    const state = async (name: string) => (await jsm.streams.info(name)).state;
+    check("the plugin post advances only its own stream and yields no ordinary channel copies",
+      frontier > 0 && (await state(pluginChannelStream(space))).last_seq === frontier &&
+      (await state(chatStream(space))).messages === 0 && (await state(inboxStream(space))).messages === 0 &&
+      (await state(dlvStream(space))).messages === 0);
+
+    check("daemon sees the uniquely resolved recipient before the mention", await waitFor(() =>
+      daemon.getRoster().some(({ card }) => card.name === "scoped-reader")));
+    const mention = await write.multicast("not inside the directed pointer", { channel, mentions: ["scoped-reader"] });
+    const pointerArrived = await waitFor(() => notices.length > 0);
+    const notice = notices[0];
+    const part = notice?.parts[0];
+    const pointer = (part?.kind === "data" ? (part.data as Record<string, unknown>)[PLUGIN_MENTION_POINTER_KEY] : undefined) as PluginMentionPointer | undefined;
+    check("the directed notice has only the daemon pointer and no body", pointerArrived && notice.parts.length === 1 &&
+      pointer?.channel === channel && pointer.message === mention.id && pointer.seq > frontier &&
+      !JSON.stringify(notice).includes("not inside the directed pointer"), notice);
+    if (pointer) {
+      check("daemon mediation fetches only the exact channel, message and sequence",
+        (await read.readPluginMentionHistory(pointer))?.id === mention.id &&
+        await read.readPluginMentionHistory({ ...pointer, message: post.id }) === undefined);
+      await fixture.provisioner.commitAcl(reader.principal, reader.lifecycleUid, []);
+      check("narrowing the live ACL refuses a later fetch of that same pointer",
+        await read.readPluginMentionHistory(pointer).then(() => false, () => true));
+    }
+    check("mention processing still leaves ordinary INBOX and DLV without plugin copies",
+      (await state(inboxStream(space))).messages === 0 && (await state(dlvStream(space))).messages === 0);
+  } finally {
+    await fixture.close();
+  }
+}
 
 async function checkPluginProjection(space: string, provisioner: string, creds: string, lifecycleUid: string, viewerCreds: string, probeCreds: string): Promise<void> {
   const writer = await connect({ servers: SERVERS, ...standaloneConnectOpts({ creds: provisioner, tls: false }) });
@@ -530,6 +605,7 @@ try {
   await checkStopWhileRedialing(dir, space);
   await checkPluginProjection(space, mgrCreds, aCreds, uidA,
     await mintCreds(auth, newIdentity(), "observer"), await mintCreds(auth, newIdentity(), "probe"));
+  await checkEnabledPluginDelivery();
 
   console.log(`\nDELIVERY-RECONNECT SMOKE ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${pass} passed, ${fail} failed)`);
   if (fail) process.exitCode = 1;
