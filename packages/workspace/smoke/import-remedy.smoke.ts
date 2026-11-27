@@ -1,7 +1,7 @@
 /** Installed factory verification and import remedies. Run: pnpm smoke:import-remedy */
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { registry, type Extension } from "@cotal-ai/core";
@@ -12,6 +12,7 @@ import {
 import { pluginManifest } from "../src/plugin-manifest.js";
 import { readPluginDeclaration, samePluginDeclaration } from "../src/plugin-declaration.js";
 import { checkPluginCore } from "../src/plugin-core.js";
+import { writePluginFixture } from "../../../scripts/plugin-fixture.mjs";
 
 const prior = process.env.XDG_CONFIG_HOME;
 const tmp = mkdtempSync(join(import.meta.dirname, ".import-remedy-"));
@@ -150,11 +151,59 @@ async function declarationPolicy() {
   checkPluginCore("@third/plugin", { version: "1.0.0", dependencies: { "@cotal-ai/core": "^0.184.0" } }, declaration, meta, "0.185.0");
 }
 
+async function physicalCoreBoundary() {
+  const original = process.env.XDG_CONFIG_HOME;
+  const real = join(tmp, "physical"), linked = join(tmp, "linked");
+  mkdirSync(real);
+  symlinkSync(real, linked, "junction");
+  process.env.XDG_CONFIG_HOME = linked;
+  try {
+    const metadata = { version: "1.0.0", dependencies: { "@cotal-ai/core": "^0.184.0" } };
+    const good = await fixture("physical-core");
+    const nested = join(good.dir, "node_modules", "@cotal-ai", "core");
+    mkdirSync(nested, { recursive: true });
+    writeFileSync(join(nested, "package.json"), JSON.stringify({ name: "@cotal-ai/core", version: "0.184.1", exports: { "./package.json": "./package.json" } }));
+    checkPluginCore(good.item.pkg, metadata, good.declaration, join(good.dir, "index.mjs"), "0.185.0");
+
+    const outside = join(tmp, "outside-core");
+    renameSync(nested, outside);
+    const escaped = await fixture("escaped-core");
+    const external = join(escaped.dir, "node_modules", "@cotal-ai", "core");
+    mkdirSync(join(external, ".."), { recursive: true });
+    symlinkSync(outside, external, "junction");
+    assert.throws(() => checkPluginCore(escaped.item.pkg, metadata, escaped.declaration, join(escaped.dir, "index.mjs"), "0.185.0"), (error: Error) =>
+      error.message.includes("inside the extensions prefix") && error.cause instanceof Error && error.cause.message.includes("outside the extensions prefix"));
+  } finally {
+    if (original === undefined) delete process.env.XDG_CONFIG_HOME;
+    else process.env.XDG_CONFIG_HOME = original;
+  }
+}
+
+async function fixtureDeclarationParity() {
+  const dir = join(tmp, "fixture-declaration-parity");
+  const providers = [
+    { kind: "command", name: "fixture-command", aliases: ["fixture-cmd"], summary: "Fixture command" },
+    { kind: "connector", name: "fixture-connector", requires: ["node"], eventChannel: true, supportsReasoningEvents: true },
+    { kind: "runtime", name: "fixture-runtime" },
+    { kind: "local-process", name: "fixture-process", label: "Fixture process", pidFile: "{root}/fixture.pid", order: 10 },
+  ];
+  const core = "0.184.1";
+  const factorySource = `export default host => host.register(...${JSON.stringify(providers)});`;
+  const options = { name: "fixture-parity", version: "1.0.0", core, provides: providers, factorySource };
+  writePluginFixture(dir, options);
+  const factory = (await import(pathToFileURL(join(dir, "index.js")).href)).default;
+  const declaration = await pluginManifest(factory, { coreVersion: core });
+  assert.deepEqual(JSON.parse(readFileSync(join(dir, "package.json"), "utf8")).cotal, JSON.parse(JSON.stringify(declaration)));
+  assert.throws(() => writePluginFixture(dir, { ...options, provides: [{ kind: "service-preset", name: "unsupported" }] }), /Unsupported fixture provider kind/);
+}
+
 try {
   await importRemedies();
   await entryResolution();
   await metadataPolicy();
   await declarationPolicy();
+  await physicalCoreBoundary();
+  await fixtureDeclarationParity();
   console.log("SMOKE OK: import-remedy");
 } finally {
   if (prior === undefined) delete process.env.XDG_CONFIG_HOME;

@@ -1,8 +1,8 @@
-import { readFileSync } from "node:fs";
+import { readFileSync, realpathSync } from "node:fs";
 import { createRequire } from "node:module";
-import { join } from "node:path";
+import { isAbsolute, join, relative, sep } from "node:path";
 import { MIN_PLUGIN_CORE } from "@cotal-ai/core";
-import { hostPackageDir, type InstalledExtensionPackage } from "./extensions.js";
+import { extensionsDir, hostPackageDir, type InstalledExtensionPackage } from "./extensions.js";
 import { comparePeerVersions } from "./import-diagnosis.js";
 import type { PluginDeclaration } from "./plugin-manifest.js";
 
@@ -11,6 +11,14 @@ function packageVersion(file: string): string {
   if (typeof version !== "string" || comparePeerVersions(version, version) !== 0)
     throw new Error("core package metadata has no valid version");
   return version;
+}
+
+function resolvePluginCore(entry: string): string {
+  const file = realpathSync(createRequire(entry).resolve("@cotal-ai/core/package.json"));
+  const inside = relative(realpathSync(extensionsDir()), file);
+  if (!inside || inside === ".." || inside.startsWith(`..${sep}`) || isAbsolute(inside))
+    throw new Error("the resolved core is outside the extensions prefix");
+  return packageVersion(file);
 }
 
 /** Verify the bundled or resolved core without importing the plugin. */
@@ -24,8 +32,8 @@ export function checkPluginCore(pkg: string, meta: InstalledExtensionPackage, de
   let pluginCore = declaration.core;
   if (pluginCore === undefined && meta.dependencies?.["@cotal-ai/core"] === undefined) return;
   if (pluginCore === undefined) {
-    try { pluginCore = packageVersion(createRequire(entry).resolve("@cotal-ai/core/package.json")); }
-    catch (error) { throw new Error(`plugin ${pkg} has no readable core version; run \`cotal ext add ${pkg}@latest\``, { cause: error }); }
+    try { pluginCore = resolvePluginCore(entry); }
+    catch (error) { throw new Error(`plugin ${pkg} has no readable core version inside the extensions prefix; run \`cotal ext add ${pkg}@latest\``, { cause: error }); }
   }
   const older = comparePeerVersions(pluginCore, MIN_PLUGIN_CORE);
   const newer = comparePeerVersions(pluginCore, hostCore);
