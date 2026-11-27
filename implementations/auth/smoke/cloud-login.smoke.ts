@@ -54,6 +54,7 @@ const signup = await ba.api.signUpEmail({body:{email:'lane@example.test',passwor
 sub = signup.response.user.id;
 const cookie = signup.headers.get('set-cookie')!.split(';')[0];
 let output = '';
+let loginTimedOut = false;
 let approval: Promise<void> | undefined;
 const child = spawn('./node_modules/.bin/tsx', ['bin/cotal.ts','login','--idp',base,'--plain'], {env,stdio:['ignore','pipe','pipe']});
 const capture = (chunk: Buffer) => {
@@ -62,9 +63,10 @@ const capture = (chunk: Buffer) => {
   if (match && !approval) approval = approveDevice({base,cookie,origin},match[1]);
 };
 child.stdout.on('data',capture); child.stderr.on('data',capture);
-const timer = setTimeout(()=>child.kill('SIGTERM'),30_000);
+const timer = setTimeout(()=>{ loginTimedOut = true; child.kill('SIGTERM'); },30_000);
 try {
-  const code = await new Promise<number|null>((resolve, reject) => { child.on('close', (status, signal) => signal ? reject(new Error(`login was killed by its own 30s deadline before it finished:\n${output}`)) : resolve(status)); });
+  const code = await new Promise<number|null>(resolve=>child.on('close',resolve));
+  assert.equal(loginTimedOut, false, `login was killed by its own 30s deadline before it finished:\n${output}`);
   await approval;
   clearTimeout(timer);
   assert.equal(code, 0, output);
@@ -78,15 +80,18 @@ try {
   assert.equal(readFileSync(join(env.COTAL_HOME!, 'current-mesh.adopted'), 'utf8').trim(), 'personal');
   console.log('Real Better Auth approval through CLI selects personal space and names next commands.');
   let seeded = '';
-  const seed = spawn('./node_modules/.bin/tsx', ['bin/cotal.ts', 'ps', '--plain'], { env, stdio: ['ignore', 'pipe', 'pipe'] });
+  let seedTimedOut = false;
+  const seed = spawn('./node_modules/.bin/tsx', ['bin/cotal.ts', 'ext', 'seed'], { env, stdio: ['ignore', 'pipe', 'pipe'] });
   seed.stdout.on('data', chunk => { seeded += chunk.toString(); });
   seed.stderr.on('data', chunk => { seeded += chunk.toString(); });
-  const seedLimit = setTimeout(() => seed.kill('SIGTERM'), 180_000);
+  const seedLimit = setTimeout(() => { seedTimedOut = true; seed.kill('SIGTERM'); }, 180_000);
   try {
-    const seedExit = await new Promise(resolve => seed.on('close', (code, signal) => resolve({ code, signal })));
-    const seedEnded = seedExit as { code: number | null, signal: NodeJS.Signals | null };
-    assert.equal(seedEnded.signal, null, `the seed of this home was killed by its own deadline after 180s:\n${seeded}`);
-    assert.notEqual(seedEnded.code, null, seeded);
+    const seedExit = await new Promise<number | null>(resolve => seed.on('close', resolve));
+    assert.equal(seedTimedOut, false, `the seed of this home was killed by its own deadline after 180s:\n${seeded}`);
+    assert.equal(seedExit, 0, seeded);
+    const installed = JSON.parse(readFileSync(join(env.XDG_CONFIG_HOME!, 'cotal', 'extensions', 'extensions.json'), 'utf8')).extensions as { pkg: string }[];
+    for (const pkg of ['@cotal-ai/connector-claude-code', '@cotal-ai/connector-opencode', '@cotal-ai/connector-codex', '@cotal-ai/connector-hermes', '@cotal-ai/connector-jcode', '@cotal-ai/pi', '@cotal-ai/web']) assert.ok(installed.some(entry => entry.pkg === pkg), seeded);
+    console.log(`Seeded built-ins before the timed cells: ${installed.map(entry => entry.pkg).join(', ')}`);
   } finally { clearTimeout(seedLimit); }
   revoked = true;
   const catalogPath = join(env.COTAL_HOME!, 'space-catalogs.json');
@@ -97,14 +102,15 @@ try {
   for (const command of ['ps', 'spawn', 'sync', 'status']) {
     for (const mode of ['--plain', '--json']) {
       let refusal = '';
+      let timedOut = false;
       const ps = spawn('./node_modules/.bin/tsx', ['bin/cotal.ts', command, ...(command === 'spawn' ? ['-d'] : []), mode], { env, stdio: ['ignore', 'pipe', 'pipe'] });
       ps.stdout.on('data', chunk => { refusal += chunk.toString(); });
       ps.stderr.on('data', chunk => { refusal += chunk.toString(); });
-      const psDeadline = setTimeout(() => ps.kill('SIGTERM'), 30_000);
+      const psDeadline = setTimeout(() => { timedOut = true; ps.kill('SIGTERM'); }, 30_000);
       try {
-        const ended = await new Promise<{ code: number | null, signal: NodeJS.Signals | null }>(resolve => ps.on('close', (code, signal) => resolve({ code, signal })));
-        assert.equal(ended.signal, null, `${command} ${mode} was killed by its own 30s deadline before it finished:\n${refusal}`);
-        if (command !== 'status') assert.notEqual(ended.code, 0, refusal);
+        const exit = await new Promise(resolve => ps.on('close', resolve));
+        assert.equal(timedOut, false, `${command} ${mode} was killed by its own 30s deadline before it finished:\n${refusal}`);
+        if (command !== 'status') assert.notEqual(exit, 0, refusal);
         assert.match(refusal, new RegExp(`cotal login --idp ${base.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`), refusal);
         assert.equal(readFileSync(join(env.COTAL_HOME!, 'idp-sessions.json'), 'utf8'), sessionBefore);
         for (const session of Object.values(JSON.parse(sessionBefore).sessions) as { token: string }[]) assert.equal(refusal.includes(session.token), false);
@@ -123,6 +129,7 @@ try {
     const dir = mkdtempSync(join(home, 'cell-'));
     if (cell.previous) writeFileSync(join(dir, 'current-mesh'), cell.previous, { mode: 0o600 });
     let text = '';
+    let landingTimedOut = false;
     let approved: Promise<void> | undefined;
     const login = spawn('./node_modules/.bin/tsx', ['bin/cotal.ts', 'login', '--idp', base, '--plain'], { env: { ...env, COTAL_HOME: dir }, stdio: ['ignore', 'pipe', 'pipe'] });
     const collect = (chunk: Buffer) => {
@@ -131,9 +138,11 @@ try {
       if (match && !approved) approved = approveDevice({ base, cookie, origin }, match[1]);
     };
     login.stdout.on('data', collect); login.stderr.on('data', collect);
-    const deadline = setTimeout(() => login.kill('SIGTERM'), 30_000);
+    const deadline = setTimeout(() => { landingTimedOut = true; login.kill('SIGTERM'); }, 30_000);
     try {
-      assert.equal(await new Promise((resolve, reject) => login.on('close', (status, signal) => signal ? reject(new Error(`login was killed by its own 30s deadline before it finished:\n${text}`)) : resolve(status))), 0, text);
+      const landed = await new Promise(resolve => login.on('close', resolve));
+      assert.equal(landingTimedOut, false, `login was killed by its own 30s deadline before it finished:\n${text}`);
+      assert.equal(landed, 0, text);
       await approved;
       const selected = existsSync(join(dir, 'current-mesh')) ? readFileSync(join(dir, 'current-mesh'), 'utf8').trim() : undefined;
       assert.equal(selected, cell.expected, text);
