@@ -35,10 +35,14 @@ if (["agent-bearer", "auth-service", "app-identity"].includes(process.argv[2] ??
   mkdirSync(root);
   for (const key of Object.keys(process.env)) if (key.startsWith("COTAL_")) delete process.env[key];
   process.env.COTAL_HOME = home;
-  const { CotalEndpoint, createSpaceAuth, isReachable, mintCreds, newIdentity, serverConfig, setupSpaceStreams } = await import("@cotal-ai/core");
+  const { CotalEndpoint, createSpaceAuth, isReachable, mintCreds, newIdentity, registry, serverConfig, setupSpaceStreams } = await import("@cotal-ai/core");
   const { authDir, assertUserAuthInfo, findMesh, recordMesh, saveSpaceAuth, userAuthStateDir, workspaceSecretStore } = await import("@cotal-ai/workspace");
   const { cotalAuthProvider, grantActor, loadCalloutAuth, revokeManagedActor } = await import("@cotal-ai/auth");
   const { deleteIdpSpaceCatalog, loadIdpSession, saveIdpSession } = await import("../src/login.js");
+  const { conversationAccountKey } = await import("../src/login.js");
+  const { previousAccountConversationsNotice } = await import("../src/logout.js");
+  const { conversationSignOut } = await import("../../cli/src/lib/app-user-identity.js");
+  if (!registry.all("conversation-sign-out").some((h) => h.name === conversationSignOut.name)) registry.register(conversationSignOut);
   const { pickFreePort } = await import("./_free-port.js");
   const { EMPTY, startApprovalAuthority } = await import("./_approval-authority.js");
   type Child = import("node:child_process").ChildProcess;
@@ -349,6 +353,25 @@ if (["agent-bearer", "auth-service", "app-identity"].includes(process.argv[2] ??
       check("another account of the same provider cannot probe, replace or change the saved approval", otherAccount.error &&
         otherAccount.text.includes("approved by another account") && counts.resumeProbes === probes && counts.posts === requestsBeforeSwitch &&
         readFileSync(recoveryFile, "utf8") === ready && await granted(oldActor), otherAccount.text);
+      const switchNotice = previousAccountConversationsNotice(home, idpUrl, login.sub!);
+      const noticeHome = mkdtempSync(join(home, "notice-"));
+      const parsedReady = JSON.parse(ready) as Record<string, unknown> & { remote: Record<string, unknown> };
+      for (const providerUrl of ["https://cotal.cloud/api/auth", "https://cloud.cotal.ai/api/auth"]) {
+        const providerDir = join(noticeHome, createHash("sha256").update(providerUrl).digest("hex"));
+        mkdirSync(join(providerDir, "app-identities", "a".repeat(64)), { recursive: true, mode: 0o700 });
+        writeFileSync(join(providerDir, "app-identities", "a".repeat(64), "identity.json"), JSON.stringify({
+          ...parsedReady, accountKey: conversationAccountKey(providerUrl, "sub-a"),
+          remote: { ...parsedReady.remote, idpUrl: providerUrl },
+        }), { mode: 0o600 });
+      }
+      const cloudDefaultNotice = previousAccountConversationsNotice(join(noticeHome, createHash("sha256").update("https://cotal.cloud/api/auth").digest("hex")), "https://cotal.cloud/api/auth", "sub-a");
+      const cloudAltNotice = previousAccountConversationsNotice(join(noticeHome, createHash("sha256").update("https://cloud.cotal.ai/api/auth").digest("hex")), "https://cloud.cotal.ai/api/auth", "sub-a");
+      check("switching accounts counts the previous account's remaining resumable approvals and names matching provider commands",
+        switchNotice === `The previous account still has 2 resumable conversation approvals on this computer. Sign in to that account with \`cotal login --idp ${idpUrl}\` and run \`cotal logout --idp ${idpUrl}\`, or revoke them at the space authority, to end them.` &&
+        cloudDefaultNotice?.includes("with `cotal login` and run `cotal logout`,") === true &&
+        cloudAltNotice?.includes("with `cotal login --idp https://cloud.cotal.ai/api/auth` and run `cotal logout --idp https://cloud.cotal.ai/api/auth`,") === true &&
+        previousAccountConversationsNotice(home, idpUrl, "different-recovery-account") === undefined,
+        { switchNotice, cloudDefaultNotice, cloudAltNotice });
       saveIdpSession(home, idpUrl, { ...login, expiresAt: 1 });
       const expired = await g7.call("cotal_connect", { name: recoveryName, context: recoverySession });
       check("an expired login cannot resume a ready approval", expired.error && expired.text.includes("Sign in again") && actorOf(recoverySession) === oldActor, expired.text);
@@ -408,8 +431,9 @@ if (["agent-bearer", "auth-service", "app-identity"].includes(process.argv[2] ??
       const setAside = join(home, "app-identities", `unconfirmed-${record(recoverySession)!.requestId}-0000000000000000`);
       renameSync(recordDir(recoverySession), setAside);
       await checkUnboundApproval();
+      const manualMesh = findMesh(space)!;
       const catalogOwner = deleteIdpSpaceCatalog(home, idpUrl, login.sub!);
-      recordMesh({ ...findMesh(space)!, origin: "catalog", catalogOwner });
+      recordMesh({ ...manualMesh, origin: "catalog", catalogOwner });
       const attemptsBeforeCatalog = counts.retirementAttempts;
       const catalogLogout = await signOut();
       check("logout retires exact lifecycles before removing the catalog registration and revoking the login", catalogLogout.includes(space) &&
@@ -417,6 +441,39 @@ if (["agent-bearer", "auth-service", "app-identity"].includes(process.argv[2] ??
         retirementAttemptsAtRevocation > attemptsBeforeCatalog && retirementAttemptsAtRevocation === counts.retirementAttempts, catalogLogout);
       check("sign-out retires a live lifecycle in a round-one set-aside folder", !existsSync(setAside) &&
         !await granted(replacement) && footprint(replacement) === "terminal");
+      recordMesh(manualMesh);
+      authority.availability.humanSession = true;
+      saveIdpSession(home, idpUrl, login);
+      authority.availability.resume = false;
+      const gProofless = await gateway(["recovery-session-5"]);
+      const prooflessConn = await gProofless.connect("recover_proofless_setaside", "recovery-session-5");
+      assert(prooflessConn.id);
+      authority.availability.resume = true;
+      const prooflessActor = actorOf("recovery-session-5")!;
+      const prooflessId = record("recovery-session-5")!.requestId;
+      assert(!("proof" in JSON.parse(readFileSync(join(recordDir("recovery-session-5"), "identity.json"), "utf8"))));
+      recordMesh({ ...manualMesh, server: "nats://127.0.0.1:1" });
+      authority.availability.humanSession = false;
+      await gProofless.call("cotal_disconnect", { connection_id: prooflessConn.id });
+      await stopped(gProofless.child);
+      recordMesh(manualMesh);
+      const prooflessSetAside = join(home, "app-identities", `unconfirmed-${prooflessId}`);
+      assert(existsSync(join(prooflessSetAside, "identity.json")));
+      authority.availability.humanSession = true;
+      authority.availability.retirement = false;
+      const firstProoflessLogout = await signOut();
+      check("a temporary sign-out failure reports a proof-less set-aside record and keeps its live lifecycle for retry",
+        firstProoflessLogout.includes("unconfirmedConversations") && firstProoflessLogout.includes("recover_proofless_setaside") &&
+        existsSync(join(prooflessSetAside, "identity.json")) && await granted(prooflessActor) && footprint(prooflessActor) === "live",
+        firstProoflessLogout);
+      authority.availability.retirement = true;
+      authority.availability.humanSession = true;
+      saveIdpSession(home, idpUrl, login);
+      const secondProoflessLogout = await signOut();
+      check("the next sign-out retries a proof-less set-aside record and finishes its retirement",
+        !secondProoflessLogout.includes("unconfirmedConversations") && !existsSync(prooflessSetAside) &&
+        !await granted(prooflessActor) && footprint(prooflessActor) === "terminal",
+        secondProoflessLogout);
       console.log(`personal-native-recovery: ${checks} real-broker resume checks passed`);
     } else {
     // The reported sequence: disconnect while the authority reports retirement pending, then

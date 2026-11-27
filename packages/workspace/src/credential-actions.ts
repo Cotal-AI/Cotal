@@ -51,6 +51,8 @@ export interface ConversationSignOut extends Extension {
    *  Return one entry per candidate whose exact retirement could not be confirmed. An empty
    *  list means the scan found no unconfirmed retirements, not that other identities were stopped. */
   retire(opts: { dir: string; idp: string; accountKey?: string }): Promise<readonly UnconfirmedConversation[]>;
+  /** Count saved resumable conversation approvals bound to `accountKey` at `idp`. */
+  count?(opts: { dir: string; idp: string; accountKey: string }): number;
 }
 
 /** The last Unix second a JavaScript date holds (8.64e15 ms). A later expiry has no date that a
