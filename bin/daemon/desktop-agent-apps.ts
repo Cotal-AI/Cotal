@@ -182,7 +182,9 @@ async function runInstaller(installer: HarnessInstaller, path: string, emit: Emi
     const root = systemRoot();
     if (!root) throw new CommandFailure("refused", "UNSUPPORTED", "the Windows system directory is unavailable; no installer was run");
     const powershell = win32.join(root, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
-    return await run(powershell, ["-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", `irm '${installer.script}' | iex`], { env: installerEnv, timeoutMs, emit });
+    // A script that stops by throwing leaves its own sentence as the last line, not a PowerShell error record.
+    const command = `[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); try { irm '${installer.script}' | iex } catch { [Console]::Error.WriteLine($_.Exception.Message); exit 1 }`;
+    return await run(powershell, ["-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", command], { env: installerEnv, timeoutMs, emit });
   }
   const curl = resolveOnPath("curl", env);
   const shell = resolveOnPath(installer.shell ?? "sh", env);
@@ -279,7 +281,9 @@ export async function installAgentApp(name: string, emit: Emit): Promise<AgentAp
   emit(`Downloading the ${app.install.title} installer from ${new URL(installer.script).host}`);
   const ran = await runInstaller(installer, before, emit);
   if (ran.timedOut) throw new CommandFailure("failed", "OPERATION_FAILED", `the ${app.install.title} installer did not finish within 15 minutes and was stopped`, { native: { code: "INSTALLER_FAILED", detail: ran.tail.join("\n") } });
-  if (ran.code !== 0) throw new CommandFailure("failed", "OPERATION_FAILED", `the ${app.install.title} installer stopped with exit code ${ran.code}`, { native: { code: "INSTALLER_FAILED", detail: ran.tail.join("\n") } });
+  // On Windows the last line is the reason the script gave; elsewhere the output is in Details.
+  const reason = process.platform === "win32" && ran.tail.length ? `: ${ran.tail.at(-1)}` : "";
+  if (ran.code !== 0) throw new CommandFailure("failed", "OPERATION_FAILED", `the ${app.install.title} installer stopped with exit code ${ran.code}${reason}`, { native: { code: "INSTALLER_FAILED", detail: ran.tail.join("\n") } });
   let path = await accountPath();
   let pathAdded: string | undefined;
   const unresolved = () => app.requires.filter(command => !resolveOnPath(command, { ...process.env, PATH: path }));
