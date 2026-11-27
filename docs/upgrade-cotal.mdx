@@ -128,6 +128,8 @@ launcher, when present, and then looks for a compatible Node alongside npm or on
 Cotal checks whether the Node it chooses for Corepack can also run the npm that Corepack selects.
 If npm requires a different Node version, Cotal keeps looking for one that can run both.
 The search can also use Volta's `node` shim.
+If the `npm` shim on `PATH` comes from asdf, Cotal resolves the project's selected npm executable
+before leaving the project and runs it outside the project, including during connector reconciliation.
 If the `node` shim on `PATH` selects a compatible version from the current project, as with asdf,
 Cotal verifies that executable and runs npm with it outside the project, including during
 reconciliation after a release changes. If the project's selection cannot run npm, Cotal also
