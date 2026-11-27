@@ -389,7 +389,12 @@ self-registers only when imported, and the CLI imports it only once it is instal
 
 The CLI seeds the connectors before the first command of each boot that is not a read. It uses the
 same `cotal ext add` path a third party uses, so the connectors are ordinary extensions you can
-`cotal ext remove`. A command or subcommand that declares `reads` installs and refreshes nothing.
+`cotal ext remove`. The first `cotal ext remove` on a machine that has not seeded still seeds,
+because that command is what installs the built-ins. Once a seed has failed and no installer is
+still writing, `cotal ext remove` leaves that seed alone, so taking the recorded extension out is
+not refused before it runs. An interrupted seed, a recovery journal, or a child that may still be
+installing still refuses `cotal ext remove`. A command or subcommand that declares `reads` installs
+and refreshes nothing.
 The CLI never imports a built-in whose installed version differs from the binary's. Its error names
 the package and the `cotal ext seed` remedy instead.
 
@@ -563,10 +568,15 @@ inspection does not invoke `ps`. Each inspection reads the owner record once and
 with the observed inode. Reclaim checks both again under its sentinel before it removes the lock
 file it judged.
 
-The reconcile journals a crash cursor before each connector mutation. On a setup retry, reconcile
-checks the staged add and the seed records under both locks. When those records identify an
-interrupted first install and no installer is active or ambiguous, setup uses the same verified
-reinstall as `cotal ext seed --repair`. A missing generation stamp alone is not enough.
+The reconcile journals a crash cursor before each connector mutation. A verify pass installs into a
+stage and promotes it once, at the end. When that install fails before the promotion, the live
+prefix is unchanged, so the pass drops the cursor it wrote and the failure stands on its own.
+While npm is offline, a verify or repair does not fetch a recorded registry extension that is not
+on disk. The manifest entry stays, so a later `cotal ext add` or `cotal ext remove` can put it
+back or drop it. On a setup retry, reconcile checks the staged add and the seed records under both
+locks. When those records identify an interrupted first install and no installer is active or
+ambiguous, setup uses the same verified reinstall as `cotal ext seed --repair`. A missing
+generation stamp alone is not enough.
 When reconcile cannot establish safe recovery, it keeps the cursor and reports the repair command.
 A SIGTERM to the seed command lets the current transaction finish, then stops
 before another starts. If an ordinary install verified, cancellation clears the cursor without

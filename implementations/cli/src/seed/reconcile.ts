@@ -37,6 +37,7 @@ import {
   clearChildMarker,
   clearCursor,
   clearRecovery,
+  clearUnpromotedCursor,
   markCursorFailed,
   readCursor,
   readRecovery,
@@ -604,21 +605,12 @@ async function runUnderLocks(mode: Mode, generation: string, nonce: string, refr
     ),
   ).map((entry) => ({ pkg: entry.pkg, spec: operatorUpdateSpec(entry, generation), version: generation }));
 
-  if (mode === "verify") {
-    const { installExtensionSet } = await import("../commands/ext.js");
-    await installExtensionSet([...staged, ...operators]);
-    for (const entry of staged) verifyInstalled(entry.name, generation);
-    for (const entry of operators) verifyOperatorInstalled(entry.pkg, generation);
-  } else if (operators.length) {
+  if (mode === "verify") await installVerified(nonce, generation, staged, operators);
+  else if (operators.length) {
     clearCursor();
-    const { installExtensionSet } = await import("../commands/ext.js");
     for (const entry of operators) console.error(c.dim(`Reconciling extension ${entry.pkg}@${generation}`));
     try {
-      await installExtensionSet(operators, console.error, { isolate: true });
-      for (const entry of operators) {
-        verifyOperatorInstalled(entry.pkg, generation);
-        refreshed.push(entry.pkg);
-      }
+      await installOperators(operators, generation, refreshed);
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error);
       const desktop = isBundledDesktopRuntime();
@@ -653,6 +645,47 @@ async function runUnderLocks(mode: Mode, generation: string, nonce: string, refr
     loadExtensionsManifest().extensions.map((e) => e.spec),
   );
   return { noop: false, seeded, refreshed, verified, removedKept };
+}
+
+/** Install a verify pass. Built-ins go in first, then optional extensions, each in its own stage.
+ *  The cursor names a built-in copy that has not touched the live prefix, and a stage promotes
+ *  once, at the end. A failure before that promotion changed nothing, so the cursor is dropped and
+ *  the failure stands on its own. */
+async function installVerified(
+  nonce: string,
+  generation: string,
+  staged: readonly { name: string; pkg: string; spec: string; version: string; source: "seeded" }[],
+  operators: readonly { pkg: string; spec: string; version: string }[],
+): Promise<void> {
+  const { installExtensionSet } = await import("../commands/ext.js");
+  try {
+    if (staged.length) {
+      await installExtensionSet(staged);
+      for (const entry of staged) verifyInstalled(entry.name, generation);
+    }
+    clearUnpromotedCursor(nonce);
+    if (operators.length) await installOperators(operators, generation, []);
+  } catch (error) {
+    clearUnpromotedCursor(nonce);
+    throw error;
+  }
+}
+
+/** Install optional extensions after the built-ins. A registry package that is not on disk while
+ *  npm is offline stays recorded and is not verified: there is nothing on disk to verify, and
+ *  fetching it would fail the repair. */
+async function installOperators(
+  operators: readonly { pkg: string; spec: string; version: string }[],
+  generation: string,
+  refreshed: string[],
+): Promise<void> {
+  const { installExtensionSet } = await import("../commands/ext.js");
+  const leftOut = new Set(await installExtensionSet(operators, console.error, { isolate: true }));
+  for (const entry of operators) {
+    if (leftOut.has(entry.pkg)) continue;
+    verifyOperatorInstalled(entry.pkg, generation);
+    refreshed.push(entry.pkg);
+  }
 }
 
 /** What refuses an `up` at the boot gate, where it defers its seed to its first launch, in the order

@@ -1,10 +1,11 @@
 import { randomBytes } from "node:crypto";
 import { bindExtensionPeers } from "@cotal-ai/workspace";
-import { boot, existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync, tmpdir, join, check, cotal, freshCfg, seedDir, manifestPath, readJson, writeJson, track, finishScenario } from "./harness.js";
+import { boot, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync, tmpdir, join, check, cotal, freshCfg, seedDir, manifestPath, readJson, writeJson, track, finishScenario } from "./harness.js";
 
 // A third-party extension recorded in the manifest whose package directory is gone: never installed
 // there, or pruned by npm as extraneous because the prefix's package.json does not list it. Either
-// one used to fail every seed, `--repair` included, and the failed seed then refused `ext remove`.
+// one used to fail every seed, `--repair` included. `ext remove` drops the entry without repairing
+// that seed.
 const PKG = "@fixture/cotal-absent-ext";
 const BUILTINS = [
   "@cotal-ai/connector-claude-code",
@@ -81,14 +82,14 @@ try {
     symlinkSync(process.execPath, join(bin, "node"));
     const failed = boot(cfg, { PATH: bin });
     check("absent extension recovery: a seed without npm fails and keeps its cursor", failed.status !== 0 && existsSync(cursorPath(cfg)), failed.stderr);
-    const refused = cotal(cfg, ["ext", "remove", PKG]);
-    check("absent extension recovery: remove is refused until the failed seed is repaired",
-      refused.status !== 0 && /a previous connector seed failed \(package "claude", phase add\)/.test(refused.stderr) && /cotal ext seed --repair/.test(refused.stderr), refused.stderr);
+    const kept = readFileSync(cursorPath(cfg), "utf8");
     const repair = cotal(cfg, ["ext", "seed", "--repair"]);
     check("absent extension recovery: --repair exits 0 and names the absent package, never its spec", repair.status === 0 && warned(repair, dir), repair.stderr);
     check("absent extension recovery: --repair seeds all seven built-ins and clears the cursor", seededAll(cfg), recorded(cfg));
+    writeFileSync(cursorPath(cfg), kept);
     const remove = cotal(cfg, ["ext", "remove", PKG]);
-    check("absent extension recovery: remove then drops the entry", remove.status === 0 && !recorded(cfg).includes(PKG), remove.stderr);
+    check("absent extension recovery: remove drops the entry while a failed seed cursor stays",
+      remove.status === 0 && !recorded(cfg).includes(PKG) && readFileSync(cursorPath(cfg), "utf8") === kept, remove.stderr);
     const reset = cotal(cfg, ["ext", "seed", "--reset"]);
     check("absent extension recovery: a later --reset exits 0 with no absent-package warning", reset.status === 0 && !reset.stderr.includes(PKG) && seededAll(cfg), reset.stderr);
   }

@@ -66,7 +66,7 @@ import {
 import { recoverExtensionPromotion } from "./lib/extension-stage.js";
 import { SeedChildFailure, deferredSeedRefusal, reconcileSeededConnectors, seedDowngradeRefusal } from "./seed/reconcile.js";
 import { deferSeedToLaunch } from "./seed/launch.js";
-import { isAuthenticSeedChild } from "./seed/lock.js";
+import { isAuthenticSeedChild, readCursor, reconcileLockActive, seedChildStatus } from "./seed/lock.js";
 import { printHelpPath, printEntry } from "./help.js";
 import { historySetupFailureRecords, membershipSetupFailureRecords, watchSetupFailureRecords } from "./lib/stream-setup-failure.js";
 import { HISTORY_LIMIT_FLAGS } from "./commands/history-limit.js";
@@ -352,6 +352,7 @@ function skipsSeed(name: string, sub: string | undefined, argv: readonly string[
   // which replaces it) still seeds on first run.
   if (process.env.COTAL_SKIP_CONNECTOR_SEED === "1") return true;
   if (name === "ext" && sub === "seed") return true; // the explicit maintenance command self-reconciles
+  if (name === "ext" && sub === "remove" && extRemoveKeepsSeed()) return true; // a failed seed must not trap a recorded entry; a fresh install still seeds
   if (name === "ext" && sub === "add" && isAuthenticSeedChild()) return true; // a seed child must not recurse
   // `agent-bearer` is machine-facing: a spawned seat execs it on EVERY bearer refresh to read one 0600
   // token file, exchange it, print the bearer and exit. It must not depend on or mutate the
@@ -366,6 +367,21 @@ function skipsSeed(name: string, sub: string | undefined, argv: readonly string[
   // connection, so, like a credential exchange, it must not seed the store under a running connector.
   if (name === "app-identity" || name === "mcp") return true;
   return false;
+}
+
+/** Whether `ext remove` should leave the seed alone. A fresh install still seeds, because the first
+ *  command of a boot is what installs the built-ins. A seed that already failed is not an installer
+ *  still writing the prefix, so removing the recorded extension must not be refused before it runs.
+ *  An interrupted seed, a recovery journal or a child that may still be installing still refuses. */
+function extRemoveKeepsSeed(): boolean {
+  try {
+    const cursor = readCursor();
+    if (!cursor?.failed || reconcileLockActive()) return false;
+    const child = seedChildStatus();
+    return child.kind !== "live" && child.kind !== "ambiguous";
+  } catch {
+    return false;
+  }
 }
 
 function seedRefusal(error: unknown): void {
