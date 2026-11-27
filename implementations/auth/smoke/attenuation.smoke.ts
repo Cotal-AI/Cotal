@@ -249,12 +249,9 @@ try {
     () => ledgerAuthorizeAgentExchange(dir, OWNER, "grandkid", gk.actorToken),
     "no longer granted",
   );
-  // The widest re-grant in the codebase lives on this branch: the revoke DELETED the row, so
-  // `cotal actor list` can no longer show what it held, and an operator re-granting from memory
-  // omits a flag and gets `>`. It said only "re-grant it, then respawn" until this cell.
   check(
-    "the revoked-spawner refusal warns that an omitted flag on the re-grant comes back WIDE",
-    /--allow-subscribe/.test(revokedMsg) && /--allow-publish/.test(revokedMsg) && /WIDE default/.test(revokedMsg),
+    "the missing ancestor is named without asking the operator to recreate its grant",
+    revokedMsg.includes("(an ancestor)") && revokedMsg.includes("Renewal requires that spawner's grant.") && !revokedMsg.includes("re-grant"),
     revokedMsg,
   );
   rejects(

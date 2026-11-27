@@ -6,7 +6,7 @@
  * Run: pnpm smoke:native-conversation-capabilities   (needs nats-server + node on PATH)
  */
 import assert from "node:assert/strict";
-import { generateKeyPairSync } from "node:crypto";
+import { generateKeyPairSync, randomBytes } from "node:crypto";
 import { SMOKE_BROKER_TOKEN, freePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const subcommand = process.argv[2] ?? "";
@@ -19,7 +19,16 @@ if (["agent-bearer", "auth-service", "app-identity"].includes(subcommand)) {
     await appIdentity(parseCommandArgs({ kind: "command", name: "app-identity", summary: "fixture identity entrypoint", positionals: "<operation>", flags: appIdentityFlags, run: appIdentity }, process.argv.slice(3)));
   } else {
     const command = registry.all<Command>("command").find((c) => c.name === subcommand)!;
-    await command.run(parseCommandArgs(command, process.argv.slice(3)));
+    const args = parseCommandArgs(command, process.argv.slice(3));
+    if (subcommand === "agent-bearer" && args.values.actor === "orphan_seat") {
+      const fetchExchange = globalThis.fetch;
+      globalThis.fetch = (input, init) => {
+        if (typeof input === "string" && /^http:\/\/127\.0\.0\.1:\d+\/exchange$/.test(input) && typeof init?.body === "string")
+          return fetchExchange(input, { ...init, body: JSON.stringify({ ...JSON.parse(init.body), ttlSec: 18 }) });
+        return fetchExchange(input, init);
+      };
+    }
+    await command.run(args);
   }
 } else if (subcommand === "seat") {
   // The child a conversation spawns: it joins presence with only the bearer its manager issued.
@@ -52,11 +61,11 @@ if (["agent-bearer", "auth-service", "app-identity"].includes(subcommand)) {
   for (const key of Object.keys(process.env)) if (key.startsWith("COTAL_")) delete process.env[key];
   process.env.COTAL_HOME = home;
   const {
-    CotalEndpoint, createSpaceAuth, eventChannel, isReachable, mintCreds, newIdentity, registry, serverConfig, setupSpaceStreams,
+    CotalEndpoint, createSpaceAuth, eventChannel, isReachable, mintCreds, mintLifecycleUid, newIdentity, registry, serverConfig, setupSpaceStreams,
   } = await import("@cotal-ai/core");
   type Connector = import("@cotal-ai/core").Connector;
   const { authDir, assertUserAuthInfo, recordMesh, saveSpaceAuth, userAuthStateDir, workspaceSecretStore } = await import("@cotal-ai/workspace");
-  const { cotalAuthProvider, grantActor, loadAuthServiceInfo, loadCalloutAuth, saveIdpSession } = await import("@cotal-ai/auth");
+  const { cotalAuthProvider, findManagedActor, grantActor, grantManagedActor, hashActorToken, loadAuthServiceInfo, loadCalloutAuth, revokeManagedActor, saveIdpSession } = await import("@cotal-ai/auth");
   const { startApprovalAuthority, EMPTY } = await import("../../auth/smoke/_approval-authority.js");
   const { NATIVE_GATEWAY_TOOLS, serveGatewayStdio } = await import("@cotal-ai/connector-core");
   const { createAppHost } = await import("../../../extensions/connector-claude-code/src/app-host.js");
@@ -97,6 +106,46 @@ if (["agent-bearer", "auth-service", "app-identity"].includes(subcommand)) {
     child.once("exit", () => resolve()); child.kill("SIGTERM");
   });
   const identities = () => existsSync(join(home, "app-identities")) ? readdirSync(join(home, "app-identities")).filter((n) => !n.endsWith(".lock")).length : 0;
+  async function checkOrphanRenewal(args: {
+    owner: string; actor: string; connection: string; observer: InstanceType<typeof CotalEndpoint>;
+    call: (name: string, args: object) => Promise<{ text: string; isError: boolean }>;
+  }) {
+    const name = "orphan_seat";
+    const started = await args.call("cotal_spawn", { connection_id: args.connection, name });
+    check("a second conversation child starts", !started.isError, started);
+    const parent = findManagedActor(stateDir, args.owner, args.actor)!;
+    const seat = findManagedActor(stateDir, args.owner, name)!;
+    assert.equal(seat.parent, `${args.owner}.${args.actor}`);
+    const presence = () => args.observer.getRoster().find((entry) => entry.card.name === name);
+    await until(() => presence()?.status === "idle", "child was just spawned but did not reach the roster");
+    const disconnected = await args.call("cotal_disconnect", { connection_id: args.connection });
+    check("disconnect removes the parent grant but not the child grant",
+      !disconnected.isError && !findManagedActor(stateDir, args.owner, args.actor) && !!findManagedActor(stateDir, args.owner, name));
+    await until(() => presence()?.condition?.code === "auth", "first renewal refusal did not reach the roster");
+    const refusal = presence()!.condition!.message;
+    const command = ["cotal", "pnpm cotal"].some((cli) => refusal?.includes(`\`${cli} spawn ${name} --name NEW_NAME --detach --space=${space}\``));
+    check("presence names the missing grant and gives the owner a replacement command", command && !refusal?.includes("re-grant"), refusal);
+    const { agentLifecycleSecretFilePaths, readAgentAuthHealth } = await import("@cotal-ai/workspace");
+    const health = agentLifecycleSecretFilePaths(root, space, name, seat.lifecycleUid!).health;
+    const first = readAgentAuthHealth(health);
+    check("the health record read by ps has the same diagnosis", refusal && first?.state === "failed" && first.reason?.endsWith(refusal), first?.reason);
+    assert(first);
+    await until(() => presence()?.status === "offline", "the last bearer did not expire");
+    check("the live observer's offline row retains the last reported condition", presence()?.condition?.message === refusal);
+
+    // The test authority approves the same actor again at a different lifecycle. Do not hand the
+    // seat a new token or ask it to reconnect: its own next scheduled renewal must restore it.
+    grantManagedActor(stateDir, { ...parent, tokenHash: hashActorToken(randomBytes(32).toString("base64url")), lifecycleUid: mintLifecycleUid(), custody: { kind: "foreground" } });
+    try {
+      await until(() => presence()?.status === "idle" && !presence()?.condition && readAgentAuthHealth(health)?.state === "ok",
+        "the slow renewal did not reconnect the unchanged child", 250_000);
+      const elapsed = Date.parse(readAgentAuthHealth(health)!.at) - Date.parse(first.at);
+      check("the scheduled retry reconnects the same seat after two to four minutes",
+        elapsed >= 120_000 && elapsed < 245_000 && presence()?.lifecycleUid === seat.lifecycleUid, elapsed);
+    } finally {
+      revokeManagedActor(stateDir, args.owner, args.actor);
+    }
+  }
   try {
     const auth = await createSpaceAuth(space);
     saveSpaceAuth(authDir(root), auth);
@@ -129,6 +178,8 @@ if (["agent-bearer", "auth-service", "app-identity"].includes(subcommand)) {
     registry.register(connector);
     writeFileSync(join(root, ".cotal", "agents", "helper_seat.md"),
       "---\nname: helper_seat\nagent: capability-seat\nsubscribe: []\nallowSubscribe: []\nallowPublish: []\n---\nA fixture child.\n");
+    writeFileSync(join(root, ".cotal", "agents", "orphan_seat.md"),
+      "---\nname: orphan_seat\nagent: capability-seat\nsubscribe: []\nallowSubscribe: []\nallowPublish: []\n---\nA fixture child.\n");
     manager = new Manager({ space, servers, workspaceRoot: root, runtime: "pty", eventsRequired: true });
     await manager.start();
     check("a real user-auth broker, auth service, delivery daemon and Manager are live", authService.exitCode === null && broker.exitCode === null);
@@ -280,7 +331,7 @@ if (["agent-bearer", "auth-service", "app-identity"].includes(subcommand)) {
       started.isError && /hosts no workflow runs yet/.test(started.text), started);
     await tool("cotal_disconnect", { connection_id: runner });
 
-    await tool("cotal_disconnect", { connection_id: sel });
+    await checkOrphanRenewal({ owner, actor, connection: sel, observer, call: tool });
     check("disconnect retires the selected identity", await cotalAuthProvider.actorScope({ dir: stateDir, owner, actor }) === undefined && identities() === before);
     console.log(`native-conversation-capabilities: ${checks} checks passed on a real isolated user-auth mesh; no hosted acceptance claimed`);
   } finally {

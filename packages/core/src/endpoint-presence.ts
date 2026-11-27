@@ -135,6 +135,7 @@ export class EndpointPresence {
 
   /** Advances on every condition change so an older in-flight put cannot be the final KV state. */
   private conditionRevision = 0;
+  private bearerCondition?: PresenceCondition;
 
   /** Read once at construction. Core publishes this opaque provider reference and never parses it. */
   private environment?: string;
@@ -321,6 +322,15 @@ export class EndpointPresence {
     await this.publishPresence();
   }
 
+  /** The last conclusive bearer refusal, separate from any condition reported by the harness. */
+  setBearerCondition(message: string | undefined): void {
+    if (message === this.bearerCondition?.message) return;
+    this.bearerCondition = message === undefined ? undefined : { code: "auth", message, since: Date.now() };
+    this.conditionRevision++;
+    if (message !== undefined) this.emitRecoverable(new Error(message));
+    void this.publishPresence().catch((error: Error) => this.emitRecoverable(error));
+  }
+
   /** Publish the agent's global attention mode into presence (advisory observability). Mirror only -
    *  delivery decisions stay in the connector's authoritative state. */
   async setAttention(attention: AttentionMode): Promise<void> {
@@ -418,7 +428,7 @@ export class EndpointPresence {
       ...(this.identity.ownLifecycleUid !== undefined ? { lifecycleUid: this.identity.ownLifecycleUid } : {}),
       runtime: processRuntime(this.identity.ownLifecycleUid),
       status: this.status,
-      condition: this.condition,
+      condition: this.bearerCondition ?? this.condition,
       environment: this.environment,
       activity: this.activity,
       statusSince: this.statusSince,

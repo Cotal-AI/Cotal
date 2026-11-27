@@ -386,7 +386,7 @@ export function assertWithinSpawnerGrant(
       throw new Error(
         boundary === "spawn"
           ? `spawner "${parentKey}"${deep ? ` (an ancestor of "${leaf}")` : ""} has no grant in this space - delegation flows from a granted spawner chain, so grant "${pActor}" under owner "${pOwner}" first, carrying "spawn" in its --scope. NO ready-to-run line is printed for it, deliberately: the row does not exist, so there is nothing to copy its read and post sets from, and any \`cotal actor grant\` short of all three flags widens the spawner on paste. Choose --allow-subscribe and --allow-publish yourself, because a flag left off is the WIDE default (\`>\` read, \`>\` post), and a spawner's own ACL is the ceiling every agent spawned under it is attenuated against`
-          : `agent "${leaf}": spawner "${parentKey}"${deep ? ` (an ancestor)` : ""} is no longer granted - revoking a spawner revokes everything under it; re-grant it, then respawn (\`cotal spawn\`). The revoke deleted the row, so \`cotal actor list\` can no longer show what it held: name --scope, --allow-subscribe and --allow-publish on the re-grant deliberately, because each one omitted comes back as the WIDE default (\`>\` read, \`>\` post) and a spawner's ACL is the ceiling for everything under it`,
+          : `agent "${leaf}": spawner "${parentKey}"${deep ? ` (an ancestor)` : ""} is no longer granted. Renewal requires that spawner's grant.`,
       );
     if (parent.scope.includes("admin")) return;
     if (child.owner !== pOwner)

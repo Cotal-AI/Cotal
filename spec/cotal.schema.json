@@ -551,13 +551,13 @@
       "type": "object"
     },
     "PresenceCondition": {
-      "description": "A condition the harness reported. Connectors relay it and never infer one from absence.",
+      "description": "A condition reported by the harness or the seat's own exchange. Never inferred from absence.",
       "properties": {
         "code": {
           "$ref": "#/definitions/PresenceConditionCode"
         },
         "message": {
-          "description": "Free-text detail reported by the harness.",
+          "description": "Free-text detail describing the reported condition.",
           "type": "string"
         },
         "since": {
@@ -575,7 +575,7 @@
       "type": "object"
     },
     "PresenceConditionCode": {
-      "description": "Closed, provider-neutral categories a connector may relay from its harness's native signal.",
+      "description": "Closed, provider-neutral categories for a reported presence condition.",
       "enum": [
         "rate_limit",
         "overloaded",
