@@ -13,7 +13,7 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { createServer } from "node:net";
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { countedAssert, emitSentinel, killAndAwaitExit, teardownOnSignal, SMOKE_BROKER_TOKEN } from "@cotal-ai/smoke-kit";
@@ -140,6 +140,25 @@ try {
       const refused = preview([...file, ...selectors, "--foreground"]);
       check.deepEqual([refused.status, refused.envelope.error?.code], [1, "USAGE_INVALID"], selectors.join(" "));
     }
+  }
+
+  if (process.platform !== "win32" && process.getuid?.() !== 0) {
+    const dir = join(realpathSync(root), "search permission");
+    mkdirSync(dir, { mode: 0o600 });
+    try {
+      const refused = preview([...file, "--cwd", dir]);
+      check.equal(refused.status, 2);
+      check.equal(refused.envelope.error?.code, "PERMISSION_DENIED");
+      check.deepEqual(refused.envelope.target, { space: "samplemesh", path: dir });
+      const launch = cli(["spawn", "--foreground", "--harness", "missing-fixture-app", "--space", "samplemesh", "--cwd", dir]);
+      check.equal(launch.status, 2);
+      check.match(launch.stderr, /PERMISSION_DENIED/);
+      chmodSync(dir, 0o100);
+      const allowed = preview([...file, "--cwd", dir]);
+      check.equal(allowed.status, 0);
+      check.equal(allowed.envelope.result?.cwd, dir);
+      check.equal(allowed.envelope.result?.launched, false);
+    } finally { chmodSync(dir, 0o700); }
   }
 
   await killAndAwaitExit(broker);
