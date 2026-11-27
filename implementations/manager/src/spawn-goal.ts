@@ -1,4 +1,5 @@
 import { bindGoal, canonicalJson, clearGoalIndex, commitGoalResult, createGoal, DEV_OWNER, EpEnvelopeError, firstCommandId, goalAlreadyTerminal, goalRefOf, oneLine, parsePrincipalKey, readGoalIndex, readGoalResult, readGoalSpec, recordGoalIndex, rejectionText, settleGoalUncertain, submissionFingerprint } from "@cotal-ai/core";
+import { setTimeout as delay } from "node:timers/promises";
 import type { ControlReply, EpErrorCode, EpServeContext, GoalIndexEntry, GoalRef } from "@cotal-ai/core";
 import type { Manager } from "./manager.js";
 import type { SpawnAcceptance, SpawnHooks } from "./seat-types.js";
@@ -166,7 +167,7 @@ export class SpawnGoal {
     // Named rather than inlined into the hooks below so the H1 post-accept fallback drives THIS
     // path — one commit site, so the progress event, the index clear and the `agentGoals` cleanup
     // cannot drift between a normal outcome and a recovered one.
-    const onOutcome = async (o: { kind: "succeeded" | "failed" | "uncertain"; data?: unknown }): Promise<boolean> => {
+    const onOutcome = async (o: Parameters<NonNullable<SpawnHooks["onOutcome"]>>[0]): Promise<boolean> => {
       // THE AUTHORITY CHECK, and the only one. An attempt that never won the bind provisioned
       // nothing and has no outcome to report: the goal belongs to whoever won it, in this
       // incarnation or a sibling. Refusing here rather than at each unwind site is the point --
@@ -183,6 +184,9 @@ export class SpawnGoal {
         else void this.settleOnceTurn(onceRef, reason);
       }
       try {
+        // A held launch releases the Manager operation before the goal's readiness window ends.
+        // Its unknown terminal still needs the persisted acceptance's deadline.
+        if (o.atReadinessDeadline && acceptance) await delay(Math.max(0, acceptedAt + acceptance.readinessDeadlineMs - Date.now()) + 1, undefined, { ref: false });
         await this.assertGoalWriterEpochCurrent(epoch); // a superseded corpse never commits
         let fact;
         if (o.kind === "succeeded") {

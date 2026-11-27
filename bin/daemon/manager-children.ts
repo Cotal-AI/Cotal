@@ -25,6 +25,26 @@ export interface HostedManagerChildren {
   spaces: (refusals?: boolean) => string[];
 }
 
+/** Split decoded output per pipe. Discard oversized lines without emitting fragments. */
+export function managerOutputLines(sanitize: (text: string) => string, accept: (line: string) => void) {
+  let pending = "", dropping = false;
+  const flush = () => {
+    accept(dropping ? "<oversized Manager log line omitted>\n" : sanitize(pending));
+    pending = "";
+    dropping = false;
+  };
+  return (text: string, end = false) => {
+    for (const part of text.split(/(?<=\n)/)) {
+      if (!dropping) {
+        if (pending.length + part.length > 16_384) { pending = ""; dropping = true; }
+        else pending += part;
+      }
+      if (part.endsWith("\n")) flush();
+    }
+    if (end && (pending || dropping)) flush();
+  };
+}
+
 /** The child-control helpers over one daemon's hosted Managers. Bodies read their deps by the closure's names. */
 export function hostedManagerChildren(deps: HostedManagerChildrenDeps): HostedManagerChildren {
   const { home, notify } = deps;

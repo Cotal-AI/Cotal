@@ -59,7 +59,7 @@ built `dist/`, so run `pnpm build` after `pnpm install` and after editing a pack
 
 | Path                                    | What it is                                                                                                                                                                                                                        |
 | --------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `packages/*`                            | The standard plus the local workstation layer. `@cotal-ai/core` is the wire protocol (generic; depends on nothing else in the repo); `@cotal-ai/workspace` is the machine-local operator and client-surface layer over `~/.cotal` and depends on core; `@cotal-ai/lang` is the cotal-lang workflow language and depends on nothing else here; `@cotal-ai/seat` is local PTY seat custody (one detached custodian per seat) and depends on nothing else here; `@cotal-ai/smoke-kit` is private test-only helpers for the smoke suites, never published and never imported by shipped code. |
+| `packages/*`                            | The standard plus the local workstation layer. `@cotal-ai/core` is the wire protocol (generic; depends on nothing else in the repo); `@cotal-ai/workspace` is the machine-local operator and client-surface layer over `~/.cotal` and depends on core; `@cotal-ai/lang` is the cotal-lang workflow language and depends on nothing else here; `@cotal-ai/seat` is local PTY seat custody and depends on nothing else here; `@cotal-ai/smoke-kit` is private test-only helpers for the smoke suites, never published and never imported by shipped code. |
 | `extensions/*`                          | Pluggable adapters (connectors, runtimes). Peer-depend core; self-register on import.                                                                                                                                             |
 | `implementations/*`                     | Opinionated surfaces over core (CLI, manager, delivery daemon, the cotal-lang runtime host). Self-contained; never import each other.                                                                                                                          |
 | `examples/*`                            | Use-cases / composition roots. Private, never published. Each self-documents in its README.                                                                                                                                       |
@@ -104,14 +104,14 @@ compiled second copy that can disagree with the source.
 validator and the interpreter), the interpreter's sequential core and concurrency scopes, the step
 journal, the effect interface a host implements, and the simulator and dry run that exercise a
 program with no broker. Depends on nothing else in the repo; it knows about effects, not about NATS.
-- `**@cotal-ai/seat**` (`packages/seat`): local PTY seat custody. A one-shot launcher starts one
-detached custodian process per seat. The custodian owns the `node-pty` object, child relationship,
-screen mirror, and exit observation. A manager worker adopts a proxy handle over a permissioned
-Unix socket. Depends on nothing else in the repo; it knows about host processes, not about NATS.
-Custody is Linux only; its host primitives for the daemon endpoint build on Linux, macOS and Windows. The built-in `pty` runtime does not
-launch through it: the manager spawns pty seats in-process on every platform, and uses this
-package only to adopt and reap seats that an earlier manager left under a custodian (on Linux;
-elsewhere `adopt` throws).
+- `**@cotal-ai/seat**` (`packages/seat`): local PTY seat custody. On Linux with a systemd user manager,
+each eligible daemon-hosted Manager lineage and runtime generation has its own shared host in a
+transient user service. The host owns the PTYs, children, screen mirrors and exit observations.
+Verified death of the owning Manager ends its hosted seat cgroups. A socket disconnect alone
+does not end seats. Managers control sessions over permissioned Unix sockets. The local
+protocol and custody records are versioned. The package has no mesh, connector or update logic.
+Other Managers spawn PTYs in-process. Linux supervisors can still adopt and reap older detached
+custodians. Host primitives for the daemon endpoint also build on macOS and Windows.
 - `**@cotal-ai/runtime**` (`implementations/runtime`): the host that runs a cotal-lang program on
 the mesh: the mesh handler binding the effect interface onto the real planes, the durable step
 journal, and the `RunDriver` the manager daemon hosts. Depends on core and lang.

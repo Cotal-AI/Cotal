@@ -95,9 +95,17 @@ A client can embed core without adopting that workstation state.
 Two packages are independent of core and NATS. `@cotal-ai/lang` implements the workflow language,
 interpreter, and journal. `@cotal-ai/seat` supplies detached PTY custody and identity-checked adoption
 and reaping on Linux. Its other-platform operations throw.
-The manager's built-in PTY runtime normally owns seats in-process.
-Its internal seat custody component records runtime references and successor records, adopts surviving
-seats, and checks supervised restart and orphan reaping before lifecycle retirement.
+The built-in PTY runtime normally owns seats in the Manager process. On Linux, a daemon-hosted
+Manager can use a separate transient systemd user service for its lineage and runtime generation.
+This requires linger, a user manager with delegated seat cgroups, and a verified runtime copy or
+retained generation.
+If these conditions cannot be verified, the Manager owns new PTYs in its own process. A lost control
+connection does not end hosted seats. When the owning Manager's death is verified, the service ends
+that Manager's seat cgroups. The shared host does not run mesh code. A successor Manager does not
+adopt hosted seats, and the separate service does not enable rolling updates.
+For runtimes that support recovery, the Manager's seat custody component records runtime references
+and successor records, adopts surviving seats, and checks supervised restart and orphan reaping
+before lifecycle retirement.
 See [process supervision](cli-processes.mdx#supervise) for successor recovery.
 
 Extensions peer-depend on the host's core instance and self-register when imported.

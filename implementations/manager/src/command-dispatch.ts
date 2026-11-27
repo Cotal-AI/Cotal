@@ -13,6 +13,7 @@ import { listHarnessCommands } from "./harness-commands.js";
 import type { ManagerConfig } from "./manager-config.js";
 import type { ManagerStartState } from "./manager-start-state.js";
 import type { ManagerParts } from "./manager-parts.js";
+import { needsProvedPtyStop } from "./runtime/shared-pty.js";
 
 export function participantKey(owner: string, actor: string, uid: string): string {
   return `${owner}.${actor}.${uid}`;
@@ -570,7 +571,7 @@ export class CommandDispatch {
     const target = [...this.agents.values()].find((a) => this.managedPrincipal(a) === callerId);
     if (!target) return { ok: false, error: `self-stop: caller ${callerId} is not a managed agent` };
     const graceful = args.graceful !== false;
-    if (process.platform === "win32" && target.handle.kind === "pty") {
+    if (needsProvedPtyStop(target.handle)) {
       return this.stopWindowsSeat(target, graceful, true, { kind: "stopped-self" }).then(() => ({ ok: true, data: { name: target.name, stopped: true, graceful } }));
     }
     this.stopHandle(target, graceful, { kind: "stopped-self" });
