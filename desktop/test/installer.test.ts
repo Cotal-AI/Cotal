@@ -63,6 +63,19 @@ test('foreign service bootstraps historical dependencies without shielding the c
   assert.doesNotMatch(workflow, /GITHUB_ENV[^\n]*before|before[^\n]*GITHUB_ENV/i);
 });
 
+test('welcome page comes forward when the app window is already open', () => {
+  execFileSync(process.execPath, [fileURLToPath(new URL('../scripts/prepare-installer.mjs', import.meta.url))]);
+  const source = readText('installer.nsi');
+  const show = source.indexOf('!define MUI_PAGE_CUSTOMFUNCTION_SHOW WelcomeShow');
+  const welcome = source.indexOf('!insertmacro MUI_PAGE_WELCOME');
+  assert.ok(show > 0 && show < welcome);
+  assert.ok(source.indexOf('Function WelcomeShow\n  BringToFront\nFunctionEnd') > welcome);
+  const laterShow = source.indexOf('MUI_PAGE_CUSTOMFUNCTION_SHOW', welcome + 1);
+  const later = source.slice(laterShow).split('\n', 1)[0];
+  assert.equal(later, 'MUI_PAGE_CUSTOMFUNCTION_SHOW un.ConfirmShow');
+  assert.equal(source.split('MUI_PAGE_CUSTOMFUNCTION_SHOW').length, 3);
+});
+
 test('pinned installer guard precedes the old uninstaller without changing update mode', () => {
   execFileSync(process.execPath, [fileURLToPath(new URL('../scripts/prepare-installer.mjs', import.meta.url))]);
   const source = readText('installer.nsi');
