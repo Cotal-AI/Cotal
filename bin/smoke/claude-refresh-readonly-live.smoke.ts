@@ -335,11 +335,11 @@ else if (args === "plugin add cotal@cotal-mesh") {
     // 4. A non-directory (mode 0644 regular file) at the marketplace path keeps main's EEXIST failure rather than printing the read-only directory remedy.
     writeFileSync(market, "not a directory\n", { mode: 0o644 });
     const fileUpdate = execCli("update");
-    assert.notEqual(fileUpdate.status, 0, fileUpdate.output);
+    assert.equal(fileUpdate.status, 1, fileUpdate.output);
     assert.doesNotMatch(fileUpdate.output, /deferred because/);
     assert.match(fileUpdate.output, /EEXIST/);
     const fileSetup = execCli("setup", "--destination", "local", "--harness", kind, "--project", project, "--space", "alpha", "--yes");
-    assert.notEqual(fileSetup.status, 0, fileSetup.output);
+    assert.equal(fileSetup.status, 4, fileSetup.output);
     assert.doesNotMatch(fileSetup.output, /is read-only/);
     assert.match(fileSetup.output, /EEXIST/);
     rmSync(market, { force: true });

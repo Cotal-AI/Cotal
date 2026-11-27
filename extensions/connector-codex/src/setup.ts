@@ -371,8 +371,7 @@ export const codexSetupProvider: ConnectorSetupProvider = {
         const version = pluginVersion(pluginFiles(cotal, ""));
         const cache = pluginCache();
         if (installed.version !== version && isConfigProtected(cache)) {
-          const protectedCache = isDirectoryProtected(cache) ? cache : dirname(cache);
-          return `Codex plugin refresh deferred because ${protectedCache} is read-only. ${PLUGIN}@${MARKETPLACE} remains at ${installed.version}. Make that directory writable and searchable, then run \`cotal update\`.`;
+          return `Codex plugin refresh deferred because ${cache} is read-only. ${PLUGIN}@${MARKETPLACE} remains at ${installed.version}. Make that directory writable, then run \`cotal update\`.`;
         }
         materializeCodexPlugin(cotal, version);
         const marketplace = configuredMarketplace();
