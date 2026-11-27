@@ -63,11 +63,38 @@ async function checkPackageLockOverride(
       npm_config_userconfig: userNpmrc, npm_config_globalconfig: globalNpmrc,
       npm_config_update_notifier: "false",
     };
-    const pkg = join(dir, "installed/lib/node_modules/cotal-ai");
+    const pkg = join(
+      npmPrefix,
+      ...(process.platform === "win32" ? ["node_modules", "cotal-ai"] : ["lib", "node_modules", "cotal-ai"]),
+    );
     mkdirSync(pkg, { recursive: true });
     cpSync(join(repo, "bin/package.json"), join(pkg, "package.json"));
     cpSync(join(repo, "bin/dist"), join(pkg, "dist"), { recursive: true });
-    symlinkSync(join(repo, "bin/node_modules"), join(pkg, "node_modules"), "junction");
+    cpSync(join(repo, "bin/seeded-connectors"), join(pkg, "seeded-connectors"), { recursive: true });
+    if (process.platform !== "win32") {
+      mkdirSync(join(npmPrefix, "bin"), { recursive: true });
+      symlinkSync("../lib/node_modules/cotal-ai/dist/cotal.js", join(npmPrefix, "bin/cotal"));
+    }
+    const nm = join(pkg, "node_modules");
+    mkdirSync(join(nm, "@cotal-ai"), { recursive: true });
+    for (const top of readdirSync(join(repo, "bin/node_modules"))) {
+      if (top === "@cotal-ai") continue;
+      symlinkSync(realpathSync(join(repo, "bin/node_modules", top)), join(nm, top), "junction");
+    }
+    for (const sub of readdirSync(join(repo, "bin/node_modules/@cotal-ai"))) {
+      if (sub === "cli") {
+        const cliDst = join(nm, "@cotal-ai/cli");
+        mkdirSync(cliDst, { recursive: true });
+        cpSync(join(repo, "implementations/cli/package.json"), join(cliDst, "package.json"));
+        cpSync(join(repo, "implementations/cli/dist"), join(cliDst, "dist"), { recursive: true });
+        if (existsSync(join(repo, "implementations/cli/cotal-skills"))) {
+          cpSync(join(repo, "implementations/cli/cotal-skills"), join(cliDst, "cotal-skills"), { recursive: true });
+        }
+        symlinkSync(join(repo, "implementations/cli/node_modules"), join(cliDst, "node_modules"), "junction");
+      } else {
+        symlinkSync(realpathSync(join(repo, "bin/node_modules/@cotal-ai", sub)), join(nm, "@cotal-ai", sub), "junction");
+      }
+    }
     const entry = join(pkg, "dist/cotal.js");
     return { dir, home, xdg, userNpmrc, env, entry };
   };
@@ -128,24 +155,46 @@ async function checkPackageLockOverride(
       && !existsSync(join(cliPrefix, "node_modules", "probe-opt-elsewhere")));
   }
 
-  const server = createServer((req, res) => {
-    if (req.url?.startsWith("/refused")) {
-      res.writeHead(503, { "content-type": "application/json" }).end(JSON.stringify({ error: "registry unavailable" }));
-      return;
+  const upstreamCache = new Map<string, Buffer>();
+  const server = createServer(async (req, res) => {
+    try {
+      if (req.url?.startsWith("/refused")) {
+        res.writeHead(503, { "content-type": "application/json" }).end(JSON.stringify({ error: "registry unavailable" }));
+        return;
+      }
+      if (req.url === "/cotal-ai") {
+        res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({
+          name: "cotal-ai", "dist-tags": { latest: version }, versions: { [version]: { name: "cotal-ai", version } },
+        }));
+        return;
+      }
+      const key = req.url ?? "/";
+      if (!upstreamCache.has(key)) {
+        const up = await fetch(`https://registry.npmjs.org${key}`, { signal: AbortSignal.timeout(30_000) });
+        if (!up.ok) {
+          res.writeHead(up.status).end(await up.text());
+          return;
+        }
+        upstreamCache.set(key, Buffer.from(await up.arrayBuffer()));
+      }
+      const cached = upstreamCache.get(key)!;
+      if (key.includes("/-/")) {
+        res.writeHead(200, { "content-type": "application/octet-stream" }).end(cached);
+        return;
+      }
+      const rewritten = cached.toString("utf8").replaceAll("https://registry.npmjs.org/", `${registryUrl}/`);
+      res.writeHead(200, { "content-type": "application/json" }).end(rewritten);
+    } catch (err) {
+      if (!res.headersSent) res.writeHead(502);
+      res.end(JSON.stringify({ error: (err as Error).message }));
     }
-    if (req.url === "/cotal-ai") {
-      res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({
-        name: "cotal-ai", "dist-tags": { latest: version }, versions: { [version]: { name: "cotal-ai", version } },
-      }));
-      return;
-    }
-    res.writeHead(404).end();
   });
+  let registryUrl = "";
   await new Promise<void>((resolveListen, reject) => server.once("error", reject).listen(0, "127.0.0.1", resolveListen));
   try {
     const address = server.address();
     assert.ok(address && typeof address !== "string");
-    const registryUrl = `http://127.0.0.1:${address.port}`;
+    registryUrl = `http://127.0.0.1:${address.port}`;
     const { dir, userNpmrc, env, entry } = makeIsolated(join(root, "lock-override-installed"));
     env.npm_config_registry = registryUrl;
     const extPrefix = queryExtRoot(entry, dir, env);
@@ -171,6 +220,11 @@ async function checkPackageLockOverride(
       return builtInPkgs.every(name => lock.packages?.[`node_modules/${name}`]?.version === version);
     };
 
+    const checkWithDiag = (name: string, value: boolean, diag: unknown): void => {
+      if (!value) console.error(`DIAG [${name}]:`, diag);
+      check(name, value);
+    };
+
     // (a) User .npmrc package-lock=false: seed + damaged built-in update + repeat update keeps lock current and .npmrc byte-identical.
     writeFileSync(userNpmrc, "package-lock=false\n");
     const npmrcBefore = readFileSync(userNpmrc);
@@ -181,20 +235,22 @@ async function checkPackageLockOverride(
     const repaired = await run(["update"]);
     const verified = await run(["update"]);
     const selfCurrent = await run(["update", "--self"]);
-    check("user .npmrc package-lock=false: update keeps built-ins current, writes package-lock.json, and leaves .npmrc byte-identical",
+    checkWithDiag("user .npmrc package-lock=false: update keeps built-ins current, writes package-lock.json, and leaves .npmrc byte-identical",
       repaired.code === 0 && /refreshed claude\b/.test(repaired.stdout + repaired.stderr)
       && verified.code === 0 && !/reinstalling every built-in|Reconciling built-in/.test(verified.stdout + verified.stderr)
       && selfCurrent.code === 0 && selfCurrent.stdout.includes("installed package closure is current")
-      && lockCoversBuiltIns() && readFileSync(userNpmrc).equals(npmrcBefore));
+      && lockCoversBuiltIns() && readFileSync(userNpmrc).equals(npmrcBefore),
+      { repaired, verified, selfCurrent, hasLock: existsSync(lockPath) });
 
     // (b) Environment npm_config_package_lock=false and working-folder project .npmrc package-lock=false.
     writeFileSync(userNpmrc, "");
     rmSync(lockPath);
     const envRepair = await run(["update"], { env: { npm_config_package_lock: "false" } });
     const envVerify = await run(["update"], { env: { npm_config_package_lock: "false" } });
-    check("env npm_config_package_lock=false: update writes package-lock.json and next update verifies built-ins",
+    checkWithDiag("env npm_config_package_lock=false: update writes package-lock.json and next update verifies built-ins",
       envRepair.code === 0 && lockCoversBuiltIns()
-      && envVerify.code === 0 && !/reinstalling every built-in|Reconciling built-in/.test(envVerify.stdout + envVerify.stderr));
+      && envVerify.code === 0 && !/reinstalling every built-in|Reconciling built-in/.test(envVerify.stdout + envVerify.stderr),
+      { envRepair, envVerify });
 
     const projectDir = join(dir, "working-project");
     mkdirSync(projectDir, { recursive: true });
@@ -204,10 +260,11 @@ async function checkPackageLockOverride(
     rmSync(lockPath);
     const projRepair = await run(["update"], { cwd: projectDir });
     const projVerify = await run(["update"], { cwd: projectDir });
-    check("project .npmrc package-lock=false in working folder: update writes prefix lock, next update verifies built-ins, and project .npmrc is untouched",
+    checkWithDiag("project .npmrc package-lock=false in working folder: update writes prefix lock, next update verifies built-ins, and project .npmrc is untouched",
       projRepair.code === 0 && lockCoversBuiltIns()
       && projVerify.code === 0 && !/reinstalling every built-in|Reconciling built-in/.test(projVerify.stdout + projVerify.stderr)
-      && readFileSync(projectNpmrc).equals(projectNpmrcBefore) && !existsSync(join(projectDir, "package-lock.json")));
+      && readFileSync(projectNpmrc).equals(projectNpmrcBefore) && !existsSync(join(projectDir, "package-lock.json")),
+      { projRepair, projVerify });
 
     // (d) Stale prefix without package-lock.json: first run reinstalls built-ins once, second run changes nothing.
     writeFileSync(userNpmrc, "package-lock=false\n");
@@ -215,11 +272,12 @@ async function checkPackageLockOverride(
     const staleFirst = await run(["update"]);
     const lockDigestAfterFirst = existsSync(lockPath) ? digest(lockPath) : "";
     const staleSecond = await run(["update"]);
-    check("stale prefix without package-lock.json repairs built-ins once and next update changes nothing",
+    checkWithDiag("stale prefix without package-lock.json repairs built-ins once and next update changes nothing",
       staleFirst.code === 0 && /reinstalling every built-in: the prefix lock is unreadable/.test(staleFirst.stdout + staleFirst.stderr)
       && lockCoversBuiltIns()
       && staleSecond.code === 0 && !/reinstalling every built-in|Reconciling built-in/.test(staleSecond.stdout + staleSecond.stderr)
-      && digest(lockPath) === lockDigestAfterFirst);
+      && digest(lockPath) === lockDigestAfterFirst,
+      { staleFirst, staleSecond });
 
     // (e) Linked extensions folder with a refused registry: nothing in the live prefix is removed.
     {

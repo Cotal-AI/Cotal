@@ -178,9 +178,21 @@ async function checkPackageLockCellsAndUpgrade(
     return builtInPkgs.every(pkg => lock.packages?.[`node_modules/${pkg}`]?.version === ver);
   };
 
-  // Pack head packages both at current version (from packedTgzDir) and bumped to targetVer for real self-update.
-  const [maj, min, pat] = version.split(".").map(Number);
-  const targetVer = `${maj}.${min}.${(pat ?? 0) + 1}`;
+  // Pack head packages both at current version (from packedTgzDir) and bumped strictly above both local and registry latest for real self-update.
+  const latestResp = await fetch("https://registry.npmjs.org/cotal-ai/latest", { signal: AbortSignal.timeout(30_000) });
+  const registryLatest = latestResp.ok
+    ? ((await latestResp.json()) as { version?: string }).version ?? version
+    : version;
+  const parseTriple = (v: string): [number, number, number] => {
+    const [a = 0, b = 0, c = 0] = v.split("-")[0]!.split(".").map(Number);
+    return [a, b, c];
+  };
+  const [lmaj, lmin, lpat] = parseTriple(version);
+  const [rmaj, rmin, rpat] = parseTriple(registryLatest);
+  const higher = lmaj !== rmaj ? (lmaj > rmaj ? [lmaj, lmin, lpat] : [rmaj, rmin, rpat])
+    : lmin !== rmin ? (lmin > rmin ? [lmaj, lmin, lpat] : [rmaj, rmin, rpat])
+    : lpat >= rpat ? [lmaj, lmin, lpat] : [rmaj, rmin, rpat];
+  const targetVer = `${higher[0]}.${higher[1]}.${higher[2] + 1}`;
   const candidateOut = join(root, "cand-tgz");
   mkdirSync(candidateOut, { recursive: true });
   const allDirs = [
@@ -368,35 +380,48 @@ async function checkPackageLockCellsAndUpgrade(
         { defaultCount: Object.keys(defaultLock.packages).length, controlCount: Object.keys(controlLock.packages).length });
     }
 
-    // 3d: Stale prefix made by published cotal-ai@0.183.0 with package-lock=false: first run of fixed binary reinstalls once, second changes nothing.
+    // 3d: Stale prefix made without package-lock.json (from published cotal-ai when already on npm, else packed head with lock removed): first run reinstalls once, second changes nothing.
     {
-      const c3d = makeCase("cell-3d-stale-from-01830");
+      const c3d = makeCase("cell-3d-stale-prefix");
       writeFileSync(c3d.userNpmrc, "package-lock=false\n");
       const npmrcBefore = readFileSync(c3d.userNpmrc);
-      await runNpm(["install", "-g", "--prefix", c3d.globalPrefix, "cotal-ai@0.183.0", "--no-audit", "--no-fund"], {
-        cwd: c3d.dir, env: c3d.env, timeout: 240_000,
-      });
-      const pubVer = (await runGlobalCli(c3d.globalPrefix, ["--version"], { cwd: c3d.dir, env: c3d.env })).stdout.trim();
-      check("3d: installed published cotal-ai@0.183.0", pubVer.split("\n")[0] === "cotal-ai 0.183.0", pubVer);
-      await runGlobalCli(c3d.globalPrefix, ["ext", "seed"], { cwd: c3d.dir, env: c3d.env, timeout: 240_000 });
+      const curPublished = (await fetch(`https://registry.npmjs.org/cotal-ai/${version}`, { signal: AbortSignal.timeout(30_000) })).ok;
+      const cotalCurTgz = join(packedTgzDir, readdirSync(packedTgzDir).find(f => /^cotal-ai-\d/.test(f))!);
+      if (curPublished) {
+        await runNpm(["install", "-g", "--prefix", c3d.globalPrefix, `cotal-ai@${version}`, "--no-audit", "--no-fund"], {
+          cwd: c3d.dir, env: c3d.env, timeout: 240_000,
+        });
+        const pubVer = (await runGlobalCli(c3d.globalPrefix, ["--version"], { cwd: c3d.dir, env: c3d.env })).stdout.trim();
+        check(`3d: installed published cotal-ai@${version}`, pubVer.split("\n")[0] === `cotal-ai ${version}`, pubVer);
+        await runGlobalCli(c3d.globalPrefix, ["ext", "seed"], { cwd: c3d.dir, env: c3d.env, timeout: 240_000 });
+      } else {
+        serveMode = "current";
+        await runNpm(["install", "-g", "--prefix", c3d.globalPrefix, cotalCurTgz, "--no-audit", "--no-fund"], {
+          cwd: c3d.dir, env: { ...c3d.env, npm_config_registry: overlayUrl }, timeout: 240_000,
+        });
+        const pubVer = (await runGlobalCli(c3d.globalPrefix, ["--version"], { cwd: c3d.dir, env: c3d.env })).stdout.trim();
+        check(`3d: installed packed cotal-ai@${version}`, pubVer.split("\n")[0] === `cotal-ai ${version}`, pubVer);
+        await runGlobalCli(c3d.globalPrefix, ["ext", "seed"], { cwd: c3d.dir, env: { ...c3d.env, npm_config_registry: overlayUrl }, timeout: 240_000 });
+        rmSync(join(await queryGlobalExtRoot(c3d.globalPrefix, c3d.dir, c3d.env), "package-lock.json"));
+      }
       const staleExtDir = await queryGlobalExtRoot(c3d.globalPrefix, c3d.dir, c3d.env);
       const staleLockPath = join(staleExtDir, "package-lock.json");
-      check("3d: published 0.183.0 with package-lock=false left the extension prefix without package-lock.json",
+      check(`3d: stale ${version} extension prefix has no package-lock.json before repair`,
         !existsSync(staleLockPath) && existsSync(join(staleExtDir, "extensions.json")));
 
-      // Replace the global binary in-place with the packed build of this head (same entry path and 0.183.0 version).
-      serveMode = "current";
-      const cotalCurTgz = join(packedTgzDir, readdirSync(packedTgzDir).find(f => /^cotal-ai-\d/.test(f))!);
-      await runNpm(["install", "-g", "--prefix", c3d.globalPrefix, cotalCurTgz, "--no-audit", "--no-fund"], {
-        cwd: c3d.dir, env: { ...c3d.env, npm_config_registry: overlayUrl, npm_config_cache: join(c3d.dir, "head-cache") }, timeout: 240_000,
-      });
+      if (curPublished) {
+        serveMode = "current";
+        await runNpm(["install", "-g", "--prefix", c3d.globalPrefix, cotalCurTgz, "--no-audit", "--no-fund"], {
+          cwd: c3d.dir, env: { ...c3d.env, npm_config_registry: overlayUrl, npm_config_cache: join(c3d.dir, "head-cache") }, timeout: 240_000,
+        });
+      }
       const run1 = await runGlobalCli(c3d.globalPrefix, ["update"], { cwd: c3d.dir, env: { ...c3d.env, npm_config_registry: overlayUrl }, timeout: 240_000 });
       console.log("=== 3d stale-prefix run 1 ===\n" + (run1.stdout + run1.stderr).trim());
       const lockShaAfterRun1 = existsSync(staleLockPath) ? createHash("sha256").update(readFileSync(staleLockPath)).digest("hex") : "";
       const run2 = await runGlobalCli(c3d.globalPrefix, ["update"], { cwd: c3d.dir, env: { ...c3d.env, npm_config_registry: overlayUrl }, timeout: 240_000 });
       console.log("=== 3d stale-prefix run 2 ===\n" + (run2.stdout + run2.stderr).trim());
       const lockShaAfterRun2 = existsSync(staleLockPath) ? createHash("sha256").update(readFileSync(staleLockPath)).digest("hex") : "";
-      check("3d: first run on stale 0.183.0 prefix reinstalls built-ins once and writes package-lock.json",
+      check(`3d: first run on stale ${version} prefix reinstalls built-ins once and writes package-lock.json`,
         /reinstalling every built-in: the prefix lock is unreadable/.test(run1.stdout + run1.stderr)
         && /connectors reconciled - refreshed /.test(run1.stdout + run1.stderr)
         && lockHasAllBuiltIns(staleLockPath, version),
@@ -484,16 +509,25 @@ async function checkPackageLockCellsAndUpgrade(
 
       const probeProject = join(c4.dir, "connector-load-project");
       mkdirSync(probeProject, { recursive: true });
-      const setupOut = await runGlobalCli(c4.globalPrefix, ["setup", "--destination", "local", "-H", "claude", "--project", probeProject, "--space", "upgrade-probe", "--configure-only", "-y"], {
-        cwd: probeProject, env: upgradeEnv, timeout: 120_000,
-      });
-      const previewOut = await runGlobalCli(c4.globalPrefix, ["spawn", "--dry-run", "--harness", "claude", "--model", "claude-opus-5-5", "--json"], {
-        cwd: probeProject, env: upgradeEnv, timeout: 120_000,
-      });
+      writeFileSync(
+        join(probeProject, "probe.md"),
+        "---\nname: probe\nrole: developer\nmodel: opus\n---\nVerify built-in connector load after upgrade.\n",
+      );
+      const previewOut = await runGlobalCli(
+        c4.globalPrefix,
+        ["spawn", "--file", "./probe.md", "--dry-run", "--server", "nats://127.0.0.1:34300", "--space", "upgrade-probe", "--harness", "claude", "--json"],
+        { cwd: probeProject, env: upgradeEnv, timeout: 120_000 },
+      );
       console.log("=== Item 4 built-in connector load (spawn --dry-run) ===\n" + previewOut.stdout.trim());
-      const previewJson = JSON.parse(previewOut.stdout) as { ok?: boolean; result?: { harness?: string } };
-      check("4: upgraded CLI loads built-in claude connector cleanly in setup and spawn --dry-run",
-        setupOut.stdout.length + setupOut.stderr.length > 0 && previewJson.ok === true && previewJson.result?.harness === "claude",
+      const previewJson = JSON.parse(previewOut.stdout) as {
+        outcome?: string;
+        result?: { harness?: string; model?: string; connectorArgumentValidation?: string };
+      };
+      check("4: upgraded CLI loads built-in claude connector cleanly and validates its arguments",
+        previewJson.outcome === "ok"
+        && previewJson.result?.harness === "claude"
+        && previewJson.result?.model === "opus"
+        && previewJson.result?.connectorArgumentValidation === "checked",
         previewOut.stdout);
     }
   } finally {
