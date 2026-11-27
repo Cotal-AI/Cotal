@@ -1,16 +1,22 @@
 import type { Socket } from "node:net";
 import type { CustodianChannel, CustodianSession } from "./custodian.js";
-import { peerCredentials } from "./peercred.js";
 import { encodeFrame, FrameReader, MAX_FRAME_SIZE, type ClientRequest, type ServerMessage } from "./protocol.js";
-import { bootToken, isSeatId, processStartToken } from "./record.js";
+import { isSeatId } from "./record.js";
 import { SHARED_CONTROL_PROTOCOL, type SharedControlMessage, type SharedLaunchPayload } from "./shared-control-protocol.js";
-import { recordedProcess, type SharedHostRecord } from "./shared-record.js";
+import { linuxWriterProof, type LinuxWriterIdentity } from "./shared-control-linux.js";
+import type { ExactIdentity, ProcessObservation } from "./shared-platform.js";
 
-export interface SharedManagerIdentity { pid: number; start: string; bootId: string }
+export type SharedManagerIdentity = ExactIdentity;
+export interface SharedWriterProof<Identity extends SharedManagerIdentity, Peer = Socket> {
+  same(a: Identity, b: Identity): boolean;
+  observe(identity: Identity): ProcessObservation;
+  matchesPeer(peer: Peer, identity: Identity): boolean;
+}
 export type SharedSeatAcceptor = (channel: CustodianChannel) => CustodianSession;
-interface HostControlOptions {
-  host: SharedHostRecord;
-  authorized(): SharedManagerIdentity | undefined;
+interface HostControlOptions<Identity extends SharedManagerIdentity, Peer> {
+  host: SharedManagerIdentity & { token: string };
+  authorized(): Identity | undefined;
+  writer: SharedWriterProof<Identity, Peer>;
   acceptSeat(id: string): SharedSeatAcceptor | undefined;
   launch(id: string, payload: SharedLaunchPayload, authorize: () => void): Promise<"admitted" | "not-admitted" | "unknown">;
   launchState?(id: string): "absent" | "unknown";
@@ -22,12 +28,18 @@ function frameObject(value: unknown): value is Record<string, unknown> {
 }
 
 /** The socket itself is the writer epoch. A closed epoch cannot affect its replacement. */
-export function hostControl(options: HostControlOptions): (socket: Socket) => void {
-  let owner: { socket: Socket; identity: SharedManagerIdentity } | undefined;
-  return socket => {
+export function hostControl(options: Omit<HostControlOptions<LinuxWriterIdentity, Socket>, "writer">): (socket: Socket) => void {
+  const accept = createHostControl({ ...options, writer: linuxWriterProof });
+  return socket => accept(socket, socket);
+}
+
+export function createHostControl<Identity extends SharedManagerIdentity, Peer>(options: HostControlOptions<Identity, Peer>): (socket: Socket, peer: Peer) => void {
+  const { writer } = options;
+  let owner: { socket: Socket; identity: Identity } | undefined;
+  return (socket, peer) => {
     const sessions = new Map<string, CustodianSession>();
     const reader = new FrameReader();
-    let identity: SharedManagerIdentity | undefined;
+    let identity: Identity | undefined;
     let closed = false;
     let lastId = 0;
     const close = () => {
@@ -50,17 +62,18 @@ export function hostControl(options: HostControlOptions): (socket: Socket) => vo
       transmit({ id, ok: false, outcome, error: "shared PTY host did not confirm the request" });
     const authorize = () => {
       const claim = options.authorized();
-      if (!identity || closed || socket.destroyed || owner?.socket !== socket || claim?.pid !== identity.pid ||
-          claim.start !== identity.start || claim.bootId !== identity.bootId || recordedProcess(identity.pid, identity.start, identity.bootId) !== "live")
+      if (!identity || closed || socket.destroyed || owner?.socket !== socket || !claim || !writer.same(claim, identity) ||
+          writer.observe(identity) !== "live")
         throw new Error("shared PTY controller lifetime is unknown");
     };
     const hello = (id: number, raw: Record<string, unknown>) => {
-      const peer = peerCredentials(socket), claim = options.authorized();
-      if (!claim || peer.uid !== process.getuid?.() || peer.pid !== claim.pid || bootToken() !== claim.bootId || processStartToken(peer.pid) !== claim.start ||
-          raw.protocol !== SHARED_CONTROL_PROTOCOL || raw.token !== options.host.token) { failure(id, "not-admitted"); return; }
+      const claim = options.authorized();
+      if (!claim || raw.protocol !== SHARED_CONTROL_PROTOCOL || raw.token !== options.host.token || !writer.matchesPeer(peer, claim)) {
+        failure(id, "not-admitted"); return;
+      }
       if (owner && owner.socket !== socket) {
         const prior = owner;
-        if (recordedProcess(prior.identity.pid, prior.identity.start, prior.identity.bootId) !== "gone") { failure(id, "not-admitted"); return; }
+        if (writer.observe(prior.identity) !== "gone") { failure(id, "not-admitted"); return; }
         prior.socket.destroy();
       }
       if (options.closing()) { failure(id, "not-admitted"); return; }

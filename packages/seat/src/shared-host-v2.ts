@@ -1,13 +1,14 @@
-import { chmodSync, closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync, rmSync } from "node:fs";
-import { createServer, type Socket } from "node:net";
+import { closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync, rmSync } from "node:fs";
+import type { Socket } from "node:net";
 import { basename, dirname, join } from "node:path";
 import { runCustodian } from "./custodian.js";
 import { lockExclusiveNb } from "./host.js";
 import { DEFAULT_COLS, DEFAULT_ROWS } from "./protocol.js";
-import { bootToken, capabilityToken, processStartToken } from "./record.js";
+import { capabilityToken } from "./record.js";
 import { initializeSharedHostCgroup } from "./shared-cgroup.js";
 import { readControllerClaim, sharedGenerationAcceptsLaunch, validSharedGeneration } from "./shared-controller-claim.js";
-import { hostControl, type SharedSeatAcceptor } from "./shared-control-server.js";
+import { createHostControl, type SharedSeatAcceptor } from "./shared-control-server.js";
+import { linuxHostTransport, linuxWriterProof } from "./shared-control-linux.js";
 import type { SharedLaunchPayload } from "./shared-control-protocol.js";
 import { createSharedExecLaunch } from "./shared-exec-launch.js";
 import { privateDirectory, readSharedHost, recordedProcess, sharedHostRecord, sharedHostSocket, sharedSeatRecord, SHARED_MULTIPLEX_VERSION, writePrivateRecord, writeSharedSeatRefusal, type SharedHostRecord } from "./shared-record.js";
@@ -47,9 +48,9 @@ export async function serveMultiplexedHost(root: string, scope: string): Promise
     if (!lock.isFile() || lock.uid !== process.getuid?.() || (lock.mode & 0o777) !== 0o600 || !lockExclusiveNb(fd)) return;
     const cgroup = initializeSharedHostCgroup(scope), socket = sharedHostSocket(root);
     clearDeadSocket(root, socket);
-    const start = processStartToken(process.pid), bootId = bootToken();
-    if (!start || !bootId) throw new Error("shared PTY host identity is unavailable");
-    const host: SharedHostRecord = { version: SHARED_MULTIPLEX_VERSION, protocol: SHARED_MULTIPLEX_VERSION, pid: process.pid, start, bootId, scope, token: capabilityToken() };
+    const identity = linuxWriterProof.current();
+    if (!identity) throw new Error("shared PTY host identity is unavailable");
+    const host: SharedHostRecord = { ...identity, version: SHARED_MULTIPLEX_VERSION, protocol: SHARED_MULTIPLEX_VERSION, scope, token: capabilityToken() };
     const sessions = new Map<string, SharedSeatAcceptor>();
     const connections = new Set<Socket>();
     let held = 0, closing = false, idle: ReturnType<typeof setTimeout>;
@@ -112,27 +113,19 @@ export async function serveMultiplexedHost(root: string, scope: string): Promise
         return refuse();
       }
     };
-    const handle = hostControl({ host, closing: () => closing, authorized: () => readControllerClaim(lineage), acceptSeat: id => sessions.get(id), launch,
+    const handle = createHostControl({ host, writer: linuxWriterProof, closing: () => closing, authorized: () => readControllerClaim(lineage), acceptSeat: id => sessions.get(id), launch,
       // Launch creates the private reservation synchronously before its first await. A probe
       // on this epoch is ordered after its launch frames, and a closed epoch cannot dispatch.
       launchState: id => lstatSync(dirname(sharedSeatRecord(root, id)), { throwIfNoEntry: false }) ? "unknown" : "absent",
     });
-    const server = createServer(connection => {
+    const server = linuxHostTransport.listen(socket, (connection, peer) => {
       connections.add(connection);
       connection.once("close", () => connections.delete(connection));
-      handle(connection);
-    });
-    server.maxConnections = 128;
+      handle(connection, peer);
+    }, () => { writePrivateRecord(sharedHostRecord(root), host); armIdle(); });
     process.on("uncaughtException", logFault);
     try {
-      await new Promise<void>((resolve, reject) => {
-        server.once("error", reject);
-        server.once("close", resolve);
-        server.listen(basename(socket), () => {
-          try { chmodSync(socket, 0o600); writePrivateRecord(sharedHostRecord(root), host); armIdle(); }
-          catch (error) { server.close(); reject(error); }
-        });
-      });
+      await server.closed;
       rmSync(sharedHostRecord(root), { force: true });
     } finally { process.off("uncaughtException", logFault); }
   } finally { closeSync(fd); }

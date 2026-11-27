@@ -3,9 +3,9 @@ import { join } from "node:path";
 import { lockExclusiveNb } from "./host.js";
 import { bootToken, processStartToken } from "./record.js";
 import { privateDirectory, readPrivateRecord, recordedProcess, sharedControllerClaim, writePrivateRecord } from "./shared-record.js";
-import type { SharedManagerIdentity } from "./shared-control-server.js";
+import type { LinuxWriterIdentity } from "./shared-control-linux.js";
 
-export interface SharedControllerClaim extends SharedManagerIdentity {
+export interface SharedControllerClaim extends LinuxWriterIdentity {
   version: 1;
   generation: string;
 }

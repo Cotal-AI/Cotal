@@ -1,22 +1,17 @@
-import { connect, type Socket } from "node:net";
-import { resolve } from "node:path";
-import { peerCredentials } from "./peercred.js";
+import type { Socket } from "node:net";
 import { FrameReader, MAX_FRAME_SIZE, encodeFrame, type ServerEvent, type ServerReply } from "./protocol.js";
 import { isSeatId } from "./record.js";
 import {
   SHARED_CONTROL_PROTOCOL, type SharedControlOutcome, type SharedControlReply, type SharedControlRequest,
   type SharedLaunchPayload, type SharedSeatRequestBody,
 } from "./shared-control-protocol.js";
-import { recordedProcess, sharedHostSocket, sharedScopeMatches, shortSocketPath, type SharedHostRecord } from "./shared-record.js";
 
 const CONNECT_MS = 2_000;
 const REQUEST_MS = 8_000;
 const MAX_PENDING = 128;
 const MAX_QUEUED_BYTES = 2 * (MAX_FRAME_SIZE + 4);
 
-// Accept the v2 protocol before the shared-record reader is switched to v2. The caller pins the
-// whole tuple, not just a path that might later point at a different host.
-type HostIdentity = Readonly<Omit<SharedHostRecord, "protocol"> & { protocol: number }>;
+type HostIdentity = Readonly<{ protocol: number; pid: number; start: string; token: string }>;
 
 export class SharedControlError extends Error {
   constructor(readonly outcome: SharedControlOutcome, message: string) {
@@ -51,7 +46,6 @@ function positiveId(value: unknown): value is number {
 
 /** One connection to one exact shared host incarnation, with no implicit retry of a request. */
 export class SharedController {
-  private readonly root: string;
   private readonly host: HostIdentity;
   private current?: Connection;
   private opening?: Promise<void>;
@@ -60,8 +54,8 @@ export class SharedController {
   private readonly events = new Map<string, Set<(message: ServerEvent) => void>>();
   private readonly disconnects = new Set<() => void>();
 
-  constructor(root: string, host: HostIdentity) {
-    this.root = resolve(root);
+  /** The dialer must authenticate the native peer against the exact recorded host. */
+  constructor(host: HostIdentity, private readonly dial: (timeoutMs: number) => Promise<Socket>) {
     this.host = { ...host };
   }
 
@@ -126,30 +120,14 @@ export class SharedController {
     return connection;
   }
 
-  private verifyHost(socket?: Socket): void {
-    const host = this.host;
-    const uid = process.getuid?.();
-    if (host.protocol !== SHARED_CONTROL_PROTOCOL || uid === undefined)
-      throw new Error("shared PTY host identity or protocol is not verified");
-    if (socket) {
-      const peer = peerCredentials(socket);
-      if (peer.uid !== uid || peer.pid !== host.pid) throw new Error("shared PTY host peer does not match its record");
-    }
-    if (recordedProcess(host.pid, host.start, host.bootId) !== "live" || !sharedScopeMatches(host.pid, host.scope, SHARED_CONTROL_PROTOCOL))
-      throw new Error("shared PTY host identity or scope is not verified");
-  }
-
   private async open(): Promise<void> {
     let connection: Connection | undefined;
     try {
-      this.verifyHost();
-      const path = shortSocketPath(sharedHostSocket(this.root));
-      let socket: Socket;
-      try { socket = connect(path.path); }
-      catch (error) { path.close(); throw error; }
+      if (this.host.protocol !== SHARED_CONTROL_PROTOCOL) throw new Error("shared PTY host protocol is not verified");
+      const socket = await this.dial(CONNECT_MS);
+      if (this.closed || socket.destroyed) { socket.destroy(); throw new Error("shared PTY host dial closed"); }
       const active: Connection = { socket, reader: new FrameReader(), pending: new Map(), authenticated: false };
       connection = this.current = active;
-      socket.once("close", path.close);
       socket.on("close", () => this.drop(active));
       socket.on("error", () => this.drop(active));
       socket.on("end", () => this.drop(active));
@@ -162,14 +140,6 @@ export class SharedController {
           }
         } catch { this.drop(active); }
       });
-      await new Promise<void>((accept, reject) => {
-        const timer = setTimeout(() => this.drop(active), CONNECT_MS);
-        socket.once("connect", () => { clearTimeout(timer); accept(); });
-        socket.once("close", () => { clearTimeout(timer); reject(new Error("host dial closed")); });
-      });
-      if (this.current !== active) throw new Error("host dial superseded");
-      // No capability or seat data leaves the Manager until this actual socket peer is verified.
-      this.verifyHost(socket);
       await this.request(active, { id: this.nextId++, op: "hello", protocol: this.host.protocol, token: this.host.token });
       if (this.current !== active || !active.authenticated)
         throw new Error("shared PTY host did not confirm its recorded identity");

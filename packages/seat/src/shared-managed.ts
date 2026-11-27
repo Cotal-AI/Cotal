@@ -9,6 +9,7 @@ import { exitPath, seatId } from "./record.js";
 import { sharedCgroupAvailable } from "./shared-cgroup.js";
 import { acquireSharedClosureLease, collectSharedRuntimeClosures } from "./shared-closure-lease.js";
 import { publishControllerClaim } from "./shared-controller-claim.js";
+import { dialSharedLinuxSocket } from "./shared-control-linux.js";
 import { SharedControlError, SharedController } from "./shared-controller.js";
 import { acquireSharedExecutionLease } from "./shared-execution-lease.js";
 import { observeSharedHandle, openSharedSeat, type SharedHandle } from "./shared-handle.js";
@@ -68,8 +69,9 @@ function controllerFor(root: string, host: SharedHostRecord): SharedController {
   if (channel?.host.pid === host.pid && channel.host.start === host.start && channel.host.bootId === host.bootId && channel.host.scope === host.scope)
     return channel.controller;
   if (channel && recordedProcess(channel.host.pid, channel.host.start, channel.host.bootId) === "gone") channel.controller.close();
-  const controller = new SharedController(root, host);
-  channels.set(root, { host, controller });
+  const recorded = { ...host };
+  const controller = new SharedController(recorded, timeout => dialSharedLinuxSocket(root, recorded, timeout));
+  channels.set(root, { host: recorded, controller });
   return controller;
 }
 
