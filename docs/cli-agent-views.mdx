@@ -23,7 +23,7 @@ the literal `cotal team deploy <file>` remedy, before agent allocation.
 
 `spawn --dry-run` never refreshes the catalog, repairs stale registrations,
 signs in to the broker, redeems enrollment, provisions or allocates an agent. A direct preview checks
-launch arguments if the installed connector supports validation without creating launch files. Where the launch reads
+launch arguments if the installed connector supports validation without creating launch files. It combines `--subscribe` and `--allow-subscribe` with the local persona's settings and refuses subscriptions outside the resulting list. Where the launch reads
 whether the recorded brokers answer to choose its space, as in a folder whose registered space may
 be stopped, the preview reads the same without signing in, so it names the space the launch uses.
 In the project of a stopped open stack, `spawn --detach --dry-run` can use the name saved by the
