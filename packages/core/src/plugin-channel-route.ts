@@ -1,5 +1,4 @@
-import { ROOT, assertValidChannel, assertValidRole, chatSubject, ownerToken, spacePrefix, token } from "./subject-grammar.js";
-import { chatStream } from "./subjects.js";
+import { assertValidChannel, assertValidRole, chatStream, chatSubject, ownerToken, spacePrefix, token } from "./subject-grammar.js";
 
 export const PLUGIN_CHANNEL_ROOT = "ext";
 
@@ -49,31 +48,6 @@ export function channelRoute(space: string, owner: string, actor: string, channe
   return rail.kind === "chat"
     ? { rail, stream: chatStream(space), subject: chatSubject(space, owner, actor, channel) }
     : { rail, stream: pluginChannelStream(space), subject: pluginChannelAddress(space, owner, actor, rail) };
-}
-
-export interface ParsedPluginChannelSubject {
-  kind: typeof PLUGIN_CHANNEL_ROOT;
-  space: string;
-  owner: string;
-  actor: string;
-  sender: string;
-  rest: string;
-}
-
-/** Parse a plugin channel address or filter. This describes routing, not authenticated identity. */
-export function parsePluginChannelSubject(subject: string): ParsedPluginChannelSubject | null {
-  const [root, space, kind, owner, actor, ...path] = subject.split(".");
-  if (root !== ROOT || !space || space !== token(space) || kind !== PLUGIN_CHANNEL_ROOT || path.length < 2)
-    return null;
-  const rest = `${PLUGIN_CHANNEL_ROOT}.${path.join(".")}`;
-  try {
-    ownerToken(owner);
-    ownerToken(actor);
-    classifyChannel(rest);
-  } catch {
-    return null;
-  }
-  return { kind, space, owner, actor, sender: `${owner}.${actor}`, rest };
 }
 
 export function pluginChannelStream(space: string): string {
