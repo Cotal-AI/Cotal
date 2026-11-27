@@ -1,5 +1,20 @@
 # @cotal-ai/cli
 
+## 0.183.1
+
+### Patch Changes
+
+- c049810: Report remaining resumable conversation approvals of the previous account when `cotal login` switches accounts at the same provider.
+- ce4a8db: `cotal backup verify` accepts an unchanged Windows artifact whose NTFS file ids are larger than a JavaScript number can hold, and still refuses a file that was replaced.
+- 8740d71: `cotal update --check` now reports when npm offline mode skipped the registry version lookup instead of blaming registry access or an unreadable extension inventory.
+- 98aed81: Stop and restart `stack-delivery` ahead of `stack-auth` when `cotal up` repairs a crashed broker in a user-auth stack, keep the stopped-auth refusal ahead of delivery startup when the broker still runs, and update the plane-claim refusal guidance to reflect delivery-first startup.
+- 6038ca0: On Windows, status and other CLI hints print an off-PATH fallback command that runs directly in PowerShell and Command Prompt.
+- Updated dependencies [c049810]
+- Updated dependencies [99e5057]
+  - @cotal-ai/workspace@0.183.1
+  - @cotal-ai/core@0.183.1
+  - @cotal-ai/seat@0.183.1
+
 ## 0.183.0
 
 ### Minor Changes
