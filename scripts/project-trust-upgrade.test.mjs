@@ -17,6 +17,7 @@ import {
   verifyProjectTrustEvidence,
   CONTROL_SOCKET_TAIL_BYTES,
   SUN_PATH_LIMIT_BYTES,
+  HOSTED_CELL_ROOT_BYTES,
   controlSocketBytes,
   waitUntilGone,
 } from './project-trust-upgrade.mjs';
@@ -48,7 +49,8 @@ function makeRefusalRecord(canonicalRoot, platform) {
   };
 }
 
-function makeFixture(platform = 'linux') {
+function makeFixture(platform = 'linux', scenario = 'project-trust-migration') {
+  const pinned = scenario === 'project-trust-migration-0.182.1';
   const output = mkdtempSync(join(tmpdir(), 'project-trust-evidence-'));
   const rootPrefix = platform === 'win32' ? 'C:\\runner\\work\\projects\\' : '/private/cell/projects/';
   const roots = {
@@ -66,11 +68,12 @@ function makeFixture(platform = 'linux') {
   const symlinkHome = `${rootPrefix}profiles-symlink`;
   const evidence = {
     platform,
-    sourceVersion: '0.182.1',
-    targetVersion: '0.183.0',
-    trustCase: 'source-without-trust',
+    sourceVersion: pinned ? '0.182.1' : '0.183.0',
+    targetVersion: pinned ? '0.183.0' : '0.184.0',
+    trustCase: pinned ? 'source-without-trust' : 'source-already-trusted',
     preUpdate: {
-      seedAbsentBeforeUpdate: true,
+      seedAbsentBeforeUpdate: pinned,
+      ...(pinned ? {} : { trustUnchanged: true }),
       statusFirst: makeLaunchRecord('foreground'),
       spawnFirst: makeLaunchRecord('foreground'),
       symlink: makeLaunchRecord('foreground'),
@@ -80,8 +83,9 @@ function makeFixture(platform = 'linux') {
     },
     statusFirst: {
       canonicalRoot: roots.statusFirst,
-      seedAbsentAfterUpdateBeforeStatus: true,
+      seedAbsentAfterUpdateBeforeStatus: pinned,
       seedRecordedByStatus: true,
+      ...(pinned ? {} : { trustUnchanged: true }),
       trustedRoots: [roots.statusFirst],
       foreground: makeLaunchRecord('foreground'),
       managed: makeLaunchRecord('managed'),
@@ -90,23 +94,26 @@ function makeFixture(platform = 'linux') {
     spawnFirst: {
       profileHome: spawnFirstHome,
       canonicalRoot: roots.spawnFirst,
-      seedAbsentBeforeSpawn: true,
-      storeAbsentBeforeSpawn: true,
+      seedAbsentBeforeSpawn: pinned,
+      storeAbsentBeforeSpawn: pinned,
       seedRecordedBySpawn: true,
+      ...(pinned ? {} : { trustUnchanged: true }),
       trustedRoots: [roots.spawnFirst],
       foreground: makeLaunchRecord('foreground'),
     },
     preparedStatusFirst: {
       canonicalRoot: roots.prepStatus,
-      seedAbsentBeforeStatus: true,
+      seedAbsentBeforeStatus: pinned,
       seedRecordedByStatus: true,
+      ...(pinned ? {} : { trustUnchanged: true }),
       trustedRoots: [roots.prepStatus],
       foreground: makeLaunchRecord('foreground'),
     },
     preparedUpFirst: {
       canonicalRoot: roots.prepUp,
-      seedAbsentBeforeUp: true,
+      seedAbsentBeforeUp: pinned,
       seedRecordedByUp: true,
+      ...(pinned ? {} : { trustUnchanged: true }),
       trustedRoots: [roots.prepUp],
       foreground: makeLaunchRecord('foreground'),
     },
@@ -114,7 +121,8 @@ function makeFixture(platform = 'linux') {
       profileHome: symlinkHome,
       linkPath: roots.symlinkLink,
       canonicalRoot: roots.symlinkReal,
-      seedAbsentBeforeSpawn: true,
+      seedAbsentBeforeSpawn: pinned,
+      ...(pinned ? {} : { trustUnchanged: true }),
       trustedRoots: [roots.symlinkReal],
       foreground: makeLaunchRecord('foreground'),
     },
@@ -147,15 +155,15 @@ function makeFixture(platform = 'linux') {
     call('project-trust symlink foreground spawn', ['spawn', '--foreground'], symlinkHome),
   ];
 
-  const artifact = `candidate-B-${platform}-0.182.1-npm-configured-self-project-trust-migration.json`;
+  const artifact = `candidate-B-${platform}-${pinned ? '0.182.1' : '0.183.0'}-npm-configured-self-${scenario}.json`;
   const writeArtifact = value => {
     const bytes = Buffer.from(JSON.stringify(value, null, 2) + '\n', 'utf8');
     writeFileSync(join(output, artifact), bytes, { mode: 0o600 });
     return { artifact, bytes: bytes.length, sha256: digest(bytes) };
   };
   const projectTrustMigration = writeArtifact(evidence);
-  const cell = { scenario: 'project-trust-migration', platform, sourceVersion: '0.182.1', targetVersion: '0.183.0' };
-  const report = { id: `candidate-B-${platform}-0.182.1-npm-configured-self`, platform, calls, projectTrustMigration };
+  const cell = { scenario, platform, sourceVersion: evidence.sourceVersion, targetVersion: evidence.targetVersion };
+  const report = { id: `candidate-B-${platform}-${evidence.sourceVersion}-npm-configured-self`, platform, calls, projectTrustMigration };
   return { output, evidence, report, cell, writeArtifact };
 }
 
@@ -209,12 +217,26 @@ test('stand-in claude records env, launchOptions and MCP execution cleanly', () 
 
 test('verifyProjectTrustEvidence accepts complete cross-platform evidence and rejects any weakened check', () => {
   for (const platform of ['linux', 'darwin', 'win32']) {
-    const fx = makeFixture(platform);
-    try {
-      assert.deepEqual(verifyProjectTrustEvidence(fx), { 'project-trust-migrated': true });
-    } finally {
-      rmSync(fx.output, { recursive: true, force: true });
+    for (const scenario of ['project-trust-migration', 'project-trust-migration-0.182.1']) {
+      const fx = makeFixture(platform, scenario);
+      try {
+        assert.deepEqual(verifyProjectTrustEvidence(fx), { 'project-trust-migrated': true });
+      } finally {
+        rmSync(fx.output, { recursive: true, force: true });
+      }
     }
+  }
+
+  const swapped = makeFixture('linux', 'project-trust-migration-0.182.1');
+  try {
+    swapped.cell.scenario = 'project-trust-migration';
+    assert.throws(() => verifyProjectTrustEvidence(swapped), /belongs to the pinned cell/);
+    swapped.cell.scenario = 'project-trust-migration-0.182.1';
+    swapped.evidence.trustCase = 'source-already-trusted';
+    swapped.report.projectTrustMigration = swapped.writeArtifact(swapped.evidence);
+    assert.throws(() => verifyProjectTrustEvidence(swapped), /source without trust/);
+  } finally {
+    rmSync(swapped.output, { recursive: true, force: true });
   }
 
   const corruptions = [
@@ -248,7 +270,7 @@ test('verifyProjectTrustEvidence accepts complete cross-platform evidence and re
   ];
 
   for (const corrupt of corruptions) {
-    const fx = makeFixture('linux');
+    const fx = makeFixture('linux', 'project-trust-migration-0.182.1');
     try {
       corrupt(fx);
       fx.report.projectTrustMigration = fx.writeArtifact(fx.evidence);
@@ -266,18 +288,8 @@ test('verifyProjectTrustEvidence accepts complete cross-platform evidence and re
     rmSync(tampered.output, { recursive: true, force: true });
   }
 
-  const trusted = makeFixture('linux');
+  const trusted = makeFixture('linux', 'project-trust-migration');
   try {
-    trusted.evidence.trustCase = 'source-already-trusted';
-    trusted.evidence.preUpdate.seedAbsentBeforeUpdate = false;
-    trusted.evidence.preUpdate.trustUnchanged = true;
-    for (const section of ['statusFirst', 'spawnFirst', 'preparedStatusFirst', 'preparedUpFirst', 'symlink']) {
-      const absent = Object.keys(trusted.evidence[section]).find(key => key.startsWith('seedAbsent') || key.startsWith('storeAbsent'));
-      for (const key of Object.keys(trusted.evidence[section])) if (key.startsWith('seedAbsent') || key.startsWith('storeAbsent')) trusted.evidence[section][key] = false;
-      trusted.evidence[section].trustUnchanged = true;
-      assert(absent, `${section} records a seed observation`);
-    }
-    trusted.report.projectTrustMigration = trusted.writeArtifact(trusted.evidence);
     assert.deepEqual(verifyProjectTrustEvidence(trusted), { 'project-trust-migrated': true });
     trusted.evidence.statusFirst.trustUnchanged = false;
     trusted.report.projectTrustMigration = trusted.writeArtifact(trusted.evidence);
@@ -287,23 +299,19 @@ test('verifyProjectTrustEvidence accepts complete cross-platform evidence and re
   }
 });
 
-test('the control socket fits the longest cell root each platform allows', () => {
+test('the control socket follows the cell temp directory and stays under the hosted limit', () => {
   assert.equal(CONTROL_SOCKET_TAIL_BYTES, 42);
-  const overhead = '/tmp'.length + CONTROL_SOCKET_TAIL_BYTES;
+  assert.equal(HOSTED_CELL_ROOT_BYTES, 35);
+  const hosted = `/${'r'.repeat(HOSTED_CELL_ROOT_BYTES - 1)}`;
+  assert.equal(Buffer.byteLength(hosted), HOSTED_CELL_ROOT_BYTES);
   for (const [platform, limit] of Object.entries(SUN_PATH_LIMIT_BYTES)) {
-    const longest = limit - overhead;
-    const root = `/${'r'.repeat(longest - 1)}`;
-    assert.equal(Buffer.byteLength(root), longest);
-    assert.equal(controlSocketBytes(root, platform), limit);
-    const over = `${root}x`;
-    assert(controlSocketBytes(over, platform) > limit, `${platform} must refuse a root past ${longest} bytes`);
+    const bytes = controlSocketBytes(hosted, platform);
+    assert.equal(bytes, HOSTED_CELL_ROOT_BYTES + '/tmp'.length + CONTROL_SOCKET_TAIL_BYTES);
+    assert(bytes <= limit, `${platform} hosted socket is ${bytes}, over ${limit}`);
+    assert(limit - bytes >= 20, `${platform} margin is ${limit - bytes}, under 20`);
   }
-  const runner = { linux: '/home/runner/work/_temp/cell-xxxxxx', darwin: '/Users/runner/work/_temp/cell-xxxxxx' };
-  for (const [platform, root] of Object.entries(runner)) {
-    assert(controlSocketBytes(root, platform) <= SUN_PATH_LIMIT_BYTES[platform], platform);
-  }
-  const perProfile = `${runner.linux}/project-trust/profiles/primary`;
-  assert(controlSocketBytes(perProfile, 'linux') > SUN_PATH_LIMIT_BYTES.linux);
+  const perProfile = `${hosted}/project-trust/profiles/primary`;
+  assert(controlSocketBytes(perProfile, 'linux') > SUN_PATH_LIMIT_BYTES.linux, 'a per-profile temp would exceed the limit');
 });
 
 test('cleanup is not done while a recorded process is still alive', async () => {

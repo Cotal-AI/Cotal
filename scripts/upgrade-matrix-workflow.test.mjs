@@ -46,7 +46,7 @@ test('paired next-hop builders are explicit in both phases and stamp B and C bef
 test('Corepack Node fallback runs on the frozen source independently of the upgrade coordinates', () => {
   const job = workflow.jobs['release-corepack-node-fallback'];
   assert.equal(job.needs, 'select');
-  assert.equal(job.if, "needs.select.outputs.applicable == 'true' && !contains(github.event.head_commit.message, '[windows-job-only]') && !contains(github.event.head_commit.message, '[windows-baseline-only]') && !contains(github.event.head_commit.message, '[mac-controls-only]') && !contains(github.event.head_commit.message, '[mac-transition-only]') && !contains(github.event.head_commit.message, '[scheduler-only]') && !contains(github.event.head_commit.message, '[installer-only]')");
+  assert.equal(job.if, "needs.select.outputs.applicable == 'true'");
   assert.equal(job.steps[0].with.ref, '${{ needs.select.outputs.source }}');
   assert.equal(job.steps[0].with['persist-credentials'], false);
   assert(job.steps.some(step => step.run?.includes('node bin/smoke/update-registry-arrival.smoke.mjs corepack-node-fallback')));
@@ -676,17 +676,18 @@ test('actual workflow census re-grades project-trust-migration artifact and reje
         plainLogCreated: false,
       };
     };
+    const pinned = d.cell.scenario === 'project-trust-migration-0.182.1';
     const evidence = {
       platform: 'linux',
       sourceVersion: d.cell.sourceVersion,
       targetVersion: d.cell.targetVersion,
-      trustCase: 'source-without-trust',
-      preUpdate: { seedAbsentBeforeUpdate: true, statusFirst: makeLaunch('foreground'), spawnFirst: makeLaunch('foreground'), symlink: makeLaunch('foreground'), spellings: { platform: 'linux', notRun: 'path spellings beyond the symlink run on Windows only' } },
-      statusFirst: { canonicalRoot: `${rootPrefix}s1`, seedAbsentAfterUpdateBeforeStatus: true, seedRecordedByStatus: true, trustedRoots: [`${rootPrefix}s1`], foreground: makeLaunch('foreground'), managed: makeLaunch('managed'), managedSeatJoined: true },
-      spawnFirst: { profileHome: `${rootPrefix}h-spawn`, canonicalRoot: `${rootPrefix}s2`, seedAbsentBeforeSpawn: true, storeAbsentBeforeSpawn: true, seedRecordedBySpawn: true, trustedRoots: [`${rootPrefix}s2`], foreground: makeLaunch('foreground') },
-      preparedStatusFirst: { canonicalRoot: `${rootPrefix}p1`, seedAbsentBeforeStatus: true, seedRecordedByStatus: true, trustedRoots: [`${rootPrefix}p1`], foreground: makeLaunch('foreground') },
-      preparedUpFirst: { canonicalRoot: `${rootPrefix}p2`, seedAbsentBeforeUp: true, seedRecordedByUp: true, trustedRoots: [`${rootPrefix}p2`], foreground: makeLaunch('foreground') },
-      symlink: { profileHome: `${rootPrefix}h-link`, linkPath: `${rootPrefix}link`, canonicalRoot: `${rootPrefix}real`, seedAbsentBeforeSpawn: true, trustedRoots: [`${rootPrefix}real`], foreground: makeLaunch('foreground') },
+      trustCase: pinned ? 'source-without-trust' : 'source-already-trusted',
+      preUpdate: { seedAbsentBeforeUpdate: pinned, ...(pinned ? {} : { trustUnchanged: true }), statusFirst: makeLaunch('foreground'), spawnFirst: makeLaunch('foreground'), symlink: makeLaunch('foreground'), spellings: { platform: 'linux', notRun: 'path spellings beyond the symlink run on Windows only' } },
+      statusFirst: { canonicalRoot: `${rootPrefix}s1`, seedAbsentAfterUpdateBeforeStatus: pinned, seedRecordedByStatus: true, ...(pinned ? {} : { trustUnchanged: true }), trustedRoots: [`${rootPrefix}s1`], foreground: makeLaunch('foreground'), managed: makeLaunch('managed'), managedSeatJoined: true },
+      spawnFirst: { profileHome: `${rootPrefix}h-spawn`, canonicalRoot: `${rootPrefix}s2`, seedAbsentBeforeSpawn: pinned, storeAbsentBeforeSpawn: pinned, seedRecordedBySpawn: true, ...(pinned ? {} : { trustUnchanged: true }), trustedRoots: [`${rootPrefix}s2`], foreground: makeLaunch('foreground') },
+      preparedStatusFirst: { canonicalRoot: `${rootPrefix}p1`, seedAbsentBeforeStatus: pinned, seedRecordedByStatus: true, ...(pinned ? {} : { trustUnchanged: true }), trustedRoots: [`${rootPrefix}p1`], foreground: makeLaunch('foreground') },
+      preparedUpFirst: { canonicalRoot: `${rootPrefix}p2`, seedAbsentBeforeUp: pinned, seedRecordedByUp: true, ...(pinned ? {} : { trustUnchanged: true }), trustedRoots: [`${rootPrefix}p2`], foreground: makeLaunch('foreground') },
+      symlink: { profileHome: `${rootPrefix}h-link`, linkPath: `${rootPrefix}link`, canonicalRoot: `${rootPrefix}real`, seedAbsentBeforeSpawn: pinned, ...(pinned ? {} : { trustUnchanged: true }), trustedRoots: [`${rootPrefix}real`], foreground: makeLaunch('foreground') },
       refusals: { legacyUnregisteredWithPeers: makeRefusal(`${rootPrefix}u1`), postUpdateCreated: makeRefusal(`${rootPrefix}u2`), legacyUnregisteredEmptyHome: makeRefusal(`${rootPrefix}u3`) },
       cleanup: { stacksStopped: true },
     };
@@ -712,17 +713,19 @@ test('actual workflow census re-grades project-trust-migration artifact and reje
       { label: 'project-trust symlink foreground spawn', argv: ['spawn'], home: `${rootPrefix}h-link`, exit: 0 },
     ];
   };
-  const okRun = fixture((d, directory) => buildEvidence(directory)(d), { scenario: 'project-trust-migration' });
+  const okRun = fixture((d, directory) => buildEvidence(directory)(d), { scenario: 'project-trust-migration', sourceVersion: '0.183.0', targetVersion: '0.184.0' });
   assert.equal(okRun.exit, 0, okRun.stderr);
+  const pinnedRun = fixture((d, directory) => buildEvidence(directory)(d), { scenario: 'project-trust-migration-0.182.1', sourceVersion: '0.182.1', targetVersion: '0.183.0' });
+  assert.equal(pinnedRun.exit, 0, pinnedRun.stderr);
   const missingAssertion = fixture((d, directory) => {
     buildEvidence(directory)(d);
     d.report.assertions = d.report.assertions.filter(a => a.name !== 'existing project trust migrates and untrusted projects still refuse');
-  }, { scenario: 'project-trust-migration' });
+  }, { scenario: 'project-trust-migration', sourceVersion: '0.183.0', targetVersion: '0.184.0' });
   assert.notEqual(missingAssertion.exit, 0);
   const tamperedArtifact = fixture((d, directory) => {
     buildEvidence(directory)(d);
     writeFileSync(join(directory, d.report.projectTrustMigration.artifact), '{"tampered":true}\n');
-  }, { scenario: 'project-trust-migration' });
+  }, { scenario: 'project-trust-migration-0.182.1', sourceVersion: '0.182.1', targetVersion: '0.183.0' });
   assert.notEqual(tamperedArtifact.exit, 0);
 });
 test('actual publication selector reports a missing receipt without starting the published phase', async () => {

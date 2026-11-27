@@ -50,6 +50,7 @@ export function buildStandinClaude(binDir, platform = process.platform) {
   const hostScript = join(binDir, 'standin-claude.cjs');
   writeFileSync(hostScript, [
     'const fs = require("node:fs");',
+    'const { join } = require("node:path");',
     'const { spawn, spawnSync } = require("node:child_process");',
     'const args = process.argv.slice(2);',
     'if (args.includes("--version")) { console.log("2.1.330 (Claude Code)"); process.exit(0); }',
@@ -86,6 +87,9 @@ export function buildStandinClaude(binDir, platform = process.platform) {
     '      windowsHide: true,',
     '    });',
     '    seat.on("error", () => {});',
+    '    const seatPid = join(process.cwd(), ".cotal", "standin-seat.pid");',
+    '    fs.mkdirSync(join(process.cwd(), ".cotal"), { recursive: true });',
+    '    fs.writeFileSync(seatPid, String(seat.pid) + "\\n", { mode: 0o600 });',
     '  }',
     '  console.log("? for shortcuts");',
     '  const keepAlive = setInterval(() => {}, 1000);',
@@ -186,11 +190,13 @@ function writeTrustedProjectFiles(projectDir, probeScript) {
   }, null, 2) + '\n', { mode: 0o600 });
 }
 
-// The connector binds tmpdir()/cotal-ctl-<22>/ctl.sock. That tail is 42 bytes and
-// sun_path holds 108 on Linux, 104 on macOS. The cell temp is join(root, 'tmp'), four
-// more bytes, so the root may be 62 on Linux and 58 on macOS. A real runner root is shorter.
+// The connector binds tmpdir()/cotal-ctl-<22>/ctl.sock. The cell sets TMPDIR to
+// join(root, 'tmp'), so the socket is that directory plus this 42-byte tail.
+// sun_path holds 108 on Linux and 104 on macOS. A hosted runner temp is 24 bytes
+// and mkdtemp adds cell-XXXXXX, so the root is 35 bytes and the socket is 81.
 export const CONTROL_SOCKET_TAIL_BYTES = '/cotal-ctl-'.length + 22 + '/ctl.sock'.length;
 export const SUN_PATH_LIMIT_BYTES = { linux: 108, darwin: 104 };
+export const HOSTED_CELL_ROOT_BYTES = 35;
 
 export function controlSocketBytes(cellRoot, platform) {
   const separator = platform === 'win32' ? '\\' : '/';
@@ -296,8 +302,11 @@ function assertTrustProfile(data, name, sourceAlreadyTrusted, absentKey, recorde
   assert(validProjectTrustLaunchRecord(section?.foreground, 'foreground'), `invalid ${name} launch`);
 }
 
+const PROJECT_TRUST_SCENARIOS = ['project-trust-migration', 'project-trust-migration-0.182.1'];
+const PINNED_TRUST_SOURCE = '0.182.1';
+
 export function verifyProjectTrustEvidence({ report, cell, output }) {
-  assert.equal(cell.scenario, 'project-trust-migration');
+  assert(PROJECT_TRUST_SCENARIOS.includes(cell.scenario), `unexpected project trust scenario ${cell.scenario}`);
   assert(['linux', 'darwin', 'win32'].includes(cell.platform));
   assert.equal(report.platform, cell.platform);
   const meta = report.projectTrustMigration;
@@ -366,6 +375,13 @@ export function verifyProjectTrustEvidence({ report, cell, output }) {
   assert(validProjectTrustLaunchRecord(data.preUpdate?.symlink, 'foreground'), 'invalid pre-update symlink launch');
   const sourceAlreadyTrusted = data.trustCase === 'source-already-trusted';
   assert(['source-without-trust', 'source-already-trusted'].includes(data.trustCase), 'the cell must name which trust case it ran');
+  if (cell.scenario === 'project-trust-migration-0.182.1') {
+    assert.equal(data.sourceVersion, PINNED_TRUST_SOURCE, 'the pinned cell must migrate from 0.182.1');
+    assert.equal(data.trustCase, 'source-without-trust', 'the pinned cell must be the source without trust');
+    assert.equal(cell.sourceVersion, PINNED_TRUST_SOURCE);
+  } else if (data.trustCase === 'source-without-trust') {
+    assert.notEqual(data.sourceVersion, PINNED_TRUST_SOURCE, '0.182.1 evidence belongs to the pinned cell');
+  }
   assert.equal(data.preUpdate?.seedAbsentBeforeUpdate, !sourceAlreadyTrusted);
   assert.equal(data.preUpdate?.trustUnchanged, sourceAlreadyTrusted ? true : undefined);
 
@@ -509,7 +525,11 @@ async function buildProjectTrustWorkspace({ env, root, pkg, call, ok, invokeCli 
 
 async function windowsPathSpellings(projectDir) {
   const canonical = realpathSync.native(projectDir);
-  if (process.platform !== 'win32') return { platform: process.platform, notRun: 'path spellings beyond the symlink run on Windows only' };
+  if (process.platform !== 'win32') {
+    const skipped = { platform: process.platform, notRun: 'path spellings beyond the symlink run on Windows only' };
+    console.log(`project-trust path spellings skipped: ${skipped.notRun}`);
+    return skipped;
+  }
   const drive = canonical.slice(0, 1);
   const rest = canonical.slice(1);
   const leaf = canonical.slice(canonical.lastIndexOf('\\') + 1);
@@ -526,7 +546,10 @@ async function windowsPathSpellings(projectDir) {
   }
   result.shortName = await shortNameSpelling(canonical);
   result.windowsSymlink = await windowsSymlinkSpelling(canonical);
-  for (const entry of Object.values(result)) if (entry.ran) assert.equal(entry.canonical, canonical, `${entry.spelling} resolved to a different root`);
+  for (const [name, entry] of Object.entries(result)) {
+    if (entry.ran) assert.equal(entry.canonical, canonical, `${entry.spelling} resolved to a different root`);
+    else console.log(`project-trust path spelling skipped: ${name}: ${entry.reason}`);
+  }
   return { platform: 'win32', canonical, spellings: result };
 }
 
@@ -551,7 +574,7 @@ function recordedPids(cwd) {
   if (!existsSync(dir)) return [];
   const pids = [];
   for (const name of readdirSync(dir)) {
-    if (!/^(nats|manager\.[0-9a-f]+|auth-service\.[0-9a-f]+|delivery\.[0-9a-f]+)\.pid$/.test(name)) continue;
+    if (!/^(nats|manager\.[0-9a-f]+|auth-service\.[0-9a-f]+|delivery\.[0-9a-f]+|standin-seat)\.pid$/.test(name)) continue;
     const first = readFileSync(join(dir, name), 'utf8').trim().split(/\s+/)[0];
     const pid = Number(first);
     if (Number.isInteger(pid) && pid > 1) pids.push(pid);
@@ -648,10 +671,13 @@ export async function prepareProjectTrustMigration(context) {
       const pids = recordedPids(stack.cwd);
       const result = await invokeCli(`project-trust cleanup ${stack.space}`, argv, { cwd: stack.cwd, env: stack.env });
       if (result.exit === 0 && result.signal === null && result.timeout === false) {
-        await waitUntilGone(pids);
-        stack.stopped = true;
-      }
-      else failures.push(`${stack.space} exit ${result.exit}`);
+        try {
+          await waitUntilGone(pids);
+          stack.stopped = true;
+        } catch (error) {
+          failures.push(`${stack.space} still running: ${error.message}`);
+        }
+      } else failures.push(`${stack.space} exit ${result.exit}`);
     }
     allStacksStopped = activeStacks.every(stack => stack.stopped);
     assert(allStacksStopped, `owned project-trust stacks still running: ${failures.join(', ')}`);
@@ -890,7 +916,7 @@ async function verifyProjectTrustAfterUpdate(update, ctx) {
 
       const verified = verifyProjectTrustEvidence({
         report,
-        cell: { scenario: 'project-trust-migration', platform: process.platform, sourceVersion: report.source, targetVersion: report.target },
+        cell: { scenario: report.source === PINNED_TRUST_SOURCE ? 'project-trust-migration-0.182.1' : 'project-trust-migration', platform: process.platform, sourceVersion: report.source, targetVersion: report.target },
         output,
       });
       check('existing project trust migrates and untrusted projects still refuse', verified['project-trust-migrated'] === true, report.projectTrustMigration);
