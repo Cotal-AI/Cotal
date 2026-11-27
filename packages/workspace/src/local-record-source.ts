@@ -61,7 +61,18 @@ export function readLocalRecordSource(path: string, limit = LOCAL_INPUT_LIMIT, p
   try {
     const before = fstatSync(fd);
     if (!before.isFile()) throw new CommandFailure("refused", "SCHEMA_INVALID", "local record input must be a regular file", { target: { path } });
-    if (privateFile && posix && (before.uid !== process.getuid!() || (before.mode & 0o077) !== 0)) throw new CommandFailure("refused", "PERMISSION_DENIED", `the saved local record ${path} is not owned and private`, { target: { path } });
+    if (privateFile && posix && (before.uid !== process.getuid!() || (before.mode & 0o077) !== 0)) {
+      // One refusal that separates the two ways a saved record stops being private: a file this
+      // account owns but other accounts can read needs only its mode back, while a file another
+      // account owns must be restored by that account, so nothing here changes it.
+      const owned = before.uid === process.getuid!();
+      throw new CommandFailure("refused", "PERMISSION_DENIED", `the saved local record ${path} is not owned and private`, {
+        target: { path },
+        remedy: owned
+          ? `from the folder that holds it, run chmod 600 ${shellPath(path)}, then retry this command`
+          : `the record needs to be restored with the correct owner: it is owned by uid ${before.uid}, not this account (uid ${process.getuid!()}), so it was not read or changed`,
+      });
+    }
     if (before.size > limit) throw new CommandFailure("refused", "SCHEMA_INVALID", "local record input exceeds its byte limit", { target: { path } });
     const bytes = Buffer.alloc(limit + 1);
     let length = 0;
