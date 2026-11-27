@@ -119,6 +119,7 @@ async function checkLegacyChannel(base: string, cookie: string, messageId: strin
 interface SharedViewCase {
   channel: string;
   ordinaryChannel: string;
+  readerId: string;
   retained: CotalMessage;
   publishVerified(): Promise<CotalMessage>;
 }
@@ -138,7 +139,10 @@ async function readSharedView(base: string, cookie: string, cell: SharedViewCase
   const membership = JSON.parse(await read("/api/membership")) as { members: unknown[] };
   assert.ok(Array.isArray(membership.members), "the broker-backed membership read retains its existing shape");
   assert.ok(!JSON.stringify(membership).includes(cell.channel), "shared membership has no plugin channel name");
-  assert.ok(!(await read("/api/roster")).includes(cell.channel), "shared roster has no plugin attention channel name");
+  const roster = await read("/api/roster");
+  const reader = (JSON.parse(roster) as { card: { id: string }; channelModes?: Record<string, string> }[]).find(({ card }) => card.id === cell.readerId);
+  assert.equal(reader?.channelModes?.[cell.ordinaryChannel], "quiet", "the shared roster includes the same reader's ordinary attention setting");
+  assert.ok(!roster.includes(cell.channel), "shared roster has no plugin attention channel name");
 }
 
 function hasMessage(events: FeedEvent[], event: string, id: string, channel?: string): boolean {
@@ -195,6 +199,7 @@ async function checkEnabledSpace(frame: Part): Promise<void> {
     });
     await Promise.all([reader.start(), writer.start()]);
     assert.ok([reader, writer].every((ep) => ep.channelRoutingMode() === "isolated"), "fixture agents admit the isolated route");
+    await reader.setChannelModes({ [channel]: "quiet", [chatChannel]: "quiet" });
     const retained = await writer.multicast("retained plugin post", { channel });
     assert.ok((await reader.channelHistory(channel, { limit: 10 })).some(({ id }) => id === retained.id), "the scoped reader sees retained plugin history before the dashboard reads");
     assert.ok((await reader.listChannels()).some((row) => row.channel === channel), "the scoped reader can discover the plugin channel");
@@ -204,6 +209,7 @@ async function checkEnabledSpace(frame: Part): Promise<void> {
     await checkViewerFeeds(dashboard.base, dashboard.cookie, writer, frame, {
       channel,
       ordinaryChannel: chatChannel,
+      readerId: reader.card.id,
       retained,
       async publishVerified() {
         const post = await writer.multicast("live plugin post", { channel });
