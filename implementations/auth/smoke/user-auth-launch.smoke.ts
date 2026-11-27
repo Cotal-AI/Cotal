@@ -820,6 +820,12 @@ try {
     const up2 = await cotal(["up", "-d", "--user-auth", "--idp", base, "--server", server2], { cwd: root2, env });
     check("with no sign-in, up starts the other members and names cotal login first",
       up2.status === 4 && field(up2.out, "Native code", "AUTH_REQUIRED") && plain(up2.out).includes(`\nNext\n  cotal login --idp ${base}, then`), up2.out);
+    const scopedUp = ["up", "--root", root2, "--space", SPACE, "--seat-cap", "3", "--json"];
+    const partial = await cotal(scopedUp, { cwd: home2, env });
+    const retryUp = /then run `cotal ([^`]+)` again/.exec(partial.out)?.[1];
+    const copiedUp = retryUp === scopedUp.join(" ") ? await cotal(retryUp.split(" "), { cwd: home2, env }) : undefined;
+    check("the sign-in retry from another folder keeps the selected stack, manager seat cap and JSON receipt",
+      partial.status === 4 && copiedUp?.status === 4 && copiedUp.out.includes(`\"space\":\"${SPACE}\"`) && copiedUp.out.includes("AUTH_REQUIRED") && !existsSync(managerPid), partial.out);
     const refusedStart = await cotal(["manager", "start"], { cwd: root2, env });
     const refusedText = plain(refusedStart.out);
     check("manager start with no sign-in exits 2 under a Mesh: heading with AUTH_REQUIRED, and Next signs in, then starts it",

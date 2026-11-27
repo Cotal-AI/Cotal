@@ -91,6 +91,29 @@ export const onRequest = async (context: Ctx): Promise<Response> => {
   }
 
   const response = await next();
+  // A missing page, asked for by an agent (Accept: text/markdown), gets a
+  // markdown 404 that says where to go instead of the HTML error page.
+  if (response.status === 404 && request.method === 'GET' && prefersMarkdown(request.headers.get('accept'))) {
+    const body = [
+      '# Page not found',
+      '',
+      `\`${url.pathname}\` does not exist on docs.cotal.ai.`,
+      '',
+      '- Every page, with its markdown URL: https://docs.cotal.ai/llms.txt',
+      '- Start here: https://docs.cotal.ai/docs/what-is-cotal.md',
+      '- Sitemap: https://docs.cotal.ai/sitemap.xml',
+      '- Search the docs over MCP: https://docs.cotal.ai/mcp (tool search_docs)',
+      '',
+    ].join('\n');
+    return new Response(body, {
+      status: 404,
+      headers: {
+        'content-type': 'text/markdown; charset=utf-8',
+        vary: 'Accept',
+        'cache-control': 'public, max-age=300',
+      },
+    });
+  }
   if (request.method === 'GET' && slug.endsWith('.md') && response.ok) {
     const body = await response.text();
     const out = new Response(body, response);

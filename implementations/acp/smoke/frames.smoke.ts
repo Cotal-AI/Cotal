@@ -447,17 +447,17 @@ const HERE = "1".repeat(64), THERE = "2".repeat(64);
   check("and so does the model select", choice?.name === "hermes: Hermes pick", choice);
   let variant: string;
   try {
-    variant = applyOption(offer, selection, "variant", "high").variant;
+    variant = applyOption(offer, selection, "reasoning", "high").variant;
   } catch (e) {
     variant = (e as Error).message;
   }
   check("one of its variants can be chosen on <agent>/default", variant === "high", variant);
   const alone = offerOf([{ id: "default", variants: [{ name: "high" }] }]);
-  const reasoning = configOptions(alone, initialSelection(alone)).find((o) => o.id === "variant") as unknown as { options: { value: string }[] } | undefined;
+  const reasoning = configOptions(alone, initialSelection(alone)).find((o) => o.id === "reasoning") as unknown as { options: { value: string }[] } | undefined;
   check("where it is the only model, the Reasoning select holds its variants", JSON.stringify(reasoning?.options.map((o) => o.value)) === JSON.stringify(["default", "high"]), reasoning);
   // The Manager checks a variant against the model a launch names, or the catalog's marked default
   // when it names none, so a variant chosen on <agent>/default launches naming the model it came from.
-  const chosen = applyOption(offer, selection, "variant", "high");
+  const chosen = applyOption(offer, selection, "reasoning", "high");
   check("a variant chosen on <agent>/default launches naming the model default, with that variant", spawnModel(offer, chosen.model) === "default" && chosen.variant === "high", chosen);
   const plainOffer = offerOf([{ id: "a", variants: [{ name: "low" }] }]);
   check("where no catalog model is named default, <agent>/default launches naming no model", spawnModel(plainOffer, initialSelection(plainOffer).model) === undefined);
