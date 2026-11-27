@@ -34,6 +34,7 @@ import {
   outputDeclarationProblems,
   oneLine,
   paintFor,
+  plainFlag,
   preferencesFolderWarning,
   recordOperationWarning,
   renderReport,
@@ -578,6 +579,8 @@ function misspelledOption(cmd: Command, rest: readonly string[], flagNames: read
       if ((cmd.name === "ext" || sub?.name === "check") && accepted && !accepted.includes(typed.flagName))
         return { message: typed.message, remedy: `omit this option; \`cotal ${cmd.name}${sub ? ` ${sub.name}` : ""}\` does not take --${typed.flagName}` };
     }
+    if (typed && typed.flagName === "plain" && asksForJson(cmd, rest))
+      return { message: typed.message, remedy: "omit the mistyped plain option" };
     if (typed) return typed;
   }
   return undefined;
@@ -935,7 +938,7 @@ async function serviceSurface(found: Command | undefined, words: string[], forRe
 /** Recover the command and output mode for a malformed leading switch without dispatching it. */
 async function unknownInvocationExit(commands: readonly Command[], word: string, args: string[], output: string[], beforeSeparator: boolean, warnings: OutputWarning[]): Promise<never> {
   const typed = typographicOption(word, new Set(LEADING_FLAGS.map((flag) => flag.slice(2))), [
-    jsonFlag, { name: "help", short: "h", type: "boolean" }, { name: "version", short: "V", type: "boolean" },
+    jsonFlag, plainFlag, { name: "help", short: "h", type: "boolean" }, { name: "version", short: "V", type: "boolean" },
   ]);
   const equals = word.indexOf("=");
   const flag = equals === -1 ? word : word.slice(0, equals);
@@ -950,11 +953,16 @@ async function unknownInvocationExit(commands: readonly Command[], word: string,
   const words = [...output, ...retry.leading.filter((item) => OUTPUT_FLAG_WORDS.has(item)), ...retry.args];
   const { cmd, rest } = await serviceSurface(takesWordsRaw(found) ? undefined : found, words, true);
   const json = cmd !== undefined && asksForJson(cmd, rest);
+  // With JSON chosen, correcting a mistyped `--plain` would ask for both outputs at once, so the
+  // remedy drops the word instead of retyping it.
+  const plainRefusal = typed?.flagName === "plain" && json
+    ? { ...typed, remedy: "omit the mistyped plain option" }
+    : typed;
   if (typed && !json) return textExit();
   routeCollisionWarnings(warnings, cmd, rest, false);
   const end = rest.indexOf("--");
   const plain = (end === -1 ? rest : rest.slice(0, end)).includes("--plain");
-  const refusal = typed ?? switchValueRefusal(flag, cmd, rest, json);
+  const refusal = plainRefusal ?? switchValueRefusal(flag, cmd, rest, json);
   return usageExit(refusal.message, cmd, json, plain, refusal.remedy, rest);
 }
 
