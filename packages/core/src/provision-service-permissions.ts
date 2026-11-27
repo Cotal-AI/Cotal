@@ -2,6 +2,8 @@
 // provisioner, issuer, registry reader, run admitter, lifecycle executor, goal writer, session,
 // endpoint-serve executor, deprovisioner, delivery, membership and connection-evictor profiles.
 // provision-permission-builders.ts re-exports each of them, so import paths are unchanged.
+import { PLUGIN_FANOUT_DURABLE, pluginChannelStream } from "./plugin-channel-route.js";
+import { pluginChannelSpaceStateSubject } from "./plugin-channel-space-state.js";
 import { eventPayloadStream } from "./event-payloads.js";
 import { TTL_RECONCILE_CANARY_KEY, ttlBuckets } from "./streams.js";
 import { BROKER_USER_INFO_SUBJECT } from "./broker-identity.js";
@@ -68,7 +70,7 @@ export function purgerPermissions(space: string, pr: MintPrincipal): Record<stri
  *  power is worse than none — it is the document a reader trusts instead of checking. KV value-writes are
  *  scoped to exactly the two
  *  registries provisioning touches: the read-ACL bucket (`commitAcl`) and the channel registry (seed). */
-export function provisionerPermissions(space: string, pr: MintPrincipal): Record<string, unknown> {
+export function provisionerPermissions(space: string, pr: MintPrincipal, opts: Pick<MintOpts, "initializePluginChannelState" | "pluginChannelsEnabled"> = {}): Record<string, unknown> {
   const CHAT = chatStream(space), DM = dmStream(space), TASK = taskStream(space);
   const INBOX = inboxStream(space), DLV = dlvStream(space);
   // Every non-endpoint KV backing stream the provisioner pre-creates. Endpoint control streams and
@@ -100,7 +102,8 @@ export function provisionerPermissions(space: string, pr: MintPrincipal): Record
   // object-store client reads by creating an ephemeral PUSH consumer with a caller-chosen
   // `deliver_subject`, so a CONSUMER.CREATE here would be an exporter of every artifact in the space.
   const OBJ = objectStoreStream(artifactBucket(space));
-  const streamSetup = [CHAT, DM, TASK, INBOX, DLV, eventPayloadStream(space), OBJ, ...endpointPlaneStreamNames(space), ...buckets].flatMap((s) => [
+  const pluginStream = opts.pluginChannelsEnabled ? pluginChannelStream(space) : undefined;
+  const streamSetup = [CHAT, DM, TASK, INBOX, DLV, eventPayloadStream(space), OBJ, ...endpointPlaneStreamNames(space), ...buckets, ...(pluginStream ? [pluginStream] : [])].flatMap((s) => [
     `$JS.API.STREAM.CREATE.${s}`,
     `$JS.API.STREAM.INFO.${s}`,
   ]);
@@ -130,7 +133,7 @@ export function provisionerPermissions(space: string, pr: MintPrincipal): Record
   // (SPEC §8). STREAM.UPDATE is a whole-config write, so the grant reaches every setting of them;
   // `setHistoryLimit` changes only `max_age` and `max_msgs_per_subject` and refuses a read back that is
   // not canonical apart from those two. TASK stays create-only.
-  const streamReconcile = [...ttlStreams, `KV_${membershipBucket(space)}`, OBJ, CHAT, INBOX, DLV, DM]
+  const streamReconcile = [...ttlStreams, `KV_${membershipBucket(space)}`, OBJ, CHAT, INBOX, DLV, DM, ...(pluginStream ? [pluginStream] : [])]
     .map((s) => `$JS.API.STREAM.UPDATE.${s}`);
   // #404: one EXACT reserved key on each TTL bucket is the post-update enforcement canary. The
   // provisioner still cannot write presence identities or lease keys; it can only write this fixed
@@ -161,6 +164,7 @@ export function provisionerPermissions(space: string, pr: MintPrincipal): Record
         // membership-rw cred own those).
         `$KV.${aclBucket(space)}.>`,
         `$KV.${channelBucket(space)}.>`,
+        ...(opts.initializePluginChannelState ? [pluginChannelSpaceStateSubject(space)] : []),
         // ...and READ both: commitAcl read-before-writes the ACL (`kvm.open`, direct=false ⇒ STREAM.MSG.GET);
         // the channel seed read-before-writes defaults (`kvm.create`, direct=true ⇒ DIRECT.GET). Grant both
         // read verbs on both buckets to cover the open/create-path variance — reads of registries it already
@@ -551,7 +555,7 @@ export function deprovisionerPermissions(space: string, pr: MintPrincipal, depro
  *  subscription — a leaked cred can't natively sniff the mixed pre-auth store. Honest blast radius
  *  (delivery-daemon.mdx): it can write any owner's `dlv` (the post-auth store agents trust); the future
  *  fan-out/reader cred split bounds that. */
-export function deliveryPermissions(space: string, pr: MintPrincipal): Record<string, unknown> {
+export function deliveryPermissions(space: string, pr: MintPrincipal, pluginChannelsEnabled = false): Record<string, unknown> {
   const p = spacePrefix(space);
   const CHAT = chatStream(space), INBOX = inboxStream(space), DLV = dlvStream(space);
   const PKV = `KV_${presenceBucket(space)}`, CHKV = `KV_${channelBucket(space)}`;
@@ -586,6 +590,7 @@ export function deliveryPermissions(space: string, pr: MintPrincipal): Record<st
     `$JS.API.CONSUMER.MSG.NEXT.${CHAT}.>`,
     `$JS.API.CONSUMER.DELETE.${CHAT}.>`,
     `$JS.ACK.${CHAT}.>`,
+    ...(pluginChannelsEnabled ? pluginHistoryDeliveryRows(space) : []),
     // Trusted reader on INBOX — NAME-PINNED to the single `reader` durable (the meaningful confinement:
     // no arbitrary INBOX consumer create against the mixed pre-auth store).
     `$JS.API.CONSUMER.CREATE.${INBOX}.${INBOX_READER_DURABLE}.>`,
@@ -676,6 +681,20 @@ export function deliveryPermissions(space: string, pr: MintPrincipal): Record<st
     livenessServeFilter(space, "delivery"),
   ];
   return { pub: { allow: pub }, sub: { allow: sub } };
+}
+
+function pluginHistoryDeliveryRows(space: string): string[] {
+  const stream = pluginChannelStream(space);
+  return [
+    `$JS.API.STREAM.INFO.${stream}`,
+    `$JS.API.CONSUMER.CREATE.${stream}`,
+    `$JS.API.CONSUMER.CREATE.${stream}.>`,
+    `$JS.API.CONSUMER.DURABLE.CREATE.${stream}.${PLUGIN_FANOUT_DURABLE}`,
+    `$JS.API.CONSUMER.INFO.${stream}.>`,
+    `$JS.API.CONSUMER.MSG.NEXT.${stream}.>`,
+    `$JS.API.CONSUMER.DELETE.${stream}.>`,
+    `$JS.ACK.${stream}.${PLUGIN_FANOUT_DURABLE}.>`,
+  ];
 }
 
 /** The scoped DATA-account `membership-rw` permission set (the graph feed's conn B; NEVER allow-all,

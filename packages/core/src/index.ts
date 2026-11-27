@@ -190,3 +190,5 @@ export {
   readPluginChannelSpaceState,
   type PluginChannelSpaceSnapshot,
 } from "./plugin-channel-space-state.js";
+
+export { projectChannelGrants, type ChannelGrantFilter, type ChannelGrantHistory, type ChannelGrantProjection, type ChannelGrantScope } from "./channel-grants.js";
