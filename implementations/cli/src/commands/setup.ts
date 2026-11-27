@@ -74,6 +74,7 @@ import { onInstanceId } from "../lib/control.js";
 import { signedInSpace } from "../lib/conversation-identity.js";
 import { addFromBundle, checkLocalSpace, checkSelfHostedSpace, recordLocalSpace, type LocalSpaceState, type SelfHostedSpace } from "./space-registration.js";
 import { mkdirPrivate } from "../lib/private-directory.js";
+import { applicationsBeyondRecordedService } from "../lib/service-application.js";
 
 const ONBOARD_VERSION = "2";
 
@@ -990,11 +991,15 @@ function setupView(r: SetupResult, connectionRefused = false): Report {
     : r.harness.failed
       ? { text: `${r.harness.name} · ${r.harness.failed.title} did not finish`, tone: "failed" }
       : r.harness.name;
+  const hidden = applicationsBeyondRecordedService().includes(r.harness.name)
+    && r.harness.missing.length === 0 && !r.harness.unavailable && !r.harness.failed
+    ? ` · the background service cannot see ${r.harness.name}; run \`${displayCmd()} daemon setup\` in this terminal`
+    : "";
   const fields: [string, Cell][] = [
     ["destination", r.destination],
     ["project", r.project],
     ["space", `${r.space} · ${SPACE_STATE[r.spaceState]}`],
-    ["application", application],
+    ["application", typeof application === "string" ? `${application}${hidden}` : { ...application, text: `${application.text}${hidden}` }],
     ...r.runtimes.filter((x) => x.selected || x.state !== "left-out").map((x): [string, Cell] => ["runtime", runtimeCell(x)]),
     ...(leftOut.length === 0 ? [] : [["not set up", leftOut.join(", ")] as [string, Cell]]),
     ...r.actions.map((a): [string, Cell] => ["ran", `${a.title}${a.detail ? ` · ${a.detail}` : ""}`]),

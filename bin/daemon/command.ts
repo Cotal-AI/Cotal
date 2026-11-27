@@ -33,7 +33,7 @@ import { EndpointRefusal, defaultPeerUid, defaultPeerPid, checkDir, daemonPaths,
 import { serveDaemon } from "./server.js";
 import { loginFromCli } from "./cli-login.js";
 import { connectCheckViaDaemon, managerViaDaemon, queryDaemon, registerViaDaemon, serviceViaDaemon } from "./client.js";
-import { admitWindowsNativeDaemon, applyInstall, applyUninstall, applicationsBeyondService, observeDaemonOwnedService, type DaemonOwnershipObservation, planInstall, planUninstall, refreshInstalledApplications, repairMissingInstalledProgram, startInstalled } from "./install.js";
+import { admitWindowsNativeDaemon, applyInstall, applyUninstall, observeDaemonOwnedService, type DaemonOwnershipObservation, planInstall, planUninstall, repairMissingInstalledProgram, startInstalled } from "./install.js";
 import { exchangeDesktopRequest, runDesktopBridge } from "./desktop.js";
 import { installedUnitForSetup, runAccountSetup, runSetup } from "./setup.js";
 import { daemonCommandCopy, daemonServiceRequirement, windowsDaemonFirstStart, windowsDaemonHomeAccess, windowsDaemonRemedy } from "./guidance.js";
@@ -399,17 +399,13 @@ async function unitCommand(args: ParsedArgs, op: "install" | "uninstall"): Promi
       return;
     }
     const installed = dry ? { ...planInstall(paths, home), state: "would-install" as const } : applyInstall(paths, home);
-    const seen = !dry && installed.alreadyInstalled ? applicationsBeyondService(paths, home) : [];
-    const refreshed = seen.length ? await refreshInstalledApplications(paths, home, seen) : {};
-    const r = { ...installed, ...refreshed };
-    const names = (r.applicationsRefreshed ?? r.applicationsDeferred ?? []).join(", ");
-    const applicationLine = r.applicationsRefreshed ? `The background service was restarted and can see ${names}.` : r.applicationsDeferred ? `Agents are running. The background service will see ${names} the next time it starts. Stop the agents and run cotal daemon install again to see it now.` : undefined;
+    const r = installed;
     writeResult(presentation, { command: "daemon install", target: { unit: r.unit }, result: r }, () => ({ sections: [
       { title: r.alreadyInstalled ? "Already installed" : dry ? "Would install" : "Installed", blocks: [
         { kind: "fields", rows: [["Unit", r.unit], ["Path", r.unitPath], ["Digest", r.sha256], ["User", r.user], ...(r.mechanism === "systemd-user" ? [["Linger", r.lingerAlready ? "already enabled" : dry ? "would be enabled" : "enabled by this install"] as [string, string]] : []), ["Restart", r.restart], ["Started by", r.wantedBy], ...(r.daemonHome ? [["Daemon home", r.daemonHome] as [string, string]] : [])] },
         { kind: "lines", lines: [{ text: [dry
           ? "Nothing was written, enabled or started."
-          : `${r.mechanism === "systemd-user" ? "It starts at login, restarts on its own, and keeps running after you log out." : "It starts at login and recovers after an exit while you are signed in."} Read it with ${codeSpan(daemonCommandCopy("status", home))}, and remove it with ${codeSpan(daemonCommandCopy("uninstall", home))}.`, applicationLine].filter(Boolean).join(" "), tone: "hint" }] },
+          : `${r.mechanism === "systemd-user" ? "It starts at login, restarts on its own, and keeps running after you log out." : "It starts at login and recovers after an exit while you are signed in."} Read it with ${codeSpan(daemonCommandCopy("status", home))}, and remove it with ${codeSpan(daemonCommandCopy("uninstall", home))}.`, tone: "hint" }] },
       ] },
     ] }));
     return;

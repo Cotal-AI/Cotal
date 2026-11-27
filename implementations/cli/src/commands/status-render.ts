@@ -233,7 +233,7 @@ function applicationsCell(m: StatusResult["machine"], interactive: boolean, beyo
   if (m.connectors === null) return stateCell("could not be read", "failed");
   const setUp = setUpApplications(m), others = m.connectors.length - setUp.length;
   const hidden = beyondService.filter(name => setUp.includes(name));
-  const service = hidden.length ? ` · the background service cannot see ${hidden.join(", ")}; run \`cotal daemon install\` in this terminal` : "";
+  const service = hidden.length ? ` · the background service cannot see ${hidden.join(", ")}; run \`${displayCmd()} daemon setup\` in this terminal` : "";
   if (!interactive) return setUp.length ? stateCell(`${setUp.join(", ")}${others ? ` · ${others} not set up` : ""}${service}`, "ok") : stateCell("not set up", "hint");
   if (!setUp.length) return stateCell(`not set up · \`${displayCmd()} setup\` adds one`, "hint");
   return stateCell(`${setUp.join(", ")}${others ? ` · ${others} more with \`${displayCmd()} setup\`` : ""}${service}`, "ok");

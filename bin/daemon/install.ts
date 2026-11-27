@@ -324,10 +324,6 @@ interface InstallResult extends InstallPlan {
   readonly lingerEnabled?: boolean;
   readonly omittedRelativePathEntries?: readonly string[];
   readonly state: "installed";
-  /** Set only by an explicit repeat install that rewrote the pin for listed applications. */
-  readonly applicationsRefreshed?: readonly string[];
-  /** Set only when that repeat install left the pin because an agent is running. */
-  readonly applicationsDeferred?: readonly string[];
 }
 
 /**
@@ -509,120 +505,6 @@ export function planInstalledPathRefresh(paths: DaemonPaths, daemonHome?: string
     if (plan.mechanism === "systemd-user") submitSystemdUnitRegistration("reload", receipt.unit);
     } finally { lock?.release(); }
   };
-}
-
-/** Directories named by the recorded unit's pinned PATH, split the way the unit quotes them. */
-export function installedPathDirectories(paths: DaemonPaths, daemonHome?: string): readonly string[] | undefined {
-  const pinned = installedServicePath(paths, daemonHome);
-  return pinned === undefined ? undefined : pinned.split(delimiter).filter(Boolean);
-}
-
-/**
- * Applications `cotal status` would list that this shell can run and the recorded service cannot.
- * A directory this shell adds changes nothing here: only an application resolves. A unit Cotal does
- * not own, or one whose PATH it does not pin, returns nothing rather than a guess.
- */
-export function applicationsBeyondService(paths: DaemonPaths, daemonHome: string | undefined, shellPath = process.env.PATH ?? "", env: NodeJS.ProcessEnv = process.env): readonly string[] {
-  const saved = process.env.XDG_CONFIG_HOME;
-  const savedPath = process.env.PATH;
-  if (env.XDG_CONFIG_HOME !== undefined) process.env.XDG_CONFIG_HOME = env.XDG_CONFIG_HOME;
-  if (env.PATH !== undefined) process.env.PATH = env.PATH;
-  try {
-  const pinned = installedPathDirectories(paths, daemonHome);
-  if (!pinned) return [];
-  const pinnedDirs = new Set(pinned);
-  let manifest;
-  try { manifest = loadExtensionsManifest(); }
-  catch { return []; }
-  const found = new Set<string>();
-  for (const extension of manifest.extensions) {
-    for (const connector of extension.connectors ?? []) {
-      const required = connector.requires.filter(executable => executable.trim() && !executable.includes("/") && !executable.includes("\\"));
-      if (!required.length) continue;
-      const shellSees = required.every(executable => executableOnPath(executable, shellPath, pinnedDirs, true));
-      const serviceSees = required.every(executable => executableOnPath(executable, pinned.join(delimiter), pinnedDirs, false));
-      if (shellSees && !serviceSees) found.add(connector.name);
-    }
-  }
-  return [...found].sort();
-  } finally { if (saved === undefined) delete process.env.XDG_CONFIG_HOME; else process.env.XDG_CONFIG_HOME = saved; if (savedPath === undefined) delete process.env.PATH; else process.env.PATH = savedPath; }
-}
-
-function executableOnPath(executable: string, pathValue: string, restrict: ReadonlySet<string>, outsidePinned: boolean): boolean {
-  for (const dir of pathValue.split(delimiter)) {
-    if (!dir) continue;
-    if (outsidePinned ? restrict.has(dir) : !restrict.has(dir)) continue;
-    try { accessSync(join(dir, executable), constants.X_OK); return true; }
-    catch { /* the next directory may hold it */ }
-  }
-  return false;
-}
-
-/** True when the daemon names a running agent, or when that answer cannot be read. A refresh must not guess. */
-async function hostedAgentsActive(paths: DaemonPaths): Promise<boolean> {
-  try {
-    const status = await queryDaemon({ paths });
-    if (!status.ok) return true;
-    return (status.result.agents ?? []).some(row => row.state !== "read" || row.agents.some(agent => agent.state === "running"));
-  } catch { return true; }
-}
-
-/**
- * The one repeat-install refresh. Callers other than a person typing `cotal daemon install` must not
- * reach this: setup, update and the desktop app install through `applyInstall` and leave the pin.
- * An application the shell lists and the unit cannot see is the only trigger. With no agent running
- * the pin is rewritten and the service restarted. With one running, nothing changes.
- */
-export async function refreshInstalledApplications(paths: DaemonPaths, daemonHome: string | undefined, names: readonly string[], env: NodeJS.ProcessEnv = process.env): Promise<{ applicationsRefreshed?: readonly string[]; applicationsDeferred?: readonly string[] }> {
-  if (names.length === 0 || process.platform !== "linux") return {};
-  const saved = { PATH: process.env.PATH, XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME, XDG_RUNTIME_DIR: process.env.XDG_RUNTIME_DIR, HOME: process.env.HOME, DBUS_SESSION_BUS_ADDRESS: process.env.DBUS_SESSION_BUS_ADDRESS };
-  const restore = () => { for (const [key, value] of Object.entries(saved)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; } };
-  for (const key of Object.keys(saved)) { const value = env[key]; if (value === undefined) delete process.env[key]; else process.env[key] = value; }
-  try {
-  const { receipt, plan, service } = recordedUnit(paths, daemonHome);
-  if (service || plan.mechanism !== "systemd-user") return {};
-  const pinned = installedServicePath(paths, daemonHome)?.trim();
-  const apply = planInstalledPathRefresh(paths, daemonHome);
-  if (!pinned || !apply || !systemdUnitRewriteSafe(plan.unit, receipt.unitPath)) return {};
-  if (await hostedAgentsActive(paths)) return { applicationsDeferred: names };
-  if (installedServicePath(paths, daemonHome)?.trim() !== pinned || await hostedAgentsActive(paths)) return { applicationsDeferred: names };
-  apply();
-  await restartInstalled(paths, daemonHome, true);
-  await waitForRefreshedDaemon(paths);
-  return { applicationsRefreshed: names };
-  } finally { restore(); }
-}
-
-/** A loaded unit with no drop-in and no pending reload. Anything else, including an unread answer, is left unchanged. */
-function systemdUnitRewriteSafe(unit: string, unitPath: string): boolean {
-  try {
-    const names = ["Id", "LoadState", "FragmentPath", "DropInPaths", "NeedDaemonReload"];
-    const read = nativeRun("systemctl", ["--user", "--no-ask-password", "--no-pager", "show", unit, "--all", ...names.map(name => `--property=${name}`)], daemonUserServiceEnv(), 5000);
-    if (read.status !== 0) return false;
-    const values = new Map<string, string>();
-    for (const line of read.stdout.split("\n").filter(Boolean)) {
-      const at = line.indexOf("="), key = line.slice(0, at), value = line.slice(at + 1);
-      if (at < 1 || !names.includes(key) || values.has(key) || /[\u0000-\u001f\u007f]/u.test(value)) return false;
-      values.set(key, value);
-    }
-    return values.size === names.length && values.get("Id") === unit && values.get("LoadState") === "loaded" && values.get("FragmentPath") === unitPath && values.get("DropInPaths") === "" && values.get("NeedDaemonReload") === "no";
-  } catch { return false; }
-}
-
-/** The bound setup already uses after it restarts the service for a new application. */
-async function waitForRefreshedDaemon(paths: DaemonPaths): Promise<void> {
-  const seconds = 60;
-  const deadline = Date.now() + seconds * 1000;
-  for (;;) {
-    try {
-      const reply = await queryDaemon({ paths });
-      if (reply.ok && reply.result.protocol === DAEMON_PROTOCOL_VERSION) return;
-    } catch (error) {
-      if (!(error instanceof EndpointRefusal) || (error.code !== "NOT_RUNNING" && error.code !== "PEER_NOT_LOCK_OWNER")) throw error;
-    }
-    if (Date.now() >= deadline) throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", `the daemon did not answer ${paths.socket} within ${seconds}s of being started; nothing was registered`, { remedy: "read its unit with systemctl --user status, then run this again" });
-    await delay(250);
-  }
 }
 
 /** Start only the recorded, unchanged service. This does not restart an already-running daemon. */

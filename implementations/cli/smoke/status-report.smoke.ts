@@ -15,6 +15,7 @@
  * Add --bin=<installed-cli-path> to exercise an installed CLI.
  */
 import { spawn, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { once } from "node:events";
 import { connect } from "node:net";
 import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
@@ -959,4 +960,53 @@ if (process.platform !== "win32") {
 
 if (brokerDisplayOnly) check("broker display profile reaches all five fixtures", brokerDisplayCases === 5);
 }
+
+if (process.platform === "linux" && !brokerDisplayOnly && !pidfileOnly) {
+  const { home, run } = sandbox();
+  const bin = join(home, "apps");
+  mkdirSync(bin);
+  writeFileSync(join(bin, "aa-bin"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+  const manifest = join(home, ".config", "cotal", "extensions");
+  mkdirSync(manifest, { recursive: true });
+  writeFileSync(join(manifest, "extensions.json"), JSON.stringify({ extensions: [{
+    pkg: "@rig/aa", version: VERSION, spec: `@rig/aa@${VERSION}`,
+    provides: [{ kind: "connector", name: "aa" }], commands: [],
+    connectors: [{ name: "aa", requires: ["aa-bin"], eventPlane: false, setup: null }],
+  }] }));
+  const unit = `[Service]\nEnvironment=PATH="/usr/bin:/bin"\nExecStart="/bin/true"\n`;
+  const unitPath = join(home, ".config", "systemd", "user", "cotal-daemon.service");
+  mkdirSync(join(home, ".config", "systemd", "user"), { recursive: true, mode: 0o700 });
+  writeFileSync(unitPath, unit, { mode: 0o600 });
+  const daemonHome = join(home, ".cotal-home");
+  mkdirSync(join(daemonHome, "daemon"), { recursive: true, mode: 0o700 });
+  writeFileSync(join(daemonHome, "daemon", "service-unit.json"), JSON.stringify({
+    v: 1, mechanism: "systemd-user", unit: "cotal-daemon.service", unitPath,
+    unitSha256: createHash("sha256").update(unit).digest("hex"), installedAt: new Date().toISOString(),
+  }), { mode: 0o600 });
+  const project = join(home, "project");
+  mkdirSync(project);
+  const onPath = { PATH: `${bin}${delimiter}${process.env.PATH ?? ""}` };
+  const repair = `the background service cannot see aa; run \`${displayCmd()} daemon setup\` in this terminal`;
+  const status = run(["status", "--space", "nosuch", "--plain"], onPath);
+  check("status names an application the recorded service cannot see and the repair command",
+    status.status === 0 && (status.stdout.split("\n").find(line => /^ {2}Agent applications:/.test(line)) ?? "").includes(repair), shown(status));
+  const aligned = run(["status", "--space", "nosuch", "--plain"], { PATH: `/usr/bin:/bin${delimiter}${bin}` });
+  check("status stays quiet when the shell PATH matches the recorded service",
+    aligned.status === 0 && !aligned.stdout.includes("background service cannot see"), shown(aligned));
+  const setup = spawnSync(process.execPath, [BIN, "setup", "--destination", "local", "--harness", "aa", "--project", project, "--space", "seen", "--no-input", "--plain"], {
+    cwd: project,
+    env: { ...HOST_ENV, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: join(home, ".config"), COTAL_HOME: daemonHome, COTAL_SKIP_CONNECTOR_SEED: "1", ...onPath, NO_COLOR: "1" },
+    encoding: "utf8", timeout: 120_000,
+  });
+  check("setup names the same application and the same repair command",
+    setup.status === 0 && (setup.stdout ?? "").includes(`application: aa · ${repair}`), { status: setup.status, stdout: (setup.stdout ?? "").slice(0, 900), stderr: (setup.stderr ?? "").slice(0, 600) });
+  const hidden = spawnSync(process.execPath, [BIN, "setup", "--destination", "local", "--harness", "aa", "--project", project, "--space", "seen", "--no-input", "--plain"], {
+    cwd: project,
+    env: { ...HOST_ENV, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: join(home, ".config"), COTAL_HOME: daemonHome, COTAL_SKIP_CONNECTOR_SEED: "1", PATH: `/usr/bin:/bin${delimiter}${bin}`, NO_COLOR: "1" },
+    encoding: "utf8", timeout: 120_000,
+  });
+  check("setup stays quiet when the recorded service can see the application",
+    hidden.status === 0 && !(hidden.stdout ?? "").includes("background service cannot see"), { status: hidden.status, stdout: (hidden.stdout ?? "").slice(0, 900), stderr: (hidden.stderr ?? "").slice(0, 600) });
+}
+
 finish();
