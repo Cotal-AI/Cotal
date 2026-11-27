@@ -175,6 +175,32 @@ assert.equal(seedInstallationCurrent(), false, "an unseeded checkout is not prov
         assert.equal(report.result.installationChanged, false);
       }
     }
+    const sibling = join(home, "node-and-npm");
+    mkdirSync(sibling);
+    const npmRoot = join(sibling, "node_modules", "npm");
+    const npmCli = join(npmRoot, "bin", "npm-cli.js");
+    mkdirSync(dirname(npmCli), { recursive: true });
+    if (process.platform === "win32") copyFileSync(process.execPath, join(sibling, "node.exe"));
+    else copyFileSync(process.execPath, join(sibling, "node"));
+    writeFileSync(join(npmRoot, "package.json"), JSON.stringify({ name: "npm", bin: { npm: "bin/npm-cli.js" }, engines: { node: process.version } }));
+    const seen = join(home, "sibling-npm-seen");
+    writeFileSync(npmCli, `#!/usr/bin/env node
+require("node:fs").writeFileSync(${JSON.stringify(seen)}, process.execPath);
+console.log(JSON.stringify("9.9.9"));
+`, { mode: 0o755 });
+    if (process.platform === "win32") writeFileSync(join(sibling, "npm.cmd"), '@node "%~dp0node_modules\\npm\\bin\\npm-cli.js" %*\r\n');
+    else symlinkSync(npmCli, join(sibling, "npm"));
+    const viaSibling = spawnSync(join(sibling, process.platform === "win32" ? "node.exe" : "node"), [join(import.meta.dirname, "../../../bin/dist/cotal.js"), "update", "--check"], {
+      cwd: home, encoding: "utf8", timeout: 60_000,
+      env: { ...env, HOME: home, USERPROFILE: home, APPDATA: join(home, "config"), LOCALAPPDATA: join(home, "config"),
+        COTAL_HOME: join(home, "cotal"), XDG_CONFIG_HOME: join(home, "config"), XDG_RUNTIME_DIR: home, PATH: path,
+        COTAL_TELEMETRY: "off", COTAL_NO_UPDATE_CHECK: "1", COTAL_SKIP_CONNECTOR_SEED: "1" },
+    });
+    const siblingOut = viaSibling.stdout + viaSibling.stderr;
+    assert.equal(viaSibling.status, 0, siblingOut);
+    assert.match(siblingOut, /Registry latest:/);
+    assert.doesNotMatch(siblingOut, /npm is not on PATH/);
+    assert.equal(realpathSync(readFileSync(seen, "utf8").trim()), realpathSync(join(sibling, process.platform === "win32" ? "node.exe" : "node")), "the npm beside the running Node is the one that answers");
   } finally { rmSync(home, { recursive: true, force: true }); }
 }
 const { registryArrivalCell } = await import("../../../bin/smoke/update-registry-arrival.smoke.mjs");
