@@ -68,7 +68,7 @@ try {
     process.env.COTAL_HOME = cliHome;
     saveIdpSession(cliHome, `${origin}/api/auth`, { token: "session-human", expiresAt: Math.floor(Date.now() / 1000) + 600, sub: "human" });
   }
-  const ownerCli = (positionals: string[], values: ServiceEndpointValues) => serviceEndpointHostCall(clientDir, a.space, positionals, values);
+  const ownerCli = (positionals: string[], values: ServiceEndpointValues, showDiagnosis?: (lines: string[]) => void) => serviceEndpointHostCall(clientDir, a.space, positionals, values, showDiagnosis);
   const post = async (path: string, body: unknown) => {
     const r = await fetch(`${service!.url}${path}`, { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${service!.cap}` }, body: JSON.stringify(body) });
     const out = await r.json() as Record<string, any>;
@@ -100,6 +100,13 @@ try {
   const approved = await host({ v: 1, kind: "service-endpoint-host", operation: "decide", requestId: rid(), granter: { kind: "owner", owner }, input: {
     proposalId: first.proposalId, expectedProposalRevision: proposal.record.revision, expectedNameRevision: bind.binding.revision, decision: "approve", callerCeiling: [capability] } });
   assert.equal(approved.state, "approved");
+  if (cli && approved.state === "approved") {
+    let diagnostic: string[] = [];
+    const read = await ownerCli(["proposal", first.proposalId], {}, (lines) => { diagnostic = lines; });
+    assert.equal(read.answer.state, "present");
+    c.check("the owner reads the root expiry in UTC from the exact approved instance",
+      diagnostic.includes(`Root credential expiry: ${new Date(approved.approval.rootExpiresAt * 1000).toISOString()} (UTC).`), diagnostic);
+  }
   const registered = await authority(registration); assert.equal(registered.state, "registered"); if (registered.state !== "registered") throw new Error("fixture registration");
   const witness: ServiceRegistrationWitness = registered.witness;
   const credential = await authority(request("activate", { witness })); assert.equal(credential.state, "credential"); if (credential.state !== "credential") throw new Error("fixture activate");

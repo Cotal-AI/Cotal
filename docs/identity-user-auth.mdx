@@ -284,6 +284,12 @@ leave a grant that needs operator recovery. Remote foreground launches remove th
 material but leave revocation to the issuer. Managed despawn follows the retirement sequence below.
 Manifest deploys (`up -f`) stamp the logged-in owner into the launch, so those agents are yours too.
 
+If the agent's root credential expires, its next bearer exchange reports the expiry in UTC. End
+a foreground launch and repeat its original `cotal spawn` command. For a managed seat, use the
+reported manager to find and stop the exact seat before spawning it again. An interactive actor
+must be re-granted by the space operator with the same scope and channel lists. Signing in again
+does not replace an expired root.
+
 **Despawn tears the lifecycle down, then frees the name.** When you despawn an agent, the manager
 drives the *full* teardown of that lifecycle: it shreds the local credential files, revokes the
 agent's standing mint authority (its ledger row, so a copied token can no longer mint a fresh
