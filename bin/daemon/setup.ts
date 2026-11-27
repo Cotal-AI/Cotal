@@ -132,7 +132,7 @@ async function ensureInstalledUnderClosure(opts: InstallOptions, steps: SetupSte
   let outcome: string, detail: string;
   if (unit !== undefined) {
     outcome = "already-installed";
-    detail = `${unit} is already installed; it was left as it is`;
+    detail = `${unit} is already installed`;
   } else {
     // Nothing is recorded, so this would install. A daemon that is already answering was started
     // some other way, by hand or by a container entrypoint, and installing now would start a
@@ -225,6 +225,7 @@ export async function refreshServiceForApplication(opts: InstallOptions, dirs: r
 async function refreshApplicationsUnderClosure(opts: InstallOptions, steps: SetupStep[]): Promise<boolean> {
   const installation = installedDaemonIdentity(opts.paths, opts.daemonHome);
   if (!installation.same) throw new CommandFailure("refused", "CONFLICT", `the daemon at ${installation.installed} cannot refresh applications from this installation`, { remedy: `run setup from ${installation.installed}` });
+  const { unit } = planUninstall(opts.paths, opts.daemonHome);
   const refresh = planInstalledPathRefresh(opts.paths, opts.daemonHome);
   if (!refresh && process.platform !== "win32") return false;
   opts.report("service: waiting for hosted Managers to confirm readiness and an idle restart fence; readiness observation waits up to 15s", { step: "manager", outcome: "running", detail: "waiting for hosted Managers to confirm readiness and an idle restart fence" });
@@ -234,14 +235,18 @@ async function refreshApplicationsUnderClosure(opts: InstallOptions, steps: Setu
     throw error;
   }
   try {
-    refresh?.();
+    if (refresh) {
+      const updating = `updating ${unit} to add new PATH directories`;
+      opts.report(`service: ${updating}`, { step: "install", outcome: "running", detail: updating });
+      refresh();
+    }
     await restartInstalled(opts.paths, opts.daemonHome, true, opts.version, restartProgress(opts));
   } catch (error) {
     try { if (process.platform !== "win32") await managerViaDaemon(opts, { op: "managers-abort-restart" }); }
     catch { /* Preserve the installation or native service failure. */ }
     throw error;
   }
-  const detail = process.platform === "win32" ? "restarted the service to read the current user PATH" : "refreshed the pinned PATH from this invocation, keeping existing directories";
+  const detail = process.platform === "win32" ? "restarted the service to read the current user PATH" : `restarted ${unit} with the updated PATH`;
   steps.push({ step: "install", outcome: "path-refreshed", detail });
   opts.report(`service: ${detail}`, steps.at(-1));
   await waitForDaemon(opts, 60);
