@@ -20,6 +20,7 @@ import { displayCmd, selfArgv } from "../lib/self-exec.js";
 import { spawnSync } from "node:child_process";
 import { isAuthenticSeedChild, markSeedChildLive, clearChildMarker } from "../seed/lock.js";
 import { cliVersion, seedStoreDir } from "../seed/paths.js";
+import { recordedReconcileCache, writeReconcileCacheWorker } from "./update-caches.js";
 
 export const extFlags = [
   jsonFlag,
@@ -123,6 +124,8 @@ export async function ext(args: ParsedArgs): Promise<void> {
   throw usage(EXT_USAGE);
 }
 
+const seedCacheGate = 'IFS= read -r permit <&3 && [ "$permit" = run ] || exit 1; exec 3<&-; exec "$@"';
+
 async function npm(args: string[], prefix: string, seeding = false): Promise<{ status: number | null; output: string }> {
   // On Windows `npm` is `npm.cmd`; Node refuses to spawn a `.cmd` without a shell (CVE-2024-27980),
   // and a naive shell re-parses cmd metachars, so run it through cmd.exe with a byte-for-byte command
@@ -144,7 +147,15 @@ async function npm(args: string[], prefix: string, seeding = false): Promise<{ s
   let lifecycle: ReturnType<typeof npmLifecycleEnvironment>;
   try {
     lifecycle = npmLifecycleEnvironment(npm, prefix);
-    const child = withInstallUmask(() => spawn(file, spawnArgs, { cwd: npm.cwd, env: lifecycle?.env ?? npm.env, windowsVerbatimArguments, detached: seedGroup, windowsHide: true }));
+    const npmEnv = lifecycle?.env ?? npm.env;
+    const reconcileCache = seedGroup ? recordedReconcileCache(npmEnv) : undefined;
+    const gated = reconcileCache !== undefined;
+    const child = withInstallUmask(() => spawn(
+      gated ? "/bin/sh" : file,
+      gated ? ["-c", seedCacheGate, "cotal-ext-seed", file, ...spawnArgs] : spawnArgs,
+      { cwd: npm.cwd, env: npmEnv, windowsVerbatimArguments, detached: seedGroup, stdio: gated ? ["ignore", "pipe", "pipe", "pipe"] : "pipe", windowsHide: true },
+    ));
+    const permit = gated ? child.stdio[3] as import("node:stream").Writable : undefined;
     if (seedGroup && child.pid !== undefined) {
       const pid = child.pid;
       const forward = (signal: NodeJS.Signals) => {
@@ -160,8 +171,10 @@ async function npm(args: string[], prefix: string, seeding = false): Promise<{ s
     child.stdout?.on("data", (chunk: Buffer | string) => { stdout += chunk.toString(); });
     child.stderr?.on("data", (chunk: Buffer | string) => { stderr += chunk.toString(); });
     child.once("error", (e) => { spawnError = `spawn error: ${e.message}\n`; });
+    permit?.on("error", (e) => { spawnError = `spawn error: ${e.message}\n`; });
     if (child.pid !== undefined) {
       try {
+        if (reconcileCache) writeReconcileCacheWorker(reconcileCache, child.pid);
         mutation.markLive(child.pid);
         published = true;
       } catch (e) {
@@ -169,6 +182,7 @@ async function npm(args: string[], prefix: string, seeding = false): Promise<{ s
         preservePending = true;
       }
     }
+    permit?.end(published ? "run\n" : undefined);
     let drain: ReturnType<typeof setTimeout> | undefined;
     if (seedGroup) child.once("exit", () => {
       // A descendant can keep npm's output pipes open after npm itself has exited. The

@@ -1,12 +1,53 @@
-import { lstatSync, readdirSync, readFileSync, realpathSync, rmdirSync, rmSync, type Stats } from "node:fs";
-import { join } from "node:path";
+import { lstatSync, readdirSync, readFileSync, realpathSync, rmdirSync, rmSync, writeFileSync, type Stats } from "node:fs";
+import { basename, dirname, join } from "node:path";
 import { processGroupMembers, protectedLocalDirectory, recoveryProcessStartToken } from "@cotal-ai/workspace";
 
 const npmCacheName = /^cotal-update-npm-[a-zA-Z0-9]{6}$/;
 const reconcileCacheName = /^cotal-update-reconcile-[a-zA-Z0-9]{6}$/;
+const updateScratchName = /^cotal-update-[a-zA-Z0-9]{6}$/;
 
 function privateDirectory(info: Stats, uid: number | undefined): boolean {
   return info.isDirectory() && info.uid === uid && (info.mode & 0o077) === 0;
+}
+
+/** Resolve `env`'s npm cache when it is a recorded Linux reconciliation cache owned by this account. */
+export function recordedReconcileCache(env: NodeJS.ProcessEnv): string | undefined {
+  if (process.platform !== "linux") return undefined;
+  let cache: string | undefined;
+  for (const [key, value] of Object.entries(env)) if (/^npm_config_cache$/i.test(key)) cache = value;
+  if (!cache || !reconcileCacheName.test(basename(cache))) return undefined;
+  const scratchName = basename(dirname(cache));
+  if (!updateScratchName.test(scratchName)) return undefined;
+  let parent: string;
+  try { parent = realpathSync(dirname(dirname(cache))); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    throw error;
+  }
+  const resolved = join(parent, scratchName, basename(cache));
+  const outer = lstatSync(dirname(resolved), { throwIfNoEntry: false });
+  const inner = outer ? lstatSync(resolved, { throwIfNoEntry: false }) : undefined;
+  const owner = inner ? lstatSync(join(resolved, ".owner"), { throwIfNoEntry: false }) : undefined;
+  if (!owner) return undefined;
+  const uid = process.getuid?.();
+  if (!privateDirectory(outer!, uid) || !privateDirectory(inner!, uid))
+    throw new Error("reconciliation cache directory is not private");
+  protectedLocalDirectory(resolved, "the update cache");
+  if (!owner.isFile() || owner.uid !== uid || owner.size > 256 || (owner.mode & 0o077) !== 0)
+    throw new Error("reconciliation cache owner record is invalid");
+  return resolved;
+}
+
+/** Record a detached worker process group in a private reconciliation cache before npm starts. */
+export function writeReconcileCacheWorker(cache: string, pid: number): void {
+  const file = join(cache, `.worker-${pid}`);
+  try {
+    writeFileSync(file, "", { mode: 0o600, flag: "wx" });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+    const info = lstatSync(file);
+    if (!info.isFile() || info.uid !== process.getuid?.() || info.size !== 0 || (info.mode & 0o077) !== 0) throw error;
+  }
 }
 
 function idleCacheTree(directory: string, cutoff: number, uid?: number): boolean {
@@ -75,13 +116,23 @@ export function collectUpdateCaches(parent: string): void {
     if (!privateDirectory(lstatSync(cache), uid)) return false;
     protectedLocalDirectory(cache, "the update cache");
     const files = readdirSync(cache);
-    const worker = files.find(name => /^\.worker-[1-9]\d*$/.test(name));
-    if (!worker || files.some(name => name !== ".owner" && name !== worker && name !== "_cacache") ||
-        !deadOwner(cache) || !absentGroup(Number(worker.slice(".worker-".length)))) return false;
-    const info = lstatSync(join(cache, worker));
-    if (!info.isFile() || info.uid !== uid || info.size !== 0 || (info.mode & 0o077) !== 0) return false;
-    if (files.includes("_cacache") && !idleNpmCache(join(cache, "_cacache"), cutoff, uid)) return false;
-    rmSync(cache, { recursive: true, force: true, maxRetries: 3 });
+    const workers = files.filter(name => /^\.worker-[1-9]\d*$/.test(name));
+    if (!files.includes(".owner") || !workers.length ||
+        files.some(name => name !== ".owner" && name !== "_cacache" && !/^\.worker-[1-9]\d*$/.test(name)) ||
+        !deadOwner(cache)) return false;
+    for (const worker of workers) {
+      const info = lstatSync(join(cache, worker));
+      if (!info.isFile() || info.uid !== uid || info.size !== 0 || (info.mode & 0o077) !== 0 ||
+          !absentGroup(Number(worker.slice(".worker-".length)))) return false;
+    }
+    if (files.includes("_cacache")) {
+      const npmCache = join(cache, "_cacache");
+      if (!idleNpmCache(npmCache, cutoff, uid)) return false;
+      rmSync(npmCache, { recursive: true, force: true, maxRetries: 3 });
+    }
+    for (const worker of workers) rmSync(join(cache, worker), { force: true });
+    rmSync(join(cache, ".owner"), { force: true });
+    rmdirSync(cache);
     return true;
   }
   function sweep(directory: string): boolean {
@@ -110,7 +161,7 @@ export function collectUpdateCaches(parent: string): void {
   try {
     if (recorded) sweep(parent);
     for (const name of readdirSync(parent)) {
-      if (!/^cotal-update-[a-zA-Z0-9]{6}$/.test(name)) continue;
+      if (!updateScratchName.test(name)) continue;
       const scratch = join(parent, name);
       try {
         const info = lstatSync(scratch);

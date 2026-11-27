@@ -28,7 +28,7 @@ function reconciliationScratch(parent, worker) {
       symlinkSync(cache, link);
       lutimesSync(link, old, old);
     } else if (shape !== 'compile-only' && shape !== 'fresh-deep') {
-      const populated = ['live', 'pending', 'fresh-npm', 'foreign-npm', 'linked-npm'].includes(shape);
+      const populated = ['live', 'pending', 'fresh-npm', 'foreign-npm', 'shared-npm', 'extra-entry', 'linked-npm'].includes(shape);
       const recorded = populated || ['dead', 'fresh-recorded'].includes(shape);
       const npm = mkdtempSync(join(outer, recorded ? 'cotal-update-reconcile-' : 'cotal-update-npm-'));
       if (recorded) {
@@ -44,11 +44,12 @@ function reconciliationScratch(parent, worker) {
           const entry = join(content, 'blob');
           mkdirSync(content, { recursive: true });
           writeFileSync(entry, 'cached data');
+          if (shape === 'shared-npm') chmodSync(entry, 0o660);
           if (shape === 'foreign-npm') writeFileSync(join(cacache, 'keep'), 'other content');
           for (const path of [cacache, content, ...(shape === 'fresh-npm' ? [] : [entry])]) utimesSync(path, old, old);
         }
       }
-      if (shape === 'nonempty') writeFileSync(join(npm, '.keep'), 'other content');
+      if (shape === 'nonempty' || shape === 'extra-entry') writeFileSync(join(npm, '.keep'), 'other content');
       if (shape === 'shared') chmodSync(npm, 0o750);
       if (shape === 'mixed') writeFileSync(join(outer, 'keep'), 'other content');
       if (shape !== 'recent') utimesSync(npm, old, old);
@@ -59,7 +60,7 @@ function reconciliationScratch(parent, worker) {
   };
   const expired = ['compile-only', ...(worker ? ['dead'] : [])].map(fixture);
   const retained = ['empty', 'fresh-deep', ...(process.getuid ? ['nonempty', 'shared', 'link', 'mixed', 'recent'] : []),
-    ...(worker ? ['pending', 'fresh-recorded', 'fresh-npm', 'foreign-npm', 'linked-npm'] : [])]
+    ...(worker ? ['pending', 'fresh-recorded', 'fresh-npm', 'foreign-npm', ...(process.getuid ? ['shared-npm'] : []), 'extra-entry', 'linked-npm'] : [])]
     .map(fixture).map(path => [path, readdirSync(path, { recursive: true }).sort()]);
   return { expired, retained, live: worker && fixture('live') };
 }
@@ -97,8 +98,14 @@ async function assertLifecycleExtension(run, { node }, entry, root) {
 /** Runs real npm and the built public entry against a loopback registry. */
 export async function registryArrivalCell({ scenario, entry = join(repo, 'bin/dist/cotal.js'), parent = tmpdir() }) {
   if (scenario === 'corepack-node-fallback') return corepackNodeFallbackCell(entry, parent);
+  if (scenario === 'reconcile-seed-worker') return reconcileSeedWorkerCell(entry, parent);
+  if (scenario === 'reconcile-orphan') {
+    for (const signal of ['SIGHUP', 'SIGKILL']) await registryArrivalCell({ scenario: `reconcile-orphan-${signal}`, entry, parent });
+    return { scenario, signals: ['SIGHUP', 'SIGKILL'] };
+  }
   const versionNamedNode = scenario === 'version-named-node';
-  const reconcileOrphan = scenario === 'reconcile-orphan';
+  const orphanSignal = scenario.startsWith('reconcile-orphan-') ? scenario.slice('reconcile-orphan-'.length) : undefined;
+  const reconcileOrphan = orphanSignal !== undefined;
   const reconcileInterrupted = reconcileOrphan || scenario === 'reconcile-killed';
   const stagingFetchTimeout = scenario === 'staging-fetch-timeout';
   const stagingNetwork = stagingFetchTimeout || ['staging-partial', 'staging-no-accept', 'staging-trickle', 'staging-auto'].includes(scenario);
@@ -874,9 +881,9 @@ exec npm "$@"
         if (reconcileOrphan) {
           const npmCache = join(custody, '_cacache');
           assert(readdirSync(join(npmCache, 'content-v2'), { recursive: true }).length > 0, 'npm populated the reconciliation cache');
-          updater.kill('SIGHUP');
+          updater.kill(orphanSignal);
           writeFileSync(releaseReconcile, 'finish');
-          assert.equal((await first).signal, 'SIGHUP');
+          assert.equal((await first).signal, orphanSignal);
           assert.throws(() => process.kill(record.owner, 0), { code: 'ESRCH' });
           const childExited = () => {
             try { return /^[ZX] /.test(readFileSync(`/proc/${record.pid}/stat`, 'utf8').split(') ').at(-1)); }
@@ -1131,6 +1138,116 @@ exec npm "$@"
   }
 }
 
+async function reconcileSeedWorkerCell(entry, parent) {
+  const root = mkdtempSync(join(parent, 'reconcile-seed-'));
+  for (const name of ['home', 'cotal', 'config/cotal/seed', 'tmp', 'runtime', 'tools', 'other-prefix', 'other-cotal'])
+    mkdirSync(join(root, name), { recursive: true, mode: 0o700 });
+  const scratch = mkdtempSync(join(root, 'tmp/cotal-update-'));
+  const custody = mkdtempSync(join(scratch, 'cotal-update-reconcile-'));
+  writeFileSync(join(custody, '.owner'), '2147483647\nexpired\n', { mode: 0o600 });
+  writeFileSync(join(custody, '.worker-2147483647'), '', { mode: 0o600 });
+  const npmLookup = spawnSync('/bin/sh', ['-c', 'command -v npm'], { env: childEnv, encoding: 'utf8' });
+  assert.equal(npmLookup.status, 0, npmLookup.stderr);
+  const realNpm = realpathSync(npmLookup.stdout.trim());
+  const seedPkg = join(root, 'seed-pkg/package');
+  mkdirSync(seedPkg, { recursive: true, mode: 0o700 });
+  writeFileSync(join(seedPkg, 'package.json'), JSON.stringify({ name: 'seed-cache-fixture', version: '1.0.0' }));
+  const seedArchive = join(root, 'seed-cache.tgz');
+  assert.equal(spawnSync('tar', ['-czf', seedArchive, '-C', join(root, 'seed-pkg'), 'package'], { env: childEnv }).status, 0);
+  const seedReady = join(root, 'seed-npm.pid');
+  const seedRelease = join(root, 'seed-npm-release');
+  writeFileSync(join(root, 'tools/npm'), `#!/usr/bin/env node
+const { spawnSync } = require('node:child_process');
+const { existsSync, writeFileSync } = require('node:fs');
+if (process.argv[2] === 'install' && process.argv.includes('--install-links') && !existsSync(${JSON.stringify(seedReady)})) {
+  const added = spawnSync(${JSON.stringify(realNpm)}, ['cache', 'add', ${JSON.stringify(seedArchive)}], { stdio: 'inherit', timeout: 30000 });
+  if (added.status !== 0) process.exit(added.status ?? 1);
+  writeFileSync(${JSON.stringify(seedReady)}, String(process.pid));
+  const deadline = Date.now() + 60000;
+  while (!existsSync(${JSON.stringify(seedRelease)}) && Date.now() < deadline)
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20);
+}
+process.exit(spawnSync(${JSON.stringify(realNpm)}, process.argv.slice(2), { stdio: 'inherit' }).status ?? 1);
+`, { mode: 0o755 });
+  const baseEnv = Object.fromEntries(Object.entries(childEnv).filter(([name]) => !/^npm_config_(?:before|offline)$/i.test(name)));
+  Object.assign(baseEnv, { HOME: join(root, 'home'), COTAL_HOME: join(root, 'cotal'), XDG_CONFIG_HOME: join(root, 'config'), TMPDIR: join(root, 'tmp'), XDG_RUNTIME_DIR: join(root, 'runtime'), npm_config_cache: custody, npm_config_logs_max: '0', npm_config_update_notifier: 'false', npm_config_audit: 'false', npm_config_fund: 'false', COTAL_ALLOW_CHECKOUT_SEED: '1', COTAL_TELEMETRY: 'off', DO_NOT_TRACK: '1' });
+  const server = createServer((_request, response) => response.socket.destroy());
+  await new Promise(done => server.listen(0, '127.0.0.1', done));
+  let reconciler, seedPid;
+  const runCli = (args, extraEnv) => new Promise((done, reject) => {
+    const child = spawn(process.execPath, [entry, ...args], { cwd: root, env: { ...baseEnv, ...extraEnv }, stdio: ['ignore', 'pipe', 'pipe'] });
+    let output = '';
+    child.stdout.on('data', chunk => { output += chunk; });
+    child.stderr.on('data', chunk => { output += chunk; });
+    const timer = setTimeout(() => child.kill('SIGKILL'), 60000);
+    child.once('error', reject);
+    child.once('close', (code, signal) => { clearTimeout(timer); done({ code, signal, output }); });
+  });
+  const groupStat = pid => {
+    try { return readFileSync(`/proc/${pid}/stat`, 'utf8').split(') ').at(-1).split(' '); }
+    catch (error) { if (error.code === 'ENOENT') return null; throw error; }
+  };
+  try {
+    let seedOutput = '';
+    reconciler = spawn(process.execPath, [entry, 'ext', 'seed'], { cwd: root, env: { ...baseEnv, PATH: `${join(root, 'tools')}${delimiter}${childEnv.PATH}` }, detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
+    reconciler.stdout.on('data', chunk => { seedOutput += chunk; });
+    reconciler.stderr.on('data', chunk => { seedOutput += chunk; });
+    for (let deadline = Date.now() + 45000; !existsSync(seedReady) && reconciler.exitCode === null && Date.now() < deadline; )
+      await new Promise(done => setTimeout(done, 20));
+    assert(existsSync(seedReady), `seed npm started inside reconciliation:\n${seedOutput}`);
+    seedPid = Number(readFileSync(seedReady, 'utf8'));
+    assert.equal(Number(groupStat(seedPid)?.[2]), seedPid, 'seed npm runs in its own detached process group');
+    assert.notEqual(seedPid, reconciler.pid, 'seed npm group is outside the reconcile worker group');
+    assert(existsSync(join(custody, `.worker-${seedPid}`)), 'seed npm process group was recorded in the reconciliation cache');
+    const npmCache = join(custody, '_cacache');
+    assert(readdirSync(join(npmCache, 'content-v2'), { recursive: true }).length > 0, 'seed npm populated _cacache');
+    process.kill(-reconciler.pid, 'SIGKILL');
+    for (let deadline = Date.now() + 5000; groupStat(reconciler.pid) && !/^[ZX]$/.test(groupStat(reconciler.pid)[0]) && Date.now() < deadline; )
+      await new Promise(done => setTimeout(done, 20));
+    assert.equal(process.kill(seedPid, 0), true, 'seed npm survives killing the reconcile worker group');
+    const compile = join(scratch, 'node-compile-cache');
+    mkdirSync(compile, { recursive: true, mode: 0o700 });
+    const ageScratch = () => {
+      const old = new Date(Date.now() - 61 * 60_000);
+      for (const tree of [compile, npmCache])
+        for (const name of readdirSync(tree, { recursive: true })) utimesSync(join(tree, name), old, old);
+      for (const name of readdirSync(custody)) utimesSync(join(custody, name), old, old);
+      for (const path of [compile, npmCache, custody, scratch]) utimesSync(path, old, old);
+    };
+    const collectEnv = { npm_config_prefix: join(root, 'other-prefix'), COTAL_HOME: join(root, 'other-cotal'), COTAL_SKIP_CONNECTOR_SEED: '1', npm_config_registry: `http://127.0.0.1:${server.address().port}`, npm_config_fetch_retries: '0', npm_config_cache: join(root, 'other-cache') };
+    ageScratch();
+    const whileRunning = await runCli(['update', '--self'], collectEnv);
+    assert.equal(whileRunning.code, 0, whileRunning.output);
+    assert(existsSync(custody), 'aged reconciliation cache is kept while detached seed npm is running');
+    process.kill(-seedPid, 'SIGSTOP');
+    for (let deadline = Date.now() + 5000; groupStat(seedPid)?.[0] !== 'T' && Date.now() < deadline; )
+      await new Promise(done => setTimeout(done, 20));
+    assert.equal(groupStat(seedPid)?.[0], 'T', 'detached seed npm is SIGSTOPped');
+    ageScratch();
+    const whileStopped = await runCli(['update', '--self'], collectEnv);
+    assert.equal(whileStopped.code, 0, whileStopped.output);
+    assert(existsSync(custody), 'aged reconciliation cache is kept while detached seed npm is SIGSTOPped');
+    writeFileSync(seedRelease, 'finish');
+    process.kill(-seedPid, 'SIGCONT');
+    for (let deadline = Date.now() + 30000; groupStat(seedPid) && !/^[ZX]$/.test(groupStat(seedPid)[0]) && Date.now() < deadline; )
+      await new Promise(done => setTimeout(done, 20));
+    assert(!groupStat(seedPid) || /^[ZX]$/.test(groupStat(seedPid)[0]), 'detached seed npm exited');
+    seedPid = undefined;
+    ageScratch();
+    const afterExit = await runCli(['update', '--self'], collectEnv);
+    assert.equal(afterExit.code, 0, afterExit.output);
+    assert(!existsSync(scratch), `aged reconciliation scratch is reclaimed once seed npm exits: ${afterExit.output}`);
+    return { scenario: 'reconcile-seed-worker', code: afterExit.code };
+  } finally {
+    writeFileSync(seedRelease, 'finish');
+    if (seedPid) { try { process.kill(-seedPid, 'SIGCONT'); process.kill(-seedPid, 'SIGKILL'); } catch {} }
+    if (reconciler?.pid) { try { process.kill(-reconciler.pid, 'SIGKILL'); } catch {} }
+    server.closeAllConnections();
+    await new Promise(done => server.close(done));
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
 async function corepackNodeFallbackCell(entry, parent) {
   const root = mkdtempSync(join(parent, 'corepack-node-fallback-'));
   const prefix = join(root, 'prefix'), home = join(root, 'home'), project = join(root, 'project');
@@ -1224,7 +1341,7 @@ if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.m
   try {
     canMount = process.platform === 'linux' && spawnSync('unshare', ['-Urm', 'mount', '-t', 'tmpfs', '-o', 'size=2m', 'tmpfs', mountPoint], { env: childEnv }).status === 0;
   } finally { rmSync(mountPoint, { recursive: true }); }
-  const selected = process.argv[2] ? [process.argv[2]] : ['arrives', 'unavailable', 'integrity', 'reset', 'cache', 'orphan', 'closed-scope', 'min-release-age', 'before', 'offline-metadata', 'offline-archive', 'offline-closure', 'offline-staging', 'concurrent', 'extension-peers', 'extension-arrives', ...(process.platform !== 'win32' ? ['corepack'] : []), ...(process.platform === 'linux' ? ['archive-interrupted', 'closure-killed', 'pending', 'reconcile-killed', 'reconcile-orphan', 'staging-killed', 'staging-timeout', 'staging-fetch-timeout', 'staging-partial', 'staging-no-accept', 'staging-trickle', 'staging-auto', 'staging-refused', 'selection-upgrade', 'selection-rollback'] : []), ...(canMount ? ['closure-nospace'] : [])];
+  const selected = process.argv[2] ? [process.argv[2]] : ['arrives', 'unavailable', 'integrity', 'reset', 'cache', 'orphan', 'closed-scope', 'min-release-age', 'before', 'offline-metadata', 'offline-archive', 'offline-closure', 'offline-staging', 'concurrent', 'extension-peers', 'extension-arrives', ...(process.platform !== 'win32' ? ['corepack'] : []), ...(process.platform === 'linux' ? ['archive-interrupted', 'closure-killed', 'pending', 'reconcile-killed', 'reconcile-orphan', 'reconcile-seed-worker', 'staging-killed', 'staging-timeout', 'staging-fetch-timeout', 'staging-partial', 'staging-no-accept', 'staging-trickle', 'staging-auto', 'staging-refused', 'selection-upgrade', 'selection-rollback'] : []), ...(canMount ? ['closure-nospace'] : [])];
   for (const scenario of selected) console.log(JSON.stringify(await registryArrivalCell({ scenario })));
   emitSentinel({ passed: selected.length, failed: 0 });
 }
