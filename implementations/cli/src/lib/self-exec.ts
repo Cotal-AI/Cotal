@@ -222,23 +222,26 @@ export function displayCmd({ fromAnyFolder = false } = {}): string {
 
 /** Format a Windows `[executable, ...args]` prefix so PowerShell and Command Prompt run it directly. */
 export function windowsDisplayCommand([file, ...args]: readonly string[]): string {
-  // A fully quoted executable is a string in PowerShell. Leave the drive prefix outside the quotes
-  // to start a command token in both shells when every runtime path is printable ASCII.
+  // A fully quoted executable is a string in PowerShell, and `[` or `]` in the executable token is a
+  // PowerShell wildcard. Leave the drive prefix outside the quotes when the runtime paths are printable ASCII.
   const ascii = (value: string) => /^[\x20-\x7e]+$/.test(value) ? windowsShellWord(value) : undefined;
-  const split = /^([A-Za-z]:)(.+)$/.exec(file!);
+  const split = /^([A-Za-z]:)([^\[\]]+)$/.exec(file!);
   const words = args.map(ascii);
   if (split && ascii(file!) !== undefined && words.every(word => word !== undefined)) {
     return [`${split[1]}"${split[2]}"`, ...words].join(" ");
   }
 
-  // Keep `$`, `"`, `%`, `!`, `^`, backticks, smart quotes, and non-ASCII bytes out of `-Command`
-  // so neither outer shell expands anything, and end the script with `#` so PowerShell ignores any
-  // appended CLI arguments on `-Command` while reading their exact argv tokens from the OS command line.
-  const literal = (value: string) => value.split(/(["$`%!^\x00-\x1f\x7f-\uffff])/u)
-    .flatMap((part, i) => part ? [i % 2 === 0 ? `'${part.replaceAll("'", "''")}'` : `[char]${part.charCodeAt(0)}`] : [])
-    .join("+") || "''";
+  // Encode `$`, `"`, `%`, `!`, `^`, backticks, control characters, and non-ASCII code units as `[char]`
+  // values so neither outer shell expands `-Command`, escape wildcards on `&`, and end with `#` so
+  // PowerShell reads appended CLI words from the OS argv instead of re-parsing them as script.
+  const literal = (value: string) => {
+    const parts = value.split(/(["$`%!^\x00-\x1f\x7f-\uffff])/)
+      .flatMap((part, i) => part ? [i % 2 === 0 ? `'${part.replaceAll("'", "''")}'` : `[char]${part.charCodeAt(0)}`] : []);
+    if (parts.length === 0) return "''";
+    return `${parts[0]!.startsWith("[char]") ? "''+" : ""}${parts.join("+")}`;
+  };
   const prefix = args.length ? `@(${args.map(literal).join(",")}) + ` : "";
-  const body = `Set-Variable ErrorActionPreference Stop; Set-Variable a (${prefix}([Environment]::GetCommandLineArgs() | Select-Object -Skip 4)); & (${literal(file!)}) @a; exit (Get-Variable LASTEXITCODE -ValueOnly) #`;
+  const body = `Set-Variable ErrorActionPreference Stop; Set-Variable a (${prefix}@([Environment]::GetCommandLineArgs() | Select-Object -Skip 4)); & ([WildcardPattern]::Escape(${literal(file!)})) @a; exit (Get-Variable LASTEXITCODE -ValueOnly) #`;
   return `powershell.exe -NoProfile -Command "${body}"`;
 }
 

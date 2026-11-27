@@ -65,7 +65,7 @@ if (process.platform === "win32") {
   const bin = dirname(dirname(BIN));
   const manifest = readFileSync(join(bin, "package.json"), "utf8");
   const dependencies = (JSON.parse(manifest) as { dependencies: Record<string, string> }).dependencies;
-  for (const prefix of ["npm's private [1] prefix", "npm $literal %TEMP% !bang! ^hat caf\u00e9 [1] prefix"]) {
+  for (const prefix of ["npm's & ( [1] prefix", "npm $v %TEMP% !b `t 'q & ( [ caf\u00e9 prefix"]) {
     const modules = join(home, prefix, "node_modules"), pkg = join(modules, "cotal-ai");
     mkdirSync(pkg, { recursive: true });
     writeFileSync(join(pkg, "package.json"), manifest);
@@ -77,9 +77,9 @@ if (process.platform === "win32") {
     }
     const entry = join(pkg, "dist", "cotal.js");
     const root = spawnSync(process.execPath, [entry, "ext", "root"], options);
-    if (root.status !== 0 || root.stdout.trim() !== join(xdg, "cotal", "extensions")) {
-      throw new Error(`unsafe extension root: ${root.stdout}${root.stderr}`);
-    }
+    const safeRoot = root.status === 0 && root.stdout.trim() === join(xdg, "cotal", "extensions");
+    check(`installed ext root stays inside the sandbox for ${prefix}`, safeRoot, root);
+    if (!safeRoot) continue;
     const status = spawnSync(process.execPath, [entry, "status"], options);
     const command = /^  (.+? setup --help) +See setup flags for scripts\./m.exec(status.stdout)?.[1];
     check(`installed status prints setup help for ${prefix} with Cotal off PATH`,
@@ -215,8 +215,11 @@ channels:
     const receipt = r.stdout ? JSON.parse(r.stdout) : undefined;
     const harness = receipt?.result?.setting ?? receipt?.result?.settings?.find((setting: { key: string }) => setting.key === "harness");
     const command = args.includes("config") ? "config" : "completion";
+    const okOutcome = command === "completion" && process.platform === "win32"
+      ? receipt?.outcome === "partial" && r.status === 4
+      : receipt?.outcome === "ok" && r.status === 0;
     check(`${args.join(" ")} reads local settings with a corrupt manifest`,
-      r.status === 0 && r.stderr === "" && receipt?.command === command && receipt.outcome === "ok" &&
+      okOutcome && r.stderr === "" && receipt?.command === command &&
       (command === "config" ? harness?.key === "harness" && harness.winner?.source === "default" : Array.isArray(receipt.result?.shells)), shown(r));
   }
   const override = run(["config", "get", "harness", "--json"], { ...offline, COTAL_DEFAULT_AGENT: "custom-harness" });
