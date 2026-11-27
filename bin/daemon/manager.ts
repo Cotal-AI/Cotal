@@ -23,7 +23,7 @@ import { readHostedAgents } from "./agents.js";
 import { readManagerCleanup, writeManagerCleanup, validateManagerCleanupAuthority, managerCleanupFile } from "./manager-cleanup.js";
 import { processBirth } from "./lifetime.js";
 import { probeLiveness } from "@cotal-ai/workspace/liveness";
-import { hostedManagerChildren } from "./manager-children.js";
+import { hostedManagerChildren, managerOutputLines } from "./manager-children.js";
 import { awaitLinuxSharedPtyPredecessor, drainLinuxSharedPty, SharedLaunchHeld } from "@cotal-ai/seat";
 
 export const daemonManagerRoot = (space: string, home: string) => join(home, "daemon", spaceSegment(space), "manager");
@@ -477,27 +477,6 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
     let authorityTerminal = false;
     let authorityStatus: number | undefined;
     let stderr = "";
-    // Each pipe has its own line boundary. Oversized lines are discarded in full,
-    // never emitted as fragments that could reconstruct a split credential.
-    const lines = (accept: (line: string) => void) => {
-      let pending = "", dropping = false;
-      return (text: string, end = false) => {
-        for (const part of text.split(/(?<=\n)/)) {
-          if (!dropping) {
-            if (pending.length + part.length > 16_384) { pending = ""; dropping = true; }
-            else pending += part;
-          }
-          if (part.endsWith("\n")) {
-            accept(dropping ? "<oversized Manager log line omitted>\n" : safeDiagnostic(pending));
-            pending = ""; dropping = false;
-          }
-        }
-        if (end && (pending || dropping)) {
-          accept(dropping ? "<oversized Manager log line omitted>\n" : safeDiagnostic(pending));
-          pending = ""; dropping = false;
-        }
-      };
-    };
     const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_") || ["COTAL_HOME", "COTAL_SKIP_CONNECTOR_SEED", "COTAL_TELEMETRY"].includes(key)));
     // The native service does not inherit the updater's environment. Delegate only from the
     // verified journal for this generation, so boot can materialize connectors under its closure.
@@ -570,8 +549,8 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
     });
     child.stderr?.setEncoding("utf8");
     const logged = (text: string) => { try { append(text); } catch { l.view = { ...l.view, logError: "the hosted Manager log could not be written; inspect its private state directory" }; } };
-    const stdoutLine = lines(logged);
-    const stderrLine = lines((line) => {
+    const stdoutLine = managerOutputLines(safeDiagnostic, logged);
+    const stderrLine = managerOutputLines(safeDiagnostic, (line) => {
       logged(line);
       if (l.stopping && l.child === child && line.trim() === SharedLaunchHeld.stoppedNotice) l.launchHoldDrained = true;
       stderr = (stderr + line).slice(-8192);

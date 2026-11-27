@@ -712,7 +712,7 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode, service
       eventsRequired,
       eventPayloadsWithheld,
       runtime,
-      machineHostedPty: machineHostedPty(args.values.machineHostedPty, args.values["machine-parent"] === true),
+      machineHostedPty: machineHostedPty(args.values.machineHostedPty, args.values.machineHostedPtyHome, args.values["machine-parent"] === true),
       execution,
       consolePort,
       wsPort,

@@ -79,7 +79,7 @@ const command: Command = {
     if (!sharedPty) process.off("message", receiveInstall);
     if (parentGone || !process.connected) throw new CommandFailure("refused", "USAGE_INVALID", "the machine Manager requires its daemon's session directory and parent channel");
     const machineSetup = typeof values.space === "string" ? daemonCommandCopy("setup", home, [["--space", values.space]]) : undefined;
-    await withIdpSessionDir(home, () => stock.run({ ...args, values: { ...values, "machine-parent": true, "machine-setup-command": machineSetup, machineHostedPty: install ? { install, home } : undefined } }));
+    await withIdpSessionDir(home, () => stock.run({ ...args, values: { ...values, "machine-parent": true, "machine-setup-command": machineSetup, machineHostedPty: install, machineHostedPtyHome: install ? home : undefined } }));
   },
 };
 registry.register(command);

@@ -13,10 +13,8 @@ export function needsProvedPtyStop(handle: AgentHandle): boolean {
   return sharedSeatHandles.has(handle) || (process.platform === "win32" && handle.kind === "pty");
 }
 
-export function machineHostedPty(value: unknown, fromParent: boolean): { install: string; home: string } | undefined {
-  if (!fromParent || !process.connected || !value || typeof value !== "object") return;
-  const { install, home } = value as Partial<{ install: string; home: string }>;
-  if (typeof install === "string" && typeof home === "string") return { install, home };
+export function machineHostedPty(install: unknown, home: unknown, fromParent: boolean): { install: string; home: string } | undefined {
+  if (fromParent && process.connected && typeof install === "string" && typeof home === "string") return { install, home };
 }
 
 export class SharedPtyRuntime extends LegacyPtyRuntime {
