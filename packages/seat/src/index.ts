@@ -16,12 +16,17 @@ export { assertSeatId, bootToken, processStartToken, processStatFields, readReco
 export { censusCustodians, drainSeats, identityVerdict, reapSeat, type CustodianSighting, type SeatInventoryEntry, type SeatReapEvidence } from "./reap.js";
 export { SeatClient } from "./client.js";
 export { flockExclusiveNb, peerCredentials, type PeerCredentials } from "./peercred.js";
-export { connectPipe, darwinLaunchdJob, darwinUserCacheDir, listenPipe, localPeerCredentials, lockExclusiveNb, processStartTime, windowsDirSecurity, windowsUserSid, type DarwinLaunchdJob, type DarwinLaunchdLookup, type PipeListener, type PipePeer, type PipeRefused, type WindowsAce, type WindowsDirSecurity } from "./host.js";
+export { connectPipe, darwinLaunchdJob, darwinUserCacheDir, listenPipe, localPeerCredentials, lockExclusiveNb, observeWindowsProcess, processStartTime, windowsDirSecurity, windowsUserSid, type DarwinLaunchdJob, type DarwinLaunchdLookup, type PipeListener, type PipePeer, type PipeRefused, type WindowsAce, type WindowsDirSecurity } from "./host.js";
 export { runCustodian, type CustodianLaunch } from "./custodian.js";
 export { launchSharedSeat, linuxSharedCustodyAvailable } from "./shared-launch.js";
 export { verifyWindowsDemandTask } from "./windows-demand-task.js";
 export { openSharedSeat, type SharedHandle } from "./shared-handle.js";
 export { launchManagedSharedSeat, reopenManagedSharedSeat } from "./shared-managed.js";
+export { launchManagedWindowsSeat, reopenVerifiedWindowsSeat, type WindowsSeatPin } from "./shared-managed-win32.js";
+export { inspectWindowsAliasHold } from "./shared-alias-win32.js";
+export { cleanupWindowsIdleTasks, inspectWindowsSeatOccupancy } from "./shared-inventory-win32.js";
+export { acquireWindowsSeatStoreFence } from "./shared-slot-win32.js";
+export { windowsSeatArtifactTemp } from "./shared-artifact-temp-win32.js";
 export { acquireSharedExecutionLease, type SharedExecutionLease } from "./shared-execution-lease.js";
 export { SEAT_OOM_SCORE_ADJ, preferSeatForOomKill, type OomPreference } from "./oom.js";
 export { ConnectorDiagnosticReader } from "./diagnostic.js";

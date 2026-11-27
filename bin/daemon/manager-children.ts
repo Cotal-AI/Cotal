@@ -74,6 +74,9 @@ export function hostedManagerChildren(deps: HostedManagerChildrenDeps): HostedMa
       catch { /* Unknown inventory receives the ceiling, never an assumed empty inventory. */ }
     }
     const graceMs = seats === undefined ? 60_000 : Math.min(60_000, 15_000 + seats * 5000);
+    if (child.connected && process.platform === "win32") await new Promise<void>(resolve => {
+      child.send({ kind: "machine-manager-stop" }, () => resolve());
+    });
     if (child.connected) child.disconnect();
     // Signal only this retained ChildProcess. Never rediscover a child from a recorded pid.
     const ended = async (ms: number) => {

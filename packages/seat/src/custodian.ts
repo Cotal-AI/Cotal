@@ -88,6 +88,7 @@ export interface SharedCustodianLifetime<I extends ExactIdentity = LinuxPrepared
   readonly prepare?: () => Promise<PreparedSeat<I>>;
   readonly identity?: CustodianIdentity<I>;
   readonly publishExit?: (exit: SeatExit) => void;
+  readonly discardArtifacts?: (paths: readonly string[] | undefined) => void;
   readonly appendLog?: (line: string) => void;
 }
 
@@ -122,11 +123,14 @@ export async function runCustodian<I extends ExactIdentity = LinuxPreparedIdenti
 
   // Removes the launch's files, logging rather than throwing: a refused path must not take down the
   // custodian of a live seat.
-  const discardArtifacts = (artifacts: readonly string[] | undefined): void => {
+  const discardArtifacts = (artifacts: readonly string[] | undefined): boolean => {
     try {
-      discardSeatArtifacts(artifacts, launch.artifactRoot);
+      if (shared?.discardArtifacts) shared.discardArtifacts(artifacts);
+      else discardSeatArtifacts(artifacts, launch.artifactRoot);
+      return true;
     } catch (e) {
       note(`${(e as Error).message}\n`);
+      return false;
     }
   };
   const note = (line: string): void => {
@@ -374,8 +378,8 @@ export async function runCustodian<I extends ExactIdentity = LinuxPreparedIdenti
     // same names again. One that could not be removed stays listed, so the reap that proves this seat
     // gone tries it again. Losing a controller's connection is not this: only the child's exit is.
     if (record.artifacts && (!gate || gate.commitAttempted)) {
-      discardArtifacts(record.artifacts);
-      const left = record.artifacts.filter((dir) => existsSync(dir));
+      const discarded = discardArtifacts(record.artifacts);
+      const left = shared?.discardArtifacts ? (discarded ? [] : record.artifacts) : record.artifacts.filter((dir) => existsSync(dir));
       if (left.length) record.artifacts = left;
       else {
         delete record.artifacts;

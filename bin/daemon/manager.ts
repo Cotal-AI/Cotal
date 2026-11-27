@@ -24,6 +24,7 @@ import { readManagerCleanup, writeManagerCleanup, validateManagerCleanupAuthorit
 import { processBirth } from "./lifetime.js";
 import { probeLiveness } from "@cotal-ai/workspace/liveness";
 import { hostedManagerChildren } from "./manager-children.js";
+import { windowsDetachedSeatOccupancy } from "./manager-custody-win32.js";
 
 export const daemonManagerRoot = (space: string, home: string) => join(home, "daemon", spaceSegment(space), "manager");
 export const daemonManagerIntentFile = (space: string, home: string) => join(home, "daemon", spaceSegment(space), "manager-host.json");
@@ -106,11 +107,16 @@ function hostedAgentActions(home: string, live: ReadonlyMap<string, Live>) {
   };
 }
 
-export function createHostedManagers(home = homeCotalDir(), version = installedGenerationVersion(), daemonHome?: string, onChange?: () => void) {
+export function createHostedManagers(home = homeCotalDir(), version = installedGenerationVersion(), daemonHome?: string, onChange?: () => void, windowsOwned?: () => boolean) {
   const notify = () => { try { onChange?.(); } catch {} };
   const { generationCall, isRateLimited, closeProbeSession, stopChild, spaces } = hostedManagerChildren({ home, notify });
   const homeArg = daemonHome === undefined ? undefined : /^[A-Za-z0-9_./-]+$/.test(daemonHome) ? daemonHome : JSON.stringify(daemonHome);
   const command = (text: string) => homeArg === undefined ? text : text.replace(/cotal daemon (setup|status|login|serve)\b(?! --daemon-home)/g, (match) => `${match} --daemon-home ${homeArg}`);
+  const assertWindowsCustodyIdle = () => {
+    const custody = windowsDetachedSeatOccupancy();
+    if (custody === "held") throw new HostedManagerRefusal("SEATS_ACTIVE", "detached Windows PTY seats remain active", "stop their seats, then retry the update");
+    if (custody === "unknown") throw new HostedManagerRefusal("MANAGER_UNAVAILABLE", "Windows PTY custody could not confirm an empty inventory", command("run `cotal daemon status`, resolve the custody state, then retry the update"));
+  };
   let reconcileTask: Promise<void> | undefined;
   const reconcile = () => reconcileTask ??= reconcileHostedConnectors(version).finally(() => { reconcileTask = undefined; });
   let runtimeTask: Promise<string> | undefined;
@@ -516,6 +522,7 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
       const frame = message as { kind?: unknown; instanceId?: unknown; reason?: unknown; terminal?: unknown; status?: unknown };
       if (frame.kind === "machine-pty-install-request") {
         if (process.platform === "linux" && desktopInstall && child.connected) child.send({ kind: "machine-pty-install", entry: desktopInstall }, () => {});
+        if (process.platform === "win32" && child.connected) child.send({ kind: "machine-pty-install", entry: windowsOwned?.() ? argv.at(-1) : null }, () => {});
         return;
       }
       if (frame.kind === "manager-refusal" && typeof frame.reason === "string") {
@@ -645,6 +652,7 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
           const seats = await generationCall(child, randomUUID(), "inspect");
           if (seats === undefined || l.child !== child) throw new Error("the hosted Manager changed before its applications could be refreshed");
           if (seats > 0) throw new HostedManagerRefusal("SEATS_ACTIVE", `hosted Manager for ${space} holds ${seats} active seat(s); its applications cannot be refreshed`, command(`stop the seats through Manager ${l.view.instanceId} in space ${space}, then run \`cotal daemon setup --space ${space}\``));
+          assertWindowsCustodyIdle();
           const attempt = randomUUID();
           generationAttempts.set(child, attempt);
           l.stopping = true;
@@ -740,7 +748,7 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
       return queueGeneration(async () => {
       generationAcquisitions--;
       generationOwners.add(owner);
-      if (generationPrepared) return;
+      if (generationPrepared) { assertWindowsCustodyIdle(); return; }
       try {
         await Promise.all([...live.values()].map((l) => l.healthTask));
         // A timed-out prepare can still have landed. Roll back every retained attempt before retrying.
@@ -757,6 +765,7 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
             throw new HostedManagerRefusal("SEATS_ACTIVE", `hosted Manager for ${l.view.space} holds ${seats} active seat(s): ${agents.map(agent => agent.name).join(", ")}`, command(`stop the seats through Manager ${l.view.instanceId} in space ${l.view.space}, then run \`cotal daemon setup --space ${l.view.space}\``));
           }
         }
+        assertWindowsCustodyIdle();
         const readinessDeadline = Date.now() + 15_000;
         for (const l of live.values()) {
           if (!l.child) continue;
@@ -784,6 +793,7 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
           await generationCall(l.child, attemptId, "prepare");
         }
         // Keep empty-manager admission fences held through the caller's close.
+        assertWindowsCustodyIdle();
         generationPrepared = true;
         generationOwners.add(owner);
         generationReleases.clear();

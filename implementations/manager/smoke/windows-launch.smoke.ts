@@ -42,6 +42,7 @@ import { controlSession } from "../src/control-session.js";
 import { WindowsSeatStop } from "../src/runtime/windows-stop.js";
 import type { Win32ProcessPin, Win32TreePin } from "@cotal-ai/workspace";
 import { createRuntime } from "../src/index.js";
+import { windowsSeatCommandLine, windowsSeatEnvironmentBlock } from "../../../packages/seat/src/shared-job-conpty-win32.js";
 
 const isWin = process.platform === "win32";
 /** The control sockets' per-launch directories, removed at the end. */
@@ -176,6 +177,43 @@ const PRESERVE_MATRIX = [
   "", // * (empty element must survive)
   "tab\there", // VERIFY — tab is a CRT separator; quoted should preserve
 ];
+
+// This host-side contract runs on every OS. The live cases below exercise cmd.exe itself.
+{
+  const cwd = "C:\\Work", systemRoot = "C:\\Trusted Windows";
+  const cmd = `${systemRoot}\\System32\\cmd.exe`;
+  const env = { Path: "inherited", PATH: "override", ComSpec: "C:\\untrusted\\cmd.exe" };
+  const script = "C:\\Program Files\\Tools\\agent.CMD";
+  const batch = (args: readonly string[], file = script) => windowsSeatCommandLine(file, args, cwd, env, systemRoot);
+  for (const file of [script, "C:\\Tools\\agent.bat", "C:\\%UNDEFINED_COTAL_XYZ%\\agent.cmd"]) {
+    for (const args of [[], ...PRESERVE_MATRIX.map(arg => [arg]), ["a b", "x&y"], ["", "x"], ["one", "", "three"]]) {
+      eq(`packed seat batch matches workspace adapter: ${file} ${JSON.stringify(args)}`, batch(args, file), {
+        executable: cmd, commandLine: `"${cmd}" ${buildCmdCommandLine(file, args, env)}`,
+      });
+    }
+  }
+  for (const executable of ["C:\\Tools\\agent.exe", "C:\\Tools\\agent.COM", "\\\\?\\C:\\Tools\\agent.exe"]) {
+    eq(`packed seat calls ${executable} directly`, batch(["%PATH%", 'a"b', "C:\\path\\"], executable), {
+      executable, commandLine: `"${executable}" "%PATH%" "a\\"b" "C:\\path\\\\"`,
+    });
+  }
+  for (const arg of ["a\nb", "a\rb", "a\0b", "%path%", "%PATH:~1%", "%CD%", "%COMSPEC%", "%unused%%pAtH%", "a".repeat(8191)]) {
+    throws(`packed seat refuses unsafe batch argument ${JSON.stringify(arg.slice(0, 40))}`, () => batch([arg]));
+  }
+  for (const file of ['C:\\b"d\\agent.cmd', "C:\\%PATH%\\agent.cmd", "C:\\Tools\\launcher.exe:agent.cmd", "C:\\Tools\\agent.ps1",
+    "C:agent.exe", "\\Tools\\agent.exe", "\\\\?\\C:\\Tools\\agent.cmd"]) {
+    throws(`packed seat refuses unsafe launch target ${file}`, () => batch([], file));
+  }
+  throws("packed seat rejects cmd expansion across argv slots", () =>
+    windowsSeatCommandLine(script, ["%left", "right%"], cwd, { 'left" "right': "value" }, systemRoot));
+
+  eq("packed seat environment sorts keys and prefers PATH over Path", windowsSeatEnvironmentBlock(env), "ComSpec=C:\\untrusted\\cmd.exe\0PATH=override\0\0");
+  eq("packed seat PATH winner does not depend on insertion order", windowsSeatEnvironmentBlock({ PATH: "override", Path: "inherited" }), "PATH=override\0\0");
+  eq("packed seat skips undefined environment aliases", windowsSeatEnvironmentBlock({ PATH: undefined, Path: "inherited" }), "Path=inherited\0\0");
+  eq("packed seat empty environment has a double NUL", windowsSeatEnvironmentBlock({}), "\0\0");
+  throws("packed seat rejects equals signs in environment keys", () => windowsSeatEnvironmentBlock({ "A=B": "x" }));
+  throws("packed seat rejects NUL in environment values", () => windowsSeatEnvironmentBlock({ A: "x\0y" }));
+}
 
 function launchCapture(command: string, args: string[], env: NodeJS.ProcessEnv, cwd: string): Promise<string> {
   return new Promise((resolve) => {

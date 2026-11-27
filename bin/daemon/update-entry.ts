@@ -23,6 +23,7 @@ import { findMesh, logicalExecutionEntry, pruneRetainedConnectorConfig, retainCo
 import { reportRunningManagers } from "@cotal-ai/cli/update";
 import { adoptAutomaticUpdateChild } from "./update-scope.js";
 import { captureWindowsGeneration, closeWindowsGeneration, windowsGenerationLifecycle } from "./update-generation-win32.js";
+import { assertWindowsUpdateCustodyIdle } from "./manager-custody-win32.js";
 import { hasUpdateDaemonLifetime, observeUpdateDaemon, sameUpdateDaemon } from "./update-lifetime.js";
 import { reclaimInterruptedUpdateSnapshots } from "./update-snapshot-cleanup.js";
 import { daemonServiceRequirement, foreignDaemonUpdateReport } from "./guidance.js";
@@ -498,6 +499,7 @@ const composed: Command = { ...command, async run(args) {
         absent = true;
       }
       if (absent) {
+        assertWindowsUpdateCustodyIdle();
         if (process.platform === "win32") await captureWindowsGeneration(paths);
         console.log("hosted Manager continuity: daemon lifetime proves no live host");
         return "none";
@@ -518,8 +520,10 @@ const composed: Command = { ...command, async run(args) {
       return "none";
     }
     const installedChild = process.env.COTAL_UPDATE_PARENT === String(process.ppid) && process.env.COTAL_UPDATE_TARGET_VERSION === updateRuntime.version();
-    if ((process.platform === "win32" && hasNoWindowsUpdateDaemon()) || (staged && (args.values.self === true || installedChild || standaloneReconcile) && !reconcileDaemonObserved && !hasUpdateDaemonLifetime()))
+    if ((process.platform === "win32" && hasNoWindowsUpdateDaemon()) || (staged && (args.values.self === true || installedChild || standaloneReconcile) && !reconcileDaemonObserved && !hasUpdateDaemonLifetime())) {
+      assertWindowsUpdateCustodyIdle();
       return reportsRetainedExecution() ? retainedReport(flags) : updateRuntime.reportRunningManager(flags);
+    }
     let managers;
     try {
       const paths = daemonPaths();
@@ -530,6 +534,7 @@ const composed: Command = { ...command, async run(args) {
       managers = reply.result.managers ?? [];
     } catch (error) {
       if (!reconcileDaemonObserved && error instanceof EndpointRefusal && ["NOT_RUNNING", "NO_RUNTIME_DIR"].includes(error.code)) {
+        assertWindowsUpdateCustodyIdle();
         if (error.code === "NOT_RUNNING" && process.platform === "win32") await captureWindowsGeneration(daemonPaths());
         return reportsRetainedExecution() ? retainedReport(flags) : updateRuntime.reportRunningManager(flags);
       }
@@ -541,7 +546,7 @@ const composed: Command = { ...command, async run(args) {
     }
     const active = managers.filter((manager) => manager.pid !== undefined);
     hostedSpaces = active.map((manager) => manager.space);
-    if (!active.length) return reportsRetainedExecution() ? retainedReport(flags) : updateRuntime.reportRunningManager(flags);
+    if (!active.length) { assertWindowsUpdateCustodyIdle(); return reportsRetainedExecution() ? retainedReport(flags) : updateRuntime.reportRunningManager(flags); }
     const blockedAgents: { space: string; describe: string; stop(): Promise<void> }[] = [];
     for (const manager of active) {
       // A failed earlier observation is not proof that a retained child's endpoint cannot answer.
@@ -621,6 +626,7 @@ const composed: Command = { ...command, async run(args) {
       if (!consent) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `cannot preserve running agents on this computer during update (${summary}); restarting would end them`, { remedy: "save their work, then run `cotal update --self --stop-agents` to stop them and finish the update" });
       for (const row of blockedAgents) await row.stop();
     }
+    assertWindowsUpdateCustodyIdle();
     return localVerdict;
   }) };
   if (interruptedChildRoot) {

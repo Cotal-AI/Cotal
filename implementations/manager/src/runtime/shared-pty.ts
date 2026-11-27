@@ -2,9 +2,9 @@ import { spawnSync } from "node:child_process";
 import { lstatSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { createHash } from "node:crypto";
-import { launchManagedSharedSeat, linuxSharedCustodyAvailable } from "@cotal-ai/seat";
+import { inspectWindowsAliasHold, launchManagedSharedSeat, launchManagedWindowsSeat, linuxSharedCustodyAvailable } from "@cotal-ai/seat";
 import type { AgentHandle, LaunchSpec } from "@cotal-ai/core";
-import { executionIdentity } from "@cotal-ai/workspace";
+import { executionIdentity, resolveOnPath } from "@cotal-ai/workspace";
 import { custodyRoot } from "./custodial-pty.js";
 import { LegacyPtyRuntime } from "./pty.js";
 
@@ -16,12 +16,21 @@ interface HostedSharedExecution {
 }
 
 export class SharedPtyRuntime extends LegacyPtyRuntime {
+  private readonly nativeArtifacts = new WeakSet<AgentHandle>();
   private readonly execution?: HostedSharedExecution;
+  private readonly windows?: { installation: string; space: string };
   constructor(space: string, install?: string) {
     super();
     try {
       const identity = executionIdentity();
       if (!identity?.loaded) return;
+      if (process.platform === "win32") {
+        if (install === identity.logicalEntry) {
+          const root = dirname(dirname(install));
+          this.windows = { installation: lstatSync(resolve(root, "desktop-runtime.json"), { throwIfNoEntry: false })?.isFile() ? dirname(root) : root, space };
+        }
+        return;
+      }
       const { logicalEntry, loadedEntry } = identity;
       const root = resolve(dirname(loadedEntry), "..");
       const key = createHash("sha256").update(JSON.stringify([install ?? logicalEntry, process.getuid?.(), space])).digest("hex");
@@ -36,6 +45,17 @@ export class SharedPtyRuntime extends LegacyPtyRuntime {
 
   /** Manager-only entry point for the shared host client. */
   async spawnShared(name: string, spec: LaunchSpec, cwd: string, onReceipt: (child: Readonly<{ pid: number; start: string; boot: string }> | undefined) => void): Promise<AgentHandle> {
+    if (this.windows) {
+      const command = resolveOnPath(spec.command, spec.env ?? {});
+      if (!command) return super.spawn(name, spec, cwd);
+      const launched = await launchManagedWindowsSeat(this.windows.installation, this.windows.space, { name, spec: { ...spec, command }, cwd });
+      if (launched.state === "ineligible") return super.spawn(name, spec, cwd);
+      const { release: _release, reference: _reference, childIdentity: _identity, ...controlled } = launched.handle;
+      // A conservative reservation must outlive the Windows root process when its job still has descendants.
+      onReceipt(undefined);
+      this.nativeArtifacts.add(controlled);
+      return controlled;
+    }
     // Eligibility can change while the Manager is running. Fall back only before
     // dispatch, since a failed shared request could already have launched the seat.
     const execution = probeHostedSharedEligibility(this.execution);
@@ -49,6 +69,27 @@ export class SharedPtyRuntime extends LegacyPtyRuntime {
     onReceipt(childIdentity);
     return controlled;
   }
+
+  ownsNativeArtifacts(handle: AgentHandle): boolean { return this.nativeArtifacts.has(handle); }
+
+  holdsNativeAlias(name: string): boolean {
+    return this.nativeAliasState(name) !== "clear";
+  }
+
+  nativeAliasState(name: string): "clear" | "held" | "unknown" {
+    return this.windows ? inspectWindowsAliasHold(this.windows.installation, this.windows.space, name) : "clear";
+  }
+}
+
+export function hostedNativeAliasHeld(runtime: unknown, name: string): boolean {
+  return runtime instanceof SharedPtyRuntime && runtime.holdsNativeAlias(name);
+}
+
+export function requireNativeAliasProof(runtime: unknown, name: string): boolean {
+  if (!(runtime instanceof SharedPtyRuntime)) return false;
+  const state = runtime.nativeAliasState(name);
+  if (state === "unknown") throw new Error("Windows PTY alias custody is unknown");
+  return state === "held";
 }
 
 /** Recheck hosted eligibility immediately before launch. This does not claim or start a host. */

@@ -2,7 +2,7 @@
 import { registry, resolveAuthProvider, type Command } from "@cotal-ai/core";
 import { IdpSessionRejectedError, withIdpSessionDir } from "@cotal-ai/auth";
 import { CommandFailure, executionIdentity } from "@cotal-ai/workspace";
-import { linuxSharedCustodyAvailable, processStatFields } from "@cotal-ai/seat";
+import { linuxSharedCustodyAvailable, processStatFields, observeWindowsProcess, windowsSeatArtifactTemp } from "@cotal-ai/seat";
 import { existsSync, realpathSync } from "node:fs";
 import { dirname, isAbsolute, join } from "node:path";
 import { checkDir } from "./endpoint.js";
@@ -17,31 +17,55 @@ function report(frame: object): void {
 
 let parentGone = false;
 let sharedPtyParent: { pid: number; start: string } | undefined;
+let windowsPtyParent: { pid: number; birth: string; user: string; session: number } | undefined;
+let explicitWindowsStop = false;
 let desktopInstall: string | undefined;
 let completeInstall: (() => void) | undefined;
 const receiveInstall = (raw: unknown) => {
   const frame = raw as { kind?: unknown; entry?: unknown } | undefined;
+  if (process.platform === "win32" && frame?.kind === "machine-pty-install" && frame.entry === null) { completeInstall?.(); return; }
   if (frame?.kind !== "machine-pty-install" || typeof frame.entry !== "string" || !isAbsolute(frame.entry)) return;
   try {
     const entry = realpathSync.native(frame.entry);
-    if (entry === join(dirname(dirname(entry)), "dist", "cotal.js") && existsSync(join(dirname(dirname(entry)), "desktop-runtime.json"))) desktopInstall = entry;
+    if (process.platform === "win32" ? entry === executionIdentity()?.logicalEntry :
+        entry === join(dirname(dirname(entry)), "dist", "cotal.js") && existsSync(join(dirname(dirname(entry)), "desktop-runtime.json"))) desktopInstall = entry;
   } catch { /* No proved installation means no shared desktop launch. */ }
   completeInstall?.();
 };
-if (process.platform === "linux" && process.connected) process.on("message", receiveInstall);
+if ((process.platform === "linux" || process.platform === "win32") && process.connected) process.on("message", receiveInstall);
+if (process.platform === "win32" && process.connected) process.on("message", (frame: { kind?: unknown } | undefined) => {
+  if (frame?.kind === "machine-manager-stop") explicitWindowsStop = true;
+});
 
 async function sharedInstallEntry(): Promise<string | undefined> {
   try {
     const entry = executionIdentity()?.logicalEntry;
-    if (!entry || !existsSync(join(dirname(dirname(entry)), "desktop-runtime.json"))) return entry;
+    if (!entry || (process.platform !== "win32" && !existsSync(join(dirname(dirname(entry)), "desktop-runtime.json")))) return entry;
     if (!desktopInstall && process.connected) await new Promise<void>(resolve => {
-      const timer = setTimeout(resolve, 1_000);
+      const timer = setTimeout(resolve, process.platform === "win32" ? 12_000 : 1_000);
       completeInstall = () => { clearTimeout(timer); resolve(); };
       report({ kind: "machine-pty-install-request" });
     });
     return desktopInstall;
   } catch { return undefined; }
   finally { completeInstall = undefined; process.off("message", receiveInstall); }
+}
+
+async function windowsHostedInstallEntry(): Promise<string | undefined> {
+  try {
+    const pid = process.ppid, parent = observeWindowsProcess(pid), self = observeWindowsProcess(process.pid);
+    if (!parent || !self || parent.user !== self.user || parent.session <= 0 || parent.session !== self.session) return undefined;
+    const install = await sharedInstallEntry();
+    if (!install || !process.connected || parentGone || observeWindowsProcess(pid)?.birth !== parent.birth) return undefined;
+    const packageRoot = dirname(dirname(install));
+    const installation = existsSync(join(packageRoot, "desktop-runtime.json")) ? dirname(packageRoot) : packageRoot;
+    const temp = windowsSeatArtifactTemp(installation);
+    // This dedicated, non-pooled Manager owns artifact creation and legacy fallback cleanup. The
+    // daemon and its other children keep their original environment.
+    process.env.TEMP = process.env.TMP = temp;
+    windowsPtyParent = { pid, ...parent };
+    return install;
+  } catch { return undefined; }
 }
 process.once("disconnect", () => {
   parentGone = true;
@@ -51,6 +75,7 @@ process.once("disconnect", () => {
     const actual = processStatFields(sharedPtyParent.pid);
     if (actual?.[19] !== sharedPtyParent.start || actual[0] === "Z" || actual[0] === "X") process.exit(0);
   }
+  if (windowsPtyParent && !explicitWindowsStop) process.exit(0);
   if (process.listenerCount("SIGTERM") === 0) process.exit(0);
   process.emit("SIGTERM", "SIGTERM");
 });
@@ -81,13 +106,14 @@ const command: Command = {
       }
     };
     const { "session-directory": _, ...values } = args.values;
-    const sharedPty = (values.runtime === "pty" || values.runtime === "auto" || values.runtime === undefined) && linuxSharedCustodyAvailable();
-    const install = sharedPty ? await sharedInstallEntry() : undefined;
+    const pty = values.runtime === "pty" || values.runtime === "auto" || values.runtime === undefined;
+    const sharedPty = pty && process.platform === "linux" && linuxSharedCustodyAvailable();
+    const install = pty && process.platform === "win32" ? await windowsHostedInstallEntry() : sharedPty ? await sharedInstallEntry() : undefined;
     if (!sharedPty) process.off("message", receiveInstall);
-    const pid = process.ppid, start = install ? processStatFields(pid)?.[19] : undefined;
+    const pid = process.ppid, start = sharedPty && install ? processStatFields(pid)?.[19] : undefined;
     if (pid > 1 && start) sharedPtyParent = { pid, start };
     const machineSetup = typeof values.space === "string" ? daemonCommandCopy("setup", home, [["--space", values.space]]) : undefined;
-    await withIdpSessionDir(home, () => stock.run({ ...args, values: { ...values, "machine-parent": true, "machine-setup-command": machineSetup, machineHostedPty: sharedPtyParent ? install : undefined } }));
+    await withIdpSessionDir(home, () => stock.run({ ...args, values: { ...values, "machine-parent": true, "machine-setup-command": machineSetup, machineHostedPty: sharedPtyParent || windowsPtyParent ? install : undefined } }));
   },
 };
 registry.register(command);

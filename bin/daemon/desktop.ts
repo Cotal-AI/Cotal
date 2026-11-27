@@ -185,14 +185,22 @@ function readServiceLogTail(state: string): { text: string; truncated: boolean }
   return { text, truncated: previous.truncated || current.truncated };
 }
 
+async function assertDetachedWindowsRemoval(): Promise<void> {
+  if (process.platform !== "win32") return;
+  const { acquireWindowsCustodyCleanup } = await import("./manager-custody-win32.js");
+  const custody = acquireWindowsCustodyCleanup();
+  try { await custody?.cleanup(); }
+  finally { custody?.release(); }
+}
+
 /**
  * Only the app's uninstaller sends remove-service; the window's requests never include it. It removes
  * the service this installation registered and keeps one another installation registered here.
  */
 async function removeDesktopService(paths: QueryOptions["paths"], home: string | undefined) {
-  if (!preflightInstalledDaemon(paths, home)) return { state: "absent" };
+  if (!preflightInstalledDaemon(paths, home)) { await assertDetachedWindowsRemoval(); return { state: "absent" }; }
   const identity = installedDaemonIdentity(paths, home);
-  if (!identity.same) return { state: "kept", installed: identity.installed };
+  if (!identity.same) { await assertDetachedWindowsRemoval(); return { state: "kept", installed: identity.installed }; }
   const removed = await applyUninstall(paths, home);
   return { state: removed.state, unit: removed.unit };
 }

@@ -6,7 +6,7 @@ import { checkWindowsCustodyPath, checkWindowsCustodyRoot } from "./shared-files
 import type { WindowsSeatSlot } from "./shared-slot-win32.js";
 import { verifyWindowsDemandTask } from "./windows-demand-task.js";
 
-type TaskState = { present: false } | { present: true; enabled: boolean; instances: number };
+type TaskState = { present: false; refused?: true } | { present: true; enabled: boolean; instances: number };
 
 /** Use COM create-only registration and exact-name lookup, not a process launched by the service.
  * The action runs the verified retained executable directly. No credentials enter the task
@@ -36,8 +36,8 @@ export function windowsCustodyTask(slot: WindowsSeatSlot, runtime: { root: strin
       stdio: ["pipe", "pipe", "ignore"], encoding: "utf8", timeout: 8000, windowsHide: true, maxBuffer: 16_384,
     });
     if (result.error || result.status !== 0) throw new Error("Windows PTY task ownership or disposition is unknown");
-    const row = JSON.parse(result.stdout.trim()) as { present?: unknown; enabled?: unknown; instances?: unknown } | null;
-    if (row?.present === false) return { present: false };
+    const row = JSON.parse(result.stdout.trim()) as { present?: unknown; refused?: unknown; enabled?: unknown; instances?: unknown } | null;
+    if (row?.present === false) return row.refused === true && op === "start" ? { present: false, refused: true } : { present: false };
     if (row?.present !== true || typeof row.enabled !== "boolean" || typeof row.instances !== "number" || !Number.isSafeInteger(row.instances) || row.instances < 0)
       throw new Error("Windows PTY task ownership or disposition is unknown");
     return { present: true, enabled: row.enabled, instances: row.instances };
@@ -98,7 +98,15 @@ if (!$task -and $a.op -eq 'start') {
     $action.Arguments = $a.args
     $action.WorkingDirectory = $a.root
     # TASK_CREATE, never TASK_CREATE_OR_UPDATE. TASK_LOGON_INTERACTIVE_TOKEN stores no password.
-    $null = $folder.RegisterTaskDefinition($a.name, $d, 2, $a.sid, $null, 3, $null)
+    try { $null = $folder.RegisterTaskDefinition($a.name, $d, 2, $a.sid, $null, 3, $null) }
+    catch {
+        $errorInfo = $_.Exception
+        while ($errorInfo.InnerException) { $errorInfo = $errorInfo.InnerException }
+        if (($errorInfo.HResult -eq -2147024891 -or $errorInfo.HResult -eq -2147023636) -and !(Find-Exact)) {
+            '{"present":false,"refused":true}'; exit 0
+        }
+        throw
+    }
     $task = Find-Exact
     if (!$task) { throw 'Task registration not observed' }
     $bytes = [Text.Encoding]::UTF8.GetBytes([string]$task.Xml)

@@ -17,6 +17,7 @@ interface SharedHostOptions<Claim extends ExactIdentity, Child extends ExactIden
   records: HostRecords<Claim>;
   childIdentity?: CustodianIdentity<Child>;
   eligiblePayload(payload: SharedLaunchPayload): boolean;
+  pinArtifacts?(payload: SharedLaunchPayload): (paths: readonly string[] | undefined) => void;
   isolate(id: string, reservation: SeatReservation): SeatIsolation<Child>;
 }
 
@@ -47,7 +48,8 @@ export async function serveSharedHost<Claim extends ExactIdentity, Child extends
     };
     if (closing || !records.acceptsLaunch(claimant, generation) || !options.eligiblePayload(payload)) return refuse();
     let isolation: SeatIsolation<Child>;
-    try { isolation = options.isolate(id, reservation); }
+    let discardArtifacts: ReturnType<NonNullable<typeof options.pinArtifacts>> | undefined;
+    try { discardArtifacts = options.pinArtifacts?.(payload); isolation = options.isolate(id, reservation); }
     catch { return refuse(); }
     let gate: PreparedSeat<Child> | undefined, cleaned = false;
     ++held;
@@ -66,6 +68,7 @@ export async function serveSharedHost<Claim extends ExactIdentity, Child extends
         settled,
         record: reservation.publish,
         identity: options.childIdentity,
+        ...(discardArtifacts && { discardArtifacts }),
         ...(reservation.publishExit && { publishExit: reservation.publishExit }),
         ...(reservation.appendLog && { appendLog: reservation.appendLog }),
         prepare: async () => {

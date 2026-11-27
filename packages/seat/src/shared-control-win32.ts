@@ -3,7 +3,7 @@ import { SHARED_CONTROL_PROTOCOL } from "./shared-control-protocol.js";
 import type { SharedWriterProof } from "./shared-control-server.js";
 import { SharedController } from "./shared-controller.js";
 import { dialSharedWindowsPipe, listenSharedWindowsPipe } from "./shared-pipe-win32.js";
-import type { ExactIdentity, HostTransport, IdentityProof, VerifiedHost } from "./shared-platform.js";
+import type { ExactIdentity, HostListener, HostTransport, IdentityProof, VerifiedHost } from "./shared-platform.js";
 
 export interface WindowsSharedIdentity extends ExactIdentity { user: string; session: number }
 type WindowsPeer = Omit<PipePeer, "fd">;
@@ -39,8 +39,8 @@ export const windowsWriterProof: IdentityProof<WindowsSharedIdentity> & SharedWr
   },
 };
 
-export const windowsHostTransport: HostTransport<WindowsAddress, VerifiedWindowsHost, WindowsPeer> = {
-  async dial(address, host, timeoutMs) {
+export const windowsHostTransport = {
+  async dial(address: WindowsAddress, host: VerifiedWindowsHost, timeoutMs: number) {
     const { identity, authority } = host;
     if (host.protocol !== SHARED_CONTROL_PROTOCOL || address.pipe !== authority.pipe || address.session !== authority.session ||
         address.session !== identity.session || identity.user !== windowsUserSid() || windowsWriterProof.observe(identity) !== "live")
@@ -48,15 +48,20 @@ export const windowsHostTransport: HostTransport<WindowsAddress, VerifiedWindows
     authority.verify(identity);
     return dialSharedWindowsPipe(address.pipe, identity, timeoutMs);
   },
-  listen(address, accept, ready) {
+  listen(address: WindowsAddress, accept: Parameters<HostTransport<WindowsAddress, VerifiedWindowsHost, WindowsPeer>["listen"]>[1], ready: () => void, refused?: () => void): HostListener {
     let resolve!: () => void, reject!: (error: unknown) => void;
     const closed = new Promise<void>((done, failed) => { resolve = done; reject = failed; });
-    const listener = listenSharedWindowsPipe(address.pipe, address.session, accept, reject);
+    let listener: ReturnType<typeof listenSharedWindowsPipe>;
+    try { listener = listenSharedWindowsPipe(address.pipe, address.session, accept, reject); }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "EADDRINUSE") refused?.();
+      throw error;
+    }
     try { ready(); }
     catch (error) { listener.close(); throw error; }
     return { closed, close() { listener.close(); resolve(); } };
   },
-};
+} satisfies HostTransport<WindowsAddress, VerifiedWindowsHost, WindowsPeer>;
 
 export function windowsSharedController(host: VerifiedWindowsHost): SharedController {
   const recorded = { ...host, identity: { ...host.identity }, authority: { ...host.authority } };

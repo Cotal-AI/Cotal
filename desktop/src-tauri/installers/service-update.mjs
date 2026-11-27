@@ -61,6 +61,14 @@ async function load() {
   const [endpoint, client, lifetime] = await Promise.all(['endpoint', 'client', 'lifetime'].map(get));
   return modules = { endpoint, client, lifetime, paths: endpoint.daemonPaths() };
 }
+async function assertDetachedSeatsIdle() {
+  const helper = join(root, 'runtime', 'dist', 'daemon', 'manager-custody-win32.js');
+  if (!existsSync(helper)) return; // Only runtimes with this adapter publish Windows custody.
+  const { windowsDetachedSeatOccupancy } = await import(pathToFileURL(helper).href);
+  const occupancy = windowsDetachedSeatOccupancy(root);
+  if (occupancy === 'held') throw Object.assign(new Error('Detached Windows PTY seats remain active.'), { code: 'SEATS_ACTIVE' });
+  if (occupancy === 'unknown') throw new Error('Windows PTY custody could not confirm an empty inventory.');
+}
 // This helper talks to the installed runtime, which may predate reply correlation.
 function createServiceRequester(socket) {
   const expired = new Set();
@@ -249,6 +257,7 @@ try {
         await request('daemon-stop');
         state.running = true;
       } else {
+        await assertDetachedSeatsIdle();
         census();
         if (native.instances !== 0) throw new Error('A native service instance exists without a readable listener. Run cotal daemon start and retry setup.');
       }
@@ -261,7 +270,7 @@ try {
         socket.destroy(); socket = undefined;
         await waitDead();
       }
-    } else census();
+    } else { await assertDetachedSeatsIdle(); census(); }
     state.phase = 'copying';
     write(stateFile, state);
     process.stdout.write('Background service prepared. Setup can replace the files.\n');

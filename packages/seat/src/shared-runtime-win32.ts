@@ -36,8 +36,8 @@ export function retainWindowsSeatRuntime(install: string) {
     ["@xterm/xterm", packageRoot("@xterm/xterm", createRequire(join(serialize, "package.json")))],
   ] as const;
   for (const [name, path] of dependencies) scan.tree(path, `node_modules/${name}`);
-  const entries = scan.entries.sort((a, b) => a.name.localeCompare(b.name, "en"));
-  const key = createHash("sha256").update(JSON.stringify(entries.map(({ name, bytes, sha256 }) => [name, bytes, sha256]))).digest("hex");
+  const entries = scan.entries;
+  const key = inventoryKey(entries);
   const generation = join(store, key);
   makeWindowsCustodyDirectory(generation);
   const root = join(generation, "runtime");
@@ -47,6 +47,19 @@ export function retainWindowsSeatRuntime(install: string) {
     publish(generation, root, entries);
   }
   return { root, key, program: join(root, "node.exe"), entry: join(root, "seat", "dist", "shared-custodian.js") };
+}
+
+/** Recompute the complete retained closure without consulting the replaceable installation. */
+export function assertWindowsRetainedRuntime(root: string, key: string): void {
+  if (!/^[a-f0-9]{64}$/.test(key)) throw new Error("unknown Windows PTY runtime generation");
+  const scan = inventory();
+  scan.tree(root, "", true);
+  if (inventoryKey(scan.entries) !== key) throw new Error("Windows PTY runtime inventory does not match");
+}
+
+function inventoryKey(entries: Entry[]): string {
+  entries.sort((a, b) => a.name.localeCompare(b.name, "en"));
+  return createHash("sha256").update(JSON.stringify(entries.map(({ name, bytes, sha256 }) => [name, bytes, sha256]))).digest("hex");
 }
 
 function exists(path: string): boolean {
@@ -77,18 +90,22 @@ function inventory() {
     names.add(folded);
     entries.push({ name, source, bytes: stat.size, sha256: hash(source, stat.size) });
   };
-  const tree = (source: string, name: string) => {
+  const tree = (source: string, name: string, retained = false) => {
     const stack = [{ source, name }];
     let directories = 0;
     while (stack.length) {
       const dir = stack.pop()!;
       if (++directories > MAX_FILES || !lstatSync(dir.source).isDirectory() || realpathSync.native(dir.source).toLowerCase() !== dir.source.toLowerCase())
         throw new Error("Windows PTY runtime source contains an unknown directory");
+      if (retained) checkWindowsCustodyRoot(dir.source);
       for (const child of readdirSync(dir.source, { withFileTypes: true })) {
-        if (child.name === "node_modules") continue;
-        const from = join(dir.source, child.name), to = `${dir.name}/${child.name}`;
+        if (!retained && child.name === "node_modules") continue;
+        const from = join(dir.source, child.name), to = dir.name ? `${dir.name}/${child.name}` : child.name;
         if (child.isDirectory()) stack.push({ source: from, name: to });
-        else file(from, to);
+        else {
+          if (retained) checkWindowsCustodyPath(from, false);
+          file(from, to);
+        }
       }
     }
   };

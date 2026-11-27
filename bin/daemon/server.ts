@@ -107,6 +107,7 @@ export interface ServeOptions {
   readonly stopAllowed?: () => Promise<boolean | { state: "owned" | "not-owned" | "unknown" }>;
   /** Native startup admission, checked under the lifetime lock before publishing an endpoint. */
   readonly admit?: () => void;
+  readonly windowsOwned?: () => boolean;
 }
 
 /** A published endpoint: closing it stops new connections and removes only what it published. */
@@ -179,7 +180,7 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
   let watchNotifyQueued = false;
   let notifyStatusWatchers = (): void => {};
   const services = createServiceConnections(machineHome);
-  const managers = createHostedManagers(machineHome, opts.version, opts.sessionDir, () => notifyStatusWatchers());
+  const managers = createHostedManagers(machineHome, opts.version, opts.sessionDir, () => notifyStatusWatchers(), opts.windowsOwned);
   const reconciler = createAccountReconciler(machineHome, services, managers);
   const account = createAccountComputer(machineHome, opts.version, reconciler, () => notifyStatusWatchers());
   const startedAt = new Date();

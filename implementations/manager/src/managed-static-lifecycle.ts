@@ -20,6 +20,7 @@ import type { Manager, ManagedAgent } from "./manager.js";
 import type { TeardownTarget, RetirementHold } from "./retirement.js";
 import type { EvictionResult } from "@cotal-ai/core";
 import { foreignEventChannels } from "./seat-launch.js";
+import { hostedNativeAliasHeld } from "./runtime/shared-pty.js";
 import type { ManagerConfig } from "./manager-config.js";
 import type { ManagerParts } from "./manager-parts.js";
 import type { ManagerStartState } from "./manager-start-state.js";
@@ -56,6 +57,7 @@ export interface ManagedStaticLifecycleDeps {
   resumeRequired: () => boolean;
   records: () => KV | undefined;
   agentFor: (name: string) => ManagedAgent | undefined;
+  holdsNativeAlias?: (name: string) => boolean;
   retirementFor: (name: string) => RetirementHold | undefined;
   recordStaticRetirement: (a: { id: string; name: string; lifecycleUid: string }) => void;
   noteRetiredPrincipal: (principal: string) => void;
@@ -86,6 +88,7 @@ export function managedStaticLifecycleDeps(m: Manager): ManagedStaticLifecycleDe
     resumeRequired: () => m["resumeRequired"],
     records: () => m["goalWriterComponent"].goalWriter?.ctx.kv,
     agentFor: (name) => m["agents"].get(name),
+    holdsNativeAlias: (name) => hostedNativeAliasHeld(m["runtime"], name),
     retirementFor: (name) => m["retirement"].held(name),
     recordStaticRetirement: (a) => m["retirement"].recordStaticRetirement(a),
     noteRetiredPrincipal: (principal) => { m["retirement"].rememberRetired(principal); },
@@ -681,6 +684,7 @@ export class ManagedStaticLifecycle {
       console.error(`✓ static reconcile recovered alias=${item.alias} phase=retired uid=${item.lifecycleUid} attempts=${item.attempts}/${item.maxAttempts}`);
       return;
     }
+    if (this.deps.holdsNativeAlias?.(row.alias)) return;
     if (ownedBySibling(row, this.managerInstanceId)) {
       item.disposition = "refused";
       item.remedy = "the owning manager must reconcile or an operator must perform an explicit CAS takeover";
@@ -862,7 +866,7 @@ export class ManagedStaticLifecycle {
         // match is the exact registered alias, actor and UID under this logical instance and this
         // process's incarnation, so a foreign, legacy or unrecorded row, or any UID this process
         // did not register, falls through to the ordinary plan below.
-        if (this.holdsLiveChatSlot(row)) {
+        if (this.holdsLiveChatSlot(row) || this.deps.holdsNativeAlias?.(row.alias)) {
           preservedAdopted++;
           continue;
         }

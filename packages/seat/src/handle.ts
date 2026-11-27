@@ -37,7 +37,7 @@ export function adoptSeatSync(record: SeatRecord, verifyPeer?: (socket: Socket) 
 export type SeatHandleClient = Pick<SeatClient, "connect" | "onExit" | "exitInfo" | "stop" | "waitExit" | "interrupt" | "write" | "snapshot" | "subscribeOutput" | "resize" | "close">;
 
 export function seatHandle(record: SeatRecord, client: SeatHandleClient, reconnectable = false): SeatHandle {
-  const ready = client.connect();
+  const ready = reconnectable ? undefined : client.connect();
   let status: "running" | "exited" = "running";
   let exit: SeatExit | undefined;
   let cols = DEFAULT_COLS;
@@ -46,7 +46,7 @@ export function seatHandle(record: SeatRecord, client: SeatHandleClient, reconne
   const liveUnsubs = new Set<() => void>();
 
   const whenReady = (): Promise<SeatHandleClient> =>
-    (reconnectable ? client.connect() : ready).then((hello) => {
+    (ready ?? client.connect()).then((hello) => {
       // Hello reports spawn size. Re-applying it on every later() overwrites a
       // resize that already updated these fields (mesh-attach-plane resize cell).
       if (!helloGeometryApplied) {

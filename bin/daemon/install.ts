@@ -35,6 +35,7 @@ import { accessSync, closeSync, constants, existsSync, lstatSync, mkdirSync, ope
 import { delimiter, dirname, isAbsolute, join, posix } from "node:path";
 import { homedir } from "node:os";
 import { recordedSourceIdentity, recordedSourceMarked } from "./install-identity.js";
+import { acquireWindowsCustodyCleanup } from "./manager-custody-win32.js";
 import { nativeRun } from "./install-native-run.js";
 import { checkWindowsRecordedUnit } from "./ownership-win32.js";
 import { Worker } from "node:worker_threads";
@@ -1119,6 +1120,7 @@ async function applyUninstallUnlocked(paths: DaemonPaths, daemonHome: string | u
   catch (error) { if (!(error instanceof EndpointRefusal && error.code === "NOT_RUNNING")) throw error; }
   const owner = readLifetimeRecord(paths.lock);
   let exclusion: ReturnType<typeof excludeLifetime> | undefined;
+  let custody: ReturnType<typeof acquireWindowsCustodyCleanup>;
   const uncertain = (detail: string) => new CommandFailure("unknown", "OPERATION_UNKNOWN", `${detail}; the daemon source and receipt were retained`, { remedy: "inspect \`cotal daemon status\` and the native service, then retry \`cotal daemon uninstall\`" });
   try {
     if (socket && (!owner?.start || before?.pid !== owner.pid || before.start !== owner.start))
@@ -1128,6 +1130,18 @@ async function applyUninstallUnlocked(paths: DaemonPaths, daemonHome: string | u
     if (!socket) exclusion = excludeLifetime(paths.lock);
     // The supervisor can close this connection during the synchronous native step.
     socket?.on("error", () => {});
+    custody = acquireWindowsCustodyCleanup();
+    const occupied = custody?.occupancy();
+    if (occupied === "unknown") throw uncertain("Windows PTY custody could not be verified before uninstall");
+    if (occupied === "held") {
+      if (!socket) throw uncertain("Windows PTY seats remain held without an answering daemon");
+      const id = randomUUID().replaceAll("-", "");
+      socket.write(encode({ v: DAEMON_PROTOCOL_VERSION, id, op: "managers-stop" }));
+      const reply = JSON.parse(await readLine(socket, 130_000)) as DaemonResponse;
+      if (!reply.ok || reply.id !== id || custody.occupancy() !== "empty") throw uncertain("Windows PTY seats did not confirm stop before uninstall");
+    }
+    try { await custody?.cleanup(); }
+    catch { throw uncertain("Windows PTY task retirement was not confirmed"); }
     if (socket && owner?.start && processBirth(owner.pid) === owner.start) {
       const id = randomUUID().replaceAll("-", "");
       socket.write(encode({ v: DAEMON_PROTOCOL_VERSION, id, op: "daemon-stop" }));
@@ -1194,5 +1208,5 @@ async function applyUninstallUnlocked(paths: DaemonPaths, daemonHome: string | u
     if (!service) submitSystemdUnitRegistration("reload", plan.unit);
     rmSync(unitReceiptFile(paths), { force: true });
     return { ...plan, state: "removed", removedServiceRecords };
-  } finally { socket?.destroy(); exclusion?.release(); }
+  } finally { socket?.destroy(); exclusion?.release(); custody?.release(); }
 }

@@ -139,7 +139,7 @@ export type RuntimeMode = RuntimeKind | "auto";
  *  provider that is absent or unreachable throws, never a silent fallback to pty. */
 export function createRuntime(mode: RuntimeMode, session: string, hosted?: { space: string; install: string }): Runtime {
   const legacy = createBackend(mode, session);
-  return ownLaunchArtifacts(hosted && legacy.kind === "pty" && process.platform === "linux" ? new HostedPtyRuntime(hosted.space, hosted.install) : legacy);
+  return ownLaunchArtifacts(hosted && legacy.kind === "pty" && (process.platform === "linux" || process.platform === "win32") ? new HostedPtyRuntime(hosted.space, hosted.install) : legacy);
 }
 
 /** The bundled Linux node-pty can import on musl but crash the manager on its first spawn. */
@@ -234,7 +234,7 @@ function ownLaunchArtifacts(runtime: Runtime): Runtime {
         if (e instanceof SpawnRefused) removeOwned(name, spec.artifacts);
         throw e;
       }
-      if (spec.artifacts?.length) discardOnExit(name, handle, spec.artifacts);
+      if (spec.artifacts?.length && !runtime.ownsNativeArtifacts(handle)) discardOnExit(name, handle, spec.artifacts);
       return handle;
     };
   }

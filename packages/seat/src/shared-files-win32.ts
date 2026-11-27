@@ -32,6 +32,11 @@ export function makeWindowsCustodyDirectory(path: string): void {
 
 /** Serialize the observed task/record/start sequence. Death releases the file lock. */
 export function withWindowsCustodyLock<T>(path: string, action: () => T): T {
+  const release = acquireWindowsCustodyLock(path);
+  try { return action(); } finally { release(); }
+}
+
+export function acquireWindowsCustodyLock(path: string): () => void {
   checkWindowsCustodyRoot(dirname(path));
   let fd: number;
   try { fd = openSync(path, "wx+"); }
@@ -43,6 +48,6 @@ export function withWindowsCustodyLock<T>(path: string, action: () => T): T {
   try {
     checkWindowsCustodyPath(path, false);
     if (!fstatSync(fd).isFile() || !lockExclusiveNb(fd)) throw new Error("Windows PTY host start is already in progress");
-    return action();
-  } finally { closeSync(fd); }
+    return () => closeSync(fd);
+  } catch (error) { closeSync(fd); throw error; }
 }

@@ -2,6 +2,7 @@ import { rmSync } from "node:fs";
 import { DEV_OWNER, firstFreeName, managedRetirementOpId, parsePrincipalKey, rejectionText, seatCapRefused, spawnNameError, type EpEnvelopeError, type Presence } from "@cotal-ai/core";
 import { SEAT_CAP_UNLIMITED } from "@cotal-ai/workspace";
 import { MAX_AGENTS } from "./resume.js";
+import { hostedNativeAliasHeld, requireNativeAliasProof } from "./runtime/shared-pty.js";
 import type { ManagedAgent, FreeSlotCause, StartAgentOpts } from "./manager.js";
 import type { RetirementHold, TeardownTarget } from "./retirement.js";
 import type { AttachEndReason } from "./session/index.js";
@@ -49,6 +50,8 @@ export interface NamesCapacityDeps {
   managedCount(): number;
   predecessor(name: string): { principal: string; lifecycleUid: string } | undefined;
   hasRetirementHold(name: string): boolean;
+  holdsNativeAlias?(name: string): boolean;
+  requireNativeAliasProof?(name: string): boolean;
   holdRetirement(name: string, hold: RetirementHold): void;
   endSessionsForTarget(name: string, lifecycleUid: string, reason: AttachEndReason): void;
   logSeatReaped: (agent: ManagedAgent, cause: FreeSlotCause) => void;
@@ -74,6 +77,8 @@ export function namesCapacityDeps(m: Manager): NamesCapacityDeps {
     managedCount: () => m["agents"].size,
     predecessor: (name) => m["retirement"].predecessor(name),
     hasRetirementHold: (name) => m["retirement"].hasHold(name),
+    holdsNativeAlias: (name) => hostedNativeAliasHeld(m["runtime"], name),
+    requireNativeAliasProof: (name) => requireNativeAliasProof(m["runtime"], name),
     holdRetirement: (name, hold) => m["retirement"].hold(name, hold),
     endSessionsForTarget: (...args) => { m["servePlane"].sessionPlane?.endForTarget(...args); },
     logSeatReaped: (...args) => m["logSeatReaped"](...args),
@@ -158,7 +163,7 @@ export class NamesCapacity {
    *  reserves/manages/retires it OR a roster-live occupant already holds it. Pass a pre-built
    *  {@link liveRosterNames} set when checking many names in one allocation. */
   nameInUse(name: string, live: Set<string> = this.liveRosterNames()): boolean {
-    return this.deps.hasAgent(name) || this.reserved.has(name) || this.deps.hasRetirementHold(name) || live.has(name);
+    return this.deps.hasAgent(name) || this.reserved.has(name) || this.deps.hasRetirementHold(name) || live.has(name) || this.deps.holdsNativeAlias?.(name) === true;
   }
 
   /** First free name in the series `base`, `base_2`, `base_3`, … - checked against live slots,
@@ -180,7 +185,7 @@ export class NamesCapacity {
     const live = this.liveRosterNames();
     // The cap belongs to user mode alone: only there is the numbered name the actor. Static and open
     // mode key the actor on the minted nkey, so a numbered name there has no length to fit.
-    const name = firstFreeName(base, (n) => unavailable.has(n) || this.nameInUse(n, live) || (n !== base && this.issuedNumberedNames.has(n)),
+    const name = firstFreeName(base, (n) => this.deps.requireNativeAliasProof?.(n) === true || unavailable.has(n) || this.nameInUse(n, live) || (n !== base && this.issuedNumberedNames.has(n)),
       this.userMode ? { actorBound: true } : undefined);
     return name;
   }
