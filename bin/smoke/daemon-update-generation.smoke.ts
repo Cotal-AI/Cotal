@@ -1,6 +1,7 @@
 import strictAssert from "node:assert/strict";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
+import { createServer } from "node:http";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -137,8 +138,19 @@ if (process.platform === "linux") {
   const fixture = new URL("../../implementations/auth/smoke/update-participant.fixture.ts", import.meta.url).href;
   const participant = spawn(process.execPath, [...process.execArgv, "--input-type=module", "-e", `
     import { prepareUpdateParticipant } from ${JSON.stringify(fixture)};
+    import { existsSync, writeFileSync } from 'node:fs';
     const report = {};
-    const close = await prepareUpdateParticipant({ env: process.env, project: process.cwd(), cotalHome: process.env.COTAL_HOME, report });
+    const close = await prepareUpdateParticipant({ env: process.env, project: process.cwd(), cotalHome: process.env.COTAL_HOME, report,
+      async beforeManagedEnrollment(name) {
+        if (name !== 'update_during_spawn') return;
+        writeFileSync(${JSON.stringify(join(directory, "update-spawn-entered"))}, 'entered');
+        const deadline = Date.now() + 30_000;
+        while (!existsSync(${JSON.stringify(join(directory, "update-spawn-release"))})) {
+          if (Date.now() >= deadline) throw new Error('enrollment fixture was not released');
+          await new Promise(resolve => setTimeout(resolve, 20));
+        }
+      },
+    });
     process.stdout.write('HOSTED_PARTICIPANT ' + report.participant.space + '\\n');
     process.stdin.resume();
     process.stdin.once('end', () => void close().catch(error => { console.error(error); process.exitCode = 1; }));
@@ -177,7 +189,10 @@ if (process.platform === "linux") {
     const before = await managerViaDaemon({ paths }, { op: "manager-start", space });
     assert.equal(before.state, "answering", JSON.stringify(before));
     if (sharedSkip === undefined) {
-      await proveHostedPtyFailures({ start, daemon: () => daemon!, paths, space, entry, project, home, env });
+      const ctx = { start, daemon: () => daemon!, paths, space, entry, project, home, env };
+      if (!("instanceId" in before) || !before.instanceId) throw new Error("the hosted fixture has no Manager instance");
+      await proveUpdateDuringSpawn(ctx, before.instanceId, directory, version);
+      await proveHostedPtyFailures(ctx);
       await start();
       const restored = await managerViaDaemon({ paths }, { op: "manager-start", space });
       assert.equal(restored.state, "answering", "the fixture restored hosting intent after the ordinary stop cell");
@@ -246,7 +261,10 @@ function addPtyFixture(entry: string, project: string, directory: string, env: N
   writeFileSync(join(fixture, "index.js"), `import { registry } from '@cotal-ai/core';
     import { join } from 'node:path';
     registry.register({kind:'connector', name:'shared-pty-smoke', requires:['node'], waitsForOperator:()=> 'test terminal',
-    buildLaunch:({name})=>({command:${JSON.stringify(process.execPath)},args:[${JSON.stringify(seat)},name,join(${JSON.stringify(directory)},name+'.json')],env:{PATH:'/usr/bin:/bin'}})});`);
+    buildLaunch:({name})=>{
+      if (name === 'update_during_spawn') throw new Error('ordinary spawn fixture stopped before process launch');
+      return {command:${JSON.stringify(process.execPath)},args:[${JSON.stringify(seat)},name,join(${JSON.stringify(directory)},name+'.json')],env:{PATH:'/usr/bin:/bin'}};
+    }});`);
   const added = spawnSync(process.execPath, [entry, "ext", "add", fixture], { env, cwd: project, encoding: "utf8", timeout: 90_000 });
   assert.equal(added.status, 0, `${added.error ?? ""}\n${added.stdout}${added.stderr}`);
 }
@@ -267,6 +285,43 @@ type HostedSeat = { child: Lifetime; descendant?: Lifetime };
 type HostedUnit = Lifetime & { scope: string; cgroup: string };
 function briefly(): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, 100));
+}
+
+async function proveUpdateDuringSpawn(ctx: HostedPtyProof, manager: string, directory: string, version: string): Promise<void> {
+  const entered = join(directory, "update-spawn-entered"), release = join(directory, "update-spawn-release");
+  const registry = createServer((_req, res) => res.end(JSON.stringify({ name: "cotal-ai", "dist-tags": { latest: version }, versions: { [version]: { name: "cotal-ai", version } } })));
+  await new Promise<void>((resolve, reject) => { registry.once("error", reject); registry.listen(0, "127.0.0.1", resolve); });
+  const address = registry.address();
+  if (!address || typeof address === "string") throw new Error("update metadata fixture did not listen");
+  const run = (args: string[]) => {
+    const child = spawn(process.execPath, [ctx.entry, ...args], {
+      env: { ...ctx.env, npm_config_registry: `http://127.0.0.1:${address.port}` }, cwd: ctx.project, stdio: ["ignore", "pipe", "pipe"],
+    });
+    let text = "";
+    for (const stream of [child.stdout, child.stderr]) stream.on("data", data => { text = (text + data).slice(-24_000); });
+    const exited = new Promise<number | null>((resolve, reject) => { child.once("error", reject); child.once("close", resolve); });
+    const timeout = setTimeout(() => { void killAndAwaitExit(child).catch(() => {}); }, 60_000);
+    void exited.then(() => clearTimeout(timeout), () => clearTimeout(timeout));
+    return { child, exited, text: () => text };
+  };
+  const launching = run(["spawn", "--agent", "shared-pty-smoke", "--name", "update_during_spawn", "--space", ctx.space, "--on", manager, "--detach", "--no-events"]);
+  let updating: ReturnType<typeof run> | undefined;
+  try {
+    for (let i = 0; i < 100 && !existsSync(entered) && launching.child.exitCode === null; i++) await briefly();
+    assert.ok(existsSync(entered), `ordinary spawn did not reach the held enrollment: ${launching.text()}`);
+    updating = run(["update", "--space", ctx.space]);
+    for (let i = 0; i < 120 && updating.child.exitCode === null && !updating.text().includes("Waiting for a hosted spawn to settle"); i++) await briefly();
+    assert.match(updating.text(), /Waiting for a hosted spawn to settle/, `the updater must observe the real reserved launch before release:\n${updating.text()}`);
+    writeFileSync(release, "release");
+    assert.notEqual(await launching.exited, 0, launching.text());
+    assert.match(launching.text(), /ordinary spawn fixture stopped before process launch/);
+    assert.equal(await updating.exited, 0, updating.text());
+    assert.match(updating.text(), /Built-in connectors/);
+  } finally {
+    writeFileSync(release, "release");
+    for (const command of [launching, updating]) if (command && command.child.exitCode === null && command.child.signalCode === null) await killAndAwaitExit(command.child);
+    await new Promise<void>(resolve => registry.close(() => resolve()));
+  }
 }
 
 function hostedCli(ctx: HostedPtyProof, args: string[]): string {
