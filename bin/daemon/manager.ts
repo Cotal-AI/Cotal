@@ -334,7 +334,7 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
   };
   /** The Manager's own grade of its serve connection. A Manager that came up and then lost it reports
    *  why. Once it reconnects the problem clears, and a Manager a failed status probe left `starting`
-   *  proves itself again. */
+   *  is read again on every check until it answers. */
   const observeConnection = async (l: Live, child: ChildProcess, current: () => boolean) => {
     if (l.starting || !l.view.instanceId) return;
     let bound: boolean;
@@ -343,10 +343,14 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
     if (!current()) return;
     if (bound) {
       l.unboundSamples = 0;
-      if (!l.view.connection) return;
-      l.view = { ...l.view, connection: undefined };
-      notify();
-      if (l.view.state !== "answering") void refresh(l.view.space).catch(() => {});
+      if (l.view.connection) {
+        console.log(`machine daemon: the hosted Manager for ${l.view.space} is connected again`);
+        l.view = { ...l.view, connection: undefined };
+        notify();
+      }
+      // A status read that failed during a loss, or just after it while the space's exchange was not
+      // back yet, leaves `starting`. While the app only watches, nothing else reads again.
+      if (l.view.state === "starting") void refresh(l.view.space).catch(() => {});
       return;
     }
     // One unbound check can be a re-dial already under way; a loss is two checks in a row.
@@ -356,6 +360,7 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
     if (!current() || l.starting) return;
     if (l.view.connection?.state === connection.state && l.view.connection.reason === connection.reason) return;
     l.view = { ...l.view, connection };
+    console.log(`machine daemon: the hosted Manager for ${l.view.space} lost its connection (${connection.state}): ${connection.reason}`);
     notify();
   };
   const observe = (l: Live) => {

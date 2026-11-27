@@ -170,10 +170,11 @@ const idpUrl = `${idpOrigin}/api/auth`;
 // them (broker TCP, exchange, IdP) drop. `offline` resets every link and refuses new ones. `silent`
 // resets nothing and delivers nothing, so only the client's own pings can notice it. A link that
 // lost bytes while silent is reset when the network comes back, since its stream is no longer whole.
-let offline = false, silent = false;
+// `facesDown` drops only the HTTP faces (exchange, IdP), as when the broker link comes back first.
+let offline = false, silent = false, facesDown = false;
 const tcpLinks = new Set<Socket>();
 const hung = new Set<Socket>();
-const reconnectNetwork = () => { offline = false; silent = false; for (const s of hung) s.destroy(); hung.clear(); };
+const reconnectNetwork = () => { offline = false; silent = false; facesDown = false; for (const s of hung) s.destroy(); hung.clear(); };
 const tcpRelays: ReturnType<typeof createTcpServer>[] = [];
 async function createTcpRelay(target: number): Promise<number> {
   const server = createTcpServer((client) => {
@@ -191,7 +192,7 @@ async function createTcpRelay(target: number): Promise<number> {
 const relays: ReturnType<typeof createHttpServer>[] = [];
 async function createRelay(targetUrl: string): Promise<string> {
   const server = createHttpServer(async (req: IncomingMessage, res: ServerResponse) => {
-    if (offline) { req.socket.destroy(); return; }
+    if (offline || facesDown) { req.socket.destroy(); return; }
     if (silent) { hung.add(req.socket); return; }
     const chunks: Buffer[] = [];
     for await (const c of req) chunks.push(Buffer.from(c));
@@ -386,7 +387,9 @@ try {
       } catch {}
       await sleep(100);
     }
-    throw new Error("daemon did not start");
+    // The finally below stops only a daemon that started; this one must not outlive the run.
+    await killAndAwaitExit(child, "SIGTERM").catch(() => {});
+    throw new Error(`daemon did not start:\n${daemonLog.slice(-60).join("\n")}`);
   };
 
   writeFileSync(join(nativeBin, "systemctl"), `#!${process.execPath}\nif (process.argv.slice(2).join(" ") === "--user show-environment") console.log(${JSON.stringify(`XDG_CONFIG_HOME=${configDir}`)});\nelse process.exit(99);\n`, { mode: 0o700 });
@@ -447,9 +450,9 @@ try {
   offline = true;
   for (const link of tcpLinks) link.destroy();
   const cutAt = Date.now();
-  const lost = await until(20_000, () => frames.some((f) => f.at >= cutAt && f.connection !== undefined));
+  const lost = await until(15_000, () => frames.some((f) => f.at >= cutAt && f.connection !== undefined));
   const lostFrame = frames.find((f) => f.at >= cutAt && f.connection !== undefined);
-  check(`C1 within 20 s of a reset link, the live feed reports the lost connection without any status request (after ${lostFrame ? Math.round((lostFrame.at - cutAt) / 1000) : "-"} s)`, lost && lostFrame?.connection?.state === "unreachable" && lostFrame.connection.reason === "127.0.0.1 is not answering", { frames: frames.length, seconds: lostFrame ? Math.round((lostFrame.at - cutAt) / 1000) : undefined, lostFrame });
+  check(`C1 within 15 s of a reset link, as desktop/README.md says, the live feed reports the lost connection without any status request (after ${lostFrame ? Math.round((lostFrame.at - cutAt) / 1000) : "-"} s)`, lost && lostFrame?.connection?.state === "unreachable" && lostFrame.connection.reason === "127.0.0.1 is not answering", { frames: frames.length, seconds: lostFrame ? Math.round((lostFrame.at - cutAt) / 1000) : undefined, lostFrame });
   check("C2 the lost connection is reported beside the Manager's own state, which stays answering", lostFrame?.state === "answering", lostFrame);
 
   // A full status read during the outage fails its own probe. What it changes reaches the feed too.
@@ -468,17 +471,37 @@ try {
   reconnectNetwork();
   const backAt = Date.now();
   const back = await until(60_000, () => answering() && frames.at(-1)!.at >= backAt);
-  check("C5 once the network is back, the live feed reports the Manager answering with no lost connection", back, { last: frames.at(-1), seconds: Math.round((Date.now() - backAt) / 1000) });
+  check(`C5 once the network is back, the live feed reports the Manager answering with no lost connection (after ${back ? Math.round((frames.at(-1)!.at - backAt) / 1000) : "-"} s)`, back, { last: frames.at(-1), seconds: Math.round((Date.now() - backAt) / 1000) });
 
   // A silent drop: no link is reset and nothing answers. Only the Manager's own pings can notice it.
   silent = true;
   const silentAt = Date.now();
-  const heard = await until(60_000, () => frames.some((f) => f.at >= silentAt && f.connection !== undefined));
+  const heard = await until(45_000, () => frames.some((f) => f.at >= silentAt && f.connection !== undefined));
   const silentFrame = frames.find((f) => f.at >= silentAt && f.connection !== undefined);
-  check(`S1 within 60 s of a silent drop, the live feed reports the lost connection (after ${silentFrame ? Math.round((silentFrame.at - silentAt) / 1000) : "-"} s)`, heard && silentFrame?.connection?.state === "unreachable" && silentFrame.state === "answering", { seconds: Math.round(((silentFrame?.at ?? Date.now()) - silentAt) / 1000), silentFrame, last: frames.at(-1) });
+  check(`S1 within 45 s of a silent drop, as desktop/README.md says, the live feed reports the lost connection (after ${silentFrame ? Math.round((silentFrame.at - silentAt) / 1000) : "-"} s)`, heard && silentFrame?.connection?.state === "unreachable" && silentFrame.state === "answering", { seconds: Math.round(((silentFrame?.at ?? Date.now()) - silentAt) / 1000), silentFrame, last: frames.at(-1) });
   reconnectNetwork();
   const quietBackAt = Date.now();
-  check("S2 once a silent drop ends, the live feed reports the Manager answering with no lost connection", await until(60_000, () => answering() && frames.at(-1)!.at >= quietBackAt), { last: frames.at(-1), seconds: Math.round((Date.now() - quietBackAt) / 1000) });
+  const quietBack = await until(60_000, () => answering() && frames.at(-1)!.at >= quietBackAt);
+  check(`S2 once a silent drop ends, the live feed reports the Manager answering with no lost connection (after ${quietBack ? Math.round((frames.at(-1)!.at - quietBackAt) / 1000) : "-"} s)`, quietBack, { last: frames.at(-1), seconds: Math.round((Date.now() - quietBackAt) / 1000) });
+
+  // The broker link comes back before the faces do, so the Manager re-dials at once while the
+  // daemon's first status read after the loss still fails. Then the faces answer, and nobody asks
+  // for a status: the app only watches. The feed must still come back to answering by itself.
+  offline = true;
+  for (const link of tcpLinks) link.destroy();
+  const facesCutAt = Date.now();
+  check("R1 a second cut is reported", await until(20_000, () => frames.some((f) => f.at >= facesCutAt && f.connection !== undefined)), frames.at(-1));
+  const failedRead = await queryDaemon({ paths });
+  const failedRow = failedRead.ok ? failedRead.result.managers?.find((row) => row.space === SPACE) : undefined;
+  offline = false; facesDown = true;
+  const linkBackAt = Date.now();
+  const cleared = await until(30_000, () => frames.some((f) => f.at >= linkBackAt && f.connection === undefined));
+  await sleep(4000);
+  const whileFacesDown = frames.at(-1);
+  reconnectNetwork();
+  const facesBackAt = Date.now();
+  const recovered = await until(30_000, () => answering() && frames.at(-1)!.at >= facesBackAt);
+  check(`R2 a status read that failed during the loss does not hold the feed on starting after it: answering ${recovered ? Math.round((frames.at(-1)!.at - facesBackAt) / 1000) : "-"} s after the faces answer, with no status request`, failedRow?.state === "starting" && cleared && whileFacesDown?.connection === undefined && recovered, { failedState: failedRow?.state, cleared, whileFacesDown, last: frames.at(-1) });
   watch?.destroy();
 
   // A Manager built before the connection question ignores it, as every released Manager does. The
@@ -528,5 +551,5 @@ try {
 
 if (fail > 0) console.log(`\n--- last daemon output ---\n${daemonLog.slice(-60).join("\n")}`);
 console.log(`\n=== daemon-lost-connection smoke: ${pass} passed, ${fail} failed ===`);
-if (fail > 0 || pass !== 17) process.exit(1);
+if (fail > 0 || pass !== 19) process.exit(1);
 process.exit(0);

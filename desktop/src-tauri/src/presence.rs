@@ -99,13 +99,14 @@ fn connection_tray_status(frame: &serde_json::Value) -> String {
     }
     if let Some(connected) = account_connected(result) {
         let account = &result["account"];
-        if !connected || account["message"].is_string() { return "Needs attention".into(); }
         let rows = account["spaces"].as_array();
         let count = rows.map_or(0, |rows| rows.iter().filter(|row| row["observed"] == "connected").count());
-        // A lost connection names itself before other problems, because it can cause them.
+        // A lost connection names itself before other problems, because it can cause them: offline,
+        // the account poll fails too and leaves its message. The window does not read that message.
         if count == 0 {
             if let Some(lost) = lost_connection(rows.into_iter().flatten().map(|row| &row["observed"])) { return lost.into(); }
         }
+        if !connected || account["message"].is_string() { return "Needs attention".into(); }
         if rows.is_some_and(|rows| rows.iter().any(|row| row["lastRefusal"].is_string())) {
             return "Needs attention".into();
         }
@@ -255,6 +256,12 @@ mod tests {
         assert_eq!(tray_status(&json!({"ok":true,"result":result.clone()})), "Can't connect");
         result["account"]["spaces"] = json!([{"desired":true,"observed":"unreachable"},{"desired":true,"observed":"offline"}]);
         assert_eq!(tray_status(&json!({"ok":true,"result":result.clone()})), "Offline");
+        // Offline, the account poll fails as well and leaves its message; the tray still names the loss, as the window does.
+        result["account"]["message"] = json!("account computer request failed; existing connections are unchanged");
+        assert_eq!(tray_status(&json!({"ok":true,"result":result.clone()})), "Offline");
+        result["account"]["spaces"] = json!([{"desired":true,"observed":"starting"}]);
+        assert_eq!(tray_status(&json!({"ok":true,"result":result.clone()})), "Needs attention");
+        result["account"].as_object_mut().unwrap().remove("message");
         result["account"]["spaces"] = json!([{"desired":true,"observed":"offline"},{"desired":true,"observed":"connected"}]);
         assert_eq!(tray_status(&json!({"ok":true,"result":result.clone()})), "Connected");
         result["account"]["spaces"] = json!([{"desired":true,"observed":"removed on this computer"}]);
