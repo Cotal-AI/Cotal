@@ -2,7 +2,7 @@ import { existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync } from "no
 import { dirname, join } from "node:path";
 import { acquireLock, globalConfigDir, token, utf16Problem, writeSecretFileAtomic } from "@cotal-ai/core";
 import { CommandFailure, isCommandFailure, type OutputWarning } from "./output.js";
-import { localRecordAccess, protectedLocalEntry, protectedResolvedDirectory, shellPath } from "./protected-records.js";
+import { localRecordAccess, protectedLocalDirectory, protectedLocalEntry, protectedResolvedDirectory, shellPath } from "./protected-records.js";
 import { assertProtectedLinkWrite, type ProtectedLinkChecks } from "./protected-link-write.js";
 import { DEFAULT_CONNECTOR, OFFICIAL_CONNECTORS } from "./official-connectors.js";
 import { chatNameProblem } from "./chat-name.js";
@@ -230,7 +230,7 @@ export function assertPreferencesFolderProtected(): void {
   preferencesFolder();
 }
 
-const linkChecks: ProtectedLinkChecks = { resolved: protectedResolvedDirectory, entry: protectedLocalEntry };
+const linkChecks: ProtectedLinkChecks = { resolved: protectedResolvedDirectory, entry: protectedLocalEntry, spelled: protectedLocalDirectory };
 
 /** The physical preferences directory a write may use, after the protected-link check. */
 function preferencesFolder(): string {
@@ -269,7 +269,12 @@ function assertPreferencesRegular(path: string): void {
  *  validate refuses with `SCHEMA_INVALID`, and is never reset. A linked file refuses with
  *  `PERMISSION_DENIED` (see {@link assertPreferencesNotLinked}), and so does a FIFO or another file
  *  that is not regular (see {@link assertPreferencesRegular}). */
-export function readPreferences(path = preferencesPath()): Preferences {
+export function readPreferences(): Preferences {
+  return readPreferencesFile(preferencesPath());
+}
+
+/** The saved preferences at one file. A missing file is no preferences at revision 0. */
+function readPreferencesFile(path: string): Preferences {
   let text: string;
   try {
     assertPreferencesNotLinked(path);
@@ -333,7 +338,7 @@ export function writePreference(scope: PreferenceScope, key: string, value: stri
     throw localWriteFailure(e, preferencesPath(), scope.space === undefined ? {} : { space: scope.space });
   }
   try {
-    const current = readPreferences(file);
+    const current = readPreferencesFile(file);
     if (current.revision !== expectedRevision)
       throw new CommandFailure("refused", "CONFLICT", `the preferences changed while this command ran (revision ${expectedRevision} became ${current.revision})`, {
         remedy: "run the command again",
@@ -374,7 +379,7 @@ export function removeSpacePreferences(space: string, expectedRevision: number):
   const path = join(dir, "preferences.json");
   const lock = acquireLock(`${path}.lock`, { label: "a preferences write", waitMs: 10_000 });
   try {
-    const current = readPreferences(path);
+    const current = readPreferencesFile(path);
     if (current.revision !== expectedRevision)
       throw new CommandFailure("refused", "CONFLICT", `the preferences changed while this command ran (revision ${expectedRevision} became ${current.revision})`, {
         remedy: "run the command again",

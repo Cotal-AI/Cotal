@@ -21,7 +21,7 @@
 import { spawn, spawnSync } from "node:child_process";
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, join } from "node:path";
+import { basename, join, relative } from "node:path";
 import { createSuite } from "@cotal-ai/smoke-kit";
 import { meshFile, recordMesh, removeMesh } from "@cotal-ai/workspace";
 
@@ -590,21 +590,130 @@ if (process.platform !== "win32") {
   const dangling = join(home, "dangling-config");
   symlinkSync(join(home, "missing-config-target"), dangling);
   const missing = run(["config", "set", "color", "always", "--json"], { XDG_CONFIG_HOME: dangling });
-  check("a dangling config symlink is refused with PERMISSION_DENIED, exit 2, and changes nothing",
-    missing.status === 2 && missing.envelope?.error?.code === "PERMISSION_DENIED" && !existsSync(join(home, "missing-config-target")), shown(missing));
-  const wide = join(home, "wide-config");
-  const stepped = join(wide, "step");
-  mkdirSync(stepped, { recursive: true, mode: 0o700 });
+  check("a dangling config symlink is refused with PERMISSION_DENIED, exit 2, naming the link and its missing target, and changes nothing",
+    missing.status === 2 && missing.envelope?.error?.code === "PERMISSION_DENIED" && (missing.envelope.error.message ?? "").includes(`${dangling} is a symbolic link to ${join(home, "missing-config-target")}, which does not exist`) && !existsSync(join(home, "missing-config-target")), shown(missing));
+  const owned = mkdtempSync(join(tmpdir(), "cotal-owned-"));
+  chmodSync(owned, 0o700);
+  const wide = join(owned, "wide-open");
+  mkdirSync(wide, { mode: 0o700 });
   chmodSync(wide, 0o777);
-  symlinkSync(join("..", "..", basename(physical)), join(stepped, "back"));
-  const dotdot = join(home, "dotdot-config");
-  symlinkSync(join(stepped, "back"), dotdot);
-  const crossed = run(["config", "set", "color", "always", "--json"], { XDG_CONFIG_HOME: dotdot });
-  check("a link that steps back through a world-writable folder is refused, naming that folder",
+  const step = join(wide, "b");
+  mkdirSync(step, { mode: 0o700 });
+  const outside = join(owned, "outside-link");
+  symlinkSync(`${step}/../../${relative(owned, physical)}`, outside);
+  const crossed = run(["config", "set", "color", "always", "--json"], { XDG_CONFIG_HOME: outside });
+  check("a link outside a world-writable folder that steps back through it is refused, naming that folder",
     crossed.status === 2 && crossed.envelope?.error?.code === "PERMISSION_DENIED" && (crossed.envelope.error.message ?? "").includes(`${wide} is writable by every local account`), shown(crossed));
-  const relative = run(["config", "--json"], { XDG_CONFIG_HOME: "cfg" }, wide);
-  check("a relative config path keeps the spelled check and does not refuse the folder above it",
-    relative.status === 0, shown(relative));
+  chmodSync(wide, 0o700);
+  const relativeWide = join(owned, "relative-wide");
+  mkdirSync(relativeWide, { recursive: true });
+  chmodSync(relativeWide, 0o777);
+  const relativeWrite = run(["config", "set", "color", "always", "--json"], { XDG_CONFIG_HOME: "cfg" }, relativeWide);
+  check("a relative config path in a world-writable working folder is refused, exit 2",
+    relativeWrite.status === 2 && relativeWrite.envelope?.error?.code === "PERMISSION_DENIED" && (relativeWrite.envelope.error.message ?? "").includes("is writable by every local account"), shown(relativeWrite));
+  const relativeCfg = join(owned, "relative-cfg");
+  mkdirSync(join(relativeCfg, "cfg"), { recursive: true });
+  chmodSync(join(relativeCfg, "cfg"), 0o777);
+  const relativeFolder = run(["config", "set", "color", "always", "--json"], { XDG_CONFIG_HOME: "cfg" }, relativeCfg);
+  check("a relative config path whose own folder is world-writable is refused, exit 2",
+    relativeFolder.status === 2 && relativeFolder.envelope?.error?.code === "PERMISSION_DENIED" && relativeFolder.envelope.error.message.includes("cfg is writable by every local account") && relativeFolder.envelope.error.remedy === "chmod go-w cfg", shown(relativeFolder));
+  mkdirSync(join(relativeCfg, "cfg", "cotal"), { recursive: true, mode: 0o777 });
+  writeFileSync(join(relativeCfg, "cfg", "cotal", "preferences.json"), JSON.stringify({ schemaVersion: 1, revision: 1, defaults: { color: "never" }, spaces: {} }), { mode: 0o600 });
+  const relativeWarn = run(["config", "--json"], { XDG_CONFIG_HOME: "cfg" }, relativeCfg);
+  check("a read of a relative world-writable config folder warns PREFERENCES_FOLDER_UNPROTECTED",
+    relativeWarn.status === 0 && (relativeWarn.envelope?.warnings ?? []).some((w) => w.code === "PREFERENCES_FOLDER_UNPROTECTED"), shown(relativeWarn));
+  const relativeTrust = run(["trust", project, "--json"], { XDG_CONFIG_HOME: "cfg" }, relativeCfg);
+  check("trust refuses the same unprotected relative config folder without writing",
+    relativeTrust.status === 2 && relativeTrust.envelope?.error?.code === "PERMISSION_DENIED" && !existsSync(join(relativeCfg, "cfg", "cotal", "trusted-projects.json")), shown(relativeTrust));
+  const relativeSafe = join(relativeWide, "relative-safe");
+  mkdirSync(relativeSafe, { mode: 0o700 });
+  const relativeOk = run(["config", "set", "color", "never", "--json"], { XDG_CONFIG_HOME: "cfg" }, relativeSafe);
+  check("a relative config path in a protected folder completes",
+    relativeOk.status === 0 && existsSync(join(relativeSafe, "cfg", "cotal", "preferences.json")), shown(relativeOk));
+  const relativeLink = join(owned, "relative-link");
+  mkdirSync(relativeLink, { mode: 0o700 });
+  symlinkSync(join("..", basename(relativeWide)), join(relativeLink, "cfg"));
+  const relativeLinked = run(["config", "set", "editor", "vi", "--json"], { XDG_CONFIG_HOME: "cfg" }, relativeLink);
+  check("a relative link to a world-writable folder is refused, exit 2, and writes nothing there",
+    relativeLinked.status === 2 && relativeLinked.envelope?.error?.code === "PERMISSION_DENIED" && !existsSync(join(relativeWide, "cotal", "preferences.json")), shown(relativeLinked));
+  rmSync(owned, { recursive: true, force: true });
+  const sticky = mkdtempSync(join(tmpdir(), "cotal-sticky-"));
+  chmodSync(sticky, 0o700);
+  const stickyTarget = join(sticky, "physical");
+  mkdirSync(stickyTarget, { mode: 0o700 });
+  const stickyLink = join(sticky, "link");
+  symlinkSync(stickyTarget, stickyLink);
+  // Supply only the ownership metadata that needs privilege. The CLI still walks and writes the
+  // real link and private target, and the fixture never plants a link in a shared directory.
+  const statFixture = join(sticky, "owner-fixture.cjs");
+  writeFileSync(statFixture, `const fs = require("node:fs");
+const lstat = fs.lstatSync;
+fs.lstatSync = (path, options) => {
+  const stat = lstat(path, options);
+  if (path === ${JSON.stringify(sticky)} && stat) {
+    stat.uid = 0;
+    stat.mode = (stat.mode & ~0o7777) | 0o1777;
+  }
+  if (path === ${JSON.stringify(stickyLink)} && stat && process.env.FOREIGN_LINK === "1") stat.uid = process.getuid() === 1 ? 2 : 1;
+  return stat;
+};
+require("node:module").syncBuiltinESMExports();
+`);
+  const stickyEnv = { XDG_CONFIG_HOME: stickyLink, NODE_OPTIONS: `--require=${JSON.stringify(statFixture)}` };
+  const foreignLink = run(["config", "set", "color", "always", "--json"], { ...stickyEnv, FOREIGN_LINK: "1" });
+  check("a link owned by another account is refused even in a root-owned sticky folder",
+    foreignLink.status === 2 && foreignLink.envelope?.error?.code === "PERMISSION_DENIED" &&
+    foreignLink.envelope.error.message.includes(`${stickyLink} is a symbolic link owned by another account`) && !existsSync(join(stickyTarget, "cotal")), shown(foreignLink));
+  const stickyWrite = run(["config", "set", "color", "never", "--json"], { ...stickyEnv, FOREIGN_LINK: undefined });
+  check("an owned link in a root-owned sticky folder completes, and the file is in the physical folder",
+    stickyWrite.status === 0 && existsSync(join(stickyTarget, "cotal", "preferences.json")), shown(stickyWrite));
+  rmSync(sticky, { recursive: true, force: true });
+  const linkedHome = join(home, "setup-linked-home");
+  const linkedHomeTarget = join(home, "setup-linked-home-target");
+  mkdirSync(linkedHomeTarget, { mode: 0o700 });
+  symlinkSync(linkedHomeTarget, linkedHome);
+  const projectDir = join(linkedHomeTarget, "project");
+  mkdirSync(join(projectDir, ".cotal", "agents"), { recursive: true });
+  const bin = join(linkedHomeTarget, "bin");
+  mkdirSync(bin, { mode: 0o700 });
+  const codexFixture = join(bin, "codex-fixture.cjs");
+  writeFileSync(codexFixture, `const fs = require("node:fs");
+const { join } = require("node:path");
+const args = process.argv.slice(2);
+const file = join(process.env.HOME, ".codex-fixture.json");
+const saved = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, "utf8")) : {};
+if (args.join(" ") === "plugin marketplace list") console.log(saved.market ? "cotal-mesh" : "");
+else if (args.join(" ") === "plugin marketplace list --json") {
+  console.log(JSON.stringify({ marketplaces: saved.market ? [{ name: "cotal-mesh", root: saved.market }] : [] }));
+} else if (args.slice(0, 3).join(" ") === "plugin marketplace add") {
+  saved.market = args[3];
+  fs.writeFileSync(file, JSON.stringify(saved));
+} else if (args.join(" ") === "plugin add cotal@cotal-mesh") {
+  saved.version = JSON.parse(fs.readFileSync(join(saved.market, "plugins/cotal/.codex-plugin/plugin.json"), "utf8")).version;
+  fs.writeFileSync(file, JSON.stringify(saved));
+} else if (args.join(" ") === "plugin list" && saved.version) console.log("cotal@cotal-mesh  installed  " + saved.version);
+`);
+  writeFileSync(join(bin, "codex"), `#!/bin/sh\nexec "${process.execPath}" "${codexFixture}" "$@"\n`, { mode: 0o755 });
+  const linkedEnv = { HOME: linkedHome, USERPROFILE: linkedHome, XDG_CONFIG_HOME: join(linkedHome, ".config"), COTAL_HOME: join(linkedHome, ".cotal"), PATH: `${bin}:${process.env.PATH ?? ""}` };
+  const seed = run(["ext", "seed"], { ...linkedEnv, COTAL_ALLOW_CHECKOUT_SEED: "1" });
+  const setupArgs = ["setup", "--destination", "local", "--harness", "codex", "--project", projectDir, "--space", "linked", "--configure-only", "--yes", "--json"];
+  const setup = run(setupArgs, linkedEnv);
+  const trusted = run(["trust", projectDir, "--json"], linkedEnv);
+  const trustFile = join(linkedHomeTarget, ".config", "cotal", "trusted-projects.json");
+  const trustedRoots = existsSync(trustFile) ? (JSON.parse(readFileSync(trustFile, "utf8")) as { roots: string[] }).roots : [];
+  check("setup through a linked home writes the preparation, and trust of that project completes",
+    seed.status === 0 && setup.status === 0 && setup.envelope?.result?.spaceState === "created" &&
+    trusted.status === 0 && trustedRoots.includes(realpathSync(projectDir)), { seed: shown(seed), setup: shown(setup), trust: shown(trusted) });
+  const missingFolder = join(home, "missing-folder-link");
+  const missingTarget = join(physical, "no-such-folder");
+  symlinkSync(missingTarget, missingFolder);
+  for (const [link, target] of [[dangling, join(home, "missing-config-target")], [missingFolder, missingTarget]] as const) {
+    const setupMissing = run(setupArgs, { XDG_CONFIG_HOME: link, COTAL_SKIP_CONNECTOR_SEED: undefined, COTAL_ALLOW_CHECKOUT_SEED: "1" });
+    check(`setup refuses ${basename(link)} before seeding, with exit 2 and the missing target`,
+      setupMissing.status === 2 && setupMissing.envelope?.error?.code === "PERMISSION_DENIED" &&
+      setupMissing.envelope.error.message.includes(`${link} is a symbolic link to ${target}, which does not exist`) &&
+      !existsSync(target), shown(setupMissing));
+  }
 }
 
 // ── a file a Windows editor saved with a UTF-8 byte-order mark reads, and the next write drops it ──

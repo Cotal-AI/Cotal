@@ -4,7 +4,7 @@ import { dirname, isAbsolute, join, parse, resolve, sep } from "node:path";
 import { acquireLock, globalConfigDir, oneLine, parseAgentFileBytes, projectTrustProblem, rejectionText, writeSecretFileAtomic, type AgentDef } from "@cotal-ai/core";
 import { parseLaunchPersonaSource, PersonaSourceError } from "./launch-persona.js";
 import { CommandFailure, isCommandFailure, recordOperationWarning } from "./output.js";
-import { assertCotalHomeWriteProtection, localRecordAccess, prepareCotalHomeForWrite, protectedLocalEntry, protectedResolvedDirectory } from "./protected-records.js";
+import { assertCotalHomeWriteProtection, localRecordAccess, prepareCotalHomeForWrite, protectedLocalDirectory, protectedLocalEntry, protectedResolvedDirectory } from "./protected-records.js";
 import { assertProtectedLinkWrite } from "./protected-link-write.js";
 import { localWriteFailure } from "./local-write.js";
 import { canonicalRoot, homeCotalDir, isMeshRegistryError, readMeshRegistry } from "./mesh-registry.js";
@@ -84,7 +84,7 @@ function knownSpaceRoots(): string[] {
  *  link is followed when its physical folder and every link parent are protected, and the returned
  *  path is the physical directory the write uses. */
 function assertTrustConfigWriteProtection(dir: string): string {
-  return assertProtectedLinkWrite(dir, "the Cotal config folder", { resolved: protectedResolvedDirectory, entry: protectedLocalEntry }, "no folder was trusted");
+  return assertProtectedLinkWrite(dir, "the Cotal config folder", { resolved: protectedResolvedDirectory, entry: protectedLocalEntry, spelled: protectedLocalDirectory }, "no folder was trusted");
 }
 
 /** Run `change` on the current file under its lock and write the returned document, if any. */
