@@ -666,6 +666,12 @@ const envelopes = (r: Run) => {
     const r = cotal([...argv], undefined, noSeed);
     check(`${argv.join(" ")} refuses with its fix and no help`, r.status === 1 && said.test(r.stderr) && !r.stderr.includes("Usage"), shown(r));
   }
+  for (const flags of [[], ["--foreground"], ["--runtime", "pty"]]) {
+    const raw = cotal(["spawn", ...flags, "--creds", "unused.creds", "--json"], undefined, noSeed);
+    const remedy = JSON.parse(raw.stdout).error?.remedy;
+    check("the managed alternative to a raw credential requires the registered caller as well as managed mode",
+      raw.status === 1 && remedy?.includes(`or omit --creds, use a registered --space you can access, and ${flags.includes("--foreground") ? "replace --foreground with -d" : "add -d"}`) && !remedy.includes("unused.creds"), shown(raw));
+  }
   const foregroundJson = cotal(["spawn", "--foreground", "--json"], undefined, noSeed);
   const foregroundReceipt = JSON.parse(foregroundJson.stdout);
   check("foreground spawn keeps its mode and offers two compatible ways past --json",
