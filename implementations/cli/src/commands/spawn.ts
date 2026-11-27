@@ -206,13 +206,14 @@ export function validateSpawnArguments(args: ParsedArgs) {
   if (values.file !== undefined) { try { personaFileReference(values.file); } catch (error) { throw new CommandFailure("refused", "SCHEMA_INVALID", (error as Error).message); } }
   if (values["allow-stale"] !== undefined) throw new CommandFailure("refused", "USAGE_INVALID", "manifest deployment options belong to `cotal team deploy <file>`, not spawn");
   if (values.runtime !== undefined && !values.runtime.trim()) throw new CommandFailure("refused", "USAGE_INVALID", "--runtime cannot be empty");
+  const needsDetach = !values["dry-run"] && (values.json || values.plain || inputDisabledByFlag() || !process.stdin.isTTY || !process.stdout.isTTY);
   const managedCaller = values.creds === undefined ? "" : "omit --creds, use a registered --space you can access, and ";
   if (values.runtime !== undefined && direct) {
     const receipt = values["dry-run"] ? undefined : values.json ? "--json" : values.plain ? "--plain" : undefined;
     const without = ["--runtime", receipt, values.detach ? "--detach" : undefined, values.on !== undefined ? "--on" : undefined, values.creds !== undefined ? "--creds" : undefined].filter(Boolean);
     const foreground = `omit ${without.join(", ")} to launch in this terminal`;
-    const modes = values.on !== undefined ? "-d" : receipt ? "-d (with --on <instance> to select a manager)" : "-d or --on <instance>";
-    const alreadyManaged = values.detach || (values.on !== undefined && !receipt);
+    const modes = values.on !== undefined ? "-d" : needsDetach ? "-d (with --on <instance> to select a manager)" : "-d or --on <instance>";
+    const alreadyManaged = values.detach || (values.on !== undefined && !needsDetach);
     const managed = values.foreground ? (alreadyManaged ? "omit --foreground" : `replace --foreground with ${modes}`) : `add ${modes}`;
     throw new CommandFailure("refused", "USAGE_INVALID", "--runtime chooses the runtime of one managed seat; a spawn in this terminal has no manager runtime to choose", { remedy: directOnly ? foreground : `${foreground}, or ${managedCaller}${managed} to launch through a manager` });
   }
@@ -241,7 +242,7 @@ export function validateSpawnArguments(args: ParsedArgs) {
   }
   if (values["live-only"] && !direct) throw new CommandFailure("refused", "USAGE_INVALID", "--live-only belongs to direct foreground execution");
   seatExpiry(values, direct);
-  if (!values["dry-run"] && !direct && !values.detach && (values.json || values.plain || inputDisabledByFlag() || !process.stdin.isTTY || !process.stdout.isTTY))
+  if (!direct && !values.detach && needsDetach)
     throw new CommandFailure("refused", "USAGE_INVALID", "attaching to a manager's launch needs usable input and output terminals before an identity is allocated", { remedy: values.json || values.plain ? "add -d to wait for readiness without attaching" : "add -d to wait for readiness without attaching, or drop --on to run it in this terminal", selfContained: true });
   for (const field of ["harness", "agent", "model", "variant", "name", "cwd"] as const) if (values[field] !== undefined && !values[field]!.trim())
     throw new CommandFailure("refused", "USAGE_INVALID", `--${field} cannot be empty`);
