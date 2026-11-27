@@ -7,6 +7,8 @@ import {
   CotalEndpoint,
   DmDurableMissingError,
   acquireLocalConsumer,
+  isConcreteChannel,
+  PLUGIN_MENTION_POINTER_KEY,
   type HeldLock,
   BASELINE_LIFECYCLE_ENDPOINT,
   assertLifecycleToken,
@@ -20,6 +22,7 @@ import {
   type Delivery,
   type AnycastStatus,
   type MessageMeta,
+  type PluginMentionPointer,
   type Presence,
   type PresenceCondition,
   type PresenceStatus,
@@ -41,7 +44,7 @@ import type { CommandDispatch } from "./agent-commands.js";
 import type { PromptDesk } from "./prompt-desk.js";
 import { AgentInbox, deliveryNoticeOf, type InboxItem, type InboxSnapshot, type InboxScope, type ExactDrainResult, type RecallMark } from "./agent-inbox.js";
 import { AgentSupervision } from "./agent-supervision.js";
-import { AgentChannels, isLocalServer } from "./agent-channels.js";
+import { AgentChannels, isLocalServer, isPluginChannel } from "./agent-channels.js";
 import { AgentMessaging } from "./agent-messaging.js";
 import { AgentTurns, type ActiveTurn, type SettledTurn } from "./agent-turns.js";
 import { AgentPresence } from "./agent-presence.js";
@@ -68,6 +71,17 @@ export type { InboxItem, InboxSnapshot, InboxScope, ExactDrainResult, RecallMark
 // Attention modes + per-channel overrides are defined in core (they're published in presence now);
 // re-exported so connector consumers keep importing them from `@cotal-ai/connector-core`.
 export type { AttentionMode, ChannelMode };
+
+function pluginMentionPointerOf(message: CotalMessage): PluginMentionPointer | undefined {
+  const [part] = message.parts;
+  if (message.parts.length !== 1 || part?.kind !== "data" || !part.data || typeof part.data !== "object") return;
+  const pointer: unknown = (part.data as Record<string, unknown>)[PLUGIN_MENTION_POINTER_KEY];
+  if (!pointer || typeof pointer !== "object") return;
+  const { channel, message: id, seq } = pointer as Record<string, unknown>;
+  if (typeof channel !== "string" || !isConcreteChannel(channel) || !isPluginChannel(channel) ||
+      typeof id !== "string" || !id || typeof seq !== "number" || !Number.isSafeInteger(seq) || seq < 1) return;
+  return { channel, message: id, seq };
+}
 
 /**
  * A thin, mesh-native agent: a {@link CotalEndpoint} plus a buffered inbox and
@@ -235,8 +249,7 @@ export class MeshAgent extends EventEmitter {
     else if (config.autoName)
       this.log(`COTAL_AUTO_NAME is set, but ${config.connector ? `the ${config.connector}` : "this"} connector cannot ask its model for a label, so the seat shows no label`);
     this.ep.on("message", (m: CotalMessage, d: Delivery, meta?: MessageMeta) => {
-      const notice = meta?.kind === "dm" ? deliveryNoticeOf(m) : undefined;
-      if (notice !== undefined) void this.inboxState.ingestNotice(m, d, meta!, notice);
+      if (meta?.kind === "dm") this.ingestDirected(m, d, meta);
       else this.inboxState.ingest(m, d, meta);
     });
     this.ep.on("error", (e: Error) => this.handleEndpointError(e));
@@ -275,6 +288,27 @@ export class MeshAgent extends EventEmitter {
       // A rebuilt connection re-bound the notice subscription first; a holder pulls for the gap.
       if (e.connected && this.turnNoticeArmed && this.activeTurns.size > 0) this.requestTurnPull();
     });
+  }
+
+  private ingestDirected(m: CotalMessage, delivery: Delivery, meta: MessageMeta): void {
+    const pointer = this.ep.channelRoutingMode() === "isolated" ? pluginMentionPointerOf(m) : undefined;
+    if (pointer) {
+      void this.ingestPluginPointer(m, delivery, meta, pointer);
+      return;
+    }
+    const notice = deliveryNoticeOf(m);
+    if (notice !== undefined) void this.inboxState.ingestNotice(m, delivery, meta, notice);
+    else this.inboxState.ingest(m, delivery, meta);
+  }
+
+  private async ingestPluginPointer(m: CotalMessage, delivery: Delivery, meta: MessageMeta, pointer: PluginMentionPointer): Promise<void> {
+    const holder = await this.ep.deliveryLeaseHolder(0);
+    if (this._stopping || this.ep.channelRoutingMode() !== "isolated") return;
+    if (holder !== m.from.id) {
+      this.inboxState.ingest(m, delivery, meta);
+      return;
+    }
+    await this.inboxState.ingestPluginMention(pointer, delivery, (p) => this.ep.readPluginMentionHistory(p));
   }
 
   get id(): string {
