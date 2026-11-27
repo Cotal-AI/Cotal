@@ -80,7 +80,7 @@
     "spawnSync(run.file, run.args) [2]": "ACP extension setup explicitly launched in the authentication terminal."
   },
   "implementations/cli/src/commands/spawn.ts": {
-    "spawn(launched.command, launched.args)": "Foreground agent attached to the invoking terminal."
+    "spawn(launched.command, childArgs)": "Foreground agent attached to the invoking terminal."
   },
   "implementations/cli/src/commands/up.ts": {
     "spawn(bin, natsArgs)": "Foreground broker attached to the invoking terminal."
