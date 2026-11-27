@@ -89,19 +89,19 @@ export class EndpointChannelDiscovery {
 
   /** This channel's registry config from the local cache (undefined if unset). */
   getChannelConfig(channel: string): ChannelConfig | undefined {
-    return this.channelRegistry.channelConfigs.get(channel);
+    return isRoutedPluginChannel(this.conn.pluginChannelsEnabled, channel) ? undefined : this.channelRegistry.channelConfigs.get(channel);
   }
 
   /** Effective replay-on-join policy for a channel: per-channel override ?? space default ??
    *  true. Reads the live cache, so it reflects runtime registry edits. */
   channelReplay(channel: string): boolean {
-    return effectiveReplay(this.channelRegistry.channelConfigs.get(channel), this.channelRegistry.channelDefaults);
+    return effectiveReplay(this.getChannelConfig(channel), this.channelRegistry.channelDefaults);
   }
 
   /** Effective replay window for a channel (per-channel override ?? space default), or undefined
    * for the full retained window. Only meaningful when {@link channelReplay} is true. */
   channelReplayWindow(channel: string): string | undefined {
-    return this.channelRegistry.channelConfigs.get(channel)?.replayWindow ?? this.channelRegistry.channelDefaults.replayWindow;
+    return this.getChannelConfig(channel)?.replayWindow ?? this.channelRegistry.channelDefaults.replayWindow;
   }
 
   /** A channel's effective replay policy read straight from the registry bucket, for a caller that
@@ -130,7 +130,7 @@ export class EndpointChannelDiscovery {
    *  from the live watch cache — drives the non-gating delivery-health surface (only durable-class
    *  channels have a Plane-3 backstop to report on). */
   channelDeliveryClass(channel: string): DeliveryClass {
-    return effectiveDeliveryClass(this.channelRegistry.channelConfigs.get(channel), this.channelRegistry.channelDefaults);
+    return effectiveDeliveryClass(this.getChannelConfig(channel), this.channelRegistry.channelDefaults);
   }
 
   /** Watch the channel registry: replay existing keys, then stream updates, into the local

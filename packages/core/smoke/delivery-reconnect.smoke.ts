@@ -23,6 +23,7 @@ import { openChannelRegistry, readChannelRegistry } from "../src/channels.js";
 import type { ConnectionState } from "../src/endpoint-connection-state.js";
 import { recordsBucket } from "../src/endpoint-records.js";
 import { PLUGIN_CHANNEL_PROJECTION_KEY } from "../src/plugin-channel-projection.js";
+import { PLUGIN_CHANNEL_ROOT } from "../src/plugin-channel-route.js";
 
 const PORT = await pickFreePort();
 const MON = await pickFreePort();
@@ -41,6 +42,8 @@ async function checkPluginProjection(space: string, provisioner: string, creds: 
   const writer = await connect({ servers: SERVERS, ...standaloneConnectOpts({ creds: provisioner, tls: false }) });
   const key = PLUGIN_CHANNEL_PROJECTION_KEY;
   const kv = await openChannelRegistry(writer, space);
+  const legacyChannel = `${PLUGIN_CHANNEL_ROOT}.sample.replay`;
+  await kv.put(legacyChannel, JSON.stringify({ replay: false, replayWindow: "1h" }));
   const probe = new CotalEndpoint({ space, servers: SERVERS, creds: probeCreds, card: { name: "projection-ungranted", kind: "endpoint" },
     readChannelRoutingProjection: true, consume: false, watchPresence: false, registerPresence: false });
   try {
@@ -58,7 +61,7 @@ async function checkPluginProjection(space: string, provisioner: string, creds: 
   const state = (ep as unknown as { conn: ConnectionState }).conn;
   let viewerWire: NatsConnection | undefined;
   const viewer = new CotalEndpoint({ space, servers: SERVERS, creds: viewerCreds, card: { name: "projection-viewer", kind: "endpoint" },
-    readChannelRoutingProjection: true, consume: false, watchPresence: false, registerPresence: false,
+    readChannelRoutingProjection: true, consume: false, watchPresence: true, registerPresence: false,
     onConnection: (nc) => { viewerWire = nc; } });
   viewer.on("error", (error) => { if (error instanceof Error) warnings.push(error.message); });
   ep.on("transport", (event) => {
@@ -76,6 +79,8 @@ async function checkPluginProjection(space: string, provisioner: string, creds: 
     await ep.start();
     await viewer.start();
     check("scoped endpoint-kind observer reads legacy mode without plugin access", viewer.channelRoutingMode() === "legacy");
+    check("off mode preserves the cached replay override on the legacy channel", await until(() => !viewer.channelReplay(legacyChannel)) &&
+      viewer.channelReplayWindow(legacyChannel) === "1h");
     check("credentialed non-consuming agent binds absent projection as CHAT before ready", ready.length === 1 &&
       ready[0].epoch === 0 && !ready[0].enabled && ep.channelRoutingMode() === "legacy");
     const first = opened[0];
@@ -88,6 +93,10 @@ async function checkPluginProjection(space: string, provisioner: string, creds: 
     await viewerBefore.reconnect();
     check("endpoint-kind observer admits isolated mode only on its replacement wire", await until(() => viewer.channelRoutingMode() === "isolated") &&
       viewerWire !== viewerBefore && viewerBefore.isClosed());
+    const isolatedReplay = await viewer.channelReplayPolicy(legacyChannel);
+    check("isolated cached replay matches fresh policy without the shared override", !isolatedReplay.registered &&
+      viewer.getChannelConfig(legacyChannel) === undefined && viewer.channelReplay(legacyChannel) === isolatedReplay.replay &&
+      viewer.channelReplayWindow(legacyChannel) === (isolatedReplay.window ?? undefined));
     await first.reconnect();
     check("native reconnect with new epoch never announces ready on reused subscriptions", await until(() => ready.length >= 3) &&
       ready.length === 3 && ready[2].wire !== first && first.isClosed() && ready[2].epoch === 1 && ready[2].enabled && ep.channelRoutingMode() === "isolated");
@@ -104,7 +113,7 @@ async function checkPluginProjection(space: string, provisioner: string, creds: 
     const view = await readChannelRegistry({ servers: SERVERS, space, creds, directGet: true });
     check("the public registry view does not expose routing metadata as a channel or warning",
       !Object.hasOwn(view.channels ?? {}, key) && !view.undecodable?.some((entry) => entry.key === key));
-    const watchedView = await readChannelRegistry({ servers: SERVERS, space, creds: provisioner });
+    const watchedView = await readChannelRegistry({ servers: SERVERS, space, creds: viewerCreds });
     check("the scanned registry also excludes routing metadata and warnings",
       !Object.hasOwn(watchedView.channels ?? {}, key) && !watchedView.undecodable?.some((entry) => entry.key === key));
     const stale = state.nc!;
