@@ -11,6 +11,7 @@
  * Another cell cuts a ready stack's stop as a closed terminal
  * does. A third shows that a second foreground `up` refuses while one holds the stack, and that one
  * over a stack whose holder was killed says it takes the running stack over before a signal stops it.
+ * A session-ceiling cell follows the refused command's printed retry and checks the manager it records.
  * A hangup cell sends SIGHUP to a ready foreground `up`: it exits 129, names `cotal down`, leaves the
  * broker running and removes its hold record, and the next `down --yes` stops the stack.
  * After a root is moved, SIGHUP names a stop by space from another folder, and SIGTERM stops it.
@@ -37,6 +38,7 @@ import { foregroundCliProbe } from "./_foreground-cli-probe.js";
 import { shellWord } from "../src/lib/endpoint-errors.js";
 import { observeServiceProcess, serviceInstances } from "../src/lib/service-instances.js";
 import { readStackJournal } from "../src/lib/stack-journal.js";
+import { serviceDefinitionStore } from "../src/lib/service-definitions.js";
 import { checkInheritedPipeCleanup } from "./_foreground-pipe-fixture.js";
 import { assertSmokeSandboxDown, emitSentinel, freePort, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
 
@@ -1211,9 +1213,50 @@ async function checkForegroundBrokerLimitsRetry(mesh: string, env: NodeJS.Proces
   await stop(restarted);
 }
 
-async function controllerHoldCell(kind: "takeover" | "other-home" | "broker-crash" | "broker-only-crash" | "moved-broker-crash" | "time-wait" | "moved-root" | "payload-retry" = "takeover"): Promise<void> {
+async function checkForegroundSessionCeilingRetry(space: string, mesh: string, env: NodeJS.ProcessEnv, sandbox: ReturnType<typeof recordSmokeSandbox>, holder: ForegroundRun, foreground: (args: string[]) => ForegroundRun): Promise<void> {
+  const savedCeiling = (): number | undefined => {
+    const previous = process.env.COTAL_HOME;
+    process.env.COTAL_HOME = env.COTAL_HOME;
+    try {
+      const launch = serviceDefinitionStore(space).read("stack-manager")?.record.value.launch;
+      const ceiling = launch?.type === "adapter" ? launch.options["max-sessions"] : undefined;
+      return typeof ceiling === "number" ? ceiling : undefined;
+    } finally {
+      if (previous === undefined) delete process.env.COTAL_HOME;
+      else process.env.COTAL_HOME = previous;
+    }
+  };
+  const downArgs = ["down", "--yes"];
+  const stop = async (run: ForegroundRun) => {
+    assertSmokeSandboxDown(sandbox, downArgs, { cwd: mesh, env });
+    const down = await foregroundCliProbe(cliEntry, tsx, mesh, env, downArgs, 120_000);
+    assert.equal(down.code, 0, down.out + down.err);
+    await waitForOwnedChild(() => run.state.closed, 10_000, run.io.err);
+    assert.equal(run.state.code, 0, run.io.err);
+  };
+  assert.equal(savedCeiling(), 5);
+  const conflict = await foregroundCliProbe(cliEntry, tsx, mesh, env, ["up", "--foreground", "--max-sessions", "3"]);
+  assert.equal(conflict.code, 2, conflict.out + conflict.err);
+  assert.match(conflict.err, /Code:\s+CONFLICT/);
+  assert.ok(!holder.state.exited, "the refusal leaves the foreground holder running");
+  assert.equal(savedCeiling(), 5, "the refusal leaves the saved manager ceiling unchanged");
+  const retry = /run `(?:pnpm )?cotal up --foreground (--max-sessions[^`]*)` again/.exec(conflict.err)?.[1];
+  assert.equal(retry, "--max-sessions 3", conflict.err);
+  await stop(holder);
+  const restarted = foreground(retry.split(" "));
+  await until(() => {
+    if (restarted.state.error) throw restarted.state.error;
+    if (restarted.state.exited) throw new Error(restarted.io.out + restarted.io.err);
+    return /Operation: +up completed/.test(restarted.io.out);
+  }, 120_000, () => restarted.io.out + restarted.io.err);
+  assert.equal(savedCeiling(), 3, "following the printed retry records the requested manager session ceiling"); passed++;
+  await stop(restarted);
+}
+
+async function controllerHoldCell(kind: "takeover" | "other-home" | "broker-crash" | "broker-only-crash" | "moved-broker-crash" | "time-wait" | "moved-root" | "payload-retry" | "session-retry" = "takeover"): Promise<void> {
   const otherHome = kind === "other-home";
   const brokerOnly = kind === "broker-only-crash" || kind === "time-wait" || kind === "payload-retry";
+  const sessionRetry = kind === "session-retry";
   const name = kind === "takeover" ? "controller-hold" : `controller-hold-${kind}`;
   const root = join(base, name), home = join(root, "home"), mesh = join(root, brokerOnly ? "broker only" : "mesh");
   const machine = join(home, otherHome ? "launching home's machine" : "machine");
@@ -1233,7 +1276,7 @@ async function controllerHoldCell(kind: "takeover" | "other-home" | "broker-cras
     child.stderr?.on("data", (b: Buffer) => { io.err += b.toString(); });
     return { child, io, state: observeOwnedChild(child) };
   };
-  const holder = foreground(["--server", `nats://127.0.0.1:${port}`, ...(brokerOnly ? ["--open", "--no-manager", "--max-payload", "131072"] : [])]);
+  const holder = foreground(["--server", `nats://127.0.0.1:${port}`, ...(brokerOnly ? ["--open", "--no-manager", "--max-payload", "131072"] : []), ...(sessionRetry ? ["--open", "--max-sessions", "5"] : [])]);
   let taker: ReturnType<typeof foreground> | undefined;
   let brokerKilled = false;
   try {
@@ -1245,6 +1288,11 @@ async function controllerHoldCell(kind: "takeover" | "other-home" | "broker-cras
     assert.ok(holder.child.pid);
     if (kind === "payload-retry") {
       await checkForegroundBrokerLimitsRetry(mesh, env, port, sandbox, holder, (args) => taker = foreground(args));
+      console.log(`PASS foreground-up-signals ${name}`);
+      return;
+    }
+    if (kind === "session-retry") {
+      await checkForegroundSessionCeilingRetry(space, mesh, env, sandbox, holder, (args) => taker = foreground(args));
       console.log(`PASS foreground-up-signals ${name}`);
       return;
     }
@@ -1659,6 +1707,7 @@ await controllerHoldCell("other-home");
 await controllerHoldCell("broker-crash");
 await controllerHoldCell("broker-only-crash");
 await controllerHoldCell("payload-retry");
+await controllerHoldCell("session-retry");
 await controllerHoldCell("moved-broker-crash");
 if (process.platform === "linux") await controllerHoldCell("time-wait");
 await controllerHoldCell("moved-root");

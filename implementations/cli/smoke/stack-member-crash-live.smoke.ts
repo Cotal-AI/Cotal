@@ -42,6 +42,9 @@
  *     names `cotal service status stack-delivery`, then `cotal down --yes` and `cotal up`.
  *  9. An independent read-only dashboard keeps its process and browser session when the same
  *     broker is recovered.
+ * 10. After a full stop the next up reuses that stack's websocket port. When another process holds
+ *     the port, up starts on a new one and names both. A second space on the same machine takes its
+ *     own port and does not take the first space's.
  *
  * Sandboxes COTAL_HOME and a temp project root, and stops the stack with `cotal down`; it signals
  * only the members its own `up` started and the process it started itself. Needs `nats-server` on PATH.
@@ -415,6 +418,54 @@ try {
     /cotal service status stack-delivery +Read the delivery member's record/.test(next[0] ?? "") && /cotal down --yes +If it stays that way/.test(next[1] ?? "") && /cotal up +Then start the stack again/.test(next[2] ?? ""), next.slice(0, 4));
   const final = cli("down", "--yes");
   check("down --yes stops it", final.status === 0, final.out);
+
+  // A full stop leaves the websocket port on the saved manager definition. The next up uses it when
+  // it is free, and the existing taken-port notice covers a port another process holds.
+  const reusedStart = cli("up");
+  const reusedPort = receiptWsPort(reusedStart.out);
+  check("the stack starts again after its hung member was stopped", reusedStart.status === 0 && reusedPort !== undefined, reusedStart.out);
+  const reusedStop = cli("down", "--yes");
+  check("down --yes stops that stack before the restart", reusedStop.status === 0, reusedStop.out);
+  const restartedUp = cli("up");
+  check("a full restart reuses the stopped stack's websocket port", restartedUp.status === 0 && receiptWsPort(restartedUp.out) === reusedPort, restartedUp.out);
+  const restartedStop = cli("down", "--yes");
+  check("down --yes stops the reused stack", restartedStop.status === 0, restartedStop.out);
+  const portHolder = createServer();
+  await new Promise<void>((done, fail) => portHolder.once("error", fail).listen(Number(reusedPort), "127.0.0.1", done));
+  try {
+    const moved = cli("up");
+    const movedPort = receiptWsPort(moved.out);
+    check("a recorded websocket port held by another process is replaced, and the notice names both ports",
+      moved.status === 0 && movedPort !== undefined && movedPort !== reusedPort
+      && moved.out.includes(`another process took the broker's websocket port ${reusedPort} before the broker bound it; launching the broker again with port ${movedPort}`),
+      moved.out);
+    const otherRoot = join(base, "other-port");
+    mkdirSync(otherRoot, { mode: 0o700 });
+    const otherAnchor = recordSmokeSandbox({ root: otherRoot, cotalHome: home, xdgConfigHome: configDir });
+    const otherCli = (...args: string[]) => {
+      const options = { cwd: otherRoot, env, encoding: "utf8" as const, timeout: 120_000 };
+      assertSmokeSandboxDown(otherAnchor, args, options);
+      const r = spawnSync(TSX, [CLI, ...args], options);
+      return { status: r.status, out: plain(`${r.stdout}${r.stderr}`) };
+    };
+    const otherClient = await freePort();
+    const otherCreated = cli("space", "create", "otherport", "--root", otherRoot);
+    const otherUp = otherCli("up", "--server", `nats://127.0.0.1:${otherClient}`);
+    const otherWs = receiptWsPort(otherUp.out);
+    check("a second space takes its own websocket port and does not take the first space's",
+      otherCreated.status === 0 && otherUp.status === 0 && otherWs !== undefined && otherWs !== reusedPort
+      && !otherUp.out.includes("another process took the broker's websocket port"),
+      otherUp.out);
+    const otherDown = otherCli("down", "--yes");
+    check("down --yes stops the second space", otherDown.status === 0, otherDown.out);
+    const forgotOther = cli("space", "forget", "otherport");
+    const selected = cli("use", "crash");
+    check("the second space is forgotten and the first space is selected again", forgotOther.status === 0 && selected.status === 0, `${forgotOther.out}\n${selected.out}`);
+  } finally {
+    await new Promise<void>((done) => portHolder.close(() => done()));
+  }
+  const movedDown = cli("down", "--yes");
+  check("down --yes stops the stack that replaced its websocket port", movedDown.status === 0, movedDown.out);
 
   const dashboardStack = cli("up", "--space", "crash");
   const dashboardBroker = runningMember("stack-broker");
