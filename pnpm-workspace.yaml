@@ -13,5 +13,10 @@ allowBuilds:
   esbuild: true
   msgpackr-extract: false
   protobufjs: false
+# The Paseo runtime targets the latest Paseo; 0.18.1 shipped 2026-11-27, inside the one-day default.
+minimumReleaseAgeExclude:
+  - '@getpaseo/client@0.18.1'
+  - '@getpaseo/protocol@0.18.1'
+  - '@getpaseo/relay@0.18.1'
 patchedDependencies:
   '@changesets/cli@3.0.3': patches/@changesets__cli@3.0.3.patch
