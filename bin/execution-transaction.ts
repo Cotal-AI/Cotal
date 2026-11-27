@@ -123,6 +123,7 @@ export function repairExecutionInstallModes(installed: string, repair: () => num
     const migrated = descriptor.launch.entry !== launch.entry || descriptor.launch.path !== launch.path;
     if (migrated || before !== after) {
       if (!migrated && !changed) throw new Error("execution launch route changed without a permission repair");
+      if (selectExecutionProgram(installed).root !== selected.root) throw new Error("selected execution changed during permission repair");
       writeExecutionDescriptor(installed, { ...descriptor, launch });
     }
     if (selectExecutionProgram(installed).root !== selected.root) throw new Error("selected execution changed during permission repair");

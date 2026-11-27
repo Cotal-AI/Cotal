@@ -313,8 +313,9 @@ try {
       assert.deepEqual(executionLaunchBinding(root, join(fileShell, "bin/cotal")), bound);
 
       // Verify the runtime executionIdentity captures the prefix entry rather than the transient shell symlink.
+      const identityModule = pathToFileURL(join(repo, "packages/workspace/dist/execution-identity.js")).href;
       const program = join(generation.root, "dist/cotal-program.js"), savedProgram = readFileSync(program);
-      writeFileSync(program, "console.log(Reflect.get(globalThis, Symbol.for('cotal.execution.identity')).launchEntry);");
+      writeFileSync(program, `import { executionIdentity } from ${JSON.stringify(identityModule)}; console.log(executionIdentity().launchEntry);`);
       writeExecutionDescriptor(root, describeExecutionGeneration(root, retainExecutionGeneration(root, generation.root)));
       try {
         const active = JSON.parse(readFileSync(executionDescriptorPath(root), "utf8"));
@@ -363,6 +364,119 @@ try {
       for (const name of readdirSync(executionStore(root))) {
         if (/^[a-f0-9]{32}$/.test(name) && name !== generation.id) rmSync(join(executionStore(root), name), { recursive: true, force: true });
       }
+      writeExecutionDescriptor(root, descriptor);
+    }
+  });
+  check("external symlinks preserve their launched bootstrap when prefix bin uses a wrapper or regular file", () => {
+    const prefix = join(scratch, "prefix"), entry = join(prefix, "bin/cotal");
+    const postinstall = join(root, postinstallScript);
+    const extDir = join(scratch, "ext-bin"), extJs = join(extDir, "cotal-js"), extNpm = join(extDir, "cotal-npm");
+    const identityModule = pathToFileURL(join(repo, "packages/workspace/dist/execution-identity.js")).href;
+    const program = join(generation.root, "dist/cotal-program.js"), savedProgram = readFileSync(program);
+    mkdirSync(extDir, { recursive: true, mode: 0o700 });
+    mkdirSync(join(root, "scripts"), { recursive: true, mode: 0o700 });
+    chmodSync(join(root, "dist/cotal.js"), 0o755);
+    rmSync(join(root, "dist/cotal-npm"), { force: true });
+    cpSync(join(repo, "bin", postinstallScript), postinstall);
+    symlinkSync("../lib/node_modules/cotal-ai/dist/cotal.js", entry);
+    try {
+      const script = spawnSync(process.execPath, [postinstall], { encoding: "utf8", timeout: 10_000 });
+      assert.equal(script.status, 0, script.stderr);
+      assert.equal(readlinkSync(entry), "../lib/node_modules/cotal-ai/dist/cotal-npm");
+
+      writeFileSync(program, `import { executionIdentity } from ${JSON.stringify(identityModule)}; console.log(executionIdentity().launchEntry);`);
+      const refreshed = retainExecutionGeneration(root, generation.root);
+      writeExecutionDescriptor(root, describeExecutionGeneration(root, refreshed));
+
+      symlinkSync(join(root, "dist/cotal.js"), extJs);
+      const expectedExtJs = join(realpathSync.native(extDir), "cotal-js");
+      assert.equal(executionLaunchBinding(root, extJs).entry, expectedExtJs);
+      const viaExtJs = spawnSync(extJs, ["--version"], { env: process.env, cwd: scratch, encoding: "utf8", timeout: 10_000 });
+      assert.equal(viaExtJs.status, 0, viaExtJs.stderr);
+      assert.equal(viaExtJs.stdout.trim(), expectedExtJs);
+
+      symlinkSync(join(root, "dist/cotal-npm"), extNpm);
+      assert.equal(executionLaunchBinding(root, extNpm).entry, join(realpathSync.native(prefix), "bin/cotal"));
+      const viaExtNpm = spawnSync(extNpm, ["--version"], { env: process.env, cwd: scratch, encoding: "utf8", timeout: 10_000 });
+      assert.equal(viaExtNpm.status, 0, viaExtNpm.stderr);
+      assert.equal(viaExtNpm.stdout.trim(), realpathSync.native(join(root, "dist/cotal.js")));
+
+      rmSync(entry);
+      writeFileSync(entry, `#!/bin/sh\nexec ${JSON.stringify(process.execPath)} ${JSON.stringify(join(root, "dist/cotal.js"))} "$@"\n`, { mode: 0o755 });
+      assert.equal(executionLaunchBinding(root, extJs).entry, expectedExtJs);
+      const viaExtRegular = spawnSync(extJs, ["--version"], { env: process.env, cwd: scratch, encoding: "utf8", timeout: 10_000 });
+      assert.equal(viaExtRegular.status, 0, viaExtRegular.stderr);
+      assert.equal(viaExtRegular.stdout.trim(), expectedExtJs);
+    } finally {
+      writeFileSync(program, savedProgram);
+      rmSync(entry, { force: true });
+      rmSync(join(root, "dist/cotal-npm"), { force: true });
+      rmSync(extDir, { recursive: true, force: true });
+      for (const name of readdirSync(executionStore(root))) {
+        if (/^[a-f0-9]{32}$/.test(name) && name !== generation.id) rmSync(join(executionStore(root), name), { recursive: true, force: true });
+      }
+      writeExecutionDescriptor(root, descriptor);
+    }
+  });
+  check("missing, looping, and unreadable prefix bin entries match baseline startup and selection diagnostics", () => {
+    const binDir = join(scratch, "prefix/bin"), entry = join(binDir, "cotal");
+    const extDir = join(scratch, "ext-err"), extJs = join(extDir, "cotal");
+    const canonicalEntry = join(realpathSync.native(binDir), "cotal");
+    mkdirSync(extDir, { recursive: true, mode: 0o700 });
+    chmodSync(join(root, "dist/cotal.js"), 0o755);
+    symlinkSync(join(root, "dist/cotal.js"), extJs);
+    try {
+      // Unbound descriptor: missing, looping, and unreadable <prefix>/bin do not block external launches.
+      rmSync(entry, { force: true });
+      const noFile = spawnSync(extJs, ["--version"], { env: process.env, cwd: scratch, encoding: "utf8", timeout: 10_000 });
+      assert.equal(noFile.status, 0, noFile.stderr);
+      assert.equal(noFile.stdout.trim(), "retained generation selected");
+
+      symlinkSync("cotal", entry);
+      const loopExt = spawnSync(extJs, ["--version"], { env: process.env, cwd: scratch, encoding: "utf8", timeout: 10_000 });
+      assert.equal(loopExt.status, 0, loopExt.stderr);
+      assert.equal(loopExt.stdout.trim(), "retained generation selected");
+
+      rmSync(entry, { force: true });
+      symlinkSync("../lib/node_modules/cotal-ai/dist/cotal.js", entry);
+      if (process.getuid?.() !== 0) {
+        chmodSync(binDir, 0o000);
+        try {
+          const eaccesExt = spawnSync(extJs, ["--version"], { env: process.env, cwd: scratch, encoding: "utf8", timeout: 10_000 });
+          assert.equal(eaccesExt.status, 0, eaccesExt.stderr);
+          assert.equal(eaccesExt.stdout.trim(), "retained generation selected");
+        } finally { chmodSync(binDir, 0o755); }
+      }
+
+      // Bound descriptor: missing falls back cleanly; loop and EACCES report realpath with reinstall guidance.
+      const bound = { ...descriptor, launch: executionLaunchBinding(root, entry) };
+      writeExecutionDescriptor(root, bound);
+      rmSync(entry);
+      const boundMissing = run();
+      assert.equal(boundMissing.status, 0, boundMissing.stderr);
+      assert.equal(boundMissing.stdout.trim(), "initial generation");
+
+      writeExecutionDescriptor(root, bound);
+      symlinkSync("cotal", entry);
+      const boundLoop = run();
+      assert.equal(boundLoop.status, 1);
+      assert.match(boundLoop.stderr.trim(), new RegExp(`^ELOOP: .*realpath '${canonicalEntry.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}'; reinstall with npm install -g cotal-ai@latest$`));
+
+      rmSync(entry, { force: true });
+      symlinkSync("../lib/node_modules/cotal-ai/dist/cotal.js", entry);
+      if (process.getuid?.() !== 0) {
+        writeExecutionDescriptor(root, { ...descriptor, launch: executionLaunchBinding(root, entry) });
+        chmodSync(binDir, 0o000);
+        try {
+          const boundEacces = run();
+          assert.equal(boundEacces.status, 1);
+          assert.match(boundEacces.stderr.trim(), new RegExp(`^EACCES: .*realpath '${canonicalEntry.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}'; reinstall with npm install -g cotal-ai@latest$`));
+        } finally { chmodSync(binDir, 0o755); }
+      }
+    } finally {
+      chmodSync(binDir, 0o755);
+      rmSync(entry, { force: true });
+      rmSync(extDir, { recursive: true, force: true });
       writeExecutionDescriptor(root, descriptor);
     }
   });

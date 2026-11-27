@@ -180,11 +180,12 @@ function executionLaunchEntry(root: string, entry: string): string {
   if (basename(canonicalRoot) !== "cotal-ai" || basename(modules) !== "node_modules" || basename(lib) !== "lib") return logical;
   const bin = join(dirname(lib), "bin");
   try {
-    if (!canonicalBootstrapEntry(canonicalRoot, realpathSync.native(logical))) return logical;
+    const physical = realpathSync.native(logical);
+    if (!canonicalBootstrapEntry(canonicalRoot, physical)) return logical;
     if (realpathSync.native(dirname(logical)) === bin) return join(bin, basename(logical));
     const prefixEntry = join(bin, "cotal");
     if (lstatSync(logical).isSymbolicLink() && lstatSync(prefixEntry).isSymbolicLink() &&
-        canonicalBootstrapEntry(canonicalRoot, realpathSync.native(prefixEntry))) return prefixEntry;
+        realpathSync.native(prefixEntry) === physical) return prefixEntry;
   } catch { /* let launch binding report the unresolvable route */ }
   return logical;
 }
@@ -254,12 +255,17 @@ function executionProgram(root: string, verifyInventory: boolean): { root: strin
     if (!["entry", "path", "dev", "ino", "birth", "ctime"].every(key => typeof launch[key] === "string") || !isAbsolute(launch.entry as string) || !isAbsolute(launch.path as string))
       throw new Error("invalid execution launch binding");
     try {
-      if (launch.path !== join(installed, "package.json")) {
-        const route = lstatSync(launch.path as string, { bigint: true });
-        if (String(route.dev) !== launch.dev || String(route.ino) !== launch.ino ||
-            String(route.birthtimeNs) !== launch.birth || String(route.ctimeNs) !== launch.ctime) return initial();
+      let currentLaunch: NonNullable<ExecutionDescriptor["launch"]>;
+      try { currentLaunch = rawExecutionLaunchBinding(installed, launch.entry as string); }
+      catch (error) {
+        if ((error as Error).message === "execution launch route does not resolve to this bootstrap" &&
+            launch.path !== join(installed, "package.json")) {
+          const route = lstatSync(launch.path as string, { bigint: true });
+          if (String(route.dev) !== launch.dev || String(route.ino) !== launch.ino ||
+              String(route.birthtimeNs) !== launch.birth || String(route.ctimeNs) !== launch.ctime) return initial();
+        }
+        throw error;
       }
-      const currentLaunch = rawExecutionLaunchBinding(installed, launch.entry as string);
       if (currentLaunch.entry !== launch.entry || currentLaunch.path !== launch.path || currentLaunch.dev !== launch.dev ||
           currentLaunch.ino !== launch.ino || currentLaunch.birth !== launch.birth) return initial();
       // ctime can change on an unchanged npm manifest. Keep it for the symlinked launch route.
