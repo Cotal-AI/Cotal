@@ -141,7 +141,7 @@ async function checkInstalledClosure(version: string, releasePackages: ReadonlyS
         recorded = true;
       }
     } catch { /* Without a readable owner record, a retry must leave this project alone. */ }
-    const result = recorded ? await rt.npmAsync(args, staging) : rt.npm(args);
+    const result = recorded ? await rt.npmAsync(args, staging, true) : rt.npm(args);
     if (result.signal) throw new DependencyCheckInterrupted(`npm dependency check was terminated by ${result.signal}`);
     if (result.status !== 0) {
       const detail = `installed extension dependency closure is unavailable: ${failure(result.stderr.trim() ? { ...result, stdout: "" } : result)}`;

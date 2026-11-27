@@ -116,6 +116,52 @@ async function retryInterruptedClosure(run, entry, scratch, interrupt) {
   return { code: retry.code, output: retry.output };
 }
 
+async function retryForwardedClosureInterrupt(run, entry, scratch, waitHeld) {
+  const update = () => run(process.execPath, [entry, 'update', '--self'], 60000);
+  const seenScratch = new Set();
+  const projects = [];
+  for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
+    const first = update();
+    const { updater, releaseHeld } = await waitHeld();
+    const updaterScratch = readdirSync(scratch).find(name => name.startsWith('cotal-update-') && !seenScratch.has(name));
+    assert(updaterScratch, `the running updater made scratch before ${signal}`);
+    seenScratch.add(updaterScratch);
+    const directory = join(scratch, updaterScratch);
+    const name = readdirSync(directory).find(entryName => entryName.startsWith('cotal-closure-check-'));
+    assert(name, `found the real npm dependency-check project before ${signal}`);
+    const project = join(directory, name);
+    const children = readFileSync(`/proc/${updater.pid}/task/${updater.pid}/children`, 'utf8').trim();
+    assert.match(children, /^[1-9]\d*$/);
+    const worker = Number(children);
+    assert(existsSync(join(project, `.worker-${worker}`)), 'npm has recorded custody before writing to the project');
+    mkdirSync(join(directory, 'node-compile-cache'), { recursive: true });
+    updater.kill(signal);
+    const stopped = await first;
+    releaseHeld();
+    assert.equal(stopped.signal, signal, stopped.output);
+    assert.throws(() => process.kill(-worker, 0), { code: 'ESRCH' });
+    const survivors = readdirSync('/proc').filter(pid => {
+      if (!/^\d+$/.test(pid)) return false;
+      try {
+        const stat = readFileSync(`/proc/${pid}/stat`, 'utf8');
+        const fields = stat.slice(stat.lastIndexOf(') ') + 2).split(' ', 3);
+        return fields[0] !== 'Z' && fields[0] !== 'X' && Number(fields[2]) === worker;
+      } catch { return false; }
+    });
+    assert.deepEqual(survivors, [], `no process in dependency-check npm group ${worker} survives ${signal}`);
+    assert(existsSync(project), `the interrupted project remains until the next update (${signal})`);
+    projects.push({ directory, project });
+  }
+  const retry = await update();
+  assert.equal(retry.code, 0, retry.output);
+  assert.match(retry.output, /installed globally and reconciled/);
+  for (const { directory, project } of projects) {
+    assert(!existsSync(project), `retry removes the interrupted project: ${project}`);
+    assert(!existsSync(directory), `retry removes the interrupted update scratch: ${directory}`);
+  }
+  return { code: retry.code, output: retry.output };
+}
+
 /** Runs real npm and the built public entry against a loopback registry. */
 export async function registryArrivalCell({ scenario, entry = join(repo, 'bin/dist/cotal.js'), parent = tmpdir() }) {
   if (scenario === 'corepack-node-fallback') return corepackNodeFallbackCell(entry, parent);
@@ -129,9 +175,10 @@ export async function registryArrivalCell({ scenario, entry = join(repo, 'bin/di
   const stagingRefused = scenario === 'staging-refused';
   const repairSelection = scenario === 'selection-upgrade' || scenario === 'selection-rollback';
   const extensionMissing = scenario === 'extension-arrives' || scenario === 'extension-unavailable';
-  assert(versionNamedNode || repairSelection || stagingNetwork || stagingTimeout || stagingRefused || extensionMissing || reconcileInterrupted || ['arrives', 'unavailable', 'integrity', 'reset', 'cache', 'archive-interrupted', 'closure-orphan', 'closure-killed', 'closure-nospace', 'orphan', 'pending', 'closed-scope', 'min-release-age', 'before', 'offline-metadata', 'offline-archive', 'offline-closure', 'offline-staging', 'staging-killed', 'concurrent', 'extension-peers', 'corepack'].includes(scenario));
+  assert(versionNamedNode || repairSelection || stagingNetwork || stagingTimeout || stagingRefused || extensionMissing || reconcileInterrupted || ['arrives', 'unavailable', 'integrity', 'reset', 'cache', 'archive-interrupted', 'closure-orphan', 'closure-interrupted', 'closure-killed', 'closure-nospace', 'orphan', 'pending', 'closed-scope', 'min-release-age', 'before', 'offline-metadata', 'offline-archive', 'offline-closure', 'offline-staging', 'staging-killed', 'concurrent', 'extension-peers', 'corepack'].includes(scenario));
   const dateFiltered = scenario === 'min-release-age' || scenario === 'before';
   const closureOrphan = scenario === 'closure-orphan';
+  const closureInterrupted = scenario === 'closure-interrupted';
   const closureKilled = scenario === 'closure-killed';
   const closureNoSpace = scenario === 'closure-nospace';
   const offline = scenario.startsWith('offline-');
@@ -200,7 +247,7 @@ export async function registryArrivalCell({ scenario, entry = join(repo, 'bin/di
   const env = lifecycle ? { PATH: childEnv.PATH } : Object.fromEntries(Object.entries(childEnv).filter(([name]) =>
     !/^npm_config_(?:before|offline)$/i.test(name) && !(stagingFetchTimeout && /^npm_config_(?:prefix|registry)$/i.test(name))));
   Object.assign(env, { HOME: home, COTAL_HOME: join(root, 'cotal'), XDG_CONFIG_HOME: join(root, 'config'), TMPDIR: join(root, 'tmp'), XDG_RUNTIME_DIR: join(root, 'runtime'), npm_config_prefix: prefix, npm_config_cache: join(root, 'cache'), npm_config_update_notifier: 'false', npm_config_audit: 'false', npm_config_fund: 'false', COTAL_SKIP_CONNECTOR_SEED: '1', COTAL_TELEMETRY: 'off', DO_NOT_TRACK: '1' });
-  let origin, armed = false, disconnected = false, missing = 0, heldArchive, closureSignal, holdClosure = closureOrphan, holdStaging = scenario === 'staging-killed';
+  let origin, armed = false, disconnected = false, missing = 0, heldArchive, closureSignal, holdClosure = closureOrphan || closureInterrupted, holdStaging = scenario === 'staging-killed';
   let heldClosure, pausedClosure;
   let hermesAvailable = false, installedAtWait, originalInstallation;
   const installedFiles = [join(prefix, 'lib/node_modules/cotal-ai/dist/cotal.js'),
@@ -613,7 +660,7 @@ exec npm "$@"
       mkdirSync(configuredCache, { mode: 0o500 });
       writeFileSync(join(home, '.npmrc'), `cache=${configuredCache}\n`);
     }
-    if (scenario === 'cache' || closureOrphan || closureKilled || closureNoSpace || extensionPeers) {
+    if (scenario === 'cache' || closureOrphan || closureInterrupted || closureKilled || closureNoSpace || extensionPeers) {
       const extensions = join(root, 'config/cotal/extensions');
       mkdirSync(extensions, { recursive: true });
       if (extensionMissing) {
@@ -701,6 +748,15 @@ exec npm "$@"
     }
     const filterConfig = scenario === 'before' ? 'before=2020-01-01\n' : 'min-release-age=365\n';
     if (dateFiltered) writeFileSync(join(home, '.npmrc'), filterConfig);
+    if (closureInterrupted) return { scenario, ...await retryForwardedClosureInterrupt(run, entry, join(root, 'tmp'), async () => {
+      holdClosure = true;
+      heldClosure = undefined;
+      const updater = interrupted;
+      const deadline = Date.now() + 30000;
+      while (!heldClosure && updater.exitCode === null && Date.now() < deadline) await new Promise(done => setTimeout(done, 10));
+      assert(heldClosure, 'the real dependency-check npm worker requested extension metadata');
+      return { updater, releaseHeld: () => { holdClosure = false; heldClosure?.end(); heldClosure = undefined; } };
+    }) };
     if (closureOrphan) return { scenario, ...await retryInterruptedClosure(run, entry, join(root, 'tmp'), async () => {
       const updater = interrupted;
       const deadline = Date.now() + 30000;
@@ -1272,7 +1328,7 @@ if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.m
   try {
     canMount = process.platform === 'linux' && spawnSync('unshare', ['-Urm', 'mount', '-t', 'tmpfs', '-o', 'size=2m', 'tmpfs', mountPoint], { env: childEnv }).status === 0;
   } finally { rmSync(mountPoint, { recursive: true }); }
-  const selected = process.argv[2] ? [process.argv[2]] : ['arrives', 'unavailable', 'integrity', 'reset', 'cache', 'orphan', 'closed-scope', 'min-release-age', 'before', 'offline-metadata', 'offline-archive', 'offline-closure', 'offline-staging', 'concurrent', 'extension-peers', 'extension-arrives', ...(process.platform !== 'win32' ? ['corepack'] : []), ...(process.platform === 'linux' ? ['archive-interrupted', 'closure-orphan', 'closure-killed', 'pending', 'reconcile-killed', 'reconcile-orphan', 'staging-killed', 'staging-timeout', 'staging-fetch-timeout', 'staging-partial', 'staging-no-accept', 'staging-trickle', 'staging-auto', 'staging-refused', 'selection-upgrade', 'selection-rollback'] : []), ...(canMount ? ['closure-nospace'] : [])];
+  const selected = process.argv[2] ? [process.argv[2]] : ['arrives', 'unavailable', 'integrity', 'reset', 'cache', 'orphan', 'closed-scope', 'min-release-age', 'before', 'offline-metadata', 'offline-archive', 'offline-closure', 'offline-staging', 'concurrent', 'extension-peers', 'extension-arrives', ...(process.platform !== 'win32' ? ['corepack'] : []), ...(process.platform === 'linux' ? ['archive-interrupted', 'closure-orphan', 'closure-interrupted', 'closure-killed', 'pending', 'reconcile-killed', 'reconcile-orphan', 'staging-killed', 'staging-timeout', 'staging-fetch-timeout', 'staging-partial', 'staging-no-accept', 'staging-trickle', 'staging-auto', 'staging-refused', 'selection-upgrade', 'selection-rollback'] : []), ...(canMount ? ['closure-nospace'] : [])];
   for (const scenario of selected) console.log(JSON.stringify(await registryArrivalCell({ scenario })));
   emitSentinel({ passed: selected.length, failed: 0 });
 }

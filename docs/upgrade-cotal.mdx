@@ -555,7 +555,10 @@ you to retry.
 
 On Linux and macOS, a successful `cotal update --self` also removes the temporary extension
 dependency check when its records identify this installation and confirm both the updater and
-its npm worker have stopped. A retry leaves projects without those records and checks still in use alone.
+its npm worker have stopped. A retry leaves checks still in use alone. A
+`cotal-update-*/cotal-closure-check-*` project without records (left by an older release, or by an
+updater killed before npm was permitted to start) and its `cotal-update-*` scratch folder are never
+removed automatically and can be removed by hand.
 
 If an interrupted self-update already selected its target, `cotal update --self` verifies that
 installation and finishes reconciliation before looking for another release. The built-in connectors

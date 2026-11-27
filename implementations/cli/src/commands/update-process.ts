@@ -1,4 +1,4 @@
-import { spawn, spawnSync } from "node:child_process";
+import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, watch, writeFileSync, type FSWatcher } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, parse, relative, resolve, sep } from "node:path";
@@ -92,8 +92,58 @@ export function verifyGlobalEntry(root: string, expectedVersion: string): string
 // The pipe closes without permission if the parent dies before publishing the PID.
 // exec keeps the published PID and the real child keeps its original argv and stdin.
 const npmChildGate = 'IFS= read -r permit <&3 && [ "$permit" = run ] || exit 1; exec 3<&-; exec "$@"';
+const STOP_GRACE_MS = 2000;
+const STOP_REAP_MS = 1000;
+const FORWARDED_SIGNALS = ["SIGINT", "SIGTERM", "SIGHUP"] as const;
+const SIGNAL_EXIT_CODE: Record<(typeof FORWARDED_SIGNALS)[number], number> = { SIGHUP: 129, SIGINT: 130, SIGTERM: 143 };
 
-export async function runNpmAsync(args: string[], cache?: string): Promise<CommandResult> {
+function stopDetachedGroup(
+  child: ChildProcess,
+  pgid: number,
+  label: string,
+  initial: NodeJS.Signals,
+  rejectClose: (error: unknown) => void,
+): Promise<void> {
+  const signalGroup = (signal: NodeJS.Signals) => {
+    try { process.kill(-pgid, signal); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error; }
+  };
+  const stopping = (async () => {
+    signalGroup(initial);
+    const graceDeadline = performance.now() + STOP_GRACE_MS;
+    while (processGroupMembers(pgid).length && performance.now() < graceDeadline) {
+      await new Promise(resolve => setTimeout(resolve, 25));
+    }
+    if (processGroupMembers(pgid).length) signalGroup("SIGKILL");
+    const deadline = performance.now() + STOP_REAP_MS;
+    while (processGroupMembers(pgid).length) {
+      if (performance.now() >= deadline) throw new Error(`could not stop ${label} npm process group ${pgid}`);
+      await new Promise(resolve => setTimeout(resolve, 25));
+    }
+  })();
+  void stopping.catch(error => {
+    child.stdin?.destroy();
+    child.stdout?.destroy();
+    child.stderr?.destroy();
+    child.unref();
+    rejectClose(error);
+  });
+  return stopping;
+}
+
+function finishInterrupt(interrupted: (typeof FORWARDED_SIGNALS)[number], removeSignals?: () => void): Promise<void> | void {
+  removeSignals?.();
+  if (process.listenerCount(interrupted) === 0) {
+    process.kill(process.pid, interrupted);
+    setTimeout(() => process.exit(SIGNAL_EXIT_CODE[interrupted]), 100).unref();
+    return new Promise(() => {});
+  }
+  process.kill(process.pid, interrupted);
+}
+
+export async function runNpmAsync(args: string[], cache?: string, stopOnSignal = false): Promise<CommandResult> {
+  let interrupted: (typeof FORWARDED_SIGNALS)[number] | undefined;
+  let removeSignals: (() => void) | undefined;
   try {
     const npm = npmInvocation(process.env, args);
     const { file, args: spawnArgs, windowsVerbatimArguments } = cmdSpawnSpec(npm.file, npm.args, npm.env);
@@ -103,6 +153,12 @@ export async function runNpmAsync(args: string[], cache?: string): Promise<Comma
       ...(gated ? { detached: true, stdio: ["ignore", "pipe", "pipe", "pipe"] } : {}),
     });
     let stdout = "", stderr = "", error: string | undefined;
+    let stopping: Promise<void> | undefined;
+    let rejectClose!: (cause: unknown) => void;
+    const close = new Promise<{ status: number | null; signal: NodeJS.Signals | null }>((resolveClose, reject) => {
+      rejectClose = reject;
+      child.once("close", (status, signal) => resolveClose({ status, signal }));
+    });
     child.stdout?.on("data", (chunk: Buffer | string) => { stdout += chunk.toString(); });
     child.stderr?.on("data", (chunk: Buffer | string) => { stderr += chunk.toString(); });
     child.once("error", cause => { error = cause.message; });
@@ -112,15 +168,39 @@ export async function runNpmAsync(args: string[], cache?: string): Promise<Comma
       try {
         if (child.pid === undefined) permit.end();
         else {
-          writeFileSync(join(cache!, `.worker-${child.pid}`), "", { mode: 0o600 });
+          writeFileSync(join(cache!, `.worker-${child.pid}`), "", { mode: 0o600, flag: "wx" });
+          if (stopOnSignal) {
+            const pgid = child.pid;
+            const handlers = FORWARDED_SIGNALS.map(signal => {
+              const handler = () => {
+                interrupted ??= signal;
+                stopping ??= stopDetachedGroup(child, pgid, "dependency-check", signal, rejectClose);
+              };
+              process.on(signal, handler);
+              return [signal, handler] as const;
+            });
+            removeSignals = () => { for (const [signal, handler] of handlers) process.off(signal, handler); };
+          }
           permit.end("run\n");
         }
       } catch (cause) { error = message(cause); permit.end(); }
     }
-    const result = await new Promise<{ status: number | null; signal: NodeJS.Signals | null }>(resolveClose => child.once("close", (status, signal) => resolveClose({ status, signal })));
+    const result = await close;
+    if (stopping) await stopping;
+    if (interrupted) {
+      await finishInterrupt(interrupted, removeSignals);
+      removeSignals = undefined;
+      return { ...result, signal: result.signal ?? interrupted, stdout, stderr, ...(error ? { error } : {}) };
+    }
     return { ...result, stdout, stderr, ...(error ? { error } : {}) };
   } catch (error) {
+    if (interrupted) {
+      await finishInterrupt(interrupted, removeSignals);
+      removeSignals = undefined;
+    }
     return { status: null, stdout: "", stderr: "", error: message(error) };
+  } finally {
+    removeSignals?.();
   }
 }
 
@@ -254,37 +334,15 @@ async function runGlobalChild(
     });
     if (staging !== undefined && child.pid !== undefined) {
       const pgid = child.pid;
-      const signalGroup = (signal: NodeJS.Signals) => {
-        try { process.kill(-pgid, signal); }
-        catch (error) { if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error; }
-      };
-      const grace = 2000;
-      const reap = 1000;
       const stop = () => {
         if (stopping) return;
         clearTimeout(elapsed);
         clearTimeout(idle);
-        stopping = (async () => {
-          signalGroup("SIGTERM");
-          await new Promise(resolve => setTimeout(resolve, grace));
-          if (processGroupMembers(pgid).length) signalGroup("SIGKILL");
-          const deadline = performance.now() + reap;
-          while (processGroupMembers(pgid).length) {
-            if (performance.now() >= deadline) throw new Error(`could not stop staging npm process group ${pgid}`);
-            await new Promise(resolve => setTimeout(resolve, 25));
-          }
-        })();
-        void stopping.catch(error => {
-          child.stdin?.destroy();
-          child.stdout?.destroy();
-          child.stderr?.destroy();
-          child.unref();
-          rejectClose(error);
-        });
+        stopping = stopDetachedGroup(child, pgid, "staging", "SIGTERM", rejectClose);
       };
       // Leave room for TERM and KILL within the five-minute staging budget. Idle time
       // covers three 15-second fetch attempts plus their one- and two-second backoffs.
-      elapsed = setTimeout(stop, 300_000 - grace - reap);
+      elapsed = setTimeout(stop, 300_000 - STOP_GRACE_MS - STOP_REAP_MS);
       idle = setTimeout(stop, 50_000);
     }
     const closed = await close;
