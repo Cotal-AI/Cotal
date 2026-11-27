@@ -37,6 +37,17 @@ try {
     fixture("absent");
     assert.equal(await refresh(), "not installed");
     assert.equal(existsSync(join(process.env.COTAL_HOME!, "codex-plugin", ".setup.lock")), false);
+    if (process.platform !== "win32" && process.getuid?.() !== 0) {
+      const market = join(process.env.COTAL_HOME!, "codex-plugin");
+      mkdirSync(market, { recursive: true, mode: 0o700 });
+      chmodSync(market, 0o500);
+      try {
+        assert.equal(await refresh(), "not installed");
+        assert.deepEqual(readdirSync(market), []);
+      } finally {
+        chmodSync(market, 0o700);
+      }
+    }
   });
   await check("an empty custom Codex home needs no executable", async () => {
     const f = fixture("empty-home");
@@ -191,22 +202,34 @@ if (args === "plugin list") {
       assert.doesNotMatch(repaired, /read-only/);
       assert.equal(status().state, "off");
       assert.ok(!status().text.includes(config));
-      if (process.platform !== "win32") {
+      if (process.platform !== "win32" && process.getuid?.() !== 0) {
         chmodSync(cache(f.codex), 0o500);
         const protectedCache = await codexSetupProvider.refresh!.run(changed);
         assert.ok(protectedCache.includes(cache(f.codex)));
         assert.match(protectedCache, /read-only.*run `cotal update`/);
         assert.ok(existsSync(join(cache(f.codex), version, ".codex-plugin/plugin.json")));
+        chmodSync(cache(f.codex), 0o700);
+        chmodSync(market, 0o500);
+        for (const input of [{ cotal }, changed]) {
+          const protectedMarket = await codexSetupProvider.refresh!.run(input);
+          assert.equal(
+            protectedMarket,
+            `Codex plugin refresh deferred because ${market} is read-only. cotal@cotal-mesh remains at ${version}. Make that directory writable, then run \`cotal update\`.`,
+          );
+          assert.equal(statSync(market).mode & 0o777, 0o500);
+          assert.equal(existsSync(join(market, ".setup.lock")), false);
+        }
+        chmodSync(market, 0o700);
       }
     } finally {
-      for (const dir of [f.codex, cache(f.codex)]) chmodSync(dir, 0o700);
+      for (const dir of [f.codex, cache(f.codex), market]) if (existsSync(dir)) chmodSync(dir, 0o700);
       rmSync(join(bin, "codex"));
     }
   });
   if (process.platform !== "win32") {
     process.env.PATH = before.PATH;
     const codex = (...args: string[]) => spawnSync("codex", args, { encoding: "utf8", timeout: 60_000 });
-    if (codex("--version").status === 0) await check("native Codex keeps a read-only cache and refreshes after write access returns", async () => {
+    if (codex("--version").status === 0) await check("native Codex keeps a read-only marketplace or cache and refreshes after write access returns", async () => {
       const f = fixture("native");
       const cotal = [process.execPath, join(ROOT, "cotal.js")];
       await codexSetupProvider.connector!.run({ cotal });
@@ -217,10 +240,24 @@ if (args === "plugin list") {
       const beforeRefresh = codex("plugin", "list");
       assert.equal(beforeRefresh.status, 0, beforeRefresh.stderr);
       const changed = [process.execPath, join(ROOT, "updated-cotal.js")];
+      const marketDir = join(process.env.COTAL_HOME!, "codex-plugin");
       const cacheDir = cache(f.codex);
       const [oldVersion] = readdirSync(cacheDir);
       assert.ok(oldVersion);
       chmodSync(config, 0o600);
+      chmodSync(marketDir, 0o500);
+      try {
+        const deferredMarket = await codexSetupProvider.refresh!.run({ cotal: changed });
+        assert.equal(
+          deferredMarket,
+          `Codex plugin refresh deferred because ${marketDir} is read-only. cotal@cotal-mesh remains at ${oldVersion}. Make that directory writable, then run \`cotal update\`.`,
+        );
+        assert.equal(statSync(marketDir).mode & 0o777, 0o500);
+        assert.equal(existsSync(join(marketDir, ".setup.lock")), false);
+        assert.deepEqual(readdirSync(cacheDir), [oldVersion]);
+      } finally {
+        chmodSync(marketDir, 0o700);
+      }
       chmodSync(cacheDir, 0o500);
       try {
         const deferred = await codexSetupProvider.refresh!.run({ cotal: changed });

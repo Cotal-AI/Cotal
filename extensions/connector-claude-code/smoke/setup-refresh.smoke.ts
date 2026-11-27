@@ -144,6 +144,30 @@ switch (args.slice(0, 3).join(" ")) {
       assert.ok(!row().text.includes(config));
     } finally { rmSync(executable, { force: true }); }
   });
+  if (process.platform !== "win32" && process.getuid?.() !== 0) await check("a read-only Cotal marketplace directory defers plugin and skills refresh without lock files", async () => {
+    for (const [pluginId, expected] of [
+      ["cotal@cotal-mesh", "Claude integration refresh"],
+      ["cotal-skills@cotal-mesh", "Claude skills refresh"],
+    ] as const) {
+      const f = fixture(`readonly-market-${pluginId.split("@")[0]}`, true);
+      const market = join(process.env.COTAL_HOME!, "claude-plugin");
+      mkdirSync(f.config, { recursive: true });
+      mkdirSync(f.plugins, { recursive: true });
+      mkdirSync(market, { recursive: true, mode: 0o700 });
+      writeFileSync(f.records, JSON.stringify({ version: 2, plugins: { [pluginId]: [{ scope: "user", version: "0.1.0" }] } }));
+      chmodSync(market, 0o500);
+      try {
+        const detail = await refresh();
+        assert.equal(detail, `${expected} deferred because ${market} is read-only. Make that directory writable, then run \`cotal update\`.`);
+        assert.equal(statSync(market).mode & 0o777, 0o500);
+        assert.deepEqual(readdirSync(market), []);
+        assert.equal(existsSync(join(f.config, ".cotal-setup.lock")), false);
+        assert.equal(existsSync(join(f.plugins, ".cotal-setup.lock")), false);
+      } finally {
+        chmodSync(market, 0o700);
+      }
+    }
+  });
 } finally {
   for (const key of keys) {
     if (before[key] === undefined) delete process.env[key];

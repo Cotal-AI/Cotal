@@ -789,8 +789,9 @@ export const claudeSetupProvider: ConnectorSetupProvider = {
       const installed = installedPluginForRefresh();
       const path = desktopConfigPath();
       if (!installed && (path === undefined || readDesktopEntry(path) === undefined)) return "not installed";
-      const protectedDir = [dirname(claudeUserMcpPath()), pluginCacheDir()]
-        .find((dir) => isConfigProtected(join(dir, ".cotal-setup.lock")));
+      const protectedDir = (
+        [[marketplaceDir(), ".setup.lock"], [dirname(claudeUserMcpPath()), ".cotal-setup.lock"], [pluginCacheDir(), ".cotal-setup.lock"]] as const
+      ).find(([dir, lock]) => isConfigProtected(dir) || isConfigProtected(join(dir, lock)))?.[0];
       if (protectedDir) {
         const integration = installed === "cotal-skills" ? "Claude skills refresh" : "Claude integration refresh";
         return `${integration} deferred because ${protectedDir} is read-only. Make that directory writable, then run \`cotal update\`.`;

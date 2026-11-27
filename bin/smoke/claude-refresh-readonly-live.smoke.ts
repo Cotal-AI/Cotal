@@ -11,7 +11,15 @@ if (process.platform !== "linux" || process.getuid?.() === 0) skipSuite("read-on
 const root = mkdtempSync(join(tmpdir(), "cotal-claude-refresh-live-"));
 const cli = fileURLToPath(new URL("../dist/cotal.js", import.meta.url));
 let passed = 0;
-for (const name of ["absent", "readonly-config", "readonly-plugins", "readonly-installed-profile", "readonly-installed-cache"]) {
+for (const name of [
+  "absent",
+  "readonly-config",
+  "readonly-plugins",
+  "readonly-installed-profile",
+  "readonly-installed-cache",
+  "readonly-installed-marketplace",
+  "readonly-codex-marketplace",
+]) {
   const base = join(root, name), home = join(base, "home"), project = join(base, "project"), native = join(base, "native");
   const config = join(base, "config"), state = join(base, "state"), runtime = join(base, "runtime");
   for (const dir of [home, project, native, config, state, runtime]) mkdirSync(dir, { recursive: true, mode: 0o700 });
@@ -35,34 +43,58 @@ for (const name of ["absent", "readonly-config", "readonly-plugins", "readonly-i
   }
   let calls = 0, running = false;
   const installedSkills = name === "readonly-installed-profile" || name === "readonly-installed-cache";
-  const claude = join(home, installedSkills ? "claude-profile" : ".claude"), plugins = join(claude, "plugins");
+  const installedMarketplace = name === "readonly-installed-marketplace";
+  const codexMarketplace = name === "readonly-codex-marketplace";
+  const claude = join(home, installedSkills || installedMarketplace ? "claude-profile" : ".claude"), plugins = join(claude, "plugins");
   const records = join(plugins, "installed_plugins.json");
-  const protectedDir = name === "readonly-installed-cache" ? plugins : claude;
-  const recordsBytes = JSON.stringify({ version: 2, plugins: { "cotal-skills@cotal-mesh": [{ scope: "user", version: "0.1.0" }] } });
-  if (installedSkills) env.CLAUDE_CONFIG_DIR = claude;
+  const protectedDir = name === "readonly-installed-cache" ? plugins
+    : installedMarketplace ? join(state, "claude-plugin")
+    : codexMarketplace ? join(state, "codex-plugin")
+    : claude;
+  const pluginKey = installedMarketplace ? "cotal@cotal-mesh" : "cotal-skills@cotal-mesh";
+  const recordsBytes = JSON.stringify({ version: 2, plugins: { [pluginKey]: [{ scope: "user", version: "0.1.0" }] } });
+  if (installedSkills || installedMarketplace) env.CLAUDE_CONFIG_DIR = claude;
   try {
     run("space", "create", "alpha", "--root", project);
     if (name === "readonly-installed-cache") run("ext", "seed");
-    if (name !== "absent") {
+    if (codexMarketplace) {
+      mkdirSync(join(home, ".codex", "plugins", "cache", "cotal-mesh", "cotal", "0.1.0"), { recursive: true, mode: 0o700 });
+      mkdirSync(protectedDir, { mode: 0o700 });
+      writeFileSync(join(native, "codex"), `#!/bin/sh
+if [ "$1 $2" = "plugin list" ]; then echo "cotal@cotal-mesh  installed, enabled  0.1.0"; exit 0; fi
+if [ "$1 $2 $3 $4" = "plugin marketplace list --json" ]; then printf '{"marketplaces":[{"name":"cotal-mesh","root":"%s"}]}\\n' "${protectedDir}"; exit 0; fi
+exit 1
+`, { mode: 0o700 });
+      chmodSync(protectedDir, 0o500);
+    } else if (name !== "absent") {
       mkdirSync(claude);
       if (name === "readonly-plugins") { mkdirSync(plugins); chmodSync(plugins, 0o500); }
-      if (installedSkills) { mkdirSync(plugins); writeFileSync(records, recordsBytes); }
+      if (installedSkills || installedMarketplace) { mkdirSync(plugins); writeFileSync(records, recordsBytes); }
+      if (installedMarketplace) mkdirSync(protectedDir, { mode: 0o700 });
       chmodSync(protectedDir, 0o500);
     }
     if (name === "readonly-installed-cache") env.npm_config_offline = "true";
     const update = run("update");
     if (installedSkills) assert.ok(update.includes(`Claude skills refresh deferred because ${protectedDir} is read-only.`), update);
-    else assert.match(update, /Refresh the Claude Code plugin: not installed/);
+    else if (installedMarketplace) assert.ok(update.includes(`Claude integration refresh deferred because ${protectedDir} is read-only.`), update);
+    else if (codexMarketplace) {
+      assert.match(update, /Refresh the Claude Code plugin: not installed/);
+      assert.ok(update.includes(`Codex plugin refresh deferred because ${protectedDir} is read-only. cotal@cotal-mesh remains at 0.1.0.`), update);
+    } else assert.match(update, /Refresh the Claude Code plugin: not installed/);
     if (name === "readonly-installed-cache") assert.match(update, /Registry latest:?\s+not established/);
     const recovery = join(state, "update-recovery.json");
     if (name !== "readonly-installed-cache" || existsSync(recovery))
       assert.equal(JSON.parse(readFileSync(recovery, "utf8")), null);
     if (name === "absent") assert.equal(existsSync(claude), false);
-    else {
+    else if (codexMarketplace) {
       assert.equal(statSync(protectedDir).mode & 0o777, 0o500);
-      assert.deepEqual(readdirSync(claude), name === "readonly-plugins" || installedSkills ? ["plugins"] : []);
+      assert.deepEqual(readdirSync(protectedDir), []);
+    } else {
+      assert.equal(statSync(protectedDir).mode & 0o777, 0o500);
+      if (installedMarketplace) assert.deepEqual(readdirSync(protectedDir), []);
+      assert.deepEqual(readdirSync(claude), name === "readonly-plugins" || installedSkills || installedMarketplace ? ["plugins"] : []);
       if (name === "readonly-plugins") assert.deepEqual(readdirSync(plugins), []);
-      if (installedSkills) {
+      if (installedSkills || installedMarketplace) {
         assert.deepEqual(readdirSync(plugins), ["installed_plugins.json"]);
         assert.equal(readFileSync(records, "utf8"), recordsBytes);
       }

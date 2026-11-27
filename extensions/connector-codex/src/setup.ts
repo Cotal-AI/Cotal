@@ -279,6 +279,27 @@ function statusRow({ version }: ConnectorStatusInput): ConnectorStatusRow {
   return installed.version.startsWith(`${version}+`) ? row("ok", "current") : row("warn", `stale · ${remedy}`);
 }
 
+function readInstalledForRefresh(): { version: string; disabled: boolean } | string {
+  if (!hasCachedPlugin()) return "not installed";
+  try {
+    let listed = codex("plugin", "list");
+    // Codex's diagnostic identifies the failing registration even when no listing is available.
+    const missing = missingMarketplace(listed);
+    if (missing) {
+      const deferred = repairMovedMarketplace(missing);
+      if (deferred) return `Codex marketplace ${MARKETPLACE} could not be refreshed. ${deferred}`;
+      listed = codex("plugin", "list");
+      if (missingMarketplace(listed)) {
+        return `Codex still cannot load marketplace ${MARKETPLACE}. Restore the Cotal marketplace at ${missing}, then run \`cotal update\`.`;
+      }
+    }
+    return installedPlugin(listed) ?? "not installed";
+  } catch (error) {
+    if (((error as Error).cause as NodeJS.ErrnoException | undefined)?.code === "ENOENT") return "Codex not installed; cached plugin left unchanged";
+    throw error;
+  }
+}
+
 export const codexSetupProvider: ConnectorSetupProvider = {
   kind: "connector-setup",
   name: "codex",
@@ -304,27 +325,16 @@ export const codexSetupProvider: ConnectorSetupProvider = {
     explain: "Rewrites the Cotal plugin that Codex conversations load for this release.",
     context: [DOCS_URL],
     run({ cotal }: ConnectorSetupInput) {
+      if (!hasCachedPlugin()) return "not installed";
+      const market = codexMarketplaceDir();
+      if (isConfigProtected(market) || isConfigProtected(join(market, ".setup.lock"))) {
+        const installed = readInstalledForRefresh();
+        if (typeof installed === "string") return installed;
+        return `Codex plugin refresh deferred because ${market} is read-only. ${PLUGIN}@${MARKETPLACE} remains at ${installed.version}. Make that directory writable, then run \`cotal update\`.`;
+      }
       return withLock(() => {
-        if (!hasCachedPlugin()) return "not installed";
-        let installed: ReturnType<typeof installedPlugin>;
-        try {
-          let listed = codex("plugin", "list");
-          // Codex's diagnostic identifies the failing registration even when no listing is available.
-          const missing = missingMarketplace(listed);
-          if (missing) {
-            const deferred = repairMovedMarketplace(missing);
-            if (deferred) return `Codex marketplace ${MARKETPLACE} could not be refreshed. ${deferred}`;
-            listed = codex("plugin", "list");
-            if (missingMarketplace(listed)) {
-              return `Codex still cannot load marketplace ${MARKETPLACE}. Restore the Cotal marketplace at ${missing}, then run \`cotal update\`.`;
-            }
-          }
-          installed = installedPlugin(listed);
-          if (installed === undefined) return "not installed";
-        } catch (error) {
-          if (((error as Error).cause as NodeJS.ErrnoException | undefined)?.code === "ENOENT") return "Codex not installed; cached plugin left unchanged";
-          throw error;
-        }
+        const installed = readInstalledForRefresh();
+        if (typeof installed === "string") return installed;
         const version = pluginVersion(pluginFiles(cotal, ""));
         const cache = pluginCache();
         if (installed.version !== version && isConfigProtected(cache)) {
