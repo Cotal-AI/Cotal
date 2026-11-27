@@ -958,11 +958,171 @@ async function firstUnreadableRestoreScenario(): Promise<void> {
     assert.equal((JSON.parse(readFileSync(journalPath, "utf8")) as { state: string }).state, "active");
     assert.equal(run("down", "--yes").status, 0);
   } finally {
-    if (listenerPid !== undefined) { try { process.kill(listenerPid, "SIGTERM"); } catch { /* already gone */ } }
+    if (listenerPid !== undefined) {
+      try { process.kill(listenerPid, "SIGTERM"); } catch { /* already gone */ }
+      await waitUntil(() => { try { process.kill(listenerPid!, 0); return false; } catch { return true; } }, "unreadable listener exit");
+    }
+    await waitUntil(async () => !(await probeConnect(server, { timeoutMs: 200 })).ok, "unreadable listener port release");
     assertSmokeSandboxDown(sandbox, ["down", "--yes"], { cwd: root, env });
     run("down", "--yes");
     rmSync(root, { recursive: true, force: true });
     rmSync(home, { recursive: true, force: true });
+  }
+}
+
+interface SpawnJournal {
+  state: string;
+  launch?: { serverName?: string; listenerSpawn?: string };
+  listenerProof?: unknown;
+}
+
+function readSpawnJournal(journalPath: string): SpawnJournal {
+  return JSON.parse(readFileSync(journalPath, "utf8")) as SpawnJournal;
+}
+
+function namedListenerPids(serverName: string): number[] {
+  const listed = spawnSync("ps", ["-axww", "-o", "pid=", "-o", "args="], { encoding: "utf8" });
+  if (listed.status !== 0) return [];
+  const pids: number[] = [];
+  for (const line of String(listed.stdout ?? "").split("\n")) {
+    if (!line.includes("nats-server") || !line.includes(`--name ${serverName}`)) continue;
+    const pid = Number(line.trim().split(/\s+/)[0]);
+    if (Number.isInteger(pid) && pid > 0) pids.push(pid);
+  }
+  return pids;
+}
+
+interface FrozenUnpublished {
+  root: string;
+  home: string;
+  env: NodeJS.ProcessEnv;
+  sandbox: SmokeSandboxAnchor;
+  server: string;
+  space: string;
+  serverName: string;
+  listenerPid: number;
+  journalPath: string;
+  pidPath: string;
+}
+
+async function releaseFrozenRestore(held: {
+  root?: string; home?: string; env?: NodeJS.ProcessEnv; sandbox?: SmokeSandboxAnchor; server?: string; serverName?: string;
+}): Promise<void> {
+  try {
+    if (held.serverName) {
+      for (const pid of namedListenerPids(held.serverName)) {
+        try { process.kill(pid, "SIGKILL"); } catch { /* already gone */ }
+      }
+      await waitUntil(() => namedListenerPids(held.serverName ?? "").length === 0, "frozen listener exit");
+    }
+    if (held.server)
+      await waitUntil(async () => !(await probeConnect(held.server ?? "", { timeoutMs: 200 })).ok, "frozen listener port release");
+    if (held.sandbox && held.root && held.env) {
+      assertSmokeSandboxDown(held.sandbox, ["down", "--yes"], { cwd: held.root, env: held.env });
+      spawnSync(tsx, [cliPath, "down", "--yes"], { cwd: held.root, env: held.env, encoding: "utf8", timeout: 240_000 });
+    }
+  } finally {
+    if (held.root) rmSync(held.root, { recursive: true, force: true });
+    if (held.home) rmSync(held.home, { recursive: true, force: true });
+  }
+}
+
+/** Spawn the restore listener, freeze it before it listens, and exit before its pid is published. */
+async function crashBeforePidPublish(label: string): Promise<FrozenUnpublished> {
+  const held: {
+    root?: string; home?: string; env?: NodeJS.ProcessEnv; sandbox?: SmokeSandboxAnchor; server?: string; serverName?: string;
+  } = {};
+  let ready = false;
+  try {
+    held.root = realpathSync.native(mkdtempSync(join(tmpdir(), `cotal-restore-${label}-root-`)));
+    held.home = realpathSync.native(mkdtempSync(join(tmpdir(), `cotal-restore-${label}-home-`)));
+    const started = sandboxRun(held.root, held.home);
+    held.env = started.env;
+    held.sandbox = started.sandbox;
+    const artifact = join(held.root, "registry-backup");
+    const port = await freePort();
+    held.server = `nats://127.0.0.1:${port}`;
+    const journalPath = join(held.root, ".cotal", "maintenance", "v1", "journal.json");
+    const pidPath = join(held.root, ".cotal", "nats.pid");
+    assert.equal(started.run("up", "--detach", "--open", "--server", held.server, "--space", label).status, 0);
+    assert.equal(started.run("down", "--preserve-state").status, 0);
+    assert.equal(started.run("backup", "create", artifact, "--only", "registry").status, 0);
+    const spawned = spawnSync(tsx, [cliPath, "up", "--restore", artifact, "--detach", "--server", held.server, "--space", label], {
+      cwd: held.root,
+      env: { ...held.env, COTAL_SMOKE_EXIT_BEFORE_RESTORE_LISTENER_PID: "1" },
+      encoding: "utf8",
+      timeout: 240_000,
+    });
+    assert.equal(spawned.status, 87, `restore exited before the pid publish\nstdout:\n${spawned.stdout}\nstderr:\n${spawned.stderr}`);
+    const journal = readSpawnJournal(journalPath);
+    held.serverName = journal.launch?.serverName ?? "";
+    assert.equal(journal.launch?.listenerSpawn, "started");
+    assert.equal(journal.listenerProof, undefined);
+    assert.notEqual(held.serverName, "");
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 1000));
+    assert.equal((await probeConnect(held.server, { timeoutMs: 250 })).ok, false, "the frozen listener is not serving");
+    assert.equal(existsSync(pidPath), false, "the pid was not published");
+    assert.equal(existsSync(`${pidPath}.pin`), false, "the pid pin was not published");
+    const pids = namedListenerPids(held.serverName);
+    assert.equal(pids.length, 1, `expected one frozen listener, found ${pids.join(", ")}`);
+    const listenerPid = pids[0];
+    if (listenerPid === undefined) throw new Error("frozen listener pid missing");
+    ready = true;
+    return {
+      root: held.root, home: held.home, env: held.env, sandbox: held.sandbox, server: held.server, space: label,
+      serverName: held.serverName, listenerPid, journalPath, pidPath,
+    };
+  } finally {
+    if (!ready) await releaseFrozenRestore(held);
+  }
+}
+
+async function unpublishedUnreadableRestoreScenario(): Promise<void> {
+  const crashed = await crashBeforePidPublish("backup_unreadable_unpublished");
+  try {
+    const refused = spawnSync(tsx, [cliPath, "up", "--detach", "--server", crashed.server, "--space", crashed.space], {
+      cwd: crashed.root,
+      env: { ...crashed.env, COTAL_SMOKE_UNREADABLE_PROCESSES: "1" },
+      encoding: "utf8",
+      timeout: 240_000,
+    });
+    assert.equal(refused.status, 3, refused.stderr);
+    assert.match(refused.stderr, /OPERATION_UNKNOWN/);
+    assert.match(refused.stderr, /cannot show that no listener it started still runs/);
+    assert.match(refused.stderr, /process command lines were not read/);
+    assert.match(refused.stderr, /A listener may already be opening this store/);
+    assert.match(refused.stderr, /does not start another listener/);
+    assert.match(refused.stderr, new RegExp(`--name ${crashed.serverName}`));
+    assert.equal(existsSync(crashed.pidPath), false, "the refusal published no listener");
+    assert.deepEqual(namedListenerPids(crashed.serverName), [crashed.listenerPid]);
+    const blocked = readSpawnJournal(crashed.journalPath);
+    assert.equal(blocked.state, "degraded");
+    assert.equal(blocked.launch?.listenerSpawn, "started");
+  } finally {
+    await releaseFrozenRestore(crashed);
+  }
+}
+
+async function oldJournalUnreadableRestoreScenario(): Promise<void> {
+  const crashed = await crashBeforePidPublish("backup_unreadable_old_journal");
+  try {
+    const journal = readSpawnJournal(crashed.journalPath);
+    delete journal.launch?.listenerSpawn;
+    writeFileSync(crashed.journalPath, `${JSON.stringify(journal)}\n`);
+    const refused = spawnSync(tsx, [cliPath, "up", "--detach", "--server", crashed.server, "--space", crashed.space], {
+      cwd: crashed.root,
+      env: { ...crashed.env, COTAL_SMOKE_UNREADABLE_PROCESSES: "1" },
+      encoding: "utf8",
+      timeout: 240_000,
+    });
+    assert.equal(refused.status, 3, refused.stderr);
+    assert.match(refused.stderr, /OPERATION_UNKNOWN/);
+    assert.match(refused.stderr, /does not say whether a listener was spawned/);
+    assert.match(refused.stderr, new RegExp(`--name ${crashed.serverName}`));
+    assert.equal(existsSync(crashed.pidPath), false, "the old journal published no listener");
+    assert.deepEqual(namedListenerPids(crashed.serverName), [crashed.listenerPid]);
+  } finally {
+    await releaseFrozenRestore(crashed);
   }
 }
 
@@ -2018,5 +2178,7 @@ await unboundRestoreReentryScenario(true);
 await unboundRestoreReentryScenario(false);
 await uninterruptedUnreadableRestore();
 await firstUnreadableRestoreScenario();
+await unpublishedUnreadableRestoreScenario();
+await oldJournalUnreadableRestoreScenario();
 await boundForeignListenerScenario();
 console.log("backup/restore live smoke: ok");

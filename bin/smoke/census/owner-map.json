@@ -1369,6 +1369,7 @@
   "env:COTAL_SMOKE_EXIT_AFTER_RESUME_COMMIT": "internal:test hook",
   "env:COTAL_SMOKE_EXIT_AFTER_RESUME_FINALIZE": "internal:test hook",
   "env:COTAL_SMOKE_EXIT_AFTER_RESUME_PRESERVED": "internal:test hook",
+  "env:COTAL_SMOKE_EXIT_BEFORE_RESTORE_LISTENER_PID": "internal:test hook",
   "env:COTAL_SMOKE_FAIL_AFTER_RESTORE_LISTENER_READY": "internal:test hook",
   "env:COTAL_SMOKE_FAIL_BACKUP_STAGE": "internal:test hook",
   "env:COTAL_SMOKE_FAIL_RESTORE_STREAM": "internal:test hook",
