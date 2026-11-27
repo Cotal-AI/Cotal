@@ -6,7 +6,7 @@ import { executionIdentity } from "./execution-identity.js";
 import { acquireLock, processStartToken } from "./advisory-lock.js";
 import { readLocalRecordSource } from "./local-record-source.js";
 import { assertExtensionPrefixIdle, claimExtensionMutationLock } from "./extension-mutation.js";
-import { claimUpdateClosureAccess, installationWriter, liveUpdateClosureOwner } from "./update-closure.js";
+import { claimUpdateClosureAccess, liveUpdateClosureOwner } from "./update-closure.js";
 import { readUpdateRecovery, type UpdateRecovery } from "./updates.js";
 import { readMeshRegistry } from "./mesh-registry.js";
 import { homeCotalDir } from "./cotal-home.js";
@@ -109,10 +109,10 @@ export function retainConnectorSeat(manager: string, agent: string, shared = fal
       sharedReceipt = true;
       if (!child || !Number.isSafeInteger(child.pid) || child.pid <= 0 || !child.start || !child.boot) return;
       try {
-        // The existing identity-less record pins the set during an atomic replacement.
-        // Do not wait for the cleanup lock after dispatch. A racing prune sees either
-        // a conservative reservation or the exact child identity, never an empty slot.
-        if (installationWriter() || expected !== reserved || !ownsRecord()) return;
+        // Creation holds the collector's lock. Replacing this exact reservation doesn't
+        // need it: a scan sees the reservation or the full identity at the same name.
+        // An unreadable or concurrently removed entry also makes the scan keep the set.
+        if (expected !== reserved || !ownsRecord()) return;
         const next = { ...holder, custody: { pid: child.pid, start: child.start, boot: child.boot } };
         writePrivateJson(file, next);
         reservationStat = lstatSync(file);
@@ -131,10 +131,11 @@ export function retainConnectorSeat(manager: string, agent: string, shared = fal
       } catch { /* The reserved identity-less holder still protects the set. */ }
       finally { try { rmSync(pending, { force: true }); } catch { /* Stale holders retain the set. */ } }
     },
+    // Called only on proved exit, not when the Manager dies or releases a handle.
     ended() {
       try {
         if (!sharedReceipt) { rmSync(file, { force: true }); return; }
-        if (!installationWriter() && ownsRecord()) rmSync(file, { force: true });
+        if (ownsRecord()) rmSync(file, { force: true });
       } catch { /* Stale holders retain the set. */ }
     },
   };

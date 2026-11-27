@@ -271,20 +271,40 @@ ${scenario === "pnpm-dlx-refresh" ? `currentDlx=join(dlxB,'dist/cotal.js');asser
 ${scenario === "unselected-holder" ? `const {retainConnectorSeat,pruneRetainedConnectorConfig}=await import(${JSON.stringify(module)});const before=snapshot(dirname(selected));writeFileSync(metadata,JSON.stringify({name:'cotal-ai',version:'0.165.5',bin:{cotal:'./dist/cotal.js'}}));assert.equal(connectorConfigDir(),selected,'unselected version reads predecessor');const holder=retainConnectorSeat('manager-B','worker');assert.equal(holder.active,false,'unselected version must not reserve a holder');holder.launched(process.pid);holder.ended();pruneRetainedConnectorConfig([]);assert.deepEqual(snapshot(dirname(selected)),before,'unselected version neither writes predecessor nor prunes');assert.equal(fs.existsSync(join(dirname(dirname(selected)),'0.165.5')),false,'unselected version creates no set');` : ""}
 ${scenario === "shared-holder" ? `
 const { retainConnectorSeat, pruneRetainedConnectorConfig } = await import(${JSON.stringify(module)});
+const { installationWriter } = await import(${JSON.stringify(pathToFileURL(join(import.meta.dirname, "../src/update-closure.ts")).href)});
+const { processStartToken } = await import(${JSON.stringify(pathToFileURL(join(import.meta.dirname, "../src/advisory-lock.ts")).href)});
+const { once } = await import('node:events');
+async function underForeignWriter(work) {
+  const writer = spawn(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', ${JSON.stringify(`
+    import { claimUpdateClosureAccess } from ${JSON.stringify(pathToFileURL(join(import.meta.dirname, "../src/update-closure.ts")).href)};
+    const release = claimUpdateClosureAccess();
+    process.once('disconnect', release);
+    process.send('locked');
+  `)}], { stdio: ['ignore', 'ignore', 'inherit', 'ipc'] });
+  const exited = once(writer, 'exit');
+  try {
+    assert.equal(await Promise.race([once(writer, 'message').then(([message]) => message), exited.then(() => 'exited')]), 'locked');
+    assert.equal(installationWriter()?.pid, writer.pid);
+    work();
+    assert.equal(installationWriter()?.pid, writer.pid);
+  } finally {
+    if (writer.connected) writer.disconnect();
+    assert.deepEqual(await exited, [0, null]);
+  }
+}
 const dir = join(dirname(selected), 'holders');
 const holder = retainConnectorSeat('manager-A', 'worker', true);
 assert.equal(holder.active && holder.sharedEligible, true);
 const [name] = fs.readdirSync(dir), file = join(dir, name);
 const reservation = readFileSync(file, 'utf8');
 assert.equal(JSON.parse(reservation).custody, undefined);
-const child = { pid: process.pid, start: 'receipt-start', boot: 'receipt-boot' };
-holder.bindSharedChild(child);
-holder.launched(process.pid);
-assert.deepEqual(JSON.parse(readFileSync(file, 'utf8')).custody, child);
-holder.ended();
-assert.equal(fs.existsSync(file), false);
+const child = {
+  pid: process.pid,
+  start: processStartToken(process.pid) ?? 'receipt-start',
+  boot: process.platform === 'linux' ? readFileSync('/proc/sys/kernel/random/boot_id', 'utf8').trim() : 'receipt-boot',
+};
 const stale = retainConnectorSeat('manager-A', 'worker', true);
-const [staleName] = fs.readdirSync(dir), staleFile = join(dir, staleName);
+const staleFile = join(dir, fs.readdirSync(dir).find(entry => entry !== name));
 writeFileSync(staleFile + '.replacement', reservation, { mode: 0o600 });
 fs.renameSync(staleFile + '.replacement', staleFile);
 stale.bindSharedChild(child);
@@ -296,20 +316,34 @@ finally { fs.chmodSync(dir, 0o700); }
 rmSync(staleFile);
 const unknown = retainConnectorSeat('manager-A', 'unacknowledged', true);
 assert.equal(unknown.active && unknown.sharedEligible, true);
-const [unknownName] = fs.readdirSync(dir), unknownFile = join(dir, unknownName);
+const unknownFile = join(dir, fs.readdirSync(dir).find(entry => entry !== name));
 const oldMetadata = readFileSync(metadata);
 writeFileSync(metadata, JSON.stringify({ ...JSON.parse(oldMetadata), version: '0.165.5' }));
 retainConnectorConfig();
 pruneRetainedConnectorConfig(['0.165.5']);
 assert(fs.existsSync(unknownFile), 'pre-dispatch reservation pins old connectors before receipt');
-unknown.bindSharedChild(undefined);
-unknown.launched(process.pid);
-assert.equal(JSON.parse(readFileSync(unknownFile, 'utf8')).custody, undefined);
+await underForeignWriter(() => {
+  holder.bindSharedChild(child);
+  holder.launched(process.pid);
+  assert.deepEqual(JSON.parse(readFileSync(file, 'utf8')).custody, child, 'bind records the identity while the writer owns the lock');
+  unknown.bindSharedChild(undefined);
+  unknown.launched(process.pid);
+  assert.equal(JSON.parse(readFileSync(unknownFile, 'utf8')).custody, undefined);
+});
 pruneRetainedConnectorConfig(['0.165.5']);
 assert(fs.existsSync(unknownFile), 'unknown receipt keeps the identity-less reservation');
-unknown.ended();
+await underForeignWriter(() => {
+  unknown.ended();
+  assert.deepEqual(fs.readdirSync(dir), [name], 'proved exit under the writer removes the identity-less reservation');
+});
 pruneRetainedConnectorConfig(['0.165.5']);
-assert(!fs.existsSync(selected), 'proved exit releases the identity-less holder');
+assert(fs.existsSync(file), 'the exact live identity pins old connectors without the other reservation');
+await underForeignWriter(() => {
+  holder.ended();
+  assert.deepEqual(fs.readdirSync(dir), [], 'proved exit under the writer removes the bound holder');
+});
+pruneRetainedConnectorConfig(['0.165.5']);
+assert(!fs.existsSync(selected), 'the old set is collectible once the holders are released');
 ` : ""}
 ${scenario === "seat-holder" ? `const {retainConnectorSeat,pruneRetainedConnectorConfig}=await import(${JSON.stringify(module)});const {launchSeat,reapSeat,identityVerdict}=await import(${JSON.stringify(pathToFileURL(join(import.meta.dirname, "../../seat/dist/index.js")).href)});const custody=join(process.env.HOME,'custody-${scenario}');const holder=retainConnectorSeat('manager-A','worker');const rec=launchSeat({root:custody,name:'worker',cwd:process.env.HOME,spec:{command:process.execPath,args:['-e','setInterval(()=>{},1000)']}});holder.launched(rec.childPid);try{writeFileSync(metadata,JSON.stringify({name:'cotal-ai',version:'0.165.5',bin:{cotal:'./dist/cotal.js'}}));retainConnectorConfig();pruneRetainedConnectorConfig(['0.165.5']);assert(fs.existsSync(join(selected,'extensions/node_modules/old/lazy.js')),'orphan seat keeps its plugin');assert.equal(identityVerdict(rec.childPid,rec.childStart,rec.bootId),'live');await reapSeat(custody,rec.id);pruneRetainedConnectorConfig(['0.165.5']);assert(!fs.existsSync(selected),'dead custody identity releases its set without Manager cleanup');}finally{await reapSeat(custody,rec.id);}` : ""}
 ${scenario === "unknown-set" || scenario === "unknown-seat" ? `const {retainConnectorSeat,pruneRetainedConnectorConfig}=await import(${JSON.stringify(module)});${scenario === "unknown-set" ? "rmSync(join(dirname(selected),'holders-v1.json'));" : "const holder=retainConnectorSeat('manager-A','worker');holder.launched();"}writeFileSync(metadata,JSON.stringify({name:'cotal-ai',version:'0.165.5',bin:{cotal:'./dist/cotal.js'}}));retainConnectorConfig();pruneRetainedConnectorConfig(['0.165.5']);assert(fs.existsSync(selected),'unknown provenance keeps the old set');${scenario === "unknown-seat" ? "holder.ended();pruneRetainedConnectorConfig(['0.165.5']);assert(!fs.existsSync(selected),'only the owning Manager releases an identity-less holder');" : ""}` : ""}
