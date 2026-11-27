@@ -509,13 +509,16 @@ async function checkPackageLockCellsAndUpgrade(
 
       const probeProject = join(c4.dir, "connector-load-project");
       mkdirSync(probeProject, { recursive: true });
+      await runGlobalCli(c4.globalPrefix, ["space", "create", "upgrade-probe", "--root", "."], {
+        cwd: probeProject, env: upgradeEnv, timeout: 120_000,
+      });
       writeFileSync(
         join(probeProject, "probe.md"),
         "---\nname: probe\nrole: developer\nmodel: opus\n---\nVerify built-in connector load after upgrade.\n",
       );
       const previewOut = await runGlobalCli(
         c4.globalPrefix,
-        ["spawn", "--file", "./probe.md", "--dry-run", "--server", "nats://127.0.0.1:34300", "--space", "upgrade-probe", "--harness", "claude", "--json"],
+        ["spawn", "--file", "./probe.md", "--dry-run", "--space", "upgrade-probe", "--harness", "claude", "--json"],
         { cwd: probeProject, env: upgradeEnv, timeout: 120_000 },
       );
       console.log("=== Item 4 built-in connector load (spawn --dry-run) ===\n" + previewOut.stdout.trim());
