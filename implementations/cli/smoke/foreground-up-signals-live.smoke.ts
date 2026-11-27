@@ -29,9 +29,9 @@ import { createConnection, createServer, type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { recordsBucket } from "@cotal-ai/core";
+import { CotalEndpoint, deliveryLeaseHolderFor, mintCreds, mintLifecycleUid, newIdentity, recordsBucket } from "@cotal-ai/core";
 import { connect } from "@nats-io/transport-node";
-import { canonicalLocalProcessPath, DELIVERY_PIDFILE, isCommandFailure, MANAGER_PIDFILE, MANAGER_SPARE_CAPABILITY, readManagerName, shellPath, spaceKey, userAuthStateDir, verifyIdentityPin, type ProcessIdentityRecord } from "@cotal-ai/workspace";
+import { canonicalLocalProcessPath, deliveryCredsKey, DELIVERY_PIDFILE, getSpaceAuth, isCommandFailure, MANAGER_PIDFILE, MANAGER_SPARE_CAPABILITY, readManagerName, shellPath, spaceKey, userAuthStateDir, verifyIdentityPin, workspaceSecretStore, type ProcessIdentityRecord } from "@cotal-ai/workspace";
 import { finishOwnedChild, observeOwnedChild, ownedBirthLive as live, waitForOwnedChild } from "./_foreground-owned-child.js";
 import { foregroundCliProbe } from "./_foreground-cli-probe.js";
 import { shellWord } from "../src/lib/endpoint-errors.js";
@@ -130,11 +130,15 @@ function token(path: string): ProcessIdentityRecord | undefined {
   return pin.kind === "match" ? pin.record : undefined;
 }
 
-function controllerBroker(space: string, machine: string) {
+function controllerMember(space: string, machine: string, definition: "stack-broker" | "stack-auth" | "stack-delivery") {
   const previousHome = process.env.COTAL_HOME;
   process.env.COTAL_HOME = machine;
-  try { return serviceInstances(space, "stack-broker")[0]?.record.value; }
+  try { return serviceInstances(space, definition)[0]?.record.value; }
   finally { if (previousHome === undefined) delete process.env.COTAL_HOME; else process.env.COTAL_HOME = previousHome; }
+}
+
+function controllerBroker(space: string, machine: string) {
+  return controllerMember(space, machine, "stack-broker");
 }
 
 async function checkStoppedPreview(mesh: string, env: NodeJS.ProcessEnv, space: string, port: number): Promise<void> {
@@ -1617,11 +1621,94 @@ async function userAuthRestartCell(): Promise<void> {
   }
 }
 
+async function userAuthControllerBrokerCrashCell(): Promise<void> {
+  const root = join(base, "controller-user-auth-broker-crash"), home = join(root, "home"), mesh = join(root, "project"), machine = join(home, "machine");
+  for (const dir of [root, home, mesh, join(home, "xdg"), machine]) mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const sandbox = recordSmokeSandbox({ root: mesh, cotalHome: machine, xdgConfigHome: join(home, "xdg") });
+  const env = { ...cleanEnv, HOME: home, COTAL_HOME: machine, XDG_CONFIG_HOME: join(home, "xdg"), XDG_DATA_HOME: join(home, "data"), XDG_CACHE_HOME: join(home, "cache"), XDG_STATE_HOME: join(home, "state"), COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1" };
+  const key = generateKeyPairSync("ed25519").publicKey.export({ format: "jwk" });
+  const idp = createHttpServer((req, res) => {
+    if (req.url !== "/auth/jwks") { res.writeHead(404).end(); return; }
+    res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ keys: [{ ...key, kid: "fixture", use: "sig", alg: "EdDSA" }] }));
+  });
+  const listening = once(idp, "listening");
+  idp.listen(0, "127.0.0.1");
+  await listening;
+  const port = await freePort(), server = `nats://127.0.0.1:${port}`, space = "foreground-user-auth-crash";
+  const idpUrl = `http://127.0.0.1:${(idp.address() as AddressInfo).port}/auth`;
+  const foreground = (args: string[]) => {
+    const child: ChildProcess = spawn(process.execPath, ["--import", tsx, cliEntry, "up", "--foreground", ...args], { cwd: mesh, env, detached: true, stdio: ["ignore", "pipe", "pipe"] });
+    const io = { out: "", err: "" };
+    child.stdout?.on("data", (chunk: Buffer) => { io.out += chunk.toString(); });
+    child.stderr?.on("data", (chunk: Buffer) => { io.err += chunk.toString(); });
+    return { child, io, state: observeOwnedChild(child) };
+  };
+  let holder: ReturnType<typeof foreground> | undefined, taker: ReturnType<typeof foreground> | undefined, brokerKilled = false;
+  try {
+    const created = await foregroundCliProbe(cliEntry, tsx, mesh, env, ["space", "create", space, "--root", mesh]);
+    assert.equal(created.code, 0, created.out + created.err);
+    holder = foreground(["--no-manager", "--user-auth", "--idp", idpUrl, "--space", space, "--server", server]);
+    await until(() => {
+      if (holder!.state.error) throw holder!.state.error;
+      if (holder!.state.exited) throw new Error(holder!.io.out + holder!.io.err);
+      return /Operation: +up completed/.test(holder!.io.out);
+    }, 120_000, () => holder!.io.err.slice(-3000));
+    const broker = controllerBroker(space, machine), auth = controllerMember(space, machine, "stack-auth"), delivery = controllerMember(space, machine, "stack-delivery");
+    assert.ok(broker?.process && observeServiceProcess(broker) === "running" && auth?.process && observeServiceProcess(auth) === "running" && delivery?.process && observeServiceProcess(delivery) === "running");
+    process.kill(broker.process.pid, "SIGKILL");
+    brokerKilled = true;
+    await until(() => holder!.state.exited, 10_000, () => holder!.io.err.slice(-3000));
+    await waitForOwnedChild(() => holder!.state.closed, 3_000, `${root}: holder streams drained`);
+    assert.equal(holder.state.code, 5, holder.io.err); passed++;
+    assert.equal(existsSync(join(mesh, ".cotal", "stack-foreground.hold")), false); passed++;
+    assert.ok(holder.io.err.includes(`up --foreground --no-manager --root ${shellPath(mesh)}\` to repair the stack.`), holder.io.err); passed++;
+    await until(() => observeServiceProcess(auth!) !== "running", 15_000, () => "crashed broker fences stack-auth");
+    assert.equal(observeServiceProcess(delivery), "running", "the prior delivery daemon is still running when repair begins"); passed++;
+    taker = foreground(["--no-manager", "--root", mesh]);
+    await until(() => {
+      if (taker!.state.error) throw taker!.state.error;
+      if (taker!.state.exited) throw new Error(taker!.io.out + taker!.io.err);
+      return /Operation: +up completed/.test(taker!.io.out);
+    }, 120_000, () => taker!.io.err.slice(-3000));
+    assert.match(taker.io.out, /^\s*auth\s+stack-auth\s+\S+\s+started$/m, taker.io.out); passed++;
+    assert.match(taker.io.out, /^\s*delivery\s+stack-delivery\s+\S+\s+started$/m, taker.io.out); passed++;
+    assert.notEqual(observeServiceProcess(delivery), "running", "broker repair stops the prior delivery process"); passed++;
+    const repairedAuth = controllerMember(space, machine, "stack-auth"), repaired = controllerMember(space, machine, "stack-delivery");
+    assert.ok(repairedAuth?.process && repairedAuth.process.pid !== auth.process.pid && observeServiceProcess(repairedAuth) === "running"); passed++;
+    assert.ok(repaired?.process && repaired.process.pid !== delivery.process.pid && observeServiceProcess(repaired) === "running"); passed++;
+    const store = workspaceSecretStore(mesh), spaceAuth = await getSpaceAuth(store, space), probeId = newIdentity(), probeUid = mintLifecycleUid();
+    const ep = new CotalEndpoint({ space, servers: server, creds: await mintCreds(spaceAuth!, probeId, "deployer", { lifecycleUid: probeUid }), lifecycleUid: probeUid, channels: [], consume: false, registerPresence: false, watchPresence: false, watchChannels: false, card: { id: probeId.id, name: "lease-probe", kind: "endpoint" } });
+    ep.on("error", () => {});
+    await ep.start();
+    try {
+      const lease = await ep.readDeliveryLease(0), creds = await store.get(deliveryCredsKey(space, { injected: false, root: mesh }));
+      assert.ok(creds && lease?.ready === true && lease.holder === deliveryLeaseHolderFor(creds), JSON.stringify(lease)); passed++;
+    } finally { await ep.stop().catch(() => {}); }
+    assertSmokeSandboxDown(sandbox, ["down", "--yes"], { cwd: mesh, env });
+    const down = await foregroundCliProbe(cliEntry, tsx, mesh, env, ["down", "--yes"], 120_000);
+    assert.equal(down.code, 0, down.out + down.err);
+    await until(() => taker!.state.closed, 10_000, () => taker!.io.err.slice(-3000));
+    assert.equal(taker.state.code, 0, taker.io.err); passed++;
+    console.log("PASS foreground-up-signals controller user-auth broker crash restarts delivery");
+  } finally {
+    try {
+      for (const run of [holder, taker]) if (run && !run.state.exited && run.child.pid) process.kill(-run.child.pid, "SIGKILL");
+      if (brokerKilled && !(await portOpen(port)) && existsSync(join(mesh, ".cotal", "stack-controller.json")) && (!taker || taker.state.code !== 0))
+        await foregroundCliProbe(cliEntry, tsx, mesh, env, ["up", "--no-manager"], 120_000);
+      assertSmokeSandboxDown(sandbox, ["down", "--yes"], { cwd: mesh, env });
+      if (await portOpen(port)) await foregroundCliProbe(cliEntry, tsx, mesh, env, ["down", "--yes"], 120_000);
+    } finally {
+      await new Promise<void>(resolve => idp.close(() => resolve()));
+    }
+  }
+}
+
 console.log(`foreground-up-signals retained evidence: ${base}`);
 await manifestBrokerRetryCell();
 await openBrokerOnlyRestartCell();
 await managerNameCell();
 await userAuthRestartCell();
+await userAuthControllerBrokerCrashCell();
 await cell("external-named", { auth: true, ready: true, externalDown: "named" });
 await cell("external-folder", { auth: true, ready: true, externalDown: "folder" });
 await cell("external-open", { externalDown: "named" });

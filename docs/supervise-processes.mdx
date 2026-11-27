@@ -79,7 +79,7 @@ Choose the ownership you need before copying a unit; `Type=simple` alone does no
 
 If the broker crashes under foreground `up`, the launcher retains its mesh record and exits nonzero.
 The unit restart repairs the recorded store rather than creating a second mesh.
-When `up` replaces a static-auth stack's broker, it restarts the recorded delivery daemon and waits for the new process to report ready.
+When `up` replaces an authenticated stack's broker, it restarts the recorded delivery daemon and waits for the new process to report ready.
 If the project folder moved, move it back to its recorded path before restarting the stack.
 If the manager or delivery daemon crashes, its lease remains until expiry, normally 10 seconds for the manager and 30 seconds for delivery.
 A repair `up` can wait out that lease when it proves the holder is gone.
