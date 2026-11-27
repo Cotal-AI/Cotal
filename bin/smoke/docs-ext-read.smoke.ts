@@ -113,6 +113,19 @@ let specBody = "";
 {
   const docs = run(["docs", "cli-agent-control", "--json"]);
   const body = docs.envelope?.result?.body;
+  const managedSeats = typeof body === "string"
+    ? (body.split(/^## Managed seats(?: \[#managed-seats\])?$/m)[1]?.split(/^## /m)[0] ?? "").replace(/\s+/g, " ")
+    : "";
+  const startup = run(["docs", "cli-startup.mdx#up", "--json"]);
+  check("the bundled managed seats reference qualifies bare up with the 263168-byte manager payload floor and restart link",
+    docs.status === 0 && startup.status === 0 &&
+    managedSeats.includes("Bare `cotal up` adds the manager when the running broker's `--max-payload` is at least 263168 bytes.") &&
+    managedSeats.includes("below 263168 bytes") &&
+    managedSeats.includes("`cotal down --yes`") &&
+    managedSeats.includes("`cotal up --max-payload 1048576`") &&
+    managedSeats.includes("[startup reference](cli-startup.mdx#up)") &&
+    !managedSeats.includes("Bare `cotal up` adds the manager."),
+    managedSeats);
   const input = typeof body === "string" ? body.split(/^## input(?: \[#input\])?$/m)[1]?.split(/^## /m)[0] ?? "" : "";
   const flags = input.split("\n").filter((line) => line.startsWith("|"));
   const raw = run(["input", "--name", "reviewer", "--text", "/compact", "--no-enter", "--space", "docs-input-ref",

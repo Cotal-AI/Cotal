@@ -29,6 +29,7 @@ import {
   extensionsDir,
   findCotalRoot,
   meshesForRoot,
+  migrateProjectTrust,
   resolveReadsLiveness,
   unsettledStackOperation,
   withdrawOperationNote,
@@ -98,7 +99,7 @@ import {
 } from "../lib/stack-journal.js";
 import { cotalLinkHere, linkedCotalRemedy } from "../lib/paths.js";
 import { rootStoreProblem } from "../lib/store-dir.js";
-import { lostRecordsBroker } from "./stack-lost-records.js";
+import { lostRecordsRecovery } from "./stack-lost-records.js";
 import { readCursor } from "../seed/lock.js";
 import { reconcileCursorPath } from "../seed/paths.js";
 import {
@@ -236,7 +237,7 @@ export async function status(args: ParsedArgs): Promise<void> {
   const preflightReport = await readStatusPreflight(selected, gaps, hints);
   const { preflight } = preflightReport;
   const responder = await readResponderAxis(selected, preflight, gaps);
-  const { folder, stackStarting, recoveryBroker } = blocked ? { folder: unreadFolder(root, blocked), stackStarting: false, recoveryBroker: undefined } : await readFolder(root, selected, values, responder.state, gaps, hints);
+  const { folder, stackStarting, recoveryBroker, recoveryMembers } = blocked ? { folder: unreadFolder(root, blocked), stackStarting: false, recoveryBroker: undefined, recoveryMembers: undefined } : await readFolder(root, selected, values, responder.state, gaps, hints);
   if (selected.ok) {
     try {
       const renewal = readRenewalRecord(selected.target.root, selected.target.space);
@@ -255,7 +256,7 @@ export async function status(args: ParsedArgs): Promise<void> {
     : readMaintenance(root, gaps);
   const recovery = backupRecovery(maintenance, sourceMissing);
   const selectedHints: string[] = [], selectedStarting = selectedStackStarting(selected, folder, stackStarting);
-  const target = recoveryBroker !== undefined ? selectedRecovery(selectedHints) : await readSelected(selected, responder, folder, gaps, selectedHints, preflightReport, Boolean(values.all), selectedStarting);
+  const target = recoveryMembers !== undefined ? selectedRecovery(selectedHints, recoveryMembers) : await readSelected(selected, responder, folder, gaps, selectedHints, preflightReport, Boolean(values.all), selectedStarting);
   const stoppedForeignListener = preflight?.ok === false && preflight.kind === "non-nats-listener" && preflight.pid !== undefined;
   // Address, journal, channel seed, and store problems can block the conditional store reset.
   if (!stoppedForeignListener && (target.resolved || target.code !== "SCHEMA_INVALID") && folder.storedState && folder.processSpace !== null && maintenance === null && !(target.channelSeedBlocksRestart && target.root === root) && !rootStoreProblem(root)) {
@@ -309,6 +310,7 @@ export async function status(args: ParsedArgs): Promise<void> {
   // An address a saved service's readiness checks that still answers with none of its instances
   // running is named, but it is not a part status failed to read, so the run stays complete.
   const survivors = selected.ok && services.state === "read" ? await readinessAddressSurvivors(selected.target.space) : [];
+  migrateProjectTrust();
   writeResult(
     presentation,
     {
@@ -328,7 +330,7 @@ export async function status(args: ParsedArgs): Promise<void> {
       recovery, stoppedForeignListener, stackStarting, selectedStarting,
     }),
   );
-  if (values.components) await printComponentHealth(selected, store, target, meshes, recovery && !recoveringOtherSpace ? recovery : selectedHints[0], !target.resolved && selectedStarting ? target.message : undefined, recoveryBroker);
+  if (values.components) await printComponentHealth(selected, store, target, meshes, recovery && !recoveringOtherSpace ? recovery : selectedHints[0], !target.resolved && selectedStarting ? target.message : undefined, recoveryBroker, recoveryMembers);
 }
 
 /** Why this account cannot list or search `root`, or undefined when it can. */
@@ -623,7 +625,7 @@ async function readResponderAxis(selected: Selected, preflight: SelectedPrefligh
   }
 }
 
-async function readFolder(root: string, selected: Selected, values: FlagValues<typeof statusFlags>, responder: DeliveryResponderState, gaps: Gaps, hints: string[]): Promise<{ folder: StatusResult["folder"]; stackStarting: boolean; recoveryBroker?: number }> {
+async function readFolder(root: string, selected: Selected, values: FlagValues<typeof statusFlags>, responder: DeliveryResponderState, gaps: Gaps, hints: string[]): Promise<{ folder: StatusResult["folder"]; stackStarting: boolean; recoveryBroker?: number; recoveryMembers?: { role: string; pid: number }[] }> {
   let stackJournal: NonNullable<StatusResult["folder"]["stackJournal"]>;
   try { stackJournal = lstatSync(stackJournalPath(root), { throwIfNoEntry: false }) === undefined ? "absent" : "present"; }
   catch { stackJournal = "unreadable"; }
@@ -697,7 +699,9 @@ async function readFolder(root: string, selected: Selected, values: FlagValues<t
     elsewhere = isCommandFailure(error) && error.code === "CONFLICT";
   }
   const activeStartup = journal !== undefined && stackUpInProgress(journal);
-  const recoveryBroker = journal && !selected.ok && isWorkspaceTargetError(selected.error) && selected.error.code === "not-started" && selected.error.details.stackSpace === journal.space && selected.error.details.root === root ? lostRecordsBroker(journal) : undefined;
+  const recovered = journal ? lostRecordsRecovery(journal, selected.ok ? undefined : selected.error, root) : undefined;
+  const verifiedMembers = recovered && recovered.length > 0 ? recovered : undefined;
+  const recoveryBroker = verifiedMembers?.find((row) => row.role === "broker")?.pid;
   // A root whose records show two spaces running has no single answer, the
   // same shape as the multi-account case above. The process rows below are keyed by one space, so
   // report that state and stop rather than crashing in the recovery command that names it.
@@ -732,7 +736,10 @@ async function readFolder(root: string, selected: Selected, values: FlagValues<t
     // #2073: a live manager pid used to print green `running` on the pidfile alone, which is how
     // a manager whose service rail had died read as healthy for hours. One probe of the service
     // endpoint now decides the row; see `managerProcess`.
-    if (component.name === "manager") processes.push(await managerProcess(selected.ok ? selected.target : undefined, state, context.space, gaps));
+    if (component.name === "manager") {
+      const pinned = verifiedMembers?.find((row) => row.role === "manager");
+      processes.push(pinned ? { name: "manager", state: "running", pid: pinned.pid, detail: "verified from the stack journal; service instance record missing" } : await managerProcess(selected.ok ? selected.target : undefined, state, context.space, gaps));
+    }
     // THE #1576 ROW. A live delivery PID is not the fact an operator needs; the responder is.
     // A live pid alone read as `delivery running (pid N)` identically over a bound responder and one
     // that never bound. The detail names which it is, and when unbound it names the CONSEQUENCE
@@ -777,7 +784,7 @@ async function readFolder(root: string, selected: Selected, values: FlagValues<t
   if (controllerStack && journal) try {
     heldServices = serviceHeldRecords(root, journal.space).map((row) => ({ definition: row.definition, instanceId: row.instanceId, record: row.record.name, pid: row.record.pid! }));
   } catch { heldServices = null; }
-  return { folder: { ...folder({ state: auth ? "space" : "none", spaces: auth ? [auth.space] : [], userAuth: userDisk, error: null }, processes, storedState, space, controllerStack, noManager, stackBlock, stackUnfinished), managerService, heldServices }, stackStarting, ...(controllerStack && recoveryBroker !== undefined ? { recoveryBroker } : {}) };
+  return { folder: { ...folder({ state: auth ? "space" : "none", spaces: auth ? [auth.space] : [], userAuth: userDisk, error: null }, processes, storedState, space, controllerStack, noManager, stackBlock, stackUnfinished), managerService, heldServices }, stackStarting, ...(controllerStack && recoveryBroker !== undefined ? { recoveryBroker } : {}), ...(controllerStack && verifiedMembers !== undefined ? { recoveryMembers: verifiedMembers } : {}) };
 }
 
 /** The folder's persona catalog, which must never let a catalog imply a `spawn` the operator does

@@ -50,6 +50,7 @@ import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { renderDetachedSummary } from "../../implementations/cli/src/lib/up-report.js";
+import { readStackJournal } from "../../implementations/cli/src/lib/stack-journal.js";
 import { shellWord } from "../../implementations/cli/src/lib/endpoint-errors.js";
 import { clean, cotalPty } from "../../implementations/cli/smoke/_console-pty.js";
 import { assertSmokeSandboxDown, freePort, killAndAwaitExit, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
@@ -69,6 +70,7 @@ const autoRoot = mkdtempSync(join(tmpdir(), "cotal-upstack-auto-"));
 const occupantRoot = mkdtempSync(join(tmpdir(), "cotal-upstack-occupant-"));
 const warningRoot = mkdtempSync(join(tmpdir(), "cotal-upstack-warning-"));
 const openRoot = mkdtempSync(join(tmpdir(), "cotal-upstack-open-"));
+const clonedRoot = mkdtempSync(join(tmpdir(), "cotal-upstack-cloned-"));
 const fakeBin = mkdtempSync(join(tmpdir(), "cotal-upstack-bin-"));
 const configDir = join(home, "xdg");
 const anchors = new Map([
@@ -76,9 +78,12 @@ const anchors = new Map([
   [autoRoot, recordSmokeSandbox({ root: autoRoot, cotalHome: home, xdgConfigHome: configDir })],
   [occupantRoot, recordSmokeSandbox({ root: occupantRoot, cotalHome: home, xdgConfigHome: configDir })],
   [warningRoot, recordSmokeSandbox({ root: warningRoot, cotalHome: home, xdgConfigHome: configDir })],
-  [openRoot, recordSmokeSandbox({ root: openRoot, cotalHome: home, xdgConfigHome: configDir })],
+  [clonedRoot, recordSmokeSandbox({ root: clonedRoot, cotalHome: home, xdgConfigHome: configDir })],
 ]);
-const env = { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: configDir, COTAL_SKIP_CONNECTOR_SEED: "1" };
+const env = {
+  ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_"))),
+  COTAL_HOME: home, XDG_CONFIG_HOME: configDir, COTAL_SKIP_CONNECTOR_SEED: "1",
+};
 
 let pass = 0;
 const ok = (name: string, cond: boolean, extra?: unknown) => {
@@ -510,8 +515,17 @@ try {
   const openRecord = (template: string) => canonicalLocalProcessPath(template, { root: openRoot, space: basename(openRoot) });
   const openManagerPid = () => Number(readFileSync(openRecord(MANAGER_PIDFILE), "utf8").trim());
   const openRefresh = (...extra: string[]) => cliIn(openRoot, "up", "--detach", "--open", "--server", openServer, ...extra);
+  ok("the fresh project has no .cotal before startup", !existsSync(join(openRoot, ".cotal")));
   const openBoot = openRefresh();
+  if (existsSync(join(openRoot, ".cotal"))) anchors.set(openRoot, recordSmokeSandbox({ root: openRoot, cotalHome: home, xdgConfigHome: configDir }));
   ok("a fresh open up --detach starts the broker and manager", openBoot.status === 0 && /^✓ running in the background: nats-server \(pid \d+\), manager - stop with: `(?:pnpm )?cotal down`$/m.test(plain(openBoot.stdout)), plain(openBoot.stdout + openBoot.stderr));
+  // `up` made this folder's `.cotal`, so it trusts the folder to declare MCP servers, spawn.env names
+  // and persona launch options.
+  const trustedRoots = (): string[] => {
+    try { return (JSON.parse(readFileSync(join(configDir, "cotal", "trusted-projects.json"), "utf8")) as { roots: string[] }).roots; }
+    catch { return []; }
+  };
+  ok("up in a new folder trusts the folder whose .cotal it made", trustedRoots().includes(realpathSync(openRoot)), { roots: trustedRoots(), stderr: plain(openBoot.stderr) });
   const openManager = openManagerPid();
   pids.push(Number(readFileSync(join(openRoot, ".cotal", "nats.pid"), "utf8").trim()), openManager);
   for (const extra of [[], ["--runtime", "pty"]]) {
@@ -629,6 +643,35 @@ process.report.getReport = () => {
   const openRootDown = cliIn(openRoot, "down", "--yes");
   for (let i = 0; i < 24 && alive(openHealedPid); i++) await sleep(500);
   ok("down stops the open root's stack", openRootDown.status === 0 && !alive(openHealedPid), plain(openRootDown.stdout + openRootDown.stderr));
+
+  // A folder that arrived with a `.cotal`, as a cloned repository does, is not trusted by `up`, which
+  // did not make it.
+  {
+    const cloned = clonedRoot;
+    mkdirSync(join(cloned, ".cotal", "agents"), { recursive: true, mode: 0o700 });
+    writeFileSync(join(cloned, ".cotal", "config.json"), JSON.stringify({ spawn: { env: ["COTAL_STACK_TRUST_PROBE"] } }));
+    const space = basename(cloned);
+    const prepared = cliIn(cloned, "space", "create", space, "--root", cloned);
+    ok("the cloned root can be prepared without trusting its existing .cotal", prepared.status === 0 && !trustedRoots().includes(realpathSync(cloned)), plain(prepared.stdout + prepared.stderr));
+    const args = ["up", "--detach", "--space", space, "--server", `nats://127.0.0.1:${await freePort()}`, "--json"];
+    const clonedUp = cliIn(cloned, ...args);
+    const before = readStackJournal(cloned)?.journal.members;
+    const broker = before?.find((row) => row.role === "broker")?.process?.pid ?? 0;
+    if (broker) pids.push(broker);
+    const result = clonedUp.stdout ? JSON.parse(clonedUp.stdout) : undefined;
+    ok("up in an untrusted clone keeps the broker, refuses the manager, and gives the trust command as the next step",
+      result?.error?.code === "OPERATION_PARTIAL" && result.error.remedy?.includes(`\`cotal trust ${realpathSync(cloned)}\``)
+      && broker > 0 && alive(broker) && !trustedRoots().includes(realpathSync(cloned))
+      && before?.find((row) => row.role === "manager")?.state === "refused",
+      { status: clonedUp.status, out: plain(clonedUp.stdout + clonedUp.stderr).slice(-1000) });
+    const trusted = cliIn(cloned, "trust", cloned);
+    const retried = cliIn(cloned, ...args);
+    const manager = readStackJournal(cloned)?.journal.members.find((row) => row.role === "manager")?.process?.pid ?? 0;
+    if (manager) pids.push(manager);
+    ok("trusting the clone lets the same up invocation start its manager",
+      trusted.status === 0 && retried.status === 0 && manager > 0 && alive(manager), plain(retried.stdout + retried.stderr).slice(-1000));
+    cliIn(cloned, "down", "--yes");
+  }
 
   const homeRecord = openRecord("stack-home.json");
   const intactHome = readFileSync(homeRecord);
@@ -934,6 +977,9 @@ process.report.getReport = () => {
   mkdirSync(join(fgRoot, ".cotal", "agents"), { recursive: true });
   writeFileSync(join(fgRoot, ".cotal", "agents", "seat.md"), "---\nname: seat\nrole: worker\nsubscribe: []\nallowPublish: []\n---\nA supervised seat that exists to be spared.\n");
   writeFileSync(join(fgRoot, ".cotal", "config.json"), JSON.stringify({ spawn: { env: ["CORE_DIST", "PIDFILE", "SHIM_BODY"] } }));
+  // A project config that names spawn.env applies only in a folder the operator trusts.
+  const fgTrust = cliIn(fgRoot, "trust", fgRoot);
+  ok("the foreground project folder is trusted", fgTrust.status === 0, plain(fgTrust.stderr));
   // Seeding installs the connector, not Claude's user configuration. Declare its wake-channel
   // server in this project so the shim launch does not depend on the host's Claude setup.
   writeFileSync(join(fgRoot, ".mcp.json"), JSON.stringify({
@@ -1177,8 +1223,9 @@ process.report.getReport = () => {
   cliIn(autoRoot, "down", "--yes");
   if (startedOccupant) cliIn(occupantRoot, "down", "--yes");
   cliIn(warningRoot, "down", "--yes");
-  cliIn(openRoot, "down", "--yes");
+  if (anchors.has(openRoot)) cliIn(openRoot, "down", "--yes");
+  cliIn(clonedRoot, "down", "--yes");
   for (const p of pids) if (alive(p)) { try { process.kill(p, "SIGTERM"); } catch { /* gone */ } }
   rmSync(home, { recursive: true, force: true });
-  for (const d of [root, autoRoot, occupantRoot, warningRoot, openRoot, fakeBin]) rmSync(d, { recursive: true, force: true });
+  for (const d of [root, autoRoot, occupantRoot, warningRoot, openRoot, clonedRoot, fakeBin]) rmSync(d, { recursive: true, force: true });
 }

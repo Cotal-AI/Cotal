@@ -18,7 +18,12 @@ function leadingFlagCount(argv: readonly string[], forRefusal = false): number {
     const flag = forRefusal ? word.split("=", 1)[0]! : word;
     const name = forRefusal ? TYPOGRAPHIC_OPTION.exec(flag)?.[1] : undefined;
     const spelling = name === undefined ? flag : `${name.length === 1 ? "-" : "--"}${name}`;
-    if (!OUTPUT_FLAG_WORDS.has(spelling) && !GLOBAL_FLAG_WORDS.has(spelling)) break;
+    if (OUTPUT_FLAG_WORDS.has(spelling) || GLOBAL_FLAG_WORDS.has(spelling)) { lead++; continue; }
+    // A mistyped help or version word is still a leading flag for the refusal, so it never hides the
+    // command that asked for its JSON receipt. Stop at the next word, which is the command: these
+    // spellings also request help and version, and reading past them would take the command word.
+    const recovering = forRefusal && (spelling === "--help" || spelling === "-h" || spelling === "--version" || spelling === "-V");
+    if (!recovering || argv[lead + 1] === undefined) break;
     lead++;
   }
   return lead;

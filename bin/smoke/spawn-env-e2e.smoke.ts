@@ -84,7 +84,7 @@ for (const connectorName of ["claude", "opencode", "codex", "jcode"]) {
   for (const [mode, block] of [["DEFAULT (no spawn block)", undefined],
                                ["CONFINED (spawn.env allow-list)", { env: [ALLOWED] }]] as const) {
     const root = realConfigRoot(block);
-    const cfg = loadCotalConfig(root);                 // real loader, real file
+    const cfg = loadCotalConfig(root, () => true);     // real loader, real file, a trusted project
     const envAllow = spawnEnvAllow(cfg);               // real caller-side resolution
     const opts = { space: "e2e", name: "seat", role: "worker", id: "AGENTIDPLACEHOLDER",
       lifecycleUid: "lc-1", creds, servers: "nats://127.0.0.1:14999",

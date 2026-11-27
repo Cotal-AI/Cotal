@@ -53,12 +53,12 @@ export function refuseExchange(
   peerThrottled: boolean,
   audit: string,
   status: number,
-  body: { error: string; code?: string; outcome?: string },
+  body: { error: string; code?: string; outcome?: string } | { v: number; lifecycleUid: string; status: string },
   throttledExtra: { code?: string; outcome?: string } = {},
 ): void {
   policy.recordFailure(ctx, peer);
   console.error(`auth-service: ${audit}`);
-  if (peerThrottled) return send(res, 429, { error: "too many refused exchanges - wait a minute and retry", ...throttledExtra });
+  if (peerThrottled) return send(res, 429, { error: "too many refused exchanges - wait a minute and retry", ...throttledExtra }, { "retry-after": "60" });
   send(res, status, body);
 }
 

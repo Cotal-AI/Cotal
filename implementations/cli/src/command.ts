@@ -7,6 +7,7 @@ import {
   CommandFailure,
   commandFailureReport,
   cachedPreferences,
+  withProjectTrustMigration,
   CorruptExtensionsManifestError,
   cotalDirProblem,
   cotalHomeProblem,
@@ -33,6 +34,7 @@ import {
   outputDeclarationProblems,
   oneLine,
   paintFor,
+  plainFlag,
   preferencesFolderWarning,
   recordOperationWarning,
   renderReport,
@@ -76,9 +78,9 @@ import { registryFailure } from "./lib/registry-errors.js";
 import { FlagValueRefusal } from "./lib/flag-value-refusal.js";
 import { workingFolderRemoved } from "./lib/paths.js";
 import { npmProjectDirectory, preserveUpdatePath } from "./lib/npm-invocation.js";
-import { reportLostOutput, writeAllSync } from "./lib/stdout-owner.js";
+import { reportLostOutput, writeWholeSync } from "./lib/stdout-owner.js";
 import { shellWord } from "./lib/endpoint-errors.js";
-import { displayRemedy, hasMovedStackRemedy } from "./lib/self-exec.js";
+import { displayProjectTrustFailure, displayRemedy, hasMovedStackRemedy } from "./lib/self-exec.js";
 import { asksForHelp, GLOBAL_FLAG_WORDS, leadingInvocation, OUTPUT_FLAG_WORDS, TYPOGRAPHIC_OPTION } from "./lib/leading-flags.js";
 import { takeManagedHandoffCustody } from "./managed-handoff.js";
 import { nearestWords, LEADING_FLAGS, unknownCommandMessage, unknownSubcommandMessage } from "./lib/nearest-word.js";
@@ -234,7 +236,12 @@ function failureExit(cmd: Command, failure: CommandFailure, json: boolean, plain
     process.exit(1);
   }
   // Rendered in the run's scope, so the `Mesh:` heading keeps the note on how the run chose its space.
-  const report = () => renderReport(commandFailureReport(failure), plain ? "plain" : "rich", process.stderr);
+  const report = () => {
+    const message = displayProjectTrustFailure(failure.message);
+    const remedy = failure.remedy === undefined ? undefined : displayProjectTrustFailure(failure.remedy);
+    const shown = message === failure.message && remedy === failure.remedy ? failure : new CommandFailure(failure.outcome, failure.code, message, { ...failure, remedy });
+    return renderReport(commandFailureReport(shown), plain ? "plain" : "rich", process.stderr);
+  };
   const writeReport = () => writeSync(2, `${scope ? runOperation(scope, report) : report()}
 `);
   // Under --json the envelope alone reports the failure. Its text report goes to stderr only when the
@@ -262,7 +269,7 @@ function failureExit(cmd: Command, failure: CommandFailure, json: boolean, plain
       }, failure)
       : cmd.name === "watch" && validationArgs && !plain ? watchSetupFailureRecords(validationArgs, failure) : undefined;
     const lines = records ? records.map((record) => `${JSON.stringify(record)}\n`).join("") : envelopeLine(failureEnvelope(command, failure, warnings, scope));
-    writeAllSync(1, Buffer.from(lines));
+    writeWholeSync(1, Buffer.from(lines));
   } catch (error) {
     const writeError = error as NodeJS.ErrnoException;
     if (writeError.code !== "EPIPE") {
@@ -330,6 +337,7 @@ function skipsSeed(name: string, sub: string | undefined, argv: readonly string[
   if (argv.includes("--dry-run")) return true;
   if (name === "persona" || (name === "personas" && !argv.includes("--running"))) return true; // local files or existing native manager routes; neither installs connectors
   if (name === "telemetry") return true; // one local settings file; never installs connectors
+  if (name === "trust") return true; // one local trust record; never installs connectors
   if (["__service-feedback-intake", "__service-delivery", "__service-manager", "__service-auth", "__service-linear", "__service-web", "__service-exec-endpoint"].includes(name)) return true; // explicit native service child; never repairs the installation
   if (name === "team" && (sub === "deploy" || sub === "remove")) return true; // existing native manager/channel operations never install local connectors
   // `backup restore` is excluded: it starts the restored stack and resumes its seats through `up
@@ -454,7 +462,7 @@ function usageRefusal(failure: CommandFailure, plain: boolean, cmd?: Command, wo
   }
   if (!cmd) return;
   if (report) console.error("");
-  paintFor(process.stderr, () => printHelpPath(cmd, helpPath(cmd, words).path, (line) => console.error(line), terminalWidth(process.stderr), plain ? "plain" : "rich"));
+  paintFor(process.stderr, () => printHelpPath(cmd, helpPath(cmd, words).path, (line) => console.error(line), terminalWidth(process.stderr), plain ? "plain" : "rich", words));
 }
 
 /** Recover the requested stream output and target for a refusal, without running the command. */
@@ -571,6 +579,8 @@ function misspelledOption(cmd: Command, rest: readonly string[], flagNames: read
       if ((cmd.name === "ext" || sub?.name === "check") && accepted && !accepted.includes(typed.flagName))
         return { message: typed.message, remedy: `omit this option; \`cotal ${cmd.name}${sub ? ` ${sub.name}` : ""}\` does not take --${typed.flagName}` };
     }
+    if (typed && typed.flagName === "plain" && asksForJson(cmd, rest))
+      return { message: typed.message, remedy: "omit the mistyped plain option" };
     if (typed) return typed;
   }
   return undefined;
@@ -612,6 +622,11 @@ function switchValueRefusal(flag: string, cmd?: Command, rest: readonly string[]
     ? !json && (findSubcommand(cmd, first) ?? cmd).outputs?.includes("plain")
     : structured(cmd, first)));
   return { message: `${flag} takes no value`, remedy: `omit ${flag}${acceptsFlag ? " or pass it without a value" : ""}` };
+}
+
+/** `--help` takes no value. Name the bare switch, not a positional that starts with `-`. */
+function helpSwitchValueRefusal(cmd: Command) {
+  return { message: "--help takes no value", remedy: displayRemedy(`run \`cotal ${cmd.name} --help\``) };
 }
 
 /** Positional word limit for the separator remedy only, counting subcommand words. Commands with
@@ -686,6 +701,8 @@ function parseRefusal(error: Error & { code?: string }, cmd: Command, rest: read
     const reason = error.message.replace(/'\. To specify a positional argument starting with a '-', place it at the end of the command after '--', as in '-- "(?:[^"\\]|\\.)*"$/u, "'");
     const option = /^Unknown option '(--.+)'$/su.exec(reason)?.[1];
     if (option && GLOBAL_FLAG_WORDS.has(option) && !takesWordsRaw(cmd)) return switchValueRefusal(option);
+    // `--help` is a switch, not a command flag, so a value on it is not an unknown option.
+    if (option === "--help" && !takesWordsRaw(cmd)) return helpSwitchValueRefusal(cmd);
     if (cmd.name === "help" && option === "--preset") {
       const [service, verb] = metadataPositionals(cmd, rest).positionals;
       if (findCommand(commandSurface(), service?.value)?.name === "service" && verb?.value === "add")
@@ -928,7 +945,7 @@ async function serviceSurface(found: Command | undefined, words: string[], forRe
 /** Recover the command and output mode for a malformed leading switch without dispatching it. */
 async function unknownInvocationExit(commands: readonly Command[], word: string, args: string[], output: string[], beforeSeparator: boolean, warnings: OutputWarning[]): Promise<never> {
   const typed = typographicOption(word, new Set(LEADING_FLAGS.map((flag) => flag.slice(2))), [
-    jsonFlag, { name: "help", short: "h", type: "boolean" }, { name: "version", short: "V", type: "boolean" },
+    jsonFlag, plainFlag, { name: "help", short: "h", type: "boolean" }, { name: "version", short: "V", type: "boolean" },
   ]);
   const equals = word.indexOf("=");
   const flag = equals === -1 ? word : word.slice(0, equals);
@@ -943,11 +960,16 @@ async function unknownInvocationExit(commands: readonly Command[], word: string,
   const words = [...output, ...retry.leading.filter((item) => OUTPUT_FLAG_WORDS.has(item)), ...retry.args];
   const { cmd, rest } = await serviceSurface(takesWordsRaw(found) ? undefined : found, words, true);
   const json = cmd !== undefined && asksForJson(cmd, rest);
+  // With JSON chosen, correcting a mistyped `--plain` would ask for both outputs at once, so the
+  // remedy drops the word instead of retyping it.
+  const plainRefusal = typed?.flagName === "plain" && json
+    ? { ...typed, remedy: "omit the mistyped plain option" }
+    : typed;
   if (typed && !json) return textExit();
   routeCollisionWarnings(warnings, cmd, rest, false);
   const end = rest.indexOf("--");
   const plain = (end === -1 ? rest : rest.slice(0, end)).includes("--plain");
-  const refusal = typed ?? switchValueRefusal(flag, cmd, rest, json);
+  const refusal = plainRefusal ?? switchValueRefusal(flag, cmd, rest, json);
   return usageExit(refusal.message, cmd, json, plain, refusal.remedy, rest);
 }
 
@@ -975,6 +997,28 @@ function repeatedInvocationExit(repeated: string, cmd: Command | undefined, rest
 export function runCli(registry: Registry, argv: string[], opts: RunCliOptions = {}): Promise<void> {
   const scope: OperationScope = {};
   return runOperation(scope, () => dispatchCli(registry, argv, opts, scope));
+}
+
+function checkCommandLocalState(cmd: Command, parsed: ParsedArgs, rest: readonly string[]): void {
+  if (cmd.name.startsWith("__") || cmd.name === "help" || cmd.name === "completion") return;
+  const json = structured(cmd, parsed.positionals[0]) && parsed.values.json === true;
+  const refuse = (failure: CommandFailure) => failureExit(cmd, failure, json, parsed.values.plain === true, undefined, rest, parsed);
+  // A relative COTAL_HOME would select different records in each working folder.
+  const home = process.env.COTAL_HOME;
+  if (home && !isAbsolute(home)) refuse(new CommandFailure("refused", "USAGE_INVALID", `COTAL_HOME ${JSON.stringify(home)} is a relative path, so each folder a command runs in would have its own Cotal home; the command did not run`, { remedy: `set COTAL_HOME to an absolute path, or unset it to use ${userCotalDir()}` }));
+  const homeProblem = cotalHomeProblem();
+  if (homeProblem) refuse(new CommandFailure("refused", "SCHEMA_INVALID", `${homeProblem}; the command did not run`, { remedy: `point COTAL_HOME at a directory, or unset it to use ${userCotalDir()}` }));
+  // The machine daemon uses its selected home, not the invoking project's records.
+  const dirProblem = cmd.name === "version" || cmd.name === "daemon" || workingFolderRemoved() ? undefined : cotalDirProblem(typeof parsed.values.root === "string" ? resolve(parsed.values.root) : findCotalRoot());
+  if (dirProblem) refuse(new CommandFailure("refused", "CONFLICT", `${dirProblem}; the command did not run`, { remedy: "rename or move that file, then run the command again" }));
+  // Commands that act on preferences refuse an invalid file. Status reports it as a warning.
+  if (!["version", "docs", "status", "daemon"].includes(cmd.name)) {
+    try { cachedPreferences(); }
+    catch (error) {
+      if (!isCommandFailure(error)) throw error;
+      refuse(error);
+    }
+  }
 }
 
 // Explicit help for the bundled reference needs only the built-in command metadata.
@@ -1225,35 +1269,11 @@ async function executeDispatchedCommand(
   cmd: Command, parsed: ParsedArgs, rest: string[], argv: string[], opts: RunCliOptions, scope: OperationScope, configRead: boolean,
 ): Promise<void> {
   const updateDirectory = cmd.name === "update" ? prepareUpdateFolder(parsed) : undefined;
-  // A preferences file that does not validate stops every command that could act on a default, as a
-  // broken config file does, so nothing runs on a default the person did not mean. Help, shell
-  // completion, version, docs and machine-daemon operations need no preference defaults, and status
-  // reports the file as a warning, so they still run. `--help` has already returned above.
-  if (!cmd.name.startsWith("__") && cmd.name !== "help" && cmd.name !== "completion") {
-    // A relative COTAL_HOME would name another home in each folder a command runs in, and a
-    // COTAL_HOME that cannot be a directory can hold no record: both stop them before any command
-    // reads it.
-    const home = process.env.COTAL_HOME;
-    if (home && !isAbsolute(home)) failureExit(cmd, new CommandFailure("refused", "USAGE_INVALID", `COTAL_HOME ${JSON.stringify(home)} is a relative path, so each folder a command runs in would have its own Cotal home; the command did not run`, { remedy: `set COTAL_HOME to an absolute path, or unset it to use ${userCotalDir()}` }), structured(cmd, parsed.positionals[0]) && parsed.values.json === true, parsed.values.plain === true, undefined, rest, parsed);
-    const homeProblem = cotalHomeProblem();
-    if (homeProblem) failureExit(cmd, new CommandFailure("refused", "SCHEMA_INVALID", `${homeProblem}; the command did not run`, { remedy: `point COTAL_HOME at a directory, or unset it to use ${userCotalDir()}` }), structured(cmd, parsed.positionals[0]) && parsed.values.json === true, parsed.values.plain === true, undefined, rest, parsed);
-    // A `.cotal` that is a file in the folder the command uses, such as someone's notes, holds no
-    // records, and every reader would otherwise report a different wrong cause. The machine daemon
-    // uses its selected home, not the invoking project's records.
-    const dirProblem = cmd.name === "version" || cmd.name === "daemon" || workingFolderRemoved() ? undefined : cotalDirProblem(typeof parsed.values.root === "string" ? resolve(parsed.values.root) : findCotalRoot());
-    if (dirProblem) failureExit(cmd, new CommandFailure("refused", "CONFLICT", `${dirProblem}; the command did not run`, { remedy: "rename or move that file, then run the command again" }), structured(cmd, parsed.positionals[0]) && parsed.values.json === true, parsed.values.plain === true, undefined, rest, parsed);
-    if (!["version", "docs", "status", "daemon"].includes(cmd.name)) {
-      try {
-        cachedPreferences();
-      } catch (e) {
-        if (!isCommandFailure(e)) throw e;
-        failureExit(cmd, e, structured(cmd, parsed.positionals[0]) && parsed.values.json === true, parsed.values.plain === true, undefined, rest, parsed);
-      }
-    }
-  }
+  checkCommandLocalState(cmd, parsed, rest);
   // Keep failures in the resolved space and completion warnings behind COTAL_COMPLETE_DEBUG.
   if (cmd.name === "__complete" && !debugFlag("COTAL_COMPLETE_DEBUG")) scope.quiet = true;
-  const execute = async () => npmProjectDirectory.run(updateDirectory, async () => {
+  const execute = () => withProjectTrustMigration(parsed.values["dry-run"] !== true && cmd.name !== "update", structured(cmd, parsed.positionals[0]) && parsed.values.json === true, executeCommand);
+  const executeCommand = async () => npmProjectDirectory.run(updateDirectory, async () => {
     if (opts.extensions && cmd.requiredExtensions) {
       for (const ref of cmd.requiredExtensions(parsed)) await materializeExtension(ref);
     }

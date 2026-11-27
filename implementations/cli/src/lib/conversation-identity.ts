@@ -11,10 +11,11 @@ export interface ConversationAuthority {
   selection: boolean;
   /** The authority advertises connection approval v1: a person decides every new request. */
   approval: boolean;
+  resume?: boolean;
 }
 
 /** Discover without human proof, then bind every returned trust pin to the selected registration. */
-export async function discoverConversationAuthority(target: MeshTarget): Promise<ConversationAuthority> {
+export async function discoverConversationAuthority(target: Pick<MeshTarget, "space" | "server" | "tlsRequired" | "userAuth">): Promise<ConversationAuthority> {
   const pinned = target.userAuth;
   if (!pinned?.endpoints?.url) throw new Error("the selected mesh has no pinned user-auth exchange");
   const url = discoveryDocumentUrl(new URL(pinned.endpoints.url));
@@ -37,7 +38,7 @@ export async function discoverConversationAuthority(target: MeshTarget): Promise
   if (authority.origin !== url.origin || authority.pathname !== `/api/spaces/${encodeURIComponent(target.space)}/conversation-identities` || authority.search)
     throw new Error("conversation identity authority does not name the selected origin and space");
   return { url: authority.href, bundle, selection: capabilities?.conversationIdentitySelection?.version === 1,
-    approval: capabilities?.connectionApproval?.version === 1 };
+    approval: capabilities?.connectionApproval?.version === 1, resume: capabilities?.conversationResume?.version === 1 };
 }
 
 /** A signed-in space with the hosted connector its discovery document advertises, read the way

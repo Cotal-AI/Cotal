@@ -79,6 +79,7 @@ from the preset's defaults and starts it; stderr says what it saved. A start pre
 adapter's foreground and multi-instance capabilities even before the definition is saved.
 The manager preset does not support `--new-instance`, so `cotal service start manager --help`
 omits it. Generic `cotal service start --help` lists it for services that support it.
+Named start help lists `--idle-exit` only for `manager` or a saved manager definition.
 A preset that needs something only you can give, such as the intake's keys, refuses with those flags
 named, and takes them on the start line. If you gave `--new-instance`, the retry tells you to remove
 it before adding the missing flags. A default the space cannot fill yet, such as the `web`

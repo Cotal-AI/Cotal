@@ -54,7 +54,12 @@ to put in the attach retry. When you name the agent and mistype the manager ID, 
 also keeps `--no-reconnect`.
 
 On a controller stack started with `--no-manager`, `ps` refuses `TARGET_UNAVAILABLE`: no manager
-runs, so there are no managed agents to list. Bare `cotal up` adds the manager. A `manager` preset
+runs, so there are no managed agents to list. Bare `cotal up` adds the manager when the running
+broker's `--max-payload` is at least 263168 bytes. If the running broker's limit is below 263168
+bytes, the limit is fixed while the broker runs: `ps` directs you to stop and restart the stack, and
+bare `cotal up` refuses `USAGE_INVALID` without starting a manager. Stop the stack with
+`cotal down --yes` and restart it from the project root with a higher limit, such as
+`cotal up --max-payload 1048576`, as the [startup reference](cli-startup.mdx#up) describes. A `manager` preset
 service started at the root answers instead, and `status` names it on its Manager row. Bare `up`
 then refuses `LIFECYCLE_BLOCKED`, exit 2, naming that service and the
 `cotal svc stop <name> --instance <id> --space <space> --yes` that stops it; once it is stopped,

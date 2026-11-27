@@ -17,6 +17,7 @@
 import { computerName } from "./name-validation.js";
 import type { AccountComputerStatus } from "./account-state.js";
 import { normalizeIdpUrl } from "@cotal-ai/auth";
+import type { UnconfirmedConversation } from "@cotal-ai/workspace";
 import { DAEMON_PROTOCOL_VERSION, MAX_LINE_BYTES } from "./endpoint.js";
 
 const DAEMON_OPS = ["update-settings", "update-check", "name", "daemon-stop", "space-recover", "space-intent", "agent-stop", "agent-terminal", "status", "status-watch", "spaces", "manager-start", "manager-status", "managers-stop", "managers-prepare-restart", "managers-abort-restart", "login-start", "login-cancel", "logout", "connect-check", "register", "service-connect", "service-disconnect", "service-status"] as const;
@@ -56,7 +57,7 @@ export type LogoutChange =
 
 type LogoutResult =
   | { readonly kind: "logout"; readonly localLogin: "absent"; readonly serverRevoked: null }
-  | { readonly kind: "logout"; readonly serverRevoked: boolean; readonly localLoginCleared: true; readonly removedRegistrations: readonly string[]; readonly skippedServices: readonly string[] };
+  | { readonly kind: "logout"; readonly serverRevoked: boolean; readonly localLoginCleared: true; readonly removedRegistrations: readonly string[]; readonly skippedServices: readonly string[]; readonly unconfirmedConversations?: readonly UnconfirmedConversation[]; readonly conversationCheck?: "unavailable" };
 
 export type AgentRowRequest = { readonly space: string; readonly lifecycleUid: string } & (
   { readonly op: "agent-stop" } | { readonly op: "agent-terminal" }

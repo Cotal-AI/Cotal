@@ -257,6 +257,14 @@ async function checkMode(mode: "auth" | "open-legacy" | "open-controller"): Prom
       // receipt offers only `down`, so there is no hint to drop there.
       if (mode === "open-controller") {
         if (process.platform !== "win32") await checkFifoBody(space, server);
+        const ps = await run(["ps", "--space", space, "--plain"]);
+        ok("ps on an open controller low-payload broker explains why bare up cannot add a manager",
+          ps.status === 2 &&
+          ps.out.includes("payload limit is 8192 bytes, below the manager's minimum of 263168 bytes") &&
+          ps.out.includes("fixed while the broker runs") &&
+          ["cotal", "pnpm cotal"].some((cli) => ps.out.includes(`\`${cli} down --yes\``)) &&
+          ["cotal", "pnpm cotal"].some((cli) => ps.out.includes(`\`${cli} up --foreground --max-payload 1048576\``)),
+          ps.out);
         const reuse = await run(["up", "--no-manager", "--space", space, "--server", server]);
         ok("a broker-only reuse exits 0 and its Next drops the add-manager hint for the low limit",
           reuse.status === 0 && /already running/.test(reuse.out) && !reuse.out.includes("Add the manager to this stack") &&
