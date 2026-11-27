@@ -186,11 +186,11 @@ check("help service remove lists --instance <full-id> in its usage and options",
     for (const [flags, cwd, space, saved, absent] of [[["--space", "sb"], neutral, "sb", "retry", "tick"], [[], b, "sa", "tick", "retry"]] as const) {
       const missing = run(["service", verb, absent, ...flags, "--json"], cwd);
       const receipt = JSON.parse(missing.stdout);
-      const listFlags = /^see the saved definitions with `cotal service (--space s[ab])`$/.exec(receipt.error?.remedy)?.[1];
+      const listFlags = /^see the saved definitions with `cotal service (--space s[ab] --json)`$/.exec(receipt.error?.remedy)?.[1];
       check(`${verb} with ${flags.length ? "an explicit" : "a selected"} space points to ${space}'s inventory`,
         missing.status === 2 && receipt.outcome === "refused" && receipt.error?.code === "TARGET_NOT_FOUND" &&
-        receipt.target?.space === space && receipt.target.name === absent && listFlags === `--space ${space}`, shown(missing));
-      const inventory = listFlags === undefined ? undefined : run(["service", ...listFlags.split(" "), "--json"]);
+        receipt.target?.space === space && receipt.target.name === absent && listFlags === `--space ${space} --json`, shown(missing));
+      const inventory = listFlags === undefined ? undefined : run(["service", ...listFlags.split(" ")]);
       const listed = inventory?.status === 0 ? JSON.parse(inventory.stdout) : undefined;
       const names = listed?.result?.definitions.map((row: { name: string }) => row.name);
       check(`following the ${verb} remedy lists ${space} from the neutral folder without starting the saved service`,

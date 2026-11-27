@@ -25,7 +25,7 @@ import {
 import { decodeLocalJson, ProtectedRecordStore, shellPath, unsearchableFolder } from "./protected-records.js";
 import { rootNamesNoSpace } from "./space.js";
 import { codeSpan } from "./text-wrap.js";
-import { tlsIntent } from "./broker-url.js";
+import { firstStartServer, tlsIntent } from "./broker-url.js";
 import { spaceFromKey } from "./auth-paths.js";
 import { readLocalRecordSource } from "./local-record-source.js";
 
@@ -177,6 +177,8 @@ export interface MeshTargetErrorDetails {
   /** For `not-started` in a folder whose stack journal another folder recorded: the next step that
    *  `up` and `down` name there too, from {@link stackElsewhereRemedy}. */
   stackRemedy?: string;
+  /** Explicit broker on a never-started target: a local startup address, or null when no local start can be suggested. */
+  firstStartServer?: string | null;
   /** For `not-started` on a prepared space: no project directory is available at its root. */
   rootMissing?: boolean;
   /** Why the recorded project directory is unavailable. */
@@ -443,7 +445,7 @@ export function isGenuineSpace(root: string): boolean {
 /** Refuses `space` when it is prepared and not started, before anything dials the address it would
  *  have: another broker may answer there. Run from `cwd` in the folder its missing root was moved to,
  *  whose stack journal names that root, it names the next step `up` and `down` name there. */
-function notStarted(space: string, cwd?: string): void {
+function notStarted(space: string, cwd?: string, server?: string): void {
   const prepared = findPreparedSpace(space);
   if (!prepared) return;
   const rootProblem = projectRootProblem(prepared.root);
@@ -455,7 +457,9 @@ function notStarted(space: string, cwd?: string): void {
   const lifecycle = preparedLifecycle(prepared.root, space);
   if (lifecycle.state === "unsettled") throw new MeshTargetError("not-started", `"${space}" is prepared, and the last ${lifecycle.unsettled} of its stack in ${prepared.root} has no recorded outcome`, { space, root: prepared.root, unsettled: lifecycle.unsettled, ...(lifecycle.stopped ? { stopped: lifecycle.stopped } : {}) });
   if (lifecycle.state === "stopped") throw new MeshTargetError("not-started", `"${space}" is stopped; its last operation, ${lifecycle.lastOperation}`, { space, root: prepared.root, stopped: lifecycle.stopped });
-  throw new MeshTargetError("not-started", `"${space}" is prepared but not started`, { space, root: prepared.root });
+  throw new MeshTargetError("not-started", `"${space}" is prepared but not started`, { space, root: prepared.root,
+    ...(server === undefined ? {} : { firstStartServer: firstStartServer(server) ?? null }),
+  });
 }
 
 /** What the root a space was prepared in records about its stack, as a command that targets it
@@ -1166,7 +1170,7 @@ export function resolveMeshTarget(cwd: string, flags: ResolveFlags = {}): MeshTa
   if (flags.space) {
     const m = findMesh(flags.space);
     if (!m) {
-      notStarted(flags.space, cwd);
+      notStarted(flags.space, cwd, flags.server);
       const root = findCotalRoot(cwd);
       if (isGenuineSpace(root) && !stackRecord(root) && !preparedSpaceAt(root)) {
         const retained = retainedLegacyBroker(root);
