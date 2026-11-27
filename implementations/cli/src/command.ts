@@ -571,11 +571,13 @@ function misspelledOption(cmd: Command, rest: readonly string[], flagNames: read
       return { message: `${word} gives -${short[1]} the value "=${value}"`, remedy: `write ${correction}${windows && common === undefined ? " in PowerShell" : ""}` };
     }
     const typed = positionals.has(index) ? recognize(word) : undefined;
-    if (typed && (cmd.name === "ext" || cmd.name === "endpoint") && typed.flagName && typed.flagName !== "help") {
+    if (typed && (cmd.name === "ext" || cmd.name === "endpoint" || cmd.name === "history") && typed.flagName && typed.flagName !== "help") {
       const first = metadataPositionals(cmd, rest, { optionSpelling: (arg) => recognize(arg)?.spelling }).positionals[0]?.value;
       const sub = findSubcommand(cmd, first);
       const accepted = sub ? sub.flagNames : cmd.flagNames;
-      if ((cmd.name === "ext" || sub?.name === "check") && accepted && !accepted.includes(typed.flagName))
+      if (cmd.name === "history" && sub?.name === "clear" && HISTORY_LIMIT_FLAGS.some((name) => name === typed.flagName))
+        return { message: typed.message, remedy: `omit --${typed.flagName} from \`history clear\` and keep the other arguments. Use it with \`history limit\` to change retention` };
+      if ((cmd.name === "ext" || (cmd.name === "endpoint" && sub?.name === "check")) && accepted && !accepted.includes(typed.flagName))
         return { message: typed.message, remedy: `omit this option; \`cotal ${cmd.name}${sub ? ` ${sub.name}` : ""}\` does not take --${typed.flagName}` };
     }
     if (typed) return typed;
