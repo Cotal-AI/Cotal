@@ -3,9 +3,11 @@ import { closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, open
 import { dirname, isAbsolute, join, parse, resolve, sep } from "node:path";
 import { acquireLock, globalConfigDir, oneLine, parseAgentFileBytes, projectTrustProblem, rejectionText, writeSecretFileAtomic, type AgentDef } from "@cotal-ai/core";
 import { parseLaunchPersonaSource, PersonaSourceError } from "./launch-persona.js";
+import { readLocalRecordSource } from "./local-record-source.js";
 import { CommandFailure, isCommandFailure, recordOperationWarning } from "./output.js";
-import { assertCotalHomeWriteProtection, localRecordAccess, prepareCotalHomeForWrite, protectedLocalDirectory } from "./protected-records.js";
+import { assertCotalHomeWriteProtection, decodeLocalJson, localRecordAccess, prepareCotalHomeForWrite, protectedLocalDirectory, protectedLocalEntry } from "./protected-records.js";
 import { localWriteFailure } from "./local-write.js";
+import { findCotalRoot } from "./auth-paths.js";
 import { canonicalRoot, homeCotalDir, isMeshRegistryError, readMeshRegistry } from "./mesh-registry.js";
 import { readPreparedSpaces } from "./prepared-spaces.js";
 
@@ -74,10 +76,28 @@ function readFile(): TrustedProjects | undefined {
   return { schemaVersion: SCHEMA_VERSION, seeded: true, roots: roots as string[] };
 }
 
-/** Every root a space this machine registered or prepared is recorded at, skipping a record that
- *  cannot be read (it names no root anyone can use). */
+/** The stopped native project root in the working folder when its owner-private `stack-home.json`
+ *  names this Cotal home. `down` removes the registration of a space not named after its folder, so
+ *  this record carries that root into the upgrade snapshot while leaving clones for other homes out. */
+function retainedHomeStackRoot(): string | undefined {
+  let root: string;
+  try { root = canonicalRoot(findCotalRoot()); } catch { return undefined; }
+  const control = join(root, ".cotal");
+  if (canonicalRoot(control) === canonicalRoot(homeCotalDir()) || !existsSync(join(control, "stack-home.json"))) return undefined;
+  try {
+    protectedLocalEntry(control, "the project control folder");
+    const bytes = readLocalRecordSource(join(control, "stack-home.json"), 4096, true);
+    if (!bytes) return undefined;
+    const record = decodeLocalJson(bytes) as { home?: unknown } | null;
+    return typeof record?.home === "string" && record.home !== "" && canonicalRoot(record.home) === canonicalRoot(homeCotalDir()) ? root : undefined;
+  } catch { return undefined; }
+}
+
+/** Every root a space this machine registered or prepared is recorded at, plus a stopped native stack
+ *  in the working folder recorded for this Cotal home, skipping any record that cannot be read. */
 function knownSpaceRoots(): string[] {
-  return [...readMeshRegistry().entries.map((m) => m.root), ...readPreparedSpaces().spaces.map((p) => p.root)];
+  const retained = retainedHomeStackRoot();
+  return [...readMeshRegistry().entries.map((m) => m.root), ...readPreparedSpaces().spaces.map((p) => p.root), ...(retained ? [retained] : [])];
 }
 
 /** Check the existing config path before a trust write, without creating directories. */

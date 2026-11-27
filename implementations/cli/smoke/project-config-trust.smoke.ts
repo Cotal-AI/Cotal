@@ -226,6 +226,76 @@ try {
   }
 
   {
+    const sandbox = mkdtempSync(join(box, "cold-upgrade-"));
+    const home = join(sandbox, "home"), config = join(sandbox, "config");
+    const coldProject = join(sandbox, "my-project"), cloned = join(sandbox, "cloned-project");
+    mkdirSync(home, { recursive: true, mode: 0o700 });
+    mkdirSync(coldProject, { recursive: true, mode: 0o700 });
+    mkdirSync(join(cloned, ".cotal", "agents"), { recursive: true, mode: 0o700 });
+    const coldServer = `nats://127.0.0.1:${await freePort()}`;
+    const prefix = join(config, "cotal", "extensions");
+    const pkg = "@cotal-ai/connector-claude-code";
+    const source = resolve("extensions/connector-claude-code");
+    mkdirSync(join(prefix, "node_modules", "@cotal-ai"), { recursive: true, mode: 0o700 });
+    symlinkSync(source, join(prefix, "node_modules", pkg), "dir");
+    const version = JSON.parse(readFileSync(join(source, "package.json"), "utf8")).version;
+    writeFileSync(join(prefix, "extensions.json"), JSON.stringify({ extensions: [{
+      pkg, version, commands: [], provides: [{ kind: "connector", name: "claude" }],
+      connectors: [{ name: "claude", requires: ["claude"], eventPlane: true, setup: null }],
+    }] }));
+    const env = {
+      ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_"))),
+      COTAL_HOME: home, XDG_CONFIG_HOME: config, COTAL_SKIP_CONNECTOR_SEED: "1", DO_NOT_TRACK: "1",
+    };
+    const guard = recordSmokeSandbox({ root: coldProject, cotalHome: home, xdgConfigHome: config });
+    const run = (cwd: string, argv: string[]) => {
+      const options = { cwd, env, encoding: "utf8" as const, timeout: 50_000 };
+      assertSmokeSandboxDown(guard, argv, options);
+      return spawnSync(process.execPath, [cliEntry, ...argv], options);
+    };
+    const store = join(config, "cotal", "trusted-projects.json"), witness = join(home, "trusted-projects-seed.json");
+    try {
+      const initialUp = run(coldProject, ["up", "--detach", "--space", "my-mesh", "--server", coldServer]);
+      const marker = "cold-upgrade-marker";
+      writeFileSync(join(coldProject, ".cotal", "config.json"), JSON.stringify(declares(marker)));
+      writeFileSync(join(coldProject, ".cotal", "agents", "default.md"), "---\nname: default_agent\nharness: claude\nlaunchOptions:\n  verbose: true\n---\nDefault test persona.\n");
+      const down = run(coldProject, ["down", "--yes"]);
+      // Simulate upgrading from <=0.182.1 after `cotal down` removed `~/.cotal/meshes/<space>.json`.
+      rmSync(store, { force: true });
+      rmSync(witness, { force: true });
+      check("cold pre-upgrade down leaves neither mesh registration nor trust records",
+        initialUp.status === 0 && down.status === 0 && !existsSync(join(home, "meshes", `space.${Buffer.from("my-mesh").toString("hex")}.json`))
+          && existsSync(join(coldProject, ".cotal", "stack-home.json")) && !existsSync(store) && !existsSync(witness),
+        { initialUp, down });
+
+      // A cloned repo whose `stack-home.json` names another Cotal home is not eligible for migration.
+      writeFileSync(join(cloned, ".cotal", "stack-home.json"), JSON.stringify({ home: join(sandbox, "other-home") }), { mode: 0o600 });
+      writeFileSync(join(cloned, ".cotal", "config.json"), JSON.stringify(declares("cloned-marker")));
+      writeFileSync(join(cloned, ".cotal", "agents", "default.md"), "---\nname: default_agent\nharness: claude\nlaunchOptions:\n  verbose: true\n---\nCloned persona.\n");
+      const clonedPreview = run(cloned, ["spawn", "--file", ".cotal/agents/default.md", "--server", server, "--agent", "claude", "--dry-run", "--json"]);
+      check("a cloned folder whose stack-home.json names another Cotal home is refused without writing trust",
+        clonedPreview.status !== 0 && `${clonedPreview.stdout}${clonedPreview.stderr}`.includes("launchOptions.verbose")
+          && `${clonedPreview.stdout}${clonedPreview.stderr}`.includes(`cotal trust ${cloned}`)
+          && !existsSync(store) && !existsSync(witness), clonedPreview);
+
+      const restarted = run(coldProject, ["up", "--detach", "--space", "my-mesh", "--server", coldServer]);
+      const roots = existsSync(store) ? JSON.parse(readFileSync(store, "utf8")).roots as string[] : [];
+      check("post-upgrade up migrates the stopped local stack root for this Cotal home",
+        restarted.status === 0 && existsSync(witness) && roots.includes(coldProject) && !roots.includes(cloned),
+        { restarted, roots });
+      const preview = run(coldProject, ["spawn", "--dry-run", "--space", "my-mesh"]);
+      fresh();
+      const live = run(coldProject, ["spawn", "--foreground", "--file", ".cotal/agents/default.md", "--space", "my-mesh", "--agent", "claude"]);
+      check("post-upgrade spawn preview and foreground launch accept project config and persona launchOptions",
+        preview.status === 0 && preview.stdout.includes("Direct launch preview")
+          && live.status === 0 && reportText().includes(`RAN ${marker}`) && reportText().includes("ENV forwarded-1118"),
+        { preview, live, report: reportText() });
+    } finally {
+      run(coldProject, ["down", "--yes"]);
+    }
+  }
+
+  {
     const sandbox = mkdtempSync(join(box, "manifest-upgrade-"));
     const home = join(sandbox, "home"), config = join(sandbox, "config");
     const legacy = join(sandbox, "legacy"), clone = join(sandbox, "clone"), prepared = join(sandbox, "prepared");
@@ -816,7 +886,7 @@ try {
   rmSync(store, { recursive: true, force: true });
 }
 
-const EXPECTED = process.getuid?.() === 0 ? 84 : 86;
+const EXPECTED = process.getuid?.() === 0 ? 88 : 90;
 if (passed + failed !== EXPECTED) { failed++; console.log(`  ✗ FAIL: ${passed + failed - 1} cells reported, ${EXPECTED} expected`); }
 emitSentinel({ passed, failed });
 process.exit(failed === 0 ? 0 : 1);

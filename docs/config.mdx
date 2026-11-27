@@ -56,12 +56,13 @@ by a link does not pass its trust to the link's target.
 in that run. A folder that already had a `.cotal`, such as a cloned repository, is trusted only by
 `cotal trust`. Run it after you read the folder's `.cotal/config.json` and personas.
 
-The upgrade migrates trust for existing registrations and prepared spaces once per Cotal home.
+The upgrade migrates trust for existing registrations and prepared spaces, and for a stopped local
+stack in the current project whose `stack-home.json` names this Cotal home, once per Cotal home.
 `trusted-projects-seed.json` records the roots before a new registration can enter the registry.
 An empty migration creates no trusted projects file. Removing `trusted-projects.json` does not
 run a completed migration again: no folder is trusted until `cotal trust` records it. Removing
-`trusted-projects-seed.json` lets the next migration consider the registrations and prepared spaces
-that already exist when it runs.
+`trusted-projects-seed.json` lets the next migration consider the eligible folders that already
+exist when it runs.
 
 A space-local file is refused whole when it, or the `.cotal` folder that holds it, belongs to
 another account. `cotal trust` refuses such a folder too. A trusted projects file that another
