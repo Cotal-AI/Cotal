@@ -170,9 +170,15 @@ done:
     uv_fs_t req;
     if (write_fd >= 0) { uv_fs_close(NULL, &req, write_fd, NULL); uv_fs_req_cleanup(&req); }
     if (read_fd >= 0) { uv_fs_close(NULL, &req, read_fd, NULL); uv_fs_req_cleanup(&req); }
-    /* No resumed child exists on this path. Release only its private job. */
+    /* No child has resumed on this path. If membership confirmation failed, the
+     * private job alone is not proof that closing it will end the suspended child. */
     if (s) {
+      if (s->child) TerminateProcess(s->child, 1);
       if (s->job) { CloseHandle(s->job); s->job = NULL; }
+      if (s->child && WaitForSingleObject(s->child, 2000) != WAIT_OBJECT_0) {
+        napi_throw_error(env, "COTAL_WINDOWS_SEAT_LAUNCH_UNKNOWN", "suspended Windows seat rollback was not confirmed");
+        return NULL;
+      }
       if (s->pin) { napi_delete_reference(env, s->pin); s->pin = NULL; }
       if (!wrapped) seat_pty_final(env, s, NULL);
     }
@@ -244,6 +250,26 @@ static napi_value SeatPtyDispose(napi_env env, napi_callback_info info) {
     napi_delete_reference(env, s->pin); s->pin = NULL;
   }
   napi_get_boolean(env, dead != FALSE, &out);
+  return out;
+}
+
+static napi_value SeatPtyAbort(napi_env env, napi_callback_info info) {
+  size_t argc = 1;
+  napi_value arg, out;
+  napi_get_cb_info(env, info, &argc, &arg, NULL, NULL);
+  seat_pty* s = argc == 1 ? seat_pty_arg(env, arg) : NULL;
+  if (!s) return NULL;
+  if (!s->thread) return throw_win32(env, "Windows seat is not suspended", ERROR_INVALID_PARAMETER);
+  TerminateProcess(s->child, 1);
+  if (WaitForSingleObject(s->child, 2000) != WAIT_OBJECT_0) {
+    napi_throw_error(env, "COTAL_WINDOWS_SEAT_LAUNCH_UNKNOWN", "suspended Windows seat rollback was not confirmed");
+    return NULL;
+  }
+  CloseHandle(s->job); s->job = NULL;
+  CloseHandle(s->child); s->child = NULL;
+  CloseHandle(s->thread); s->thread = NULL;
+  napi_delete_reference(env, s->pin); s->pin = NULL;
+  napi_get_undefined(env, &out);
   return out;
 }
 

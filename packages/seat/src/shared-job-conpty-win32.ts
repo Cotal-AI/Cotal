@@ -10,6 +10,7 @@ type Exit = { exitCode: number; active: number };
 type Native = {
   seatPtyLaunch(dll: string, executable: string, commandLine: string, cwd: string, env: string, input: string, output: string, cols: number, rows: number): Launch;
   seatPtyResume(handle: object): void;
+  seatPtyAbort(handle: object): void;
   seatPtyPoll(handle: object): Exit | undefined;
   seatPtyResize(handle: object, cols: number, rows: number): void;
   seatPtyDispose(handle: object): boolean;
@@ -33,7 +34,7 @@ export function launchWindowsJobConPty(options: {
     if (realpathSync.native(path).toLowerCase() !== path.toLowerCase()) throw new Error("unknown retained ConPTY path");
   }
   const binding = loadNativeHelper<Native>();
-  if (typeof binding.seatPtyLaunch !== "function" || typeof binding.seatPtyResume !== "function" || typeof binding.seatPtyPoll !== "function" ||
+  if (typeof binding.seatPtyLaunch !== "function" || typeof binding.seatPtyResume !== "function" || typeof binding.seatPtyPoll !== "function" || typeof binding.seatPtyAbort !== "function" ||
     typeof binding.seatPtyDispose !== "function" || typeof binding.seatPtyResize !== "function" || typeof binding.seatPtyStop !== "function")
     throw new Error("Windows ConPTY custody binding is unavailable");
   const nonce = `\\\\.\\pipe\\cotal-seat-io-${randomUUID()}`;
@@ -48,16 +49,11 @@ export function launchWindowsJobConPty(options: {
     output.on("error", () => {});
     binding.seatPtyResume(row.handle);
   } catch (error) {
-    if (input) input.destroy(); else closeSync(row.input);
-    if (output) output.destroy(); else closeSync(row.output);
-    // Resume did not succeed. This job has never executed seat code.
-    binding.seatPtyStop(row.handle);
-    const deadline = performance.now() + 2000;
-    const settle = setInterval(() => {
-      try {
-        if (binding.seatPtyDispose(row.handle) || performance.now() >= deadline) clearInterval(settle);
-      } catch { clearInterval(settle); }
-    }, 25);
+    try { if (input) input.destroy(); else closeSync(row.input); }
+    finally {
+      try { if (output) output.destroy(); else closeSync(row.output); }
+      finally { binding.seatPtyAbort(row.handle); }
+    }
     throw error;
   }
   const terminal = { input, output };
