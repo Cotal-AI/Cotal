@@ -215,14 +215,13 @@ function patternsOverlap(a: string, b: string): boolean {
   return true;
 }
 
-/** Does the ceiling permit a SUBSCRIPTION whose filter is `pattern` (which may carry wildcards)?
- *  Every subject the filter could deliver must sit inside one allow entry, and no deny entry may
- *  overlap it: a subscription is a claim over a set of subjects, so a partial cover is a refusal,
- *  never a narrower grant invented on the caller's behalf. */
-export function issuedPermitsPattern(value: IssuedSubjectPermission, pattern: string): boolean {
+/** Does the ceiling permit the granted subjects named by `pattern`? Exclusions must be deny
+ *  rows in the same candidate credential, never a caller's requested filter. A native filter
+ *  passes no exclusions and must fit on its own. */
+export function issuedPermitsPattern(value: IssuedSubjectPermission, pattern: string, excluded: readonly string[] = []): boolean {
   const parsed = readIssuedSubjectPermission(value);
   subjectToken(pattern, true);
-  if (parsed.deny.some((d) => patternsOverlap(d, pattern))) return false;
+  if (parsed.deny.some((d) => patternsOverlap(d, pattern) && !excluded.some((e) => patternCovers(e, d)))) return false;
   if (parsed.allow.mode === "none") return false;
   return parsed.allow.mode === "all" || parsed.allow.patterns.some((a) => patternCovers(a, pattern));
 }

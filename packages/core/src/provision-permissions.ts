@@ -13,6 +13,8 @@ import { transferReaderGrants, transferWriterGrants } from "./transfer.js";
 import { environmentManagerPermissions, isEnvironmentManagerProfile } from "./environment-manager-grants.js";
 import { backupProfilePermissions, restoreProfilePermissions } from "./backup.js";
 import type { MintOpts, MintPrincipal } from "./provision-jwt.js";
+import { channelRoute } from "./plugin-channel-route.js";
+import { channelHistoryRows, withLegacyPluginChannelDeny } from "./provision-permission-builders.js";
 import { managerCallerPermissions, agentCallerPermissions, supervisorPermissions, remoteManagerPermissions, operatorPermissions, probePermissions, channelWriterPermissions, channelPurgerPermissions, teardownPermissions, membershipStoreRecreatePermissions, issuedStoreRecreatePermissions, controlCallerPermissions, issuedCallerFor, listingGrantRows, deployerPermissions, purgerPermissions, provisionerPermissions, issuerPermissions, registryReaderPermissions, runAdmitterPermissions, lifecycleExecutorPermissions, goalWriterPermissions, sessionCallerPermissions, dmReaderPermissions, sessionServingPermissions, sessionLedgerPermissions, endpointServeExecutorPermissions, deprovisionerPermissions, deliveryPermissions, membershipRwPermissions } from "./provision-permission-builders.js";
 
 
@@ -182,10 +184,16 @@ export function permissionsFor(
   pr: MintPrincipal,
   opts: MintOpts,
 ): Record<string, unknown> {
+  return withLegacyPluginChannelDeny(space, profilePermissions(profile, space, pr, opts), opts.pluginChannelsEnabled);
+}
+
+function profilePermissions(profile: Profile, space: string, pr: MintPrincipal, opts: MintOpts): Record<string, unknown> {
   // Guard the connId BEFORE any profile builds `_INBOX_<connId>.>`: in user mode connId is a client-
   // chosen nonce (untrusted), so a metacharacter here would escalate the inbox grant to every inbox.
   // Assert once, for all profiles (each early-returning profile builds its own inbox from pr.connId).
   assertInboxConnId(pr.connId);
+  if (opts.initializePluginChannelState && profile !== "provisioner")
+    throw new Error("plugin channel state initialization requires the provisioner profile");
   // Extraneous serve-artifact refusal, hoisted ABOVE the profile dispatch: every early-return
   // profile (delivery/supervisor/observer/...) must refuse it too, not just the agent tail, or a
   // misconfigured sensitive mint is silently masked (MintOpts: every other profile refuses it).
@@ -214,12 +222,12 @@ export function permissionsFor(
     throw new Error(`permissionsFor: principalServe decides a static agent mint's serve rows; a ${profile === "agent" ? "callout" : `"${profile}"`} mint refuses it (SPEC 13.21)`);
   if (isEnvironmentManagerProfile(profile)) return environmentManagerPermissions(profile, space, pr, opts.environmentManager);
   if (opts.environmentManager) throw new Error(`permissionsFor: environmentManager pins cannot ride ${profile}`);
-  if (profile === "delivery") return deliveryPermissions(space, pr); // scoped server-side Plane-3 infra
+  if (profile === "delivery") return deliveryPermissions(space, pr, opts.pluginChannelsEnabled); // scoped server-side Plane-3 infra
   if (profile === "manager-caller") return managerCallerPermissions(space, pr, opts);
   if (profile === "agent-caller") return agentCallerPermissions(space, pr);
   if (profile === "membership-rw") return membershipRwPermissions(space, pr); // scoped graph-feed reader/writer
   if (profile === "supervisor") return supervisorPermissions(space, pr); // always-on daemon
-  if (profile === "provisioner") return provisionerPermissions(space, pr); // ephemeral onboarding authority
+  if (profile === "provisioner") return provisionerPermissions(space, pr, opts); // ephemeral onboarding authority
   if (profile === "deprovisioner") {
     // Ephemeral, TARGET-PINNED teardown — the counterpart to `provisioner`. The target is a
     // full principal dot-form for user-mode agents, or a bare static/dev actor id (keyed under
@@ -279,7 +287,7 @@ export function permissionsFor(
       throw new Error('permissionsFor: "remote-manager" requires opts.remoteManager ({instanceId, owner} of the authorized manager lifecycle)');
     return remoteManagerPermissions(space, pr, opts.remoteManager);
   }
-  if (profile === "space-quiescence-reader") return spaceQuiescenceReaderGrants(space, pr.connId);
+  if (profile === "space-quiescence-reader") return spaceQuiescenceReaderGrants(space, pr.connId, opts.pluginChannelsEnabled);
   if (profile === "issuer") return issuerPermissions(space, pr);
   if (profile === "registry-reader") return registryReaderPermissions(space, pr);
   if (profile === "run-admitter") {
@@ -497,10 +505,12 @@ export function permissionsFor(
   const chatHistD = chatHistDurable(pr.owner, pr.actor, uid), dmD = dmDurable(pr.owner, pr.actor, uid);
   const DLV = dlvStream(space), dlvD = dlvDurable(pr.owner, pr.actor, uid); // Plane-3 per-member delivery (bind-only when channel-readable)
   const roles = taskRoles(opts.role, opts.capabilities);
+  const mode = opts.pluginChannelsEnabled ? "isolated" : "legacy";
+  const readRoutes = allowSubscribe.map(channel => channelRoute(space, "*", "*", channel, mode));
   const pubAllow = [
     // peer publish — owner+actor identity + channel scope, built from the real builders. Default-deny:
     // ONLY the declared allowPublish channels (none by default) get a chat-publish grant.
-    ...allowPublish.map((ch) => chatSubject(space, pr.owner, pr.actor, ch)),
+    ...allowPublish.map((ch) => channelRoute(space, pr.owner, pr.actor, ch, mode).subject),
     unicastSubject(space, "*", "*", pr.owner, pr.actor), // inst.*.*.<o>.<a> — DM any instance, as me
     anycastSubject(space, "*", pr.owner, pr.actor), //  svc.*.<o>.<a>   — anycast any role, as me
     // Self stop/despawn rides the v0.4 ep baseline (`stop` self-mode) — the manager `ctl` rail is
@@ -544,7 +554,7 @@ export function permissionsFor(
     // old unfiltered DIRECT.GET.<CHAT> (which could fetch ANY message regardless of channel). The
     // name is the agent's own, so info/fetch/delete can't reach a peer's consumer. NO broad
     // CONSUMER.CREATE.<CHAT> / .> deny here: NATS deny beats allow, which would also kill these.
-    ...allowSubscribe.map((ch) => `$JS.API.CONSUMER.CREATE.${CHAT}.${chatHistD}.${chatSubject(space, "*", "*", ch)}`),
+    ...channelHistoryRows(chatHistD, readRoutes),
     `$JS.API.CONSUMER.INFO.${CHAT}.${chatHistD}`,
     `$JS.API.CONSUMER.MSG.NEXT.${CHAT}.${chatHistD}`,
     `$JS.API.CONSUMER.DELETE.${CHAT}.${chatHistD}`,
@@ -716,7 +726,7 @@ export function permissionsFor(
   // with NO manager: join = nc.subscribe, broker-enforced per-subscribe, no consumer name to confine,
   // so an open ACL needs no enumeration. This sub.allow grant IS the live read path — there is no
   // per-instance chat durable; the durable backstop is Plane-3 (delivery-daemon fan-out → per-member DELIVER).
-  const subChat = allowSubscribe.map((ch) => chatSubject(space, "*", "*", ch));
+  const subChat = readRoutes.map(({ subject }) => subject);
   const payloadReads = eventPayloadReadSubjects(space, pr.owner, allowSubscribe);
   if (opts.eventPayloads !== false) pubAllow.push(eventPayloadSubject(space, pr.owner, pr.actor));
   const payloadReaders = Array.from({ length: HISTORY_READERS }, (_, i) => historyReaderConsumer(pr.readerId ?? pr.connId, i));
