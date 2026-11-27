@@ -28,7 +28,6 @@ import type { CotalMessage, EndpointRef, HistoryMessage, Part } from "./types.js
 export interface EndpointMessagingDeps {
   notLiveMsg: () => string;
   ref: () => EndpointRef;
-  publishMsg: (subject: string, msg: CotalMessage) => Promise<void>;
   emitRecoverable: (err: Error) => void;
 }
 
@@ -39,7 +38,6 @@ export class EndpointMessaging {
 
   private notLiveMsg() { return this.deps.notLiveMsg(); }
   private ref() { return this.deps.ref(); }
-  private publishMsg(subject: string, msg: CotalMessage) { return this.deps.publishMsg(subject, msg); }
   private emitRecoverable(err: Error) { this.deps.emitRecoverable(err); }
 
   /** Multicast: broadcast to everyone on a channel. */
@@ -420,6 +418,22 @@ export class EndpointMessaging {
       { msgID: msg.id },
     );
     return { msg, ack: { seq: ack.seq, duplicate: ack.duplicate === true } };
+  }
+
+  private async publishMsg(subject: string, msg: CotalMessage): Promise<void> {
+    if (!this.conn.js) throw new Error(this.notLiveMsg());
+    assertPartsSerializable(msg.parts);
+    // msgID = message id → free server-side dedup across JetStream redelivery.
+    try {
+      await this.conn.js.publish(subject, JSON.stringify(msg), { msgID: msg.id });
+    } catch (error) {
+      if (error instanceof TimeoutError)
+        throw new Error(
+          `${error.message} publishing to ${JSON.stringify(subject)}. The send outcome is unknown: the broker may have stored the message. Check before resending.`,
+          { cause: error },
+        );
+      throw error;
+    }
   }
 }
 

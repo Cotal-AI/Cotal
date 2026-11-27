@@ -235,6 +235,7 @@ cotal spawn --harness claude --model sonnet
 `--model` overrides the persona's model pin.
 To list the models your Claude login can use, run `cotal models --harness claude`.
 The connector asks your own `claude` without sending a prompt.
+The list marks the model Claude runs when a launch names none.
 With a logged-out `claude`, the read fails with `claude is not logged in; run claude to log in`.
 An alias such as `opus` is listed with the model it currently resolves to, for example `Opus 5.5 (claude-opus-5-5)`.
 The Claude connector rejects `provider/model` names used by other connectors, except Bedrock inference-profile ARNs.
@@ -249,9 +250,31 @@ cotal spawn --harness claude --model opus --variant high
 ```
 
 Claude accepts `low`, `medium`, `high`, `xhigh` and `max`, and the connector refuses any other value before launch.
-`cotal models --harness claude` lists the levels each model supports as its variants.
+`cotal models --harness claude` lists the levels each model supports as its variants, and marks the level Claude runs when a launch names none.
 Claude does not run a model at a level that model lacks, so pick one from that list.
 A launch option `--opt effort=<level>` wins over `--variant`. The seat's roster entry, `cotal ps`, and `cotal status <name>` show no variant for that launch.
+
+### Choose a mode
+
+Claude offers two modes, which `--mode` turns on or off:
+
+- `fast` runs Claude's fast mode on a model that supports it.
+- `ultracode` lets Claude orchestrate subagents for the whole session, on a model that can run it.
+
+```bash
+cotal spawn --harness claude --model opus --mode ultracode=true
+```
+
+`cotal models --harness claude` lists the modes each model offers your login, and both are off by default.
+It lists `fast` on each model that supports it.
+When your `claude` reports fast mode off, `fast` is listed as unavailable with Claude's reason, such as `Fast mode has been disabled by your organization`, and a launch with `--mode fast=true` is refused with that reason.
+`--mode fast=false` still launches, so a template that keeps fast off runs for an organization that turns it off.
+The connector reads that state 2 seconds after your `claude` starts answering, which covers the normal case.
+Claude gives no sign that it has finished asking your organization, so on a slow network `fast` can be listed as usable although your organization turns it off.
+An agent launched with `fast` then runs at standard speed.
+The connector passes the chosen modes to Claude in one `--settings` flag, together with the thinking summaries a [`reasoningEvents`](connectors.mdx#opt-in-launch-fields) launch turns on.
+A mode set to `false` is passed as off, so a fast mode you saved with `/fast` does not turn it back on.
+Claude keeps only the last `--settings` flag, so a launch with a mode or `reasoningEvents` refuses `--opt settings=`.
 
 ### Choose a permission mode
 
@@ -381,8 +404,8 @@ It can deliver complete short messages at idle or supported busy boundaries. Lar
 If the module is unavailable or blocked, use `cotal_wait`; an attached reader does not prove the host can start a turn.
 
 T3 Code and other apps that run Claude Code through the Agent SDK stop an idle session's process. T3 Code does so 30 minutes after the last turn, which disconnects Cotal and leaves nothing to wake.
-In such a session, `cotal_connect` asks Claude to start a silent hold as a background task, which keeps the session running.
-A hold ends after 3 hours, before T3 Code's 4-hour limit on background work, and Claude starts the next one.
+In such a session, `cotal_connect` asks Claude to start a silent hold as a background task, which keeps the session running. While the conversation has a Cotal connection and no hold running, the plugin's Stop hook does not let a turn end until Claude starts one.
+Claude Code stops a background command after 2 hours at most, so a hold ends by itself after 110 minutes and asks Claude to start the next one. While the conversation is otherwise idle, that is one short turn about every 2 hours.
 
 For ordinary Claude Desktop chat or Claude web, use the hosted HTTPS connector described in [Choose a connection path](#choose-a-connection-path).
 Authorization and conversation approval are separate steps. Desktop chat has no native module, so ask Claude to retry after approval.
