@@ -248,6 +248,8 @@ async function linkedForegroundSmoke() {
     assert.equal((await post(MANAGED_RETIRE, target, signIn)).body.alreadyRetired, true);
 
     await enable(true);
+    assert.equal((await post(LINK_GRANT, first.body)).status, 409, "approval replay stays refused after the alias is free");
+    assert.equal(findActorUnified(stateDir, owner, first.body.actor), undefined);
     const bootRequest = await request("abandoned");
     const abandoned = await post(LINK_GRANT, bootRequest.body);
     assert.equal(abandoned.status, 200, String(abandoned.body.error));
