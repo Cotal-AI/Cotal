@@ -14,6 +14,7 @@ export * from "./default-agent.js";
 export * from "./official-connectors.js";
 export * from "./official-runtimes.js";
 export * from "./extensions.js";
+export { pluginManifest, type PluginDeclaration } from "./plugin-manifest.js";
 export * from "./harness-install.js";
 export * from "./connector-retention.js";
 export * from "./materialize.js";

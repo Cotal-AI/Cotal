@@ -15,6 +15,7 @@ import { pathToFileURL } from "node:url";
 import { readFileSync } from "node:fs";
 import { registry, type ExtensionRef } from "@cotal-ai/core";
 import { bindExtensionPeers, CorruptExtensionPackageError, extensionPackageDir, extensionsDir, extensionsManifestPath, hostPackageDir, importExtensionEntry, importInstalledExtension, installedExtensionPackage, installedExtensionVersion, materializeFromManifest, resolveExtensionEntry, type InstalledExtension } from "@cotal-ai/workspace";
+import { pluginManifest } from "../src/plugin-manifest.js";
 // Not on the package's public surface: the same module instance the entry point above loads.
 import { upgradeRemedy } from "../dist/import-diagnosis.js";
 
@@ -316,6 +317,18 @@ try {
   }
 } finally {
   rmSync(tmp, { recursive: true, force: true });
+}
+
+{
+  const runtime = { kind: "runtime", name: "manifest-proof", aliases: ["mp"] };
+  const declaration = await pluginManifest((host) => host.register(runtime), { coreVersion: "0.183.1" });
+  check("factory declarations include exact aliases and bundled core version",
+    JSON.stringify(declaration) === JSON.stringify({ contract: 1, core: "0.183.1", provides: [runtime], commands: [], connectors: [], localProcesses: [], servicePresets: [] }));
+  check("manifest generation never publishes runtime registrations", !registry.has("runtime", "manifest-proof"));
+  let refused: unknown;
+  try { await pluginManifest((host) => host.register({ kind: "auth-provider", name: "forbidden" })); }
+  catch (error) { refused = error; }
+  check("the factory manifest refuses composition-root kinds", refused instanceof Error && /cannot provide auth-provider/.test(refused.message));
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);
