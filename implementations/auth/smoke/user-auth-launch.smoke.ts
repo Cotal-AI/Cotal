@@ -871,13 +871,18 @@ try {
     const conflictError = (JSON.parse(conflictJson.out.split("\n").find((line) => line.startsWith("{")) ?? "null") as { error?: { code?: string; message?: string; remedy?: string } } | null)?.error;
     check("…and --json carries the same detail and remedy",
       conflictJson.status === 2 && conflictError?.code === "CONFLICT" && conflictError.message === modeConflict && conflictError.remedy === modeNext, conflictJson.out);
-    const teamFile = join(root2, "team.yaml");
+    const namedFile = "stopped team.yaml";
+    const teamFile = join(root2, namedFile);
     writeFileSync(teamFile, `apiVersion: cotal/v1\nkind: Mesh\nspace: ${SPACE}\nbroker:\n  servers: ${server2}\n  auth: user\n  idp: ${base}\nchannels:\n  general:\n    description: The general channel.\n`);
     const revokedBoot = await cotal(["team", "boot", teamFile], { cwd: root2, env });
     const revokedBootText = plain(revokedBoot.out);
     check("a team boot resuming it is refused AUTH_REQUIRED, exit 2, says nothing was started or written, and Next signs in at that IdP, then boots the team again",
       revokedBoot.status === 2 && field(revokedBoot.out, "Code", "AUTH_REQUIRED") && revokedBootText.includes("the IdP rejected this machine's sign-in, which has expired or was revoked; nothing was started or written") &&
-        !revokedBootText.includes("the manager was not attempted") && revokedBootText.includes(`cotal login --idp ${base}, then \`cotal team boot ${teamFile}\``), revokedBoot.out);
+        !revokedBootText.includes("the manager was not attempted") && revokedBootText.includes(`cotal login --idp ${base}, then `) && revokedBootText.includes(` team boot '${teamFile}'\``), revokedBoot.out);
+    const retryBoot = await cotal(["team", "boot", namedFile, "--json"], { cwd: root2, env });
+    const retryError = JSON.parse(retryBoot.out.split("\n").find((line) => line.startsWith("{")) ?? "null")?.error;
+    check("a stopped team's sign-in refusal keeps the quoted relative manifest and JSON output in its retry",
+      retryBoot.status === 2 && retryError?.code === "AUTH_REQUIRED" && retryError.remedy === `cotal login --idp ${base}, then \`cotal team boot '${namedFile}' --json\``, retryBoot.out);
     check("…before any effect: no broker answers and no manager runs", !(await isReachable(server2)) && !existsSync(managerPid), revokedBoot.out);
     const restarted = await cotal(["up"], { cwd: root2, env });
     check("a bare up of the stopped stack starts the other members and refuses the manager the same way",
