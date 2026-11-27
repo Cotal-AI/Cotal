@@ -21,6 +21,8 @@ import { spawnSync } from "node:child_process";
 import { isAuthenticSeedChild, markSeedChildLive, clearChildMarker } from "../seed/lock.js";
 import { cliVersion, seedStoreDir } from "../seed/paths.js";
 import { generateExtensionManifest } from "../lib/extension-manifest-command.js";
+import { declaredExtensionEntry } from "../lib/extension-install-declaration.js";
+import { checkPluginCore, readPluginDeclaration } from "@cotal-ai/workspace";
 
 export const extFlags = [
   jsonFlag,
@@ -339,7 +341,7 @@ export async function installExtensionSet(
     const specs = requests.map(({ spec }) => isPathSpec(spec) ? realpathSync(spec) : spec);
     // npm's own update notifier can query the registry even in offline mode.
     const cacheOnly = opts?.offline ? ["--offline", "--update-notifier=false"] : [];
-    const result = await npm(["install", "--save", "--no-audit", "--no-fund", "--install-links", ...cacheOnly, ...specs], npmPrefix);
+    const result = await npm(["install", "--save", "--no-audit", "--no-fund", "--install-links", "--ignore-scripts", ...cacheOnly, ...specs], npmPrefix);
     if (existsSync(mutationPath)) stage.retain();
     if (interrupted) throw new ExtensionAddInterrupted(requests[0]!.pkg);
     if (result.status !== 0) {
@@ -350,9 +352,12 @@ export async function installExtensionSet(
     for (const request of requests) {
       const meta = installedExtensionPackage(request.pkg);
       if (!meta || request.version !== undefined && meta.version !== request.version) throw new Error(`extension set installed an unexpected version of ${request.pkg}`);
-      if (opts?.checkCorePeer) assertExtensionCorePeer(request.pkg, meta.peerDependencies?.["@cotal-ai/core"]);
       const dir = extensionPackageDir(request.pkg);
       const entry = resolveExtensionEntry(dir, meta);
+      if (opts?.checkCorePeer) {
+        if (meta.cotal === undefined) assertExtensionCorePeer(request.pkg, meta.peerDependencies?.["@cotal-ai/core"]);
+        else checkPluginCore(request.pkg, meta, readPluginDeclaration(meta.cotal), entry);
+      }
       if (!existsSync(entry)) {
         const path = codeSpan(`./${oneLine(relative(dir, entry).split(sep).join("/"))}`);
         const message = `the installed npm package ${oneLine(request.pkg)} is missing its entry ${path}.`;
@@ -542,7 +547,7 @@ async function installCandidate(pkg: string, resolved: string, dir: string, reco
   console.error(c.dim(`installing ${resolved} into ${dir} …`));
   // --install-links: a file:/path spec is COPIED into the prefix, not symlinked — a symlink's
   // realpath would escape the prefix and Node could no longer resolve the linked core from it.
-  const r = await npm(["install", "--save", "--no-audit", "--no-fund", "--install-links", resolved], dir, seeding);
+  const r = await npm(["install", "--save", "--no-audit", "--no-fund", "--install-links", "--ignore-scripts", resolved], dir, seeding);
   if (r.status !== 0) {
     fail(pkg, `npm install failed: ${npmInstallFailure(r.output)}`);
   }
@@ -563,6 +568,13 @@ async function verifyCandidate(pkg: string, resolved: string, dir: string, recor
   }
   const pkgMeta = installedExtensionPackage(pkg);
   if (!pkgMeta) fail(pkg, `npm install left no package.json at ${extensionPackageDir(pkg)} - remove and retry`);
+  if (pkgMeta.cotal !== undefined) {
+    const entry = declaredExtensionEntry(pkg, resolved, pkgMeta, recorded, seeding);
+    saveExtensionsManifest({ extensions: [...recorded.filter((item) => item.pkg !== pkg), entry] });
+    provenance.wrote(`extensions manifest (+${pkg}@${entry.version})`, extensionsManifestPath());
+    const providers = entry.provides ?? [];
+    return [c.green(`✓ added ${pkg}@${entry.version}`) + c.dim(` - provides: ${providers.map((item) => `${item.kind}:${item.name}`).join(", ")}`)];
+  }
 
   // Shared @cotal-ai/* packages must be PEER dependencies — a regular dependency vendors a second
   // copy: core's would swallow the extension's registrations into its own registry singleton, and

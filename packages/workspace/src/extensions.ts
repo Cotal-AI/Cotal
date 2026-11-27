@@ -379,6 +379,7 @@ export function bindExtensionPeers(
       }
       throw new CorruptExtensionPackageError(owner, join(dir, "package.json"), "file is missing from the installed package");
     }
+    if (meta.cotal !== undefined) continue;
     for (const peer of Object.keys(meta.peerDependencies ?? {}).filter((name) => name.startsWith("@cotal-ai/"))) {
       let source: string;
       try {

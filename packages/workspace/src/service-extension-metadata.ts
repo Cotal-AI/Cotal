@@ -30,13 +30,18 @@ function declarations(processes: readonly LocalProcess[], presets: readonly Serv
 /** Run by ext add after its ordinary transactional import. Hashes detect cached declaration or
  *  package-metadata changes; they are neither publisher signatures nor executable-code proofs. */
 export function cacheExtensionServiceMetadata(pkg: string, version: string, processes: readonly LocalProcess[], presets: readonly ServicePreset[] = []): InstalledExtension["serviceMetadata"] {
-  if (!processes.some((component) => component.service !== undefined) && !presets.length) return undefined;
   for (const component of processes) if (component.service !== undefined && (typeof component.buildServiceLaunch !== "function" || typeof component.checkServiceReadiness !== "function")) throw new CommandFailure("refused", "SCHEMA_INVALID", "a service adapter must provide both declared launch and readiness hooks");
   for (const component of processes) if (component.service?.stop === "native" && (typeof component.prepareServiceStop !== "function" || typeof component.stopService !== "function")) throw new CommandFailure("refused", "SCHEMA_INVALID", "a native stop adapter must provide both impact and terminal hooks; no generic signal fallback was cached");
+  return cacheDeclaredServiceMetadata(pkg, version, processes.map(cacheLocalProcess), presets);
+}
+
+/** Bind the installed package bytes to declarative service metadata without loading a provider. */
+export function cacheDeclaredServiceMetadata(pkg: string, version: string, processes: readonly LocalProcess[], presets: readonly ServicePreset[]): InstalledExtension["serviceMetadata"] {
+  if (!processes.some((component) => component.service !== undefined) && !presets.length) return undefined;
   // Without protected file access no service adapter can be verified or run here, so the extension
   // installs with no receipt and every service use refuses UNSUPPORTED before reading one.
   if (!protectedFileAccessAvailable()) return undefined;
-  return { schemaVersion: 1, packageJsonSha256: packageMetadata(pkg, version), declarationsSha256: serviceMetadataDigest(declarations(processes.map(cacheLocalProcess), presets)) };
+  return { schemaVersion: 1, packageJsonSha256: packageMetadata(pkg, version), declarationsSha256: serviceMetadataDigest(declarations(processes, presets)) };
 }
 
 /** Metadata-only validation. Never imports executable provider code or fetches a schema. */
