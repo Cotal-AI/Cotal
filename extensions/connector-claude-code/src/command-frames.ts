@@ -11,9 +11,22 @@ export type RequestId = string;
 export type CommandAsk =
   | { op: "list" }
   | { op: "run"; command: string; args: string }
-  | { op: "interrupt" };
+  | { op: "interrupt" }
+  | { op: "prompt"; text: string }
+  | { op: "usage" }
+  /** The owner's model switch: `model` absent keeps the model in force, and `effort` absent leaves
+   *  the session's own effort. */
+  | { op: "model"; model?: string; effort?: string };
 
 export type CommandRequest = CommandAsk & { id: RequestId };
+
+/** Asks the mod to relay the reply text the session streams, as `deltas` answers under this id. The
+ *  server sends it once to each reader it accepts, and only a seat that journals the text does. */
+export interface StreamRequest { id: RequestId; op: "stream" }
+
+/** Lines of reply text Claude Code showed, under the journal key the mod numbered them with
+ *  (`claude-stream.ts`). */
+export interface ModDelta { key: string; text: string }
 
 /** The first line of a reader connection. `mod` is the connector version the reader was built
  *  from; `claude` is the version of the Claude Code session it runs in. */
@@ -26,19 +39,36 @@ export type ModAnswer =
   | { id: RequestId; op: "run"; outcome: "started" }
   | { id: RequestId; op: "run"; outcome: "refused" | "not-found"; reason: string }
   | { id: RequestId; op: "interrupt"; outcome: "interrupted" | "idle"; reason?: string }
+  | { id: RequestId; op: "prompt"; outcome: "submitted" }
+  | { id: RequestId; op: "prompt"; outcome: "refused"; reason: string }
+  /** Claude Code's own figures: the context window, the input tokens of the last response over it,
+   *  and the session's cost in US dollars. */
+  | { id: RequestId; op: "usage"; window: number; tokens?: number; usd?: number }
+  /** What each main turn after the one running goes out on. */
+  | { id: RequestId; op: "model"; model: string; effort?: string }
+  /** Any number of these answer one {@link StreamRequest}. */
+  | { id: RequestId; op: "deltas"; deltas: ModDelta[] }
   | { id: RequestId; op: "error"; reason: string };
 
 export type ModFrame = ModHello | ModAnswer;
 
-/** The longest line either side reads, in UTF-8 bytes. A list answer is the largest frame. */
+/** The longest line the mod side sends, in UTF-8 bytes. A list answer is the largest frame. */
 export const MAX_LINE_BYTES = 1024 * 1024;
+/** The longest request line, in UTF-8 bytes. A prompt is the largest: up to 262144 characters of
+ *  turn text, each at most 6 bytes once JSON-escaped, and its image paths. */
+export const MAX_REQUEST_BYTES = 2 * 1024 * 1024;
 
 const ID = /^[a-z2-7]{26}$/;
 const VERSION = /^[0-9A-Za-z.+-]{1,64}$/;
 const NAME = /^\S{1,128}$/u;
+const MODEL = /^[^\s\p{C}]{1,256}$/u;
+const EFFORT = /^[a-z]{1,16}$/;
 const MAX_COMMANDS = 2048;
 const MAX_TEXT = 4096;
 const MAX_REASON = 2000;
+/** `stream:<prompt id>:<n>`, as `claudeStreamKey` builds it. */
+const STREAM_KEY = /^stream:[0-9A-Za-z-]{1,64}:[1-9][0-9]{0,5}$/;
+const MAX_DELTAS = 256;
 
 type Fields = Record<string, unknown>;
 
@@ -62,6 +92,10 @@ function text(v: unknown, field: string, min: number, max: number): void {
   if (typeof v !== "string") refuse(`${field} is not a string`);
   const length = [...v].length;
   if (length < min || length > max) refuse(`${field} is not ${min} to ${max} characters`);
+}
+
+function count(v: unknown, field: string): void {
+  if (!Number.isSafeInteger(v) || (v as number) < 0) refuse(`${field} is not a whole number of tokens`);
 }
 
 function oneOf(v: unknown, allowed: readonly string[], field: string): void {
@@ -106,6 +140,39 @@ const FRAMES: Record<ModFrame["op"], (f: Fields) => void> = {
     matches(f.id, ID, "id");
     oneOf(f.outcome, ["interrupted", "idle"], "outcome");
     if (Object.hasOwn(f, "reason")) text(f.reason, "reason", 1, MAX_REASON);
+  },
+  prompt(f) {
+    if (f.outcome === "submitted") only(f, ["id", "op", "outcome"]);
+    else {
+      only(f, ["id", "op", "outcome", "reason"]);
+      oneOf(f.outcome, ["refused"], "outcome");
+      text(f.reason, "reason", 1, MAX_REASON);
+    }
+    matches(f.id, ID, "id");
+  },
+  usage(f) {
+    only(f, ["id", "op", "window", "tokens", "usd"]);
+    matches(f.id, ID, "id");
+    count(f.window, "window");
+    if (Object.hasOwn(f, "tokens")) count(f.tokens, "tokens");
+    if (Object.hasOwn(f, "usd") && !(typeof f.usd === "number" && Number.isFinite(f.usd) && f.usd >= 0)) refuse("usd is not a number of dollars");
+  },
+  model(f) {
+    only(f, ["id", "op", "model", "effort"]);
+    matches(f.id, ID, "id");
+    matches(f.model, MODEL, "model");
+    if (Object.hasOwn(f, "effort")) matches(f.effort, EFFORT, "effort");
+  },
+  deltas(f) {
+    only(f, ["id", "op", "deltas"]);
+    matches(f.id, ID, "id");
+    if (!Array.isArray(f.deltas) || f.deltas.length === 0 || f.deltas.length > MAX_DELTAS) refuse(`deltas is not 1 to ${MAX_DELTAS} entries`);
+    for (const d of f.deltas) {
+      if (!isFields(d)) refuse("a delta is not an object");
+      only(d, ["key", "text"]);
+      matches(d.key, STREAM_KEY, "key");
+      if (typeof d.text !== "string" || d.text === "") refuse("a delta's text is not a non-empty string");
+    }
   },
   error(f) {
     only(f, ["id", "op", "reason"]);

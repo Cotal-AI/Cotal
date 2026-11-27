@@ -49,6 +49,8 @@ interface NativeBinding { session: string; path: string; event: HookEvent }
 interface Held {
   conn: GatewayConnection;
   dir?: string;
+  resumable?: boolean;
+  retireRequested?: boolean;
   session?: string;
   hooks?: ClaudeHooks;
   plane?: ReturnType<typeof createClaudeEventPlane>;
@@ -59,7 +61,7 @@ interface Held {
 }
 
 type Reply = { ok: true; env: Record<string, string>; retire?: { dir: string }; grant?: ConversationGrant }
-  | ({ ok: false; pending: true } & ConversationPending)
+  | ({ ok: false; pending: true; error?: string } & ConversationPending)
   | { ok: false; pending?: false; taken?: true; error?: string; refused?: "denied" | "expired" | "refused"; retryable?: boolean };
 
 /** A bound session's request the person has not decided. The host replays it until the authority
@@ -139,7 +141,7 @@ export function createAppHost(o: AppHostOptions): AppHost {
   let reapSpace: string | undefined;
   const plumbing = (args: string[]): Promise<Reply> => new Promise((resolve, reject) => {
     const cotal = o.cotal();
-    execFile(cotal[0]!, [...cotal.slice(1), "app-identity", ...args], { cwd: o.cwd, env: o.env, timeout: PLUMBING_MS }, (_error, stdout, stderr) => {
+    execFile(cotal[0]!, [...cotal.slice(1), "app-identity", ...args], { cwd: o.cwd, env: o.env, timeout: PLUMBING_MS, windowsHide: true }, (_error, stdout, stderr) => {
       try { resolve(JSON.parse(stdout.trim().split("\n").at(-1) ?? "") as Reply); }
       catch {
         reject(new Error(/Unknown option ['"]--require-approval['"]/.test(stderr)
@@ -264,7 +266,7 @@ export function createAppHost(o: AppHostOptions): AppHost {
       if (reply.pending) {
         // A bound session can be told the decision, so the host follows the request for it.
         if (binding) startWatch(binding.session, name, args, reply.approval);
-        throw new ApprovalRequired({ requestId: reply.requestId, approval: reply.approval, proposed: reply.proposed }, space);
+        throw new ApprovalRequired({ requestId: reply.requestId, approval: reply.approval, proposed: reply.proposed }, space, reply.error);
       }
       if ((reply.refused || reply.retryable === false) && binding) stopWatch(binding.session);
       if (reply.taken) throw new NameTaken(name);
@@ -287,7 +289,7 @@ export function createAppHost(o: AppHostOptions): AppHost {
       let hooks: ClaudeHooks | undefined;
       agent = new MeshAgent(config, env, {
         withholdProcessCwd: true,
-        ...(o.commands ? { commands: claudeCommands({ feed: () => o.commands, interrupting: () => hooks?.interrupting(agent!), warn }) } : {}),
+        ...(o.commands ? { commands: claudeCommands({ feed: () => o.commands, interrupting: () => hooks?.interrupting(agent!), warn, onStop: (stop) => agent!.once("stopping", stop) }) } : {}),
       });
       const turns = o.commands ? commandTurns(agent) : undefined;
       agent.on("error", () => process.stderr.write("[cotal-connector] personal connection error; inspect cotal_connection_status\n"));
@@ -300,21 +302,22 @@ export function createAppHost(o: AppHostOptions): AppHost {
       for (let waited = 0; !agent.connected && waited < JOIN_MS; waited += 100) await new Promise((resolve) => setTimeout(resolve, 100));
       if (!agent.connected) throw new Error(`the personal conversation did not join within ${JOIN_MS / 1000} s; its identity was retained for exact cleanup`);
       const conn: GatewayConnection = { id: randomUUID(), agent, config, ...(reply.grant ? { tools: grantedTools(reply.grant) } : {}) };
-      held.set(conn.id, { conn, dir, session: binding?.session, hooks, plane });
+      held.set(conn.id, { conn, dir, resumable: !!reply.env.COTAL_CONVERSATION_APPROVAL, session: binding?.session, hooks, plane });
       if (binding && hooks) await hooks.handle(agent, binding.event);
       if (config.userAuth) reap(config.space);
       return conn;
     } catch (error) {
       await closePlane(plane);
       await agent?.stop().catch(() => {});
-      try { await retire(dir); }
+      try { if (reply.env.COTAL_CONVERSATION_APPROVAL !== "resumed") await retire(dir); }
       catch { if (context && dir) pending.set(context, dir); }
       throw error;
     }
   };
-  const close = async (id: string): Promise<boolean> => {
+  const close = async (id: string, release = false): Promise<boolean> => {
     const h = held.get(id);
     if (!h) return false;
+    if (!release) h.retireRequested = true;
     if (h.closing) return h.closing;
     h.closing = (async () => {
       if (!h.stopped) {
@@ -322,7 +325,7 @@ export function createAppHost(o: AppHostOptions): AppHost {
         await h.conn.agent.stop();
         h.stopped = true;
       }
-      try { await retire(h.dir); }
+      try { if (h.retireRequested || !h.resumable) await retire(h.dir); }
       catch (error) { h.unfinished = reason(error); throw new Error(unfinished(id, h.unfinished)); }
       held.delete(id);
       return true;
@@ -361,7 +364,7 @@ export function createAppHost(o: AppHostOptions): AppHost {
         const context = (reply?.hookSpecificOutput as { additionalContext?: unknown } | undefined)?.additionalContext;
         if (event.hook_event_name === "SessionStart" && typeof context === "string")
           h.hooks?.onReply(bound, o.turn?.(session, id, context) === true);
-        if (event.hook_event_name === "SessionEnd") await close(id);
+        if (event.hook_event_name === "SessionEnd") await close(id, true);
       }
       if (event.hook_event_name === "SessionEnd") {
         bindings.delete(session);
@@ -377,8 +380,11 @@ export function createAppHost(o: AppHostOptions): AppHost {
     },
     async closeAll() {
       refusals.clear();
-      for (const session of [...watches.keys()]) stopWatch(session);
-      const results = await Promise.allSettled([...held.keys()].map(close));
+      const unclaimed = [...watches.keys()].flatMap((session) => stopWatch(session)?.issued ?? []);
+      const results = await Promise.allSettled([...held.keys()].map((id) => close(id, true)));
+      for (const dir of unclaimed) {
+        try { await serial(() => retire(dir)); } catch (error) { results.push({ status: "rejected", reason: error }); }
+      }
       if (results.some((r) => r.status === "rejected") || pending.size)
         throw new Error("some personal identities have pending cleanup; their saved lifecycle records were retained");
     },

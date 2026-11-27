@@ -172,6 +172,9 @@ jobs:
           if-no-files-found: error
           retention-days: 7
       - run: pnpm --filter cotal-ai seeded-connectors
+      - name: Agent apps through the desktop bridge
+        if: runner.os != 'Windows'
+        run: pnpm smoke:daemon-desktop-agent-apps
       # Notarization refuses unsigned nested code, and Tauri does not sign Mach-O files under Resources, so a
       # release build signs the runtime's own before prepare:runtime hashes them. This keychain exists only for
       # that step; Tauri imports the certificate again for the bundle.
@@ -278,10 +281,15 @@ jobs:
             'signed=true' >> $env:GITHUB_OUTPUT
           }
       - name: Build desktop packages
+        id: build
         shell: pwsh
         env:
           TAURI_BUNDLER_DMG_IGNORE_CI: 'true'
           SIGNED_BUILD: ${{ steps.signing.outputs.signed }}
+          RELEASE_BUILD: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
+          UPDATER_PUBLIC_KEY: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && runner.os != 'Linux' && vars.COTAL_UPDATER_PUBLIC_KEY || '' }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && runner.os != 'Linux' && secrets.TAURI_SIGNING_PRIVATE_KEY || '' }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && runner.os != 'Linux' && secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD || '' }}
           APPLE_CERTIFICATE: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && secrets.APPLE_CERTIFICATE || '' }}
           APPLE_CERTIFICATE_PASSWORD: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && secrets.APPLE_CERTIFICATE_PASSWORD || '' }}
           APPLE_SIGNING_IDENTITY: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && secrets.APPLE_SIGNING_IDENTITY || '' }}
@@ -305,10 +313,39 @@ jobs:
             '{"bundle":{"macOS":{"signingIdentity":"-"}}}' | Set-Content -Encoding utf8 $adhoc
             $args += @('--config', $adhoc)
           }
+          # macOS and Windows release builds carry the app updater: the compiled public key turns it on, and
+          # the private key signs each update bundle. Linux packages update through their installer.
+          if ($env:RELEASE_BUILD -eq 'true' -and $env:RUNNER_OS -ne 'Linux') {
+            if (@($env:UPDATER_PUBLIC_KEY, $env:TAURI_SIGNING_PRIVATE_KEY, $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD | Where-Object { $_ }).Count -ne 3) {
+              throw 'A macOS or Windows release build needs the app updater key: repository variable COTAL_UPDATER_PUBLIC_KEY and secrets TAURI_SIGNING_PRIVATE_KEY and TAURI_SIGNING_PRIVATE_KEY_PASSWORD.'
+            }
+            $env:COTAL_UPDATER_PUBLIC_KEY = $env:UPDATER_PUBLIC_KEY
+            $updater = Join-Path $env:RUNNER_TEMP 'cotal-updater.json'
+            @{ bundle = @{ createUpdaterArtifacts = $true }; plugins = @{ updater = @{ pubkey = $env:UPDATER_PUBLIC_KEY } } } | ConvertTo-Json -Depth 4 | Set-Content -Encoding utf8 $updater
+            $args += @('--config', $updater)
+            'updater=true' >> $env:GITHUB_OUTPUT
+          } else {
+            Get-ChildItem Env:TAURI_SIGNING_* | Remove-Item
+            'updater=false' >> $env:GITHUB_OUTPUT
+          }
           & pnpm @args
           if ($LASTEXITCODE -ne 0) { throw 'Desktop build failed.' }
           & pnpm --dir desktop check:size
           if ($LASTEXITCODE -ne 0) { throw 'Desktop bundle size budget exceeded.' }
+      - name: Verify installed Linux RPM files and bundled CLI
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          docker run --rm -i -e DO_NOT_TRACK=1 \
+            -v "$PWD/desktop/src-tauri/target/release/bundle/rpm:/packages:ro" fedora:41 bash -se <<'FEDORA'
+          set -o pipefail
+          scratch=$(mktemp -d)
+          export HOME="$scratch/home" COTAL_HOME="$scratch/cotal" XDG_CONFIG_HOME="$scratch/config" TMPDIR="$scratch/tmp"
+          mkdir -p "$HOME" "$COTAL_HOME" "$XDG_CONFIG_HOME" "$TMPDIR"
+          dnf install -y /packages/*.rpm
+          rpm -V cotal
+          /usr/bin/cotal-node /usr/lib/Cotal/runtime/dist/cotal.js --version
+          FEDORA
       # The only notarization: Tauri gets no notarization login, so it signs the app and the disk image and
       # skips submitting. Gatekeeper assesses a downloaded disk image on open and rejects a signed, unnotarized
       # one; the notary service checks everything nested in the image, the app included, so one submission and
@@ -345,7 +382,25 @@ jobs:
           spctl -a -vv -t open --context context:primary-signature "$dmg" 2>&1 | tee "$RUNNER_TEMP/dmg-spctl.txt"
           grep -q 'source=Notarized Developer ID' "$RUNNER_TEMP/dmg-spctl.txt"
       - name: Verify compiled updater release inputs
+        env:
+          COTAL_UPDATER_EXPECTED_PUBLIC_KEY: ${{ steps.build.outputs.updater == 'true' && vars.COTAL_UPDATER_PUBLIC_KEY || '' }}
         run: node desktop/scripts/check-updater-release.mjs
+      # Both Mac builds name their update bundle Cotal.app.tar.gz; give it the disk image's name so the two
+      # architectures can share one release.
+      - name: Name the macOS update bundle after its disk image
+        if: runner.os == 'macOS' && steps.build.outputs.updater == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          bundle=desktop/src-tauri/target/release/bundle
+          archives=("$bundle"/macos/*.app.tar.gz)
+          dmgs=("$bundle"/dmg/*.dmg)
+          [ "${#archives[@]}" -eq 1 ] && [ -f "${archives[0]}" ] && [ -f "${archives[0]}.sig" ] || { echo 'expected one signed update bundle'; exit 1; }
+          [ "${#dmgs[@]}" -eq 1 ] && [ -f "${dmgs[0]}" ] || { echo 'expected one disk image'; exit 1; }
+          name=$(basename "${dmgs[0]}" .dmg).app.tar.gz
+          mv "${archives[0]}" "$bundle/macos/$name"
+          mv "${archives[0]}.sig" "$bundle/macos/$name.sig"
+          echo "Update bundle: $name"
       - name: Verify the macOS bundle signature seals the whole app
         if: runner.os == 'macOS'
         run: |
@@ -428,6 +483,9 @@ jobs:
             desktop/src-tauri/target/release/bundle/**/*.rpm
             desktop/src-tauri/target/release/bundle/**/*.msi
             desktop/src-tauri/target/release/bundle/**/*.exe
+            desktop/src-tauri/target/release/bundle/**/*.app.tar.gz
+            desktop/src-tauri/target/release/bundle/**/*.app.tar.gz.sig
+            desktop/src-tauri/target/release/bundle/**/*-setup.exe.sig
           if-no-files-found: error
           retention-days: 7
   updater-arm:
@@ -554,7 +612,31 @@ jobs:
             done
             missing=()
             for name in "${expected[@]}"; do [[ "$attached" == *" $name "* ]] || missing+=("$name"); done
-            [ "${#missing[@]}" -eq 0 ] && { echo "All ${#expected[@]} platforms attached."; exit 0; }
+            [ "${#missing[@]}" -eq 0 ] && { echo "All ${#expected[@]} platforms attached."; break; }
             $final && { echo "::error::Builds ended without installers for: ${missing[*]}"; exit 1; }
             sleep 30
           done
+      # Installed Mac and Windows apps poll releases/latest/download/desktop-latest.json. It is attached last,
+      # after every update bundle it names, and only when all three are there.
+      - name: Publish the app update feed
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          one() {
+            mapfile -t found < <(find installers -type f -name "$1")
+            [ "${#found[@]}" -eq 1 ] && [ -f "${found[0]}.sig" ] || { echo "::error::expected one update file matching $1 with its .sig beside it, found ${#found[@]} files" >&2; exit 1; }
+            printf '%s' "${found[0]}"
+          }
+          arm=$(one '*_aarch64.app.tar.gz')
+          intel=$(one '*_x64.app.tar.gz')
+          windows=$(one '*-setup.exe')
+          url="https://github.com/$GH_REPO/releases/download/$TAG"
+          entry() { jq -n --arg url "$url/$(basename "$1")" --rawfile signature "$1.sig" '{url: $url, signature: $signature}'; }
+          jq -n --arg version "${TAG#v}" --arg notes "https://github.com/$GH_REPO/releases/tag/$TAG" --arg date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --argjson arm "$(entry "$arm")" --argjson intel "$(entry "$intel")" --argjson windows "$(entry "$windows")" \
+            '{version: $version, notes: $notes, pub_date: $date, platforms: {"darwin-aarch64": $arm, "darwin-x86_64": $intel, "windows-x86_64": $windows}}' > desktop-latest.json
+          jq . desktop-latest.json
+          gh release upload "$TAG" --clobber desktop-latest.json

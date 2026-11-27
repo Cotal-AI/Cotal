@@ -1,5 +1,39 @@
 # @cotal-ai/linear
 
+## 0.183.1
+
+No changes in this release.
+
+## 0.183.0
+
+No changes in this release.
+
+## 0.182.1
+
+No changes in this release.
+
+## 0.182.0
+
+### Minor Changes
+
+- 68c3df3: Linear now refuses calls to tools omitted from an account's `allowedTools` list and credential replacement on invalid account records, so ask the account operator to update the list or repair the record before retrying.
+
+### Patch Changes
+
+- 238c82e: Linear reports how to repair dangling account record links and shows the tool allowlist remedy in every CLI output format.
+
+## 0.181.0
+
+No changes in this release.
+
+## 0.180.0
+
+No changes in this release.
+
+## 0.179.0
+
+No changes in this release.
+
 ## 0.178.0
 
 No changes in this release.

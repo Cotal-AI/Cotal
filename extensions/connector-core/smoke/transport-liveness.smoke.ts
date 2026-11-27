@@ -126,6 +126,7 @@
  * Run: pnpm smoke:transport-liveness
  */
 import type { Status } from "@nats-io/transport-node";
+import { CotalEndpoint } from "../../../packages/core/dist/index.js";
 import { MeshAgent } from "../src/agent.js";
 import type { AgentConfig } from "../src/config.js";
 
@@ -215,11 +216,13 @@ const cfg: AgentConfig = {
 
 type EndpointHarness = {
   conn: { nc?: FakeNc };
-  connection: { heartbeatTimer?: ReturnType<typeof setInterval> };
-  watchStatus(): void;
-  superviseConnection(): void;
-  reestablishLoop(): Promise<void>;
-  connectAndBind(): Promise<void>;
+  connection: {
+    heartbeatTimer?: ReturnType<typeof setInterval>;
+    watchStatus(): void;
+    superviseConnection(): void;
+    reestablishLoop(): Promise<void>;
+    connectAndBind(): Promise<void>;
+  };
 };
 type AgentHarness = {
   readonly transportConnected: boolean;
@@ -228,13 +231,16 @@ type AgentHarness = {
 function arm(agent: MeshAgent, nc: FakeNc): void {
   const ep = agent.ep as unknown as EndpointHarness;
   ep.conn.nc = nc;
-  ep.watchStatus();
+  ep.connection.watchStatus();
 }
 
 let unexpected: unknown;
 try {
 console.log("transport lifecycle is separate from full-bind readiness:");
 const agent = new MeshAgent(cfg);
+// The core cells grade the endpoint `pnpm --filter @cotal-ai/core build` writes to dist; an agent
+// holding any other copy would leave them untested.
+if (!(agent.ep instanceof CotalEndpoint)) throw new Error("MeshAgent did not construct the built core CotalEndpoint");
 const endpointEvents: Array<{ connected: boolean; server?: string }> = [];
 const agentEvents: Array<{ connected: boolean; server?: string }> = [];
 const endpointErrors: string[] = [];
@@ -333,10 +339,10 @@ await tick();
 let releaseRebind!: () => void;
 const rebindGate = new Promise<void>((resolve) => { releaseRebind = resolve; });
 const manualNew = new FakeNc("nats://manual-new");
-manualEp.connectAndBind = async () => {
+manualEp.connection.connectAndBind = async () => {
   await rebindGate;
   manualEp.conn.nc = manualNew;
-  manualEp.watchStatus();
+  manualEp.connection.watchStatus();
   manual.ep.emit("connection", { connected: true });
 };
 const manualResult = manual.reconnect();
@@ -390,8 +396,8 @@ terminal.ep.emit("connection", { connected: true });
 const terminalNc = new ClosingNc("nats://terminal");
 const terminalEp = terminal.ep as unknown as EndpointHarness;
 terminalEp.conn.nc = terminalNc;
-terminalEp.reestablishLoop = async () => {};
-terminalEp.superviseConnection();
+terminalEp.connection.reestablishLoop = async () => {};
+terminalEp.connection.superviseConnection();
 terminalNc.finish(new Error("terminal socket loss"));
 await tick();
 check(
@@ -424,14 +430,14 @@ const freshNc = new DrainWitnessNc("nats://fresh-after-stop");
 let supervised = 0;
 let polledAfterStop = 0;
 (starting as unknown as { ensureTurnPoll(): void }).ensureTurnPoll = () => { polledAfterStop++; };
-startingEp.connectAndBind = async () => {
+startingEp.connection.connectAndBind = async () => {
   enteredBind();
   await bindGate;
   bindFinished = true;
   startingEp.conn.nc = freshNc;
   startingEp.connection.heartbeatTimer = setInterval(() => {}, 60_000);
 };
-startingEp.superviseConnection = () => { supervised++; };
+startingEp.connection.superviseConnection = () => { supervised++; };
 const startingPromise = starting.start(1);
 await bindParked;
 let stopSettled = false;
@@ -482,13 +488,13 @@ const failingBindParked = new Promise<void>((resolve) => { enteredFailingBind = 
 let startRejected = false;
 let failingBindFinished = false;
 let failingSupervised = 0;
-failingEp.connectAndBind = async () => {
+failingEp.connection.connectAndBind = async () => {
   enteredFailingBind();
   await startGate;
   failingBindFinished = true;
   failingEp.conn.nc = refusingNc;
 };
-failingEp.superviseConnection = () => { failingSupervised++; };
+failingEp.connection.superviseConnection = () => { failingSupervised++; };
 const failedStart = failing.start(1);
 await failingBindParked;
 let failingStopSettled = false;
@@ -538,7 +544,7 @@ check("an unclosed owned connection retains custody after all bind flights settl
 
 const liveFailure = new MeshAgent({ ...cfg, name: "live-bind-failure" });
 const liveError = new Error("controlled live bind failure");
-(liveFailure.ep as unknown as EndpointHarness).connectAndBind = async () => { throw liveError; };
+(liveFailure.ep as unknown as EndpointHarness).connection.connectAndBind = async () => { throw liveError; };
 const liveResult = await liveFailure.ep.start().then(() => undefined, (error: unknown) => error);
 check("a bind failure before stop still rejects the caller", liveResult === liveError);
 await liveFailure.stop();
@@ -552,7 +558,7 @@ const rebuildEntered = new Promise<void>((resolve) => { enterRebuild = resolve; 
 const rebuildCloseError = new Error("controlled late-rebuild close failure");
 const rebuildNc = new FakeNc("nats://late-rebuild-close");
 rebuildNc.close = async () => { throw rebuildCloseError; };
-rebuildingEp.connectAndBind = async () => { enterRebuild(); await rebuildGate; rebuildingEp.conn.nc = rebuildNc; };
+rebuildingEp.connection.connectAndBind = async () => { enterRebuild(); await rebuildGate; rebuildingEp.conn.nc = rebuildNc; };
 const rebuildFlight = rebuilding.ep.reconnect().then(() => undefined, (error: unknown) => error);
 await rebuildEntered;
 const rebuildStop = rebuilding.stop().then(() => undefined, (error: unknown) => error);

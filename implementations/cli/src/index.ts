@@ -21,6 +21,7 @@ import { console_ } from "./commands/console.js";
 import { spawn, spawnComplete, spawnFlags, spawnRequiredExtensions, validateSpawnArguments } from "./commands/spawn.js";
 import { refuseRemovedStart } from "./commands/removed-start.js";
 import { appIdentity, appIdentityFlags } from "./commands/app-identity.js";
+import { conversationSignOut } from "./lib/app-user-identity.js";
 import { attach, attachFlags, input, inputFlags, inputArguments, managedAgentComplete, managedTarget, ps, psFlags, stop, stopFlags, validateStopArguments } from "./commands/agents.js";
 import { models, modelsComplete, modelsFlags, validateModelsArguments } from "./commands/models.js";
 import { watch, watchComplete, watchFlags, validateWatchArguments } from "./commands/watch.js";
@@ -29,6 +30,7 @@ import { personas, personasComplete } from "./commands/personas.js";
 import { completion, completionComplete, completionFlags, complete, validateCompletionArguments } from "./commands/completion.js";
 import { config, configComplete, configFlags, configSubcommands, validateConfigArguments } from "./commands/config.js";
 import { telemetry, telemetryFlags, validateTelemetryArguments } from "./commands/telemetry.js";
+import { trust, trustFlags, validateTrustArguments } from "./commands/trust.js";
 import { mint } from "./commands/mint.js";
 import { revokeCredential } from "./commands/revoke-credential.js";
 import { channels, channelArguments, channelComplete, channelFlags } from "./commands/channels.js";
@@ -161,9 +163,27 @@ const baseCommands: Command[] = [
   },
   {
     kind: "command",
+    name: "trust",
+    group: "Setup",
+    summary: "trust a project folder, so its .cotal may declare MCP servers, spawn.env names and persona launch options",
+    usage: "cotal trust <path> [--hex] [--json|--plain]",
+    positionals: "<path>",
+    flags: trustFlags,
+    outputs: ["json", "plain"],
+    prepareMeshTarget: false,
+    examples: [{ command: "cotal trust .", note: "trust the project in this folder" }, { command: "cotal trust <path>", note: "trust the project at a path" }],
+    validate: validateTrustArguments,
+    run: trust,
+  },
+  {
+    kind: "command",
     name: "update",
     group: "Setup",
     summary: "reconcile first-party extensions and check for a coherent cotal-ai upgrade",
+    usage: "cotal update [--self [--stop-agents]] [-s|--space <s>] [--server <url>] [--creds <path>] [--on <instance>]\n" +
+      "cotal update --check [-j|--json|--plain]\n" +
+      "cotal update --auto [off|on] [-j|--json|--plain]\n" +
+      "cotal update --notify [off|on] [-j|--json|--plain]",
     flags: updateFlags,
     positionals: "[off|on]",
     prepareMeshTarget: false,
@@ -247,7 +267,7 @@ const baseCommands: Command[] = [
       { name: "show", flagNames: ["space", "json", "plain"], summary: "read a saved definition without exposing argument or credential contents", examples: [{ command: "cotal service show <name>", note: "read a saved service definition" }], usage: "cotal service show <name>", reads: true, prepareMeshTarget: false },
       { name: "add", flagNames: ["space", "exec", "cwd", "file", "preset", "json", "plain"], summary: "save your own program (--exec), a preset or a definition file; starts nothing", examples: [{ command: "cotal service add <name> --exec \"<command>\"", note: "save a program as a service" }, { command: "cotal service add <name> --file <definition.json>", note: "save one from a definition file" }], usage: "cotal service add <name> (--exec \"<command>\" [--cwd <dir>] | --preset <preset> [<options>] | --file <definition.json>)", prepareMeshTarget: false },
       { name: "remove", flagNames: ["space", "instance", "yes", "json", "plain"], aliases: ["rm"], summary: "forget a stopped, unsupervised owned definition", examples: [{ command: "cotal service remove <name>", note: "forget a stopped service" }], usage: "cotal service remove <name> [--instance <full-id>] [--yes]", prepareMeshTarget: false },
-      { name: "start", flagNames: ["space", "instance", "new-instance", "foreground", "no-open", "dry-run", "json", "plain"], summary: "start a service; a built-in one is saved from its defaults first, and nothing else is started for it", examples: [{ command: "cotal service start <name>", note: "start a service in the background" }, { command: "cotal service start <name> --foreground", note: "run it in this terminal" }], usage: "cotal service start <name> [<preset options>] [--instance <id>|--new-instance] [--foreground] [--dry-run]", prepareMeshTarget: false },
+      { name: "start", flagNames: ["space", "instance", "new-instance", "foreground", "no-open", "idle-exit", "dry-run", "json", "plain"], summary: "start a service; a built-in one is saved from its defaults first, and nothing else is started for it", examples: [{ command: "cotal service start <name>", note: "start a service in the background" }, { command: "cotal service start <name> --foreground", note: "run it in this terminal" }], usage: "cotal service start <name> [<preset options>] [--instance <id>|--new-instance] [--foreground] [--dry-run]", prepareMeshTarget: false },
       { name: "stop", flagNames: ["space", "instance", "yes", "with-agents", "dry-run", "json", "plain"], summary: "stop the exact owned process through its declared native policy", examples: [{ command: "cotal service stop <name>", note: "stop a service" }, { command: "cotal service stop <name> --dry-run", note: "show what stopping it affects" }], usage: "cotal service stop <name> [--instance <id>] [--with-agents] [--yes|--dry-run]", prepareMeshTarget: false },
       { name: "restart", flagNames: ["space", "instance", "yes", "with-agents", "dry-run", "json", "plain"], summary: "confirm an exact owned stop before one replacement launch", examples: [{ command: "cotal service restart <name>", note: "stop a service, then start it again" }], usage: "cotal service restart <name> [--instance <id>] [--with-agents] [--yes|--dry-run]", prepareMeshTarget: false },
       { name: "status", flagNames: ["space", "instance", "json", "plain"], summary: "read instance identity and process observations without repair", examples: [{ command: "cotal service status <name>", note: "check whether a service runs" }], usage: "cotal service status <name> [--instance <id>]", reads: true, prepareMeshTarget: false },
@@ -723,13 +743,13 @@ const baseCommands: Command[] = [
     aliases: ["p"],
     group: "Agents",
     summary: "manage local definitions or an exact manager's caller-owned persona catalog",
-    examples: [{ command: "cotal persona", note: "list your personas" }, { command: "cotal persona create <name> --prompt \"<text>\" --subscribe \"\"", note: "save a persona from a prompt, reading no channels" }, { command: "cotal persona show <name>", note: "read one persona" }],
-    usage: "cotal persona [--json|--plain] | persona show <name> | persona create <name> (--file <persona.md>|(--prompt <text>|--from <path>) --subscribe <a,b|\"\">) | persona edit <name> | persona remove <name> [--yes]; list/show/create support --on <manager-instance>",
+    examples: [{ command: "cotal persona", note: "list your personas" }, { command: 'cotal persona create <name> --prompt "<text>" --subscribe=', note: "save a persona from a prompt, reading no channels" }, { command: "cotal persona show <name>", note: "read one persona" }],
+    usage: "cotal persona [--json|--plain] | persona show <name> | persona create <name> (--file <persona.md>|(--prompt <text>|--from <path>) (--subscribe <a,b>|--subscribe=)) | persona edit <name> | persona remove <name> [--yes]; list/show/create support --on <manager-instance>",
     positionals: "[show <name> | create <name> | edit <name> | remove <name>]",
     flagNames: ["space", "server", "on", "json", "plain"],
     subcommands: [
       { name: "show", flagNames: ["space", "server", "on", "json", "plain"], summary: "read a local definition or an authorized exact-manager card", examples: [{ command: "cotal persona show <name>", note: "read a persona's definition" }], usage: "cotal persona show <name> [--on <manager-instance>] [--json|--plain]", reads: true, outputs: ["json", "plain"] },
-      { name: "create", flagNames: ["space", "server", "on", "file", "prompt", "from", "role", "model", "harness", "subscribe", "allow-subscribe", "allow-publish", "announce", "json", "plain"], summary: "save a local definition or define a caller-owned remote persona", examples: [{ command: "cotal persona create <name> --prompt \"<text>\" --subscribe \"\"", note: "save a persona from a prompt, reading no channels" }, { command: "cotal persona create <name> --file <persona.md>", note: "save one from a file" }], usage: "cotal persona create <name> (--file <persona.md> | (--prompt <text> | --from <path>) --subscribe <a,b|\"\">) [--role <role>] [--model <model>] [--harness <application>] [--on <manager-instance>] [--json|--plain]", outputs: ["json", "plain"] },
+      { name: "create", flagNames: ["space", "server", "on", "file", "prompt", "from", "role", "model", "harness", "subscribe", "allow-subscribe", "allow-publish", "announce", "json", "plain"], summary: "save a local definition or define a caller-owned remote persona", examples: [{ command: 'cotal persona create <name> --prompt "<text>" --subscribe=', note: "save a persona from a prompt, reading no channels" }, { command: "cotal persona create <name> --file <persona.md>", note: "save one from a file" }], usage: "cotal persona create <name> (--file <persona.md> | (--prompt <text> | --from <path>) (--subscribe <a,b> | --subscribe=)) [--role <role>] [--model <model>] [--harness <application>] [--on <manager-instance>] [--json|--plain]", outputs: ["json", "plain"] },
       { name: "edit", flagNames: ["space", "server", "json", "plain"], summary: "validate a private editor draft before saving", examples: [{ command: "cotal persona edit <name>", note: "edit a persona in your editor" }], usage: "cotal persona edit <name> [--json|--plain]", outputs: ["json", "plain"] },
       { name: "remove", flagNames: ["space", "server", "yes", "json", "plain"], aliases: ["rm"], summary: "remove a named local definition after confirmation", examples: [{ command: "cotal persona remove <name>", note: "remove a persona after you confirm" }], usage: "cotal persona remove <name> [-y|--yes] [--json|--plain]", outputs: ["json", "plain"] },
     ],
@@ -912,7 +932,7 @@ const baseProcesses: LocalProcess[] = [
 
 const credentialMintAction: CredentialAction = { kind: "credential-action", name: "mint", validate: validateCredentialMintArguments, run: mint };
 const credentialRevokeAction: CredentialAction = { kind: "credential-action", name: "revoke-credential", validate: validateCredentialRevokeArguments, run: revokeCredential };
-registry.register(...baseCommands, ...baseProcesses, credentialMintAction, credentialRevokeAction);
+registry.register(...baseCommands, ...baseProcesses, credentialMintAction, credentialRevokeAction, conversationSignOut);
 
 export { runCli } from "./command.js";
 export { stdoutError } from "./lib/stdout-owner.js";

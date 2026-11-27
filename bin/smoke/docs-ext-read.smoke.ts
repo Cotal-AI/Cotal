@@ -111,6 +111,32 @@ let specBody = "";
 }
 
 {
+  const docs = run(["docs", "cli-agent-control", "--json"]);
+  const body = docs.envelope?.result?.body;
+  const managedSeats = typeof body === "string"
+    ? (body.split(/^## Managed seats(?: \[#managed-seats\])?$/m)[1]?.split(/^## /m)[0] ?? "").replace(/\s+/g, " ")
+    : "";
+  const startup = run(["docs", "cli-startup.mdx#up", "--json"]);
+  check("the bundled managed seats reference qualifies bare up with the 263168-byte manager payload floor and restart link",
+    docs.status === 0 && startup.status === 0 &&
+    managedSeats.includes("Bare `cotal up` adds the manager when the running broker's `--max-payload` is at least 263168 bytes.") &&
+    managedSeats.includes("below 263168 bytes") &&
+    managedSeats.includes("`cotal down --yes`") &&
+    managedSeats.includes("`cotal up --max-payload 1048576`") &&
+    managedSeats.includes("[startup reference](cli-startup.mdx#up)") &&
+    !managedSeats.includes("Bare `cotal up` adds the manager."),
+    managedSeats);
+  const input = typeof body === "string" ? body.split(/^## input(?: \[#input\])?$/m)[1]?.split(/^## /m)[0] ?? "" : "";
+  const flags = input.split("\n").filter((line) => line.startsWith("|"));
+  const raw = run(["input", "--name", "reviewer", "--text", "/compact", "--no-enter", "--space", "docs-input-ref",
+    "--server", "nats://127.0.0.1:38324", "--creds", "./does-not-exist.creds", "--json"]);
+  check("the bundled input flag table lists space and server but not raw credentials, which input refuses",
+    docs.status === 0 && flags.some((line) => line.includes("`--space <s>`") && line.includes("`--server <url>`")) &&
+    flags.every((line) => !line.includes("--creds")) && raw.status === 2 && raw.envelope?.outcome === "refused" &&
+    raw.envelope.error?.code === "UNSUPPORTED", { flags, raw: shown(raw) });
+}
+
+{
   const docs = run(["docs", "cli-messaging", "--json"]);
   const body = docs.envelope?.result?.body;
   const pending = typeof body === "string" ? body.split(/^## pending(?: \[#pending\])?$/m)[1]?.split(/^## /m)[0] ?? "" : "";
@@ -262,6 +288,22 @@ for (const [args, why] of [
 }
 
 {
+  for (const args of [["cli", "--wibble"], ["--wibble", "cli"]]) {
+    const refused = run(["docs", ...args, "--json"]);
+    const error = refused.envelope?.error;
+    check(`docs ${args.join(" ")} says to drop the unknown option when the page is set`,
+      refused.status === 1 && refused.stderr === "" && refused.envelope?.command === "docs" && refused.envelope.outcome === "refused" &&
+      error?.code === "USAGE_INVALID" && error.message === "Unknown option '--wibble'" && error.remedy === "drop the unknown option", shown(refused));
+  }
+  const retry = run(["docs", "cli", "--json"]);
+  check("dropping the unknown option reads the requested page", retry.status === 0 && retry.stderr === "" &&
+    retry.envelope?.outcome === "ok" && retry.envelope.result?.kind === "docs-page" && retry.envelope.result.slug === "cli", shown(retry));
+  const noPage = run(["docs", "--wibble", "--json"]);
+  check("docs still suggests the separator when no page is set", noPage.status === 1 && noPage.stderr === "" &&
+    noPage.envelope?.error?.remedy === 'to pass a word that starts with "-", put -- before it', shown(noPage));
+}
+
+{
   const config = join(home, "damaged-inventory");
   const extensions = join(config, "cotal", "extensions");
   const manifest = join(extensions, "extensions.json");
@@ -284,6 +326,22 @@ for (const [args, why] of [
     list.envelope.error?.code === "SCHEMA_INVALID" && list.envelope.error.message.includes('no "extensions" array') &&
     list.envelope.error.remedy?.includes("cotal ext seed --repair") === true &&
     readFileSync(manifest, "utf8") === "{}\n", shown(list));
+
+  writeFileSync(manifest, "{\n");
+  for (const [prefixArgs, suffixArgs] of [
+    [["help", "docs"], ["docs", "--help"]],
+    [["--no-color", "help", "--all", "--", "docs", "cli-usage"], ["docs", "cli-usage", "--help"]],
+  ] satisfies [string[], string[]][]) {
+    const prefix = run(prefixArgs, env);
+    const suffix = run(suffixArgs, env);
+    check(`\`${prefixArgs.join(" ")}\` shows the same docs help without changing the damaged inventory`,
+      prefix.status === 0 && suffix.status === 0 && prefix.stderr === "" && suffix.stderr === "" &&
+      suffix.stdout.includes("Usage\n") && prefix.stdout === suffix.stdout && readFileSync(manifest, "utf8") === "{\n",
+      { prefix: shown(prefix), suffix: shown(suffix) });
+  }
+  const allHelp = run(["help"], env);
+  check("full help reports a corrupt extension inventory",
+    allHelp.status === 1 && allHelp.stdout === "" && allHelp.stderr.includes("corrupt extensions manifest"), shown(allHelp));
 
   const journal = join(config, "cotal", ".extensions-promotion.json");
   writeFileSync(journal, "{}\n", { mode: 0o600 });

@@ -27,6 +27,10 @@ export interface LaunchOpts {
    *  `name`. The connector forwards it (`COTAL_DISPLAY_NAME`) and keeps `name` as the launch name,
    *  which in user mode is also the actor. */
   displayName?: string;
+  /** The seat labels itself from the first message it receives (SPEC 13.22): its launch
+   *  {@link prompt}, else its first live direct message or mention. The connector forwards it
+   *  (`COTAL_AUTO_NAME`). A seat started with a {@link displayName} keeps that name instead. */
+  autoName?: boolean;
   role?: string;
   /** Stable agent id (the nkey public key). When set, the launched session adopts it
    *  as its `card.id` instead of generating a random one — so the id the launcher
@@ -89,6 +93,11 @@ export interface LaunchOpts {
    *  supports variants renders it in its host form; unsupported connectors fail loud rather than
    *  silently ignoring it. */
   variant?: string;
+  /** The modes the launcher resolved, by {@link ModeInfo.id}: a boolean for a toggle, an option id
+   *  for a choice. A manager launches only modes the connector's catalog lists for the model, so a
+   *  connector renders them as given. A mode the launch does not name runs at the harness default.
+   *  Only set when the connector declares {@link Connector.supportsModes}. */
+  modes?: LaunchModes;
   /** Opaque, connector-specific launch options — an arbitrary key→value map core forwards VERBATIM
    *  and never inspects. Connectors forward well-shaped keys raw into their own host form (CLI flags,
    *  config, env); a connector with no option surface fails loud. Fed by `--opt k=v`, a persona's
@@ -146,6 +155,13 @@ export interface LaunchOpts {
   events?: boolean;
   /** Publish tool inputs/results on the sibling rail. False retains names/times only. Defaults to true. */
   eventPayloads?: boolean;
+  /** Launch the harness in its mode that asks before it uses a tool, so its permission prompts reach
+   *  the agent's `agent` endpoint (SPEC 13.22) where the session serves one. Absent or false keeps
+   *  the connector's own launch mode. Gated upstream by {@link Connector.supportsAskPermissions}. */
+  askPermissions?: boolean;
+  /** Publish the model's reasoning (`REASONING_*`) on the session's event plane. Absent or false
+   *  publishes none. Gated upstream by {@link Connector.supportsReasoningEvents}. */
+  reasoningEvents?: boolean;
   /** The selected registration requires this session's structured event plane. A launcher sets this
    *  from trusted registration material; connectors carry it into launch material for session-side
    *  enforcement as well as arming the emitter. */
@@ -253,13 +269,40 @@ export interface ModelVariantInfo {
   options?: Record<string, unknown>;
 }
 
-/** One model a connector can launch. `id` is the value to pass as {@link LaunchOpts.model}; variants
- *  are selected separately via {@link LaunchOpts.variant}. */
+/** One option of a choice {@link ModeInfo}. `id` is the value a launch passes. */
+export interface ModeOption {
+  id: string;
+  label: string;
+}
+
+/** A launch setting a model offers besides its variant, such as a fast tier or an agent. A toggle is
+ *  on or off; a choice picks one option. `default` is what the harness runs when a launch does not
+ *  name the mode. `unavailable` is set when the logged-in account cannot run the mode, and says why
+ *  for a person to read; a manager refuses a launch that turns the mode on, a toggle to `true` or a
+ *  choice to any option but `default`, and launches one that sets it off. */
+export type ModeInfo =
+  | { id: string; label: string; kind: "toggle"; default: boolean; unavailable?: string }
+  | { id: string; label: string; kind: "choice"; options: ModeOption[]; default: string; unavailable?: string };
+
+/** A launch's mode choices, by {@link ModeInfo.id}: a boolean for a toggle, an option id for a choice. */
+export type LaunchModes = Record<string, boolean | string>;
+
+/** One model a connector can launch. `id` is the value to pass as {@link LaunchOpts.model}; a variant
+ *  and modes are selected separately via {@link LaunchOpts.variant} and {@link LaunchOpts.modes}, and
+ *  a manager refuses either when this row does not list it. */
 export interface ModelInfo {
   id: string;
   name?: string;
   provider?: string;
+  description?: string;
+  /** The model the harness runs when a launch names none. At most one row of a catalog sets it. */
+  isDefault?: boolean;
   variants?: ModelVariantInfo[];
+  /** The variant the harness runs when a launch names none. It is the name of one of {@link variants}. */
+  defaultVariant?: string;
+  /** The modes this model offers, each marked `unavailable` when the account the harness is logged in
+   *  as cannot run it. */
+  modes?: ModeInfo[];
 }
 
 /** Connector-provided model catalog. Optional by design: some hosts have no local model-list API. */
@@ -278,6 +321,11 @@ export interface ModelCatalogOpts {
    *  these files rather than resolving the bare name again, so it runs the binary a spawn will run.
    *  Absent when no manager boot inventory exists, as for a standalone call. */
   resolvedBinaries?: Readonly<Record<string, string>>;
+  /** The extra environment names the operator declared in `spawn.env`, read from the config a spawn
+   *  would read now: what a managed launch receives as {@link LaunchOpts.envAllow}. A catalog that
+   *  runs its harness passes them on as the launch does, so it lists the models a seat reaches.
+   *  Absent when none are declared, or for a standalone call. */
+  envAllow?: readonly string[];
 }
 
 /** What a seat on a connector runs on its `agent` endpoint (SPEC 13.22), and how the manager lists
@@ -308,6 +356,38 @@ export interface ConnectorModelCatalog extends ModelCatalog {
   error?: string;
 }
 
+/** How a person installs the harness a connector runs, from its maker. It is data, cached in the
+ *  extensions manifest beside {@link Connector.requires}, so an app can offer the install before it
+ *  imports the connector. The app builds every command from these fields and from nothing else. */
+export interface HarnessInstall {
+  /** The harness as people know it, such as "Claude Code". */
+  readonly title: string;
+  /** Who makes it, such as "Anthropic". */
+  readonly maker: string;
+  /** The maker's installer for each operating system. A system left out has none. */
+  readonly installers: Readonly<Partial<Record<"darwin" | "linux" | "win32", HarnessInstaller>>>;
+  /** The harness's own sign-in, when it has a command that checks it and one that starts it in the
+   *  browser. Each command starts with an executable from {@link Connector.requires}. */
+  readonly signIn?: { readonly status: readonly string[]; readonly login: readonly string[] };
+}
+
+/** One installer script a harness's maker publishes. It runs for the person's own account, with no
+ *  terminal and no administrator rights. */
+export interface HarnessInstaller {
+  /** The script's https address. macOS and Linux pipe it to {@link shell}; Windows runs it in
+   *  PowerShell. */
+  readonly script: string;
+  /** The shell the maker's instructions pipe the script to on macOS and Linux. */
+  readonly shell?: "sh" | "bash";
+  /** Variables the maker documents for a run without a terminal. */
+  readonly env?: Readonly<Record<string, string>>;
+  /** The folder the installer puts the executables in: `~/` starts the home folder, and on Windows
+   *  `%NAME%\` starts a folder variable. An app adds it to PATH when the installer does not. */
+  readonly binDir: string;
+  /** Executables the installer needs on PATH before it runs, such as `node`. */
+  readonly needs?: readonly string[];
+}
+
 /**
  * A bridge that knows how to launch one agent type (Claude Code, OpenCode, the CLI
  * peer …) as a Cotal mesh node — an {@link Extension} of kind `"connector"`.
@@ -323,9 +403,13 @@ export interface Connector extends Extension {
   /** Connector-owned setup surface. The base CLI resolves this through the extension registry and
    * never carries a harness's asset names or native install commands itself. */
   readonly setup?: ExtensionRef;
+  /** Return a host-specific refusal without taking action or writing anything. A defined `cwd`
+   *  means a supervised Manager launch. `buildLaunch` must refuse the same conditions itself. */
+  launchUnavailable?(opts?: Pick<LaunchOpts, "cwd" | "resume">): string | undefined;
   buildLaunch(opts: LaunchOpts): LaunchSpec;
-  /** Optional model catalog hook. The manager calls this for selector UIs; launch remains authority-free
-   *  and still accepts any string the operator supplies. */
+  /** Optional model catalog hook. The manager calls this for selector UIs and keeps the last answer.
+   *  A launch may still name a model the catalog does not list, but a variant or modes it names are
+   *  checked against the kept catalog, and one its model's row does not list is refused. */
   listModels?(opts?: ModelCatalogOpts): ModelCatalog | Promise<ModelCatalog>;
   /** The harness commands and skills its seats run. Absent: they run none, and the manager answers
    *  `supported: false` before launch. */
@@ -352,6 +436,9 @@ export interface Connector extends Extension {
    *  and fails with a clear error naming a missing one. Optional — omit for connectors
    *  whose harness runs in-process. */
   readonly requires?: readonly string[];
+  /** How a person installs what {@link requires} names, from its maker. Absent: no app offers to
+   *  install it. */
+  readonly install?: HarnessInstall;
   /** Directory of installable editor-plugin assets shipped with the connector
    *  (e.g. a Claude Code plugin dir), when the agent type needs a one-time
    *  plugin install. Consumers (like `cotal setup`) resolve it via the registry
@@ -396,10 +483,19 @@ export interface Connector extends Extension {
   /** Whether this connector can honor {@link LaunchOpts.variant}. Default-deny so a variant request
    *  fails before provisioning side effects in the manager. */
   readonly supportsModelVariant?: boolean;
+  /** Whether this connector renders {@link LaunchOpts.modes}. Default-deny so a modes request fails
+   *  before provisioning side effects in the manager. */
+  readonly supportsModes?: boolean;
   /** Whether this connector can honor {@link LaunchOpts.prompt} as the harness's first turn.
    *  Default-deny, so a prompt on a connector that does not declare it fails before any
    *  provisioning rather than being accepted and never submitted. */
   readonly supportsPrompt?: boolean;
+  /** Whether this connector can honor {@link LaunchOpts.askPermissions}. Default-deny, so a launch
+   *  that asks for it fails before any provisioning rather than running without asking. */
+  readonly supportsAskPermissions?: boolean;
+  /** Whether this connector can honor {@link LaunchOpts.reasoningEvents}. Default-deny, so a launch
+   *  that asks for it fails before any provisioning rather than publishing no reasoning. */
+  readonly supportsReasoningEvents?: boolean;
   /** The bytes a terminal sends for the key that interrupts the harness's live turn, such as
    *  `"\x1b"` for Escape. The manager's `interrupt` command writes them into a seat's terminal.
    *  Declare it only after a live check shows the key ending a turn. Absent, the command refuses

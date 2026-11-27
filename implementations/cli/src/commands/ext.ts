@@ -10,12 +10,13 @@ import { cotalRoot } from "../lib/paths.js";
 import { resolveSpace } from "../lib/status.js";
 import { claimExtensionMutation, extensionUpdatePassOwnedBy } from "../lib/ext-mutation.js";
 import { withInstallUmask } from "../lib/install-umask.js";
-import { npmInvocation } from "../lib/npm-invocation.js";
+import { npmInvocation, npmLifecycleEnvironment } from "../lib/npm-invocation.js";
+import { assertExtensionCorePeer } from "../lib/extension-core-peer.js";
 import { runSeed } from "../seed/reconcile.js";
 import { assertStageVerifier, stageExtensions } from "../lib/extension-stage.js";
 import { connectorConfigDir, extensionReinstallAdvice, isExtensionPathSpec as isPathSpec, resolveExtensionEntry } from "@cotal-ai/workspace";
-import { CorruptExtensionPackageError, CorruptExtensionsManifestError, inspectLock, extensionNpmMutationPath, oneLine, type OutputWarning } from "@cotal-ai/workspace";
-import { selfArgv } from "../lib/self-exec.js";
+import { codeSpan, CorruptExtensionPackageError, CorruptExtensionsManifestError, inspectLock, extensionNpmMutationPath, oneLine, windowsShellWord, type OutputWarning } from "@cotal-ai/workspace";
+import { displayCmd, selfArgv } from "../lib/self-exec.js";
 import { spawnSync } from "node:child_process";
 import { isAuthenticSeedChild, markSeedChildLive, clearChildMarker } from "../seed/lock.js";
 import { cliVersion, seedStoreDir } from "../seed/paths.js";
@@ -29,6 +30,7 @@ export const extFlags = [
 ] as const satisfies readonly FlagSpec[];
 
 const usage = (message: string): CommandFailure => new CommandFailure("refused", "USAGE_INVALID", message);
+const REGISTRY_SPEC = /^(@[^/@]+\/[^/@]+|[^/@]+)(@.*)?$/;
 const EXT_USAGE = "usage: cotal ext [list] [--json|--plain] | ext add <npm-package> | ext remove <name> | ext root | ext seed [--repair|--reset|--force]";
 
 /** Parent binding for update's internal isolated re-add. Ordinary `ext add` never reads it. */
@@ -59,6 +61,8 @@ export function validateExtArguments(args: ParsedArgs): void {
     throw usage(sub === "root" ? "ext root prints its path raw and has no --json or --plain" : `ext ${sub}: --json and --plain are taken by the listing only`);
   }
   if ((sub === "add" || sub === "remove") && (args.positionals.length !== 2 || !operand)) throw usage(EXT_USAGE);
+  if (sub === "add" && operand && !isPathSpec(operand) && !REGISTRY_SPEC.test(operand))
+    throw usage("unsupported extension spec - use a local path or a registry name[@version]; prefix a relative folder with ./");
   // npm accepts an initial underscore in either part of a scoped name.
   if (sub === "remove" && operand && !/^(?:[a-z0-9-]|@[a-z0-9_-][a-z0-9._~-]*\/[a-z0-9_-])[a-z0-9._~-]*$/i.test(operand)) {
     throw usage(`invalid extension package name "${oneLine(operand)}". Give the package name as shown by \`cotal ext list\``);
@@ -137,8 +141,10 @@ async function npm(args: string[], prefix: string, seeding = false): Promise<{ s
   let published = false;
   let preservePending = false;
   let stopForwarding = () => {};
+  let lifecycle: ReturnType<typeof npmLifecycleEnvironment>;
   try {
-    const child = withInstallUmask(() => spawn(file, spawnArgs, { cwd: npm.cwd, env: npm.env, windowsVerbatimArguments, detached: seedGroup }));
+    lifecycle = npmLifecycleEnvironment(npm, prefix);
+    const child = withInstallUmask(() => spawn(file, spawnArgs, { cwd: npm.cwd, env: lifecycle?.env ?? npm.env, windowsVerbatimArguments, detached: seedGroup, windowsHide: true }));
     if (seedGroup && child.pid !== undefined) {
       const pid = child.pid;
       const forward = (signal: NodeJS.Signals) => {
@@ -187,6 +193,7 @@ async function npm(args: string[], prefix: string, seeding = false): Promise<{ s
   } finally {
     stopForwarding();
     if (!published && !preservePending) mutation.clear();
+    lifecycle?.dispose();
   }
 }
 
@@ -237,14 +244,22 @@ export async function addExtension(spec: string, expectedPkg?: string, borrowMut
   // a repair after a parent SIGKILL sees the exact orphan identity and refuses to race it.
   if (seeding) markSeedChildLive(process.env.COTAL_EXT_SEEDING as string, Number(process.env.COTAL_EXT_SEEDING_PARENT));
   try {
-    mkdirSync(dir, { recursive: true, mode: 0o755 });
-    if (!existsSync(join(dir, "package.json"))) {
-      // `wx`: a dangling link at the name passes the check above, and must not be followed.
-      writeFileSync(join(dir, "package.json"), `${JSON.stringify({ name: "cotal-extensions", private: true }, null, 2)}\n`, { flag: "wx", mode: 0o644 });
-      provenance.wrote("extensions prefix", join(dir, "package.json"));
+    if (seeding || expectedPkg !== undefined) {
+      mkdirSync(dir, { recursive: true, mode: 0o755 });
+      if (!existsSync(join(dir, "package.json"))) {
+        // `wx`: a dangling link at the name passes the check above, and must not be followed.
+        writeFileSync(join(dir, "package.json"), `${JSON.stringify({ name: "cotal-extensions", private: true }, null, 2)}\n`, { flag: "wx", mode: 0o644 });
+        provenance.wrote("extensions prefix", join(dir, "package.json"));
+      }
     }
     if (seeding) await addTransaction(pkg, resolved, expectedPkg, true, announce);
-    else await installExtensionSet([{ pkg, spec: resolved }], announce);
+    else {
+      // Official registry releases can be pinned out of lockstep and reconciled by update.
+      const selector = resolved.slice(pkg.length + 1);
+      const officialRelease = !isPath && pkg.startsWith("@cotal-ai/") && /^[a-z0-9._~^*<>=|+ -]*$/i.test(selector)
+        && !/\.(?:tgz|tar(?:\.gz)?)$/i.test(selector);
+      await installExtensionSet([{ pkg, spec: resolved }], announce, { checkCorePeer: expectedPkg === undefined && !officialRelease, ...(isPath ? { localOperand: spec } : {}) });
+    }
   } finally {
     if (seeding) clearChildMarker();
     releaseMutation();
@@ -269,7 +284,7 @@ function dropForeignLockEntries(lock: { packages?: Record<string, { extraneous?:
 export async function installExtensionSet(
   requests: readonly ExtensionInstallRequest[],
   announce: (line: string) => void = console.error,
-  opts?: { isolate?: boolean },
+  opts?: { isolate?: boolean; localOperand?: string; offline?: true; checkCorePeer?: boolean },
 ): Promise<void> {
   if (!requests.length) return;
   const ownerConfig = connectorConfigDir();
@@ -319,16 +334,32 @@ export async function installExtensionSet(
     }
     const mutationPath = extensionNpmMutationPath();
     const specs = requests.map(({ spec }) => isPathSpec(spec) ? realpathSync(spec) : spec);
-    const result = await npm(["install", "--save", "--no-audit", "--no-fund", "--install-links", ...specs], npmPrefix);
+    // npm's own update notifier can query the registry even in offline mode.
+    const cacheOnly = opts?.offline ? ["--offline", "--update-notifier=false"] : [];
+    const result = await npm(["install", "--save", "--no-audit", "--no-fund", "--install-links", ...cacheOnly, ...specs], npmPrefix);
     if (existsSync(mutationPath)) stage.retain();
     if (interrupted) throw new ExtensionAddInterrupted(requests[0]!.pkg);
-    if (result.status !== 0) throw new Error(`extension set npm install failed: ${npmInstallFailure(result.output)}`);
+    if (result.status !== 0) {
+      const localFailure = opts?.localOperand === undefined ? undefined : localTarballFailure(result.output, npmPrefix, requests[0]!, opts.localOperand);
+      throw new Error(localFailure ?? `extension set npm install failed: ${npmInstallFailure(result.output)}`);
+    }
     process.env.XDG_CONFIG_HOME = stage.config;
     for (const request of requests) {
       const meta = installedExtensionPackage(request.pkg);
       if (!meta || request.version !== undefined && meta.version !== request.version) throw new Error(`extension set installed an unexpected version of ${request.pkg}`);
-      const entry = resolveExtensionEntry(extensionPackageDir(request.pkg), meta);
-      if (!existsSync(entry)) throw new Error(`extension set installed no entry for ${request.pkg} at ${entry}`);
+      if (opts?.checkCorePeer) assertExtensionCorePeer(request.pkg, meta.peerDependencies?.["@cotal-ai/core"]);
+      const dir = extensionPackageDir(request.pkg);
+      const entry = resolveExtensionEntry(dir, meta);
+      if (!existsSync(entry)) {
+        const path = codeSpan(`./${oneLine(relative(dir, entry).split(sep).join("/"))}`);
+        const message = `the installed npm package ${oneLine(request.pkg)} is missing its entry ${path}.`;
+        const operand = opts?.localOperand;
+        if (operand === undefined) throw new Error(message);
+        const word = oneLine(operand) !== operand ? undefined : process.platform === "win32" ? windowsShellWord(operand) : shellWord(operand);
+        const pack = codeSpan(`npm pack --dry-run ${word ?? "<local-path>"}`);
+        const retry = codeSpan(`${displayCmd()} ext add ${word ?? "<local-path>"}`);
+        throw new Error(`${message} Check the package with ${pack}, then include the entry in \`files\` or generate it before rerunning ${retry}.`);
+      }
     }
     const invocation = requests.length > 1 || opts?.isolate ? selfArgv() : undefined;
     for (const request of requests) {
@@ -338,7 +369,7 @@ export async function installExtensionSet(
       }
       const [file, ...argv] = invocation;
       const child = spawnSync(file!, [...argv, "ext", "__stage-verify", request.pkg, request.spec, ownerConfig, owner.owner.nonce, String(process.pid), request.source ?? "operator"], {
-        encoding: "utf8", env: { ...process.env, COTAL_SKIP_CONNECTOR_SEED: "1" },
+        encoding: "utf8", env: { ...process.env, COTAL_SKIP_CONNECTOR_SEED: "1" }, windowsHide: true,
       });
       if (child.stderr) process.stderr.write(child.stderr);
       if (child.status !== 0) throw new Error(`extension set verification failed for ${request.pkg}: ${child.stderr || child.error?.message || child.status}`);
@@ -601,12 +632,41 @@ async function verifyCandidate(pkg: string, resolved: string, dir: string, recor
     fail(pkg, `could not update the extensions manifest: ${(e as Error).message}`);
   }
   provenance.wrote(`extensions manifest (+${pkg}@${version})`, extensionsManifestPath());
+  const providers = contributed.filter((ext) => ext.kind !== "commands");
+  const pluralCommands = contributed.filter((ext) => ext.kind === "commands");
   return [
-    c.green(`✓ added ${pkg}@${version}`) + c.dim(` - provides: ${contributed.map((ext) => `${ext.kind}:${ext.name}`).join(", ")}`),
+    c.green(`✓ added ${pkg}@${version}`) + (providers.length ? c.dim(` - provides: ${providers.map((ext) => `${ext.kind}:${ext.name}`).join(", ")}`) : ""),
+    ...(pluralCommands.length
+      ? [c.yellow(`  Registered ${pluralCommands.map((ext) => `commands:${oneLine(ext.name)}`).join(", ")} in the registry only. Use kind \`command\` in the extension to add a CLI command.`)]
+      : []),
     ...(!entry.serviceMetadata && (servicePresets.length || localProcesses.some((component) => component.service !== undefined))
       ? [c.dim(`  its services cannot run on this platform: protected workstation file access is not available in this release`)]
       : []),
   ];
+}
+
+/** Explain a missing tarball only when npm's path matches a relative file dependency of the candidate. */
+function localTarballFailure(output: string, prefix: string, request: ExtensionInstallRequest, operand: string): string | undefined {
+  if (!/^npm (?:error|ERR!) code ENOENT\s*$/m.test(output)) return;
+  const missing = /^npm (?:error|ERR!) path ([^\r\n]+)/m.exec(output)?.[1];
+  if (!missing || !/\.(?:tgz|tar\.gz|tar)$/i.test(missing)) return;
+  let meta: { dependencies?: Record<string, string>; optionalDependencies?: Record<string, string> };
+  try {
+    meta = JSON.parse(readFileSync(join(request.spec, "package.json"), "utf8"));
+  } catch {
+    return;
+  }
+  const installed = join(prefix, "node_modules", request.pkg);
+  const match = Object.entries({ ...meta?.dependencies, ...meta?.optionalDependencies }).find(([, spec]) =>
+    typeof spec === "string" && spec.startsWith("file:") && !isAbsolute(spec.slice(5)) && resolve(installed, spec.slice(5)) === missing);
+  if (!match) return;
+  const [dependency, spec] = match;
+  const word = oneLine(operand) !== operand ? undefined : process.platform === "win32" ? windowsShellWord(operand) : shellWord(operand);
+  const pack = codeSpan(`npm pack --dry-run ${word ?? "<local-path>"}`);
+  const retry = codeSpan(`${displayCmd()} ext add ${word ?? "<local-path>"}`);
+  return `npm could not install ${oneLine(request.pkg)}: it could not open the tarball for ${oneLine(dependency)} (${codeSpan(oneLine(spec))}). ` +
+    `Check the source package with ${pack}. For local use, set the \`file:\` dependency to the absolute path of an existing archive, then rerun ${retry}. ` +
+    "For distribution, use a dependency npm can install from a registry.";
 }
 
 /** Why `npm install` did not finish, as one line. A spawn that cannot find npm says so. Any other
@@ -637,7 +697,7 @@ function packageNameFromSpec(resolved: string, isPath: boolean): string {
     if (meta.name) return meta.name;
     throw new Error(`${join(resolved, "package.json")} declares no "name"`);
   }
-  const m = /^(@[^/@]+\/[^/@]+|[^/@]+)(@.*)?$/.exec(resolved);
+  const m = REGISTRY_SPEC.exec(resolved);
   if (m) return m[1];
   throw new Error(`unsupported extension spec "${resolved}" - use a local path or a registry name[@version]`);
 }
@@ -728,8 +788,12 @@ async function extensionProcesses(entry: InstalledExtension): Promise<ExtensionP
   if (!refs.length) return [];
   const providers = [...extensionLocalProcesses(entry)];
   const missing = refs.map((ref) => ref.name).filter((name) => !providers.some((provider) => provider.name === name));
-  if (missing.length)
-    throw new Error(`${entry.pkg} predates cached local-process metadata for ${missing.join(", ")} - re-add it before removal: \`cotal ext add ${entry.spec}\``);
+  if (missing.length) {
+    const reinstall = typeof entry.spec === "string" ? `\`cotal ext add ${entry.spec}\``
+      : entry.source === "seeded" || entry.pkg.startsWith("@cotal-ai/") ? extensionReinstallAdvice(entry)
+      : "use the original install spec";
+    throw new Error(`${entry.pkg} predates cached local-process metadata for ${missing.join(", ")} - re-add it before removal: ${reinstall}`);
+  }
   const currentRoot = cotalRoot();
   const contexts = new Map<string, LocalProcessContext>();
   contexts.set(currentRoot, { root: currentRoot, space: resolveSpace(currentRoot) });
@@ -773,8 +837,8 @@ export interface ExtensionRow {
   readonly pkg: string;
   /** The manifest pin recorded at add time. */
   readonly version: string;
-  /** What `ext add` was given. */
-  readonly spec: string;
+  /** What `ext add` was given, when recorded. */
+  readonly spec?: string;
   /** Whether the built-in seed installed the entry. */
   readonly seeded: boolean;
   /** The `kind:name` refs the package registers. */
@@ -837,7 +901,7 @@ function extensionRow(e: InstalledExtension): ExtensionRow {
   return {
     pkg: e.pkg,
     version: e.version,
-    spec: e.spec,
+    ...(typeof e.spec === "string" ? { spec: e.spec } : {}),
     seeded: e.source === "seeded",
     provides: extensionProvides(e).map((ref) => `${ref.kind}:${ref.name}`),
   };

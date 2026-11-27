@@ -85,15 +85,25 @@ function importFailure(pkg: string, version: string, e: unknown, remedy: string,
   }
 }
 
+/** Select the first entry matching the Node ESM conditions in declaration order. */
+function conditionalEntry(target: unknown): string | undefined {
+  if (typeof target === "string") return target;
+  if (!target || typeof target !== "object" || Array.isArray(target)) return undefined;
+  for (const [condition, value] of Object.entries(target)) {
+    if (condition !== "node" && condition !== "import" && condition !== "default") continue;
+    const entry = conditionalEntry(value);
+    if (entry !== undefined) return entry;
+  }
+  return undefined;
+}
+
 /** Select the package's explicit export, if it has one. */
 function exportedEntry(meta: InstalledExtensionPackage): string | undefined {
-  const dot = (meta.exports as Record<string, unknown> | undefined)?.["."];
-  if (typeof dot === "string") return dot;
-  if (dot && typeof dot === "object") {
-    const d = dot as Record<string, string>;
-    return d.import ?? d.default;
+  const exports = meta.exports;
+  if (exports && typeof exports === "object" && Object.keys(exports).some((key) => key.startsWith("."))) {
+    return conditionalEntry((exports as Record<string, unknown>)["."]);
   }
-  return typeof meta.exports === "string" ? meta.exports : undefined;
+  return conditionalEntry(exports);
 }
 
 /**
@@ -121,14 +131,15 @@ export function resolveExtensionEntry(dir: string, meta: InstalledExtensionPacka
  * while an add has already rolled its candidate back. `metadata` carries the caller's validated read
  * through entry selection and failure diagnosis; a standalone call reads it once here.
  */
-export async function importExtensionEntry(pkg: string, version: string, remedy: string, metadata?: InstalledExtensionPackage): Promise<void> {
+export async function importExtensionEntry(pkg: string, version: string, remedy: string | (() => string), metadata?: InstalledExtensionPackage): Promise<void> {
+  const advice = () => typeof remedy === "string" ? remedy : remedy();
   const dir = extensionPackageDir(pkg);
   const meta = metadata ?? installedExtensionPackage(pkg);
-  if (!meta) throw new Error(`extension ${pkg} is not installed at ${dir} - ${remedy}`);
+  if (!meta) throw new Error(`extension ${pkg} is not installed at ${dir} - ${advice()}`);
   try {
     await import(pathToFileURL(resolveExtensionEntry(dir, meta)).href);
   } catch (e) {
-    throw importFailure(pkg, version, e, remedy, meta);
+    throw importFailure(pkg, version, e, advice(), meta);
   }
 }
 
@@ -190,7 +201,7 @@ async function loadOne(ext: InstalledExtension, advertised: ExtensionRef): Promi
   const pkg = ext.pkg;
   const onDisk = installedExtensionPackage(pkg);
   if (!onDisk) {
-    throw new Error(`extension ${pkg} is in the manifest but not installed at ${extensionPackageDir(pkg)} - \`cotal ext add ${ext.spec}\` again`);
+    throw new Error(`extension ${pkg} is in the manifest but not installed at ${extensionPackageDir(pkg)} - ${extensionReinstallAdvice(ext)}`);
   }
   if (onDisk.version !== ext.version) {
     throw new Error(
@@ -203,13 +214,13 @@ async function loadOne(ext: InstalledExtension, advertised: ExtensionRef): Promi
   // The import self-registers into OUR registry (core is linked); runStaged keeps those
   // registrations invisible until we've validated them, so a throw discards the stage untouched.
   const { staged } = await registry.runStaged(() =>
-    importExtensionEntry(pkg, ext.version, `reinstall it: \`cotal ext add ${ext.spec}\``, onDisk),
+    importExtensionEntry(pkg, ext.version, () => extensionReinstallAdvice(ext), onDisk),
   );
   // Publish ONLY if the package advertised the requested provider. Otherwise commit NONE of its
   // registrations (never leave a package's other keys live when its advertised one is absent).
   if (!staged.some((r) => r.kind === advertised.kind && r.name === advertised.name)) {
     throw new Error(
-      `extension ${pkg}@${ext.version} imported but did not register ${advertised.kind} "${advertised.name}" - re-add it: \`cotal ext add ${ext.spec}\``,
+      `extension ${pkg}@${ext.version} imported but did not register ${advertised.kind} "${advertised.name}" - ${extensionReinstallAdvice(ext)}`,
     );
   }
   registry.commitStaged(staged);

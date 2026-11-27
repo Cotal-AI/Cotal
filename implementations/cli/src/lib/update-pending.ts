@@ -1,7 +1,8 @@
-import { loadExtensionsManifest, readUpdateRecovery, recoveryDisposition, type UpdateRecovery } from "@cotal-ai/workspace";
+import { isCommandFailure, loadExtensionsManifest, readUpdateRecovery, recoveryDisposition, type UpdateRecovery } from "@cotal-ai/workspace";
 
 const receiptRepair = "Run `cotal update --self` to reconcile this installation.";
-export const manifestRepair = "Repair the manifest with `cotal ext seed --repair`.";
+export const manifestRepair = "run `cotal ext seed --repair` to preserve the damaged file and rebuild the built-in inventory";
+export const manifestReadRemedy = (error: unknown): string => isCommandFailure(error) && error.remedy ? error.remedy : manifestRepair;
 
 export type UpdatePending =
   | { readonly kind: "none" }
@@ -27,6 +28,6 @@ export function readUpdatePending(current: string): UpdatePending {
       .map(entry => ({ package: entry.pkg, version: entry.version }));
     return extensions.length ? { kind: "version-mismatch", extensions, instruction: "Reconciliation pending: Run `cotal update` to reconcile this home's extensions." } : { kind: "none" };
   } catch (error) {
-    return { kind: "unreadable", source: "manifest", error: error instanceof Error ? error.message : String(error), instruction: manifestRepair };
+    return { kind: "unreadable", source: "manifest", error: error instanceof Error ? error.message : String(error), instruction: manifestReadRemedy(error) };
   }
 }

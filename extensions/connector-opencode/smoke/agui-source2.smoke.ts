@@ -38,7 +38,9 @@ function server(size: number) {
   };
 }
 
-const keyOf = (r: OpenCode2Record): string => `${r.message.id}:${r.index}`;
+const keyOf = (r: OpenCode2Record): string => `${r.message.id}:${r.index}${r.call ? ":call" : ""}`;
+/** A tool's input, the part of its call that must be final when the call is handed over. */
+const inputOf = (r: OpenCode2Record): string => JSON.stringify(r.element?.type === "tool" ? r.element.state.input ?? null : null);
 const keys = (rs: { value: OpenCode2Record }[]): string => rs.map((r) => keyOf(r.value)).join(" ");
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -62,9 +64,13 @@ for (const session of fixture.sessions) {
   const all = (await new OpenCode2SessionSource({ page: whole.page }).read("")).records;
   check(`replay:${session.name}: read as it grew, it yields what one read of the finished session yields`,
     keys(handed) === keys(all) && handed.length > 0, { grown: keys(handed), whole: keys(all) });
-  const finalElement = new Map(all.map((r) => [keyOf(r.value), JSON.stringify(r.value.element ?? null)]));
-  const early = handed.filter((r) => JSON.stringify(r.value.element ?? null) !== finalElement.get(keyOf(r.value)));
-  check(`replay:${session.name}: every element was final when it was handed over`, early.length === 0, early.map((r) => keyOf(r.value)));
+  const final = new Map(all.filter((r) => !r.value.call).map((r) => [keyOf(r.value), r.value]));
+  const early = handed.filter((r) => {
+    const last = final.get(keyOf({ ...r.value, call: undefined }));
+    return last === undefined || (r.value.call ? inputOf(r.value) !== inputOf(last) : JSON.stringify(r.value.element ?? null) !== JSON.stringify(last.element ?? null));
+  });
+  check(`replay:${session.name}: every element was final when it was handed over, and a tool's call carried its final input`,
+    early.length === 0, early.map((r) => keyOf(r.value)));
 }
 
 const user = (id: string, created = 1): OpenCode2Message => ({ id, type: "user", time: { created } });
@@ -73,7 +79,7 @@ const step = (id: string, content: OpenCode2Element[], marks: { streamed?: numbe
   id, type: "assistant", time: { created: 2, ...marks }, content,
 });
 const text = (body: string): OpenCode2Element => ({ type: "text", text: body });
-const tool = (id: string, status: "running" | "completed"): OpenCode2Element => ({
+const tool = (id: string, status: "streaming" | "running" | "completed"): OpenCode2Element => ({
   type: "tool", id, name: "shell", state: { status, input: {} }, time: { created: 3 },
 });
 
@@ -82,7 +88,7 @@ const tool = (id: string, status: "running" | "completed"): OpenCode2Element => 
   const src = new OpenCode2SessionSource({ page: s.page });
   s.set([user("msg_1"), step("msg_2", []), { id: "msg_3", type: "model-switched", time: { created: 4 } }]);
   const first = await src.read("");
-  check("hold:a step that has written nothing yet holds every record after it", keys(first.records) === "msg_1:-1", keys(first.records));
+  check("hold:a step with no output yields its header and holds every later record", keys(first.records) === "msg_1:-1 msg_2:-2", keys(first.records));
   s.set([user("msg_1"), step("msg_2", [text("a")], { streamed: 5, completed: 6 }), { id: "msg_3", type: "model-switched", time: { created: 4 } }]);
   const second = await src.read(first.cursor);
   check("hold:once it writes and finishes, its element comes before the record it held", keys(second.records) === "msg_2:0 msg_3:-1", keys(second.records));
@@ -93,11 +99,12 @@ const tool = (id: string, status: "running" | "completed"): OpenCode2Element => 
   const src = new OpenCode2SessionSource({ page: s.page });
   s.set([user("msg_1"), step("msg_2", [tool("call_1", "completed"), text(""), tool("call_2", "running")])]);
   const first = await src.read("");
-  check("settle:a finished tool is handed over before its step has finished streaming", keys(first.records) === "msg_1:-1 msg_2:0", keys(first.records));
+  check("settle:a finished tool's call and result are handed over before its step has finished streaming",
+    keys(first.records) === "msg_1:-1 msg_2:-2 msg_2:0:call msg_2:0", keys(first.records));
   s.set([user("msg_1"), step("msg_2", [tool("call_1", "completed"), text("b"), tool("call_2", "running")], { streamed: 5 })]);
   const second = await src.read(first.cursor);
-  check("settle:text is handed over once its step has streamed, and a running tool still holds the read",
-    keys(second.records) === "msg_2:1", keys(second.records));
+  check("settle:text is handed over once its step has streamed, and a running tool hands over its call and holds its result",
+    keys(second.records) === "msg_2:1 msg_2:2:call", keys(second.records));
   s.set([user("msg_1"), step("msg_2", [tool("call_1", "completed"), text("b"), tool("call_2", "completed")], { streamed: 5, completed: 6 }), idle("msg_3")]);
   const third = await src.read(second.cursor);
   check("settle:the rest follows when the tool ends, then the turn end", keys(third.records) === "msg_2:2 msg_3:-1", keys(third.records));
@@ -105,10 +112,22 @@ const tool = (id: string, status: "running" | "completed"): OpenCode2Element => 
 
 {
   const s = server(200);
+  const src = new OpenCode2SessionSource({ page: s.page });
+  s.set([user("msg_1"), step("msg_2", [tool("call_1", "streaming")])]);
+  const first = await src.read("");
+  check("call:a tool still streaming its input holds the read at the header", keys(first.records) === "msg_1:-1 msg_2:-2", keys(first.records));
+  s.set([user("msg_1"), step("msg_2", [tool("call_1", "completed")], { streamed: 5, completed: 6 }), idle("msg_3")]);
+  const resumed = await src.read("msg_2:0:call").catch((e: Error) => ({ records: [], cursor: e.message }));
+  check("call:a read resumed at a tool's call hands over its result next, then what follows",
+    keys(resumed.records) === "msg_2:0 msg_3:-1" && resumed.cursor === "msg_3:-1", { records: keys(resumed.records), cursor: resumed.cursor });
+}
+
+{
+  const s = server(200);
   s.set([user("msg_1"), step("msg_2", [text("")]), idle("msg_3")]);
   const read = await new OpenCode2SessionSource({ page: s.page }).read("");
   check("turn-end:a turn that ended settles an element its own marks never did",
-    keys(read.records) === "msg_1:-1 msg_2:0 msg_3:-1", keys(read.records));
+    keys(read.records) === "msg_1:-1 msg_2:-2 msg_2:0 msg_3:-1", keys(read.records));
 }
 
 {
@@ -135,10 +154,10 @@ const tool = (id: string, status: "running" | "completed"): OpenCode2Element => 
   const again = await src.read(first.cursor);
   await src.read(first.cursor);
   check("revert:a cursor whose record was removed is reported once and the read goes on by order",
-    first.cursor === "msg_2:0" && again.records.length === 0 && vanished.join(" ") === "msg_2:0", { cursor: first.cursor, vanished });
+    first.cursor === "msg_2:0" && keys(again.records) === "msg_4:-2" && vanished.join(" ") === "msg_2:0", { cursor: first.cursor, vanished });
   s.set([user("msg_1"), step("msg_4", [text("c")], { streamed: 7, completed: 8 })]);
   const after = await src.read(first.cursor);
-  check("revert:what is written after the revert is read", keys(after.records) === "msg_4:0", keys(after.records));
+  check("revert:what is written after the revert is read", keys(after.records) === "msg_4:-2 msg_4:0", keys(after.records));
 }
 
 {
@@ -155,10 +174,10 @@ const tool = (id: string, status: "running" | "completed"): OpenCode2Element => 
 {
   const src = new OpenCode2SessionSource({ page: server(200).page });
   let refused = 0;
-  for (const bad of ["msg_1", ":0", "msg_1:", "msg_1:01", "msg_1:-2", "msg_1:x"]) await src.read(bad).catch(() => (refused += 1));
-  check("cursor:a malformed cursor is refused, never guessed at", refused === 6, refused);
+  for (const bad of ["msg_1", ":0", "msg_1:", "msg_1:01", "msg_1:-2:call", "msg_1:x", "msg_1:0:x", "msg_1:-1:call", "msg_1:0:call:call"]) await src.read(bad).catch(() => (refused += 1));
+  check("cursor:a malformed cursor is refused, never guessed at", refused === 9, refused);
 }
 
-const EXPECTED = 26;
+const EXPECTED = 28;
 check(`meta:every cell ran - ${EXPECTED} expected`, passed() + failed() === EXPECTED, `${passed() + failed()} cells reported`);
 finish();

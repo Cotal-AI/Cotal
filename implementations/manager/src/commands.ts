@@ -32,9 +32,9 @@ import {
   assertManagerName, authDir, canonicalLocalProcessPath, canonicalRoot, claimServicePid, consumeManagerShutdownIntent, findCotalRoot, getSpaceAuth, hasUserAuthState, isWorkspaceTargetError, listenForLocalStop, loadManagerInstanceIdentity, loadSpaceAccountAuth, parsePositiveIntegerFlag, parseSeatCapFlag, publishManagerSpareCapability, readManagerName, readManagerSeatCap, reclaimDeadPreUpgradeRecord, recordManagerName, recordManagerSeatCap, removePidPair, resolveMeshTarget, soleSpaceOf, userAuthStateDir, workspaceSecretStore, writePidPair,
   c, MANAGER_DELIVERY_AWARE_MARKER, MANAGER_PIDFILE, stderrLines, UNTRUSTED_CERTIFICATE, untilInputEnds,
   brokerAddressForDisplay, brokerUrlCredentialRefusal, brokerUrlHasUserinfo, CommandFailure, exitCode, inputDisabledByFlag, isCommandFailure, jsonFlag, plainFlag, presentationOf, renderReport, resolveNativeServiceTarget, writeResult, type Report,
-  refreshRegistrationPolicy, publishServiceStartup, serviceStartupPath, publishServiceStopReceipt, publishServedContract, protectedCredentialReference, readLocalRecordSource, type NativeServiceStopRequest,
+  refreshRegistrationPolicy, publishServiceIdleExit, publishServiceStartup, serviceStartupPath, publishServiceStopReceipt, publishServedContract, protectedCredentialReference, readLocalRecordSource, type NativeServiceStopRequest,
   ConfirmationRequired, findMesh, folderSpace, folderSpaceHeld, getCurrent, targetErrorCode, targetErrorSpace, workspaceErrorParts, type MeshEntry, type MeshTargetError, type SeatCap,
-  deprecatedDaemonEntry, DEPRECATED_MANAGER_ENTRY, loadRoster,
+  deprecatedDaemonEntry, DEPRECATED_MANAGER_ENTRY, loadRoster, migrateProjectTrust,
 } from "@cotal-ai/workspace";
 import { Manager } from "./manager.js";
 import { acceptManagerServiceStop, armManagerServiceObserver, bindManagerServiceIdentity, managerServiceChild, managerServiceStopRequested, type ManagerServiceChild } from "./service-child.js";
@@ -330,6 +330,13 @@ function unconfirmedStart(cause: unknown, message = "the native manager child di
 // `--runtime` forces the manager runtime; honored only on the `supervise` path (default
 // pty). `cmux` gives each teammate its own cmux tab — `cotal supervise --runtime cmux` is
 // the cmux-tab manager.
+/** Leave the idle-exit receipt once the idle stop completed. A failed write is reported, never turned
+ *  into a failed stop: the stop itself completed. */
+function recordIdleExit(service: ManagerServiceChild): void {
+  try { publishServiceIdleExit(service.context, service.idleExitSeconds!); }
+  catch (e) { console.error(c.yellow(`! the idle-exit receipt was not written, so status shows this exit with no recorded stop: ${rejectionText(e)}`)); }
+}
+
 async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode, service?: ManagerServiceChild): Promise<void> {
   stampConsole();
   const { values: v, root: managerRoot } = service ? { values: args.values as Values, root: service.root } : superviseSelection(args.values as Values);
@@ -353,6 +360,7 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode, service
   const { space, server } = target;
   const foreign = service || target.remoteUser ? undefined : foreignHostRefusal(space, managerRoot, server);
   if (foreign) throw foreign;
+  if (execution !== "none") migrateProjectTrust();
   // Claim before hosted registration/issuance or local endpoint initialization. Starting
   // custody proves only this process; no startup/serving phase exists and no contender is adopted.
   const releaseStartingCustody = service ? claimServicePid({ root: managerRoot, space }, MANAGER_PIDFILE) : undefined;
@@ -710,6 +718,7 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode, service
       maxSessions,
       ...(seatCap !== undefined ? { seatCap } : {}),
       ...(name !== undefined ? { name } : {}),
+      ...(service?.idleExitSeconds !== undefined ? { idleExit: { afterMs: service.idleExitSeconds * 1000, onStop: () => shutdown("idle") } } : {}),
       installedExtensions: true,
       ...(args.values["machine-parent"] === true && process.connected === true ? { machineSetupCommand: v["machine-setup-command"] } : {}),
       ...(typeof v["expected-connector-generation"] === "string" ? { expectedConnectorGeneration: v["expected-connector-generation"] } : {}),
@@ -778,11 +787,14 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode, service
   let startFailed = false;
   let stopped: Promise<void> | undefined;
   let disposeObserver: (() => void) | undefined;
-  const shutdown = (signal?: NodeJS.Signals) => {
+  const shutdown = (signal?: NodeJS.Signals | "idle") => {
     if (shuttingDown) return;
     let request: NativeServiceStopRequest | undefined;
     let withAgents: boolean;
-    if (service && signal === "SIGTERM" && !managerServiceStopRequested(service)) {
+    if (signal === "idle") {
+      console.error(`• manager: no agents for ${service?.idleExitSeconds} s; stopping (space ${space})`);
+      withAgents = false;
+    } else if (service && signal === "SIGTERM" && !managerServiceStopRequested(service)) {
       // A SIGTERM from kill, a systemd stop or a system shutdown carries no request, so it runs the
       // sparing stop and leaves no stop receipt. A SIGINT without one is still ignored below: Ctrl-C
       // reaches this child together with the CLI that publishes the request.
@@ -803,6 +815,7 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode, service
       publishManagerSpareCapability(managerContext, false);
       releasePidRecord();
       if (service && request) publishServiceStopReceipt(service.context, request, "completed");
+      if (service && signal === "idle") recordIdleExit(service);
       if (!startFailed) process.exit(0);
     })
     .catch((e) => {
@@ -1096,6 +1109,7 @@ const managerCommands: Command[] = [
       { name: "ws-port", type: "string", description: "the prepared broker websocket port" },
       { name: "max-sessions", type: "string", description: "explicit positive native session ceiling" },
       { name: "seat-cap", type: "string", description: "explicit native per-owner seat ceiling, or unlimited" },
+      { name: "idle-exit", type: "string", description: "stop once the manager has held no agents for this many seconds" },
       { name: "launch", type: "string", description: "private native launch spec for this selected space" },
       { name: "launch-sha256", type: "string", description: "full digest pinned by the saved service definition" },
       { name: "roster", type: "string", description: "absolute roster file whose agents start at launch" },
@@ -1228,7 +1242,7 @@ for (const mode of maintenance) for (const flag of mode.command.flags ?? []) {
 
 /** The manager's lifecycle, which the CLI runs as `service <verb> manager` before this group parses. */
 const lifecycle = [
-  { name: "start", summary: "start the manager for this folder's or the selected space; pty runtime and its registered broker by default", examples: [{ command: "cotal manager start", note: "start it with the pty runtime" }, { command: "cotal manager start --foreground", note: "keep it in this terminal" }, { command: "cotal manager start --name <name>", note: "select by name with --on only on user-auth spaces" }], usage: "cotal manager start [--runtime <name>] [--roster <file>] [--name <name>] [--foreground] [--dry-run] [--space <s>]" },
+  { name: "start", summary: "start the manager for this folder's or the selected space; pty runtime and its registered broker by default", examples: [{ command: "cotal manager start", note: "start it with the pty runtime" }, { command: "cotal manager start --foreground", note: "keep it in this terminal" }, { command: "cotal manager start --name <name>", note: "select by name with --on only on user-auth spaces" }], usage: "cotal manager start [--runtime <name>] [--roster <file>] [--name <name>] [--idle-exit <seconds>] [--foreground] [--dry-run] [--space <s>]" },
   { name: "stop", summary: "stop it; its agents follow the runtime's default unless --with-agents", examples: [{ command: "cotal manager stop", note: "stop the manager" }, { command: "cotal manager stop --with-agents", note: "stop it and every agent it runs" }], usage: "cotal manager stop [--with-agents] [--yes|--dry-run] [--space <s>]" },
   { name: "restart", summary: "stop it, then start it again", examples: [{ command: "cotal manager restart", note: "stop the manager, then start it again" }], usage: "cotal manager restart [--with-agents] [--yes|--dry-run] [--space <s>]" },
   { name: "status", summary: "show whether it runs, and its process and endpoint", examples: [{ command: "cotal manager status", note: "show whether it runs, its process and endpoint" }], usage: "cotal manager status [--space <s>]" },

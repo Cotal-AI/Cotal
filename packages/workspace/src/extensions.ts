@@ -2,9 +2,11 @@ import { closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, open
 import { randomBytes } from "node:crypto";
 import { basename, dirname, isAbsolute, join } from "node:path";
 import { shellPath } from "./local-record-source.js";
-import { codeSpan } from "./text-wrap.js";
+import { codeSpan, windowsShellWord } from "./text-wrap.js";
+import { CommandFailure } from "./output.js";
 import { fileURLToPath } from "node:url";
-import type { Command, CommandExample, Connector, Extension, ExtensionRef, FlagSpec, OutputMode, Subcommand } from "@cotal-ai/core";
+import type { Command, CommandExample, Connector, Extension, ExtensionRef, FlagSpec, HarnessInstall, OutputMode, Subcommand } from "@cotal-ai/core";
+import { checkedHarnessInstall } from "./harness-install.js";
 import { connectorConfigDir } from "./connector-retention.js";
 import { inspectLock } from "./advisory-lock.js";
 import { globalConfigDirProblem } from "./cotal-config.js";
@@ -63,9 +65,16 @@ export interface CachedConnector {
    *  endpoint. Absent in a manifest written before this was cached, which reads as false: no launch
    *  menu offers prompts on a guess. */
   readonly prompts?: boolean;
+  /** Whether the connector honors `askPermissions` and `reasoningEvents` at launch. Absent in a
+   *  manifest written before these were cached, which reads as false. */
+  readonly askPermissions?: boolean;
+  readonly reasoningEvents?: boolean;
   /** The connector's declared setup provider, `null` when it declares none. Absent only in a
    *  manifest written before this was cached. */
   readonly setup?: ExtensionRef | null;
+  /** How a person installs what `requires` names, from its maker. Absent when the connector declares
+   *  none, and in a manifest written before this was cached: no app offers an install on a guess. */
+  readonly install?: HarnessInstall;
 }
 
 export interface InstalledExtension {
@@ -73,8 +82,8 @@ export interface InstalledExtension {
   readonly pkg: string;
   /** Exact installed version, pinned at add time and verified at run-import. */
   readonly version: string;
-  /** The spec the operator passed to `ext add` (registry range, file:, tarball…) — for re-adds. */
-  readonly spec: string;
+  /** The original install spec, when recorded. */
+  readonly spec?: string;
   /** `"seeded"` iff installed by the built-in-connector reconcile (not an operator `ext add`). Keys
    *  refresh-gating and import-failure hints on the marker rather than trusting the spec path. */
   readonly source?: "seeded";
@@ -103,8 +112,13 @@ export function isExtensionPathSpec(spec: string, absolute: (p: string) => boole
 /** Recovery for a recorded extension. Do not echo a registry URL or opaque selector in advice. */
 export function extensionReinstallAdvice(entry: InstalledExtension): string {
   if (entry.source === "seeded") return "Run `cotal ext seed --repair` to reinstall it.";
-  if (isExtensionPathSpec(entry.spec) || /^(?:@[a-z0-9._~-]+\/)?[a-z0-9._~-]+(?:@[a-z0-9._~^*<>=|+ -]+)?$/i.test(entry.spec))
-    return `Run ${codeSpan(`cotal ext add ${shellPath(entry.spec)}`)} to reinstall it.`;
+  const { spec } = entry;
+  if (typeof spec !== "string" && /^@cotal-ai\/[a-zA-Z0-9._~-]+$/.test(entry.pkg)) {
+    const pkg = process.platform === "win32" ? windowsShellWord(entry.pkg) : shellPath(entry.pkg);
+    if (pkg) return `Run ${codeSpan(`cotal ext add ${pkg}`)} to reinstall it.`;
+  }
+  if (typeof spec === "string" && (isExtensionPathSpec(spec) || /^(?:@[a-z0-9._~-]+\/)?[a-z0-9._~-]+(?:@[a-z0-9._~^*<>=|+ -]+)?$/i.test(spec)))
+    return `Run ${codeSpan(`cotal ext add ${shellPath(spec)}`)} to reinstall it.`;
   return `Run ${codeSpan(`cotal ext remove ${shellPath(entry.pkg)}`)} to drop the record, or reinstall with the original spec.`;
 }
 
@@ -163,12 +177,23 @@ export function loadExtensionsManifest(): ExtensionsManifest {
       closeSync(fd);
     }
   } catch (e) {
-    if ((e as NodeJS.ErrnoException).code === "ENOENT" && !lstatSync(p, { throwIfNoEntry: false })) return { extensions: [] };
-    if ((e as NodeJS.ErrnoException).code === "ENOTDIR" && globalConfigDirProblem()) return { extensions: [] };
+    const code = (e as NodeJS.ErrnoException).code;
+    if (code === "EACCES" || code === "EPERM") throw new CommandFailure("refused", "PERMISSION_DENIED", `cannot read the extensions manifest at ${p} (${code})`, {
+      target: { path: p }, remedy: "restore this account's read access to the extensions manifest and its path, then retry", cause: e,
+    });
+    if (code === "ENOENT" && !lstatSync(p, { throwIfNoEntry: false })) return { extensions: [] };
+    if (code === "ENOTDIR" && globalConfigDirProblem()) return { extensions: [] };
     throw new CorruptExtensionsManifestError(p, (e as Error).message);
   }
   const m = parsed as ExtensionsManifest | null;
   if (!Array.isArray(m?.extensions)) throw new CorruptExtensionsManifestError(p, 'no "extensions" array');
+  const invalid = m.extensions.findIndex((entry) => {
+    if (entry === null || typeof entry !== "object" || Array.isArray(entry)) return true;
+    const record = entry as { pkg?: unknown; commands?: unknown };
+    return typeof record.pkg !== "string" || record.pkg.length === 0 || !Array.isArray(record.commands)
+      || record.commands.some((command) => command === null || typeof command !== "object" || Array.isArray(command) || typeof (command as { name?: unknown }).name !== "string");
+  });
+  if (invalid !== -1) throw new CorruptExtensionsManifestError(p, `invalid extension inventory entry at index ${invalid}`);
   return m;
 }
 
@@ -218,7 +243,10 @@ export function cacheConnector(connector: Connector): CachedConnector {
     requires: [...(connector.requires ?? [])],
     eventPlane: connector.eventChannel !== undefined,
     prompts: connector.prompts === true,
+    askPermissions: connector.supportsAskPermissions === true,
+    reasoningEvents: connector.supportsReasoningEvents === true,
     setup: connector.setup ? { kind: connector.setup.kind, name: connector.setup.name } : null,
+    ...(connector.install === undefined ? {} : { install: checkedHarnessInstall(connector.name, connector.requires ?? [], connector.install) }),
   };
 }
 

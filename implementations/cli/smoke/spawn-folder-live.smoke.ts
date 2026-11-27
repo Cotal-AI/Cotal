@@ -35,6 +35,8 @@ import { clean, cotalPty, repoRoot, wait } from "./_console-pty.js";
 import type { FolderCheck } from "../src/lib/manager-choice.js";
 import { checkSpawnPreflight } from "./_spawn-preflight-live.js";
 
+process.env.DO_NOT_TRACK = "1";
+
 const PORT = await freePort();
 const SERVER = `nats://127.0.0.1:${PORT}`;
 const CLI = join(repoRoot, "bin", "cotal.ts");

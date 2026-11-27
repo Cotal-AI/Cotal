@@ -242,6 +242,8 @@ try {
   });
   const silentFile = join(workspaceRoot, ".cotal", "agents", `${silentName}.md`);
   check("the tool reports success for a define with no announce", silentResult.isError !== true, silentResult);
+  check("a confirmed save names the spawn tool and the persona argument", silentResult.text ===
+    `Persona \`${silentName}\` saved. You can bring it online with \`cotal_spawn\`. Pass \`name\` set to \`${silentName}\`.`, silentResult);
   check("the persona file was actually written (so silence below is a job done, not a job failed)", existsSync(silentFile));
   check(
     "the silent tool result claims no announcement (the caller is told what actually happened)",
@@ -389,9 +391,12 @@ try {
     check("a denied announcement is NOT reported as a failed definition", deniedResult.isError !== true, deniedResult);
     const dt = String(deniedResult.text ?? "");
     check("the result says the persona was saved", dt.includes("saved"), dt);
-    check("the result says the announcement was REFUSED (a denial proves non-delivery)", dt.includes("REFUSED"), dt);
-    check("the result says it did not go out", dt.includes("did not go out"), dt);
-    check("the result points at allowPublish, not at the spawn capability", dt.includes("allowPublish"), dt);
+    check("a denied announcement names the refusal, ACL, and spawn tool", dt.startsWith(
+      `Persona \`${deniedName}\` saved \u2014 but the announcement to #${LANE} was REFUSED and did not go out: Permissions Violation`,
+    ) && dt.endsWith(
+      `. The persona is on disk; do not re-run this call. Check your \`allowPublish\` for #${LANE}, then post it yourself if you still want to. ` +
+      `You can bring it online with \`cotal_spawn\`. Pass \`name\` set to \`${deniedName}\`.`,
+    ), dt);
     check(
       "the result does NOT blame the spawn capability (the caller has it; that was never the problem)",
       !dt.includes("capabilities: [spawn]"),
@@ -435,18 +440,10 @@ try {
       existsSync(join(workspaceRoot, ".cotal", "agents", `${unknownName}.md`)),
     );
     check("an unknown outcome is not reported as a failed definition", unknownResult?.isError !== true, ut);
-    check("an unknown outcome says it could NOT CONFIRM", ut.includes("could NOT CONFIRM"), ut);
-    check(
-      "an unknown outcome does NOT claim the post did not go out (that claim invites a duplicate)",
-      !ut.includes("did not go out") && !ut.includes("did NOT go out"),
-      ut,
-    );
-    check(
-      "an unknown outcome does NOT blame allowPublish (only a denial proves an ACL problem)",
-      !ut.includes("allowPublish"),
-      ut,
-    );
-    check("an unknown outcome tells the caller to READ the channel before posting", ut.includes(`READ #${LANE}`), ut);
+    check("an unknown outcome reports the unconfirmed announcement and spawn tool", ut ===
+      `Persona \`${unknownName}\` saved \u2014 but I could NOT CONFIRM the announcement to #${LANE}: TIMEOUT: no response from stream. ` +
+      `It may or may not have been delivered. The persona is on disk; do not re-run this call, and READ #${LANE} before posting anything yourself \u2014 posting blind is how the channel gets it twice. ` +
+      `You can bring it online with \`cotal_spawn\`. Pass \`name\` set to \`${unknownName}\`.`, ut);
   }
 
   // ---- 7. a SUBSCRIPTION permission denial is unknown, not denied ------------------------------
@@ -483,17 +480,12 @@ try {
       "the persona is saved when the PubAck inbox subscription is denied",
       existsSync(join(workspaceRoot, ".cotal", "agents", `${subDeniedName}.md`)),
     );
-    check("a subscription denial says it could NOT CONFIRM", st.includes("could NOT CONFIRM"), st);
-    check(
-      "a subscription denial does NOT claim the post was REFUSED (the message may be stored)",
-      !st.includes("REFUSED") && !st.includes("did not go out"),
-      st,
-    );
-    check(
-      "a subscription denial does NOT blame allowPublish (publishing was never refused)",
-      !st.includes("allowPublish"),
-      st,
-    );
+    check("a subscription denial reports an unconfirmed announcement and the spawn tool", st.startsWith(
+      `Persona \`${subDeniedName}\` saved \u2014 but I could NOT CONFIRM the announcement to #${LANE}: Permissions Violation for Subscription`,
+    ) && st.endsWith(
+      `. It may or may not have been delivered. The persona is on disk; do not re-run this call, and READ #${LANE} before posting anything yourself \u2014 posting blind is how the channel gets it twice. ` +
+      `You can bring it online with \`cotal_spawn\`. Pass \`name\` set to \`${subDeniedName}\`.`,
+    ), st);
   }
 
   console.log(`\n  ${pass} checks passed`);

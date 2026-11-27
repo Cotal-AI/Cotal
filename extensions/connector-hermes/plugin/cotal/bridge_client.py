@@ -20,7 +20,8 @@ import time
 import uuid
 from typing import Any, Callable, Optional
 
-from .control_exchange import bridge_token, control_key, socket_dir_problem
+from .control_exchange import ClientExchange, ExchangeRefused, bridge_token, control_key, socket_dir_problem
+from .transport import PipeStream, dial
 
 _BACKOFF_S = 2.0
 
@@ -42,10 +43,17 @@ class BridgeClient:
                 "carries one) — the bridge socket cannot be authenticated"
             )
         self._token = bridge_token(key)
-        self._sock: Optional[socket.socket] = None
+        self._sock: Optional[socket.socket | PipeStream] = None
         self._lock = threading.Lock()
         self._pending: dict[str, tuple[threading.Event, dict]] = {}
         self._on_incoming: Optional[Callable[[dict], None]] = None
+        self._on_turn: Optional[Callable[[dict], None]] = None
+        self._on_request: Optional[Callable[[dict], None]] = None
+        self._on_approval: Optional[Callable[[dict], None]] = None
+        self._on_clarify: Optional[Callable[[dict], None]] = None
+        # How many Cotal messages and turns the gateway has in progress, as last reported, and
+        # reported again on every (re)subscribe.
+        self._busy = 0
         self._on_refused: Optional[Callable[[str], None]] = None
         # Why this bridge refuses to dial, once its socket's directory has been found present and not
         # private to this user. That is a configuration fault no retry repairs, so it is permanent.
@@ -57,8 +65,20 @@ class BridgeClient:
         # correctness never depends on guessing whether a dying thread has finished dying.
         self._gen = 0
 
-    def start(self, on_incoming: Callable[[dict], None], on_refused: Optional[Callable[[str], None]] = None) -> None:
-        """Begin the reader thread. ``on_incoming`` is called (off-loop) for each mesh message, and
+    def start(
+        self,
+        on_incoming: Callable[[dict], None],
+        on_refused: Optional[Callable[[str], None]] = None,
+        on_turn: Optional[Callable[[dict], None]] = None,
+        on_request: Optional[Callable[[dict], None]] = None,
+        on_approval: Optional[Callable[[dict], None]] = None,
+        on_clarify: Optional[Callable[[dict], None]] = None,
+    ) -> None:
+        """Begin the reader thread. ``on_incoming`` is called (off-loop) for each mesh message,
+        ``on_turn`` for each turn in the user's own words (``{t:"turn", id, text, images?}``),
+        ``on_request`` for each ``interrupt``, ``usage`` or ``commands`` request (answered with
+        ``answer``), ``on_approval`` for each owner's answer to an approval (``approval_answer``),
+        ``on_clarify`` for each owner's answer to a clarify question (``clarify_answer``), and
         ``on_refused`` (off-loop, once) if the reader stops because the socket's directory is not
         private to this user.
 
@@ -67,6 +87,10 @@ class BridgeClient:
         each see None and put two readers on one socket.
         """
         self._on_incoming = on_incoming
+        self._on_turn = on_turn
+        self._on_request = on_request
+        self._on_approval = on_approval
+        self._on_clarify = on_clarify
         self._on_refused = on_refused
         with self._lock:
             if self._reader is not None:
@@ -102,7 +126,11 @@ class BridgeClient:
                     return  # the socket's directory is not private: refusal() has reported it
                 if self._sock is None:
                     continue
-                self._send({"t": "subscribe", "token": self._token})  # (re)subscribe after every (re)connect
+                if os.name != "nt":
+                    self._send({"t": "subscribe", "token": self._token})  # (re)subscribe after every (re)connect
+                self._send({"t": "busy", "count": self._busy})
+                if os.name == "nt":
+                    buf = b""
             # Read through a local handle. Re-reading `self._sock` here would race a concurrent
             # reassignment between the guard above and the recv below.
             sock = self._sock
@@ -127,6 +155,8 @@ class BridgeClient:
                     # delivered 0 of 8 with the live socket erased on every rep.
                     if self._sock is sock:
                         self._sock = None
+                if isinstance(sock, PipeStream):
+                    sock.close()
                 continue
             buf += data
             while b"\n" in buf:
@@ -161,8 +191,7 @@ class BridgeClient:
                 time.sleep(_BACKOFF_S)  # the directory is not there yet: the sidecar is not up
                 continue
             try:
-                s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-                s.connect(self._path)
+                s = self._dial()
                 with self._lock:
                     if gen is not None and gen != self._gen:
                         # Retired between the dial and the assignment. Close rather than install:
@@ -174,8 +203,22 @@ class BridgeClient:
                         return
                     self._sock = s
                 return
-            except OSError:
+            except (OSError, ExchangeRefused):
                 time.sleep(_BACKOFF_S)
+
+    def _dial(self) -> socket.socket | PipeStream:
+        sock = dial(self._path, 1.0 if os.name == "nt" else None)
+        if isinstance(sock, PipeStream):
+            try:
+                exchange = ClientExchange(sock, self._token)
+                exchange.open({"t": "subscribe"})
+                exchange.reply(1.0)
+                exchange.continue_on_pipe()
+                sock.settimeout(None)
+            except (OSError, ExchangeRefused):
+                sock.close()
+                raise
+        return sock
 
     def refusal(self) -> Optional[str]:
         """Why this bridge will not dial, or ``None``. Checks the socket's directory now: a directory
@@ -203,6 +246,20 @@ class BridgeClient:
             cb = self._on_incoming
             if cb:
                 cb(frame.get("msg") or {})
+        elif t == "turn":
+            cb = self._on_turn
+            if cb:
+                cb(frame)
+        elif t in ("interrupt", "usage", "commands") or (os.name == "nt" and t == "shutdown"):
+            cb = self._on_request
+            if cb:
+                cb(frame)
+            else:
+                self.answer(str(frame.get("id") or ""), error="the cotal adapter is not started")
+        elif t in ("approval_answer", "clarify_answer"):
+            cb = self._on_approval if t == "approval_answer" else self._on_clarify
+            if cb:
+                cb(frame)
         elif t == "tool_result":
             entry = self._pending.get(frame.get("id"))
             if entry:
@@ -211,15 +268,19 @@ class BridgeClient:
 
     # ---- writes --------------------------------------------------------------
 
-    def _send(self, frame: dict) -> None:
+    def _send(self, frame: dict) -> bool:
         data = (json.dumps(frame) + "\n").encode()
         with self._lock:
             if self._sock is None:
-                return
+                return False
             try:
                 self._sock.sendall(data)
             except OSError:
+                if isinstance(self._sock, PipeStream):
+                    self._sock.close()
                 self._sock = None
+                return False
+        return True
 
     def delivered(self, recv_key: str) -> None:
         """Ack a message on the stream — call only once it has been surfaced into a turn.
@@ -234,6 +295,46 @@ class BridgeClient:
         """Tell the sidecar delivery ``recv_key`` was not taken into a turn: it stays unacked, and
         the sidecar offers it again later while the messages behind it keep flowing."""
         self._send({"t": "deferred", "recvKey": recv_key})
+
+    def turn_taken(self, turn_id: str, error: Optional[str] = None) -> None:
+        """Tell the sidecar whether the gateway took turn ``turn_id``."""
+        self._send({"t": "turn_taken", "id": turn_id} if error is None else {"t": "turn_refused", "id": turn_id, "error": error})
+
+    def busy(self, count: int) -> None:
+        """Report how many Cotal messages and turns the gateway has in progress."""
+        self._busy = count
+        self._send({"t": "busy", "count": count})
+
+    def answer(self, request_id: str, data: Optional[dict] = None, error: Optional[str] = None) -> None:
+        """Answer the sidecar's request ``request_id`` with its data, or why it failed."""
+        self._send({"t": "answer", "id": request_id, "ok": True, "data": data or {}} if error is None else {"t": "answer", "id": request_id, "ok": False, "error": error})
+
+    def approval(self, frame: dict) -> bool:
+        """Ask the sidecar to put one of Hermes's approvals behind the prompt desk (approvals.py).
+        False when no connection took the frame."""
+        return self._send(frame)
+
+    def approval_end(self, session_key: str, outcome: str) -> None:
+        """Report that the oldest approval waiting in ``session_key`` stopped waiting."""
+        self._send({"t": "approval_end", "session": session_key, "outcome": outcome})
+
+    def clarify(self, frame: dict) -> bool:
+        """Ask the sidecar to put one of Hermes's clarify questions on the prompt desk (clarify.py).
+        False when no connection took the frame."""
+        return self._send(frame)
+
+    def clarify_end(self, clarify_id: str, resolved: bool) -> None:
+        """Report that Hermes stopped waiting on question ``clarify_id``, with the owner's answer
+        (``resolved``) or without it."""
+        self._send({"t": "clarify_end", "id": clarify_id, "resolved": resolved})
+
+    def delta(self, key: str, text: str) -> None:
+        """Text a reply added while the model wrote it, for the event plane's stream ``key``."""
+        self._send({"t": "delta", "key": key, "text": text})
+
+    def delta_end(self, key: str) -> None:
+        """End stream ``key``, which no saved response will close."""
+        self._send({"t": "delta_end", "key": key})
 
     def reply(
         self, target: dict, text: str, reply_to: Optional[str] = None, context_id: Optional[str] = None

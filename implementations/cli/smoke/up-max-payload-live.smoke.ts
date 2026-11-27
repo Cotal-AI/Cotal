@@ -21,14 +21,15 @@
  *  6. A broker-only reuse on that low limit exits 0 but drops the add-manager hint from its Next
  *     section, naming the stop and restart instead; on a sufficient limit the hint stays. This is
  *     the controller route; the legacy open route's reuse receipt offers only `down`.
+ *  7. Status after a busy-port first start tells the operator to keep the original startup options.
  *
  * Sandboxes COTAL_HOME and a project root under a scratch base with proven-clean `.cotal` ancestry;
  * kills only its own children. Needs `nats-server` on PATH.
  * Run: pnpm smoke:up-max-payload:live  (BUILD FIRST - the subprocess runs built dist.)
  */
-import { spawn, type ChildProcess } from "node:child_process";
+import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import net from "node:net";
 import { join, resolve as resolvePath } from "node:path";
 import { assertSmokeSandboxDown, freePort, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
@@ -67,14 +68,18 @@ const sandboxEnv = (() => {
 })();
 
 const kids: ChildProcess[] = [];
-async function run(args: string[], timeoutMs?: number): Promise<{ status: number | null; out: string }> {
-  const options = { cwd: root, env: sandboxEnv, stdio: ["ignore", "pipe", "pipe"] as ["ignore", "pipe", "pipe"] };
+async function run(args: string[], timeoutMs?: number, stdin?: Buffer): Promise<{ status: number | null; out: string }> {
+  const options = { cwd: root, env: sandboxEnv, stdio: [stdin === undefined ? "ignore" : "pipe", "pipe", "pipe"] as ["ignore" | "pipe", "pipe", "pipe"] };
   assertSmokeSandboxDown(sandbox, args, options);
   const cp = spawn(process.execPath, ["--import", TSX_IMPORT, CLI, ...args], options);
   kids.push(cp);
   let out = "";
   cp.stdout?.on("data", (b: Buffer) => { out += b.toString(); });
   cp.stderr?.on("data", (b: Buffer) => { out += b.toString(); });
+  if (stdin !== undefined) {
+    cp.stdin!.on("error", () => {});
+    cp.stdin!.write(stdin); // Keep the pipe open until the command exits.
+  }
   const timeout = timeoutMs === undefined ? undefined : setTimeout(() => cp.kill("SIGTERM"), timeoutMs);
   try { await once(cp, "close"); } finally { clearTimeout(timeout); }
   return { status: cp.exitCode, out };
@@ -103,6 +108,37 @@ function servedMaxPayload(port: number, timeoutMs = 5_000): Promise<number | und
 let open = false;
 const confText = () => readFileSync(open ? join(root, ".cotal", "server-open.conf") : join(authDir(root), "server.conf"), "utf8");
 const recordedPayload = () => (JSON.parse(readFileSync(join(root, ".cotal", "broker-policy.json"), "utf8")) as { maxPayload?: number }).maxPayload;
+
+async function checkFifoBody(space: string, server: string): Promise<void> {
+  const target = ["--space", space, "--server", server, "--json"];
+  const small = join(root, "small.txt");
+  writeFileSync(small, "short file body");
+  const sent = await run(["send", "-c", "fifo-body", "--file", small, ...target]);
+  ok("a short file body is stored on the low-limit broker", sent.status === 0 && JSON.parse(sent.out).result?.stored === true, sent.out);
+
+  const fifo = join(root, "body.fifo");
+  execFileSync("mkfifo", [fifo]);
+  // The producer holds the FIFO open until the parent stops it, even after writing the entire body.
+  const writer = spawn(process.execPath, ["-e", `
+    const { openSync, writeFileSync } = require("node:fs");
+    writeFileSync(openSync(process.argv[1], "w"), Buffer.alloc(8193, "a"));
+    process.stdin.resume();
+  `, fifo], { stdio: ["pipe", "ignore", "ignore"] });
+  kids.push(writer);
+  const closed = once(writer, "close");
+  try {
+    const refused = await run(["send", "-c", "fifo-body", "--file", fifo, ...target], 10_000);
+    ok("a FIFO one byte over the broker limit refuses while its writer is still open", refused.status === 2 && writer.exitCode === null && writer.signalCode === null &&
+      JSON.parse(refused.out).error?.code === "UNSUPPORTED" && refused.out.includes("8192-byte message limit; nothing was sent"), refused.out);
+  } finally {
+    writer.stdin.end();
+    writer.kill();
+    await closed;
+  }
+  const history = await run(["history", "fifo-body", ...target]);
+  const items = JSON.parse(history.out).result?.items as { text: string }[] | undefined;
+  ok("only the short file reaches history", history.status === 0 && items?.length === 1 && items[0]?.text === "short file body", history.out);
+}
 
 async function checkMode(mode: "auth" | "open-legacy" | "open-controller"): Promise<void> {
   open = mode !== "auth";
@@ -213,9 +249,22 @@ async function checkMode(mode: "auth" | "open-legacy" | "open-controller"): Prom
     const brokerOnly = await run(["up", "--open", "--no-manager", "--space", space, "--server", server, "--max-payload", "8192"]);
     try {
       ok("a broker-only start accepts and serves 8192 bytes", brokerOnly.status === 0 && await servedMaxPayload(port) === 8192, brokerOnly.out);
+      const source = mode === "open-controller" ? ["--file", "-"] : ["--stdin"];
+      const oversized = await run(["send", "-c", "general", ...source, "--json", "--space", space, "--server", server], 10_000, Buffer.alloc(8193, "a"));
+      ok(`${source.join(" ")} refuses one byte over the broker limit before EOF`, oversized.status === 2 &&
+        oversized.out.includes('"code":"UNSUPPORTED"') && oversized.out.includes("8192-byte message limit; nothing was sent"), oversized.out);
       // Only the controller route renders the add-manager hint: the legacy open route's reuse
       // receipt offers only `down`, so there is no hint to drop there.
       if (mode === "open-controller") {
+        if (process.platform !== "win32") await checkFifoBody(space, server);
+        const ps = await run(["ps", "--space", space, "--plain"]);
+        ok("ps on an open controller low-payload broker explains why bare up cannot add a manager",
+          ps.status === 2 &&
+          ps.out.includes("payload limit is 8192 bytes, below the manager's minimum of 263168 bytes") &&
+          ps.out.includes("fixed while the broker runs") &&
+          ["cotal", "pnpm cotal"].some((cli) => ps.out.includes(`\`${cli} down --yes\``)) &&
+          ["cotal", "pnpm cotal"].some((cli) => ps.out.includes(`\`${cli} up --foreground --max-payload 1048576\``)),
+          ps.out);
         const reuse = await run(["up", "--no-manager", "--space", space, "--server", server]);
         ok("a broker-only reuse exits 0 and its Next drops the add-manager hint for the low limit",
           reuse.status === 0 && /already running/.test(reuse.out) && !reuse.out.includes("Add the manager to this stack") &&
@@ -295,8 +344,43 @@ async function checkStoppedBrokerOnly(space: string, port: number): Promise<void
   }
 }
 
+async function checkBlockedFirstStart(): Promise<void> {
+  const space = "payload-blocked-first";
+  root = mkdtempSync(join(scratch, `${space}-`));
+  sandbox = recordSmokeSandbox({ root, cotalHome: home, xdgConfigHome: configDir });
+  const prepared = await run(["space", "create", space]);
+  ok("the busy-port fixture is prepared", prepared.status === 0, prepared.out);
+  const holder = net.createServer((socket) => socket.end("not NATS\n"));
+  holder.listen(0, "127.0.0.1");
+  await once(holder, "listening");
+  const port = (holder.address() as net.AddressInfo).port;
+  const options = ["--open", "--no-manager", "--max-payload", "8192"];
+  try {
+    const refused = await run(["up", ...options, "--server", `nats://127.0.0.1:${port}`]);
+    ok("the busy port refuses the first start", refused.status === 2 && refused.out.includes("CONFLICT"), refused.out);
+    const status = await run(["status", "--plain", "--space", space]);
+    const alternate = /`--server (nats:\/\/127\.0\.0\.1:(\d+))` and all other options unchanged/.exec(status.out);
+    ok("status says to repeat the original command or change only its server",
+      status.status === 0 && status.out.includes(`stop the process listening on 127.0.0.1:${port}, then repeat your original startup command from the same folder`) &&
+      alternate !== null && Number(alternate[2]) !== port && !/`(?:pnpm )?cotal up\b/.test(status.out), status.out);
+    try {
+      const started = await run(["up", ...options, "--server", alternate![1]!]);
+      const health = await run(["status", "--components", "--space", space]);
+      ok("changing only the server starts a broker with the original payload limit and no manager",
+        started.status === 0 && await servedMaxPayload(Number(alternate![2])) === 8192 &&
+        /manager\s+not-started.*started with --no-manager/.test(health.out), `${started.out}\n${health.out}`);
+    } finally {
+      const stopped = await run(["down", "--yes"]);
+      ok("the recovered broker stops", stopped.status === 0, stopped.out);
+    }
+  } finally {
+    await new Promise<void>((resolve) => holder.close(() => resolve()));
+  }
+}
+
 try {
   for (const mode of ["auth", "open-legacy", "open-controller"] as const) await checkMode(mode);
+  await checkBlockedFirstStart();
   console.log(`\nup-max-payload live smoke: OK - ${pass} checks`);
 } finally {
   for (const cp of kids) { try { cp.kill("SIGKILL"); } catch { /* already gone */ } }

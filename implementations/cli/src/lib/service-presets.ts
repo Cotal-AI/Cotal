@@ -188,7 +188,12 @@ export function presetDefaultOptions(preset: ServicePreset, space: string, root:
       continue;
     }
     const path = presetMaterialPath(fallback.kind, space, root, migrate);
-    if (!existsSync(path)) throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", `the ${preset.name} preset uses this space's ${fallback.kind} for --${name}, and ${path} does not exist yet; nothing was saved or started`, { target: { space, path }, remedy: `cotal up writes it for this space; or pass --${name} <file>` });
+    if (!existsSync(path)) {
+      if (preset.adapter === WEB_SERVICE_ADAPTER && fallback.kind === "web.creds" && findMesh(space)?.mode === "open") {
+        throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "the web dashboard requires a registered static-auth space, and the selected space is open; nothing was saved or started", { target: { space, path }, remedy: "select or create a registered static-auth space, then rerun the command for that space" });
+      }
+      throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", `the ${preset.name} preset uses this space's ${fallback.kind} for --${name}, and ${path} does not exist yet; nothing was saved or started`, { target: { space, path }, remedy: `cotal up writes it for this space; or pass --${name} <file>` });
+    }
     filled[name] = path;
   }
   return filled;
@@ -253,7 +258,10 @@ export function servicePresetDefinition(preset: ServicePreset, space: string, gi
     const additions = [...missing.map((name) => `--${name} ${flags.find((flag) => flag.name === name)?.value ?? ""}`.trimEnd()), ...unfilled.map((row) => `--${row.name} ${row.value}`)].join(" ");
     const onSpace = given.space === undefined ? "" : ` --space ${shellWord(space)}`;
     const showCommand = !fromCommand || Object.keys(given).every((name) => name === "space" || name === "preset");
-    throw new CommandFailure("refused", "USAGE_INVALID", `the ${preset.name} preset needs ${missing.map((name) => `--${name}`).join(", ")}, which ${missing.length === 1 ? "has" : "have"} no default${unfilled.map((row) => `, and --${row.name}, since ${row.reason}`).join("")}; nothing was saved or started`, { remedy: showCommand ? `${line} ${additions}${onSpace}` : retryWith(additions), selfContained: true, ...(showCommand ? { remedyIsCommand: true } : {}) });
+    const retry = verb === "start" && given["new-instance"]
+      ? `remove ${codeSpan("--new-instance")} and add ${codeSpan(additions)}, keeping the rest of the command unchanged`
+      : retryWith(additions);
+    throw new CommandFailure("refused", "USAGE_INVALID", `the ${preset.name} preset needs ${missing.map((name) => `--${name}`).join(", ")}, which ${missing.length === 1 ? "has" : "have"} no default${unfilled.map((row) => `, and --${row.name}, since ${row.reason}`).join("")}; nothing was saved or started`, { remedy: showCommand ? `${line} ${additions}${onSpace}` : retry, selfContained: true, ...(showCommand ? { remedyIsCommand: true } : {}) });
   }
   const values: ParsedArgs["values"] = { ...presetDefaultOptions(preset, space, root, given, migrate), ...given };
   const options = parsedPresetOptions(preset, values);

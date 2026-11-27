@@ -147,6 +147,8 @@ export function boundedCells(plan) {
   add("linux", "npm", "standalone-stop-consent");
   add("linux", "npm", "foreign-config-recovery");
   add("linux", "npm", "container-manager");
+  add("linux", "npm", "interrupted-snapshot-copy");
+  cells.at(-1).requiredAssertions.push("interrupted-snapshot-reclaimed");
   for (const platform of platforms) add(platform, "npm", "daemon-self");
   for (const platform of ["linux", "darwin"]) add(platform, "installer", "daemon-self");
   {

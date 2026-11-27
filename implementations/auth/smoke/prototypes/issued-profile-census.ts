@@ -65,6 +65,7 @@ export async function profileFixtures(space: string): Promise<ProfileFixture[]> 
     "control-caller-privileged": () => one("control-caller-privileged"),
     "control-caller-admin": () => one("control-caller-admin"),
     deployer() { one("deployer"); one("deployer", { controlTier: "privileged" }, "privileged-tier"); },
+    "agent-caller": () => one("agent-caller"),
     "endpoint-serve"() {
       const grant = epServeGrantRows(space, { endpoint: "manager", instanceId: instance, epoch: 1, ephemeralCommands: ["ps", "run-start", "run-resume"] });
       rows.push({ profile: "endpoint-serve", variant: "raw-serve-rows", permissions: { pub: { allow: grant.pub }, sub: { allow: grant.sub } }, producer: "epServeGrantRows" });
@@ -248,7 +249,7 @@ function subjectCoveredBy(streamPattern: string, grantRow: string): boolean {
  * pairing is expected in the trusted infrastructure profiles (they ARE the trusted plane), and is the
  * condition the issued rail's origin assumption cannot survive in a peer-held credential.
  */
-export const PEER_HELD_PROFILES: readonly Profile[] = Object.freeze(["agent", "observer", "session-caller", "run-driver", "manager-caller", "dm-reader"]);
+export const PEER_HELD_PROFILES: readonly Profile[] = Object.freeze(["agent", "observer", "session-caller", "run-driver", "manager-caller", "dm-reader", "agent-caller"]);
 
 /**
  * The rest, classified as trusted infrastructure or operator credentials. Peer-heldness is a

@@ -140,6 +140,13 @@ export const SPAWN_INPUT_SCHEMA = deepFreeze({
     identity: nonBlank(),
     model: nonBlank(),
     variant: nonBlank(),
+    // Mode id to a toggle's boolean or a choice's option id. The manager refuses any the connector's
+    // catalog does not list for the launched model.
+    modes: {
+      type: "object", minProperties: 1, maxProperties: 32,
+      propertyNames: { minLength: 1, maxLength: 128 },
+      additionalProperties: { anyOf: [{ type: "boolean" }, { type: "string", minLength: 1, maxLength: 256 }] },
+    },
     launchOptions: { type: "object" },
     resume: nonBlank(),
     // #1499: the one-time claim `transcript-receive` issued for carried bytes of `resume`, and the
@@ -148,11 +155,15 @@ export const SPAWN_INPUT_SCHEMA = deepFreeze({
     resumeAgent: nonBlank(),
     events: { type: "boolean" },
     eventPayloads: { type: "boolean" },
+    askPermissions: { type: "boolean" },
+    reasoningEvents: { type: "boolean" },
     cwd: nonBlank(),
     prompt: nonBlank(),
     // A harness command or skill the new agent runs as its first turn: the `command` input of SPEC
     // 13.22, which the agent queues under the id the acceptance names. Never sent as a prompt.
     firstCommand: AGENT_COMMAND_INPUT_SCHEMA,
+    // The seat labels itself from its first message: the prompt above, else its owner's first DM or mention.
+    autoName: { type: "boolean" },
     // An inline persona: the helper's definition, carried here instead of read from the catalog.
     // Its `prompt` is the persona body; the `prompt` above stays the first-turn kickoff.
     persona: {

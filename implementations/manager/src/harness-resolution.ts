@@ -1,9 +1,20 @@
-import { connectorServers, registry, spawnEnvAllow } from "@cotal-ai/core";
-import type { CommandInput, Connector, CotalConfig, LaunchOpts } from "@cotal-ai/core";
+import { catalogChoiceRefusal, connectorServers, readModelCatalog, registry, spawnEnvAllow } from "@cotal-ai/core";
+import type { CommandInput, Connector, CotalConfig, LaunchChoice, LaunchModes, LaunchOpts, ModelCatalog } from "@cotal-ai/core";
 import { connectorInstallHint, manifestExtensionNames, materializeFromManifest, resolveOnPath } from "@cotal-ai/workspace";
 import type { Manager } from "./manager.js";
 import type { ManagerParts } from "./manager-parts.js";
 import type { ManagerConfig } from "./manager-config.js";
+
+/** The opt-in launch fields a seat keeps, each present only when asked, so a launch without them is
+ *  built and recorded as before and every relaunch of the seat asks as its spawn did. */
+export function optInLaunchFields(launch: { askPermissions?: boolean; reasoningEvents?: boolean }): { askPermissions?: true; reasoningEvents?: true } {
+  return { ...(launch.askPermissions ? { askPermissions: true } : {}), ...(launch.reasoningEvents ? { reasoningEvents: true } : {}) };
+}
+
+/** The harness files and spawn.env names a catalog was read with, so a kept catalog serves only a
+ *  launch that would read the same one. */
+const catalogKey = (binaries: Readonly<Record<string, string>> | undefined, envAllow: readonly string[] | undefined): string =>
+  JSON.stringify([binaries ?? {}, envAllow ?? []]);
 
 /** One connector's declared harness binaries resolved on PATH now. The refusal sentence is built only
  *  here, so the boot row and the check for a connector registered after boot can never word it apart. */
@@ -34,6 +45,11 @@ export function harnessResolutionDeps(m: Manager): HarnessResolutionDeps {
 
 /** Resolving a connector by name and the host fields, harness binaries and capability and events refusals a launch carries. */
 export class HarnessResolution {
+  /** Each connector's last catalog read, or the read in flight, with the harness files and spawn.env
+   *  names it ran with. A spawn
+   *  that chooses a variant or modes checks against it rather than running the harness again. */
+  private readonly catalogs = new Map<string, { harness: string; read: Promise<ModelCatalog> }>();
+
   constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: HarnessResolutionDeps, private readonly parts: Pick<ManagerParts, "connectorInventory">) {}
 
   // The Manager members these bodies read, under their Manager names. Each reads through its dep at
@@ -100,16 +116,47 @@ export class HarnessResolution {
 
   /** The refusal for a launch choice the connector cannot honour. Spawn and resume both ask before
    *  a seat's launch is built, so a rule changed here holds on both paths. */
-  capabilityRefusal(connector: Connector, launch: { variant?: string; prompt?: string; firstCommand?: CommandInput; exact: boolean }): string | undefined {
+  capabilityRefusal(
+    connector: Connector,
+    launch: { variant?: string; modes?: LaunchModes; prompt?: string; firstCommand?: CommandInput; exact: boolean; askPermissions?: boolean; reasoningEvents?: boolean; events: boolean },
+  ): string | undefined {
     if (launch.variant && !connector.supportsModelVariant)
       return `${connector.name} connector does not support model variants (variant)`;
+    if (launch.modes !== undefined && !connector.supportsModes)
+      return `${connector.name} connector does not support modes (modes)`;
     if (launch.prompt !== undefined && !connector.supportsPrompt)
       return `${connector.name} connector does not support an initial prompt (prompt)`;
+    if (launch.askPermissions && !connector.supportsAskPermissions)
+      return `${connector.name} connector does not support asking before tool use (askPermissions)`;
+    if (launch.reasoningEvents && !connector.supportsReasoningEvents)
+      return `${connector.name} connector does not support reasoning events (reasoningEvents)`;
+    if (launch.reasoningEvents && !launch.events)
+      return "reasoningEvents needs the event plane, and this launch has none (events: false)";
     if (launch.firstCommand && !connector.commands?.targets.includes(launch.firstCommand.target))
       return `${connector.name} seats run no ${launch.firstCommand.target}s, so a spawn cannot name one as their first command (firstCommand)`;
     if (launch.exact && (!connector.supportsSessionReopen || !connector.supportsSessionContinuation))
       return `${connector.name} connector does not support exact session continuity (continuity: exact)`;
     return undefined;
+  }
+
+  /** Read the connector's catalog from its harness now and keep it for spawn checks. A read that fails,
+   *  is malformed or reports no catalog is not kept, so the next spawn reads again. `envAllow` is the
+   *  spawn.env names a launch would receive, so the catalog lists the models a seat reaches. */
+  readCatalog(connector: Connector, binaries: Readonly<Record<string, string>> | undefined, envAllow: readonly string[] | undefined, refresh = false): Promise<ModelCatalog> {
+    const read = readModelCatalog(connector, { refresh, resolvedBinaries: binaries, ...(envAllow ? { envAllow } : {}) });
+    this.catalogs.set(connector.name, { harness: catalogKey(binaries, envAllow), read });
+    const forget = () => { if (this.catalogs.get(connector.name)?.read === read) this.catalogs.delete(connector.name); };
+    read.then((catalog) => { if (catalog.unavailable !== undefined) forget(); }, forget);
+    return read;
+  }
+
+  /** The refusal for a variant or modes the connector's catalog does not list for the launched model.
+   *  It reads the kept catalog, and the harness only when none is kept for these files and names. */
+  catalogRefusal(connector: Connector, binaries: Readonly<Record<string, string>> | undefined, envAllow: readonly string[] | undefined, choice: LaunchChoice): Promise<string | undefined> {
+    return catalogChoiceRefusal(connector, choice, () => {
+      const kept = this.catalogs.get(connector.name);
+      return kept?.harness === catalogKey(binaries, envAllow) ? kept.read : this.readCatalog(connector, binaries, envAllow);
+    });
   }
 
   /** The refusal for an event-plane choice the registration policy or the connector cannot meet.

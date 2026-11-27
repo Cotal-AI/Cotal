@@ -50,6 +50,9 @@ export interface ServiceAdapterContext {
   readonly stack?: ControllerStackView;
   /** This start's explicit manager cap. The manager records it only once it starts serving. */
   readonly managerSeatCap?: SeatCap;
+  /** This start's `--idle-exit`, in seconds: the manager stops once it has held no agents that long.
+   *  Launch-only: never part of a saved definition, so a later start without it runs until stopped. */
+  readonly managerIdleExit?: number;
 }
 
 /** A resume attempt's per-launch inputs. `resumeCommit` names a protected handoff file by path and

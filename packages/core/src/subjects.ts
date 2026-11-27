@@ -30,7 +30,7 @@
  * Presence lives in a JetStream KV bucket, not a subject (see presenceBucket()).
  */
 import { fromPublic } from "@nats-io/nkeys";
-import type { Presence, PresenceStatus } from "./types.js";
+import type { Presence, PresenceAgentEndpoint, PresenceStatus } from "./types.js";
 import {
   token,
   ROOT,
@@ -76,6 +76,8 @@ export {
   deprovisionTargetPrincipal,
   parsePrincipalKey,
   assertInboxConnId,
+  assertUserInboxConnId,
+  userInboxConnId,
   PRINCIPAL_TAG_PREFIX,
   principalTags,
   principalFromTags,
@@ -532,6 +534,9 @@ export function presenceKeySubject(space: string, owner: string, actor: string):
 }
 
 const PRESENCE_STATUSES: Record<PresenceStatus, true> = { idle: true, waiting: true, working: true, offline: true };
+const AGENT_ENDPOINT_FLAGS: readonly (keyof PresenceAgentEndpoint)[] = ["interrupt", "turn", "images", "usage"];
+/** A flag a newer process adds: absent from an older one's record, and a boolean where present. */
+const AGENT_ENDPOINT_LATER_FLAGS: readonly (keyof PresenceAgentEndpoint)[] = ["setModel"];
 
 function presenceRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -544,8 +549,10 @@ function presenceOptionalString(value: unknown): boolean {
 /** The presence row shape every reader relies on (SPEC §6). A record whose `card.id` differs from
  *  its KV key, whose `card.name` is blank or has the wrong type, whose `status` has the wrong type,
  *  whose `ts` is not finite, whose printed display fields are present and not strings, whose
- *  `condition` is present and is not an object with a string `code`, or whose `prompts` is present
- *  and is not an object with non-negative integer `open` and `seq`, is not a row. `card.id` must be
+ *  `condition` is present and is not an object with a string `code`, whose `prompts` is present
+ *  and is not an object with non-negative integer `open` and `seq`, or whose `agentEndpoint` is
+ *  present and is not an object with boolean `interrupt`, `turn`, `images` and `usage` and, where
+ *  present, a boolean `setModel`, is not a row. `card.id` must be
  *  a non-empty string and equal the key it was read under: the key is the identity the write grant
  *  proves, and an empty id matches no key. `card.name` must be a non-blank string: a blank name
  *  cannot identify the participant a refusal prints. */
@@ -572,6 +579,12 @@ function presenceRowProblem(value: unknown, key: string): string | undefined {
     if (!presenceRecord(value.prompts)) return "prompts";
     for (const k of ["open", "seq"] as const)
       if (!Number.isSafeInteger(value.prompts[k]) || (value.prompts[k] as number) < 0) return `prompts.${k}`;
+  }
+  if (value.agentEndpoint !== undefined) {
+    if (!presenceRecord(value.agentEndpoint)) return "agentEndpoint";
+    for (const k of AGENT_ENDPOINT_FLAGS) if (typeof value.agentEndpoint[k] !== "boolean") return `agentEndpoint.${k}`;
+    for (const k of AGENT_ENDPOINT_LATER_FLAGS)
+      if (value.agentEndpoint[k] !== undefined && typeof value.agentEndpoint[k] !== "boolean") return `agentEndpoint.${k}`;
   }
   return undefined;
 }

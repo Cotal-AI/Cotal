@@ -124,6 +124,11 @@ export function normalizeIdpUrl(idpUrl: string): string {
   return checked.url.origin + checked.url.pathname.replace(/\/+$/, "");
 }
 
+/** Stable within an IdP, without saving the provider's raw subject in conversation records. */
+export function conversationAccountKey(idp: string, subject: string | undefined): string | undefined {
+  return subject ? createHash("sha256").update(JSON.stringify([normalizeIdpUrl(idp), subject])).digest("hex") : undefined;
+}
+
 interface OAuthError {
   error?: string;
   error_description?: string;
@@ -162,6 +167,9 @@ export function idpTimeoutMs(): number {
 
 /** An IdP request that got no answer: the transport failed or the per-request timeout fired. */
 export class IdpUnreachableError extends Error {}
+
+/** The IdP answered a token request with a server error. */
+export class IdpTokenServerError extends Error {}
 
 /** The provider refused the initial device-code request, before approval or persistence. */
 export class IdpDeviceAuthorizationRefusedError extends Error {}
@@ -347,19 +355,42 @@ export async function deviceLogin(opts: DeviceLoginOpts): Promise<IdpSession> {
   }
 
   // RFC 8628 §3.5: poll at the server's interval; `slow_down` adds 5s to it, permanently.
+  // A poll the provider could not answer (no connection, a 5xx such as a proxy's error page) says
+  // nothing about the approval, so polling goes on until the code's own expiry. If the provider was
+  // still unreachable then, that is the refusal, not an expiry the person could not have caused.
   let intervalSec = Math.max(1, grant.interval || 5);
+  let unanswered: IdpUnreachableError | undefined;
   for (;;) {
     await sleepUnlessCancelled(intervalSec * 1000, opts.signal);
-    if (Date.now() > deadline) throw new Error(expired);
-    const poll = await idpFetch(`${base}/device/token`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        grant_type: "urn:ietf:params:oauth:grant-type:device_code",
-        device_code: grant.device_code,
-        client_id: opts.clientId,
-      }),
-    }, opts.signal);
+    if (Date.now() > deadline) throw unanswered ?? new Error(expired);
+    let poll: Response;
+    try {
+      poll = await idpFetch(`${base}/device/token`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          grant_type: "urn:ietf:params:oauth:grant-type:device_code",
+          device_code: grant.device_code,
+          client_id: opts.clientId,
+        }),
+      }, opts.signal);
+    } catch (e) {
+      if (!(e instanceof IdpUnreachableError)) throw e;
+      unanswered = new IdpUnreachableError(`idp login: ${base} could not be reached while waiting for approval, and the device code expired - ${e.message}`);
+      continue;
+    }
+    if (poll.status >= 500) {
+      await poll.body?.cancel().catch(() => {});
+      throwIfCancelled(opts.signal);
+      unanswered = new IdpUnreachableError(`idp login: ${base} answered HTTP ${poll.status} while waiting for approval, and the device code expired - run \`${retry}\` again once it answers`);
+      continue;
+    }
+    unanswered = undefined;
+    if (poll.status === 429) {
+      await poll.body?.cancel().catch(() => {});
+      intervalSec += 5;
+      continue;
+    }
     if (poll.ok) {
       const tok = await idpJson<{ access_token: string; expires_in: number }>(`${base}/device/token`, poll, opts.signal);
       // Bound the session lifetime like the device grant's timing fields above (finite, positive,
@@ -480,7 +511,10 @@ async function fetchIdpJwtUncached(base: string, sessionToken: string, cancel?: 
       throw new IdpSessionRejectedError(
         `idp session: ${base} rejected the cached session (expired or revoked) - ${serviceLoginRecovery(base, idpSessionDir())}`,
       );
-    if (!res.ok) throw new Error(`idp session: ${base}/token failed (HTTP ${res.status})`);
+    if (!res.ok) {
+      const message = `idp session: ${base}/token failed (HTTP ${res.status})`;
+      throw res.status >= 500 ? new IdpTokenServerError(message) : new Error(message);
+    }
     const body = await idpJson<{ token?: string }>(`${base}/token`, res, cancel);
     if (typeof body.token !== "string" || !body.token) throw new Error(`idp session: ${base}/token returned no token`);
     return { jwt: body.token, response: res };

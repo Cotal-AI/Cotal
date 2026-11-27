@@ -18,7 +18,7 @@
  *
  * Run: pnpm smoke:history-read
  */
-import { execFile, spawn } from "node:child_process";
+import { execFile, spawn, spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
@@ -130,6 +130,7 @@ const run = (args: string[], cwd = shell, extra: NodeJS.ProcessEnv = {}, timeout
   });
 const shown = (r: { status: number; stdout: string; stderr: string }) => ({ status: r.status, stdout: r.stdout.slice(0, 1500), stderr: r.stderr.slice(0, 600) });
 const texts = (r: { envelope?: Envelope }) => (r.envelope?.result?.items ?? []).map((i) => i.text);
+const quotedChannel = (name: string) => process.platform === "win32" ? `"#${name}"` : `'#${name}'`;
 
 async function checkDottedHistory(): Promise<void> {
   const dotted = "a.".repeat(2047) + "bc";
@@ -196,6 +197,27 @@ async function checkChannelReplayRetry(): Promise<void> {
       && read === `cotal channel show ${name} --space ${openSpace} --json`
       && shownAgain?.status === 0 && entry(shownAgain)?.replay === false,
     { show: shown(show), shownAgain: shownAgain && shown(shownAgain) });
+
+  const explicitScope = ["--space", openSpace, "--server", openServers, "--json"];
+  const leading = await run(["channel", "set", "--replay", "off", "true", "--desc", "replay probe", ...explicitScope]);
+  const retry = /^run `(.+)`$/.exec(leading.envelope?.error?.remedy ?? "")?.[1];
+  const savedLeading = retry ? await run(execWords(retry).slice(1)) : undefined;
+  const target = await run(["channel", "show", "true", ...explicitScope]);
+  const other = await run(["channel", "show", "off", ...explicitScope]);
+  const entries = (r: Awaited<ReturnType<typeof run>>) =>
+    (r.envelope?.result as unknown as { registry?: ChannelRegistryRead } | undefined)?.registry?.channels;
+  check("a replay flag before a boolean-like channel retries the intended channel and replay setting",
+    leading.status === 1 && leading.envelope?.error?.code === "USAGE_INVALID"
+      && retry === `cotal channel set true --no-replay --desc 'replay probe' --space ${openSpace} --server ${openServers} --json`
+      && savedLeading?.status === 0 && savedLeading.envelope?.outcome === "ok"
+      && target.status === 0 && entries(target)?.true?.replay === false && entries(target)?.true?.description === "replay probe"
+      && other.status === 0 && JSON.stringify(entries(other)) === "{}",
+    { leading: shown(leading), retry, saved: savedLeading && shown(savedLeading), target: shown(target), other: shown(other) });
+
+  const ambiguous = await run(["channel", "set", "true", "off", "--replay", ...explicitScope]);
+  check("a boolean word not following the replay flag gets guidance without naming a channel to edit",
+    ambiguous.status === 1 && ambiguous.envelope?.error?.code === "USAGE_INVALID"
+      && ambiguous.envelope.error.remedy?.startsWith("name one channel") === true, shown(ambiguous));
 }
 
 async function checkFollowUsageRefusals(): Promise<void> {
@@ -211,6 +233,10 @@ async function checkFollowUsageRefusals(): Promise<void> {
     const server = `nats://127.0.0.1:${address.port}`;
     const historyTarget = { space: null, channel: "general", dms: false };
     const membershipTarget = { space: "triage", channel: "volume.posts" };
+    const recordsFrom = (stdout: string) => stdout.trim().split("\n").filter(Boolean).map((line) => JSON.parse(line) as {
+      schemaVersion?: number; stream?: string; type?: string; target?: Record<string, unknown>;
+      data?: { code?: string; message?: string; remedy?: string; reason?: string; lastAsOf?: number | null };
+    });
     for (const { base, invalid, stream, target, followAfter } of [
       { base: ["history", "--json"], invalid: ["--limit", "0"], stream: "history", target: { ...historyTarget, channel: null } },
       { base: ["history", "general", "--json"], invalid: ["--limit"], stream: "history", target: historyTarget, followAfter: true },
@@ -221,10 +247,7 @@ async function checkFollowUsageRefusals(): Promise<void> {
       const args = [...base, "--server", server];
       const finite = await run([...args, ...invalid]);
       const followed = await run(followAfter ? [...args, ...invalid, "--follow"] : [...args, "--follow", ...invalid]);
-      const records = followed.stdout.trim().split("\n").filter(Boolean).map((line) => JSON.parse(line) as {
-        schemaVersion?: number; stream?: string; type?: string; target?: Record<string, unknown>;
-        data?: { code?: string; message?: string; remedy?: string; reason?: string; lastAsOf?: number | null };
-      });
+      const records = recordsFrom(followed.stdout);
       const error = finite.envelope?.error;
       check(`${stream} ${invalid.join(" ")} refuses with a receipt for finite reads and error then end for follows`,
         finite.status === 1 && finite.stderr === "" && finite.envelope?.command === (stream === "history" ? "history" : "channel")
@@ -236,6 +259,20 @@ async function checkFollowUsageRefusals(): Promise<void> {
           && records[0]?.data?.code === error.code && records[0]?.data?.message === error.message && records[0]?.data?.remedy === error.remedy
           && records[1]?.data?.reason === "setup-failed" && (stream !== "membership" || records[1].data.lastAsOf === null),
         { follow: shown(followed), finite: shown(finite), connections });
+    }
+    for (const name of ["general", "#true"]) {
+      const followed = await run(["channel", "members", "--replay", "off", name, "--follow", "--space", "triage", "--server", server, "--json"]);
+      const records = recordsFrom(followed.stdout);
+      const retryName = name === "general" ? name : "'#true'";
+      check(`membership follow after a leading replay value names ${name} in its error and end records`,
+        followed.status === 1 && followed.stderr === "" && connections === 0
+          && records.map((record) => record.type).join() === "error,end"
+          && records.every((record) => record.schemaVersion === 1 && record.stream === "membership"
+            && record.target?.space === "triage" && record.target?.channel === name.replace(/^#/, ""))
+          && records[0]?.data?.code === "USAGE_INVALID"
+          && records[0]?.data?.remedy === `run \`cotal channel members ${retryName} --follow --space triage --server ${server} --json\``
+          && records[1]?.data?.reason === "setup-failed" && records[1].data.lastAsOf === null,
+        { follow: shown(followed), connections });
     }
     for (const args of [["history", "--json", "--limit", "--", "--follow"], ["history", "clear", "--json", "--follow", "--limit"],
       ["channel", "show", "volume.posts", "--json", "--follow", "--creds"]]) {
@@ -303,6 +340,21 @@ async function checkEventShapedChannelHistory(): Promise<void> {
       history.status === 0 && history.stderr === "" && envelope?.completeness === "complete" && envelope.warnings.length === 0
         && envelope.result !== null && envelope.result.channels.includes(channel) && envelope.result.window.olderRetained === false
         && envelope.result.items.length === 1 && envelope.result.items[0]?.channel === channel && envelope.result.items[0]?.text === text,
+      shown(history));
+  }
+}
+
+async function checkGreekSigmaHistory(): Promise<void> {
+  const target = ["--space", openSpace, "--server", openServers, "--json"];
+  const saved = await run(["channel", "set", "greek", "--desc", "Filter demo", ...target]);
+  const sent = await run(["send", "-c", "greek", "ΟΣ", ...target]);
+  check("fixture: the Greek channel accepts a post", saved.status === 0 && sent.status === 0,
+    { saved: shown(saved), sent: shown(sent) });
+  for (const sigma of ["Σ", "σ", "ς"]) {
+    const history = await run(["history", "greek", "--grep", sigma, ...target]);
+    check(`history --grep ${sigma} matches the retained word-final sigma`,
+      history.status === 0 && history.stderr === "" && history.envelope?.result?.window.read === 1
+        && texts(history).length === 1 && texts(history)[0] === "ΟΣ",
       shown(history));
   }
 }
@@ -999,7 +1051,7 @@ try {
 
   // Channel receipts and reads recommend scoped commands even when the channel name is a history verb.
   {
-    const channels = ["clear", "limit", "ordinary"];
+    const channels = ["clear", "limit", "baseline"];
     const scope = ["--space", openSpace, "--server", openServers];
     const printedLines = (stdout: string) => stdout.split("\n").map((line) => line.trim().replace(/^pnpm cotal /, "cotal "));
     for (const channel of channels) {
@@ -1013,7 +1065,7 @@ try {
       const history = suggestion("history");
       const target = scope.join(" ");
       const listed = inventory === `cotal ch ${target}` ? await run([...execWords(inventory).slice(1), "--plain"]) : undefined;
-      const read = history === `cotal history '#clear' ${target}` ? await run([...execWords(history).slice(1), "--json"]) : undefined;
+      const read = history === `cotal history ${quotedChannel("clear")} ${target}` ? await run([...execWords(history).slice(1), "--json"]) : undefined;
       check("channel set receipt inventory keeps the explicit target when another space is selected",
         listed?.status === 0 && listed.stdout.includes(`Mesh: ${openSpace}`) && listed.stdout.includes("#clear"), { receipt: shown(saved), listed });
       check("channel set receipt history reads the quoted channel instead of the history verb",
@@ -1021,14 +1073,16 @@ try {
     }
     for (const channel of channels) {
       const card = await run(["channel", "show", channel, "--space", openSpace, "--plain"]);
-      const [, word, targetSpace] = card.stdout.match(/^\s+(?:pnpm )?cotal history '(#[\w.-]+)' --space (\S+)\s+Read retained messages within your grant$/m) ?? [];
+      const [, command] = card.stdout.match(/^\s+((?:pnpm )?cotal history .+?) {2,}Read retained messages within your grant\r?$/m) ?? [];
       // Only execute the quoted channel form. An unexpected administrative command is a test failure.
-      const read = word === `#${channel}` && targetSpace === openSpace ? await run(["history", word, "--space", targetSpace, "--json"]) : undefined;
-      const messages = read?.envelope?.result?.items;
-      check(`channel show #${channel} recommends a history read for that channel only`,
+      const read = command && ["cotal", "pnpm cotal"].some((cli) => command === `${cli} history ${quotedChannel(channel)} --space ${openSpace}`)
+        ? spawnSync(`${command.replace(/^(?:pnpm )?cotal /, () => `"${process.execPath}" "${BIN}" `)} --json`,
+          { shell: true, cwd: shell, env: isolatedEnv, encoding: "utf8", timeout: 120_000 }) : undefined;
+      const messages = read?.status === 0 ? (JSON.parse(read.stdout) as Envelope).result?.items : undefined;
+      check(`pasting the channel show #${channel} history command reads that channel only`,
         card.status === 0 && read?.status === 0 && messages?.length === 1
           && messages[0]?.channel === channel && messages[0].text === `retained in ${channel}`,
-        { card: shown(card), read: read && shown(read) });
+        { card: shown(card), read: read && { status: read.status, stdout: read.stdout, stderr: read.stderr, error: read.error } });
     }
     const writer = join(home, "channel writer.creds");
     writeFileSync(writer, await mintCreds(auth, newIdentity(), "channel-writer"), { mode: 0o600 });
@@ -1304,6 +1358,23 @@ try {
   }
 
   {
+    const target = ["--space", openSpace, "--server", openServers, "--json"];
+    const description = "Output contract test";
+    const typo = await run(["channel", "set", "results", "--description", description, ...target]);
+    const unsupported = await run(["channel", "set", "results", "--mystery-option", ...target]);
+    const retry = await run(["channel", "set", "results", "--desc", description, ...target]);
+    const readback = await run(["channel", "show", "results", ...target]);
+    const result = readback.envelope?.result as { registry?: ChannelRegistryRead } | undefined;
+    check("channel set with a name suggests --desc for --description, not another operand",
+      typo.status === 1 && typo.stderr === "" && typo.envelope?.outcome === "refused"
+        && typo.envelope.error?.code === "USAGE_INVALID" && typo.envelope.error.remedy === "use --desc"
+        && unsupported.status === 1 && unsupported.envelope?.error?.remedy === "drop the unknown option"
+        && retry.status === 0 && retry.envelope?.outcome === "ok" && readback.status === 0
+        && result?.registry?.channels?.results?.description === description,
+      { typo: shown(typo), unsupported: shown(unsupported), retry: shown(retry), readback: shown(readback) });
+  }
+
+  {
     const saved = await run(["channel", "set", "wire.window", "--window", " 24h ", "--space", openSpace, "--json"]);
     const readback = await run(["channel", "show", "wire.window", "--space", openSpace, "--json"]);
     const patch = (saved.envelope?.result as unknown as { patch?: { replayWindow?: string } })?.patch;
@@ -1360,7 +1431,7 @@ try {
     const openCard = await run(["channel", "show", "general", "--space", openSpace, "--plain"]);
     check("channel show explains unavailable membership on an open mesh and still suggests history",
       openCard.status === 0 && openCard.stdout.includes("Broker-observed channel membership is unavailable on open meshes.")
-      && !openCard.stdout.includes("cotal ch members") && openCard.stdout.includes("cotal history '#general'"), shown(openCard));
+      && !openCard.stdout.includes("cotal ch members") && openCard.stdout.includes(`cotal history ${quotedChannel("general")}`), shown(openCard));
     const authCard = await run(["channel", "show", "general", "--space", space, "--plain"]);
     check("channel show still suggests membership on the auth mesh",
       authCard.status === 0 && authCard.stdout.includes("cotal ch members general"), shown(authCard));
@@ -1624,6 +1695,7 @@ try {
     { read: shown(stoppedRead), follow: shown(stoppedFollow) });
   await checkMembershipSetupRefusal(space, "updates", "TARGET_UNAVAILABLE", "--server", servers);
   await checkEventShapedChannelHistory();
+  await checkGreekSigmaHistory();
 } finally {
   for (const ep of endpoints) await ep.stop().catch(() => {});
   await provisioner?.stop().catch(() => {});

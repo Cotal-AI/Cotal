@@ -9,12 +9,13 @@
  * Run: pnpm smoke:read-no-seed
  */
 import { spawnSync } from "node:child_process";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { isDeepStrictEqual } from "node:util";
 import { createSuite } from "@cotal-ai/smoke-kit";
+import { resolveComspec, resolveOnPath } from "@cotal-ai/workspace";
 import { displayCmd } from "../src/lib/self-exec.js";
 import { shellWord } from "../src/lib/endpoint-errors.js";
 
@@ -48,8 +49,69 @@ function sandbox() {
   };
   return { home, xdg, run };
 }
+
+if (process.platform === "win32") {
+  const { home, xdg } = sandbox();
+  const system = process.env.SystemRoot ?? "C:\\Windows";
+  const cmd = resolveComspec(), powershell = join(system, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
+  const env = {
+    ...Object.fromEntries(Object.entries(HOST_ENV).filter(([name]) => !/^(?:COTAL_.*|PATH|APPDATA|LOCALAPPDATA|TEMP|TMP)$/i.test(name))),
+    PATH: [join(system, "System32"), dirname(powershell)].join(";"),
+    USERPROFILE: home, HOME: home, APPDATA: home, LOCALAPPDATA: home, TEMP: home, TMP: home,
+    COTAL_HOME: join(home, ".cotal"), XDG_CONFIG_HOME: xdg, COTAL_SKIP_CONNECTOR_SEED: "1",
+    DO_NOT_TRACK: "1", NO_COLOR: "1",
+  };
+  const options = { cwd: home, env, encoding: "utf8" as const, timeout: 60_000, windowsHide: true };
+  const bin = dirname(dirname(BIN));
+  const manifest = readFileSync(join(bin, "package.json"), "utf8");
+  const dependencies = (JSON.parse(manifest) as { dependencies: Record<string, string> }).dependencies;
+  for (const prefix of ["npm's & ( [1] prefix", "npm $v %TEMP% !b `t 'q & ( [ caf\u00e9 prefix"]) {
+    const modules = join(home, prefix, "node_modules"), pkg = join(modules, "cotal-ai");
+    mkdirSync(pkg, { recursive: true });
+    writeFileSync(join(pkg, "package.json"), manifest);
+    cpSync(join(bin, "dist"), join(pkg, "dist"), { recursive: true });
+    for (const name of Object.keys(dependencies)) {
+      const link = join(modules, name);
+      mkdirSync(dirname(link), { recursive: true });
+      symlinkSync(realpathSync(join(bin, "node_modules", name)), link, "junction");
+    }
+    const entry = join(pkg, "dist", "cotal.js");
+    const root = spawnSync(process.execPath, [entry, "ext", "root"], options);
+    const safeRoot = root.status === 0 && root.stdout.trim() === join(xdg, "cotal", "extensions");
+    check(`installed ext root stays inside the sandbox for ${prefix}`, safeRoot, root);
+    if (!safeRoot) continue;
+    const status = spawnSync(process.execPath, [entry, "status"], options);
+    const command = /^  (.+? setup --help) +See setup flags for scripts\./m.exec(status.stdout)?.[1];
+    check(`installed status prints setup help for ${prefix} with Cotal off PATH`,
+      status.status === 0 && !resolveOnPath("cotal", env) && Boolean(command), status);
+    if (!command) continue;
+    const ps = spawnSync(powershell, ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Restricted",
+      "-EncodedCommand", Buffer.from(`${command}\nexit $LASTEXITCODE`, "utf16le").toString("base64")], options);
+    const prompt = spawnSync(cmd, [`/d /s /c "${command}"`], { ...options, windowsVerbatimArguments: true });
+    for (const [shell, result] of [["Restricted PowerShell", ps], ["Command Prompt", prompt]] as const) {
+      check(`the command for ${prefix} opens setup help unchanged in ${shell}`,
+        result.status === 0 && /^cotal setup\r?$/m.test(result.stdout) && result.stderr === "", result);
+    }
+    const launcher = command.slice(0, -" setup --help".length);
+    const useDash = `${launcher} use --json -- -missing-space`;
+    const psUse = spawnSync(powershell, ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Restricted",
+      "-EncodedCommand", Buffer.from(`${useDash}\nexit $LASTEXITCODE`, "utf16le").toString("base64")], options);
+    const cmdUse = spawnSync(cmd, [`/d /s /c "${useDash}"`], { ...options, windowsVerbatimArguments: true });
+    for (const [shell, result] of [["Restricted PowerShell", psUse], ["Command Prompt", cmdUse]] as const) {
+      const receipt = result.stdout ? JSON.parse(result.stdout) : undefined;
+      check(`the launcher for ${prefix} preserves -- and -missing-space in ${shell}`,
+        result.status === 2 && receipt?.command === "use" && receipt?.error?.code === "TARGET_NOT_FOUND" &&
+        receipt?.error?.message?.includes('"-missing-space"') === true, result);
+    }
+  }
+}
 const shown = (r: { status: number | null; stdout: string; stderr: string }) => ({ status: r.status, stdout: r.stdout.slice(0, 400), stderr: r.stderr.slice(0, 600) });
 const GATE = /refusing to reconcile the operator-global seed store/;
+/** Mode 000 hides a file from chmodSync, so restoration goes through the directory. */
+function chmodUnreadable(path: string, mode = 0): void {
+  if (mode === 0) chmodSync(path, 0);
+  else spawnSync("chmod", [mode.toString(8), path], { stdio: "ignore" });
+}
 
 // ── Reads run past the seed gate and write nothing ──────────────────────────────────────────────────
 {
@@ -147,6 +209,13 @@ channels:
   mkdirSync(root, { recursive: true });
   writeFileSync(manifest, corrupt);
   const offline = { COTAL_NO_UPDATE_CHECK: "1", COTAL_TELEMETRY: "off" };
+  for (const args of [["version"], ["--version"], ["-V"]]) {
+    const r = run(args, offline);
+    check(`${args[0]} reports the running version with an unreadable inventory`,
+      r.status === 4 && r.stdout.split("\n")[0] === `cotal-ai ${VERSION}` &&
+      r.stdout.includes("run `cotal ext seed --repair` to preserve the damaged file and rebuild the built-in inventory") &&
+      r.stderr.includes(`corrupt extensions manifest ${manifest}: no "extensions" array`), shown(r));
+  }
   for (const args of [["config", "get", "harness", "--json"], ["--json", "config"], ["completion", "-j"]]) {
     const r = run(args, offline);
     const receipt = r.stdout ? JSON.parse(r.stdout) : undefined;
@@ -188,11 +257,97 @@ channels:
       receipt.result === null && receipt.error?.code === "SCHEMA_INVALID" &&
       receipt.error.message.includes("corrupt extensions manifest") && receipt.error.remedy.includes("cotal ext seed --repair"), shown(r));
   }
+  const corruptFailure = (error: { code?: string; message?: string; remedy?: string } | undefined) =>
+    error?.code === "SCHEMA_INVALID" && error.message?.includes(manifest) === true && error.remedy?.includes("cotal ext seed --repair") === true;
+  for (const [command, args] of [
+    ["space", ["--json", "space"]],
+    ["doctor auth", ["doctor", "auth", "--json"]],
+    ["history", ["h", "general", "--space", "absent", "-j"]],
+  ] as const) {
+    const r = run([...args], offline);
+    const receipt = r.stdout ? JSON.parse(r.stdout) : undefined;
+    check(`${args.join(" ")} reports one finite refusal without running`,
+      r.status === 1 && r.stderr === "" && receipt?.schemaVersion === 1 && receipt.command === command &&
+      receipt.outcome === "refused" && receipt.result === null && corruptFailure(receipt.error), shown(r));
+  }
+  for (const [stream, args] of [
+    ["watch", ["watch", "--space", "absent", "--json"]],
+    ["history", ["history", "general", "--space", "absent", "--follow", "--json"]],
+    ["membership", ["channel", "members", "general", "--space", "absent", "--follow", "--json"]],
+  ] as const) {
+    const r = run([...args], offline);
+    const records = r.stdout.trim().split("\n").filter(Boolean).map((line) => JSON.parse(line));
+    const [error, end] = records;
+    const target = stream === "watch" ? { requestedSpace: "absent" }
+      : stream === "history" ? { space: "absent", channel: "general", dms: false } : { space: "absent", channel: "general" };
+    check(`${stream} reports the corrupt manifest as a stream setup failure`,
+      r.status === 1 && r.stderr === "" && records.length === 2 && error.stream === stream && end.stream === stream &&
+      error.type === "error" && corruptFailure(error.data) && end.type === "end" && end.data?.reason === "setup-failed" &&
+      isDeepStrictEqual(error.target, target) && isDeepStrictEqual(end.target, target), shown(r));
+  }
   const add = run(["ext", "add", "example-extension"], { ...offline, npm_config_offline: "true" });
   check("ext add still refuses a corrupt manifest without installing anything",
     add.status === 1 && add.stdout === "" && add.stderr.includes("corrupt extensions manifest"), shown(add));
   check("the damaged inventory and its directory are unchanged",
     readFileSync(manifest, "utf8") === corrupt && isDeepStrictEqual(readdirSync(root), ["extensions.json"]) && !existsSync(join(xdg, "cotal", "seed")));
+
+  const remedy = "restore this account's read access to the extensions manifest and its path, then retry";
+  writeFileSync(manifest, '{"extensions":[]}\n');
+  const locked = () => (statSync(manifest).mode & 0o777) === 0 && statSync(manifest).size === Buffer.byteLength('{"extensions":[]}\n');
+  try {
+    chmodUnreadable(manifest);
+    const deniedFailure = (error: { code?: string; message?: string; remedy?: string } | undefined) =>
+      error?.code === "PERMISSION_DENIED" && error.message?.includes(`cannot read the extensions manifest at ${manifest} (EACCES)`) === true && error.remedy === remedy;
+    for (const [command, args] of [
+      ["space", ["space", "--json"]],
+      ["ext", ["ext", "list", "--json"]],
+    ] as const) {
+      const r = run([...args], offline);
+      const receipt = r.stdout ? JSON.parse(r.stdout) : undefined;
+      check(`${args.join(" ")} reports an unreadable manifest as one permission refusal`,
+        r.status === 2 && r.stderr === "" && receipt?.command === command && receipt.outcome === "refused" && receipt.result === null && deniedFailure(receipt.error) && locked(), shown(r));
+    }
+    const watched = run(["watch", "--space", "absent", "--json"], offline);
+    const watchRecords = watched.stdout.trim().split("\n").filter(Boolean).map((line) => JSON.parse(line));
+    check("watch reports an unreadable manifest as setup error and end records",
+      watched.status === 2 && watched.stderr === "" && watchRecords.length === 2 && watchRecords[0]?.type === "error" && deniedFailure(watchRecords[0]?.data) &&
+      watchRecords[1]?.type === "end" && watchRecords[1]?.data?.reason === "setup-failed" && locked(), shown(watched));
+    for (const [label, args] of [["plain", ["space", "--plain"]], ["text", ["space"]]] as const) {
+      const r = run([...args], { ...offline, NO_COLOR: "1" });
+      check(`space ${label} names the unreadable manifest and its read-access remedy`,
+        r.status === 2 && r.stdout === "" && r.stderr.includes("PERMISSION_DENIED") && r.stderr.includes(manifest) && r.stderr.includes(remedy) && locked(), shown(r));
+    }
+    chmodUnreadable(manifest, 0o600);
+    const readableAgain = run(["space", "--json"], offline);
+    check("space --json succeeds again once the manifest is readable",
+      readableAgain.status === 0 && JSON.parse(readableAgain.stdout).outcome === "ok", shown(readableAgain));
+  } finally {
+    chmodUnreadable(manifest, 0o600);
+  }
+
+  const repair = "run `cotal ext seed --repair` to preserve the damaged file and rebuild the built-in inventory";
+  const entryFailure = (error: { code?: string; message?: string; remedy?: string } | undefined) =>
+    error?.code === "SCHEMA_INVALID" && error.message?.includes(`corrupt extensions manifest ${manifest}: invalid extension inventory entry at index 0`) === true && error.remedy === repair;
+  for (const body of ['{"extensions":[null]}\n', '{"extensions":[{}]}\n', '{"extensions":[{"pkg":"example-extension"}]}\n', '{"extensions":[{"pkg":"example-extension","commands":[null]}]}\n']) {
+    writeFileSync(manifest, body);
+    for (const [command, args] of [["space", ["space", "--json"]], ["ext", ["ext", "list", "--json"]]] as const) {
+      const r = run([...args], offline);
+      const receipt = r.stdout ? JSON.parse(r.stdout) : undefined;
+      check(`${args.join(" ")} refuses ${body.trim()} as a corrupt manifest`,
+        r.status === 1 && r.stderr === "" && receipt?.command === command && receipt.outcome === "refused" && entryFailure(receipt.error) && readFileSync(manifest, "utf8") === body, shown(r));
+    }
+    const streamed = run(["watch", "--space", "absent", "--json"], offline);
+    const records = streamed.stdout.trim().split("\n").filter(Boolean).map((line) => JSON.parse(line));
+    check(`watch refuses ${body.trim()} as setup error and end records`,
+      streamed.status === 1 && streamed.stderr === "" && records.length === 2 && records[0]?.type === "error" && entryFailure(records[0]?.data) &&
+      records[1]?.type === "end" && records[1]?.data?.reason === "setup-failed" && readFileSync(manifest, "utf8") === body, shown(streamed));
+    const version = run(["version", "--json"], offline);
+    const versionReceipt = version.stdout ? JSON.parse(version.stdout) : undefined;
+    check(`version --json keeps a partial report for ${body.trim()} and uses the repair command`,
+      version.status === 4 && version.stderr === "" && versionReceipt?.outcome === "partial" && versionReceipt.error?.code === "OPERATION_PARTIAL" &&
+      versionReceipt.error?.remedy === repair && versionReceipt.warnings?.[0]?.message === `the extensions manifest could not be read: corrupt extensions manifest ${manifest}: invalid extension inventory entry at index 0` &&
+      readFileSync(manifest, "utf8") === body, shown(version));
+  }
 }
 
 {

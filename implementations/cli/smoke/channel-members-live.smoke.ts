@@ -79,6 +79,27 @@ const records = (out: string) => out.split("\n").filter((line) => line.startsWit
 /** What a change is: whether the feed has a census, and who it observed how. */
 const shape = (data: Census) => JSON.stringify([data.asOf !== null, data.members.map(({ id, name, live, durable }) => [id, name, live, durable])]);
 
+async function checkHistoryObserver(): Promise<void> {
+  const observerCreds = join(base, "history-reader.creds");
+  const minted = cotal("auth", "mint", "history_reader", "--provision", "--allow-subscribe", "general", "--out", observerCreds, "--json");
+  check("a provisioned agent credential can read #general", minted.status === 0, minted.out);
+  if (minted.status !== 0) return;
+  const read = started("history", "general", "--creds", observerCreds, "--follow", "--json");
+  try {
+    check("history follow starts on the joined channel", await until(() => records(read.out).some((r) => r.type === "snapshot"), 30_000), read.out);
+    const openedAt = Date.now();
+    check("a post is stored while history follows", cotal("send", "-c", "general", "history follow membership probe").status === 0);
+    check("the history observer receives the new post", await until(() => records(read.out).some((r) => r.type === "event" && JSON.stringify(r.data).includes("history follow membership probe")), 30_000), read.out);
+    let observed: Census | undefined;
+    const fresh = await until(() => ((observed = census("general"))?.asOf ?? 0) >= openedAt, 30_000);
+    check("a fresh census shows the real join and no history observer", fresh && observed?.members.length === 1
+      && observed.members[0]?.name === "anna" && observed.members[0]?.live === true, observed);
+  } finally {
+    read.child.kill("SIGINT");
+    await read.exited;
+  }
+}
+
 let up = false;
 try {
   const legacySpace = `${SPACE}-legacy`;
@@ -140,6 +161,7 @@ try {
   const general = cotal("channel", "members", "general");
   check("#general lists anna and offers to follow it in the resolved space",
     general.status === 0 && general.out.includes("anna") && general.out.includes(`cotal ch members general --space ${SPACE} --follow`), general.out.slice(-600));
+  await checkHistoryObserver();
 
   const inferredInventory = cotal("channel", "--plain");
   check("the channel inventory suggests the resolved space even when none is passed",
@@ -147,8 +169,9 @@ try {
 
   check("a leading hyphen is valid in a channel name", cotal("channel", "set", "#-audit", "--desc", "Dash-prefixed channel").status === 0);
   const dashShow = cotal("channel", "show", "#-audit", "--plain");
+  const dashHistory = process.platform === "win32" ? '"#-audit"' : "'#-audit'";
   check("channel show spells a dash-prefixed channel as a shell-safe operand",
-    dashShow.status === 0 && dashShow.out.includes("cotal ch members '#-audit' ") && dashShow.out.includes("cotal history '#-audit' "), dashShow.out);
+    dashShow.status === 0 && dashShow.out.includes("cotal ch members '#-audit' ") && dashShow.out.includes(`cotal history ${dashHistory} `), dashShow.out);
   const dashMembers = cotal("ch", "members", "#-audit", "--plain");
   check("the suggested member read succeeds and its follow command keeps the operand safe",
     dashMembers.status === 0 && dashMembers.out.includes(`cotal ch members '#-audit' --space ${SPACE} --follow`), dashMembers.out);
@@ -208,7 +231,8 @@ try {
         && suggestedShow?.status === 0 && suggestedShow.stdout.includes(`Mesh: ${SPACE}`)
         && /Description:\s+General talk/.test(suggestedShow.stdout), { inventory: inventory.out, show: suggestedShow?.out });
     const card = cotal("channel", "show", "archive", ...target, "--plain");
-    const history = card.stdout.includes(`cotal history '#archive' ${scope}`) ? cotal("history", "#archive", ...target, "--json") : undefined;
+    const archiveWord = process.platform === "win32" ? '"#archive"' : "'#archive'";
+    const history = card.stdout.includes(`cotal history ${archiveWord} ${scope}`) ? cotal("history", "#archive", ...target, "--json") : undefined;
     check("the suggested history read uses the inspected space, broker and credential",
       card.status === 0 && history?.status === 0 && history.stdout.includes('"text":"kept"'), { card: card.out, history: history?.out });
     const members = card.stdout.includes(`cotal ch members archive ${scope}`) ? cotal("ch", "members", "archive", ...target, "--plain") : undefined;

@@ -691,14 +691,18 @@ async function movedStackTargetHealth(report: SelectedResult, meshes: StatusResu
   return movedStackComponent("target", [`registered ${address}`, ...(reachable ? ["reachable"] : [])]);
 }
 
-export async function printComponentHealth(selected: Selected, store: StoreWriteObservation | undefined, report: SelectedResult, meshes: StatusResult["meshes"], selectedHint: string | undefined, starting?: string): Promise<void> {
+export async function printComponentHealth(selected: Selected, store: StoreWriteObservation | undefined, report: SelectedResult, meshes: StatusResult["meshes"], selectedHint: string | undefined, starting?: string, recoveryBroker?: number, recoveryMembers?: readonly { role: string; pid: number }[]): Promise<void> {
   section("Component Health");
+  const verified = recoveryMembers ?? (recoveryBroker === undefined ? undefined : [{ role: "broker", pid: recoveryBroker }]);
+  if (verified !== undefined && !report.resolved)
+    return printComponents([{ name: "target", verdict: "refused", facts: ["service health cannot be checked", report.message, ...verified.map((row) => `${row.role} pid ${row.pid}`), ...(selectedHint === undefined ? [] : [selectedHint])] }]);
   if (!selected.ok) {
-    const error = selected.error;
-    const e = isWorkspaceTargetError(error) && error.code === "not-started" && error.details.root !== undefined && !error.details.rootMissing
-      ? unusableStackJournal(error.details.root) ?? error : error;
-    if (isCommandFailure(e) && (e.code === "SCHEMA_INVALID" || e.code === "PERMISSION_DENIED"))
-      return printComponents([{ name: "target", verdict: "refused", facts: [e.code, e.message, ...(e.remedy ? [e.remedy] : [])] }], e.code);
+    const e = selected.error;
+    const journal = isWorkspaceTargetError(e) && e.code === "not-started" && e.details.root !== undefined && !e.details.rootMissing
+      ? unusableStackJournal(e.details.root) : undefined;
+    const refusal = journal ?? (isCommandFailure(e) && (e.code === "SCHEMA_INVALID" || e.code === "PERMISSION_DENIED") ? e : undefined);
+    if (refusal)
+      return printComponents([{ name: "target", verdict: "refused", facts: [refusal.code, refusal.message, ...(refusal.remedy ? [refusal.remedy] : [])] }], refusal.code);
     if (isMeshRegistryError(e))
       return printComponents([{ name: "target", verdict: "refused", facts: ["SCHEMA_INVALID", e.message] }], "SCHEMA_INVALID");
     if (isWorkspaceTargetError(e)) {

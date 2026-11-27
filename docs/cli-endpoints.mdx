@@ -109,6 +109,14 @@ pinned issuer to exchange a fresh IdP proof and reports the current grant return
 bearer. It does not refresh the remote space catalog or connect to the broker. A one-shot command
 has no mesh session, so there is no unread count or connection state to report.
 
+If `--server` matches several registered spaces, `whoami` refuses with `TARGET_AMBIGUOUS` (exit 2).
+The remedy gives a command for each space with the same broker and output flags when the address can
+be printed unchanged. Run one to read that identity without changing the saved selection.
+
+When a folder's registrations compete with an automatically adopted selection, `whoami` reports
+an identity from local records and notes that it cannot check which space a live command would
+target. Pass `--space <name>` to choose the space explicitly.
+
 | Mesh | `identity.kind` | What it may do |
 |---|---|---|
 | Open | `open` | Everything; the broker authenticates nothing |
@@ -525,6 +533,10 @@ Next names a command for each space and keeps the original inventory options. `s
 `endpoint add <name> --file <reference.json>` imports a strict version-1 reference object.
 If space selection is ambiguous and you did not pass `--space`, the import uses the file's
 space only if it matches one of the registered candidates. It does not change the current selection.
+If no local space resolves, pass the file's space with `--space`. For a new local space,
+prepare it with `cotal space create <space> --root <project-directory>` first. The import needs no running broker.
+If a stopped project still records its last broker and space but has no registration, the refusal
+names that space. If it matches the reference, prepare it again from its project folder and retry the import.
 An empty `--file` is refused with `USAGE_INVALID` (exit 1) before the command resolves a space.
 Guided add is available in an interactive terminal. The class, instance pin and credential path
 are checked at their questions. Invalid answers are asked for again without losing earlier answers.
@@ -561,6 +573,7 @@ existing native caller and digest-verified contracts. `ref:<name>` requires a sa
 references first, then uses the native class only when no reference exists. An unreadable or
 invalid reference refuses instead of selecting another target.
 If several spaces match, `endpoint describe` names them and shows how to retry with `--space`.
+Each retry keeps the original options and endpoint target, including a target after `--`.
 If the requested space is not registered, the refusal names it and points to `cotal space`.
 
 A selected reference is disclosed on stderr and in `result.resolution`, with its revision and
@@ -599,6 +612,9 @@ The CLI grammar also names `endpoint watch <target> <record-key-or-topic> [--sin
 The current resolver supplies command contracts, not a verified mapping of these application
 capabilities. This is a CLI integration limit, not a claim that the selected endpoint lacks them.
 No arbitrary subject, pool implementation or remote execution is guessed.
+The suggested `endpoint describe` keeps the original target, space, broker and instance pin.
+If you supplied a credential file or a broker address that cannot be displayed unchanged, the
+refusal tells you to keep the original selection options without printing their values.
 
 `endpoint invoke --handle <private-file>` is also an explicit unsupported boundary, because no
 verified native auth-slot adapter is connected. It opens no file, redeems no handle and publishes no call.
@@ -662,6 +678,10 @@ Unknown and partial results use waiting treatment, not a healthy completion mark
 keeps the same state words without ANSI. The JSON envelope stays on stdout; diagnostics stay on
 stderr. Raw argument objects and arbitrary native detail payloads are not copied into the human
 report. Confirmed history purge acknowledgements remain visible when a later stream fails.
+
+For a pre-execution refusal, the human report shows the responder's reason when available, and
+`--json` carries it in `error.message`. The CLI redacts recognized credential forms, owner IDs and
+request IDs from the reason. The request and responder attribution stay in their usual fields.
 
 
 ## Endpoint class scatters [#endpoint-class-scatters]

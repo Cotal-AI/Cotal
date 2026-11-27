@@ -188,14 +188,15 @@ try {
   // A daemon before 0.166.0 answers discovery with this lifecycle's rows and no lifecycleUid.
   await dlv.durableJoinFor(agentPrincipal, "incident", UID);
   assert.equal((await next.joinChannel("incident")).durable, true, "the new lifecycle joins durably again");
-  const discover = next.fetchMemberships.bind(next);
-  next.fetchMemberships = async () => [{ channel: "incident", generation: 1, activated: true }];
+  const nextBoot = (next as unknown as { bootMemberships: Pick<CotalEndpoint, "fetchMemberships"> }).bootMemberships;
+  const discover = nextBoot.fetchMemberships.bind(nextBoot);
+  nextBoot.fetchMemberships = async () => [{ channel: "incident", generation: 1, activated: true }];
   try {
     await assert.rejects(next.leaveChannel("incident"), /predates lifecycle-aware membership discovery.*restart the daemon at this version/, "an older daemon's answer refuses the leave and names the remedy");
     const hostedMessage = "this space's host runs an older delivery service, so this durable leave was not applied and the channel stays joined; the host must update the delivery service";
     await assert.rejects(next.leaveChannel("incident", hostedMessage), { message: hostedMessage }, "the caller selects the remedy without changing the refusal");
   } finally {
-    next.fetchMemberships = discover;
+    nextBoot.fetchMemberships = discover;
   }
   assert.ok(next.joinedChannels().includes("incident"), "a refused leave keeps the channel joined");
   for (const uid of [UID, nextUid]) {

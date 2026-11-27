@@ -3,6 +3,7 @@ import type { CotalEndpoint } from "@cotal-ai/core";
 import { existsSync, lstatSync, readdirSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { credRenewIntervalMs } from "./credential-renewal.js";
+import { optInLaunchFields } from "./harness-resolution.js";
 import { inlineSnapshotPath } from "./launch.js";
 import { withTimeout } from "./manager-timeout.js";
 import type { Manager, ManagerPreservationPlan, ManagerPreserveFailure, ManagerPreserveOptions, ManagerPreserveResult, ManagerResumeAgent, ManagerResumeInventory } from "./manager.js";
@@ -628,12 +629,14 @@ export class Preservation {
         cwd: launch.cwd,
         model: launch.model,
         variant: launch.variant,
+        modes: launch.modes,
         subscribe: launch.subscribe,
         allowSubscribe: launch.allowSubscribe,
         allowPublish: launch.allowPublish,
         capabilities: launch.capabilities,
         events: launch.events,
         eventPayloads: launch.eventPayloads,
+        ...optInLaunchFields(launch),
         shareTools: launch.shareTools,
         forkSource: launch.forkSource,
         sessionId: launch.sessionId,

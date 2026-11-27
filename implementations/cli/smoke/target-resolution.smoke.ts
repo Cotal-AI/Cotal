@@ -30,7 +30,7 @@
  * Run: pnpm smoke:target-resolution
  */
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { jetstreamManager } from "@nats-io/jetstream";
@@ -40,14 +40,14 @@ import { clean, cotalPty, repoRoot, wait, type Pty } from "./_console-pty.js";
 const home = mkdtempSync(join(tmpdir(), "cotal-target-resolution-"));
 // Set before the workspace is imported: it reads COTAL_HOME on each call.
 process.env.COTAL_HOME = join(home, ".cotal");
-const { findMesh, getCurrent, recordMesh, removeMesh, recordPreparedSpace, removePreparedSpace, resolveOnPath, setCurrent, setAdoptedCurrent, clearCurrent } = await import("@cotal-ai/workspace");
+const { findMesh, getCurrent, meshFile, readCurrentSelection, recordMesh, removeMesh, recordPreparedSpace, removePreparedSpace, resolveOnPath, setCurrent, setAdoptedCurrent, clearCurrent } = await import("@cotal-ai/workspace");
 const { execWords } = await import("../src/lib/exec-words.js");
 const { observeServiceProcess, serviceInstances } = await import("../src/lib/service-instances.js");
 
 const { check, finish } = createSuite();
 const env: Record<string, string> = {};
 for (const [key, value] of Object.entries(process.env)) if (value !== undefined && !key.startsWith("COTAL_") && key !== "FORCE_COLOR" && key !== "NO_COLOR") env[key] = value;
-Object.assign(env, { HOME: home, USERPROFILE: home, COTAL_HOME: process.env.COTAL_HOME, XDG_CONFIG_HOME: join(home, ".config"), COTAL_SKIP_CONNECTOR_SEED: "1", TERM: "xterm-256color" });
+Object.assign(env, { HOME: home, USERPROFILE: home, COTAL_HOME: process.env.COTAL_HOME, XDG_CONFIG_HOME: join(home, ".config"), COTAL_SKIP_CONNECTOR_SEED: "1", DO_NOT_TRACK: "1", TERM: "xterm-256color" });
 const launcher = resolveOnPath("cotal", env) ? "cotal" : "pnpm cotal";
 const COTAL = join(repoRoot, "bin", "cotal.ts");
 const TSX = join(repoRoot, "node_modules", ".bin", process.platform === "win32" ? "tsx.cmd" : "tsx");
@@ -261,8 +261,33 @@ const QUESTION = "Which one?";
     }
   }
   recordMesh({ space: "shared", server: A, root: join(home, "beta"), mode: "open", origin: "manual", ts: new Date(0).toISOString(), unchecked: true });
-  const ambiguous = run(["whoami", "--server", A, "--json"]);
-  check("explicit broker ambiguity names recorded spaces and explains removing --server after use", ambiguous.status === 2 && /multiple spaces recorded/.test(envelope(ambiguous)?.error?.message ?? "") && /remove --server/.test(envelope(ambiguous)?.error?.remedy ?? ""), shown(ambiguous));
+  for (const format of ["--plain", "--json"]) {
+    const args = ["whoami", "--server", A, format];
+    const refused = run(args);
+    const json = format === "--json";
+    const error = envelope(refused)?.error;
+    const next = json ? error?.remedy ?? "" : refused.stderr.split("\nNext\n")[1] ?? "";
+    const retries = Array.from(String(next).matchAll(/`([^`]+)`/g), (match) => match[1]!);
+    const spaces = ["alpha", "shared"];
+    const expected = spaces.map((space) => ` ${args.join(" ")} --space ${space}`);
+    check(`whoami ${format} refuses ambiguity and prints an exact retry for each space`,
+      refused.status === 2 && (json ? error?.code === "TARGET_AMBIGUOUS" : /Code:\s+TARGET_AMBIGUOUS/.test(refused.stderr)) &&
+      /multiple spaces recorded/.test(json ? error?.message ?? "" : refused.stderr) && retries.length === expected.length &&
+      expected.every((command, index) => retries[index]?.endsWith(command)), shown(refused));
+    for (const [index, space] of spaces.entries()) {
+      const retry = retries[index];
+      if (!retry?.endsWith(expected[index]!)) continue;
+      const picked = run(execWords(retry).slice(-args.length - 2));
+      const identity = envelope(picked);
+      const checked = space === "alpha";
+      check(`the printed whoami ${format} retry reads ${space} without selecting a default`,
+        picked.status === (checked ? 0 : 4) && getCurrent() === undefined &&
+        (json ? identity?.target?.space === space && identity?.result?.identity?.kind === "open" && identity?.result?.modeChecked === checked &&
+          (checked || identity?.warnings?.some((warning: { code: string }) => warning.code === "MODE_NOT_CHECKED"))
+          : picked.stdout.startsWith(`Mesh: ${space}\n`) && picked.stdout.includes("the broker authenticates nothing") &&
+            picked.stdout.includes("that was not checked") === !checked), shown(picked));
+    }
+  }
   for (const [serverFlags, format] of [[["--server", A], "--plain"], [[`--server=${A}/`], "-j"]] as const) {
     const args = ["who", ...serverFlags, format, "--all"];
     const refused = run(args);
@@ -280,15 +305,36 @@ const QUESTION = "Which one?";
         (format === "-j" ? envelope(picked)?.target?.space === space : picked.stdout.startsWith(`Mesh: ${space}\n`)), shown(picked));
     }
   }
+  for (const [words, format] of [[["endpoint", "describe"], "--plain"], [["describe"], "--json"]] as const) {
+    const beforeSpace = [...words, "--server", A, format];
+    const refused = run([...beforeSpace, "--", "manager"]);
+    const error = envelope(refused)?.error;
+    const next = error?.remedy ?? refused.stderr.split("\nNext\n")[1] ?? "";
+    const retries = Array.from(String(next).matchAll(/`([^`]+)`/g), (match) => match[1]!);
+    check(`${words.join(" ")} ${format} keeps the endpoint after the delimiter in both exact retries`, refused.status === 2 &&
+      (format === "--json" ? error?.code === "TARGET_AMBIGUOUS" : /Code:\s+TARGET_AMBIGUOUS/.test(refused.stderr)) &&
+      retries.length === 2 && ["alpha", "shared"].every((space, i) => retries[i]?.endsWith(` ${beforeSpace.join(" ")} --space ${space} -- manager`)), shown(refused));
+    for (const [i, space] of ["alpha", "shared"].entries()) {
+      const retry = retries[i];
+      if (!retry?.endsWith(` ${beforeSpace.join(" ")} --space ${space} -- manager`)) continue;
+      const picked = run(execWords(retry).slice(-beforeSpace.length - 4));
+      const receipt = envelope(picked);
+      check(`the printed ${words.join(" ")} retry reaches ${space} without changing the selection`, picked.status === 2 && getCurrent() === undefined &&
+        (format === "--json" ? receipt?.error?.code === "UNSUPPORTED" && receipt?.target?.space === space && receipt?.target?.endpoint === "manager"
+          : picked.stderr.startsWith(`Mesh: ${space}\n`) && /Code:\s+UNSUPPORTED/.test(picked.stderr)), shown(picked));
+    }
+  }
   for (const [args, beforeSpace, afterSpace] of [
     [["history", "fleet-test", "--server", A, "--plain"], `history fleet-test --server ${A} --plain`, ""],
     [["history", "--server", A, "--json", "--grep", "two words", "--", "fleet-test"], `history --server ${A} --json --grep 'two words'`, " -- fleet-test"],
     [["history", "fleet-test", "--server", A, "--follow", "--json"], `history fleet-test --server ${A} --follow --json`, ""],
     [["ps", "--server", A, "--plain", "--wide"], `ps --server ${A} --plain --wide`, ""],
+    [["channel", "--server", A, "--plain"], `channel --server ${A} --plain`, ""],
+    [["ch", `--server=${A}/`, "-j"], `channel '--server=${A}/' -j`, ""],
   ] as const) {
     const refused = run([...args]);
     const follow = args.some((arg) => arg === "--follow");
-    const json = args.some((arg) => arg === "--json");
+    const json = args.some((arg) => arg === "--json" || arg === "-j");
     const records = follow ? refused.stdout.trim().split("\n").map((line) => JSON.parse(line)) : [];
     const error = follow ? records[0]?.data : envelope(refused)?.error;
     const next = error?.remedy ?? refused.stderr.split("\nNext\n")[1] ?? "";
@@ -303,8 +349,11 @@ const QUESTION = "Which one?";
       const retry = retries[index];
       if (!retry?.endsWith(` ${beforeSpace} --space ${space}${afterSpace}`)) continue;
       const picked = run(execWords(retry).slice(-args.length - 2));
+      const channel = args[0] === "channel" || args[0] === "ch";
       check(`the printed ${args[0]} retry reaches ${space} without selecting a default`, getCurrent() === undefined &&
         (args[0] === "ps" ? picked.stderr.startsWith(`Mesh: ${space}\n`) && !picked.stderr.includes("TARGET_AMBIGUOUS")
+          : channel ? picked.status === 0 && (json ? envelope(picked)?.target?.space === space && envelope(picked)?.result?.action === "list"
+            : picked.stdout.includes(`Channels - ${space}\n`))
           : picked.status === 0 && (json ? envelope(picked)?.target?.space === space && envelope(picked)?.target?.channel === "fleet-test"
             : picked.stdout.startsWith(`Mesh: ${space}\n`) && picked.stdout.includes(`#fleet-test of ${space}`))), shown(picked));
     }
@@ -323,6 +372,8 @@ const QUESTION = "Which one?";
     const streams = (await jetstreamManager(nc)).streams;
     await streams.add({ name: chatStream("alpha"), subjects: ["inventory.alpha"] });
     removeMesh("beta");
+    const prepared = run(["space", "create", "planned-upcoming", "--plain"], root);
+    check("prepare the project that holds the unchecked registration", prepared.status === 0, shown(prepared));
     const add = ["space", "add", "upcoming", "--server", A, "--root", root];
     const checked = run([...add, "--yes", "--json"]);
     check("checked registration refuses a space absent from the broker inventory", checked.status === 2 && envelope(checked)?.error?.code === "TARGET_NOT_FOUND", shown(checked));
@@ -341,7 +392,30 @@ const QUESTION = "Which one?";
     check("an explicit selection still targets the unchecked record", selected.status === 0 && envelope(selected)?.target?.space === "upcoming", shown(selected));
     clearCurrent();
 
+    setAdoptedCurrent("alpha");
+    const saved = readFileSync(meshFile("upcoming"), "utf8");
+    const inProject = run(["who", "--plain"], root);
+    check("an unserved project registration does not override the adopted selection",
+      inProject.status === 0 && /^Mesh: alpha$/m.test(inProject.stdout) && /Who's here - alpha/.test(inProject.stdout) &&
+      inProject.stdout.includes('this folder holds the prepared space "planned-upcoming"'), shown(inProject));
+    const named = run(["who", "--space", "upcoming", "--json"], root);
+    check("explicitly naming the unchecked space still reaches it", named.status === 0 && envelope(named)?.target?.space === "upcoming", shown(named));
+    check("project targeting leaves both the unchecked record and the adopted selection unchanged",
+      readFileSync(meshFile("upcoming"), "utf8") === saved && readCurrentSelection()?.space === "alpha" && readCurrentSelection()?.source === "adopted");
+
     await streams.add({ name: chatStream("upcoming"), subjects: ["inventory.upcoming"] });
+    const serving = run(["who", "--json"], root);
+    check("the unchecked project space takes precedence when its broker serves it",
+      serving.status === 0 && envelope(serving)?.target?.space === "upcoming", shown(serving));
+    recordMesh({ ...findMesh("upcoming")!, space: "unserved-alias" });
+    try {
+      const sharedRoot = run(["who", "--json"], root);
+      check("an unserved alias does not block the only served registration in the project",
+        sharedRoot.status === 0 && envelope(sharedRoot)?.target?.space === "upcoming", shown(sharedRoot));
+    } finally {
+      removeMesh("unserved-alias");
+    }
+    clearCurrent();
     const two = run(["who", "--json"]);
     check("an unchecked registration with a live stream stays a candidate", two.status === 2 && /multiple meshes running/.test(envelope(two)?.error?.message ?? "") && /upcoming/.test(envelope(two)?.error?.message ?? ""), shown(two));
 
@@ -355,6 +429,7 @@ const QUESTION = "Which one?";
   } finally {
     clearCurrent();
     removeMesh("upcoming");
+    removePreparedSpace("planned-upcoming");
     recordMesh({ space: "beta", server: B, root: join(home, "beta"), mode: "open", origin: "manual", ts: new Date(0).toISOString() });
     await nc.close();
   }
@@ -861,6 +936,18 @@ const QUESTION = "Which one?";
   const forgot = run(["space", "forget", "gone"], forgotten);
   check("control: a space prepared in a folder and then forgotten", prepared.status === 0 && forgot.status === 0 && existsSync(join(forgotten, ".cotal")), { prepared: shown(prepared), forgot: shown(forgot) });
   const root = realpathSync(forgotten);
+  const file = join(root, "reference.json");
+  writeFileSync(file, JSON.stringify({ schemaVersion: 1, space: "beta", endpoint: "example.offline" }));
+  const add = ["endpoint", "add", "offline", "--file", file, "--json"];
+  const refused = run(add, root);
+  const error = envelope(refused)?.error;
+  check("an import with no local space explains how to use the reference file's space",
+    refused.status === 2 && error?.code === "TARGET_NOT_FOUND" && error.remedy?.includes("--space <space>") &&
+      error.remedy.includes("cotal space create <space> --root <project-directory>"), shown(refused));
+  const retry = run([...add, "--space", "beta"], root);
+  const saved = run(["endpoint", "show", "offline", "--space", "beta", "--json"], root);
+  check("the scoped retry saves the same reference without changing the selection",
+    retry.status === 0 && envelope(saved)?.result?.reference?.endpoint === "example.offline" && getCurrent() === undefined, shown(retry));
   for (const command of [["whoami"], ["spawn", "--dry-run"]]) {
     const json = run([...command, "--json"], forgotten);
     const body = json.status === 2 ? JSON.parse(json.stdout) as { target?: Record<string, unknown> | null; error?: { code?: string; message?: string } } : undefined;

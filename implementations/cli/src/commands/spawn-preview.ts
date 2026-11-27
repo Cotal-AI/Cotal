@@ -1,11 +1,11 @@
 import { realpathSync, statSync } from "node:fs";
 import { hostname } from "node:os";
 import { resolve } from "node:path";
-import { connectorServers, loadCotalConfig, parseAgentFileSource, parseShareSelection, spawnEnvAllow, token, type AgentDef, type Connector, type FlagValues, type ParsedArgs } from "@cotal-ai/core";
-import { CommandFailure, findMesh, isCommandFailure, recordOperationSpace, brokerAddressForDisplay, cachedPreferences, isWorkspaceTargetError, loadLaunchPersonaFile, personaDir, PersonaSourceError, presentationOf, pruneStaleMeshes, resolveAgentType, resolveMeshTarget, resolvePreference, resolveReadsLiveness, targetErrorCode, workspaceErrorParts, writeResult, type MeshTarget, type OutputWarning, type Report } from "@cotal-ai/workspace";
-import { mergeLaunchOptions, parseLaunchOptions } from "@cotal-ai/workspace";
+import { connectorServers, loadCotalConfig, parseAgentFileSource, parseShareSelection, ProjectConfigTrustError, spawnEnvAllow, token, type AgentDef, type Connector, type FlagValues, type ParsedArgs } from "@cotal-ai/core";
+import { CommandFailure, findMesh, isCommandFailure, recordOperationSpace, brokerAddressForDisplay, cachedPreferences, isWorkspaceTargetError, previewPersonaReader, projectTrustForPreview, personaDir, PersonaSourceError, presentationOf, pruneStaleMeshes, resolveAgentType, resolveMeshTarget, resolvePreference, resolveReadsLiveness, targetErrorCode, workspaceErrorParts, writeResult, type MeshTarget, type OutputWarning, type Report } from "@cotal-ai/workspace";
+import { mergeLaunchOptions, parseLaunchModes, parseLaunchOptions } from "@cotal-ai/workspace";
 import { extensionNames, materializeExtension, preflightRuntime } from "../ext-loader.js";
-import { brokenPersonaLink, callerHarness, checkSpawnExpiryTarget, directPersonaPath, missingConnector, missingPersonaFailure, spawnPersona, spawnUsesManager, type PersonaSite } from "../lib/spawn-defaults.js";
+import { brokenPersonaLink, callerHarness, checkSpawnExpiryTarget, directPersonaPath, missingConnector, missingPersonaFailure, nonDirectoryPersonaPath, spawnPersona, spawnUsesManager, type PersonaSite } from "../lib/spawn-defaults.js";
 import { managerPin } from "../lib/manager-choice.js";
 import { unreadablePersona } from "../lib/persona-files.js";
 import { refuseDirectSpawnName, spawnRerun, unsupportedVariantRemedy } from "./spawn-flags.js";
@@ -13,6 +13,14 @@ import { checkHarness, invalidEnvironmentValues } from "./config.js";
 import { DEFAULT_AGENT } from "../lib/default-persona.js";
 import { refuseUnmintableName } from "./spawn-managed-launch.js";
 import type { spawnFlags } from "./spawn.js";
+
+function readPreviewConfig(root: string, target: { space: string; path: string }, trusted: ReturnType<typeof projectTrustForPreview>) {
+  try { return loadCotalConfig(root, trusted); }
+  catch (error) {
+    if (!(error instanceof ProjectConfigTrustError)) throw error;
+    throw new CommandFailure("refused", "PERMISSION_DENIED", error.message, { target });
+  }
+}
 
 type Values = FlagValues<typeof spawnFlags>;
 
@@ -99,12 +107,14 @@ export async function spawnLaunchPreview(args: Pick<ParsedArgs, "positionals"> &
   }
   const path = values.file !== undefined || (values["enrollment-file"] && values.config) ? resolve(ref) : directPersonaPath(root, ref, values.config === undefined);
   let definition: AgentDef;
+  let personaRefusal: string | undefined;
   // A missing product default is what the launch writes from the shipped template, so the preview
   // reads that template and writes nothing.
   let personaWrite: "none" | "shipped-default" = "none";
   let blockedDefault: CommandFailure | undefined;
   const useShippedDefault = ref === "default" && from === undefined && values.config === undefined && values["enrollment-file"] === undefined;
-  try { definition = loadLaunchPersonaFile(path); }
+  const trusted = projectTrustForPreview();
+  try { ({ def: definition, refusal: personaRefusal } = previewPersonaReader("launch", trusted)(path)); }
   catch (error) {
     // A missing persona is refused as the launch refuses it, naming where it was looked for.
     const code = (error as NodeJS.ErrnoException).code;
@@ -124,6 +134,8 @@ export async function spawnLaunchPreview(args: Pick<ParsedArgs, "positionals"> &
       throw unreadablePersona(path, code, { ...target, path }) ?? previewPersonaReadFailure(path, code, { ...target, path });
     }
   }
+  if (personaRefusal) throw new CommandFailure("refused", "PERMISSION_DENIED", personaRefusal, { target: { ...target, path } });
+  const config = readPreviewConfig(root, { ...target, path }, trusted);
   let cwd: string;
   let requestedCwd = values.cwd || ".";
   try {
@@ -150,14 +162,15 @@ export async function spawnLaunchPreview(args: Pick<ParsedArgs, "positionals"> &
     let connector: Connector;
     try { connector = await materializeExtension<Connector>({ kind: "connector", name: harness }); }
     catch (error) { throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", error instanceof Error ? error.message : String(error), { target: { ...target, path } }); }
+    const unavailable = connector.launchUnavailable?.({ resume: values.resume });
+    if (unavailable) throw new CommandFailure("refused", "UNSUPPORTED", unavailable, { target: { ...target, path } });
     if (connector.supportsLaunchValidation) {
-      const config = loadCotalConfig(root);
       try {
         const shareTools = parseShareSelection(values["share-tools"]);
         connector.buildLaunch({
           validateOnly: true, space, name: requestedName, role: values.role ?? definition.role,
           configPath: personaWrite === "none" && !blockedDefault ? path : undefined,
-          model: values.model ?? definition.model, variant,
+          model: values.model ?? definition.model, variant, modes: parseLaunchModes(values.mode),
           launchOptions: mergeLaunchOptions(definition.launchOptions, parseLaunchOptions(values.opt)),
           prompt: values.prompt, resume: values.resume, events: values.events || (!values["no-events"] && !!connector.eventChannel),
           mcpServers: connectorServers(config, harness, shareTools), mcpServersExclusive: shareTools !== undefined,
@@ -180,6 +193,6 @@ export async function spawnLaunchPreview(args: Pick<ParsedArgs, "positionals"> &
 }
 
 function previewPersonaReadFailure(path: string, code: string | undefined, target: object): CommandFailure {
-  const broken = code === "ENOTDIR" ? brokenPersonaLink(path, target) : undefined;
-  return broken ?? new CommandFailure("refused", "PERMISSION_DENIED", `cannot read persona: ${path}`, { target });
+  if (code === "ENOTDIR") return nonDirectoryPersonaPath(path, target);
+  return new CommandFailure("refused", "PERMISSION_DENIED", `cannot read persona: ${path}`, { target });
 }

@@ -23,11 +23,13 @@ extract what they need, so a signature change degrades to "no detail" rather tha
 from __future__ import annotations
 
 import os
-import socket
 import sys
 from typing import Any
 
+from . import approvals, journal, streams
+from .bridge_client import get_client
 from .control_exchange import ClientExchange, ControlConfigError, ExchangeRefused, control_key, socket_dir_problem
+from .transport import dial
 
 _TIMEOUT_S = 2.0
 _warned = False
@@ -67,10 +69,8 @@ def relay(event_name: str, **fields: Any) -> None:
             _warn_once(f"{reason}, so the hook connected to nothing - presence relays are disabled for this session")
         return
     try:
-        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        s = dial(path, _TIMEOUT_S)
         try:
-            s.settimeout(_TIMEOUT_S)
-            s.connect(path)
             exchange = ClientExchange(s, key)
             exchange.open({"event": {"hook_event_name": event_name, **fields}})
             try:
@@ -105,17 +105,50 @@ def on_session_start(*args: Any, **kwargs: Any) -> None:
 
 
 def pre_llm_call(*args: Any, **kwargs: Any) -> None:
+    journal.model_called(str(kwargs.get("platform") or ""), str(kwargs.get("sender_id") or ""), str(kwargs.get("session_id") or ""))
     relay("pre_llm_call")
 
 
 def pre_tool_call(*args: Any, **kwargs: Any) -> None:
     name, inp = _extract_tool(args, kwargs)
+    approvals.tool_started(name, str(kwargs.get("tool_call_id") or ""))
     relay("pre_tool_call", tool_name=name, tool_input=inp)
 
 
+def pre_approval_request(*args: Any, **kwargs: Any) -> None:
+    approvals.approval_requested(str(kwargs.get("session_key") or ""))
+    relay("approval_wait")
+
+
+def post_approval_response(*args: Any, **kwargs: Any) -> None:
+    approvals.ended(get_client(), str(kwargs.get("session_key") or ""), str(kwargs.get("choice") or ""))
+    relay("approval_done")
+
+
 def post_llm_call(*args: Any, **kwargs: Any) -> None:
+    journal.model_answered(str(kwargs.get("platform") or ""), str(kwargs.get("session_id") or ""), kwargs.get("assistant_response"))
     relay("post_llm_call")
 
 
 def on_session_end(*args: Any, **kwargs: Any) -> None:
     relay("on_session_end")
+
+
+# ---- event journal (see journal.py); each record wakes the sidecar's reader -----------------
+
+def journal_wake() -> None:
+    relay("event_journal")
+
+
+def post_api_request(*args: Any, **kwargs: Any) -> None:
+    platform = str(kwargs.get("platform") or "")
+    message = kwargs.get("assistant_message")
+    # The stream closes before the record is written, so none of its text follows the record.
+    stream = streams.response_saved(platform, journal.armed() and journal.has_text(message))
+    if journal.model_response(platform, message, stream):
+        journal_wake()
+
+
+def post_tool_call(*args: Any, **kwargs: Any) -> None:
+    if journal.tool_result(str(kwargs.get("tool_call_id") or ""), kwargs.get("result"), kwargs.get("status")):
+        journal_wake()

@@ -6,7 +6,7 @@ import { join, resolve } from "node:path";
 import { CotalEndpoint, accountFromCreds, DEFAULT_SERVER, DEV_OWNER, injectedSecretStoreIdentity, type DeprovisionResourceAccounting, type IssuedBinding, type IssuedStore, mintLifecycleUid, parsePrincipalKey, principalKey, probeConnect, resolveAuthProvider } from "@cotal-ai/core";
 import { retainConnectorSeat } from "@cotal-ai/workspace";
 import { agentSecretKeyForFile, DEFAULT_SEAT_CAP, findCotalRoot, loadManagerInstanceIdentity, manifestExtensionNames, materializeFromManifest, runtimeInstallHint, spaceKey, userAuthStateDir, workspaceSecretStore, type ManagerInstanceIdentity, type SeatCap } from "@cotal-ai/workspace";
-import type { PersonaEndpoint, RunAdmission, Connector, ControlReply, EpCaller, LaunchSpec, Presence, RuntimeProvider, RuntimeReference, SecretStore, SpaceAuth, StartupOutcome } from "@cotal-ai/core";
+import type { PersonaEndpoint, RunAdmission, Connector, LaunchModes, ControlReply, EpCaller, LaunchSpec, Presence, RuntimeProvider, RuntimeReference, SecretStore, SpaceAuth, StartupOutcome } from "@cotal-ai/core";
 import {
   createRuntime,
   isCustodialRuntime,
@@ -52,6 +52,7 @@ import { withTimeout } from "./manager-timeout.js";
 import { inlineSnapshotPath } from "./launch.js";
 import { authorizeNamedControl } from "./authorize.js";
 import { RunHosting } from "./run-hosting.js";
+import { IdleExit, type IdleExitOptions } from "./idle-exit.js";
 import { rejectionText, attemptCleanup, type CleanupFailure } from "@cotal-ai/core";
 import { readReleasedSeatReference, type SeatRecord } from "./resume.js";
 import { TranscriptReceiver } from "./transcript-receive.js";
@@ -181,6 +182,10 @@ export interface ManagerOptions {
    *  It is deliberately NOT the global ceiling in another spelling: {@link MAX_AGENTS} bounds the
    *  host, this bounds one tenant's share of it, and the two refusals name different remedies. */
   seatCap?: SeatCap;
+  /** Stop once the manager has been idle for `afterMs`: it holds no seat, no spawn or control call
+   *  is in flight, it drives no hosted workflow run, and no preservation or resume is open. The
+   *  clock starts when `start()` returns and restarts whenever any of those appears. Off when absent. */
+  idleExit?: IdleExitOptions;
   /** Remote manager-service prepare material. The participant owns every private seed; the host
    * returned only scoped JWTs. When present, local signer/static trust is forbidden and the
    * manager follows the remote authority path. */
@@ -394,6 +399,7 @@ export interface ManagerResumeAgent {
       | { kind: "manifest"; runId?: string; requested: string; hash: string; configPath: string; configSha256: string; manifestSha256?: string };
     model?: string;
     variant?: string;
+    modes?: LaunchModes;
     /** Kickoff prompt from the persona/manifest launch form; a stale-restart re-submits it. */
     prompt?: string;
     subscribe?: string[];
@@ -403,6 +409,8 @@ export interface ManagerResumeAgent {
     endpoints?: PersonaEndpoint[];
     events: boolean;
     eventPayloads?: boolean;
+    askPermissions?: true;
+    reasoningEvents?: true;
     shareTools?: readonly string[];
     /** Original connector fork source, not a captured id for the currently running host session. */
     forkSource?: string;
@@ -679,6 +687,7 @@ export class Manager {
   protected daemonRenewalLeaseTimer?: ReturnType<typeof setInterval>;
   protected maintenanceState: ManagerMaintenanceState = "active";
   protected lifecycleInFlight = 0;
+  private readonly idleExit: IdleExit | undefined;
   private lifecycleDrainWaiters: Array<() => void> = [];
   protected preservationGeneration = 0;
   protected preservationAttemptId?: string;
@@ -807,6 +816,8 @@ export class Manager {
     config.eventPayloadsWithheld = opts.eventPayloadsWithheld === true;
     config.maxSessions = opts.maxSessions;
     config.seatCap = opts.seatCap ?? DEFAULT_SEAT_CAP;
+    this.idleExit = opts.idleExit && new IdleExit(opts.idleExit, () => this.agents.size === 0 && Object.values(this.pendingWork()).every((n) => n === 0) &&
+      this.maintenanceState === "active" && !this.resumeRequired && !this.leaseStopping && (this.runHosting?.liveCount ?? 0) === 0, () => this.stop());
     config.remoteAuthority = opts.remoteAuthority;
     this.credentialRenewal.remoteExecutorCreds = opts.remoteAuthority?.executorCreds;
     this.credentialRenewal.remoteSupervisorCreds = opts.remoteAuthority?.supervisorCreds;
@@ -1070,7 +1081,7 @@ export class Manager {
 
   start(): Promise<void> {
     if (this.startTask) return this.startTask;
-    const task = this.bootComponent.runStart();
+    const task = this.bootComponent.runStart().then(() => this.idleExit?.arm());
     let wrapped!: Promise<void>;
     wrapped = task.finally(() => {
       if (this.startTask === wrapped) this.startTask = undefined;
@@ -1125,6 +1136,12 @@ export class Manager {
     for (const wake of waiters) wake();
   }
   protected trackDeprovision(a: TeardownTarget, context = ""): void { this.retirement.trackDeprovision(a, context); }
+
+  /** The work a stop would cut short, as `status` reports it in `stopImpact`. `cotal manager stop`
+   *  refuses while any is pending, and the idle clock does not run. */
+  protected pendingWork() {
+    return { lifecycleInFlight: this.lifecycleInFlight, reservedLaunches: this.namesCapacity.reservedCount, retirementsPending: this.retirement.pendingCount, deprovisioningInFlight: this.retirement.inFlightCount, staticReconciliationInFlight: this.staticLifecycle.sweepsInFlight };
+  }
 
   protected async awaitLifecycleDrain(): Promise<void> {
     if (this.lifecycleInFlight === 0) return;
@@ -1215,6 +1232,7 @@ export class Manager {
 
   private async stopOnce(withAgents: boolean): Promise<void> {
     this.leaseStopping = true;
+    this.idleExit?.disarm();
     this.config.shutdownReadiness.abort();
     this.credentialRenewal.stopRetries();
     this.transcripts?.stop();
@@ -1759,7 +1777,7 @@ export class Manager {
   /** {@link HarnessResolution.capabilityRefusal}. */
   protected capabilityRefusal(...args: Parameters<HarnessResolution["capabilityRefusal"]>): ReturnType<HarnessResolution["capabilityRefusal"]> { return this.harnessResolutionComponent.capabilityRefusal(...args); }
   /** {@link SeatLaunch.onceRefusal}. */
-  onceRefusal(connector: Connector, runtime: Runtime, launch: Pick<StartAgentOpts, "once" | "supervise" | "launchOptions" | "prompt">, spawner: string | undefined, hooks: SpawnHooks | undefined): string | undefined { return this.seatLaunch.onceRefusal(connector, runtime, launch, spawner, hooks); }
+  onceRefusal(connector: Connector, runtime: Runtime, launch: Pick<StartAgentOpts, "once" | "supervise" | "launchOptions" | "prompt" | "autoName">, spawner: string | undefined, hooks: SpawnHooks | undefined): string | undefined { return this.seatLaunch.onceRefusal(connector, runtime, launch, spawner, hooks); }
 
   /** {@link HarnessResolution.eventsRefusal}. */
   protected eventsRefusal(...args: Parameters<HarnessResolution["eventsRefusal"]>): ReturnType<HarnessResolution["eventsRefusal"]> { return this.harnessResolutionComponent.eventsRefusal(...args); }

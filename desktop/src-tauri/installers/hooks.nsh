@@ -156,7 +156,8 @@ FunctionEnd
   SetOutPath $INSTDIR
 !macroend
 
-; Tauri's own functions set the bundle AppUserModelID on each shortcut.
+; The desktop shortcut is the template's: silent and passive installs create it, and the finish
+; page's Create desktop shortcut box decides for everyone else.
 !macro NSIS_HOOK_POSTINSTALL
   ${If} $CotalFresh = 1
     CreateDirectory "$LOCALAPPDATA\CotalSetup"
@@ -182,8 +183,37 @@ FunctionEnd
     ${EndIf}
   ${EndIf}
   StrCpy $CotalPrepared 0
+!macroend
+
+; Uninstalling removes the background service this installation registered, through the packaged
+; runtime's own uninstall, before the program files go. An update (/UPDATE) keeps the service.
+; A refusal stops the uninstall, so no task is left running a deleted program.
+!macro NSIS_HOOK_PREUNINSTALL
   ${If} $UpdateMode <> 1
-  ${AndIf} $NoShortcutMode <> 1
-    Call CreateOrUpdateDesktopShortcut
+  ${AndIf} ${FileExists} "$INSTDIR\cotal-desktop.exe"
+    nsExec::ExecToStack /TIMEOUT=300000 '"$INSTDIR\cotal-desktop.exe" --remove-service'
+    Pop $0
+    Pop $1
+    ${If} $0 != "0"
+      DetailPrint "$1"
+      ${IfNot} ${Silent}
+        MessageBox MB_ICONSTOP|MB_OK "Cotal could not remove its background service, so nothing was uninstalled.$\r$\n$\r$\n$1"
+      ${EndIf}
+      SetErrorLevel 21
+      Quit
+    ${EndIf}
+    ; With the service gone, end what still runs from here: the app and any status reader it started.
+    ; Its own running-app check would end only the app, and a reader left holding node.exe keeps it.
+    nsExec::ExecToStack /TIMEOUT=120000 '"$INSTDIR\cotal-desktop.exe" --close-app'
+    Pop $0
+    Pop $1
+    ${If} $0 != "0"
+      DetailPrint "$1"
+      ${IfNot} ${Silent}
+        MessageBox MB_ICONSTOP|MB_OK "Cotal removed its background service but could not close its running programs, so its files were not removed.$\r$\n$\r$\n$1"
+      ${EndIf}
+      SetErrorLevel 21
+      Quit
+    ${EndIf}
   ${EndIf}
 !macroend

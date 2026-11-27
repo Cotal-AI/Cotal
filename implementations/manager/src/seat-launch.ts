@@ -2,7 +2,7 @@ import { accessSync, constants, existsSync, lstatSync, realpathSync, statSync } 
 import { homedir, hostname } from "node:os";
 import { isAbsolute, join, sep } from "node:path";
 import { agentFilePath, assertLifecycleToken, assertValidChannel, DEFAULT_SERVER, digestIdToken, EpEnvelopeError, eventChannel, eventChannelPrincipal, grantOverreach, grantParts, isIssuedCaller, issuedSpawnerStanding, MAX_SCHEDULE_MS, parsePersonaEndpoints, personaDir, personaLinkTarget, principalKey, registry, rejectionText, renderOnceTask, resolveReadAcl, runDriverCaller, shownSpawner, withIssuerSession, type AgentDef, type Connector, type ControlReply, type CotalEndpoint, type DelegatedGrant, type EpCaller, type EpCapability, type GrantOverreach, type InlinePersona, type IssuedStore, type IssuedSubjectPermissions, type LifecycleStateTransport, type RunAdmission, type RunRevocation } from "@cotal-ai/core";
-import { loadLaunchPersonaFile, manifestExtensionNames, PersonaSourceError, resolveAgentType } from "@cotal-ai/workspace";
+import { loadTrustCheckedPersona, manifestExtensionNames, manifestPersonaLaunchOptionsRefusal, PersonaSourceError, resolveAgentType } from "@cotal-ai/workspace";
 import type { KV } from "@nats-io/kv";
 import { inlinePersonaDir } from "./launch.js";
 import { listDirectory } from "./list-dir.js";
@@ -363,10 +363,12 @@ export class SeatLaunch {
 
   /** The refusal for a `once` spawn this manager cannot run as one task: every check is made before
    *  anything is allocated, so a refused spawn leaves nothing behind. */
-  onceRefusal(connector: Connector, runtime: Runtime, launch: Pick<StartAgentOpts, "once" | "supervise" | "launchOptions" | "prompt">, spawner: string | undefined, hooks: SpawnHooks | undefined): string | undefined {
+  onceRefusal(connector: Connector, runtime: Runtime, launch: Pick<StartAgentOpts, "once" | "supervise" | "launchOptions" | "prompt" | "autoName">, spawner: string | undefined, hooks: SpawnHooks | undefined): string | undefined {
     if (!hooks?.onOnce) return "once: a once task rides the spawn action, which this launch door is not";
     if (launch.prompt === undefined || launch.prompt.trim() === "") return "once: needs a prompt, which is the task";
     if (launch.supervise !== undefined) return "once: a once seat is never restarted, so it cannot carry supervise";
+    // The task reaches the seat as a relayed turn, never as a message, so the seat would wait to be labelled forever.
+    if (launch.autoName) return "once: a once seat cannot label itself from its first message (autoName)";
     if (!connector.supportsTurnRelay)
       return `once: the ${connector.name} connector cannot take a once task${connector.turnRelayRefusal ? `: ${connector.turnRelayRefusal}` : ""}`;
     if (connector.onceNeedsConfirmed !== undefined && !runtime.reportsStartupOutcome)
@@ -491,9 +493,14 @@ export class SeatLaunch {
     // file is NOT its authority, so its def (and its agent pin) is deliberately not consulted here —
     // the manifest's own `agent:` field drove the launch object already.
     let def: AgentDef | undefined;
-    if (!opts.resolved) {
+    if (opts.resolved) {
+      const refusal = manifestPersonaLaunchOptionsRefusal(opts.resolved.personaPath, opts.resolved.launchOptions);
+      if (refusal) return { error: refusal };
+    } else {
       try {
-        def = loadLaunchPersonaFile(configPath);
+        const checked = loadTrustCheckedPersona(configPath, "launch");
+        if (checked.refusal) return { error: checked.refusal };
+        def = checked.def;
       } catch (e) {
         return { error: personaPermissionProblem(configPath, e) ?? rejectionText(e), ...(e instanceof PersonaSourceError ? { code: "bad-request" as const } : {}) };
       }

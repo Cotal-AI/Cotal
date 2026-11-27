@@ -116,7 +116,7 @@ export function printRestoreReceipt(restored: PreparedRestore, invokedRoot?: str
   for (const line of leftOutNotes(restored.attemptId, restored.selection, onlyCopy, cleanupRoot, cmd)) console.log(c.yellow(line));
   const journal = readMaintenanceJournal(restored.root);
   if (journal && "restore" in journal && journal.restore.attemptId === restored.attemptId)
-    console.log(c.dim(`next: ${restoreNextStep(journal.state, restored.attemptId, journal, cleanupRoot, cmd)}`));
+    console.log(c.dim(`next: ${restoreNextStep(journal.state, restored.attemptId, journal, { cleanupRoot, cmd })}`));
 }
 
 /** The address of a prepared stack that neither a journal nor a registration records, as after a
@@ -148,7 +148,7 @@ export function restoredBrokerRuns(root: string, attempt: string, pid: number, m
  *  out, cleanup deletes that store only with `--discard-history`. */
 function retireRestore(attempt: string, leftOut: string | undefined): string {
   return leftOut
-    ? `\`cotal backup cleanup-fallback ${attempt} --yes --discard-history\`, which deletes the previous store and the ${leftOut} only it holds`
+    ? `\`cotal backup cleanup-fallback ${attempt}\` only if you choose to discard the ${leftOut} held only in the previous store (deletion requires --discard-history)`
     : `\`cotal backup cleanup-fallback ${attempt} --yes\``;
 }
 
@@ -651,6 +651,7 @@ export async function completeResumeActivation(
   server: string,
   heldLock?: MaintenanceLock,
   retireBroker?: () => void,
+  waitForRestoreStop?: () => Promise<void> | undefined,
 ): Promise<void> {
   if (!attemptId) return;
   const ordinary = pendingOrdinaryResumes.get(attemptId);
@@ -697,12 +698,14 @@ export async function completeResumeActivation(
   const auth = await resumeControlAuth(pending.root, pending.mode);
   const readinessDeadline = Date.now() + 20_000;
   for (;;) {
+    await waitForRestoreStop?.();
     const ready = await askManager(cliControl, pending.space, server, "ps", undefined, auth, "any", 2_000);
     // Wait only while nothing ANSWERS (the manager is still coming up). Any answer, including a
     // refusal, ends the wait: a refusal will not heal by waiting, and the resume call right after
     // this fails loud on it with its own message.
     if (!ready.unanswered) break;
     if (Date.now() >= readinessDeadline) {
+      await waitForRestoreStop?.();
       const why = ready.error ?? "no manager answered within the readiness deadline";
       markPendingResumeDegraded(attemptId, why, heldLock);
       throw new Error(why);
@@ -718,10 +721,13 @@ export async function completeResumeActivation(
       userAuth ??= await userManagerAuth(pending.space);
       return await userAuth();
     } catch (e) {
-      if (degrade) markPendingResumeDegraded(attemptId, e instanceof Error ? e.message : String(e), heldLock);
+      if (!degrade) throw e;
+      await waitForRestoreStop?.();
+      markPendingResumeDegraded(attemptId, e instanceof Error ? e.message : String(e), heldLock);
       throw e;
     }
   };
+  await waitForRestoreStop?.();
   const resumed = await askManager(
     cliControl,
     pending.space,
@@ -737,6 +743,7 @@ export async function completeResumeActivation(
     "any",
     10 * 60 * 1000,
   );
+  await waitForRestoreStop?.();
   if (!resumed.ok) {
     const detail = resumed.data ? ` (${JSON.stringify(resumed.data)})` : "";
     const message = `${resumed.error ?? "retained-agent resume failed"}${detail}`;
@@ -772,6 +779,7 @@ export async function completeResumeActivation(
       "any",
       40_000,
     );
+    await waitForRestoreStop?.();
     if (!committed.ok) {
       const message = committed.error ?? "manager resume commit failed";
       markPendingResumeDegraded(attemptId, message, heldLock);

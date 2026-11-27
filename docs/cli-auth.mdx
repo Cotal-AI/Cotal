@@ -109,7 +109,8 @@ so a preserved same-label persona cannot add grants the old credential did not h
 file of that name that cannot be read as a persona refuses the mint `SCHEMA_INVALID`, exit 1, even
 when the flags name every grant. The mint refusal does not print file values or parser text.
 It names the file and `cotal persona show <name> --space <space>` to inspect it. A role from the file that is not one word
-of letters, digits, `_` and `-` refuses the same way, naming `cotal persona edit <name> --space <space>`. With
+of letters, digits, `_` and `-` refuses the same way, naming `cotal persona edit <name> --space <space>`.
+These persona refusals leave the `--out` directory tree unchanged. With
 `--identity` naming an agent credential this space issued, the new credential keeps that
 credential's read channels, post channels and role in place of the persona's, and each flag still
 replaces its own grant. The receipt lists the grants as May read, May post and Role, marking those
@@ -341,6 +342,9 @@ space's grant ledger, the refusal names the operator's `cotal actor grant` comma
 Signing in as a different account at the same provider removes the previous account's discovered
 spaces and deletes their sentinel credential files; manual registrations and their files stay. A
 file that cannot be deleted is named, and the login exits 4 (`OPERATION_PARTIAL`) after signing in.
+The previous account's resumable conversation approvals stay active at their space authorities until
+that account signs in again and runs `cotal logout` or revokes them there, and `cotal login` prints
+how many remain.
 After a login, every command on that mesh works under your identity: each connect takes a fresh IdP
 proof, exchanges it locally for a short-lived bearer, and is authorized against the actor
 ledger at connect time. A rate-limited `/token` read retries once when the IdP supplies a valid
@@ -355,7 +359,10 @@ The exchange or Manager operation that consumes the proof is never replayed by t
 A provider that cannot be reached, or that stops answering, refuses with
 `DEPENDENCY_UNAVAILABLE` (exit 2) and caches no session. `logout` revokes the IdP session, clears
 its cache, and removes only that
-account's discovered registry entries. See
+account's discovered registry entries. Logout does not enumerate open terminal sessions or
+send their detach frames. Those session grants stay in the attach process, not the login cache.
+Detach the terminal to end its session. Signing out at the provider on another machine also
+does not close an admitted terminal connection. See
 [identity & auth](identity-and-auth.mdx).
 
 
@@ -533,7 +540,11 @@ lifecycle UID the mint reports.
 
 Each file `auth mint --out` wrote for the space from this root and that is still there is listed
 under Exported credential files, and in `result.exported`, with its state and expiry. These rows
-are not findings. A file missing its user seed block is unreadable even if its JWT still parses.
+are not findings. On POSIX, doctor reports a symbolic link at the recorded export path as unreadable
+without following it. Restore the original private regular file at that path in place of the link.
+If an export you own is unreadable because its mode lacks owner read permission, doctor names
+`chmod 600 <file>` to restore access without replacing the credential.
+A file missing its user seed block is unreadable even if its JWT still parses.
 Restore the complete file, or use the replacement mint the report names. If the JWT claims cannot
 be read, the report cannot determine the original grants. Restore the complete file or confirm the
 intended grants before minting a replacement to a new private path. An expired file is an
@@ -597,10 +608,11 @@ flow requires approval and refuses `--no-input` before requesting a device sessi
 Bare `logout` chooses among cached providers. A single cached provider is unambiguous; scripts
 with multiple providers must select one with `--idp`. `logout --json` and `--plain` report the
 same result. No cached session is a local no-op, not proof that all provider sessions are gone.
-Revocation must return before local cleanup. If revocation is unconfirmed the login is retained
+Sign-out first attempts to retire resumable conversations at their spaces. Provider revocation
+must return before local login and registry cleanup. If revocation is unconfirmed the login is retained
 for retry, and the refusal names `--local`; a later cleanup failure is partial and keeps the
 confirmed server outcome. `logout --local` clears this machine's cached login and that account's
-discovered registry entries without contacting the provider, for a provider that is down or does
+discovered registry entries without asking the provider to revoke the session, for a provider that is down or does
 not confirm sign-out. The provider session stays valid until it expires or is revoked at the
 provider, and the receipt says so. `logout` does not seed or refresh connectors, so a connector
 install problem does not keep the cached login.
@@ -699,9 +711,21 @@ static mesh: its broker footprint, then its files and directory. When the broker
 keeps them. Each provision also retires those directories whose owning process has exited. For a
 signed-in identity, `retire` keeps the record until the mesh confirms retirement, and names the
 mesh's phase while it is pending. A request still pending is dropped.
+For a space that supports resume, the stock connector uses the OS machine identity and a device
+key to derive the actor secret from the saved conversation proof. With the default
+layout a backup of the Cotal home includes the proof and key. Together with the original public OS
+machine identity, those files can derive the actor credential for the ordinary exchange until it
+is revoked. Protect the backup as a credential. Disconnect conversations you no longer use. An
+approval can last until disconnect, sign-out or revocation, with no idle expiry on the client.
+`cotal logout` attempts to retire the account's resumable conversations before clearing its login
+and registrations. It names any retirement it cannot confirm. Resume requires an unexpired local
+sign-in for the account that requested the approval. `cotal meshes rm` and `cotal space forget`
+leave the resumable identities live at their authorities.
+
 `cotal app-identity reap` retires the selected mesh's saved conversations whose server process no
-longer exists. The connector runs it after each signed-in connection, so a connection never waits
-for that cleanup. Like `agent-bearer`, it skips the connector-seed boot gate.
+longer exists, except when they hold an approval the space supports resuming. The connector runs it
+after each signed-in connection, so a connection never waits for that cleanup. Like `agent-bearer`,
+it skips the connector-seed boot gate.
 
 
 ## auth revoke-credential [#auth-revoke-credential]

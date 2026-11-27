@@ -4,7 +4,7 @@
 import { spaceDeletionStreams } from "./space-deletion-targets.js";
 import { BROKER_USER_INFO_SUBJECT } from "./broker-identity.js";
 import { spacePrefix, chatSubject, principalKey, unicastSubject, anycastSubject, controlServiceSubject, CONTROL_DELIVERY_ADMIN, chatStream, presenceBucket, channelBucket, assertLifecycleToken, membershipBucket, deliveryBucket, managerBucket, MANAGER_LEASE_KEY, MANAGER_RENEWAL_LEASE_KEY, livenessServeFilter, livenessReplyGrant, isTransferStream } from "./subjects.js";
-import { epCallerGrantRows, epServeGrantRows, baselineCallerCapabilities, spawnCallerCapabilities, runCallerCapabilities, epRequestGrantRows, operatorInstrumentCapabilities, personSeatCapabilities, instanceOnlyManagerCapabilities, epDescribeAllGrantRow, BASELINE_LIFECYCLE_ENDPOINT, MANAGER_VITALS_COMMAND, MANAGER_VITALS_SCOPE, type EpCapability } from "./endpoint-grants.js";
+import { epCallerGrantRows, epServeGrantRows, baselineCallerCapabilities, spawnCallerCapabilities, runCallerCapabilities, epRequestGrantRows, operatorInstrumentCapabilities, personSeatCapabilities, instanceOnlyManagerCapabilities, epDescribeAllGrantRow, epPrincipalOwnerGrantRows, BASELINE_LIFECYCLE_ENDPOINT, MANAGER_VITALS_COMMAND, MANAGER_VITALS_SCOPE, type EpCapability } from "./endpoint-grants.js";
 import { assertServeGrantMintable } from "./endpoint-service.js";
 import { effectsBindGrants, poolOwnerBindGrants, epAuthBucket, epcStreamName } from "./endpoint-binding.js";
 import { epCallerReplyFilter, assertGeneration, isIssuedCaller, type EpCaller, type IssuedCaller } from "./endpoint-subjects.js";
@@ -28,6 +28,19 @@ const SPAWN_VIEW_READS = Object.freeze(["status", "models", "resolve-cwd", "list
  * resolves a seat's name before every seat command, and `ps` lists their agents. The Manager bounds
  * both to the caller's owner unless the caller holds admin. */
 const PERSON_VIEW_READS = Object.freeze(["inspect", "ps"] as const);
+
+/** The person's caller of their agents' `agent` endpoints on a static space (SPEC 13.21): its inbox,
+ *  the `owner` row for each command the agent cluster admits with that word, and the reply read. It
+ *  holds no presence, channel or serve row. No agent mint carries these rows, and the auth callout
+ *  never mints this profile: a signed-in person holds them from an interactive ledger row. */
+export function agentCallerPermissions(space: string, pr: MintPrincipal): Record<string, unknown> {
+  if (pr.readerId !== undefined)
+    throw new Error("permissionsFor(agent-caller): only a static mint makes it; a signed-in person calls their agents from an interactive ledger row (SPEC 13.21)");
+  if (!pr.lifecycleUid)
+    throw new Error("permissionsFor(agent-caller): a lifecycleUid is required: the caller rows name it (SPEC 13.21)");
+  const own = epPrincipalOwnerGrantRows(space, { owner: pr.owner, actor: pr.actor, uid: assertLifecycleToken(pr.lifecycleUid) });
+  return { pub: { allow: own.pub }, sub: { allow: [`_INBOX_${pr.connId}.>`, ...own.sub] } };
+}
 
 /** One seat's manager control view. It carries no agent messaging or delivery surface, and every
  * manager request, including describe, is pinned to one exact registered instance. */

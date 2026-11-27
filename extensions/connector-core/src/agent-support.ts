@@ -1,7 +1,8 @@
 import { hostname } from "node:os";
-import { type DmDurableMissingError, type Presence } from "@cotal-ai/core";
+import { AGENT_LABEL_META_KEY, AGENT_NAMING_META_KEY, type DmDurableMissingError, type Presence } from "@cotal-ai/core";
 import { eventPlaneArmed, type AgentConfig } from "./config.js";
 import type { CommandDispatcher } from "./agent-commands.js";
+import type { AgentNaming } from "./agent-naming.js";
 
 /** Grace for a mesh op issued while the link is still coming up. `start()` deliberately returns
  *  immediately so the connector's MCP surface boots while the broker is absent — which means a
@@ -17,8 +18,9 @@ export const CONNECT_GRACE_MS = 10_000;
 export const EVENTS_META_KEY = "ai.cotal.events";
 
 /** The display-only `AgentCard.meta` for a session. Agent-file metadata is preserved, then
- *  connector-owned fields are overlaid so files cannot spoof the hosting harness. */
-export function buildMeta(config: AgentConfig, processCwd: boolean, eventsArmed?: boolean): Record<string, string> | undefined {
+ *  connector-owned fields are overlaid so files cannot spoof the hosting harness. `naming` shows the
+ *  seat's labelling from its first message as pending. */
+export function buildMeta(config: AgentConfig, processCwd: boolean, eventsArmed?: boolean, naming?: boolean): Record<string, string> | undefined {
   const meta: Record<string, string> = { ...(config.meta ?? {}) };
   if (config.model) meta.model = config.model;
   if (config.variant) meta.variant = config.variant;
@@ -35,6 +37,11 @@ export function buildMeta(config: AgentConfig, processCwd: boolean, eventsArmed?
   // Whether the session arms its event plane, from the predicate the emitting connectors branch on.
   // Overlaid with the other connector-owned keys, so an agent file cannot declare it. Advisory.
   meta[EVENTS_META_KEY] = (eventsArmed ?? eventPlaneArmed(config)) ? "on" : "off";
+  // Only the seat's own naming writes these keys, so an agent file can neither hold a seat at pending
+  // nor give it a label.
+  if (naming) meta[AGENT_NAMING_META_KEY] = "pending";
+  else delete meta[AGENT_NAMING_META_KEY];
+  delete meta[AGENT_LABEL_META_KEY];
   // Snapshot the connector process directory when the session is constructed. This is display
   // metadata, not a model harness's later shell directory or a routing/authorization input. A
   // connector whose process directory is not the session's leaves it unknown until the harness
@@ -61,6 +68,9 @@ export interface MeshAgentOptions {
   /** Lists and starts the harness commands and skills this agent's `agent` endpoint offers. Without
    *  one, `commands` answers `supported: false` and `command` is refused. */
   commands?: CommandDispatcher;
+  /** How the connector labels a seat launched with `COTAL_AUTO_NAME` from its first message (SPEC
+   *  13.22). Without it such a seat shows no label and never shows `ai.cotal.naming`. */
+  naming?: AgentNaming;
 }
 
 /** Host-authorized participation for one native personal connection. The connector validates the

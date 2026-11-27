@@ -1,6 +1,6 @@
 /** Space discovery stays in the daemon, next to the sign-in that authorizes it. */
 import { prepareCatalogTargets } from "@cotal-ai/cli";
-import { readMeshRegistry } from "@cotal-ai/workspace";
+import { readMeshRegistry, withProjectTrustMigration } from "@cotal-ai/workspace";
 import { listIdpAccounts } from "@cotal-ai/auth";
 import { isDaemonSpaceName, type DaemonSpaces } from "./protocol.js";
 
@@ -9,7 +9,7 @@ export async function desktopSpaces(sessionDir: string, refresh: boolean): Promi
   let collisions = 0;
   let failedProviders: string[] = [];
   if (refresh) {
-    const { results, diffs } = await prepareCatalogTargets({ sessionDir, force: true });
+    const { results, diffs } = await withProjectTrustMigration(true, false, () => prepareCatalogTargets({ sessionDir, force: true }));
     failedProviders = results.filter((result) => result.state === "failed").map(result => result.account.idpUrl);
     const failures = failedProviders.length;
     collisions = diffs.reduce((count, diff) => count + diff.collisions.length, 0);

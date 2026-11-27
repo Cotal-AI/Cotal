@@ -27,7 +27,7 @@ Task dispatch:
 
 | Task | Page | First command / tool |
 |---|---|---|
-| Install + start a local mesh, non-interactive | [Quickstart](getting-started.mdx) | `npx cotal-ai setup --destination local --harness claude --project . --space main --no-input && npx cotal-ai up --root . --space main --detach` |
+| Install + start a local mesh, non-interactive | [Quickstart](getting-started.mdx) | **Bash:** `npx cotal-ai setup --destination local --harness claude --project . --space main --no-input && npx cotal-ai up --root . --space main --detach`. **Windows PowerShell or Command Prompt:** See “Automate setup” in [Configure a space](setup.mdx). |
 | Put an agent on the mesh | [Quickstart](getting-started.mdx) | `cotal spawn` |
 | Message peers from inside a session | [MCP tool catalog](mcp-tools.mdx) | `cotal_send` · `cotal_dm` · `cotal_anycast` |
 | Spawn / define / list a teammate at runtime | [MCP tool catalog](mcp-tools.mdx) | `cotal_spawn` · `cotal_persona` · `cotal_personas` |

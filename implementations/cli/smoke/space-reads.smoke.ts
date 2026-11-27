@@ -48,7 +48,7 @@ process.on("exit", () => rmSync(home, { recursive: true, force: true }));
 const run = (args: string[], extraEnv: Record<string, string> = {}, cwd = home) => {
   const options = {
     cwd,
-    env: { ...HOST_ENV, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: xdgConfigHome, XDG_RUNTIME_DIR: xdgRuntimeDir, COTAL_HOME: cotalHome, COTAL_SKIP_CONNECTOR_SEED: "1", ...extraEnv },
+    env: { ...HOST_ENV, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: xdgConfigHome, XDG_RUNTIME_DIR: xdgRuntimeDir, COTAL_HOME: cotalHome, COTAL_SKIP_CONNECTOR_SEED: "1", DO_NOT_TRACK: "1", ...extraEnv },
     encoding: "utf8" as const,
     timeout: 120_000,
   };
@@ -81,6 +81,29 @@ function saveDormantBroker(space: string, project: string): string {
   const revision: unknown = added.env?.result?.revision;
   if (added.status !== 0 || typeof revision !== "string") throw new Error(`could not save the dormant broker fixture: ${JSON.stringify(shown(added))}`);
   return revision;
+}
+
+function checkRunningSpaceSearchPermission(space: string, project: string): void {
+  if (process.platform === "win32" || process.getuid?.() === 0) return;
+  const control = join(project, ".cotal");
+  chmodSync(control, 0o600);
+  try {
+    accessSync(project, constants.X_OK);
+    const plain = run(["space", "show", space, "--plain"]);
+    const denied = json(["space", "show", space]);
+    const remedy = "Restore search permission before retrying.";
+    check("plain space show preserves broker reachability and asks to restore control directory access",
+      plain.status === 0 && /broker: +reachable/.test(plain.stdout) && plain.stderr.includes(control) && plain.stderr.includes(remedy) &&
+      !plain.stdout.includes("folder was moved or deleted") && !plain.stdout.includes("down --space"), shown(plain));
+    check("JSON space show warns about denied control directory lookup without marking the root gone",
+      denied.status === 0 && denied.env?.result?.check === "reachable" && denied.env.result.rootGone === false &&
+      denied.env.warnings.some((w: { code: string; target: { path?: string }; message: string }) =>
+        w.code === "PERMISSION_DENIED" && w.target.path === control && w.message.includes(remedy)), shown(denied));
+  } finally { chmodSync(control, 0o700); }
+  const restored = json(["space", "show", space]);
+  check("restoring search permission clears the warning without restarting the broker",
+    restored.status === 0 && restored.env?.result?.check === "reachable" && restored.env.result.rootGone === false &&
+    restored.env.warnings.length === 0, shown(restored));
 }
 
 // An implicit config scope outside a project requires a running broker.
@@ -574,6 +597,14 @@ recordMesh({ space: "gamma", server: CATALOG, root, mode: "user", origin: "catal
   const prepared = run(["space", "create", "hint-live"], {}, project);
   check("rig: create prepares the hint's project root", prepared.status === 0, shown(prepared));
   try {
+    const withUnknown = json(["space", "show", "hint-live", "--wibble"], project);
+    const corrected = json(["space", "show", "hint-live"], project);
+    check("space show tells you to drop an unknown option and keep the supplied name",
+      withUnknown.status === 1 && withUnknown.stderr === "" && withUnknown.env?.outcome === "refused"
+      && withUnknown.env.error?.code === "USAGE_INVALID" && withUnknown.env.error.message === "Unknown option '--wibble'"
+      && withUnknown.env.error.remedy === "drop the unknown option"
+      && corrected.status === 0 && corrected.stderr === "" && corrected.env?.result?.space === "hint-live",
+      { withUnknown: shown(withUnknown), corrected: shown(corrected) });
     setCurrent("alpha");
     const selection = json(["use"], project);
     check("bare use reports the prepared folder without changing the selection or target", selection.status === 0 && selection.env?.target?.space === "alpha" && selection.env?.result?.current === "alpha" && selection.env?.result?.folder === "hint-live" && getCurrent() === "alpha", shown(selection));
@@ -606,6 +637,7 @@ recordMesh({ space: "gamma", server: CATALOG, root, mode: "user", origin: "catal
     check("a prepared root offers another folder, not creation in this folder", list.status === 0 && otherHint.test(list.stdout) && !localHint.test(list.stdout), shown(list));
     const started = run(["up", "--no-manager", "--server", `nats://127.0.0.1:${await freePort()}`], {}, project);
     check("rig: the prepared space starts a real local broker", started.status === 0, shown(started));
+    if (started.status === 0) checkRunningSpaceSearchPermission("hint-live", project);
     const used = run(["use", "hint-live"]);
     check("rig: this root's space is also selected", used.status === 0, shown(used));
     for (const args of [["space", "--plain"], ["space"]]) {

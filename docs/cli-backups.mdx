@@ -45,8 +45,9 @@ there they refuse `CONFLICT` (exit 2), name the address and leave the cut unchan
 private attempt clone, and opens only that clone on a random loopback bootstrap broker with an
 independent parent/deadline watchdog. A bootstrap broker that does not accept connections within
 15 seconds fails the command. Each maintenance-login reload waits for the broker's acknowledgement
-for up to 15 seconds, bounded by the operation deadline. A rejection, broker exit or missing
-acknowledgement fails the command before the next phase receives its login.
+for up to 15 seconds, bounded by the operation deadline. On Windows, the CLI requests the reload
+through a dedicated login on the isolated broker that cannot access the backup data. A rejection,
+broker exit or missing acknowledgement fails the command before the next phase receives its login.
 Creation returns one JSON/plain receipt after cleanup.
 A published artifact plus incomplete cleanup is partial and retains the artifact and original
 attempt; it is not a reason to repeat creation blindly. It validates the canonical stream and pull-consumer inventory,
@@ -54,9 +55,8 @@ writes native snapshots with consumers excluded, and stores conservative contigu
 checkpoints separately. The presence bucket is memory-backed, so it does not survive the cut and
 the clone may lack it. Every other stream must be present. The original store is never opened by
 the backup broker, and the stack is not restarted implicitly. Artifact destinations must not overlap
-the preserved source or maintenance
-attempt tree. Restore artifacts and targets likewise cannot nest inside or contain each other, the
-preserved source, or the maintenance attempt tree.
+the preserved source or maintenance attempt tree. A restore target cannot overlap the artifact or
+the maintenance attempt tree. It can overlap the preserved source only by replacing it at the same path.
 
 `backup create` checks its preconditions before it claims the cut or creates any maintenance state.
 If it receives an option it does not accept, such as `--yes`, it names the option and asks you to remove it.
@@ -70,16 +70,21 @@ refuses and names that state and its space. A create during a restore that still
 to wait for it. A create that finds the root's maintenance lock held, such as by another
 `backup create`, names the operation that holds it, its pid and since when it has held the lock.
 Neither refusal journaled anything, so it names no attempt of its own. A destination that already exists is a `CONFLICT`
-refusal, because create writes only a new directory. A destination whose folder does not exist
-refuses `TARGET_NOT_FOUND` (exit 2) and names that folder; create makes only the artifact's own
-folder. A destination check that finds a non-directory parent (`ENOTDIR`) or a symbolic-link loop
-(`ELOOP`) refuses `USAGE_INVALID` (exit 1), naming the destination and its parent. Choose a destination
+refusal, because create writes only a new directory. If an otherwise eligible destination's parent
+does not exist, create refuses `TARGET_NOT_FOUND` (exit 2) and names that parent. Create makes only
+the artifact's own folder. A destination check that finds a non-directory parent (`ENOTDIR`) or a
+symbolic-link loop (`ELOOP`) refuses `USAGE_INVALID` (exit 1), naming the destination and its parent. Choose a destination
 with a directory parent; no attempt was started and the preservation journal is unchanged.
 A destination that overlaps the maintenance attempt directory refuses `USAGE_INVALID` (exit 1).
-Choose a destination outside that directory. The refusal does not start a backup or change a ready cut.
+Choose a destination outside that directory. The same refusal covers the maintenance journal
+directory `.cotal/maintenance/v1`, the lock path `.cotal/maintenance/lock.json`, and the lock
+recovery path `.cotal/maintenance/lock-reaper.json`, including a destination that is either lock
+path. A backup stored directly under `.cotal/maintenance`, beside those paths, is still accepted.
+The refusal does not start a backup or change a ready cut.
 A destination inside the preserved store refuses `USAGE_INVALID` (exit 1). So does one
 inside a path `clean all` removes, such as `.cotal/auth` or the space's `.cotal/space.<hex>`
-folder, because that cleanup would remove the backup with them. If this account cannot write or
+folder, because that cleanup would remove the backup with them. For either refusal, choose another
+location even if the destination's parent does not exist. If this account cannot write or
 search the destination's parent folder, create refuses `PERMISSION_DENIED` (exit 2) and names
 that folder without changing the preserved cut. Next suggests `chmod u+w` for missing write
 access or `chmod u+x` for missing search access on the parent, with a shell-quoted path when it can
@@ -88,9 +93,10 @@ A `--store-dir` that is not the cut's preserved store, such as an empty folder,
 refuses `CONFLICT` (exit 2) and names both stores. A process that listens at the cut's recorded
 address refuses `CONFLICT` (exit 2), as `backup restore` and a resuming `up` refuse it, and its Next
 says to stop the process that listens there and run the same `backup create` again. Retry commands
-quote the destination and any `--store-dir` path for a POSIX shell when both can be displayed
-unchanged. Otherwise, Next asks you to rerun your original command. Run either from the same
-project folder. Any other refusal or failure shows the check's own sentence as its native detail.
+quote the destination and any `--store-dir` path for POSIX shells, or for PowerShell and `cmd.exe`
+on Windows, when both paths can be displayed and copied unchanged. Otherwise, Next asks you to
+rerun your original command. Run either from the same project folder. Any other refusal or failure
+shows the check's own sentence as its native detail.
 A failure that removed what it wrote leaves the preserved cut ready, and its Next names the same
 `backup create` to run again once that cause is fixed.
 A create that runs out of disk space (`ENOSPC`) or quota (`EDQUOT`) after it claims the cut removes
@@ -186,8 +192,11 @@ removes only its unchanged retained old-store identity; it never removes the res
 It removes that store by its store entries, as `clean store` does. When the old store also holds
 anything else, such as a file you put in a custom store directory or in the fallback folder, its
 `--dry-run` names those entries, and the cleanup refuses `CONFLICT` (exit 2), names them and deletes
-nothing; move them out and run it again. A restore into the preserved store's own path moves that
-store aside whole, so it refuses `CONFLICT` (exit 2) the same way before anything moves.
+nothing. Move those entries out before retrying. The retry includes `--discard-history` only if
+it was given in the original command. If the store holds the only copy of data the restore left
+out, the refusal tells you to keep that store unless you choose to discard the data.
+A restore into the preserved store's own path moves that store aside whole, so it refuses
+`CONFLICT` (exit 2) the same way before anything moves.
 A restore made with `--accept-missing-source` replaced a missing source and retains no old store.
 Run `cotal backup cleanup-fallback <attempt> --yes` to retire its journal without removing a store.
 A later `down --preserve-state` then
@@ -212,11 +221,15 @@ or process kill is supplied.
 A restore's full attempt id has the form `restore-<uuid>`. `backup recover` also takes an
 interrupted create's `backup-<uuid>`, as described above. `cotal status` shows the attempt a root
 holds under Maintenance, with its state and next step. That step includes `--discard-history` when
-the retained store holds data the restore left out. For a registry restore with no retained store,
+describing the consent needed to delete data the restore left out. The command it prints in that
+case previews cleanup. For a registry restore with no retained store,
 it says that chat and DM history and workflow runs start empty. The legacy `clean restore-fallback` also refuses a
 matching pre-commit attempt without deleting anything and points to `backup recover`. A refusal for
 the wrong state names the next step for the recorded one. A completed `cleanup-fallback` retires the
-journal. When the current root holds no restore attempt, cleanup refuses with `TARGET_NOT_FOUND`
+journal. If the attempt ID does not match an active restore that retained data, the
+`TARGET_NOT_FOUND` remedy previews cleanup for the recorded attempt. It carries an explicitly given
+`--discard-history` only on that read-only preview, not on a deletion command for a different
+attempt. When the current root holds no restore attempt, cleanup refuses with `TARGET_NOT_FOUND`
 and asks you to check that you are in the original project folder. The refusal does not confirm that
 cleanup already ran.
 
@@ -258,8 +271,8 @@ the age difference alone. If the check finds additional state or cannot rule it 
 `NEWER_HISTORY_NOT_RESTORED` and cleanup still requires `--discard-history`.
 When the store a restore replaced also held another account's streams, the receipt says they are not
 restored and names the accounts in `otherAccounts`. That is an `OTHER_ACCOUNTS_NOT_RESTORED` warning,
-or the warning above when the restore also left out history or workflow runs, and its next step
-includes `--discard-history` as well. `previousStore` names the store a restore set aside whenever
+or the warning above when the restore also left out history or workflow runs. Deleting the previous
+store requires `--discard-history` in either case. `previousStore` names the store a restore set aside whenever
 that store holds the only copy of something the restore left out, and is null otherwise. A restore
 made by an earlier release recorded no other accounts. For it, `status`, the cleanup preview and
 the cleanup read them from the store it set aside while that store is still the one the restore
@@ -297,15 +310,19 @@ create it. Restore needs the stopped preserved cut from `down --preserve-state`.
 maintenance journal refuses before the restore takes its
 maintenance lock. Both `backup restore`
 and `up --restore` leave the project folder and the connector installation unchanged in that case.
-The refusal says to start a stack a plain `cotal down` stopped with `cotal up` first, since that stop
+If the root is prepared for its first controller start, the refusal points to `cotal space show`
+and explains that starting it does not make preservation or restore available. On a legacy root,
+the refusal says to start a stack a plain `cotal down` stopped with `cotal up` first, since that stop
 records no cut. An artifact path that names nothing refuses `TARGET_NOT_FOUND` (exit 2) at the same
 point. It names the path, and its JSON
 target says in `missing` whether the folder that should hold the artifact (`folder`) or only the
 artifact (`artifact`) is missing. A path that is not an artifact, or is an incomplete one, refuses
-there too, as `backup verify` refuses it. A path that is, holds or sits inside the preserved store
-or `.cotal/maintenance`, such as `.` in this folder, refuses `USAGE_INVALID` (exit 1) there, naming
-that store or folder. The restore checks the path again once it holds the maintenance lock, because a
-link in it may name another folder by then, and refuses the same way. A restore that fails after it
+there too, as `backup verify` refuses it. A restore artifact can sit in `.cotal/maintenance`, beside
+the attempt and journal directories. It must not overlap the preserved store or any of these paths:
+`.cotal/maintenance/attempts`, `.cotal/maintenance/v1`, `.cotal/maintenance/lock.json`, and
+`.cotal/maintenance/lock-reaper.json`. If paths overlap, restore refuses `USAGE_INVALID` (exit 1)
+and names the protected path. Restore repeats this check under the maintenance lock because a link
+may name another folder by then. A restore that fails after it
 began names its attempt in the text and in the JSON target, which also carries `journalState`, and
 its remedy gives the next step for that state. The listener endpoint must be a bare `nats://` or
 `tls://` URL without credentials, a query, a fragment or a path. Its refusal does not repeat the
@@ -313,21 +330,23 @@ endpoint value, including when it came from a preserved launch. `up --restore`
 remains as the equivalent startup form. It refuses `--no-manager` with `USAGE_INVALID` (exit 1)
 before staging. A restore needs the manager to commit its state, so run it without `--no-manager`.
 The preserved store and its ready journal stay unchanged. After their startup lines, both foreground and detached
-starts name the restore attempt and give the cleanup step that retires it. The step includes
-`--discard-history` only if the retained store holds data the restore left out. When `up --restore --root` selects another
+starts name the restore attempt and give the cleanup step. If the retained store holds data the
+restore left out, the step previews cleanup and explains that deleting the store requires
+`--discard-history`. When `up --restore --root` selects another
 project, the cleanup step starts with `cd <project> &&` so you can run it from the folder where you
 ran the restore. `backup restore` defers connector reconciliation to startup, as `up --restore` does.
 
 Three commands refuse an active restore. `down --preserve-state`, in each of its forms, refuses
 `LIFECYCLE_BLOCKED` (exit 2) and stops nothing: a new cut begins only after the restore journal is
-retired, so it names the attempt and `backup cleanup-fallback` as the next step. The step includes
-`--discard-history` only if the retained store holds data the restore left out. `team boot`
+retired, so it names the attempt and `backup cleanup-fallback` as the next step. If the retained
+store holds data the restore left out, the command it prints previews cleanup. `team boot`
 resumes only a stopped stack whose manager never launched, and a restored stack's manager already
 ran, so start it with bare `cotal up` instead. `cotal up -f` boots a fresh mesh, so it starts only
 once the restore is retired. While the restored broker runs, it refuses `CONFLICT`, exit 2, naming
 the broker's PID, and its Next is `cotal down`, then `backup cleanup-fallback <attempt> --yes`, then
-`cotal up -f` again. If the retained store holds data the restore left out, that cleanup step
-includes `--discard-history` and says it deletes the previous store. Once that stack is stopped, it refuses `LIFECYCLE_BLOCKED`, exit 2, and names
+`cotal up -f` again. If the retained store holds data the restore left out, the refusal names
+cleanup as a separate choice and explains that deleting the previous store requires `--discard-history`.
+Once that stack is stopped, it refuses `LIFECYCLE_BLOCKED`, exit 2, and names
 the cleanup. Nothing is started either way. While the restored broker runs, any other `cotal up`,
 bare or with `--server`, refuses `CONFLICT` too, naming its PID, and leaves the restore journal as it
 was. Its Next is `cotal down`, then `cotal up`. Once the broker stops, `cotal up` checks the store's
@@ -357,6 +376,9 @@ ledger files are excluded. The other endpoint stores are nonportable control sta
 submissions, facts, events, timer requests and fires, work pools, contract artifacts, and the
 auth, session and issued-authority stores. Restore recreates those streams empty with their
 canonical configs before exposing the normal listener, so endpoint sessions do not cross a backup.
+A full backup includes the checkpoint of an open-space DM inbox that is still present after its
+seat disconnects, if the inbox has the standard inactivity threshold or none. A full restore
+recreates the inbox at the checkpoint's replay position with the standard inactivity threshold.
 The delivery daemon's anycast request records are control state too and come back empty. A full
 restore brings back the requests the TASK queue held at the cut and recreates its durables from
 checkpoints, so a role request a holder had taken and not yet acked at the cut is on its role's
@@ -612,13 +634,18 @@ On a legacy root, a restore uses the cap recorded in the preserved state unless 
 receives an explicit `--max-file-store <bytes>`. The restore journals the cap it uses so re-entry
 keeps it. If SIGINT, SIGTERM or SIGHUP interrupts a restore after commit intent and before the listener
 starts, the command names the attempt and tells you to run bare `cotal up` from that root. If SIGINT
-or SIGTERM makes foreground `up --restore` stop its listener before it answers, the command gives
-the same recovery step and exits 130 or 143, respectively. Bare `cotal up` continues the same attempt.
+or SIGTERM stops foreground `up --restore` before it records the manager commit, the command waits
+for its stack to stop, gives the same recovery step, and exits 130 or 143, respectively. Bare
+`cotal up` continues the same attempt. Once the manager commit is recorded, an interrupt lets the
+restore finish and print its receipt before stopping the stack and exiting with the signal's status.
 If no listener was bound to the attempt, it starts one only when no process of this account names
 the attempt and the recorded port is free. A listener spawned and never bound may still be opening
 the restored store, and NATS does not stop a second server from opening it too. While such a process
-runs, `up` names its pid, refuses to start and preserves the attempt. A host that cannot read command
-lines refuses the same way. A later ordinary startup may pass an `active` restore only when its details
+runs, `up` names its pid, refuses to start and preserves the attempt. On a host that cannot read
+command lines, `up` can start a listener when the journal proves startup has not begun, or when
+the published process identity proves the previous listener is gone. It refuses if the last spawn
+may have started but did not publish its PID. A closed port does not prove that listener is gone.
+A later ordinary startup may pass an `active` restore only when its details
 prove manager commit and its exact recorded listener is dead.
 
 

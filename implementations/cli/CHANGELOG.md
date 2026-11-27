@@ -1,5 +1,334 @@
 # @cotal-ai/cli
 
+## 0.183.1
+
+### Patch Changes
+
+- c049810: Report remaining resumable conversation approvals of the previous account when `cotal login` switches accounts at the same provider.
+- ce4a8db: `cotal backup verify` accepts an unchanged Windows artifact whose NTFS file ids are larger than a JavaScript number can hold, and still refuses a file that was replaced.
+- 8740d71: `cotal update --check` now reports when npm offline mode skipped the registry version lookup instead of blaming registry access or an unreadable extension inventory.
+- 98aed81: Stop and restart `stack-delivery` ahead of `stack-auth` when `cotal up` repairs a crashed broker in a user-auth stack, keep the stopped-auth refusal ahead of delivery startup when the broker still runs, and update the plane-claim refusal guidance to reflect delivery-first startup.
+- 6038ca0: On Windows, status and other CLI hints print an off-PATH fallback command that runs directly in PowerShell and Command Prompt.
+- Updated dependencies [c049810]
+- Updated dependencies [99e5057]
+  - @cotal-ai/workspace@0.183.1
+  - @cotal-ai/core@0.183.1
+  - @cotal-ai/seat@0.183.1
+
+## 0.183.0
+
+### Minor Changes
+
+- 335d8e9: Launches that use a project's MCP servers, `spawn.env` or persona launch options now require a trusted project folder, so review the folder and run `cotal trust <path>` before retrying.
+  
+  SDK callers of `loadCotalConfig` must pass a project trust check as the second argument, such as `isTrustedProject` from `@cotal-ai/workspace`.
+  
+  The workspace exports `projectTrustForPreview` and `previewPersonaReader` for read-only plans that predict the legacy upgrade without recording or granting trust. Do not use them to authorize a launch.
+
+### Patch Changes
+
+- 6813caf: Qualify the `cotal ps` recovery guidance for `--no-manager` controller stacks when `--max-payload` is below the manager's 263168-byte minimum.
+- f9c3003: Refuse a backup destination that overlaps the maintenance journal or lock paths before anything is written.
+- 978764e: A foreground `cotal up` that refuses because another terminal holds the stack keeps `--max-sessions` in the restart command it prints, so following that command starts the manager at the ceiling you asked for.
+- 82c5f58: A help switch given a value, such as `cotal help --help=false`, says that `--help` takes no value and names `cotal help --help`, instead of telling you to pass the switch as a command name.
+- a0e9aae: Run a foreground Hermes seat with a disposable managed profile in Windows PowerShell or Command Prompt.
+- 572384e: Tell users to omit a pasted retention option such as `--per-sender` from `cotal history clear` and point them to `history limit` instead of suggesting a spelling `history clear` rejects.
+- 297bd76: Detached Jcode spawns now show the corrected `--model` retry when a provider prefix precedes a catalog model ID that contains a slash.
+- 7898871: A `--creds` join refused for a missing channel read grant now prints a complete owner mint, with the space, `--no-persona` and a private `--out` file the guest can be handed, instead of an incomplete command that minted a standing credential under the space's project.
+- f00e874: Keep the requested preview, confirmation and store path when a stop through a linked project state directory points back at the real project.
+- 5906e3b: `cotal ext add` refuses a local or third-party extension whose declared core peer range does not match the bundled core, without changing the installed extensions.
+- bb5ecef: Component status reports a running stack as refused when its home records are missing, and names each verified member instead of calling the stack absent.
+- bd54d24: A JSON request that fails its leading flags is refused as one JSON document, and a mistyped plain option no longer recommends combining it with --json.
+- a206dcd: Point the OpenCode direct-file example at the catalog persona the guide tells readers to create.
+- 2ed44d0: `cotal persona create` now prints a command that works when a name starts with `-`: the flags come before `--` and only the name comes after it.
+- acd3c32: When a prepared space cannot be preserved for restore, explain the limitation and show how to inspect the space instead.
+- 0cf031c: Report an unusable local stack journal when `cotal ps` names the stack's saved broker address.
+- 447e860: Reclaim abandoned extension staging copies from the previous connector configuration without removing its installed connectors.
+- e21aff3: Running `cotal update --self` repairs a moved Codex marketplace even when the CLI packages are already current.
+- 6930623: Resume a signed-in native conversation on the same computer without asking for approval again when the space still accepts its original approval.
+- 3ceb545: Treat a Retry-After value that is neither whole seconds nor an HTTP date as absent, so a throttled conversation resume no longer prints "Wait at least 0 seconds".
+- 58985e3: A stopped stack starts again on its previous websocket port when that port is free.
+- 0c10988: Self-update restores missing owner read or folder search permissions on a verified, owned extensions manifest path and continues.
+- 2b9b69f: Omit `--idle-exit` from named `service start` help when the target service is not the manager.
+- e4e22eb: Split CLI dispatch into smaller steps without changing how commands run or report results.
+- cb6e235: Restore a regular stdout file to its prior size when a JSON refusal write stops partway, while keeping the refusal exit status and the text report on stderr.
+- 067ff29: Report an unreadable or invalid extension inventory as the existing permission or corrupt-manifest refusal, without changing the file.
+- 06629ca: Cotal can update when an extension has no recorded install spec, keeping verified packages and repairing packages that need it.
+- 02dac11: Manual `cotal update --self` can repair damaged first-party extensions from npm's cache without checking for a newer release when npm is offline.
+- da7db7e: On Windows, status and the entry card suggest `cotal.cmd` when the npm launcher is on PATH, so the commands run in PowerShell without changing execution policy.
+- Updated dependencies [a0e9aae]
+- Updated dependencies [c3236a3]
+- Updated dependencies [335d8e9]
+- Updated dependencies [447e860]
+- Updated dependencies [6930623]
+- Updated dependencies [0c10988]
+- Updated dependencies [067ff29]
+- Updated dependencies [06629ca]
+  - @cotal-ai/core@0.183.0
+  - @cotal-ai/workspace@0.183.0
+  - @cotal-ai/seat@0.183.0
+
+## 0.182.1
+
+### Patch Changes
+
+- f9729db: Bash completes persona names with spaces as one argument, and `persona show` completion skips entries it cannot open as valid persona files.
+- a47c69b: Return the oversized-message refusal from `cotal send --file` without waiting for a named pipe's writer to close it.
+- fba35eb: Jcode seats can now start with model IDs that contain a slash when those IDs appear in the model catalog.
+- 24b89fe: When several spaces share a broker address, the channel inventory prints a runnable retry for each space without changing the saved selection.
+- e64eec6: Show `--subscribe=` in persona help and retry instructions so the same command creates a persona with no channel subscriptions in Windows PowerShell 5.1 and other shells.
+- 8495df7: Show the Codex thread's reported model in named status when no model was requested through Cotal.
+- 54ecd82: Self-update looks for a Node version that can run both Corepack and the npm it selects, even when the Node running Cotal cannot run Corepack.
+- 5100dc5: Built-in commands blocked by a corrupt extension manifest now report the refusal and repair advice in their JSON output.
+- 1508bf3: Detached Codex seats stay headless when you start the stack with `COTAL_CODEX_TUI=0`.
+- c368daa: JSON refusals for malformed or repeated global flags include the extension command collision warning in the receipt instead of printing it to stderr or dropping it.
+- c788d9f: Show the endpoint's reason for refusing an invocation in both terminal and JSON output.
+- 35b74b7: Fix the extension installation smoke suite's expected check count on every platform.
+- ed3b78e: The restart command printed by a foreground `cotal up` conflict keeps the requested `--max-file-store` cap.
+- 20f474c: On Linux, `cotal update` can reconcile an unrelated npm installation when the running Manager's original launch path is gone but its loaded files still identify a separate installation.
+- d757524: Fix `cotal history --grep` so uppercase, lowercase, and final Greek sigma all match the same retained text.
+- 572cb42: Detached Jcode spawns now show a retry with a bare model ID when a persona supplies a prefixed model.
+- 985638b: Keep `--discard-history` out of backup cleanup retries unless the original command included it, and offer a preview when cleanup would delete the only copy of data the restore left out.
+- 41baead: When you request JSON and give a leading `--plain` flag a value, the CLI tells you to drop `--plain` rather than retry with both output flags.
+- 1260ff7: Keep the first error in the requested JSON output when several leading switches use typographic dashes.
+- 364a6d1: Keep the target and flags in the `cotal clean` retry printed when `.cotal` links to another project.
+- 5117d48: When a stack loses its Cotal home records, status and ps point to the stop preview, and component status distinguishes a running broker from a service it cannot check.
+- 63c1509: When a running manager cannot be renamed, `cotal up` names the project to stop and tells you to repeat the original startup command from the same folder, keeping all options.
+- bc7731a: Validate the persona before creating export directories for `cotal auth mint`.
+- cdccf6a: When a first user-auth start needs an identity provider, explain how to add it to the original command or manifest without switching projects.
+- 2af983b: The console removes a deleted channel's posts from the aggregate feed without hiding posts from other channels.
+- c27ddc1: Select the matching Node import from nested conditional exports when installing and loading extensions.
+- 41c615a: Interrupting a foreground restore before the manager commit is recorded stops the stack and prints how to continue the same restore, while an interrupt after that commit lets the restore finish before stopping.
+- 412c202: Report a missing editor once in the `cotal persona edit --json` refusal while keeping editor output on stderr.
+- 8a9ffeb: An unchecked project registration does not override the automatically selected space when its broker does not serve it.
+- d9a8109: Show the `spaces` action in the console command palette only when it can return to the space overview.
+- e6a468a: Self-update removes abandoned extension copies left behind when promotion is interrupted before its journal is written.
+- 4fb5871: Restore a backup from `.cotal/maintenance` without moving it, as long as it does not overlap the preserved store, the maintenance lock files, or the attempt and journal directories.
+- e819f05: Keep the stack settlement smoke test running when its startup poll reads a journal that is being replaced.
+- 74b4870: Show the `--no-open` option in start help for dashboards saved under a custom name.
+- b4af2aa: When self-update cannot read the extensions manifest, it tells you to restore read access and retry.
+- 0e36096: `cotal service status` tells you to omit a bare `--exec` instead of asking you to give it a value.
+- 938cd61: Keep the partial infrastructure status report when permissions prevent reading the extension inventory, and tell the user to restore read access.
+- b8e8c3e: Make the stop preview in the `cotal team boot` receipt work when you boot a project from another folder.
+- ee55746: When `cotal ext add` cannot install a local extension's relative tarball dependency, it names the dependency and explains how to fix the source package.
+- 82fd7c4: Commands such as `run plan`, `space show`, and `persona show` tell you to drop an unknown option when you have already supplied all their arguments.
+- 5767c3a: Fix self-updates and extension installs whose npm scripts need `node` when Cotal is running on a version-named Node executable.
+- b2f1a77: Fix offline backup creation for preserved local Windows spaces and show usable retry commands when a backup fails.
+- 8401965: Make the commands printed when a Windows foreground terminal closes work in PowerShell and Command Prompt.
+- 32b79a6: Make suggested channel history commands work when pasted into Windows Command Prompt.
+- f017c32: Show how to preserve Unicode when piping text into `cotal send --stdin` from Windows PowerShell 5.1.
+- e4cca2e: Make setup retries and optional global installation work on Windows without changing PowerShell execution policy.
+- ac8c75e: On Windows, `cotal down` stops a controller stack from either the UNC path or a drive-letter path to the same project, while still refusing copies.
+- Updated dependencies [8495df7]
+- Updated dependencies [8eead0e]
+- Updated dependencies [5117d48]
+- Updated dependencies [2af983b]
+- Updated dependencies [c27ddc1]
+- Updated dependencies [8a9ffeb]
+- Updated dependencies [287b874]
+  - @cotal-ai/workspace@0.182.1
+  - @cotal-ai/core@0.182.1
+
+## 0.182.0
+
+### Minor Changes
+
+- d0d5bf5: Legacy persona creation, persona renames, team manifest validation and direct terminal launches now reject names that start with `-`, so choose a name that starts with a letter, digit or underscore instead.
+
+### Patch Changes
+
+- a77d85f: `cotal backup create` points you to a different location for a protected destination even when its parent folder does not exist.
+- 2a09563: `cotal send --stdin` refuses an oversized message as soon as it reads one byte past the broker's limit, without waiting for the writer to close the pipe.
+- f4b11e7: `cotal service start broker --help` now says that `--config` requires an absolute path.
+- db2b232: Status and empty agent lists identify missing executables for the default agent instead of suggesting a launch that cannot start.
+- 17bdfa2: `cotal clean all` now warns that backup creation and restore are unavailable on a controller-owned stack instead of recommending those commands.
+- b451e49: Explain how to correct a symbolic-link loop in the store path when previewing or applying `cotal clean store` or `cotal clean all`.
+- ecd506f: Clear purged chat messages from the console that ran the purge, without closing configured channel tabs.
+- e8cac22: Explain how to pass a literal dollar sign or backtick in `cotal service add --exec` when double quotes alone do not work.
+- 31b4a4a: Keep a JSON usage refusal when a repeated global flag appears with a leading switch that takes no value but is given one.
+- f6b3823: Ctrl-P opens the command palette without freezing the console when Needs You fills the terminal.
+- 896100c: The console space picker counts agents without including the manager or other endpoints.
+- 77a02cd: The console space picker includes configured channels even when they have no retained posts.
+- 6affa71: When service removal refuses for a controller stack member, the shutdown instructions name the owning project folder and the exact space to stop.
+- f5855be: Self-update uses a compatible Node when Corepack selects an npm version that cannot run on the Node Cotal is using.
+- 121be18: The foreground delivery repair smoke test verifies that status hides the spawn suggestion while delivery is stopped and restores it after repair.
+- 1b2b5c3: Show the built-in docs help with `cotal help docs` even when the extension inventory is damaged.
+- cac62b4: When `cotal docs` already has a page, an unknown option prompts you to remove it rather than pass it as a second page.
+- 998aed8: `cotal doctor auth` shows how to restore access to a credential export you own when its mode prevents you from reading it.
+- 733ac16: Tell users to remove an unsupported `--file` option from `endpoint check` and keep the contract path.
+- a65e1b4: Show scoped help when `cotal help --` receives flags before a subcommand or service preset.
+- 1d10f92: Make short-option corrections and daemon recovery commands copyable in Windows PowerShell and Command Prompt.
+- 98c2395: After a foreground stack loses its terminal, show how to inspect and then stop the stack from its original project and Cotal home.
+- 510f2b1: When `cotal manager logs` cannot find a captured log for a running foreground manager, it points you to the terminal where you started the manager.
+- c54c4e4: Keep the requested `--max-payload` in the restart command when another terminal already holds the foreground stack.
+- 659fc6c: Keep stack records when `cotal down` cannot access the project's `.cotal` directory.
+- 75227fb: Tell users to omit `--server` from `history limit` and use `--space` if needed, and direct them to `history limit` when they pass retention flags to `history clear` without a value.
+- 71dcf8e: Reject provider-prefixed Jcode model IDs before starting the seat and show a corrected detached spawn command that uses the bare model ID.
+- 7ef585e: When `cotal join` rejects a credential from another space, its replacement command includes a read grant for the requested channel without adding publish access.
+- 06d3f1a: Keep the endpoint name after `--` in `endpoint describe` retry commands when several spaces match.
+- 319c336: Keep matching local extensions during self-update and repair them from their recorded path instead of npm.
+- 08b57e9: Keep the requested JSON output when a flag before the command starts with a typographic dash.
+- 10babee: Show the file path when `cotal personas list` reports an invalid persona display name.
+- 367fad6: When a refresh finds a running legacy stack with a File-backed membership feed, report the lifecycle refusal and how to restart without changing the feed while it is in use.
+- 945b532: When an installed npm extension package is missing its entry, `cotal ext add` names the relative entry path and shows how to check and fix a local package.
+- 392fa29: JSON membership follow refusals name the requested channel instead of a preceding replay value.
+- e16ffa6: Keep the seat's space and explicit broker in the send and watch commands printed after launching or attaching to a seat without a terminal stream.
+- 423aa24: Fix full backups of open spaces after a seat disconnects, and restore its DM inbox with the standard inactivity threshold.
+- e38c469: When an open space has no dashboard credential, explain that the dashboard needs a registered static-auth space instead of suggesting how to supply a credential for the open space.
+- 1f37adb: OpenCode seats launched without a model pin report the model they use after a mesh-delivered prompt in `cotal who` and plain `cotal status`.
+- cba49f9: `cotal status` keeps the diagnostics it can read and reports a partial result when the extension inventory is damaged.
+- db6bfc2: Flag persona filenames that contain tabs or other control characters and suggest renaming them so `cotal persona show` can open them.
+- b670c41: Keep the extension inventory in place when permissions prevent reading it. The version report points to restoring read access, and connector repair and reset refuse to quarantine the file.
+- 7e4b026: `cotal team boot --dry-run` now explains when an earlier team boot blocks another boot in a stopped project, even when the earlier boot has a matching summary.
+- 050f632: Report when an open broker-only stack is still running after its Cotal home records disappear, and guide operators to preview and stop it before touching the store.
+- 82fd363: After stopping a moved broker-only stack, `cotal down` recommends restarting it with `--no-manager` after adoption.
+- 803f245: `cotal ext add` explains that registrations with kind `commands` do not create CLI commands and tells extension authors to use `command`.
+- dba1672: `cotal space show` asks you to restore search permission on an inaccessible `.cotal` directory instead of reporting that the project moved or recommending a stop.
+- 63f375d: When a busy port blocks the first start, `cotal status` tells you how to retry without dropping `--no-manager` or your other startup options.
+- 8d276ce: Keep the explicit space and broker options in the census hint shown when an attach session ends, without exposing sensitive broker addresses.
+- d50427a: When a stop cannot verify the broker launch, point to the local journal so operators can inspect the recorded members without a space registration.
+- ed84db3: Self-update reinstalls first-party extensions that cannot load even when their installed versions match the CLI.
+- 9f63fee: Keep Windows consoles from opening during background extension installs, updates, and helper commands.
+- 365e355: Quote local extension paths in reinstall commands so you can paste them into a POSIX shell even when the path contains spaces.
+- b5eeb5b: `cotal update --self` now repairs broken bundled extension links on Linux after an npm reinstall, even when the CLI is already at the latest version.
+- 1398023: `cotal update --self` reclaims abandoned private extension staging copies even when Cotal is already current.
+- dd426ff: When a non-NATS listener holds a controller stack’s recorded broker address, `cotal status` and `cotal ps` tell you to free that address and restart the stack there.
+- 0733761: When a manually registered space already uses the project folder, `cotal space create` points to the existing broker and names the commands to inspect or forget its registration.
+- cfce2c6: Report an unknown stack lifecycle in `cotal status` when the journal cannot be read instead of saying the space never started.
+- 48b891d: Restart the same local stack after a completed team deployment without relaunching the agents that shutdown stopped.
+- bf96c8a: When a running broker cannot change auth mode, `up` now explains how to review and stop the owned stack and retry the original request without losing its broker address, space or identity provider.
+- d721a6b: Explain how to fix `--reply-to` on a role send even when the message body is missing.
+- f5b2a30: Install and load extensions that use Node's shorthand for conditional root exports without requiring a `main` field or an `index.js` file.
+- e571906: When `cotal service remove` cannot find a definition, it suggests listing services in the space it checked.
+- 34e736e: Scroll through console help when the terminal is too small to show every shortcut at once.
+- 1213276: When self-hosted setup cannot read a connection bundle, it names `--connection-file` and tells you to pass the exported bundle's path.
+- 9c7a254: Show the running version in text output when the extension inventory is unreadable, and exit with the same partial status as the JSON report.
+- f3c334e: On Linux, background services start without calling systemd when there is no user bus or systemd socket to contact.
+- b291174: Foreground spawn and its preview identify a file blocking the persona path and tell you to pass the correct path with `--file`.
+- be4c516: When `cotal team boot` refuses to replace an earlier boot, the suggested `cotal team show` command now targets the booted space even if another space is selected.
+- bdb5aca: When a fresh team boot conflicts with another local space's broker address, the refusal names that space and address and tells you how to edit the manifest and retry.
+- ffaf830: Show `--auto [off|on]` and `--notify [off|on]` separately in `cotal update --help` so each value appears with the flag it needs.
+- 633a8c7: The Claude setup guide and connector reference now show how to verify plugin installation and wake-channel registration with `cotal status --wide`.
+- eb5849b: The CLI tells you to drop an unsupported leading output flag when you give it a value, instead of suggesting you keep it without the value.
+- f92cbe4: `cotal whoami` prints an exact retry for each registered space when the broker address matches more than one space and can be printed unchanged.
+- e6cd8f2: Explain when `cotal whoami` cannot verify whether a project space overrides the automatically selected space.
+- debad7c: On Windows, daemon commands explain how to set up a private home or start an uninstalled daemon, and Manager installation points to a local stack instead of systemd.
+- 6c10b18: Fix Windows npm self-updates so they can update a stopped local space, replace the invoked installation, and finish or retry safely after an interrupt or a temporary file lock.
+- 83db958: The Windows docs show how to install, verify, and remove Cotal without changing PowerShell execution policy and how to prepare a project from PowerShell or Command Prompt.
+- f1651fc: On Windows, a confirmed `cotal down` now ends foreground `cotal up` successfully, and a stopped PTY seat releases its console host so it does not block stack shutdown.
+- Updated dependencies [ecd506f]
+- Updated dependencies [896100c]
+- Updated dependencies [77a02cd]
+- Updated dependencies [1d10f92]
+- Updated dependencies [7ef585e]
+- Updated dependencies [48b6414]
+- Updated dependencies [423aa24]
+- Updated dependencies [1f37adb]
+- Updated dependencies [30b474d]
+- Updated dependencies [b670c41]
+- Updated dependencies [c9a8881]
+- Updated dependencies [0adb7ba]
+- Updated dependencies [b4d8ea1]
+- Updated dependencies [9f63fee]
+- Updated dependencies [365e355]
+- Updated dependencies [dd426ff]
+- Updated dependencies [f5b2a30]
+- Updated dependencies [0c9e27a]
+- Updated dependencies [d387f8b]
+- Updated dependencies [e6cd8f2]
+- Updated dependencies [6c10b18]
+  - @cotal-ai/workspace@0.182.0
+  - @cotal-ai/core@0.182.0
+
+## 0.181.0
+
+### Minor Changes
+
+- b05f907: In ACP clients such as T3 Code, choosing another model or reasoning level on a running thread now switches its agent from the next turn, with no `/despawn`.
+  
+  - The `agent` endpoint advances to revision 6 with the owner-only `set-model`, and presence `agentEndpoint` gains `setModel`. Reconnect clients after the auth callout is updated, so their sign-in carries the new command.
+  - Codex switches with `thread/settings/update`, OpenCode with the model each prompt carries (1.x) or its session model route (2.x), pi 0.84.3 or later with its session setters, Jcode with its model and effort calls, and Claude Code through its command mod for later turns of the session alone. Each checks the model against its own list first. Hermes does not switch yet, and the thread says to use `/despawn`.
+  - A Manager keeps the switch and restarts or resumes the agent on it.
+  - An agent whose role `modelPolicy` governs refuses every switch, since the policy is checked only at launch.
+
+### Patch Changes
+
+- 1db7233: Preserve the requested broker address in the retry instructions for a foreground manifest start.
+- df1666c: When a broker start preview needs more options, the retry tells you to remove `--new-instance` and keep the preview and output flags.
+- e768fb9: `cotal channel set` points to `--desc` when you type `--description` and no longer suggests passing unknown options as extra channel names.
+- 7289937: Show the missing target of a broken persona link in `cotal personas list` and explain how to fix it.
+- fde800c: `cotal doctor auth` explains how to restore a credential export whose recorded path is a symbolic link.
+- 9935b2a: `cotal down` no longer tells you to run it from inside a regular file when the space's recorded project root is no longer a folder; it names that path and asks you to move it aside and restore the original project folder first.
+- d0b9136: `cotal history clear --dry-run` now previews a space that was started directly with `cotal up --foreground` and then stopped, using the broker address its project retains, instead of refusing until the space is restarted. A confirmed clear of that stopped space is still refused.
+- 222e6fb: `history limit` tells you to drop an unknown option instead of moving it after `--`.
+- 36175cd: Keep `--json` or `--plain` in the retry command printed when terminal input needs a different manager pin.
+- b5d204f: Keep the requested JSON refusal when a leading output flag has an attached value, and tell callers how to correct the flag.
+- 22f586b: Keep extension command collision warnings uncolored with `--plain`, even when `FORCE_COLOR` is set.
+- b91919d: Keep `--plain` in both the preview and confirmation commands suggested by `cotal reset store`.
+- df886cf: When a file blocks a prepared space's `.cotal` directory, `status` and `ps` name the file and explain how to restore the directory.
+- 8ff0e85: Recover a stopped local broker with `cotal up` without restarting its read-only web dashboard or losing the current browser session.
+- b1590ac: Keep read-only history follows out of the channel membership list without changing which posts they receive.
+- 958a65d: Flag persona filenames with backslashes as unusable catalog selectors and show how to launch them by file path.
+- e88785e: When foreground startup finds a running legacy broker, return a lifecycle refusal. Identify where to stop the broker and keep the original foreground request for the retry.
+- 49130cf: The attach and stop commands suggested by `cotal ps` now target the mesh it listed instead of your default mesh.
+- 8060402: The scripted self-hosted setup example now creates the required project folder before running setup.
+- 825f3a4: `cotal send -c <channel> --reply-to <message-id>` stores the channel post with `replyTo`, as a direct send already does. A role send still refuses `--reply-to`.
+- d76ec5e: Keep the partial status report and show how to restore access when the selected project's broker PID file cannot be read because of permissions.
+- b869681: Keep the intended channel and replay setting in the suggested retry when `--replay off` comes before the channel name.
+- Updated dependencies [b05f907]
+- Updated dependencies [49d14ac]
+- Updated dependencies [e22d95e]
+- Updated dependencies [b1590ac]
+- Updated dependencies [d76ec5e]
+  - @cotal-ai/core@0.181.0
+  - @cotal-ai/workspace@0.181.0
+
+## 0.180.0
+
+### Minor Changes
+
+- bffdc47: `cotal acp` now starts this machine's manager for the space when no manager may start a new thread's agent, or when none of yours runs on this machine, and that manager stops itself after 10 minutes with no agents. The bridge runs `cotal manager start --idle-exit 600` and says so in one line at the start of the thread's first prompt, before the agent's reply. Another computer's manager runs a thread's agent only when the thread's Machine option names it. Threads that open at the same time share one start, and a failed start fails the new thread with its reason. With no manager registered for the space, listing, loading or deleting threads and `/open` now say so and that a new thread starts this machine's manager, in place of a bare internal error. A listed manager whose rail the broker reports empty, such as one whose computer is gone, is not offered. `cotal manager start` and `cotal service start manager` take `--idle-exit <seconds>` for that start only: the manager stops, and deregisters, once it has held no agent, call, workflow run, preservation or resume for that long, and no pending work over which `cotal manager stop` refuses, such as a name held until its retirement completes; `cotal status --components` lists that work on the manager row. `status` shows the value on an `Idle exit` row. A start with a different value while the manager runs refuses `LIFECYCLE_BLOCKED`. `@cotal-ai/workspace` probes a signed-in caller's pinned manager rail on the rail its credential was issued for. A manager that `cotal manager start`, `cotal acp` or a controller stack's `cotal up` starts now gets the `spawn.env` names that are set where it starts, so its seats get them, as seats of a manager the legacy launcher starts do; no value is printed. On Linux, a background service now starts in a systemd user scope of its own when the user manager answers, so it outlives an app that stops the scope its agent ran in, as T3 Code does when a thread's session ends; a scope that cannot be made fails the start, and each launch's scope has a name of its own, so a retry never meets an earlier attempt's scope. When `cotal acp` cannot read this machine's identity, as in a container with no `/etc/machine-id`, a thread still uses a manager its Machine option names, and it neither defaults to a manager nor starts one; a prompt with none chosen, or a new thread with none listed, fails and says why.
+- fcd33e4: `cotal acp` now recognises this machine's manager after the machine's host name changes, as macOS does when the network changes, so it no longer starts a second manager or defaults a thread to another computer. A Manager's `status` and presence card carry `machine`, an HMAC-SHA256 of the host's OS machine identity keyed by it over `cotal manager host`, and the bridge compares it with its own; the host name is only shown. A manager that names no machine counts as another computer's. The Manager cluster advances to revision 57, and its closed status schema of revision 56 rejects the field, so update Managers and their callers together, as revision 56 already requires. `@cotal-ai/workspace` exports `osMachineId()`, the OS machine identity read the CLI's service records use, and `managerMachineId()`; `reportedManagerHost` answers `{ host, machine }`.
+
+### Patch Changes
+
+- Updated dependencies [bffdc47]
+- Updated dependencies [fcd33e4]
+  - @cotal-ai/workspace@0.180.0
+  - @cotal-ai/core@0.180.0
+
+## 0.179.0
+
+### Minor Changes
+
+- 3b5bde1: T3 Code and other ACP clients now get from every Cotal agent what that harness's own provider shows: replies streamed as they are written, tool calls with their arguments, results and diffs, plans, approvals, questions, the agent's own commands, cancel, later prompts with images, context usage, reasoning, and the model and effort pickers.
+  
+  - Core: the `agent` endpoint is at revision 5, with `turn` (the owner's next prompt, with images) and `usage` (context and cost). Presence gains `agentEndpoint: { interrupt, turn, images, usage }`, which says what a process serves now, so a caller picks one path per agent before it sends anything. `ModelCatalogOpts.envAllow` gives a model catalog read the `spawn.env` names a launch receives.
+  - Manager: cluster revision 56. `spawn` takes the opt-in `askPermissions` (ask before tool use) and `reasoningEvents` (publish the model's reasoning), and every `status.connectors` row says whether its connector takes them. Update Managers and their callers together. `@cotal-ai/workspace` carries the two fields in a managed launch and in the cached connector rows.
+  - connector-core: a delta journal beside each thread's journal streams harness text and reasoning before the harness saves it, merged into the durable source, and a connector may journal records of its own there. `JsonlFileSource.holdsSync` tells whether a cursor is on the file at the path now. A tool result marker may leave out `isError`, and `web` reads one without it.
+  - Claude Code: reply text streams while the command mod runs; the owner's turns take images as files the model reads; usage, both launch fields, `AskUserQuestion` as a question form, and the model list read with the launch's `spawn.env` names. Reply text that Claude Code does not show, such as "No response requested.", is not published. The release plugin tree now ships `hooks/stream.js`. The to-do tools stay off as Claude Code's terminal has them for current models; an operator turns them on with `CLAUDE_CODE_ENABLE_TODO_TOOLS` through `spawn.env`.
+  - Codex: replies and reasoning summaries stream; turns with images and usage; approval requests, questions, permissions requests and MCP elicitations go to the prompt desk; `askPermissions` launches in the approval-required mode; a code-mode script's calls and plan show as their own tool calls while they run. Codex now publishes reasoning only for a launch with `reasoningEvents`, where before it published every summary it recorded.
+  - Hermes: turns, interrupt, usage and the gateway's slash commands on the agent endpoint; streamed replies; reasoning with `reasoningEvents`; `askPermissions` for the commands Hermes stops; `clarify` questions on the prompt desk; the models of the provider a launch's environment selects, with Hermes's reasoning efforts as variants; tools run in the seat's folder; and a run shared by several messages ends with the outcome of the message that ends it.
+  - Jcode: native session commands, interrupt, turns with images, usage and streamed text and reasoning; a failed turn closes its run with the error; the seat's real home, so the shell tool runs on Jcode 1.1; and streaming keeps going across a journal fold that reuses the file's inode.
+  - OpenCode: agent commands and interrupt on 1.x; turns with images and usage, permission asks and questions on the agent endpoint, both launch fields, streamed replies and running tool calls on 2.x and 1.x. On 1.x, usage reads the newest step, and a command whose turn never starts frees the seat after 5 seconds. Before launch, `harness-commands` lists a 1.x install's commands and skills too, from a private server it starts and stops. The 2.x model list read stops its private server's whole process group, reports OpenCode's own error when that server fails to start, and gives up after 10 seconds in all.
+  - Pi: tool arguments and results on the payload rail, turns and usage, `askPermissions`, streamed replies, thinking with `reasoningEvents`, and the model catalog read with the launch's `spawn.env` names.
+  - `cotal acp`: picks each agent's cancel, prompt, image and usage path from its presence; sends a turn's usage before the prompt answers; gives each model's reasoning choices in the session's model state, so T3 shows the effort picker before a thread runs; launches with the two fields where the connector takes them; shows tool details, plans, Codex's change approvals as diffs, and the agent's own commands; asks an agent's approvals and questions, also ones it opens between the thread's turns, and asks a prompt again when its first read fails; keeps a prompt queued behind the agent's other work open until the agent runs it, and a cancel takes it out of the queue; never defaults a thread to another computer's manager; offers a short persona and channel select plus `/persona` and `/join` where the lists are too long for a select; and says what it cannot replay when an agent's tool details cannot be read.
+  - `cli`: the Hermes model remedy no longer suggests `--no-events`.
+
+### Patch Changes
+
+- 2311236: Report unsupported extension source spellings as usage refusals and explain how to specify a relative package folder.
+- 92cb129: Keep foreground-only spawn options in the suggested retry when a receipt or runtime option is incompatible with them.
+- 77efabc: Explain how to select or prepare the space named in an endpoint reference when an import has no local space.
+- b384419: Keep the selected endpoint, space, broker and instance pin in discovery advice for unsupported endpoint capabilities.
+- 7e34dce: When a background service exits before readiness, report when no log line was available instead of claiming its log explains the exit.
+- a66bde2: Show how to import an endpoint reference offline when a stopped project records its space but no longer has a registration.
+- Updated dependencies [3b5bde1]
+- Updated dependencies [0413abe]
+- Updated dependencies [c7f487b]
+  - @cotal-ai/core@0.179.0
+  - @cotal-ai/workspace@0.179.0
+
 ## 0.178.0
 
 ### Patch Changes

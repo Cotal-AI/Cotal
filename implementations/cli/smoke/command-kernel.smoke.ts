@@ -578,6 +578,7 @@ async function completionOut(positionals: string[]): Promise<string> {
     assert.equal(result.error, undefined);
     assert.equal(readFileSync(manifest, "utf8"), corrupt, "the check never repairs the corrupt manifest");
     assert.deepEqual(readdirSync(config), ["extensions"], "no seed or promotion files are written");
+    assert.equal(existsSync(join(env.COTAL_HOME, "trusted-projects-seed.json")), false, "the update invocation does not mark the trust migration attempted");
     assert.deepEqual(readdirSync(join(config, "extensions")), ["extensions.json"]);
     return result;
   };
@@ -2220,7 +2221,8 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) {
   try {
     await assert.rejects(
       ext({ values: {}, positionals: ["add", "https://example.invalid/ext.tgz"], raw: [] }),
-      /unsupported extension spec/,
+      (e: unknown) => isCommandFailure(e) && e.outcome === "refused" && e.code === "USAGE_INVALID" &&
+        e.message.includes("prefix a relative folder with ./") && !e.message.includes("example.invalid"),
     );
     process.env[EXT_UPDATE_PARENT_ENV] = "0";
     await assert.rejects(
@@ -2240,7 +2242,7 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) {
         {
           encoding: "utf8",
           env: {
-            ...process.env,
+            ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_"))),
             COTAL_SKIP_CONNECTOR_SEED: "1",
             [EXT_UPDATE_PARENT_ENV]: String(process.pid),
           },

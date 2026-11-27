@@ -1,8 +1,8 @@
 import { existsSync, realpathSync, statSync } from "node:fs";
 import { dirname } from "node:path";
 import { globalConfigDir } from "@cotal-ai/core";
-import { loadExtensionsManifest, prepareConnectorConfigForUpdate, protectedLocalDirectory, repairConnectorSelection, type UnreadableConnectorSelection } from "@cotal-ai/workspace";
-import { recoverExtensionPromotion } from "./extension-stage.js";
+import { isCommandFailure, loadExtensionsManifest, prepareConnectorConfigForUpdate, protectedLocalDirectory, repairConnectorSelection, restoreConnectorManifestAccessForUpdate, type UnreadableConnectorSelection } from "@cotal-ai/workspace";
+import { reclaimAbandonedExtensionStages, recoverExtensionPromotion } from "./extension-stage.js";
 
 /** Check the closest existing ancestor outside the Cotal folder, whose modes update does not repair. */
 export function assertConfigAncestorProtected(): void {
@@ -19,11 +19,37 @@ export function assertConfigAncestorProtected(): void {
   protectedLocalDirectory(path, "the Cotal config folder");
 }
 
-export function prepareUpdateConnectorConfig(staged: boolean, onChange?: () => void, onModeChange?: () => void): boolean {
-  if (staged) prepareConnectorConfigForUpdate(onChange, onModeChange);
+export function manifestAccessReporter(report: (line: string) => void): () => void {
+  let reported = false;
+  return () => {
+    if (reported) return;
+    reported = true;
+    report("Restored owner access to the extensions manifest.");
+  };
+}
+
+export function prepareUpdateConnectorConfig(staged: boolean, onChange?: () => void, onModeChange?: () => void, reportManifestAccess?: () => void): boolean {
+  const prepare = (): void => {
+    if (reportManifestAccess && restoreConnectorManifestAccessForUpdate(true)) reportManifestAccess();
+    prepareConnectorConfigForUpdate(onChange, onModeChange);
+  };
+  if (staged) prepare();
   const recovered = recoverExtensionPromotion(staged, onChange);
-  if (recovered && staged) prepareConnectorConfigForUpdate(onChange, onModeChange);
+  if (recovered && staged) prepare();
+  if (!recovered) reclaimAbandonedExtensionStages();
   return recovered;
+}
+
+/** Validate the inventory after recovery because built-in self-update skips the extension overlay. */
+export function restoreUpdateManifestAccess(staged: boolean, report: () => void): void {
+  try { loadExtensionsManifest(); }
+  catch (error) {
+    const cause = error instanceof Error ? error.cause as NodeJS.ErrnoException | undefined : undefined;
+    if (!staged || !isCommandFailure(error) || error.code !== "PERMISSION_DENIED" ||
+        cause?.syscall !== "open" || !restoreConnectorManifestAccessForUpdate(false)) throw error;
+    report();
+    loadExtensionsManifest();
+  }
 }
 
 /** Repair the selection before the updater checks installed extension dependencies. */

@@ -1,5 +1,35 @@
 # @cotal-ai/seat
 
+## 0.183.1
+
+No changes in this release.
+
+## 0.183.0
+
+No changes in this release.
+
+## 0.182.1
+
+### Patch Changes
+
+- 57b3b2d: When a Claude Code launch times out waiting for its startup prompt in a PTY, the error shows the last visible screen lines or says that no text was visible.
+
+## 0.182.0
+
+No changes in this release.
+
+## 0.181.0
+
+No changes in this release.
+
+## 0.180.0
+
+No changes in this release.
+
+## 0.179.0
+
+No changes in this release.
+
 ## 0.178.0
 
 No changes in this release.

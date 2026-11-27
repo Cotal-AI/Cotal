@@ -215,8 +215,8 @@ try {
   const taskEpoch = async () => (await dJsm.streams.info(taskStream(space))).created;
   // A take written by the test for a copy of the current stream, through the endpoint's own take path.
   const takeAs = async (ep: CotalEndpoint, role: string, seq: number, id: string, count = 1) =>
-    (ep as unknown as { takeAnycast(r: string, s: number, id: string, c: number, e: string): Promise<AnycastTakeOutcome> })
-      .takeAnycast(role, seq, id, count, await taskEpoch());
+    (ep as unknown as { anycastRail: { takeAnycast(r: string, s: number, id: string, c: number, e: string): Promise<AnycastTakeOutcome> } })
+      .anycastRail.takeAnycast(role, seq, id, count, await taskEpoch());
   const seen = new Set<string>();
   const mark = (g: Got) => seen.add(`${g.msg.id}:${g.delivery.redelivery?.deliveryCount}`);
 

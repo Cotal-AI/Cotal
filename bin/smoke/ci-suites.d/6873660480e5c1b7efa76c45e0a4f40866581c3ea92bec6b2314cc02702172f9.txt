@@ -1,0 +1,4 @@
+# Agent commands, interrupt, turns and usage on OpenCode 1.x through the agent endpoint: one list of commands and skills by name,
+# started at OpenCode's command hook, refusals that never reach OpenCode, interrupt from the turn state, images as data URLs,
+# and usage from the last model step.
+smoke:opencode1-command:auth

@@ -55,6 +55,7 @@ if (!existsSync(BIN)) {
 }
 
 const { check, finish } = createSuite();
+process.env.DO_NOT_TRACK = "1";
 
 // A supervising seat's COTAL_* (COTAL_SKIP_CONNECTOR_SEED above all) would suppress the seed under
 // test, so the host's are scrubbed and checkout seeding is opted in deliberately.
@@ -448,8 +449,10 @@ const envelopes = (r: Run) => {
   const damagedText = versionRun(["version"]);
   check("version formats agree on repairing the corrupt manifest", damagedReport?.result?.reconciliation?.source === "manifest"
     && damagedReport.result.reconciliation.instruction === damagedReport.error?.remedy
-    && damagedReport.error?.remedy === "Repair the manifest with `cotal ext seed --repair`."
-    && damagedText.status === 1 && damagedText.stderr.includes("cotal ext seed --repair")
+    && damagedReport.error?.remedy === "run `cotal ext seed --repair` to preserve the damaged file and rebuild the built-in inventory"
+    && damagedText.status === 4 && damagedText.stdout.split("\n")[0] === `cotal-ai ${env?.result?.version}`
+    && damagedText.stdout.includes("run `cotal ext seed --repair` to preserve the damaged file and rebuild the built-in inventory")
+    && damagedText.stderr.includes(`corrupt extensions manifest ${manifest}: no "extensions" array`)
     && !damagedText.stderr.includes("cotal update --self"), { json: damagedReport, text: shown(damagedText) });
   check("version --json leaves the corrupt manifest unchanged", readFileSync(manifest, "utf8") === "{}\n");
   const strict = versionRun(["ext", "list"]);
@@ -668,6 +671,11 @@ const envelopes = (r: Run) => {
   check("foreground spawn keeps its mode and offers two compatible ways past --json",
     foregroundJson.status === 1 && foregroundReceipt.error?.code === "USAGE_INVALID" &&
     foregroundReceipt.error.remedy.includes("omit --json to launch in this terminal, or replace --foreground with -d"), shown(foregroundJson));
+  for (const [flags, omit] of [[["--live-only"], "--json"], [["--expires-in", "1h", "--runtime", "pty"], "--runtime, --json"]] as const) {
+    const refusal = cotal(["spawn", "--foreground", "--json", ...flags], undefined, noSeed);
+    const error = JSON.parse(refusal.stdout).error;
+    check(`foreground spawn keeps ${flags[0]} in its remedy`, refusal.status === 1 && error?.code === "USAGE_INVALID" && error.remedy === `omit ${omit} to launch in this terminal`, shown(refusal));
+  }
   const pinnedSpawn = ["spawn", "dev", "--on", "a".repeat(30)];
   const pinnedJson = cotal([...pinnedSpawn, "--json"], undefined, noSeed);
   const pinnedReceipt = JSON.parse(pinnedJson.stdout);

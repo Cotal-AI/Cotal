@@ -205,6 +205,11 @@ try {
             if (box.right > innerWidth || box.left < 0) failures.push("machine name outside viewport");
             continue;
           }
+          // Other deliberately truncated text passes only while it carries its full text as a tooltip.
+          if (getComputedStyle(el).textOverflow === "ellipsis" && el.scrollWidth > el.clientWidth + 1 && el.clientWidth > 0) {
+            if (el.title !== el.textContent) failures.push(`truncated text lacks full title: ${el.id || el.className || el.tagName}`);
+            continue;
+          }
           if (el.scrollWidth > el.clientWidth + 1 && el.clientWidth > 0) failures.push(`horizontal overflow: ${el.id || el.tagName}`);
           for (const node of el.childNodes) {
             if (node.nodeType !== Node.TEXT_NODE || !node.textContent.trim()) continue;
@@ -213,7 +218,18 @@ try {
             for (const rect of range.getClientRects()) if (rect.left < box.left - 1 || rect.right > box.right + 1 || rect.bottom > box.bottom + 1) failures.push(`clipped text: ${el.id || el.tagName} text=${JSON.stringify(rect.toJSON())} box=${JSON.stringify(box.toJSON())}`);
           }
         }
-        const controls = [...document.querySelectorAll("button,input,select,summary")].filter(el => visible(el) && !el.disabled);
+        // A control scrolled wholly out of its scroller is not on screen, so it can neither overlap nor be tapped.
+        const scrolledAway = el => {
+          const box = el.getBoundingClientRect();
+          for (let parent = el.parentElement; parent; parent = parent.parentElement) {
+            const style = getComputedStyle(parent);
+            if (style.overflowX === "visible" && style.overflowY === "visible") continue;
+            const clip = parent.getBoundingClientRect();
+            if (box.bottom <= clip.top || box.top >= clip.bottom || box.right <= clip.left || box.left >= clip.right) return true;
+          }
+          return false;
+        };
+        const controls = [...document.querySelectorAll("button,input,select,summary")].filter(el => visible(el) && !el.disabled && !scrolledAway(el));
         for (const [i, a] of controls.entries()) {
           const x = a.getBoundingClientRect();
           if (x.height < 32 || x.width < 32) failures.push(`small target: ${a.id || a.tagName}`);
@@ -292,14 +308,15 @@ try {
           if (scrolling !== !!visible(thumb)) failures.thumbs.push(`${selector}: scrolling=${scrolling}, thumb=${!!visible(thumb)}`);
           if (selector === "#agent-list" && list.children.length) {
             const height = list.clientHeight;
-            if (Math.abs(height / 36 - Math.round(height / 36)) > .03) failures.rows.push(`agent list height ${height} is not whole rows`);
+            const rowHeight = parseFloat(getComputedStyle(list.firstElementChild).height);
+            if (Math.abs(height / rowHeight - Math.round(height / rowHeight)) > .03) failures.rows.push(`agent list height ${height} is not whole rows`);
           }
           if (!list.children.length && parseFloat(getComputedStyle(list).borderBottomWidth)) failures.rhythm.push(`${selector}: empty list has rule`);
           if (box.height < 0) failures.rows.push(selector);
         }
         const spaces = document.querySelector(".connected-spaces-scroll");
         const agents = document.querySelector("#running-agents");
-        const applications = document.querySelector("#applications-summary");
+        const applications = document.querySelector("#apps-strip");
         if (visible(spaces) && visible(agents) && visible(applications) && applications.textContent.trim()) {
           const before = agents.getBoundingClientRect().top - spaces.getBoundingClientRect().bottom;
           const after = applications.getBoundingClientRect().top - agents.getBoundingClientRect().bottom;

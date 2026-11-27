@@ -13,8 +13,9 @@ import {
 } from "@cotal-ai/workspace";
 import { DEFAULT_AGENT_NAME } from "./default-persona.js";
 import { shellWord } from "./endpoint-errors.js";
+import { execWords } from "./exec-words.js";
 import { exitInterrupted, INTERRUPT_SIGNALS, type InterruptSignal } from "./interrupt-notice.js";
-import { catalogFolderProblem, linkTarget } from "./personas.js";
+import { catalogFolderProblem, linkTarget, personaSelectorControls } from "./personas.js";
 
 export interface PersonaCatalog { root: string; space: string }
 export interface PersonaSource { bytes: Buffer; ino: number; dev: number; mtimeMs: number }
@@ -92,7 +93,7 @@ export function personaPath(root: string, name: string, access: "show" | "legacy
   if (access === "show" && !name.trim())
     throw new CommandFailure("refused", "USAGE_INVALID", "persona show needs a nonblank catalog filename stem");
   const problem = access === "show"
-    ? (/[\\/\u0000-\u001f\u007f]/u.test(name) || (process.platform === "win32" && name.includes(":"))
+    ? (/[\\/]/u.test(name) || personaSelectorControls.test(name) || (process.platform === "win32" && name.includes(":"))
       ? "persona show needs a catalog filename stem, not a path or a name with control characters" : undefined)
     : personaNameProblem(access === "legacy-remove" && name !== "." && name !== ".." ? name.replaceAll(".", "_") : name);
   if (problem) throw new CommandFailure("refused", "USAGE_INVALID", problem);
@@ -318,6 +319,16 @@ function editorProgram(editor: string): string | undefined {
   catch { return undefined; }
 }
 
+/** Silence the shell's lookup error for an absent editor, but leave the editor's own stderr live. */
+function quietEditorLookup(editor: string): string {
+  let command: string | undefined;
+  try { [command] = execWords(editor); }
+  catch { return ""; } // Shell expressions can decide at runtime which commands to run.
+  // Shell negation and assignments do not name an editor program.
+  if (!command || command === "!" || command.includes("=")) return "";
+  return `if ! command -v -- ${shellWord(command)} >/dev/null 2>&1; then exec 2>/dev/null; fi\n`;
+}
+
 /** How the editor ended, and the first signal the CLI received while it ran. */
 interface EditorExit { status: number | null; signal: NodeJS.Signals | null; error?: NodeJS.ErrnoException; received?: InterruptSignal }
 
@@ -331,7 +342,8 @@ function runEditor(editor: string, program: string | undefined, draft: string, j
   const pass = (signal: InterruptSignal) => { received ??= signal; child.kill(signal); };
   for (const signal of INTERRUPT_SIGNALS) process.on(signal, pass);
   const stdio: StdioOptions = json ? ["inherit", process.stderr, "inherit"] : "inherit";
-  const child = program ? spawn(program, [draft], { stdio }) : spawn(`${editor} ${quoted}`, { shell: true, stdio });
+  const prefix = json && !program && process.platform !== "win32" ? quietEditorLookup(editor) : "";
+  const child = program ? spawn(program, [draft], { stdio }) : spawn(`${prefix}${editor} ${quoted}`, { shell: true, stdio });
   return new Promise(resolve => {
     const done = (exit: EditorExit) => {
       for (const signal of INTERRUPT_SIGNALS) process.off(signal, pass);
@@ -395,7 +407,11 @@ export async function editPersona(path: string, name: string, catalog: PersonaCa
     const oversized = tooLarge(edited, `your edit is kept in ${draft}; shorten it to 1 MiB or less, run \`${retry}\` again and paste it in, then remove ${dirname(draft)}`);
     if (oversized) { keep = true; throw oversized; }
     let displayName: string;
-    try { displayName = validatePersona(edited, draft).name; }
+    try {
+      displayName = validatePersona(edited, draft).name;
+      if (displayName.startsWith("-") && displayName !== validatePersona(source.bytes, path).name)
+        throw new CommandFailure("refused", "SCHEMA_INVALID", "the new frontmatter name cannot start with \"-\"; choose one that starts with a letter, digit or `_`");
+    }
     catch (error) {
       if (!isCommandFailure(error)) throw error;
       keep = true;

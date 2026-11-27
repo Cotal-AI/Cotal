@@ -58,6 +58,7 @@ import {
   type UserBundle,
 } from "@cotal-ai/workspace";
 import { forgetChatSessions } from "@cotal-ai/workspace/chat";
+import { recordNewProjectTrust } from "./up-project-trust.js";
 import { liveMeshOwner, unsettledStackMembers } from "./clean.js";
 import { brokerLaunchAt } from "../lib/broker-service.js";
 import { shellWord } from "../lib/endpoint-errors.js";
@@ -295,11 +296,11 @@ async function addFromServer(name: string | undefined, v: AddValues, prompt: boo
  *  discovery document, which is fetched only after the operator agrees and is adopted only after
  *  they confirm the pins. Its checks run even under `--force`, which only replaces a record.
  *  `cotal setup --connection-file` registers a self-hosted space through it. */
-export async function addFromBundle(name: string | undefined, v: AddValues, prompt: boolean, presentation: Presentation = "rich"): Promise<Added> {
+export async function addFromBundle(name: string | undefined, v: AddValues, prompt: boolean, presentation: Presentation, fileFlag: "--file" | "--connection-file" = "--file"): Promise<Added> {
   const target = name ? { space: name } : null;
   let bundle: UserBundle;
   if (v.file !== undefined) {
-    bundle = readConnectionFile(v.file, "--file", target);
+    bundle = readConnectionFile(v.file, fileFlag, target);
   } else {
     let from: URL;
     let disco: URL;
@@ -370,12 +371,13 @@ export async function addFromBundle(name: string | undefined, v: AddValues, prom
 }
 
 /** A user-auth connection bundle read from `file` and checked; `flag` names the input in a refusal. */
-export function readConnectionFile(file: string, flag: string, target: unknown): UserBundle {
+export function readConnectionFile(file: string, flag: "--file" | "--connection-file", target: unknown): UserBundle {
   let raw: string;
   try {
     raw = readFileSync(file, "utf8");
   } catch (e) {
-    throw usage(`cannot read ${flag} ${file} (${(e as NodeJS.ErrnoException).code ?? (e as Error).message})`);
+    throw usage(`cannot read ${flag} ${file} (${(e as NodeJS.ErrnoException).code ?? (e as Error).message})`,
+      flag === "--connection-file" ? "pass the path to the exported connection bundle with `--connection-file`" : undefined);
   }
   return take(checkUserBundle(raw), target);
 }
@@ -461,7 +463,7 @@ export async function spaceCreate(name: string, rootFlag: string | undefined, ad
     const blocked = found && adoptionRefusal(root, found);
     if (blocked) throw refuse("CONFLICT", `${blocked.message}; it was not adopted and nothing was written`, { space: name, root: canonicalRoot(root), recordedRoot: found!.recordedRoot }, displayRemedy(blocked.remedy));
   }
-  const state = checkLocalSpace(name, root, "--root", adopt ? false : "prepared", adopt);
+  const state = checkLocalSpace(name, root, "--root", adopt ? false : "prepared", adopt, presentation);
   const existing = state === "prepared" ? findPreparedSpace(name) : undefined;
   if (state === "prepared") {
     if (!existing || canonicalRoot(existing.root) !== canonicalRoot(root))
@@ -511,7 +513,7 @@ export function validateLocalSpaceName(name: string): void {
  * be reused. With `adopting`, a stack journal another folder recorded here counts as
  * this root's own, as `space create --adopt` is about to make it.
  */
-export function checkLocalSpace(name: string, root: string, flag: "--root" | "--project", again: boolean | "prepared", adopting = false): LocalSpaceState {
+export function checkLocalSpace(name: string, root: string, flag: "--root" | "--project", again: boolean | "prepared", adopting = false, presentation: Presentation = "rich"): LocalSpaceState {
   const target = { space: name };
   validateLocalSpaceName(name);
   if (resolve(root, ".cotal") === resolve(homeCotalDir()) || canonicalRoot(root) === canonicalRoot(homedir()))
@@ -558,7 +560,9 @@ export function checkLocalSpace(name: string, root: string, flag: "--root" | "--
       target, remedy: `${displayCmd()} space create ${shellWord(elsewhere.journal.space)} --adopt --root ${shellWord(canonicalRoot(root))}`, remedyIsCommand: true,
     });
   }
-  const held = [...new Set([...take(spacesAtRoot(root), target), ...loadMeshes().filter((m) => here(m.root)).map((m) => m.space), ...[preparedSpaceAt(root)?.space].filter((s): s is string => s !== undefined)])];
+  const accounts = take(spacesAtRoot(root), target);
+  const registrations = loadMeshes().filter((m) => here(m.root));
+  const held = [...new Set([...accounts, ...registrations.map((m) => m.space), ...[preparedSpaceAt(root)?.space].filter((s): s is string => s !== undefined)])];
   // A space started here before and stopped since keeps its trust in this root.
   if (again === true && held.length === 1 && held[0] === name) return "started";
   if (held.length > 0) {
@@ -579,10 +583,17 @@ export function checkLocalSpace(name: string, root: string, flag: "--root" | "--
       const link = cotalDirLink(root);
       throw refuse("CONFLICT", link !== undefined ? `${join(root, ".cotal")} is a link to ${link}, which holds the records of "${held[0]}" at ${origin}` : `${root} holds records copied or moved from ${origin}, the root of "${held[0]}"`, target, `create "${name}" in another folder with ${flag} <dir>`);
     }
-    const stopped = held.length === 1 && journaled === undefined && !loadMeshes().some((m) => here(m.root)) && preparedSpaceAt(root) === undefined;
+    const conflict = `${root} is already the root of "${held.join('", "')}"`;
+    const manual = registrations.filter((m) => m.origin === "manual");
+    if (manual.length) {
+      const cli = presentation === "json" ? "cotal" : displayCmd();
+      const steps = manual.map(({ space }) => `for "${space}", start its broker where it runs, inspect the registration with ${codeSpan(`${cli} space show ${shellWord(space)}`)}, or forget it with ${codeSpan(`${cli} space forget ${shellWord(space)}`)}`);
+      throw refuse("CONFLICT", conflict, target, `create "${name}" in another folder with ${flag} <dir>; ${steps.join("; ")}`);
+    }
+    const stopped = held.length === 1 && journaled === undefined && !registrations.length && preparedSpaceAt(root) === undefined;
     // The next step names the space already here, so whoever meant it can start, select or forget it.
     const which = held.length === 1 ? held[0]! : "<space>";
-    throw refuse("CONFLICT", `${root} is already the root of "${held.join('", "')}"`, target, stopped
+    throw refuse("CONFLICT", conflict, target, stopped
       ? `start "${held[0]}" again with \`cotal up\` from ${root}${held[0] === name ? "" : `, or create "${name}" in another folder with ${flag} <dir>`}`
       : `create "${name}" in another folder with ${flag} <dir>; for "${held.join('", "')}", which ${held.length === 1 ? "uses" : "use"} this folder, start it with \`cotal up\` from ${root}, select it with \`cotal use ${which}\`, or forget it with \`cotal space forget ${which}\``);
   }
@@ -606,13 +617,16 @@ export function recordLocalSpace(name: string, root: string, flag: "--root" | "-
   }
   protectedLocalDirectory(dir, "the project's .cotal directory");
   const preparedAt = new Date().toISOString();
-  try { return { file: recordPreparedSpace({ space: name, root, ts: preparedAt }), preparedAt }; }
+  let file: string;
+  try { file = recordPreparedSpace({ space: name, root, ts: preparedAt }); }
   catch (error) {
     if (!unwritable(error)) throw error;
     // The empty `.cotal` this call made goes too, so the refusal leaves the root as it was.
     if (made !== undefined) rmdirSync(dir);
     throw refuse("PERMISSION_DENIED", `this account cannot write this machine's Cotal home ${homeCotalDir()}, so the space could not be recorded; nothing was written`, target, "make that folder writable by you, or set COTAL_HOME to a folder you own");
   }
+  if (made !== undefined) recordNewProjectTrust(root);
+  return { file, preparedAt };
 }
 
 const unwritable = (error: unknown): boolean => ["EACCES", "EPERM", "EROFS"].includes((error as NodeJS.ErrnoException).code ?? "");

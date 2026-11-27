@@ -3,18 +3,15 @@
 import type { DeliveryState } from "./endpoint-delivery-state.js";
 import type { LifecycleState } from "./endpoint-lifecycle-state.js";
 import type { EndpointIdentity } from "./endpoint-identity.js";
+import type { EndpointParts } from "./endpoint-parts.js";
 import { isChannelFamily, isConcreteChannel } from "./subjects.js";
-import type { ControlReply, DeliveryClass } from "./types.js";
+import type { ControlReply } from "./types.js";
 
 /** What the boot-membership component reads from its endpoint. State is read when it is used, never
- *  copied, and every method is looked up on the endpoint at call time. */
+ *  copied, and every method is looked up on the endpoint at call time. A peer part is read from the
+ *  parts record at call time. */
 export interface EndpointBootMembershipsDeps {
-  requestDelivery: (op: string, args: Record<string, unknown>, timeoutMs?: number) => Promise<ControlReply>;
   requireLifecycleUid: (what: string) => string;
-  deliveryClassFresh: (channel: string) => Promise<DeliveryClass>;
-  durableJoinChannel: (channel: string) => Promise<{ durable: boolean; reason?: string; generation?: number }>;
-  membershipPause: (attempt: number) => Promise<void>;
-  isNoResponders: (e: unknown) => boolean;
   emitRecoverable: (err: Error) => void;
 }
 
@@ -30,14 +27,9 @@ export class EndpointBootMemberships {
    *  via {@link hasDurableMembership} (a joined durable channel NOT yet a member renders degraded). */
   private readonly pendingBootJoins = new Set<string>();
 
-  constructor(private readonly identity: Readonly<EndpointIdentity>, private readonly lifecycle: Readonly<LifecycleState>, private readonly delivery: Readonly<DeliveryState>, private readonly deps: EndpointBootMembershipsDeps) {}
+  constructor(private readonly identity: Readonly<EndpointIdentity>, private readonly lifecycle: Readonly<LifecycleState>, private readonly delivery: Readonly<DeliveryState>, private readonly deps: EndpointBootMembershipsDeps, private readonly parts: Pick<EndpointParts, "anycastRail" | "controlPlane" | "durable" | "durableBackstop" | "reconnection">) {}
 
-  private requestDelivery(op: string, args: Record<string, unknown>, timeoutMs?: number) { return this.deps.requestDelivery(op, args, timeoutMs); }
   private requireLifecycleUid(what: string) { return this.deps.requireLifecycleUid(what); }
-  private deliveryClassFresh(channel: string) { return this.deps.deliveryClassFresh(channel); }
-  private durableJoinChannel(channel: string) { return this.deps.durableJoinChannel(channel); }
-  private membershipPause(attempt: number) { return this.deps.membershipPause(attempt); }
-  private isNoResponders(e: unknown) { return this.deps.isNoResponders(e); }
   private emitRecoverable(err: Error) { this.deps.emitRecoverable(err); }
 
   /** Agent-side: current lifecycle memberships, or all principal-owned rows for an explicit channel,
@@ -47,9 +39,9 @@ export class EndpointBootMemberships {
   async fetchMemberships(channel?: string): Promise<{ channel: string; generation: number; activated: boolean; lifecycleUid?: string }[] | undefined> {
     let reply: ControlReply;
     try {
-      reply = await this.requestDelivery("listMemberships", { lifecycleUid: this.requireLifecycleUid("listing durable memberships"), ...(channel === undefined ? {} : { channel }) }, 5_000);
+      reply = await this.parts.controlPlane.requestDelivery("listMemberships", { lifecycleUid: this.requireLifecycleUid("listing durable memberships"), ...(channel === undefined ? {} : { channel }) }, 5_000);
     } catch (e) {
-      if (this.isNoResponders(e)) return undefined; // no delivery daemon — open / daemon-less, no Plane-3
+      if (this.parts.anycastRail.isNoResponders(e)) return undefined; // no delivery daemon — open / daemon-less, no Plane-3
       throw e; // responder present but errored — surface it (leaveChannel fails closed)
     }
     if (!reply.ok) throw new Error(reply.error ?? "listMemberships failed");
@@ -74,15 +66,15 @@ export class EndpointBootMemberships {
         if (!isConcreteChannel(channel)) continue;
         // A missing channel row legitimately resolves through the defaults. A failed/denied registry
         // read does not prove the channel is live-only, so let it fail startup loudly.
-        const cls = await this.deliveryClassFresh(channel);
+        const cls = await this.parts.durableBackstop.deliveryClassFresh(channel);
         if (cls !== "durable") continue;
       }
       try {
-        const r = await this.durableJoinChannel(channel);
+        const r = await this.parts.durable.durableJoinChannel(channel);
         if (r.durable) this.delivery.plane3Channels.set(channel, r.generation ?? 0);
         else void this.reconcileBootJoin(channel); // present but not yet durable — reconcile to recovery
       } catch (e) {
-        if (!this.isNoResponders(e)) this.emitRecoverable(e as Error); // no daemon ⇒ retry until it recovers
+        if (!this.parts.anycastRail.isNoResponders(e)) this.emitRecoverable(e as Error); // no daemon ⇒ retry until it recovers
         void this.reconcileBootJoin(channel);
       }
     }
@@ -98,13 +90,13 @@ export class EndpointBootMemberships {
     if (this.pendingBootJoins.has(channel)) return; // already reconciling
     this.pendingBootJoins.add(channel);
     for (let attempt = 0; ; attempt++) {
-      await this.membershipPause(attempt);
+      await this.parts.reconnection.membershipPause(attempt);
       if (this.lifecycle.stopped || !this.identity.channels.includes(channel) || this.delivery.plane3Channels.has(channel)) {
         this.pendingBootJoins.delete(channel);
         return; // stopped, left, or another path established it
       }
       try {
-        const r = await this.durableJoinChannel(channel);
+        const r = await this.parts.durable.durableJoinChannel(channel);
         if (r.durable) {
           this.delivery.plane3Channels.set(channel, r.generation ?? 0);
           this.pendingBootJoins.delete(channel);
@@ -113,7 +105,7 @@ export class EndpointBootMemberships {
         // present but durable:false (e.g. catch-up window evicted) — keep retrying; the channel stays
         // honestly degraded meanwhile, never silently "active".
       } catch (e) {
-        if (attempt === 0 && !this.isNoResponders(e))
+        if (attempt === 0 && !this.parts.anycastRail.isNoResponders(e))
           this.emitRecoverable(new Error(`channel "${channel}": boot durable self-join not yet established - retrying until the delivery daemon is reachable (${(e as Error).message})`));
       }
     }

@@ -53,14 +53,16 @@ export interface ApprovalAuthority {
   /** Trust it in a child process with `NODE_EXTRA_CA_CERTS`. */
   readonly caFile: string;
   readonly requests: ReadonlyMap<string, FixtureRequest>;
-  readonly counts: { posts: number; issues: number; deletes: number; foreignDeletes: number };
+  readonly counts: { posts: number; issues: number; deletes: number; foreignDeletes: number; resumeProbes: number; retirementAttempts: number };
   /** `slow` retirements each answer after 35 s, past the client's own request deadline. */
   readonly retirement: { driverRan: boolean; slow: number; served: number };
+  /** Temporarily stop advertising resume or answering retirement for a live test. */
+  readonly availability: { resume: boolean; retirement: boolean; humanSession: boolean; resumeReply?: { status: 429 | 503; retryAfter?: string } };
   /** Serve a mesh's discovery and identities, and record it in the workspace as a signed-in mesh.
    *  `exchange` is the auth service's public exchange URL; `local` issues into a real ledger. */
   addMesh(mesh: {
     space: string; server: string; root: string; owner: string; userAuth: ReturnType<typeof assertUserAuthInfo>; sentinelCreds: string;
-    exchange?: string; local?: LocalIssuer; selection?: boolean;
+    exchange?: string; local?: LocalIssuer; selection?: boolean; resume?: boolean;
   }): void;
   /** The fixture person's decision in the authority's own page. */
   decide(requestId: string, decision: { approve: Approved } | "deny" | "expire"): void;
@@ -89,8 +91,9 @@ export async function startApprovalAuthority(o: { home: string; human: string })
   type Mesh = { owner: string; bundle: Record<string, unknown>; exchange?: string; local?: LocalIssuer };
   const meshes = new Map<string, Mesh>();
   const requests = new Map<string, FixtureRequest>();
-  const counts = { posts: 0, issues: 0, deletes: 0, foreignDeletes: 0 };
+  const counts = { posts: 0, issues: 0, deletes: 0, foreignDeletes: 0, resumeProbes: 0, retirementAttempts: 0 };
   const retirement = { driverRan: true, slow: 0, served: 0 };
+  const availability: ApprovalAuthority["availability"] = { resume: true, retirement: true, humanSession: true };
   let base = "";
 
   const issue = async (row: FixtureRequest, mesh: Mesh) => {
@@ -129,11 +132,28 @@ export async function startApprovalAuthority(o: { home: string; human: string })
     void (async () => {
       const url = new URL(req.url!, base);
       const discovery = /^\/s\/([^/]+)\/\.well-known\/cotal-mesh$/.exec(url.pathname);
-      if (req.method === "GET" && discovery && meshes.has(discovery[1]!)) return send(200, meshes.get(discovery[1]!)!.bundle);
+      if (req.method === "GET" && discovery && meshes.has(discovery[1]!)) {
+        const bundle = meshes.get(discovery[1]!)!.bundle;
+        if (availability.resume) return send(200, bundle);
+        const capabilities = { ...bundle.cloudCapabilities as Record<string, unknown> };
+        delete capabilities.conversationResume;
+        return send(200, { ...bundle, cloudCapabilities: capabilities });
+      }
       const exchange = /^\/s\/([^/]+)\/exchange$/.exec(url.pathname);
       const forward = exchange ? meshes.get(exchange[1]!)?.exchange : undefined;
       if (req.method === "POST" && forward) {
-        const answer = await fetch(forward, { method: "POST", headers: { "content-type": "application/json" }, body: await read(req) });
+        if (req.headers["cotal-conversation-resume"] === "1") {
+          counts.resumeProbes++;
+          const reply = availability.resumeReply;
+          if (reply) {
+            if (reply.retryAfter) res.setHeader("Retry-After", reply.retryAfter);
+            return send(reply.status, { error: "resume temporarily unavailable" });
+          }
+        }
+        const answer = await fetch(forward, { method: "POST", headers: { "content-type": "application/json",
+          ...(req.headers["cotal-conversation-resume"] === "1" ? { "cotal-conversation-resume": "1" } : {}) }, body: await read(req) });
+        const retryAfter = answer.headers.get("retry-after");
+        if (retryAfter) res.setHeader("Retry-After", retryAfter);
         res.writeHead(answer.status, { "content-type": "application/json" });
         return res.end(await answer.text());
       }
@@ -162,6 +182,9 @@ export async function startApprovalAuthority(o: { home: string; human: string })
         return send(status, row.material);
       }
       if (req.method === "DELETE" && route[2]) {
+        counts.retirementAttempts++;
+        if (!availability.humanSession) return send(401, { error: "session revoked" });
+        if (!availability.retirement) return send(503, { error: "retirement unavailable" });
         const row = [...requests.values()].find((r) => r.space === at && r.actor === route[2] && url.searchParams.get("lifecycleUid") === r.lifecycleUid);
         if (!row) return send(404, { error: "unknown lifecycle" });
         if (mesh.local) counts.deletes++; else counts.foreignDeletes++;
@@ -177,13 +200,14 @@ export async function startApprovalAuthority(o: { home: string; human: string })
   base = `https://127.0.0.1:${(server.address() as AddressInfo).port}`;
 
   return {
-    base, caFile, requests, counts, retirement,
+    base, caFile, requests, counts, retirement, availability,
     addMesh(m) {
       const userAuth = { ...m.userAuth, endpoints: { url: `${base}/s/${m.space}` } };
       meshes.set(m.space, { owner: m.owner, exchange: m.exchange, local: m.local, bundle: {
         space: m.space, server: m.server, tlsRequired: false, userAuth, policy: { events: "required" }, sentinelCreds: m.sentinelCreds,
         cloudCapabilities: { conversationIdentity: { version: 1, url: `${base}/api/spaces/${m.space}/conversation-identities` },
-          connectionApproval: { version: 1 }, ...(m.selection ? { conversationIdentitySelection: { version: 1 } } : {}) } } });
+          connectionApproval: { version: 1 }, ...(m.selection ? { conversationIdentitySelection: { version: 1 } } : {}),
+          ...(m.resume ? { conversationResume: { version: 1 } } : {}) } } });
       recordMesh({ space: m.space, server: m.server, root: m.root, mode: "user", origin: "manual", policy: { events: "required" },
         userAuth: { ...userAuth, remote: true }, ts: new Date().toISOString() });
     },

@@ -1,7 +1,7 @@
 /** Live Linux local-control checks through the actual desktop stdio entry, with an owned daemon. */
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { PassThrough, Readable } from "node:stream";
@@ -25,6 +25,14 @@ for (const input of [{ op: "exec", command: "sh" }, { op: "status", path: "/tmp/
 }
 check("status admits only its closed shape", parseDesktopRequest({ op: "status" }).op === "status");
 check("status-watch admits only its closed shape", parseDesktopRequest({ op: "status-watch" }).op === "status-watch" && parseRequest('{"v":1,"id":"w1","op":"status-watch"}').ok);
+const recover = { op: "space-recover", space: "team", candidate: "b".repeat(64), holder: "https://example.test/api/auth" };
+const recoveryFrame = (request: Record<string, unknown>) => parseRequest(JSON.stringify({ v: 1, id: "recovery", ...request }));
+assert.deepEqual(parseDesktopRequest(recover), recover);
+check("confirmed recovery has the same shape on both boundaries", recoveryFrame(recover).ok);
+for (const invalid of [{ ...recover, candidate: "B".repeat(64) }, { ...recover, holder: "file:///tmp/auth" }, { ...recover, unsafe: true }]) {
+  assert.throws(() => parseDesktopRequest(invalid));
+  check("both boundaries reject an invalid recovery request", !recoveryFrame(invalid).ok);
+}
 check("spaces refresh remains a typed field", parseDesktopRequest({ op: "spaces", refresh: true }).op === "spaces");
 await assert.rejects(readDesktopRequest(Readable.from(["x".repeat(65537)]))); checks++;
 await assert.rejects(readDesktopRequest(Readable.from(['{"op":"status"}\n{"op":"install"}\n']))); checks++;
@@ -35,8 +43,11 @@ const root = mkdtempSync(join(tmpdir(), "cotal-desktop-")); chmodSync(root, 0o70
 // Restoration-only entries, never a child environment.
 const saved = Object.entries(process.env);
 for (const key of Object.keys(process.env)) if (key.startsWith("COTAL_")) delete process.env[key];
-for (const name of ["home", "runtime", "config", "data", "cache"]) mkdirSync(join(root, name), { mode: 0o700 });
-Object.assign(process.env, { HOME: join(root, "home"), XDG_RUNTIME_DIR: join(root, "runtime"), XDG_CONFIG_HOME: join(root, "config"), XDG_DATA_HOME: join(root, "data"), XDG_CACHE_HOME: join(root, "cache"), DO_NOT_TRACK: "1" });
+for (const name of ["home", "config", "data", "cache"]) mkdirSync(join(root, name), { mode: 0o700 });
+// A selected daemon home's socket is `<runtime>/cotal/home-<16 hex>/daemon.sock`, and Linux allows 107 bytes.
+// Under a 39-byte TMPDIR that path was 108, so the runtime directory sits directly under /tmp, whatever TMPDIR is.
+const runtime = mkdtempSync("/tmp/cotal-rt-");
+Object.assign(process.env, { HOME: join(root, "home"), XDG_RUNTIME_DIR: runtime, XDG_CONFIG_HOME: join(root, "config"), XDG_DATA_HOME: join(root, "data"), XDG_CACHE_HOME: join(root, "cache"), DO_NOT_TRACK: "1" });
 process.env.COTAL_HOME = join(root, "home", ".cotal");
 const paths = daemonPaths();
 const native = desktopNativeFixture(root);
@@ -99,8 +110,19 @@ try {
   writeFileSync(logFile, `${"x".repeat(5 * 1024 * 1024)}\nlarge log final reason\n`, { mode: 0o600 });
   const largeLog = await request({ op: "log" });
   check("large native logs return only their recent tail", largeLog.ok === true && largeLog.result.truncated === true && largeLog.result.text.endsWith("large log final reason\n") && Buffer.byteLength(largeLog.result.text) <= 8192);
+  const previousLog = join(paths.state, "daemon.previous.log");
+  writeFileSync(previousLog, `older launch output\n${"y".repeat(9000)}\nprevious launch final reason\neyJprevious.token\n`, { mode: 0o600 });
+  const bothLogs = await request({ op: "log" });
+  check("the previous and current launches have independent redacted tails", bothLogs.ok === true && bothLogs.result.truncated === true
+    && /^Previous launch:\n.*previous launch final reason\n<redacted>\n.*Current launch:\n.*large log final reason\n$/s.test(bothLogs.result.text)
+    && !bothLogs.result.text.includes("older launch output") && Buffer.byteLength(bothLogs.result.text) <= 2 * 8192 + 64);
+  rmSync(previousLog);
+  symlinkSync(logFile, previousLog);
+  const unsafeHistory = await request({ op: "log" });
+  check("an unsafe previous log does not block the current log", unsafeHistory.ok === true && unsafeHistory.result.text === largeLog.result.text);
+  rmSync(previousLog);
   writeFileSync(logFile, "service is writing\n", { mode: 0o600 });
-  const writer = spawn(process.execPath, ["--input-type=module", "-e", 'import { appendFileSync } from "node:fs"; const file = process.argv[1]; setInterval(() => appendFileSync(file, "concurrent service output\\n".repeat(200)), 1);', logFile], { stdio: "ignore" });
+  const writer = spawn(process.execPath, ["--input-type=module", "-e", 'import { appendFileSync } from "node:fs"; const file = process.argv[1]; setInterval(() => appendFileSync(file, "concurrent service output\\n".repeat(200)), 1);', logFile], { env: {}, stdio: "ignore" });
   try {
     for (let i = 0; i < 4; i++) {
       const growing = await request({ op: "log" });
@@ -269,4 +291,5 @@ try {
   for (const key of Object.keys(process.env)) if (!saved.some(([name]) => name === key)) delete process.env[key];
   for (const [key, value] of saved) process.env[key] = value;
   rmSync(root, { recursive: true, force: true });
+  rmSync(runtime, { recursive: true, force: true });
 }

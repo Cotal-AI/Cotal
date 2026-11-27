@@ -2,7 +2,7 @@
  *  holding process removes its own record as it exits. A whole-stack stop removes one whose process
  *  is gone, such as a holder that was killed, and leaves one that still runs or cannot be read. */
 import { readFileSync, realpathSync, unlinkSync } from "node:fs";
-import { isAbsolute, join, relative, sep } from "node:path";
+import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import { writeSecretFileAtomic } from "@cotal-ai/core";
 import { assertRecordIdentity, codeSpan, exitCode, findMesh, formatRecord, homeCotalDir, identityRecord, parseRecord, renderReport, shellPath, userCotalDir } from "@cotal-ai/workspace";
@@ -69,7 +69,7 @@ function foregroundStopLoaders(flags: string[], inside: (path: string) => boolea
 }
 
 /** Capture the physical entry and loader before their paths can move with the project. */
-export function foregroundStopLauncher(root: string): string | undefined {
+export function foregroundStopLauncher(root: string): string[] | undefined {
   try {
     const argv = selfArgv();
     const project = realpathSync(root), node = realpathSync(process.execPath), entry = entryScript();
@@ -79,21 +79,45 @@ export function foregroundStopLauncher(root: string): string | undefined {
     };
     if (inside(node) || inside(entry)) return undefined;
     const loaders = entry.endsWith(".ts") ? foregroundStopLoaders(argv.slice(1, -1), inside) : [];
-    return loaders && [node, ...loaders, entry].map(shellWord).join(" ");
+    return loaders && [node, ...loaders, entry];
   } catch { return undefined; }
 }
 
+/** A literal in a PowerShell command that is itself double-quoted in PowerShell or cmd.exe. */
+function windowsStopLiteral(value: string): string {
+  const parts = value.split(/(["$`%!\u2018-\u201e])/u);
+  const words = parts.map((part, i) => i % 2 === 0 ? `'${part.replaceAll("'", "''")}'` : `[char]${part.charCodeAt(0)}`);
+  return words.length === 1 ? words[0]! : `(${words.join("+")})`;
+}
+
+function windowsStopCommand(home: string, root: string | undefined, launcher: string[], args: string[]): string {
+  const [file, ...flags] = launcher;
+  const program = file === "cotal"
+    ? `(Get-Command cotal -All -CommandType Application | Where-Object Name -Match '\\.(com|exe|bat|cmd)\\z' | Select-Object -First 1)` : windowsStopLiteral(file!);
+  const location = root === undefined ? "" : `Set-Location -LiteralPath ${windowsStopLiteral(root)}; `;
+  const argv = [...flags, ...args].map(windowsStopLiteral).join(" ");
+  return `powershell.exe -NoProfile -Command "Set-Variable ErrorActionPreference Stop; ${location}[Environment]::SetEnvironmentVariable('COTAL_HOME', ${windowsStopLiteral(resolve(home))}); & ${program} ${argv}; exit (Get-Variable LASTEXITCODE -ValueOnly)"`;
+}
+
 /** A hangup leaves the stack running. Release the hold before exiting without unwinding finally. */
-export function hangupForegroundStack(root: string, space: string, outsideCmd: string | undefined): never {
-  const stop = `down --space ${shellWord(space)} --yes`;
+export function hangupForegroundStack(root: string, space: string, outsideCmd: string[] | undefined): never {
   const home = homeCotalDir();
   const prefix = home === userCotalDir() ? "" : `COTAL_HOME=${shellWord(home)} `;
-  const command = codeSpan(`${prefix}${outsideCmd ?? "cotal"} ${stop}`);
-  const remedy = !stackRootGone(space, root)
-    ? `${codeSpan(`cd ${shellWord(root)} && ` + `${displayCmd()} down`)} stops it`
-    : outsideCmd !== undefined
-      ? `run ${command} from another folder to stop it`
+  let remedy: string;
+  if (!stackRootGone(space, root)) {
+    const launcher = displayCmd();
+    const stop = (action: string) => codeSpan(process.platform === "win32"
+      ? windowsStopCommand(home, root, launcher === "cotal" ? [launcher] : outsideCmd ?? selfArgv(), ["down", action])
+      : `cd ${shellWord(root)} && ${prefix}${launcher} down ${action}`);
+    remedy = `inspect it with ${stop("--dry-run")}; to stop it, run ${stop("--yes")}`;
+  } else {
+    const launcher = outsideCmd ?? ["cotal"];
+    const command = codeSpan(process.platform === "win32"
+      ? windowsStopCommand(home, undefined, launcher, ["down", "--space", space, "--yes"])
+      : `${prefix}${launcher.map(shellWord).join(" ")} down --space ${shellWord(space)} --yes`);
+    remedy = outsideCmd !== undefined ? `run ${command} from another folder to stop it`
       : `use a Cotal installation outside the project to run ${command} from another folder to stop it`;
+  }
   process.stderr.write(`The terminal closed. This stack is still running; ${remedy}.\n`);
   process.exitCode = 129;
   releaseForegroundHold(root);

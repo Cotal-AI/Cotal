@@ -70,7 +70,7 @@ export function App({
   /** Builds the operator's presence peer (root.tsx); absent where the mesh cannot host one. */
   makeParticipant?: () => CotalEndpoint;
 }) {
-  const mesh = useMesh(ep, { tapSubject });
+  const { mesh, discardChatHistory } = useMesh(ep, { tapSubject });
   const { exit } = useApp();
   const { stdout } = useStdout();
   const { focus, focusNext, focusPrevious } = useFocusManager();
@@ -482,7 +482,10 @@ export function App({
       );
     } else if (c?.kind === "purge") {
       setNotice(`purging ${c.space}…`);
-      void ctl("purge", {}).then((r) => setNotice(r.ok ? "purged space history" : `purge: ${r.error ?? "failed"}`));
+      void ctl("purge", {}).then((r) => {
+        if (r.ok) discardChatHistory();
+        setNotice(r.ok ? "purged space history" : `purge: ${r.error ?? "failed"}`);
+      });
     } else if (c?.kind === "delchan") {
       // Core's clearChannel with the web's per-action authority (console/control.ts). The tab
       // vanishes on the next channel poll (MeshView rebuilds the list from the broker) and its
@@ -490,6 +493,7 @@ export function App({
       setNotice(`deleting #${c.channel}…`);
       void deleteChannel({ ...controlCtx, space: ep.space }, c.channel).then((r) => {
         if (!r.ok) return setNotice(`delchan: ${r.error}`);
+        discardChatHistory(c.channel);
         setNotice(`deleted #${c.channel} · ${r.purged} messages purged`);
         setActiveChannel((ch) => (ch === c.channel ? null : ch));
       });
@@ -498,7 +502,6 @@ export function App({
 
   useInput(
     (input, key) => {
-      if (helpOpen) return setHelpOpen(false);
       if (detail) {
         if (detail.kind === "agent" && !key.escape && !key.return) return;
         return setDetail(null);
@@ -535,32 +538,21 @@ export function App({
         if (idx < tabs.length) setActiveChannel(tabs[idx]);
       }
     },
-    { isActive: !attachTarget && !palette.active && !newAgent && confirm === null && compose === null },
+    { isActive: !helpOpen && !attachTarget && !palette.active && !newAgent && confirm === null && compose === null },
   );
 
   // Attached: render nothing so Ink releases stdin/stdout to the seat (the suspend effect owns the
   // terminal). App stays mounted, so the observer endpoint + MeshView survive in the background.
   if (attachTarget) return null;
-  if (helpOpen) return <Help focusedId={focusedId} width={size.cols} height={size.rows} />;
+  if (helpOpen) return <Help focusedId={focusedId} width={size.cols} height={size.rows} onClose={() => setHelpOpen(false)} />;
   if (detail) return <Detail ep={ep} target={detail} feed={mesh.feed} width={size.cols} height={size.rows} managed={managed} />;
   if (confirm)
     return (
       <Confirm target={confirm} width={size.cols} height={size.rows} onConfirm={onConfirmed} onCancel={() => setConfirm(null)} />
     );
-  if (railOverlay)
-    return (
-      <NeedsYou
-        waiting={mesh.signals.waiting}
-        boxWidth={size.cols}
-        boxHeight={size.rows}
-        blocked={blocked}
-        onFocus={onFocus}
-        onOpenDetail={openAgent}
-      />
-    );
 
-  return (
-    <Box flexDirection="column" width={size.cols} height={size.rows}>
+  const mainView = (
+    <>
       <Tabs tabs={tabs} active={activeChannel} counts={counts} unread={unread} width={size.cols} />
       <Tiles counts={mesh.signals.counts} stalestLiveTs={mesh.signals.stalestLiveTs} width={size.cols} />
       {mode === "dm" ? (
@@ -670,6 +662,24 @@ export function App({
         onRoster={onRoster}
         width={size.cols}
       />
+    </>
+  );
+  function renderView() {
+    if (railOverlay) return (
+        <NeedsYou
+          waiting={mesh.signals.waiting}
+          boxWidth={size.cols}
+          boxHeight={size.rows}
+          blocked={blocked}
+          onFocus={onFocus}
+          onOpenDetail={openAgent}
+        />
+      );
+    return mainView;
+  }
+  return (
+    <Box flexDirection="column" width={size.cols} height={size.rows}>
+      {renderView()}
       {palette.active || newAgent ? <Box position="absolute" width={size.cols} height={size.rows}
         alignItems="center" justifyContent="center">
         {newAgent ? <NewAgent space={ep.space} width={size.cols} height={size.rows}
@@ -678,7 +688,7 @@ export function App({
           onClose={() => setNewAgent(false)}
           onBack={() => { setNewAgent(false); setPalette({ active: true, query: "" }); }} />
           : <CommandPalette active query={palette.query} snapshot={mesh} canWrite={!!canWrite}
-            canControl={!!canControl} width={size.cols} readManaged={readPaletteAgents}
+            canControl={!!canControl} canBack={!!onBack} width={size.cols} readManaged={readPaletteAgents}
             onChange={(query) => setPalette({ active: true, query })} onRun={runPaletteLine}
             onNewAgent={() => { setPalette({ active: false, query: "" }); setNewAgent(true); }}
             onCancel={() => setPalette({ active: false, query: "" })} />}

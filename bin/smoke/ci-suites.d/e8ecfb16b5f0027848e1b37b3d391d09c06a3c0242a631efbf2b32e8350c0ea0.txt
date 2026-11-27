@@ -1,0 +1,3 @@
+# A Codex tool result read after its call publishes with its result marker, and the event plane
+# keeps publishing.
+smoke:agui-codex-result-split

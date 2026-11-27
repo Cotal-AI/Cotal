@@ -1,6 +1,6 @@
 /**
- * An agent's display name on its `agent` endpoint (SPEC 13.22 `set-name`), on a real nats-server
- * through the shipped auth callout.
+ * An agent's display name and label on its `agent` endpoint (SPEC 13.22 `set-name` and `set-label`),
+ * on a real nats-server through the shipped auth callout.
  *
  * Covered: the owner's interactive session renames an agent and gets `{ name }`; the agent's card
  * carries the name at once while its principal stays; a second client watching presence and a third
@@ -11,7 +11,10 @@
  * agent, in any case, is `already-exists` with `name-taken`, and once that agent is offline its name is
  * free; the agent's own name in another case is a change. The broker refuses a sibling agent of the
  * same owner, another owner's session and another owner's agent that holds a prompts grant, and the
- * shipped grant builder refuses `set-name`. A closed lane answers `unavailable`. A `MeshAgent` whose
+ * shipped grant builder refuses `set-name`. The owner's session labels the agent and gets `{ label }`;
+ * the card carries the label and keeps its name, and a watcher sees both; every label the label rule
+ * refuses is `bad-request` saying why; the broker refuses a sibling's or another owner's `set-label`;
+ * and a later `set-name` drops the label. A closed lane answers `unavailable`. A `MeshAgent` whose
  * launcher restores a display name starts with it under its launch actor, reports it as
  * `displayName`, and follows a rename; `configFromEnv` reads `COTAL_DISPLAY_NAME` and refuses an
  * invalid one, and the shipped connectors' launch env forwards it beside `COTAL_NAME`.
@@ -26,7 +29,7 @@ import { join } from "node:path";
 import { PermissionViolationError, connect, credsAuthenticator, tokenAuthenticator, type NatsConnection } from "@nats-io/transport-node";
 import { SignJWT, generateKeyPair, type CryptoKey } from "jose";
 import {
-  AGENT_ENDPOINT, AGENT_NAME_REFUSED_DETAIL, CotalEndpoint, EpEnvelopeError, createSpaceAuth, epPrincipalGrantRows, epPrincipalRequestSubject,
+  AGENT_ENDPOINT, AGENT_LABEL_META_KEY, AGENT_NAME_REFUSED_DETAIL, CotalEndpoint, EpEnvelopeError, createSpaceAuth, epPrincipalGrantRows, epPrincipalRequestSubject,
   isReachable, mintCreds, mintLifecycleUid, newIdentity, processRuntime, provisionAgentDurables, serverConfig, setupSpaceStreams,
   type EndpointReply, type EpPrincipal, type EpPrincipalServeContext, type Presence,
 } from "@cotal-ai/core";
@@ -149,6 +152,9 @@ const verdict = (r: Settled): string =>
     : r.error instanceof EpEnvelopeError ? `${r.error.code}/${r.error.outcome ?? "-"}` : `threw ${(r.error as Error).message}`;
 const reason = (r: Settled): unknown => (r.ok && !r.value.ok ? r.value.error.details?.find((d) => d.kind === AGENT_NAME_REFUSED_DETAIL)?.reason : undefined);
 const data = (r: Settled): unknown => (r.ok && r.value.ok ? (r.value as EndpointReply & { data: unknown }).data : undefined);
+const refusalText = (r: Settled): string => (r.ok && !r.value.ok ? r.value.error.message : "");
+const relabel = (ep: CotalEndpoint, to: Who, label: unknown) =>
+  settled(ep.callPrincipal({ endpoint: AGENT_ENDPOINT, principal: addressOf(to), command: "set-label", authority: "owner", args: { label }, deadlineMs: WAIT }));
 const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
 async function publishRefused(s: Seat, to: Who, authority: "owner" | "grant"): Promise<boolean> {
   const subject = epPrincipalRequestSubject(space, { endpoint: AGENT_ENDPOINT, principal: addressOf(to), command: "set-name", authority, caller: { owner: s.w.owner, actor: s.w.actor, uid: s.w.uid }, nonce: nonce() });
@@ -282,12 +288,36 @@ try {
     check("none of them changed the name", coderEp.card.name === "Ada Reviewer" && shownTo(webEp) === "Ada Reviewer", coderEp.card.name);
   }
 
+  console.log("\nthe owner labels the agent");
+  {
+    const labelTo = (ep: CotalEndpoint) => ep.getRoster().find((p: Presence) => p.card.id === coderId)?.card.meta?.[AGENT_LABEL_META_KEY];
+    const r = await relabel(webEp, W.coder, "Login work");
+    check("set-label answers ok with { label }", verdict(r) === "ok" && same(data(r), { label: "Login work" }), verdict(r));
+    check("the agent's card carries the label and keeps its name, and a watcher sees both",
+      coderEp.card.meta?.[AGENT_LABEL_META_KEY] === "Login work" && coderEp.card.name === "Ada Reviewer"
+        && await until(() => labelTo(bobWebEp) === "Login work" && shownTo(bobWebEp) === "Ada Reviewer", 4000),
+      { meta: coderEp.card.meta, name: coderEp.card.name, seen: [labelTo(bobWebEp), shownTo(bobWebEp)] });
+    const bad: [string, string][] = [["41 characters", "x".repeat(41)], ["two spaces", "Login  work"], ["a tab", "Login\twork"], ["a slash", "src/app.ts"],
+      ["a line break", "a\nb"], ["padded", " Login"], ["empty", ""]];
+    const got = await Promise.all(bad.map(async ([what, label]) => ({ what, r: await relabel(webEp, W.coder, label) })));
+    check(`each of ${bad.length} labels the label rule refuses is bad-request, not-executed, saying why`,
+      got.every(({ r }) => verdict(r) === "bad-request/not-executed" && /^invalid (label|name)/.test(refusalText(r))), got.map(({ what, r }) => `${what}: ${verdict(r)} ${refusalText(r)}`));
+    check("and the card kept its label", coderEp.card.meta?.[AGENT_LABEL_META_KEY] === "Login work", coderEp.card.meta);
+    const sibling = await relabel(siblingEp, W.coder, "Mallory");
+    const foreign = await relabel(bobWebEp, W.coder, "Mallory");
+    check("a sibling agent of the same owner and another owner's session: permission-denied, not-executed",
+      verdict(sibling) === "permission-denied/not-executed" && verdict(foreign) === "permission-denied/not-executed", [verdict(sibling), verdict(foreign)]);
+    const back = await rename(webEp, W.coder, "Ada Reviewer");
+    check("a later set-name drops the label", verdict(back) === "ok" && coderEp.card.meta?.[AGENT_LABEL_META_KEY] === undefined && await until(() => labelTo(bobWebEp) === undefined, 4000),
+      { verdict: verdict(back), meta: coderEp.card.meta });
+  }
+
   console.log("\na closed lane");
   {
     const lane = createNameLane(coderEp, (m) => logs.push(m));
     lane.close();
     const ctx = { request: { args: { name: "Later" } } } as unknown as EpPrincipalServeContext;
-    const closed = await settled(Promise.resolve(lane.handler.handler(ctx)));
+    const closed = await settled(Promise.resolve(lane.handlers.find((h) => h.command === "set-name")!.handler(ctx)));
     check("a set-name after the lane closed is unavailable, not-executed, and the card keeps its name",
       !closed.ok && closed.error instanceof EpEnvelopeError && closed.error.code === "unavailable" && closed.error.outcome === "not-executed" && coderEp.card.name === "Ada Reviewer",
       closed.ok ? closed.value : (closed.error as Error).message);

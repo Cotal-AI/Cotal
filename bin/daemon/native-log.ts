@@ -1,16 +1,29 @@
 /** Bounded native-service output, retained when Task Scheduler has no terminal to show it in. */
 import { closeSync, writeSync } from "node:fs";
 import { join } from "node:path";
-import { openPrivateAppend, writeSecretFile } from "@cotal-ai/core";
+import { openPrivateAppend, writeSecretFile, writeSecretFileAtomic } from "@cotal-ai/core";
+import { readLocalRecordSource } from "@cotal-ai/workspace";
 
 export const nativeDaemonLog = (state: string): string => join(state, "daemon.log");
+export const previousNativeDaemonLog = (state: string): string => join(state, "daemon.previous.log");
+const outputLimit = 64 * 1024;
+let capturing = false;
 
 /** Start a fresh private log for this launch. Keep stdout/stderr behavior for manual diagnosis. */
 export function captureNativeDaemonOutput(state: string): void {
+  if (capturing) return;
   const file = nativeDaemonLog(state);
+  let archiveFailed = false;
+  try {
+    const previous = readLocalRecordSource(file, outputLimit + 128, true);
+    if (previous?.length) writeSecretFileAtomic(previousNativeDaemonLog(state), previous);
+  } catch {
+    archiveFailed = true;
+  }
   writeSecretFile(file, `daemon service launch ${new Date().toISOString()}\n`);
   const fd = openPrivateAppend(file);
-  let remaining = 64 * 1024;
+  capturing = true;
+  let remaining = outputLimit;
   for (const stream of [process.stdout, process.stderr]) {
     const original = stream.write.bind(stream);
     stream.write = ((chunk: string | Uint8Array, ...args: unknown[]) => {
@@ -25,4 +38,10 @@ export function captureNativeDaemonOutput(state: string): void {
     }) as typeof stream.write;
   }
   process.once("exit", () => closeSync(fd));
+  if (archiveFailed) process.stderr.write("daemon: could not save the previous service log\n");
+}
+
+/** launchd opens StandardOutPath with its own umask, so the log it creates is readable by others. */
+export function privateLaunchdLog(state: string): void {
+  closeSync(openPrivateAppend(nativeDaemonLog(state)));
 }

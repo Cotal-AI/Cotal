@@ -29,14 +29,14 @@ import { registry, type Command, type FlagSpec, type ParsedArgs } from "@cotal-a
 import { CommandFailure, logicalExecutionEntry, codeSpan, homeCotalDir, keptCatalogCredentials, jsonFlag, plainFlag, presentationOf, recordOperationContext, renderReport, writeResult, type Report } from "@cotal-ai/workspace";
 import { cloudAuthUrl, isCotalCloudIdp, openLoginBrowser, isDiscoveryName, resolveDiscoveryLogin } from "@cotal-ai/workspace";
 import { chooseAccountChoice, IdpConfigurationError, normalizeIdpUrl } from "@cotal-ai/auth";
-import { EndpointRefusal, defaultPeerUid, defaultPeerPid, checkDir, daemonPaths, daemonPathsFor, type DaemonPaths, type EndpointProblemCode } from "./endpoint.js";
+import { EndpointRefusal, defaultPeerUid, defaultPeerPid, checkDir, daemonPaths, daemonPathsFor, ensureStateDir, type DaemonPaths, type EndpointProblemCode } from "./endpoint.js";
 import { serveDaemon } from "./server.js";
 import { loginFromCli } from "./cli-login.js";
 import { connectCheckViaDaemon, managerViaDaemon, queryDaemon, registerViaDaemon, serviceViaDaemon } from "./client.js";
 import { admitWindowsNativeDaemon, applyInstall, applyUninstall, observeDaemonOwnedService, type DaemonOwnershipObservation, planInstall, planUninstall, repairMissingInstalledProgram, startInstalled } from "./install.js";
 import { exchangeDesktopRequest, runDesktopBridge } from "./desktop.js";
 import { installedUnitForSetup, runAccountSetup, runSetup } from "./setup.js";
-import { daemonCommandCopy, daemonServiceRequirement } from "./guidance.js";
+import { daemonCommandCopy, daemonServiceRequirement, windowsDaemonFirstStart, windowsDaemonHomeAccess, windowsDaemonRemedy } from "./guidance.js";
 import { forgetHostedManagerIntents } from "./manager.js";
 import { automaticUpdates } from "./auto-update.js";
 import { watchDaemonGeneration } from "./generation.js";
@@ -54,7 +54,7 @@ const daemonFlags = [
   { name: "no-browser", type: "boolean", description: "print approval instructions without opening a browser" },
   { name: "idp", type: "string", value: "<auth URL or name>", description: "the provider's auth base URL or issuer-authorized discovery hostname" },
   { name: "client-id", type: "string", value: "<id>", description: "the OAuth device-flow client id" },
-  { name: "daemon-home", type: "string", value: "<abs dir>", completion: "files", description: "run or reach the daemon whose state lives in this directory (absolute, yours, mode 0700, not the Cotal home): its own sign-in, identity and registration, its own socket and lifetime lock. Without it, run or reach the default daemon, whose state lives in the Cotal home." },
+  { name: "daemon-home", type: "string", value: "<abs dir>", completion: "files", description: "run or reach the daemon whose state lives in this separate absolute directory, not the Cotal home. Use mode 0700 and your own account as owner on POSIX. On Windows, use an ACL that grants access only to you, SYSTEM or Administrators, with one of those as owner. Without this flag, use the default daemon in the Cotal home." },
   { name: "refresh", type: "boolean", description: "spaces: refresh catalogs through the daemon-held sign-in" },
   { name: "dry-run", type: "boolean", description: "install, uninstall: report the unit it would write or remove, and change nothing" },
   { name: "yes", type: "boolean", short: "y", description: "uninstall: confirm in a script" },
@@ -77,12 +77,12 @@ const peerUid = defaultPeerUid;
 const peerPid = defaultPeerPid;
 
 /** The daemon this invocation targets: the default one, or the one whose state lives in an explicit
- *  `--daemon-home`. The home must already exist as a real 0700 directory owned by this uid, and may
+ *  `--daemon-home`. The home must already exist as a real private directory for this user, and may
  *  not be the Cotal home itself. Linux install/uninstall may resolve a missing leaf only when its
  *  surviving native service verifies ownership; other operations never create, repair or migrate it. Mesh lookup always stays
  *  the shared Cotal home's registry. */
 interface Target { readonly paths: DaemonPaths; readonly home?: string }
-function target(args: ParsedArgs, recoverMissingHome = false): Target {
+function target(args: ParsedArgs, recoverMissingHome?: "install" | "uninstall"): Target {
   const raw = (args.values as { "daemon-home"?: string })["daemon-home"];
   if (raw === undefined) return { paths: daemonPaths() };
   if (!raw || !isAbsolute(raw)) throw new CommandFailure("refused", "USAGE_INVALID", "--daemon-home needs an absolute directory path");
@@ -98,10 +98,17 @@ function target(args: ParsedArgs, recoverMissingHome = false): Target {
   try { cotalHome = realpathSync(homeCotalDir()); } catch (e) { if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e; }
   if (home === cotalHome) throw new CommandFailure("refused", "USAGE_INVALID", "--daemon-home cannot be the Cotal home; name a separate directory for this daemon's state");
   const paths = daemonPathsFor(home);
-  if (missing) planUninstall(paths, home);
+  if (missing) planUninstall(paths, home, recoverMissingHome === "install" ? missingDaemonHome : undefined);
   return { paths, home };
 }
-function resolveTarget(args: ParsedArgs, recoverMissingHome = false): Target {
+function missingDaemonHome(): CommandFailure {
+  return process.platform === "win32"
+    ? new CommandFailure("refused", "TARGET_NOT_FOUND", "the --daemon-home directory does not exist", {
+      remedy: `create the directory, then in File Explorer open Properties > Security > Advanced. Give your account an explicit Full control grant, choose Disable inheritance and remove inherited permissions. Remove any remaining grants except those for your account, SYSTEM and Administrators. Verify the owner as well: ${windowsDaemonHomeAccess}`,
+    })
+    : new CommandFailure("refused", "TARGET_NOT_FOUND", "the --daemon-home directory does not exist; create it with mode 0700 first");
+}
+function resolveTarget(args: ParsedArgs, recoverMissingHome?: "install" | "uninstall"): Target {
   try {
     const resolved = target(args, recoverMissingHome);
     // Native user-service tools need the same validated runtime as the socket client.
@@ -109,7 +116,7 @@ function resolveTarget(args: ParsedArgs, recoverMissingHome = false): Target {
     return resolved;
   }
   catch (e) {
-    if ((e as NodeJS.ErrnoException).code === "ENOENT") throw new CommandFailure("refused", "TARGET_NOT_FOUND", "the --daemon-home directory does not exist; create it with mode 0700 first");
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") throw missingDaemonHome();
     throw asFailure(e);
   }
 }
@@ -160,7 +167,7 @@ function statusView(s: DaemonStatus): Report {
     ...(s.vitals ? [{ title: "Computer vitals", blocks: [{ kind: "fields" as const, rows: [["Sampled", s.vitals.sampledAt], ["CPU", `${s.vitals.cpu.logicalCount} logical, ${s.vitals.cpu.utilisationPercent.toFixed(1)}% over ${s.vitals.cpu.intervalMs}ms`], ...(s.vitals.cpu.load1 !== undefined ? [["Load (1/5/15m)", `${s.vitals.cpu.load1} / ${s.vitals.cpu.load5} / ${s.vitals.cpu.load15}`]] : []), ["Memory", capacityText(s.vitals.memory.totalBytes, s.vitals.memory.availableBytes)], ["System uptime", uptimeText(s.vitals.uptimeSeconds)], ...s.vitals.filesystems.map(fs => [fs.mount, capacityText(fs.totalBytes, fs.freeBytes)])] as [string, string][] }] }] : []),
     ...(s.vitalsError ? [{ title: "Computer vitals error", blocks: [{ kind: "lines" as const, lines: [s.vitalsError] }] }] : []),
     ...(s.update ? [{ title: "Updates", blocks: [{ kind: "fields" as const, rows: [["Current", s.update.current], ["Latest seen", s.update.latest ?? "unknown"], ["Last check", s.update.lastCheck ?? "not checked"], ["Automatic updates", s.update.automatic ? "on" : "off"], ["Last result", s.update.lastResult], ["Failures", String(s.update.failures)], ["Next attempt", s.update.nextAttempt ?? "none"]] as [string, string][] }] }] : []),
-    ...(s.account ? (s.account.accounts?.length ? s.account.accounts : [s.account]).map(account => ({ title: `Account computer${account.machineId ? `: ${account.machineId}` : ""}`, blocks: [{ kind: "fields" as const, rows: [["Computer", account.machineId ?? "not registered"], ["Mode", account.mode], ["Host support", account.hostSupport], ["Last registration", account.lastRegistration ?? "none"], ["Desired revision", String(account.desiredRevision ?? "unknown")], ...(account.message ? [["Next", account.message]] : []), ...(account.spaces.some(space => space.lastRefusal === "no available application") ? [["Next", `Install an agent application, then run \`cotal daemon setup${(s.account?.accounts?.length ?? 0) > 1 && account.idpUrl ? ` --idp ${account.idpUrl}` : ""}\` again in a terminal that finds it.`]] : []), ...account.spaces.map((space) => [space.space, `${space.desired ? "desired" : "connected here, not in the account's list"}: ${space.observed}${space.lastRefusal ? ` (${space.lastRefusal})` : ""}${space.machineService === "approval-pending" ? "; machine status service waits for the space owner's approval" : space.machineService ? `; machine status service ${space.machineService}` : ""}`])] as [string, string][] }] })) : []),
+    ...(s.account ? (s.account.accounts?.length ? s.account.accounts : [s.account]).map(account => ({ title: `Account computer${account.machineId ? `: ${account.machineId}` : ""}`, blocks: [{ kind: "fields" as const, rows: [["Computer", account.machineId ?? "not registered"], ["Mode", account.mode], ["Host support", account.hostSupport], ["Last registration", account.lastRegistration ?? "none"], ["Desired revision", String(account.desiredRevision ?? "unknown")], ...(account.message ? [["Next", account.message]] : []), ...(account.spaces.some(space => space.lastRefusal === "no available application") ? [["Next", `Install an agent application, then run \`cotal daemon setup${(s.account?.accounts?.length ?? 0) > 1 && account.idpUrl ? ` --idp ${account.idpUrl}` : ""}\` again in a terminal that finds it.`]] : []), ...account.spaces.map((space) => [space.space, `${space.desired ? "desired" : "connected here, not in the account's list"}: ${space.observed}${space.lastRefusal ? ` (${space.lastRefusal})` : ""}${space.custodyRecovery ? "; open the app and choose Use signed-in account to confirm moving this connection" : ""}${space.machineService === "approval-pending" ? "; machine status service waits for the space owner's approval" : space.machineService ? `; machine status service ${space.machineService}` : ""}`])] as [string, string][] }] })) : []),
     ...(s.agents ?? []).map(inventory => ({ title: `Agents: ${inventory.space}`, blocks: inventory.state === "unreadable"
       ? [{ kind: "lines" as const, lines: [inventory.message] }]
       : inventory.agents.length ? inventory.agents.map(agent => ({ kind: "fields" as const, rows: [["Name", agent.name], ["Application", agent.application], ["Model", agent.model ?? "not pinned"], ["Space", inventory.space], ["Folder", agent.cwd], ["Started", agent.startedAt], ["State", agent.state]] as [string, string][] }))
@@ -189,8 +196,12 @@ async function status(args: ParsedArgs): Promise<void> {
       });
     }
     if (process.platform === "win32" && e instanceof EndpointRefusal && e.code === "NOT_RUNNING") {
+      const receipt = readReceipt(paths);
+      const recorded = receipt?.mechanism === "scheduled-task" && receipt.daemonHome === home;
       throw new CommandFailure("refused", "TARGET_UNAVAILABLE", e.message, {
-        remedy: `start the owned task with ${daemonCommandCopy("start", home)}; read ${nativeDaemonLog(paths.state)} for its last launch output, and inspect the task's state and last result in Task Scheduler if no log was created`,
+        remedy: recorded
+          ? `if the recorded task is still registered, start it with ${windowsDaemonRemedy("start", home)}. Read ${nativeDaemonLog(paths.state)} for its last launch output. If no log was created, inspect the task's state and last result in Task Scheduler`
+          : `no scheduled task installation is recorded for this daemon. To start it, ${windowsDaemonFirstStart(home)}`,
         native: { code: e.code },
       });
     }
@@ -377,7 +388,7 @@ async function unitCommand(args: ParsedArgs, op: "install" | "uninstall"): Promi
     const requirement = daemonServiceRequirement(values["daemon-home"]);
     if (requirement) throw requirement;
   }
-  const { paths, home } = resolveTarget(args, true);
+  const { paths, home } = resolveTarget(args, op);
   if (op === "install") {
     const dry = values["dry-run"] === true;
     if (!dry && await repairMissingInstalledProgram(paths, home)) {
@@ -504,7 +515,20 @@ async function setupCommand(args: ParsedArgs): Promise<void> {
   ] }));
 }
 
+/** Protect the log launchd writes, or capture a private copy of native service output. */
+async function privateServiceLog(args: ParsedArgs): Promise<void> {
+  let paths: DaemonPaths;
+  // serve resolves the same target again and refuses an unusable one with its full diagnosis.
+  try { ({ paths } = resolveTarget(args)); } catch { return; }
+  const log = await import("./native-log.js");
+  ensureStateDir(paths);
+  if (process.platform === "darwin") log.privateLaunchdLog(paths.state);
+  else log.captureNativeDaemonOutput(paths.state);
+}
+
 async function serve(args: ParsedArgs): Promise<void> {
+  // The app's Background service log reads a private daemon.log; set it up before anything below can fail.
+  if (process.env.COTAL_DAEMON_NATIVE_SERVICE === "1" && process.platform !== "win32") await privateServiceLog(args);
   const { recoverInterruptedUpdate, updateRuntime } = await import("@cotal-ai/cli/update");
   const { recoverExecutionUpdate, executionInstallRoot } = await import("./execution-update.js");
   const { cleanupExecutionStore } = await import("../execution-store.js");

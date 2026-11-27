@@ -52,8 +52,10 @@ ExecStart=/usr/bin/cotal up --foreground --space main --host 0.0.0.0
 Restart=on-failure
 RestartSec=5s
 ```
-`cotal up --foreground` refuses when this folder's stack is already running, for example after a
-manual background `cotal up`. Stop that stack before the unit starts.
+For a stack using the older launcher, `cotal up --foreground` refuses with `LIFECYCLE_BLOCKED`
+(exit 2) if the broker is already running. If Cotal started it, inspect and stop the stack from its
+project folder. If the broker was registered by hand, stop it with its own launcher. Then retry the
+original foreground command from the folder where you invoked it, with the same options.
 
 If repeated refusals hit the start limit, `systemctl status cotal-stack.service` shows the unit as failed and the refusal is in the journal.
 After fixing the cause, run `systemctl reset-failed cotal-stack.service` and then `systemctl start cotal-stack.service`, adding `--user` after `systemctl` for a user unit.
@@ -77,7 +79,8 @@ Choose the ownership you need before copying a unit; `Type=simple` alone does no
 
 If the broker crashes under foreground `up`, the launcher retains its mesh record and exits nonzero.
 The unit restart repairs the recorded store rather than creating a second mesh.
-When `up` replaces a static-auth stack's broker, it restarts the recorded delivery daemon and waits for the new process to report ready.
+When `up` replaces an authenticated controller stack's broker, it restarts the recorded delivery daemon and waits for the new process to report ready.
+On a legacy root using the older launcher, a foreground broker exit stops the recorded delivery daemon on its way out, and a replacement `up` that finds the recorded delivery daemon still running reuses it instead of restarting it.
 If the project folder moved, move it back to its recorded path before restarting the stack.
 If the manager or delivery daemon crashes, its lease remains until expiry, normally 10 seconds for the manager and 30 seconds for delivery.
 A repair `up` can wait out that lease when it proves the holder is gone.

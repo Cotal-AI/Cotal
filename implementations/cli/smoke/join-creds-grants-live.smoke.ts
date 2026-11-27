@@ -4,7 +4,7 @@
 import { strict as assert } from "node:assert";
 import { spawn, type ChildProcess } from "node:child_process";
 import { createRequire } from "node:module";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -107,6 +107,25 @@ try {
     await killAndAwaitExit(run.proc);
     await run.exited;
   }
+
+  // #10691: the missing read-grant refusal's Next is a complete owner mint that writes a private
+  // file for the guest (space + --out), not a standing credential under the space's project.
+  {
+    const denied = cli("join", "--space", space, "--creds", empty.file, "--lifecycle-uid", empty.uid, "--name", "no_read_fix", "--channel", "general");
+    const code = await denied.exited;
+    const out = denied.output();
+    const advice = /`cotal auth mint (<name> [^`]+)`/.exec(out)?.[1];
+    assert.ok(advice?.includes(`--provision --allow-subscribe general --space ${space} --no-persona --out <file>`), out);
+    check("no-read: the remedy mints to a private file in the named space", code === 2 && /Code: +PERMISSION_DENIED/.test(out), out);
+    const granted = join(dir, "no-read-repair.creds");
+    const repair = cli("auth", "mint", ...advice!.split(" ").map((arg) => arg === "<name>" ? "no_read_repair" : arg === "<file>" ? granted : arg));
+    check("no-read: the printed remedy mints a private file the guest can join with", await repair.exited === 0 &&
+      new RegExp(`Private file: +${granted.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`).test(repair.output()), repair.output());
+    const grantedUid = /^\s*Lifecycle:\s+(\S+)/m.exec(repair.output())?.[1];
+    assert.ok(grantedUid && grantedUid !== empty.uid, repair.output());
+    check("no-read: the remedy writes no standing credential under the label", !existsSync(join(project, ".cotal", "auth", "creds", `space.${Buffer.from(space).toString("hex")}`, "no_read_repair.creds")), repair.output());
+    await joins("no-read-repair", granted, grantedUid, "general");
+  }
   const truncated = join(dir, "truncated.creds");
   writeFileSync(truncated, readFileSync(other.file, "utf8").split("\n").slice(0, 2).join("\n") + "\n", { mode: 0o600 });
   const absent = join(dir, "absent.creds");
@@ -141,19 +160,37 @@ try {
   const foreignServer = `nats://127.0.0.1:${await freePort()}`;
   recordMesh({ space: "elsewhere", server: foreignServer, root: foreignRoot, mode: "auth", ts: new Date().toISOString() });
   const foreignArgs = ["join", "--creds", foreign, "--lifecycle-uid", foreignUid, "--name", "foreign"];
-  const rejected = cli(...foreignArgs, "--space", space);
-  check("wrong-space join names the target and the credential's space", await rejected.exited === 2 &&
-    /Code: +PERMISSION_DENIED/.test(rejected.output()) && rejected.output().includes(`Space:   ${space}`) &&
-    rejected.output().includes(`is a credential for space "elsewhere", not "${space}"`), rejected.output());
-  const replacementArgs = /`cotal auth mint (<label> [^`]+)`/.exec(rejected.output())?.[1];
-  assert.ok(replacementArgs?.includes(`--space ${space} --provision --allow-subscribe general --allow-publish general --role reviewer --no-persona`), rejected.output());
-  check("wrong-space join tells the operator to pair the replacement with its new lifecycle", rejected.output().includes("join with the lifecycle UID that mint reports"), rejected.output());
-  const crossRepair = join(dir, "cross-repair.creds");
-  const crossMint = cli("auth", "mint", ...replacementArgs!.split(" ").map((arg) => arg === "<label>" ? "cross_repair" : arg === "<file>" ? crossRepair : arg));
-  check("the wrong-space remedy mints a replacement", await crossMint.exited === 0, crossMint.output());
-  const crossUid = /^\s*Lifecycle:\s+(\S+)/m.exec(crossMint.output())?.[1];
-  assert.ok(crossUid, crossMint.output());
-  await joins("cross-repair", crossRepair, crossUid, "general");
+  const foreignEmpty = join(dir, "foreign-empty.creds");
+  const foreignWildcard = join(dir, "foreign-wildcard.creds");
+  for (const [file, read] of [[foreignEmpty, []], [foreignWildcard, ["review.>"]]] as const) {
+    writeFileSync(file, await mintCreds(foreignAuth, newIdentity(), "agent", {
+      lifecycleUid: foreignUid, allowSubscribe: [...read], allowPublish: [],
+    }), { mode: 0o600 });
+  }
+  for (const [name, file, channel, flags] of [
+    ["cross_repair", foreign, "general", "--allow-subscribe general --allow-publish general --role reviewer"],
+    ["cross_read_only", foreignEmpty, "general", "--allow-subscribe general --allow-publish ''"],
+    ["cross_dash", foreignEmpty, "-general", "--allow-subscribe=-general --allow-publish ''"],
+    ["cross_wildcard", foreignWildcard, "review.code", "--allow-subscribe 'review.>' --allow-publish ''"],
+  ] as const) {
+    const rejected = cli("join", "--creds", file, "--lifecycle-uid", foreignUid, "--name", name, "--space", space, `--channel=${channel}`);
+    const code = await rejected.exited;
+    const out = rejected.output();
+    check(`${name}: wrong-space join names both spaces and how to use the original file`, code === 2 &&
+      /Code: +PERMISSION_DENIED/.test(out) && out.includes(`Space:   ${space}`) &&
+      out.includes(`is a credential for space "elsewhere", not "${space}"`) && out.includes("use it with --space elsewhere"), out);
+    const replacementArgs = /`(?:pnpm )?cotal auth mint (<label> [^`]+)`/.exec(out)?.[1];
+    assert.ok(replacementArgs?.includes(`--space ${space} --provision ${flags} --no-persona`), out);
+    check(`${name}: the remedy names the owner-approved read grant and lifecycle pairing`,
+      out.includes(`ask the owner of "${space}" to mint a replacement with read access to the landing channel`) &&
+      out.includes("join with the lifecycle UID that mint reports"), out);
+    const crossRepair = join(dir, `${name}.creds`);
+    const crossMint = cli("auth", "mint", ...replacementArgs!.split(" ").map((arg) => arg === "<label>" ? name : arg === "<file>" ? crossRepair : arg.replace(/^'|'$/g, "")));
+    check(`${name}: the printed remedy mints a replacement`, await crossMint.exited === 0, crossMint.output());
+    const crossUid = /^\s*Lifecycle:\s+(\S+)/m.exec(crossMint.output())?.[1];
+    assert.ok(crossUid && crossUid !== foreignUid, crossMint.output());
+    await joins(name, crossRepair, crossUid, channel);
+  }
 
   // Use the broker's exact numeric address in the link so DNS and address family cannot change the result.
   const wrongLink = cli(...foreignArgs, "--link", `${broker.servers.replace(/^nats:/, "cotal:")}/elsewhere`);

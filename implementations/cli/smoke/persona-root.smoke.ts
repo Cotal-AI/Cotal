@@ -135,6 +135,7 @@ function checkCreateInputGuidance(run: (args: string[], input?: Buffer) => Spawn
       "--space", "meshspace", `--on=${on}`, "--plain"], piped ? Buffer.from(body) : undefined);
     check(`persona create ${source} with --on=${on} preserves the original command in its guidance`,
       refused.status === 1 && refused.stderr.includes("USAGE_INVALID") &&
+      refused.stderr.includes("cotal ps --space meshspace --plain") && !refused.stderr.includes("`cotal ps`") &&
       refused.stderr.includes("replace only the --on value in the original command") &&
       refused.stderr.includes("pipe the original input into the command again") === piped &&
       !refused.stderr.includes("cotal persona create retry-input --on") && !refused.stderr.includes(body) &&
@@ -380,6 +381,16 @@ try {
   check("completion: send --channel offers the MESH's declared channels", sorted(sendComplete(["--channel", ""])).join(",") === "mesh-alpha,mesh-beta", sorted(sendComplete(["--channel", ""])));
   check("completion: personas show offers the MESH's persona names", sorted(personasComplete(["show", ""])).join(",") === "mesh-default,mesh-lead", sorted(personasComplete(["show", ""])));
   check("completion: personas show --space alpha offers ALPHA's names", sorted(personasComplete(["--space", "alpha", "show", ""])).join(",") === "alpha-only", sorted(personasComplete(["--space", "alpha", "show", ""])));
+  if (process.platform !== "win32") {
+    const path = join(MESH, ".cotal", "agents", "outbound-back\\slash.md");
+    writeFileSync(path, "---\nname: backslash\n---\nFixture.\n");
+    try {
+      const names = sorted(spawnComplete([""]));
+      check("completion: spawn omits the backslash selector and retains ordinary names", names.join(",") === "mesh-default,mesh-lead", names);
+    } finally {
+      rmSync(path, { force: true });
+    }
+  }
 
   // POSITIVE CONTROL for every "the cwd's names are absent" claim above. Those are all zeroes, and
   // a zero fuses two claims: "the instrument looked" and "there was nothing". This proves the
@@ -521,12 +532,48 @@ try {
   const offlineRoot = join(scratch, "offline-project");
   const prepared = native(["space", "create", "offline-audit", "--root", offlineRoot, "--plain"], CWD);
   check("a separate project is prepared without starting a broker", prepared.status === 0, prepared.stdout + prepared.stderr);
+  const help = [native(["persona", "--help"]), native(["persona", "create", "--help"])];
+  const emptyExample = /persona create <name> --prompt "<text>" (--subscribe=) +save a persona from a prompt, reading no channels/;
+  const makeEmpty = ["persona", "create", "empty-read-set", "--prompt", "Review the patch."];
+  const missingValue = native([...makeEmpty, "--subscribe", "--json"], offlineRoot);
+  const error = JSON.parse(missingValue.stdout).error;
+  const attached = emptyExample.exec(help[1]!.stdout)?.[1];
+  check("persona help and missing-value guidance show an attached empty subscription",
+    help.every((entry) => entry.status === 0 && emptyExample.test(entry.stdout)) && missingValue.status === 1 &&
+    error?.code === "USAGE_INVALID" && error.message === "--subscribe needs a value" && error.remedy?.includes("--subscribe= for none"),
+    [...help.map((entry) => entry.stdout + entry.stderr), missingValue.stdout + missingValue.stderr]);
+  const emptyCreated = native([...makeEmpty, attached!, "--json"], offlineRoot);
+  const emptyShown = native(["persona", "show", "empty-read-set", "--json"], offlineRoot);
+  check("the printed attached option saves a persona with no subscriptions",
+    emptyCreated.status === 0 && emptyShown.status === 0 && JSON.stringify(JSON.parse(emptyShown.stdout).result.definition.subscribe) === "[]",
+    emptyCreated.stdout + emptyCreated.stderr + emptyShown.stdout + emptyShown.stderr);
   const args = ["persona", "--space", "offline-audit", "--plain"];
   const offline = native(args, CWD);
   const plannedServer = native([...args, "--server", "nats://127.0.0.1:1"], CWD);
   check("a planned server still lists the named prepared project's local catalog",
     offline.status === 0 && plannedServer.status === 0 && /offline-audit .* local persona files/.test(plannedServer.stdout) &&
     /\bdefault\b/.test(plannedServer.stdout), plannedServer.stdout + plannedServer.stderr);
+  if (process.platform !== "win32") {
+    const link = agentFilePath(realpathSync(offlineRoot), "shared");
+    symlinkSync("../../shared.md", link);
+    try {
+      const legacy = native(["personas", "list", "--space", "offline-audit"], CWD);
+      check("legacy list keeps readable personas and explains how to fix a missing link target",
+        legacy.status === 4 && /^default\s+default$/m.test(legacy.stdout) &&
+        /^shared\s+⨯ missing link target /m.test(legacy.stdout) &&
+        legacy.stdout.includes(`${link} is a link to ../../shared.md. Restore the target or replace the link with a regular persona file.`) &&
+        !legacy.stdout.includes("unparseable"), legacy.stdout + legacy.stderr);
+    } finally { unlinkSync(link); }
+  }
+  const invalidName = agentFilePath(realpathSync(offlineRoot), "name-rule");
+  writeFileSync(invalidName, '---\nname: " leading"\n---\nReview the fixture.\n');
+  const invalidNameList = native(["personas", "list", "--space", "offline-audit"], CWD);
+  unlinkSync(invalidName);
+  check("legacy listing names the selected catalog file and the display-name rule",
+    invalidNameList.status === 4 && /^default\s/m.test(invalidNameList.stdout) &&
+    invalidNameList.stdout.split("\n").some(line => /^name-rule +⨯ unparseable /.test(line) &&
+      line.endsWith(`agent file ${invalidName}: invalid name " leading": must be non-empty with no surrounding whitespace`)),
+    invalidNameList.stdout + invalidNameList.stderr);
   const only = "offline-only";
   writeFileSync(agentFilePath(offlineRoot, only), `---\nname: ${only}\n---\nOnly in the other catalog.\n`);
   const listReceipt = native(args, CWD);
@@ -534,6 +581,31 @@ try {
   const showReceipt = show ? native([...show.replace("<name>", only).split(" "), "--plain"], CWD) : undefined;
   check("persona list's show command reads the explicitly selected catalog",
     listReceipt.status === 0 && showReceipt?.status === 0 && showReceipt.stdout.includes("Only in the other catalog."), listReceipt.stdout + listReceipt.stderr);
+  const showWords = ["p", "show", only, "--space", "offline-audit", "--json"];
+  const unknownShow = native([...showWords, "--wibble"], CWD);
+  const fixedShow = native(showWords, CWD);
+  const unknownError = JSON.parse(unknownShow.stdout || "{}").error;
+  check("persona show tells you to drop an unknown option and keep the supplied name",
+    unknownShow.status === 1 && unknownShow.stderr === "" && unknownError?.code === "USAGE_INVALID"
+    && unknownError.message === "Unknown option '--wibble'" && unknownError.remedy === "drop the unknown option"
+    && fixedShow.status === 0 && fixedShow.stderr === "" && JSON.parse(fixedShow.stdout).outcome === "ok",
+    { unknownShow: unknownShow.stdout, fixedShow: fixedShow.stdout });
+  const dashName = "-review";
+  const dashRefused = native(["persona", "create", dashName, "--prompt", "Review the patch.", "--subscribe=", "--json"], offlineRoot);
+  const dashError = JSON.parse(dashRefused.stdout || "{}").error;
+  const printed = typeof dashError?.remedy === "string" ? /`(?:pnpm cotal|cotal) persona ([^`]+)`/.exec(dashError.remedy)?.[1] : undefined;
+  const printedWords = printed === undefined ? [] : [...printed.matchAll(/'([^']*)'|"([^"]*)"|(\S+)/g)].map((match) => match[1] ?? match[2] ?? match[3]!);
+  check("a persona name that starts with - keeps its flags and is not reprinted",
+    dashRefused.status === 1 && dashRefused.stderr === "" && dashError?.remedy?.includes("starts with a letter, digit or _")
+    && printedWords[0] === "create" && printedWords.includes("--prompt") && printedWords.includes("Review the patch.")
+    && printedWords.at(-1) === "<name>" && !printedWords.includes(dashName),
+    dashRefused.stdout + dashRefused.stderr);
+  const literal = native(["persona", "show", "review", "--json", "--", "--json"], offlineRoot);
+  const literalError = JSON.parse(literal.stdout || "{}").error;
+  check("a declared flag after -- stays a positional",
+    literal.status === 1 && literalError?.code === "USAGE_INVALID"
+    && literalError.message === "usage: cotal persona [show|create|edit|remove <name>]",
+    literal.stdout + literal.stderr);
   const create = plannedServer.stdout.match(/(?:cotal|pnpm cotal) (p create <name> --file <persona.md> --space offline-audit --server nats:\/\/127\.0\.0\.1:1)/)?.[1];
   const sourcePath = join(scratch, "catalog-input.md");
   const source = "---\nname: catalog-created\n---\nCreated in the other catalog.\n";

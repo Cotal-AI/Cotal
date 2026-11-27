@@ -27,6 +27,46 @@ The files merge per connector and server name. A space-local server replaces the
 entry with the same name. Connectors and servers present in only one file remain. A missing file
 means no settings. Invalid JSON, a non-object top level, or an invalid shared server causes an error.
 
+### Trusted project folders [#trusted-project-folders]
+
+A project folder's own `.cotal` may declare these only when the folder is trusted:
+
+- `connectors.<name>.mcpServers` entries and `spawn.env` names in `.cotal/config.json`;
+- `launchOptions` in a persona file under `.cotal/agents/`, or a folder below it, since the
+  connector renders each key into the application's own flags or config. This includes a persona
+  file a manifest names for `cotal up -f` or `cotal team deploy`. Cotal resolves a persona path one
+  symbolic link at a time, refuses its launch options when the path you give, any link or folder on
+  the way, or the file reached lies under the `.cotal/agents` of a folder that is not trusted, and
+  reads the persona from the file it checked.
+
+A spawn that reads either from a folder that is not trusted refuses. The refusal names the file,
+the entries, the folder and the command that trusts it. Nothing launches. For a managed launch,
+run the printed command on the manager's host as the account that runs it. The config file's other
+fields, such as `modelPolicy`, apply whether or not the folder is trusted. A persona file outside
+any project folder, `--opt` given on the command line, and a manifest's own `launchOptions` on an
+agent are not affected.
+
+`cotal trust <path>` trusts one folder. It records the folder's canonical path in
+`trusted-projects.json` in the operator config folder. A trusted folder does not trust the folders
+inside it. Trust follows the path, not the contents: what the folder's files declare later is
+trusted, and so is a folder deleted and made again at the same path. A trusted path later replaced
+by a link does not pass its trust to the link's target.
+
+`cotal setup`, `cotal space create` and `cotal up` trust a folder only when they made its `.cotal`
+in that run. A folder that already had a `.cotal`, such as a cloned repository, is trusted only by
+`cotal trust`. Run it after you read the folder's `.cotal/config.json` and personas.
+
+The upgrade migrates trust for existing registrations and prepared spaces once per Cotal home.
+`trusted-projects-seed.json` records the roots before a new registration can enter the registry.
+An empty migration creates no trusted projects file. Removing `trusted-projects.json` does not
+run a completed migration again: no folder is trusted until `cotal trust` records it. Removing
+`trusted-projects-seed.json` lets the next migration consider the registrations and prepared spaces
+that already exist when it runs.
+
+A space-local file is refused whole when it, or the `.cotal` folder that holds it, belongs to
+another account. `cotal trust` refuses such a folder too. A trusted projects file that another
+account owns or may write trusts nothing.
+
 | Field | Meaning | Merge rule |
 |---|---|---|
 | `connectors.<name>.mcpServers` | Named MCP servers available to a connector's spawned agents | Per connector and server name |
@@ -133,6 +173,9 @@ The refusal names the persona, the value and its source, and the allowed IDs. Ro
 and personas with no role are unconstrained.
 A seat launches on the model and variant that were checked, even if its persona file changes after
 the check.
+The launcher tells a seat in a role with a policy entry so through `COTAL_MODEL_POLICY`, and the
+seat then refuses every owner `set-model` that would switch its running model, since the policy is
+checked only at launch. Start a new agent on an allowed model instead.
 
 A space-local role entry replaces the operator-level entry for that role. Roles present in only one
 file keep their entry. Each entry accepts only `models` and `variants`. Both lists must be non-empty
@@ -234,6 +277,7 @@ other non-empty value when it starts, naming the variable. A blank value uses th
 | `COTAL_SPACE` | connector session | Space to join | `demo` (or the join link's) |
 | `COTAL_NAME` | connector session | Presence name / identity | required (or via `COTAL_AGENT_FILE` / `COTAL_LINK`) |
 | `COTAL_DISPLAY_NAME` | connector session | The display name the card starts with when it differs from `COTAL_NAME`. A manager sets it when it relaunches a seat that `set-name` renamed; `COTAL_NAME`, and in user mode the actor, stay the launch name. An invalid name is refused when the session starts | `COTAL_NAME` |
+| `COTAL_AUTO_NAME` | connector session | `1` labels the seat from its first message: its launch prompt, else its first live direct message or mention from its own owner. The label is `meta["ai.cotal.label"]`, and the seat keeps its launch name. A manager sets it for a `spawn` with `autoName: true`, and never on a relaunch. Ignored when `COTAL_DISPLAY_NAME` is set, and on a connector that cannot ask its model for a label | off |
 | `COTAL_ROLE` | connector session | Role | agent file's `role:`, else none |
 | `COTAL_SERVERS` | connector session | Broker URL(s). Hand-driven sessions only: a launcher-spawned seat gets this in its launch material instead (see below). A URL with a user name or password is refused when the session starts; pass the credential in `COTAL_CREDS`, `COTAL_TOKEN` or `COTAL_LINK` | the default local broker (or the link's) |
 | `COTAL_CREDS` | connector session | Path to a NATS creds file (auth mode). Hand-driven sessions only, same as above | none (open mode) |
@@ -372,8 +416,12 @@ Model discovery uses a different environment. The `codex` and `opencode` catalog
 They do not read `spawn.env`. The binary resolves from the operator pin (`COTAL_CODEX_BIN` or `COTAL_OPENCODE_BIN`),
 then the absolute path recorded at manager boot, then the bare name. The seat allow-list does not apply to these short-lived reads.
 The `claude` and `pi` catalog reads receive a launch's environment: the seat allow-list and the
-connector's provider keys, without `spawn.env`. Their binary is the absolute path recorded at
-manager boot, then the bare name.
+connector's provider keys. The `pi` read also receives the `spawn.env` names, as a Pi launch does,
+so it reads the agent directory and keys a seat reads. The `claude` read does not. Their binary is
+the absolute path recorded at manager boot, then the bare name. The `hermes` catalog read receives
+the same environment with the `spawn.env` names, as a Hermes launch does, and runs `uv` from the
+same places. The manager hands every catalog read the `spawn.env` names from
+the config a spawn would read at that moment, and each connector decides whether its read uses them.
 
 ### Launch material
 
@@ -587,6 +635,7 @@ Move the file aside so Cotal can create the folder when it next saves configurat
 |---|---|
 | `config.json` | Operator-level connector config (the base layer above) |
 | `preferences.json` | Your [preferences](#preferences), private to you (`0600`), written by `cotal config` |
+| `trusted-projects.json` | The [trusted project folders](#trusted-project-folders), private to you (`0600`), written by `cotal trust` |
 | `installs/<sha256>/sets/<version>/cotal/extensions/` | Installed POSIX CLI's `cotal ext` prefix: its own npm root (`node_modules`) plus an `extensions.json` provider/command-display cache. Built-in connectors install here too, seeded on first run |
 | `installs/<sha256>/sets/<version>/cotal/seed/` | Installed POSIX CLI's built-in-connector seeding state: the `ever-seeded` authority (+ durable backup), the init witness, the version stamp, the crash cursor, and `store/<version>/<name>` (the stable payloads `ext add --install-links` reifies each seeded connector from) |
 

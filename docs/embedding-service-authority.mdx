@@ -73,9 +73,11 @@ credential-root records cannot use this service binding. This is not proof of br
 the opt-in authority plane now composes this evidence, while terminal retirement remains unfinished.
 
 `mintServiceCalloutJwt` is a host-only mint seam. It uses the native serving grant, the actual
-principal name and tags, the authenticated broker user key and a separate client inbox nonce.
-Expiry stays bounded by the original admission and access deadline. It does not authenticate the
-callout request, record natkey evidence or release an encrypted response; the host must do those.
+principal name and tags, the authenticated broker user key and the client's inbox name. It checks
+the name's syntax, not its binding to the service principal. The stock auth callout checks that
+binding before minting and also accepts legacy nonces. Expiry stays bounded by the original
+admission and access deadline. A host that runs its own callout must authenticate the request,
+check the inbox binding, record natkey evidence and release the encrypted response.
 
 Native service receipts bind the same epcred connection and registration witness to the broker user
 key. Recording rechecks the evidence, receipt, native authority and fixed expiry. Expired service

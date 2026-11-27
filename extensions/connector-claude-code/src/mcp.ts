@@ -23,7 +23,6 @@ import {
   registerCotalTools,
   briefing,
   orientationCard,
-  type AguiEmitterHolder,
   controlFromEnv,
   GATEWAY_CONNECTING,
   GATEWAY_INSTRUCTIONS,
@@ -35,16 +34,20 @@ import {
 } from "@cotal-ai/connector-core";
 import { homedir } from "node:os";
 import { dirname, parse } from "node:path";
-import { createClaudeHandle, createWakePolicy, type WakePolicy } from "./hooks.js";
+import { createClaudeHandle, createWakePolicy, type ClaudeHooks, type WakePolicy } from "./hooks.js";
 import { createClaudePrompts, launchedSessionHooks } from "./prompts.js";
-import type { ClaudeEntry } from "./agui-map.js";
-import { createClaudeEventPlane } from "./claude-events.js";
+import { CLAUDE_RESOLVED_BIN_ENV, claudeNaming } from "./naming.js";
+import { listClaudeModels } from "./models.js";
+import { createClaudeEventPlane, type ClaudeEventHolder } from "./claude-events.js";
 import { createAppHost } from "./app-host.js";
 import { readCliRecord } from "./cli-record.js";
 import { openWakeFeed } from "./wake-feed.js";
 import { openCommandFeed, type CommandFeed } from "./command-feed.js";
+import type { ModDelta } from "./command-frames.js";
 import { claudeCommands, commandTurns } from "./commands.js";
+import { TURN_IMAGES_ENV } from "./turn-images.js";
 import { endHost, recordHost } from "./once-exit.js";
+import { holdAdvice, holdCommand, markNeeded, sdkHosted } from "./sdk-hold.js";
 
 /** What a plain session's local server tells the model ahead of the gateway's own steps. */
 const LOCAL =
@@ -99,7 +102,24 @@ async function serveLocal(desktop: boolean): Promise<void> {
   });
   feed?.onNative((event) => host.nativeEvent(event));
   let rearm: (connection?: GatewayConnection, fireNow?: boolean) => void = () => {};
-  const served = await serveGatewayStdio(host, {
+  // An Agent SDK host stops an idle session, so each session this server holds a connection for is
+  // marked for the Stop hook until that connection closes (`sdk-hold.ts`).
+  const holds = !desktop && sdkHosted(process.env);
+  const gateway: typeof host = holds ? {
+    ...host,
+    async open(...args) {
+      const connection = await host.open(...args);
+      const session = host.sessionFor(connection.id);
+      if (session) markNeeded(session, true);
+      return connection;
+    },
+    async close(account, id) {
+      const session = host.sessionFor(id);
+      try { return await host.close(account, id); }
+      finally { if (session) markNeeded(session, false); }
+    },
+  } : host;
+  const served = await serveGatewayStdio(gateway, {
     source: "claude-local",
     connectContext: !desktop,
     space: !desktop,
@@ -140,9 +160,10 @@ async function serveLocal(desktop: boolean): Promise<void> {
               const session = host.sessionFor(c.id);
               if (!session || !feed.watched(session))
                 return "Automatic incoming messages are unavailable in this session. Check that the Cotal plugin and its native hooks module are enabled; call cotal_wait to listen.";
-              return feed.supportsInline(session)
+              const reader = feed.supportsInline(session)
                 ? "The Cotal incoming-message reader is connected with complete short-message delivery. New messages can start a turn, subject to Claude's Stop and organization policies."
                 : "The Cotal incoming-message reader is connected in notification-only mode. Read messages with cotal_inbox; reload the Cotal plugin to enable complete short-message delivery.";
+              return holds ? `${reader}\n${holdAdvice(holdCommand(process.execPath, process.argv[1] ?? "", session))}` : reader;
             },
           },
         }
@@ -226,6 +247,22 @@ export async function serveClaudeSession(opts: ClaudeSessionOptions): Promise<Cl
   }
 }
 
+/** Local control plane for the lifecycle hooks (presence + message injection) and the manager's
+ *  cooperative shutdown. The SOCKET PATH comes from the launch env; the KEY and exchange version
+ *  come from the launch-material file that env points at, which is also where the hooks read them,
+ *  or from COTAL_CONTROL_KEY and COTAL_CONTROL_VERSION in a session driven by hand. The hooks are
+ *  what advance presence and inject peer messages, so a session without the endpoint is refused,
+ *  naming it, rather than served with an unauthenticated (or no) control plane. */
+function requireControl(env: NodeJS.ProcessEnv): NonNullable<ReturnType<typeof controlFromEnv>> {
+  const control = controlFromEnv(env);
+  if (!control) {
+    throw new Error(
+      "no control endpoint for the lifecycle hooks: set COTAL_CONTROL_SOCKET to a socket path in a private directory, COTAL_CONTROL_KEY to a random secret and COTAL_CONTROL_VERSION to 1",
+    );
+  }
+  return control;
+}
+
 async function startSession(
   opts: ClaudeSessionOptions,
   setClose: (close: () => Promise<void>) => void,
@@ -236,7 +273,7 @@ async function startSession(
   /** Publishes this session's activity as AG-UI events on `events.<owner>.<actor>` — set below
    *  when launch policy arms it. Personal native connections use the same recorder through the
    *  app host, with a boundary captured when that conversation connects. */
-  let events: AguiEmitterHolder<ClaudeEntry> | undefined;
+  let events: ClaudeEventHolder | undefined;
 
   /** The `claude/channel` push side — set below once the MCP server exists. */
   let wake: WakePolicy | undefined;
@@ -262,32 +299,22 @@ async function startSession(
   // directory comes from that session's SessionStart hook instead.
   const warn = (msg: string): void => void process.stderr.write(`[cotal-connector] ${msg}\n`);
   // The command mod's socket opens below, once the session's teardown is in place.
-  let commands: CommandFeed | undefined;
+  const commands = sessionCommands(env, claude, () => agent, warn);
   const agent: MeshAgent = new MeshAgent(config, env, {
     withholdProcessCwd: true,
     onceClaimBound: true,
-    commands: claudeCommands({ feed: () => commands, interrupting: () => claude.interrupting(agent), warn }),
+    commands: commands.dispatcher,
+    naming: claudeNaming(env, config.model),
   });
   const turns = commandTurns(agent);
   const plane = eventPlaneArmed(config, env) ? createClaudeEventPlane(agent, config, env) : undefined;
   events = plane?.events;
   // Claude's tool permissions, answerable on the agent's own `agent` endpoint while Claude's dialog
-  // stays open. The desk exists once the agent serves that endpoint, which only a user-auth mesh does.
+  // stays open. The desk exists once the agent serves that endpoint.
   const prompts = createClaudePrompts({ desk: () => agent.prompts, warn });
   const hooks = launchedSessionHooks(prompts, claude, warn);
 
-  // Local control plane for the lifecycle hooks (presence + message injection) and the manager's
-  // cooperative shutdown. The SOCKET PATH comes from the launch env; the KEY and exchange version
-  // come from the launch-material file that env points at, which is also where the hooks read them,
-  // or from COTAL_CONTROL_KEY and COTAL_CONTROL_VERSION in a session driven by hand. The hooks are
-  // what advance presence and inject peer messages, so a session without the endpoint is refused,
-  // naming it, rather than served with an unauthenticated (or no) control plane.
-  const control = controlFromEnv(env);
-  if (!control) {
-    throw new Error(
-      "no control endpoint for the lifecycle hooks: set COTAL_CONTROL_SOCKET to a socket path in a private directory, COTAL_CONTROL_KEY to a random secret and COTAL_CONTROL_VERSION to 1",
-    );
-  }
+  const control = requireControl(env);
   // Defined before the server so it can be the cooperative-shutdown handler; only ever CALLED after
   // `controlServer` is assigned (on a signal or an authed `{op:"shutdown"}`), so the forward ref is safe.
   // `wake` is likewise assigned later, so a shutdown frame arriving before the MCP server exists
@@ -308,7 +335,7 @@ async function startSession(
       } catch {
         /* ignore */
       }
-      commands?.close();
+      commands.close();
       wake?.stop();
       try {
         await events?.close();
@@ -329,7 +356,7 @@ async function startSession(
     );
   };
   setClose(close);
-  if (opts.claudePid !== undefined) commands = await openCommandFeed(opts.claudePid, { warn });
+  await commands.open(opts.claudePid, plane && ((list) => plane.deltas(list)));
   controlServer = startControlServer(
     agent,
     control,
@@ -392,6 +419,30 @@ async function startSession(
     `[cotal-connector] MCP ready (stdio) — space="${config.space}" name="${config.name}"${config.role ? ` role="${config.role}"` : ""}\n`,
   );
   return { name: config.name, close };
+}
+
+/** A session's command mod: the dispatcher its agent serves, and the mod's socket behind it, which
+ *  `open` opens for the named Claude Code process. With none named, the dispatcher refuses. */
+function sessionCommands(env: NodeJS.ProcessEnv, claude: Pick<ClaudeHooks, "interrupting">, agent: () => MeshAgent, warn: (msg: string) => void) {
+  let feed: CommandFeed | undefined;
+  return {
+    dispatcher: claudeCommands({
+      feed: () => feed, interrupting: () => claude.interrupting(agent()), warn,
+      imageDir: env[TURN_IMAGES_ENV] || undefined, onStop: (stop) => agent().once("stopping", stop),
+      models: {
+        catalog: () => listClaudeModels({ resolvedBinaries: { claude: env[CLAUDE_RESOLVED_BIN_ENV]?.trim() || "claude" } }),
+        launchEffort: env.COTAL_VARIANT || undefined,
+      },
+    }),
+    /** Serve the command socket of the Claude Code process `claudePid`, and, given a sink, ask its
+     *  mod to relay the reply text the session streams. */
+    async open(claudePid: number | undefined, deltas?: (list: ModDelta[]) => void): Promise<void> {
+      if (claudePid === undefined) return;
+      feed = await openCommandFeed(claudePid, { warn });
+      if (deltas) feed.stream(deltas);
+    },
+    close: (): void => feed?.close(),
+  };
 }
 
 /**

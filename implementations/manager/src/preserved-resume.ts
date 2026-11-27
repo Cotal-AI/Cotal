@@ -1,6 +1,6 @@
-import { copyPersonaEndpoints, DEV_OWNER, discardLaunchArtifacts, EpEnvelopeError, identityFromCreds, idFromCreds, loadAgentFile, loadCotalConfig, parsePrincipalKey, principalKey, rejectionText, resolveAuthProvider } from "@cotal-ai/core";
+import { copyPersonaEndpoints, DEV_OWNER, discardLaunchArtifacts, EpEnvelopeError, identityFromCreds, idFromCreds, loadCotalConfig, modelPolicyEnv, parsePrincipalKey, principalKey, rejectionText, resolveAuthProvider } from "@cotal-ai/core";
 import type { Connector, ControlReply, LaunchOpts, LaunchSpec, MeshLaunchAgent, Presence, RuntimeReference, UserAuthLaunch } from "@cotal-ai/core";
-import { agentCredsDir, agentLifecycleSecretFilePaths, agentSecretFilePaths, agentSecretKeyForFile, userAuthStateDir } from "@cotal-ai/workspace";
+import { agentCredsDir, agentLifecycleSecretFilePaths, agentSecretFilePaths, agentSecretKeyForFile, isTrustedProject, loadTrustCheckedPersona, manifestPersonaLaunchOptionsRefusal, userAuthStateDir } from "@cotal-ai/workspace";
 import { createHash, randomBytes } from "node:crypto";
 import { lstatSync, realpathSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -11,6 +11,7 @@ import { MAX_AGENTS, parseResumeCommitArgs, parseResumeControlArgs, parseResumeF
 import { requireRuntimeReap } from "./runtime/index.js";
 import type { CustodialRuntime } from "./runtime/index.js";
 import type { ManagerParts } from "./manager-parts.js";
+import { optInLaunchFields } from "./harness-resolution.js";
 import { foreignEventChannels } from "./seat-launch.js";
 import type { ManagedAgent } from "./seat-types.js";
 import { ownedBySibling } from "./static-lifecycle.js";
@@ -283,6 +284,7 @@ export class PreservedResume {
         source: a.launch.source,
         model: a.launch.model,
         variant: a.launch.variant,
+        ...(a.launch.modes ? { modes: a.launch.modes } : {}),
         subscribe: a.launch.subscribe,
         allowSubscribe: a.launch.allowSubscribe,
         allowPublish: a.launch.allowPublish,
@@ -290,6 +292,7 @@ export class PreservedResume {
         ...(a.launch.endpoints?.length ? { endpoints: copyPersonaEndpoints(a.launch.endpoints) } : {}),
         events: a.launch.events,
         eventPayloads: a.launch.eventPayloads,
+        ...optInLaunchFields(a.launch),
         shareTools: a.launch.shareTools,
         forkSource: a.launch.forkSource,
         ...(this.forkProvenance(a) ? { resumed: this.forkProvenance(a) } : {}),
@@ -929,6 +932,8 @@ export class PreservedResume {
       } catch (e) {
         return { ok: false, error: rejectionText(e) };
       }
+      const unavailable = connector.launchUnavailable?.({ cwd: entry.launch.cwd, resume: entry.launch.forkSource });
+      if (unavailable !== undefined) return { ok: false, error: unavailable };
       await this.parts.connectorInventory.refreshUnavailableConnectors(connector.name, true);
       const harness = this.parts.harnessResolution.launchHarness(connector);
       if ("refusal" in harness) return { ok: false, error: harness.refusal };
@@ -960,18 +965,22 @@ export class PreservedResume {
         }
         if (!spec || spec.hash !== launchSource.hash)
           return { ok: false, error: `retained manifest agent ${launchSource.requested} is missing or its hash changed; refusing same-principal resume` };
+        const refusal = manifestPersonaLaunchOptionsRefusal(spec.personaPath, spec.launchOptions);
+        if (refusal) return { ok: false, error: refusal };
         launchOptions = spec.launchOptions;
         exact = spec.continuity === "exact";
       } else {
         try {
-          launchOptions = loadAgentFile(entry.launch.source.configPath).launchOptions;
+          const checked = loadTrustCheckedPersona(entry.launch.source.configPath, "agent");
+          if (checked.refusal) return { ok: false, error: checked.refusal };
+          launchOptions = checked.def.launchOptions;
         } catch (e) {
           return { ok: false, error: rejectionText(e) };
         }
       }
       // Asked once `exact` is known: an exact seat reopens its retained session or fails, like its
       // manifest launch, so the connector must honor reopenSession before the batch starts any child.
-      const unsupported = this.capabilityRefusal(connector, { variant: entry.launch.variant, prompt: entry.launch.prompt, exact });
+      const unsupported = this.capabilityRefusal(connector, { ...entry.launch, exact });
       if (unsupported) return { ok: false, error: unsupported };
       const eventsRefused = this.eventsRefusal(connector, entry.launch.events);
       if (eventsRefused) return { ok: false, error: eventsRefused };
@@ -984,8 +993,9 @@ export class PreservedResume {
       }
 
       try {
+        const config = loadCotalConfig(this.config.workspaceRoot, isTrustedProject);
         const launchOpts: LaunchOpts = {
-          ...this.hostLaunchFields(loadCotalConfig(this.config.workspaceRoot), entry.launch.connector, entry.launch.shareTools, harness),
+          ...this.hostLaunchFields(config, entry.launch.connector, entry.launch.shareTools, harness),
           name: entry.name,
           displayName: entry.displayName,
           role: entry.role,
@@ -1003,6 +1013,7 @@ export class PreservedResume {
           configPath: entry.launch.source.configPath,
           model: entry.launch.model,
           variant: entry.launch.variant,
+          modes: entry.launch.modes,
           launchOptions,
           resume: retainedSession ? undefined : entry.launch.forkSource,
           continueSession: exact ? undefined : retainedSession,
@@ -1014,10 +1025,11 @@ export class PreservedResume {
           endpoints: copyPersonaEndpoints(entry.launch.endpoints) ?? [],
           events: entry.launch.events,
           eventPayloads: this.config.eventPayloadsWithheld ? false : entry.launch.eventPayloads,
+          ...optInLaunchFields(entry.launch),
           cwd: entry.launch.cwd,
         };
         const spec = connector.buildLaunch(launchOpts);
-        spec.env = { ...spec.env, COTAL_MANAGER_INSTANCE: this.managerInstanceId };
+        spec.env = { ...spec.env, COTAL_MANAGER_INSTANCE: this.managerInstanceId, ...modelPolicyEnv(config, entry.role) };
         const value = { spec, launchOpts, ...authority, exact } satisfies PreparedResume;
         prepared?.set(entry.name, value);
         if (preflightOnly) return { ok: true, data: { name: entry.name, preflight: true } };
@@ -1093,7 +1105,8 @@ export class PreservedResume {
           source: entry.launch.source,
           cwd: entry.launch.cwd,
           model: entry.launch.model,
-          variant: entry.launch.variant,
+          variant: connector.name === "claude" ? prepared.spec.env?.COTAL_VARIANT : entry.launch.variant,
+          modes: entry.launch.modes,
           subscribe: entry.launch.subscribe,
           allowSubscribe: entry.launch.allowSubscribe,
           allowPublish: entry.launch.allowPublish,
@@ -1101,6 +1114,7 @@ export class PreservedResume {
           ...(entry.launch.endpoints?.length ? { endpoints: copyPersonaEndpoints(entry.launch.endpoints) } : {}),
           events: entry.launch.events,
           eventPayloads: this.config.eventPayloadsWithheld ? false : entry.launch.eventPayloads,
+          ...optInLaunchFields(entry.launch),
           shareTools: entry.launch.shareTools,
           forkSource: entry.launch.forkSource,
           ...(entry.launch.resumed ? { resumed: entry.launch.resumed } : {}),

@@ -14,7 +14,7 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { readFileSync } from "node:fs";
 import { registry, type ExtensionRef } from "@cotal-ai/core";
-import { bindExtensionPeers, CorruptExtensionPackageError, extensionPackageDir, extensionsDir, hostPackageDir, importExtensionEntry, importInstalledExtension, installedExtensionPackage, installedExtensionVersion, resolveExtensionEntry, type InstalledExtension } from "@cotal-ai/workspace";
+import { bindExtensionPeers, CorruptExtensionPackageError, extensionPackageDir, extensionsDir, extensionsManifestPath, hostPackageDir, importExtensionEntry, importInstalledExtension, installedExtensionPackage, installedExtensionVersion, materializeFromManifest, resolveExtensionEntry, type InstalledExtension } from "@cotal-ai/workspace";
 // Not on the package's public surface: the same module instance the entry point above loads.
 import { upgradeRemedy } from "../dist/import-diagnosis.js";
 
@@ -101,7 +101,7 @@ try {
   {
     const m = await failureFor({ scope: "@cotal-ai", version: "0.0.1", peerRange: ">=0.1.0" });
     check("lockstep, extension older: names the EXTENSION as the older side", m.includes("The extension is the older side"), m);
-    check("lockstep, extension older: keeps the `cotal ext add` remedy", m.includes("cotal ext add @cotal-ai/remedy-"), m);
+    check("lockstep, extension older: keeps the `cotal ext add` remedy", m.includes("cotal ext add '@cotal-ai/remedy-"), m);
   }
 
   // 5. A third-party extension whose declared range the linked core satisfies: nothing available
@@ -119,7 +119,7 @@ try {
   {
     const m = await failureFor({ scope: "@cotal-ai", version: "99.0.0", peerRange: ">=0.1.0", body: `import "./does-not-exist.mjs";\n` });
     check("control, non-export failure: claims no side", !/is BEHIND|older side|Same version|Neither side/.test(m), m);
-    check("control, non-export failure: keeps the plain reinstall remedy", m.includes("cotal ext add @cotal-ai/remedy-"), m);
+    check("control, non-export failure: keeps the plain reinstall remedy", m.includes("cotal ext add '@cotal-ai/remedy-"), m);
   }
   // A package whose `main` names a directory resolves through that directory's index file, the
   // way Node's own resolution does. The add-time existence check already passes for such a package
@@ -200,6 +200,27 @@ try {
   }
   check("all import-remedy assertions ran", passed + failed === 40, { passed, failed });
 
+  for (const name of ["no-spec-load", "no-spec-failure"]) {
+    const pkg = `@third/${name}`;
+    const version = "1.0.0";
+    const dir = extensionPackageDir(pkg);
+    const ref = { kind: "command", name };
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "package.json"), JSON.stringify({ name: pkg, version, main: "index.mjs", peerDependencies: { "@cotal-ai/core": "*" } }));
+    writeFileSync(extensionsManifestPath(), JSON.stringify({ extensions: [{ pkg, version, commands: [], provides: [ref] }] }));
+    const broken = name === "no-spec-failure";
+    writeFileSync(join(dir, "index.mjs"), broken ? 'throw new Error("broken extension entry");\n' :
+      `import { registry } from "@cotal-ai/core";\nregistry.register({ ...${JSON.stringify(ref)}, summary: "Fixture", run() {} });\n`);
+    let error: unknown;
+    try { await materializeFromManifest(ref); } catch (e) { error = e; }
+    if (broken) {
+      check("no manifest spec: a failed import keeps its cause and names the package to remove",
+        error instanceof Error && error.message.includes("broken extension entry") && error.message.includes(`cotal ext remove '${pkg}'`), error);
+    } else {
+      check("no manifest spec: the installed extension loads and registers", !error && registry.has(ref.kind, ref.name), error);
+    }
+  }
+
   {
     const dir = extensionPackageDir("@third/entry-precedence");
     mkdirSync(join(dir, "dist"), { recursive: true });
@@ -207,6 +228,10 @@ try {
     const meta = { version: "1.0.0", main: "./entry" };
     check("entry resolution keeps an exact file ahead of a suffixed sibling", resolveExtensionEntry(dir, meta) === join(dir, "entry"));
     check("entry resolution keeps a root import export ahead of main", resolveExtensionEntry(dir, { ...meta, exports: { ".": { import: "./export.js" } } }) === join(dir, "export.js"));
+    check("entry resolution accepts a default root export in shorthand", resolveExtensionEntry(dir, { ...meta, exports: { default: "./export.js" } }) === join(dir, "export.js"));
+    check("entry resolution keeps default ahead of a later import", resolveExtensionEntry(dir, { ...meta, exports: { ".": { default: "./export.js", import: "./entry" } } }) === join(dir, "export.js"));
+    check("entry resolution tries the next condition when a nested node branch does not match", resolveExtensionEntry(dir, { ...meta, exports: { ".": { node: { require: "./entry" }, default: "./export.js" } } }) === join(dir, "export.js"));
+    check("entry resolution keeps main when exports declare only a subpath", resolveExtensionEntry(dir, { ...meta, exports: { "./import": "./export.js" } }) === join(dir, "entry"));
     check("entry resolution keeps an exported directory's index", resolveExtensionEntry(dir, { ...meta, exports: "./dist" }) === join(dir, "dist", "index.js"));
     check("entry resolution does not expand a missing explicit export", resolveExtensionEntry(dir, { ...meta, exports: "./export" }) === join(dir, "export"));
   }
