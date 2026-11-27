@@ -520,9 +520,9 @@ custody generation is reported as `legacy`: it cannot preserve its manager-owned
 command says that this is not a hot update and prints `exact`, `fork`, `fresh`, or `drain-only`
 for every seat. A seat whose name is missing or only whitespace is listed by its id, or as `(unnamed)` when the inventory has no id. This report sends no stop, preservation-commit, or replacement command.
 The update does not preserve a running PTY on a `legacy` Manager. The built-in PTY runtime
-uses a shared host for daemon-hosted Managers on Linux with a systemd user manager. Other Managers
-spawn PTYs in-process. Both report `legacy` for update admission. An incompatible native
-`@lydell/node-pty` or ConPTY ABI break remains an explicit per-seat maintenance cut.
+can use a shared host for eligible daemon-hosted Managers on Linux. Otherwise it spawns PTYs
+in-process. Both report `legacy` for update admission, and live seats still block update activation.
+An incompatible native `@lydell/node-pty` or ConPTY ABI break still requires per-seat maintenance.
 
 
 ### CLI upgrade

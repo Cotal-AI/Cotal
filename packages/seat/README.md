@@ -13,7 +13,11 @@ named `custody transport unsupported on <platform>` error on darwin and win32. T
 in-process fallback in this package. Standalone Managers and Linux sessions without verified runtime
 retention, linger and delegated systemd seat cgroups use the in-process runtime. Other platforms use
 their existing runtime.
-The shared host does not change update admission or provide automatic Manager recovery.
+The host checks the owning Manager's boot ID, PID and kernel start time. It ends the owning
+Manager's seat cgroups when that identity is proved dead. Losing the control socket or being unable
+to read the identity does not establish death. Stopping the host's unit, restarting the user manager,
+or logging out without linger when the user manager stops ends all seats in that host.
+Successor Managers do not adopt these seats. Live seats still block update activation.
 
 `peerCredentials(socket)` and its `PeerCredentials` type are exported from the package root.
 For a connected Linux Unix socket, the function returns the kernel's peer `pid`, `uid` and

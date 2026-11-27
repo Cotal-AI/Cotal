@@ -105,8 +105,10 @@ validator and the interpreter), the interpreter's sequential core and concurrenc
 journal, the effect interface a host implements, and the simulator and dry run that exercise a
 program with no broker. Depends on nothing else in the repo; it knows about effects, not about NATS.
 - `**@cotal-ai/seat**` (`packages/seat`): local PTY seat custody. On Linux with a systemd user manager,
-one shared host in its own transient user service owns the PTYs, children, screen mirrors and exit observations
-of daemon-hosted Managers. Managers control sessions over permissioned Unix sockets. The local
+each eligible daemon-hosted Manager lineage and runtime generation has its own shared host in a
+transient user service. The host owns the PTYs, children, screen mirrors and exit observations.
+Verified death of the owning Manager ends its hosted seat cgroups. A socket disconnect alone
+does not end seats. Managers control sessions over permissioned Unix sockets. The local
 protocol and custody records are versioned. The package has no mesh, connector or update logic.
 Other Managers spawn PTYs in-process. Linux supervisors can still adopt and reap older detached
 custodians. Host primitives for the daemon endpoint also build on macOS and Windows.
