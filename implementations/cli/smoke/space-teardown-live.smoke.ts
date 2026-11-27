@@ -153,7 +153,7 @@ async function deleteWithPluginHistory(root: string, space: string): Promise<Run
     }
     const preview = cli(home, "space", "delete", space, "--dry-run", "--json");
     const streams = preview.env?.result?.streams as { name: string; messages: number }[] | undefined;
-    check("authenticated plugin teardown preview names the exact history and omits the decoy", preview.status === 0 && streams?.some((entry) => entry.name === names[0] && entry.messages === 1) && !streams?.some((entry) => entry.name === names[1]), shown(preview));
+    check("authenticated plugin teardown preview names the exact history and omits the decoy", preview.status === 0 && streams !== undefined && streams.some((entry) => entry.name === names[0] && entry.messages === 1) && !streams.some((entry) => entry.name === names[1]), shown(preview));
     const deleted = cli(home, "space", "delete", space, "--yes");
     const gone = await manager.streams.info(names[0]).then(() => false, isStreamNotFound);
     const durableGone = await manager.consumers.info(names[0], PLUGIN_FANOUT_DURABLE).then(() => false, isStreamNotFound);

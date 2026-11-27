@@ -2329,7 +2329,7 @@ async function legacyMissingRecordsScenario(): Promise<void> {
     return result;
   };
   try {
-    must("up", "--detach", "--no-manager", "--server", server, "--space", space);
+    must("up", "--detach", "--server", server, "--space", space);
     const auth = loadSoleSpaceAuth(authDir(root));
     assert.ok(auth);
     const records = `KV_${recordsBucket(space)}`;
