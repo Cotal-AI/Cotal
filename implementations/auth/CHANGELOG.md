@@ -1,5 +1,16 @@
 # @cotal-ai/auth
 
+## 0.183.1
+
+### Patch Changes
+
+- c049810: Report remaining resumable conversation approvals of the previous account when `cotal login` switches accounts at the same provider.
+- 98aed81: Stop and restart `stack-delivery` ahead of `stack-auth` when `cotal up` repairs a crashed broker in a user-auth stack, keep the stopped-auth refusal ahead of delivery startup when the broker still runs, and update the plane-claim refusal guidance to reflect delivery-first startup.
+- Updated dependencies [c049810]
+  - @cotal-ai/workspace@0.183.1
+  - @cotal-ai/core@0.183.1
+  - @cotal-ai/lang@0.183.1
+
 ## 0.183.0
 
 ### Patch Changes

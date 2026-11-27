@@ -1,5 +1,12 @@
 # @cotal-ai/workspace
 
+## 0.183.1
+
+### Patch Changes
+
+- c049810: Report remaining resumable conversation approvals of the previous account when `cotal login` switches accounts at the same provider.
+- @cotal-ai/core@0.183.1
+
 ## 0.183.0
 
 ### Minor Changes
