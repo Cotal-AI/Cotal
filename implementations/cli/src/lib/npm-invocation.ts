@@ -13,6 +13,7 @@ const UPDATE_NPM_NODE = "COTAL_UPDATE_NPM_NODE";
 const windows = process.platform === "win32";
 
 let updatePath: { value: string; directories: string[] } | undefined;
+const asdfNpmCache = new Map<string, string | null>();
 
 export function preserveUpdatePath(): void {
   const path = process.env.PATH;
@@ -111,7 +112,7 @@ function asdfShimExecutable(file: string, env: NodeJS.ProcessEnv): string | unde
     if (!info.isFile() || info.size > 16_384) return;
     const text = readFileSync(entry, "utf8");
     if (!/^# asdf-plugin:/m.test(text)) return;
-    const raw = /^exec[ \t]+(.+?)[ \t]+exec[ \t]+(?:"npm"|'npm'|npm)[ \t]+(?:"\$@"|\$@)[ \t]*\r?$/m.exec(text)?.[1]?.trim();
+    const raw = /^exec[ \t]+(.+?)[ \t]+exec[ \t]+(?:"npm"|'npm'|npm)[ \t]+(?:"\$@"|\$@)(?:[ \t]+#[^\r\n]*)?[ \t]*\r?$/m.exec(text)?.[1]?.trim();
     if (!raw) return;
     let candidate = (raw.startsWith('"') && raw.endsWith('"')) || (raw.startsWith("'") && raw.endsWith("'"))
       ? raw.slice(1, -1) : raw;
@@ -172,7 +173,7 @@ export function npmUpdateChildEnvironment(env: NodeJS.ProcessEnv): NodeJS.Proces
   }
   const pathKey = pathVariable(env);
   let path = env[pathKey]!;
-  for (const selected of [npm, node]) {
+  for (const selected of [node, npm]) {
     if (!selected) continue;
     const bin = dirname(selected);
     if (!bin.includes(delimiter) && !path.split(delimiter).includes(bin)) path = `${path}${delimiter}${bin}`;
@@ -227,10 +228,20 @@ export function npmInvocation(env: NodeJS.ProcessEnv, args: string[]): NpmComman
   const project = npmProjectDirectory.getStore();
   const asdfCommand = !engine && !windows ? asdfShimExecutable(file, env) : undefined;
   if (asdfCommand) {
-    const asdfEnv = { ...lookup };
-    delete asdfEnv.NODE_OPTIONS;
-    const resolved = validInherited(inheritedNpm, directories, env)
-      ?? resolveAsdfNpm(asdfCommand, findOnPath, callerDirectory(cwd), cwd, asdfEnv, env);
+    let resolved = validInherited(inheritedNpm, directories, env);
+    if (!resolved) {
+      const directory = callerDirectory(cwd);
+      const cacheKey = `${file}\0${directory ?? ""}\0${lookup[pathKey] ?? ""}`;
+      if (asdfNpmCache.has(cacheKey)) {
+        const cached = asdfNpmCache.get(cacheKey) ?? undefined;
+        resolved = cached && resolveOnPath(cached, env) === cached ? cached : undefined;
+      } else {
+        const asdfEnv = { ...lookup };
+        delete asdfEnv.NODE_OPTIONS;
+        resolved = resolveAsdfNpm(asdfCommand, findOnPath, directory, cwd, asdfEnv, env);
+        asdfNpmCache.set(cacheKey, resolved ?? null);
+      }
+    }
     if (resolved) {
       try {
         if (realpathSync(resolved) !== realpathSync(file)) {

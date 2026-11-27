@@ -377,8 +377,12 @@ require(${JSON.stringify(cli)});
       for (const dir of [asdfShims, asdfBin, dirname(asdfPluginShim), join(asdfInstall, "bin")]) mkdirSync(dir, { recursive: true });
       copyFileSync(process.execPath, join(asdfInstall, "bin", "node"));
       symlinkSync(cli, join(asdfInstall, "bin", "npm"));
+      const asdfCalls = join(root, "asdf-calls");
       const asdfExe = join(asdfBin, "asdf");
-      writeFileSync(asdfExe, `#!/bin/sh
+      const writeAsdfExe = () => writeFileSync(asdfExe, `#!/bin/sh
+printf '%s\\n' "$1:$2:$PWD" >> ${JSON.stringify(asdfCalls)}
+if [ -n "$ASDF_TEST_SLEEP" ]; then /bin/sleep "$ASDF_TEST_SLEEP"; fi
+if [ -n "$ASDF_TEST_WHICH_OUT" ]; then printf '%b' "$ASDF_TEST_WHICH_OUT"; exit "\${ASDF_TEST_WHICH_CODE:-0}"; fi
 if [ ! -f .tool-versions ]; then
   printf '%s\\n' 'No version is set for nodejs; please run \`asdf set [options] nodejs <version>\`' >&2
   exit 1
@@ -390,12 +394,15 @@ case "$1:$2" in
   *) exit 2 ;;
 esac
 `, { mode: 0o755 });
+      writeAsdfExe();
       writeFileSync(asdfPluginShim, `#!/bin/sh\ninstalled=$(${JSON.stringify(asdfExe)} where nodejs) || exit $?\nexec "$installed/bin/npm" "$@"\n`, { mode: 0o755 });
-      writeFileSync(join(asdfShims, "npm"), `#!/bin/sh\n# asdf-plugin: nodejs ${process.versions.node}\nexec asdf exec "npm" "$@"`, { mode: 0o755 });
+      const writeGoAsdfShim = (asdfCmd = "asdf") => writeFileSync(join(asdfShims, "npm"), `#!/bin/sh\n# asdf-plugin: nodejs ${process.versions.node}\nexec ${asdfCmd} exec "npm" "$@"`, { mode: 0o755 });
+      writeGoAsdfShim();
       const asdfExtra = [asdfBin, "/usr/bin", "/bin"];
       const asdfBaseEnv = { ...cliEnv(asdfExtra, asdfShims), ASDF_DATA_DIR: asdfData };
       writeFileSync(join(project, ".tool-versions"), `${asdfInstall}\n`);
 
+      rmSync(asdfCalls, { force: true });
       const standaloneAsdf = spawnSync(join(onlyNode, exe), [entry, "update", "--self"], {
         cwd: project, encoding: "utf8", timeout: 60_000, env: { ...asdfBaseEnv, NODE_OPTIONS: undefined },
       });
@@ -404,12 +411,97 @@ esac
       assert.deepEqual(recordedLaunches().at(-1), {
         node: realpathSync(join(onlyNode, exe)), cwd: parse(root).root, pathHead: onlyNode,
       }, "project-selected asdf npm runs outside the project on Cotal's standalone compatible Node");
+      assert.deepEqual(readFileSync(asdfCalls, "utf8").trim().split(/\r?\n/), [
+        `which:npm:${realpathSync(project)}`, `where:nodejs:${realpathSync(project)}`,
+      ], "asdf npm resolution is memoised per process for the same shim and directory");
+
+      // Exact bash reshim template from asdf v0.10.2, v0.14.1, and v0.15.0 (`lib/commands/reshim.bash`),
+      // where `$(asdf_dir)` and `${executable_name}` expand when asdf writes the shim.
+      for (const asdfDirExpr of [asdfData, "${ASDF_DIR}"]) {
+        const legacyAsdfDir = join(asdfData, "bin");
+        mkdirSync(legacyAsdfDir, { recursive: true });
+        copyFileSync(asdfExe, join(legacyAsdfDir, "asdf"));
+        writeFileSync(join(asdfShims, "npm"), `#!/usr/bin/env bash\n# asdf-plugin: nodejs ${process.versions.node}\nexec ${asdfDirExpr}/bin/asdf exec "npm" "$@" # asdf_allow: ' asdf '\n`, { mode: 0o755 });
+        const legacyEnv = { ...cliEnv(["/usr/bin", "/bin"], asdfShims), ASDF_DATA_DIR: asdfData, ASDF_DIR: asdfData, NODE_OPTIONS: undefined };
+        const legacyAsdf = spawnSync(join(onlyNode, exe), [entry, "update", "--self"], {
+          cwd: project, encoding: "utf8", timeout: 60_000, env: legacyEnv,
+        });
+        assert.equal(legacyAsdf.status, 0, legacyAsdf.stdout + legacyAsdf.stderr);
+        assert.match(legacyAsdf.stdout, /Registry latest:/);
+        assert.deepEqual(recordedLaunches().at(-1), {
+          node: realpathSync(join(onlyNode, exe)), cwd: parse(root).root, pathHead: onlyNode,
+        }, `bash-era asdf reshim template (${asdfDirExpr}) resolves the project's npm`);
+      }
+      writeGoAsdfShim();
 
       const unsetAsdf = spawnSync(join(onlyNode, exe), [entry, "update", "--self"], {
         cwd: root, encoding: "utf8", timeout: 60_000, env: { ...asdfBaseEnv, NODE_OPTIONS: undefined },
       });
       assert.equal(unsetAsdf.status, 1, unsetAsdf.stdout + unsetAsdf.stderr);
       assert.match(unsetAsdf.stderr, /No version is set for nodejs/);
+
+      // Failure fallbacks: missing asdf, >2s hang, and relative / multi-line / non-executable answers
+      // each leave the original shim in place (main's behaviour).
+      const missingAsdfPath = join(root, "missing-asdf-dir", "asdf");
+      writeFileSync(join(asdfShims, "npm"), `#!/bin/sh\n# asdf-plugin: nodejs ${process.versions.node}\nexec "${missingAsdfPath}" exec "npm" "$@"\n`, { mode: 0o755 });
+      const missingAsdf = spawnSync(join(onlyNode, exe), [entry, "update", "--self"], {
+        cwd: project, encoding: "utf8", timeout: 60_000,
+        env: { ...cliEnv(["/usr/bin", "/bin"], asdfShims), ASDF_DATA_DIR: asdfData, NODE_OPTIONS: undefined },
+      });
+      assert.equal(missingAsdf.status, 1, missingAsdf.stdout + missingAsdf.stderr);
+      assert.match(missingAsdf.stderr, /missing-asdf-dir\/asdf/);
+      writeGoAsdfShim();
+
+      const nonExecNpm = join(root, "non-exec-npm");
+      writeFileSync(nonExecNpm, "#!/bin/sh\nexit 0\n", { mode: 0o644 });
+      const fallbackShimCalls = join(root, "fallback-shim-calls");
+      writeFileSync(join(asdfShims, "npm"), `#!/bin/sh
+# asdf-plugin: nodejs ${process.versions.node}
+exec asdf exec "npm" "$@"
+`, { mode: 0o755 });
+      writeFileSync(asdfExe, `#!/bin/sh
+case "$1:$2" in
+  which:npm)
+    if [ -n "$ASDF_TEST_SLEEP" ]; then exec /bin/sleep "$ASDF_TEST_SLEEP"; fi
+    printf '%b' "$ASDF_TEST_WHICH_OUT"
+    exit 0 ;;
+  exec:npm)
+    printf '%s\\n' "$PWD" >> ${JSON.stringify(fallbackShimCalls)}
+    shift 2
+    exec ${JSON.stringify(cli)} "$@" ;;
+  *) exit 2 ;;
+esac
+`, { mode: 0o755 });
+      for (const [label, extraEnv] of [
+        ["timeout", { ASDF_TEST_SLEEP: "3" }],
+        ["relative", { ASDF_TEST_WHICH_OUT: "relative/bin/npm\\n" }],
+        ["multiline", { ASDF_TEST_WHICH_OUT: `${join(asdfInstall, "bin", "npm")}\\n${join(asdfInstall, "bin", "npm")}\\n` }],
+        ["non-executable", { ASDF_TEST_WHICH_OUT: `${nonExecNpm}\\n` }],
+      ] as const) {
+        rmSync(fallbackShimCalls, { force: true });
+        const fallbackRes = spawnSync(join(onlyNode, exe), [entry, "update", "--check"], {
+          cwd: project, encoding: "utf8", timeout: 60_000,
+          env: { ...asdfBaseEnv, NODE_OPTIONS: undefined, ...extraEnv },
+        });
+        assert.equal(fallbackRes.status, 0, `${label}: ${fallbackRes.stdout}${fallbackRes.stderr}`);
+        assert.deepEqual(readFileSync(fallbackShimCalls, "utf8").trim().split(/\r?\n/), [parse(root).root],
+          `${label} falls back to running the original shim from the isolated directory`);
+      }
+
+      // Non-asdf npm wrapper on PATH is untouched and never consults asdf.
+      const customNpmDir = join(root, "custom-npm-bin");
+      mkdirSync(customNpmDir, { recursive: true });
+      const customNpmLog = join(root, "custom-npm-calls");
+      writeFileSync(join(customNpmDir, "npm"), `#!/bin/sh\nprintf '%s\\n' "$PWD" >> ${JSON.stringify(customNpmLog)}\nexec ${JSON.stringify(cli)} "$@"\n`, { mode: 0o755 });
+      writeAsdfExe();
+      rmSync(asdfCalls, { force: true });
+      const nonAsdfRes = spawnSync(join(onlyNode, exe), [entry, "update", "--check"], {
+        cwd: project, encoding: "utf8", timeout: 60_000,
+        env: { ...cliEnv(asdfExtra, customNpmDir), ASDF_DATA_DIR: asdfData, NODE_OPTIONS: undefined },
+      });
+      assert.equal(nonAsdfRes.status, 0, nonAsdfRes.stdout + nonAsdfRes.stderr);
+      assert.equal(readFileSync(customNpmLog, "utf8").trim(), parse(root).root, "non-asdf npm wrapper runs directly from /");
+      assert.throws(() => readFileSync(asdfCalls), { code: "ENOENT" }, "non-asdf npm never invokes asdf");
 
       const compatibleAsdf = spawnSync(join(onlyNode, exe), [entry, "update", "--self"], {
         cwd: project, encoding: "utf8", timeout: 60_000, env: asdfBaseEnv,
@@ -434,10 +526,72 @@ esac
             assert.equal(child.status, 0, child.stdout + child.stderr);
             assert.deepEqual(recordedLaunches().at(-1), {
               node: realpathSync(join(onlyNode, exe)), cwd: parse(root).root, pathHead: onlyNode,
-            }, `reconcile and seed children retain the resolved asdf npm from ${installName}`);
+            }, `reconcile and update children retain the resolved asdf npm from ${installName}`);
           }
         }
       } finally { release(); }
+
+      // Real seedOne reconciliation cell: drive `runSeed` (`seed/reconcile.ts:seedOne` -> `ext add` child)
+      // from `/` under `npmProjectDirectory.run(project, ...)` with an asdf npm shim and unset global asdf.
+      {
+        const seedSandbox = join(root, "seed-reconcile-cell");
+        const seedXdg = join(seedSandbox, "config"), seedHome = join(seedSandbox, "home"), seedCotal = join(seedSandbox, "cotal");
+        const seedInstall = join(seedSandbox, "asdf-install"), seedNpmLog = join(seedSandbox, "seed-npm.jsonl");
+        const seedEntry = join(repoBin, "dist", "cotal.js");
+        for (const dir of [seedXdg, seedHome, seedCotal, join(seedInstall, "bin")]) {
+          mkdirSync(dir, { recursive: true, mode: 0o700 });
+        }
+        const seedNpm = join(seedInstall, "bin", "npm"), seedNpmRoot = join(seedInstall, "lib", "node_modules", "npm"), seedNpmCli = join(seedNpmRoot, "bin", "npm-cli.js");
+        mkdirSync(dirname(seedNpmCli), { recursive: true });
+        writeFileSync(join(seedNpmRoot, "package.json"), JSON.stringify({ name: "npm", bin: { npm: "bin/npm-cli.js" }, engines: { node: process.version } }));
+        writeFileSync(seedNpmCli, `#!/usr/bin/env node
+const fs = require("node:fs"), path = require("node:path");
+const args = process.argv.slice(2);
+const pIdx = args.indexOf("--prefix");
+const prefix = pIdx >= 0 ? args[pIdx + 1] : "";
+const spec = args.filter((a, i) => !a.startsWith("-") && i !== pIdx + 1)[1];
+fs.appendFileSync(${JSON.stringify(seedNpmLog)}, JSON.stringify({ node: process.execPath, cwd: process.cwd(), cmd: args[0], hasUpdateNpm: Object.prototype.hasOwnProperty.call(process.env, "COTAL_UPDATE_NPM") }) + "\\n");
+if (args[0] === "install" && prefix && spec) {
+  const meta = JSON.parse(fs.readFileSync(path.join(spec, "package.json"), "utf8"));
+  const dest = path.join(prefix, "node_modules", ...meta.name.split("/"));
+  fs.mkdirSync(path.dirname(dest), { recursive: true });
+  fs.cpSync(spec, dest, { recursive: true });
+  const rootPkgPath = path.join(prefix, "package.json");
+  const rootPkg = fs.existsSync(rootPkgPath) ? JSON.parse(fs.readFileSync(rootPkgPath, "utf8")) : { dependencies: {} };
+  rootPkg.dependencies = { ...rootPkg.dependencies, [meta.name]: "file:" + path.relative(prefix, spec) };
+  fs.writeFileSync(rootPkgPath, JSON.stringify(rootPkg, null, 2) + "\\n");
+}
+`, { mode: 0o755 });
+        symlinkSync(seedNpmCli, seedNpm);
+        writeFileSync(join(project, ".tool-versions"), `${seedInstall}\n`);
+        const seedReconcileUrl = pathToFileURL(join(import.meta.dirname, "../dist/seed/reconcile.js")).href;
+        const npmInvocationUrl = pathToFileURL(join(import.meta.dirname, "../dist/lib/npm-invocation.js")).href;
+        const seedDriver = join(seedSandbox, "drive-seed.mjs");
+        writeFileSync(seedDriver, `
+process.argv[1] = ${JSON.stringify(seedEntry)};
+const { npmProjectDirectory } = await import(${JSON.stringify(npmInvocationUrl)});
+const { runSeed } = await import(${JSON.stringify(seedReconcileUrl)});
+await npmProjectDirectory.run(${JSON.stringify(project)}, () => runSeed({}));
+`);
+        const seedRun = spawnSync(join(onlyNode, exe), [seedDriver], {
+          cwd: parse(root).root, encoding: "utf8", timeout: 60_000,
+          env: {
+            ...asdfBaseEnv, NODE_OPTIONS: undefined,
+            HOME: seedHome, USERPROFILE: seedHome, COTAL_HOME: seedCotal, XDG_CONFIG_HOME: seedXdg,
+            COTAL_SKIP_CONNECTOR_SEED: undefined,
+          },
+        });
+        assert.equal(seedRun.status, 0, `seedOne reconcile cell failed:\n${seedRun.stdout}\n${seedRun.stderr}`);
+        assert.match(seedRun.stdout, /connectors reconciled.*seeded claude/);
+        const seedEvents = readFileSync(seedNpmLog, "utf8").trim().split(/\r?\n/).map(line => JSON.parse(line));
+        const installEvents = seedEvents.filter(event => event.cmd === "install");
+        assert.equal(installEvents.length, SEED_BUILTINS.length);
+        for (const event of seedEvents) {
+          assert.equal(event.node, realpathSync(join(onlyNode, exe)));
+          assert.equal(event.cwd, parse(root).root);
+          assert.equal(event.hasUpdateNpm, false, "COTAL_UPDATE_NPM is stripped before npm runs");
+        }
+      }
     }
     const updated = run("--self");
     assert.equal(updated.status, 0, updated.stdout + updated.stderr);
