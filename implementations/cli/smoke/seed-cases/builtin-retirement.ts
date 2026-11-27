@@ -12,8 +12,8 @@ export async function checkBuiltInRetirement(): Promise<void> {
   const source = join(seedDir(cfg), "store", old, "web");
   const installed = join(prefix, "node_modules", "@cotal-ai", "web", "index.mjs");
   const pending = join(seedDir(cfg), "builtin-retire.json");
-  mkdirSync(prefix, { recursive: true });
-  mkdirSync(source, { recursive: true });
+  mkdirSync(prefix, { recursive: true, mode: 0o700 });
+  mkdirSync(source, { recursive: true, mode: 0o700 });
   writeJson(join(source, "package.json"), { name: packageName, version: old, main: "index.mjs" });
   writeFileSync(join(source, "index.mjs"), 'throw new Error("Retired dashboard must not be loaded");\n');
   const npmArgs = ["install", "--prefix", prefix, "--install-links", "--ignore-scripts", "--offline", "--no-fund", "--no-audit", source];
@@ -41,7 +41,11 @@ export async function checkBuiltInRetirement(): Promise<void> {
     const store = serviceInstanceStore(instance.space);
     store.commit(instanceId, undefined, instance);
     const recorded = () => readJson(manifestPath(cfg)).extensions.some((entry: { pkg: string }) => entry.pkg === packageName);
-    const npmRecords = () => ["package.json", "package-lock.json"].map(file => JSON.stringify(readJson(join(prefix, file))).includes(packageName));
+    const npmRecords = () => {
+      const metadata = readJson(join(prefix, "package.json"));
+      const lock = readJson(join(prefix, "package-lock.json"));
+      return [metadata.dependencies?.[packageName], lock.packages?.[""]?.dependencies?.[packageName], lock.packages?.[`node_modules/${packageName}`]];
+    };
     const unchanged = () => child.exitCode === null && child.signalCode === null &&
       observeServiceProcess(instance) === (process.platform === "win32" ? "unreadable" : "running");
     const first = boot(cfg);

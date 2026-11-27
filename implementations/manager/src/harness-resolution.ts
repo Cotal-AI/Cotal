@@ -48,7 +48,7 @@ export class HarnessResolution {
   /** Each connector's last catalog read, or the read in flight, with the harness files and spawn.env
    *  names it ran with. A spawn
    *  that chooses a variant or modes checks against it rather than running the harness again. */
-  private readonly catalogs = new Map<string, { harness: string; read: Promise<ModelCatalog> }>();
+  private readonly catalogs = new WeakMap<Connector, { harness: string; read: Promise<ModelCatalog> }>();
 
   constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: HarnessResolutionDeps, private readonly parts: Pick<ManagerParts, "connectorInventory">) {}
 
@@ -144,8 +144,8 @@ export class HarnessResolution {
    *  spawn.env names a launch would receive, so the catalog lists the models a seat reaches. */
   readCatalog(connector: Connector, binaries: Readonly<Record<string, string>> | undefined, envAllow: readonly string[] | undefined, refresh = false): Promise<ModelCatalog> {
     const read = readModelCatalog(connector, { refresh, resolvedBinaries: binaries, ...(envAllow ? { envAllow } : {}) });
-    this.catalogs.set(connector.name, { harness: catalogKey(binaries, envAllow), read });
-    const forget = () => { if (this.catalogs.get(connector.name)?.read === read) this.catalogs.delete(connector.name); };
+    this.catalogs.set(connector, { harness: catalogKey(binaries, envAllow), read });
+    const forget = () => { if (this.catalogs.get(connector)?.read === read) this.catalogs.delete(connector); };
     read.then((catalog) => { if (catalog.unavailable !== undefined) forget(); }, forget);
     return read;
   }
@@ -154,7 +154,7 @@ export class HarnessResolution {
    *  It reads the kept catalog, and the harness only when none is kept for these files and names. */
   catalogRefusal(connector: Connector, binaries: Readonly<Record<string, string>> | undefined, envAllow: readonly string[] | undefined, choice: LaunchChoice): Promise<string | undefined> {
     return catalogChoiceRefusal(connector, choice, () => {
-      const kept = this.catalogs.get(connector.name);
+      const kept = this.catalogs.get(connector);
       return kept?.harness === catalogKey(binaries, envAllow) ? kept.read : this.readCatalog(connector, binaries, envAllow);
     });
   }

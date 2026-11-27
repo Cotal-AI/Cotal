@@ -548,10 +548,19 @@ function verifyCandidate(pkg: string, resolved: string, dir: string, recorded: r
   const providers = entry.provides ?? [];
   return [
     c.green(`✓ added ${pkg}@${entry.version}`) + c.dim(` - provides: ${providers.map((item) => `${item.kind}:${item.name}`).join(", ")}`),
+    ...(!seeding && hasManagerProvider(entry) ? [managerExtensionRestartHint()] : []),
     ...(!entry.serviceMetadata && (entry.servicePresets?.length || entry.localProcesses?.some((component) => component.service !== undefined))
       ? [c.dim(`  its services cannot run on this platform: protected workstation file access is not available in this release`)]
       : []),
   ];
+}
+
+function hasManagerProvider(entry: InstalledExtension): boolean {
+  return extensionProvides(entry).some(({ kind }) => kind === "connector" || kind === "runtime");
+}
+
+function managerExtensionRestartHint(): string {
+  return c.dim("  A running manager that loaded this package needs a restart before it can use the change. Running seats are not stopped.");
 }
 
 /** Explain a missing tarball only when npm's path matches a relative file dependency of the candidate. */
@@ -674,6 +683,7 @@ async function removeUnlocked(pkg: string): Promise<void> {
     saveExtensionsManifest({ extensions: remaining });
     provenance.wrote(`extensions manifest (−${pkg})`, extensionsManifestPath());
     console.log(c.green(`✓ removed ${pkg}`) + c.dim(` - removed: ${extensionProvides(entry).map((ref) => `${ref.kind}:${ref.name}`).join(", ")}`));
+    if (hasManagerProvider(entry)) console.log(managerExtensionRestartHint());
   } finally {
     for (const pidPath of reservations) {
       try {
