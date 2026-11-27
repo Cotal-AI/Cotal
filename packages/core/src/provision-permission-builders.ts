@@ -13,7 +13,23 @@ import { REGISTRY_ENDPOINTS_GRANT } from "./registry-contract.js";
 import { recordsBucket, recordSpecKey, recordStatusKey, recordAtomicKey, RECORD_KINDS, GOVERN_HEAD } from "./endpoint-records.js";
 import { epgateKey, epcredFamilyPrefix, eprepairKey } from "./lifecycle-state.js";
 import { snapshotAckGrant } from "./backup.js";
+import { legacyPluginChannelFilters } from "./plugin-channel-route.js";
 import type { MintOpts, MintPrincipal } from "./provision-jwt.js";
+
+/** Fence the legacy reserved subjects and exact legacy history reads in routed spaces. */
+export function withLegacyPluginChannelDeny(space: string, permissions: Record<string, unknown>, enabled?: boolean): Record<string, unknown> {
+  if (!enabled) return permissions;
+  const reserved = legacyPluginChannelFilters(space);
+  const denyLegacy = (direction: unknown, denied: readonly string[]) => {
+    const rows = direction as { allow?: string[]; deny?: string[] } | undefined;
+    return { ...rows, deny: [...new Set([...(rows?.deny ?? []), ...denied])] };
+  };
+  return {
+    ...permissions,
+    pub: denyLegacy(permissions.pub, [...reserved, ...reserved.map(filter => `$JS.API.CONSUMER.CREATE.${chatStream(space)}.*.${filter}`)]),
+    sub: denyLegacy(permissions.sub, reserved),
+  };
+}
 
 /** The reads a spawn-scoped manager-caller view carries on its one pinned instance. A launch uses
  * `status` (execution mode and connectors), `models` (their catalogs), `resolve-cwd` (canonical
