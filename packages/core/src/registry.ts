@@ -34,6 +34,9 @@ export interface PluginHost {
   register(...exts: Extension[]): void;
 }
 
+/** Earliest core release implementing plugin contract 1. */
+export const MIN_PLUGIN_CORE = "0.184.0";
+
 /** A registry key used by commands that need an operator-installed provider before they run. */
 export interface ExtensionRef {
   readonly kind: string;

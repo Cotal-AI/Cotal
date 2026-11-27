@@ -316,6 +316,26 @@ try {
     check("metadata: standalone entry reads its own current snapshot", freshError instanceof Error && freshError.message.includes("reread-entry"));
     check("all metadata policy assertions ran", passed + failed - start === 19 + (permissions ? 2 : 0) + (links ? 1 : 0), { checked: passed + failed - start });
   }
+
+  {
+    const pkg = "@third/scoped-factory";
+    const dir = extensionPackageDir(pkg);
+    const ref = { kind: "runtime", name: "scoped-factory" };
+    const declaration = await pluginManifest((host) => host.register(ref), { coreVersion: CORE_VERSION });
+    const extension: InstalledExtension = { pkg, version: "1.0.0", installId: "first", provides: [ref], commands: [] };
+    const writeInventory = (entries: InstalledExtension[]) => writeFileSync(extensionsManifestPath(), JSON.stringify({ extensions: entries }));
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "package.json"), JSON.stringify({ name: pkg, version: extension.version, main: "index.mjs", cotal: declaration }));
+    writeFileSync(join(dir, "index.mjs"), `export default (host) => host.register(${JSON.stringify(ref)});`);
+    writeInventory([extension]);
+    const loaded = await materializeFromManifest(ref);
+    check("a factory loads from the manifest without a linked core peer", loaded.name === ref.name && registry.has(ref.kind, ref.name));
+    writeInventory([{ ...extension, installId: "second" }]);
+    let restart: unknown;
+    try { await materializeFromManifest(ref); } catch (error) { restart = error; }
+    check("a same-version second install disposes the old scope and requires restart",
+      restart instanceof Error && /restart the process/.test(restart.message) && !registry.has(ref.kind, ref.name));
+  }
 } finally {
   rmSync(tmp, { recursive: true, force: true });
 }

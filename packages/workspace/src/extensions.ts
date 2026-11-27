@@ -82,6 +82,8 @@ export interface InstalledExtension {
   readonly pkg: string;
   /** Exact installed version, pinned at add time and verified at run-import. */
   readonly version: string;
+  /** Identity of this install, even when an operator re-adds the same version. */
+  readonly installId?: string;
   /** The original install spec, when recorded. */
   readonly spec?: string;
   /** `"seeded"` iff installed by the built-in-connector reconcile (not an operator `ext add`). Keys
@@ -427,6 +429,7 @@ export class CorruptExtensionPackageError extends Error {
 export interface InstalledExtensionPackage {
   version: string;
   main: string | undefined;
+  cotal?: unknown;
   exports?: unknown;
   dependencies?: Record<string, string>;
   peerDependencies?: Record<string, string>;
@@ -458,6 +461,7 @@ export function installedExtensionPackage(pkg: string): InstalledExtensionPackag
   return {
     version,
     main: typeof main === "string" && main ? main : undefined,
+    ...(meta.cotal === undefined ? {} : { cotal: meta.cotal }),
     ...(meta.exports === undefined ? {} : { exports: meta.exports }),
     ...(meta.dependencies === undefined ? {} : { dependencies: meta.dependencies as Record<string, string> }),
     ...(meta.peerDependencies === undefined ? {} : { peerDependencies: meta.peerDependencies as Record<string, string> }),

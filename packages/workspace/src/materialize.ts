@@ -2,7 +2,7 @@ import { existsSync, statSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { registry, type Extension, type ExtensionRef } from "@cotal-ai/core";
+import { commitPlugin, registry, stagePlugin, type Extension, type ExtensionRef } from "@cotal-ai/core";
 import {
   bindExtensionPeers,
   extensionPackageDir,
@@ -17,6 +17,10 @@ import {
 import { claimExtensionMutationLockAsync } from "./extension-mutation.js";
 import { diagnosePeerSkew, upgradeRemedy } from "./import-diagnosis.js";
 import { SEEDED_EXTENSIONS } from "./official-connectors.js";
+import { connectorConfigDir } from "./connector-retention.js";
+import { readPluginDeclaration, samePluginDeclaration } from "./plugin-declaration.js";
+import { checkPluginCore } from "./plugin-core.js";
+import { pluginDeclaration } from "./plugin-manifest.js";
 
 /** Whether this process is running from the desktop app's bundled runtime (`desktop-runtime.json`). */
 export function isBundledDesktopRuntime(): boolean {
@@ -184,11 +188,54 @@ async function withExtensionLock(load: () => Promise<void>): Promise<void> {
  * share a validation window.
  */
 export async function importInstalledExtension(ext: InstalledExtension, advertised: ExtensionRef): Promise<void> {
+  reconcileExtensionScopes();
   if (registry.has(advertised.kind, advertised.name)) return;
   return enqueueLoad(async () => {
     if (registry.has(advertised.kind, advertised.name)) return;
     await withExtensionLock(() => loadOne(ext, advertised));
   });
+}
+
+const loadedPlugins = new Map<string, { entry: InstalledExtension; scope?: { dispose(): void } }>();
+
+function sameInstall(a: InstalledExtension, b: InstalledExtension): boolean {
+  return a.version === b.version && a.installId === b.installId;
+}
+
+/** Dispose scopes whose published manifest entry has changed, without taking the writer lock. */
+export function reconcileExtensionScopes(entries?: readonly InstalledExtension[]): boolean {
+  if (!loadedPlugins.size) return false;
+  const snapshot = entries ?? loadExtensionsManifest().extensions;
+  const journal = join(connectorConfigDir(), ".extensions-promotion.json");
+  if (!entries && !snapshot.length && existsSync(journal)) return false;
+  const installed = new Map(snapshot.map((item) => [item.pkg, item]));
+  let changed = false;
+  for (const [pkg, loaded] of loadedPlugins) {
+    const current = installed.get(pkg);
+    if (!loaded.scope || (current && sameInstall(current, loaded.entry))) continue;
+    loaded.scope.dispose();
+    loaded.scope = undefined;
+    changed = true;
+  }
+  return changed;
+}
+
+async function loadFactory(ext: InstalledExtension, onDisk: InstalledExtensionPackage, advertised: ExtensionRef): Promise<void> {
+  const { pkg } = ext;
+  const entry = resolveExtensionEntry(extensionPackageDir(pkg), onDisk);
+  const declared = readPluginDeclaration(onDisk.cotal);
+  checkPluginCore(pkg, onDisk, declared, entry);
+  // Record any attempted import. Node can retain evaluated dependencies even when an entry throws.
+  const loaded = loadedPlugins.get(pkg) ?? { entry: ext };
+  loadedPlugins.set(pkg, loaded);
+  const { value: { default: factory }, staged: importWrites } = await registry.runStaged(() => import(pathToFileURL(entry).href));
+  if (importWrites.length) throw new Error("the plugin entry registered outside its factory");
+  if (typeof factory !== "function") throw new Error("the plugin entry must export a default factory");
+  const staged = await stagePlugin(registry, factory);
+  const actual = pluginDeclaration(staged, declared.core);
+  if (!samePluginDeclaration(actual, declared) || !declared.provides.some((item) => item.kind === advertised.kind && item.name === advertised.name))
+    throw new Error(`the plugin factory does not match its cotal declaration. ${extensionReinstallAdvice(ext)}`);
+  loaded.scope = commitPlugin(registry, staged);
 }
 
 async function loadOne(ext: InstalledExtension, advertised: ExtensionRef): Promise<void> {
@@ -197,8 +244,11 @@ async function loadOne(ext: InstalledExtension, advertised: ExtensionRef): Promi
   // already-evaluated module is a cache hit with NO registration side effects, so its stage would be
   // empty and wrongly read as "did not register"; the live check short-circuits that. commitStaged
   // publishes ALL of a package's keys, so a sibling ref requested concurrently is live here too.
-  if (registry.has(advertised.kind, advertised.name)) return;
   const pkg = ext.pkg;
+  const loaded = loadedPlugins.get(pkg);
+  if (loaded && !sameInstall(loaded.entry, ext))
+    throw new Error(`installed ${pkg}@${ext.version}, this process loaded ${loaded.entry.version}; restart the process to use that plugin`);
+  if (registry.has(advertised.kind, advertised.name)) return;
   const onDisk = installedExtensionPackage(pkg);
   if (!onDisk) {
     throw new Error(`extension ${pkg} is in the manifest but not installed at ${extensionPackageDir(pkg)} - ${extensionReinstallAdvice(ext)}`);
@@ -207,6 +257,11 @@ async function loadOne(ext: InstalledExtension, advertised: ExtensionRef): Promi
     throw new Error(
       `extension ${pkg} is ${onDisk.version} on disk but the manifest pinned ${ext.version} (its cached command surface may be stale). ${extensionReinstallAdvice(ext)}`,
     );
+  }
+  if (onDisk.cotal !== undefined) {
+    try { await loadFactory(ext, onDisk, advertised); }
+    catch (error) { throw new Error(`extension ${pkg}@${ext.version}: ${(error as Error).message}`, { cause: error }); }
+    return;
   }
   // The prefix is machine-global, but global installs, npx, and source worktrees are distinct hosts.
   // Rebind before the first import in this process so registration lands in this host's core registry.
@@ -253,7 +308,9 @@ export async function materializeFromManifest<T extends Extension = Extension>(
 ): Promise<T> {
   await enqueueLoad(() =>
     withExtensionLock(async () => {
-      const ext = loadExtensionsManifest().extensions.find((candidate) =>
+      const extensions = loadExtensionsManifest().extensions;
+      reconcileExtensionScopes(extensions);
+      const ext = extensions.find((candidate) =>
         extensionProvides(candidate).some((provided) => provided.kind === ref.kind && provided.name === ref.name),
       );
       if (!ext) {
