@@ -147,6 +147,7 @@ address, and says when it has no TLS. A port that takes no connection gets the p
 remedy. For a new `--server` registration, the `--force` route follows either one. If a recheck
 finds a different transport on the recorded port, restore the listener with its recorded transport
 and rerun the same check. Changing the URL would conflict with the existing registration.
+When the name belongs to a registration this machine started or a catalog lists, the suggested `space show` command keeps `--json` or `--plain`.
 `--force` replaces a registration added by hand, never one this machine started or a catalog lists,
 and adds a `--server` space without checking its broker, which suits a
 space that is down right now; a user-auth space is always checked. Such a registration records that

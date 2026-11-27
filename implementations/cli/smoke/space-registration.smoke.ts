@@ -289,6 +289,11 @@ setCurrent("keep");
   recordMesh({ space: "started", server: LIVE, root, mode: "open", origin: "up", ts: new Date(0).toISOString() });
   const overUpBare = await json(["space", "add", "started", "--server", LIVE, "--root", root]);
   check("adding a space this machine started is CONFLICT and does not offer --force", refused(overUpBare, 2, "CONFLICT") && (overUpBare.env?.error?.message ?? "").includes("a space this machine started") && !/--force/.test(overUpBare.env?.error?.remedy ?? ""), shown(overUpBare));
+  const showStep = overUpBare.env?.error?.remedy?.match(/`cotal (space show started --json)`/)?.[1];
+  const inspection = showStep ? await run(showStep.split(" ")) : undefined;
+  check("the suggested JSON inspection reads the existing registration", inspection?.status === 0 && inspection.stdout.trimStart().startsWith("{") && JSON.parse(inspection.stdout).result?.root === root, showStep);
+  const overUpPlain = await run(["space", "add", "started", "--server", LIVE, "--root", root, "--plain"]);
+  check("plain registration conflict keeps the plain inspection", overUpPlain.status === 2 && overUpPlain.stderr.includes("`cotal space show started --plain`"), shown(overUpPlain));
   const overUp = await json(["space", "add", "started", "--server", LIVE, "--root", root, "--force"]);
   check("--force does not replace a space this machine started", refused(overUp, 2, "CONFLICT") && findMesh("started")?.origin === "up", shown(overUp));
 
