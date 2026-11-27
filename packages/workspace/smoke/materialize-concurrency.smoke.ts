@@ -2,21 +2,16 @@
  * Concurrency + idempotency smoke for importInstalledExtension (no NATS). Run:
  * pnpm smoke:materialize-concurrency
  *
- * ES modules evaluate ONCE: a second import() of an already-loaded package is a cache hit with no
- * registration side effects, so its stage is empty. This guards that two first materializations of
- * the same package still both succeed (the second observes the first's committed keys instead of
- * falsely reporting "did not register"), that two refs from one package resolve concurrently, and
- * that a sequential repeat is idempotent, without weakening the genuine "advertised key absent" error.
+ * A factory publishes its whole scope once. Concurrent callers for that scope must both succeed,
+ * and sequential callers must reuse it, without accepting a factory that omits an advertised key.
  *
- * Lays down real self-registering ESM packages under a temp cotal config home (XDG_CONFIG_HOME) INSIDE
- * the repo, so each package's `import "@cotal-ai/core"` resolves to the same core singleton this smoke
- * and materialize.ts use.
+ * Writes factory packages and an installed manifest in an isolated cotal config home.
  */
 import nodeAssert from "node:assert/strict";
 import { countedAssert, emitSentinel } from "@cotal-ai/smoke-kit";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, lstatSync, mkdirSync, mkdtempSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { spawn, spawnSync } from "node:child_process";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { registry, type ExtensionRef } from "@cotal-ai/core";
 import {
   breakLock,
@@ -25,14 +20,18 @@ import {
   extensionMutationLockPath,
   extensionsDir,
   importInstalledExtension,
+  installedExtensionPackage,
+  loadExtensionsManifest,
+  readPluginDeclaration,
+  reconcileExtensionScopes,
+  saveExtensionsManifest,
   type InstalledExtension,
 } from "@cotal-ai/workspace";
+import { writePluginFixture } from "../../../scripts/plugin-fixture.mjs";
 const counted = countedAssert(nodeAssert);
 const assert: typeof nodeAssert = counted.assert;
 const cells = counted.cells;
 
-// Temp config home under the repo so the fixture packages resolve @cotal-ai/core to the repo copy
-// (node walks up to packages/workspace/node_modules), sharing this process's registry singleton.
 const tmp = mkdtempSync(join(import.meta.dirname, ".mat-concurrency-"));
 process.env.XDG_CONFIG_HOME = tmp;
 
@@ -73,20 +72,68 @@ const sentinelHolderExpr = `(() => {
 })()`;
 
 let seq = 0;
-/** Write a self-registering ESM package that registers `refs` on import; return its manifest row. */
-function fakePackage(refs: ExtensionRef[]): InstalledExtension {
-  const pkg = `@fake/mat-${++seq}`;
+/** Write a factory package and publish its cached declarations in the installed manifest. */
+function fakePackage(declared: ExtensionRef[], registered = declared): InstalledExtension {
+  const installId = `mat-${++seq}`;
+  const pkg = `@fake/${installId}`;
+  const metadata = (ref: ExtensionRef) => ({ ...ref, ...(ref.kind === "command" ? { summary: "Fixture command" } : {}) });
   const dir = join(extensionsDir(), "node_modules", ...pkg.split("/"));
-  mkdirSync(dir, { recursive: true });
-  writeFileSync(join(dir, "package.json"), JSON.stringify({ name: pkg, version: "1.0.0", type: "module", main: "index.mjs" }));
-  const body = refs.map((r) => `registry.register(${JSON.stringify({ kind: r.kind, name: r.name })});`).join("\n");
-  writeFileSync(join(dir, "index.mjs"), `import { registry } from "@cotal-ai/core";\n${body}\n`);
-  return { pkg, version: "1.0.0", spec: ".", commands: [], provides: refs };
+  const version = "1.0.0";
+  const entries = registered.map((ref) => {
+    const json = JSON.stringify(metadata(ref));
+    return ref.kind === "command" ? `{ ...${json}, run: async () => {} }` : json;
+  });
+  writePluginFixture(dir, {
+    name: pkg, version, provides: declared.map(metadata),
+    factorySource: `export default (host) => host.register(${entries.join(", ")});\n`,
+  });
+  const { provides, commands, connectors, localProcesses, servicePresets } = readPluginDeclaration(installedExtensionPackage(pkg)?.cotal);
+  const row = { pkg, version, installId, spec: ".", provides, commands, connectors, localProcesses, servicePresets };
+  saveExtensionsManifest({ extensions: [...loadExtensionsManifest().extensions, row] });
+  return row;
+}
+
+function prefixIdentity(path: string) {
+  const stat = lstatSync(path);
+  return { dev: String(stat.dev), ino: String(stat.ino), birth: stat.birthtimeMs };
+}
+
+async function assertPromotionKeepsScope(): Promise<void> {
+  const ref: ExtensionRef = { kind: "connector", name: "during-promotion" };
+  const ext = fakePackage([ref]);
+  await importInstalledExtension(ext, ref);
+  const loaded = registry.resolve(ref.kind, ref.name);
+  const root = extensionsDir();
+  const config = dirname(root);
+  const stage = join(config, ".extensions.stage-smoke0.ready");
+  const old = join(config, ".extensions.rollback-smoke");
+  const journal = join(config, ".extensions-promotion.json");
+  const release = await claimExtensionMutationLockAsync({ label: "promotion test" });
+  try {
+    cpSync(root, stage, { recursive: true });
+    // Stop at the publication boundary: the verified stage and journal exist, but live has moved aside.
+    writeFileSync(journal, JSON.stringify({ v: 1, root, stage, old, stageIdentity: prefixIdentity(stage), oldIdentity: prefixIdentity(root) }), { mode: 0o600 });
+    renameSync(root, old);
+    const snapshot = loadExtensionsManifest().extensions;
+    assert.deepEqual(snapshot, [], "the live manifest is absent during promotion");
+    assert.equal(reconcileExtensionScopes(), false, "the pending promotion must not retire the loaded scope");
+    assert.equal(reconcileExtensionScopes(snapshot), false, "a supplied empty snapshot must also preserve the scope");
+    assert.equal(registry.resolve(ref.kind, ref.name), loaded);
+    renameSync(stage, root);
+    rmSync(old, { recursive: true });
+    rmSync(journal);
+  } finally {
+    release();
+  }
+  await importInstalledExtension(ext, ref);
+  assert.equal(registry.resolve(ref.kind, ref.name), loaded, "an unchanged install keeps its scope after publication");
+  saveExtensionsManifest({ extensions: loadExtensionsManifest().extensions.filter((row) => row.pkg !== ext.pkg) });
+  assert.equal(reconcileExtensionScopes(), true, "an actual manifest removal retires the scope");
+  assert.equal(registry.has(ref.kind, ref.name), false);
 }
 
 try {
-  // 1. Two concurrent FIRST materializations of the same package/ref both fulfill: the second sees the
-  //    first's committed key rather than re-importing an already-evaluated, side-effect-free module.
+  // 1. Two simultaneous first loads of the same provider reuse one factory scope.
   {
     const ref: ExtensionRef = { kind: "connector", name: "same" };
     const ext = fakePackage([ref]);
@@ -95,8 +142,7 @@ try {
     assert.equal(registry.resolve("connector", "same").name, "same");
   }
 
-  // 2. Two concurrent first materializations of DIFFERENT refs from ONE package both fulfill: one
-  //    import evaluates and commits BOTH keys; the other observes the committed sibling.
+  // 2. Concurrent requests for distinct providers share the same package's complete scope.
   {
     const c: ExtensionRef = { kind: "connector", name: "dual" };
     const cmd: ExtensionRef = { kind: "command", name: "dual" };
@@ -107,27 +153,27 @@ try {
     assert.equal(registry.resolve("command", "dual").name, "dual");
   }
 
-  // 3. Sequential repeat is idempotent: a cached re-import has no new stage, so the early live-check
-  //    must short-circuit instead of falsely reporting "did not register".
+  // 3. A sequential repeat keeps the original registration.
   {
     const ref: ExtensionRef = { kind: "connector", name: "repeat" };
     const ext = fakePackage([ref]);
     await importInstalledExtension(ext, ref);
+    const loaded = registry.resolve(ref.kind, ref.name);
     await assert.doesNotReject(importInstalledExtension(ext, ref), "sequential repeat must be idempotent");
-    assert.equal(registry.resolve("connector", "repeat").name, "repeat");
+    assert.equal(registry.resolve(ref.kind, ref.name), loaded);
   }
 
-  // 4. Regression: a package that imports cleanly but never advertises the wanted key STILL throws and
-  //    commits none of its keys (the early live-check must not weaken validation).
+  // 4. A factory that omits an advertised key publishes none of its registrations.
   {
-    const ext = fakePackage([{ kind: "connector", name: "provided" }]);
-    await assert.rejects(importInstalledExtension(ext, { kind: "connector", name: "absent" }), /did not register connector "absent"/);
-    assert.throws(() => registry.resolve("connector", "provided"), /no connector registered/, "unadvertised import leaked a key");
+    const present: ExtensionRef = { kind: "connector", name: "provided" };
+    const absent: ExtensionRef = { kind: "connector", name: "absent" };
+    const ext = fakePackage([present, absent], [present]);
+    await assert.rejects(importInstalledExtension(ext, absent), /plugin factory does not match its cotal declaration/);
+    assert.throws(() => registry.resolve(present.kind, present.name), /no connector registered/, "rejected factory leaked a key");
   }
 
-  // 5. Materialization can rewrite shared-peer links, so it must obey the same pass -> writer order as
-  //    add/remove. A whole update pass excludes a direct materializer, not only CLI mutation helpers. This process
-  //    holds the pass, so the load waits out its lock bound before refusing.
+  // 5. Materialization follows the same pass -> writer order as add/remove. This process holds the
+  //    pass, so the load waits out its lock bound before refusing.
   {
     const ref: ExtensionRef = { kind: "connector", name: "pass-excluded" };
     const ext = fakePackage([ref]);
@@ -238,6 +284,9 @@ try {
       breakLock(lockPath);
     }
   }
+
+  // 10. Lock-free readers must distinguish the transient promotion gap from a removal.
+  await assertPromotionKeepsScope();
 
   console.log("materialize-concurrency.smoke: all assertions passed");
 } finally {

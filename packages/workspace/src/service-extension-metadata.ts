@@ -27,8 +27,8 @@ function declarations(processes: readonly LocalProcess[], presets: readonly Serv
   return { adapters: processes.filter((component) => component.service !== undefined).map((component) => ({ name: component.name, controllerOnly: component.controllerOnly === true, service: serviceAdapterDeclaration(component.service) })).sort(order), presets: presets.map(cacheServicePreset).sort(order) };
 }
 
-/** Run by ext add after its ordinary transactional import. Hashes detect cached declaration or
- *  package-metadata changes; they are neither publisher signatures nor executable-code proofs. */
+/** Build a metadata receipt from live providers for programmatic callers. Hashes detect declaration
+ *  or package-metadata changes; they are neither publisher signatures nor executable-code proofs. */
 export function cacheExtensionServiceMetadata(pkg: string, version: string, processes: readonly LocalProcess[], presets: readonly ServicePreset[] = []): InstalledExtension["serviceMetadata"] {
   for (const component of processes) if (component.service !== undefined && (typeof component.buildServiceLaunch !== "function" || typeof component.checkServiceReadiness !== "function")) throw new CommandFailure("refused", "SCHEMA_INVALID", "a service adapter must provide both declared launch and readiness hooks");
   for (const component of processes) if (component.service?.stop === "native" && (typeof component.prepareServiceStop !== "function" || typeof component.stopService !== "function")) throw new CommandFailure("refused", "SCHEMA_INVALID", "a native stop adapter must provide both impact and terminal hooks; no generic signal fallback was cached");

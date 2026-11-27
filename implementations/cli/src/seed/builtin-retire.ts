@@ -17,7 +17,7 @@ function pendingRetirements(): Pending {
   return data;
 }
 
-/** Keep the original store payload even when npm no longer records the path. */
+/** Retain the original store payload for pending retirements even without an npm path. */
 export function builtInRetirementSpecs(): (string | undefined)[] {
   try { return Object.values(pendingRetirements()).map((spec) => spec ?? undefined); }
   catch { return [undefined]; }

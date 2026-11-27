@@ -141,14 +141,14 @@ async function declarationPolicy() {
   assert(samePluginDeclaration(readPluginDeclaration(JSON.parse(JSON.stringify(generated))), generated));
   assert.throws(() => readPluginDeclaration({ ...generated, provides: [generated.provides[0], generated.provides[0]] }), /claims runtime:manifest-proof twice/);
   await assert.rejects(pluginManifest((host) => host.register({ kind: "auth-provider", name: "forbidden" })), /cannot provide auth-provider/);
-  checkPluginCore("@third/plugin", { version: "1.0.0" }, generated, meta, "0.185.0");
-  assert.throws(() => checkPluginCore("@third/plugin", { version: "1.0.0" }, { ...generated, core: "0.185.1" }, meta, "0.185.0"), /newer core.*cotal update --self/);
-  assert.throws(() => checkPluginCore("@third/plugin", { version: "1.0.0" }, { ...generated, core: "0.183.9" }, meta, "0.185.0"), /unsupported core.*cotal ext add/);
-  assert.throws(() => checkPluginCore("@cotal-ai/plugin", { version: "0.184.1" }, generated, meta, "0.185.0"), /cotal update --self/);
+  checkPluginCore("@third/plugin", { version: "1.0.0", main: undefined }, generated, meta, "0.185.0");
+  assert.throws(() => checkPluginCore("@third/plugin", { version: "1.0.0", main: undefined }, { ...generated, core: "0.185.1" }, meta, "0.185.0"), /newer core.*cotal update --self/);
+  assert.throws(() => checkPluginCore("@third/plugin", { version: "1.0.0", main: undefined }, { ...generated, core: "0.183.9" }, meta, "0.185.0"), /unsupported core.*cotal ext add/);
+  assert.throws(() => checkPluginCore("@cotal-ai/plugin", { version: "0.184.1", main: undefined }, generated, meta, "0.185.0"), /cotal update --self/);
   const nested = join(meta, "..", "node_modules", "@cotal-ai", "core");
   mkdirSync(nested, { recursive: true });
   writeFileSync(join(nested, "package.json"), JSON.stringify({ name: "@cotal-ai/core", version: "0.184.1", exports: { "./package.json": "./package.json" } }));
-  checkPluginCore("@third/plugin", { version: "1.0.0", dependencies: { "@cotal-ai/core": "^0.184.0" } }, declaration, meta, "0.185.0");
+  checkPluginCore("@third/plugin", { version: "1.0.0", main: undefined, dependencies: { "@cotal-ai/core": "^0.184.0" } }, declaration, meta, "0.185.0");
 }
 
 async function physicalCoreBoundary() {
@@ -158,7 +158,7 @@ async function physicalCoreBoundary() {
   symlinkSync(real, linked, "junction");
   process.env.XDG_CONFIG_HOME = linked;
   try {
-    const metadata = { version: "1.0.0", dependencies: { "@cotal-ai/core": "^0.184.0" } };
+    const metadata = { version: "1.0.0", main: undefined, dependencies: { "@cotal-ai/core": "^0.184.0" } };
     const good = await fixture("physical-core");
     const nested = join(good.dir, "node_modules", "@cotal-ai", "core");
     mkdirSync(nested, { recursive: true });

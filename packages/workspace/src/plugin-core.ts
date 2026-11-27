@@ -23,9 +23,9 @@ function resolvePluginCore(entry: string): string {
 
 /** Verify the bundled or resolved core without importing the plugin. */
 export function checkPluginCore(pkg: string, meta: InstalledExtensionPackage, declaration: PluginDeclaration, entry: string, hostCore = packageVersion(join(hostPackageDir("@cotal-ai/core"), "package.json"))): void {
-  if (hostCore === "0.0.0" || hostCore.startsWith("0.0.0-")) return;
+  const checkout = hostCore === "0.0.0" || /^0\.0\.0[-+]/.test(hostCore);
   if (pkg.startsWith("@cotal-ai/")) {
-    if (meta.version !== hostCore || declaration.core !== hostCore)
+    if (!checkout && (meta.version !== hostCore || declaration.core !== hostCore))
       throw new Error(`plugin ${pkg}@${meta.version} bundles core ${declaration.core ?? "not declared"}, this CLI uses ${hostCore}; run \`cotal update --self\``);
     return;
   }
@@ -35,6 +35,7 @@ export function checkPluginCore(pkg: string, meta: InstalledExtensionPackage, de
     try { pluginCore = resolvePluginCore(entry); }
     catch (error) { throw new Error(`plugin ${pkg} has no readable core version inside the extensions prefix; run \`cotal ext add ${pkg}@latest\``, { cause: error }); }
   }
+  if (checkout) return;
   const older = comparePeerVersions(pluginCore, MIN_PLUGIN_CORE);
   const newer = comparePeerVersions(pluginCore, hostCore);
   // A development build of contract 1 can validate against its own core before the cut is stamped.

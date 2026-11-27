@@ -17,6 +17,10 @@ export const DECLARATIONS = [
     declaration: fileURLToPath(new URL("../../scripts/live-job-conclusion.d.mts", import.meta.url)),
   },
   {
+    module: fileURLToPath(new URL("../../scripts/plugin-fixture.mjs", import.meta.url)),
+    declaration: fileURLToPath(new URL("../../scripts/plugin-fixture.d.mts", import.meta.url)),
+  },
+  {
     module: fileURLToPath(new URL("./live-suite.mjs", import.meta.url)),
     declaration: fileURLToPath(new URL("./live-suite.d.mts", import.meta.url)),
   },
