@@ -177,6 +177,10 @@ if (process.platform === "linux") {
   const relativeChild = spawn(process.execPath, ["entry.mjs", "supervise", "--space", "relative-proof", "--server", "nats://127.0.0.1:9", otherEntry], { cwd: relativeRoot, stdio: "ignore" });
   try {
     await once(relativeChild, "spawn");
+    const commandReady = () => { try { return readFileSync(`/proc/${relativeChild.pid}/cmdline`).length > 0; } catch { return false; } };
+    const commandDeadline = Date.now() + 5_000;
+    while (relativeChild.exitCode === null && Date.now() < commandDeadline && !commandReady()) await new Promise(resolve => setTimeout(resolve, 25));
+    assert.equal(commandReady(), true, "the relative fixture command is readable before the census");
     const { localUpdateManagers } = await import("../src/lib/update-managers.js");
     assert.throws(() => localUpdateManagers({ space: "relative-proof" }, relativeEntry), /missing identity/, "relative same-install entry is resolved before another absolute CLI argument can exclude it");
   } finally {
@@ -210,7 +214,7 @@ if (process.platform === "linux") {
 
 async function checkRenamedManagerInstall(): Promise<void> {
   const { spawn } = await import("node:child_process");
-  const { copyFileSync, cpSync, existsSync, readdirSync, realpathSync, renameSync, rmdirSync, symlinkSync } = await import("node:fs");
+  const { copyFileSync, cpSync, existsSync, readdirSync, realpathSync, renameSync, rmdirSync, statSync, symlinkSync } = await import("node:fs");
   const { createRequire } = await import("node:module");
   const { dirname } = await import("node:path");
   const { localUpdateManagers } = await import("../src/lib/update-managers.js");
@@ -272,11 +276,21 @@ async function checkRenamedManagerInstall(): Promise<void> {
         child.stderr.on("data", chunk => { output += chunk; });
         try {
           await once(child, "spawn");
-          const deadline = Date.now() + 15_000;
+          let deadline = Date.now() + 15_000;
           const maps = `/proc/${child.pid}/maps`;
-          const mapped = () => existsSync(maps) && readFileSync(maps, "utf8").includes(mapping);
-          while (child.exitCode === null && Date.now() < deadline && !mapped()) await new Promise(resolve => setTimeout(resolve, 25));
-          assert.ok(mapped(), `real Manager mapped its own PTY dependency: ${output}`);
+          const mapped = (path = mapping) => existsSync(maps) && readFileSync(maps, "utf8").includes(path);
+          const exeReady = () => { try { statSync(`/proc/${child.pid}/exe`); return true; } catch { return false; } };
+          // The first map line and a readable exe can both vanish again while the process is still starting.
+          const settled = async (path = mapping) => {
+            let stable = false;
+            while (child.exitCode === null && Date.now() < deadline && !stable) {
+              stable = mapped(path) && exeReady();
+              await new Promise(resolve => setTimeout(resolve, 25));
+              stable &&= mapped(path) && exeReady();
+            }
+            return stable;
+          };
+          assert.ok(await settled(), `real Manager mapped its own PTY dependency: ${output}`);
           if (mode === "foreign" || mode === "generation") {
             if (mode === "generation") {
               assert.deepEqual(localUpdateManagers({ space }, own.entry), [], "a self-updated foreign Manager does not block while its launch entry resolves");
@@ -287,6 +301,9 @@ async function checkRenamedManagerInstall(): Promise<void> {
               const elsewhere = join(root, "elsewhere/.cotal-generations", generationId, "cotal-ai");
               mkdirSync(dirname(elsewhere), { recursive: true });
               renameSync(badId, elsewhere);
+              const movedMapping = join(elsewhere, "node_modules", archPackage, ptyFile);
+              deadline = Date.now() + 15_000;
+              assert.ok(await settled(movedMapping), "maps show the retained package under its different parent");
               assert.throws(() => localUpdateManagers({ space }, own.entry), new RegExp(`local Manager continuity cannot be established: Manager pid ${child.pid}`), "a retained package under a different parent stays unproven");
               renameSync(elsewhere, retained);
               rmdirSync(dirname(badId));
