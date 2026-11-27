@@ -1,7 +1,7 @@
 import { existsSync, realpathSync, statSync } from "node:fs";
 import { dirname } from "node:path";
 import { globalConfigDir } from "@cotal-ai/core";
-import { isCommandFailure, loadExtensionsManifest, prepareConnectorConfigForUpdate, protectedLocalDirectory, repairConnectorSelection, restoreConnectorManifestAccessForUpdate, type UnreadableConnectorSelection } from "@cotal-ai/workspace";
+import { CommandFailure, isCommandFailure, loadExtensionsManifest, prepareConnectorConfigForUpdate, protectedLocalDirectory, repairConnectorSelection, restoreConnectorManifestAccessForUpdate, type UnreadableConnectorSelection } from "@cotal-ai/workspace";
 import { reclaimAbandonedExtensionStages, recoverExtensionPromotion } from "./extension-stage.js";
 
 /** Check the closest existing ancestor outside the Cotal folder, whose modes update does not repair. */
@@ -38,6 +38,23 @@ export function prepareUpdateConnectorConfig(staged: boolean, onChange?: () => v
   if (recovered && staged) prepare();
   if (!recovered) reclaimAbandonedExtensionStages();
   return recovered;
+}
+
+export function connectorConfigPreflightFailure(error: unknown, changed: boolean): CommandFailure {
+  if (isCommandFailure(error)) {
+    if (!changed || error.native?.outcome !== "not-executed") return error;
+    const { outcome: _, ...rest } = error.native;
+    return new CommandFailure(error.outcome, error.code, error.message, {
+      remedy: error.remedy, native: Object.keys(rest).length ? rest : undefined,
+      target: error.target, changed: error.changed, cause: error.cause,
+      selfContained: error.selfContained, given: error.given, remedyIsCommand: error.remedyIsCommand,
+    });
+  }
+  const detail = error instanceof Error ? error.message : String(error);
+  return new CommandFailure("refused", "PERMISSION_DENIED", `Cannot prepare the Cotal connector configuration: ${detail}. No CLI update was staged.`, {
+    ...(changed ? {} : { native: { outcome: "not-executed" } }),
+    remedy: "Correct the reported connector configuration problem, then run `cotal update --self` again.",
+  });
 }
 
 /** Validate the inventory after recovery because built-in self-update skips the extension overlay. */

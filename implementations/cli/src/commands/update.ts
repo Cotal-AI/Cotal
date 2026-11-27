@@ -44,7 +44,7 @@ import {
 import { resumePublishedUpdate, retainUnusableRecovery } from "../lib/update-recovery-state.js";
 import { readUpdatePending } from "../lib/update-pending.js";
 import { snapshotUpdateClosure, type UpdateSnapshot } from "../lib/update-snapshot.js";
-import { assertConfigAncestorProtected, manifestAccessReporter, prepareUpdateConnectorConfig, repairCurrentUpdateConnectorSelection, repairUpdateConnectorSelection, restoreUpdateManifestAccess } from "../lib/update-connector-config.js";
+import { assertConfigAncestorProtected, connectorConfigPreflightFailure, manifestAccessReporter, prepareUpdateConnectorConfig, repairCurrentUpdateConnectorSelection, repairUpdateConnectorSelection, restoreUpdateManifestAccess } from "../lib/update-connector-config.js";
 import { reclaimPreviousExtensionStages } from "../lib/extension-stage.js";
 import { EXT_UPDATE_PARENT_ENV } from "./ext.js";
 import { collectUpdateCaches } from "./update-caches.js";
@@ -364,9 +364,7 @@ async function updateInstallation(args: ParsedArgs, rt: UpdateRuntime): Promise<
     } catch (error) {
       if (error instanceof UnreadableConnectorSelection) connectorSelection = error;
       else {
-        const failure = isCommandFailure(error) ? error : new CommandFailure("refused", "PERMISSION_DENIED", `Cannot prepare the Cotal connector configuration: ${message(error)}. No CLI update was staged.`, {
-          native: { outcome: "not-executed" }, remedy: "Correct the reported connector configuration problem, then run `cotal update --self` again.",
-        });
+        const failure = connectorConfigPreflightFailure(error, preflightChanged);
         recordUpdateDeferral(rt.version(), `connector configuration preflight: ${preflightDetail(failure)}`);
         throw failure;
       }
