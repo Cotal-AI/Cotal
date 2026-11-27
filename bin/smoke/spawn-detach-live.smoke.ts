@@ -39,6 +39,7 @@ const awaitExit = (p: ChildProcess, ms = 5000): Promise<void> =>
 // finds its folder by walking up to the nearest one, and a home holding `.cotal` would answer.
 const scratch = makeScratch("cotal-detach-");
 const home = mkdtempSync(join(tmpdir(), "cotal-detach-home-"));
+for (const key of Object.keys(process.env)) if (key.startsWith("COTAL_")) delete process.env[key];
 process.env.COTAL_HOME = home;
 
 const { parseCommandArgs, probeConnect, registry, CotalEndpoint, openSessionRail, EpEnvelopeError, eventChannel } = await import("@cotal-ai/core");
@@ -83,6 +84,11 @@ writeFileSync(
   join(workspaceRoot, ".cotal", "config.json"),
   JSON.stringify({ connectors: { e2e: { mcpServers: { alpha: { command: "true" }, beta: { command: "true" } } } } }),
 );
+// A project config that declares servers applies only in a folder the operator trusts. The trust
+// record lives in this suite's own config folder.
+process.env.XDG_CONFIG_HOME = join(home, "xdg");
+const { trustProject } = await import("@cotal-ai/workspace");
+trustProject(workspaceRoot);
 
 // The e2e connector: a REAL long-lived child (node keepalive) through the REAL pty runtime — no
 // Claude cold-start, but a genuine process the manager supervises and attach streams. The child
@@ -288,7 +294,7 @@ try {
     ok("OpenCode serve failure returns child stderr rather than wrapper prose", isCommandFailure(serveFailure) && serveFailure.message.includes("run auth login to reauthenticate"), String(serveFailure));
     const modelProbe = join(fakeBin, "model probe.md");
     const slashModel = "deepseek-ai/DeepSeek-V3.2";
-    const modelList = [slashModel, "DeepSeek-V3.2", "gpt-6.2-sol", "persona-model", "unsafe;model"].map((model) => ({ model, provider: "Hugging Face", available: true }));
+    const modelList = [slashModel, "DeepSeek-V3.2", "gpt-6.2-sol", "persona-model", "unsafe;model", "org/unsafe;model"].map((model) => ({ model, provider: "Hugging Face", available: true }));
     const listCommand = `if(process.argv[2]==='model'){console.log(JSON.stringify(${JSON.stringify({ provider: "Hugging Face", models: modelList.map(({ model }) => model), routes: modelList })}));process.exit(0)}`;
     fixture("jcode", listCommand + errorLines);
     const catalog = JSON.parse(await capture(() => run("models", ["--harness", "jcode", "--space", SPACE, "--json"])));
@@ -299,25 +305,29 @@ try {
       try { await capture(() => run("spawn", ["--file", modelProbe, "-d", "--space", SPACE, "--server", SERVER, "--cwd", fakeBin, "--no-events", ...extra])); }
       catch (error) { return error; }
     };
-    modelPersona("fixture/persona-model");
-    for (const [source, model, extra] of [
-      ["persona", "persona-model", []],
-      ["flag", "gpt-6.2-sol", ["--harness", "jcode", "--model", "cliproxy/gpt-6.2-sol"]],
+    for (const [source, personaModel, model, extra] of [
+      ["persona", "fixture/persona-model", "persona-model", []],
+      ["flag", "fixture/persona-model", "gpt-6.2-sol", ["--harness", "jcode", "--model", "cliproxy/gpt-6.2-sol"]],
+      ["persona slash", `fixture/${slashModel}`, slashModel, []],
+      ["flag slash", "fixture/persona-model", slashModel, ["--harness", "jcode", "--model", `cliproxy/${slashModel}`]],
     ] as const) {
+      modelPersona(personaModel);
       const failure = await modelFailure([...extra]);
       ok(`Jcode rejects a ${source} model prefix and keeps the original options in the bare-model retry`,
         isCommandFailure(failure) && exitCode(failure.outcome, failure.code) === 5 && failure.code === "OPERATION_FAILED"
           && failure.message.includes("model_prefix_rejected") && failure.message.includes("Select the provider in Jcode's configuration")
           && failure.remedyIsCommand === true && ["cotal", "pnpm cotal"].some((cli) => failure.remedy?.startsWith(`${cli} spawn `))
           && [" -d", ` --space ${SPACE}`, ` --server ${SERVER}`, ` --file '${modelProbe}'`, ` --cwd ${fakeBin}`, " --no-events", ` --model ${model}`].every((part) => failure.remedy?.includes(part))
-          && (source === "persona" || failure.remedy?.includes(" --harness jcode") === true)
+          && (source.startsWith("persona") || failure.remedy?.includes(" --harness jcode") === true)
           && !failure.remedy?.includes("fixture/") && !failure.remedy?.includes("cliproxy/"), failure);
     }
-    modelPersona("fixture/unsafe;model");
-    const unsafeModel = await modelFailure();
-    ok("Jcode withholds an unsafe persona model from the refusal and does not suggest a retry command",
-      isCommandFailure(unsafeModel) && unsafeModel.code === "OPERATION_FAILED" && unsafeModel.message.includes("model_prefix_rejected")
-        && !unsafeModel.message.includes("unsafe;model") && !unsafeModel.remedyIsCommand, unsafeModel);
+    for (const [label, unsafe] of [["persona model", "unsafe;model"], ["slash-bearing model", "org/unsafe;model"]] as const) {
+      modelPersona(`fixture/${unsafe}`);
+      const unsafeModel = await modelFailure();
+      ok(`Jcode withholds an unsafe ${label} from the refusal and does not suggest a retry command`,
+        isCommandFailure(unsafeModel) && unsafeModel.code === "OPERATION_FAILED" && unsafeModel.message.includes("model_prefix_rejected")
+          && !unsafeModel.message.includes("unsafe;model") && !unsafeModel.remedyIsCommand, unsafeModel);
+    }
     const harness = join(import.meta.dirname, "../../extensions/connector-jcode/smoke/fake-jcode.mjs");
     const modelLog = join(fakeBin, "model-harness.jsonl");
     fixture("jcode", `${listCommand}process.env.FAKE_JCODE_LOG=${JSON.stringify(modelLog)};await import(${JSON.stringify(harness)});`);
@@ -680,7 +690,10 @@ try {
   // validation under test is ever reached. The seed stays skipped so nothing npm-installs into
   // the sandbox either. Customers never see this state (the lockstep release publishes core +
   // connectors together).
-  const subEnv = { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: join(home, "xdg"), COTAL_SKIP_CONNECTOR_SEED: "1" };
+  const subEnv = {
+    ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_"))),
+    COTAL_HOME: home, XDG_CONFIG_HOME: join(home, "xdg"), COTAL_SKIP_CONNECTOR_SEED: "1",
+  };
 
   {
     const retryConnector: Connector = { ...e2eCon, name: "retry-e2e", eventChannel };

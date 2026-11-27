@@ -4,8 +4,12 @@ import {
   CommandFailure,
   isCommandFailure,
   isMeshRegistryError,
+  preparedRecordSkipped,
   preparedRecordSpace,
   preparedSpacesDir,
+  readPreparedSpaces,
+  recordOperationWarning,
+  recordUpdateDeferral,
   logicalExecutionEntry,
   resolveControlTarget,
   ConnectRefusal,
@@ -35,6 +39,7 @@ import { managerPin } from "../lib/manager-choice.js";
 import { localUpdateManagers, recordedUpdateManagers, skipUpdateStack, type UpdateManager } from "../lib/update-managers.js";
 import { assertRecordIdentity, brokerAddressKey, brokerUrlKey } from "@cotal-ai/workspace";
 import { message } from "./update-process.js";
+import type { UpdateRuntime } from "./update.js";
 
 /** The "no mesh running" target refusal: no recorded mesh on this machine, or every recorded mesh
  *  down with none selected. Either way no manager is running. A mesh selected with `--space` or
@@ -94,6 +99,51 @@ export function refusal(e: unknown): string {
     : message(e);
   const remedy = e instanceof CommandFailure ? e.remedy : undefined;
   return remedy === undefined ? text : `${text}\n\nNext\n  ${remedy}`;
+}
+
+export function reportUncheckedPreparedRecords(rt: UpdateRuntime, target: Record<string, unknown>): void {
+  if (["server", "creds", "on"].some(key => typeof target[key] === "string")) return;
+  // The installed child may carry a daemon admission receipt and never resolve the project.
+  // Report read failures separately from the Manager custody verdict and package reconciliation.
+  try {
+    for (const error of readPreparedSpaces().unusable) {
+      if (error.refusal !== "PERMISSION_DENIED") continue;
+      if (typeof target.space === "string" && target.space !== preparedRecordSpace(error.file)) continue;
+      recordOperationWarning(preparedRecordSkipped(error));
+      rt.out(c.dim(`  ${error.file}: leaving its records and processes untouched, continuity not checked`));
+    }
+  } catch (error) {
+    rt.err(`Could not check prepared space records: ${message(error)}; continuity not checked`);
+  }
+}
+
+/** Establish Manager continuity and installation ownership before writing the extension prefix. */
+export async function admitReconciliation(current: string, rt: UpdateRuntime, target: Record<string, unknown>): Promise<boolean> {
+  try { await rt.prepareReconciliation?.(target); }
+  catch (error) {
+    rt.err(c.red(`✗ installed connector reconciliation admission: ${refusal(error)}`));
+    return false;
+  }
+  try {
+    if (await rt.reportRunningManager(target) === "legacy") {
+      if (rt.env.COTAL_AUTO_UPDATE === "1") recordUpdateDeferral(current, "waiting for agents to stop");
+      return false;
+    }
+  } catch (e) {
+    if (rt.env.COTAL_AUTO_UPDATE === "1") recordUpdateDeferral(current, "waiting for agents to stop");
+    rt.err(c.red(`✗ running manager continuity check: ${refusal(e)}`));
+    return false;
+  }
+
+  reportUncheckedPreparedRecords(rt, target);
+
+  try { await rt.preflightReplacement?.(); }
+  catch (error) {
+    if (rt.env.COTAL_AUTO_UPDATE === "1") recordUpdateDeferral(current, "installed daemon preflight refused");
+    rt.err(c.red(`✗ installed daemon preflight: ${refusal(error)}`));
+    return false;
+  }
+  return true;
 }
 
 /** The running meshes an `ambiguous-target` named, or undefined when this refusal names none to act

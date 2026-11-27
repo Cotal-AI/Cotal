@@ -1381,6 +1381,7 @@ export function composeUserBundle(args: {
     space: args.space,
     server: args.server,
     tlsRequired: true,
+    cloudCapabilities: { conversationResume: { version: 1 } },
     ...(args.eventPayloadsWithheld === true ? { policy: { eventPayloads: "withheld" } } : {}),
     userAuth: {
       // The same provider name the LOCAL arm records — one exported constant rather than a

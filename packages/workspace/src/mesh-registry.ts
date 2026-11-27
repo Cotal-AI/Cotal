@@ -6,6 +6,7 @@ import { mkSecretDir, writeSecretFile, writeSecretFileAtomic } from "@cotal-ai/c
 import { findCotalRoot, movedRootRemedy, spaceSegment, stackJournalRoot, userAuthStateDir } from "./auth-paths.js";
 import { homeCotalDir } from "./cotal-home.js";
 import { prepareCotalHomeForWrite } from "./protected-records.js";
+import { migrateProjectTrust } from "./trusted-projects.js";
 import { shellPath } from "./local-record-source.js";
 
 export { homeCotalDir, userCotalDir } from "./cotal-home.js";
@@ -312,6 +313,7 @@ export function recordMeshes(entries: Iterable<MeshEntry>): void {
     // local users even though the file contents are private. Keep the dir readable only by us
     // (0700 POSIX / hardened ACL win32).
     prepareCotalHomeForWrite();
+    migrateProjectTrust(true);
     mkSecretDir(meshesDir());
     const file = meshFile(m.space);
     // Per-process temp name so two concurrent `up`s for the same space can't stomp each other's

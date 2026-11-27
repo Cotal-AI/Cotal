@@ -33,6 +33,23 @@ try {
       // Leave a failed regression removable without hiding its original assertions.
       for (const dir of directories) if (existsSync(dir)) chmodSync(dir, 0o700);
     }
+    if (process.getuid && process.getuid() !== 0) {
+      const blocked = join(storeRoot, "0.0.1-blocked");
+      mkdirSync(blocked);
+      // The generation's own permissions can be repaired, but removal requires a writable parent.
+      chmodSync(storeRoot, 0o555);
+      try {
+        const updated = cotal(cfg, ["update"]);
+        const warnings = updated.stderr.split("\n").filter(line => line.includes("could not remove old seed-store generation"));
+        check("update continues past an old seed-store generation that cannot be removed",
+          updated.status === 0 && existsSync(blocked) && warnings.length === 1 &&
+            warnings[0]!.includes(blocked) && /EACCES|EPERM/.test(warnings[0]!) && warnings[0]!.includes("left in place") &&
+            updated.stdout.includes("connector integrations refreshed") && updated.stdout.includes("operator extensions: none installed"),
+          updated.stdout + updated.stderr);
+      } finally {
+        chmodSync(storeRoot, 0o700);
+      }
+    }
   }
 } finally {
   finishScenario();

@@ -124,6 +124,11 @@ export function normalizeIdpUrl(idpUrl: string): string {
   return checked.url.origin + checked.url.pathname.replace(/\/+$/, "");
 }
 
+/** Stable within an IdP, without saving the provider's raw subject in conversation records. */
+export function conversationAccountKey(idp: string, subject: string | undefined): string | undefined {
+  return subject ? createHash("sha256").update(JSON.stringify([normalizeIdpUrl(idp), subject])).digest("hex") : undefined;
+}
+
 interface OAuthError {
   error?: string;
   error_description?: string;
@@ -162,6 +167,9 @@ export function idpTimeoutMs(): number {
 
 /** An IdP request that got no answer: the transport failed or the per-request timeout fired. */
 export class IdpUnreachableError extends Error {}
+
+/** The IdP answered a token request with a server error. */
+export class IdpTokenServerError extends Error {}
 
 /** The provider refused the initial device-code request, before approval or persistence. */
 export class IdpDeviceAuthorizationRefusedError extends Error {}
@@ -503,7 +511,10 @@ async function fetchIdpJwtUncached(base: string, sessionToken: string, cancel?: 
       throw new IdpSessionRejectedError(
         `idp session: ${base} rejected the cached session (expired or revoked) - ${serviceLoginRecovery(base, idpSessionDir())}`,
       );
-    if (!res.ok) throw new Error(`idp session: ${base}/token failed (HTTP ${res.status})`);
+    if (!res.ok) {
+      const message = `idp session: ${base}/token failed (HTTP ${res.status})`;
+      throw res.status >= 500 ? new IdpTokenServerError(message) : new Error(message);
+    }
     const body = await idpJson<{ token?: string }>(`${base}/token`, res, cancel);
     if (typeof body.token !== "string" || !body.token) throw new Error(`idp session: ${base}/token returned no token`);
     return { jwt: body.token, response: res };

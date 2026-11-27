@@ -1,6 +1,6 @@
-import { copyPersonaEndpoints, DEV_OWNER, discardLaunchArtifacts, EpEnvelopeError, identityFromCreds, idFromCreds, loadAgentFile, loadCotalConfig, modelPolicyEnv, parsePrincipalKey, principalKey, rejectionText, resolveAuthProvider } from "@cotal-ai/core";
+import { copyPersonaEndpoints, DEV_OWNER, discardLaunchArtifacts, EpEnvelopeError, identityFromCreds, idFromCreds, loadCotalConfig, modelPolicyEnv, parsePrincipalKey, principalKey, rejectionText, resolveAuthProvider } from "@cotal-ai/core";
 import type { Connector, ControlReply, LaunchOpts, LaunchSpec, MeshLaunchAgent, Presence, RuntimeReference, UserAuthLaunch } from "@cotal-ai/core";
-import { agentCredsDir, agentLifecycleSecretFilePaths, agentSecretFilePaths, agentSecretKeyForFile, userAuthStateDir } from "@cotal-ai/workspace";
+import { agentCredsDir, agentLifecycleSecretFilePaths, agentSecretFilePaths, agentSecretKeyForFile, isTrustedProject, loadTrustCheckedPersona, manifestPersonaLaunchOptionsRefusal, userAuthStateDir } from "@cotal-ai/workspace";
 import { createHash, randomBytes } from "node:crypto";
 import { lstatSync, realpathSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -931,6 +931,8 @@ export class PreservedResume {
       } catch (e) {
         return { ok: false, error: rejectionText(e) };
       }
+      const unavailable = connector.launchUnavailable?.({ cwd: entry.launch.cwd, resume: entry.launch.forkSource });
+      if (unavailable !== undefined) return { ok: false, error: unavailable };
       await this.parts.connectorInventory.refreshUnavailableConnectors(connector.name, true);
       const harness = this.parts.harnessResolution.launchHarness(connector);
       if ("refusal" in harness) return { ok: false, error: harness.refusal };
@@ -962,11 +964,15 @@ export class PreservedResume {
         }
         if (!spec || spec.hash !== launchSource.hash)
           return { ok: false, error: `retained manifest agent ${launchSource.requested} is missing or its hash changed; refusing same-principal resume` };
+        const refusal = manifestPersonaLaunchOptionsRefusal(spec.personaPath, spec.launchOptions);
+        if (refusal) return { ok: false, error: refusal };
         launchOptions = spec.launchOptions;
         exact = spec.continuity === "exact";
       } else {
         try {
-          launchOptions = loadAgentFile(entry.launch.source.configPath).launchOptions;
+          const checked = loadTrustCheckedPersona(entry.launch.source.configPath, "agent");
+          if (checked.refusal) return { ok: false, error: checked.refusal };
+          launchOptions = checked.def.launchOptions;
         } catch (e) {
           return { ok: false, error: rejectionText(e) };
         }
@@ -986,8 +992,9 @@ export class PreservedResume {
       }
 
       try {
+        const config = loadCotalConfig(this.config.workspaceRoot, isTrustedProject);
         const launchOpts: LaunchOpts = {
-          ...this.hostLaunchFields(loadCotalConfig(this.config.workspaceRoot), entry.launch.connector, entry.launch.shareTools, harness),
+          ...this.hostLaunchFields(config, entry.launch.connector, entry.launch.shareTools, harness),
           name: entry.name,
           displayName: entry.displayName,
           role: entry.role,
@@ -1020,7 +1027,7 @@ export class PreservedResume {
           cwd: entry.launch.cwd,
         };
         const spec = connector.buildLaunch(launchOpts);
-        spec.env = { ...spec.env, COTAL_MANAGER_INSTANCE: this.managerInstanceId, ...modelPolicyEnv(loadCotalConfig(this.config.workspaceRoot), entry.role) };
+        spec.env = { ...spec.env, COTAL_MANAGER_INSTANCE: this.managerInstanceId, ...modelPolicyEnv(config, entry.role) };
         const value = { spec, launchOpts, ...authority, exact } satisfies PreparedResume;
         prepared?.set(entry.name, value);
         if (preflightOnly) return { ok: true, data: { name: entry.name, preflight: true } };

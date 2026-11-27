@@ -1,7 +1,7 @@
 name: Windows
 
 # Native-Windows gate. Kept separate from the ubuntu `CI` workflow because the command set differs
-# (no tmux/runtime/Hermes — those are Unix-only) and the broker install is Windows-specific.
+# (no tmux or Unix runtime) and the broker install is Windows-specific.
 #
 # Lanes:
 #   • required — Windows-specific, BROKER-FREE checks: typecheck + build + unit tests + the seam
