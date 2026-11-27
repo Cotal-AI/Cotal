@@ -31,7 +31,7 @@ export function endpointFailure(error: unknown, target: Record<string, unknown>,
   const code = nativeEndpointRefusal(native?.code);
   if ((!mayHaveInvoked || native?.outcome === "not-executed") && code) {
     const absoluteDirectoryRequired = mayHaveInvoked && native?.code === "failed-precondition"
-      && target.endpoint === BASELINE_LIFECYCLE_ENDPOINT && ["resolve-cwd", "list-dir", "harness-commands", "make-dir", "clone"].includes(String(target.command))
+      && target.endpoint === BASELINE_LIFECYCLE_ENDPOINT && ["resolve-cwd", "list-dir", "harness-commands", "make-dir", "clone", "worktree"].includes(String(target.command))
       && error instanceof NativeReplyError && error.phase === "invocation"
       && error.response.reply.error?.details?.some((detail) => detail.kind === "ai.cotal.manager.absolute-directory-required");
     const reason = mayHaveInvoked && !absoluteDirectoryRequired && error instanceof NativeReplyError && error.phase === "invocation" && native?.outcome === "not-executed"

@@ -439,6 +439,7 @@ export function operatorInstrumentCapabilities(tier: "privileged" | "admin", cal
     // reads above, the standing agent `spawn` set does not carry them.
     { endpoint: BASELINE_LIFECYCLE_ENDPOINT, command: "make-dir" },
     { endpoint: BASELINE_LIFECYCLE_ENDPOINT, command: "clone" },
+    { endpoint: BASELINE_LIFECYCLE_ENDPOINT, command: "worktree" },
     { endpoint: BASELINE_LIFECYCLE_ENDPOINT, command: "define-persona" },
     { endpoint: BASELINE_LIFECYCLE_ENDPOINT, command: "remove-persona" },
     ...CHAT_SESSION_SNAP.map((command) => ({ endpoint: BASELINE_LIFECYCLE_ENDPOINT, command })),

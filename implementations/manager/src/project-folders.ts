@@ -1,7 +1,7 @@
 /**
- * The manager's `make-dir` and `clone` commands (SPEC §9): a launcher makes the folder a new
- * project starts in, under a parent directory on this host, and then spawns there. Git runs as the
- * Manager's host user with that user's own credentials and settings. Nothing in a request is a
+ * The manager's `make-dir`, `clone` and `worktree` commands (SPEC §9): a launcher makes the folder a
+ * new project starts in, under a parent directory on this host, and then spawns there. Git runs as
+ * the Manager's host user with that user's own credentials and settings. Nothing in a request is a
  * credential, and git never asks anyone anything.
  */
 import { spawn, type ChildProcess } from "node:child_process";
@@ -13,10 +13,13 @@ import type { SeatLaunch } from "./seat-launch.js";
 type ParentResolver = Pick<SeatLaunch, "resolveSpawnCwd">;
 type CloneOutput = { path: string; head: string | null; ref: string | null; existing: boolean };
 type GitRun = { code: number; stdout: string; stderr: string };
+type WorktreeOutput = { path: string; branch: string; base: string; head: string };
 
 /** Time kept back from the caller's deadline so a refusal still reaches it. */
 const REPLY_MARGIN_MS = 1_000;
 const STDERR_TAIL_BYTES = 4_096;
+/** How long removing a half-made worktree may take once the caller's deadline has passed. */
+const CLEANUP_MS = 10_000;
 /** user@host:path, git's scp-like ssh form. Neither user nor host may start with a dash. */
 const SCP_LIKE = /^[A-Za-z0-9._~+][A-Za-z0-9._~+-]*@[A-Za-z0-9][A-Za-z0-9.-]*:(?!\/\/)(.+)$/;
 /** What git and its transports print when the host's credentials cannot read the repository. */
@@ -41,16 +44,21 @@ async function exists(path: string): Promise<boolean> {
   }
 }
 
-/** Create the empty folder `name` under `parent`. An existing folder is refused, never reused. */
-export async function makeProjectDirectory(args: Record<string, unknown>, launch: ParentResolver): Promise<{ path: string }> {
-  const { cwd: parent } = launch.resolveSpawnCwd(args.parent);
-  const target = join(parent, folderName(args.name));
+/** Create the empty folder `target`. An existing folder is refused, never reused. */
+async function claimFolder(target: string): Promise<void> {
   try {
     await mkdir(target);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "EEXIST") refuse("already-exists", `${JSON.stringify(target)} already exists`);
     refuse("failed-precondition", `folder cannot be created on this host: ${JSON.stringify(target)} (${rejectionText(error)})`);
   }
+}
+
+/** Create the empty folder `name` under `parent`. */
+async function makeProjectDirectory(args: Record<string, unknown>, launch: ParentResolver): Promise<{ path: string }> {
+  const { cwd: parent } = launch.resolveSpawnCwd(args.parent);
+  const target = join(parent, folderName(args.name));
+  await claimFolder(target);
   return { path: await realpath(target) };
 }
 
@@ -70,10 +78,12 @@ function cloneSource(value: unknown): { url: string; path: string } {
   return { url, path: parsed.pathname };
 }
 
-function cloneRef(value: unknown): string {
-  const ref = String(value);
-  if (ref.startsWith("-") || /[\s\x00-\x1f\x7f]/.test(ref)) refuse("bad-request", `${JSON.stringify(ref)} is not a branch or tag name`);
-  return ref;
+/** A ref or revision from a request. One git could read as an option, or one holding a space or a
+ *  control character, is refused before git runs. */
+function gitName(value: unknown, what: string): string {
+  const name = String(value);
+  if (name.startsWith("-") || /[\s\x00-\x1f\x7f]/.test(name)) refuse("bad-request", `${JSON.stringify(name)} is not ${what}`);
+  return name;
 }
 
 /** The folder git itself would name a clone: the URL's last path segment without `.git`. */
@@ -91,7 +101,7 @@ const gitEnv = (ceiling: string): NodeJS.ProcessEnv => ({
   GCM_INTERACTIVE: "never", GIT_ALLOW_PROTOCOL: "https:ssh", GIT_CEILING_DIRECTORIES: ceiling,
 });
 
-const deadlineExceeded = () => new EpEnvelopeError("deadline-exceeded", "the clone did not finish within the caller's deadline, and nothing was kept");
+const deadlineExceeded = () => new EpEnvelopeError("deadline-exceeded", "git did not finish within the caller's deadline, and nothing was kept");
 
 function killGroup(child: ChildProcess): void {
   try {
@@ -126,6 +136,9 @@ function runGit(args: string[], cwd: string, ceiling: string, endsAt: number): P
   });
 }
 
+/** Git run in `repo`, whose repository discovery stops there. */
+const gitIn = (repo: string, endsAt: number) => (...args: string[]) => runGit(["-C", repo, ...args], repo, dirname(repo), endsAt);
+
 function cloneFailure(url: string, stderr: string): EpEnvelopeError {
   const said = stderr.split("\n").map((line) => line.trim()).filter(Boolean).slice(-3).join("; ") || "git exited without a message";
   if (ACCESS_REFUSED.test(stderr))
@@ -137,7 +150,7 @@ function cloneFailure(url: string, stderr: string): EpEnvelopeError {
 /** The checkout at `path`: its commit, or null before the first one, and its branch, or null when
  *  detached. Discovery stops at `path`, so only a repository whose top level is `path` answers. */
 async function describeCheckout(path: string, endsAt: number): Promise<Omit<CloneOutput, "existing"> | undefined> {
-  const git = (...args: string[]) => runGit(["-C", path, ...args], path, dirname(path), endsAt);
+  const git = gitIn(path, endsAt);
   const top = await git("rev-parse", "--show-toplevel");
   if (top.code !== 0) return undefined;
   const head = await git("rev-parse", "--verify", "--quiet", "HEAD");
@@ -151,7 +164,7 @@ async function existingClone(target: string, url: string, ref: string | undefine
   const taken = (why: string) => refuse("already-exists", `${JSON.stringify(target)} already exists and ${why}; choose another name`);
   const path = await realpath(target);
   const checkout = await describeCheckout(path, endsAt) ?? taken("is not a git clone");
-  const git = (...args: string[]) => runGit(["-C", path, ...args], path, dirname(path), endsAt);
+  const git = gitIn(path, endsAt);
   const origin = (await git("config", "--get", "remote.origin.url")).stdout;
   if (origin !== url) taken(`is a clone of ${origin || "no origin"}, not ${url}`);
   if (ref !== undefined) {
@@ -161,22 +174,22 @@ async function existingClone(target: string, url: string, ref: string | undefine
   return { ...checkout, existing: true };
 }
 
-/** The monotonic time a clone must end by: the caller's own deadline, less time to reply. */
-function cloneEndsAt(ctx: EpServeContext): number {
+/** The monotonic time git must end by: the caller's own deadline, less time to reply. */
+function callEndsAt(ctx: EpServeContext, command: string): number {
   const { receivedAtMonotonicMs: received } = ctx, budget = ctx.request.deadlineMs;
   if (received === undefined || !Number.isFinite(received) || budget === undefined)
-    refuse("bad-request", "clone is a call with a deadline");
+    refuse("bad-request", `${command} is a call with a deadline`);
   return received! + budget! - REPLY_MARGIN_MS;
 }
 
 /** Clone `url` into `name` under `parent`. Git writes into a hidden staging folder beside the
  *  target, which takes the name only once the clone is complete, so a failed or timed-out clone
  *  leaves nothing and a concurrent or retried clone of the same URL answers the finished one. */
-export async function cloneProject(args: Record<string, unknown>, launch: ParentResolver, ctx: EpServeContext): Promise<CloneOutput> {
-  const endsAt = cloneEndsAt(ctx);
+async function cloneProject(args: Record<string, unknown>, launch: ParentResolver, ctx: EpServeContext): Promise<CloneOutput> {
+  const endsAt = callEndsAt(ctx, "clone");
   const { cwd: parent } = launch.resolveSpawnCwd(args.parent);
   const source = cloneSource(args.url);
-  const ref = args.ref === undefined ? undefined : cloneRef(args.ref);
+  const ref = args.ref === undefined ? undefined : gitName(args.ref, "a branch or tag name");
   const target = join(parent, folderName(args.name ?? defaultName(source.path)));
   if (await exists(target)) return existingClone(target, source.url, ref, endsAt);
   let staging: string;
@@ -195,4 +208,71 @@ export async function cloneProject(args: Record<string, unknown>, launch: Parent
   } finally {
     await rm(staging, { recursive: true, force: true, maxRetries: 3 });
   }
+}
+
+/** The commit a new worktree of `repo` starts at, after checking that `repo` is the top level of a
+ *  work tree and that `branch` is a branch name git accepts. Nothing is written. */
+async function worktreeStart(repo: string, branch: string, base: string | undefined, endsAt: number): Promise<string> {
+  const git = gitIn(repo, endsAt);
+  if ((await git("rev-parse", "--show-toplevel")).code !== 0)
+    refuse("failed-precondition", `${JSON.stringify(repo)} is not the top level of a git work tree on this host`);
+  const valid = await git("check-ref-format", "--branch", branch);
+  if (valid.code !== 0 || valid.stdout !== branch) refuse("bad-request", `${JSON.stringify(branch)} is not a valid branch name`);
+  const start = await git("rev-parse", "--verify", "--quiet", "--end-of-options", `${base ?? "HEAD"}^{commit}`);
+  if (start.code !== 0)
+    refuse(base === undefined ? "failed-precondition" : "bad-request", `${JSON.stringify(base ?? "HEAD")} names no commit in ${JSON.stringify(repo)}`);
+  return start.stdout;
+}
+
+/** Remove what a failed `git worktree add` left: its registration, its files and, unless the branch
+ *  was already someone else's, the branch it made, deleted only while it is still at `commit`. */
+async function abandonWorktree(repo: string, target: string, branch: string | undefined, commit: string): Promise<void> {
+  const git = gitIn(repo, performance.now() + CLEANUP_MS);
+  await git("worktree", "remove", "--force", "--force", "--", target);
+  await rm(target, { recursive: true, force: true, maxRetries: 3 });
+  if (branch !== undefined) await git("update-ref", "-d", `refs/heads/${branch}`, commit);
+}
+
+/** Check `branch`, made at `commit`, out in the empty folder `target`. A failed or stopped add is
+ *  removed with its branch. A branch that exists is refused, never reused or reset. */
+async function addWorktree(repo: string, target: string, branch: string, commit: string, endsAt: number): Promise<void> {
+  let run: GitRun;
+  try {
+    run = await gitIn(repo, endsAt)("worktree", "add", "-b", branch, "--", target, commit);
+  } catch (error) {
+    await abandonWorktree(repo, target, branch, commit);
+    throw error;
+  }
+  if (run.code === 0) return;
+  const taken = /^fatal: a branch named '.*' already exists\.?$/im.test(run.stderr);
+  await abandonWorktree(repo, target, taken ? undefined : branch, commit);
+  if (taken) refuse("already-exists", `branch ${branch} already exists in ${JSON.stringify(repo)}; choose another branch`);
+  const said = run.stderr.split("\n").map((line) => line.trim()).filter(Boolean).slice(-3).join("; ") || "git exited without a message";
+  throw new EpEnvelopeError("failed-precondition", `git worktree add in ${JSON.stringify(repo)} failed: ${said}`);
+}
+
+/** Make the worktree `name` under `parent`: a new branch of `repo`, default `name`, checked out at
+ *  `base`, default the repository's HEAD. An existing folder or branch is refused and left as it is. */
+async function makeWorktree(args: Record<string, unknown>, launch: ParentResolver, ctx: EpServeContext): Promise<WorktreeOutput> {
+  const endsAt = callEndsAt(ctx, "worktree");
+  const { cwd: repo } = launch.resolveSpawnCwd(args.repo);
+  const { cwd: parent } = launch.resolveSpawnCwd(args.parent);
+  const name = folderName(args.name);
+  const branch = gitName(args.branch ?? name, "a branch name");
+  const base = args.base === undefined ? undefined : gitName(args.base, "a commit");
+  const commit = await worktreeStart(repo, branch, base, endsAt);
+  const target = join(parent, name);
+  await claimFolder(target);
+  await addWorktree(repo, target, branch, commit, endsAt);
+  return { path: await realpath(target), branch, base: base ?? "HEAD", head: commit };
+}
+
+/** The served `make-dir`, `clone` and `worktree` handlers, each run through `serve`. */
+export function projectFolderHandlers(launch: ParentResolver, serve: <T>(ctx: EpServeContext, fn: () => Promise<T>) => Promise<T>) {
+  const args = (ctx: EpServeContext) => (ctx.request.args ?? {}) as Record<string, unknown>;
+  return {
+    makeDir: (ctx: EpServeContext) => serve(ctx, () => makeProjectDirectory(args(ctx), launch)),
+    clone: (ctx: EpServeContext) => serve(ctx, () => cloneProject(args(ctx), launch, ctx)),
+    worktree: (ctx: EpServeContext) => serve(ctx, () => makeWorktree(args(ctx), launch, ctx)),
+  };
 }
