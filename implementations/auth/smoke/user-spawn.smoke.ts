@@ -2090,7 +2090,7 @@ try {
   // These combined expectations still require an actual integrated run.
   // 148 -> 151: D2's spawn and admin views also read ps.
   // Eight hosted-enrollment checks include uncommitted attempts, changed authority and refused replay.
-  const EXPECTED = endpointCliFocus ? 75 : 164;
+  const EXPECTED = endpointCliFocus ? 76 : 165;
   check(`every cell ran - ${EXPECTED} expected`, cells === EXPECTED + 1, `${cells} cells reported`);
 
   console.log(`\n${endpointCliFocus ? "USER-ENDPOINT CLI SMOKE" : "USER-SPAWN SMOKE"} ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${pass} passed, ${fail} failed)`);
