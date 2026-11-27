@@ -646,7 +646,7 @@ search permission to group and other accounts, such as an owned `.config` direct
 Shell-quoted home and config paths, including spaces, are decoded without running a shell.
 Relative paths, control characters and malformed quoting are refused.
 
-On Linux, repeating `cotal daemon install` verifies an unchanged recorded service from this installation and reports `Already installed`. It leaves the unit, receipt and running daemon unchanged. A modified source or another installation still refuses.
+On Linux, repeating `cotal daemon install` verifies an unchanged recorded service from this installation and reports `Already installed`. It leaves the unit, receipt and running daemon unchanged, except when an application that `cotal status` lists is on this shell's PATH and not on the unit's pinned PATH. With no agent running, that repeat rewrites the pin, restarts the service and says it can see the application. With an agent running, or when the unit has a drop-in, a pending reload, a hand edit or belongs to another installation, it changes nothing. A modified source or another installation still refuses.
 
 On Linux, if a daemon already answers but there is no install receipt or service unit, desktop
 installation reports a conflict and leaves the running daemon alone.
