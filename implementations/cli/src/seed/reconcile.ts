@@ -393,6 +393,15 @@ function unregisteredOperatorPackages(builtIns: ReadonlySet<string>): string[] {
     .map((name) => `@cotal-ai/${name}`).sort();
 }
 
+/** After a verify rebuild, an inventory that is still absent gets the recovered fact written before the
+ *  commit. Built-ins staged above already write their entries. Leftover operator packages stay on disk. */
+function writeRecoveredInventory(staged: readonly unknown[], builtIns: ReadonlySet<string>): void {
+  if (!extensionsInventoryMissing()) return;
+  if (!staged.length) saveExtensionsManifest({ extensions: [] });
+  const unregistered = unregisteredOperatorPackages(builtIns);
+  console.log(`the extensions inventory was missing. Built-in packages still on disk are registered again.${unregistered.length ? ` ${unregistered.join(", ")} remain on disk but are not registered. Run \`${displayCmd()} ext add\` with the original spec to register one.` : ""}`);
+}
+
 /** A witnessed prefix whose inventory file is gone while npm still has packages installed. A prefix
  *  that was never seeded, or an empty prefix, is not this state: there is no inventory to restore. */
 function extensionsInventoryMissing(): boolean {
@@ -673,11 +682,7 @@ async function runUnderLocks(mode: Mode, generation: string, nonce: string, refr
   // stamping the generation: a failed refresh must remain an incomplete upgrade on the next boot.
   if (migrationFrom) await refreshInstalls();
   await checkInterrupted(true);
-  if (inventoryWasMissing && extensionsInventoryMissing()) {
-    if (!staged.length) saveExtensionsManifest({ extensions: [] });
-    const unregistered = unregisteredOperatorPackages(builtIns);
-    console.log(`the extensions inventory was missing. Built-in packages still on disk are registered again.${unregistered.length ? ` ${unregistered.join(", ")} remain on disk but are not registered. Run \`${displayCmd()} ext add\` with the original spec to register one.` : ""}`);
-  }
+  if (inventoryWasMissing) writeRecoveredInventory(staged, builtIns);
 
   // Commit: authority (+ backup) → witness → stamp (LAST); THEN drop the cursor + recovery obligation
   // and GC old stores. A crash above (including a repair that quarantined then died mid-reinstall)
