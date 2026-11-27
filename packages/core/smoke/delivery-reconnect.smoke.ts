@@ -112,7 +112,8 @@ async function checkEnabledPluginRecovery() {
     await reader.stop();
 
     const replacement = endpoint({ creds: recipient.creds, lifecycleUid: recipient.lifecycleUid, channels: [channel],
-      backfillFloor: 10_000, registerPresence: false, watchPresence: false, card: { kind: "agent", name: "recovery-reader" } });
+      backfillFloor: 10_000, registerPresence: false, watchPresence: false, card: { kind: "agent", name: "recovery-reader" },
+      beforeBind: async () => { atBind = true; await hold; } });
     const replayed = capture(replacement);
     await replacement.start();
     check("a replacement uses ordinary join replay on the plugin rail, not the prior frontier or the CHAT floor",
@@ -120,6 +121,25 @@ async function checkEnabledPluginRecovery() {
     const liveAgain = await writer.multicast("live after replacement replay", { channel });
     check("the replacement receives new posts through its live tail after replay", await waitFor(() =>
       replayed.some(({ id, historical, durable }) => id === liveAgain.id && !historical && !durable)));
+
+    const oldFrontier = await replacement.channelFrontier(channel);
+    await fixture.recreatePluginHistoryAtNextEpoch();
+    hold = new Promise<void>((resolve) => { releaseBind = resolve; });
+    atBind = false;
+    const epochRebind = replacement.reconnect();
+    let onNewRail: CotalMessage;
+    try {
+      if (!(await waitFor(() => atBind))) throw new Error("epoch turnover did not reach the new bind");
+      onNewRail = await writer.multicast("first in the recreated stream", { channel });
+    } finally {
+      hold = undefined;
+      releaseBind();
+      await epochRebind;
+    }
+    const nextFrontier = await replacement.channelFrontier(channel);
+    check("an epoch change replays the new stream without comparing its sequence to the previous frontier",
+      nextFrontier === 1 && oldFrontier > nextFrontier && replayed.filter(({ id, historical }) => id === onNewRail.id && historical).length === 1,
+      { oldFrontier, nextFrontier, replayed });
   } finally {
     await fixture.close();
   }
