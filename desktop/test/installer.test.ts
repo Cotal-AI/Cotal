@@ -72,12 +72,12 @@ test('welcome page comes forward when the app window is already open', () => {
   const body = source.slice(source.indexOf('Function WelcomePlace'), source.indexOf('FunctionEnd', source.indexOf('Function WelcomeShow')));
   const place = body.indexOf('Function WelcomePlace');
   const kill = body.indexOf('nsDialogs::KillTimer $0');
-  const found = body.indexOf('FindWindow $1 "" "Cotal Setup"');
-  const above = body.indexOf('SetWindowPos(p r1, p -1, i 0, i 0, i 0, i 0, i 0x13)');
+  const above = body.indexOf('SetWindowPos(p $HWNDPARENT, p -1, i 0, i 0, i 0, i 0, i 0x13)');
+  const clear = body.indexOf('SetWindowPos(p $HWNDPARENT, p -2, i 0, i 0, i 0, i 0, i 0x13)');
   const shown = body.indexOf('Function WelcomeShow');
   const timer = body.indexOf('nsDialogs::CreateTimer $0 1');
-  assert.ok(place >= 0 && kill > place && found > kill && above > found && shown > above && timer > shown);
-  assert.equal(body.indexOf(', p -2,'), -1);
+  assert.ok(place >= 0 && kill > place && above > kill && clear > above && shown > clear && timer > shown);
+  assert.equal(body.indexOf('FindWindow'), -1);
   assert.equal(body.indexOf('AttachThreadInput'), -1);
   assert.equal(body.indexOf('RunAsUser'), -1);
   const laterShow = source.indexOf('MUI_PAGE_CUSTOMFUNCTION_SHOW', welcome + 1);
