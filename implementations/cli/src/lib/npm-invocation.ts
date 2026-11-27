@@ -4,7 +4,7 @@ import { lstatSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync
 import { createRequire } from "node:module";
 import { homedir } from "node:os";
 import { basename, delimiter, dirname, isAbsolute, join, parse, resolve } from "node:path";
-import { logicalExecutionEntry, protectedLocalDirectory, resolveOnPath } from "@cotal-ai/workspace";
+import { cmdSpawnSpec, logicalExecutionEntry, protectedLocalDirectory, resolveOnPath } from "@cotal-ai/workspace";
 
 const { satisfies } = createRequire(import.meta.url)("semver") as { satisfies: (version: string, range: string) => boolean };
 export const npmProjectDirectory = new AsyncLocalStorage<string | undefined>();
@@ -112,7 +112,7 @@ interface NpmCommand {
   lifecycleNode?: boolean;
 }
 
-export function npmInvocation(env: NodeJS.ProcessEnv, args: string[]): NpmCommand {
+function resolveNpmInvocation(env: NodeJS.ProcessEnv, args: string[]): NpmCommand {
   const cwd = parse(homedir()).root;
   const pathKey = pathVariable(env);
   const inheritedNode = env[UPDATE_NPM_NODE];
@@ -199,6 +199,35 @@ export function npmInvocation(env: NodeJS.ProcessEnv, args: string[]): NpmComman
     return { file: process.execPath, args: [engine.entry, ...args], env: withNode(process.execPath, true), cwd,
       lifecycleNode: args[0] === "install" && !args.includes("--ignore-scripts") };
   return { file, args, env: withNode(process.execPath), cwd };
+}
+
+const globalConfigs = new Map<string, string | undefined>();
+
+function effectiveGlobalConfig(npm: NpmCommand, launcher: string[]): string | undefined {
+  const { file, cwd, env } = npm;
+  const configInputs = Object.entries(env).filter(([key]) => /^(?:home|userprofile|path|npm_config_(?:prefix|userconfig))$/i.test(key));
+  const key = JSON.stringify([file, launcher, cwd, configInputs]);
+  if (globalConfigs.has(key)) return globalConfigs.get(key);
+  let globalConfig: string | undefined;
+  try {
+    const probe = cmdSpawnSpec(file, [...launcher, "config", "get", "globalconfig", "--json=false", "--logs-max=0", "--update-notifier=false"], env);
+    const result = spawnSync(probe.file, probe.args, {
+      cwd, env, windowsVerbatimArguments: probe.windowsVerbatimArguments, windowsHide: true,
+      encoding: "utf8", timeout: 5000, killSignal: "SIGKILL", maxBuffer: 65536,
+    });
+    const path = result.stdout?.replace(/\r?\n$/, "");
+    if (result.status === 0 && path && isAbsolute(path) && !/[\r\n\0]/.test(path)) globalConfig = path;
+  } catch { /* Keep npm's normal invocation when it cannot report a path. */ }
+  globalConfigs.set(key, globalConfig);
+  return globalConfig;
+}
+
+export function npmInvocation(env: NodeJS.ProcessEnv, args: string[]): NpmCommand {
+  const npm = resolveNpmInvocation(env, args);
+  if (!args.includes("--prefix") || Object.keys(npm.env).some(key => key.toLowerCase() === "npm_config_globalconfig")) return npm;
+  // npm derives globalconfig from the prefix. Resolve it without our prefix, using the same npm.
+  const globalConfig = effectiveGlobalConfig(npm, npm.args.slice(0, npm.args.length - args.length));
+  return globalConfig === undefined ? npm : { ...npm, env: { ...npm.env, npm_config_globalconfig: globalConfig } };
 }
 
 /** Give lifecycle shells a `node` command when npm itself is launched by absolute Node path. */

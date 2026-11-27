@@ -261,8 +261,9 @@ private update scratch idle for more than an hour when it contains only the Node
 On Linux, it also removes that scratch if the reconciliation cache holds only records that prove
 the updater and child process group have exited. Cotal keeps unrecorded reconciliation caches.
 An unwritable cache configured in `.npmrc` does not block the update. Cotal leaves that cache and
-its permissions unchanged and still applies your registry,
-authentication, proxy and TLS settings. An unavailable dependency stops the update before replacement.
+its permissions unchanged and still applies your registry, authentication, proxy and TLS settings.
+The dependency check and staged installs use your global npm configuration even though they install
+into temporary prefixes. An unavailable dependency stops the update before replacement.
 If npm runs out of space while checking installed extension dependencies, no global install is
 attempted. Free space on the temporary filesystem, then run `cotal update --self` again.
 If a signal terminates the npm dependency check, the command names the signal and leaves installed
@@ -928,6 +929,7 @@ status recommends `cotal update --self`.
 
 Bare `cotal ext` lists the inventory, headed by the install prefix. That prefix is a cotal-owned npm
 root kept **separate** from npm's own global tree. These packages never show up in `npm list -g`.
+Extension installs and removals use your global npm configuration without changing it.
 The Extensions section of `cotal status` shows the recorded pins. `cotal ext root` prints only the
 path, for scripts. The listing's versions are the manifest pins recorded at add time.
 On POSIX, cotal creates a missing Cotal config directory with mode `0700`, even with a
