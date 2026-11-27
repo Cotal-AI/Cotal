@@ -210,7 +210,7 @@ if (process.platform === "linux") {
 
 async function checkRenamedManagerInstall(): Promise<void> {
   const { spawn } = await import("node:child_process");
-  const { copyFileSync, cpSync, existsSync, readdirSync, renameSync, realpathSync, symlinkSync } = await import("node:fs");
+  const { copyFileSync, cpSync, existsSync, readdirSync, realpathSync, renameSync, rmdirSync, symlinkSync } = await import("node:fs");
   const { createRequire } = await import("node:module");
   const { dirname } = await import("node:path");
   const { localUpdateManagers } = await import("../src/lib/update-managers.js");
@@ -278,8 +278,28 @@ async function checkRenamedManagerInstall(): Promise<void> {
           while (child.exitCode === null && Date.now() < deadline && !mapped()) await new Promise(resolve => setTimeout(resolve, 25));
           assert.ok(mapped(), `real Manager mapped its own PTY dependency: ${output}`);
           if (mode === "foreign" || mode === "generation") {
-            if (mode === "generation") assert.deepEqual(localUpdateManagers({ space }, own.entry), [], "a self-updated foreign Manager does not block while its launch entry resolves");
-            renameSync(mode === "foreign" ? foreign.prefix : generated.prefix, `${mode === "foreign" ? foreign.prefix : generated.prefix}.moved`);
+            if (mode === "generation") {
+              assert.deepEqual(localUpdateManagers({ space }, own.entry), [], "a self-updated foreign Manager does not block while its launch entry resolves");
+              const badId = join(generated.prefix, "lib/.cotal-generations/not-a-generation-id/cotal-ai");
+              mkdirSync(dirname(badId), { recursive: true });
+              renameSync(retained, badId);
+              assert.throws(() => localUpdateManagers({ space }, own.entry), new RegExp(`local Manager continuity cannot be established: Manager pid ${child.pid}`), "a retained package whose generation id is not 32 hex digits stays unproven");
+              const elsewhere = join(root, "elsewhere/.cotal-generations", generationId, "cotal-ai");
+              mkdirSync(dirname(elsewhere), { recursive: true });
+              renameSync(badId, elsewhere);
+              assert.throws(() => localUpdateManagers({ space }, own.entry), new RegExp(`local Manager continuity cannot be established: Manager pid ${child.pid}`), "a retained package under a different parent stays unproven");
+              renameSync(elsewhere, retained);
+              rmdirSync(dirname(badId));
+              rmdirSync(dirname(elsewhere));
+              rmdirSync(dirname(dirname(elsewhere)));
+            }
+            const prefix = mode === "foreign" ? foreign.prefix : generated.prefix;
+            renameSync(prefix, `${prefix}.moved`);
+            if (mode === "generation") {
+              mkdirSync(prefix);
+              assert.throws(() => localUpdateManagers({ space }, own.entry), new RegExp(`local Manager continuity cannot be established: Manager pid ${child.pid}`), "a directory at the old prefix is not inferred as a rename");
+              rmdirSync(prefix);
+            }
             assert.deepEqual(localUpdateManagers({ space }, own.entry), [], "a foreign Manager with a missing launch entry does not block");
           } else {
             assert.ok(localUpdateManagers({ space }, own.entry).some(manager => manager.pid === child.pid), "a resolvable symlink into the installation retains Manager custody");
