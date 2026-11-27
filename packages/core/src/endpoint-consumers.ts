@@ -136,7 +136,8 @@ export class EndpointConsumers {
     // First connect, auth mode: self-join BOOT durable channels via the server-side delivery daemon
     // (it owns membership now — there is no manager-written boot membership). Seeds plane3Channels so a
     // later leave can tombstone the §7 boundary; idempotent on relaunch. Open mode has no Plane-3.
-    if (this.firstConnect && this.authed && this.identity.channels.length) await this.parts.bootMemberships.armBootDurableMemberships();
+    if (this.firstConnect && this.authed && this.identity.channels.length)
+      await this.parts.bootMemberships.armBootDurableMemberships((channel) => isRoutedPluginChannel(this.conn.pluginChannelsEnabled, channel));
     this.firstConnect = false;
 
     // Anycast: a shared work-queue consumer for our role — one instance grabs each task.
