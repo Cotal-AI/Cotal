@@ -284,7 +284,7 @@ export async function registryArrivalCell({ scenario, entry = join(repo, 'bin/di
     mkdirSync(etc);
     writeFileSync(join(etc, 'npmrc'), `registry=${origin}/\n`);
     for (const key of Object.keys(env)) {
-      if (/^(?:npm_config_(?:registry|prefix|userconfig|globalconfig|https?_proxy|proxy|noproxy)|(?:https?_proxy|all_proxy|no_proxy))$/i.test(key)) delete env[key];
+      if (/^(?:npm_config_(?:cache|registry|prefix|userconfig|globalconfig|https?_proxy|proxy|noproxy)|(?:https?_proxy|all_proxy|no_proxy))$/i.test(key)) delete env[key];
     }
     writeFileSync(join(home, '.npmrc'), `prefix=${prefix}\n`);
     Object.assign(env, { HTTP_PROXY: 'http://127.0.0.1:1', HTTPS_PROXY: 'http://127.0.0.1:1', NO_PROXY: '127.0.0.1' });
@@ -337,6 +337,7 @@ export async function registryArrivalCell({ scenario, entry = join(repo, 'bin/di
     }
     const before = readFileSync(join(packageRoot, 'dist/cotal.js'));
     writeFileSync(join(packageRoot, 'preserve'), 'unchanged');
+    if (globalConfig) rmSync(join(home, '.npm'), { recursive: true, force: true });
     armed = true;
     if (stagingTimeout) {
       const tools = join(root, 'staging-tools'), pidFile = join(root, 'staging.pid');
@@ -1009,6 +1010,7 @@ exec npm "$@"
         const active = await run(process.execPath, [entry, '--version'], 60000);
         assert.equal(active.code, 0, active.output);
         assert.match(active.output, /^cotal-ai 99\.0\.0\b/);
+        assert(!existsSync(join(home, '.npm')), 'self-update does not create a default npm cache');
         assert(requests.some(request => request.path === `/${target}.tgz` && request.staging), 'staged CLI npm uses the same configured registry');
       } else {
         assert.equal(selected, target);
@@ -1219,6 +1221,79 @@ async function corepackNodeFallbackCell(entry, parent) {
   }
 }
 
+async function globalConfigExtensionCell(setting) {
+  const root = mkdtempSync(join(tmpdir(), 'global-config-ext-'));
+  const name = 'global-config-extension-fixture', version = '1.0.0';
+  const home = join(root, 'home'), prefix = join(root, 'npm prefix'), config = join(root, 'config');
+  const tmp = join(root, 'tmp'), source = join(root, 'package'), cache = join(root, 'read-only cache');
+  const ext = join(config, 'cotal', 'extensions');
+  const manifest = { name, version, main: 'index.mjs', peerDependencies: { '@cotal-ai/core': '*' } };
+  const requests = [];
+  let registry, bytes;
+  const server = createServer((req, res) => {
+    requests.push(req.url);
+    if (req.url === `/${name}.tgz`) return res.end(bytes);
+    if (req.url !== `/${name}`) return res.writeHead(404).end();
+    res.setHeader('content-type', 'application/json');
+    res.end(JSON.stringify({ name, 'dist-tags': { latest: version }, versions: { [version]: { ...manifest, dist: {
+      tarball: `${registry}/${name}.tgz`, integrity: `sha512-${createHash('sha512').update(bytes).digest('base64')}`,
+    } } } }));
+  });
+  const env = Object.fromEntries(Object.entries(childEnv).filter(([key]) => !/^(?:npm_config_|(?:https?_proxy|all_proxy|no_proxy)$)/i.test(key)));
+  Object.assign(env, { HOME: home, COTAL_HOME: join(root, 'cotal'), XDG_CONFIG_HOME: config, TMPDIR: tmp,
+    DO_NOT_TRACK: '1', COTAL_SKIP_CONNECTOR_SEED: '1', npm_config_fetch_retries: '0', npm_config_update_notifier: 'false',
+    HTTPS_PROXY: 'http://127.0.0.1:1', HTTP_PROXY: 'http://127.0.0.1:1', NO_PROXY: '127.0.0.1' });
+  const run = async (...args) => {
+    const child = spawn(process.execPath, [join(repo, 'bin/dist/cotal.js'), 'ext', ...args], { cwd: home, env, timeout: 60_000 });
+    let output = '';
+    child.stdout.on('data', chunk => { output += chunk; });
+    child.stderr.on('data', chunk => { output += chunk; });
+    const [code] = await once(child, 'close');
+    return { code, output };
+  };
+  try {
+    for (const dir of [home, join(prefix, 'etc'), tmp, source]) mkdirSync(dir, { recursive: true, mode: 0o700 });
+    mkdirSync(cache, { mode: 0o500 });
+    writeFileSync(join(source, 'package.json'), JSON.stringify(manifest));
+    writeFileSync(join(source, 'index.mjs'), `import { registry } from '@cotal-ai/core'; registry.register({ kind: 'command', name: '${name}', summary: 'Fixture command', run() {} });`);
+    const archive = join(root, 'fixture.tgz');
+    assert.equal(spawnSync('tar', ['-czf', archive, '-C', root, 'package'], { env }).status, 0);
+    bytes = readFileSync(archive);
+    server.listen(0, '127.0.0.1');
+    await once(server, 'listening');
+    registry = `http://127.0.0.1:${server.address().port}`;
+    writeFileSync(join(home, '.npmrc'), `prefix=${prefix}\n`);
+    const npmrc = join(prefix, 'etc/npmrc');
+    const contents = `registry=${registry}/\n${setting === 'cache' ? `cache=${cache}\n` : 'global=true\npackage-lock=false\nsave=false\n'}`;
+    if (setting === 'default') env.npm_config_registry = registry;
+    else writeFileSync(npmrc, contents);
+    const added = await run('add', name);
+    if (setting === 'cache') {
+      assert.equal(added.code, 1, added.output);
+      assert.match(added.output, /EACCES|errno -13|Your cache folder contains root-owned files/);
+      assert(!existsSync(join(ext, 'extensions.json')));
+      assert(!existsSync(join(ext, 'node_modules', name)));
+      assert.deepEqual(readdirSync(cache), []);
+    } else {
+      assert.equal(added.code, 0, added.output);
+      assert(requests.includes(`/${name}.tgz`), 'extension install fetched through the fixture registry');
+      const dependency = file => JSON.parse(readFileSync(join(ext, file), 'utf8'));
+      assert(dependency('package.json').dependencies[name] && dependency('package-lock.json').packages[''].dependencies[name]);
+      const removed = await run('remove', name);
+      assert.equal(removed.code, 0, removed.output);
+      assert(!existsSync(join(ext, 'node_modules', name)), 'removal changes the project, not the global tree');
+      assert(!dependency('package.json').dependencies?.[name] && !dependency('package-lock.json').packages['']?.dependencies?.[name]);
+    }
+    if (setting !== 'default') assert.equal(readFileSync(npmrc, 'utf8'), contents);
+    return { scenario: `global-config-ext-${setting}`, requests };
+  } finally {
+    server.closeAllConnections();
+    if (server.listening) await new Promise(done => server.close(done));
+    if (existsSync(cache)) chmodSync(cache, 0o700);
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
 if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) {
   const mountPoint = mkdtempSync(join(tmpdir(), 'closure-mount-probe-'));
   let canMount;
@@ -1226,7 +1301,11 @@ if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.m
     canMount = process.platform === 'linux' && spawnSync('unshare', ['-Urm', 'mount', '-t', 'tmpfs', '-o', 'size=2m', 'tmpfs', mountPoint], { env: childEnv }).status === 0;
   } finally { rmSync(mountPoint, { recursive: true }); }
   const selected = process.argv[2] ? [process.argv[2]] : ['arrives', 'unavailable', 'integrity', 'reset', 'cache', 'orphan', 'closed-scope', 'min-release-age', 'before', 'offline-metadata', 'offline-archive', 'offline-closure', 'offline-staging', 'concurrent', 'extension-peers', 'extension-arrives', ...(process.platform !== 'win32' ? ['corepack'] : []), ...(process.platform === 'linux' ? ['archive-interrupted', 'closure-killed', 'pending', 'reconcile-killed', 'reconcile-orphan', 'staging-killed', 'staging-timeout', 'staging-fetch-timeout', 'staging-partial', 'staging-no-accept', 'staging-trickle', 'staging-auto', 'staging-refused', 'selection-upgrade', 'selection-rollback'] : []), ...(canMount ? ['closure-nospace'] : [])];
-  if (!process.argv[2] && ['linux', 'darwin'].includes(process.platform)) selected.push('global-config');
-  for (const scenario of selected) console.log(JSON.stringify(await registryArrivalCell({ scenario })));
+  if (!process.argv[2] && ['linux', 'darwin'].includes(process.platform)) {
+    selected.push('global-config', 'global-config-ext-mirror', 'global-config-ext-default');
+    if (process.getuid?.()) selected.push('global-config-ext-cache');
+  }
+  for (const scenario of selected) console.log(JSON.stringify(await (scenario.startsWith('global-config-ext-')
+    ? globalConfigExtensionCell(scenario.slice('global-config-ext-'.length)) : registryArrivalCell({ scenario }))));
   emitSentinel({ passed: selected.length, failed: 0 });
 }

@@ -2,7 +2,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { spawnSync } from "node:child_process";
 import { lstatSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync } from "node:fs";
 import { createRequire } from "node:module";
-import { homedir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { basename, delimiter, dirname, isAbsolute, join, parse, resolve } from "node:path";
 import { cmdSpawnSpec, logicalExecutionEntry, protectedLocalDirectory, resolveOnPath } from "@cotal-ai/workspace";
 
@@ -209,8 +209,10 @@ function effectiveGlobalConfig(npm: NpmCommand, launcher: string[]): string | un
   const key = JSON.stringify([file, launcher, cwd, configInputs]);
   if (globalConfigs.has(key)) return globalConfigs.get(key);
   let globalConfig: string | undefined;
+  let cache: string | undefined;
   try {
-    const probe = cmdSpawnSpec(file, [...launcher, "config", "get", "globalconfig", "--json=false", "--logs-max=0", "--update-notifier=false"], env);
+    cache = mkdtempSync(join(tmpdir(), "cotal-npm-config-"));
+    const probe = cmdSpawnSpec(file, [...launcher, "config", "get", "globalconfig", "--cache", cache, "--json=false", "--logs-max=0", "--update-notifier=false"], env);
     const result = spawnSync(probe.file, probe.args, {
       cwd, env, windowsVerbatimArguments: probe.windowsVerbatimArguments, windowsHide: true,
       encoding: "utf8", timeout: 5000, killSignal: "SIGKILL", maxBuffer: 65536,
@@ -218,6 +220,7 @@ function effectiveGlobalConfig(npm: NpmCommand, launcher: string[]): string | un
     const path = result.stdout?.replace(/\r?\n$/, "");
     if (result.status === 0 && path && isAbsolute(path) && !/[\r\n\0]/.test(path)) globalConfig = path;
   } catch { /* Keep npm's normal invocation when it cannot report a path. */ }
+  finally { if (cache) try { rmSync(cache, { recursive: true, force: true }); } catch { /* A probe cannot block the install. */ } }
   globalConfigs.set(key, globalConfig);
   return globalConfig;
 }

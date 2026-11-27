@@ -10,7 +10,7 @@ import { claimGlobalNpmUpdateLock, recoveryProcessStartToken, withWindowsUpdateI
 import { countedAssert, emitSentinel } from "../../../bin/smoke/sentinel.mjs";
 import { executeUpdate, updateRuntime, type UpdateRuntime } from "../src/commands/update.js";
 import { installedUpdatePrefix, runGlobalProcess, runNpm, runProcess } from "../src/commands/update-process.js";
-import { npmProjectDirectory } from "../src/lib/npm-invocation.js";
+import { npmInvocation, npmProjectDirectory } from "../src/lib/npm-invocation.js";
 import { SEED_BUILTINS } from "../src/seed/paths.js";
 import { repairRuntimeEntry } from "./update-runtime-entry.smoke.js";
 const counted = countedAssert(strictAssert);
@@ -206,6 +206,46 @@ exec "${executable}" "$@"
 }
 
 await repairRuntimeEntry(assert);
+
+function globalConfigFallbacks(): void {
+  const root = mkdtempSync(join(tmpdir(), "cotal-npm-config-fallback-"));
+  const pin = ["install", "--prefix", join(root, "stage"), "fixture"];
+  const path = join(root, "operator settings", "npmrc");
+  try {
+    for (const [name, script] of [
+      ["timeout", "while :; do :; done"],
+      ["nonzero", `printf '%s\\n' '${path}'; exit 7`],
+      ["empty", ":"],
+      ["relative", "printf '%s\\n' 'relative/npmrc'"],
+      ["absolute", `printf '%s\\n' '${path}'`],
+    ] as const) {
+      const tools = join(root, name);
+      mkdirSync(tools);
+      writeFileSync(join(tools, "npm"), `#!/bin/sh\nprintf '%s\\n' 'probe diagnostic' >&2\n${script}\n`, { mode: 0o700 });
+      const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^npm_config_globalconfig$/i.test(key)));
+      env.PATH = `${tools}${delimiter}${env.PATH ?? ""}`;
+      const ordinary = npmInvocation(env, []);
+      const expected = { ...ordinary, args: [...ordinary.args, ...pin], env: name === "absolute" ? { ...ordinary.env, npm_config_globalconfig: path } : ordinary.env };
+      assert.deepEqual(npmInvocation(env, pin), expected, name);
+      const started = Date.now();
+      assert.deepEqual(npmInvocation(env, pin), expected, `${name} lookup is cached`);
+      if (name === "timeout") assert.ok(Date.now() - started < 2_000, "a timed-out probe is not repeated");
+    }
+    const keys = Object.keys(process.env).filter(key => /^npm_config_globalconfig$/i.test(key));
+    const env: NodeJS.ProcessEnv = { ...process.env, HOME: root, USERPROFILE: root };
+    for (const key of keys) delete env[key];
+    for (const args of [["root", "-g"], ["install", "@cotal-ai/fixture"], ["install", "-g", "cotal-ai@1.0.0"],
+      ["install", "-g", "cotal-ai@0.9.0"], ["remove", "fixture"]]) {
+      const ordinary = npmInvocation(env, args);
+      const prefixed = npmInvocation(env, [...args, "--prefix", join(root, "stage")]);
+      const { npm_config_globalconfig: globalConfig, ...rest } = prefixed.env;
+      assert.ok(globalConfig, "real npm supplies its inherited default config path");
+      assert.deepEqual({ ...prefixed, env: rest }, { ...ordinary, args: [...ordinary.args, "--prefix", join(root, "stage")] });
+    }
+  } finally { rmSync(root, { recursive: true, force: true }); }
+}
+
+if (process.platform !== "win32") globalConfigFallbacks();
 
 async function npmNodeEngine(): Promise<void> {
   const root = mkdtempSync(join(tmpdir(), "cotal-npm-node-"));

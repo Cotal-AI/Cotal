@@ -131,10 +131,12 @@ async function npm(args: string[], prefix: string, seeding = false): Promise<{ s
   // its shared peers to the running binary's copies after npm changes the prefix.
   // The prefix verifier requires every host-compatible dependency, including native optional
   // packages. CLI inclusion wins over an ambient omit=optional, also when npm removes a sibling.
+  // Keep a saved project and lockfile for verification and promotion, even with global npm settings.
   // Select the extension prefix explicitly so Corepack never treats its ancestors as a project.
   const env = { ...process.env };
   delete env[EXT_UPDATE_PARENT_ENV];
-  const npm = npmInvocation(env, [...args, "--prefix", prefix, "--include=optional", "--legacy-peer-deps"]);
+  const npm = npmInvocation(env, [...args, "--prefix", prefix, "--location=project", "--global=false", "--save=true", "--package-lock=true",
+    "--package-lock-only=false", "--dry-run=false", "--include=optional", "--legacy-peer-deps"]);
   const { file, args: spawnArgs, windowsVerbatimArguments } = cmdSpawnSpec(npm.file, npm.args, npm.env);
   const seedGroup = seeding && process.platform === "linux";
   const mutation = beginExtensionNpmMutation(undefined, seedGroup);
@@ -336,7 +338,7 @@ export async function installExtensionSet(
     const specs = requests.map(({ spec }) => isPathSpec(spec) ? realpathSync(spec) : spec);
     // npm's own update notifier can query the registry even in offline mode.
     const cacheOnly = opts?.offline ? ["--offline", "--update-notifier=false"] : [];
-    const result = await npm(["install", "--save", "--no-audit", "--no-fund", "--install-links", ...cacheOnly, ...specs], npmPrefix);
+    const result = await npm(["install", "--no-audit", "--no-fund", "--install-links", ...cacheOnly, ...specs], npmPrefix);
     if (existsSync(mutationPath)) stage.retain();
     if (interrupted) throw new ExtensionAddInterrupted(requests[0]!.pkg);
     if (result.status !== 0) {
@@ -539,7 +541,7 @@ async function installCandidate(pkg: string, resolved: string, dir: string, reco
   console.error(c.dim(`installing ${resolved} into ${dir} …`));
   // --install-links: a file:/path spec is COPIED into the prefix, not symlinked — a symlink's
   // realpath would escape the prefix and Node could no longer resolve the linked core from it.
-  const r = await npm(["install", "--save", "--no-audit", "--no-fund", "--install-links", resolved], dir, seeding);
+  const r = await npm(["install", "--no-audit", "--no-fund", "--install-links", resolved], dir, seeding);
   if (r.status !== 0) {
     fail(pkg, `npm install failed: ${npmInstallFailure(r.output)}`);
   }
