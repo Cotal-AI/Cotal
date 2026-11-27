@@ -6,10 +6,10 @@ import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join, parse } from "node:path";
 import { pathToFileURL } from "node:url";
-import { claimGlobalNpmUpdateLock, recoveryProcessStartToken, withWindowsUpdateIdentity } from "@cotal-ai/workspace";
+import { claimGlobalNpmUpdateLock, processGroupMembers, recoveryProcessStartToken, withWindowsUpdateIdentity } from "@cotal-ai/workspace";
 import { countedAssert, emitSentinel } from "../../../bin/smoke/sentinel.mjs";
 import { executeUpdate, updateRuntime, type UpdateRuntime } from "../src/commands/update.js";
-import { installedUpdatePrefix, npmChildGate, runGlobalProcess, runNpm, runNpmAsync, runProcess } from "../src/commands/update-process.js";
+import { installedUpdatePrefix, npmChildGate, releaseChildGate, runGlobalProcess, runNpm, runNpmAsync, runProcess } from "../src/commands/update-process.js";
 import { npmProjectDirectory } from "../src/lib/npm-invocation.js";
 import { SEED_BUILTINS } from "../src/seed/paths.js";
 import { repairRuntimeEntry } from "./update-runtime-entry.smoke.js";
@@ -198,10 +198,17 @@ async function assertPosixChildGate(): Promise<void> {
 const fs = require("node:fs");
 const path = require("node:path");
 if (process.env.SMOKE_RAN_MARKER) fs.writeFileSync(process.env.SMOKE_RAN_MARKER, String(process.pid));
-let isGroupLeader = false;
-try { process.kill(-process.pid, 0); isGroupLeader = true; } catch {}
+if (process.env.SMOKE_HOLD_UNTIL) {
+  while (!fs.existsSync(process.env.SMOKE_HOLD_UNTIL)) {
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 15);
+  }
+}
+if (process.env.SMOKE_EXIT_CODE !== undefined) process.exit(Number(process.env.SMOKE_EXIT_CODE));
+let sameGroupAsGate = false;
+const gatePid = Number(process.env.SMOKE_EXPECTED_PGID || 0) || process.ppid;
+try { process.kill(-gatePid, 0); sameGroupAsGate = true; } catch {}
 const checkDir = process.env.SMOKE_WORKER_DIR || process.env.npm_config_cache || "";
-const workerBeforeStart = checkDir ? fs.existsSync(path.join(checkDir, ".worker-" + process.pid)) : false;
+const workerBeforeStart = checkDir ? (fs.existsSync(path.join(checkDir, ".worker-" + process.pid)) || fs.existsSync(path.join(checkDir, ".worker-" + process.ppid))) : false;
 let liveRecord = null;
 if (process.env.SMOKE_GLOBAL_ROOT) {
   try { liveRecord = JSON.parse(fs.readFileSync(path.join(process.env.SMOKE_GLOBAL_ROOT, ".cotal-update-child"), "utf8")); } catch {}
@@ -209,23 +216,26 @@ if (process.env.SMOKE_GLOBAL_ROOT) {
 const stdinText = process.env.SMOKE_READ_STDIN ? fs.readFileSync(0, "utf8") : "";
 const keys = JSON.parse(process.env.SMOKE_KEYS || "[]");
 const picked = Object.fromEntries(keys.map(k => [k, process.env[k]]));
-const leaked = Object.keys(process.env).filter(k => k.startsWith("COTAL_GATE_ENV_") && !keys.includes(k));
-process.stdout.write(JSON.stringify({ pid: process.pid, argv: process.argv.slice(2), stdinText, isGroupLeader, workerBeforeStart, liveRecord, picked, leaked }));
+const inheritedPipeFds = [];
+for (const fd of [3, 4]) {
+  try { if (fs.fstatSync(fd).isFIFO()) inheritedPipeFds.push(fd); } catch {}
+}
+process.stdout.write(JSON.stringify({ pid: process.pid, ppid: process.ppid, argv: process.argv.slice(2), stdinText, sameGroupAsGate, workerBeforeStart, liveRecord, picked, inheritedPipeFds }));
 `;
   writeFileSync(join(stubBin, "npm"), probeScript, { mode: 0o755 });
   const eqCmd = join(eqDir, "probe=cmd");
   writeFileSync(eqCmd, probeScript, { mode: 0o755 });
+  const secretNeedle = "COTAL_SECRET_SENTINEL_9f81c2e4";
   const tricky: Record<string, string> = {
-    "npm_config_//127.0.0.1:4873/:_authToken": "-lead\nline2'single\"double$(echo bad)`bad`*",
+    "npm_config_//127.0.0.1:4873/:_authToken": `-lead-${secretNeedle}\nline2'single"double$(echo bad)\`bad\`*`,
     "npm_config_@cotal-ai:registry": "https://127.0.0.1:4874/\n'\"-scope",
     "npm_config_strict-ssl": "false",
-    "npm_config_https-proxy": "-http://proxy'\"example:8080",
-    COTAL_GATE_ENV_0: "-caller\n'\"carrier",
+    "npm_config_https-proxy": `-http://user:${secretNeedle}@proxy'"example:8080`,
   };
   const keysJson = JSON.stringify(Object.keys(tricky));
   const baseEnv = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("COTAL_")));
   const savedEnv = new Map<string, string | undefined>();
-  const patchKeys = ["PATH", "SMOKE_WORKER_DIR", "SMOKE_KEYS", ...Object.keys(tricky)];
+  const patchKeys = ["PATH", "SMOKE_WORKER_DIR", "SMOKE_KEYS", "SMOKE_EXIT_CODE", ...Object.keys(tricky)];
   for (const key of patchKeys) savedEnv.set(key, process.env[key]);
   try {
     process.env.PATH = `${stubBin}${delimiter}${baseEnv.PATH ?? ""}`;
@@ -236,16 +246,29 @@ process.stdout.write(JSON.stringify({ pid: process.pid, argv: process.argv.slice
     assert.equal(asyncResult.status, 0, asyncResult.stderr || asyncResult.error);
     const asyncReport = JSON.parse(asyncResult.stdout);
     assert.equal(asyncReport.workerBeforeStart, true, "runNpmAsync publishes .worker-<pid> before npm starts");
-    assert.equal(asyncReport.isGroupLeader, true, "runNpmAsync keeps detached process group across exec");
+    assert.equal(asyncReport.sameGroupAsGate, true, "runNpmAsync keeps detached process group");
     assert.deepEqual(asyncReport.argv, ["view", "-leading", "a'b\"c\nd"]);
     assert.deepEqual(asyncReport.picked, tricky);
-    assert.deepEqual(asyncReport.leaked, []);
+    assert.deepEqual(asyncReport.inheritedPipeFds, []);
+    process.env.SMOKE_EXIT_CODE = "1";
+    assert.equal((await runNpmAsync(["view"], archiveCache)).status, 1, "runNpmAsync preserves exit status 1");
   } finally {
     for (const [key, value] of savedEnv) {
       if (value === undefined) delete process.env[key];
       else process.env[key] = value;
     }
   }
+  const readGroupArgv = (pgid: number): string[] => {
+    const members = processGroupMembers(pgid);
+    if (process.platform === "linux") {
+      return members.flatMap(pid => {
+        try { return [readFileSync(`/proc/${pid}/cmdline`, "utf8").split("\0").join(" ")]; }
+        catch { return []; }
+      });
+    }
+    const ps = spawnSync("ps", ["-ww", "-o", "args=", "-g", String(pgid)], { encoding: "utf8" });
+    return ps.status === 0 ? ps.stdout.split("\n").filter(Boolean) : [];
+  };
   try {
     const childEnv: NodeJS.ProcessEnv = {
       ...baseEnv, PATH: `${stubBin}${delimiter}${baseEnv.PATH ?? ""}`,
@@ -254,56 +277,141 @@ process.stdout.write(JSON.stringify({ pid: process.pid, argv: process.argv.slice
     const globalResult = await runGlobalProcess(globalRoot, "install", "npm", ["install", "-leading", "x'y\"z\nw"], childEnv, false, false, staging);
     assert.equal(globalResult.status, 0, globalResult.stderr || globalResult.error);
     const globalReport = JSON.parse(globalResult.stdout);
-    assert.equal(globalReport.isGroupLeader, true);
+    assert.equal(globalReport.sameGroupAsGate, true);
     assert.deepEqual(globalReport.argv, ["install", "-leading", "x'y\"z\nw"]);
     assert.deepEqual(globalReport.picked, tricky);
-    assert.deepEqual(globalReport.leaked, []);
+    assert.deepEqual(globalReport.inheritedPipeFds, []);
     assert.equal(globalReport.liveRecord?.phase, "live");
     if (process.platform === "linux") {
       assert.equal(globalReport.workerBeforeStart, true, "runGlobalChild publishes .worker-<pid> before npm starts");
-      assert.equal(globalReport.liveRecord?.pid, globalReport.pid, "runGlobalChild marks the exact exec'd npm pid live before permit");
+      assert.equal(globalReport.liveRecord?.pid, globalReport.ppid, "runGlobalChild marks the gate group leader live before permit");
     }
-    const shells = ["/bin/sh", ...["/bin/dash", "/usr/bin/dash"].filter(s => existsSync(s) && realpathSync(s) !== realpathSync("/bin/sh"))];
+    const candidateShells = ["/bin/sh", "/bin/dash", "/usr/bin/dash", "/bin/bash", "/usr/bin/bash"];
+    const seenReal = new Set<string>();
+    const shells = candidateShells.filter(s => {
+      if (!existsSync(s)) return false;
+      const real = realpathSync(s);
+      if (seenReal.has(real) && s !== "/bin/sh") return false;
+      seenReal.add(real);
+      return true;
+    });
     for (const sh of shells) {
-      for (const denied of [undefined, "refuse\n"]) {
-        const ranMarker = join(root, `denied-${denied ? "token" : "eof"}-${shells.indexOf(sh)}`);
-        const launch = npmChildGate(true, "cotal-gate-smoke", eqCmd, ["should-not-run"], {
+      // Denied/EOF permit cell: target never starts, exit status 1.
+      for (const permitted of [false, true] as const) {
+        const ranMarker = join(root, `denied-${permitted ? "badtok" : "eof"}-${shells.indexOf(sh)}`);
+        const launch = npmChildGate("cotal-gate-smoke", eqCmd, ["should-not-run"], {
           ...baseEnv, PATH: `${stubBin}${delimiter}${baseEnv.PATH ?? ""}`, SMOKE_RAN_MARKER: ranMarker, ...tricky,
-        });
-        const child = spawn(sh, launch.args, { env: launch.env, detached: true, stdio: ["ignore", "pipe", "pipe", "pipe"] });
-        const permit = child.stdio[3] as import("node:stream").Writable;
-        permit.end(denied);
+        }, sh);
+        for (const arg of launch.args) assert(!arg.includes(secretNeedle), `launch.args exposed secret under ${sh}`);
+        for (const val of Object.values(launch.env)) assert(!String(val ?? "").includes(secretNeedle), `shell env exposed non-identifier secret`);
+        const stdio = launch.envPayload ? ["ignore", "pipe", "pipe", "pipe", "pipe"] as const : ["ignore", "pipe", "pipe", "pipe"] as const;
+        const child = spawn(launch.file, launch.args, { env: launch.env, detached: true, stdio: [...stdio] });
+        if (!permitted) {
+          releaseChildGate(child, false, launch.envPayload, () => {});
+        } else {
+          (child.stdio[4] as import("node:stream").Writable | undefined)?.end();
+          (child.stdio[3] as import("node:stream").Writable).end("refuse\n");
+        }
         const status = await new Promise<number | null>(resolve => child.once("close", resolve));
         assert.equal(status, 1, `refused/closed permit under ${sh} must exit 1`);
         assert.equal(existsSync(ranMarker), false, `refused/closed permit under ${sh} must not start target`);
       }
-      const fdCheck = npmChildGate(true, "cotal-gate-smoke", "/bin/sh", ["-c", "(: <&3) 2>/dev/null && exit 9 || exit 0"], {
-        ...baseEnv, ...tricky,
+
+      // Argv-absence cell: inspect whole process group while permit is held, and again while stand-in child runs.
+      const startedMarker = join(root, `started-${shells.indexOf(sh)}`);
+      const releaseMarker = join(root, `release-${shells.indexOf(sh)}`);
+      const argvLaunch = npmChildGate("cotal-gate-argv", eqCmd, ["visible-arg"], {
+        ...baseEnv, PATH: `${stubBin}${delimiter}${baseEnv.PATH ?? ""}`,
+        SMOKE_RAN_MARKER: startedMarker, SMOKE_HOLD_UNTIL: releaseMarker, SMOKE_KEYS: keysJson, ...tricky,
+      }, sh);
+      const argvChild = spawn(argvLaunch.file, argvLaunch.args, {
+        env: argvLaunch.env, detached: true, stdio: ["ignore", "pipe", "pipe", "pipe", "pipe"],
       });
-      const fdChild = spawn(sh, fdCheck.args, { env: fdCheck.env, detached: true, stdio: ["ignore", "pipe", "pipe", "pipe"] });
-      (fdChild.stdio[3] as import("node:stream").Writable).end("run\n");
-      assert.equal(await new Promise<number | null>(resolve => fdChild.once("close", resolve)), 0, `${sh} gate closes fd 3 before exec`);
-      const workerDir = mkdtempSync(join(root, "direct-worker-"));
-      const launch = npmChildGate(true, "cotal-gate-smoke", eqCmd, ["-leading", "q'w\"e\nr"], {
-        ...baseEnv, PATH: `${stubBin}${delimiter}${baseEnv.PATH ?? ""}`, SMOKE_WORKER_DIR: workerDir, SMOKE_KEYS: keysJson, SMOKE_READ_STDIN: "1", ...tricky,
+      let argvOut = "";
+      argvChild.stdout?.on("data", chunk => { argvOut += chunk.toString(); });
+      const pgid = argvChild.pid!;
+      await new Promise(resolve => setTimeout(resolve, 40));
+      const beforePermitArgvs = readGroupArgv(pgid);
+      assert(beforePermitArgvs.length >= 1, `expected live gated process group ${pgid} before permit under ${sh}`);
+      for (const cmdline of beforePermitArgvs) {
+        assert(!cmdline.includes(secretNeedle), `secret leaked into argv before permit under ${sh}: ${cmdline}`);
+      }
+      assert.equal(existsSync(startedMarker), false, "child must not start before permit is released");
+      releaseChildGate(argvChild, true, argvLaunch.envPayload, cause => { throw cause; });
+      for (let deadline = Date.now() + 10_000; !existsSync(startedMarker) && Date.now() < deadline; ) {
+        await new Promise(resolve => setTimeout(resolve, 15));
+      }
+      assert(existsSync(startedMarker), `stand-in child started after permit under ${sh}`);
+      const childPid = Number(readFileSync(startedMarker, "utf8").trim());
+      const duringRunMembers = processGroupMembers(pgid);
+      assert(duringRunMembers.includes(pgid) && duringRunMembers.includes(childPid),
+        `expected both gate (${pgid}) and child (${childPid}) in process group under ${sh}, got ${JSON.stringify(duringRunMembers)}`);
+      const duringRunArgvs = readGroupArgv(pgid);
+      assert(duringRunArgvs.length >= 2, `expected argvs for gate and running child under ${sh}`);
+      for (const cmdline of duringRunArgvs) {
+        assert(!cmdline.includes(secretNeedle), `secret leaked into argv while child runs under ${sh}: ${cmdline}`);
+      }
+      writeFileSync(releaseMarker, "done");
+      assert.equal(await new Promise<number | null>(resolve => argvChild.once("close", resolve)), 0, argvOut);
+      assert.deepEqual(JSON.parse(argvOut).picked, tricky);
+
+      // Exit status cells (0, 1, 127) under sh.
+      for (const expectedCode of [0, 1, 127] as const) {
+        const targetCmd = expectedCode === 127 ? join(root, "missing-executable-127") : eqCmd;
+        const exitLaunch = npmChildGate("cotal-gate-exit", targetCmd, ["-leading", "q'w\"e\nr"], {
+          ...baseEnv, PATH: `${stubBin}${delimiter}${baseEnv.PATH ?? ""}`,
+          SMOKE_EXPECTED_PGID: "", SMOKE_KEYS: keysJson, SMOKE_READ_STDIN: expectedCode === 0 ? "1" : "",
+          ...(expectedCode === 1 ? { SMOKE_EXIT_CODE: "1" } : {}),
+          ...tricky,
+        }, sh);
+        const exitChild = spawn(exitLaunch.file, exitLaunch.args, {
+          env: exitLaunch.env, detached: true, stdio: ["pipe", "pipe", "pipe", "pipe", "pipe"],
+        });
+        let exitStdout = "";
+        exitChild.stdout?.on("data", chunk => { exitStdout += chunk.toString(); });
+        exitChild.stdin?.end("stdin-payload\n");
+        releaseChildGate(exitChild, true, exitLaunch.envPayload, cause => { throw cause; });
+        const actualCode = await new Promise<number | null>(resolve => exitChild.once("close", resolve));
+        assert.equal(actualCode, expectedCode, `expected exit code ${expectedCode} under ${sh}, got ${actualCode}`);
+        if (expectedCode === 0) {
+          const report = JSON.parse(exitStdout);
+          assert.equal(report.ppid, exitChild.pid, `${sh} gate parent pid matches recorded gate pid`);
+          assert.equal(report.sameGroupAsGate, true);
+          assert.equal(report.stdinText, "stdin-payload\n");
+          assert.deepEqual(report.argv, ["-leading", "q'w\"e\nr"]);
+          assert.deepEqual(report.picked, tricky);
+          assert.deepEqual(report.inheritedPipeFds, []);
+        }
+      }
+
+      // SIGTERM to recorded process group ends both the gate and the running child.
+      const sigStarted = join(root, `sig-started-${shells.indexOf(sh)}`);
+      const sigHold = join(root, `sig-hold-${shells.indexOf(sh)}`);
+      const sigLaunch = npmChildGate("cotal-gate-sigterm", eqCmd, ["hold-for-sigterm"], {
+        ...baseEnv, PATH: `${stubBin}${delimiter}${baseEnv.PATH ?? ""}`,
+        SMOKE_RAN_MARKER: sigStarted, SMOKE_HOLD_UNTIL: sigHold, ...tricky,
+      }, sh);
+      const sigChild = spawn(sigLaunch.file, sigLaunch.args, {
+        env: sigLaunch.env, detached: true, stdio: ["ignore", "pipe", "pipe", "pipe", "pipe"],
       });
-      const child = spawn(sh, launch.args, { env: launch.env, detached: true, stdio: ["pipe", "pipe", "pipe", "pipe"] });
-      let stdout = "";
-      child.stdout?.on("data", chunk => { stdout += chunk.toString(); });
-      child.stdin?.end("stdin-payload\n");
-      const spawnedPid = child.pid!;
-      writeFileSync(join(workerDir, `.worker-${spawnedPid}`), "", { mode: 0o600 });
-      (child.stdio[3] as import("node:stream").Writable).end("run\n");
-      const status = await new Promise<number | null>(resolve => child.once("close", resolve));
-      assert.equal(status, 0, `${sh} gate failed: ${stdout}`);
-      const report = JSON.parse(stdout);
-      assert.equal(report.pid, spawnedPid, `${sh} exec keeps published gate pid`);
-      assert.equal(report.workerBeforeStart, true);
-      assert.equal(report.isGroupLeader, true);
-      assert.equal(report.stdinText, "stdin-payload\n");
-      assert.deepEqual(report.argv, ["-leading", "q'w\"e\nr"]);
-      assert.deepEqual(report.picked, tricky);
-      assert.deepEqual(report.leaked, []);
+      const sigPgid = sigChild.pid!;
+      const closedPromise = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>(resolve =>
+        sigChild.once("close", (code, signal) => resolve({ code, signal })),
+      );
+      releaseChildGate(sigChild, true, sigLaunch.envPayload, cause => { throw cause; });
+      for (let deadline = Date.now() + 10_000; !existsSync(sigStarted) && Date.now() < deadline; ) {
+        await new Promise(resolve => setTimeout(resolve, 15));
+      }
+      assert(existsSync(sigStarted), `SIGTERM stand-in child started under ${sh}`);
+      const sigInnerPid = Number(readFileSync(sigStarted, "utf8").trim());
+      process.kill(-sigPgid, "SIGTERM");
+      const closedSig = await closedPromise;
+      assert(closedSig.signal === "SIGTERM" || closedSig.code === 143,
+        `expected SIGTERM termination under ${sh}, got ${JSON.stringify(closedSig)}`);
+      for (let deadline = Date.now() + 5_000; processGroupMembers(sigPgid).length > 0 && Date.now() < deadline; ) {
+        await new Promise(resolve => setTimeout(resolve, 20));
+      }
+      assert.deepEqual(processGroupMembers(sigPgid), [], `SIGTERM to -${sigPgid} ended gate and child ${sigInnerPid} under ${sh}`);
     }
   } finally {
     rmSync(root, { recursive: true, force: true });

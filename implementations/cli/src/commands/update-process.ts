@@ -89,35 +89,80 @@ export function verifyGlobalEntry(root: string, expectedVersion: string): string
   return entry;
 }
 
-const GATE_CARRIER = "COTAL_GATE_ENV_";
 const SHELL_IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_]*$/;
+const npmChildPermitGate = 'IFS= read -r permit <&3 && [ "$permit" = run ] || exit 1; exec 3<&-; exec "$@"';
+
+function posixGateScriptPath(): string {
+  const adjacent = fileURLToPath(new URL("./update-posix-gate.js", import.meta.url));
+  return existsSync(adjacent) ? adjacent : fileURLToPath(new URL("../../dist/commands/update-posix-gate.js", import.meta.url));
+}
+
+function encodeGateEnv(entries: readonly (readonly [string, string])[]): Buffer {
+  const parts: Buffer[] = [];
+  const header = Buffer.allocUnsafe(4);
+  header.writeUInt32BE(entries.length, 0);
+  parts.push(header);
+  for (const [key, value] of entries) {
+    const keyBytes = Buffer.from(key, "utf8");
+    const valueBytes = Buffer.from(value, "utf8");
+    const lengths = Buffer.allocUnsafe(8);
+    lengths.writeUInt32BE(keyBytes.length, 0);
+    lengths.writeUInt32BE(valueBytes.length, 4);
+    parts.push(lengths, keyBytes, valueBytes);
+  }
+  const trailer = Buffer.allocUnsafe(4);
+  trailer.writeUInt32BE(0xffffffff, 0);
+  parts.push(trailer);
+  return Buffer.concat(parts);
+}
 
 // The pipe closes without permission if the parent dies before publishing the PID.
-// exec keeps the published PID and the real child keeps its original argv and stdin.
-// Non-identifier names such as npm_config_//host/:_authToken travel in indexed shell
-// variables and are restored by env so shells like dash cannot drop them before exec.
-export function npmChildGate(gated: boolean, label: string, file: string, args: string[], env: NodeJS.ProcessEnv) {
-  if (!gated) return { file, args, env };
-  const gateEnv: NodeJS.ProcessEnv = {};
-  const carriers: string[] = [];
+// When non-identifier names exist, pass them over inherited descriptor 4 to a Node
+// second stage so shells like dash cannot drop them and values never enter argv.
+export function npmChildGate(label: string, file: string, args: string[], env: NodeJS.ProcessEnv, shell = "/bin/sh"): {
+  file: string;
+  args: string[];
+  env: NodeJS.ProcessEnv;
+  envPayload?: Buffer;
+} {
+  const extra: [string, string][] = [];
   for (const [key, value] of Object.entries(env)) {
     if (value === undefined || !key || key.includes("=")) continue;
-    if (SHELL_IDENTIFIER.test(key) && !key.startsWith(GATE_CARRIER)) {
-      gateEnv[key] = value;
-      continue;
-    }
-    const carrier = `${GATE_CARRIER}${carriers.length}`;
-    gateEnv[carrier] = `${key}=${value}`;
-    carriers.push(carrier);
+    if (!SHELL_IDENTIFIER.test(key)) extra.push([key, value]);
   }
-  const execTarget = carriers.length === 0
-    ? 'exec "$@"'
-    : `set -- /usr/bin/env -- ${carriers.map(name => `"$${name}"`).join(" ")}${file.includes("=") ? " /usr/bin/nice -n 0 --" : ""} "$@"; unset ${carriers.join(" ")}; exec "$@"`;
+  if (extra.length === 0) return { file: shell, args: ["-c", npmChildPermitGate, label, file, ...args], env };
+  const gateEnv: NodeJS.ProcessEnv = {};
+  for (const [key, value] of Object.entries(env)) {
+    if (value === undefined || !SHELL_IDENTIFIER.test(key) || key === "NODE_OPTIONS") continue;
+    gateEnv[key] = value;
+  }
+  if (env.NODE_OPTIONS !== undefined) extra.push(["NODE_OPTIONS", env.NODE_OPTIONS]);
   return {
-    file: "/bin/sh",
-    args: ["-c", `IFS= read -r permit <&3 && [ "$permit" = run ] || exit 1; exec 3<&-; ${execTarget}`, label, file, ...args],
+    file: shell,
+    args: ["-c", npmChildPermitGate, label, process.execPath, posixGateScriptPath(), file, ...args],
     env: gateEnv,
+    envPayload: encodeGateEnv(extra),
   };
+}
+
+export function releaseChildGate(
+  child: import("node:child_process").ChildProcess,
+  permitted: boolean,
+  envPayload: Buffer | undefined,
+  onPermitError: (cause: Error) => void,
+): void {
+  const permit = child.stdio[3] as import("node:stream").Writable;
+  const envPipe = envPayload ? child.stdio[4] as import("node:stream").Writable : undefined;
+  permit.on("error", onPermitError);
+  envPipe?.on("error", () => {});
+  if (envPayload && child.pid !== undefined) {
+    const pgid = child.pid;
+    child.once("exit", (_code, sig) => {
+      if (sig !== null) { try { process.kill(-pgid, sig); } catch { /* group already gone */ } }
+    });
+  }
+  envPipe?.end(permitted ? envPayload : undefined);
+  permit.end(permitted ? "run\n" : undefined);
 }
 
 export async function runNpmAsync(args: string[], archiveCache?: string): Promise<CommandResult> {
@@ -125,25 +170,24 @@ export async function runNpmAsync(args: string[], archiveCache?: string): Promis
     const npm = npmInvocation(process.env, args);
     const { file, args: spawnArgs, windowsVerbatimArguments } = cmdSpawnSpec(npm.file, npm.args, npm.env);
     const gated = archiveCache !== undefined && (process.platform === "linux" || process.platform === "darwin");
-    const launch = npmChildGate(gated, "cotal-release-check", file, spawnArgs, npm.env);
-    const child = spawn(launch.file, launch.args, {
-      cwd: npm.cwd, env: launch.env, windowsVerbatimArguments, windowsHide: true,
-      ...(gated ? { detached: true, stdio: ["ignore", "pipe", "pipe", "pipe"] } : {}),
+    const launch = gated ? npmChildGate("cotal-release-check", file, spawnArgs, npm.env) : undefined;
+    const child = spawn(launch ? launch.file : file, launch ? launch.args : spawnArgs, {
+      cwd: npm.cwd, env: launch ? launch.env : npm.env, windowsVerbatimArguments, windowsHide: true,
+      ...(launch ? { detached: true, stdio: launch.envPayload ? ["ignore", "pipe", "pipe", "pipe", "pipe"] : ["ignore", "pipe", "pipe", "pipe"] } : {}),
     });
     let stdout = "", stderr = "", error: string | undefined;
     child.stdout?.on("data", (chunk: Buffer | string) => { stdout += chunk.toString(); });
     child.stderr?.on("data", (chunk: Buffer | string) => { stderr += chunk.toString(); });
     child.once("error", cause => { error = cause.message; });
-    if (gated) {
-      const permit = child.stdio[3] as import("node:stream").Writable;
-      permit.on("error", cause => { error = message(cause); });
-      try {
-        if (child.pid === undefined) permit.end();
-        else {
+    if (launch) {
+      let permitted = false;
+      if (child.pid !== undefined) {
+        try {
           writeFileSync(join(archiveCache!, `.worker-${child.pid}`), "", { mode: 0o600 });
-          permit.end("run\n");
-        }
-      } catch (cause) { error = message(cause); permit.end(); }
+          permitted = true;
+        } catch (cause) { error = message(cause); }
+      }
+      releaseChildGate(child, permitted, launch.envPayload, cause => { error = message(cause); });
     }
     const status = await new Promise<number | null>(resolveClose => child.once("close", resolveClose));
     return { status, stdout, stderr, ...(error ? { error } : {}) };
@@ -241,23 +285,24 @@ async function runGlobalChild(
         watchers.push(watcher);
       }
     }
-    const launch = npmChildGate(gated, "cotal-update", file, args, { ...(lifecycle?.env ?? npm?.env ?? env), npm_config_cache: cache, npm_config_logs_max: "0", npm_config_update_notifier: "false" });
-    const child = withInstallUmask(() => spawn(launch.file, launch.args, {
+    const launch = gated ? npmChildGate("cotal-update", file, args, { ...(lifecycle?.env ?? npm?.env ?? env), npm_config_cache: cache, npm_config_logs_max: "0", npm_config_update_notifier: "false" }) : undefined;
+    const child = withInstallUmask(() => spawn(launch ? launch.file : file, launch ? launch.args : args, {
       // Corepack searches ancestors for a package manager. Keep only npm at the filesystem root.
       ...(operation === "install" ? { cwd: parse(homedir()).root } : {}),
+      env: launch ? launch.env : { ...(lifecycle?.env ?? npm?.env ?? env), npm_config_cache: cache, npm_config_logs_max: "0", npm_config_update_notifier: "false" },
       // A separate process group keeps terminal interrupts out of npm's live replacement.
       // Keep the ChildProcess referenced and await close; this is not a background update.
-      env: launch.env, detached: true, windowsHide: true, windowsVerbatimArguments,
-      stdio: updateChildStdio(gated, inherit, pipeConsole),
+      detached: true,
+      windowsHide: true,
+      windowsVerbatimArguments,
+      stdio: launch?.envPayload ? [...Array<"inherit" | "pipe">(3).fill(inherit ? "inherit" : "pipe"), "pipe", "pipe"] : updateChildStdio(gated, inherit, pipeConsole),
     }));
-    const permit = gated ? child.stdio[3] as import("node:stream").Writable : undefined;
     let error = "";
     let stdout = "";
     let stderr = "";
     child.stdout?.on("data", (chunk: Buffer | string) => { if (pipeConsole) process.stdout.write(chunk); else stdout += chunk.toString(); });
     child.stderr?.on("data", (chunk: Buffer | string) => { if (pipeConsole) process.stderr.write(chunk); else stderr += chunk.toString(); });
     child.once("error", (e) => { error = e.message; });
-    permit?.on("error", (e) => { error = e.message; });
     if (child.pid !== undefined) {
       try {
         // Publish cache custody before the gate permits npm to write to it.
@@ -272,7 +317,7 @@ async function runGlobalChild(
         preservePending = true;
       }
     }
-    permit?.end(published ? "run\n" : undefined);
+    if (launch) releaseChildGate(child, published, launch.envPayload, (e) => { error = e.message; });
     let rejectClose: (error: unknown) => void;
     const close = new Promise<{ status: number | null; signal: NodeJS.Signals | null }>((resolveClose, reject) => {
       rejectClose = reject;
