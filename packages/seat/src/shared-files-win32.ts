@@ -1,12 +1,12 @@
 import { closeSync, fstatSync, lstatSync, mkdirSync, openSync, realpathSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { dirname, resolve, toNamespacedPath } from "node:path";
 import { lockExclusiveNb, windowsDirSecurity, windowsUserSid } from "./host.js";
 
 /** Like the Windows daemon directory boundary: trust the owner, SYSTEM and Administrators only.
  * The caller supplies the owner-private root. Never fix up an existing ACL on the custody path. */
 export function checkWindowsCustodyPath(path: string, directory: boolean): void {
   const info = lstatSync(path);
-  const security = windowsDirSecurity(path);
+  const security = windowsDirSecurity(toNamespacedPath(path));
   const trusted = new Set([windowsUserSid(), "S-1-5-18", "S-1-5-32-544"]);
   if (security.reparse || security.directory !== directory || !(directory ? info.isDirectory() : info.isFile()) ||
       !security.owner || !trusted.has(security.owner) || !security.aces || security.aces.some(ace =>
