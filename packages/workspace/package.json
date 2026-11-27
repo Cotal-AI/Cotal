@@ -24,6 +24,10 @@
       "types": "./dist/liveness.d.ts",
       "import": "./dist/liveness.js"
     },
+    "./conversation-resume": {
+      "types": "./dist/conversation-resume.d.ts",
+      "import": "./dist/conversation-resume.js"
+    },
     "./view": {
       "types": "./dist/view/index.d.ts",
       "import": "./dist/view/index.js"
