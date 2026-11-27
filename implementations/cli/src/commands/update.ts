@@ -1122,7 +1122,6 @@ async function upgradeAndReconcile(targetVersion: string, current: string, rt: U
     }
     return true;
   }
-
   async function repairReplacement(reason: string, failureStatus = 1, skipTargetRetry = false): Promise<number> {
     if (!skipTargetRetry) {
       rt.err(c.yellow("Retrying reconciliation of the installed generation before rollback."));
@@ -1154,6 +1153,7 @@ async function upgradeAndReconcile(targetVersion: string, current: string, rt: U
       if (execution) execution.verify(current);
       await releaseAdmission?.();
       releaseAdmission = await rt.prepareReplacement?.();
+      writeUpdateRecovery({ ...readUpdateRecovery()!, preparedRestart: rt.preparedRestart?.() ?? false });
       if (!await reconcileVersion(current)) throw new Error("previous generation reconciliation failed");
       snapshot.discard();
       clearUpdateRecovery();

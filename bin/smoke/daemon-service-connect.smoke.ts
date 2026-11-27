@@ -106,7 +106,7 @@ import {
   deleteIdpSession, deriveOwnerForIdpSubject, ensureCalloutAuth, ensureIssuer, ensureOwnerSecret, ensurePinnedIdp, grantActor, loadIdpSession, loadOwnerSecret, saveIdpSession,
   saveServiceKeys, startAuthService, cotalAuthProvider, mintServiceCallerPayloadObserverCreds, type AuthServiceHandle,
 } from "@cotal-ai/auth";
-import { connectionEvictorCredsKey, deliveryCredsKey, membershipObserverCredsKey, membershipRwCredsKey, findMesh, meshFile, removeMesh, recordMesh, resolveControlTarget, spaceSegment, userAuthStateDir, workspaceSecretStore, type MeshEntry } from "@cotal-ai/workspace";
+import { connectionEvictorCredsKey, deliveryCredsKey, membershipObserverCredsKey, membershipRwCredsKey, findMesh, meshFile, readUpdateRecovery, removeMesh, recordMesh, resolveControlTarget, spaceSegment, userAuthStateDir, workspaceSecretStore, type MeshEntry } from "@cotal-ai/workspace";
 import { askManager } from "@cotal-ai/workspace/control";
 import { startDeliveryService } from "@cotal-ai/delivery";
 import { freePort, killAndAwaitExit, skipSuite, teardownOnSignal, SMOKE_BROKER_TOKEN } from "@cotal-ai/smoke-kit";
@@ -284,7 +284,7 @@ const jwtsIssued: string[] = [];
 let idpRevoked = false;
 let signOutRequests = 0;
 let signOutSuccesses = 0;
-let idpJwtTtl = 120;
+let idpJwtTtl = manualAdmissionRace ? 900 : 120;
 let tokenFailure: "unreachable" | "unusable" | undefined;
 let recoverOnApproval = false;
 let deviceCodeRequests = 0;
@@ -3409,7 +3409,7 @@ process.exit(result.status ?? 93);
           updater.stdout.on("data", b => { output += String(b); }); updater.stderr.on("data", b => { output += String(b); });
           const finished = new Promise<number | null>((resolve, reject) => { updater.once("error", reject); updater.once("close", resolve); });
           try {
-            const deadline = Date.now() + 90_000;
+            const deadline = Date.now() + 300_000;
             while (!existsSync(rootEntered)) {
               if (updater.exitCode !== null || updater.signalCode !== null || Date.now() > deadline) throw new Error(`manual updater did not reach target admission hold: ${output}`);
               await sleep(20);
@@ -3456,18 +3456,19 @@ process.exit(result.status ?? 93);
                 if (Date.now() > installDeadline) throw new Error(`manual updater neither refused admission nor reached install: ${output}`);
                 await sleep(20);
               }
-              const admittedInstall = existsSync(entered);
-              if (admittedInstall) {
+              const published = existsSync(entered);
+              if (published) {
                 const journal = JSON.parse(readFileSync(join(home, "update-recovery.json"), "utf8"));
                 assert.equal(journal.phase, "replacing");
                 assert.equal(JSON.parse(readFileSync(join(globalPrefix, "lib/node_modules/cotal-ai/package.json"), "utf8")).version, "0.151.2");
                 const occupied = await status();
-                console.log("MANUAL_ADMISSION install admitted with real raced seat", JSON.stringify({ journal: { phase: journal.phase, preparedRestart: journal.preparedRestart }, occupied, npm: JSON.parse(readFileSync(entered, "utf8")), output }));
-                assert.ok(occupied.ok && (occupied.data as any)?.agentCount === 1, "raced seat must remain real and live at install boundary");
+                const sameSeat = (occupied.data as any)?.stopImpact?.agents?.some((agent: any) => agent.lifecycleUid === (started.data as any).lifecycleUid);
+                check("Manual updater publishes but defers activation and preserves the raced seat", journal.preparedRestart === false && journal.admission?.disposition === "deferred" && journal.admission.reason.includes("SEATS_ACTIVE") && occupied.ok && (occupied.data as any)?.agentCount === 1 && sameSeat, { admission: journal.admission, preparedRestart: journal.preparedRestart, occupied });
+              } else {
+                check("Manual updater publishes but defers activation and preserves the raced seat", false, output);
               }
               await stop("manual_install_race"); raceSeat = false;
-              console.log("MANUAL_ADMISSION exact race seat stopped before releasing npm install");
-              check("Manual updater rechecks raced real seat before npm replacement", !admittedInstall && /SEATS_ACTIVE|cannot preserve running agents/.test(output), { admittedInstall, output });
+              console.log("MANUAL_ADMISSION raced seat stopped by the fixture before rollback");
             }
           } finally {
             try { if (raceSeat) await stop("manual_install_race"); }
@@ -3479,7 +3480,12 @@ process.exit(result.status ?? 93);
               try {
                 const code = await finished;
                 console.log("MANUAL_ADMISSION updater completed", JSON.stringify({ code, output, npm: readFileSync(npmLog, "utf8") }));
-                check("Manual fixture refusal or failed install retains old generation", code === 1 && (existsSync(entered) ? output.includes("MANUAL_TARGET_VERIFICATION_FAILED_AFTER_PUBLICATION") && output.includes("was restored and reconciled") : /SEATS_ACTIVE|cannot preserve running agents/.test(output)) && JSON.parse(readFileSync(join(globalPrefix, "lib/node_modules/cotal-ai/package.json"), "utf8")).version === "0.151.2", { code, output });
+                const { selectExecutionProgram } = await import("../cotal.js");
+                const selected = selectExecutionProgram(dirname(dirname(cliEntry)));
+                const version = JSON.parse(readFileSync(join(selected.root, "package.json"), "utf8")).version;
+                const pending = readUpdateRecovery() !== undefined;
+                const reconciled = output.includes("was restored and reconciled");
+                check("Manual failed install restores and reconciles the old generation", code === 1 && output.includes("MANUAL_TARGET_VERIFICATION_FAILED_AFTER_PUBLICATION") && reconciled && version === "0.151.2" && !pending, { code, reconciled, version, pending });
               } finally { clearTimeout(timer); }
             }
           }

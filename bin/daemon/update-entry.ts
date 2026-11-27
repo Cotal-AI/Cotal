@@ -397,7 +397,7 @@ const composed: Command = { ...command, async run(args) {
     await updateRuntime.preflightReplacement?.();
     preflightInstalledDaemon({ state: join(homeCotalDir(), "daemon") });
   }, adoptUpdateChild: adoptAutomaticUpdateChild, preparedRestart: () => preparedRestart, async prepareReplacement() {
-    if (readUpdateRecovery()?.phase === "restoring") admission = undefined;
+    if (readUpdateRecovery()?.phase === "restoring") { preparedRestart = false; admission = undefined; }
     let paths: DaemonPaths | undefined;
     try { if (process.platform !== "win32" || daemonObserved) paths = daemonPaths(); }
     catch (error) { if (!(error instanceof EndpointRefusal) || error.code !== "NO_RUNTIME_DIR") throw error; }
