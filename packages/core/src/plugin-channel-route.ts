@@ -2,12 +2,12 @@ import { ROOT, assertValidChannel, ownerToken, spacePrefix, token } from "./subj
 
 export const PLUGIN_CHANNEL_ROOT = "ext";
 
-export type ChannelFamily =
+export type ChannelRail =
   | { kind: "chat" }
   | { kind: typeof PLUGIN_CHANNEL_ROOT; plugin: string; resource: string };
 
 /** Classify a channel name or filter. Only a literal reserved root selects the plugin family. */
-export function classifyChannel(channel: string): ChannelFamily {
+export function classifyChannel(channel: string): ChannelRail {
   assertValidChannel(channel);
   const [root, plugin, ...resource] = channel.split(".");
   if (root !== PLUGIN_CHANNEL_ROOT) return { kind: "chat" };
