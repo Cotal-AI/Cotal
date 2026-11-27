@@ -218,7 +218,7 @@ const livePeerCopy = (space: string, row: PlaneClaimRow, r: PlaneLivenessResult)
  *  did — pointing them at a ghost is the manager-lease-loss ghost-chase class). */
 const unknownCopy = (space: string, row: PlaneClaimRow, cause: string, railDown: boolean): string =>
   `cannot confirm the previous auth plane for space "${space}" has fully disconnected (${cause}; claim held since ${row.openedAt}). This refusal is FAIL-SAFE, not a failure: taking over while the prior plane might still be scanning would risk a partial enumeration. NEXT: ${railDown
-    ? "the delivery daemon (the connection-liveness oracle) is not answering. Start it, then restart this auth service: after a whole-stack crash, run `cotal up` once more after it finishes (it brings the delivery daemon up after this service, so the first run cannot adjudicate a stale claim)."
+    ? "the delivery daemon (the connection-liveness oracle) is not answering. Start it, then restart this auth service (`cotal up` starts the delivery daemon before this service)."
     : "retry once the prior plane's connections time out on the broker (seconds, not minutes); if it persists, check this host's link to the broker."} Do NOT delete the plane claim by hand.`;
 
 /** UX STATE 3 — mid-life scanner death: this plane fenced itself DELIBERATELY. */

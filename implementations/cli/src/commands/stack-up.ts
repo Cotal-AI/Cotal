@@ -1201,6 +1201,12 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
       streamsRecreated = await native.recreateDeletedStreams({ root, space, server, mode, readSeed });
       failedRole = undefined;
     }
+    // A stopped user-auth service under an already-running broker is refused before delivery
+    // mints a credential or starts; its native preparation runs only with a broker start.
+    if (mode === "user" && !prepared?.user) {
+      const authRows = serviceInstances(space, STACK_DEFINITION.auth);
+      if (authRows.length !== 1 || observeServiceProcess(authRows[0]!.record.value) !== "running") throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "the user stack's auth service is stopped while its broker still runs; its native preparation runs only with a broker start, so it was not started from other material", { target: { root, space }, remedy: "stop the stack with bare `cotal down`, then run bare `cotal up`" });
+    }
     // Delivery, before a user stack's auth service so its liveness oracle answers a plane-claim
     // reclaim. Its native credential is minted into the root's own store key; the adapter gets only
     // that protected path. An open stack has no delivery member and mints no credential.
@@ -1233,12 +1239,7 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
       const delivery = ensureDefinition(space, "delivery", adapterDefinition(space, STACK_ADAPTER.delivery, { root, creds: credsPath, server }, 40000), root, replace("delivery"));
       await start("delivery", delivery);
     }
-    // Auth service, user stacks only. Its native preparation came from this broker preparation, so
-    // a stopped auth service under an already-running broker is not started from guessed material.
     if (mode === "user") {
-      const authRows = serviceInstances(space, STACK_DEFINITION.auth);
-      const authRunning = authRows.length === 1 && observeServiceProcess(authRows[0]!.record.value) === "running";
-      if (!prepared?.user && !authRunning) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "the user stack's auth service is stopped while its broker still runs; its native preparation runs only with a broker start, so it was not started from other material", { target: { root, space }, remedy: "stop the stack with bare `cotal down`, then run bare `cotal up`" });
       // The callout's deadline is the timeout this broker configuration rendered, never a second setting.
       const authOptions = { root, server, ...(prepared?.authTimeout !== undefined ? { "auth-timeout": String(prepared.authTimeout) } : {}) };
       const authService = ensureDefinition(space, "auth", adapterDefinition(space, STACK_ADAPTER.auth, authOptions, 60000), root, replace("auth"));

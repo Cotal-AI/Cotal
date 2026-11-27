@@ -1703,6 +1703,10 @@ async function userAuthControllerBrokerCrashCell(): Promise<void> {
     }, 120_000, () => holder!.io.err.slice(-3000));
     const broker = controllerBroker(space, machine), auth = controllerMember(space, machine, "stack-auth"), delivery = controllerMember(space, machine, "stack-delivery");
     assert.ok(broker?.process && observeServiceProcess(broker) === "running" && auth?.process && observeServiceProcess(auth) === "running" && delivery?.process && observeServiceProcess(delivery) === "running");
+    const firstDeliveryStart = holder.io.err.indexOf("Starting stack-delivery;"), firstAuthStart = holder.io.err.indexOf("Starting stack-auth;");
+    assert.ok(firstDeliveryStart >= 0 && firstAuthStart > firstDeliveryStart, holder.io.err); passed++;
+    assert.ok(delivery.adapterReadiness?.observedAt && Date.parse(delivery.adapterReadiness.observedAt) <= Date.parse(auth.createdAt), JSON.stringify({ deliveryReadyAt: delivery.adapterReadiness?.observedAt, authCreatedAt: auth.createdAt })); passed++;
+    console.log("PASS foreground-up-signals controller user-auth first start readies delivery before auth starts");
     process.kill(broker.process.pid, "SIGKILL");
     brokerKilled = true;
     await until(() => holder!.state.exited, 10_000, () => holder!.io.err.slice(-3000));
@@ -1725,23 +1729,44 @@ async function userAuthControllerBrokerCrashCell(): Promise<void> {
     assert.ok(repairedAuth?.process && repairedAuth.process.pid !== auth.process.pid && observeServiceProcess(repairedAuth) === "running"); passed++;
     assert.ok(repaired?.process && repaired.process.pid !== delivery.process.pid && observeServiceProcess(repaired) === "running"); passed++;
     const store = workspaceSecretStore(mesh), spaceAuth = await getSpaceAuth(store, space), probeId = newIdentity(), probeUid = mintLifecycleUid();
+    const credsKey = deliveryCredsKey(space, { injected: false, root: mesh }), credsPath = join(mesh, ".cotal", credsKey);
     const ep = new CotalEndpoint({ space, servers: server, creds: await mintCreds(spaceAuth!, probeId, "deployer", { lifecycleUid: probeUid }), lifecycleUid: probeUid, channels: [], consume: false, registerPresence: false, watchPresence: false, watchChannels: false, card: { id: probeId.id, name: "lease-probe", kind: "endpoint" } });
     ep.on("error", () => {});
     await ep.start();
     try {
-      const lease = await ep.readDeliveryLease(0), creds = await store.get(deliveryCredsKey(space, { injected: false, root: mesh }));
+      const lease = await ep.readDeliveryLease(0), creds = await store.get(credsKey);
       assert.ok(creds && lease?.ready === true && lease.holder === deliveryLeaseHolderFor(creds), JSON.stringify(lease)); passed++;
     } finally { await ep.stop().catch(() => {}); }
+    // SIGHUP releases the foreground hold while the stack keeps running. Stopping both stack-auth and
+    // stack-delivery under the running broker must still refuse LIFECYCLE_BLOCKED (exit 2) before any
+    // delivery credential write or delivery launch.
+    if (taker.child.pid) process.kill(-taker.child.pid, "SIGHUP");
+    await until(() => taker!.state.exited, 10_000, () => taker!.io.err.slice(-3000));
+    await waitForOwnedChild(() => taker!.state.closed, 3_000, `${root}: taker streams drained`);
+    assert.equal(taker.state.code, 129, taker.io.err); passed++;
+    assert.equal(existsSync(join(mesh, ".cotal", "stack-foreground.hold")), false); passed++;
+    process.kill(repairedAuth.process.pid, "SIGKILL");
+    process.kill(repaired.process.pid, "SIGKILL");
+    await until(() => observeServiceProcess(repairedAuth) !== "running" && observeServiceProcess(repaired) !== "running", 10_000, () => "stopped auth and delivery");
+    rmSync(credsPath, { force: true });
+    const refused = await foregroundCliProbe(cliEntry, tsx, mesh, env, ["up", "--no-manager", "--json"], 60_000);
+    assert.equal(refused.code, 2, refused.out + refused.err); passed++;
+    const refusedJson = JSON.parse(refused.out);
+    assert.equal(refusedJson.outcome, "refused", refused.out);
+    assert.equal(refusedJson.error?.code, "LIFECYCLE_BLOCKED", refused.out);
+    assert.deepEqual(refusedJson.changed, [], refused.out); passed++;
+    assert.equal(existsSync(credsPath), false, "stopped-auth refusal writes no new delivery credential"); passed++;
+    const deliveryAfterRefusal = controllerMember(space, machine, "stack-delivery");
+    assert.ok(!deliveryAfterRefusal || observeServiceProcess(deliveryAfterRefusal) !== "running", "stopped-auth refusal starts no delivery process"); passed++;
+    console.log("PASS foreground-up-signals controller stopped-auth under reused broker refuses before delivery");
     assertSmokeSandboxDown(sandbox, ["down", "--yes"], { cwd: mesh, env });
     const down = await foregroundCliProbe(cliEntry, tsx, mesh, env, ["down", "--yes"], 120_000);
-    assert.equal(down.code, 0, down.out + down.err);
-    await until(() => taker!.state.closed, 10_000, () => taker!.io.err.slice(-3000));
-    assert.equal(taker.state.code, 0, taker.io.err); passed++;
+    assert.equal(down.code, 0, down.out + down.err); passed++;
     console.log("PASS foreground-up-signals controller user-auth broker crash restarts delivery");
   } finally {
     try {
       for (const run of [holder, taker]) if (run && !run.state.exited && run.child.pid) process.kill(-run.child.pid, "SIGKILL");
-      if (brokerKilled && !(await portOpen(port)) && existsSync(join(mesh, ".cotal", "stack-controller.json")) && (!taker || taker.state.code !== 0))
+      if (brokerKilled && !(await portOpen(port)) && existsSync(join(mesh, ".cotal", "stack-controller.json")) && (!taker || (taker.state.code !== 0 && taker.state.code !== 129)))
         await foregroundCliProbe(cliEntry, tsx, mesh, env, ["up", "--no-manager"], 120_000);
       assertSmokeSandboxDown(sandbox, ["down", "--yes"], { cwd: mesh, env });
       if (await portOpen(port)) await foregroundCliProbe(cliEntry, tsx, mesh, env, ["down", "--yes"], 120_000);
