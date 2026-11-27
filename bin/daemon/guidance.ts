@@ -20,8 +20,24 @@ export function daemonServiceRequirement(home?: string): CommandFailure | undefi
 /** The Cotal directory the background service resolves with the account's own environment. The service
  * definition carries no shell home, so a shell `COTAL_HOME` or Windows `LOCALAPPDATA` never reaches it. */
 function serviceAccountHome(): string {
-  if (process.platform !== "win32") return join(homedir(), ".cotal");
-  return join(accountProfilePath(), "AppData", "Local", "Cotal");
+  if (process.platform === "linux") return join(linuxServiceHome(), ".cotal");
+  if (process.platform === "win32") return join(accountProfilePath(), "AppData", "Local", "Cotal");
+  return join(homedir(), ".cotal");
+}
+
+/** HOME of the systemd user manager, which is the account home a user unit starts with. */
+function linuxServiceHome(): string {
+  const systemctl = resolveOnPath("systemctl");
+  if (!systemctl) throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "systemctl is not on PATH, so the account home the service would use could not be read; nothing was registered");
+  const out = nativeRun(systemctl, ["--user", "show-environment"]);
+  if (out.status !== 0) throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "the systemd user manager did not answer `systemctl --user show-environment`, so the account home the service would use could not be read; nothing was registered");
+  const homes = out.stdout.split("\n").flatMap((line) => {
+    const index = line.indexOf("=");
+    return index > 0 && line.slice(0, index) === "HOME" ? [line.slice(index + 1)] : [];
+  });
+  const home = homes.length === 1 ? homes[0] : undefined;
+  if (!home || !home.startsWith("/") || /[\u0000-\u001f\u007f]/u.test(home)) throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "the systemd user manager did not name one absolute account home; nothing was registered");
+  return home;
 }
 
 /** The signed-in account's profile directory, read from the account record rather than this shell. */
@@ -41,8 +57,8 @@ function serviceHomeMismatch(): CommandFailure | undefined {
   const shellHome = homeCotalDir();
   const serviceHome = serviceAccountHome();
   if (canonicalRoot(resolve(shellHome)) === canonicalRoot(resolve(serviceHome))) return undefined;
-  return new CommandFailure("refused", "CONFLICT", `this shell resolves the daemon home to ${shellHome}, but the background service resolves it to ${serviceHome}, so the service would not find this installation`, {
-    remedy: "unset the home override, or install with --daemon-home <directory>. Nothing was registered.",
+  return new CommandFailure("refused", "CONFLICT", `this shell resolves the daemon home to ${shellHome}, but the background service resolves it to ${serviceHome}. Nothing was registered.`, {
+    remedy: "unset the home override, or pass --daemon-home <directory>",
   });
 }
 
