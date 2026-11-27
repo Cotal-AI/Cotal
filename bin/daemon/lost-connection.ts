@@ -8,11 +8,21 @@ const LOOKUP_MS = 3000;
 // host never has more than one in flight. Later checks wait on the same one.
 const pending = new Map<string, Promise<unknown>>();
 
-/** Look up the host of the broker at `server`. A lookup that fails or does not finish means this
- *  computer has no working internet connection. One that works means the space is not answering. */
-export async function lostConnection(server: string, resolve: (host: string) => Promise<unknown> = lookup): Promise<ManagerConnection> {
-  const host = new URL(server).hostname.replace(/^\[(.*)\]$/, "$1");
-  if (isIP(host) !== 0) return { state: "unreachable", reason: `${host} is not answering` };
+/** Look up the hosts of the brokers in `servers` (one URL, or a comma-separated list). When every
+ *  lookup fails or does not finish, this computer has no working internet connection. When one
+ *  works, or a broker is named by its address, the space is not answering. */
+export async function lostConnection(servers: string, resolve: (host: string) => Promise<unknown> = lookup): Promise<ManagerConnection> {
+  const hosts = [...new Set(servers.split(",").map((server) => new URL(server.trim()).hostname.replace(/^\[(.*)\]$/, "$1")))];
+  const address = hosts.find((host) => isIP(host) !== 0);
+  if (address !== undefined) return { state: "unreachable", reason: `${address} is not answering` };
+  const failures = await Promise.all(hosts.map((host) => lookupFailure(host, resolve)));
+  const found = hosts.find((_, i) => failures[i] === undefined);
+  if (found !== undefined) return { state: "unreachable", reason: `${found} is not answering` };
+  return { state: "offline", reason: `this computer cannot look up ${hosts[0]}${failures[0] ? ` (${failures[0]})` : ""}` };
+}
+
+/** Undefined when `host` looks up; otherwise the failure's code, or "" when it has none. */
+async function lookupFailure(host: string, resolve: (host: string) => Promise<unknown>): Promise<string | undefined> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     await Promise.race([
@@ -23,11 +33,11 @@ export async function lostConnection(server: string, resolve: (host: string) => 
       })(),
       new Promise((_, reject) => { timer = setTimeout(() => reject(Object.assign(new Error("lookup did not finish"), { code: "ETIMEOUT" })), LOOKUP_MS); }),
     ]);
+    return undefined;
   } catch (error) {
     const code = (error as { code?: unknown }).code;
-    return { state: "offline", reason: `this computer cannot look up ${host}${typeof code === "string" ? ` (${code})` : ""}` };
+    return typeof code === "string" ? code : "";
   } finally {
     if (timer) clearTimeout(timer);
   }
-  return { state: "unreachable", reason: `${host} is not answering` };
 }

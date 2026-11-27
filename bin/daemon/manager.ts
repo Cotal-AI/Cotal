@@ -18,7 +18,7 @@ import { DIAL_TIMEOUT_MS, DialNotAdmitted, askManager, dialWithRetry, epRailFail
 import { installedGenerationVersion, reconcileHostedConnectors, ReplacedDaemonGeneration } from "./generation.js";
 import { daemonPaths, daemonPathsFor } from "./endpoint.js";
 import { daemonStartedByOwnedService, installedDaemonIdentity, unitReceiptFile } from "./install.js";
-import type { HostedManager, HostedAgents } from "./protocol.js";
+import type { HostedManager, HostedAgents, ManagerConnection } from "./protocol.js";
 import { readHostedAgents, readServeBound } from "./agents.js";
 import { lostConnection } from "./lost-connection.js";
 import { readManagerCleanup, writeManagerCleanup, validateManagerCleanupAuthority, managerCleanupFile } from "./manager-cleanup.js";
@@ -70,6 +70,8 @@ export interface Live {
   stopTask?: Promise<void>;
   failures: number;
   healthFailures?: number;
+  /** Consecutive health checks in which the Manager graded its serve connection unbound. */
+  unboundSamples?: number;
 }
 
 async function selectRunningAgent(local: Live | undefined, lifecycleUid: string) {
@@ -318,25 +320,40 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
       return status(space);
     })().finally(() => { l.refreshing = undefined; });
   };
+  /** Why `space` cannot be reached. The loss itself is the Manager's own grade; the mesh record only
+   *  tells no internet from a space that is not answering, so a record that cannot be read still
+   *  leaves the loss to report, with the reason it could not be told apart. */
+  const describeLoss = async (space: string): Promise<ManagerConnection> => {
+    try {
+      const server = findMesh(space)?.server;
+      if (!server) throw new Error("no mesh record names its server");
+      return await lostConnection(server);
+    } catch (error) {
+      return { state: "unreachable", reason: `the space is not answering, and its address could not be checked: ${safeDiagnostic(error instanceof Error ? error.message : String(error)).slice(0, 300)}` };
+    }
+  };
   /** The Manager's own grade of its serve connection. A Manager that came up and then lost it reports
    *  why. Once it reconnects the problem clears, and a Manager a failed status probe left `starting`
    *  proves itself again. */
   const observeConnection = async (l: Live, child: ChildProcess, current: () => boolean) => {
     if (l.starting || !l.view.instanceId) return;
     let bound: boolean;
+    // A Manager built before this question does not answer it, which says nothing about its connection.
     try { bound = await readServeBound(child); } catch { return; }
     if (!current()) return;
     if (bound) {
+      l.unboundSamples = 0;
       if (!l.view.connection) return;
       l.view = { ...l.view, connection: undefined };
       notify();
       if (l.view.state !== "answering") void refresh(l.view.space).catch(() => {});
       return;
     }
-    const server = findMesh(l.view.space)?.server;
-    if (!server) return;
-    const connection = await lostConnection(server).catch(() => undefined);
-    if (!connection || !current() || l.starting) return;
+    // One unbound check can be a re-dial already under way; a loss is two checks in a row.
+    l.unboundSamples = (l.unboundSamples ?? 0) + 1;
+    if (l.unboundSamples < 2) return;
+    const connection = await describeLoss(l.view.space);
+    if (!current() || l.starting) return;
     if (l.view.connection?.state === connection.state && l.view.connection.reason === connection.reason) return;
     l.view = { ...l.view, connection };
     notify();
@@ -572,6 +589,7 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
         resolve();
         const lastLine = stderr.trim().split("\n").pop()?.slice(-500);
         const exitReason = `Manager exited (${signal ?? `code ${code}`})${lastLine ? `: ${lastLine}` : ""}`;
+        l.unboundSamples = 0;
         l.view = { ...l.view, pid: undefined, connection: undefined, lastExit: l.stopping && code === 0 && signal === null ? undefined : exitReason };
         if (!nativeReason) nativeReason = exitReason;
         if (!l.stopping && !closed && (l.view.state === "answering" || (l.view.state === "starting" && !l.starting))) {

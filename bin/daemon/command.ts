@@ -356,9 +356,13 @@ async function serviceCommand(args: ParsedArgs, op: "service-connect" | "service
   }
   if (!reply.ok) throw new CommandFailure("refused", "USAGE_INVALID", `the daemon refused the service request: ${reply.code} ${reply.message}`, { native: { code: reply.code } });
   const r: ServiceConnectionResult = reply.result;
-  const native = { native: { code: (r.state === "ended" && r.reason ? r.reason : r.state).toUpperCase().replaceAll("-", "_") } };
-  const ok = op === "service-status" && r.manager && r.manager.state !== "stopped"
-    ? r.manager.state === "answering" && !r.manager.connection
+  // service-status judges a hosted Manager by the Manager; its refusal names what the Manager lacks.
+  const manager = op === "service-status" && r.manager && r.manager.state !== "stopped" ? r.manager : undefined;
+  const nativeCode = manager?.connection ? (manager.connection.state === "offline" ? "OFFLINE" : "SPACE_UNREACHABLE")
+    : manager ? `MANAGER_${manager.state}` : r.state === "ended" && r.reason ? r.reason : r.state;
+  const native = { native: { code: nativeCode.toUpperCase().replaceAll("-", "_") } };
+  const ok = manager
+    ? manager.state === "answering" && !manager.connection
     : r.state === "connected" || (op === "service-disconnect" && r.state === "disconnected");
   if (!ok) {
     const code = r.state === "not-requested" || r.state === "not-registered" ? "TARGET_NOT_FOUND"

@@ -1,9 +1,12 @@
 /**
  * Issue #10805: a hosted Manager that loses its connection to its space. The machine daemon's live
- * status feed (`status-watch`, what the desktop app reads) must report the loss by itself, within
- * one health check and without anyone asking for a full status, and must report the Manager
- * answering again once the network is back. Only this computer's paths to the space (broker TCP,
- * exchange, IdP) are cut; the broker and its services stay up, as they do when a laptop goes offline.
+ * status feed (`status-watch`, what the desktop app reads) must report the loss by itself, without
+ * anyone asking for a full status, and must report the Manager answering again once the network is
+ * back. Only this computer's paths to the space (broker TCP, exchange, IdP) are cut; the broker and
+ * its services stay up, as they do when a laptop goes offline. Three kinds of loss: short drops the
+ * Manager re-dials at once (no report), a reset link that stays down, and a silent drop where nothing
+ * is reset and nothing answers (a laptop whose Wi-Fi went away). The last phase runs a Manager built
+ * before the connection question, which must not be read as failing its health check.
  * The first cells drive the shipped lookup that tells "no internet" from "the space is not answering".
  */
 import assert from "node:assert/strict";
@@ -11,7 +14,7 @@ import { createServer as createHttpServer, type IncomingMessage, type ServerResp
 import { type AddressInfo } from "node:net";
 import { createHash } from "node:crypto";
 import { createConnection, createServer as createTcpServer, type Socket } from "node:net";
-import { chmodSync, cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { spawn, type ChildProcess } from "node:child_process";
@@ -59,6 +62,7 @@ type Jose = {
 const { SignJWT, exportJWK, generateKeyPair } = await import(pathToFileURL(authRequire.resolve("jose")).href) as Jose;
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+const daemonLog: string[] = [];
 let pass = 0, fail = 0;
 const check = (name: string, cond: boolean, extra?: unknown) => {
   if (cond) { pass++; console.log(`  ✓ ${name}`); }
@@ -84,6 +88,12 @@ const check = (name: string, cond: boolean, extra?: unknown) => {
   const [first, second] = await Promise.all([lostConnection("nats://stalled.example.test:4222", stalled), lostConnection("nats://stalled.example.test:4222", stalled)]);
   const third = await lostConnection("nats://stalled.example.test:4222", stalled);
   check("U4 a lookup that does not finish means no internet connection, and a host keeps one lookup in flight", first.state === "offline" && first.reason.endsWith("(ETIMEOUT)") && second.state === "offline" && third.state === "offline" && calls === 1 && Date.now() - t < 10_000, { first, calls, ms: Date.now() - t });
+  calls = 0;
+  const byHost = (answers: Record<string, () => Promise<unknown>>) => (host: string) => { calls++; return answers[host]!(); };
+  const listUp = await lostConnection("nats://down.example.test:4222, nats://up2.example.test:4222", byHost({ "down.example.test": failure("ENOTFOUND"), "up2.example.test": () => Promise.resolve({ address: "192.0.2.2", family: 4 }) }));
+  const listDown = await lostConnection("nats://a.example.test:4222,nats://b.example.test:4222", byHost({ "a.example.test": failure("ENOTFOUND"), "b.example.test": failure("EAI_AGAIN") }));
+  const listAddress = await lostConnection("nats://c.example.test:4222,nats://192.0.2.7:4222", byHost({}));
+  check("U5 a server list: one host that looks up means not answering, every lookup failing means no internet, an address needs no lookup", listUp.state === "unreachable" && listUp.reason === "up2.example.test is not answering" && listDown.state === "offline" && listDown.reason === "this computer cannot look up a.example.test (ENOTFOUND)" && listAddress.state === "unreachable" && listAddress.reason === "192.0.2.7 is not answering" && calls === 4, { listUp, listDown, listAddress, calls });
 }
 
 class MemoryStore implements SecretStore {
@@ -101,7 +111,15 @@ const privateCliDir = join(root, "cli");
 mkdirSync(privateCliDir, { recursive: true, mode: 0o700 });
 cpSync(join(repo, "bin", "package.json"), join(privateCliDir, "package.json"));
 cpSync(join(repo, "bin", "dist"), join(privateCliDir, "dist"), { recursive: true });
-symlinkSync(join(repo, "bin", "node_modules"), join(privateCliDir, "node_modules"));
+// The CLI's packages, with the Manager package behind its own link so the last phase can swap in an
+// older Manager.
+const repoModules = join(repo, "bin", "node_modules");
+const cliModules = join(privateCliDir, "node_modules");
+mkdirSync(join(cliModules, "@cotal-ai"), { recursive: true, mode: 0o700 });
+for (const entry of readdirSync(repoModules)) if (entry !== "@cotal-ai") symlinkSync(join(repoModules, entry), join(cliModules, entry));
+for (const entry of readdirSync(join(repoModules, "@cotal-ai"))) if (entry !== "manager") symlinkSync(join(repoModules, "@cotal-ai", entry), join(cliModules, "@cotal-ai", entry));
+const managerLink = join(cliModules, "@cotal-ai", "manager");
+symlinkSync(join(repo, "implementations", "manager"), managerLink);
 const cliEntry = join(privateCliDir, "dist", "cotal.js");
 const home = join(root, "home");
 const participant = join(root, "participant");
@@ -126,6 +144,7 @@ let idpOrigin = "";
 
 const idp = createHttpServer(async (req: IncomingMessage, res: ServerResponse) => {
   if (offline) { req.socket.destroy(); return; }
+  if (silent) { hung.add(req.socket); return; }
   res.setHeader("content-type", "application/json");
   if (req.url?.startsWith("/api/cli/machines/") || req.url?.startsWith("/api/machines/")) {
     res.writeHead(404); res.end("{}"); return;
@@ -148,16 +167,21 @@ idpOrigin = `http://127.0.0.1:${(idp.address() as AddressInfo).port}`;
 const idpUrl = `${idpOrigin}/api/auth`;
 
 // This computer's network. The broker and its services stay up; only the participant's paths to
-// them (broker TCP, exchange, IdP) drop while offline.
-let offline = false;
+// them (broker TCP, exchange, IdP) drop. `offline` resets every link and refuses new ones. `silent`
+// resets nothing and delivers nothing, so only the client's own pings can notice it. A link that
+// lost bytes while silent is reset when the network comes back, since its stream is no longer whole.
+let offline = false, silent = false;
 const tcpLinks = new Set<Socket>();
+const hung = new Set<Socket>();
+const reconnectNetwork = () => { offline = false; silent = false; for (const s of hung) s.destroy(); hung.clear(); };
 const tcpRelays: ReturnType<typeof createTcpServer>[] = [];
 async function createTcpRelay(target: number): Promise<number> {
   const server = createTcpServer((client) => {
     if (offline) { client.destroy(); return; }
     const upstream = createConnection(target, "127.0.0.1");
-    for (const s of [client, upstream]) { tcpLinks.add(s); s.on("close", () => tcpLinks.delete(s)); s.on("error", () => {}); }
-    client.pipe(upstream); upstream.pipe(client);
+    for (const s of [client, upstream]) { tcpLinks.add(s); s.on("close", () => { tcpLinks.delete(s); hung.delete(s); }); s.on("error", () => {}); }
+    client.on("data", (b: Buffer) => { if (silent) hung.add(client); else upstream.write(b); });
+    upstream.on("data", (b: Buffer) => { if (silent) hung.add(client); else client.write(b); });
     client.on("close", () => upstream.destroy()); upstream.on("close", () => client.destroy());
   });
   await new Promise<void>((r) => server.listen(0, "127.0.0.1", () => r()));
@@ -168,6 +192,7 @@ const relays: ReturnType<typeof createHttpServer>[] = [];
 async function createRelay(targetUrl: string): Promise<string> {
   const server = createHttpServer(async (req: IncomingMessage, res: ServerResponse) => {
     if (offline) { req.socket.destroy(); return; }
+    if (silent) { hung.add(req.socket); return; }
     const chunks: Buffer[] = [];
     for await (const c of req) chunks.push(Buffer.from(c));
     const rawBody = Buffer.concat(chunks);
@@ -348,6 +373,12 @@ try {
       env: { ...childEnv, COTAL_DAEMON_NATIVE_SERVICE: "1" },
       stdio: ["ignore", "pipe", "pipe"],
     });
+    // Read the daemon's output: writes to a full pipe block a Node process on Linux, which froze
+    // the daemon (and its feed) once the reconnect phases had logged enough.
+    for (const stream of [child.stdout!, child.stderr!]) stream.on("data", (b) => {
+      daemonLog.push(...String(b).split("\n").filter(Boolean));
+      if (daemonLog.length > 300) daemonLog.splice(0, daemonLog.length - 300);
+    });
     for (let i = 0; i < 100; i++) {
       try {
         const r = await queryDaemon({ paths });
@@ -376,33 +407,50 @@ try {
   }
 
   // Watch the way the desktop app does: one status-watch connection, frames pushed by the daemon.
-  type Frame = { at: number; state?: string; connection?: HostedManager["connection"] };
+  type Frame = { at: number; state?: string; reason?: string; pid?: number; restarts?: number; connection?: HostedManager["connection"] };
   const frames: Frame[] = [];
-  const watch = createConnection(paths.socket!);
-  let buffered = "";
-  watch.on("data", (chunk) => {
-    buffered += String(chunk);
-    for (let i = buffered.indexOf("\n"); i >= 0; i = buffered.indexOf("\n")) {
-      const line = buffered.slice(0, i);
-      buffered = buffered.slice(i + 1);
-      const frame = JSON.parse(line) as { event?: string; result?: { managers?: HostedManager[] } };
-      if (frame.event !== "status") continue;
-      const m = frame.result?.managers?.find((row) => row.space === SPACE);
-      frames.push({ at: Date.now(), state: m?.state, connection: m?.connection });
-    }
-  });
-  watch.on("error", () => {});
-  watch.write(`${JSON.stringify({ v: 1, id: "dlc-watch", op: "status-watch" })}\n`);
+  let watch: Socket | undefined;
+  const openWatch = () => {
+    let buffered = "";
+    watch = createConnection(paths.socket!);
+    watch.on("data", (chunk) => {
+      buffered += String(chunk);
+      for (let i = buffered.indexOf("\n"); i >= 0; i = buffered.indexOf("\n")) {
+        const line = buffered.slice(0, i);
+        buffered = buffered.slice(i + 1);
+        const frame = JSON.parse(line) as { event?: string; result?: { managers?: HostedManager[] } };
+        if (frame.event !== "status") continue;
+        const m = frame.result?.managers?.find((row) => row.space === SPACE);
+        frames.push({ at: Date.now(), state: m?.state, reason: m?.reason, pid: m?.pid, restarts: m?.restarts, connection: m?.connection });
+      }
+    });
+    watch.on("error", () => {});
+    watch.write(`${JSON.stringify({ v: 1, id: "dlc-watch", op: "status-watch" })}\n`);
+  };
+  openWatch();
   const until = async (ms: number, done: () => boolean) => { for (const end = Date.now() + ms; Date.now() < end && !done(); ) await sleep(250); return done(); };
-  check("C0 the hosted Manager answers before the network is cut", await until(30_000, () => frames.at(-1)?.state === "answering" && !frames.at(-1)?.connection), frames.at(-1));
+  const answering = () => { const last = frames.at(-1); return last?.state === "answering" && last.connection === undefined; };
+  check("C0 the hosted Manager answers before the network is cut", await until(30_000, answering), frames.at(-1));
+
+  // Short drops the Manager re-dials within seconds are not a lost connection; the app must not flicker.
+  const flickerFrom = Date.now();
+  for (let i = 0; i < 4; i++) {
+    offline = true;
+    for (const link of tcpLinks) link.destroy();
+    await sleep(1500);
+    reconnectNetwork();
+    await sleep(6000);
+  }
+  const flicker = frames.filter((f) => f.at >= flickerFrom && f.connection !== undefined);
+  check("F1 four short drops the Manager re-dials at once never show a lost connection", flicker.length === 0 && await until(15_000, answering), { flicker: flicker.slice(0, 2), last: frames.at(-1) });
 
   offline = true;
   for (const link of tcpLinks) link.destroy();
   const cutAt = Date.now();
-  const lost = await until(15_000, () => frames.some((f) => f.at >= cutAt && f.connection !== undefined));
+  const lost = await until(20_000, () => frames.some((f) => f.at >= cutAt && f.connection !== undefined));
   const lostFrame = frames.find((f) => f.at >= cutAt && f.connection !== undefined);
-  check("C1 within 15 s of the cut, the live feed reports the lost connection without any status request", lost && lostFrame?.connection?.state === "unreachable" && lostFrame.connection.reason === "127.0.0.1 is not answering", { frames: frames.length, lostFrame });
-  check("C2 the Manager itself still answers its daemon, so local actions keep working", lostFrame?.state === "answering", lostFrame);
+  check(`C1 within 20 s of a reset link, the live feed reports the lost connection without any status request (after ${lostFrame ? Math.round((lostFrame.at - cutAt) / 1000) : "-"} s)`, lost && lostFrame?.connection?.state === "unreachable" && lostFrame.connection.reason === "127.0.0.1 is not answering", { frames: frames.length, seconds: lostFrame ? Math.round((lostFrame.at - cutAt) / 1000) : undefined, lostFrame });
+  check("C2 the lost connection is reported beside the Manager's own state, which stays answering", lostFrame?.state === "answering", lostFrame);
 
   // A full status read during the outage fails its own probe. What it changes reaches the feed too.
   const asked = await queryDaemon({ paths });
@@ -410,12 +458,60 @@ try {
   const readAt = Date.now();
   check("C3 a full status read reports the lost connection and its failed probe", askedRow?.connection?.state === "unreachable" && askedRow.state === "starting", askedRow);
   check("C4 the state that read changed reaches the live feed", await until(5_000, () => frames.some((f) => f.at >= readAt - 1000 && f.state === "starting")), frames.slice(-3));
+  const statusCli = spawn(process.execPath, [cliEntry, "daemon", "service-status", "--space", SPACE, "--json"], { cwd: participant, env: childEnv, stdio: ["ignore", "pipe", "pipe"] });
+  let statusOut = "";
+  statusCli.stdout.on("data", (b) => { statusOut += String(b); });
+  const statusCode = await new Promise<number | null>((r) => statusCli.once("exit", r));
+  const statusDoc = (() => { try { return JSON.parse(statusOut) as { error?: { cause?: { code?: string }; message?: string } }; } catch { return undefined; } })();
+  check("C6 `cotal daemon service-status` refuses and names the lost connection as its code", statusCode !== 0 && statusDoc?.error?.cause?.code === "SPACE_UNREACHABLE" && /connection unreachable: 127\.0\.0\.1 is not answering/.test(statusDoc.error.message ?? ""), { statusCode, error: statusDoc?.error ?? statusOut.slice(0, 400) });
 
-  offline = false;
+  reconnectNetwork();
   const backAt = Date.now();
-  const back = await until(60_000, () => { const last = frames.at(-1); return last !== undefined && last.at >= backAt && last.state === "answering" && last.connection === undefined; });
+  const back = await until(60_000, () => answering() && frames.at(-1)!.at >= backAt);
   check("C5 once the network is back, the live feed reports the Manager answering with no lost connection", back, { last: frames.at(-1), seconds: Math.round((Date.now() - backAt) / 1000) });
-  watch.destroy();
+
+  // A silent drop: no link is reset and nothing answers. Only the Manager's own pings can notice it.
+  silent = true;
+  const silentAt = Date.now();
+  const heard = await until(60_000, () => frames.some((f) => f.at >= silentAt && f.connection !== undefined));
+  const silentFrame = frames.find((f) => f.at >= silentAt && f.connection !== undefined);
+  check(`S1 within 60 s of a silent drop, the live feed reports the lost connection (after ${silentFrame ? Math.round((silentFrame.at - silentAt) / 1000) : "-"} s)`, heard && silentFrame?.connection?.state === "unreachable" && silentFrame.state === "answering", { seconds: Math.round(((silentFrame?.at ?? Date.now()) - silentAt) / 1000), silentFrame, last: frames.at(-1) });
+  reconnectNetwork();
+  const quietBackAt = Date.now();
+  check("S2 once a silent drop ends, the live feed reports the Manager answering with no lost connection", await until(60_000, () => answering() && frames.at(-1)!.at >= quietBackAt), { last: frames.at(-1), seconds: Math.round((Date.now() - quietBackAt) / 1000) });
+  watch?.destroy();
+
+  // A Manager built before the connection question ignores it, as every released Manager does. The
+  // daemon must not count that silence as a failed health check (which relaunches the Manager), and
+  // must not report a connection it cannot see.
+  const olderManager = join(root, "older-manager");
+  mkdirSync(olderManager, { mode: 0o700 });
+  cpSync(join(repo, "implementations", "manager", "package.json"), join(olderManager, "package.json"));
+  cpSync(join(repo, "implementations", "manager", "dist"), join(olderManager, "dist"), { recursive: true });
+  symlinkSync(join(repo, "implementations", "manager", "node_modules"), join(olderManager, "node_modules"));
+  const commandsJs = join(olderManager, "dist", "commands.js");
+  const shipped = readFileSync(commandsJs, "utf8");
+  const answers = shipped.match(/if \(answerConnectionQuestion\(frame, mgr\)\)\s*return;/g) ?? [];
+  assert.equal(answers.length, 1, "the built Manager answers the connection question in exactly one place");
+  writeFileSync(commandsJs, shipped.replace(answers[0]!, ""));
+  await killAndAwaitExit(daemonChild!, "SIGTERM");
+  daemonChild = undefined;
+  rmSync(managerLink);
+  symlinkSync(olderManager, managerLink);
+  daemonChild = await startDaemonProcess();
+  frames.length = 0;
+  openWatch();
+  check("O1 the daemon hosts the older Manager and it answers", await until(60_000, answering), frames.at(-1));
+  const olderPid = frames.at(-1)?.pid;
+  const olderRestarts = frames.at(-1)?.restarts;
+  offline = true;
+  for (const link of tcpLinks) link.destroy();
+  const olderCutAt = Date.now();
+  await sleep(20_000);
+  const during = frames.filter((f) => f.at >= olderCutAt);
+  check("O2 cut for 20 s, the older Manager is never reported starting, relaunched, or with a connection the daemon cannot see", during.every((f) => f.state === "answering" && f.connection === undefined && f.pid === olderPid && f.restarts === olderRestarts) && frames.at(-1)?.pid === olderPid, { olderPid, olderRestarts, odd: during.filter((f) => f.state !== "answering" || f.connection !== undefined || f.pid !== olderPid).slice(0, 2) });
+  reconnectNetwork();
+  watch?.destroy();
 } finally {
   if (daemonChild) await killAndAwaitExit(daemonChild, "SIGTERM").catch(() => {});
   for (const d of deliveries) await d.close().catch(() => {});
@@ -430,6 +526,7 @@ try {
   rmSync(root, { recursive: true, force: true });
 }
 
+if (fail > 0) console.log(`\n--- last daemon output ---\n${daemonLog.slice(-60).join("\n")}`);
 console.log(`\n=== daemon-lost-connection smoke: ${pass} passed, ${fail} failed ===`);
-if (fail > 0 || pass !== 10) process.exit(1);
+if (fail > 0 || pass !== 17) process.exit(1);
 process.exit(0);
