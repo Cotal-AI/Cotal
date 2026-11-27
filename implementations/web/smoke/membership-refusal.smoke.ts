@@ -75,6 +75,7 @@ import { createStore } from "../client/src/state/store.js";
 import { initialState, type DashboardState } from "../client/src/state/types.js";
 // `writeFeed` is what the lifted `send` calls, so it goes into the context as the module exports it.
 import { MEMBERSHIP_READ_FAILED, writeFeed, writeOpening } from "../src/web.js";
+import { sharedChannels } from "../src/shared-channels.js";
 
 let pass = 0;
 const check = (name: string, cond: boolean, extra?: unknown) => {
@@ -119,6 +120,7 @@ const liftStmt = (src: string, anchor: string, terminator: string, nth = 0): str
 };
 
 const webTs = read("../src/web.ts");
+const shared = sharedChannels(() => "legacy");
 
 const routeBlock = lift(webTs, 'if (path === "/api/membership")');
 const jsonHelper = lift(webTs, "function json(res: ServerResponse");
@@ -151,6 +153,7 @@ const serve = async (readMembership: () => Promise<unknown>): Promise<Recorded> 
     path: "/api/membership",
     res,
     ep: { readMembership },
+    shared,
     MEMBERSHIP_READ_FAILED,
     globalThis: undefined,
     console,
@@ -322,6 +325,7 @@ const sseWire = async (stmt: string, ctxOverrides: Record<string, unknown> = {})
   ).outputText;
   const ctx: Record<string, unknown> = {
     ep: { readMembership: async () => { throw new Error(REASON); } },
+    shared,
     clients: new Set([client]),
     res: client,
     MEMBERSHIP_READ_FAILED,
@@ -374,6 +378,7 @@ const okBytes = await (async () => {
     { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
   const c: Record<string, unknown> = {
     ep: { readMembership: async () => ({ members: [] }) },
+    shared,
     clients: new Set([client]), res: client,
     MEMBERSHIP_READ_FAILED, writeFeed, globalThis: undefined, console,
   };
