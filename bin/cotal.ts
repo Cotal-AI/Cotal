@@ -170,11 +170,30 @@ export function executionInventory(root: string): ExecutionInventoryEntry[] {
   return rows;
 }
 
-export function executionLaunchBinding(root: string, entry: string): NonNullable<ExecutionDescriptor["launch"]> {
+function canonicalBootstrapEntry(canonicalRoot: string, candidate: string): boolean {
+  return candidate === join(canonicalRoot, "dist", "cotal.js") || candidate === join(canonicalRoot, "dist", "cotal-npm");
+}
+
+function executionLaunchEntry(root: string, entry: string): string {
+  const logical = resolve(entry), canonicalRoot = realpathSync.native(root);
+  const modules = dirname(canonicalRoot), lib = dirname(modules);
+  if (basename(canonicalRoot) !== "cotal-ai" || basename(modules) !== "node_modules" || basename(lib) !== "lib") return logical;
+  const bin = join(dirname(lib), "bin");
+  try {
+    if (!canonicalBootstrapEntry(canonicalRoot, realpathSync.native(logical))) return logical;
+    if (realpathSync.native(dirname(logical)) === bin) return join(bin, basename(logical));
+    const prefixEntry = join(bin, "cotal");
+    if (lstatSync(logical).isSymbolicLink() && lstatSync(prefixEntry).isSymbolicLink() &&
+        canonicalBootstrapEntry(canonicalRoot, realpathSync.native(prefixEntry))) return prefixEntry;
+  } catch { /* let launch binding report the unresolvable route */ }
+  return logical;
+}
+
+function rawExecutionLaunchBinding(root: string, entry: string): NonNullable<ExecutionDescriptor["launch"]> {
   const logical = resolve(entry), physical = realpathSync.native(logical);
   const canonicalRoot = realpathSync.native(root);
   // npm's postinstall can repoint the saved entry to this package's wrapper.
-  if (physical !== join(canonicalRoot, "dist", "cotal.js") && physical !== join(canonicalRoot, "dist", "cotal-npm"))
+  if (!canonicalBootstrapEntry(canonicalRoot, physical))
     throw new Error("execution launch route does not resolve to this bootstrap");
   let path = join(canonicalRoot, "package.json");
   for (let current = dirname(logical); current !== dirname(current); current = dirname(current)) {
@@ -182,6 +201,10 @@ export function executionLaunchBinding(root: string, entry: string): NonNullable
   }
   const info = lstatSync(path, { bigint: true });
   return { entry: logical, path, dev: String(info.dev), ino: String(info.ino), birth: String(info.birthtimeNs), ctime: String(info.ctimeNs) };
+}
+
+export function executionLaunchBinding(root: string, entry: string): NonNullable<ExecutionDescriptor["launch"]> {
+  return rawExecutionLaunchBinding(root, executionLaunchEntry(root, entry));
 }
 
 export function executionDescriptorPath(root: string): string {
@@ -231,7 +254,12 @@ function executionProgram(root: string, verifyInventory: boolean): { root: strin
     if (!["entry", "path", "dev", "ino", "birth", "ctime"].every(key => typeof launch[key] === "string") || !isAbsolute(launch.entry as string) || !isAbsolute(launch.path as string))
       throw new Error("invalid execution launch binding");
     try {
-      const currentLaunch = executionLaunchBinding(installed, launch.entry as string);
+      if (launch.path !== join(installed, "package.json")) {
+        const route = lstatSync(launch.path as string, { bigint: true });
+        if (String(route.dev) !== launch.dev || String(route.ino) !== launch.ino ||
+            String(route.birthtimeNs) !== launch.birth || String(route.ctimeNs) !== launch.ctime) return initial();
+      }
+      const currentLaunch = rawExecutionLaunchBinding(installed, launch.entry as string);
       if (currentLaunch.entry !== launch.entry || currentLaunch.path !== launch.path || currentLaunch.dev !== launch.dev ||
           currentLaunch.ino !== launch.ino || currentLaunch.birth !== launch.birth) return initial();
       // ctime can change on an unchanged npm manifest. Keep it for the symlinked launch route.
@@ -338,7 +366,7 @@ export function startExecutionProgram(): void {
     if (!import.meta.url.endsWith(".ts")) {
       const logicalEntry = realpathSync.native(fileURLToPath(import.meta.url));
       const loadedEntry = realpathSync.native(join(selected.root, "dist", "cotal.js"));
-      const launchEntry = direct ? resolve(process.argv[1]!) : logicalEntry;
+      const launchEntry = direct ? executionLaunchEntry(packageRoot, process.argv[1]!) : logicalEntry;
       Object.defineProperty(globalThis, Symbol.for("cotal.execution.identity"), {
         value: Object.freeze({ logicalEntry, launchEntry, loadedEntry }),
         configurable: false, writable: false,

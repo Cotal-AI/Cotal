@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, renameSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, realpathSync, renameSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -287,6 +287,84 @@ try {
     assert.throws(() => selectExecutionProgram(root), /execution launch route does not resolve to this bootstrap/);
     rmSync(entry); rmSync(join(source, "dist/cotal-npm"));
     writeExecutionDescriptor(root, descriptor);
+  });
+  check("version-manager shell symlinks bind to the installation prefix and survive switching Node", () => {
+    const prefix = join(scratch, "prefix"), entry = join(prefix, "bin/cotal");
+    const otherPrefix = join(scratch, "other-node"), otherRoot = join(otherPrefix, "lib/node_modules/cotal-ai"), otherEntry = join(otherPrefix, "bin/cotal");
+    const direct = "../lib/node_modules/cotal-ai/dist/cotal.js";
+    packageAt(otherRoot, "0.1.0", "other node installation");
+    chmodSync(join(otherRoot, "dist/cotal.js"), 0o755);
+    mkdirSync(join(otherPrefix, "bin"), { recursive: true, mode: 0o700 });
+    symlinkSync(direct, entry);
+    symlinkSync(direct, otherEntry);
+    const shells = join(scratch, "fnm_multishells"), shell1 = join(shells, "shell-1"), shell2 = join(shells, "shell-2");
+    const fileShell = join(shells, "file-shell");
+    mkdirSync(join(fileShell, "bin"), { recursive: true, mode: 0o700 });
+    symlinkSync(prefix, shell1);
+    symlinkSync(prefix, shell2);
+    symlinkSync(entry, join(fileShell, "bin/cotal"));
+    const canonicalEntry = join(realpathSync.native(prefix), "bin/cotal");
+    const canonicalManifest = join(realpathSync.native(root), "package.json");
+    const launchVia = (cli: string) => spawnSync(process.execPath, [cli, "--version"], { env: process.env, cwd: scratch, encoding: "utf8", timeout: 10_000 });
+    try {
+      const bound = executionLaunchBinding(root, join(shell1, "bin/cotal"));
+      assert.equal(bound.entry, canonicalEntry);
+      assert.equal(bound.path, canonicalManifest);
+      assert.deepEqual(executionLaunchBinding(root, join(fileShell, "bin/cotal")), bound);
+
+      // Verify the runtime executionIdentity captures the prefix entry rather than the transient shell symlink.
+      const program = join(generation.root, "dist/cotal-program.js"), savedProgram = readFileSync(program);
+      writeFileSync(program, "console.log(Reflect.get(globalThis, Symbol.for('cotal.execution.identity')).launchEntry);");
+      writeExecutionDescriptor(root, describeExecutionGeneration(root, retainExecutionGeneration(root, generation.root)));
+      try {
+        const active = JSON.parse(readFileSync(executionDescriptorPath(root), "utf8"));
+        writeExecutionDescriptor(root, { ...active, launch: executionLaunchBinding(root, join(shell1, "bin/cotal")) });
+        const identityProbe = launchVia(join(shell1, "bin/cotal"));
+        assert.equal(identityProbe.status, 0, identityProbe.stderr);
+        assert.equal(identityProbe.stdout.trim(), canonicalEntry);
+      } finally {
+        writeFileSync(program, savedProgram);
+      }
+
+      writeExecutionDescriptor(root, { ...descriptor, launch: bound });
+      assert.equal(launchVia(join(shell1, "bin/cotal")).stdout.trim(), "retained generation selected");
+
+      // Shell 1 switches to the other Node installation and back; retained generation stays active.
+      rmSync(shell1); symlinkSync(otherPrefix, shell1);
+      assert.equal(launchVia(join(shell1, "bin/cotal")).stdout.trim(), "other node installation");
+      assert.equal(launchVia(join(shell2, "bin/cotal")).stdout.trim(), "retained generation selected");
+      rmSync(shell1); symlinkSync(prefix, shell1);
+      assert.equal(launchVia(join(shell1, "bin/cotal")).stdout.trim(), "retained generation selected");
+
+      // Shell 1 stays on the other Node installation (or closes) while Shell 2 runs on the updated installation.
+      rmSync(shell1); symlinkSync(otherPrefix, shell1);
+      const inShell2 = launchVia(join(shell2, "bin/cotal"));
+      assert.equal(inShell2.status, 0, inShell2.stderr);
+      assert.equal(inShell2.stdout.trim(), "retained generation selected");
+      rmSync(shell1);
+      assert.equal(launchVia(join(shell2, "bin/cotal")).stdout.trim(), "retained generation selected");
+
+      // An older pre-migration descriptor that recorded a shell directory symlink falls back cleanly when retargeted.
+      symlinkSync(prefix, shell1);
+      const shellStat = lstatSync(shell1, { bigint: true });
+      writeExecutionDescriptor(root, {
+        ...descriptor,
+        launch: { entry: join(shell1, "bin/cotal"), path: shell1, dev: String(shellStat.dev), ino: String(shellStat.ino), birth: String(shellStat.birthtimeNs), ctime: String(shellStat.ctimeNs) },
+      });
+      assert.equal(launchVia(join(shell2, "bin/cotal")).stdout.trim(), "retained generation selected");
+      rmSync(shell1); symlinkSync(otherPrefix, shell1);
+      const fallback = launchVia(join(shell2, "bin/cotal"));
+      assert.equal(fallback.status, 0, fallback.stderr);
+      assert.equal(fallback.stdout.trim(), "initial generation");
+    } finally {
+      rmSync(entry, { force: true });
+      rmSync(otherPrefix, { recursive: true, force: true });
+      rmSync(shells, { recursive: true, force: true });
+      for (const name of readdirSync(executionStore(root))) {
+        if (/^[a-f0-9]{32}$/.test(name) && name !== generation.id) rmSync(join(executionStore(root), name), { recursive: true, force: true });
+      }
+      writeExecutionDescriptor(root, descriptor);
+    }
   });
   check("a bootstrap bound to a different artifact runs the installed tree without writing", () => {
     const stale = { ...descriptor, binding: { ...descriptor.binding, bootstrapSha256: "0".repeat(64) } };
