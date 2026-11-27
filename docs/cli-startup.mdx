@@ -250,7 +250,8 @@ stack after startup. Run `cotal status` from the project to inspect it, or press
 original terminal before starting it in another one. After startup, a bare `cotal down` from another
 terminal can also stop the stack. A controller `up` releases the startup lock before it prints its
 completed startup receipt. A second foreground `up` then refuses `CONFLICT` (exit 2) while the
-first terminal still holds the stack. Its retry command keeps any explicit `--max-file-store` cap.
+first terminal still holds the stack. Its retry command keeps any explicit `--max-payload`,
+`--max-file-store` and `--max-sessions` it was given.
 On a controller stack, the foreground
 `up` sees the completed stop or preserve, prints `Foreground stack released` and exits 0. The same
 applies when `cotal down --space <space> --yes` confirms the stop after the project folder is moved

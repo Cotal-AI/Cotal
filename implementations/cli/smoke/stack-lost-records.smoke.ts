@@ -74,17 +74,14 @@ try {
   mkdirSync(home, { mode: 0o700 });
   anchor = recordSmokeSandbox({ root, cotalHome: home, xdgConfigHome: env.XDG_CONFIG_HOME });
   const status = cli(["status"]);
-  assert.equal(status.exit, 4);
-  assert.equal(status.data.outcome, "partial");
-  assert.equal(status.data.completeness, "partial");
-  assert.equal(status.data.error?.code, "OPERATION_PARTIAL");
-  assert.deepEqual(status.data.warnings?.map(({ code, message }) => ({ code, message })), [{
-    code: "FOLDER_BROKER_UNAVAILABLE",
-    message: "owned broker observation unavailable · the stack's recorded broker instance is missing",
-  }]);
+  assert.equal(status.exit, 0);
+  assert.equal(status.data.outcome, "ok");
+  assert.equal(status.data.completeness, "complete");
+  assert.equal(status.data.warnings?.length ?? 0, 0);
+  assert.match(status.data.result?.selected?.message ?? "", /manager, delivery and broker processes are running/);
   assert.match(status.data.result?.selected?.message ?? "", /member records are missing/);
   assert.doesNotMatch(status.data.result?.selected?.message ?? "", /runs under another/);
-  for (const [command, exit, cotalHome] of [["status", 4, home], ["ps", 2, home], ["ps", 2, `${home}/`]] as const) {
+  for (const [command, exit, cotalHome] of [["status", 0, home], ["ps", 2, home], ["ps", 2, `${home}/`]] as const) {
     const plain = run([command, "--plain"], cotalHome);
     const text = plain.stdout + plain.stderr;
     assert.equal(plain.status, exit, text);
