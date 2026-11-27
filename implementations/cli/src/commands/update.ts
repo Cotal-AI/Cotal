@@ -1010,10 +1010,10 @@ async function upgradeAndReconcile(targetVersion: string, current: string, rt: U
     interrupted = code;
     rt.err(c.yellow("Interrupt received; finishing installation and reconciliation before exiting."));
   };
-  const onInt = (): void => interrupt(130);
-  const onTerm = (): void => interrupt(143);
+  const onInt = (): void => interrupt(130), onTerm = (): void => interrupt(143), onHup = (): void => interrupt(129);
   process.on("SIGINT", onInt);
   process.on("SIGTERM", onTerm);
+  process.on("SIGHUP", onHup);
   try {
   if (execution) {
     rt.out(`Switching to cotal-ai@${targetVersion}`);
@@ -1177,6 +1177,7 @@ async function upgradeAndReconcile(targetVersion: string, current: string, rt: U
     } finally {
       process.off("SIGINT", onInt);
       process.off("SIGTERM", onTerm);
+      process.off("SIGHUP", onHup);
     }
   }
 }

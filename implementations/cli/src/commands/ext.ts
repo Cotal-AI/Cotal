@@ -1,7 +1,6 @@
 import { spawn } from "node:child_process";
 import { closeSync, copyFileSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
-import { homedir, tmpdir } from "node:os";
-import { dirname, isAbsolute, join, parse, resolve, relative, sep } from "node:path";
+import { dirname, isAbsolute, join, resolve, relative, sep } from "node:path";
 import { registry, type Command, type Connector, type FlagSpec, type FlagValues, type ParsedArgs } from "@cotal-ai/core";
 import { CommandFailure, RESERVED_CONNECTOR_NAMES, beginExtensionNpmMutation, bindExtensionPeers, cacheExtensionServiceMetadata, cacheServicePreset, cacheCommand, cacheConnector, cacheExtension, cacheLocalProcess, cmdSpawnSpec, extensionLocalProcesses, extensionPackageDir, extensionProvides, extensionsDir, extensionsManifestPath, importExtensionEntry, installedExtensionPackage, loadExtensionsManifest, loadMeshes, localProcessPath, parsePid, probeLiveness, providedWords, jsonFlag, plainFlag, presentationOf, provenance, saveExtensionsManifest, seededCommandsMismatch, writeResult, type InstalledExtension, type InstalledExtensionPackage, type LocalProcess, type LocalProcessContext, type Presentation, type Report, type ServicePreset } from "@cotal-ai/workspace";
 import { c } from "../ui.js";
@@ -21,7 +20,6 @@ import { displayCmd, selfArgv } from "../lib/self-exec.js";
 import { spawnSync } from "node:child_process";
 import { isAuthenticSeedChild, markSeedChildLive, clearChildMarker } from "../seed/lock.js";
 import { cliVersion, seedStoreDir } from "../seed/paths.js";
-import { npmConfiguredCache, reconciliationCachePath } from "./update-caches.js";
 
 export const extFlags = [
   jsonFlag,
@@ -136,18 +134,7 @@ async function npm(args: string[], prefix: string, seeding = false): Promise<{ s
   // Select the extension prefix explicitly so Corepack never treats its ancestors as a project.
   const env = { ...process.env };
   delete env[EXT_UPDATE_PARENT_ENV];
-  const configuredCache = seeding ? npmConfiguredCache(env) : undefined;
-  let seedCache: string | undefined;
-  if (reconciliationCachePath(configuredCache) || reconciliationCachePath(configuredCache, parse(homedir()).root)) {
-    for (const key of Object.keys(env)) if (/^npm_config_cache$/i.test(key)) delete env[key];
-    for (const base of new Set([tmpdir(), ...(process.platform === "win32" ? [] : ["/tmp"]), homedir()])) {
-      try { seedCache = mkdtempSync(join(base, "cotal-seed-cache-")); break; }
-      catch { /* Try the next private scratch parent. */ }
-    }
-    if (!seedCache) return { status: null, output: "spawn error: cannot create temporary seed npm cache" };
-    env.npm_config_cache = seedCache;
-  }
-  const npm = npmInvocation(env, [...args, ...(seedCache ? ["--cache", seedCache] : []), "--prefix", prefix, "--include=optional", "--legacy-peer-deps"]);
+  const npm = npmInvocation(env, [...args, "--prefix", prefix, "--include=optional", "--legacy-peer-deps"]);
   const { file, args: spawnArgs, windowsVerbatimArguments } = cmdSpawnSpec(npm.file, npm.args, npm.env);
   const seedGroup = seeding && process.platform === "linux";
   const mutation = beginExtensionNpmMutation(undefined, seedGroup);
@@ -207,7 +194,6 @@ async function npm(args: string[], prefix: string, seeding = false): Promise<{ s
     stopForwarding();
     if (!published && !preservePending) mutation.clear();
     lifecycle?.dispose();
-    if (seedCache) rmSync(seedCache, { recursive: true, force: true, maxRetries: 3 });
   }
 }
 

@@ -2044,10 +2044,11 @@ for (const installed of ["0.13.2", "0.13.3"]) {
 }
 
 // --- interrupts retain update custody until verification and reconciliation finish --------------
-for (const signal of ["SIGINT", "SIGTERM"] as const) {
+for (const [signal, code] of [["SIGINT", 130], ["SIGTERM", 143], ["SIGHUP", 129]] as const) {
   for (const phase of ["install", "reconcile"] as const) {
     const beforeInt = process.listenerCount("SIGINT");
     const beforeTerm = process.listenerCount("SIGTERM");
+    const beforeHup = process.listenerCount("SIGHUP");
     const { rt, events } = updateRuntime({
       npm: (args) => ({ status: 0, stdout: args[0] === "view" ? '"0.13.2"' : "/global/node_modules" }),
     });
@@ -2061,13 +2062,14 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) {
       }
       return spawnGlobal(...args);
     };
-    assert.equal(await executeUpdate(true, rt), signal === "SIGINT" ? 130 : 143);
+    assert.equal(await executeUpdate(true, rt), code);
     assert.ok(events.includes("verify:/global/node_modules:0.13.2"), "interruption still verifies the installed package");
     assert.ok(events.some((event) => event.startsWith("global:reconcile:")), "interruption still reconciles matching extensions");
     assert.equal(events.filter((event) => event.includes("Interrupt received;")).length, 1, "repeated interrupts produce one explanation");
     assert.equal(events.at(-1), "release-global:/global/node_modules");
     assert.equal(process.listenerCount("SIGINT"), beforeInt, "SIGINT handling is restored after the update");
     assert.equal(process.listenerCount("SIGTERM"), beforeTerm, "SIGTERM handling is restored after the update");
+    assert.equal(process.listenerCount("SIGHUP"), beforeHup, "SIGHUP handling is restored after the update");
   }
 }
 

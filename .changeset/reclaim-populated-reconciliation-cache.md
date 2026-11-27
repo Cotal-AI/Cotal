@@ -2,4 +2,4 @@
 "@cotal-ai/cli": patch
 ---
 
-On Linux, self-update reclaims idle npm cache data from an interrupted reconciliation once the updater and recorded reconciliation worker group have exited and no process of the account still holds the cache.
+Self-update finishes and removes its temporary scratch on a terminal hangup, and on Linux a later self-update reclaims a populated reconciliation cache left by a kill once its updater and worker group have exited and every entry has been idle for 24 hours.
