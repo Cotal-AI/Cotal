@@ -496,9 +496,14 @@ function streamRefusalArgs(cmd: Command, words: readonly string[]): ParsedArgs |
 
 /** An unreadable extension surface refuses dispatch, using the known built-in output mode if available. */
 function overlayFailureExit(error: unknown, builtin: Command | undefined, words: readonly string[], wantsHelp: boolean, scope: OperationScope): never {
-  if (error instanceof CorruptExtensionsManifestError && builtin && !wantsHelp && !takesWordsRaw(builtin) && asksForJson(builtin, words)) {
-    const failure = new CommandFailure("refused", "SCHEMA_INVALID", error.diagnosis, { remedy: error.remedy, cause: error });
-    failureExit(builtin, failure, true, false, scope, words, streamRefusalArgs(builtin, words));
+  const denied = isCommandFailure(error) && error.code === "PERMISSION_DENIED" ? error : undefined;
+  const corrupt = error instanceof CorruptExtensionsManifestError
+    ? new CommandFailure("refused", "SCHEMA_INVALID", error.diagnosis, { remedy: error.remedy, cause: error }) : undefined;
+  const failure = denied ?? corrupt;
+  if (failure && builtin && !wantsHelp && !takesWordsRaw(builtin)) {
+    const end = words.indexOf("--");
+    const plain = (end === -1 ? words : words.slice(0, end)).includes("--plain");
+    if (asksForJson(builtin, words) || plain || denied) failureExit(builtin, failure, asksForJson(builtin, words), plain, scope, words, streamRefusalArgs(builtin, words));
   }
   stderrLine("✗ ", (error as Error).message, c.red);
   process.exit(1);
