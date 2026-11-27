@@ -65,6 +65,9 @@ if (!existsSync(BIN)) {
 }
 
 const home = mkdtempSync(join(tmpdir(), "cotal-space-registration-"));
+// These saved definitions are inspected, never launched. Their executable must belong to this account.
+const fixtureExecutable = join(home, "fixture-executable");
+writeFileSync(fixtureExecutable, "#!/bin/sh\nexit 0\n", { mode: 0o700 });
 // Set before the workspace is imported: it reads COTAL_HOME on each call.
 process.env.COTAL_HOME = join(home, ".cotal");
 const { MANAGER_PIDFILE, cacheLocalProcess, canonicalLocalProcessPath, clearCurrent, extensionsManifestPath, findMesh, findPreparedSpace, getCurrent, meshFile, meshesDir, preparedSpacesDir, recordMesh, recordPreparedSpace, removeMesh, removePreparedSpace, resolveOnPath, saveExtensionsManifest, setCurrent, setAdoptedCurrent, readCurrentSelection, shellPath, spaceSegment } = await import("@cotal-ai/workspace");
@@ -737,7 +740,7 @@ setCurrent("keep");
     const brokerDefinition = (space: string, stackRoot: string) => {
       const config = join(stackRoot, ".cotal", "server.conf");
       writeFileSync(config, "", { mode: 0o600 });
-      serviceDefinitionStore(space).commit("stack-broker", undefined, { schemaVersion: 1, space, launch: { type: "adapter", adapter: "nats-broker", options: { root: stackRoot, config, binary: process.execPath, server: LIVE } }, readiness: { type: "adapter", timeoutMs: 30_000 } });
+      serviceDefinitionStore(space).commit("stack-broker", undefined, { schemaVersion: 1, space, launch: { type: "adapter", adapter: "nats-broker", options: { root: stackRoot, config, binary: fixtureExecutable, server: LIVE } }, readiness: { type: "adapter", timeoutMs: 30_000 } });
     };
 
     const runningRoot = stack("stackrun", "open", { broker: member("stackrun", "stack-broker", requireProcessIdentity(process.pid), false) }, "started");
@@ -1150,7 +1153,7 @@ if (process.platform === "linux") {
   mkdirSync(first);
   mkdirSync(second);
   const server = `nats://127.0.0.1:${await freePort()}`, definition = join(home, "inherit-tick.json");
-  writeFileSync(definition, JSON.stringify({ schemaVersion: 1, space: "inherit", launch: { type: "process", executable: "/bin/sh", args: ["-c", "exit 0"], cwd: first }, readiness: { type: "process", timeoutMs: 3000 } }));
+  writeFileSync(definition, JSON.stringify({ schemaVersion: 1, space: "inherit", launch: { type: "process", executable: fixtureExecutable, args: [], cwd: first }, readiness: { type: "process", timeoutMs: 3000 } }));
   await json(["space", "create", "inherit"], first);
   const sandbox = recordSmokeSandbox({ root: first, cotalHome: process.env.COTAL_HOME!, xdgConfigHome: runEnv.XDG_CONFIG_HOME });
   const fresh = await json(["up", "--detach", "--open", "--no-manager", "--server", server], first);
