@@ -205,8 +205,8 @@ grants, and their own agents' commands whatever the scope: `inspect`, `ps`, and 
 `despawn`, `attach`, `input` and `interrupt` ([your own agents](identity-user-auth.mdx#delegation)).
 `spawn`, for example, carries `spawn`, `despawn`, `inspect`, the persona commands
 (`define-persona`, `remove-persona`, `list-personas`, `show-persona`) and
-`goal-result`, plus the reads `status`, `models`, `resolve-cwd`, `list-dir`, `harness-commands` and `ps` on that one
-instance. That `ps` lists only the person's own agents, unless their grant holds `admin`, whose `ps`
+`goal-result`, plus the reads `status`, `models`, `resolve-cwd`, `list-dir`, `harness-commands` and `ps`, and the
+folder commands `make-dir` and `clone`, on that one instance. That `ps` lists only the person's own agents, unless their grant holds `admin`, whose `ps`
 lists every owner's. Operator reads such as `slots` come only with `admin`, and the broker refuses a
 command the view does not carry. The connection never reconnects
 on its own; `reopen` acquires again and re-checks every pin.

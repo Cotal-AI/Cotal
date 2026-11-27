@@ -10,6 +10,7 @@ import { listStaticSlotObservations, observeStaticSlot, renderStaticSlotObservat
 import type { TranscriptReceiveInput } from "./transcript-receive.js";
 import { measureManagerVitals } from "./vitals.js";
 import { listHarnessCommands } from "./harness-commands.js";
+import { cloneProject, makeProjectDirectory } from "./project-folders.js";
 import type { ManagerConfig } from "./manager-config.js";
 import type { ManagerStartState } from "./manager-start-state.js";
 import type { ManagerParts } from "./manager-parts.js";
@@ -413,6 +414,8 @@ export class CommandDispatch {
       listDir: (ctx) => this.serveGated(ctx, () => this.parts.seatLaunch.listSpawnDirectory(args(ctx))),
       resolveCwd: (ctx) => this.serveGated(ctx, () => this.parts.seatLaunch.resolveSpawnCwd(args(ctx).cwd)),
       harnessCommands: (ctx) => this.serveGated(ctx, () => listHarnessCommands(args(ctx), this.parts, this.config.workspaceRoot)),
+      makeDir: (ctx) => this.serveGated(ctx, () => makeProjectDirectory(args(ctx), this.parts.seatLaunch)),
+      clone: (ctx) => this.serveGated(ctx, () => cloneProject(args(ctx), this.parts.seatLaunch, ctx)),
       resolveAgent: (ctx) => this.serveGated(ctx, async () => {
         if (this.config.execution === "none") throw new EpEnvelopeError("unimplemented", this.executionRefusal());
         const persona = await this.spawnPersona(args(ctx) as Pick<StartAgentOpts, "name" | "config" | "agent" | "defaultAgent">, callerOf(ctx), ctx.subject.caller);

@@ -159,6 +159,44 @@ on the new agent reads how far it got. What each harness lists is in the
 [connector reference](connector-runtime-reference.mdx#commands-before-launch), and the contract is in
 [SPEC §13.22](../SPEC.md#1322-the-agent-endpoint).
 
+## Project folders [#project-folders]
+
+The manager's `make-dir` and `clone` commands are granted where `list-dir` is. They make the folder a
+new project starts in on the Manager's host, and the launcher then passes the returned `path` to
+`spawn` as `cwd`. Each takes `parent`, an absolute directory on that host, checked as
+`resolve-cwd` checks a cwd, and `name`, one folder name.
+
+`make-dir` creates an empty folder and answers `{ path }`. A name that exists is refused with
+`already-exists`, and that folder is not changed:
+
+```sh
+cotal invoke manager make-dir --on <instance> --args '{"parent":"/abs/projects","name":"new-app"}'
+```
+
+`clone` clones a repository with the host's own git and answers `{ path, head, ref, existing }`:
+
+```sh
+cotal invoke manager clone --on <instance> --args '{"url":"https://github.com/<owner>/<repo>.git","parent":"/abs/projects"}'
+```
+
+The URL is `https://`, `ssh://` or `user@host:path`. Other URLs, local paths and URLs carrying a
+password are refused before git runs. `name` defaults to the URL's last segment without `.git`,
+and `ref` checks out a branch or tag. `head` is the checked-out commit and `ref` the checked-out
+branch, null when a tag leaves it detached.
+
+Git runs as the Manager's host user with that user's credentials: ssh keys, a credential helper,
+or a `gh auth login` on that computer. A request never carries a credential, and git never prompts.
+A private repository the host cannot read is refused with `failed-precondition` and the detail kind
+`ai.cotal.manager.git-access-refused`, and the fix is to sign in to that git host on that computer.
+A clone still running at the caller's deadline is stopped with `deadline-exceeded`. A failed or
+stopped clone leaves nothing under `name`, because git writes into a hidden `.cotal-clone-` folder
+that takes the name only when the clone is complete.
+
+When `name` already holds a clone whose `origin` is the same URL, at `ref` when one is given,
+`clone` answers it with `existing: true` and leaves it as it is. A retried launch, or a second
+launch from the same repository, reuses that clone. Any other existing folder is refused with
+`already-exists`. The full contract is in [SPEC §9](../SPEC.md#9-nats--jetstream-security-and-authorization).
+
 ## Spawn input resolution [#agent-selection-and-spawn-inputs]
 
 The manager's `resolve-agent` command is minted beside `spawn` in the spawn capability and the
@@ -208,9 +246,10 @@ the whole id, because both surfaces take nothing else.
 On a user-auth mesh, manager commands obtain a short-lived `manager-caller` view from the
 exchange. It authorizes one concrete manager instance using the caller's current actor grant and
 the host's registered service records. Discovery and invocation both use that instance's `inst`
-route. This view grants no registry scan or class queue. It adds six reads for an actor that
-holds `spawn`. The view may call `status`, `models`, `resolve-cwd`, `list-dir` and `harness-commands` on that instance,
-the reads a launch needs, subject to the execution-mode limit above. It may also call `ps` there to
+route. This view grants no registry scan or class queue. It adds six reads and two folder
+commands for an actor that holds `spawn`. The view may call `status`, `models`, `resolve-cwd`,
+`list-dir` and `harness-commands` on that instance, the reads a launch needs, and `make-dir` and
+`clone`, which make the folder it starts in, subject to the execution-mode limit above. It may also call `ps` there to
 list the caller's own agents. An `admin` actor's view carries the operator reads there, `slots`
 included. A `run`-only or no-scope agent view gets none of them. A
 person's own view, minted from their sign-in, calls `inspect` and `ps` there whatever its scope,
