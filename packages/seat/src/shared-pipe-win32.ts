@@ -7,9 +7,9 @@ function adopt(fd: number): Socket {
   catch (error) { closeSync(fd); throw error; }
 }
 
-export async function dialSharedWindowsPipe(path: string, host: { pid: number; start: string; session: number }): Promise<Socket> {
+export async function dialSharedWindowsPipe(path: string, host: { pid: number; start: string; session: number }, timeoutMs = 5_000): Promise<Socket> {
   const own = windowsUserSid();
-  const peer = await connectPipe(path, 5000);
+  const peer = await connectPipe(path, timeoutMs);
   try {
     if (peer.user !== own || peer.pid !== host.pid || peer.birth !== host.start || !matchesSession(peer, host.session))
       throw new Error("shared PTY pipe peer does not match its recorded host");
