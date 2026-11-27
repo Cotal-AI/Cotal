@@ -47,6 +47,7 @@ import type { ModDelta } from "./command-frames.js";
 import { claudeCommands, commandTurns } from "./commands.js";
 import { TURN_IMAGES_ENV } from "./turn-images.js";
 import { endHost, recordHost } from "./once-exit.js";
+import { holdAdvice, holdCommand, sdkHosted } from "./sdk-hold.js";
 
 /** What a plain session's local server tells the model ahead of the gateway's own steps. */
 const LOCAL =
@@ -142,9 +143,10 @@ async function serveLocal(desktop: boolean): Promise<void> {
               const session = host.sessionFor(c.id);
               if (!session || !feed.watched(session))
                 return "Automatic incoming messages are unavailable in this session. Check that the Cotal plugin and its native hooks module are enabled; call cotal_wait to listen.";
-              return feed.supportsInline(session)
+              const reader = feed.supportsInline(session)
                 ? "The Cotal incoming-message reader is connected with complete short-message delivery. New messages can start a turn, subject to Claude's Stop and organization policies."
                 : "The Cotal incoming-message reader is connected in notification-only mode. Read messages with cotal_inbox; reload the Cotal plugin to enable complete short-message delivery.";
+              return sdkHosted(process.env) ? `${reader}\n${holdAdvice(holdCommand(process.execPath, process.argv[1] ?? ""))}` : reader;
             },
           },
         }

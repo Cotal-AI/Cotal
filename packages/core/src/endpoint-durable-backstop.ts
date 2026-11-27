@@ -3,12 +3,11 @@
 // them. Not re-exported by the index.
 import type { ConnectionState } from "./endpoint-connection-state.js";
 import type { EndpointIdentity } from "./endpoint-identity.js";
-import { jetstream, jetstreamManager, JetStreamApiCodes, type JetStreamManager, type ConsumerInfo, type JetStreamPublishOptions } from "@nats-io/jetstream";
+import type { EndpointParts } from "./endpoint-parts.js";
+import { jetstream, jetstreamManager, JetStreamApiCodes, type JetStreamPublishOptions } from "@nats-io/jetstream";
 import { Kvm, type KV } from "@nats-io/kv";
 import { openAclRegistry, readAcl, readAclForAlias, AmbiguousAclAlias, commitAcl as writeAclRecord, reissueAcl as writeAclReissue } from "./acls.js";
 import { effectiveDeliveryClass, readChannelConfig, readChannelDefaults } from "./channels.js";
-import type { EndpointDeliveryPlane } from "./endpoint-delivery-plane.js";
-import type { EndpointPresence } from "./endpoint-presence.js";
 import { isCasLoss } from "./endpoint-records.js";
 import type { ManagerLeaseInfo } from "./lease.js";
 import { openMembersRegistry, commitMemberRevision, tombstoneMember, activateMember, readMember, deleteMember, listMembers } from "./members.js";
@@ -18,36 +17,21 @@ import type { DeliveryClass, MembershipRecord, Plane3Entry } from "./types.js";
 
 /** What the durable backstop reads from its endpoint. State is read when it is used, never copied,
  *  and every method is looked up on the endpoint at call time. The connection-scoped handles stay
- *  fields of the endpoint, which drops them on reconnect; the component reads and sets them there. */
+ *  fields of the endpoint, which drops them on reconnect; the component reads and sets them there. A peer
+ *  part is read from the parts record at call time. */
 export interface EndpointDurableBackstopDeps {
   authed: () => boolean;
-  presence: () => EndpointPresence;
-  deliveryPlane: () => EndpointDeliveryPlane;
   notLiveMsg: () => string;
-  consumerInfo: (stream: string, durable: string) => Promise<ConsumerInfo | null>;
-  manager: () => Promise<JetStreamManager>;
-  chatFrontier: () => Promise<number>;
-  aclAllows: (owner: string, lifecycleUid: string, channel: string) => Promise<boolean>;
-  catchupCopy: (owner: string, lifecycleUid: string, channel: string, fromSeqExcl: number, toSeqIncl: number, generation: number) => Promise<number>;
 }
 
 /** The Plane-3 durable backstop's state outside the delivery loops: the members and read-ACL
  *  registries, the manager and daemon-renewal leases, and the durable join and leave writes the
  *  delivery daemon serves. Internal: `CotalEndpoint` keeps the public methods and forwards to it. */
 export class EndpointDurableBackstop {
-  constructor(private readonly identity: Readonly<EndpointIdentity>, private readonly conn: ConnectionState, private readonly deps: EndpointDurableBackstopDeps) {}
+  constructor(private readonly identity: Readonly<EndpointIdentity>, private readonly conn: ConnectionState, private readonly deps: EndpointDurableBackstopDeps, private readonly parts: Pick<EndpointParts, "consumers" | "deliveryPlane" | "durable" | "presence">) {}
 
   private get authed() { return this.deps.authed(); }
-  private get presence() { return this.deps.presence(); }
-  private get deliveryPlane() { return this.deps.deliveryPlane(); }
   private notLiveMsg() { return this.deps.notLiveMsg(); }
-  private consumerInfo(stream: string, durable: string) { return this.deps.consumerInfo(stream, durable); }
-  private manager() { return this.deps.manager(); }
-  private chatFrontier() { return this.deps.chatFrontier(); }
-  private aclAllows(owner: string, lifecycleUid: string, channel: string) { return this.deps.aclAllows(owner, lifecycleUid, channel); }
-  private catchupCopy(owner: string, lifecycleUid: string, channel: string, fromSeqExcl: number, toSeqIncl: number, generation: number) {
-    return this.deps.catchupCopy(owner, lifecycleUid, channel, fromSeqExcl, toSeqIncl, generation);
-  }
 
   /** Lazily open the privileged members registry KV (delivery daemon / open-mode self). */
   async membersRegistry(): Promise<KV> {
@@ -336,7 +320,7 @@ export class EndpointDurableBackstop {
    *  peer wins; 0 or >1 matches drop (never fan a directed durable copy to an unrelated same-named
    *  bystander — red-team LOW; SPEC §4 unique instance id). */
   resolveOwnerByName(name: string): string | undefined {
-    const matches = [...this.presence.values()].filter((p) => p.card.name.toLowerCase() === name.toLowerCase());
+    const matches = [...this.parts.presence.values()].filter((p) => p.card.name.toLowerCase() === name.toLowerCase());
     return matches.length === 1 ? matches[0].card.id : undefined;
   }
 
@@ -372,7 +356,7 @@ export class EndpointDurableBackstop {
   /** The fan-out consumer's delivered stream-seq — the activation-fence upper bound (red-team
    *  BLOCKER-1: the shared fan-out cursor advances independently of the stream frontier). */
   private async fanoutDeliveredSeq(): Promise<number> {
-    const info = await this.consumerInfo(chatStream(this.identity.space), FANOUT_DURABLE);
+    const info = await this.parts.consumers.consumerInfo(chatStream(this.identity.space), FANOUT_DURABLE);
     return info?.delivered?.stream_seq ?? 0;
   }
 
@@ -404,7 +388,7 @@ export class EndpointDurableBackstop {
     opts: { aclFence?: boolean } = {},
   ): Promise<{ durable: boolean; reason?: string; generation?: number }> {
     if (!this.conn.js) throw new Error(this.notLiveMsg());
-    await this.manager(); // ensure jsm — a non-consuming provisioner inits it lazily; catch-up + fence need it
+    await this.parts.consumers.manager(); // ensure jsm — a non-consuming provisioner inits it lazily; catch-up + fence need it
     const kv = await this.membersRegistry();
     const existing = await readMember(kv, channel, owner, lifecycleUid);
     const open = existing?.record.state === "durable-active" && existing.record.leaveCursor === undefined;
@@ -418,20 +402,20 @@ export class EndpointDurableBackstop {
     // gates only the REPORT — durableJoin returns true / channelMembers lists the owner only after the
     // catch-up confirms. A join that never completes catch-up still routes live (harmless: the agent is
     // live-subscribed and DLV is id-deduped) but honestly reports durable:false and stays hidden.
-    const joinCursor = open ? existing!.record.joinCursor : await this.chatFrontier();
+    const joinCursor = open ? existing!.record.joinCursor : await this.parts.consumers.chatFrontier();
     const generation = open ? existing!.record.generation : (existing?.record.generation ?? 0) + 1;
     const base: MembershipRecord = {
       channel, owner, lifecycleUid, state: "durable-active", joinCursor, generation,
       activated: false, writerIdentity: this.identity.card.id, updatedAt: Date.now(),
     };
     if (!open) {
-      if (opts.aclFence && !(await this.aclAllows(owner, lifecycleUid, channel)))
+      if (opts.aclFence && !(await this.parts.durable.aclAllows(owner, lifecycleUid, channel)))
         throw new Error(`durableJoin: "${channel}" is no longer within the read ACL of lifecycle ${lifecycleUid} (narrowed or retired); no membership row was written`);
       const written = await commitMemberRevision(kv, base);
       if (opts.aclFence) await this.keepRowIfAclAllows(kv, owner, lifecycleUid, channel, written.revision);
     }
-    const fence = Math.max(await this.chatFrontier(), await this.fanoutDeliveredSeq());
-    await this.catchupCopy(owner, lifecycleUid, channel, joinCursor, fence, generation);
+    const fence = Math.max(await this.parts.consumers.chatFrontier(), await this.fanoutDeliveredSeq());
+    await this.parts.durable.catchupCopy(owner, lifecycleUid, channel, joinCursor, fence, generation);
     // Flip → reported durable, ATOMICALLY: refuse if a concurrent SAME-generation leave (tombstone) or a
     // rejoin superseded this pending join while catch-up ran. A blind same-gen commit would clobber the
     // tombstone (clear leaveCursor) and resurrect the membership, reopening §7 (review-general-2 BLOCKER).
@@ -451,7 +435,7 @@ export class EndpointDurableBackstop {
     let disallowed = false;
     let why: string;
     try {
-      if (await this.aclAllows(owner, lifecycleUid, channel)) return;
+      if (await this.parts.durable.aclAllows(owner, lifecycleUid, channel)) return;
       disallowed = true;
       why = "was narrowed or retired while the row was written";
     } catch (e) {
@@ -473,10 +457,10 @@ export class EndpointDurableBackstop {
   /** Privileged durable-LEAVE write: tombstone the membership at `leaveCursor = frontier` so the
    *  backstop denies `seq > leaveCursor` while a pre-leave entry stays deliverable (SPEC §7 interval). */
   async durableLeaveFor(owner: string, channel: string, lifecycleUid: string, expectedGeneration?: number): Promise<void> {
-    if (!this.deliveryPlane.plane3) return; // not a Plane-3 host — no membership to tombstone
+    if (!this.parts.deliveryPlane.plane3) return; // not a Plane-3 host — no membership to tombstone
     const kv = await this.membersRegistry();
     // expectedGeneration (captured by the agent at durableJoin) refuses a stale leave from tombstoning
     // a newer rejoin (StaleMembershipWrite) — a durable-disable primitive otherwise.
-    await tombstoneMember(kv, channel, owner, lifecycleUid, await this.chatFrontier(), this.identity.card.id, expectedGeneration);
+    await tombstoneMember(kv, channel, owner, lifecycleUid, await this.parts.consumers.chatFrontier(), this.identity.card.id, expectedGeneration);
   }
 }

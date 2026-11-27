@@ -4,8 +4,9 @@
 import type { DeliveryState } from "./endpoint-delivery-state.js";
 import type { ConnectionState } from "./endpoint-connection-state.js";
 import type { EndpointIdentity } from "./endpoint-identity.js";
+import type { EndpointParts } from "./endpoint-parts.js";
 import { randomUUID } from "node:crypto";
-import { AuthorizationError, PermissionViolationError, TimeoutError, type Msg, type NatsConnection } from "@nats-io/transport-node";
+import { AuthorizationError, PermissionViolationError, TimeoutError } from "@nats-io/transport-node";
 import {
   parseLivenessAnswer,
   responderFromProbe,
@@ -22,8 +23,6 @@ import { livenessServeFilter, livenessSubject } from "./subjects.js";
  *  copied, and every method is looked up on the endpoint at call time. */
 export interface EndpointLivenessDeps {
   notLiveMsg: () => string;
-  requestBoundReply: (nc: NatsConnection, subject: string, body: string, reply: string, timeoutMs: number) => Promise<Msg>;
-  isNoResponders: (e: unknown) => boolean;
   emitRecoverable: (err: Error) => void;
   emit: (event: string, ...args: unknown[]) => boolean;
 }
@@ -32,11 +31,9 @@ export interface EndpointLivenessDeps {
  *  every connection, and the probe that grades another responder. Internal: `CotalEndpoint` keeps
  *  the public methods and forwards to it. */
 export class EndpointLiveness {
-  constructor(private readonly identity: Readonly<EndpointIdentity>, private readonly conn: Readonly<ConnectionState>, private readonly delivery: Readonly<DeliveryState>, private readonly deps: EndpointLivenessDeps) {}
+  constructor(private readonly identity: Readonly<EndpointIdentity>, private readonly conn: Readonly<ConnectionState>, private readonly delivery: Readonly<DeliveryState>, private readonly deps: EndpointLivenessDeps, private readonly parts: Pick<EndpointParts, "anycastRail" | "controlPlane">) {}
 
   private notLiveMsg() { return this.deps.notLiveMsg(); }
-  private requestBoundReply(nc: NatsConnection, subject: string, body: string, reply: string, timeoutMs: number) { return this.deps.requestBoundReply(nc, subject, body, reply, timeoutMs); }
-  private isNoResponders(e: unknown) { return this.deps.isNoResponders(e); }
   private emitRecoverable(err: Error) { this.deps.emitRecoverable(err); }
   private emit(event: string, ...args: unknown[]) { return this.deps.emit(event, ...args); }
 
@@ -186,7 +183,7 @@ export class EndpointLiveness {
     let answered: ResponderState | undefined;
     let instance: string | undefined;
     try {
-      const m = await this.requestBoundReply(this.conn.nc, reqSubject, "", reply, timeoutMs);
+      const m = await this.parts.controlPlane.requestBoundReply(this.conn.nc, reqSubject, "", reply, timeoutMs);
       let body: unknown;
       try { body = m.json(); } catch { body = undefined; }
       const parsed = parseLivenessAnswer(body, plane);
@@ -197,7 +194,7 @@ export class EndpointLiveness {
       answered = parsed?.responder;
       instance = parsed?.instance;
     } catch (e) {
-      outcome = this.isNoResponders(e) ? "noResponders" : this.probeFailureOutcome(e);
+      outcome = this.parts.anycastRail.isNoResponders(e) ? "noResponders" : this.probeFailureOutcome(e);
     }
     // `instance` rides ONLY a reply that was read. Every other outcome means no responder answered,
     // so there is no responder to name, and a token attached to an `unbound` or an `unknown` would
