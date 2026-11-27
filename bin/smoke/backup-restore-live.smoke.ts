@@ -888,6 +888,37 @@ async function deadBoundListenerReplacementScenario(): Promise<void> {
   }
 }
 
+async function uninterruptedUnreadableRestore(): Promise<void> {
+  const root = realpathSync.native(mkdtempSync(join(tmpdir(), "cotal-restore-unreadable-full-root-")));
+  const home = realpathSync.native(mkdtempSync(join(tmpdir(), "cotal-restore-unreadable-full-home-")));
+  const artifact = join(root, "registry-backup");
+  const port = await freePort();
+  const server = `nats://127.0.0.1:${port}`;
+  const space = "backup_unreadable_full";
+  const { run, env, sandbox } = sandboxRun(root, home);
+  const journalPath = join(root, ".cotal", "maintenance", "v1", "journal.json");
+  const unreadable = { ...env, COTAL_SMOKE_UNREADABLE_PROCESSES: "1" };
+  try {
+    assert.equal(run("up", "--detach", "--open", "--server", server, "--space", space).status, 0);
+    assert.equal(run("down", "--preserve-state").status, 0);
+    assert.equal(run("backup", "create", artifact, "--only", "registry").status, 0);
+    const restored = spawnSync(tsx, [cliPath, "up", "--restore", artifact, "--detach", "--server", server, "--space", space], {
+      cwd: root, env: unreadable, encoding: "utf8", timeout: 240_000,
+    });
+    assert.equal(restored.status, 0, `first restore finishes when process command lines cannot be read\nstdout:\n${restored.stdout}\nstderr:\n${restored.stderr}`);
+    const active = JSON.parse(readFileSync(journalPath, "utf8")) as { state: string; listenerProof?: { processOwner: { pid: number } } };
+    assert.equal(active.state, "active");
+    assert.ok(active.listenerProof, "the uninterrupted first restore bound its listener");
+    assert.equal((await probeConnect(server, { timeoutMs: 250 })).ok, true, "the restored listener accepts a connection");
+    assert.equal(run("down", "--yes").status, 0);
+  } finally {
+    assertSmokeSandboxDown(sandbox, ["down", "--yes"], { cwd: root, env });
+    run("down", "--yes");
+    rmSync(root, { recursive: true, force: true });
+    rmSync(home, { recursive: true, force: true });
+  }
+}
+
 async function firstUnreadableRestoreScenario(): Promise<void> {
   const root = realpathSync.native(mkdtempSync(join(tmpdir(), "cotal-restore-unreadable-root-")));
   const home = realpathSync.native(mkdtempSync(join(tmpdir(), "cotal-restore-unreadable-home-")));
@@ -1972,6 +2003,7 @@ await ordinaryResumeReentryScenario("resume-finalize");
 await deadBoundListenerReplacementScenario();
 await unboundRestoreReentryScenario(true);
 await unboundRestoreReentryScenario(false);
+await uninterruptedUnreadableRestore();
 await firstUnreadableRestoreScenario();
 await boundForeignListenerScenario();
 console.log("backup/restore live smoke: ok");
