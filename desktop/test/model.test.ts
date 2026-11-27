@@ -133,10 +133,10 @@ test("expired credentials and pending approval refusals map to their recovery ac
     label: "Check status",
   });
   assert.deepEqual(refusalView("UNREACHABLE"), {
-    title: "We cannot reach your connection",
-    description: "The host or background service is not answering. Check your network and the exact next step in Details, then try again.",
+    title: "Can't reach your space",
+    description: "Cotal reconnects by itself when the space answers again. Details shows the reason.",
     action: "refresh",
-    label: "Try again",
+    label: "Check again",
   });
   assert.deepEqual(refusalView("OFFLINE"), {
     title: "No internet connection",

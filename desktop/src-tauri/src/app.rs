@@ -245,15 +245,17 @@ fn set_update_notice(app: AppHandle, version: Option<String>) -> Result<(), Stri
 }
 
 #[tauri::command]
-fn set_connection_state(app: AppHandle, connected: bool) -> Result<(), String> {
+fn set_connection_state(app: AppHandle, connected: bool, lost: Option<String>) -> Result<(), String> {
     let tray = app
         .tray_by_id("machine")
         .ok_or("The system tray is unavailable.")?;
-    tray.set_tooltip(Some(if connected {
-        "Cotal: connected"
-    } else {
-        "Cotal: not connected"
-    }))
+    let status = match lost.as_deref() {
+        Some("offline") => "offline",
+        Some("unreachable") => "can't connect",
+        _ if connected => "connected",
+        _ => "not connected",
+    };
+    tray.set_tooltip(Some(format!("Cotal: {status}")))
     .map_err(|_| "The tray status could not be updated.".into())
 }
 
