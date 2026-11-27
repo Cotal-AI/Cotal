@@ -259,7 +259,7 @@ npm workers have exited. On Linux, the same cleanup removes earlier staged npm i
 after their recorded owner and npm process group have exited. A successful retry also reclaims
 private update scratch idle for more than an hour when it contains only the Node compile cache.
 On Linux, staged extension installation during reconciliation writes to the reconciliation npm
-cache, whereas detached connector seeding uses its own cache under the seed folder. A successful
+cache, whereas detached connector seeding uses a separate temporary cache. A successful
 retry removes aged reconciliation scratch if the reconciliation cache contains only recognized npm
 cache data idle for more than an hour, records prove the updater and the recorded reconciliation
 worker group have exited, and no process of your account still holds that cache in its environment,

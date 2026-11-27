@@ -1,5 +1,5 @@
 import { lstatSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmdirSync, rmSync, type Stats } from "node:fs";
-import { basename, dirname, join, resolve, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
 import { parsePid, processGroupMembers, protectedLocalDirectory, recoveryProcessStartToken } from "@cotal-ai/workspace";
 
 const npmCacheName = /^cotal-update-npm-[a-zA-Z0-9]{6}$/;
@@ -20,9 +20,9 @@ export function npmConfiguredCache(env: NodeJS.ProcessEnv): string | undefined {
 }
 
 /** Resolve `cache` when it names an update reconciliation cache directory. Never throws. */
-export function reconciliationCachePath(cache: string | undefined): string | undefined {
+export function reconciliationCachePath(cache: string | undefined, base?: string): string | undefined {
   if (!cache) return undefined;
-  const resolved = resolve(cache);
+  const resolved = base !== undefined ? resolve(base, cache) : resolve(cache);
   if (!reconcileCacheName.test(basename(resolved)) || !updateScratchName.test(basename(dirname(resolved))))
     return undefined;
   try { return join(realpathSync(dirname(dirname(resolved))), basename(dirname(resolved)), basename(resolved)); }
@@ -44,19 +44,19 @@ function processZombie(pid: number): boolean {
   }
 }
 
-function nonDumpableDaemon(pid: number, uid: number, cacheBirthMs: number | undefined): boolean {
+function startedBeforeCache(pid: number, cacheBirthMs: number | undefined): boolean {
+  if (cacheBirthMs === undefined) return false;
   try {
-    if (lstatSync(`/proc/${pid}/environ`).uid !== uid) return true;
-    const procFields = readFileSync(`/proc/${pid}/status`, "utf8");
-    if (uid !== 0 && /^Cap(?:Prm|Eff):\t0*[1-9a-f]/mi.test(procFields)) return true;
-    if (cacheBirthMs === undefined) return false;
+    const uptime = /^(\d+)\.(\d{2})\b/.exec(readFileSync("/proc/uptime", "utf8"));
+    const nowMs = Date.now();
     const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
     const after = stat.lastIndexOf(") ");
-    if (after < 0) return false;
+    if (!uptime || after < 0) return false;
+    const uptimeTicks = Number(uptime[1]) * 100 + Number(uptime[2]);
     const startTicks = Number(stat.slice(after + 2).trim().split(/\s+/)[19]);
-    const btime = Number(/^btime (\d+)$/m.exec(readFileSync("/proc/stat", "utf8"))?.[1]);
-    return Number.isSafeInteger(startTicks) && Number.isSafeInteger(btime) && startTicks >= 0 &&
-      (btime + (startTicks + 1) / 100) * 1000 < cacheBirthMs - 5000;
+    return Number.isSafeInteger(uptimeTicks) && Number.isSafeInteger(startTicks) &&
+      startTicks >= 0 && uptimeTicks > startTicks + 1 &&
+      nowMs - (uptimeTicks - startTicks - 1) * 10 + 100 < cacheBirthMs;
   } catch { return false; }
 }
 
@@ -76,38 +76,43 @@ function processHoldsReconcileCache(cache: string, uid: number | undefined, cach
       return true;
     }
     if (procInfo.uid !== uid) continue;
+    let holderCwd: string | undefined;
+    try {
+      holderCwd = readlinkSync(`/proc/${pid}/cwd`).replace(/ \(deleted\)$/, "");
+      if (insideReconcileCache(holderCwd, cache)) return true;
+    } catch {
+      if (processZombie(pid)) continue;
+      if (!startedBeforeCache(pid, cacheBirthMs)) return true;
+    }
     try {
       const raw = readFileSync(`/proc/${pid}/environ`, "utf8");
-      const env: NodeJS.ProcessEnv = {};
+      const env: NodeJS.ProcessEnv = Object.create(null);
       for (const item of raw.split("\0")) {
         const eq = item.indexOf("=");
-        if (eq > 0) env[item.slice(0, eq)] = item.slice(eq + 1);
+        if (eq > 0) {
+          const key = item.slice(0, eq);
+          if (!Object.hasOwn(env, key)) env[key] = item.slice(eq + 1);
+        }
       }
       const configured = npmConfiguredCache(env);
       if (configured) {
-        const resolved = reconciliationCachePath(configured) ?? resolve(configured);
+        if (!isAbsolute(configured) && !holderCwd) return true;
+        const target = holderCwd ? resolve(holderCwd, configured) : resolve(configured);
+        const resolved = reconciliationCachePath(configured, holderCwd) ?? target;
         if (insideReconcileCache(resolved, cache)) return true;
+        try {
+          if (insideReconcileCache(realpathSync(target), cache)) return true;
+        } catch { /* Nonexistent configured cache path is already checked lexically above. */ }
       }
-    } catch (error) {
-      const code = (error as NodeJS.ErrnoException).code;
-      if (code === "EACCES" && nonDumpableDaemon(pid, uid, cacheBirthMs)) continue;
-      if (!processZombie(pid)) return true;
-      continue;
-    }
-    try {
-      if (insideReconcileCache(readlinkSync(`/proc/${pid}/cwd`), cache)) return true;
-    } catch (error) {
-      const code = (error as NodeJS.ErrnoException).code;
-      if (code === "EACCES" && nonDumpableDaemon(pid, uid, cacheBirthMs)) continue;
-      if (!processZombie(pid)) return true;
-      continue;
+    } catch {
+      if (processZombie(pid)) continue;
+      if (!startedBeforeCache(pid, cacheBirthMs)) return true;
     }
     let fds: string[];
     try { fds = readdirSync(`/proc/${pid}/fd`); }
-    catch (error) {
-      const code = (error as NodeJS.ErrnoException).code;
-      if (code === "EACCES" && nonDumpableDaemon(pid, uid, cacheBirthMs)) continue;
-      if (!processZombie(pid)) return true;
+    catch {
+      if (processZombie(pid)) continue;
+      if (!startedBeforeCache(pid, cacheBirthMs)) return true;
       continue;
     }
     for (const fd of fds) {
@@ -115,7 +120,9 @@ function processHoldsReconcileCache(cache: string, uid: number | undefined, cach
         if (insideReconcileCache(readlinkSync(`/proc/${pid}/fd/${fd}`), cache)) return true;
       } catch (error) {
         const code = (error as NodeJS.ErrnoException).code;
-        if (code !== "ENOENT" && code !== "ESRCH") return true;
+        if (code === "ENOENT" || code === "ESRCH") continue;
+        if (processZombie(pid)) break;
+        if (!startedBeforeCache(pid, cacheBirthMs)) return true;
       }
     }
   }

@@ -6,7 +6,7 @@ import { createServer } from 'node:http';
 import { connect } from 'node:net';
 import { chmodSync, cpSync, existsSync, lutimesSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, realpathSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { basename, delimiter, dirname, join, resolve } from 'node:path';
+import { basename, delimiter, dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { emitSentinel } from './sentinel.mjs';
 
@@ -192,7 +192,7 @@ export async function registryArrivalCell({ scenario, entry = join(repo, 'bin/di
     join(root, 'config/cotal/extensions/extensions.json'),
     join(root, 'config/cotal/extensions/node_modules', extension, 'package.json')];
   const readInstallation = () => installedFiles.map(path => readFileSync(path, 'utf8'));
-  let blackhole, blockedPort, networkChild, networkStarted, trickle, cacheWorker;
+  let blackhole, blockedPort, networkChild, networkStarted, trickle, cacheWorker, reconcileWorkerPid;
   let stagingDenied = false;
   let invalidStagingMetadata = true;
   const backlog = [];
@@ -880,10 +880,11 @@ exec npm "$@"
         assert.match(readFileSync(join(custody, '.owner'), 'utf8'), new RegExp(`^${updater.pid}\\n[^\\n]+\\n$`));
         assert(existsSync(join(custody, `.worker-${record.pid}`)), 'the running child has a published cache record');
         if (reconcileOrphan) {
+          reconcileWorkerPid = record.pid;
           const npmCache = join(custody, '_cacache');
           assert(readdirSync(join(npmCache, 'content-v2'), { recursive: true }).length > 0, 'npm populated the reconciliation cache');
           updater.kill(orphanSignal);
-          writeFileSync(releaseReconcile, 'finish');
+          writeFileSync(releaseReconcile, 'finish', { mode: 0o600 });
           assert.equal((await first).signal, orphanSignal);
           assert.throws(() => process.kill(record.owner, 0), { code: 'ESRCH' });
           const childExited = () => {
@@ -893,9 +894,10 @@ exec npm "$@"
           for (let deadline = Date.now() + 5000; !childExited() && Date.now() < deadline; )
             await new Promise(done => setTimeout(done, 20));
           assert(childExited(), 'the interrupted updater’s child exited');
+          reconcileWorkerPid = undefined;
           const reconcileScratch = join(env.TMPDIR, scratch);
           const compile = join(reconcileScratch, 'node-compile-cache');
-          mkdirSync(compile, { recursive: true });
+          mkdirSync(compile, { recursive: true, mode: 0o700 });
           const old = new Date(Date.now() - 61 * 60_000);
           for (const tree of [compile, npmCache])
             for (const name of readdirSync(tree, { recursive: true })) utimesSync(join(tree, name), old, old);
@@ -1118,12 +1120,11 @@ exec npm "$@"
     return { scenario, code: update.code, ...(scenario === 'concurrent' ? { updates } : {}), elapsedMs, selected, missing, requests, output: update.output, ...(retry ? { retry } : {}) };
   } finally {
     clearInterval(trickle);
-    if (reconcileOrphan) writeFileSync(releaseReconcile, 'finish');
-    if (cacheWorker && cacheWorker.exitCode === null && cacheWorker.signalCode === null) {
-      const exited = once(cacheWorker, 'exit');
-      cacheWorker.kill();
-      await exited;
+    if (reconcileOrphan) {
+      writeFileSync(releaseReconcile, 'finish', { mode: 0o600 });
+      await stopGroupAndWaitGone(reconcileWorkerPid);
     }
+    if (cacheWorker?.pid) await stopGroupAndWaitGone(cacheWorker.pid, cacheWorker);
     for (const socket of backlog) socket.destroy();
     blackhole?.kill('SIGKILL');
     if (networkChild) { try { process.kill(-networkChild, 'SIGKILL'); } catch {} }
@@ -1137,6 +1138,33 @@ exec npm "$@"
     if (existsSync(join(root, 'configured-cache'))) chmodSync(join(root, 'configured-cache'), 0o700);
     rmSync(root, { recursive: true, force: true });
   }
+}
+
+async function stopGroupAndWaitGone(pid, child) {
+  if (!pid) return;
+  try { process.kill(-pid, 'SIGKILL'); } catch {}
+  try { process.kill(-pid, 'SIGCONT'); } catch {}
+  try { process.kill(pid, 'SIGKILL'); } catch {}
+  try { process.kill(pid, 'SIGCONT'); } catch {}
+  if (child && child.exitCode === null && child.signalCode === null) await once(child, 'exit');
+  const gone = () => {
+    try { process.kill(-pid, 0); }
+    catch (error) {
+      if (error.code === 'ESRCH') {
+        try { process.kill(pid, 0); }
+        catch (inner) { if (inner.code === 'ESRCH') return true; }
+      }
+    }
+    try {
+      const stat = readFileSync(`/proc/${pid}/stat`, 'utf8');
+      return /^[ZX] /.test(stat.slice(stat.lastIndexOf(') ') + 2));
+    } catch (error) {
+      return error.code === 'ENOENT' || error.code === 'ESRCH';
+    }
+  };
+  for (let deadline = Date.now() + 10000; !gone() && Date.now() < deadline; )
+    await new Promise(done => setTimeout(done, 20));
+  assert(gone(), `process ${pid} exited before removing cell folder`);
 }
 
 async function reconcileSeedWorkerCell(entry, parent) {
@@ -1198,20 +1226,53 @@ process.exit(spawnSync(${JSON.stringify(realNpm)}, process.argv.slice(2), { stdi
     seedPid = recorded.pid;
     assert.equal(Number(groupStat(seedPid)?.[2]), seedPid, 'seed npm runs directly in its own detached process group');
     assert.deepEqual(recorded.keys, ['npm_config_cache'], 'duplicate empty NPM_CONFIG_CACHE was cleared');
-    const expectedSeedCache = join(root, 'config/cotal/seed/npm-cache');
-    assert.equal(recorded.cache, expectedSeedCache, 'seed npm uses a cache under seedDir outside cotal-update-reconcile-*');
+    assert.equal(dirname(recorded.cache), realpathSync(join(root, 'tmp')), 'seed npm temporary cache lives outside seed/ and extensions/');
+    assert.match(basename(recorded.cache), /^cotal-seed-cache-[a-zA-Z0-9]{6}$/, 'seed npm uses a per-run temporary cache');
     assert(!existsSync(join(custody, '_cacache')), 'seed npm never writes _cacache inside cotal-update-reconcile-*');
     assert.deepEqual(readdirSync(custody), ['.owner'], 'seed npm writes no .worker-* record or cache files in cotal-update-reconcile-*');
-    assert(readdirSync(join(expectedSeedCache, '_cacache/content-v2'), { recursive: true }).length > 0, 'seed npm populated its dedicated seed cache');
+    assert(readdirSync(join(recorded.cache, '_cacache/content-v2'), { recursive: true }).length > 0, 'seed npm populated its per-run temporary cache');
     writeFileSync(seedRelease, 'finish', { mode: 0o600 });
     const [code, signal] = await once(reconciler, 'close');
+    await stopGroupAndWaitGone(seedPid);
     seedPid = undefined;
     assert.equal(code, 0, `ext seed completed (${signal}):\n${seedOutput}`);
+    assert(!existsSync(recorded.cache), 'seed npm temporary cache is removed when the run ends');
+    assert.deepEqual(readdirSync(join(root, 'tmp')).filter(name => name.startsWith('cotal-seed-cache-')), [], 'no seed npm temporary caches remain in TMPDIR');
+    assert.deepEqual(readdirSync(join(root, 'config/cotal/seed')).sort(), ['authority.bak.json', 'authority.json', 'stamp.json', 'store', 'witness.json'], 'nothing new is left under the seed tree');
+    assert(!readdirSync(join(root, 'config/cotal/seed'), { recursive: true }).some(name => /(?:^|[\\/])(?:_cacache|npm-cache|cotal-seed-cache)/.test(name)), 'seed tree contains no npm cache');
+    const snapshotUrl = pathToFileURL(join(repo, 'implementations/cli/dist/lib/update-snapshot.js')).href;
+    const snapProbe = spawnSync(process.execPath, ['--input-type=module', '-e', `
+      import { existsSync, readdirSync } from 'node:fs';
+      import { join } from 'node:path';
+      import { snapshotUpdateClosure } from ${JSON.stringify(snapshotUrl)};
+      const snap = snapshotUpdateClosure();
+      let top = [], seedTop = [], cacheFiles = [];
+      try {
+        top = readdirSync(snap.path).sort();
+        seedTop = readdirSync(join(snap.path, 'seed')).sort();
+        cacheFiles = readdirSync(snap.path, { recursive: true }).filter(name => /(?:^|[\\\\/])(?:_cacache|npm-cache|cotal-seed-cache)/.test(name));
+      } finally {
+        snap.discard();
+      }
+      console.log(JSON.stringify({ top, seedTop, cacheFiles, discarded: !existsSync(snap.path) }));
+    `], {
+      cwd: root,
+      env: baseEnv,
+      encoding: 'utf8',
+    });
+    assert.ifError(snapProbe.error);
+    assert.equal(snapProbe.status, 0, snapProbe.stderr);
+    const snapInfo = JSON.parse(snapProbe.stdout.trim());
+    assert(snapInfo.top.includes('seed'), 'snapshot captured seed tree');
+    assert.deepEqual(snapInfo.seedTop, ['authority.bak.json', 'authority.json', 'stamp.json', 'store', 'witness.json'], 'snapshot seed tree matches clean seed contents');
+    assert.deepEqual(snapInfo.cacheFiles, [], 'snapshot does not contain an npm cache');
+    assert(snapInfo.discarded, 'discarded probe snapshot');
     return { scenario: 'reconcile-seed-worker', code, elapsedMs: Date.now() - started, selected: version, missing: 0, requests: [], output: seedOutput };
   } finally {
     writeFileSync(seedRelease, 'finish', { mode: 0o600 });
-    if (seedPid) { try { process.kill(-seedPid, 'SIGKILL'); } catch {} }
-    if (reconciler?.pid) { try { process.kill(-reconciler.pid, 'SIGKILL'); } catch {} }
+    if (seedPid) { try { process.kill(-seedPid, 'SIGKILL'); process.kill(-seedPid, 'SIGCONT'); } catch {} }
+    await stopGroupAndWaitGone(reconciler?.pid, reconciler);
+    await stopGroupAndWaitGone(seedPid);
     rmSync(root, { recursive: true, force: true });
   }
 }
@@ -1220,7 +1281,7 @@ async function reconcileDetachedHolderCell(entry, parent) {
   const started = Date.now();
   const root = mkdtempSync(join(parent, 'reconcile-holder-'));
   const version = JSON.parse(readFileSync(join(repo, 'bin/package.json'), 'utf8')).version;
-  for (const name of ['home', 'cotal', 'config', 'tmp', 'runtime', 'other-prefix', 'other-cotal'])
+  for (const name of ['home', 'cotal', 'config', 'tmp', 'runtime', 'other-prefix', 'other-cotal', 'updater-cwd', 'holder-cwd/nested', 'decoy-cache'])
     mkdirSync(join(root, name), { recursive: true, mode: 0o700 });
   const baseEnv = Object.fromEntries(Object.entries(childEnv).filter(([name]) => !/^npm_config_(?:before|offline|cache)$/i.test(name)));
   Object.assign(baseEnv, {
@@ -1232,9 +1293,12 @@ async function reconcileDetachedHolderCell(entry, parent) {
   const server = createServer((_request, response) => response.socket.destroy());
   await new Promise(done => server.listen(0, '127.0.0.1', done));
   const holders = [];
+  const updaterCwd = join(root, 'updater-cwd');
+  const holderNestedCwd = join(root, 'holder-cwd/nested');
+  const decoyCache = join(root, 'decoy-cache');
   const runUpdate = () => new Promise((done, reject) => {
     const child = spawn(process.execPath, [entry, 'update', '--self'], {
-      cwd: root,
+      cwd: updaterCwd,
       env: { ...baseEnv, npm_config_prefix: join(root, 'other-prefix'), COTAL_HOME: join(root, 'other-cotal'), npm_config_registry: `http://127.0.0.1:${server.address().port}`, npm_config_fetch_retries: '0', npm_config_cache: join(root, 'other-cache') },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
@@ -1275,23 +1339,86 @@ async function reconcileDetachedHolderCell(entry, parent) {
   };
   try {
     let last;
-    for (const mode of ['env', 'cwd', 'fd']) {
+    for (const mode of ['env', 'env-duplicate', 'env-relative', 'cwd', 'fd', 'non-dumpable']) {
       const { scratch, custody, blob, age } = makeAgedScratch();
       const ready = join(root, `holder-${mode}.ready`);
-      const script = mode === 'fd'
-        ? `const fs = require('node:fs'); const fd = fs.openSync(${JSON.stringify(blob)}, 'r'); fs.writeFileSync(${JSON.stringify(ready)}, String(fd), { mode: 0o600 }); setInterval(() => {}, 1000);`
-        : `require('node:fs').writeFileSync(${JSON.stringify(ready)}, '1', { mode: 0o600 }); setInterval(() => {}, 1000);`;
-      const holder = spawn(process.execPath, ['-e', script], {
-        cwd: mode === 'cwd' ? custody : root,
-        env: mode === 'env' ? { ...baseEnv, npm_config_cache: custody, NPM_CONFIG_CACHE: '' } : baseEnv,
-        detached: true,
-        stdio: 'ignore',
-      });
+      let holder;
+      if (mode === 'env-duplicate') {
+        const nodeScript = `require('node:fs').writeFileSync(${JSON.stringify(ready)}, process.env.npm_config_cache ?? '', { mode: 0o600 }); setInterval(() => {}, 1000);`;
+        const pyExecve = [
+          'import ctypes, os, sys',
+          'libc = ctypes.CDLL(None)',
+          'libc.execve.argtypes = [ctypes.c_char_p, ctypes.POINTER(ctypes.c_char_p), ctypes.POINTER(ctypes.c_char_p)]',
+          'libc.execve.restype = ctypes.c_int',
+          'prog = sys.argv[1].encode()',
+          'argv = (ctypes.c_char_p * 4)(prog, b"-e", sys.argv[2].encode(), None)',
+          'base = [f"{k}={v}".encode() for k, v in os.environ.items() if k.lower() != "npm_config_cache"]',
+          'items = [f"npm_config_cache={sys.argv[3]}".encode(), f"npm_config_cache={sys.argv[4]}".encode(), *base]',
+          'envp = (ctypes.c_char_p * (len(items) + 1))(*items, None)',
+          'libc.execve(prog, argv, envp)',
+          'os._exit(127)',
+        ].join('\n');
+        holder = spawn('python3', ['-c', pyExecve, process.execPath, nodeScript, custody, decoyCache], {
+          cwd: root,
+          env: baseEnv,
+          detached: true,
+          stdio: 'ignore',
+        });
+      } else if (mode === 'non-dumpable') {
+        const pyNonDumpable = [
+          'import ctypes, os, sys, time',
+          'fd = os.open(sys.argv[1], os.O_RDONLY)',
+          'rc = ctypes.CDLL(None).prctl(4, 0, 0, 0, 0)',
+          'if rc != 0: raise SystemExit(rc)',
+          'out = os.open(sys.argv[2], os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)',
+          'os.write(out, str(fd).encode())',
+          'os.close(out)',
+          'while True: time.sleep(1)',
+        ].join('\n');
+        holder = spawn('python3', ['-c', pyNonDumpable, blob, ready], {
+          cwd: custody,
+          env: baseEnv,
+          detached: true,
+          stdio: 'ignore',
+        });
+      } else {
+        const relCache = relative(holderNestedCwd, custody);
+        if (mode === 'env-relative') {
+          assert.notEqual(resolve(updaterCwd, relCache), custody);
+          assert.equal(resolve(holderNestedCwd, relCache), custody);
+        }
+        const script = mode === 'fd'
+          ? `const fs = require('node:fs'); const fd = fs.openSync(${JSON.stringify(blob)}, 'r'); fs.writeFileSync(${JSON.stringify(ready)}, String(fd), { mode: 0o600 }); setInterval(() => {}, 1000);`
+          : `require('node:fs').writeFileSync(${JSON.stringify(ready)}, '1', { mode: 0o600 }); setInterval(() => {}, 1000);`;
+        holder = spawn(process.execPath, ['-e', script], {
+          cwd: mode === 'cwd' ? custody : mode === 'env-relative' ? holderNestedCwd : root,
+          env: mode === 'env'
+            ? { ...baseEnv, npm_config_cache: custody, NPM_CONFIG_CACHE: '' }
+            : mode === 'env-relative'
+              ? { ...baseEnv, npm_config_cache: relCache }
+              : baseEnv,
+          detached: true,
+          stdio: 'ignore',
+        });
+      }
       holders.push(holder);
       for (let deadline = Date.now() + 10000; !existsSync(ready) && holder.exitCode === null && Date.now() < deadline; )
         await new Promise(done => setTimeout(done, 20));
       assert(existsSync(ready), `detached ${mode} holder started`);
       assert.equal(Number(groupStat(holder.pid)?.[2]), holder.pid, `detached ${mode} holder leads its own group outside recorded workers`);
+      if (mode === 'env-duplicate') {
+        assert.equal(readFileSync(ready, 'utf8'), custody, 'Node takes the first exact duplicate npm_config_cache entry');
+        assert.deepEqual(
+          readFileSync(`/proc/${holder.pid}/environ`, 'utf8').split('\0').filter(item => item.startsWith('npm_config_cache=')),
+          [`npm_config_cache=${custody}`, `npm_config_cache=${decoyCache}`],
+          'holder environ holds exact duplicate npm_config_cache keys',
+        );
+      }
+      if (mode === 'non-dumpable') {
+        assert.throws(() => readFileSync(`/proc/${holder.pid}/environ`), { code: 'EACCES' });
+        assert.throws(() => readlinkSync(`/proc/${holder.pid}/cwd`), { code: 'EACCES' });
+        assert.throws(() => readdirSync(`/proc/${holder.pid}/fd`), { code: 'EACCES' });
+      }
       age();
       const whileRunning = await runUpdate();
       assert.equal(whileRunning.code, 0, whileRunning.output);
@@ -1304,12 +1431,8 @@ async function reconcileDetachedHolderCell(entry, parent) {
       const whileStopped = await runUpdate();
       assert.equal(whileStopped.code, 0, whileStopped.output);
       assert(existsSync(custody), `aged reconciliation cache is kept while detached ${mode} holder is SIGSTOPped`);
-      const exited = once(holder, 'exit');
-      process.kill(-holder.pid, 'SIGKILL');
-      process.kill(-holder.pid, 'SIGCONT');
-      await exited;
-      for (let deadline = Date.now() + 5000; groupStat(holder.pid) && !/^[ZX]$/.test(groupStat(holder.pid)[0]) && Date.now() < deadline; )
-        await new Promise(done => setTimeout(done, 20));
+      await stopGroupAndWaitGone(holder.pid, holder);
+      assert.equal(groupStat(holder.pid), null, `detached ${mode} holder pid is gone`);
       age();
       last = await runUpdate();
       assert.equal(last.code, 0, last.output);
@@ -1317,9 +1440,7 @@ async function reconcileDetachedHolderCell(entry, parent) {
     }
     return { scenario: 'reconcile-detached-holder', code: last.code, elapsedMs: Date.now() - started, selected: version, missing: 0, requests: [], output: last.output };
   } finally {
-    for (const holder of holders) {
-      if (holder.pid) { try { process.kill(-holder.pid, 'SIGCONT'); process.kill(-holder.pid, 'SIGKILL'); } catch {} }
-    }
+    for (const holder of holders) await stopGroupAndWaitGone(holder.pid, holder);
     server.closeAllConnections();
     await new Promise(done => server.close(done));
     rmSync(root, { recursive: true, force: true });
