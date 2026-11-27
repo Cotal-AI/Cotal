@@ -1,22 +1,30 @@
 import { DEV_OWNER, assertLifecycleToken, peerLabel, type CompletionResult, type FlagSpec, type FlagValues, type ParsedArgs, type Presence } from "@cotal-ai/core";
 import {
+  authDir,
   brokerAddressForDisplay,
   brokerUrlKey,
   cachedPreferences,
+  canonicalRoot,
   checkServer,
   codeSpan,
   CommandFailure,
+  findCotalRoot,
   findMesh,
   instanceIdShaped,
   isCommandFailure,
   isConnectRefusal,
+  isGenuineSpace,
   isWorkspaceTargetError,
   jsonFlag,
+  legacyStackOtherHome,
+  meshesForRoot,
   oneLine,
   renderReport,
   plainFlag,
   preparedNeverStarted,
+  preparedSpaceAt,
   presentationOf,
+  projectRootProblem,
   resolveSeatControlTarget,
   targetFlags,
   writeResult,
@@ -33,6 +41,7 @@ import {
   resolveMeshTarget,
   resolvePreference,
   retainedLegacyBroker,
+  soleSpaceOf,
   spaceRootTarget,
   stoppedStack,
   workspaceErrorParts,
@@ -55,6 +64,7 @@ import { defaultPersonaPin, directPersonaPath } from "../lib/spawn-defaults.js";
 import { channelSeedRestartBlock } from "../lib/channel-seed.js";
 import { preparedRootWriteProblem } from "../lib/paths.js";
 import { legacyRestartAddressProblem } from "../lib/broker-service.js";
+import { retainedOpenSpace } from "../lib/legacy-start.js";
 import { rootStoreProblem } from "../lib/store-dir.js";
 import { askManager, scatterManager, managerFailure, readFailure, refuseUnregisteredManager, startStackManagerRemedy, unansweredDescribeRefusal, type ScatterInstanceLiveness, type ScatterInstanceReply, type ScatterReply, type ManagerPin, managersByInstance, type ManagerCandidate, askYourManagers, locateSeat, managerReadFailure, refusedManagers, seatMissRefusal } from "@cotal-ai/workspace/control";
 
@@ -661,6 +671,47 @@ function liveSeatsRemedy(v: FlagValues<typeof psFlags>): string {
   return `run ${psRerun(v)} without --slots to list live agents`;
 }
 
+/** Surface an unusable local stack journal when `ps` fails against the local stack or its saved broker address. */
+function psUnusableJournalRefusal(e: unknown, v: FlagValues<typeof psFlags>): CommandFailure | undefined {
+  if (isWorkspaceTargetError(e) && e.code === "not-started" && e.details.root !== undefined && !e.details.rootMissing) {
+    const saved = v.server === undefined ? undefined : e.details.server ?? retainedLegacyBroker(e.details.root)?.server;
+    if (v.server === undefined || (saved !== undefined && brokerUrlKey(v.server) === brokerUrlKey(saved))) {
+      const journal = unusableStackJournal(e.details.root);
+      if (journal) return new CommandFailure("refused", journal.code, journal.message, { target: spaceRootTarget(e.details), remedy: journal.remedy });
+    }
+  }
+  if (v.server === undefined || v.creds !== undefined || !isConnectRefusal(e) || e.code !== "TARGET_UNAVAILABLE") return undefined;
+  if (typeof e.target?.root === "string") {
+    const { root, space } = e.target;
+    if (projectRootProblem(root) !== undefined) return undefined;
+    const entry = typeof space === "string" ? findMesh(space) : undefined;
+    const sameServer = entry
+      ? entry.origin === "up" && canonicalRoot(entry.root) === canonicalRoot(root) && brokerUrlKey(entry.server) === brokerUrlKey(v.server)
+      : isGenuineSpace(root) && (() => {
+          const saved = retainedLegacyBroker(root)?.server;
+          return saved !== undefined && brokerUrlKey(v.server) === brokerUrlKey(saved);
+        })();
+    if (!sameServer) return undefined;
+    const journal = unusableStackJournal(root);
+    if (!journal) return undefined;
+    const targetSpace = entry ? entry.space : v.space ?? preparedSpaceAt(root)?.space;
+    return new CommandFailure("refused", journal.code, journal.message, { target: spaceRootTarget({ space: targetSpace, root }), remedy: journal.remedy });
+  }
+  if (e.target?.root === undefined && v.space !== undefined) {
+    const root = findCotalRoot(process.cwd());
+    if (!isGenuineSpace(root) || projectRootProblem(root) !== undefined || meshesForRoot(root).length > 0 || preparedSpaceAt(root) !== undefined) return undefined;
+    try { if (legacyStackOtherHome(root) !== undefined) return undefined; } catch { return undefined; }
+    const retained = retainedLegacyBroker(root);
+    if (!retained || brokerUrlKey(v.server) !== brokerUrlKey(retained.server)) return undefined;
+    let space: string | undefined;
+    try { space = retained.open ? retainedOpenSpace(root) : soleSpaceOf(authDir(root)); } catch { space = undefined; }
+    if (space !== v.space) return undefined;
+    const journal = unusableStackJournal(root);
+    if (journal) return new CommandFailure("refused", journal.code, journal.message, { target: spaceRootTarget({ space: v.space, root }), remedy: journal.remedy });
+  }
+  return undefined;
+}
+
 export async function ps(args: ParsedArgs): Promise<void> {
   const v = args.values as FlagValues<typeof psFlags>;
   // #651 presentations: --wide is a human layout and --json the document that already carries every
@@ -686,13 +737,8 @@ export async function ps(args: ParsedArgs): Promise<void> {
     }
     census = await readSeats(v, command, on);
   } catch (e) {
-    if (isWorkspaceTargetError(e) && e.code === "not-started" && e.details.root !== undefined && !e.details.rootMissing) {
-      const saved = v.server === undefined ? undefined : e.details.server ?? retainedLegacyBroker(e.details.root)?.server;
-      if (v.server === undefined || (saved !== undefined && brokerUrlKey(v.server) === brokerUrlKey(saved))) {
-        const journal = unusableStackJournal(e.details.root);
-        if (journal) throw new CommandFailure("refused", journal.code, journal.message, { target: spaceRootTarget(e.details), remedy: journal.remedy });
-      }
-    }
+    const journalRefusal = psUnusableJournalRefusal(e, v);
+    if (journalRefusal) throw journalRefusal;
     const parts = isConnectRefusal(e) ? e.parts : isWorkspaceTargetError(e) && e.code === "not-started" ? workspaceErrorParts({ kind: "target", error: e }) : undefined;
     if (parts?.restartRoot !== undefined) {
       const cause = isConnectRefusal(e) ? e.cause : e;
