@@ -1,5 +1,11 @@
 # @cotal-ai/connector-codex
 
+## 0.183.0
+
+### Patch Changes
+
+- 6930623: Resume a signed-in native conversation on the same computer without asking for approval again when the space still accepts its original approval.
+
 ## 0.182.1
 
 ### Patch Changes

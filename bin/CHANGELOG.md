@@ -1,5 +1,66 @@
 # cotal-ai
 
+## 0.183.0
+
+### Minor Changes
+
+- 335d8e9: Launches that use a project's MCP servers, `spawn.env` or persona launch options now require a trusted project folder, so review the folder and run `cotal trust <path>` before retrying.
+  
+  SDK callers of `loadCotalConfig` must pass a project trust check as the second argument, such as `isTrustedProject` from `@cotal-ai/workspace`.
+  
+  The workspace exports `projectTrustForPreview` and `previewPersonaReader` for read-only plans that predict the legacy upgrade without recording or granting trust. Do not use them to authorize a launch.
+
+### Patch Changes
+
+- 6813caf: Qualify the `cotal ps` recovery guidance for `--no-manager` controller stacks when `--max-payload` is below the manager's 263168-byte minimum.
+- 297bd76: Detached Jcode spawns now show the corrected `--model` retry when a provider prefix precedes a catalog model ID that contains a slash.
+- 7898871: A `--creds` join refused for a missing channel read grant now prints a complete owner mint, with the space, `--no-persona` and a private `--out` file the guest can be handed, instead of an incomplete command that minted a standing credential under the space's project.
+- 5906e3b: `cotal ext add` refuses a local or third-party extension whose declared core peer range does not match the bundled core, without changing the installed extensions.
+- 3cceeab: Name the tools and arguments in `cotal_persona` results instead of spelling out their call syntax.
+- 447e860: Reclaim abandoned extension staging copies from the previous connector configuration without removing its installed connectors.
+- 6930623: Resume a signed-in native conversation on the same computer without asking for approval again when the space still accepts its original approval.
+- cb6e235: Restore a regular stdout file to its prior size when a JSON refusal write stops partway, while keeping the refusal exit status and the text report on stderr.
+- 02dac11: Manual `cotal update --self` can repair damaged first-party extensions from npm's cache without checking for a newer release when npm is offline.
+- a7b8614: Point Windows readers to setup commands that work in Windows PowerShell and Command Prompt.
+- Updated dependencies [6813caf]
+- Updated dependencies [82c5f58]
+- Updated dependencies [a0e9aae]
+- Updated dependencies [297bd76]
+- Updated dependencies [7898871]
+- Updated dependencies [c3236a3]
+- Updated dependencies [f00e874]
+- Updated dependencies [5906e3b]
+- Updated dependencies [bb5ecef]
+- Updated dependencies [3cceeab]
+- Updated dependencies [acd3c32]
+- Updated dependencies [335d8e9]
+- Updated dependencies [0cf031c]
+- Updated dependencies [447e860]
+- Updated dependencies [e21aff3]
+- Updated dependencies [6930623]
+- Updated dependencies [3ceb545]
+- Updated dependencies [040b05d]
+- Updated dependencies [e08738d]
+- Updated dependencies [0c10988]
+- Updated dependencies [e4e22eb]
+- Updated dependencies [eb9fd3d]
+- Updated dependencies [cb6e235]
+- Updated dependencies [a961dab]
+- Updated dependencies [06629ca]
+- Updated dependencies [02dac11]
+- Updated dependencies [a7b8614]
+- Updated dependencies [da7db7e]
+  - @cotal-ai/cli@0.183.0
+  - @cotal-ai/connector-core@0.183.0
+  - @cotal-ai/core@0.183.0
+  - @cotal-ai/manager@0.183.0
+  - @cotal-ai/workspace@0.183.0
+  - @cotal-ai/auth@0.183.0
+  - @cotal-ai/runtime@0.183.0
+  - @cotal-ai/delivery@0.183.0
+  - @cotal-ai/registry@0.183.0
+  - @cotal-ai/seat@0.183.0
+
 ## 0.182.1
 
 ### Patch Changes

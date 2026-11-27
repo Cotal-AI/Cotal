@@ -1,5 +1,13 @@
 # @cotal-ai/connector-claude-code
 
+## 0.183.0
+
+### Patch Changes
+
+- 3cceeab: Name the tools and arguments in `cotal_persona` results instead of spelling out their call syntax.
+- e21aff3: Running `cotal update --self` repairs a moved Codex marketplace even when the CLI packages are already current.
+- 6930623: Resume a signed-in native conversation on the same computer without asking for approval again when the space still accepts its original approval.
+
 ## 0.182.1
 
 ### Patch Changes

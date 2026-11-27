@@ -1,5 +1,23 @@
 # @cotal-ai/auth
 
+## 0.183.0
+
+### Patch Changes
+
+- 6930623: Resume a signed-in native conversation on the same computer without asking for approval again when the space still accepts its original approval.
+- eb9fd3d: Keep retrying interrupted hosted workflows through a 30-minute authority outage and log when automatic recovery starts retrying or gives up.
+- Updated dependencies [a0e9aae]
+- Updated dependencies [c3236a3]
+- Updated dependencies [335d8e9]
+- Updated dependencies [447e860]
+- Updated dependencies [6930623]
+- Updated dependencies [0c10988]
+- Updated dependencies [a961dab]
+- Updated dependencies [06629ca]
+  - @cotal-ai/core@0.183.0
+  - @cotal-ai/workspace@0.183.0
+  - @cotal-ai/lang@0.183.0
+
 ## 0.182.1
 
 ### Patch Changes
