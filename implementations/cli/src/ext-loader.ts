@@ -15,10 +15,14 @@ import {
   jsonFlag,
   plainFlag,
   connectorInstallHint,
+  extensionCorePeerProblem,
   extensionLocalProcesses,
   extensionProvides,
+  extensionReinstallAdvice,
   importInstalledExtension,
+  installedExtensionPackage,
   isBundledDesktopRuntime,
+  isReleaseExtension,
   loadExtensionsManifest,
   materializeFromManifest,
   type CachedCommand,
@@ -214,7 +218,7 @@ export async function materializeExtensionCommand(stub: Command): Promise<Comman
   if (!pkg) return stub; // not a stub — already live
   const ext = loadExtensionsManifest().extensions.find((e) => e.pkg === pkg);
   if (!ext) throw new Error(`extension ${pkg} vanished from the manifest - \`cotal ext add\` it again`);
-  if (ext.pkg.startsWith("@cotal-ai/") && ext.version !== cliVersion()) {
+  if (isReleaseExtension(ext) && ext.version !== cliVersion()) {
     const seeded = Object.values(SEEDED_EXTENSIONS).some((item) => item.pkg === ext.pkg);
     if (!seeded && isBundledDesktopRuntime()) {
       throw new Error(`this Cotal app runs ${cliVersion()}, and another Cotal install on this account moved the shared extension ${ext.pkg} to ${ext.version}`);
@@ -252,12 +256,25 @@ function seededVersionSkew(ref: ExtensionRef): string | undefined {
   const ext = loadExtensionsManifest().extensions.find((candidate) =>
     extensionProvides(candidate).some((provided) => provided.kind === ref.kind && provided.name === ref.name),
   );
-  if (!ext || ext.version === cliVersion() || !ext.pkg.startsWith("@cotal-ai/")) return undefined;
+  if (!ext || ext.version === cliVersion() || !isReleaseExtension(ext)) return undefined;
   const seeded = Object.values(SEEDED_EXTENSIONS).some((item) => item.pkg === ext.pkg);
   if (!seeded && isBundledDesktopRuntime()) {
     return `this Cotal app runs ${cliVersion()}, and another Cotal install on this account moved the shared extension ${ext.pkg} to ${ext.version}`;
   }
   return `${ext.pkg} is ${ext.version} and this cotal is ${cliVersion()} - run \`${seeded ? "cotal ext seed" : "cotal update --self"}\` to ${seeded ? "bring it to this version" : "reconcile this installation"}`;
+}
+
+/** Why a non-release `@cotal-ai/*` package providing `ref` cannot load against this core, or undefined. */
+export function nonReleaseCoreSkew(ref: ExtensionRef): string | undefined {
+  if (!installedEnabled) return undefined;
+  const ext = loadExtensionsManifest().extensions.find((candidate) =>
+    extensionProvides(candidate).some((provided) => provided.kind === ref.kind && provided.name === ref.name),
+  );
+  if (!ext || !ext.pkg.startsWith("@cotal-ai/") || isReleaseExtension(ext)) return undefined;
+  const onDisk = installedExtensionPackage(ext.pkg);
+  if (!onDisk) return undefined;
+  const problem = extensionCorePeerProblem(ext.pkg, onDisk.peerDependencies?.["@cotal-ai/core"]);
+  return problem ? `${problem} ${extensionReinstallAdvice(ext)}` : undefined;
 }
 
 /** Resolve and probe an extension runtime before a manifest command mutates local or mesh state. */

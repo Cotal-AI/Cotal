@@ -14,6 +14,7 @@ export * from "./default-agent.js";
 export * from "./official-connectors.js";
 export * from "./official-runtimes.js";
 export * from "./extensions.js";
+export * from "./extension-core-peer.js";
 export * from "./harness-install.js";
 export * from "./connector-retention.js";
 export * from "./materialize.js";

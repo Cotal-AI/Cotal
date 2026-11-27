@@ -1143,6 +1143,9 @@ importers:
       ajv:
         specifier: ^8.20.0
         version: 8.20.0
+      semver:
+        specifier: 7.8.5
+        version: 7.8.5
       string-width:
         specifier: ^8.2.1
         version: 8.2.1
