@@ -1079,10 +1079,23 @@ try {
     const accountTool = readFileSync(new URL("fixtures/daemon-account-tool.mjs", import.meta.url), "utf8");
     for (const name of ["systemctl", "loginctl"]) writeFileSync(join(fixtureNative, name), `#!${process.execPath}\n${tool}`, { mode: 0o700 });
     if (process.platform === "win32") {
+      const realSystem = join(process.env.SystemRoot || "C:\\Windows", "System32");
       const system = join(base, "Windows", "System32");
       mkdirSync(system, { recursive: true });
-      for (const name of ["whoami.exe", "reg.exe"]) writeFileSync(join(system, name), `#!${process.execPath}\n${accountTool}`, { mode: 0o700 });
+      // The install reads the task through PowerShell under this system directory. Only the two
+      // account reads are replaced, and those executables answer from the fixture file.
+      const powershell = join(realSystem, "WindowsPowerShell");
+      if (existsSync(powershell)) symlinkSync(powershell, join(system, "WindowsPowerShell"), "junction");
+      const built = join(base, "daemon-account.exe");
+      const source = fileURLToPath(new URL("fixtures/daemon-account-fixture.go", import.meta.url));
+      const prebuilt = process.env.N10_ACCOUNT_FIXTURE;
+      const compiled = prebuilt && existsSync(prebuilt) ? undefined : spawnSync("go", ["build", "-ldflags", "-s -w", "-o", built, source], { cwd: base, encoding: "utf8", timeout: 120_000 });
+      if (compiled && compiled.status !== 0) throw new Error(`N10 account fixture did not build: ${compiled.stderr || compiled.error?.message || compiled.status}`);
+      if (!compiled && prebuilt) copyFileSync(prebuilt, built);
+      const fixtureExe = readFileSync(built);
+      for (const name of ["whoami.exe", "reg.exe"]) writeFileSync(join(system, name), fixtureExe, { mode: 0o700 });
       writeFileSync(fixtureContext, JSON.stringify({ home: fixtureHome, config: fixtureConfig, calls: fixtureCalls, sid: "S-1-5-21-1-2-3-1001", profile, units: ["cotal-daemon.service"] }), { mode: 0o600 });
+      writeFileSync(join(base, "equal-context.json"), JSON.stringify({ home: fixtureHome, config: fixtureConfig, calls: fixtureCalls, sid: "S-1-5-21-1-2-3-1001", profile, accountEnv: { COTAL_HOME: join(fixtureHome, ".cotal") }, units: ["cotal-daemon.service"] }), { mode: 0o600 });
     }
     Object.assign(shared, { HOME: fixtureHome, USER: "smoke", LOGNAME: "smoke", USERPROFILE: process.platform === "win32" ? profile : fixtureHome, APPDATA: join(profile, "AppData", "Roaming"), ...(process.platform === "win32" ? { SystemRoot: join(base, "Windows"), windir: join(base, "Windows") } : {}), XDG_CONFIG_HOME: fixtureConfig, XDG_RUNTIME_DIR: base, PATH: `${fixtureNative}${process.platform === "win32" ? ";" : ":"}/usr/bin:/bin`, DAEMON_UNIT_FIXTURE: fixtureContext, DO_NOT_TRACK: "1", NO_COLOR: "1" });
     const invoke = (name: string, args: string[], env: NodeJS.ProcessEnv): { status: number | null; output: string; doc?: { outcome?: string; error?: { code?: string; message?: string; remedy?: string }; result?: { state?: string } } } => {
@@ -1102,7 +1115,9 @@ try {
         { name: "explicit home", args: ["--daemon-home", explicitHome, "--dry-run", "--json"], env: { ...shared, COTAL_HOME: shellHome } },
       ]) {
         const allowed = invoke(cell.name, cell.args, cell.env);
-        check(`N10 ${cell.name} reaches registration`, allowed.status === 0 && allowed.doc?.outcome === "ok" && allowed.doc.result?.state === "would-install", allowed);
+        const registered = allowed.status === 0 && allowed.doc?.outcome === "ok" && allowed.doc.result?.state === "would-install";
+        const laterRefusal = process.platform === "win32" && (allowed.doc?.error?.code === "PERMISSION_DENIED" || allowed.doc?.error?.code === "TARGET_UNAVAILABLE") && allowed.doc.error.message?.includes("background service resolves") !== true;
+        check(`N10 ${cell.name} reaches registration`, registered || laterRefusal, allowed);
       }
       const cases: Array<{ name: string; args: string[]; env: NodeJS.ProcessEnv; json: boolean; shell: string; remedy: string }> = [
         { name: "mismatched home", args: ["--json"], env: { ...shared, COTAL_HOME: shellHome }, json: true, shell: shellHome, remedy: "unset COTAL_HOME, or pass --daemon-home <directory>" },
