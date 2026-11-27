@@ -124,6 +124,44 @@ function assertAttemptsDestinationRefusal(root: string, run: (...args: string[])
   assert.equal(existsSync(join(root, ".cotal", "maintenance", "lock.json")), false);
 }
 
+function assertReservedMaintenanceDestinationRefusal(root: string, run: (...args: string[]) => SpawnSyncReturns<string>): void {
+  const maintenance = join(root, ".cotal", "maintenance");
+  const journalDir = join(maintenance, "v1");
+  const lock = join(maintenance, "lock.json");
+  const reaper = join(maintenance, "lock-reaper.json");
+  const journal = join(journalDir, "journal.json");
+  const journalBefore = readFileSync(journal);
+  const attemptsBefore = attemptResidue(root).sort();
+  const cases = [
+    [".cotal/maintenance/v1/private-artifact", `is inside this root's maintenance journal directory ${journalDir}`, journalDir],
+    [".cotal/maintenance/lock.json", "is this root's maintenance lock path", lock],
+    [".cotal/maintenance/lock.json/nested", `is inside this root's maintenance lock path ${lock}`, lock],
+    [".cotal/maintenance/lock-reaper.json", "is this root's maintenance lock recovery path", reaper],
+  ] as const;
+  for (const [relativePath, relation, reserved] of cases) {
+    const destination = resolve(root, relativePath);
+    const message = `the backup destination ${destination} ${relation}; nothing was written`;
+    const remedy = `name a destination outside ${reserved}`;
+    const plain = run("backup", "create", relativePath, "--only", "registry", "--plain");
+    assert.equal(plain.status, 1, plain.stderr);
+    assert.match(plain.stderr, /Code:\s+USAGE_INVALID/);
+    assert.ok(plain.stderr.includes(message) && plain.stderr.includes(remedy), plain.stderr);
+    const json = run("backup", "create", relativePath, "--json");
+    assert.equal(json.status, 1, `${json.stdout}${json.stderr}`);
+    const envelope = JSON.parse(json.stdout);
+    assert.equal(envelope.outcome, "refused");
+    assert.equal(envelope.error.code, "USAGE_INVALID");
+    assert.equal(envelope.error.message, message);
+    assert.equal(envelope.error.remedy, remedy);
+    assert.deepEqual(envelope.target, { directory: destination, overlaps: reserved });
+    assert.equal(existsSync(destination), false);
+  }
+  assert.deepEqual(readFileSync(journal), journalBefore);
+  assert.deepEqual(attemptResidue(root).sort(), attemptsBefore);
+  assert.equal(existsSync(lock), false);
+  assert.equal(existsSync(reaper), false);
+}
+
 function assertMissingCleanupDestinationRefusal(root: string, run: (...args: string[]) => SpawnSyncReturns<string>): void {
   const auth = join(root, ".cotal", "auth");
   const journal = join(root, ".cotal", "maintenance", "v1", "journal.json");
@@ -353,6 +391,7 @@ async function backupStageFaultScenario(): Promise<void> {
     const insidePlain = run("backup", "create", join(sourcePath, "bk1"));
     assert.ok(insidePlain.status === 1 && !insidePlain.stderr.includes("Usage"), `that refusal prints no command help\n${insidePlain.stderr}`);
     assertAttemptsDestinationRefusal(root, run);
+    assertReservedMaintenanceDestinationRefusal(root, run);
     // So is one inside the space's material folder, which `clean all` removes with whatever it
     // holds, named directly or through a link outside `.cotal`.
     const material = readdirSync(join(root, ".cotal")).find((entry) => entry.startsWith("space."));

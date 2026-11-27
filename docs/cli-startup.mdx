@@ -843,10 +843,10 @@ is also compared with the recorded pin before maintenance state changes, even wh
 running. A different IdP refuses without refreshing members or rewriting their journal. The controller
 checks again under its lock, and the provider repeats its authoritative checks during preparation,
 before any member launches. Later races or failures retain their records and are not rolled back.
-It starts the broker, initializes streams, records provisional public trust metadata, then starts
-the `stack-auth` service. Only that exact process's provider readiness supplies the final endpoints.
-Delivery uses the same hosting-root authority as native startup. No user caller is replaced by a
-static or borrowed caller.
+It starts the broker, initializes streams, records provisional public trust metadata, starts
+`stack-delivery`, and then starts the `stack-auth` service. Only that exact process's provider
+readiness supplies the final endpoints. Delivery uses the same hosting-root authority as native
+startup. No user caller is replaced by a static or borrowed caller.
 
 The manager requires an existing signed-in, granted CLI login. First enable can therefore start
 the other members and return partial `OPERATION_PARTIAL` with native cause `AUTH_REQUIRED`, while
