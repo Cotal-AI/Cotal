@@ -135,6 +135,7 @@ function checkCreateInputGuidance(run: (args: string[], input?: Buffer) => Spawn
       "--space", "meshspace", `--on=${on}`, "--plain"], piped ? Buffer.from(body) : undefined);
     check(`persona create ${source} with --on=${on} preserves the original command in its guidance`,
       refused.status === 1 && refused.stderr.includes("USAGE_INVALID") &&
+      refused.stderr.includes("cotal ps --space meshspace --plain") && !refused.stderr.includes("`cotal ps`") &&
       refused.stderr.includes("replace only the --on value in the original command") &&
       refused.stderr.includes("pipe the original input into the command again") === piped &&
       !refused.stderr.includes("cotal persona create retry-input --on") && !refused.stderr.includes(body) &&

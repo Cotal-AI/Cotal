@@ -134,7 +134,16 @@ registry.register({ kind: "runtime", name: "probe", available() {
   }
   const named = run(["models", "--json", "--space", "nope"]);
   check("models --json --space <unknown> names the space it could not find", named.status === 2 && named.envelope?.error?.code === "TARGET_NOT_FOUND" && /no space named "nope"/.test(named.envelope.error.message), shown(named));
-  check("an unknown --space refusal names where to look in its remedy", named.envelope?.error?.remedy === "see `cotal space`", named.envelope?.error);
+  check("an unknown --space refusal names the JSON inventory", named.envelope?.error?.remedy === "see `cotal space --json`", named.envelope?.error);
+  for (const request of [["space", "show", "nope"], ["who", "--space", "nope"]]) {
+    const refusal = run([...request, "--json"]);
+    const words = /`cotal (space --json)`/.exec(refusal.envelope?.error?.remedy ?? "")?.[1];
+    const list = words && run(words.split(" "));
+    check(`${request[0]} offers a JSON inventory that runs without the unknown target`,
+      refusal.status === 2 && !!list && list.status === 0 && list.envelope?.command === "space" && list.envelope.outcome === "ok", shown(refusal));
+    const plain = run([...request, "--plain"]);
+    check(`${request[0]} keeps plain output in the suggested inventory`, plain.status === 2 && plain.stderr.includes("`cotal space --plain`"), shown(plain));
+  }
 }
 
 // ── ps and models: a home reached through a symlink is still no project ──────────────────────────

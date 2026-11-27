@@ -13,6 +13,16 @@ const within = (root: string, path: string): boolean => {
   return !isAbsolute(rel) && rel !== ".." && !rel.startsWith(`..${sep}`);
 };
 
+/** The npm prefix of a retained generation package, or none when the path is not one. */
+function generationPrefix(packageRoot: string): string | undefined {
+  const marker = `${sep}lib${sep}.cotal-generations${sep}`;
+  const at = packageRoot.lastIndexOf(marker);
+  if (at < 0) return undefined;
+  const rest = packageRoot.slice(at + marker.length).split(sep);
+  if (rest.length !== 2 || !/^[a-f0-9]{32}$/.test(rest[0]!) || rest[1] !== "cotal-ai") return undefined;
+  return packageRoot.slice(0, at);
+}
+
 /** Resolve without importing the Manager or loading its addon into the updater. */
 function managerPty(entry: string): string | undefined {
   for (const modules of createRequire(entry).resolve.paths("@cotal-ai/manager") ?? []) {
@@ -32,7 +42,8 @@ function managerPty(entry: string): string | undefined {
 }
 
 /** A missing JS entry leaves no mapping. Require a live native dependency from a complete,
- * separate npm package at the former launch location or its renamed prefix. An arbitrary
+ * separate npm package at the former launch location or its renamed prefix. A retained
+ * generation is that prefix plus `lib/.cotal-generations/<32 hex>/cotal-ai`. An arbitrary
  * mapped module, a shared runtime or an empty file list does not establish separation. */
 export function managerOutsideInstall(pin: ProcessIdentityRecord | { pid: number }, argv: readonly string[], ownEntry: string, env: Record<string, string>): boolean {
   if (!("token" in pin) || env.NODE_OPTIONS || env.NODE_PATH) return false;
@@ -46,7 +57,10 @@ export function managerOutsideInstall(pin: ProcessIdentityRecord | { pid: number
     const root = statSync(`${proc}/root`, { bigint: true }), ours = statSync("/", { bigint: true });
     if (root.dev !== ours.dev || root.ino !== ours.ino) return false;
     const ownRoot = dirname(dirname(ownEntry));
-    const ownStore = join(dirname(dirname(ownRoot)), ".cotal-generations");
+    const ownPrefix = generationPrefix(ownRoot);
+    const ownStore = ownPrefix === undefined
+      ? join(dirname(dirname(ownRoot)), ".cotal-generations")
+      : join(ownPrefix, "lib", ".cotal-generations");
     const ownPty = managerPty(ownEntry);
     if (!ownPty) return false;
     const native = statSync(ownPty, { bigint: true });
@@ -75,8 +89,9 @@ export function managerOutsideInstall(pin: ProcessIdentityRecord | { pid: number
       if (!permissions!.includes("x") || path !== name || !path.endsWith(bundledPty)) continue;
       const packageRoot = path.slice(0, -bundledPty.length);
       const foreignEntry = join(packageRoot, "dist/cotal.js");
-      if (!foreignEntry.endsWith(npmEntry) || isOwn(foreignEntry)) continue;
-      const launchPrefix = launch.slice(0, -npmEntry.length), mappedPrefix = foreignEntry.slice(0, -npmEntry.length);
+      const launchPrefix = launch.slice(0, -npmEntry.length);
+      const mappedPrefix = foreignEntry.endsWith(npmEntry) ? foreignEntry.slice(0, -npmEntry.length) : generationPrefix(packageRoot);
+      if (!mappedPrefix || isOwn(foreignEntry)) continue;
       const movedLaunch = mappedPrefix !== launchPrefix && dirname(mappedPrefix) === dirname(launchPrefix);
       if (mappedPrefix !== launchPrefix && !movedLaunch) continue;
       if (movedLaunch) {

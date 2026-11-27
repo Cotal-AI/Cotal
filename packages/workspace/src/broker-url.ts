@@ -26,6 +26,12 @@ export function checkServer(raw: string, what: string): Check<string> {
   return { ok: true, value: raw };
 }
 
+/** A dial address that a first local `up` can use without bind or TLS options. Never echo other addresses in startup advice. */
+export function firstStartServer(server?: string): string | undefined {
+  const port = /^nats:\/\/127\.0\.0\.1:([1-9]\d{0,4})\/?$/i.exec(server ?? "")?.[1];
+  return server !== undefined && server === server.trim() && port !== undefined && Number(port) <= 65535 ? server : undefined;
+}
+
 /** Required TLS from an explicit flag or a checked broker URL's scheme. The TCP client drops the
  *  scheme, so `tls://` must also become a dial option. WebSocket TLS is enforced by `wss://`. */
 export function tlsIntent(server: string, tlsFlag: boolean): boolean {

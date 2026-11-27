@@ -285,6 +285,20 @@ function holdsBrokerAccount(root: string): boolean {
 
 const MODE_NAME: Record<StackMode, string> = { auth: "static auth", open: "open", user: "user auth" };
 
+/** The broker already has a journal. Repeat only the target and the settings for the unstarted manager. */
+function stackLoginRetry(request: StackUpRequest): string {
+  const bare = "run bare `cotal up` again";
+  if (request.manifest) return bare;
+  const { root, space, runtime, managerName, managerSeatCap, maxSessions, foreground, presentation } = request;
+  const options = [
+    ...(runtime !== "pty" ? ["--runtime", shellWord(runtime)] : []), ...(managerName ? ["--manager-name", shellWord(managerName)] : []),
+    ...(managerSeatCap !== undefined ? ["--seat-cap", String(managerSeatCap)] : []), ...(maxSessions !== undefined ? ["--max-sessions", String(maxSessions)] : []),
+    ...(foreground ? ["--foreground"] : []), ...(presentation === "rich" ? [] : [`--${presentation}`]),
+  ];
+  if (!options.length && (!request.invokedRoot || request.invokedRoot === root)) return bare;
+  return `run ${codeSpan([presentation === "json" ? "cotal" : displayCmd(), "up", "--root", shellWord(root), "--space", shellWord(space), ...options].join(" "))} again`;
+}
+
 /** The next step when an explicit mode is not the one a root's first whole-stack `up` recorded.
  *  Nothing converts a root's mode: `reset`, `clean` and `space forget` keep the stack journal that
  *  records it. So the step keeps that mode, or starts the requested one in another folder. */
@@ -1255,7 +1269,7 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
     // as `manager start` confirms it. Without a signed-in, granted login, or with one the IdP
     // rejects, it is not attempted; nothing is launched for it.
     if (!request.noManager && mode === "user") {
-      try { await assertManagerLogin(root, space, "run bare `cotal up` again"); }
+      try { await assertManagerLogin(root, space, () => stackLoginRetry(request)); }
       catch (error) {
         if (!isCommandFailure(error) || error.code !== "AUTH_REQUIRED") throw error;
         loginBlock = error;
