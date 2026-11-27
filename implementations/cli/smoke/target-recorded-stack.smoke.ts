@@ -361,7 +361,7 @@ mkdirSync(linked);
 symlinkSync(linkTarget, linkPath);
 sandbox(home);
 const linkedUp = run(["up", "--json"], linked), linkedDown = runLinkedDown(["down", "--yes", "--json"], linked);
-const linkRefused = (r: ReturnType<typeof run>, command: "up" | "down", effect: string, here: string, retry = command) => r.status === 2 && r.envelope?.error?.code === "CONFLICT"
+const linkRefused = (r: ReturnType<typeof run>, command: "up" | "down", effect: string, here: string, retry: string = command) => r.status === 2 && r.envelope?.error?.code === "CONFLICT"
   && r.envelope.error.message === `${linkPath} is a link to ${linkTarget}, and a stack runs only from a folder whose .cotal is its own directory; nothing was ${effect}`
   && r.envelope.error.remedy === `run \`cotal ${retry}\` from ${root}, whose .cotal this links to, or ${here}`;
 check("up in a folder whose .cotal is a link refuses CONFLICT, naming the link, where it leads and that project",
