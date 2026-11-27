@@ -81,6 +81,10 @@ console.log("✓ 2 — the index names the version and offers real page slugs");
     assert.match(reference.text, /## Schemas/);
   }
 
+  const agents = await runDocs({ page: "cli-agents" });
+  assert.match(agents.text, /Codex ids are bare \(`gpt-6\.2-sol`, not `openai\/gpt-6\.2-sol`\)/);
+  assert.match(agents.text, /OpenCode ids are `provider\/model`/);
+
   // Case-insensitive and tolerant of a trailing .md.
   const alt = await runDocs({ page: "Architecture.md" });
   assert.match(alt.text, /# Architecture/);

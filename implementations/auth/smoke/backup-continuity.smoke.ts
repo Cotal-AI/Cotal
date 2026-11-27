@@ -16,18 +16,9 @@ import {
   loadPinnedIdp,
   USER_AUTH_TRUST_SCHEME,
 } from "../src/index.js";
+import { createSuite } from "@cotal-ai/smoke-kit";
 
-let pass = 0;
-let fail = 0;
-function check(name: string, condition: boolean, extra?: unknown): void {
-  if (condition) {
-    pass++;
-    console.log(`  ✓ ${name}`);
-  } else {
-    fail++;
-    console.log(`  ✗ FAIL: ${name}`, extra ?? "");
-  }
-}
+const { check, finish, passed, failed } = createSuite();
 async function rejects(name: string, fn: () => unknown | Promise<unknown>, needle: string): Promise<void> {
   try {
     await fn();
@@ -387,5 +378,6 @@ try {
   rmSync(missingRoot, { recursive: true, force: true });
 }
 
-console.log(`\nbackup continuity smoke: ${pass} passed, ${fail} failed`);
-if (fail) process.exit(1);
+console.log(`\nbackup continuity smoke: ${passed()} passed, ${failed()} failed`);
+finish();
+if (failed()) process.exit(1);

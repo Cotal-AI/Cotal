@@ -1,7 +1,7 @@
 /** `run check` identifies the current and candidate programs without implying a migration.
  * Exercises the built CLI on an owned loopback stack. Needs nats-server on PATH. */
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -45,7 +45,9 @@ const check = (name: string, condition: boolean, output: string) => {
   else { failed++; console.error(`FAIL: ${name}\n${output}`); }
 };
 const source = 'const d = await checkpoint("approve", "Ship it?");\nlog("resolved", d.status);\n';
+const quotedProgram = "reviewer's $draft.cotal.js";
 writeFileSync(join(project, "good.cotal.js"), source);
+writeFileSync(join(project, quotedProgram), source);
 writeFileSync(join(project, "edited.cotal.js"), source.replace('"resolved"', '"resolved-edited"'));
 writeFileSync(join(project, "diverged.cotal.js"), source.replace('"Ship it?"', '"Changed question?"'));
 const read = async (id: string) => JSON.parse(await succeed("run", "show", id, "--json")).result.view as {
@@ -59,16 +61,108 @@ const until = async (id: string, ready: (view: Awaited<ReturnType<typeof read>>)
   }
   throw new Error(`run ${id} did not reach the expected state`);
 };
+const retryWords = (remedy: string): string[] => {
+  const command = /(`+)(cotal run .*?)\1$/.exec(remedy)?.[2];
+  assert.ok(command, remedy);
+  const [binary, ...words] = execFileSync("bash", ["-c", `printf '%s\\0' ${command}`], { cwd: project, env, encoding: "utf8" }).split("\0").slice(0, -1);
+  assert.equal(binary, "cotal");
+  return words;
+};
 let up = false;
 try {
-  await succeed("up", "--detach", "--server", `nats://127.0.0.1:${await freePort()}`);
+  for (const verb of ["check", "migrate"]) for (const flags of [["--adopt", "h1"], ["--release", "h1"], ["--discard-approvals"]]) {
+    const out = await call("run", verb, "run-missing", "good.cotal.js", ...flags);
+    check(`${verb} ${flags[0]} refuses before a mesh exists`, out.code === 1 && out.text.includes(`${flags[0]} decides what a commit does`)
+      && out.text.includes(`run the check without ${flags[0]}`) && !out.text.includes("no mesh"), out.text);
+  }
+  for (const verb of ["check", "migrate"]) for (const flag of ["--adopt", "--release"]) for (const after of [[], ["--local"], ["--"]]) {
+    const out = await call("run", verb, "run-missing", "good.cotal.js", flag, ...after);
+    check(`${verb} ${[flag, ...after].join(" ")} tells the user to remove the flag`, out.code === 1
+      && out.text.includes(`does not take ${flag}`) && out.text.includes(`run the check without ${flag}`)
+      && !out.text.includes(`write ${flag}`) && !out.text.includes("no mesh"), out.text);
+  }
+  const unsupportedFile = await call("run", "resume", "run-example", "--file", "good.cotal.js", "--json");
+  const fileRefusal = JSON.parse(unsupportedFile.text);
+  check("hosted resume --file returns a structured usage refusal without a mesh", unsupportedFile.code === 1 && fileRefusal.error.code === "USAGE_INVALID" && fileRefusal.error.remedy.startsWith("remove only --file and its value from the original command"), unsupportedFile.text);
+  const other = join(project, "other-workflows");
+  for (const folder of [other, join(project, "selection")]) mkdirSync(folder, { mode: 0o700 });
+  await succeed("space", "create", "workflow-target", "--root", other);
+  await succeed("space", "create", "workflow-selected", "--root", join(project, "selection"));
+  await succeed("use", "workflow-selected");
+  for (const [verb, operands, expected] of [
+    ["resume", ["run-example", "--file", "good.cotal.js"], ["run-example"]],
+    ["start", [quotedProgram, "--admit-read", "none", "--admit-publish", "none"], ["--file", quotedProgram]],
+  ] as const) {
+    const refused = await call("run", verb, ...operands, "--local", "--space", "workflow-target", "--json");
+    const error = JSON.parse(refused.text).error;
+    const words = retryWords(error.remedy);
+    assert.deepEqual(words, ["run", verb, ...expected, "--json", "--space", "workflow-target"]);
+    const retried = await call(...words);
+    const receipt = JSON.parse(retried.text);
+    check(`the ${verb} retry reaches the requested manager's space, not the selected space`,
+      refused.code === 1 && error.code === "USAGE_INVALID" && retried.code === 2 && receipt.error.code === "TARGET_UNAVAILABLE"
+        && receipt.target.space === "workflow-target", retried.text);
+  }
+  await succeed("use", "--clear");
+  const server = `nats://127.0.0.1:${await freePort()}`;
+  await succeed("up", "--detach", "--server", server);
   up = true;
+  const managers = JSON.parse(await succeed("ps", "--json")).result.managers;
+  const selection = ["--space", "project", "--on", managers[0].instanceId];
+  const recoveryServer = `nats://127.0.0.1:${await freePort()}`;
+  const recoveryTarget = ["--space", "recovery-lab", "--server", recoveryServer, "--on", managers[0].instanceId, "--json"];
+  const missingResume = await call("run", "resume", ...recoveryTarget);
+  const resumeError = JSON.parse(missingResume.text).error;
+  assert.equal(missingResume.code, 1, missingResume.text);
+  assert.equal(resumeError.code, "USAGE_INVALID", missingResume.text);
+  const correction = ". Then add a run ID after `run resume` in the original command";
+  const resumeRemedy = resumeError.remedy as string;
+  assert.ok(resumeRemedy.endsWith(correction), resumeRemedy);
+  const resumeLookup = retryWords(resumeRemedy.slice(0, -correction.length));
+  assert.deepEqual(resumeLookup, ["run", "list", ...recoveryTarget]);
+  const recoveryList = await call(...resumeLookup);
+  const recoveryReceipt = JSON.parse(recoveryList.text);
+  check("the missing hosted resume ID lookup reaches the requested broker instead of the project broker",
+    recoveryList.code === 2 && recoveryReceipt.error.code === "TARGET_UNAVAILABLE"
+      && recoveryReceipt.error.message.includes(recoveryServer) && recoveryReceipt.target.space === "recovery-lab", recoveryList.text);
+  const unknownShow = await call("run", "show", "run-missing", "--local", "--space", "project", "--server", server, "--endpoint", "manager", "--json");
+  const unknownShowError = JSON.parse(unknownShow.text).error;
+  assert.equal(unknownShow.code, 2, unknownShow.text);
+  assert.equal(unknownShowError.code, "TARGET_NOT_FOUND", unknownShow.text);
+  const showRetry = retryWords(unknownShowError.remedy);
+  assert.deepEqual(showRetry, ["run", "list", "--local", "--space", "project", "--server", server, "--endpoint", "manager", "--json"]);
+  const listed = JSON.parse(await succeed(...showRetry));
+  check("the local show retry lists the recorded runs on the same target", listed.target.space === "project"
+    && listed.warnings.some((warning: { code: string; target?: { endpoint?: string } }) => warning.code === "ENDPOINT_HAS_NO_RUNS" && warning.target?.endpoint === "manager")
+    && Array.isArray(listed.result.items) && listed.result.items.length === 0, JSON.stringify(listed));
+  for (const verb of ["answer", "amend"]) for (const local of [false, true]) {
+    const flags = local ? ["--space", "project", "--local", "--by", "operator"] : selection;
+    const out = await call("run", verb, "run-missing", "/checkpoint:approve#0", "--value", "true", ...flags, "--json");
+    const refusal = JSON.parse(out.text);
+    const remedy = refusal.error.remedy as string;
+    check(`${verb}${local ? " --local" : ""} for an unknown run lists the same target`, out.code === 2 && refusal.error.code === "TARGET_NOT_FOUND" && remedy.includes("--space project") && (local ? remedy.includes("--local") : remedy.includes(`--on ${managers[0].instanceId}`)) && !remedy.includes("run show"), out.text);
+    const followup = /`([^`]+)`/.exec(remedy)![1]!.split(" ").slice(1);
+    check(`${verb}${local ? " --local" : ""} missing-run remedy succeeds`, (await call(...followup)).code === 0, remedy);
+  }
   const started = JSON.parse(await succeed("run", "start", "good.cotal.js", "--json"));
   const id = started.target.run as string;
   assert.ok(id);
   const running = await until(id, view => view.journal.some(row => row.step === "/checkpoint:approve#0" && row.state === "pending"));
   assert.equal(running.status?.state, "running");
   const current = running.programHash;
+  const checkTarget = ["--space", "project", "--server", server, "--endpoint", "manager", "--local"];
+  const refusedCheck = await call("run", "check", id, "--file", quotedProgram, ...checkTarget, "--json");
+  assert.equal(refusedCheck.code, 1, refusedCheck.text);
+  assert.match(refusedCheck.text, /run check prints no --json output/);
+  const checkRetry = retryWords(refusedCheck.text.trimEnd());
+  assert.deepEqual(checkRetry, ["run", "check", id, "--file", quotedProgram, ...checkTarget]);
+  const checked = await call(...checkRetry);
+  check("the check retry keeps the quoted program and explicit target", checked.code === 0 && /admissible/.test(checked.text) && /program unchanged/.test(checked.text), checked.text);
+  for (const verb of ["answer", "amend"]) {
+    const out = await call("run", verb, id, "/checkpoint:missing#0", ...selection, "--json");
+    const refusal = JSON.parse(out.text);
+    check(`${verb} for a missing step reads its existing run on the same target`, out.code === 2 && refusal.error.remedy.includes(`cotal run show ${id} --space project --on ${managers[0].instanceId}`), out.text);
+  }
   assert.match(current, /^sha256:[0-9a-f]{64}$/);
   const unchanged = await call("run", "check", id, "good.cotal.js");
   console.log(`running unchanged: exit=${unchanged.code}\n${unchanged.text}`);
@@ -89,7 +183,18 @@ try {
   const afterCheck = await read(id);
   check("checks do not change source or running state", afterCheck.programHash === current
     && afterCheck.status?.state === "running", JSON.stringify(afterCheck));
-  await succeed("run", "answer", id, "/checkpoint:approve#0", "--value", '"yes"');
+  const value = '{\n  "text": "reviewer\'s `$draft`"\n}';
+  const artifact = "reviewer's $draft";
+  const answerTarget = ["--space", "project", "--server", server, "--endpoint", "manager", "--on", managers[0].instanceId];
+  const refusedAnswer = await call("run", "answer", id, "approve", "--value", value, "--artifact", artifact, ...answerTarget, "--json");
+  assert.equal(refusedAnswer.code, 2, refusedAnswer.text);
+  const refusal = JSON.parse(refusedAnswer.text);
+  assert.equal(refusal.error.code, "TARGET_NOT_FOUND");
+  const answerRetry = retryWords(refusal.error.remedy);
+  assert.deepEqual(answerRetry, ["run", "answer", id, "/checkpoint:approve#0", "--value", value, "--artifact", artifact, ...answerTarget, "--json"]);
+  const answer = JSON.parse(await succeed(...answerRetry));
+  assert.deepEqual(answer.result.answer.value, JSON.parse(value));
+  check("the answer retry is accepted with the original JSON, artifact, and target", answer.outcome === "ok" && answer.result.answer.artifact === artifact, JSON.stringify(answer));
   await until(id, view => view.status?.state === "completed");
   for (const file of ["good.cotal.js", "edited.cotal.js"]) {
     const out = await call("run", "check", id, file);

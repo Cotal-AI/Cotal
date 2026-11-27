@@ -29,10 +29,10 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { CotalEndpoint, createSpaceAuth, isReachable, mintCreds, newIdentity, registry, serverConfig, setupSpaceStreams, type Connector, type EpCommandDef, type LaunchOpts, type LaunchSpec, type Presence } from "@cotal-ai/core";
+import { CotalEndpoint, createSpaceAuth, isReachable, mintCreds, newIdentity, registry, seedChannelRegistry, serverConfig, setupSpaceStreams, type Connector, type EpCommandDef, type LaunchOpts, type LaunchSpec, type Presence } from "@cotal-ai/core";
 import { authDir, recordMesh, saveSpaceAuth } from "@cotal-ai/workspace";
 import { SMOKE_BROKER_TOKEN, freePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
-import { ConsoleSession, clean, repoRoot, wait } from "./_console-pty.js";
+import { ConsoleSession, clean, repoRoot, screen, wait } from "./_console-pty.js";
 
 let pass = 0, fail = 0;
 const check = (n: string, c: boolean, extra?: unknown) => { if (c) { pass++; console.log("  ✓ " + n); } else { fail++; console.log("  ✗ FAIL: " + n, extra ?? ""); } };
@@ -124,7 +124,9 @@ try {
   let up = false;
   for (let i = 0; i < 50 && srv.exitCode === null; i++) { if (await isReachable(servers)) { up = true; break; } await wait(200); }
   if (!up) throw new Error(`nats-server did not come up on ${port}`);
-  await setupSpaceStreams({ servers, space, creds: await mintCreds(auth, newIdentity(), "provisioner") });
+  const provisioner = await mintCreds(auth, newIdentity(), "provisioner");
+  await setupSpaceStreams({ servers, space, creds: provisioner });
+  await seedChannelRegistry({ servers, space, creds: provisioner, file: { channels: { general: { description: "General chat" } } } });
   const admin = await mintCreds(auth, newIdentity(), "admin");
   watcher = new CotalEndpoint({ space, servers, creds: admin, card: { name: "watcher", kind: "endpoint" }, consume: false, registerPresence: false, watchPresence: true });
   watcher.on("error", () => {});
@@ -142,7 +144,7 @@ try {
 
   session = new ConsoleSession(["--space", space, "--server", servers], home, {}, { cols: 140, rows: 36 });
   const s = session;
-  check("console: the TUI paints", await s.waitFor(`${space} · #`, 40_000), clean(s.out).slice(-300));
+  check("console: the TUI paints", await s.waitFor(`${space} · all`, 40_000), clean(s.out).slice(-300));
 
   console.log("1. :ps merges both managers");
   let m = s.mark();
@@ -275,7 +277,11 @@ try {
   await s.keys("\x1b", 300);
 
   console.log("6. :purge behind the typed-space-name confirm");
+  const readScreen = () => screen(s.out, 140, 36);
+  const chatMarker = "hello from seat3";
   check("fixture: the space has history before the purge (each seat said hello)", (await poster.channelHistory("general")).length >= 2, await poster.channelHistory("general"));
+  const beforePurge = await readScreen();
+  check("fixture: the aggregate feed shows the chat to purge", beforePurge.includes(chatMarker), beforePurge);
   m = s.mark();
   await s.command("purge");
   check("purge: the typed-space-name confirm opens", await s.waitFor(/Purge .* history \(all channels\)/, 8_000, m), clean(s.out.slice(m)).slice(-300));
@@ -295,6 +301,14 @@ try {
   let gone = false;
   for (let i = 0; i < 20 && !gone; i++) { gone = (await poster.channelHistory("general")).length === 0; if (!gone) await wait(300); }
   check("purge: the space history is gone", gone, await poster.channelHistory("general"));
+  check("purge: the configured channel tab reaches zero", await s.waitFor(/#general 0\b/, 10_000, m));
+  const aggregate = await readScreen();
+  check("purge: the aggregate feed drops the purged chat", aggregate.includes("(no messages yet - waiting for peer traffic)") && !aggregate.includes(chatMarker), aggregate);
+  m = s.mark();
+  s.write("2");
+  check("purge: the retained tab can still be selected", await s.waitFor("feed · #general", 5_000, m));
+  const channel = await readScreen();
+  check("purge: the selected channel feed drops the purged chat", channel.includes("(no messages yet - waiting for peer traffic)") && !channel.includes(chatMarker), channel);
   check("console quits cleanly", await s.quit(), s.exited);
 } catch (e) {
   fail++;

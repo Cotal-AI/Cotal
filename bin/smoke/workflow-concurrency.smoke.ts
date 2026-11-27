@@ -39,21 +39,12 @@
 import { readFileSync, readdirSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { createSuite } from "@cotal-ai/smoke-kit";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const DIR = join(ROOT, ".github", "workflows");
 
-let pass = 0;
-let fail = 0;
-function check(name: string, cond: boolean, extra?: unknown): void {
-  if (cond) {
-    pass++;
-    console.log(`  ✓ ${name}`);
-  } else {
-    fail++;
-    console.log(`  ✗ FAIL: ${name}`, extra ?? "");
-  }
-}
+const { check, finish, passed, failed } = createSuite();
 
 /** The population this file is asserting over. A count that drifts is a workflow added or removed,
  *  and either deserves a human deciding whether it needs the queue rule, so the numbers are exact
@@ -92,8 +83,12 @@ function check(name: string, cond: boolean, extra?: unknown): void {
 // workflow_call or dispatch only, so neither push-to-main population changes.
 // Upgrade matrix adds one PR/workflow-run/manual workflow, not a main-push workflow.
 // windows-setup-proof.yml runs on pull requests or dispatch only.
-const EXPECTED_WORKFLOWS = 18;
-const EXPECTED_PUSH_TO_MAIN = 8;
+// control-exchange-windows.yml also runs on a push to main that touches the exchange core, and
+// declares a concurrency group, so it adds one to each of the three counts.
+// mac-app-deleted-daemon.yml starts on a dispatch or a push to its own measurement branches, so
+// only the total moves.
+const EXPECTED_WORKFLOWS = 20;
+const EXPECTED_PUSH_TO_MAIN = 9;
 /** Of those, the ones that declare a concurrency group and therefore CAN evict. Every push-to-main
  *  workflow but `windows-identity.yml` and `remotion.yml` carries one: `docs.yml` and `mutation-reproof.yml` were groupless until 2026-09-10,
  *  when every pushed pull-request head kept its own 12-shard reproof matrix and its own docs build
@@ -102,7 +97,7 @@ const EXPECTED_PUSH_TO_MAIN = 8;
  *  evicting, which the checks below hold them to. The scheduled reproof sweep keys its group on
  *  `refs/heads/main` like a merge, so a sweep and a merge queue behind each other rather than
  *  running side by side; a manual `workflow_dispatch` sweep joins the same queue. */
-const EXPECTED_GROUPED = 6;
+const EXPECTED_GROUPED = 7;
 
 /** What a concurrency key can be: absent, a literal, or one of the expressions this repo uses.
  *  `unknown` is deliberately terminal. */
@@ -267,11 +262,12 @@ for (const g of all.flatMap((w) => w.groups)) {
   }
 }
 
-console.log(`\n${fail === 0 ? "WORKFLOW CONCURRENCY SMOKE OK ✅" : "WORKFLOW CONCURRENCY SMOKE FAILED ❌"}  (${pass} passed, ${fail} failed)`);
+console.log(`\n${failed() === 0 ? "WORKFLOW CONCURRENCY SMOKE OK ✅" : "WORKFLOW CONCURRENCY SMOKE FAILED ❌"}  (${passed()} passed, ${failed()} failed)`);
 // Printed on BOTH outcomes, deliberately, and this is not cosmetic. The marker means the suite
 // REACHED ITS END, not that it passed, which is what lets mutation-proof tell a real named red from
 // a run that died in the middle and reddened for an unrelated reason. Gating it on success graded
 // all three mutations INCONCLUSIVE: each was red and correctly named, and each was refused for
 // having stopped early, because the only evidence it had not was the line this print withheld.
-console.log(`SUITE COMPLETE: ${pass} passed, ${fail} failed`);
-process.exit(fail === 0 ? 0 : 1);
+console.log(`SUITE COMPLETE: ${passed()} passed, ${failed()} failed`);
+finish();
+process.exit(failed() === 0 ? 0 : 1);

@@ -1,10 +1,11 @@
 /** Directory identity persists through journals, legacy upgrades and completed restores. */
-import { mkdirSync, mkdtempSync, readFileSync, renameSync, symlinkSync, writeFileSync } from "node:fs";
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, sep } from "node:path";
 import { randomUUID } from "node:crypto";
 import { createSuite } from "@cotal-ai/smoke-kit";
-import { adoptStackJournal, readStackJournal, writeStackJournal, type StackJournal } from "../src/lib/stack-journal.js";
+import { adoptStackJournal, readStackJournal, stackJournalPath, writeStackJournal, type StackJournal } from "../src/lib/stack-journal.js";
+import { controllerStackRecorded } from "../src/commands/stack-down.js";
 import { readStoreIdentity, stackStoreWarnings } from "../src/lib/store-identity.js";
 import { settleControllerResume } from "../src/lib/controller-resume.js";
 
@@ -21,6 +22,21 @@ const journal: StackJournal = {
 };
 const saved = writeStackJournal(root, undefined, journal);
 suite.check("journal round trip keeps all store identity fields", JSON.stringify(readStackJournal(root)?.journal.broker) === JSON.stringify(journal.broker));
+{
+  const path = stackJournalPath(root), bytes = readFileSync(path);
+  const recorded = `${root}${sep}.`;
+  writeFileSync(path, JSON.stringify({ ...journal, root: recorded }), { mode: 0o600 });
+  let target: unknown;
+  try { target = controllerStackRecorded(root); } catch (error) { target = String(error); }
+  suite.check("down recognizes another spelling of its own project as a controller stack", target === true, target);
+  const copy = join(root, "copy");
+  mkdirSync(join(copy, ".cotal"), { recursive: true, mode: 0o700 });
+  cpSync(path, stackJournalPath(copy));
+  let refused = false;
+  try { controllerStackRecorded(copy); } catch (error) { refused = (error as { code?: string }).code === "CONFLICT"; }
+  suite.check("a byte-identical journal in a different directory is not a project alias", refused);
+  writeFileSync(path, bytes, { mode: 0o600 });
+}
 suite.check("an unchanged custom store has no warning", stackStoreWarnings(journal).length === 0);
 writeFileSync(join(store, "ordinary-file"), "changing contents does not change directory identity");
 suite.check("ordinary directory content changes do not warn", stackStoreWarnings(journal).length === 0);
@@ -53,7 +69,7 @@ writeFileSync(path, bytes, { mode: 0o600 });
 const previousHome = process.env.COTAL_HOME;
 process.env.COTAL_HOME = join(root, "private-home");
 try {
-  for (const kind of ["moved", "replaced", "missing", "external", "legacy"] as const) {
+  for (const kind of ["moved", "copied", "replaced", "retargeted", "missing", "external", "legacy"] as const) {
     const oldRoot = join(root, `${kind}-old`), newRoot = join(root, `${kind}-new`);
     const oldStore = kind === "external" ? join(root, "external-store") : join(oldRoot, "store");
     mkdirSync(join(oldRoot, ".cotal"), { recursive: true, mode: 0o700 });
@@ -61,19 +77,28 @@ try {
     const identity = readStoreIdentity(oldStore);
     const original: StackJournal = { ...journal, root: oldRoot, broker: { storeDir: oldStore, ...(kind === "legacy" ? {} : { storeIdentity: identity }) } };
     writeStackJournal(oldRoot, undefined, original);
-    renameSync(oldRoot, newRoot);
+    if (kind === "copied") {
+      cpSync(oldRoot, newRoot, { recursive: true });
+      rmSync(oldRoot, { recursive: true, force: true });
+    } else {
+      renameSync(oldRoot, newRoot);
+    }
     const newStore = kind === "external" ? oldStore : join(newRoot, "store");
-    if (kind === "replaced" || kind === "missing") {
+    if (kind === "missing" || kind === "retargeted") {
       renameSync(newStore, `${newStore}.retained`);
-      if (kind === "replaced") mkdirSync(newStore, { mode: 0o700 });
+      if (kind === "retargeted") symlinkSync(`${newStore}.retained`, newStore, process.platform === "win32" ? "junction" : "dir");
     }
     suite.check(`${kind} store adoption returns the recorded root`, adoptStackJournal(newRoot, "identity") === oldRoot);
     const adopted = readStackJournal(newRoot)!.journal;
     suite.check(`${kind} store adoption keeps the rewritten store path`, adopted.broker?.storeDir === newStore);
-    const expectedIdentity = kind === "legacy" ? undefined : { ...identity, path: newStore };
-    suite.check(`${kind} store adoption keeps directory pins without accepting a new store`, JSON.stringify(adopted.broker?.storeIdentity) === JSON.stringify(expectedIdentity));
+    const expectedIdentity = kind === "legacy" ? undefined : kind === "copied" ? readStoreIdentity(newStore) : { ...identity, path: newStore };
+    suite.check(`${kind} store adoption records the expected store identity`, JSON.stringify(adopted.broker?.storeIdentity) === JSON.stringify(expectedIdentity));
+    if (kind === "replaced") {
+      renameSync(newStore, `${newStore}.retained`);
+      mkdirSync(newStore, { mode: 0o700 });
+    }
     const warnings = stackStoreWarnings(adopted);
-    suite.check(`${kind} store adoption diagnoses the retained identity`, kind === "replaced" ? warnings[0]?.code === "STORE_REPLACED" : kind === "missing" ? warnings[0]?.code === "STORE_MISSING" : warnings.length === 0, warnings);
+    suite.check(`${kind} store adoption diagnoses the retained identity`, kind === "replaced" || kind === "retargeted" ? warnings[0]?.code === "STORE_REPLACED" : kind === "missing" ? warnings[0]?.code === "STORE_MISSING" : warnings.length === 0, warnings);
   }
 } finally {
   if (previousHome === undefined) delete process.env.COTAL_HOME; else process.env.COTAL_HOME = previousHome;

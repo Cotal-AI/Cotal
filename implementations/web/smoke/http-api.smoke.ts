@@ -17,7 +17,7 @@
  *
  * Run: pnpm smoke:web-http-api
  */
-import { httpApi } from "../client/src/api/http.js";
+import { httpApi, sessionInvalid } from "../client/src/api/http.js";
 
 let cells = 0;
 let failed = 0;
@@ -68,6 +68,22 @@ const settle = async (run: () => Promise<unknown>): Promise<Outcome> => {
   try { return { rejected: false, value: await run() }; } catch (e) { return { rejected: true, error: e as Error }; }
 };
 const messageOf = (o: Outcome): string => (o.rejected ? o.error.message : `RESOLVED with ${JSON.stringify(o.value)}`);
+
+// The feed diagnosis needs both the session gate's status and its reason.
+{
+  const expired = fake({ ok: false, status: 401, body: { error: "unauthenticated" } });
+  ok("session probe confirms the dashboard's unauthenticated response", await sessionInvalid(expired.fetchImpl));
+  ok("session probe reads the authenticated metadata route", expired.calls[0]?.url === "/api/meta");
+  for (const answer of [
+    { ok: true, status: 200, body: { space: "main" } },
+    { ok: false, status: 401, body: { error: "different refusal" } },
+    { ok: false, status: 401 },
+    { ok: false, status: 503, body: { error: "unauthenticated" } },
+  ]) {
+    ok("session probe leaves other responses unclassified", !await sessionInvalid(fake(answer).fetchImpl), answer);
+  }
+  ok("session probe leaves a failed request unclassified", !await sessionInvalid(async () => { throw new TypeError("offline"); }));
+}
 
 // ── 1. A REFUSAL IS NOT DATA, on every route ────────────────────────────────────────────────────
 {

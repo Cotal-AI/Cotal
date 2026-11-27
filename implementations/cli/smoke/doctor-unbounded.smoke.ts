@@ -96,6 +96,7 @@ try {
     assert.ok(alice?.repair?.startsWith(`native renewal skips unbounded material. Revoke it and keep the store: \`${displayCmd()} down\`, \`${displayCmd()} auth revoke-credential ${unbounded} --yes\`, then \`${displayCmd()} up\``), "its guidance first revokes that one credential and keeps the store");
     assert.match(alice?.repair ?? "", new RegExp(`reset space ${SPACE}\``), "and names rotating the space identity as the way to retire every credential");
     assert.ok(alice?.repair?.includes(`Or bound it: stop what uses it, then replace it with ${replaceFor("alice")}`), "and bounds it with auth mint --replace for its label");
+    assert.match(alice?.repair ?? "", /file-only replacement.*join-ready replacement.*`--provision`/, "standing replacement guidance also names provisioning when bounding an agent credential");
     assert.ok(!alice?.repair?.includes(`remove ${unbounded}`), "  rather than a hand removal inside .cotal");
     assert.equal(bob?.state, "healthy", "fixture: bob.creds is bounded and healthy");
     assert.equal(bob?.problem, null, "a bounded agent credential is no finding");
@@ -166,6 +167,7 @@ try {
     assert.equal(item(expiredIncarnation)?.state, "expired", "fixture: the incarnation file has expired");
     assert.match(item(expiredIncarnation)?.repair ?? "", /^inspect this original lifecycle under its manager/, "an expired incarnation keeps the managed guidance");
     assert.ok(!item(expiredIncarnation)?.repair?.includes("--replace"), "  and names no --replace");
+    assert.doesNotMatch(item(expiredIncarnation)?.repair ?? "", /--provision/, "an expired incarnation does not get standalone provisioning advice");
     assert.equal(item(expiredObserver)?.repair, `if \`${displayCmd()} auth mint\` wrote it, replace it with ${replaceFor("grace", " --profile observer")}`, "an expired observer label's file names --replace with --profile observer, and no managed renewal");
     assert.equal(envelope.result.findings, 4, "the four files are findings");
     assert.equal(code, 5, "exit 5");

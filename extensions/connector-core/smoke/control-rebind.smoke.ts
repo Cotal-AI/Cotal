@@ -4,10 +4,10 @@ import { randomBytes } from "node:crypto";
 import { once } from "node:events";
 import { existsSync, lstatSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
-import { connect } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { CONTROL_PROTOCOL_VERSION, controlCall } from "@cotal-ai/core";
 import { startControlServer } from "../src/control.js";
 import type { MeshAgent } from "../src/agent.js";
 
@@ -16,7 +16,7 @@ import type { MeshAgent } from "../src/agent.js";
 if (process.argv.includes("--listener")) {
   const server = startControlServer(
     {} as MeshAgent,
-    { path: process.env.COTAL_CONTROL_SOCKET!, token: process.env.COTAL_CONTROL_TOKEN! },
+    { path: process.env.COTAL_CONTROL_SOCKET!, token: process.env.COTAL_CONTROL_KEY!, version: CONTROL_PROTOCOL_VERSION },
     async () => ({ ok: true }),
     { fatalBind: process.env.FIXTURE_FATAL !== "0" },
   );
@@ -43,7 +43,7 @@ if (process.argv.includes("--listener")) {
   const launch = (fatal = true) => {
     const child = spawn(process.execPath, ["--import", createRequire(import.meta.url).resolve("tsx"), fileURLToPath(import.meta.url), "--listener"], {
       cwd: root,
-      env: { PATH: process.env.PATH, HOME: root, COTAL_CONTROL_SOCKET: path, COTAL_CONTROL_TOKEN: token, FIXTURE_FATAL: fatal ? "1" : "0" },
+      env: { PATH: process.env.PATH, HOME: root, COTAL_CONTROL_SOCKET: path, COTAL_CONTROL_KEY: token, FIXTURE_FATAL: fatal ? "1" : "0" },
       stdio: ["ignore", "pipe", "pipe"],
     });
     children.push(child);
@@ -60,15 +60,9 @@ if (process.argv.includes("--listener")) {
     }
     assert.fail("control child deadline");
   };
-  const request = (presented: string) => new Promise<string>((resolve, reject) => {
-    const socket = connect(path);
-    let reply = "";
-    socket.setTimeout(1_000, () => { socket.destroy(); reject(new Error("control request deadline")); });
-    socket.once("error", reject);
-    socket.once("connect", () => socket.write(JSON.stringify({ token: presented, event: {} }) + "\n"));
-    socket.on("data", (data: Buffer) => { reply += data.toString(); });
-    socket.once("close", () => resolve(reply));
-  });
+  // A proven reply, or "" when the listener does not prove it holds `presented` (the control exchange).
+  const request = (presented: string): Promise<string> =>
+    controlCall({ path, token: presented, version: CONTROL_PROTOCOL_VERSION }, { event: {} }, { timeoutMs: 1_000, maxReplyBytes: 1 << 20 }).catch(() => "");
   try {
     const first = launch();
     await until(() => first.stdout().includes("READY"));

@@ -24,13 +24,14 @@ The endpoint stays off the roster and creates no inbox, chat, or anycast durable
 It reads through a live tap, history reads, and presence and membership watches.
 The web server creates its own endpoint with the same observer flags. Browsers read its HTTP APIs and event stream.
 
-History reads can create temporary consumers. Stopping or rebinding a watch first disarms local delivery. If the presented credentials exclude consumer deletion, cleanup sends no delete and leaves broker expiry to reclaim it after five minutes. Permitted deletes reclaim immediately. SDK-internal ordered-consumer recovery is unchanged.
+History reads can create temporary consumers. Stopping or rebinding a watch first disarms local delivery. If the presented credentials exclude consumer deletion, cleanup sends no delete and leaves broker expiry to reclaim it after five minutes. Permitted deletes reclaim immediately. A [membership watch](embedding-endpoints.mdx#membership-watch) replays the current entries if the store is replaced.
 
 The console narrows its tap to `chatWildcard(space)` whenever it has credentials or a user bearer.
 That view exposes multicast traffic and hides DMs and anycast.
 An open-mesh console uses the whole-space tap.
 A space-wide subscription still requires broker permission. Authenticated admin grants cover the
-`chat`, `inst`, and `svc` planes individually, so the web server taps those three subjects separately.
+`chat`, `inst`, and `svc` planes individually. The web server taps each permitted messaging plane
+separately. The default dashboard observer credential permits only the `chat` plane among these three.
 
 On an open mesh, the interactive console starts a second, presence-only endpoint before the operator's first send.
 It shares the observer's card, so peers can address replies to the operator.
@@ -61,6 +62,8 @@ Its resolution does not mean that those reads have completed.
 A 75 ms timer emits `change` when the model is dirty. A one-second heartbeat marks the model dirty to refresh ages and rates.
 Channels refresh every two seconds. Membership watch notifications debounce for 150 ms before a new read.
 `stop()` clears timers, discards pending unicast bursts, stops the membership watch, and stops the endpoint.
+If `stop()` runs while the endpoint is starting, the view does not open its tap or start timers.
+To observe again after stopping, create a new view with a new endpoint.
 
 | Option | Type | Default | Meaning |
 |---|---|---|---|
@@ -113,6 +116,7 @@ The model applies these rules:
 - `nameOf(id)` reads the roster-derived name map. A name that is only whitespace is not used, and the call returns the id. An unknown ID returns its first eight characters. Message payload names do not update that map.
 - Channel rows sort by name. `messages` is the broker's retained count, which can stop growing at the retention cap. `arrivals` counts live rows seen by this viewer, independently of retained history. A channel's arrival count disappears when the channel leaves the next successful poll. `deliveryClass` is the channel's effective class from the registry cache.
 - Startup prefill reads up to 50 messages per non-event channel. It deduplicates against the current feed by `id`, merges by timestamp, and applies `window`. Channel-list failures skip prefill. Individual history failures contribute no rows.
+- After a confirmed purge, `discardChatHistory(channel)` removes the channel's chat rows from the feed and excludes them from any pending startup prefill. Without a channel, it removes all chat rows. Direct messages and anycast stay in the feed.
 - When DMs are visible, prefill also requests up to 1,000 DM messages for the DM roll-up. Those messages do not enter `feed`. A refused DM history read leaves the roll-up with live traffic only.
 - The feed retains at most `window` entries. Live tap arrivals, before coalescing, drive the rolling one-second `msgsPerSec` rate.
 - `rates.activity` contains 15 four-second buckets, oldest first, with raw live-arrival counts over 60 seconds. The buckets decay even without new traffic. The console renders this series as a status-bar sparkline.

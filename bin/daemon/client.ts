@@ -74,8 +74,8 @@ export async function managerViaDaemon(opts: Pick<QueryOptions, "paths" | "peerU
   try {
     const id = randomUUID().replaceAll("-", "");
     sock.write(encode({ v: DAEMON_PROTOCOL_VERSION, id, ...request } as DaemonRequest));
-    // A start may reconcile connectors for up to 120s, then wait for Manager readiness.
-    const reply = JSON.parse(await readLine(sock, request.op === "manager-start" ? 250_000 : 130_000)) as DaemonResponse;
+    // A start may reconcile connectors for up to ten minutes, then wait for Manager readiness.
+    const reply = JSON.parse(await readLine(sock, request.op === "manager-start" ? 730_000 : 130_000)) as DaemonResponse;
     if (!reply.ok) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `the daemon refused ${request.op}: ${reply.error.code} ${reply.error.message}`, { native: { code: reply.error.code }, remedy: reply.error.remedy ?? (reply.error.code === "UNKNOWN_OP" ? "restart the recorded Cotal daemon user service with this platform's service manager, then retry" : "inspect the daemon's hosting records and retry the operation") });
     if (reply.id !== id || "event" in reply || !("state" in reply.result)) throw new Error("invalid Manager response");
     return reply.result as HostedManager | DaemonStatus;
@@ -154,9 +154,17 @@ export function readLine(sock: Socket, timeoutMs: number): Promise<string> {
       if (nl !== -1) finish(undefined, buf.slice(0, nl));
       else if (Buffer.byteLength(buf, "utf8") > MAX_LINE_BYTES) finish(new Error("daemon reply exceeds the line limit"));
     });
-    sock.once("end", () => finish(new Error("daemon closed the connection without a reply")));
+    sock.once("end", () => finish(new Error(DAEMON_CLOSED)));
     sock.once("error", (e) => finish(e));
   });
+}
+
+const DAEMON_CLOSED = "daemon closed the connection without a reply";
+const DAEMON_CLOSED_SIGN_IN = "the daemon closed the connection before the sign-in finished";
+/** The daemon's end of a verified connection went away before it answered: it stopped or was killed. */
+export function daemonConnectionLost(error: unknown): boolean {
+  return error instanceof Error && !(error instanceof EndpointRefusal) && (
+    error.message === DAEMON_CLOSED || error.message === DAEMON_CLOSED_SIGN_IN || ["ECONNRESET", "EPIPE"].includes((error as NodeJS.ErrnoException).code ?? ""));
 }
 
 /** The only replies `queryDaemon` sees: it sends status (or a raw contract probe), never login-start,
@@ -337,7 +345,7 @@ export async function loginViaDaemon(opts: LoginOptions): Promise<LoginReply> {
           else if ("event" in msg && msg.event === "login-result") return finish({ ok: true, attempt: msg.attempt, result: msg.result });
         }
       });
-      sock.once("end", () => finish(new Error("the daemon closed the connection before the sign-in finished")));
+      sock.once("end", () => finish(new Error(DAEMON_CLOSED_SIGN_IN)));
       sock.once("error", (e) => finish(e));
       if (opts.signal?.aborted) return finish(abandoned);
       opts.signal?.addEventListener("abort", onAbort, { once: true });

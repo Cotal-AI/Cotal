@@ -171,10 +171,12 @@ const envelopeOf = (r: Run): Envelope | undefined => {
 type MgrPriv = {
   managerInstanceId: string;
   agents: Map<string, { name: string; userOwner?: string }>;
-  reserved: Map<string, string>;
-  ownerSeats(owner: string): number;
   startAgent(opts: { name: string; agent?: string; events?: boolean }): Promise<ControlReply>;
   opStop(args: Record<string, unknown>, caller: string, admin: boolean): Promise<ControlReply>;
+  namesCapacity: {
+    reserved: Map<string, string>;
+    ownerSeats(owner: string): number;
+  };
 };
 const managers: InstanceType<typeof Manager>[] = [];
 async function bootManager(workspaceRoot: string, seatCap?: number | typeof SEAT_CAP_UNLIMITED): Promise<InstanceType<typeof Manager>> {
@@ -203,7 +205,7 @@ try {
   check(`the default admits ${CAP + 1} seats for one owner, so nothing below is the host ceiling`,
     admitted.every((r) => r.ok), admitted.map((r) => ({ ok: r.ok, error: r.error })));
   check("and the mesh's one owner is what holds them",
-    priv(open).ownerSeats(DEV_OWNER) === 3, priv(open).ownerSeats(DEV_OWNER));
+    priv(open).namesCapacity.ownerSeats(DEV_OWNER) === 3, priv(open).namesCapacity.ownerSeats(DEV_OWNER));
   await open.stop();
   managers.splice(managers.indexOf(open), 1);
 
@@ -230,9 +232,9 @@ try {
 
   // ---- 3. THE REFUSAL LEFT NOTHING BEHIND ----------------------------------------------------
   console.log("\n3. the refusal is not a half-launch");
-  check("no name was reserved for it", !M.reserved.has(CAPPED[2]!), [...M.reserved.keys()]);
+  check("no name was reserved for it", !M.namesCapacity.reserved.has(CAPPED[2]!), [...M.namesCapacity.reserved.keys()]);
   check("no seat was added", !M.agents.has(CAPPED[2]!), [...M.agents.keys()]);
-  check("and the owner's count is what it was before the attempt", M.ownerSeats(DEV_OWNER) === CAP, M.ownerSeats(DEV_OWNER));
+  check("and the owner's count is what it was before the attempt", M.namesCapacity.ownerSeats(DEV_OWNER) === CAP, M.namesCapacity.ownerSeats(DEV_OWNER));
 
   // ---- 4. THE LIVE SEATS ---------------------------------------------------------------------
   console.log("\n4. a spawn already running is never affected");
@@ -243,7 +245,7 @@ try {
   console.log("\n5. stopping one of that owner's seats admits the next");
   const stopped = await M.opStop({ name: CAPPED[0]! }, `${DEV_OWNER}.smoke`, true);
   check("the stop is accepted", stopped.ok !== false, stopped);
-  for (let i = 0; i < 100 && M.ownerSeats(DEV_OWNER) >= CAP; i++) await wait(50);
+  for (let i = 0; i < 100 && M.namesCapacity.ownerSeats(DEV_OWNER) >= CAP; i++) await wait(50);
   const readmitted = await spawnSeat(mgr, CAPPED[3]!);
   check("and the launch that was refused a moment ago now lands", readmitted.ok === true, readmitted.error);
 
@@ -258,7 +260,7 @@ try {
   check(`at most ${CAP} of 3 concurrent launches landed`, landed <= CAP, { landed, errors: burst.map((r) => r.error) });
   check("and every refusal among them is the seat cap, not a name collision",
     burst.filter((r) => !r.ok).every((r) => seatCapFrom(r) !== undefined), burst.filter((r) => !r.ok).map((r) => r.error));
-  check("the owner holds no more seats than the cap", B.ownerSeats(DEV_OWNER) <= CAP, B.ownerSeats(DEV_OWNER));
+  check("the owner holds no more seats than the cap", B.namesCapacity.ownerSeats(DEV_OWNER) <= CAP, B.namesCapacity.ownerSeats(DEV_OWNER));
   await burstMgr.stop();
   managers.splice(managers.indexOf(burstMgr), 1);
 
@@ -268,10 +270,10 @@ try {
   // below would name the planted seats in its total and this cell would go red.
   console.log("\n7. the cap counts one owner's seats, not the manager's");
   const OTHER = "u_zzzzzzzzzzzzzzzzzzzzzzzzzz";
-  const before = M.ownerSeats(DEV_OWNER);
+  const before = M.namesCapacity.ownerSeats(DEV_OWNER);
   for (const n of ["planted_1", "planted_2", "planted_3"]) M.agents.set(n, { name: n, userOwner: OTHER });
-  check("another owner's seats do not move this owner's count", M.ownerSeats(DEV_OWNER) === before, { before, now: M.ownerSeats(DEV_OWNER) });
-  check("they are counted against the owner that holds them", M.ownerSeats(OTHER) === 3, M.ownerSeats(OTHER));
+  check("another owner's seats do not move this owner's count", M.namesCapacity.ownerSeats(DEV_OWNER) === before, { before, now: M.namesCapacity.ownerSeats(DEV_OWNER) });
+  check("they are counted against the owner that holds them", M.namesCapacity.ownerSeats(OTHER) === 3, M.namesCapacity.ownerSeats(OTHER));
   const stillRefused = await spawnSeat(mgr, CAPPED[4]!);
   const stillFacts = seatCapFrom(stillRefused);
   check("and this owner's refusal names its own count, not the manager's total",

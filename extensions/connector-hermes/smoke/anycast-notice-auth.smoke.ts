@@ -29,6 +29,7 @@ import {
 import { MeshAgent, type AgentConfig } from "@cotal-ai/connector-core";
 import { SMOKE_BROKER_TOKEN, awaitBrokerReady, createSuite, freePort, skipSuite, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { startBridgeServer } from "../src/bridge.js";
+import { bridgeKey, openBridge } from "./bridge-open.js";
 
 if (process.platform === "win32") skipSuite("the Hermes connector is Unix-only");
 const python = ["python3", "python"].find((bin) => spawnSync(bin, ["-c", ""], { stdio: "ignore" }).status === 0);
@@ -94,10 +95,11 @@ try {
   const seat = await mkAgent("hermes_seat");
   const holder = await mkAgent("hm_holder", "hmrole");
 
-  // The sidecar's side of the bridge socket: subscribe with the launch token, collect what it pushes.
+  // The sidecar's side of the bridge socket: subscribe with the bridge token derived from the launch key,
+  // collect what it pushes.
   const sock = join(dir, "bridge.sock");
   const token = randomUUID();
-  const bridge = startBridgeServer(seat.agent, seat.config, sock, token);
+  const bridge = startBridgeServer(seat.agent, seat.config, sock, bridgeKey(sock, token));
   stops.push(() => bridge.close());
   const frames: Record<string, unknown>[] = [];
   const client = netConnect(sock);
@@ -113,7 +115,7 @@ try {
     }
   });
   stops.push(() => { client.destroy(); });
-  client.write(JSON.stringify({ t: "subscribe", token }) + "\n");
+  await openBridge(client, token);
   await sleep(300);
 
   // ── 1. the notice on a Hermes seat ────────────────────────────────────────────────────────

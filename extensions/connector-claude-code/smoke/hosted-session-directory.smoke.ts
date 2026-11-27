@@ -12,12 +12,11 @@ import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { mkdirSync, mkdtempSync, rmSync, statSync } from "node:fs";
 import { createRequire } from "node:module";
-import { createConnection } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { PassThrough } from "node:stream";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { CotalEndpoint, isReachable, setupSpaceStreams } from "@cotal-ai/core";
+import { CONTROL_PROTOCOL_VERSION, CotalEndpoint, controlCall, isReachable, setupSpaceStreams } from "@cotal-ai/core";
 import { SMOKE_BROKER_TOKEN, awaitBrokerReady, freePort, killAndAwaitExit, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import type { ClaudeSession, ClaudeSessionOptions } from "../src/mcp.js";
 
@@ -30,22 +29,14 @@ function check(name: string, passed: boolean, detail?: unknown): void {
   console.log(`PASS ${name}`);
 }
 
-/** One control frame, as the hook relay sends it. Resolves the reply, or undefined when the
- *  connector dropped the connection without one (an unauthenticated frame). */
-function hook(path: string, token: string, event: Record<string, unknown>): Promise<Record<string, unknown> | undefined> {
-  return new Promise((resolve, reject) => {
-    const sock = createConnection(path);
-    let buf = "";
-    sock.setEncoding("utf8");
-    sock.on("data", (chunk: string) => {
-      buf += chunk;
-      const nl = buf.indexOf("\n");
-      if (nl >= 0) { sock.end(); resolve(JSON.parse(buf.slice(0, nl)) as Record<string, unknown>); }
-    });
-    sock.once("error", reject);
-    sock.once("close", () => resolve(undefined));
-    sock.write(`${JSON.stringify({ token, event })}\n`);
+/** One control exchange, as the hook relay runs it. Resolves the reply, or undefined when the
+ *  exchange was refused (a client without the session's key gets no reply). */
+async function hook(path: string, token: string, event: Record<string, unknown>): Promise<Record<string, unknown> | undefined> {
+  const reply = await controlCall({ path, token, version: CONTROL_PROTOCOL_VERSION }, { event }, { timeoutMs: 13000, maxReplyBytes: 1 << 20 }).catch((e: Error) => {
+    if (/prove|MAC|closed/.test(e.message)) return undefined;
+    throw e;
   });
+  return reply === undefined ? undefined : (JSON.parse(reply) as Record<string, unknown>);
 }
 
 async function child(): Promise<void> {
@@ -89,7 +80,7 @@ async function child(): Promise<void> {
         env: {
           HOME: home, PATH: `${dirname(process.execPath)}:/usr/bin:/bin`, COTAL_NAME: name, COTAL_SPACE: space,
           COTAL_SERVERS: servers, COTAL_WORKSPACE_ROOT: home, COTAL_CONTROL_SOCKET: seat.socket,
-          COTAL_CONTROL_TOKEN: seat.token, COTAL_CHANNEL: "0",
+          COTAL_CONTROL_KEY: seat.token, COTAL_CONTROL_VERSION: "1", COTAL_CHANNEL: "0",
         },
         input, output,
       });

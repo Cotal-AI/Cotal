@@ -5,7 +5,7 @@ import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, writeFileSync } from 'node:fs';
 import { delimiter, dirname, join, resolve } from 'node:path';
 import { createServer } from 'node:net';
-import { pathToFileURL } from 'node:url';
+import { isMainEntry } from './main-entry.mjs';
 import { candidateRegistry } from './automatic-update-platform-baseline.mjs';
 import { compareVersions } from './upgrade-matrix-plan.mjs';
 
@@ -15,6 +15,7 @@ export async function automaticUpdateSeedChild(sourcePack, targetPack, privateRo
   assert(!existsSync(root), 'private root must be fresh');
   mkdirSync(root, { mode: 0o700 });
   const prefix = join(root, 'prefix'), entry = join(prefix, 'bin/cotal'), calls = [], envs = {};
+  const bootstrap = process.platform === 'win32' ? entry : join(prefix, 'lib/node_modules/cotal-ai/dist/cotal.js');
   const report = { root, currentNode, calls }, hash = value => createHash('sha256').update(value).digest('hex');
   const json = file => JSON.parse(readFileSync(file, 'utf8'));
   const save = () => writeFileSync(join(root, 'report.json'), JSON.stringify(report, null, 2) + '\n', { mode: 0o600 });
@@ -41,7 +42,7 @@ export async function automaticUpdateSeedChild(sourcePack, targetPack, privateRo
     });
     record.finishedAt = new Date().toISOString(); save(); return record;
   }
-  const cli = (home, label, args) => call(home, label, currentNode, [entry, ...args]);
+  const cli = (home, label, args) => process.platform === 'win32' ? call(home, label, currentNode, [entry, ...args]) : call(home, label, entry, args);
   const ok = result => { assert.equal(result.code, 0, JSON.stringify(result)); assert(!result.signal && !result.timedOut); return result; };
   try {
     source = await candidateRegistry(resolve(sourcePack), 'A', 'https://registry.npmjs.org/'); report.source = source.identity; save();
@@ -51,7 +52,8 @@ export async function automaticUpdateSeedChild(sourcePack, targetPack, privateRo
     for (const env of Object.values(envs)) env.npm_config_registry = source.url;
     ok(await call('A', 'install-source', process.platform === 'win32' ? 'npm.cmd' : 'npm', ['install', '-g', `cotal-ai@${source.identity.version}`]));
     for (const home of ['A', 'B']) ok(await cli(home, `seed-${home}`, ['ext', 'seed']));
-    const logicalEntry = realpathSync(entry), logicalKey = hash(logicalEntry), installs = join(root, 'B/config/cotal/installs');
+    const launchTarget = realpathSync(entry);
+    const logicalEntry = realpathSync(bootstrap), logicalKey = hash(logicalEntry), installs = join(root, 'B/config/cotal/installs');
     Object.assign(report, { logicalEntry, logicalKey });
     const oldPath = join(installs, logicalKey, 'sets', source.identity.version, 'selection.json'), oldSelection = json(oldPath);
     report.sourceSelection = { path: oldPath, ...oldSelection, claudeVersion: json(join(oldSelection.root, 'extensions/node_modules/@cotal-ai/connector-claude-code/package.json')).version };
@@ -67,7 +69,7 @@ export async function automaticUpdateSeedChild(sourcePack, targetPack, privateRo
     report.descriptorPath = join(store, `.active-${hash(installed)}.json`); report.executionDescriptor = json(report.descriptorPath);
     assert.equal(json(join(installed, 'package.json')).version, source.identity.version, 'original bootstrap must be retained');
     assert.equal(report.executionDescriptor.generation.version, target.identity.version);
-    assert.equal(realpathSync(entry), logicalEntry, 'self-update must retain the original launch route');
+    assert.equal(realpathSync(entry), launchTarget, 'self-update must retain the original launch route');
     const loadedEntry = join(store, report.executionDescriptor.generation.id, 'cotal-ai/dist/cotal.js');
     report.loadedEntry = loadedEntry; report.loadedKey = hash(loadedEntry); assert.notEqual(report.loadedKey, logicalKey); save();
     running = true; const up = await cli('B', 'first-plain-up', ['up', '--detach']);
@@ -93,6 +95,6 @@ export async function automaticUpdateSeedChild(sourcePack, targetPack, privateRo
   }
   return report;
 }
-if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) {
+if (isMainEntry(import.meta.url)) {
   automaticUpdateSeedChild(...process.argv.slice(2)).catch(error => { console.error(error); process.exitCode = 1; });
 }

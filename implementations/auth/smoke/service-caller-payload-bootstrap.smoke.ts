@@ -13,7 +13,7 @@ import { acquirePlaneClaim } from "../src/plane-claim.js";
 import { openLifecycleRegistry } from "../src/lifecycle-registry.js";
 import { bootstrapServiceCallerPayload } from "../src/service-caller-payload-bootstrap.js";
 import { openAuthorityClient } from "../src/authority-client.js";
-import { startAuthService, type AuthServiceHandle } from "../src/service.js";
+import { startAuthService, type AuthServiceHandle } from "../src/service-host.js";
 import { mintServiceCallerPayloadObserverCreds } from "../src/index.js";
 import { SERVICE_CALLER_PAYLOAD_FLOOR, SERVICE_CALLER_PAYLOAD_KEY } from "../src/service-caller-payload.js";
 const c = checks(), enc = new TextEncoder();

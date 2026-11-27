@@ -14,7 +14,8 @@
  * Run: `pnpm smoke:send-channel-receipt`
  */
 import { MAX_CHANNEL_LENGTH } from "@cotal-ai/core";
-import { closeChannelNames, MeshAgent, type MeshAgent as MeshAgentType } from "../src/agent.js";
+import { MeshAgent, type MeshAgent as MeshAgentType } from "../src/agent.js";
+import { AgentMessaging, closeChannelNames, type AgentMessagingDeps } from "../src/agent-messaging.js";
 import { cotalToolSpecs } from "../src/tool-specs.js";
 import type { AgentConfig } from "../src/config.js";
 
@@ -49,8 +50,10 @@ function stubAgent(opts: {
     },
     getChannelConfig: (channel: string) => (registered.has(channel) ? { description: "from registry" } : undefined),
   };
+  // MeshAgent.describeSendChannel delegates to its messaging member; the receipt reads only the endpoint.
   return {
     ep,
+    messaging: new AgentMessaging({ ep: () => ep } as unknown as AgentMessagingDeps),
     joinedChannels: () => opts.joined,
     readChannels: async () => {},
     connected: true,
@@ -384,9 +387,9 @@ const proto = MeshAgent.prototype as unknown as {
       dmText.text,
     );
     // Only an offline recipient gets the notice of what happens to the stored DM.
-    const notice = "otto is offline: the DM is delivered when otto reconnects, and a new agent spawned as otto does not receive it.";
+    const notice = "otto is offline. The message is stored, but delivery is not confirmed. Only the same lifecycle can receive it, and only if its inbox still exists. A new session with the same name does not receive it.";
     check(
-      `1229:i cotal_dm text for a ${status} recipient ${status === "offline" ? "says" : "does not say"} otto is offline and when the DM arrives`,
+      `1229:i cotal_dm text for a ${status} recipient ${status === "offline" ? "includes" : "omits"} the qualified offline notice`,
       status === "offline" ? dmText.text.includes(notice) : !dmText.text.includes("is offline"),
       dmText.text,
     );

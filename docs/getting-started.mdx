@@ -25,6 +25,8 @@ To do the setup yourself, follow the steps below.
 
 [Install Cotal](installation.mdx) and one of its supported [agent applications](connectors.mdx).
 Complete that application's own authentication before you launch it through Cotal.
+In PowerShell or Command Prompt on Windows, replace `cotal` with `cotal.cmd` in the commands below.
+This uses npm's Windows launcher without relying on PowerShell script execution.
 
 <Steps>
 <Step>
@@ -40,7 +42,10 @@ cotal setup --configure-only
 ```
 
 In setup, choose **Local** and the agent application you have installed.
-Keep the built-in **pty** runtime for this first run.
+The built-in `pty` runtime is always enabled and does not appear as a selectable row.
+Setup checks optional runtimes that are already installed or whose tools it finds on this machine.
+To keep only `pty` for this first run, use the arrow keys to move to each checked row and press **Space** to uncheck it.
+Then press **Enter**.
 Use the current project folder and its default space name, `cotal-demo`.
 Review the choices and save them.
 

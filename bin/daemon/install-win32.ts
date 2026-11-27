@@ -5,9 +5,12 @@
  * Task Scheduler is the per-user supervisor Windows ships. The task's logon trigger names this
  * user's SID, so it starts at this user's logon only, and a standard user can register it without
  * elevation. It runs on the user's interactive token at least privilege, so no password is stored
- * and nothing runs as LocalSystem. The trigger repeats every minute with no end, and the task
+ * and nothing runs as LocalSystem. A time trigger repeats every minute with no end, and the task
  * ignores a start while its instance is running, so a daemon that exits is started again within a
- * minute. The battery and run-time limits are off, and it runs at normal priority.
+ * minute. The repetition sits on a time trigger, not the logon trigger, because a logon trigger's
+ * repetition begins only at a logon after registration: a task installed mid-session would not
+ * restart until the next sign-in. The interactive token keeps it from running while the user is
+ * signed out. The battery and run-time limits are off, and it runs at normal priority.
  *
  * `schtasks /Create /XML` registers the definition from a file this install first creates in the
  * daemon's own state directory, as UTF-16 with a byte order mark, and records the digest of. The
@@ -76,7 +79,8 @@ export function renderScheduledTask(input: ScheduledTaskInput): { text: string; 
     '<Task version="1.3" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">',
     "  <RegistrationInfo><Description>Cotal machine daemon</Description></RegistrationInfo>",
     "  <Triggers>",
-    `    <LogonTrigger><Enabled>true</Enabled><Repetition><Interval>PT1M</Interval><StopAtDurationEnd>false</StopAtDurationEnd></Repetition><UserId>${sid}</UserId></LogonTrigger>`,
+    `    <LogonTrigger><Enabled>true</Enabled><UserId>${sid}</UserId></LogonTrigger>`,
+    "    <TimeTrigger><Enabled>true</Enabled><StartBoundary>2000-01-01T00:00:00</StartBoundary><Repetition><Interval>PT1M</Interval><StopAtDurationEnd>false</StopAtDurationEnd></Repetition></TimeTrigger>",
     "  </Triggers>",
     "  <Principals>",
     `    <Principal id="Author"><UserId>${sid}</UserId><LogonType>InteractiveToken</LogonType><RunLevel>LeastPrivilege</RunLevel></Principal>`,
@@ -163,8 +167,8 @@ export function scheduledTaskService(run: NativeRun): WindowsTaskService {
     if (!value || !/^S-1-[0-9]+(?:-[0-9]+)+$/.test(value)) throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `whoami did not name the current user's SID (${out.detail}); nothing was changed`);
     return value;
   };
-  const registered = (name: string, requireInstances = false): RegisteredTask => {
-    const out = run(system32("WindowsPowerShell", "v1.0", "powershell.exe"), ["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(READ_TASK, "utf16le").toString("base64")], { ...process.env, COTAL_DAEMON_TASK: name, COTAL_DAEMON_TASK_INSTANCES: requireInstances ? "1" : "0" });
+  const registered = (name: string, requireInstances = false, timeoutMs?: number): RegisteredTask => {
+    const out = run(system32("WindowsPowerShell", "v1.0", "powershell.exe"), ["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(READ_TASK, "utf16le").toString("base64")], { ...process.env, COTAL_DAEMON_TASK: name, COTAL_DAEMON_TASK_INSTANCES: requireInstances ? "1" : "0" }, timeoutMs);
     let o: unknown;
     try { o = out.status === 0 ? JSON.parse(out.stdout.replace(/^\uFEFF/, "").trim()) : undefined; } catch { o = undefined; }
     const r = o && typeof o === "object" ? o as Record<string, unknown> : undefined;
@@ -243,7 +247,8 @@ export function scheduledTaskService(run: NativeRun): WindowsTaskService {
       try { lstatSync(unitPath); present = true; }
       catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `${unitPath} could not be inspected; no absent task definition was inferred`); }
       if (present) throw new CommandFailure("refused", "CONFLICT", `${unitPath} already exists and no install of this daemon recorded it; it was not written over`);
-      if (registered(unit).present) throw new CommandFailure("refused", "CONFLICT", `a task named ${unit} is already registered and no install of this daemon recorded it; nothing was written`);
+      // The first PowerShell launch can be slow. Wait for the read before publishing a definition.
+      if (registered(unit, false, 60_000).present) throw new CommandFailure("refused", "CONFLICT", `a task named ${unit} is already registered and no install of this daemon recorded it; nothing was written`);
       const { text, bytes, sha256 } = renderScheduledTask({ sid: user, argv, workingDirectory: homedir() });
       return { mechanism: "scheduled-task", unit, unitPath, bytes, sha256, user: userInfo().username,
         restart: `every ${element(text, "Interval")} unless running (${element(text, "MultipleInstancesPolicy")})`, wantedBy: `logon of ${element(text, "UserId")}` };

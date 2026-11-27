@@ -207,7 +207,7 @@ class ObservableResolveCache extends Map<string, ResolvedService> {
   }
 }
 const cache = new ObservableResolveCache();
-(ep as unknown as { resolvedServices: Map<string, ResolvedService> }).resolvedServices = cache;
+(ep as unknown as { controlPlane: { resolvedServices: Map<string, ResolvedService> } }).controlPlane.resolvedServices = cache;
 /** Seed the resolve the way a long-lived client holds one, bound to an incarnation that is not the
  *  one answering. Deterministic on purpose: waiting for a natural split grades the same code on a
  *  coin flip, and `smoke:queue-win` measured class-queue delivery as sticky on one box. */

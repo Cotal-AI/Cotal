@@ -50,7 +50,7 @@ try {
   for (const mode of ["success", "silent", "refusal"] as const) {
     console.log(`\nSame-bridge reconnect: ${mode}`);
     const cell = join(root, mode);
-    mkdirSync(cell);
+    mkdirSync(cell, { mode: 0o700 }); // the control socket below needs a directory private to this user
     const log = join(cell, "fake.jsonl");
     const entries = (): Array<{ ev: string; pid?: number; mode?: string; content?: string; frame?: { req?: string; content?: string } }> =>
       existsSync(log) ? readFileSync(log, "utf8").trim().split("\n").filter(Boolean).map((line) => JSON.parse(line)) : [];
@@ -83,7 +83,7 @@ try {
           COTAL_SPACE: space, COTAL_SERVERS: servers, COTAL_ID: "busyseat", COTAL_NAME: "busyseat",
           COTAL_SUBSCRIBE: "team", COTAL_ALLOW_SUBSCRIBE: "team", COTAL_ALLOW_PUBLISH: "team",
           COTAL_JCODE_HOME: cell, COTAL_JCODE_TUI: "1", COTAL_JCODE_PROMPT: "Owned kickoff after busy window",
-          COTAL_JCODE_REQUEST_TIMEOUT_MS: "1000", COTAL_CONTROL_SOCKET: join(cell, "control.sock"), COTAL_CONTROL_TOKEN: "owned-control",
+          COTAL_JCODE_REQUEST_TIMEOUT_MS: "1000", COTAL_CONTROL_SOCKET: join(cell, "control.sock"), COTAL_CONTROL_KEY: "owned-control", COTAL_CONTROL_VERSION: "1",
         },
         stdio: ["ignore", "ignore", "pipe"],
       });

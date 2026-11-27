@@ -75,7 +75,7 @@
     },
     {
       "name": "up -f does not compare --space with the manifest",
-      "file": "implementations/cli/src/commands/up.ts",
+      "file": "implementations/cli/src/commands/up-manifest.ts",
       "find": "  refuseManifestSpaceMismatch(prepared, opts.space);\n",
       "replace": "",
       "expectRed": "up -f with a --space naming another space refuses, exit 1, naming both",

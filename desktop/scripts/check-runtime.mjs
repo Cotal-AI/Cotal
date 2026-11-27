@@ -57,6 +57,7 @@ try {
     'seeded-connectors/claude/dist/seat.cjs',
     'seeded-connectors/claude/dist/hook.cjs',
     'seeded-connectors/claude/dist/monitor.cjs',
+    'seeded-connectors/claude/dist/command-reader.cjs',
     'seeded-connectors/codex/dist/host.js',
     'seeded-connectors/codex/dist/personal.js',
     'seeded-connectors/hermes/dist/launch.js',

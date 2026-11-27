@@ -1,30 +1,43 @@
 /** Real CLI backup/restore refusal for an edited legacy resume document with a private endpoint.
  * The broker, preserved cut and artifact are real. Only the stopped fixture's records are adapted
  * to the supported legacy shape; no production validator or restore implementation is replaced.
+ * The successful control restores in the foreground from another folder and runs its cleanup step.
  */
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
 import { lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import { assertSmokeSandboxDown, freePort, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
-import { readMaintenanceJournal } from "@cotal-ai/workspace";
+import { readMaintenanceJournal, resolveOnPath, shellPath } from "@cotal-ai/workspace";
 import { assertScratchHeld, makeScratch } from "../../../bin/smoke/_scratch.js";
 
 const scratch = makeScratch("cotal-restore-redaction-");
-const root = mkdtempSync(join(scratch, "root-"));
+const root = mkdtempSync(join(scratch, "project 'quoted' root-"));
 const home = mkdtempSync(join(scratch, "home-"));
+const invokingFolder = join(scratch, "invoking-folder");
+mkdirSync(join(invokingFolder, ".cotal"), { recursive: true, mode: 0o700 });
 const config = join(home, "xdg");
 const sandbox = recordSmokeSandbox({ root, cotalHome: home, xdgConfigHome: config });
 const worktree = resolve(import.meta.dirname, "../../..");
+const tsx = join(worktree, "node_modules/.bin/tsx");
+const cli = join(worktree, "bin/cotal.ts");
 const env = { ...process.env };
 for (const key of Object.keys(env)) if (key.startsWith("COTAL_")) delete env[key];
-Object.assign(env, { HOME: home, COTAL_HOME: home, XDG_CONFIG_HOME: config, COTAL_SKIP_CONNECTOR_SEED: "1" });
-const run = (...args: string[]) => {
-  const options = { cwd: root, env, encoding: "utf8" as const, timeout: 240_000 };
+Object.assign(env, { HOME: home, COTAL_HOME: home, XDG_CONFIG_HOME: config, COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1" });
+const launcher = resolveOnPath("cotal", env) ? "cotal" : "pnpm cotal";
+const shell = [
+  'cotal() { "$TEST_TSX" "$TEST_CLI" "$@"; }',
+  'pnpm() { [ "$1" = cotal ] || return 1; shift; cotal "$@"; }',
+  "",
+].join("\n");
+const runFrom = (cwd: string, ...args: string[]) => {
+  const options = { cwd, env, encoding: "utf8" as const, timeout: 240_000 };
   assertSmokeSandboxDown(sandbox, args, options);
-  return spawnSync(join(worktree, "node_modules/.bin/tsx"), [join(worktree, "bin/cotal.ts"), ...args], options);
+  return spawnSync(tsx, [cli, ...args], options);
 };
+const run = (...args: string[]) => runFrom(root, ...args);
 let passed = 0, failed = 0;
 const refusals: Array<{ name: string; status: number | null; stdout: string; stderr: string }> = [];
 function check(name: string, condition: boolean) {
@@ -39,6 +52,7 @@ const journalPath = join(root, ".cotal/maintenance/v1/journal.json");
 const resumePath = join(root, ".cotal/maintenance/v1/resume.json");
 let originalJournal: string | undefined, originalResume: string | undefined;
 let running = false, completed = false;
+let foreground: ChildProcess | undefined;
 try {
   mkdirSync(join(root, ".cotal"), { recursive: true });
   assertScratchHeld(root, "restore endpoint fixture");
@@ -99,12 +113,54 @@ try {
   check("CLI flag still refuses userinfo before restore", flag.status === 1 && /must not embed credentials/.test(flag.stdout + flag.stderr));
   check("CLI flag refusal omits private endpoint", !(flag.stdout + flag.stderr).includes(canary));
   running = true;
-  must("bare endpoint restores real artifact", run("up", "--restore", artifact, "--detach", "--server", server, "--space", space));
+  const child = foreground = spawn(tsx, [cli, "up", "--foreground", "--restore", artifact, "--root", root, "--server", server, "--space", space], {
+    cwd: invokingFolder, env, stdio: ["ignore", "pipe", "pipe"], timeout: 240_000,
+  });
+  let stdout = "", stderr = "";
+  const exited = new Promise<number | null>((done) => {
+    child.once("close", done);
+    child.once("error", (error) => { stderr += String(error); done(null); });
+  });
+  child.stdout.on("data", (data) => { stdout += data; });
+  child.stderr.on("data", (data) => { stderr += data; });
+  const deadline = Date.now() + 120_000;
+  const cleanupCommand = () => stdout.match(/^next: .*?`([^`]*backup cleanup-fallback [^`]+)`/m)?.[1];
+  while (!cleanupCommand() && child.exitCode === null && child.signalCode === null && Date.now() < deadline) {
+    await delay(100);
+  }
+  const command = cleanupCommand();
+  assert.ok(command, `foreground restore did not print a cleanup command while running\n${stdout}\n${stderr}`);
+  const active = readMaintenanceJournal(root);
+  assert.ok(active?.state === "active");
+  const attempt = active.restore.attemptId;
+  assert.ok(stdout.includes(`restored the backup registry as restore attempt ${attempt}`), stdout);
+  const prefix = `cd ${shellPath(root)} && ${launcher} backup cleanup-fallback ${attempt}`;
+  assert.equal(command, `${prefix} --dry-run`, stdout);
+  check("the foreground receipt and previous-store warning name the project", stdout.includes(`\`${prefix}\` deletes it only with --discard-history`));
+  const before = readFileSync(journalPath, "utf8");
+  const preview = spawnSync("sh", ["-c", shell + command], {
+    cwd: invokingFolder, env: { ...env, TEST_TSX: tsx, TEST_CLI: cli }, encoding: "utf8", timeout: 240_000,
+  });
+  must("copied cleanup preview runs from the invoking folder", preview);
+  check("the preview finds the active restore", /Recorded state:\s+active/.test(preview.stdout) && preview.stdout.includes(attempt));
+  check("previews keep the active journal and previous store", readFileSync(journalPath, "utf8") === before && !!active.restore.previousSource && lstatSync(active.restore.previousSource.identity.path).isDirectory());
   const listed = run("channel", "show", "preserved", "--space", space);
   must("restored registry is readable", listed);
   check("restored registry retains its channel", listed.stdout.includes("preserved"));
   must("stop restored fixture", run("down", "--yes"));
   running = false;
+  assert.equal(await exited, 0, `${stdout}\n${stderr}`);
+  foreground = undefined;
+  const wrongRoot = runFrom(invokingFolder, "backup", "cleanup-fallback", attempt, "--dry-run");
+  check("bare cleanup refuses at the wrong root", wrongRoot.status === 2 && wrongRoot.stderr.includes("TARGET_NOT_FOUND"));
+  check("wrong-root refusal points to the original project without claiming cleanup completed", wrongRoot.stderr.includes("original project folder") && !wrongRoot.stderr.includes("finds nothing to do"));
+  const cleanup = spawnSync("sh", ["-c", shell + `${prefix} --yes --discard-history`], {
+    cwd: invokingFolder, env: { ...env, TEST_TSX: tsx, TEST_CLI: cli }, encoding: "utf8", timeout: 240_000,
+  });
+  must("explicit cleanup retires the restore from the invoking folder", cleanup);
+  const status = run("status", "--space", space, "--plain");
+  must("status after copied cleanup", status);
+  check("status no longer shows Maintenance", !/^Maintenance$/m.test(status.stdout));
   completed = true;
 } finally {
   // A failed cleanup keeps its records; do not hide a remaining owned stack by deleting them.
@@ -112,6 +168,7 @@ try {
     const stopped = run("down", "--yes");
     check("failure cleanup stops owned stack", stopped.status === 0);
   }
+  foreground?.kill("SIGTERM");
   writeFileSync(join(scratch, "refusals.json"), `${JSON.stringify(refusals, null, 2)}\n`, { mode: 0o600 });
   console.log(`RESTORE ENDPOINT REDACTION: ${passed} passed, ${failed} failed`);
   for (const row of refusals) console.log(`REFUSAL ${row.name}: exit=${row.status}, privateEndpointEchoed=${(row.stdout + row.stderr).includes("fixture-only-private-endpoint")}`);

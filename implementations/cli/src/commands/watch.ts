@@ -1,9 +1,10 @@
 import { writeSync } from "node:fs";
 import { chatWildcard, type CompletionResult, type FlagSpec, type FlagValues, type ParsedArgs } from "@cotal-ai/core";
-import { colorEnabled, CommandFailure, exitCode, inputDisabledByFlag, isCommandFailure, isConnectRefusal, jsonFlag, plainFlag, presentationOf, recordOperationSpace, streamRecord, writeStreamRecord, userViewAuth, targetFlags } from "@cotal-ai/workspace";
+import { colorEnabled, CommandFailure, exitCode, inputDisabledByFlag, isCommandFailure, isConnectRefusal, jsonFlag, plainFlag, presentationOf, recordOperationSpace, writeStreamRecord, userViewAuth, targetFlags } from "@cotal-ai/workspace";
 import { MeshView, openObserver } from "@cotal-ai/workspace/view";
 import { completingFlagValue } from "../lib/completion.js";
 import { connectOrThrow, userViewAuthOrExit } from "../lib/connect.js";
+import { watchSetupFailureRecords } from "../lib/stream-setup-failure.js";
 import { watchViews, type WatchFilter } from "../watch-data.js";
 export type { WatchFilter } from "../watch-data.js";
 
@@ -40,11 +41,11 @@ export async function watch(args: ParsedArgs): Promise<void> {
     // failure a CommandFailure does, so it is read through `failure()` rather than falling into the
     // generic sentence below under OPERATION_FAILED. Any other failure keeps that sentence, because
     // its message is not written for an operator.
-    const failure = isCommandFailure(error) ? error : isConnectRefusal(error) ? error.failure() : undefined;
-    const target = { requestedSpace: args.values.space ?? null, ...(resolved.space === undefined ? {} : { space: resolved.space }) };
-    const reason = failure ? { message: failure.message, ...(failure.remedy === undefined ? {} : { remedy: failure.remedy }) } : { message: "The observer could not establish its authorized view; this is not an empty successful snapshot." };
-    writeStreamRecord(streamRecord("watch", "error", target, { code: failure ? failure.code : "OPERATION_FAILED", ...reason }));
-    writeStreamRecord(streamRecord("watch", "end", target, { reason: "setup-failed" }));
+    const refusal = isConnectRefusal(error) ? error : undefined;
+    const failure = isCommandFailure(error) ? error : refusal?.failure();
+    const refusedSpace = refusal?.target?.space;
+    const space = resolved.space ?? (typeof refusedSpace === "string" ? refusedSpace : undefined);
+    for (const record of watchSetupFailureRecords(args, failure, space)) writeStreamRecord(record);
     process.exitCode = failure ? exitCode(failure.outcome, failure.code) : 5;
   }
 }

@@ -1335,7 +1335,7 @@ await parallel({
   ok("and neither landed", outer.n === 0, outer.n);
 
   const protoDesc = Object.getOwnPropertyDescriptor(EngineFrame.prototype, "depth");
-  const interpretSrc = readFileSync(fileURLToPath(new URL("../src/interpret.ts", import.meta.url)), "utf8").replace(/\r\n/g, "\n");
+  const interpretSrc = readFileSync(fileURLToPath(new URL("../src/interpret-state.ts", import.meta.url)), "utf8").replace(/\r\n/g, "\n");
   const walkerFrameSrc = interpretSrc.slice(interpretSrc.indexOf("class Frame {"), interpretSrc.indexOf("// ---- the run"));
   ok(
     "both Frame and EngineFrame derive depth as a prototype getter over keys.path.length with a three-argument constructor",
@@ -2969,7 +2969,7 @@ let n = 1;
     // `ready` is the boot handshake the host waits on before it posts a root cancellation; its
     // behaviour is celled by root-cancellation.smoke.ts's worker boot and parked cells.
     const KINDS = ["log", "ready", "result"];
-    const REQUEST_FIELDS = ["cutAt", "effectCeiling", "entries", "file", "handler", "module", "pins", "resultBytes", "runId", "seed", "source", "stepBudget"];
+    const REQUEST_FIELDS = ["ceilings", "cutAt", "effectCeiling", "entries", "file", "handler", "module", "pins", "resultBytes", "runId", "seed", "source", "stepBudget"];
     const WORKER_DATA = ["bridge", "hostPackageVersion", "request", "stop"];
     const posted = [...new Set([...entrySrc.matchAll(/postMessage\(\{\s*kind: "(\w+)"/g)].map((m) => m[1] as string))].sort();
     ok(`the thread posts exactly the ${KINDS.length} message kinds this table cells`, JSON.stringify(posted) === JSON.stringify(KINDS), { declared: KINDS, found: posted });

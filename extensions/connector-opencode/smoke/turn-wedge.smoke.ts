@@ -97,9 +97,13 @@ Object.assign(process.env, {
 // Fire one opencode bus event at the plugin's `event` hook.
 type Hooks = Awaited<ReturnType<typeof bootPlugin>>;
 const fire = (hooks: Hooks, event: unknown) => hooks.event!({ event } as never);
+type PromptModel = { providerID: string; modelID: string };
 const chatMessage = (hooks: Hooks) =>
   (hooks as Hooks & {
-    "chat.message"?: (input: { sessionID?: string; model?: { providerID: string; modelID: string }; variant?: string }, output: { parts?: { type: string; text?: string }[] }) => Promise<void>;
+    "chat.message"?: (input: { sessionID?: string; model?: PromptModel; variant?: string }, output: {
+      message?: { model: PromptModel & { variant?: string } };
+      parts?: { type: string; text?: string }[];
+    }) => Promise<void>;
   })["chat.message"]!;
 
 // A plain peer that posts ambient channel traffic at the agent.
@@ -136,6 +140,15 @@ try {
   await pub.multicast("hello team", { channel: "team" });
   await waitForPrompts(1);
   check("a channel message drives a turn (push works)", prompts.length === 1, prompts);
+  const submitted = prompts[0]?.body as { model?: PromptModel };
+  check("the automatic prompt does not submit a model when unpinned", submitted.model === undefined, submitted);
+  // OpenCode resolves the model before chat.message and supplies it on the user message.
+  await chatMessage(hooks)({ sessionID: SID }, {
+    message: { model: { providerID: "local", modelID: "gpt-6.2-sol", variant: "high" } },
+  });
+  for (let i = 0; i < 50 && otto()?.card.meta?.model !== "local/gpt-6.2-sol"; i++) await sleep(100);
+  check("an unpinned mesh turn reports the resolved model and variant to the roster",
+    otto()?.card.meta?.model === "local/gpt-6.2-sol" && otto()?.card.meta?.variant === "high", otto()?.card.meta);
 
   // (2) complete the connector's turn (acks it, returns the session to idle).
   await fire(hooks, { type: "session.idle", properties: { sessionID: SID } });
@@ -532,7 +545,8 @@ try {
   const auth2 = `Basic ${Buffer.from("opencode:test-secret-2").toString("base64")}`;
   const prompts2: { body: { text?: string } }[] = [];
   let modelListing: Array<{ providerID: string; modelID: string }> = [];
-  let modelReads = 0;
+  // What GET /api/plugin lists: a real server lists nothing until its plugins have loaded.
+  let pluginListing: Array<{ id: string }> = [{ id: "opencode.agent" }];
   // Holds the `POST /api/session` answer, so a cell can feed events before the adapter knows its session.
   let sessionGate: Promise<void> | undefined;
 
@@ -552,8 +566,11 @@ try {
         return;
       }
       if (req.method === "GET" && req.url === "/api/model") {
-        modelReads++;
         res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ data: modelListing }));
+        return;
+      }
+      if (req.method === "GET" && req.url === "/api/plugin") {
+        res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ data: pluginListing }));
         return;
       }
       if (req.method === "POST" && req.url === `/api/session/${SID2}/prompt`) {
@@ -595,8 +612,8 @@ try {
 
     // 2.x model check: `GET /api/model` (not 1.x's `/provider`) must refuse before join when the
     // configured model is not in the server's list — parity with 1.x's catalog/server mismatch
-    // cell. The listing below names the provider but not the model, so the check must throw
-    // before any session is created without waiting on the settle loop.
+    // cell. The plugins have loaded and the listing names the provider but not the model, so the
+    // check must throw before any session is created.
     modelListing = [{ providerID: "prov", modelID: "other" }];
     process.env.COTAL_MODEL = "prov/absent-model";
     process.env.COTAL_NAME = "ModelReadiness2";
@@ -630,9 +647,10 @@ try {
     await disposeMR?.();
     delete process.env.COTAL_MODEL;
 
-    // 2.x model check: an empty listing after boot is waited on rather than refused immediately.
-    modelReads = 0;
-    modelListing = [];
+    // 2.x model check: while the plugins load, the listing names the provider but not the model. The
+    // check judges only the settled listing, so it waits and joins once the plugins have loaded.
+    pluginListing = [];
+    modelListing = [{ providerID: "prov", modelID: "other" }];
     process.env.COTAL_MODEL = "prov/m";
     process.env.COTAL_NAME = "ModelWait2";
     process.env.COTAL_ID = "modelwait2";
@@ -653,6 +671,7 @@ try {
     const disposeWait = await bootPlugin2(ctxWait);
     setTimeout(() => {
       modelListing = [{ providerID: "prov", modelID: "m" }];
+      pluginListing = [{ id: "opencode.agent" }];
     }, 500);
     let waitOnline = false;
     for (let i = 0; i < 100; i++) {
@@ -665,14 +684,15 @@ try {
     process.exit = originalExitWait;
     process.stderr.write = originalStderrWriteWait;
     check(
-      "2.x: an empty listing is waited on, and the model check passes once the server lists it",
-      waitOnline && modelReads >= 2 && exitCodeWait === undefined && !refusalLineWait.includes("Refusing before join"),
-      { waitOnline, modelReads, exitCodeWait, refusalLineWait },
+      "2.x: the model check waits for OpenCode's plugins and passes once the settled listing names the model",
+      waitOnline && exitCodeWait === undefined && !refusalLineWait.includes("Refusing before join"),
+      { waitOnline, exitCodeWait, refusalLineWait },
     );
     await disposeWait?.();
     delete process.env.COTAL_MODEL;
 
-    // 2.x model check: a listing still empty at the settle deadline is a real refusal, not a hang.
+    // 2.x model check: plugins still loading at the settle deadline are a real refusal, not a hang.
+    pluginListing = [];
     modelListing = [];
     process.env.COTAL_MODEL = "prov/m";
     process.env.COTAL_MODEL_LIST_SETTLE_MS = "700";
@@ -697,16 +717,17 @@ try {
     process.exit = originalExitDeadline;
     process.stderr.write = originalStderrWriteDeadline;
     check(
-      "2.x: a listing still empty at the deadline refuses, naming the wait",
+      "2.x: plugins still loading at the deadline refuse, naming the wait",
       exitCodeDeadline === 1 &&
         modelRefusalDeadline.includes("prov/") &&
-        modelRefusalDeadline.includes("listed no provider within"),
+        modelRefusalDeadline.includes("plugins did not finish loading within"),
       { exitCodeDeadline, modelRefusalDeadline },
     );
     await disposeDeadline?.();
     delete process.env.COTAL_MODEL;
     delete process.env.COTAL_MODEL_LIST_SETTLE_MS;
 
+    pluginListing = [{ id: "opencode.agent" }];
     modelListing = [{ providerID: "dead", modelID: "m" }];
     process.env.COTAL_NAME = "Otto2";
     process.env.COTAL_ID = "otto2";
@@ -749,7 +770,10 @@ try {
     await pub2.unicast(otto2Id!, "hello via 2.x");
     for (let i = 0; i < 50 && prompts2.length < 1; i++) await sleep(100);
     check("2.x: one DM drives exactly one prompt POST with text", prompts2.length === 1 && prompts2[0]?.body.text?.includes("hello via 2.x") === true, prompts2);
+    // Each DM turn below replies, as a model would, so its clean end drives no reply reminder.
+    const reply2 = () => ctx2.addedTools.find((t) => t.name === "cotal_dm")!.execute({ to: "Pubby2", text: "ok" });
 
+    await reply2();
     ctx2.feed({ type: "session.execution.started", durable: { aggregateID: SID2, seq: 1 }, data: { sessionID: SID2 } });
     ctx2.feed({ type: "session.execution.succeeded", durable: { aggregateID: SID2, seq: 2 }, data: { sessionID: SID2 } });
     await sleep(300);
@@ -769,6 +793,7 @@ try {
     const whileOpen = { sessionID: SID2, prompt: { text: "typed while a batch is open" } };
     await prompt2(whileOpen);
     check("2.x: a native prompt carries nothing while a driven batch is open", whileOpen.prompt.text === "typed while a batch is open", whileOpen);
+    await reply2();
     ctx2.feed({ type: "session.execution.started", durable: { aggregateID: SID2, seq: 3 }, data: { sessionID: SID2 } });
     ctx2.feed({ type: "session.execution.succeeded", durable: { aggregateID: SID2, seq: 4 }, data: { sessionID: SID2 } });
     for (let i = 0; i < 50 && prompts2.length < 3; i++) await sleep(100);
@@ -777,6 +802,7 @@ try {
       prompts2.length === 3 && prompts2[2]?.body.text?.includes("third turn via 2.x") === true && !prompts2[2]?.body.text?.includes("second turn via 2.x"),
       prompts2,
     );
+    await reply2();
     ctx2.feed({ type: "session.execution.started", durable: { aggregateID: SID2, seq: 5 }, data: { sessionID: SID2 } });
     ctx2.feed({ type: "session.execution.succeeded", durable: { aggregateID: SID2, seq: 6 }, data: { sessionID: SID2 } });
     await sleep(300);

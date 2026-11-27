@@ -97,7 +97,7 @@ check("main publication consumes the matching tree's immutable pack without rebu
   assert.equal(job.if, "needs.release.outputs.pack != ''");
   assert.equal(job.environment, "npm-publish");
   assert.equal(job.permissions["id-token"], "write");
-  const download = job.steps.find((step) => step.uses === "actions/download-artifact@v4");
+  const download = job.steps.find((step) => step.uses === "actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093");
   assert.equal(download.with["artifact-ids"], "${{ needs.release.outputs.pack }}");
   assert.equal(download.with["run-id"], "${{ needs.release.outputs.run }}");
   assert.equal(download.with.pattern, undefined);

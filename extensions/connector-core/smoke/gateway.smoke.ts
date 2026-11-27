@@ -16,7 +16,8 @@
  *   - only the remote subset is offered, and the orientation card says so; the docs it points to
  *     are offered and answer; connect names the connection's own access;
  *   - cotal_wait returns a message as soon as it arrives, at once when one is waiting, and after its
- *     bound with none; it follows attention, counts a focus @mention that landed between waits,
+ *     bound with none, saying when it could only read the local buffer because the broker is
+ *     unreachable; it follows attention, counts a focus @mention that landed between waits,
  *     ignores a run turn the gateway cannot surface, ends when its connection closes, and leaves
  *     no listener behind; a wait or read whose client is gone clears nothing; every other tool
  *     says when messages are waiting;
@@ -114,6 +115,7 @@ const host: GatewayHost = {
       if (approvalId && approvalRecorded) throw new Error("the authority has not recorded the person's approval");
       throw new ApprovalRequired(pendingApproval, "team");
     }
+    if (name === "approval_early") throw new ApprovalRequired(pendingApproval, "team");
     if (name === "approval_now") {
       approvalNow += 1;
       if (approvalNow === 1) throw new ApprovalRequired(pendingApproval, "team");
@@ -295,6 +297,8 @@ try {
   // ---- name allocation ----
   const first = await call(a, "cotal_connect", { name: "claude" });
   const id1 = idOf(first);
+  const unavailable = [...new Set(first.text.match(/\bcotal_[a-z][a-z_]*\b/g))].filter((name) => !tools.some((tool) => tool.name === name));
+  check("the hosted connect reply names only tools served by the gateway", unavailable.length === 0, unavailable);
   check("the requested name is used when free", !first.isError && first.text.startsWith("Connected as claude.") && id1 !== "", first);
   check("connect names the connection's own read, join and post access", first.text.includes("\nReads #lobby; may join #lobby; may post to #lobby."), first);
   check(
@@ -351,6 +355,21 @@ try {
     approvalBody.message.includes("does not start another request") &&
     approvalBody.message.includes(pendingApproval.approval.id));
   check("a held connect asks the host again every 2 seconds until its hold ends", probes === 3 && heldMs >= 3000 && heldMs < 6000, { probes, heldMs });
+  // A timer can fire a little before its time by Date.now(). Here the pause that reaches the deadline
+  // always does, and the hold still ends with that pause's open.
+  {
+    const realSetTimeout = globalThis.setTimeout;
+    globalThis.setTimeout = ((fn: (...args: unknown[]) => void, ms?: number, ...args: unknown[]) =>
+      realSetTimeout(fn, typeof ms === "number" && ms > 100 && ms < 2000 ? ms - 50 : ms, ...args)) as unknown as typeof setTimeout;
+    const before = opened.filter((o) => o === "acct_a/approval_early").length;
+    try {
+      await a.callTool({ name: "cotal_connect", arguments: { name: "approval_early" } });
+    } finally {
+      globalThis.setTimeout = realSetTimeout;
+    }
+    const early = opened.filter((o) => o === "acct_a/approval_early").length - before;
+    check("a held connect whose last pause ends early asks the host no more often", early === 3, { early });
+  }
   check("pending approval retries the same approval and never renames or issues", probes > 1 &&
     !opened.includes("acct_a/approval_probe_2") && !reserved.has("acct_a/approval_probe") && resumedApprovals.length > 0);
   approvalRecorded = true;
@@ -474,6 +493,8 @@ try {
   }
   check("an embedder's bound below one second is refused", threw.includes("waitSeconds"), threw);
 
+  // Drain the initial channel replay so the timeout starts with an empty inbox.
+  await call(a, "cotal_inbox", { connection_id: listener });
   let started = Date.now();
   const quiet = await call(a, "cotal_wait", { connection_id: listener, seconds: 1 });
   const quietMs = Date.now() - started;
@@ -511,6 +532,18 @@ try {
   await call(a, "cotal_inbox", { connection_id: listener });
   const quietRoster = await call(a, "cotal_roster", { connection_id: listener });
   check("the notice is gone once the message is read", !quietRoster.text.includes("new message"), quietRoster);
+
+  await call(a, "cotal_channel_mode", { connection_id: listener, channel: "lobby", mode: "quiet" });
+  await call(a, "cotal_send", { connection_id: talker, text: "quiet-channel-probe", channel: "lobby" });
+  const buffered = await peekFor("quiet-channel-probe");
+  started = Date.now();
+  const heldWait = await call(a, "cotal_wait", { connection_id: listener, seconds: 1 });
+  check("a quiet-channel post does not wake a wait, but the timeout points to the inbox",
+    buffered && Date.now() - started >= 900 && !heldWait.isError &&
+      heldWait.text === "No message woke this wait in 1 second. Buffered messages are waiting. Call cotal_inbox to read them.", heldWait);
+  const pulled = await call(a, "cotal_inbox", { connection_id: listener });
+  check("the quiet-channel post is still available to pull", !pulled.isError && pulled.text.includes("quiet-channel-probe"), pulled);
+  await call(a, "cotal_channel_mode", { connection_id: listener, channel: "lobby", mode: "normal" });
 
   await call(a, "cotal_status", { connection_id: listener, attention: "dnd" });
   const dndWait = call(a, "cotal_wait", { connection_id: listener, seconds: 2 });
@@ -663,6 +696,16 @@ try {
   await killAndAwaitExit(severedSrv);
   for (let i = 0; i < 50 && severedAgent.transportConnected; i++) await sleep(100);
   check("the stopped broker takes that connection's transport down", !severedAgent.transportConnected);
+  // An empty wait that cannot hear from the broker only read the local buffer, and says so as
+  // cotal_inbox does. A connected one keeps the plain reply.
+  const severedQuiet = await call(a, "cotal_wait", { connection_id: severedSeat, seconds: 1 });
+  check(
+    "an empty wait on a connection whose transport is down says it only read the local buffer",
+    !severedQuiet.isError && severedQuiet.text.startsWith("Mesh connection is not ready") &&
+      severedQuiet.text.includes("an empty buffer does not mean no new mesh messages") &&
+      severedQuiet.text.endsWith("Nothing new reached the local buffer in 1 second. Call cotal_wait again to keep listening."),
+    severedQuiet,
+  );
   const severedWait = call(a, "cotal_wait", { connection_id: severedSeat });
   await sleep(500);
   const severedAt = Date.now();

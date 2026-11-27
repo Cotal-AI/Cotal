@@ -19,7 +19,7 @@ a hashed account identifier can also link usage across machines. You can turn it
 | `regular` (default) | The `command` event with the registered subcommand, flag names, typed error code, the failure's error text with values and paths masked, whether stdout is a terminal, and the shell and terminal program names; plus one `install` event per UTC day with the installed connectors, extensions, runtimes and mesh count. |
 
 ```bash
-cotal telemetry            # the level in force, where it comes from, the install id and the URL
+cotal telemetry            # the level in force, where it comes from, and the intake URL if valid
 cotal telemetry off
 cotal telemetry minimal
 cotal telemetry regular    # the default; `on` is an alias
@@ -61,13 +61,18 @@ The event builders do not collect command argument values, mesh, space, agent, u
 names, prompts or messages. They do collect the environment-derived fields listed below,
 including `TERM_PROGRAM` at `regular`. Failure text is sent at `regular` after pattern-based
 masking (see `errorMessage`); masking is not a guarantee that arbitrary error text contains no
-identifying information. Use `minimal` to exclude error text or `off` to send nothing.
+identifying information. When `spawn` reports a failure with a native cause, its message and
+stack stay local because the diagnostic can include the agent's terminal output. The event still
+records the typed error code. Use `minimal` to exclude all error text or `off` to send nothing.
 
 The install id is a persistent identifier for the settings file. The `account` field at
 `regular` hashes the cached sign-in's IdP URL and subject id; it allows correlation across
 machines without sending those raw identifiers. The daemon, manager,
 connectors and workflow runtime send nothing; neither do internal
 entries, hidden daemon runners, `agent-bearer` and `cotal telemetry` itself.
+Extension update helpers and the `ext add` processes that prepare built-in connectors send no events.
+Running `cotal ext add` yourself still reports the command at the configured level.
+The standalone `cotal --version` and `cotal -V` flags send no events.
 
 The intake receives the request's IP address even though the CLI does not put it in the
 JSON body. The [website API description](https://cotal.ai/openapi.json) says accepted
@@ -77,13 +82,18 @@ opt-outs; it does not establish the receiving service's IP handling or retention
 ## Delivery
 
 One `command` event is posted as the CLI process exits, whatever the exit path. At `regular`, the
-first command of each UTC day also posts an `install` event first. Each is one `POST` of JSON,
-`content-type: application/json`, to `https://cotal.ai/v1/telemetry`. The command and install
-posts share one 1.5 second send deadline, with no retry. Send failures are ignored and do not
-change the command's exit code; the exit hook waits at most 1.5 seconds for delivery. `COTAL_TELEMETRY_URL` points a self-hosted intake. It must be an `http` or
-`https` URL, because a send to anything else fails and that failure is ignored too. Any other value
-refuses with `USAGE_INVALID` before the command runs whenever the level in force sends events, and
-`cotal telemetry` refuses it at every level, since it reports that URL.
+first eligible command to finish each UTC day also posts an `install` event first. Commands that
+overlap share the same daily record. `cotal docs` leaves that event for another command so it
+can run without reading the extension inventory. If another process is still creating the install
+ID, the command runs without sending telemetry. Each event
+is one `POST` of JSON, `content-type: application/json`, to `https://cotal.ai/v1/telemetry`. The
+command and install posts share one 1.5 second send deadline, with no retry. Send failures are
+ignored and do not change the command's exit code; the exit hook waits at most 1.5 seconds for delivery.
+`COTAL_TELEMETRY_URL` points to a self-hosted intake. An invalid value refuses with `USAGE_INVALID`
+when a command would send events, when `cotal telemetry` reports an active level, or when you set
+a sending level without an environment opt-out. `cotal telemetry off` and reports of `off` still
+show a valid URL, but omit an invalid one from the text report and return `null` for it in JSON.
+The environment still takes precedence over the saved level.
 
 When the settings file selects `regular`, the first run with a terminal on stderr prints
 one notice and records it. A non-terminal run can send events without printing the notice;
@@ -98,7 +108,7 @@ a later terminal run still shows it. An environment-selected level does not trig
 | `level` | `"minimal"` or `"regular"` | The level the event was sent at. |
 | `event` | `"command"` | |
 | `command` | string | The registered top-level command name (`up`, `spawn`, `ext`), never a user word. |
-| `outcome` | `"ok"`, `"error"` or `"refused"` | Exit 0 is `ok`; a typed refusal, or exit 2 without one, is `refused`; anything else is `error`. |
+| `outcome` | `"ok"`, `"error"` or `"refused"` | Exit 0 is `ok`. For `status --components`, a refused check gives `refused`; an absent or non-serving component gives `error` unless another check was refused. Other commands use their reported failure outcome, or `refused` for exit 2 and `error` for other nonzero exits when none was reported. |
 | `exitCode` | integer | The process exit code. |
 | `durationMs` | integer | Milliseconds from dispatch to exit. |
 | `version` | string | The `cotal-ai` version. |
@@ -106,6 +116,8 @@ a later terminal run still shows it. An environment-selected level does not trig
 | `arch` | string | `process.arch`. |
 | `node` | integer | The Node major version. |
 | `ci` | boolean | Whether `CI` is set to anything but `0` or `false`. |
+
+When the `help` command encounters an unknown command or subcommand, it reports `refused` and exits 1. At `regular`, its code is `USAGE_INVALID`. The event omits the requested topic, diagnostic text and stack.
 
 At `regular` the event also carries:
 
@@ -115,8 +127,8 @@ At `regular` the event also carries:
 | `subcommand` | string or `null` | The registered subcommand the first positional names (`ext add`, `daemon status`), never a user value. |
 | `flags` | string array, at most 32 | Flag names as typed (`--json`, `-j`, `--server`), values stripped; an unknown flag counts by name. |
 | `errorCode` | string or `null` | The typed code of a refusal or failure (`USAGE_INVALID`, `AUTH_REQUIRED`, `OPERATION_PARTIAL`); `null` on success or when the exit carried no code. |
-| `errorMessage` | string or `null`, at most 500 characters | The failure's message after masking: quoted words become `<value>` (the CLI quotes every user value it echoes), URLs `<url>`, email addresses `<email>`, IPv4 addresses `<ip>`, paths `<path>` and any run of 32 or more token characters `<token>`. `null` on success. |
-| `errorStack` | string or `null`, at most 2000 characters | At most 12 frames of the failure's stack, each file path cut down to its part inside `node_modules` (the installed package and file, never the directory it is installed under); a frame outside one reads `<path>`. `null` on success or when the failure had no stack. |
+| `errorMessage` | string or `null`, at most 500 characters | The failure's message after masking: quoted words become `<value>`, URLs `<url>`, email addresses `<email>`, IPv4 addresses `<ip>`, paths `<path>` and any run of 32 or more token characters `<token>`. `null` on success or for a `spawn` failure with a native cause. |
+| `errorStack` | string or `null`, at most 2000 characters | At most 12 frames of the failure's stack, each file path cut down to its part inside `node_modules` (the installed package and file, never the directory it is installed under); a frame outside one reads `<path>`. `null` on success, when the failure had no stack, or for a `spawn` failure with a native cause. |
 | `interactive` | boolean | Whether stdout is a terminal. |
 | `shell` | string or `null` | The basename of `SHELL`. |
 | `terminal` | string or `null` | `TERM_PROGRAM` as set. |

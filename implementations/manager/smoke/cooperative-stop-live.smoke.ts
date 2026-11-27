@@ -48,6 +48,8 @@ const awaitExit = (proc: ReturnType<typeof spawn>, timeoutMs = 3000): Promise<vo
     proc.once("exit", () => resolve());
     setTimeout(resolve, timeoutMs);
   });
+/** The control sockets' per-launch directories, removed at the end. */
+const controlDirs: string[] = [];
 let pass = 0;
 let fail = 0;
 const check = (name: string, cond: boolean, extra?: unknown): void => {
@@ -144,7 +146,7 @@ try {
   // Stand up alice's REAL control server. onShutdown does what the Claude Code connector's shutdown
   // closure does — close the server, then agent.stop() (the offline-presence publish) — minus the
   // process.exit (this test process lives on to observe the result).
-  const ep = controlEndpoint(space, "alice");
+  const ep = controlEndpoint(space, "alice", controlDirs);
   let onShutdownFired = false;
   const stubAgent = {} as unknown as MeshAgent;
   const handle = async (): Promise<Record<string, unknown>> => ({ ok: true });
@@ -189,7 +191,7 @@ try {
   }
   srv.kill("SIGKILL");
   await awaitExit(srv); // await actual exit so a failed run never leaks the broker onto its port
-  rmSync(dir, { recursive: true, force: true });
+  for (const d of [dir, ...controlDirs]) rmSync(d, { recursive: true, force: true });
   releaseBroker(); // last: ownership is held until this teardown has actually finished
 }
 

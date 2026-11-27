@@ -6,6 +6,7 @@
  *
  * Run: tsx implementations/auth/smoke/personal-codex-native.smoke.ts */
 import assert from "node:assert/strict";
+import { generateKeyPairSync } from "node:crypto";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 // Codex gives a plugin server a minimal environment, so the fixture CLI entry learns the fixture
@@ -69,7 +70,8 @@ if (["agent-bearer", "auth-service", "app-identity"].includes(process.argv[2] ??
   const human = "isolated-human-session";
   const stateDir = userAuthStateDir(root, space);
   const store = workspaceSecretStore(root);
-  const idp = createServer((_req, res) => { res.writeHead(200, { "content-type": "application/json" }); res.end('{"keys":[]}'); });
+  const jwks = JSON.stringify({ keys: [generateKeyPairSync("ed25519").publicKey.export({ format: "jwk" })] });
+  const idp = createServer((_req, res) => { res.writeHead(200, { "content-type": "application/json" }); res.end(jwks); });
   await new Promise<void>((resolve) => idp.listen(0, "127.0.0.1", resolve));
   const idpUrl = `http://127.0.0.1:${(idp.address() as import("node:net").AddressInfo).port}/auth`;
 
@@ -211,7 +213,7 @@ if (["agent-bearer", "auth-service", "app-identity"].includes(process.argv[2] ??
     check("setup installs the Cotal plugin through Codex's own plugin commands", /^cotal@cotal-mesh \d/.test(installed));
     check("refresh replaces the installed plugin when its launcher digest changes", /^cotal@cotal-mesh \d/.test(refreshed) && refreshed.split(";")[0] !== installed);
     // The fixture model, and the person's standing approval of this plugin's tool calls.
-    writeFileSync(join(codexHome, "config.toml"), `model = "fixture-model"
+    writeFileSync(join(codexHome, "config.toml"), `model = "gpt-6.2-sol"
 model_provider = "fixture"
 approval_policy = "never"
 sandbox_mode = "read-only"

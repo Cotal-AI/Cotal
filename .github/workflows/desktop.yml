@@ -34,13 +34,15 @@ on:
       - '.github/workflows/desktop.yml'
 permissions:
   contents: read
+env:
+  DO_NOT_TRACK: '1'
 concurrency:
   group: desktop-${{ github.ref }}
   cancel-in-progress: true
 jobs:
   render:
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
       - uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093 # v6.0.8
@@ -79,7 +81,8 @@ jobs:
           - os: windows-2022
             bundles: nsis,msi
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 60
+    # A tag's macOS build waits for Apple's notary service inside the build step, which can take well over an hour.
+    timeout-minutes: ${{ startsWith(matrix.os, 'macos') && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && 180 || 60 }}
     steps:
       # A version tag builds, signs and notarizes the tagged commit with the signing credentials in
       # this job, so the tag must point at a commit that is already on main. Checked before anything
@@ -169,7 +172,41 @@ jobs:
           if-no-files-found: error
           retention-days: 7
       - run: pnpm --filter cotal-ai seeded-connectors
+      - name: Agent apps through the desktop bridge
+        if: runner.os != 'Windows'
+        run: pnpm smoke:daemon-desktop-agent-apps
+      # Notarization refuses unsigned nested code, and Tauri does not sign Mach-O files under Resources, so a
+      # release build signs the runtime's own before prepare:runtime hashes them. This keychain exists only for
+      # that step; Tauri imports the certificate again for the bundle.
+      - name: Import the macOS signing certificate for the runtime
+        if: runner.os == 'macOS' && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+        run: |
+          set -euo pipefail
+          if [ -z "$APPLE_CERTIFICATE" ]; then echo 'No macOS signing certificate: the runtime stays unsigned.'; exit 0; fi
+          keychain="$RUNNER_TEMP/cotal-runtime-signing.keychain-db"
+          password=$(openssl rand -hex 24)
+          security create-keychain -p "$password" "$keychain"
+          security set-keychain-settings -lut 3600 "$keychain"
+          security unlock-keychain -p "$password" "$keychain"
+          # shellcheck disable=SC2046 # the existing search list is one keychain path per word
+          security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
+          printf '%s' "$APPLE_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/cotal-runtime-signing.p12"
+          security import "$RUNNER_TEMP/cotal-runtime-signing.p12" -k "$keychain" -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          rm -f "$RUNNER_TEMP/cotal-runtime-signing.p12"
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$password" "$keychain" > /dev/null
+          echo "COTAL_RUNTIME_SIGNING_KEYCHAIN=$keychain" >> "$GITHUB_ENV"
+          echo "COTAL_RUNTIME_SIGNING_IDENTITY=$APPLE_SIGNING_IDENTITY" >> "$GITHUB_ENV"
       - run: pnpm --dir desktop prepare:runtime
+      - name: Remove the runtime signing keychain
+        if: always() && runner.os == 'macOS'
+        shell: bash
+        run: |
+          if [ -n "${COTAL_RUNTIME_SIGNING_KEYCHAIN:-}" ] && [ -e "$COTAL_RUNTIME_SIGNING_KEYCHAIN" ]; then security delete-keychain "$COTAL_RUNTIME_SIGNING_KEYCHAIN"; fi
       - run: pnpm --dir desktop check:runtime
       - name: Compile configured and no-key updater branches
         if: inputs.updater_compile && runner.os != 'Linux'
@@ -244,24 +281,29 @@ jobs:
             'signed=true' >> $env:GITHUB_OUTPUT
           }
       - name: Build desktop packages
+        id: build
         shell: pwsh
         env:
           TAURI_BUNDLER_DMG_IGNORE_CI: 'true'
           SIGNED_BUILD: ${{ steps.signing.outputs.signed }}
+          RELEASE_BUILD: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
+          UPDATER_PUBLIC_KEY: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && runner.os != 'Linux' && vars.COTAL_UPDATER_PUBLIC_KEY || '' }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && runner.os != 'Linux' && secrets.TAURI_SIGNING_PRIVATE_KEY || '' }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && runner.os != 'Linux' && secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD || '' }}
           APPLE_CERTIFICATE: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && secrets.APPLE_CERTIFICATE || '' }}
           APPLE_CERTIFICATE_PASSWORD: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && secrets.APPLE_CERTIFICATE_PASSWORD || '' }}
           APPLE_SIGNING_IDENTITY: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && secrets.APPLE_SIGNING_IDENTITY || '' }}
-          APPLE_ID: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && secrets.APPLE_ID || '' }}
-          APPLE_PASSWORD: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && secrets.APPLE_PASSWORD || '' }}
-          APPLE_TEAM_ID: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && secrets.APPLE_TEAM_ID || '' }}
-          APPLE_API_ISSUER: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && secrets.APPLE_API_ISSUER || '' }}
-          APPLE_API_KEY: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && secrets.APPLE_API_KEY || '' }}
         run: |
           $ErrorActionPreference = 'Stop'
           if ($env:SIGNED_BUILD -ne 'true') {
             Get-ChildItem Env:APPLE_* | Remove-Item
             Write-Output 'Building unsigned validation packages.'
-          } else { Write-Output 'Building signed release packages.' }
+          } else {
+            # Tauri uses the Apple ID login whenever APPLE_ID, APPLE_PASSWORD and APPLE_TEAM_ID exist, even
+            # empty, so the unused notarization set must be absent, not blank.
+            Get-ChildItem Env:APPLE_* | Where-Object { -not $_.Value } | Remove-Item
+            Write-Output 'Building signed release packages.'
+          }
           $args = @('--dir', 'desktop', 'exec', 'tauri', 'build', '--bundles', '${{ matrix.bundles }}')
           if ($env:WINDOWS_SIGNING_CONFIG) { $args += @('--config', $env:WINDOWS_SIGNING_CONFIG) }
           if ($env:RUNNER_OS -eq 'macOS' -and $env:SIGNED_BUILD -ne 'true') {
@@ -271,12 +313,94 @@ jobs:
             '{"bundle":{"macOS":{"signingIdentity":"-"}}}' | Set-Content -Encoding utf8 $adhoc
             $args += @('--config', $adhoc)
           }
+          # macOS and Windows release builds carry the app updater: the compiled public key turns it on, and
+          # the private key signs each update bundle. Linux packages update through their installer.
+          if ($env:RELEASE_BUILD -eq 'true' -and $env:RUNNER_OS -ne 'Linux') {
+            if (@($env:UPDATER_PUBLIC_KEY, $env:TAURI_SIGNING_PRIVATE_KEY, $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD | Where-Object { $_ }).Count -ne 3) {
+              throw 'A macOS or Windows release build needs the app updater key: repository variable COTAL_UPDATER_PUBLIC_KEY and secrets TAURI_SIGNING_PRIVATE_KEY and TAURI_SIGNING_PRIVATE_KEY_PASSWORD.'
+            }
+            $env:COTAL_UPDATER_PUBLIC_KEY = $env:UPDATER_PUBLIC_KEY
+            $updater = Join-Path $env:RUNNER_TEMP 'cotal-updater.json'
+            @{ bundle = @{ createUpdaterArtifacts = $true }; plugins = @{ updater = @{ pubkey = $env:UPDATER_PUBLIC_KEY } } } | ConvertTo-Json -Depth 4 | Set-Content -Encoding utf8 $updater
+            $args += @('--config', $updater)
+            'updater=true' >> $env:GITHUB_OUTPUT
+          } else {
+            Get-ChildItem Env:TAURI_SIGNING_* | Remove-Item
+            'updater=false' >> $env:GITHUB_OUTPUT
+          }
           & pnpm @args
           if ($LASTEXITCODE -ne 0) { throw 'Desktop build failed.' }
           & pnpm --dir desktop check:size
           if ($LASTEXITCODE -ne 0) { throw 'Desktop bundle size budget exceeded.' }
+      - name: Verify installed Linux RPM files and bundled CLI
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          docker run --rm -i -e DO_NOT_TRACK=1 \
+            -v "$PWD/desktop/src-tauri/target/release/bundle/rpm:/packages:ro" fedora:41 bash -se <<'FEDORA'
+          set -o pipefail
+          scratch=$(mktemp -d)
+          export HOME="$scratch/home" COTAL_HOME="$scratch/cotal" XDG_CONFIG_HOME="$scratch/config" TMPDIR="$scratch/tmp"
+          mkdir -p "$HOME" "$COTAL_HOME" "$XDG_CONFIG_HOME" "$TMPDIR"
+          dnf install -y /packages/*.rpm
+          rpm -V cotal
+          /usr/bin/cotal-node /usr/lib/Cotal/runtime/dist/cotal.js --version
+          FEDORA
+      # The only notarization: Tauri gets no notarization login, so it signs the app and the disk image and
+      # skips submitting. Gatekeeper assesses a downloaded disk image on open and rejects a signed, unnotarized
+      # one; the notary service checks everything nested in the image, the app included, so one submission and
+      # the image's stapled ticket cover both, with one wait for Apple instead of two.
+      - name: Notarize and staple the macOS disk image
+        if: runner.os == 'macOS' && steps.signing.outputs.signed == 'true'
+        shell: bash
+        env:
+          APPLE_ID: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && secrets.APPLE_ID || '' }}
+          APPLE_PASSWORD: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && secrets.APPLE_PASSWORD || '' }}
+          APPLE_TEAM_ID: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && secrets.APPLE_TEAM_ID || '' }}
+          APPLE_API_ISSUER: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && secrets.APPLE_API_ISSUER || '' }}
+          APPLE_API_KEY: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && secrets.APPLE_API_KEY || '' }}
+        run: |
+          set -euo pipefail
+          dmgs=()
+          while IFS= read -r found; do dmgs+=("$found"); done < <(find desktop/src-tauri/target/release/bundle/dmg -maxdepth 1 -name '*.dmg')
+          [ "${#dmgs[@]}" -eq 1 ] || { echo "expected one disk image, found ${#dmgs[@]}"; exit 1; }
+          dmg=${dmgs[0]}
+          if [ -n "$APPLE_API_KEY" ]; then auth=(--key "$APPLE_API_KEY_PATH" --key-id "$APPLE_API_KEY" --issuer "$APPLE_API_ISSUER")
+          else auth=(--apple-id "$APPLE_ID" --password "$APPLE_PASSWORD" --team-id "$APPLE_TEAM_ID"); fi
+          result="$RUNNER_TEMP/dmg-notarization.json"
+          # A rejected submission can exit nonzero; the status check below handles every outcome and prints the log.
+          xcrun notarytool submit "$dmg" "${auth[@]}" --wait --output-format json > "$result" || true
+          cat "$result"
+          id=$(node -e "process.stdout.write(JSON.parse(require('fs').readFileSync(process.argv[1], 'utf8')).id ?? '')" "$result")
+          status=$(node -e "process.stdout.write(JSON.parse(require('fs').readFileSync(process.argv[1], 'utf8')).status ?? '')" "$result")
+          if [ "$status" != 'Accepted' ]; then
+            [ -n "$id" ] && xcrun notarytool log "$id" "${auth[@]}"
+            echo "disk image notarization ended with status '${status:-none}'"; exit 1
+          fi
+          xcrun stapler staple "$dmg"
+          xcrun stapler validate "$dmg"
+          spctl -a -vv -t open --context context:primary-signature "$dmg" 2>&1 | tee "$RUNNER_TEMP/dmg-spctl.txt"
+          grep -q 'source=Notarized Developer ID' "$RUNNER_TEMP/dmg-spctl.txt"
       - name: Verify compiled updater release inputs
+        env:
+          COTAL_UPDATER_EXPECTED_PUBLIC_KEY: ${{ steps.build.outputs.updater == 'true' && vars.COTAL_UPDATER_PUBLIC_KEY || '' }}
         run: node desktop/scripts/check-updater-release.mjs
+      # Both Mac builds name their update bundle Cotal.app.tar.gz; give it the disk image's name so the two
+      # architectures can share one release.
+      - name: Name the macOS update bundle after its disk image
+        if: runner.os == 'macOS' && steps.build.outputs.updater == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          bundle=desktop/src-tauri/target/release/bundle
+          archives=("$bundle"/macos/*.app.tar.gz)
+          dmgs=("$bundle"/dmg/*.dmg)
+          [ "${#archives[@]}" -eq 1 ] && [ -f "${archives[0]}" ] && [ -f "${archives[0]}.sig" ] || { echo 'expected one signed update bundle'; exit 1; }
+          [ "${#dmgs[@]}" -eq 1 ] && [ -f "${dmgs[0]}" ] || { echo 'expected one disk image'; exit 1; }
+          name=$(basename "${dmgs[0]}" .dmg).app.tar.gz
+          mv "${archives[0]}" "$bundle/macos/$name"
+          mv "${archives[0]}.sig" "$bundle/macos/$name.sig"
+          echo "Update bundle: $name"
       - name: Verify the macOS bundle signature seals the whole app
         if: runner.os == 'macOS'
         run: |
@@ -359,6 +483,9 @@ jobs:
             desktop/src-tauri/target/release/bundle/**/*.rpm
             desktop/src-tauri/target/release/bundle/**/*.msi
             desktop/src-tauri/target/release/bundle/**/*.exe
+            desktop/src-tauri/target/release/bundle/**/*.app.tar.gz
+            desktop/src-tauri/target/release/bundle/**/*.app.tar.gz.sig
+            desktop/src-tauri/target/release/bundle/**/*-setup.exe.sig
           if-no-files-found: error
           retention-days: 7
   updater-arm:
@@ -438,27 +565,78 @@ jobs:
             ${{ runner.temp }}/win-updater-result/
           if-no-files-found: error
           retention-days: 7
+  # Each platform's installers attach as soon as its build stages them, so a slow macOS notarization
+  # never holds back Windows and Linux. When every build has ended, any platform without installers fails
+  # this job by name.
   release:
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
-    needs: native-build
     runs-on: ubuntu-24.04
+    timeout-minutes: 240
     permissions:
+      actions: read
       contents: write
     steps:
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          pattern: desktop-release-*
-          path: installers
-      - name: Attach installers to the version release
+      - name: Attach each platform's installers as soon as they are staged
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          expected=(desktop-release-Linux-X64 desktop-release-Windows-X64 desktop-release-macOS-X64 desktop-release-macOS-ARM64)
+          if ! gh release view "$TAG" > /dev/null 2>&1; then
+            gh release create "$TAG" --verify-tag --draft --title "$TAG" --notes 'Desktop installer validation packages. Check each platform signature before distribution.' \
+              || gh release view "$TAG" > /dev/null
+          fi
+          attached=" "
+          final=false
+          while :; do
+            # Read the jobs before the artifacts: a build that has ended has already staged what it will stage.
+            running=$(gh api "repos/$GH_REPO/actions/runs/$RUN_ID/attempts/$RUN_ATTEMPT/jobs" --paginate \
+              -q '.jobs[] | select((.name | startswith("native-build")) and .status != "completed") | .name' | wc -l)
+            [ "$running" -eq 0 ] && final=true
+            for name in "${expected[@]}"; do
+              [[ "$attached" == *" $name "* ]] && continue
+              id=$(gh api "repos/$GH_REPO/actions/runs/$RUN_ID/artifacts?name=$name" -q '[.artifacts[] | select(.expired | not)] | max_by(.created_at) | .id // empty')
+              [ -n "$id" ] || continue
+              rm -rf "installers/$name" && mkdir -p "installers/$name"
+              curl -fsSL -H "Authorization: Bearer $GH_TOKEN" -o "installers/$name.zip" "https://api.github.com/repos/$GH_REPO/actions/artifacts/$id/zip"
+              unzip -q "installers/$name.zip" -d "installers/$name"
+              mapfile -d '' packages < <(find "installers/$name" -type f -print0)
+              test "${#packages[@]}" -gt 0
+              gh release upload "$TAG" --clobber "${packages[@]}"
+              attached+="$name "
+              echo "Attached ${#packages[@]} installers from $name."
+            done
+            missing=()
+            for name in "${expected[@]}"; do [[ "$attached" == *" $name "* ]] || missing+=("$name"); done
+            [ "${#missing[@]}" -eq 0 ] && { echo "All ${#expected[@]} platforms attached."; break; }
+            $final && { echo "::error::Builds ended without installers for: ${missing[*]}"; exit 1; }
+            sleep 30
+          done
+      # Installed Mac and Windows apps poll releases/latest/download/desktop-latest.json. It is attached last,
+      # after every update bundle it names, and only when all three are there.
+      - name: Publish the app update feed
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
           TAG: ${{ github.ref_name }}
         run: |
           set -euo pipefail
-          if ! gh release view "$TAG" > /dev/null 2>&1; then
-            gh release create "$TAG" --verify-tag --draft --title "$TAG" --notes 'Desktop installer validation packages. Check each platform signature before distribution.'
-          fi
-          mapfile -d '' packages < <(find installers -type f -print0)
-          test "${#packages[@]}" -gt 0
-          gh release upload "$TAG" "${packages[@]}"
+          one() {
+            mapfile -t found < <(find installers -type f -name "$1")
+            [ "${#found[@]}" -eq 1 ] && [ -f "${found[0]}.sig" ] || { echo "::error::expected one update file matching $1 with its .sig beside it, found ${#found[@]} files" >&2; exit 1; }
+            printf '%s' "${found[0]}"
+          }
+          arm=$(one '*_aarch64.app.tar.gz')
+          intel=$(one '*_x64.app.tar.gz')
+          windows=$(one '*-setup.exe')
+          url="https://github.com/$GH_REPO/releases/download/$TAG"
+          entry() { jq -n --arg url "$url/$(basename "$1")" --rawfile signature "$1.sig" '{url: $url, signature: $signature}'; }
+          jq -n --arg version "${TAG#v}" --arg notes "https://github.com/$GH_REPO/releases/tag/$TAG" --arg date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --argjson arm "$(entry "$arm")" --argjson intel "$(entry "$intel")" --argjson windows "$(entry "$windows")" \
+            '{version: $version, notes: $notes, pub_date: $date, platforms: {"darwin-aarch64": $arm, "darwin-x86_64": $intel, "windows-x86_64": $windows}}' > desktop-latest.json
+          jq . desktop-latest.json
+          gh release upload "$TAG" --clobber desktop-latest.json

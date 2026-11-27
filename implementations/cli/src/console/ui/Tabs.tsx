@@ -9,8 +9,8 @@ export function Tabs({
   unread,
   width,
 }: {
-  tabs: string[];
-  active: string;
+  tabs: (string | null)[];
+  active: string | null;
   counts: Record<string, number>;
   unread?: Record<string, number>;
   width: number;
@@ -20,11 +20,11 @@ export function Tabs({
       <Text wrap="truncate-end">
         {tabs.map((t, i) => {
           const isActive = t === active;
-          const label = t === "all" ? "all" : "#" + t;
-          const count = t === "all" ? undefined : counts[t];
-          const fresh = !isActive ? unread?.[t] : undefined;
+          const label = t === null ? "all" : "#" + t;
+          const count = t === null ? undefined : counts[t];
+          const fresh = t !== null && !isActive ? unread?.[t] : undefined;
           return (
-            <Text key={t}>
+            <Text key={label}>
               {i > 0 ? <Text dimColor>{"   "}</Text> : null}
               <Text dimColor>{i + 1}:</Text>
               <Text color={isActive ? "cyan" : undefined} inverse={isActive} bold={isActive}>

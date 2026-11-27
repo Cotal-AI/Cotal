@@ -65,6 +65,14 @@ function sessionListed(name: string): boolean {
   }
 }
 
+// Name validation runs before the runtime checks whether tmux is reachable.
+for (const dashed of ["-reviewer", "--reviewer"]) {
+  let refusal = "";
+  try { new TmuxRuntime("cotal-tmux-smoke-dash").spawn(dashed, { command: "true", args: [], env: {} }, "/tmp"); }
+  catch (error) { refusal = (error as Error).message; }
+  ok(`spawn refuses an agent name that begins with - (${dashed})`, refusal.includes("not starting with -"));
+}
+
 // Needs a real tmux. Skip cleanly where it isn't installed (local `pnpm check` on a tmux-less box);
 // CI installs tmux explicitly so this runs there.
 if (!tmux.available()) {
@@ -235,7 +243,7 @@ const SECRET_CANARY = "leak-canary-tmux-DO-NOT-LEAK";
 const handle = runtime.spawn("smoke-agent", {
   command: "sleep",
   args: ["30"],
-  env: { TEST_VAR: "hello", COTAL_CONTROL_TOKEN: SECRET_CANARY },
+  env: { TEST_VAR: "hello", COTAL_CONTROL_KEY: SECRET_CANARY },
 }, "/tmp");
 ok(`handle.name = "smoke-agent"`, handle.name === "smoke-agent");
 ok(`handle.kind = "tmux"`, handle.kind === "tmux");
@@ -297,7 +305,7 @@ ok("mergedCommand does NOT contain '-i'", !merged.includes("env -i"));
 
 // privateLaunch keeps secret env VALUES off tmux's command line: the rendered body (with the secret)
 // goes into an owner-only (0o600) launcher script, and tmux only ever sees `bash <path>`.
-const secretBody = tmux.isolatedCommand({ COTAL_CONTROL_TOKEN: "s3cr3t-token" }, "/bin/echo", ["hi"]);
+const secretBody = tmux.isolatedCommand({ COTAL_CONTROL_KEY: "s3cr3t-token" }, "/bin/echo", ["hi"]);
 const launch = tmux.privateLaunch(secretBody).command;
 const launchPath = launch.replace(/^bash\s+'?|'?$/g, ""); // strip `bash '` … `'`
 ok("privateLaunch returns a `bash <path>` invocation", launch.startsWith("bash ") && launchPath.endsWith(".sh"));

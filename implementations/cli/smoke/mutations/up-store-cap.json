@@ -23,7 +23,7 @@
     },
     {
       "name": "the preservation cut does not journal the cap",
-      "file": "implementations/cli/src/commands/down.ts",
+      "file": "implementations/cli/src/commands/down-preserve.ts",
       "find": "  const cap: { maxFileStore?: number } = mesh.maxFileStore !== undefined ? { maxFileStore: mesh.maxFileStore } : {};\n",
       "replace": "  const cap: { maxFileStore?: number } = {};\n",
       "expectRed": "the cut journals the store cap in the preserved launch",

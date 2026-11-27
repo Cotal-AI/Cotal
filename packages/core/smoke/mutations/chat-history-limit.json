@@ -16,7 +16,7 @@
   "mutations": [
     {
       "name": "the provisioner loses its chat stream update grant",
-      "file": "packages/core/src/provision.ts",
+      "file": "packages/core/src/provision-service-permissions.ts",
       "find": "  const streamReconcile = [...ttlStreams, `KV_${membershipBucket(space)}`, OBJ, CHAT, INBOX, DLV, DM]\n",
       "replace": "  const streamReconcile = [...ttlStreams, `KV_${membershipBucket(space)}`, OBJ, INBOX, DLV, DM]\n",
       "expectRed": "the provisioner may set the chat stream's limit",
@@ -25,7 +25,7 @@
     },
     {
       "name": "the provisioner loses its INBOX update grant",
-      "file": "packages/core/src/provision.ts",
+      "file": "packages/core/src/provision-service-permissions.ts",
       "find": "  const streamReconcile = [...ttlStreams, `KV_${membershipBucket(space)}`, OBJ, CHAT, INBOX, DLV, DM]\n",
       "replace": "  const streamReconcile = [...ttlStreams, `KV_${membershipBucket(space)}`, OBJ, CHAT, DLV, DM]\n",
       "expectRed": "the provisioner may set the inbox stream's limit",
@@ -33,7 +33,7 @@
     },
     {
       "name": "the provisioner loses its DM update grant",
-      "file": "packages/core/src/provision.ts",
+      "file": "packages/core/src/provision-service-permissions.ts",
       "find": "  const streamReconcile = [...ttlStreams, `KV_${membershipBucket(space)}`, OBJ, CHAT, INBOX, DLV, DM]\n",
       "replace": "  const streamReconcile = [...ttlStreams, `KV_${membershipBucket(space)}`, OBJ, CHAT, INBOX, DLV]\n",
       "expectRed": "the provisioner may set the dm stream's limit",
@@ -41,7 +41,7 @@
     },
     {
       "name": "the grant is widened to the TASK stream",
-      "file": "packages/core/src/provision.ts",
+      "file": "packages/core/src/provision-service-permissions.ts",
       "find": "  const streamReconcile = [...ttlStreams, `KV_${membershipBucket(space)}`, OBJ, CHAT, INBOX, DLV, DM]\n",
       "replace": "  const streamReconcile = [...ttlStreams, `KV_${membershipBucket(space)}`, OBJ, CHAT, INBOX, DLV, DM, TASK]\n",
       "expectRed": "the provisioner may not update TASK_",
@@ -118,15 +118,15 @@
     },
     {
       "name": "the client compares against the compiled 1000, as before the stamp",
-      "file": "packages/core/src/endpoint.ts",
+      "file": "packages/core/src/endpoint-delivery-plane.ts",
       "find": "        if (limit !== null && m.info.pending >= limit - 1) this.emit(\"stored-copies-full\", { limit });",
-      "replace": "        if (m.info.pending >= PLANE3_MAX_MSGS_PER_SUBJECT - 1) this.emit(\"stored-copies-full\", { limit: PLANE3_MAX_MSGS_PER_SUBJECT });",
+      "replace": "        if (m.info.pending >= deliveryLimitOf(undefined)! - 1) this.emit(\"stored-copies-full\", { limit: deliveryLimitOf(undefined)! });",
       "expectRed": "copies stored under 5 still warn, at 5, after the count is raised to 50",
       "cell": "copies stored under 5 still warn, at 5, after the count is raised to 50"
     },
     {
       "name": "the notice fires one copy late",
-      "file": "packages/core/src/endpoint.ts",
+      "file": "packages/core/src/endpoint-delivery-plane.ts",
       "find": "        if (limit !== null && m.info.pending >= limit - 1) this.emit(\"stored-copies-full\", { limit });",
       "replace": "        if (limit !== null && m.info.pending >= limit) this.emit(\"stored-copies-full\", { limit });",
       "expectRed": "...and the same agent's next copies, stored under 5, warn at 5",
@@ -134,7 +134,7 @@
     },
     {
       "name": "the writer stops stamping its count",
-      "file": "packages/core/src/endpoint.ts",
+      "file": "packages/core/src/endpoint-delivery-plane.ts",
       "find": "      frameHeaders.set(DELIVERY_LIMIT_HEADER, await this.deliveryLimitStamp());\n",
       "replace": "",
       "expectRed": "copies stored under 5 still warn, at 5, after the count is raised to 50",
@@ -143,7 +143,7 @@
     },
     {
       "name": "the writer never reads the count again",
-      "file": "packages/core/src/endpoint.ts",
+      "file": "packages/core/src/endpoint-delivery-plane.ts",
       "find": "const DELIVERY_LIMIT_READ_MS = 5_000;",
       "replace": "const DELIVERY_LIMIT_READ_MS = 3_600_000;",
       "expectRed": "copies stored under no count give no notice after the count drops to 5",
@@ -152,7 +152,7 @@
     },
     {
       "name": "an unstamped copy counts as no count",
-      "file": "packages/core/src/endpoint.ts",
+      "file": "packages/core/src/endpoint-options.ts",
       "find": "  if (value === undefined || value === \"\") return PLANE3_MAX_MSGS_PER_SUBJECT;",
       "replace": "  if (value === undefined || value === \"\") return null;",
       "expectRed": "1000 copies without the stamp warn, at 1000, as the old daemon's count was",
@@ -161,7 +161,7 @@
     },
     {
       "name": "an unstamped copy counts as 999",
-      "file": "packages/core/src/endpoint.ts",
+      "file": "packages/core/src/endpoint-options.ts",
       "find": "  if (value === undefined || value === \"\") return PLANE3_MAX_MSGS_PER_SUBJECT;",
       "replace": "  if (value === undefined || value === \"\") return PLANE3_MAX_MSGS_PER_SUBJECT - 1;",
       "expectRed": "999 copies without the stamp give no notice",
@@ -169,16 +169,16 @@
     },
     {
       "name": "catch-up judges the per-sender count again",
-      "file": "packages/core/src/endpoint.ts",
-      "find": "    await this.catchupCopy(owner, lifecycleUid, channel, joinCursor, fence, generation);\n",
-      "replace": "    await this.catchupCopy(owner, lifecycleUid, channel, joinCursor, fence, generation);\n    { const info = await this.jsm!.streams.info(chatStream(this.space), { subjects_filter: chatSubject(this.space, \"*\", \"*\", channel) }); if (Object.values(info.state.subjects ?? {}).some((n) => n >= info.config.max_msgs_per_subject)) { await tombstoneMember(kv, channel, owner, lifecycleUid, fence, this.card.id, generation); return { durable: false, reason: \"activation catch-up window partially evicted by retention\", generation }; } }\n",
+      "file": "packages/core/src/endpoint-durable-backstop.ts",
+      "find": "    await this.parts.durable.catchupCopy(owner, lifecycleUid, channel, joinCursor, fence, generation);\n",
+      "replace": "    await this.parts.durable.catchupCopy(owner, lifecycleUid, channel, joinCursor, fence, generation);\n    { const info = await this.conn.jsm!.streams.info(chatStream(this.identity.space), { subjects_filter: (await import(\"./subjects.js\")).chatSubject(this.identity.space, \"*\", \"*\", channel) }); if (Object.values(info.state.subjects ?? {}).some((n) => n >= info.config.max_msgs_per_subject)) { await tombstoneMember(kv, channel, owner, lifecycleUid, fence, this.identity.card.id, generation); return { durable: false, reason: \"activation catch-up window partially evicted by retention\", generation }; } }\n",
       "expectRed": "a join whose channel is exactly at the per-sender count, behind another channel's post, activates with both posts",
       "cell": "a join whose channel is exactly at the per-sender count, behind another channel's post, activates with both posts",
       "note": "Stream state cannot tell this channel's eviction from another channel's removal, so a sender at the count proves nothing; the mutant tombstones a join that lost nothing."
     },
     {
       "name": "recall ignores the stream head",
-      "file": "packages/core/src/endpoint.ts",
+      "file": "packages/core/src/endpoint-history.ts",
       "find": "    if (info.state.first_seq > sinceSeq + 1) return true;\n",
       "replace": "",
       "expectRed": "recall reports a channel whose posts are all gone, with the stream head past the watermark",
@@ -186,7 +186,7 @@
     },
     {
       "name": "recall judges the count against the compiled 1000, not the stream's limit",
-      "file": "packages/core/src/endpoint.ts",
+      "file": "packages/core/src/endpoint-history.ts",
       "find": "    const cap = info.config.max_msgs_per_subject;\n    let maxPerSubject = 0;",
       "replace": "    const cap = 1000;\n    let maxPerSubject = 0;",
       "expectRed": "recall reports a channel where a sender passed the stream's per-sender count",
@@ -194,7 +194,7 @@
     },
     {
       "name": "the writer acts on its stamp read without asking the fence again",
-      "file": "packages/core/src/endpoint.ts",
+      "file": "packages/core/src/endpoint-delivery-plane.ts",
       "find": "      frameHeaders.set(DELIVERY_LIMIT_HEADER, await this.deliveryLimitStamp());\n      if (!this.plane3MayAct()) return;\n",
       "replace": "      frameHeaders.set(DELIVERY_LIMIT_HEADER, await this.deliveryLimitStamp());\n",
       "expectRed": "a daemon that stands down during its count read writes no stored copy",

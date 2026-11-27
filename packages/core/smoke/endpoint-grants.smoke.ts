@@ -135,16 +135,18 @@ c("the spawn set: spawn and resolve-agent are UNTARGETED (virgin child); despawn
 // attach write today and this really would be new authority.
 c("the spawn capability grants NO `input` row in either mode: seat input is operator-only",
   !epCallerGrantRows("demo", spawnCallerCapabilities("u_abc"), caller).pub.some((r) => r.includes(".manager.input.")));
+c("the spawn capability grants NO `interrupt` row: writing a seat's interrupt key is operator-only like input",
+  !epCallerGrantRows("demo", spawnCallerCapabilities("u_abc"), caller).pub.some((r) => r.includes(".manager.interrupt.")));
 // The operator INSTRUMENT rollups (the 1c grant-migration table's admin row): the privileged
 // instrument is read + create + persona only (structurally barred from cross-agent reach, like its
 // ctl row); the admin instrument adds ANY-mode despawn/attach (tOwner "*": operator-policy-mintable
 // only, §13.2 - the broker grant IS the tier boundary), BOTH modes of `input` and `turn` (the two
 // seat writes, granted nowhere else; the run driver submits its turns under this instrument), and
 // the untargeted `manager.admin` family.
-c("the privileged instrument set: reads + spawn + resolve-agent + resolve-cwd + persona writes + the chat-session pair + the run family with the keyed pair, with run-answer self-targeted",
-  operatorInstrumentCapabilities("privileged").length === 24
+c("the privileged instrument set: reads + spawn + resolve-agent + resolve-cwd + list-dir + harness-commands + persona writes + the chat-session pair + the run family with the keyed pair, with run-answer self-targeted",
+  operatorInstrumentCapabilities("privileged").length === 25
   && operatorInstrumentCapabilities("privileged").filter((cap) => cap.target !== undefined).every((cap) => cap.command === "run-answer" && cap.target?.mode === "self")
-  && operatorInstrumentCapabilities("privileged").map((cap) => cap.command).join(",") === "status,ps,slots,inspect,models,list-personas,show-persona,goal-result,spawn,resolve-agent,resolve-cwd,list-dir,define-persona,remove-persona,chat-session-open,chat-session-retire,run-status,run-ps,run-start,run-resume,run-start-keyed,run-submission-status,run-cancel,run-answer");
+  && operatorInstrumentCapabilities("privileged").map((cap) => cap.command).join(",") === "status,ps,slots,inspect,models,list-personas,show-persona,goal-result,spawn,resolve-agent,resolve-cwd,list-dir,harness-commands,define-persona,remove-persona,chat-session-open,chat-session-retire,run-status,run-ps,run-start,run-resume,run-start-keyed,run-submission-status,run-cancel,run-answer");
 // `resolve-cwd` is the placement read the folder question of a managed launch calls, and on a static
 // mesh the instrument IS that caller: without this row the question offers typing and every typed
 // folder is refused at the broker. It stays out of the standing agent `spawn` set, which reaches
@@ -161,6 +163,9 @@ c("both instrument tiers carry resolve-cwd untargeted and off the scatter rail, 
 c("list-dir matches operator cwd reads without entering standing spawn or run grants",
   ["privileged", "admin"].every((tier) => operatorInstrumentCapabilities(tier as "privileged" | "admin").some((cap) => cap.command === "list-dir" && cap.target === undefined && cap.routes === undefined))
   && ![...spawnCallerCapabilities("u_abc"), ...runCallerCapabilities("u_abc"), ...baselineCallerCapabilities()].some((cap) => cap.command === "list-dir"));
+c("harness-commands matches list-dir: on both instrument tiers, never in the standing spawn or run grants",
+  ["privileged", "admin"].every((tier) => operatorInstrumentCapabilities(tier as "privileged" | "admin").some((cap) => cap.command === "harness-commands" && cap.target === undefined && cap.routes === undefined))
+  && ![...spawnCallerCapabilities("u_abc"), ...runCallerCapabilities("u_abc"), ...baselineCallerCapabilities()].some((cap) => cap.command === "harness-commands"));
 
 // The pin is what makes the row usable: the instrument is minted per control call, so the typed
 // folder's check reaches exactly the manager `--on` named and no other instance.
@@ -190,10 +195,10 @@ c("the run capability set: run-start/run-resume/run-start-keyed/run-submission-s
   && JSON.stringify(runCallerCapabilities("u_abc").slice(8)) === JSON.stringify(spawnCallerCapabilities("u_abc"))
   && !spawnCallerCapabilities("u_abc").some((cap) => cap.command.startsWith("run-")));
 const adminCaps = operatorInstrumentCapabilities("admin", "u_abc");
-c("the admin instrument set adds any-mode despawn/attach + BOTH modes of input and turn + the manager.admin family",
-  adminCaps.length === 39
-  && adminCaps.filter((cap) => cap.target?.mode === "any").map((cap) => cap.command).join(",") === "despawn,attach,input,turn"
-  && adminCaps.filter((cap) => cap.target?.mode === "owner").map((cap) => cap.command).join(",") === "input,turn"
+c("the admin instrument set adds any-mode despawn/attach + BOTH modes of input, interrupt and turn + the manager.admin family",
+  adminCaps.length === 42
+  && adminCaps.filter((cap) => cap.target?.mode === "any").map((cap) => cap.command).join(",") === "despawn,attach,input,interrupt,turn"
+  && adminCaps.filter((cap) => cap.target?.mode === "owner").map((cap) => cap.command).join(",") === "input,interrupt,turn"
   && adminCaps.filter((cap) => cap.target?.mode === "owner").every((cap) => (cap.target as { tOwner?: string }).tOwner === "u_abc")
   && adminCaps.filter((cap) => cap.target?.mode === "any").every((cap) => (cap.target as { tOwner?: string }).tOwner === "*")
   && ["purge", "launch", "resume-preserved", "commit-resume", "finalize-resume", "prepare-preservation", "commit-preservation", "abort-preservation", "transcript-receive"].every((cmd) => adminCaps.some((cap) => cap.command === cmd && cap.target === undefined)));
@@ -289,13 +294,18 @@ const BASELINE_PUB = [
   `cotal.epg.ep.one.manager.turn-yield.self.u_abc.cli.${UID}.*`,
   `cotal.epg.ep.one.manager.turn-unconfirmed.self.u_abc.cli.${UID}.*`,
   `cotal.epg.ep.one.manager.run-answer.self.u_abc.cli.${UID}.*`,
+  `cotal.epg.ep.prin-reply.agent.u_abc.cli.${UID}.*.*.*.*.*`,
 ];
-c("no-capability mint carries EXACTLY the Appendix-B baseline ep rows (describe-all + delivery join/leave/list + self stop/turn-participate/turn-pending/turn-yield/turn-unconfirmed/run-answer), nothing wider",
-  JSON.stringify(without.pub.allow.filter((r) => r.includes(".ep.") || r.includes(".epj.")).sort())
-  === JSON.stringify([...BASELINE_PUB].sort()),
-  JSON.stringify(without.pub.allow.filter((r) => r.includes(".ep."))));
-c("no-capability mint carries the baseline reply-rail read (and only that ep sub row)",
-  without.sub.allow.filter((r) => r.includes(".ep.")).join("|") === `cotal.epg.ep.reply.*.*.*.u_abc.cli.${UID}.*`);
+const BASELINE_SUB = [
+  `cotal.epg.ep.reply.*.*.*.u_abc.cli.${UID}.*`,
+  `cotal.epg.ep.prin.agent.u_abc.cli.${UID}.*.*.*.*.*.*.*`,
+];
+const withoutEpPub = without.pub.allow.filter((r) => r.includes(".ep.") || r.includes(".epj.")).sort();
+const withoutEpSub = without.sub.allow.filter((r) => r.includes(".ep.")).sort();
+c("no-capability static agent mint carries exactly the Appendix B endpoint publish rows",
+  JSON.stringify(withoutEpPub) === JSON.stringify(BASELINE_PUB.sort()), JSON.stringify(withoutEpPub));
+c("no-capability static agent mint carries exactly the ordinary reply read and principal serve subscription",
+  JSON.stringify(withoutEpSub) === JSON.stringify(BASELINE_SUB.sort()), JSON.stringify(withoutEpSub));
 c("no-capability mint carries NO journal rows and NO owner/child/ledger-mode rows",
   ![...without.pub.allow].some((r) => r.includes(".epj.") || r.includes(".owner.") || r.includes(".child.") || r.includes(".ledger.")));
 const withSpawn = decode(await mintCreds(auth, newIdentity(), "agent", { principal: { owner: "u_abc", actor: "cli" }, lifecycleUid: UID, capabilities: ["spawn"] }));

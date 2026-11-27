@@ -8,10 +8,13 @@ import { credsAuthenticator, type NatsConnection } from "@nats-io/transport-node
 import { JetStreamApiCodes, JetStreamApiError, jetstreamManager } from "@nats-io/jetstream";
 import { Kvm } from "@nats-io/kv";
 import { DEFAULT_SERVER, dialerFor } from "./endpoint.js";
-import { parseSubject, isTransferStream, mintLifecycleUid } from "./subjects.js";
+import { CHANNEL_DEFAULTS_KEY, channelBucket, chatStream, isPrincipalOwnerToken, parseSubject, isTransferStream, mintLifecycleUid, isPresenceRow } from "./subjects.js";
+import { decodeChannelEntry } from "./channels.js";
+import { isEventChannel } from "./event-channel.js";
 import { spaceDeletionStreams } from "./space-deletion-targets.js";
 import { idFromCreds, newIdentity } from "./identity.js";
 import { mintCreds, type SpaceAuth } from "./provision.js";
+import { lastKvEntries } from "./kv-scan.js";
 
 /** Connect opts for a possibly-scoped cred: an authenticator plus the per-id `inboxPrefix` a scoped
  *  cred needs (its `sub.allow` is `_INBOX_<id>.>`, so JS API replies must land there, not the default
@@ -27,8 +30,8 @@ function scopedConnectOpts(creds?: string): Record<string, unknown> {
 /** One row of the space overview. */
 export interface SpaceInfo {
   space: string;
-  agents: number; // presence KV entries (≈ agents currently present)
-  channels: number; // distinct chat channels with backlog
+  agents: number; // agent presence records, excluding endpoints
+  channels: number; // distinct configured or retained chat channels, excluding events
   messages: number; // total chat messages
 }
 
@@ -58,34 +61,70 @@ export async function listSpaces(opts: ListSpacesOptions = {}): Promise<SpaceInf
       return s;
     };
 
-    // Chat stream per space → message total + channel count (same subject-breakdown parse as
-    // endpoint.listChannels()).
+    const streamNames = new Set<string>();
     for await (const name of jsm.streams.names()) {
+      streamNames.add(name);
       const m = /^CHAT_(.+)$/.exec(name);
-      if (!m) continue;
-      const s = get(m[1]);
-      try {
-        const info = await jsm.streams.info(name, { subjects_filter: ">" });
-        s.messages = info.state.messages;
-        const chans = new Set<string>();
-        for (const subject of Object.keys(info.state.subjects ?? {})) {
-          const p = parseSubject(subject);
-          if (p?.kind === "chat") chans.add(p.rest);
-        }
-        s.channels = chans.size;
-      } catch {
-        /* leave stats at 0 if the stream can't be inspected */
-      }
+      if (m) get(m[1]);
     }
 
-    // Presence KV per space → agents present.
+    // Presence KV per space → count agents using the roster's card kind.
+    const kvm = new Kvm(nc);
     try {
-      for await (const st of new Kvm(nc).list()) {
+      for await (const st of kvm.list()) {
         const m = /^cotal_presence_(.+)$/.exec(st.bucket);
-        if (m) get(m[1]).agents = st.values;
+        if (!m) continue;
+        const s = get(m[1]);
+        try {
+          for (const entry of await lastKvEntries(await kvm.open(st.bucket))) {
+            if (entry.operation !== "PUT") continue;
+            try {
+              const row = entry.json<unknown>();
+              if (isPresenceRow(row, entry.key) && row.card.kind === "agent") s.agents++;
+            } catch {
+              /* skip malformed JSON without discarding other presence rows */
+            }
+          }
+        } catch {
+          /* leave agent count at 0 if this bucket can't be inspected */
+        }
       }
     } catch {
       /* no KV access (restricted creds) — leave agent counts at 0 */
+    }
+
+    for (const s of bySpace.values()) {
+      const chans = new Set<string>();
+      const chat = chatStream(s.space);
+      if (streamNames.has(chat)) {
+        try {
+          const info = await jsm.streams.info(chat, { subjects_filter: ">" });
+          s.messages = info.state.messages;
+          for (const subject of Object.keys(info.state.subjects ?? {})) {
+            const p = parseSubject(subject);
+            if (p?.kind === "chat" && isPrincipalOwnerToken(p.owner) && !isEventChannel(p.rest)) chans.add(p.rest);
+          }
+        } catch {
+          /* message totals and retained channels are best-effort */
+        }
+      }
+      const bucket = channelBucket(s.space);
+      if (streamNames.has(`KV_${bucket}`)) {
+        try {
+          for (const entry of await lastKvEntries(await kvm.open(bucket))) {
+            if (entry.operation !== "PUT" || entry.key === CHANNEL_DEFAULTS_KEY || isEventChannel(entry.key)) continue;
+            try {
+              decodeChannelEntry(entry);
+              chans.add(entry.key);
+            } catch {
+              /* skip invalid channel config without discarding other channels */
+            }
+          }
+        } catch {
+          /* keep retained channels if the registry can't be inspected */
+        }
+      }
+      s.channels = chans.size;
     }
 
     return [...bySpace.values()].sort((a, b) => a.space.localeCompare(b.space));

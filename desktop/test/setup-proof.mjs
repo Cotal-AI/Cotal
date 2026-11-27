@@ -161,7 +161,7 @@ async function observeInstalledService(label) {
     `$st=if($receipt){try{Get-ScheduledTask -TaskPath '\\' -TaskName $receipt.unit -ErrorAction Stop}catch{$null}}else{$null}; ` +
     `$sti=if($receipt){try{Get-ScheduledTaskInfo -TaskPath '\\' -TaskName $receipt.unit -ErrorAction Stop}catch{$null}}else{$null}; ` +
     `$procs=@(Get-CimInstance Win32_Process -Property ProcessId,ParentProcessId,Name,ExecutablePath,CommandLine,CreationDate | Where-Object { $_.Name -in @('cotal-desktop.exe','node.exe','uninstall.exe') -or ($_.ExecutablePath -and $_.ExecutablePath -like '*\\Cotal\\*') } | ForEach-Object { @{pid=[int]$_.ProcessId;parentPid=[int]$_.ParentProcessId;name=$_.Name;executablePath=$_.ExecutablePath;commandLine=$_.CommandLine;created=$(if($_.CreationDate){$_.CreationDate.ToUniversalTime().ToString('o')}else{$null})} }); ` +
-    `@{receipt=$receipt;xml=@{command=$xmlCommand;arguments=$xmlArgs;workingDirectory=$xmlWorkDir};task=$(if($task){@{name=$task.Name;enabled=[bool]$task.Enabled;state=[int]$task.State;scheduledTaskState=$(if($st){[string]$st.State}else{$null});instances=[int]$task.GetInstances(0).Count;lastRunTime=$(if($task.LastRunTime){$task.LastRunTime.ToUniversalTime().ToString('o')}else{$null});scheduledTaskLastRunTime=$(if($sti -and $sti.LastRunTime){$sti.LastRunTime.ToUniversalTime().ToString('o')}else{$null});lastTaskResult=[int]$task.LastTaskResult;lastTaskResultHex=('0x{0:X8}' -f ([uint32]([int64]$task.LastTaskResult -band 0xFFFFFFFFL)));scheduledTaskLastResult=$(if($sti){[int]$sti.LastTaskResult}else{$null});numberOfMissedRuns=$(if($sti){[int]$sti.NumberOfMissedRuns}else{$null});actionPath=$(if($action){[string]$action.Path}else{$null});actionArguments=$(if($action){[string]$action.Arguments}else{$null});actionWorkingDirectory=$(if($action){[string]$action.WorkingDirectory}else{$null})}}else{$null});processes=$procs} | ConvertTo-Json -Depth 6 -Compress`
+    `@{receipt=$receipt;xml=@{command=$xmlCommand;arguments=$xmlArgs;workingDirectory=$xmlWorkDir};task=$(if($task){@{name=$task.Name;enabled=[bool]$task.Enabled;state=[int]$task.State;scheduledTaskState=$(if($st){[string]$st.State}else{$null});instances=[int]$task.GetInstances(0).Count;lastRunTime=$(if($task.LastRunTime){$task.LastRunTime.ToUniversalTime().ToString('o')}else{$null});scheduledTaskLastRunTime=$(if($sti -and $sti.LastRunTime){$sti.LastRunTime.ToUniversalTime().ToString('o')}else{$null});lastTaskResult=[int]$task.LastTaskResult;lastTaskResultHex=('0x{0:X8}' -f ([uint32]([int64]$task.LastTaskResult -band 0xFFFFFFFFL)));scheduledTaskLastResult=$(if($sti){[int64]$sti.LastTaskResult}else{$null});numberOfMissedRuns=$(if($sti){[int]$sti.NumberOfMissedRuns}else{$null});actionPath=$(if($action){[string]$action.Path}else{$null});actionArguments=$(if($action){[string]$action.Arguments}else{$null});actionWorkingDirectory=$(if($action){[string]$action.WorkingDirectory}else{$null})}}else{$null});processes=$procs} | ConvertTo-Json -Depth 6 -Compress`
   ]);
   const parsed = JSON.parse(obs.stdout);
   parsed.daemonLog = daemonLog;
@@ -257,13 +257,64 @@ async function observeDaemonLockState(label, statusPid) {
   save();
   return entry;
 }
+// The NSIS root is also the running service's Cotal home. These names are its own bookkeeping,
+// created and removed while setup is refused, so they are not installed files.
+const serviceState = new Set([
+  'daemon', // service lock, logs, hosted manager records, and per-space state
+  '.update-closure.lock', // held while the service closes its update generation
+  'update-settings.json', // saved automatic-update and notice preferences
+  'update-recovery.json', // interrupted update journal the service reads and retires
+  'update-recovery-observed.json', // first observation of that journal
+  'update-check.json', // cached registry result rewritten by each check
+  'update-check.lock', // created for one check and deleted when the check releases it
+  'update-attempt.json', // scheduled attempt record rewritten by the service
+  'update-attempt.log', // output of an automatic update the service starts
+  'update-windows.json', // Windows update task receipt
+  'update-windows-paused.json', // pause after an interrupted Windows helper
+  'update-windows-clear.json', // request that clears that pause
+  'update-windows-activation.json', // result of activating the replaced Windows service
+  'meshes', // registered mesh records rewritten while the service answers
+  'trusted-projects-seed.json', // project-trust seed written when the service records a mesh
+  'idp-sessions.json', // signed-in sessions kept beside the service
+  'idp-sessions.lock', // lock around those signed-in sessions
+  'acp', // account and connector session records
+  'agent-skills.json', // reconciled skill record
+  'app-identities', // desktop app identity records
+  'catalog', // signed-in space catalog
+  'chat-sessions', // remembered desktop chat sessions
+  'current-mesh', // mesh selected by the running service
+  'linear', // Linear connector state
+  'onboarded.json', // onboarding marker read at service start
+  'prepared', // spaces prepared on this machine
+  'service-launchd', // retained service launch records
+  'services', // connected service records
+]);
+function serviceOwned(file) {
+  const name = file.split('/')[0];
+  return serviceState.has(name)
+    || /^update-check\.[^/]+\.tmp$/.test(file) // private sibling of one update-check write
+    || /^update-check\.lock\.[0-9a-f]{16}\.tmp$/.test(file) // private sibling of one lock publish
+    || /^update-check\.lock\.reclaim$/.test(file) // sentinel while a stale lock is reclaimed
+    || /^update-check\.lock\.reclaim\.[0-9a-f]{16}\.tmp$/.test(file) // private sibling of that sentinel
+    || /^cotal-update-[0-9a-f]{32}\.xml$/.test(file) // task definition for one Windows update nonce
+    || /^cotal-update-[0-9a-f]{32}\.gate$/.test(file); // gate beside that task
+}
 function inventory() {
   const rows = [];
   function visit(directory, prefix = '') {
     for (const entry of readdirSync(directory, { withFileTypes: true })) {
       const path = join(directory, entry.name), file = prefix ? `${prefix}/${entry.name}` : entry.name;
+      if (serviceOwned(file)) continue;
       if (entry.isDirectory()) visit(path, file);
-      else if (entry.isFile()) rows.push({ file, sha256: createHash('sha256').update(readFileSync(path)).digest('hex') });
+      else if (entry.isFile()) {
+        let bytes;
+        try { bytes = readFileSync(path); }
+        catch (error) {
+          if (error?.code === 'ENOENT') throw new Error(`Installed file disappeared during inventory: ${file}`);
+          throw error;
+        }
+        rows.push({ file, sha256: createHash('sha256').update(bytes).digest('hex') });
+      }
       else throw new Error('Unexpected non-file in owned installation');
     }
   }
@@ -393,6 +444,7 @@ async function pollRelaunchedApp(previousPid, previousBirth, timeoutMs = 30_000)
 }
 
 let fixture, seat, locker, app, elevatedExternalPid, systemExternalTask, stopExternalSpawner;
+let pathProbeProcess;
 let serviceInstalled = false;
 let seatStopped = false;
 try {
@@ -400,9 +452,12 @@ try {
   if (cell === 'path-probe') {
     const probeOutput = join(output, 'probe');
     const probeRun = await run(ps, ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', join(repo, 'desktop/test/setup-path-probe.ps1'), '-Installer', candidate, '-Output', probeOutput, '-ExpectedVersion', candidateVersion], 420_000);
+    const { code, signal, stdout, stderr } = probeRun;
+    pathProbeProcess = { code, signal, stdout, stderr };
+    report.pathProbe = pathProbeProcess;
     const probeResultPath = join(probeOutput, 'result.json');
     const probeReport = existsSync(probeResultPath) ? JSON.parse(readText(probeResultPath)) : null;
-    report.pathProbe = probeReport ?? { code: probeRun.code, stderr: probeRun.stderr };
+    report.pathProbe = { ...probeReport, ...pathProbeProcess };
     check('Path-identity probe script exited 0', probeRun.code === 0);
     check('All 28 guard and recovery cases completed with zero issues or failures', probeReport?.status === 'fixed-acceptance-complete' && probeReport?.cases?.length === 28 && probeReport?.observationIssues?.length === 0 && probeReport?.acceptanceFailures?.length === 0);
     check('Missing-folder /S installer rerun cleared the stale handover', probeReport?.recovery?.handoverRemoved === true);
@@ -435,6 +490,12 @@ try {
       }
       if (appInstalled) {
         await installServiceViaAppBridge(true);
+        // 0.164.9 gives the account's PATH read a short limit and refuses on a slow runner before it changes
+        // anything. That refusal belongs to the published release, so ask it again; every call stays in report.calls.
+        for (let retry = 1; retry <= 2 && cell === 'app-installed-0.164.9' && report.appBridgeInstall?.resultFrame?.error?.message?.startsWith("the account's application PATH could not be read"); retry++) {
+          report.appBridgeInstallRetries = retry;
+          await installServiceViaAppBridge(true);
+        }
         serviceInstalled = existsSync(join(root, 'daemon', 'service-unit.json'));
         await observeInstalledService('after-install');
         report.initialDaemonPoll = await pollDaemonStatus(sourceVersion, 120_000);
@@ -602,6 +663,11 @@ try {
     const before = cell === 'fresh' ? [] : inventory();
     const start = Date.now();
     let result;
+    if (cell === 'interactive') {
+      // The silent base install made a desktop shortcut. Remove it so the person's choice on the finish page is what shows.
+      report.desktopShortcut = join((await required(ps, ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', "[Environment]::GetFolderPath('Desktop')"])).stdout.trim(), 'Cotal.lnk');
+      rmSync(report.desktopShortcut, { force: true });
+    }
     if (cell === 'interactive' || cell === 'occupied-ui') {
       result = await run(ps, ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', join(repo, 'desktop/test/setup-ui.ps1'), '-Installer', candidate, '-Mode', cell === 'occupied-ui' ? 'occupied' : 'install', '-Output', join(output, 'ui.json')], 300_000);
       check('Actual UI Automation driver completed', result.code === 0);
@@ -641,6 +707,10 @@ try {
     if (cell === 'interactive') {
       const ui = JSON.parse(readText(join(output, 'ui.json')).replace(/^\uFEFF/, ''));
       check('Newer default click-through never offers the unsafe old-uninstaller choice', !ui.some(row => row.names?.some(name => /uninstall before installing/i.test(name))));
+      check('The finish page offered Create desktop shortcut and the driver cleared it', JSON.parse(result.stdout.trim().split('\n').at(-1)).desktopShortcutCleared === true);
+      check('A cleared Create desktop shortcut leaves no desktop shortcut', !existsSync(report.desktopShortcut));
+      const startMenu = JSON.parse((await required(ps, ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', "@(Get-ChildItem -LiteralPath ([Environment]::GetFolderPath('Programs')) -Recurse -Filter 'Cotal.lnk' -ErrorAction SilentlyContinue).Count | ConvertTo-Json"])).stdout.trim());
+      check('The Start menu shortcut is still created', startMenu >= 1);
     }
     if (['occupied', 'occupied-ui', 'locker', 'locker-filtered', 'locker-short', 'early', 'cannot-start'].includes(cell)) {
       check('Setup refuses before replacing files', result.code !== 0);
@@ -702,6 +772,12 @@ try {
         check('Foreign CLI service keeps its old PID and version', status.pid === report.before.pid && status.version === report.before.version);
         check('Foreign service receipt is unchanged', readText(join(root, 'daemon', 'service-unit.json')) === report.foreignReceipt);
         check('Setup names untouched foreign service', diagnostic.message.includes('another installation'));
+        // The app's uninstaller removes only the service its own installation registered.
+        const uninstalled = await run(join(root, 'uninstall.exe'), ['/S', `_?=${root}`], 300_000);
+        check('App uninstaller exits 0 beside a foreign CLI service', uninstalled.code === 0);
+        const kept = JSON.parse((await required(process.execPath, [report.foreignCli, 'daemon', 'status', '--json'])).stdout).result;
+        check('App uninstall keeps the foreign CLI service and its PID', kept.pid === report.before.pid);
+        check('App uninstall keeps the foreign service receipt', readText(join(root, 'daemon', 'service-unit.json')) === report.foreignReceipt);
       } else if (cell === 'absent' || cell === 'fresh') check('No service was installed', !existsSync(join(root, 'daemon/service-unit.json')));
       else if (cell === 'stopped') {
         const stopped = await daemon('status');
@@ -870,5 +946,6 @@ finally {
   writeFileSync(join(output, 'application-events-1000.json'), JSON.stringify(events, null, 2));
   await fixture?.close();
   save();
-  console.log(JSON.stringify({ cell, failure: report.failure, cleanup: report.cleanupOutcome ?? null, checks: report.checks, output }, null, 2));
+  const probeFailure = report.failure ? pathProbeProcess : undefined;
+  console.log(JSON.stringify({ cell, failure: report.failure, probeFailure, cleanup: report.cleanupOutcome ?? null, checks: report.checks, output }, null, 2));
 }

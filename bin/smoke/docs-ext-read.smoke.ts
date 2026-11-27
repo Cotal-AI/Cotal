@@ -8,7 +8,7 @@
  * Run: pnpm smoke:docs-ext-read
  */
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createSuite } from "@cotal-ai/smoke-kit";
@@ -31,13 +31,13 @@ type Envelope = {
   command: string;
   target: unknown;
   result: Record<string, unknown> | null;
-  warnings: unknown[];
-  error?: { code: string; message: string };
+  warnings: { code: string; target: { pkg?: string } | null; message: string }[];
+  error?: { code: string; message: string; remedy?: string };
 };
 function run(args: string[], extraEnv: Record<string, string> = {}) {
   const r = spawnSync(process.execPath, [BIN, ...args], {
     cwd: home,
-    env: { ...HOST_ENV, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: xdg, COTAL_HOME: join(home, ".cotal-home"), COTAL_SKIP_CONNECTOR_SEED: "1", ...extraEnv },
+    env: { ...HOST_ENV, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: xdg, COTAL_HOME: join(home, ".cotal-home"), COTAL_SKIP_CONNECTOR_SEED: "1", DO_NOT_TRACK: "1", ...extraEnv },
     encoding: "utf8",
     timeout: 60_000,
   });
@@ -78,14 +78,158 @@ let specBody = "";
   // A line of the page with no punctuation that plain writes in ASCII, so it reads the same in both.
   const asciiLine = r?.body.split("\n").find((line) => line.length > 20 && /^[\x20-\x7e]+$/.test(line));
   check("a page's slug is matched without case or .md, and the plain page says which copy it is", plain.status === 0 && lines[0] === `bundled v${VERSION}` && plain.stdout.includes("# Architecture") && plain.stdout.includes(asciiLine ?? "\u0000"), shown(plain));
-  // A page is drawn only on a terminal (the pty suite reads that); to a pipe it is its Markdown.
+  // A page is drawn only on a terminal (the pty suite reads that); to a pipe it keeps its Markdown.
   const piped = run(["docs", "cli"]);
   check("the CLI hub read to a pipe keeps its Markdown heading and links", piped.status === 0 && piped.stdout.includes("\n# CLI reference\n") && piped.stdout.includes("[CLI usage](cli-usage.mdx#structured-output)"), shown(piped));
   const usage = run(["docs", "cli-usage"]);
   check("a reference page read to a pipe keeps its Markdown table", usage.status === 0 && usage.stdout.includes("\n# CLI usage\n") && /^\|---\|---\|$/m.test(usage.stdout) && /^\| `schemaVersion` \| `1` \|$/m.test(usage.stdout), shown(usage));
+  const structured = usage.stdout.split(/^## Structured output.*$/m)[1]?.split(/^## /m)[0]?.replace(/\s+/g, " ") ?? "";
+  const history = run(["history", "general", "--limit", "--json"]);
+  const follow = run(["history", "general", "--limit", "--follow", "--json"]);
+  const records = follow.stdout.trim().split("\n").filter(Boolean).map((line) => JSON.parse(line));
+  check("the bundled reference distinguishes finite JSON refusals from NDJSON streams",
+    usage.status === 0 && structured.includes("Finite JSON output is one document on stdout") &&
+    structured.includes("newline-delimited JSON (NDJSON)") && /usage error[^.]+finite `--json` output[^.]+`USAGE_INVALID`/.test(structured) &&
+    ["[`history --follow`](cli-messaging.mdx#history)", "[`channel members --follow`](cli-messaging.mdx#channel)", "[`watch`](cli-observation.mdx#observer-stream)"].every((link) => structured.includes(link)) &&
+    history.status === 1 && history.envelope?.outcome === "refused" && history.envelope.error?.code === "USAGE_INVALID" &&
+    follow.status === 1 && records.length === 2 && records[0]?.stream === "history" && records[0]?.type === "error" &&
+    records[0]?.data?.code === "USAGE_INVALID" && records[1]?.type === "end" && records[1]?.data?.reason === "setup-failed", { history: shown(history), follow: shown(follow) });
+  const observation = run(["docs", "cli-observation"]);
+  const watch = observation.stdout.split("\n## watch\n")[1]?.split("\n## ")[0] ?? "";
+  check("the bundled watch reference lists its target selectors and links to observer credential restrictions",
+    observation.status === 0 && /\| `--space <s>`[^\n]+\n\| `--server <url>`[^\n]+\n\| `--creds <path>`[^\n]+off-registry broker[^\n]+\(watch-a-mesh\.mdx#what-each-surface-can-see\)/.test(watch), watch.slice(0, 950));
+  const help = run(["help"]);
+  const mcpHelp = run(["mcp", "--help"]);
+  check("the CLI command table links the MCP entry that help lists",
+    usage.status === 0 && /^\| Agents \| \[`mcp`\]\(cli-messaging\.mdx#mcp\) \|/m.test(usage.stdout) &&
+    help.status === 0 && /^\s+mcp +serve Cotal tools over stdio/m.test(help.stdout) &&
+    mcpHelp.status === 0 && mcpHelp.stdout.includes("cotal mcp [--space <name>]"),
+    { usage: shown(usage), help: shown(help), mcpHelp: shown(mcpHelp) });
   const spec = run(["docs", "spec", "--json"]);
   specBody = (spec.envelope?.result as { body?: string } | undefined)?.body ?? "";
   check("spec, lang and schema are pages too", spec.status === 0 && specBody.length > 0 && run(["docs", "lang", "--json"]).status === 0 && run(["docs", "schema", "--json"]).status === 0, shown(spec));
+}
+
+{
+  const docs = run(["docs", "cli-agent-control", "--json"]);
+  const body = docs.envelope?.result?.body;
+  const managedSeats = typeof body === "string"
+    ? (body.split(/^## Managed seats(?: \[#managed-seats\])?$/m)[1]?.split(/^## /m)[0] ?? "").replace(/\s+/g, " ")
+    : "";
+  const startup = run(["docs", "cli-startup.mdx#up", "--json"]);
+  check("the bundled managed seats reference qualifies bare up with the 263168-byte manager payload floor and restart link",
+    docs.status === 0 && startup.status === 0 &&
+    managedSeats.includes("Bare `cotal up` adds the manager when the running broker's `--max-payload` is at least 263168 bytes.") &&
+    managedSeats.includes("below 263168 bytes") &&
+    managedSeats.includes("`cotal down --yes`") &&
+    managedSeats.includes("`cotal up --max-payload 1048576`") &&
+    managedSeats.includes("[startup reference](cli-startup.mdx#up)") &&
+    !managedSeats.includes("Bare `cotal up` adds the manager."),
+    managedSeats);
+  const input = typeof body === "string" ? body.split(/^## input(?: \[#input\])?$/m)[1]?.split(/^## /m)[0] ?? "" : "";
+  const flags = input.split("\n").filter((line) => line.startsWith("|"));
+  const raw = run(["input", "--name", "reviewer", "--text", "/compact", "--no-enter", "--space", "docs-input-ref",
+    "--server", "nats://127.0.0.1:38324", "--creds", "./does-not-exist.creds", "--json"]);
+  check("the bundled input flag table lists space and server but not raw credentials, which input refuses",
+    docs.status === 0 && flags.some((line) => line.includes("`--space <s>`") && line.includes("`--server <url>`")) &&
+    flags.every((line) => !line.includes("--creds")) && raw.status === 2 && raw.envelope?.outcome === "refused" &&
+    raw.envelope.error?.code === "UNSUPPORTED", { flags, raw: shown(raw) });
+}
+
+{
+  const docs = run(["docs", "cli-messaging", "--json"]);
+  const body = docs.envelope?.result?.body;
+  const pending = typeof body === "string" ? body.split(/^## pending(?: \[#pending\])?$/m)[1]?.split(/^## /m)[0] ?? "" : "";
+  const synopsis = /^cotal pending .*$/m.exec(pending)?.[0] ?? "";
+  const help = run(["pending", "--help"]);
+  const usage = help.stdout.split(/^Usage$/m)[1]?.split(/\n\s*\n/)[0] ?? "";
+  const selectors = ["[--server <url>]", "[--creds <private-file>]"];
+  check("pending names both selectors in the bundled reference and help Usage",
+    docs.status === 0 && help.status === 0 && selectors.every((flag) => synopsis.includes(flag) && usage.includes(flag)),
+    { synopsis, usage, stderr: help.stderr });
+  check("the pending reference explains which credential to pair with an unregistered broker",
+    pending.includes("pass its URL with `--server <url>` and a static admin credential with `--creds <private-file>`"), pending);
+}
+
+{
+  const installation = run(["docs", "installation", "--plain"]);
+  const removal = installation.stdout.split("\n## Remove Cotal\n")[1]?.split("\n## ")[0] ?? "";
+  const status = removal.indexOf("`cotal daemon status`");
+  const uninstall = removal.indexOf("`cotal daemon uninstall`");
+  check("the bundled uninstall guide checks and removes the daemon before either CLI removal route",
+    installation.status === 0 && status >= 0 && status < uninstall && uninstall < removal.indexOf("npm uninstall -g cotal-ai") &&
+    uninstall < removal.indexOf("For a shell installation"), removal || shown(installation));
+  check("the bundled uninstall guide names the retained connector store and when to leave it in place",
+    installation.status === 0 && removal.includes("`$XDG_CONFIG_HOME/cotal`") && removal.includes("`~/.config/cotal`") &&
+    removal.includes("connector seed store") && removal.includes("only if no other Cotal installation or running Cotal process uses it"),
+    removal || shown(installation));
+}
+
+{
+  const plain = run(["docs", "cli-processes.mdx#daemon", "--plain"]);
+  const piped = run(["docs", "cli-installation"]);
+  const json = run(["docs", "cli-installation", "--json"]);
+  const body = json.envelope?.result?.body;
+  check("plain and redirected pages start with the source and version line", plain.status === 0 && plain.stdout.startsWith(`bundled v${VERSION}\n\n# Process supervision\n`) && piped.status === 0 && piped.stdout.startsWith(`bundled v${VERSION}\n\n# CLI installation\n`), { plain: shown(plain), piped: shown(piped) });
+  check("the bundled reference explains the banner and how to export only the Markdown", json.status === 0 && typeof body === "string" && body.startsWith("# CLI installation\n") && /starts with a source and version\s+line/.test(body) && /use `--json` and extract `result\.body`/.test(body), shown(json));
+  const searchDocs = typeof body === "string" ? body.split(/^## docs(?: \[#docs\])?$/m)[1]?.split(/^## /m)[0] ?? "" : "";
+  const searchFields = ["result.hits", "kind", "docs-search", "version", "query", "slug", "page", "heading", "text"];
+  check("the bundled docs reference describes the JSON search fields and successful empty hit array",
+    json.status === 0 && searchFields.every((field) => searchDocs.includes(`\`${field}\``)) && /`result\.hits` is `\[\]` when nothing matches/.test(searchDocs), searchDocs.slice(-600));
+}
+
+{
+  const docs = run(["docs", "cli-endpoints", "--json"]);
+  const body = docs.envelope?.result?.body;
+  const authoring = typeof body === "string" ? body.split(/^## Endpoint authoring$/m)[1]?.split(/^## /m)[0] ?? "" : "";
+  const fields = ["result.kind", "local-endpoint-contract", "result.closureDigest", "result.commands", "inputDigest", "outputDigest",
+    "handlerExecuted", "brokerContacted", "authorityChecked", "servingChecked"];
+  const missing = fields.filter((field) => !authoring.includes(`\`${field}\``));
+  check("the bundled endpoint authoring reference names the JSON digests and offline verification fields",
+    docs.status === 0 && docs.envelope?.result?.source === "bundled" && missing.length === 0,
+    { ...shown(docs), missing });
+
+  const whoami = typeof body === "string" ? body.split(/^## whoami$/m)[1]?.split(/^## /m)[0] ?? "" : "";
+  const example = /`(nats:\/\/127\.0\.0\.1:\d+)`/.exec(whoami)?.[1];
+  const bare = run(["whoami", "--server", "127.0.0.1:48112", "--json"]);
+  const qualified = example ? run(["whoami", "--server", example, "--json"]) : undefined;
+  check("the whoami reference requires a scheme and its example reaches the identity report",
+    docs.status === 0 && whoami.includes("Bare host addresses are refused") &&
+    bare.status === 1 && bare.envelope?.error?.code === "USAGE_INVALID" &&
+    qualified?.status === 4 && qualified.envelope?.warnings.some((warning) => warning.code === "BROKER_NOT_PROBED") === true,
+    { example, bare: shown(bare), qualified: qualified && shown(qualified) });
+}
+
+{
+  const docs = run(["docs", "cli-maintenance", "--json"]);
+  const body = docs.envelope?.result?.body;
+  const start = typeof body === "string" ? /^cotal manager start \[.*$/m.exec(body)?.[0] ?? "" : "";
+  const manager = run(["manager", "start", "--help"]);
+  const service = run(["service", "start", "manager", "--help"]);
+  check("the bundled manager start usage shows the launch flags together, as supported by both command forms",
+    docs.status === 0 && start.includes("[--launch <file> --launch-sha256 <digest>]") &&
+    [manager, service].every((help) => help.status === 0 && /^\s+--launch\s/m.test(help.stdout) && /^\s+--launch-sha256\s/m.test(help.stdout)),
+    { start, manager: shown(manager), service: shown(service) });
+}
+
+{
+  const docs = run(["docs", "cli-agents", "--json"]);
+  const body = docs.envelope?.result?.body;
+  const remedy = typeof body === "string" ? /`cotal (persona create default --file <persona\.md>)`/.exec(body)?.[1] : undefined;
+  check("the bundled spawn reference gives a complete default persona remedy", docs.status === 0 && !!remedy, shown(docs));
+  const project = join(home, "demo");
+  const file = join(home, "persona.md");
+  mkdirSync(project);
+  writeFileSync(file, "---\nname: default\nsubscribe: [general]\n---\n\nSummarize the work.\n");
+  const prepare = run(["space", "create", "demo", "--root", project]);
+  const remove = run(["persona", "remove", "default", "--space", "demo", "--yes"]);
+  const missing = run(["persona", "show", "default", "--space", "demo"]);
+  check("the prepared space has no default after removal", prepare.status === 0 && remove.status === 0 && missing.status === 2, { prepare: shown(prepare), remove: shown(remove), missing: shown(missing) });
+  if (remedy) {
+    const create = run([...remedy.split(" ").map((arg) => arg === "<persona.md>" ? file : arg), "--space", "demo"]);
+    const show = run(["persona", "show", "default", "--space", "demo"]);
+    check("the documented remedy restores the default in the named space", create.status === 0 && show.status === 0 && show.stdout.includes("Summarize the work."), { create: shown(create), show: shown(show) });
+  }
 }
 
 // ── docs: --refresh says which copy it served ────────────────────────────────────────────────────
@@ -122,8 +266,12 @@ let specBody = "";
   check("--search returns matching sections and excerpts from each named page", json.status === 0 && r?.kind === "docs-search" && r.query === "allowSubscribe" && r.hits.length > 0 && matchingSections === true, r && { hits: r.hits.map((h) => `${h.slug}: ${h.heading}`) });
   const plain = run(["docs", "--search", "allowSubscribe", "--plain"]);
   check("the plain search points at each hit's full page", plain.status === 0 && /read the full page: `cotal docs [^\s`]+`/.test(plain.stdout), shown(plain));
-  const none = run(["docs", "--search", "zzqqxxnomatch", "--json"]);
-  check("a search with no match is an empty, complete result", none.status === 0 && none.envelope?.completeness === "complete" && (none.envelope.result as { hits: unknown[] }).hits.length === 0, shown(none));
+  const none = run(["docs", "--search", "no-such-page", "--json"]);
+  const empty = none.envelope?.result;
+  check("a search with no match succeeds with metadata and an empty hit array",
+    none.status === 0 && none.envelope?.outcome === "ok" && none.envelope.completeness === "complete" &&
+    empty?.kind === "docs-search" && empty.version === VERSION && empty.query === "no-such-page" &&
+    Array.isArray(empty.hits) && empty.hits.length === 0, shown(none));
 }
 
 // ── docs: usage ──────────────────────────────────────────────────────────────────────────────────
@@ -137,6 +285,70 @@ for (const [args, why] of [
 ] as const) {
   const r = run([...args, "--json"]);
   check(`${args.join(" ")} is one USAGE_INVALID envelope, exit 1`, r.status === 1 && r.envelope?.error?.code === "USAGE_INVALID" && why.test(r.envelope.error.message), shown(r));
+}
+
+{
+  for (const args of [["cli", "--wibble"], ["--wibble", "cli"]]) {
+    const refused = run(["docs", ...args, "--json"]);
+    const error = refused.envelope?.error;
+    check(`docs ${args.join(" ")} says to drop the unknown option when the page is set`,
+      refused.status === 1 && refused.stderr === "" && refused.envelope?.command === "docs" && refused.envelope.outcome === "refused" &&
+      error?.code === "USAGE_INVALID" && error.message === "Unknown option '--wibble'" && error.remedy === "drop the unknown option", shown(refused));
+  }
+  const retry = run(["docs", "cli", "--json"]);
+  check("dropping the unknown option reads the requested page", retry.status === 0 && retry.stderr === "" &&
+    retry.envelope?.outcome === "ok" && retry.envelope.result?.kind === "docs-page" && retry.envelope.result.slug === "cli", shown(retry));
+  const noPage = run(["docs", "--wibble", "--json"]);
+  check("docs still suggests the separator when no page is set", noPage.status === 1 && noPage.stderr === "" &&
+    noPage.envelope?.error?.remedy === 'to pass a word that starts with "-", put -- before it', shown(noPage));
+}
+
+{
+  const config = join(home, "damaged-inventory");
+  const extensions = join(config, "cotal", "extensions");
+  const manifest = join(extensions, "extensions.json");
+  const env = { XDG_CONFIG_HOME: config };
+  mkdirSync(extensions, { recursive: true });
+  writeFileSync(manifest, "{}\n");
+  const json = run(["docs", "cli-usage", "--json"], env);
+  check("docs returns one complete bundled page with a damaged extension inventory",
+    json.status === 0 && json.stderr === "" && json.envelope?.command === "docs" &&
+    json.envelope.outcome === "ok" && json.envelope.completeness === "complete" &&
+    json.envelope.result?.kind === "docs-page" && json.envelope.result.slug === "cli-usage" &&
+    json.envelope.result.source === "bundled", shown(json));
+  const plain = run(["docs", "cli-usage", "--plain"], env);
+  check("plain docs opens with a damaged extension inventory",
+    plain.status === 0 && plain.stderr === "" && plain.stdout.startsWith(`bundled v${VERSION}\n\n# CLI usage\n`), shown(plain));
+  const list = run(["ext", "list", "--json"], env);
+  check("the JSON extension listing reports the damage and leaves the manifest unchanged",
+    list.status === 1 && list.stderr === "" && list.envelope?.command === "ext" &&
+    list.envelope.outcome === "refused" && list.envelope.result === null &&
+    list.envelope.error?.code === "SCHEMA_INVALID" && list.envelope.error.message.includes('no "extensions" array') &&
+    list.envelope.error.remedy?.includes("cotal ext seed --repair") === true &&
+    readFileSync(manifest, "utf8") === "{}\n", shown(list));
+
+  writeFileSync(manifest, "{\n");
+  for (const [prefixArgs, suffixArgs] of [
+    [["help", "docs"], ["docs", "--help"]],
+    [["--no-color", "help", "--all", "--", "docs", "cli-usage"], ["docs", "cli-usage", "--help"]],
+  ] satisfies [string[], string[]][]) {
+    const prefix = run(prefixArgs, env);
+    const suffix = run(suffixArgs, env);
+    check(`\`${prefixArgs.join(" ")}\` shows the same docs help without changing the damaged inventory`,
+      prefix.status === 0 && suffix.status === 0 && prefix.stderr === "" && suffix.stderr === "" &&
+      suffix.stdout.includes("Usage\n") && prefix.stdout === suffix.stdout && readFileSync(manifest, "utf8") === "{\n",
+      { prefix: shown(prefix), suffix: shown(suffix) });
+  }
+  const allHelp = run(["help"], env);
+  check("full help reports a corrupt extension inventory",
+    allHelp.status === 1 && allHelp.stdout === "" && allHelp.stderr.includes("corrupt extensions manifest"), shown(allHelp));
+
+  const journal = join(config, "cotal", ".extensions-promotion.json");
+  writeFileSync(journal, "{}\n", { mode: 0o600 });
+  const index = run(["--no-color", "-j", "--", "docs"], env);
+  check("docs with leading flags opens the index without touching the extension promotion journal",
+    index.status === 0 && index.stderr === "" && index.envelope?.result?.kind === "docs-index" &&
+    readFileSync(journal, "utf8") === "{}\n", shown(index));
 }
 
 // ── docs: the bundle loads only when docs runs ───────────────────────────────────────────────────
@@ -157,7 +369,18 @@ for (const [args, why] of [
   mkdirSync(root, { recursive: true });
   const added = { pkg: "@acme/fake-runtime", version: "1.2.3", spec: "@acme/fake-runtime@1.2.3", provides: [{ kind: "runtime", name: "fakert" }], commands: [] };
   const seeded = { pkg: "@cotal-ai/connector-pi", version: VERSION, spec: "/seed/connector-pi", source: "seeded", provides: [{ kind: "connector", name: "pi" }], commands: [] };
-  writeFileSync(join(root, "extensions.json"), JSON.stringify({ extensions: [added, seeded] }));
+  const manifestPath = join(root, "extensions.json");
+  const manifest = JSON.stringify({ extensions: [added, seeded] });
+  writeFileSync(manifestPath, manifest);
+  const addedDir = join(root, "node_modules", added.pkg);
+  const seededDir = join(root, "node_modules", seeded.pkg);
+  const imported = join(home, "extension-was-imported");
+  for (const entry of [added, seeded]) {
+    const dir = join(root, "node_modules", entry.pkg);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "package.json"), JSON.stringify({ name: entry.pkg, version: entry.version, type: "module", main: "./index.js" }));
+    writeFileSync(join(dir, "index.js"), `import { writeFileSync } from "node:fs"; writeFileSync(${JSON.stringify(imported)}, "loaded");`);
+  }
   const json = run(["ext", "list", "--json"]);
   const items = (json.envelope?.result as { items: unknown[] } | undefined)?.items;
   check(
@@ -172,20 +395,58 @@ for (const [args, why] of [
   );
   const plain = run(["ext", "--plain"]);
   check("the plain listing is a table with the source of each", plain.status === 0 && /^\s*Package\s+Version\s+Source\s+Provides$/m.test(plain.stdout) && /@acme\/fake-runtime\s+1\.2\.3\s+added\s+runtime:fakert/.test(plain.stdout) && /@cotal-ai\/connector-pi\s+\S+\s+included\s+connector:pi/.test(plain.stdout) && !/\x1b\[/.test(plain.stdout), shown(plain));
+
+  const olderPackage = JSON.stringify({ name: added.pkg, version: "1.2.2", type: "module", main: "./index.js" });
+  const addedMetadata = join(addedDir, "package.json");
+  writeFileSync(addedMetadata, olderPackage);
+  const skewed = run(["ext", "list", "--json"]);
+  const [skew] = skewed.envelope?.warnings ?? [];
+  check("a different installed version keeps the recorded pin and gives a reinstall step without importing or repairing",
+    skewed.status === 4 && skewed.envelope?.completeness === "partial" && JSON.stringify(skewed.envelope.result?.items) === JSON.stringify(items) &&
+    skew?.target?.pkg === added.pkg && skew.message.includes("1.2.2 on disk") && skew.message.includes("manifest pins 1.2.3") &&
+    skew.message.includes("`cotal ext add '@acme/fake-runtime@1.2.3'`") && !existsSync(imported) && readFileSync(addedMetadata, "utf8") === olderPackage &&
+    readFileSync(manifestPath, "utf8") === manifest, shown(skewed));
+  renameSync(addedDir, `${addedDir}.saved`);
+  const seededMetadata = join(seededDir, "package.json");
+  for (const content of ["{", "{}"]) {
+    writeFileSync(seededMetadata, content);
+    const broken = run(["ext", "list", "--json"]);
+    const [missing, corrupt] = broken.envelope?.warnings ?? [];
+    check(`ext list reports missing and corrupt (${content}) packages without dropping recorded rows`,
+      broken.status === 4 && broken.stderr === "" && broken.envelope?.outcome === "partial" && broken.envelope.completeness === "partial" &&
+      JSON.stringify(broken.envelope.result?.items) === JSON.stringify(items) && broken.envelope.warnings.length === 2 &&
+      missing?.target?.pkg === added.pkg && missing.message.includes(`not installed at ${addedDir}`) &&
+      missing.message.includes("`cotal ext add '@acme/fake-runtime@1.2.3'`") &&
+      corrupt?.target?.pkg === seeded.pkg && corrupt.message.includes(`corrupt package.json at ${seededMetadata}`) &&
+      corrupt.message.includes("`cotal ext seed --repair`"), shown(broken));
+  }
+  const brokenPlain = run(["ext", "list", "--plain"]);
+  check("plain extension inventory keeps the row and reports both problems and their recovery commands",
+    brokenPlain.status === 4 && brokenPlain.stdout.includes(added.pkg) && brokenPlain.stdout.includes(seeded.pkg) &&
+    brokenPlain.stderr.includes(`not installed at ${addedDir}`) && brokenPlain.stderr.includes("`cotal ext add '@acme/fake-runtime@1.2.3'`") &&
+    brokenPlain.stderr.includes(`corrupt package.json at ${seededMetadata}`) && brokenPlain.stderr.includes("`cotal ext seed --repair`"), shown(brokenPlain));
+  check("listing does not import, install, or repair packages", !existsSync(imported) && !existsSync(addedDir) &&
+    readFileSync(seededMetadata, "utf8") === "{}" && readFileSync(manifestPath, "utf8") === manifest);
 }
 
 // ── ext: root stays raw; the other subcommands refuse the listing's flags ────────────────────────
 {
   const root = run(["ext", "root"]);
   check("ext root prints only the path", root.status === 0 && root.stdout === `${join(xdg, "cotal", "extensions")}\n`, shown(root));
+  const unknownRootOption = run(["ext", "root", "--jso"]);
+  check("ext root tells the caller to drop an unknown option", unknownRootOption.status === 1 && unknownRootOption.stdout === "" &&
+    /Unknown option '--jso'\n  drop the unknown option\n/.test(unknownRootOption.stderr) && !unknownRootOption.stderr.includes("put -- before it"), shown(unknownRootOption));
   // Only the listing declares structured output, so the other modes refuse its flags as text, and keep
   // their own exits.
   for (const args of [["ext", "root", "--json"], ["ext", "root", "--plain"], ["ext", "remove", "x", "--json"], ["ext", "seed", "--plain"]]) {
     const r = run(args);
     check(`${args.join(" ")} is refused as text with no envelope, exit 1`, r.status === 1 && r.stdout === "" && /--json or --plain|taken by the listing only/.test(r.stderr), shown(r));
   }
-  const missing = run(["ext", "remove", "not-installed"]);
-  check("a mode without structured output keeps its exit: removing a missing package exits 1", missing.status === 1 && /no installed extension "not-installed"/.test(missing.stderr), shown(missing));
+  for (const operand of ["not/a/package", "@acme/fake-runtime@1.2.3", "connector:claude"]) {
+    const invalid = run(["ext", "remove", operand]);
+    check(`text-only removal rejects an invalid package name (${operand}), exit 1`,
+      invalid.status === 1 && invalid.stdout === "" && /invalid extension package name/.test(invalid.stderr), shown(invalid));
+  }
   for (const args of [["ext", "--json", "--plain"], ["ext", "list", "--plain", "--json"]]) {
     const r = run(args);
     check(`${args.join(" ")} is one USAGE_INVALID envelope, exit 1`, r.status === 1 && r.envelope?.error?.code === "USAGE_INVALID", shown(r));

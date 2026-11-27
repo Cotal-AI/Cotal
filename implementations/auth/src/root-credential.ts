@@ -36,6 +36,7 @@ import { EpEnvelopeError, mintLifecycleUid } from "@cotal-ai/core";
 import {
   assertOrdinaryRegistryMutation,
   activateLifecycleAtUid,
+  observeGate,
   readLifecycleHeadForOperation,
   registryStores,
   setCurrentRootCredential,
@@ -118,7 +119,16 @@ export async function ensureRootCredential(
       sourceChain: ["root"],
       exp: now() + ROOT_CREDENTIAL_TTL_MS,
     });
-    await finalizeAgentMint(reg, staged);
+    try {
+      await finalizeAgentMint(reg, staged);
+    } catch (e) {
+      if (!(e instanceof EpEnvelopeError) || e.code !== "permission-denied") throw e;
+      // Finalize revokes the losing row. A sibling touch keeps the generation open, but a
+      // barrier freezes it or reopens it at a new generation.
+      const gate = await observeGate(reg, lifecycleUid);
+      if (gate?.row.state === "open" && gate.row.generation === staged.generation) continue;
+      throw e;
+    }
     try {
       await setCurrentRootCredential(reg, { owner, actor, lifecycleUid, credentialId });
       return credentialId;

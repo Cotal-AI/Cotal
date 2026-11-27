@@ -21,36 +21,55 @@
  * stdout may be a shared terminal or log. Bind stays loopback; no CORS / mDNS.
  */
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
-import { createServer } from "node:net";
 import { once } from "node:events";
 import { randomBytes } from "node:crypto";
-import { closeSync, existsSync, mkdirSync, readdirSync, readFileSync, rmdirSync, rmSync, writeFileSync } from "node:fs";
-import { delimiter, join } from "node:path";
+import { accessSync, closeSync, constants, mkdirSync, readdirSync, readFileSync, rmdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { delimiter, isAbsolute, join, resolve } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import { acquireLock } from "@cotal-ai/core/advisory-lock";
 import { openPrivateAppend } from "@cotal-ai/core/secret-fs";
 import { OPENCODE_BOOT_TIMEOUT_MS } from "./startup.js";
 import { opencodeLine } from "./opencode-line.js";
+import { freePort } from "./private-serve.js";
 
 /** The opencode binary to spawn. `COTAL_OPENCODE_BIN` overrides. On Windows, `opencode` on PATH is
  *  an npm `.cmd` shim that child_process can't spawn, and the real `opencode.exe` it wraps
  *  (`<bindir>/node_modules/opencode-ai/bin/opencode.exe`) isn't itself on PATH — resolve and spawn
- *  it directly, so there's no `cmd.exe` wrapper to orphan the server on kill. POSIX spawns the name
- *  as-is. Unresolved on Windows → returns the bare name so spawn fails with a clear ENOENT. */
+ *  it directly, so there's no `cmd.exe` wrapper to orphan the server on kill. */
 function resolveOpencodeBin(): string {
   const override = process.env.COTAL_OPENCODE_BIN?.trim() || process.env.COTAL_OPENCODE_RESOLVED_BIN?.trim();
+  if (process.platform !== "win32") return located(override || "opencode");
   if (override) return override;
-  if (process.platform !== "win32") return "opencode";
   for (const dir of (process.env.PATH ?? "").split(delimiter)) {
     if (!dir) continue;
     for (const exe of [join(dir, "opencode.exe"), join(dir, "node_modules", "opencode-ai", "bin", "opencode.exe")]) {
-      if (existsSync(exe)) return exe;
+      if (executableFile(exe)) return resolve(exe);
     }
   }
   return "opencode";
 }
 
 export const BIN = resolveOpencodeBin();
+
+function executableFile(file: string): boolean {
+  try {
+    accessSync(file, constants.X_OK);
+    return statSync(file).isFile();
+  } catch {
+    return false;
+  }
+}
+
+/** Keep explicit paths. On POSIX, pin the first executable regular file on PATH. */
+function located(bin: string): string {
+  if (bin.includes("/")) return bin;
+  for (const dir of (process.env.PATH ?? "/usr/bin:/bin").split(delimiter)) {
+    const absoluteDir = isAbsolute(dir) ? dir : dir ? `${process.cwd()}/${dir}` : process.cwd();
+    const file = `${absoluteDir}/${bin}`;
+    if (executableFile(file)) return file;
+  }
+  return bin;
+}
 const USERNAME = "opencode";
 
 /** Secret gating the spawned server's HTTP API (see SECURITY above). A caller that drives the
@@ -61,16 +80,6 @@ const SECRET = process.env.OPENCODE_SERVER_PASSWORD || randomBytes(24).toString(
 /** Run by `/bin/sh -c` as `<script> cotal-serve <record> <command> <args...>`. A record it cannot
  *  write stops it before the command starts. */
 const RECORD_THEN_EXEC = `printf %s "$$" > "$1" && shift && exec "$@"`;
-
-/** Ask the OS for a free port (bind :0, read it, release) so co-located peers don't collide. */
-async function freePort(): Promise<number> {
-  const srv = createServer();
-  srv.listen(0, "127.0.0.1");
-  await once(srv, "listening");
-  const port = (srv.address() as { port: number }).port;
-  await new Promise<void>((r) => srv.close(() => r()));
-  return port;
-}
 
 /** SIGTERM the child, then SIGKILL if it's still alive 3s later. Resolves once it's dead. A
  *  lingering serve keeps the agent's data dir (SQLite) open and wedges every later same-name spawn;
@@ -96,7 +105,7 @@ function processCommand(pid: number): string | undefined {
         "-NonInteractive",
         "-Command",
         `(Get-CimInstance Win32_Process -Filter 'ProcessId = ${pid}').CommandLine`,
-      ], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+      ], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], windowsHide: true }).trim();
     }
     return execFileSync("ps", ["-p", String(pid), "-o", "command="], {
       encoding: "utf8",
@@ -199,7 +208,14 @@ export async function launch(tuiArgv: TuiArgv, serveEnv?: ServeEnv): Promise<voi
 
   // Detect the OpenCode line (1.x opencode-ai vs 2.x @opencode/cli) once, before any spawn, so the
   // plugin and the viewer below can each act on it without probing anything themselves.
-  const versionRaw = execFileSync(BIN, ["--version"], { encoding: "utf8" }).trim();
+  let versionRaw: string;
+  try {
+    versionRaw = execFileSync(BIN, ["--version"], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], windowsHide: true }).trim();
+  } catch (error) {
+    const stderr = String((error as { stderr?: string | Buffer }).stderr ?? "").trim();
+    process.stderr.write(`[cotal-connector] OpenCode version probe failed${stderr ? `: ${stderr.split(/\r?\n/).slice(-2).join(" | ")}` : ""}\n`);
+    process.exit(1);
+  }
   const line = opencodeLine(versionRaw, BIN);
 
   mkdirSync(agentHome, { recursive: true });
@@ -231,7 +247,7 @@ export async function launch(tuiArgv: TuiArgv, serveEnv?: ServeEnv): Promise<voi
       OPENCODE_SERVER_PASSWORD: SECRET,
       OPENCODE_DB: dbPath,
     },
-    stdio: ["ignore", "pipe", "pipe"],
+    stdio: ["ignore", "pipe", "pipe"], windowsHide: true,
   });
   if (process.platform === "win32") writeFileSync(pidFile, String(serve.pid));
   serve.on("exit", () => rmSync(pidFile, { force: true }));
@@ -254,11 +270,15 @@ export async function launch(tuiArgv: TuiArgv, serveEnv?: ServeEnv): Promise<voi
   // The plugin's last line before the handshake. A host shows only the launcher's final row as the
   // cause of a failed launch (the Manager's `last output`), so the exit line below repeats it.
   let connectorLine: string | undefined;
+  let lastOutput = "";
   const scanner = (): ((d: Buffer) => void) => {
     const decoder = new StringDecoder("utf8");
     let partial = "";
     return (d) => {
-      if (!attached) bootOutput(d);
+      if (!attached) {
+        lastOutput = (lastOutput + d.toString()).slice(-4000);
+        bootOutput(d);
+      }
       if (sessionId) return;
       const lines = (partial + decoder.write(d)).split("\n");
       partial = lines.pop() ?? "";
@@ -278,15 +298,17 @@ export async function launch(tuiArgv: TuiArgv, serveEnv?: ServeEnv): Promise<voi
   serve.stdout?.on("data", scanner());
   serve.stderr?.on("data", scanner());
   // Set once the boot has failed, so the serve's own clean exit on our SIGTERM cannot turn that
-  // failure into exit 0: this handler runs before the abort's own `process.exit(1)` (#3878).
+  // failure into exit 0: this handler runs before the abort's own `process.exit(1)` (#3878). A serve
+  // that ends on its own before the handshake is a failed launch too, even when it exits 0.
   let bootFailed = false;
   serve.on("close", (code, signal) => {
     if (!attached) {
       if (!bootFailed && !stopping) bootOutput(
-        `[cotal-connector] OpenCode exited before its Cotal session was ready (code ${code ?? signal}). ` +
-          (connectorLine ? `Last connector message: ${connectorLine}\n` : "Check the retained boot log for setup errors, then launch again.\n"),
+        `[cotal-connector] OpenCode exited before its Cotal session was ready (code ${code ?? signal}); boot log: ${bootLog}. ` +
+          (connectorLine ? `Last connector message: ${connectorLine}. ` : "") +
+          (lastOutput.trim() ? `Last output: ${lastOutput.trim().split(/\r?\n/).slice(-2).join(" | ")}\n` : "\n"),
       );
-      process.exit(bootFailed ? 1 : (code ?? (signal ? 1 : 0)));
+      process.exit(bootFailed ? 1 : code || (signal || (!sessionId && !stopping) ? 1 : 0));
     }
   });
 

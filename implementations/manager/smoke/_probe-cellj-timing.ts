@@ -214,7 +214,7 @@ try {
   await manager.start();
   const q = await manager.startAgent({ name: QUIET, agent: "rc-seat-quiet", cwd: repoRoot, events: false });
   if (!q.ok) throw new Error(`quiet seat did not start: ${JSON.stringify(q)}`);
-  const live = (): number => (manager as unknown as { sessionPlane?: { liveSessions: number } }).sessionPlane?.liveSessions ?? -1;
+  const live = (): number => (manager as unknown as { servePlane: { sessionPlane?: { liveSessions: number } } }).servePlane.sessionPlane?.liveSessions ?? -1;
 
   const base = live();
   att = attachUnderPty(root, QUIET);

@@ -36,15 +36,17 @@
  *
  * Run: pnpm smoke:spawn-foreground-events
  */
-import { spawn as spawnProcess } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync, rmSync } from "node:fs";
+import { spawn as spawnProcess, spawnSync } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, realpathSync, symlinkSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { pickFreePort } from "../../manager/smoke/_free-port.js";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const home = mkdtempSync(join(tmpdir(), "cotal-fg-events-home-"));
 const root = mkdtempSync(join(tmpdir(), "cotal-fg-events-root-"));
+const caller = mkdtempSync(join(tmpdir(), "cotal-fg-events-caller-"));
 process.env.COTAL_HOME = home;
 process.env.COTAL_NO_PROMPT = "1";
 
@@ -117,6 +119,11 @@ writeFileSync(persona, "---\nname: probe\nrole: worker\nsubscribe: [general]\nal
 writeFileSync(join(root, ".cotal", "config.json"), JSON.stringify({
   connectors: { "fg-probe-emitter": { mcpServers: { alpha: { command: "true" }, beta: { command: "true" } } } },
 }));
+// A project config that declares servers applies only in a folder the operator trusts. The trust
+// record lives in this suite's own config folder.
+process.env.XDG_CONFIG_HOME = join(home, "xdg");
+const { trustProject } = await import("@cotal-ai/workspace");
+trustProject(root);
 
 const port = await pickFreePort();
 const store = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}fg-events-js-`));
@@ -196,9 +203,135 @@ async function run(argv: string[]): Promise<{ opts?: LaunchOpts; exited?: number
 const openRun = (extra: string[]): Promise<{ opts?: LaunchOpts; exited?: number; stderr: string }> =>
   run(["spawn", "--foreground", "--file", persona, "--server", server, "--space", "fgevents", ...extra]);
 
+async function checkPersonaRefusals() {
+  const binary = fileURLToPath(new URL("../../../bin/dist/cotal.js", import.meta.url));
+  const env: NodeJS.ProcessEnv = { ...process.env, NO_COLOR: "1" };
+  for (const key of Object.keys(env)) if (key.startsWith("COTAL_")) delete env[key];
+  Object.assign(env, { COTAL_HOME: home, COTAL_NO_PROMPT: "1", COTAL_SKIP_CONNECTOR_SEED: "1" });
+  const invoke = (args: string[]) => spawnSync(process.execPath, [binary, "spawn", ...args], {
+    cwd: caller, env, encoding: "utf8", timeout: 30_000,
+  });
+  const selectors = ["--server", server, "--space", "fgevents"];
+  const path = join(root, ".cotal", "agents", "edit-control.md");
+  const source = '---\nname: "Review Bot"\nagent: opencode\n---\n';
+  writeFileSync(path, source);
+  for (const mode of [[], ["--dry-run", "--plain"]]) {
+    const refused = invoke(["edit-control", "--no-events", ...selectors, ...mode]);
+    const retry = refused.stderr.match(/`((?:cotal|pnpm cotal) spawn [^`]+)`/)?.[1];
+    check(`a bad frontmatter name gives a ${mode.length ? "preview" : "direct launch"} retry with the same flags`,
+      refused.status === 1 && refused.stderr.includes("the persona's frontmatter name cannot be used for launch") &&
+      !!retry && retry.includes("spawn edit-control") && retry.includes(`--server ${server}`) &&
+      retry.includes("--space fgevents") && retry.includes("--no-events") && retry.includes("--name edit-control") &&
+      (mode.length ? retry.includes("--dry-run") && retry.includes("--plain") : !retry.includes("--dry-run")), refused.stderr);
+    if (mode.length && retry) {
+      const preview = invoke(retry.split(" spawn ")[1]!.split(" "));
+      check("the suggested preview succeeds without rewriting the persona",
+        preview.status === 0 && /Requested name:\s+edit-control/.test(preview.stdout) && readFileSync(path, "utf8") === source,
+        preview.stdout + preview.stderr);
+    }
+  }
+  const launched = await run(["spawn", "edit-control", "--space", "fgevents", "--harness", "fg-probe-live", "--name", "edit-control"]);
+  check("the name override launches from the unchanged persona", launched.opts?.name === "edit-control" && readFileSync(path, "utf8") === source, launched.stderr);
+  const explicit = invoke(["edit-control", "--dry-run", "--plain", "--name", "Invalid Name", ...selectors]);
+  check("a bad explicit name is not blamed on the persona", explicit.status === 1 && explicit.stderr.includes('unsafe name "Invalid Name"') &&
+    !explicit.stderr.includes("frontmatter name"), explicit.stderr);
+  if (process.platform === "win32") return;
+  const parentFile = join(realpathSync(caller), "plain-parent");
+  writeFileSync(parentFile, "not a directory");
+  const fileArgs = ["--file", "plain-parent/nested/persona.md", ...selectors];
+  const preview = invoke(["--dry-run", "--json", ...fileArgs]);
+  const refusal = preview.stdout && (JSON.parse(preview.stdout) as { error?: { code: string; message: string; remedy?: string } }).error;
+  const remedy = "pass the correct persona file path with `--file`";
+  check("foreground preview names the blocking persona path component and gives a retry",
+    preview.status === 2 && !!refusal && refusal.code === "TARGET_NOT_FOUND" && refusal.message.includes(`${parentFile} is not a directory`) &&
+    refusal.remedy === remedy, preview.stdout + preview.stderr);
+  const launch = invoke(["--foreground", ...fileArgs]);
+  check("foreground launch names the blocking persona path component and gives the same retry",
+    launch.status === 1 && launch.stderr.includes(parentFile) && /plain-parent\s+is not a directory/.test(launch.stderr) &&
+    launch.stderr.replace(/\s+/g, " ").includes(remedy) && !launch.stderr.includes("ENOTDIR"), launch.stderr);
+
+  const blocked = join(root, "parent-file");
+  const link = join(root, ".cotal", "agents", "notdir-link.md");
+  const target = "../../parent-file/child.md";
+  writeFileSync(blocked, "not a directory");
+  symlinkSync(target, link);
+  for (const mode of [[], ["--dry-run", "--plain"]]) {
+    const refused = invoke(["notdir-link", ...selectors, ...mode]);
+    check(`foreground ${mode.length ? "preview" : "launch"} identifies a symlink whose target crosses a file`,
+      refused.status === (mode.length ? 2 : 1) && refused.stderr.includes(link) && refused.stderr.includes(target) &&
+      refused.stderr.includes("is a symbolic link to a missing target") && refused.stderr.includes("put a regular persona file in its place") &&
+      !refused.stderr.includes("PERMISSION_DENIED") && readlinkSync(link) === target, refused.stderr);
+  }
+  rmSync(blocked);
+  mkdirSync(blocked);
+  writeFileSync(join(blocked, "child.md"), "---\nname: notdir-link\nagent: opencode\n---\n");
+  const repaired = invoke(["notdir-link", "--dry-run", "--plain", ...selectors]);
+  check("foreground preview follows the symlink once its target is restored", repaired.status === 0 && repaired.stdout.includes(link), repaired.stderr);
+}
+
 console.log("cotal spawn (foreground): the launch bag an armed session needs");
 
 try {
+  await checkPersonaRefusals();
+  {
+    const previous = process.cwd();
+    const previousDefault = process.env.COTAL_DEFAULT_PERSONA;
+    writeFileSync(join(caller, "probe.md"), "---\nname: caller-probe\n---\nCaller persona.\n");
+    writeFileSync(join(root, "probe.md"), "---\nname: mesh-probe\n---\nMesh persona.\n");
+    const dotted = join(root, ".cotal", "agents", "probe.md.md");
+    writeFileSync(dotted, "---\nname: catalog-probe\n---\nCatalog persona.\n");
+    try {
+      process.chdir(caller);
+      const local = await run(["spawn", "--foreground", "--file", "probe.md", "--space", "fgevents", "-H", "fg-probe-live"]);
+      check("foreground --file uses the caller's persona even when the mesh has the same filename", local.opts?.name === "caller-probe", local.stderr);
+      const named = await run(["spawn", "--foreground", "probe", "--space", "fgevents", "-H", "fg-probe-live"]);
+      check("foreground catalog names still read the selected mesh persona", named.opts?.name === "probe", named.stderr);
+      const dottedArgs = ["spawn", "--foreground", "probe.md", "--space", "fgevents", "-H", "fg-probe-live"];
+      const shadowed = await run(dottedArgs);
+      check("a catalog name ending in .md wins over a same-named project file", shadowed.opts?.name === "catalog-probe", shadowed.stderr);
+      const preferredArgs = ["spawn", "--foreground", "--space", "fgevents", "-H", "fg-probe-live"];
+      process.env.COTAL_DEFAULT_PERSONA = "probe.md";
+      const preferred = await run(preferredArgs);
+      check("a preferred catalog name ending in .md wins over a same-named project file", preferred.opts?.name === "catalog-probe", preferred.stderr);
+      process.env.COTAL_DEFAULT_PERSONA = "./probe.md";
+      const relative = await run(preferredArgs);
+      check("an explicit relative default persona path still selects the project file", relative.opts?.name === "mesh-probe", relative.stderr);
+      const explicit = await run(["spawn", "--foreground", "--file", join(root, "probe.md"), "--space", "fgevents", "-H", "fg-probe-live"]);
+      check("an explicit file selects the project file even when its basename is a catalog name", explicit.opts?.name === "mesh-probe", explicit.stderr);
+      rmSync(join(root, "probe.md"));
+      const unshadowed = await run(dottedArgs);
+      check("a catalog name ending in .md works without a same-named project file", unshadowed.opts?.name === "catalog-probe", unshadowed.stderr);
+      const malformed = join(root, ".cotal", "agents", "bad-utf8.md");
+      writeFileSync(malformed, Buffer.from("---\nname: bad-utf8\n---\nbefore\xffafter\n", "latin1"));
+      const bad = await run(["spawn", "--foreground", "--file", malformed, "--space", "fgevents", "-H", "fg-probe-live"]);
+      check("foreground spawn refuses invalid UTF-8 before building a launch", bad.opts === undefined && bad.exited === 1, bad);
+      rmSync(malformed);
+      if (process.platform !== "win32") {
+        const loop = join(root, ".cotal", "agents", "loop.md");
+        const binary = fileURLToPath(new URL("../../../bin/dist/cotal.js", import.meta.url));
+        symlinkSync("loop.md", loop);
+        const loopEnv: NodeJS.ProcessEnv = { ...process.env, NO_COLOR: "1" };
+        for (const key of Object.keys(loopEnv)) if (key.startsWith("COTAL_")) delete loopEnv[key];
+        Object.assign(loopEnv, { COTAL_HOME: home, COTAL_NO_PROMPT: "1", COTAL_SKIP_CONNECTOR_SEED: "1" });
+        for (const mode of [[], ["--dry-run", "--plain"]]) {
+          for (const source of [["--", "loop"], ["--file", loop]]) {
+            const refused = spawnSync(process.execPath, [binary, "spawn", "--foreground", "--server", server, "--space", "fgevents", ...mode, ...source], {
+              cwd: caller, env: loopEnv, encoding: "utf8", timeout: 30_000,
+            });
+            check(`foreground ${mode.length ? "preview" : "spawn"} ${source[0]} names the looping persona and how to fix it`,
+              refused.status === 1 && /Code:\s+SCHEMA_INVALID/.test(refused.stderr) &&
+              refused.stderr.includes(`the persona path contains a symbolic-link loop: ${loop}`) &&
+              refused.stderr.includes("correct the link's target") && refused.stderr.includes("put a regular persona file in its place") &&
+              readlinkSync(loop) === "loop.md" && !refused.stderr.includes("spawning loop"), refused.stderr || refused.error);
+          }
+        }
+        rmSync(loop);
+      }
+    } finally {
+      if (previousDefault === undefined) delete process.env.COTAL_DEFAULT_PERSONA; else process.env.COTAL_DEFAULT_PERSONA = previousDefault;
+      process.chdir(previous);
+    }
+  }
   {
     const path = process.env.PATH;
     const pin = process.env.COTAL_OPENCODE_BIN;
@@ -230,6 +363,39 @@ try {
     // this cell an edit that passed it only under `--events` would leave the suite green and move
     // both of those homes back to whatever directory the operator happened to be standing in.
     check("a default-armed foreground launch carries the mesh root", r.opts?.workspaceRoot === root, { got: r.opts?.workspaceRoot, expected: root });
+    check("a foreground launch without --cwd leaves the connector's managed cwd unset", r.opts !== undefined && r.opts.cwd === undefined);
+  }
+
+  {
+    const work = join(root, "work");
+    const link = join(root, "work-link");
+    mkdirSync(work);
+    symlinkSync(work, link, "junction");
+    const receipt = join(root, "child-cwd.txt");
+    const cwdProbe: Connector = {
+      ...liveProbe,
+      name: "fg-probe-cwd",
+      buildLaunch: (o: LaunchOpts): LaunchSpec => {
+        captured.push(o);
+        return {
+          command: process.execPath,
+          args: ["-e", 'require("node:fs").writeFileSync(process.argv[1], process.cwd())', receipt],
+          env: {},
+        };
+      },
+    };
+    registry.register(cwdProbe);
+    const r = await openRun(["--agent", "fg-probe-cwd", "--cwd", link]);
+    const childCwd = existsSync(receipt) ? readFileSync(receipt, "utf8") : undefined;
+    check("foreground --cwd runs the child in the canonical directory without a managed connector cwd",
+      childCwd === realpathSync(work) && r.opts !== undefined && r.opts.cwd === undefined, { childCwd, ...r });
+  }
+
+  for (const field of ["role: two words", "launchOptions: null"]) {
+    const invalid = join(root, ".cotal", "agents", "invalid.md");
+    writeFileSync(invalid, `---\nname: invalid\n${field}\n---\nbody\n`);
+    const r = await run(["spawn", "invalid", "--foreground", "--server", server, "--space", "fgevents", "--agent", "fg-probe-live"]);
+    check(`foreground with ${field} refuses before reaching the connector`, r.opts === undefined && r.exited === 1, r);
   }
 
   {
@@ -254,15 +420,13 @@ try {
 
   {
     const r = await openRun(["--agent", "fg-probe-silent"]);
-    // Asserted on the MESSAGE, not on the exit code. Every other refusal in this path also exits 1,
-    // so a code-only cell would pass on a missing persona, an unreachable broker, or a bad flag,
-    // and would report the CLI refusing for a reason this suite is not about.
-    check(
-      "a bare spawn on a connector that publishes no event plane REFUSES, by name and opt-out",
-      /connector "fg-probe-silent".*--no-events/.test(r.stderr),
-      r.stderr.slice(0, 300),
-    );
-    check("and it refuses BEFORE the connector is reached", r.opts === undefined, "buildLaunch ran anyway");
+    check("a bare spawn leaves an unsupported event plane unarmed", r.opts?.events === false, r.stderr.slice(0, 300));
+  }
+
+  {
+    const r = await openRun(["--agent", "fg-probe-silent", "--events"]);
+    check("explicit --events refuses an unsupported connector", /connector "fg-probe-silent".*omit --events/.test(r.stderr), r.stderr);
+    check("explicit unsupported events refuse before launch", r.opts === undefined);
   }
 
   {
@@ -367,11 +531,12 @@ try {
 } finally {
   broker.kill("SIGKILL");
   rmSync(root, { recursive: true, force: true });
+  rmSync(caller, { recursive: true, force: true });
   rmSync(home, { recursive: true, force: true });
   rmSync(store, { recursive: true, force: true });
 }
 
-const EXPECTED = 23;
+const EXPECTED = process.platform === "win32" ? 41 : 50;
 check(`every cell ran - ${EXPECTED} expected`, pass + fail === EXPECTED, `${pass + fail} cells reported`);
 console.log(`SUITE COMPLETE: ${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);

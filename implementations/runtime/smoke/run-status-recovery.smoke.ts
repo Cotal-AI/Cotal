@@ -107,6 +107,7 @@ try {
   const out = await withDeadline(driven, 15_000, "run status reconciliation after broker returns");
   assert.ok(out);
   assert.equal(out.status, "released");
+  assert.equal(out.status === "released" && out.brokerInterrupted, true, "classify the native outage for the hosting manager");
   await nc.reconnect();
   await until(async () => {
     try { await nc.flush(); return true; }

@@ -21,7 +21,7 @@ test("refresh keeps row nodes and unknown reads never claim a zero count", () =>
     renderAgents(status, root);
     assert.equal(root.querySelector("li"), row);
     assert.ok(row.getAttribute("aria-label")?.includes("private-model-pin"));
-    assert.ok(!row.textContent?.includes("private-model-pin"));
+    assert.equal(row.querySelector(".agent-meta")?.textContent, "Codex · private-model-pin");
     assert.equal(root.querySelector(".agent-folder")?.getAttribute("aria-label"), agent.cwd);
     renderAgents({ agents: [{ space: "team", state: "unreadable" }, ...status.agents] }, root);
     assert.match(root.querySelector(".agent-count")!.textContent!, /could not read/);

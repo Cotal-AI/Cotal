@@ -12,7 +12,7 @@
   "mutations": [
     {
       "name": "resume consults roster liveness before an unresolved retirement hold",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/preserved-resume.ts",
       "find": "        const held = this.retirement.held(entry.name);",
       "replace": "        const held = undefined;",
       "expectRed": "resume refuses an unresolved retirement hold before launch",
@@ -20,7 +20,7 @@
     },
     {
       "name": "an unresolved retirement hold refuses without re-driving its teardown",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/preserved-resume.ts",
       "find": "          void this.deprovision(held.target).catch(() => {});",
       "replace": "          void held;",
       "expectRed": "resume re-drives the exact held lifecycle teardown",
@@ -36,7 +36,7 @@
     },
     {
       "name": "the predecessor bypass also accepts the retired lifecycle itself",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/preserved-resume.ts",
       "find": "            entry.identity.lifecycleUid === confirmedPredecessor.lifecycleUid;",
       "replace": "            false;",
       "expectRed": "resume still refuses a live row for the requested terminal-confirmed lifecycle",
@@ -44,7 +44,7 @@
     },
     {
       "name": "the predecessor bypass ignores which live lifecycle the roster row names",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/preserved-resume.ts",
       "find": "            confirmedPredecessor.lifecycleUid !== presence.lifecycleUid ||",
       "replace": "            false ||",
       "expectRed": "resume refuses a live lifecycle not named by the terminal predecessor confirmation",

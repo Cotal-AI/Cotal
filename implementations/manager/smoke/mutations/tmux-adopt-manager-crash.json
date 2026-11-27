@@ -13,9 +13,9 @@
   "mutations": [
     {
       "name": "the successor retires a surviving tmux seat instead of adopting it",
-      "file": "implementations/manager/src/manager.ts",
-      "find": "record.supervise ? await this.restartSupervisedSeat(row, record) : await this.adoptSeat(row, record);",
-      "replace": "record.supervise ? await this.restartSupervisedSeat(row, record) : \"adoption disabled\";",
+      "file": "implementations/manager/src/managed-static-lifecycle.ts",
+      "find": "record.supervise ? await this.deps.restartSupervisedSeat(row, record) : await this.deps.adoptSeat(row, record);",
+      "replace": "record.supervise ? await this.deps.restartSupervisedSeat(row, record) : \"adoption disabled\";",
       "expectRed": "the successor adopts the surviving seat",
       "cell": "the successor adopts the surviving seat"
     },

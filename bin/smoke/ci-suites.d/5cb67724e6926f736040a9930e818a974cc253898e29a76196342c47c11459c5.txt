@@ -1,0 +1,3 @@
+# An agent's display name on its agent endpoint, on a real broker through the shipped auth callout:
+# only the owner's interactive session renames it, every client sees the name, and refusals are typed.
+smoke:agent-set-name:auth

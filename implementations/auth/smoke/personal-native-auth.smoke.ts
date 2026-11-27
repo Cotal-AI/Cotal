@@ -3,6 +3,7 @@
  * That authority, the person who decides there, native transcript/lifecycle inputs and the human
  * session are fixtures, not hosted acceptance. */
 import assert from "node:assert/strict";
+import { generateKeyPairSync } from "node:crypto";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 if (["agent-bearer", "auth-service", "app-identity"].includes(process.argv[2] ?? "")) {
@@ -50,7 +51,8 @@ if (["agent-bearer", "auth-service", "app-identity"].includes(process.argv[2] ??
   const human = "isolated-human-session";
   const stateDir = userAuthStateDir(root, space);
   const store = workspaceSecretStore(root);
-  const idp = createServer((_req, res) => { res.writeHead(200, { "content-type": "application/json" }); res.end('{"keys":[]}'); });
+  const jwks = JSON.stringify({ keys: [generateKeyPairSync("ed25519").publicKey.export({ format: "jwk" })] });
+  const idp = createServer((_req, res) => { res.writeHead(200, { "content-type": "application/json" }); res.end(jwks); });
   await new Promise<void>((resolve) => idp.listen(0, "127.0.0.1", resolve));
   const idpUrl = `http://127.0.0.1:${(idp.address() as import("node:net").AddressInfo).port}/auth`;
   let broker: import("node:child_process").ChildProcess | undefined;

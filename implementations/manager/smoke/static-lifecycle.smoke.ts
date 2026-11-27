@@ -99,7 +99,7 @@ let ran = 0;
  * when a `check` is deliberately added or removed, because completeness is something only this
  * suite knows, so it has to be the thing that says it.
  */
-const EXPECTED_CHECKS = 45;
+const EXPECTED_CHECKS = 46;
 function check(label: string, cond: boolean, extra?: unknown): void {
   console.log(`${cond ? "✓" : "✗"} ${label}${cond ? "" : ` — ${JSON.stringify(extra) ?? ""}`}`);
   ran++;
@@ -164,8 +164,7 @@ registry.register(con);
 
 const M = mgr as unknown as {
   managerInstanceId: string;
-  agents: Map<string, { id: string; name: string; lifecycleUid: string; terminalizing?: boolean; secretPaths?: { creds?: string }; seed?: string }>;
-  freeSlot: (a: unknown, floor: boolean, cause: import("../src/manager.js").FreeSlotCause) => void;
+  agents: Map<string, { id: string; name: string; lifecycleUid: string; terminalizing?: boolean; secretPaths?: { creds?: string }; seed?: string; seatHome?: string }>;
   lifecycleMembershipRefusal: (caller: string) => string | undefined;
   renewManagedStaticCred: (a: unknown) => Promise<void>;
   reconcileStaticLifecycles: () => Promise<void>;
@@ -173,6 +172,9 @@ const M = mgr as unknown as {
     retiring: Map<string, { target: { lifecycleUid: string } }>;
     retiredPrincipals: Set<string>;
     deprovision: (a: { id: string; name: string; lifecycleUid: string; secretPaths?: { creds?: string } }) => Promise<void>;
+  };
+  namesCapacity: {
+    freeSlot: (a: unknown, floor: boolean, cause: import("../src/manager.js").FreeSlotCause) => void;
   };
 };
 M.managerInstanceId = "smoke-manager-instance";
@@ -370,9 +372,23 @@ try {
   check("no renewal is minted at the horizon, and the refusal says to respawn (#4942)", /reached its horizon .* respawn the agent .*#4942/.test(refusal), refusal);
 
   // ── 4. Terminal (F1) ───────────────────────────────────────────────────────
-  M.freeSlot(managedA, false, "process-exit");
+  // An overlong path produces a filesystem failure without depending on the runner's privileges.
+  const seatHomes = join(workspaceRoot, ".cotal", "seat-homes");
+  mkdirSync(seatHomes);
+  const seatHome = join(seatHomes, "x".repeat(1024));
+  managedA.seatHome = seatHome;
+  const originalError = console.error;
+  const errors: string[] = [];
+  try {
+    console.error = (...args: unknown[]) => { errors.push(args.join(" ")); };
+    M.namesCapacity.freeSlot(managedA, false, "process-exit");
+  } finally {
+    console.error = originalError;
+  }
+  const cleanupReport = `could not remove the private seat home ${seatHome}: `;
+  check("the manager reports the failed seat-home removal", errors.some((line) => line.startsWith(cleanupReport) && line.length > cleanupReport.length),
+    errors.map((line) => line.slice(0, 180)));
   check("the name is HELD pending the static retirement (freeSlot -> retiring hold)", M.retirement.retiring.has("worker"));
-  await M.retirement.deprovision({ id: idA, name: "worker", lifecycleUid: uidA, secretPaths: managedA.secretPaths });
   const settled = await until(async () => !M.retirement.retiring.has("worker"), 30_000, "the static terminal to clear the hold");
   check("the terminal completed and FREED the alias (hold cleared)", settled);
   const s4 = await readState("worker", idA, uidA);

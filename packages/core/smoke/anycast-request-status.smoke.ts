@@ -174,7 +174,7 @@ try {
     const laterConsumers = await scanConsumers();
     check("0d the idle bucket still has no scan consumer five minutes later", laterConsumers.length === 0, laterConsumers);
   }
-  const idleAuthority = (daemon as unknown as { anycastAuthority: AnycastRequestAuthority }).anycastAuthority;
+  const idleAuthority = (daemon as unknown as { anycastRail: { anycastAuthority: AnycastRequestAuthority } }).anycastRail.anycastAuthority;
   await idleAuthority.sweep();
   const repeatedConsumers = await scanConsumers();
   check("0c another empty-bucket sweep creates no scan consumer", repeatedConsumers.length === 0, repeatedConsumers);
@@ -215,8 +215,8 @@ try {
   const taskEpoch = async () => (await dJsm.streams.info(taskStream(space))).created;
   // A take written by the test for a copy of the current stream, through the endpoint's own take path.
   const takeAs = async (ep: CotalEndpoint, role: string, seq: number, id: string, count = 1) =>
-    (ep as unknown as { takeAnycast(r: string, s: number, id: string, c: number, e: string): Promise<AnycastTakeOutcome> })
-      .takeAnycast(role, seq, id, count, await taskEpoch());
+    (ep as unknown as { anycastRail: { takeAnycast(r: string, s: number, id: string, c: number, e: string): Promise<AnycastTakeOutcome> } })
+      .anycastRail.takeAnycast(role, seq, id, count, await taskEpoch());
   const seen = new Set<string>();
   const mark = (g: Got) => seen.add(`${g.msg.id}:${g.delivery.redelivery?.deliveryCount}`);
 
@@ -563,7 +563,7 @@ try {
   // still carries the time of the stream it came from.
   check("10j the second request is stored again at its seq", replayC.seq === s10c.ack.seq, { replayed: replayC.seq, original: s10c.ack.seq });
   const epochAfter = await taskEpoch();
-  const refreshed = await until(() => (x.ep as unknown as { taskEpoch?: string }).taskEpoch === epochAfter || undefined);
+  const refreshed = await until(() => (x.ep as unknown as { consumers: { taskEpoch?: string } }).consumers.taskEpoch === epochAfter || undefined);
   const t10c = await g10c!.delivery.take!();
   check(
     "10k a second copy from the old stream is refused as a mismatch after the endpoint read the new time",

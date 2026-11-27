@@ -51,9 +51,10 @@
  */
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { resolveOnPath } from "@cotal-ai/workspace";
 import { assertSmokeSandboxDown, assertSmokeSandboxLinkedDown, createSuite, recordSmokeSandbox, type SmokeSandboxAnchor } from "@cotal-ai/smoke-kit";
 
 const BIN = join(import.meta.dirname, "..", "..", "..", "bin", "dist", "cotal.js");
@@ -65,7 +66,7 @@ if (!existsSync(BIN)) {
 interface Envelope {
   outcome: string;
   target: { space?: string | null } | null;
-  result: { selected?: { resolved: boolean; code?: string; message?: string; space?: string; recordedRoot?: string }; hints?: string[] } | null;
+  result: { kind?: string; selected?: { resolved: boolean; code?: string; message?: string; space?: string; recordedRoot?: string }; hints?: string[] } | null;
   error?: { code: string; message: string; remedy?: string };
   warnings?: { code: string; message: string }[];
 }
@@ -79,6 +80,8 @@ process.on("exit", () => rmSync(home, { recursive: true, force: true }));
 
 const HOST_ENV = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("COTAL_") && k !== "FORCE_COLOR" && k !== "NO_COLOR"));
 const env = { ...HOST_ENV, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: join(home, ".config"), COTAL_HOME: join(home, ".cotal"), COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1" };
+const launcher = resolveOnPath("cotal", env) ? "cotal" : "pnpm cotal";
+const readRemedy = (text: string) => text.replaceAll("`cotal ", `\`${launcher} `);
 const anchors = new Map<string, SmokeSandboxAnchor>();
 /** Record `at`, which already holds its `.cotal`, as a root a down may run in. */
 const sandbox = (at: string) => anchors.set(at, recordSmokeSandbox({ root: at, cotalHome: env.COTAL_HOME, xdgConfigHome: env.XDG_CONFIG_HOME }));
@@ -112,10 +115,47 @@ const statusOnSelection = (text: ReturnType<typeof run>, json: ReturnType<typeof
     json.envelope.result?.selected?.space === "sel07" && json.envelope.result.selected.resolved === true;
 const selectedRefusal = (r: ReturnType<typeof run>) => refusedWith(r, "TARGET_UNAVAILABLE",
   'no broker answered at nats://127.0.0.1:24712; "sel07" is registered here but its mesh is not up',
-  'start it where it runs, or `cotal space forget sel07` to unregister it') && r.envelope?.target?.space === "sel07";
+  `start it where it runs, or \`${launcher} space forget sel07\` to unregister it`) && r.envelope?.target?.space === "sel07";
 
 const before = run(["whoami", "--json"]);
 check("control: with nothing recorded, the root names no space and borrows none", before.status === 2 && before.envelope?.error?.code === "TARGET_NOT_FOUND" && before.envelope.error.message === `no space is registered or prepared here for ${root}`, shown(before));
+
+sandbox(root);
+const missingText = runDown(["down"], root);
+for (const mode of ["--json", "--plain"]) {
+  const missing = runDown(["down", mode], root);
+  check(`down ${mode} keeps the missing-stack diagnosis and next step`, missing.status === 2 && (mode === "--json"
+    ? missing.envelope?.error?.code === "TARGET_NOT_FOUND" && JSON.stringify(missing.envelope.target) === JSON.stringify({ root }) && missingText.stderr.includes(missing.envelope.error.message) && missingText.stderr.includes(missing.envelope.error.remedy ?? "missing remedy")
+    : missing.stderr === missingText.stderr), shown(missing));
+}
+
+const prepared = realpathSync(mkdtempSync(join(home, "prepared-")));
+const other = realpathSync(mkdtempSync(join(home, "other-")));
+check("space create prepares the first project", run(["space", "create", "example", "--root", "."], prepared).status === 0);
+sandbox(prepared);
+const mismatch = '--space "other" does not match the space "example" prepared in this folder; nothing was stopped';
+const presentations = [["--json"], ["--plain"], []];
+for (const output of presentations) {
+  const mode = output[0] ?? "(default output)";
+  const wrong = runDown(["down", "--space", "other", ...output], prepared);
+  check(`down ${mode} names the mismatched space and does not suggest stopping this project`,
+    refusedWith(wrong, "UNSUPPORTED", mismatch, 'locate the project root for space "other" before retrying') &&
+      (mode !== "--json" || wrong.envelope?.target === null), shown(wrong));
+  const match = runDown(["down", "--space", "example", ...output], prepared);
+  check(`down ${mode} still treats the matching prepared space as stopped`, match.status === 0 && (mode === "--json"
+    ? match.envelope?.outcome === "no-op" && match.envelope.target?.space === "example" && match.envelope.result?.kind === "stack-not-running"
+    : match.stdout.includes("is not running")), shown(match));
+}
+check("space create prepares the other project", run(["space", "create", "other", "--root", "."], other).status === 0);
+for (const output of presentations) {
+  const mode = output[0] ?? "(default output)";
+  const known = runDown(["down", "--space", "other", ...output], prepared);
+  check(`down ${mode} names the other space's recorded project root`,
+    refusedWith(known, "UNSUPPORTED", mismatch, `retry from the project root for space "other" at ${other}`), shown(known));
+}
+for (const space of ["example", "other"]) {
+  check(`remove the ${space} fixture registration`, run(["space", "forget", space], root).status === 0);
+}
 
 const now = new Date().toISOString();
 const member = (role: string, definition: string, state: string) => ({ role, definition, instanceId: null, state });
@@ -140,7 +180,7 @@ check("status reports the selection as not started at the recorded broker", stat
 check("status names no default broker address", noDefault(status), shown(status));
 
 const components = run(["status", "--components"]);
-check("status --components refuses the target and probes no default broker", /target\s+refused · not-started/.test(components.stdout) && noDefault(components), shown(components));
+check("status --components reports the target absent and probes no default broker", components.status === 1 && /target\s+absent · not-started/.test(components.stdout) && components.stdout.includes(RECORDED) && components.stdout.includes("cotal space create") && noDefault(components), shown(components));
 
 // ── with a space selected, this folder's stopped stack does not take its place ───────────────────
 // A folder's space captures the commands run there only while it runs. This root's stack is stopped,
@@ -241,10 +281,12 @@ check("up in a copied folder refuses CONFLICT, exit 2, naming the folder its jou
 // space of this folder and the `cotal up` that would start it.
 {
   check("rig: sel07 is selected again", run(["use", "sel07"], copy).status === 0);
+  // sel07 was added with --force, so whoami there reports its mode as not checked and exits 4.
   for (const command of ["ps", "whoami"]) {
     const r = run([command, "--json"], copy);
     check(`${command} in a copy targets the explicit selection`,
-      command === "ps" ? selectedRefusal(r) : r.status === 0 && r.envelope?.outcome === "ok" && r.envelope.target?.space === "sel07", shown(r));
+      command === "ps" ? selectedRefusal(r) : r.status === 4 && r.envelope?.outcome === "partial" && r.envelope.target?.space === "sel07" &&
+        (r.envelope.warnings ?? []).some((w) => w.code === "MODE_NOT_CHECKED"), shown(r));
   }
   // Bare cotal reads no broker, so it names what the folder holds from its records, with the step the
   // reads name, and status reports under the space they name, as the reads refuse under it.
@@ -275,22 +317,22 @@ const recreatedUp = run(["up", "--json"], moved);
 rmSync(root, { recursive: true });
 renameSync(moved, root);
 check("up in a moved folder whose space this machine does not record refuses CONFLICT and names only --adopt",
-  movedUp.status === 2 && movedUp.envelope?.error?.code === "CONFLICT" && (movedUp.envelope.error.message ?? "").includes(`recorded at ${root}, so this folder was moved from there`) && movedUp.envelope.error.remedy === adoptOnly, shown(movedUp));
+  movedUp.status === 2 && movedUp.envelope?.error?.code === "CONFLICT" && (movedUp.envelope.error.message ?? "").includes(`recorded at ${root}, so this folder was moved from there`) && movedUp.envelope.error.remedy === readRemedy(adoptOnly), shown(movedUp));
 check("status and whoami there name the same next step",
-  (movedStatus.envelope?.result?.hints ?? []).includes(adoptOnly) && movedWho.status === 2 && movedWho.envelope?.error?.remedy === adoptOnly, { status: shown(movedStatus), whoami: shown(movedWho) });
+  (movedStatus.envelope?.result?.hints ?? []).includes(readRemedy(adoptOnly)) && movedWho.status === 2 && movedWho.envelope?.error?.remedy === readRemedy(adoptOnly), { status: shown(movedStatus), whoami: shown(movedWho) });
 check("ps in a moved folder targets the explicit selection",
   selectedRefusal(movedSelected), shown(movedSelected));
 {
   const holds = `this folder holds the records of "la07" and was moved from ${root}`;
   check("bare cotal there says the folder was moved from the recorded folder, with the same step",
-    movedEntry.status === 0 && /^sel07 · /m.test(movedEntry.stdout) && movedEntry.stdout.includes(`\n${holds}; ${adoptOnly}\n`), shown(movedEntry));
+    movedEntry.status === 0 && /^sel07 · /m.test(movedEntry.stdout) && movedEntry.stdout.includes(`\n${holds}; ${readRemedy(adoptOnly)}\n`), shown(movedEntry));
   check("status in a moved folder reports the explicit selection",
     statusOnSelection(movedStatusText, movedStatusSelected), { text: movedStatusText.stdout.slice(0, 1400), json: movedStatusSelected.envelope?.result?.selected });
 }
 check("clean store in that moved folder refuses TARGET_UNAVAILABLE with the same step, and the store stays",
-  refusedWith(movedClean, "TARGET_UNAVAILABLE", `the stack journal in ${moved} was recorded at ${root}, so this folder is a copy or was moved from there; nothing was removed`, adoptOnly) && movedStore, shown(movedClean));
+  refusedWith(movedClean, "TARGET_UNAVAILABLE", `the stack journal in ${moved} was recorded at ${root}, so this folder is a copy or was moved from there; nothing was removed`, readRemedy(adoptOnly)) && movedStore, shown(movedClean));
 check("with empty folders at the old path it is still moved, and names the same step",
-  recreatedUp.status === 2 && (recreatedUp.envelope?.error?.message ?? "").includes(`recorded at ${root}, so this folder was moved from there`) && recreatedUp.envelope?.error?.remedy === adoptOnly, shown(recreatedUp));
+  recreatedUp.status === 2 && (recreatedUp.envelope?.error?.message ?? "").includes(`recorded at ${root}, so this folder was moved from there`) && recreatedUp.envelope?.error?.remedy === readRemedy(adoptOnly), shown(recreatedUp));
 // With la07 prepared at the old path, moving back starts it again; adopting it here needs a forget first.
 {
   check("rig: prepare la07 at its root again", run(["space", "create", "la07", "--json"]).status === 0);
@@ -305,31 +347,63 @@ check("with empty folders at the old path it is still moved, and names the same 
   rmSync(root, { recursive: true });
   renameSync(moved, root);
   check("up, down, whoami and whoami --space there all name moving back, or forgetting and adopting",
-    routes.every((r) => r.status === 2 && r.envelope?.error?.remedy === back), routes.map(shown));
+    routes.every((r) => r.status === 2 && r.envelope?.error?.remedy === readRemedy(back)), routes.map(shown));
   check("status --space there says the folder was moved and names the same step",
-    (status.envelope?.result?.selected?.message ?? "") === `"la07" is prepared in ${root}, which no longer exists, and this folder's stack journal was recorded there, so this folder was moved from there` && (status.envelope?.result?.hints ?? []).includes(back), shown(status));
+    (status.envelope?.result?.selected?.message ?? "") === `"la07" is prepared in ${root}, which no longer exists, and this folder's stack journal was recorded there, so this folder was moved from there` && (status.envelope?.result?.hints ?? []).includes(readRemedy(back)), shown(status));
   check("with empty folders at the old path, up says to move them aside first",
-    recreated.status === 2 && recreated.envelope?.error?.remedy === `move what is now at ${root} aside, such as empty folders a running broker created there, then move this folder back to ${root} and run the command again there; ${adopt}`, shown(recreated));
+    recreated.status === 2 && recreated.envelope?.error?.remedy === readRemedy(`move what is now at ${root} aside, such as empty folders a running broker created there, then move this folder back to ${root} and run the command again there; ${adopt}`), shown(recreated));
   check("rig: forget la07", run(["space", "forget", "la07", "--json"]).status === 0);
 }
 // A folder whose .cotal links to this project's is refused by up and down before anything reads through
 // the link, and status names the link once.
-const linked = `${root}-linked`, linkPath = join(linked, ".cotal"), linkTarget = join(root, ".cotal");
+const linked = `${root}-linked folder`, linkPath = join(linked, ".cotal"), linkTarget = join(root, ".cotal");
 mkdirSync(linked);
 symlinkSync(linkTarget, linkPath);
 sandbox(home);
 const linkedUp = run(["up", "--json"], linked), linkedDown = runLinkedDown(["down", "--yes", "--json"], linked);
-const linkRefused = (r: ReturnType<typeof run>, command: "up" | "down", effect: string, here: string) => r.status === 2 && r.envelope?.error?.code === "CONFLICT"
+const linkRefused = (r: ReturnType<typeof run>, command: "up" | "down", effect: string, here: string, retry: string = command) => r.status === 2 && r.envelope?.error?.code === "CONFLICT"
   && r.envelope.error.message === `${linkPath} is a link to ${linkTarget}, and a stack runs only from a folder whose .cotal is its own directory; nothing was ${effect}`
-  && r.envelope.error.remedy === `run \`cotal ${command}\` from ${root}, whose .cotal this links to, or ${here}`;
+  && r.envelope.error.remedy === `run \`cotal ${retry}\` from ${root}, whose .cotal this links to, or ${here}`;
 check("up in a folder whose .cotal is a link refuses CONFLICT, naming the link, where it leads and that project",
-  linkRefused(linkedUp, "up", "started", `remove the link and prepare this folder with \`cotal space create <space> --root ${linked}\``), shown(linkedUp));
+  linkRefused(linkedUp, "up", "started", `remove the link and prepare this folder with \`cotal space create <space> --root '${linked}'\``), shown(linkedUp));
 check("down --yes --json there refuses the same way, with no stack trace",
-  linkRefused(linkedDown, "down", "stopped", "remove the link, then run `cotal down` again") && !linkedDown.stderr.includes("    at "), shown(linkedDown));
+  linkRefused(linkedDown, "down", "stopped", "remove the link, then run `cotal down` again", "down --yes --json") && !linkedDown.stderr.includes("    at "), shown(linkedDown));
+{
+  const store = join(linked, "custom 'store'");
+  const requested = runLinkedDown(["down", "--dry-run", "--store-dir", "custom 'store'"], linked);
+  const next = /Next\n  run `([^`]+)` from (.*), whose \.cotal this links to, or /.exec(requested.stderr);
+  check("down --dry-run --store-dir there keeps the preview and prints the store as an absolute path",
+    requested.status === 2 && /Code:\s+CONFLICT/.test(requested.stderr) && next?.[2] === root && next[1]?.endsWith(` down --store-dir '${store.replaceAll("'", `'\\''`)}' --dry-run`) === true && readlinkSync(linkPath) === linkTarget && !existsSync(store), shown(requested));
+}
 const linkedStatus = run(["status", "--json"], linked);
 const linkedCodes = (linkedStatus.envelope?.warnings ?? []).map((w) => w.code);
 check("status there warns once that it did not read the attempt inventories through the link, with the next step",
-  linkedCodes.includes("COTAL_DIR_LINKED") && !linkedCodes.includes("FRESH_BOOT_RECORD_UNAVAILABLE") && !linkedCodes.includes("ADDITIVE_ATTEMPT_UNAVAILABLE") && (linkedStatus.envelope?.warnings ?? []).some((w) => w.message.includes(`is a link to ${linkTarget}`) && w.message.endsWith(`; run commands for that project from ${root}, or remove the link and prepare this folder with \`cotal space create <space> --root ${linked}\``)), shown(linkedStatus));
+  linkedCodes.includes("COTAL_DIR_LINKED") && !linkedCodes.includes("FRESH_BOOT_RECORD_UNAVAILABLE") && !linkedCodes.includes("ADDITIVE_ATTEMPT_UNAVAILABLE") && (linkedStatus.envelope?.warnings ?? []).some((w) => w.message.includes(`is a link to ${linkTarget}`) && w.message.endsWith(`; run commands for that project from ${root}, or remove the link and prepare this folder with \`cotal space create <space> --root '${linked}'\``)), shown(linkedStatus));
+{
+  const defaultStore = join(linkTarget, "nats"), customStore = join(linked, "custom 'store'");
+  const retry = (result: ReturnType<typeof run>) => /Next\n  run `([^`]+)` from (.*), whose \.cotal this links to, or /.exec(result.stderr);
+  for (const [store, flags] of [[defaultStore, []], [customStore, ["--store-dir", "custom 'store'", "--force"]]] as const) {
+    const data = join(store, "jetstream");
+    mkdirSync(data, { recursive: true });
+    const refused = run(["clean", "store", "--dry-run", ...flags], linked);
+    const next = retry(refused);
+    check("linked clean preview refuses without changing the link or store and names the owning project",
+      refused.status === 2 && /Code:\s+CONFLICT/.test(refused.stderr) && next?.[2] === root && readlinkSync(linkPath) === linkTarget && existsSync(data), shown(refused));
+    const command = next?.[1];
+    const mode = flags.length ? " --dry-run --force" : " --dry-run";
+    if (!command?.endsWith(mode)) {
+      check("the printed retry keeps the requested preview and force flags", false, shown(refused));
+      continue;
+    }
+    const preview = spawnSync("sh", ["-c", 'node=$1; cli=$2; cotal() { "$node" "$cli" "$@"; }; pnpm() { "$@"; }; eval "$3"', "sh", process.execPath, BIN, command], { cwd: root, env, encoding: "utf8", timeout: 30_000 });
+    check("the printed retry previews the requested store in the owning project without removing anything",
+      preview.status === 0 && preview.stdout.includes(`would remove ${flags.length ? customStore : ".cotal/nats"} (JetStream store:`) && preview.stdout.includes("dry run - nothing was removed") && existsSync(data), preview.stdout + preview.stderr);
+  }
+  const restore = run(["clean", "restore-fallback", "--attempt=-example", "--force", "--discard-history"], linked);
+  check("linked restore cleanup keeps the attempt and force options in the retry",
+    restore.status === 2 && retry(restore)?.[1]?.endsWith(" clean restore-fallback --attempt=-example --force --discard-history") === true, shown(restore));
+  rmSync(defaultStore, { recursive: true });
+}
 rmSync(linked, { recursive: true, force: true });
 // The project's .cotal moved to another folder and linked back. Through the link each folder seems to
 // hold the journal, so both used to name the other. Both now name moving the records back.
@@ -397,7 +471,7 @@ rmSync(linked, { recursive: true, force: true });
 // A link to a folder that is no project's .cotal, and a link that leads nowhere, which the walk to a
 // root passes over.
 {
-  const empty = `${root}-empty`, toEmpty = `${root}-to-empty`, dangling = `${root}-dangling`, nowhere = join(`${root}-nowhere`, ".cotal");
+  const empty = `${root}-empty`, toEmpty = `${root}-to-empty`, dangling = `${root}-dangling folder`, nowhere = join(`${root}-nowhere`, ".cotal");
   for (const dir of [empty, toEmpty, dangling]) mkdirSync(dir);
   symlinkSync(empty, join(toEmpty, ".cotal"));
   symlinkSync(nowhere, join(dangling, ".cotal"));
@@ -408,10 +482,10 @@ rmSync(linked, { recursive: true, force: true });
   const nowhereRefused = (r: ReturnType<typeof run>, effect: string, remedy: string) => r.status === 2 && r.envelope?.error?.code === "TARGET_NOT_FOUND"
     && r.envelope.error.message === `${join(dangling, ".cotal")} links to ${nowhere}, which does not exist; nothing was ${effect}` && r.envelope.error.remedy === remedy;
   check("up where .cotal leads nowhere refuses TARGET_NOT_FOUND, naming the link and where it leads, not the home .cotal",
-    nowhereRefused(danglingUp, "started", `remove the link and prepare this folder with \`cotal space create <space> --root ${dangling}\``), shown(danglingUp));
+    nowhereRefused(danglingUp, "started", `remove the link and prepare this folder with \`cotal space create <space> --root '${dangling}'\``), shown(danglingUp));
   check("down --dry-run there refuses the same way", nowhereRefused(danglingDown, "stopped", "remove the link, then run `cotal down` again"), shown(danglingDown));
   check("status there warns COTAL_DIR_DANGLING with the next step and exits 4",
-    danglingStatus.status === 4 && (danglingStatus.envelope?.warnings ?? []).some((w) => w.code === "COTAL_DIR_DANGLING" && w.message === `this folder's .cotal links to ${nowhere}, which does not exist, so this folder has no records of its own; remove the link and prepare this folder with \`cotal space create <space> --root ${dangling}\``), shown(danglingStatus));
+    danglingStatus.status === 4 && (danglingStatus.envelope?.warnings ?? []).some((w) => w.code === "COTAL_DIR_DANGLING" && w.message === `this folder's .cotal links to ${nowhere}, which does not exist, so this folder has no records of its own; remove the link and prepare this folder with \`cotal space create <space> --root '${dangling}'\``), shown(danglingStatus));
   const emptyStatus = run(["status", "--json"], toEmpty), emptyHints = emptyStatus.envelope?.result?.hints ?? [];
   check("status there names the same refusal and next step, and not cotal up",
     emptyStatus.status === 4 && (emptyStatus.envelope?.result?.selected?.message ?? "").startsWith(`${join(toEmpty, ".cotal")} is a link to ${empty}, and a stack runs only from a folder whose .cotal is its own directory, so `)
@@ -431,10 +505,10 @@ rmSync(linked, { recursive: true, force: true });
   const path = join(brought, ".cotal", "stack-controller.json");
   writeFileSync(path, JSON.stringify({ ...JSON.parse(readFileSync(path, "utf8")), broker: { storeDir: join(root, ".cotal", "nats") } }, null, 2) + "\n", { mode: 0o600 });
   renameSync(root, away);
-  const command = `cotal space create la07 --adopt --root ${brought}`;
+  const command = `${launcher} space create la07 --adopt --root ${brought}`;
   const plain = run(["space", "create", "la07", "--json"], brought);
   check("space create there without --adopt refuses CONFLICT, exit 2, naming the --adopt command",
-    plain.status === 2 && plain.envelope?.error?.code === "CONFLICT" && plain.envelope.error.remedy === `adopt it with \`${command}\``, shown(plain));
+    plain.status === 2 && plain.envelope?.error?.code === "CONFLICT" && plain.envelope.error.remedy === command, shown(plain));
   const status = run(["status", "--json"], brought), up = run(["up", "--json"], brought);
   check("status there names the same step as up, which adopts it",
     up.status === 2 && (up.envelope?.error?.remedy ?? "").startsWith(`adopt it with \`${command}\`;`) && (status.envelope?.result?.hints ?? []).includes(up.envelope?.error?.remedy ?? "-"), { status: shown(status), up: shown(up) });
@@ -455,7 +529,7 @@ rmSync(linked, { recursive: true, force: true });
   writeFileSync(path, JSON.stringify({ ...JSON.parse(readFileSync(path, "utf8")), root: `${root}\tx` }, null, 2) + "\n", { mode: 0o600 });
   const up = run(["up", "--json"], renamed);
   check("up there refuses CONFLICT and names only the adopt command, since up refuses the recorded path",
-    up.status === 2 && up.envelope?.error?.code === "CONFLICT" && (up.envelope.error.message ?? "").includes("so this folder was moved from there") && up.envelope.error.remedy === `to run it from this folder, adopt it with \`cotal space create la07 --adopt --root ${renamed}\`; \`cotal up\` refuses the recorded folder, whose path holds a control character or a bidirectional formatting mark`, shown(up));
+    up.status === 2 && up.envelope?.error?.code === "CONFLICT" && (up.envelope.error.message ?? "").includes("so this folder was moved from there") && up.envelope.error.remedy === readRemedy(`to run it from this folder, adopt it with \`cotal space create la07 --adopt --root ${renamed}\`; \`cotal up\` refuses the recorded folder, whose path holds a control character or a bidirectional formatting mark`), shown(up));
   const adopted = run(["space", "create", "la07", "--adopt", "--json"], renamed);
   check("--adopt there rewrites the journal to name this folder", adopted.status === 0 && (JSON.parse(readFileSync(path, "utf8")) as { root: string }).root === renamed, shown(adopted));
   check("rig: forget the adopted space", run(["space", "forget", "la07", "--json"], renamed).status === 0);
@@ -476,7 +550,8 @@ writeFileSync(join(legacy, ".cotal", "server-open.conf"), "# Generated by `cotal
 for (const command of ["whoami", "ps", "who", "endpoints"]) {
   const r = run([command, "--json"], legacy);
   check(`${command} in a stopped legacy root refuses as not started, exit 2`, r.status === 2 && r.envelope?.outcome === "refused" && r.envelope.error?.code === "TARGET_UNAVAILABLE", shown(r));
-  check(`${command} names the address its last start configured and the bare up`, (r.envelope?.error?.message ?? "").includes("last ran at nats://127.0.0.1:24712") && r.envelope?.error?.remedy === `start it again with \`cotal up\` in ${legacy}`, r.envelope?.error);
+  const cmd = command === "whoami" || command === "ps" ? launcher : "cotal";
+  check(`${command} names the address its last start configured and the bare up`, (r.envelope?.error?.message ?? "").includes("last ran at nats://127.0.0.1:24712") && r.envelope?.error?.remedy === `start it again with \`${cmd} up\` in ${legacy}`, r.envelope?.error);
   check(`${command} in a stopped legacy root names no default broker address`, noDefault(r), shown(r));
 }
 // `watch` refuses that target like every other read. It used to end on one red line with exit 1,
@@ -540,7 +615,7 @@ for (const command of ["whoami", "ps", "who", "endpoints"]) {
   writeFileSync(join(legacyAuth, ".cotal", "auth", "server.conf"), "# Generated by `cotal up` - do not edit by hand.\nhost: 127.0.0.1\nport: 24714\n", { mode: 0o600 });
   writeFileSync(join(legacyAuth, ".cotal", "auth", `account.${key}.json`), JSON.stringify({ space: "lg01", account: { pub: "P", jwt: "J", signingSeed: "S", signingPub: "SP" } }) + "\n", { mode: 0o600 });
   const lastRan = `the mesh "lg01" in ${legacyAuth} last ran at nats://127.0.0.1:24714`;
-  const ownUp = `start it again with \`cotal up\` in ${legacyAuth}`;
+  const ownUp = `start it again with \`${launcher} up\` in ${legacyAuth}`;
   const record = join(home, ".cotal", "meshes", `space.${key}.json`);
   mkdirSync(join(home, ".cotal", "meshes"), { recursive: true, mode: 0o700 });
   const registerAt = (at: string, origin: string) =>
@@ -551,10 +626,21 @@ for (const command of ["whoami", "ps", "who", "endpoints"]) {
   check("control: a legacy root no registration names keeps its own address and its own cotal up",
     refusedWith(alone, "TARGET_UNAVAILABLE", `${lastRan}, and no space is registered for it here`, ownUp), shown(alone));
 
+  const reference = join(home, "import.json");
+  writeFileSync(reference, JSON.stringify({ schemaVersion: 1, space: "lg01", endpoint: "example.offline" }));
+  const add = ["endpoint", "add", "offline", "--file", reference, "--json"];
+  const unregistered = run(add, legacyAuth);
+  check("a stopped project's endpoint import names its recorded space and an offline retry",
+    unregistered.status === 2 && unregistered.envelope?.error?.code === "TARGET_UNAVAILABLE" &&
+    unregistered.envelope.error.message.includes(lastRan) && unregistered.envelope.error.remedy?.includes("space create <space> --root .") === true &&
+    unregistered.envelope.error.remedy.includes("--space <space>"), shown(unregistered));
   // The recorded folder is still there, so the stack runs from it. A copy and a folder whose name a
   // later `up` took over read the same, because nothing on disk tells the two apart.
   const holder = realpathSync(mkdtempSync(join(home, "holder-")));
   registerAt(holder, "up");
+  const copiedImport = run(add, legacyAuth);
+  check("an import in a copy does not suggest preparing the space in that copy", copiedImport.status === 2 &&
+    !(copiedImport.envelope?.error?.remedy ?? "").includes("space create"), shown(copiedImport));
   const useHolder = `use the stack from ${holder}, where "lg01" is registered`;
   for (const command of ["ps", "who", "whoami", "endpoints"]) {
     const r = run([command, "--json"], legacyAuth);

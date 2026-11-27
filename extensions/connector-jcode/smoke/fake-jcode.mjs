@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { spawn } from "node:child_process";
 import { appendFileSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
-import { createServer } from "node:net";
+import { connect, createServer } from "node:net";
 import { basename, dirname, join } from "node:path";
 
 const logPath = process.env.FAKE_JCODE_LOG;
@@ -58,12 +58,44 @@ if (process.argv[2] === "mcp") {
   setInterval(() => {}, 1000);
   await new Promise(() => {});
 }
+if (process.argv[2] === "respawned-server") {
+  // Stand-in for the server a real TUI starts when its own goes away. The smoke kills it; the
+  // timeout only bounds a leak when a cell fails before it can.
+  log({ ev: "respawned_server", pid: process.pid });
+  setTimeout(() => process.exit(0), 60_000);
+  await new Promise(() => {});
+}
 if (process.argv.includes("--resume")) {
   // The foreground client is an observer of the Harness API socket. It must be created while the
   // mandatory readiness request is running, rather than leaving an operator at a blank terminal.
-  log({ ev: "tui", argv: process.argv.slice(2) });
+  log({
+    ev: "tui",
+    argv: process.argv.slice(2),
+    companionAutostart: process.env.JCODE_COMPANION_AUTOSTART ?? null,
+    jcodeHome: process.env.JCODE_HOME ?? null,
+    runtimeDir: process.env.JCODE_RUNTIME_DIR ?? null,
+  });
   process.on("SIGTERM", () => process.exit(0));
   setInterval(() => {}, 1_000);
+  if (process.env.FAKE_JCODE_TUI_RESPAWN === "1") {
+    // From Jcode 0.99.1 a TUI that loses its server starts a detached new one on the seat's socket.
+    // Watch the API socket; when an established connection closes, start the stand-in server.
+    const api = join(process.env.JCODE_RUNTIME_DIR ?? "", "jcode-api.sock");
+    const watch = () => {
+      let connected = false;
+      const socket = connect(api);
+      socket.on("connect", () => {
+        connected = true;
+        log({ ev: "tui_watching" });
+      });
+      socket.on("error", () => {});
+      socket.on("close", () => {
+        if (!connected) return void setTimeout(watch, 50);
+        spawn(process.execPath, [process.argv[1], "respawned-server"], { detached: true, stdio: "ignore" }).unref();
+      });
+    };
+    watch();
+  }
 } else if (process.argv[2] !== "api-bridge") {
   process.stderr.write(`fake-jcode: expected api-bridge, got ${process.argv.slice(2).join(" ")}\n`);
   process.exit(2);
@@ -119,6 +151,8 @@ let busyOwner;
 const queuedTurns = [];
 const initialSessionModel = process.env.FAKE_JCODE_DEFAULT_MODEL ?? "deepseek-v4-pro";
 let sessionModel = initialSessionModel;
+// The reasoning effort `set_reasoning_effort` last took, which a model switch leaves in place here.
+let sessionEffort;
 const sessionStatePath = process.env.FAKE_JCODE_SESSION_STATE;
 const journalPath = process.env.FAKE_JCODE_JOURNAL;
 const sessionJournalPaths = (sessionId) => [...new Set([
@@ -207,8 +241,9 @@ function runTurn(frame, socket) {
   // A turn that is actually EXECUTED, as distinct from a frame that merely arrived. Every frame is
   // logged on arrival, so the request log alone cannot tell "the session ran this" from "the session
   // was handed this and dropped it" — which is exactly the distinction between a late delivery and a
-  // lost one. Carries the content so a fixture can ask whether ITS message ever ran.
-  log({ ev: "turn_run", session_id: frame.session_id, content: String(frame.content ?? "") });
+  // lost one. Carries the content so a fixture can ask whether ITS message ever ran, and the model
+  // and effort the session ran it on.
+  log({ ev: "turn_run", session_id: frame.session_id, content: String(frame.content ?? ""), model: sessionModel, effort: sessionEffort ?? null });
   appendTurnRecord?.(frame);
   // Where the deferred persistence failure lands. Real jcode logs SESSION_PERSISTENCE at this
   // point, fails to persist the session close state, and the session dies under the turn. Ordered
@@ -288,7 +323,21 @@ function runTurn(frame, socket) {
       orientationTurns++;
       if (process.env.FAKE_JCODE_NEVER_ORIENTATION !== "1" && orientationTurns > readyAfter) {
         log({ ev: "orientation_done", turn: orientationTurns });
-        event({ ev: "tool_done", session_id: frame.session_id, call_id: "orientation", name: "mcp__cotal__cotal_orientation", output: "ok" });
+        // FAKE_JCODE_ORIENTATION_VIA reaches orientation through Jcode's deferred MCP wrapper, as a
+        // model does when no direct tool is listed: `mcp_call` up to Jcode 0.99.0, `mcp` with action
+        // "call" from 0.99.1. `mcp-search` sends an `mcp` call naming the tool with another action.
+        const via = process.env.FAKE_JCODE_ORIENTATION_VIA;
+        if (via) {
+          const name = via === "mcp_call" ? "mcp_call" : "mcp";
+          const action = via === "mcp" ? { action: "call" } : via === "mcp-search" ? { action: "search" } : {};
+          const input = JSON.stringify({ ...action, server: "cotal", tool: "cotal_orientation", arguments: {}, intent: "readiness" });
+          const call_id = `orientation-${orientationTurns}`;
+          event({ ev: "tool_start", session_id: frame.session_id, call_id, name });
+          event({ ev: "tool_input_delta", session_id: frame.session_id, call_id, delta: input.slice(0, 20) });
+          event({ ev: "tool_input_delta", session_id: frame.session_id, call_id, delta: input.slice(20) });
+          event({ ev: "tool_exec", session_id: frame.session_id, call_id, name });
+          event({ ev: "tool_done", session_id: frame.session_id, call_id, name, output: "ok" });
+        } else event({ ev: "tool_done", session_id: frame.session_id, call_id: "orientation", name: "mcp__cotal__cotal_orientation", output: "ok" });
         if (process.env.FAKE_JCODE_WITHHOLD_TURN_DONE === "1") {
           // #1440: the required orientation call has arrived; keep the turn open so a host
           // that still waits for turn_done times out and kills a functional seat.
@@ -480,6 +529,7 @@ const server = createServer((socket) => {
               message: process.env.FAKE_JCODE_EFFORT_ERROR ?? `Reasoning effort '${frame.effort}' is not supported (available: low, medium, high)`,
             });
           } else {
+            sessionEffort = frame.effort;
             reply({ ev: "ok" });
           }
           break;
@@ -562,6 +612,7 @@ const server = createServer((socket) => {
             session_id: frame.session_id,
             provider,
             model,
+            ...(sessionEffort ? { reasoning_effort: sessionEffort } : {}),
             routes,
           });
           break;

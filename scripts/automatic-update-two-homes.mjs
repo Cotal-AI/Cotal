@@ -6,6 +6,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync, lstatSync, readdirS
 import { delimiter, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createServer } from 'node:net';
+import { isMainEntry } from './main-entry.mjs';
 import { candidateRegistry } from './automatic-update-platform-baseline.mjs';
 
 /** Two homes share one installed CLI, but each must reconcile its own built-ins before launch. */
@@ -38,6 +39,7 @@ export async function twoHomeUpgrade({ oldDirectory, targetDirectory, root, rout
       const directory = join(root, route);
       const prefix = join(root, 'prefix');
       const entry = join(prefix, 'bin', 'cotal');
+      const bootstrap = join(prefix, 'lib/node_modules/cotal-ai/dist/cotal.js');
       const environments = {};
       for (const home of ['A', 'B']) {
         const homeRoot = join(directory, home);
@@ -58,9 +60,9 @@ export async function twoHomeUpgrade({ oldDirectory, targetDirectory, root, rout
         } finally { clearTimeout(timer); }
       };
       const ok = async (home, label, args) => { const row = await call(home, label, entry, args); check(`${route} ${home} ${label} exits zero`, row.code === 0 && row.signal === null); return row; };
-      const managerProbe = async (label, instanceId) => {
+      const managerProbe = async (label, instanceId, logicalEntry) => {
         const modules = join(prefix, 'lib/node_modules/cotal-ai/node_modules');
-        const script = `const{localUpdateManagers}=await import(${JSON.stringify(pathToFileURL(join(modules, '@cotal-ai/cli/dist/commands/update.js')).href)});const{assertRecordIdentity}=await import(${JSON.stringify(pathToFileURL(join(modules, '@cotal-ai/workspace/dist/index.js')).href)});const candidates=localUpdateManagers({space:'twohomes'},${JSON.stringify(join(prefix, 'lib/node_modules/cotal-ai/dist/cotal.js'))});const owner=candidates.find(m=>m.instanceId===${JSON.stringify(instanceId)});if(!owner?.process||assertRecordIdentity(owner.process).kind!=='match')throw Error('Manager endpoint has no verified native owner');const{resolveControlTarget}=await import(${JSON.stringify(pathToFileURL(join(modules, '@cotal-ai/workspace/dist/index.js')).href)});const{askManager}=await import(${JSON.stringify(pathToFileURL(join(modules, '@cotal-ai/workspace/dist/control/index.js')).href)});const t=await resolveControlTarget({space:'twohomes'},'control-caller-admin',${JSON.stringify(instanceId)},{readOnly:true,onRefusal:'throw'});const s=await askManager({versionSkew:()=>{},roster:async()=>[]},t.space,t.server,'managerStatus',undefined,t.auth,'owner',3000,{instanceId:${JSON.stringify(instanceId)}});if(!s.ok||assertRecordIdentity(owner.process).kind!=='match')throw new Error(s.error??'Manager native identity changed');console.log(JSON.stringify({...s.data,native:owner.process}));`;
+        const script = `const{localUpdateManagers}=await import(${JSON.stringify(pathToFileURL(join(modules, '@cotal-ai/cli/dist/commands/update.js')).href)});const{assertRecordIdentity}=await import(${JSON.stringify(pathToFileURL(join(modules, '@cotal-ai/workspace/dist/index.js')).href)});const candidates=localUpdateManagers({space:'twohomes'},${JSON.stringify(logicalEntry)});const owner=candidates.find(m=>m.instanceId===${JSON.stringify(instanceId)});if(!owner?.process||assertRecordIdentity(owner.process).kind!=='match')throw Error('Manager endpoint has no verified native owner');const{resolveControlTarget}=await import(${JSON.stringify(pathToFileURL(join(modules, '@cotal-ai/workspace/dist/index.js')).href)});const{askManager}=await import(${JSON.stringify(pathToFileURL(join(modules, '@cotal-ai/workspace/dist/control/index.js')).href)});const t=await resolveControlTarget({space:'twohomes'},'control-caller-admin',${JSON.stringify(instanceId)},{readOnly:true,onRefusal:'throw'});const s=await askManager({versionSkew:()=>{},roster:async()=>[]},t.space,t.server,'managerStatus',undefined,t.auth,'owner',3000,{instanceId:${JSON.stringify(instanceId)}});if(!s.ok||assertRecordIdentity(owner.process).kind!=='match')throw new Error(s.error??'Manager native identity changed');console.log(JSON.stringify({...s.data,native:owner.process}));`;
         const receipt = await call('B', label, process.execPath, ['--input-type=module', '-e', script]);
         check(`${route} ${label} exits zero`, receipt.code === 0 && receipt.signal === null);
         return JSON.parse(receipt.stdout);
@@ -74,7 +76,8 @@ export async function twoHomeUpgrade({ oldDirectory, targetDirectory, root, rout
           const version = await ok(home, 'old version', ['--version']);
           check(`${route} ${home} built-ins start at A`, inventory(version.stdout, old.identity.version));
         }
-        const logicalEntry = realpathSync(entry);
+        // The public npm command can lead to a Node launcher, not the bootstrap that owns connector sets.
+        const logicalEntry = realpathSync(bootstrap);
         const fixture = join(directory, 'fixture'); mkdirSync(fixture, { mode: 0o700 });
         const fixtureRoot = selectedConnectorRoot(join(directory, 'B/config/cotal'), logicalEntry, old.identity.version);
         const connectorModules = realpathSync(join(fixtureRoot, 'extensions/node_modules/@cotal-ai/connector-jcode'));
@@ -100,7 +103,7 @@ export async function twoHomeUpgrade({ oldDirectory, targetDirectory, root, rout
           assert(local && Number.isSafeInteger(local.pid) && typeof local.instanceId === 'string', 'live stack Manager identity required');
           const peers = JSON.parse((await ok('B', 'old Manager endpoint before', ['ps', '--json'])).stdout).result.managers;
           assert(peers.length === 1 && peers[0].state === 'answered', 'one answering Manager required');
-          const served = await managerProbe('old Manager served identity before', peers[0].instanceId);
+          const served = await managerProbe('old Manager served identity before', peers[0].instanceId, logicalEntry);
           report.managers[route] = { before: managerIdentity(served, local.pid) };
           check('old-manager starts exact old Manager', report.managers[route].before.version === old.identity.version);
         }
@@ -144,7 +147,7 @@ export async function twoHomeUpgrade({ oldDirectory, targetDirectory, root, rout
         if (route === 'old-manager') {
           const local = JSON.parse(status.stdout).result.stackManager;
           assert(local && local.pid === report.managers[route].before.pid, 'stack Manager PID changed');
-          report.managers[route].after = managerIdentity(await managerProbe('old Manager served identity after', report.managers[route].before.instanceId), local.pid);
+          report.managers[route].after = managerIdentity(await managerProbe('old Manager served identity after', report.managers[route].before.instanceId, logicalEntry), local.pid);
           check('old-manager version PID and birth unchanged', JSON.stringify(report.managers[route].before) === JSON.stringify(report.managers[route].after));
         }
         const recovery = join(directory, 'B/cotal/update-recovery.json');
@@ -211,7 +214,7 @@ function inventory(output, version) {
   return ['claude', 'opencode', 'codex', 'hermes', 'jcode', 'pi', 'web, web-service'].every(name => output.split('\n').some(line => line.trimStart().startsWith(name) && line.trimEnd().endsWith(version)));
 }
 
-if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) {
+if (isMainEntry(import.meta.url)) {
   const [oldDirectory, targetDirectory, root, route] = process.argv.slice(2);
   assert(oldDirectory && targetDirectory && root, 'usage: automatic-update-two-homes.mjs <old-packed-closure> <target-packed-closure> <new-private-root>');
   await twoHomeUpgrade({ oldDirectory, targetDirectory, root, ...(route ? { routes: [route] } : {}) });

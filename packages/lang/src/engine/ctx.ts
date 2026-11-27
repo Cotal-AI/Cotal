@@ -26,7 +26,8 @@ import type { RunPins } from "../pins.js";
 import { NotCrossable, Prng, assertNoCode, assertWritable, born as stampBirth, deepFreeze, setOwn } from "../values.js";
 import { digest, type ScopeKind } from "../keys.js";
 import { currentFrame, withFrame, type EngineFrame } from "./frame.js";
-import { agentHandles, dispatchPrimitive, freeConstructors, onceBodyNotCallable, option, performScope, runScope, type EffectHost, type Frame as ScopeFrame } from "../perform.js";
+import { agentHandles, freeConstructors, onceBodyNotCallable, option, performScope, runScope, type EffectHost, type Frame as ScopeFrame } from "../perform.js";
+import { dispatchPrimitive } from "../perform-dispatch.js";
 import { PRIMITIVES } from "../primitives.js";
 import type { RunOptions } from "../interpret.js";
 
@@ -258,6 +259,7 @@ function buildCtx(run: EngineRun): CtxWithSteps {
     } as RunOptions,
     ceiling: run.pins.effectCeiling,
     effectCount: run.journal.dispatchedEffects(),
+    kindCounts: new Map(),
   };
 
   // A LOG LINE IS DATA on this engine: a function anywhere inside a logged value is refused HERE, in

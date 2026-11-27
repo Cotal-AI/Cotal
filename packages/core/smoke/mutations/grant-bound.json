@@ -68,7 +68,7 @@
     },
     {
       "name": "I1 issue a source-free non-instrument with no presence key",
-      "file": "packages/core/src/provision.ts",
+      "file": "packages/core/src/provision-jwt.ts",
       "find": "  if (seam.sources.length === 0 && !INSTRUMENT_PROFILES.has(profile) && !issuedPermitsPattern(permissions.publish, presenceKeySubject(space, pr.owner, pr.actor)))",
       "replace": "  if (false)",
       "expectRed": "a source-free non-instrument with no presence key of its own is refused before staging",
@@ -76,7 +76,7 @@
     },
     {
       "name": "B7 the agent mint ignores role:<r> tokens",
-      "file": "packages/core/src/provision.ts",
+      "file": "packages/core/src/provision-permissions.ts",
       "find": "  const roles = taskRoles(opts.role, opts.capabilities);",
       "replace": "  const roles = taskRoles(opts.role, undefined);",
       "expectRed": "a spawner minted the role:<r> token hands that role on",
@@ -84,7 +84,7 @@
     },
     {
       "name": "B8 the take subject only for the agent's own role",
-      "file": "packages/core/src/provision.ts",
+      "file": "packages/core/src/provision-permissions.ts",
       "find": "        takeSubject(space, role, pr.owner, pr.actor),\n",
       "replace": "        ...(role === opts.role ? [takeSubject(space, role, pr.owner, pr.actor)] : []),\n",
       "expectRed": "a spawner minted the role:<r> token hands that role on",
@@ -92,7 +92,7 @@
     },
     {
       "name": "B9 the take reply only for the agent's own role",
-      "file": "packages/core/src/provision.ts",
+      "file": "packages/core/src/provision-permissions.ts",
       "find": "  const takeReplies = roles.map((role) => `${takeSubject(space, role, pr.owner, pr.actor)}.>`);",
       "replace": "  const takeReplies = roles.filter((role) => role === opts.role).map((role) => `${takeSubject(space, role, pr.owner, pr.actor)}.>`);",
       "expectRed": "a spawner minted the role:<r> token hands that role on",

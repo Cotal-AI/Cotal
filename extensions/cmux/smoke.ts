@@ -78,7 +78,7 @@ try {
   rmSync(envRoot, { recursive: true, force: true });
 }
 
-const cmd = paneCommand({ command: "/bin/echo", args: ["hi"], env: { COTAL_CONTROL_TOKEN: SECRET }, cwd: "/tmp" }).command;
+const cmd = paneCommand({ command: "/bin/echo", args: ["hi"], env: { COTAL_CONTROL_KEY: SECRET }, cwd: "/tmp" }).command;
 
 ok("paneCommand returns a `bash <path>` invocation", /^bash '\/.*\/launch\.sh'$/.test(cmd));
 const scriptPath = cmd.replace(/^bash\s+'|'$/g, "");
@@ -180,6 +180,14 @@ process.stdout.write("OK");
     else process.env.TMPDIR = previousTmp;
     rmSync(stubDir, { recursive: true, force: true });
   }
+}
+
+// Name validation runs before the runtime checks whether cmux is reachable.
+for (const dashed of ["-reviewer", "--reviewer"]) {
+  let refusal = "";
+  try { new CmuxRuntime().spawn(dashed, { command: "true", args: [], env: {} }, "/tmp"); }
+  catch (error) { refusal = (error as Error).message; }
+  ok(`spawn refuses an agent name that begins with - (${dashed})`, refusal.includes("not starting with -"));
 }
 
 console.log(`\n${passed} passed, ${failed} failed\n`);

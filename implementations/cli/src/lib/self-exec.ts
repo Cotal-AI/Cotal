@@ -1,10 +1,11 @@
 import { spawnSync } from "node:child_process";
 import { accessSync, constants, readFileSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
-import { delimiter, join, resolve } from "node:path";
-import { cmdSpawnSpec, logicalExecutionEntry, resolveOnPath } from "@cotal-ai/workspace";
+import { delimiter, dirname, isAbsolute, join, relative, resolve, sep, win32 } from "node:path";
+import { cmdSpawnSpec, codeSpan, isWorkspaceTargetError, logicalExecutionEntry, resolveOnPath, windowsShellWord } from "@cotal-ai/workspace";
 import { cliPackageRoot, entryScript, seedWriterKind } from "../seed/paths.js";
 import { shellWord } from "./endpoint-errors.js";
+import { workingFolderRemoved } from "./paths.js";
 
 /** Is this process running the CLI's own entry? Decided on the RESOLVED file, never on its name.
  *
@@ -74,11 +75,16 @@ export const DAEMON_NODE_FLAGS: readonly string[] = ["--max-semi-space-size=1"];
 
 /** {@link selfArgv} for a long-lived daemon: the same verified entry, under {@link DAEMON_NODE_FLAGS}.
  *  The flags come before any inherited loader flag, so a node flag the operator passed explicitly
- *  still wins. */
+ *  still wins. Keep a same-directory alias of this runtime, so a distribution's stable `node`
+ *  symlink can move to its next supported version without pinning a shell's transient directory. */
 export function daemonArgv(): string[] {
   const [node, ...self] = selfArgv();
+  const invoked = resolveOnPath(process.argv0);
+  // Only preserve a sibling alias, never a directory alias such as fnm's per-shell PATH entry.
+  // A custom argv0 or another runtime on PATH is not authority to change the running runtime.
+  const executable = invoked && dirname(invoked) === dirname(node!) && realpathSync(invoked) === node ? invoked : node!;
   const logical = logicalExecutionEntry();
-  return [node!, ...DAEMON_NODE_FLAGS, ...self.slice(0, -1), logical ?? self.at(-1)!];
+  return [executable, ...DAEMON_NODE_FLAGS, ...self.slice(0, -1), logical ?? self.at(-1)!];
 }
 
 /** True when launched via `npx` — the package is unpacked under `~/.npm/_npx/<hash>/…`. */
@@ -86,9 +92,37 @@ export function isNpx(): boolean {
   return /[/\\]_npx[/\\]/.test(process.argv[1] ?? "");
 }
 
+/** True when launched from pnpm's default or configured dlx cache. */
+export function isPnpmDlx(): boolean {
+  const entry = process.argv[1] ?? "";
+  return inPnpmDlxCache(entry, process.env) || linkedFromPnpmDlx(entry, process.env);
+}
+
+/** pnpm 11 runs a dlx package from its global virtual store, so the entry's path names the store
+ *  rather than the dlx cache. The cache's bin directory, which pnpm puts first on PATH, still links
+ *  the package the entry belongs to. */
+function linkedFromPnpmDlx(entry: string, env: NodeJS.ProcessEnv): boolean {
+  const bin = (env.PATH ?? "").split(delimiter)[0];
+  if (!entry || !bin || !env.npm_config_user_agent?.startsWith("pnpm/") || !bin.endsWith(`${sep}node_modules${sep}.bin`) || !inPnpmDlxCache(bin, env)) return false;
+  try { return realpathSync(entry).startsWith(realpathSync(join(bin, "..", "cotal-ai")) + sep); }
+  catch { return false; }
+}
+
+function inPnpmDlxCache(path: string, env: NodeJS.ProcessEnv): boolean {
+  if (/[/\\]pnpm[/\\]dlx[/\\]/.test(path)) return true;
+  const cache = env.npm_config_cache_dir;
+  if (!cache || !path) return false;
+  // Relative paths cannot be compared against the configured cache without a working folder.
+  if ((!isAbsolute(cache) || !isAbsolute(path)) && workingFolderRemoved()) return false;
+  // pnpm uses <cache>/dlx/<hash>/<id>/node_modules for both the entry and its PATH shim.
+  const withinCache = relative(join(cache, "dlx"), path);
+  const [hash, id, modules, child] = withinCache.split(sep);
+  return !isAbsolute(withinCache) && Boolean(hash && hash !== ".." && id && modules === "node_modules" && child);
+}
+
 /** Is a *durable* `cotal` executable resolvable on PATH? A pure PATH scan (no exec):
- *  {@link displayCmd} calls it for every user-facing hint, so it only resolves files, and the
- *  `--version` exec probe stays in {@link verifiedCotalExecutables} for the recovery path.
+ *  User-facing hints also only resolve files. The `--version` exec probe stays in
+ *  {@link verifiedCotalExecutables} for the recovery path.
  *  Skips npx's transient shim: `npm exec` (npx) prepends the package's own
  *  `<cache>/_npx/<hash>/node_modules/.bin` to PATH, and since `cotal-ai` declares a `cotal` bin,
  *  that dir holds a throwaway `cotal`. Counting it would make a bare `npx cotal-ai setup` conclude
@@ -137,7 +171,7 @@ export function verifiedCotalExecutables(env: NodeJS.ProcessEnv = process.env): 
         encoding: "utf8",
         env,
         timeout: 2000,
-        windowsVerbatimArguments: spec.windowsVerbatimArguments,
+        windowsVerbatimArguments: spec.windowsVerbatimArguments, windowsHide: true,
       });
       if (result.status !== 0 || result.error) continue;
       const firstLine = `${result.stdout ?? ""}`.split(/\r?\n/, 1)[0];
@@ -152,29 +186,30 @@ export function verifiedCotalExecutables(env: NodeJS.ProcessEnv = process.env): 
 
 /** Every durable `cotal` executable on `env`'s PATH, in PATH order. Each entry is probed as an
  *  absolute path because `join(".", "cotal")` is the bare name `cotal`, which {@link resolveOnPath}
- *  would scan the whole PATH for, npx's transient bins included. */
+ *  would scan the whole PATH for, npx and pnpm dlx transient bins included. A relative entry is
+ *  unusable when the working folder has been removed. */
 function durableCotalsOnPath(env: NodeJS.ProcessEnv): string[] {
   return (env.PATH ?? "")
     .split(delimiter)
-    .filter((dir) => dir && !isEphemeralNpxBin(dir))
+    .filter((dir) => dir && (isAbsolute(dir) || !workingFolderRemoved()))
+    .filter((dir) => !/[/\\]_npx[/\\]/.test(dir) && !inPnpmDlxCache(dir, env))
     .flatMap((dir) => resolveOnPath(resolve(dir, "cotal"), env) ?? []);
 }
 
-/** A PATH entry npx (`npm exec`) injected for the current run only — its `_npx` cache
- *  `node_modules/.bin`. A `cotal` shim there disappears when npx exits, so it must not count as
- *  `cotal` being installed. Matches the `_npx` cache segment on POSIX and Windows. */
-function isEphemeralNpxBin(dir: string): boolean {
-  return /[/\\]_npx[/\\]/.test(dir);
-}
-
-/** The copy-paste command prefix for user-facing hints: prefer PATH or npx, then the installed
- *  entry under this Node runtime. A dev clone uses pnpm. Re-execs use {@link selfArgv}. */
-export function displayCmd(): string {
-  if (cotalOnPath()) return "cotal";
+/** The copy-paste command prefix for user-facing hints: prefer PATH, npx, or pnpm dlx, then the
+ *  installed entry under this Node runtime. A dev clone uses pnpm unless the command must run
+ *  from another folder. Re-execs use {@link selfArgv}. */
+export function displayCmd({ fromAnyFolder = false } = {}): string {
+  const [launcher] = durableCotalsOnPath(process.env);
+  if (launcher) return process.platform === "win32" && launcher.toLowerCase().endsWith(".cmd") ? "cotal.cmd" : "cotal";
   if (isNpx()) return "npx cotal-ai";
-  if (runsCliEntry() && seedWriterKind() === "released") {
-    const command = [process.execPath, entryScript()].map(shellWord).join(" ");
-    if (process.platform !== "win32" && process.env.COTAL_LAUNCHER === "1") {
+  if (isPnpmDlx()) return "pnpm dlx cotal-ai";
+  if (runsCliEntry() && (fromAnyFolder || seedWriterKind() === "released")) {
+    const released = seedWriterKind() === "released";
+    const argv = released ? [process.execPath, entryScript()] : selfArgv();
+    if (process.platform === "win32") return windowsDisplayCommand(argv) ?? argv.map(shellWord).join(" ");
+    const command = argv.map(shellWord).join(" ");
+    if (released && process.env.COTAL_LAUNCHER === "1") {
       const prefix = process.env.npm_config_prefix;
       if (!prefix) throw new Error("the installer launcher did not provide its npm prefix");
       // Match install.sh's pinned runtime and install destination without copying the whole PATH.
@@ -183,6 +218,64 @@ export function displayCmd(): string {
     return command;
   }
   return "pnpm cotal";
+}
+
+/** Format a Windows `[executable, ...args]` prefix so PowerShell and Command Prompt run it directly. */
+function windowsDisplayCommand([file, ...args]: readonly string[]): string | undefined {
+  // A fully quoted executable is a string in PowerShell, `[` or `]` in the executable token is a
+  // PowerShell wildcard, and PowerShell 5.1 splits a bare `-name.ext` parameter token at `.`.
+  const ascii = (value: string) => {
+    const word = /^[\x20-\x7e]+$/.test(value) ? windowsShellWord(value) : undefined;
+    return word === value && value.startsWith("-") && value.includes(".") ? `"${value}"` : word;
+  };
+  const commandToken = (exe: string) => {
+    const split = /^([A-Za-z]:)([^\[\]]+)$/.exec(exe);
+    return split && ascii(exe) !== undefined ? `${split[1]}"${split[2]}"` : undefined;
+  };
+  const exe = commandToken(file!);
+  const words = args.map(ascii);
+  if (exe !== undefined && words.every(word => word !== undefined)) {
+    return [exe, ...words].join(" ");
+  }
+
+  const systemRoot = Object.entries(process.env).find(([key]) => key.toLowerCase() === "systemroot")?.[1];
+  const psFile = systemRoot ? win32.join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe") : undefined;
+  const ps = psFile ? commandToken(psFile) : undefined;
+  if (ps === undefined) return undefined;
+  try {
+    accessSync(psFile!);
+  } catch {
+    return undefined;
+  }
+
+  // Encode `$`, `"`, `%`, `!`, `^`, backticks, control characters, and non-ASCII code units as `[char]`
+  // values so neither outer shell expands `-Command`, wrap each array element in `(...)` so `+` binds
+  // before `,`, escape wildcards on `&`, and end with `#` so PowerShell reads appended CLI words from
+  // the OS argv instead of re-parsing them as script.
+  const literal = (value: string) => {
+    const parts = value.split(/(["$`%!^\x00-\x1f\x7f-\uffff])/)
+      .flatMap((part, i) => part ? [i % 2 === 0 ? `'${part.replaceAll("'", "''")}'` : `[char]${part.charCodeAt(0)}`] : []);
+    if (parts.length === 0) return "''";
+    return `${parts[0]!.startsWith("[char]") ? "''+" : ""}${parts.join("+")}`;
+  };
+  const prefix = args.length ? `@(${args.map(arg => `(${literal(arg)})`).join(",")}) + ` : "";
+  const body = `Set-Variable ErrorActionPreference Stop; Set-Variable a (${prefix}@([Environment]::GetCommandLineArgs() | Select-Object -Skip 4)); & ([WildcardPattern]::Escape(${literal(file!)})) @a; exit (Get-Variable LASTEXITCODE -ValueOnly) #`;
+  return `${ps} -NoProfile -Command "${body}"`;
+}
+
+/** Give the ticked commands in a workspace remedy the CLI's launcher, keeping each command whole. */
+export function displayRemedy(remedy: string, cmd?: string): string {
+  return remedy.replace(/(?<!`)(`+)(?!`)([\s\S]*?)(?<!`)\1(?!`)/g, (span, _fence, command: string) =>
+    command.startsWith("cotal ") ? codeSpan(`${cmd ??= displayCmd()}${command.slice("cotal".length)}`) : span);
+}
+
+/** Adapt the project-trust command for human output without changing the machine-readable error. */
+export function displayProjectTrustFailure(message: string): string {
+  return message.replace(/(?<=If you trust this folder, run `)cotal(?= trust )/g, () => displayCmd());
+}
+
+export function hasMovedStackRemedy(error: unknown): boolean {
+  return isWorkspaceTargetError(error) && error.code === "not-started" && error.details.home === undefined && error.details.stackRemedy !== undefined;
 }
 
 /** The self-invocation as a shell-ready, double-quoted command prefix (for cmux pane commands).

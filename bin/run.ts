@@ -63,32 +63,10 @@ registry.provide({ provides: commands("mcp"), load: importing("mcp") });
 // The dispatch module reads the command word as `runCli` will, and loads no command. A word a
 // provider declares imports that provider's surfaces; any other word imports them all.
 const { commandWord, completeFileWrites, runCli, stdoutError } = await import("@cotal-ai/cli/dispatch");
-const { executionIdentity } = await import("@cotal-ai/workspace");
-const identity = executionIdentity();
-if (identity && identity.logicalEntry === identity.loadedEntry) {
-  const { retireSupersededExecutionDescriptor } = await import("./execution-transaction.js");
-  const { dirname } = await import("node:path");
-  retireSupersededExecutionDescriptor(dirname(dirname(identity.logicalEntry)));
-}
 const argv = process.argv.slice(2);
 const { readFileSync } = await import("node:fs");
 const currentVersion = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version as string;
-(await import("./update-notice.js")).installUpdateNotice(argv, currentVersion);
-const word = commandWord(argv);
-if (word !== undefined && registry.provides("command", word)) await registry.load("command", word);
-else await importing(...(Object.keys(surfaces) as Surface[]))();
-if (word === "update") await import("./daemon/update-entry.js");
-
-// A CLI must exit quietly when its stdout is closed early — piped to `head`, a pager that quits,
-// or a shell's process substitution (`source <(cotal completion script bash)`). Node otherwise turns the
-// closed-pipe write into a fatal unhandled 'error' event with a stack trace. Mirror SIGPIPE: exit
-// 0. A command that must close something first, such as a chat session, owns stdout's errors while
-// it runs, and this listener stands down for it. Registered before any command can write. A stdout
-// redirected to a file writes each chunk whole or fails into this listener, so a file-size limit or
-// a full disk cannot cut an export short and still exit 0.
-process.stdout.on("error", stdoutError);
-completeFileWrites();
-
+const { installUpdateNotice } = await import("./update-notice.js");
 // The four agent connectors (claude/opencode/hermes/pi) are NOT imported here: they are removable,
 // install-seeded `cotal ext` plugins loaded through the manifest, exactly like a third-party
 // connector (and like the `@cotal-ai/orca` runtime already is). `runCli` seeds them on first run and
@@ -101,4 +79,19 @@ completeFileWrites();
 // roots keep the explicit-import model.
 // The bundled app uses only stock daemon operations, never operator extension discovery or seeding.
 const desktopBridge = argv.length === 2 && argv[0] === "daemon" && argv[1] === "desktop";
-await runCli(registry, argv, { extensions: !desktopBridge, startupNotice: { release: releaseStartupInterrupt, handOver: handOverStartupInterrupt } });
+// The bundled reference must open even when the extension inventory needs repair.
+await runCli(registry, argv, {
+  extensions: !desktopBridge && commandWord(argv) !== "docs",
+  async prepare(word, help) {
+    // Keep the recovery message available even when a command surface cannot load.
+    if (word !== undefined && !help) installUpdateNotice(argv, currentVersion);
+    if (word !== undefined && registry.provides("command", word)) await registry.load("command", word);
+    else await importing(...(Object.keys(surfaces) as Surface[]))();
+    if (word === "update") await import("./daemon/update-entry.js");
+
+    // Handle a closed pipe or a failed file write before any command emits output.
+    process.stdout.on("error", stdoutError);
+    completeFileWrites();
+  },
+  startupNotice: { release: releaseStartupInterrupt, handOver: handOverStartupInterrupt },
+});

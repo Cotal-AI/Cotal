@@ -1,0 +1,3 @@
+# A pi seat lists and runs pi's own commands, prompt templates and skills, refuses a name pi does not
+# list before pi sees it, and stops pi's turn on interrupt.
+smoke:pi-commands

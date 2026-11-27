@@ -3,7 +3,7 @@ import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSyn
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { emitSentinel } from "@cotal-ai/smoke-kit";
-import { recoverExtensionPromotion, assertStageVerifier, stageExtensions } from "../src/lib/extension-stage.js";
+import { reclaimAbandonedExtensionStages, recoverExtensionPromotion, assertStageVerifier, stageExtensions } from "../src/lib/extension-stage.js";
 
 const originalConfig = process.env.XDG_CONFIG_HOME;
 const roots: string[] = [];
@@ -59,13 +59,16 @@ for (const state of ["prepared", "old-renamed", "new-promoted"] as const) {
   roots.push(root);
   process.env.XDG_CONFIG_HOME = root;
   const config = join(root, "cotal"); mkdirSync(config, { mode: 0o700 });
-  const live = join(config, "extensions"), stage = join(config, ".extensions.stage-proof.ready"), old = join(config, ".extensions.rollback-proof");
+  const live = join(config, "extensions"), wrapper = join(config, ".extensions.stage-Ab1234"), stage = `${wrapper}.ready`, old = join(config, ".extensions.rollback-proof");
   mkdirSync(live); writeFileSync(join(live, "whole"), "old");
-  mkdirSync(stage); writeFileSync(join(stage, "whole"), "new");
+  mkdirSync(wrapper, { mode: 0o700 }); mkdirSync(stage); writeFileSync(join(stage, "whole"), "new");
   const stat = lstatSync(stage), oldStat = lstatSync(live);
   writeFileSync(join(config, ".extensions-promotion.json"), JSON.stringify({ v: 1, root: live, stage, old,
     oldIdentity: { dev: String(oldStat.dev), ino: String(oldStat.ino), birth: oldStat.birthtimeMs },
     stageIdentity: { dev: String(stat.dev), ino: String(stat.ino), birth: stat.birthtimeMs } }), { mode: 0o600 });
+  reclaimAbandonedExtensionStages();
+  assert.ok(existsSync(wrapper), "cleanup leaves the wrapper of a journaled stage alone");
+  assert.equal(readFileSync(join(stage, "whole"), "utf8"), "new", "cleanup leaves a journaled ready copy alone");
   if (state !== "prepared") renameSync(live, old);
   if (state === "new-promoted") renameSync(stage, live);
   recoverExtensionPromotion();

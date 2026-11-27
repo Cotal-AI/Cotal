@@ -3,17 +3,18 @@ import { readFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 
 const source = readFileSync(new URL('../install.sh', import.meta.url), 'utf8');
-const hook = source.match(/  if \[ -n "\$PREVIOUS_VERSION" \] \|\| \[ -e[^\n]+\n[\s\S]*?\n  fi\n(?=  setup_path)/)[0];
+const hook = source.match(/  if \[ -n "\$PREVIOUS_VERSION" \] \|\| \[ -e[^\n]+\n[\s\S]*?\n  fi\n(?=  DOWNGRADE_PENDING=0)/)[0];
 assert.match(hook, /"\$BIN_DIR\/cotal" update/);
 assert.doesNotMatch(hook, /update --self/);
 for (const [previous, result, expected] of [['', 1, 0], ['0.164.0', 0, 0], ['0.160.7', 1, 1]]) {
   // The real-entry installer cells cover package installation. Isolate the shell gate here.
   const script = `
 PREVIOUS_VERSION='${previous}'
+DOWNGRADE_PENDING=0
 BIN_DIR=/fixture
 shquote() { printf "'%s'" "$1"; }
 die() { printf '%s\\n' "$@"; exit 1; }
-${hook.replace('"$BIN_DIR/cotal" update', `reconcile`)}
+${hook.replaceAll('"$BIN_DIR/cotal" update', 'reconcile')}
 printf 'completed\\n'
 `;
   const run = spawnSync('sh', ['-c', `reconcile() { printf 'reconcile output\\n'; return ${result}; }\n${script}`], { encoding: 'utf8' });

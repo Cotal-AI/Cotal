@@ -60,9 +60,11 @@ export type AclResolver = (
 
 /**
  * Build the callout's `permissionsFor` hook. Maps `ValidatedUserToken` → `MintPrincipal` → core's
- * `permissionsFor("agent", …)`. `connId` here is the CLIENT-CHOSEN inbox nonce the callout reads from
- * `req.connect_opts.name` (NOT `req.user_nkey`, which the client cannot know pre-connect); it scopes the
- * reply inbox `_INBOX_<connId>.>`. `readerId` is the connection's server-assigned history-reader id
+ * `permissionsFor("agent", …)`. `connId` here is the connection `name` the callout reads from
+ * `req.connect_opts.name` (NOT `req.user_nkey`, which the client cannot know pre-connect). The callout
+ * accepts a legacy nonce or `<owner>-<actor>-<nonce>` for this bearer's own principal. It scopes
+ * the reply inbox `_INBOX_<connId>.>`. `readerId` is the
+ * connection's server-assigned history-reader id
  * (core's `calloutReaderId`), which keys the admin view's reader deletes.
  *
  * Invariants enforced HERE (not in core):
@@ -187,7 +189,9 @@ export function calloutPermissions(
           "manager-caller",
           t.space,
           { ...principal, lifecycleUid: t.act.lifecycleUid },
-          { capabilities: caps, lifecycleUid: t.act.lifecycleUid, managerInstanceId: instanceId, ...binding },
+          // The row's kind, never a scope token, decides a person's control of their own agents
+          // (SPEC 13.21).
+          { capabilities: caps, lifecycleUid: t.act.lifecycleUid, managerInstanceId: instanceId, ...binding, ...(acl.kind !== undefined ? { ledgerKind: acl.kind } : {}) },
         );
         // Interactive issuance is unchanged. A managed seat needs both its current persona scope
         // and the fresh direct-parent grant. The mint still uses only signed act.scope.

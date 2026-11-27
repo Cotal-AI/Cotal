@@ -759,6 +759,12 @@ try {
       && managerForms.every((f) => f.route === "inst" && f.literals.instanceId?.includes(ownerARemoteInstanceId) === true),
     managerView.text.slice(0, 3000));
 
+  // A foreign manager pin is refused by the real issuer before run-ps can reach the broker.
+  const refusedRun = await agent.run("ps", {}, ownerBRemoteInstanceId);
+  check("MeshAgent.run('ps') reports a refused exchange as permission-denied / not-executed",
+    refusedRun.ok === false && refusedRun.code === "permission-denied" && refusedRun.outcome === "not-executed",
+    JSON.stringify({ ok: refusedRun.ok, code: refusedRun.code ?? null, outcome: refusedRun.outcome ?? null }));
+
   // Spawn/model/goal checks below use the real Manager, never a synthetic success reply.
   await agent.stop();
   agent = undefined;
@@ -799,7 +805,9 @@ try {
   const hostedPersonas = agent.connected ? await agent.listPersonas() : { ok: false, error: "not connected" };
   check(
     "a host-bearer agent refuses manager calls with no manager-call bearer",
-    hostedPersonas.ok === false && /issues no manager-call bearer/.test(String((hostedPersonas as { error?: unknown }).error ?? "")),
+    hostedPersonas.ok === false && /issues no manager-call bearer/.test(hostedPersonas.error ?? "")
+      && "code" in hostedPersonas && hostedPersonas.code === "failed-precondition"
+      && "outcome" in hostedPersonas && hostedPersonas.outcome === "not-executed",
     hostedPersonas,
   );
   await agent.stop();
@@ -1058,10 +1066,10 @@ try {
   }
 }
 
-const EXPECTED_CHECKS = 53;
+const EXPECTED_CHECKS = 54;
 check("all smoke checks passed", pass + fail === EXPECTED_CHECKS, { pass, fail, expected: EXPECTED_CHECKS });
 
-const ACTUAL_COUNT_GUARD = 54;
+const ACTUAL_COUNT_GUARD = 55;
 emitSentinel({ passed: pass, failed: fail, cells: pass + fail });
 console.log(`\n${fail === 0 ? "PASS" : "FAIL"} — ${pass} passed, ${fail} failed`);
 console.log("USER-MANAGER-TRANSPORT SMOKE COMPLETE");

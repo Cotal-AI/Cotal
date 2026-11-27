@@ -68,7 +68,7 @@ function Orbit({ r }: { r: number }) {
  *  Inside the shell (`AgentPicker`) a click on the node picks the agent: its peek, or on a phone its
  *  page. The graph is an image to assistive tech, so the node takes no focus; the Agents view and
  *  the Members tab are the keyboard's way to the same agent. */
-function AgentNode({ node, x, y, size }: { node: TopoNode; x: number; y: number; size: number }) {
+function AgentNode({ node, x, y, size, showName }: { node: TopoNode; x: number; y: number; size: number; showName: boolean }) {
   const status = node.status ?? "idle";
   const pick = useContext(AgentPicker);
   const chip = 8 + "all channels".length * 5.2;
@@ -90,6 +90,7 @@ function AgentNode({ node, x, y, size }: { node: TopoNode; x: number; y: number;
       transform={`translate(${x} ${y})`}
       onClick={pick ? () => pick(node.id) : undefined}
     >
+      {!showName && <title>{node.label}</title>}
       {status === "working" && <Orbit r={size / 2 + 7} />}
       <g className="ui-ta-art">
         <svg
@@ -101,7 +102,7 @@ function AgentNode({ node, x, y, size }: { node: TopoNode; x: number; y: number;
           overflow="visible"
           dangerouslySetInnerHTML={{ __html: characterMarkup(node.vendor, status) }}
         />
-        <text y={size / 2 + 13} textAnchor="middle" className="ui-ta-name">{node.label}</text>
+        {showName && <text y={size / 2 + 13} textAnchor="middle" className="ui-ta-name">{node.label}</text>}
         {node.wide && (
           <g className="ui-wide" transform={`translate(0 ${size / 2 + 26})`}>
             <rect x={-chip / 2} y={-8} width={chip} height={16} rx={6} />
@@ -134,13 +135,16 @@ function ChannelNode({ node, x, y, hot }: { node: TopoNode; x: number; y: number
  *  heats again only when the set of nodes or links changes, so a link going hot or cold, a status or
  *  a new label moves nothing. The first draw is already at rest. `d3-zoom` on the SVG pans and zooms.
  *
- *  `width` and `height` are the drawing's own coordinates (its `viewBox`); CSS scales it to its box.
+ *  `width` and `height` set the drawing's proportions. `drawingScale` adds space for dense graphs
+ *  without making nodes bigger and moves agent names to tooltips. CSS scales the SVG to its box.
  *  A new size on the same mount refits the layout's forces and heats it, so the nodes move to the
  *  new middle rather than staying where the old size put them. */
-export function TopologyGraph({ model, width = 400, height = 420 }: { model: TopoModel; width?: number; height?: number }) {
+export function TopologyGraph({ model, width = 400, height = 420, drawingScale = 1 }: { model: TopoModel; width?: number; height?: number; drawingScale?: number }) {
+  const drawingWidth = width * drawingScale;
+  const drawingHeight = height * drawingScale;
   const layoutRef = useRef<ForceLayout | null>(null);
   if (layoutRef.current === null) {
-    layoutRef.current = new ForceLayout(width, height);
+    layoutRef.current = new ForceLayout(drawingWidth, drawingHeight, drawingScale);
     layoutRef.current.sync(model);
     layoutRef.current.warm();
   }
@@ -160,7 +164,7 @@ export function TopologyGraph({ model, width = 400, height = 420 }: { model: Top
   };
 
   useEffect(() => {
-    if (layout.resize(width, height)) layout.reheat();
+    if (layout.resize(drawingWidth, drawingHeight, drawingScale)) layout.reheat();
     if (layout.sync(model)) layout.reheat();
     run();
   });
@@ -181,12 +185,12 @@ export function TopologyGraph({ model, width = 400, height = 420 }: { model: Top
     return () => void select(el).on(".zoom", null);
   }, []);
 
-  const place = (id: string) => layout.at(id) ?? { x: width / 2, y: height / 2 };
+  const place = (id: string) => layout.at(id) ?? { x: drawingWidth / 2, y: drawingHeight / 2 };
   const byId = new Map(model.nodes.map((n) => [n.id, n]));
   const hotChannels = new Set(model.links.filter((l) => l.hot).map((l) => l.target));
   const size = Math.min(40, width / 10);
   return (
-    <svg ref={svg} className="ui-topo-svg" viewBox={`0 0 ${width} ${height}`} role="img" aria-label="Mesh topology">
+    <svg ref={svg} className="ui-topo-svg" viewBox={`0 0 ${drawingWidth} ${drawingHeight}`} role="img" aria-label="Mesh topology">
       <g transform={`translate(${view.x} ${view.y}) scale(${view.k})`}>
         {model.links.map((l) => {
           const a = place(l.source);
@@ -207,7 +211,7 @@ export function TopologyGraph({ model, width = 400, height = 420 }: { model: Top
           <ChannelNode key={n.id} node={n} {...place(n.id)} hot={hotChannels.has(n.id)} />
         ))}
         {model.nodes.filter((n) => n.kind === "agent").map((n) => (
-          <AgentNode key={n.id} node={n} {...place(n.id)} size={size} />
+          <AgentNode key={n.id} node={n} {...place(n.id)} size={size} showName={drawingScale === 1} />
         ))}
       </g>
     </svg>

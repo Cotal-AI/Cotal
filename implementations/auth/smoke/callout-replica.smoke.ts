@@ -15,6 +15,7 @@
  * Run: pnpm smoke:callout-replica [--rate 20] [--seconds 6]   (nats-server on PATH, or NATS_SERVER_BIN)
  */
 import assert from "node:assert/strict";
+import { generateKeyPairSync } from "node:crypto";
 import { SMOKE_BROKER_TOKEN, emitSentinel, killAndAwaitExit, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 if (process.argv[2] === "__daemon-auth-service") {
@@ -104,7 +105,8 @@ if (process.argv[2] === "__daemon-auth-service") {
   for (const key of Object.keys(childEnv)) if (key.startsWith("COTAL_")) delete childEnv[key];
   childEnv.COTAL_HOME = home;
   childEnv.COTAL_TELEMETRY = "off";
-  const idp = createServer((_req, res) => { res.writeHead(200, { "content-type": "application/json" }); res.end('{"keys":[]}'); });
+  const jwks = JSON.stringify({ keys: [generateKeyPairSync("ed25519").publicKey.export({ format: "jwk" })] });
+  const idp = createServer((_req, res) => { res.writeHead(200, { "content-type": "application/json" }); res.end(jwks); });
   await new Promise<void>((resolve) => idp.listen(0, "127.0.0.1", resolve));
   const idpUrl = `http://127.0.0.1:${(idp.address() as import("node:net").AddressInfo).port}/auth`;
   let broker: ChildProcess | undefined;

@@ -18,10 +18,16 @@ export interface ConnectorSetupInput {
   /** The argv that runs this Cotal CLI, `[node, ...loaderFlags, entry]` by absolute path, so an asset
    *  the action installs can run the CLI without `cotal` on its PATH. */
   readonly cotal: readonly string[];
+  /** Report a setup write for the command's receipt after it succeeds. */
+  readonly wrote?: (what: string, path: string) => void;
+  /** Prepare an unattended machine host without changing its Desktop or project integration. */
+  readonly machineHost?: boolean;
   /** Current authored skills for refreshing an already installed skills integration. */
   readonly skills?: ConnectorSkillsSetupInput;
   /** The space setup is for, when its members sign in. */
   readonly signedIn?: SignedInSpace;
+  /** The space this setup run is for. A refresh has none: it keeps the spaces an earlier setup wrote. */
+  readonly space?: string;
 }
 
 /** A space whose members sign in. A chat app that cannot join it through this computer's server
@@ -106,4 +112,14 @@ export interface ConnectorSetupProvider extends Extension {
   /** Read-only health of what this provider installs, for `cotal status` and the setup card. A
    * property so a narrowed `input` fails to compile, as {@link ConnectorSetupAction.run} explains. */
   readonly status?: (input: ConnectorStatusInput) => readonly ConnectorStatusRow[];
+}
+
+/** The setup surface of an application people drive Cotal agents from, such as an ACP client, rather
+ * than one agents run in. The contract is {@link ConnectorSetupProvider}'s. No connector declares it,
+ * so it is never the harness setup asks for: setup runs its `connector` action for the space it sets
+ * up whenever the provider is available, `cotal update` runs its `refresh`, and `cotal status` shows
+ * its `status`. Its package registers it under this kind, and the CLI finds it in the installed
+ * manifest. */
+export interface ClientSetupProvider extends Omit<ConnectorSetupProvider, "kind"> {
+  readonly kind: "client-setup";
 }

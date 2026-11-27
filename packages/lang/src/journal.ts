@@ -16,7 +16,7 @@ import { canonicalize } from "json-canonicalize";
 import { NotCrossable, assertCrossable, assertScopeValueCrossable, deepFreeze } from "./values.js";
 import { RuntimeFault } from "./errors.js";
 import { type JournalKind, type StepKey, scopeTraits, stepKeyString } from "./keys.js";
-import { EFFECT_KINDS } from "./primitives.js";
+import { EFFECT_KINDS, type EffectKind } from "./primitives.js";
 
 export type EntryState = "pending" | "settled";
 export type EntryStatus = "ok" | "failed" | "cancelled" | "refused";
@@ -812,14 +812,15 @@ export class Journal {
    * A `conclave` counts, because its open is a dispatch and the interpreter counts it as one; the
    * other scope kinds dispatch nothing of their own, so their entries do not.
    *
-   * A `waitUntil` counts once per recorded observation: each one is a durable append the run made,
-   * and the interpreter counts each look after the first as it makes it. Its key covers the first.
+   * A `waitUntil` counts once per recorded observation in the run total: each one is a durable append
+   * the run made, and the interpreter counts each look after the first as it makes it. Its key covers
+   * the first. A count for one `kind` counts keys only, as a pinned kind ceiling limits dispatches.
    */
-  dispatchedEffects(): number {
+  dispatchedEffects(kind?: EffectKind): number {
     let n = 0;
     for (const e of this.byKey.values()) {
-      if ((EFFECT_KINDS as readonly string[]).includes(e.kind)) n += 1;
-      if (e.kind === "waitUntil" && e.observations !== undefined && e.observations.length > 1) n += e.observations.length - 1;
+      if ((EFFECT_KINDS as readonly string[]).includes(e.kind) && (kind === undefined || e.kind === kind)) n += 1;
+      if (kind === undefined && e.kind === "waitUntil" && e.observations !== undefined && e.observations.length > 1) n += e.observations.length - 1;
     }
     return n;
   }

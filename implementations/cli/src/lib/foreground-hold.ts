@@ -1,10 +1,16 @@
 /** The process record a foreground `up` writes while it holds a controller stack's lifetime. The
  *  holding process removes its own record as it exits. A whole-stack stop removes one whose process
  *  is gone, such as a holder that was killed, and leaves one that still runs or cannot be read. */
-import { readFileSync, unlinkSync } from "node:fs";
-import { join } from "node:path";
+import { readFileSync, realpathSync, unlinkSync } from "node:fs";
+import { isAbsolute, join, relative, resolve, sep } from "node:path";
+import { pathToFileURL } from "node:url";
 import { writeSecretFileAtomic } from "@cotal-ai/core";
-import { assertRecordIdentity, formatRecord, identityRecord, parseRecord } from "@cotal-ai/workspace";
+import { assertRecordIdentity, codeSpan, exitCode, findMesh, formatRecord, homeCotalDir, identityRecord, parseRecord, renderReport, shellPath, userCotalDir } from "@cotal-ai/workspace";
+import { entryScript } from "../seed/paths.js";
+import { shellWord } from "./endpoint-errors.js";
+import { displayCmd, selfArgv } from "./self-exec.js";
+import { observeServiceProcess, serviceInstanceStore } from "./service-instances.js";
+import { readStackJournal, stackDefinitionsAt, stackRootGone, type StackJournal } from "./stack-journal.js";
 
 /** Where a foreground `up` records the process that holds its stack's lifetime. */
 const foregroundHoldPath = (root: string): string => join(root, ".cotal", "stack-foreground.hold");
@@ -33,6 +39,91 @@ export function releaseForegroundHold(root: string): void {
   } catch { /* nothing recorded */ }
 }
 
+/** Resolve file-based preloads from the launching folder, while their original paths still exist. */
+function foregroundStopLoaders(flags: string[], inside: (path: string) => boolean): string[] | undefined {
+  const loaders: string[] = [];
+  for (let i = 0; i < flags.length; i++) {
+    const arg = flags[i]!;
+    const match = /^(--import|--require|-r|--(?:experimental-)?loader)(?:=(.*))?$/.exec(arg);
+    if (!match) { loaders.push(arg); continue; }
+    const specifier = match[2] ?? flags[++i];
+    if (!specifier) return undefined;
+    if (specifier.startsWith("data:") || specifier.startsWith("node:")) {
+      loaders.push(match[1]!, specifier);
+      continue;
+    }
+    const url = specifier.startsWith("file:") ? new URL(specifier) : undefined;
+    if (!url && !isAbsolute(specifier) && !/^\.\.?[/\\]/.test(specifier)) return undefined;
+    const path = realpathSync(url ?? specifier);
+    if (inside(path)) return undefined;
+    if (url) {
+      const physical = pathToFileURL(path);
+      physical.search = url.search;
+      physical.hash = url.hash;
+      loaders.push(match[1]!, physical.href);
+    } else {
+      loaders.push(match[1]!, path);
+    }
+  }
+  return loaders;
+}
+
+/** Capture the physical entry and loader before their paths can move with the project. */
+export function foregroundStopLauncher(root: string): string[] | undefined {
+  try {
+    const argv = selfArgv();
+    const project = realpathSync(root), node = realpathSync(process.execPath), entry = entryScript();
+    const inside = (path: string) => {
+      const rel = relative(project, path);
+      return !isAbsolute(rel) && rel !== ".." && !rel.startsWith(`..${sep}`);
+    };
+    if (inside(node) || inside(entry)) return undefined;
+    const loaders = entry.endsWith(".ts") ? foregroundStopLoaders(argv.slice(1, -1), inside) : [];
+    return loaders && [node, ...loaders, entry];
+  } catch { return undefined; }
+}
+
+/** A literal in a PowerShell command that is itself double-quoted in PowerShell or cmd.exe. */
+function windowsStopLiteral(value: string): string {
+  const parts = value.split(/(["$`%!\u2018-\u201e])/u);
+  const words = parts.map((part, i) => i % 2 === 0 ? `'${part.replaceAll("'", "''")}'` : `[char]${part.charCodeAt(0)}`);
+  return words.length === 1 ? words[0]! : `(${words.join("+")})`;
+}
+
+function windowsStopCommand(home: string, root: string | undefined, launcher: string[], args: string[]): string {
+  const [file, ...flags] = launcher;
+  const program = file === "cotal"
+    ? `(Get-Command cotal -All -CommandType Application | Where-Object Name -Match '\\.(com|exe|bat|cmd)\\z' | Select-Object -First 1)` : windowsStopLiteral(file!);
+  const location = root === undefined ? "" : `Set-Location -LiteralPath ${windowsStopLiteral(root)}; `;
+  const argv = [...flags, ...args].map(windowsStopLiteral).join(" ");
+  return `powershell.exe -NoProfile -Command "Set-Variable ErrorActionPreference Stop; ${location}[Environment]::SetEnvironmentVariable('COTAL_HOME', ${windowsStopLiteral(resolve(home))}); & ${program} ${argv}; exit (Get-Variable LASTEXITCODE -ValueOnly)"`;
+}
+
+/** A hangup leaves the stack running. Release the hold before exiting without unwinding finally. */
+export function hangupForegroundStack(root: string, space: string, outsideCmd: string[] | undefined): never {
+  const home = homeCotalDir();
+  const prefix = home === userCotalDir() ? "" : `COTAL_HOME=${shellWord(home)} `;
+  let remedy: string;
+  if (!stackRootGone(space, root)) {
+    const launcher = displayCmd();
+    const stop = (action: string) => codeSpan(process.platform === "win32"
+      ? windowsStopCommand(home, root, launcher === "cotal" ? [launcher] : outsideCmd ?? selfArgv(), ["down", action])
+      : `cd ${shellWord(root)} && ${prefix}${launcher} down ${action}`);
+    remedy = `inspect it with ${stop("--dry-run")}; to stop it, run ${stop("--yes")}`;
+  } else {
+    const launcher = outsideCmd ?? ["cotal"];
+    const command = codeSpan(process.platform === "win32"
+      ? windowsStopCommand(home, undefined, launcher, ["down", "--space", space, "--yes"])
+      : `${prefix}${launcher.map(shellWord).join(" ")} down --space ${shellWord(space)} --yes`);
+    remedy = outsideCmd !== undefined ? `run ${command} from another folder to stop it`
+      : `use a Cotal installation outside the project to run ${command} from another folder to stop it`;
+  }
+  process.stderr.write(`The terminal closed. This stack is still running; ${remedy}.\n`);
+  process.exitCode = 129;
+  releaseForegroundHold(root);
+  process.exit(129);
+}
+
 /** Remove a foreground hold whose recorded process is gone, and leave one that still runs or cannot
  *  be read. A whole-stack stop calls this: the holding process removes its own record as it exits,
  *  and a holder that was killed does not. */
@@ -44,4 +135,58 @@ export function releaseDeadForegroundHold(root: string): boolean {
   if (read.kind !== "record" || assertRecordIdentity(read.record).kind !== "gone") return false;
   try { unlinkSync(path); } catch { return false; }
   return true;
+}
+
+function foregroundReleased(message: string): 0 {
+  process.stderr.write(`${renderReport({ sections: [{ title: "Foreground stack released", blocks: [{ kind: "lines", lines: [message] }] }] }, "rich", process.stderr)}\n`);
+  return 0;
+}
+
+/** The missing-folder stop observes the pinned exits, then removes definitions and registration. */
+function goneRootStackStopped(held: StackJournal): boolean {
+  const members = held.members.filter((member) => member.instanceId !== null);
+  return members.length > 0 && members.every((member) => {
+    const state = member.process && assertRecordIdentity(member.process).kind;
+    return state === "gone" || state === "mismatch";
+  }) && stackDefinitionsAt(held.space, held.root).length === 0 && findMesh(held.space)?.root !== held.root;
+}
+
+/** Read-only lifetime check. An unreadable record is not proof that its process exited. */
+export function foregroundStackEnd(root: string, held: StackJournal | undefined): number | undefined {
+  try {
+    const current = readStackJournal(root)?.journal;
+    if (!current && held && goneRootStackStopped(held)) {
+      return foregroundReleased("Another command stopped this stack and removed its saved records after its folder went missing. This terminal no longer holds it.");
+    }
+    const stack = current ?? held;
+    if (!stack) return;
+    const { operation, space } = stack;
+    if (!current && ((operation.kind !== "up" && operation.kind !== "resume") || operation.phase !== "completed" || !stackRootGone(space, root))) return;
+    if (current && operation.id !== held?.operation.id && (operation.kind === "down" || operation.kind === "preserve")) {
+      if (operation.phase === "completed") {
+        return foregroundReleased(`Another command completed a ${operation.kind === "down" ? "stop" : "preserve"} of this stack (operation ${operation.id}). This terminal no longer holds it.`);
+      }
+      if (operation.phase === "planned" || operation.phase === "applying") return;
+    }
+    const broker = stack.members.find((member) => member.role === "broker");
+    if (!broker?.instanceId) return;
+    const store = serviceInstanceStore(space), snapshot = store.read(broker.instanceId);
+    if (!snapshot) return;
+    const instance = snapshot.record.value;
+    if (!instance.process || instance.definition !== broker.definition) return;
+    // A missing-folder stop marks the broker instance before signalling it, without a journal.
+    if (!current && (instance.state !== "running" || instance.process.pid !== broker.process?.pid || instance.process.token !== broker.process.token)) return;
+    const state = observeServiceProcess(instance);
+    if (state !== "gone" && state !== "foreign-pid") return;
+    // A whole-stack stop or replacement can begin between reading the records and observing the PID.
+    const latest = readStackJournal(root)?.journal.operation;
+    if (current) {
+      if (latest?.id !== operation.id || latest.phase !== operation.phase) return;
+    } else if (latest || store.read(broker.instanceId)?.hash !== snapshot.hash) return;
+    const brokerOnly = stack.members.some((member) => member.role === "manager" && member.state === "not-attempted" && member.code === undefined);
+    const repair = codeSpan(`${displayCmd()} up --foreground${brokerOnly ? " --no-manager" : ""} --root ${shellPath(root)}`);
+    const remedy = current ? `Run ${repair} to repair the stack.` : `Move the project back to ${shellPath(root)}, then run ${repair} to repair the stack.`;
+    process.stderr.write(`nats-server exited unexpectedly (pid ${instance.process.pid}). The stack records were kept. ${remedy}\n`);
+    return exitCode("failed", "OPERATION_FAILED");
+  } catch { return; }
 }

@@ -64,10 +64,11 @@ import {
   type EffectHandler,
   type JournalEntry,
   type RunPins,
+  type EffectCeilings,
   type RunResult,
 } from "@cotal-ai/lang";
 import { runOnHostedEngine } from "./engine-host.js";
-import { RunJournalStore, replayOwnJournal } from "./journal-store.js";
+import { RunJournalStore, RunJournalUnavailable, replayOwnJournal } from "./journal-store.js";
 import { releasableSeats } from "./run-scope-authority.js";
 
 /**
@@ -92,6 +93,7 @@ interface HostedEngineRequest {
     readonly seed?: string;
     readonly file?: string;
     readonly effectCeiling?: number;
+    readonly ceilings?: EffectCeilings;
     readonly stepBudget?: number;
     readonly onLog?: (line: { readonly scope: string; readonly values: readonly unknown[] }) => void;
   };
@@ -119,6 +121,7 @@ const hostedEngineRun = (r: HostedEngineRequest): Promise<RunResult> =>
     ...(r.options.file !== undefined ? { file: r.options.file } : {}),
     ...(r.options.seed !== undefined ? { seed: r.options.seed } : {}),
     ...(r.options.effectCeiling !== undefined ? { effectCeiling: r.options.effectCeiling } : {}),
+    ...(r.options.ceilings !== undefined ? { ceilings: r.options.ceilings } : {}),
     ...(r.options.stepBudget !== undefined ? { stepBudget: r.options.stepBudget } : {}),
     ...(r.options.onLog !== undefined ? { onLog: r.options.onLog } : {}),
   });
@@ -286,6 +289,7 @@ export interface DriveRequest {
   readonly seed?: string;
   readonly file?: string;
   readonly effectCeiling?: number;
+  readonly ceilings?: EffectCeilings;
   readonly stepBudget?: number;
   /**
    * The most bytes a settled `ok` result may canonicalize to, checked by the journal AHEAD of the
@@ -461,7 +465,7 @@ export async function dischargeCancellations(
  */
 export type DriveOutcome =
   | { readonly status: "completed"; readonly result: RunResult }
-  | { readonly status: "released"; readonly reason: Error };
+  | { readonly status: "released"; readonly reason: Error; readonly brokerInterrupted?: true };
 
 /** Start a run that has never been driven. Refused if the journal already has records. */
 export async function startRun(
@@ -513,6 +517,7 @@ async function drive(
         runId: req.runId,
         ...(req.seed !== undefined ? { seed: req.seed } : {}),
         ...(req.effectCeiling !== undefined ? { effectCeiling: req.effectCeiling } : {}),
+        ...(req.ceilings !== undefined ? { ceilings: req.ceilings } : {}),
         ...(req.stepBudget !== undefined ? { stepBudget: req.stepBudget } : {}),
       },
       req.handler.now(),
@@ -652,6 +657,7 @@ async function drive(
     ...(req.seed !== undefined ? { seed: req.seed } : {}),
     ...(req.file !== undefined ? { file: req.file } : {}),
     ...(req.effectCeiling !== undefined ? { effectCeiling: req.effectCeiling } : {}),
+    ...(req.ceilings !== undefined ? { ceilings: req.ceilings } : {}),
     ...(req.stepBudget !== undefined ? { stepBudget: req.stepBudget } : {}),
     ...(req.onLog !== undefined ? { onLog: req.onLog } : {}),
   };
@@ -739,8 +745,12 @@ async function drive(
       // Recorded on a BEST-EFFORT basis and never allowed to mask the real answer: the record is a
       // projection, and a driver that could not append to the journal may not be able to write here
       // either. What it must not do is turn a lost run into a different-looking failure.
-      await noteFinal(req, "released", appender.journalHigh, specRevision, statusRevision);
-      return { status: "released", reason: e };
+      const recorded = await noteFinal(req, "released", appender.journalHigh, specRevision, statusRevision);
+      const cause = e.reason instanceof RunJournalUnavailable ? e.reason.cause : e.reason;
+      const brokerInterrupted = recorded && req.statusConnection !== undefined && shouldStop() === undefined
+        && req.cancellation?.reason === undefined && req.cancellationObserved?.() === undefined
+        && isBrokerInterruption(cause instanceof RunJournalStalled ? cause.cause : cause);
+      return { status: "released", reason: e, ...(brokerInterrupted ? { brokerInterrupted: true } : {}) };
     }
     // The host stopping is the same kind of answer: this driver no longer holds the run, and the
     // program has neither failed nor finished.
@@ -814,6 +824,14 @@ function isStatusConflict(e: unknown): boolean {
   return e instanceof EpEnvelopeError && e.code === "conflict";
 }
 
+function isBrokerInterruption(e: unknown): boolean {
+  // JetStream wraps a native no-responder request in JetStreamNotEnabled. Its other variant
+  // carries an API refusal, which must not be treated as a transport interruption.
+  const requestError = e instanceof RequestError ? e
+    : e instanceof Error && e.cause instanceof RequestError ? e.cause : undefined;
+  return e instanceof TimeoutError || e instanceof ConnectionError || requestError?.isNoResponders() === true;
+}
+
 /**
  * Persist the terminal projection without replacing the engine's answer with a store error.
  * A hosted attempt retains its connection while transport failures are retried. Every retry
@@ -827,42 +845,36 @@ async function noteFinal(
   observedSpecRevision: number,
   expectedRevision: number | undefined,
   failure?: RunFailure,
-): Promise<void> {
+): Promise<boolean> {
   let recovering = false;
   for (;;) {
-    if (recovering && req.statusConnection!.isClosed()) return;
+    if (recovering && req.statusConnection!.isClosed()) return false;
     try {
       if (recovering) {
         const current = await readRunRecord(req.kv, req.endpoint, req.runId);
         const status = current?.status;
         if (current?.spec.revision !== observedSpecRevision || status === undefined
           || status.value.holder !== req.lease.holder || status.value.epoch !== req.lease.epoch
-          || status.value.fencingToken !== req.lease.fencingToken) return;
+          || status.value.fencingToken !== req.lease.fencingToken) return false;
         // An acknowledged-late terminal write needs no second write. A terminal record is
         // never reopened, and a higher tail anchor must not be rolled back by this attempt.
-        if (status.value.state !== "running") return;
+        if (status.value.state !== "running") return status.value.state === state;
         expectedRevision = status.revision;
         journalHigh = Math.max(journalHigh, status.value.journalHigh);
       }
       await note(req, state, journalHigh, observedSpecRevision, expectedRevision, failure);
       if (recovering) console.error(`run ${req.runId}: the "${state}" status was recorded after the broker became available`);
-      return;
+      return true;
     } catch (e) {
-      // JetStream wraps no-responder requests in JetStreamNotEnabled. Its other
-      // variant carries an API refusal, so retry only the native no-responder cause.
-      const requestError = e instanceof RequestError ? e
-        : e instanceof Error && e.cause instanceof RequestError ? e.cause : undefined;
-      const transient = e instanceof TimeoutError || e instanceof ConnectionError
-        || requestError?.isNoResponders() === true;
       const retry = req.statusConnection !== undefined && !req.statusConnection.isClosed()
-        && (transient || isStatusConflict(e));
+        && (isBrokerInterruption(e) || isStatusConflict(e));
       if (!recovering || !retry) {
         console.error(
           `run ${req.runId}: the "${state}" status write did not land (${(e as Error).message}); `
           + (retry ? "retrying while this attempt's connection remains open" : "the recorded status may be stale"),
         );
       }
-      if (!retry) return;
+      if (!retry) return false;
       recovering = true;
       await new Promise<void>((resolve) => setTimeout(resolve, 1_000));
     }

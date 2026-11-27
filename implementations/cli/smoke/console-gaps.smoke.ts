@@ -15,21 +15,24 @@
  *   3. `:delchan <channel>`: the verb opens the typed-name confirm, the name arms Enter, the notice
  *      reports the purge count, and the channel's history is actually gone while another survives
  *      (core's clearChannel, the web dashboard's delete, with a bare connection on an open mesh).
- *      The deleted channel's tab leaves the strip on the next channel poll, and never shows a
- *      badge on the way out (its watermark is dropped only once the tab is gone).
+ *      The aggregate feed drops the deleted posts and keeps other posts. The deleted channel's tab
+ *      leaves the strip on the next poll without showing a badge on the way out.
  *   4. Color follows the CLI's decision: `--no-color` paints the TUI with no ANSI color even under
  *      `FORCE_COLOR`, and so does a non-empty `NO_COLOR`. `FORCE_COLOR` alone paints color, so the
  *      color check can see color.
+ *   5. Feed help at 80 by 24 displays complete, readable rows and pages to the remaining shortcuts.
  */
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { CotalEndpoint, isReachable, setupSpaceStreams } from "@cotal-ai/core";
+import { CotalEndpoint, isReachable, membershipBucket, setupSpaceStreams } from "@cotal-ai/core";
+import { jetstreamManager } from "@nats-io/jetstream";
+import { connect } from "@nats-io/transport-node";
 import { recordMesh } from "@cotal-ai/workspace";
-import { SMOKE_BROKER_TOKEN, freePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
-import { ConsoleSession, clean, wait } from "./_console-pty.js";
+import { SMOKE_BROKER_TOKEN, freePort, killAndAwaitExit, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { ConsoleSession, clean, screen, wait } from "./_console-pty.js";
 
 let pass = 0, fail = 0;
 const check = (n: string, c: boolean, extra?: unknown) => { if (c) { pass++; console.log("  ✓ " + n); } else { fail++; console.log("  ✗ FAIL: " + n, extra ?? ""); } };
@@ -46,6 +49,143 @@ const SERVERS = `nats://127.0.0.1:${PORT}`;
 const srv = spawn("nats-server", ["-js", "-p", String(PORT), "-sd", join(dir, "js")], { stdio: "ignore" });
 const releaseBroker = teardownOnSignal(srv, dir);
 recordMesh({ space, server: SERVERS, root: workspaceRoot, mode: "open", ts: new Date().toISOString() });
+
+async function checkNarrowNeedsYouPalette(): Promise<void> {
+  const cols = 80, rows = 24;
+  const s = new ConsoleSession(["--space", space, "--server", SERVERS], home,
+    { CI: "false", CONTINUOUS_INTEGRATION: "false" }, { cols, rows });
+  try {
+    if (!(await s.waitFor("feed", 40_000))) throw new Error(`Console did not paint: ${clean(s.out).slice(-500)}`);
+    let from = s.mark();
+    s.write("n");
+    if (!(await s.waitFor("NEEDS YOU", 8_000, from))) throw new Error("Needs You did not open");
+    const rail = await screen(s.out, cols, rows);
+    check("Needs You replaces the feed and roster at 80 columns", !rail.includes("feed") && !rail.includes("roster"), rail);
+
+    from = s.mark();
+    s.write("\x10");
+    const opened = await s.waitFor("Commands", 8_000, from);
+    check("Ctrl-P opens Commands over full-screen Needs You", opened, clean(s.out).slice(-500));
+    if (!opened) return;
+
+    from = s.mark();
+    s.write("\x1b");
+    const dismissed = await s.waitFor("NEEDS YOU", 8_000, from);
+    const afterEscape = await screen(s.out, cols, rows);
+    check("Esc dismisses Commands and keeps Needs You open", dismissed && !afterEscape.includes("Commands"), afterEscape);
+
+    from = s.mark();
+    s.write("n");
+    check("n returns to the feed after dismissing Commands", await s.waitFor("feed", 8_000, from));
+    check("q exits after dismissing Commands", await s.quit(20_000), s.exited);
+  } finally {
+    await s.close();
+  }
+}
+
+async function checkSpaceOverviewPalette(): Promise<void> {
+  const cols = 120, rows = 32;
+  const overview = "Enter open · r refresh";
+  const action = "back to the space overview";
+  for (const pinned of [true, false]) {
+    const args = pinned ? ["--space", space] : [];
+    const s = new ConsoleSession([...args, "--server", SERVERS], home, {}, { cols, rows });
+    try {
+      if (!pinned) {
+        if (!(await s.waitFor(`▸ ${space}`, 40_000))) throw new Error("The space overview did not list the space");
+        s.write("\r");
+      }
+      if (!(await s.waitFor(`${space} · all`, 40_000))) throw new Error("The console did not open the all feed");
+      const opened = s.mark();
+      s.write("\x10");
+      if (!(await s.waitFor("Commands", 8_000, opened))) throw new Error("The command palette did not open");
+      s.write("spaces");
+      const wanted = pinned ? "No matching commands" : action;
+      const deadline = Date.now() + 8_000;
+      let displayed = await screen(s.out, cols, rows);
+      while (!displayed.includes(wanted) && Date.now() < deadline) {
+        await wait(100);
+        displayed = await screen(s.out, cols, rows);
+      }
+      if (pinned) {
+        check("the pinned console does not suggest Spaces", displayed.includes(wanted) && !displayed.includes(action), displayed);
+        s.write("\x1b");
+      } else {
+        check("the console opened from the overview suggests Spaces", displayed.includes(wanted), displayed);
+        const submitted = s.mark();
+        s.write("\r");
+        check("Spaces returns to the overview", await s.waitFor(overview, 8_000, submitted), clean(s.out.slice(submitted)).slice(-500));
+      }
+    } finally {
+      await s.close();
+    }
+  }
+}
+
+async function checkDisconnectedQuit(): Promise<void> {
+  const nc = await connect({ servers: SERVERS });
+  let s: ConsoleSession | undefined;
+  try {
+    const js = await jetstreamManager(nc);
+    const consumerCount = async () => (await js.streams.info(`KV_${membershipBucket(space)}`)).state.consumer_count;
+    const before = await consumerCount();
+    s = new ConsoleSession(["--space", space, "--server", SERVERS], home, { CI: "false", CONTINUOUS_INTEGRATION: "false" });
+    check("console opens on a live broker", await s.waitFor(`● ${space}`, 40_000), clean(s.out).slice(-500));
+    const deadline = Date.now() + 10_000;
+    while ((await consumerCount()) <= before && Date.now() < deadline) await wait(100);
+    check("console has a live membership watch before the outage", (await consumerCount()) > before);
+    await nc.close();
+    const from = s.mark();
+    await killAndAwaitExit(srv, "SIGTERM");
+    check("the console paints disconnected before quit", await s.waitFor(`⨯ ${space}`, 10_000, from), clean(s.out.slice(from)).slice(-500));
+    const quitFrom = s.mark();
+    const exited = await s.quit(20_000);
+    const output = s.out.slice(quitFrom);
+    check("q exits zero, restores the terminal, and prints no timeout after the broker stops",
+      exited && output.includes("\x1b[?1049l") && !output.includes("TimeoutError"), { exit: s.exited, output: clean(output).slice(-500) });
+  } finally {
+    await nc.close();
+    await s?.close();
+  }
+}
+
+async function checkSmallHelp(): Promise<void> {
+  const cols = 80, rows = 24;
+  const s = new ConsoleSession(["--space", space, "--server", SERVERS], home, {}, { cols, rows });
+  const displayed = () => screen(s.out, cols, rows);
+  const hasRow = (frame: string, text: string) => frame.split("\n").some((row) =>
+    row.replace(/^│|│$/g, "").trim().replace(/ +/g, " ") === text);
+  try {
+    check("the 80 by 24 console paints the feed", await s.waitFor(`${space} · all`, 40_000));
+    s.write("?");
+    await s.waitFor("↑↓ scroll", 8_000);
+    const first = await displayed();
+    check("short help shows the title, both headings and distinct feed bindings", [
+      "cotal console - help", "context: feed panel", "feed panel", "global",
+      "Ctrl-d / Ctrl-u half-page down / up", "{ } / K J previous / next message",
+      "[ / ] prev / next channel", "d direct-message lens",
+    ].every((text) => hasRow(first, text)), first);
+    const down = s.mark();
+    s.write("\x1b[6~");
+    await s.waitFor("q / Ctrl-C", 8_000, down);
+    const last = await displayed();
+    check("Page Down reaches the final shortcuts and preserves the wrapped commands description", [
+      "D delete - kill agent / drop space", "/ search / filter", "? toggle this help", "q / Ctrl-C quit",
+      "Ctrl-p commands (spawn / send / attach / status / purge /", "delchan)",
+    ].every((text) => hasRow(last, text)), last);
+    const up = s.mark();
+    s.write("\x1b[5~");
+    await s.waitFor("half-page down / up", 8_000, up);
+    const back = await displayed();
+    check("Page Up restores the first help rows", hasRow(back, "feed panel") && hasRow(back, "Ctrl-d / Ctrl-u half-page down / up"), back);
+    const close = s.mark();
+    s.write("?");
+    check("? closes help and returns to the feed", await s.waitFor(`${space} · all`, 8_000, close));
+    check("q quits after leaving help", await s.quit());
+  } finally {
+    await s.close();
+  }
+}
 
 let session: ConsoleSession | undefined;
 let poster: CotalEndpoint | undefined;
@@ -71,11 +211,11 @@ try {
   reader.on("error", () => {});
   await reader.start();
   await poster.multicast("baseline", { channel: "kept" }); // pre-start history: must NOT count as unread
-  await poster.multicast("doomed-1", { channel: "doomed" });
-  await poster.multicast("doomed-2", { channel: "doomed" });
   // A channel filled to the per-sender retention cap: the 1,001st message evicts the oldest, so the
   // broker's count for it is pinned at 1,000 from here on.
   for (let i = 0; i < 1000; i++) await poster.multicast(`cap-${i}`, { channel: "cap" });
+  await poster.multicast("doomed-1", { channel: "doomed" });
+  await poster.multicast("doomed-2", { channel: "doomed" });
   check("fixture: both channels have persisted history", (await reader.channelHistory("kept")).length === 1 && (await reader.channelHistory("doomed")).length === 2);
   const capRow = (await reader.listChannels()).find((c) => c.channel === "cap");
   check("fixture: the cap channel sits at the retention cap", capRow?.messages === 1000, capRow);
@@ -84,7 +224,7 @@ try {
   const s = session;
 
   console.log("1. unread badges");
-  check("console paints", await s.waitFor(`${space} · #`, 40_000), clean(s.out).slice(-300));
+  check("console paints", await s.waitFor(`${space} · all`, 40_000), clean(s.out).slice(-300));
   check("channel tab visible", await s.waitFor("#kept", 15_000));
   await wait(1500); // let the first channel poll land and the baseline settle
   check("no fake unread at startup", !clean(s.out).includes("+1") && !clean(s.out).includes("+2"));
@@ -120,6 +260,9 @@ try {
   await wait(400);
 
   console.log("3. :delchan through the typed-name confirm");
+  const beforeDelete = await screen(s.out, 140, 36);
+  check("delchan fixture: the aggregate shows posts from both channels",
+    beforeDelete.includes("feed · all") && beforeDelete.includes("doomed-2") && beforeDelete.includes("m4"), beforeDelete);
   const dm = s.out.length;
   await s.command("delchan doomed");
   check("delchan: the confirm opens", await s.waitFor("Delete channel", 8_000, dm), clean(s.out.slice(dm)).slice(-300));
@@ -146,16 +289,32 @@ try {
   const strips = clean(s.out.slice(dm)).match(/1: all[^\n]*/g) ?? [];
   check("delchan: the deleted channel's tab is gone on the next poll", strips.length > 0 && !strips[strips.length - 1].includes("#doomed"), strips.at(-1));
   check("delchan: the tab never carried a badge on the way out", !/#doomed \d+ \+\d/.test(clean(s.out.slice(dm))), clean(s.out.slice(dm)).match(/#doomed \d+ \+\d/)?.[0]);
+  const afterDelete = await screen(s.out, 140, 36);
+  check("delchan: the aggregate keeps other posts and drops the deleted channel's posts",
+    afterDelete.includes("feed · all") && afterDelete.includes("m4") && !/doomed-[12]/.test(afterDelete), afterDelete);
+
+  console.log("4. the aggregate and the channel named all are separate tabs");
+  await poster.multicast("other-feed-marker", { channel: "kept" });
+  await poster.multicast("literal-all-marker", { channel: "all" });
+  check("the aggregate and #all have separate tab labels", await s.waitFor(/1: all\s+2: #all\b/, 15_000));
+  check("the aggregate shows both channels", await s.waitFor("other-feed-marker", 5_000) && await s.waitFor("literal-all-marker", 5_000));
+  const selectAll = s.mark();
+  s.write("2");
+  check("tab 2 selects the concrete #all channel", await s.waitFor("feed · #all", 5_000, selectAll));
+  const displayed = await screen(s.out, 140, 36);
+  check("the selected #all feed only shows posts from #all",
+    displayed.includes("literal-all-marker") && !displayed.includes("other-feed-marker"), displayed);
+  check("the two tabs have distinct React keys", !clean(s.out).includes("Encountered two children with the same key"));
   check("console quits cleanly", await s.quit(), s.exited);
 
-  console.log("4. color follows --no-color and NO_COLOR");
+  console.log("5. color follows --no-color and NO_COLOR");
   // An SGR sequence that sets a foreground or background color. Bold, dim and resets are not color.
   const colored = (raw: string) =>
     [...raw.matchAll(/\x1b\[([0-9;]*)m/g)].some((m) => m[1].split(";").some((p) => /^(3[0-8]|4[0-8]|9[0-7]|10[0-7])$/.test(p)));
   const paint = async (args: string[], env: Record<string, string>) => {
     const c = new ConsoleSession([...args, "--space", space, "--server", SERVERS], home, env, { cols: 140, rows: 36 });
     try {
-      const painted = await c.waitFor(`${space} · #`, 40_000);
+      const painted = await c.waitFor(`${space} · all`, 40_000);
       await wait(1500); // the roster and the channel strip paint after the frame
       return { painted, colored: colored(c.out), tail: clean(c.out).slice(-200) };
     } finally {
@@ -168,6 +327,15 @@ try {
   check("--no-color paints the console with no ANSI color, even under FORCE_COLOR", flagged.painted && !flagged.colored, flagged.tail);
   const noColor = await paint([], { NO_COLOR: "1" });
   check("a non-empty NO_COLOR paints the console with no ANSI color", noColor.painted && !noColor.colored, noColor.tail);
+
+  console.log("6. help fits a short terminal");
+  await checkSmallHelp();
+  await Promise.all([reader.stop(), stub.stop(), poster.stop()]);
+  console.log("6. command palette over full-screen Needs You");
+  await checkNarrowNeedsYouPalette();
+  console.log("7. space overview action in the command palette");
+  await checkSpaceOverviewPalette();
+  await checkDisconnectedQuit();
 } catch (e) {
   fail++;
   console.error("  ✗ threw:", e);
@@ -176,8 +344,7 @@ try {
   try { await reader?.stop(); } catch { /* down */ }
   try { await stub?.stop(); } catch { /* down */ }
   try { await poster?.stop(); } catch { /* down */ }
-  srv.kill("SIGKILL");
-  await new Promise<void>((res) => { if (srv.exitCode !== null) return res(); srv.once("exit", () => res()); setTimeout(res, 3000); });
+  await killAndAwaitExit(srv, "SIGKILL");
   releaseBroker();
   rmSync(dir, { recursive: true, force: true });
 }

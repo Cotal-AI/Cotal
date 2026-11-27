@@ -1,5 +1,171 @@
 # @cotal-ai/seat
 
+## 0.183.1
+
+No changes in this release.
+
+## 0.183.0
+
+No changes in this release.
+
+## 0.182.1
+
+### Patch Changes
+
+- 57b3b2d: When a Claude Code launch times out waiting for its startup prompt in a PTY, the error shows the last visible screen lines or says that no text was visible.
+
+## 0.182.0
+
+No changes in this release.
+
+## 0.181.0
+
+No changes in this release.
+
+## 0.180.0
+
+No changes in this release.
+
+## 0.179.0
+
+No changes in this release.
+
+## 0.178.0
+
+No changes in this release.
+
+## 0.177.0
+
+No changes in this release.
+
+## 0.176.6
+
+No changes in this release.
+
+## 0.176.5
+
+No changes in this release.
+
+## 0.176.4
+
+No changes in this release.
+
+## 0.176.3
+
+No changes in this release.
+
+## 0.176.2
+
+No changes in this release.
+
+## 0.176.1
+
+No changes in this release.
+
+## 0.176.0
+
+No changes in this release.
+
+## 0.175.3
+
+No changes in this release.
+
+## 0.175.2
+
+No changes in this release.
+
+## 0.175.1
+
+No changes in this release.
+
+## 0.175.0
+
+No changes in this release.
+
+## 0.174.4
+
+No changes in this release.
+
+## 0.174.3
+
+No changes in this release.
+
+## 0.174.2
+
+No changes in this release.
+
+## 0.174.1
+
+No changes in this release.
+
+## 0.174.0
+
+No changes in this release.
+
+## 0.173.0
+
+### Patch Changes
+
+- f79e065: Jcode startup failures report the full path to the private log, so you can open it from any directory on the host that ran Jcode.
+
+## 0.172.2
+
+No changes in this release.
+
+## 0.172.1
+
+No changes in this release.
+
+## 0.172.0
+
+No changes in this release.
+
+## 0.171.5
+
+No changes in this release.
+
+## 0.171.4
+
+No changes in this release.
+
+## 0.171.3
+
+No changes in this release.
+
+## 0.171.2
+
+No changes in this release.
+
+## 0.171.1
+
+No changes in this release.
+
+## 0.171.0
+
+No changes in this release.
+
+## 0.170.0
+
+No changes in this release.
+
+## 0.169.0
+
+### Patch Changes
+
+- 9ecacd7: Repair a recorded macOS background service when its application executable has been removed.
+  
+  The CLI verifies the original LaunchAgent and receipt before moving the service to the current installation. Interrupted source and receipt publication retain a bounded repair record, disabled services stay disabled, and updater output no longer claims that an untouched foreign service was stopped.
+
+## 0.168.0
+
+### Patch Changes
+
+- 97a8f1a: Show the exit status, signal, stderr and any process error when a Windows native build cannot download the Node SDK.
+
+## 0.167.0
+
+No changes in this release.
+
 ## 0.166.3
 
 No changes in this release.

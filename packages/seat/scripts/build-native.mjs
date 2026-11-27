@@ -174,7 +174,7 @@ function fetchNodeSdk(work) {
   const pin = JSON.parse(readFileSync(join(root, "..", "workspace", "native", "node-sdk.json"), "utf8"));
   const fetchChecked = (path, expected, output) => {
     const result = spawnSync("curl.exe", ["--fail", "--silent", "--show-error", "--location", "--max-time", "120", "--output", output, `https://nodejs.org/dist/v${pin.version}/${path}`], { encoding: "utf8" });
-    if (result.status !== 0 || result.error) fail([`@cotal-ai/seat: Node SDK download failed for ${path}: ${result.error ? result.error.message : result.stderr.trim()}`]);
+    if (result.status !== 0 || result.error) fail([`@cotal-ai/seat: Node SDK download failed for ${path}: status ${result.status}, signal ${result.signal}, stderr ${JSON.stringify(result.stderr?.trim() ?? "")}${result.error ? `, error ${result.error.message}` : ""}`]);
     const digest = createHash("sha256").update(readFileSync(output)).digest("hex");
     if (digest !== expected) fail([`@cotal-ai/seat: Node SDK checksum mismatch for ${path}: ${digest}, expected ${expected}`]);
   };

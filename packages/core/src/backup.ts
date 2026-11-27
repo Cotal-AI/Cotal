@@ -16,6 +16,7 @@ import {
 } from "./backup-config.js";
 import { withDeadline } from "./deadline.js";
 import { wfjStreamName } from "./endpoint-binding.js";
+import { DEFAULT_OPEN_DM_INACTIVE_MS } from "./endpoint-options.js";
 import {
   dlvDurableConfig,
   dmDurableConfig,
@@ -310,12 +311,13 @@ function principalFromDurable(name: string, prefix: string): { owner: string; ac
   return match ? { owner: match[1], actor: match[2], lifecycleUid: match[3] } : undefined;
 }
 
-function expectedConsumerConfig(space: string, stream: string, name: string): Partial<ConsumerConfig> {
+function expectedConsumerConfig(space: string, stream: string, name: string, openBackup = false): Partial<ConsumerConfig> {
   if (stream === chatStream(space) && name === FANOUT_DURABLE) return fanoutDurableConfig(space);
   if (stream === inboxStream(space) && name === INBOX_READER_DURABLE) return inboxReaderConfig(space);
   if (stream === dmStream(space)) {
     const principal = principalFromDurable(name, "dm_");
-    if (principal) return dmDurableConfig(space, principal.owner, principal.actor, principal.lifecycleUid);
+    if (principal) return dmDurableConfig(space, principal.owner, principal.actor, principal.lifecycleUid,
+      openBackup ? { inactiveThresholdMs: DEFAULT_OPEN_DM_INACTIVE_MS } : undefined);
   }
   if (stream === dlvStream(space)) {
     const principal = principalFromDurable(name, "dlv_");
@@ -337,8 +339,21 @@ const CONSUMER_KEYS = new Set([
 
 /** Validate one recognized Cotal pull durable. Limits-retention consumers accept the checkpoint
  * migration shape; TASK remains canonical WorkQueue DeliverAll. */
-export function validatePersistentConsumer(space: string, stream: string, info: ConsumerInfo): void {
-  const expected = expectedConsumerConfig(space, stream, info.name);
+export function validatePersistentConsumer(space: string, stream: string, info: ConsumerInfo, openBackup = false): void {
+  validatePullConsumerReadConfig(stream, info, expectedConsumerConfig(space, stream, info.name, openBackup), {
+    allowStartSequence: stream !== taskStream(space), allowImplicitAll: stream === taskStream(space),
+  });
+}
+
+/** Validate an observed pull durable against its stock family builder. The supplied configuration
+ * is a comparison target, never permission to create or adopt a consumer. */
+export function validatePullConsumerReadConfig(
+  stream: string,
+  info: ConsumerInfo,
+  expected: Partial<ConsumerConfig>,
+  options: { allowStartSequence?: boolean; allowImplicitAll?: boolean } = {},
+): void {
+  if (expected.durable_name !== info.name) throw new Error(`${stream}/${info.name} is not the expected durable`);
   const config = info.config as ConsumerConfig & Record<string, unknown>;
   const unknown = Object.keys(config).filter((key) => !CONSUMER_KEYS.has(key));
   if (unknown.length) throw new Error(`${stream}/${info.name} has unsupported consumer fields: ${unknown.sort().join(", ")}`);
@@ -350,9 +365,8 @@ export function validatePersistentConsumer(space: string, stream: string, info: 
   if (config.ack_policy !== AckPolicy.Explicit || config.ack_wait !== expected.ack_wait)
     throw new Error(`${stream}/${info.name} has noncanonical ACK settings`);
 
-  const task = stream === taskStream(space);
-  const migrated = !task && config.deliver_policy === DeliverPolicy.StartSequence;
-  const implicitTaskAll = task && config.deliver_policy === undefined;
+  const migrated = options.allowStartSequence === true && config.deliver_policy === DeliverPolicy.StartSequence;
+  const implicitTaskAll = options.allowImplicitAll === true && expected.deliver_policy === DeliverPolicy.All && config.deliver_policy === undefined;
   if (config.deliver_policy !== expected.deliver_policy && !migrated && !implicitTaskAll)
     throw new Error(`${stream}/${info.name} has a noncanonical delivery policy`);
   if (migrated) {
@@ -374,6 +388,7 @@ export function validatePersistentConsumer(space: string, stream: string, info: 
     "priority_policy", "priority_timeout", "rate_limit_bps", "sample_freq",
   ]) {
     const value = config[key];
+    if (key === "inactive_threshold" && value === expected.inactive_threshold) continue;
     if (
       key === "metadata" && value && typeof value === "object" && !Array.isArray(value) &&
       Object.entries(value as Record<string, unknown>)
@@ -403,6 +418,7 @@ export function validatePersistentConsumerInventory(
   consumersByStream: Readonly<Record<string, readonly ConsumerInfo[]>>,
   statesByStream: Readonly<Record<string, BackupStreamState>>,
   expectedStreams: readonly string[] = spaceBackupInventory(space).full,
+  openBackup = false,
 ): PersistentConsumerCheckpoint[] {
   const supplied = Object.keys(consumersByStream).sort();
   if (JSON.stringify(supplied) !== JSON.stringify([...expectedStreams].sort()))
@@ -418,7 +434,7 @@ export function validatePersistentConsumerInventory(
     for (const info of consumersByStream[stream] ?? []) {
       if (seen.has(info.name)) throw new Error(`duplicate consumer ${stream}/${info.name}`);
       seen.add(info.name);
-      validatePersistentConsumer(space, stream, info);
+      validatePersistentConsumer(space, stream, info, openBackup);
       const ackFloor = info.ack_floor.stream_seq;
       if (!Number.isSafeInteger(ackFloor) || ackFloor < 0)
         throw new Error(`${stream}/${info.name} has an invalid contiguous ACK floor`);
@@ -450,6 +466,7 @@ export function validatePersistentConsumerInventory(
 export function consumerConfigFromCheckpoint(
   space: string,
   checkpoint: PersistentConsumerCheckpoint,
+  openArtifact = false,
 ): Partial<ConsumerConfig> {
   if (!Number.isSafeInteger(checkpoint.ackFloorStreamSequence) || checkpoint.ackFloorStreamSequence < 0 ||
       !Number.isSafeInteger(checkpoint.creationLowerBound) || checkpoint.creationLowerBound < 1)
@@ -475,7 +492,7 @@ export function consumerConfigFromCheckpoint(
     : (lastSequence as number) + 1;
   if (checkpoint.creationLowerBound > lastSuccessor)
     throw new Error(`${checkpoint.stream}/${checkpoint.name} creation lower bound exceeds snapshot sequence window`);
-  const expected = expectedConsumerConfig(space, checkpoint.stream, checkpoint.name);
+  const expected = expectedConsumerConfig(space, checkpoint.stream, checkpoint.name, openArtifact);
   if (checkpoint.stream === taskStream(space)) {
     if (checkpoint.creationLowerBound !== 1)
       throw new Error(`${checkpoint.stream}/${checkpoint.name} has a noncanonical TASK creation lower bound`);
@@ -498,8 +515,9 @@ export function consumerConfigFromCheckpoint(
 function checkpointCreateSubject(
   space: string,
   checkpoint: PersistentConsumerCheckpoint,
+  openArtifact = false,
 ): { subject: string; config: Partial<ConsumerConfig> } {
-  const config = consumerConfigFromCheckpoint(space, checkpoint);
+  const config = consumerConfigFromCheckpoint(space, checkpoint, openArtifact);
   if (!config.filter_subject) throw new Error(`${checkpoint.stream}/${checkpoint.name} has no canonical single filter`);
   return {
     subject: `$JS.API.CONSUMER.CREATE.${checkpoint.stream}.${checkpoint.name}.${config.filter_subject}`,
@@ -514,8 +532,9 @@ export async function recreateConsumerCheckpoint(
   space: string,
   checkpoint: PersistentConsumerCheckpoint,
   timeoutMs = DEFAULT_TRANSFER_TIMEOUT_MS,
+  openArtifact = false,
 ): Promise<ConsumerInfo> {
-  const { subject, config } = checkpointCreateSubject(space, checkpoint);
+  const { subject, config } = checkpointCreateSubject(space, checkpoint, openArtifact);
   const responseMsg = await nc.request(
     subject,
     JSON.stringify({ stream_name: checkpoint.stream, config }),
@@ -531,7 +550,7 @@ export async function recreateConsumerCheckpoint(
   const info = response as ConsumerInfo;
   if (info.name !== checkpoint.name || info.stream_name !== checkpoint.stream)
     throw new JetStreamBackupError(`checkpoint ${checkpoint.stream}/${checkpoint.name}: response identity mismatch`);
-  validatePersistentConsumer(space, checkpoint.stream, info);
+  validatePersistentConsumer(space, checkpoint.stream, info, openArtifact);
   if (info.config.deliver_policy !== config.deliver_policy || info.config.opt_start_seq !== config.opt_start_seq)
     throw new JetStreamBackupError(`checkpoint ${checkpoint.stream}/${checkpoint.name}: response start policy mismatch`);
   return info;

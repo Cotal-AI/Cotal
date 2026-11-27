@@ -9,6 +9,8 @@ audience: operators
 folder until another `use` or `use --clear`. Explicit `--space`, `--server` and `--creds` keep their
 own target rules. A selection Cotal adopts automatically does not override another project's running space.
 `status` reads infrastructure and local records without starting or repairing components.
+An explicit empty or whitespace-only name on `use`, `space show` or `space forget` refuses with
+`USAGE_INVALID`, exit 1, before connector seeding or registry lookups.
 
 
 ## space [#selecting-a-space]
@@ -30,17 +32,34 @@ cotal use [<space> | --clear] [--json|--plain]
 
 `space` lists the spaces this machine can reach: each one's broker state, server, mode, origin
 (`started here`, `registered` or `discovered`) and root, with the selected one marked. Inside a
-project whose root has one running registered space other than the selection, that space is marked as
-this folder's, since a command without `--space` targets it there. It probes
+project whose root has one running registered space other than the automatically adopted selection,
+that space is marked as this folder's, since a command without `--space` targets it there. An offline
+registration at the same root stays listed but does not prevent that marker. The listing probes
 each broker that this machine started or that was registered by hand, and reports one that does not
 answer as `unreachable` when the connection fails, or `not answering` when it times out.
 A stopped local listener is reported as `broker process is stopped`. Its registration stays.
+Since 0.167.1, when this folder is already a space root, the listing's create step uses
+`cotal space create <name> --root <dir>` to prepare another space in another folder.
+An unoccupied folder still offers `cotal space create <name>` for this folder.
 A discovered space is never dialed by a listing and
 reads `not checked`. `space show [<name>]` shows one space in full and probes only that broker.
 With no name it is about this folder: the space it has registered, else the one it holds prepared or
-stopped, which `show` names although every other command there targets the selection, else the
-selected one. Neither writes anything. A registry record that cannot be
-read refuses both with `SCHEMA_INVALID`, exit 1, naming its file.
+stopped, else the selected one. `space show` also finds a registration at the nearest enclosing
+root without a `.cotal` folder. If that root has several registrations, `space show` refuses with
+`TARGET_AMBIGUOUS`, exit 2, and gives a `cotal space show <name>` command for each instead of using
+the selection. The retries keep `--json` or `--plain` when requested. This does not change what
+other commands target. If `cotal use` explicitly selected a different space, `space show` says
+that commands such as `cotal who` still target the selection here. Pass `--space <name>` to target
+the folder's space instead. Neither `space` nor `space show` writes anything. Both refuse an invalid
+registry record with `SCHEMA_INVALID`, exit 1, and name its file. If this account lacks read access
+to a registration, they refuse with `PERMISSION_DENIED`, exit 2, and tell you to restore read access.
+If bare `space show` needs the saved selection and its file is empty or unreadable, it refuses with
+`SCHEMA_INVALID`, exit 1, like bare `cotal use`. Clear the selection with `cotal use --clear` or
+select a known space again. The inventory still lists spaces and warns with `MESH_REGISTRY_UNREADABLE`.
+Its JSON reports `current: null` and `currentRecorded: false` in that case.
+Inside a renamed project's folder, bare `space show` uses the stack journal to find the local
+registration that matches its name, original root and broker. If neither a matching record nor a
+selection is available, the refusal names the space and the move.
 
 `--json` writes one document. `space` gives `current` (the selected space or null),
 `currentRecorded`, `folder` (this folder's space when it is marked, else null), `items` and
@@ -56,51 +75,94 @@ definition names that root but its stack journal and broker configuration are no
 The root row then says the folder was moved or deleted, even if the broker is reachable or has
 recreated empty directories at the old path. Its next step stops the stack with
 `cotal down --space <space> --yes` from any folder. See [the missing-folder stop](cli-shutdown.mdx#down).
+`rootGone` is also true when a file obstructs the root of a locally started space. The root row
+names the obstruction and the next step explains how to restore the project folder or forget its
+registration.
+If search permission prevents `space show` from checking a local stack's `.cotal` directory, it
+names the directory and asks you to restore search permission. JSON includes the same warning and
+keeps `rootGone` false. The command still reports broker reachability and exits 0 without suggesting
+a stop.
 A name that is not registered is refused with `TARGET_NOT_FOUND`, exit 2, and
 so is a bare `space show` outside a project with nothing selected. Each entry under `prepared` has `space`, `root`,
-`preparedAt`, `current`, `rootMissing`, which is true when its project folder no longer exists,
-`state` and `lastOperation`. `state` is `prepared` for a space that never started, `stopped` for one
+`preparedAt`, `current`, `rootMissing`, `state` and `lastOperation`. `rootMissing` is true when no
+directory is available at the recorded path. `state` is `prepared` for a space that never started, `stopped` for one
 whose stack ran and was stopped, and `unsettled` when its last `up` or `down` recorded no outcome.
 `lastOperation` names that operation and how it ended, such as `` `cotal down`, completed ``, or is null.
-`space show` of a prepared space gives those with the kind `prepared-space`. The listing marks
-such a folder `(no longer exists)` and names `cotal space forget <space>` for it instead of `cotal up`.
+`space show` of a prepared space gives those with the kind `prepared-space`. When the old path is
+missing or occupied by a file and the current project holds the matching stack journal,
+`cotal space` and `cotal space show`
+identify the moved project. If a file occupies the old path and saved instances still belong to
+the moved stack, restore the folder to the old path before trying again. When the old path is
+missing and Cotal offers adoption, run the displayed `cotal space forget <name>` and `cotal space create <name> --adopt --root <dir>`
+commands to keep the new location, then run `cotal up` from that folder. The recovery steps use the
+same launcher name across commands, such as `pnpm cotal` in a source checkout without `cotal` on PATH.
+Forget releases the stopped
+stack definitions and leaves the project data in place. When no matching journal is found, the
+listing marks a missing folder `(no longer exists)` and names forget and plain create instead.
+If a file occupies the recorded path, Cotal does not suggest starting the space there. With no
+matching journal in the current folder, restore the original project folder, or run `cotal space
+forget <name>` and prepare it again at the new path with `cotal space create <name> --root <dir>`.
+Inspection leaves both the file and preparation untouched. `cotal space delete <name> --dry-run`
+cannot inspect the store at a file and asks you to restore the project folder first. A stopped
+local registration with a file at its root can be forgotten once its stack has stopped and its
+broker address is free. This leaves the file in place.
 
-`space add` registers a space that runs elsewhere, so `--space` and `use` can reach it. A name
-`space create` refuses, such as one that starts with `-` or holds a `*`, given or named by a bundle,
+`space add` registers a space that runs elsewhere, so `--space` and `use` can reach it. If you omit
+the name from a registration using `--server`, insert it after `add` and keep the rest of the command.
+A name `space create` refuses, such as one that starts with `-` or holds a `*`, given or named by a bundle,
 refuses with `USAGE_INVALID`, exit 1, before anything is written. With
 `--server`, the trust comes from `--root`'s `.cotal/auth`, and the mode is `auth` when that folder
 holds the space's trust, `open` otherwise. `--root` defaults to this project. Outside one it is
-required, and leaving it out is a one-line `USAGE_INVALID` refusal whose remedy says what to pass:
-an open space keeps no credentials there, so any folder will do. With `--file`, a user-auth connection bundle exported
+required, and the inventory includes it in the registration command and explains what folder to pass.
+Leaving it out is a one-line `USAGE_INVALID` refusal. An open space keeps no credentials there, so
+its folder must exist but can be empty. An auth space needs the folder whose `.cotal/auth` holds its trust.
+With `--file`, a user-auth connection bundle exported
 where the space runs supplies the login pins and the server, unless `--server` names another
-address for that broker; `--from` fetches the space's discovery
-document instead, after you agree to the fetch, and needs a terminal. Before anything is written,
+address for that broker. `--from` fetches the space's discovery document only after you agree in an
+interactive terminal. It refuses before fetching if stdin or stdout is not a terminal, or if
+`--json`, `--no-input`, or `COTAL_NO_PROMPT=1` disables prompts. Use `--file <bundle.json>` instead
+of `--from <url>` in scripts or to keep JSON output. Before anything is written,
 `space add` checks that the address may carry credentials, that the trust composes, that the
 broker enforces the mode, and that the credentials open the space; a user-auth space's exchange
 must answer as the issuer it pins. An open broker answers for any name, so an open space must also
 be one the broker serves, as its streams show. A name it does not serve is refused with
-`TARGET_NOT_FOUND`, exit 2, naming the spaces it does serve. On a terminal it then shows what it will trust and asks; `--yes`
-skips that question, but not the confirmation of fetched pins. It never changes the selection.
+`TARGET_NOT_FOUND`, exit 2, naming the spaces it does serve. When run in a terminal, it shows what
+it will trust and asks before writing a registration. `--yes` skips that question, but not the
+confirmation of fetched pins. It never changes the selection.
 
 A refusal writes nothing and carries its code: `USAGE_INVALID` or `SCHEMA_INVALID` (exit 1) for
 input, and `CONFLICT`, `TARGET_UNAVAILABLE`, `TARGET_NOT_FOUND`, `DEPENDENCY_UNAVAILABLE`,
-`UNSUPPORTED`, `AUTH_REQUIRED` or `PERMISSION_DENIED` (exit 2) for what the checks found. A name that is already
-registered is a `CONFLICT`, and its remedy offers `--force` only for a registration added by hand.
-A broker that does not answer is a `TARGET_UNAVAILABLE`, and its remedy offers `--force`.
-A broker that requires auth, with a `--root` that holds another space's trust, is a
-`DEPENDENCY_UNAVAILABLE` that names the space the folder holds.
+`UNSUPPORTED`, `AUTH_REQUIRED` or `PERMISSION_DENIED` (exit 2) for what the checks found. A name
+that is already registered is a `CONFLICT` unless `--server` checks a matching manual registration
+in place or `--force` replaces a manual registration. A broker that does not answer is a
+`TARGET_UNAVAILABLE`. For a new registration, its remedy offers `--force`.
+When adding a broker that requires auth, a `--root` that holds another space's trust gives
+`DEPENDENCY_UNAVAILABLE` and names the space the folder holds.
 When no broker answers at `--server`, or at a bundle's server, the `TARGET_UNAVAILABLE` refusal says
 whether its host name resolves and whether anything took a connection at its port. When a broker
 answers there under another scheme, such as `nats://` for a `tls://` address, the remedy names that
 address, and says when it has no TLS. A port that takes no connection gets the port check as its
-remedy. For `--server`, the `--force` route follows either one.
+remedy. For a new `--server` registration, the `--force` route follows either one. If a recheck
+finds a different transport on the recorded port, restore the listener with its recorded transport
+and rerun the same check. Changing the URL would conflict with the existing registration.
 `--force` replaces a registration added by hand, never one this machine started or a catalog lists,
 and adds a `--server` space without checking its broker, which suits a
 space that is down right now; a user-auth space is always checked. Such a registration records that
 its mode was not checked: `space` and `space show` show the mode as not checked, with
-`modeChecked: false` in `--json`, and `whoami` does not state what that mode implies as fact. Declining the question is a
-`no-op` with a `USER_CANCELLED` warning. `--json` gives the registration under `space`, in the
-shape `space show` gives, with `verified` and `replaced`.
+`modeChecked: false` in `--json`. `whoami` reports conditional access and points to `cotal space show <name>`.
+If its broker does not answer, `space show` tells you to wait and check again. Once the broker
+answers, `space show` prints a `space add` command without `--force` that checks the recorded broker,
+root, mode and transport settings in place. A trailing slash on a NATS URL or another path to the
+same root directory does not prevent this check. The command quotes the root when the shell would otherwise split
+or expand it. With the same broker, root, mode and transport policy, repeating `space add --server`
+without `--force` checks the broker again. If the record was already checked and the check passes,
+the command reports that the space is already registered and exits 0 without rewriting it. A failed
+check keeps the record and the selection. If the broker for an open registration now requires auth,
+restore the open broker at that address and rerun the same check. If the broker no longer serves the
+space, start or restore the space on that broker, then retry the check without `--force`.
+Declining the question is a `no-op` with a `USER_CANCELLED` warning. `--json` gives the registration
+under `space`, in the shape `space show` gives, with `verified` and `replaced`. A successful recheck
+of an already checked registration reports `outcome: "no-op"`, `verified: true` and `replaced: false`.
 
 
 ### Connection bundle export
@@ -119,6 +181,8 @@ it does not refresh a catalog, contact a broker, issue a credential or verify cu
 The receiving user still needs their own sign-in and current space grant. Legacy custody that
 needs migration refuses without moving it. Open, static-auth and locally hosted registrations
 refuse this command. It never substitutes an account signer.
+If the name is not registered, export leaves the output untouched and points to `cotal space`
+to list local registrations.
 
 The output parent must already exist and pass the protected-directory checks. Managed `.cotal`
 and workstation state are forbidden destinations. Publication creates a private file and
@@ -132,19 +196,25 @@ never the bundle, sentinel, login token or signing material. Keep the exported f
 which is `--root` or this folder, and makes `<root>/.cotal/`; `cotal up` in that root then starts the
 space under that name and drops the prepared record. It also writes the `default` persona into
 `<root>/.cotal/agents` when the root has none, as setup does, and leaves one you edited as it is.
+With an explicit `--root`, `space create` makes missing directories with private permissions under
+a protected, writable directory. `--adopt` requires an existing project folder.
+An invalid space name is refused before connector installation or project writes.
 `--json` lists the files it wrote under `result.written`. The project and its ancestors must be physical
-directories owned by you or root, with no symlinks. World write refuses. Group write is allowed only
-on a directory you own whose group is your user private group, the Debian and Ubuntu default, and
-that has no extended ACL. On Linux, `getent` must show that the group is your primary group, lists
-no other member and is no other account's primary group, and `getfacl` must show no ACL entries
+directories owned by you or root, with no symlinks. World write refuses. A Linux directory can be
+group-writable if an ancestor owned by you or root gives group and other accounts no search
+permission. Otherwise, group write is allowed only on a directory you own whose group is your user
+private group, the Debian and Ubuntu default, and that has no extended ACL. For the private-group
+check, `getent` must show that the group is your primary group, lists no other member and is no
+other account's primary group, and `getfacl` must show no ACL entries
 beyond the base ones. When `getfacl` is not installed, `python3 -I` reads the entry's extended
 attribute names without following symlinks instead. Either `system.posix_acl_access` or
 `system.posix_acl_default` means an extended ACL and refuses; unrelated attributes do not. That account list counts only when `/etc/nsswitch.conf` names `files` and
 `systemd` alone for passwd and group. A directory source such as LDAP or SSSD can list part of its
-accounts, so with one configured, group write refuses. `getent`, `getfacl` and `python3` run from your PATH
-with a 2 second limit and a 4 MiB output limit each, so the first check in a process can take a few seconds. A proven group
-holds for the life of the process. When neither ACL reader is installed, or the selected read fails, group write refuses; install the
-`acl` package for `getfacl`, or remove group write. Root-owned sticky temporary directories are
+accounts, so with one configured, the private-group check refuses. `getent`, `getfacl` and `python3`
+run from your PATH with a 2 second limit and a 4 MiB output limit each, so the first check in a
+process can take a few seconds. A proven group holds for the life of the process. When neither ACL
+reader is installed, or the selected read fails, the private-group check refuses. Install the `acl`
+package for `getfacl`, or remove group write. Root-owned sticky temporary directories are
 allowed. New control directories, the persona catalog `.cotal/agents` included, use mode 0700,
 even with a group-writable umask. An unsafe existing path refuses before the
 prepared record is written, without changing its permissions. The refusal names every unsafe path
@@ -154,28 +224,33 @@ leave the group write that refuses next, and the other group and world gaps join
 When a symlink is the gap, the remedy names the physical path the folder resolves to.
 It starts nothing and leaves the selection as it is. `cotal up` applies the same rule to the root
 it starts in, before it writes anything, so it never starts a stack that `down` would refuse to
-stop from that root. `cotal up` starts a space only under a name of 1 to 64 letters, digits,
+stop from that root. `cotal up` starts a new space only under a name of 1 to 64 letters, digits,
 underscores or hyphens that starts with a letter, digit or underscore, because a name that starts
-with `-` cannot be passed as a flag value. `space create` refuses any other name, such as `café` or
-`-x`, with `USAGE_INVALID`, exit 1, before anything is written, with a `remedy` that says which
-characters a name can use, and `cotal up` refuses a `--space`
-that starts with `-` the same way. The limit is 64 because each local file that carries a space spells its name twice over,
+with `-` cannot be passed as a flag value. `space create` and `cotal up --space` refuse invalid
+new names, such as `bad space`, `café` or `-x`, with `USAGE_INVALID`, exit 1, before writing files or
+starting the broker. If a registration, prepared record or this root's stack already names the
+space, `up` uses its existing startup rules, including the restriction on a leading `-`. The limit
+is 64 because each local file that carries a space spells its name twice over,
 and a file name holds at most 255 bytes. `cotal up` refuses a longer name that an earlier release
 prepared the same way, before it starts anything, and names `cotal space forget` and a shorter name.
 `space add` and `meshes add` refuse a longer name with `USAGE_INVALID`, exit 1, and write no
 record, because a space added from elsewhere is carried by the same files.
 If saving a prepared-space record fails, Cotal attempts to remove its temporary sibling and
 reports the original error without publishing a partial record.
-It refuses with `CONFLICT` a name that is registered or prepared, a folder that is already a
-space's root, and the home folder, whose `.cotal` holds this machine's own records. It refuses a
+Running `space create` again for the same prepared space in the same root keeps its record and
+finishes writing a missing default persona. It refuses with `CONFLICT` a registered name, a name
+prepared in another root, a folder already used by another space, and the home folder, whose
+`.cotal` holds this machine's own records. It refuses a
 folder that is, or is in, a control directory, which is a project's `.cotal` or the Cotal home,
 judged by the path given and by the path its links lead to, with `CONFLICT` and nothing written. A
 home `COTAL_HOME` redirects may hold project folders beside its records, so under it only the home
 itself and its record entries (`daemon`, `meshes`, `prepared`, `services` and the like) are control paths. The
 next step names the project folder that `.cotal` belongs to. A project folder inside another project,
-outside its `.cotal`, is a project of its own. For a folder
-another space uses, the next step names creating it in another folder with `--root <dir>`, and
-starting, selecting or forgetting the space that uses the folder. A folder this
+outside its `.cotal`, is a project of its own. If another space uses the folder, prepare the new
+space in a different folder with `--root <dir>`. For a registration added by hand, the next step
+says to start its broker where it runs and gives `cotal space show <name>` and
+`cotal space forget <name>` for that exact registration. For a local space, the next step names
+how to start, select or forget it. A folder this
 account cannot write, such as `/`, refuses `PERMISSION_DENIED`, exit 2, with nothing written, and so
 does a Cotal home (`~/.cotal` or `COTAL_HOME`) it cannot write. A `.cotal` that links to a folder that
 does not exist refuses `TARGET_NOT_FOUND`, exit 2, naming the link and its target. A folder whose
@@ -186,7 +261,8 @@ it escaped. `space` lists prepared spaces under their own heading, below a line 
 has been started or registered yet when that is so, and `space show`, `use` and `whoami` accept one.
 Once one of them has run, the heading gets a `State` column, and the line says no space is running
 or registered. A space whose stack ran and was stopped reads as stopped in `space`, `space show` and
-`use`, with its last operation, as `status` reads it.
+`use`, with its last operation, as `status` reads it. For a stopped broker-only stack, `space show`
+and `use` name `cotal up --no-manager` in its project folder.
 A command that
 targets a prepared space refuses with `TARGET_UNAVAILABLE`, exit 2, naming the root to start it in,
 and so does `cotal up --space <name>` run from another folder. Its Next names
@@ -195,13 +271,20 @@ and so does `cotal up --space <name>` run from another folder. Its Next names
 was cut off before it recorded an outcome, as an `up` interrupted before it registered the space
 leaves it, the refusal says so and names `cotal status` in that root, which names the step that
 finishes or settles it. `cotal up --space <name>` in a folder
-that is already another space's root refuses with `CONFLICT`, exit 2. `space add` refuses a prepared
-name. A prepared space records its folder by path, and moving the folder leaves nothing in it that
-names the space. A bare `cotal up` in a folder that names no space, while the selected space is
+that is already another local space's root refuses with `CONFLICT`, exit 2. `space add` refuses a
+prepared name and gives the startup command for its recorded project folder. If the project moved,
+restore it to that path before starting it. To register the other broker instead, forget the prepared
+space and repeat the add with the same options. A registration for another broker in the same folder
+does not prevent a prepared local space from starting there. A prepared space records its folder by path, and moving the folder
+leaves nothing in it that names the space. A bare `cotal up` in a folder that names no space, while the selected space is
 prepared in a folder that no longer exists, refuses `TARGET_UNAVAILABLE`, exit 2, rather than start a
 space named after the folder there. Forget the space with `cotal space forget <name>`, prepare it again in its new
 folder with `cotal space create <name>`, then run `cotal up`. Until then, `space create` of that name
 says its recorded folder no longer exists.
+
+
+An explicit empty or whitespace-only `--root` on `space create` or `space add` refuses
+`USAGE_INVALID` (exit 1) before any files or registrations are written.
 
 
 ### Forgetting a local record
@@ -209,26 +292,49 @@ says its recorded folder no longer exists.
 When a broker registered by hand does not answer, commands such as `send` and the delivery daemon
 name `cotal space forget <name>` as the way to unregister it. The refusal keeps the registration
 and does not start a local replacement. Start the broker where it runs to keep using that space.
+When `status` reports a manually registered open or static-auth broker as unreachable, its Next
+section gives the same recovery steps instead of offering the live roster.
 For a discovered space, the next step names removal from the provider's catalog followed by
 `cotal sync`, because `space forget` cannot remove a catalog-owned registration.
 
 `space forget <name>` removes a registration this machine keeps. It stops nothing, deletes nothing on
-the broker, and keeps the files under its root. It refuses a space this machine is running with
+the broker, and keeps the files under its root. A name of `.` or `..` refuses with `USAGE_INVALID`,
+exit 1, before reading the registry. If this account lacks access to check a prepared project for
+running processes, `space forget` exits 2 with `PERMISSION_DENIED` and keeps the record. Restore
+access to the project folder and its process records before retrying. It refuses a space this machine is running with
 `LIFECYCLE_BLOCKED`, because `cotal down` stops it, and a discovered space with `CONFLICT`, because
 its catalog keeps it. A stack `cotal up` started stays a prepared space at its root after that
-`down`, so the refusal names `cotal down` and then `space forget` again. A legacy root's `down` drops
-the record, and the refusal says so, unless the space is named after its folder: that `down` keeps the
-record, and the refusal names `space forget` again. A space whose root holds its stack journal counts as
+`down`, so the refusal names `cotal down` in the project folder and then `space forget` again.
+When the command cannot prompt or uses `--json`, it names `cotal down --yes` to confirm the stop
+explicitly. A legacy root's `down` drops the record, and the refusal says so, unless the space is
+named after its folder: that `down` keeps the record, and the refusal names `space forget` again.
+A space whose root holds its stack journal counts as
 running while any stack member's process may still run. The refusal names one such member and
 writes nothing: the registration, the selection and the root's files stay. A space whose folder was
 deleted while it ran also refuses with `LIFECYCLE_BLOCKED` and keeps its record. A controller stack
 whose instance records show a member still running names `cotal down --space <space> --yes`. Any
 other such space refuses while something still listens at its recorded broker address that no other
-registration names, and names the process listening there to stop. A member whose process
+registration names. The address alone cannot identify the process. Leave an unrelated listener running.
+Retry when the address is free or after restoring the original project folder. If only the registration is
+missing, forget still refuses while a stack member runs. When the journal and running broker let
+`down` rebuild the registration, the refusal names `cotal down --yes` in the stack's root. If the
+folder is gone, it names `cotal down --space <space> --yes` instead. If no stop can be determined
+without the registration, it tells you to restore it first. A member whose process
 is gone without its stop receipt does not block, and the result warns with `STACK_MEMBER_UNSETTLED`
 that it was never stopped cleanly. A prepared space is forgotten the same way, and the `.cotal/`
-that `space create` made stays. A prepared record that cannot be read names no folder, so forgetting
-its space removes only that file, and the result's `root` is null. Forgetting the selected space clears the selection. Forget also
+that `space create` made stays. A malformed prepared record names no folder, so forgetting its space
+removes only that file, and the result's `root` is null. If the account lacks read access to the
+registration or prepared record, `space forget` refuses with `PERMISSION_DENIED` and keeps the record
+and the selection. Restore read access, then retry.
+A damaged registration is removed with a prepared record of the same name in one forget when that
+prepared record can be forgotten. The prepared root still names stopped
+stack definitions to release, and recorded running stack members still block the forget before
+anything is removed. This also covers a malformed pre-hex registration whose filename names the
+space unambiguously. If several registrations are damaged, forget them one at a time by exact
+name. Each forget warns about the damaged files it leaves in place. A forget that does not
+name a damaged registration still refuses with `SCHEMA_INVALID` while any registration is damaged.
+`meshes rm --force` names `space forget` for such a record rather than skipping
+its stack checks. Forgetting the selected space clears the selection. Forget also
 removes the per-space preferences saved under that name, so a later space with the same name starts
 without them, and the receipt lists each removed key and value so you can set them again. If that
 removal fails after the record is gone, the run is `partial` and names the `config unset` to finish it,
@@ -239,7 +345,8 @@ Forget also removes the stack definitions `cotal up` saved for the space at its 
 stopped instance records, so another folder can start a stack under the same name. The result lists
 them. The root's stack journal stays, keeping the stack's mode, address and store, and no longer
 names the instances forget removed. After `space create` in that folder, the space reads as prepared
-but not started, and `up --no-manager` and `down` there start and stop only the new members. A
+but not started. `up --no-manager` uses the recorded mode, address and store, so retained history is
+still available. It and `down` start and stop only the new members. A
 journal an earlier release left naming removed instances is not changed, and `down` there still
 refuses `TARGET_NOT_FOUND`. While a member was not stopped cleanly, or the root holds preserved
 state, they stay and the result warns with `STACK_DEFINITIONS_KEPT`. For a member that was not stopped cleanly, the warning
@@ -260,13 +367,29 @@ the folder, because no space was resolved there.
 
 In open or static-auth mode, an unanswered `--server` address that differs from the registration
 retained by target resolution gives `TARGET_UNAVAILABLE`, naming the address that did not answer.
-Its Next names the recorded broker and says to drop `--server` to reach it. If resolution retained
-no registration, the Next says to check the address instead. The request is not sent to the
-recorded broker in its place. A trailing slash or scheme case change in `--server` retains the
-registered space. Matching preserves the URL's transport scheme and TLS intent. If equivalent
-addresses name several registered spaces, pass `--space` to choose one.
-Target resolution given `--server` probes only records at that address,
-including when `--space` is omitted. `status --all` still checks every recorded address because
+Its Next names the recorded broker and says to drop `--server` and retry with the named `--space`.
+If resolution retained no registration, the Next says to check the address instead. For a prepared
+space and an explicit `nats://127.0.0.1:<port>` address, it also gives `cotal up --root <root> --space <space> --server <url>`
+to start that project there. The request is not sent to the recorded broker in its place.
+When `--space` and `--server` name a cleanly stopped local stack and its saved broker address,
+`history` and `send` report the completed `cotal down` if that address does not answer. They name
+the folder where `cotal up` restarts the stack, without starting it themselves.
+A trailing slash or scheme case change in `--server` retains the
+registered space, including when its broker does not answer. The refusal gives the same next step
+as `--space` for that registration, including where to restart a stopped local space. Matching
+preserves the URL's transport scheme and TLS intent. If equivalent addresses name several
+registered spaces, pass `--space` to choose one.
+When `--server` does not match a registration and the command would fall back to open `main`,
+it refuses with `TARGET_NOT_FOUND`, exit 2, if another loopback host at the same port and
+transport is registered. This also applies inside a named open project's folder.
+`localhost`, `127.0.0.1` and `[::1]` can reach different listeners.
+The command does not connect on the strength of the hint. Use a listed address, or verify the
+requested broker and name its space with `--space <name>`.
+When an overriding `--server` requires auth but the selected space is recorded as open at another
+address, the refusal names both brokers. Its Next says to check the address or drop `--server`
+to reach the space at its recorded broker, not to start a new space in the current folder.
+Target resolution with `--server` does not sweep recorded brokers for liveness. The command checks
+only the broker it was given. `status --all` still checks every recorded address because
 `--all` asks for that scope. This refusal wording does not describe the infrastructure report from
 `status`.
 
@@ -280,14 +403,28 @@ streams and bucket backing streams as present or absent, the broker-observed
 transfer-stream targets under a second exact-name grant in static mode, and the
 entries in the presence bucket. A presence name that is missing or only whitespace is shown as that participant's id. Both static connections must confirm their own
 identity and the same broker server ID. A failed or incomplete native read refuses
-instead of showing missing resources as absent. The snapshot is non-atomic and presence is not an
+instead of showing missing resources as absent. If the connection fails, the refusal shows the
+recorded broker address and points to `cotal space show <name>`. It tries no alternate address or
+identity. The snapshot is non-atomic and presence is not an
 authoritative liveness or membership check. User-auth deletion inventory and apply
 are not supported. The dry-run removes no live or local state, and a read that covers its whole scope
 exits 0. A space that is prepared and not running, including one stopped with `cotal down`, has no
 live broker to read or delete from: `space delete` refuses it with `TARGET_UNAVAILABLE`, exit 2.
-For a stopped stack it names `cotal reset store <space> --yes`, which removes the stored streams, and
-`space forget`, which removes only its local record. For a space that never ran it names only
+For a stopped stack the preview points to `cotal reset store <space> --dry-run` to show the impact of
+resetting its local store. A stream inventory requires a running broker. A request without `--dry-run`
+instead names `cotal reset store <space> --yes`, which removes
+the stored streams, and `space forget`, which removes only its local record. For a space that never ran it names only
 `space forget`, because no streams were stored.
+If the recorded project folder is missing and this folder holds the matching journal, the refusal
+names how to move the project back before previewing or resetting the store. When it offers adoption, start and
+stop the adopted stack in its new root before resetting its store. If the project cannot be
+located, the refusal says that stored streams could not be checked.
+
+If a damaged mesh registration prevents the lookup, `space delete` refuses with `TARGET_UNAVAILABLE`,
+exit 2, before contacting a broker. If the named space's prepared record is damaged, both preview
+and apply refuse with `SCHEMA_INVALID`, exit 1. The refusal names the path and the recovery. Restore
+a damaged file from backup or, if it is named for a space, remove it with `cotal space forget <space>`.
+If a directory occupies the record path, move it aside intact before restoring the record.
 
 The dry run also reads the space's workflow runs from its records bucket and lists each run that
 has not finished, with its recorded state. Deleting the streams removes those runs, and a run still
@@ -311,12 +448,20 @@ Next. `--json` carries the refusal as `applyBlockedBy` and as a `LIFECYCLE_BLOCK
 
 ### Live deletion
 
+`space delete <name>` checks the local registration before requiring confirmation. If the exact
+name is neither registered nor prepared, it refuses with `TARGET_NOT_FOUND`, exit 2, without
+contacting a broker.
+
 Bare `space delete <name>` displays that impact on an interactive terminal and requires
-typing the exact space name. Its question, and the message under a wrong answer, wrap to the
+typing the exact space name. Existing registrations can be addressed by their exact name even if
+`space create` would refuse it. Quote a name that contains spaces, and put a name starting with `-`
+after `--`, as in `cotal space delete --dry-run -- -old`. If two local registrations map to the same
+streams on the same open broker, deletion refuses rather than choosing between them. Its question,
+and the message under a wrong answer, wrap to the
 terminal with each continuation line under the prompt's bar. A script supplies the exact
-positional name with `--yes`;
-`--json` without `--yes` refuses before a connection. After confirmation the command
-reads the broker again and refuses if the stream states, transfer names, presence
+positional name with `--yes`. `--json` without `--yes` refuses before a connection. The confirmation
+refusal keeps `--json` or `--plain` in both suggested commands if given. After confirmation the
+command reads the broker again and refuses if the stream states, transfer names, presence
 identities, registration, trust or broker identity changed. After a typed confirmation it also
 refuses `CONFLICT`, exit 2, when a stream's message count differs from the impact it showed, as
 when a message is posted while the confirmation waits; the refusal names each changed count and
@@ -363,24 +508,37 @@ the space instead, run `cotal down --yes` in its root, then `space forget`. On a
 `cotal down`, then `cotal up` to start it again with empty streams.
 
 `use <space>` selects the space commands target when none is named, in every
-project folder. It changes only the selection:
+project folder. For a retained name beginning with `-`, `space show` puts `--` before the name in
+its selection hint, as in `cotal use -- -old`. The command changes only the selection:
 it starts nothing and does not check the broker, so a stopped or prepared space can be selected and
 the command that targets it reports that. Selecting the explicit selection again is a `no-op`; selecting an adopted selection promotes it to explicit. A name that is not
 registered or prepared is refused with `TARGET_NOT_FOUND`, exit 2, naming the known spaces, and the
 selection stays. That refusal has no `Mesh:` heading, and its remedy names `cotal use --clear` only
-while a space is selected. Bare `use` reports
-the selection and whether Cotal adopted it automatically. Inside a project, it names the folder's
-space and how to reach it with `--space <name>` or `cotal use --clear`. `use --json` keeps its keys;
-`folder` identifies the local folder's space, not an override of explicit intent. `cotal space` and
-`cotal status` mark the folder as the target only when no explicit selection overrides it.
+while a space is selected. Bare `use` reports the selection and whether Cotal adopted it
+automatically. When the selection differs from the folder's space, `use` names both, even if
+the folder's space is prepared and has not started. With an explicit selection, the hint names
+`--space <name>` and `cotal use --clear`. In `use --json`, `folder` identifies the local folder's
+space without changing the selection. `cotal space` and `cotal status` mark the folder as the target
+only when no explicit selection overrides it.
+If `use <space>` cannot read the prepared-space records it needs to identify the folder's space,
+it refuses with `SCHEMA_INVALID`, exit 1, and keeps the saved selection.
 A selection that names a space no longer registered is reported with a
 `SELECTION_NOT_REGISTERED` warning by `use` and `space`, and stays until `use` changes it.
+Bare `use` refuses with `SCHEMA_INVALID`, exit 1, if the saved selection is empty or unreadable.
+It names the file without changing it. Clear it with `cotal use --clear`, or select a known space again.
+If a directory occupies a saved selection file's path, either repair moves the directory aside and leaves its contents intact.
 `use --clear` removes the selection, so a command targets its folder's space again. Its receipt
 names the space that was selected, and `--json` gives `current: null` with that `previous`. With
-nothing selected it is a `no-op`, exit 0. It takes no space name.
+nothing selected it is a `no-op`, exit 0. In both cases, `folder` identifies the local folder's
+space or is null when none is recorded. If the folder's space cannot be read, the command still
+succeeds, reports a warning, and sets `folder` to null in JSON. `use --clear` takes no space name.
 A space stays selected through its `cotal down`: `use` then reports it as stopped, with its last
-operation, such as `` `cotal down`, completed ``, and names `cotal up` in its root. It stays selected until
-`use` changes it. On a controller root, `up --json` gives
+operation, such as `` `cotal down`, completed ``, and names `cotal up` in its root. This also applies
+when a legacy space named after its folder keeps its registration after `down`. For that space,
+`use --json` reports `currentRecorded: true` and `preparedState: "stopped"` together. The space stays
+selected until `use` changes it. Inside a renamed project with the matching stack journal, `use`
+still reports the stopped state and tells you how to move the folder back, as `space show` does.
+On a controller root, `up --json` gives
 `result.selection`, with `current`, the space selected after the start, and `changed`, which is true
 when this `up` selected its own space because no space was selected.
 
@@ -391,6 +549,10 @@ A command run without `--space` targets the selection. When the selected space's
 refuses with `TARGET_UNAVAILABLE`, exit 2, and when the selection names a space no longer registered
 it refuses with `TARGET_NOT_FOUND`. Neither reaches another mesh.
 
+If the saved selection is empty or unreadable, commands that rely on it refuse with `SCHEMA_INVALID`
+before connecting. Clear it with `cotal use --clear`, select a known space again, or name the space
+for that command with `--space <name>`.
+
 A selection made with `cotal use` wins over every folder state, including a running, stopped,
 prepared or copied project. The note under `Mesh:` names that choice, including native `spawn`.
 The following folder precedence rules apply only when the selection was adopted automatically
@@ -399,7 +561,13 @@ by the first `up`, registration or sign-in, or when nothing is selected.
 A folder's space captures the commands run there only while it runs. Inside a project whose root has
 one registered space other than the selection, and whose broker answers, the command targets that
 space, as it does with nothing selected, and the note under its `Mesh:` heading, a refusal's
-included, says the selection applies outside the folder. A space `cotal space create` prepared there
+included, says the selection applies outside the folder. If the selection was adopted automatically,
+offline registrations do not prevent the folder's only running space from taking precedence.
+When a target selection checks broker inventory, it skips an unchecked open registration if the
+inventory shows that broker does not serve the space. The registration and saved selection stay unchanged.
+`cotal whoami` does not contact the broker. When folder registrations compete with an adopted
+selection, it reports the identity from local records and notes that it cannot check this precedence.
+A space `cotal space create` prepared there
 and no `cotal up` started, and one whose stack there is stopped, is the target of the commands about
 the folder itself only: `cotal up`, `cotal down`, `cotal space show` and the folder part of
 `cotal status`. `cotal auth revoke-credential` also targets the stopped one, because that space's
@@ -427,6 +595,9 @@ runs in part, so every command there targets it, as with nothing selected, and t
 `Mesh:` heading says the selection applies outside the folder. `cotal status` there reports it as
 `Half started` or `Half stopped` with its Next, which for that `up` is `cotal down --yes` and then
 `cotal up --root <root>`.
+If you started the broker with `--root` from another folder, the interrupt notice and the next
+startup refusal give a stop command that changes to the broker's project first. Once it stops,
+repeat your original startup command from the folder where you ran it.
 Inside a project whose root
 has several running spaces, none of them the selection, the command targets the selection. Before it
 acts, it warns on stderr and in its JSON `warnings` with `SELECTION_NOT_FOLDER_SPACE`, naming those
@@ -437,8 +608,10 @@ back to the selection.
 A `--server` URL with a user name or password in it, such as `nats://<user>:<password>@<host>:<port>`,
 is refused with `USAGE_INVALID`, exit 1, by every command that takes `--server`, before anything is
 read, written or dialed. The refusal does not repeat the value. The NATS client uses only the host
-and port of that URL, so the command would otherwise connect with the credential it resolves. Pass
-that credential with `--creds`, a login or the space's own trust instead. `up` refuses such a URL
+and port of that URL. Remove the user name and password, keeping the same broker address. For an
+authenticated space, use its login or trust, or a credential file on commands that accept one for
+connections. `space add` does not take `--creds`. `whoami --creds` inspects the file on its own;
+leave out `--creds` to inspect the identity for a broker address. `up` refuses such a URL
 with its own message. The manager reads `COTAL_SERVER` when `--server` is unset, and refuses a
 `COTAL_SERVER` with a user name or password the same way, naming `COTAL_SERVER`. `space add` and
 `meshes add` refuse such a server in a connection bundle, and the `meshes add` prompt refuses one
@@ -448,9 +621,10 @@ A prepared space whose project folder was deleted cannot start. A command that t
 included, refuses with `TARGET_UNAVAILABLE`, exit 2, saying the folder no longer exists and naming
 `cotal space forget <space>`. `cotal space create <space> --root <dir>` then prepares it again.
 `use`, `space show`, `up --space` and `space forget` also say the folder no longer exists, and
-`space show` names the same forget and create steps in place of `cotal up`. Run from the folder it
-was moved to, whose stack journal names the old folder, such a command says the folder was moved and
-names the next step that `up` and `down` name there.
+`space show` names the same forget and create steps in place of `cotal up`. If a matching stack
+journal in this folder shows that the project was moved instead, `space show` gives the move-back
+and adoption guidance described in [Space inventory](#space-inventory). Other commands that target
+the space from the renamed folder name the next step that `up` and `down` name there.
 
 A stopped space that `cotal up` started is handled the same way when its folder was deleted. `status`
 says the folder no longer exists instead of naming `cotal up` there, and `send` and `history`
@@ -459,7 +633,9 @@ refuse `TARGET_UNAVAILABLE` rather than report a missing seed. Both name moving 
 `history` give the refusal they give there without `--space`, which names the move and the way back.
 
 With nothing selected, a command run in a project targets the space registered for that project's
-root. A root with no registration whose `.cotal/` holds the stack journal `cotal up` writes is
+root. If the root has several registrations, a noninteractive `cotal who` refuses with
+`TARGET_AMBIGUOUS`, exit 2, and gives the exact roster command for each space. A root with no
+registration whose `.cotal/` holds the stack journal `cotal up` writes is
 refused with `TARGET_UNAVAILABLE`, exit 2, naming the broker the journal recorded and
 `cotal space create <space> --root <root>`, which prepares the journal's space there again so that
 `cotal up` starts it. That is the state after an `up` that failed to start or a `space forget`, and the
@@ -472,6 +648,11 @@ and `cotal up`, and `status` names the same step. A selection does not change th
 that holds such a journal or configuration and no registration, as a moved project does, is refused
 the same way and never reaches the selected space.
 
+With `--server` and no `--space`, a matching registration takes precedence. If the project would
+otherwise use the default space `main`, it uses the space in its journal when the requested address
+matches the journal's open broker and the recorded process identity still matches. An unrelated
+raw address does not inherit the journal's space.
+
 When the journal names running members but this Cotal home has no instance records for them,
 commands report the missing records. They do not infer that the stack runs under another home.
 If the original home's records were removed, the project's `cotal down --dry-run` and
@@ -479,17 +660,22 @@ If the original home's records were removed, the project's `cotal down --dry-run
 If another home still holds the records, use that home instead.
 
 A copied or moved project folder keeps a stack journal that names the folder it was recorded in.
-`space create <name>` there refuses `CONFLICT`, exit 2, and names `cotal space create <name> --adopt
---root <root>`, and `status` names the same command. `--adopt` takes the journal over: it rewrites it
+`space create <name>` there refuses `CONFLICT`, exit 2. If the record was already forgotten and the
+journal can be adopted, the refusal prints the exact `space create --adopt` command to run.
+If the folder holds no journal recorded in another folder, `space create --adopt` refuses with
+`TARGET_NOT_FOUND`, exit 2, and leaves the folder untouched.
+`cotal status` lists the applicable recovery options. `--adopt` takes the journal over: it rewrites it
 to name this folder, moves a broker store that lay under the recorded folder to the same place under
-this one, and records a stack that never ran here, so the next `cotal up` starts it from this folder
-with the copied store. It also moves the recorded store identity path, keeping its directory pins.
-A renamed store therefore gives no replacement warning before startup, while a replaced or missing
-store still warns. It refuses with `CONFLICT`, writing nothing, when the folder's `.cotal` is a
-link, when the recorded folder still holds the journal, because this folder is then a copy of a stack
-that runs from there, when this machine records an instance of that stack, because the folder was
-then moved on this machine and moves back, and when the space is prepared or registered on this
-machine, where its Next names `cotal space forget` first. A copy brought from another machine and a
+this one, and records a stack that never ran here. Bare `cotal up` starts it from this folder with
+its recorded authentication mode and the copied store. When that store directory is present under
+this folder, adoption refreshes the recorded store identity from it, so a moved or copied store gives
+no replacement warning before startup, while a missing store or a replacement made after adoption
+still warns. It refuses with `CONFLICT`, writing nothing, when the folder's `.cotal` is a
+link, when the recorded folder still holds the journal, when this machine records an instance of
+that stack, or when the space is prepared or registered on this machine. If this machine still
+records an instance, moving the folder back to its recorded path makes the existing stack usable
+there without adoption. For a confirmed stopped stack at a missing path, follow the forget and
+adopt commands shown by `cotal status`. A copy brought from another machine and a
 folder moved after its record was forgotten are adopted. A folder renamed from a path that `cotal up`
 refuses, such as one with a tab in it, is told only to adopt, since moving it back would not start
 the stack. Without `--adopt`, nothing rewrites a journal.
@@ -498,7 +684,16 @@ With no `--space`, `--server` or `--creds`, nothing selected and no project in t
 that several running spaces could serve asks which one when it runs in a terminal. The answer is the
 target of that one run, and the selection stays as it is; cancelling the question does nothing and
 exits 0. A script, a `--json` caller and `--no-input` are not asked: the command refuses with
-`TARGET_AMBIGUOUS`, exit 2, naming the running spaces. Every refusal of a target puts what to run next
+`TARGET_AMBIGUOUS`, exit 2, naming the candidates. `cotal who` gives a runnable command for each
+candidate without changing the selection. When an unchecked open registration competes
+with another reachable record, the CLI checks the broker's space inventory. It leaves the
+registration intact and excludes it from automatic selection if the broker does not serve that
+space. If the CLI cannot read the inventory and still has to refuse, it marks the unchecked
+record as unverified and gives the exact `--space` choice for each candidate. An explicit
+`--server` can still require `--space` when several records name that address. In that case,
+`cotal history` reads, `cotal ps`, and `cotal whoami` give a retry for each space when the broker
+address can be printed unchanged. The retries keep the other arguments without changing the saved selection.
+Every refusal of a target puts what to run next
 in `error.remedy`, apart from `error.message`, and names the space and root it concerns under
 `target` when they are known, as for a prepared space that is not started.
 
@@ -511,8 +706,10 @@ will not load, such as an `auth.json` that is not JSON, and says to repair or re
 name running spaces or pick another space, and it changes no file. `--space <name>` still targets a
 space by name.
 
-`--creds <file>` presents that credential to `--server`. Without `--server`, it goes to the broker
-its space is registered at and keeps that registration's TLS requirement. The space is `--space`,
+`--creds <file>` presents that credential to `--server`. Without `--space`, it uses the space
+registered at that broker if only one matches, or `main` otherwise. Without `--server`, the
+credential goes to the broker its space is registered at and keeps that registration's TLS
+requirement. The space is `--space`,
 else the selected space, else the space of the project the command runs in, else `main`. Inside a
 project whose root has one space other than the selection, it is that space. A command never picks the only running space for a credential. A space not registered here is refused with
 `TARGET_NOT_FOUND`, exit 2, before anything is dialed. The refusal says whether it is the selected
@@ -535,6 +732,10 @@ its Next is `--space <owner>`. When `--server` named another broker than the one
 registered at here, the Next says to use `--space <owner>` without `--server`, naming that broker.
 Keeping `--server` with `--space <owner>` refuses again, saying the space is registered at another
 address, and the Next is to drop `--server` or point it at that broker.
+
+`join --creds` gives the same diagnoses. It also identifies a credential issued before a local
+space reset when the registered broker uses the new local identity. The replacement mint for
+`join` includes `--provision`. Pass the lifecycle UID reported by the new mint to `join`.
 
 A manifest's `space:` is the target of native `up -f` and the new team
 check/boot/deploy routes. A `--space` that names another space is refused before
@@ -561,7 +762,8 @@ cotal status --components [--space <s>] [--server <url>]
 ```
 
 `cotal meshes` is a legacy command. It still runs, and `cotal help meshes` still prints its help,
-but `cotal help` no longer lists it and completion does not offer it. `cotal space` lists the
+but `cotal help` no longer lists it and completion does not offer it. Both bare `cotal meshes`
+and `cotal meshes list` show the registry without installing or refreshing connectors. `cotal space` lists the
 spaces, `space add <name>` registers one that runs elsewhere, including a user-auth space with
 `--file` or `--from`, and `space forget <name>` drops a registration.
 
@@ -581,8 +783,22 @@ attempt and next step; `maintenance` in JSON), unsettled fresh and additive atte
 when present, owned service records and useful commands under Next. Connection state, local process
 state and service replies remain separate observations.
 
+Infrastructure status does not accept `--creds`. Remove the flag and its value when you retry.
+Keep the other arguments so the retry uses the same target and output format.
+
+Under Next, `spawn`, `who` and `ps` name the reported space or broker so a different default does not redirect them.
+When Next offers a change of space, it lists `cotal space` to see the choices and `cotal use <name>`
+to select one. Bare `cotal use` reports the current selection without changing it.
+
+If a ready preservation journal's store is missing, Next says to move it back or restore a backup
+with `cotal backup restore <dir> --accept-missing-source` instead of offering to restart that stack.
+
 For the selected space, `Default agent` reports the harness a bare `cotal spawn` selects.
 The default persona's `agent:` pin overrides environment and saved harness preferences.
+If the selected harness needs a missing executable, Next names it and links to its installation guide
+instead of offering the default launch. The default stays the same.
+If the catalog contains `suffix.md` (`.cotal/agents/suffix.md.md`), both commands select that entry
+even if the space's project root has a file named `suffix.md`. Use `./suffix.md` to select the project file explicitly.
 If that persona cannot be read or validated, status reports the application as unresolved
 and includes a warning instead of presenting a harness preference as the launch choice.
 Non-regular persona paths, including named pipes, are refused without reading them.
@@ -591,7 +807,10 @@ This machine shows what is set up and what needs attention. The version line is 
 applications is one line: the applications whose required executables are on PATH, and a count of the
 others, which `cotal setup` adds. An application's own rows, such as the Claude plugin, Claude
 Desktop and Claude skills, appear for an application that is set up and only when they are not
-current. When this machine has local broker records, such as a prepared space, a stack or a
+current. When no application is set up and `status` cannot prompt, Next names the missing executable
+and gives a configure-only setup command if the prepared local space has a saved harness whose
+connector is installed. If those inputs are not known, Next points to `cotal setup --help` for the
+scripted flags. Bare `cotal setup` needs a terminal. When this machine has local broker records, such as a prepared space, a stack or a
 registration started here, the broker executable appears if it is missing or `up` refuses it.
 Prepared spaces count even when another space is selected or status runs outside their projects.
 Local trust and a stack journal also retain the row, including records that cannot be read or parsed.
@@ -632,18 +851,32 @@ folder reach that stack until then.
 
 A prepared space whose controller stack ran and was stopped reads as stopped, with its last
 operation and how it ended, such as `` `cotal down`, completed ``, and Next names `cotal up` in its root.
-A space that never started still reads as prepared but not started. A recorded file-store cap does not
-change the restart command because Cotal reserves no fixed capacity per space.
+After a completed stop, Next names `cotal up --no-manager` instead if the stop records no manager
+or the broker's payload limit is too low to start one.
+If the recorded broker address is occupied after a completed stop, `status` and `history` name the
+address and explain how to free it before restarting. The stack keeps its address.
+If a legacy `.cotal/nats.pid` file blocks a controller restart, `status` and `ps` name the file
+and give the same verification step as [startup](cli-startup.mdx#controller-recovery).
+A space that never started still reads as prepared but not started. If startup cannot write or search
+its `.cotal` directory, `status` and `ps` give the same repair as `cotal up` without changing permissions.
+If the default `.cotal/channels.json` blocks the first start, `status` and `ps` name the file and the
+repair. If a refused first start recorded a broker address and the address is still in use, `status`
+names how to free it and repeat the original startup command from the same folder. If another
+address is available, it also suggests changing only `--server` in that command. A recorded
+file-store cap does not change the restart command because Cotal reserves no fixed capacity per space.
 `meshes.currentStopped` says whether the selection is such a stopped stack. A stack whose last `up`
 or `down` has no recorded outcome is not stopped, even when a member it launched still runs: the
 selection reads as prepared but not started, and the selected space names that operation.
+If the selected space has no running registration and its stack journal cannot be read, `status`
+reports an unknown stack lifecycle and keeps the journal's recovery step under Next.
 
 Owned services use the saved controller definitions and instance records for the selected space.
 Instances are listed by definition name, then instance ID, in the text and in
 `result.services.instances`, so their order holds from one start to the next.
 Full instance IDs and execution hosts stay visible. Process observations and historical readiness
 are separate columns; neither a saved serving state nor a supervisor receipt becomes a fresh
-endpoint response or OS unit-state check. Legacy PID-file rows are labeled separately. On a root
+endpoint response or OS unit-state check. On Linux, an exited process is gone even while its parent
+has yet to reap it. Legacy PID-file rows are labeled separately. On a root
 whose controller stack serves the selected space, its members are the `stack-` rows here, the
 legacy rows and the stored-state hint are omitted from the text report. When the stack does not
 answer or a member's
@@ -655,6 +888,10 @@ first names that service's `svc stop` with its instance, as the refusal does, an
 `up --root`. In open or static-auth mode, an unreachable `--server` address other than the recorded
 one says nothing about whether the stack answers. Next offers `up --root` only for a member whose
 process is gone, and names the failed address the way other commands' `TARGET_UNAVAILABLE` refusal does.
+On a static-auth root without a controller stack, started here with `up`, Next offers a bare
+`cotal up` in that folder first when its broker or manager exited, or when a clean `down` left every
+member stopped and the broker does not answer. It comes ahead of `spawn`, `ps` and the conditional
+store reset.
 When an earlier `down`, or a foreground
 `up` whose terminal closed, ended after it signalled the broker or the delivery daemon and before it
 saw that process exit, `up` and `down` refuse until that stop is abandoned. `status` then says so
@@ -667,8 +904,16 @@ folder note that names `cotal status`. A stack there whose
 last `up` or `down` has no recorded outcome and that is not blocked settles when it starts, so Next
 names the `cotal up` that starts it there.
 `--json` carries the same as `folder.stackBlock`. A manager stop is decided by the manager's own
-receipts, which only `up` and `down` read, so `status` does not name it. An `up` or `down` that was
-interrupted before it recorded an outcome, and left some members running and others stopped, is
+receipts, which only `up` and `down` read, so `status` does not name it. When `status` verifies
+that a controller startup still holds the root's maintenance lock, it reports `Startup in progress`.
+For a prepared space, `status --space <name>` checks that space's root even from another folder.
+If a regular file occupies the project's `.cotal` path, Next names the file and tells you to move
+it aside and restore the original `.cotal` directory. `status` leaves both entries untouched.
+In the project's own folder, this includes an open stack restart while it registers the space again.
+Next does not suggest a store reset or settlement for that restart.
+Wait for startup to finish, then run the status command shown under Next.
+An `up` or `down` that was interrupted before it recorded an outcome and left some members running
+and others stopped is
 named under the selected space as `Half started` or `Half stopped`, with the members on each side.
 Next then offers the command that finishes it first: `cotal up --root <root>` for an `up`, with
 the root shell-quoted when needed and `--no-manager` kept when it was chosen, or
@@ -693,8 +938,8 @@ probe of its manager endpoint, and the selected space's `Manager` row reads `ans
 `not answering · stack-manager pid <pid>`, or `endpoint not checked` when the probe could not be
 made or another manager instance answered. A manager that does not answer puts `kill -KILL <pid>`
 first in Next, because `cotal down` cannot stop it; once that process is gone, `cotal down --yes`
-records it stopped. A folder this account cannot read is one warning that names the folder and
-`chmod u+rx` on it, and nothing in it is read. Unreadable
+records it stopped. If this account cannot read a folder, `status` skips its contents and names it
+in one warning. The suggested `chmod u+rx` command quotes the folder path when it contains spaces. Unreadable
 service record families make the report partial instead of becoming empty lists. Warnings retain
 a classified cause code, such as unsupported host observation, without native diagnostic bodies. These reads
 import no provider and start, stop, adopt or repair nothing. `--all` extends broker checks; this
@@ -723,22 +968,32 @@ presentation and is not a stable parsing target. `meshes add` and `meshes rm` re
 
 A registry record this build cannot use is refused by name, never rendered and never skipped. One
 that does not parse, or is missing a field every consumer reads (`server`, `mode`, `root`, `ts`,
-`space`), makes every command that reads the registry refuse with `SCHEMA_INVALID`, exit 1, before
-it acts. The refusal names the file under `target` without repeating its stored values; `meshes`
-also says what is wrong with it. `status` is the exception: it lists the readable records, names the
-file and exits 4. Remove the file or restore the record; nothing repairs or invents a field for you.
-When the file is named for a space, the refusal names `cotal space forget <space>`, which removes
-that file. It reads no broker or folder from it, so it reports none.
+`space`), normally makes commands that read the registry refuse with `SCHEMA_INVALID`, exit 1,
+before they act. The refusal names the file under `target` without repeating its stored values.
+`meshes` also says what is wrong with it. `status` lists the readable records, names the file and
+exits 4. Remove the file or restore the record. Nothing repairs or invents a field for you.
+When a damaged file is named for a space, the refusal names `cotal space forget <space>`, which removes
+that file even if other registrations are damaged. It reads no broker or folder from the damaged
+file, so it reports none from that file.
+A registration this account cannot read due to its permissions is not treated as damaged.
+Restore read access to the file and retry the command. `space forget` keeps the file and the selection.
+If a directory occupies a registration or prepared record path, `space forget` refuses without
+removing it. Move the directory aside to an unused path, then restore the record if you have a backup.
 A registry directory that exists but cannot be read, such as one without read permission or a
 regular file in its place, refuses the same way, naming the directory, and `meshes` gives the read
 error. Only an absent directory is an empty registry. The folder of prepared spaces,
 `~/.cotal/prepared`, refuses the same way when it exists and cannot be read, on every command that
 reads it, such as `space`, `space create`, `use <name>` and `up`. A file in its place is named as
-`<path> is a file, not a folder`, with the step that moves it aside. A record in it that does not parse
+`<path> is a file, not a folder`, with an `mv` command that quotes both paths when the shell would
+otherwise split or expand them. A record in it that does not parse
 or is not a prepared space record refuses only a command about the space its file is named for, such
 as `use <space>`, and names `cotal space forget <space>`. Other commands skip it with the warning `PREPARED_RECORD_SKIPPED`, which names the
 file and `cotal space forget <space>`, the step that removes it, and `status` lists it under
-`meshes.unreadable` and exits 4. A record removed between listing and reading
+`meshes.unreadable` and exits 4. A record this account cannot read, such as one left owned by root,
+is reported as `<file> could not be read`, not as damaged. A command about its space refuses
+`PERMISSION_DENIED`, exit 2, and keeps the record. That refusal and the skip warning name the step
+that gives the file back, `sudo chown "$(id -un)" <file>` and `chmod 600 <file>`, in place of the
+forget. A record removed between listing and reading
 is omitted from that listing. A keyed read also treats a record removed during its read as absent;
 parse, shape and other read failures still refuse by name. Recording or removing a mesh also sweeps
 the directory for an older-format record of the same space. Any error listing the directory for
@@ -763,12 +1018,15 @@ creating a control directory or lock. An explicit IdP without a cached login ref
 before refresh or registry application. Both exit 2 and leave the cache untouched; diagnostics
 name the path without printing cache contents or parser excerpts.
 `cotal sync` bypasses freshness and reports added, changed, removed, unchanged, name collisions, and the spaces the catalog marks unavailable. `--idp` limits it to one signed-in account. It never connects
-to a broker. `--json` gives each account under `accounts` with its `idp`, `state`, `catalog`, the
+to a broker or installs connectors. An empty or malformed `--idp` refuses with `USAGE_INVALID`,
+exit 1, before reading accounts. Use HTTPS, or HTTP on a loopback IP literal, without embedded
+credentials, a query or a fragment. `--json` gives each account under `accounts` with its `idp`, `state`, `catalog`, the
 six name lists, `selectionCleared` and `error`. An unavailable space keeps the registration this
 machine holds, which is also listed as unchanged; a command that targets it refuses with
 `DEPENDENCY_UNAVAILABLE` and the catalog's reason while its siblings keep working. An account whose catalog could not be refreshed keeps
 its last snapshot and is named in a `CATALOG_UNAVAILABLE` warning, so the result is partial, exit 4;
 when no account could be refreshed, `sync` refuses with `DEPENDENCY_UNAVAILABLE`, exit 2.
+If you selected an account with `--idp`, the suggested retry refreshes only that account.
 
 The registry is updated under the same lock that guards the catalog cache, so a command never lists
 a discovered space set that another command is still writing. The cache records a fetched snapshot
@@ -810,10 +1068,15 @@ mesh an earlier release registered under such a name still lists, shows and remo
 whose `.cotal/auth` holds that mesh's credentials and whose `.cotal/agents` holds its personas.
 The default is the project you run it in. The registry stores that path, never a secret. `--mode`
 defaults to `auth` when the root holds the space's account record and to `open` otherwise. The
-broker is probed before anything is recorded, so a wrong address, or credentials that mesh will
-not accept, fails here instead of at the first `spawn`; `--force` records without verifying (and
-replaces a record added by hand). A name that is prepared on this machine, or that this machine
-started or a catalog lists, is refused with `CONFLICT` (exit 2), with or without `--force`, as
+broker is probed before anything is recorded. An open broker must serve the named space. A wrong
+address or credentials that mesh will not accept fail here instead of at the first `spawn`.
+`--force` records without verifying and replaces a record added by hand. The guided form also lets
+you explicitly accept an unchecked registration. `space show` marks the unchecked registration,
+and `whoami` reports conditional access and exits 4 with `MODE_NOT_CHECKED`. To verify an unchecked
+open or static-auth registration, repeat `meshes add` with the same broker, root, mode and transport
+settings but without `--force`. A successful check keeps the registration and selection in place.
+A name that is prepared
+on this machine, or that this machine started or a catalog lists, is refused with `CONFLICT` (exit 2), with or without `--force`, as
 `space add` refuses it: `cotal down` finds a running stack through that record.
 
 
@@ -850,16 +1113,16 @@ the entry's root; the registry records only the path.
 `meshes rm` drops records. It never stops a mesh. For a mesh running on this machine `cotal down`
 is the right verb, and `rm` refuses and says so, with or without `--force`, because `cotal down`
 finds a running mesh by its record. A stack `cotal up` started stays a prepared space at its root
-after that `down`, which `meshes rm` does not list or remove, so the refusal names `cotal space
-forget <space>` for it. `--force` drops a record only when its folder cannot be checked
+after that `down`. When the exact name is a prepared space, `meshes rm` refuses and points to
+`cotal space forget <space>` to remove only its local record. `--force` drops a record only when its folder cannot be checked
 for a running mesh. A broker record that cannot be proven
 stopped counts as running, as it does for `clean`. A hand-added record is removed by
 `meshes rm`, by an `add --force` replacement, or by a `cotal up` that actually starts the broker for that same space, server and root, which becomes that
 mesh and so takes the record over (a `cotal up` for that space anywhere else refuses instead).
 
-For several names, `meshes rm` loads the registry once, shares the legacy-file scan, and reads the
-selected default once. Each completed entry is reported and its selected default cleared before the
-next entry is attempted. A later removal failure does not roll back earlier removals.
+For several names, `meshes rm` treats repeated names as one target. It loads the registry once,
+shares the legacy-file scan, and reads the selected default once. It reports each removal and clears
+its selected default before attempting the next entry. A later failure does not roll back earlier removals.
 
 Nothing that merely *infers* a record is stale from a dead broker touches it: an
 unreachable broker is listed `offline` and stays, whether `cotal up` or `cotal meshes add`
@@ -904,10 +1167,12 @@ AG-UI runs, regardless of who drives their input. Required events do not turn te
 into agent runs or copy channel and DM text into an event stream. This launch policy is not an
 additional broker authorization boundary. The broker still enforces each endpoint's grants.
 
-The selection `cotal use` sets applies from every directory except the project folder of a running
-space, where the command targets that folder's space. There `status` reports that space under its
-`Mesh:` heading and a `This folder's space` section, and says the selected space applies outside the
-folder. `--json` names it in `target.space` and in `meshes.folder`, which `cotal space --json` gives
+An explicit `cotal use` selection applies from every directory, including the project folder of a
+running space. There `status` reports the selected space under its `Mesh:` heading and names
+`--space <space>` or `cotal use --clear` to reach the folder's space. Only an automatically adopted
+selection yields to a running project's space. In that case, `status` reports the folder's space
+under its `Mesh:` heading and a `This folder's space` section, and says the selected space applies
+outside the folder. `--json` names it in `target.space` and in `meshes.folder`, which `cotal space --json` gives
 as `folder`. In the folder of a space that is prepared or stopped, `status` reports the selection
 instead, and the line under its heading names what the folder holds and the `cotal up` that starts
 it; `meshes.folder` is then `null`. A folder whose stack is half started or half stopped, with a
@@ -920,8 +1185,22 @@ folder in `selected.recordedRoot`. `status` is a read-only report in this order:
 their versions, this folder's `.cotal/`, the recorded meshes, the selected mesh (its connection, the
 delivery responder, its channels and membership feed), then the hints. It lists no roster; `cotal ps`
 lists managed seats. Stale Claude skills and out-of-date `.agents` skills recommend
-`cotal setup --skills`, not unscoped `cotal setup`. `status` takes `--space` / `--server` to pick the
-mesh to inspect; it starts nothing.
+`cotal setup --skills`. The compact report shows out-of-date `.agents` skills even when no agent
+application is set up. If the skills ownership manifest is corrupt, restore a valid manifest at the
+reported path before running `cotal setup --skills`. `status` takes `--space` / `--server` to pick the
+mesh to inspect. It starts nothing.
+
+When `status` would suggest restarting the selected stopped local stack,
+`status` checks the recorded root's default `.cotal/channels.json` with the same validation as `up`.
+This includes a foreground stack whose `down` removed its registration. Next names an invalid file
+and how to fix it before restarting. In `status --components`, the target still reports `absent`
+without a restart command. The broker still reports as unreachable when dialed. The check does not
+change the file or start the stack.
+In `--json`, `selected.channelSeedBlocksRestart` is `true` when this check finds a blocker, and
+`hints` names the file and its repair.
+
+If the manager exited but the broker of an open foreground stack still serves the space,
+Next recommends bare `cotal up` to restore the manager without stopping the broker.
 
 
 ### Broker probes
@@ -933,10 +1212,20 @@ cannot be displayed safely is `null` in JSON, `unavailable` in text, and names a
 
 Only the selected mesh is checked. Its row under Spaces dials its address with its recorded TLS
 requirement, and every other row carries no connection state, under the note that says what was
-dialed. When `--server` names another address, that address is the only broker dialed, and the
-selected mesh's row carries no state either. In `--json` each of those rows is `not-checked`. `--all` checks every recorded mesh, including discovered ones, each with its own
+dialed. A trailing slash on the same NATS URL does not change its address: the Spaces row uses the
+selected broker's check. When `--server` names another address, that address is the only broker
+dialed, and the selected mesh's row carries no state either. In `--json` each of those rows is
+`not-checked`. `--all` checks every recorded mesh, including discovered ones, each with its own
 recorded TLS requirement. Each row then shows the check of its own address, the selected mesh's
 row included when `--server` names another.
+
+Outside a project, without a default selection, `--space` or `--server`, `status --all` reports on
+the sole reachable registration. It does not change the default
+selection. Without `--all`, status lists multiple registrations as unchecked rather than assuming
+their brokers are running.
+
+An unreachable `--server` address that does not name this folder's recorded broker gets an
+address check, not a suggestion to reset the folder's store.
 
 
 ### JSON report
@@ -964,6 +1253,7 @@ space or `null` and `scope` is `selected` or `all`. Its `result` is the report t
 | `selected` | `{resolved: false, code, message}` when no mesh resolves, where `message` states why and `hints` carries the step (`code` is `registry-unreadable` when the registry directory or a record could not be read, and a `not-started` prepared space adds its `space` and `root`); otherwise the target's fields, `connection` (`ok` or the reason it failed; on a user-auth mesh `reachable` or `unreachable`), `login`, `deliveryResponder` (`bound`, `unbound`, `stale` or `unknown`, and `null` on an open mesh with no delivery lease), `snapshot`, `channels`, `membershipFeed` and `spaceStreams`. `spaceStreams.state` is `present`, `absent` or `not-checked`; it is read for an auth or user space and an open space this machine started. When `absent`, `root` is this machine's stack of the space and `stack` is `running` or `stopped`, each `null` when unknown. `storedBytes` is what the space's account holds in the broker's JetStream file store, `null` when it was not read |
 | `services` | Selected-space local owned records: `space`, `state` (`read`, `partial` or `not-checked`), non-atomic `observedAt`, public definition/instance projections and explicit scope. An unreadable family is `null`; stored readiness is historical. Older serialized snapshots may omit this observation, which is not an empty inventory. |
 | `stackManager` | The selected space's running stack manager: `instanceId`, `pid` and `endpoint`, which is `answered`, `not-answering` or `unchecked`. Absent when no stack manager runs |
+| `outsideStackManager` | A manager endpoint check for a selected stack that started with `--no-manager`, when no local manager preset is named. The `endpoint` is `answered`, `not-answering` or `unchecked`. An answer includes `instanceId` if the manager reported it. Absent when the check was skipped |
 | `store` | What the selected space's running local broker logged about its JetStream store: `state` `write-failed` with `pid`, `log`, `at`, `cause`, `path` and `jetStreamDisabled`, true when the broker then disabled JetStream; `full` with `used`, `cap` and `path` when the space holds more than its broker's recorded cap; `damaged` with `pid`, `log`, `at` and the broker's `warning` when it logged damage in a stored file; `none-recorded` with `pid` and `log`; or `not-checked` with a `reason`. Absent when no space resolves |
 | `hints` | The hints, in the order the report prints them |
 
@@ -1013,6 +1303,9 @@ durable backstop wait until a new daemon binds while joins, DMs and live posts c
 With no delivery daemon serving, as after `cotal down stack-delivery`, `deliveryResponder` is
 `unbound`. The delivery responder line says spawn, retirement and the durable backstop wait until a
 daemon binds, while joins, DMs and live posts can still work, and that `cotal up` starts it.
+Next omits `cotal spawn` while the responder is unbound or its lease is stale. In a local static-auth
+project whose broker still answers and whose delivery process stopped, Next leads with `cotal up`
+when no other stack repair is needed.
 
 When a controller stack's delivery member runs but holds no delivery lease, `deliveryResponder` is
 `unbound`, and the delivery responder line names the member's pid and says it is starting or not
@@ -1022,23 +1315,41 @@ then `cotal down --yes`, which kills a member that does not exit, and `cotal up`
 
 ### Partial reads
 
+A recorded connector seed failure makes setup incomplete, even when the installed extension
+versions match. The `Connector setup` row names the package and phase. Next shows the recorded
+cause before `cotal ext seed --repair` instead of suggesting startup or sign-in. The same guidance
+appears in `hints` in JSON. Reading a recorded seed failure does not change the report's exit
+status, and status neither repairs nor clears the record. If the seed cursor cannot be read,
+status names the file in an `EXTENSIONS_UNREADABLE` warning and reports a partial read.
+
+If the extension inventory is corrupt or unreadable, the infrastructure report keeps the
+observations it could read and exits 4 with an `EXTENSIONS_UNREADABLE` warning. In JSON,
+`extensions.items` in the result is `null`. The report leaves the inventory untouched. If access
+is denied, the warning asks you to restore read access to the manifest and its path. If the manifest
+is corrupt, it names the repair command, `cotal ext seed --repair`.
+
 An unreachable broker, a stopped process or an unbound responder is a state the report names, and
 `status` exits 0. An open mesh runs no delivery daemon, so when it records no delivery lease its
-delivery responder row says the responder is not used and suggests no command. A controller stack
-started with `--no-manager` gets a Manager row saying it runs none by choice and that bare `cotal up`
-adds it. A part it cannot read is named on its row and as a warning, and the run is
+delivery responder row says the responder is not used and suggests no command. A selected controller
+stack started with `--no-manager` can still have an answering manager outside the stack. The Manager
+row names a local manager preset or reports whether the selected endpoint answered, including its instance
+when reported. If the endpoint could not be checked, the row says so. Next suggests `cotal who` for the
+live roster. It offers `cotal ps` to list managed agents when the report observed a manager answer.
+A part it cannot read is named on its row and as a warning, and the run is
 `partial` with exit 4: a PID record, the folder's trust material, the delivery-aware marker, the
 connectors, the skills bundle, the web records, a persona catalog, the mesh
 registry or one of its records, the current-mesh pointer, a user-auth login, or the selected mesh's
 channels or its owned service definition/instance records. Only an absent catalog, registry or pointer reads as empty or unset; an empty pointer is
 named too. A registry directory or record that cannot be read also leaves the selected mesh
-unresolved, because resolution refuses it, and the readable records are still listed. A corrupt or
-unreadable extensions manifest is refused while loading the command surface, before this report
-can run. The manager
+unresolved, because resolution refuses it, and the readable records are still listed. The manager
 row asks the service endpoint once: a live process that does
 not answer is `not serving`, and a probe that could not be made leaves the row
 `running · service unchecked`. A broker that takes the connection and does not answer, as a
 stopped one does, leaves it unchecked too, and `status` still exits.
+
+When permission to read a selected local space's broker PID file is denied, `status` keeps the
+rest of the report and exits `4`. The warning names the unreadable record, and Next says which
+permissions to restore. A failed connection does not establish that the broker process stopped.
 
 
 ### Local records
@@ -1077,8 +1388,9 @@ login --idp <url>` line when it does not, with no network round trip either way.
 provisioned space also shows the actor grant row; a discovered or registered remote entry reports
 the grant as not checkable on this machine, because the ledger runs where the space was
 provisioned. `--components` on a user-mode target probes delivery as that
-same signed-in login, never a static mint. The broker row only checks that the
-registered address is reachable. It does not present the login. The manager
+same signed-in login, never a static mint. The broker row checks that the
+registered address is reachable and includes any observed local store write failure or full store.
+It does not present the login. The manager
 `status` probe uses the manager-caller view `cotal spawn` already exchanges for
 that login. When this machine's manager process is live, the exchange is pinned
 to the instance id that process persisted. If that id is not known, or a different
@@ -1095,12 +1407,15 @@ catalogs, status names both and marks which one spawn launches from. A green `de
 passes the same agent-file loader spawn uses; a present but invalid file is reported as invalid.
 
 `cotal status --components` prints the report, then a fail-loud per-component health pass. It takes
-no `--json`, `--plain` or `--all`. It reads **each
+no `--json`, `--plain` or `--all`. If you pass both output flags, remove both to run the component check. The refusal's retry keeps the explicit space and broker address.
+It reads **each
 component's own control surface**, rather than treating a PID, a lease, or a successful probe of a
 sibling as proof that the component serves. It prints one of `serving`, `absent`, `not-serving`, or
 `refused` for each component and exits `0`, `1`, `2`, or `3` respectively (the highest observed
 state wins). The optional dashboard prints `not-installed` when its extension is not installed,
-or `not-started` when it is installed but has no process record. Both exit `0`.
+or `not-started` when it is installed but has no process record or unsettled owned instance. Both exit `0`.
+The component pass uses the same selected space as the report above it. A trailing slash in the
+broker URL does not change which startup records the pass reads.
 That exit replaces the report's own, so a partial report followed by a clean pass exits 0:
 
 - **manager**: local PID record, its liveness-lease holder and PID, then the manager's own typed
@@ -1109,14 +1424,26 @@ That exit replaces the report's own, so a partial report followed by a clean pas
   visible even when the manager is otherwise `serving`. A row that reached no manager does not
   carry it. If the service does not answer and the local PID is dead, the manager reads `absent`
   even before its lease expires. A lease without a local PID record still reads `not-serving`.
+  A stack intentionally started with `--no-manager` reports `not-started` and exits `0` when
+  no manager answers and no manager lease remains. Legacy starts record that choice against
+  the broker's creation identity, so it does not survive as proof for a different broker process.
 - **delivery**: local PID record, its ready lease (`ready` is the daemon's own bound-control
   signal), and the latest `renewal.<spaceKey>.json` adoption verdict, the record of the space the
   command was asked about, keyed per space the way the pidfiles are. A re-signed credential and a
   broker-accepted adoption stay distinct facts. A root-only `renewal.json` left by an older build
   names no space and is never read as any space's verdict (`doctor auth` names it as a leftover).
+  On an open mesh with no delivery process record or lease, delivery is `not-started` and does not
+  fail the check. If that local broker is absent and unreachable, the check skips the lease probe
+  for unused Delivery. A managed delivery credential exposed to other local readers makes this row
+  `refused`, with its native permission repair. The ordinary report names that credential as an
+  unreadable part and exits `4` instead of silently skipping lease-holder verification.
+  An unreadable renewal record or a recorded adoption refusal makes delivery `refused`, even when
+  its responder is bound. Bare status reports the same finding and exits partial rather than healthy.
 - **web**: `not-installed` when the dashboard extension is not installed and no PID record exists.
-  An installed dashboard with no PID record is `not-started`, which does not fail the check.
+  An installed dashboard with no PID record or unsettled owned instance is `not-started`, which does not fail the check.
   A dead PID with a stale record is still `absent` and exits `1`.
+  An owned dashboard instance that exited without a confirmed stop is also `absent`, even if
+  its shutdown removed the PID file. Confirm its stop with `cotal service stop web --yes`.
   Otherwise, the local PID record, then the `/api/meta` response at the address the dashboard
   recorded once it was listening, which must name the same PID. The holder of `web.pid` picks the record, as
   on the `Web process` row: a service-run dashboard's own session record, found through its web
@@ -1129,9 +1456,47 @@ That exit replaces the report's own, so a partial report followed by a clean pas
   session record or service instance record that exists but cannot be read is also `refused`, and
   the row names the read error.
 - **broker**: the registered mesh URL dialed from this host with its recorded TLS requirement.
+  An observed local store write failure or full store makes it `not-serving`, with the store
+  failure in its facts, even if that URL is reachable.
+  For a locally owned stack, a missing or dead broker process is `absent`, not `not-serving`.
+  A cleanly stopped controller target reports `absent` and exits `1` without dialing another space.
+  If the home records for a broker-only open stack are missing and the project journal verifies
+  its broker process is running, the component check reports `target refused` and exits `3`.
+  It names the running process and points to `cotal down --dry-run` in the project because it
+  cannot check service health without the saved records.
+  If its store is not writable or its broker address is occupied, the target row names what to fix
+  before restarting.
+  Inside a renamed open project without a saved selection, the check reports `target refused` when
+  the journal matches the local registration and the recorded project folder is gone. It keeps the
+  move-back guidance and reports `reachable` if the broker answers.
+  For open and static-auth plaintext NATS targets with no absent local process, the probe also checks JetStream and the
+  recorded authentication requirement. An unauthenticated substitute for a static-auth broker
+  is not reported as serving. When the address and process identity match this space's running
+  local broker, missing JetStream does not trigger the substitute-broker remedy. A request that
+  fails after the broker disables JetStream keeps its store write diagnosis and history-preserving repair.
+
+When a stopped local broker's address accepts a connection without a NATS greeting, `status`
+and read commands name the occupied address without changing the space's registration. For a
+controller stack, they recommend stopping that listener and running `cotal up` in the recorded
+project, since the stack cannot move to another port. For a legacy stack, they may also offer
+starting on another port. For a stopped foreground stack,
+`status` and `ps` check the saved address even if `down` removed its registration. Neither command
+stops the listener.
+When a controller stack keeps its recorded address, a refused restart does not clear the diagnosis.
+`status` checks the address again and names the listener to stop if it still holds the port.
+
+When `--server` matches several registered spaces, add `--space <name>` to choose one.
+Selecting a default with `cotal use <name>` applies only after removing `--server`.
+`whoami` recognizes equivalent registered URL spellings, including a trailing slash or
+scheme case, without treating another transport as the same registered address.
 
 An unreadable component PID file is `refused`, and its row names the file path and read error.
+A malformed PID file is not a stopped process. Bare status names the uncertain record and exits
+partial. An unreadable mesh registry record produces a `target refused` component row and exit 3.
 A missing or empty PID file still means no local process record.
+PID records with creation pins are checked against the live process identity. A reused PID
+is stale, not running, and cannot keep a dead delivery daemon's ready lease bound. Unknown or
+unreadable identity pins refuse the component check rather than claiming liveness.
 
 If a user-auth exchange returns a bearer whose principal cannot be decoded, the component probe
 reports the shared auth-service build and restart guidance instead of a bare JSON or missing-claim error.

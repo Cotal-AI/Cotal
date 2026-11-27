@@ -1,26 +1,38 @@
 import { findCommand, type FlagValues, type ParsedArgs } from "@cotal-ai/core";
-import { cachedUpdateSummary, jsonFlag, paintFor, writeResult } from "@cotal-ai/workspace";
+import { cachedUpdateSummary, CommandFailure, globalConfigDirProblem, jsonFlag, paintFor, writeResult } from "@cotal-ai/workspace";
 import { commandSurface } from "../ext-loader.js";
 import { printCommandList, printHelpPath } from "../help.js";
+import { metadataPositionals } from "../lib/command-path.js";
 import { unknownCommandMessage } from "../lib/nearest-word.js";
-import { cliVersion, extensionVersions, readExtensionVersions } from "../lib/version.js";
+import { findServicePreset, servicePresetCommand } from "../lib/service-presets.js";
+import { cliVersion, printVersion, readExtensionVersions } from "../lib/version.js";
 import { managerServiceCommand } from "./manager-service.js";
-import { readUpdatePending } from "../lib/update-pending.js";
+import { manifestRepair, readUpdatePending } from "../lib/update-pending.js";
 
 /** `--all`, the older way to ask for every command, which help now always lists. It is accepted and
  *  changes nothing, and neither help nor completion offers it. */
 export const helpFlags = [{ name: "all", type: "boolean", description: "accepted for scripts written before help listed every command; it changes nothing" }] as const;
 
 /** `cotal help [command…]`: every command, or the help of the command the words name. The words
- *  are literal nesting: a command (or its alias), then one of its subcommands. A manager lifecycle
+ *  select a command or alias, then its subcommands before any operands. A manager lifecycle
  *  verb is read as the dispatcher reads it, so its help is the one `--help` prints. */
 export async function help(args: ParsedArgs): Promise<void> {
-  const [word, ...path] = args.positionals;
+  const [word, ...words] = args.positionals;
   const commands = commandSurface();
   if (word === undefined) return paintFor(process.stdout, () => printCommandList(commands));
   const cmd = findCommand(commands, word);
-  if (!cmd || cmd.name.startsWith("__")) throw new Error(unknownCommandMessage(commands, word));
-  paintFor(process.stdout, () => printHelpPath(managerServiceCommand(cmd, path)?.cmd ?? cmd, path));
+  if (!cmd || cmd.name.startsWith("__")) throw new CommandFailure("refused", "USAGE_INVALID", unknownCommandMessage(commands, word), { selfContained: true });
+  const lifecycle = managerServiceCommand(cmd, words);
+  let scoped = lifecycle?.cmd ?? cmd;
+  if (cmd.name === "service") {
+    // A directly named start preset selects help independently of any trailing startup arguments.
+    const [verb, name] = words;
+    const namedStart = verb === "start" && name !== undefined && findServicePreset(name) !== undefined;
+    try { scoped = servicePresetCommand(cmd, namedStart ? words.slice(0, 2) : words); }
+    catch (error) { if (namedStart && words.length === 2) throw error; }
+  }
+  const path = metadataPositionals(scoped, lifecycle?.argv ?? words).positionals.map(({ value }) => value);
+  paintFor(process.stdout, () => printHelpPath(scoped, path, undefined, undefined, undefined, words));
 }
 
 export const versionFlags = [jsonFlag] as const;
@@ -30,7 +42,12 @@ export const versionFlags = [jsonFlag] as const;
  *  envelope with no target, since it reads only local metadata. */
 export async function version(args: ParsedArgs): Promise<void> {
   if ((args.values as FlagValues<typeof versionFlags>).json) {
-    const { versions, unreadable } = readExtensionVersions();
+    const { versions, unreadable, remedy } = readExtensionVersions();
+    const config = unreadable === undefined ? undefined : globalConfigDirProblem();
+    const current = cliVersion();
+    const pending = readUpdatePending(current);
+    const reconciliation = config && pending.kind === "unreadable" && pending.source === "manifest"
+      ? { ...pending, error: config.message, instruction: config.remedy } : pending;
     // An unreadable manifest leaves the extension list unread, so the read is partial rather than an
     // empty complete list.
     writeResult(
@@ -38,28 +55,18 @@ export async function version(args: ParsedArgs): Promise<void> {
       {
         command: "version",
         target: null,
-        result: { version: cliVersion(), update: cachedUpdateSummary(cliVersion()), reconciliation: readUpdatePending(cliVersion()), extensions: versions.map((e) => ({ package: e.pkg, version: e.version })) },
+        result: { version: current, update: cachedUpdateSummary(current), reconciliation, extensions: versions.map((e) => ({ package: e.pkg, version: e.version })) },
         ...(unreadable === undefined
           ? {}
           : {
               completeness: "partial",
-              warnings: [{ code: "EXTENSIONS_UNREADABLE", target: null, message: `the extensions manifest could not be read: ${unreadable}` }],
-              partial: { message: "the installed extensions could not be listed", remedy: "repair the manifest with `cotal ext seed --repair`" },
+              warnings: [{ code: "EXTENSIONS_UNREADABLE", target: null, message: `the extensions manifest could not be read: ${config?.message ?? unreadable}` }],
+              partial: { message: "the installed extensions could not be listed", remedy: config?.remedy ?? remedy ?? manifestRepair },
             }),
       },
       () => ({ sections: [] }),
     );
     return;
   }
-  const exts = extensionVersions();
-  // The human form adds an update line only when there is something to act on. The JSON form
-  // always carries the state.
-  const update = cachedUpdateSummary(cliVersion());
-  const pending = readUpdatePending(cliVersion());
-  const lines = [`cotal-ai ${cliVersion()}`, ...(pending.kind === "none" ? [] : [`  ${pending.instruction}`]), ...(update === "update status unknown" || update === "up to date" ? [] : [`  ${update}`])];
-  if (exts.length) {
-    const pad = Math.max(...exts.map((e) => e.label.length));
-    for (const e of exts) lines.push(`  ${e.label.padEnd(pad)}  ${e.version}`);
-  }
-  console.log(lines.join("\n"));
+  printVersion();
 }

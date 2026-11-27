@@ -18,7 +18,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { connect, type NatsConnection } from "@nats-io/transport-node";
+import { connect, headers, type MsgHdrs, type NatsConnection } from "@nats-io/transport-node";
 import { jetstream, jetstreamManager } from "@nats-io/jetstream";
 import { Kvm } from "@nats-io/kv";
 import {
@@ -47,9 +47,12 @@ import {
   timerWriterDurable,
   armCheckpointTimer,
   readCheckpointSpec,
+  readCheckpointSettle,
   readCheckpointStatus,
   resumeCheckpoint,
   eptReqStreamName,
+  eptStreamName,
+  epfStreamName,
   eptSubject,
   chatSubject,
   admissionBucket,
@@ -113,7 +116,9 @@ const SERVERS = `nats://127.0.0.1:${PORT}`;
 const dir = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}rdauth-`));
 const auth = await createSpaceAuth(S);
 writeFileSync(join(dir, "server.conf"), serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port: PORT, storeDir: join(dir, "js") }));
-const broker = spawn("nats-server", ["-c", join(dir, "server.conf")], { stdio: "ignore" });
+const broker = spawn("nats-server", ["-c", join(dir, "server.conf")], {
+  stdio: "ignore", env: Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_"))),
+});
 teardownOnSignal(broker);
 const conns: NatsConnection[] = [];
 const done = () => {
@@ -208,12 +213,13 @@ const lease = (takeoverId: string, fencingToken: number) => ({ holder: "manager"
 // An agent on the channel the program waits on, minted as `cotal spawn` would mint it.
 const ann = newIdentity();
 const annNc = await open(await mintCreds(auth, ann, "agent", { allowPublish: [CHANNEL], allowSubscribe: [CHANNEL], lifecycleUid: mintLifecycleUid() }));
-const say = async (text: string) => {
+const say = async (text: string, messageHeaders?: MsgHdrs) => {
   const msg: CotalMessage = {
     id: `m-${Date.now()}`, ts: Date.now(), space: S,
     from: { id: `${DEV_OWNER}.${ann.id}`, name: "ann" }, channel: CHANNEL, parts: [{ kind: "text", text }],
   };
-  await jetstream(annNc).publish(chatSubject(S, DEV_OWNER, ann.id, CHANNEL), new TextEncoder().encode(JSON.stringify(msg)));
+  return await jetstream(annNc).publish(chatSubject(S, DEV_OWNER, ann.id, CHANNEL), new TextEncoder().encode(JSON.stringify(msg)),
+    messageHeaders === undefined ? undefined : { headers: messageHeaders });
 };
 
 const PROGRAM = `
@@ -347,12 +353,21 @@ const A = await driver(RUN_A, TK_A);
       await refused(() => host.open("foreign-request", CHANNEL)));
     c("the host refuses a channel different from the recorded wait channel",
       await refused(() => host.open(ctx.requestId, "private")));
+    const marked = headers();
+    marked.set("Nats-Time-Stamp", new Date().toISOString());
+    const prior = await say("marked wait fixture", marked);
     await say("mediated answer");
     const messages = await host.fetch(ctx.requestId);
     c("the host fetch returns a real message and an opaque receipt", messages.length === 1, messages.length);
     const message = messages[0]!;
+    c("the mediated wait exposes only the fresh post", message.sequence !== prior.seq
+      && new TextDecoder().decode(message.data).includes("mediated answer"));
     c("the host refuses a sequence before the wait has bound its match",
       await refused(() => host.messageAt(ctx.requestId, message.sequence)));
+    await ctx.bind({ waitChannel: CHANNEL, chatSeq: prior.seq });
+    const stale = await host.messageAt(ctx.requestId, prior.seq).then(() => "allowed", (error: Error) => error.message);
+    c("the host refuses a previously recorded marked match and explains how to restart",
+      stale.includes("Start a new run and have the sender post a fresh message."), stale);
     await ctx.bind({ waitChannel: CHANNEL, chatSeq: message.sequence });
     const saved = await host.messageAt(ctx.requestId, message.sequence);
     c("the host rereads the bound message without exposing a stream reader",
@@ -857,6 +872,10 @@ const A = await driver(RUN_A, TK_A);
   const copiedRead = await pauses.readSettle(sleep.requestId)
     .then(() => "allowed", (e) => e instanceof RunScopeDenied ? "denied" : short(e));
   c("copying a foreign token into the driver's own journal grants no host access", copiedRead === "denied", copiedRead);
+  const fact = await readCheckpointSettle(B.hostPlanes.jsm, S, { endpoint: EP, token: sleep.requestId });
+  const copiedPoll = await pauses.pollSettle(sleep.requestId)
+    .then(() => "allowed", (e) => e instanceof RunScopeDenied ? "denied" : short(e));
+  c("the settlement poll refuses to return a foreign run's existing fact", fact !== undefined && copiedPoll === "denied", copiedPoll);
 
 }
 
@@ -964,7 +983,7 @@ const A = await driver(RUN_A, TK_A);
   `);
   const result = spawnSync(process.execPath, [
     "--import", import.meta.resolve("tsx"), entry,
-    "run", "start", "--local", "--server", SERVERS, "--space", S, "--creds", credsFile, "--file", programFile,
+    "run", "start", "--local", "--server", SERVERS, "--space", S, "--creds", credsFile, "--file", programFile, "--admit-read", "none", "--admit-publish", "none",
   ], { cwd: dir, env, encoding: "utf8", timeout: 30_000 });
   const output = `${result.stdout ?? ""}\n${result.stderr ?? ""}`;
   c("a single-credential local CLI attempt reaches the named refusal", result.status === 1 && output.includes("single --creds"), output.slice(-1200));
@@ -1051,11 +1070,11 @@ const A = await driver(RUN_A, TK_A);
   }
 }
 
-// ── createRunEffectHost constructs EpfSettleWatcher over pauses.readSettle (#3344) ─────────────
+// The hosted settlement watcher shares the broker-backed polling loop.
 {
   const hostSrc = readFileSync(new URL("../src/run-effect-host.ts", import.meta.url), "utf8");
-  c("createRunEffectHost constructs EpfSettleWatcher over pauses.readSettle (#3344)",
-    hostSrc.includes("new EpfSettleWatcher((ref) => pauses.readSettle(ref.token))")
+  c("createRunEffectHost constructs EpfSettleWatcher over pauses.pollSettle",
+    hostSrc.includes("new EpfSettleWatcher((ref) => pauses.pollSettle(ref.token))")
       && !hostSrc.includes("awaitSettle") && !hostSrc.includes("2_000"));
   const authority = createRunScopeAuthority(A.hostPlanes, RUN_A, lease(TK_A, 1));
   const pauses = createRunPauseHost(A.hostPlanes, {
@@ -1072,6 +1091,38 @@ const A = await driver(RUN_A, TK_A);
     .then(() => "allowed", (e) => e instanceof RunScopeDenied ? "denied" : short(e));
   c("a pause-mediated EpfSettleWatcher enforces run-scope authority on settle reads (#3344)",
     deniedWatch === "denied", deniedWatch);
+}
+
+{
+  const runId = "run-idle-pause-polls";
+  const takeoverId = newTakeoverId();
+  const H = await driver(runId, takeoverId);
+  const { streams, consumers } = H.hostPlanes.jsm;
+  const getMessage = streams.getMessage.bind(streams);
+  const add = consumers.add.bind(consumers);
+  let fires = 0, settles = 0, replays = 0;
+  streams.getMessage = async (stream, query) => {
+    if ("last_by_subj" in query) {
+      if (stream === eptStreamName(S) && query.last_by_subj.endsWith(".fire")) fires++;
+      if (stream === epfStreamName(S) && query.last_by_subj.includes(".cp.")) settles++;
+    }
+    return getMessage(stream, query);
+  };
+  consumers.add = async (stream, ...args) => {
+    if (stream === wfjStreamName(S)) replays++;
+    return add(stream, ...args);
+  };
+  const driven = startRun(H.js, H.jsm, { space: S, endpoint: EP, runId,
+    source: 'await sleep("10s", { name: "idle" });', kv: H.kv, lease: lease(takeoverId, 1), handler: H.handler });
+  c("the hosted sleep starts both live pollers", await until(async () => fires > 0 && settles > 0, 5_000));
+  await wait(150);
+  const before = { fires, settles, replays };
+  const observed = await until(async () => fires > before.fires && settles > before.settles, 5_000);
+  c("each idle poll reads its plane without creating a journal consumer", observed && replays === before.replays,
+    { before, after: { fires, settles, replays } });
+  const out = await withDeadline(driven, 15_000, "the idle hosted sleep");
+  c("the same hosted sleep settles once when its timer fires", out?.status === "completed"
+    && out.result.journal.entries().filter(row => row.kind === "sleep" && row.state === "settled" && row.status === "ok").length === 1);
 }
 } catch (error) {
   fail++;
