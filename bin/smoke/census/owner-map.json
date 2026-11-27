@@ -1051,6 +1051,7 @@
   "cli:spawn--harness": "current:spawn --harness",
   "cli:spawn--json": "current:spawn --json",
   "cli:spawn--live-only": "current:spawn --foreground --live-only",
+  "cli:spawn--mode": "current:spawn --mode",
   "cli:spawn--model": "current:spawn --model",
   "cli:spawn--name": "current:spawn --name",
   "cli:spawn--no-event-payloads": "current:spawn --no-event-payloads",
