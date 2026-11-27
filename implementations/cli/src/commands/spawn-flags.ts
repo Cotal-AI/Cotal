@@ -49,7 +49,7 @@ export function spawnModelRetry(values: FlagValues<typeof spawnFlags>, positiona
   if (!fromHost && !error.startsWith("Jcode launch failed (model_prefix_rejected):")) return undefined;
   const [provider, explicitModel, extra] = values.model?.trim().split("/") ?? [];
   const model = fromHost || values.model === undefined
-    ? error.match(/ Retry with `--model ([A-Za-z0-9][A-Za-z0-9._:-]{0,255})`\.$/)?.[1]
+    ? error.match(/ Retry with `--model ([A-Za-z0-9][A-Za-z0-9._/:-]{0,255})`\.$/)?.[1]
     : provider && explicitModel?.trim() && extra === undefined ? explicitModel : undefined;
   if (!model) return undefined;
   return spawnCommand({ ...values, model }, positionals, `${values.json ? "cotal" : displayCmd()} spawn`,
