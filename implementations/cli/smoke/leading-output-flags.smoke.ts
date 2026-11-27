@@ -231,6 +231,18 @@ const malformedText = run(["--no-input=", ...search.slice(0, -1)]);
 check("an empty attached value still gets the switch remedy in text", malformedText.status === 1 && malformedText.stdout === "" &&
   malformedText.stderr.includes("--no-input takes no value") && malformedText.stderr.includes("omit --no-input or pass it without a value"), shown(malformedText));
 
+const helpPage = run(["help", "--help"]);
+const valuedHelp = run(["help", "--help=false"]);
+check("a value on the help switch names the bare switch, not a positional", valuedHelp.status === 1 && valuedHelp.stdout === "" &&
+  valuedHelp.stderr.startsWith("✗ --help takes no value\n") &&
+  ["cotal", "pnpm cotal"].some((cli) => valuedHelp.stderr.includes(`  run \`${cli} help --help\`\n`)) &&
+  !valuedHelp.stderr.includes("put -- before it") && !valuedHelp.stderr.includes("Unknown option") &&
+  valuedHelp.stderr.endsWith(helpPage.stdout), shown(valuedHelp));
+const separatedHelp = run(["help", "--", "--help=false"]);
+check("after -- a valued help switch stays a command name", separatedHelp.status === 1 && separatedHelp.stdout === "" &&
+  /unknown command: --help=false/.test(separatedHelp.stderr) && !separatedHelp.stderr.includes("--help takes no value"), shown(separatedHelp));
+check("the bare help switch still prints the help page", helpPage.status === 0 && helpPage.stderr === "" && helpPage.stdout.length > 0, shown(helpPage));
+
 for (const [flag, ...tail] of [
   ["--no-color", "--no-input=false", "status", "--json"],
   ["--no-input", "-j", "--no-color=false", "--", "status"],
