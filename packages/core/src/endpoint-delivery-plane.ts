@@ -282,6 +282,7 @@ export class EndpointDeliveryPlane {
     if (req.op === "durableJoin") return this.deliveryJoin(caller, args);
     if (req.op === "durableLeave") return this.deliveryLeave(caller, args);
     if (req.op === "readHistory") return this.deliveryReadHistory(caller, args);
+    if (req.op === "readPluginMentionHistory") return this.deliveryReadPluginMentionHistory(caller, args);
     if (req.op === ANYCAST_TAKES_OP)
       return this.delivery.anycastUnavailable ? { ok: false, error: `delivery: ${this.delivery.anycastUnavailable}` } : { ok: true, data: { takes: true } };
     if (req.op === ANYCAST_STATUS_OP || req.op === ANYCAST_CANCEL_OP) return this.parts.anycastRail.deliveryAnycast(req.op, caller, args);
@@ -506,6 +507,33 @@ export class EndpointDeliveryPlane {
     if (wanted.length > 0 && fitted.length === 0)
       return { ok: false, error: `readHistory: the newest message on "${channel}" alone exceeds the broker payload budget (${this.maxPayload} bytes) - refused loudly rather than served as an empty page` };
     return { ok: true, data: { items: fitted, complete: reachedStart && fitted.length === wanted.length } satisfies HistoryPage };
+  }
+
+  private async deliveryReadPluginMentionHistory(caller: string, args: Record<string, unknown>): Promise<ControlReply> {
+    const op = "readPluginMentionHistory";
+    const channel = this.checkDurableChannelArg(args, op);
+    if (typeof channel !== "string") return channel;
+    const { message, seq } = args;
+    if (channel !== args.channel || typeof message !== "string" || !message || typeof seq !== "number" || !Number.isSafeInteger(seq) || seq < 1)
+      return { ok: false, error: `${op}: expected a concrete channel, message ID and positive safe sequence` };
+    if (!isRoutedPluginChannel(this.conn.pluginChannelsEnabled, channel))
+      return { ok: false, error: `${op}: channel is not on the isolated plugin rail` };
+    const mayAct = this.plane3DispatchFence(this.conn.nc);
+    const permits = (acl: Awaited<ReturnType<typeof this.parts.durableBackstop.aclForAlias>>) => acl !== undefined &&
+      channelInAllow(acl.allowSubscribe, channel, true) && channelInAllow(acl.issuedAllowSubscribe, channel, true);
+    const refused = { ok: false, error: `${op}: access or delivery binding could not be verified` };
+    try {
+      const acl = await this.parts.durableBackstop.aclForAlias(caller);
+      if (!permits(acl) || !mayAct()) return refused;
+      const item = await this.parts.history.exactPluginHistory({ channel, message, seq });
+      const current = await this.parts.durableBackstop.aclForAlias(caller);
+      if (!mayAct() || !permits(current) || current?.lifecycleUid !== acl?.lifecycleUid) return refused;
+      if (item && !fitHistoryPage([item], this.maxPayload).length)
+        return { ok: false, error: `${op}: message exceeds broker reply budget` };
+      return { ok: true, data: { item: item ?? null } };
+    } catch (error) {
+      return { ok: false, error: `${op}: ${(error as Error).message}` };
+    }
   }
 
   /** Stop serving Plane-3 WITHOUT tearing down the connection, so a daemon that has just learned its

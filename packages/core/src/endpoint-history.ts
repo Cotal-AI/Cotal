@@ -11,7 +11,7 @@ import { effectiveReplay, effectiveReplayWindowMs, readChannelConfig, readChanne
 import { isPermissionDenied } from "./permission-denied.js";
 import { hasStoredOrigin } from "./endpoint-provenance.js";
 import { channelSubjectInSpace, endpointChannelRoute, isRoutedPluginChannel, PLUGIN_CHANNEL_CATCHUP_AGE_MS } from "./endpoint-channel-route.js";
-import type { CotalMessage, DmHistoryRead, HistoryMessage, Delivery, MessageMeta } from "./types.js";
+import type { CotalMessage, DmHistoryRead, HistoryMessage, Delivery, MessageMeta, PluginMentionPointer } from "./types.js";
 import type { HistoryPage } from "./endpoint.js";
 
 /** Current transport and shared lifecycle operations used by history reads. */
@@ -419,6 +419,35 @@ export class EndpointHistory {
     if (!Array.isArray(data?.items) || typeof data?.complete !== "boolean")
       throw new Error("readHistory: the delivery daemon returned a malformed page (expected { items, complete })");
     return { items: data.items as CotalMessage[], complete: data.complete };
+  }
+
+  async readPluginMentionHistory(pointer: PluginMentionPointer): Promise<CotalMessage | undefined> {
+    const reply = await this.parts.controlPlane.requestDelivery("readPluginMentionHistory", { ...pointer });
+    if (!reply.ok) throw new Error(reply.error ?? "readPluginMentionHistory failed");
+    const data = reply.data;
+    if (!this.deps.isRecord(data) || !Object.hasOwn(data, "item")) throw new Error("invalid plugin mention history reply");
+    if (data.item === null) return undefined;
+    if (!this.deps.isRecord(data.item) || data.item.id !== pointer.message || data.item.channel !== pointer.channel ||
+        data.item.space !== this.identity.space || !Array.isArray(data.item.parts)) throw new Error("invalid plugin mention history reply");
+    return data.item as unknown as CotalMessage;
+  }
+
+  /** Daemon-only exact filtered read. Missing positions cannot slide forward to another post. */
+  async exactPluginHistory(pointer: PluginMentionPointer): Promise<CotalMessage | undefined> {
+    if (!this.conn.nc || !this.conn.jsm) throw new Error(this.deps.notLiveMsg());
+    const route = endpointChannelRoute(this.identity.space, this.conn.pluginChannelsEnabled, pointer.channel);
+    if (route.kind === "chat") throw new Error("plugin history requires isolated channel routing");
+    const subject = route.subject("*", "*");
+    const signal = AbortSignal.timeout(4000);
+    const reader = await this.acquireHistoryReader(this.conn.nc, this.conn.jsm, route.stream, signal);
+    try {
+      const rows = await this.drainWindow(reader, [subject], pointer.seq, pointer.seq, 1, signal);
+      const row = rows[0];
+      return row?.seq === pointer.seq && subjectMatches(subject, row.subject) && row.msg.id === pointer.message &&
+        row.msg.channel === pointer.channel && row.msg.space === this.identity.space ? row.msg : undefined;
+    } finally {
+      this.releaseHistoryReader(reader);
+    }
   }
 
 

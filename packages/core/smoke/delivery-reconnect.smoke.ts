@@ -37,7 +37,7 @@ const reconnected = (ep: CotalEndpoint): Promise<void> => new Promise((resolve) 
 let pass = 0, fail = 0;
 const check = (name: string, cond: boolean, extra?: unknown) => { if (cond) { pass++; console.log(`  ✓ ${name}`); } else { fail++; console.log(`  ✗ FAIL: ${name}`, extra ?? ""); } };
 
-async function checkPluginProjection(space: string, provisioner: string, creds: string, lifecycleUid: string): Promise<void> {
+async function checkPluginProjection(space: string, provisioner: string, creds: string, lifecycleUid: string, viewerCreds: string): Promise<void> {
   const writer = await connect({ servers: SERVERS, ...standaloneConnectOpts({ creds: provisioner, tls: false }) });
   const key = PLUGIN_CHANNEL_PROJECTION_KEY;
   const kv = await openChannelRegistry(writer, space);
@@ -50,6 +50,10 @@ async function checkPluginProjection(space: string, provisioner: string, creds: 
     onConnection: (nc) => { opened.push(nc); },
   });
   const state = (ep as unknown as { conn: ConnectionState }).conn;
+  let viewerWire: NatsConnection | undefined;
+  const viewer = new CotalEndpoint({ space, servers: SERVERS, creds: viewerCreds, card: { name: "projection-viewer", kind: "endpoint" },
+    readChannelRoutingProjection: true, consume: false, watchPresence: false, registerPresence: false,
+    onConnection: (nc) => { viewerWire = nc; } });
   ep.on("transport", (event) => {
     if (event.connected) ready.push({ wire: state.nc, epoch: state.pluginChannelEpoch, enabled: state.pluginChannelsEnabled });
   });
@@ -63,6 +67,8 @@ async function checkPluginProjection(space: string, provisioner: string, creds: 
   try {
     check("public routing mode is undefined before the initial bind", ep.channelRoutingMode() === undefined);
     await ep.start();
+    await viewer.start();
+    check("scoped endpoint-kind observer reads legacy mode without plugin access", viewer.channelRoutingMode() === "legacy");
     check("credentialed non-consuming agent binds absent projection as CHAT before ready", ready.length === 1 &&
       ready[0].epoch === 0 && !ready[0].enabled && ep.channelRoutingMode() === "legacy");
     const first = opened[0];
@@ -71,6 +77,10 @@ async function checkPluginProjection(space: string, provisioner: string, creds: 
       ready[1].wire === first && ready[1].epoch === 0);
 
     await put(true, 1);
+    const viewerBefore = viewerWire!;
+    await viewerBefore.reconnect();
+    check("endpoint-kind observer admits isolated mode only on its replacement wire", await until(() => viewer.channelRoutingMode() === "isolated") &&
+      viewerWire !== viewerBefore && viewerBefore.isClosed());
     await first.reconnect();
     check("native reconnect with new epoch never announces ready on reused subscriptions", await until(() => ready.length >= 3) &&
       ready.length === 3 && ready[2].wire !== first && first.isClosed() && ready[2].epoch === 1 && ready[2].enabled && ep.channelRoutingMode() === "isolated");
@@ -119,6 +129,7 @@ async function checkPluginProjection(space: string, provisioner: string, creds: 
     check("boot rejects deleted projection without publishing readiness", !bootReady &&
       failure instanceof Error && failure.message.includes("invalid plugin channel route projection record"));
   } finally {
+    await viewer.stop();
     await ep.stop();
     await writer.close();
   }
@@ -497,7 +508,7 @@ try {
   await daemon.releaseDeliveryLease(0, notReadyRev);
 
   await checkStopWhileRedialing(dir, space);
-  await checkPluginProjection(space, mgrCreds, aCreds, uidA);
+  await checkPluginProjection(space, mgrCreds, aCreds, uidA, await mintCreds(auth, newIdentity(), "observer"));
 
   console.log(`\nDELIVERY-RECONNECT SMOKE ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${pass} passed, ${fail} failed)`);
   if (fail) process.exitCode = 1;

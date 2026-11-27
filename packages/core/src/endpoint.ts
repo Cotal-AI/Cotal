@@ -51,6 +51,7 @@ import type {
   AttentionMode,
   ChannelMode,
   CotalMessage,
+  PluginMentionPointer,
   DmHistoryRead,
   HistoryMessage,
   DeliveryClass,
@@ -1158,6 +1159,9 @@ export class CotalEndpoint extends EventEmitter {
   async readHistory(channel: string, opts?: { limit?: number }): Promise<HistoryPage> {
     return this.history.readHistory(channel, opts);
   }
+
+  /** Reauthorize and fetch one retained plugin mention on the delivery service. */
+  readPluginMentionHistory(pointer: PluginMentionPointer): Promise<CotalMessage | undefined> { return this.history.readPluginMentionHistory(pointer); }
 
   /** Fetch recent DMs (any sender→any recipient) from the space's DM backlog. `signal` cancels the
    *  active pull and reclaims its ephemeral consumer. God-view only:

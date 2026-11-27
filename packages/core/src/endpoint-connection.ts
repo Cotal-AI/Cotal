@@ -98,7 +98,7 @@ export class EndpointConnection {
    *  rail or epoch over the old subscriptions. That requires the full bind path. */
   private async validatePluginChannelProjection(nc: NatsConnection): Promise<boolean> {
     if (this.lifecycle.stopped || this.conn.nc !== nc || nc.isClosed()) return false;
-    if (!this.authed || this.identity.dmOnly || this.identity.card.kind !== "agent") return true;
+    if (!this.authed || this.identity.dmOnly || (this.identity.card.kind !== "agent" && !this.identity.readChannelRoutingProjection)) return true;
     let wire = this.projectionWires.get(nc);
     if (!wire) {
       wire = watchNativeConnection(nc, "plugin channel projection");

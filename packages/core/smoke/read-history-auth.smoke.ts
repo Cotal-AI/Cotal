@@ -91,6 +91,11 @@ try {
   const legacyPage = await poster.channelHistoryPage(legacyPluginName);
   check("a dark space stores and reads the plugin-shaped name on chat", legacyPage.items[0]?.id === legacy.id, legacyPage);
   check("the dark-space frontier uses the chat sequence domain", await poster.channelFrontier(legacyPluginName) === await poster.chatFrontier());
+  let pointerRefusal: unknown;
+  try { await poster.readPluginMentionHistory({ channel: legacyPluginName, message: legacy.id, seq: await poster.chatFrontier() }); }
+  catch (error) { pointerRefusal = error; }
+  check("exact mention lookup does not fall back to matching CHAT history in an off space",
+    pointerRefusal instanceof Error && pointerRefusal.message.includes("not on the isolated plugin rail"), pointerRefusal);
   for (let i = 1; i <= 6; i++) await poster.multicast(`scrollback line ${i}`, { channel: "ops" });
   // A backlog whose full page CANNOT fit one NATS message: 20 x ~60 KB is over the 1 MB default
   // max_payload, so a count-only bound would build a reply the broker refuses to carry.
