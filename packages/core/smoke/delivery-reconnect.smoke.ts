@@ -19,6 +19,9 @@ import { Kvm } from "@nats-io/kv";
 import { CotalEndpoint, isReachable, createSpaceAuth, mintCreds, provisionAgent, mintLifecycleUid, serverConfig, newIdentity, setupSpaceStreams, principalKey, DEV_OWNER, membershipBucket, MEMBERSHIP_FEED_KEY, standaloneConnectOpts, dlvDurable, type MembershipChange } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
 import { SMOKE_BROKER_TOKEN, awaitBrokerReady, killAndAwaitExit, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { openChannelRegistry, readChannelRegistry } from "../src/channels.js";
+import type { ConnectionState } from "../src/endpoint-connection-state.js";
+import { PLUGIN_CHANNEL_PROJECTION_KEY } from "../src/plugin-channel-projection.js";
 
 const PORT = await pickFreePort();
 const MON = await pickFreePort();
@@ -32,6 +35,91 @@ const reconnected = (ep: CotalEndpoint): Promise<void> => new Promise((resolve) 
 });
 let pass = 0, fail = 0;
 const check = (name: string, cond: boolean, extra?: unknown) => { if (cond) { pass++; console.log(`  ✓ ${name}`); } else { fail++; console.log(`  ✗ FAIL: ${name}`, extra ?? ""); } };
+
+async function checkPluginProjection(space: string, provisioner: string, creds: string, lifecycleUid: string): Promise<void> {
+  const writer = await connect({ servers: SERVERS, ...standaloneConnectOpts({ creds: provisioner, tls: false }) });
+  const key = PLUGIN_CHANNEL_PROJECTION_KEY;
+  const kv = await openChannelRegistry(writer, space);
+  const opened: NatsConnection[] = [];
+  const ready: { wire: NatsConnection | undefined; epoch: number | undefined; enabled: boolean }[] = [];
+  const warnings: string[] = [];
+  const ep = new CotalEndpoint({
+    space, servers: SERVERS, creds, lifecycleUid, card: { name: "projection-agent", kind: "agent" },
+    channels: [], consume: false, watchPresence: false, registerPresence: false, watchChannels: false,
+    onConnection: (nc) => { opened.push(nc); },
+  });
+  const state = (ep as unknown as { conn: ConnectionState }).conn;
+  ep.on("transport", (event) => {
+    if (event.connected) ready.push({ wire: state.nc, epoch: state.pluginChannelEpoch, enabled: state.pluginChannelsEnabled });
+  });
+  ep.on("warning", (error) => { if (error instanceof Error) warnings.push(error.message); });
+  ep.on("error", (error) => { if (error instanceof Error) warnings.push(error.message); });
+  const until = async (condition: () => boolean) => {
+    for (let i = 0; i < 200 && !condition(); i++) await wait(50);
+    return condition();
+  };
+  const put = (enabled: boolean, epoch: number) => kv.put(key, JSON.stringify({ enabled, epoch }));
+  try {
+    await ep.start();
+    check("credentialed non-consuming agent binds absent projection as CHAT before ready", ready.length === 1 &&
+      ready[0].epoch === 0 && !ready[0].enabled);
+    const first = opened[0];
+    await first.reconnect();
+    check("same projection preserves the native connection and re-announces readiness", await until(() => ready.length === 2) &&
+      ready[1].wire === first && ready[1].epoch === 0);
+
+    await put(true, 1);
+    await first.reconnect();
+    check("native reconnect with new epoch never announces ready on reused subscriptions", await until(() => ready.length >= 3) &&
+      ready.length === 3 && ready[2].wire !== first && first.isClosed() && ready[2].epoch === 1 && ready[2].enabled);
+    const old = ready[2]?.wire;
+    if (!old) throw new Error("fixture did not establish a rebuilt transport");
+    await kv.put(key, "{");
+    await old.reconnect();
+    check("corrupt reconnect refuses readiness and reports the validation error", await until(() => old.isClosed()) &&
+      ready.length === 3 && warnings.some((message) => message.includes("malformed plugin channel route projection")));
+    await put(true, 2);
+    check("full bind can recover after a corrupt reconnect without reviving the old wire", await until(() => ready.length >= 4) &&
+      ready.length === 4 && ready[3].epoch === 2 && ready[3].wire !== old);
+
+    const view = await readChannelRegistry({ servers: SERVERS, space, creds, directGet: true });
+    check("the public registry view does not expose routing metadata as a channel", !Object.hasOwn(view.channels ?? {}, key));
+    const stale = state.nc!;
+    const request = stale.request.bind(stale);
+    let readHeld = false;
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    stale.request = async (...args: Parameters<NatsConnection["request"]>) => {
+      const reply = await request(...args);
+      if (args[0].startsWith("$JS.API.STREAM.MSG.GET.") && !readHeld) {
+        readHeld = true;
+        await held;
+      }
+      return reply;
+    };
+    try {
+      await stale.reconnect();
+      if (!(await until(() => readHeld))) throw new Error("fixture did not hold the native projection reply");
+      await put(false, 3);
+      await ep.reconnect();
+    } finally { release(); }
+    await wait(50);
+    check("a delayed projection reply cannot overwrite or announce readiness for a replacement transport", ready.length === 5 &&
+      ready[4].wire !== stale && ready[4].epoch === 3 && !ready[4].enabled && state.pluginChannelEpoch === 3);
+    await kv.delete(key);
+    let bootReady = false;
+    const refused = new CotalEndpoint({ space, servers: SERVERS, creds, lifecycleUid, card: { name: "projection-refused", kind: "agent" },
+      consume: false, watchPresence: false, registerPresence: false, watchChannels: false });
+    refused.on("transport", (event) => { if (event.connected) bootReady = true; });
+    let failure: unknown;
+    try { await refused.start(); } catch (error) { failure = error; } finally { await refused.stop(); }
+    check("boot rejects deleted projection without publishing readiness", !bootReady &&
+      failure instanceof Error && failure.message.includes("invalid plugin channel route projection record"));
+  } finally {
+    await ep.stop();
+    await writer.close();
+  }
+}
 
 async function checkStopWhileRedialing(dir: string, space: string): Promise<void> {
   const port = await pickFreePort();
@@ -379,6 +467,7 @@ try {
   await daemon.releaseDeliveryLease(0, notReadyRev);
 
   await checkStopWhileRedialing(dir, space);
+  await checkPluginProjection(space, mgrCreds, aCreds, uidA);
 
   console.log(`\nDELIVERY-RECONNECT SMOKE ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${pass} passed, ${fail} failed)`);
   if (fail) process.exitCode = 1;
