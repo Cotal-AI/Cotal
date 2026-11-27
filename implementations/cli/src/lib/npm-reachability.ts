@@ -70,13 +70,17 @@ function secrets(entries: [string, string][], env: NodeJS.ProcessEnv): string[] 
     const value = expanded(decode(raw), env);
     if (auth.test(key)) {
       add(value);
-      if (key.endsWith(":_password") || key.endsWith(":_auth")) add(Buffer.from(value, "base64").toString());
+      if (key.endsWith(":_password") || key.endsWith(":_auth")) {
+        const decoded = Buffer.from(value, "base64").toString();
+        add(decoded);
+        if (key.endsWith(":_auth") && decoded.includes(":")) add(decoded.slice(decoded.indexOf(":") + 1));
+      }
     } else if (key === "registry" || scoped.test(key) || key === "proxy" || key === "https-proxy") {
       try {
         const url = new URL(value);
         add(url.username); add(url.password);
         for (const [, param] of url.searchParams) add(param);
-      } catch { /* npm diagnoses an invalid URL. */ }
+      } catch { add(value); }
     }
   }
   return [...values].filter(Boolean).sort((a, b) => b.length - a.length);

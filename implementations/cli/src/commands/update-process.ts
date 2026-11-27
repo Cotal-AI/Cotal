@@ -93,6 +93,21 @@ export function verifyGlobalEntry(root: string, expectedVersion: string): string
 // exec keeps the published PID and the real child keeps its original argv and stdin.
 const npmChildGate = 'IFS= read -r permit <&3 && [ "$permit" = run ] || exit 1; exec 3<&-; exec "$@"';
 
+async function stopStagingGroup(pgid: number, grace: number, reap: number): Promise<void> {
+  const signal = (value: NodeJS.Signals) => {
+    try { process.kill(-pgid, value); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error; }
+  };
+  signal("SIGTERM");
+  await new Promise(resolve => setTimeout(resolve, grace));
+  if (processGroupMembers(pgid).length) signal("SIGKILL");
+  const deadline = performance.now() + reap;
+  while (processGroupMembers(pgid).length) {
+    if (performance.now() >= deadline) throw new Error(`could not stop staging npm process group ${pgid}`);
+    await new Promise(resolve => setTimeout(resolve, 25));
+  }
+}
+
 export async function runNpmAsync(args: string[], archiveCache?: string): Promise<CommandResult> {
   try {
     const npm = npmInvocation(process.env, args);
@@ -260,26 +275,13 @@ async function runGlobalChild(
     });
     if (staging !== undefined && child.pid !== undefined) {
       const pgid = child.pid;
-      const signalGroup = (signal: NodeJS.Signals) => {
-        try { process.kill(-pgid, signal); }
-        catch (error) { if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error; }
-      };
       const grace = 2000;
       const reap = 1000;
       const stop = () => {
         if (stopping) return;
         clearTimeout(elapsed);
         clearTimeout(idle);
-        stopping = (async () => {
-          signalGroup("SIGTERM");
-          await new Promise(resolve => setTimeout(resolve, grace));
-          if (processGroupMembers(pgid).length) signalGroup("SIGKILL");
-          const deadline = performance.now() + reap;
-          while (processGroupMembers(pgid).length) {
-            if (performance.now() >= deadline) throw new Error(`could not stop staging npm process group ${pgid}`);
-            await new Promise(resolve => setTimeout(resolve, 25));
-          }
-        })();
+        stopping = stopStagingGroup(pgid, grace, reap);
         void stopping.catch(error => {
           child.stdin?.destroy();
           child.stdout?.destroy();

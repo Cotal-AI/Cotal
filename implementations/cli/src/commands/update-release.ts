@@ -37,7 +37,7 @@ export function latestVersionCheckRemedy(latest: { ok: true; version: string } |
 export function latestVersion(rt: UpdateRuntime): { ok: true; version: string } | LatestVersionFailure {
   const cache = mkdtempSync(join(tmpdir(), "cotal-npm-view-"));
   try {
-    const result = rt.npm(["view", "cotal-ai@latest", "version", "--json", "--cache", cache, "--logs-max=0", "--update-notifier=false", "--fetch-retries=0", "--fetch-timeout=15000"]);
+    const result = rt.npm(["view", "cotal-ai@latest", "version", "--json", "--cache", cache, "--logs-max=0", "--timing=false", "--update-notifier=false", "--fetch-retries=0", "--fetch-timeout=15000"]);
     if (result.errorCode === "ENOENT") return { ok: false, error: "npm is not on PATH", missingNpm: true };
     if (result.status !== 0) {
       if (npmOfflineCacheMiss(result)) return { ok: false, error: "npm is in offline mode", offline: true };
@@ -126,7 +126,7 @@ async function npmProxyRefusal(result: CommandResult, rt: UpdateRuntime): Promis
 
   // npm resolves config precedence and redacts the password in its text listing. Its JSON listing
   // omits authenticated proxy URLs, and commented-out settings are not effective.
-  const config = rt.npm(["config", "list", "--json=false", "--long", "--logs-max=0", "--update-notifier=false"]);
+  const config = rt.npm(["config", "list", "--json=false", "--long", "--logs-max=0", "--timing=false", "--update-notifier=false"]);
   if (config.status !== 0 || config.error) return;
   for (const key of ["https-proxy", "proxy"] as const) {
     const value = new RegExp(`^${key} = ("[^\\r\\n]*")$`, "m").exec(config.stdout)?.[1];
@@ -165,7 +165,7 @@ function checkInstalledClosure(version: string, releasePackages: ReadonlySet<str
  *  A private cache forces a registry read without changing the installed packages or running scripts. */
 export async function checkReleaseArchives(version: string, rt: UpdateRuntime): Promise<ReadonlySet<string>> {
   const cache = mkdtempSync(join(tmpdir(), "cotal-release-check-"));
-  const options = ["--cache", cache, "--logs-max=0", "--update-notifier=false", "--fetch-retries=2", "--fetch-retry-mintimeout=1000", "--fetch-retry-maxtimeout=2000", "--fetch-timeout=15000", "--prefer-online"];
+  const options = ["--cache", cache, "--logs-max=0", "--timing=false", "--update-notifier=false", "--fetch-retries=2", "--fetch-retry-mintimeout=1000", "--fetch-retry-maxtimeout=2000", "--fetch-timeout=15000", "--prefer-online"];
   const pending = new Set(["cotal-ai"]);
   const names = ["cotal-ai"];
   try {
