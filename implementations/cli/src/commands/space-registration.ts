@@ -199,8 +199,13 @@ export function handAddedRegistration(name: string, force: boolean, target: unkn
 /** A manual registration can be replaced with `--force` or checked in place when it matches. */
 function registrationBeforeAdd(name: string, force: boolean, target: unknown, matches?: (existing: MeshEntry) => boolean): MeshEntry | undefined {
   const existing = handAddedRegistration(name, force, target);
-  if (existing && !force && !matches?.(existing))
-    throw refuse("CONFLICT", `"${name}" is already registered at ${existing.server}`, target, `forget it first with \`cotal space forget ${name}\`, or pass --force to replace it`);
+  if (existing && !force && !matches?.(existing)) {
+    const checks = matches
+      ? "This records the replacement without checking the broker; repeat the same add without --force to verify it."
+      : "The bundle checks still apply.";
+    throw refuse("CONFLICT", `"${name}" is already registered at ${existing.server}`, target,
+      `to replace it in place, repeat the add with --force. ${checks} Forgetting it with ${codeSpan(`cotal space forget ${name}`)} instead clears its selection, per-space preferences and remembered chat sessions`);
+  }
   return existing;
 }
 

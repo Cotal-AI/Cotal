@@ -1,0 +1,16 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/mcp-server-card/v1.json",
+  "version": "1.0",
+  "protocolVersion": "2025-06-18",
+  "serverInfo": { "name": "cotal-docs", "title": "Cotal documentation", "version": "1.0.0" },
+  "description": "Documentation MCP server for Cotal: search every docs page, list the table of contents, read any page as markdown. Read-only, no credentials. For actions on cotal.ai use the product server at https://cotal.ai/mcp.",
+  "documentationUrl": "https://docs.cotal.ai/llms.txt",
+  "transport": { "type": "streamable-http", "endpoint": "https://docs.cotal.ai/mcp" },
+  "capabilities": { "tools": { "listChanged": false }, "resources": { "listChanged": false } },
+  "authentication": { "required": false, "schemes": [] },
+  "tools": [
+    { "name": "search_docs", "description": "Keyword search over every Cotal docs page; returns ranked pages with URLs and an excerpt." },
+    { "name": "get_docs_page", "description": "Reads one docs page as markdown by slug, path or URL." },
+    { "name": "list_docs_pages", "description": "Lists every docs page with title, section and URLs." }
+  ]
+}
