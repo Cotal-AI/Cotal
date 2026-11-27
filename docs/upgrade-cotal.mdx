@@ -304,7 +304,7 @@ damaged first-party extensions installed from npm at the running CLI's version, 
 packages cached. An unsuccessful offline repair names the affected extensions and still exits 0.
 On Linux and macOS, `cotal update --self` also removes abandoned extension staging copies
 from the selected connector configuration, even when the CLI is current. Both `cotal update`
-and `cotal update --self` check the previous retained configuration recorded by the selected
+and `cotal update --self` check the previous connector configuration recorded by the selected
 update without removing its installed connectors. This includes staging copies renamed for
 promotion before the journal was written. Cleanup takes the extension writer lock and leaves
 staging alone while a writer is active or a promotion journal is present.

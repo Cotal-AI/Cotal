@@ -21,43 +21,58 @@ async function reclaimPreviousStages(prefix: string, entry: string, version: str
   const foreign = join(prefix, "installs", "f".repeat(64), "sets", "0.0.0-test", "cotal");
   mkdirSync(selected, { recursive: true, mode: 0o700 });
   renameSync(join(prefix, "seed"), join(selected, "seed"));
-  const stageName = ".extensions.stage-Kl1234.ready";
-  for (const root of [previous, foreign]) {
-    for (const name of ["extensions", stageName]) {
-      const path = join(root, name);
-      mkdirSync(path, { recursive: true, mode: 0o700 });
-      writeFileSync(join(path, "package.json"), "{}");
-    }
+  const ordinaryName = ".extensions.stage-Mn5678", stageName = ".extensions.stage-Kl1234.ready";
+  const plantStages = (root: string) => {
+    const ordinary = join(root, ordinaryName), ready = join(root, stageName);
+    mkdirSync(join(ordinary, "config/cotal/extensions"), { recursive: true, mode: 0o700 });
+    writeFileSync(join(ordinary, "config/cotal/extensions/package.json"), "{}");
+    mkdirSync(ready, { recursive: true, mode: 0o755 });
+    writeFileSync(join(ready, "package.json"), "{}");
+    return { ordinary, ready };
+  };
+  for (const root of [previous, prefix, foreign]) {
+    const path = join(root, "extensions");
+    mkdirSync(path, { recursive: true, mode: 0o700 });
+    writeFileSync(join(path, "package.json"), "{}");
+    plantStages(root);
   }
   const publish = (root: string) => {
     const data = JSON.stringify({ v: 1, entry, version, root: selected, snapshot: join(root, ".update-snapshot-Kl1234") });
     for (const path of [join(sets, "current.json"), join(sets, version, "selection.json")]) writeFileSync(path, data, { mode: 0o600 });
   };
   const current = async () => assert.match(await runUpdate("--self"), /installed package closure is current\. No connector reconciliation was run\./);
-  const ready = join(previous, stageName);
   publish(foreign);
   await current();
   assert.ok(existsSync(join(foreign, stageName)), "cleanup skips a rollback path from another installation");
-  assert.ok(existsSync(ready), "cleanup does not guess the previous set");
-  publish(previous);
-  const writer = acquireLock(join(previous, ".extensions.lock"), { label: "smoke previous extension writer" });
-  try {
+  for (const root of [previous, prefix]) {
+    const ordinary = join(root, ordinaryName), ready = join(root, stageName);
+    assert.ok(existsSync(ordinary) && existsSync(ready), "cleanup does not guess an unselected source");
+    publish(root);
+    const writer = acquireLock(join(root, ".extensions.lock"), { label: "smoke previous extension writer" });
+    try {
+      await current();
+      assert.ok(existsSync(ordinary) && existsSync(ready), "cleanup leaves previous stages with a live writer");
+    } finally { writer.release(); }
+    const journal = join(root, ".extensions-promotion.json");
+    writeFileSync(journal, "{}", { mode: 0o600 });
     await current();
-    assert.ok(existsSync(ready), "cleanup leaves a previous stage with a live writer");
-  } finally { writer.release(); }
-  const journal = join(previous, ".extensions-promotion.json");
-  writeFileSync(journal, "{}", { mode: 0o600 });
-  await current();
-  assert.ok(existsSync(ready), "cleanup leaves a previous stage with a promotion journal");
-  rmSync(journal);
-  await current();
-  assert.ok(!existsSync(ready), "current self-update removes the previous unpublished stage");
-  assert.equal(readFileSync(join(previous, "extensions", "package.json"), "utf8"), "{}", "cleanup keeps the previous installed extensions");
-  assert.ok(existsSync(join(selected, "seed/stamp.json")), "cleanup keeps the selected seed inventory");
-  mkdirSync(ready, { mode: 0o700 });
+    assert.ok(existsSync(ordinary) && existsSync(ready), "cleanup leaves previous stages with a promotion journal");
+    rmSync(journal);
+    await current();
+    assert.ok(!existsSync(ordinary) && !existsSync(ready), "current self-update removes previous unpublished stages");
+    assert.equal(readFileSync(join(root, "extensions", "package.json"), "utf8"), "{}", "cleanup keeps the previous installed extensions");
+    assert.ok(existsSync(join(selected, "seed/stamp.json")), "cleanup keeps the selected seed inventory");
+    plantStages(root);
+    await runUpdate();
+    assert.ok(!existsSync(ordinary) && !existsSync(ready), "plain update also removes previous unpublished stages");
+    assert.equal(readFileSync(join(root, "extensions", "package.json"), "utf8"), "{}");
+  }
+  const selectedStages = plantStages(selected);
+  publish(selected);
   await runUpdate();
-  assert.ok(!existsSync(ready), "plain update also removes the previous unpublished stage");
-  assert.equal(readFileSync(join(previous, "extensions", "package.json"), "utf8"), "{}");
+  assert.ok(existsSync(selectedStages.ordinary) && existsSync(selectedStages.ready), "previous-stage scan skips the active selected root");
+  rmSync(selectedStages.ordinary, { recursive: true, force: true });
+  rmSync(selectedStages.ready, { recursive: true, force: true });
 }
 
 if (process.platform !== "linux") {
