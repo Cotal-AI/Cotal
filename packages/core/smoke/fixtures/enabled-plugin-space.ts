@@ -10,7 +10,7 @@ import {
   CotalEndpoint, DEV_OWNER, createSpaceAuth, isReachable, mintCreds, mintLifecycleUid, newIdentity, principalKey,
   serverConfig, setupSpaceStreams, standaloneConnectOpts,
 } from "../../src/index.js";
-import { openChannelRegistry } from "../../src/channels.js";
+import { openChannelRegistry, writeChannelConfig } from "../../src/channels.js";
 import { PLUGIN_CHANNEL_PROJECTION_KEY } from "../../src/plugin-channel-projection.js";
 import { PLUGIN_CHANNEL_ROOT } from "../../src/plugin-channel-route.js";
 import { pluginChannelSpaceStateSubject } from "../../src/plugin-channel-space-state.js";
@@ -28,6 +28,7 @@ export async function startEnabledPluginSpace() {
   const space = `plugin-smoke-${randomUUID().slice(0, 8)}`;
   const channel = `${PLUGIN_CHANNEL_ROOT}.fixture.issue`;
   const hiddenChannel = `${PLUGIN_CHANNEL_ROOT}.other.issue`;
+  const chatChannel = "fixture-replay";
   const auth = await createSpaceAuth(space);
   const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
   const conf = join(dir, "server.conf");
@@ -61,6 +62,7 @@ export async function startEnabledPluginSpace() {
     await jsm.jetstream().publish(pluginChannelSpaceStateSubject(space), new TextEncoder().encode(JSON.stringify({ version: 1, enabled: true, epoch: 1 })));
     const registry = await openChannelRegistry(wire, space);
     await registry.put(PLUGIN_CHANNEL_PROJECTION_KEY, JSON.stringify({ enabled: true, epoch: 1 }));
+    await writeChannelConfig(registry, chatChannel, { deliveryClass: "live", replay: true, replayWindow: "1h" });
     const provisioner = endpoint({ creds: provisionerCreds, channels: [], consume: false, registerPresence: false, watchPresence: false,
       card: { name: "prov", kind: "endpoint" } });
     await provisioner.start();
@@ -87,7 +89,7 @@ export async function startEnabledPluginSpace() {
       await ep.startPlane3((target, uid) => ep.aclForOwner(target, uid), { readPluginChannelAuthority: true });
       return ep;
     };
-    return { servers, space, channel, hiddenChannel, endpoint, mintAgent, mintObserver, startDelivery, provisioner, jsm, close };
+    return { servers, space, channel, hiddenChannel, chatChannel, endpoint, mintAgent, mintObserver, startDelivery, provisioner, jsm, close };
   } catch (error) {
     await close();
     throw error;

@@ -44,7 +44,7 @@ const check = (name: string, cond: boolean, extra?: unknown) => { if (cond) { pa
 
 async function checkEnabledPluginDelivery() {
   const fixture = await startEnabledPluginSpace();
-  const { channel, hiddenChannel, space, endpoint, mintAgent, jsm } = fixture;
+  const { channel, hiddenChannel, chatChannel, space, endpoint, mintAgent, jsm } = fixture;
   try {
     const daemon = await fixture.startDelivery();
     const reader = await mintAgent({ read: [channel] });
@@ -73,6 +73,8 @@ async function checkEnabledPluginDelivery() {
     const names = (rows: Awaited<ReturnType<typeof read.listChannels>>) => rows.map((row) => row.channel);
     const readable = names(await read.listChannels());
     const chatOnly = names(await observer.listChannels());
+    const replay = await observer.channelReplayPolicy(chatChannel);
+    check("the fixture's ordinary CHAT channel has explicit replay enabled", chatOnly.includes(chatChannel) && replay.registered && replay.replay && replay.window === "1h");
     check("isolated discovery lists admitted grants and suppresses stale configured names",
       readable.includes(channel) && !readable.includes(hiddenChannel) && !chatOnly.includes(channel) && !chatOnly.includes(hiddenChannel),
       { readable, chatOnly });
