@@ -7,6 +7,7 @@ import { createHash } from 'node:crypto';
 import test from 'node:test';
 import { parse } from 'yaml';
 import { planRelease } from './upgrade-matrix-plan.mjs';
+import { expectedTrustRemedy } from './project-trust-upgrade.mjs';
 import { knownRefusals } from './upgrade-matrix-refusals.mjs';
 import { matchSource16410Refusal, source16410Refusals } from './source-16410-refusal.mjs';
 const workflow = parse(readFileSync(new URL('../.github/workflows/automatic-update-platforms.yml', import.meta.url), 'utf8'));
@@ -15,7 +16,7 @@ const program = summary.split("<<'NODE'\n")[1].split('\nNODE')[0];
 test('all required release coordinates fit in the concurrency budget without waiting for macOS', () => {
   const plan = planRelease({ inputs: { phase: 'candidate', source_sha: 'a'.repeat(40), target_version: '0.164.9', profile: 'bounded' } }, { eventName: 'workflow_dispatch', sourceVersion: '0.164.8' });
   const cells = workflow.jobs['release-cells'];
-  assert.equal(plan.matrix.include.length, 47);
+  assert.equal(plan.matrix.include.length, 50);
   assert.equal(cells.strategy['max-parallel'], plan.matrix.include.length);
   assert.deepEqual(cells.needs, ['select', 'release-pack', 'release-next']);
   assert.equal(cells.strategy['fail-fast'], false);
@@ -39,13 +40,13 @@ test('paired next-hop builders are explicit in both phases and stamp B and C bef
   assert(!next.steps.some(step => step.run?.includes('pnpm --workspace-concurrency 3 build')));
   assert(next.steps.some(step => step.run?.includes('node scripts/pack-candidate-next.mjs --source-root')));
   assert(next.steps.some(step => step.run?.includes('--offset 2000')));
-  assert.equal(workflow.jobs['release-cells'].strategy['max-parallel'], 47);
+  assert.equal(workflow.jobs['release-cells'].strategy['max-parallel'], 50);
   for (const job of ['release-native', 'release-pack', 'release-next']) assert(workflow.jobs[job]);
 });
 test('Corepack Node fallback runs on the frozen source independently of the upgrade coordinates', () => {
   const job = workflow.jobs['release-corepack-node-fallback'];
   assert.equal(job.needs, 'select');
-  assert.equal(job.if, "needs.select.outputs.applicable == 'true'");
+  assert.equal(job.if, "needs.select.outputs.applicable == 'true' && !contains(github.event.head_commit.message, '[windows-job-only]') && !contains(github.event.head_commit.message, '[windows-baseline-only]') && !contains(github.event.head_commit.message, '[mac-controls-only]') && !contains(github.event.head_commit.message, '[mac-transition-only]') && !contains(github.event.head_commit.message, '[scheduler-only]') && !contains(github.event.head_commit.message, '[installer-only]')");
   assert.equal(job.steps[0].with.ref, '${{ needs.select.outputs.source }}');
   assert.equal(job.steps[0].with['persist-credentials'], false);
   assert(job.steps.some(step => step.run?.includes('node bin/smoke/update-registry-arrival.smoke.mjs corepack-node-fallback')));
@@ -73,6 +74,9 @@ test('paired routes preserve ordinary published arguments and bind artifact rece
   assert(download.if.includes("matrix.scenario == 'candidate-next-foreign-config-recovery'"));
   assert(run.includes("'candidate-next-foreign-config-recovery': 'recovery'"));
   assert(run.includes("['foreign-config-recovery', 'candidate-next-foreign-config-recovery'].includes(cell.scenario)) args.push('--foreign-config-snapshot', 'true')"));
+  assert(run.includes("if (cell.scenario === 'project-trust-migration') args.push('--project-trust-migration', 'true')"));
+  assert(program.includes("'project-trust-migrated'"));
+  assert(program.includes('verifyProjectTrustEvidence'));
   for (const name of ['candidate-next-origin.json', 'EXPECTED_NEXT_ARTIFACT', 'EXPECTED_NEXT_DIGEST', 'EXPECTED_FOLLOW_ON_ARTIFACT', 'EXPECTED_FOLLOW_ON_DIGEST', 'sourceManifestSha256', 'targetManifestSha256', 'followOnManifestSha256', 'verifyCandidateNextEvidence', "'candidate-source-identity'", "'candidate-next-target'", "'next-hop-success'", "'stopped-daemon-before-update'", "'disabled-daemon-before-update'", "'stopped-desktop-beside-cli'", "'follow-on-target'", "'follow-on-success'", "'exact-source-refusal'", "'intermediate-whole-machine'"]) assert(program.includes(name), name);
 });
 test('ordinary landing push cannot admit the legacy priority cascade', () => {
@@ -126,6 +130,7 @@ function fixture(change = () => {}, { scenario = 'configured', channel = 'npm', 
     .replace("'./scripts/upgrade-matrix-plan.mjs'", JSON.stringify(new URL('./upgrade-matrix-plan.mjs', import.meta.url).href))
     .replace("'./scripts/upgrade-matrix-refusals.mjs'", JSON.stringify(new URL('./upgrade-matrix-refusals.mjs', import.meta.url).href))
     .replace("'./scripts/candidate-next-evidence.mjs'", JSON.stringify(new URL('./candidate-next-evidence.mjs', import.meta.url).href))
+    .replace("'./scripts/project-trust-upgrade.mjs'", JSON.stringify(new URL('./project-trust-upgrade.mjs', import.meta.url).href))
     .replace("'./scripts/daemon-manual-acceptance.mjs'", JSON.stringify(new URL('./daemon-manual-acceptance.mjs', import.meta.url).href)));
   const env = { ...process.env, RUNNER_TEMP: root, GITHUB_STEP_SUMMARY: join(root, 'summary.md'), EXPECTED_CANDIDATE_ARTIFACT: '42', EXPECTED_CANDIDATE_DIGEST: 'sha256:fixed', EXPECTED_NEXT_ARTIFACT: '43', EXPECTED_NEXT_DIGEST: 'sha256:next', EXPECTED_FOLLOW_ON_ARTIFACT: '44', EXPECTED_FOLLOW_ON_DIGEST: 'sha256:follow', EXPECTED_HARNESS_SOURCE: harnessSource };
   try { execFileSync(process.execPath, [join(root, 'summary.mjs')], { env, stdio: 'pipe', cwd: new URL('..', import.meta.url) }); return { exit: 0, root }; }
@@ -653,6 +658,72 @@ test('daemon consent summary uses daemon cleanup proof and cannot inherit standa
 });
 test('actual workflow census refuses missing manual/recovery/status requirements', () => {
   for (const name of ['no manual step or refusal', 'no paused recovery record', 'cotal status exits zero']) assert.notEqual(fixture(d => { d.report.assertions = d.report.assertions.filter(a => a.name !== name); }).exit, 0);
+});
+test('actual workflow census re-grades project-trust-migration artifact and rejects missing or tampered evidence', () => {
+  const buildEvidence = directory => d => {
+    const rootPrefix = '/private/cell/projects/';
+    const makeLaunch = mode => ({ mode, env: 'forwarded-project-env-10672', permissionMode: 'default', mcpServers: ['cotal', 'trustProbe'], probe: 'MCP ran' });
+    const makeRefusal = root => {
+      const expectedRemedy = expectedTrustRemedy(root);
+      return {
+        canonicalRoot: root,
+        expectedRemedy,
+        probeExit: 1,
+        probeOutput: `refused at ${root}; run \`${expectedRemedy}\``,
+        probeLogCreated: false,
+        plainExit: 1,
+        plainOutput: `refused at ${root}; run \`${expectedRemedy}\``,
+        plainLogCreated: false,
+      };
+    };
+    const evidence = {
+      platform: 'linux',
+      sourceVersion: d.cell.sourceVersion,
+      targetVersion: d.cell.targetVersion,
+      trustCase: 'source-without-trust',
+      preUpdate: { seedAbsentBeforeUpdate: true, statusFirst: makeLaunch('foreground'), spawnFirst: makeLaunch('foreground'), symlink: makeLaunch('foreground'), spellings: { platform: 'linux', notRun: 'path spellings beyond the symlink run on Windows only' } },
+      statusFirst: { canonicalRoot: `${rootPrefix}s1`, seedAbsentAfterUpdateBeforeStatus: true, seedRecordedByStatus: true, trustedRoots: [`${rootPrefix}s1`], foreground: makeLaunch('foreground'), managed: makeLaunch('managed'), managedSeatJoined: true },
+      spawnFirst: { profileHome: `${rootPrefix}h-spawn`, canonicalRoot: `${rootPrefix}s2`, seedAbsentBeforeSpawn: true, storeAbsentBeforeSpawn: true, seedRecordedBySpawn: true, trustedRoots: [`${rootPrefix}s2`], foreground: makeLaunch('foreground') },
+      preparedStatusFirst: { canonicalRoot: `${rootPrefix}p1`, seedAbsentBeforeStatus: true, seedRecordedByStatus: true, trustedRoots: [`${rootPrefix}p1`], foreground: makeLaunch('foreground') },
+      preparedUpFirst: { canonicalRoot: `${rootPrefix}p2`, seedAbsentBeforeUp: true, seedRecordedByUp: true, trustedRoots: [`${rootPrefix}p2`], foreground: makeLaunch('foreground') },
+      symlink: { profileHome: `${rootPrefix}h-link`, linkPath: `${rootPrefix}link`, canonicalRoot: `${rootPrefix}real`, seedAbsentBeforeSpawn: true, trustedRoots: [`${rootPrefix}real`], foreground: makeLaunch('foreground') },
+      refusals: { legacyUnregisteredWithPeers: makeRefusal(`${rootPrefix}u1`), postUpdateCreated: makeRefusal(`${rootPrefix}u2`), legacyUnregisteredEmptyHome: makeRefusal(`${rootPrefix}u3`) },
+      cleanup: { stacksStopped: true },
+    };
+    const artifact = `${d.report.id}-project-trust-migration.json`;
+    const bytes = Buffer.from(JSON.stringify(evidence, null, 2) + '\n', 'utf8');
+    writeFileSync(join(directory, artifact), bytes, { mode: 0o600 });
+    d.report.projectTrustMigration = { artifact, bytes: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex') };
+    d.report.assertions.push({ name: 'existing project trust migrates and untrusted projects still refuse', passed: true });
+    d.report.calls = [
+      { label: 'install published source', argv: ['install'], exit: 0 },
+      { label: 'project-trust pre-update status-first spawn', argv: ['spawn'], exit: 0 },
+      { label: 'project-trust pre-update spawn-first spawn', argv: ['spawn'], home: `${rootPrefix}h-spawn`, exit: 0 },
+      { label: 'project-trust pre-update symlink spawn', argv: ['spawn'], home: `${rootPrefix}h-link`, exit: 0 },
+      { label: 'upgrade under test', argv: ['update', '--self'], exit: 0 },
+      { label: 'project-trust status-first status', argv: ['status', '--plain'], exit: 0 },
+      { label: 'project-trust status-first foreground spawn', argv: ['spawn'], exit: 0 },
+      { label: 'project-trust status-first managed spawn', argv: ['spawn', '--detach'], exit: 0 },
+      { label: 'project-trust spawn-first foreground spawn', argv: ['spawn'], home: `${rootPrefix}h-spawn`, exit: 0 },
+      { label: 'project-trust prepared-status-first status', argv: ['status', '--plain'], exit: 0 },
+      { label: 'project-trust prepared-status-first foreground spawn', argv: ['spawn'], exit: 0 },
+      { label: 'project-trust prepared-up-first stack up', argv: ['up'], exit: 0 },
+      { label: 'project-trust prepared-up-first foreground spawn', argv: ['spawn'], exit: 0 },
+      { label: 'project-trust symlink foreground spawn', argv: ['spawn'], home: `${rootPrefix}h-link`, exit: 0 },
+    ];
+  };
+  const okRun = fixture((d, directory) => buildEvidence(directory)(d), { scenario: 'project-trust-migration' });
+  assert.equal(okRun.exit, 0, okRun.stderr);
+  const missingAssertion = fixture((d, directory) => {
+    buildEvidence(directory)(d);
+    d.report.assertions = d.report.assertions.filter(a => a.name !== 'existing project trust migrates and untrusted projects still refuse');
+  }, { scenario: 'project-trust-migration' });
+  assert.notEqual(missingAssertion.exit, 0);
+  const tamperedArtifact = fixture((d, directory) => {
+    buildEvidence(directory)(d);
+    writeFileSync(join(directory, d.report.projectTrustMigration.artifact), '{"tampered":true}\n');
+  }, { scenario: 'project-trust-migration' });
+  assert.notEqual(tamperedArtifact.exit, 0);
 });
 test('actual publication selector reports a missing receipt without starting the published phase', async () => {
   const script = workflow.jobs.select.steps.find(s => s.id === 'plan').with.script;
