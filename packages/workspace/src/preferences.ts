@@ -2,8 +2,8 @@ import { existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync } from "no
 import { dirname, join } from "node:path";
 import { acquireLock, globalConfigDir, token, utf16Problem, writeSecretFileAtomic } from "@cotal-ai/core";
 import { CommandFailure, isCommandFailure, type OutputWarning } from "./output.js";
-import { localRecordAccess, protectedLocalDirectory, protectedLocalEntry, protectedResolvedDirectory, shellPath } from "./protected-records.js";
-import { assertProtectedLinkWrite, type ProtectedLinkChecks } from "./protected-link-write.js";
+import { configLinkChecks, localRecordAccess, shellPath } from "./protected-records.js";
+import { assertProtectedLinkWrite } from "./protected-link-write.js";
 import { DEFAULT_CONNECTOR, OFFICIAL_CONNECTORS } from "./official-connectors.js";
 import { chatNameProblem } from "./chat-name.js";
 import { localWriteFailure } from "./local-write.js";
@@ -224,17 +224,15 @@ function assertPreferencesNotLinked(path: string): void {
 /** Refuse a preferences write into a folder another local account could write, by the rule every
  *  protected path follows (see {@link assertProtectedLinkWrite}): that account could replace the file,
  *  and `editor` runs as a shell command. A symbolic link is followed when its physical folder and
- *  every link parent are protected, the same way a write under the Cotal home is. A folder not made
+ *  every link parent are protected and you or root own the link. A folder not made
  *  yet is checked from the nearest one above it that exists. */
 export function assertPreferencesFolderProtected(): void {
   preferencesFolder();
 }
 
-const linkChecks: ProtectedLinkChecks = { resolved: protectedResolvedDirectory, entry: protectedLocalEntry, spelled: protectedLocalDirectory };
-
 /** The physical preferences directory a write may use, after the protected-link check. */
 function preferencesFolder(): string {
-  return assertProtectedLinkWrite(globalConfigDir(), "the preferences folder", linkChecks, "nothing was changed");
+  return assertProtectedLinkWrite(globalConfigDir(), "the preferences folder", configLinkChecks, "nothing was changed");
 }
 
 /** The warning a command gives when the preferences file it read sits in a folder another local
@@ -244,7 +242,7 @@ function preferencesFolder(): string {
 export function preferencesFolderWarning(): { warning: OutputWarning; remedy: string } | undefined {
   if (!lstatSync(preferencesPath(), { throwIfNoEntry: false })) return undefined;
   try {
-    assertProtectedLinkWrite(globalConfigDir(), "the preferences folder", linkChecks);
+    assertProtectedLinkWrite(globalConfigDir(), "the preferences folder", configLinkChecks);
     return undefined;
   } catch (e) {
     if (!isCommandFailure(e) || e.code !== "PERMISSION_DENIED") throw e;

@@ -257,7 +257,8 @@ Symlinks, FIFOs, devices, and folders at `preferences.json` are refused with `PE
 
 The preferences folder and each ancestor must be writable only by you or root.
 Group write is accepted only for your private group without an extended ACL; world write is refused.
-A path that passes through a symbolic link is accepted when you or root own the link and the physical folder and every folder the link steps through are protected against other local writers.
+An absolute path can pass through symbolic links when you or root own each link and the physical folders are protected against other local writers.
+A relative `XDG_CONFIG_HOME` cannot pass through symbolic links.
 The preferences folder itself must still be a real folder.
 An unsafe folder permits reads with `PREFERENCES_FOLDER_UNPROTECTED`, naming the path and how to protect it.
 Writes, including setup and `space forget`, refuse `PERMISSION_DENIED` before any change.

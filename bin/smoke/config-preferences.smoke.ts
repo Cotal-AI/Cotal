@@ -650,11 +650,18 @@ if (process.platform !== "win32") {
 const lstat = fs.lstatSync;
 fs.lstatSync = (path, options) => {
   const stat = lstat(path, options);
-  if (path === ${JSON.stringify(sticky)} && stat) {
+  if (stat && path === ${JSON.stringify(sticky)} && process.env.FOREIGN_LINK !== "home") {
     stat.uid = 0;
     stat.mode = (stat.mode & ~0o7777) | 0o1777;
   }
-  if (path === ${JSON.stringify(stickyLink)} && stat && process.env.FOREIGN_LINK === "1") stat.uid = process.getuid() === 1 ? 2 : 1;
+  if (stat && (path === ${JSON.stringify(stickyLink)} || (path === "link" && process.cwd() === ${JSON.stringify(sticky)}))) {
+    if (process.env.FOREIGN_LINK === "root") stat.uid = 0;
+    else if (process.env.FOREIGN_LINK === "1" || process.env.FOREIGN_LINK === "home") stat.uid = process.getuid() === 1 ? 2 : 1;
+  }
+  if (stat && path === ${JSON.stringify(stickyTarget)} && process.env.FOREIGN_LINK === "root-target") {
+    stat.uid = 0;
+    stat.mode |= 0o002;
+  }
   return stat;
 };
 require("node:module").syncBuiltinESMExports();
@@ -667,7 +674,23 @@ require("node:module").syncBuiltinESMExports();
   const stickyWrite = run(["config", "set", "color", "never", "--json"], { ...stickyEnv, FOREIGN_LINK: undefined });
   check("an owned link in a root-owned sticky folder completes, and the file is in the physical folder",
     stickyWrite.status === 0 && existsSync(join(stickyTarget, "cotal", "preferences.json")), shown(stickyWrite));
-  rmSync(sticky, { recursive: true, force: true });
+  const rootLink = run(["config", "set", "color", "always", "--json"], { ...stickyEnv, XDG_CONFIG_HOME: "link", FOREIGN_LINK: "root" }, sticky);
+  check("a root-owned relative link is refused with the physical-path remedy",
+    rootLink.status === 2 && rootLink.envelope?.error?.code === "PERMISSION_DENIED" &&
+    rootLink.envelope.error.remedy === `use the physical path ${realpathSync(join(stickyTarget, "cotal"))}`, shown(rootLink));
+  const linkedProject = run(["space", "create", "linked-project", "--root", stickyLink, "--json"], { NODE_OPTIONS: stickyEnv.NODE_OPTIONS, FOREIGN_LINK: "root" });
+  check("a root-owned project link keeps the physical-path remedy",
+    linkedProject.status === 2 && linkedProject.envelope?.error?.code === "PERMISSION_DENIED" &&
+    linkedProject.envelope.error.remedy === `use the physical path ${realpathSync(stickyTarget)}` &&
+    !existsSync(join(stickyTarget, ".cotal")), shown(linkedProject));
+  if (process.getuid?.() !== 0) {
+    // The link stays owned by the caller; only the target's owner and mode are supplied by the fixture.
+    const rootTarget = run(["config", "set", "color", "always", "--json"], { ...stickyEnv, FOREIGN_LINK: "root-target" });
+    check("a root-owned writable config target is refused without suggesting chmod",
+      rootTarget.status === 2 && rootTarget.envelope?.error?.code === "PERMISSION_DENIED" &&
+      rootTarget.envelope.error.message.includes(`${stickyTarget} is writable by every local account`) &&
+      rootTarget.envelope.error.remedy === "use a folder you own, or ask its owner to protect it", shown(rootTarget));
+  }
   const linkedHome = join(home, "setup-linked-home");
   const linkedHomeTarget = join(home, "setup-linked-home-target");
   mkdirSync(linkedHomeTarget, { mode: 0o700 });
@@ -704,6 +727,16 @@ else if (args.join(" ") === "plugin marketplace list --json") {
   check("setup through a linked home writes the preparation, and trust of that project completes",
     seed.status === 0 && setup.status === 0 && setup.envelope?.result?.spaceState === "created" &&
     trusted.status === 0 && trustedRoots.includes(realpathSync(projectDir)), { seed: shown(seed), setup: shown(setup), trust: shown(trusted) });
+  const recordHome = join(stickyLink, "records");
+  const otherProject = join(linkedHomeTarget, "other-project");
+  mkdirSync(otherProject, { mode: 0o700 });
+  const otherSetup = run(["setup", "--destination", "local", "--harness", "codex", "--project", otherProject, "--space", "other-linked", "--configure-only", "--yes", "--json"], {
+    ...linkedEnv, COTAL_HOME: recordHome, NODE_OPTIONS: stickyEnv.NODE_OPTIONS, FOREIGN_LINK: "home",
+  });
+  check("setup accepts a protected Cotal record home reached through a non-config link",
+    otherSetup.status === 0 && otherSetup.envelope?.result?.spaceState === "created" &&
+    existsSync(join(stickyTarget, "records", "prepared")), shown(otherSetup));
+  rmSync(sticky, { recursive: true, force: true });
   const missingFolder = join(home, "missing-folder-link");
   const missingTarget = join(physical, "no-such-folder");
   symlinkSync(missingTarget, missingFolder);

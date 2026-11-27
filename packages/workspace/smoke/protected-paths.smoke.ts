@@ -154,18 +154,18 @@ accepts(() => assertProtectedEntry("the path", "/home/dev/Projects", stat(DIR | 
 accepts(() => assertProtectedEntry("the declared adapter path", "/home/dev/bin/nats-server", stat(FILE | 0o775), { policy }), "a UPG group-writable adapter file");
 accepts(() => assertProtectedEntry("the path", "/tmp", stat(DIR | 0o1777, 0, 0), { ancestor: true, policy }), "a root-owned sticky ancestor");
 refused(() => assertProtectedEntry("the path", "/tmp", stat(DIR | 0o1777, 0, 0), { policy }),
-  /: \/tmp is writable by every local account$/, "use a folder you own, or ask its owner to protect it", "a root-owned sticky adapter entry keeps the entry rule");
+  /: \/tmp is writable by every local account$/, "chmod go-w /tmp", "a root-owned sticky adapter entry keeps the entry rule");
 refused(() => assertProtectedEntry("the project root", "/home/dev/shared", stat(DIR | 0o777), { ancestor: true, policy }),
   /^the project root is not protected against other local writers: \/home\/dev\/shared is writable by every local account$/,
   "chmod go-w /home/dev/shared", "world write, even with a private group, removes group write in the same step");
 refused(() => assertProtectedEntry("the path", "/home/eve", stat(DIR | 0o755, 1001, 1001), { ancestor: true, policy }),
-  /: \/home\/eve is owned by another account$/, "use a folder you own, or ask its owner to protect it", "a foreign owner");
+  /: \/home\/eve is owned by another account$/, "use a physical path owned by you or root, without symlinks", "a foreign owner");
 refused(() => assertProtectedEntry("the path", "/home/dev/link", stat(0o120777, ME, 1000, true), { ancestor: true, policy }),
   /: \/home\/dev\/link is a symbolic link$/, "use a physical path owned by you or root, without symlinks", "a symlink");
 refused(() => assertProtectedEntry("the path", "/srv/team", stat(DIR | 0o775, ME, 27), { ancestor: true, policy }),
   /: \/srv\/team is group-writable and its group is not your primary group$/, "chmod g-w /srv/team", "a shared group");
 refused(() => assertProtectedEntry("the path", "/usr/local", stat(DIR | 0o2775, 0, 50), { ancestor: true, policy }),
-  /: \/usr\/local is group-writable and it is not owned by you$/, "use a folder you own, or ask its owner to protect it", "a root-owned group-writable directory");
+  /: \/usr\/local is group-writable and it is not owned by you$/, "chmod g-w /usr/local", "a root-owned group-writable directory");
 refused(() => assertProtectedEntry("the path", "/home/dev/my work", stat(DIR | 0o775), { ancestor: true, policy: unproven }),
   /: \/home\/dev\/my work is group-writable and the private-group proof is unavailable: getent is not installed$/,
   "chmod g-w '/home/dev/my work'", "an unavailable proof");
