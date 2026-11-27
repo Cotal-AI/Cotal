@@ -185,7 +185,7 @@ function writeTrustedProjectFiles(projectDir, probeScript) {
   }, null, 2) + '\n', { mode: 0o600 });
 }
 
-function buildIsolatedProfile(baseEnv, profileRoot, binDir) {
+function buildIsolatedProfile(baseEnv, profileRoot, binDir, tmp) {
   const env = { ...baseEnv };
   for (const key of Object.keys(env)) if (key.startsWith('COTAL_') && key !== 'COTAL_ALLOW_CHECKOUT_SEED') delete env[key];
   const home = join(profileRoot, 'home');
@@ -195,7 +195,9 @@ function buildIsolatedProfile(baseEnv, profileRoot, binDir) {
   const xdgCache = join(profileRoot, 'cache');
   const xdgState = join(profileRoot, 'xdg-state');
   const runtimeDir = join(profileRoot, 'runtime');
-  const tmp = join(profileRoot, 'tmp');
+  // A per-profile tmp under the cell root makes the control socket
+  // (tmpdir/cotal-ctl-<22>/ctl.sock, 42 bytes) longer than sun_path on the
+  // GitHub runner: 108 on Linux, 104 on macOS. One shared short directory fits both.
   const localAppData = join(home, 'AppData', 'Local');
   const appData = join(home, 'AppData', 'Roaming');
   for (const dir of [profileRoot, home, cotalHome, xdgConfig, xdgData, xdgCache, xdgState, runtimeDir, tmp, localAppData, appData]) {
@@ -424,14 +426,19 @@ async function buildProjectTrustWorkspace({ env, root, pkg, call, ok, invokeCli 
     TRUST_MATRIX_ENV: EXPECTED_PROJECT_TRUST_ENV,
   };
 
+  const shortTmp = join(root, 't');
+  mkdirSync(shortTmp, { recursive: true, mode: 0o700 });
+  // The cell env also carries the long cell tmp. Launches read TMPDIR from the profile.
+  for (const key of ['TMPDIR', 'TEMP', 'TMP']) probeEnv[key] = shortTmp;
+  const profile = (name) => buildIsolatedProfile(probeEnv, join(workRoot, 'profiles', name), standin.binDir, shortTmp);
   const profiles = {
-    primary: buildIsolatedProfile(probeEnv, join(workRoot, 'profiles', 'primary'), standin.binDir),
-    spawnFirst: buildIsolatedProfile(probeEnv, join(workRoot, 'profiles', 'spawn-first'), standin.binDir),
-    preparedStatusFirst: buildIsolatedProfile(probeEnv, join(workRoot, 'profiles', 'prepared-status-first'), standin.binDir),
-    preparedUpFirst: buildIsolatedProfile(probeEnv, join(workRoot, 'profiles', 'prepared-up-first'), standin.binDir),
-    symlink: buildIsolatedProfile(probeEnv, join(workRoot, 'profiles', 'symlink'), standin.binDir),
-    emptyHome: buildIsolatedProfile(probeEnv, join(workRoot, 'profiles', 'empty-home'), standin.binDir),
-    brokerOnly: buildIsolatedProfile(probeEnv, join(workRoot, 'profiles', 'broker-only'), standin.binDir),
+    primary: profile('primary'),
+    spawnFirst: profile('spawn-first'),
+    preparedStatusFirst: profile('prepared-status-first'),
+    preparedUpFirst: profile('prepared-up-first'),
+    symlink: profile('symlink'),
+    emptyHome: profile('empty-home'),
+    brokerOnly: profile('broker-only'),
   };
 
   const projectsDir = join(workRoot, 'projects');
