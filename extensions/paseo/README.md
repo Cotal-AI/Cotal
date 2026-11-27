@@ -10,7 +10,7 @@ published [`@getpaseo/client`](https://www.npmjs.com/package/@getpaseo/client) S
 on import.
 
 Requires the `paseo` CLI (`npm i -g @getpaseo/cli`) and a running local daemon (`paseo daemon start`);
-verified against Paseo 0.17.4. `PASEO_HOME` selects the daemon instance, `COTAL_PASEO_BIN` names the
+verified against Paseo 0.18.1. `PASEO_HOME` selects the daemon instance, `COTAL_PASEO_BIN` names the
 CLI, and a password-protected daemon needs `PASEO_PASSWORD`, as for the Paseo CLI.
 
 ## What it does
@@ -47,6 +47,22 @@ cotal supervise --runtime paseo
 ```
 
 The runtime can also be selected with `runtime: paseo` in a mesh manifest.
+
+## Paseo's agent view
+
+A terminal is not a Paseo agent, so these seats do not appear in Paseo's agent list. To drive Cotal
+agents from that view, add [`cotal acp`](../../docs/acp-clients.mdx) to `~/.paseo/config.json` as an
+ACP provider, by absolute path:
+
+```json
+{ "agents": { "providers": { "cotal": {
+  "extends": "acp", "label": "Cotal", "command": ["/abs/path/to/cotal", "acp", "--space", "<name>"]
+} } } }
+```
+
+A new Paseo agent on that provider spawns a Cotal agent through the space's manager, and Paseo's
+session import opens one that is already running. Its prompts reach the agent as `turn`s, so they
+need no terminal input.
 
 ## Testing
 
