@@ -33,7 +33,7 @@ import {
 } from "@cotal-ai/auth";
 import {
   connectionEvictorCredsKey, deliveryCredsKey, membershipObserverCredsKey, membershipRwCredsKey,
-  recordMesh, userAuthStateDir, type MeshEntry,
+  findMesh, recordMesh, userAuthStateDir, type MeshEntry,
 } from "@cotal-ai/workspace";
 import { startDeliveryService } from "@cotal-ai/delivery";
 import { freePort, killAndAwaitExit, skipSuite, teardownOnSignal, SMOKE_BROKER_TOKEN } from "@cotal-ai/smoke-kit";
@@ -64,6 +64,8 @@ const { SignJWT, exportJWK, generateKeyPair } = await import(pathToFileURL(authR
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 const daemonLog: string[] = [];
+// The daemon's loss and recovery lines, kept whole: its log file is bounded, so how often it writes them matters.
+const connectionLines: { at: number; line: string }[] = [];
 let pass = 0, fail = 0;
 const check = (name: string, cond: boolean, extra?: unknown) => {
   if (cond) { pass++; console.log(`  ✓ ${name}`); }
@@ -191,8 +193,11 @@ async function createTcpRelay(target: number): Promise<number> {
   return (server.address() as AddressInfo).port;
 }
 const relays: ReturnType<typeof createHttpServer>[] = [];
+// When each request reached a face that was down while the broker link was up.
+const faceRefusals: number[] = [];
 async function createRelay(targetUrl: string): Promise<string> {
   const server = createHttpServer(async (req: IncomingMessage, res: ServerResponse) => {
+    if (facesDown && !offline) faceRefusals.push(Date.now());
     if (offline || facesDown) { req.socket.destroy(); return; }
     if (silent) { hung.add(req.socket); return; }
     const chunks: Buffer[] = [];
@@ -227,6 +232,7 @@ const deliveries: Awaited<ReturnType<typeof startDeliveryService>>[] = [];
 let nats: ChildProcess | undefined;
 let releaseNats: (() => void) | undefined;
 let daemonChild: ChildProcess | undefined;
+let relayPort = 0;
 
 try {
   const ctx = await Promise.all(spaces.map(async (space, i) => {
@@ -303,9 +309,10 @@ try {
     mkSecretDir(dir);
     const sentinelCredsPath = join(dir, "sentinel.creds");
     writeSecretFileAtomic(sentinelCredsPath, bundle.sentinelCreds);
+    relayPort = await createTcpRelay(port);
     recordMesh({
       space: c.space,
-      server: `nats://127.0.0.1:${await createTcpRelay(port)}`,
+      server: `nats://127.0.0.1:${relayPort}`,
       root: participant,
       mode: "user",
       origin: "manual",
@@ -337,6 +344,33 @@ try {
   }
   writeFileSync(join(seedDir, "witness.json"), JSON.stringify({ initialized: true, firstGeneration: targetVersion }));
   writeFileSync(join(seedDir, "stamp.json"), JSON.stringify({ generation: targetVersion }));
+
+  // The daemon's system resolver, replaced only where the loss is described: `lookup(host)` from
+  // node:dns/promises with no options. The broker client resolves through node:dns callbacks with
+  // options, and the Manager child never sees the control path, so both keep the real resolver.
+  // While the control file says "flap", lookups by turns fail at once (ENOTFOUND) and outlast the
+  // shipped lookup budget (reported as ETIMEOUT), as a resolver does through a long outage.
+  const lookupControl = join(root, "lookup-mode");
+  const lookupPreload = join(root, "lookup-preload.mjs");
+  writeFileSync(lookupPreload, `import { createRequire, syncBuiltinESMExports } from "node:module";
+import { readFileSync } from "node:fs";
+const control = process.env.DLC_LOOKUP_CONTROL;
+if (control) {
+  delete process.env.DLC_LOOKUP_CONTROL;
+  const dns = createRequire(import.meta.url)("node:dns/promises");
+  const real = dns.lookup;
+  let n = 0;
+  const failure = (code) => Object.assign(new Error("lookup failed: " + code), { code });
+  dns.lookup = (host, ...rest) => {
+    let mode = "";
+    try { mode = readFileSync(control, "utf8").trim(); } catch {}
+    if (mode !== "flap" || rest.length > 0) return real(host, ...rest);
+    n++;
+    return n % 2 ? Promise.reject(failure("ENOTFOUND")) : new Promise((_, reject) => setTimeout(() => reject(failure("EAI_AGAIN")), 3500));
+  };
+  syncBuiltinESMExports();
+}
+`, { mode: 0o600 });
 
   const nativeBin = join(root, "native-bin");
   mkdirSync(nativeBin, { recursive: true, mode: 0o700 });
@@ -372,13 +406,15 @@ try {
   const startDaemonProcess = async (): Promise<ChildProcess> => {
     const child = spawn(process.execPath, [cliEntry, "daemon", "serve"], {
       cwd: participant,
-      env: { ...childEnv, COTAL_DAEMON_NATIVE_SERVICE: "1" },
+      env: { ...childEnv, COTAL_DAEMON_NATIVE_SERVICE: "1", NODE_OPTIONS: `--import=${pathToFileURL(lookupPreload).href}`, DLC_LOOKUP_CONTROL: lookupControl },
       stdio: ["ignore", "pipe", "pipe"],
     });
     // Read the daemon's output: writes to a full pipe block a Node process on Linux, which froze
     // the daemon (and its feed) once the reconnect phases had logged enough.
     for (const stream of [child.stdout!, child.stderr!]) stream.on("data", (b) => {
-      daemonLog.push(...String(b).split("\n").filter(Boolean));
+      const lines = String(b).split("\n").filter(Boolean);
+      for (const line of lines) if (/hosted Manager for .* (lost its connection|is connected again)/.test(line)) connectionLines.push({ at: Date.now(), line });
+      daemonLog.push(...lines);
       if (daemonLog.length > 300) daemonLog.splice(0, daemonLog.length - 300);
     });
     for (let i = 0; i < 100; i++) {
@@ -499,10 +535,38 @@ try {
   const cleared = await until(30_000, () => frames.some((f) => f.at >= linkBackAt && f.connection === undefined));
   await sleep(4000);
   const whileFacesDown = frames.at(-1);
+  // Each re-read dials the space's faces. While they stay down the re-reads must space out.
+  await sleep(Math.max(0, linkBackAt + 60_000 - Date.now()));
+  const dials = faceRefusals.filter((at) => at >= linkBackAt).filter((at, i, all) => i === 0 || at - all[i - 1]! > 2000);
+  const gaps = dials.slice(1).map((at, i) => Math.round((at - dials[i]!) / 1000));
+  check(`R3 while the faces stay down for 60 s, the re-reads space out (${dials.length} dials, ${gaps.join(" s, ")} s apart)`, dials.length >= 2 && dials.length <= 5 && gaps.at(-1)! >= 15, { dials: dials.map((at) => Math.round((at - linkBackAt) / 1000)), gaps });
   reconnectNetwork();
   const facesBackAt = Date.now();
-  const recovered = await until(30_000, () => answering() && frames.at(-1)!.at >= facesBackAt);
+  const recovered = await until(45_000, () => answering() && frames.at(-1)!.at >= facesBackAt);
   check(`R2 a status read that failed during the loss does not hold the feed on starting after it: answering ${recovered ? Math.round((frames.at(-1)!.at - facesBackAt) / 1000) : "-"} s after the faces answer, with no status request`, failedRow?.state === "starting" && cleared && whileFacesDown?.connection === undefined && recovered, { failedState: failedRow?.state, cleared, whileFacesDown, last: frames.at(-1) });
+
+  // A long outage with a space named by its host, whose lookups fail by turns at once and after the
+  // budget. The feed follows the latest reason. The daemon's log is bounded (64 KiB), so it records
+  // the loss once, not once per lookup error, or a long outage fills it and "connected again" is lost.
+  const record = findMesh(SPACE)!;
+  recordMesh({ ...record, server: `nats://localhost:${relayPort}` });
+  writeFileSync(lookupControl, "flap", { mode: 0o600 });
+  offline = true;
+  for (const link of tcpLinks) link.destroy();
+  const flapAt = Date.now();
+  const flapLost = await until(20_000, () => frames.some((f) => f.at >= flapAt && f.connection?.state === "offline"));
+  await sleep(40_000);
+  const flapFrames = frames.filter((f) => f.at >= flapAt && f.connection !== undefined);
+  const reasons = flapFrames.map((f) => f.connection!.reason).filter((reason, i, all) => i === 0 || reason !== all[i - 1]);
+  const lossLines = connectionLines.filter((l) => l.at >= flapAt && l.line.includes("lost its connection"));
+  check(`L1 an outage whose lookup error keeps changing logs the loss once (${reasons.length} reasons in turn on the feed, ${lossLines.length} log lines)`, flapLost && flapFrames.every((f) => f.connection!.state === "offline") && reasons.length >= 3 && lossLines.length === 1, { reasons, lossLines: lossLines.map((l) => l.line) });
+  recordMesh(record);
+  rmSync(lookupControl, { force: true });
+  reconnectNetwork();
+  const flapBackAt = Date.now();
+  const flapBack = await until(60_000, () => answering() && frames.at(-1)!.at >= flapBackAt);
+  const againLines = connectionLines.filter((l) => l.at >= flapBackAt && l.line.includes("is connected again"));
+  check(`L2 once that outage ends, the feed reports the Manager answering and the log says it is connected again, once (after ${flapBack ? Math.round((frames.at(-1)!.at - flapBackAt) / 1000) : "-"} s)`, flapBack && againLines.length === 1, { last: frames.at(-1), againLines: againLines.map((l) => l.line) });
   watch?.destroy();
 
   // A Manager built before the connection question ignores it, as every released Manager does. The
@@ -560,5 +624,5 @@ try {
 if (fail > 0) console.log(`\n--- last daemon output ---\n${daemonLog.slice(-60).join("\n")}`);
 console.log(`\n=== daemon-lost-connection smoke: ${pass} passed, ${fail} failed ===`);
 emitSentinel({ passed: pass, failed: fail });
-if (fail > 0 || pass !== 19) process.exit(1);
+if (fail > 0 || pass !== 22) process.exit(1);
 process.exit(0);
