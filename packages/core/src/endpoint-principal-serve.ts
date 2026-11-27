@@ -6,6 +6,7 @@
 import type { DeliveryState } from "./endpoint-delivery-state.js";
 import type { ConnectionState } from "./endpoint-connection-state.js";
 import type { EndpointIdentity } from "./endpoint-identity.js";
+import type { EndpointParts } from "./endpoint-parts.js";
 import { AGENT_CONTRACTS, AGENT_ENDPOINT } from "./agent-endpoint.js";
 import { epPrincipalCall } from "./endpoint-call.js";
 import { EpEnvelopeError, type EndpointReply } from "./endpoint-envelope.js";
@@ -25,10 +26,10 @@ const promptsSeqs = new Map<string, number>();
 
 /** What the principal-serve component reads from its endpoint. State is read when it is used, never
  *  copied, a field it reassigns is written back through its setter, and every method is looked up on the
- *  endpoint at call time, so a member a caller replaced on the endpoint is the one that runs. */
+ *  endpoint at call time, so a member a caller replaced on the endpoint is the one that runs. A peer part
+ *  is read from the parts record at call time. */
 export interface EndpointPrincipalServeDeps {
   principalServers: () => Map<string, PrincipalServeIntent>;
-  publishPresence: () => Promise<void>;
   emitRecoverable: (err: Error) => void;
   requireLifecycleUid: (what: string) => string;
   notLiveMsg: () => string;
@@ -44,10 +45,9 @@ export class EndpointPrincipalServe {
    *  same gate as `prompts`. */
   private agentEndpointPresence?: PresenceAgentEndpoint;
 
-  constructor(private readonly identity: Readonly<EndpointIdentity>, private readonly conn: Readonly<ConnectionState>, private readonly delivery: Readonly<DeliveryState>, private readonly deps: EndpointPrincipalServeDeps) {}
+  constructor(private readonly identity: Readonly<EndpointIdentity>, private readonly conn: Readonly<ConnectionState>, private readonly delivery: Readonly<DeliveryState>, private readonly deps: EndpointPrincipalServeDeps, private readonly parts: Pick<EndpointParts, "presence">) {}
 
   private get principalServers() { return this.deps.principalServers(); }
-  private publishPresence(): Promise<void> { return this.deps.publishPresence(); }
   private emitRecoverable(err: Error): void { return this.deps.emitRecoverable(err); }
   private requireLifecycleUid(what: string): string { return this.deps.requireLifecycleUid(what); }
   private notLiveMsg(): string { return this.deps.notLiveMsg(); }
@@ -99,7 +99,7 @@ export class EndpointPrincipalServe {
       intent.readySettled = true;
       intent.resolveReady();
     }
-    if (intent.serve.endpoint === AGENT_ENDPOINT) this.publishPresence().catch((e) => this.emitRecoverable(e as Error));
+    if (intent.serve.endpoint === AGENT_ENDPOINT) this.parts.presence.publishPresence().catch((e) => this.emitRecoverable(e as Error));
   }
 
   /** Re-bind every principal serve on a replaced connection (a rebuild), or re-run the check on the
@@ -140,7 +140,7 @@ export class EndpointPrincipalServe {
     for (const handle of intent.handles) void handle.stop();
     if (intent.serve.endpoint === AGENT_ENDPOINT) {
       this.promptsPresence = this.agentEndpointPresence = undefined;
-      this.publishPresence().catch((e) => this.emitRecoverable(e as Error));
+      this.parts.presence.publishPresence().catch((e) => this.emitRecoverable(e as Error));
     }
     // `ready` already carried a refusal that came before it settled; a later one is reported here.
     if (wasReady) this.emitRecoverable(new Error(`stopped serving "${intent.serve.endpoint}" on the principal route: ${err.message}`, { cause: err }));
@@ -167,7 +167,7 @@ export class EndpointPrincipalServe {
       }
       if (intent.serve.endpoint === AGENT_ENDPOINT) {
         this.promptsPresence = this.agentEndpointPresence = undefined;
-        if (republish) this.publishPresence().catch((e) => this.emitRecoverable(e as Error));
+        if (republish) this.parts.presence.publishPresence().catch((e) => this.emitRecoverable(e as Error));
       }
     }
     await Promise.all(intent.handles.map((handle) => handle.stop()));
@@ -192,7 +192,7 @@ export class EndpointPrincipalServe {
       throw new RangeError(`prompts.seq ${prompts.seq} is below ${used}, which this process already used under runtime ${intent.self.runtimeId}: seq never goes back under one runtime id (SPEC §6)`);
     promptsSeqs.set(intent.self.runtimeId, prompts.seq);
     this.promptsPresence = { open: prompts.open, seq: prompts.seq };
-    await this.publishPresence();
+    await this.parts.presence.publishPresence();
   }
 
   /**
@@ -211,7 +211,7 @@ export class EndpointPrincipalServe {
     const next = { interrupt: served.interrupt, turn: served.turn, images: served.images, usage: served.usage, setModel: served.setModel ?? false };
     if (was && (Object.keys(next) as (keyof PresenceAgentEndpoint)[]).every((k) => was[k] === next[k])) return;
     this.agentEndpointPresence = next;
-    await this.publishPresence();
+    await this.parts.presence.publishPresence();
   }
 
   /** Show `open: 0` with a fresh `seq` for a new serve of the `agent` endpoint. */

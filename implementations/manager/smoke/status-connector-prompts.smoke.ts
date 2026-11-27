@@ -19,7 +19,7 @@ import { MANAGER_STATUS_CONTRACT, managerShippedSurface, type ManagerConnectorSt
 const { check, finish } = createSuite();
 
 const shipped = managerShippedSurface();
-check("the Manager contract retains the prompts fact after the status machine field advances it", shipped.revision === 59, shipped);
+check("the Manager contract retains the prompts fact after make-dir, clone and worktree advance it", shipped.revision === 60, shipped);
 
 const base = {
   instanceId: "a".repeat(26), execution: "runtime", runtime: "pty", custody: "legacy", runHosting: false,

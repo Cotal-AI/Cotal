@@ -1371,12 +1371,16 @@ export const MANAGER_STATUS_CONTRACT: { input: CompiledContract; output: Compile
  *  57 = `status` adds the optional `machine`, the answering Manager's machine id. The status output
  *  schema is closed, so a revision-56 contract rejects it.
  *
- *  58 = `make-dir` and `clone` make the folder a launch starts in on this Manager's host. New served
+ *  58 = `spawn` takes `modes`, the launch's mode choices, which the Manager checks with its variant
+ *  against the connector's model catalog. The input schema is closed, so a revision-57 contract
+ *  rejects the field.
+ *
+ *  59 = `make-dir` and `clone` make the folder a launch starts in on this Manager's host. New served
  *  commands are what a revision is for.
  *
- *  59 = `worktree` makes that folder a new git worktree on a new branch of a checkout there. */
+ *  60 = `worktree` makes that folder a new git worktree on a new branch of a checkout there. */
 export function managerClusterDocument(): ClusterDocument {
-  return buildClusterDocument(MANAGER_CLUSTER_URN, 59, ROWS);
+  return buildClusterDocument(MANAGER_CLUSTER_URN, 60, ROWS);
 }
 
 /** Revision, count, and names from the shipped cluster document. Reached smokes derive surface pins from this. */
