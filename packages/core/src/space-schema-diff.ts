@@ -149,7 +149,7 @@ function reconciliationPolicy(resource: SpaceResourceDefinition, observation: Sp
  *  creation options are not expanded into guessed SDK/server defaults. Pure native invariant
  *  checks run where declared; runtime checks and complete field policy stay separate. No
  *  mutating create-or-verify helper, canary, repair or migration is invoked. */
-export function diffSpaceResources(space: string, observations: readonly SpaceSchemaObservation[], options: EndpointStreamOptions = {}) {
+export function diffSpaceResources(space: string, observations: readonly SpaceSchemaObservation[], options: EndpointStreamOptions & { pluginChannels?: boolean } = {}) {
   const definitions = spaceResourceDefinitions(space, options);
   const resources = new Map(definitions.resources.map((resource) => [resource.stream, resource]));
   const found = new Map<string, SpaceSchemaObservation>();

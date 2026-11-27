@@ -2,7 +2,7 @@ import * as prompts from "../lib/prompts.js";
 import {
   HISTORY_NO_COUNT, HistoryLimitChanged, HistoryLimitUpdateUnknown, describeHistoryLimit, dialerFor, dlvDurable, formatChatAge, historyAgeProblem, historyLimitOf, historyLimitProblem,
   historyLimitStreamName, isPrincipalOwnerToken, isPublishPermissionDenied, isStreamNotFound, mintCreds, newIdentity, parseDinboxPrincipal, parseDuration, parseSubject, requireBrokerFloor,
-  setHistoryLimit, standaloneConnectOpts, validateCanonicalBackupStreamConfig,
+  readPluginMaintenanceState, setHistoryLimit, spacePluginStreams, standaloneConnectOpts, validateCanonicalBackupStreamConfig,
   type HistoryLimit, type HistoryLimitStream,
 } from "@cotal-ai/core";
 import { JetStreamApiError, jetstreamManager, type JetStreamManager, type StreamInfo } from "@nats-io/jetstream";
@@ -201,6 +201,7 @@ export async function historyLimit(values: Values): Promise<void> {
   try {
     requireBrokerFloor(nc);
     const jsm = await jetstreamManager(nc, { checkAPI: false });
+    const pluginChannels = selected.mode !== "open" && (await readPluginMaintenanceState(nc, selected.space)).state.enabled;
     // Every requested stream is read and checked before the first write, so a refusal on a later
     // stream never comes after an earlier one changed.
     const rows: Row[] = [];
@@ -224,7 +225,14 @@ export async function historyLimit(values: Values): Promise<void> {
     const readAt = new Date();
     const limitRows = (rowsOf: readonly Row[], pick: (row: Row) => HistoryLimit): [string, string][] => rowsOf.map((row) => [LABEL[row.kind], describeHistoryLimit(row.kind, pick(row))]);
     if (readOnly) {
-      writeResult(presentation, { command: "history", target, result: { kind: "history-limits", streams: rows.map((row) => ({ stream: row.stream, limit: row.kind, holds: view(row.from) })) } }, (): Report => ({ sections: [{ title: "History limits", blocks: [{ kind: "fields", rows: [["Space", selected.space], ...limitRows(rows, (row) => row.from)] }] }] }));
+      const plugins = pluginChannels ? await Promise.all(spacePluginStreams(selected.space).map(async (stream) => {
+        const { config } = await jsm.streams.info(stream);
+        validateCanonicalBackupStreamConfig(selected.space, stream, config as unknown as Record<string, unknown>);
+        return { stream, limit: "plugin-history" as const, holds: historyLimitOf(config as unknown as Record<string, unknown>) };
+      })) : [];
+      const native = [...rows.map((row) => ({ stream: row.stream, limit: row.kind, holds: view(row.from) })), ...plugins.map((row) => ({ ...row, holds: view(row.holds) }))];
+      const labels: [string, string][] = plugins.map((row) => ["Plugin channel posts", describeHistoryLimit(row.limit, row.holds)]);
+      writeResult(presentation, { command: "history", target, result: { kind: "history-limits", streams: native } }, (): Report => ({ sections: [{ title: "History limits", blocks: [{ kind: "fields", rows: [["Space", selected.space], ...limitRows(rows, (row) => row.from), ...labels] }] }] }));
       return;
     }
     const resultOf = (changed: boolean, extra: Record<string, unknown> = {}) => ({ kind: "history-limit", changed, streams: rows.map((row) => ({ stream: row.stream, limit: row.kind, from: view(row.from), to: view(row.to), outcome: row.outcome ?? "unchanged" })), ...extra });

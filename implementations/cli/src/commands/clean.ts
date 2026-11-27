@@ -49,6 +49,7 @@ import { reportOnInterrupt } from "../lib/interrupt-report.js";
 import { c, stderrLine } from "../ui.js";
 import { cotalRoot, linkedCotalRefusal } from "../lib/paths.js";
 import { pidfileState, pidfileTargets } from "./down.js";
+import { hasLocalPluginHistory } from "./history-clear.js";
 import { localProcessSurface } from "../ext-loader.js";
 import { readStackJournal, recordResetStore, STACK_DEFINITION, stackJournalPath } from "../lib/stack-journal.js";
 import { rollbackRestoreWithBroker } from "../lib/controller-restore.js";
@@ -389,6 +390,7 @@ function checkCleanStorePath(root: string, requested: string): void {
  *  ledger scope "admin" (the refusal names the exact re-grant). */
 export async function purgeHistory(values: { server?: string; space?: string; creds?: string; dms?: boolean }): Promise<void> {
   const conn = await connectOrExit(values, "purger");
+  const pluginChannels = await hasLocalPluginHistory(conn);
   const user = conn.bearer ? await userViewAuthOrExit(conn, "purger") : undefined;
   const { server, space, creds } = conn;
   const result = await clearSpaceHistory({
@@ -399,6 +401,7 @@ export async function purgeHistory(values: { server?: string; space?: string; cr
   });
   const dm = result.dm === undefined ? "" : `, ${result.dm} DM message${result.dm === 1 ? "" : "s"}`;
   console.log(c.green(`✓ cleared ${result.chat} channel message${result.chat === 1 ? "" : "s"}${dm} from "${space}"`));
+  if (pluginChannels) console.log("Plugin channel history was not purged.");
 }
 
 /** The recorded mesh process that may still be running under this root, as a "label, pid N" string -
