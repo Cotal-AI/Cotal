@@ -18,6 +18,7 @@ import {
   principalFromTags, channelInAllow, membershipInAllow, patternCovers, patternInAllow, subjectPatternCovers, DEV_OWNER,
 } from "../src/index.js";
 import { MAX_CHANNEL_LENGTH, subjectMatches } from "../src/subject-grammar.js";
+import { historyMessageFromDelivery, kindFromParsed } from "../src/endpoint-messages.js";
 import {
   PLUGIN_CHANNEL_ROOT, PLUGIN_FANOUT_DURABLE, channelRoute, classifyChannel, legacyPluginChannelFilters,
   pluginChannelFilter, pluginChannelStream, pluginChannelSubject,
@@ -47,6 +48,18 @@ c("plugin subject pins owner then actor", pluginSubject === `${pluginWire}.u_abc
 const parsedPlugin = parseSubject(pluginSubject);
 c("shared parser restores the plugin logical channel", parsedPlugin?.kind === familyRoot &&
   parsedPlugin.owner === "u_abc" && parsedPlugin.actor === "act1" && parsedPlugin.sender === "u_abc.act1" && parsedPlugin.rest === issue);
+const verifiedOwner = "u_nd77wkm3o3eyk6qvuwhy76b2nm";
+const receiverSubject = pluginChannelSubject("demo", verifiedOwner, "act1", issue);
+const receiverRow = {
+  id: "plugin-row", ts: 1, space: "demo", from: { id: `${verifiedOwner}.act1`, name: "act1" },
+  parts: [{ kind: "text", text: "hello" }], channel: "advisory", to: "also-advisory", toService: "worker",
+};
+const readPluginRow = (row: typeof receiverRow) => historyMessageFromDelivery({ subject: receiverSubject, json: <T>() => row as T });
+const received = readPluginRow(receiverRow);
+c("a parsed plugin subject maps to channel delivery metadata", !!parsedPlugin && kindFromParsed(parsedPlugin.kind) === "channel");
+c("authenticated plugin history takes the channel from the wire and clears advisory targets", received?.channel === issue &&
+  !Object.hasOwn(received, "to") && !Object.hasOwn(received, "toService") && received.parts === receiverRow.parts);
+c("plugin history still rejects mismatched sender claims", readPluginRow({ ...receiverRow, from: { ...receiverRow.from, id: `${verifiedOwner}.other` } }) === undefined);
 const legacyPlugin = chatSubject("demo", "u_abc", "act1", `${linear}.inbox`);
 c("legacy plugin address remains CHAT with its original logical name", parseSubject(legacyPlugin)?.kind === "chat" &&
   parseSubject(legacyPlugin)?.rest === `${linear}.inbox`);
