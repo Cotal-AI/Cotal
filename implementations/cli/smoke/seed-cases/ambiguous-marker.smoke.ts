@@ -1,4 +1,6 @@
-import { boot, cotal, join, check, freshCfg, seedDir, writeJson, listNames, track, finishScenario, spawn, existsSync } from "./harness.js";
+import assert from "node:assert/strict";
+import { setTimeout as sleep } from "node:timers/promises";
+import { BIN, HOST_ENV, boot, bootArgs, cotal, join, check, freshCfg, seedDir, writeJson, listNames, track, finishScenario, spawn, existsSync, readFileSync } from "./harness.js";
 import { acquireReconcileLock, markSeedChildLive, seedChildStatus, clearChildMarker, writePendingChildMarker } from "../../src/seed/lock.js";
 import { processStartToken } from "@cotal-ai/workspace";
 import { randomBytes } from "node:crypto";
@@ -14,7 +16,7 @@ try {
     writeJson(join(seedDir(cfg), "reconcile.cursor.json"), { nonce, package: "hermes", phase: "add" });
     writeJson(marker, { state: "pending", parentPid: 2147483646, nonce, ts: 1, ...extra });
   };
-  for (const args of [["ext", "seed", "--repair"], ["update"], ["sync"]]) {
+  for (const args of [["ext", "seed", "--repair"], ["update"], bootArgs]) {
     pending();
     const result = cotal(cfg, args);
     check(`released marker: ${args.join(" ")} recovers`, result.status === 0 && /cleared an interrupted connector seed child marker/.test(result.stderr), result);
@@ -54,6 +56,71 @@ try {
   writeJson(marker, { state: "unknown" });
   const corrupt = boot(cfg);
   check("unprovable marker still refuses", corrupt.status !== 0 && /mid-flight/.test(corrupt.stderr), corrupt);
+
+  if (process.platform !== "win32") for (const args of [["ext", "seed"], ["ext", "seed", "--repair"]]) {
+    const cfg = track(freshCfg());
+    const invocation = args.join(" ");
+    const command = spawn(process.execPath, [BIN, ...args], {
+      env: { ...HOST_ENV, XDG_CONFIG_HOME: cfg, COTAL_ALLOW_CHECKOUT_SEED: "1", DO_NOT_TRACK: "1" },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let stdout = "", stderr = "", signalled = false;
+    command.stdout.on("data", chunk => { stdout += chunk; });
+    command.stderr.on("data", chunk => {
+      stderr += chunk;
+      if (!signalled && stderr.includes("seed store payload (claude)")) signalled = command.kill("SIGTERM");
+    });
+    const status = await new Promise<number | null>((resolve, reject) => {
+      command.once("error", reject);
+      command.once("close", resolve);
+    });
+    check(`SIGTERM to ${invocation} exits 143 before starting a second install`, signalled && status === 143 &&
+      stderr.includes("Reconciling built-in claude@") && !stderr.includes("Reconciling built-in opencode@") &&
+      stderr.includes(`Connector seed interrupted. Run \`cotal ${invocation}\` to finish seeding.`) &&
+      !stdout.includes("connectors reconciled") && !existsSync(join(seedDir(cfg), "stamp.json")), { status, stdout, stderr });
+    const retry = cotal(cfg, args);
+    check(`retry completes a cancelled ${invocation}`, retry.status === 0 && retry.stderr.includes("Reconciling built-in opencode@") &&
+      retry.stdout.includes("connectors reconciled"), retry);
+  }
+
+  if (process.platform === "linux") for (const signal of ["SIGKILL", "SIGTERM"] as const) {
+    const cfg = track(freshCfg());
+    const npmMarker = join(cfg, "cotal", ".extensions.lock.npm-child");
+    const command = spawn(process.execPath, [BIN, "ext", "seed", "--force"], {
+      env: { ...HOST_ENV, XDG_CONFIG_HOME: cfg, COTAL_ALLOW_CHECKOUT_SEED: "1" }, stdio: ["ignore", "ignore", "pipe"],
+    });
+    let output = "";
+    command.stderr?.on("data", chunk => { output += chunk; });
+    const closed = new Promise<number | null>((resolve, reject) => {
+      command.once("error", reject);
+      command.once("close", resolve);
+    });
+    const read = (path: string) => {
+      try { return readFileSync(path, "utf8"); }
+      catch (error) { if (["ENOENT", "ESRCH"].includes((error as NodeJS.ErrnoException).code ?? "")) return ""; throw error; }
+    };
+    let npmPid: number | undefined;
+    try {
+      for (let deadline = Date.now() + 60_000; Date.now() < deadline && command.exitCode === null && command.signalCode === null; await sleep(5)) {
+        const row = JSON.parse(read(npmMarker) || "null");
+        const seed = JSON.parse(read(join(seedDir(cfg), "reconcile.child.json")) || "null");
+        if (row?.phase !== "live" || seed?.parentPid !== command.pid || seed?.childPid !== row.owner) continue;
+        if (!/npm.*install|\0install\0/.test(read(`/proc/${row.pid}/cmdline`))) continue;
+        process.kill(row.pid, signal);
+        npmPid = row.pid;
+        break;
+      }
+      assert.ok(npmPid, `seed did not start its real npm child: ${output}`);
+      check(`${signal}: interrupted seed fails without asking to remove a marker`, await closed === 1 && !/remove the marker/.test(output), output);
+      assert.throws(() => process.kill(npmPid!, 0), { code: "ESRCH" });
+      check(`${signal}: dead direct npm group leaves no marker`, !existsSync(npmMarker));
+      const repaired = cotal(cfg, ["ext", "seed", "--repair"]);
+      check(`${signal}: repair succeeds without manual marker removal`, repaired.status === 0, repaired);
+    } finally {
+      if (command.exitCode === null && command.signalCode === null) command.kill("SIGTERM");
+      await closed;
+    }
+  }
 } finally {
   if (previousConfig === undefined) delete process.env.XDG_CONFIG_HOME;
   else process.env.XDG_CONFIG_HOME = previousConfig;

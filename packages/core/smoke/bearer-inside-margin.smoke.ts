@@ -48,7 +48,7 @@ const mintAt = (expSec: number, sig = "sig", iatSec?: number): string =>
 const mintBearer = (expiresInMs: number, sig = "sig"): string =>
   mintAt(Math.floor((Date.now() + expiresInMs) / 1000), sig);
 
-type Internals = { refreshBearer: (initial?: boolean) => Promise<void>; currentBearer?: string };
+type Internals = { credentials: { refreshBearer: (initial?: boolean) => Promise<void> }; cred: { currentBearer?: string } };
 
 const endpoints: CotalEndpoint[] = [];
 /** One endpoint per source, each in its own space: `currentBearer` is the state under test, and
@@ -81,7 +81,7 @@ const refreshAt = async (ep: Internals, nowMs: number, initial = false): Promise
     return realSetTimeout(fn, ms);
   }) as unknown as typeof setTimeout;
   try {
-    await ep.refreshBearer(initial);
+    await ep.credentials.refreshBearer(initial);
   } finally {
     Date.now = realNow;
     globalThis.setTimeout = realSetTimeout;
@@ -94,10 +94,10 @@ const HEALTHY = mintBearer(10 * 60_000);
 const SHORT = mintBearer(30_000);
 let shortReads = 0;
 const fresh = armed("s1561", async () => { shortReads++; return shortReads === 1 ? HEALTHY : SHORT; });
-await fresh.internals.refreshBearer(true);
-c("the initial fetch is adopted", fresh.internals.currentBearer === HEALTHY, shortReads);
-await fresh.internals.refreshBearer();
-c("a token that is new material is adopted even with little life left", fresh.internals.currentBearer === SHORT);
+await fresh.internals.credentials.refreshBearer(true);
+c("the initial fetch is adopted", fresh.internals.cred.currentBearer === HEALTHY, shortReads);
+await fresh.internals.credentials.refreshBearer();
+c("a token that is new material is adopted even with little life left", fresh.internals.cred.currentBearer === SHORT);
 
 // ── #1561 and the window edge, on a pinned clock ──────────────────────────────────────────────────
 // A 600s token issued at EDGE_IAT is overdue from 80% of its life, 480s in.
@@ -106,7 +106,7 @@ const EDGE = mintAt(EDGE_IAT + 600, "edge", EDGE_IAT);
 const OVERDUE_AT = (EDGE_IAT + 480) * 1000;
 
 const overdue = armed("s1561b", async () => EDGE);
-await overdue.internals.refreshBearer(true);
+await overdue.internals.credentials.refreshBearer(true);
 const overdueDelays = await refreshAt(overdue.internals, OVERDUE_AT);
 c(
   "the SAME token back past its renewal window is refused (the edge is inclusive)",
@@ -122,7 +122,7 @@ c(
 // The other side of the edge, same token: one millisecond earlier the refusal must not fire. This
 // is also what shows the cells above refuse because of the window and not because of the pinning.
 const inside = armed("s1561c", async () => EDGE);
-await inside.internals.refreshBearer(true);
+await inside.internals.credentials.refreshBearer(true);
 const insideDelays = await refreshAt(inside.internals, OVERDUE_AT - 1);
 c(
   "the same token 1ms inside its window is adopted, with no warning, and re-armed at the 5s floor",
@@ -133,8 +133,8 @@ c(
 // A source that caches: the same bytes on every read while the token still has most of its life.
 const CACHED = mintBearer(10 * 60_000, "cached");
 const cache = armed("s1572f", async () => CACHED);
-await cache.internals.refreshBearer(true);
-await cache.internals.refreshBearer();
+await cache.internals.credentials.refreshBearer(true);
+await cache.internals.credentials.refreshBearer();
 c("a re-served token with most of its life left is adopted, with no warning", cache.warnings.length === 0, cache.warnings.map((e) => e.message));
 
 // ── The renewal point is drawn from 50% to 80% of the lifetime ────────────────────────────────────
@@ -175,14 +175,14 @@ const dead = armed("s1572a", async () => { deadReads++; return deadReads === 1 ?
 // "does not throw" is half of what this cell claims - `refreshBearer` rethrows on the initial fetch,
 // so a refusal that reached here would take the process down instead of naming itself.
 let initialRefusal: unknown;
-try { await dead.internals.refreshBearer(true); } catch (e) { initialRefusal = e; }
+try { await dead.internals.credentials.refreshBearer(true); } catch (e) { initialRefusal = e; }
 c(
   "the initial fetch is adopted even when it is already expired",
-  initialRefusal === undefined && dead.internals.currentBearer === DEAD_OLD,
-  initialRefusal ?? dead.internals.currentBearer?.slice(0, 24),
+  initialRefusal === undefined && dead.internals.cred.currentBearer === DEAD_OLD,
+  initialRefusal ?? dead.internals.cred.currentBearer?.slice(0, 24),
 );
-await dead.internals.refreshBearer();
-c("an expired candidate is refused even though it ADVANCES the held one", dead.internals.currentBearer === DEAD_OLD, dead.internals.currentBearer?.slice(0, 24));
+await dead.internals.credentials.refreshBearer();
+c("an expired candidate is refused even though it ADVANCES the held one", dead.internals.cred.currentBearer === DEAD_OLD, dead.internals.cred.currentBearer?.slice(0, 24));
 c(
   "the expiry refusal is reported as a recoverable retry",
   dead.warnings.some((e) => /has already expired/.test(e.message) && /retrying/.test(e.message)),
@@ -195,9 +195,9 @@ const BEFORE_ROTATION = mintAt(ROTATE_EXP, "oldkey");
 const AFTER_ROTATION = mintAt(ROTATE_EXP, "newkey");
 let rotateReads = 0;
 const rotated = armed("s1572b", async () => { rotateReads++; return rotateReads === 1 ? BEFORE_ROTATION : AFTER_ROTATION; });
-await rotated.internals.refreshBearer(true);
-await rotated.internals.refreshBearer();
-c("a re-signed token carrying the same exp IS adopted", rotated.internals.currentBearer === AFTER_ROTATION, rotated.internals.currentBearer?.slice(0, 24));
+await rotated.internals.credentials.refreshBearer(true);
+await rotated.internals.credentials.refreshBearer();
+c("a re-signed token carrying the same exp IS adopted", rotated.internals.cred.currentBearer === AFTER_ROTATION, rotated.internals.cred.currentBearer?.slice(0, 24));
 c("and it is not reported as a failure", rotated.warnings.length === 0, rotated.warnings.map((e) => e.message));
 
 // The same re-signing past the held token's renewal window, where the re-serve refusal applies. Only
@@ -206,19 +206,19 @@ c("and it is not reported as a failure", rotated.warnings.length === 0, rotated.
 const EDGE_RESIGNED = mintAt(EDGE_IAT + 600, "edge-newkey", EDGE_IAT);
 let resignReads = 0;
 const resigned = armed("s1572d", async () => { resignReads++; return resignReads === 1 ? EDGE : EDGE_RESIGNED; });
-await resigned.internals.refreshBearer(true);
+await resigned.internals.credentials.refreshBearer(true);
 await refreshAt(resigned.internals, OVERDUE_AT);
 c(
   "a re-signed token carrying the same exp past its renewal window IS adopted, with no warning",
-  resigned.internals.currentBearer === EDGE_RESIGNED && resigned.warnings.length === 0,
-  { adopted: resigned.internals.currentBearer === EDGE_RESIGNED, warnings: resigned.warnings.map((e) => e.message) },
+  resigned.internals.cred.currentBearer === EDGE_RESIGNED && resigned.warnings.length === 0,
+  { adopted: resigned.internals.cred.currentBearer === EDGE_RESIGNED, warnings: resigned.warnings.map((e) => e.message) },
 );
 
 // ── A run of failures: one warning, growing jittered retries, and a new run warns again ───────────
 let down = true;
 const flaky = armed("s-flaky", async () => { if (down) throw new Error("exchange down"); return mintBearer(10 * 60_000, `f${Date.now()}`); });
 down = false;
-await flaky.internals.refreshBearer(true);
+await flaky.internals.credentials.refreshBearer(true);
 down = true;
 const retries: number[] = [];
 for (let i = 0; i < 4; i++) retries.push(...(await refreshAt(flaky.internals, Date.now())));
@@ -229,9 +229,9 @@ c(
   retries,
 );
 down = false;
-await flaky.internals.refreshBearer();
+await flaky.internals.credentials.refreshBearer();
 down = true;
-await flaky.internals.refreshBearer();
+await flaky.internals.credentials.refreshBearer();
 c("after a renewal works, the next failure is reported again", flaky.warnings.length === 2, flaky.warnings.map((e) => e.message));
 
 // ── The cadence of a healthy short-TTL source, on the live clock ──────────────────────────────────
@@ -239,7 +239,7 @@ c("after a renewal works, the next failure is reported again", flaky.warnings.le
 // of the time.
 let fiveReads = 0;
 const five = armed("s1572c", async () => { fiveReads++; return mintBearer(5_000, `s${fiveReads}`); });
-await five.internals.refreshBearer(true);
+await five.internals.credentials.refreshBearer(true);
 const fiveBaseline = fiveReads;
 await wait(12_000);
 c("a healthy short-TTL source still renews at the floor (>= 2 reads in 12s)", fiveReads - fiveBaseline >= 2, { fiveReads, fiveBaseline });

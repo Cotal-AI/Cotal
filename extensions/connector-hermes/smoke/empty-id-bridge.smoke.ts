@@ -34,6 +34,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import type { ExactDrainResult, InboxItem, InboxScope, MeshAgent } from "@cotal-ai/connector-core";
 import { startBridgeServer } from "../src/bridge.js";
+import { bridgeKey, openBridge, subscribeFrame } from "./bridge-open.js";
 
 const dir = mkdtempSync(join(tmpdir(), "hermes-empty-id"));
 const socketPath = join(dir, "bridge.sock");
@@ -86,7 +87,7 @@ const config = {
 
 const agent = new FakeAgent();
 const TOKEN = "empty-id-bridge-token";
-const bridge = startBridgeServer(agent as unknown as MeshAgent, config as AgentConfig, socketPath, TOKEN);
+const bridge = startBridgeServer(agent as unknown as MeshAgent, config as AgentConfig, socketPath, bridgeKey(socketPath, TOKEN));
 
 try {
   for (let i = 0; i < 50; i++) {
@@ -139,15 +140,19 @@ try {
     assert.equal(sawResult, false, "a tool frame before auth gets no tool_result");
   }
 
-  // ---- 0c) a subscribe with a wrong token is dropped ----
-  {
+  // ---- 0c) a subscribe under the wrong key, the raw key, or another version's token is dropped ----
+  for (const frame of [
+    subscribeFrame("wrong"),
+    JSON.stringify({ t: "subscribe", token: TOKEN }) + "\n",
+    subscribeFrame(TOKEN, 2),
+  ]) {
     const raw = connect(socketPath);
     await once(raw, "connect");
-    raw.write(JSON.stringify({ t: "subscribe", token: "wrong" }) + "\n");
+    raw.write(frame);
     await once(raw, "close");
   }
 
-  client.write(JSON.stringify({ t: "subscribe", token: TOKEN }) + "\n");
+  await openBridge(client, TOKEN);
 
   // ---- 1) an empty-id message is pumped like any other ----
   agent.items.push(emptyIdDelivery("first empty-id body"));
@@ -202,7 +207,7 @@ try {
   const childEnv: NodeJS.ProcessEnv = { ...process.env };
   for (const key of Object.keys(childEnv)) if (key.startsWith("COTAL_")) delete childEnv[key];
   const py = spawn(python!, ["-c", script, pluginDir, socketPath], {
-    env: { ...childEnv, COTAL_CONTROL_TOKEN: TOKEN }, stdio: ["ignore", "inherit", "inherit"],
+    env: { ...childEnv, COTAL_CONTROL_KEY: TOKEN, COTAL_CONTROL_VERSION: "1" }, stdio: ["ignore", "inherit", "inherit"],
   });
   const [code] = (await once(py, "exit")) as [number | null];
   assert.equal(code, 0, "the real client subscribed and surfaced the pending item");

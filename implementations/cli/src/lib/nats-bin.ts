@@ -7,17 +7,28 @@ import { CommandFailure, isCommandFailure, protectedLocalEntry, resolveOnPath } 
  *  (e.g. to our own @cotal-ai/nats-server-*) is a one-line change here. */
 const BUNDLED_PKG_PREFIX = "@eplightning/nats-server";
 
+export const NATS_DEFAULT_MAX_PAYLOAD = 1048576;
+
 const FLOOR = `${BROKER_FLOOR.major}.${BROKER_FLOOR.minor}`;
 
 /** The nats-server a broker start runs: its path, where it was found, and the version it reports.
- *  `skipped` is a nats-server on PATH that was passed over, with the reason. `refused` is the refusal
- *  a broker launch would give this one; it was not run, so its version is null. */
-export interface NatsServer { path: string; source: "path" | "bundled"; version: string | null; skipped?: { path: string; reason: string }; refused?: CommandFailure }
+ *  `versionError` is why a `--version` run gave no version: the error it could not run with, such as
+ *  EMFILE, or its exit status. `skipped` is a nats-server on PATH that was passed over, with the
+ *  reason. `refused` is the refusal a broker launch would give this one; it was not run, so its
+ *  version is null. */
+export interface NatsServer { path: string; source: "path" | "bundled"; version: string | null; versionError?: string; skipped?: { path: string; reason: string }; refused?: CommandFailure }
 
 /** The version a `nats-server --version` run printed, such as "2.14.0", or null when it printed none. */
 function reportedVersion(run: ReturnType<typeof spawnSync>): string | null {
   if (run.error || run.status !== 0) return null;
   return /\bv?(\d+\.\d+\.\d+\S*)/.exec(String(run.stdout ?? ""))?.[1] ?? null;
+}
+
+/** Why a `nats-server --version` run printed no version, or undefined when it printed one. */
+function versionError(run: ReturnType<typeof spawnSync>): string | undefined {
+  if (run.error) return (run.error as NodeJS.ErrnoException).code ?? run.error.message;
+  if (run.status !== 0) return run.status === null ? `killed by ${run.signal}` : `exit status ${run.status}`;
+  return reportedVersion(run) === null ? "no version in its output" : undefined;
 }
 
 /** The refusal a broker launch would give the physical file at `path` as its executable, by the rule
@@ -38,7 +49,7 @@ export async function findNatsServer(): Promise<NatsServer> {
   const found = resolveOnPath("nats-server");
   const pathRefused = found === undefined ? undefined : refusal(found, "the nats-server on PATH");
   if (!pathRefused) {
-    const onPath = spawnSync("nats-server", ["--version"], { encoding: "utf8" });
+    const onPath = spawnSync("nats-server", ["--version"], { encoding: "utf8", windowsHide: true });
     if (!onPath.error && onPath.status === 0) return { path: found ?? "nats-server", source: "path", version: reportedVersion(onPath) };
   }
   // With no protected bundled one, the refused PATH one stays the choice, so its refusal names the fix.
@@ -48,8 +59,19 @@ export async function findNatsServer(): Promise<NatsServer> {
   catch (error) { if (pathRefused) return refusedOnPath(); throw error; }
   const bundledRefused = refusal(bin, "the bundled nats-server");
   if (bundledRefused) return pathRefused ? refusedOnPath() : { path: bin, source: "bundled", version: null, refused: bundledRefused };
-  const version = reportedVersion(spawnSync(bin, ["--version"], { encoding: "utf8", timeout: 10_000 }));
-  return { path: bin, source: "bundled", version, ...(pathRefused ? { skipped: { path: found!, reason: pathRefused.message } } : {}) };
+  const run = spawnSync(bin, ["--version"], { encoding: "utf8", timeout: 10_000, windowsHide: true });
+  const error = versionError(run);
+  return { path: bin, source: "bundled", version: reportedVersion(run), ...(error !== undefined ? { versionError: error } : {}), ...(pathRefused ? { skipped: { path: found!, reason: pathRefused.message } } : {}) };
+}
+
+/** The failure a broker start gives a nats-server whose version it could not read. Its configuration
+ *  is rendered for that version, so nothing was rendered or started. A `--version` run this process
+ *  had no open file left for names the open-file limit. */
+export function unreadVersion(server: NatsServer): CommandFailure {
+  const target = { executable: server.path, version: null };
+  if (server.versionError === "EMFILE")
+    return new CommandFailure("failed", "OPERATION_FAILED", `the nats-server version could not be read, because this process ran out of open files to run \`${server.path} --version\`; nothing was started`, { target, remedy: "raise the open-file limit (ulimit -n) of the shell that runs cotal, then run the command again" });
+  return new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", `cannot read the nats-server version from ${server.path}${server.versionError ? ` (${server.versionError})` : ""}, so the broker configuration was not rendered; nothing was started`, { target, remedy: `run \`${server.path} --version\` to see why it prints no version, or put nats-server ${FLOOR} or newer on PATH` });
 }
 
 /** The bundled platform package's nats-server path. Throws, naming the likely cause, when it is not installed. */

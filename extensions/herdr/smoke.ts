@@ -50,6 +50,14 @@ function ok(label: string, val: unknown, extra?: unknown) {
 // herdr call, because what a backend declares does not depend on a live herdr server.
 ok("the runtime declares that it streams no terminal", new HerdrRuntime(SESSION).streamsTerminal === false);
 
+// Name validation runs before the runtime checks whether herdr is reachable.
+for (const dashed of ["-reviewer", "--reviewer"]) {
+  let refusal = "";
+  try { new HerdrRuntime(SESSION).spawn(dashed, { command: "true", args: [], env: {} }, "/tmp"); }
+  catch (error) { refusal = (error as Error).message; }
+  ok(`spawn refuses an agent name that begins with - (${dashed})`, refusal.includes("not starting with -"), refusal);
+}
+
 /** Synchronous sleep: these checks poll around synchronous driver calls, so there is no event
  *  loop to await on. */
 function sleepSync(ms: number): void {
@@ -381,7 +389,7 @@ const SECRET_CANARY = "leak-canary-herdr-DO-NOT-LEAK";
 const handle = runtime.spawn("smoke-agent", {
   command: "sleep",
   args: ["30"],
-  env: { TEST_VAR: "hello", COTAL_CONTROL_TOKEN: SECRET_CANARY },
+  env: { TEST_VAR: "hello", COTAL_CONTROL_KEY: SECRET_CANARY },
 }, "/tmp");
 ok(`handle.name = "smoke-agent"`, handle.name === "smoke-agent");
 ok(`handle.kind = "herdr"`, handle.kind === "herdr");
@@ -533,7 +541,7 @@ ok("layout agents torn down", true);
 
 console.log("\n── launcher hygiene ────────────────────────────");
 
-const launcher = privateLauncher({ command: "/bin/echo", args: ["hi"], env: { COTAL_CONTROL_TOKEN: "s3cr3t-token" } }, "/tmp");
+const launcher = privateLauncher({ command: "/bin/echo", args: ["hi"], env: { COTAL_CONTROL_KEY: "s3cr3t-token" } }, "/tmp");
 ok("privateLauncher argv is `node <script>` (no env inline)", launcher.argv[0] === process.execPath && !launcher.argv.join(" ").includes("s3cr3t-token"));
 ok("privateLauncher script is 0o600 (owner-only)", (statSync(launcher.script).mode & 0o777) === 0o600);
 ok("privateLauncher dir is 0o700 (owner-only)", (statSync(launcher.dir).mode & 0o777) === 0o700);

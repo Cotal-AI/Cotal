@@ -111,13 +111,14 @@ const slowRetireStub: Connector = {
   },
 };
 // Needs a confirmed startup, as Claude does. Its child paints a prompt and, on the prompt's Enter,
-// its input screen with the notice (`confirmed`) or without it (`silent`); `ready` paints the input
-// screen with no prompt. Each then joins as the stub, two seconds in.
-let startupMode: "confirmed" | "silent" | "ready" = "confirmed";
+// its input screen with the notice (`confirmed`) or without it (`silent`). `ready` paints the input
+// screen with no prompt; `unmatched` shows neither. Each then joins as the stub, two seconds in.
+let startupMode: "confirmed" | "silent" | "ready" | "unmatched" = "confirmed";
 const startupChild = (mode: string): string => `
 const show = (text) => process.stdout.write("\\x1b[2J\\x1b[H" + text + "\\r\\n");
 const join = () => { process.stdin.pause(); setTimeout(() => import(${JSON.stringify(pathToFileURL(STUB).href)}), 2000); };
 if (${JSON.stringify(mode)} === "ready") { show("input ready"); join(); }
+else if (${JSON.stringify(mode)} === "unmatched") { show("app banner"); join(); }
 else {
   show("LOAD THE CHANNEL\\r\\nEnter to confirm");
   process.stdin.setRawMode(true);
@@ -151,7 +152,12 @@ try {
   manager = new Manager({ space, servers: broker.servers, runtime: "pty", workspaceRoot });
   await manager.start();
   type Seat = { id: string; lifecycleUid: string; handle: AgentHandle; issued?: { generation: string; acceptedToken: string } };
-  const M = manager as unknown as { agents: Map<string, Seat>; reserved: Map<string, string> };
+  const M = manager as unknown as {
+    agents: Map<string, Seat>;
+    namesCapacity: {
+      reserved: Map<string, string>;
+    };
+  };
 
   // The spawner: the operator's admin instrument, issued as the CLI mints it, so the static spawn
   // bound reads its evidence and it hands on the helper's role (SPEC 13.15).
@@ -168,7 +174,7 @@ try {
       ...(args !== undefined ? { args } : {}),
       ...(opts.target ? { target: { mode: opts.target.mode ?? "owner", owner: DEV_OWNER, actor: opts.target.actor, lifecycleUid: opts.target.lifecycleUid } } : {}),
     }, { deadlineMs: 15_000, currentEpoch: async () => 0 }).then((r) => r.reply as Reply, asValue);
-  const actx = (manager as unknown as { goalWriter: { ctx: Parameters<typeof readGoalResult>[0] } }).goalWriter.ctx;
+  const actx = (manager as unknown as { goalWriterComponent: { goalWriter: { ctx: Parameters<typeof readGoalResult>[0] }; } }).goalWriterComponent.goalWriter.ctx;
   const refOf = (goalId: string) => ({ endpoint: MANAGER_ENDPOINT, caller: runner, goalId });
   const resultOf = async (goalId: string, ms: number) => {
     const until = Date.now() + ms;
@@ -254,7 +260,7 @@ try {
   check("once with supervise is refused: a once seat is never restarted", supervised.ok === false && /never restarted|cannot enforce/.test(errorText(supervised)), supervised);
   const tooLong = await call("spawn", { name: "helper", agent: "once-stub", cwd: repoRoot, events: false, prompt: "\u0001".repeat(20_000), once: {} }, { id: goalId("tl") });
   check("a prompt whose relay record cannot fit the goal index is refused", tooLong.ok === false && /too long for one task/.test(errorText(tooLong)), tooLong);
-  check("...and none of them allocated a seat or a reservation", M.agents.size === seatsBefore && M.reserved.size === 0, { agents: [...M.agents.keys()], reserved: [...M.reserved.keys()] });
+  check("...and none of them allocated a seat or a reservation", M.agents.size === seatsBefore && M.namesCapacity.reserved.size === 0, { agents: [...M.agents.keys()], reserved: [...M.namesCapacity.reserved.keys()] });
 
   console.log("\n2. control: a prompt-only spawn takes its prompt as a kickoff and keeps running");
   const control = await call("spawn", { name: "helper", agent: "once-stub", cwd: repoRoot, events: false, prompt: "kick" }, { id: goalId("ctl") });
@@ -535,6 +541,13 @@ try {
     plainConfirmed.terminal?.state === "succeeded" && plainConfirmed.notice === undefined && plainConfirmed.row !== undefined && plainConfirmed.row.startupNotice === undefined,
     { terminal: plainConfirmed.terminal, row: plainConfirmed.row });
   await despawnPlain(plainConfirmed.name);
+  startupMode = "unmatched";
+  const plainUnmatched = await plainSpawn(goalId("plain-unmatched"));
+  check("a plain launch fails with the runtime diagnostic and visible banner when a joined seat never shows the startup prompt",
+    plainUnmatched.terminal?.state === "failed" && errorOf(plainUnmatched.terminal)?.startsWith(
+      `${plainUnmatched.name}: Cotal startup confirmation failed: prompt "LOAD THE CHANNEL" did not appear within 15000ms. Last visible lines: app banner | STUB_JOINED ${plainUnmatched.name} `) === true,
+    plainUnmatched.terminal);
+  check("the failed startup is absent from ps", plainUnmatched.name !== undefined && plainUnmatched.ps.ok === true && plainUnmatched.row === undefined, plainUnmatched.ps);
 } finally {
   for (const nc of seatConns) await nc.drain().catch(() => nc.close());
   await runnerNc?.drain().catch(() => runnerNc?.close());
@@ -545,7 +558,7 @@ try {
   await broker.stop().catch(() => {});
 }
 
-const EXPECTED_CELLS = 70;
+const EXPECTED_CELLS = 72;
 console.log(`\n${fail === 0 && pass === EXPECTED_CELLS ? "SPAWN ONCE SMOKE OK ✅" : "SPAWN ONCE SMOKE FAILED"}  (${pass} passed, ${fail} failed)`);
 if (pass + fail !== EXPECTED_CELLS) {
   console.log(`SUITE INCOMPLETE — ran ${pass + fail} of ${EXPECTED_CELLS} cells; a partial run is not a pass`);

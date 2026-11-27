@@ -219,41 +219,41 @@ try {
     ep.on("warning", (error: Error) => warnings.push(error.message));
     await ep.start();
     const internal = ep as unknown as {
-      kv: unknown;
-      publishPresence(): Promise<void>;
+      conn: { kv: unknown };
+      presence: { publishPresence(): Promise<void> };
       presenceWriteFailure(): { consecutiveFailures: number; stuck: boolean } | undefined;
     };
-    const liveKv = internal.kv;
-    internal.kv = { put: () => Promise.reject(new Error("store refused presence write")) };
-    await internal.publishPresence().catch(() => {});
-    await internal.publishPresence().catch(() => {});
+    const liveKv = internal.conn.kv;
+    internal.conn.kv = { put: () => Promise.reject(new Error("store refused presence write")) };
+    await internal.presence.publishPresence().catch(() => {});
+    await internal.presence.publishPresence().catch(() => {});
     ok("4.4 two immediate refused writes do not escalate before one full TTL",
       internal.presenceWriteFailure()?.stuck === false &&
       internal.presenceWriteFailure()?.consecutiveFailures === 2,
       internal.presenceWriteFailure());
     await wait(TTL_MS + 100);
-    await internal.publishPresence().catch(() => {});
+    await internal.presence.publishPresence().catch(() => {});
     const escalation = warnings.find((message) => /presence writes .* failed 3 consecutive times/.test(message));
     ok("4.5 consecutive presence write failures crossing one TTL raise the named non-transient condition once",
       escalation !== undefined &&
       internal.presenceWriteFailure()?.stuck === true &&
       new PresenceWriteStuckError("bucket", 0, 2, TTL_MS).transient === false,
       { warnings, failure: internal.presenceWriteFailure() });
-    await internal.publishPresence().catch(() => {});
+    await internal.presence.publishPresence().catch(() => {});
     ok("4.6 later refused heartbeats do not flood the named stuck condition",
       warnings.filter((message) => /presence writes .* consecutive times/.test(message)).length === 1,
       warnings);
-    internal.kv = liveKv;
-    await internal.publishPresence();
+    internal.conn.kv = liveKv;
+    await internal.presence.publishPresence();
     ok("4.7 the next successful presence write clears the stuck condition and resets the consecutive count",
       internal.presenceWriteFailure() === undefined, internal.presenceWriteFailure());
-    internal.kv = { put: () => Promise.reject(new Error("new refused run")) };
-    await internal.publishPresence().catch(() => {});
+    internal.conn.kv = { put: () => Promise.reject(new Error("new refused run")) };
+    await internal.presence.publishPresence().catch(() => {});
     ok("4.8 a refusal after recovery starts a fresh run at one and is not already stuck",
       internal.presenceWriteFailure()?.consecutiveFailures === 1 &&
       internal.presenceWriteFailure()?.stuck === false,
       internal.presenceWriteFailure());
-    internal.kv = liveKv;
+    internal.conn.kv = liveKv;
     await ep.stop();
   }
 
@@ -284,7 +284,7 @@ try {
     ok("4.9 a below-floor INFO is refused at bind, before any control-surface resource, with the floor sentence",
       floorRejected !== undefined && /below the required floor 2\.12/.test(floorRejected.message), floorRejected?.message);
     ok("4.10 the refused bind closed its connection (the endpoint holds no nc)",
-      (floorEp as unknown as { nc?: unknown }).nc === undefined);
+      (floorEp as unknown as { conn: { nc?: unknown } }).conn.nc === undefined);
     server.close();
   }
 
@@ -317,7 +317,7 @@ try {
   type Held = { release?: () => void; bound: number };
   const holdWatch = (ep: CotalEndpoint): Held => {
     const held: Held = { bound: 0 };
-    const kv = (ep as unknown as { kv: { watch: (...a: unknown[]) => Promise<unknown> } }).kv;
+    const kv = (ep as unknown as { conn: { kv: { watch: (...a: unknown[]) => Promise<unknown> } } }).conn.kv;
     const real = kv.watch.bind(kv);
     kv.watch = async (...a: unknown[]) => {
       const it = await real(...a);

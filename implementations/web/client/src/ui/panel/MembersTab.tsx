@@ -30,7 +30,7 @@ function deliveryText(info: ChannelRow | undefined): string | undefined {
 }
 
 /** The Members tab (mock section D, the panel): who is in the channel and which source says so, then
- *  the channel's own details and the way to delete it.
+ *  the channel's own details and, when supported, the way to delete it.
  *
  *  - Members are `channelMembers`: the broker's when its feed is authoritative, else who posted here.
  *    The pill names which, with the notes' tooltips. They are listed in the roster's order, waiting
@@ -50,6 +50,7 @@ export function MembersTab({ store, controller, channel, now, onPick }: {
   const roster = useStore(store, (s) => s.roster);
   const channels = useStore(store, (s) => s.channels);
   const membership = useStore(store, (s) => s.membership);
+  const channelDeleteSupported = useStore(store, (s) => s.channelDeleteSupported);
   const open = useStore(store, (s) => s.open);
   const messages = open?.channel === channel ? open.messages : NONE;
   const idx = useMemo(() => nameIndex(roster), [roster]);
@@ -92,12 +93,14 @@ export function MembersTab({ store, controller, channel, now, onPick }: {
         {delivery && <><dt>Delivery</dt><dd>{delivery}</dd></>}
         {info && <><dt>Messages</dt><dd className="ui-num">{info.messages}</dd></>}
       </dl>
-      <DeleteChannelDialog channel={channel} space={space} controller={controller}>
-        <Button type="button" variant="destructive" className="mt-1">
-          <Icon icon={Delete02Icon} data-icon="inline-start" />
-          Delete channel
-        </Button>
-      </DeleteChannelDialog>
+      {channelDeleteSupported && (
+        <DeleteChannelDialog channel={channel} space={space} controller={controller}>
+          <Button type="button" variant="destructive" className="mt-1">
+            <Icon icon={Delete02Icon} data-icon="inline-start" />
+            Delete channel
+          </Button>
+        </DeleteChannelDialog>
+      )}
     </>
   );
 }

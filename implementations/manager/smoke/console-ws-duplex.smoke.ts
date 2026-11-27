@@ -55,7 +55,7 @@ try {
   await setupSpaceStreams({ servers: SERVER, space, creds: await mintCreds(auth, newIdentity(), "provisioner") });
 
   mgr = new Manager({ space, servers: SERVER, runtime: "pty", workspaceRoot, wsPort, consolePort });
-  (mgr as unknown as { readinessTimeoutMs: number }).readinessTimeoutMs = 2500;
+  (mgr as unknown as { config: { readinessTimeoutMs: number } }).config.readinessTimeoutMs = 2500;
   await mgr.start();
   await mgr.startAgent({ name: "echo1", agent: "echo", events: false }); // cat: a clean line-echo pty
   // The console URL carries the credential in the FRAGMENT, which is how the browser is handed it;

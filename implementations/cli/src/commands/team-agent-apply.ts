@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { DEV_OWNER, assertLifecycleToken, mintCreds, newIdentity, validateChannelConfig, type MeshLaunchSpec } from "@cotal-ai/core";
-import { acquireMaintenanceLock, recordOperationSpace, brokerAddressForDisplay, canonicalRoot, CommandFailure, connectOrThrow, findMesh, presentationOf, readMaintenanceJournal, releaseMaintenanceLock, writeResult, type Report, resolveControlTarget } from "@cotal-ai/workspace";
+import { acquireMaintenanceLock, recordOperationSpace, brokerAddressForDisplay, canonicalRoot, CommandFailure, connectOrThrow, findMesh, findPreparedSpace, presentationOf, readMaintenanceJournal, releaseMaintenanceLock, writeResult, type Report, resolveControlTarget } from "@cotal-ai/workspace";
 import { buildLaunchSpec, cardOf, genRunId } from "../lib/manifest/apply.js";
 import { hashManifestSource, listLedgerFiles } from "../lib/manifest/ledger.js";
 import { loadManifest } from "../lib/manifest/index.js";
@@ -10,7 +10,8 @@ import { additiveAgentRequestReceipt, listAdditiveTeamAttempts, retainedAdditive
 import { openAdditiveChannelWriter } from "../lib/team-additive-native.js";
 import { shellWord } from "../lib/endpoint-errors.js";
 import { retainedRemovalRemedy } from "../lib/team-text.js";
-import { cardsWithoutLiveDelivery, LIVE_DELIVERY_REMEDY, readOwnedChannelRevisions } from "../lib/team-deploy-inspection.js";
+import { cardsWithoutLiveDelivery, liveDeliveryRemedy, readOwnedChannelRevisions, stoppedTeamDeploy } from "../lib/team-deploy-inspection.js";
+import { canonicalServer } from "../lib/broker-service.js";
 import { freshTeamAttemptSettled, listFreshTeamAttempts, listFreshTeamSummaries } from "../lib/team-fresh.js";
 import { retainedTeamMatches } from "../lib/team-retained.js";
 import { applyRetainedTeam } from "./team-deploy-apply.js";
@@ -33,15 +34,15 @@ export async function applyAgentTeam(file: string, values: TeamValues): Promise<
   const retained = retainedTeamMatches(root, space, hashManifestSource(source));
   if (retained) return applyRetainedTeam(file, values, retained[0]!);
   if (!prepared.agents.length || prepared.agents.length > 100 || manifest.channels.length > 100 || manifest.defaults !== undefined || manifest.broker?.host !== undefined || values["allow-stale"] !== undefined) throw new CommandFailure("refused", "UNSUPPORTED", "this guarded team route accepts one to 100 all-new agents and at most 100 new live channel cards without default/bind changes or stale waivers; no field was dropped", { target });
-  const notLive = cardsWithoutLiveDelivery(manifest.channels);
-  if (notLive) throw new CommandFailure("refused", "UNSUPPORTED", `mixed team creation needs explicit live delivery on every channel, and ${notLive.cards} ${notLive.verb} not set deliveryClass: live; inherited or durable delivery was not silently replaced`, { target: { ...target, cards: notLive.names }, remedy: LIVE_DELIVERY_REMEDY });
-  try { for (const channel of manifest.channels) validateChannelConfig(cardOf(channel)); }
-  catch { throw new CommandFailure("refused", "SCHEMA_INVALID", "a declared channel card exceeds native policy or text limits; no channel or agent was created", { target }); }
   if (values.space !== undefined && values.space !== space) throw new CommandFailure("refused", "CONFLICT", "the selected space differs from this manifest; no target was substituted", { target });
   const selected = findMesh(space);
-  if (!selected || canonicalRoot(selected.root) !== root || selected.server.includes(",")) throw new CommandFailure("refused", "CONFLICT", "team deployment needs one registered broker and this exact project root", { target });
+  if (!selected || canonicalRoot(selected.root) !== root || selected.server.includes(",")) throw (!selected ? stoppedTeamDeploy(findPreparedSpace(space), root) : undefined) ?? new CommandFailure("refused", "CONFLICT", "team deployment needs one registered broker and this exact project root", { target });
   if (selected.mode === "user") throw new CommandFailure("refused", "UNSUPPORTED", "user-auth inline team launch needs its server-side pre-persistence owner boundary qualified first; no inline spec was submitted or broader caller substituted", { target });
-  if (manifest.broker?.servers !== undefined && manifest.broker.servers !== selected.server || manifest.broker?.auth !== undefined && (manifest.broker.auth === false ? "open" : manifest.broker.auth === "user" ? "user" : "auth") !== selected.mode) throw new CommandFailure("refused", "CONFLICT", "the manifest broker or authentication mode differs from its registered target", { target });
+  if (manifest.broker?.servers !== undefined && canonicalServer(manifest.broker.servers) !== canonicalServer(selected.server) || manifest.broker?.auth !== undefined && (manifest.broker.auth === false ? "open" : manifest.broker.auth === "user" ? "user" : "auth") !== selected.mode) throw new CommandFailure("refused", "CONFLICT", "the manifest broker or authentication mode differs from its registered target", { target });
+  const notLive = cardsWithoutLiveDelivery(manifest.channels);
+  if (notLive) throw new CommandFailure("refused", "UNSUPPORTED", `mixed team creation needs explicit live delivery on every channel, and ${notLive.cards} ${notLive.verb} not set deliveryClass: live; inherited or durable delivery was not silently replaced`, { target: { ...target, cards: notLive.names }, remedy: liveDeliveryRemedy(selected.mode) });
+  try { for (const channel of manifest.channels) validateChannelConfig(cardOf(channel)); }
+  catch { throw new CommandFailure("refused", "SCHEMA_INVALID", "a declared channel card exceeds native policy or text limits; no channel or agent was created", { target }); }
   const runtime = values.runtime ?? manifest.runtime ?? "pty", manifestHash = hashManifestSource(source);
   const unchanged = () => {
     const current = findMesh(space);

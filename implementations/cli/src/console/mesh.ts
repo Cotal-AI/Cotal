@@ -28,7 +28,7 @@ export function displaySafe<T>(value: T): T {
   return Object.fromEntries(Object.entries(value).map(([key, field]) => [key, displaySafe(field)])) as T;
 }
 
-export function useMesh(ep: CotalEndpoint, opts?: MeshViewOptions): MeshSnapshot {
+export function useMesh(ep: CotalEndpoint, opts?: MeshViewOptions) {
   const viewRef = useRef<MeshView | null>(null);
   if (!viewRef.current) viewRef.current = new MeshView(ep, opts ?? {});
   const [state, setState] = useState<MeshSnapshot>(() => displaySafe(viewRef.current!.snapshot()));
@@ -43,5 +43,5 @@ export function useMesh(ep: CotalEndpoint, opts?: MeshViewOptions): MeshSnapshot
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-  return state;
+  return { mesh: state, discardChatHistory: (channel?: string) => viewRef.current!.discardChatHistory(channel) };
 }

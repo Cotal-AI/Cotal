@@ -4,7 +4,7 @@
  * prefix with no repo on the resolution path, and proves the PUBLISHED seed path:
  *
  *  - the `cotal-ai` tarball ships the `seeded-connectors/<name>` payloads (prepack) with concrete deps
- *  - a first command on the installed binary seeds all four built-ins from those bundled payloads
+ *  - explicit reconciliation on the installed binary seeds the built-ins from those bundled payloads
  *    (`shippedSourceDir` published branch), installing each from the durable store under the isolated
  *    config (never a repo path). Driven through the `.bin/cotal` SYMLINK npm publishes, the way a user
  *    reaches an installed binary: `process.argv[1]` is then the link, whose parents hold no
@@ -17,31 +17,101 @@
  * Broker-free and deterministic. Needs `npm` + `pnpm` on PATH and network for third-party deps.
  * Run: pnpm smoke:seed-tarball:live
  */
-import { execFileSync, spawnSync } from "node:child_process";
+import { execFile, execFileSync, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { createServer } from "node:http";
 import { tmpdir } from "node:os";
-import { dirname, join, sep } from "node:path";
+import { delimiter, dirname, join, sep } from "node:path";
+import { promisify } from "node:util";
+import { resolveOnPath } from "@cotal-ai/workspace";
+import { platformExcludesHost } from "../../implementations/cli/src/seed/verify.js";
+import { createSuite } from "@cotal-ai/smoke-kit";
 
 const REPO = join(import.meta.dirname, "..", "..");
-let pass = 0;
-let fail = 0;
-const check = (name: string, cond: boolean, extra?: unknown) => {
-  if (cond) {
-    pass++;
-    console.log(`  ✓ ${name}`);
-  } else {
-    fail++;
-    console.log(`  ✗ FAIL: ${name}`, extra ?? "");
+const { check, finish, passed, failed } = createSuite();
+const cleanEnv: NodeJS.ProcessEnv = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_")));
+
+function seedWithShadowedNode(entry: string, cwd: string, env: NodeJS.ProcessEnv, version: string) {
+  const tools = join(env.HOME!, "tools");
+  const invocations = join(tools, "npm-node");
+  const npm = resolveOnPath("npm", env);
+  if (!npm) throw new Error("the smoke needs npm on PATH");
+  mkdirSync(tools);
+  writeFileSync(join(tools, "node"), '#!/bin/sh\necho "unsupported project Node" >&2\nexit 89\n', { mode: 0o755 });
+  writeFileSync(join(tools, "npm"), `#!/usr/bin/env node
+const { appendFileSync } = require("node:fs");
+const { spawnSync } = require("node:child_process");
+appendFileSync(${JSON.stringify(invocations)}, process.argv[2] + " " + process.execPath + "\\n");
+if (process.argv[2] === "view" && process.argv[3] === "cotal-ai@latest") console.log(${JSON.stringify(JSON.stringify(version))});
+else process.exit(spawnSync(${JSON.stringify(npm)}, process.argv.slice(2), { stdio: "inherit" }).status ?? 1);
+`, { mode: 0o755 });
+  const result = spawnSync(process.execPath, [entry, "update", "--self"], {
+    cwd, encoding: "utf8", env: { ...env, PATH: `${tools}${delimiter}${env.PATH}` },
+  });
+  const calls = existsSync(invocations) ? readFileSync(invocations, "utf8").trim().split("\n") : [];
+  check("self-update uses the running Node with PATH's npm for both the version check and connector install",
+    calls.includes(`view ${process.execPath}`) && calls.includes(`install ${process.execPath}`), calls);
+  check("self-update reconciles the built-ins with an unsupported Node first on PATH",
+    result.status === 0 && /connectors reconciled.*seeded/.test(result.stdout), result.stdout + result.stderr);
+}
+
+async function checkLocalOperatorUpdate(entry: string, cwd: string, env: NodeJS.ProcessEnv, version: string, extensions: string): Promise<void> {
+  const command = "local-peer-probe", pkg = `@cotal-ai/${command}`, source = join(cwd, command);
+  mkdirSync(source);
+  writeFileSync(join(source, "package.json"), JSON.stringify({ name: pkg, version, type: "module", main: "index.mjs", peerDependencies: { "@cotal-ai/core": version } }));
+  writeFileSync(join(source, "index.mjs"), `import { registry } from '@cotal-ai/core';
+registry.register({ kind: 'command', name: '${command}', summary: 'Print a test greeting', run() { console.log('probe loaded'); } });
+`);
+  const requests: string[] = [];
+  const registry = createServer((req, res) => {
+    const path = decodeURIComponent(req.url!);
+    requests.push(path);
+    res.setHeader("content-type", "application/json");
+    if (path === "/cotal-ai") res.end(JSON.stringify({ name: "cotal-ai", "dist-tags": { latest: version }, versions: { [version]: { name: "cotal-ai", version } } }));
+    else { res.statusCode = 404; res.end('{"error":"not found"}'); }
+  });
+  await new Promise<void>((resolve, reject) => registry.once("error", reject).listen(0, "127.0.0.1", resolve));
+  try {
+    const address = registry.address();
+    if (!address || typeof address === "string") throw new Error("loopback registry has no port");
+    const exec = promisify(execFile);
+    const run = (...args: string[]) => exec(process.execPath, [entry, ...args], {
+      cwd, env: { ...env, COTAL_NO_UPDATE_CHECK: "1", npm_config_registry: `http://127.0.0.1:${address.port}`, npm_config_fetch_retries: "0" }, timeout: 120_000,
+    });
+    await run("ext", "add", `./${command}`);
+    check("local scoped extension runs before the update", (await run(command)).stdout.trim() === "probe loaded");
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const result = await run("update", "--self");
+      check("self-update keeps the working local scoped extension", result.stdout.includes("installed package closure is current"), result.stdout + result.stderr);
+    }
+    const installed = join(extensions, "node_modules", pkg, "index.mjs");
+    rmSync(installed);
+    await run("update", "--self");
+    check("self-update repairs a missing entry from the recorded local copy", readFileSync(installed).equals(readFileSync(join(source, "index.mjs"))));
+    writeFileSync(installed, "throw new Error('unloadable local entry');\n");
+    await run("update", "--self");
+    check("self-update repairs an unloadable entry from the recorded local copy", readFileSync(installed).equals(readFileSync(join(source, "index.mjs"))));
+    check("local scoped extension runs after repair", (await run(command)).stdout.trim() === "probe loaded");
+    const status = JSON.parse((await run("status", "--json")).stdout) as { result: { extensions: { items: { package: string }[] } } };
+    check("status still lists the local scoped extension", status.result.extensions.items.some(item => item.package === pkg));
+    const inventory = JSON.parse(readFileSync(join(extensions, "extensions.json"), "utf8")) as { extensions: { pkg: string; spec: string }[] };
+    check("update retains the operator's recorded path", inventory.extensions.find(item => item.pkg === pkg)?.spec === source);
+    check("npm checks the latest CLI without asking for the local package", requests.filter(path => path === "/cotal-ai").length >= 4 && !requests.includes(`/${pkg}`), requests);
+  } finally {
+    await new Promise<void>((resolveClose, reject) => registry.close(error => error ? reject(error) : resolveClose()));
   }
-};
+}
 
 const base = mkdtempSync(join(tmpdir(), "cotal-tarball-smoke-"));
 const tgz = join(base, "tgz");
 const prefix = join(base, "prefix");
-const cfg = join(base, "cfg");
+const physicalConfig = join(base, "cfg");
+const cfg = process.platform === "win32" ? physicalConfig : join(base, "linked-config");
 mkdirSync(tgz, { recursive: true });
 mkdirSync(prefix, { recursive: true });
-mkdirSync(cfg, { recursive: true });
+mkdirSync(physicalConfig, { recursive: true });
+if (cfg !== physicalConfig) symlinkSync(physicalConfig, cfg, "dir");
 
 try {
   console.log("packing the cotal-ai closure …");
@@ -76,18 +146,18 @@ try {
     header.writeUInt16LE(machine, 18);
     writeFileSync(helper, header);
   }
-  // workspace's prepack refuses without its Windows and macOS identity bindings, which only the native
-  // builder jobs produce and a Linux install never loads, so it packs without that check.
+  // workspace and seat require foreign-platform bindings for publication. This host-only smoke
+  // loads neither those bindings nor the simulated non-host seat headers, so skip their release checks.
   for (const d of dirs) {
     const root = d === "packages/seat" ? seatClone : join(REPO, d);
-    const skipPrepack = d === "packages/workspace" ? ["--config.ignore-scripts=true"] : [];
-    execFileSync("pnpm", ["-C", root, "pack", ...skipPrepack, "--pack-destination", tgz], { stdio: ["ignore", "ignore", "inherit"] });
+    const skipPrepack = ["packages/workspace", "packages/seat"].includes(d) ? ["--config.ignore-scripts=true"] : [];
+    execFileSync("pnpm", ["-C", root, "pack", ...skipPrepack, "--pack-destination", tgz], { env: cleanEnv, stdio: ["ignore", "ignore", "inherit"] });
   }
   const tarballs = readdirSync(tgz).filter((f) => f.endsWith(".tgz"));
   check("packed the full @cotal-ai closure", tarballs.length === dirs.length, tarballs.length);
 
   const cotalTgz = join(tgz, tarballs.find((f) => /^cotal-ai-\d/.test(f)) ?? "");
-  const listing = execFileSync("tar", ["tzf", cotalTgz], { encoding: "utf8" });
+  const listing = execFileSync("tar", ["tzf", cotalTgz], { env: cleanEnv, encoding: "utf8" });
   check("cotal-ai tarball ships seeded-connectors/ payloads", listing.includes("package/seeded-connectors/hermes/package.json"));
   check("cotal-ai tarball bundles the web dashboard payload", listing.includes("package/seeded-connectors/web/package.json"));
   const webBase = "package/seeded-connectors/web/dist/web";
@@ -103,7 +173,7 @@ try {
     docsEntries,
   );
   check("cotal-ai tarball ships the shared-file placements", listing.includes("package/seeded-connectors/_shared/placements.json"));
-  const packedPkg = execFileSync("tar", ["xzf", cotalTgz, "-O", "package/package.json"], { encoding: "utf8" });
+  const packedPkg = execFileSync("tar", ["xzf", cotalTgz, "-O", "package/package.json"], { env: cleanEnv, encoding: "utf8" });
   check("cotal-ai tarball has concrete dep versions (workspace: replaced)", !packedPkg.includes("workspace:"));
 
   // Every bundled payload must carry the umbrella's exact version — the reconcile stamps that version
@@ -112,7 +182,7 @@ try {
   const umbrellaVersion = (JSON.parse(packedPkg) as { version: string }).version;
   for (const n of ["claude", "opencode", "hermes", "pi", "web"]) {
     const seededPkg = JSON.parse(
-      execFileSync("tar", ["xzf", cotalTgz, "-O", `package/seeded-connectors/${n}/package.json`], { encoding: "utf8" }),
+      execFileSync("tar", ["xzf", cotalTgz, "-O", `package/seeded-connectors/${n}/package.json`], { env: cleanEnv, encoding: "utf8" }),
     ) as { version: string };
     check(`bundled ${n} payload is version-locked to the umbrella (${umbrellaVersion})`, seededPkg.version === umbrellaVersion, seededPkg.version);
   }
@@ -125,7 +195,7 @@ try {
   // binary. marked and DOMPurify are bundled too, because the message rows render bodies as
   // sanitized Markdown, and d3-force, d3-selection and d3-zoom lay out and pan the topology graph.
   const licenses = JSON.parse(
-    execFileSync("tar", ["xzf", cotalTgz, "-O", `${webBase}/bundle-licenses.json`], { encoding: "utf8" }),
+    execFileSync("tar", ["xzf", cotalTgz, "-O", `${webBase}/bundle-licenses.json`], { env: cleanEnv, encoding: "utf8" }),
   ) as { bundled: { package: string; version: string; license: string }[] };
   const libs = new Map(licenses.bundled.map((e) => [e.package, e]));
   check(
@@ -136,7 +206,7 @@ try {
   check("web bundle-licenses.json names react and react-dom", ["react", "react-dom"].every((p) => libs.has(p)), [...libs.keys()].join(","));
   check("web bundle-licenses.json names marked and dompurify", ["marked", "dompurify"].every((p) => libs.has(p)), [...libs.keys()].join(","));
   check("web bundle-licenses.json names d3-force, d3-selection and d3-zoom", ["d3-force", "d3-selection", "d3-zoom"].every((p) => libs.has(p)), [...libs.keys()].join(","));
-  const page = execFileSync("tar", ["xzf", cotalTgz, "-O", `${webBase}/index.html`], { encoding: "utf8" });
+  const page = execFileSync("tar", ["xzf", cotalTgz, "-O", `${webBase}/index.html`], { env: cleanEnv, encoding: "utf8" });
   const refs = [...page.matchAll(/(?:src|href)="\/([^"]+)"/g)].map((m) => m[1]);
   check("the shipped web page references its script and stylesheet", refs.some((r) => r.endsWith(".js")) && refs.some((r) => r.endsWith(".css")), refs);
   for (const r of refs) check(`the shipped web page's reference /${r} is in the tarball`, listing.includes(`${webBase}/${r}`));
@@ -151,16 +221,17 @@ try {
   // above, which reads the umbrella's own tarball.
   const webTgzDir = join(base, "web-tgz");
   mkdirSync(webTgzDir, { recursive: true });
-  execFileSync("npm", ["pack", "--ignore-scripts", "--silent", "--pack-destination", webTgzDir, join(REPO, "implementations", "web")], { stdio: ["ignore", "ignore", "inherit"] });
+  execFileSync("npm", ["pack", "--ignore-scripts", "--silent", "--pack-destination", webTgzDir, join(REPO, "implementations", "web")], { env: cleanEnv, stdio: ["ignore", "ignore", "inherit"] });
   const webTgz = join(webTgzDir, readdirSync(webTgzDir).find((f) => f.endsWith(".tgz")) ?? "");
-  const standalone = execFileSync("tar", ["xzf", webTgz, "-O", "package/dist/web/bundle-licenses.json"], { encoding: "utf8" });
+  const standalone = execFileSync("tar", ["xzf", webTgz, "-O", "package/dist/web/bundle-licenses.json"], { env: cleanEnv, encoding: "utf8" });
   check("the umbrella's web manifest is the one the web package itself packs",
-    standalone === execFileSync("tar", ["xzf", cotalTgz, "-O", `${webBase}/bundle-licenses.json`], { encoding: "utf8" }));
+    standalone === execFileSync("tar", ["xzf", cotalTgz, "-O", `${webBase}/bundle-licenses.json`], { env: cleanEnv, encoding: "utf8" }));
 
   console.log("installing the tarball closure into a clean prefix …");
   writeFileSync(join(prefix, "package.json"), JSON.stringify({ name: "tb-host", private: true }));
   const install = spawnSync("npm", ["install", "--no-audit", "--no-fund", ...tarballs.map((f) => join(tgz, f))], {
     cwd: prefix,
+    env: cleanEnv,
     encoding: "utf8",
   });
   check("npm install of the tarball closure succeeded", install.status === 0, install.stderr?.split("\n").slice(-6).join("\n"));
@@ -176,17 +247,33 @@ try {
   if (process.platform !== "win32") {
     check("npm installed cotal through a bin symlink", existsSync(npmBin) && lstatSync(npmBin).isSymbolicLink());
   }
-  // A read no longer seeds, so seed explicitly; the listing after it is a read.
-  const seed = spawnSync("node", [invokedBin, "ext", "seed"], { encoding: "utf8", env: { ...process.env, XDG_CONFIG_HOME: cfg } });
-  check("ext seed from the published layout succeeded", seed.status === 0, `${seed.stdout}${seed.stderr}`.split("\n").slice(-12).join("\n"));
-  const list = spawnSync("node", [invokedBin, "ext", "list"], { encoding: "utf8", env: { ...process.env, XDG_CONFIG_HOME: cfg } });
+  // Seed explicitly before reading the installed inventory.
+  const home = join(base, "home");
+  mkdirSync(home, { recursive: true });
+  mkdirSync(join(prefix, ".cotal"));
+  const npmrc = join(home, ".npmrc");
+  writeFileSync(npmrc, "omit=optional\n");
+  const seedEnv: NodeJS.ProcessEnv & { HOME: string; XDG_CONFIG_HOME: string } = { ...cleanEnv,
+    HOME: home, COTAL_HOME: join(home, ".cotal"), XDG_CONFIG_HOME: cfg, npm_config_userconfig: npmrc };
+  if (process.platform === "win32") {
+    const seed = spawnSync("node", [invokedBin, "ext", "seed"], { cwd: prefix, encoding: "utf8", env: seedEnv });
+    check("ext seed from the published layout succeeded", seed.status === 0, `${seed.stdout}${seed.stderr}`.split("\n").slice(-12).join("\n"));
+  } else {
+    seedWithShadowedNode(invokedBin, prefix, seedEnv, umbrellaVersion);
+  }
+  const list = spawnSync("node", [invokedBin, "ext", "list"], { cwd: prefix, encoding: "utf8", env: seedEnv });
   const out = list.stdout ?? "";
   for (const n of ["claude", "opencode", "codex", "hermes", "jcode", "pi"]) {
     check(`seeded connector:${n} from the tarball binary`, out.includes(`connector:${n}`), list.stderr);
   }
   check("seeded service-preset:web (the dashboard) from the bundled payload", out.includes("service-preset:web"), list.stderr);
 
-  const manifest = JSON.parse(readFileSync(join(cfg, "cotal", "extensions", "extensions.json"), "utf8")) as {
+  const installKey = createHash("sha256").update(packageBin).digest("hex");
+  const selectionPath = join(cfg, "cotal", "installs", installKey, "sets", umbrellaVersion, "selection.json");
+  const connectorRoot = existsSync(selectionPath)
+    ? (JSON.parse(readFileSync(selectionPath, "utf8")) as { root: string }).root : join(cfg, "cotal");
+  const extensionPrefix = join(connectorRoot, "extensions");
+  const manifest = JSON.parse(readFileSync(join(extensionPrefix, "extensions.json"), "utf8")) as {
     extensions: { pkg: string; spec: string; source?: string }[];
   };
   const hermes = manifest.extensions.find((e) => e.pkg === "@cotal-ai/connector-hermes");
@@ -202,7 +289,7 @@ try {
   // PACKAGED — a build that emits only declarations for it passes install + import + materialize but
   // fails at LAUNCH with MODULE_NOT_FOUND. Assert those buildLaunch targets exist in the installed
   // payload (a self-contained esbuild bundle each), so a dropped shim can never ship again.
-  const extRoot = join(cfg, "cotal", "extensions", "node_modules");
+  const extRoot = join(extensionPrefix, "node_modules");
   const launchShims: Record<string, string> = {
     "@cotal-ai/connector-opencode": "dist/serve.js",
     "@cotal-ai/connector-codex": "dist/host.js",
@@ -241,19 +328,66 @@ try {
 
   // `cotal update` keeps a seeded built-in only when its store and installed copies are byte-equal to
   // the shipped payload, which for a restored file is the shared copy. A tampered copy is reinstalled.
-  const updateEnv = { ...process.env, HOME: join(base, "home"), XDG_CONFIG_HOME: cfg };
+  const lock = JSON.parse(readFileSync(join(extensionPrefix, "package-lock.json"), "utf8")) as {
+    packages: Record<string, { version?: string; optional?: boolean; os?: string[]; cpu?: string[]; libc?: string[] }>;
+  };
+  const native = Object.entries(lock.packages).find(([key, entry]) =>
+    key.includes("/@1jehuang/jcode-") && entry.optional && !platformExcludesHost(entry));
+  if (!native) throw new Error("the SDK lock records no native package for this host");
+  const nativeManifest = join(extensionPrefix, native[0], "package.json");
+  check("first seed includes the host native dependency despite omit=optional", existsSync(nativeManifest));
+  const updateEnv = seedEnv;
   mkdirSync(updateEnv.HOME, { recursive: true });
-  const update = () => {
-    const run = spawnSync("node", [invokedBin, "update"], { cwd: prefix, encoding: "utf8", env: updateEnv });
+  const runUpdate = (env: NodeJS.ProcessEnv, ...args: string[]) => {
+    const run = spawnSync(process.execPath, [invokedBin, "update", ...args], { cwd: prefix, encoding: "utf8", env });
+    check(`update ${args.join(" ")} exits successfully`, run.status === 0, run.stderr);
     return `${run.stdout ?? ""}${run.stderr ?? ""}`;
   };
+  const update = (...args: string[]) => runUpdate(updateEnv, ...args);
   const reconciled = (out: string) => out.split("\n").find((line) => line.includes("connectors reconciled")) ?? "";
   const kept = reconciled(update());
+  const standaloneDir = join(home, ".pi", "agent", "extensions");
   check(
     "cotal update verifies all seven built-ins against the shipped payload and reinstalls none",
     Object.keys(seededPkgs).every((name) => new RegExp(`verified [^;]*\\b${name}\\b`).test(kept)) && !kept.includes("refreshed"),
     kept,
   );
+  check("update does not create a standalone pi extension directory", !existsSync(standaloneDir));
+  if (process.platform === "linux") {
+    const selfUpdate = () => runUpdate({ ...updateEnv, PATH: `${join(home, "tools")}${delimiter}${updateEnv.PATH}` }, "--self");
+    const coreLink = installedAt("web", "node_modules/@cotal-ai/core");
+    const dashboard = installedAt("web", "dist/index.js");
+    const importDashboard = () => spawnSync(process.execPath, ["--input-type=module", "-e",
+      "await import(process.argv[1]);", dashboard], { cwd: prefix, env: updateEnv, encoding: "utf8" });
+    rmSync(coreLink);
+    symlinkSync(join(base, "removed-generation", "core"), coreLink);
+    const broken = importDashboard();
+    check("the dashboard cannot import with a dangling core peer", broken.status === 1 && broken.stderr.includes("ERR_MODULE_NOT_FOUND"), broken.stderr);
+    const repaired = selfUpdate();
+    check("current self-update verifies the dashboard without reinstalling it", /verified [^;]*\bweb\b/.test(reconciled(repaired)) && !repaired.includes("Reconciling built-in web"), repaired);
+    const loaded = importDashboard();
+    check("the dashboard imports after self-update rebinds its peer", loaded.status === 0, loaded.stderr);
+    check("a second self-update skips reconciliation", selfUpdate().includes("installed package closure is current"));
+  }
+  // Real npm creates the reported existing installation while leaving its lock intact.
+  const omitted = spawnSync("npm", ["install", "--omit=optional", "--legacy-peer-deps", "--install-links", "--no-audit", "--no-fund"], {
+    cwd: extensionPrefix, env: updateEnv, encoding: "utf8",
+  });
+  check("real npm with omit=optional creates the missing-native state", omitted.status === 0 && !existsSync(nativeManifest), omitted.stderr);
+  const optionalRepair = update();
+  check("plain update repairs an omitted host native dependency", existsSync(nativeManifest), optionalRepair);
+  const standaloneCopy = join(standaloneDir, "cotal.js");
+  const editedCopy = "// operator-edited standalone extension\n";
+  mkdirSync(standaloneDir, { recursive: true });
+  writeFileSync(standaloneCopy, editedCopy, { flag: "wx" });
+  const repeated = update();
+  const advice = repeated.split("\n").filter(line => line.includes("standalone pi extension"));
+  check("update distinguishes the managed connector and explains how to update the standalone copy once",
+    advice.length === 1 && advice[0].includes("managed pi connector") && advice[0].includes("reinstall `@cotal-ai/pi`")
+    && advice[0].includes("`cotal --version`") && advice[0].includes("repeat the copy"), advice);
+  check("update does not overwrite an edited standalone pi extension", readFileSync(standaloneCopy, "utf8") === editedCopy);
+  check("repeat plain update does not reinstall any built-in", !/reinstalling every built-in|Reconciling built-in/.test(repeated), repeated);
+  check("update leaves the operator's omit configuration unchanged", readFileSync(npmrc, "utf8") === "omit=optional\n");
   const tamperedRel = placements.claude?.[0] ?? "";
   writeFileSync(installedAt("claude", tamperedRel), Buffer.concat([sharedCopy(tamperedRel), Buffer.from([0])]));
   const repairOut = update();
@@ -263,9 +397,31 @@ try {
     repairOut.split("\n").filter((line) => line.includes("claude")).join("\n"),
   );
   check("the reinstall restores the shared copy", readFileSync(installedAt("claude", tamperedRel)).equals(sharedCopy(tamperedRel)));
+  if (cfg !== physicalConfig) {
+    const lockPath = join(extensionPrefix, "package-lock.json");
+    const lock = JSON.parse(readFileSync(lockPath, "utf8"));
+    const stale = `../.extensions.stage-removed/config/cotal/extensions/${native[0]}`;
+    lock.packages[stale] = { version: native[1].version, extraneous: true };
+    writeFileSync(lockPath, JSON.stringify(lock));
+    const repaired = update();
+    const repairedLock = JSON.parse(readFileSync(lockPath, "utf8")) as { packages: Record<string, { extraneous?: boolean }> };
+    check("one update repairs a lock containing a removed stage", /reinstalling every built-in/.test(repaired) &&
+      Object.entries(repairedLock.packages).every(([key, entry]) => !key.includes(".extensions.stage-") && !(key.startsWith("../") && entry.extraneous)), repaired);
+    const linkedUpdate = update("--self");
+    check("the next update through the link keeps the installed built-ins", !/reinstalling every built-in|Reconciling built-in/.test(linkedUpdate), linkedUpdate);
+    updateEnv.XDG_CONFIG_HOME = physicalConfig;
+    for (const args of [["--version"], ["status"]]) {
+      const run = spawnSync("node", [invokedBin, ...args], { cwd: prefix, encoding: "utf8", env: updateEnv });
+      check(`${args[0]} succeeds through the physical config path`, run.status === 0, run.stderr);
+    }
+    const physicalUpdate = update("--self");
+    check("an update through the physical path keeps the installed built-ins", !/reinstalling every built-in|Reconciling built-in/.test(physicalUpdate), physicalUpdate);
+  }
+  if (process.platform === "linux") await checkLocalOperatorUpdate(invokedBin, prefix, seedEnv, umbrellaVersion, extensionPrefix);
 } finally {
   rmSync(base, { recursive: true, force: true });
 }
 
-console.log(`\nseed-tarball smoke: ${pass} passed, ${fail} failed`);
-process.exit(fail ? 1 : 0);
+console.log(`\nseed-tarball smoke: ${passed()} passed, ${failed()} failed`);
+finish();
+process.exit(failed() ? 1 : 0);

@@ -11,6 +11,7 @@ public static class SetupNative {
   [DllImport("user32.dll", SetLastError=true)] public static extern bool PostMessage(IntPtr window, uint message, IntPtr w, IntPtr l);
   [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr window);
   [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+  [DllImport("user32.dll")] public static extern IntPtr SendMessage(IntPtr window, uint message, IntPtr w, IntPtr l);
 }
 '@
 function Click-Control($Control,$Window,[bool]$StartMenu=$false) {
@@ -24,10 +25,22 @@ function Click-Control($Control,$Window,[bool]$StartMenu=$false) {
   $script:observations+=@{at=[DateTime]::UtcNow.ToString('o');action=$action;name=$Control.Current.Name;handle=$handle.ToInt64();dialog=$dialog.ToInt64();activated=$activated;foreground=[SetupNative]::GetForegroundWindow().ToInt64();posted=$posted}
   if(!$posted){throw 'Native installer control message failed.'}
 }
+# NSIS checkboxes are plain Win32 buttons that UI Automation reports as panes, so find them by name and clear them the way a click does.
+function Clear-Checkbox($Elements,$Window,[string]$Pattern) {
+  $boxes=@($Elements | Where-Object {$_.Current.Name -match $Pattern -and $_.Current.NativeWindowHandle -ne 0})
+  if($boxes.Count -ne 1){return $false}
+  $handle=[IntPtr]$boxes[0].Current.NativeWindowHandle
+  [void][SetupNative]::SetForegroundWindow([IntPtr]$Window.Current.NativeWindowHandle)
+  if([SetupNative]::SendMessage($handle,0x00F0,[IntPtr]::Zero,[IntPtr]::Zero) -eq [IntPtr]1){[void][SetupNative]::SendMessage($handle,0x00F5,[IntPtr]::Zero,[IntPtr]::Zero)}
+  $cleared=[SetupNative]::SendMessage($handle,0x00F0,[IntPtr]::Zero,[IntPtr]::Zero) -eq [IntPtr]::Zero
+  $script:observations+=@{at=[DateTime]::UtcNow.ToString('o');action='BM_CLICK:clear';name=$boxes[0].Current.Name;handle=$handle.ToInt64();cleared=$cleared}
+  return $cleared
+}
 $process=Start-Process -FilePath $Installer -PassThru
 $deadline=[DateTime]::UtcNow.AddSeconds(240)
 $observations=@()
 $occupiedSeen=$false
+$desktopShortcutCleared=$false
 while (!$process.HasExited -and [DateTime]::UtcNow -lt $deadline) {
   $windows=[Windows.Automation.AutomationElement]::RootElement.FindAll([Windows.Automation.TreeScope]::Children,[Windows.Automation.PropertyCondition]::new([Windows.Automation.AutomationElement]::ProcessIdProperty,$process.Id))
   foreach($window in $windows) {
@@ -45,7 +58,9 @@ while (!$process.HasExited -and [DateTime]::UtcNow -lt $deadline) {
     $buttons=@($elements | Where-Object {$_.Current.IsEnabled -and !$_.Current.IsOffscreen -and $_.Current.AutomationId -eq '1' -and $_.Current.Name -match '^(Next\s*>?|Install|Finish|Close|I Agree)$'})
     if($buttons.Count -eq 1) {
       if($buttons[0].Current.Name -eq 'Finish') {
-        foreach($check in @($elements | Where-Object {$_.Current.ControlType -eq [Windows.Automation.ControlType]::CheckBox -and $_.Current.Name -match 'Run Cotal'})) { $toggle=$check.GetCurrentPattern([Windows.Automation.TogglePattern]::Pattern); if($toggle.Current.ToggleState -eq [Windows.Automation.ToggleState]::On){$toggle.Toggle()} }
+        if(!(Clear-Checkbox $elements $window '^Run Cotal$')){throw 'The finish page Run Cotal box could not be cleared.'}
+        # A person who clears Create desktop shortcut must get none.
+        $desktopShortcutCleared=Clear-Checkbox $elements $window 'desktop shortcut'
       }
       Click-Control $buttons[0] $window (($names -contains 'Choose Start Menu Folder') -or $buttons[0].Current.Name -eq 'Finish')
     }
@@ -56,4 +71,4 @@ while (!$process.HasExited -and [DateTime]::UtcNow -lt $deadline) {
 $observations | ConvertTo-Json -Depth 7 | Set-Content -LiteralPath $Output -Encoding UTF8
 if(!$process.HasExited){throw 'Installer UI did not finish within 240 seconds.'}
 if($Mode -eq 'occupied' -and !$occupiedSeen){throw 'Occupied agent count was never shown.'}
-@{exitCode=$process.ExitCode;occupiedSeen=$occupiedSeen;observations=$observations.Count}|ConvertTo-Json -Compress
+@{exitCode=$process.ExitCode;occupiedSeen=$occupiedSeen;desktopShortcutCleared=$desktopShortcutCleared;observations=$observations.Count}|ConvertTo-Json -Compress

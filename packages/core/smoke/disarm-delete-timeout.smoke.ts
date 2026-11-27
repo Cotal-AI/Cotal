@@ -39,8 +39,8 @@ const ep = new CotalEndpoint({
 
 const emitted: Error[] = [];
 ep.on("error", (err) => { emitted.push(err as Error); });
-(ep as unknown as { nc: { isClosed(): boolean }; reconnecting: boolean }).nc = { isClosed: () => false };
-(ep as unknown as { reconnecting: boolean }).reconnecting = false;
+(ep as unknown as { conn: { nc: { isClosed(): boolean } }; lifecycle: { reconnecting: boolean } }).conn.nc = { isClosed: () => false };
+(ep as unknown as { lifecycle: { reconnecting: boolean } }).lifecycle.reconnecting = false;
 
 const watch = {
   onChange: () => {},
@@ -61,7 +61,8 @@ type WatchArg = {
   consumerName?: string;
   consumer?: PushConsumer;
 };
-const disarm = (ep as unknown as { disarmMembershipWatch(w: WatchArg): Promise<void> }).disarmMembershipWatch.bind(ep);
+const subscriptions = (ep as unknown as { subscriptions: { disarmMembershipWatch(w: WatchArg): Promise<void> } }).subscriptions;
+const disarm = subscriptions.disarmMembershipWatch.bind(subscriptions);
 
 let threw = false;
 let thrown: unknown;

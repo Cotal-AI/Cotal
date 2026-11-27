@@ -18,6 +18,9 @@ import {
   chatStream,
   dmStream,
   taskStream,
+  dialerFor,
+  standaloneConnectOpts,
+  subjectMatches,
   AmbiguousPeerError,
   CotalEndpoint,
   mentionsIn,
@@ -28,7 +31,8 @@ import {
   type CompletionResult,
   type ParsedArgs,
 } from "@cotal-ai/core";
-import { CLI_USER_ACTOR, CommandFailure, agentGrants, codeSpan, connectOrThrow, connectSpace, endpointAuth, recordOperationSpace, jsonFlag, plainFlag, presentationOf, writeResult, targetFlags, userAuthStateDir, workspaceSecretStore, type Connection, type ConnectFlags, type OutputWarning, concreteChannelProblem, offlineRecipientNotice, spaceStreamsExpected } from "@cotal-ai/workspace";
+import { CLI_USER_ACTOR, CommandFailure, agentGrants, checkServer, codeSpan, connectOrThrow, connectSpace, endpointAuth, recordOperationSpace, jsonFlag, plainFlag, presentationOf, writeResult, targetFlags, userAuthStateDir, workspaceSecretStore, type Connection, type ConnectFlags, type OutputWarning, concreteChannelProblem, offlineRecipientNotice, payloadRefused, spaceStreamsExpected } from "@cotal-ai/workspace";
+import { DIAL_TIMEOUT_MS } from "@cotal-ai/workspace/control";
 import { completedFlagValue, completingFlagValue } from "../lib/completion.js";
 import { batchedRead, openTransient, streamGoneAt } from "../lib/transient.js";
 import { streamsAbsent } from "../lib/space-streams.js";
@@ -51,7 +55,7 @@ export const sendFlags = [
   { name: "file", short: "f", type: "string", value: "<path>", description: "read the message body from this UTF-8 file (- reads stdin), instead of a positional body" },
   { name: "stdin", type: "boolean", description: "read the message body from explicit stdin, instead of a positional body" },
   { name: "mention", type: "string", multiple: true, value: "<agent>", description: "channel: wake this authorized peer; repeat for several peers" },
-  { name: "reply-to", type: "string", value: "<message-id>", description: "direct send: name the message this body answers" },
+  { name: "reply-to", type: "string", value: "<message-id>", description: "direct or channel send: name the message this body answers" },
   { name: "verbose", short: "v", type: "boolean", description: "include the actual sending principal in the receipt" },
 ] as const satisfies readonly FlagSpec[];
 
@@ -90,14 +94,17 @@ export function sendArguments(args: ParsedArgs): SendInput {
   if (destinations.length !== 1) throw new CommandFailure("refused", "USAGE_INVALID", "choose one destination: --to/-t, --channel/-c, or --role/-r");
   const destination = destinations[0]!;
   destination.target = destination.target.replace(destination.mode === "msg" ? /^#/ : /^@/, "");
-  const bodies = Number(args.positionals.length === 1) + Number(values.file !== undefined) + Number(values.stdin === true);
-  // A remedy reruns the destination the caller gave.
-  const flag = destination.mode === "msg" ? "-c" : destination.mode === "ask" ? "-r" : "-t";
   if (!destination.target.trim()) {
     const [option, what] = destination.mode === "msg" ? ["--channel/-c", "channel"] : destination.mode === "ask" ? ["--role/-r", "role"] : ["--to/-t", "agent"];
-    throw new CommandFailure("refused", "USAGE_INVALID", `${option} is empty; name one ${what === "agent" ? "agent or full instance id" : what}`, { remedy: `run \`cotal send ${flag} <${what}> "<message>"\`` });
+    throw new CommandFailure("refused", "USAGE_INVALID", `${option} is empty; name one ${what === "agent" ? "agent or full instance id" : what}`, { remedy: `set ${option} in the original command and keep the same message body and options` });
   }
-  const again = (body: string) => sendAgain(destination, body);
+  if (destination.mode === "ask" && values["reply-to"] !== undefined)
+    throw new CommandFailure("refused", "USAGE_INVALID", "role sends do not take --reply-to", {
+      remedy: "To send to the role, remove --reply-to and its value. To reply, replace the role destination with --to or --channel. Keep the other options and include a message body.",
+    });
+  const bodies = Number(args.positionals.length === 1) + Number(values.file !== undefined) + Number(values.stdin === true);
+  const output = values.json ? "--json " : values.plain ? "--plain " : "";
+  const again = (body: string) => sendAgain(destination, values, `${output}${body}`);
   if (args.positionals.length > 1 || bodies !== 1 || values.file === "")
     throw new CommandFailure("refused", "USAGE_INVALID", "choose exactly one body: a quoted message, --file/-f <path>, or --stdin", { remedy: again('"<message>"') });
   // Stdin is read only when asked for, so a lone `-` is refused rather than published.
@@ -118,8 +125,8 @@ export function sendArguments(args: ParsedArgs): SendInput {
   } catch (error) {
     throw new CommandFailure("refused", "USAGE_INVALID", (error as Error).message);
   }
-  if (values["reply-to"] !== undefined && (destination.mode !== "dm" || !values["reply-to"].trim() || /[\u0000-\u001f\u007f]/u.test(values["reply-to"])))
-    throw new CommandFailure("refused", "USAGE_INVALID", "--reply-to takes a message identifier and requires --to");
+  if (values["reply-to"] !== undefined && (!values["reply-to"].trim() || /[\u0000-\u001f\u007f]/u.test(values["reply-to"])))
+    throw new CommandFailure("refused", "USAGE_INVALID", "--reply-to takes a message identifier and requires --to or --channel");
   if (values.mention?.length && destination.mode !== "msg")
     throw new CommandFailure("refused", "USAGE_INVALID", "native mention hints belong to channel publications; they do not change a direct or role destination", { remedy: "drop --mention, or send to a channel with -c <channel>" });
   if (values.mention?.some((name) => !name.replace(/^@/, "").trim() || /[\/\u0000-\u001f\u007f]/u.test(name)))
@@ -128,38 +135,52 @@ export function sendArguments(args: ParsedArgs): SendInput {
   return { ...destination, source: values.file !== undefined ? (values.file === "-" ? "stdin" : "file") : values.stdin ? "stdin" : "argument", ...(args.positionals[0] === undefined ? {} : { text: args.positionals[0] }) };
 }
 
-/** A remedy's rerun of the destination the caller gave, with another body. */
-function sendAgain(destination: Pick<SendInput, "mode" | "target">, body: string): string {
-  return `run ${codeSpan(`cotal send ${destination.mode === "msg" ? "-c" : destination.mode === "ask" ? "-r" : "-t"} ${shellWord(destination.target)} ${body}`)}`;
+const option = (name: string, value: string) => `--${name}${value.startsWith("-") ? "=" : " "}${shellWord(value)}`;
+
+function targetOptions(values: ConnectFlags): string[] {
+  return targetFlags.flatMap(({ name }) => values[name] === undefined ? [] : [option(name, values[name])]);
+}
+
+/** A remedy that replaces the body without changing where or as whom the message is sent. */
+function sendAgain(destination: Pick<SendInput, "mode" | "target">, values: Values, body: string): string {
+  // Body grammar is also checked before the dispatcher validates --server. Never echo an unchecked URL.
+  if (values.server !== undefined) {
+    const checked = checkServer(values.server, "--server");
+    if (!checked.ok) return checked.remedy ?? checked.message.replace(/^✗ /, "");
+  }
+  const [long, short] = destination.mode === "msg" ? ["channel", "-c"] : destination.mode === "ask" ? ["role", "-r"] : ["to", "-t"];
+  const recipient = destination.target.startsWith("-") ? option(long, destination.target) : `${short} ${shellWord(destination.target)}`;
+  const options = targetOptions(values);
+  options.push(...(values.mention ?? []).map((name) => option("mention", name)));
+  if (values["reply-to"] !== undefined) options.push(option("reply-to", values["reply-to"]));
+  if (values.verbose) options.push("--verbose");
+  return `run ${codeSpan(["cotal send", recipient, ...options, body].join(" "))}`;
 }
 
 /** How a refused message file is reported: with the mesh the send was aimed at, as a refusal after
- *  connecting names it, and a remedy that keeps the destination with a quoted body instead. */
+ *  connecting names it, and a remedy that replaces the file with a quoted body. */
 interface FileRefusal { target(file: string): { space?: string; file: string }; instead: string }
 
 function fileRefusal(input: SendInput, values: Values): FileRefusal {
+  const output = values.json ? "--json " : values.plain ? "--plain " : "";
   return {
     target: (file) => { const space = connectSpace(values); return { ...(space === undefined ? {} : { space }), file }; },
-    instead: `or ${sendAgain(input, '"<message>"')}`,
+    instead: `or ${sendAgain(input, values, `${output}"<message>"`)}`,
   };
 }
 
-/** NATS's default max_payload. A file or stdin body is read up to it, plus one byte, before
- *  connecting, so a usual message is checked with no dial. A longer one is read on only once the
- *  connected broker names its own limit, and never past one byte over that. */
+/** NATS's default max_payload bounds the initial read when the broker's limit is unavailable. */
 const PREREAD_BYTES = 1024 * 1024;
 
 /** An explicit body: the whole text, or an open input past the pre-read whose rest waits for the
  *  broker's limit. `size` is a regular file's length, known without reading it. */
 type Body = { text: string } | { fd: number; file?: string; head: Buffer; size: number | null };
 
-async function bodyOf(input: SendInput, values: Values, refusal: FileRefusal): Promise<Body> {
+async function bodyOf(input: SendInput, values: Values, refusal: FileRefusal, limit = PREREAD_BYTES): Promise<Body> {
   if (input.source === "argument") return { text: input.text! };
-  if (input.source === "stdin" && process.stdin.isTTY)
-    throw new CommandFailure("refused", "USAGE_INVALID", "pipe the message to --stdin, or use a quoted body or --file");
   const file = input.source === "file" ? values.file! : undefined;
   let fd: number | undefined;
-  const head = Buffer.allocUnsafe(PREREAD_BYTES + 1);
+  const head = Buffer.allocUnsafe(limit + 1);
   let held: number;
   let size: number | null;
   try {
@@ -171,7 +192,7 @@ async function bodyOf(input: SendInput, values: Values, refusal: FileRefusal): P
     if (file !== undefined && fd !== undefined) closeSync(fd);
     throw readFailure(error, file, refusal);
   }
-  if (held > PREREAD_BYTES) return { fd, file, head, size };
+  if (held > limit) return { fd, file, head, size };
   if (file !== undefined) closeSync(fd);
   return { text: decoded(head.subarray(0, held), file, refusal) };
 }
@@ -193,6 +214,28 @@ async function bodyRest(body: Body, limit: number, refusal: FileRefusal): Promis
     return held > limit ? { over: null } : { text: decoded(bytes.subarray(0, held), body.file, refusal) };
   } finally {
     if (body.file !== undefined) closeSync(body.fd);
+  }
+}
+
+function tooLarge(limit: number, bytes: number | null, target: { space: string; mode: SendInput["mode"]; destination: string }): CommandFailure {
+  return new CommandFailure("refused", "UNSUPPORTED", bytes === null
+    ? `the message is longer than this broker's ${limit}-byte message limit; nothing was sent`
+    : `the message is ${bytes} bytes, and with its envelope it exceeds this broker's ${limit}-byte message limit; nothing was sent`, { target, remedy: "shorten the message, or split it across several sends" });
+}
+
+/** Read the limit without holding a sender connection or roster snapshot while the input is open. */
+async function bodyBudget(values: Values, senderActor: string): Promise<{ space: string; limit: number } | undefined> {
+  try {
+    const conn = await connectOrThrow(values, "operator", { operatorActor: senderActor, readOnly: true });
+    const nc = await dialerFor(conn.server)({
+      servers: conn.server, ...standaloneConnectOpts({ ...endpointAuth(conn), tls: conn.tls }), timeout: DIAL_TIMEOUT_MS, reconnect: false,
+    });
+    try {
+      const limit = nc.info?.max_payload;
+      if (limit !== undefined && limit > 0) return { space: conn.space, limit };
+    } finally { await nc.close(); }
+  } catch {
+    // The broker may come up while the input is open. The send itself checks admission after the read.
   }
 }
 
@@ -235,7 +278,10 @@ function decoded(bytes: Buffer, file: string | undefined, { target, instead }: F
     if (file !== undefined) throw new UnusableFile(`the message file ${JSON.stringify(file)} is not valid UTF-8`, target(file), `save it as UTF-8 text, ${instead}`);
     throw new CommandFailure("refused", "USAGE_INVALID", "the message input is not valid UTF-8");
   }
-  if (!text.trim()) throw new CommandFailure("refused", "USAGE_INVALID", "the explicit message input is empty");
+  if (!text.trim()) {
+    if (file !== undefined) throw new UnusableFile(`the message file ${JSON.stringify(file)} is empty or contains only whitespace`, target(file), `write a nonempty message in the file, ${instead}`);
+    throw new CommandFailure("refused", "USAGE_INVALID", "the explicit message input is empty");
+  }
   return text;
 }
 
@@ -256,7 +302,7 @@ function identityLabel(candidate: PeerCandidate, p: Presence | undefined): strin
   return `${candidate.id} (${name}, ${kind}${p.runtime ? `, started ${new Date(p.runtime.startedAt).toLocaleTimeString()}` : ""})`;
 }
 
-async function directPeer(ep: Awaited<ReturnType<typeof openTransient>>["ep"], space: string, name: string, use: "to" | "mention"): Promise<Presence> {
+async function directPeer(ep: Awaited<ReturnType<typeof openTransient>>["ep"], space: string, name: string, use: "to" | "mention", values: ConnectFlags): Promise<Presence> {
   // Presence arrives asynchronously. Never turn a partial name into a fuzzy target.
   for (let attempt = 0; attempt < 20; attempt++) {
     try {
@@ -269,7 +315,8 @@ async function directPeer(ep: Awaited<ReturnType<typeof openTransient>>["ep"], s
     }
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
-  throw new CommandFailure("refused", "TARGET_NOT_FOUND", "no matching participant was found in the authorized presence view", { target: { space, name }, remedy: `list the participants with \`cotal who --all --space ${space}\`, then use one name or full identity` });
+  const roster = ["cotal who --all", ...targetOptions({ ...values, space })].join(" ");
+  throw new CommandFailure("refused", "TARGET_NOT_FOUND", "no matching participant was found in the authorized presence view", { target: { space, name }, remedy: `list the participants with ${codeSpan(roster)}, then use one name or full identity` });
 }
 
 /** How long a role send waits for the presence snapshot before it says nothing about holders. */
@@ -310,12 +357,6 @@ function editDistance(a: string, b: string): number {
   return row[b.length]!;
 }
 
-/** nats.js refuses a frame over the broker's `max_payload` before writing any of it. */
-function payloadRefused(error: unknown): boolean {
-  for (let e: unknown = error; e instanceof Error; e = e.cause) if (e.name === "InvalidArgumentError" && e.message.includes("max_payload")) return true;
-  return false;
-}
-
 /** JetStream answers 10023, insufficient resources, to a write while its file store holds more than
  *  its cap, and stores nothing. The refusal names the store and cap this machine records for the
  *  space's broker. */
@@ -329,26 +370,44 @@ function storeFullRefusal(error: unknown, root: string | undefined, space: strin
   });
 }
 
-/** The broker refused a channel publication, so it was not stored. The remedy names what this
- *  identity may post to: its grant when this machine holds it, read as `cotal whoami` reads it, the
- *  post grant in the claims of a `--creds` agent file (`credsFile`), and otherwise the space's
- *  registered channels. */
+/** An explicit file is never replaced automatically. The default identity only helps if it can
+ *  reach this same space on this broker. */
+function useOperator(space: string): string {
+  return `if this machine has operator access to the same broker, rerun ${codeSpan("cotal send")} without --creds and with ${codeSpan(`--space ${shellWord(space)}`)}`;
+}
+
+const publishRefusal = "the broker refused the message, so it was not stored";
+
+/** Explain the channel grant without inferring the cause of a refusal from the registry. */
 async function channelDenied(channel: string, target: { space: string }, connection: Connection, registered: readonly string[], credsFile?: string): Promise<CommandFailure> {
   let post: string[] | undefined;
-  if (connection.mode === "user" && connection.root) {
+  let profile: "agent" | "observer" | "admin" | undefined;
+  if (credsFile !== undefined) {
+    const claims = credsClaims(credsFile);
+    if (claims.name === "agent" || claims.name === "observer" || claims.name === "admin") {
+      profile = claims.name;
+      post = agentGrants(claims.nats ?? {}, target.space).post;
+    }
+  } else if (connection.mode === "user" && connection.root) {
     try {
       const status = await resolveAuthProvider().userStatus({ store: workspaceSecretStore(connection.root), dir: userAuthStateDir(connection.root, connection.space), space: connection.space, actor: CLI_USER_ACTOR });
       post = status.grant === "not-granted" ? [] : status.grant?.allowPublish;
     } catch { /* the grant stays unknown */ }
-  } else if (credsFile !== undefined) {
-    const claims = credsClaims(credsFile);
-    if (claims.name === "agent") post = agentGrants(claims.nats ?? {}, target.space).post;
   }
   const list = (channels: readonly string[]) => channels.map((name) => `#${name}`).join(", ");
-  const remedy = post === undefined
+  let remedy = post === undefined
     ? `this machine cannot read this identity's post grant${registered.length ? `; the channels registered in ${target.space} are ${list(registered)}` : ""}`
     : post.length ? `post to a channel this identity may post to: ${list(post)}` : `this identity may post to no channel in ${target.space}`;
-  return new CommandFailure("refused", "PERMISSION_DENIED", `#${channel} does not exist in ${target.space} or this identity may not post to it; the broker refused the message, so it was not stored`, { target: { ...target, post: post ?? null }, remedy });
+  if (credsFile !== undefined) {
+    if (profile !== undefined) remedy += `. Credential profile: ${profile}`;
+    remedy += `. ${useOperator(target.space)}, or use a credential that may post to #${channel}`;
+    if (post !== undefined && !post.some((pattern) => subjectMatches(pattern, channel))) {
+      const publish = `--allow-publish${channel.startsWith("-") ? "=" : " "}${shellWord(channel)}`;
+      const mint = codeSpan(`cotal auth mint <label> --space ${shellWord(target.space)} ${publish} --no-persona --out <file>`);
+      remedy += `: on the machine that signs this space's credentials, run ${mint} and pass the new file with --creds`;
+    }
+  }
+  return new CommandFailure("refused", "PERMISSION_DENIED", `#${channel} does not exist in ${target.space} or this identity may not post to it; ${publishRefusal}`, { target: { ...target, post: post ?? null }, remedy });
 }
 
 /** The warning for a post to a channel with no registry entry. Whether the channel already holds
@@ -391,11 +450,18 @@ export async function send(args: ParsedArgs): Promise<void> {
   const values = args.values as Values;
   const presentation = presentationOf(values);
   const refusal = fileRefusal(input, values);
-  const body = await bodyOf(input, values, refusal);
+  if (input.source === "stdin" && process.stdin.isTTY)
+    throw new CommandFailure("refused", "USAGE_INVALID", "pipe the message to --stdin, or use a quoted body or --file");
   const warnings: OutputWarning[] = [];
   // The account signer binds this OS-derived label to a stable operator actor, not a peer seat.
   // A fresh transport key still authenticates each send. Explicit credentials and user auth keep theirs.
   const senderActor = `cli_${createHash("sha256").update(senderName()).digest("hex")}`;
+  const budget = input.source === "argument" ? undefined : await bodyBudget(values, senderActor);
+  const body = await bodyOf(input, values, refusal, budget?.limit);
+  if (budget && !("text" in body)) {
+    if (body.file !== undefined) closeSync(body.fd);
+    throw tooLarge(budget.limit, body.size, { space: budget.space, mode: input.mode, destination: input.target });
+  }
   const opened = await openTransient(values, senderName(), { throwOnRefusal: true, senderActor, report: (level) => {
     warnings.push({ code: level === "error" ? "SENDER_CONNECTION_WARNING" : "SENDER_WARNING", target: { destination: input.target }, message: "The transient sender reported a connection or delivery warning; its receipt confirms only the stated storage outcome." });
   } });
@@ -409,11 +475,6 @@ export async function send(args: ParsedArgs): Promise<void> {
     channelPolicy: { registered: boolean; replay: boolean; window: string | null; delivery: string } | null;
   } | undefined;
   let failure: unknown;
-  // The envelope only adds to the body. A body under the limit can still make a frame over it,
-  // which the client refuses before writing any of it.
-  const tooLarge = (bytes: number | null) => new CommandFailure("refused", "UNSUPPORTED", bytes === null
-    ? `the message is longer than this broker's ${ep.maxPayload}-byte message limit; nothing was sent`
-    : `the message is ${bytes} bytes, and with its envelope it exceeds this broker's ${ep.maxPayload}-byte message limit; nothing was sent`, { target, remedy: "shorten the message, or split it across several sends" });
   try {
     // A channel post is stored on the chat stream, a direct message on the DM stream, and a role
     // send on the task stream. Confirmed absence of that stream refuses before publication. An
@@ -425,10 +486,10 @@ export async function send(args: ParsedArgs): Promise<void> {
       if (await streamGoneAt(connection, storedOn)) throw streamsAbsent(connection);
     } else if (!connection.creds && !connection.bearer) await ep.ensureOpenSpaceStreams();
     const rest = await bodyRest(body, ep.maxPayload, refusal);
-    if ("over" in rest) throw tooLarge(rest.over);
+    if ("over" in rest) throw tooLarge(ep.maxPayload, rest.over, target);
     const { text } = rest;
     const bytes = Buffer.byteLength(text, "utf8");
-    if (bytes > ep.maxPayload) throw tooLarge(bytes);
+    if (bytes > ep.maxPayload) throw tooLarge(ep.maxPayload, bytes, target);
     let policy: NonNullable<typeof receipt>["channelPolicy"] = null;
     let registered: string[] = [];
     if (input.mode === "msg") {
@@ -449,30 +510,34 @@ export async function send(args: ParsedArgs): Promise<void> {
     for (const name of values.mention ?? []) {
       // A mention travels as the peer's name (SPEC §5), the value a receiver compares with its own.
       // An instance id is accepted only when its name resolves back to that same peer.
-      const peer = await directPeer(ep, space, name.replace(/^@/, ""), "mention");
+      const peer = await directPeer(ep, space, name.replace(/^@/, ""), "mention", values);
       let named: Presence | undefined;
       try { named = resolvePeer(ep.getRoster(), peer.card.name); } catch { named = undefined; }
       if (named?.card.id !== peer.card.id)
         throw new CommandFailure("refused", "TARGET_AMBIGUOUS", "a mention carries the agent's name, and this name does not name only that participant", { target: { space, name: peer.card.name }, remedy: `send to that participant with \`cotal send -t ${peer.card.id}\` instead` });
       mentions.push(peer.card.name);
     }
-    const peer = input.mode === "dm" ? await directPeer(ep, space, input.target, "to") : undefined;
+    const peer = input.mode === "dm" ? await directPeer(ep, space, input.target, "to", values) : undefined;
     let messageId: string;
     let sequence: number | null = null;
     try {
       if (peer) {
         const { msg, ack } = await ep.unicastAttributed(peer.card.id, text, { replyTo: values["reply-to"] });
         messageId = msg.id; sequence = ack.seq;
-        if (peer.status === "offline") warnings.push({ code: "RECIPIENT_OFFLINE", target, message: offlineRecipientNotice(peer.card.name) });
       } else if (input.mode === "ask") {
         const { msg, ack } = await ep.anycastAttributed(input.target, text);
         messageId = msg.id; sequence = ack.seq;
-        const unheld = await unheldRole(ep, input.target, target);
-        if (unheld) warnings.push(unheld);
-      } else messageId = (await ep.multicast(text, { channel: input.target, mentions })).id;
+      } else messageId = (await ep.multicast(text, { channel: input.target, mentions, replyTo: values["reply-to"] })).id;
     } catch (error) {
-      if (payloadRefused(error)) throw tooLarge(bytes);
-      if (input.mode === "msg" && isPublishPermissionDenied(error)) throw await channelDenied(input.target, target, connection, registered, values.creds !== undefined ? connection.creds : undefined);
+      if (payloadRefused(error)) throw tooLarge(ep.maxPayload, bytes, target);
+      if (isPublishPermissionDenied(error)) {
+        if (input.mode === "msg") throw await channelDenied(input.target, target, connection, registered, values.creds !== undefined ? connection.creds : undefined);
+        const destination = input.mode === "ask" ? `role ${input.target}` : input.target;
+        const useAuthorized = `use a credential that may send to ${destination} in ${space}`;
+        throw new CommandFailure("refused", "PERMISSION_DENIED", `${destination}: ${publishRefusal}`, {
+          target, remedy: values.creds === undefined ? useAuthorized : `${useOperator(space)}, or ${useAuthorized}`,
+        });
+      }
       const full = storeFullRefusal(error, connection.root, space, target);
       if (full) throw full;
       // Later stream absence cannot rule out storage before an acknowledgement was lost.
@@ -483,6 +548,12 @@ export async function send(args: ParsedArgs): Promise<void> {
         throw new CommandFailure("unknown", "OPERATION_UNKNOWN", `No storage acknowledgement was established, and the broker logged a store write failure at ${store.at}: ${store.cause}${store.path ? ` (${store.path})` : ""}. The message was probably not stored; it was not retried.`, { target, remedy: `${repair[0]!.toUpperCase()}${repair.slice(1)}, then restart the broker with \`cotal down\` and \`cotal up\` before sending again.${store.jetStreamDisabled ? " The broker disabled JetStream, so if `cotal down` refuses because the manager's stop cannot be recorded, it names the manager process to end on this host first." : ""}` });
       }
       throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "No storage acknowledgement was established. The message may have been stored; it was not retried.", { target, remedy: "Inspect the destination before sending again. The native publisher did not return a message identifier." });
+    }
+    if (peer) {
+      if (peer.status === "offline") warnings.push({ code: "RECIPIENT_OFFLINE", target, message: offlineRecipientNotice(peer.card.name) });
+    } else if (input.mode === "ask") {
+      const unheld = await unheldRole(ep, input.target, target);
+      if (unheld) warnings.push(unheld);
     }
     receipt = { kind: "send", messageId, sequence, destination: peer?.card.id ?? input.target, sender: { principal: ep.card.id, kind: ep.card.kind }, stored: true, delivery: null, acceptance: null, completion: null, replyListener: false, replyTo: values["reply-to"] ?? null, bodySource: input.source, mentions: [...new Set(mentions)], channelPolicy: policy };
   } catch (error) { failure = error; }

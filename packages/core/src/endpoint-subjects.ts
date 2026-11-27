@@ -354,6 +354,10 @@ export function epIssuedInstanceServeFilter(space: string, endpoint: string, ins
 export const EP_PRINCIPAL_ROUTE = "prin";
 export const EP_PRINCIPAL_REPLY_ROUTE = "prin-reply";
 
+/** The largest `deadlineMs` a principal-route request may carry (SPEC 13.21). A larger one is
+ *  `bad-request` before the handler runs, so a serve's stop waits at most this long for a handler. */
+export const EP_PRINCIPAL_MAX_DEADLINE_MS = 30_000;
+
 /** The closed set of authority words a principal-route caller names after `<command>` (SPEC
  *  13.21). It is not the §13.2 mode set: `owner` here covers the caller's own owner's principals
  *  with no current-mapping check, and `grant` names one granted lifecycle. */

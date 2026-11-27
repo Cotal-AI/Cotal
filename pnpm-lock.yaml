@@ -139,6 +139,9 @@ importers:
         specifier: ^6.2.3
         version: 6.2.3
     devDependencies:
+      '@cotal-ai/acp':
+        specifier: workspace:*
+        version: link:../implementations/acp
       '@cotal-ai/connector-claude-code':
         specifier: workspace:*
         version: link:../extensions/connector-claude-code
@@ -166,6 +169,9 @@ importers:
       '@cotal-ai/web':
         specifier: workspace:*
         version: link:../implementations/web
+      '@modelcontextprotocol/sdk':
+        specifier: 1.29.0
+        version: 1.29.0(zod@4.4.3)
       '@nats-io/jetstream':
         specifier: 3.4.0
         version: 3.4.0
@@ -352,6 +358,9 @@ importers:
 
   extensions/connector-codex:
     devDependencies:
+      '@cotal-ai/auth':
+        specifier: workspace:*
+        version: link:../../implementations/auth
       '@cotal-ai/connector-core':
         specifier: workspace:*
         version: link:../connector-core
@@ -373,6 +382,9 @@ importers:
       esbuild:
         specifier: ^0.28.0
         version: 0.28.1
+      jose:
+        specifier: ^6.2.3
+        version: 6.2.3
       tsx:
         specifier: ^4.22.4
         version: 4.23.0
@@ -443,9 +455,6 @@ importers:
       '@modelcontextprotocol/sdk':
         specifier: ^1.29.0
         version: 1.29.0(zod@4.4.3)
-      smol-toml:
-        specifier: ^1.8.0
-        version: 1.8.0
     devDependencies:
       '@cotal-ai/connector-core':
         specifier: workspace:*
@@ -474,6 +483,9 @@ importers:
 
   extensions/connector-opencode:
     devDependencies:
+      '@cotal-ai/auth':
+        specifier: workspace:*
+        version: link:../../implementations/auth
       '@cotal-ai/connector-core':
         specifier: workspace:*
         version: link:../connector-core
@@ -492,6 +504,9 @@ importers:
       esbuild:
         specifier: ^0.28.0
         version: 0.28.0
+      jose:
+        specifier: ^6.2.3
+        version: 6.2.3
       tsx:
         specifier: ^4.22.4
         version: 4.22.4
@@ -562,6 +577,28 @@ importers:
         specifier: workspace:*
         version: link:../../packages/smoke-kit
 
+  implementations/acp:
+    dependencies:
+      '@agentclientprotocol/sdk':
+        specifier: 2.8.0
+        version: 2.8.0(@modelcontextprotocol/server@2.4.0)(zod@4.4.3)
+      '@modelcontextprotocol/sdk':
+        specifier: ^1.29.0
+        version: 1.29.0(zod@4.4.3)
+      jsonc-parser:
+        specifier: 3.3.1
+        version: 3.3.1
+      zod:
+        specifier: ^4.4.3
+        version: 4.4.3
+    devDependencies:
+      '@cotal-ai/core':
+        specifier: workspace:*
+        version: link:../../packages/core
+      '@cotal-ai/workspace':
+        specifier: workspace:*
+        version: link:../../packages/workspace
+
   implementations/auth:
     dependencies:
       '@clack/prompts':
@@ -613,12 +650,18 @@ importers:
       '@cotal-ai/core':
         specifier: workspace:*
         version: link:../../packages/core
+      '@cotal-ai/seat':
+        specifier: workspace:*
+        version: link:../../packages/seat
       '@cotal-ai/workspace':
         specifier: workspace:*
         version: link:../../packages/workspace
       '@nats-io/jetstream':
         specifier: 3.4.0
         version: 3.4.0
+      '@nats-io/jwt':
+        specifier: 0.0.10-5
+        version: 0.0.10-5
       '@nats-io/kv':
         specifier: 3.4.0
         version: 3.4.0
@@ -634,6 +677,9 @@ importers:
       react:
         specifier: ^19.0.0
         version: 19.2.7
+      semver:
+        specifier: 7.8.5
+        version: 7.8.5
       ws:
         specifier: ^8.21.0
         version: 8.21.0
@@ -650,9 +696,6 @@ importers:
       '@cotal-ai/smoke-kit':
         specifier: workspace:*
         version: link:../../packages/smoke-kit
-      '@nats-io/jwt':
-        specifier: 0.0.10-5
-        version: 0.0.10-5
       '@nats-io/nkeys':
         specifier: 2.0.3
         version: 2.0.3
@@ -1114,6 +1157,24 @@ importers:
         specifier: workspace:*
         version: link:../smoke-kit
 
+  tools/docs-checks:
+    devDependencies:
+      '@cotal-ai/docs-content':
+        specifier: workspace:*
+        version: link:../docs-content
+      '@types/node':
+        specifier: ^22.20.0
+        version: 22.20.0
+      marked:
+        specifier: ^18.0.6
+        version: 18.0.6
+      typescript:
+        specifier: ^5.9.3
+        version: 5.9.3
+      zod:
+        specifier: ^4.4.3
+        version: 4.4.3
+
   tools/docs-content:
     dependencies:
       fumadocs-core:
@@ -1186,6 +1247,15 @@ packages:
 
   '@ag-ui/core@0.0.57':
     resolution: {integrity: sha512-gho1OWjNE6E3Rl7ZEZ1wr2CEpUHjLFU0FqzCZZk439TicLu+BfLCMkMokB07bMGlRmbJ60hM6LW60iOVauCx+Q==}
+
+  '@agentclientprotocol/sdk@2.8.0':
+    resolution: {integrity: sha512-EjsvoRX8nEH2z3PAVI2ILsVXAefVcSlLPeXGjlQoFgkJE71F2J0Fj7N6oL/k7SnP0vY+9hmONPFz/K2zalnTiw==}
+    peerDependencies:
+      '@modelcontextprotocol/server': ^2.4.0
+      zod: ^3.25.76 || ^4.0.0
+    peerDependenciesMeta:
+      '@modelcontextprotocol/server':
+        optional: true
 
   '@alcalzone/ansi-tokenize@0.2.5':
     resolution: {integrity: sha512-3NX/MpTdroi0aKz134A6RC2Gb2iXVECN4QaAXnvCIxxIm3C3AVB1mkUe8NaaiyvOpDfsrqWhYtj+Q6a62RrTsw==}
@@ -5873,10 +5943,6 @@ packages:
     resolution: {integrity: sha512-94hK0Hh8rPqQl2xXc3HsaBoOXKV20MToPkcXvwbISWLEs+64sBq5kFgn2kJDHb1Pry9yrP0dxrCI9RRci7RXKg==}
     engines: {node: '>= 6.0.0', npm: '>= 3.0.0'}
 
-  smol-toml@1.8.0:
-    resolution: {integrity: sha512-kCZr2V3ch9i00x8zXRhjUNVcjG9ijES5dDudkXvUVCT5QlJNQWElSJdZqyPemffHoLNUYwOcou0Fy+ojN0uHSQ==}
-    engines: {node: '>= 18'}
-
   socks@2.8.10:
     resolution: {integrity: sha512-e0VyvkVTwVYViNovRkZ9aodhxVlyoMn7eJhVUPxZ+eK9P/7CBkxvvsBOHqFPEH416726W8tLXXXjKwqgTErrCQ==}
     engines: {node: '>= 10.0.0', npm: '>= 3.0.0'}
@@ -6411,6 +6477,12 @@ snapshots:
   '@ag-ui/core@0.0.57':
     dependencies:
       zod: 3.25.76
+
+  '@agentclientprotocol/sdk@2.8.0(@modelcontextprotocol/server@2.4.0)(zod@4.4.3)':
+    dependencies:
+      zod: 4.4.3
+    optionalDependencies:
+      '@modelcontextprotocol/server': 2.4.0
 
   '@alcalzone/ansi-tokenize@0.2.5':
     dependencies:
@@ -11428,8 +11500,6 @@ snapshots:
       is-fullwidth-code-point: 5.1.0
 
   smart-buffer@4.2.0: {}
-
-  smol-toml@1.8.0: {}
 
   socks@2.8.10:
     dependencies:

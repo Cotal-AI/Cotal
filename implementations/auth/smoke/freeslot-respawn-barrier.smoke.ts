@@ -66,7 +66,7 @@
  * Run: pnpm smoke:freeslot-barrier:live   (pnpm build first — Manager + the agent child load
  * dist; needs nats-server + node on PATH)
  */
-import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal, createSuite } from "@cotal-ai/smoke-kit";
 
 // ---------- SELF-DISPATCH (must be the FIRST thing that runs) ----------
 // The manager builds the agent's bearer argv from `process.argv[1]`, which in this in-process
@@ -183,11 +183,7 @@ function launchEnv(): Record<string, string> {
   return out;
 }
 
-let pass = 0, fail = 0;
-const check = (name: string, cond: boolean, extra?: unknown) => {
-  if (cond) { pass++; console.log(`  ✓ ${name}`); }
-  else { fail++; console.log(`  ✗ FAIL: ${name}`, extra ?? ""); }
-};
+const { check, finish, passed, failed } = createSuite();
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 const SELF = process.argv[1];
@@ -945,23 +941,25 @@ try {
       attempts: number; maxAttempts: number; disposition: string; remedy?: string; lastError?: string;
     };
     const mStatic = manager as unknown as {
+      staticLifecycle: {
       staticReconcileKey: (row: { owner: string; alias: string; actor: string; lifecycleUid: string }) => string;
       staticReconcileItems: Map<string, StaticReconcileItem>;
       driveStaticReconcileRetry: (key: string, item: StaticReconcileItem) => Promise<void>;
       reconcileStaticLifecycles: (postAdoption?: boolean) => Promise<void>;
+      };
       retirement: {
         retiredPrincipals: Set<string>;
       };
     };
 
     const liveSlotFresh = await readStaticSlot(staticTransport, DEV_OWNER, liveAlias);
-    const liveKey = mStatic.staticReconcileKey(liveSlotFresh!.row);
+    const liveKey = mStatic.staticLifecycle.staticReconcileKey(liveSlotFresh!.row);
     const liveItem: StaticReconcileItem = {
       owner: DEV_OWNER, alias: liveAlias, actor: liveActor, lifecycleUid: liveUid,
       phase: "active", attempts: 0, maxAttempts: 5, disposition: "retrying",
     };
-    mStatic.staticReconcileItems.set(liveKey, liveItem);
-    await mStatic.driveStaticReconcileRetry(liveKey, liveItem);
+    mStatic.staticLifecycle.staticReconcileItems.set(liveKey, liveItem);
+    await mStatic.staticLifecycle.driveStaticReconcileRetry(liveKey, liveItem);
 
     check("RECONCILE 8344: static reconciliation refuses to terminalize an adopted live managed agent",
       liveItem.disposition === "refused" && /adopted live managed agent/.test(liveItem.lastError ?? ""), liveItem);
@@ -971,7 +969,7 @@ try {
       await inspect(async (_j, nc) => (await readMember(await openMembersRegistry(nc, SPACE), "general", livePrincipal.key, liveUid)) !== undefined));
 
     // 4. Drive startup/static reconciliation sweep: reconciles unadopted orphan to terminal
-    await mStatic.reconcileStaticLifecycles(true);
+    await mStatic.staticLifecycle.reconcileStaticLifecycles(true);
 
     const orphanSlotAfter = await readStaticSlot(staticTransport, DEV_OWNER, orphanAlias);
     check("RECONCILE: unadopted orphan static slot is retired", orphanSlotAfter?.row.phase === "retired", orphanSlotAfter);
@@ -1031,7 +1029,7 @@ try {
         }
         return nativePurge.call(this, key, options);
       };
-      try { await mStatic.reconcileStaticLifecycles(true); }
+      try { await mStatic.staticLifecycle.reconcileStaticLifecycles(true); }
       finally { proto.purge = nativePurge; }
     });
     const racedResources = (manager as unknown as { staticReconcileLastSweepResources?: { deprovision?: import("@cotal-ai/core").DeprovisionResourceAccounting } }).staticReconcileLastSweepResources?.deprovision;
@@ -1049,9 +1047,9 @@ try {
     await staticNc.drain().catch(() => {});
   }
 
-  console.log(`\nFREESLOT RESPAWN BARRIER ${fail === 0 ? "OK ✅" : "RED ❌"}  (${pass} passed, ${fail} failed)`);
+  console.log(`\nFREESLOT RESPAWN BARRIER ${failed() === 0 ? "OK ✅" : "RED ❌"}  (${passed()} passed, ${failed()} failed)`);
 
-  if (fail) process.exitCode = 1;
+  finish();
 } catch (e) {
   console.error("  ✗ scenario threw:", e);
   process.exitCode = 1;

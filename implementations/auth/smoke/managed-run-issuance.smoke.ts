@@ -618,14 +618,15 @@ try {
   await cell(23, async () => {
     // The generation and accepted row a callout without the listing row issued for this nonce.
     const nonce = mintLifecycleUid();
-    const generation = mintGeneration(Math.floor(Date.now() / 1000) + 600);
+    const expiresAt = Math.floor(Date.now() / 1000) + 600;
+    const generation = mintGeneration(expiresAt);
     const ref = { space: a.space, owner, actor: "runner", uid, generation };
     const acceptedToken = connectionAcceptedToken(nonce);
     const before = permissionsFor("manager-caller", a.space, { owner, actor: "runner", connId: nonce, lifecycleUid: uid },
       { capabilities: ["spawn", "run"], lifecycleUid: uid, managerInstanceId: state.instanceId, issued: { generation, acceptedToken } });
     await withIssuerSession({ servers: fx.servers, space: a.space, auth: a.auth, tls: false }, async (session) => {
       const prepared = await session.store.stage({ version: 1, ref, sources: [actorLedgerSource(a.space, owner, "runner", uid)],
-        permissions: importNativeSubjectPermissions(before), expiresAt: Math.floor(Date.now() / 1000) + 600 });
+        permissions: importNativeSubjectPermissions(before), expiresAt });
       await session.store.release(prepared, async () => {});
       await writeAcceptedRow(session.accepted, acceptedToken, ref);
     });

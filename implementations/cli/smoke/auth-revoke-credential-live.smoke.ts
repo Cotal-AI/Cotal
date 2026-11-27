@@ -89,7 +89,7 @@ try {
   const sent = cli(root, "send", "-c", "general", "kept through the revocation", "--json");
   check("a message is stored on general", sent.status === 0, shown(sent));
   const leaked = join(creds, "leaked.creds"), kept = join(creds, "kept.creds");
-  const mintLeaked = cli(root, "auth", "mint", "leaked", "--no-expiry", "--allow-subscribe", "general", "--allow-publish", "general", "--role", "rev", "--out", leaked, "--json");
+  const mintLeaked = cli(root, "auth", "mint", "leaked", "--no-expiry", "--provision", "--allow-subscribe", "general", "--allow-publish", "general", "--role", "rev", "--out", leaked, "--json");
   const mintKept = cli(root, "auth", "mint", "kept", "--no-expiry", "--out", kept, "--json");
   const key = String(mintLeaked.env?.result?.identity ?? "");
   check("auth mint writes two credentials", mintLeaked.status === 0 && mintKept.status === 0 && /^U[A-Z2-7]{55}$/.test(key), { leaked: shown(mintLeaked), kept: shown(mintKept) });
@@ -136,7 +136,7 @@ try {
     const listed = exported.find((row) => row.path === leaked);
     check("doctor auth lists the revoked file, and its repair is a mint with a new key and the file's grants, since --identity refuses that key",
       listed?.state === "revoked" && listed.repair?.includes("auth mint --identity refuses that key; mint a new key with the grants this file holds:") === true
-        && listed.repair.includes("auth mint leaked --allow-subscribe general --allow-publish general --role rev --no-persona --out <new file>")
+        && listed.repair.includes("auth mint leaked --provision --allow-subscribe general --allow-publish general --role rev --no-persona --out <new file>")
         && exported.find((row) => row.path === kept)?.state === "unbounded", { exported, doctor: shown(doctor) });
     const heading = cli(root, "doctor", "auth");
     check("  and its heading says there are no findings and that one exported file needs attention",
@@ -189,6 +189,8 @@ try {
       labelRow?.state === "revoked" && typeof labelRow.revokedAt === "number" && labelRow.problem?.startsWith(`REVOKED - its key ${labelKey} was revoked at `) === true && labelDoctor.env?.outcome === "failed", { labelRow, doctor: shown(labelDoctor) });
     check("  and its repair is --replace with a new key and the file's grants",
       labelRow?.repair?.includes(`auth mint standing --replace --space ${space} --allow-subscribe general --allow-publish general --no-persona\``) === true && labelRow.repair.startsWith("a revoked key is not signed again"), labelRow);
+    check("  the standing replacement can stay file-only or use --provision before joining",
+      /file-only replacement.*join-ready replacement.*`--provision`/.test(labelRow?.repair ?? ""), labelRow);
     const replaced = cli(root, "auth", "mint", "standing", "--replace", "--allow-subscribe", "general", "--allow-publish", "general", "--json");
     const replacedBy = replaced.env?.result as { identity?: string; replaced?: { state?: string; publicKey?: string; revokedAt?: number } } | undefined;
     check("auth mint --replace replaces the revoked label credential under a new key, naming the revocation",
@@ -199,6 +201,12 @@ try {
       refused.env?.error?.remedy === "a revoked key is not signed again; mint a new key with the grants it held: `cotal auth mint <label> --allow-subscribe general --allow-publish general --role rev --no-persona --out <new file>`", refused.env?.error);
     const sendRevoked = cli(root, "send", "-c", "general", "after the revocation", "--json", "--creds", leaked, "--space", space, "--server", server);
     check("send with the revoked file names the revocation too", sendRevoked.status === 2 && sendRevoked.env?.error?.message === refused.env?.error?.message, shown(sendRevoked));
+    const joined = cli(root, "join", "--space", space, "--name", "leaked", "--creds", leaked, "--lifecycle-uid", String(mintLeaked.env?.result?.lifecycleUid));
+    check("join with the revoked file names its space and revocation and gives a provisioned replacement",
+      joined.status === 2 && /Code: +PERMISSION_DENIED/.test(joined.stderr) && joined.stderr.includes(`Space:   ${space}`) &&
+      joined.stderr.includes(refused.env?.error?.message ?? "missing one-shot diagnosis") &&
+      joined.stderr.includes(`cotal auth mint <label> --space ${space} --provision --allow-subscribe general --allow-publish general --role rev --no-persona --out <new file>`) &&
+      joined.stderr.includes("join with the lifecycle UID that mint reports"), shown(joined));
     const whoRevoked = cli(root, "whoami", "--creds", leaked, "--json");
     const whoKept = cli(root, "whoami", "--creds", kept, "--json");
     check("whoami --creds reports when the file's key was revoked, and null for a key that was not",
@@ -216,7 +224,9 @@ try {
     // A --creds agent file holds its own post grant, so a refused post names it.
     const unposted = cli(root, "send", "-c", "general", "no post grant", "--json", "--creds", join(creds, "fresh.creds"), "--space", space, "--server", server);
     check("a post the fresh file may not make names its post grant, read from the file",
-      unposted.status === 2 && unposted.env?.error?.code === "PERMISSION_DENIED" && unposted.env.error.remedy === `this identity may post to no channel in ${space}`, shown(unposted));
+      unposted.status === 2 && unposted.env?.outcome === "refused" && unposted.env.error?.code === "PERMISSION_DENIED"
+        && unposted.env.error.message.includes("it was not stored")
+        && unposted.env.error.remedy?.startsWith(`this identity may post to no channel in ${space}.`) === true, shown(unposted));
   }
 } finally {
   if (anchors.has(root)) cli(root, "down", "--yes", "--json");
@@ -250,9 +260,21 @@ try {
         && shellPath(credsFile).startsWith("'") && shellPath(ownRoot).startsWith("'"), shown(running));
     const stoppedOwn = cli(ownRoot, "down", "--yes", "--json");
     check("down --yes stops the folder's own space and leaves the selection", stoppedOwn.status === 0, shown(stoppedOwn));
+    const beforeConfirm = accountDigest(ownRoot);
+    const outside = folder("outside");
+    const plainConfirm = cli(outside, "auth", "revoke-credential", credsFile, "--space", own, "--plain");
+    const jsonConfirm = cli(outside, "auth", "revoke-credential", credsFile, "--space", own, "--json");
+    const retry = `cotal auth revoke-credential ${shellPath(credsFile)} --space ${own}`;
+    check("confirmation from outside the issuing root keeps the explicit space, quoted path and output format without revoking",
+      plainConfirm.status === 1 && plainConfirm.stderr.replace(/\s+/g, " ").includes(codeSpan(`${retry} --plain --yes`)) &&
+      jsonConfirm.status === 1 && jsonConfirm.env?.error?.code === "USAGE_INVALID" && jsonConfirm.env.error.remedy === `run ${codeSpan(`${retry} --json --yes`)}` &&
+      accountDigest(ownRoot) === beforeConfirm, { plain: shown(plainConfirm), json: shown(jsonConfirm) });
+    const explicit = cli(outside, "auth", "revoke-credential", credsFile, "--space", own, "--plain", "--yes");
+    check("the confirmed retry revokes the credential in the explicitly named issuing space",
+      explicit.status === 0 && explicit.stdout.includes("Credential revoked") && explicit.stdout.includes(ownKey), shown(explicit));
     const revokedOwn = cli(ownRoot, "auth", "revoke-credential", credsFile, "--yes", "--json");
-    check("after down, the revoke in that folder revokes its own space, not the selected one",
-      revokedOwn.status === 0 && revokedOwn.env?.result?.space === own && revokedOwn.env.result.publicKey === ownKey && revokedOwn.env.result.takesEffect === "next-up", shown(revokedOwn));
+    check("after down, the revoke in that folder finds its own space's revocation, not the selected space",
+      revokedOwn.status === 0 && revokedOwn.env?.result?.space === own && revokedOwn.env.result.publicKey === ownKey && revokedOwn.env.result.alreadyRevoked === true, shown(revokedOwn));
     const restartedOwn = cli(ownRoot, "up", "--server", ownServer, "--json");
     check("the folder's own space starts again", restartedOwn.status === 0, shown(restartedOwn));
     const refusedOwn = cli(ownRoot, "who", "--json", "--creds", credsFile, "--space", own, "--server", ownServer);
@@ -272,6 +294,33 @@ try {
   } finally {
     if (anchors.has(ownRoot)) cli(ownRoot, "down", "--yes", "--json");
     if (anchors.has(selectedRoot)) cli(selectedRoot, "down", "--yes", "--json");
+  }
+}
+
+{
+  const name = "revoke-retained", project = folder(name);
+  const broker = `nats://127.0.0.1:${await freePort()}`;
+  const key = "UAQGWOEVJKMIO4WXSYOTLARXYOZTCXFK67JASEH6AFFFYK6FOPSKQCAD";
+  mkdirSync(join(project, ".cotal"), { mode: 0o700 });
+  anchors.set(project, recordSmokeSandbox({ root: project, cotalHome: home, xdgConfigHome: configDir }));
+  try {
+    const started = cli(project, "up", "--no-manager", "--space", name, "--server", broker);
+    check("an unprepared static stack starts", started.status === 0, shown(started));
+    const stopped = cli(project, "down", "--yes");
+    check("the unprepared static stack stops", stopped.status === 0, shown(stopped));
+    const digest = accountDigest(project);
+    const args = ["auth", "revoke-credential", key];
+    const named = cli(project, ...args, "--space", name, "--plain");
+    const retry = `cotal auth revoke-credential ${key} --space ${name} --plain --yes`;
+    check("named offline revocation reaches confirmation without changing the account",
+      named.status === 1 && named.stderr.includes("USAGE_INVALID") && named.stderr.replace(/\s+/g, " ").includes(codeSpan(retry)) && accountDigest(project) === digest, shown(named));
+    const wrong = cli(project, ...args, "--space", "other-space", "--plain");
+    check("a different name does not resolve or recommend starting the broker",
+      wrong.status === 2 && wrong.stderr.includes("TARGET_NOT_FOUND") && !wrong.stderr.includes("cotal up"), shown(wrong));
+    const confirmed = cli(project, ...retry.split(" ").slice(1));
+    check("the printed retry revokes the key offline", confirmed.status === 0 && confirmed.stdout.includes("Credential revoked") && accountDigest(project) !== digest, shown(confirmed));
+  } finally {
+    cli(project, "down", "--yes");
   }
 }
 

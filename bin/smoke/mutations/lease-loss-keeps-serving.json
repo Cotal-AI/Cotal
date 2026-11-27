@@ -31,7 +31,7 @@
   "mutations": [
     {
       "name": "the defect restored: an unanswerable broker ends the process",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/lease-keeper.ts",
       "find": "          case \"unknown\":\n            this.noteLease(\"unknown\",",
       "replace": "          case \"unknown\":\n            process.exit(1);\n            this.noteLease(\"unknown\",",
       "expectRed": "unknown: the process is not ended",
@@ -40,7 +40,7 @@
     },
     {
       "name": "a gone key is never put back",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/lease-keeper.ts",
       "find": "            try {\n              this.leaseRevision = await this.ep.acquireManagerLease(this.leaseInfo);",
       "replace": "            try {\n              this.leaseRevision = 42;",
       "expectRed": "gone: the key is put back (acquire called once) and the new revision is adopted",
@@ -49,7 +49,7 @@
     },
     {
       "name": "the state-change throttle is removed, so every tick prints",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/lease-keeper.ts",
       "find": "    if (state === this.leaseState) return;\n",
       "replace": "",
       "expectRed": "unknown: repeated ticks in the same state print nothing more",

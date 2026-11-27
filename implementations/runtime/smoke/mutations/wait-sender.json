@@ -19,7 +19,7 @@
   "mutations": [
     {
       "name": "the from.id check is dropped, so a message whose payload names another sender than its subject can answer",
-      "file": "implementations/runtime/src/mesh-handler.ts",
+      "file": "implementations/runtime/src/mesh-handler-support.ts",
       "find": "  if (parsed === null || !isFromSubjectSender(msg, parsed)) return false;",
       "replace": "  if (parsed === null) return false;",
       "expectRed": "a post on the seat's own subject carrying a different from.id is ignored",
@@ -27,7 +27,7 @@
     },
     {
       "name": "the sender comparison is dropped, so any principal on the channel answers a wait with `from`",
-      "file": "implementations/runtime/src/mesh-handler.ts",
+      "file": "implementations/runtime/src/mesh-handler-support.ts",
       "find": "  if (sender !== undefined && parsed.sender !== sender) return false;",
       "replace": "",
       "expectRed": "impostors posting APPROVED from their own principals",

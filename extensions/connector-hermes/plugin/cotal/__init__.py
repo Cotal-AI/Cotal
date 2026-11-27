@@ -2,7 +2,8 @@
 
 Registers three things on the Hermes plugin context:
   - a **gateway platform adapter** (``cotal``) — inbound wake/drive + outbound reply routing,
-  - **lifecycle hooks** → Cotal presence (over connector-core's control socket),
+  - **lifecycle hooks** → Cotal presence (over connector-core's control socket), and, when the
+    launcher armed the seat's event plane, the turn journal it publishes from (journal.py),
   - the **cotal_* tools** — proactive mesh actions for the agent (full shared parity).
 
 All three talk to the TS sidecar (which owns the mesh endpoint) over the sockets the launcher set
@@ -26,6 +27,7 @@ from pathlib import Path
 from typing import Any
 
 from . import hooks, replies
+from .control_exchange import CONTROL_PROTOCOL_VERSION, ControlConfigError, control_key, env_set
 from .tools import register_tools
 
 
@@ -90,10 +92,33 @@ def _resolve_node() -> str:
     )
 
 
+def _standalone_control_key() -> None:
+    """The sidecar (listener) and the lifecycle hooks (this process) prove to each other that they
+    hold a shared control key, without sending it, and the bridge client presents a token derived
+    from it. A launch that carries neither the key nor its version gets both minted here, together,
+    so both sides (they share this env) agree on them. A launch that already carries a key is used
+    as it is, and half a pair, a version this plugin does not speak, two carriers, or the retired
+    ``COTAL_CONTROL_TOKEN`` are refused before any sidecar starts rather than filled in."""
+    carried = ("COTAL_CONTROL_KEY", "COTAL_CONTROL_VERSION", "COTAL_CONTROL_TOKEN", "COTAL_LAUNCH_MATERIAL")
+    if not any(env_set(k) for k in carried):
+        os.environ["COTAL_CONTROL_KEY"] = secrets.token_urlsafe(32)
+        os.environ["COTAL_CONTROL_VERSION"] = str(CONTROL_PROTOCOL_VERSION)
+        return
+    try:
+        key = control_key()
+    except ControlConfigError as exc:
+        raise RuntimeError(f"cannot start the standalone sidecar: {exc}") from exc
+    if not key:
+        raise RuntimeError("cannot start the standalone sidecar: COTAL_LAUNCH_MATERIAL carries no control key")
+
+
 def _bootstrap_standalone_sidecar() -> None:
     """Standalone mode: spawn the bundled Node sidecar and wait until it has published the bridge
     socket + tools file. Sets the three path env vars first so the sidecar and the rest of this
     registration agree on them."""
+    if os.name == "nt":
+        raise RuntimeError("Standalone Hermes is not supported on Windows. Run `cotal spawn --foreground --harness hermes --model <model>`.")
+    _standalone_control_key()
     run_dir = Path(tempfile.mkdtemp(prefix="cotal-hermes-"))
     # Identity may come entirely from COTAL_LINK (which carries the space), so neither of these is
     # guaranteed — they're only used for the readiness error below.
@@ -101,10 +126,6 @@ def _bootstrap_standalone_sidecar() -> None:
     space = os.environ.get("COTAL_SPACE") or "(from COTAL_LINK)"
     os.environ.setdefault("COTAL_BRIDGE_SOCKET", str(run_dir / "bridge.sock"))
     os.environ.setdefault("COTAL_CONTROL_SOCKET", str(run_dir / "control.sock"))
-    # The sidecar (listener) and the lifecycle hooks (this process) authenticate the control plane
-    # with a shared first-frame token. Managed mode gets it from the launcher; standalone mints one
-    # here so both sides — they share this env — agree on it.
-    os.environ.setdefault("COTAL_CONTROL_TOKEN", secrets.token_urlsafe(32))
     os.environ.setdefault("COTAL_TOOLS_FILE", str(run_dir / "cotal-tools.json"))
 
     sidecar = _resolve_sidecar_js()
@@ -181,6 +202,13 @@ def register(ctx: Any) -> None:
     ctx.register_hook("pre_tool_call", hooks.pre_tool_call)
     ctx.register_hook("post_llm_call", hooks.post_llm_call)
     ctx.register_hook("on_session_end", hooks.on_session_end)
+    # Command approvals: presence, and the prompts of a seat launched with askPermissions (approvals.py).
+    ctx.register_hook("pre_approval_request", hooks.pre_approval_request)
+    ctx.register_hook("post_approval_response", hooks.post_approval_response)
+    # The event journal (journal.py), written only when the launcher armed the seat's event plane.
+    if os.environ.get("COTAL_HERMES_EVENTS"):
+        ctx.register_hook("post_api_request", hooks.post_api_request)
+        ctx.register_hook("post_tool_call", hooks.post_tool_call)
 
     # Proactive mesh tools (declared from the descriptors the sidecar wrote to COTAL_TOOLS_FILE).
     register_tools(ctx)

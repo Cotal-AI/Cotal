@@ -57,14 +57,20 @@ const user = (id: string, partId: string): OpenCodeMessageWithParts => ({
   info: { id, role: "user", time: { created: 1 } },
   parts: [{ id: partId, messageID: id, type: "text", text: "prompt" }],
 });
+const partsOnly = <T extends { value: { part: OpenCodePart } }>(records: T[]): T[] =>
+  records.filter((r) => r.value.part.type !== "assistant-header");
 
 const drain = async (src: OpenCodeSessionSource, from: string | undefined) => {
   const ids: string[] = [];
+  let calls = 0;
   let cursor = from;
   for (;;) {
     const r = await src.read(cursor);
-    if (r.records.length === 0) return { ids, cursor: r.cursor };
-    for (const rec of r.records) ids.push(rec.value.part.id);
+    if (r.records.length === 0) return { ids, calls, cursor: r.cursor };
+    for (const rec of partsOnly(r.records)) {
+      if (rec.value.call) calls += 1;
+      else ids.push(rec.value.part.id);
+    }
     cursor = r.cursor;
   }
 };
@@ -104,7 +110,7 @@ const drain = async (src: OpenCodeSessionSource, from: string | undefined) => {
     all.ids.join(",") === "prt_500,prt_100", all.ids);
   const after = await src.read("msg_1:prt_500");
   c("cursor:resuming after the first message yields the LOWER-id part in the next message",
-    after.records.length === 1 && after.records[0]!.value.part.id === "prt_100",
+    partsOnly(after.records).map((r) => r.value.part.id).join(",") === "prt_100",
     after.records.map((r) => r.value.part.id));
   // The control that gives the cell its meaning: a part-id-only comparison, which is what the plan
   // specified before this was measured, drops that record entirely.
@@ -123,7 +129,7 @@ const drain = async (src: OpenCodeSessionSource, from: string | undefined) => {
   const data = [assistant("msg_1", [text("prt_1", "msg_1"), openText("prt_2", "msg_1"), text("prt_3", "msg_1")])];
   const src = new OpenCodeSessionSource({ read: async () => data });
   const r = await src.read("");
-  c("settle:the read STOPS at the first unsettled part", r.records.map((x) => x.value.part.id).join(",") === "prt_1", r.records.length);
+  c("settle:the header and first part reach the mapper before an unsettled part", r.records.map((x) => x.value.part.id).join(",") === "msg_1,prt_1", r.records.length);
   c("settle:and the cursor does not advance past it", r.cursor === "msg_1:prt_1", r.cursor);
   c("settle:the part AFTER the unsettled one is withheld, not emitted around",
     !r.records.some((x) => x.value.part.id === "prt_3"), r.records.map((x) => x.value.part.id));
@@ -138,20 +144,26 @@ const drain = async (src: OpenCodeSessionSource, from: string | undefined) => {
   const running = [assistant("msg_1", [tool("prt_1", "msg_1", "running")])];
   const done = [assistant("msg_1", [tool("prt_1", "msg_1", "completed")])];
   const errored = [assistant("msg_1", [tool("prt_1", "msg_1", "error")])];
-  const read = async (d: OpenCodeMessageWithParts[]) => (await new OpenCodeSessionSource({ read: async () => d }).read("")).records.length;
-  c("settle:a tool part is withheld while pending", (await read(pending)) === 0);
-  c("settle:a tool part is withheld while running", (await read(running)) === 0);
-  c("settle:a completed tool part is released", (await read(done)) === 1);
-  c("settle:an errored tool part is released, because error IS a terminal state", (await read(errored)) === 1);
+  const read = async (d: OpenCodeMessageWithParts[]) =>
+    partsOnly((await new OpenCodeSessionSource({ read: async () => d }).read("")).records).map((r) => cursorOf(r.value)).join(" ");
+  c("settle:a tool part is withheld while pending, call and all", (await read(pending)) === "");
+  c("settle:a running tool part hands over its call and withholds its result", (await read(running)) === "msg_1:prt_1:call", await read(running));
+  c("settle:a completed tool part is released, its call before its result", (await read(done)) === "msg_1:prt_1:call msg_1:prt_1", await read(done));
+  c("settle:an errored tool part is released, because error IS a terminal state",
+    (await read(errored)) === "msg_1:prt_1:call msg_1:prt_1", await read(errored));
+  const resumed = await new OpenCodeSessionSource({ read: async () => [...done, user("msg_2", "prt_2")] }).read("msg_1:prt_1:call");
+  c("call:a read resumed at a tool's call hands over its result next, then what follows",
+    resumed.records.map((r) => cursorOf(r.value)).join(" ") === "msg_1:prt_1 msg_2:prt_2", resumed.records.map((r) => cursorOf(r.value)));
 }
 {
   // The turn-level backstop: a part that never got its own end mark is settled once the message says
   // the turn is over. Without it a markless turn wedges the stream permanently.
   const open = [assistant("msg_1", [openText("prt_1", "msg_1")])];
   const closed = [assistant("msg_1", [openText("prt_1", "msg_1")], 9)];
-  const read = async (d: OpenCodeMessageWithParts[]) => (await new OpenCodeSessionSource({ read: async () => d }).read("")).records.length;
-  c("settle:an end-less part is withheld while its turn is open", (await read(open)) === 0);
-  c("settle:message.time.completed settles it", (await read(closed)) === 1);
+  const read = async (d: OpenCodeMessageWithParts[]) => (await new OpenCodeSessionSource({ read: async () => d }).read("")).records;
+  const pending = await read(open);
+  c("settle:the assistant header is readable while its only part is still open", pending.length === 1 && pending[0]?.cursor === "msg_1:msg_1");
+  c("settle:message.time.completed settles the part", partsOnly(await read(closed)).length === 1);
 }
 {
   // AUTHORSHIP GATES BEFORE PART TYPE, and this is the cell that proves the wedge is gone. A user
@@ -170,7 +182,7 @@ const drain = async (src: OpenCodeSessionSource, from: string | undefined) => {
   const data = [assistant("msg_1", [step, text("prt_2", "msg_1")])];
   const src = new OpenCodeSessionSource({ read: async () => data });
   const r = await src.read("");
-  c("settle:a non-emitting part passes straight through", r.records.length === 2, r.records.length);
+  c("settle:a non-emitting part passes straight through", partsOnly(r.records).length === 2, r.records.length);
 }
 
 // ---------------------------------------------------------------------------- removal
@@ -186,7 +198,7 @@ const drain = async (src: OpenCodeSessionSource, from: string | undefined) => {
   current = reverted; // the revert removes prt_2, which is exactly where the cursor stands
   const after = await src.read("msg_1:prt_2");
   c("removal:a resume whose own record was reverted away still returns the records after it",
-    after.records.map((r) => r.value.part.id).join(",") === "prt_3", after.records.map((r) => r.value.part.id));
+    after.records.map((r) => r.value.part.id).join(",") === "msg_2,prt_3", after.records.map((r) => r.value.part.id));
   c("removal:the divergence is reported, naming the cursor", seen.join(",") === "msg_1:prt_2", seen);
   await src.read("msg_1:prt_2");
   await src.read("msg_1:prt_2");
@@ -207,7 +219,7 @@ const drain = async (src: OpenCodeSessionSource, from: string | undefined) => {
   data = [...data, assistant("msg_2", [text("prt_2", "msg_2")], 9)];
   const first = await bound.read(undefined);
   c("bound:a-part-appended-in-the-adopt-to-first-read-window-is-published",
-    first.records.map((r) => r.value.part.id).join(",") === "prt_2", first.records.map((r) => r.value.part.id));
+    first.records.map((r) => r.value.part.id).join(",") === "msg_2,prt_2", first.records.map((r) => r.value.part.id));
 }
 {
   // A session with no prior history yet (OpenCode's equivalent of Claude's `startup`: nothing to
@@ -220,7 +232,7 @@ const drain = async (src: OpenCodeSessionSource, from: string | undefined) => {
   data = [assistant("msg_1", [text("prt_1", "msg_1")], 9)];
   const startupLike = await boundEmpty.read(undefined);
   c("bound:a-session-with-no-prior-history-still-adopts-at-the-empty-boundary-and-reads-what-follows",
-    startupLike.records.map((r) => r.value.part.id).join(",") === "prt_1", startupLike.records.length);
+    startupLike.records.map((r) => r.value.part.id).join(",") === "msg_1,prt_1", startupLike.records.length);
 }
 {
   // A cursor already on the log (a resume persisted by a prior run BEFORE this capture) is the
@@ -243,9 +255,11 @@ const drain = async (src: OpenCodeSessionSource, from: string | undefined) => {
     readFileSync(join(here, "fixtures", "session-shape.json"), "utf8"),
   ) as OpenCodeMessageWithParts[];
   const parts = fixture.reduce((n, m) => n + m.parts.length, 0);
+  const tools = fixture.reduce((n, m) => n + m.parts.filter((p) => p.type === "tool").length, 0);
   const src = new OpenCodeSessionSource({ read: async () => fixture });
   const all = await drain(src, "");
-  c("fixture:the whole derived-from-real session drains", all.ids.length === parts, { drained: all.ids.length, parts });
+  c("fixture:the whole derived-from-real session drains, each tool's call with it",
+    all.ids.length === parts && all.calls === tools && tools > 0, { drained: all.ids.length, parts, calls: all.calls, tools });
   c("fixture:it drains in id order, which is what the cursor claims to guarantee",
     all.ids.join(",") === [...all.ids].sort().join(","), all.ids.length);
   const last = fixture.at(-1)!;
@@ -253,7 +267,7 @@ const drain = async (src: OpenCodeSessionSource, from: string | undefined) => {
     all.cursor === cursorOf({ part: last.parts.at(-1)!, message: last.info }), all.cursor);
 }
 
-const EXPECTED = 31;
+const EXPECTED = 32;
 c(`meta:every cell ran - ${EXPECTED} expected`, pass + fail === EXPECTED, `${pass + fail} cells reported`);
 
 console.log(`agui-opencode-source smoke: ${pass} passed, ${fail} failed`);

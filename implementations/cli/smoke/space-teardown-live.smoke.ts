@@ -17,7 +17,8 @@
  *     none, and `up` starts again. `reset space` is offered, its preview opens with the offered verdict and
  *     names the store contents
  *     that go with the identity as `reset store`'s does, and it removes the identity, keeping the
- *     prepared record and the stack journal, and `up` starts again with a new account. It clears
+ *     prepared record and the stack journal, and `up` starts again with a new account. After
+ *     either reset, `status` exits 0 and neither it nor `up` warns STORE_MISSING. It clears
  *     the credentialRef of a saved service whose credential the removed account issued, names it,
  *     and keeps any other.
  *  5. A forgotten name starts elsewhere. After `down --yes`, `space forget` removes the stack
@@ -49,6 +50,9 @@
  *     it. `status` says the space was deleted under the running stack and leads its Next with
  *     `cotal down --yes`, then `cotal up`; history, send and `run ps` refuse with that cause and
  *     remedy. `down --yes` and `up` give the space its streams back.
+ *     After `down`, `doctor auth` still identifies the recorded open stack, including with `--fix`
+ *     or `--space`. An overriding auth broker names the address mismatch, not a new `up` here.
+ *     A stopped auth space whose folder is deleted names moving it back or forgetting the space.
  * 12. Reset targets with nothing to reset. `reset store` and `reset space` of a name no space has
  *     refuse TARGET_NOT_FOUND saying so, naming `cotal space` first. Of a prepared space no stack
  *     has run for, they refuse TARGET_NOT_FOUND naming its root, `cotal up` and `cotal space forget`.
@@ -60,18 +64,22 @@
  *     --yes` and `up` bring back every message stored before the failure.
  * 14. A moved folder. With a stack running, its folder is renamed. `down --space --yes` from another
  *     folder stops it, and its Next names `cotal space create <space> --adopt --root <folder>` before
- *     `cotal space create <space>`. Adopting the renamed folder keeps its history, and `up` starts it there.
+ *     `cotal space create <space>`. Adopting the renamed folder keeps its history, and the receipt's
+ *     restart command starts it without a manager at its saved payload limit.
  * 15. A forgotten stack that ran a manager, started again in its own folder without one. While the
  *     manager runs, `up --no-manager` refuses LIFECYCLE_BLOCKED. After `down --yes`, `space forget`
  *     removes the three stack definitions, and the journal names none of their instances. `space
  *     create` there and `up --no-manager` start a new broker and delivery with no manager instance,
  *     and `down --yes` stops them. Each down leaves no member process.
+ *  16. Forgetting a running open stack refuses and names a stop that works without a terminal.
+ *      Once forgotten, it starts in its original mode at the recorded address and store,
+ *      without delivery, and can read its retained history.
  *
  * Sandboxes COTAL_HOME and every project root. Run: pnpm smoke:space-teardown:live
  */
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { connect } from "@nats-io/transport-node";
@@ -81,8 +89,7 @@ import { assertSmokeSandboxDown, createSuite, freePort, recordSmokeSandbox, type
 import { clean, cotalPty, wait } from "./_console-pty.js";
 
 const WT = resolve(import.meta.dirname, "..", "..", "..");
-const CLI = join(WT, "bin", "cotal.ts");
-const TSX_IMPORT = import.meta.resolve("tsx");
+const CLI = join(WT, "bin", "dist", "cotal.js");
 const home = mkdtempSync(join(tmpdir(), "cotal-space-teardown-"));
 const configDir = join(home, "xdg");
 // The CLI children must not inherit a managed session's mesh identity from whatever runs this
@@ -91,8 +98,10 @@ for (const key of Object.keys(process.env)) if (key.startsWith("COTAL_")) delete
 // Set before the stores are imported; they read COTAL_HOME on each call.
 process.env.COTAL_HOME = home;
 const env = { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: configDir, COTAL_SKIP_CONNECTOR_SEED: "1" };
-const { findMesh, findPreparedSpace, getSpaceAuth, recordMesh, removeMesh, workspaceSecretStore } = await import("@cotal-ai/workspace");
+const { deliveryCredsKey, findMesh, findPreparedSpace, getSpaceAuth, recordMesh, removeMesh, workspaceSecretStore } = await import("@cotal-ai/workspace");
 const { observeServiceProcess, serviceInstances, serviceInstanceStore } = await import("../src/lib/service-instances.js");
+const { shellWord } = await import("../src/lib/endpoint-errors.js");
+const { readStackJournal } = await import("../src/lib/stack-journal.js");
 
 const { check, finish } = createSuite();
 const anchors = new Map<string, SmokeSandboxAnchor>();
@@ -106,16 +115,37 @@ type Envelope = {
   result?: Record<string, unknown> & { applyVerdict?: { offered: boolean; code?: string; remedy?: string | null } };
 };
 type Run = { status: number | null; stdout: string; stderr: string; env?: Envelope };
-const cli = (cwd: string, ...args: string[]): Run => {
+const cliWithEnv = (cwd: string, args: string[], childEnv: NodeJS.ProcessEnv): Run => {
   // Room for a history that holds messages near the broker's payload limit.
-  const options = { cwd, env, encoding: "utf8" as const, timeout: 180_000, maxBuffer: 64 * 1024 * 1024 };
+  const options = { cwd, env: childEnv, encoding: "utf8" as const, timeout: 180_000, maxBuffer: 64 * 1024 * 1024 };
   assertSmokeSandboxDown(anchors.get(cwd), args, options);
-  const run = spawnSync(process.execPath, ["--import", TSX_IMPORT, CLI, ...args], options);
+  const run = spawnSync(process.execPath, [CLI, ...args], options);
   let parsed: Envelope | undefined;
   try { parsed = JSON.parse(run.stdout) as Envelope; } catch { parsed = undefined; }
   return { status: run.status, stdout: run.stdout, stderr: run.stderr, env: parsed };
 };
+const cli = (cwd: string, ...args: string[]) => cliWithEnv(cwd, args, env);
 const shown = (run: Run) => ({ status: run.status, error: run.env?.error, out: run.stdout.slice(-1000), err: run.stderr.slice(-1500) });
+
+function checkStoppedDeliveryLog(root: string, space: string, instanceId: string | null | undefined): void {
+  const credential = join(root, ".cotal", deliveryCredsKey(space, { injected: false, root }));
+  check("the stop removed the delivery launch credential", !existsSync(credential), credential);
+  const args = ["service", "logs", "stack-delivery", "--space", space, "--tail", "30", "--json"];
+  const logs = cli(root, ...args);
+  const result = logs.env?.result as { instance?: { instanceId?: string; observedProcess?: string; recordedState?: string }; lines?: string[]; path?: string } | undefined;
+  check("the stopped delivery instance's captured log is readable without its launch credential",
+    logs.status === 0 && typeof instanceId === "string" && result?.instance?.instanceId === instanceId && result.instance.observedProcess === "gone"
+    && result.instance.recordedState === "stopped" && (result.lines?.length ?? 0) > 0, shown(logs));
+  if (!result?.path) return;
+  const path = result.path, moved = `${path}.moved`;
+  renameSync(path, moved);
+  try {
+    const missing = cli(root, ...args);
+    check("the missing captured file is refused by its log path, not by a launch input",
+      missing.status === 2 && missing.env?.error?.code === "TARGET_NOT_FOUND" && missing.env.error.message.includes(path), shown(missing));
+  } finally { renameSync(moved, path); }
+}
+
 const journalOf = (root: string) => join(root, ".cotal", "stack-controller.json");
 const accountDigest = (root: string) => {
   const dir = join(root, ".cotal", "auth");
@@ -188,11 +218,16 @@ try {
     check("its remedy names cotal down and cotal reset store", Boolean(deleted.env?.error?.remedy?.includes("cotal down")) && Boolean(deleted.env?.error?.remedy?.includes(`cotal reset store ${space}`)), deleted.env?.error);
 
     // 3. Reset previews and refusals carry a verdict, one reason and a Next (B4-04).
+    const stopReview = `from ${root}, review the stop with \`cotal down --dry-run\`, confirm it with \`cotal down --yes\``;
     const storeLive = cli(root, "reset", "store", space, "--dry-run", "--json");
     check("reset store --dry-run on a live stack exits 0 with a refused verdict", storeLive.status === 0 && storeLive.env?.result?.applyVerdict?.offered === false && storeLive.env.result.applyVerdict.code === "LIFECYCLE_BLOCKED", shown(storeLive));
-    check("that verdict's remedy names cotal down and the review, each in backticks", Boolean(storeLive.env?.result?.applyVerdict?.remedy?.startsWith("stop it with `cotal down` from ")) && Boolean(storeLive.env?.result?.applyVerdict?.remedy?.endsWith(`, then run \`cotal reset store ${space} --dry-run\``)), storeLive.env?.result?.applyVerdict);
+    check("that verdict names how to review and confirm the stop, then retry the store preview", storeLive.env?.result?.applyVerdict?.remedy === `${stopReview}, then run \`cotal reset store ${space} --dry-run\``, storeLive.env?.result?.applyVerdict);
+    const storeLiveText = cli(root, "reset", "store", space, "--dry-run", "--plain");
+    check("a live store preview without a recorded run list suggests the live inventory, not a start",
+      storeLiveText.status === 0 && storeLiveText.stdout.includes("would refuse (LIFECYCLE_BLOCKED)") && storeLiveText.stdout.includes("No run list was recorded") &&
+      storeLiveText.stdout.includes(`If a manager is available, list live runs with \`cotal run --space ${space}\``) && !storeLiveText.stdout.includes("`cotal up`"), shown(storeLiveText));
     const spaceLive = cli(root, "reset", "space", space, "--dry-run", "--json");
-    check("reset space --dry-run on a live stack refuses with a remedy naming cotal down and the review, each in backticks", spaceLive.status === 2 && spaceLive.env?.error?.code === "LIFECYCLE_BLOCKED" && Boolean(spaceLive.env.error.remedy?.startsWith("stop it with `cotal down` from ")) && Boolean(spaceLive.env.error.remedy?.endsWith(`, then run \`cotal reset space ${space} --dry-run\``)), shown(spaceLive));
+    check("reset space --dry-run refuses and names how to review and confirm the stop, then retry the space preview", spaceLive.status === 2 && spaceLive.env?.error?.code === "LIFECYCLE_BLOCKED" && spaceLive.env.error.remedy === `${stopReview}, then run \`cotal reset space ${space} --dry-run\``, shown(spaceLive));
     // The delivery daemon's own pidfile names the process its stack member runs, so it is listed once.
     const processes = spaceLive.env?.target?.processes ?? [];
     const pids = processes.flatMap((row) => /\bpid (\d+)/.exec(row)?.[1] ?? []);
@@ -200,6 +235,8 @@ try {
       processes.length === 2 && !processes.some((row) => row.startsWith("delivery daemon")) && /^stack-delivery, pid \d+, instance [0-9a-f-]+$/.test(processes.find((row) => row.startsWith("stack-delivery")) ?? "")
         && processes.some((row) => /^stack-broker, instance [0-9a-f-]+$/.test(row)) && new Set(pids).size === pids.length && spaceLive.env?.error?.message.split("delivery").length === 2, processes);
 
+    const stopPreview = cli(root, "down", "--dry-run", "--json");
+    check("down --dry-run reviews the stop and leaves the stack running", stopPreview.status === 0 && findMesh(space) !== undefined, shown(stopPreview));
     const stopped = cli(root, "down", "--yes", "--json");
     check("the refused delete left a stack that down --yes stops", stopped.status === 0, shown(stopped));
     check("down removed the registration and kept the prepared record", findMesh(space) === undefined && findPreparedSpace(space) !== undefined);
@@ -207,16 +244,39 @@ try {
     const deleteStopped = cli(home, "space", "delete", space, "--yes", "--json");
     check("space delete after down refuses TARGET_UNAVAILABLE and names cotal reset store, not cotal up",
       deleteStopped.status === 2 && deleteStopped.env?.error?.code === "TARGET_UNAVAILABLE" && Boolean(deleteStopped.env.error.remedy?.includes(`cotal reset store ${space} --yes`)) && !deleteStopped.env.error.remedy?.includes("cotal up"), shown(deleteStopped));
+    const deletePreview = cli(home, "space", "delete", space, "--dry-run", "--json");
+    check("the stopped stack's deletion preview names reset impact and says a stream inventory needs a running broker",
+      deletePreview.status === 2 && deletePreview.env?.error?.code === "TARGET_UNAVAILABLE" &&
+        deletePreview.env.error.remedy === `preview the impact of resetting its store with \`cotal reset store ${space} --dry-run\`. A stream inventory requires a running broker.`, shown(deletePreview));
 
     // 4. Reset after a normal down (B4-02).
+    const forcedColor: NodeJS.ProcessEnv = { ...env, FORCE_COLOR: "1" };
+    delete forcedColor.NO_COLOR;
+    const storeConfirmation = cliWithEnv(root, ["reset", "store", space, "--plain"], forcedColor);
+    const [previewWords, confirmWords] = Array.from(storeConfirmation.stderr.matchAll(/`(?:pnpm )?cotal (reset store [^`]+)`/g), ([, words]) => words);
+    check("the noninteractive plain store reset refusal keeps --plain on both commands",
+      storeConfirmation.status === 1 && storeConfirmation.stdout === "" && storeConfirmation.stderr.includes("USAGE_INVALID")
+      && previewWords === `reset store ${space} --dry-run --plain` && confirmWords === `reset store ${space} --yes --plain`, shown(storeConfirmation));
+    const suggestedPreview = previewWords === `reset store ${space} --dry-run` || previewWords === `reset store ${space} --dry-run --plain`
+      ? cliWithEnv(root, previewWords.split(" "), forcedColor) : undefined;
+    check("the printed store preview succeeds without ANSI even with FORCE_COLOR",
+      suggestedPreview?.status === 0 && suggestedPreview.stdout.includes(`reset store ${space} is offered`)
+      && !`${suggestedPreview.stdout}${suggestedPreview.stderr}`.includes("\x1b"), suggestedPreview && shown(suggestedPreview));
     const storeStopped = cli(root, "reset", "store", space, "--dry-run", "--json");
     // This stack runs with --no-manager, so its down recorded why it could not read the runs.
     const contents = storeStopped.env?.result?.storeContents as { removed?: string[]; listed?: boolean; runsAtLastDown?: { read?: boolean; reason?: string } | null } | undefined;
     check("reset store --dry-run after down offers the apply, names the workflow runs it removes and says why the down listed none", storeStopped.status === 0 && storeStopped.env?.result?.applyVerdict?.offered === true && contents?.removed?.includes("workflow runs and their journals") === true && contents.listed === false && contents.runsAtLastDown?.read === false && contents.runsAtLastDown.reason === "the stack's manager was not running", shown(storeStopped));
+    const storeStoppedText = cli(root, "reset", "store", space, "--dry-run", "--plain");
+    check("a stopped store preview still says how to start and inspect an unread run list",
+      storeStoppedText.status === 0 && storeStoppedText.stdout.includes("could not read the runs") && storeStoppedText.stdout.includes("run `cotal up` and `cotal run`"), shown(storeStoppedText));
     const storeApplied = cli(root, "reset", "store", space, "--yes", "--json");
     check("reset store --yes removes the stopped store and names the workflow runs that went with it", storeApplied.status === 0 && storeApplied.env?.result?.selectedBy === "stopped-stack" && Array.isArray(storeApplied.env.result.removedPaths) && (storeApplied.env.result.removedPaths as unknown[]).length > 0 && (storeApplied.env.result.removedContents as string[] | undefined)?.includes("workflow runs and their journals") === true, shown(storeApplied));
+    // The reset leaves the store as a fresh up prepares it, so nothing reports it lost.
+    const missing = (run: Run) => Boolean(run.env?.warnings?.some((warning) => warning.code === "STORE_MISSING"));
+    const statusAfterStore = cli(root, "status", "--json");
+    check("status after reset store exits 0 without a missing-store warning", statusAfterStore.status === 0 && !missing(statusAfterStore), shown(statusAfterStore));
     const restarted = cli(root, "up", "--json");
-    check("bare up starts the stack again on an empty store", restarted.status === 0, shown(restarted));
+    check("bare up starts the stack again on an empty store, without a missing-store warning", restarted.status === 0 && !missing(restarted), shown(restarted));
     // A saved service naming a credential this account issued would hand its child a credential the
     // next identity rejects; one naming any other file is not attributed to it.
     const keys = folder("keys");
@@ -235,6 +295,10 @@ try {
     const stoppedAgain = cli(root, "down", "--yes", "--json");
     check("down --yes stops it again", stoppedAgain.status === 0, shown(stoppedAgain));
 
+    const spaceConfirmation = cli(root, "reset", "space", space, "--json");
+    check("reset space confirmation keeps JSON in both the preview and apply commands",
+      spaceConfirmation.status === 1 && spaceConfirmation.env?.error?.code === "USAGE_INVALID"
+        && spaceConfirmation.env.error.remedy === `review \`cotal reset space ${space} --dry-run --json\` first, then run \`cotal reset space ${space} --yes --json\``, shown(spaceConfirmation));
     const spacePreview = cli(root, "reset", "space", space, "--dry-run", "--json");
     check("reset space --dry-run after down offers the apply", spacePreview.status === 0 && spacePreview.env?.result?.applyVerdict?.offered === true, shown(spacePreview));
     // The store goes with the identity, so the preview names what it holds, as reset store's does.
@@ -256,8 +320,10 @@ try {
       JSON.stringify(spaceApplied.env?.result?.clearedCredentialRefs) === issuedRefs && shownMinted.status === 0 && !shownMinted.stdout.includes('"credentialRef"') && shownForeign.stdout.includes(JSON.stringify(foreign)),
       { cleared: spaceApplied.env?.result?.clearedCredentialRefs, minted: shown(shownMinted), foreign: shown(shownForeign) });
     check("the prepared record and the stack journal stay", findPreparedSpace(space) !== undefined && existsSync(journalOf(root)));
+    const statusAfterSpace = cli(root, "status", "--json");
+    check("status after reset space exits 0 without a missing-store warning", statusAfterSpace.status === 0 && !missing(statusAfterSpace), shown(statusAfterSpace));
     const fresh = cli(root, "up", "--json");
-    check("bare up starts it again", fresh.status === 0, shown(fresh));
+    check("bare up starts it again, without a missing-store warning", fresh.status === 0 && !missing(fresh), shown(fresh));
     check("with a new account identity", accountDigest(root) !== before && accountDigest(root) !== "absent", { before, after: accountDigest(root) });
     const last = cli(root, "down", "--yes", "--json");
     check("down --yes stops it", last.status === 0, shown(last));
@@ -310,6 +376,10 @@ try {
       await new Promise((settle) => setTimeout(settle, 250));
     }
     check("the finished run is counted and only the waiting run is listed, with its state", runs?.finished === 1 && runs.unfinished?.length === 1 && runs.unfinished[0]?.runId === runId && runs.unfinished[0].state === "running", runs);
+    const journal = cli(root, "run", "show", runId ?? "-", "--limit", "1", "--space", space);
+    check("run show --limit reads one journal row", journal.status === 0 && journal.stdout.includes("Journal · last 1 of"), shown(journal));
+    const pagedJournal = cli(root, "run", "show", runId ?? "-", "--page", "--limit", "1", "--space", space);
+    check("run show refuses inventory paging even when the journal limit is valid", pagedJournal.status === 1 && pagedJournal.stdout === "" && pagedJournal.stderr.includes("remove --page to read the journal") && pagedJournal.stderr.includes("cotal run --page --on <instance>"), shown(pagedJournal));
     for (const [definition, id] of [["stack-manager", manager], ["stack-delivery", delivery]] as const) {
       const stoppedMember = cli(root, "service", "stop", definition, "--instance", String(id), "--space", space, "--yes", "--json");
       check(`the ${definition} member stops on its own`, stoppedMember.status === 0, shown(stoppedMember));
@@ -414,7 +484,7 @@ try {
   // 8. A registration an older `meshes rm --force` dropped, or `meshes add --force` replaced.
   {
     const space = "tear6";
-    const root = folder(space);
+    const root = folder(`${space} project`);
     const created = cli(home, "space", "create", space, "--root", root, "--json");
     anchor(root);
     const server = `nats://127.0.0.1:${await freePort()}`;
@@ -432,9 +502,13 @@ try {
     removeMesh(space);
     writeFileSync(receipt, original.replace(server, "nats://127.0.0.1:1"), { mode: 0o600 });
     const mismatched = cli(root, "down", "--yes", "--json");
-    check("with no registration and a broker receipt for another address, down refuses CONFLICT, exit 2",
-      mismatched.status === 2 && mismatched.env?.error?.code === "CONFLICT" && Boolean(mismatched.env.error.message.includes("is not the launch its journal records")), shown(mismatched));
+    check("with no registration and a broker receipt for another address, down refuses and points to the journal that names the broker",
+      mismatched.status === 2 && mismatched.env?.error?.code === "CONFLICT" && Boolean(mismatched.env.error.message.includes("is not the launch its journal records")) &&
+      mismatched.env.error.remedy?.includes(journalOf(root)) === true && readStackJournal(root)?.journal.members.some((row) => row.role === "broker" && row.instanceId === broker.instanceId) === true, shown(mismatched));
     check("...stopping nothing and writing no registration", live() === running && running > 0 && findMesh(space) === undefined, { running, now: live() });
+    const noStop = cli(home, "space", "forget", space, "--json");
+    check("forget tells the user to restore the registration when the broker receipt does not match",
+      noStop.status === 2 && noStop.env?.error?.code === "LIFECYCLE_BLOCKED" && noStop.env.error.remedy?.startsWith("restore the stack's registration") === true && live() === running, shown(noStop));
     writeFileSync(receipt, original, { mode: 0o600 });
 
     recordMesh({ ...registered!, origin: "manual", server: "nats://127.0.0.1:2" });
@@ -452,9 +526,18 @@ try {
 
     const again = cli(root, "up", "--json");
     removeMesh(space);
+    const journal = readFileSync(journalOf(root), "utf8");
+    const runningAgain = live();
+    const forgot = cli(home, "space", "forget", space, "--json");
+    check("forget of a running stack with no registration keeps its journal and names a quoted stop in its root",
+      forgot.status === 2 && forgot.env?.error?.code === "LIFECYCLE_BLOCKED" &&
+      forgot.env.error.remedy?.includes(`\`cd ${shellWord(root)} && `) === true && forgot.env.error.remedy.includes(" down --yes`") &&
+      !forgot.env.error.remedy.includes("down --space") && findMesh(space) === undefined && runningAgain > 0 && live() === runningAgain && readFileSync(journalOf(root), "utf8") === journal, shown(forgot));
     const dropped = cli(root, "down", "--yes", "--json");
     check("a stack restarted and then left with no registration stops through its journal",
       again.status === 0 && dropped.status === 0 && Boolean(dropped.env?.warnings?.some((row) => row.code === "REGISTRATION_REBUILT" && row.message.includes("had no registration"))) && live() === 0, { up: shown(again), down: shown(dropped) });
+    const after = cli(home, "space", "forget", space, "--json");
+    check("forget succeeds after the stop it named", after.status === 0 && findPreparedSpace(space) === undefined, shown(after));
   }
 
   // 9. A controller stack whose --store-dir also holds the user's files: the reset keeps them.
@@ -487,9 +570,46 @@ try {
       check(`reset ${kind} ${mode} refuses CONFLICT, naming the linked store path and the directory it points to`, reset.status === 2 && reset.env?.error?.code === "CONFLICT" && Boolean(reset.env.error.message.includes(`the recorded store path ${store} is a link to ${moved}`)) && Boolean(reset.env.error.remedy?.includes(`cotal reset ${kind} ${space} --dry-run`)), shown(reset));
     }
     check("nothing is removed through the link", existsSync(join(moved, "notes.txt")) && existsSync(join(moved, "jetstream")));
+    rmSync(store);
+    const missing = `${store}-missing`;
+    symlinkSync(missing, store);
+    for (const kind of ["store", "space"]) for (const mode of ["--dry-run", "--yes"]) {
+      const reset = cli(root, "reset", kind, space, mode, "--json");
+      check(`reset ${kind} ${mode} refuses a dangling store link`, reset.status === 2 && reset.env?.error?.code === "CONFLICT"
+        && reset.env.error.message.includes(`the recorded store path ${store} is a link to ${missing}`)
+        && reset.env.error.message.includes("nothing was removed") && reset.env.error.remedy?.includes("restore this space's original store directory at the recorded path") === true
+        && reset.env.error.remedy.includes(`cotal reset ${kind} ${space} --dry-run`), shown(reset));
+    }
+    check("the dangling link and parked store remain", readlinkSync(store) === missing
+      && !existsSync(missing) && existsSync(join(moved, "jetstream")));
   }
 
   // 10. A stack whose folder is deleted stops from another folder, and its name starts again.
+  if (process.platform === "linux") {
+    const space = "tear-retained";
+    const root = folder(space);
+    anchor(root);
+    const started = cli(root, "up", "--space", space, "--server", `nats://127.0.0.1:${await freePort()}`);
+    check("default up starts a retained stack", started.status === 0, shown(started));
+    const files = readdirSync(join(root, ".cotal")).filter((name) => name.endsWith(".pid"));
+    const pids = files.map((name) => ({ name, pid: Number(readFileSync(join(root, ".cotal", name), "utf8")) }));
+    check("the default stack recorded all three components", pids.length === 3, pids);
+    anchors.delete(root);
+    rmSync(root, { recursive: true, force: true });
+    const other = folder(`${space}-other`);
+    anchor(other);
+    const refused = cli(other, "space", "forget", space, "--json");
+    check("forget names all retained processes and the whole-stack stop", refused.status === 2 && Boolean(refused.env?.error?.message.includes("manager: pid")) && Boolean(refused.env?.error?.message.includes("delivery: pid")) && Boolean(refused.env?.error?.remedy?.includes(`cotal down --space ${space} --yes`)), shown(refused));
+    const preview = cli(other, "down", "--space", space, "--dry-run", "--json");
+    check("the deleted default stack preview lists three members", preview.status === 0 && (preview.env?.result?.members as unknown[])?.length === 3, shown(preview));
+    // Following the historical listener-only remedy must not make forget lose the daemons.
+    process.kill(pids.find((row) => row.name === "nats.pid")!.pid, "SIGTERM");
+    const stillRefused = cli(other, "space", "forget", space, "--json");
+    check("forget still refuses after only its broker stops", stillRefused.status === 2 && findMesh(space) !== undefined && Boolean(stillRefused.env?.error?.message.includes("manager: pid")), shown(stillRefused));
+    const stopped = cli(other, "down", "--space", space, "--yes", "--json");
+    check("down stops the surviving retained components from another folder", stopped.status === 0 && stopped.env?.result?.kind === "gone-root-stack-stop" && findMesh(space) === undefined, shown(stopped));
+    check("the deleted default stack leaves no component process", pids.every(({ pid }) => { try { process.kill(pid, 0); return false; } catch { return true; } }), pids);
+  }
   {
     const space = "tear7";
     const root = folder(space);
@@ -519,6 +639,9 @@ try {
       stopped.status === 0 && stopped.env?.result?.kind === "gone-root-stack-stop" && members.length === 3 && members.every((row) => row.result === "stopped")
         && JSON.stringify(stopped.env?.result?.releasedDefinitions) === JSON.stringify(["stack-broker", "stack-delivery", "stack-manager"]), shown(stopped));
     check("no member process is left", pids.every((pid) => { try { process.kill(pid!, 0); return false; } catch { return true; } }), pids);
+    const spaceServiceDir = join(home, "services", Buffer.from(space, "utf8").toString("hex"));
+    check("gone-root down removes retired instance logs, sidecars, broker launch scratch, and the empty space service directory",
+      !existsSync(spaceServiceDir), spaceServiceDir);
     const elsewhere = folder(`${space}b`);
     const again = cli(home, "space", "create", space, "--root", elsewhere, "--json");
     anchor(elsewhere);
@@ -526,6 +649,16 @@ try {
     check("another folder prepares and starts a stack under the same name", again.status === 0 && reused.status === 0, { create: shown(again), up: shown(reused) });
     const last = cli(elsewhere, "down", "--yes", "--json");
     check("down --yes stops it", last.status === 0, shown(last));
+    anchors.delete(elsewhere);
+    rmSync(elsewhere, { recursive: true, force: true });
+    for (const args of [["send", "-c", "general", "hi"], ["history", "general"]]) {
+      const refused = cli(other, ...args, "--space", space, "--json");
+      check(`${args[0]} keeps move-back or forget advice when the gone folder has no running stack members`,
+        refused.status === 2 && refused.env?.error?.code === "TARGET_UNAVAILABLE"
+          && refused.env.error.message.includes(`${elsewhere}, which no longer exists`)
+          && Boolean(refused.env.error.remedy?.includes(`cotal space forget ${space}`))
+          && !refused.env.error.remedy?.includes("cotal down"), shown(refused));
+    }
   }
 
   // 11. An open space another machine deleted under its running stack.
@@ -543,12 +676,22 @@ try {
     const elsewhereEnv = { ...env, COTAL_HOME: join(elsewhere, "home"), XDG_CONFIG_HOME: join(elsewhere, "xdg") };
     for (const dir of ["home", "xdg", "proj"]) mkdirSync(join(elsewhere, dir), { mode: 0o700 });
     const other = (...args: string[]) => {
-      const run = spawnSync(process.execPath, ["--import", TSX_IMPORT, CLI, ...args], { cwd: join(elsewhere, "proj"), env: elsewhereEnv, encoding: "utf8", timeout: 180_000 });
-      return { status: run.status, stdout: run.stdout, stderr: run.stderr } as Run;
+      const run = spawnSync(process.execPath, [CLI, ...args], { cwd: join(elsewhere, "proj"), env: elsewhereEnv, encoding: "utf8", timeout: 180_000 });
+      let parsed: Envelope | undefined;
+      try { parsed = JSON.parse(run.stdout) as Envelope; } catch { parsed = undefined; }
+      return { status: run.status, stdout: run.stdout, stderr: run.stderr, env: parsed } satisfies Run;
     };
     const added = other("space", "add", space, "--server", server, "--root", join(elsewhere, "proj"));
-    const deleted = other("space", "delete", space, "--yes");
-    check("another Cotal home adds the open space and deletes it while the stack runs", added.status === 0 && deleted.status === 0 && /Space streams deleted/.test(deleted.stdout), { added: shown(added), deleted: shown(deleted) });
+    const confirmation = other("space", "delete", space, "--json");
+    check("space delete confirmation keeps JSON in both the preview and apply commands",
+      confirmation.status === 1 && confirmation.env?.error?.code === "USAGE_INVALID"
+        && confirmation.env.error.remedy === `inspect \`cotal space delete ${space} --dry-run --json\` first, then run \`cotal space delete ${space} --yes --json\``, shown(confirmation));
+    const preview = other("space", "delete", space, "--dry-run", "--json");
+    check("the suggested delete preview returns JSON without applying", preview.status === 0 && preview.env?.result?.kind === "live-space-delete-impact", shown(preview));
+    const deleted = other("space", "delete", space, "--yes", "--json");
+    check("another Cotal home adds the open space and deletes it with a JSON receipt while the stack runs",
+      added.status === 0 && deleted.status === 0 && deleted.env?.result?.kind === "live-space-delete",
+      { added: shown(added), deleted: shown(deleted) });
     const statusGone = cli(root, "status", "--json");
     const streamsGone = (statusGone.env?.result?.selected as { spaceStreams?: { state: string; root: string | null; stack: string | null } } | undefined)?.spaceStreams;
     check("status says the streams are not on the broker while the stack runs", statusGone.status === 0 && streamsGone?.state === "absent" && streamsGone.stack === "running" && streamsGone.root === root, shown(statusGone));
@@ -569,6 +712,56 @@ try {
     check("down --yes, then up, gives the space its streams back", stopped.status === 0 && restarted.status === 0 && sent.status === 0, { down: shown(stopped), up: shown(restarted), send: shown(sent) });
     const last = cli(root, "down", "--yes", "--json");
     check("down --yes stops it", last.status === 0, shown(last));
+    for (const flags of [[], ["--fix"], ["--space", space], ["--space", space, "--fix"]]) {
+      const diagnosed = cli(root, "doctor", "auth", ...flags, "--json");
+      check(`doctor auth ${flags.join(" ")} on a stopped open stack is a root-local no-op`,
+        diagnosed.status === 0 && diagnosed.env?.outcome === "no-op" && diagnosed.env.target?.root === root
+          && diagnosed.env.result?.space === space && diagnosed.env.result?.credentialScope === "open-space"
+          && diagnosed.env.result?.brokerAuthorization === "not-checked"
+          && (diagnosed.env.result?.repair as { attempted?: boolean } | undefined)?.attempted === false, shown(diagnosed));
+      const plain = cli(root, "doctor", "auth", ...flags, "--plain");
+      check("the stopped open stack's text report says there are no credentials, with no root-folder remedy",
+        plain.status === 0 && plain.stdout.includes("No credentials to check") && !`${plain.stdout}${plain.stderr}`.includes("root folder"), shown(plain));
+    }
+    const wrongSpace = cli(root, "doctor", "auth", "--space", "not-this-stack", "--json");
+    check("an open stack does not establish open mode for another named space",
+      wrongSpace.status === 2 && wrongSpace.env?.error?.code === "AUTH_REQUIRED", shown(wrongSpace));
+
+    const authSpace = "tear9auth";
+    const openUp = cli(root, "up", "--json");
+    check("the open stack starts again at its recorded broker", openUp.status === 0, shown(openUp));
+    const authRoot = folder(authSpace);
+    const authServer = `nats://127.0.0.1:${await freePort()}`;
+    const authCreated = cli(home, "space", "create", authSpace, "--root", authRoot, "--json");
+    check("space create prepares the second auth stack's root", authCreated.status === 0, shown(authCreated));
+    const authUp = cli(authRoot, "up", "--server", authServer, "--json");
+    check("a second stack starts an authenticated broker", authUp.status === 0, shown(authUp));
+    anchor(authRoot);
+    const caller = folder("doctor-caller");
+    mkdirSync(join(caller, ".cotal"), { mode: 0o700 });
+    {
+      const mismatch = cli(caller, "send", "-c", "general", "hi", "--space", space, "--server", authServer, "--json");
+      check("an open space with an overriding auth broker names both addresses and dropping --server, never up here",
+        mismatch.status === 2 && mismatch.env?.error?.code === "AUTH_REQUIRED"
+          && mismatch.env.error.message.includes(authServer) && mismatch.env.error.message.includes(`"${space}" is recorded as an open mesh at ${server}`)
+          && mismatch.env.error.remedy === `check that address, or drop --server and retry with \`--space ${space}\` to reach its recorded broker at ${server}`
+          && !mismatch.env.error.remedy.includes("cotal up"), shown(mismatch));
+    }
+    const openDown = cli(root, "down", "--yes", "--json");
+    check("the open stack stops after the mismatched broker refusal", openDown.status === 0, shown(openDown));
+    const authDown = cli(authRoot, "down", "--yes", "--json");
+    check("the auth stack stops cleanly before its folder is deleted", authDown.status === 0, shown(authDown));
+    anchors.delete(authRoot);
+    rmSync(authRoot, { recursive: true, force: true });
+    for (const flags of [[], ["--fix"]]) {
+      const missing = cli(caller, "doctor", "auth", "--space", authSpace, ...flags, "--json");
+      check("doctor auth for the deleted auth root names moving it back or forgetting it, not rerunning in that folder",
+        missing.status === 2 && missing.env?.error?.code === "AUTH_REQUIRED"
+          && Boolean(missing.env.error.remedy?.includes(`${authRoot}, no longer exists`))
+          && Boolean(missing.env.error.remedy?.includes("move it back"))
+          && Boolean(missing.env.error.remedy?.includes(`cotal space forget ${authSpace}`))
+          && !missing.env.error.remedy?.startsWith("run `"), shown(missing));
+    }
   }
 
   // 12. A mistyped name and a prepared space no stack ran for have nothing to reset.
@@ -623,6 +816,9 @@ try {
       const status = cli(root, "status", "--json");
       const selected = status.env?.result?.selected as { spaceStreams?: { state: string } } | undefined;
       check("status names the write failure and does not report the streams absent", (status.env?.result?.store as { state?: string; cause?: string } | undefined)?.state === "write-failed" && selected?.spaceStreams?.state !== "absent", shown(status));
+      const components = cli(root, "status", "--components");
+      check("component health grades the reachable broker not-serving after its store write fails",
+        components.status !== 0 && /broker\s+not-serving/.test(components.stdout) && components.stdout.includes("store write failed:") && components.stdout.includes("permission denied"), shown(components));
       const statusText = cli(root, "status");
       check("its Next leads with down, after making the store writable again",
         statusText.stdout.split("\n").some((line) => /cotal down +First make /.test(line) && line.includes(`${store} writable by this account again`)) && !statusText.stdout.includes("deleted under"), shown(statusText));
@@ -640,17 +836,22 @@ try {
     check("down --yes stops it", last.status === 0, shown(last));
   }
 
-  // 14. A stack whose folder is renamed while it runs stops from another folder, and adopting the
-  // folder where it is now keeps its history.
+  // 14. An open stack whose folder is renamed while it runs stops from another folder. Adopting it
+  // keeps its mode, saved payload limit, channel metadata and history.
   {
     const space = "tear14";
     const root = folder(space);
     const created = cli(home, "space", "create", space, "--root", root, "--json");
     check("space create prepares a root that is then renamed", created.status === 0, shown(created));
     anchor(root);
-    const started = cli(root, "up", "--server", `nats://127.0.0.1:${await freePort()}`, "--no-manager", "--json");
-    const sent = cli(root, "send", "-c", "general", "kept across the move", "--json");
-    check("up starts the stack and a message is stored", started.status === 0 && sent.status === 0, { up: shown(started), send: shown(sent) });
+    const server = `nats://127.0.0.1:${await freePort()}`;
+    const started = cli(root, "up", "--open", "--server", server, "--no-manager", "--max-payload", "16384", "--json");
+    const channel = "moved.notes", description = "Notes kept across the move";
+    const saved = cli(root, "channel", "set", channel, "--desc", description);
+    const messages = ["first post across the move", "second post across the move"];
+    const sent = messages.map((message) => cli(root, "send", "-c", channel, message, "--json"));
+    check("open up starts the stack and stores channel metadata and two messages",
+      started.status === 0 && started.env?.result?.mode === "open" && saved.status === 0 && sent.every((post) => post.status === 0), { up: shown(started), channel: shown(saved), send: sent.map(shown) });
     anchors.delete(root);
     const moved = `${root}-moved`;
     renameSync(root, moved);
@@ -660,15 +861,31 @@ try {
     const stopped = cli(other, "down", "--space", space, "--yes");
     anchors.delete(other);
     const text = stopped.stdout.replace(/\x1b\[[0-9;]*m/g, "");
-    const next = text.slice(text.indexOf("\nNext\n")).split("\n").map((line) => line.trim().split(/\s{2,}/)[0]).filter((command) => command.startsWith("cotal "));
+    const next = text.slice(text.indexOf("\nNext\n")).split("\n").map((line) => line.trim().split(/\s{2,}/)[0]).filter((command) => /^(?:pnpm )?cotal /.test(command)).map((command) => command.replace(/^pnpm /, ""));
     check("down --space from another folder stops it, and its Next names the adopt route before another folder",
       stopped.status === 0 && text.includes("Stack stopped; its folder was gone") && JSON.stringify(next) === JSON.stringify([`cotal space create ${space} --adopt --root <folder>`, `cotal space create ${space}`]), shown(stopped));
+    const restart = /--adopt --root <folder>[^\n]* then run `(?:pnpm )?cotal (up[^`\n]*)` there/.exec(text)?.[1];
+    check("the adoption advice preserves --no-manager without changing the fresh-start advice",
+      restart === "up --no-manager" && /Otherwise prepare the space in another folder, then run `(?:pnpm )?cotal up` there/.test(text), shown(stopped));
     const adopted = cli(other, "space", "create", space, "--adopt", "--root", moved, "--json");
     anchor(moved);
-    const restarted = cli(moved, "up", "--json");
-    const kept = cli(moved, "history", "general", "--json");
-    check("adopting the renamed folder keeps its history, and up starts it there",
-      adopted.status === 0 && restarted.status === 0 && ((kept.env?.result?.items ?? []) as { text?: string }[]).some((m) => m.text === "kept across the move"), { adopt: shown(adopted), up: shown(restarted), history: shown(kept) });
+    const restarted = cli(moved, ...(restart ?? "up").split(" "), "--json");
+    const members = restarted.env?.result?.members as { role: string; state: string }[] | undefined;
+    check("the printed restart starts the adopted stack at its original address without a manager",
+      adopted.status === 0 && restarted.status === 0 && restarted.env?.result?.mode === "open" && restarted.env.result.server === server
+      && members?.some((member) => member.role === "manager" && member.state === "not-attempted") === true, { adopt: shown(adopted), up: shown(restarted) });
+    if (restarted.status === 0) {
+      const nc = await connect({ servers: server, reconnect: false, timeout: 2_000 });
+      try { check("the restarted broker serves at the saved 16384-byte payload limit", nc.info?.max_payload === 16384, nc.info?.max_payload); }
+      finally { await nc.close(); }
+    }
+    const channels = cli(moved, "channel", "--plain");
+    check("the adopted open stack lists the saved channel metadata",
+      channels.status === 0 && channels.stdout.includes(channel) && channels.stdout.includes(description), shown(channels));
+    const kept = cli(moved, "history", channel, "--limit", "20", "--json");
+    const retained = ((kept.env?.result?.items ?? []) as { text?: string }[]).map((item) => item.text);
+    check("the adopted open stack retains both posts",
+      kept.status === 0 && retained.length === messages.length && messages.every((message) => retained.includes(message)), shown(kept));
     const last = cli(moved, "down", "--yes", "--json");
     check("down --yes stops it", last.status === 0, shown(last));
   }
@@ -695,9 +912,21 @@ try {
       omitted.status === 2 && omitted.env?.error?.code === "LIFECYCLE_BLOCKED" && journalRows().find((row) => row.role === "manager")?.instanceId === manager, shown(omitted));
     const stopped = cli(root, "down", "--yes", "--json");
     check("down --yes stops every member, and no member process is left", stopped.status === 0 && JSON.stringify(ids(rows(stopped))) === JSON.stringify(ids(first)) && gone(firstPids), shown(stopped));
+    checkStoppedDeliveryLog(root, space, first.find((row) => row.role === "delivery")?.instanceId);
+    const cycledUp = cli(root, "up", "--json"), cycledRows = rows(cycledUp), cycledPids = pidsOf();
+    const cycledDown = cli(root, "down", "--yes", "--json");
+    const spaceServiceDir = join(home, "services", Buffer.from(space, "utf8").toString("hex"));
+    const instanceEntries = existsSync(join(spaceServiceDir, "instances")) ? readdirSync(join(spaceServiceDir, "instances")).sort() : [];
+    check("restarting and stopping the stack replaces retired manager logs and prior broker launch scratch without leaking retired files",
+      cycledUp.status === 0 && cycledDown.status === 0 && gone(cycledPids)
+        && instanceEntries.filter((f) => f.endsWith(".log")).length === 3
+        && instanceEntries.filter((f) => f.startsWith(".broker-ports-")).length === 1
+        && instanceEntries.filter((f) => f.startsWith(".broker-launch-")).length === 1
+        && !instanceEntries.some((f) => f.includes(Buffer.from(manager!, "utf8").toString("hex"))),
+      { cycledRows, instanceEntries });
     const forgot = cli(home, "space", "forget", space, "--json");
-    check("space forget removes the three stack definitions, and the journal then names none of their instances",
-      forgot.status === 0 && JSON.stringify(forgot.env?.result?.releasedDefinitions) === JSON.stringify(["stack-broker", "stack-delivery", "stack-manager"]) && ids(journalRows()).length === 0, { forget: shown(forgot), journal: journalRows() });
+    check("space forget removes the three stack definitions, the journal names none of their instances, and the space's services directory is gone",
+      forgot.status === 0 && JSON.stringify(forgot.env?.result?.releasedDefinitions) === JSON.stringify(["stack-broker", "stack-delivery", "stack-manager"]) && ids(journalRows()).length === 0 && !existsSync(spaceServiceDir), { forget: shown(forgot), journal: journalRows(), exists: existsSync(spaceServiceDir) });
     const again = cli(home, "space", "create", space, "--root", root, "--json");
     const restarted = cli(root, "up", "--server", server, "--no-manager", "--json"), second = rows(restarted), secondPids = pidsOf();
     check("space create there and up --no-manager start a new broker and delivery, and record no manager instance",
@@ -706,6 +935,67 @@ try {
     const last = cli(root, "down", "--yes", "--json");
     check("down --yes then stops them, and no member process is left",
       last.status === 0 && JSON.stringify(ids(rows(last))) === JSON.stringify(ids(second)) && rows(last).every((row) => row.instanceId === null || row.state === "stopped") && gone(secondPids), shown(last));
+  }
+  // 16. Forgetting an open space does not make its stopped broker a first start.
+  {
+    const space = "tear16";
+    const root = folder(space);
+    const server = `nats://127.0.0.1:${await freePort()}`;
+    const store = join(root, "retained-store");
+    const text = "retained-before-forget";
+    const created = cli(root, "space", "create", space, "--json");
+    anchor(root);
+    const started = cli(root, "up", "--open", "--no-manager", "--server", server, "--store-dir", store, "--json");
+    const sent = cli(root, "send", "-c", "audit", text, "--json");
+    const blocked = cli(root, "space", "forget", space, "--plain");
+    const stop = /stop it with `(?:pnpm )?cotal (down --yes)`/.exec(blocked.stderr)?.[1];
+    check("forget of a running stack keeps the registration and names how to confirm its stop without a terminal",
+      blocked.status === 2 && blocked.stderr.includes("LIFECYCLE_BLOCKED") && stop !== undefined
+        && blocked.stderr.includes(`in ${root} to explicitly confirm the stop`) && findMesh(space)?.root === root, shown(blocked));
+    const stopped = stop === undefined ? undefined : cli(root, ...stop.split(" "));
+    const forgot = cli(root, "space", "forget", space, "--json");
+    const recreated = cli(root, "space", "create", space, "--json");
+    check("the open stack stored a message and was stopped, forgotten and prepared again",
+      created.status === 0 && started.env?.result?.mode === "open" && sent.status === 0 && stopped?.status === 0
+        && forgot.status === 0 && JSON.stringify(forgot.env?.result?.releasedDefinitions) === '["stack-broker"]' && recreated.status === 0,
+      { created: shown(created), started: shown(started), sent: shown(sent), stopped: stopped && shown(stopped), forgot: shown(forgot), recreated: shown(recreated) });
+    const restarted = cli(root, "up", "--no-manager", "--json");
+    const delivery = (restarted.env?.result?.members as { role: string; instanceId: string | null }[] | undefined)?.find((row) => row.role === "delivery");
+    const history = cli(root, "history", "audit", "--limit", "10", "--json");
+    check("up without a mode or address keeps the open broker and its retained history without starting delivery",
+      restarted.status === 0 && restarted.env?.result?.mode === "open" && restarted.env?.result?.server === server && delivery?.instanceId === null
+        && findMesh(space)?.storeDir === store && history.status === 0 && (history.env?.result?.items as { text?: string }[] | undefined)?.some((row) => row.text === text) === true,
+      { restarted: shown(restarted), history: shown(history) });
+    const last = cli(root, "down", "--yes", "--json");
+    check("the reopened open stack stops cleanly", last.status === 0, shown(last));
+  }
+
+  // A stopped project's original path can be occupied by a file after the folder is moved.
+  {
+    const space = "root-obstructed";
+    const root = folder(space), outside = folder(`${space}-caller`);
+    const created = cli(root, "space", "create", space, "--json");
+    anchor(root);
+    const started = cli(root, "up", "--open", "--server", `nats://127.0.0.1:${await freePort()}`, "--json");
+    const stopped = cli(root, "down", "--yes", "--json");
+    check("the open stack starts and stops before the project moves",
+      created.status === 0 && started.status === 0 && stopped.status === 0, [created, started, stopped].map(shown));
+
+    const moved = join(outside, "original-project");
+    renameSync(root, moved);
+    anchors.delete(root);
+    const contents = "must remain intact\n";
+    writeFileSync(root, contents, { flag: "wx" });
+    anchor(outside);
+    const released = cli(outside, "down", "--space", space, "--yes", "--plain");
+    anchors.delete(outside);
+    check("named down releases the stopped stack and explains how to restore the occupied project path",
+      released.status === 0 && released.stdout.includes(`${root} - occupied by a file`)
+        && released.stdout.includes("already stopped") && released.stdout.includes("Removed the saved definitions stack-broker, stack-manager")
+        && released.stdout.includes("It was left untouched.") && !released.stdout.includes("The broker wrote")
+        && released.stdout.includes("move the file aside and restore the original project folder"), shown(released));
+    check("named down preserves the file and the moved project's journal",
+      lstatSync(root).isFile() && readFileSync(root, "utf8") === contents && existsSync(journalOf(moved)));
   }
 } finally {
   for (const root of roots) if (anchors.has(root)) cli(root, "down", "--yes", "--json");

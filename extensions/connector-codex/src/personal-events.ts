@@ -32,7 +32,7 @@ export function startCodexPersonalEvents(agent: MeshAgent, config: AgentConfig, 
     const subjectFrontier = await FileSubjectFrontier.open(subjectPath, { space: config.space, principal });
     const wal = await EventWal.open(walPath, { space: config.space, threadId, principal, subjectMayExist: false });
     const resumeRunId = wal.pending === null ? wal.brackets?.run : wal.pending.brackets.run;
-    mapper = createCodexMapper({ threadId, mintRunId: () => randomUUID(), resumeRunId });
+    mapper = createCodexMapper({ threadId, mintRunId: () => randomUUID(), resumeRunId, reasoning: config.reasoningEvents });
     const source = new BoundStartSource<CodexRecord>(new JsonlFileSource<CodexRecord>(path), start);
     const emitter = await AguiEmitter.start<CodexRecord>({
       endpoint: agent.ep, withholdPayloads: config.eventPayloadsWithheld, wal, subjectFrontier, source, map: mapper.map,

@@ -45,7 +45,7 @@ import {
   standaloneConnectOpts,
 } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
-import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal, createSuite } from "@cotal-ai/smoke-kit";
 
 /** The stock `max_bytes` an artifact store created before this change carries. Spelled out rather
  *  than imported: the shipped code no longer exports it, and a test that read the number out of the
@@ -72,11 +72,7 @@ const RECONCILE_STORE_CAP = 6 * 1024 * 1024 * 1024;
 const SPACES = 6;
 
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
-let ok = 0, fail = 0;
-const check = (name: string, pass: boolean, extra?: unknown) => {
-  if (pass) { ok++; console.log(`  ✓ ${name}`); }
-  else { fail++; console.log("  ✗ FAIL:", name, extra ?? ""); }
-};
+const { check, finish, passed, failed } = createSuite();
 /** Run `setupSpaceStreams` and RETURN its refusal rather than throwing.
  *
  *  Every phase below goes through this, and the reason is that a suite whose cells are reached by a
@@ -273,5 +269,6 @@ await onBroker("open", PUT_CAP, async ({ servers }) => {
   await deleteSpace({ servers, space });
 });
 
-console.log(`\nartifact-store-no-reserve: ${ok} passed, ${fail} failed`);
-process.exit(fail === 0 ? 0 : 1);
+console.log(`\nartifact-store-no-reserve: ${passed()} passed, ${failed()} failed`);
+finish();
+process.exit(failed() === 0 ? 0 : 1);

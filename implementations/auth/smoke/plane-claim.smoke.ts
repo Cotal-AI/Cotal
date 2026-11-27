@@ -36,13 +36,12 @@ import { acquirePlaneClaim, parsePlaneClaimRow, planeClaimRefusal, scannerDeathC
 import { openAuthAuthorityPlane } from "../src/service.js";
 import type { EvictPrincipal } from "../src/credential-ledger.js";
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
-import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal, createSuite } from "@cotal-ai/smoke-kit";
 
 const PORT = await pickFreePort();
 const SERVERS = `nats://127.0.0.1:${PORT}`;
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
-let pass = 0, fail = 0;
-const check = (name: string, cond: boolean, extra?: unknown) => { if (cond) { pass++; console.log(`  ✓ ${name}`); } else { fail++; console.log(`  ✗ FAIL: ${name}`, extra ?? ""); } };
+const { check, finish, passed, failed } = createSuite();
 const rejects = async (fn: () => Promise<unknown>): Promise<string> => { try { await fn(); return ""; } catch (e) { return (e as Error)?.message ?? String(e); } };
 
 const space = `plcl-${randomUUID().slice(0, 8)}`;
@@ -132,7 +131,7 @@ try {
   check("STATE 2 unknown: fail-safe wording, cause included", unk.includes("cannot confirm the previous auth plane") && unk.includes("FAIL-SAFE"));
   check("STATE 2 NEVER says to stop the other process (the ghost-chase class)", !unk.includes("stop the other"));
   const raildown = await rejects(() => acquirePlaneClaim({ nc: b2.nc, space, ledger: c2.ledger.tuple, records: c2.records.tuple, oracle: verdictOracle("unknown", "unknown", false, "the delivery-admin rail is unreachable (no responders)"), log: quiet }));
-  check("STATE 2 rail-down variant names the delivery daemon and the two-step recovery", raildown.includes("delivery daemon") && raildown.includes("cotal up"));
+  check("STATE 2 rail-down variant names the delivery daemon and cotal up", raildown.includes("delivery daemon") && raildown.includes("`cotal up` starts the delivery daemon before this service"));
   const contradictory = await rejects(() => acquirePlaneClaim({ nc: b2.nc, space, ledger: c2.ledger.tuple, records: c2.records.tuple, oracle: verdictOracle("gone", "gone", false), log: quiet }));
   check("a gone verdict under an INCOMPLETE sweep never reclaims (refuses as state 2)", contradictory.includes("cannot confirm"));
   const foreign = await rejects(() => acquirePlaneClaim({ nc: b2.nc, space, ledger: c2.ledger.tuple, records: c2.records.tuple, oracle: foreignEchoOracle, log: quiet }));
@@ -408,5 +407,6 @@ try {
   releaseBroker(); // last: ownership is held until this teardown has actually finished
 }
 
-console.log(fail === 0 ? `\nPLANE-CLAIM SMOKE OK ✅  (${pass} passed, ${fail} failed)` : `\nPLANE-CLAIM SMOKE FAILED ❌  (${pass} passed, ${fail} failed)`);
-if (fail > 0) process.exit(1);
+console.log(failed() === 0 ? `\nPLANE-CLAIM SMOKE OK ✅  (${passed()} passed, ${failed()} failed)` : `\nPLANE-CLAIM SMOKE FAILED ❌  (${passed()} passed, ${failed()} failed)`);
+finish();
+if (failed() > 0) process.exit(1);

@@ -24,7 +24,7 @@ export async function runPersonalNativeAcceptance(input: {
   const plugin = join(fixture, "plugin");
   const source = resolve(import.meta.dirname, "../../../extensions/connector-claude-code");
   for (const dir of [fixture, plugin, join(plugin, "hooks"), join(plugin, "dist"), join(plugin, ".claude-plugin")]) mkdirSync(dir, { recursive: true, mode: 0o700 });
-  for (const file of [".claude-plugin/plugin.json", "hooks/hooks.json", "hooks/native-wake.js", "dist/seat.cjs", "dist/mcp.cjs", "dist/hook.cjs", "dist/monitor.cjs"])
+  for (const file of [".claude-plugin/plugin.json", "hooks/hooks.json", "hooks/index.js", "hooks/native-wake.js", "hooks/commands.js", "dist/seat.cjs", "dist/mcp.cjs", "dist/hook.cjs", "dist/monitor.cjs"])
     copyFileSync(join(source, file), join(plugin, file));
   writeFileSync(join(plugin, "dist/cli.json"), JSON.stringify({ argv: input.cli }), { mode: 0o600 });
   const deliveredFiles = ["hooks/native-wake.js", "dist/seat.cjs", "dist/mcp.cjs", "dist/hook.cjs", "dist/monitor.cjs"];

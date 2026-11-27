@@ -224,6 +224,7 @@ function parseBysrcRow(raw: Uint8Array, key: string): BysrcRow {
 export interface StagedAgentMint {
   readonly lifecycleUid: string;
   readonly credentialId: string;
+  readonly generation: number;
   /** The observed lifecycle-gate + source-gate pins the finalize touch-CASes, keyed by KV key. */
   readonly pins: ReadonlyArray<{ readonly key: string; readonly revision: number }>;
   /** The staged row's own key (what a losing finalize revokes). */
@@ -294,6 +295,7 @@ export async function stageAgentMint(
   const snapshot: StagedMintSnapshot = { pins: pins.map((p) => ({ ...p })), rowKey };
   const staged: StagedAgentMint = Object.freeze({
     lifecycleUid: args.lifecycleUid, credentialId: args.credentialId,
+    generation: gate.row.generation,
     pins: Object.freeze(pins.map((p) => Object.freeze({ ...p }))), rowKey,
   });
   STAGED_MINTS.set(staged, snapshot);
@@ -515,7 +517,8 @@ interface TakeoverResult {
   evictedPrincipals: string[];
 }
 
-async function readTakeoverIntent(authKv: KV, opId: string): Promise<{ intent: TakeoverIntent; revision: number } | undefined> {
+/** Package-internal canonical intent read; observers bind the KV to leader reads. */
+export async function readTakeoverIntent(authKv: KV, opId: string): Promise<{ intent: TakeoverIntent; revision: number } | undefined> {
   const key = stageIntentKey(opId);
   const entry = await authKv.get(key);
   if (!entry) return undefined;

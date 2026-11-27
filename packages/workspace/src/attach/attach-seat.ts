@@ -1,15 +1,17 @@
 import { dialerFor, drainAndClose, mintCreds, newIdentity, oneLine, openSessionRail, standaloneConnectOpts, type SessionGrant, type SpaceAuth } from "@cotal-ai/core";
-import type { NatsConnection } from "@nats-io/transport-node";
+import { AuthorizationError, type NatsConnection } from "@nats-io/transport-node";
 import { divergentCwdAnchor } from "../auth-paths.js";
 import { ConnectRefusal, userSessionAuth } from "../connect.js";
 import { resolveControlTarget, resolveSeatControlTarget } from "../control-target.js";
 import { askManager, managerFailure, type ControlClient, type ManagerPin } from "../control/manager.js";
 import { locateSeat, seatMissRefusal, seatNotFoundMessage } from "../control/seat.js";
 import { presenceSeat } from "../control/seat-presence.js";
+import { shellPath } from "../local-record-source.js";
 import { isWorkspaceTargetError } from "../mesh-target.js";
 import { CommandFailure, isCommandFailure, recordOperationSpace } from "../output.js";
 import { renderReport } from "../present.js";
 import { renderWorkspaceError } from "../render.js";
+import { codeSpan } from "../text-wrap.js";
 import { attachClient, detachKey, holdTerminal, isDetachPress, isTransportEnd, meshSessionTransport, writeNotice, type AttachNotice, type TerminalHold, type TerminalTransport } from "./attach-client.js";
 
 /** Re-establishment backoff, in order; the last value is the cap and repeats forever. A seat that
@@ -199,7 +201,19 @@ async function establishAttachSession(
     catch (error) {
       if (!isCommandFailure(error) || error.code !== "TARGET_NOT_FOUND") throw error;
       const info = await askManager(v.control, t.space, t.server, "status", { name: v.name }, t.auth, reach, undefined, { instanceId: on });
-      if (!info.ok) throw managerFailure(info, "terminal attach", { space: t.space, agent: v.name, managerInstanceId: on ?? null });
+      if (!info.ok) {
+        if (!first) return { ok: false, kind: attachRefusal(info.code, info.details), message: info.error ?? "error", fromManager: true, code: info.code };
+        const manager = info.managerInstanceId ?? on;
+        if (info.code === "not-found") {
+          const roster = ["cotal ps", ...(on === undefined ? [] : ["--on", shellPath(on)]), ...(v.space === undefined ? [] : ["--space", shellPath(v.space)]), ...(v.server === undefined ? [] : ["--server", shellPath(v.server)])].join(" ");
+          throw new CommandFailure("refused", "TARGET_NOT_FOUND", `no managed agent "${oneLine(v.name)}" on manager ${manager ?? "instance"}`, {
+            target: { space: t.space, agent: v.name, managerInstanceId: manager ?? null },
+            native: { code: info.code, detail: { phase: "target-resolution", actionSubmitted: false } },
+            remedy: `run ${codeSpan(roster)} to see the agents the manager runs`,
+          });
+        }
+        throw managerFailure({ ...info, preSubmitRefusal: true }, "terminal attach", { space: t.space, agent: v.name, managerInstanceId: manager ?? null });
+      }
       const row = info.data as { id: string; lifecycleUid: string };
       v.expectedTarget = { id: row.id, lifecycleUid: row.lifecycleUid };
     }
@@ -680,7 +694,8 @@ async function runAttachLoop(
     }
     saidWhy = "";
     const from = est.resumedFrom ? ` (resumed from ${est.resumedFrom.host}:${est.resumedFrom.source})` : "";
-    notice({ tone: "status", text: first ? `attached to ${vv.name}${from} - ${key.label} to detach` : "[cotal: reconnected]" });
+    const detachHint = process.stdin.isTTY ? ` - ${key.label} to detach` : "";
+    notice({ tone: "status", text: first ? `attached to ${vv.name}${from}${detachHint}` : "[cotal: reconnected]" });
     first = false;
     let outcome;
     const startedAt = Date.now();
@@ -724,6 +739,8 @@ async function runAttachLoop(
     // lasted is the other half of the same question.
     if (outcome.carried || Date.now() - startedAt >= SESSION_WORKED_MS) attempt = 0;
     if (!reconnect) {
+      if (est.link.mode === "session-bearer" && outcome.reason === "connection-closed" && outcome.error instanceof AuthorizationError)
+        throw new Error(`the terminal session connection ended: ${outcome.error.message}`, { cause: outcome.error });
       // One-shot: a faulted session still throws, so `--no-reconnect` exits the way it does today.
       if (outcome.error) throw outcome.error;
       return await done({ kind: "ended", reason: outcome.reason });

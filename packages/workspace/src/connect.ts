@@ -1,7 +1,6 @@
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, statSync, type Stats } from "node:fs";
 import { hostname, userInfo } from "node:os";
-import { dirname, resolve } from "node:path";
 import {
   DEFAULT_SPACE,
   DEV_OWNER,
@@ -23,12 +22,14 @@ import {
   mintAcceptedToken,
   newIdentity,
   oneLine,
+  patternInAllow,
   withIssuerSession,
   type IssuedCaller,
   probeConnect,
   registry,
   token,
   type AuthProvider,
+  type ManagerInstanceListing,
   type EpCaller,
   type MintOpts,
   type ProbeResult,
@@ -36,15 +37,18 @@ import {
   type SpaceAuth,
 } from "@cotal-ai/core";
 import { brokerAddressForDisplay } from "./broker-display.js";
-import { tlsIntent } from "./broker-url.js";
+import { checkServer, tlsIntent } from "./broker-url.js";
 import { c, paintFor } from "./colors.js";
 import { findCotalRoot, getSpaceAuth, hasUserAuthState, userAuthStateDir } from "./auth-paths.js";
 import { agentGrants, grantMintFlags } from "./agent-grants.js";
 import { workspaceSecretStore } from "./secret-store-fs.js";
-import { canonicalRoot, findMesh, movedProject, pruneMesh, type UserAuthInfo } from "./mesh-registry.js";
-import { isWorkspaceTargetError, recordsElsewhereError, resolveMeshTarget, resolveReadsLiveness, targetErrorSpace, type MeshTarget, type ResolveFlags, credsSpace } from "./mesh-target.js";
+import { brokerUrlKey, canonicalRoot, findMesh, loadMeshes, movedProject, pruneMesh, type MeshEntry, type UserAuthInfo } from "./mesh-registry.js";
+import { isWorkspaceTargetError, MeshTargetError, preparedLifecycle, recordsElsewhereError, resolveMeshTarget, resolveReadsLiveness, retainedLegacyBroker, stoppedStack, targetErrorSpace, type MeshTarget, type ResolveFlags, credsSpace } from "./mesh-target.js";
+import { findPreparedSpace, projectRootProblem, projectRootProblemText } from "./prepared-spaces.js";
+import { shellPath } from "./local-record-source.js";
+import { codeSpan } from "./text-wrap.js";
 import { PREFLIGHT_CONFIRM_TIMEOUT_MS, preflightTarget, pruneStaleMeshes } from "./preflight.js";
-import { renderWorkspaceError, workspaceErrorParts, type WorkspaceError, type WorkspaceErrorParts } from "./render.js";
+import { preparedRootRemedy, renderWorkspaceError, workspaceErrorParts, type WorkspaceError, type WorkspaceErrorParts } from "./render.js";
 import { CommandFailure, type NativeCause, type RefusalCode } from "./output.js";
 import { credentialFileExposure, localRecordAccess, protectedLocalDirectory } from "./protected-records.js";
 import { localStackRoot, spaceStreamsAbsent, spaceStreamsExpected } from "./space-streams.js";
@@ -184,15 +188,10 @@ export interface UserViewAuth {
   source: () => Promise<string>;
 }
 
-/** Mint an elevated-view bearer over an existing user-mode {@link Connection} — the user-mode
- *  path for the operator surfaces (`web`, `console`, `history clear`, `channels`, `spawn -f`).
- *  The view is authorized server-side against the fresh ledger row; a refusal THROWS the exact
- *  re-grant sentence. Call ONLY with a user-mode connection (`conn.bearer` set) — anything else
- *  is a caller bug. Long-running servers (the web delete handler) call THIS and surface the
- *  thrown sentence; CLI startup paths use {@link userViewAuthOrExit}. */
-export async function userViewAuth(conn: Connection, view: string, opts: { managerInstanceId?: string; transferWriter?: { instanceId: string; hex: string } } = {}): Promise<UserViewAuth> {
+/** The auth provider and this machine's sign-in state for a user-mode {@link Connection}. */
+function userAuthState(conn: Connection, what: string): { provider: AuthProvider; dir: string; store: ReturnType<typeof workspaceSecretStore>; bearer: string } {
   if (!conn.bearer || !conn.userAuth || !conn.root)
-    throw new Error(`userViewAuth: not a user-mode registry connection (view "${view}")`);
+    throw new Error(`userViewAuth: not a user-mode registry connection (${what})`);
   const ua = conn.userAuth;
   let provider: AuthProvider;
   try {
@@ -202,8 +201,63 @@ export async function userViewAuth(conn: Connection, view: string, opts: { manag
       `space "${conn.space}" uses the "${ua.provider}" auth provider, which this build does not register - user-auth spaces need it (the official cotal binary includes @cotal-ai/auth)`,
     );
   }
-  const dir = userAuthStateDir(conn.root, conn.space);
-  const store = workspaceSecretStore(conn.root);
+  return { provider, dir: userAuthStateDir(conn.root, conn.space), store: workspaceSecretStore(conn.root), bearer: conn.bearer };
+}
+
+/** {@link userSignInAuth}'s source refused a bearer for another sign-in: the person's row was
+ *  granted again, or this machine signed in as another account, while a reader held the old one.
+ *  The reader cannot recover in place. */
+export class SignInChangedError extends Error {}
+
+/** Why `bearer` is not the sign-in `started` names, or undefined when it is the same owner, actor and
+ *  lifecycle. A caller that must act as one sign-in throughout checks each bearer it is handed. */
+export function signInChange(started: { owner: string; actor: string; lifecycleUid: string }, bearer: string): SignInChangedError | undefined {
+  const now = principalFromBearer(bearer);
+  if (now.owner !== started.owner || now.actor !== started.actor)
+    return new SignInChangedError(`this machine is now signed in as ${now.owner}.${now.actor}, not ${started.owner}.${started.actor}; restart to act as that account`);
+  if (now.lifecycleUid !== started.lifecycleUid)
+    return new SignInChangedError(`your sign-in ${started.owner}.${started.actor} was granted again (lifecycle ${now.lifecycleUid}; this reader started on ${started.lifecycleUid}); restart it to read under the new grant`);
+  return undefined;
+}
+
+/** The person's own sign-in as a standing reader's auth material: the plain bearer a user-mode
+ *  {@link Connection} carries, and a source that runs the exchange again for each new connection, so
+ *  a long-running reader holds no elevated view. A person's sign-in reads the event channels of
+ *  every agent under their owner (SPEC 13.21). Call ONLY with a user-mode connection. */
+export function userSignInAuth(conn: Connection): UserViewAuth {
+  const { provider, dir, store, bearer } = userAuthState(conn, "the sign-in");
+  const { sentinelCreds } = conn;
+  if (!sentinelCreds) throw new Error("userSignInAuth: the connection carries no sentinel credential");
+  const { owner, actor, lifecycleUid } = principalFromBearer(bearer);
+  // A reader's history consumer is named for this lifecycle, and a re-grant retires it. A bearer
+  // for another sign-in is refused, so the reader fails loud instead of reading under a name its
+  // new credential does not hold.
+  const source = async () => {
+    const next = (await provider.userCredentials({ store, dir, space: conn.space, actor: CLI_USER_ACTOR })).bearer;
+    const changed = signInChange({ owner, actor, lifecycleUid }, next);
+    if (changed) throw changed;
+    return next;
+  };
+  return { bearer, sentinelCreds, owner, actor, lifecycleUid, source };
+}
+
+/** The signed-in person's own Manager instances, as the space's auth service lists them: each Manager
+ *  their owner registered and the space host's own, with the verdict an unpinned selection reads.
+ *  The list spends no selection. Call ONLY with a user-mode connection. */
+export async function ownManagerInstances(conn: Connection): Promise<ManagerInstanceListing[]> {
+  const { provider, dir, store } = userAuthState(conn, "the manager list");
+  if (!provider.listManagerInstances) throw new Error(`the "${provider.name}" auth provider cannot list a person's managers`);
+  return provider.listManagerInstances({ store, dir, space: conn.space });
+}
+
+/** Mint an elevated-view bearer over an existing user-mode {@link Connection} — the user-mode
+ *  path for the operator surfaces (`web`, `console`, `history clear`, `channels`, `spawn -f`).
+ *  The view is authorized server-side against the fresh ledger row; a refusal THROWS the exact
+ *  re-grant sentence. Call ONLY with a user-mode connection (`conn.bearer` set) — anything else
+ *  is a caller bug. Long-running servers (the web delete handler) call THIS and surface the
+ *  thrown sentence; CLI startup paths use {@link userViewAuthOrExit}. */
+export async function userViewAuth(conn: Connection, view: string, opts: { managerInstanceId?: string; transferWriter?: { instanceId: string; hex: string } } = {}): Promise<UserViewAuth> {
+  const { provider, dir, store, bearer: signIn } = userAuthState(conn, `view "${view}"`);
   if (opts.managerInstanceId !== undefined) {
     if (view !== "manager-caller") throw new Error("a manager instance selector requires the manager-caller view");
     assertLifecycleToken(opts.managerInstanceId, "managerInstanceId");
@@ -211,7 +265,7 @@ export async function userViewAuth(conn: Connection, view: string, opts: { manag
   if ((view === "transfer-writer") !== (opts.transferWriter !== undefined))
     throw new Error("the transfer-writer view and the one object it uploads come together or not at all");
   const request = { store, dir, space: conn.space, actor: CLI_USER_ACTOR, view, ...opts };
-  const original = view === "manager-caller" ? principalFromBearer(conn.bearer) : undefined;
+  const original = view === "manager-caller" ? principalFromBearer(signIn) : undefined;
   const mint = async () => {
     const result = await provider.userCredentials(request);
     if (!original) return { ...result, principal: principalFromBearer(result.bearer) };
@@ -303,8 +357,19 @@ export function principalFromBearer(bearer: string): { owner: string; actor: str
 export function refuseStaticCredsForKnownUserAuth(space: string, server: string | undefined, what: string): void {
   const recorded = findMesh(space);
   const knownRecordedUser = recorded?.mode === "user" && (server === undefined || recorded.server === server);
-  const knownLocalUser = hasUserAuthState(findCotalRoot(), space);
-  if (!knownRecordedUser && !knownLocalUser) return;
+  const root = findCotalRoot();
+  try {
+    if (!hasUserAuthState(root, space) && !knownRecordedUser) return;
+  } catch (error) {
+    const native = error as NodeJS.ErrnoException | undefined;
+    const code = native?.code;
+    if (native?.syscall !== "lstat" || (code !== "EACCES" && code !== "EPERM")) throw error;
+    throw new ConnectRefusal(
+      `✗ cannot check the local authentication mode for space "${space}" (${code})`,
+      "  Check that this account can read the project's authentication settings and traverse their parent folders.",
+      { code: "PERMISSION_DENIED", cause: error, native: { code }, target: { space, root } },
+    );
+  }
   throw new ConnectRefusal(
     `✗ ${what} tried to authenticate with a static creds file, but space "${space}" is a per-user-auth mesh - old --creds files are refused here so they can't bypass user accounts.`,
     `  Sign in with \`cotal login\` and use the user-mode path instead (for agents: \`cotal spawn\`).`,
@@ -369,8 +434,8 @@ export class ConnectRefusal extends Error {
 
   /** This refusal as a command's classified failure under its code: the message, and the remedy
    *  apart from it. */
-  failure(): CommandFailure {
-    const remedy = this.parts?.remedy ?? this.hint?.trim();
+  failure(renderRemedy?: (remedy: string) => string): CommandFailure {
+    const remedy = this.parts?.remedy === undefined ? this.hint?.trim() : renderRemedy?.(this.parts.remedy) ?? this.parts.remedy;
     return new CommandFailure("refused", this.code, this.parts?.message ?? this.rendered.replace(/^✗ /, ""), { ...(remedy ? { remedy } : {}), ...(this.target ? { target: this.target } : {}), ...(this.native ? { native: this.native } : {}) });
   }
 }
@@ -401,6 +466,7 @@ export function targetErrorCode(code: MeshTargetErrorCode): RefusalCode {
   switch (code) {
     case "no-meshes":
     case "unknown-space":
+    case "server-host-mismatch":
     case "user-auth-unrecorded":
       return "TARGET_NOT_FOUND";
     case "not-started":
@@ -422,6 +488,9 @@ export function preflightCode(failure: PreflightFailure): RefusalCode {
     case "unreachable":
     case "slow-link":
     case "broker-stopped":
+    case "non-nats-listener":
+    case "auth-unsupported":
+    case "jetstream-unsupported":
       return "TARGET_UNAVAILABLE";
     case "registry-open-now-auth":
     case "open-wants-auth":
@@ -553,13 +622,23 @@ export function staticOperatorActor(): string {
   return actor;
 }
 
+function credsBrokerEntry(server: string): MeshEntry | undefined {
+  const key = brokerUrlKey(server);
+  const matches = loadMeshes().filter((entry) => brokerUrlKey(entry.server) === key);
+  return matches.length === 1 ? matches[0] : undefined;
+}
+
 /** The space {@link connectOrThrow} connects `flags` to, read from local records only, with no probe
  *  and no dial. Undefined when those records name no single space, which connecting then reports. A
  *  command reads it before it connects, so a refusal of its own input still names the mesh. */
 export function connectSpace(flags: ConnectFlags): string | undefined {
-  if (flags.creds) return flags.space ?? DEFAULT_SPACE;
+  if (flags.creds) {
+    try {
+      return flags.space ?? (flags.server === undefined ? credsSpace(process.cwd()) : credsBrokerEntry(flags.server))?.space ?? DEFAULT_SPACE;
+    } catch { return undefined; }
+  }
   if (flags.server && flags.space && !findMesh(flags.space)) return flags.space;
-  try { return resolveMeshTarget(process.cwd(), { server: flags.server, space: flags.space, offline: flags.offline, readOnly: true }).space; }
+  try { return resolveMeshTarget(process.cwd(), { server: flags.server, space: flags.space, offline: flags.offline, openInventory: flags.openInventory, readOnly: true }).space; }
   catch { return undefined; }
 }
 
@@ -568,7 +647,8 @@ export function connectSpace(flags: ConnectFlags): string | undefined {
  * on every refusal instead of ending the process. {@link connectOrExit} is this plus the printing
  * and the exit; a caller that must survive a refusal (a reconnect loop) calls this one.
  *  • Explicit `--creds` → a RAW connection to `--server`, or to the address its space is registered
- *    at: `--space`, else the selected space or this folder's ({@link credsSpace}), else the default.
+ *    at. Without `--space`, use the broker's unique registration when `--server` is given,
+ *    or the selected space or this folder's ({@link credsSpace}) otherwise. The fallback is the default.
  *    Except when the target is a known per-user-auth mesh. Those refuse static creds fail-closed
  *    because old local creds remain broker-valid but are the wrong identity plane after the flip.
  *  • Otherwise → resolve the running mesh from the registry (works from any dir), mint `role` creds
@@ -577,25 +657,28 @@ export function connectSpace(flags: ConnectFlags): string | undefined {
 export async function connectOrThrow(flags: ConnectFlags, role: Profile, opts: ConnectOpts = {}): Promise<Connection> {
   if (flags.creds) {
     let resolved: { space: string; selected: boolean } | undefined;
-    if (flags.space === undefined && flags.server === undefined) {
-      try { resolved = credsSpace(process.cwd()); }
-      catch (e) {
+    let brokerEntry: ReturnType<typeof credsBrokerEntry>;
+    if (flags.space === undefined) {
+      try {
+        if (flags.server === undefined) resolved = credsSpace(process.cwd());
+        else brokerEntry = credsBrokerEntry(flags.server);
+      } catch (e) {
         if (isWorkspaceTargetError(e)) throw workspaceRefusal({ kind: "target", error: e }, { cause: e, code: targetErrorCode(e.code) });
         throw e;
       }
     }
-    const space = flags.space ?? resolved?.space ?? DEFAULT_SPACE;
-    // A space the caller named, selected or is in is named in a refusal; the default is not.
+    const space = flags.space ?? brokerEntry?.space ?? resolved?.space ?? DEFAULT_SPACE;
+    // Offer to mint for a space the caller named, selected or is in, not one inferred from the broker.
     const named = flags.space !== undefined || resolved !== undefined;
     // Run the flip guard with the RAW `--server` (may be undefined). The guard treats "no --server"
     // as "any recorded server for this space", so a user mesh on a NON-default port is still
     // recognized when the caller omits --server. Defaulting the server BEFORE the guard would make
     // its `recorded.server === server` match miss every non-4222 user mesh, letting a static --creds
     // slip past the flip.
-    refuseStaticCredsForKnownUserAuth(space, flags.server, "--creds");
+    refuseStaticCredsForKnownUserAuth(space, brokerEntry?.server ?? flags.server, "--creds");
     // The credential goes only to a broker the caller paired it with: `--server`, or the address the
     // space is registered at. The default address is never assumed for it.
-    const recorded = flags.server === undefined ? findMesh(space) : undefined;
+    const recorded = flags.server === undefined ? findMesh(space) : brokerEntry;
     const server = flags.server ?? recorded?.server;
     if (server === undefined)
       throw new ConnectRefusal(
@@ -606,44 +689,9 @@ export async function connectOrThrow(flags: ConnectFlags, role: Profile, opts: C
     const creds = readCredsFile(flags.creds);
     // Keep recorded TLS policy, or require the transport the explicit URL names.
     const tls = tlsIntent(server, recorded?.tlsRequired === true);
-    try {
-      await reachableOrThrow(server, { creds, ...(tls ? { tls } : {}) });
-    } catch (e) {
-      // A rejected credential whose own permissions name another space is reported with that space.
-      const owner = isConnectRefusal(e) && e.code === "PERMISSION_DENIED" ? spaceInCreds(creds) : undefined;
-      if (owner === undefined) throw e;
-      const at = brokerAddressForDisplay(server) ?? "an invalid broker address";
-      // A `--server` other than the one the credential's space is registered at sends it to another
-      // broker, so the step back drops `--server` rather than keeping it.
-      const ownerMesh = findMesh(owner);
-      const elsewhere = flags.server !== undefined && ownerMesh !== undefined && ownerMesh.server !== server ? brokerAddressForDisplay(ownerMesh.server) ?? "its registered broker" : undefined;
-      if (owner === space) {
-        if (elsewhere === undefined) {
-          const rejection = await recordedCredentialRejection(space, creds);
-          if (rejection === undefined) throw e;
-          const claims = credsClaims(creds);
-          const mint = claims.name === "agent" ? `mint a new key with the grants it held: \`cotal auth mint <label>${grantMintFlags(agentGrants(claims.nats ?? {}, space))} --out <new file>\`` : `mint a new key: \`cotal auth mint <label>${typeof claims.name === "string" ? ` --profile ${claims.name}` : ""} --out <new file>\``;
-          if (rejection.kind === "other-account") {
-            // A local account says nothing about an unrelated broker with the same space name.
-            if (ownerMesh?.mode !== "auth" || ownerMesh.server !== server) throw e;
-            const message = `credentials rejected at ${at}: space "${space}" has a different local identity from the one that issued ${flags.creds}, as after reset space and a new up`;
-            const remedy = `the old credential cannot authenticate to this identity; from ${ownerMesh.root}, ${mint}`;
-            throw new ConnectRefusal(`✗ ${message}`, `  ${remedy}`, { cause: e, code: "PERMISSION_DENIED", parts: { message, remedy }, target: { space, path: flags.creds } });
-          }
-          // The account here records the revocation, so the refusal says so instead of "check your creds".
-          const message = `credentials rejected at ${at}: the key ${claims.sub} in ${flags.creds} was revoked at ${new Date(rejection.at * 1000).toISOString()} with auth revoke-credential`;
-          const remedy = `a revoked key is not signed again; ${mint}`;
-          throw new ConnectRefusal(`✗ ${message}`, `  ${remedy}`, { cause: e, code: "PERMISSION_DENIED", parts: { message, remedy }, target: { space, path: flags.creds } });
-        }
-        const message = `credentials rejected at ${at}: ${flags.creds} is a credential for space "${owner}", which is registered here at ${elsewhere}, not ${at}`;
-        const remedy = `drop --server to use ${owner}'s broker at ${elsewhere}, or point --server at it`;
-        throw new ConnectRefusal(`✗ ${message}`, `  ${remedy}`, { cause: e, code: "PERMISSION_DENIED", parts: { message, remedy }, target: { space, credentialSpace: owner, path: flags.creds, server: at } });
-      }
-      const message = `credentials rejected at ${at}: ${flags.creds} is a credential for space "${owner}"${named ? `, not "${space}"` : ""}`;
-      const use = elsewhere !== undefined ? `use it with --space ${owner} and without --server, which dials ${owner}'s broker at ${elsewhere}` : ownerMesh ? `use it with --space ${owner}` : `use it with --space ${owner} --server <url of its broker>`;
-      const remedy = `${use}${named ? `, or mint one for "${space}" with \`cotal auth mint <label> --space ${space} --out <file>\`` : ""}`;
-      throw new ConnectRefusal(`✗ ${message}`, `  ${remedy}`, { cause: e, code: "PERMISSION_DENIED", parts: { message, remedy }, target: { ...(named ? { space } : {}), credentialSpace: owner, path: flags.creds } });
-    }
+    await reachableOrThrow(server, { creds, ...(tls ? { tls } : {}) }, {
+      space, path: flags.creds, named, addressFlags: flags.server !== undefined ? "--server" : undefined,
+    });
     return { server, space, tls, creds };
   }
   // A raw OPEN remote mesh: explicit `--server` + a `--space` that isn't locally registered. Naming
@@ -655,17 +703,48 @@ export async function connectOrThrow(flags: ConnectFlags, role: Profile, opts: C
     // for that very space even when the registry lost (or never had) the entry — treating it as an
     // open broker would credless-connect into a callout denial whose copy sends the operator
     // port-hunting. Name the real state and the recovery instead.
-    if (hasUserAuthState(findCotalRoot(), flags.space))
+    const root = findCotalRoot();
+    if (hasUserAuthState(root, flags.space)) {
+      const retained = retainedLegacyBroker(root);
+      const restart = codeSpan(`cotal up --user-auth --space ${shellPath(flags.space)}${retained && !retained.open ? ` --server ${shellPath(retained.server)}` : ""}`);
       throw new ConnectRefusal(
-        `✗ space "${flags.space}" has user auth enabled on disk but no usable registry entry - re-record it with \`cotal up\` from its project folder, then sign in (\`cotal login\`)`,
+        `✗ space "${flags.space}" has user auth enabled on disk but no usable registry entry - re-record it with ${restart} from its project folder, then sign in (\`cotal login\`)`,
         undefined,
         { code: "TARGET_NOT_FOUND" },
       );
+    }
     const tls = tlsIntent(flags.server, false);
-    await reachableOrThrow(flags.server, { tls });
+    try {
+      await reachableOrThrow(flags.server, { tls });
+    } catch (error) {
+      if (!isConnectRefusal(error) || error.code !== "TARGET_UNAVAILABLE") throw error;
+      // Preparation can guide recovery, but it must not affect which broker we dial.
+      const prepared = findPreparedSpace(flags.space);
+      const at = checkServer(flags.server, "--server").ok && !flags.server.includes(",") ? new URL(flags.server) : undefined;
+      const rootProblem = prepared ? projectRootProblem(prepared.root) : undefined;
+      if (prepared && at && rootProblem === undefined) {
+        const stopped = stoppedStack(prepared.root, flags.space, flags.server);
+        if (stopped) {
+          const target = new MeshTargetError("not-started", `"${flags.space}" is stopped; its last operation, ${stopped.operation}, ${stopped.outcome}`, { space: flags.space, root: prepared.root, stopped }, { cause: error });
+          throw workspaceRefusal({ kind: "target", error: target }, { cause: target, kind: error.kind, code: error.code });
+        }
+      }
+      const local = prepared && at?.protocol === "nats:" && at.hostname === "127.0.0.1" && at.port && at.port !== "0";
+      const addressRemedy = "check that address and that a broker runs there";
+      const remedy = !local || rootProblem === "missing" ? addressRemedy
+        : rootProblem !== undefined ? `${addressRemedy}. The recorded project path ${prepared.root} ${projectRootProblemText(rootProblem)}. ${preparedRootRemedy(flags.space, rootProblem)}`
+        : preparedLifecycle(prepared.root, flags.space).state === "prepared"
+          ? `if you meant to start the prepared space here, run ${codeSpan(`cotal up --root ${shellPath(prepared.root)} --space ${shellPath(flags.space)} --server ${shellPath(flags.server)}`)}. Otherwise, ${addressRemedy}`
+          : addressRemedy;
+      const message = error.failure().message;
+      throw new ConnectRefusal(`✗ ${message} - ${remedy}`, undefined, {
+        cause: error, kind: error.kind, code: error.code, parts: { message, remedy },
+        target: { space: flags.space, ...(prepared ? { root: prepared.root } : {}) },
+      });
+    }
     return { server: flags.server, space: flags.space, tls };
   }
-  const target = await resolveTargetOrThrow({ server: flags.server, space: flags.space, offline: flags.offline, readOnly: opts.readOnly });
+  const target = await resolveTargetOrThrow({ server: flags.server, space: flags.space, offline: flags.offline, openInventory: flags.openInventory, readOnly: opts.readOnly });
   return connectTargetOrThrow(target, role, opts);
 }
 
@@ -766,7 +845,7 @@ export async function connectTargetOrThrow(target: MeshTarget, role: Profile, op
     // no stack journal. Run from it, the refusal is the one the command gives there with no --space (#7315).
     const elsewhere = recordsElsewhereError(findCotalRoot());
     if (elsewhere?.details.stackSpace === target.space && elsewhere.details.recordedRoot !== undefined && canonicalRoot(elsewhere.details.recordedRoot) === canonicalRoot(target.root))
-      throw workspaceRefusal({ kind: "target", error: elsewhere }, { code: targetErrorCode(elsewhere.code) });
+      throw workspaceRefusal({ kind: "target", error: elsewhere }, { cause: elsewhere, code: targetErrorCode(elsewhere.code) });
     // The folder is gone, deleted or moved somewhere this command cannot see, so no seed is missing (#7318).
     if (!existsSync(target.root)) {
       const parts = { message: `mesh "${target.space}" is registered for ${target.root}, which no longer exists`, remedy: `if that folder was moved or renamed, move it back to ${target.root} and run the command again; otherwise forget the space with \`cotal space forget ${target.space}\`` };
@@ -894,7 +973,7 @@ async function userConnect(target: MeshTarget): Promise<Connection> {
  *  malformed file is refused naming the file and what is wrong with it, rather than reaching a
  *  serving broker as an unreachable one. A file other accounts can read is still used, with a
  *  warning on stderr: the private-file rule refuses only the credentials Cotal keeps itself. */
-export function readCredsFile(path: string): string {
+export function readCredsFile(path: string, options?: { malformedRemedy?: string }): string {
   const refuse = (problem: string, code: RefusalCode, remedy: string) =>
     new ConnectRefusal(`✗ creds file ${problem}`, `  ${remedy}`, { code, parts: { message: `creds file ${problem}`, remedy }, target: { path } });
   let stat: Stats;
@@ -905,7 +984,7 @@ export function readCredsFile(path: string): string {
     // Another local account that can write a folder on its path can swap the file, so it is refused
     // as auth mint refuses to write one there. POSIX only, as the file-mode warning below is.
     if (localRecordAccess() === "posix") {
-      try { protectedLocalDirectory(dirname(resolve(path)), "its path"); }
+      try { protectedLocalDirectory({ parentOf: path }, "its path"); }
       catch (error) {
         if (error instanceof CommandFailure && error.code === "PERMISSION_DENIED") throw refuse(`${path} cannot be used: ${error.message}`, "PERMISSION_DENIED", error.remedy ?? "move it to a folder only you can write");
         throw error;
@@ -920,8 +999,8 @@ export function readCredsFile(path: string): string {
   }
   const problem = credsProblem(text);
   if (problem) throw refuse(`${path} cannot be used: ${problem.message}`, "SCHEMA_INVALID", problem.code === "crlf"
-    ? `save it with LF line endings, for example with \`dos2unix ${path}\``
-    : "pass the complete credential file as it was issued; `cotal auth mint <label> --out <file>` writes a new one");
+    ? `save it with LF line endings, for example with \`dos2unix ${shellPath(path)}\``
+    : options?.malformedRemedy ?? "pass the complete credential file as it was issued; `cotal auth mint <label> --out <file>` writes a new one");
   const exposure = credentialFileExposure(path, stat);
   if (exposure) console.error(c.yellow(`! creds file ${path} ${exposure.reason}; ${exposure.remedy}`));
   return text;
@@ -975,10 +1054,67 @@ export function readCredsFileOrExit(path: string): string {
   }
 }
 
-/** Reachability check for a RAW (off-registry) connection — one plain sentence, never a registry/
- *  stale-entry message and never a prune. Used by the `--creds` escape hatch and `join`'s explicit
- *  (link/token/creds) path, both of which connect to a broker the user named, not the registry. */
-export async function reachableOrThrow(server: string, auth: RawAuth = {}): Promise<void> {
+interface CredentialContext {
+  space: string;
+  path: string;
+  named: boolean;
+  addressFlags?: "--server" | "--link" | "--server and --link";
+  landingChannel?: string;
+}
+
+/** Classify a broker-rejected file from its declared space and recorded local trust. */
+async function rejectCredential(e: ConnectRefusal, server: string, creds: string, context: CredentialContext): Promise<never> {
+  const { space, path, named, addressFlags, landingChannel } = context;
+  const provision = landingChannel !== undefined;
+  const owner = spaceInCreds(creds);
+  if (owner === undefined) throw e;
+  const at = brokerAddressForDisplay(server) ?? "an invalid broker address";
+  const ownerMesh = findMesh(owner);
+  const elsewhere = addressFlags && ownerMesh !== undefined && ownerMesh.server !== server ? brokerAddressForDisplay(ownerMesh.server) ?? "its registered broker" : undefined;
+  const provisionFlags = provision ? " --provision" : "";
+  const pairing = provision ? ", then join with the lifecycle UID that mint reports" : "";
+  if (owner === space) {
+    if (elsewhere !== undefined) {
+      const message = `credentials rejected at ${at}: ${path} is a credential for space "${owner}", which is registered here at ${elsewhere}, not ${at}`;
+      const remedy = addressFlags === "--server"
+        ? `drop --server to use ${owner}'s broker at ${elsewhere}, or point --server at it`
+        : `use --space ${owner} without ${addressFlags} to reach its registered broker at ${elsewhere}`;
+      throw new ConnectRefusal(`✗ ${message}`, `  ${remedy}`, { cause: e, code: "PERMISSION_DENIED", parts: { message, remedy }, target: { space, credentialSpace: owner, path, server: at } });
+    }
+    const rejection = await recordedCredentialRejection(space, creds);
+    if (rejection === undefined) throw e;
+    const claims = credsClaims(creds);
+    const mint = claims.name === "agent"
+      ? `mint a new key with the grants it held: ${codeSpan(`cotal auth mint <label>${provision ? ` --space ${shellPath(space)}` : ""}${provisionFlags}${grantMintFlags(agentGrants(claims.nats ?? {}, space))} --out <new file>`)}${pairing}`
+      : `mint a new key: \`cotal auth mint <label>${typeof claims.name === "string" ? ` --profile ${claims.name}` : ""} --out <new file>\``;
+    if (rejection.kind === "other-account") {
+      // A local account says nothing about an unrelated broker with the same space name.
+      if (ownerMesh?.mode !== "auth" || ownerMesh.server !== server) throw e;
+      const message = `credentials rejected at ${at}: space "${space}" has a different local identity from the one that issued ${path}, as after reset space and a new up`;
+      const remedy = `the old credential cannot authenticate to this identity; from ${ownerMesh.root}, ${mint}`;
+      throw new ConnectRefusal(`✗ ${message}`, `  ${remedy}`, { cause: e, code: "PERMISSION_DENIED", parts: { message, remedy }, target: { space, path } });
+    }
+    const message = `credentials rejected at ${at}: the key ${claims.sub} in ${path} was revoked at ${new Date(rejection.at * 1000).toISOString()} with auth revoke-credential`;
+    const remedy = `a revoked key is not signed again; ${mint}`;
+    throw new ConnectRefusal(`✗ ${message}`, `  ${remedy}`, { cause: e, code: "PERMISSION_DENIED", parts: { message, remedy }, target: { space, path } });
+  }
+  const message = `credentials rejected at ${at}: ${path} is a credential for space "${owner}"${named ? `, not "${space}"` : ""}`;
+  const use = elsewhere !== undefined ? `use it with --space ${owner} and without ${addressFlags}, which dials ${owner}'s broker at ${elsewhere}` : ownerMesh ? `use it with --space ${owner}` : `use it with --space ${owner} --server <url of its broker>`;
+  let grants = "";
+  if (named && landingChannel !== undefined) {
+    const claims = credsClaims(creds);
+    const held = agentGrants(claims.name === "agent" ? claims.nats ?? {} : {}, owner);
+    if (!patternInAllow(held.read, landingChannel)) held.read.push(landingChannel);
+    grants = grantMintFlags(held);
+  }
+  const mint = codeSpan(`cotal auth mint <label> --space ${provision ? shellPath(space) : space}${provisionFlags}${grants} --out <file>`);
+  const replacement = provision ? `ask the owner of "${space}" to mint a replacement with read access to the landing channel using ${mint}${pairing}` : `mint one for "${space}" with ${mint}`;
+  const remedy = named ? `${use}, or ${replacement}` : use;
+  throw new ConnectRefusal(`✗ ${message}`, `  ${remedy}`, { cause: e, code: "PERMISSION_DENIED", parts: { message, remedy }, target: { ...(named ? { space } : {}), credentialSpace: owner, path } });
+}
+
+/** Check reachability without pruning. With credential context, diagnose a broker-rejected file. */
+export async function reachableOrThrow(server: string, auth: RawAuth = {}, credential?: CredentialContext): Promise<void> {
   // A credential past its own expiry is dead, and no endpoint presents it, but the broker still
   // accepts it until its last second ends. So it is refused without a dial.
   let probe: ProbeResult = auth.creds !== undefined && inspectCredHealth(auth.creds).state === "expired" ? { ok: false, reason: "stale-auth" } : await probeConnect(server, auth);
@@ -996,7 +1132,10 @@ export async function reachableOrThrow(server: string, auth: RawAuth = {}): Prom
   const kind = probe.reason === "timeout" || probe.reason === "unreachable" ? "transient" : "permanent";
   const code: RefusalCode =
     kind === "transient" ? "TARGET_UNAVAILABLE" : probe.reason === "tls-unsupported" ? "DEPENDENCY_UNAVAILABLE" : probe.reason === "auth-required" && hasAuth ? "PERMISSION_DENIED" : "AUTH_REQUIRED";
-  throw workspaceRefusal({ kind: "reachable", reason: probe.reason, server, hasAuth }, { kind, code, ...(probe.reason === "auth-required" && !hasAuth ? { native: { code: "CREDENTIALS_MISSING" } } : {}) });
+  const refusal = workspaceRefusal({ kind: "reachable", reason: probe.reason, server, hasAuth }, { kind, code, ...(probe.reason === "auth-required" && !hasAuth ? { native: { code: "CREDENTIALS_MISSING" } } : {}) });
+  if (credential && auth.creds !== undefined && code === "PERMISSION_DENIED")
+    return rejectCredential(refusal, server, auth.creds, credential);
+  throw refusal;
 }
 
 /** {@link reachableOrThrow} with the exiting disposition. */
@@ -1018,10 +1157,10 @@ export async function reachableOrExit(server: string, auth: RawAuth = {}): Promi
  *  dead-recorded mesh the operator is recovering with a live `--server` override. A `readOnly`
  *  resolve takes no sweep and keeps a stale entry. */
 export async function resolveTargetOrThrow(flags: ResolveFlags): Promise<MeshTarget> {
-  const offline = flags.offline ?? (!flags.readOnly && resolveReadsLiveness(process.cwd(), flags) ? (await pruneStaleMeshes(flags.server)).offline : []);
   let target: MeshTarget;
   try {
-    target = resolveMeshTarget(process.cwd(), { ...flags, offline });
+    const sweep = flags.offline === undefined && !flags.readOnly && resolveReadsLiveness(process.cwd(), flags) ? await pruneStaleMeshes(flags.server, "targets") : {};
+    target = resolveMeshTarget(process.cwd(), { ...flags, ...sweep });
   } catch (e) {
     // The target error rides as `cause`, so a caller that must tell "no mesh recorded at all" from
     // every other refusal can read its `code` instead of matching the rendered sentence. No mesh

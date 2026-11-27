@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { accessSync, constants, existsSync, lstatSync, readFileSync, readdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { hostname } from "node:os";
-import { assertRecordIdentity, CommandFailure, darwinProcessBinding, isCustodyPipe, win32ProcessBinding, homeCotalDir, identityRecord, localRecordAccess, oneLine, protectedLocalDirectory, serviceAdapterKernelStopResult, serviceAdapterReadiness, serviceAdapterStopResult, type ServiceAdapterKernelStopResult, type ServiceAdapterStopResult, serviceOperationId, spaceFromSegment, type ServiceAdapterReadiness, type ProcessIdentityRecord, spaceKey } from "@cotal-ai/workspace";
+import { assertRecordIdentity, CommandFailure, darwinProcessBinding, osMachineId, type OsMachineId, SYSTEM_ID_SOURCES, type Win32SystemIdSource, MAX_IDLE_EXIT_SECONDS, readServiceIdleExit, isCustodyPipe, win32ProcessBinding, homeCotalDir, identityRecord, localRecordAccess, oneLine, protectedLocalDirectory, serviceAdapterKernelStopResult, serviceAdapterReadiness, serviceAdapterStopResult, type ServiceAdapterKernelStopResult, type ServiceAdapterStopResult, serviceOperationId, spaceFromSegment, type ServiceAdapterReadiness, type ProcessIdentityRecord, spaceKey } from "@cotal-ai/workspace";
 import { serviceSupervisorProjection } from "./service-supervision.js";
 import type { ServiceAdapterPin } from "./service-adapters.js";
 import { localRecordObject, localRecordText, ProtectedRecordStore, type LocalRecordSnapshot } from "./protected-records.js";
@@ -14,9 +14,6 @@ import { localRecordObject, localRecordText, ProtectedRecordStore, type LocalRec
 export type ServiceHost = { machine: string; name: string } & (
   | { boot: string; uid: number; platform?: never; sid?: never; machineSource?: never }
   | { platform: "win32"; machineSource: Win32SystemIdSource; sid: string; boot?: never; uid?: never });
-/** The modules Windows derives a system ID from (SystemIdentificationSource 1, 2 and 3). */
-export type Win32SystemIdSource = "tpm" | "uefi" | "registry";
-const SYSTEM_ID_SOURCES: readonly Win32SystemIdSource[] = ["tpm", "uefi", "registry"];
 /** Windows only: the custodian that holds this incarnation's job, the pipe it answers on, and the
  *  name of the protected file beside this record that holds its capability. Never the capability. */
 export interface ServiceCustody { custodian: ProcessIdentityRecord; pipe: string; capability: string }
@@ -48,6 +45,8 @@ export interface ServiceInstance {
   /** The maintenance attempt a controller resume launched this incarnation for. Never the
    *  attempt's handoff path or digest. */
   attempt?: { attemptId: string };
+  /** The manager's `--idle-exit` for this launch, in seconds. Never saved in the definition. */
+  managerIdleExit?: number;
   supervisor: "none";
   foreground: boolean;
   createdAt: string;
@@ -91,31 +90,31 @@ export function processServiceHost(): ServiceHost {
   if (host) return host;
   if (process.platform === "win32") {
     const native = win32ProcessBinding();
-    let system: { id: string; source: number }, sid: string;
+    let system: OsMachineId, sid: string;
     try {
-      system = native.systemId();
+      system = osMachineId();
       sid = native.userSid();
-      if (!/^(?:[0-9a-f]{2}){1,256}$/.test(system.id) || !Number.isInteger(system.source) || !SID.test(sid)) throw new Error();
+      if (!SID.test(sid)) throw new Error();
     } catch { throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "the host's stable machine identity or account SID could not be established; no process-service effect was attempted"); }
-    const machineSource = SYSTEM_ID_SOURCES[system.source - 1];
+    const machineSource = system.platform === "win32" ? system.source : undefined;
     if (!machineSource) throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "Windows has no TPM, UEFI or registry module to derive this machine's system ID from; no process-service effect was attempted");
-    return host = { platform: "win32", machine: createHash("sha256").update(Buffer.from(system.id, "hex")).digest("hex"), machineSource, sid, name: hostname() };
+    return host = { platform: "win32", machine: createHash("sha256").update(system.bytes).digest("hex"), machineSource, sid, name: hostname() };
   }
   if ((process.platform !== "linux" && process.platform !== "darwin") || process.getuid === undefined) throw new CommandFailure("refused", "UNSUPPORTED", "this process-service driver currently requires Linux, macOS or Windows machine identity; another platform is not silently treated as one of them");
   const native = process.platform === "darwin" ? darwinProcessBinding() : undefined;
-  let machine: string, boot: string;
+  let machine: OsMachineId, boot: string;
   try {
+    machine = osMachineId();
     if (native) {
-      ({ machine, boot } = native.hostIdentity());
-      if (!UUID.test(machine) || !UUID.test(boot)) throw new Error();
+      boot = native.hostIdentity().boot;
+      if (!UUID.test(boot)) throw new Error();
       boot = boot.toLowerCase();
     } else {
-      machine = readFileSync("/etc/machine-id", "utf8").trim();
       boot = readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim();
-      if (!/^[0-9a-f]{32}$/i.test(machine) || !/^[0-9a-f-]{36}$/i.test(boot)) throw new Error();
+      if (!/^[0-9a-f-]{36}$/i.test(boot)) throw new Error();
     }
   } catch { throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "the host's stable machine/boot identity could not be established; no process-service effect was attempted"); }
-  return host = { machine: createHash("sha256").update(machine.toLowerCase()).digest("hex"), boot, name: hostname(), uid: process.getuid() };
+  return host = { machine: createHash("sha256").update(machine.bytes).digest("hex"), boot, name: hostname(), uid: process.getuid() };
 }
 
 export function requireProcessIdentity(pid: number): ProcessIdentityRecord {
@@ -131,7 +130,7 @@ function identity(input: unknown): ProcessIdentityRecord {
 }
 
 function validateInstance(input: unknown, space: string): ServiceInstance {
-  const value = localRecordObject(input, ["schemaVersion", "instanceId", "definition", "definitionRevision", "space", "host", "requestId", "launchRequestId", "state", "launcher", "process", "custody", "readiness", "adapter", "adapterReadiness", "nativeStopRequired", "nativeStop", "kernelStopRequired", "kernelStop", "processStop", "attempt", "supervisorInvocationId", "supervisor", "foreground", "createdAt", "updatedAt", "exit"]);
+  const value = localRecordObject(input, ["schemaVersion", "instanceId", "definition", "definitionRevision", "space", "host", "requestId", "launchRequestId", "state", "launcher", "process", "custody", "readiness", "adapter", "adapterReadiness", "nativeStopRequired", "nativeStop", "kernelStopRequired", "kernelStop", "processStop", "attempt", "managerIdleExit", "supervisorInvocationId", "supervisor", "foreground", "createdAt", "updatedAt", "exit"]);
   if (value.schemaVersion !== 1 || value.space !== space || typeof value.state !== "string" || !states.includes(value.state) || value.supervisor !== "none" || typeof value.foreground !== "boolean" || !["not-checked", "process-running", "http-reachable", "adapter-process-running", "endpoint-serving", "broker-listener-reported"].includes(String(value.readiness))) throw new CommandFailure("refused", "SCHEMA_INVALID", "the saved service instance has an unsupported shape; no empty or stopped state was inferred");
   let id: string;
   try { id = serviceInstanceId(localRecordText(value.instanceId, 64)); serviceInstanceId(localRecordText(value.requestId, 64)); serviceInstanceId(localRecordText(value.launchRequestId, 64)); }
@@ -178,11 +177,12 @@ function validateInstance(input: unknown, space: string): ServiceInstance {
   if (processStop && (value.nativeStopRequired === true || value.kernelStopRequired === true || nativeStop || kernelStop || processStop.process.pid !== (value.process as ProcessIdentityRecord | undefined)?.pid || processStop.process.token !== (value.process as ProcessIdentityRecord | undefined)?.token || processStop.requestId !== value.requestId || value.state !== "stopped")) throw new CommandFailure("refused", "SCHEMA_INVALID", "the process stop receipt does not match this retained instance and request");
   const createdAt = localRecordText(value.createdAt, 100), updatedAt = localRecordText(value.updatedAt, 100);
   if (!Number.isFinite(Date.parse(createdAt)) || !Number.isFinite(Date.parse(updatedAt))) throw new CommandFailure("refused", "SCHEMA_INVALID", "the instance timestamps are invalid");
+  if (value.managerIdleExit !== undefined && (!Number.isSafeInteger(value.managerIdleExit) || Number(value.managerIdleExit) < 1 || Number(value.managerIdleExit) > MAX_IDLE_EXIT_SECONDS)) throw new CommandFailure("refused", "SCHEMA_INVALID", "the instance's manager idle exit is invalid");
   if (value.exit !== undefined) {
     const exit = localRecordObject(value.exit, ["code", "signal"]);
     if (!(exit.code === null || Number.isInteger(exit.code)) || !(exit.signal === null || typeof exit.signal === "string")) throw new CommandFailure("refused", "SCHEMA_INVALID", "the instance exit observation is invalid");
   }
-  return { schemaVersion: 1, instanceId: id, definition, definitionRevision: localRecordText(value.definitionRevision, 200), space, host: machine as unknown as ServiceHost, requestId: serviceInstanceId(localRecordText(value.requestId, 64)), launchRequestId: serviceInstanceId(localRecordText(value.launchRequestId, 64)), state: value.state as ServiceInstance["state"], launcher: identity(value.launcher), ...(value.process === undefined ? {} : { process: identity(value.process) }), ...(custody ? { custody } : {}), readiness: value.readiness as ServiceInstance["readiness"], ...(adapter === undefined ? {} : { adapter }), ...(adapterReadiness === undefined ? {} : { adapterReadiness }), ...(typeof value.supervisorInvocationId === "string" ? { supervisorInvocationId: value.supervisorInvocationId } : {}), ...(value.nativeStopRequired ? { nativeStopRequired: true } : {}), ...(nativeStop ? { nativeStop } : {}), ...(value.kernelStopRequired ? { kernelStopRequired: true } : {}), ...(kernelStop ? { kernelStop } : {}), ...(processStop ? { processStop } : {}), ...(attempt ? { attempt } : {}), supervisor: "none", foreground: value.foreground, createdAt, updatedAt, ...(value.exit === undefined ? {} : { exit: value.exit as ServiceInstance["exit"] }) };
+  return { schemaVersion: 1, instanceId: id, definition, definitionRevision: localRecordText(value.definitionRevision, 200), space, host: machine as unknown as ServiceHost, requestId: serviceInstanceId(localRecordText(value.requestId, 64)), launchRequestId: serviceInstanceId(localRecordText(value.launchRequestId, 64)), state: value.state as ServiceInstance["state"], launcher: identity(value.launcher), ...(value.process === undefined ? {} : { process: identity(value.process) }), ...(custody ? { custody } : {}), readiness: value.readiness as ServiceInstance["readiness"], ...(adapter === undefined ? {} : { adapter }), ...(adapterReadiness === undefined ? {} : { adapterReadiness }), ...(typeof value.supervisorInvocationId === "string" ? { supervisorInvocationId: value.supervisorInvocationId } : {}), ...(value.nativeStopRequired ? { nativeStopRequired: true } : {}), ...(nativeStop ? { nativeStop } : {}), ...(value.kernelStopRequired ? { kernelStopRequired: true } : {}), ...(kernelStop ? { kernelStop } : {}), ...(processStop ? { processStop } : {}), ...(attempt ? { attempt } : {}), ...(value.managerIdleExit === undefined ? {} : { managerIdleExit: Number(value.managerIdleExit) }), supervisor: "none", foreground: value.foreground, createdAt, updatedAt, ...(value.exit === undefined ? {} : { exit: value.exit as ServiceInstance["exit"] }) };
 }
 
 export const serviceInstanceStore = (space: string) => new ProtectedRecordStore("services", space, (value) => validateInstance(value, space), "instances");
@@ -220,6 +220,14 @@ export function observeServiceProcess(value: ServiceInstance): ServiceProcessSta
   if (current.platform === "win32") return observeCustodiedProcess(value);
   if (current.boot !== value.host.boot) return "previous-boot";
   if (!value.process) return value.state === "failed" || value.state === "stopped" ? "gone" : "unresolved-launch";
+  if (process.platform === "linux") {
+    try {
+      const stat = readFileSync(`/proc/${value.process.pid}/stat`, "utf8");
+      const fields = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
+      // Match the recorded start time in the same read that shows the process has exited.
+      if (fields[19] === value.process.token && /^[ZXx]$/.test(fields[0] ?? "")) return "gone";
+    } catch { /* Keep the identity verdict when procfs cannot be read. */ }
+  }
   const observed = assertRecordIdentity(value.process);
   return observed.kind === "match" ? "running" : observed.kind === "gone" ? "gone" : observed.kind === "mismatch" ? "foreign-pid" : "unreadable";
 }
@@ -248,10 +256,18 @@ export function startInterrupted(value: ServiceInstance): boolean {
   return launcher.kind === "gone" || launcher.kind === "mismatch";
 }
 
+/** The receipt a manager launched with `--idle-exit` left when it stopped itself, once its process is
+ *  gone. A manager that crashed or was killed leaves none. */
+function idleExitReceipt(value: ServiceInstance): { idleSeconds: number; observedAt: string } | undefined {
+  const stateDirectory = value.managerIdleExit !== undefined && value.process && observeServiceProcess(value) !== "running" ? serviceInstanceStore(value.space).directory() : undefined;
+  return stateDirectory ? readServiceIdleExit({ space: value.space, instanceId: value.instanceId, launchRequestId: value.launchRequestId, stateDirectory }, value.process!) : undefined;
+}
+
 export function instanceProjection(row: ServiceInstanceSnapshot) {
   const value = row.record.value;
   const supervisorRecord = serviceSupervisorProjection(value, processServiceHost());
-  return { instanceId: value.instanceId, definition: value.definition, definitionRevision: value.definitionRevision, revision: row.record.revision, space: value.space, executionHost: value.host.name, observedProcess: observeServiceProcess(value), recordedState: value.state, startInterrupted: startInterrupted(value), pid: value.process?.pid ?? null, readinessObservation: value.readiness, readinessAsOf: value.updatedAt, servingResponse: value.adapterReadiness?.native ? value.adapterReadiness.evidence === "local-process-receipt" ? "child-local-receipt-as-of" : "adapter-checked-as-of" : "not-checked", nativeEvidence: value.adapterReadiness?.evidence ?? null, adapter: value.adapter ?? null, nativeEndpoint: value.adapterReadiness?.native ?? null, reportedListener: value.adapterReadiness?.listener ?? null, adapterObservedAt: value.adapterReadiness?.observedAt ?? null, nativeStop: value.nativeStop ?? null, kernelStop: value.kernelStop ?? null, processStop: value.processStop ?? null, stopPolicy: value.nativeStopRequired ? "native" as const : value.kernelStopRequired ? "kernel-exit" as const : "process" as const, supervisor: supervisorRecord.mechanism === "none-recorded" ? value.supervisor : supervisorRecord.mechanism, supervisorRecord, supervisorInvocationId: value.supervisorInvocationId ?? null, supervisorObservation: "not-checked" as const, requestId: value.requestId, launchRequestId: value.launchRequestId, foreground: value.foreground, exit: value.exit ?? null };
+  const idleExited = idleExitReceipt(value);
+  return { instanceId: value.instanceId, definition: value.definition, definitionRevision: value.definitionRevision, revision: row.record.revision, space: value.space, executionHost: value.host.name, observedProcess: observeServiceProcess(value), recordedState: value.state, startInterrupted: startInterrupted(value), pid: value.process?.pid ?? null, readinessObservation: value.readiness, readinessAsOf: value.updatedAt, servingResponse: value.adapterReadiness?.native ? value.adapterReadiness.evidence === "local-process-receipt" ? "child-local-receipt-as-of" : "adapter-checked-as-of" : "not-checked", nativeEvidence: value.adapterReadiness?.evidence ?? null, adapter: value.adapter ?? null, nativeEndpoint: value.adapterReadiness?.native ?? null, reportedListener: value.adapterReadiness?.listener ?? null, adapterObservedAt: value.adapterReadiness?.observedAt ?? null, nativeStop: value.nativeStop ?? null, kernelStop: value.kernelStop ?? null, processStop: value.processStop ?? null, stopPolicy: value.nativeStopRequired ? "native" as const : value.kernelStopRequired ? "kernel-exit" as const : "process" as const, supervisor: supervisorRecord.mechanism === "none-recorded" ? value.supervisor : supervisorRecord.mechanism, supervisorRecord, supervisorInvocationId: value.supervisorInvocationId ?? null, supervisorObservation: "not-checked" as const, requestId: value.requestId, launchRequestId: value.launchRequestId, foreground: value.foreground, exit: value.exit ?? null, managerIdleExit: value.managerIdleExit ?? null, idleExited: idleExited ?? null };
 }
 
 /** Called only while ext remove holds the extension writer lock. Enumerate the case-safe service

@@ -139,7 +139,11 @@ A worker can act, crash before acknowledging, and leave the broker to deliver th
 The same can happen when renewal stops and another role consumer receives the request.
 Broker redelivery counts appear in the injected frame, but a stored sequence cannot establish that only one worker acted.
 
-A redelivery count proves that an earlier copy outlived its acknowledgement wait. Without a separate handoff record, including after restart, the connector labels the prior model handoff unknown.
+A redelivery count proves that an earlier copy outlived its acknowledgement wait. A message that waits in a connector's queue past that wait is redelivered even though no model has seen it.
+The connector records the first copy it received and the first copy it handed to its host.
+A message it never handed over carries no redelivery label, however high the count.
+A message it handed over without an acknowledgement says that an earlier handoff in this session was not confirmed.
+When the first copy it received was already a redelivery, as after a restart, the connector labels the prior model handoff unknown.
 Work with effects that must not repeat needs its own ownership rule or idempotency key.
 
 ### Reading only your own DMs [#reading-only-your-own-dms]

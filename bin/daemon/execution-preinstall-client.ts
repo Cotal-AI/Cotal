@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { readFileSync, realpathSync } from "node:fs";
 import { isAbsolute, join, relative, sep } from "node:path";
+import { validUpdateAdmission, type UpdateAdmission } from "@cotal-ai/workspace";
 import type { ExecutionPreinstallRequest } from "./execution-preinstall.js";
 
 export interface ExecutionPreinstallReceipt {
@@ -9,8 +10,10 @@ export interface ExecutionPreinstallReceipt {
   readonly nonce: string;
   readonly installedEntry: string;
   readonly daemon?: { pid: number; start: string };
-  readonly hostedSpaces: string[];
+  readonly hostedSpaces: readonly string[];
+  /** The count released updaters validate: the admission's, or 0 when the admission's is unknown. */
   readonly occupied: number;
+  readonly admission: UpdateAdmission;
 }
 
 /** Execute only the retained package's declared check, with a bounded single identity-bound receipt. */
@@ -24,7 +27,7 @@ export async function targetExecutionPreinstall(root: string, installedEntry: st
     daemonArgv, flags: Object.fromEntries(Object.entries(flags).filter(([key, value]) => ["space", "server", "creds", "on"].includes(key) && typeof value === "string")),
   };
   const result = await new Promise<{ status: number | null; stdout: string; stderr: string }>((resolve, reject) => {
-    const child = spawn(process.execPath, [entry, JSON.stringify(request)], { env: { ...process.env, COTAL_SKIP_CONNECTOR_SEED: "1" }, stdio: ["ignore", "pipe", "pipe"] });
+    const child = spawn(process.execPath, [entry, JSON.stringify(request)], { env: { ...process.env, COTAL_SKIP_CONNECTOR_SEED: "1" }, stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
     let stdout = "", stderr = "", failure = "";
     let escalation: ReturnType<typeof setTimeout> | undefined;
     const terminate = () => { child.kill("SIGTERM"); escalation ??= setTimeout(() => child.kill("SIGKILL"), 2000); };
@@ -46,7 +49,7 @@ export async function targetExecutionPreinstall(root: string, installedEntry: st
   const receipt = JSON.parse(receipts[0]!.slice("COTAL_PREINSTALL_RESULT ".length)) as ExecutionPreinstallReceipt;
   if (receipt.v !== 1 || receipt.nonce !== request.nonce || receipt.installedEntry !== installedEntry ||
       !Array.isArray(receipt.hostedSpaces) || receipt.hostedSpaces.some(space => typeof space !== "string") ||
-      !Number.isSafeInteger(receipt.occupied) || receipt.occupied < 0 ||
+      !validUpdateAdmission(receipt.admission) || receipt.occupied !== (receipt.admission.occupied ?? 0) || JSON.stringify(receipt.hostedSpaces) !== JSON.stringify(receipt.admission.hostedSpaces) ||
       receipt.daemon !== undefined && (!Number.isSafeInteger(receipt.daemon.pid) || receipt.daemon.pid <= 0 || typeof receipt.daemon.start !== "string" || !receipt.daemon.start))
     throw new Error("target pre-install checks returned invalid evidence");
   return receipt;

@@ -11,15 +11,16 @@
  * `linear/<name>.token` when `--token-stdin` stored the token, or `linear/<name>.oauth.json` for an
  * OAuth login. All 0600.
  */
-import { readFileSync, statSync } from "node:fs";
+import { lstatSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { mkSecretDir, writeSecretFileAtomic } from "@cotal-ai/core";
 import { homeCotalDir } from "@cotal-ai/workspace";
 import { isLinearMode, type LinearMode } from "./origin.js";
 
-export type LinearAccount =
+export type LinearAccount = { allowedTools?: string[] } & (
   | { name: string; mode: LinearMode; auth: "token"; /** Absolute path of the 0600 file holding the bearer. */ tokenFile: string }
-  | { name: string; mode: LinearMode; auth: "oauth" };
+  | { name: string; mode: LinearMode; auth: "oauth" }
+);
 
 const NAME = /^[a-z0-9][a-z0-9-]{0,31}$/;
 
@@ -55,8 +56,41 @@ export function assertPrivateFile(path: string): void {
   if (process.platform !== "win32" && (st.mode & 0o077) !== 0) throw new Error(`${path} is readable by other users (mode ${(st.mode & 0o777).toString(8)}); chmod 600 it`);
 }
 
-export function saveAccount(account: LinearAccount, token?: string): void {
-  assertAccountName(account.name);
+const TOOL_LIST_FORMAT = "allowedTools must be an array of distinct nonempty tool names without surrounding whitespace or terminal controls";
+
+function allowedTools(value: unknown): string[] | undefined {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value) || value.some(name => typeof name !== "string" || !name.length || name.trim() !== name || /[\u0000-\u001f\u007f-\u009f]/u.test(name)) || new Set(value).size !== value.length)
+    throw new Error(TOOL_LIST_FORMAT);
+  return [...value] as string[];
+}
+
+export class AccountRecordError extends Error {
+  readonly remedy: string;
+
+  constructor(readonly path: string, reason: string) {
+    super(`${path}: ${reason}`);
+    this.remedy = `repair the record at ${JSON.stringify(path)} while preserving its intended \`allowedTools\` list, then repeat the command`;
+  }
+}
+
+function existingAccount(name: string): LinearAccount | undefined {
+  try { return loadAccount(name); }
+  catch (error) {
+    if (accountMissing(error)) return undefined;
+    throw error;
+  }
+}
+
+/** Validate an existing record before any credential replacement or OAuth authorization. */
+export function assertAccountWritable(name: string): void {
+  existingAccount(name);
+}
+
+export function saveAccount(account: LinearAccount, token?: string): LinearAccount {
+  const existing = existingAccount(account.name);
+  const tools = allowedTools(account.allowedTools) ?? existing?.allowedTools;
+  const saved = { ...account, ...(tools === undefined ? {} : { allowedTools: tools }) };
   if (!isLinearMode(account.mode)) throw new Error(`mode must be "write" or "readonly"`);
   mkSecretDir(linearDir());
   if (account.auth === "token") {
@@ -67,7 +101,8 @@ export function saveAccount(account: LinearAccount, token?: string): void {
     }
     assertPrivateFile(account.tokenFile);
   } else if (token !== undefined) throw new Error("an oauth account takes no token");
-  writeSecretFileAtomic(accountPath(account.name), `${JSON.stringify(account, null, 2)}\n`);
+  writeSecretFileAtomic(accountPath(account.name), `${JSON.stringify(saved, null, 2)}\n`);
+  return saved;
 }
 
 export function loadAccount(name: string): LinearAccount {
@@ -76,13 +111,27 @@ export function loadAccount(name: string): LinearAccount {
   try {
     raw = JSON.parse(readFileSync(path, "utf8"));
   } catch (e) {
-    throw new Error(`no Linear account "${name}" (${path}): ${(e as Error).message}. Add one with \`cotal linear account add\``, { cause: e });
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") {
+      try { lstatSync(path); }
+      catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+          throw new Error(`no Linear account "${name}" (${path}); add one with \`cotal linear account add\``, { cause: e });
+        }
+        throw new AccountRecordError(path, "account record cannot be accessed");
+      }
+    }
+    throw new AccountRecordError(path, e instanceof SyntaxError ? "invalid JSON in account record" : "account record cannot be read");
   }
-  const a = raw as { name?: unknown; mode?: unknown; auth?: unknown; tokenFile?: unknown };
-  if (a.name !== name || !isLinearMode(a.mode)) throw new Error(`${path} is not a valid Linear account record`);
-  if (a.auth === "token" && typeof a.tokenFile === "string") return { name, mode: a.mode, auth: "token", tokenFile: a.tokenFile };
-  if (a.auth === "oauth") return { name, mode: a.mode, auth: "oauth" };
-  throw new Error(`${path} is not a valid Linear account record`);
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) throw new AccountRecordError(path, "account record must be an object");
+  const a = raw as { name?: unknown; mode?: unknown; auth?: unknown; tokenFile?: unknown; allowedTools?: unknown };
+  if (a.name !== name || !isLinearMode(a.mode)) throw new AccountRecordError(path, "invalid name or mode in account record");
+  let tools: string[] | undefined;
+  try { tools = allowedTools(a.allowedTools); }
+  catch { throw new AccountRecordError(path, TOOL_LIST_FORMAT); }
+  const policy = tools === undefined ? {} : { allowedTools: tools };
+  if (a.auth === "token" && typeof a.tokenFile === "string") return { name, mode: a.mode, auth: "token", tokenFile: a.tokenFile, ...policy };
+  if (a.auth === "oauth") return { name, mode: a.mode, auth: "oauth", ...policy };
+  throw new AccountRecordError(path, "invalid authentication fields in account record");
 }
 
 /** Whether a {@link loadAccount} failure means no record exists under that name. */

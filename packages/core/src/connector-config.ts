@@ -21,7 +21,7 @@
  * The caller (both spawn paths) resolves this once and hands the chosen servers to the connector,
  * which renders them into its own host format.
  */
-import { existsSync, readFileSync } from "node:fs";
+import { closeSync, existsSync, fstatSync, lstatSync, openSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -124,13 +124,24 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
 /** Every refusal the reader throws: the file named, then what is wrong in it. */
 const configError = (path: string, what: string): Error => new Error(`cotal config ${path}: ${what}`);
 
-/** Parse one config file. A missing file is empty (no config is a valid state); malformed JSON or a
- *  non-object top level throws — a typo in your settings should be loud, not silently ignored. */
+/** Parse one config file without validating its sections. A missing file is empty (no config is a
+ *  valid state); malformed JSON or a non-object top level throws: a typo in your settings should be
+ *  loud, not silently ignored. */
 function readConfigObject(path: string): Record<string, unknown> {
   if (!existsSync(path)) return {};
+  return parseCotalConfig(path, readFileSync(path, "utf8"));
+}
+
+/** Parse one config file and validate each declared section. */
+export function readCotalConfigFile(path: string): CotalConfig {
+  return checkCotalConfig(path, readConfigObject(path));
+}
+
+/** Parse the text of the config file at `path` into its top-level object. */
+function parseCotalConfig(path: string, text: string): Record<string, unknown> {
   let parsed: unknown;
   try {
-    parsed = JSON.parse(readFileSync(path, "utf8"));
+    parsed = JSON.parse(text);
   } catch (e) {
     throw configError(path, `invalid JSON - ${(e as Error).message}`);
   }
@@ -138,9 +149,8 @@ function readConfigObject(path: string): Record<string, unknown> {
   return parsed;
 }
 
-/** Read all config sections, validating each declared section. */
-export function readCotalConfigFile(path: string): CotalConfig {
-  const parsed = readConfigObject(path);
+/** Refuse what {@link readCotalConfigFile} refuses in a parsed config object. */
+function checkCotalConfig(path: string, parsed: Record<string, unknown>): CotalConfig {
   if (parsed.accountLimits !== undefined) assertAccountLimits(parsed.accountLimits, `cotal config ${path}: accountLimits`);
   if (parsed.modelPolicy !== undefined) checkModelPolicy(path, parsed.modelPolicy);
   if (parsed.connectors !== undefined) checkConnectors(path, parsed.connectors);
@@ -238,13 +248,79 @@ function mergeConfig(base: CotalConfig, over: CotalConfig): CotalConfig {
   return { connectors, ...(accountLimits === undefined ? {} : { accountLimits }), ...(spawn === undefined ? {} : { spawn }), ...(modelPolicy === undefined ? {} : { modelPolicy }) };
 }
 
+/** Whether the operator trusts the project at `root` to declare MCP servers and `spawn.env` names in
+ *  its own config. The caller answers it from the operator's trust records (see `cotal trust`). */
+export type ProjectTrust = (root: string) => boolean;
+
+/** A command that passes the same folder through POSIX shells, PowerShell, and cmd.exe. Use
+ *  hex when a path contains shell metacharacters, a control character, or a trailing backslash. */
+export function trustProjectCommand(root: string): string {
+  if (/^[A-Za-z0-9_./:-]+$/.test(root) && !root.startsWith("-")) return `cotal trust ${root}`;
+  if (/^[A-Za-z0-9_./:\\ -]+$/.test(root) && !/\\\\|\\$/.test(root)) return `cotal trust -- "${root}"`;
+  return `cotal trust --hex ${Buffer.from(root, "utf8").toString("hex")}`;
+}
+
+export function projectTrustProblem(declared: readonly string[], root: string): string {
+  return `declares ${declared.join(", ")}, which a project may declare only when its folder is trusted. ${root} is not trusted, so nothing was launched. If you trust this folder, run \`${trustProjectCommand(root)}\``;
+}
+
+export class ProjectConfigTrustError extends Error {
+  constructor(message: string, readonly remedy?: string) { super(message); }
+}
+
+/** Whether a file or folder with owner `uid` belongs to another account. Windows has no owner ids here. */
+const foreignOwner = (uid: number): boolean => typeof process.getuid === "function" && uid !== process.getuid();
+
+/** The entries of a project config that start processes or forward environment names: every
+ *  declared MCP server and every `spawn.env` name. A project config may declare these only when its
+ *  folder is trusted. */
+export function trustedOnlyEntries(config: CotalConfig): string[] {
+  const servers = Object.entries(config.connectors ?? {}).flatMap(([name, connector]) =>
+    Object.keys(connector.mcpServers ?? {}).map((server) => `connectors.${name}.mcpServers.${server}`));
+  return config.spawn?.env?.length ? [...servers, "spawn.env"] : servers;
+}
+
 /** Load the merged cotal config: the operator-level file as the base, the space-local file layered
- *  on top (more specific wins, per connector + server name). */
-export function loadCotalConfig(root: string): CotalConfig {
-  const localPath = spaceConfigPath(root);
-  const local = readConfigObject(localPath);
-  refuseProjectAccountLimits(localPath, local);
-  return mergeConfig(readCotalConfigFile(globalConfigPath()), readCotalConfigFile(localPath));
+ *  on top (more specific wins, per connector + server name).
+ *
+ *  A space-local file is refused whole when it, or the `.cotal` folder holding it, belongs to another
+ *  account. A space-local file that declares an MCP server or a `spawn.env` name is refused unless
+ *  `trusted(root)` holds, which is asked only then; its other fields load either way. Each refusal
+ *  names the file. */
+export function loadCotalConfig(root: string, trusted: ProjectTrust): CotalConfig {
+  const operator = readCotalConfigFile(globalConfigPath());
+  const path = spaceConfigPath(root);
+  const control = join(root, ".cotal");
+  const owned = (stat: { uid: number } | undefined): boolean => stat === undefined || !foreignOwner(stat.uid);
+  const refuseOwner = (what: string): never => {
+    const remedy = "Copy the settings into a project folder and config file your own account owns";
+    throw new ProjectConfigTrustError(`cotal config ${path}: ${what} belongs to another user, so this project config is refused and nothing was launched. ${remedy}`, remedy);
+  };
+  if (!owned(lstatSync(path, { throwIfNoEntry: false }))) refuseOwner(path);
+  // The file is read through the handle its owner is checked on, so it cannot be swapped between the
+  // check and the read.
+  let fd: number;
+  try {
+    fd = openSync(path, "r");
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") return mergeConfig(operator, {});
+    throw configError(path, `cannot be read - ${(e as Error).message}`);
+  }
+  let text: string;
+  try {
+    if (!owned(fstatSync(fd))) refuseOwner(path);
+    if (!owned(lstatSync(control, { throwIfNoEntry: false })) || !owned(statSync(control, { throwIfNoEntry: false }))) refuseOwner(control);
+    text = readFileSync(fd, "utf8");
+  } finally {
+    closeSync(fd);
+  }
+  const raw = parseCotalConfig(path, text);
+  refuseProjectAccountLimits(path, raw);
+  const project = checkCotalConfig(path, raw);
+  const declared = trustedOnlyEntries(project);
+  if (declared.length && !trusted(root))
+    throw new ProjectConfigTrustError(`cotal config ${path}: ${projectTrustProblem(declared, root)}`, `If you trust this folder, run \`${trustProjectCommand(root)}\`, then retry`);
+  return mergeConfig(operator, project);
 }
 
 function refuseProjectAccountLimits(path: string, parsed: Record<string, unknown>): void {
@@ -318,6 +394,16 @@ export interface ModelPolicyLaunch {
   modelFlag: boolean;
   variantFlag: boolean;
   launchOptions?: Record<string, unknown>;
+}
+
+/** The launch env that tells a seat its role is under `modelPolicy`, naming the role. The policy is
+ *  judged at launch only, so the seat's connector refuses an owner's `set-model` (SPEC 13.22). */
+export const MODEL_POLICY_ENV = "COTAL_MODEL_POLICY";
+
+/** The env a seat launched under `role` takes: {@link MODEL_POLICY_ENV} when `modelPolicy` names the
+ *  role, and none otherwise. Every launcher that runs {@link modelPolicyRefusal} sets it. */
+export function modelPolicyEnv(config: CotalConfig, role: string | undefined): Record<string, string> {
+  return role !== undefined && config.modelPolicy && Object.hasOwn(config.modelPolicy, role) ? { [MODEL_POLICY_ENV]: role } : {};
 }
 
 /** The operator-facing refusal for a launch whose role `modelPolicy` constrains and whose model or

@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
-import { chmodSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { executionDescriptorPath, executionStore, selectExecutionProgram } from "../cotal.js";
 import { cleanupExecutionStore } from "../execution-store.js";
-import { recoverExecutionUpdate } from "../daemon/execution-update.js";
+import { recoverExecutionUpdate, prepareExecutionUpdate } from "../daemon/execution-update.js";
+import { updateRuntime } from "@cotal-ai/cli/update";
 import { repairInstallModes } from "../../implementations/cli/src/lib/install-umask.js";
 import { assertExecutionDestination, executionStagingPrefix, journalExecutionTransaction, publishExecutionTransaction, repairExecutionInstallModes, retainExecutionGeneration, retireSupersededExecutionDescriptor } from "../execution-transaction.js";
 
@@ -32,15 +33,29 @@ if (["linux", "darwin"].includes(process.platform)) {
     writeFileSync(join(source, "package.json"), JSON.stringify({ name: "cotal-ai", version: "0.2.0", bin: { cotal: "./dist/cotal.js" } }));
     writeFileSync(join(source, "dist/cotal-program.js"), "console.log('new generation'); export const version = 'new';\n");
     const store = executionStore(installed);
+    const elsewhere = join(scratch, "elsewhere");
+    mkdirSync(elsewhere, { mode: 0o500 });
+    symlinkSync(elsewhere, store);
+    assert.throws(() => executionStagingPrefix(installed), /unsafe execution generation store/);
+    assert.throws(() => retainExecutionGeneration(installed, source), /unsafe execution generation store/);
+    assert.equal(lstatSync(elsewhere).mode & 0o777, 0o500);
+    assert.deepEqual(readdirSync(elsewhere), []);
+    rmSync(store);
     mkdirSync(join(store, ".installing-Zz9999/lib"), { recursive: true, mode: 0o700 });
     mkdirSync(join(store, ".preparing-Yy8888"), { mode: 0o700 });
     cleanupExecutionStore(installed);
+    chmodSync(store, 0o555);
     const staging = executionStagingPrefix(installed);
+    assert.equal(lstatSync(store).mode & 0o777, 0o755, "staging restores only owner write");
     assert.deepEqual(readdirSync(store), [staging.slice(store.length + 1)], "a new staging folder replaces the abandoned ones");
     rmSync(staging, { recursive: true });
+    chmodSync(store, 0o555);
     const generation = retainExecutionGeneration(installed, source);
+    assert.equal(lstatSync(store).mode & 0o777, 0o755, "retention restores only owner write");
     chmodSync(join(installed, "package.json"), 0o664);
     const journal = journalExecutionTransaction(installed, generation, join(installed, "dist/cotal.js"));
+    assert.deepEqual(readdirSync(dirname(journal)), ["execution.json"]);
+    assert.equal(lstatSync(journal).mode & 0o777, 0o600);
     publishExecutionTransaction(installed, journal);
     assert.equal(selectExecutionProgram(installed).root, generation.root);
     repairExecutionInstallModes(installed, () => repairInstallModes(join(scratch, "prefix")));
@@ -49,6 +64,49 @@ if (["linux", "darwin"].includes(process.platform)) {
     assert.equal(selectedEntry.status, 0, selectedEntry.stderr);
     assert.equal(selectedEntry.stdout.trim(), "new generation");
     assert.equal(lstatSync(join(installed, "package.json")).mode & 0o022, 0);
+    const published = readFileSync(executionDescriptorPath(installed));
+    utimesSync(join(installed, "package.json"), 1, 1);
+    assert.equal(repairExecutionInstallModes(installed, () => repairInstallModes(join(scratch, "prefix"))), 0);
+    assert.deepEqual(readFileSync(executionDescriptorPath(installed)), published, "a no-op repair leaves the active descriptor unchanged after a manifest touch");
+    {
+      const prefix = join(scratch, "prefix"), binEntry = join(prefix, "bin/cotal");
+      const otherPrefix = join(scratch, "other-prefix"), otherRoot = join(otherPrefix, "lib/node_modules/cotal-ai");
+      const shells = join(scratch, "fnm_multishells"), shell1 = join(shells, "1"), shell2 = join(shells, "2");
+      mkdirSync(join(prefix, "bin"), { recursive: true });
+      mkdirSync(join(otherRoot, "dist"), { recursive: true });
+      mkdirSync(join(otherPrefix, "bin"), { recursive: true });
+      cpSync(join(installed, "dist/cotal.js"), join(otherRoot, "dist/cotal.js"));
+      writeFileSync(join(otherRoot, "dist/cotal-program.js"), "console.log('other installation');\n");
+      writeFileSync(join(otherRoot, "package.json"), oldManifest);
+      symlinkSync("../lib/node_modules/cotal-ai/dist/cotal.js", binEntry);
+      symlinkSync("../lib/node_modules/cotal-ai/dist/cotal.js", join(otherPrefix, "bin/cotal"));
+      mkdirSync(shells, { recursive: true });
+      symlinkSync(prefix, shell1);
+      symlinkSync(prefix, shell2);
+      try {
+        const current = JSON.parse(published.toString("utf8"));
+        const info = lstatSync(shell1, { bigint: true });
+        writeFileSync(executionDescriptorPath(installed), `${JSON.stringify({
+          ...current,
+          launch: { entry: join(shell1, "bin/cotal"), path: shell1, dev: String(info.dev), ino: String(info.ino), birth: String(info.birthtimeNs), ctime: String(info.ctimeNs) },
+        })}\n`, { mode: 0o644 });
+        chmodSync(executionDescriptorPath(installed), 0o644);
+        assert.equal(repairExecutionInstallModes(installed, () => 0), 0);
+        const migrated = JSON.parse(readFileSync(executionDescriptorPath(installed), "utf8"));
+        assert.equal(migrated.launch.entry, join(realpathSync.native(prefix), "bin/cotal"));
+        assert.equal(migrated.launch.path, join(realpathSync.native(installed), "package.json"));
+        rmSync(shell1); symlinkSync(otherPrefix, shell1);
+        const viaShell2 = spawnSync(process.execPath, [join(shell2, "bin/cotal"), "--version"], { encoding: "utf8", cwd: scratch, timeout: 15_000 });
+        assert.equal(viaShell2.status, 0, viaShell2.stderr);
+        assert.equal(viaShell2.stdout.trim(), "new generation");
+      } finally {
+        writeFileSync(executionDescriptorPath(installed), published);
+        chmodSync(executionDescriptorPath(installed), 0o644);
+        rmSync(join(prefix, "bin"), { recursive: true, force: true });
+        rmSync(otherPrefix, { recursive: true, force: true });
+        rmSync(shells, { recursive: true, force: true });
+      }
+    }
     assert.equal(retireSupersededExecutionDescriptor(installed), false, "active matching descriptor is never retired");
     for (const [path, mode] of [[join(installed, "dist/cotal.js"), 0o755], [store, 0o755], [executionDescriptorPath(installed), 0o644]] as const)
       assert.equal(lstatSync(path).mode & 0o777, mode, `${path} stays readable by the other accounts that run this package`);
@@ -84,6 +142,48 @@ if (["linux", "darwin"].includes(process.platform)) {
     Reflect.set(globalThis, identityKey, Object.freeze({ logicalEntry: installedEntry, loadedEntry: installedEntry }));
     try {
       const recovery = recoverExecutionUpdate(journal);
+      writeFileSync(join(installed, "dist/cotal-program.js"), "console.log('cotal-ai 0.1.0');\n");
+      const oldExecArgv = process.execArgv.splice(0);
+      const oldArgv = process.argv[1]; process.argv[1] = installedEntry;
+      const oldHome = process.env.COTAL_HOME, oldRuntime = process.env.XDG_RUNTIME_DIR;
+      const oldSpawn = updateRuntime.spawnGlobal;
+      const state = join(scratch, "admission-state");
+      mkdirSync(join(state, "daemon"), { recursive: true, mode: 0o700 });
+      writeFileSync(join(state, "daemon/service-unit.json"), "{", { mode: 0o600 });
+      const runtime = join(scratch, "runtime"); mkdirSync(runtime, { mode: 0o700 });
+      process.env.COTAL_HOME = state; process.env.XDG_RUNTIME_DIR = runtime;
+      updateRuntime.spawnGlobal = async (_root, phase, _file, args) => {
+        assert.equal(phase, "install");
+        const staging = args[args.indexOf("--prefix") + 1]!;
+        const target = join(staging, "lib/node_modules/cotal-ai");
+        cpSync(source, target, { recursive: true });
+        writeFileSync(join(target, "package.json"), JSON.stringify({ name: "cotal-ai", version: "0.2.0", type: "module", bin: { cotal: "./dist/cotal.js" }, cotalPreinstall: { v: 1, entry: "./dist/check.js" } }));
+        writeFileSync(join(target, "dist/cotal-program.js"), "console.log('cotal-ai 0.2.0');\n");
+        writeFileSync(join(target, "dist/check.js"), "const r=JSON.parse(process.argv[2]);console.log('COTAL_PREINSTALL_RESULT '+JSON.stringify({v:1,nonce:r.nonce,installedEntry:r.installedEntry,hostedSpaces:[],occupied:0,admission:{disposition:'deferred',occupied:null,hostedSpaces:[],reason:'target permits installation without restart'}}));\n");
+        return { status: 0, stdout: "", stderr: "" };
+      };
+      try {
+        let checked = false;
+        chmodSync(installed, 0o700);
+        chmodSync(store, 0o500);
+        const staged = await prepareExecutionUpdate("0.2.0", join(scratch, "prefix/lib/node_modules"), receipt => { checked = true; assert.equal(receipt.admission.disposition, "deferred"); });
+        assert.equal(lstatSync(store).mode & 0o777, 0o700, "private generation staging keeps the store private");
+        assert.throws(() => staged.publish(), /before target checks/);
+        await staged.preflight({});
+        assert.equal(checked, true, "verified target policy decides despite an installed native preflight refusal");
+        writeFileSync(join(state, "daemon/daemon.lock"), "malformed", { mode: 0o600 });
+        assert.throws(() => staged.publish(), /identity is unreadable/);
+        assert.equal(selectExecutionProgram(installed).root, installed, "changed lifetime cannot publish target");
+        rmSync(join(state, "daemon/daemon.lock"));
+        staged.publish(); staged.verify("0.2.0");
+        staged.restore(); staged.verify("0.1.0"); staged.complete?.();
+      } finally {
+        process.execArgv.push(...oldExecArgv);
+        process.argv[1] = oldArgv;
+        updateRuntime.spawnGlobal = oldSpawn;
+        if (oldHome === undefined) delete process.env.COTAL_HOME; else process.env.COTAL_HOME = oldHome;
+        if (oldRuntime === undefined) delete process.env.XDG_RUNTIME_DIR; else process.env.XDG_RUNTIME_DIR = oldRuntime;
+      }
       writeFileSync(join(installed, "dist/cotal-program.js"), "setTimeout(() => console.log('cotal-ai 0.1.0'), 31_000);\n");
       const started = Date.now();
       recovery.verify("0.1.0");

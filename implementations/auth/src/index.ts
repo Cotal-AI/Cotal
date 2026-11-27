@@ -1,4 +1,5 @@
 /** @module index */
+export { observeSpaceQuiescence, type SpaceQuiescenceOptions, type SpaceQuiescenceObservation } from "./space-quiescence.js";
 export { retainManagerAuthorityRoute } from "./provider.js";
 export { signOutIdpSession, type SignOutIdpSessionResult } from "./logout.js";
 export { mintServiceCallerPayloadObserverCreds, type ServiceCallerPayloadBootstrap } from "./service-caller-payload-bootstrap.js";
@@ -81,6 +82,7 @@ export {
   hasIdpSpaceCatalog,
   prepareIdpSpaceCatalogs,
   signedInMachineAccounts,
+  knownMachineAccounts,
   requestAccountMachine,
   requireIdpSession,
   normalizeIdpUrl,
@@ -154,7 +156,8 @@ export {
   type ActorKind,
   type ActorRow,
 } from "./ledger.js";
-export { runAuthService, startAuthService, parseAuthHostManifest, type AuthHostEntry, type AuthServiceRuntimeOptions, type OpenAuthAuthorityPlaneOptions, type AuthAuthorityPlaneHandle, type AuthServiceHandle, type PublicFaceInput, type PlatformControlInput, openAuthAuthorityPlane, dispatchManagerAuthorityRequest, handleManagerServiceAuthority, type ManagerServiceAuthorityCtx, handleToolResultHumanProof, type ToolResultHumanProofCtx, TOOL_RESULT_HUMAN_PROOF_PATH, handleToolResultConsent, TOOL_RESULT_CONSENT_PATH, JWKS_MAX_AGE_SEC, INTERACTIVE_RETIRE_PATH, CHAT_SESSION_PATHS, MANAGED_ACTIVATE_PATH, MANAGED_RETIRE_PATH, VERIFY_ENROLLMENT_PATH, composeUserBundle, finalizeUserBundleEndpoint, checkAdvertisedServer, checkAgentProvisioningUrl, type ManagedLifecycleActivationRequest, type ManagedLifecycleActivationResult, type AuthAuthorityPlane } from "./service.js";
+export { runAuthService, startAuthService, type AuthServiceHandle, type PlatformControlInput } from "./service-host.js";
+export { parseAuthHostManifest, type AuthHostEntry, type AuthServiceRuntimeOptions, type OpenAuthAuthorityPlaneOptions, type AuthAuthorityPlaneHandle, type PublicFaceInput, openAuthAuthorityPlane, dispatchManagerAuthorityRequest, handleManagerServiceAuthority, type ManagerServiceAuthorityCtx, handleToolResultHumanProof, type ToolResultHumanProofCtx, TOOL_RESULT_HUMAN_PROOF_PATH, handleToolResultConsent, TOOL_RESULT_CONSENT_PATH, JWKS_MAX_AGE_SEC, INTERACTIVE_RETIRE_PATH, CHAT_SESSION_PATHS, MANAGED_ACTIVATE_PATH, MANAGED_RETIRE_PATH, VERIFY_ENROLLMENT_PATH, composeUserBundle, finalizeUserBundleEndpoint, checkAdvertisedServer, checkAgentProvisioningUrl, type ManagedLifecycleActivationRequest, type ManagedLifecycleActivationResult, type AuthAuthorityPlane } from "./service.js";
 export { remoteManagerIssuerGrants } from "./authority-client.js";
 export { PLANE_CLAIM_REFUSED, PLANE_CLAIM_KEY, readPlaneClaim, planeClaimRefusal, type PlaneClaimRefusal, type PlaneClaimRow } from "./plane-claim.js";
 // The R1 connect-arm deny-new READ seam (SPEC 13.1): the reader grant builder, the sealed

@@ -253,10 +253,10 @@ try {
   process.env.XDG_CONFIG_HOME = xdg;
   try {
     let refusal = "";
-    try { loadCotalConfig(root); } catch (error) { refusal = String(error); }
+    try { loadCotalConfig(root, () => false); } catch (error) { refusal = String(error); }
     check("merged public config loader refuses project accountLimits", refusal.includes(projectConfig) && refusal.includes("accountLimits") && refusal.includes("operator-only"));
     rmSync(projectConfig);
-    const loaded = loadCotalConfig(root).accountLimits;
+    const loaded = loadCotalConfig(root, () => false).accountLimits;
     check("operator account limits load unchanged", loaded?.conn === 40 && loaded.subs === limits.subs);
   } finally {
     if (previousXdg === undefined) delete process.env.XDG_CONFIG_HOME;

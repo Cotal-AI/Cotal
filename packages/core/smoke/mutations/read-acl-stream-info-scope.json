@@ -33,7 +33,7 @@
   "mutations": [
     {
       "name": "STREAM.INFO on the DM stream is granted to every agent again",
-      "file": "packages/core/src/provision.ts",
+      "file": "packages/core/src/provision-permissions.ts",
       "find": "    `$JS.API.STREAM.INFO.${CHAT}`, `$JS.API.STREAM.INFO.${KV}`, `$JS.API.STREAM.INFO.${CHKV}`,\n",
       "replace": "    `$JS.API.STREAM.INFO.${CHAT}`, `$JS.API.STREAM.INFO.${KV}`, `$JS.API.STREAM.INFO.${CHKV}`,\n    `$JS.API.STREAM.INFO.${DM}`,\n",
       "expectRed": "G1: STREAM.INFO on DM is blocked (no DM metadata leak)",
@@ -42,7 +42,7 @@
     },
     {
       "name": "STREAM.INFO on the TASK stream escapes the role gate",
-      "file": "packages/core/src/provision.ts",
+      "file": "packages/core/src/provision-permissions.ts",
       "find": "    `$JS.API.STREAM.INFO.${CHAT}`, `$JS.API.STREAM.INFO.${KV}`, `$JS.API.STREAM.INFO.${CHKV}`,\n",
       "replace": "    `$JS.API.STREAM.INFO.${CHAT}`, `$JS.API.STREAM.INFO.${KV}`, `$JS.API.STREAM.INFO.${CHKV}`,\n    `$JS.API.STREAM.INFO.${TASK}`,\n",
       "expectRed": "G2: STREAM.INFO on TASK is blocked",
@@ -51,7 +51,7 @@
     },
     {
       "name": "STREAM.INFO on the delivery stream is granted to every agent again",
-      "file": "packages/core/src/provision.ts",
+      "file": "packages/core/src/provision-permissions.ts",
       "find": "    `$JS.API.STREAM.INFO.${CHAT}`, `$JS.API.STREAM.INFO.${KV}`, `$JS.API.STREAM.INFO.${CHKV}`,\n",
       "replace": "    `$JS.API.STREAM.INFO.${CHAT}`, `$JS.API.STREAM.INFO.${KV}`, `$JS.API.STREAM.INFO.${CHKV}`,\n    `$JS.API.STREAM.INFO.${DLV}`,\n",
       "expectRed": "G3: STREAM.INFO on DLV is blocked (no delivery metadata leak)",
@@ -60,7 +60,7 @@
     },
     {
       "name": "STREAM.INFO on the EPC contract store is granted to every agent again",
-      "file": "packages/core/src/provision.ts",
+      "file": "packages/core/src/provision-permissions.ts",
       "find": "    `$JS.API.STREAM.INFO.${CHAT}`, `$JS.API.STREAM.INFO.${KV}`, `$JS.API.STREAM.INFO.${CHKV}`,\n",
       "replace": "    `$JS.API.STREAM.INFO.${CHAT}`, `$JS.API.STREAM.INFO.${KV}`, `$JS.API.STREAM.INFO.${CHKV}`,\n    `$JS.API.STREAM.INFO.${epcStreamName(space)}`,\n",
       "expectRed": "G4: STREAM.INFO on EPC is blocked",

@@ -18,7 +18,7 @@
  * Run: pnpm smoke:doctor-auth
  */
 import { strict as nodeAssert } from "node:assert";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -30,10 +30,12 @@ import {
   mintLifecycleUid,
   mintMembershipObserverCreds,
   newIdentity,
+  revokeAccountUser,
 } from "@cotal-ai/core";
 import { countedAssert, emitSentinel } from "@cotal-ai/smoke-kit";
 import { agentCredsDir, authDir, isCommandFailure, readRenewalRecord, recordMesh, saveSpaceAuth, spaceMaterialDir, type CommandFailure } from "@cotal-ai/workspace";
 import { doctor } from "../src/commands/doctor.js";
+import { credentialExportStore, recordCredentialExport } from "../src/lib/credential-exports.js";
 
 const counted = countedAssert(nodeAssert);
 const assert: typeof nodeAssert = counted.assert;
@@ -97,6 +99,7 @@ interface Envelope {
   result: {
     findings: number;
     items: Item[];
+    exported: { path: string; state: string; issuedAt: number | null; repair: string | null }[];
     repair: { attempted: boolean; authority: string | null; results: { file: string; ok: boolean; reminted: boolean; reason: string | null }[] };
     renewal: { authority: string | null };
   };
@@ -175,6 +178,21 @@ try {
   // --fix: the daemon files are re-signed offline for their own nkeys; the agent finding stays.
   // The evictor is staged first, as the rotation the finding names would leave it.
   writeFileSync(join(material, "connection-evictor.creds"), sysEvictor, { mode: 0o600 });
+  for (const file of ["membership-observer.creds", "connection-evictor.creds"]) {
+    const path = join(material, file);
+    const before = readFileSync(path);
+    try {
+      for (const malformed of [Buffer.from("-----BEGIN NATS USER JWT-----\neyJ0eXAiOi"), Buffer.from([0xff, 0xfe])]) {
+        writeFileSync(path, malformed);
+        const { envelope, code } = await runDoctor({ json: true });
+        assert.equal(item(envelope!, file)?.state, "unreadable", `${file}: truncated JWT and invalid UTF-8 are per-file findings`);
+        assert.match(item(envelope!, file)?.repair ?? "", /up --rotate-sys/, `${file}: retains system rotation guidance`);
+        assert.ok(envelope!.result.items.length >= 5, "an unreadable system credential does not hide other rows");
+        assert.equal(code, 5, "local findings still fail the diagnosis");
+        assert.deepEqual(readFileSync(path), malformed, "read-only diagnosis leaves the file unchanged");
+      }
+    } finally { writeFileSync(path, before); }
+  }
   {
     const { envelope, code } = await runDoctor({ json: true, fix: true });
     const report = envelope!;
@@ -260,7 +278,9 @@ try {
     assert.match(usage.message, /doctor auth/, "it names doctor auth");
     const unknown = await refusal({ space: "nope" }, ["auth"]);
     assert.equal(unknown.code, "AUTH_REQUIRED", "an unknown --space refuses");
-    assert.equal(unknown.remedy, "run `cotal doctor auth --space nope` in that space's root folder; `cotal space` lists each space's root", "and names a space's root, which cotal space lists");
+    assert.equal(unknown.remedy, 'Unknown space "nope". Run `cotal space` to check the name. For a new local space, run `cotal space create nope` in its project folder, then run `cotal up` there.');
+    const unusable = await refusal({ space: "not a token" }, ["auth"]);
+    assert.equal(unusable.remedy, 'Unknown space "not a token". Run `cotal space` to check the name.', "a name space create refuses is not put in a command");
     // A space registered at another root keeps its trust there: this root reads none of it, and the
     // step names the folder where the same command runs.
     const elsewhere = join(root, "elsewhere");
@@ -269,6 +289,129 @@ try {
     const remote = await refusal({ space: "remote" }, ["auth"]);
     assert.equal(remote.code, "AUTH_REQUIRED", "a --space registered at another root refuses here");
     assert.equal(remote.remedy, `run \`cotal doctor auth --space remote\` in the folder space remote is registered at: ${elsewhere}`, "its step names that root");
+
+    // Legacy export records have no provisioning field. New records preserve it for both
+    // same-key and fresh-key repairs without adding provisioning to legacy files.
+    const exported = join(root, "exported files");
+    mkdirSync(exported, { mode: 0o700 });
+    const exportId = newIdentity();
+    const expiredExport = await mintCreds(auth, exportId, "agent", { lifecycleUid: mintLifecycleUid(), expiresAt: now - 10 });
+    const exportPath = join(exported, "alice's file.creds");
+    writeFileSync(exportPath, expiredExport, { mode: 0o600 });
+    recordCredentialExport(SPACE, { label: "exported", profile: "agent", path: exportPath, root, identity: exportId.id, provisioned: true });
+    const oldPath = join(exported, "old.creds");
+    writeFileSync(oldPath, expiredExport, { mode: 0o600 });
+    recordCredentialExport(SPACE, { label: "old_export", profile: "agent", path: oldPath, root, identity: exportId.id });
+    assert.equal(credentialExportStore(SPACE).list().find((entry) => entry.record.value.path === oldPath)?.record.value.provisioned, undefined, "old export records remain readable without a provisioning field");
+    const exportsReport = (await runDoctor({ json: true })).envelope!;
+    const repair = exportsReport.result.exported.find((entry) => entry.path === exportPath)?.repair ?? "";
+    assert.match(repair, /auth mint exported --provision --identity/, "expired provisioned export repair keeps --provision");
+    assert.ok(repair.includes("alice'\\''s file.creds'"), "repair shell-quotes an apostrophe in the exported path");
+    assert.ok(!exportsReport.result.exported.find((entry) => entry.path === oldPath)?.repair?.includes("--provision"), "legacy records do not infer provisioning");
+    const foreignAuth = await createSpaceAuth("foreign-export");
+    writeFileSync(exportPath, await mintCreds(foreignAuth, exportId, "agent", { lifecycleUid: mintLifecycleUid(), expiresAt: now - 10 }), { mode: 0o600 });
+    const foreignReport = (await runDoctor({ json: true })).envelope!;
+    const foreignRow = foreignReport.result.exported.find((entry) => entry.path === exportPath);
+    assert.equal(foreignRow?.state, "other-account", "changed-account exports ask for a fresh key");
+    assert.match(foreignRow?.repair ?? "", /auth mint exported --provision/, "fresh-key repair keeps --provision too");
+    writeFileSync(exportPath, expiredExport, { mode: 0o600 });
+    const revokedAuth = await revokeAccountUser(auth, exportId.id, Math.floor(Date.now() / 1000));
+    saveSpaceAuth(authDir(root), revokedAuth);
+    const revokedReport = (await runDoctor({ json: true })).envelope!;
+    const revokedRow = revokedReport.result.exported.find((entry) => entry.path === exportPath);
+    assert.equal(revokedRow?.state, "revoked", "revoked exports ask for a new key rather than re-signing it");
+    assert.match(revokedRow?.repair ?? "", /auth mint exported --provision/, "revoked-key repair also keeps --provision");
+    saveSpaceAuth(authDir(root), auth);
+
+    writeFileSync(exportPath, "");
+    const emptyExport = await runDoctor({ json: true });
+    const emptyRow = emptyExport.envelope!.result.exported.find((row) => row.path === exportPath);
+    assert.equal(emptyRow?.state, "unreadable", "the empty exported file stays unreadable");
+    assert.equal(emptyExport.envelope!.outcome, "ok", "the unreadable export leaves the diagnostic outcome unchanged");
+    assert.equal(emptyExport.envelope!.result.findings, 0, "the unreadable export is not a managed finding");
+    assert.equal(emptyExport.code, 0, "the unreadable export leaves exit 0");
+    assert.match(emptyRow?.repair ?? "", /original grants cannot be determined.*Restore the complete credential file.*confirm the intended grants.*`(?:pnpm )?cotal auth mint`.*mint a replacement to a new private path/);
+    assert.doesNotMatch(emptyRow?.repair ?? "", /--(?:identity|allow-subscribe|allow-publish|role)|auth mint exported/);
+    const plainEmptyExport = await runDoctor({ plain: true });
+    assert.equal(plainEmptyExport.code, 0, "the plain report leaves exit 0");
+    assert.ok(plainEmptyExport.text.includes(`exported: ${emptyRow?.repair}`), "plain output includes the same export guidance");
+
+    if (process.platform !== "win32") {
+      const movedPath = join(exported, "moved.creds");
+      const movedTarget = join(exported, "moved-real.creds");
+      const movedId = newIdentity();
+      writeFileSync(movedPath, await mintCreds(auth, movedId, "agent", { lifecycleUid: mintLifecycleUid(), expiresInSeconds: 3600 }), { mode: 0o600 });
+      recordCredentialExport(SPACE, { label: "moved", profile: "agent", path: movedPath, root, identity: movedId.id });
+      renameSync(movedPath, movedTarget);
+      symlinkSync("moved-real.creds", movedPath);
+
+      const linked = await runDoctor({ json: true });
+      const row = linked.envelope!.result.exported.find((entry) => entry.path === movedPath);
+      assert.equal(row?.state, "unreadable", "the protected read does not follow a symlink to a healthy export");
+      assert.equal(row?.issuedAt, null, "no claims are read through the link");
+      assert.match(row?.repair ?? "", /symbolic link.*Restore the original private regular file at the recorded path/);
+      assert.doesNotMatch(row?.repair ?? "", /auth mint/, "a symlink does not require re-minting");
+      assert.equal(linked.envelope!.result.findings, 0, "the linked export is informational");
+      assert.equal(linked.code, 0, "the linked export does not change the JSON exit code");
+      const linkedPlain = await runDoctor({ plain: true });
+      assert.equal(linkedPlain.code, 0, "the linked export does not change the plain exit code");
+      assert.ok(linkedPlain.text.includes(`moved: ${row?.repair}`), "plain output includes the same guidance");
+
+      unlinkSync(movedPath);
+      renameSync(movedTarget, movedPath);
+      const restored = (await runDoctor({ json: true })).envelope!.result.exported.find((entry) => entry.path === movedPath);
+      assert.equal(restored?.state, "healthy", "restoring the original file resolves the diagnostic");
+      assert.equal(restored?.repair, null, "a restored export needs no repair");
+    }
+
+    if (process.getuid && process.getuid() !== 0) {
+      const privatePath = join(exported, "owner's unreadable file.creds");
+      const privateId = newIdentity();
+      const creds = await mintCreds(auth, privateId, "agent", { lifecycleUid: mintLifecycleUid(), expiresInSeconds: 3600 });
+      writeFileSync(privatePath, creds, { mode: 0o600 });
+      recordCredentialExport(SPACE, { label: "owner_unreadable", profile: "agent", path: privatePath, root, identity: privateId.id });
+      chmodSync(privatePath, 0o000);
+
+      const unreadable = await runDoctor({ json: true });
+      const row = unreadable.envelope!.result.exported.find((entry) => entry.path === privatePath);
+      const repair = `The export's owner lacks read permission. Run \`chmod 600 '${exported}/owner'\\''s unreadable file.creds'\`.`;
+      assert.equal(row?.state, "unreadable", "an export without owner read permission stays unreadable");
+      assert.equal(row?.issuedAt, null, "no claims are read from the export");
+      assert.equal(row?.repair, repair, "the repair quotes the path and restores permission without replacing the credential");
+      assert.equal(unreadable.envelope!.result.findings, 0, "the unreadable export is informational");
+      assert.equal(unreadable.code, 0, "the unreadable export does not change the JSON exit code");
+      const plain = await runDoctor({ plain: true });
+      assert.equal(plain.code, 0, "the unreadable export does not change the plain exit code");
+      assert.ok(plain.text.includes(`owner_unreadable: ${repair}`), "plain output includes the same permission guidance");
+
+      chmodSync(privatePath, 0o600);
+      const restored = (await runDoctor({ json: true })).envelope!.result.exported.find((entry) => entry.path === privatePath);
+      assert.equal(restored?.state, "healthy", "restoring the mode resolves the diagnostic");
+      assert.equal(restored?.repair, null, "a readable private export needs no repair");
+      assert.equal(readFileSync(privatePath, "utf8"), creds, "the credential contents are unchanged");
+    }
+
+    // #7542: if a root is registered as open even while leftover .cotal/auth files exist on disk,
+    // doctor auth (with or without --fix) reports the open-space no-op rather than Mode: static or CONFLICT.
+    writeFileSync(join(material, "membership-rw.creds"), "", { mode: 0o600 });
+    recordMesh({ space: SPACE, server: "nats://127.0.0.1:8", root, mode: "open", ts: new Date().toISOString(), origin: "up" });
+    const openCases: Record<string, string | boolean>[] = [{ json: true }, { json: true, fix: true }];
+    for (const values of openCases) {
+      const openRun = await runDoctor(values);
+      const openEnv = openRun.envelope as unknown as { outcome: string; result: { space: string | null; credentialScope?: string; mode?: string } };
+      assert.equal(openEnv.outcome, "no-op", "doctor auth on a root registered as open is a no-op");
+      assert.equal(openEnv.result.space, SPACE, "names the open space");
+      assert.equal(openEnv.result.credentialScope, "open-space", "reports open-space scope rather than static mode");
+      assert.ok(openRun.code === undefined || openRun.code === 0, "exits 0");
+    }
+    const openText = await runDoctor({});
+    assert.match(openText.text, /Mode:\s+open, as registered/, "text report shows open, as registered");
+    rmSync(elsewhere, { recursive: true });
+    for (const fix of [false, true]) {
+      const missing = await refusal({ space: "remote", fix }, ["auth"]);
+      assert.equal(missing.code, "AUTH_REQUIRED", "a deleted registered root still refuses local credential diagnosis");
+      assert.equal(missing.remedy, `the folder space remote is recorded at, ${elsewhere}, no longer exists; if it was moved or renamed, move it back and run \`cotal doctor auth --space remote${fix ? " --fix" : ""}\` there; otherwise forget the space with \`cotal space forget remote\``, "its step names the missing folder, restoring it or forgetting the space");
+    }
   }
 } finally {
   process.chdir(startCwd);

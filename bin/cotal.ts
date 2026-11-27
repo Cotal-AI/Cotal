@@ -1,13 +1,54 @@
 #!/usr/bin/env node
 import { createHash } from "node:crypto";
-import { chmodSync, closeSync, constants, cpSync, existsSync, fstatSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, readlinkSync, realpathSync, rmSync } from "node:fs";
+import * as fs from "node:fs";
+import { chmodSync, closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, readlinkSync, realpathSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { setFlagsFromString } from "node:v8";
 
-setFlagsFromString("--no-maglev");
-setFlagsFromString("--no-concurrent-sparkplug");
+const MIN_NODE = "22.10";
+const [MIN_MAJOR, MIN_MINOR] = MIN_NODE.split(".").map(Number) as [number, number];
+
+function supportedNode(version = process.versions.node): boolean {
+  const parts = version.split(".");
+  const major = Number.parseInt(parts[0] || "", 10);
+  const minor = Number.parseInt(parts[1] || "", 10);
+  return Number.isInteger(major) && Number.isInteger(minor) &&
+    (major > MIN_MAJOR || (major === MIN_MAJOR && minor >= MIN_MINOR));
+}
+
+if (supportedNode()) {
+  setFlagsFromString("--no-maglev");
+  setFlagsFromString("--no-concurrent-sparkplug");
+}
+
+/** Refuse runtimes below the Node floor before touching V8 flags, retained stores, or package code. */
+export function ensureSupportedNode(): void {
+  if (supportedNode()) return;
+  const viaInstaller = process.env.COTAL_LAUNCHER === "1";
+  const remedy = viaInstaller
+    ? `The Node this install was pinned to has been replaced with an older one.\n` +
+      `Re-run the installer to repin it:\n  curl -fsSL https://get.cotal.ai | sh\n\n` +
+      `Or stop depending on the system Node altogether:\n  curl -fsSL https://get.cotal.ai | sh -s -- --vendor-node\n\n`
+    : `Install a newer Node (https://nodejs.org). With nvm:\n  nvm install ${MIN_NODE} && nvm use ${MIN_NODE}\n\n` +
+      `If you installed Cotal globally with npm, reinstall it with the newer Node to fetch the bundled broker:\n` +
+      `  npm install -g cotal-ai\n\n` +
+      `If you use npx, clear its cache instead, then rerun your npx command:\n  rm -rf ~/.npm/_npx\n\n` +
+      `Or let the installer manage the runtime for you:\n  curl -fsSL https://get.cotal.ai | sh\n\n`;
+  process.stderr.write(`\ncotal-ai requires Node.js >= ${MIN_NODE}, but this is ${process.version}.\n` +
+    `Below Node ${MIN_MAJOR}, npm silently skips the bundled nats-server broker and the CLI's UI\n` +
+    `stack cannot parse. Below ${MIN_NODE}, Node has no module compile cache and a seat refuses to\nstart.\n\n` + remedy);
+  const command = process.argv.slice(2).find((arg) => !arg.startsWith("-"));
+  for (const [key, path] of Object.entries(process.env)) {
+    if (key.toUpperCase() !== "COTAL_MANAGED_HANDOFF_FILE" || !path || (command !== "spawn" && command !== "sp")) continue;
+    try { unlinkSync(path); }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") process.stderr.write(`cannot remove the managed handoff file: ${(error as Error).message}\n`);
+    }
+  }
+  process.exit(1);
+}
 
 export interface ExecutionBinding { name: "cotal-ai"; version: string; bootstrapSha256: string }
 export interface ExecutionDescriptor {
@@ -80,7 +121,7 @@ function shareExecutionStore(installed: string): void {
   try {
     if (typeof process.getuid !== "function" || !executionShared(installed)) return;
     const store = executionStore(installed), info = lstatSync(store, { throwIfNoEntry: false });
-    if (!info?.isDirectory() || info.uid !== process.getuid() || (info.mode & 0o005) === 0o005) return;
+    if (!info || !info.isDirectory() || info.uid !== process.getuid() || (info.mode & 0o005) === 0o005) return;
     const open = (path: string, directory: boolean): void => {
       const entry = lstatSync(path, { throwIfNoEntry: false });
       if (entry && (directory ? entry.isDirectory() : entry.isFile())) chmodSync(path, directory ? 0o755 : 0o644);
@@ -129,10 +170,32 @@ export function executionInventory(root: string): ExecutionInventoryEntry[] {
   return rows;
 }
 
-export function executionLaunchBinding(root: string, entry: string): NonNullable<ExecutionDescriptor["launch"]> {
+function canonicalBootstrapEntry(canonicalRoot: string, candidate: string): boolean {
+  return candidate === join(canonicalRoot, "dist", "cotal.js") || candidate === join(canonicalRoot, "dist", "cotal-npm");
+}
+
+function executionLaunchEntry(root: string, entry: string): string {
+  const logical = resolve(entry), canonicalRoot = realpathSync.native(root);
+  const modules = dirname(canonicalRoot), lib = dirname(modules);
+  if (basename(canonicalRoot) !== "cotal-ai" || basename(modules) !== "node_modules" || basename(lib) !== "lib") return logical;
+  const bin = join(dirname(lib), "bin");
+  try {
+    const physical = realpathSync.native(logical);
+    if (!canonicalBootstrapEntry(canonicalRoot, physical)) return logical;
+    if (realpathSync.native(dirname(logical)) === bin) return join(bin, basename(logical));
+    const prefixEntry = join(bin, "cotal");
+    if (lstatSync(logical).isSymbolicLink() && lstatSync(prefixEntry).isSymbolicLink() &&
+        realpathSync.native(prefixEntry) === physical) return prefixEntry;
+  } catch { /* let launch binding report the unresolvable route */ }
+  return logical;
+}
+
+function rawExecutionLaunchBinding(root: string, entry: string): NonNullable<ExecutionDescriptor["launch"]> {
   const logical = resolve(entry), physical = realpathSync.native(logical);
   const canonicalRoot = realpathSync.native(root);
-  if (physical !== join(canonicalRoot, "dist", "cotal.js")) throw new Error("execution launch route does not resolve to this bootstrap");
+  // npm's postinstall can repoint the saved entry to this package's wrapper.
+  if (!canonicalBootstrapEntry(canonicalRoot, physical))
+    throw new Error("execution launch route does not resolve to this bootstrap");
   let path = join(canonicalRoot, "package.json");
   for (let current = dirname(logical); current !== dirname(current); current = dirname(current)) {
     if (lstatSync(current).isSymbolicLink()) { path = current; break; }
@@ -141,12 +204,30 @@ export function executionLaunchBinding(root: string, entry: string): NonNullable
   return { entry: logical, path, dev: String(info.dev), ino: String(info.ino), birth: String(info.birthtimeNs), ctime: String(info.ctimeNs) };
 }
 
+export function executionLaunchBinding(root: string, entry: string): NonNullable<ExecutionDescriptor["launch"]> {
+  return rawExecutionLaunchBinding(root, executionLaunchEntry(root, entry));
+}
+
 export function executionDescriptorPath(root: string): string {
   return join(executionStore(root), `.active-${executionSha256(realpathSync.native(root))}.json`);
 }
 
 /** Select a verified program, or the installed first generation when no matching descriptor exists. */
 export function selectExecutionProgram(root: string): { root: string; entry: string; retained: boolean } {
+  return executionProgram(root, true);
+}
+
+/** Observe replacement metadata without walking the retained package. This does not authorize
+ *  execution: callers must still launch through the bootstrap to verify the complete inventory. */
+export function observeExecutionVersion(root: string): string {
+  const selected = executionProgram(root, false);
+  const meta = object(JSON.parse(readFileSync(join(selected.root, "package.json"), "utf8")));
+  if (meta.name !== "cotal-ai" || typeof meta.version !== "string" || !meta.version)
+    throw new Error("the installed execution artifact is not cotal-ai");
+  return meta.version;
+}
+
+function executionProgram(root: string, verifyInventory: boolean): { root: string; entry: string; retained: boolean } {
   const installed = realpathSync.native(root), descriptorPath = executionDescriptorPath(installed);
   const initial = () => ({ root: installed, entry: import.meta.url.endsWith(".ts") && installed === realpathSync.native(dirname(fileURLToPath(import.meta.url)))
     ? join(installed, "cotal-program.ts") : join(installed, "dist", "cotal-program.js"), retained: false });
@@ -173,14 +254,30 @@ export function selectExecutionProgram(root: string): { root: string; entry: str
     const launch = object(descriptor.launch);
     if (!["entry", "path", "dev", "ino", "birth", "ctime"].every(key => typeof launch[key] === "string") || !isAbsolute(launch.entry as string) || !isAbsolute(launch.path as string))
       throw new Error("invalid execution launch binding");
-    try { if (JSON.stringify(executionLaunchBinding(installed, launch.entry as string)) !== JSON.stringify(launch)) return initial(); }
-    catch (error) { if (["ENOENT", "ENOTDIR"].includes((error as NodeJS.ErrnoException).code ?? "")) return initial(); throw error; }
+    try {
+      let currentLaunch: NonNullable<ExecutionDescriptor["launch"]>;
+      try { currentLaunch = rawExecutionLaunchBinding(installed, launch.entry as string); }
+      catch (error) {
+        if ((error as Error).message === "execution launch route does not resolve to this bootstrap" &&
+            launch.path !== join(installed, "package.json")) {
+          const route = lstatSync(launch.path as string, { bigint: true });
+          if (String(route.dev) !== launch.dev || String(route.ino) !== launch.ino ||
+              String(route.birthtimeNs) !== launch.birth || String(route.ctimeNs) !== launch.ctime) return initial();
+        }
+        throw error;
+      }
+      if (currentLaunch.entry !== launch.entry || currentLaunch.path !== launch.path || currentLaunch.dev !== launch.dev ||
+          currentLaunch.ino !== launch.ino || currentLaunch.birth !== launch.birth) return initial();
+      // ctime can change on an unchanged npm manifest. Keep it for the symlinked launch route.
+      if (currentLaunch.path !== join(installed, "package.json") && currentLaunch.ctime !== launch.ctime) return initial();
+    } catch (error) { if (["ENOENT", "ENOTDIR"].includes((error as NodeJS.ErrnoException).code || "")) return initial(); throw error; }
   }
   const matches = (candidate: Record<string, unknown>): boolean => candidate.name === current.name && candidate.version === current.version && candidate.bootstrapSha256 === current.bootstrapSha256;
   if (descriptor.bindings !== undefined && (!Array.isArray(descriptor.bindings) || descriptor.bindings.length > 4 ||
       descriptor.bindings.some(value => { const item = object(value); return item.name !== "cotal-ai" || typeof item.version !== "string" || !item.version || typeof item.bootstrapSha256 !== "string" || !HASH.test(item.bootstrapSha256); })))
     throw new Error("invalid execution transition bindings");
-  if (!matches(binding) && !(descriptor.bindings as Record<string, unknown>[] | undefined)?.some(matches)) return initial();
+  const transition = descriptor.bindings as Record<string, unknown>[] | undefined;
+  if (!matches(binding) && (!transition || !transition.some(matches))) return initial();
   if (descriptor.v !== 1) throw new Error(`unsupported execution descriptor version ${String(descriptor.v)}`);
   if (process.platform === "win32") throw new Error("retained execution generations are unavailable on Windows");
   const generation = object(descriptor.generation);
@@ -194,9 +291,11 @@ export function selectExecutionProgram(root: string): { root: string; entry: str
     protectedExecutionEntry(path);
   }
   const canonicalSelected = realpathSync.native(selected);
-  const inventory = executionRecord(join(container, "inventory.json"));
-  if (!Array.isArray(inventory) || executionSha256(JSON.stringify(inventory)) !== generation.inventorySha256 ||
-      JSON.stringify(executionInventory(canonicalSelected)) !== JSON.stringify(inventory)) throw new Error("retained execution inventory differs");
+  if (verifyInventory) {
+    const inventory = executionRecord(join(container, "inventory.json"));
+    if (!Array.isArray(inventory) || executionSha256(JSON.stringify(inventory)) !== generation.inventorySha256 ||
+        JSON.stringify(executionInventory(canonicalSelected)) !== JSON.stringify(inventory)) throw new Error("retained execution inventory differs");
+  }
   const meta = object(JSON.parse(readFileSync(join(canonicalSelected, "package.json"), "utf8")));
   if (meta.name !== "cotal-ai" || meta.version !== generation.version) throw new Error("retained execution manifest differs");
   return { root: canonicalSelected, entry: join(canonicalSelected, "dist", "cotal-program.js"), retained: true };
@@ -223,10 +322,10 @@ function copiesSharedWrite(): boolean {
   try {
     scratch = mkdtempSync(join(tmpdir(), "cotal-copy-probe-"));
     mkdirSync(join(scratch, "from"), { mode: 0o700 });
-    cpSync(join(scratch, "from"), join(scratch, "to"), { recursive: true });
+    fs.cpSync(join(scratch, "from"), join(scratch, "to"), { recursive: true });
     return (lstatSync(join(scratch, "to")).mode & 0o022) !== 0;
   } catch { return false; }
-  finally { if (scratch) rmSync(scratch, { recursive: true, force: true }); }
+  finally { if (scratch) fs.rmSync(scratch, { recursive: true, force: true }); }
 }
 
 /** The 0.164.16 and 0.164.17 updaters start the staged target once for its version line, then copy
@@ -249,7 +348,7 @@ function refuseDoomedStagedCheck(root: string): boolean {
     : `run npm install -g --prefix ${home} cotal-ai@latest`;
   process.stderr.write(`the installed Cotal updater cannot finish here: ${reason}. Install the new version once by hand: ${remedy}. Later updates run on their own`);
   for (const name of readdirSync(store)) {
-    if (/^\.installing-[A-Za-z0-9]{6}$/.test(name)) try { rmSync(join(store, name), { recursive: true, force: true }); } catch { /* the next attempt removes it */ }
+    if (/^\.installing-[A-Za-z0-9]{6}$/.test(name)) try { fs.rmSync(join(store, name), { recursive: true, force: true }); } catch { /* the next attempt removes it */ }
   }
   process.exitCode = 1;
   return true;
@@ -259,6 +358,7 @@ function refuseDoomedStagedCheck(root: string): boolean {
 export function startExecutionProgram(): void {
   if (Reflect.get(globalThis, executionStarted)) return;
   Object.defineProperty(globalThis, executionStarted, { value: true });
+  ensureSupportedNode();
   let selected: ReturnType<typeof selectExecutionProgram> | undefined;
   const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), import.meta.url.endsWith(".ts") ? "." : "..");
   if (startedHere() && refuseDoomedStagedCheck(realpathSync.native(packageRoot))) return;
@@ -272,7 +372,7 @@ export function startExecutionProgram(): void {
     if (!import.meta.url.endsWith(".ts")) {
       const logicalEntry = realpathSync.native(fileURLToPath(import.meta.url));
       const loadedEntry = realpathSync.native(join(selected.root, "dist", "cotal.js"));
-      const launchEntry = direct ? resolve(process.argv[1]!) : logicalEntry;
+      const launchEntry = direct ? executionLaunchEntry(packageRoot, process.argv[1]!) : logicalEntry;
       Object.defineProperty(globalThis, Symbol.for("cotal.execution.identity"), {
         value: Object.freeze({ logicalEntry, launchEntry, loadedEntry }),
         configurable: false, writable: false,

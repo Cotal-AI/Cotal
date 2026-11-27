@@ -16,7 +16,7 @@
  * A LaunchDaemon in the system domain is the separate headless profile and is not offered here.
  */
 import { createHash } from "node:crypto";
-import { lstatSync, readFileSync, rmSync } from "node:fs";
+import { lstatSync, readFileSync, rmSync, statSync } from "node:fs";
 import { homedir, userInfo } from "node:os";
 import { basename, dirname, isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -35,6 +35,22 @@ const NOT_LOADED = 113;
 export function launchAgentLabel(daemonHome: string | undefined): string {
   if (daemonHome === undefined) return "ai.cotal.daemon";
   return `ai.cotal.daemon.${createHash("sha256").update(daemonHome).digest("hex").slice(0, 16)}`;
+}
+
+/** Read only an installer-verified plist. An unreadable program is never a missing program. */
+export function missingLaunchAgentProgram(receipt: UnitReceipt): boolean {
+  const source = readFileSync(receipt.unitPath, "utf8");
+  const encoded = /<key>ProgramArguments<\/key>\s*<array>\s*<string>([^<]+)<\/string>/.exec(source)?.[1];
+  if (!encoded) throw new CommandFailure("refused", "CONFLICT", "the recorded LaunchAgent has no readable program; nothing was changed");
+  const program = encoded.replaceAll("&lt;", "<").replaceAll("&gt;", ">").replaceAll("&quot;", '"').replaceAll("&apos;", "'").replaceAll("&amp;", "&");
+  if (!isAbsolute(program)) throw new CommandFailure("refused", "CONFLICT", "the recorded LaunchAgent program is not absolute; nothing was changed");
+  try {
+    if (!statSync(program).isFile()) throw new CommandFailure("refused", "CONFLICT", "the recorded LaunchAgent program is not a file; nothing was changed");
+    return false;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return true;
+    throw error;
+  }
 }
 
 import { xmlText } from "./install-xml.js";

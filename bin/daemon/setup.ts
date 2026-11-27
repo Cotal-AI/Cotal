@@ -14,7 +14,8 @@ import { ensureHostedManager, hostingPrerequisite } from "./hosting.js";
  * It composes the existing commands and adds no new authority. Pausing, renaming and disconnecting
  * stay separate commands; this one does not absorb them.
  */
-import { codeSpan, CommandFailure, keptCatalogCredentials, resolveOnPath } from "@cotal-ai/workspace";
+import { lstatSync } from "node:fs";
+import { claimUpdateClosureAccess, codeSpan, CommandFailure, findMesh, findPreparedSpace, hasUserAuthState, keptCatalogCredentials, resolveOnPath } from "@cotal-ai/workspace";
 import { normalizeIdpUrl } from "@cotal-ai/auth";
 import type { DaemonPaths } from "./endpoint.js";
 import { EndpointRefusal } from "./endpoint.js";
@@ -23,10 +24,10 @@ import { connectCheckViaDaemon, managerViaDaemon, queryDaemon, registerViaDaemon
 import { exchangeDesktopRequest } from "./desktop.js";
 import type { PeerPid, PeerUid } from "./endpoint.js";
 import type { HostedManager, LoginPrompt, LoginResult, RegisterResult, ServiceConnectionState } from "./protocol.js";
-import { applyInstall, installedDaemonIdentity, planUninstall, planInstalledPathRefresh, startInstalled, restartInstalled } from "./install.js";
+import { applyInstall, installedDaemonIdentity, installedServicePath, planUninstall, planInstalledPathRefresh, preflightInstalledDaemon, startInstalled, restartInstalled, unitReceiptFile } from "./install.js";
 import { fromRegister } from "./service.js";
 import { DAEMON_PROTOCOL_VERSION } from "./endpoint.js";
-import { daemonCommandCopy } from "./guidance.js";
+import { daemonCommandCopy, NON_USER_AUTH_MESSAGE, NON_USER_AUTH_REMEDY } from "./guidance.js";
 
 /** How each step ended, in the order they ran. A reader sees what this did and what it skipped. */
 export interface SetupStep {
@@ -47,7 +48,7 @@ export interface SetupResult {
   readonly registration?: RegisterResult;
 }
 
-interface InstallOptions {
+export interface InstallOptions {
   readonly noManager?: boolean;
   readonly space?: string;
   readonly version?: string;
@@ -112,16 +113,27 @@ function restartProgress(opts: InstallOptions): (detail: string) => void {
 
 /** Install the user service unless it is already installed, then wait for the daemon to answer. */
 async function ensureInstalled(opts: InstallOptions, steps: SetupStep[]): Promise<string | undefined> {
-  let unit: string | undefined;
+  const release = claimUpdateClosureAccess();
+  try { return await ensureInstalledUnderClosure(opts, steps); }
+  finally { release(); }
+}
+
+/** A verified unit, including a recovered one. A failed inspection of a recorded unit still refuses setup. */
+export function installedUnitForSetup(paths: DaemonPaths, home?: string): string | undefined {
+  try { return planUninstall(paths, home).unit; }
+  catch (error) {
+    if (lstatSync(unitReceiptFile(paths), { throwIfNoEntry: false })) throw error;
+    return undefined;
+  }
+}
+
+async function ensureInstalledUnderClosure(opts: InstallOptions, steps: SetupStep[]): Promise<string | undefined> {
+  let unit = installedUnitForSetup(opts.paths, opts.daemonHome);
   let outcome: string, detail: string;
-  try {
-    // A recorded, unchanged unit means this is already installed; `planUninstall` is the exact
-    // same check `uninstall` makes, so the two can never disagree about what is installed.
-    const existing = planUninstall(opts.paths, opts.daemonHome);
-    unit = existing.unit;
+  if (unit !== undefined) {
     outcome = "already-installed";
-    detail = `${existing.unit} is already installed; it was left as it is`;
-  } catch {
+    detail = `${unit} is already installed; it was left as it is`;
+  } else {
     // Nothing is recorded, so this would install. A daemon that is already answering was started
     // some other way, by hand or by a container entrypoint, and installing now would start a
     // second one that the lifetime lock refuses. Say so instead of leaving a unit that cannot run,
@@ -186,6 +198,31 @@ function hasNewApplications(manager: HostedManager): boolean {
 }
 
 async function refreshApplications(opts: InstallOptions, steps: SetupStep[]): Promise<boolean> {
+  // Hosted Managers claim the same closure when they load connectors. Only native service
+  // mutations run under the CLI's claim, not the later wait for a Manager to answer.
+  const release = claimUpdateClosureAccess();
+  try { return await refreshApplicationsUnderClosure(opts, steps); }
+  finally { release(); }
+}
+
+/** After the app installs an application into `dirs`, or when it checks again: refresh the installed
+ *  service as setup does when it cannot find the application yet. That is when a systemd or launchd
+ *  service's pinned PATH lacks one of `dirs`, when the Windows task started before PATH had them
+ *  (`before`, the account PATH it read), or when a hosted Manager reports a missing executable that
+ *  PATH now finds. Running seats refuse the refresh with LIFECYCLE_BLOCKED and change nothing. */
+export async function refreshServiceForApplication(opts: InstallOptions, dirs: readonly string[], before?: string): Promise<"none" | "unchanged" | "refreshed"> {
+  if (!preflightInstalledDaemon(opts.paths, opts.daemonHome)) return "none";
+  // Windows compares folders without regard to case; macOS and Linux paths keep theirs.
+  const key = (dir: string) => { const trimmed = dir.replace(/[\\/]+$/, ""); return process.platform === "win32" ? trimmed.toLowerCase() : trimmed; };
+  const servicePath = installedServicePath(opts.paths, opts.daemonHome) ?? before;
+  const entries = servicePath?.split(process.platform === "win32" ? ";" : ":").map(key);
+  const pathLacks = entries !== undefined && !dirs.every(dir => entries.includes(key(dir)));
+  const status = pathLacks ? undefined : await queryDaemon(opts).catch(() => undefined);
+  if (!pathLacks && !(status?.ok && status.result.managers?.some(hasNewApplications))) return "unchanged";
+  return await refreshApplications(opts, []) ? "refreshed" : "unchanged";
+}
+
+async function refreshApplicationsUnderClosure(opts: InstallOptions, steps: SetupStep[]): Promise<boolean> {
   const installation = installedDaemonIdentity(opts.paths, opts.daemonHome);
   if (!installation.same) throw new CommandFailure("refused", "CONFLICT", `the daemon at ${installation.installed} cannot refresh applications from this installation`, { remedy: `run setup from ${installation.installed}` });
   const refresh = planInstalledPathRefresh(opts.paths, opts.daemonHome);
@@ -258,6 +295,9 @@ export async function runAccountSetup(opts: Omit<SetupOptions, "space" | "waitSe
 async function ensureSignedIn(opts: SetupOptions, steps: SetupStep[]): Promise<RegisterResult | undefined> {
   const check = await connectCheckViaDaemon({ paths: opts.paths, peerUid: opts.peerUid, peerPid: opts.peerPid, space: opts.space });
   if (!check.ok) throw new CommandFailure("refused", "USAGE_INVALID", `the daemon refused the connection check: ${check.code} ${check.message}`, { native: { code: check.code } });
+  if (check.result.outcome === "not-user-auth") {
+    throw new CommandFailure("refused", "UNSUPPORTED", NON_USER_AUTH_MESSAGE, { remedy: NON_USER_AUTH_REMEDY, native: { code: "NOT_USER_AUTH" } });
+  }
   if (check.result.outcome === "credential-expired") {
     throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", check.result.message, { native: { code: "CREDENTIAL_EXPIRED" } });
   }
@@ -376,6 +416,12 @@ async function connectWhenApproved(opts: SetupOptions, steps: SetupStep[]): Prom
 
 /** Run setup through an answering Manager, or a connected machine service with the opt-out. */
 export async function runSetup(opts: SetupOptions): Promise<SetupResult> {
+  // As in connect-check, a stopped local stack is recorded as prepared, not registered.
+  const entry = findMesh(opts.space);
+  const prepared = entry ? undefined : findPreparedSpace(opts.space);
+  if ((entry && (entry.mode !== "user" || !entry.userAuth)) || (prepared && !hasUserAuthState(prepared.root, opts.space, { readOnly: true }))) {
+    throw new CommandFailure("refused", "UNSUPPORTED", NON_USER_AUTH_MESSAGE, { remedy: NON_USER_AUTH_REMEDY, native: { code: "NOT_USER_AUTH" } });
+  }
   const steps: SetupStep[] = [];
   let discoveredSignIn = false;
   const unit = await ensureInstalled(opts, steps);
@@ -391,6 +437,13 @@ export async function runSetup(opts: SetupOptions): Promise<SetupResult> {
     let discovered = await exchangeDesktopRequest(opts, { op: "spaces", refresh: true });
     const hasSpace = () => discovered.ok && !("event" in discovered) && "spaces" in discovered.result && discovered.result.spaces.some((entry) => entry.space === opts.space);
     const signedInToProvider = () => discovered.ok && !("event" in discovered) && "signedInProviders" in discovered.result && discovered.result.signedInProviders?.includes(opts.idp ?? "");
+    if (!hasSpace() && discovered.ok) {
+      // Signed-in catalogs do not list a prepared local stack. Rule it out before signing in.
+      const check = await connectCheckViaDaemon({ paths: opts.paths, peerUid: opts.peerUid, peerPid: opts.peerPid, space: opts.space });
+      if (check.ok && check.result.outcome === "not-user-auth") {
+        throw new CommandFailure("refused", "UNSUPPORTED", NON_USER_AUTH_MESSAGE, { remedy: NON_USER_AUTH_REMEDY, native: { code: "NOT_USER_AUTH" } });
+      }
+    }
     if (!hasSpace() && opts.idp && !signedInToProvider()) {
       opts.report("sign-in: approve this machine on another device", { step: "sign-in", outcome: "running", detail: "approve this machine on another device" });
       const signed = await loginFromCli({ ...opts, idp: opts.idp });
@@ -453,6 +506,8 @@ export async function runSetup(opts: SetupOptions): Promise<SetupResult> {
     }))];
     opts.report(`connectors: ${available.length} available`, { step: "applications", outcome: available.length ? "available" : "unavailable", detail: `${available.length} available`, applications: applications.length ? applications : Object.values(names) });
     if (!available.length) {
+      const claudeSetup = manager.connectors?.find(connector => connector.agent === "claude" && connector.reason?.startsWith("Claude wake channel setup failed:"));
+      if (claudeSetup?.reason) throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", claudeSetup.reason, { native: { code: "NO_AVAILABLE_CONNECTOR" } });
       throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "no available connector in the hosted Manager's environment", { remedy: `install ${applications.length ? applications.join(" or ") : "Claude Code, Codex, Hermes, Jcode, OpenCode or pi"} and make sure the application runs in this terminal, then run the same setup command again`, native: { code: "NO_AVAILABLE_CONNECTOR" } });
     }
     const registration = prerequisite ? registrationResult(opts, steps, prerequisite) : await requestRegistration(opts, steps);

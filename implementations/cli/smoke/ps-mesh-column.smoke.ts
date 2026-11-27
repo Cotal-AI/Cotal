@@ -11,7 +11,7 @@
  * Run: pnpm smoke:ps-mesh-column
  */
 import assert from "node:assert/strict";
-import { attachChoiceLabel, joinedAgentRows, meshCell, psSeatLabel } from "../src/commands/agents.js";
+import { attachChoiceLabel, joinedAgentRows, meshCell, psSeatLabel, psView } from "../src/commands/agents.js";
 import { MANAGER_CONTRACTS } from "../../manager/src/manager-service-contract.js";
 let pass = 0, fail = 0;
 const check = (name: string, actual: { text: string }, expected: string): void => {
@@ -83,5 +83,22 @@ judge("a joined receipt uses the id when the name is empty", joined("")[0]?.[1] 
 judge("a joined receipt uses the id when the name is a newline", joined("\n")[0]?.[1] === "local.blank");
 judge("a joined receipt keeps a name with a leading space", joined(" ada")[0]?.[1] === " ada");
 judge("a joined receipt keeps a name", joinedAgentRows({ name: "ada", id: "local.ada", managerInstanceId: "mgr" })[0]?.[1] === "ada");
+// An empty list with no agent application: the Next agrees with `status` — bare `setup` only
+// where a terminal can answer its questions, `setup --help` anywhere else, so a scripted run
+// never follows the Next into a usage error.
+const nextOf = (report: ReturnType<typeof psView>): readonly { command: string; description: string }[] => {
+  for (const section of report.sections) for (const block of section.blocks) if (block.kind === "commands") return block.items;
+  return [];
+};
+const emptyPs = { kind: "seats", items: [], managers: [{ instanceId: "mgr", state: "answered" }] } as const;
+const interactiveNext = nextOf(psView(emptyPs, false, new Map(), true));
+judge("an empty ps on a terminal offers bare setup",
+  interactiveNext.length === 1 && interactiveNext[0]!.command.endsWith(" setup") && interactiveNext[0]!.description === "Set up an agent application", interactiveNext);
+const headlessNext = nextOf(psView(emptyPs, false, new Map(), true, undefined, false));
+judge("an empty ps without a terminal offers setup --help instead of bare setup",
+  headlessNext.length === 1 && headlessNext[0]!.command.endsWith(" setup --help") && headlessNext[0]!.description === "See setup flags for scripts. Bare setup needs a terminal.", headlessNext);
+const appNext = nextOf(psView(emptyPs, false, new Map(), false, undefined, false, "cotal spawn --space roster-check"));
+judge("an empty ps with an application set up still offers spawn without a terminal",
+  appNext.length === 1 && appNext[0]!.command === "cotal spawn --space roster-check" && appNext[0]!.description === "Launch your default agent", appNext);
 console.log(`\nps mesh column smoke: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

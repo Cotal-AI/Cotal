@@ -13,7 +13,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { sameSecretStoreIdentity, type SecretStore, type SecretStoreIdentity } from "@cotal-ai/core";
 import { DELIVERY_CREDS_KIND, findCotalRoot, spaceSegment, workspaceSecretStore } from "@cotal-ai/workspace";
-import { assertUninjectedCredsSharesCwdRoot, reloadStoreIdentityFromCredsPath, reloadStoreIdentityOf, workspaceRootFromCredsPath } from "../src/delivery.js";
+import { assertUninjectedCredsSharesCwdRoot, reloadStoreIdentityFromCredsPath, reloadStoreIdentityOf, workspaceRootFromCredsPath } from "../src/delivery-creds.js";
 
 let pass = 0;
 const ok = (name: string, cond: boolean, extra?: unknown) => {

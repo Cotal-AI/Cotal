@@ -20,11 +20,13 @@
  *
  * Needs nats-server on PATH. Run: pnpm smoke:sparse-history-walk
  */
+import { strict as assert } from "node:assert";
 import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CotalEndpoint, isReachable, newIdentity, setupSpaceStreams } from "../src/index.js";
+import type { EndpointHistory } from "../src/endpoint-history.js";
 import { pickFreePort } from "./_free-port.js";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
@@ -39,21 +41,40 @@ const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const textOf = (m: { parts: { kind: string; text?: string }[] }) =>
   m.parts.map((p) => (p.kind === "text" ? p.text ?? "" : "")).join("");
 
-type Drain = { start: number; ceiling: number; delivered: number };
-function instrument(ep: CotalEndpoint): Drain[] {
+type Drain = { start: number; ceiling: number; limit: number; delivered: number; boundStart?: number };
+function instrument(ep: CotalEndpoint) {
   const drains: Drain[] = [];
-  const proto = Object.getPrototypeOf(ep);
-  const orig = proto.drainWindow as (
-    js: unknown, stream: string, subjects: string[], start: number, ceiling: number,
-  ) => Promise<unknown[]>;
-  proto.drainWindow = async function (
-    this: CotalEndpoint, js: unknown, stream: string, subjects: string[], start: number, ceiling: number,
-  ) {
-    const page = await orig.call(this, js, stream, subjects, start, ceiling) as unknown[];
-    drains.push({ start, ceiling, delivered: page.length });
-    return page;
+  const history = (ep as unknown as { history: EndpointHistory }).history;
+  const originalDrain = history.drainWindow;
+  const originalOpen = history.openHistoryReader;
+  let active: { drain: Drain; subjects: string[] } | undefined;
+  history.openHistoryReader = async function (...args: Parameters<EndpointHistory["openHistoryReader"]>) {
+    const consumer = await originalOpen.apply(this, args);
+    if (active) {
+      const config = (await consumer.info(true)).config;
+      active.drain.boundStart = config.opt_start_seq;
+      assert.equal(config.opt_start_seq, active.drain.start, "recorded start equals the real broker reader start");
+      assert.deepEqual(config.filter_subjects ?? [config.filter_subject], active.subjects,
+        "recorded subjects equal the real broker reader filters");
+    }
+    return consumer;
   };
-  return drains;
+  history.drainWindow = async function (...args: Parameters<EndpointHistory["drainWindow"]>) {
+    const [, subjects, start, ceiling, limit] = args;
+    const drain: Drain = { start, ceiling, limit, delivered: 0 };
+    active = { drain, subjects };
+    try {
+      // Forward the actual tuple, including the optional AbortSignal, without a handwritten cast.
+      const page = await originalDrain.apply(this, args);
+      drain.delivered = page.length;
+      drains.push(drain);
+      return page;
+    } finally { active = undefined; }
+  };
+  return { drains, restore: () => {
+    history.drainWindow = originalDrain;
+    history.openHistoryReader = originalOpen;
+  } };
 }
 
 const PORT = await pickFreePort();
@@ -93,29 +114,37 @@ try {
   });
   reader.on("error", () => {});
   await reader.start();
-  const drains = instrument(reader);
+  const { drains, restore } = instrument(reader);
+  try {
+    drains.length = 0;
+    const sparse = await reader.channelHistory("sparse-end", { limit: 100, signal: new AbortController().signal });
+    console.log("  sparse drain measurements", JSON.stringify(drains));
+    ok("1.0 sparse measurements name the actual broker start, ceiling and limit",
+      drains.length > 0 && drains.every((d) => d.boundStart === d.start && d.start <= d.ceiling && d.limit === 100), drains);
+    const sparseStarts = drains.map((d) => d.start);
+    const minStart = Math.min(...sparseStarts);
+    ok("1.1 CONTROL: the sparse channel really has only three matches (the page is not the bug)",
+      sparse.map(textOf).join("|") === "end-1|end-2|end-3", sparse.map(textOf));
+    ok("1.2 the walk does NOT start at stream sequence 1 (that is the unbounded drain)",
+      minStart > 1, { minStart, drains });
+    ok("1.3 the lowest start is at the HIGH end (the first sparse match), not a walk covering the noise prefix",
+      minStart > 200, { minStart, drains });
 
-  drains.length = 0;
-  const sparse = await reader.channelHistory("sparse-end", { limit: 100 });
-  const sparseStarts = drains.map((d) => d.start);
-  const minStart = Math.min(...sparseStarts);
-  ok("1.1 CONTROL: the sparse channel really has only three matches (the page is not the bug)",
-    sparse.map(textOf).join("|") === "end-1|end-2|end-3", sparse.map(textOf));
-  ok("1.2 the walk does NOT start at stream sequence 1 (that is the unbounded drain)",
-    minStart > 1, { minStart, drains });
-  ok("1.3 the lowest start is at the HIGH end (the first sparse match), not a walk covering the noise prefix",
-    minStart > 200, { minStart, drains });
-
-  drains.length = 0;
-  const dense = await reader.channelHistory("dense", { limit: 10 });
-  const denseMin = Math.min(...drains.map((d) => d.start));
-  ok("2.1 CONTROL: a dense page is still the newest N, not the oldest",
-    textOf(dense[0]!) === "d110" && textOf(dense[dense.length - 1]!) === "d119", dense.map(textOf));
-  ok("2.2 a dense page still does not walk to 1 (the floor probe must not tax a full drain)",
-    denseMin > 1 && drains.length === 1, { denseMin, drains });
-
-  await reader.stop().catch(() => {});
-  await writer.stop().catch(() => {});
+    drains.length = 0;
+    const dense = await reader.channelHistory("dense", { limit: 10 });
+    console.log("  dense drain measurements", JSON.stringify(drains));
+    const denseMin = Math.min(...drains.map((d) => d.start));
+    ok("2.0 dense measurements name the actual broker start, ceiling and limit",
+      drains.length > 0 && drains.every((d) => d.boundStart === d.start && d.start <= d.ceiling && d.limit === 10), drains);
+    ok("2.1 CONTROL: a dense page is still the newest N, not the oldest",
+      textOf(dense[0]!) === "d110" && textOf(dense[dense.length - 1]!) === "d119", dense.map(textOf));
+    ok("2.2 a dense page still does not walk to 1 (the floor probe must not tax a full drain)",
+      denseMin > 1 && drains.length === 1, { denseMin, drains });
+  } finally {
+    restore();
+    await reader.stop().catch(() => {});
+    await writer.stop().catch(() => {});
+  }
 } finally {
   release();
   broker.kill("SIGKILL");

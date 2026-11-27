@@ -24,7 +24,7 @@ const scratch = mkdtempSync(join(tmpdir(), "cotal-jcode-once-"));
 // The operator's own config and Jcode home stay out of this run.
 process.env.HOME = join(scratch, "home");
 process.env.XDG_CONFIG_HOME = join(scratch, "home", ".config");
-mkdirSync(process.env.XDG_CONFIG_HOME, { recursive: true });
+mkdirSync(process.env.XDG_CONFIG_HOME, { recursive: true, mode: 0o700 });
 for (const key of Object.keys(process.env)) if (key.startsWith("COTAL_") || key.startsWith("FAKE_JCODE_")) delete process.env[key];
 // `jcode` on PATH is the fake harness.
 const bin = join(scratch, "bin");
@@ -38,7 +38,7 @@ const {
   createSpaceAuth, mintCreds, newIdentity, standaloneConnectOpts, setupSpaceStreams,
   digestIdToken, epCall, readGoalResult, readGoalIndex, lifecycleBlockedFrom,
 } = await import("@cotal-ai/core");
-const { authDir, saveSpaceAuth, mintControlInstrument, workspaceSecretStore } = await import("@cotal-ai/workspace");
+const { authDir, saveSpaceAuth, mintControlInstrument, trustProject, workspaceSecretStore } = await import("@cotal-ai/workspace");
 await import("@cotal-ai/connector-jcode");
 const { Manager } = await import("@cotal-ai/manager");
 const { MANAGER_ENDPOINT, MANAGER_CONTRACTS } = await import("../../implementations/manager/src/manager-service-contract.js");
@@ -86,6 +86,8 @@ writeFileSync(join(workspaceRoot, ".cotal", "agents", "helper.md"), "---\nname: 
 writeFileSync(join(workspaceRoot, ".cotal", "config.json"), JSON.stringify({
   spawn: { env: ["FAKE_JCODE_LOG", "FAKE_JCODE_DAEMON", "FAKE_JCODE_SESSION_STATE", "FAKE_JCODE_RUN_WITHOUT_ACCEPT_ON_CONTENT", "FAKE_JCODE_RUN_WITHOUT_ACCEPT_HOLD_FILE", "FAKE_JCODE_HOLD_TURN_ON_CONTENT", "FAKE_JCODE_HOLD_TURN_RELEASE_FILE"] },
 }));
+// A project config that names spawn.env applies only in a folder the operator trusts.
+trustProject(workspaceRoot);
 process.env.FAKE_JCODE_DAEMON = "1";
 
 let manager: InstanceType<typeof Manager> | undefined;
@@ -102,7 +104,7 @@ try {
   manager = new Manager({ space, servers: broker.servers, runtime: "pty", workspaceRoot });
   await manager.start();
   type Seat = { lifecycleUid: string; handle: { pid?: number; status(): string } };
-  const M = manager as unknown as { agents: Map<string, Seat>; goalWriter: { ctx: Parameters<typeof readGoalResult>[0] } };
+  const M = manager as unknown as { agents: Map<string, Seat>; goalWriterComponent: { goalWriter: { ctx: Parameters<typeof readGoalResult>[0] }; } };
 
   // The spawner: the operator's admin instrument, issued as the CLI mints it, so the static spawn
   // bound reads its evidence and it hands on the helper's role (SPEC 13.15).
@@ -115,7 +117,7 @@ try {
   const refOf = (goalId: string) => ({ endpoint: MANAGER_ENDPOINT, caller: runner, goalId });
   const resultOf = async (goalId: string, ms: number) => {
     let fact: Awaited<ReturnType<typeof readGoalResult>>;
-    await until(async () => (fact = await readGoalResult(M.goalWriter.ctx, refOf(goalId))) !== undefined, ms);
+    await until(async () => (fact = await readGoalResult(M.goalWriterComponent.goalWriter.ctx, refOf(goalId))) !== undefined, ms);
     return fact;
   };
   let seq = 0;
@@ -165,7 +167,7 @@ try {
     return { id, name, seat, terminal, readyAt, task, runsOf, identities, entries, accepted, refusals };
   };
   const goneSeat = (name: string, seat: Seat) => until(() => seat.handle.status() === "exited" && M.agents.get(name) !== seat, 30_000);
-  const debtCleared = (task: string) => until(async () => (await readGoalIndex(M.goalWriter.ctx, refOf(task))) === undefined, 60_000);
+  const debtCleared = (task: string) => until(async () => (await readGoalIndex(M.goalWriterComponent.goalWriter.ctx, refOf(task))) === undefined, 60_000);
 
   console.log("1. the task reaches the harness once, its turn ends, and the seat and its tree are gone");
   // The turn is held open until the launch is checked, or a fast harness ends it, and the seat's tree

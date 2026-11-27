@@ -296,7 +296,7 @@ function cotal(args: string[]): { status: number; stdout: string; stderr: string
   const out = `${r.stdout ?? ""}${r.stderr ?? ""}`;
   check(
     "`up` refuses a newer seed store, naming the store to restore",
-    r.status === 1 && out.includes(`the connector seed store ${seedDir} is at generation 99.0.0`) && /from a backup taken before the store moved to 99\.0\.0/.test(out),
+    r.status === 2 && out.includes(`the connector seed store ${seedDir} is at generation 99.0.0`) && /from a backup taken before the store moved to 99\.0\.0/.test(out),
     { status: r.status, out: out.slice(0, 400) },
   );
   check(

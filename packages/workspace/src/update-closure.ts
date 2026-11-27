@@ -1,4 +1,7 @@
 import { join } from "node:path";
+import { createHash } from "node:crypto";
+import { readFileSync, rmSync } from "node:fs";
+import { writeSecretFileAtomic } from "@cotal-ai/core";
 import { homeCotalDir } from "./cotal-home.js";
 import { readUpdateRecovery, type UpdateRecovery } from "./updates.js";
 import { acquireLock, inspectLock, processStartToken, type HeldLock } from "./advisory-lock.js";
@@ -121,6 +124,28 @@ export function liveUpdateClosureOwner(record: UpdateRecovery, lookup = processS
 export function updateActivationBlocked(): boolean {
   const record = readUpdateRecovery();
   return record !== undefined && record.phase !== "verified-ready";
+}
+
+function activationPath(installation: string): string {
+  return join(homeCotalDir(), `update-activation-${createHash("sha256").update(installation).digest("hex")}.json`);
+}
+
+/** A completed software update may retain its daemon without leaving paused recovery. */
+export function deferredUpdateActivation(installation: string, target: string): string | undefined {
+  let record: { v?: number; installation?: string; target?: string; reason?: string };
+  try { record = JSON.parse(readFileSync(activationPath(installation), "utf8")); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined; throw error; }
+  if (record.v !== 1 || record.installation !== installation || typeof record.target !== "string" || typeof record.reason !== "string" || !record.reason) throw new Error("invalid deferred update activation record");
+  return record.target === target ? record.reason : undefined;
+}
+
+/** Replace activation authority only while holding this update's live parent capability. */
+export function recordUpdateActivation(installation: string, target: string, reason?: string): void {
+  const release = claimUpdateClosureAccess();
+  try {
+    if (reason) writeSecretFileAtomic(activationPath(installation), `${JSON.stringify({ v: 1, installation, target, reason })}\n`);
+    else rmSync(activationPath(installation), { force: true });
+  } finally { release(); }
 }
 
 /** Delegate only the outer barrier, leaving each child responsible for native writer ownership. */

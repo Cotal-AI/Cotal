@@ -42,9 +42,9 @@ if (process.argv[2] === "stop-child") {
     card: { name: "fence-close-child", kind: "endpoint" },
   });
   await ep.start();
-  const nc = (ep as unknown as { nc?: { protocol?: { options?: { reconnect?: boolean } } } }).nc;
+  const nc = (ep as unknown as { conn: { nc?: { protocol?: { options?: { reconnect?: boolean } } } } }).conn.nc;
   if (!nc) throw new Error("stop child started without a NATS connection");
-  (ep as unknown as { disableLibraryReconnect: (c: unknown) => void }).disableLibraryReconnect(nc);
+  (ep as unknown as { credentials: { disableLibraryReconnect: (c: unknown) => void } }).credentials.disableLibraryReconnect(nc);
   if (nc.protocol?.options?.reconnect !== false) throw new Error("stop child failed to disable library reconnect");
   process.stdout.write("FENCED\n");
   process.stdin.resume();

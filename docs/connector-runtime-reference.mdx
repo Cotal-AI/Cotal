@@ -1,6 +1,6 @@
 ---
 title: Connector runtime reference
-description: Shared connection recovery, presence display, send receipts, delivery acknowledgement, reply correlation, and resume records.
+description: Shared connection recovery, presence display, send receipts, delivery acknowledgement, reply correlation, resume records, the agent endpoint, agent commands, and the prompt desk.
 kind: Reference
 audience: integrators
 ---
@@ -69,6 +69,14 @@ Concurrent triggers join that rebuild instead of opening parallel connections.
 A failed post-connect bind closes its partial transport before another attempt begins.
 Unacknowledged durable messages remain eligible for redelivery after the endpoint rebinds.
 `cotal_reconnect` requests this recovery manually.
+
+A websocket connection can die without a reset, for example while a laptop sleeps. When the
+native ping check then finds the connection stale, the client closes the socket and waits at most
+5 seconds for the server to answer the closing handshake. After that it treats the socket as closed
+and starts its own reconnect attempts, so the connection comes back once the network does.
+A failed websocket dial names the URL it dialed, whether the socket had opened, how long it had
+been trying or open, and any reason the runtime or the server gave. That text reaches the endpoint's
+`warning` and `error` events, `connectionIssue` and the `cotal_reconnect` reply.
 When channel drop tracking is exhausted, reconnect reports transport recovery and the
 channel degradation that remains. Ambient channel traffic stays suppressed until the
 session restarts. Direct messages and anycast remain available, and fresh mentions on
@@ -175,9 +183,9 @@ A stored sequence proves broker acceptance, without confirming receipt or comple
 `cotal_dm` names the recipient, says other agents can't read the DM, and points what others could use at the task's channel.
 It reads the recipient's roster status immediately before publication.
 It uses that observation for offline and unrostered warnings; the success text does not include the stored sequence or a full roster-status report.
-When that status is `offline`, `cotal_dm`, `cotal send -t`, `cotal chat`, `cotal join`, and the console explain that the DM waits for the recipient to reconnect.
-The same lifecycle receives it after reconnect. A new spawn under the same name does not inherit that inbox.
-Retention and the lifecycle interval still bound delivery.
+When that status is `offline`, `cotal_dm`, `cotal send -t`, `cotal chat`, `cotal join`, and the console report that the DM was stored but delivery is not confirmed.
+Only the original lifecycle can receive the DM, and only if its inbox still exists and the message is still retained.
+A new session with the same name does not inherit that inbox.
 
 A one-shot sender such as `cotal send` can send a DM without joining the roster.
 A reply to that authenticated sender is stored under its ID even if no inbox ever reads it.
@@ -204,6 +212,10 @@ The shared connector marks a newly received durable channel copy historical when
 
 ## Acknowledgement [#acknowledgement-and-redelivery]
 
+`MeshAgent` forwards inbox reads, drains, delivery holds and focus recall to its internal inbox
+component. The component owns pending deliveries and their timers. Connector integrations keep
+using the same `MeshAgent` methods and exported inbox types.
+
 The connector acknowledges a durable message at its integration's handoff boundary.
 For Claude hooks, a clean stdout-write receipt commits the batch. That receipt proves OS acceptance, not that the model read or applied it.
 See [Hook acknowledgement](claude-connector-reference.mdx#hook-acknowledgement).
@@ -225,6 +237,177 @@ Hermes and Jcode create their forks after launch. Their records include the sour
 session title and a SHA-256 hash of the transcript they read. The manager reads
 these values once the fork exists. Each seat also prints the source session, title,
 and hash when it creates the fork.
+
+## Agent endpoint [#agent-endpoint]
+
+A `MeshAgent` serves its own `agent` endpoint once it joined the mesh, on every mesh mode: the prompt desk and the agent's commands.
+`openAgentEndpoint(ep, { warn, dispatcher, onQueued })` is that one serve in the process, and a connector built on `MeshAgent` does not call it.
+It resolves once the broker accepted the subscription.
+It rejects without a lifecycle UID, when the broker refuses the subscription, and when the connection's `max_payload` is under 524288 bytes.
+The broker refuses it for a credential minted before the serve rows existed. On a static space a renewal keeps that credential's rows, so the refusal says to respawn the agent.
+Then nothing is served: the harness's own dialogs answer every prompt, presence shows neither the `prompts` nor the `agentEndpoint` field, and a caller gets `unavailable`.
+The same checks run on every replaced connection, and a failure there closes the endpoint and warns.
+`MeshAgent` logs a refusal and runs on without the endpoint.
+
+Who may call depends on the mesh ([SPEC 13.21](../SPEC.md#1321-principal-route)). On a user-auth space it is the owner's interactive session. On a static space it is the owner's `agent-caller` connection, which `openAgentCaller` in `@cotal-ai/workspace/view` opens from the space's signing key, and no agent credential calls. On an open mesh any client calls, with no check on who it is.
+
+## Agent commands [#agent-commands]
+
+The agent's owner can list an agent's own harness commands and skills and queue one to run, with `commands` and `command` on the agent's endpoint.
+It cancels a queued command with `command-cancel` and reads how far a command got with `command-state`.
+It stops the agent's running turn with `interrupt`, so a command queued behind a turn that hangs can run.
+It gives the agent a turn on the owner's own words, images included, with `turn`, and reads what the harness reports of its context window and cost with `usage`.
+It switches the model and variant the harness runs from its next turn with `set-model`.
+No one else can call them: the broker refuses a sibling agent of the same owner, any other owner, and every grant.
+The agent cannot run a command on itself, give itself a turn or switch its own model: `command`, `turn` and `set-model` from the agent's own identity are `permission-denied`.
+
+A connector hands `MeshAgent` a dispatcher as the `commands` option:
+
+- `targets` names what it runs: `command`, `skill`, both, or neither. With neither, `commands` answers `{ supported: false }`.
+- `list()` returns every command and skill the harness runs now as `{ name, target, description?, inputHint? }`, each named as `dispatch` names it. A rejection reaches the caller as `unavailable`, never as an empty list.
+- `dispatch({ target, name, args })` starts one and resolves once the harness accepted it. A command that runs the model runs as a turn of its own, and some, such as OpenCode's `goal clear`, run no turn. It throws `CommandRefused` with `not-found` or `failed-precondition` when the harness refused it and nothing started. Any other throw leaves the outcome unknown.
+- `interrupt()`, optional, stops the turn the harness is running and resolves `interrupted`, or `idle` when none ran. The connector then ends that turn as one its user stopped, so the next queued command starts. Without it, `interrupt` is `unimplemented`. A throw reaches the caller as `internal` with the outcome unknown.
+- `unsupported()`, optional, names why the harness runs no commands now, or returns undefined while it does. While it names a cause, `commands` and `usage` answer `{ supported: false }`, and `command`, `turn`, `interrupt` and `set-model` are `unimplemented` with that cause. Claude Code uses it while no command mod serves the session.
+- `watch(changed)`, optional, is called once when the endpoint opens. The dispatcher calls `changed` each time `unsupported()` may answer differently, and the agent then republishes what its presence says it serves.
+- `turn({ text, images })`, optional, hands the owner's words to the harness as its user's own message and resolves once the harness accepted it. It throws `CommandRefused` with `failed-precondition` when the harness refused it and nothing started. Without it, `turn` is `unimplemented`.
+- `images`, optional, says the harness takes images with a turn. Without it, a `turn` with images is `unimplemented`. Each image is `{ mimeType, data }`, `data` in base64.
+- `usage()`, optional, resolves what the harness reports now: `context` as `{ used, size }` in tokens and `cost` as `{ amount, currency }`, each left out until the harness reported it. A rejection, or no answer in 10 seconds, reaches the caller as `unavailable`. Without it, or while `unsupported()` names a cause, `usage` answers `{ supported: false }`.
+- `setModel(model, variant)`, optional, switches the harness from its next turn at the latest: `model` undefined keeps the model it runs, and `variant` undefined leaves the variant to the harness. It resolves once the harness took the switch, with `{ model, variant? }` as the harness names what it runs. It throws `CommandRefused` with `not-found` for a model the harness does not offer, or `failed-precondition` for any other refusal, when nothing changed. Any other throw reaches the caller as `internal` with the outcome unknown. Without it, `set-model` is `unimplemented`. The runtime runs one switch at a time, and puts the answer on the agent's card as `meta.model`, `meta.variant` and `meta["ai.cotal.model-set"]`, which a later model report from the harness does not replace. An agent launched under a role its launcher's `modelPolicy` governs refuses every switch as `failed-precondition`.
+
+The runtime sends only those four fields of an entry. It leaves out a name `command` cannot carry and shortens a longer description or hint.
+Without a dispatcher, `commands` answers `{ supported: false }` and `command` is `unimplemented`.
+In this release [OpenCode](opencode-connector-reference.mdx) 1.x and 2.x, [pi](pi-connector-reference.mdx#agent-commands) 0.84.2 or later and [Claude Code](claude-connector-reference.mdx#agent-commands) 2.1.330 or later with mods on have one, [Codex](codex-connector-reference.mdx#agent-commands) has one that runs skills, and [Jcode](jcode-connector-reference.mdx#agent-commands) has one that runs its native session operations.
+Pi's also takes `turn` with images and answers `usage`, on every Pi version, and so does Claude Code's while its mod runs, with images only in a session Cotal launched.
+[Hermes](hermes-connector-reference.mdx#agent-commands) has one that runs the gateway's slash commands and skill commands, and takes `turn` with images, `interrupt` and `usage`.
+Jcode's, Codex's and OpenCode's also take `turn` with images and answer `usage`.
+Codex's, OpenCode's, Jcode's, pi's from 0.84.3 and Claude Code's while its mod runs also switch the model. Hermes's does not.
+
+The agent's presence carries `agentEndpoint: { interrupt, turn, images, usage, setModel }` while it serves the endpoint, so a caller can pick its path before it sends anything.
+`MeshAgent` derives it from the dispatcher, and a connector declares nothing:
+
+- `interrupt` is true when the dispatcher has `interrupt()` and `unsupported()` names no cause.
+- `turn` is true when it has `turn()` and `unsupported()` names no cause.
+- `images` is true with `turn` when it sets `images`.
+- `usage` is true when it has `usage()` and `unsupported()` names no cause.
+- `setModel` is true when it has `setModel()` and `unsupported()` names no cause.
+
+Without a dispatcher, all five are false. The field never claims a call the endpoint would refuse.
+
+`command` and `turn` answer an `id` at once, and the command or turn waits in one queue for the connector's next idle turn.
+`MeshAgent` emits `command`, and the connector calls `dispatchNextCommand()` while no turn runs. It answers `dispatched`, `failed`, or `empty`.
+At most 8 commands and turns are queued. A queued command has no time bound: it waits until the connector takes it, a caller cancels it, or the agent stops.
+`command-state` reads `queued` while the command waits and `taken` while the harness is being asked to start it. It then reads `started`, `cancelled`, `refused` or `unknown`, and that state is final.
+Stopping the agent moves every queued command to `refused` with `unavailable`. A command the harness is still being asked to start stays `taken`, and its outcome leaves with the process.
+The agent remembers the last 32 commands to end, and an older id is `not-found`.
+The states, codes and outcomes are in [SPEC §13.22](../SPEC.md#1322-the-agent-endpoint).
+
+## Commands before launch [#commands-before-launch]
+
+A launcher reads what a new agent will run with the Manager's `harness-commands` command, `{ agent, cwd }`, and starts the agent with one entry as its first turn with `spawn`'s `firstCommand`.
+A connector takes part by declaring `commands` on its `Connector`:
+
+- `targets` names what its seats' dispatcher runs.
+- `list({ cwd, resolvedBinaries, envAllow })` reads the entries a seat started in `cwd` would list, from the harness the seat would run and in the environment the seat would get. It starts no seat and keeps nothing. It resolves `{ supported: false, reason }` for an install whose seats run no commands, and rejects when the harness did not answer. The Manager then answers `unavailable`.
+
+A connector without `commands` lists `supported: false`, and a spawn that names a first command for it is refused.
+A connector that declares it writes `LaunchOpts.firstCommand` into its launch with `firstCommandEnv`.
+`MeshAgent` takes that file once when it serves its endpoint, removes it, and queues the command before any other under the id the spawn named.
+While the dispatcher's `unsupported()` names a cause, the command reads `queued` and the connector is not shown it. After 60 s it ends `refused` with that cause.
+
+| Harness | Listed before launch from | Runs | Notes |
+| --- | --- | --- | --- |
+| Claude Code 2.1.330 or later | a headless `claude` run in `cwd`: its `initialize` answer, with no MCP server, hooks, mods or saved session | `command` | The command mod's policy drops what a remote request may not run. Claude does not mark skills, so they are listed as commands. MCP prompts are missing, because no MCP server starts. An older Claude Code lists `supported: false`. |
+| Codex | `skills/list` on a short-lived `codex app-server` in `cwd`, under an empty private `CODEX_HOME` as a seat's is | `skill` | Listing needs no login. Built-in slash commands and custom prompts are not listed, because the app-server cannot run them. |
+| pi 0.84.2 or later | `get_commands` on a pi in RPC mode in `cwd`, which trusts the project as a supervised seat does | `command`, `skill` | A project with no saved Pi trust decision lists none of its templates or skills, because its seat loads none. An older pi lists `supported: false`. |
+| OpenCode 2.x | a private `opencode serve` in `cwd`, on loopback with its own password and database, read once both lists loaded | `command`, `skill` | OpenCode lists a directory's commands only at a running server and loads them on first request, so the read starts one for 1 to 3 s and creates no session. |
+| OpenCode 1.x | `GET /command` on a private `opencode serve` in `cwd`, on loopback with its own free port, password and database | `command`, `skill` | The server lists commands and skills in one list on the first request, and the read creates no session. It names a free port because OpenCode 1.x takes port 0 as 4096 while that port is free. |
+| Hermes, jcode | none | none | `supported: false`: their seats run no agent commands. |
+
+## Agent name [#agent-name]
+
+The agent's owner renames an agent with `set-name` `{ name }` on the agent's endpoint, and gets `{ name }` back.
+No one else can call it: the broker refuses a sibling agent of the same owner, any other owner, and every grant.
+`MeshAgent` serves it with no connector code. It changes the card's display name and republishes presence at once, and every client in the space sees the new name.
+The principal does not change, so the agent's subjects, durables and grants stay as they are, and an `@mention` of the new name reaches it.
+
+The agent refuses a name the shared name rule refuses as `bad-request`, and the name of another live agent, compared lowercased, as `already-exists`.
+Each refusal is `not-executed` and carries the `ai.cotal.agent.name-refused` detail with the reason `name-invalid` or `name-taken`.
+The current name again is `ok` and changes nothing.
+Two agents renamed at the same moment can still end up with one name, because the check reads presence.
+
+Messages the agent sends afterwards carry the new `from.name`, and stored history keeps the name each message was sent under.
+`agent.displayName` reads the current name, and `config.name` stays the launch name.
+A manager keeps the last name a seat showed with the seat, apart from its alias. When it starts the seat again, after a crash or a preserved resume, it passes the name as `COTAL_DISPLAY_NAME`, so the seat comes back under the same alias and actor and shows its last name.
+
+The owner's session labels an agent with `set-label` `{ label }` and gets `{ label }` back. Only the owner can call it, as with `set-name`.
+`MeshAgent` sets `meta["ai.cotal.label"]`, which clients show in place of the name, and leaves the name, so `@mentions` still reach the agent by it.
+A label follows the rule a label from the first message meets: the shared name rule, at most 40 code points, and single spaces between words.
+The agent refuses a label that breaks it as `bad-request`, `not-executed`, with a message that says which part.
+A later `set-name` drops the label.
+
+### Labels from the first message [#labels-from-the-first-message]
+
+A seat launched with `COTAL_AUTO_NAME=1` (the Manager `spawn` field `autoName`) labels itself from the first message it gets: its launch prompt, else its first live direct message or `@mention` from a principal of its own owner.
+A message from another owner neither labels the seat nor ends naming.
+The connector passes `MeshAgent` a `naming` hook (`NameFromMessage`), which makes one request to the session's own model outside its conversation, with no tools.
+The request asks for a short name for the message and caps the message at 8,000 characters.
+`MeshAgent` cleans the reply and sets it as `meta["ai.cotal.label"]`, at most 40 code points.
+The card's `name` stays the launch name, so `@mentions`, direct messages and name lookups keep reaching the seat by it.
+A client that lists agents shows `meta["ai.cotal.label"] ?? name`.
+From launch until naming settles, the card carries `meta["ai.cotal.naming"] = "pending"`.
+The key goes when naming settles: a label, a failed or empty reply, 60 seconds, an owner `set-name` or `set-label`, or the seat stopping.
+The label and the key's removal reach presence in one record.
+An owner `set-name` sets the name and drops the label in one record, and one made while naming is out ends naming with no label.
+An owner `set-label` made while naming is out ends naming too, and the owner's label stays.
+A failed naming leaves no label, and so does a relaunch.
+An agent file cannot set either key.
+A connector with no hook never shows the key and logs that the seat shows no label.
+
+The Claude Code connector runs one `claude -p` with no tools, no MCP server, hooks off and no saved session.
+The Codex connector runs one ephemeral `codex exec` on the seat's own Codex home, without the config file there, at low reasoning, under a read-only sandbox.
+It turns off web search and, with `--disable`, every feature that gives the model a tool or runs a command, the shell among them.
+Codex 0.170.0 has no switch for the few tools its model catalog adds, such as `apply_patch` and sub-agents.
+The OpenCode 2.x connector runs `generate` on a child session of the seat's session, then deletes the child session.
+The Hermes, Jcode, pi and OpenCode 1.x connectors have no hook yet.
+
+## Prompt desk [#prompt-desk]
+
+The prompt desk is the `prompts` field of the agent endpoint, where an authorized session reads and answers the prompts the agent's harness raises.
+A connector built on `MeshAgent` reads it as `agent.prompts`. It is undefined until the broker accepted the serve, and when the serve was refused, and then the adapter leaves each dialog to the harness.
+The Claude Code, OpenCode, pi and Hermes connectors are the shipped adapters; see Claude Code's [tool permissions](claude-connector-reference.mdx#tool-permissions), OpenCode's [permissions and questions](opencode-connector-reference.mdx#prompts), pi's [tool permissions](pi-connector-reference.mdx#tool-permissions) and Hermes's [command approvals](hermes-connector-reference.mdx#command-approvals).
+
+The desk knows no harness. An adapter calls `open({ content, openMs, settleMs }, hooks)` for each native dialog it offers.
+`openMs` bounds how long the prompt is offered, from 1 s to 7 days.
+`settleMs` bounds how long a prompt with an accepted answer waits for evidence, from 1 s to 24 h.
+`open` throws `PromptRefused` with the reason `full`, `too-large`, `invalid` or `closed`, and the adapter then leaves that dialog to the harness.
+`open` takes effect at once, also from inside a hook: unlike a report, it is not applied after the step that runs the hook.
+
+The adapter supplies three hooks:
+
+- `check(verdict)` applies the adapter's own rules before an answer is accepted, and returns a message to refuse it. It is synchronous: a promise it returns is a bug, and the answer is refused `internal`.
+- `deliver(verdict)` hands the one accepted answer to the harness. It resolves `delivered` on a receipt from the harness side, `confirmed` when the harness said the answer applied, and `gone` when nothing was handed over. It stays pending while nothing is known, and a rejection proves nothing.
+- `end({ attempted })` comes once per prompt, after its last change. With `attempted: false` the adapter gives the dialog back to the harness if it still waits. With `attempted: true` the adapter writes nothing more to the harness. The desk then lets go of the hooks.
+
+The adapter reports what the harness was then seen to do with `settle` on the prompt's hold: `confirmed`, `local`, `observed` with a sighting tied to the prompt, to its subject or to nothing, or `withdrawn`.
+The desk never upgrades a report, and it ignores a report for a closed prompt with a warning.
+A value `deliver` resolves that is not a delivery result is a failed call, and no rejection of a hook escapes as an unhandled one. A `warn` that throws stops nothing.
+Stopping the client endpoint ends the serve and not the prompts, so call the agent endpoint's `close()` first. It closes every prompt and answers every waiting caller, and it does not wait for a `deliver` that has not ended.
+The answer checks, the bounds and the states are in [SPEC §13.22](../SPEC.md#1322-the-agent-endpoint).
+
+## Streamed text [#streamed-text]
+
+The event plane publishes only what a durable record carries, and most harnesses save a reply once it is complete.
+A connector whose harness reports deltas while it writes a reply journals them, so the reply streams on the event plane and a restart publishes the same events.
+
+- `DeltaJournal.open({ path, anchor, onWrite, onError })` opens the thread's journal at the `deltaJournalPath` of its WAL location, next to `wal.json`, with mode 0600. `append({ key, kind, text })` queues a delta. `key` names one part of one reply from its first delta to its saved record, and `kind` is `text` or `reasoning`. The journal writes at most one line every 250 ms, holding the deltas since the last line and `anchor()`, the harness source's position at that moment. Each line wakes the emitter through `onWrite`, and a line that cannot be written goes to `onError`. `settle()` drops what is not written yet, for when the harness is about to save the reply that carries it. `abandon(keys)` ends streams that no saved record will close, as a reply the harness failed to save leaves: it writes one line at once, whatever the interval, with the pending deltas and `ends: keys`. A connector calls it at a turn end, before it closes the run, because the run cannot close while a streamed part is open. `record(value)` writes a record the connector defines, for something its harness reports and never saves: one line at once, with the pending deltas and `records: [value]`. The journal does not read the record, and refuses a value that is not JSON. The journal lives and dies with the thread's `wal.json`, and only the seat process writes it: a connector whose deltas arrive in another process, such as a hook, relays them to the seat.
+- `DeltaMergedSource(harness, journalPath)` reads the harness's own source with the journal's lines among its records. The harness source implements `OrderedSource`, whose `compare(a, b)` orders two of its cursors, as `JsonlFileSource` does. A harness that replaces its file can get a new file with the old file's inode number, so `JsonlFileSource.compare` cannot tell their cursors apart. `holdsSync(cursor)` says whether a cursor is still a position on the file at the path, by the checks `read` makes. A line goes before the first harness record that ends after its anchor, so a read after a restart answers the same records in the same order under the same cursors. A connector stores `start(harnessCursor)` where it stored a harness cursor, and gives the holder `() => source.end()` as its `sourceEnd`. A WAL that holds a harness cursor alone starts the journal at its end. A line's `records` reach the mapper as written.
+- `StreamedParts` holds what the mapper needs. `delta(d, ts)` opens a part at its first delta and adds content for each. `saved(key, text, ts)` at the saved record sends the rest of the text and ends the part. When the saved text does not begin with what streamed, as after a provider retry, it ends the part and answers `mapAsNew`, so the saved text publishes as a message of its own and a reader sees the abandoned text once. A part that never streamed answers `mapAsNew` with nothing to send, and maps as it would without the journal. `endAll(ts)` ends the parts a saved reply left out, and `end(keys, ts)` ends the parts a line's `ends` names. A key already closed sends nothing.
+- `streamSeed(journalPath, cursor, brackets)` rebuilds that state for an emitter that starts again mid-reply, from the journal up to the cursor and the parts the WAL holds open.
+
+The saved record stays the text of record: text that was never journaled reaches the plane with it.
+The journal grows with the thread's streamed text.
+A harness in another process can save a record between a line's anchor and its write, and a reader that already passed the anchor places that line where its read starts.
+Pi, Jcode, Codex, Hermes and OpenCode stream this way; see the [Pi](pi-connector-reference.mdx#event-plane), [Jcode](jcode-connector-reference.mdx#event-plane), [Codex](codex-connector-reference.mdx#event-plane), [Hermes](hermes-connector-reference.mdx#event-plane) and [OpenCode](opencode-connector-reference.mdx#event-plane) event planes. So does Claude Code, whose command mod relays the reply text to the seat; see its [event plane](claude-connector-reference.mdx#event-plane).
 
 ## Connector contracts
 

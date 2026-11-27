@@ -20,21 +20,24 @@
  *      ALREADY_RUNNING, and that squatter receives 0 bytes from a client, which refuses
  *      PEER_NOT_LOCK_OWNER;
  *  W4  a daemon home whose DACL grants Everyone access is refused DIR_WRONG_MODE.
+ *  W5  built CLI guidance distinguishes a missing home and an uninstalled scheduled task.
+ *  W6  both update routes skip a foreign pipe but check continuity for its own home.
  * Cells for another platform are listed as not run on this one, never counted as passed.
  *
  * Run: tsx bin/smoke/daemon-transport.smoke.ts
  */
-import { closeSync, mkdtempSync, openSync, readdirSync, rmSync, writeFileSync, chmodSync } from "node:fs";
+import { closeSync, mkdtempSync, openSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync, chmodSync } from "node:fs";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomBytes } from "node:crypto";
+import { pathToFileURL } from "node:url";
 import { mkSecretDir } from "@cotal-ai/core";
 import { lockExclusiveNb } from "@cotal-ai/seat";
 import { EndpointRefusal, assertSocketPathFits, checkDir, daemonPaths, type DaemonPaths } from "../daemon/endpoint.js";
 import { serveDaemon, type RunningDaemon, type ServeOptions } from "../daemon/server.js";
 import { EmptyLifetimeRefusal, isStoppingLifetime, queryDaemon, type ClientCounters } from "../daemon/client.js";
-import { processBirth } from "../daemon/lifetime.js";
+import { excludeLifetime, processBirth } from "../daemon/lifetime.js";
 
 let pass = 0, fail = 0;
 const notRun: string[] = [];
@@ -46,8 +49,9 @@ const refusalCode = async (p: Promise<unknown>): Promise<string> => {
 };
 // Restoration-only entries, never a child environment.
 const savedEnvironment = Object.entries(process.env);
-for (const key of Object.keys(process.env)) if (key.startsWith("COTAL_") && key !== "COTAL_DAEMON_SMOKE_TMP") delete process.env[key];
-const root = mkdtempSync(join(process.env.COTAL_DAEMON_SMOKE_TMP ?? tmpdir(), "cotal-transport-"));
+const scratchParent = process.env.COTAL_DAEMON_SMOKE_TMP ?? tmpdir();
+for (const key of Object.keys(process.env)) if (key.startsWith("COTAL_")) delete process.env[key];
+const root = mkdtempSync(join(scratchParent, "cotal-transport-"));
 mkSecretDir(root);
 for (const name of ["home", "runtime", "config", "data", "cache", "appdata", "localappdata"]) mkSecretDir(join(root, name));
 Object.assign(process.env, { HOME: join(root, "home"), USERPROFILE: join(root, "home"), XDG_RUNTIME_DIR: join(root, "runtime"), XDG_CONFIG_HOME: join(root, "config"), XDG_DATA_HOME: join(root, "data"), XDG_CACHE_HOME: join(root, "cache"), APPDATA: join(root, "appdata"), LOCALAPPDATA: join(root, "localappdata"), DO_NOT_TRACK: "1" });
@@ -88,6 +92,45 @@ const stop = (p: ChildProcess) => new Promise<void>((resolve, reject) => {
   p.stdin?.end();
   p.kill();
 });
+
+async function windowsUpdateAgainstPipe(socket: string, home: string, self: boolean) {
+  const entry = join(import.meta.dirname, "..", "dist", "cotal.js");
+  const endpoint = pathToFileURL(join(import.meta.dirname, "..", "dist", "daemon", "endpoint.js")).href;
+  // Route only the pipe name to the fixture. Keep the real home lock and native peer checks.
+  const routed = `data:text/javascript,${encodeURIComponent(`export * from ${JSON.stringify(endpoint)};
+    import { daemonPaths as original } from ${JSON.stringify(endpoint)};
+    export const daemonPaths = (...args) => ({ ...original(...args), socket: ${JSON.stringify(socket)} });`)}`;
+  const script = `
+    import { registerHooks } from 'node:module';
+    process.argv[1] = ${JSON.stringify(entry)};
+    Object.defineProperty(globalThis, Symbol.for('cotal.execution.started'), { value: true });
+    registerHooks({ resolve(specifier, context, next) {
+      const result = next(specifier, context);
+      return result.url === ${JSON.stringify(endpoint)} && !context.parentURL?.startsWith('data:')
+        ? { url: ${JSON.stringify(routed)}, shortCircuit: true } : result;
+    } });
+    const { registry } = await import(${JSON.stringify(import.meta.resolve("@cotal-ai/core"))});
+    const { updateRuntime } = await import(${JSON.stringify(import.meta.resolve("@cotal-ai/cli/update"))});
+    Object.assign(updateRuntime, {
+      version: () => '0.0.0-transport',
+      npm: () => ({ status: 0, stdout: '"0.0.0-transport"', stderr: '' }),
+      preflightReplacement: async () => {},
+      reportRunningManager: async () => { console.log('LOCAL_CONTINUITY'); return 'none'; },
+      reconcile: async () => { console.log('RECONCILED'); },
+      refreshConnectors: async () => {}, refreshClients: async () => [], extensions: () => [],
+    });
+    await import(${JSON.stringify(pathToFileURL(join(import.meta.dirname, "..", "dist", "daemon", "update-entry.js")).href)});
+    await registry.resolve('command', 'update').run({ raw: [], positionals: [], values: { self: ${self} } });`;
+  const child = spawn(process.execPath, ["--input-type=module", "-e", script], {
+    cwd: root, env: { ...process.env, COTAL_HOME: home }, stdio: ["ignore", "pipe", "pipe"], timeout: 60_000,
+  });
+  ownedChildren.add(child);
+  let output = "";
+  child.stdout.on("data", data => { output += String(data); });
+  child.stderr.on("data", data => { output += String(data); });
+  const status = await new Promise<number | null>((resolve, reject) => { child.once("error", reject); child.once("close", resolve); });
+  return { status, output };
+}
 
 try {
   if (process.platform === "linux") {
@@ -231,8 +274,81 @@ try {
       check("W4 instrument: Everyone was granted read", grant.status === 0, grant.stderr);
       check("W4 a daemon home whose DACL grants Everyone is refused DIR_WRONG_MODE", (await refusalCode(Promise.resolve().then(() => checkDir(d)))) === "DIR_WRONG_MODE");
     }
+    {
+      const home = realpathSync(privateDir("daemon state"));
+      const bin = join(import.meta.dirname, "..", "dist", "cotal.js");
+      const env = { ...process.env, COTAL_SKIP_CONNECTOR_SEED: "1" };
+      const run = (verb: string, path: string, ...flags: string[]) => spawnSync(process.execPath, [
+        bin, "daemon", verb, "--daemon-home", path, "--plain", ...flags,
+      ], { cwd: root, env, encoding: "utf8", timeout: 60_000 });
+      for (const verb of ["status", "start"]) {
+        const child = run(verb, home);
+        const text = child.stdout + child.stderr;
+        const matchesCommand = (op: string) => ["cotal", "pnpm cotal"].some((cli) => text.includes(`\`${cli} daemon ${op} --daemon-home "${home}"\``));
+        const code = verb === "status" ? "TARGET_UNAVAILABLE" : "TARGET_NOT_FOUND";
+        check(`W5 ${verb} names install and foreground serve for the same uninstalled home`, child.status === 2 && text.includes(code)
+          && text.includes("no scheduled task installation is recorded") && matchesCommand("install") && matchesCommand("serve")
+          && !text.includes("nothing was removed") && !matchesCommand("start"), text);
+      }
+      writeFileSync(join(home, "service-unit.json"), JSON.stringify({
+        v: 1, mechanism: "scheduled-task", daemonHome: home, unit: "fixture", unitPath: join(home, "service-task.xml"), unitSha256: "0".repeat(64), installedAt: "2026-11-25T00:00:00Z",
+      }));
+      const recorded = run("status", home);
+      const advice = recorded.stdout + recorded.stderr;
+      const next = /`(?:pnpm )?cotal (daemon start [^`]+)`/.exec(advice)?.[1];
+      check("W5 status distinguishes a recorded task without asserting that it is registered", recorded.status === 2
+        && advice.includes("NOT_RUNNING") && advice.includes("if the recorded task is still registered") && next === `daemon start --daemon-home "${home}"`
+        && advice.includes("daemon.log") && advice.includes("Task Scheduler"), advice);
+      if (next) {
+        const pasted = spawnSync(`"${process.execPath}" "${bin}" ${next}`, { shell: true, cwd: root, env, encoding: "utf8", timeout: 60_000 });
+        check("W5 recovery command reaches the recorded-task check in cmd.exe", pasted.status === 2
+          && pasted.stderr.includes("TARGET_NOT_FOUND") && pasted.stderr.includes("service-task.xml"), pasted.stderr);
+      }
+      const shellHome = realpathSync(privateDir("daemon $state"));
+      const shellStatus = run("status", shellHome);
+      const shellAdvice = shellStatus.stdout + shellStatus.stderr;
+      check("W5 status names PowerShell for a home that needs literal quoting", shellStatus.status === 2
+        && ["install", "serve"].every(op => ["cotal", "pnpm cotal"].some(cli => shellAdvice.includes(`\`${cli} daemon ${op} --daemon-home '${shellHome.replaceAll("'", "''")}'\` in PowerShell`))), shellAdvice);
+      const missing = run("install", join(root, "missing daemon state"), "--dry-run");
+      const text = missing.stdout + missing.stderr;
+      check("W5 install preview explains the ACL for a missing Windows home", missing.status === 2 && text.includes("TARGET_NOT_FOUND")
+        && text.includes("Windows ACL") && text.includes("Disable inheritance") && !text.includes("0700"), text);
+    }
+    {
+      const home = privateDir("w6-owned"), other = privateDir("w6-other");
+      const stoppedHome = privateDir("w6-stopped"), staleHome = privateDir("w6-stale");
+      const paths = { ...daemonPaths(process.env, home), socket: pipe("w6") };
+      const stoppedPaths = { ...daemonPaths(process.env, stoppedHome), socket: paths.socket };
+      const stopped = await ownedServe({ paths: stoppedPaths, version: "0.0.0-transport" });
+      await stopped.close();
+      check("W6 clean shutdown leaves an empty lifetime file", statSync(stoppedPaths.lock).size === 0);
+      const stalePaths = daemonPaths(process.env, staleHome);
+      mkSecretDir(stalePaths.state);
+      writeFileSync(stalePaths.lock, JSON.stringify({ v: 1, pid: process.pid, start: "stale", startedAt: "now" }));
+      const daemon = await ownedServe({ paths, version: "0.0.0-transport" });
+      for (const self of [false, true]) {
+        const command = self ? "update --self" : "update";
+        for (const [label, foreignHome] of [["no record", other], ["empty record", stoppedHome], ["stale record", staleHome]] as const) {
+          const before = daemon.counters.accepted;
+          const foreign = await windowsUpdateAgainstPipe(paths.socket, foreignHome, self);
+          check(`W6 ${command} reconciles with ${label} without opening the foreign pipe`,
+            foreign.status === 0 && /LOCAL_CONTINUITY[\s\S]*RECONCILED/.test(foreign.output) && daemon.counters.accepted === before, foreign);
+        }
+        const exclusion = excludeLifetime(stoppedPaths.lock);
+        try {
+          const held = await windowsUpdateAgainstPipe(paths.socket, stoppedHome, self);
+          check(`W6 ${command} does not skip a held lifetime lock with an empty record`,
+            held.status === 1 && /running manager continuity check:/.test(held.output) && !held.output.includes("RECONCILED"), held);
+        } finally { exclusion.release(); }
+        const answered = daemon.counters.statusAnswered;
+        const owned = await windowsUpdateAgainstPipe(paths.socket, home, self);
+        check(`W6 ${command} still authenticates the daemon in its own home`,
+          owned.status === 0 && /LOCAL_CONTINUITY[\s\S]*RECONCILED/.test(owned.output) && daemon.counters.statusAnswered > answered, owned);
+      }
+      await daemon.close();
+    }
   } else {
-    notRun.push("W1", "W2", "W3", "W4");
+    notRun.push("W1", "W2", "W3", "W4", "W5", "W6");
   }
 } catch (e) {
   fail++;

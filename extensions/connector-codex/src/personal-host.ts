@@ -43,6 +43,8 @@ interface Held {
   conn: GatewayConnection;
   thread: string;
   dir?: string;
+  resumable?: boolean;
+  retireRequested?: boolean;
   events?: CodexPersonalEvents;
   closing?: Promise<boolean>;
   stopped?: boolean;
@@ -50,7 +52,7 @@ interface Held {
 }
 
 type Reply = { ok: true; env: Record<string, string>; retire?: { dir: string }; grant?: ConversationGrant }
-  | ({ ok: false; pending: true } & ConversationPending)
+  | ({ ok: false; pending: true; error?: string } & ConversationPending)
   | { ok: false; pending?: false; taken?: true; error?: string; refused?: "denied" | "expired" | "refused"; retryable?: boolean };
 
 interface Watch {
@@ -119,7 +121,7 @@ export function createCodexPersonalHost(o: CodexPersonalHostOptions): CodexPerso
   let reaping: Promise<void> | undefined;
   const plumbing = (args: string[], cwd: string): Promise<Reply> => new Promise((resolve, reject) => {
     const cotal = o.cotal();
-    execFile(cotal[0]!, [...cotal.slice(1), "app-identity", ...args], { cwd, env: o.env, timeout: PLUMBING_MS }, (_error, stdout) => {
+    execFile(cotal[0]!, [...cotal.slice(1), "app-identity", ...args], { cwd, env: o.env, timeout: PLUMBING_MS, windowsHide: true }, (_error, stdout) => {
       try { resolve(JSON.parse(stdout.trim().split("\n").at(-1) ?? "") as Reply); }
       catch { reject(new Error("the Cotal CLI did not return an identity result; any saved request was retained for recovery")); }
     });
@@ -222,7 +224,7 @@ export function createCodexPersonalHost(o: CodexPersonalHostOptions): CodexPerso
     if (!reply.ok) {
       if (reply.pending) {
         startWatch(thread, { name, args, cwd: facts.cwd, approval: reply.approval });
-        throw new ApprovalRequired({ requestId: reply.requestId, approval: reply.approval, proposed: reply.proposed }, space);
+        throw new ApprovalRequired({ requestId: reply.requestId, approval: reply.approval, proposed: reply.proposed }, space, reply.error);
       }
       if (reply.refused || reply.retryable === false) stopWatch(thread);
       if (reply.taken) throw new NameTaken(name);
@@ -247,20 +249,21 @@ export function createCodexPersonalHost(o: CodexPersonalHostOptions): CodexPerso
       if (!agent.connected) throw new Error(`the conversation did not join within ${JOIN_MS / 1000} s; its identity was retained for exact cleanup`);
       if (eventPlaneArmed(config, env)) events = startCodexPersonalEvents(agent, config, env, thread, facts.path!, start!);
       const conn: GatewayConnection = { id: randomUUID(), agent, config, ...(reply.grant ? { tools: grantedTools(reply.grant) } : {}) };
-      held.set(conn.id, { conn, thread, dir, events });
+      held.set(conn.id, { conn, thread, dir, resumable: !!reply.env.COTAL_CONVERSATION_APPROVAL, events });
       if (config.userAuth) reap(config.space, facts.cwd);
       return conn;
     } catch (error) {
       await events?.stop().catch(() => {});
       await agent?.stop().catch(() => {});
-      try { await retire(dir, facts.cwd); }
+      try { if (reply.env.COTAL_CONVERSATION_APPROVAL !== "resumed") await retire(dir, facts.cwd); }
       catch { if (dir) pending.set(thread, dir); }
       throw error;
     }
   };
-  const close = async (id: string): Promise<boolean> => {
+  const close = async (id: string, release = false): Promise<boolean> => {
     const h = held.get(id);
     if (!h) return false;
+    if (!release) h.retireRequested = true;
     if (h.closing) return h.closing;
     h.closing = (async () => {
       if (!h.stopped) {
@@ -269,7 +272,7 @@ export function createCodexPersonalHost(o: CodexPersonalHostOptions): CodexPerso
         await h.conn.agent.stop();
         h.stopped = true;
       }
-      try { await retire(h.dir, lastCwd); }
+      try { if (h.retireRequested || !h.resumable) await retire(h.dir, lastCwd); }
       catch (error) { h.unfinished = reason(error); throw new Error(unfinished(id, h.unfinished)); }
       held.delete(id);
       return true;
@@ -300,7 +303,7 @@ export function createCodexPersonalHost(o: CodexPersonalHostOptions): CodexPerso
       refusals.clear();
       const issued: string[] = [];
       for (const thread of [...watches.keys()]) { const w = stopWatch(thread); if (w?.issued) issued.push(w.issued); }
-      const results = await Promise.allSettled([...held.keys()].map(close));
+      const results = await Promise.allSettled([...held.keys()].map((id) => close(id, true)));
       // The conversation that could claim an issued identity is gone: retire it exactly.
       for (const dir of [...issued, ...pending.values()]) {
         try { await serial(() => retire(dir, lastCwd)); } catch { results.push({ status: "rejected", reason: dir }); }

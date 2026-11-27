@@ -135,7 +135,7 @@ export interface CmdSpawnSpec {
 export function cmdSpawnSpec(command: string, args: readonly string[], operatorEnv: NodeJS.ProcessEnv = process.env): CmdSpawnSpec {
   if (process.platform !== "win32") return { file: command, args: [...args], windowsVerbatimArguments: false };
   const resolved = resolveOnPath(command, operatorEnv);
-  if (resolved === undefined) throw new Error(`cannot run "${command}": not found on PATH`);
+  if (resolved === undefined) throw Object.assign(new Error(`cannot run "${command}": not found on PATH`), { code: "ENOENT" });
   const ext = extname(resolved).toLowerCase();
   if (ext === ".cmd" || ext === ".bat") {
     const comspec = resolveComspec(operatorEnv);

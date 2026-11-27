@@ -115,7 +115,7 @@ let manager: InstanceType<typeof Manager> | undefined;
 const kids: ReturnType<typeof pty.spawn>[] = [];
 
 // The manager's own accounting, read straight off the plane the ceiling is enforced against.
-const liveSessions = (): number => (manager as unknown as { sessionPlane?: { liveSessions: number } })?.sessionPlane?.liveSessions ?? -1;
+const liveSessions = (): number => (manager as unknown as { servePlane: { sessionPlane?: { liveSessions: number } } })?.servePlane.sessionPlane?.liveSessions ?? -1;
 
 try {
   let up = false;
