@@ -16,7 +16,7 @@
  *      manager's own environment default.
  * Run: pnpm smoke:start-overrides
  */
-import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Manager } from "../src/manager.js";
@@ -52,6 +52,11 @@ writeFileSync(
     connectors: { "smoke-ov": { mcpServers: { alpha: { command: "true" }, beta: { command: "true" } } } },
   }),
 );
+// A project config that declares servers applies only in a folder the operator trusts. The trust
+// record lives in this suite's own config folder.
+process.env.XDG_CONFIG_HOME = join(workspaceRoot, "xdg");
+const { trustProject } = await import("@cotal-ai/workspace");
+trustProject(workspaceRoot);
 
 const mgr = new Manager({ space: "smoke", servers: undefined, runtime: "pty", workspaceRoot });
 const fakeSession = {
@@ -284,6 +289,134 @@ const j = (v: unknown) => JSON.stringify(v);
   } finally {
     if (prev === undefined) delete process.env.COTAL_DEFAULT_AGENT;
     else process.env.COTAL_DEFAULT_AGENT = prev;
+  }
+}
+
+// 11: a persona file in a project folder that is not trusted contributes no launch options on the
+// manager path: the spawn is refused before any launch, naming the file, the key and `cotal trust`.
+// The same persona in a trusted folder launches with them, and the caller's own options still apply.
+{
+  const untrusted = mkdtempSync(join(tmpdir(), "cotal-start-ov-untrusted-"));
+  mkdirSync(join(untrusted, ".cotal", "agents"), { recursive: true });
+  writeFileSync(join(untrusted, ".cotal", "agents", "opts.md"), "---\nname: opts\nlaunchOptions:\n  mcp-config: /tmp/planted.json\n---\n");
+  writeFileSync(join(untrusted, ".cotal", "agents", "bare.md"), "---\nname: bare\n---\n");
+  const mgr2 = new Manager({ space: "smoke", servers: undefined, runtime: "pty", workspaceRoot: untrusted });
+  // Its own fake runtime and roster, the same shape as the first manager's, so a launch resolves.
+  (mgr2 as unknown as { runtime: object }).runtime = (mgr as unknown as { runtime: object }).runtime;
+  (mgr2 as unknown as { ep: object }).ep = {
+    ...(mgr as unknown as { ep: object }).ep,
+    getRoster: () => [...(mgr2 as unknown as { agents: Map<string, { id: string; name: string; lifecycleUid: string }> }).agents.values()].map((a) => ({ card: { id: principalKey(DEV_OWNER, a.id).key, name: a.name }, status: "idle", lifecycleUid: a.lifecycleUid })),
+  };
+  resetOpts();
+  const refused = await mgr2.startAgent({ name: "opts", agent: "smoke-ov", events: false });
+  check("an untrusted project's persona launch options refuse the manager spawn", !refused.ok && lastOpts === undefined && /launchOptions\.mcp-config/.test(String(refused.error)) && String(refused.error).includes(`cotal trust ${untrusted}`), refused);
+  resetOpts();
+  const callerOpts = await mgr2.startAgent({ name: "bare", agent: "smoke-ov", events: false, launchOptions: { "mcp-config": "/tmp/caller.json" } });
+  check("the caller's own launch options are not gated on the manager path", callerOpts.ok && lastOpts?.launchOptions?.["mcp-config"] === "/tmp/caller.json", j(callerOpts));
+  trustProject(untrusted);
+  resetOpts();
+  const allowed = await mgr2.startAgent({ name: "opts", agent: "smoke-ov", events: false });
+  check("a trusted project's persona launch options reach the connector on the manager path", allowed.ok && lastOpts?.launchOptions?.["mcp-config"] === "/tmp/planted.json", j(allowed));
+}
+
+// A manifest launch carries the persona's launch options merged into its spec, so the manager reads
+// the persona file it names again: in a folder that is not trusted, a key that file declares refuses,
+// both for a spec pushed inline (before the spec is kept) and for one already on disk. The
+// manifest's own launch options, with a persona that declares none, are not gated.
+{
+  const manifestRoot = mkdtempSync(join(tmpdir(), "cotal-start-ov-manifest-"));
+  mkdirSync(join(manifestRoot, ".cotal", "agents", "team"), { recursive: true });
+  const personaPath = join(manifestRoot, ".cotal", "agents", "team", "opts.md");
+  writeFileSync(personaPath, "---\nname: opts\nlaunchOptions:\n  mcp-config: /tmp/planted.json\n---\n");
+  const barePath = join(manifestRoot, ".cotal", "agents", "bare.md");
+  writeFileSync(barePath, "---\nname: bare\n---\n");
+  const mgr3 = new Manager({ space: "smoke", servers: undefined, runtime: "pty", workspaceRoot: manifestRoot });
+  (mgr3 as unknown as { runtime: object }).runtime = (mgr as unknown as { runtime: object }).runtime;
+  (mgr3 as unknown as { ep: object }).ep = {
+    ...(mgr as unknown as { ep: object }).ep,
+    getRoster: () => [...(mgr3 as unknown as { agents: Map<string, { id: string; name: string; lifecycleUid: string }> }).agents.values()].map((a) => ({ card: { id: principalKey(DEV_OWNER, a.id).key, name: a.name }, status: "idle", lifecycleUid: a.lifecycleUid })),
+  };
+  const agentOf = (name: string, persona: string, launchOptions: Record<string, unknown>): MeshLaunchAgent => ({
+    name, agent: "smoke-ov", role: "worker", body: "body", events: false, launchOptions,
+    subscribe: [], allowSubscribe: [], allowPublish: [], personaPath: persona, hash: `h${name}`,
+  });
+  const launch = (runId: string, a: MeshLaunchAgent) => (mgr3 as unknown as { opLaunch(a: Record<string, unknown>, c: string, admin: boolean): Promise<{ ok: boolean; error?: string }> })
+    .opLaunch({ runId, name: a.name, spec: { apiVersion: "cotal-launch/v1", space: "smoke", runId, agents: [a] } }, "smoke-caller", true);
+
+  resetOpts();
+  const inline = await launch("runinline01", agentOf("nested", personaPath, { "mcp-config": "/tmp/planted.json" }));
+  check("an inline manifest spec carrying an untrusted persona's launch options is refused and not kept",
+    !inline.ok && lastOpts === undefined && /launchOptions\.mcp-config/.test(String(inline.error)) && String(inline.error).includes(`cotal trust ${manifestRoot}`)
+      && !existsSync(join(manifestRoot, ".cotal", "run", "runinline01.json")), j(inline));
+  resetOpts();
+  const resolvedStart = await mgr3.startAgent({ name: "nested2", agent: "smoke-ov", events: false, config: personaPath, resolved: agentOf("nested2", personaPath, { "mcp-config": "/tmp/planted.json" }) });
+  check("a manifest start from a spec on disk with an untrusted persona's launch options is refused", !resolvedStart.ok && lastOpts === undefined && /launchOptions\.mcp-config/.test(String(resolvedStart.error)), j(resolvedStart));
+  resetOpts();
+  const own = await launch("runinline02", agentOf("ownopts", barePath, { "mcp-config": "/tmp/manifest.json" }));
+  check("a manifest's own launch options, with a persona that declares none, are not gated", own.ok && lastOpts?.launchOptions?.["mcp-config"] === "/tmp/manifest.json", j(own));
+  trustProject(manifestRoot);
+  resetOpts();
+  const trusted = await launch("runinline03", agentOf("nested3", personaPath, { "mcp-config": "/tmp/planted.json" }));
+  check("CONTROL: the same inline spec launches once the folder is trusted", trusted.ok && lastOpts?.launchOptions?.["mcp-config"] === "/tmp/planted.json", j(trusted));
+
+  // The manager judges a manifest persona path as written and as read: a link outside any
+  // `.cotal/agents`, or in the trusted project's own `.cotal/agents`, naming a persona under an
+  // untrusted project refuses on both manager routes; a link within the trusted project launches.
+  const other = mkdtempSync(join(tmpdir(), "cotal-start-ov-linked-"));
+  mkdirSync(join(other, ".cotal", "agents"), { recursive: true });
+  const otherPersona = join(other, ".cotal", "agents", "opts.md");
+  writeFileSync(otherPersona, "---\nname: opts\nlaunchOptions:\n  mcp-config: /tmp/linked.json\n---\n");
+  const outsideDir = mkdtempSync(join(tmpdir(), "cotal-start-ov-outside-"));
+  const linkOut = join(outsideDir, "link.md");
+  symlinkSync(otherPersona, linkOut);
+  const linkIn = join(manifestRoot, ".cotal", "agents", "link.md");
+  symlinkSync(otherPersona, linkIn);
+  const linkSame = join(manifestRoot, ".cotal", "agents", "same.md");
+  symlinkSync(personaPath, linkSame);
+  const linked = { "mcp-config": "/tmp/linked.json" };
+  resetOpts();
+  const outInline = await launch("runlink01", agentOf("linkout", linkOut, linked));
+  resetOpts();
+  const outResolved = await mgr3.startAgent({ name: "linkout2", agent: "smoke-ov", events: false, config: linkOut, resolved: agentOf("linkout2", linkOut, linked) });
+  check("a manifest persona linked from outside .cotal/agents to an untrusted project refuses inline and from disk",
+    !outInline.ok && !outResolved.ok && lastOpts === undefined && String(outInline.error).includes(`cotal trust ${other}`) && String(outResolved.error).includes(`cotal trust ${other}`)
+      && !existsSync(join(manifestRoot, ".cotal", "run", "runlink01.json")), { inline: j(outInline), resolved: j(outResolved) });
+  resetOpts();
+  const inInline = await launch("runlink02", agentOf("linkin", linkIn, linked));
+  resetOpts();
+  const inResolved = await mgr3.startAgent({ name: "linkin2", agent: "smoke-ov", events: false, config: linkIn, resolved: agentOf("linkin2", linkIn, linked) });
+  check("a manifest persona linked from a trusted project's .cotal/agents to an untrusted project refuses inline and from disk",
+    !inInline.ok && !inResolved.ok && lastOpts === undefined && String(inInline.error).includes(`cotal trust ${other}`) && String(inResolved.error).includes(`cotal trust ${other}`)
+      && !existsSync(join(manifestRoot, ".cotal", "run", "runlink02.json")), { inline: j(inInline), resolved: j(inResolved) });
+  resetOpts();
+  const sameLink = await launch("runlink03", agentOf("linksame", linkSame, { "mcp-config": "/tmp/planted.json" }));
+  check("CONTROL: a manifest persona linked within the trusted project launches", sameLink.ok && lastOpts?.launchOptions?.["mcp-config"] === "/tmp/planted.json", j(sameLink));
+
+  // Every hop is judged on the manager too: a chain through the untrusted folder's .cotal/agents to a
+  // file outside it, from outside or from the trusted project, and a persona under a project whose
+  // .cotal is a link, all refuse on both manager routes and keep no spec.
+  mkdirSync(join(other, "cfg"));
+  writeFileSync(join(other, "cfg", "x.md"), "---\nname: opts\nlaunchOptions:\n  mcp-config: /tmp/linked.json\n---\n");
+  symlinkSync("../../cfg/x.md", join(other, ".cotal", "agents", "hop.md"));
+  const chainOut = join(outsideDir, "chain.md");
+  symlinkSync(join(other, ".cotal", "agents", "hop.md"), chainOut);
+  const chainIn = join(manifestRoot, ".cotal", "agents", "chain.md");
+  symlinkSync(join(other, ".cotal", "agents", "hop.md"), chainIn);
+  const linkedDir = mkdtempSync(join(tmpdir(), "cotal-start-ov-linkeddir-"));
+  mkdirSync(join(linkedDir, "cfg", "agents"), { recursive: true });
+  writeFileSync(join(linkedDir, "cfg", "agents", "x.md"), "---\nname: opts\nlaunchOptions:\n  mcp-config: /tmp/linked.json\n---\n");
+  symlinkSync("cfg", join(linkedDir, ".cotal"));
+  const dirLink = join(outsideDir, "dirlink.md");
+  symlinkSync(join(linkedDir, ".cotal", "agents", "x.md"), dirLink);
+  const cases: Array<[string, string, string]> = [["chainout", chainOut, other], ["chainin", chainIn, other], ["dirlink", dirLink, linkedDir]];
+  for (const [label, path, root] of cases) {
+    resetOpts();
+    const inline = await launch(`run${label}`, agentOf(label, path, linked));
+    resetOpts();
+    const resolved = await mgr3.startAgent({ name: `${label}2`, agent: "smoke-ov", events: false, config: path, resolved: agentOf(`${label}2`, path, linked) });
+    check(`a manifest persona path (${label}) whose middle hop is under an untrusted project refuses inline and from disk`,
+      !inline.ok && !resolved.ok && lastOpts === undefined && String(inline.error).includes(`cotal trust ${root}`) && String(resolved.error).includes(`cotal trust ${root}`)
+        && !existsSync(join(manifestRoot, ".cotal", "run", `run${label}.json`)), { inline: j(inline), resolved: j(resolved) });
   }
 }
 

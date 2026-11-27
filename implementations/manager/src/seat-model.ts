@@ -4,7 +4,8 @@
  * source, as it is for the name `set-name` changed: the agent's connector writes the
  * `ai.cotal.model-set` mark only once its harness took a switch.
  */
-import { AGENT_CONTRACTS, AGENT_MODEL_SET_META_KEY, loadCotalConfig, modelPolicyEnv, type Presence, type SetModelOutput } from "@cotal-ai/core";
+import { AGENT_CONTRACTS, AGENT_MODEL_SET_META_KEY, loadCotalConfig, modelPolicyEnv, rejectionText, type Presence, type SetModelOutput } from "@cotal-ai/core";
+import { isTrustedProject } from "@cotal-ai/workspace";
 import type { ManagedAgent } from "./seat-types.js";
 
 /** The mark each seat last had refused, so a refusal is logged once and not on every roster change. */
@@ -15,7 +16,7 @@ const refusedMarks = new WeakMap<ManagedAgent, string>();
  *  under `modelPolicy` never switches (its connector refuses), so a mark from one is not kept. */
 function markRefusal(a: ManagedAgent, mark: unknown, workspaceRoot: string): string | undefined {
   if (!AGENT_CONTRACTS["set-model"].output.validate(mark)) return `${AGENT_MODEL_SET_META_KEY} is not { model, variant? }`;
-  const policed = modelPolicyEnv(loadCotalConfig(workspaceRoot), a.role);
+  const policed = modelPolicyEnv(loadCotalConfig(workspaceRoot, isTrustedProject), a.role);
   return Object.keys(policed).length ? `role "${a.role}" is under modelPolicy.${a.role}, which judges its model at launch only` : undefined;
 }
 
@@ -33,7 +34,7 @@ export function noteModelSet(a: ManagedAgent, seen: Presence, o: { workspaceRoot
   try {
     why = markRefusal(a, mark, o.workspaceRoot);
   } catch (e) {
-    why = `could not read the Cotal configuration: ${(e as Error).message}`;
+    why = `could not read the Cotal configuration: ${rejectionText(e)}`;
   }
   if (why !== undefined) {
     const key = JSON.stringify(mark);

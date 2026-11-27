@@ -57,10 +57,17 @@ else process.exit(spawnSync(${JSON.stringify(npm)}, process.argv.slice(2), { std
 }
 
 function checkSelfUpdateWithoutPackageLock(
-  selfUpdate: () => string, prefix: string, npmrc: string, claudePayload: string,
+  selfUpdate: () => string,
+  prefix: string,
+  npmrc: string,
+  claudePayload: string,
+  updateEnv: NodeJS.ProcessEnv,
+  native: readonly [string, { version?: string }],
+  nativeManifest: string,
 ): void {
   const userConfig = readFileSync(npmrc, "utf8");
   const lockPath = join(prefix, "package-lock.json");
+  const hiddenLockPath = join(prefix, "node_modules", ".package-lock.json");
   const contents = readFileSync(lockPath, "utf8");
   const stale = JSON.parse(contents);
   stale.packages["node_modules/@cotal-ai/connector-claude-code"].version = "0.0.0";
@@ -82,6 +89,30 @@ function checkSelfUpdateWithoutPackageLock(
     const unlocked = selfUpdate();
     check("self-update keeps current built-ins without creating a public lockfile",
       unlocked.includes("installed package closure is current") && !existsSync(lockPath), unlocked);
+
+    const omitted = spawnSync("npm", ["install", "--omit=optional", "--legacy-peer-deps", "--install-links", "--no-audit", "--no-fund"], {
+      cwd: prefix, env: updateEnv, encoding: "utf8",
+    });
+    check("real npm with omit=optional and package-lock=false removes the host native dependency",
+      omitted.status === 0 && !existsSync(nativeManifest) && !existsSync(lockPath), omitted.stderr);
+    const optionalRepaired = selfUpdate();
+    check("self-update with package-lock=false repairs an omitted host native dependency",
+      /reinstalling every built-in/.test(optionalRepaired) && existsSync(nativeManifest) && !existsSync(lockPath), optionalRepaired);
+    const afterOptionalRepair = selfUpdate();
+    check("repeat self-update after optional repair keeps current built-ins",
+      afterOptionalRepair.includes("installed package closure is current") && !existsSync(lockPath), afterOptionalRepair);
+
+    const hidden = JSON.parse(readFileSync(hiddenLockPath, "utf8")) as { packages: Record<string, { version?: string; extraneous?: boolean }> };
+    hidden.packages[`../.extensions.stage-removed/config/cotal/extensions/${native[0]}`] = { version: native[1].version, extraneous: true };
+    writeFileSync(hiddenLockPath, JSON.stringify(hidden, null, 2) + "\n");
+    const stageRepaired = selfUpdate();
+    const repairedHidden = JSON.parse(readFileSync(hiddenLockPath, "utf8")) as { packages: Record<string, unknown> };
+    check("self-update with package-lock=false repairs a stale ../ stage entry in .package-lock.json",
+      /reinstalling every built-in/.test(stageRepaired) &&
+      Object.keys(repairedHidden.packages).every((key) => !key.includes(".extensions.stage-")), stageRepaired);
+    check("repeat self-update after hidden lock stage repair keeps current built-ins",
+      selfUpdate().includes("installed package closure is current") && !existsSync(lockPath));
+
     check("self-update leaves the user's package-lock setting unchanged", readFileSync(npmrc, "utf8") === `${userConfig}package-lock=false\n`);
   } finally {
     writeFileSync(npmrc, userConfig);
@@ -401,7 +432,7 @@ try {
     const loaded = importDashboard();
     check("the dashboard imports after self-update rebinds its peer", loaded.status === 0, loaded.stderr);
     check("a second self-update skips reconciliation", selfUpdate().includes("installed package closure is current"));
-    checkSelfUpdateWithoutPackageLock(selfUpdate, extensionPrefix, npmrc, installedAt("claude", "package.json"));
+    checkSelfUpdateWithoutPackageLock(selfUpdate, extensionPrefix, npmrc, installedAt("claude", "package.json"), updateEnv, native, nativeManifest);
   }
   // Real npm creates the reported existing installation while leaving its lock intact.
   const omitted = spawnSync("npm", ["install", "--omit=optional", "--legacy-peer-deps", "--install-links", "--no-audit", "--no-fund"], {

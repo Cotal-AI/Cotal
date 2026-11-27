@@ -396,8 +396,9 @@ load, and its Claude Desktop entry), then checks other `@cotal-ai/*` operator ex
 npm's own record in the extensions prefix. One recorded at the binary's exact version with the spec
 `update` installs (`<package>@<version>`) is kept when the prefix lock records it at that version
 and every package the lock records is on disk at its recorded version. When npm's `package-lock`
-setting is false, update checks npm's installed-tree record instead of the public lockfile and still
-verifies each built-in against the shipped payload. The extension's entry file must also be present
+setting is false, update checks npm's installed-tree record and declared optional dependencies
+instead of a missing or stale public lockfile, and still verifies each built-in against the shipped
+payload. The extension's entry file must also be present
 and loadable. The extension check does not compare file contents. Cotal keeps a working
 local-path extension at the binary's version under the same lock and entry checks. If it needs
 repair at that version, Cotal reinstalls it from the recorded path. A registry extension that
@@ -560,10 +561,13 @@ proxy settings and retry. For a refused proxy set in npm configuration, the comm
 neither prints the proxy URL nor bypasses it. An unavailable registry without a confirmed proxy
 refusal remains a no-op.
 If npm is in offline mode and the latest-version lookup misses Cotal's temporary cache,
-`cotal update --self` reports that the check was skipped and exits 0. The skipped check does not
-retry with network access or start a new install. Before the lookup, the updater can still recover an
-interrupted update or finish a pending extension promotion. It reports a completed promotion
-separately. Run the command with npm offline mode disabled to check for a newer release.
+`cotal update --self` reports that the check was skipped and exits 0. It does not retry with network
+access or replace the CLI. A manual run can repair damaged first-party extensions installed from npm
+at the running CLI's version, using npm's existing cache and the usual continuity checks. It names
+any extensions it could not repair and does not stop agents or restart the daemon for this repair.
+Before the lookup, the updater can still recover an interrupted update or finish a pending
+extension promotion. It reports a completed promotion separately. Run the command with npm offline
+mode disabled to check for a newer release.
 For other non-network failures in the latest-version check, `cotal update --self` reports npm's
 first diagnostic line and exits with status 1.
 
@@ -651,7 +655,14 @@ and names `chmod g-w <path>` as the next step.
 
 ### Update limits
 
-Third-party extensions are listed with their installed version and recorded spec but are not
+When an operator-installed first-party extension has no recorded install spec, `cotal update`
+verifies it against the installed version and npm lock. If it needs repair, the command uses the
+package name at this Cotal release's version. A built-in without a recorded spec is repaired from
+the shipped payload.
+Seed cleanup keeps old generations that the extension inventory or npm metadata still reference.
+If cleanup cannot remove an old generation, the command warns and continues the update.
+
+Third-party extensions are listed with their installed version and any recorded spec but are not
 auto-updated in v1. Floating third-party updates require `@cotal-ai/*` peer-range validation and are
 a future follow-up. When `update --self` cannot reach the registry before selecting a release,
 it exits 0 without reconciling packages, inspecting Manager custody or creating an update recovery
@@ -888,8 +899,9 @@ When a package needs an export its linked `@cotal-ai/*` peer does not have,
 when the versions establish one. If the versions match, check the extension's import against the
 exports of the linked peer before replacing either build.
 On POSIX shells, a reinstall command printed for a local extension quotes paths with spaces as one argument.
-When a failed load calls for reinstalling an operator-installed extension but its recorded install spec
-cannot be used in a command, the advice names `cotal ext remove <package>` instead.
+When an operator-installed first-party extension has no recorded install spec, the advice gives
+`cotal ext add <package>`. The bare package name selects this CLI's version. In other cases where
+the original spec cannot be used in a command, the advice names `cotal ext remove <package>` instead.
 Each load or add reads the installed package's metadata once, using that same result for its version,
 peer links, entry and import diagnosis. Corrupt or unreadable metadata refuses before import; an entry
 that later changes its own `package.json` cannot change the peer range used to diagnose that import.
@@ -925,7 +937,8 @@ rather than weakening its shell-file ownership checks.
 Bare `ext --json` (or `ext list --json`) writes one JSON document: `result.root` is the install
 prefix and `result.items` holds one row per installed extension with `pkg`, `version`, `spec` (what
 `ext add` was given), `seeded` (`true` for an entry the built-in seed installed) and `provides` (the
-`kind:name` refs the table shows). An empty prefix is an empty list. `--plain` writes the same report
+`kind:name` refs the table shows). If the install spec was not recorded, the row omits `spec`.
+An empty prefix is an empty list. `--plain` writes the same report
 without color. The other `ext` subcommands refuse `--json` and `--plain` with `USAGE_INVALID`.
 `ext root` stays a raw path for `$(cotal ext root)`, even if the manifest is corrupt.
 If the manifest is corrupt, `ext list --json` exits 1 with a `SCHEMA_INVALID` refusal and names
@@ -1409,6 +1422,21 @@ The first interactive run at `regular` prints one notice to stderr. `COTAL_TELEM
 anything but a level refuses `USAGE_INVALID`. A settings file that does not validate refuses
 `SCHEMA_INVALID` on `cotal telemetry` and on every command that reports usage, until it is fixed or
 moved away. Under the environment opt-outs above nothing reads it, so it stops no command.
+
+## trust [#trust]
+
+```bash
+cotal trust <path> [--hex] [--json|--plain]
+```
+
+Trusts one project folder, so its `.cotal/config.json` may declare MCP servers and `spawn.env`
+names, and its persona files may declare `launchOptions`, for agents spawned there. The folder's
+canonical path is recorded in `trusted-projects.json` in the operator config folder. Trusting a
+folder that is already trusted is a `no-op`. A path that is not a folder refuses `TARGET_NOT_FOUND`.
+A folder whose `.cotal` another account owns refuses `PERMISSION_DENIED`.
+The refusal for an untrusted project prints a command you can copy into your shell. The command
+uses `--hex` when a path contains characters that a shell might interpret.
+[Trusted project folders](config.mdx#trusted-project-folders) describes the rule.
 
 
 ### Preparation [#preparation]

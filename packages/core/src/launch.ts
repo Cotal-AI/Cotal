@@ -42,7 +42,8 @@ export interface MeshLaunchAgent {
   allowSubscribe: string[];
   /** Effective merged post ACL (default-deny). */
   allowPublish: string[];
-  /** Original persona path — for user-facing output only; never read for authority. */
+  /** Original persona path. Shown to the user, and read again on the launching host to check the
+   *  persona's own `launchOptions` against project trust; never a source of identity or access. */
   personaPath?: string;
   /** Content hash of the resolved launch fields (drift detection: a changed hash ⇒ restart-required). */
   hash: string;

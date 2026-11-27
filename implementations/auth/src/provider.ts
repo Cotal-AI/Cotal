@@ -25,7 +25,7 @@ import { parseServiceAuthorityEnvelope, parseServiceAuthorityRequest } from "@co
 import { parseRemoteEndpointDeregisterRequest, parseRemoteEndpointDeregisterResult } from "@cotal-ai/core";
 import { CommandFailure } from "@cotal-ai/workspace";
 import { readRemoteServiceAuthorityInfo, postRemoteServiceAuthority, serviceAuthorityUrl, withServiceAuthorityBudget, assertServiceViewFreshness } from "./service-authority-client.js";
-import { deleteIdpSpaceCatalog, fetchIdpJwt, hasIdpSessions, hasIdpSpaceCatalog, IdpSessionRejectedError, loadIdpSession, normalizeIdpUrl, prepareIdpSpaceCatalogs, probeIdpJwks, requireIdpSession } from "./login.js";
+import { deleteIdpSpaceCatalog, fetchIdpJwt, hasIdpSessions, hasIdpSpaceCatalog, IdpSessionRejectedError, IdpTokenServerError, IdpUnreachableError, loadIdpSession, normalizeIdpUrl, prepareIdpSpaceCatalogs, probeIdpJwks, requireIdpSession } from "./login.js";
 import { deriveOwnerForIdpSubject } from "./derive.js";
 import { findActorUnified, findInteractiveActor, hashActorToken, newActorToken, notGrantedReason, withManagedGrantTransaction } from "./ledger.js";
 import { userAuthTrustFingerprint, validateRetainedManagedAgent } from "./continuity.js";
@@ -143,11 +143,15 @@ export const cotalAuthProvider: AuthProvider = {
     try {
       return await postManagerAuthority(endpoint, idpUrl, authorization, request, "manager run issuance") as RemoteRunAttemptResult;
     } catch (error) {
-      if (error instanceof ManagerAuthorityRefusal && isManagerAuthorityOutage(error.status)) {
-        if (request.operator && request.operator.answers === undefined)
-          throw new EpEnvelopeError("unavailable", "the run authority is temporarily unavailable; retry the read in a few seconds", undefined, "not-executed");
+      if (isRunAuthorityOutage(error, request.space)) {
+        if (request.operator && request.operator.answers === undefined) {
+          const message = error instanceof ManagerAuthorityRefusal && isManagerAuthorityOutage(error.status)
+            ? "the run authority is temporarily unavailable; retry the read in a few seconds" : error.message;
+          throw new EpEnvelopeError("unavailable", message, undefined, "not-executed");
+        }
         if (request.attempt && request.attempt.served === undefined)
-          throw new EpEnvelopeError("unavailable", error.message, undefined, "unknown");
+          throw new EpEnvelopeError("unavailable", error.message, undefined,
+            error instanceof IdpTokenServerError || error instanceof IdpUnreachableError ? "not-executed" : "unknown");
       }
       throw error;
     }
@@ -966,13 +970,17 @@ async function postManagerAuthority(
     headers: { "content-type": "application/json", ...(authorization ? { authorization } : {}) },
     body: JSON.stringify({ idpToken: idpJwt, request }),
     signal: signal ?? AbortSignal.timeout(30_000),
-  }).catch((error) => { throw new Error(`the ${what} endpoint did not answer at ${endpoint} (${error instanceof Error ? error.message : String(error)})`, { cause: error }); });
+  }).catch((error: unknown) => {
+    const message = `the ${what} endpoint did not answer at ${endpoint} (${error instanceof Error ? error.message : String(error)})`;
+    throw isManagerAuthorityTransportOutage(error) ? new ManagerAuthorityTransportError(message, { cause: error }) : new Error(message, { cause: error });
+  });
   if (response.status >= 300 && response.status < 400)
     throw new Error(`the ${what} endpoint answered ${response.status} with redirect Location ${JSON.stringify(response.headers.get("location") ?? "")} - redirects are refused`);
   // A stand-in object would reach the caller as a result the endpoint never sent.
-  const body = await response.json().catch(() => {
+  const body = await response.json().catch((error: unknown) => {
     const message = `the ${what} endpoint at ${endpoint} answered HTTP ${response.status} with a body that could not be read as JSON`;
     if (isManagerAuthorityOutage(response.status)) throw new ManagerAuthorityRefusal(message, response.status, undefined);
+    if (response.ok && isManagerAuthorityTransportOutage(error)) throw new ManagerAuthorityTransportError(message, { cause: error });
     throw new Error(message);
   });
   signal?.throwIfAborted();
@@ -986,6 +994,22 @@ const COTAL_VERSION = (JSON.parse(readFileSync(new URL("../package.json", import
 
 function isManagerAuthorityOutage(status: number): boolean {
   return status === 502 || status === 503 || status === 504;
+}
+
+class ManagerAuthorityTransportError extends Error {}
+
+function isManagerAuthorityTransportOutage(error: unknown): boolean {
+  if (error instanceof DOMException && error.name === "TimeoutError") return true;
+  const code = (error as { cause?: { code?: unknown } } | null)?.cause?.code;
+  return typeof code === "string" && ["ECONNREFUSED", "ECONNRESET", "ETIMEDOUT", "EAI_AGAIN", "UND_ERR_CONNECT_TIMEOUT", "UND_ERR_SOCKET"].includes(code);
+}
+
+function isRunAuthorityOutage(error: unknown, space: string): error is Error {
+  if (error instanceof ManagerAuthorityTransportError || error instanceof IdpTokenServerError || error instanceof IdpUnreachableError) return true;
+  if (!(error instanceof ManagerAuthorityRefusal)) return false;
+  // Some issuers report a restart as 403. Only the exact restart refusal is temporary.
+  return isManagerAuthorityOutage(error.status) || (error.status === 403 && (error.body as { error?: unknown } | null)?.error ===
+    `the auth service for space "${space}" is momentarily unavailable (it detected a fault and is restarting); retry shortly`);
 }
 
 /** A host's non-2xx answer to a manager-authority request, with the HTTP status and body it answered. */
