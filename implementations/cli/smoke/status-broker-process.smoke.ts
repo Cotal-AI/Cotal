@@ -240,12 +240,16 @@ try {
     writeFileSync(journal, '{"schemaVersion":1,"kind":\n');
     const implicit = run("ps", "--space", "status-broker", "--json");
     const matching = run("ps", "--space", "status-broker", "--server", server, "--json");
-    const different = run("ps", "--space", "status-broker", "--server", `nats://127.0.0.1:${await freePort()}`, "--json");
-    const expected = JSON.parse(implicit.stdout).error, actual = JSON.parse(matching.stdout).error;
+    const serverOnly = run("ps", "--server", server, "--json");
+    const otherPort = `nats://127.0.0.1:${await freePort()}`;
+    const different = run("ps", "--space", "status-broker", "--server", otherPort, "--json");
+    const differentServerOnly = run("ps", "--server", otherPort, "--json");
+    const expected = JSON.parse(implicit.stdout).error, actual = JSON.parse(matching.stdout).error, actualServerOnly = JSON.parse(serverOnly.stdout).error;
     check("ps with the saved address reports the same truncated journal and recovery as ps without it",
-      implicit.status === 1 && expected.code === "SCHEMA_INVALID" && expected.message.includes(journal) && matching.status === 1 && JSON.stringify(actual) === JSON.stringify(expected), matching.stdout);
+      implicit.status === 1 && expected.code === "SCHEMA_INVALID" && expected.message.includes(journal) && matching.status === 1 && JSON.stringify(actual) === JSON.stringify(expected) && serverOnly.status === 1 && JSON.stringify(actualServerOnly) === JSON.stringify(expected), { matching: matching.stdout, serverOnly: serverOnly.stdout });
     check("ps with a different address does not diagnose the local journal",
-      different.status === 2 && JSON.parse(different.stdout).error?.code === "TARGET_UNAVAILABLE" && !different.stdout.includes(journal), different.stdout);
+      different.status === 2 && JSON.parse(different.stdout).error?.code === "TARGET_UNAVAILABLE" && !different.stdout.includes(journal) &&
+      differentServerOnly.status === 2 && JSON.parse(differentServerOnly.stdout).error?.code === "TARGET_UNAVAILABLE" && !differentServerOnly.stdout.includes(journal), { different: different.stdout, differentServerOnly: differentServerOnly.stdout });
   } finally { writeFileSync(journal, bytes, { mode: 0o600 }); }
   try {
     rmSync(journal);
@@ -396,6 +400,33 @@ ${replace ? `ln -sf ${shellPath(realNats)} "$0"\n` : ""}exec ${shellPath(realNat
     if (stopped.status !== 0) throw new Error(stopped.stdout + stopped.stderr);
     const cleared = local("use", "--clear");
     if (cleared.status !== 0) throw new Error(cleared.stdout + cleared.stderr);
+  }
+  const journalPath = join(project, ".cotal", "stack-controller.json");
+  const journalBytes = readFileSync(journalPath);
+  const otherAddress = `nats://127.0.0.1:${await freePort()}`;
+  const forgotten = local("space", "forget", space);
+  if (forgotten.status !== 0) throw new Error(forgotten.stdout + forgotten.stderr);
+  try {
+    writeFileSync(journalPath, '{"operation":');
+    const implicit = local("ps", "--json");
+    const matching = local("ps", "--space", space, "--server", address, "--json");
+    const plainMatching = local("ps", "--plain", "--space", space, "--server", address);
+    const serverOnly = local("ps", "--server", address, "--json");
+    const different = local("ps", "--space", space, "--server", otherAddress, "--json");
+    const otherSpace = local("ps", "--space", "unrelated-space", "--server", address, "--json");
+    const expected = JSON.parse(implicit.stdout).error;
+    check("ps with the saved open address and space reports the truncated journal even without a prepared record",
+      implicit.status === 1 && expected.code === "SCHEMA_INVALID" && expected.message.includes(journalPath) &&
+      matching.status === 1 && JSON.stringify(JSON.parse(matching.stdout).error) === JSON.stringify(expected) &&
+      plainMatching.status === 1 && /Code:\s+SCHEMA_INVALID/.test(plainMatching.stderr) && plainMatching.stderr.includes(journalPath) &&
+      serverOnly.status === 1 && JSON.stringify(JSON.parse(serverOnly.stdout).error) === JSON.stringify(expected),
+      { implicit: implicit.stdout, matching: matching.stdout, plain: plainMatching.stderr, serverOnly: serverOnly.stdout });
+    check("ps with an unrelated address or space keeps the broker connection refusal on a stopped open root",
+      different.status === 2 && JSON.parse(different.stdout).error?.code === "TARGET_UNAVAILABLE" && !different.stdout.includes(journalPath) &&
+      otherSpace.status === 2 && JSON.parse(otherSpace.stdout).error?.code === "TARGET_UNAVAILABLE" && !otherSpace.stdout.includes(journalPath),
+      { different: different.stdout, otherSpace: otherSpace.stdout });
+  } finally {
+    writeFileSync(journalPath, journalBytes, { mode: 0o600 });
   }
 }
 if (process.platform === "linux") {

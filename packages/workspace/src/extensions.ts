@@ -187,6 +187,13 @@ export function loadExtensionsManifest(): ExtensionsManifest {
   }
   const m = parsed as ExtensionsManifest | null;
   if (!Array.isArray(m?.extensions)) throw new CorruptExtensionsManifestError(p, 'no "extensions" array');
+  const invalid = m.extensions.findIndex((entry) => {
+    if (entry === null || typeof entry !== "object" || Array.isArray(entry)) return true;
+    const record = entry as { pkg?: unknown; commands?: unknown };
+    return typeof record.pkg !== "string" || record.pkg.length === 0 || !Array.isArray(record.commands)
+      || record.commands.some((command) => command === null || typeof command !== "object" || Array.isArray(command) || typeof (command as { name?: unknown }).name !== "string");
+  });
+  if (invalid !== -1) throw new CorruptExtensionsManifestError(p, `invalid extension inventory entry at index ${invalid}`);
   return m;
 }
 

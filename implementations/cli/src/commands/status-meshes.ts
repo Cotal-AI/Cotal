@@ -259,10 +259,15 @@ export function selectedStackStarting(selected: Selected, folder: StatusResult["
 }
 
 /** Report the local recovery observation without treating it as a resolved connection. */
-export function selectedRecovery(hints: string[]): SelectedResult {
+export function selectedRecovery(hints: string[], members: readonly { role: string; pid: number }[] = []): SelectedResult {
   const cmd = displayCmd();
-  hints.push(`run ${codeSpan(`${cmd} down --dry-run`)} in this project to inspect the pinned broker, then ${codeSpan(`${cmd} down --yes`)} to stop it`);
-  return { resolved: false, code: "not-started", message: "the stack's broker process is running, but its member records are missing from this Cotal home" };
+  const pinned = members.length === 1 && members[0]?.role === "broker" ? "pinned broker" : "pinned members";
+  hints.push(`run ${codeSpan(`${cmd} down --dry-run`)} in this project to inspect the ${pinned}, then ${codeSpan(`${cmd} down --yes`)} to stop ${members.length === 1 ? "it" : "them"}`);
+  const roles = members.map((row) => row.role);
+  const running = roles.length === 0 ? "processes are"
+    : roles.length === 1 ? `${roles[0]} process is`
+    : `${roles.slice(0, -1).join(", ")} and ${roles[roles.length - 1]} processes are`;
+  return { resolved: false, code: "not-started", message: `the stack's ${running} running, but its member records are missing from this Cotal home` };
 }
 
 export async function readSelected(selected: Selected, responder: { state: DeliveryResponderState; leased: boolean }, folder: StatusResult["folder"], gaps: Gaps, hints: string[], { preflight, pidfileUnreadable }: Awaited<ReturnType<typeof readStatusPreflight>>, all: boolean, selectedStarting: boolean): Promise<SelectedResult> {

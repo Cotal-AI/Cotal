@@ -404,6 +404,19 @@ export function restoreConnectorManifestAccessForUpdate(search: boolean): boolea
   return restoreManifestAccess(resolve(globalConfigDir()), selectedConnectorConfig, search);
 }
 
+/** The selected update's rollback source, only within this installation's protected version sets. */
+export function previousUpdateConnectorConfig(): string | undefined {
+  const id = identity();
+  if (!id || readUpdateRecovery()) return;
+  const selected = readLineage(dirname(id.path));
+  if (selected?.entry !== id.entry || selected.version !== id.version || typeof selected.snapshot !== "string") return;
+  const current = currentConfig(id);
+  if (!current || current !== selectedRoot(selected.root, id.path, selectionDiffers)) return;
+  const previous = snapshotConfig(selected.snapshot, undefined, id.path);
+  if (!previous || !sameConfigPath(dirname(dirname(previous)), dirname(id.path)) || sameConfigPath(previous, current)) return;
+  return previous;
+}
+
 /**
  * Restore write access without following managed links or touching another installation.
  * Report completed repairs and recovery, even if a later check refuses. `onModeChange` reports
