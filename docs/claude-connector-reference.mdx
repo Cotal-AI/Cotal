@@ -796,11 +796,12 @@ person's mod registered, and Claude refuses that run too.
 
 `interrupt` stops the main turn with the mod's turn abort, then stops each tool a turn abort moved
 to the background in the current uninterrupted chain of main turns, such as a running Bash command
-whose turn an earlier prompt preempted or that Escape stopped locally. It answers `interrupted`, or
-`idle` when no turn ran. When Claude refuses to stop such a tool, it still answers `interrupted`,
-and the seat's log says `a tool is still running`. Claude fires no hook when a mod stops a turn, so
-the connector ends the turn itself: presence reads idle and the next queued command can start. The
-mod has 10 s to answer.
+when a prompt that arrived mid-turn stayed queued until `interrupt` aborted the turn and Claude
+appended that prompt after the abort's tool result. It answers `interrupted`, or `idle` when no turn
+ran. When Claude refuses to stop such a tool, it still answers `interrupted`, and the seat's log
+says `a tool is still running`. Claude fires no hook when a mod stops a turn, so the connector ends
+the turn itself: presence reads idle and the next queued command can start. The mod has 10 s to
+answer.
 
 `turn` hands the owner's words to the mod, which submits them with `$.prompt.submit` as the person's
 own, so the model reads them without a plugin frame. The transcript records them under the plugin's

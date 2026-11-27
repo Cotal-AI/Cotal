@@ -428,6 +428,39 @@ describe('interrupt', () => {
     expect(record.aborts).toEqual(['t1', 't2'])
     expect(record.stops).toEqual([])
   })
+  test('stops a tool when the abort appends its result and a queued prompt lands after it', async ($, on) => {
+    mock.clock(on)
+    const history: SessionMessage[] = [userPrompt('earlier'), bashAborted('u0', 'old')]
+    const { ask, record } = seat(on, {
+      messages: () => history,
+      abort: (turnId) => {
+        history.push(bashUse('u1'), bashAborted('u1', 'b1'), userPrompt('queued mid-turn input'))
+        return completes($)(turnId)
+      },
+    })
+    await start($)
+    history.push(userPrompt('run loop'))
+    await $.turn.start({ text: 'run loop', turnId: 't1' })
+    expect(await ask({ op: 'interrupt' })).toEqual({ id: 'r1', op: 'interrupt', outcome: 'interrupted' })
+    expect(record.aborts).toEqual(['t1'])
+    expect(record.stops).toEqual(['b1'])
+  })
+  test('a rejected session.messages at turn.start falls back to the last prompt on interrupt', async ($, on) => {
+    mock.clock(on)
+    let reads = 0
+    const { ask, record } = seat(on, {
+      messages: () => {
+        if (++reads === 1) throw new Error('session messages unavailable')
+        return ABORTED
+      },
+      abort: completes($),
+    })
+    await start($)
+    await $.turn.start({ text: 'run the two scripts', turnId: 't1' })
+    expect(await ask({ op: 'interrupt' })).toEqual({ id: 'r1', op: 'interrupt', outcome: 'interrupted' })
+    expect(record.aborts).toEqual(['t1'])
+    expect(record.stops).toEqual(['b1', 'b2'])
+  })
 })
 
 describe('prompt', () => {

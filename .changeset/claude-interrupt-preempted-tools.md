@@ -2,4 +2,4 @@
 "@cotal-ai/connector-claude-code": patch
 ---
 
-Stop foreground tools that an earlier aborted turn in the same uninterrupted chain moved to the background when a remote `interrupt` ends a Claude Code seat's turn after a preempting prompt.
+Stop foreground tools that a remote `interrupt` moved to the background when a prompt sent mid-turn stayed queued in Claude Code until `interrupt` aborted the turn and was appended after the abort's tool result before `interrupt` read the session messages.
