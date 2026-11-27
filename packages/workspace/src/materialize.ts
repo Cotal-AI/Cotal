@@ -224,6 +224,17 @@ async function loadFactory(ext: InstalledExtension, onDisk: InstalledExtensionPa
   const { pkg } = ext;
   const entry = resolveExtensionEntry(extensionPackageDir(pkg), onDisk);
   const declared = readPluginDeclaration(onDisk.cotal);
+  const installed = {
+    contract: declared.contract,
+    core: declared.core,
+    provides: extensionProvides(ext).map((row) => ({ kind: row.kind, name: row.name, aliases: row.aliases ?? [] })),
+    commands: ext.commands,
+    connectors: ext.connectors ?? [],
+    localProcesses: ext.localProcesses ?? [],
+    servicePresets: ext.servicePresets ?? [],
+  };
+  if (!samePluginDeclaration(declared, installed))
+    throw new Error(`the plugin declaration does not match the installed manifest. ${extensionReinstallAdvice(ext)}`);
   checkPluginCore(pkg, onDisk, declared, entry);
   // Record any attempted import. Node can retain evaluated dependencies even when an entry throws.
   const loaded = loadedPlugins.get(pkg) ?? { entry: ext };

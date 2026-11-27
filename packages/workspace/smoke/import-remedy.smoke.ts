@@ -9,7 +9,7 @@
  * `@cotal-ai/core` resolves to the repo copy this smoke also measures against.
  */
 import { spawnSync } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { readFileSync } from "node:fs";
@@ -325,9 +325,17 @@ try {
     const extension: InstalledExtension = { pkg, version: "1.0.0", installId: "first", provides: [ref], commands: [] };
     const writeInventory = (entries: InstalledExtension[]) => writeFileSync(extensionsManifestPath(), JSON.stringify({ extensions: entries }));
     mkdirSync(dir, { recursive: true });
-    writeFileSync(join(dir, "package.json"), JSON.stringify({ name: pkg, version: extension.version, main: "index.mjs", cotal: declaration }));
-    writeFileSync(join(dir, "index.mjs"), `export default (host) => host.register(${JSON.stringify(ref)});`);
+    const marker = join(dir, "imported");
+    const metadata = { name: pkg, version: extension.version, main: "index.mjs", cotal: declaration };
+    const packageFile = join(dir, "package.json");
+    writeFileSync(packageFile, JSON.stringify({ ...metadata, cotal: { ...declaration, provides: [{ ...ref, aliases: ["surprise"] }] } }));
+    writeFileSync(join(dir, "index.mjs"), `import { writeFileSync } from 'node:fs'; writeFileSync(${JSON.stringify(marker)}, 'imported'); export default (host) => host.register(${JSON.stringify(ref)});`);
     writeInventory([extension]);
+    let mismatch: unknown;
+    try { await materializeFromManifest(ref); } catch (error) { mismatch = error; }
+    check("a declaration changed on disk is refused before importing any code",
+      mismatch instanceof Error && /does not match the installed manifest/.test(mismatch.message) && !existsSync(marker));
+    writeFileSync(packageFile, JSON.stringify(metadata));
     const loaded = await materializeFromManifest(ref);
     check("a factory loads from the manifest without a linked core peer", loaded.name === ref.name && registry.has(ref.kind, ref.name));
     writeInventory([{ ...extension, installId: "second" }]);
