@@ -221,7 +221,7 @@ export function displayCmd({ fromAnyFolder = false } = {}): string {
 }
 
 /** Format a Windows `[executable, ...args]` prefix so PowerShell and Command Prompt run it directly. */
-export function windowsDisplayCommand([file, ...args]: readonly string[]): string {
+function windowsDisplayCommand([file, ...args]: readonly string[]): string {
   // A fully quoted executable is a string in PowerShell, and `[` or `]` in the executable token is a
   // PowerShell wildcard. Leave the drive prefix outside the quotes when the runtime paths are printable ASCII.
   const ascii = (value: string) => /^[\x20-\x7e]+$/.test(value) ? windowsShellWord(value) : undefined;
