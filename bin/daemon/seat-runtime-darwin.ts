@@ -46,16 +46,6 @@ function requireStandaloneNode(path: string): void {
     throw new Error("the macOS PTY host Node depends on files outside the retained runtime");
 }
 
-function quarantine(path: string): string | undefined {
-  const tool = "/usr/bin/xattr", name = "com.apple.quarantine";
-  const listed = nativeRun(tool, [path], undefined, 5000);
-  if (listed.status !== 0) throw new Error("could not inspect macOS PTY runtime quarantine");
-  if (!listed.stdout.split(/\r?\n/).includes(name)) return undefined;
-  const value = nativeRun(tool, ["-px", name, path], undefined, 5000);
-  if (value.status !== 0) throw new Error("could not read macOS PTY runtime quarantine");
-  return value.stdout.replace(/\s/g, "");
-}
-
 /** Stage a protected, immutable closure outside the install that npm or the app can replace. */
 export async function retainDarwinSeatRuntime(input: {
   home: string;
@@ -78,11 +68,8 @@ export async function retainDarwinSeatRuntime(input: {
   if (input.desktop) {
     if (node !== realpathSync.native(process.execPath) || !lstatSync(join(root, "desktop-runtime.json")).isFile())
       throw new Error("the macOS PTY host must retain the running desktop runtime");
-    const before = quarantine(node);
-    const retained = await retainHostedAppRuntime(home, root);
+    const retained = await retainHostedAppRuntime(home, root, true);
     const executable = join(retained, "cotal-node");
-    if (quarantine(node) !== before || quarantine(executable) !== before)
-      throw new Error("the macOS PTY host Node quarantine differs from the installed app");
     return { generation: basename(retained), node: executable, entry: join(retained, "runtime", suffix) };
   }
   const current = selectExecutionProgram(realpathSync.native(input.installedRoot));
