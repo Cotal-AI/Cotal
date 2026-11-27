@@ -2,7 +2,7 @@ import type { ConnectionState } from "./endpoint-connection-state.js";
 import type { EndpointIdentity } from "./endpoint-identity.js";
 import type { EndpointParts } from "./endpoint-parts.js";
 import { randomUUID } from "node:crypto";
-import { setTimeout as delay } from "node:timers/promises";
+import { setImmediate as yieldToLoop, setTimeout as delay } from "node:timers/promises";
 import { nanos, type MsgHdrs, type NatsConnection } from "@nats-io/transport-node";
 import { jetstream, jetstreamManager, AckPolicy, DeliverPolicy, JetStreamApiError, type JetStreamClient, type JetStreamManager, type Consumer, type ConsumerInfo, type ConsumerConfig, type JsMsg } from "@nats-io/jetstream";
 import { chatStream, dmStream, chatSubject, chatHistDurable, spacePrefix, parseSubject, subjectMatches, assertValidChannel, assertValidOwnerToken, isConcreteChannel, isChannelFamily, historyReaderConsumer, HISTORY_READERS, calloutReaderId, parsePrincipalKey, unicastRecvFilter, unicastSubject, type ParsedSubject } from "./subjects.js";
@@ -969,6 +969,7 @@ export class EndpointHistory {
    *  tail owns them. Reads through the contained {@link collectHistory}. */
   async backfillChannel(channel: string, upToSeq: number, sinceMs?: number, floorSeq?: number): Promise<number> {
     if (floorSeq !== undefined && floorSeq >= upToSeq) return 0;
+    const nc = this.conn.nc;
     const subject = chatSubject(this.identity.space, "*", "*", channel);
     // A window that reaches back before 1970 covers the whole retained window (#7323). Its start time
     // would be a date JetStream does not read, or not a valid date at all, and the read replayed nothing.
@@ -985,7 +986,13 @@ export class EndpointHistory {
     }
     const noop: Delivery = { ack: () => {}, nak: () => {}, durable: false };
     let n = 0;
-    for (const sm of msgs) {
+    for (let i = 0; i < msgs.length; i++) {
+      // Catch-up can cover the whole space. Let timers and live traffic run between replay slices.
+      if (i > 0 && i % 128 === 0) {
+        await yieldToLoop();
+        if (this.conn.nc !== nc || nc?.isClosed() || !this.identity.channels.includes(channel)) break;
+      }
+      const sm = msgs[i]!;
       if (hasStoredOrigin(sm.headers)) continue;
       let msg: CotalMessage;
       try {

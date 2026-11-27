@@ -4,6 +4,7 @@ import { spawn } from "node:child_process";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { performance } from "node:perf_hooks";
 import {
   CotalEndpoint, createSpaceAuth, isReachable, mintCreds, mintLifecycleUid,
   newIdentity, provisionAgent, seedChannelRegistry, serverConfig, setupSpaceStreams,
@@ -38,6 +39,45 @@ function withSenderClock<T>(offset: number, send: () => T): T {
   try { return send(); } finally { Date.now = now; }
 }
 
+async function checkWideReplay(manager: CotalEndpoint, publisher: CotalEndpoint) {
+  const count = 12_000;
+  const channels = Array.from({ length: 16 }, (_, i) => `replay.wide.c${i}`);
+  const text = "x".repeat(4_096);
+  for (let i = 0; i < count; i += 4) {
+    await Promise.all(channels.slice(0, 4).map((_, j) =>
+      publisher.multicast(text, { channel: channels[(i + j) % channels.length] }),
+    ));
+  }
+
+  const subscribe = [">", "replay.wide.>"];
+  const id = newIdentity();
+  const lifecycleUid = mintLifecycleUid();
+  const creds = await provisionAgent(manager, auth, id, { subscribe, allowSubscribe: [">"], lifecycleUid });
+  const agent = new MeshAgent({
+    space, servers, tls: false, name: "wide-reader", id: id.id, creds, lifecycleUid,
+    subscribe, allowSubscribe: [">"], allowPublish: [], kind: "agent",
+  });
+  agents.push(agent);
+  let replayed = 0;
+  let nextTurn: Promise<{ elapsedMs: number; replayed: number }> | undefined;
+  agent.ep.on("message", (message, _delivery, meta) => {
+    if (!meta.historical || !message.channel?.startsWith("replay.wide.")) return;
+    replayed++;
+    if (replayed !== 1) return;
+    const began = performance.now();
+    nextTurn = new Promise(resolve => setImmediate(() => resolve({ elapsedMs: performance.now() - began, replayed })));
+  });
+  await agent.start();
+  assert(nextTurn, "the join must replay retained history");
+  const firstTurn = await nextTurn;
+  assert.equal(replayed, 2 * count, "the root and the overlapping family both replay their full history");
+  assert(firstTurn.replayed <= 256 && firstTurn.elapsedMs < 250,
+    `first event-loop turn after replay starts must run within 250 ms and 256 posts: ${JSON.stringify(firstTurn)}`);
+  assert(agent.peekInbox("pull-only").some(item => item.historical && item.channel?.startsWith("replay.wide.")));
+  console.log(`PASS wide join: ${count} posts on ${channels.length} channels, first replay yield ${firstTurn.elapsedMs.toFixed(1)} ms after ${firstTurn.replayed} posts`);
+  await agent.stop();
+}
+
 try {
   await awaitBrokerReady(() => isReachable(servers), { servers, attempts: 50, delayMs: 100 });
   const creds = await mintCreds(auth, newIdentity(), "provisioner");
@@ -50,7 +90,7 @@ try {
   await manager.start();
   const delivery = new CotalEndpoint({
     space, servers, creds: await mintCreds(auth, newIdentity(), "delivery"),
-    channels: [], consume: false, watchPresence: true, registerPresence: false,
+    channels: [], consume: false, watchPresence: true, registerPresence: false, ttlMs: 60_000,
     card: { name: "delivery", kind: "endpoint" },
   });
   endpoints.push(delivery);
@@ -59,10 +99,10 @@ try {
   const lease = await delivery.acquireDeliveryLease(0);
   await delivery.markDeliveryLeaseReady(0, lease);
   const grant = { allowSubscribe: [channel], allowPublish: [channel], subscribe: [channel] };
-  async function identity() {
+  async function identity(allowPublish = grant.allowPublish) {
     const id = newIdentity();
     const uid = mintLifecycleUid();
-    const creds = await provisionAgent(manager, auth, id, { ...grant, lifecycleUid: uid });
+    const creds = await provisionAgent(manager, auth, id, { ...grant, allowPublish, lifecycleUid: uid });
     return { id, uid, creds };
   }
   async function seat(name: string, issued: Awaited<ReturnType<typeof identity>>) {
@@ -74,7 +114,7 @@ try {
     await agent.start();
     return agent;
   }
-  const alice = await identity();
+  const alice = await identity([channel, "replay.wide.>"]);
   const publisher = new CotalEndpoint({
     space, servers, creds: alice.creds, lifecycleUid: alice.uid, channels: [channel],
     consume: false, watchPresence: false, registerPresence: false,
@@ -164,10 +204,13 @@ try {
   assert(replayOffSeat.peekInbox("pull-only").some((item) => item.id === replayOffPost.id && item.historical));
   assert(!replayOffSeat.peekInbox("automatic").some((item) => item.id === replayOffPost.id));
   console.log("PASS replay-off control: aged durable mentions remain available as pull-only history");
+  await replayOffSeat.stop();
+  await seedChannelRegistry({ servers, space, creds, file: { defaults: { replay: true }, channels: {} } });
+  await checkWideReplay(manager, publisher);
 } finally {
   for (const agent of agents.reverse()) await agent.stop();
   for (const endpoint of endpoints.reverse()) await endpoint.stop();
   await killAndAwaitExit(broker);
   release();
 }
-emitSentinel({ passed: 6, failed: 0 });
+emitSentinel({ passed: 7, failed: 0 });
