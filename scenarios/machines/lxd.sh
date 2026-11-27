@@ -40,7 +40,7 @@ wait_agent() {
 }
 as_user() { local vm=$1; shift; lxc exec "$vm" ${SCENARIO_JOB_URL:+--env SCENARIO_JOB_URL="$SCENARIO_JOB_URL"} --user $uid --group $uid --cwd /home/$user --env HOME=/home/$user --env USER=$user --env XDG_RUNTIME_DIR=/run/user/$uid --env DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$uid/bus -- "$@"; }
 running_others() {
-  lxc list --format csv -c ns | awk -F, -v self="$1" '$1 ~ /^cotal-test-/ && $1 != self && $2 == "RUNNING" {print $1}'
+  lxc list --format csv -c ns | awk -F, -v self="$1" '$1 ~ /^cotal-(test|dev)-/ && $1 != self && $2 == "RUNNING" {print $1}'
 }
 one_at_a_time() {
   local others
