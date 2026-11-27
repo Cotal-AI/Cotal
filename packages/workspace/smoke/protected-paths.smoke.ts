@@ -154,7 +154,7 @@ accepts(() => assertProtectedEntry("the path", "/home/dev/Projects", stat(DIR | 
 accepts(() => assertProtectedEntry("the declared adapter path", "/home/dev/bin/nats-server", stat(FILE | 0o775), { policy }), "a UPG group-writable adapter file");
 accepts(() => assertProtectedEntry("the path", "/tmp", stat(DIR | 0o1777, 0, 0), { ancestor: true, policy }), "a root-owned sticky ancestor");
 refused(() => assertProtectedEntry("the path", "/tmp", stat(DIR | 0o1777, 0, 0), { policy }),
-  /: \/tmp is writable by every local account$/, "chmod go-w /tmp", "a root-owned sticky adapter entry keeps the entry rule");
+  /: \/tmp is writable by every local account$/, "use a folder you own, or ask its owner to protect it", "a root-owned sticky adapter entry keeps the entry rule");
 refused(() => assertProtectedEntry("the project root", "/home/dev/shared", stat(DIR | 0o777), { ancestor: true, policy }),
   /^the project root is not protected against other local writers: \/home\/dev\/shared is writable by every local account$/,
   "chmod go-w /home/dev/shared", "world write, even with a private group, removes group write in the same step");

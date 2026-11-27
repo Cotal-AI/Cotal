@@ -21,7 +21,7 @@
 import { spawn, spawnSync } from "node:child_process";
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { createSuite } from "@cotal-ai/smoke-kit";
 import { meshFile, recordMesh, removeMesh } from "@cotal-ai/workspace";
 
@@ -587,6 +587,24 @@ if (process.platform !== "win32") {
   check("a symlink to a world-writable config folder is still refused, naming the physical folder",
     refusedLink.status === 2 && refusedLink.envelope?.error?.code === "PERMISSION_DENIED" && (refusedLink.envelope.error.message ?? "").includes(`${physical} is writable by every local account`) && refusedLink.envelope.error.remedy === `chmod o-w ${physical}`, shown(refusedLink));
   chmodSync(physical, 0o700);
+  const dangling = join(home, "dangling-config");
+  symlinkSync(join(home, "missing-config-target"), dangling);
+  const missing = run(["config", "set", "color", "always", "--json"], { XDG_CONFIG_HOME: dangling });
+  check("a dangling config symlink is refused with PERMISSION_DENIED, exit 2, and changes nothing",
+    missing.status === 2 && missing.envelope?.error?.code === "PERMISSION_DENIED" && !existsSync(join(home, "missing-config-target")), shown(missing));
+  const wide = join(home, "wide-config");
+  const stepped = join(wide, "step");
+  mkdirSync(stepped, { recursive: true, mode: 0o700 });
+  chmodSync(wide, 0o777);
+  symlinkSync(join("..", "..", basename(physical)), join(stepped, "back"));
+  const dotdot = join(home, "dotdot-config");
+  symlinkSync(join(stepped, "back"), dotdot);
+  const crossed = run(["config", "set", "color", "always", "--json"], { XDG_CONFIG_HOME: dotdot });
+  check("a link that steps back through a world-writable folder is refused, naming that folder",
+    crossed.status === 2 && crossed.envelope?.error?.code === "PERMISSION_DENIED" && (crossed.envelope.error.message ?? "").includes(`${wide} is writable by every local account`), shown(crossed));
+  const relative = run(["config", "--json"], { XDG_CONFIG_HOME: "cfg" }, wide);
+  check("a relative config path keeps the spelled check and does not refuse the folder above it",
+    relative.status === 0, shown(relative));
 }
 
 // ── a file a Windows editor saved with a UTF-8 byte-order mark reads, and the next write drops it ──

@@ -1,7 +1,7 @@
-import { existsSync, realpathSync, statSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { dirname } from "node:path";
 import { globalConfigDir } from "@cotal-ai/core";
-import { isCommandFailure, loadExtensionsManifest, prepareConnectorConfigForUpdate, protectedLocalDirectory, repairConnectorSelection, restoreConnectorManifestAccessForUpdate, type UnreadableConnectorSelection } from "@cotal-ai/workspace";
+import { isCommandFailure, loadExtensionsManifest, prepareConnectorConfigForUpdate, protectedResolvedDirectory, repairConnectorSelection, restoreConnectorManifestAccessForUpdate, type UnreadableConnectorSelection } from "@cotal-ai/workspace";
 import { reclaimAbandonedExtensionStages, recoverExtensionPromotion } from "./extension-stage.js";
 
 /** Check the closest existing ancestor outside the Cotal folder, whose modes update does not repair. */
@@ -13,10 +13,7 @@ export function assertConfigAncestorProtected(): void {
     if (parent === path) return;
     path = parent;
   }
-  // Owned private configuration reached through a symlink is supported.
-  try { path = realpathSync(path); } catch { /* Check the existing path below. */ }
-  if (!statSync(path).isDirectory()) return;
-  protectedLocalDirectory(path, "the Cotal config folder");
+  protectedResolvedDirectory(path, "the Cotal config folder");
 }
 
 export function manifestAccessReporter(report: (line: string) => void): () => void {

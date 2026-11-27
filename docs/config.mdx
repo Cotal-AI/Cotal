@@ -257,7 +257,8 @@ Symlinks, FIFOs, devices, and folders at `preferences.json` are refused with `PE
 
 The preferences folder and each ancestor must be writable only by you or root.
 Group write is accepted only for your private group without an extended ACL; world write is refused.
-A folder reached through a symbolic link is accepted when the physical folder and every link's parent chain are protected against other local writers.
+A path that passes through a symbolic link is accepted when the physical folder and every folder the link steps through are protected against other local writers.
+The preferences folder itself must still be a real folder.
 An unsafe folder permits reads with `PREFERENCES_FOLDER_UNPROTECTED`, naming the path and corrective `chmod`.
 Writes, including setup and `space forget`, refuse `PERMISSION_DENIED` before any change.
 When the folder does not exist, Cotal checks its nearest existing ancestor.
