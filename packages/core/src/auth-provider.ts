@@ -607,10 +607,12 @@ export interface ManagerInstanceListing {
  *  the error as `retryAfterSeconds`. */
 export function bearerCommandFailure(err: ExecFileException, stderr: string, timeoutMs: number, stdout = ""): Error {
   const said = stderr.trim();
-  const retryAfter = /^retry-after (\d+)$/.exec(stdout.trim());
+  const out = stdout.trim();
+  const retryAfter = /^retry-after (\d+)$/m.exec(out);
   if (said) {
-    const exchange = /^agent-bearer: exchange refused: HTTP (?:401|403): (.*)$/s.exec(said);
-    const reason = exchange?.[1];
+    const refusedStatus = /^http-status (?:401|403)$/m.test(out);
+    const exchange = /^agent-bearer: exchange refused: (.*)$/s.exec(said);
+    const reason = refusedStatus ? exchange?.[1] : undefined;
     const denied = reason !== undefined && (
       /^agent exchange refused: unknown agent or wrong secret\b/.test(reason)
       || /^agent "[^"]+": (?:spawner .* is no longer granted|.*(?:exceeds its spawner's CURRENT grant|delegation chain contains a cycle))/.test(reason)
