@@ -2,7 +2,7 @@ import "./update-isolation.js";
 import strictAssert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { copyFileSync, cpSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, realpathSync, renameSync, rmdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { createServer } from "node:net";
+import { createServer as createNetServer } from "node:net";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join, parse } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -95,7 +95,7 @@ for (const code of ["ENOTCACHED", "EAI_AGAIN", "E401"]) {
   assert.deepEqual(errors, []);
 }
 async function closedPort(): Promise<number> {
-  const server = createServer();
+  const server = createNetServer();
   await new Promise<void>((resolve, reject) => server.once("error", reject).listen(0, "127.0.0.1", resolve));
   const address = server.address();
   await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
@@ -147,6 +147,75 @@ try {
   assert.equal(fallback.status, 0, fallback.stdout + fallback.stderr);
   assert.match(fallback.stdout, /npm proxy refused the connection \(ECONNREFUSED\).*`proxy` in your npm configuration/);
 } finally { rmSync(proxyHome, { recursive: true, force: true }); }
+{
+  // A registry that accepts the connection and never answers is the same outcome as one that refuses it.
+  // The fixture runs in its own process: this cell waits on the CLI with spawnSync, which would
+  // otherwise stop the in-process server from accepting the lookup.
+  const home = mkdtempSync(join(tmpdir(), "cotal-update-hang-"));
+  const fixture = join(home, "registry.mjs");
+  writeFileSync(fixture, `import { createServer } from "node:http";
+    import { appendFileSync } from "node:fs";
+    const mode = process.argv[2];
+    const log = process.argv[3];
+    const server = createServer((request, response) => {
+      const url = request.url ?? "";
+      appendFileSync(log, url + "\\n");
+      if (mode === "silent" || url.includes("9.9.9")) return;
+      const version = { name: "cotal-ai", version: "9.9.9", dist: { tarball: "http://" + request.headers.host + "/cotal-ai-9.9.9.tgz", integrity: "sha512-aaaa" } };
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({ name: "cotal-ai", "dist-tags": { latest: "9.9.9" }, versions: { "9.9.9": version } }));
+    });
+    server.listen(0, "127.0.0.1", () => {
+      const address = server.address();
+      if (!address || typeof address === "string") throw new Error("no loopback port");
+      process.stdout.write(String(address.port) + "\\n");
+    });
+  `);
+  const servers: ReturnType<typeof spawn>[] = [];
+  const registry = (mode: "silent" | "partial") => new Promise<number>((resolve, reject) => {
+    const log = join(home, `${mode}.log`);
+    writeFileSync(log, "");
+    const child = spawn(process.execPath, [fixture, mode, log], { stdio: ["ignore", "pipe", "pipe"] });
+    servers.push(child);
+    let port = "";
+    let error = "";
+    child.stdout.on("data", (chunk: Buffer) => { port += chunk.toString(); });
+    child.stderr.on("data", (chunk: Buffer) => { error += chunk.toString(); });
+    child.once("error", reject);
+    child.once("exit", code => reject(new Error(`registry fixture exited ${code}: ${error}`)));
+    child.stdout.once("data", () => {
+      const parsed = Number(port.trim());
+      if (!Number.isInteger(parsed)) reject(new Error(`registry fixture port: ${port}`));
+      else resolve(parsed);
+    });
+  });
+  try {
+    const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^(?:cotal_|npm_config_)/i.test(key)));
+    const update = (port: number) => spawnSync(process.execPath, [join(import.meta.dirname, "../../../bin/dist/cotal.js"), "update", "--self"], {
+      cwd: home, encoding: "utf8", timeout: 90_000,
+      env: { ...env, HOME: home, USERPROFILE: home, COTAL_HOME: join(home, "cotal"),
+        XDG_CONFIG_HOME: join(home, "config"), LOCALAPPDATA: join(home, "local"), APPDATA: join(home, "roaming"),
+        npm_config_cache: join(home, "npm-cache"), npm_config_userconfig: join(home, "user.npmrc"),
+        npm_config_fetch_retries: "0", npm_config_fetch_retry_mintimeout: "100", npm_config_fetch_retry_maxtimeout: "200", npm_config_fetch_timeout: "15000",
+        npm_config_registry: `http://127.0.0.1:${port}`,
+        COTAL_TELEMETRY: "off", COTAL_NO_UPDATE_CHECK: "1", COTAL_SKIP_CONNECTOR_SEED: "1" },
+    });
+    const version = update(await registry("silent"));
+    assert.equal(version.status, 0, version.stdout + version.stderr);
+    assert.equal(version.stdout.trim(), "The registry cannot be reached; nothing was changed.");
+    assert.doesNotMatch(version.stderr, /FETCH_ERROR|version check failed|npm registry settings/);
+    const archives = update(await registry("partial"));
+    const partialRequests = readFileSync(join(home, "partial.log"), "utf8").trim().split("\n").filter(Boolean);
+    assert.equal(archives.status, 0, archives.stdout + archives.stderr);
+    assert.match(archives.stdout, /Checking cotal-ai@9\.9\.9 release archives/, `requests=${partialRequests.join(" ")}\n${archives.stdout}${archives.stderr}`);
+    assert.match(archives.stdout, /The registry cannot be reached; nothing was changed\./);
+    assert.doesNotMatch(archives.stdout + archives.stderr, /FETCH_ERROR|update preflight failed|npm registry settings/);
+    assert.ok(partialRequests.length > 1, `archive checks reached the registry after the version answer: ${partialRequests.join(" ")}`);
+  } finally {
+    for (const child of servers) child.kill();
+    rmSync(home, { recursive: true, force: true });
+  }
+}
 const { seedInstallationCurrent } = await import("../src/seed/reconcile.js");
 assert.equal(seedInstallationCurrent(), false, "an unseeded checkout is not proven current");
 {
