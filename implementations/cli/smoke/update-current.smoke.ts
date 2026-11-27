@@ -720,10 +720,12 @@ if (process.platform !== "win32") {
       if (readFileSync(launcher, "utf8").startsWith("#!/usr/bin/env -S ")) entry.splice(0, entry.length, launcher);
     }
     const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^(?:cotal_|npm_config_)/i.test(key)));
+    const runtime = join(home, "run");
+    mkdirSync(runtime, { mode: 0o700 });
     const result = spawnSync("/bin/sh", ["-c", 'cd "$1" && rmdir "$1" && shift && "$@" update --self && "$@" update --self', "sh", gone,
       ...entry], {
       cwd: home, encoding: "utf8", timeout: 180_000,
-      env: { ...env, HOME: home, USERPROFILE: home, COTAL_HOME: join(home, "cotal"), XDG_CONFIG_HOME: join(home, "xdg"),
+      env: { ...env, HOME: home, USERPROFILE: home, COTAL_HOME: join(home, "cotal"), XDG_CONFIG_HOME: join(home, "xdg"), XDG_RUNTIME_DIR: runtime,
         COTAL_TELEMETRY: "off", COTAL_NO_UPDATE_CHECK: "1", COTAL_ALLOW_CHECKOUT_SEED: "1" },
     });
     assert.equal(result.status, 0, `plain self-update and retry run from an already removed folder: ${result.stdout}\n${result.stderr}`);
@@ -735,7 +737,7 @@ if (process.platform !== "win32") {
     const during = await new Promise<{ status: number | null; output: string; removed: boolean }>((resolve, reject) => {
       const child = spawn("/bin/sh", ["-c", 'cd "$1" && shift && "$@" update --self && "$@" update --self', "sh", gone,
         ...entry], {
-        cwd: home, env: { ...env, HOME: home, USERPROFILE: home, COTAL_HOME: join(home, "cotal"), XDG_CONFIG_HOME: join(home, "xdg"),
+        cwd: home, env: { ...env, HOME: home, USERPROFILE: home, COTAL_HOME: join(home, "cotal"), XDG_CONFIG_HOME: join(home, "xdg"), XDG_RUNTIME_DIR: runtime,
           COTAL_TELEMETRY: "off", COTAL_NO_UPDATE_CHECK: "1", COTAL_ALLOW_CHECKOUT_SEED: "1" },
       });
       let output = "", removed = false;
@@ -827,15 +829,16 @@ process.exit(real.status ?? 1);
     const manifest = join(extensions, "extensions.json");
     const calls = (): string => existsSync(npmRecord) ? readFileSync(npmRecord, "utf8") : "";
     const before = calls();
-    const ordinary = cli("clean");
+    const ordinary = cli("space", "forget", "ghost");
     assert.notEqual(ordinary.status, 0, ordinary.stdout + ordinary.stderr);
-    assert.match(ordinary.stdout + ordinary.stderr, /clean needs a target/);
+    assert.match(ordinary.stdout + ordinary.stderr, /no space named/);
     assert.doesNotMatch(ordinary.stdout + ordinary.stderr, /inventory is missing|Reconciling built-in/);
     rmSync(manifest);
-    const hinted = cli("clean");
+    const hinted = cli("space", "forget", "ghost");
     assert.notEqual(hinted.status, 0, hinted.stdout + hinted.stderr);
-    assert.match(hinted.stdout + hinted.stderr, /clean needs a target/);
+    assert.match(hinted.stdout + hinted.stderr, /no space named/);
     assert.match(hinted.stdout + hinted.stderr, /extensions inventory is missing/);
+    assert.match(hinted.stdout + hinted.stderr, /ext seed --repair/);
     assert.doesNotMatch(hinted.stdout + hinted.stderr, /Reconciling built-in/);
     assert.equal(calls(), before, "an ordinary command does not call npm");
     assert.equal(existsSync(manifest), false);
@@ -862,7 +865,8 @@ process.exit(real.status ?? 1);
     assert.notEqual(failed.status, 0, failed.stdout + failed.stderr);
     assert.match(failed.stdout + failed.stderr, /npm install failed for the missing inventory/);
     assert.equal(existsSync(manifest), false);
-    const afterFailure = cli("clean");
+    const afterFailure = cli("update", "--check");
+    assert.notEqual(afterFailure.status, 0, afterFailure.stdout + afterFailure.stderr);
     assert.match(afterFailure.stdout + afterFailure.stderr, /extensions inventory is missing/);
     assert.doesNotMatch(afterFailure.stdout + afterFailure.stderr, /installed package closure is current/);
     const recovered = cli("update", "--self");
@@ -883,11 +887,14 @@ process.exit(real.status ?? 1);
     assert.match(lockOnly.stdout + lockOnly.stderr, /extensions inventory was missing/);
     assert.equal(existsSync(manifest), true);
     assert.doesNotMatch(readFileSync(manifest, "utf8"), /tmux/);
+    mkdirSync(builtInDir, { recursive: true });
+    writeFileSync(join(builtInDir, "package.json"), JSON.stringify({ name: builtInPkg, version, main: "index.js" }));
+    writeFileSync(join(builtInDir, "index.js"), "");
     rmSync(manifest);
     const repaired = cli("ext", "seed", "--repair");
     assert.equal(repaired.status, 0, repaired.stdout + repaired.stderr);
     assert.match(repaired.stdout + repaired.stderr, /extensions inventory was missing/);
-    assert.equal(existsSync(manifest), true);
+    assert.match(readFileSync(manifest, "utf8"), new RegExp(builtInPkg.replace("/", "\\/")));
     const emptyHome = mkdtempSync(join(home, "empty-"));
     const emptyConfig = join(emptyHome, "xdg");
     const emptyExtensions = join(emptyConfig, "cotal", "extensions");
@@ -897,19 +904,31 @@ process.exit(real.status ?? 1);
     writeFileSync(join(emptySeed, "authority.json"), JSON.stringify({ everSeeded: SEED_BUILTINS }));
     writeFileSync(join(emptySeed, "witness.json"), JSON.stringify({ initialized: true, firstGeneration: version }));
     writeFileSync(join(emptySeed, "stamp.json"), JSON.stringify({ generation: version }));
-    const empty = spawnSync(entry, [...argv.slice(1), "clean"], {
+    const empty = spawnSync(entry, [...argv.slice(1), "space", "forget", "ghost"], {
       cwd: emptyHome, encoding: "utf8", timeout: 60_000,
       env: { ...env, HOME: emptyHome, USERPROFILE: emptyHome, COTAL_HOME: join(emptyHome, "cotal"), XDG_CONFIG_HOME: emptyConfig, XDG_RUNTIME_DIR: emptyHome },
     });
     assert.notEqual(empty.status, 0, empty.stdout + empty.stderr);
-    assert.match(empty.stdout + empty.stderr, /clean needs a target/);
-    assert.doesNotMatch(empty.stdout + empty.stderr, /inventory is missing/);
+    assert.match(empty.stdout + empty.stderr, /no space named/);
+    assert.doesNotMatch(empty.stdout + empty.stderr, /inventory is missing|Reconciling built-in/);
     assert.equal(existsSync(join(emptyExtensions, "extensions.json")), false);
+    const neverHome = mkdtempSync(join(home, "never-"));
+    const nevered = spawnSync(entry, [...argv.slice(1), "space", "forget", "ghost"], {
+      cwd: neverHome, encoding: "utf8", timeout: 60_000,
+      env: { ...Object.fromEntries(Object.entries(env).filter(([key]) => key !== "COTAL_ALLOW_CHECKOUT_SEED")), HOME: neverHome, USERPROFILE: neverHome, COTAL_HOME: join(neverHome, "cotal"), XDG_CONFIG_HOME: join(neverHome, "xdg"), XDG_RUNTIME_DIR: neverHome },
+    });
+    assert.notEqual(nevered.status, 0, nevered.stdout + nevered.stderr);
+    assert.match(nevered.stdout + nevered.stderr, /refusing to reconcile the operator-global seed store/);
+    assert.doesNotMatch(nevered.stdout + nevered.stderr, /inventory is missing/);
+    rmSync(manifest);
+    const project = join(home, "project");
+    mkdirSync(project);
     const checkout = spawnSync(entry, [...argv.slice(1), "up"], {
-      cwd: home, encoding: "utf8", timeout: 60_000,
+      cwd: project, encoding: "utf8", timeout: 60_000,
       env: Object.fromEntries(Object.entries(env).filter(([key]) => key !== "COTAL_ALLOW_CHECKOUT_SEED")),
     });
     assert.notEqual(checkout.status, 0, checkout.stdout + checkout.stderr);
+    assert.match(checkout.stdout + checkout.stderr, /extensions inventory is missing/);
     assert.doesNotMatch(checkout.stdout + checkout.stderr, /refusing to reconcile the operator-global seed store/);
   } finally { rmSync(home, { recursive: true, force: true }); }
 }

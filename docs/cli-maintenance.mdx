@@ -51,14 +51,16 @@ current, it skips package replacement, full connector reconciliation, and the ru
 check. It does not restart a running daemon.
 A prefix that was seeded and still has packages installed is not current when `extensions.json` is
 missing. The same is true when the packages are gone but `package-lock.json` remains.
-`cotal update`, `cotal version`, and `cotal update --check` say the inventory is missing.
+`cotal update`, `cotal version`, `cotal update --check`, and an ordinary command that still
+reconciles say the inventory is missing and name `cotal ext seed --repair`.
 Self-update registers the built-in packages that are still on disk, or writes an empty
 inventory when none remain, and names a real `@cotal-ai` directory left on disk without a
 registration. Register one again with `cotal ext add` and its original spec.
 `cotal ext remove` says the package is not registered and leaves its files.
-An ordinary command that still reconciles names `cotal update` and does not rebuild the
-inventory. A command that only reads, such as `cotal config`, does not print it. A prefix
-that was never seeded, and an empty prefix, are unchanged.
+An ordinary command that still reconciles, such as `cotal space forget`, names
+`cotal ext seed --repair` and does not rebuild the inventory. A command that only reads, such as
+`cotal ext list`, reports the missing file without rebuilding it. A prefix that was never seeded,
+and an empty prefix, are unchanged.
 A manual `cotal update --self` also repairs a complete Codex marketplace moved into the current
 Cotal home when Codex still points to the missing old path. Run `cotal update` to refresh other
 harness integrations. If the package closure needs repair, the usual continuity guards still apply.

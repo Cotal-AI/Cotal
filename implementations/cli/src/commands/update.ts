@@ -559,8 +559,9 @@ function checkUpdate(args: ParsedArgs, rt: UpdateRuntime): void {
     }
   }
   if (reconciliation.kind === "unreadable") {
-    if (reconciliation.source === "manifest") extensions = null;
-    warnings.push({ code: reconciliation.source === "manifest" ? "EXTENSION_INVENTORY_UNREADABLE" : "RECONCILIATION_UNREADABLE", target: null, message: reconciliation.source === "manifest" ? `The extension inventory could not be read: ${reconciliation.error} It was not repaired or treated as empty.` : `Reconciliation state could not be read: ${reconciliation.error}` });
+    const missing = reconciliation.source === "manifest" && reconciliation.error === "the extensions inventory is missing";
+    if (missing) extensions = null;
+    warnings.push({ code: missing ? "EXTENSION_INVENTORY_UNREADABLE" : "RECONCILIATION_UNREADABLE", target: null, message: missing ? `The extension inventory could not be read: ${reconciliation.error}. It was not repaired or treated as empty.` : `Reconciliation state could not be read: ${reconciliation.error}` });
   }
   if (reconciliation.kind === "seed") warnings.push({ code: "OPERATION_PARTIAL", target: null, message: reconciliation.instruction });
   const manifestUnreadable = reconciliation.kind === "unreadable" && reconciliation.source === "manifest";

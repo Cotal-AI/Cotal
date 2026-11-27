@@ -216,7 +216,7 @@ async function reconcileUnderClosure(mode: Mode, automatic: boolean, resumeFirst
     // re-check the fast path (it will have stamped). No live holder ⇒ it crashed → fail loud.
     if (cursor || recoveryPending()) {
       if (automatic && extensionsInventoryMissing()) {
-        console.error(`the extensions inventory is missing. Run \`${displayCmd()} update\` to register built-in packages still on disk.`);
+        console.error(`the extensions inventory is missing. Run \`${displayCmd()} ext seed --repair\` to preserve the damaged file and rebuild the built-in inventory.`);
         return NOOP;
       }
       if (!reconcileLockActive()) {
@@ -243,7 +243,7 @@ async function reconcileUnderClosure(mode: Mode, automatic: boolean, resumeFirst
         if (!resumeFirstSeed || !interruptedFirstSeed(cursor, generation)) throw seedRepairRefusal(cursor, generation);
       }
     } else if (automatic && extensionsInventoryMissing()) {
-      console.error(`the extensions inventory is missing. Run \`${displayCmd()} update\` to register built-in packages still on disk.`);
+      console.error(`the extensions inventory is missing. Run \`${displayCmd()} ext seed --repair\` to preserve the damaged file and rebuild the built-in inventory.`);
       return NOOP;
     } else if (readWitness() && authorityIntact() && builtinsAccounted() && builtinsMetadataCurrent() && !extensionsInventoryMissing() && officialExtensionsCurrent(generation) && readStamp()?.generation === generation && !reconcileLockActive()) {
       // Steady state AND no reconcile in flight. The lock check is LAST (immediately before NOOP) so
@@ -396,7 +396,7 @@ function unregisteredOperatorPackages(builtIns: ReadonlySet<string>): string[] {
 /** After a verify rebuild, an inventory that is still absent gets the recovered fact written before the
  *  commit. Built-ins staged above already write their entries. Leftover operator packages stay on disk. */
 function writeRecoveredInventory(staged: readonly unknown[], unregistered: readonly string[]): void {
-  if (!staged.length) saveExtensionsManifest({ extensions: [] });
+  if (!staged.length && extensionsInventoryMissing()) saveExtensionsManifest({ extensions: [] });
   console.log(`the extensions inventory was missing. Built-in packages still on disk are registered again.${unregistered.length ? ` ${unregistered.join(", ")} remain on disk but are not registered. Run \`${displayCmd()} ext add\` with the original spec to register one.` : ""}`);
 }
 
@@ -481,9 +481,10 @@ async function runUnderLocks(mode: Mode, generation: string, nonce: string, refr
   // quarantine still honors them on the next run.
   let manifestRebuilt = false;
   let repairAllSeeded = false;
+  const inventoryMissingAtStart = extensionsInventoryMissing();
   if (mode === "repair" || mode === "reset") {
     ({ manifestRebuilt, repairAllSeeded } = prepareMaintenanceState(mode));
-  } else if (mode === "verify" && extensionsInventoryMissing()) {
+  } else if (mode === "verify" && inventoryMissingAtStart) {
     writeRecovery({ rebuildFromDisk: true });
     manifestRebuilt = true;
   }
@@ -627,7 +628,7 @@ async function runUnderLocks(mode: Mode, generation: string, nonce: string, refr
   }
 
   const builtIns = new Set(Object.values(SEEDED_EXTENSIONS).map((entry) => entry.pkg));
-  const inventoryWasMissing = manifestRebuilt;
+  const inventoryWasMissing = manifestRebuilt && (mode === "verify" || mode === "repair" ? inventoryMissingAtStart : extensionsInventoryMissing());
   const unregistered = inventoryWasMissing ? unregisteredOperatorPackages(builtIns) : [];
   const operators = mode === "reset" ? [] : loadExtensionsManifest().extensions.filter((entry) =>
     entry.pkg.startsWith("@cotal-ai/") && !builtIns.has(entry.pkg) && (
@@ -690,10 +691,13 @@ async function runUnderLocks(mode: Mode, generation: string, nonce: string, refr
 }
 
 /** What refuses an `up` at the boot gate, where it defers its seed to its first launch, in the order
- *  {@link reconcile} would refuse: a writer that may not write a store that is not current, then an
- *  executable older than the store. Neither check writes anything. */
+ *  {@link reconcile} would refuse: a missing extensions inventory, a writer that may not write a
+ *  store that is not current, then an executable older than the store. Neither check writes anything. */
 export function deferredSeedRefusal(): Error | undefined {
   const generation = seedGeneration();
+  if (extensionsInventoryMissing()) {
+    return new Error(`the extensions inventory is missing. Run \`${displayCmd()} ext seed --repair\` to preserve the damaged file and rebuild the built-in inventory.`);
+  }
   let current = false;
   try {
     current = !readCursor() && !recoveryPending() && !!readWitness() && authorityIntact() && builtinsAccounted() && builtinsMetadataCurrent() && officialExtensionsCurrent(generation) && readStamp()?.generation === generation;

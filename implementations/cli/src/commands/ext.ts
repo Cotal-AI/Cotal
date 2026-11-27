@@ -860,7 +860,7 @@ function list(presentation: Presentation): void {
   }
   const pending = readUpdatePending(cliVersion());
   const missing = pending.kind === "unreadable" && pending.source === "manifest" && pending.error === "the extensions inventory is missing"
-    ? [{ code: "EXTENSION_INVENTORY_UNREADABLE" as const, target: null, message: pending.instruction }]
+    ? [{ code: "EXTENSION_INVENTORY_UNREADABLE" as const, target: null, message: pending.error }]
     : [];
   const warnings = [...missing, ...entries.flatMap((entry): OutputWarning[] => {
     const dir = extensionPackageDir(entry.pkg);
