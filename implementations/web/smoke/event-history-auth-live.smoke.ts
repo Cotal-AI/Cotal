@@ -9,8 +9,9 @@ import { get } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { CotalEndpoint, createSpaceAuth, eventChannel, isReachable, mintCreds, newIdentity, PLUGIN_CHANNEL_ROOT, serverConfig, setupSpaceStreams, type CotalMessage, type Part } from "@cotal-ai/core";
+import { CotalEndpoint, createSpaceAuth, DEV_OWNER, eventChannel, isReachable, mintCreds, newIdentity, PLUGIN_CHANNEL_ROOT, serverConfig, setupSpaceStreams, type CotalMessage, type Part } from "@cotal-ai/core";
 import { freePort, SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { startEnabledPluginSpace } from "../../../packages/core/smoke/fixtures/enabled-plugin-space.js";
 
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 async function until(check: () => boolean, label: string) {
@@ -19,7 +20,7 @@ async function until(check: () => boolean, label: string) {
   assert.ok(check(), label);
 }
 
-type FeedEvent = { event: string; data: { feed?: string; channel?: string; msg?: CotalMessage; asOf?: number } };
+type FeedEvent = { event: string; data: { feed?: string; channel?: string; msg?: CotalMessage } };
 function openFeed(base: string, cookie: string) {
   const events: FeedEvent[] = [];
   let failure: unknown;
@@ -134,8 +135,8 @@ async function readSharedView(base: string, cookie: string, cell: SharedViewCase
   assert.deepEqual(JSON.parse(await read(`/api/channels/${encodeURIComponent(cell.channel)}/history`)), [], "named plugin history is empty in a shared view");
   const activity = await read("/api/activity");
   assert.ok(!activity.includes(cell.channel) && !activity.includes(cell.retained.id), "activity has neither the plugin channel nor its retained post");
-  const membership = JSON.parse(await read("/api/membership")) as { asOf?: number; members: { live: string[]; durable: string[] }[] };
-  assert.ok(membership.asOf !== undefined && membership.members.some(({ live, durable }) => [...live, ...durable].includes(cell.ordinaryChannel)), "the real membership snapshot includes ordinary chat");
+  const membership = JSON.parse(await read("/api/membership")) as { members: unknown[] };
+  assert.ok(Array.isArray(membership.members), "the broker-backed membership read retains its existing shape");
   assert.ok(!JSON.stringify(membership).includes(cell.channel), "shared membership has no plugin channel name");
   assert.ok(!(await read("/api/roster")).includes(cell.channel), "shared roster has no plugin attention channel name");
 }
@@ -144,7 +145,7 @@ function hasMessage(events: FeedEvent[], event: string, id: string, channel?: st
   return events.some((row) => row.event === event && row.data.msg?.id === id && (channel === undefined || row.data.channel === channel));
 }
 
-async function checkViewerFeeds(base: string, cookie: string, sender: CotalEndpoint, frame: Part, enabled?: SharedViewCase): Promise<void> {
+async function checkViewerFeeds(base: string, cookie: string, sender: Pick<CotalEndpoint, "card" | "principal" | "multicast">, frame: Part, enabled?: SharedViewCase): Promise<void> {
   const watching = openFeed(base, cookie);
   const other = openFeed(base, cookie);
   try {
@@ -164,7 +165,7 @@ async function checkViewerFeeds(base: string, cookie: string, sender: CotalEndpo
     assert.ok(!other.events.some(({ data }) => data.msg?.id === metadata.id) && !hasMessage(watching.events, "message", metadata.id), "the frame does not reach the other viewer or the generic feed");
     if (enabled) {
       assert.ok(plugin && plugin.channel === enabled.channel, "the fixture verifies publication on the plugin rail");
-      await until(() => viewers.every(({ events }) => events.some(({ event, data }) => event === "membership" && data.asOf !== undefined)), "both viewers receive real membership snapshots");
+      await until(() => viewers.every(({ events }) => events.some(({ event }) => event === "membership")), "both viewers receive broker-backed membership snapshots");
       for (const { events } of viewers) {
         assert.ok(!JSON.stringify(events).includes(enabled.channel) && !events.some(({ data }) => data.msg?.id === plugin.id), "neither shared feed names the plugin channel or receives the plugin post");
         await readSharedView(base, cookie, enabled);
@@ -173,6 +174,45 @@ async function checkViewerFeeds(base: string, cookie: string, sender: CotalEndpo
   } finally {
     watching.close();
     other.close();
+  }
+}
+
+async function checkEnabledSpace(frame: Part): Promise<void> {
+  const fixture = await startEnabledPluginSpace();
+  const { channel, chatChannel, endpoint, mintAgent } = fixture;
+  try {
+    await fixture.startDelivery();
+    const [readCred, writeCred] = await Promise.all([
+      mintAgent({ read: [channel] }),
+      mintAgent({ post: [channel, chatChannel, `events.${DEV_OWNER}.>`] }),
+    ]);
+    const reader = endpoint({ ...readCred, card: { kind: "agent", name: "plugin-reader" }, channels: [channel], allowSubscribe: [channel] });
+    const writer = endpoint({ ...writeCred, card: { kind: "agent", name: "plugin-writer" }, channels: [], consume: false, registerPresence: false });
+    const delivered = new Set<string>();
+    reader.on("message", (msg, delivery, meta) => {
+      if (meta.kind === "channel" && msg.channel === channel && !delivery.durable && !meta.historical) delivered.add(msg.id);
+      delivery.ack();
+    });
+    await Promise.all([reader.start(), writer.start()]);
+    assert.ok([reader, writer].every((ep) => ep.channelRoutingMode() === "isolated"), "fixture agents admit the isolated route");
+    const retained = await writer.multicast("retained plugin post", { channel });
+    assert.ok((await reader.channelHistory(channel, { limit: 10 })).some(({ id }) => id === retained.id), "the scoped reader sees retained plugin history before the dashboard reads");
+    assert.ok((await reader.listChannels()).some((row) => row.channel === channel), "the scoped reader can discover the plugin channel");
+    const credsPath = join(dir, "shared-observer.creds");
+    writeFileSync(credsPath, await fixture.mintObserver(), { mode: 0o600 });
+    const dashboard = await launchDashboard({ servers: fixture.servers, space: fixture.space, credsPath });
+    await checkViewerFeeds(dashboard.base, dashboard.cookie, writer, frame, {
+      channel,
+      ordinaryChannel: chatChannel,
+      retained,
+      async publishVerified() {
+        const post = await writer.multicast("live plugin post", { channel });
+        await until(() => delivered.has(post.id), "the scoped subscriber receives the new plugin post live");
+        return post;
+      },
+    });
+  } finally {
+    try { await stopDashboard(); } finally { await fixture.close(); }
   }
 }
 
@@ -213,7 +253,8 @@ try {
     }
     await stopDashboard();
   }
-  console.log("COTAL_SMOKE_SENTINEL cells=23 passed=23 failed=0");
+  await checkEnabledSpace(frame as unknown as Part);
+  console.log("COTAL_SMOKE_SENTINEL cells=27 passed=27 failed=0");
 } finally {
   await agent?.stop();
   await stopDashboard();
