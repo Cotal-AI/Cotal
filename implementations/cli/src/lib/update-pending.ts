@@ -1,7 +1,7 @@
 import { isCommandFailure, loadExtensionsManifest, readUpdateRecovery, recoveryDisposition, type UpdateRecovery } from "@cotal-ai/workspace";
 
 const receiptRepair = "Run `cotal update --self` to reconcile this installation.";
-export const manifestRepair = "Repair the manifest with `cotal ext seed --repair`.";
+export const manifestRepair = "run `cotal ext seed --repair` to preserve the damaged file and rebuild the built-in inventory";
 export const manifestReadRemedy = (error: unknown): string => isCommandFailure(error) && error.remedy ? error.remedy : manifestRepair;
 
 export type UpdatePending =
