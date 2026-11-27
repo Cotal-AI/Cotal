@@ -32,8 +32,19 @@ if (basename(process.argv[1]) === "loginctl") {
   operation = "unit-read";
   const unit = args[args.indexOf("show") + 1];
   if (!context.units.includes(unit)) process.exit(89);
-  if (args.includes("--value") && args.includes("--property=UnitFileState")) console.log(context.unitFileState ?? "enabled");
-  else console.log(`Id=${unit}\nLoadState=loaded\nFragmentPath=${context.config}/systemd/user/${unit}\nDropInPaths=${context.dropInPaths ?? ""}\nNeedDaemonReload=${context.needDaemonReload ?? "no"}`);
+  const fields = {
+    Id: unit,
+    LoadState: "loaded",
+    FragmentPath: `${context.config}/systemd/user/${unit}`,
+    DropInPaths: context.dropInPaths ?? "",
+    NeedDaemonReload: context.needDaemonReload ?? "no",
+    OOMPolicy: context.oomPolicy ?? "stop",
+    UnitFileState: context.unitFileState ?? "enabled",
+  };
+  const requested = args.filter((arg) => arg.startsWith("--property=")).map((arg) => arg.slice(11));
+  if (args.includes("--value") && requested.length === 1 && requested[0] in fields) console.log(fields[requested[0]]);
+  else if (requested.length) { for (const key of requested) if (key in fields) console.log(`${key}=${fields[key]}`); }
+  else console.log(`Id=${unit}\nLoadState=loaded\nFragmentPath=${fields.FragmentPath}\nDropInPaths=${fields.DropInPaths}\nNeedDaemonReload=${fields.NeedDaemonReload}`);
 } else {
   operation = ["daemon-reload", "enable", "disable", "start", "stop"].find((op) => args.includes(op));
   if (!operation || (operation !== "daemon-reload" && !context.units.includes(args.at(-1)))) process.exit(89);

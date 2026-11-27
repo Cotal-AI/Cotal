@@ -6,7 +6,7 @@ import { createHash } from 'node:crypto';
 import { mkdirSync, writeFileSync, readFileSync, readdirSync, mkdtempSync, existsSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { spawn, spawnSync } from 'node:child_process';
 for (const key of Object.keys(process.env)) if (key.startsWith('COTAL_')) delete process.env[key];
 const repo = fileURLToPath(new URL('../../', import.meta.url));
@@ -21,14 +21,100 @@ for (const scenario of terminal ? ['terminal'] : process.argv.includes('--releas
  const closure = scenario === 'closure-auto';
  const releaseHold = scenario === 'release-hold';
  const legacyUnitRollback = scenario === 'legacy-unit-rollback';
- const first = legacyUnitRollback ? '0.151.3' : '99.0.0', second = '99.0.1', hour = 3_600_000;
- const baseVersion = legacyUnitRollback ? '0.151.2' : previous;
+ const first = legacyUnitRollback ? '0.183.1000' : '99.0.0', second = '99.0.1', hour = 3_600_000;
+ const baseVersion = legacyUnitRollback ? '0.183.0' : previous;
  const archives = {};
  if (legacyUnitRollback) {
   const fixtureDir = join(root, 'upgrade-fixture');
   const built = spawnSync(process.execPath, [join(repo, 'bin/smoke/build-daemon-upgrade-fixture.mjs'), fixtureDir, '--workspace-source'], { cwd: repo, encoding: 'utf8' });
   assert.equal(built.status, 0, built.stderr || built.stdout);
-  for (const version of [baseVersion, first]) archives[version] = readFileSync(join(fixtureDir, `cotal-ai-${version}.tgz`));
+  const reversionTree = (dir, ver) => {
+   const rootPkg = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8'));
+   rootPkg.version = ver;
+   for (const k of Object.keys(rootPkg.dependencies ?? {})) if (k.startsWith('@cotal-ai/')) rootPkg.dependencies[k] = ver;
+   writeFileSync(join(dir, 'package.json'), JSON.stringify(rootPkg, null, 2) + '\n');
+   for (const entry of readdirSync(join(dir, 'seeded-connectors'), { withFileTypes: true })) {
+    const p = join(dir, 'seeded-connectors', entry.name, 'package.json');
+    if (entry.isDirectory() && existsSync(p)) { const c = JSON.parse(readFileSync(p, 'utf8')); c.version = ver; writeFileSync(p, JSON.stringify(c, null, 2) + '\n'); }
+   }
+   const walkFirstParty = nm => {
+    const scopeDir = join(nm, '@cotal-ai');
+    if (!existsSync(scopeDir)) return;
+    for (const entry of readdirSync(scopeDir, { withFileTypes: true })) {
+     if (!entry.isDirectory()) continue;
+     const pkgRoot = join(scopeDir, entry.name), mf = join(pkgRoot, 'package.json');
+     if (existsSync(mf)) {
+      const m = JSON.parse(readFileSync(mf, 'utf8'));
+      m.version = ver;
+      for (const field of ['dependencies', 'optionalDependencies', 'peerDependencies']) {
+       for (const k of Object.keys(m[field] ?? {})) if (k.startsWith('@cotal-ai/')) m[field][k] = ver;
+      }
+      writeFileSync(mf, JSON.stringify(m, null, 2) + '\n');
+     }
+     if (existsSync(join(pkgRoot, 'node_modules'))) walkFirstParty(join(pkgRoot, 'node_modules'));
+    }
+   };
+   walkFirstParty(join(dir, 'node_modules'));
+  };
+  const candDir = join(fixtureDir, 'hoisted-fix2-0.151.3');
+  reversionTree(candDir, first);
+  assert.equal(readFileSync(join(candDir, 'dist/daemon/update-entry.js'), 'utf8').includes('reconcileInstalledLinuxPolicy'), true);
+  assert.equal(spawnSync('npm', ['pack', '--ignore-scripts', '--offline', '--pack-destination', fixtureDir], { cwd: candDir, encoding: 'utf8' }).status, 0);
+  archives[first] = readFileSync(join(fixtureDir, `cotal-ai-${first}.tgz`));
+  // Assemble genuine published 0.183.0 first-party packages from npm over the offline third-party dependency closure.
+  const relDir = join(fixtureDir, 'hoisted-fix2-0.151.2');
+  const templateMeta = JSON.parse(readFileSync(join(relDir, 'package.json'), 'utf8'));
+  const hoistedDeps = templateMeta.bundledDependencies;
+  const expectedPkgs = JSON.parse(readFileSync(join(repo, '.changeset/config.json'), 'utf8')).fixed.flat().sort();
+  const fetched = await Promise.all(expectedPkgs.map(async (name, idx) => {
+   const metaRes = await fetch(`https://registry.npmjs.org/${encodeURIComponent(name)}/${baseVersion}`, { signal: AbortSignal.timeout(30_000) });
+   assert.equal(metaRes.ok, true, `failed fetching metadata for ${name}@${baseVersion}: ${metaRes.status}`);
+   const meta = await metaRes.json();
+   assert.equal(meta.version, baseVersion);
+   const tgzRes = await fetch(meta.dist.tarball, { signal: AbortSignal.timeout(60_000) });
+   assert.equal(tgzRes.ok, true, `failed fetching tarball for ${name}@${baseVersion}: ${tgzRes.status}`);
+   const bytes = Buffer.from(await tgzRes.arrayBuffer());
+   assert.equal('sha512-' + createHash('sha512').update(bytes).digest('base64'), meta.dist.integrity, `SRI mismatch for ${name}@${baseVersion}`);
+   const tgzPath = join(fixtureDir, `pub-${idx}.tgz`);
+   writeFileSync(tgzPath, bytes);
+   return { name, tgzPath };
+  }));
+  for (const { name, tgzPath } of fetched) {
+   if (name === 'cotal-ai') {
+    for (const entry of readdirSync(relDir)) if (entry !== 'node_modules') rmSync(join(relDir, entry), { recursive: true, force: true });
+    assert.equal(spawnSync('tar', ['-xzf', tgzPath, '--strip-components=1', '-C', relDir]).status, 0);
+    const pubMeta = JSON.parse(readFileSync(join(relDir, 'package.json'), 'utf8'));
+    assert.equal(pubMeta.version, baseVersion);
+    pubMeta.private = true;
+    pubMeta.dependencies = Object.fromEntries(hoistedDeps.map(k => [k, k.startsWith('@cotal-ai/') ? baseVersion : '*']));
+    pubMeta.bundledDependencies = hoistedDeps;
+    delete pubMeta.bundleDependencies;
+    delete pubMeta.scripts;
+    delete pubMeta.devDependencies;
+    writeFileSync(join(relDir, 'package.json'), JSON.stringify(pubMeta, null, 2) + '\n');
+   } else {
+    const pkgDir = join(relDir, 'node_modules', name);
+    const savedNested = existsSync(join(pkgDir, 'node_modules')) ? join(fixtureDir, `nested-${name.replace('/', '_')}`) : undefined;
+    const prevPkgMeta = existsSync(join(pkgDir, 'package.json')) ? JSON.parse(readFileSync(join(pkgDir, 'package.json'), 'utf8')) : undefined;
+    if (savedNested) { mkdirSync(savedNested, { recursive: true }); assert.equal(spawnSync('cp', ['-a', join(pkgDir, 'node_modules/.'), savedNested]).status, 0); }
+    rmSync(pkgDir, { recursive: true, force: true });
+    mkdirSync(pkgDir, { recursive: true });
+    assert.equal(spawnSync('tar', ['-xzf', tgzPath, '--strip-components=1', '-C', pkgDir]).status, 0);
+    if (savedNested) {
+     mkdirSync(join(pkgDir, 'node_modules'), { recursive: true });
+     assert.equal(spawnSync('cp', ['-a', `${savedNested}/.`, join(pkgDir, 'node_modules')]).status, 0);
+     if (prevPkgMeta?.bundledDependencies?.length) {
+      const m = JSON.parse(readFileSync(join(pkgDir, 'package.json'), 'utf8'));
+      m.bundledDependencies = prevPkgMeta.bundledDependencies;
+      delete m.bundleDependencies;
+      writeFileSync(join(pkgDir, 'package.json'), JSON.stringify(m, null, 2) + '\n');
+     }
+    }
+   }
+  }
+  assert.equal(readFileSync(join(relDir, 'dist/daemon/update-entry.js'), 'utf8').includes('reconcileInstalledLinuxPolicy'), false, 'published 0.183.0 must not contain candidate OOMPolicy step');
+  assert.equal(spawnSync('npm', ['pack', '--ignore-scripts', '--offline', '--pack-destination', fixtureDir], { cwd: relDir, encoding: 'utf8' }).status, 0);
+  archives[baseVersion] = readFileSync(join(fixtureDir, `cotal-ai-${baseVersion}.tgz`));
  } else {
   for (const version of [first, previous, ...(releaseHold ? [second] : [])]) {
    writeFileSync(join(root, 'payload/package/package.json'), JSON.stringify({ name: 'cotal-ai', version, bin: { cotal: 'dist/cotal.js' } }));
@@ -222,31 +308,83 @@ for (const scenario of terminal ? ['terminal'] : process.argv.includes('--releas
    const originalReceipt = JSON.stringify({ v: 1, mechanism: 'systemd-user', unit: 'cotal-daemon.service', unitPath, unitSha256: legacySha, installedAt: new Date().toISOString() });
    writeFileSync(receiptPath, originalReceipt + '\n', { mode: 0o600 });
    const daemonEnv = { ...env, COTAL_DAEMON_NATIVE_SERVICE: '1' };
+   const scopesFile = join(root, 'scopes.json');
+   writeFileSync(scopesFile, '[]\n', { mode: 0o600 });
+   const storeDir = join(prefix, 'lib/.cotal-generations');
+   const cgroupPreload = join(root, 'cgroup-preload.mjs');
+   writeFileSync(cgroupPreload, `
+import fs from 'node:fs';
+import { syncBuiltinESMExports } from 'node:module';
+const origReadFileSync = fs.readFileSync;
+const scopesFile = ${JSON.stringify(scopesFile)};
+function ppidOf(pid) {
+  try {
+    const stat = origReadFileSync('/proc/' + pid + '/stat', 'utf8');
+    return Number(stat.slice(stat.lastIndexOf(')') + 2).split(' ')[1]);
+  } catch { return 0; }
+}
+fs.readFileSync = function(path, ...rest) {
+  const m = /^\\/proc\\/(\\d+)\\/cgroup$/.exec(String(path));
+  if (m) {
+    const pid = Number(m[1]), ppid = ppidOf(pid);
+    const scopes = JSON.parse(origReadFileSync(scopesFile, 'utf8')).filter(e => e.op === 'StartTransientUnit');
+    const hit = scopes.findLast(e => e.pids.includes(pid) || e.pids.includes(ppid));
+    const text = hit ? '0::/user.slice/' + hit.scope + '\\n' : '0::/user.slice/cotal-daemon.service\\n';
+    return rest[0] ? text : Buffer.from(text);
+  }
+  return origReadFileSync.call(this, path, ...rest);
+};
+syncBuiltinESMExports();
+`, { mode: 0o600 });
    writeFileSync(join(native, 'systemctl'), `#!${process.execPath}
 const fs = require('node:fs');
 const { spawn } = require('node:child_process');
 const args = process.argv.slice(2);
+const scopesFile = ${JSON.stringify(scopesFile)};
+const storeDir = ${JSON.stringify(storeDir)};
+const recordEvent = ev => { const list = JSON.parse(fs.readFileSync(scopesFile, 'utf8')); list.push(ev); fs.writeFileSync(scopesFile, JSON.stringify(list) + '\\n'); };
+const ppidOf = pid => { try { const s = fs.readFileSync('/proc/' + pid + '/stat', 'utf8'); return Number(s.slice(s.lastIndexOf(')') + 2).split(' ')[1]); } catch { return 0; } };
 if (args.join(' ') === '--user show-environment') { console.log(${JSON.stringify(`XDG_CONFIG_HOME=${join(root, 'config')}`)}); process.exit(0); }
-if (args.includes('show') && args.includes('cotal-daemon.service')) {
- const pid = fs.existsSync(${JSON.stringify(daemonPidFile)}) ? fs.readFileSync(${JSON.stringify(daemonPidFile)}, 'utf8').trim() : '0';
- const live = pid !== '0' && (() => { try { process.kill(Number(pid), 0); return true; } catch { return false; } })();
- if (args.includes('--value') && args.includes('--property=UnitFileState')) { console.log('enabled'); process.exit(0); }
- const fields = { Id: 'cotal-daemon.service', LoadState: 'loaded', FragmentPath: ${JSON.stringify(unitPath)}, DropInPaths: '', NeedDaemonReload: 'no', Transient: 'no', MainPID: live ? pid : '0', ControlPID: '0', ActiveState: live ? 'active' : 'inactive', SubState: live ? 'running' : 'dead', UnitFileState: 'enabled', InvocationID: live ? '1'.repeat(32) : '', WorkingDirectory: '', Job: '0' };
- if (args.includes('--value') && args.length === 6 && args[5].startsWith('--property=')) { console.log(fields[args[5].slice(11)] ?? ''); process.exit(0); }
- for (const f of args.filter(x => x.startsWith('--property='))) console.log(f.slice(11) + '=' + (fields[f.slice(11)] ?? ''));
- process.exit(0);
+if (args.includes('show')) {
+ const unit = args[args.indexOf('show') + 1];
+ if (unit && unit.endsWith('.scope')) {
+  const list = JSON.parse(fs.readFileSync(scopesFile, 'utf8'));
+  const entry = list.findLast(e => e.op === 'StartTransientUnit' && e.scope === unit);
+  if (!entry) process.exit(89);
+  const activeGen = fs.existsSync(storeDir) && fs.readdirSync(storeDir).some(name => name.startsWith('.active-'));
+  const fields = { Description: entry.description, Transient: 'yes', ActiveState: 'active', ControlGroup: '/user.slice/' + unit, Job: '0' };
+  const propArg = args.find(x => x.startsWith('--property='));
+  recordEvent({ op: 'scope-show', scope: unit, prop: propArg ? propArg.slice(11) : '', callerPid: ppidOf(process.pid), activeGeneration: activeGen });
+  if (args.includes('--value') && propArg) { console.log(fields[propArg.slice(11)] ?? ''); process.exit(0); }
+  for (const f of args.filter(x => x.startsWith('--property='))) console.log(f.slice(11) + '=' + (fields[f.slice(11)] ?? ''));
+  process.exit(0);
+ }
+ if (unit === 'cotal-daemon.service') {
+  const pid = fs.existsSync(${JSON.stringify(daemonPidFile)}) ? fs.readFileSync(${JSON.stringify(daemonPidFile)}, 'utf8').trim() : '0';
+  const live = pid !== '0' && (() => { try { process.kill(Number(pid), 0); return true; } catch { return false; } })();
+  if (args.includes('--value') && args.includes('--property=UnitFileState')) { console.log('enabled'); process.exit(0); }
+  const fields = { Id: 'cotal-daemon.service', LoadState: 'loaded', FragmentPath: ${JSON.stringify(unitPath)}, DropInPaths: '', NeedDaemonReload: 'no', OOMPolicy: 'stop', ControlGroup: '/user.slice/cotal-daemon.service', Transient: 'no', MainPID: live ? pid : '0', ControlPID: '0', ActiveState: live ? 'active' : 'inactive', SubState: live ? 'running' : 'dead', UnitFileState: 'enabled', InvocationID: live ? '1'.repeat(32) : '', WorkingDirectory: '', Job: '0' };
+  const propArg = args.find(x => x.startsWith('--property='));
+  if (args.includes('--value') && propArg) { console.log(fields[propArg.slice(11)] ?? ''); process.exit(0); }
+  for (const f of args.filter(x => x.startsWith('--property='))) console.log(f.slice(11) + '=' + (fields[f.slice(11)] ?? ''));
+  process.exit(0);
+ }
 }
-if (args.includes('daemon-reload')) process.exit(0);
+if (args.includes('daemon-reload')) { recordEvent({ op: 'daemon-reload' }); process.exit(0); }
 if (args.includes('stop')) {
- try { process.kill(Number(fs.readFileSync(${JSON.stringify(daemonPidFile)}, 'utf8').trim()), 'SIGTERM'); } catch {}
+ const oldPid = fs.existsSync(${JSON.stringify(daemonPidFile)}) ? Number(fs.readFileSync(${JSON.stringify(daemonPidFile)}, 'utf8').trim()) : 0;
+ if (oldPid > 0) {
+  try { process.kill(oldPid, 'SIGTERM'); } catch {}
+  const until = Date.now() + 5000;
+  while (Date.now() < until) { try { process.kill(oldPid, 0); Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25); } catch { break; } }
+ }
  fs.writeFileSync(${JSON.stringify(daemonPidFile)}, '0');
  process.exit(0);
 }
 if (args.includes('start')) {
- // Only start when no retained generation (0.151.3) is active; fail fast when .active-*.json exists so target activation fails and rolls back immediately.
- const storeDir = ${JSON.stringify(join(prefix, 'lib/.cotal-generations'))};
+ // Fail native start when target candidate generation (0.183.1000) is active; succeed once rolled back to 0.183.0.
  const active = fs.existsSync(storeDir) && fs.readdirSync(storeDir).some(name => name.startsWith('.active-'));
- if (active) { console.error('target 0.151.3 native start failed'); process.exit(99); }
+ if (active) { console.error('target 0.183.1000 native start failed'); process.exit(99); }
  const child = spawn(${JSON.stringify(process.execPath)}, [${JSON.stringify(installedEntry)}, 'daemon', 'serve'], { cwd: ${JSON.stringify(root)}, env: ${JSON.stringify(daemonEnv)}, detached: true, stdio: 'ignore' });
  fs.writeFileSync(${JSON.stringify(daemonPidFile)}, String(child.pid));
  child.unref();
@@ -256,6 +394,16 @@ process.exit(99);
 `, { mode: 0o700 });
    writeFileSync(join(native, 'busctl'), `#!${process.execPath}
 const fs = require('node:fs');
+const idx = process.argv.indexOf('StartTransientUnit');
+if (idx !== -1) {
+ const scope = process.argv[idx + 2], description = process.argv[idx + 7];
+ const pids = [Number(process.argv[idx + 11]), Number(process.argv[idx + 12])];
+ const list = JSON.parse(fs.readFileSync(${JSON.stringify(scopesFile)}, 'utf8'));
+ list.push({ op: 'StartTransientUnit', scope, description, pids });
+ fs.writeFileSync(${JSON.stringify(scopesFile)}, JSON.stringify(list) + '\\n');
+ console.log('o "/org/freedesktop/systemd1/job/1"');
+ process.exit(0);
+}
 if (process.argv.slice(-3).join(' ') !== 'ExecStartEx ExecStopEx ExecStopPostEx') process.exit(99);
 const pid = fs.existsSync(${JSON.stringify(daemonPidFile)}) ? Number(fs.readFileSync(${JSON.stringify(daemonPidFile)}, 'utf8').trim()) : 0;
 const argv = [${JSON.stringify(process.execPath)}, ${JSON.stringify(installedEntry)}, 'daemon', 'serve'];
@@ -281,31 +429,33 @@ for (const data of [[[argv[0], argv, [], 0, 0, 0, 0, pid, 0, 0]], [], []]) conso
      await new Promise(r => setTimeout(r, 100));
     }
     assert.match(daemonOut, /native ownership owned: verified/);
-    // Simulate systemd restarting the service when 0.151.3 activates: stop 0.151.2 so the updater tries `systemctl --user start`, which fails for 0.151.3 and succeeds once rolled back to 0.151.2.
-    const storeDir = join(prefix, 'lib/.cotal-generations');
-    const watchTimer = setInterval(() => {
-     if (daemon.exitCode === null && existsSync(storeDir) && readdirSync(storeDir).some(name => name.startsWith('.active-'))) {
-      clearInterval(watchTimer);
-      try { daemon.kill('SIGTERM'); } catch {}
-      writeFileSync(daemonPidFile, '0');
-     }
-    }, 50);
+    // Drive the automatic update child the way auto-update.ts spawns it (COTAL_AUTO_UPDATE=1, COTAL_NO_UPDATE_CHECK=1).
+    const autoEnv = { ...env, COTAL_NO_UPDATE_CHECK: '1', COTAL_AUTO_UPDATE: '1', NODE_OPTIONS: `--import=${pathToFileURL(cgroupPreload).href}` };
     const autoRun = await new Promise((resolve, reject) => {
-     const c = spawn(process.execPath, [installedEntry, 'update', '--self'], { cwd: root, env, stdio: ['ignore', 'pipe', 'pipe'] });
+     const c = spawn(process.execPath, [installedEntry, 'update', '--self'], { cwd: root, env: autoEnv, stdio: ['ignore', 'pipe', 'pipe'] });
      let out = '';
      c.stdout.on('data', b => out += b);
      c.stderr.on('data', b => out += b);
      c.once('error', reject);
      c.once('close', code => resolve({ code, output: out }));
     });
-    clearInterval(watchTimer);
     assert.notEqual(autoRun.code, 0, autoRun.output);
-    assert.match(autoRun.output, /Restoring verified cotal-ai@/);
+    const custodyMatch = /automatic update custody: parent (\d+) and child (\d+) in (cotal-update-[0-9a-f]{32}\.scope)/.exec(autoRun.output);
+    assert.ok(custodyMatch, autoRun.output);
+    const [, , initialChildPid, adoptedScope] = custodyMatch;
+    const scopeEvents = JSON.parse(readFileSync(scopesFile, 'utf8'));
+    const starts = scopeEvents.filter(e => e.op === 'StartTransientUnit');
+    assert.equal(starts.length, 1, JSON.stringify(scopeEvents));
+    assert.equal(starts[0].scope, adoptedScope);
+    const rollbackScopeReuses = scopeEvents.filter(e => e.op === 'scope-show' && e.scope === adoptedScope && String(e.callerPid) !== initialChildPid && e.activeGeneration === false);
+    assert.ok(rollbackScopeReuses.length > 0, `rollback child did not reuse ${adoptedScope}: ${JSON.stringify(scopeEvents)}`);
+    assert.equal(scopeEvents.some(e => e.op === 'daemon-reload'), false, JSON.stringify(scopeEvents));
+    assert.match(autoRun.output, /Restoring verified cotal-ai@0\.183\.0/);
     assert.equal(recovery(), null, autoRun.output);
-    // Legacy unit and receipt must remain untouched so the rolled-back pre-fix daemon still sees an owned unit and keeps automatic updates enabled.
+    assert.equal(installedVersion(), baseVersion);
+    // Legacy unit and receipt must remain untouched so the rolled-back 0.183.0 daemon still sees an owned unit and keeps automatic updates enabled.
     assert.equal(readFileSync(unitPath, 'utf8'), legacyUnit);
     assert.equal(JSON.parse(readFileSync(receiptPath, 'utf8')).unitSha256, legacySha);
-    // Wait briefly for the restored daemon's async native ownership worker to settle, then assert automatic updates remain enabled.
     let parsedStatus;
     for (let i = 0; i < 60; i++) {
      const statusAfter = await run(process.execPath, [installedEntry, 'daemon', 'status', '--json']);
@@ -318,16 +468,19 @@ for (const data of [[[argv[0], argv, [], 0, 0, 0, 0, pid, 0, 0]], [], []]) conso
     assert.ok(parsedStatus, 'rolled-back daemon did not answer daemon status');
     assert.equal(parsedStatus.result.version, baseVersion);
     assert.equal(parsedStatus.result.update.automatic, true, JSON.stringify(parsedStatus.result.update));
-    console.log('LEGACY UNIT ROLLBACK PRESERVED AUTO UPDATE:', JSON.stringify(parsedStatus.result.update));
+    console.log('LEGACY UNIT ROLLBACK PRESERVED AUTO UPDATE:', JSON.stringify({ scope: adoptedScope, rollbackReuses: rollbackScopeReuses.length, update: parsedStatus.result.update }));
    } finally {
-    if (daemon.exitCode === null) { daemon.kill('SIGTERM'); await new Promise(r => daemon.once('close', r)); }
-    if (existsSync(daemonPidFile)) {
-     const pid = Number(readFileSync(daemonPidFile, 'utf8').trim());
-     if (pid > 0) {
-      try { process.kill(pid, 'SIGTERM'); } catch {}
-      for (let i = 0; i < 50; i++) { try { process.kill(pid, 0); await new Promise(r => setTimeout(r, 50)); } catch { break; } }
+    const stopAndWaitGone = async pid => {
+     if (!(pid > 0)) return;
+     try { process.kill(pid, 'SIGTERM'); } catch { return; }
+     for (let i = 0; i < 80; i++) {
+      try { process.kill(pid, 0); if (i === 40) process.kill(pid, 'SIGKILL'); await new Promise(r => setTimeout(r, 50)); }
+      catch { return; }
      }
-    }
+    };
+    if (daemon.exitCode === null) { daemon.kill('SIGTERM'); await new Promise(r => daemon.once('close', r)); }
+    await stopAndWaitGone(daemon.pid);
+    if (existsSync(daemonPidFile)) await stopAndWaitGone(Number(readFileSync(daemonPidFile, 'utf8').trim()));
    }
   } else {
    const { code, output } = await command();

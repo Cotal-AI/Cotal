@@ -127,6 +127,8 @@ async function status(): Promise<any> {
     });
   });
 }
+const loadedOomPolicyFile = join(root, "loaded-oom-policy.txt");
+writeFileSync(loadedOomPolicyFile, "stop\n", { mode: 0o600 });
 const control = createServer(async (request, response) => {
   try {
     calls.push(request.url!);
@@ -144,6 +146,7 @@ const control = createServer(async (request, response) => {
       response.end(String(refusal === "--foreign-native" ? process.pid : mainPid)); return;
     } else if (request.url === "/daemon-reload") {
       if (existsSync(join(root, "fail-daemon-reload"))) { response.writeHead(500).end("daemon-reload denied"); return; }
+      writeFileSync(loadedOomPolicyFile, /^[ \t]*OOMPolicy=continue$/m.test(readFileSync(unitPath, "utf8")) ? "continue\n" : "stop\n", { mode: 0o600 });
     } else throw new Error("unexpected native operation");
     response.end("ok");
   } catch (error) { response.writeHead(500).end(String(error)); }
@@ -177,7 +180,8 @@ if(args.includes('show') && args.includes('cotal-daemon.service')) {
   get('show').then(r=>r.text()).then(pid => {
     const live = pid !== '0';
     const needReload = fs.existsSync(${JSON.stringify(join(root, "need-daemon-reload"))}) ? 'yes' : 'no';
-    const fields={Id:'cotal-daemon.service',LoadState:'loaded',FragmentPath:${JSON.stringify(unitPath)},DropInPaths:'',NeedDaemonReload:needReload,Transient:'no',MainPID:pid,ControlPID:'0',ActiveState:live?'active':'inactive',SubState:live?'running':'dead',UnitFileState:enablement(),InvocationID:live?'1'.repeat(32):'',WorkingDirectory:'',Job:'0',ExecStop:'',ExecStopPost:''};
+    const loadedOom = fs.readFileSync(${JSON.stringify(loadedOomPolicyFile)}, 'utf8').trim();
+    const fields={Id:'cotal-daemon.service',LoadState:'loaded',FragmentPath:${JSON.stringify(unitPath)},DropInPaths:'',NeedDaemonReload:needReload,OOMPolicy:loadedOom,Transient:'no',MainPID:pid,ControlPID:'0',ActiveState:live?'active':'inactive',SubState:live?'running':'dead',UnitFileState:enablement(),InvocationID:live?'1'.repeat(32):'',WorkingDirectory:'',Job:'0',ExecStop:'',ExecStopPost:''};
     for (const flag of args.filter(x=>x.startsWith('--property='))) { const key=flag.slice(11); if (!(key in fields)) process.exit(99); console.log(key+'='+fields[key]); }
   }).catch(()=>process.exit(99));
 } else {
@@ -353,33 +357,82 @@ try {
         }
         console.log(`PASS ${nonEnabledState} owned daemon left stopped and reported by update --self`);
       }
-      // Failed daemon-reload during shipped `cotal update` keeps exit 0, prints one concise warning line, and retries daemon-reload on the next `cotal update` when NeedDaemonReload=yes.
+      // Failed daemon-reload during shipped `cotal update` keeps exit 0, prints one concise warning line, and retries daemon-reload on the next `cotal update` when nothing else is pending.
+      writeFileSync(unitStateFile, "enabled\n", { mode: 0o600 });
+      writeFileSync(loadedOomPolicyFile, "stop\n", { mode: 0o600 });
       writeFileSync(unitPath, bytes, { mode: 0o600 });
       writeFileSync(join(paths.state, "service-unit.json"), JSON.stringify({ v: 1, unit: "cotal-daemon.service", unitPath, unitSha256: createHash("sha256").update(bytes).digest("hex"), installedAt: new Date().toISOString() }), { mode: 0o600 });
       writeFileSync(join(root, "fail-daemon-reload"), "1", { mode: 0o600 });
       calls.length = 0;
-      const failedReloadChild = spawn(process.execPath, [join(repo, "bin/dist/cotal.js"), "update"], { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] });
-      let failedReloadOut = "";
-      failedReloadChild.stdout.on("data", b => failedReloadOut += String(b));
-      failedReloadChild.stderr.on("data", b => failedReloadOut += String(b));
-      const failedReloadCode = await new Promise(resolve => failedReloadChild.once("exit", resolve));
-      const warningLines = failedReloadOut.split("\n").filter(line => line.includes("updated with OOMPolicy=continue, but systemctl --user daemon-reload failed"));
-      if (failedReloadCode !== 0 || warningLines.length !== 1 || !calls.includes("/daemon-reload") || !readFileSync(unitPath, "utf8").includes("OOMPolicy=continue")) {
-        throw new Error(`failed daemon-reload did not exit 0 with one warning line: ${JSON.stringify({ failedReloadCode, warningLines, calls, failedReloadOut })}`);
+      const runShipped = async (cliArgs: string[]) => {
+        const c = spawn(process.execPath, [join(repo, "bin/dist/cotal.js"), ...cliArgs], { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] });
+        let stdout = "", stderr = "";
+        c.stdout.on("data", b => stdout += String(b));
+        c.stderr.on("data", b => stderr += String(b));
+        const exitCode = await new Promise<number | null>(resolve => c.once("exit", resolve));
+        return { code: exitCode, stdout, stderr, output: stdout + stderr };
+      };
+      const failedReload = await runShipped(["update"]);
+      const warningLines = failedReload.output.split("\n").filter(line => line.includes("updated with OOMPolicy=continue, but systemctl --user daemon-reload failed"));
+      if (failedReload.code !== 0 || warningLines.length !== 1 || !calls.includes("/daemon-reload") || !readFileSync(unitPath, "utf8").includes("OOMPolicy=continue") || readFileSync(loadedOomPolicyFile, "utf8").trim() !== "stop") {
+        throw new Error(`failed daemon-reload did not exit 0 with one warning line: ${JSON.stringify({ failedReload, warningLines, calls })}`);
       }
       rmSync(join(root, "fail-daemon-reload"));
       writeFileSync(join(root, "need-daemon-reload"), "1", { mode: 0o600 });
       calls.length = 0;
-      const retryReloadChild = spawn(process.execPath, [join(repo, "bin/dist/cotal.js"), "update"], { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] });
-      let retryReloadOut = "";
-      retryReloadChild.stdout.on("data", b => retryReloadOut += String(b));
-      retryReloadChild.stderr.on("data", b => retryReloadOut += String(b));
-      const retryReloadCode = await new Promise(resolve => retryReloadChild.once("exit", resolve));
+      const retryReload = await runShipped(["update"]);
       rmSync(join(root, "need-daemon-reload"));
-      if (retryReloadCode !== 0 || calls.join(",") !== "/daemon-reload" || retryReloadOut.includes("daemon-reload failed")) {
-        throw new Error(`subsequent update did not retry daemon-reload cleanly: ${JSON.stringify({ retryReloadCode, calls, retryReloadOut })}`);
+      if (retryReload.code !== 0 || calls.join(",") !== "/daemon-reload" || readFileSync(loadedOomPolicyFile, "utf8").trim() !== "continue" || retryReload.output.includes("daemon-reload failed") || retryReload.output.includes("did not reload")) {
+        throw new Error(`subsequent update did not retry daemon-reload cleanly: ${JSON.stringify({ retryReload, calls })}`);
       }
-      console.log("PASS failed daemon-reload reports one warning line and retries on next update");
+      console.log("PASS failed daemon-reload reports one warning line and retries on next update when nothing else is pending");
+      // Upgraded unit plus an unloaded operator drop-in makes NO reload and prints one skip line (both when loaded OOMPolicy is continue and when loaded OOMPolicy is still stop).
+      const dropInDir = `${unitPath}.d`;
+      mkdirSync(dropInDir, { recursive: true, mode: 0o700 });
+      writeFileSync(join(dropInDir, "operator.conf"), "[Service]\nEnvironment=OP=1\n", { mode: 0o600 });
+      writeFileSync(join(root, "need-daemon-reload"), "1", { mode: 0o600 });
+      for (const loadedPolicy of ["continue", "stop"]) {
+        writeFileSync(loadedOomPolicyFile, `${loadedPolicy}\n`, { mode: 0o600 });
+        calls.length = 0;
+        const skippedReload = await runShipped(["update"]);
+        const skipLines = skippedReload.output.split("\n").filter(line => line.includes("cotal-daemon.service needs a reload") && line.includes("Cotal did not reload it"));
+        if (skippedReload.code !== 0 || calls.length !== 0 || skipLines.length !== 1) {
+          throw new Error(`upgraded unit with unloaded drop-in reloaded or missed one-line notice (${loadedPolicy}): ${JSON.stringify({ skippedReload, skipLines, calls })}`);
+        }
+      }
+      rmSync(dropInDir, { recursive: true, force: true });
+      rmSync(join(root, "need-daemon-reload"));
+      writeFileSync(loadedOomPolicyFile, "stop\n", { mode: 0o600 });
+      // Shipped CLI completes an interrupted service-policy-repair.json and reports policy-specific refusal text on conflict.
+      const upgradedBytes = readFileSync(unitPath, "utf8");
+      const legacyReceiptObj = { v: 1 as const, unit: "cotal-daemon.service", unitPath, unitSha256: createHash("sha256").update(bytes).digest("hex"), installedAt: new Date().toISOString() };
+      const policyIntentPath = join(paths.state, "service-policy-repair.json");
+      const validPolicyIntent = { v: 1, receipt: legacyReceiptObj, previousSource: bytes, nextSource: upgradedBytes, enabled: true, argv: [process.execPath, join(repo, "bin/dist/cotal.js"), "daemon", "serve"], version, hostedSpaces: [], phase: "prepared" };
+      writeFileSync(join(paths.state, "service-unit.json"), `${JSON.stringify(legacyReceiptObj)}\n`, { mode: 0o600 });
+      writeFileSync(policyIntentPath, `${JSON.stringify(validPolicyIntent)}\n`, { mode: 0o600 });
+      calls.length = 0;
+      const uninstallRefused = await runShipped(["daemon", "uninstall", "--yes", "--json"]);
+      if (uninstallRefused.code !== 2 || !JSON.parse(uninstallRefused.stdout).error?.message.includes("unfinished repair; run `cotal daemon status` to finish it") || calls.length !== 0) {
+        throw new Error(`daemon uninstall did not refuse unfinished policy repair: ${JSON.stringify({ uninstallRefused, calls })}`);
+      }
+      const installCompleted = await runShipped(["daemon", "install", "--json"]);
+      if (installCompleted.code !== 0 || !JSON.parse(installCompleted.stdout).result?.alreadyInstalled || existsSync(policyIntentPath) || !calls.includes("/daemon-reload") || JSON.parse(readFileSync(join(paths.state, "service-unit.json"), "utf8")).unitSha256 !== createHash("sha256").update(upgradedBytes).digest("hex")) {
+        throw new Error(`daemon install did not complete interrupted policy repair cleanly: ${JSON.stringify({ installCompleted, calls })}`);
+      }
+      writeFileSync(unitPath, `${upgradedBytes}# conflicting manual edit\n`, { mode: 0o600 });
+      writeFileSync(join(paths.state, "service-unit.json"), `${JSON.stringify(legacyReceiptObj)}\n`, { mode: 0o600 });
+      writeFileSync(policyIntentPath, `${JSON.stringify(validPolicyIntent)}\n`, { mode: 0o600 });
+      for (const verb of [["daemon", "status", "--json"], ["daemon", "install", "--json"]]) {
+        const conflictOut = await runShipped(verb);
+        const doc = JSON.parse(conflictOut.stdout);
+        if (conflictOut.code !== 2 || doc.error?.code !== "CONFLICT" || !String(doc.error?.message).startsWith("could not finish the interrupted daemon unit OOMPolicy update:") || String(doc.error?.message).includes("program is missing") || !String(doc.error?.remedy).includes("service-policy-repair.json")) {
+          throw new Error(`policy intent conflict used wrong refusal message or remedy (${verb.join(" ")}): ${JSON.stringify({ conflictOut, doc })}`);
+        }
+      }
+      rmSync(policyIntentPath, { force: true });
+      writeFileSync(unitPath, upgradedBytes, { mode: 0o600 });
+      writeFileSync(join(paths.state, "service-unit.json"), `${JSON.stringify({ ...legacyReceiptObj, unitSha256: createHash("sha256").update(upgradedBytes).digest("hex") })}\n`, { mode: 0o600 });
+      console.log("PASS unloaded drop-in reload skip and policy-intent CLI completion/refusal verified");
     }
   }
   }

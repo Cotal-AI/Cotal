@@ -252,7 +252,7 @@ const composed: Command = { ...command, async run(args) {
       if (process.platform !== "linux" || !(error instanceof EndpointRefusal) || error.code !== "NO_RUNTIME_DIR") throw error;
       if (linuxMissingProgram({ state: join(homeCotalDir(), "daemon") })) throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "the recorded daemon program is missing and this session cannot reach the user service", { remedy: "run `cotal daemon install` from a logged-in session using the working Cotal installation" });
     }
-    if (paths && await repairMissingInstalledProgram(paths)) console.log("The recorded service's missing program was replaced with this Cotal installation. An operator-disabled service remains stopped.");
+    if (paths && await repairMissingInstalledProgram(paths, undefined, line => console.log(line))) console.log("The recorded service's missing program was replaced with this Cotal installation. An operator-disabled service remains stopped.");
   }
   if (process.platform === "linux" && args.values.self === true && process.env.COTAL_AUTO_UPDATE !== "1" && !process.env.COTAL_UPDATE_PARENT) {
     const prefix = updateRuntime.installPrefix();
