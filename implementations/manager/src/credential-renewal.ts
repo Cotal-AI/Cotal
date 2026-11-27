@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { accountFromCreds, credsClaims, credsRenewalDelayMs, divergentSecretStoreNotice, EpEnvelopeError, inspectCredHealth, mintCreds, parseDaemonStoreAnswer, parseSecretStoreIdentity, rejectionText, REMOTE_MANAGER_IDENTITY_NAMES, requestSafeReconnect, sameSecretStoreIdentity, serveIssuanceGateKv, STANDING_RENEWABLE_TTL_SEC, type ControlReply, type CredHealth, type DaemonStoreAnswer, type DeliveryLeaseInfo, type EpServeHandle, type SecretStoreIdentity } from "@cotal-ai/core";
-import { agentSecretKeyForFile, DELIVERY_CREDS_KIND, MEMBERSHIP_RW_CREDS_KIND, remintDaemonCreds, spaceMaterialKey, SYSTEM_CREDS_FILES, writeRenewalRecord, type RenewalRecord } from "@cotal-ai/workspace";
+import { accountFromCreds, credsClaims, credsRenewalDelayMs, DEFAULT_SERVER, divergentSecretStoreNotice, EpEnvelopeError, inspectCredHealth, mintCreds, parseDaemonStoreAnswer, parseSecretStoreIdentity, rejectionText, REMOTE_MANAGER_IDENTITY_NAMES, requestSafeReconnect, sameSecretStoreIdentity, serveIssuanceGateKv, STANDING_RENEWABLE_TTL_SEC, type ControlReply, type CredHealth, type DaemonStoreAnswer, type DeliveryLeaseInfo, type EpServeHandle, type SecretStoreIdentity } from "@cotal-ai/core";
+import { agentSecretKeyForFile, DAEMON_ENDPOINT_BOOTSTRAPS, DELIVERY_CREDS_KIND, getSpaceAuth, MEMBERSHIP_RW_CREDS_KIND, readDaemonEndpointInstanceId, remintDaemonCreds, renewDaemonEndpoint, spaceMaterialKey, SYSTEM_CREDS_FILES, writeRenewalRecord, type RemintResult, type RenewalRecord } from "@cotal-ai/workspace";
 import type { KV } from "@nats-io/kv";
 import { credsAuthenticator, RequestError, type NatsConnection } from "@nats-io/transport-node";
 import { isUnansweredDeliveryAdmin, untilDeliveryAdminAnswers } from "./endpoint-evict.js";
@@ -450,6 +450,32 @@ export class CredentialRenewal {
     return false;
   }
 
+  /** Renew each registered delivery-served endpoint (A1). An endpoint this space never registered (no
+   *  persisted instance id) is skipped, so a daemon not asked to serve it is left alone. Never throws:
+   *  each outcome is one record row, and a failure is logged loudly. */
+  private async renewDaemonEndpoints(): Promise<RemintResult[]> {
+    const out: RemintResult[] = [];
+    let auth: Awaited<ReturnType<typeof getSpaceAuth>>;
+    try { auth = await getSpaceAuth(this.config.secrets, this.config.space); }
+    catch (e) { return [{ file: "endpoints", ok: false, error: rejectionText(e) }]; }
+    if (!auth) return [];
+    for (const [name, spec] of Object.entries(DAEMON_ENDPOINT_BOOTSTRAPS)) {
+      const file = `endpoints/${name}`;
+      try {
+        if (await readDaemonEndpointInstanceId(this.config.secrets, this.config.space, name) === undefined) continue;
+        await renewDaemonEndpoint({
+          auth, servers: this.config.servers ?? DEFAULT_SERVER, space: this.config.space, store: this.config.secrets,
+          log: (line) => console.error(line),
+        }, spec());
+        out.push({ file, ok: true });
+      } catch (e) {
+        console.error(`! credential renewal: endpoint ${name} was not renewed (${rejectionText(e)}); its last-good serve connection keeps serving until its credential expires`);
+        out.push({ file, ok: false, error: rejectionText(e) });
+      }
+    }
+    return out;
+  }
+
   /** One class-2 renewal pass: re-sign `.cotal/delivery.creds` + `.cotal/membership-rw.creds`
    *  for their existing nkeys, then request the delivery daemon's EXPLICIT `reloadCreds` adoption on the
    *  delivery-admin rail and persist the audit record (`.cotal/renewal.<spaceKey>.json`) that `cotal doctor auth`
@@ -500,6 +526,10 @@ export class CredentialRenewal {
       for (const r of results.filter((x) => !x.ok && !x.skipped))
         console.error(`! credential renewal: could not re-sign ${r.file}: ${r.error} - the daemon dies loud at this cred's expiry unless it is reminted`);
       if (adoption && !adoption.ok) console.error(`! credential renewal: daemon adoption failed: ${adoption.error}`);
+      // The delivery-served endpoints' three credentials (A1): renewed by the same owner, in the same
+      // pass, and adopted only on the daemon's own bind proof. One that fails leaves its last-good
+      // connection serving and is recorded beside the daemon's own results.
+      if (this.daemonRenewalOwner) results.push(...await this.renewDaemonEndpoints());
       // `writeRenewalRecord` redacts the ephemeral fingerprint at the persistence boundary (covering
       // the `doctor auth --fix` writer too), so the results pass straight through.
       // A non-owner (#1634) re-signed nothing, so it writes no record: an empty one renders in

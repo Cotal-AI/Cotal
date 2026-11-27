@@ -27,7 +27,7 @@ import {
   daemonEndpointKey, DAEMON_ENDPOINT_SERVE_CREDS_KIND, loadOrCreateDaemonEndpointInstanceId,
   loadOrCreateDaemonEndpointServeIdentity,
 } from "./daemon-endpoint-material.js";
-import { registerDaemonEndpoint, writeDaemonEndpointReady, type DaemonEndpointContract } from "./daemon-endpoint-registration.js";
+import { registerDaemonEndpoint, remintDaemonEndpointServe, writeDaemonEndpointReady, type DaemonEndpointContract } from "./daemon-endpoint-registration.js";
 import { DELIVERY_ADMIN_BOOT_WAIT_MS, untilDeliveryAdminAnswers, withScopedEndpoint } from "./endpoint-evict.js";
 
 /** A store credential a served endpoint needs beside its serve credential: the profile it is minted
@@ -75,12 +75,32 @@ export async function bootstrapDaemonEndpoint(
   target: { auth: SpaceAuth; servers: string; space: string; tls?: boolean; store: SecretStore; log: (line: string) => void },
   endpoint: DaemonEndpointBootstrap,
 ): Promise<{ epoch: number; instanceId: string }> {
+  return handOver(target, endpoint, "register");
+}
+
+/** Renew a delivery-served endpoint's three credentials (the manager's renewal pass): re-mint the serve
+ *  credential for the same registration at the current epoch behind the fence, re-mint the store
+ *  credentials, and have the daemon adopt them. The daemon binds the candidate only after its own
+ *  checks, and keeps the last-good connection serving on any refusal; `ready` is rewritten only when
+ *  it reports this exact credential bound. Throws on any refusal, so the caller records it loudly. */
+export async function renewDaemonEndpoint(
+  target: { auth: SpaceAuth; servers: string; space: string; tls?: boolean; store: SecretStore; log: (line: string) => void },
+  endpoint: DaemonEndpointBootstrap,
+): Promise<{ epoch: number; instanceId: string }> {
+  return handOver(target, endpoint, "remint");
+}
+
+async function handOver(
+  target: { auth: SpaceAuth; servers: string; space: string; tls?: boolean; store: SecretStore; log: (line: string) => void },
+  endpoint: DaemonEndpointBootstrap,
+  mode: "register" | "remint",
+): Promise<{ epoch: number; instanceId: string }> {
   const { store, space, log } = target;
   const name = endpoint.endpoint;
   const instanceId = await loadOrCreateDaemonEndpointInstanceId(store, space, name);
   const serveIdentity = await loadOrCreateDaemonEndpointServeIdentity(store, space, name);
   const reg = { auth: target.auth, servers: target.servers, space, tls: target.tls, instanceId, serveIdentity, log };
-  const minted = await registerDaemonEndpoint(reg, endpoint);
+  const minted = mode === "register" ? await registerDaemonEndpoint(reg, endpoint) : await remintDaemonEndpointServe(reg, endpoint);
   for (const cred of endpoint.storeCreds)
     await store.put(daemonEndpointKey(space, name, cred.kind), await mintCreds(target.auth, newIdentity(), cred.profile));
   await store.put(daemonEndpointKey(space, name, DAEMON_ENDPOINT_SERVE_CREDS_KIND), minted.creds);
@@ -96,6 +116,6 @@ export async function bootstrapDaemonEndpoint(
   if (s.adoptionOpId !== adoptionOpId || s.instanceId !== instanceId)
     throw new Error(`${name}: the delivery daemon reports a bind from another adoption (op ${String(s.adoptionOpId)}), not the one just sent; ready was not written`);
   await writeDaemonEndpointReady(reg, name, minted, { epoch: s.epoch, credentialFingerprint: s.credentialFingerprint });
-  log(`✓ ${name}: registered, bound by the delivery daemon at epoch ${s.epoch}, ready`);
+  log(`✓ ${name}: ${mode === "register" ? "registered" : "renewed"}, bound by the delivery daemon at epoch ${s.epoch}, ready`);
   return { epoch: s.epoch, instanceId };
 }

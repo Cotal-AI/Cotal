@@ -11,6 +11,11 @@
  *  - a seeded non-empty channel pages under a real agent credential (limit + after);
  *  - a peer whose read ACL lacks the channel is refused, outcome not-executed, with no rows;
  *  - a candidate with an extra row is refused by claims equality and the last-good keeps answering;
+ *  - renewal re-mints at the same epoch and the daemon binds the new credential on proof;
+ *  - a gate frozen, or a registration revision moved, at an unchanged epoch refuses the bind and the
+ *    re-mint, while last-good keeps answering;
+ *  - a re-registration of the same instance is a takeover through the real verify-evict, the epoch
+ *    advances, and list answers at the new epoch;
  *  - nativeConnections lists artifacts-serve, artifact-data and artifact-sweeper beside the rest.
  *
  * The caller's `artifacts list` row comes from the `artifacts` capability token (option A): the
@@ -27,18 +32,18 @@ import { Kvm } from "@nats-io/kv";
 import {
   ARTIFACTS_CAPABILITY, ARTIFACTS_ENDPOINT, ARTIFACTS_LIST_COMMAND, CotalEndpoint, DEV_OWNER, RECORD_KINDS, SERVICE_READY,
   artifactAttachBucket, composeSpaceAuth, createBrokerAuth, createSpaceAccountAuth, credsFingerprint, idFromCreds, provisionAgentDurables,
-  isReachable, mintCreds, mintLifecycleUid, mintMembershipObserverCreds, newIdentity, readSvcRecordLeader, recordStatusKey,
-  serverConfig, setupSpaceStreams, type SecretStore,
+  isReachable, mintConnectionEvictorCreds, mintCreds, mintLifecycleUid, mintMembershipObserverCreds, newIdentity, readSvcRecordLeader, recordStatusKey,
+  serverConfig, setupSpaceStreams, epAuthBucket, epgateKey, type SecretStore,
 } from "@cotal-ai/core";
 import {
   DAEMON_ENDPOINT_BOOTSTRAPS, DAEMON_ENDPOINT_SERVE_CREDS_KIND, bootstrapDaemonEndpoint, daemonEndpointKey,
-  deliveryCredsKey, membershipObserverCredsKey, membershipRwCredsKey, readDaemonEndpointInstanceId,
+  deliveryCredsKey, membershipObserverCredsKey, membershipRwCredsKey, connectionEvictorCredsKey, readDaemonEndpointInstanceId, readDaemonEndpointServeId, renewDaemonEndpoint,
 } from "@cotal-ai/workspace";
 import { SMOKE_BROKER_TOKEN, createSuite, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { startDeliveryService, type DeliveryServiceHandle } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
 
-const EXPECTED_CELLS = 13;
+const EXPECTED_CELLS = 22;
 const { check, finish, passed, failed } = createSuite();
 
 class MemoryStore implements SecretStore {
@@ -86,6 +91,9 @@ try {
   await store.put(deliveryCredsKey(space, composition), await mintCreds(auth, newIdentity(), "delivery"));
   await store.put(membershipObserverCredsKey(space, composition), await mintMembershipObserverCreds(auth, newIdentity()));
   await store.put(membershipRwCredsKey(space, composition), await mintCreds(auth, newIdentity(), "membership-rw"));
+  // The connection evictor `cotal up` provisions: a restart takeover verify-evicts the superseded serve
+  // family through it, and eviction is never skipped.
+  await store.put(connectionEvictorCredsKey(space, composition), await mintConnectionEvictorCreds(auth, newIdentity()));
 
   handle = await startDeliveryService({
     context: { accountPublicKey: account.account.pub, lifecycleUid: "artifacts-ctx" },
@@ -193,6 +201,59 @@ try {
     !badAdopt.ok && (stillGood.data as { state?: { credentialFingerprint?: string } }).state?.credentialFingerprint === credsFingerprint(good), { badAdopt, stillGood });
   const again = (await member.invokeService(ARTIFACTS_ENDPOINT, ARTIFACTS_LIST_COMMAND, { channel, limit: 1 })).reply;
   check("the last-good serve connection still answers list after the refused candidate", again.ok, again);
+
+  // ---- renewal: the same registration, the same epoch, a new credential, adopted on proof ----
+  const target = { auth, servers, space, store, log: (l: string) => log.push(l) };
+  const renewed = await renewDaemonEndpoint(target, DAEMON_ENDPOINT_BOOTSTRAPS[ARTIFACTS_ENDPOINT]!());
+  const afterRenew = (await admin.requestDeliveryAdmin("serveState", { endpoint: ARTIFACTS_ENDPOINT }, 10_000)).data as { state?: { epoch: number; credentialFingerprint: string } };
+  const renewedCreds = await store.get(daemonEndpointKey(space, ARTIFACTS_ENDPOINT, DAEMON_ENDPOINT_SERVE_CREDS_KIND));
+  check("renewal re-mints at the same epoch and the daemon binds the new credential, not last-good",
+    renewed.epoch === bound.epoch && afterRenew.state?.epoch === bound.epoch && renewedCreds !== undefined
+      && afterRenew.state.credentialFingerprint === credsFingerprint(renewedCreds) && renewedCreds !== good, { renewed, afterRenew });
+  const afterRenewList = (await member.invokeService(ARTIFACTS_ENDPOINT, ARTIFACTS_LIST_COMMAND, { channel, limit: 1 })).reply;
+  check("list answers on the renewed serve connection", afterRenewList.ok, afterRenewList);
+
+  // ---- a gate frozen at an unchanged epoch: nothing binds, last-good keeps answering ----
+  // The scoped executor for this one instance holds the auth-store write a registration barrier uses;
+  // the cell freezes the gate with it exactly as a barrier would, without advancing the epoch.
+  const executorCreds = await mintCreds(auth, newIdentity(), "endpoint-serve-executor", { endpointServeExecutor: { endpoint: ARTIFACTS_ENDPOINT, instanceId: instanceId! } });
+  const execNc = await dial(servers, executorCreds);
+  conns.push(execNc);
+  const authKv = await new Kvm(execNc).open(epAuthBucket(space));
+  const gateKey = epgateKey(ARTIFACTS_ENDPOINT, instanceId!);
+  const openEntry = (await authKv.get(gateKey))!;
+  const openRow = JSON.parse(new TextDecoder().decode(openEntry.value)) as Record<string, unknown>;
+  const frozenRev = await authKv.update(gateKey, JSON.stringify({ ...openRow, state: "frozen", op: { opId: mintLifecycleUid(), kind: "registration" } }), openEntry.revision);
+  const servingBefore = (await admin.requestDeliveryAdmin("serveState", { endpoint: ARTIFACTS_ENDPOINT }, 10_000)).data as { state?: { credentialFingerprint: string } };
+  const frozenAdopt = await admin.requestDeliveryAdmin("adoptEndpointCreds", { endpoint: ARTIFACTS_ENDPOINT, adoptionOpId: mintLifecycleUid() }, 20_000);
+  const servingAfter = (await admin.requestDeliveryAdmin("serveState", { endpoint: ARTIFACTS_ENDPOINT }, 10_000)).data as { state?: { credentialFingerprint: string } };
+  check("a gate frozen at an unchanged epoch refuses the bind, naming the frozen gate, and keeps last-good",
+    !frozenAdopt.ok && /frozen|not open/.test(frozenAdopt.error ?? "") && servingAfter.state?.credentialFingerprint === servingBefore.state?.credentialFingerprint, { frozenAdopt });
+  const duringFreeze = (await member.invokeService(ARTIFACTS_ENDPOINT, ARTIFACTS_LIST_COMMAND, { channel, limit: 1 })).reply;
+  check("last-good still answers list while the gate is frozen", duringFreeze.ok, duringFreeze);
+  let remintRefused: string | undefined;
+  try { await renewDaemonEndpoint(target, DAEMON_ENDPOINT_BOOTSTRAPS[ARTIFACTS_ENDPOINT]!()); } catch (e) { remintRefused = (e as Error).message; }
+  check("renewal against a frozen gate re-mints nothing and says why", remintRefused !== undefined && /frozen/.test(remintRefused), remintRefused);
+
+  // ---- a registration revision moved at an unchanged epoch: the whole-tuple re-read refuses ----
+  await authKv.update(gateKey, JSON.stringify({ ...openRow, registrationRevision: (openRow.registrationRevision as number) + 1 }), frozenRev);
+  const revAdopt = await admin.requestDeliveryAdmin("adoptEndpointCreds", { endpoint: ARTIFACTS_ENDPOINT, adoptionOpId: mintLifecycleUid() }, 20_000);
+  check("a gate whose registration revision moved at an unchanged epoch refuses the bind",
+    !revAdopt.ok && /revision|changed/.test(revAdopt.error ?? ""), revAdopt);
+  // Put the gate back exactly as it was, so the restart below starts from a real registration.
+  const cur = (await authKv.get(gateKey))!;
+  await authKv.update(gateKey, JSON.stringify(openRow), cur.revision);
+
+  // ---- restart takeover: the same instance re-registers, the epoch advances, the old family goes ----
+  const oldServeId = (await readDaemonEndpointServeId(store, space, ARTIFACTS_ENDPOINT))!;
+  const restarted = await bootstrapDaemonEndpoint(target, DAEMON_ENDPOINT_BOOTSTRAPS[ARTIFACTS_ENDPOINT]!());
+  const afterRestart = (await admin.requestDeliveryAdmin("serveState", { endpoint: ARTIFACTS_ENDPOINT }, 10_000)).data as { state?: { epoch: number; instanceId: string } };
+  check("a re-registration of the same instance is a takeover: the epoch advances and the daemon binds it",
+    restarted.epoch > bound.epoch && restarted.instanceId === instanceId && afterRestart.state?.epoch === restarted.epoch, { restarted, afterRestart });
+  check("the takeover keeps the persisted serve identity, so the gate's principal holds",
+    (await readDaemonEndpointServeId(store, space, ARTIFACTS_ENDPOINT)) === oldServeId);
+  const afterTakeover = (await member.invokeService(ARTIFACTS_ENDPOINT, ARTIFACTS_LIST_COMMAND, { channel, limit: 1 })).reply;
+  check("list answers at the new epoch after the takeover", afterTakeover.ok, afterTakeover);
 
   // ---- native inventory ----
   let labels = "";

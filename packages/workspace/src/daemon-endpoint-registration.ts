@@ -63,10 +63,19 @@ function nameAuthority(endpoint: string): ServiceNameAuthority {
   return { authorize: (name, owner) => ({ authorized: name === endpoint && owner === DEV_OWNER, revision: 0 }) };
 }
 
-/** Publish the contract, provision the gate if this is the first registration, and register (a
- *  takeover on restart, verify-evicting the superseded family). Returns the grant at the committed
- *  epoch and the minted serve credential. */
+/** Register and mint the serve credential behind the fence (a takeover on restart). Returns the grant at
+ *  the committed epoch and the minted serve credential. */
 export async function registerDaemonEndpoint(t: DaemonEndpointTarget, contract: DaemonEndpointContract): Promise<{ grant: EpServeGrant; creds: string; fingerprint: string }> {
+  return withDaemonEndpointSession(t, contract, "register");
+}
+
+/** Re-mint the serve credential for the SAME registration at the CURRENT epoch (renewal): no barrier, no
+ *  epoch advance. The fence still refuses unless the gate is open at the grant's epoch and revisions. */
+export async function remintDaemonEndpointServe(t: DaemonEndpointTarget, contract: DaemonEndpointContract): Promise<{ grant: EpServeGrant; creds: string; fingerprint: string }> {
+  return withDaemonEndpointSession(t, contract, "remint");
+}
+
+async function withDaemonEndpointSession(t: DaemonEndpointTarget, contract: DaemonEndpointContract, mode: "register" | "remint"): Promise<{ grant: EpServeGrant; creds: string; fingerprint: string }> {
   const { endpoint, cluster } = contract;
   const store = new Map<string, unknown>([[cluster.rootDigest, cluster.document], [cluster.closureDigest, cluster.manifest]]);
   const readClusterArtifact = (digest: string): unknown => store.get(digest);
@@ -74,26 +83,36 @@ export async function registerDaemonEndpoint(t: DaemonEndpointTarget, contract: 
   const principal = principalKey(DEV_OWNER, t.serveIdentity.id).key;
   const opId = mintLifecycleUid();
   return withEndpointServeExecutorSession(sessionArgs(t), { endpoint, instanceId: t.instanceId }, async ({ recordsKv, authKv, nc }) => {
-    const ctx = await contractStoreContext(nc, t.space);
-    for (const value of [...contract.artifactValues(), cluster.document, cluster.manifest])
-      await publishContractArtifact(ctx, contractArtifactCanonicalBytes(value));
     const fence = serveIssuanceGateKv(authKv, t.space, { endpoint, instanceId: t.instanceId });
-    if ((await fence.observe()) === null)
-      await provisionEndpointGateOpen(authKv, { endpoint, instanceId: t.instanceId, principal });
-    const barrier = endpointRegistrationBarrier(authKv, t.space, {
-      endpoint, instanceId: t.instanceId, opId,
-      evict: makeManagerEndpointHolderEvictor({ space: t.space, servers: t.servers, auth: t.auth, tlsRequired: t.tls, log: t.log, unreachableWaitMs: DELIVERY_ADMIN_BOOT_WAIT_MS }),
-    });
-    const spec = { endpoint, owner: DEV_OWNER, clusterDigests: [cluster.closureDigest], protocol: { v: 1 as const } };
-    const { processEpoch } = await registerServiceInstance(recordsKv, {
-      space: t.space, spec, instanceId: t.instanceId, registrant: { owner: DEV_OWNER }, authority, barrier, readClusterArtifact,
-      observeHolderGeneration: (holder) => readEndpointGateGeneration(authKv, { endpoint, instanceId: holder }),
-    });
     const readProcessEpoch = async (): Promise<number> => {
       const gate = await fence.observe();
       if (gate === null) throw new Error(`no issuance gate for ${endpoint}/${t.instanceId} after its registration`);
       return gate.processEpoch;
     };
+    let processEpoch: number;
+    if (mode === "register") {
+      const ctx = await contractStoreContext(nc, t.space);
+      for (const value of [...contract.artifactValues(), cluster.document, cluster.manifest])
+        await publishContractArtifact(ctx, contractArtifactCanonicalBytes(value));
+      if ((await fence.observe()) === null)
+        await provisionEndpointGateOpen(authKv, { endpoint, instanceId: t.instanceId, principal });
+      const barrier = endpointRegistrationBarrier(authKv, t.space, {
+        endpoint, instanceId: t.instanceId, opId,
+        evict: makeManagerEndpointHolderEvictor({ space: t.space, servers: t.servers, auth: t.auth, tlsRequired: t.tls, log: t.log, unreachableWaitMs: DELIVERY_ADMIN_BOOT_WAIT_MS }),
+      });
+      const spec = { endpoint, owner: DEV_OWNER, clusterDigests: [cluster.closureDigest], protocol: { v: 1 as const } };
+      ({ processEpoch } = await registerServiceInstance(recordsKv, {
+        space: t.space, spec, instanceId: t.instanceId, registrant: { owner: DEV_OWNER }, authority, barrier, readClusterArtifact,
+        observeHolderGeneration: (holder) => readEndpointGateGeneration(authKv, { endpoint, instanceId: holder }),
+      }));
+    } else {
+      const gate = await fence.observe();
+      if (gate === null || gate.state !== "open")
+        throw new Error(`${endpoint}/${t.instanceId}: the issuance gate is ${gate?.state ?? "absent"}, so nothing is re-minted; a restart re-registers`);
+      if (gate.principal !== principal)
+        throw new Error(`${endpoint}/${t.instanceId}: the issuance gate names ${gate.principal}, not the persisted serve principal; nothing is re-minted`);
+      processEpoch = gate.processEpoch;
+    }
     const grant = await authorizeServeGrant(recordsKv, {
       space: t.space, endpoint, instanceId: t.instanceId, epoch: processEpoch, holder: { owner: DEV_OWNER }, authority, readClusterArtifact, readProcessEpoch,
     });

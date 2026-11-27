@@ -93,13 +93,22 @@ export function artifactsServedEndpoint(ctx: ServedEndpointContext): DaemonServe
     });
     return { creds, nc, native: watchNativeConnection(nc, `delivery ${label} connection`) };
   };
-  /** Swap to a re-minted credential: dial the new one first, then close the old. */
+  /** Swap to a re-minted credential: dial the new one and bind what it serves first, and only then
+   *  publish it and close the old one, so a failed dial or bind leaves the last-good connection in use.
+   *  Store credentials carry no epoch, so a store connection on a newer credential serves a last-good
+   *  serve connection unchanged. */
   const refresh = async (slot: "data" | "sweeper", label: "artifact-data" | "artifact-sweeper", kind: string): Promise<boolean> => {
     const current = conns[slot];
     const stored = await ctx.store.get(daemonEndpointKey(ctx.space, ARTIFACTS_ENDPOINT, kind));
     if (current !== undefined && stored === current.creds) return false;
     const next = await open(label, kind);
+    let scan: KV | undefined;
+    if (slot === "sweeper") {
+      try { scan = await new Kvm(next.nc).open(artifactAttachBucket(ctx.space)); }
+      catch (e) { await drainAndClose(next.nc).catch(() => {}); throw e; }
+    }
     conns[slot] = next;
+    if (scan !== undefined) attachScan = scan;
     if (current) await drainAndClose(current.nc).catch(() => {});
     return true;
   };
@@ -147,8 +156,7 @@ export function artifactsServedEndpoint(ctx: ServedEndpointContext): DaemonServe
     cluster: artifactsClusterArtifacts(),
     prepare: async () => {
       await refresh("data", "artifact-data", ARTIFACT_DATA_CREDS_KIND);
-      if (await refresh("sweeper", "artifact-sweeper", ARTIFACT_SWEEPER_CREDS_KIND) || attachScan === undefined)
-        attachScan = await new Kvm(conns.sweeper!.nc).open(artifactAttachBucket(ctx.space));
+      await refresh("sweeper", "artifact-sweeper", ARTIFACT_SWEEPER_CREDS_KIND);
     },
     defs: (scope) => [{ command: ARTIFACTS_LIST_COMMAND, contract: ARTIFACTS_CONTRACTS[ARTIFACTS_LIST_COMMAND]!, handler: list(scope) }],
     nativeConnections: () => [
