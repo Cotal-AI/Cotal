@@ -13,7 +13,7 @@
  */
 import nodeAssert from "node:assert/strict";
 import { countedAssert, emitSentinel } from "@cotal-ai/smoke-kit";
-import { Registry, registry } from "../src/registry.js";
+import { commitPlugin, Registry, registry, stagePlugin, type PluginHost } from "../src/registry.js";
 const counted = countedAssert(nodeAssert);
 const assert: typeof nodeAssert = counted.assert;
 const cells = counted.cells;
@@ -110,6 +110,64 @@ const cells = counted.cells;
   assert.throws(() => registry.resolve("connector", "fixture-import"), /no connector registered/, "import was visible before commit");
   registry.commitStaged(staged);
   assert.equal(registry.resolve("connector", "fixture-import").name, "fixture-import");
+}
+
+{
+  const r = new Registry();
+  const extension = { kind: "command", name: "example", aliases: ["short"] };
+  let captured!: PluginHost;
+  const staged = await stagePlugin(r, (host) => {
+    captured = host;
+    host.register(extension);
+  });
+  assert.deepEqual(Object.keys(captured).sort(), ["contract", "register"]);
+  assert.equal(captured.contract, 1);
+  assert.equal(r.has("command", "short"), false);
+  assert.throws(() => captured.register(extension), /registration is closed/);
+  const scope = commitPlugin(r, staged);
+  assert.equal(r.resolve("command", "short"), extension);
+  assert.equal(r.unregister("command", "example"), true);
+  const replacement = { ...extension };
+  r.register(replacement);
+  scope.dispose();
+  scope.dispose();
+  assert.equal(r.resolve("command", "short"), replacement);
+
+  const removable = { kind: "command", name: "removable", aliases: ["remove-me"] };
+  const disposable = commitPlugin(r, await stagePlugin(r, (host) => host.register(removable)));
+  disposable.dispose();
+  assert.equal(r.has("command", "removable"), false);
+  assert.equal(r.has("command", "remove-me"), false);
+}
+
+{
+  const r = new Registry();
+  const root = { kind: "command", name: "root-word" };
+  const plugin = { kind: "command", name: "plugin-word", aliases: [root.name] };
+  const unrelated = { kind: "command", name: "unrelated" };
+  r.provide({ provides: [root], load: async () => r.register(root) });
+  const staged = await stagePlugin(r, (host) => host.register(unrelated, plugin));
+  assert.throws(() => commitPlugin(r, staged), /already registered: command:root-word/);
+  assert.equal(r.has("command", "unrelated"), false);
+  assert.equal(r.has("command", "plugin-word"), false);
+  assert.equal(await r.load("command", "root-word"), root);
+}
+
+{
+  const r = new Registry();
+  const extension = { kind: "command", name: "discarded" };
+  await assert.rejects(stagePlugin(r, (host) => {
+    host.register(extension);
+    throw new Error("factory failed");
+  }), /factory failed/);
+  assert.equal(r.has("command", "discarded"), false);
+  await assert.rejects(stagePlugin(r, async (host) => {
+    host.register(extension);
+    await Promise.resolve();
+    host.register({ kind: "command", name: "late" });
+  }), /factory must be synchronous/);
+  assert.equal(r.has("command", "discarded"), false);
+  assert.equal(r.has("command", "late"), false);
 }
 
 console.log("registry-staging.smoke: all assertions passed");

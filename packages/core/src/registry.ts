@@ -2,8 +2,8 @@ import { AsyncLocalStorage } from "node:async_hooks";
 
 /**
  * A typed registry of extensions, keyed by `kind:name`. Implementations
- * **self-register** their extensions (connectors, commands …) as a side-effect of
- * import; composition roots just import the packages they want and then resolve.
+ * publish their extensions (connectors, commands …) here. Composition roots
+ * register directly. Installed plugins receive a scoped {@link PluginHost}.
  *
  * Core stays ignorant of which extensions exist: they plug into the registry, not
  * the other way round. An unknown extension throws; no silent fallback.
@@ -26,6 +26,12 @@ export interface Extension {
   /** Other names that resolve to this extension within its kind. A name or alias already claimed in
    *  the kind is refused at registration, so resolution never depends on load order. */
   readonly aliases?: readonly string[];
+}
+
+/** Registration surface available only during an installed plugin's factory call. */
+export interface PluginHost {
+  readonly contract: 1;
+  register(...exts: Extension[]): void;
 }
 
 /** A registry key used by commands that need an operator-installed provider before they run. */
@@ -92,12 +98,11 @@ export class Registry {
     }
   }
 
-  /** Remove one extension by kind + name; returns whether it was registered. Generic teardown; it
-   *  knows nothing about what a kind means. */
-  unregister(kind: string, name: string): boolean {
+  /** Remove one extension by kind and name. When given, `expected` must be the live object. */
+  unregister(kind: string, name: string, expected?: Extension): boolean {
     const key = `${kind}:${name}`;
     const ext = this.#byKey.get(key);
-    if (!ext) return false;
+    if (!ext || (expected !== undefined && ext !== expected)) return false;
     for (const alias of claims(ext).slice(1)) this.#aliases.delete(alias);
     return this.#byKey.delete(key);
   }
@@ -119,7 +124,10 @@ export class Registry {
    *  re-checked against the live map, which may have changed since staging). */
   commitStaged(staged: readonly Extension[]): void {
     const taken = this.#claimed();
-    for (const ext of staged) for (const key of claims(ext)) if (taken.has(key)) throw new Error(`extension already registered: ${key}`);
+    for (const ext of staged) for (const key of claims(ext)) {
+      if (taken.has(key) || this.#providers.has(key)) throw new Error(`extension already registered: ${key}`);
+      taken.add(key);
+    }
     this.#publish(staged);
   }
 
@@ -183,6 +191,42 @@ export class Registry {
     const values = [...this.#byKey.values()];
     return (kind === undefined ? values : values.filter((e) => e.kind === kind)) as T[];
   }
+}
+
+/** Call a synchronous plugin factory without publishing any of its registrations. */
+export async function stagePlugin(target: Registry, factory: (host: PluginHost) => unknown): Promise<Extension[]> {
+  const { staged } = await target.runStaged(async () => {
+    let open = true;
+    const host: PluginHost = Object.freeze({
+      contract: 1,
+      register(...exts: Extension[]): void {
+        if (!open) throw new Error("plugin registration is closed");
+        target.register(...exts);
+      },
+    });
+    let result: unknown;
+    try { result = factory(host); }
+    finally { open = false; }
+    if (result && typeof (result as { then?: unknown }).then === "function") {
+      void Promise.resolve(result).catch(() => {});
+      throw new Error("plugin factory must be synchronous");
+    }
+  });
+  return staged;
+}
+
+/** Publish validated registrations and return their idempotent, identity-checked teardown. */
+export function commitPlugin(target: Registry, staged: readonly Extension[]): { dispose(): void } {
+  const owned = staged.map((ext) => ({ kind: ext.kind, name: ext.name, ext }));
+  target.commitStaged(staged);
+  return {
+    dispose() {
+      while (owned.length) {
+        const { kind, name, ext } = owned.pop()!;
+        target.unregister(kind, name, ext);
+      }
+    },
+  };
 }
 
 /** The process-wide registry. Implementations self-register into it on import. */
