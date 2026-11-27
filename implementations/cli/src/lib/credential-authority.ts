@@ -1,5 +1,5 @@
 import {
-  CommandFailure, authDir, canonicalRoot, codeSpan, findCotalRoot, findMesh, getSoleSpaceAuth, getSpaceAuth,
+  CommandFailure, authDir, canonicalRoot, codeSpan, findCotalRoot, findMesh, firstStartServer, getSoleSpaceAuth, getSpaceAuth,
   hasUserAuthState, isWorkspaceTargetError, preparedLifecycle, preparedNeverStarted, preparedSpaceAt, resolveMeshTarget, targetErrorCode,
   workspaceErrorParts, workspaceSecretStore, type MeshTarget,
 } from "@cotal-ai/workspace";
@@ -8,11 +8,8 @@ import { readStackJournal } from "./stack-journal.js";
 
 function preparedMintRemedy(root: string, server?: string): string {
   const elsewhere = canonicalRoot(findCotalRoot()) !== canonicalRoot(root);
-  const port = /^nats:\/\/127\.0\.0\.1:([1-9]\d{0,4})\/?$/i.exec(server ?? "")?.[1];
-  // An arbitrary dial address may not be usable by a first local up, or may contain secrets.
-  const broker = server !== undefined && server === server.trim() && port !== undefined && Number(port) <= 65535
-    ? ` --server ${shellWord(server)}` : "";
-  const command = `cotal up${broker}${elsewhere ? ` --root ${shellWord(root)}` : ""}`;
+  const broker = firstStartServer(server);
+  const command = `cotal up${broker === undefined ? "" : ` --server ${shellWord(broker)}`}${elsewhere ? ` --root ${shellWord(root)}` : ""}`;
   return `start it with ${codeSpan(command)} to create the local static signing trust`;
 }
 
