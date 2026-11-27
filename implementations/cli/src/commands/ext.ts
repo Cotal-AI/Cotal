@@ -859,8 +859,8 @@ function list(presentation: Presentation): void {
     throw new CommandFailure("refused", "SCHEMA_INVALID", error.diagnosis, { remedy: error.remedy, cause: error });
   }
   const pending = readUpdatePending(cliVersion());
-  const missing = pending.kind === "inventory-missing"
-    ? [{ code: "DEPENDENCY_UNAVAILABLE" as const, target: null, message: pending.instruction }]
+  const missing = pending.kind === "unreadable" && pending.source === "manifest" && pending.error === "the extensions inventory is missing"
+    ? [{ code: "EXTENSION_INVENTORY_UNREADABLE" as const, target: null, message: pending.instruction }]
     : [];
   const warnings = [...missing, ...entries.flatMap((entry): OutputWarning[] => {
     const dir = extensionPackageDir(entry.pkg);

@@ -53,7 +53,7 @@ A prefix that was seeded and still has packages installed is not current when `e
 missing. The same is true when the packages are gone but `package-lock.json` remains.
 `cotal update`, `cotal version`, and `cotal update --check` say the inventory is missing.
 Self-update registers the built-in packages that are still on disk, or writes an empty
-inventory when none remain, and names any operator package left on disk without a
+inventory when none remain, and names a real `@cotal-ai` directory left on disk without a
 registration. Register one again with `cotal ext add` and its original spec.
 `cotal ext remove` says the package is not registered and leaves its files.
 An ordinary command that still reconciles names `cotal update` and does not rebuild the

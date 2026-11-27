@@ -32,7 +32,7 @@ import { displayCmd, selfArgv, verifiedCotalExecutables } from "../lib/self-exec
 import { claimExtensionMutation } from "../lib/ext-mutation.js";
 import { recoverExtensionPromotion } from "../lib/extension-stage.js";
 import { exitInterrupted, handOverStartupNotice, INTERRUPT_SIGNALS, type InterruptSignal } from "../lib/interrupt-notice.js";
-import { assertReleasedSeedWriter, entryScript, isValidSemver, parseSemver, SEED_BUILTINS, seedDir, seedGeneration, seedStoreDir, seedStorePath, stampPath } from "./paths.js";
+import { assertReleasedSeedWriter, entryScript, extensionsInventoryMissing, isValidSemver, parseSemver, SEED_BUILTINS, seedDir, seedGeneration, seedStoreDir, seedStorePath, stampPath } from "./paths.js";
 import {
   acquireReconcileLock,
   clearChildMarker,
@@ -402,17 +402,6 @@ function writeRecoveredInventory(staged: readonly unknown[], builtIns: ReadonlyS
   console.log(`the extensions inventory was missing. Built-in packages still on disk are registered again.${unregistered.length ? ` ${unregistered.join(", ")} remain on disk but are not registered. Run \`${displayCmd()} ext add\` with the original spec to register one.` : ""}`);
 }
 
-/** A witnessed prefix whose inventory file is gone while npm still has packages installed. A prefix
- *  that was never seeded, or an empty prefix, is not this state: there is no inventory to restore. */
-function extensionsInventoryMissing(): boolean {
-  if (!readWitness()) return false;
-  const manifest = join(extensionsDir(), "extensions.json");
-  if (lstatSync(manifest, { throwIfNoEntry: false })) return false;
-  const prefix = extensionsDir();
-  return lstatSync(join(prefix, "package-lock.json"), { throwIfNoEntry: false })?.isFile() === true
-    || lstatSync(join(prefix, "node_modules"), { throwIfNoEntry: false })?.isDirectory() === true;
-}
-
 /** A package can add a registry provider without changing the seed generation in a source checkout.
  * The fast path must not preserve an older manifest that advertises only a subset of what the packed
  * built-in now registers, or lazy materialization of the new provider can never find its owner. An
@@ -708,7 +697,7 @@ export function deferredSeedRefusal(): Error | undefined {
   const generation = seedGeneration();
   let current = false;
   try {
-    current = !readCursor() && !recoveryPending() && !!readWitness() && authorityIntact() && builtinsAccounted() && builtinsMetadataCurrent() && !extensionsInventoryMissing() && officialExtensionsCurrent(generation) && readStamp()?.generation === generation;
+    current = !readCursor() && !recoveryPending() && !!readWitness() && authorityIntact() && builtinsAccounted() && builtinsMetadataCurrent() && officialExtensionsCurrent(generation) && readStamp()?.generation === generation;
   } catch {
     current = false; // unreadable seed state: the deferred reconcile reports it
   }

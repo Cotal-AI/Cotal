@@ -560,17 +560,16 @@ function checkUpdate(args: ParsedArgs, rt: UpdateRuntime): void {
       reconciliation = { kind: "unreadable", source: "seed", error: refusal(error), instruction: "Run `cotal ext seed --repair` to reconcile the connectors." };
     }
   }
-  if (reconciliation.kind === "inventory-missing") {
-    extensions = null;
-    warnings.push({ code: "EXTENSION_INVENTORY_UNREADABLE", target: null, message: reconciliation.instruction });
+  if (reconciliation.kind === "unreadable") {
+    if (reconciliation.source === "manifest") extensions = null;
+    warnings.push({ code: reconciliation.source === "manifest" ? "EXTENSION_INVENTORY_UNREADABLE" : "RECONCILIATION_UNREADABLE", target: null, message: reconciliation.source === "manifest" ? `The extension inventory could not be read: ${reconciliation.error} It was not repaired or treated as empty.` : `Reconciliation state could not be read: ${reconciliation.error}` });
   }
-  if (reconciliation.kind === "unreadable") warnings.push({ code: "RECONCILIATION_UNREADABLE", target: null, message: `Reconciliation state could not be read: ${reconciliation.error}` });
   if (reconciliation.kind === "seed") warnings.push({ code: "OPERATION_PARTIAL", target: null, message: reconciliation.instruction });
   const manifestUnreadable = reconciliation.kind === "unreadable" && reconciliation.source === "manifest";
   const result = { kind: "update-check", reconciliation, current, latest: latest.ok ? latest.version : null, updateAvailable: comparison === null ? null : comparison > 0, extensions, scope: "registry version and recorded installation versions", installationChanged: false, processesRestarted: false };
   writeResult(presentationOf(args.values), {
     command: "update", target: null, result, warnings,
-    ...(warnings.some((warning) => warning.code !== "EXTENSION_INVENTORY_UNREADABLE") ? { completeness: "partial" as const, partial: {
+    ...(warnings.length ? { completeness: "partial" as const, partial: {
       message: reconciliation.kind === "seed" ? "Connector seeding needs reconciliation." : "Some update information could not be established.",
       remedy: reconciliation.kind === "seed" || reconciliation.kind === "unreadable" && reconciliation.source !== "receipt" ? reconciliation.instruction : missingNpm ? MISSING_NPM_REMEDY : "Check registry access or the unreadable inventory and repeat update --check.",
     } } : {}),
