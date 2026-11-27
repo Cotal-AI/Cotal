@@ -162,8 +162,8 @@ export async function registryArrivalCell({ scenario, entry = join(repo, 'bin/di
       writeFileSync(join(root, 'payload/package/dist/cotal.js'), `#!/usr/bin/env node\n${fail}console.log('cotal-ai ${version}');\n`, { mode: 0o755 });
       writeFileSync(join(root, 'payload/package/dist/cotal-program.js'), `${fail}console.log('cotal-ai ${version}');\n`);
       writeFileSync(join(root, 'payload/package/dist/preinstall.js'), stagingRefused && version === target
-        ? `import assert from 'node:assert/strict';
-assert.match(import.meta.url, /\\/\\.cotal-generations\\/[a-f0-9]{32}\\/cotal-ai\\/dist\\/preinstall\\.js$/);
+        ? `const assert = require('node:assert/strict');
+assert.match(__filename, /\\/\\.cotal-generations\\/[a-f0-9]{32}\\/cotal-ai\\/dist\\/preinstall\\.js$/);
 console.error('fixture refused after retention'); process.exitCode = 1;\n`
         : `const { nonce, installedEntry } = JSON.parse(process.argv[2]); console.log('COTAL_PREINSTALL_RESULT ' + JSON.stringify({ v: 1, nonce, installedEntry, hostedSpaces: [], occupied: 0, admission: { disposition: 'restart-empty', occupied: 0, hostedSpaces: [] } }));\n`);
     }

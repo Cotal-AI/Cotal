@@ -199,7 +199,7 @@ if (process.platform !== "linux") {
     manifest.scripts?.prepublishOnly === "node scripts/assert-shipped-natives.mjs && pnpm run build:ts",
     manifest.scripts,
   );
-  check("the TypeScript-only build does not rebuild natives", manifest.scripts?.["build:ts"] === "tsc -p tsconfig.json", manifest.scripts);
+  check("the TypeScript-only build clears stale dist without rebuilding natives", manifest.scripts?.["build:ts"] === "node scripts/clear-dist.mjs && tsc -p tsconfig.json", manifest.scripts);
   check(
     "prepare is absent so install-from-git is not gated",
     manifest.scripts?.prepare === undefined,
