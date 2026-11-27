@@ -770,10 +770,13 @@ export function managerRefusal(command: string, space: string, args: Record<stri
   const resumeBlocked = command === "run-resume" && err?.code === "failed-precondition" && typeof args?.runId === "string";
   const selection = ` --space ${space}${on ? ` --on ${on}` : ""}${typeof args?.endpoint === "string" ? ` --endpoint ${args.endpoint}` : ""}`;
   const missingRun = err?.message?.endsWith(": no run is recorded under that id") === true;
+  // A retry over the caller's own broker, credentials and output format lists what that caller
+  // can act on, so the not-found inventory keeps what `values` carried.
+  const listSelection = `${(["server", "creds"] as const).map((flag) => retryFlag(flag, values[flag])).join("")}${values.json ? " --json" : ""}`;
   const remedy = busy ? { remedy: `wait until one of them has activated, then run ${command === "run-resume" ? "the resume" : "the start"} again; \`cotal run\` lists a run once it has` }
     : resumeBlocked ? { remedy: `read the run's recorded state with \`cotal run show ${args.runId}${selection}\`` }
     : err?.code === "not-found" && command === "run-status" ? { remedy: journalIdRemedy("show", { ...values, space }) }
-    : err?.code !== "not-found" ? {} : { remedy: command === "run-answer" && typeof args?.runId === "string" && !missingRun ? `read the run's ${args.amend === true ? "answers" : "open requests"} with \`cotal run show ${args.runId}${selection}\`` : `list the recorded runs with \`cotal run${selection}\`` };
+    : err?.code !== "not-found" ? {} : { remedy: command === "run-answer" && typeof args?.runId === "string" && !missingRun ? `read the run's ${args.amend === true ? "answers" : "open requests"} with \`cotal run show ${args.runId}${selection}\`` : `list the recorded runs with \`cotal run${selection}${listSelection}\`` };
   if (code) {
     const problems = err?.details?.filter((d) => d.kind === LANG_PROBLEM_DETAIL_KIND);
     if (problems?.length) return new CommandFailure("refused", "SCHEMA_INVALID", message, {

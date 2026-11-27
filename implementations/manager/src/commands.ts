@@ -34,7 +34,7 @@ import {
   brokerAddressForDisplay, brokerUrlCredentialRefusal, brokerUrlHasUserinfo, CommandFailure, exitCode, inputDisabledByFlag, isCommandFailure, jsonFlag, plainFlag, presentationOf, renderReport, resolveNativeServiceTarget, writeResult, type Report,
   refreshRegistrationPolicy, publishServiceIdleExit, publishServiceStartup, serviceStartupPath, publishServiceStopReceipt, publishServedContract, protectedCredentialReference, readLocalRecordSource, type NativeServiceStopRequest,
   ConfirmationRequired, findMesh, folderSpace, folderSpaceHeld, getCurrent, targetErrorCode, targetErrorSpace, workspaceErrorParts, type MeshEntry, type MeshTargetError, type SeatCap,
-  deprecatedDaemonEntry, DEPRECATED_MANAGER_ENTRY, loadRoster,
+  deprecatedDaemonEntry, DEPRECATED_MANAGER_ENTRY, loadRoster, migrateProjectTrust,
 } from "@cotal-ai/workspace";
 import { Manager } from "./manager.js";
 import { acceptManagerServiceStop, armManagerServiceObserver, bindManagerServiceIdentity, managerServiceChild, managerServiceStopRequested, type ManagerServiceChild } from "./service-child.js";
@@ -360,6 +360,7 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode, service
   const { space, server } = target;
   const foreign = service || target.remoteUser ? undefined : foreignHostRefusal(space, managerRoot, server);
   if (foreign) throw foreign;
+  if (execution !== "none") migrateProjectTrust();
   // Claim before hosted registration/issuance or local endpoint initialization. Starting
   // custody proves only this process; no startup/serving phase exists and no contender is adopted.
   const releaseStartingCustody = service ? claimServicePid({ root: managerRoot, space }, MANAGER_PIDFILE) : undefined;

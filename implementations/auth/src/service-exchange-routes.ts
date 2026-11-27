@@ -2,6 +2,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { assertValidOwnerToken } from "@cotal-ai/core";
 import { decodeJwt } from "jose";
 import { ConnectRateLimited } from "./connect-limit.js";
+import { checkConversationResumeExchange } from "./conversation-resume-exchange.js";
 import { deriveOwnerForIdpSubject } from "./derive.js";
 import { verifyIdpToken } from "./idp.js";
 import { AGENT_BEARER_TTL_SEC, ledgerAuthorizeAgentExchange } from "./ledger.js";
@@ -213,7 +214,7 @@ export async function handleExchange(req: IncomingMessage, res: ServerResponse, 
     const reason = "exchange body must be a JSON object";
     return refuseExchange(res, ctx, policy, peer, peerThrottled, `refused an exchange: ${reason}`, 400, { error: reason });
   }
-  const { idpToken, actor, actorToken, owner, ttlSec, view, managerInstanceId, sessionGrant, transferWriter } = body as {
+  const { idpToken, actor, actorToken, owner, ttlSec, view, managerInstanceId, sessionGrant, transferWriter, conversationResume } = body as {
     idpToken?: unknown;
     actor?: unknown;
     actorToken?: unknown;
@@ -223,6 +224,7 @@ export async function handleExchange(req: IncomingMessage, res: ServerResponse, 
     managerInstanceId?: unknown;
     sessionGrant?: unknown;
     transferWriter?: unknown;
+    conversationResume?: unknown;
   };
   if ((view === "session-caller") !== (sessionGrant !== undefined))
     return send(res, 400, { error: 'view "session-caller" and sessionGrant come together or not at all' });
@@ -252,6 +254,12 @@ export async function handleExchange(req: IncomingMessage, res: ServerResponse, 
       return send(res, 400, { error: "the managed (agent-secret) exchange never mints elevated views - views ride a signed-in human exchange" });
     if (typeof owner !== "string" || !owner || typeof actor !== "string" || !actor || typeof actorToken !== "string" || !actorToken)
       return send(res, 400, { error: "agent exchange needs { owner: string, actor: string, actorToken: string, ttlSec?: number }" });
+    if (req.headers["cotal-conversation-resume"] === "1") {
+      if (view !== undefined || ttlSec !== undefined) return send(res, 400, { error: "conversation resume cannot mint a bearer" });
+      const answer = checkConversationResumeExchange(ctx.dir, owner, actor, actorToken, conversationResume);
+      if (answer.status === 401) return refuseExchange(res, ctx, policy, peer, peerThrottled, "refused an agent exchange: conversation resume was refused", 401, answer.body);
+      return send(res, answer.status, answer.body);
+    }
     try {
       const grant = ledgerAuthorizeAgentExchange(ctx.dir, owner, actor, actorToken);
       if (typeof grant.lifecycleUid !== "string" || !grant.lifecycleUid)

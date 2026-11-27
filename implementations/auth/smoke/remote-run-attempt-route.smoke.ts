@@ -101,6 +101,7 @@ try {
     ...gate, generation: 1, nameAuthorityRevision: 0,
   })));
 
+  let stopLedger: (() => Promise<void>) | undefined;
   const plane = await openAuthAuthorityPlane({
     server: servers,
     space: SPACE,
@@ -108,6 +109,7 @@ try {
     identityRoot: authDir,
     dataAccount: { pub: auth.account.pub, signingSeed: auth.account.signingSeed },
     log: () => {},
+    probePlaneDeath: ({ ledger }) => { stopLedger = ledger; },
   });
 
   const cap = "operator-cap-secret";
@@ -556,6 +558,13 @@ try {
   c("request with both attempt and operator, or neither, refuses",
     bothRes.status === 403 && String(bothRes.body.error).includes("exactly one") &&
     neitherRes.status === 403 && String(neitherRes.body.error).includes("exactly one"), { bothRes, neitherRes });
+
+  await stopLedger!();
+  await plane.fenced;
+  const restarting = await postHttp({ ...baseReq, requestId: `req-${mintLifecycleUid()}`, registrationProof: proof,
+    operator: { id: newIdentity().id, takeoverId: "o".repeat(16), runId: first } });
+  c("a fenced issuer answers run credential issuance with HTTP 503", restarting.status === 503 &&
+    String(restarting.body.error).includes("is restarting"), restarting);
 
   await new Promise((r) => httpServer.close(r));
   await plane.close();

@@ -304,7 +304,7 @@ function previewWholeStack(args: ParsedArgs): void {
 
 /** Read the manifest before previewing a recorded stack without an additive ledger. */
 function validatePreviewManifest(file: string): void {
-  try { loadManifest(file); }
+  try { loadManifest(file, undefined, "preview"); }
   catch (error) {
     throw manifestPathFailure(error, { file }) ?? new CommandFailure("refused", "SCHEMA_INVALID", `cannot read ${file}: ${(error as Error).message}`, { target: { file } });
   }
