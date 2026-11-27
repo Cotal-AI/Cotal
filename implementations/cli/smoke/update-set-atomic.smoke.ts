@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync, rmSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, writeFileSync, rmSync } from 'node:fs';
 import { delimiter, dirname, join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { emitSentinel, skipSuite } from '@cotal-ai/smoke-kit';
@@ -92,6 +92,35 @@ assert.equal(repairSeed.status, 0, repairSeed.stderr);
 console.log('deleted local extensions do not block update retries, removal or seed repair');
 const packageRecord = JSON.parse(readFileSync(join(prefix, 'package.json'), 'utf8')) as { dependencies: Record<string, string> };
 assert.equal(packageRecord.dependencies['@cotal-ai/connector-claude-code'], `file:../seed/store/${generation}/claude`);
-emitSentinel({ passed: 3, failed: 0 });
+
+// Let npm finish and the verified prefix promote, then make the authority rename fail.
+const authority = join(selected, 'seed/authority.json');
+const cursor = join(selected, 'seed/reconcile.cursor.json');
+const damage = join(prefix, 'node_modules/@cotal-ai/connector-claude-code/damage.txt');
+writeFileSync(damage, 'previous damaged bytes\n');
+writeFileSync(shim, `#!/bin/sh
+case "$*" in
+  *view*cotal-ai@latest*) printf '"${generation}"\\n'; exit 0;;
+  *install*claude*)
+    ${JSON.stringify(npm)} "$@" || exit $?
+    mv ${JSON.stringify(authority)} ${JSON.stringify(authority + '.saved')} && mkdir ${JSON.stringify(authority)}
+    exit $?;;
+esac
+exec ${JSON.stringify(npm)} "$@"
+`);
+const commitFailure = run(['update'], { PATH: [tools, process.env.PATH].join(delimiter) });
+assert.equal(commitFailure.status, 1, commitFailure.stderr);
+assert.match(commitFailure.stderr, /rename.*authority\.json/);
+assert(!existsSync(damage), 'the verified prefix already promoted');
+const retained = readFileSync(cursor, 'utf8');
+assert.match(retained, /"failed"/);
+rmSync(authority, { recursive: true });
+renameSync(authority + '.saved', authority);
+const next = run(['space', 'create', 'after-failed-seed'], { COTAL_SKIP_CONNECTOR_SEED: undefined });
+assert.notEqual(next.status, 0);
+assert.match(next.stderr, /previous connector seed failed/);
+assert.equal(readFileSync(cursor, 'utf8'), retained);
+console.log('a commit failure after promotion retains the seed cursor and refuses the next command');
+emitSentinel({ passed: 4, failed: 0 });
 } finally { rmSync(root, { recursive: true, force: true }); }
 }

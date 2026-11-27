@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
-import { c, cachedUpdateSummary, CorruptExtensionsManifestError, exitCode, isCommandFailure, logicalExecutionEntry, extensionProvides, loadExtensionsManifest, stderrLine, UnreadableConnectorSelection } from "@cotal-ai/workspace";
+import { c, cachedUpdateSummary, CorruptExtensionsManifestError, exitCode, isCommandFailure, logicalExecutionEntry, extensionProvides, extensionPackageDir, loadExtensionsManifest, stderrLine, UnreadableConnectorSelection } from "@cotal-ai/workspace";
 import { cliPackageRoot, cliVersion, installedCliVersion } from "../seed/paths.js";
 import { isNpx } from "./self-exec.js";
 import { readUpdatePending } from "./update-pending.js";
@@ -57,7 +57,7 @@ export function extensionVersions(): ExtensionVersion[] {
 
 /** {@link extensionVersions}, with the reason when the manifest could not be read, so a version
  *  report can say its list is incomplete rather than empty. */
-export function readExtensionVersions(): { versions: ExtensionVersion[]; unreadable?: string; unreadableSelection?: true; remedy?: string } {
+export function readExtensionVersions(presentOnly = false): { versions: ExtensionVersion[]; unreadable?: string; unreadableSelection?: true; remedy?: string } {
   try {
     const versions = loadExtensionsManifest().extensions.map((entry, index) => {
       if (!entry || typeof entry.pkg !== "string" || !entry.pkg || typeof entry.version !== "string" || !entry.version || !Array.isArray(entry.commands)) {
@@ -69,7 +69,7 @@ export function readExtensionVersions(): { versions: ExtensionVersion[]; unreada
       }
       return { label: [...new Set(refs.map((ref) => ref.name))].join(", ") || entry.pkg, version: entry.version, pkg: entry.pkg };
     });
-    return { versions };
+    return { versions: presentOnly ? versions.filter(({ pkg }) => existsSync(join(extensionPackageDir(pkg), "package.json"))) : versions };
   } catch (e) {
     return { versions: [], unreadable: e instanceof CorruptExtensionsManifestError ? e.diagnosis : e instanceof Error ? e.message : String(e), remedy: e instanceof CorruptExtensionsManifestError ? e.remedy : isCommandFailure(e) ? e.remedy : undefined, ...(e instanceof UnreadableConnectorSelection ? { unreadableSelection: true } : {}) };
   }

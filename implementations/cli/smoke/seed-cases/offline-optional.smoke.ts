@@ -67,6 +67,14 @@ try {
     `status ${update.status}\n${updateText.slice(-800)}`);
   check("missing optional: update does not reinstall the built-ins", sameBuiltIns(before, prefix) && readFileSync(stampPath, "utf8") === stampBefore);
   check("missing optional: the entry stays recorded", listed(prefix).includes(PKG));
+  const availability = cotal(cfg, ["update", "--check", "--json"], offline);
+  const status = cotal(cfg, ["status", "--json"], offline);
+  const updateInventory = JSON.parse(availability.stdout).result?.extensions;
+  const statusInventory = JSON.parse(status.stdout).result?.extensions?.items;
+  check("missing optional: read-only reports do not count it as installed",
+    [updateInventory, statusInventory].every((entries) => Array.isArray(entries) &&
+      entries.some((entry) => entry.package === "@cotal-ai/web") && !entries.some((entry) => entry.package === PKG)),
+    { updateInventory, statusInventory });
 
   const command = cotal(cfg, ["space", "create", "left-out"], offline);
   check("missing optional: the next command warns once and runs",

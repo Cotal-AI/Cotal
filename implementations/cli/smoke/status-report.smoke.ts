@@ -94,6 +94,14 @@ const asPlain = (rich: string) => ascii(strip(rich).replace(/[●○] /g, ""));
 /** The words of a report, so a column padded around a mark does not count as a different word. */
 const words = (text: string) => text.split(/\s+/).filter(Boolean).join(" ");
 
+function packageFiles(prefix: string, packages: readonly string[]): void {
+  for (const name of packages) {
+    const dir = join(prefix, "node_modules", name);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "package.json"), JSON.stringify({ name, version: VERSION }));
+  }
+}
+
 const brokerDisplayOnly = process.argv.includes("--broker-display-only");
 const pidfileOnly = process.argv.includes("--pidfile-only");
 // A failed first-run seed is an installation blocker even when all extension pins match.
@@ -104,9 +112,9 @@ if (!brokerDisplayOnly && !pidfileOnly) {
   const prefix = join(home, ".config", "cotal", "extensions");
   mkdirSync(seed, { recursive: true, mode: 0o700 });
   mkdirSync(prefix, { recursive: true, mode: 0o700 });
-  writeFileSync(join(prefix, "extensions.json"), JSON.stringify({ extensions: [
-    "connector-claude-code", "connector-opencode", "connector-codex", "connector-hermes", "connector-jcode", "pi",
-  ].map(name => ({ pkg: `@cotal-ai/${name}`, version: VERSION, spec: "file:seed", source: "seeded", commands: [] })) }));
+  const packages = ["connector-claude-code", "connector-opencode", "connector-codex", "connector-hermes", "connector-jcode", "pi"].map(name => `@cotal-ai/${name}`);
+  packageFiles(prefix, packages);
+  writeFileSync(join(prefix, "extensions.json"), JSON.stringify({ extensions: packages.map(pkg => ({ pkg, version: VERSION, spec: "file:seed", source: "seeded", commands: [] })) }));
   const cursor = join(seed, "reconcile.cursor.json");
   const control = run(["status", "--json"]);
   check("seed control: matching extension pins with no cursor need no seed repair", control.status === 0 && control.envelope?.result?.extensions?.items?.length === 6 && !control.envelope.result.hints.some(h => h.includes("ext seed --repair")), shown(control));
@@ -726,6 +734,7 @@ if (process.platform !== "win32") {
   });
   const manifest = join(home, ".config", "cotal", "extensions");
   mkdirSync(manifest, { recursive: true });
+  packageFiles(manifest, ["@rig/aa", "@rig/bb", "@rig/one", "@rig/two", "@rig/old", "@cotal-ai/tmux"]);
   writeFileSync(join(manifest, "extensions.json"), JSON.stringify({ extensions: [
     connector("aa", ["aa-bin"]), connector("bb", ["bb-bin"]),
     { pkg: "@rig/one", version: VERSION, spec: `@rig/one@${VERSION}`, provides: [{ kind: "runtime", name: "one" }], commands: [] },

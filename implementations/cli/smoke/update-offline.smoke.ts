@@ -128,7 +128,9 @@ async function assertOfflineUpdateCheck(assert: typeof strictAssert): Promise<vo
     const manifest = join(extDir, "extensions.json");
     for (const populated of [false, true]) {
       if (populated) {
-        mkdirSync(extDir, { recursive: true, mode: 0o700 });
+        const installed = join(extDir, "node_modules", "offline-check-fixture");
+        mkdirSync(installed, { recursive: true, mode: 0o700 });
+        writeFileSync(join(installed, "package.json"), '{"name":"offline-check-fixture","version":"1.2.3"}');
         writeFileSync(manifest, JSON.stringify({
           extensions: [{ pkg: "offline-check-fixture", version: "1.2.3", spec: "offline-check-fixture@1.2.3", commands: [] }],
         }), { mode: 0o600 });
@@ -142,7 +144,7 @@ async function assertOfflineUpdateCheck(assert: typeof strictAssert): Promise<vo
           assert.equal(text.code, 4, text.stdout + text.stderr);
           assert.match(text.stdout, /Registry latest:\s+not established/);
           assert.match(text.stdout, /CLI update:\s+unknown/);
-          assert.match(text.stdout, populated ? /offline-check-fixture/ : /No extensions in the recorded inventory\./);
+          assert.match(text.stdout, populated ? /offline-check-fixture/ : /No recorded extensions are present on disk\./);
           assert.ok(text.stderr.includes(`! ${offlineWarning}`), text.stderr);
           assert.ok(text.stderr.includes(offlineRemedy), text.stderr);
           assert.doesNotMatch(text.stderr, /The registry did not return a valid latest version|unreadable inventory|Check registry access/);
