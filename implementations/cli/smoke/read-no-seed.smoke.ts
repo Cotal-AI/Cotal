@@ -215,11 +215,8 @@ channels:
     const receipt = r.stdout ? JSON.parse(r.stdout) : undefined;
     const harness = receipt?.result?.setting ?? receipt?.result?.settings?.find((setting: { key: string }) => setting.key === "harness");
     const command = args.includes("config") ? "config" : "completion";
-    const okOutcome = command === "completion" && process.platform === "win32"
-      ? receipt?.outcome === "partial" && r.status === 4
-      : receipt?.outcome === "ok" && r.status === 0;
     check(`${args.join(" ")} reads local settings with a corrupt manifest`,
-      okOutcome && r.stderr === "" && receipt?.command === command &&
+      r.status === 0 && r.stderr === "" && receipt?.command === command && receipt.outcome === "ok" &&
       (command === "config" ? harness?.key === "harness" && harness.winner?.source === "default" : Array.isArray(receipt.result?.shells)), shown(r));
   }
   const override = run(["config", "get", "harness", "--json"], { ...offline, COTAL_DEFAULT_AGENT: "custom-harness" });

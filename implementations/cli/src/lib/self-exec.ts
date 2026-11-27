@@ -1,8 +1,8 @@
 import { spawnSync } from "node:child_process";
 import { accessSync, constants, readFileSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
-import { delimiter, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
-import { cmdSpawnSpec, codeSpan, isWorkspaceTargetError, logicalExecutionEntry, resolveOnPath, windowsShellWord } from "@cotal-ai/workspace";
+import { delimiter, dirname, isAbsolute, join, relative, resolve, sep, win32 } from "node:path";
+import { cmdSpawnSpec, codeSpan, isWorkspaceTargetError, logicalExecutionEntry, resolveComspec, resolveOnPath, windowsShellWord } from "@cotal-ai/workspace";
 import { cliPackageRoot, entryScript, seedWriterKind } from "../seed/paths.js";
 import { shellWord } from "./endpoint-errors.js";
 import { workingFolderRemoved } from "./paths.js";
@@ -225,10 +225,14 @@ function windowsDisplayCommand([file, ...args]: readonly string[]): string {
   // A fully quoted executable is a string in PowerShell, and `[` or `]` in the executable token is a
   // PowerShell wildcard. Leave the drive prefix outside the quotes when the runtime paths are printable ASCII.
   const ascii = (value: string) => /^[\x20-\x7e]+$/.test(value) ? windowsShellWord(value) : undefined;
-  const split = /^([A-Za-z]:)([^\[\]]+)$/.exec(file!);
+  const commandToken = (exe: string) => {
+    const split = /^([A-Za-z]:)([^\[\]]+)$/.exec(exe);
+    return split && ascii(exe) !== undefined ? `${split[1]}"${split[2]}"` : undefined;
+  };
+  const exe = commandToken(file!);
   const words = args.map(ascii);
-  if (split && ascii(file!) !== undefined && words.every(word => word !== undefined)) {
-    return [`${split[1]}"${split[2]}"`, ...words].join(" ");
+  if (exe !== undefined && words.every(word => word !== undefined)) {
+    return [exe, ...words].join(" ");
   }
 
   // Encode `$`, `"`, `%`, `!`, `^`, backticks, control characters, and non-ASCII code units as `[char]`
@@ -240,9 +244,11 @@ function windowsDisplayCommand([file, ...args]: readonly string[]): string {
     if (parts.length === 0) return "''";
     return `${parts[0]!.startsWith("[char]") ? "''+" : ""}${parts.join("+")}`;
   };
+  const ps = commandToken(win32.join(win32.dirname(resolveComspec()), "WindowsPowerShell", "v1.0", "powershell.exe"))
+    ?? 'C:"\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe"';
   const prefix = args.length ? `@(${args.map(literal).join(",")}) + ` : "";
   const body = `Set-Variable ErrorActionPreference Stop; Set-Variable a (${prefix}@([Environment]::GetCommandLineArgs() | Select-Object -Skip 4)); & ([WildcardPattern]::Escape(${literal(file!)})) @a; exit (Get-Variable LASTEXITCODE -ValueOnly) #`;
-  return `powershell.exe -NoProfile -Command "${body}"`;
+  return `${ps} -NoProfile -Command "${body}"`;
 }
 
 /** Give the ticked commands in a workspace remedy the CLI's launcher, keeping each command whole. */

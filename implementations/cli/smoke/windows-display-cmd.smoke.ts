@@ -7,14 +7,15 @@
  *    - Printable ASCII drive executables without `[` or `]` use `C:"\...\node.exe" "<entry>"` when every
  *      argument is printable ASCII and accepted by `windowsShellWord`.
  *    - Executable paths containing `[` or `]`, UNC/`\\?\` roots, non-ASCII characters, or shell expanders
- *      (`$`, `%`, `!`, backticks, quotes, trailing `\`) fall back to `powershell.exe -NoProfile -Command "... #"`
- *      using pure-ASCII `[char]` code units, `[WildcardPattern]::Escape(...)` on `&`, and
- *      `@([Environment]::GetCommandLineArgs() | Select-Object -Skip 4)`.
+ *      (`$`, `%`, `!`, backticks, quotes, trailing `\`) fall back to
+ *      `C:"\Windows\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -Command "... #"` (resolved
+ *      from `SystemRoot`, never `PATH`) using pure-ASCII `[char]` code units, `[WildcardPattern]::Escape(...)`,
+ *      and `@([Environment]::GetCommandLineArgs() | Select-Object -Skip 4)`.
  * 2. POSIX (`linux` and `darwin`) byte-for-byte output parity with `main` across released and checkout
  *    runs, with and without `COTAL_LAUNCHER=1` and `fromAnyFolder: true`.
- * 3. Live Windows shell execution (on `win32`; explicitly skipped on non-`win32`) across PowerShell 5.1
+ * 3. Live Windows shell execution (on `win32`, explicitly logged when skipped elsewhere) across PowerShell 5.1
  *    (default, `Restricted`, `-Command`), `pwsh` when installed, `cmd.exe` (default and `/v:on`), a `.cmd`
- *    batch file, and `Start-Process`.
+ *    batch file, and `Start-Process`, including `cwd\powershell.exe` and `trap 1\node.exe` marker decoys.
  */
 import { spawnSync, type SpawnSyncReturns } from "node:child_process";
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
@@ -61,9 +62,10 @@ function callDisplayCmd(opts: {
     process.execArgv = opts.execArgv ?? [];
     process.argv = [opts.execPath, opts.entry];
     for (const key of Object.keys(process.env)) {
-      if (key === "PATH" || key === "COTAL_LAUNCHER" || key.startsWith("npm_config_")) delete process.env[key];
+      if (/^(?:PATH|COTAL_LAUNCHER|SystemRoot|windir|npm_config_.*)$/i.test(key)) delete process.env[key];
     }
     process.env.PATH = "";
+    if (opts.platform === "win32") process.env.SystemRoot = savedEnv.SystemRoot ?? "C:\\Windows";
     for (const [k, v] of Object.entries(opts.env ?? {})) {
       if (v === undefined) delete process.env[k];
       else process.env[k] = v;
@@ -101,6 +103,19 @@ try {
       primary,
     );
 
+    const customSysRoot = callDisplayCmd({
+      platform: "win32",
+      execPath: "C:\\tools\\node [1]\\node.exe",
+      entry: CHECKOUT_ENTRY,
+      env: { SystemRoot: "D:\\WinSys" },
+      fromAnyFolder: true,
+    });
+    check(
+      "wrapper resolves absolute System32 powershell.exe from SystemRoot in first-form shape (never PATH)",
+      customSysRoot.startsWith(`D:"\\WinSys\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -NoProfile -Command "`),
+      customSysRoot,
+    );
+
     for (const [label, execPath, execArgv] of [
       ["brackets in executable path", "C:\\tools\\node [1]\\node.exe", []],
       ["unclosed bracket in executable path", "C:\\tools\\node [\\node.exe", []],
@@ -116,11 +131,12 @@ try {
         execPath,
         execArgv: [...execArgv],
         entry: CHECKOUT_ENTRY,
+        env: { SystemRoot: "C:\\Windows" },
         fromAnyFolder: true,
       });
-      const inner = /^powershell\.exe -NoProfile -Command "([^"]*)"$/.exec(cmd)?.[1];
+      const inner = /^C:"\\Windows\\System32\\WindowsPowerShell\\v1\.0\\powershell\.exe" -NoProfile -Command "([^"]*)"$/.exec(cmd)?.[1];
       check(
-        `${label} uses pure-ASCII PowerShell fallback with WildcardPattern::Escape, @() argv skip, and trailing #`,
+        `${label} uses absolute System32 PowerShell fallback with WildcardPattern::Escape, @() argv skip, and trailing #`,
         inner !== undefined
           && /^[\x20-\x7e]+$/.test(cmd)
           && !/["$`%!^]/.test(inner)
@@ -185,13 +201,15 @@ try {
 }
 
 if (process.platform !== "win32") {
-  console.log(`3. live Windows shell execution skipped on ${process.platform} (requires win32 powershell.exe and cmd.exe)`);
+  console.log(`3. SKIPPED live Windows shell and UNC execution cells on ${process.platform}: requires win32 System32 powershell.exe and cmd.exe`);
 } else {
   console.log("3. live Windows shell execution across PowerShell, Command Prompt, .cmd batch, and Start-Process");
   const sandbox = mkdtempSync(join(tmpdir(), "cotal-win-display-cmd-"));
   const toolBin = join(sandbox, "tool-bin");
   mkdirSync(toolBin, { recursive: true });
   const markerFile = join(sandbox, "injected-marker.txt");
+  const bracketDecoyMarker = join(sandbox, "bracket-decoy-marker.txt");
+  const cwdPsDecoyMarker = join(sandbox, "cwd-ps-decoy-marker.txt");
   // Harmless marker command on PATH: if `;`, `&`, or `#>` in an appended argument is ever executed as script,
   // `cotalmarker` runs and creates `injected-marker.txt`.
   writeFileSync(join(toolBin, "cotalmarker.cmd"), `@echo ran>"${markerFile}"\r\n`, "ascii");
@@ -200,6 +218,9 @@ if (process.platform !== "win32") {
   const cmdExe = resolveComspec();
   const powershell = join(system, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
   const pwsh = resolveOnPath("pwsh", process.env);
+  if (!pwsh) {
+    console.log("  SKIPPED pwsh outer-shell cells: PowerShell 7 (pwsh) is not installed on PATH on this Windows host");
+  }
   const env = {
     ...Object.fromEntries(Object.entries(process.env).filter(([k]) => !/^(?:COTAL_.*|PATH|TEMP|TMP)$/i.test(k))),
     PATH: [toolBin, join(system, "System32"), dirname(powershell)].join(delimiter),
@@ -234,6 +255,23 @@ if (process.platform !== "win32") {
     { name: "cmd.exe /v:on", run: runCmd(true) },
   ];
 
+  function buildMarkerExe(outExe: string, targetMarker: string): void {
+    const csc = join(system, "Microsoft.NET", "Framework64", "v4.0.30319", "csc.exe");
+    if (existsSync(csc)) {
+      const csFile = `${outExe}.cs`;
+      const escaped = targetMarker.replaceAll("\\", "\\\\");
+      writeFileSync(
+        csFile,
+        `class P { static int Main() { System.IO.File.WriteAllText("${escaped}", "ran"); return 99; } }\n`,
+        "utf8",
+      );
+      const compiled = spawnSync(csc, ["/nologo", `/out:${outExe}`, csFile], baseOpts);
+      rmSync(csFile, { force: true });
+      if (compiled.status === 0 && existsSync(outExe)) return;
+    }
+    copyFileSync(join(system, "System32", "hostname.exe"), outExe);
+  }
+
   try {
     const echoScript = [
       "const args = process.argv.slice(2);",
@@ -242,12 +280,16 @@ if (process.platform !== "win32") {
       "process.exit(code ? Number(code.slice(7)) : 0);",
     ].join("\n");
 
-    // Wildcard sibling decoy for `trap [12]`: if `[12]` were evaluated as a wildcard, PowerShell would
-    // match `trap 1\node.exe` (`hostname.exe`) instead of `trap [12]\node.exe`.
+    // 1. Wildcard sibling decoy for `trap [12]\node.exe`: if `[12]` were unescaped, PowerShell would match
+    //    `trap 1\node.exe` and write `bracket-decoy-marker.txt`.
     const decoyDir = join(sandbox, "trap 1");
     mkdirSync(decoyDir, { recursive: true });
-    const hostnameExe = join(system, "System32", "hostname.exe");
-    if (existsSync(hostnameExe)) copyFileSync(hostnameExe, join(decoyDir, "node.exe"));
+    buildMarkerExe(join(decoyDir, "node.exe"), bracketDecoyMarker);
+
+    // 2. Current-directory `powershell.exe` / `powershell.cmd` decoy in `cwd = sandbox`: if the second form
+    //    printed an unqualified `powershell.exe`, `cmd.exe` would run `sandbox\powershell.exe` first.
+    buildMarkerExe(join(sandbox, "powershell.exe"), cwdPsDecoyMarker);
+    writeFileSync(join(sandbox, "powershell.cmd"), `@echo ran>"${cwdPsDecoyMarker}"\r\n@exit /b 99\r\n`, "ascii");
 
     const installFolders: { label: string; exeDirName: string; entryDirName: string }[] = [
       {
@@ -300,9 +342,9 @@ if (process.platform !== "win32") {
           checkMarker: true,
         },
         {
-          caseName: "space use -- -dash-space",
-          line: `${prefix} space use -- -dash-space`,
-          want: ["space", "use", "--", "-dash-space"],
+          caseName: "use -- -dash-space",
+          line: `${prefix} use -- -dash-space`,
+          want: ["use", "--", "-dash-space"],
         },
       ];
 
@@ -310,12 +352,21 @@ if (process.platform !== "win32") {
         const wantJson = JSON.stringify(want);
         for (const shell of shells) {
           rmSync(markerFile, { force: true });
+          rmSync(bracketDecoyMarker, { force: true });
+          rmSync(cwdPsDecoyMarker, { force: true });
           const res = shell.run(line);
           const markerRan = existsSync(markerFile);
+          const bracketDecoyRan = existsSync(bracketDecoyMarker);
+          const cwdPsDecoyRan = existsSync(cwdPsDecoyMarker);
           check(
             `${label} -> ${caseName} in ${shell.name}`,
-            res.status === 0 && res.stdout.trim() === wantJson && res.stderr === "" && (!checkMarker || !markerRan),
-            { status: res.status, stdout: res.stdout, stderr: res.stderr, markerRan, line },
+            res.status === 0
+              && res.stdout.trim() === wantJson
+              && res.stderr === ""
+              && !bracketDecoyRan
+              && !cwdPsDecoyRan
+              && (!checkMarker || !markerRan),
+            { status: res.status, stdout: res.stdout, stderr: res.stderr, markerRan, bracketDecoyRan, cwdPsDecoyRan, line },
           );
         }
       }
@@ -337,22 +388,28 @@ if (process.platform !== "win32") {
       const batPath = join(sandbox, "invoke-second.cmd");
       writeFileSync(batPath, `@echo off\r\n${secondFormPrefix} ${tailArgs}\r\n`, "ascii");
       rmSync(markerFile, { force: true });
+      rmSync(cwdPsDecoyMarker, { force: true });
       const batRes = runCmd(false)(`"${batPath}"`);
       check(
-        "second form preserves exact argv from .cmd batch file without running #> marker",
-        batRes.status === 0 && batRes.stdout.trim() === wantBatch && batRes.stderr === "" && !existsSync(markerFile),
+        "second form preserves exact argv from .cmd batch file without running #> or cwd powershell.exe decoy",
+        batRes.status === 0
+          && batRes.stdout.trim() === wantBatch
+          && batRes.stderr === ""
+          && !existsSync(markerFile)
+          && !existsSync(cwdPsDecoyMarker),
         { status: batRes.status, stdout: batRes.stdout, stderr: batRes.stderr },
       );
 
       const spOut = join(sandbox, "sp-out.txt");
-      const restOfCmd = `${secondFormPrefix.slice("powershell.exe ".length)} ${tailArgs}`;
-      const spScript = `$p = Start-Process -FilePath powershell.exe -ArgumentList $env:COTAL_SP_ARGS -NoNewWindow -Wait -PassThru -RedirectStandardOutput '${spOut}'; Get-Content '${spOut}'; exit $p.ExitCode`;
+      const firstSpace = secondFormPrefix.indexOf(" ");
+      const restOfCmd = `${secondFormPrefix.slice(firstSpace + 1)} ${tailArgs}`;
+      const spScript = `$p = Start-Process -FilePath '${powershell}' -ArgumentList $env:COTAL_SP_ARGS -NoNewWindow -Wait -PassThru -RedirectStandardOutput '${spOut}'; Get-Content '${spOut}'; exit $p.ExitCode`;
       const spRes = spawnSync(powershell, ["-NoProfile", "-NonInteractive", "-Command", spScript], {
         ...baseOpts,
         env: { ...env, COTAL_SP_ARGS: restOfCmd },
       });
       check(
-        "second form preserves exact argv through Start-Process powershell.exe",
+        "second form preserves exact argv through Start-Process System32 powershell.exe",
         spRes.status === 0 && spRes.stdout.trim() === wantBatch && spRes.stderr === "",
         { status: spRes.status, stdout: spRes.stdout, stderr: spRes.stderr },
       );
@@ -365,8 +422,8 @@ if (process.platform !== "win32") {
       const probe = spawnSync(uncExe, ["--version"], baseOpts);
       if (probe.status === 0) {
         const uncEntry = stageReleasedPackage(join(sandbox, "unc-pkg"), echoScript);
-        const uncCmd = `${callDisplayCmd({ platform: "win32", execPath: uncExe, entry: uncEntry })} space use -- -unc-space`;
-        const wantUnc = JSON.stringify(["space", "use", "--", "-unc-space"]);
+        const uncCmd = `${callDisplayCmd({ platform: "win32", execPath: uncExe, entry: uncEntry })} use -- -unc-space`;
+        const wantUnc = JSON.stringify(["use", "--", "-unc-space"]);
         for (const shell of [shells[1]!, shells[shells.length - 2]!]) {
           const res = shell.run(uncCmd);
           check(
@@ -376,7 +433,9 @@ if (process.platform !== "win32") {
           );
         }
       } else {
-        console.log("  (UNC loopback administrative share unavailable on this host, skipping live UNC exec)");
+        console.log(
+          `  SKIPPED live UNC cell: loopback administrative share ${uncExe} is unavailable on this host (status=${String(probe.status)})`,
+        );
       }
     }
 
