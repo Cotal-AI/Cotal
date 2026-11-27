@@ -178,7 +178,7 @@
     },
     {
       "name": "recall ignores the stream head",
-      "file": "packages/core/src/endpoint.ts",
+      "file": "packages/core/src/endpoint-history.ts",
       "find": "    if (info.state.first_seq > sinceSeq + 1) return true;\n",
       "replace": "",
       "expectRed": "recall reports a channel whose posts are all gone, with the stream head past the watermark",
@@ -186,7 +186,7 @@
     },
     {
       "name": "recall judges the count against the compiled 1000, not the stream's limit",
-      "file": "packages/core/src/endpoint.ts",
+      "file": "packages/core/src/endpoint-history.ts",
       "find": "    const cap = info.config.max_msgs_per_subject;\n    let maxPerSubject = 0;",
       "replace": "    const cap = 1000;\n    let maxPerSubject = 0;",
       "expectRed": "recall reports a channel where a sender passed the stream's per-sender count",

@@ -71,6 +71,24 @@ function assertServableModel(model: string): void {
   );
 }
 
+/** The `--model` and `--effort` flags of the launch, and the env that labels the seat with its model
+ *  and variant. A native `--opt model=` is the one model argument and the seat's model label. An
+ *  explicit `--opt effort=` wins, as a permission option does, and the seat is then not labelled with
+ *  a variant it does not run. */
+function modelFlags(opts: LaunchOpts, passthrough: readonly (readonly [string, string])[]): { args: string[]; env: Record<string, string> } {
+  const args: string[] = [];
+  const env: Record<string, string> = {};
+  const native = passthrough.find(([k]) => k === "model")?.[1];
+  if (opts.model && !native) args.push("--model", opts.model);
+  const model = native || opts.model;
+  if (model) env.COTAL_MODEL = model;
+  if (opts.variant !== undefined && !passthrough.some(([k]) => k === "effort")) {
+    args.push("--effort", opts.variant);
+    env.COTAL_VARIANT = opts.variant;
+  }
+  return { args, env };
+}
+
 /**
  * The Claude Code connector: launches the real `claude` with the Cotal identity in
  * the environment and the mesh channel enabled, so the session joins the mesh and
@@ -110,6 +128,7 @@ export const claudeConnector: Connector = {
   },
   listModels: listClaudeModels,
   supportsModelVariant: true, // variant = claude's `--effort` level
+  supportsModes: true, // fast and ultracode, rendered as claude's `--settings`
   supportsResume: true, // renders `--resume <id> --fork-session` (fork-from, never hijack) — see buildLaunch
   resumeTranscript: claudeResumeTranscript,
   supportsToolListAnnounce: true, // MCP McpServer.registerTool; SDK fires tools/list_changed
@@ -255,7 +274,7 @@ export const claudeConnector: Connector = {
     // exists. After the first write, only writeLaunchArtifact can throw, and it removes every file
     // this launch wrote before it does.
     const passthrough = connectorLaunchOptions("claude", opts.launchOptions).map(([k, v]) => [k, String(v)] as const);
-    const nativeModel = passthrough.find(([k]) => k === "model")?.[1];
+    const chosen = modelFlags(opts, passthrough);
     const fieldArgs = launchFieldArgs(opts, passthrough);
     // The private files this launch writes. The launcher that spawns the spec removes them once the
     // child has exited (core launch-artifacts).
@@ -305,15 +324,8 @@ export const claudeConnector: Connector = {
         // The file must outlive buildLaunch for startup and resume, so it is a launch artifact too.
         args.push("--append-system-prompt-file", writeLaunchArtifact(artifacts, "cotal-claude-persona-", "persona.md", def.persona));
       }
-      if (opts.model && !nativeModel) args.push("--model", opts.model);
-      const model = nativeModel || opts.model;
-      if (model) env.COTAL_MODEL = model;
-      // An explicit `--opt effort=` wins, as a permission option does, and the seat is then not
-      // labelled with a variant it does not run.
-      if (opts.variant !== undefined && !passthrough.some(([k]) => k === "effort")) {
-        args.push("--effort", opts.variant);
-        env.COTAL_VARIANT = opts.variant;
-      }
+      args.push(...chosen.args);
+      Object.assign(env, chosen.env);
 
       // Fork an existing session INTO the mesh (opts.resume, an opaque host-local id). `--fork-session`
       // is pushed in the SAME branch — resume here is fork-only, never a hijack: claude mints a NEW
