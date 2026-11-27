@@ -126,6 +126,27 @@ export class EndpointConnection {
     return true;
   }
 
+  private recoverPluginChannelsOnNativeReconnect(nc: NatsConnection): void {
+    const wire = this.projectionWires.get(nc);
+    if (!this.conn.pluginChannelsEnabled || !wire) return;
+    let validated: NativeConnectionBinding;
+    try { validated = wire.binding(); }
+    catch { return; }
+    const epoch = this.conn.pluginChannelEpoch;
+    const stillCurrent = () => {
+      if (this.lifecycle.stopped || this.conn.nc !== nc || this.conn.pluginChannelEpoch !== epoch) return false;
+      try {
+        const binding = wire.binding();
+        return binding.serverId === validated.serverId && binding.cid === validated.cid;
+      } catch {
+        return false;
+      }
+    };
+    void this.parts.consumers.recoverPluginChannels(stillCurrent).catch((error: Error) => {
+      if (stillCurrent()) this.emitRecoverable(error);
+    });
+  }
+
   async bindConnection(): Promise<void> {
     this.clearConnectionScoped();
     // Bearer-source endpoints fetch before the FIRST connect, and renew first on a rebuild whose
@@ -617,6 +638,7 @@ export class EndpointConnection {
             continue;
           }
           if (this.lifecycle.stopped || this.conn.nc !== nc || nc.isClosed()) continue;
+          this.recoverPluginChannelsOnNativeReconnect(nc);
           // The library re-subscribed on a connection the broker authorized again: re-run the check.
           this.parts.principalServe.rebindPrincipalServes(true);
           this.emit("transport", { connected: true, server: s.server } satisfies TransportState);

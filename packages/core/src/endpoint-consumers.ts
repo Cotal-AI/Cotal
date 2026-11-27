@@ -160,18 +160,26 @@ export class EndpointConsumers {
       this.pluginHistoryFrontiers.set(channel, frontier);
   }
 
-  recoverPluginChannels(): Promise<void> {
-    if (this.pluginHistoryRecovery) return this.pluginHistoryRecovery;
-    return this.pluginHistoryRecovery = this.recoverPluginHistoryWindows().finally(() => { this.pluginHistoryRecovery = undefined; });
+  recoverPluginChannels(stillCurrent: () => boolean = () => true): Promise<void> {
+    const nc = this.conn.nc;
+    const epoch = this.conn.pluginChannelEpoch;
+    const onSameRoute = () => this.conn.nc === nc && this.conn.pluginChannelEpoch === epoch &&
+      this.conn.pluginChannelsEnabled && !this.lifecycle.stopped && stillCurrent();
+    const previous = this.pluginHistoryRecovery?.catch(() => {});
+    const recovery = Promise.resolve(previous).then(() => this.recoverPluginHistoryWindows(onSameRoute));
+    this.pluginHistoryRecovery = recovery;
+    const clear = () => { if (this.pluginHistoryRecovery === recovery) this.pluginHistoryRecovery = undefined; };
+    void recovery.then(clear, clear);
+    return recovery;
   }
 
-  private async recoverPluginHistoryWindows(): Promise<void> {
-    const nc = this.conn.nc;
+  private async recoverPluginHistoryWindows(stillCurrent: () => boolean): Promise<void> {
     for (const [channel, from] of this.pluginHistoryFrontiers) {
+      if (!stillCurrent()) return;
       const sub = this.delivery.chatSubs.get(channel);
       if (!sub || !isRoutedPluginChannel(this.conn.pluginChannelsEnabled, channel)) continue;
       const replayFence = this.pluginReplayFence(channel);
-      const stillJoined = () => this.conn.nc === nc && replayFence() && this.pluginHistoryFrontiers.get(channel) === from;
+      const stillJoined = () => stillCurrent() && replayFence() && this.pluginHistoryFrontiers.get(channel) === from;
       const through = await this.parts.history.channelFrontier(channel);
       if (!stillJoined() || through <= from) continue;
       await this.parts.history.recoverPluginHistory(channel, from, through, stillJoined);
