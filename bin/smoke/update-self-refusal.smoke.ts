@@ -86,6 +86,16 @@ function checkManifestAccess(): void {
 
     chmodSync(extensions, 0o300);
     try {
+      const offlineWriteOnly = run({ npm_config_offline: "true" });
+      check.equal(offlineWriteOnly.status, 0, offlineWriteOnly.stderr);
+      check.equal(offlineWriteOnly.stderr, "");
+      check.equal(offlineWriteOnly.stdout.trim(), "Restored owner access to the Cotal connector configuration; no installed packages were replaced.\nnpm is in offline mode. The latest-version check was skipped.");
+      check.equal(lstatSync(extensions).mode & 0o777, 0o700);
+      const offlineRetry = run({ npm_config_offline: "true" });
+      check.equal(offlineRetry.status, 0, offlineRetry.stderr);
+      check.equal(offlineRetry.stderr, "");
+      check.equal(offlineRetry.stdout.trim(), "npm is in offline mode. The latest-version check was skipped.");
+      chmodSync(extensions, 0o300);
       const repairedWriteOnly = run(offlineRegistry);
       check.equal(repairedWriteOnly.status, 0, repairedWriteOnly.stderr);
       check.equal(repairedWriteOnly.stdout.trim(), packagesKept);
@@ -162,7 +172,7 @@ try {
     check.equal(repaired.stdout.trim(), paths.length ? packagesKept : noChange);
     check.equal(existsSync(join(cotal, "update-recovery.json")), false, "offline update leaves an absent recovery file absent");
     check.doesNotMatch(repaired.stderr, /sudo npm|EACCES|Request refused/);
-    for (const path of paths) check.equal(lstatSync(path).mode & 0o777, 0o700, "only owner write is restored");
+    for (const path of paths) check.equal(lstatSync(path).mode & 0o777, 0o700, "owner access is restored");
     const release = claimGlobalNpmUpdateLock(join(prefix, "lib/node_modules"));
     release();
     check.equal(readFileSync(join(installed, "package.json"), "utf8"), packageBefore);

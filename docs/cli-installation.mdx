@@ -312,8 +312,8 @@ If npm is missing from `PATH`, `update --self` exits 1 and `update --check` repo
 with exit 4. Install npm or add it to `PATH`, then retry. A registry connection failure still
 leaves the installation unchanged without failing `update --self`.
 On Linux and macOS, an installed self-update restores owner read, write, and search access to its
-own connector directories before staging a release. If it cannot restore that access, it names the
-directory to fix and stops before staging.
+own connector directories before staging a release, and reports when it restores that access. If it
+cannot restore access, it names the directory to fix and stops before staging.
 On Linux and macOS, `cotal update --self` can restore owner read access to its extensions manifest
 and owner search access to folders on its path inside the Cotal config. It does this only for a
 regular manifest and real folders owned by your account. It reports the repair and continues without

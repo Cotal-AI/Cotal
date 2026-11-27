@@ -70,17 +70,17 @@ export function restoreUpdateManifestAccess(staged: boolean, report: () => void)
 }
 
 /** Repair the selection before the updater checks installed extension dependencies. */
-export function repairUpdateConnectorSelection(staged: boolean, report: (line: string) => void): boolean {
+export function repairUpdateConnectorSelection(staged: boolean, report: (line: string) => void, onModeChange?: () => void): boolean {
   const setAside = repairConnectorSelection();
   if (!setAside.length) return false;
   report(`Set aside unreadable connector selection: ${setAside.map(path => JSON.stringify(path)).join(", ")}`);
-  prepareUpdateConnectorConfig(staged);
+  prepareUpdateConnectorConfig(staged, undefined, onModeChange);
   return true;
 }
 
-export function repairCurrentUpdateConnectorSelection(staged: boolean, refusal: UnreadableConnectorSelection, report: (line: string) => void): boolean {
+export function repairCurrentUpdateConnectorSelection(staged: boolean, refusal: UnreadableConnectorSelection, report: (line: string) => void, onModeChange?: () => void): boolean {
   try {
-    repairUpdateConnectorSelection(staged, report);
+    repairUpdateConnectorSelection(staged, report, onModeChange);
     loadExtensionsManifest();
     return true;
   } catch (error) {

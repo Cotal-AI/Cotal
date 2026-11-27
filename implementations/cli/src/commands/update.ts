@@ -79,6 +79,7 @@ import {
   latestVersionCheckRemedy,
   latestVersionCheckWarning,
   handleLatestVersionFailure,
+  reportConnectorAccessRestored,
   checkReleaseArchives,
   ReleaseNotAvailable,
   ReleaseDateExcluded,
@@ -628,22 +629,26 @@ export async function executeUpdate(self: boolean, rt: UpdateRuntime = updateRun
       // The live npm lookup can select a different version from the one the daemon held.
       const next = await observeUpdateVersion(latest.version) + UPDATE_HOUR_MS;
       if (upgrading && Date.now() < next) {
+        reportConnectorAccessRestored(rt, permissionsRestored);
         recordUpdateReleaseHold(latest.version, next);
         return 0;
       }
       recordUpdateDeferral(current, "waiting for update preflight");
     }
     if (upgrading) {
-      const code = await upgradeAndReconcile(latest.version, current, rt, target, preflightChanged);
+      reportConnectorAccessRestored(rt, permissionsRestored);
+      const code = await upgradeAndReconcile(latest.version, current, rt, target, preflightChanged, !permissionsRestored);
       if (code === 0 && rt.env.COTAL_AUTO_UPDATE !== "1") rt.generationWaited = true;
       return code;
     }
     if (unreadableSelection) {
-      const repaired = repairCurrentUpdateConnectorSelection(Boolean(rt.prepareExecution), unreadableSelection, line => rt.err(line));
+      const repaired = repairCurrentUpdateConnectorSelection(Boolean(rt.prepareExecution), unreadableSelection, line => rt.err(line), () => { permissionsRestored = true; });
+      reportConnectorAccessRestored(rt, permissionsRestored);
       rt.out(repaired ? "No newer CLI version." : "No newer CLI version. No connector reconciliation was run.");
       reportVersion(current, latest.version, rt, false);
       return 0;
     }
+    reportConnectorAccessRestored(rt, permissionsRestored);
     if (rt.isCurrent?.()) {
       reportUncheckedPreparedRecords(rt, target);
       await reportCurrentConnectorState(current, rt);
@@ -817,7 +822,7 @@ function preflightDetail(error: unknown): string {
   return message(error).replace(/[\r\n\u001b]+/g, " ").replace(/(?:[A-Za-z]:[\\/]|\/)[^\s,;"']+/g, "<config path>").slice(0, 500);
 }
 
-async function upgradeAndReconcile(targetVersion: string, current: string, rt: UpdateRuntime, target: Record<string, unknown>, preflightChanged: boolean): Promise<number> {
+async function upgradeAndReconcile(targetVersion: string, current: string, rt: UpdateRuntime, target: Record<string, unknown>, preflightChanged: boolean, reportSelectionAccess = true): Promise<number> {
   try { await rt.preflightReplacement?.(); }
   catch (error) {
     recordUpdateDeferral(targetVersion, "installed daemon preflight refused");
@@ -832,12 +837,13 @@ async function upgradeAndReconcile(targetVersion: string, current: string, rt: U
     return 1;
   }
 
-  let repairedSelection = false;
+  let repairedSelection = false, selectionAccessRestored = false;
   const releaseChecksStarted = Date.now();
   try {
     const release = await waitForReleasePreflight(targetVersion, current, rt, () => {
       try {
-        repairedSelection = repairUpdateConnectorSelection(Boolean(rt.prepareExecution), line => rt.err(line));
+        repairedSelection = repairUpdateConnectorSelection(Boolean(rt.prepareExecution), line => rt.err(line), () => { selectionAccessRestored = true; });
+        if (reportSelectionAccess && selectionAccessRestored) { reportConnectorAccessRestored(rt, true); reportSelectionAccess = false; }
         return true;
       } catch (error) {
         recordUpdateDeferral(targetVersion, `connector configuration preflight: ${preflightDetail(error)}`);
