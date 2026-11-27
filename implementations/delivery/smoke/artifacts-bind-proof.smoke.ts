@@ -166,12 +166,13 @@ const rawGets = sources.map((p) => relative(root, p)).filter((rel) => {
   return /artifact(Attach|Possess|Reserve)Bucket\(/.test(text) && /\.(get|put|create|update|delete)\(/.test(text) && !allowedReader(rel);
 });
 function allowedReader(rel: string): boolean {
-  // The list handler opens the attachment bucket for a filtered scan and never a keyed read; it imports
-  // its keys from artifact-keys.ts. Any other file that opens an index bucket and reads or writes by
-  // key is a second key builder.
-  return rel === "implementations/delivery/src/artifacts-endpoint.ts" && readFileSync(join(root, rel), "utf8").includes("./artifact-keys.js");
+  // The artifacts endpoint (a filtered scan) and the index layer (point reads and writes) open the
+  // index buckets, and both take every key from artifact-keys.ts. Any other file that opens an index
+  // bucket and reads or writes it by key is a second key builder.
+  const readers = new Set(["implementations/delivery/src/artifacts-endpoint.ts", "implementations/delivery/src/artifact-index.ts"]);
+  return readers.has(rel) && readFileSync(join(root, rel), "utf8").includes("./artifact-keys.js");
 }
-check("no source file other than the artifacts endpoint opens an index bucket and reads or writes it by key", rawGets.length === 0, rawGets);
+check("no source file but the artifacts endpoint and the index layer opens an index bucket and reads or writes it by key", rawGets.length === 0, rawGets);
 
 finish();
 if (passed() + failed() !== EXPECTED_CELLS) {

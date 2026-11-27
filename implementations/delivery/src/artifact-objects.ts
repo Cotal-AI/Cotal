@@ -1,0 +1,116 @@
+/**
+ * The artifacts service's object store layer (plan section 4, C5; security S2, S10).
+ *
+ * Layout: chunk `i` of digest `h` is the one message on `$O.<obj>.C.<h>.<i>`, and the meta record
+ * `{size, chunks, digest, name, mediaType}` is the one message on the stock meta subject
+ * `$O.<obj>.M.<base64url("sha256:<h>")>` (rollup, so a re-put replaces it). Every read is a
+ * last-by-subject DIRECT.GET on a named subject: no consumer, no enumeration, and no body that can
+ * select another subject (the credential holds only the subject-scoped direct-get row, never the bare
+ * one a `seq` read needs).
+ *
+ * Bytes are hashed BEFORE the meta record is written (S2): the meta record is the commit, and it is
+ * written only for bytes this service hashed to the digest the caller declared. A crash between the
+ * chunks and the meta leaves chunks with no meta, which the sweep reclaims behind its reservation.
+ *
+ * The delete side (filtered purges by subject) lives in the sweep, on the sweeper credential, which
+ * holds no `$O` publish and no read of object bytes.
+ */
+import { headers, type NatsConnection } from "@nats-io/transport-node";
+import { jetstream, jetstreamManager, type JetStreamManager } from "@nats-io/jetstream";
+import { artifactBucket, isCasLoss, objectStoreStream } from "@cotal-ai/core";
+import { digestToken } from "./artifact-keys.js";
+
+/** The commit record: what the store verified, not what any message claims. */
+export interface ArtifactMeta {
+  digest: string;
+  size: number;
+  chunks: number;
+  name: string;
+  mediaType: string;
+}
+
+/** Base64url with padding, the stock object store's encoding for meta subject names. */
+const paddedBase64Url = (text: string): string => Buffer.from(text).toString("base64").replace(/\+/g, "-").replace(/\//g, "_");
+
+/** `$O.<obj>.C.<h>.<i>`: chunk `index` of `digest`. */
+export function chunkSubject(space: string, digest: string, index: number): string {
+  if (!Number.isSafeInteger(index) || index < 0) throw new Error(`chunk index ${index} is not an unsigned integer`);
+  return `$O.${artifactBucket(space)}.C.${digestToken(digest)}.${index}`;
+}
+
+/** `$O.<obj>.C.<h>.>`: every chunk of `digest`, the filter one purge removes them by. */
+export function chunkFilter(space: string, digest: string): string {
+  return `$O.${artifactBucket(space)}.C.${digestToken(digest)}.>`;
+}
+
+/** The stock meta subject for `digest`. */
+export function metaSubject(space: string, digest: string): string {
+  return `$O.${artifactBucket(space)}.M.${paddedBase64Url(`sha256:${digestToken(digest)}`)}`;
+}
+
+/** The digest a meta subject names, or `undefined` for one this layout did not write. */
+export function digestOfMetaSubject(space: string, subject: string): string | undefined {
+  const prefix = `$O.${artifactBucket(space)}.M.`;
+  if (!subject.startsWith(prefix)) return undefined;
+  const name = Buffer.from(subject.slice(prefix.length), "base64url").toString();
+  return /^sha256:[0-9a-f]{64}$/.test(name) ? name : undefined;
+}
+
+/** The digest a chunk subject names, or `undefined` for one this layout did not write. */
+export function digestOfChunkSubject(space: string, subject: string): string | undefined {
+  const m = new RegExp(`^\\$O\\.${artifactBucket(space).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\.C\\.([0-9a-f]{64})\\.\\d+$`).exec(subject);
+  return m ? `sha256:${m[1]}` : undefined;
+}
+
+/** The store over one `artifact-data` connection. */
+export class ArtifactObjects {
+  private jsm?: JetStreamManager;
+  constructor(private readonly nc: NatsConnection, private readonly space: string) {}
+
+  private async manager(): Promise<JetStreamManager> {
+    // `checkAPI: false`: the credential holds no account-info read beyond `$JS.API.INFO`, and needs none.
+    this.jsm ??= await jetstreamManager(this.nc, { checkAPI: false });
+    return this.jsm;
+  }
+
+  /** The commit record, or `undefined` when the digest has no live meta. A last-by-subject direct get. */
+  async readMeta(digest: string): Promise<ArtifactMeta | undefined> {
+    const m = await (await this.manager()).direct.getMessage(objectStoreStream(artifactBucket(this.space)), { last_by_subj: metaSubject(this.space, digest) });
+    if (m === null) return undefined;
+    let o: Partial<ArtifactMeta> & { deleted?: boolean };
+    try { o = JSON.parse(m.string()); } catch { return undefined; }
+    if (o.deleted === true || o.digest !== digest || !Number.isSafeInteger(o.size) || !Number.isSafeInteger(o.chunks)
+      || typeof o.name !== "string" || typeof o.mediaType !== "string") return undefined;
+    return { digest, size: o.size!, chunks: o.chunks!, name: o.name, mediaType: o.mediaType };
+  }
+
+  /** Chunk `index` of `digest`, or `undefined` when it is gone. A last-by-subject direct get. */
+  async readChunk(digest: string, index: number): Promise<Uint8Array | undefined> {
+    const m = await (await this.manager()).direct.getMessage(objectStoreStream(artifactBucket(this.space)), { last_by_subj: chunkSubject(this.space, digest, index) });
+    return m === null ? undefined : m.data;
+  }
+
+  /** Write `chunks` for `digest`, then its meta record. The caller has already hashed the bytes to
+   *  `meta.digest`; `beforeEach` runs before every publish so the serve fence can refuse a write
+   *  that has not started.
+   *
+   *  Each chunk publish is create-only (expected last subject sequence 0). The stream keeps every
+   *  message per subject, so an unconditional re-put of the same bytes would stack a duplicate on each
+   *  chunk subject. A chunk subject that already holds a message holds these exact bytes (the subject
+   *  names the digest and the index, and the bytes were hashed to the digest), so a refused create is
+   *  the chunk already being there, and the write moves on. */
+  async write(meta: ArtifactMeta, chunks: readonly Uint8Array[], beforeEach: (what: string) => void): Promise<void> {
+    const js = jetstream(this.nc);
+    for (const [i, chunk] of chunks.entries()) {
+      beforeEach(`chunk ${i}`);
+      const h = headers();
+      h.set("Nats-Expected-Last-Subject-Sequence", "0");
+      try { await js.publish(chunkSubject(this.space, meta.digest, i), chunk, { headers: h }); }
+      catch (e) { if (!isCasLoss(e)) throw e; }
+    }
+    beforeEach("the meta record");
+    const h = headers();
+    h.set("Nats-Rollup", "sub");
+    await js.publish(metaSubject(this.space, meta.digest), JSON.stringify(meta), { headers: h });
+  }
+}
