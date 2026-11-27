@@ -6,14 +6,14 @@ import { executionIdentity } from "./execution-identity.js";
 import { acquireLock, processStartToken } from "./advisory-lock.js";
 import { readLocalRecordSource } from "./local-record-source.js";
 import { assertExtensionPrefixIdle, claimExtensionMutationLock } from "./extension-mutation.js";
-import { claimUpdateClosureAccess, liveUpdateClosureOwner } from "./update-closure.js";
+import { claimLocalLaunchClosure, claimUpdateClosureAccess, liveUpdateClosureOwner } from "./update-closure.js";
 import { readUpdateRecovery, type UpdateRecovery } from "./updates.js";
 import { readMeshRegistry } from "./mesh-registry.js";
 import { homeCotalDir } from "./cotal-home.js";
 import { MANAGER_PIDFILE, localProcessPathCandidates, recordedLocalProcessPaths } from "./local-process.js";
 import { commandIsCotalSupervisor, readProcessRecord } from "./pid.js";
 import { probeLiveness } from "./liveness.js";
-import { protectedResolvedDirectory } from "./protected-records.js";
+import { protectedLocalDirectory, protectedResolvedDirectory } from "./protected-records.js";
 import { CommandFailure } from "./output.js";
 import { restoreManifestAccess } from "./manifest-access.js";
 
@@ -56,13 +56,14 @@ function setHasHolders(path: string, unpublished = false): boolean {
 }
 
 /** Reserve before launch so even a Manager killed during spawn leaves a conservative holder. */
-export function retainConnectorSeat(manager: string, agent: string): { active: boolean; launched(pid?: number): void; ended(): void } {
+export function retainConnectorSeat(manager: string, agent: string, localLaunch = false): { active: boolean; launched(pid?: number): void; ended(): void } {
   const id = identity();
   if (!id || currentConfig(id) === undefined) return { active: false, launched() {}, ended() {} };
-  const release = claimUpdateClosureAccess();
+  const release = localLaunch ? claimLocalLaunchClosure() : claimUpdateClosureAccess();
   let file: string;
   const holder: ConnectorHolder = { v: 1, manager, agent };
   try {
+    if (localLaunch && currentConfig(id) === undefined) return { active: false, launched() {}, ended() {} };
     ownedAncestors(id.path);
     const directory = join(id.path, "holders");
     mkdirSync(directory, { mode: 0o700, recursive: true });
@@ -182,6 +183,7 @@ function retentionEntryKey(logicalEntry: string): string {
   // seeded built-ins and added extensions visible across refreshes instead of leaking a new set tree.
   return logicalEntry.replace(/([/\\]pnpm[/\\]dlx[/\\][^/\\]+[/\\])[^/\\]+(?=[/\\]node_modules[/\\])/, "$1*");
 }
+const retentionKey = (entry: string) => createHash("sha256").update(retentionEntryKey(entry)).digest("hex");
 function identity(): { entry: string; version: string; path: string } | undefined {
   if (process.platform !== "linux" && process.platform !== "darwin") return;
   const execution = executionIdentity();
@@ -193,7 +195,7 @@ function identity(): { entry: string; version: string; path: string } | undefine
   const meta = JSON.parse(readFileSync(join(loaded, "package.json"), "utf8")) as { version?: unknown };
   if (typeof meta.version !== "string" || !/^\d+\.\d+\.\d+(?:[-+][A-Za-z0-9.-]+)?$/.test(meta.version)) throw new Error("connector selection has no valid loaded version");
   const entry = retentionEntryKey(execution.logicalEntry);
-  const key = createHash("sha256").update(entry).digest("hex");
+  const key = retentionKey(execution.logicalEntry);
   return { entry, version: meta.version, path: join(globalConfigDir(), "installs", key, "sets", meta.version) };
 }
 function ownedDirectory(path: string): void {
@@ -330,6 +332,45 @@ function rejectLinkedSet(id: { entry: string; version: string; path: string }, r
 /** Identify the snapshot's config root without following links inside a retained set. */
 export function updateSnapshotConfig(record: UpdateRecovery): string | undefined {
   return snapshotConfig(record.snapshot, record.previous);
+}
+
+/** Positive proof for launch admission only. A failed local snapshot lookup is not proof of foreign ownership. */
+export function foreignUpdateInstallation(record: UpdateRecovery): boolean {
+  try {
+    const own = identity();
+    const journal = record.execution, snapshot = record.snapshot;
+    if (!own || !journal || !snapshot || !isAbsolute(journal) || resolve(journal) !== journal ||
+        basename(journal) !== "execution.json" || !/^\.transaction-[A-Za-z0-9]+$/.test(basename(dirname(journal)))) return false;
+    protectedLocalDirectory(dirname(journal));
+    const bytes = readLocalRecordSource(journal, 4 * 1024 * 1024, true);
+    if (!bytes) return false;
+    const tx = JSON.parse(bytes.toString("utf8"));
+    const installed: unknown = tx?.installed;
+    if (tx?.v !== 1 || typeof installed !== "string" || !isAbsolute(installed) || resolve(installed) !== installed ||
+        basename(installed) !== "cotal-ai" || basename(dirname(installed)) !== "node_modules" ||
+        dirname(dirname(journal)) !== join(dirname(dirname(installed)), ".cotal-generations") ||
+        typeof tx.previous?.manifest !== "string" || typeof tx.previous.bootstrap !== "string" ||
+        typeof tx.target?.id !== "string" || !/^[a-f0-9]{32}$/.test(tx.target.id) || tx.target.version !== record.target ||
+        typeof tx.target.inventorySha256 !== "string" || !/^[a-f0-9]{64}$/.test(tx.target.inventorySha256) ||
+        tx.target.root !== join(dirname(dirname(journal)), tx.target.id, "cotal-ai")) return false;
+    const entry = join(installed, "dist/cotal.js");
+    if (realpathSync.native(entry) !== entry || !lstatSync(entry).isFile()) return false;
+    if (tx.launchEntry !== undefined && (typeof tx.launchEntry !== "string" || !isAbsolute(tx.launchEntry) || realpathSync.native(tx.launchEntry) !== entry)) return false;
+    const prior = JSON.parse(tx.previous.manifest);
+    const earlier = tx.previous.descriptor;
+    if (prior?.name !== "cotal-ai" || prior.bin?.cotal !== "./dist/cotal.js" ||
+        (earlier === null ? prior.version !== record.previous : earlier?.v !== 1 || earlier.generation?.version !== record.previous ||
+         earlier.binding?.bootstrapSha256 !== createHash("sha256").update(tx.previous.bootstrap).digest("hex"))) return false;
+    const key = retentionKey(entry);
+    const ownKey = basename(dirname(dirname(own.path)));
+    if (key === ownKey) return false;
+    const otherSet = join(globalConfigDir(), "installs", key, "sets", record.previous);
+    if (basename(snapshot) === ".update-snapshot-" || !snapshotConfig(snapshot, record.previous, otherSet) ||
+        !sameConfigPath(dirname(dirname(snapshot)), otherSet)) return false;
+    ownedAncestors(snapshot);
+    accessSync(snapshot, constants.R_OK | constants.X_OK);
+    return true;
+  } catch { return false; }
 }
 
 function snapshotConfig(path: string | undefined, previous?: string, selectedPath?: string): string | undefined {

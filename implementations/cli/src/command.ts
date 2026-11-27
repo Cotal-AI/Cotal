@@ -66,6 +66,7 @@ import {
 import { recoverExtensionPromotion } from "./lib/extension-stage.js";
 import { SeedChildFailure, deferredSeedRefusal, reconcileSeededConnectors, seedDowngradeRefusal } from "./seed/reconcile.js";
 import { deferSeedToLaunch } from "./seed/launch.js";
+import { isLocalManagedLaunch } from "./seed/local-launch.js";
 import { isAuthenticSeedChild } from "./seed/lock.js";
 import { printHelpPath, printEntry } from "./help.js";
 import { historySetupFailureRecords, membershipSetupFailureRecords, watchSetupFailureRecords } from "./lib/stream-setup-failure.js";
@@ -1179,7 +1180,10 @@ async function dispatchCli(registry: Registry, argv: string[], opts: RunCliOptio
     const deferred = cmd?.name === "up" || (cmd?.name === "backup" && parsed?.positionals[0] === "restore");
     try {
       if (deferred) deferStartupSeed(parsed);
-      else await reconcileSeededConnectors(cmd?.name === "setup");
+      else {
+        const launch = cmd?.name === "spawn" ? parsed?.values : undefined;
+        await reconcileSeededConnectors(cmd?.name === "setup", launch && (() => isLocalManagedLaunch(launch)));
+      }
     } catch (e) {
       dispatchSeedRefusal(e, cmd, parsed, rest);
     }
