@@ -1,8 +1,9 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, watch, writeFileSync, type FSWatcher } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, unlinkSync, watch, writeFileSync, type FSWatcher } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, parse, relative, resolve, sep } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { cmdSpawnSpec, beginGlobalUpdateChild, processGroupMembers, processStartToken } from "@cotal-ai/workspace";
 import { withInstallUmask } from "../lib/install-umask.js";
 import { npmInvocation, npmLifecycleEnvironment, npmUpdateChildEnvironment } from "../lib/npm-invocation.js";
@@ -89,36 +90,202 @@ export function verifyGlobalEntry(root: string, expectedVersion: string): string
   return entry;
 }
 
+const SHELL_IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_]*$/;
+const npmChildPermitGate = 'IFS= read -r permit <&3 && [ "$permit" = run ] || exit 1; exec 3<&-; exec "$@"';
+const shellPreservesCache = new Map<string, boolean>();
+const pinnedPosixGate = new AsyncLocalStorage<{ dir: string; path?: string }>();
+
+function hasNonIdentifierEnv(env: NodeJS.ProcessEnv): boolean {
+  for (const [key, value] of Object.entries(env)) {
+    if (value !== undefined && key && !key.includes("=") && !SHELL_IDENTIFIER.test(key)) return true;
+  }
+  return false;
+}
+
+function shellPreservesNonIdentifiers(shell: string): boolean {
+  let key = shell;
+  try { key = `${shell}\0${realpathSync(shell)}`; } catch { /* keep literal shell path */ }
+  const cached = shellPreservesCache.get(key);
+  if (cached !== undefined) return cached;
+  const probeKey = "cotal_gate_probe:1";
+  const probe = spawnSync(
+    shell,
+    ["-c", 'exec "$@"', "cotal-gate-probe", process.execPath, "-e", `process.stdout.write(process.env[${JSON.stringify(probeKey)}] === "1" ? "1" : "0")`],
+    { env: { [probeKey]: "1" }, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 5000, killSignal: "SIGKILL", windowsHide: true },
+  );
+  const preserves = !probe.error && probe.signal === null && probe.stdout === "1";
+  shellPreservesCache.set(key, preserves);
+  return preserves;
+}
+
+export async function withPosixGateScratch<T>(scratchDir: string | undefined, run: () => Promise<T>): Promise<T> {
+  if (pinnedPosixGate.getStore()) return run();
+  const ownDir = scratchDir === undefined ? mkdtempSync(join(tmpdir(), "cotal-update-")) : undefined;
+  const store: { dir: string; path?: string } = { dir: realpathSync(scratchDir ?? ownDir!) };
+  try {
+    return await pinnedPosixGate.run(store, run);
+  } finally {
+    if (store.path) {
+      try { unlinkSync(store.path); } catch { /* already removed */ }
+    }
+    if (ownDir) rmSync(ownDir, { recursive: true, force: true, maxRetries: 3 });
+  }
+}
+
+export function pinPosixGateIfNeeded(env: NodeJS.ProcessEnv, shell = "/bin/sh"): void {
+  if (process.platform === "win32") return;
+  if (hasNonIdentifierEnv(env) && !shellPreservesNonIdentifiers(shell)) posixGateScriptPath();
+}
+
+export function posixGateScriptPath(): string {
+  const store = pinnedPosixGate.getStore();
+  if (store?.path) return store.path;
+  const path = fileURLToPath(new URL(import.meta.url.endsWith(".ts") ? "./update-posix-gate.ts" : "./update-posix-gate.js", import.meta.url));
+  if (!existsSync(path)) {
+    throw new Error(`missing POSIX update gate helper (${path}); reinstall with \`npm install -g cotal-ai@latest\` or run \`pnpm --filter @cotal-ai/cli build\` in a source checkout`);
+  }
+  if (!store) return path;
+  const copy = join(store.dir, path.endsWith(".ts") ? "update-posix-gate.mts" : "update-posix-gate.mjs");
+  writeFileSync(copy, readFileSync(path), { mode: 0o600, flag: "wx" });
+  store.path = copy;
+  return copy;
+}
+
+function encodeGateEnv(entries: readonly (readonly [string, string])[]): Buffer {
+  const parts: Buffer[] = [];
+  const header = Buffer.allocUnsafe(4);
+  header.writeUInt32BE(entries.length, 0);
+  parts.push(header);
+  for (const [key, value] of entries) {
+    const keyBytes = Buffer.from(key, "utf8");
+    const valueBytes = Buffer.from(value, "utf8");
+    const lengths = Buffer.allocUnsafe(8);
+    lengths.writeUInt32BE(keyBytes.length, 0);
+    lengths.writeUInt32BE(valueBytes.length, 4);
+    parts.push(lengths, keyBytes, valueBytes);
+  }
+  const trailer = Buffer.allocUnsafe(4);
+  trailer.writeUInt32BE(0xffffffff, 0);
+  parts.push(trailer);
+  return Buffer.concat(parts);
+}
+
 // The pipe closes without permission if the parent dies before publishing the PID.
-// exec keeps the published PID and the real child keeps its original argv and stdin.
-const npmChildGate = 'IFS= read -r permit <&3 && [ "$permit" = run ] || exit 1; exec 3<&-; exec "$@"';
+// When the gate shell drops non-identifier names, pass them over inherited descriptor 4:
+// in-process via --import for our own Node children so parent/published PIDs never change,
+// or through the adjacent gate stage for external commands such as npm.
+export function npmChildGate(
+  label: string,
+  file: string,
+  args: string[],
+  env: NodeJS.ProcessEnv,
+  shell = "/bin/sh",
+  operation: "npm" | "reconcile" = "npm",
+): {
+  file: string;
+  args: string[];
+  env: NodeJS.ProcessEnv;
+  envPayload?: Buffer;
+  groupCleanup?: boolean;
+} {
+  const extra: [string, string][] = [];
+  for (const [key, value] of Object.entries(env)) {
+    if (value === undefined || !key || key.includes("=")) continue;
+    if (!SHELL_IDENTIFIER.test(key)) extra.push([key, value]);
+  }
+  if (extra.length === 0 || shellPreservesNonIdentifiers(shell))
+    return { file: shell, args: ["-c", npmChildPermitGate, label, file, ...args], env };
+  const gateScript = posixGateScriptPath();
+  const inProcessPreload = operation === "reconcile" && file === process.execPath;
+  const gateEnv: NodeJS.ProcessEnv = {};
+  for (const [key, value] of Object.entries(env)) {
+    if (value === undefined || !SHELL_IDENTIFIER.test(key)) continue;
+    if (!inProcessPreload && key === "NODE_OPTIONS") continue;
+    gateEnv[key] = value;
+  }
+  if (!inProcessPreload && env.NODE_OPTIONS !== undefined) extra.push(["NODE_OPTIONS", env.NODE_OPTIONS]);
+  const envPayload = encodeGateEnv(extra);
+  if (inProcessPreload) {
+    const preloadUrl = pathToFileURL(gateScript);
+    preloadUrl.searchParams.set("label", label);
+    return {
+      file: shell,
+      args: ["-c", npmChildPermitGate, label, file, "--import", preloadUrl.href, ...args],
+      env: gateEnv,
+      envPayload,
+    };
+  }
+  return {
+    file: shell,
+    args: ["-c", npmChildPermitGate, label, process.execPath, gateScript, label, file, ...args],
+    env: gateEnv,
+    envPayload,
+    groupCleanup: true,
+  };
+}
+
+export function releaseChildGate(
+  child: import("node:child_process").ChildProcess,
+  permitted: boolean,
+  envPayload: Buffer | undefined,
+  onPermitError: (cause: Error) => void,
+  groupCleanup = false,
+  startTokenOf: (pid: number) => string | undefined = processStartToken,
+): void {
+  const permit = child.stdio[3] as import("node:stream").Writable;
+  const envPipe = envPayload ? child.stdio[4] as import("node:stream").Writable : undefined;
+  permit.on("error", onPermitError);
+  envPipe?.on("error", () => {});
+  if (permitted && groupCleanup && child.pid !== undefined && child.pid > 1) {
+    const pgid = child.pid;
+    const leaderStart = startTokenOf(pgid);
+    if (leaderStart !== undefined) {
+      child.once("exit", (_code, sig) => {
+        if (sig === null) return;
+        try {
+          // Once the leader is reaped, a recycled PID could lead a new group only after all our
+          // members exited; verify no new leader holds pgid and our group still has live members.
+          const currentStart = startTokenOf(pgid);
+          if (currentStart !== undefined && currentStart !== leaderStart) return;
+          if (processGroupMembers(pgid).length === 0) return;
+          const groupSig = sig === "SIGPIPE" || sig === "SIGXFSZ" || sig === "SIGUSR1" ? "SIGTERM" : sig;
+          process.kill(-pgid, groupSig);
+        } catch { /* group already gone */ }
+      });
+    }
+  }
+  envPipe?.end(permitted ? envPayload : undefined);
+  permit.end(permitted ? "run\n" : undefined);
+}
 
 export async function runNpmAsync(args: string[], archiveCache?: string): Promise<CommandResult> {
   try {
     const npm = npmInvocation(process.env, args);
     const { file, args: spawnArgs, windowsVerbatimArguments } = cmdSpawnSpec(npm.file, npm.args, npm.env);
     const gated = archiveCache !== undefined && (process.platform === "linux" || process.platform === "darwin");
-    const child = spawn(gated ? "/bin/sh" : file, gated ? ["-c", npmChildGate, "cotal-release-check", file, ...spawnArgs] : spawnArgs, {
-      cwd: npm.cwd, env: npm.env, windowsVerbatimArguments, windowsHide: true,
-      ...(gated ? { detached: true, stdio: ["ignore", "pipe", "pipe", "pipe"] } : {}),
+    const launch = gated ? npmChildGate("cotal-release-check", file, spawnArgs, npm.env) : undefined;
+    const child = spawn(launch ? launch.file : file, launch ? launch.args : spawnArgs, {
+      cwd: npm.cwd, env: launch ? launch.env : npm.env, windowsVerbatimArguments, windowsHide: true,
+      ...(launch ? { detached: true, stdio: launch.envPayload ? ["ignore", "pipe", "pipe", "pipe", "pipe"] : ["ignore", "pipe", "pipe", "pipe"] } : {}),
     });
     let stdout = "", stderr = "", error: string | undefined;
     child.stdout?.on("data", (chunk: Buffer | string) => { stdout += chunk.toString(); });
     child.stderr?.on("data", (chunk: Buffer | string) => { stderr += chunk.toString(); });
     child.once("error", cause => { error = cause.message; });
-    if (gated) {
-      const permit = child.stdio[3] as import("node:stream").Writable;
-      permit.on("error", cause => { error = message(cause); });
-      try {
-        if (child.pid === undefined) permit.end();
-        else {
+    if (launch) {
+      let permitted = false;
+      if (child.pid !== undefined) {
+        try {
           writeFileSync(join(archiveCache!, `.worker-${child.pid}`), "", { mode: 0o600 });
-          permit.end("run\n");
-        }
-      } catch (cause) { error = message(cause); permit.end(); }
+          permitted = true;
+        } catch (cause) { error = message(cause); }
+      }
+      releaseChildGate(child, permitted, launch.envPayload, cause => { error = message(cause); }, launch.groupCleanup);
     }
-    const status = await new Promise<number | null>(resolveClose => child.once("close", resolveClose));
-    return { status, stdout, stderr, ...(error ? { error } : {}) };
+    const [status, signal] = await new Promise<[number | null, NodeJS.Signals | null]>(resolveClose =>
+      child.once("close", (code, sig) => resolveClose([code, sig])),
+    );
+    return { status, signal, stdout, stderr, ...(error ? { error } : {}) };
   } catch (error) {
     return { status: null, stdout: "", stderr: "", error: message(error) };
   }
@@ -156,13 +323,17 @@ export function runProcess(file: string, args: string[], env: NodeJS.ProcessEnv,
   };
 }
 
-export function runGlobalProcess(
+export async function runGlobalProcess(
   ...args: Parameters<typeof runGlobalChild>
 ): Promise<CommandResult> {
   const [root, operation, file, argv, env, inherit = false, verbatim = false] = args;
-  return process.platform === "win32" && operation === "install"
-    ? runWindowsInstall(root, file, argv, env, inherit, verbatim)
-    : runGlobalChild(...args);
+  if (process.platform === "win32" && operation === "install")
+    return runWindowsInstall(root, file, argv, env, inherit, verbatim);
+  if (process.platform === "linux") {
+    try { pinPosixGateIfNeeded(env); }
+    catch (e) { return { status: null, stdout: "", stderr: "", error: message(e) }; }
+  }
+  return runGlobalChild(...args);
 }
 
 async function runGlobalChild(
@@ -193,6 +364,8 @@ async function runGlobalChild(
     const reconcileCache = gated && operation === "reconcile";
     cache = mkdtempSync(join(tmpdir(), reconcileCache ? "cotal-update-reconcile-" : "cotal-update-npm-"));
     if (npm) lifecycle = npmLifecycleEnvironment(npm, cache);
+    const childEnv = { ...(lifecycle?.env ?? npm?.env ?? env), npm_config_cache: cache, npm_config_logs_max: "0", npm_config_update_notifier: "false" };
+    const launch = gated ? npmChildGate("cotal-update", file, args, childEnv, "/bin/sh", operation === "reconcile" ? "reconcile" : "npm") : undefined;
     let recordCache = gated && (staging !== undefined || reconcileCache);
     if (recordCache) {
       try {
@@ -213,25 +386,23 @@ async function runGlobalChild(
         watchers.push(watcher);
       }
     }
-    const child = withInstallUmask(() => spawn(gated ? "/bin/sh" : file, gated ? ["-c", npmChildGate, "cotal-update", file, ...args] : args, {
+    const child = withInstallUmask(() => spawn(launch ? launch.file : file, launch ? launch.args : args, {
       // Corepack searches ancestors for a package manager. Keep only npm at the filesystem root.
       ...(operation === "install" ? { cwd: parse(homedir()).root } : {}),
-      env: { ...(lifecycle?.env ?? npm?.env ?? env), npm_config_cache: cache, npm_config_logs_max: "0", npm_config_update_notifier: "false" },
+      env: launch ? launch.env : childEnv,
       // A separate process group keeps terminal interrupts out of npm's live replacement.
       // Keep the ChildProcess referenced and await close; this is not a background update.
       detached: true,
       windowsHide: true,
       windowsVerbatimArguments,
-      stdio: updateChildStdio(gated, inherit, pipeConsole),
+      stdio: launch?.envPayload ? [...Array<"inherit" | "pipe">(3).fill(inherit ? "inherit" : "pipe"), "pipe", "pipe"] : updateChildStdio(gated, inherit, pipeConsole),
     }));
-    const permit = gated ? child.stdio[3] as import("node:stream").Writable : undefined;
     let error = "";
     let stdout = "";
     let stderr = "";
     child.stdout?.on("data", (chunk: Buffer | string) => { if (pipeConsole) process.stdout.write(chunk); else stdout += chunk.toString(); });
     child.stderr?.on("data", (chunk: Buffer | string) => { if (pipeConsole) process.stderr.write(chunk); else stderr += chunk.toString(); });
     child.once("error", (e) => { error = e.message; });
-    permit?.on("error", (e) => { error = e.message; });
     if (child.pid !== undefined) {
       try {
         // Publish cache custody before the gate permits npm to write to it.
@@ -246,7 +417,7 @@ async function runGlobalChild(
         preservePending = true;
       }
     }
-    permit?.end(published ? "run\n" : undefined);
+    if (launch) releaseChildGate(child, published, launch.envPayload, (e) => { error = e.message; }, launch.groupCleanup);
     let rejectClose: (error: unknown) => void;
     const close = new Promise<{ status: number | null; signal: NodeJS.Signals | null }>((resolveClose, reject) => {
       rejectClose = reject;
