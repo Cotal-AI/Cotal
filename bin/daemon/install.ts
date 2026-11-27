@@ -1133,7 +1133,7 @@ async function applyUninstallUnlocked(paths: DaemonPaths, daemonHome: string | u
     custody = acquireWindowsCustodyCleanup();
     const occupied = custody?.occupancy();
     if (occupied === "unknown") throw uncertain("Windows PTY custody could not be verified before uninstall");
-    if (occupied === "held") {
+    if (custody && occupied === "held") {
       if (!socket) throw uncertain("Windows PTY seats remain held without an answering daemon");
       const id = randomUUID().replaceAll("-", "");
       socket.write(encode({ v: DAEMON_PROTOCOL_VERSION, id, op: "managers-stop" }));
