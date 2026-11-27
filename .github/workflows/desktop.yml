@@ -470,7 +470,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/desktop-command-line"
-          deb=$(find desktop/src-tauri/target/release/bundle/deb -name '*.deb' -print -quit)
+          deb=$(realpath "$(find desktop/src-tauri/target/release/bundle/deb -name '*.deb' -print -quit)")
           docker run --rm -v "$PWD/desktop/scripts:/scripts:ro" -v "$(dirname "$deb"):/pkg:ro" ubuntu:24.04 \
             bash /scripts/check-command-line-linux.sh "/pkg/$(basename "$deb")" | tee "$RUNNER_TEMP/desktop-command-line/deb.txt"
       - name: Verify the cotal command from the Linux rpm
@@ -478,7 +478,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/desktop-command-line"
-          rpm=$(find desktop/src-tauri/target/release/bundle/rpm -name '*.rpm' -print -quit)
+          rpm=$(realpath "$(find desktop/src-tauri/target/release/bundle/rpm -name '*.rpm' -print -quit)")
           docker run --rm -v "$PWD/desktop/scripts:/scripts:ro" -v "$(dirname "$rpm"):/pkg:ro" fedora:41 \
             bash /scripts/check-command-line-linux.sh "/pkg/$(basename "$rpm")" | tee "$RUNNER_TEMP/desktop-command-line/rpm.txt"
       - name: Upload native presence evidence
