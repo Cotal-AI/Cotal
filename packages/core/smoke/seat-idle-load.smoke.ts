@@ -236,7 +236,7 @@ async function runSeats(job: SeatJob): Promise<void> {
   // The probe republishes a seat's own record through the endpoint's private publisher: the
   // heartbeat's put, on the heartbeat's connection, timed from this event loop.
   const probe = job.putProbe && readers.size ? putLatencyProbe(
-    [...readers.values()].slice(0, 8).map((ep) => () => (ep as unknown as { publishPresence(): Promise<void> }).publishPresence()),
+    [...readers.values()].slice(0, 8).map((ep) => () => (ep as unknown as { presence: { publishPresence(): Promise<void> } }).presence.publishPresence()),
     (row) => console.error(`seat-idle-put ${JSON.stringify({ childPid: process.pid, ...row })}`),
   ) : undefined;
   for (;;) {

@@ -192,7 +192,7 @@ try {
 
   const encode = new TextEncoder();
   const writer = await connect({ servers: SERVERS, authenticator: credsAuthenticator(encode.encode(dlvCreds)), inboxPrefix: `_INBOX_${dlvId.id}` });
-  const watchedMembers = await (dlv as unknown as { membersRegistry(): Promise<KV> }).membersRegistry();
+  const watchedMembers = await (dlv as unknown as { durableBackstop: { membersRegistry(): Promise<KV> } }).durableBackstop.membersRegistry();
   const writerMembers = await openMembersRegistry(writer, space);
   const status = watchedMembers.status.bind(watchedMembers);
   const writeChurn = (cursor: number) => writerMembers.put(memberKey("other", aPrincipal, uidA), encode.encode(JSON.stringify({
