@@ -458,10 +458,10 @@ Preparation rechecks that explicit old store's directory identity instead of rec
 disappears. These checks do not exclude an unrelated local process changing the path. Open broker
 configuration stays inside the selected root's `.cotal` directory, even when its store is elsewhere.
 
-For a first user-auth team, prepare with `cotal up --user-auth --idp <url>`, then `cotal login`,
-explicitly grant the invoking user with `cotal auth grant cli --sub <subject> --full`, and run
-`cotal down` before `cotal team boot <file>`. Do not start the manager between preparation and that
-stop. Before any write, that boot confirms your sign-in with its IdP. Without one, or when the IdP
+For a first user-auth team, follow the preparation command in the refusal. It starts the manifest's
+broker in the selected project with `--no-manager`. Sign in to the same provider. The space owner
+grants your CLI access in that space. Stop the stack from its project folder, then retry the team
+boot from the folder where you first ran it. Before any write, that boot confirms your sign-in with its IdP. Without one, or when the IdP
 rejects it because it expired or was revoked, it refuses `AUTH_REQUIRED` (exit 2), says nothing was
 started or written, and Next names `cotal login --idp <base>`, then the team boot again. Any other
 failure of that check, such as an IdP that does not answer, is left to the boot. A
