@@ -239,7 +239,8 @@ which installed source executes the first update attempt.
 
 Use Node >= 22.10. Native service and agent cells require a disposable hosted runner. On a persistent
 Linux host the harness refuses them and places other cells in private mode 700 homes under
-`/var/tmp/upgrade-matrix`. It never uses the operator's Cotal state. Require 20 GiB free before
+the system temporary directory. Without `--output` or `RUNNER_TEMP`, it writes evidence to a fresh
+directory there. It never uses the operator's Cotal state. Require 20 GiB free before
 installation or build. Do not run the container fixture on a workstation.
 
 ```sh

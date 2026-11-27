@@ -436,11 +436,35 @@ test('source-root refuses non-repositories and untracked product inputs', () => 
   const outside = mkdtempSync(join(tmpdir(), 'not-git-'));
   assert.throws(() => baseline.resolveCandidateSourceRoot(outside));
 });
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { create } from 'tar';
 import { parse as parseYaml } from 'yaml';
+
+test('excluded cell writes default evidence under private temp or RUNNER_TEMP', (t) => {
+  const root = mkdtempSync(join(tmpdir(), 'matrix-temp-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const driver = join(import.meta.dirname, 'automatic-update-platform-baseline.mjs');
+  const { RUNNER_TEMP, ...environment } = process.env;
+  const run = (env) => JSON.parse(execFileSync(process.execPath, [driver, '--state', 'fresh', '--method', 'scheduler'], {
+    env: { ...environment, TMPDIR: root, TMP: root, TEMP: root, GITHUB_SHA: '0'.repeat(40), ...env },
+    encoding: 'utf8',
+  }));
+  const report = run();
+  assert.equal(report.result, 'excluded');
+  const [directory, ...rest] = readdirSync(root);
+  assert.match(directory, /^upgrade-matrix-/);
+  assert.deepEqual(rest, []);
+  const local = join(root, directory);
+  if (process.platform !== 'win32') assert.equal(statSync(local).mode & 0o777, 0o700);
+  assert(existsSync(join(local, 'upgrade-evidence', `${report.id}.json`)));
+
+  const runner = join(root, 'runner');
+  const hosted = run({ RUNNER_TEMP: runner, GITHUB_ACTIONS: 'true', RUNNER_ENVIRONMENT: 'github-hosted' });
+  assert.equal(hosted.result, 'excluded');
+  assert(existsSync(join(runner, 'upgrade-evidence', `${hosted.id}.json`)));
+});
 
 test('old ready daemon verifying installed generation is not target readiness', () => {
   assert(!nativeGenerationReady({ state: 'ready', version: '0.160.7', generation: { installed: '0.164.2', running: '0.160.7', waiting: 'verifying the installed entry' } }, '0.164.2'));
