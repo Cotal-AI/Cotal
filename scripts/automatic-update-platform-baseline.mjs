@@ -21,6 +21,7 @@ import { candidateSourceIdentity, hostedManagerRestored, hostedManagerRetryAfter
 export { hostedManagerRetryAfter } from './candidate-next-evidence.mjs';
 import { matchSource16410Refusal } from './source-16410-refusal.mjs';
 import { matchKnownRefusal } from './upgrade-matrix-refusals.mjs';
+import { prepareProjectTrustMigration } from './project-trust-upgrade.mjs';
 
 export function candidateNextOptions(options, disposable = hosted) {
   if (options['candidate-next'] === undefined) {
@@ -400,6 +401,9 @@ export async function matrixCell(options) {
   const foreignSnapshot = options['foreign-config-snapshot'] === 'true';
   const interruptedSnapshot = options['interrupt-snapshot-copy'] === 'true';
   if (interruptedSnapshot) assert(process.platform === 'linux' && layout === 'npm' && state === 'configured' && method === 'self', 'interrupted snapshot copy requires Linux configured npm self-update');
+  const projectTrustMigration = options['project-trust-migration'] === 'true';
+  if (options['project-trust-migration'] !== undefined) assert.equal(options['project-trust-migration'], 'true', 'project-trust-migration accepts only true');
+  if (projectTrustMigration) assert(['linux', 'darwin', 'win32'].includes(process.platform) && layout === 'npm' && state === 'configured' && method === 'self' && options.prepare === undefined, 'project trust migration requires configured npm self-update without a competing composition');
   const containerManager = options['container-manager'] === 'true';
   if (containerManager) assert(hosted && process.platform === 'linux' && state === 'configured', 'container Manager cell requires disposable hosted Linux configured state');
   if (foreignSnapshot) assert(state === 'recovery' && process.platform === 'linux', 'foreign snapshot cell requires Linux recovery state');
@@ -409,7 +413,7 @@ export async function matrixCell(options) {
   if (windowsPolicy) assert(hosted && process.platform === 'win32' && !options.candidate && source === '0.164.6' && layout === 'npm' && state === 'daemon' && method === 'scheduler', 'Windows policy baseline requires hosted published 0.164.6 npm daemon scheduler');
   const output = resolve(options.output ?? join(process.env.RUNNER_TEMP ?? '/var/tmp/upgrade-matrix', 'upgrade-evidence'));
   const variant = [options['stale-version'] ? `stale-${options['stale-version']}` : '', options['prior-status'] === 'true' ? 'prior-status' : '', options['desktop-runtime'] ? 'desktop-beside-cli' : '', options['stopped-daemon-before-update'] === 'true' ? 'stopped-daemon' : '', options['disabled-daemon-before-update'] === 'true' ? 'disabled-daemon' : '', options['stop-agents'] === 'true' ? 'stop-agents' : '', daemonHostedManager ? 'daemon-hosted-manager' : '', options['other-home-auth'] === 'true' ? 'other-home-auth' : '', options['first-install'] === 'true' ? 'first-install' : '', options['follow-on-action'] ? `follow-on-${options['follow-on-action']}` : '', launchdProof ?? '', windowsPolicy ? 'windows-policy' : ''].filter(Boolean).join('-');
-  const id = `${nextHopMode ? 'candidate-next-' : options.candidate ? `candidate-${options.direction ?? 'B'}-` : 'published-'}${process.platform}-${source}-${layout}-${state}-${method}${variant ? `-${variant}` : ''}${interruptedSnapshot ? '-interrupted-snapshot-copy' : ''}`;
+  const id = `${nextHopMode ? 'candidate-next-' : options.candidate ? `candidate-${options.direction ?? 'B'}-` : 'published-'}${process.platform}-${source}-${layout}-${state}-${method}${variant ? `-${variant}` : ''}${interruptedSnapshot ? '-interrupted-snapshot-copy' : ''}${projectTrustMigration ? '-project-trust-migration' : ''}`;
   const report = { tier: nextHopMode ? 'candidate-next (synthetic registry, real native processes)' : options.candidate ? `candidate-${options.direction ?? 'B'} (synthetic registry, real native processes)` : 'published', id, sourceRequested: source, platform: process.platform, layout, state, method, calls: [], assertions: [], startedAt: new Date().toISOString(), harnessSource: process.env.GITHUB_SHA ?? execFileSync('git', ['rev-parse', 'HEAD'], { cwd: resolve(import.meta.dirname, '..'), encoding: 'utf8' }).trim(), harnessSha256: digest(readFileSync(import.meta.filename)) };
   report.agentHost = state === 'agent' ? daemonHostedManager ? 'daemon' : 'standalone' : undefined;
   const omit = exclusion({ layout, method, state });
@@ -633,6 +637,8 @@ export async function matrixCell(options) {
       assert.equal(typeof options.prepare, 'function', 'composition prepare must be an in-process callback, never a CLI string');
       compositionCleanup = await options.prepare({ env, project, pkg, root, config, cotalHome, prefix, call, cotal, daemon, check, report, output, cli, options });
       assert(compositionCleanup === undefined || typeof compositionCleanup === 'function', 'composition prepare returns an optional owned cleanup callback');
+    } else if (projectTrustMigration) {
+      compositionCleanup = await prepareProjectTrustMigration({ env, project, pkg, root, config, cotalHome, prefix, call, cotal, daemon, check, report, output, cli, launcher, options });
     }
     if (containerManager) {
       assert(report.participant?.remote === true && report.participant?.localManagerStarted === false, 'container Manager regression requires a selected remote-user participant composition, not a local host control');

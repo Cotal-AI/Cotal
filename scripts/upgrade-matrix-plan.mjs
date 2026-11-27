@@ -149,6 +149,10 @@ export function boundedCells(plan) {
   add("linux", "npm", "container-manager");
   add("linux", "npm", "interrupted-snapshot-copy");
   cells.at(-1).requiredAssertions.push("interrupted-snapshot-reclaimed");
+  for (const platform of platforms) {
+    add(platform, "npm", "project-trust-migration");
+    cells.at(-1).requiredAssertions.push("project-trust-migrated");
+  }
   for (const platform of platforms) add(platform, "npm", "daemon-self");
   for (const platform of ["linux", "darwin"]) add(platform, "installer", "daemon-self");
   {

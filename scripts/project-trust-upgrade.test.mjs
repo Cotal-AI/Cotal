@@ -1,0 +1,273 @@
+import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import test from 'node:test';
+import {
+  EXPECTED_PROJECT_TRUST_ENV,
+  EXPECTED_PROJECT_TRUST_MCP,
+  EXPECTED_PROJECT_TRUST_OPTION,
+  buildStandinClaude,
+  expectedTrustRemedy,
+  validProjectTrustLaunchRecord,
+  validProjectTrustRefusalRecord,
+  verifyProjectTrustEvidence,
+} from './project-trust-upgrade.mjs';
+import { planRelease, verifyResults } from './upgrade-matrix-plan.mjs';
+
+const digest = bytes => createHash('sha256').update(bytes).digest('hex');
+
+function makeLaunchRecord(mode = 'foreground') {
+  return {
+    mode,
+    env: EXPECTED_PROJECT_TRUST_ENV,
+    permissionMode: EXPECTED_PROJECT_TRUST_OPTION,
+    mcpServers: ['cotal', 'trustProbe'],
+    probe: EXPECTED_PROJECT_TRUST_MCP,
+  };
+}
+
+function makeRefusalRecord(canonicalRoot) {
+  const expectedRemedy = expectedTrustRemedy(canonicalRoot);
+  return {
+    canonicalRoot,
+    expectedRemedy,
+    probeExit: 1,
+    probeOutput: `project trust refused at ${canonicalRoot}; run \`${expectedRemedy}\``,
+    probeLogCreated: false,
+    plainExit: 1,
+    plainOutput: `project config refused at ${canonicalRoot}; run \`${expectedRemedy}\``,
+    plainLogCreated: false,
+  };
+}
+
+function makeFixture(platform = 'linux') {
+  const output = mkdtempSync(join(tmpdir(), 'project-trust-evidence-'));
+  const rootPrefix = platform === 'win32' ? 'C:\\runner\\work\\projects\\' : '/private/cell/projects/';
+  const roots = {
+    statusFirst: `${rootPrefix}status-first-registered`,
+    spawnFirst: `${rootPrefix}spawn-first-registered`,
+    prepStatus: `${rootPrefix}prepared-status-first`,
+    prepUp: `${rootPrefix}prepared-up-first`,
+    symlinkReal: `${rootPrefix}symlink-real`,
+    symlinkLink: `${rootPrefix}symlink-entry`,
+    unregPeers: `${rootPrefix}legacy-unreg-with-peers`,
+    postUpdate: `${rootPrefix}post-update-created`,
+    unregEmpty: `${rootPrefix}legacy-unreg-empty-home`,
+  };
+  const spawnFirstHome = `${rootPrefix}profiles-spawn-first`;
+  const symlinkHome = `${rootPrefix}profiles-symlink`;
+  const evidence = {
+    platform,
+    sourceVersion: '0.182.1',
+    targetVersion: '0.183.0',
+    preUpdate: {
+      seedAbsentBeforeUpdate: true,
+      statusFirst: makeLaunchRecord('foreground'),
+      spawnFirst: makeLaunchRecord('foreground'),
+      symlink: makeLaunchRecord('foreground'),
+    },
+    statusFirst: {
+      canonicalRoot: roots.statusFirst,
+      seedAbsentAfterUpdateBeforeStatus: true,
+      seedRecordedByStatus: true,
+      trustedRoots: [roots.statusFirst],
+      foreground: makeLaunchRecord('foreground'),
+      managed: makeLaunchRecord('managed'),
+      managedSeatJoined: true,
+    },
+    spawnFirst: {
+      profileHome: spawnFirstHome,
+      canonicalRoot: roots.spawnFirst,
+      seedAbsentBeforeSpawn: true,
+      storeAbsentBeforeSpawn: true,
+      seedRecordedBySpawn: true,
+      trustedRoots: [roots.spawnFirst],
+      foreground: makeLaunchRecord('foreground'),
+    },
+    preparedStatusFirst: {
+      canonicalRoot: roots.prepStatus,
+      seedAbsentBeforeStatus: true,
+      seedRecordedByStatus: true,
+      trustedRoots: [roots.prepStatus],
+      foreground: makeLaunchRecord('foreground'),
+    },
+    preparedUpFirst: {
+      canonicalRoot: roots.prepUp,
+      seedAbsentBeforeUp: true,
+      seedRecordedByUp: true,
+      trustedRoots: [roots.prepUp],
+      foreground: makeLaunchRecord('foreground'),
+    },
+    symlink: {
+      profileHome: symlinkHome,
+      linkPath: roots.symlinkLink,
+      canonicalRoot: roots.symlinkReal,
+      seedAbsentBeforeSpawn: true,
+      trustedRoots: [roots.symlinkReal],
+      foreground: makeLaunchRecord('foreground'),
+    },
+    refusals: {
+      legacyUnregisteredWithPeers: makeRefusalRecord(roots.unregPeers),
+      postUpdateCreated: makeRefusalRecord(roots.postUpdate),
+      legacyUnregisteredEmptyHome: makeRefusalRecord(roots.unregEmpty),
+    },
+    cleanup: { stacksStopped: true },
+  };
+
+  const call = (label, argv = [], home = undefined) => ({ label, argv, ...(home ? { home } : {}), exit: 0, signal: null, timeout: false });
+  const calls = [
+    call('install published source', ['install', '-g', 'cotal-ai@0.182.1']),
+    call('project-trust pre-update status-first spawn', ['spawn', '--foreground']),
+    call('project-trust pre-update spawn-first spawn', ['spawn', '--foreground'], spawnFirstHome),
+    call('project-trust pre-update symlink spawn', ['spawn', '--foreground'], symlinkHome),
+    call('upgrade under test', ['update', '--self']),
+    call('project-trust status-first status', ['status', '--plain']),
+    call('project-trust status-first foreground spawn', ['spawn', '--foreground']),
+    call('project-trust status-first managed spawn', ['spawn', '--detach']),
+    call('project-trust spawn-first version', ['--version'], spawnFirstHome),
+    call('project-trust spawn-first ext seed', ['ext', 'seed'], spawnFirstHome),
+    call('project-trust spawn-first foreground spawn', ['spawn', '--foreground'], spawnFirstHome),
+    call('project-trust prepared-status-first status', ['status', '--plain']),
+    call('project-trust prepared-status-first foreground spawn', ['spawn', '--foreground']),
+    call('project-trust prepared-up-first stack up', ['up', '--space', 'prepared']),
+    call('project-trust prepared-up-first foreground spawn', ['spawn', '--foreground']),
+    call('project-trust symlink version', ['--version'], symlinkHome),
+    call('project-trust symlink foreground spawn', ['spawn', '--foreground'], symlinkHome),
+  ];
+
+  const artifact = `candidate-B-${platform}-0.182.1-npm-configured-self-project-trust-migration.json`;
+  const writeArtifact = value => {
+    const bytes = Buffer.from(JSON.stringify(value, null, 2) + '\n', 'utf8');
+    writeFileSync(join(output, artifact), bytes, { mode: 0o600 });
+    return { artifact, bytes: bytes.length, sha256: digest(bytes) };
+  };
+  const projectTrustMigration = writeArtifact(evidence);
+  const cell = { scenario: 'project-trust-migration', platform, sourceVersion: '0.182.1', targetVersion: '0.183.0' };
+  const report = { id: `candidate-B-${platform}-0.182.1-npm-configured-self`, platform, calls, projectTrustMigration };
+  return { output, evidence, report, cell, writeArtifact };
+}
+
+test('expectedTrustRemedy matches the product quoting: plain, quoted, and hex', () => {
+  assert.equal(expectedTrustRemedy('/var/tmp/project-a'), 'cotal trust /var/tmp/project-a');
+  assert.equal(expectedTrustRemedy('C:\\Users\\runneradmin\\project space'), 'cotal trust -- "C:\\Users\\runneradmin\\project space"');
+  const special = '/var/tmp/project$HOME!';
+  assert.equal(expectedTrustRemedy(special), `cotal trust --hex ${Buffer.from(special).toString('hex')}`);
+});
+
+test('stand-in claude records env, launchOptions and MCP execution cleanly', () => {
+  if (process.platform === 'win32') return;
+  const root = mkdtempSync(join(tmpdir(), 'standin-claude-'));
+  try {
+    const standin = buildStandinClaude(join(root, 'bin'), 'linux');
+    const ver = execFileSync(standin.executable, ['--version'], { encoding: 'utf8' }).trim();
+    assert.equal(ver, '2.1.330 (Claude Code)');
+    const plugins = execFileSync(standin.executable, ['plugin', 'list', '--json'], { encoding: 'utf8' }).trim();
+    assert.equal(plugins, '[]');
+    const probeLog = join(root, 'probe.log');
+    const mcpCfg = join(root, 'mcp.json');
+    writeFileSync(mcpCfg, JSON.stringify({
+      mcpServers: {
+        cotal: { command: process.execPath, args: ['-e', 'process.exit(0)'] },
+        trustProbe: { command: process.execPath, args: [standin.probeScript, probeLog] },
+      },
+    }));
+    execFileSync(standin.executable, ['--mcp-config', mcpCfg, '--permission-mode', EXPECTED_PROJECT_TRUST_OPTION], {
+      env: { ...process.env, TRUST_PROBE_LOG: probeLog, TRUST_MATRIX_ENV: EXPECTED_PROJECT_TRUST_ENV, TRUST_LAUNCH_MODE: 'foreground' },
+      stdio: 'pipe',
+    });
+    const record = JSON.parse(readFileSync(probeLog, 'utf8').trim());
+    assert(validProjectTrustLaunchRecord(record, 'foreground'));
+    assert(!validProjectTrustLaunchRecord({ ...record, env: '<absent>' }, 'foreground'));
+    assert(!validProjectTrustLaunchRecord({ ...record, permissionMode: '<missing>' }, 'foreground'));
+    assert(!validProjectTrustLaunchRecord({ ...record, probe: '<missing>' }, 'foreground'));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('verifyProjectTrustEvidence accepts complete cross-platform evidence and rejects any weakened check', () => {
+  for (const platform of ['linux', 'darwin', 'win32']) {
+    const fx = makeFixture(platform);
+    try {
+      assert.deepEqual(verifyProjectTrustEvidence(fx), { 'project-trust-migrated': true });
+    } finally {
+      rmSync(fx.output, { recursive: true, force: true });
+    }
+  }
+
+  const corruptions = [
+    fx => { fx.evidence.preUpdate.seedAbsentBeforeUpdate = false; },
+    fx => { fx.evidence.preUpdate.statusFirst.env = '<absent>'; },
+    fx => { fx.evidence.statusFirst.seedAbsentAfterUpdateBeforeStatus = false; },
+    fx => { fx.evidence.statusFirst.foreground.permissionMode = '<missing>'; },
+    fx => { fx.evidence.statusFirst.managed.probe = '<missing>'; },
+    fx => { fx.evidence.statusFirst.managedSeatJoined = false; },
+    fx => { fx.evidence.statusFirst.trustedRoots.push(fx.evidence.refusals.legacyUnregisteredWithPeers.canonicalRoot); },
+    fx => { fx.evidence.spawnFirst.seedAbsentBeforeSpawn = false; },
+    fx => { fx.evidence.spawnFirst.storeAbsentBeforeSpawn = false; },
+    fx => { fx.evidence.spawnFirst.foreground.mcpServers = ['cotal']; },
+    fx => { fx.evidence.preparedStatusFirst.seedRecordedByStatus = false; },
+    fx => { fx.evidence.preparedUpFirst.seedRecordedByUp = false; },
+    fx => { fx.evidence.symlink.trustedRoots = [fx.evidence.symlink.linkPath]; },
+    fx => { fx.evidence.refusals.legacyUnregisteredWithPeers.probeExit = 0; },
+    fx => { fx.evidence.refusals.legacyUnregisteredWithPeers.plainLogCreated = true; },
+    fx => { fx.evidence.refusals.postUpdateCreated.probeOutput = 'refused without remedy'; },
+    fx => { fx.evidence.refusals.legacyUnregisteredEmptyHome.plainExit = 0; },
+    fx => { fx.evidence.cleanup.stacksStopped = false; },
+    fx => {
+      const idx = fx.report.calls.findIndex(c => c.label === 'project-trust spawn-first foreground spawn');
+      fx.report.calls.splice(idx, 0, { label: 'intervening status', argv: ['status'], home: fx.evidence.spawnFirst.profileHome, exit: 0 });
+    },
+    fx => {
+      const s = fx.report.calls.findIndex(c => c.label === 'project-trust status-first status');
+      const f = fx.report.calls.findIndex(c => c.label === 'project-trust status-first foreground spawn');
+      [fx.report.calls[s], fx.report.calls[f]] = [fx.report.calls[f], fx.report.calls[s]];
+    },
+  ];
+
+  for (const corrupt of corruptions) {
+    const fx = makeFixture('linux');
+    try {
+      corrupt(fx);
+      fx.report.projectTrustMigration = fx.writeArtifact(fx.evidence);
+      assert.throws(() => verifyProjectTrustEvidence(fx));
+    } finally {
+      rmSync(fx.output, { recursive: true, force: true });
+    }
+  }
+
+  const tampered = makeFixture('darwin');
+  try {
+    writeFileSync(join(tampered.output, tampered.report.projectTrustMigration.artifact), '{"tampered":true}\n');
+    assert.throws(() => verifyProjectTrustEvidence(tampered));
+  } finally {
+    rmSync(tampered.output, { recursive: true, force: true });
+  }
+});
+
+test('both phases require Linux, macOS and Windows project-trust-migration cells', () => {
+  for (const phase of ['candidate', 'published']) {
+    const plan = planRelease(
+      { inputs: { phase, source_sha: 'a'.repeat(40), target_version: '0.183.0', profile: 'bounded' } },
+      { eventName: 'workflow_dispatch', sourceVersion: '0.182.1' },
+    );
+    const cells = plan.cells.filter(c => c.scenario === 'project-trust-migration');
+    assert.deepEqual(cells.map(c => c.platform), ['linux', 'darwin', 'win32']);
+    for (const cell of cells) {
+      assert.equal(cell.channel, 'npm');
+      assert.equal(cell.required, true);
+      assert(cell.requiredAssertions.includes('project-trust-migrated'));
+      const good = plan.cells.filter(c => c.required).map(c => ({
+        id: c.id,
+        status: 'passed',
+        assertions: Object.fromEntries(c.requiredAssertions.map(a => [a, true])),
+      }));
+      assert.equal(verifyResults(plan.cells, good).acceptance, true);
+      delete good.find(r => r.id === cell.id).assertions['project-trust-migrated'];
+      assert.equal(verifyResults(plan.cells, good).acceptance, false);
+    }
+  }
+});

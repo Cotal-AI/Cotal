@@ -540,7 +540,7 @@ test('workflow bounds diagnostics and preserves every immutable release head wit
     if (done.has(name)) return;
     const job = workflow.jobs[name];
     assert(job, `unknown dependency ${name}`);
-    if (job.strategy) assert(job.strategy['max-parallel'] <= (name === 'release-cells' ? 47 : 6), `${name} exceeds its matrix bound`);
+    if (job.strategy) assert(job.strategy['max-parallel'] <= (name === 'release-cells' ? 50 : 6), `${name} exceeds its matrix bound`);
     if (!['priority', 'scheduler-proof', 'installer-proof', 'transition-native', 'mac-controls-proof', 'windows-baseline', 'next-release-macos', 'windows-job-facts', 'select'].includes(name)) assert(job.needs, `${name} bypasses priority ordering`);
     visiting.add(name);
     for (const dependency of [job.needs ?? []].flat()) visit(dependency);
@@ -929,4 +929,19 @@ test('matrix includes each requested source, state and method', () => {
   assert(exclusion({ layout: 'npm', method: 'installer', state: 'fresh' }));
   assert(exclusion({ layout: 'npm', method: 'scheduler', state: 'fresh' }));
   assert.equal(exclusion({ layout: 'npm', method: 'scheduler', state: 'daemon' }), undefined);
+});
+
+test('project-trust-migration option validates coordinate shape and hooks into composition lifecycle', async () => {
+  const source = readFileSync(new URL('./automatic-update-platform-baseline.mjs', import.meta.url), 'utf8');
+  assert(source.includes("const projectTrustMigration = options['project-trust-migration'] === 'true'"));
+  assert(source.includes('prepareProjectTrustMigration({ env, project, pkg, root, config, cotalHome, prefix, call, cotal, daemon, check, report, output, cli, launcher, options })'));
+  for (const invalid of [
+    { 'project-trust-migration': 'false', layout: 'npm', state: 'configured', method: 'self' },
+    { 'project-trust-migration': 'true', layout: 'installer', state: 'configured', method: 'self' },
+    { 'project-trust-migration': 'true', layout: 'npm', state: 'fresh', method: 'self' },
+    { 'project-trust-migration': 'true', layout: 'npm', state: 'configured', method: 'scheduler' },
+    { 'project-trust-migration': 'true', layout: 'npm', state: 'configured', method: 'self', prepare() {} },
+  ]) {
+    await assert.rejects(() => baseline.matrixCell(invalid));
+  }
 });
