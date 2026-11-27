@@ -85,6 +85,7 @@ export class EndpointConnection {
    *  the same two paths wait for these first. */
   private readonly kvWatchBinds = new Set<Promise<unknown>>();
   private readonly projectionWires = new WeakMap<NatsConnection, ReturnType<typeof watchNativeConnection>>();
+  private readonly admittedProjection = new WeakMap<NatsConnection, NativeConnectionBinding>();
 
   constructor(private readonly identity: Readonly<EndpointIdentity>, private readonly conn: ConnectionState, private readonly lifecycle: LifecycleState, private readonly cred: CredentialState, private readonly channelRegistry: ChannelRegistryState, private readonly delivery: Readonly<DeliveryState>, private readonly deps: EndpointConnectionDeps, private readonly parts: Pick<EndpointParts, "anycastRail" | "channelDiscovery" | "consumers" | "credentials" | "deliveryLease" | "deliveryPlane" | "liveness" | "presence" | "principalServe" | "provisioning" | "reconnection" | "subscriptions">) {}
 
@@ -123,7 +124,23 @@ export class EndpointConnection {
       throw new Error("plugin channel routing changed; a full endpoint bind is required");
     this.conn.pluginChannelsEnabled = enabled;
     this.conn.pluginChannelEpoch = epoch;
+    this.admittedProjection.set(nc, { serverId, cid });
     return true;
+  }
+
+  channelRoutingMode(): "legacy" | "isolated" | undefined {
+    const nc = this.conn.nc;
+    if (!nc || nc.isClosed() || this.lifecycle.stopped || !this.conn.nativeBound || this.identity.dmOnly) return undefined;
+    if (!this.authed) return "legacy";
+    const admitted = this.admittedProjection.get(nc);
+    if (!admitted) return undefined;
+    try {
+      const current = this.projectionWires.get(nc)?.binding();
+      if (current?.cid !== admitted.cid || current.serverId !== admitted.serverId) return undefined;
+      return this.conn.pluginChannelsEnabled ? "isolated" : "legacy";
+    } catch {
+      return undefined;
+    }
   }
 
   private recoverPluginChannelsOnNativeReconnect(nc: NatsConnection): void {

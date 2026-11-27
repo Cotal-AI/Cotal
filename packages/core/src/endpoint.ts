@@ -1884,6 +1884,9 @@ export class CotalEndpoint extends EventEmitter {
     return this.history.channelFrontier(channel);
   }
 
+  /** Routing mode validated on the current channel transport, if admitted. */
+  channelRoutingMode(): "legacy" | "isolated" | undefined { return this.connection.channelRoutingMode(); }
+
   /** Whether this connection's account has a JetStream stream of this name. A missing stream is
    *  false. Any other failure is thrown, so a caller does not treat an unread broker as absence. */
   streamRecorded(name: string): Promise<boolean> {

@@ -61,9 +61,10 @@ async function checkPluginProjection(space: string, provisioner: string, creds: 
   };
   const put = (enabled: boolean, epoch: number) => kv.put(key, JSON.stringify({ enabled, epoch }));
   try {
+    check("public routing mode is undefined before the initial bind", ep.channelRoutingMode() === undefined);
     await ep.start();
     check("credentialed non-consuming agent binds absent projection as CHAT before ready", ready.length === 1 &&
-      ready[0].epoch === 0 && !ready[0].enabled);
+      ready[0].epoch === 0 && !ready[0].enabled && ep.channelRoutingMode() === "legacy");
     const first = opened[0];
     await first.reconnect();
     check("same projection preserves the native connection and re-announces readiness", await until(() => ready.length === 2) &&
@@ -72,7 +73,7 @@ async function checkPluginProjection(space: string, provisioner: string, creds: 
     await put(true, 1);
     await first.reconnect();
     check("native reconnect with new epoch never announces ready on reused subscriptions", await until(() => ready.length >= 3) &&
-      ready.length === 3 && ready[2].wire !== first && first.isClosed() && ready[2].epoch === 1 && ready[2].enabled);
+      ready.length === 3 && ready[2].wire !== first && first.isClosed() && ready[2].epoch === 1 && ready[2].enabled && ep.channelRoutingMode() === "isolated");
     const old = ready[2]?.wire;
     if (!old) throw new Error("fixture did not establish a rebuilt transport");
     await kv.put(key, "{");
@@ -101,12 +102,13 @@ async function checkPluginProjection(space: string, provisioner: string, creds: 
     try {
       await stale.reconnect();
       if (!(await until(() => readHeld))) throw new Error("fixture did not hold the native projection reply");
+      check("public routing mode is undefined while native projection admission is pending", ep.channelRoutingMode() === undefined);
       await put(false, 3);
       await ep.reconnect();
     } finally { release(); }
     await wait(50);
     check("a delayed projection reply cannot overwrite or announce readiness for a replacement transport", ready.length === 5 &&
-      ready[4].wire !== stale && ready[4].epoch === 3 && !ready[4].enabled && state.pluginChannelEpoch === 3);
+      ready[4].wire !== stale && ready[4].epoch === 3 && !ready[4].enabled && state.pluginChannelEpoch === 3 && ep.channelRoutingMode() === "legacy");
     await kv.delete(key);
     let bootReady = false;
     const refused = new CotalEndpoint({ space, servers: SERVERS, creds, lifecycleUid, card: { name: "projection-refused", kind: "agent" },
