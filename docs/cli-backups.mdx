@@ -641,8 +641,11 @@ restore finish and print its receipt before stopping the stack and exiting with 
 If no listener was bound to the attempt, it starts one only when no process of this account names
 the attempt and the recorded port is free. A listener spawned and never bound may still be opening
 the restored store, and NATS does not stop a second server from opening it too. While such a process
-runs, `up` names its pid, refuses to start and preserves the attempt. A host that cannot read command
-lines refuses the same way. A later ordinary startup may pass an `active` restore only when its details
+runs, `up` names its pid, refuses to start and preserves the attempt. On a host that cannot read
+command lines, `up` can start a listener when the journal proves startup has not begun, or when
+the published process identity proves the previous listener is gone. It refuses if the last spawn
+may have started but did not publish its PID. A closed port does not prove that listener is gone.
+A later ordinary startup may pass an `active` restore only when its details
 prove manager commit and its exact recorded listener is dead.
 
 
