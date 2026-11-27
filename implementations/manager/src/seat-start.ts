@@ -1222,7 +1222,7 @@ export class SeatStart {
           discardLaunchArtifacts(spec?.artifacts);
           this.settleUnusedLaunch(name, seatHome, snapshotUid, provisioned);
         });
-        await hooks?.onOutcome?.({ kind: "uncertain", data: { reason: e.message } });
+        void hooks?.onOutcome?.({ kind: "uncertain", data: { reason: e.message }, atReadinessDeadline: true });
         return controlReplyFromThrown(new EpEnvelopeError("unavailable", e.message, undefined, "unknown"), e.message);
       }
       // Failure after reserve (provision / launch threw): the slot was never live, so no cold-start

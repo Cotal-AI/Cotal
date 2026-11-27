@@ -288,7 +288,7 @@ export interface SpawnHooks {
    *  terminal + emits the final progress event here. Awaited, but the caller swallows its own errors
    *  so a terminal-commit failure never disrupts the (already-replied) spawn. Resolves true only
    *  when this call committed the terminal; a once task is served only after that. */
-  onOutcome?: (outcome: { kind: "succeeded" | "failed" | "uncertain"; data?: unknown }) => Promise<boolean | void> | boolean | void;
+  onOutcome?: (outcome: { kind: "succeeded" | "failed" | "uncertain"; data?: unknown; atReadinessDeadline?: true }) => Promise<boolean | void> | boolean | void;
   /** Fires when this spawn ends with its goal's terminal owned by ANOTHER path — today only a
    *  despawn/stop that lands inside the readiness window, whose own handler commits `cancel`.
    *  It commits nothing; it only claims the terminal so the post-accept fallback does not
