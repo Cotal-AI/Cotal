@@ -1,5 +1,21 @@
 # @cotal-ai/runtime
 
+## 0.183.0
+
+### Patch Changes
+
+- 040b05d: Resuming an unknown hosted run now suggests the inventory command with the broker, credentials and output format the caller used, instead of dropping them.
+- Updated dependencies [a0e9aae]
+- Updated dependencies [c3236a3]
+- Updated dependencies [335d8e9]
+- Updated dependencies [447e860]
+- Updated dependencies [6930623]
+- Updated dependencies [0c10988]
+- Updated dependencies [06629ca]
+  - @cotal-ai/core@0.183.0
+  - @cotal-ai/workspace@0.183.0
+  - @cotal-ai/lang@0.183.0
+
 ## 0.182.1
 
 ### Patch Changes
