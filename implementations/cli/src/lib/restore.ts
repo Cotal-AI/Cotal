@@ -39,6 +39,10 @@ import {
   localProcessOwnerStatus,
   parsePositiveIntegerFlag,
   readMaintenanceJournal,
+  readPidfile,
+  parsePid,
+  probeLiveness,
+  NATS_PIDFILE,
   restoreLeftOut,
   restoreOtherAccounts,
   restoreReplacedNewerCut,
@@ -79,6 +83,7 @@ import { attemptProcessesGone, ensurePrivateAttemptsDir, startIsolatedBroker, sw
 import { inspectPreviousStore, readRegistryDefault, readRunJournals, rolledBackRuns } from "./rolled-back-runs.js";
 import { noticeOnInterrupt } from "./interrupt-notice.js";
 import { displayCmd } from "./self-exec.js";
+import { cotalPath } from "./paths.js";
 import { assertEndpointUnreachable } from "./endpoint-cut.js";
 import { acquireStackOperationLock } from "./stack-journal.js";
 import { checkStorePath, foreignEntriesRefusal, missingRestoreStoreParent, oldStoreForeignEntries } from "./store-dir.js";
@@ -251,6 +256,15 @@ export function replacePreparedDeadRestoreListener(prepared: PreparedRestore, he
   } finally {
     if (!heldLock) releaseMaintenanceLock(lock);
   }
+}
+
+/** The published listener pid that blocks an unbound restore when process command lines cannot be
+ *  read. A pid reused by an unrelated process stays blocking until that process ends, because a
+ *  signal probe cannot tell it from the listener. No pid file means this attempt has published none. */
+export function unreadableUnboundRestorePid(): number | undefined {
+  const text = readPidfile(cotalPath(NATS_PIDFILE));
+  const pid = text === undefined ? undefined : parsePid(text);
+  return pid !== undefined && probeLiveness(pid) !== "dead" ? pid : undefined;
 }
 
 /** Return a restore with no bound listener to commit intent before its listener starts (#7127). The
