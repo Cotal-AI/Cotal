@@ -54,7 +54,7 @@ export function nativeStub(scenario) {
       if (request.op === "agent-apps") {
         state.appsRequests = [...(state.appsRequests ?? []), request.refresh === true];
         if (state.appsHold) await new Promise(() => {});
-        return ok({ apps: state.agentApps ?? defaultApps, ...(request.refresh ? { service: "unchanged" } : {}) });
+        return ok({ apps: state.agentApps ?? defaultApps, ...(request.refresh ? { service: state.refreshService ?? "unchanged" } : {}) });
       }
       if (request.op === "agent-app-install" || request.op === "agent-app-sign-in") {
         state.appActions = [...(state.appActions ?? []), `${request.op}:${request.name}`];
@@ -247,9 +247,16 @@ const appsScenarios = [
     await appButton(page, "Open sign-in page: Claude Code").click();
   } },
   { name: "agent-apps-install-signs-in-service-failed", state: { ...accountOnly, agentApps: noApps, appService: "failed", serviceError: "the daemon did not answer within 60s" }, act: async page => { await appButton(page, "Install Claude Code from claude.ai").click(); await page.locator('[data-app="claude"][data-state="ready"]').waitFor(); }, expect: async page => {
-    // The automatic sign-in keeps the reason the service has not picked Claude Code up; a refresh that succeeds clears it.
+    // The automatic sign-in keeps the reason the service has not picked Claude Code up; only a refresh that ran clears it.
     assert.deepEqual((await page.evaluate(() => window.__renderState.appActions)), ["agent-app-install:claude", "agent-app-sign-in:claude"]);
-    assert.equal(await page.locator("#apps-message").textContent(), "Claude Code is signed in, but the background service has not picked it up yet: the daemon did not answer within 60s. Choose Check again to try once more.");
+    const reason = "Claude Code is signed in, but the background service has not picked it up yet: the daemon did not answer within 60s. Choose Check again to try once more.";
+    assert.equal(await page.locator("#apps-message").textContent(), reason);
+    // "unchanged" also means the service did not answer, so the reason stays.
+    const asked = (await page.evaluate(() => window.__renderState.appsRequests)).length;
+    await page.click("#apps-refresh");
+    await page.waitForFunction(n => window.__renderState.appsRequests.length > n && !document.querySelector("#apps-refresh").disabled, asked);
+    assert.equal(await page.locator("#apps-message").textContent(), reason);
+    await page.evaluate(() => { window.__renderState.refreshService = "refreshed"; });
     await page.click("#apps-refresh");
     await page.waitForFunction(() => document.querySelector("#apps-message").textContent === "");
     assert.deepEqual((await page.evaluate(() => window.__renderState.appsRequests)).at(-1), true);

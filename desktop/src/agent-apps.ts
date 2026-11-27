@@ -125,7 +125,9 @@ export class AgentApps {
       try {
         const result = await appRequest({ op: "agent-apps", ...(refresh || this.waitingForAgents ? { refresh: true } : {}) });
         this.apps = orderedApps(result.apps ?? []); this.error = undefined;
-        if (result.service === "refreshed" || result.service === "unchanged") { if (this.servicePending) this.message = ""; this.servicePending = false; this.waitingForAgents = false; }
+        // Only a refresh that ran clears the warning: "unchanged" also comes back when the service does not answer.
+        if (result.service === "refreshed" && this.servicePending) { this.message = ""; this.servicePending = false; }
+        if (result.service === "refreshed" || result.service === "unchanged") this.waitingForAgents = false;
       } catch (error) { this.error = refusalMessage(error); }
       finally { this.loading = undefined; this.host.changed(); }
     })();
