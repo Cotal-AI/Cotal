@@ -54,3 +54,13 @@ test('missing or unparsable built output refuses instead of an empty audit', () 
     assert.throws(() => auditPackage(root), /did not parse/);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
+
+test('first-party plugin bundles only use declared runtime dependencies and do not import core', () => {
+  const names = ['connector-claude-code', 'connector-codex', 'connector-hermes', 'connector-jcode',
+    'connector-opencode', 'pi', 'cmux', 'herdr', 'orca', 'tmux'];
+  for (const name of names) {
+    const audit = auditPackage(join(import.meta.dirname, '..', 'extensions', name));
+    assert.deepEqual(audit.violations, [], `${audit.name} runtime dependencies`);
+    assert.deepEqual(audit.imports.filter(({ dependency }) => dependency === '@cotal-ai/core'), [], `${audit.name} core imports`);
+  }
+});

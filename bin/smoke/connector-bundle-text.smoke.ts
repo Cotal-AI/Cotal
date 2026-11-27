@@ -16,29 +16,37 @@
  * Run: pnpm smoke:connector-bundle-text
  */
 import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { createSuite } from "@cotal-ai/smoke-kit";
+import { extractTarball, packPackage } from "../../scripts/post-publish-install-probe.mjs";
 
 const { check, finish } = createSuite();
 const repoRoot = fileURLToPath(new URL("../..", import.meta.url));
 
 /** Each package whose bundles load into a long-running process, with how many bundles it emits. */
 const PACKAGES: ReadonlyArray<readonly [string, number]> = [
-  ["extensions/connector-claude-code", 5],
+  ["extensions/connector-claude-code", 6],
   // index, host and the personal-session entry.
   ["extensions/connector-codex", 3],
   ["extensions/connector-hermes", 3],
   ["extensions/connector-jcode", 3],
   ["extensions/connector-opencode", 4],
   ["extensions/pi", 2],
+  ["extensions/cmux", 1],
+  ["extensions/herdr", 1],
+  ["extensions/orca", 1],
+  ["extensions/tmux", 1],
 ];
-const EXPECTED_BUNDLES = 20;
+const EXPECTED_BUNDLES = 25;
 
 /** A step that copies one of connector-core's prebuilt docs data files beside the bundles. It emits
  *  no JavaScript, so it is neither a bundle nor a way for another bundler to slip in. */
 const DOCS_DATA_COPY = /^node -e "require\('node:fs'\)\.copyFileSync\('\.\.\/connector-core\/src\/docs-(?:index|bundle)\.bin','[^']+\.bin'\)"$/;
+// These pi entrypoints are transpiled without bundling.
+const PI_HELPERS = "esbuild src/spawn-entry.ts src/spawn-discovery.ts src/trust-entry.ts src/trust.ts --platform=node --format=esm --target=node22 --outdir=dist";
 
 /** Every esbuild call in a package's `bundle` script: its `--outfile`, plus what is wrong with it. */
 function bundleCalls(pkgDir: string): { outs: string[]; problems: string[] } {
@@ -49,6 +57,7 @@ function bundleCalls(pkgDir: string): { outs: string[]; problems: string[] } {
   const problems: string[] = [];
   for (const call of script.split(" && ")) {
     if (DOCS_DATA_COPY.test(call.trim())) continue;
+    if (pkgDir === "extensions/pi" && call === PI_HELPERS) continue;
     if (!call.trimStart().startsWith("esbuild")) problems.push(`${pkgDir}: bundle runs something other than esbuild: ${call}`);
     if (!call.includes(" --minify-whitespace ")) problems.push(`${pkgDir}: esbuild call without --minify-whitespace: ${call}`);
     const out = /--outfile=(\S+)/.exec(call);
@@ -56,6 +65,46 @@ function bundleCalls(pkgDir: string): { outs: string[]; problems: string[] } {
     else outs.push(out[1]!);
   }
   return { outs, problems };
+}
+
+const importPacked = `
+import assert from 'node:assert/strict';
+const [core, entry, expected] = process.argv.slice(1);
+const { commitPlugin, registry, stagePlugin } = await import(core);
+const refs = JSON.parse(expected);
+const { default: factory } = await import(entry);
+assert(refs.length);
+for (const { kind, name } of refs) assert(!registry.has(kind, name));
+const staged = await stagePlugin(registry, factory);
+assert.deepEqual(staged.map(({ kind, name }) => ({ kind, name })), refs);
+const scope = commitPlugin(registry, staged);
+for (const provider of staged) assert.equal(registry.resolve(provider.kind, provider.name), provider);
+scope.dispose();
+for (const { kind, name } of refs) assert(!registry.has(kind, name));
+`;
+
+function verifyPack(pkgDir: string): void {
+  const scratch = mkdtempSync(join(tmpdir(), "cotal-packed-plugin-"));
+  try {
+    const dir = extractTarball(packPackage(join(repoRoot, pkgDir), scratch), scratch);
+    const file = join(dir, "package.json");
+    const declaration = JSON.parse(readFileSync(file, "utf8")).cotal;
+    const core = JSON.parse(readFileSync(join(repoRoot, "packages/core/package.json"), "utf8")).version;
+    check(`${pkgDir} ships metadata for its bundled core`, declaration?.core === core && declaration.contract === 1);
+    const refs = declaration.provides.map(({ kind, name }: { kind: string; name: string }) => ({ kind, name }));
+    const node = (args: string[]): void => {
+      const { NODE_OPTIONS: _options, ...env } = process.env;
+      execFileSync(process.execPath, args, { cwd: scratch, env, stdio: ["ignore", "ignore", "inherit"] });
+    };
+    const url = (path: string): string => pathToFileURL(path).href;
+    node(["--input-type=module", "-e", importPacked, url(join(repoRoot, "packages/core/dist/index.js")), url(join(dir, "dist/index.js")), JSON.stringify(refs)]);
+    check(`${pkgDir} packs a working, inert factory without node_modules`, !existsSync(join(dir, "node_modules")));
+    node([join(repoRoot, "bin/dist/cotal.js"), "ext", "manifest", dir]);
+    const regenerated = JSON.parse(readFileSync(file, "utf8")).cotal;
+    check(`${pkgDir} build and CLI declarations match`, JSON.stringify(regenerated) === JSON.stringify(declaration), regenerated);
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
 }
 
 let checked = 0;
@@ -73,6 +122,7 @@ for (const [pkgDir, count] of PACKAGES) {
     checked += 1;
     scanned += text.length;
   }
+  verifyPack(pkgDir);
 }
 
 check(`every connector bundle was read (${EXPECTED_BUNDLES} expected)`, checked === EXPECTED_BUNDLES, checked);

@@ -20,7 +20,8 @@
   "scripts": {
     "test": "pnpm run build && tsx package.smoke.ts && tsx driver-reads.smoke.ts && tsx driver-writes.smoke.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.smoke.json",
-    "build": "tsc -p tsconfig.json --emitDeclarationOnly && esbuild src/index.ts --bundle --minify-whitespace --platform=node --format=esm --target=node20 --outfile=dist/index.js --banner:js=\"import { createRequire as __cotalCreateRequire } from 'node:module'; const require = __cotalCreateRequire(import.meta.url);\" && pnpm run manifest",
+    "build": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && tsc -p tsconfig.json --emitDeclarationOnly && pnpm run bundle && pnpm run manifest",
+    "bundle": "esbuild src/index.ts --bundle --minify-whitespace --platform=node --format=esm --target=node20 --outfile=dist/index.js --banner:js=\"import { createRequire as __cotalCreateRequire } from 'node:module'; const require = __cotalCreateRequire(import.meta.url);\"",
     "manifest": "node ../../scripts/plugin-manifest.mjs",
     "prepublishOnly": "pnpm run build"
   },
