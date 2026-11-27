@@ -11,3 +11,4 @@ export function registryArrivalCell(options: {
   requests: { at: number; path: string }[];
   output: string;
 }>;
+export function registryArrivalSkippedCount(): number;

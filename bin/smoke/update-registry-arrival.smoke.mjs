@@ -13,6 +13,14 @@ import { emitSentinel } from './sentinel.mjs';
 
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const childEnv = Object.fromEntries(Object.entries(process.env).filter(([name]) => !/^cotal_/i.test(name)));
+let skippedCells = 0;
+export function registryArrivalSkippedCount() {
+  return skippedCells;
+}
+function skipCell(name, why) {
+  skippedCells += 1;
+  console.log(`  - skipped: ${name} (${why})`);
+}
 
 function reconciliationScratch(parent, worker) {
   const old = new Date(Date.now() - 61 * 60_000);
@@ -1204,7 +1212,9 @@ async function corepackNodeFallbackCell(entry, parent) {
 }
 
 function buildLinuxShRedirector(root) {
-  if (process.platform !== 'linux' || process.arch !== 'x64') return undefined;
+  if (process.platform !== 'linux' || process.arch !== 'x64') {
+    return { exe: undefined, why: `ptrace /bin/sh redirector requires linux/x64, running on ${process.platform}/${process.arch}` };
+  }
   const src = join(root, 'sh-redirect.c'), exe = join(root, 'sh-redirect');
   writeFileSync(src, [
     '#define _GNU_SOURCE',
@@ -1254,7 +1264,9 @@ function buildLinuxShRedirector(root) {
     '}',
   ].join('\n'));
   const built = spawnSync('cc', ['-O2', src, '-o', exe], { env: childEnv, encoding: 'utf8' });
-  return built.status === 0 ? exe : undefined;
+  if (built.status === 0) return { exe, why: '' };
+  const why = built.error?.code === 'ENOENT' ? 'cc is not on PATH' : `cc exited ${built.status ?? 'null'}: ${(built.stderr || '').trim() || 'build failed'}`;
+  return { exe: undefined, why };
 }
 
 async function gateEnvCell(entry, parent, scenario = 'gate-env') {
@@ -1317,8 +1329,8 @@ if (process.argv[2] === "update") {
       pid: process.pid,
       ppid: process.ppid,
       expectedParent: Number(process.env.COTAL_UPDATE_PARENT),
-      custodyPid: custody.child?.pid ?? null,
-      custodyPhase: custody.child?.phase ?? null,
+      custodyPid: custody?.child?.pid ?? null,
+      custodyPhase: custody?.child?.phase ?? null,
       hasUnscopedAuth: Object.entries(process.env).filter(([k]) => k.endsWith(":_authToken")).map(([, v]) => v).sort().join("\0") === [${JSON.stringify(unscopedToken)}, ${JSON.stringify(scopedToken)}].sort().join("\0"),
       scopedRegistry: process.env["npm_config_@cotal-ai:registry"] ?? null,
       httpsProxy: process.env["npm_config_https-proxy"] ?? null,
@@ -1388,13 +1400,43 @@ console.log("cotal-ai ${version}");
     scopedOrigin = `https://127.0.0.1:${scopedPort}`;
     const userrc = join(root, 'user.npmrc'), globalrc = join(root, 'global.npmrc');
     writeFileSync(userrc, ''); writeFileSync(globalrc, '');
-    const redirector = buildLinuxShRedirector(root);
-    const wantedShells = scenario === 'gate-env-dash' ? ['/bin/dash'] : scenario === 'gate-env-bash' ? ['/bin/bash']
-      : (redirector ? ['/bin/dash', '/bin/bash'].filter(sh => existsSync(sh)) : [undefined]);
+    const redirectorInfo = buildLinuxShRedirector(root);
+    const redirector = redirectorInfo.exe;
+    let wantedShells;
+    if (scenario === 'gate-env-dash') {
+      wantedShells = ['/bin/dash'];
+    } else if (scenario === 'gate-env-bash') {
+      wantedShells = ['/bin/bash'];
+    } else if (redirector) {
+      wantedShells = [];
+      for (const sh of ['/bin/dash', '/bin/bash']) {
+        if (existsSync(sh)) wantedShells.push(sh);
+        else skipCell(`gate-env ${sh}`, `${sh} is not installed on this host`);
+      }
+      if (wantedShells.length === 0) wantedShells = [undefined];
+    } else {
+      skipCell('gate-env second-shell redirector matrix', redirectorInfo.why);
+      wantedShells = [undefined];
+    }
+    const waitPidGone = async pid => {
+      if (!Number.isSafeInteger(pid) || pid <= 1) return;
+      for (let deadline = Date.now() + 5_000; Date.now() < deadline; ) {
+        try { process.kill(pid, 0); }
+        catch (err) { if (err.code === 'ESRCH') return; }
+        await new Promise(done => setTimeout(done, 15));
+      }
+    };
     const started = Date.now();
     let lastOutput = '';
     for (const shellBin of wantedShells) {
-      if (shellBin && !existsSync(shellBin)) continue;
+      if (shellBin && !existsSync(shellBin)) {
+        skipCell(`gate-env ${shellBin}`, `${shellBin} is not installed on this host`);
+        continue;
+      }
+      if (shellBin && !redirector) {
+        skipCell(`gate-env ${shellBin}`, redirectorInfo.why);
+        continue;
+      }
       const cellDir = mkdtempSync(join(root, 'shell-run-'));
       const prefix = join(cellDir, 'prefix'), home = join(cellDir, 'home'), shLog = join(cellDir, 'sh.log');
       const bindingReportPath = join(cellDir, 'reconcile-binding.json');
@@ -1413,10 +1455,11 @@ console.log("cotal-ai ${version}");
       const run = (file, args) => new Promise((done, reject) => {
         let output = '';
         const child = spawn(file, args, { cwd: cellDir, env, timeout: 120_000, killSignal: 'SIGKILL', stdio: ['ignore', 'pipe', 'pipe'] });
+        const pid = child.pid;
         child.stdout.on('data', chunk => { output += chunk; });
         child.stderr.on('data', chunk => { output += chunk; });
         child.once('error', reject);
-        child.once('close', code => done({ code, output }));
+        child.once('close', code => waitPidGone(pid).then(() => done({ code, output })));
       });
       const initial = await run('npm', ['install', '-g', `cotal-ai@${previous}`]);
       assert.equal(initial.code, 0, initial.output);
@@ -1460,6 +1503,7 @@ console.log("cotal-ai ${version}");
       const checkVersion = await run(process.execPath, [installedEntry, '--version']);
       assert.equal(checkVersion.code, 0, checkVersion.output);
       assert.match(checkVersion.output, /cotal-ai 99\.0\.0/);
+      await waitPidGone(bindingReport.pid);
     }
     return { scenario, code: 0, elapsedMs: Date.now() - started, selected: target, missing: 0, requests: [], output: lastOutput };
   } finally {
@@ -1478,7 +1522,13 @@ if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.m
   try {
     canMount = process.platform === 'linux' && spawnSync('unshare', ['-Urm', 'mount', '-t', 'tmpfs', '-o', 'size=2m', 'tmpfs', mountPoint], { env: childEnv }).status === 0;
   } finally { rmSync(mountPoint, { recursive: true }); }
+  if (!process.argv[2]) {
+    if (process.platform === 'win32') skipCell('corepack and gate-env scenarios', 'POSIX only; running on win32');
+    if (process.platform !== 'linux') skipCell('Linux signal and custody scenarios', `Linux only; running on ${process.platform}`);
+    if (!canMount) skipCell('closure-nospace scenario', process.platform !== 'linux' ? `Linux mount namespace required; running on ${process.platform}` : 'unprivileged tmpfs mount unavailable');
+  }
   const selected = process.argv[2] ? [process.argv[2]] : ['arrives', 'unavailable', 'integrity', 'reset', 'cache', 'orphan', 'closed-scope', 'min-release-age', 'before', 'offline-metadata', 'offline-archive', 'offline-closure', 'offline-staging', 'concurrent', 'extension-peers', 'extension-arrives', ...(process.platform !== 'win32' ? ['corepack', 'gate-env'] : []), ...(process.platform === 'linux' ? ['archive-interrupted', 'closure-killed', 'pending', 'reconcile-killed', 'reconcile-orphan', 'staging-killed', 'staging-timeout', 'staging-fetch-timeout', 'staging-partial', 'staging-no-accept', 'staging-trickle', 'staging-auto', 'staging-refused', 'selection-upgrade', 'selection-rollback'] : []), ...(canMount ? ['closure-nospace'] : [])];
   for (const scenario of selected) console.log(JSON.stringify(await registryArrivalCell({ scenario })));
+  console.log(`UPDATE REGISTRY ARRIVAL SMOKE OK (${selected.length} passed, 0 failed; ${skippedCells} skipped)`);
   emitSentinel({ passed: selected.length, failed: 0 });
 }

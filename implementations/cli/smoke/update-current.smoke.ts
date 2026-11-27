@@ -1,20 +1,26 @@
 import "./update-isolation.js";
 import strictAssert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, realpathSync, renameSync, rmdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, realpathSync, renameSync, rmdirSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join, parse } from "node:path";
 import { pathToFileURL } from "node:url";
-import { claimGlobalNpmUpdateLock, processGroupMembers, readProcessCommand, recoveryProcessStartToken, withWindowsUpdateIdentity } from "@cotal-ai/workspace";
+import { claimGlobalNpmUpdateLock, processGroupMembers, processStartToken, readProcessCommand, recoveryProcessStartToken, withWindowsUpdateIdentity } from "@cotal-ai/workspace";
 import { countedAssert, emitSentinel } from "../../../bin/smoke/sentinel.mjs";
-import { executeUpdate, updateRuntime, type UpdateRuntime } from "../src/commands/update.js";
+import { executeUpdate, update, updateRuntime, type UpdateRuntime } from "../src/commands/update.js";
+import { collectUpdateCaches } from "../src/commands/update-caches.js";
 import { installedUpdatePrefix, npmChildGate, posixGateScriptPath, releaseChildGate, runGlobalProcess, runNpm, runNpmAsync, runProcess } from "../src/commands/update-process.js";
 import { npmProjectDirectory } from "../src/lib/npm-invocation.js";
 import { SEED_BUILTINS } from "../src/seed/paths.js";
 import { repairRuntimeEntry } from "./update-runtime-entry.smoke.js";
 const counted = countedAssert(strictAssert);
 const assert: typeof strictAssert = counted.assert as typeof strictAssert;
+let skippedCells = 0;
+function skipCell(name: string, why: string): void {
+  skippedCells += 1;
+  console.log(`  - skipped: ${name} (${why})`);
+}
 if (process.platform === "win32") {
   const prefix = mkdtempSync(join(tmpdir(), "cotal update prefix "));
   const previous = process.env.npm_config_prefix;
@@ -177,7 +183,7 @@ assert.equal(seedInstallationCurrent(), false, "an unseeded checkout is not prov
     }
   } finally { rmSync(home, { recursive: true, force: true }); }
 }
-const { registryArrivalCell } = await import("../../../bin/smoke/update-registry-arrival.smoke.mjs");
+const { registryArrivalCell, registryArrivalSkippedCount } = await import("../../../bin/smoke/update-registry-arrival.smoke.mjs");
 const cacheUpdate = await registryArrivalCell({ scenario: "cache" });
 assert.equal(cacheUpdate.code, 0, "real CLI and npm update succeed with a user-owned cache that is not writable");
 if (["linux", "darwin"].includes(process.platform)) {
@@ -186,6 +192,8 @@ if (["linux", "darwin"].includes(process.platform)) {
   const gateEnvUpdate = await registryArrivalCell({ scenario: "gate-env" });
   assert.equal(gateEnvUpdate.code, 0, gateEnvUpdate.output);
   await assertPosixChildGate();
+} else {
+  skipCell("POSIX update gate cells", `POSIX only; running on ${process.platform}`);
 }
 
 async function assertPosixChildGate(): Promise<void> {
@@ -285,7 +293,23 @@ process.stdout.write(JSON.stringify({
     "  _exit(0);",
     "}",
   ].join("\n"));
-  const hasNativeSignalBin = spawnSync("cc", ["-O2", cSignalSrc, "-o", cSignalBin], { encoding: "utf8" }).status === 0;
+  const ccBuild = spawnSync("cc", ["-O2", cSignalSrc, "-o", cSignalBin], { encoding: "utf8" });
+  const hasNativeSignalBin = ccBuild.status === 0;
+  const ccSkipWhy = (ccBuild.error as NodeJS.ErrnoException | undefined)?.code === "ENOENT"
+    ? "cc is not on PATH"
+    : `cc exited ${ccBuild.status ?? "null"}: ${(ccBuild.stderr || "").trim() || "build failed"}`;
+  const waitPidGone = async (pid: number | undefined, start?: string): Promise<void> => {
+    if (pid === undefined || pid <= 1) return;
+    for (let deadline = Date.now() + 5_000; Date.now() < deadline; ) {
+      try {
+        process.kill(pid, 0);
+        if (start !== undefined && processStartToken(pid) !== start) return;
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code === "ESRCH") return;
+      }
+      await new Promise(resolve => setTimeout(resolve, 15));
+    }
+  };
   const nodeOptPreload = join(root, "node-opt-preload.cjs");
   writeFileSync(nodeOptPreload, "globalThis.__cotalSmokeNodeOptLoaded = true;\n");
 
@@ -329,6 +353,96 @@ process.stdout.write(JSON.stringify({
     assert.equal(idReport.pid, idChild.pid, "identifier-only gate execs target in place with the published pid");
     assert.equal(idReport.ppid, process.pid, "identifier-only gate preserves the CLI as direct parent");
     assert.deepEqual(idReport.openGateFds, []);
+    await waitPidGone(idChild.pid);
+  }
+
+  // Review 2 Finding 1: with identifier-only names, a refused .cotal-update-child marker throws out of
+  // runGlobalProcess (as on main) rather than returning { status: null } and entering repairReplacement.
+  {
+    const refusedRoot = join(root, "refused-marker-global");
+    mkdirSync(join(refusedRoot, "cotal-ai", "dist"), { recursive: true, mode: 0o700 });
+    writeFileSync(join(refusedRoot, "cotal-ai", "package.json"), JSON.stringify({ name: "cotal-ai", version: "0.183.0", bin: { cotal: "dist/cotal.js" } }), { mode: 0o600 });
+    writeFileSync(join(refusedRoot, "cotal-ai", "dist", "cotal.js"), "console.log('ok');\n", { mode: 0o700 });
+    const markerPath = join(realpathSync(refusedRoot), ".cotal-update-child");
+    const writeRefusedMarker = () => writeFileSync(markerPath, JSON.stringify({
+      phase: "ambiguous", owner: process.pid, nonce: "deadbeefcafebabe01234567", operation: "global install", reason: "simulated marker",
+    }), { mode: 0o600 });
+    writeRefusedMarker();
+    await assert.rejects(
+      () => runGlobalProcess(refusedRoot, "install", "npm", ["install"], { ...baseEnv }, false),
+      /global install ended ambiguously \(simulated marker;/,
+      "beginGlobalUpdateChild refusal with identifier-only names must reject spawnGlobal as on main",
+    );
+    rmSync(markerPath, { force: true });
+
+    const refusedSubHome = join(root, "refused-cli-home");
+    for (const sub of ["home", "cotal", "config/cotal", "runtime", "tmp"]) mkdirSync(join(refusedSubHome, sub), { recursive: true, mode: 0o700 });
+    const refusedCallsFile = join(root, "refused-spawn-calls.json");
+    const refusedRunner = join(refusedRoot, "cotal-ai", "refused-cli-runner.mjs");
+    const cliCommandUrl = pathToFileURL(join(import.meta.dirname, "../dist/command.js")).href;
+    const cliIndexUrl = pathToFileURL(join(import.meta.dirname, "../dist/index.js")).href;
+    const cliUpdateUrl = pathToFileURL(join(import.meta.dirname, "../dist/commands/update.js")).href;
+    const coreDistUrl = pathToFileURL(join(import.meta.dirname, "../../../packages/core/dist/index.js")).href;
+    writeFileSync(refusedRunner, [
+      `import { writeFileSync } from "node:fs";`,
+      `import { registry } from ${JSON.stringify(coreDistUrl)};`,
+      `import ${JSON.stringify(cliIndexUrl)};`,
+      `import { runCli } from ${JSON.stringify(cliCommandUrl)};`,
+      `import { updateRuntime } from ${JSON.stringify(cliUpdateUrl)};`,
+      `const calls = [];`,
+      `const origSpawnGlobal = updateRuntime.spawnGlobal;`,
+      `Object.assign(updateRuntime, {`,
+      `  version: () => "0.183.0",`,
+      `  checkout: () => true,`,
+      `  installPrefix: () => undefined,`,
+      `  preflightReplacement: async () => {},`,
+      `  reportRunningManager: async () => "none",`,
+      `  extensions: () => [],`,
+      `  npm: (args) => args[0] === "view" ? { status: 0, stdout: '"99.0.0"\\n', stderr: "" } : args[0] === "root" ? { status: 0, stdout: ${JSON.stringify(`${realpathSync(refusedRoot)}\n`)}, stderr: "" } : { status: 0, stdout: "", stderr: "" },`,
+      `  npmAsync: async (args) => args[0] === "view" ? { status: 0, stdout: JSON.stringify({ name: "cotal-ai", version: args[1].endsWith("@99.0.0") ? "99.0.0" : "0.183.0", dependencies: {}, dist: { tarball: "http://127.0.0.1:1/pkg.tgz", integrity: "sha512-AA==" } }), stderr: "" } : { status: 0, stdout: "", stderr: "" },`,
+      `  prepareReplacement: async () => {`,
+      `    writeFileSync(${JSON.stringify(markerPath)}, JSON.stringify({ phase: "ambiguous", owner: process.pid, nonce: "deadbeefcafebabe01234567", operation: "global install", reason: "simulated marker" }), { mode: 0o600 });`,
+      `    return async () => {};`,
+      `  },`,
+      `  spawnGlobal: async (...a) => { calls.push(a[1]); writeFileSync(${JSON.stringify(refusedCallsFile)}, JSON.stringify(calls)); return origSpawnGlobal(...a); },`,
+      `});`,
+      `await runCli(registry, ["update", "--self"]);`,
+    ].join("\n"), { mode: 0o700 });
+    const refusedCli = spawnSync(process.execPath, [refusedRunner], {
+      cwd: refusedSubHome,
+      encoding: "utf8",
+      env: {
+        ...baseEnv,
+        NO_COLOR: "1",
+        HOME: join(refusedSubHome, "home"),
+        COTAL_HOME: join(refusedSubHome, "cotal"),
+        XDG_CONFIG_HOME: join(refusedSubHome, "config"),
+        XDG_RUNTIME_DIR: join(refusedSubHome, "runtime"),
+        TMPDIR: join(refusedSubHome, "tmp"),
+        DO_NOT_TRACK: "1",
+      },
+    });
+    assert.equal(refusedCli.status, 3, `refused marker CLI status must match main (3): ${refusedCli.stdout}\n${refusedCli.stderr}`);
+    assert.equal(refusedCli.signal, null);
+    assert.equal(existsSync(refusedCallsFile), true, `spawnGlobal was not reached: ${refusedCli.stdout}\n${refusedCli.stderr}`);
+    assert.deepEqual(JSON.parse(readFileSync(refusedCallsFile, "utf8")), ["install"], "no repairReplacement retry or rollback attempt may run");
+    const normLines = (s: string) => s.trim().split("\n").filter(Boolean).map(l => l.replace(/\(\d+\.\d+ s\)/g, "(<t>)"));
+    assert.deepEqual(normLines(refusedCli.stdout), [
+      "Checking cotal-ai@99.0.0 release archives",
+      "Checking installed extension dependencies for 99.0.0",
+      "Checking cotal-ai@0.183.0 recovery archives",
+      "✓ release archives checked (<t>)",
+      "Saving update recovery snapshot",
+      "✓ recovery snapshot saved (<t>)",
+      "cotal-ai binary",
+      "installing cotal-ai@99.0.0 into npm's global installation; this 0.183.0 process remains loaded until the verified global copy takes over",
+    ], "identifier-only refused marker stdout lines match main with no global install finished or repair lines");
+    assert.deepEqual(refusedCli.stderr.trim().split("\n").filter(Boolean), [
+      "Outcome unconfirmed",
+      `  global install ended ambiguously (simulated marker; ${markerPath}) - if no descendant process is running, remove the marker and retry`,
+      "  Outcome: unknown",
+      "  Code:    OPERATION_UNKNOWN",
+    ], "identifier-only refused marker stderr lines match main with no repairReplacement output");
   }
 
   const savedEnv = new Map<string, string | undefined>();
@@ -476,6 +590,141 @@ process.stdout.write(JSON.stringify({
     if (process.platform === "linux") {
       assert.equal(reconcileReport.custodyPhase, "live");
       assert.equal(reconcileReport.custodyPid, reconcileReport.pid, "runGlobalProcess custody marker records exact reconcile child pid");
+    } else {
+      skipCell("Linux .cotal-update-child gate custody assertions", `runGlobalChild gates only on Linux; running on ${process.platform}`);
+    }
+
+    // Review 2 Finding 2: running CLI pins its own gate helper once before custody into a private 0600 file in the
+    // update's own private scratch (removed at update end), so replacing the package tree's helper between install
+    // and reconcile still completes the update with non-identifier names preserved.
+    {
+      const replaceRoot = join(root, "replace-helper-global");
+      mkdirSync(join(replaceRoot, "cotal-ai", "dist"), { recursive: true, mode: 0o700 });
+      writeFileSync(join(replaceRoot, "cotal-ai", "package.json"), JSON.stringify({ name: "cotal-ai", version: "0.183.0", bin: { cotal: "dist/cotal.js" } }), { mode: 0o600 });
+      const replaceEntry = join(replaceRoot, "cotal-ai", "dist", "cotal.js");
+      copyFileSync(reconcileEntry, replaceEntry);
+      const replaceReportPath = join(root, "replace-helper-reconcile.json");
+      const replaceHome = join(root, "replace-helper-home");
+      for (const sub of ["home", "cotal", "config/cotal", "runtime", "tmp"]) mkdirSync(join(replaceHome, sub), { recursive: true, mode: 0o700 });
+      const liveTreeHelper = posixGateScriptPath();
+      const savedHelperBytes = readFileSync(liveTreeHelper);
+      const shDrops = spawnSync(
+        "/bin/sh",
+        ["-c", 'exec "$@"', "probe", process.execPath, "-e", 'process.exit(process.env["cotal_gate_probe:1"] === "1" ? 0 : 1)'],
+        { env: { "cotal_gate_probe:1": "1" }, stdio: "ignore" },
+      ).status !== 0;
+      let observedScratch = "", observedPinned = "", helperSabotaged = false;
+      const savedHomeEnv = new Map<string, string | undefined>();
+      for (const k of ["HOME", "COTAL_HOME", "XDG_CONFIG_HOME", "XDG_RUNTIME_DIR", "TMPDIR", "DO_NOT_TRACK", "COTAL_TELEMETRY", "COTAL_NO_UPDATE_CHECK", "COTAL_SKIP_CONNECTOR_SEED", ...Object.keys(tricky)]) {
+        savedHomeEnv.set(k, process.env[k]);
+      }
+      const prevExitCode = process.exitCode;
+      process.exitCode = undefined;
+      try {
+        process.env.HOME = join(replaceHome, "home");
+        process.env.COTAL_HOME = join(replaceHome, "cotal");
+        process.env.XDG_CONFIG_HOME = join(replaceHome, "config");
+        process.env.XDG_RUNTIME_DIR = join(replaceHome, "runtime");
+        process.env.TMPDIR = join(replaceHome, "tmp");
+        process.env.DO_NOT_TRACK = "1";
+        process.env.COTAL_TELEMETRY = "off";
+        process.env.COTAL_NO_UPDATE_CHECK = "1";
+        process.env.COTAL_SKIP_CONNECTOR_SEED = "1";
+        Object.assign(process.env, tricky);
+        const replaceOut: string[] = [], replaceErr: string[] = [];
+        const replaceRt: UpdateRuntime = {
+          ...updateRuntime,
+          env: {
+            ...baseEnv,
+            PATH: `${stubBin}${delimiter}${baseEnv.PATH ?? ""}`,
+            HOME: process.env.HOME,
+            COTAL_HOME: process.env.COTAL_HOME,
+            XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME,
+            XDG_RUNTIME_DIR: process.env.XDG_RUNTIME_DIR,
+            TMPDIR: process.env.TMPDIR,
+            DO_NOT_TRACK: "1",
+            COTAL_TELEMETRY: "off",
+            COTAL_NO_UPDATE_CHECK: "1",
+            COTAL_SKIP_CONNECTOR_SEED: "1",
+            SMOKE_KEYS: keysJson,
+            SMOKE_GLOBAL_ROOT: replaceRoot,
+            SMOKE_RECONCILE_REPORT: replaceReportPath,
+            NODE_OPTIONS: `--require ${JSON.stringify(nodeOptPreload)}`,
+            ...tricky,
+          },
+          version: () => "0.183.0",
+          checkout: () => true,
+          installPrefix: () => undefined,
+          preflightReplacement: async () => {},
+          reportRunningManager: async () => "none",
+          waitForInstalledGeneration: async () => {},
+          extensions: () => [],
+          npm: (args) => args[0] === "view" ? { status: 0, stdout: '"99.0.0"\n', stderr: "" } : args[0] === "root" ? { status: 0, stdout: `${realpathSync(replaceRoot)}\n`, stderr: "" } : { status: 0, stdout: "", stderr: "" },
+          npmAsync: async (args) => args[0] === "view" ? { status: 0, stdout: JSON.stringify({ name: "cotal-ai", version: args[1]!.endsWith("@99.0.0") ? "99.0.0" : "0.183.0", dependencies: {}, dist: { tarball: "http://127.0.0.1:1/pkg.tgz", integrity: "sha512-AA==" } }), stderr: "" } : { status: 0, stdout: "", stderr: "" },
+          spawnGlobal: async (r, op, f, a, e, inh, verb, stg) => {
+            if (op === "install") {
+              observedScratch = process.env.TMPDIR ?? "";
+              observedPinned = join(observedScratch, liveTreeHelper.endsWith(".ts") ? "update-posix-gate.mts" : "update-posix-gate.mjs");
+              if (shDrops) {
+                assert.equal(existsSync(observedPinned), true, "helper copy pinned in update scratch before custody");
+                assert.equal(lstatSync(observedPinned).mode & 0o777, 0o600, "pinned helper copy in scratch must be mode 0600");
+              }
+              const installRes = await runGlobalProcess(r, op, process.execPath, ["-e", `require("node:fs").writeFileSync(${JSON.stringify(join(replaceRoot, "cotal-ai", "package.json"))}, JSON.stringify({ name: "cotal-ai", version: "99.0.0", bin: { cotal: "dist/cotal.js" } }))`], e, false, verb, stg);
+              // Replace the package tree's helper with a failing script BETWEEN install and reconcile!
+              writeFileSync(liveTreeHelper, 'process.stderr.write("REPLACED_PACKAGE_TREE_HELPER_RAN\\n"); process.exit(99);\n', { mode: 0o600 });
+              helperSabotaged = true;
+              return installRes;
+            }
+            return runGlobalProcess(r, op, f, a, e, inh, verb, stg);
+          },
+          out: line => replaceOut.push(line),
+          err: line => replaceErr.push(line),
+          stdout: line => replaceOut.push(line),
+          stderr: line => replaceErr.push(line),
+        };
+        await update({ values: { self: true }, positionals: [], raw: ["--self"] }, replaceRt);
+        assert.equal(helperSabotaged, true, "package tree helper was replaced between install and reconcile");
+        assert.equal(process.exitCode, undefined, `update with replaced package-tree helper failed:\n${replaceErr.join("\n")}\n${replaceOut.join("\n")}`);
+        assert(!replaceErr.join("\n").includes("REPLACED_PACKAGE_TREE_HELPER_RAN"), "reconcile must run pinned scratch helper, never replaced package-tree helper");
+        const rep = JSON.parse(readFileSync(replaceReportPath, "utf8"));
+        assert.equal(rep.code, 0);
+        assert.equal(rep.reconciled, true);
+        assert.equal(rep.ppid, process.pid);
+        assert.deepEqual(rep.picked, tricky, "update completed with non-identifier names preserved after helper replacement");
+        if (observedPinned) assert.equal(existsSync(observedPinned), false, "pinned 0600 helper copy removed at end of update");
+        if (observedScratch) assert.equal(existsSync(observedScratch), false, "private update scratch removed at end of update");
+
+        // Also prove collectUpdateCaches reclaims an aged interrupted cotal-update-* scratch that still holds a 0600
+        // pinned update-posix-gate.mjs alongside node-compile-cache, while keeping one whose helper is group-writable.
+        const agedParent = mkdtempSync(join(root, "aged-scratch-"));
+        const makeScratchWithPinnedGate = (gateMode: number) => {
+          const s = mkdtempSync(join(agedParent, "cotal-update-"));
+          const cc = join(s, "node-compile-cache");
+          mkdirSync(cc, { mode: 0o700 });
+          const ccEntry = join(cc, "compiled");
+          writeFileSync(ccEntry, "cache", { mode: 0o600 });
+          const gateCopy = join(s, "update-posix-gate.mjs");
+          writeFileSync(gateCopy, savedHelperBytes, { mode: gateMode });
+          const old = new Date(Date.now() - 61 * 60_000);
+          for (const p of [ccEntry, cc, gateCopy, s]) {
+            chmodSync(p, p === gateCopy ? gateMode : p === ccEntry ? 0o600 : 0o700);
+            utimesSync(p, old, old);
+          }
+          return s;
+        };
+        const reclaimableScratch = makeScratchWithPinnedGate(0o600);
+        const sharedGateScratch = makeScratchWithPinnedGate(0o640);
+        collectUpdateCaches(agedParent);
+        assert.equal(existsSync(reclaimableScratch), false, "collectUpdateCaches reclaims aged scratch with 0600 pinned helper");
+        if (process.getuid) assert.equal(existsSync(sharedGateScratch), true, "collectUpdateCaches retains scratch with non-0600 helper");
+      } finally {
+        writeFileSync(liveTreeHelper, savedHelperBytes);
+        process.exitCode = prevExitCode;
+        for (const [k, v] of savedHomeEnv) {
+          if (v === undefined) delete process.env[k];
+          else process.env[k] = v;
+        }
+      }
     }
 
     const candidateShells = ["/bin/sh", "/bin/dash", "/usr/bin/dash", "/bin/bash", "/usr/bin/bash"];
@@ -487,12 +736,21 @@ process.stdout.write(JSON.stringify({
       seenReal.add(real);
       return true;
     });
-    for (const sh of shells) {
-      const shPreserves = spawnSync(
+    const shellsWithDisposition = shells.map(sh => ({
+      sh,
+      shPreserves: spawnSync(
         sh,
         ["-c", 'exec "$@"', "probe", process.execPath, "-e", 'process.exit(process.env["cotal_gate_probe:1"] === "1" ? 0 : 1)'],
         { env: { "cotal_gate_probe:1": "1" }, stdio: "ignore" },
-      ).status === 0;
+      ).status === 0,
+    }));
+    if (!shellsWithDisposition.some(entry => !entry.shPreserves)) {
+      skipCell("non-identifier-dropping shell gate cells", "no dash or other non-identifier-dropping shell is installed on this host");
+    }
+    if (!shellsWithDisposition.some(entry => entry.shPreserves)) {
+      skipCell("non-identifier-preserving shell gate cells", "no bash or other non-identifier-preserving shell is installed on this host");
+    }
+    for (const { sh, shPreserves } of shellsWithDisposition) {
 
       // Finding 2: where the shell preserves non-identifier names (e.g. bash), npmChildGate MUST return main's exact gate unchanged.
       const shellCheckEnv: NodeJS.ProcessEnv = { ...baseEnv, PATH: `${stubBin}${delimiter}${baseEnv.PATH ?? ""}`, ...tricky };
@@ -530,6 +788,7 @@ process.stdout.write(JSON.stringify({
         assert.deepEqual(ownReport.picked, tricky);
         assert.equal(ownReport.nodeOptionsEnv, `--require ${JSON.stringify(nodeOptPreload)}`);
         assert.deepEqual(ownReport.openGateFds, []);
+        await waitPidGone(ownChild.pid);
       }
 
       // Real executeUpdate reconcile child bound to `process.pid` under `sh` (dash and bash).
@@ -553,6 +812,7 @@ process.stdout.write(JSON.stringify({
         assert.deepEqual(shRecReport.picked, tricky, `real executeUpdate preserved non-identifier env under ${sh}`);
         assert.deepEqual(shRecReport.execArgv, [], `real executeUpdate stripped gate --import under ${sh}`);
         assert.deepEqual(shRecReport.openGateFds, [], `real executeUpdate closed gate fds under ${sh}`);
+        await waitPidGone(recChild.pid);
       }
 
       // Raw non-Node shell fd check under sh: neither fd 3 nor fd 4 is open in target.
@@ -565,6 +825,7 @@ process.stdout.write(JSON.stringify({
         releaseChildGate(rawChild, true, rawLaunch.envPayload, cause => { throw cause; }, rawLaunch.groupCleanup);
         assert.equal(await new Promise<number | null>(resolve => rawChild.once("close", resolve)), 0);
         assert.equal(rawOut, "", `non-Node target must not inherit fd 3 or fd 4 under ${sh}, got ${JSON.stringify(rawOut)}`);
+        await waitPidGone(rawChild.pid);
       }
 
       // Denied/EOF permit cell: target never starts, exit status 1.
@@ -588,29 +849,40 @@ process.stdout.write(JSON.stringify({
         const status = await new Promise<number | null>(resolve => child.once("close", resolve));
         assert.equal(status, 1, `refused/closed permit under ${sh} must exit 1`);
         assert.equal(existsSync(ranMarker), false, `refused/closed permit under ${sh} must not start target`);
+        await waitPidGone(child.pid);
       }
 
-      // Truncated fd 4 payload cell (when shell requires fd 4): both stage and preload must exit 1 without starting target.
+      // Review 2 Finding 5: truncated or absent fd 4 payload in both stage and preload must exit 1 without starting
+      // target and print exactly one stderr line `<label>: gate environment unreadable` with no values.
       if (!shPreserves) {
         for (const mode of ["npm", "reconcile"] as const) {
-          const truncMarker = join(root, `trunc-${mode}-${shells.indexOf(sh)}`);
-          const target = mode === "reconcile" ? process.execPath : eqCmd;
-          const truncArgs = mode === "reconcile" ? [eqCmd, "should-not-run"] : ["should-not-run"];
-          const truncLaunch = npmChildGate("cotal-gate-trunc", target, truncArgs, {
-            ...baseEnv, PATH: `${stubBin}${delimiter}${baseEnv.PATH ?? ""}`, SMOKE_RAN_MARKER: truncMarker, ...tricky,
-          }, sh, mode);
-          assert(truncLaunch.envPayload && truncLaunch.envPayload.length > 6);
-          const truncChild = spawn(truncLaunch.file, truncLaunch.args, {
-            env: truncLaunch.env, detached: true, stdio: ["ignore", "pipe", "pipe", "pipe", "pipe"],
-          });
-          let truncErr = "";
-          truncChild.stderr?.on("data", chunk => { truncErr += chunk.toString(); });
-          const truncatedBytes = truncLaunch.envPayload.subarray(0, truncLaunch.envPayload.length - 3);
-          releaseChildGate(truncChild, true, truncatedBytes, () => {}, truncLaunch.groupCleanup);
-          const truncCode = await new Promise<number | null>(resolve => truncChild.once("close", resolve));
-          assert.equal(truncCode, 1, `truncated payload under ${sh} must exit 1`);
-          assert.equal(existsSync(truncMarker), false, `truncated payload under ${sh} must not run target`);
-          assert(!truncErr.includes(secretNeedle), "truncated payload stderr must never leak secret");
+          for (const corruption of ["truncated", "absent"] as const) {
+            const truncMarker = join(root, `trunc-${mode}-${corruption}-${shells.indexOf(sh)}`);
+            const target = mode === "reconcile" ? process.execPath : eqCmd;
+            const truncArgs = mode === "reconcile" ? [eqCmd, "should-not-run"] : ["should-not-run"];
+            const truncLaunch = npmChildGate("cotal-gate-trunc", target, truncArgs, {
+              ...baseEnv, PATH: `${stubBin}${delimiter}${baseEnv.PATH ?? ""}`, SMOKE_RAN_MARKER: truncMarker, ...tricky,
+            }, sh, mode);
+            assert(truncLaunch.envPayload && truncLaunch.envPayload.length > 6);
+            const truncChild = spawn(truncLaunch.file, truncLaunch.args, {
+              env: truncLaunch.env, detached: true, stdio: ["ignore", "pipe", "pipe", "pipe", "pipe"],
+            });
+            let truncErr = "";
+            truncChild.stderr?.on("data", chunk => { truncErr += chunk.toString(); });
+            if (corruption === "truncated") {
+              const truncatedBytes = truncLaunch.envPayload.subarray(0, truncLaunch.envPayload.length - 3);
+              releaseChildGate(truncChild, true, truncatedBytes, () => {}, truncLaunch.groupCleanup);
+            } else {
+              (truncChild.stdio[4] as import("node:stream").Writable).end();
+              (truncChild.stdio[3] as import("node:stream").Writable).end("run\n");
+            }
+            const truncCode = await new Promise<number | null>(resolve => truncChild.once("close", resolve));
+            assert.equal(truncCode, 1, `${corruption} payload (${mode}) under ${sh} must exit 1`);
+            assert.equal(existsSync(truncMarker), false, `${corruption} payload (${mode}) under ${sh} must not run target`);
+            assert.equal(truncErr, "cotal-gate-trunc: gate environment unreadable\n", `${corruption} payload (${mode}) must print one diagnostic line with label and no values`);
+            assert(!truncErr.includes(secretNeedle), "unreadable payload stderr must never leak secret");
+            await waitPidGone(truncChild.pid);
+          }
         }
       }
 
@@ -657,6 +929,8 @@ process.stdout.write(JSON.stringify({
       writeFileSync(releaseMarker, "done");
       assert.equal(await new Promise<number | null>(resolve => argvChild.once("close", resolve)), 0, argvOut);
       assert.deepEqual(JSON.parse(argvOut).picked, tricky);
+      await waitPidGone(argvChild.pid);
+      await waitPidGone(childPid);
 
       // Exit status cells (0, 1, 126 EACCES, 127 ENOENT) under sh, including ENOENT stderr text matching main.
       for (const expectedCode of [0, 1, 126, 127] as const) {
@@ -694,9 +968,11 @@ process.stdout.write(JSON.stringify({
           assert.deepEqual(report.picked, tricky);
           assert.deepEqual(report.openGateFds, []);
         }
+        await waitPidGone(exitChild.pid);
       }
 
-      // Signals: SIGTERM to group, SIGKILL, SIGPIPE, SIGXFSZ, and SIGUSR1 (never exit 0, never open inspector).
+      // Review 2 Finding 4 + 6: SIGKILL, SIGPIPE, SIGXFSZ, and SIGUSR1 through the stage must report as a signal
+      // (code === null, signal === sigName), keep .cotal-update-child ambiguous with custody, and run group cleanup.
       if (hasNativeSignalBin) {
         for (const sigName of ["SIGKILL", "SIGPIPE", "SIGXFSZ", "SIGUSR1"] as const) {
           const sigLaunch = npmChildGate("cotal-gate-sig", cSignalBin, [sigName], { ...baseEnv, ...tricky }, sh);
@@ -711,11 +987,39 @@ process.stdout.write(JSON.stringify({
           );
           releaseChildGate(sigChild, true, sigLaunch.envPayload, cause => { throw cause; }, sigLaunch.groupCleanup);
           const outcome = await sigClosed;
-          assert.notEqual(outcome.code, 0, `${sigName} death under ${sh} must never become exit 0: ${JSON.stringify(outcome)}`);
-          assert(outcome.signal === sigName || (outcome.code !== null && outcome.code > 128),
-            `${sigName} under ${sh} must report signal or >128 status, got ${JSON.stringify(outcome)}`);
+          assert.equal(outcome.code, null, `${sigName} death under ${sh} must report null exit code, got ${JSON.stringify(outcome)}`);
+          assert.equal(outcome.signal, sigName, `${sigName} death under ${sh} must report signal ${sigName}, got ${JSON.stringify(outcome)}`);
           assert.doesNotMatch(sigErr, /Debugger listening/i, `${sigName} under ${sh} must never start Node inspector: ${sigErr}`);
+          await waitPidGone(sigChild.pid);
         }
+        if (!shPreserves && sh === "/bin/sh" && process.platform === "linux") {
+          for (const sigName of ["SIGPIPE", "SIGXFSZ", "SIGUSR1"] as const) {
+            const sigGlobalRoot = join(root, `sig-custody-${sigName}`);
+            mkdirSync(sigGlobalRoot, { recursive: true, mode: 0o700 });
+            const sigSleeperFile = join(sigGlobalRoot, "sleeper.pid");
+            const sigWrapper = join(sigGlobalRoot, "spawn-then-die");
+            writeFileSync(sigWrapper, `#!/bin/sh
+"${process.execPath}" -e 'const cp = require("node:child_process"), fs = require("node:fs"); const s = cp.spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" }); s.unref(); fs.writeFileSync(${JSON.stringify(sigSleeperFile)}, String(s.pid));'
+exec "${cSignalBin}" "$1"
+`, { mode: 0o755 });
+            const globalSigRes = await runGlobalProcess(sigGlobalRoot, "install", sigWrapper, [sigName], { ...baseEnv, ...tricky }, false);
+            assert.equal(globalSigRes.status, null, `runGlobalProcess ${sigName} must have status null`);
+            assert.equal(globalSigRes.signal, sigName, `runGlobalProcess ${sigName} must report signal ${sigName}`);
+            const marker = JSON.parse(readFileSync(join(sigGlobalRoot, ".cotal-update-child"), "utf8"));
+            assert.equal(marker.phase, "ambiguous", `${sigName} must keep .cotal-update-child as ambiguous`);
+            assert.equal(typeof marker.custody?.pid, "number", `${sigName} ambiguous marker must record custody pid`);
+            assert.equal(typeof marker.custody?.start, "string", `${sigName} ambiguous marker must record custody start token`);
+            const sigSleeperPid = Number(readFileSync(sigSleeperFile, "utf8").trim());
+            for (let deadline = Date.now() + 5_000; processGroupMembers(marker.custody.pid).length > 0 && Date.now() < deadline; ) {
+              await new Promise(resolve => setTimeout(resolve, 20));
+            }
+            assert.deepEqual(processGroupMembers(marker.custody.pid), [], `${sigName} through stage must run group cleanup on surviving descendants`);
+            await waitPidGone(sigSleeperPid);
+            await waitPidGone(marker.custody.pid, marker.custody.start);
+          }
+        }
+      } else {
+        skipCell(`native signal death cells (SIGKILL/SIGPIPE/SIGXFSZ/SIGUSR1) under ${sh}`, ccSkipWhy);
       }
 
       // SIGTERM to recorded process group ends both the gate and the running child.
@@ -747,13 +1051,31 @@ process.stdout.write(JSON.stringify({
         await new Promise(resolve => setTimeout(resolve, 20));
       }
       assert.deepEqual(processGroupMembers(sigPgid), [], `SIGTERM to -${sigPgid} ended gate and child ${sigInnerPid} under ${sh}`);
+      await waitPidGone(sigPgid);
+      await waitPidGone(sigInnerPid);
 
       // Guarded group kill in releaseChildGate: when the stage leader dies by SIGKILL, surviving descendants in its
-      // dedicated group are killed, while an unrelated detached process group is untouched and a simulated recycled leader
-      // start token prevents signaling a foreign group.
+      // dedicated group are killed, while an unrelated detached process group is untouched and reaching the
+      // `currentStart !== leaderStart` guard leaves the live foreign group completely unsignalled (Review 2 Finding 3).
       if (!shPreserves) {
-        const foreignGroup = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { detached: true, stdio: "ignore" });
+        const foreignReady = join(root, `foreign-ready-${shells.indexOf(sh)}`);
+        const foreignSignaled = join(root, `foreign-signaled-${shells.indexOf(sh)}`);
+        const foreignGroup = spawn(process.execPath, ["-e", [
+          `const fs = require("node:fs");`,
+          `process.on("SIGTERM", () => { fs.writeFileSync(${JSON.stringify(foreignSignaled)}, "SIGTERM"); process.exit(0); });`,
+          `fs.writeFileSync(${JSON.stringify(foreignReady)}, String(process.pid));`,
+          `setInterval(() => {}, 1000);`,
+        ].join(" ")], { detached: true, stdio: "ignore" });
+        const foreignClosed = new Promise<void>(resolve => foreignGroup.once("close", () => resolve()));
+        let foreignStart: string | undefined;
         try {
+          for (let deadline = Date.now() + 10_000; !existsSync(foreignReady) && Date.now() < deadline; ) {
+            await new Promise(resolve => setTimeout(resolve, 15));
+          }
+          assert(existsSync(foreignReady), "foreign group leader armed SIGTERM trap");
+          foreignStart = processStartToken(foreignGroup.pid!);
+          assert(foreignStart !== undefined, "captured live foreign group start token");
+
           const sleeperFile = join(root, `sleeper-${shells.indexOf(sh)}`);
           const gkStarted = join(root, `gk-started-${shells.indexOf(sh)}`);
           const gkHold = join(root, `gk-hold-${shells.indexOf(sh)}`);
@@ -778,36 +1100,40 @@ process.stdout.write(JSON.stringify({
             await new Promise(resolve => setTimeout(resolve, 20));
           }
           assert.deepEqual(processGroupMembers(gkPgid), [], "releaseChildGate cleaned up surviving group descendants after stage SIGKILL");
+          await waitPidGone(gkPgid);
+          await waitPidGone(sleeperPid);
           assert(processGroupMembers(foreignGroup.pid!).includes(foreignGroup.pid!), "unrelated process group was untouched");
+          assert.equal(existsSync(foreignSignaled), false, "unrelated process group received no signal during stage group cleanup");
 
-          // Verify guard against PID/PGID reuse: if child.pid points at a live foreign group leader whose start token
-          // differs from the token captured before exit, releaseChildGate must NOT signal that foreign group.
-          const fakePipe3 = new (await import("node:stream")).PassThrough();
-          const fakePipe4 = new (await import("node:stream")).PassThrough();
-          const fakeEmitter = Object.assign(new (await import("node:events")).EventEmitter(), {
-            pid: 1, // pid <= 1 is explicitly refused, and let's also test foreignGroup.pid when start token mismatches
-            stdio: [null, null, null, fakePipe3, fakePipe4],
-          }) as unknown as import("node:child_process").ChildProcess;
-          releaseChildGate(fakeEmitter, true, Buffer.from([0, 0, 0, 0, 0xff, 0xff, 0xff, 0xff]), () => {}, true);
-          fakeEmitter.emit("exit", null, "SIGTERM");
-          assert(processGroupMembers(foreignGroup.pid!).includes(foreignGroup.pid!), "pid <= 1 guard did not signal anything");
-
-          // Also test start-token mismatch guard with a LIVE foreign group leader: capture leaderStart for a dead PID
-          // (undefined), then simulate a recycled PID by testing a fake ChildProcess whose pid is foreignGroup.pid AFTER
-          // foreignGroup spawns: if releaseChildGate captured leaderStart before foreignGroup existed (simulated by
-          // capturing an unbound pid 2147483646 and also testing foreignGroup.pid when permitted=false or groupCleanup=false),
-          // plus spawn a brief child, let it exit so its start token differs from foreignGroup, and verify foreignGroup survives.
-          const brief = spawn(process.execPath, ["-e", "process.exit(0)"], { detached: true, stdio: "ignore" });
-          await new Promise<void>(resolve => brief.once("close", () => resolve()));
-          const deadThenReused = Object.assign(new (await import("node:events")).EventEmitter(), {
-            pid: brief.pid!,
+          // Review 2 Finding 3: reach `currentStart !== leaderStart` directly against the live `foreignGroup.pid`
+          // (whose processGroupMembers is non-empty and whose SIGTERM handler writes `foreignSignaled` if signalled).
+          const tokenReads: (string | undefined)[] = [];
+          const priorStageStart = `${foreignStart}-prior-stage`;
+          let readCount = 0;
+          const reusedEmitter = Object.assign(new (await import("node:events")).EventEmitter(), {
+            pid: foreignGroup.pid!,
             stdio: [null, null, null, new (await import("node:stream")).PassThrough(), new (await import("node:stream")).PassThrough()],
           }) as unknown as import("node:child_process").ChildProcess;
-          releaseChildGate(deadThenReused, true, Buffer.from([0, 0, 0, 0, 0xff, 0xff, 0xff, 0xff]), () => {}, true);
-          deadThenReused.emit("exit", null, "SIGTERM");
-          assert(processGroupMembers(foreignGroup.pid!).includes(foreignGroup.pid!), "foreign group survived synthetic exit");
+          releaseChildGate(reusedEmitter, true, Buffer.from([0, 0, 0, 0, 0xff, 0xff, 0xff, 0xff]), () => {}, true, pid => {
+            readCount += 1;
+            const tok = readCount === 1 ? priorStageStart : processStartToken(pid);
+            tokenReads.push(tok);
+            return tok;
+          });
+          reusedEmitter.emit("exit", null, "SIGTERM");
+          await new Promise(resolve => setTimeout(resolve, 60));
+          assert.deepEqual(tokenReads, [priorStageStart, foreignStart], "exit hook must reach currentStart !== leaderStart check");
+          assert.equal(existsSync(foreignSignaled), false, "foreign group pid must receive no signal when currentStart !== leaderStart");
+          assert(processGroupMembers(foreignGroup.pid!).includes(foreignGroup.pid!), "foreign group remains alive after start-token mismatch guard");
+
+          // Positive control on foreignGroup's SIGTERM trap: sending SIGTERM now MUST record `foreignSignaled` and exit cleanly.
+          process.kill(-foreignGroup.pid!, "SIGTERM");
+          await foreignClosed;
+          assert.equal(existsSync(foreignSignaled), true, "positive control: foreignGroup SIGTERM trap records signal when actually signalled");
         } finally {
           try { process.kill(-foreignGroup.pid!, "SIGKILL"); } catch {}
+          await foreignClosed;
+          await waitPidGone(foreignGroup.pid, foreignStart);
         }
       }
 
@@ -1127,4 +1453,6 @@ if (process.platform !== "win32") {
     assert.doesNotMatch(during.output, /getcwd\(\) failed|this folder no longer exists|update preflight failed|registry cannot be reached/i);
   } finally { rmSync(home, { recursive: true, force: true }); }
 }
+const totalSkipped = skippedCells + registryArrivalSkippedCount();
+console.log(`UPDATE CURRENT SMOKE OK (${counted.cells()} passed, 0 failed; ${totalSkipped} skipped)`);
 emitSentinel({ passed: counted.cells(), failed: 0 });

@@ -1,6 +1,5 @@
 import { spawn } from "node:child_process";
 import { closeSync, readSync } from "node:fs";
-import { constants as osConstants } from "node:os";
 
 // Read the framed non-identifier environment block from inherited descriptor 4 and close it
 // before loading or spawning the target so values never enter argv and descriptor 4 never leaks.
@@ -86,12 +85,13 @@ function runStage(entries: readonly (readonly [string, string])[]): void {
   });
   inner.once("exit", (exitCode, termSignal) => {
     if (termSignal !== null) {
-      // Node ignores SIGPIPE and SIGXFSZ and starts the inspector on SIGUSR1; exit non-zero directly.
-      if (termSignal === "SIGPIPE" || termSignal === "SIGXFSZ" || termSignal === "SIGUSR1") {
-        const num = osConstants.signals[termSignal as keyof typeof osConstants.signals];
-        process.exit(128 + (typeof num === "number" ? num : 1));
+      if (termSignal !== "SIGKILL" && termSignal !== "SIGSTOP") {
+        // Reset Node's default SIGPIPE/SIGXFSZ/SIGUSR1 dispositions to SIG_DFL before re-raising
+        // so the parent sees the real signal without starting the inspector.
+        const reset = () => {};
+        process.on(termSignal, reset);
+        process.removeAllListeners(termSignal);
       }
-      process.removeAllListeners(termSignal);
       process.kill(process.pid, termSignal);
       return;
     }
@@ -101,10 +101,12 @@ function runStage(entries: readonly (readonly [string, string])[]): void {
 
 function main(): void {
   const preload = stripSelfExecArgv();
+  const label = (preload ? new URL(import.meta.url).searchParams.get("label") : process.argv[2]) || "cotal-update";
   let entries: [string, string][];
   try {
     entries = decodeGateEnv(readEnvPipe(4));
   } catch {
+    process.stderr.write(`${label}: gate environment unreadable\n`);
     process.exit(1);
   }
   if (preload) {

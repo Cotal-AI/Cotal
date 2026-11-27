@@ -1,5 +1,6 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, watch, writeFileSync, type FSWatcher } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, unlinkSync, watch, writeFileSync, type FSWatcher } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, parse, relative, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -92,6 +93,14 @@ export function verifyGlobalEntry(root: string, expectedVersion: string): string
 const SHELL_IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const npmChildPermitGate = 'IFS= read -r permit <&3 && [ "$permit" = run ] || exit 1; exec 3<&-; exec "$@"';
 const shellPreservesCache = new Map<string, boolean>();
+const pinnedPosixGate = new AsyncLocalStorage<{ dir: string; path?: string }>();
+
+function hasNonIdentifierEnv(env: NodeJS.ProcessEnv): boolean {
+  for (const [key, value] of Object.entries(env)) {
+    if (value !== undefined && key && !key.includes("=") && !SHELL_IDENTIFIER.test(key)) return true;
+  }
+  return false;
+}
 
 function shellPreservesNonIdentifiers(shell: string): boolean {
   let key = shell;
@@ -109,12 +118,37 @@ function shellPreservesNonIdentifiers(shell: string): boolean {
   return preserves;
 }
 
+export async function withPosixGateScratch<T>(scratchDir: string | undefined, run: () => Promise<T>): Promise<T> {
+  if (pinnedPosixGate.getStore()) return run();
+  const ownDir = scratchDir === undefined ? mkdtempSync(join(tmpdir(), "cotal-update-")) : undefined;
+  const store: { dir: string; path?: string } = { dir: realpathSync(scratchDir ?? ownDir!) };
+  try {
+    return await pinnedPosixGate.run(store, run);
+  } finally {
+    if (store.path) {
+      try { unlinkSync(store.path); } catch { /* already removed */ }
+    }
+    if (ownDir) rmSync(ownDir, { recursive: true, force: true, maxRetries: 3 });
+  }
+}
+
+export function pinPosixGateIfNeeded(env: NodeJS.ProcessEnv, shell = "/bin/sh"): void {
+  if (process.platform === "win32") return;
+  if (hasNonIdentifierEnv(env) && !shellPreservesNonIdentifiers(shell)) posixGateScriptPath();
+}
+
 export function posixGateScriptPath(): string {
+  const store = pinnedPosixGate.getStore();
+  if (store?.path) return store.path;
   const path = fileURLToPath(new URL(import.meta.url.endsWith(".ts") ? "./update-posix-gate.ts" : "./update-posix-gate.js", import.meta.url));
   if (!existsSync(path)) {
     throw new Error(`missing POSIX update gate helper (${path}); reinstall with \`npm install -g cotal-ai@latest\` or run \`pnpm --filter @cotal-ai/cli build\` in a source checkout`);
   }
-  return path;
+  if (!store) return path;
+  const copy = join(store.dir, path.endsWith(".ts") ? "update-posix-gate.mts" : "update-posix-gate.mjs");
+  writeFileSync(copy, readFileSync(path), { mode: 0o600, flag: "wx" });
+  store.path = copy;
+  return copy;
 }
 
 function encodeGateEnv(entries: readonly (readonly [string, string])[]): Buffer {
@@ -172,9 +206,11 @@ export function npmChildGate(
   if (!inProcessPreload && env.NODE_OPTIONS !== undefined) extra.push(["NODE_OPTIONS", env.NODE_OPTIONS]);
   const envPayload = encodeGateEnv(extra);
   if (inProcessPreload) {
+    const preloadUrl = pathToFileURL(gateScript);
+    preloadUrl.searchParams.set("label", label);
     return {
       file: shell,
-      args: ["-c", npmChildPermitGate, label, file, "--import", pathToFileURL(gateScript).href, ...args],
+      args: ["-c", npmChildPermitGate, label, file, "--import", preloadUrl.href, ...args],
       env: gateEnv,
       envPayload,
     };
@@ -194,6 +230,7 @@ export function releaseChildGate(
   envPayload: Buffer | undefined,
   onPermitError: (cause: Error) => void,
   groupCleanup = false,
+  startTokenOf: (pid: number) => string | undefined = processStartToken,
 ): void {
   const permit = child.stdio[3] as import("node:stream").Writable;
   const envPipe = envPayload ? child.stdio[4] as import("node:stream").Writable : undefined;
@@ -201,16 +238,19 @@ export function releaseChildGate(
   envPipe?.on("error", () => {});
   if (permitted && groupCleanup && child.pid !== undefined && child.pid > 1) {
     const pgid = child.pid;
-    const leaderStart = processStartToken(pgid);
+    const leaderStart = startTokenOf(pgid);
     if (leaderStart !== undefined) {
       child.once("exit", (_code, sig) => {
         if (sig === null) return;
-        // Once the leader is reaped, a recycled PID could lead a new group only after all our
-        // members exited; verify no new leader holds pgid and our group still has live members.
-        const currentStart = processStartToken(pgid);
-        if (currentStart !== undefined && currentStart !== leaderStart) return;
-        if (processGroupMembers(pgid).length === 0) return;
-        try { process.kill(-pgid, sig); } catch { /* group already gone */ }
+        try {
+          // Once the leader is reaped, a recycled PID could lead a new group only after all our
+          // members exited; verify no new leader holds pgid and our group still has live members.
+          const currentStart = startTokenOf(pgid);
+          if (currentStart !== undefined && currentStart !== leaderStart) return;
+          if (processGroupMembers(pgid).length === 0) return;
+          const groupSig = sig === "SIGPIPE" || sig === "SIGXFSZ" || sig === "SIGUSR1" ? "SIGTERM" : sig;
+          process.kill(-pgid, groupSig);
+        } catch { /* group already gone */ }
       });
     }
   }
@@ -242,8 +282,10 @@ export async function runNpmAsync(args: string[], archiveCache?: string): Promis
       }
       releaseChildGate(child, permitted, launch.envPayload, cause => { error = message(cause); }, launch.groupCleanup);
     }
-    const status = await new Promise<number | null>(resolveClose => child.once("close", resolveClose));
-    return { status, stdout, stderr, ...(error ? { error } : {}) };
+    const [status, signal] = await new Promise<[number | null, NodeJS.Signals | null]>(resolveClose =>
+      child.once("close", (code, sig) => resolveClose([code, sig])),
+    );
+    return { status, signal, stdout, stderr, ...(error ? { error } : {}) };
   } catch (error) {
     return { status: null, stdout: "", stderr: "", error: message(error) };
   }
@@ -301,12 +343,16 @@ async function runGlobalChild(
   staging?: string,
 ): Promise<CommandResult> {
   const gated = process.platform === "linux";
-  let mutation: ReturnType<typeof beginGlobalUpdateChild> | undefined;
+  if (gated) {
+    try { pinPosixGateIfNeeded(env); }
+    catch (e) { return { status: null, stdout: "", stderr: "", error: message(e) }; }
+  }
+  const mutation = beginGlobalUpdateChild(root, operation, gated);
   let cache: string | undefined;
   let lifecycle: ReturnType<typeof npmLifecycleEnvironment>;
   let published = false, preservePending = false;
   const watchers: FSWatcher[] = [];
-  let elapsed: ReturnType<typeof setTimeout> | undefined, idle: ReturnType<typeof setTimeout> | undefined, stopping: Promise<void> | undefined;
+  let timers: ReturnType<typeof armStagingTimeout> | undefined;
   try {
     if (operation === "reconcile") env = npmUpdateChildEnvironment(env);
     const pipeConsole = process.platform === "win32" && inherit;
@@ -316,9 +362,7 @@ async function runGlobalChild(
     cache = mkdtempSync(join(tmpdir(), reconcileCache ? "cotal-update-reconcile-" : "cotal-update-npm-"));
     if (npm) lifecycle = npmLifecycleEnvironment(npm, cache);
     const childEnv = { ...(lifecycle?.env ?? npm?.env ?? env), npm_config_cache: cache, npm_config_logs_max: "0", npm_config_update_notifier: "false" };
-    // Resolve and check any POSIX gate helper before writing custody or cache owner records.
     const launch = gated ? npmChildGate("cotal-update", file, args, childEnv, "/bin/sh", operation === "reconcile" ? "reconcile" : "npm") : undefined;
-    mutation = beginGlobalUpdateChild(root, operation, gated);
     let recordCache = gated && (staging !== undefined || reconcileCache);
     if (recordCache) {
       try {
@@ -334,8 +378,8 @@ async function runGlobalChild(
       // npm is quiet during a download. Its private cache receives the archive bytes and
       // the private prefix changes as packages unpack. Neither depends on terminal output.
       for (const path of [cache, staging]) {
-        const watcher = watch(path, { recursive: true }, () => idle?.refresh());
-        watcher.on("error", () => { clearTimeout(idle); idle = undefined; watcher.close(); });
+        const watcher = watch(path, { recursive: true }, () => timers?.refreshIdle());
+        watcher.on("error", () => { timers?.clearIdle(); watcher.close(); });
         watchers.push(watcher);
       }
     }
@@ -374,45 +418,11 @@ async function runGlobalChild(
       rejectClose = reject;
       child.once("close", (status, signal) => resolveClose({ status, signal }));
     });
-    if (staging !== undefined && child.pid !== undefined) {
-      const pgid = child.pid;
-      const signalGroup = (signal: NodeJS.Signals) => {
-        try { process.kill(-pgid, signal); }
-        catch (error) { if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error; }
-      };
-      const grace = 2000, reap = 1000;
-      const stop = () => {
-        if (stopping) return;
-        clearTimeout(elapsed);
-        clearTimeout(idle);
-        stopping = (async () => {
-          signalGroup("SIGTERM");
-          await new Promise(resolve => setTimeout(resolve, grace));
-          if (processGroupMembers(pgid).length) signalGroup("SIGKILL");
-          const deadline = performance.now() + reap;
-          while (processGroupMembers(pgid).length) {
-            if (performance.now() >= deadline) throw new Error(`could not stop staging npm process group ${pgid}`);
-            await new Promise(resolve => setTimeout(resolve, 25));
-          }
-        })();
-        void stopping.catch(error => {
-          child.stdin?.destroy();
-          child.stdout?.destroy();
-          child.stderr?.destroy();
-          child.unref();
-          rejectClose(error);
-        });
-      };
-      // Leave room for TERM and KILL within the five-minute staging budget. Idle time
-      // covers three 15-second fetch attempts plus their one- and two-second backoffs.
-      elapsed = setTimeout(stop, 300_000 - grace - reap);
-      idle = setTimeout(stop, 50_000);
-    }
+    if (staging !== undefined && child.pid !== undefined) timers = armStagingTimeout(child, child.pid, err => rejectClose(err));
     const closed = await close;
-    clearTimeout(elapsed);
-    clearTimeout(idle);
-    if (stopping) {
-      await stopping;
+    timers?.clear();
+    if (timers?.stopping) {
+      await timers.stopping;
       if (published) mutation.clear();
       throw new StagingTimeout(`${stderr}\n${stdout}`);
     }
@@ -429,12 +439,57 @@ async function runGlobalChild(
     return { status: null, stdout: "", stderr: "", error: message(e) };
   } finally {
     for (const watcher of watchers) watcher.close();
-    clearTimeout(elapsed);
-    clearTimeout(idle);
-    if (!published && !preservePending) mutation?.clear();
+    timers?.clear();
+    if (!published && !preservePending) mutation.clear();
     lifecycle?.dispose();
     if (cache) rmSync(cache, { recursive: true, force: true, maxRetries: 3 });
   }
+}
+
+function armStagingTimeout(
+  child: import("node:child_process").ChildProcess,
+  pgid: number,
+  onStopError: (error: unknown) => void,
+): { stopping: Promise<void> | undefined; refreshIdle(): void; clearIdle(): void; clear(): void } {
+  const signalGroup = (signal: NodeJS.Signals) => {
+    try { process.kill(-pgid, signal); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error; }
+  };
+  const grace = 2000, reap = 1000;
+  let stopping: Promise<void> | undefined;
+  let idle: ReturnType<typeof setTimeout> | undefined;
+  const stop = () => {
+    if (stopping) return;
+    clearTimeout(elapsed);
+    clearTimeout(idle);
+    stopping = (async () => {
+      signalGroup("SIGTERM");
+      await new Promise(resolve => setTimeout(resolve, grace));
+      if (processGroupMembers(pgid).length) signalGroup("SIGKILL");
+      const deadline = performance.now() + reap;
+      while (processGroupMembers(pgid).length) {
+        if (performance.now() >= deadline) throw new Error(`could not stop staging npm process group ${pgid}`);
+        await new Promise(resolve => setTimeout(resolve, 25));
+      }
+    })();
+    void stopping.catch(error => {
+      child.stdin?.destroy();
+      child.stdout?.destroy();
+      child.stderr?.destroy();
+      child.unref();
+      onStopError(error);
+    });
+  };
+  // Leave room for TERM and KILL within the five-minute staging budget. Idle time
+  // covers three 15-second fetch attempts plus their one- and two-second backoffs.
+  const elapsed = setTimeout(stop, 300_000 - grace - reap);
+  idle = setTimeout(stop, 50_000);
+  return {
+    get stopping() { return stopping; },
+    refreshIdle() { idle?.refresh(); },
+    clearIdle() { clearTimeout(idle); idle = undefined; },
+    clear() { clearTimeout(elapsed); clearTimeout(idle); },
+  };
 }
 
 function updateChildStdio(gated: boolean, inherit: boolean, pipeConsole: boolean): import("node:child_process").StdioOptions | undefined {
