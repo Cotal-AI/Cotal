@@ -255,6 +255,16 @@ switch (args.slice(0, 3).join(" ")) {
     } finally {
       rmSync(market, { force: true });
     }
+    writeFileSync(market, "not a directory\n", { mode: 0o644 });
+    try {
+      await assert.rejects(async () => refresh(), { code: "EEXIST" });
+      await assert.rejects(
+        async () => claudeSetupProvider.connector!.run({ cotal: [process.execPath, join(root, "cotal.js")] }),
+        { code: "EEXIST" },
+      );
+    } finally {
+      rmSync(market, { force: true });
+    }
   });
   if (process.platform !== "win32" && process.getuid?.() !== 0) await check("a default Claude account whose home parent is mode 0555 still refreshes", async () => {
     const parent = join(root, "nonwritable-parent");

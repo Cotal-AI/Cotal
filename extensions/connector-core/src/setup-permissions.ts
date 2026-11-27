@@ -27,7 +27,7 @@ export function isDirectoryProtected(path: string): boolean {
     if (!link) return false;
     const info = statSync(path, { throwIfNoEntry: false });
     if (!info) return true;
-    if ((info.mode & 0o200) === 0 || (info.mode & 0o100) === 0) return true;
+    if (!info.isDirectory()) return false;
     accessSync(path, constants.W_OK | constants.X_OK);
     return false;
   } catch (error) {

@@ -269,6 +269,13 @@ if (args === "plugin list") {
           );
         } finally {
           rmSync(market, { force: true });
+        }
+        writeFileSync(market, "not a directory\n", { mode: 0o644 });
+        try {
+          await assert.rejects(async () => codexSetupProvider.refresh!.run(changed), { code: "EEXIST" });
+          await assert.rejects(async () => codexSetupProvider.connector!.run({ cotal }), { code: "EEXIST" });
+        } finally {
+          rmSync(market, { force: true });
           renameSync(marketBackup, market);
         }
       }
