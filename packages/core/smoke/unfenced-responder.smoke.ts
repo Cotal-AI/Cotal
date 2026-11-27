@@ -61,7 +61,7 @@ const c = (name: string, cond: boolean, extra?: unknown) => {
 /** Declared, not implied: a live suite can end in ways that redden no line, and `fail === 0` reads
  *  as PASS in every one of them. Measured by this lane's own crash controls — a mid-run exit prints
  *  nothing at all, and an import-time throw does not even reach this handler. */
-const EXPECTED_CELLS = 34;
+const EXPECTED_CELLS = 35;
 process.on("exit", () => {
   const ran = pass + fail;
   if (ran !== EXPECTED_CELLS) {
@@ -259,6 +259,8 @@ try {
     threw !== undefined, threw);
   c("...carrying the responder-answered marker, which says the command MAY have run",
     respondedButUnbound(threw), threw instanceof Error ? threw.message.slice(0, 160) : threw);
+  c("...and telling the caller to check whether the change took effect without naming CLI verbs",
+    threw instanceof Error && threw.message.includes("check whether the requested change took effect before re-issuing") && !threw.message.includes("'ps'/'inspect'"), threw instanceof Error ? threw.message.slice(0, 240) : threw);
   c("...and NOT the bind-refused marker, which would claim it did not",
     !replyRefusedBeforeEffect(threw instanceof EpEnvelopeError ? threw.toEpError() : undefined));
   // THE ASSERTION THE WHOLE FILE EXISTS FOR, and it is a direct count, not a publish proxy.

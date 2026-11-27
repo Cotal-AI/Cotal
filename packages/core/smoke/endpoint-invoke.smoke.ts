@@ -422,13 +422,13 @@ console.log("describe REQUEST-BINDING (freelance HIGH #1):");
   c("the follower deadline wins before epCall but retains the submitted id", detail(followed)?.requestId === sent && followed instanceof EpEnvelopeError && followed.code === "deadline-exceeded" && followed.outcome === "unknown", followed);
   const innerTimeout = await errorOf(submitAndFollowGoal(nc as never, SPACE, ENDPOINT, CALLER, 1000,
     signal => epCall(nc as never, SPACE, { mode: "one" }, op, { deadlineMs: 20, currentEpoch: () => HONEST.epoch, signal })));
-  c("an epCall deadline winning first keeps both request id and generic no-retry guidance", detail(innerTimeout)?.requestId === sent && innerTimeout instanceof EpEnvelopeError && innerTimeout.message.includes("do NOT retry"), innerTimeout);
+  c("an epCall deadline winning first keeps both request id and generic no-retry guidance", detail(innerTimeout)?.requestId === sent && innerTimeout instanceof EpEnvelopeError && innerTimeout.message.includes("do NOT retry without first checking the goal's result or whether the requested change took effect (SPEC 13.6)") && !innerTimeout.message.includes("'ps'/'inspect'"), innerTimeout);
   const stop = new AbortController();
   const waiting = submitAndFollowGoal(nc as never, SPACE, ENDPOINT, CALLER, 1000,
     signal => epCall(nc as never, SPACE, { mode: "one" }, op, { deadlineMs: 1000, currentEpoch: () => HONEST.epoch, signal }), { signal: stop.signal });
   await wait(10); stop.abort();
   const stopped = await errorOf(waiting);
-  c("stopping an in-flight follower retains id without asserting acceptance", detail(stopped)?.requestId === sent && stopped instanceof EpEnvelopeError && stopped.outcome === "unknown" && !stopped.message.includes("was accepted"), stopped);
+  c("stopping an in-flight follower retains id without asserting acceptance", detail(stopped)?.requestId === sent && stopped instanceof EpEnvelopeError && stopped.outcome === "unknown" && !stopped.message.includes("was accepted") && stopped.message.includes("do NOT retry without first checking the goal's result or whether the requested change took effect (SPEC 13.6)") && !stopped.message.includes("'ps'/'inspect'"), stopped);
   const before = await errorOf(submitAndFollowGoal(nc as never, SPACE, ENDPOINT, CALLER, 20, async () => { throw new Error("must not submit"); }, {
     prepare: async () => { throw new EpEnvelopeError("deadline-exceeded", "no describe reply", [{ kind: EP_UNANSWERED, endpoint: ENDPOINT, command: "describe" }]); },
   }));

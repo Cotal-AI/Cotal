@@ -400,6 +400,8 @@ try {
       respondedButUnbound(e) && d?.answeredBy === OID && d?.answeredEpoch === 4 && d?.heldEpoch === 5 && d?.reference === "registry" && d?.boundTo === undefined && d?.pinned === false, d);
     c("...and the message says a SUPERSEDED incarnation answered (answered 4 < registry 5), never that a handle is stale",
       e instanceof Error && /SUPERSEDED incarnation/.test(e.message) && !/SUCCESSOR|handle/.test(e.message), e instanceof Error ? e.message.slice(0, 200) : e);
+    c("...and the stale-reply guidance is neutral without CLI verbs",
+      e instanceof Error && e.message.includes("check whether the requested change took effect before re-issuing (SPEC 13.2, the stale-reply rejection rule)") && !e.message.includes("'ps'/'inspect'"), e instanceof Error ? e.message.slice(0, 240) : e);
   }
   {
     // The registry read can also LAG a restart: the responder answers AHEAD of the read. That is not

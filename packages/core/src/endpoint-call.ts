@@ -343,7 +343,7 @@ function staleEpochRefusal(
     answeredEpoch: responder.epoch, heldEpoch: held, reference, pinned: rail === "inst",
   };
   return new EpEnvelopeError("expired",
-    `${situation}. THIS SAYS NOTHING ABOUT WHETHER THE COMMAND RAN: ${responder.instanceId} received the request and answered it, so if "${op.command}" mutates, that effect may already have landed; verify the outcome ('ps'/'inspect'/roster) before re-issuing (SPEC 13.2, the stale-reply rejection rule)`,
+    `${situation}. THIS SAYS NOTHING ABOUT WHETHER THE COMMAND RAN: ${responder.instanceId} received the request and answered it, so if "${op.command}" mutates, that effect may already have landed; check whether the requested change took effect before re-issuing (SPEC 13.2, the stale-reply rejection rule)`,
     [detail]);
 }
 
