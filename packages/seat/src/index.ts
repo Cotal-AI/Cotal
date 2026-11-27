@@ -19,6 +19,7 @@ export { flockExclusiveNb, peerCredentials, type PeerCredentials } from "./peerc
 export { connectPipe, darwinLaunchdJob, darwinUserCacheDir, listenPipe, localPeerCredentials, lockExclusiveNb, processStartTime, windowsDirSecurity, windowsUserSid, type DarwinLaunchdJob, type DarwinLaunchdLookup, type PipeListener, type PipePeer, type PipeRefused, type WindowsAce, type WindowsDirSecurity } from "./host.js";
 export { runCustodian, type CustodianLaunch } from "./custodian.js";
 export { launchSharedSeat, linuxSharedCustodyAvailable } from "./shared-launch.js";
+export { verifyWindowsDemandTask } from "./windows-demand-task.js";
 export { openSharedSeat, type SharedHandle } from "./shared-handle.js";
 export { launchManagedSharedSeat, reopenManagedSharedSeat } from "./shared-managed.js";
 export { acquireSharedExecutionLease, type SharedExecutionLease } from "./shared-execution-lease.js";
