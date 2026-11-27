@@ -9,13 +9,14 @@ import type { ConnectionState } from "./endpoint-connection-state.js";
 import type { EndpointIdentity } from "./endpoint-identity.js";
 import type { EndpointParts } from "./endpoint-parts.js";
 import { withDeadline } from "./deadline.js";
+import { endpointChannelRoute, isRoutedPluginChannel } from "./endpoint-channel-route.js";
 import { ackWaitOf, durableDelivery, isRecord } from "./endpoint-inbound.js";
 import { authenticatedMessage, kindFromParsed, isUsableMessageId, isFromSubjectSender, dmOnlyDelivery } from "./endpoint-messages.js";
 import { hasStoredOrigin } from "./endpoint-provenance.js";
 import { DmDurableMissingError, type DmOnlyOptions, DmBindRefusedError } from "./endpoint-options.js";
 import { isConsumerNotFound, isJetStreamMissing, isStreamNotFound } from "./jetstream-missing.js";
 import { taskDurableConfig } from "./streams.js";
-import { dmDurable, dmStream, taskStream, taskDurable, type ParsedSubject, parseSubject, chatStream, chatSubject } from "./subjects.js";
+import { dmDurable, dmStream, taskStream, taskDurable, type ParsedSubject, parseSubject, chatStream, subjectMatches } from "./subjects.js";
 import type { MessageMeta, CotalMessage, Delivery } from "./types.js";
 import { type JetStreamManager, type ConsumerMessages, jetstreamManager, type Consumer, type JsMsg, JetStreamApiCodes, type ConsumerInfo } from "@nats-io/jetstream";
 import { PermissionViolationError } from "@nats-io/transport-node";
@@ -338,7 +339,8 @@ export class EndpointConsumers {
   subscribeChat(channel: string): void {
     if (!this.conn.nc || this.delivery.chatSubs.has(channel)) return;
     this.delivery.chatSubDenied.delete(channel);
-    const subject = chatSubject(this.identity.space, "*", "*", channel);
+    const route = endpointChannelRoute(this.identity.space, this.conn.pluginChannelsEnabled, channel);
+    const subject = route.subject("*", "*");
     const sub = this.conn.nc.subscribe(subject, {
       callback: (err, m) => {
         if (err) {
@@ -369,7 +371,8 @@ export class EndpointConsumers {
           return;
         }
         const parsed = parseSubject(m.subject);
-        if (!parsed || parsed.kind !== "chat" || hasStoredOrigin(m.headers)) return;
+        if (!parsed || parsed.kind !== route.kind || !subjectMatches(subject, m.subject) || hasStoredOrigin(m.headers)) return;
+        if (route.kind === "chat" && isRoutedPluginChannel(this.conn.pluginChannelsEnabled, parsed.rest)) return;
         let msg: CotalMessage;
         try {
           msg = m.json<CotalMessage>();

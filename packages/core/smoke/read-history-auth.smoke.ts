@@ -39,6 +39,7 @@ import {
   serverConfig, newIdentity, setupSpaceStreams, seedChannelRegistry, principalKey, DEV_OWNER,
   type CotalMessage,
 } from "../src/index.js";
+import { PLUGIN_CHANNEL_ROOT } from "../src/plugin-channel-route.js";
 import { pickFreePort } from "./_free-port.js";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal, createSuite } from "@cotal-ai/smoke-kit";
 
@@ -82,9 +83,14 @@ try {
   // Backlog worth reading back.
   const pId = newIdentity();
   const uidP = mintLifecycleUid();
-  const pCreds = await provisionAgent(mgr, auth, pId, { allowSubscribe: ["ops", "bulk", "many"], allowPublish: ["ops", "bulk", "many"], subscribe: ["ops", "bulk", "many"], lifecycleUid: uidP });
+  const legacyPluginName = `${PLUGIN_CHANNEL_ROOT}.sample.thread`;
+  const pCreds = await provisionAgent(mgr, auth, pId, { allowSubscribe: ["ops", "bulk", "many", legacyPluginName], allowPublish: ["ops", "bulk", "many", legacyPluginName], subscribe: ["ops", "bulk", "many"], lifecycleUid: uidP });
   poster = new CotalEndpoint({ space, servers: SERVERS, creds: pCreds, channels: ["ops", "bulk", "many"], consume: false, lifecycleUid: uidP, watchPresence: false, registerPresence: false, card: { id: pId.id, name: "poster", kind: "agent" } });
   poster.on("error", () => {}); await poster.start();
+  const legacy = await poster.multicast("legacy channel on chat", { channel: legacyPluginName });
+  const legacyPage = await poster.channelHistoryPage(legacyPluginName);
+  check("a dark space stores and reads the plugin-shaped name on chat", legacyPage.items[0]?.id === legacy.id, legacyPage);
+  check("the dark-space frontier uses the chat sequence domain", await poster.channelFrontier(legacyPluginName) === await poster.chatFrontier());
   for (let i = 1; i <= 6; i++) await poster.multicast(`scrollback line ${i}`, { channel: "ops" });
   // A backlog whose full page CANNOT fit one NATS message: 20 x ~60 KB is over the 1 MB default
   // max_payload, so a count-only bound would build a reply the broker refuses to carry.

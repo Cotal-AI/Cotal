@@ -1874,13 +1874,14 @@ export class CotalEndpoint extends EventEmitter {
     emit: (event, ...args) => this.emit(event, ...args),
   }, this.parts);
 
-  /** Current frontier (last sequence) of the chat stream — a channel's join watermark, the
-   *  focus-watermark a connector captures on entering `focus` (recall reads ambient after it), and
-   *  the backfill floor a preservation cut records for each retained seat. The manager reads it in
-   *  open mode over its own `consume: false` endpoint, which binds no JetStream manager at start, so
-   *  the manager is obtained lazily here rather than assumed. */
+  /** Current frontier of the ordinary chat stream, including on a non-consuming endpoint. */
   async chatFrontier(): Promise<number> {
     return this.consumers.chatFrontier();
+  }
+
+  /** Current frontier for a channel's rail. Do not reuse the value on a different rail. */
+  channelFrontier(channel: string): Promise<number> {
+    return this.history.channelFrontier(channel);
   }
 
   /** Whether this connection's account has a JetStream stream of this name. A missing stream is
@@ -1896,13 +1897,11 @@ export class CotalEndpoint extends EventEmitter {
     return this.consumers.storedBytes();
   }
 
-  /** Phase 1 of a join: capture each channel's current CHAT stream frontier before opening the
-   *  core subscription. The frontier bounds the {@link EndpointHistory.backfillArmed} read (`seq <= frontier`),
-   *  and the live subscription carries everything published after it. */
+  /** Capture each channel's history frontier before opening its live subscription. */
   private async armJoin(channels: string[]): Promise<Map<string, number>> {
     const frontiers = new Map<string, number>();
     for (const ch of channels) {
-      frontiers.set(ch, await this.chatFrontier());
+      frontiers.set(ch, await this.channelFrontier(ch));
     }
     return frontiers;
   }

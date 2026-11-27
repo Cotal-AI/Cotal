@@ -8,11 +8,13 @@ import { jetstream, jetstreamManager, JetStreamApiCodes, type JetStreamPublishOp
 import { Kvm, type KV } from "@nats-io/kv";
 import { openAclRegistry, readAcl, readAclForAlias, AmbiguousAclAlias, commitAcl as writeAclRecord, reissueAcl as writeAclReissue } from "./acls.js";
 import { effectiveDeliveryClass, readChannelConfig, readChannelDefaults } from "./channels.js";
+import { endpointChannelRoute, isRoutedPluginChannel } from "./endpoint-channel-route.js";
+import { PLUGIN_FANOUT_DURABLE } from "./plugin-channel-route.js";
 import { isCasLoss } from "./endpoint-records.js";
 import type { ManagerLeaseInfo } from "./lease.js";
 import { openMembersRegistry, commitMemberRevision, tombstoneMember, activateMember, readMember, deleteMember, listMembers } from "./members.js";
 import { MANAGER_LEASE_TTL_MS, MANAGER_LEASE_ATTEMPT_MS } from "./streams.js";
-import { chatStream, dinboxSubject, FANOUT_DURABLE, isConcreteChannel, managerBucket, MANAGER_LEASE_KEY, MANAGER_RENEWAL_LEASE_KEY, managerLeaseKey, memberKey, parsePrincipalKey } from "./subjects.js";
+import { dinboxSubject, FANOUT_DURABLE, isConcreteChannel, managerBucket, MANAGER_LEASE_KEY, MANAGER_RENEWAL_LEASE_KEY, managerLeaseKey, memberKey, parsePrincipalKey } from "./subjects.js";
 import type { DeliveryClass, MembershipRecord, Plane3Entry } from "./types.js";
 
 /** What the durable backstop reads from its endpoint. State is read when it is used, never copied,
@@ -310,7 +312,8 @@ export class EndpointDurableBackstop {
   async deliveryClassFresh(channel: string): Promise<DeliveryClass> {
     if (!this.conn.channelKv) return effectiveDeliveryClass(undefined, undefined);
     const [cfg, defaults] = await Promise.all([
-      isConcreteChannel(channel) ? readChannelConfig(this.conn.channelKv, channel) : Promise.resolve(undefined),
+      isConcreteChannel(channel) && !isRoutedPluginChannel(this.conn.pluginChannelsEnabled, channel)
+        ? readChannelConfig(this.conn.channelKv, channel) : Promise.resolve(undefined),
       readChannelDefaults(this.conn.channelKv),
     ]);
     return effectiveDeliveryClass(cfg, defaults);
@@ -355,9 +358,17 @@ export class EndpointDurableBackstop {
 
   /** The fan-out consumer's delivered stream-seq — the activation-fence upper bound (red-team
    *  BLOCKER-1: the shared fan-out cursor advances independently of the stream frontier). */
-  private async fanoutDeliveredSeq(): Promise<number> {
-    const info = await this.parts.consumers.consumerInfo(chatStream(this.identity.space), FANOUT_DURABLE);
+  private async fanoutDeliveredSeq(channel: string): Promise<number> {
+    const route = endpointChannelRoute(this.identity.space, this.conn.pluginChannelsEnabled, channel);
+    const info = await this.parts.consumers.consumerInfo(route.stream, route.kind === "chat" ? FANOUT_DURABLE : PLUGIN_FANOUT_DURABLE);
     return info?.delivered?.stream_seq ?? 0;
+  }
+
+  private async membershipFrontier(channel: string): Promise<number> {
+    const route = endpointChannelRoute(this.identity.space, this.conn.pluginChannelsEnabled, channel);
+    if (route.kind === "chat") return this.parts.consumers.chatFrontier();
+    const jsm = await this.parts.consumers.manager();
+    return (await jsm.streams.info(route.stream)).state.last_seq;
   }
 
   /**
@@ -402,7 +413,7 @@ export class EndpointDurableBackstop {
     // gates only the REPORT — durableJoin returns true / channelMembers lists the owner only after the
     // catch-up confirms. A join that never completes catch-up still routes live (harmless: the agent is
     // live-subscribed and DLV is id-deduped) but honestly reports durable:false and stays hidden.
-    const joinCursor = open ? existing!.record.joinCursor : await this.parts.consumers.chatFrontier();
+    const joinCursor = open ? existing!.record.joinCursor : await this.membershipFrontier(channel);
     const generation = open ? existing!.record.generation : (existing?.record.generation ?? 0) + 1;
     const base: MembershipRecord = {
       channel, owner, lifecycleUid, state: "durable-active", joinCursor, generation,
@@ -414,7 +425,7 @@ export class EndpointDurableBackstop {
       const written = await commitMemberRevision(kv, base);
       if (opts.aclFence) await this.keepRowIfAclAllows(kv, owner, lifecycleUid, channel, written.revision);
     }
-    const fence = Math.max(await this.parts.consumers.chatFrontier(), await this.fanoutDeliveredSeq());
+    const fence = Math.max(await this.membershipFrontier(channel), await this.fanoutDeliveredSeq(channel));
     await this.parts.durable.catchupCopy(owner, lifecycleUid, channel, joinCursor, fence, generation);
     // Flip → reported durable, ATOMICALLY: refuse if a concurrent SAME-generation leave (tombstone) or a
     // rejoin superseded this pending join while catch-up ran. A blind same-gen commit would clobber the
@@ -461,6 +472,6 @@ export class EndpointDurableBackstop {
     const kv = await this.membersRegistry();
     // expectedGeneration (captured by the agent at durableJoin) refuses a stale leave from tombstoning
     // a newer rejoin (StaleMembershipWrite) — a durable-disable primitive otherwise.
-    await tombstoneMember(kv, channel, owner, lifecycleUid, await this.parts.consumers.chatFrontier(), this.identity.card.id, expectedGeneration);
+    await tombstoneMember(kv, channel, owner, lifecycleUid, await this.membershipFrontier(channel), this.identity.card.id, expectedGeneration);
   }
 }

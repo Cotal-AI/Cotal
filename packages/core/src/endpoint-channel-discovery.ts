@@ -17,6 +17,7 @@ import {
   decodeChannelEntry,
 } from "./channels.js";
 import { isPublishPermissionDenied } from "./endpoint-dial.js";
+import { isRoutedPluginChannel } from "./endpoint-channel-route.js";
 import { isJetStreamMissing } from "./jetstream-missing.js";
 import { lastKvEntries } from "./kv-scan.js";
 import { CHANNEL_DEFAULTS_KEY, channelBucket, isConcreteChannel } from "./subjects.js";
@@ -113,7 +114,8 @@ export class EndpointChannelDiscovery {
     let defaults: ChannelDefaults | undefined;
     try {
       [cfg, defaults] = await Promise.all([
-        isConcreteChannel(channel) ? readChannelConfig(kv, channel) : Promise.resolve(undefined),
+        isConcreteChannel(channel) && !isRoutedPluginChannel(this.conn.pluginChannelsEnabled, channel)
+          ? readChannelConfig(kv, channel) : Promise.resolve(undefined),
         readChannelDefaults(kv),
       ]);
     } catch (e) {
@@ -156,6 +158,7 @@ export class EndpointChannelDiscovery {
     const isDefaults = e.key === CHANNEL_DEFAULTS_KEY;
     if (isDefaults) this.channelRegistry.channelDefaults = {};
     else this.channelRegistry.channelConfigs.delete(e.key);
+    if (isRoutedPluginChannel(this.conn.pluginChannelsEnabled, e.key)) return;
     if (e.operation === "DEL" || e.operation === "PURGE") return;
     try {
       if (isDefaults) this.channelRegistry.channelDefaults = decodeChannelEntry(e);

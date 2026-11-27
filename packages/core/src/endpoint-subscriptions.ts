@@ -12,12 +12,13 @@ import { jetstreamManager, JetStreamApiCodes, type JetStreamManager, type JsMsg,
 import { Kvm, type KV, type KvEntry } from "@nats-io/kv";
 import { Bucket, KvWatchInclude } from "@nats-io/kv/internal";
 import { effectiveDeliveryClass } from "./channels.js";
+import { isRoutedPluginChannel } from "./endpoint-channel-route.js";
 import { isPublishPermissionDenied } from "./endpoint-dial.js";
 import type { ChannelMember } from "./endpoint-options.js";
 import { isJetStreamMissing } from "./jetstream-missing.js";
 import { lastKvEntries } from "./kv-scan.js";
 import { listMembers } from "./members.js";
-import { chatStream, dmStream, isChannelFamily, isConcreteChannel, isPrincipalOwnerToken, membershipBucket, MEMBERSHIP_FEED_KEY, parseSubject, subjectMatches } from "./subjects.js";
+import { chatStream, dmStream, isChannelFamily, isConcreteChannel, isPrincipalOwnerToken, membershipBucket, MEMBERSHIP_FEED_KEY, parseSubject, patternInAllow, subjectMatches } from "./subjects.js";
 import type { ChannelConfig, ChannelMembership, MembershipChange, MembershipEntry, MembershipSnapshot, Presence } from "./types.js";
 
 /** One feed entry, decoded the way {@link CotalEndpoint.readMembership} decodes it: the reserved
@@ -270,11 +271,20 @@ export class EndpointSubscriptions {
       if (!isJetStreamMissing(e, JetStreamApiCodes.StreamNotFound)) throw e;
     }
     const channels = new Set<string>([...counts.keys(), ...this.channelRegistry.channelConfigs.keys()]);
+    if (this.conn.pluginChannelsEnabled) {
+      const isPlugin = (channel: string) => isRoutedPluginChannel(true, channel);
+      for (const channel of channels) if (isPlugin(channel)) channels.delete(channel);
+      const grants = (this.identity.allowSubscribe ?? []).filter(isPlugin);
+      for (const channel of grants) channels.add(channel);
+      for (const channel of [...this.identity.channels, ...this.delivery.plane3Channels.keys()]) {
+        if (isPlugin(channel) && patternInAllow(grants, channel, true)) channels.add(channel);
+      }
+    }
     return [...channels]
       .map((channel) => ({
         channel,
-        messages: counts.get(channel) ?? 0,
-        config: this.channelRegistry.channelConfigs.get(channel),
+        messages: isRoutedPluginChannel(this.conn.pluginChannelsEnabled, channel) ? 0 : counts.get(channel) ?? 0,
+        config: isRoutedPluginChannel(this.conn.pluginChannelsEnabled, channel) ? undefined : this.channelRegistry.channelConfigs.get(channel),
       }))
       .sort((a, b) => a.channel.localeCompare(b.channel));
   }

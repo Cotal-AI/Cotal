@@ -10,6 +10,7 @@ import { isConsumerAlreadyExists, isConsumerNotFound } from "./jetstream-missing
 import { effectiveReplay, effectiveReplayWindowMs, readChannelConfig, readChannelDefaults } from "./channels.js";
 import { isPermissionDenied } from "./permission-denied.js";
 import { hasStoredOrigin } from "./endpoint-provenance.js";
+import { channelSubjectInSpace, endpointChannelRoute, isRoutedPluginChannel } from "./endpoint-channel-route.js";
 import type { CotalMessage, DmHistoryRead, HistoryMessage, Delivery, MessageMeta } from "./types.js";
 import type { HistoryPage } from "./endpoint.js";
 
@@ -64,6 +65,8 @@ type HistoryReaderSlots = {
   waiting: (() => void)[];
   refusedUntil: number;
 };
+
+type HistoryRow = { seq: number; subject: string; msg: HistoryMessage; received: bigint };
 
 
 /** How many channel filters one multi-filter consumer create may carry.
@@ -146,6 +149,12 @@ export class EndpointHistory {
     channel: string,
     opts?: { limit?: number; signal?: AbortSignal; publisher?: { owner: string; actor: string } },
   ): Promise<HistoryMessage[]> {
+    const route = endpointChannelRoute(this.identity.space, this.conn.pluginChannelsEnabled, channel);
+    if (route.kind !== "chat") {
+      const limit = opts?.limit ?? 100;
+      if (Number.isSafeInteger(limit) && limit <= 0) return [];
+      return (await this.channelHistoryPage(channel, { ...opts, limit })).items;
+    }
     const from = opts?.publisher;
     // A publisher is one principal. A `*` in either slot would widen the read back to any sender
     // while the caller believes it narrowed it, so both slots are checked as concrete tokens.
@@ -171,8 +180,14 @@ export class EndpointHistory {
     channel: string,
     opts?: ChannelHistoryPageOptions,
   ): Promise<HistoryPage> {
+    const page = await this.channelHistoryRows(channel, opts);
+    return { items: page.items.map(({ msg }) => msg), complete: page.complete };
+  }
+
+  private async channelHistoryRows(channel: string, opts?: ChannelHistoryPageOptions, family = false): Promise<{ items: HistoryRow[]; complete: boolean }> {
     assertValidChannel(channel);
-    if (!isConcreteChannel(channel)) throw new Error("channelHistoryPage requires one concrete channel");
+    if (!isConcreteChannel(channel) && !(family && isChannelFamily(channel)))
+      throw new Error("channelHistoryPage requires one concrete channel");
     const limit = opts?.limit ?? 50;
     if (!Number.isSafeInteger(limit) || limit < 1)
       throw new Error("channelHistoryPage limit must be a positive safe integer");
@@ -180,13 +195,14 @@ export class EndpointHistory {
     const jsm = this.conn.jsm ??= await jetstreamManager(this.conn.nc);
     const signal = AbortSignal.any([AbortSignal.timeout(10_000), ...(opts?.signal ? [opts.signal] : [])]);
     signal.throwIfAborted();
-    const stream = chatStream(this.identity.space);
+    const route = endpointChannelRoute(this.identity.space, this.conn.pluginChannelsEnabled, channel);
+    const stream = route.stream;
     const name = chatHistDurable(this.identity.owner, this.identity.actor, this.deps.requireLifecycleUid("channelHistoryPage"));
     const from = opts?.publisher;
     // A `*` in either slot would widen the read back to any sender, so both are concrete tokens.
     const subject = from === undefined
-      ? chatSubject(this.identity.space, "*", "*", channel)
-      : chatSubject(this.identity.space, assertValidOwnerToken(from.owner), assertValidOwnerToken(from.actor), channel);
+      ? route.subject("*", "*")
+      : route.subject(assertValidOwnerToken(from.owner), assertValidOwnerToken(from.actor));
     const marker = randomUUID();
     let created: ConsumerInfo;
     for (;;) {
@@ -211,7 +227,7 @@ export class EndpointHistory {
     if (!owns(created)) throw new Error("channelHistoryPage: consumer ownership was not established");
     const consumer = await this.conn.js.consumers.get(stream, name);
     const pending = created.num_pending;
-    const out: CotalMessage[] = [];
+    const out: HistoryRow[] = [];
     let delivered = 0;
     if (pending > 0) {
       const iter = await consumer.consume({ max_messages: Math.min(pending, 32) });
@@ -226,7 +242,7 @@ export class EndpointHistory {
           delivered++;
           const msg = this.deps.decodeHistory(m);
           if (msg) {
-            out.push(msg);
+            out.push({ msg, seq: m.seq, subject: m.subject, received: m.timestampNanos });
             if (out.length > limit + 1) out.shift();
           }
           if (delivered >= pending) break;
@@ -281,7 +297,8 @@ export class EndpointHistory {
     channels: readonly string[],
     opts?: { limit?: number; signal?: AbortSignal; batch?: number },
   ): Promise<{ channel: string; seq: number; msg: HistoryMessage }[]> {
-    const subjects = [...new Set(channels.map((channel) => {
+    const pluginChannels = new Set<string>();
+    const subjects = [...new Set(channels.flatMap((channel) => {
       if (!isConcreteChannel(channel) && !(channels.length === 1 && isChannelFamily(channel)))
         throw new Error(`multiChannelHistory: "${channel}" is a wildcard channel - name one channel family alone or concrete channels without wildcards`);
       // `chatSubject` builds the filter through `token()`, which REWRITES rather than refuses: it
@@ -292,12 +309,17 @@ export class EndpointHistory {
       // same aliasing `assertValidChannel` was written for on the policy path; the read path needs
       // it too, and it fails loud rather than serving a channel nobody asked for.
       assertValidChannel(channel);
-      return chatSubject(this.identity.space, "*", "*", channel);
+      const route = endpointChannelRoute(this.identity.space, this.conn.pluginChannelsEnabled, channel);
+      const subject = route.subject("*", "*");
+      if (route.kind === "chat") return [subject];
+      pluginChannels.add(channel);
+      return [];
     }))];
     // No channels is not an empty stream, but it IS an empty answer, and asking the broker for a
     // consumer with no filter would read the WHOLE stream instead of none of it.
-    if (subjects.length === 0) return [];
+    if (!subjects.length && !pluginChannels.size) return [];
     const limit = opts?.limit ?? 100;
+    if (pluginChannels.size && Number.isSafeInteger(limit) && limit <= 0) return [];
     // ONE CREATE CANNOT CARRY AN UNBOUNDED FILTER LIST. The create names every subject in one
     // request and the client's request timeout is what gives way, so past roughly 5,000 filters the
     // read does not answer at all and the route loses the whole chat source: measured on an
@@ -308,7 +330,7 @@ export class EndpointHistory {
     // single-create path on ONE corpus: forcing a small batch makes a space that would otherwise be
     // one read take many, which is the only way to assert the two select the same messages.
     const size = Math.max(1, Math.trunc(opts?.batch ?? MULTI_FILTER_BATCH));
-    const batches: { subjects: string[]; usePluralFilter: boolean }[] = [];
+    const batches: { subjects: string[]; usePluralFilter: boolean; pluginChannel?: string }[] = [];
     for (let i = 0; i < subjects.length; i += size) {
       const batch = subjects.slice(i, i + size);
       const usePluralFilter = batch.length > 1;
@@ -320,15 +342,17 @@ export class EndpointHistory {
       }
       if (shallow.length) batches.push({ subjects: shallow, usePluralFilter });
     }
-    const pages: { seq: number; subject: string; msg: HistoryMessage }[][] = new Array(batches.length);
+    for (const channel of pluginChannels) batches.push({ subjects: [], usePluralFilter: false, pluginChannel: channel });
+    const pages: HistoryRow[][] = new Array(batches.length);
     let next = 0;
     const readBatch = async (): Promise<void> => {
       for (;;) {
         const i = next++;
         if (i >= batches.length) return;
-        pages[i] = await this.streamHistory(
-          chatStream(this.identity.space), batches[i].subjects, limit, undefined, opts?.signal, batches[i].usePluralFilter,
-        );
+        const batch = batches[i];
+        pages[i] = batch.pluginChannel === undefined
+          ? await this.streamHistory(chatStream(this.identity.space), batch.subjects, limit, undefined, opts?.signal, batch.usePluralFilter)
+          : (await this.channelHistoryRows(batch.pluginChannel, { limit, signal: opts?.signal }, true)).items;
       }
     };
     // A BATCH THAT FAILS FAILS THE READ. Returning the batches that answered would be the newest
@@ -344,13 +368,15 @@ export class EndpointHistory {
     // reproduces exactly what one create over the whole list would have selected. Sorting by the
     // payload's `ts` here instead would change which messages the page holds, which is the
     // selection question this pull request already had to answer once.
-    const rows = pages.flat().sort((a, b) => a.seq - b.seq).slice(-limit);
-    return rows.map(({ seq, subject, msg }) => {
-      const p = parseSubject(subject);
-      // The filter set is built from chat subjects, so this cannot fire against a healthy broker.
-      // It is here because the alternative to raising is tagging a message with a guess.
-      if (p?.kind !== "chat")
-        throw new Error(`multiChannelHistory: the broker delivered ${subject}, which is not a chat subject on this space`);
+    const mixed = subjects.length > 0 && pluginChannels.size > 0;
+    const rows = pages.flat().map((row) => ({ ...row, parsed: parseSubject(row.subject) })).sort((a, b) => {
+      if (!mixed || a.parsed?.kind === b.parsed?.kind) return a.seq - b.seq;
+      if (a.received !== b.received) return a.received < b.received ? -1 : 1;
+      return String(a.parsed?.kind).localeCompare(String(b.parsed?.kind));
+    }).slice(-limit);
+    return rows.map(({ seq, subject, msg, parsed: p }) => {
+      if (!p || !channelSubjectInSpace(this.identity.space, subject) || p.kind !== endpointChannelRoute(this.identity.space, this.conn.pluginChannelsEnabled, p.rest).kind)
+        throw new Error(`multiChannelHistory: the broker delivered ${subject} outside the requested channel rail`);
       return { channel: p.rest, seq, msg };
     });
   }
@@ -450,7 +476,7 @@ export class EndpointHistory {
     before?: number,
     signal?: AbortSignal,
     usePluralFilter?: boolean,
-  ): Promise<{ seq: number; subject: string; msg: HistoryMessage }[]> {
+  ): Promise<HistoryRow[]> {
     if (!this.conn.nc) throw new Error(this.deps.notLiveMsg());
     signal?.throwIfAborted();
     // A LIMIT THAT IS NOT A FINITE NUMBER HAS NO ANSWER, AND THE SEARCH BELOW CANNOT REFUSE IT.
@@ -814,9 +840,9 @@ export class EndpointHistory {
     ceiling: number,
     limit: number,
     signal?: AbortSignal,
-  ): Promise<{ seq: number; subject: string; msg: HistoryMessage }[]> {
+  ): Promise<HistoryRow[]> {
     signal?.throwIfAborted();
-    const out: { seq: number; subject: string; msg: HistoryMessage }[] = [];
+    const out: HistoryRow[] = [];
     const consumer = await this.openHistoryReader(reader, {
       filter_subjects: subjects,
       deliver_policy: DeliverPolicy.StartSequence,
@@ -853,14 +879,14 @@ export class EndpointHistory {
           if (m.seq >= ceiling) { // reached the page's upper bound
             if (m.seq === ceiling) {
               const msg = this.deps.decodeHistory(m);
-              if (msg) out.push({ seq: m.seq, subject: m.subject, msg });
+              if (msg) out.push({ seq: m.seq, subject: m.subject, msg, received: m.timestampNanos });
             }
             complete = true;
             break;
           }
           const msg = this.deps.decodeHistory(m);
           if (msg) {
-            out.push({ seq: m.seq, subject: m.subject, msg });
+            out.push({ seq: m.seq, subject: m.subject, msg, received: m.timestampNanos });
             if (out.length > limit) out.shift();
           }
           if (delivered >= pending) { complete = true; break; }
@@ -894,27 +920,28 @@ export class EndpointHistory {
    * stopping once past `untilSeq` (exclusive of it) or after `limit`. The per-instance name means
    * calls must be serial — every reader here awaits to completion, so they are.
    */
-  async collectHistory(
+  private collectHistory(
     subject: string,
-    start: { seq: number } | { time: Date },
+    start: { seq: number } | { time: Date } | { last: true },
     opts: { untilSeq?: number; limit?: number } = {},
+    stream = chatStream(this.identity.space),
   ): Promise<JsMsg[]> {
     // Serialize on the per-instance lock: the fixed `chathist_<id>` name means two concurrent reads
     // (recall + join-backfill + drop-marker can race in-process) would delete/recreate the consumer
     // under each other and cross-feed results. The chain makes the "serial callers" assumption true.
-    const run = this.histLock.then(() => this.collectHistoryInner(subject, start, opts));
+    const run = this.histLock.then(() => this.collectHistoryInner(stream, subject, start, opts));
     this.histLock = run.catch(() => {}); // keep the chain alive on error
     return run;
   }
 
 
-  async collectHistoryInner(
+  private async collectHistoryInner(
+    stream: string,
     subject: string,
-    start: { seq: number } | { time: Date },
+    start: { seq: number } | { time: Date } | { last: true },
     opts: { untilSeq?: number; limit?: number } = {},
   ): Promise<JsMsg[]> {
     if (!this.conn.jsm || !this.conn.js) throw new Error(this.deps.notLiveMsg());
-    const stream = chatStream(this.identity.space);
     const name = chatHistDurable(this.identity.owner, this.identity.actor, this.deps.requireLifecycleUid("chat history reads"));
     const out: JsMsg[] = [];
     // Clear any consumer leaked by a crashed prior read before re-creating it with THIS read's
@@ -928,7 +955,9 @@ export class EndpointHistory {
       inactive_threshold: nanos(30_000),
       ...("time" in start
         ? { deliver_policy: DeliverPolicy.StartTime, opt_start_time: start.time.toISOString() }
-        : { deliver_policy: DeliverPolicy.StartSequence, opt_start_seq: start.seq }),
+        : "seq" in start
+          ? { deliver_policy: DeliverPolicy.StartSequence, opt_start_seq: start.seq }
+          : { deliver_policy: DeliverPolicy.Last }),
     });
     try {
       const consumer = await this.conn.js.consumers.get(stream, name);
@@ -953,6 +982,14 @@ export class EndpointHistory {
       await this.parts.consumers.deleteConsumerIfPresent(stream, name);
     }
     return out;
+  }
+
+  async channelFrontier(channel: string): Promise<number> {
+    const route = endpointChannelRoute(this.identity.space, this.conn.pluginChannelsEnabled, channel);
+    if (route.kind === "chat") return this.parts.consumers.chatFrontier();
+    await this.parts.consumers.manager();
+    const rows = await this.collectHistory(route.subject("*", "*"), { last: true }, { limit: 1 }, route.stream);
+    return rows[0]?.seq ?? 0;
   }
 
 
@@ -1033,10 +1070,11 @@ export class EndpointHistory {
     if (!isConcreteChannel(channel)) return { messages: [], seqs: [], dropped: false, unanswered: true };
     const policy = await this.joinPolicyFresh(channel);
     if (!policy.replay) return { messages: [], seqs: [], dropped: true, unanswered: true };
-    const subject = chatSubject(this.identity.space, "*", "*", channel);
+    const route = endpointChannelRoute(this.identity.space, this.conn.pluginChannelsEnabled, channel);
+    const subject = route.subject("*", "*");
     let raw: JsMsg[];
     try {
-      raw = await this.collectHistory(subject, { seq: sinceSeq + 1 });
+      raw = await this.collectHistory(subject, { seq: sinceSeq + 1 }, {}, route.stream);
     } catch (e) {
       this.deps.emit("error", e as Error);
       if (isPermissionDenied(e)) throw e;
@@ -1061,7 +1099,11 @@ export class EndpointHistory {
     }
     let dropped: boolean;
     try {
-      dropped = await this.chatMayHaveLost(subject, sinceSeq);
+      // Plugin credentials cannot read stream-wide retention metadata. A gap before the first
+      // retained post may reflect eviction, so report it as possibly incomplete.
+      dropped = route.kind === "chat"
+        ? await this.chatMayHaveLost(subject, sinceSeq)
+        : (raw[0]?.seq ?? 0) > sinceSeq + 1;
     } catch (e) {
       // Completeness could not be read, so the read is reported as unanswered: nothing settles on it.
       this.deps.emit("error", e as Error);
@@ -1107,7 +1149,8 @@ export class EndpointHistory {
     let total = 0;
     for (const [ch, frontier] of frontiers) {
       const policy = await this.joinPolicyFresh(ch);
-      if (policy.replay) total += await this.backfillChannel(ch, frontier, policy.windowMs, floorSeq);
+      const floor = isRoutedPluginChannel(this.conn.pluginChannelsEnabled, ch) ? undefined : floorSeq;
+      if (policy.replay) total += await this.backfillChannel(ch, frontier, policy.windowMs, floor);
     }
     return total;
   }
@@ -1121,7 +1164,8 @@ export class EndpointHistory {
     // KV keys, so a per-channel get would throw. Read only the space defaults for it; concrete
     // channels still get their per-channel override.
     const [cfg, defaults] = await Promise.all([
-      isConcreteChannel(channel) ? readChannelConfig(this.conn.channelKv, channel) : Promise.resolve(undefined),
+      isConcreteChannel(channel) && !isRoutedPluginChannel(this.conn.pluginChannelsEnabled, channel)
+        ? readChannelConfig(this.conn.channelKv, channel) : Promise.resolve(undefined),
       readChannelDefaults(this.conn.channelKv),
     ]);
     return { replay: effectiveReplay(cfg, defaults), windowMs: effectiveReplayWindowMs(cfg, defaults) };
