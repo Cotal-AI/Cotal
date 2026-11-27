@@ -9,7 +9,7 @@ import { get } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { CotalEndpoint, createSpaceAuth, DEV_OWNER, eventChannel, isReachable, mintCreds, newIdentity, PLUGIN_CHANNEL_ROOT, serverConfig, setupSpaceStreams, type CotalMessage, type Part } from "@cotal-ai/core";
+import { CotalEndpoint, createSpaceAuth, DEV_OWNER, eventChannel, isReachable, mintCreds, newIdentity, PLUGIN_CHANNEL_ROOT, serverConfig, setupSpaceStreams, type CotalMessage, type MembershipSnapshot, type Part } from "@cotal-ai/core";
 import { freePort, SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { startEnabledPluginSpace } from "../../../packages/core/smoke/fixtures/enabled-plugin-space.js";
 
@@ -124,6 +124,14 @@ interface SharedViewCase {
   publishVerified(): Promise<CotalMessage>;
 }
 
+function checkSharedMembership(snapshot: MembershipSnapshot, cell: SharedViewCase): void {
+  assert.ok(snapshot.asOf !== undefined, "the shared snapshot includes the broker heartbeat");
+  const member = snapshot.members.find(({ id }) => id === cell.readerId);
+  assert.deepEqual(member?.live, [cell.ordinaryChannel], "shared live membership retains only the ordinary channel");
+  assert.deepEqual(member?.durable, [cell.ordinaryChannel], "shared durable membership retains only the ordinary channel");
+  assert.ok(!JSON.stringify(snapshot).includes(cell.channel), "shared membership has no plugin channel name");
+}
+
 async function readSharedView(base: string, cookie: string, cell: SharedViewCase): Promise<void> {
   const read = async (path: string) => {
     const response = await fetch(`${base}${path}`, { headers: { cookie }, signal: AbortSignal.timeout(30_000) });
@@ -136,9 +144,7 @@ async function readSharedView(base: string, cookie: string, cell: SharedViewCase
   assert.deepEqual(JSON.parse(await read(`/api/channels/${encodeURIComponent(cell.channel)}/history`)), [], "named plugin history is empty in a shared view");
   const activity = await read("/api/activity");
   assert.ok(!activity.includes(cell.channel) && !activity.includes(cell.retained.id), "activity has neither the plugin channel nor its retained post");
-  const membership = JSON.parse(await read("/api/membership")) as { members: unknown[] };
-  assert.ok(Array.isArray(membership.members), "the broker-backed membership read retains its existing shape");
-  assert.ok(!JSON.stringify(membership).includes(cell.channel), "shared membership has no plugin channel name");
+  checkSharedMembership(JSON.parse(await read("/api/membership")) as MembershipSnapshot, cell);
   const roster = await read("/api/roster");
   const reader = (JSON.parse(roster) as { card: { id: string }; channelModes?: Record<string, string> }[]).find(({ card }) => card.id === cell.readerId);
   assert.equal(reader?.channelModes?.[cell.ordinaryChannel], "quiet", "the shared roster includes the same reader's ordinary attention setting");
@@ -171,6 +177,7 @@ async function checkViewerFeeds(base: string, cookie: string, sender: Pick<Cotal
       assert.ok(plugin && plugin.channel === enabled.channel, "the fixture verifies publication on the plugin rail");
       await until(() => viewers.every(({ events }) => events.some(({ event }) => event === "membership")), "both viewers receive broker-backed membership snapshots");
       for (const { events } of viewers) {
+        checkSharedMembership(events.find(({ event }) => event === "membership")!.data as unknown as MembershipSnapshot, enabled);
         assert.ok(!JSON.stringify(events).includes(enabled.channel) && !events.some(({ data }) => data.msg?.id === plugin.id), "neither shared feed names the plugin channel or receives the plugin post");
         await readSharedView(base, cookie, enabled);
       }
@@ -203,8 +210,14 @@ async function checkEnabledSpace(frame: Part): Promise<void> {
     const retained = await writer.multicast("retained plugin post", { channel });
     assert.ok((await reader.channelHistory(channel, { limit: 10 })).some(({ id }) => id === retained.id), "the scoped reader sees retained plugin history before the dashboard reads");
     assert.ok((await reader.listChannels()).some((row) => row.channel === channel), "the scoped reader can discover the plugin channel");
+    await fixture.seedMembership(readCred.principal, { live: [chatChannel, channel], durable: [chatChannel, channel] });
     const credsPath = join(dir, "shared-observer.creds");
-    writeFileSync(credsPath, await fixture.mintObserver(), { mode: 0o600 });
+    const observerCreds = await fixture.mintObserver();
+    const observer = endpoint({ creds: observerCreds, card: { kind: "endpoint", name: "membership-witness" }, channels: [], consume: false, registerPresence: false, watchPresence: false });
+    await observer.start();
+    const raw = (await observer.readMembership()).members.find(({ id }) => id === reader.card.id);
+    assert.ok(raw?.live.includes(channel) && raw.durable.includes(channel), "the real broker snapshot contains the plugin membership before dashboard filtering");
+    writeFileSync(credsPath, observerCreds, { mode: 0o600 });
     const dashboard = await launchDashboard({ servers: fixture.servers, space: fixture.space, credsPath });
     await checkViewerFeeds(dashboard.base, dashboard.cookie, writer, frame, {
       channel,
