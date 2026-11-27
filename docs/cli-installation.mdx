@@ -258,10 +258,13 @@ removes earlier archive caches in its temporary location when it can verify that
 npm workers have exited. On Linux, the same cleanup removes earlier staged npm install caches
 after their recorded owner and npm process group have exited. A successful retry also reclaims
 private update scratch idle for more than an hour when it contains only the Node compile cache.
-On Linux, it also removes that scratch if the reconciliation cache contains only recognized npm
-cache data idle for more than an hour and records that prove the updater and every recorded worker
-process group have exited. Cotal keeps unrecorded reconciliation caches, group- or other-writable
-cache data, and scratch with unrelated entries.
+On Linux, staged extension installation during reconciliation writes to the reconciliation npm
+cache, whereas detached connector seeding uses its own cache under the seed folder. A successful
+retry removes aged reconciliation scratch if the reconciliation cache contains only recognized npm
+cache data idle for more than an hour, records prove the updater and the recorded reconciliation
+worker group have exited, and no process of your account still holds that cache in its environment,
+working directory, or open file descriptors. Cotal keeps unrecorded reconciliation caches,
+group- or other-writable cache data, and scratch with unrelated entries.
 An unwritable cache configured in `.npmrc` does not block the update. Cotal leaves that cache and
 its permissions unchanged and still applies your registry,
 authentication, proxy and TLS settings. An unavailable dependency stops the update before replacement.
