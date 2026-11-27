@@ -148,7 +148,7 @@ try {
     help.status === 0 && /^cotal - lateral agent coordination over NATS$/m.test(banner),
     output(help),
   );
-  check("all installed-distribution assertions ran", passed + failed === 31 + 2 * needed.size, { passed, failed, closureMembers: needed.size });
+  check("all installed-distribution assertions ran", passed + failed === 32 + 2 * needed.size, { passed, failed, closureMembers: needed.size });
 } catch (error) {
   if (failed === 0) check("installed-distribution fixture completed", false, error);
   else console.error(error);
