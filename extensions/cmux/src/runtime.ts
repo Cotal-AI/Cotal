@@ -2,7 +2,6 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
-  registry,
   SpawnRefused,
   confirmWatch,
   type AgentHandle,
@@ -173,5 +172,3 @@ export const cmuxRuntimeProvider: RuntimeProvider = {
   available: () => cmux.available(),
   create: () => new CmuxRuntime(),
 };
-
-registry.register(cmuxRuntimeProvider);

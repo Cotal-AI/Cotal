@@ -13,10 +13,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createRuntime, requireRuntimeAdopt } from "../src/index.js";
 import { CustodialPtyRuntime } from "../src/runtime/custodial-pty.js";
-import type { AgentHandle, LaunchSpec, Runtime } from "@cotal-ai/core";
+import { registry, type AgentHandle, type LaunchSpec, type Runtime } from "@cotal-ai/core";
 import { detachKey } from "../../../packages/workspace/src/attach/attach-client.js"; // dev-only cross-package smoke import
-import "@cotal-ai/cmux"; // registers the `cmux` runtime provider
-import "@cotal-ai/tmux"; // registers the `tmux` runtime provider
+import { cmuxRuntimeProvider } from "@cotal-ai/cmux";
+import { tmuxRuntimeProvider } from "@cotal-ai/tmux";
+
+registry.register(cmuxRuntimeProvider, tmuxRuntimeProvider);
 
 let failures = 0;
 function check(label: string, cond: boolean): void {

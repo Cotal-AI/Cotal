@@ -1,6 +1,5 @@
 import { rmSync } from "node:fs";
 import {
-  registry,
   SpawnRefused,
   confirmWatch,
   type AgentHandle,
@@ -224,5 +223,3 @@ export const tmuxRuntimeProvider: RuntimeProvider = {
   available: () => tmux.available(),
   create: (opts) => new TmuxRuntime(opts.session),
 };
-
-registry.register(tmuxRuntimeProvider);

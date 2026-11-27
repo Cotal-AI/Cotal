@@ -4,7 +4,6 @@ import { tmpdir } from "node:os";
 import {
   hardenPrivate,
   launcherSource,
-  registry,
   SpawnRefused,
   confirmWatch,
   writeSecretFile,
@@ -253,5 +252,3 @@ export const herdrRuntimeProvider: RuntimeProvider = {
   available: () => herdr.available(),
   create: (opts) => new HerdrRuntime(opts.session),
 };
-
-registry.register(herdrRuntimeProvider);

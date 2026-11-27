@@ -43,7 +43,9 @@ try {
 }
 
 check("package exports TmuxRuntime and tmuxRuntimeProvider, not tmuxTerminalProvider", "TmuxRuntime" in tmuxPkg && "tmuxRuntimeProvider" in tmuxPkg && !("tmuxTerminalProvider" in tmuxPkg));
-check("importing @cotal-ai/tmux registers runtime/tmux and no terminal provider", registry.has("runtime", "tmux") && !registry.has("terminal", "tmux") && registry.all("terminal").length === 0);
+check("importing @cotal-ai/tmux registers no provider", !registry.has("runtime", "tmux") && registry.all("terminal").length === 0);
+tmuxPkg.default({ contract: 1, register: (...exts) => registry.register(...exts) });
+check("the tmux factory registers runtime/tmux", registry.resolve("runtime", "tmux") === tmuxPkg.tmuxRuntimeProvider);
 assert.throws(() => registry.resolve("terminal", "tmux"), /no terminal registered for "tmux"/);
 checks++;
 console.log("  ✓ resolving terminal/tmux throws");

@@ -17,10 +17,12 @@
  */
 import { execFileSync } from "node:child_process";
 import { createRuntime } from "../src/index.js";
-import "@cotal-ai/cmux"; // registers the `cmux` runtime provider (skipped below if no surface)
-import "@cotal-ai/tmux"; // registers the `tmux` runtime provider — exercised below when tmux is present
+import { cmuxRuntimeProvider } from "@cotal-ai/cmux";
+import { tmuxRuntimeProvider } from "@cotal-ai/tmux";
 import { launchEnv } from "@cotal-ai/connector-core";
-import type { LaunchSpec } from "@cotal-ai/core";
+import { registry, type LaunchSpec } from "@cotal-ai/core";
+
+registry.register(cmuxRuntimeProvider, tmuxRuntimeProvider);
 
 let failures = 0;
 function check(label: string, cond: boolean, extra?: unknown): void {

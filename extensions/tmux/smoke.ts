@@ -5,6 +5,7 @@
  */
 import * as tmux from "./src/driver.js";
 import { TmuxRuntime, tmuxRuntimeProvider } from "./src/runtime.js";
+import registerTmux from "./src/index.js";
 import { registry } from "@cotal-ai/core";
 import { execFileSync } from "node:child_process";
 import { readFileSync, statSync } from "node:fs";
@@ -282,6 +283,7 @@ ok("that session ends with its last seat", !sessionListed(FRESH));
 
 console.log("\n── registry registration ────────────────────────");
 
+registerTmux({ contract: 1, register: (...exts) => registry.register(...exts) });
 const resolvedRuntime = registry.resolve("runtime", "tmux");
 ok("tmuxRuntimeProvider registered as 'runtime/tmux'", resolvedRuntime != null);
 ok("tmuxRuntimeProvider.available() returns true", tmuxRuntimeProvider.available());

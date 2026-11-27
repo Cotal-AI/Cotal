@@ -21,7 +21,7 @@ import {
 } from "@cotal-ai/core";
 import { Manager } from "@cotal-ai/manager";
 import { launchEnv } from "@cotal-ai/connector-core";
-import "@cotal-ai/cmux"; // registers the cmux runtime (default here); harmless under COTAL_RUNTIME=pty
+import { cmuxRuntimeProvider } from "@cotal-ai/cmux";
 import { fileURLToPath } from "node:url";
 
 const RUN_AGENT = fileURLToPath(new URL("../run-agent.sh", import.meta.url));
@@ -34,7 +34,7 @@ const roleAgentConnector: Connector = {
     return { command: RUN_AGENT, args: [opts.role ?? opts.name], confirm: "Enter to confirm", env: launchEnv() };
   },
 };
-registry.register(roleAgentConnector);
+registry.register(roleAgentConnector, cmuxRuntimeProvider);
 
 const space = process.env.COTAL_SPACE?.trim() || "console";
 const server = process.env.COTAL_SERVERS?.trim() || DEFAULT_SERVER;

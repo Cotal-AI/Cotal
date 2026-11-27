@@ -28,7 +28,7 @@ import { Manager } from "../src/manager.js";
 import { createRuntime } from "../src/runtime/index.js";
 import { childlessRuntime } from "./_childless-runtime.js";
 import type { Runtime } from "@cotal-ai/core";
-import "@cotal-ai/tmux";
+import { tmuxRuntimeProvider } from "@cotal-ai/tmux";
 import { bootDeliveryDaemon } from "./_boot-delivery.js";
 import { pickFreePort } from "./_free-port.js";
 
@@ -73,7 +73,7 @@ const connector: Connector = {
     };
   },
 };
-registry.register(connector);
+registry.register(connector, tmuxRuntimeProvider);
 
 let failed = 0;
 const check = (label: string, condition: boolean, detail?: unknown): void => {

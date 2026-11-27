@@ -10,6 +10,7 @@
  */
 import * as herdr from "./src/driver.js";
 import { HerdrRuntime, herdrRuntimeProvider, privateLauncher } from "./src/runtime.js";
+import registerHerdr from "./src/index.js";
 import { registry } from "@cotal-ai/core";
 import { execFileSync, spawn } from "node:child_process";
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
@@ -764,7 +765,8 @@ throws("a serverless session cannot prove terminal state (fails closed)", () =>
 
 console.log("\n── registry registration ────────────────────────");
 
-ok("herdrRuntimeProvider registered as 'runtime/herdr'", registry.resolve("runtime", "herdr") != null);
+registerHerdr({ contract: 1, register: (...exts) => registry.register(...exts) });
+ok("the factory registers runtime/herdr", registry.resolve("runtime", "herdr") === herdrRuntimeProvider);
 ok("herdrRuntimeProvider.available() returns true", herdrRuntimeProvider.available());
 
 console.log("\n────────────────────────────────────────────────");

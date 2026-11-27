@@ -20,7 +20,7 @@ import {
 } from "@cotal-ai/core";
 import { authDir, saveSpaceAuth, workspaceSecretStore } from "@cotal-ai/workspace";
 import { Manager } from "../src/manager.js";
-import "@cotal-ai/tmux";
+import { tmuxRuntimeProvider } from "@cotal-ai/tmux";
 import { bootBroker } from "./_boot-broker.js";
 import { bootDeliveryDaemon } from "./_boot-delivery.js";
 
@@ -57,7 +57,7 @@ const connector: Connector = {
     };
   },
 };
-registry.register(connector);
+registry.register(connector, tmuxRuntimeProvider);
 
 let failed = 0;
 const check = (label: string, condition: boolean, detail?: unknown): void => {

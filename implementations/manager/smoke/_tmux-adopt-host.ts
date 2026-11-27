@@ -1,7 +1,7 @@
 // One tmux-runtime manager process for tmux-adopt-manager-crash.smoke.ts: it starts the manager,
 // prints REPRO_MANAGER, and waits to be SIGKILLed, which is the crash the suite grades. The suite
 // spawns seats over the manager's own spawn command, so the suite is their spawner.
-import "@cotal-ai/tmux"; // registers the `tmux` runtime provider
+import { tmuxRuntimeProvider } from "@cotal-ai/tmux";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Manager } from "../src/manager.js";
@@ -16,7 +16,7 @@ const stub = join(here, "e2e-stub.mjs");
 // The stub seat gets the endpoint list the way a real connector writes it, so a suite can read the
 // value the session received.
 const envFor = (o: LaunchOpts): Record<string, string> => ({ COTAL_SPACE: o.space, COTAL_SERVERS: String(o.servers ?? servers), COTAL_CREDS: String(o.creds), COTAL_ID: String(o.id), COTAL_NAME: o.name, COTAL_LIFECYCLE_UID: String(o.lifecycleUid), ...aclEnv({ endpoints: o.endpoints }), PATH: process.env.PATH ?? "" });
-registry.register({ kind: "connector", name: "tmux-adopt-stub", requires: ["node"], buildLaunch: (o): LaunchSpec => ({ command: process.execPath, args: [stub, space], env: envFor(o) }) } as Connector);
+registry.register(tmuxRuntimeProvider, { kind: "connector", name: "tmux-adopt-stub", requires: ["node"], buildLaunch: (o): LaunchSpec => ({ command: process.execPath, args: [stub, space], env: envFor(o) }) } as Connector);
 const manager = new Manager({ space, servers, runtime: "tmux", workspaceRoot: root, consolePort: 0 });
 (manager as unknown as { staticLifecycleEvict?: (principal: string) => Promise<EvictionResult> }).staticLifecycleEvict =
   (principal) => evictDeniedPrincipalWithCreds({

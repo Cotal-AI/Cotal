@@ -3,8 +3,8 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import * as tmux from "./dist/driver.js";
-import { TmuxRuntime } from "./dist/runtime.js";
+import * as tmux from "./src/driver.js";
+import { TmuxRuntime } from "./src/runtime.js";
 import { SpawnRefused } from "@cotal-ai/core";
 
 if (process.platform === "win32" || !tmux.available()) {

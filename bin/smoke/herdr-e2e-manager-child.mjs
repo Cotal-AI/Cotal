@@ -15,7 +15,9 @@ import { join } from "node:path";
 import { registry } from "@cotal-ai/core";
 import { Manager } from "@cotal-ai/manager";
 import * as herdr from "../../extensions/herdr/src/driver.js";
-import "../../extensions/herdr/src/runtime.js"; // self-registers runtime/herdr
+import { herdrRuntimeProvider } from "../../extensions/herdr/src/runtime.js";
+
+registry.register(herdrRuntimeProvider);
 
 const e = process.env;
 const SPACE = e.HE2E_SPACE;

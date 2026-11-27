@@ -328,6 +328,9 @@ importers:
       '@cotal-ai/core':
         specifier: workspace:*
         version: link:../../packages/core
+      esbuild:
+        specifier: ^0.28.0
+        version: 0.28.1
       tsx:
         specifier: ^4.22.4
         version: 4.22.4
@@ -516,6 +519,9 @@ importers:
       '@cotal-ai/core':
         specifier: workspace:*
         version: link:../../packages/core
+      esbuild:
+        specifier: ^0.28.0
+        version: 0.28.1
       tsx:
         specifier: ^4.22.4
         version: 4.23.0
@@ -579,6 +585,9 @@ importers:
       '@cotal-ai/smoke-kit':
         specifier: workspace:*
         version: link:../../packages/smoke-kit
+      esbuild:
+        specifier: ^0.28.0
+        version: 0.28.1
 
   implementations/acp:
     dependencies:

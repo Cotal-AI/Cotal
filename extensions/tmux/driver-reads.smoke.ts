@@ -11,7 +11,7 @@ if (process.platform === "win32") {
   console.log("tmux driver reads: POSIX scripted executable required");
 } else {
   const root = mkdtempSync(join(tmpdir(), "cotal-tmux-driver-reads-"));
-  const driver = new URL("./dist/driver.js", import.meta.url).href;
+  const driver = new URL("./src/driver.ts", import.meta.url).href;
   writeFileSync(join(root, "tmux"), `#!/bin/sh
 [ "$1" = -u ] || exit 2
 shift
@@ -52,7 +52,7 @@ esac
   function read(mode: string, call: string, inside = true) {
     const callsPath = join(root, `calls-${serial++}`);
     writeFileSync(callsPath, "");
-    const child = spawnSync(process.execPath, ["--input-type=module", "-e", `
+    const child = spawnSync(process.execPath, ["--import", import.meta.resolve("tsx"), "--input-type=module", "-e", `
       import * as driver from ${JSON.stringify(driver)};
       try {
         console.log(JSON.stringify({ returned: ${call} }));

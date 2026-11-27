@@ -94,7 +94,9 @@ try {
 }
 
 ok("package exports CmuxRuntime and cmuxRuntimeProvider, not cmuxTerminalProvider", "CmuxRuntime" in cmuxPkg && "cmuxRuntimeProvider" in cmuxPkg && !("cmuxTerminalProvider" in cmuxPkg));
-ok("importing @cotal-ai/cmux registers runtime/cmux and no terminal provider", registry.has("runtime", "cmux") && !registry.has("terminal", "cmux") && registry.all("terminal").length === 0);
+ok("importing @cotal-ai/cmux registers no provider", !registry.has("runtime", "cmux") && registry.all("terminal").length === 0);
+cmuxPkg.default({ contract: 1, register: (...exts) => registry.register(...exts) });
+ok("the cmux factory registers runtime/cmux", registry.resolve("runtime", "cmux") === cmuxPkg.cmuxRuntimeProvider);
 {
   let refusal = "";
   try { registry.resolve("terminal", "cmux"); } catch (e) { refusal = (e as Error).message; }
