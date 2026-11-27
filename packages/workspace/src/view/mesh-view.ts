@@ -2,7 +2,7 @@
 
 import { EventEmitter } from "node:events";
 import type { CotalEndpoint, CotalMessage, DeliveryClass, EndpointRef, MembershipChange, MembershipSnapshot, Presence, PresenceStatus, TransportState } from "@cotal-ai/core";
-import { PLUGIN_CHANNEL_ROOT, deliveryOf, chatWildcard, isEventChannel, parseSubject, partsToText } from "@cotal-ai/core";
+import { PLUGIN_CHANNEL_ROOT, channelRoute, deliveryOf, chatWildcard, isEventChannel, parseSubject, partsToText, subjectPatternCovers } from "@cotal-ai/core";
 import { observerChannelTapSubjects } from "./observer.js";
 
 // ---- the model the surfaces render -----------------------------------------
@@ -220,6 +220,7 @@ export class MeshView extends EventEmitter {
   private warning?: string;
   private dirty = true;
   private membership: MembershipView = {};
+  private isolatedMembership = false;
   private membershipWatch?: { stop(): Promise<void> };
   private membershipTimer?: ReturnType<typeof setTimeout>;
 
@@ -287,6 +288,7 @@ export class MeshView extends EventEmitter {
     // A cancelled endpoint start can resolve after stop has cleared the view's timers.
     if (this.stopped) return;
     this.bound = true;
+    this.isolatedMembership = this.chatOnly && this.ep.channelRoutingMode() === "isolated";
     this.setRoster(this.ep.getRoster());
     const receive = (subject: string, msg: CotalMessage | undefined) => {
       if (msg) this.ingest(subject, msg);
@@ -377,6 +379,26 @@ export class MeshView extends EventEmitter {
     this.dirty = true;
   }
 
+  private scopeMembership(snapshot: MembershipSnapshot): MembershipSnapshot {
+    if (!this.chatOnly) return snapshot;
+    const mode = this.ep.channelRoutingMode();
+    if (mode !== undefined) this.isolatedMembership = mode === "isolated";
+    if (!this.isolatedMembership) return snapshot;
+    const allowed = observerChannelTapSubjects(this.ep) ?? [];
+    const visible = (channel: string): boolean => {
+      if (channel !== PLUGIN_CHANNEL_ROOT && !channel.startsWith(`${PLUGIN_CHANNEL_ROOT}.`)) return true;
+      try {
+        const { subject } = channelRoute(this.ep.space, "*", "*", channel, "isolated");
+        return allowed.some((grant) => subjectPatternCovers(grant, subject));
+      } catch { return false; }
+    };
+    const members = snapshot.members.flatMap((row) => {
+      const live = row.live.filter(visible), durable = row.durable.filter(visible);
+      return live.length || durable.length || (!row.live.length && !row.durable.length) ? [{ ...row, live, durable }] : [];
+    });
+    return { ...snapshot, members };
+  }
+
   /** Discard local chat for one channel, or all chat if no channel is given, after a confirmed purge. */
   discardChatHistory(channel?: string): void {
     this.chatPrefillDiscards?.add(channel);
@@ -397,7 +419,7 @@ export class MeshView extends EventEmitter {
       endpoints: this.roster.filter((p) => p.card.kind !== "agent"),
       channels,
       feed: this.feed.slice(),
-      membership: { ...this.membership },
+      membership: { ...this.membership, ...(this.membership.snapshot ? { snapshot: this.scopeMembership(this.membership.snapshot) } : {}) },
       rates: { msgsPerSec: this.msgsPerSec, activity: this.bucketCounts.slice() },
       status: {
         connected: this.bound && this.transport,
