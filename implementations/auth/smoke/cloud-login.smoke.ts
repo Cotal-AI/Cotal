@@ -180,6 +180,7 @@ try {
   const secondCookie = secondUser.headers.get('set-cookie')!.split(';')[0]!;
   for (const [attempt, expectNotice] of [['switch', true], ['same-account', false]] as const) {
     let switchedText = '';
+    let switchTimedOut = false;
     let switchedApproved: Promise<void> | undefined;
     const switchedLogin = spawn(process.execPath, ['bin/dist/cotal.js', 'login', '--idp', base, '--plain'], { env, stdio: ['ignore', 'pipe', 'pipe'] });
     const collectSwitch = (chunk: Buffer) => {
@@ -188,9 +189,10 @@ try {
       if (match && !switchedApproved) switchedApproved = approveDevice({ base, cookie: secondCookie, origin }, match[1]!);
     };
     switchedLogin.stdout.on('data', collectSwitch); switchedLogin.stderr.on('data', collectSwitch);
-    const switchDeadline = setTimeout(() => switchedLogin.kill('SIGTERM'), 30_000);
+    const switchDeadline = setTimeout(() => { switchTimedOut = true; switchedLogin.kill('SIGTERM'); }, 30_000);
     try {
       assert.equal(await new Promise(resolve => switchedLogin.on('close', resolve)), 0, switchedText);
+      assert.equal(switchTimedOut, false, `login was killed by its own 30s deadline before it finished:\n${switchedText}`);
       await switchedApproved;
       const expectedLine = `The previous account still has 1 resumable conversation approval on this computer. Sign in to that account with \`cotal login --idp ${base}\` and run \`cotal logout --idp ${base}\`, or revoke it at the space authority, to end it.`;
       assert.equal(switchedText.includes(expectedLine), expectNotice, switchedText);
