@@ -58,6 +58,10 @@ function retainedPath(root: string, path: string): string {
 
 const SCRIPT = Buffer.from(verifyWindowsDemandTask + String.raw`
 $ErrorActionPreference = 'Stop'
+# Load the inbox cmdlets directly in the desktop daemon's restricted environment.
+$PSModuleAutoLoadingPreference = 'None'
+Import-Module ([IO.Path]::Combine($PSHOME, 'Modules\Microsoft.PowerShell.Utility\Microsoft.PowerShell.Utility.psd1'))
+Import-Module ([IO.Path]::Combine($PSHOME, 'Modules\Microsoft.PowerShell.Management\Microsoft.PowerShell.Management.psd1'))
 [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
 $a = [Console]::In.ReadToEnd() | ConvertFrom-Json
 $scheduler = New-Object -ComObject Schedule.Service

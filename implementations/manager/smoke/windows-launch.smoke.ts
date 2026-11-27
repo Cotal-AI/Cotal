@@ -30,7 +30,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, delimiter } from "node:path";
 import { connect, createServer } from "node:net";
 import { spawnSync } from "node:child_process";
-import { randomBytes } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { resolveOnPath } from "@cotal-ai/workspace";
 import { CONTROL_PROTOCOL_VERSION, controlCall } from "@cotal-ai/core";
@@ -40,10 +40,13 @@ import { quoteCmdArg, buildCmdCommandLine, resolveComspec, preparePtyLaunch } fr
 import { controlShutdown } from "../src/control-shutdown.js";
 import { controlSession } from "../src/control-session.js";
 import { WindowsSeatStop } from "../src/runtime/windows-stop.js";
+import { createWindowsPrivateDir, windowsUserSid } from "../../../packages/seat/src/host.js";
 import type { Win32ProcessPin, Win32TreePin } from "@cotal-ai/workspace";
 import { createRuntime } from "../src/index.js";
 import { SharedPtyRuntime } from "../src/runtime/shared-pty.js";
 import { windowsSeatCommandLine, windowsSeatEnvironmentBlock } from "../../../packages/seat/src/shared-job-conpty-win32.js";
+import { deriveWindowsSeatSlot } from "../../../packages/seat/src/shared-slot-win32.js";
+import { windowsCustodyTask } from "../../../packages/seat/src/shared-task-win32.js";
 
 const isWin = process.platform === "win32";
 /** The control sockets' per-launch directories, removed at the end. */
@@ -67,6 +70,45 @@ function throws(label: string, fn: () => unknown): void {
   check(label, threw);
 }
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+
+if (isWin) {
+  const root = realpathSync.native(mkdtempSync(join(tmpdir(), "cotal-task-inspect-")));
+  const original = Object.entries(process.env);
+  try {
+    const generation = "1".repeat(64);
+    const runtime = join(root, generation, "runtime");
+    const program = join(runtime, "node.exe"), entry = join(runtime, "host.js");
+    const slot = deriveWindowsSeatSlot(root, root.toLowerCase(), windowsUserSid(), randomUUID(), generation);
+    mkdirSync(dirname(runtime));
+    mkdirSync(dirname(slot.root));
+    createWindowsPrivateDir(runtime);
+    createWindowsPrivateDir(slot.root);
+    writeFileSync(program, "never executed");
+    writeFileSync(entry, "never executed");
+    const task = () => windowsCustodyTask(slot, { root: runtime, key: generation, program, entry }, 1).inspect();
+    eq("Windows custody inspect verifies the vacant task in the normal environment", task(), { present: false });
+    // Match the desktop launcher's daemon_env_key allowlist.
+    const allowed = new Set([
+      "PATH", "HOME", "USER", "LOGNAME", "LANG", "LANGUAGE", "LC_ALL", "LC_CTYPE",
+      "XDG_RUNTIME_DIR", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME", "XDG_STATE_HOME",
+      "DBUS_SESSION_BUS_ADDRESS", "DISPLAY", "WAYLAND_DISPLAY", "SYSTEMROOT", "WINDIR",
+      "USERPROFILE", "LOCALAPPDATA", "APPDATA", "TEMP", "TMP", "COMSPEC", "PATHEXT",
+      "NUMBER_OF_PROCESSORS", "PROCESSOR_ARCHITECTURE", "DO_NOT_TRACK",
+    ]);
+    for (const [key] of original) if (!allowed.has(key.toUpperCase())) delete process.env[key];
+    try {
+      eq("Windows custody inspect works in the stock desktop environment", task(), { present: false });
+    } catch (error) {
+      check(`Windows custody inspect works in the stock desktop environment (${String(error)})`, false);
+    }
+    check("read-only task inspection leaves no task receipt", !existsSync(join(slot.root, "task.xml")));
+  } finally {
+    for (const [key, value] of original) process.env[key] = value;
+    rmSync(root, { recursive: true, force: true });
+  }
+} else {
+  console.log("  skip: restricted Windows Scheduler inspection requires native Windows");
+}
 
 // The packed Windows bootstrap attests its entry, but only Linux supplies a loaded stamp.
 // Exercise the real runtime constructor with that shape. No host or task is started by this cell.
