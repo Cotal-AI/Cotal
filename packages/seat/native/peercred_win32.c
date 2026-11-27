@@ -736,6 +736,8 @@ static napi_value PipeConnect(napi_env env, napi_callback_info info) {
   return promise;
 }
 
+#include "conpty_win32.inc"
+
 static void Export(napi_env env, napi_value exports, const char* name, napi_callback cb) {
   napi_value fn;
   napi_create_function(env, name, NAPI_AUTO_LENGTH, cb, NULL, &fn);
@@ -753,6 +755,12 @@ static napi_value Init(napi_env env, napi_value exports) {
   Export(env, exports, "pipeAccept", PipeAccept);
   Export(env, exports, "pipeClose", PipeClose);
   Export(env, exports, "pipeConnect", PipeConnect);
+  Export(env, exports, "seatPtyLaunch", SeatPtyLaunch);
+  Export(env, exports, "seatPtyResume", SeatPtyResume);
+  Export(env, exports, "seatPtyPoll", SeatPtyPoll);
+  Export(env, exports, "seatPtyResize", SeatPtyResize);
+  Export(env, exports, "seatPtyDispose", SeatPtyDispose);
+  Export(env, exports, "seatPtyStop", SeatPtyStop);
   return exports;
 }
 
