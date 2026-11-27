@@ -80,7 +80,14 @@ export async function repairRuntimeEntry(assert: typeof strictAssert): Promise<v
     assert.equal(added.status, 0, added.output);
     const root = await cli("ext", "root");
     assert.equal(root.status, 0, root.output);
-    const entry = join(root.stdout.trim(), "node_modules", pkg, "dist/index.js");
+    const extroot = root.stdout.trim();
+    const manifestPath = join(extroot, "extensions.json");
+    const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as { extensions: { pkg: string; spec?: string }[] };
+    const recorded = manifest.extensions.find(entry => entry.pkg === pkg);
+    assert.equal(recorded?.spec, `${pkg}@${version}`);
+    recorded!.spec = `${pkg}@latest`;
+    writeFileSync(manifestPath, JSON.stringify(manifest));
+    const entry = join(extroot, "node_modules", pkg, "dist/index.js");
     const original = readFileSync(entry);
     assert.ok(original.length > 0);
     const offlineCli = (...args: string[]) => run([cliEntry, ...args], home, { ...env, COTAL_SKIP_CONNECTOR_SEED: "1", CI: "false" });
