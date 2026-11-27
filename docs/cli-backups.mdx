@@ -289,9 +289,7 @@ store it set aside. A reopened step accepts an answer again. `cotal status` and 
 the prior run journals on the same isolated copy of the store it sets aside, so such a restore takes
 longer and needs disk space for that copy.
 
-If `--store-dir` names a symbolic link to an existing directory, restore refuses `USAGE_INVALID`
-(exit 1) before staging. Choose an unused path inside an existing writable directory instead of
-using the link's target.
+Restore refuses `USAGE_INVALID` (exit 1) before staging if `--store-dir` names a symbolic link or a regular file, or if a regular file blocks the path. The only store path allowed inside `.cotal` is the project's default store. For an alternate store, choose an unused path in an existing writable directory outside `.cotal`. The restore creates the store directory.
 
 `up --restore --restore-only registry` prints the same two lines. Without `--store-dir`, a restore
 creates its store at `.cotal/nats`, also when the cut's store is elsewhere, as after
