@@ -40,6 +40,7 @@ import { freePort, killAndAwaitExit, skipSuite, teardownOnSignal, SMOKE_BROKER_T
 import { daemonPaths } from "../daemon/endpoint.js";
 import { unitReceiptFile } from "../daemon/install.js";
 import { queryDaemon } from "../daemon/client.js";
+import { emitSentinel } from "./sentinel.mjs";
 import { lostConnection } from "../daemon/lost-connection.js";
 import type { HostedManager } from "../daemon/protocol.js";
 
@@ -460,7 +461,7 @@ try {
   const askedRow = asked.ok ? asked.result.managers?.find((row) => row.space === SPACE) : undefined;
   const readAt = Date.now();
   check("C3 a full status read reports the lost connection and its failed probe", askedRow?.connection?.state === "unreachable" && askedRow.state === "starting", askedRow);
-  check("C4 the state that read changed reaches the live feed", await until(5_000, () => frames.some((f) => f.at >= readAt - 1000 && f.state === "starting")), frames.slice(-3));
+  check("C4 the state that read changed reaches the live feed (a guard: the status request pushed this before the change too; R2 is the cell whose frame only the probe's own push can send)", await until(5_000, () => frames.some((f) => f.at >= readAt - 1000 && f.state === "starting")), frames.slice(-3));
   const statusCli = spawn(process.execPath, [cliEntry, "daemon", "service-status", "--space", SPACE, "--json"], { cwd: participant, env: childEnv, stdio: ["ignore", "pipe", "pipe"] });
   let statusOut = "";
   statusCli.stdout.on("data", (b) => { statusOut += String(b); });
@@ -532,7 +533,14 @@ try {
   const olderCutAt = Date.now();
   await sleep(20_000);
   const during = frames.filter((f) => f.at >= olderCutAt);
-  check("O2 cut for 20 s, the older Manager is never reported starting, relaunched, or with a connection the daemon cannot see", during.every((f) => f.state === "answering" && f.connection === undefined && f.pid === olderPid && f.restarts === olderRestarts) && frames.at(-1)?.pid === olderPid, { olderPid, olderRestarts, odd: during.filter((f) => f.state !== "answering" || f.connection !== undefined || f.pid !== olderPid).slice(0, 2) });
+  // Frames come only on change, so a daemon that stopped sending would pass the line above. A new
+  // watch is answered at once with the daemon's current view, which proves it is alive and what it holds.
+  watch?.destroy();
+  const askedAt = Date.now();
+  openWatch();
+  const fresh = await until(5_000, () => frames.some((f) => f.at >= askedAt));
+  const now = frames.find((f) => f.at >= askedAt);
+  check("O2 cut for 20 s, the older Manager is never reported starting, relaunched, or with a connection the daemon cannot see, and a new watch still reads it answering", during.every((f) => f.state === "answering" && f.connection === undefined && f.pid === olderPid && f.restarts === olderRestarts) && fresh && now?.state === "answering" && now.connection === undefined && now.pid === olderPid && now.restarts === olderRestarts, { olderPid, olderRestarts, now, odd: during.filter((f) => f.state !== "answering" || f.connection !== undefined || f.pid !== olderPid).slice(0, 2) });
   reconnectNetwork();
   watch?.destroy();
 } finally {
@@ -551,5 +559,6 @@ try {
 
 if (fail > 0) console.log(`\n--- last daemon output ---\n${daemonLog.slice(-60).join("\n")}`);
 console.log(`\n=== daemon-lost-connection smoke: ${pass} passed, ${fail} failed ===`);
+emitSentinel({ passed: pass, failed: fail });
 if (fail > 0 || pass !== 19) process.exit(1);
 process.exit(0);
