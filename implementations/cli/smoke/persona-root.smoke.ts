@@ -589,6 +589,22 @@ try {
     && unknownError.message === "Unknown option '--wibble'" && unknownError.remedy === "drop the unknown option"
     && fixedShow.status === 0 && fixedShow.stderr === "" && JSON.parse(fixedShow.stdout).outcome === "ok",
     { unknownShow: unknownShow.stdout, fixedShow: fixedShow.stdout });
+  const dashName = "-review";
+  const dashRefused = native(["persona", "create", dashName, "--prompt", "Review the patch.", "--subscribe=", "--json"], offlineRoot);
+  const dashError = JSON.parse(dashRefused.stdout || "{}").error;
+  const printed = typeof dashError?.remedy === "string" ? /`(?:pnpm cotal|cotal) persona ([^`]+)`/.exec(dashError.remedy)?.[1] : undefined;
+  const printedWords = printed === undefined ? [] : [...printed.matchAll(/'([^']*)'|"([^"]*)"|(\S+)/g)].map((match) => match[1] ?? match[2] ?? match[3]!);
+  check("a persona name that starts with - keeps its flags and is not reprinted",
+    dashRefused.status === 1 && dashRefused.stderr === "" && dashError?.remedy?.includes("starts with a letter, digit or _")
+    && printedWords[0] === "create" && printedWords.includes("--prompt") && printedWords.includes("Review the patch.")
+    && printedWords.at(-1) === "<name>" && !printedWords.includes(dashName),
+    dashRefused.stdout + dashRefused.stderr);
+  const literal = native(["persona", "show", "review", "--json", "--", "--json"], offlineRoot);
+  const literalError = JSON.parse(literal.stdout || "{}").error;
+  check("a declared flag after -- stays a positional",
+    literal.status === 1 && literalError?.code === "USAGE_INVALID"
+    && literalError.message === "usage: cotal persona [show|create|edit|remove <name>]",
+    literal.stdout + literal.stderr);
   const create = plannedServer.stdout.match(/(?:cotal|pnpm cotal) (p create <name> --file <persona.md> --space offline-audit --server nats:\/\/127\.0\.0\.1:1)/)?.[1];
   const sourcePath = join(scratch, "catalog-input.md");
   const source = "---\nname: catalog-created\n---\nCreated in the other catalog.\n";
