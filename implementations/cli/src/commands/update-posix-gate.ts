@@ -1,8 +1,9 @@
 import { spawn } from "node:child_process";
 import { closeSync, readSync } from "node:fs";
+import { constants as osConstants } from "node:os";
 
 // Read the framed non-identifier environment block from inherited descriptor 4 and close it
-// before spawning the target so no environment value enters argv and descriptor 4 never leaks.
+// before loading or spawning the target so values never enter argv and descriptor 4 never leaks.
 function readEnvPipe(fd: number): Buffer {
   const chunks: Buffer[] = [];
   const scratch = Buffer.allocUnsafe(65536);
@@ -48,15 +49,24 @@ function decodeGateEnv(raw: Buffer): [string, string][] {
   return entries;
 }
 
-function main(): void {
-  const [file, ...args] = process.argv.slice(2);
-  if (!file) process.exit(1);
-  let entries: [string, string][];
-  try {
-    entries = decodeGateEnv(readEnvPipe(4));
-  } catch {
-    process.exit(1);
+function stripSelfExecArgv(): boolean {
+  let stripped = false;
+  for (let i = process.execArgv.length - 1; i >= 0; i--) {
+    const arg = process.execArgv[i]!;
+    if (arg === `--import=${import.meta.url}`) {
+      process.execArgv.splice(i, 1);
+      stripped = true;
+    } else if (arg === "--import" && process.execArgv[i + 1] === import.meta.url) {
+      process.execArgv.splice(i, 2);
+      stripped = true;
+    }
   }
+  return stripped;
+}
+
+function runStage(entries: readonly (readonly [string, string])[]): void {
+  const [label, file, ...args] = process.argv.slice(2);
+  if (!label || !file) process.exit(1);
   const childEnv: NodeJS.ProcessEnv = { ...process.env };
   delete childEnv.NODE_OPTIONS;
   for (const [key, value] of entries) childEnv[key] = value;
@@ -70,17 +80,38 @@ function main(): void {
   }
   inner.once("error", err => {
     const code = (err as NodeJS.ErrnoException).code;
-    process.stderr.write(`${file}: ${err.message}\n`);
+    const detail = code === "ENOENT" ? "not found" : code === "EACCES" ? "Permission denied" : err.message;
+    process.stderr.write(`${label}: 1: exec: ${file}: ${detail}\n`);
     process.exit(code === "ENOENT" ? 127 : 126);
   });
   inner.once("exit", (exitCode, termSignal) => {
     if (termSignal !== null) {
+      // Node ignores SIGPIPE and SIGXFSZ and starts the inspector on SIGUSR1; exit non-zero directly.
+      if (termSignal === "SIGPIPE" || termSignal === "SIGXFSZ" || termSignal === "SIGUSR1") {
+        const num = osConstants.signals[termSignal as keyof typeof osConstants.signals];
+        process.exit(128 + (typeof num === "number" ? num : 1));
+      }
       process.removeAllListeners(termSignal);
       process.kill(process.pid, termSignal);
       return;
     }
     process.exit(exitCode ?? 1);
   });
+}
+
+function main(): void {
+  const preload = stripSelfExecArgv();
+  let entries: [string, string][];
+  try {
+    entries = decodeGateEnv(readEnvPipe(4));
+  } catch {
+    process.exit(1);
+  }
+  if (preload) {
+    for (const [key, value] of entries) process.env[key] = value;
+    return;
+  }
+  runStage(entries);
 }
 
 main();

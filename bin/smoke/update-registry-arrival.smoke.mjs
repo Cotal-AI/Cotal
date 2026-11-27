@@ -1271,13 +1271,68 @@ async function gateEnvCell(entry, parent, scenario = 'gate-env') {
     const tls = spawnSync('openssl', ['req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-keyout', key, '-out', cert, '-days', '1', '-config', cnf], { env: childEnv, encoding: 'utf8' });
     assert.equal(tls.status, 0, tls.stderr);
     const archives = new Map();
+    const realCliDist = pathToFileURL(join(repo, 'implementations/cli/dist/commands/update.js')).href;
+    const realWorkspaceDist = pathToFileURL(join(repo, 'packages/workspace/dist/index.js')).href;
     for (const version of [previous, target]) {
       writeFileSync(join(root, 'payload/package/package.json'), JSON.stringify({
-        name: 'cotal-ai', version, bin: { cotal: 'dist/cotal.js' },
+        name: 'cotal-ai', version, type: 'module', bin: { cotal: 'dist/cotal.js' },
         ...(version === target ? { cotalPreinstall: { v: 1, entry: 'dist/preinstall.js' }, dependencies: { '@cotal-ai/cli': target } } : {}),
       }));
-      writeFileSync(join(root, 'payload/package/dist/cotal.js'), `#!/usr/bin/env node\nconsole.log('cotal-ai ${version}');\n`, { mode: 0o755 });
-      writeFileSync(join(root, 'payload/package/dist/cotal-program.js'), `console.log('cotal-ai ${version}');\n`);
+      const programBody = version === target ? `
+import { existsSync, fstatSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+if (process.argv[2] === "--version") {
+  console.log("cotal-ai ${version}");
+  process.exit(0);
+}
+if (process.argv[2] === "update") {
+  const { executeUpdate, updateRuntime } = await import(${JSON.stringify(realCliDist)});
+  const { inspectGlobalUpdateChild } = await import(${JSON.stringify(realWorkspaceDist)});
+  const reportPath = process.env.SMOKE_RECONCILE_BINDING_REPORT;
+  const globalRoot = join(process.env.npm_config_prefix, "lib/node_modules");
+  const custody = inspectGlobalUpdateChild(globalRoot);
+  const openGateFds = [];
+  for (const fd of [3, 4]) {
+    try { const st = fstatSync(fd); if (st.isFIFO() || st.isSocket()) openGateFds.push(fd); } catch {}
+  }
+  let reconciled = false;
+  const code = await executeUpdate(false, {
+    ...updateRuntime,
+    env: process.env,
+    pid: process.pid,
+    parentPid: process.ppid,
+    version: () => ${JSON.stringify(version)},
+    reconcile: async () => { reconciled = true; },
+    refreshConnectors: async () => {},
+    refreshClients: async () => [],
+    reportRunningManager: async () => "none",
+    waitForInstalledGeneration: async () => {},
+    extensions: () => [],
+    claimUpdatePass: () => () => {},
+  });
+  if (reportPath) {
+    writeFileSync(reportPath, JSON.stringify({
+      code,
+      reconciled,
+      pid: process.pid,
+      ppid: process.ppid,
+      expectedParent: Number(process.env.COTAL_UPDATE_PARENT),
+      custodyPid: custody.child?.pid ?? null,
+      custodyPhase: custody.child?.phase ?? null,
+      hasUnscopedAuth: Object.entries(process.env).filter(([k]) => k.endsWith(":_authToken")).map(([, v]) => v).sort().join("\0") === [${JSON.stringify(unscopedToken)}, ${JSON.stringify(scopedToken)}].sort().join("\0"),
+      scopedRegistry: process.env["npm_config_@cotal-ai:registry"] ?? null,
+      httpsProxy: process.env["npm_config_https-proxy"] ?? null,
+      strictSsl: process.env["npm_config_strict-ssl"] ?? null,
+      openGateFds,
+      execArgv: process.execArgv,
+    }));
+  }
+  process.exit(code);
+}
+console.log("cotal-ai ${version}");
+` : `console.log('cotal-ai ${version}');\n`;
+      writeFileSync(join(root, 'payload/package/dist/cotal.js'), `#!/usr/bin/env node\n${programBody}`, { mode: 0o755 });
+      writeFileSync(join(root, 'payload/package/dist/cotal-program.js'), programBody);
       writeFileSync(join(root, 'payload/package/dist/preinstall.js'), `const { nonce, installedEntry } = JSON.parse(process.argv[2]); console.log('COTAL_PREINSTALL_RESULT ' + JSON.stringify({ v: 1, nonce, installedEntry, hostedSpaces: [], occupied: 0, admission: { disposition: 'restart-empty', occupied: 0, hostedSpaces: [] } }));\n`);
       assert.equal(spawnSync('tar', ['-czf', join(root, `${version}.tgz`), '-C', join(root, 'payload'), 'package'], { env: childEnv }).status, 0);
       archives.set(version, readFileSync(join(root, `${version}.tgz`)));
@@ -1342,6 +1397,7 @@ async function gateEnvCell(entry, parent, scenario = 'gate-env') {
       if (shellBin && !existsSync(shellBin)) continue;
       const cellDir = mkdtempSync(join(root, 'shell-run-'));
       const prefix = join(cellDir, 'prefix'), home = join(cellDir, 'home'), shLog = join(cellDir, 'sh.log');
+      const bindingReportPath = join(cellDir, 'reconcile-binding.json');
       for (const sub of ['prefix', 'home', 'cotal', 'config', 'tmp', 'runtime', 'cache']) mkdirSync(join(cellDir, sub), { recursive: true, mode: 0o700 });
       const env = Object.fromEntries(Object.entries(childEnv).filter(([name]) => !/^(?:npm_config_|(?:https?|all|no)_proxy$|proxy$|node_options$|node_tls_reject_unauthorized$)/i.test(name)));
       Object.assign(env, {
@@ -1351,6 +1407,7 @@ async function gateEnvCell(entry, parent, scenario = 'gate-env') {
         'npm_config_@cotal-ai:registry': `${scopedOrigin}/`, [`npm_config_//127.0.0.1:${scopedPort}/:_authToken`]: scopedToken,
         'npm_config_strict-ssl': 'false', 'npm_config_https-proxy': `http://proxyuser:${proxyPass}@127.0.0.1:${proxyPort}`,
         npm_config_audit: 'false', npm_config_fund: 'false', npm_config_update_notifier: 'false',
+        SMOKE_RECONCILE_BINDING_REPORT: bindingReportPath,
         COTAL_SKIP_CONNECTOR_SEED: '1', COTAL_TELEMETRY: 'off', DO_NOT_TRACK: '1', COTAL_NO_UPDATE_CHECK: '1',
       });
       const run = (file, args) => new Promise((done, reject) => {
@@ -1375,6 +1432,21 @@ async function gateEnvCell(entry, parent, scenario = 'gate-env') {
       lastOutput = update.output;
       assert.equal(update.code, 0, `shell=${shellBin ?? '/bin/sh'}\n${update.output}`);
       assert.match(update.output, /cotal-ai@99\.0\.0 in use and reconciled/);
+      assert(existsSync(bindingReportPath), `expected real reconcile child binding report under ${shellBin}`);
+      const bindingReport = JSON.parse(readFileSync(bindingReportPath, 'utf8'));
+      assert.equal(bindingReport.code, 0, `reconcile executeUpdate code under ${shellBin}: ${JSON.stringify(bindingReport)}`);
+      assert.equal(bindingReport.reconciled, true, `reconcile body ran under ${shellBin}`);
+      assert.equal(bindingReport.ppid, bindingReport.expectedParent, `reconcile ppid matches CLI updater pid under ${shellBin}`);
+      if (process.platform === 'linux') {
+        assert.equal(bindingReport.custodyPhase, 'live', `reconcile custody marker live under ${shellBin}`);
+        assert.equal(bindingReport.custodyPid, bindingReport.pid, `reconcile custody marker pid matches reconcile pid under ${shellBin}`);
+      }
+      assert.equal(bindingReport.hasUnscopedAuth, true, `reconcile child preserved auth token env under ${shellBin}`);
+      assert.equal(bindingReport.scopedRegistry, `${scopedOrigin}/`, `reconcile child preserved @cotal-ai:registry under ${shellBin}`);
+      assert.equal(bindingReport.httpsProxy, `http://proxyuser:${proxyPass}@127.0.0.1:${proxyPort}`, `reconcile child preserved https-proxy under ${shellBin}`);
+      assert.equal(bindingReport.strictSsl, 'false', `reconcile child preserved strict-ssl under ${shellBin}`);
+      assert.deepEqual(bindingReport.openGateFds, [], `reconcile child closed gate fds under ${shellBin}`);
+      assert.deepEqual(bindingReport.execArgv, [], `reconcile child stripped gate --import from execArgv under ${shellBin}`);
       assert.equal(unscopedDenied, 0, `unscoped bearer token dropped under ${shellBin}: ${update.output}`);
       assert.equal(scopedDenied, 0, `scoped bearer token dropped under ${shellBin}: ${update.output}`);
       assert.equal(proxyDenied, 0, `proxy credentials dropped under ${shellBin}: ${update.output}`);

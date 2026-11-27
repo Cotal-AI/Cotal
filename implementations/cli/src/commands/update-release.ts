@@ -268,6 +268,7 @@ export function releaseReadError(result: CommandResult, detail: string, { instal
       }
     } catch { /* An unstructured failure is not evidence of registry propagation. */ }
   }
+  if (result.error?.startsWith("missing POSIX update gate helper ")) return new Error(`${detail}: ${result.error}`);
   return registryNetworkFailure(new Error(failure(result))) ? new RegistryUnavailable(detail) : new Error(detail);
 }
 
