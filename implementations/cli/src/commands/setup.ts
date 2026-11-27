@@ -615,6 +615,7 @@ async function planSetup(inputs: SetupInputs, runtimes: readonly RuntimeChoice[]
   const candidates = await harnessCandidates(inputs.harness);
   const candidate = candidates.find((c) => c.value === inputs.harness);
   if (!candidate) throw usage(`no harness ${JSON.stringify(inputs.harness)}; known harnesses: ${candidates.map((c) => c.value).join(", ")}`, HARNESS_REMEDY);
+  if (candidate.launchRestriction) throw new CommandFailure("refused", "UNSUPPORTED", candidate.launchRestriction, { target });
   assertPreferencesFolderProtected();
   if (inputs.destination === "self-hosted") return { inputs, runtimes, candidate, space: checkSelfHostedSpace(inputs.space, inputs.project, inputs.connectionFile) };
   if (inputs.connectionFile !== undefined) throw usage("--connection-file registers a self-hosted space", "pass --destination self-hosted, or drop --connection-file");
@@ -1138,6 +1139,7 @@ export interface SetupConnectorCandidate {
   hint: string;
   missing: string[];
   unavailable: boolean;
+  launchRestriction?: string;
 }
 
 /** Every connector becomes a choice. Its provider owns setup readiness; the connector's launch
@@ -1150,6 +1152,8 @@ export async function setupConnectorCandidates(
   return Promise.all([...connectors]
     .sort((a, b) => a.name.localeCompare(b.name))
     .map(async (connector) => {
+      const launchRestriction = connector.launchUnavailable?.();
+      if (launchRestriction) return { connector, value: connector.name, label: connector.name, missing: [connector.name], unavailable: true, hint: launchRestriction, launchRestriction };
       const provider = await providerFor(connector);
       const available = provider?.available?.();
       const missing = available === undefined

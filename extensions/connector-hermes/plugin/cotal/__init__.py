@@ -116,6 +116,8 @@ def _bootstrap_standalone_sidecar() -> None:
     """Standalone mode: spawn the bundled Node sidecar and wait until it has published the bridge
     socket + tools file. Sets the three path env vars first so the sidecar and the rest of this
     registration agree on them."""
+    if os.name == "nt":
+        raise RuntimeError("Standalone Hermes is not supported on Windows. Run `cotal spawn --foreground --harness hermes --model <model>`.")
     _standalone_control_key()
     run_dir = Path(tempfile.mkdtemp(prefix="cotal-hermes-"))
     # Identity may come entirely from COTAL_LINK (which carries the space), so neither of these is

@@ -13,13 +13,16 @@
  */
 import { strict as assert } from "node:assert";
 import { execFileSync, spawnSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import { skipSuite } from "@cotal-ai/smoke-kit";
 
-if (process.platform === "win32") skipSuite("the Hermes connector is Unix-only; execFileSync(\"pnpm\") cannot spawn a .cmd");
-
 const pkgDir = fileURLToPath(new URL("..", import.meta.url));
+const { peerDependencies } = JSON.parse(readFileSync(join(pkgDir, "package.json"), "utf8"));
+assert.deepEqual(Object.keys(peerDependencies).filter((name) => name.startsWith("@cotal-ai/")), ["@cotal-ai/core"]);
+
+if (process.platform === "win32") skipSuite("execFileSync(\"pnpm\") cannot spawn a .cmd");
 
 execFileSync("pnpm", ["run", "bundle"], { cwd: pkgDir, stdio: "pipe" });
 
