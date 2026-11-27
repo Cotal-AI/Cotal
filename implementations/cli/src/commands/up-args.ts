@@ -492,6 +492,6 @@ export function assertSelectionNotMoved(root: string, space: string): void {
   if (!prepared || existsSync(prepared.root)) return;
   throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `the selected space "${current}" is prepared in ${prepared.root}, which no longer exists, and this folder names no space, so up did not start "${space}" here`, {
     target: { root, space: current, preparedRoot: prepared.root },
-    remedy: `if this is that folder moved, forget it with \`cotal space forget ${current}\`, then prepare it here with \`cotal space create ${current}\` and run \`cotal up\`; to start "${space}" here, pass --space ${space}`,
+    remedy: `if this is that folder moved, forget it with \`cotal space forget ${current}\`, prepare it here with \`cotal space create ${current}\`, then repeat your startup command with the same options; to start "${space}" here instead, add \`--space ${space}\` to your original command`,
   });
 }
