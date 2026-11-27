@@ -637,20 +637,27 @@ explains the wait, keeps its update lock and does not send terminal interrupts i
 processes that are replacing packages. An install or reconcile failure still reports its own
 nonzero result. Force-killing the process or closing its terminal is not a supported cancellation.
 
-Run through the installer's `cotal` launcher, `update` first removes group and other write from the
+Run through the installer's `cotal` launcher, `update` removes group and other write from the
 folders and files you own in Cotal's install root, without following links. An installer from before
 it set its own umask, run under a umask of 0002, left that tree group-writable. Running the installer
-again repairs it the same way. Permission repair preserves the selected CLI generation, including
-when an older updater hands reconciliation to the new release. Before reporting a successful
-self-update, the updater verifies the selected version again after reconciliation.
+again repairs it the same way. On Linux and macOS, from a global npm installation under
+`<prefix>/lib/node_modules/cotal-ai`, `update` and `update --self` remove group and other write from
+the folders and files you own in the installed `cotal-ai` package, without following links,
+including on an already-current `update --self` when the registry answers. This package repair does
+not apply on Windows or to a pnpm global install. Permission repair preserves the selected CLI
+generation, including when an older updater hands reconciliation to the new release. Before
+reporting a successful self-update, the updater verifies the selected version again after
+reconciliation.
 
 `update` also removes group and other write from the folders and files you own in Cotal's config
 directory, `$XDG_CONFIG_HOME/cotal` or `~/.config/cotal`, which holds the extension prefix and the
 seed store. An earlier seed run under a umask of 0002 left those folders group-writable, and the web
 seed's check for other local writers refused them. Each repair prints how many entries it changed
-and where. A folder above the config directory, such as `~/.config`, is not Cotal's, so `update`
-does not repair it. `update` refuses that folder before any repair, seed or binary replacement,
-and names `chmod g-w <path>` as the next step.
+and where. If a mode change or directory read fails on an owned entry in any walked root, the
+command prints one warning line naming the root and error code and continues. A folder above the
+config directory, such as `~/.config`, is not Cotal's, so `update` does not repair it. `update`
+refuses that folder before any repair, seed or binary replacement, and names `chmod g-w <path>` as
+the next step.
 
 
 ### Update limits
