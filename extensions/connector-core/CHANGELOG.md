@@ -1,5 +1,11 @@
 # @cotal-ai/connector-core
 
+## 0.183.0
+
+### Patch Changes
+
+- 3cceeab: Name the tools and arguments in `cotal_persona` results instead of spelling out their call syntax.
+
 ## 0.182.1
 
 ### Patch Changes
