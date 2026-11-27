@@ -242,6 +242,7 @@ chmodSync(root, 0o700);
 const home = join(root, "home"), participant = join(root, "participant"), rtDir = join(root, "rt"), jsDir = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}a2b2-js-`));
 for (const d of [home, participant, rtDir]) mkdirSync(d, { mode: 0o700 });
 process.env.COTAL_HOME = home;
+process.env.DO_NOT_TRACK = "1";
 {
   process.env.HOME = home;
   process.env.XDG_CONFIG_HOME = join(root, "config");
