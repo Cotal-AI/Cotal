@@ -1,20 +1,10 @@
 import { spawnSync } from "node:child_process";
-import { createHash } from "node:crypto";
-import { existsSync, lstatSync, readdirSync, readFileSync, realpathSync, statSync, type Dirent } from "node:fs";
-import { createRequire } from "node:module";
-import { homedir } from "node:os";
-import { basename, dirname, join, resolve, sep } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
-import { gunzipSync } from "node:zlib";
-import { SEEDED_EXTENSIONS, cmdSpawnSpec, extensionPackageDir, extensionsDir, hostPackageDir, installedExtensionPackage, isExtensionPathSpec, resolveExtensionEntry, type InstalledExtension } from "@cotal-ai/workspace";
-import { npmInvocation } from "../lib/npm-invocation.js";
+import { lstatSync, readdirSync, readFileSync, realpathSync, statSync, type Dirent } from "node:fs";
+import { join, resolve, sep } from "node:path";
+import { pathToFileURL } from "node:url";
+import { SEEDED_EXTENSIONS, extensionPackageDir, extensionsDir, hostPackageDir, installedExtensionPackage, isExtensionPathSpec, resolveExtensionEntry, type InstalledExtension } from "@cotal-ai/workspace";
 import { seedStorePath, shippedSourceDir } from "./paths.js";
 import { sharedPlacements, type SharedPlacement } from "./shared.js";
-
-const semver = createRequire(import.meta.url)("semver") as {
-  validRange(range: string): string | null;
-  satisfies(version: string, range: string, options?: { includePrerelease?: boolean }): boolean;
-};
 
 /** Check the links installed by the peer binder without changing the extension tree. */
 export function seededPeerLinksCurrent(pkg: string): boolean {
@@ -86,6 +76,22 @@ export function operatorUpdateSpec(entry: InstalledExtension, generation: string
   return entry.version === generation && typeof entry.spec === "string" && isExtensionPathSpec(entry.spec) ? entry.spec : `${entry.pkg}@${generation}`;
 }
 
+import { createHash } from "node:crypto";
+import { existsSync } from "node:fs";
+import { createRequire } from "node:module";
+import { homedir } from "node:os";
+import { basename, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
+import { gunzipSync } from "node:zlib";
+import { cmdSpawnSpec } from "@cotal-ai/workspace";
+import { withInstallUmask } from "../lib/install-umask.js";
+import { npmInvocation } from "../lib/npm-invocation.js";
+
+const semver = createRequire(import.meta.url)("semver") as {
+  validRange(range: string): string | null;
+  satisfies(version: string, range: string, options?: { includePrerelease?: boolean }): boolean;
+};
+
 /**
  * Why `cotal update` still has to reinstall a first-party operator extension, or undefined when npm's
  * own record in the prefix proves it installed at this generation: the entry is recorded at this
@@ -125,45 +131,78 @@ export function prefixLockDiffers(): string | undefined {
   return verifyPrefixLock(extensionsDir());
 }
 
+/** Whether `prefix` holds a readable public `package-lock.json` that covers `package.json` and matches `node_modules`. */
+export function publicPrefixLockCurrent(prefix: string): boolean {
+  const realPrefix = tryRealpath(prefix);
+  const publicPackages = readLockPackages(join(prefix, "package-lock.json"));
+  if (typeof publicPackages === "string") return false;
+  return lockedTreeDiffers(prefix, realPrefix, { packages: publicPackages, installed: false }) === undefined &&
+    publicLockCoversManifest(prefix, publicPackages);
+}
+
 /** Installed package directories in `prefix` whose missing optionalDependencies the installed-tree verifier reports. */
 export function packagesMissingOptionalDependencies(prefix: string, configPrefix = prefix): string[] {
-  if (!packageLockDisabled(configPrefix)) return [];
+  if (literalEnvPackageLockDisabled() === false || literalEnvOffline() === true) return [];
   const realPrefix = tryRealpath(prefix);
+  if (!realPrefix) return [];
   const publicPackages = readLockPackages(join(prefix, "package-lock.json"));
   const fallback = typeof publicPackages === "string" ? undefined : publicPackages;
   const unrepairable = unrepairableLocalPackages(prefix, configPrefix);
-  const incomplete: string[] = [];
+  const candidates: Array<{ readonly dir: string; readonly optional: Record<string, string> }> = [];
   const walkNodeModules = (nmDir: string): void => {
+    if (!isRealStageSubdirectory(nmDir, realPrefix)) return;
     let entries: Dirent[];
     try { entries = readdirSync(nmDir, { withFileTypes: true }); }
     catch { return; }
     for (const entry of entries) {
       if (entry.name.startsWith(".") || entry.isSymbolicLink() || !entry.isDirectory()) continue;
       const full = join(nmDir, entry.name);
+      if (!isRealStageSubdirectory(full, realPrefix)) continue;
       if (entry.name.startsWith("@")) {
         walkNodeModules(full);
         continue;
       }
-      if (unrepairable.has(full)) continue;
-      if (optionalDependenciesDiffer(prefix, realPrefix, full, readOptionalDependencies(join(full, "package.json")), fallback, configPrefix)) {
-        incomplete.push(full);
-        continue;
+      if (!unrepairable.has(full)) {
+        const optional = readOptionalDependencies(join(full, "package.json"));
+        if (optional && optionalNeedsFurtherCheck(prefix, realPrefix, full, optional, fallback)) {
+          candidates.push({ dir: full, optional });
+        }
       }
       walkNodeModules(join(full, "node_modules"));
     }
   };
   walkNodeModules(join(prefix, "node_modules"));
+  if (!candidates.length) return [];
+  if (!packageLockDisabled(configPrefix) || prefixNpmOffline(configPrefix)) return [];
+  const incomplete: string[] = [];
+  for (const candidate of candidates) {
+    if (incomplete.some((parent) => candidate.dir.startsWith(parent + sep))) continue;
+    if (optionalDependenciesDiffer(prefix, realPrefix, candidate.dir, candidate.optional, fallback, configPrefix)) {
+      incomplete.push(candidate.dir);
+    }
+  }
   return incomplete;
+}
+
+function isRealStageSubdirectory(dir: string, realStage: string): boolean {
+  let stat: ReturnType<typeof lstatSync>;
+  try { stat = lstatSync(dir); }
+  catch { return false; }
+  if (stat.isSymbolicLink() || !stat.isDirectory()) return false;
+  const real = tryRealpath(dir);
+  return real !== undefined && real.startsWith(realStage + sep);
 }
 
 interface PrefixNpmConfig {
   readonly packageLockDisabled: boolean;
+  readonly offline: boolean;
   readonly cache?: string;
   readonly registry: string;
 }
 
 const builtInLockKeys = new Set(Object.values(SEEDED_EXTENSIONS).map(({ pkg }) => `node_modules/${pkg}`));
 const npmConfigCache = new Map<string, PrefixNpmConfig>();
+const scopedRegistryCache = new Map<string, string>();
 const packumentCache = new Map<string, Record<string, LockEntry> | null>();
 
 function verifyPrefixLock(prefix: string, expected?: { pkg: string; version: string }): string | undefined {
@@ -219,7 +258,33 @@ function publicLockCoversManifest(prefix: string, packages: Record<string, LockE
 
 /** npm records the installed tree under node_modules even with package-lock disabled. */
 function packageLockDisabled(prefix: string): boolean {
+  const fromEnv = literalEnvPackageLockDisabled();
+  if (fromEnv !== undefined) return fromEnv;
   return prefixNpmConfig(prefix).packageLockDisabled;
+}
+
+function prefixNpmOffline(prefix: string): boolean {
+  const fromEnv = literalEnvOffline();
+  if (fromEnv !== undefined) return fromEnv;
+  return prefixNpmConfig(prefix).offline;
+}
+
+function literalEnvPackageLockDisabled(): boolean | undefined {
+  const matches = Object.entries(process.env).filter(([key]) => /^npm_config_package[-_]lock$/i.test(key));
+  if (matches.length !== 1) return undefined;
+  const value = matches[0]![1];
+  if (value === "false") return true;
+  if (value === "true") return false;
+  return undefined;
+}
+
+function literalEnvOffline(): boolean | undefined {
+  const matches = Object.entries(process.env).filter(([key]) => /^npm_config_offline$/i.test(key));
+  if (matches.length !== 1) return undefined;
+  const value = matches[0]![1];
+  if (value === "true") return true;
+  if (value === "false") return false;
+  return undefined;
 }
 
 function prefixNpmConfig(prefix: string): PrefixNpmConfig {
@@ -227,37 +292,31 @@ function prefixNpmConfig(prefix: string): PrefixNpmConfig {
   const cached = npmConfigCache.get(key);
   if (cached !== undefined) return cached;
   if (npmConfigCache.size >= 64) npmConfigCache.clear();
-  const explicitDisabled = explicitPackageLockSetting(prefix);
-  if (explicitDisabled === true) {
-    const home = envValue("HOME") ?? envValue("USERPROFILE") ?? homedir();
-    const parsed: PrefixNpmConfig = {
-      packageLockDisabled: true,
-      cache: envValue("npm_config_cache") ?? configuredNpmValue(prefix, "cache", home),
-      registry: (envValue("npm_config_registry") ?? configuredNpmValue(prefix, "registry", home) ?? "https://registry.npmjs.org").replace(/\/+$/, ""),
-    };
-    npmConfigCache.set(key, parsed);
-    return parsed;
-  }
-  const fallback: PrefixNpmConfig = { packageLockDisabled: false, registry: "https://registry.npmjs.org" };
+  const fallback: PrefixNpmConfig = {
+    packageLockDisabled: literalEnvPackageLockDisabled() === true,
+    offline: literalEnvOffline() === true,
+    cache: envValue("npm_config_cache") || undefined,
+    registry: (envValue("npm_config_registry") || "https://registry.npmjs.org").replace(/\/+$/, ""),
+  };
   try {
     const npm = npmInvocation(process.env, [
-      "config", "get", "package-lock", "cache", "registry", "--prefix", prefix, "--logs-max=0", "--update-notifier=false",
+      "config", "get", "package-lock", "offline", "cache", "registry", "--prefix", prefix, "--logs-max=0", "--update-notifier=false",
     ]);
     const { file, args, windowsVerbatimArguments } = cmdSpawnSpec(npm.file, npm.args, npm.env);
-    const config = spawnSync(file, args, {
-      cwd: npm.cwd, env: npm.env, windowsVerbatimArguments, encoding: "utf8", timeout: 5_000, killSignal: "SIGKILL", windowsHide: true,
-    });
+    const config = withInstallUmask(() => spawnSync(file, args, {
+      cwd: existsSync(prefix) ? prefix : npm.cwd, env: npm.env, windowsVerbatimArguments, encoding: "utf8", timeout: 5_000, killSignal: "SIGKILL", windowsHide: true,
+    }));
     if (config.status === 0) {
       const values = new Map<string, string>();
       for (const raw of config.stdout.split(/\r?\n/)) {
         const eq = raw.indexOf("=");
         if (eq > 0) values.set(raw.slice(0, eq).trim(), raw.slice(eq + 1).trim());
       }
-      const rawDisabled = values.get("package-lock") ?? config.stdout.trim();
       const parsed: PrefixNpmConfig = {
-        packageLockDisabled: rawDisabled === "false",
-        cache: values.get("cache") || undefined,
-        registry: (values.get("registry") || "https://registry.npmjs.org").replace(/\/+$/, ""),
+        packageLockDisabled: values.get("package-lock") === "false",
+        offline: values.get("offline") === "true",
+        cache: values.get("cache") || fallback.cache,
+        registry: (values.get("registry") || fallback.registry).replace(/\/+$/, ""),
       };
       npmConfigCache.set(key, parsed);
       return parsed;
@@ -269,53 +328,50 @@ function prefixNpmConfig(prefix: string): PrefixNpmConfig {
   return fallback;
 }
 
+function scopedNpmRegistry(prefix: string, scope: string): string {
+  const key = `${packageLockCacheKey(prefix)}\0${scope}`;
+  const cached = scopedRegistryCache.get(key);
+  if (cached !== undefined) return cached;
+  if (scopedRegistryCache.size >= 128) scopedRegistryCache.clear();
+  let resolved = "";
+  try {
+    const npm = npmInvocation(process.env, [
+      "config", "get", `${scope}:registry`, "--prefix", prefix, "--logs-max=0", "--update-notifier=false",
+    ]);
+    const { file, args, windowsVerbatimArguments } = cmdSpawnSpec(npm.file, npm.args, npm.env);
+    const config = withInstallUmask(() => spawnSync(file, args, {
+      cwd: existsSync(prefix) ? prefix : npm.cwd, env: npm.env, windowsVerbatimArguments, encoding: "utf8", timeout: 5_000, killSignal: "SIGKILL", windowsHide: true,
+    }));
+    if (config.status === 0) {
+      const out = config.stdout.trim();
+      if (out && out !== "undefined" && out !== "null") resolved = out.replace(/\/+$/, "");
+    }
+  } catch {
+    // Missing npm or failed config lookup leaves the scoped registry empty.
+  }
+  scopedRegistryCache.set(key, resolved);
+  return resolved;
+}
+
 function packageLockCacheKey(prefix: string): string {
+  const home = envValue("HOME") ?? envValue("USERPROFILE") ?? homedir();
+  const userConfig = envValue("npm_config_userconfig") ?? join(home, ".npmrc");
+  const globalConfig = envValue("npm_config_globalconfig");
+  const referencedVars = new Set<string>();
+  const files = [join(prefix, ".npmrc"), userConfig, ...(globalConfig ? [globalConfig] : [])].map((file) => {
+    try {
+      const content = readFileSync(file, "utf8");
+      for (const match of content.matchAll(/\$\{([^}]+)\}/g)) if (match[1]) referencedVars.add(match[1]);
+      return `${file}:${content}`;
+    } catch {
+      return `${file}:absent`;
+    }
+  });
   const envEntries = Object.entries(process.env)
-    .filter(([name]) => /^(?:npm_config_|path$|home$|userprofile$|localappdata$)/i.test(name))
+    .filter(([name]) => /^(?:npm_config_|path$|home$|userprofile$|localappdata$)/i.test(name) || referencedVars.has(name))
     .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
     .map(([name, value]) => `${name}=${value ?? ""}`);
-  const home = envValue("HOME") ?? envValue("USERPROFILE") ?? homedir();
-  const userConfig = envValue("npm_config_userconfig") ?? join(home, ".npmrc");
-  const globalConfig = envValue("npm_config_globalconfig");
-  const files = [join(prefix, ".npmrc"), userConfig, ...(globalConfig ? [globalConfig] : [])].map((file) => {
-    try { return `${file}:${readFileSync(file, "utf8")}`; }
-    catch { return `${file}:absent`; }
-  });
   return JSON.stringify([prefix, process.platform, envEntries, files]);
-}
-
-function explicitPackageLockSetting(prefix: string): boolean | undefined {
-  const fromEnv = envValue("npm_config_package_lock") ?? envValue("npm_config_package-lock");
-  if (fromEnv !== undefined) {
-    const norm = fromEnv.trim().toLowerCase();
-    if (norm === "false") return true;
-    if (norm === "true" || norm === "") return false;
-  }
-  const home = envValue("HOME") ?? envValue("USERPROFILE") ?? homedir();
-  const raw = configuredNpmValue(prefix, "package-lock", home);
-  if (raw === undefined) return undefined;
-  const norm = raw.toLowerCase();
-  return norm === "false" ? true : norm === "true" ? false : undefined;
-}
-
-function configuredNpmValue(prefix: string, key: string, home: string): string | undefined {
-  const userConfig = envValue("npm_config_userconfig") ?? join(home, ".npmrc");
-  const globalConfig = envValue("npm_config_globalconfig");
-  for (const file of [join(prefix, ".npmrc"), userConfig, ...(globalConfig ? [globalConfig] : [])]) {
-    try {
-      let found: string | undefined;
-      for (const raw of readFileSync(file, "utf8").split(/\r?\n/)) {
-        const line = raw.trim();
-        if (!line || line.startsWith("#") || line.startsWith(";")) continue;
-        const eq = line.indexOf("=");
-        if (eq > 0 && line.slice(0, eq).trim() === key) {
-          found = line.slice(eq + 1).trim().replace(/^["']|["']$/g, "");
-        }
-      }
-      if (found !== undefined && !found.includes("${")) return found;
-    } catch { /* absent or unreadable npmrc is skipped */ }
-  }
-  return undefined;
 }
 
 function envValue(name: string): string | undefined {
@@ -404,8 +460,10 @@ function unrepairableLocalPackages(prefix: string, configPrefix: string): Set<st
   const dirs = new Set<string>();
   let deps: Record<string, string> = {};
   try {
-    const manifest = JSON.parse(readFileSync(join(prefix, "package.json"), "utf8")) as { dependencies?: Record<string, unknown> };
-    for (const [k, v] of Object.entries(manifest.dependencies ?? {})) if (typeof v === "string") deps[k] = v;
+    const manifest = JSON.parse(readFileSync(join(prefix, "package.json"), "utf8")) as { dependencies?: unknown };
+    if (manifest.dependencies && typeof manifest.dependencies === "object" && !Array.isArray(manifest.dependencies)) {
+      for (const [k, v] of Object.entries(manifest.dependencies)) if (typeof v === "string") deps[k] = v;
+    }
   } catch { /* unreadable manifest leaves deps empty */ }
   let recorded: InstalledExtension[] = [];
   try {
@@ -460,6 +518,54 @@ function readOptionalDependencies(manifestPath: string): Record<string, string> 
   }
 }
 
+function installedOptionalDiffers(
+  declarerDir: string,
+  depName: string,
+  depSpec: string,
+  local: boolean,
+  manifestPath: string,
+): string | undefined {
+  let installed: LockEntry;
+  try {
+    installed = JSON.parse(readFileSync(manifestPath, "utf8")) as LockEntry;
+  } catch {
+    return `node_modules/${depName} has an unreadable package.json`;
+  }
+  if (typeof installed.version !== "string") return `node_modules/${depName} has no version on disk`;
+  if (local) {
+    const source = readOptionalSource(declarerDir, depSpec);
+    if (source && typeof source.version === "string" && installed.version !== source.version) {
+      return `node_modules/${depName} is ${installed.version} on disk and ${source.version} in ${depSpec}`;
+    }
+  } else if (semver.validRange(depSpec) !== null && !semver.satisfies(installed.version, depSpec, { includePrerelease: true })) {
+    return `node_modules/${depName} is ${installed.version} on disk, which does not satisfy ${depSpec}`;
+  }
+  return undefined;
+}
+
+function optionalNeedsFurtherCheck(
+  prefix: string,
+  realPrefix: string | undefined,
+  declarerDir: string,
+  optional: Record<string, string>,
+  publicPackages?: Record<string, LockEntry>,
+): boolean {
+  for (const [depName, depSpec] of Object.entries(optional)) {
+    const local = depSpec.startsWith("file:") || isExtensionPathSpec(depSpec);
+    const manifestPath = findInstalledOptionalManifest(prefix, realPrefix, declarerDir, depName);
+    if (manifestPath) {
+      if (installedOptionalDiffers(declarerDir, depName, depSpec, local, manifestPath) !== undefined) return true;
+      continue;
+    }
+    const known = local
+      ? readOptionalSource(declarerDir, depSpec) ?? publicOptionalPlatform(prefix, realPrefix, declarerDir, depName, depSpec, publicPackages)
+      : publicOptionalPlatform(prefix, realPrefix, declarerDir, depName, depSpec, publicPackages);
+    if (known && platformExcludesHost(known)) continue;
+    return true;
+  }
+  return false;
+}
+
 function optionalDependenciesDiffer(
   prefix: string,
   realPrefix: string | undefined,
@@ -473,21 +579,8 @@ function optionalDependenciesDiffer(
     const local = depSpec.startsWith("file:") || isExtensionPathSpec(depSpec);
     const manifestPath = findInstalledOptionalManifest(prefix, realPrefix, declarerDir, depName);
     if (manifestPath) {
-      let installed: LockEntry;
-      try {
-        installed = JSON.parse(readFileSync(manifestPath, "utf8")) as LockEntry;
-      } catch {
-        return `node_modules/${depName} has an unreadable package.json`;
-      }
-      if (typeof installed.version !== "string") return `node_modules/${depName} has no version on disk`;
-      if (local) {
-        const source = readOptionalSource(declarerDir, depSpec);
-        if (source && typeof source.version === "string" && installed.version !== source.version) {
-          return `node_modules/${depName} is ${installed.version} on disk and ${source.version} in ${depSpec}`;
-        }
-      } else if (semver.validRange(depSpec) !== null && !semver.satisfies(installed.version, depSpec, { includePrerelease: true })) {
-        return `node_modules/${depName} is ${installed.version} on disk, which does not satisfy ${depSpec}`;
-      }
+      const differs = installedOptionalDiffers(declarerDir, depName, depSpec, local, manifestPath);
+      if (differs) return differs;
       continue;
     }
     const platform = local
@@ -543,53 +636,48 @@ function cachedOptionalPlatform(
   depSpec: string,
 ): Pick<LockEntry, "os" | "cpu" | "libc"> | undefined {
   if (semver.validRange(depSpec) === null) return undefined;
-  const config = prefixNpmConfig(configPrefix);
   const home = envValue("HOME") ?? envValue("USERPROFILE") ?? homedir();
-  const caches = [...new Set([
+  const scope = depName.startsWith("@") ? depName.slice(0, depName.indexOf("/")) : undefined;
+  const encoded = encodeURIComponent(depName)
+    .replace(/^%40/, "@")
+    .replace(/%[0-9A-F]{2}/g, (esc) => esc.toLowerCase());
+  const lookup = (caches: readonly string[], registries: readonly string[]): Pick<LockEntry, "os" | "cpu" | "libc"> | undefined => {
+    for (const cacheDir of caches) {
+      for (const registry of registries) {
+        const versions = readCachedPackumentVersions(cacheDir, `${registry}/${encoded}`);
+        if (!versions) continue;
+        let matched: LockEntry | undefined;
+        for (const [ver, meta] of Object.entries(versions)) {
+          if (semver.satisfies(ver, depSpec, { includePrerelease: true })) matched = meta;
+        }
+        if (matched) return { os: matched.os, cpu: matched.cpu, libc: matched.libc };
+      }
+    }
+    return undefined;
+  };
+  const envScopedRegistry = scope
+    ? (envValue(`npm_config_${scope}:registry`) ?? envValue(`npm_config_${scope.slice(1)}_registry`) ?? "").replace(/\/+$/, "")
+    : "";
+  const envCaches = [...new Set([
     envValue("npm_config_cache"),
-    config.cache,
     join(home, ".npm"),
     ...(process.platform === "win32" && envValue("LOCALAPPDATA") ? [join(envValue("LOCALAPPDATA")!, "npm-cache")] : []),
   ].filter((dir): dir is string => Boolean(dir)))];
-  const scope = depName.startsWith("@") ? depName.slice(0, depName.indexOf("/")) : undefined;
-  const registries = [...new Set([
-    ...(scope ? scopedRegistries(configPrefix, scope, home) : []),
+  const envRegistries = [...new Set([
+    envScopedRegistry,
     (envValue("npm_config_registry") || "").replace(/\/+$/, ""),
-    config.registry,
     "https://registry.npmjs.org",
   ].filter(Boolean))];
-  const encoded = depName.startsWith("@") ? `@${encodeURIComponent(depName.slice(1))}` : encodeURIComponent(depName);
-  for (const cacheDir of caches) {
-    for (const registry of registries) {
-      const versions = readCachedPackumentVersions(cacheDir, `${registry}/${encoded}`);
-      if (!versions) continue;
-      let matched: LockEntry | undefined;
-      for (const [ver, meta] of Object.entries(versions)) {
-        if (semver.satisfies(ver, depSpec, { includePrerelease: true })) matched = meta;
-      }
-      if (matched) return { os: matched.os, cpu: matched.cpu, libc: matched.libc };
-    }
-  }
-  return undefined;
-}
-
-function scopedRegistries(prefix: string, scope: string, home: string): string[] {
-  const found: string[] = [];
-  const envKey = `npm_config_${scope.replace(/^@/, "")}_registry`;
-  const fromEnv = envValue(envKey) ?? envValue(`npm_config_${scope}:registry`);
-  if (fromEnv) found.push(fromEnv.replace(/\/+$/, ""));
-  const userConfig = envValue("npm_config_userconfig") ?? join(home, ".npmrc");
-  const globalConfig = envValue("npm_config_globalconfig");
-  const keyPrefix = `${scope}:registry=`;
-  for (const file of [join(prefix, ".npmrc"), userConfig, ...(globalConfig ? [globalConfig] : [])]) {
-    try {
-      for (const raw of readFileSync(file, "utf8").split(/\r?\n/)) {
-        const line = raw.trim();
-        if (line.startsWith(keyPrefix)) found.push(line.slice(keyPrefix.length).trim().replace(/^["']|["']$/g, "").replace(/\/+$/, ""));
-      }
-    } catch { /* absent or unreadable npmrc is skipped */ }
-  }
-  return found;
+  const fastHit = lookup(envCaches, envRegistries);
+  if (fastHit) return fastHit;
+  const config = prefixNpmConfig(configPrefix);
+  const allCaches = [...new Set([config.cache, ...envCaches].filter((dir): dir is string => Boolean(dir)))];
+  const allRegistries = [...new Set([
+    scope ? scopedNpmRegistry(configPrefix, scope) : "",
+    config.registry,
+    ...envRegistries,
+  ].filter(Boolean))];
+  return lookup(allCaches, allRegistries);
 }
 
 function readCachedPackumentVersions(cacheDir: string, url: string): Record<string, LockEntry> | undefined {

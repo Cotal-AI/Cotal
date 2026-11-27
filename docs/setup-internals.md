@@ -480,9 +480,9 @@ record:
 - Extension installs and removals explicitly include optional dependencies, even when npm configuration
   sets `omit=optional`. In installed-tree mode (`package-lock=false`), a non-offline staged install
   clears only installed packages whose missing optional dependencies verify mode would report, while
-  keeping installed local-path packages whose source folder is gone. Host-compatible native packages
-  are installed, and npm still excludes packages for other platforms. The operator's npm
-  configuration is not rewritten.
+  keeping installed local-path packages whose source folder is gone and restoring cleared packages if
+  npm cannot fetch them again in that run. Host-compatible native packages are installed, and npm still
+  excludes packages for other platforms. The operator's npm configuration is not rewritten.
 - It reinstalls a built-in only when something differs, so a current install pays no reinstall. An
   operator-managed entry always counts as a difference.
 

@@ -10,10 +10,12 @@
  * Broker-free; needs `npm` on PATH and no network. Run: pnpm smoke:seed-verify-platform
  */
 import { createHash } from "node:crypto";
-import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { execFile, spawnSync } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
+import { promisify } from "node:util";
 import { emitSentinel } from "@cotal-ai/smoke-kit";
 import { resolveOnPath } from "@cotal-ai/workspace";
 import { admits, packagesMissingOptionalDependencies, platformExcludesHost, prefixLockDiffers } from "../src/seed/verify.js";
@@ -65,6 +67,8 @@ const savedEnv = {
   npm_config_registry: process.env.npm_config_registry,
   npm_config_userconfig: process.env.npm_config_userconfig,
   npm_config_globalconfig: process.env.npm_config_globalconfig,
+  npm_config_package_lock: process.env.npm_config_package_lock,
+  npm_config_offline: process.env.npm_config_offline,
 };
 const savedPlatform = Object.getOwnPropertyDescriptor(process, "platform");
 try {
@@ -128,7 +132,8 @@ process.exit(spawnSync(${JSON.stringify(realNpm)}, process.argv.slice(2), { stdi
 
   check("real npm also wrote node_modules/.package-lock.json", existsSync(join(prefix, "node_modules", ".package-lock.json")));
   check("intact prefix: platform-excluded absences are not differences", prefixLockDiffers() === undefined && prefixLockDiffers() === undefined, prefixLockDiffers());
-  check("default package-lock=true verification does not spawn npm when package-lock.json is valid", !existsSync(npmCalls));
+  check("default package-lock=true verification and stage pass do not spawn npm when package-lock.json covers the tree",
+    packagesMissingOptionalDependencies(prefix).length === 0 && !existsSync(npmCalls));
 
   // Simulated Windows without npm on PATH: readPrefixLock must never throw.
   const emptyPath = join(base, "empty-path");
@@ -195,17 +200,54 @@ process.exit(spawnSync(${JSON.stringify(realNpm)}, process.argv.slice(2), { stdi
 
   // ── package-lock=false over node_modules/.package-lock.json ─────────────────────────────────────
   rmSync(npmCalls, { force: true });
+  process.env.npm_config_package_lock = "false";
+  check("literal npm_config_package_lock=false excuses foreign-platform file optionals with zero npm calls",
+    prefixLockDiffers() === undefined && !existsSync(npmCalls), prefixLockDiffers());
+  process.env.npm_config_package_lock = "true";
+  check("literal npm_config_package_lock=true treats package locks as enabled with zero npm calls",
+    prefixLockDiffers()?.startsWith("the prefix lock is unreadable") === true &&
+    packagesMissingOptionalDependencies(prefix).length === 0 && !existsSync(npmCalls));
+  delete process.env.npm_config_package_lock;
+
   writeFileSync(userNpmrc, "package-lock=false\n");
-  check("package-lock=false keeps foreign-platform file optional dependencies excused without a public lock",
+  check("package-lock=false in .npmrc asks npm once and caches the lookup across repeated checks",
     prefixLockDiffers() === undefined && prefixLockDiffers() === undefined && prefixLockDiffers() === undefined, prefixLockDiffers());
-  check("explicit package-lock=false in .npmrc makes zero npm calls", !existsSync(npmCalls), existsSync(npmCalls));
+  const npmrcCalls = existsSync(npmCalls) ? readFileSync(npmCalls, "utf8").trim().split("\n") : [];
+  check("package-lock=false in .npmrc spawned npm config once under 022-safe path", npmrcCalls.length === 1, npmrcCalls);
+
+  // Five .npmrc / env configurations where naive parsing disagrees with npm:
+  writeFileSync(plain, JSON.stringify({
+    name: "probe-plain",
+    version: "1.0.0",
+    optionalDependencies: { [`@probe/native-${here}-${process.arch}`]: "1.0.0" },
+  }));
+  writeFileSync(userNpmrc, "package-lock=FALSE\n");
+  check("package-lock=FALSE (uppercase) agrees with npm that locks remain enabled and keeps the deletion gate closed",
+    prefixLockDiffers()?.startsWith("the prefix lock is unreadable") === true &&
+    packagesMissingOptionalDependencies(prefix).length === 0);
+  writeFileSync(userNpmrc, "[foo]\npackage-lock=false\n");
+  check("sectioned [foo] package-lock=false agrees with npm that locks remain enabled and keeps the deletion gate closed",
+    prefixLockDiffers()?.startsWith("the prefix lock is unreadable") === true &&
+    packagesMissingOptionalDependencies(prefix).length === 0);
+  process.env.PROBING_LOCK = "true";
+  writeFileSync(userNpmrc, "package-lock=false\n");
+  writeFileSync(join(prefix, ".npmrc"), "package-lock=${PROBING_LOCK}\n");
+  check("interpolated project package-lock=true over user false agrees with npm that locks remain enabled",
+    prefixLockDiffers()?.startsWith("the prefix lock is unreadable") === true &&
+    packagesMissingOptionalDependencies(prefix).length === 0);
+  writeFileSync(plain, JSON.stringify({ name: "probe-plain", version: "1.0.0" }));
   process.env.PROBING_LOCK = "false";
-  writeFileSync(userNpmrc, "package-lock=${PROBING_LOCK}\n");
-  check("interpolated package-lock=false falls back to npm config get and caches the lookup across repeated checks",
-    prefixLockDiffers() === undefined && prefixLockDiffers() === undefined, prefixLockDiffers());
-  const probeCalls = existsSync(npmCalls) ? readFileSync(npmCalls, "utf8").trim().split("\n") : [];
-  check("package-lock=false caches the npm config lookup across repeated checks", probeCalls.length === 1, probeCalls);
+  writeFileSync(userNpmrc, "package-lock=true\n");
+  writeFileSync(join(prefix, ".npmrc"), "package-lock=${PROBING_LOCK}\n");
+  check("interpolated project package-lock=false over user true agrees with npm that locks are disabled",
+    prefixLockDiffers() === undefined, prefixLockDiffers());
+  rmSync(join(prefix, ".npmrc"), { force: true });
   delete process.env.PROBING_LOCK;
+  process.env.npm_config_package_lock = "";
+  writeFileSync(userNpmrc, "package-lock=false\n");
+  check("empty npm_config_package_lock over user package-lock=false agrees with npm that locks are disabled",
+    prefixLockDiffers() === undefined, prefixLockDiffers());
+  delete process.env.npm_config_package_lock;
   writeFileSync(userNpmrc, "package-lock=false\n");
 
   // Registry-style platform-suffixed optional dependencies on an installed package.
@@ -232,54 +274,149 @@ process.exit(spawnSync(${JSON.stringify(realNpm)}, process.argv.slice(2), { stdi
   check("package-lock=false stage pass flags only packages whose missing optional verify reports",
     packagesMissingOptionalDependencies(prefix).join(",") === join(prefix, "node_modules", "probe-plain"));
 
-  // Real platform lists from a stale public lock or offline npm _cacache override name heuristics without network access.
-  const writeCachedPackument = (cacheDir: string, registry: string, pkgName: string, versions: Record<string, unknown>): void => {
-    const encoded = pkgName.startsWith("@") ? `@${encodeURIComponent(pkgName.slice(1))}` : encodeURIComponent(pkgName);
-    const key = `make-fetch-happen:request-cache:${registry.replace(/\/+$/, "")}/${encoded}`;
-    const body = Buffer.from(JSON.stringify({ name: pkgName, versions }));
-    const hex = createHash("sha512").update(body).digest("hex");
-    const integrity = `sha512-${Buffer.from(hex, "hex").toString("base64")}`;
-    const contentPath = join(cacheDir, "_cacache", "content-v2", "sha512", hex.slice(0, 2), hex.slice(2, 4), hex.slice(4));
-    mkdirSync(join(contentPath, ".."), { recursive: true });
-    writeFileSync(contentPath, body);
-    const keyHash = createHash("sha256").update(key).digest("hex");
-    const bucket = join(cacheDir, "_cacache", "index-v5", keyHash.slice(0, 2), keyHash.slice(2, 4), keyHash.slice(4));
-    mkdirSync(join(bucket, ".."), { recursive: true });
-    const record = JSON.stringify({ key, integrity, time: Date.now(), size: body.length, metadata: {} });
-    const entryHash = createHash("sha1").update(record).digest("hex");
-    writeFileSync(bucket, `${entryHash}\t${record}\n`);
+  // Offline settings keep the stage deletion gate closed.
+  process.env.npm_config_offline = "true";
+  check("literal npm_config_offline=true skips stage optional deletion",
+    packagesMissingOptionalDependencies(prefix).length === 0);
+  delete process.env.npm_config_offline;
+  writeFileSync(userNpmrc, "package-lock=false\noffline=true\n");
+  check("offline=true in .npmrc skips stage optional deletion",
+    packagesMissingOptionalDependencies(prefix).length === 0);
+  writeFileSync(userNpmrc, "package-lock=false\n");
+
+  // Symlinked node_modules folders (nested or top-level) are never followed outside the stage.
+  if (here !== "win32") {
+    writeFileSync(plain, JSON.stringify({ name: "probe-plain", version: "1.0.0" }));
+    const outsideNm = join(base, "outside-nm");
+    const outsideVictim = join(outsideNm, "victim");
+    mkdirSync(outsideVictim, { recursive: true });
+    writeFileSync(join(outsideVictim, "package.json"), JSON.stringify({
+      name: "victim",
+      version: "1.0.0",
+      optionalDependencies: { [`@probe/native-${here}-${process.arch}`]: "1.0.0" },
+    }));
+    const nestedLink = join(prefix, "node_modules", "probe-plain", "node_modules");
+    symlinkSync(outsideNm, nestedLink, "dir");
+    check("stage walk skips a symlinked nested node_modules pointing outside the stage",
+      packagesMissingOptionalDependencies(prefix).length === 0 && existsSync(join(outsideVictim, "package.json")));
+    rmSync(nestedLink, { force: true });
+    const linkedStage = join(base, "linked-stage");
+    mkdirSync(linkedStage, { recursive: true });
+    writeFileSync(join(linkedStage, "package.json"), JSON.stringify({ name: "linked-stage", private: true }));
+    symlinkSync(outsideNm, join(linkedStage, "node_modules"), "dir");
+    check("stage walk skips a symlinked top-level node_modules pointing outside the stage",
+      packagesMissingOptionalDependencies(linkedStage, prefix).length === 0 && existsSync(join(outsideVictim, "package.json")));
+  }
+
+  // Real npm fills _cacache from a loopback registry (using npm's lowercase %2f scoped key) for scoped
+  // optionals whose package names the suffix heuristic misreads.
+  const customCache = join(base, "cacache-real-npm");
+  const packWork = join(base, "pack-work");
+  mkdirSync(packWork, { recursive: true });
+  const misreadForeignName = `@probe/addon-${here}-${process.arch}`;
+  const misreadHostName = `@probe/addon-${elsewhere}-${otherArch}`;
+  const packFixture = (slug: string, pkgJson: Record<string, unknown>): Buffer => {
+    const dir = join(packWork, slug);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "package.json"), JSON.stringify(pkgJson));
+    writeFileSync(join(dir, "index.js"), "");
+    const before = new Set(readdirSync(packWork));
+    const packed = spawnSync(realNpm, ["pack", "--silent", "--pack-destination", packWork, dir], { env, encoding: "utf8" });
+    if (packed.status !== 0) throw new Error(`npm pack failed: ${packed.stderr}`);
+    const tgzFile = readdirSync(packWork).find((f) => f.endsWith(".tgz") && !before.has(f))!;
+    return readFileSync(join(packWork, tgzFile));
   };
-  const customCache = join(base, "cacache-meta");
-  const customRegistry = "http://127.0.0.1:9";
+  const misreadForeignTgz = packFixture("misread-foreign", { name: misreadForeignName, version: "1.0.0", cpu: ["wasm32"] });
+  const misreadHostTgz = packFixture("misread-host", { name: misreadHostName, version: "1.0.0", os: [here], cpu: [process.arch] });
+  const sharpWasmTgz = packFixture("sharp-wasm32", { name: "@probe/sharp-wasm32", version: "1.0.0", cpu: ["wasm32"] });
+  const distMeta = (port: number, route: string, bytes: Buffer) => ({
+    tarball: `http://127.0.0.1:${port}/${route}`,
+    integrity: `sha512-${createHash("sha512").update(bytes).digest("base64")}`,
+    shasum: createHash("sha1").update(bytes).digest("hex"),
+  });
+  let loopPort = 0;
+  const loopServer = createServer((req, res) => {
+    const path = decodeURIComponent(req.url!);
+    if (path === `/${misreadForeignName}`) {
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify({
+        name: misreadForeignName, "dist-tags": { latest: "1.0.0" },
+        versions: { "1.0.0": { name: misreadForeignName, version: "1.0.0", cpu: ["wasm32"], dist: distMeta(loopPort, "misread-foreign.tgz", misreadForeignTgz) } },
+      }));
+    } else if (path === `/${misreadHostName}`) {
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify({
+        name: misreadHostName, "dist-tags": { latest: "1.0.0" },
+        versions: { "1.0.0": { name: misreadHostName, version: "1.0.0", os: [here], cpu: [process.arch], dist: distMeta(loopPort, "misread-host.tgz", misreadHostTgz) } },
+      }));
+    } else if (path === "/@probe/sharp-wasm32") {
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify({
+        name: "@probe/sharp-wasm32", "dist-tags": { latest: "1.0.0" },
+        versions: { "1.0.0": { name: "@probe/sharp-wasm32", version: "1.0.0", cpu: ["wasm32"], dist: distMeta(loopPort, "sharp-wasm32.tgz", sharpWasmTgz) } },
+      }));
+    } else if (path === "/misread-foreign.tgz") {
+      res.setHeader("content-type", "application/octet-stream"); res.end(misreadForeignTgz);
+    } else if (path === "/misread-host.tgz") {
+      res.setHeader("content-type", "application/octet-stream"); res.end(misreadHostTgz);
+    } else if (path === "/sharp-wasm32.tgz") {
+      res.setHeader("content-type", "application/octet-stream"); res.end(sharpWasmTgz);
+    } else {
+      res.statusCode = 404; res.end('{"error":"not found"}');
+    }
+  });
+  await new Promise<void>((resolveListen, reject) => loopServer.once("error", reject).listen(0, "127.0.0.1", resolveListen));
+  try {
+    const addr = loopServer.address();
+    if (!addr || typeof addr === "string") throw new Error("loopback server has no port");
+    loopPort = addr.port;
+    writeFileSync(userNpmrc, `@probe:registry=http://127.0.0.1:${loopPort}\npackage-lock=false\n`);
+    const warmupDir = join(base, "cache-warmup");
+    mkdirSync(warmupDir, { recursive: true });
+    writeFileSync(join(warmupDir, "package.json"), JSON.stringify({
+      name: "cache-warmup", private: true,
+      optionalDependencies: {
+        [misreadForeignName]: "^1.0.0",
+        [misreadHostName]: "^1.0.0",
+        "@probe/sharp-wasm32": "^1.0.0",
+      },
+    }));
+    const warmup = await promisify(execFile)(realNpm, ["install", "--no-audit", "--no-fund", "--ignore-scripts"], {
+      cwd: warmupDir,
+      env: { ...env, npm_config_userconfig: userNpmrc, npm_config_cache: customCache, npm_config_fetch_retries: "0" },
+      timeout: 30_000,
+    });
+    check("real npm populates _cacache from loopback registry and honors metadata over package names",
+      !existsSync(join(warmupDir, "node_modules", ...misreadForeignName.split("/"))) &&
+      existsSync(join(warmupDir, "node_modules", ...misreadHostName.split("/"), "package.json")),
+      warmup.stderr);
+  } finally {
+    await new Promise<void>((resolveClose, reject) => loopServer.close((err) => err ? reject(err) : resolveClose()));
+  }
   process.env.npm_config_cache = customCache;
-  process.env.npm_config_registry = customRegistry;
-  writeCachedPackument(customCache, customRegistry, "@probe/sharp-wasm32", {
-    "1.0.0": { name: "@probe/sharp-wasm32", version: "1.0.0", cpu: ["wasm32"] },
-  });
-  writeCachedPackument(customCache, customRegistry, "@probe/sharp-host-custom", {
-    "1.0.0": { name: "@probe/sharp-host-custom", version: "1.0.0", os: [here], cpu: [process.arch] },
-  });
   writeFileSync(plain, JSON.stringify({
     name: "probe-plain",
     version: "1.0.0",
     optionalDependencies: {
+      [misreadForeignName]: "^1.0.0",
       "@probe/sharp-wasm32": "^1.0.0",
       "@probe/unknown-unindexed-addon": "^1.0.0",
     },
   }));
-  check("package-lock=false excuses non-suffix foreign optional from cached packument and unknown unindexed optional",
+  check("package-lock=false reads real npm %2f cache entry to excuse a scoped optional whose name suffix matches this host",
     prefixLockDiffers() === undefined && packagesMissingOptionalDependencies(prefix).length === 0, prefixLockDiffers());
 
   writeFileSync(plain, JSON.stringify({
     name: "probe-plain",
     version: "1.0.0",
-    optionalDependencies: { "@probe/sharp-host-custom": "^1.0.0" },
+    optionalDependencies: { [misreadHostName]: "^1.0.0" },
   }));
   const missingCachedHost = prefixLockDiffers();
-  check("package-lock=false reports an absent non-suffix optional whose cached packument admits this host",
-    missingCachedHost === "node_modules/@probe/sharp-host-custom is recorded in optionalDependencies but not installed" &&
+  check("package-lock=false reads real npm %2f cache entry to report a missing scoped optional whose name suffix matches another platform",
+    missingCachedHost === `node_modules/${misreadHostName} is recorded in optionalDependencies but not installed` &&
     packagesMissingOptionalDependencies(prefix).join(",") === join(prefix, "node_modules", "probe-plain"),
     missingCachedHost);
+  writeFileSync(userNpmrc, "package-lock=false\n");
 
   // Stale public lock entry supplies os/cpu/libc when the npm cache is cold.
   process.env.npm_config_cache = join(base, "cold-cache");

@@ -20,7 +20,8 @@ import { displayCmd, selfArgv } from "../lib/self-exec.js";
 import { spawnSync } from "node:child_process";
 import { isAuthenticSeedChild, markSeedChildLive, clearChildMarker } from "../seed/lock.js";
 import { cliVersion, seedStoreDir } from "../seed/paths.js";
-import { packagesMissingOptionalDependencies } from "../seed/verify.js";
+import { packagesMissingOptionalDependencies, publicPrefixLockCurrent } from "../seed/verify.js";
+import { assertExtensionPrefixIdle } from "@cotal-ai/workspace";
 
 export const extFlags = [
   jsonFlag,
@@ -281,6 +282,43 @@ function dropForeignLockEntries(lock: { packages?: Record<string, { extraneous?:
   }
 }
 
+async function installStagedSet(
+  stage: { readonly config: string; readonly prefix: string },
+  ownerConfig: string,
+  npmPrefix: string,
+  livePrefix: string,
+  specs: readonly string[],
+  offline: boolean,
+  isInterrupted: () => boolean,
+): Promise<{ status: number | null; output: string }> {
+  // npm's own update notifier can query the registry even in offline mode.
+  const cacheOnly = offline ? ["--offline", "--update-notifier=false"] : [];
+  const installArgs = ["install", "--save", "--no-audit", "--no-fund", "--install-links", ...cacheOnly, ...specs];
+  let prefixIdle = true;
+  try { assertExtensionPrefixIdle(ownerConfig); } catch { prefixIdle = false; }
+  const cleared = prefixIdle && !offline
+    ? packagesMissingOptionalDependencies(stage.prefix, livePrefix).filter((dir) => {
+        const stat = lstatSync(dir, { throwIfNoEntry: false });
+        return Boolean(stat && !stat.isSymbolicLink() && stat.isDirectory() && realpathSync(dir).startsWith(npmPrefix + sep));
+      })
+    : [];
+  if (!cleared.length) return npm(installArgs, npmPrefix);
+  const preClearDir = join(dirname(stage.config), "pre-clear");
+  cpSync(stage.prefix, preClearDir, { recursive: true, verbatimSymlinks: true });
+  for (const dir of cleared) rmSync(dir, { recursive: true, force: true });
+  const first = await npm(installArgs, npmPrefix);
+  if (first.status === 0 || isInterrupted() || existsSync(extensionNpmMutationPath())) {
+    rmSync(preClearDir, { recursive: true, force: true });
+    return first;
+  }
+  for (const entry of readdirSync(stage.prefix)) rmSync(join(stage.prefix, entry), { recursive: true, force: true });
+  for (const entry of readdirSync(preClearDir)) {
+    cpSync(join(preClearDir, entry), join(stage.prefix, entry), { recursive: true, verbatimSymlinks: true });
+  }
+  rmSync(preClearDir, { recursive: true, force: true });
+  return npm(installArgs, npmPrefix);
+}
+
 /** Install a verified set off-line from readers, then promote its complete prefix once. Caller owns writer. */
 export async function installExtensionSet(
   requests: readonly ExtensionInstallRequest[],
@@ -333,14 +371,9 @@ export async function installExtensionSet(
       if (packageNameFromSpec(request.spec, isPathSpec(request.spec)) !== request.pkg) throw new Error("extension set spec does not match its package");
       rmSync(join(stage.prefix, "node_modules", request.pkg), { recursive: true, force: true });
     }
-    if (!opts?.offline) {
-      for (const incomplete of packagesMissingOptionalDependencies(stage.prefix, livePrefix)) rmSync(incomplete, { recursive: true, force: true });
-    }
     const mutationPath = extensionNpmMutationPath();
     const specs = requests.map(({ spec }) => isPathSpec(spec) ? realpathSync(spec) : spec);
-    // npm's own update notifier can query the registry even in offline mode.
-    const cacheOnly = opts?.offline ? ["--offline", "--update-notifier=false"] : [];
-    const result = await npm(["install", "--save", "--no-audit", "--no-fund", "--install-links", ...cacheOnly, ...specs], npmPrefix);
+    const result = await installStagedSet(stage, ownerConfig, npmPrefix, livePrefix, specs, Boolean(opts?.offline), () => interrupted);
     if (existsSync(mutationPath)) stage.retain();
     if (interrupted) throw new ExtensionAddInterrupted(requests[0]!.pkg);
     if (result.status !== 0) {
@@ -382,7 +415,20 @@ export async function installExtensionSet(
     // The verifiers wrote one complete inventory inside the stage. Rebind every retained package,
     // including packages not changed by this pass, just as each former individual add did.
     linkExtensionPeers(loadExtensionsManifest().extensions, requests[0]!.pkg, console.error);
-    for (const name of ["package.json", "package-lock.json", join("node_modules", ".package-lock.json")]) {
+    const stageLockPath = join(stage.prefix, "package-lock.json");
+    let lockHasAbsoluteFile = false;
+    if (existsSync(stageLockPath)) {
+      try {
+        JSON.parse(readFileSync(stageLockPath, "utf8"), (key, item: unknown) => {
+          if (key === "resolved" && typeof item === "string" && item.startsWith("file:") && isAbsolute(item.slice(5))) lockHasAbsoluteFile = true;
+          return item;
+        });
+      } catch { lockHasAbsoluteFile = true; }
+    }
+    const lockNames = !publicPrefixLockCurrent(stage.prefix) || lockHasAbsoluteFile
+      ? ["package.json", "package-lock.json", join("node_modules", ".package-lock.json")]
+      : ["package.json", "package-lock.json"];
+    for (const name of lockNames) {
       const path = join(stage.prefix, name);
       if (!existsSync(path)) continue;
       const value = JSON.parse(readFileSync(path, "utf8"), (_key, item: unknown) => {
