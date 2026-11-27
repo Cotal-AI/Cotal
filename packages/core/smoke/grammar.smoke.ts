@@ -19,7 +19,7 @@ import {
 } from "../src/index.js";
 import { subjectMatches } from "../src/subject-grammar.js";
 import {
-  PLUGIN_CHANNEL_ROOT, PLUGIN_FANOUT_DURABLE, channelRoute, classifyChannel,
+  PLUGIN_CHANNEL_ROOT, PLUGIN_FANOUT_DURABLE, channelRoute, classifyChannel, legacyPluginChannelFilters,
   parsePluginChannelSubject, pluginChannelFilter, pluginChannelStream, pluginChannelSubject,
 } from "../src/plugin-channel-route.js";
 
@@ -97,6 +97,12 @@ c("history capture includes both plugins but not CHAT", pluginChannelFilter("dem
 c("plugin history purge covers only the selected plugin", subjectMatches(pluginChannelFilter("demo", "linear"), pluginSubject) &&
   !subjectMatches(pluginChannelFilter("demo", "linear"), anotherPluginPost));
 c("privileged history purge refuses explicit wildcard plugin IDs", ["*", ">", "linear.other"].every((id) => rejects(() => pluginChannelFilter("demo", id))));
+const legacyDeny = legacyPluginChannelFilters("demo");
+c("legacy deny filters cover the bare reserved root and all descendants only", legacyDeny.length === 2 &&
+  legacyDeny[0] === `cotal.demo.chat.*.*.${familyRoot}` && legacyDeny[1] === `cotal.demo.chat.*.*.${familyRoot}.>` &&
+  legacyDeny.some((filter) => subjectMatches(filter, chatSubject("demo", "u_abc", "act1", familyRoot))) &&
+  legacyDeny.some((filter) => subjectMatches(filter, legacyPlugin)) &&
+  !legacyDeny.some((filter) => [cs, pluginSubject].some((subject) => subjectMatches(filter, subject))));
 const is = unicastSubject("demo", "u_r", "ra", "u_s", "sa");
 c("inst build (4-token)", is === "cotal.demo.inst.u_r.ra.u_s.sa");
 const pi = parseSubject(is)!;

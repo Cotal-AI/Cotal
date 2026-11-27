@@ -85,4 +85,12 @@ export function pluginChannelFilter(space: string, plugin?: string): string {
   return `${spacePrefix(space)}.${PLUGIN_CHANNEL_ROOT}.*.*.${plugin === undefined ? "*" : assertValidRole(plugin)}.>`;
 }
 
+/** Deny the bare reserved name and its descendants on CHAT in an enabled space. */
+export function legacyPluginChannelFilters(space: string): readonly string[] {
+  return [
+    chatSubject(space, "*", "*", PLUGIN_CHANNEL_ROOT),
+    chatSubject(space, "*", "*", `${PLUGIN_CHANNEL_ROOT}.>`),
+  ];
+}
+
 export const PLUGIN_FANOUT_DURABLE = "fanout";
