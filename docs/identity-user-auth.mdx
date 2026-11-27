@@ -269,13 +269,33 @@ exited 15 seconds after SIGTERM. A legacy stack has no command that stops only t
 
 **Your agents are yours.** `cotal spawn` on a user mesh grants a managed actor under the
 *spawning operator's* owner and launches the agent with a bearer command instead of a
-creds file. The agent exchanges its spawn-time secret for short bearers (five minutes or
-less). It renews each one at a random point between half and four fifths of its lifetime and
-moves its connection onto the new bearer, so the broker never closes the connection for an
-expired one. Agents started together draw different points, and two connections in one process
-for the same space renew at least a second apart. An agent never presents an expired bearer: it
-renews first. While renewal fails it retries with growing, randomized waits of up to a minute,
-and reports the failure once until renewal works again. A locally provisioned foreground launch
+creds file. The agent exchanges its spawn-time secret for a bearer valid for at most five minutes.
+The broker accepts that bearer only on a new connection. A Manager-custodied seat using the full
+five-minute bearer gets a broker credential that lasts up to 60 minutes, bounded by its admission.
+Connections with separately approved endpoint caller grants keep their shorter lifetime.
+The managed endpoint renews around half-life with a small randomized offset. It waits for pending
+requests before moving the connection onto fresh credentials. A definitive exchange refusal
+closes the existing connection immediately. An unreachable or restarting authority does not close
+it. The agent retries with growing, randomized waits of up to a minute, and the broker closes the
+connection when its credential expires. Foreground launches,
+shorter bearers and views keep their existing expiry rules.
+
+Removing a managed grant blocks new exchanges. The authority rechecks live managed connections
+and asks the delivery daemon to disconnect those that lose their grant, delegation, or admission.
+A missing, malformed, deleted, or conflicting authority record triggers eviction on the next
+scan, with no grace period. A completed scan starts again within a second. An unreachable reader,
+transient local row-read fault, or unclassified store error is retried without an eviction decision,
+and a local row-read fault at the exchange answers 503 rather than a definitive 401 refusal.
+If eviction cannot complete, the authority is rolled back to a release without the reconciler,
+the delivery daemon does not support exact connection eviction, or an older delivery daemon on a
+multi-server broker reports verified absence without a reply from the target server, a revoked
+socket can keep its broker permissions until expiry, up to **60 minutes instead of five**. A
+cooperating seat closes sooner when the exchange definitively refuses it at its next renewal,
+normally within about 30 to 33 minutes if the exchange can answer directly. If unauthenticated
+probing fills a shared public reverse-proxy peer bucket, refused exchanges answer 429 instead of
+401, so the revoked seat retries rather than closing early until the peer bucket drains or its
+broker credential expires. Its expired or revoked bearer cannot authorize a fresh
+connection. A locally provisioned foreground launch
 refuses an existing actor rather than rotating another launch's secret. Its exit and failed-start cleanup
 revoke only the grant matching the launch's token and lifecycle. Broker-footprint deletion follows
 a successful owned revoke; credential files are removed only while they still hold this launch's

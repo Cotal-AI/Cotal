@@ -206,7 +206,7 @@ export async function openLifecycleMappingReader(nc: NatsConnection, space: stri
     jsm = await jetstreamManager(nc);
     recordsCfg = (await jsm.streams.info(`KV_${recordsBucket}`)).config;
   } catch (e) {
-    throw new EpEnvelopeError("failed-precondition", `the mapping reader cannot bind + shape-prove the records store ${recordsBucket} (the reader profile holds the API probe, STREAM.INFO, and its own connection-scoped inbox, SPEC 13.9): ${(e as Error)?.message ?? String(e)}`);
+    throw Object.assign(new EpEnvelopeError("failed-precondition", `the mapping reader cannot bind + shape-prove the records store ${recordsBucket} (the reader profile holds the API probe, STREAM.INFO, and its own connection-scoped inbox, SPEC 13.9): ${(e as Error)?.message ?? String(e)}`), { cause: e });
   }
   assertAuthorityStreamShape(recordsCfg, recordsBucket);
   const rd: LifecycleMappingReader = Object.freeze({ space });
@@ -529,7 +529,7 @@ export async function readLifecycleMappingLeader(
     entry = await readRecordLeader(jsm, space, key);
   } catch (e) {
     if (e instanceof EpEnvelopeError) throw e; // incl. the DEL/PURGE refusal
-    throw new EpEnvelopeError("unavailable", `the leader-served lifecycle-head read for "${owner}/${actor}" failed; an authority read fails closed, never open (SPEC 13.1): ${(e as Error)?.message ?? String(e)}`);
+    throw Object.assign(new EpEnvelopeError("unavailable", `the leader-served lifecycle-head read for "${owner}/${actor}" failed; an authority read fails closed, never open (SPEC 13.1): ${(e as Error)?.message ?? String(e)}`), { cause: e });
   }
   if (entry === undefined) return undefined;
   await assertOrdinaryNativeMutation({

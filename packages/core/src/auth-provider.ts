@@ -607,8 +607,23 @@ export interface ManagerInstanceListing {
  *  the error as `retryAfterSeconds`. */
 export function bearerCommandFailure(err: ExecFileException, stderr: string, timeoutMs: number, stdout = ""): Error {
   const said = stderr.trim();
-  const retryAfter = /^retry-after (\d+)$/.exec(stdout.trim());
-  if (said) return Object.assign(new Error(said), retryAfter ? { retryAfterSeconds: Number(retryAfter[1]) } : {});
+  const out = stdout.trim();
+  const retryAfter = /^retry-after (\d+)$/m.exec(out);
+  if (said) {
+    const refusedStatus = /^http-status (?:401|403)$/m.test(out);
+    const exchange = /^agent-bearer: exchange refused: (.*)$/s.exec(said);
+    const reason = refusedStatus ? exchange?.[1] : undefined;
+    const denied = reason !== undefined && (
+      /^agent exchange refused: unknown agent or wrong secret\b/.test(reason)
+      || /^agent "[^"]+"(?:: (?:spawner .* is no longer granted|its delegation chain contains a cycle|its ancestor "[^"]+" exceeds its spawner's CURRENT grant)| exceeds its spawner's CURRENT grant| cannot be delegated by spawner )/.test(reason)
+      || /^actor "[^"]+" has no lifecycleUid on its ledger row\b/.test(reason)
+      || /^the root credential for .* (?:is \S+; rotating a root credential|expired at\b)/.test(reason)
+      || /^uid \S+ (?:has a terminally retired issuance gate|is reserved by)\b/.test(reason)
+      || /^lifecycle (?:"[^"]+" is (?:retiring \(op |active at uid )|\S+ has immutable service custody\b)/.test(reason)
+      || /^lifecycle head \S+ carries service custody\b/.test(reason)
+    );
+    return Object.assign(new Error(said), retryAfter ? { retryAfterSeconds: Number(retryAfter[1]) } : {}, denied ? { bearerRefused: true } : {});
+  }
   // execFile marks an exit error `killed` only when its own timeout killed the child.
   if (err.killed) return new Error(`the bearer command timed out after ${timeoutMs}ms`);
   if (err.signal) return new Error(`the bearer command was killed by ${err.signal}`);

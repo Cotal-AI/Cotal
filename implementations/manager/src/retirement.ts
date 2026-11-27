@@ -271,8 +271,8 @@ export class Retirement {
     if (a.userOwner) {
       // USER MODE: this teardown IS revocation, not just footprint reduction - the ledger row is
       // the agent's standing mint authority, so delete it (next exchange refused, next connect
-      // denied) and shred the secret/sentinel/health files. A copied actor token dies here; a
-      // still-LIVE connection ends at its bearer-bound JWT expiry (≤ the agent TTL).
+      // denied) and shred the secret/sentinel/health files. The authority reconciles the live
+      // connections, and the lifecycle retirement verifies eviction before the name is freed.
       await this.shredUserSecrets(unshredded, files);
       // The ledger row IS the agent's STANDING mint authority (a different store from the auth-plane
       // cred ledger the rail retirement covers): while it lives, a copied actor token can still mint a

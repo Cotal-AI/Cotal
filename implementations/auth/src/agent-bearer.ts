@@ -128,6 +128,7 @@ async function runAgentBearer(args: ParsedArgs): Promise<void> {
         process.stdout.write(`retry-after ${limited.retryAfterSeconds}\n`);
         throw Object.assign(new Error(`agent-bearer: ${limited.message}; ${limited.remedy}`), { exitCode: 2 });
       }
+      if (res.status === 401 || res.status === 403) process.stdout.write(`http-status ${res.status}\n`);
       throw new Error(`agent-bearer: exchange refused: ${body.error ?? `HTTP ${res.status}`}`);
     }
     const out = (await readAuthResponseJson(res, `agent-bearer: the exchange at ${exchangeUrl}`)) as { token?: string };

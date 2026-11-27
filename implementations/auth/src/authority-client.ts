@@ -31,7 +31,7 @@ import { decode, encodeUser } from "@nats-io/jwt";
 import { fromPublic } from "@nats-io/nkeys";
 import { armRenewal, jitteredBackoffMs, nativeNkeySigner, epRequestObservationFilter, EpEnvelopeError, admissionBucket, dialerFor, sessionsBucket, assertInboxConnId, endpointToken, epAuthBucket, epcStreamName, epfStreamName, newIdentity, recordsBucket, retirementFrontierStreams, spacePrefix, assertPoolToken, principalTags, principalKey, remoteManagerRegistrationProof, assertLifecycleToken, epcredFamilyPrefix, epgateKey, eprepairKey, GOVERN_HEAD, RECORD_KINDS, recordAtomicKey, recordSpecKey, recordStatusKey, BASELINE_LIFECYCLE_ENDPOINT, epCallerGrantRows, instanceOnlyManagerCapabilities, type EpCaller, type PlaneConnTuple } from "@cotal-ai/core";
 import { chatAuthorityWriteSubjects } from "./chat-session-store.js";
-import { authConnectReaderGrants, openConnectReader, type ConnectReader } from "./connect-reader.js";
+import { authConnectReaderGrants, connectReaderUnreachable, openConnectReader, type ConnectReader } from "./connect-reader.js";
 import { environmentManagerAdmissionIndexBucket } from "./environment-manager-admission-index.js";
 import type { ServiceWriteScope } from "./service-write.js";
 import type { ServiceKeys } from "./store.js";
@@ -106,7 +106,7 @@ export function authorityWriterGrants(space: string, connId: string): { publish:
   const base = baseAuthorityWriterGrants(space, connId);
   // Chat admission and the chat sweep run on this writer: the holder index, the owner quota and
   // the sweep cursor, each an exact-arity family (SPEC 13.9). Derived host writers do not get them.
-  return { publish: [...base.publish, `$KV.${epAuthBucket(space)}.sessionconn.*`, `$KV.${epAuthBucket(space)}.consent.*`, ...chatAuthorityWriteSubjects(space)], subscribe: base.subscribe };
+  return { publish: [...base.publish, `$KV.${epAuthBucket(space)}.sessionconn.*`, `$KV.${epAuthBucket(space)}.managedconn.*`, `$KV.${epAuthBucket(space)}.consent.*`, ...chatAuthorityWriteSubjects(space)], subscribe: base.subscribe };
 }
 
 /** Host-private environment reservation writer. It adds manager gates and multi-segment operation
@@ -190,6 +190,7 @@ export function calloutReplicaGrants(space: string, connId: string): { publish: 
       `$JS.API.DIRECT.GET.${records}.>`,
       `$KV.${epAuthBucket(space)}.natkey.>`,
       `$KV.${epAuthBucket(space)}.sessionconn.*`,
+      `$KV.${epAuthBucket(space)}.managedconn.*`,
     ],
     subscribe: [`_INBOX_${assertInboxConnId(connId)}.>`],
   };
@@ -787,6 +788,7 @@ export async function openSupervisedConnectReader(
 ): Promise<SupervisedConnectReader> {
   const label = `cotal:auth-reader:${opts.space}`;
   let reader: ConnectReader | undefined;
+  let shapeRefusal: Error | undefined;
   let client: AuthorityClient | undefined;
   let closed = false, downed = false, replaceFailures = 0;
   let retry: ReturnType<typeof setTimeout> | undefined, expiry: ReturnType<typeof setTimeout> | undefined;
@@ -819,6 +821,7 @@ export async function openSupervisedConnectReader(
         if (closed || c !== client) break;
         if (s.type === "disconnect") {
           reader = undefined;
+          shapeRefusal = undefined;
           opts.log(`${label}: connection lost - connects DENY until the rebind shape proof passes`);
         } else if (s.type === "error") {
           // An -ERR leaves the bind as it was. nats.js reports every loss of the link as
@@ -828,10 +831,13 @@ export async function openSupervisedConnectReader(
         } else if (s.type === "reconnect") {
           try {
             const proved = await openConnectReader(c.nc, opts.space);
-            if (c === client && !downed) reader = proved;
+            if (c === client && !downed) { reader = proved; shapeRefusal = undefined; }
             opts.log(`${label}: rebound and shape-proved; connect reads resume`);
           } catch (e) {
-            if (c === client) reader = undefined;
+            if (c === client) {
+              reader = undefined;
+              shapeRefusal = connectReaderUnreachable(e) ? undefined : (e instanceof Error ? e : new Error(String(e)));
+            }
             opts.log(`${label}: REBIND SHAPE PROOF FAILED (${(e as Error)?.message ?? String(e)}) - connects stay denied`);
           }
         }
@@ -842,6 +848,7 @@ export async function openSupervisedConnectReader(
     const old = client;
     client = c;
     reader = r;
+    shapeRefusal = undefined;
     watch(c);
     clearTimeout(expiry);
     // A serving credential that reaches its expiry with no proved successor would otherwise make
@@ -879,6 +886,7 @@ export async function openSupervisedConnectReader(
       await c.close().catch(() => {});
       // The stores failed the shape proof, and the serving reader reads the same stores.
       reader = undefined;
+      shapeRefusal = connectReaderUnreachable(e) ? undefined : (e instanceof Error ? e : new Error(String(e)));
       opts.log(`${label}: REPLACEMENT SHAPE PROOF FAILED (${(e as Error)?.message ?? String(e)}) - connects stay denied`);
       return retryLater("no replacement reader is proved");
     }
@@ -900,6 +908,7 @@ export async function openSupervisedConnectReader(
   serve(first, firstReader);
   return {
     current: () => {
+      if (shapeRefusal) throw shapeRefusal;
       if (reader === undefined)
         throw new EpEnvelopeError("unavailable", "the connect-credential reader is not currently bound + shape-proved; a connect is never authorized without the live credential row (deny-new is fail-closed, SPEC 13.1/13.12)");
       return reader;

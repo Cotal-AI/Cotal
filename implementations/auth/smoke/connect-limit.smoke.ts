@@ -22,11 +22,13 @@
 import { randomUUID } from "node:crypto";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
-import { writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+import ts from "typescript";
 import { SignJWT, exportJWK, generateKeyPair, type CryptoKey } from "jose";
 import { connect, credsAuthenticator, tokenAuthenticator, type NatsConnection } from "@nats-io/transport-node";
-import { CotalEndpoint, mintCreds, mintLifecycleUid, newIdentity, runAgentBearer, setupSpaceStreams } from "@cotal-ai/core";
+import { CotalEndpoint, bearerCommandFailure, mintCreds, mintLifecycleUid, newIdentity, runAgentBearer, setupSpaceStreams } from "@cotal-ai/core";
 import { createSuite } from "@cotal-ai/smoke-kit";
 import {
   ConnectLimiter, ConnectRateLimited, USER_TOKEN_VER, calloutPermissions, deriveOwnerForIdpSubject, deriveOwnerToken, grantActor,
@@ -186,6 +188,159 @@ try {
   const ran = await runAgentBearer([process.execPath, "-e", `process.stdout.write("retry-after 7\\n"); process.stderr.write(${JSON.stringify(sentence)}); process.exit(2)`])
     .then(() => undefined, (e: Error & { retryAfterSeconds?: unknown }) => e);
   check("the bearer command's retry-after line rides its error beside its one sentence", ran?.message === sentence && ran.retryAfterSeconds === 7, ran);
+  const definitive = "agent-bearer: exchange refused: agent exchange refused: unknown agent or wrong secret";
+  const hasDefinitiveRefusal = async (status: string, text: string) => (await runAgentBearer([
+    process.execPath, "-e", `if (${JSON.stringify(status)}) process.stdout.write(${JSON.stringify(status)} + "\\n"); console.error(${JSON.stringify(text)}); process.exit(1)`,
+  ])
+    .then(() => undefined, (e: Error & { bearerRefused?: boolean }) => e))?.bearerRefused === true;
+  check("the same identity refusal is definitive on HTTP 401 and 403",
+    await hasDefinitiveRefusal("http-status 401", definitive) && await hasDefinitiveRefusal("http-status 403", definitive));
+  check("a restart response, a 5xx, or no exchange response is not a definitive identity refusal",
+    !(await hasDefinitiveRefusal("http-status 401", "agent-bearer: exchange refused: the auth service is momentarily unavailable (it detected a fault and is restarting); retry shortly")) &&
+    !(await hasDefinitiveRefusal("http-status 503", definitive)) &&
+    !(await hasDefinitiveRefusal("", definitive)) &&
+    !(await hasDefinitiveRefusal("", "agent-bearer: the pinned exchange did not answer (TimeoutError)")));
+
+  // Exhaustive source-scraped sentence classification across every throw site reachable from the
+  // managed agent exchange path: any new or changed refusal sentence fails this cell until it is
+  // explicitly classified as definitive (self-close) vs retryable (keep and retry) and matches
+  // bearerCommandFailure's actual verdict.
+  {
+    const smokeDir = fileURLToPath(new URL(".", import.meta.url));
+    const scrapeTargets: Array<{ file: string; functions: string[] }> = [
+      { file: join(smokeDir, "../src/service-exchange-routes.ts"), functions: ["handleExchange", "selectExchangeManagerInstance"] },
+      { file: join(smokeDir, "../src/ledger.ts"), functions: ["ledgerAuthorizeAgentExchange", "assertWithinSpawnerGrant"] },
+      { file: join(smokeDir, "../src/root-credential.ts"), functions: ["ensureRootCredential", "readCredRow"] },
+      { file: join(smokeDir, "../../../packages/core/src/lifecycle-saga.ts"), functions: ["runActivationSagaAtUid", "headSetCurrentRootCredential", "gateCreateFrozen", "gateReopen"] },
+      { file: join(smokeDir, "../../../packages/core/src/native-uid-custody.ts"), functions: ["assertOrdinaryNativeMutation", "invalid"] },
+      { file: join(smokeDir, "../src/credential-ledger.ts"), functions: ["stageAgentMint", "finalizeAgentMint"] },
+    ];
+    const renderExpr = (node: ts.Expression, sf: ts.SourceFile, env: Map<string, string[]>): string[] => {
+      if (ts.isParenthesizedExpression(node)) return renderExpr(node.expression, sf, env);
+      if (ts.isStringLiteralLike(node)) return [node.text];
+      if (ts.isIdentifier(node)) return env.get(node.text) ?? [`<${node.text}>`];
+      if (ts.isTemplateExpression(node)) {
+        let acc = [node.head.text];
+        for (const span of node.templateSpans) {
+          const vals = renderExpr(span.expression, sf, env);
+          acc = acc.flatMap((prefix) => vals.map((v) => `${prefix}${v}${span.literal.text}`));
+        }
+        return acc;
+      }
+      if (ts.isConditionalExpression(node)) {
+        const cond = node.condition.getText(sf);
+        if (cond === 'boundary === "spawn"') return renderExpr(node.whenFalse, sf, env);
+        return [...renderExpr(node.whenTrue, sf, env), ...renderExpr(node.whenFalse, sf, env)];
+      }
+      if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.PlusToken) {
+        const left = renderExpr(node.left, sf, env), right = renderExpr(node.right, sf, env);
+        return left.flatMap((l) => right.map((r) => `${l}${r}`));
+      }
+      if (ts.isCallExpression(node)) {
+        const callee = node.expression.getText(sf);
+        if (callee.endsWith(".join")) return ["sample_token"];
+        const argc = node.arguments.length;
+        if (argc === 1) return renderExpr(node.arguments[0]!, sf, env);
+        if (argc >= 2 && /EpEnvelopeError|lifecycleBlocked|RequestBodyError|definitiveLedgerRefusal/.test(callee))
+          return renderExpr(node.arguments[1]!, sf, env);
+      }
+      if (ts.isNewExpression(node) && node.arguments?.length) {
+        const callee = node.expression.getText(sf);
+        const idx = callee === "EpEnvelopeError" || callee === "RequestBodyError" ? 1 : 0;
+        if (node.arguments[idx]) return renderExpr(node.arguments[idx]!, sf, env);
+      }
+      return ["sample_token"];
+    };
+    const scraped = new Map<string, string>();
+    for (const { file, functions } of scrapeTargets) {
+      const text = readFileSync(file, "utf8");
+      const sf = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+      const shortFile = file.replace(/^.*\/(implementations|packages)\//, "$1/");
+      const visitDecl = (node: ts.Node) => {
+        const name = (ts.isFunctionDeclaration(node) && node.name?.text)
+          || (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer && (ts.isArrowFunction(node.initializer) || ts.isFunctionExpression(node.initializer)) ? node.name.text : undefined);
+        if (name && functions.includes(name)) {
+          const env = new Map<string, string[]>([
+            ["actor", ["seat"]], ["leaf", ["seat"]], ["owner", ["u_owner"]], ["space", ["sp"]],
+            ["lifecycleUid", ["uid00000000000000000000001"]], ["credid", ["cred0000000000000000000001"]],
+            ["key", ["cred.uid.cid"]], ["parentKey", ["u_owner.cli"]], ["childKey", ["u_owner.mid"]],
+          ]);
+          const walk = (n: ts.Node) => {
+            if (ts.isVariableDeclaration(n) && ts.isIdentifier(n.name) && n.initializer && !env.has(n.name.text)) {
+              if (ts.isArrowFunction(n.initializer) && n.initializer.body && !ts.isBlock(n.initializer.body))
+                env.set(n.name.text, renderExpr(n.initializer.body, sf, env));
+              else if (!ts.isArrowFunction(n.initializer) && !ts.isFunctionExpression(n.initializer))
+                env.set(n.name.text, renderExpr(n.initializer, sf, env));
+            }
+            if (ts.isThrowStatement(n) && n.expression) {
+              const exprText = n.expression.getText(sf);
+              if (!/^(?:e|err|error)$/.test(exprText) && !exprText.startsWith("invalid(")) {
+                const line = sf.getLineAndCharacterOfPosition(n.getStart(sf)).line + 1;
+                const samples = exprText === "deny()" ? (env.get("deny") ?? []) : renderExpr(n.expression, sf, env);
+                for (const s of samples) {
+                  const full = name === "invalid" ? `native UID custody ${s}; reconcile the authority stores` : s;
+                  scraped.set(`${shortFile}:${line}:${full}`, full);
+                }
+              }
+            }
+            ts.forEachChild(n, walk);
+          };
+          walk(node);
+        }
+        ts.forEachChild(node, visitDecl);
+      };
+      visitDecl(sf);
+    }
+    const sentenceClasses: ReadonlyArray<{ pattern: RegExp; expectedDefinitive: boolean }> = [
+      // Definitive identity / grant / delegation / lifecycle terminal refusals -> close resident socket:
+      { pattern: /^agent exchange refused: unknown agent or wrong secret - /, expectedDefinitive: true },
+      { pattern: /^agent "[^"]+": its delegation chain contains a cycle at /, expectedDefinitive: true },
+      { pattern: /^agent "[^"]+": spawner "[^"]+"(?: \(an ancestor\))? is no longer granted - /, expectedDefinitive: true },
+      { pattern: /^agent "[^"]+" cannot be delegated by spawner "[^"]+" of a different owner - /, expectedDefinitive: true },
+      { pattern: /^agent "[^"]+" exceeds its spawner's CURRENT grant \(narrowed since spawn\): /, expectedDefinitive: true },
+      { pattern: /^agent "[^"]+": its ancestor "[^"]+" exceeds its spawner's CURRENT grant \(narrowed since spawn\): /, expectedDefinitive: true },
+      { pattern: /^actor "[^"]+" has no lifecycleUid on its ledger row - /, expectedDefinitive: true },
+      { pattern: /^the root credential for "[^"]+" \([^)]+\) is \S+; rotating a root credential /, expectedDefinitive: true },
+      { pattern: /^the root credential for "[^"]+" expired at /, expectedDefinitive: true },
+      { pattern: /^uid \S+ has a terminally retired issuance gate;/, expectedDefinitive: true },
+      { pattern: /^uid \S+ is reserved by /, expectedDefinitive: true },
+      { pattern: /^lifecycle "[^"]+" is retiring \(op /, expectedDefinitive: true },
+      { pattern: /^lifecycle "[^"]+" is active at uid /, expectedDefinitive: true },
+      { pattern: /^lifecycle \S+ has immutable service custody;/, expectedDefinitive: true },
+      { pattern: /^lifecycle head \S+ carries service custody;/, expectedDefinitive: true },
+      // Non-definitive / transient / barrier-in-flight / corruption / manager-selection / syntax -> keep & retry:
+      { pattern: /^too many (?:pinned )?manager-caller selection refusals - /, expectedDefinitive: false },
+      { pattern: /^the credential row \S+ carries a \S+ marker;/, expectedDefinitive: false },
+      { pattern: /^the head for "[^"]+" (?:names root credential|already names root credential)/, expectedDefinitive: false },
+      { pattern: /^the root credential row for "[^"]+" binds /, expectedDefinitive: false },
+      { pattern: /^the root-credential ensure for "[^"]+" at uid \S+ keeps losing /, expectedDefinitive: false },
+      { pattern: /^activateLifecycleAtUid requires a managerInstance /, expectedDefinitive: false },
+      { pattern: /^(?:activation|the gate touch) for .* (?:keeps losing|lost the head CAS|is ambiguous)/, expectedDefinitive: false },
+      { pattern: /^the issuance gate for \S+ (?:is frozen by|is open but|does not exist|is "\S+", not frozen|was terminalized)/, expectedDefinitive: false },
+      { pattern: /^an issuance gate is born only under an activation intent/, expectedDefinitive: false },
+      { pattern: /^(?:no uid reservation exists|the uid reservation for \S+ carries|uid \S+ has immutable service custody; an ordinary gate)/, expectedDefinitive: false },
+      { pattern: /^(?:setCurrentRootCredential requires|stamping the root credential for)/, expectedDefinitive: false },
+      { pattern: /^native UID custody .* reconcile the authority stores$/, expectedDefinitive: false },
+      { pattern: /^(?:exp .* is not a non-negative safe integer|lifecycle \S+ has no (?:uid reservation|issuance gate)|the mint's holderPrincipal|the issuance gate for \S+ is "\S+"; only an open gate|the presented handle|the source gate for handle|the staged mint|the gate \S+ was observed at two revisions|the mint for \S+ lost its fence)/, expectedDefinitive: false },
+    ];
+    const sentences = [...new Set([...scraped.values()].filter((s) => !s.startsWith("sample_token")))];
+    const unclassified: string[] = [];
+    const mismatched: Array<{ sentence: string; expected: boolean; actual: boolean }> = [];
+    let sawDirectNarrow = false, sawAncestorNarrow = false;
+    for (const text of sentences) {
+      if (/^agent "seat" exceeds its spawner's CURRENT grant/.test(text)) sawDirectNarrow = true;
+      if (/^agent "seat": its ancestor "u_owner\.mid" exceeds its spawner's CURRENT grant/.test(text)) sawAncestorNarrow = true;
+      const rule = sentenceClasses.find((c) => c.pattern.test(text));
+      if (!rule) { unclassified.push(text); continue; }
+      const err = bearerCommandFailure({ name: "Error", message: "exit 1", code: 1 } as never, `agent-bearer: exchange refused: ${text}\n`, 15_000, "http-status 401\n") as Error & { bearerRefused?: boolean };
+      const actual = err.bearerRefused === true;
+      if (actual !== rule.expectedDefinitive) mismatched.push({ sentence: text, expected: rule.expectedDefinitive, actual });
+    }
+    check("source-scraped exchange refusal inventory covers both direct-spawner and ancestor narrowing",
+      sentences.length >= 25 && sawDirectNarrow && sawAncestorNarrow, { count: sentences.length, sawDirectNarrow, sawAncestorNarrow });
+    check("every source-scraped exchange refusal sentence is classified and matches bearerCommandFailure",
+      unclassified.length === 0 && mismatched.length === 0, { unclassified, mismatched });
+  }
 
   const epOwner = ownerOf("endpoint-human");
   const endpointOf = (owner: string, actor: string, source: () => Promise<string>) => new CotalEndpoint({

@@ -21,6 +21,7 @@ export const SESSION_EXP = "__cotalSessionExp";
 /** Internal expiry bound for ordinary endpoint callers, stripped before JWT encoding. */
 export const ENDPOINT_CALLER_EXP = "__cotalEndpointCallerExp";
 export const ENDPOINT_CALLER_RECHECK = "__cotalEndpointCallerRecheck";
+export const MANAGED_CONNECTION_EXP = "__cotalManagedConnectionExp";
 export type EndpointCallerResolver = (t: ValidatedUserToken) => Promise<{ capabilities: NonNullable<MintOpts["endpointCapabilities"]>; expiresAt?: number; recheck?: () => Promise<void> }>;
 
 /** The callout's issuing seam for an eligible user's `manager-caller` view (SPEC 13.15). `mint`
@@ -38,6 +39,7 @@ export type UserCallerIssuer = (args: {
 export type ListingIssuer = (args: {
   t: ValidatedUserToken;
   connId: string;
+  horizon?: number;
   mint: (listing?: ListingBinding) => Record<string, unknown>;
 }) => Promise<Record<string, unknown>>;
 
@@ -103,7 +105,7 @@ export function calloutPermissions(
   issueUserCaller: UserCallerIssuer,
   resolveEndpointCaller: EndpointCallerResolver,
   issueListing: ListingIssuer,
-): (t: ValidatedUserToken, connId: string, readerId: string) => Record<string, unknown> | Promise<Record<string, unknown>>;
+): (t: ValidatedUserToken, connId: string, readerId: string, managedExpiry?: number) => Record<string, unknown> | Promise<Record<string, unknown>>;
 export function calloutPermissions(
   resolveAcl: AclResolver,
   authorizeManagerCaller?: (owner: string, instanceId: string) => Promise<void>,
@@ -111,8 +113,8 @@ export function calloutPermissions(
   issueUserCaller?: UserCallerIssuer,
   resolveEndpointCaller?: EndpointCallerResolver,
   issueListing?: ListingIssuer,
-): (t: ValidatedUserToken, connId: string, readerId: string) => Record<string, unknown> | Promise<Record<string, unknown>> {
-  return (t, connId, readerId) => {
+): (t: ValidatedUserToken, connId: string, readerId: string, managedExpiry?: number) => Record<string, unknown> | Promise<Record<string, unknown>> {
+  return (t, connId, readerId, managedExpiry) => {
     if (t.act.view === "service-endpoint")
       throw new Error("callout permissions: service-endpoint requires native service authorization; ordinary actor profiles refuse it");
     assertDerivedOwnerToken(t.owner); // user-mode owners are derived — never `local`, never an nkey
@@ -227,12 +229,14 @@ export function calloutPermissions(
     );
     // The listing generation is decided on the complete set this connection is minted, endpoint
     // caller rights included, so its evidence is that set.
-    const issue = (endpointCapabilities?: NonNullable<MintOpts["endpointCapabilities"]>) =>
-      issueListing ? issueListing({ t, connId, mint: (listing) => mint(endpointCapabilities, listing) }) : mint(endpointCapabilities);
+    const issue = (endpointCapabilities?: NonNullable<MintOpts["endpointCapabilities"]>, horizon?: number) =>
+      issueListing ? issueListing({ t, connId, ...(horizon === undefined ? {} : { horizon }), mint: (listing) => mint(endpointCapabilities, listing) }) : mint(endpointCapabilities);
     if (!resolveEndpointCaller) return issue();
-    return resolveEndpointCaller(t).then(async ({ capabilities, expiresAt, recheck }) => ({
-      ...(await issue(capabilities)), ...(expiresAt === undefined ? {} : { [ENDPOINT_CALLER_EXP]: expiresAt }),
-      ...(recheck === undefined ? {} : { [ENDPOINT_CALLER_RECHECK]: recheck }),
-    }));
+    return resolveEndpointCaller(t).then(async ({ capabilities, expiresAt, recheck }) => {
+      const seatExpiry = kind === "managed-agent" && managedExpiry !== undefined && capabilities.length === 0 ? managedExpiry : undefined;
+      return { ...(await issue(capabilities, seatExpiry)), ...(expiresAt === undefined ? {} : { [ENDPOINT_CALLER_EXP]: expiresAt }),
+        ...(seatExpiry === undefined ? {} : { [MANAGED_CONNECTION_EXP]: seatExpiry }),
+        ...(recheck === undefined ? {} : { [ENDPOINT_CALLER_RECHECK]: recheck }) };
+    });
   };
 }

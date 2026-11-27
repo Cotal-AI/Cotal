@@ -5,7 +5,7 @@ import { ConnectRateLimited } from "./connect-limit.js";
 import { checkConversationResumeExchange } from "./conversation-resume-exchange.js";
 import { deriveOwnerForIdpSubject } from "./derive.js";
 import { verifyIdpToken } from "./idp.js";
-import { AGENT_BEARER_TTL_SEC, ledgerAuthorizeAgentExchange } from "./ledger.js";
+import { AGENT_BEARER_TTL_SEC, isDefinitiveLedgerRefusal, ledgerAuthorizeAgentExchange } from "./ledger.js";
 import type { HandlerCtx, ManagerCaller } from "./service.js";
 import { readJsonBody, refuseCapability, refuseExchange, send } from "./service-http.js";
 import { grantCoordinates } from "./session-redemption.js";
@@ -296,18 +296,12 @@ export async function handleExchange(req: IncomingMessage, res: ServerResponse, 
         lifecycleUid: grant.lifecycleUid,
         credentialId,
         ...(view === "manager-caller" ? { view, managerInstanceId: selectedManagerInstanceId } : {}),
-        ttlSec: Math.min(ttlSec ?? AGENT_BEARER_TTL_SEC, AGENT_BEARER_TTL_SEC),
+        ttlSec: Math.min(ttlSec ?? AGENT_BEARER_TTL_SEC, ctx.probeManagedBearerTtlSec ?? AGENT_BEARER_TTL_SEC),
       });
       const { exp } = decodeJwt(token);
       return send(res, 200, { token, owner, exp });
     } catch (e) {
-      const reason = e instanceof Error ? e.message : String(e);
-      if (e instanceof ConnectRateLimited) return sendRateLimited(res, e);
-      if (e instanceof ManagerSelectionRefusal) {
-        console.error(`auth-service: refused an agent exchange: ${reason}`);
-        return send(res, 401, { error: reason });
-      }
-      return refuseExchange(res, ctx, policy, peer, peerThrottled, `refused an agent exchange: ${reason}`, 401, { error: reason });
+      return sendExchangeError(res, ctx, policy, peer, peerThrottled, "refused an agent exchange", e);
     }
   }
   if (typeof idpToken !== "string" || !idpToken || typeof actor !== "string" || !actor)
@@ -353,14 +347,36 @@ export async function handleExchange(req: IncomingMessage, res: ServerResponse, 
   } catch (e) {
     // A refused exchange (bad IdP token, ungranted actor, expired proof) is an AUTHENTICATED
     // denial with the reason — the client shows it to the operator verbatim.
-    const reason = e instanceof Error ? e.message : String(e);
-    if (e instanceof ConnectRateLimited) return sendRateLimited(res, e);
-    if (e instanceof ManagerSelectionRefusal) {
-      console.error(`auth-service: refused an exchange: ${reason}`);
-      return send(res, 401, { error: reason });
-    }
-    return refuseExchange(res, ctx, policy, peer, peerThrottled, `refused an exchange: ${reason}`, 401, { error: reason });
+    return sendExchangeError(res, ctx, policy, peer, peerThrottled, "refused an exchange", e);
   }
+}
+
+function isLocalFilesystemFault(e: unknown): boolean {
+  if (isDefinitiveLedgerRefusal(e)) return false;
+  const cause = (e as { cause?: NodeJS.ErrnoException } | null)?.cause;
+  return typeof cause?.code === "string";
+}
+
+function sendExchangeError(
+  res: ServerResponse,
+  ctx: Pick<HandlerCtx, "failures">,
+  policy: ExchangePolicy,
+  peer: string,
+  peerThrottled: boolean,
+  label: string,
+  e: unknown,
+): void {
+  const reason = e instanceof Error ? e.message : String(e);
+  if (e instanceof ConnectRateLimited) return sendRateLimited(res, e);
+  if (isLocalFilesystemFault(e)) {
+    console.error(`auth-service: ${label} (authority row store fault): ${reason}`);
+    return send(res, 503, { error: reason });
+  }
+  if (e instanceof ManagerSelectionRefusal) {
+    console.error(`auth-service: ${label}: ${reason}`);
+    return send(res, 401, { error: reason });
+  }
+  return refuseExchange(res, ctx, policy, peer, peerThrottled, `${label}: ${reason}`, 401, { error: reason });
 }
 
 /** An authenticated exchange whose actor the connect limits refuse. It is not probing, so it spends

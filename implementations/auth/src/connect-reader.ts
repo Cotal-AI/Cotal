@@ -20,8 +20,8 @@
  * mapping read, or explicitly for a descendant, before this invocation can allow. Both callout
  * passes execute fresh reads; no observation is reused across signing or connections.
  */
-import type { NatsConnection } from "@nats-io/transport-node";
-import { jetstreamManager, type JetStreamManager } from "@nats-io/jetstream";
+import { ClosedConnectionError, ConnectionError, DrainingConnectionError, NoRespondersError, RequestError, TimeoutError, type NatsConnection } from "@nats-io/transport-node";
+import { JetStreamApiCodes, JetStreamApiError, JetStreamError, jetstreamManager, type JetStreamManager } from "@nats-io/jetstream";
 import { EpEnvelopeError, assertInboxConnId, epAuthBucket, recordsBucket, readRecordLeader, assertOrdinaryNativeMutation } from "@cotal-ai/core";
 import { assertAuthorityStreamShape, openLifecycleMappingReader, readLifecycleMappingLeader, type LifecycleMappingReader } from "./lifecycle-registry.js";
 import { credRowKey, parseLedgerRow, type CredentialLedgerRow } from "./credential-ledger.js";
@@ -73,6 +73,28 @@ export interface ConnectReader {
 
 const READERS = new WeakMap<ConnectReader, ConnectReaderInternals>();
 
+/** True only when an error proves the authority store or shape says no (revoked, expired,
+ *  superseded, deleted, malformed or drifted store state). Every unreachable, no-responders,
+ *  503 or unrecognised error defaults to false so callers keep and retry rather than evict. */
+export function connectReaderDefinitiveRefusal(error: unknown): boolean {
+  if (error instanceof TimeoutError || error instanceof ClosedConnectionError || error instanceof DrainingConnectionError ||
+      error instanceof ConnectionError || error instanceof NoRespondersError)
+    return false;
+  if (error instanceof RequestError) return !error.isNoResponders() && connectReaderDefinitiveRefusal(error.cause);
+  if (error instanceof JetStreamApiError)
+    return error.status !== 503 && error.apiError().code !== 503 && error.code === JetStreamApiCodes.StreamNotFound;
+  if (error instanceof JetStreamError) return false;
+  if (error instanceof EpEnvelopeError) {
+    if (error.cause !== undefined) return connectReaderDefinitiveRefusal(error.cause);
+    return error.code === "permission-denied" || error.code === "failed-precondition" || error.code === "internal";
+  }
+  return false;
+}
+
+export function connectReaderUnreachable(error: unknown): boolean {
+  return !connectReaderDefinitiveRefusal(error);
+}
+
 function internals(reader: ConnectReader): ConnectReaderInternals {
   const i = READERS.get(reader);
   if (!i)
@@ -105,7 +127,7 @@ export async function openConnectReader(nc: NatsConnection, space: string): Prom
       throw new EpEnvelopeError("failed-precondition", `the auth store ${authBucket} has allow_direct=${String(authCfg.allow_direct)}, not false; a Direct-Get-capable credential store defeats leader-served deny-new (SPEC 13.1); reprovision`);
   } catch (e) {
     if (e instanceof EpEnvelopeError) throw e;
-    throw new EpEnvelopeError("failed-precondition", `the connect reader cannot bind + shape-prove the auth store ${authBucket} (SPEC 13.12): ${(e as Error)?.message ?? String(e)}`);
+    throw Object.assign(new EpEnvelopeError("failed-precondition", `the connect reader cannot bind + shape-prove the auth store ${authBucket} (SPEC 13.12): ${(e as Error)?.message ?? String(e)}`), { cause: e });
   }
   // The records-head reads go through the mapping reader, which shape-proves the records store the
   // same way at its own bind — so both stores are proved on this (re)bind.
@@ -165,6 +187,10 @@ function isRootChain(chain: string[]): boolean {
  *     the operation reports success, and after the leaf CAS deny-new holds.
  */
 export async function authorizeConnectCredential(reader: ConnectReader, t: ValidatedUserToken, now: () => number): Promise<void> {
+  await readConnectCredentialExpiry(reader, t, now);
+}
+
+export async function readConnectCredentialExpiry(reader: ConnectReader, t: ValidatedUserToken, now: () => number): Promise<number> {
   const credid = t.act.credentialId;
   if (credid === undefined)
     throw new EpEnvelopeError("permission-denied", "the bearer carries no credential claim (act.credentialId); connect deny-new requires it; re-exchange for a fresh bearer (lifecycle credential-bound from v0.4 R1)");
@@ -209,4 +235,5 @@ export async function authorizeConnectCredential(reader: ConnectReader, t: Valid
     // Root mapping reads already check alias custody. Descendants still need that check.
     await assertOrdinaryNativeMutation(custodyReader, { owner: t.owner, actor: t.act.actor });
   }
+  return Math.floor(row.exp / 1000);
 }

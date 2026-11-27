@@ -153,8 +153,8 @@ export interface ValidatedUserToken {
   credentialId?: string;
   /** Token-shape version (== {@link USER_TOKEN_VER}). */
   ver: number;
-  /** Bearer expiry (unix seconds) — the callout binds the minted NATS user JWT's lifetime to it,
-   *  so broker access dies with the bearer (the v1 revocation lever, enforced server-side). */
+  /** Bearer validity window, in Unix seconds. The callout checks it before each new admission. */
+  iat?: number;
   exp: number;
 }
 
@@ -336,6 +336,7 @@ export async function validateUserToken(token: string, opts: ValidateUserTokenOp
     act: { owner: act.owner, actor: act.actor, scope: act.scope, parent: act.parent, lifecycleUid: act.lifecycleUid, credentialId: act.credentialId, view: act.view, managerInstanceId: act.managerInstanceId, ...(act.session ? { session: act.session } : {}), ...(act.transferWriter ? { transferWriter: act.transferWriter } : {}), ...(service ? { service } : {}) },
     credentialId: act.credentialId,
     ver: USER_TOKEN_VER,
+    iat: payload.iat,
     exp: payload.exp,
   };
 }

@@ -137,6 +137,7 @@ export async function runAuthService(args: ParsedArgs, store?: SecretStore, opti
     // selection exactly as before. A hosted context passes no local manager at all.
     localManager: () => loadManagerInstanceIdentity(root, space),
     eventPayloadsWithheld: options.eventPayloadsWithheld,
+    probeManagedLifetimes: options.probeManagedLifetimes,
     ...(interactiveManagerSelection !== undefined ? { interactiveManagerSelection } : {}),
     ...(options.runCancelLimits !== undefined ? { runCancelLimits: options.runCancelLimits } : {}),
     ...(registry !== undefined ? { registry } : {}),
@@ -558,6 +559,7 @@ async function startAuthContext(o: AuthContextOptions): Promise<{ handle: Omit<A
     log,
     localManager: o.localManager,
     eventPayloadsWithheld: o.eventPayloadsWithheld,
+    probeManagedLifetimes: o.probeManagedLifetimes,
     ...(o.interactiveManagerSelection !== undefined ? { interactiveManagerSelection: o.interactiveManagerSelection } : {}),
     ...(o.runCancelLimits !== undefined ? { runCancelLimits: o.runCancelLimits } : {}),
     ...(o.standingRenewableTtlSeconds !== undefined ? { standingRenewableTtlSeconds: o.standingRenewableTtlSeconds } : {}),
@@ -635,6 +637,7 @@ async function startAuthContext(o: AuthContextOptions): Promise<{ handle: Omit<A
     const serviceEngine = plane.serviceEndpointHost !== undefined ? serviceHostEngineOf(plane.serviceEndpointHost) : undefined;
     const ctx: HandlerCtx = {
       connectLimiter,
+      probeManagedBearerTtlSec: o.probeManagedLifetimes?.bearerSec,
       ...(issueToolResultConsent ? { issueToolResultConsent } : {}),
       ...(serviceEngine !== undefined ? { serviceAuthority: { space, accountPublicKey: keys.dataAccount.pub, engine: serviceEngine, material: issuer } } : {}),
       ...(plane.serviceEndpointHost !== undefined ? { serviceHost: plane.serviceEndpointHost } : {}),
