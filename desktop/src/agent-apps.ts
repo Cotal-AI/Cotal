@@ -3,7 +3,7 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
 import { requireResult, type Frame } from "./model";
 import { icon } from "./icons";
-import { isReady, orderedApps, parseApps, refusalDetail, refusalMessage, rowView, signInUrl, suggestedApp, type Activity, type AgentApp, type RowView } from "./agent-apps-model";
+import { installedMessage, isReady, orderedApps, parseApps, refusalDetail, refusalMessage, rowView, signInUrl, suggestedApp, type Activity, type AgentApp, type RowView } from "./agent-apps-model";
 import claudeLogo from "../../assets/agents/claude-code.svg";
 import codexLogo from "../../assets/agents/codex.svg";
 import opencodeLogo from "../../assets/agents/opencode.svg";
@@ -28,7 +28,7 @@ export function logo(name: string, size: "row" | "tile" = "row"): HTMLElement {
   return box;
 }
 
-export interface AppResult { app?: AgentApp; apps?: AgentApp[]; service?: "none" | "unchanged" | "refreshed" | "waiting"; pathAdded?: string }
+export interface AppResult { app?: AgentApp; apps?: AgentApp[]; service?: "none" | "unchanged" | "refreshed" | "waiting" | "failed"; serviceError?: string; pathAdded?: string }
 
 /** One bridge request; progress lines arrive through `onLine`. */
 export async function appRequest(request: { op: "agent-apps"; refresh?: boolean } | { op: "agent-app-install" | "agent-app-sign-in"; name: string }, onLine?: (line: string) => void): Promise<AppResult> {
@@ -153,7 +153,7 @@ export class AgentApps {
       this.activity.delete(name);
       if (result.app) this.replace(result.app);
       this.waitingForAgents = result.service === "waiting";
-      this.message = result.service === "waiting" ? `${title} is installed. Your spaces can start it once the agents running on this computer stop.` : result.pathAdded ? `${title} is installed. Cotal added its folder to PATH in ${result.pathAdded}.` : `${title} is installed.`;
+      this.message = installedMessage(title, result);
       this.host.announce(this.message);
       if (result.app?.state === "signed-out") await this.signIn(name);
     } catch (error) {

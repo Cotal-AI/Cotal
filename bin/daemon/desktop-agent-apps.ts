@@ -315,13 +315,12 @@ export type AgentAppRequest =
 type ServiceOptions = Omit<InstallOptions, "report">;
 
 /** Let the installed service find what was installed. Running agents defer it: the app says so and
- *  checks again later. Any other refusal is reported with the install it follows. */
-async function refreshService(service: ServiceOptions, dirs: readonly string[], before: string | undefined, progress: Emit, title?: string): Promise<"none" | "unchanged" | "refreshed" | "waiting"> {
+ *  checks again later. */
+async function refreshService(service: ServiceOptions, dirs: readonly string[], before: string | undefined, progress: Emit): Promise<"none" | "unchanged" | "refreshed" | "waiting"> {
   try { return await refreshServiceForApplication({ ...service, report: line => progress(line) }, dirs, before); }
   catch (error) {
     if (error instanceof CommandFailure && error.native?.code === "SEATS_ACTIVE") return "waiting";
-    if (!title) throw error;
-    throw new CommandFailure("partial", "OPERATION_PARTIAL", `${title} is installed, but the background service could not be refreshed to find it: ${error instanceof Error ? error.message : String(error)}`, { remedy: "choose Check again" });
+    throw error;
   }
 }
 
@@ -346,6 +345,9 @@ async function answer(req: AgentAppRequest, service: ServiceOptions, emit: (fram
   const progress = (line: string) => emit({ v: 1, event: "agent-app-progress", name: req.name, line });
   if (req.op === "agent-app-sign-in") return { app: await signInAgentApp(req.name, progress) };
   const installed = await installAgentApp(req.name, progress);
-  const serviceState = await refreshService(service, installed.dirs, installed.before, progress, installed.app.title);
-  return { app: installed.app, service: serviceState, ...(installed.pathAdded ? { pathAdded: installed.pathAdded } : {}) };
+  const done = { app: installed.app, ...(installed.pathAdded ? { pathAdded: installed.pathAdded } : {}) };
+  // The install stands even when the service cannot pick it up yet, so the reply says both and Check
+  // again (`agent-apps` with refresh) tries the service once more.
+  try { return { ...done, service: await refreshService(service, installed.dirs, installed.before, progress) }; }
+  catch (error) { return { ...done, service: "failed", serviceError: error instanceof Error ? error.message : String(error) }; }
 }
