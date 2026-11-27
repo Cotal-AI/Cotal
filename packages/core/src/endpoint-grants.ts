@@ -19,6 +19,7 @@ import {
   EP_PRINCIPAL_ROUTE, EP_PRINCIPAL_REPLY_ROUTE, epPrincipalCallerReplyFilter,
 } from "./endpoint-subjects.js";
 import { AGENT_CLUSTER, AGENT_ENDPOINT } from "./agent-endpoint.js";
+import { ARTIFACTS_ENDPOINT, ARTIFACTS_LIST_COMMAND } from "./artifacts-contract.js";
 
 /** A minted request capability: one endpoint command a caller may invoke, on the named rails.
  *  `routes` defaults to `["one"]`; `instanceId` additionally pins the instance form to exactly
@@ -301,6 +302,7 @@ const GOAL_BEARING_SET: ReadonlySet<string> = new Set(GOAL_BEARING_COMMANDS);
 export const REPEAT_SAFE_COMMANDS: Readonly<Record<string, readonly string[]>> = Object.freeze({
   [BASELINE_LIFECYCLE_ENDPOINT]: Object.freeze(["status", "ps", "slots", "inspect", "list-personas", "show-persona", "run-status", "run-ps", "goal-result"]),
   [BASELINE_DELIVERY_ENDPOINT]: Object.freeze(["list"]),
+  [ARTIFACTS_ENDPOINT]: Object.freeze([ARTIFACTS_LIST_COMMAND]),
 });
 /** `describe` is a read on every endpoint by construction, so it is repeat-safe without one: no
  *  handler can be attached to it (`serveEndpoint` throws on any def naming it, and a cluster
