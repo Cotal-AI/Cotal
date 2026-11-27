@@ -133,7 +133,7 @@ import {
   rehydratePreparedRestore,
   journaledMaxFileStore,
   rearmUnboundRestore,
-  unreadableUnboundRestoreBlocks,
+  unreadableUnboundRestorePid,
   replacePreparedDeadRestoreListener,
   type PreparedRestore,
   type RestoreFlags,
@@ -1373,10 +1373,15 @@ async function runUp(args: ParsedArgs, invokedFrom: string, inheritedLock?: Main
     } else if (restoredAttempt) {
       // No listener is bound. An interrupted spawn may still be opening the restored store, so a
       // process naming the attempt must be gone. When command lines cannot be read, a published
-      // listener pid that is not proven dead still blocks; the first launch has published none.
-      const naming = processesNaming(restoredAttempt.attemptId);
-      if (naming.kind === "unreadable" && unreadableUnboundRestoreBlocks())
-        throw new Error(`restore attempt ${resumeAttempt} re-entry has no bound listener proof, and this host cannot show that no listener it started still runs (${naming.why}); preserving recovery state`);
+      // listener pid that is not proven dead still blocks. A pid reused by another process stays
+      // blocking until that process ends. The first launch has published no pid. The smoke switch
+      // stands in for that host at this call only.
+      const naming = process.env.COTAL_SMOKE_UNREADABLE_PROCESSES === "1"
+        ? { kind: "unreadable" as const, why: "no process-argv source on win32" }
+        : processesNaming(restoredAttempt.attemptId);
+      const blockingPid = naming.kind === "unreadable" ? unreadableUnboundRestorePid() : undefined;
+      if (blockingPid !== undefined)
+        throw new Error(`restore attempt ${resumeAttempt} re-entry has no bound listener proof, and this host cannot show that no listener it started still runs (${naming.why}). Published listener pid ${blockingPid} is not proven dead. Stop it if it is the restore listener, then run \`${displayCmd()} up\` again. If another process reused that pid, this refusal stays until that process ends; preserving recovery state`);
       if (naming.kind === "pids" && naming.pids.length)
         throw new Error(`restore attempt ${resumeAttempt} re-entry has no bound listener proof, and process ${naming.pids.join(", ")} started for it still runs; stop it, then run \`${displayCmd()} up\` again; preserving recovery state`);
       if (await isReachable(restoredAttempt.server))

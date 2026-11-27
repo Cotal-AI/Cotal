@@ -255,12 +255,13 @@ export function replacePreparedDeadRestoreListener(prepared: PreparedRestore, he
   }
 }
 
-/** An unbound restore whose process scan cannot be read still starts, unless this root's published
- *  listener pid is not proven dead. No pid file means this attempt has not published a listener. */
-export function unreadableUnboundRestoreBlocks(): boolean {
+/** The published listener pid that blocks an unbound restore when process command lines cannot be
+ *  read. A pid reused by an unrelated process stays blocking until that process ends, because a
+ *  signal probe cannot tell it from the listener. No pid file means this attempt has published none. */
+export function unreadableUnboundRestorePid(): number | undefined {
   const text = readPidfile(cotalPath(NATS_PIDFILE));
   const pid = text === undefined ? undefined : parsePid(text);
-  return pid !== undefined && probeLiveness(pid) !== "dead";
+  return pid !== undefined && probeLiveness(pid) !== "dead" ? pid : undefined;
 }
 
 /** Return a restore with no bound listener to commit intent before its listener starts (#7127). The
