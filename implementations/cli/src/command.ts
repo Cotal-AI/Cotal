@@ -461,7 +461,7 @@ function usageRefusal(failure: CommandFailure, plain: boolean, cmd?: Command, wo
   }
   if (!cmd) return;
   if (report) console.error("");
-  paintFor(process.stderr, () => printHelpPath(cmd, helpPath(cmd, words).path, (line) => console.error(line), terminalWidth(process.stderr), plain ? "plain" : "rich"));
+  paintFor(process.stderr, () => printHelpPath(cmd, helpPath(cmd, words).path, (line) => console.error(line), terminalWidth(process.stderr), plain ? "plain" : "rich", words));
 }
 
 /** Recover the requested stream output and target for a refusal, without running the command. */
