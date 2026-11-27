@@ -127,7 +127,7 @@ export async function controllerTeamBoot(request: ControllerTeamBootRequest): Pr
       throw new CommandFailure("refused", "AUTH_REQUIRED", "a user-auth team boot needs a prepared space with your granted login, and this root has none yet; nothing was written", { target: { root: plan.root, space: plan.space },
         remedy: `prepare with ${codeSpan(prepare)}, then ${codeSpan(login)}. Have the space owner run ${codeSpan(`cotal auth grant cli --sub <subject> --full --space ${space}`)}. Stop the prepared stack with ${codeSpan(`cd ${root} && cotal down --space ${space}`)}, then retry from the original folder with ${request.retry()}` });
     }
-    await assertManagerLogin(plan.root, plan.space, codeSpan(`cotal team boot ${shellWord(request.file)}`), "nothing was started or written");
+    await assertManagerLogin(plan.root, plan.space, request.retry, "nothing was started or written");
   }
   if (readMaintenanceJournal(plan.root)) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "this root retains a maintenance or recovery attempt; team boot cannot substitute an ordinary startup", { target: { root: plan.root, space: plan.space } });
   const lock = acquireMaintenanceLock(plan.root, { operation: "team boot" });
