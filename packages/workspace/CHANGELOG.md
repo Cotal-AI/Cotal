@@ -1,5 +1,21 @@
 # @cotal-ai/workspace
 
+## 0.184.0
+
+### Minor Changes
+
+- 68fc37d: A launch now runs only an effort level or mode its harness lists for the model, and is refused before launch otherwise. A model catalog row can name its default variant, the harness's default model, and modes such as a fast tier, which `cotal models` prints and `cotal spawn --mode id=value` chooses. The Manager's `spawn` takes `modes` (Manager revision 58) and checks a variant or modes against the last catalog it read for that connector, reading one only when it holds none. A mode the account cannot use is listed with an `unavailable` reason, which `cotal models` prints, and a launch that turns it on is refused with that reason. A launch that sets it off, `false` or the choice's default, still runs. A connector declares `supportsModes` to render them, and a resumed seat launches with the modes it was spawned with. A variant on a connector without a catalog, or on a model its catalog does not list, is now refused rather than launched at a setting the harness picks.
+
+### Patch Changes
+
+- f9301f2: Keep the requested loopback broker port in first-start advice for a named prepared space. Do not suggest starting a local broker for a remote address.
+- ec3c29f: A backup restore on a host that cannot list process command lines now starts its first listener. If that listener was spawned but its pid was never published, a later attempt refuses instead of starting a second listener. A published pid whose creation time does not match the recorded listener does not block.
+- Updated dependencies [68fc37d]
+- Updated dependencies [e693bb2]
+- Updated dependencies [56ff3d1]
+- Updated dependencies [6e28100]
+  - @cotal-ai/core@0.184.0
+
 ## 0.183.1
 
 ### Patch Changes
