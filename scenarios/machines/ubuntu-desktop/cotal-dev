@@ -11,7 +11,11 @@ cd "$repo"
 
 die() { echo "cotal-dev: $*" >&2; exit 1; }
 # Matches executable paths only (/proc/*/exe), never command lines.
-running() { ls -l /proc/[0-9]*/exe 2>/dev/null | grep -Fq -- "$1"; }
+running() {
+  local exe
+  for exe in /proc/[0-9]*/exe; do [[ $(readlink "$exe" 2>/dev/null) == "$1"* ]] && return 0; done
+  return 1
+}
 
 build() {
   local t=$SECONDS
