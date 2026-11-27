@@ -27,6 +27,8 @@
  * Claude login, and three seats' one short turn each spends a few tokens. The space is prepared
  * with `space create`, which leaves the operator's Claude configuration alone, and the persona asks
  * for the default permission mode, because Cotal never accepts Bypass Permissions for the operator.
+ * That launch option applies only from a trusted folder, so the suite trusts the project as its
+ * operator would.
  * COTAL_HOME and the Cotal config dir are scratch, the operator's own COTAL_*, CLAUDE_* and
  * ANTHROPIC_* variables never reach a seat, and the seats' transcript folder is removed at the end.
  * Kills only what it starts.
@@ -149,7 +151,10 @@ try {
   console.log("\nseats through a local Manager:");
   check("connectors seed from this checkout", cotal(undefined, "ext", "seed").status === 0);
   const prepared = cotal(anchor, "space", "create", "effort-live", "--root", root);
-  check("space create prepares the project", prepared.status === 0, prepared.out);
+  // The persona's launch option applies only from a trusted folder, and space create does not trust a
+  // project whose .cotal was already there.
+  const trusted = cotal(anchor, "trust", root);
+  check("space create prepares the project, and the operator trusts it", prepared.status === 0 && trusted.status === 0, { prepared: prepared.out, trusted: trusted.out });
   const started = cotal(anchor, "up", "--detach", "--open", "--server", `nats://127.0.0.1:${await freePort()}`);
   up = started.status === 0;
   check("up --detach starts the stack", up, started.out);
