@@ -25,7 +25,7 @@ import { parseServiceAuthorityEnvelope, parseServiceAuthorityRequest } from "@co
 import { parseRemoteEndpointDeregisterRequest, parseRemoteEndpointDeregisterResult } from "@cotal-ai/core";
 import { CommandFailure, type ConversationAccount } from "@cotal-ai/workspace";
 import { readRemoteServiceAuthorityInfo, postRemoteServiceAuthority, serviceAuthorityUrl, withServiceAuthorityBudget, assertServiceViewFreshness } from "./service-authority-client.js";
-import { conversationAccountKey, deleteIdpSpaceCatalog, fetchIdpJwt, hasIdpSessions, hasIdpSpaceCatalog, IdpSessionRejectedError, IdpTokenServerError, IdpUnreachableError, loadIdpSession, normalizeIdpUrl, prepareIdpSpaceCatalogs, probeIdpJwks, requireIdpSession } from "./login.js";
+import { conversationAccountKey, deleteIdpSpaceCatalog, fetchIdpJwt, hasIdpSessions, hasIdpSpaceCatalog, IdpRateLimitedError, IdpSessionRejectedError, IdpTokenServerError, IdpUnreachableError, loadIdpSession, normalizeIdpUrl, prepareIdpSpaceCatalogs, probeIdpJwks, requireIdpSession } from "./login.js";
 import { deriveOwnerForIdpSubject } from "./derive.js";
 import { findActorUnified, findInteractiveActor, hashActorToken, newActorToken, notGrantedReason, withManagedGrantTransaction } from "./ledger.js";
 import { userAuthTrustFingerprint, validateRetainedManagedAgent } from "./continuity.js";
@@ -149,9 +149,17 @@ export const cotalAuthProvider: AuthProvider = {
             ? "the run authority is temporarily unavailable; retry the read in a few seconds" : error.message;
           throw new EpEnvelopeError("unavailable", message, undefined, "not-executed");
         }
-        if (request.attempt && request.attempt.served === undefined)
-          throw new EpEnvelopeError("unavailable", error.message, undefined,
+        if (request.attempt && request.attempt.served === undefined) {
+          const unavailable = new EpEnvelopeError("unavailable", error.message, undefined,
             error instanceof IdpTokenServerError || error instanceof IdpUnreachableError ? "not-executed" : "unknown");
+          const status = error instanceof ManagerAuthorityRefusal ? error.status : error instanceof IdpRateLimitedError ? error.status : undefined;
+          const retryAfterSeconds = error instanceof IdpRateLimitedError ? error.retryAfterSeconds
+            : error instanceof ManagerAuthorityRefusal ? error.retryAfterSeconds : undefined;
+          throw Object.assign(unavailable, {
+            ...(status !== undefined ? { status } : {}),
+            ...(retryAfterSeconds !== undefined ? { retryAfterSeconds } : {}),
+          });
+        }
       }
       throw error;
     }
@@ -1004,7 +1012,7 @@ async function postManagerAuthority(
     throw new Error(message);
   });
   signal?.throwIfAborted();
-  if (!response.ok) throw managerAuthorityRefusal(what, request, body, response.status);
+  if (!response.ok) throw managerAuthorityRefusal(what, request, body, response.status, retryAfterHeaderSeconds(response));
   return body;
 }
 
@@ -1016,6 +1024,15 @@ function isManagerAuthorityOutage(status: number): boolean {
   return status === 502 || status === 503 || status === 504;
 }
 
+/** The whole-second wait a `Retry-After` header names, or undefined when it names none. A date
+ *  value is the same wait, counted from now. */
+function retryAfterHeaderSeconds(response: { headers: { get(name: string): string | null } }): number | undefined {
+  const value = response.headers.get("retry-after")?.trim();
+  if (value === undefined || value === "") return undefined;
+  const seconds = /^\d+$/.test(value) ? Number(value) : Math.ceil((Date.parse(value) - Date.now()) / 1000);
+  return Number.isSafeInteger(seconds) && seconds >= 0 ? seconds : undefined;
+}
+
 class ManagerAuthorityTransportError extends Error {}
 
 function isManagerAuthorityTransportOutage(error: unknown): boolean {
@@ -1025,16 +1042,18 @@ function isManagerAuthorityTransportOutage(error: unknown): boolean {
 }
 
 function isRunAuthorityOutage(error: unknown, space: string): error is Error {
-  if (error instanceof ManagerAuthorityTransportError || error instanceof IdpTokenServerError || error instanceof IdpUnreachableError) return true;
+  if (error instanceof ManagerAuthorityTransportError || error instanceof IdpTokenServerError || error instanceof IdpUnreachableError || error instanceof IdpRateLimitedError) return true;
   if (!(error instanceof ManagerAuthorityRefusal)) return false;
   // Some issuers report a restart as 403. Only the exact restart refusal is temporary.
-  return isManagerAuthorityOutage(error.status) || (error.status === 403 && (error.body as { error?: unknown } | null)?.error ===
+  // 429 is a rate limit and 501 names a request this host will not serve. Both reach recovery,
+  // which waits for the first and stops on the second.
+  return isManagerAuthorityOutage(error.status) || error.status === 429 || error.status === 501 || (error.status === 403 && (error.body as { error?: unknown } | null)?.error ===
     `the auth service for space "${space}" is momentarily unavailable (it detected a fault and is restarting); retry shortly`);
 }
 
 /** A host's non-2xx answer to a manager-authority request, with the HTTP status and body it answered. */
 class ManagerAuthorityRefusal extends Error {
-  constructor(message: string, readonly status: number, readonly body: unknown) {
+  constructor(message: string, readonly status: number, readonly body: unknown, readonly retryAfterSeconds?: number) {
     super(message);
   }
 }
@@ -1049,14 +1068,14 @@ function heldConflict(message: string, body: unknown, actor: string): EpEnvelope
 /** A manager-authority refusal, with the host's reason verbatim. The protocol is closed, so a host
  *  that names a field this request carries as unknown predates that field: say it is version skew
  *  and which side has to move. The field is never dropped to fit the older host. */
-function managerAuthorityRefusal(what: string, request: unknown, body: unknown, status: number): ManagerAuthorityRefusal {
+function managerAuthorityRefusal(what: string, request: unknown, body: unknown, status: number, retryAfterSeconds?: number): ManagerAuthorityRefusal {
   const why = (body as { error?: unknown } | null)?.error;
   const reason = typeof why === "string" ? why : `HTTP ${status}`;
   const field = /unknown field "?([A-Za-z_$][\w$]*)"?/.exec(reason)?.[1];
   const skew = field !== undefined && carriesField(request, field)
     ? ` - version skew: this manager runs Cotal ${COTAL_VERSION} and the host's auth service predates the field "${field}" it sends; it needs a host at Cotal ${COTAL_VERSION} or later`
     : "";
-  return new ManagerAuthorityRefusal(`signed in, but ${what} was refused: ${reason}${skew}`, status, body);
+  return new ManagerAuthorityRefusal(`signed in, but ${what} was refused: ${reason}${skew}`, status, body, retryAfterSeconds);
 }
 
 function carriesField(value: unknown, field: string): boolean {

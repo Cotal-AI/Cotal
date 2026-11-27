@@ -6,7 +6,7 @@ import { Kvm } from "@nats-io/kv";
 import type { KV } from "@nats-io/kv";
 import { existsSync } from "node:fs";
 import { hostname } from "node:os";
-import { resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { credRenewIntervalMs } from "./credential-renewal.js";
 import { DELIVERY_ADMIN_BOOT_WAIT_MS, makeManagerEndpointHolderEvictor } from "./endpoint-evict.js";
 import { makeManagerHolderLivenessProbe } from "./holder-liveness.js";
@@ -514,6 +514,7 @@ export class ManagerBoot {
         holder: { id: this.remoteAuthority.identities.supervisor.id, lifecycleUid: this.config.managerLifecycleUid },
         auth: undefined,
         log: (line) => console.error(line),
+        stateDir: join(this.config.workspaceRoot, ".cotal"),
         admitRun: remoteRuns.admitRun,
         submitRun: remoteRuns.submitRun,
         revokeRun: remoteRuns.revokeRun,
@@ -532,6 +533,7 @@ export class ManagerBoot {
         holder: { id: this.ep.ref().id, lifecycleUid: this.config.managerLifecycleUid },
         auth: this.auth,
         log: (line) => console.error(line),
+        stateDir: join(this.config.workspaceRoot, ".cotal"),
       });
       await this.runHosting.reconcile();
     }

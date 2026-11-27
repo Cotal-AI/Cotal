@@ -513,7 +513,7 @@ async function fetchIdpJwtUncached(base: string, sessionToken: string, cancel?: 
       );
     if (!res.ok) {
       const message = `idp session: ${base}/token failed (HTTP ${res.status})`;
-      throw res.status >= 500 ? new IdpTokenServerError(message) : new Error(message);
+      throw res.status >= 500 && res.status !== 501 ? new IdpTokenServerError(message) : new Error(message);
     }
     const body = await idpJson<{ token?: string }>(`${base}/token`, res, cancel);
     if (typeof body.token !== "string" || !body.token) throw new Error(`idp session: ${base}/token returned no token`);
