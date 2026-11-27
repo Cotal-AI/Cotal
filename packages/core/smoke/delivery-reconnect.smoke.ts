@@ -54,6 +54,7 @@ async function checkPluginProjection(space: string, provisioner: string, creds: 
   const viewer = new CotalEndpoint({ space, servers: SERVERS, creds: viewerCreds, card: { name: "projection-viewer", kind: "endpoint" },
     readChannelRoutingProjection: true, consume: false, watchPresence: false, registerPresence: false,
     onConnection: (nc) => { viewerWire = nc; } });
+  viewer.on("error", (error) => { if (error instanceof Error) warnings.push(error.message); });
   ep.on("transport", (event) => {
     if (event.connected) ready.push({ wire: state.nc, epoch: state.pluginChannelEpoch, enabled: state.pluginChannelsEnabled });
   });
