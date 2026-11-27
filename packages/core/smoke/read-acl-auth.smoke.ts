@@ -34,8 +34,10 @@ import {
   createSpaceAuth,
   credsClaims,
   credsFromJwt,
+  importNativeSubjectPermissions,
   mintCreds,
   provisionAgent,
+  projectChannelGrants,
   pushAccountClaim,
   serverConfig,
   newIdentity,
@@ -114,7 +116,10 @@ async function checkPluginGrants(): Promise<void> {
     const creds = await mintCreds(auth, id, profile, { allowSubscribe: read, allowPublish: post, lifecycleUid: uid, pluginChannelsEnabled: enabled });
     const nc = await connect({ servers: SERVERS, authenticator: credsAuthenticator(enc(creds)), inboxPrefix: `_INBOX_${id.id}`, reconnect: false });
     clients.push(nc);
-    return { nc, id: id.id, history: chatHistDurable(DEV_OWNER, id.id, uid) };
+    const { pub, sub } = credsClaims(creds).nats ?? {};
+    const grants = projectChannelGrants(importNativeSubjectPermissions({ ...(pub && { pub }), ...(sub && { sub }) }),
+      { space, mode: enabled ? "isolated" : "legacy", principal: { owner: DEV_OWNER, actor: id.id, lifecycleUid: uid } });
+    return { nc, id: id.id, history: chatHistDurable(DEV_OWNER, id.id, uid), grants };
   };
   const publishProbe = async (nc: NatsConnection, subject: string) =>
     jetstream(nc, { timeout: 800 }).publish(subject, enc("plugin boundary")).then(ack => ack.stream, (error: unknown) => {
@@ -157,6 +162,12 @@ async function checkPluginGrants(): Promise<void> {
     const writer = await dial("agent", [scope], [scope], true);
     const narrow = await dial("agent", [exact], [exact], true);
     const send = (ch: string) => publishProbe(writer.nc, pluginChannelSubject(space, DEV_OWNER, writer.id, ch));
+    const grantedTap = narrow.grants.read.find(row => row.kind === PLUGIN_CHANNEL_ROOT);
+    const grantedHistory = narrow.grants.history.find(row => row.kind === PLUGIN_CHANNEL_ROOT);
+    check("signed credential inverse omits plugin taps for a broad chat grant", broad.grants.read.every(row => row.kind !== PLUGIN_CHANNEL_ROOT));
+    check("signed credential inverse pins the named plugin tap and lifecycle history reader", grantedTap?.subject === readFilter(exact)
+      && grantedHistory?.subject === grantedTap.subject && grantedHistory.consumer === narrow.history && grantedHistory.stream === stream);
+    if (!grantedTap || !grantedHistory) throw new Error("signed credential did not project its scoped plugin read");
 
     check("routed provisioner can track the canonical history stream", (await (await jetstreamManager(admin.nc)).streams.info(stream)).config.name === stream);
     check("dark mint can still publish a reserved name as ordinary chat", await publishProbe(legacy.nc, chatSubject(space, DEV_OWNER, legacy.id, exact)) === CHAT);
@@ -175,7 +186,7 @@ async function checkPluginGrants(): Promise<void> {
       await publishProbe(legacy.nc, ordinarySubject);
     });
     check("the enabled root wildcard receives ordinary chat but not reserved chat", !ordinary.denied && ordinary.received.join() === ordinarySubject, ordinary);
-    const exactRead = await nativeRead(narrow.nc, readFilter(exact), () => send(exact));
+    const exactRead = await nativeRead(narrow.nc, grantedTap.subject, () => send(exact));
     check("an exact plugin read grant receives a post from another allowed agent", exactRead.received.length === 1 && !exactRead.denied, exactRead);
     const subtreeRead = await nativeRead(writer.nc, readFilter(scope), () => publishProbe(narrow.nc, pluginChannelSubject(space, DEV_OWNER, narrow.id, exact)));
     check("a plugin subtree grant receives posts on its own plugin", subtreeRead.received.length === 1 && !subtreeRead.denied, subtreeRead);
@@ -195,7 +206,7 @@ async function checkPluginGrants(): Promise<void> {
     check("only the explicit plugin subtree admits the concrete and family joins", membershipInAllow([scope], exact, true)
       && membershipInAllow([scope], scope, true) && !membershipInAllow([scope], foreign, true)
       && !membershipInAllow([`${PLUGIN_CHANNEL_ROOT}.>`], exact, true));
-    const held = await create(narrow, readFilter(exact));
+    const held = await create(narrow, grantedHistory.subject, grantedHistory.subject, grantedHistory.consumer);
     check("an exact plugin grant creates its own filtered history reader", held.kind === "ok", held);
     if (held.kind === "ok") {
       const jsm = await jetstreamManager(narrow.nc);
