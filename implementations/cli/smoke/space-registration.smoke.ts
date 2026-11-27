@@ -2109,7 +2109,8 @@ if (process.platform === "linux") {
     refused(underFile, 1, "USAGE_INVALID") && (underFile.env?.error?.message ?? "").includes(`${file}, in the --store-dir path ${join(file, "sub")}, is not a directory`), shown(underFile));
   const restoreFile = await json(["backup", "restore", join(home, "no-backup"), "--store-dir", file], storeRoot);
   check("backup restore --store-dir naming a regular file is the same USAGE_INVALID, exit 1",
-    refused(restoreFile, 1, "USAGE_INVALID") && (restoreFile.env?.error?.message ?? "").includes(`the --store-dir path ${file} is not a directory`), shown(restoreFile));
+    refused(restoreFile, 1, "USAGE_INVALID") && (restoreFile.env?.error?.message ?? "").includes(`the --store-dir path ${file} is not a directory`) &&
+      (restoreFile.env?.error?.remedy ?? "").includes("does not exist yet, inside an existing writable directory"), shown(restoreFile));
   const writable = await json(["up", "--server", DEAD, "--store-dir", join(exposed, "store")], storeRoot);
   check("up --store-dir in a directory every account can write is PERMISSION_DENIED, exit 2, naming it with its chmod",
     refused(writable, 2, "PERMISSION_DENIED") && (writable.env?.error?.message ?? "").includes(`${exposed} is writable by every local account`) &&
@@ -2125,7 +2126,9 @@ if (process.platform === "linux") {
     refused(inHome, 1, "USAGE_INVALID") && (inHome.env?.error?.message ?? "").includes(`the --store-dir path ${homeStore} is in the control directory ${process.env.COTAL_HOME}`), shown(inHome));
   const restoreControl = await json(["backup", "restore", join(home, "no-backup"), "--store-dir", join(control, "auth")], storeRoot);
   check("backup restore --store-dir in the root's .cotal is the same refusal",
-    refused(restoreControl, 1, "USAGE_INVALID") && (restoreControl.env?.error?.message ?? "").includes(`is in the control directory ${control}`), shown(restoreControl));
+    refused(restoreControl, 1, "USAGE_INVALID") && (restoreControl.env?.error?.message ?? "").includes(`is in the control directory ${control}`) &&
+      (restoreControl.env?.error?.remedy ?? "").includes("does not exist yet, inside an existing writable directory") &&
+      (restoreControl.env?.error?.remedy ?? "").includes("outside the control directory"), shown(restoreControl));
   // A link would be recorded as the store path, which no reset removes: it refuses, naming its target.
   const real = join(realpathSync(home), "operator's store");
   mkdirSync(real, { mode: 0o700 });
