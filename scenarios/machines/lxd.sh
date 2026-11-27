@@ -2,6 +2,7 @@
 # Disposable Ubuntu, Fedora and Windows 11 test machines in LXD, each with a "clean" snapshot.
 # Usage: scenarios/machines/lxd.sh <create|reset|run|shell|stop|delete|list> [os] [scenario] [runner options]
 set -euo pipefail
+export PATH=$PATH:/snap/bin
 
 here=$(dirname "$(readlink -f "$0")")
 scenarios=$(dirname "$here")

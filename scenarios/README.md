@@ -48,6 +48,28 @@ cotal-dev profile rm trial
 `cotal-dev profile list` shows them and `cotal-dev profile run trial -- cotal status` runs one
 command in one.
 
+## Every night: the setup scenarios
+
+Each scenario is one starting setup, run the same way on every OS: start from a clean machine, set
+up the starting state, install the published release the way a person does, then check that the
+app opens, its background service runs and nobody is signed in.
+
+| Scenario | Starting state |
+|---|---|
+| `fresh` | a new machine, latest release |
+| `upgrade-1`, `upgrade-2`, `upgrade-3` | the release 1, 2 or 3 back, then upgrade to the latest |
+| `npm-first` | `cotal` already installed with npm, with its service running |
+| `offline` | the app installed, but Cotal, GitHub and npm unreachable at first launch |
+
+The **Scenarios** workflow runs them all every night on GitHub's machines: Ubuntu, Fedora, macOS on
+Apple Silicon and Intel, and Windows Server. Its summary page holds one table, scenario by OS. A red
+cell links to that job's log, and the lines under the table name the first check that failed.
+Run it by hand from the Actions tab (Scenarios > Run workflow), optionally with one release or a
+few scenario names.
+
+To run one scenario on the Ubuntu PC instead: `scenarios/machines/lxd.sh run ubuntu fresh`. It
+resets its own VM first and leaves the result in `scenarios/results/`.
+
 ## Windows
 
 Your Windows 11 VM is Windows 11 Pro, so it can run Windows Sandbox: a throwaway Windows desktop

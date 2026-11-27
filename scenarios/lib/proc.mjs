@@ -11,7 +11,7 @@ export function productEnv(extra = {}) {
 export function run(file, args = [], { timeout = 120_000, input, env = productEnv(), cwd } = {}) {
   return new Promise((resolve) => {
     const started = Date.now();
-    const child = spawn(file, args, { env, cwd, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
+    const child = spawn(file, args, { env, cwd, windowsHide: true, stdio: [input === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'] });
     let stdout = '';
     let stderr = '';
     const timer = setTimeout(() => child.kill('SIGKILL'), timeout);
@@ -22,7 +22,11 @@ export function run(file, args = [], { timeout = 120_000, input, env = productEn
       clearTimeout(timer);
       resolve({ code, signal, timedOut: signal === 'SIGKILL', stdout, stderr, ms: Date.now() - started });
     });
-    child.stdin.end(input ?? '');
+    if (input !== undefined) {
+      // A program may exit without reading all of its input; that is its answer, not a runner failure.
+      child.stdin.on('error', () => {});
+      child.stdin.end(input);
+    }
   });
 }
 

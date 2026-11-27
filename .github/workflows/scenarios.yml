@@ -46,6 +46,9 @@ jobs:
       scenarios: ${{ steps.list.outputs.scenarios }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 24
       - id: list
         env:
           ONLY: ${{ inputs.only || '' }}
@@ -86,6 +89,9 @@ jobs:
       GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 24
       - name: Give the runner user a systemd user manager and an X server
         if: matrix.os == 'ubuntu'
         run: |
@@ -144,6 +150,9 @@ jobs:
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 24
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           pattern: scenario-*

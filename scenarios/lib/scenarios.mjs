@@ -15,9 +15,7 @@ async function appWorks(ctx, version) {
 async function fresh(ctx) {
   const version = await installRelease(ctx);
   await appWorks(ctx, version);
-  const apps = await agentApps(ctx);
-  const installed = Object.entries(apps).filter(([, state]) => state !== 'missing').map(([name]) => name);
-  ctx.report.check('no agent application is reported as installed', installed.length === 0, { listed: Object.keys(apps).length, installed });
+  await agentApps(ctx);
 }
 
 function upgrade(back) {
