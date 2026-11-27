@@ -16,6 +16,7 @@ import { readFileSync } from "node:fs";
 import { registry, type ExtensionRef } from "@cotal-ai/core";
 import { bindExtensionPeers, CorruptExtensionPackageError, extensionPackageDir, extensionsDir, extensionsManifestPath, hostPackageDir, importExtensionEntry, importInstalledExtension, installedExtensionPackage, installedExtensionVersion, materializeFromManifest, resolveExtensionEntry, type InstalledExtension } from "@cotal-ai/workspace";
 import { pluginManifest } from "../src/plugin-manifest.js";
+import { readPluginDeclaration, samePluginDeclaration } from "../src/plugin-declaration.js";
 // Not on the package's public surface: the same module instance the entry point above loads.
 import { upgradeRemedy } from "../dist/import-diagnosis.js";
 
@@ -325,6 +326,12 @@ try {
   check("factory declarations include exact aliases and bundled core version",
     JSON.stringify(declaration) === JSON.stringify({ contract: 1, core: "0.183.1", provides: [runtime], commands: [], connectors: [], localProcesses: [], servicePresets: [] }));
   check("manifest generation never publishes runtime registrations", !registry.has("runtime", "manifest-proof"));
+  check("generated runtime declarations validate without importing the package",
+    samePluginDeclaration(readPluginDeclaration(JSON.parse(JSON.stringify(declaration))), declaration));
+  let duplicate: unknown;
+  try { readPluginDeclaration({ ...declaration, provides: [declaration.provides[0], declaration.provides[0]] }); }
+  catch (error) { duplicate = error; }
+  check("metadata-only validation rejects a duplicate provider claim", duplicate instanceof Error && /claims runtime:manifest-proof twice/.test(duplicate.message));
   let refused: unknown;
   try { await pluginManifest((host) => host.register({ kind: "auth-provider", name: "forbidden" })); }
   catch (error) { refused = error; }
