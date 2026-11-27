@@ -264,9 +264,10 @@ try {
     const expected = "start it with `cotal daemon serve --daemon-home '" + managed.replaceAll("'", "'\\''") + "'`";
     const absent = await cli(["status", "--daemon-home", managed, "--json"]);
     check("G2 absent status retains its mode and null local target", absent.status === 2 && absent.doc.command === "daemon status" && absent.doc.target === null, absent.doc);
-    check("G2 stopped explicit status names a shell-quoted foreground start", absent.doc.error?.cause?.code === "NOT_RUNNING" && absent.doc.error.remedy === expected, absent.doc);
+    const selectedSetup = "On a systemd host, set up the background service with `cotal daemon setup --daemon-home '" + managed.replaceAll("'", "'\\''") + "'`.";
+    check("G2 stopped explicit status names setup for the shell-quoted home", absent.doc.error?.cause?.code === "NOT_RUNNING" && absent.doc.error.remedy === selectedSetup, absent.doc);
     const defaultStatus = await cli(["status", "--json"]);
-    check("G2 stopped default status keeps the bare foreground start", defaultStatus.status === 2 && defaultStatus.doc.error?.cause?.code === "NOT_RUNNING" && defaultStatus.doc.error.remedy === "start it with `cotal daemon serve`", defaultStatus.doc);
+    check("G2 stopped default status names setup without a daemon-home flag", defaultStatus.status === 2 && defaultStatus.doc.error?.code === "TARGET_UNAVAILABLE" && defaultStatus.doc.error.cause?.code === "NOT_RUNNING" && defaultStatus.doc.error.remedy === "On a systemd host, set up the background service with `cotal daemon setup`.", defaultStatus.doc);
     const invalidSpace = await cli(["status", "--space", "bad.space", "--json"]);
     for (const mode of ["service-connect", "service-disconnect", "service-status"]) {
       const invalid = await cli([mode, "--space", "bad.space", "--json"]);
@@ -346,7 +347,7 @@ try {
     const env = { ...childEnv, XDG_RUNTIME_DIR: nearLimit };
     const args = ["--daemon-home", managed];
     const before = await cli(["status", ...args, "--json"], 30_000, env);
-    check("H0e status recommends foreground serve", before.status === 2 && before.doc.error?.cause?.code === "NOT_RUNNING" && before.doc.error.remedy?.includes("cotal daemon serve") === true, before);
+    check("H0e status reports no endpoint before serve", before.status === 2 && before.doc.error?.cause?.code === "NOT_RUNNING", before);
     const daemon = await serve(args, env);
     try {
       check("H0e serve publishes the 107-byte socket", live(daemon) && Buffer.byteLength(daemon.socket ?? "") === 107, daemon.err);
@@ -746,8 +747,8 @@ try {
     await stop(managedServe, "SIGKILL");
     check("H4 instrument: after SIGKILL the socket is left behind, and the kernel has released the lock while its record still names the dead pid", existsSync(derived) && lstatSync(derived).ino === ino && lockFree(managed) && lockRecordPid(managed) === killedPid, { free: lockFree(managed), recorded: lockRecordPid(managed), killedPid });
     const stopped = await cli(["status", "--daemon-home", managed, "--json"], 30_000, { ...childEnv, XDG_RUNTIME_DIR: join(root, "rt2") });
-    check("H4 a dead lifetime record leaves the foreground start remedy intact", stopped.status === 2 && stopped.doc.error?.cause?.code === "NOT_RUNNING"
-      && stopped.doc.error?.remedy?.startsWith("start it with `cotal daemon serve --daemon-home ") === true, stopped);
+    check("H4 a dead lifetime record is not an installed service", stopped.status === 2 && stopped.doc.error?.cause?.code === "NOT_RUNNING"
+      && stopped.doc.error?.remedy?.includes("`cotal daemon setup --daemon-home ") === true, stopped);
     // No operator step: the successor removes exactly the socket the record names and binds its own.
     // A second name keeps the dead inode allocated through the restart, so the successor's socket
     // cannot be given its number, which some filesystems hand straight back once it is freed. Its

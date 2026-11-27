@@ -657,10 +657,11 @@ such as a version manager's per-shell directory, use the resolved runtime instea
 Changing a same-directory link to the next supported Node version does
 not require reinstalling the service. An older unit can still pin a removed versioned Node file.
 In that case, `daemon install` refuses without rewriting it and names the selected daemon's
-uninstall and install commands to replace it explicitly. When an installed Linux daemon is not
-answering, `daemon status` points to its recorded systemd service and installation check rather
-than a foreground daemon. It retains the absent-endpoint refusal even when the unit file is gone
-or the user manager cannot answer; the recorded service name is guidance, not verified ownership.
+uninstall and install commands to replace it explicitly. On Linux, when no daemon answers,
+`cotal daemon status` points to `cotal daemon start` for a recorded systemd service or to
+`cotal daemon setup` on a systemd host if no service is recorded. If the recorded service does
+not start, inspect it with the `systemctl --user status` command shown in Next. A recorded
+service does not prove that its unit file exists or that the user manager can answer.
 
 On Linux, `daemon install` and `daemon uninstall` can recover after the daemon's local home was deleted when the surviving service source matches this installation. They verify the protected unit file and the user manager's loaded fragment, and refuse modified sources or drop-ins. A missing explicit `--daemon-home` leaf can also recover when its parent resolves and the surviving service verifies that same home; other daemon commands still require the directory. Installation restarts that verified service to rebuild its local state.
 For a first install with `--daemon-home`, create the directory with mode 0700 first. If the directory is absent and no unit survives for it, `daemon install` points to the missing directory.
@@ -1333,8 +1334,8 @@ A relative path or the Cotal home refuses `USAGE_INVALID`, a missing
 directory `TARGET_NOT_FOUND`, and a symlinked, foreign or loose one `PERMISSION_DENIED`. Nothing is
 created or repaired. Bash and Zsh completion offer file paths for `--daemon-home`, including
 existing directories; the directory checks still apply when the command runs.
-On Linux, when a foreground daemon is stopped, `daemon status` and `daemon service-connect`
-name the `cotal daemon serve` command for the selected home, including `--daemon-home` if supplied.
+On Linux, when no daemon answers, `daemon status` names setup or start for the selected home.
+`daemon service-connect` names `cotal daemon serve`. Both include `--daemon-home` if supplied.
 If the daemon is running but its socket is in a different runtime directory, `status` and a second
 `serve` tell you to use the running daemon's `XDG_RUNTIME_DIR` before checking status again.
 

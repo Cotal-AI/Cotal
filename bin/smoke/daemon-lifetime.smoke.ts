@@ -48,7 +48,7 @@
  *     `status` refuses PEER_NOT_LOCK_OWNER, and with the socket at 0700 SOCKET_WRONG_MODE, each with a
  *     Next naming the portable ownership or protection check, in plain and --json;
  *  L5 a clean stop leaves no generation to recover: after `close()` the record names no socket and
- *     `status` refuses NOT_RUNNING naming `cotal daemon serve`, so a foreign socket placed at the path
+ *     `status` refuses NOT_RUNNING naming `cotal daemon setup`, so a foreign socket placed at the path
  *     is refused ALREADY_RUNNING and kept;
  *  L6 `install --dry-run` through the CLI: it names the unit, path and digest, writes nothing, and
  *     the rendered unit carries `Restart=always`, `WantedBy=default.target`, an absolute pinned
@@ -478,7 +478,10 @@ try {
     check("L5 a clean close clears the record, so it names no generation", lockRecord() === undefined, lockRecord());
     const stopped = await cli("status", "--json"), stoppedPlain = await cli("status", "--plain");
     check("L5 status then refuses TARGET_UNAVAILABLE / NOT_RUNNING, exit 2", stopped.status === 2 && stopped.doc.error?.cause?.code === "NOT_RUNNING", { status: stopped.status, out: stopped.out.slice(0, 300) });
-    check("L5 its Next names `cotal daemon serve` in backticks, in plain and --json alike", stopped.doc.error?.remedy === "start it with `cotal daemon serve`" && stoppedPlain.status === 2 && sameText(stopped, stoppedPlain), { remedy: stopped.doc.error?.remedy, plain: stoppedPlain.out + stoppedPlain.err });
+    const remedy = "On a systemd host, set up the background service with `cotal daemon setup`.";
+    const plainText = stoppedPlain.out + stoppedPlain.err;
+    check("L5 its Next names daemon setup in backticks, in plain and --json alike", stopped.doc.error?.remedy === remedy && stoppedPlain.status === 2
+      && plainText.includes(stopped.doc.error.message) && ["cotal", "pnpm cotal"].some(word => plainText.includes(`Next\n  ${remedy.replace("`cotal ", `\`${word} `)}`)), { remedy: stopped.doc.error?.remedy, plain: plainText });
     const other = await impostor(paths.socket);
     const foreign = ino(paths.socket);
     const r = await cli("serve", "--json");

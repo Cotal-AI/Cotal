@@ -188,10 +188,14 @@ async function status(args: ParsedArgs): Promise<void> {
   } catch (e) {
     const refusal = otherRuntimeRefusal(e, paths, home);
     if (refusal !== e) throw asFailure(refusal, home);
-    const installed = process.platform === "linux" && e instanceof EndpointRefusal && e.code === "NOT_RUNNING" ? readReceipt(paths) : undefined;
-    if (e instanceof EndpointRefusal && installed && /^cotal-daemon(?:-[a-f0-9]{16})?\.service$/.test(installed.unit)) {
+    if (process.platform === "linux" && e instanceof EndpointRefusal && e.code === "NOT_RUNNING") {
+      const receipt = readReceipt(paths);
+      const recorded = receipt && receipt.daemonHome === home && (receipt.mechanism ?? "systemd-user") === "systemd-user"
+        && /^cotal-daemon(?:-[a-f0-9]{16})?\.service$/.test(receipt.unit);
       throw new CommandFailure("refused", "TARGET_UNAVAILABLE", e.message, {
-        remedy: `inspect the recorded service with ${codeSpan(`systemctl --user status ${installed.unit}`)}; run ${codeSpan(daemonCommandCopy("install", home))} to verify its installation and read its repair guidance, then ${codeSpan(daemonCommandCopy("start", home))}`,
+        remedy: recorded
+          ? `Start the recorded service with ${codeSpan(daemonCommandCopy("start", home))}. If it does not start, inspect it with ${codeSpan(`systemctl --user status ${receipt.unit}`)}.`
+          : `On a systemd host, set up the background service with ${codeSpan(daemonCommandCopy("setup", home))}.`,
         native: { code: e.code },
       });
     }

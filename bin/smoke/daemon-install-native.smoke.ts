@@ -681,7 +681,7 @@ try {
       check(`Node ${spelling} stream switch keeps preview and install idempotent`, preview.status === 0 && preview.doc.result?.alreadyInstalled === true && installed.status === 0 && installed.doc.result?.alreadyInstalled === true);
       check(`Node ${spelling} stream switch preserves unit and receipt bytes`, readFileSync(unitPath, "utf8") === source && readFileSync(receiptFile, "utf8") === receipt);
       const status = call("status");
-      check(`Node ${spelling} absent endpoint names the recorded service and selected home`, status.status === 2 && status.doc.error?.code === "TARGET_UNAVAILABLE" && status.doc.error.remedy?.includes(`systemctl --user status ${unit}`) === true && status.doc.error.remedy.includes(home) && !status.doc.error.remedy.includes("daemon serve"), status);
+      check(`Node ${spelling} absent endpoint recommends starting the recorded service for the selected home`, status.status === 2 && status.doc.error?.code === "TARGET_UNAVAILABLE" && status.doc.error.remedy?.startsWith(`Start the recorded service with \`${daemonCommandCopy("start", home)}\`.`) === true && status.doc.error.remedy.includes(`systemctl --user status ${unit}`), status);
       check(`Node ${spelling} start still reaches the native adapter`, call("start").status === 0);
       if (spelling === "absolute") {
         for (const missing of ["unit", "manager"] as const) {
