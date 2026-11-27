@@ -216,7 +216,7 @@ async function checkRenamedManagerInstall(): Promise<void> {
   const { spawn } = await import("node:child_process");
   const { copyFileSync, cpSync, existsSync, readdirSync, realpathSync, renameSync, rmdirSync, statSync, symlinkSync } = await import("node:fs");
   const { createRequire } = await import("node:module");
-  const { dirname } = await import("node:path");
+  const { dirname, relative } = await import("node:path");
   const { localUpdateManagers } = await import("../src/lib/update-managers.js");
   const root = realpathSync(mkdtempSync(join(tmpdir(), "cotal-update-mapped-install-")));
   const repo = join(import.meta.dirname, "../../..");
@@ -259,6 +259,9 @@ async function checkRenamedManagerInstall(): Promise<void> {
     mkdirSync(dirname(retained), { recursive: true });
     renameSync(logicalPkg, retained);
     symlinkSync(join("..", ".cotal-generations", generationId, "cotal-ai"), logicalPkg);
+    const current = join(dirname(dirname(retained)), "fedcba9876543210fedcba9876543210", "cotal-ai");
+    mkdirSync(dirname(current), { recursive: true });
+    cpSync(retained, current, { recursive: true, verbatimSymlinks: true });
     const generatedMapping = join(retained, "node_modules", archPackage, ptyFile);
     const alias = join(root, "alias"), aliasEntry = join(alias, "lib/node_modules/cotal-ai/dist/cotal.js");
     symlinkSync(own.prefix, alias);
@@ -318,6 +321,10 @@ async function checkRenamedManagerInstall(): Promise<void> {
               rmdirSync(prefix);
             }
             assert.deepEqual(localUpdateManagers({ space }, own.entry), [], "a foreign Manager with a missing launch entry does not block");
+            if (mode === "generation") {
+              const currentEntry = join(`${prefix}.moved`, relative(prefix, current), "dist/cotal.js");
+              assert.throws(() => localUpdateManagers({ space }, currentEntry), new RegExp(`Manager pid ${child.pid}.*has no proven CLI entry`), "an older own generation cannot be skipped as foreign");
+            }
           } else {
             assert.ok(localUpdateManagers({ space }, own.entry).some(manager => manager.pid === child.pid), "a resolvable symlink into the installation retains Manager custody");
             renameSync(alias, `${alias}.moved`);

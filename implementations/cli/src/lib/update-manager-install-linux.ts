@@ -57,7 +57,10 @@ export function managerOutsideInstall(pin: ProcessIdentityRecord | { pid: number
     const root = statSync(`${proc}/root`, { bigint: true }), ours = statSync("/", { bigint: true });
     if (root.dev !== ours.dev || root.ino !== ours.ino) return false;
     const ownRoot = dirname(dirname(ownEntry));
-    const ownStore = join(dirname(dirname(ownRoot)), ".cotal-generations");
+    const ownPrefix = generationPrefix(ownRoot);
+    const ownStore = ownPrefix === undefined
+      ? join(dirname(dirname(ownRoot)), ".cotal-generations")
+      : join(ownPrefix, "lib", ".cotal-generations");
     const ownPty = managerPty(ownEntry);
     if (!ownPty) return false;
     const native = statSync(ownPty, { bigint: true });
