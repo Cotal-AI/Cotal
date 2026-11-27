@@ -1417,27 +1417,34 @@ endpoint caller grants keep their existing, shorter deadline.
 It MUST recheck the managed grant, delegation envelope and admission before releasing the signed
 response. Shorter bearers, foreground agents and views retain their separate bounds. The
 broker user JWT is bound to the broker's per-connect key and cannot admit another connection.
-A renewable endpoint replaces this connection around half-life, using a fresh short bearer and
-draining requests before reconnect. An HTTP 401 or 403 that definitively refuses the seat's
-identity, such as a removed grant, narrowed delegation, or retired lifecycle, makes a cooperating
-endpoint discard its bearer and close the resident connection immediately. A transport failure,
-timeout, 5xx, rate limit, or authority restart reply retains the live connection and retries with
-backoff. A broker closes the connection at its issued deadline even if the authority is unreachable.
+A renewable endpoint replaces this connection around half-life with bounded jitter, using a fresh
+short bearer and draining requests before reconnect. An HTTP 401 or 403 that definitively refuses
+the seat's identity, such as a removed grant, narrowed delegation, or retired lifecycle, makes a
+cooperating endpoint discard its bearer and close the resident connection immediately. A transport
+failure, timeout, 5xx, rate limit, or authority restart reply retains the live connection and
+retries with backoff. A broker closes the connection at its issued deadline even if the authority
+is unreachable.
 
 The authority records authenticated evidence of the exact broker server and connection IDs, the
 actor lifecycle and root credential, the grant digest and the issued deadline before releasing a
 broker credential that outlasts the bearer. It rechecks the grant, its ancestor envelope, and the
-live root against this evidence, including after restart. An unreadable, malformed, deleted, or
-conflicting authority record that refuses a new connect triggers the same eviction on the next
-scan, with no grace period. A complete pass waits at most one second before starting the next
-pass. Only an unreachable reader or store is retried without an eviction decision.
+live root against this evidence, including after restart. A missing, malformed, deleted, or
+conflicting authority record that proves the store says no triggers eviction on the next scan,
+with no grace period. A complete pass waits at most one second before starting the next pass. An
+unreachable reader, transient local row-read fault, or unclassified store error retains the
+receipt and retries without an eviction decision. Local row-read faults on `/exchange` likewise
+answer 503 rather than a definitive 401 refusal.
 The authority requests verified native eviction through delivery-admin for the exact broker
 connection. An unanswered target broker does not verify absence. Lifecycle retirement also evicts
-through its existing barrier. If eviction cannot
-complete, the authority is rolled back to a release without the reconciler, or the delivery daemon
-does not support exact connection eviction, a revoked socket can retain its minted grants until
-expiry, up to 3600 seconds instead of 300. A cooperating endpoint closes sooner on definitive
-refusal at its next renewal, normally within about 1800 seconds when the exchange can answer.
+through its existing barrier. If eviction cannot complete, the authority is rolled back to a
+release without the reconciler, the delivery daemon does not support exact connection eviction, or
+an older delivery daemon on a multi-server broker reports verified absence without a reply from
+the target server, a revoked socket can retain its minted grants until expiry, up to 3600 seconds
+instead of 300. A cooperating endpoint closes sooner on definitive refusal at its next renewal,
+normally within about 1800 to 1980 seconds when the exchange can answer directly. Behind a shared
+public reverse-proxy peer bucket saturated by unauthenticated probing, refused exchanges answer
+429 instead of 401, so the revoked seat retries rather than self-closing until the peer bucket
+drains or its broker credential expires, still within the 3600-second maximum.
 It cannot use that connection credential to open another socket or
 exchange for a fresh bearer. Operations that independently recheck live authority still refuse.
 

@@ -20,8 +20,8 @@
  * mapping read, or explicitly for a descendant, before this invocation can allow. Both callout
  * passes execute fresh reads; no observation is reused across signing or connections.
  */
-import { ClosedConnectionError, ConnectionError, NoRespondersError, RequestError, TimeoutError, type NatsConnection } from "@nats-io/transport-node";
-import { jetstreamManager, type JetStreamManager } from "@nats-io/jetstream";
+import { ClosedConnectionError, ConnectionError, DrainingConnectionError, NoRespondersError, RequestError, TimeoutError, type NatsConnection } from "@nats-io/transport-node";
+import { JetStreamApiCodes, JetStreamApiError, JetStreamError, jetstreamManager, type JetStreamManager } from "@nats-io/jetstream";
 import { EpEnvelopeError, assertInboxConnId, epAuthBucket, recordsBucket, readRecordLeader, assertOrdinaryNativeMutation } from "@cotal-ai/core";
 import { assertAuthorityStreamShape, openLifecycleMappingReader, readLifecycleMappingLeader, type LifecycleMappingReader } from "./lifecycle-registry.js";
 import { credRowKey, parseLedgerRow, type CredentialLedgerRow } from "./credential-ledger.js";
@@ -73,13 +73,26 @@ export interface ConnectReader {
 
 const READERS = new WeakMap<ConnectReader, ConnectReaderInternals>();
 
+/** True only when an error proves the authority store or shape says no (revoked, expired,
+ *  superseded, deleted, malformed or drifted store state). Every unreachable, no-responders,
+ *  503 or unrecognised error defaults to false so callers keep and retry rather than evict. */
+export function connectReaderDefinitiveRefusal(error: unknown): boolean {
+  if (error instanceof TimeoutError || error instanceof ClosedConnectionError || error instanceof DrainingConnectionError ||
+      error instanceof ConnectionError || error instanceof NoRespondersError)
+    return false;
+  if (error instanceof RequestError) return !error.isNoResponders() && connectReaderDefinitiveRefusal(error.cause);
+  if (error instanceof JetStreamApiError)
+    return error.status !== 503 && error.apiError().code !== 503 && error.code === JetStreamApiCodes.StreamNotFound;
+  if (error instanceof JetStreamError) return false;
+  if (error instanceof EpEnvelopeError) {
+    if (error.cause !== undefined) return connectReaderDefinitiveRefusal(error.cause);
+    return error.code === "permission-denied" || error.code === "failed-precondition" || error.code === "internal";
+  }
+  return false;
+}
+
 export function connectReaderUnreachable(error: unknown): boolean {
-  if (error instanceof EpEnvelopeError)
-    return error.cause === undefined ? error.code === "unavailable" : connectReaderUnreachable(error.cause);
-  if (error instanceof TimeoutError || error instanceof ClosedConnectionError || error instanceof ConnectionError || error instanceof NoRespondersError) return true;
-  if (error instanceof RequestError) return error.isNoResponders() || connectReaderUnreachable(error.cause);
-  const reply = error as { code?: unknown; apiError?: { code?: unknown } } | undefined;
-  return reply?.apiError?.code === 503 || reply?.code === 503 || reply?.code === "503";
+  return !connectReaderDefinitiveRefusal(error);
 }
 
 function internals(reader: ConnectReader): ConnectReaderInternals {

@@ -147,7 +147,9 @@ export class EndpointCredentials {
     this.armAuthExpiryReconnectFence(nc, false);
     if (this.brokerBearerExpiryMs !== undefined) {
       const issuedAt = bearerLifetimeMs(this.cred.currentBearer!, this.cred.bearerAdoptedAtMs).issuedAtMs;
-      const timer = setTimeout(() => void this.renewBearerOnTimer(), Math.max(0, (issuedAt + this.brokerBearerExpiryMs) / 2 - Date.now()));
+      const life = Math.max(0, this.brokerBearerExpiryMs - issuedAt);
+      const at = issuedAt + (0.5 + Math.random() * 0.05) * life;
+      const timer = setTimeout(() => void this.renewBearerOnTimer(), Math.max(0, at - Date.now()));
       timer.unref?.();
       this.armBearerTimer(() => clearTimeout(timer));
     } else if (!this.cred.cancelBearerRenewal && this.cred.currentBearer) {

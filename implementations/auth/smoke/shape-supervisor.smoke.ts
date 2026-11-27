@@ -22,12 +22,13 @@ import { spawn } from "node:child_process";
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { jetstreamManager } from "@nats-io/jetstream";
-import { createSpaceAuth, ensureAuthorityStores, epAuthBucket, isReachable, serverConfig } from "@cotal-ai/core";
+import { JetStreamApiCodes, JetStreamApiError, JetStreamError, jetstreamManager } from "@nats-io/jetstream";
+import { NoRespondersError, RequestError, TimeoutError } from "@nats-io/transport-node";
+import { EpEnvelopeError, createSpaceAuth, ensureAuthorityStores, epAuthBucket, isReachable, serverConfig } from "@cotal-ai/core";
 import { Kvm } from "@nats-io/kv";
 import { assertAuthorityStreamShape, type AuthorityStreamCfg } from "../src/lifecycle-registry.js";
 import { openAuthorityClient, openSupervisedConnectReader } from "../src/authority-client.js";
-import { connectReaderUnreachable } from "../src/connect-reader.js";
+import { connectReaderDefinitiveRefusal, connectReaderUnreachable } from "../src/connect-reader.js";
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
@@ -82,6 +83,33 @@ try {
     () => assertAuthorityStreamShape({ storage: "file", retention: "limits" }, bucket), "subject");
   throws("a WRONG-bucket subject is rejected", () => assertAuthorityStreamShape({ ...good, subjects: ["$KV.other.>"] }, bucket), "subject");
 
+  // ---- Positive definitive-refusal classification (keep-and-retry default) ----
+  {
+    const js503 = new JetStreamApiError({ code: 503, err_code: 10077 as never, description: "meta leader unavailable" });
+    const js10059 = new JetStreamApiError({ code: 404, err_code: JetStreamApiCodes.StreamNotFound, description: "stream not found" });
+    const js10059On503 = new JetStreamApiError({ code: 503, err_code: JetStreamApiCodes.StreamNotFound, description: "stream unavailable" });
+    const js400 = new JetStreamApiError({ code: 400, err_code: 10003 as never, description: "bad request" });
+    const reqNoResp = new RequestError("$JS.API.STREAM.INFO.KV_x", { cause: new NoRespondersError("$JS.API.STREAM.INFO.KV_x") });
+    const jsErr = new JetStreamError("503 No Responders", { cause: reqNoResp });
+    check("503 JetStreamApiError (via .apiError() method), JetStreamError(no-responders/status), RequestError(503/no-responders), TimeoutError, unproved-reader EpEnvelopeError, and unknown Error are NOT definitive refusals",
+      !connectReaderDefinitiveRefusal(js503) && connectReaderUnreachable(js503) &&
+      !connectReaderDefinitiveRefusal(js10059On503) &&
+      !connectReaderDefinitiveRefusal(jsErr) &&
+      !connectReaderDefinitiveRefusal(reqNoResp) &&
+      !connectReaderDefinitiveRefusal(new TimeoutError()) &&
+      !connectReaderDefinitiveRefusal(new EpEnvelopeError("unavailable", "the connect-credential reader is not currently bound + shape-proved")) &&
+      !connectReaderDefinitiveRefusal(new Error("unexpected runtime error")));
+    check("404/10059 StreamNotFound JetStreamApiError, RequestError wrapping StreamNotFound, and non-transient definitive EpEnvelopeError ARE definitive refusals",
+      connectReaderDefinitiveRefusal(js10059) &&
+      connectReaderDefinitiveRefusal(new RequestError("$JS.API.STREAM.INFO.KV_x", { cause: js10059 })) &&
+      !connectReaderDefinitiveRefusal(js400) &&
+      connectReaderDefinitiveRefusal(new EpEnvelopeError("failed-precondition", "drifted shape")) &&
+      connectReaderDefinitiveRefusal(new EpEnvelopeError("permission-denied", "revoked")) &&
+      connectReaderDefinitiveRefusal(new EpEnvelopeError("internal", "corrupt row")) &&
+      !connectReaderDefinitiveRefusal(new EpEnvelopeError("unavailable", "leader stepping down")) &&
+      !connectReaderDefinitiveRefusal(Object.assign(new EpEnvelopeError("failed-precondition", "wrapped transient"), { cause: js503 })));
+  }
+
   let up = false;
   for (let i = 0; i < 50; i++) { if (await isReachable(SERVERS)) { up = true; break; } await wait(200); }
   if (!up) throw new Error(`nats-server did not come up on ${PORT}`);
@@ -128,6 +156,11 @@ try {
   }
   check("a reachable but drifted auth store is a definitive refusal", shapeDenied);
   await jsm.streams.update(`KV_${bucket}`, { allow_direct: false });
+  let shapeCleared = false;
+  for (let i = 0; i < 30 && !shapeCleared; i++) {
+    try { reader.current(); shapeCleared = true; } catch { await wait(100); }
+  }
+  check("fixing the drifted stream clears shapeRefusal on the next renewal without latching", shapeCleared);
   await reader.close();
   reader = undefined;
 

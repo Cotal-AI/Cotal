@@ -37,6 +37,7 @@ import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { closeSync, constants, existsSync, fstatSync, lstatSync, openSync, readdirSync, readFileSync, renameSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
 import {
+  EpEnvelopeError,
   acquireLock,
   assertDerivedOwnerToken,
   assertManagedGrantCustody,
@@ -135,12 +136,27 @@ function spaceDir(dir: string, kind: ActorKind): string {
   return join(dir, kind === "interactive" ? ACTORS_DIR : MANAGED_DIR);
 }
 
+function definitiveLedgerRefusal(message: string): Error {
+  return Object.assign(new Error(message), { ledgerDefinitive: true });
+}
+
+export function isDefinitiveLedgerRefusal(error: unknown): boolean {
+  return (error as { ledgerDefinitive?: unknown } | null)?.ledgerDefinitive === true;
+}
+
 function assertRowSpaceDirectory(dir: string, kind: ActorKind): string | undefined {
   const path = spaceDir(dir, kind);
-  if (!existsSync(path)) return undefined;
-  const stat = lstatSync(path);
+  let stat: ReturnType<typeof lstatSync>;
+  try {
+    stat = lstatSync(path);
+  } catch (e) {
+    const code = (e as NodeJS.ErrnoException).code;
+    if (code === "ENOENT") return undefined;
+    if (code === "ENOTDIR") throw definitiveLedgerRefusal(`${path}: actor row space must be a real directory, not a symlink or non-directory`);
+    throw new Error(`${path}: actor row space cannot be inspected (${e instanceof Error ? e.message : String(e)})`, { cause: e });
+  }
   if (stat.isSymbolicLink() || !stat.isDirectory())
-    throw new Error(`${path}: actor row space must be a real directory, not a symlink or non-directory`);
+    throw definitiveLedgerRefusal(`${path}: actor row space must be a real directory, not a symlink or non-directory`);
   return path;
 }
 
@@ -157,35 +173,48 @@ function rowPath(dir: string, kind: ActorKind, owner: string, actor: string): st
  *  reclassification (an interactive row carrying a token hash was written by the wrong path; a
  *  managed row without a valid one has a corrupted grant — both deny with the repair). */
 function readRow(path: string, kind: ActorKind): ActorRow {
-  let parsed: RowFile;
+  let raw: string;
   let fd: number | undefined;
   try {
-    if (lstatSync(path).isSymbolicLink()) throw new Error("actor grant must be a regular non-symlink file");
+    if (lstatSync(path).isSymbolicLink()) throw definitiveLedgerRefusal("actor grant must be a regular non-symlink file");
     fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
-    if (!fstatSync(fd).isFile()) throw new Error("actor grant must be a regular non-symlink file");
-    parsed = JSON.parse(readFileSync(fd, "utf8")) as RowFile;
+    if (!fstatSync(fd).isFile()) throw definitiveLedgerRefusal("actor grant must be a regular non-symlink file");
+    raw = readFileSync(fd, "utf8");
   } catch (e) {
-    throw new Error(`${path}: unreadable actor grant (${e instanceof Error ? e.message : String(e)}) - fix or remove the row; a broken row denies its actor and fails ledger listings`);
+    const code = (e as NodeJS.ErrnoException).code;
+    const shape = isDefinitiveLedgerRefusal(e) || code === "ELOOP" || code === "EISDIR" || code === "ENOTDIR";
+    const err = new Error(`${path}: unreadable actor grant (${e instanceof Error ? e.message : String(e)}) - fix or remove the row; a broken row denies its actor and fails ledger listings`, { cause: e });
+    throw shape ? Object.assign(err, { ledgerDefinitive: true }) : err;
   } finally {
     if (fd !== undefined) closeSync(fd);
   }
+  let parsed: RowFile;
+  try {
+    parsed = JSON.parse(raw) as RowFile;
+  } catch (e) {
+    throw definitiveLedgerRefusal(`${path}: unreadable actor grant (${e instanceof Error ? e.message : String(e)}) - fix or remove the row; a broken row denies its actor and fails ledger listings`);
+  }
   if (parsed === null || typeof parsed !== "object" || parsed.ver !== LEDGER_VER)
-    throw new Error(`${path}: unknown actor-grant version ${String((parsed as { ver?: unknown })?.ver)} (expected ${LEDGER_VER}) - refusing to guess at an authorization row`);
-  assertDerivedOwnerToken(parsed.owner);
+    throw definitiveLedgerRefusal(`${path}: unknown actor-grant version ${String((parsed as { ver?: unknown })?.ver)} (expected ${LEDGER_VER}) - refusing to guess at an authorization row`);
+  try {
+    assertDerivedOwnerToken(parsed.owner);
+    assertValidOwnerToken(parsed.actor);
+  } catch (e) {
+    throw definitiveLedgerRefusal(`${path}: ${e instanceof Error ? e.message : String(e)}`);
+  }
   if (parsed.eventPayloads !== undefined && parsed.eventPayloads !== false)
-    throw new Error(`${path}: eventPayloads restriction must be false`);
-  assertValidOwnerToken(parsed.actor);
+    throw definitiveLedgerRefusal(`${path}: eventPayloads restriction must be false`);
   if (!Array.isArray(parsed.scope) || !Array.isArray(parsed.allowSubscribe) || !Array.isArray(parsed.allowPublish))
-    throw new Error(`${path}: actor grant is missing explicit scope/allowSubscribe/allowPublish lists`);
+    throw definitiveLedgerRefusal(`${path}: actor grant is missing explicit scope/allowSubscribe/allowPublish lists`);
   if (kind === "interactive" && parsed.tokenHash !== undefined)
-    throw new Error(`${path}: an interactive grant must not carry an agent token hash - it was written by the wrong path; remove the row and re-grant (\`cotal actor grant\`)`);
+    throw definitiveLedgerRefusal(`${path}: an interactive grant must not carry an agent token hash - it was written by the wrong path; remove the row and re-grant (\`cotal actor grant\`)`);
   if (kind === "managed-agent" && !(typeof parsed.tokenHash === "string" && /^[0-9a-f]{64}$/.test(parsed.tokenHash)))
-    throw new Error(`${path}: managed-agent grant has a missing/corrupted secret hash - respawn the agent (\`cotal spawn\`) to rewrite it`);
+    throw definitiveLedgerRefusal(`${path}: managed-agent grant has a missing/corrupted secret hash - respawn the agent (\`cotal spawn\`) to rewrite it`);
   if (kind === "interactive" && parsed.custody !== undefined)
-    throw new Error(`${path}: an interactive grant must not carry managed custody - it was written by the wrong path; remove the row and re-grant (\`cotal actor grant\`)`);
+    throw definitiveLedgerRefusal(`${path}: an interactive grant must not carry managed custody - it was written by the wrong path; remove the row and re-grant (\`cotal actor grant\`)`);
   if (kind === "managed-agent" && parsed.custody !== undefined) {
     try { assertManagedGrantCustody(parsed.custody); }
-    catch (e) { throw new Error(`${path}: managed-agent grant has a malformed custody record (${e instanceof Error ? e.message : String(e)}) - respawn the agent to rewrite it`); }
+    catch (e) { throw definitiveLedgerRefusal(`${path}: managed-agent grant has a malformed custody record (${e instanceof Error ? e.message : String(e)}) - respawn the agent to rewrite it`); }
   }
   const { ver: _ver, ...row } = parsed;
   return row;
@@ -218,12 +247,24 @@ export function loadActorLedger(dir: string): Array<ActorRow & { kind: ActorKind
 /** Find one row in ONE space, reading only that row's file. Undefined = not granted there. A
  *  corrupt file for THIS principal throws — deny with the reason, not a miss. */
 function findIn(dir: string, kind: ActorKind, owner: string, actor: string): ActorRow | undefined {
-  const p = rowPath(dir, kind, owner, actor);
+  let p: string;
+  try {
+    p = rowPath(dir, kind, owner, actor);
+  } catch (e) {
+    throw definitiveLedgerRefusal(e instanceof Error ? e.message : String(e));
+  }
   if (!assertRowSpaceDirectory(dir, kind)) return undefined;
-  if (!existsSync(p)) return undefined;
+  try {
+    lstatSync(p);
+  } catch (e) {
+    const code = (e as NodeJS.ErrnoException).code;
+    if (code === "ENOENT") return undefined;
+    if (code === "ENOTDIR") throw definitiveLedgerRefusal(`${p}: actor row space must be a real directory, not a symlink or non-directory`);
+    throw new Error(`${p}: actor grant could not be inspected (${e instanceof Error ? e.message : String(e)})`, { cause: e });
+  }
   const row = readRow(p, kind);
   if (row.owner !== owner || row.actor !== actor)
-    throw new Error(
+    throw definitiveLedgerRefusal(
       `${p}: actor grant principal "${row.owner}.${row.actor}" does not match requested canonical principal "${owner}.${actor}" - refusing to authenticate one row as another`,
     );
   return row;
@@ -246,12 +287,21 @@ export function findActorUnified(dir: string, owner: string, actor: string): (Ac
   // THE THIRD SPACE: a principal present in `chat-sessions/` AND in either grant space is a
   // broken ledger and denies. A chat row is never returned here: it is not an actor grant, and its
   // connect authority is the chat arm's closed reader plus the holder index (chat-session-row.ts).
-  if ((interactive || managed) && chatSessionAliasPresent(dir, owner, actor))
-    throw new Error(
+  let chatPresent = false;
+  if (interactive || managed) {
+    try {
+      chatPresent = chatSessionAliasPresent(dir, owner, actor);
+    } catch (e) {
+      if (e instanceof EpEnvelopeError && e.cause === undefined) throw definitiveLedgerRefusal(e.message);
+      throw e;
+    }
+  }
+  if (chatPresent)
+    throw definitiveLedgerRefusal(
       `actor "${actor}" is present in BOTH the chat-session row space and a grant row space - a broken ledger denies; a chat alias is never an interactive or managed grant`,
     );
   if (interactive && managed)
-    throw new Error(
+    throw definitiveLedgerRefusal(
       `actor "${actor}" is granted in BOTH the interactive and managed row spaces - a broken ledger denies; remove one of ${rowPath(dir, "interactive", owner, actor)} / ${rowPath(dir, "managed-agent", owner, actor)}`,
     );
   if (interactive) return { ...interactive, kind: "interactive" };
@@ -373,7 +423,7 @@ export function assertWithinSpawnerGrant(
     const childKey = `${child.owner}.${child.actor}`;
     const deep = child !== row;
     if (seen.has(parentKey))
-      throw new Error(
+      throw definitiveLedgerRefusal(
         `agent "${leaf}": its delegation chain contains a cycle at "${parentKey}" - a broken ledger denies; repair the parent links (\`cotal actor list\`)`,
       );
     seen.add(parentKey);
@@ -382,14 +432,14 @@ export function assertWithinSpawnerGrant(
     const pActor = parentKey.slice(dot + 1);
     const parent = findActorUnified(dir, pOwner, pActor);
     if (!parent)
-      throw new Error(
+      throw definitiveLedgerRefusal(
         boundary === "spawn"
           ? `spawner "${parentKey}"${deep ? ` (an ancestor of "${leaf}")` : ""} has no grant in this space - delegation flows from a granted spawner chain, so grant "${pActor}" under owner "${pOwner}" first, carrying "spawn" in its --scope. NO ready-to-run line is printed for it, deliberately: the row does not exist, so there is nothing to copy its read and post sets from, and any \`cotal actor grant\` short of all three flags widens the spawner on paste. Choose --allow-subscribe and --allow-publish yourself, because a flag left off is the WIDE default (\`>\` read, \`>\` post), and a spawner's own ACL is the ceiling every agent spawned under it is attenuated against`
           : `agent "${leaf}": spawner "${parentKey}"${deep ? ` (an ancestor)` : ""} is no longer granted - revoking a spawner revokes everything under it; re-grant it, then respawn (\`cotal spawn\`). The revoke deleted the row, so \`cotal actor list\` can no longer show what it held: name --scope, --allow-subscribe and --allow-publish on the re-grant deliberately, because each one omitted comes back as the WIDE default (\`>\` read, \`>\` post) and a spawner's ACL is the ceiling for everything under it`,
       );
     if (parent.scope.includes("admin")) return;
     if (child.owner !== pOwner)
-      throw new Error(
+      throw definitiveLedgerRefusal(
         `agent "${childKey}" cannot be delegated by spawner "${parentKey}" of a different owner - cross-owner spawns are operator (admin) launches only`,
       );
     const { overScope, overSub, overPub, needRole } = overreachOf(parent, child);
@@ -397,7 +447,7 @@ export function assertWithinSpawnerGrant(
       const wrongs = describeOverreach({ overScope, overSub, overPub, needRole }, parent, child.role);
       const widen = widenGrantCommand(pOwner, pActor, parent, [...overScope, ...(needRole ? [needRole] : [])], overSub, overPub);
       const who = deep ? `agent "${leaf}": its ancestor "${childKey}"` : `agent "${leaf}"`;
-      throw new Error(
+      throw definitiveLedgerRefusal(
         (boundary === "spawn"
           ? `${who} would exceed its spawner's grant - delegation only narrows: `
           : `${who} exceeds its spawner's CURRENT grant (narrowed since spawn): `) +
@@ -659,13 +709,20 @@ export function notGrantedReason(actor: string): string {
 export function ledgerAuthorizeGrant(dir: string): (owner: string, actor: string) => ActorGrant {
   return (owner, actor) => {
     // Reader isolation: a chat alias never exchanges as an interactive human bearer.
-    if (chatSessionAliasPresent(dir, owner, actor))
-      throw new Error(`actor "${actor}" is a chat session - it exchanges only through the chat bearer exchange with its holder proof, never as an interactive grant`);
+    let chatPresent = false;
+    try {
+      chatPresent = chatSessionAliasPresent(dir, owner, actor);
+    } catch (e) {
+      if (e instanceof EpEnvelopeError && e.cause === undefined) throw definitiveLedgerRefusal(e.message);
+      throw e;
+    }
+    if (chatPresent)
+      throw definitiveLedgerRefusal(`actor "${actor}" is a chat session - it exchanges only through the chat bearer exchange with its holder proof, never as an interactive grant`);
     const row = findInteractiveActor(dir, owner, actor);
     if (!row) {
       if (findManagedActor(dir, owner, actor))
-        throw new Error(`actor "${actor}" is a managed agent - it authenticates with its own spawn-time secret; interact with it via the mesh, or respawn it with \`cotal spawn\``);
-      throw new Error(
+        throw definitiveLedgerRefusal(`actor "${actor}" is a managed agent - it authenticates with its own spawn-time secret; interact with it via the mesh, or respawn it with \`cotal spawn\``);
+      throw definitiveLedgerRefusal(
         `${notGrantedReason(actor)} - the mesh operator lets them in with \`cotal actor grant ${actor} --owner ${owner} --full\` (or --sub <their IdP subject>, printed by their \`cotal login\`), which is the FULL grant: all channels, may spawn. For a narrow row, name --scope, --allow-subscribe and --allow-publish instead of --full`,
       );
     }
@@ -674,7 +731,7 @@ export function ledgerAuthorizeGrant(dir: string): (owner: string, actor: string
     // row without one is a pre-cut grant and cannot mint (re-grant rotates one in); minting a
     // claimless bearer here would only defer the same refusal to every connect it attempts.
     if (!row.lifecycleUid)
-      throw new Error(`actor "${actor}" has no lifecycleUid on its ledger row - re-grant it (bearers are lifecycle-bound from v0.4)`);
+      throw definitiveLedgerRefusal(`actor "${actor}" has no lifecycleUid on its ledger row - re-grant it (bearers are lifecycle-bound from v0.4)`);
     // The ACLs ride along so a refusal ABOVE this layer can print the row's REAL current values
     // instead of a placeholder. A remedy that names a placeholder is a remedy whose shortest
     // successful recovery is to delete the flag, and a deleted flag is the wide default.
@@ -823,15 +880,17 @@ export function ledgerAuthorizeAgentExchange(
   lifecycleUid?: string;
 } {
   const deny = () =>
-    new Error("agent exchange refused: unknown agent or wrong secret - if this agent should exist, respawn it (`cotal spawn`) to rotate its grant");
+    definitiveLedgerRefusal("agent exchange refused: unknown agent or wrong secret - if this agent should exist, respawn it (`cotal spawn`) to rotate its grant");
   let row: ActorRow | undefined;
   try {
     // Reader isolation: a chat alias is refused with the SAME sentence as every other
     // failure here, so this unauthenticated surface never reveals that a chat session exists.
     if (chatSessionAliasPresent(dir, owner, actor)) throw deny();
     row = findManagedActor(dir, owner, actor);
-  } catch {
-    throw deny(); // a corrupt row denies exactly like a missing one on this unauthenticated surface
+  } catch (e) {
+    if (isDefinitiveLedgerRefusal(e) || (e instanceof EpEnvelopeError && e.cause === undefined))
+      throw deny(); // a corrupt row denies exactly like a missing one on this unauthenticated surface
+    throw e; // a transient local filesystem fault cannot read the row and is NOT a credential denial
   }
   if (!row?.tokenHash) throw deny();
   const presented = Buffer.from(hashActorToken(actorToken), "hex");

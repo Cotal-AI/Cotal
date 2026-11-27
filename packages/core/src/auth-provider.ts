@@ -615,10 +615,12 @@ export function bearerCommandFailure(err: ExecFileException, stderr: string, tim
     const reason = refusedStatus ? exchange?.[1] : undefined;
     const denied = reason !== undefined && (
       /^agent exchange refused: unknown agent or wrong secret\b/.test(reason)
-      || /^agent "[^"]+": (?:spawner .* is no longer granted|.*(?:exceeds its spawner's CURRENT grant|delegation chain contains a cycle))/.test(reason)
-      || /^the root credential for .* (?:is revoked|expired at)\b/.test(reason)
-      || /^uid \S+ has a terminally retired issuance gate\b/.test(reason)
-      || /^lifecycle "[^"]+" is retiring \(op /.test(reason)
+      || /^agent "[^"]+"(?:: (?:spawner .* is no longer granted|its delegation chain contains a cycle|its ancestor "[^"]+" exceeds its spawner's CURRENT grant)| exceeds its spawner's CURRENT grant| cannot be delegated by spawner )/.test(reason)
+      || /^actor "[^"]+" has no lifecycleUid on its ledger row\b/.test(reason)
+      || /^the root credential for .* (?:is \S+; rotating a root credential|expired at\b)/.test(reason)
+      || /^uid \S+ (?:has a terminally retired issuance gate|is reserved by)\b/.test(reason)
+      || /^lifecycle (?:"[^"]+" is (?:retiring \(op |active at uid )|\S+ has immutable service custody\b)/.test(reason)
+      || /^lifecycle head \S+ carries service custody\b/.test(reason)
     );
     return Object.assign(new Error(said), retryAfter ? { retryAfterSeconds: Number(retryAfter[1]) } : {}, denied ? { bearerRefused: true } : {});
   }

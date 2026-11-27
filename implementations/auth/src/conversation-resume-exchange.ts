@@ -1,5 +1,5 @@
-import { assertLifecycleToken, canonicalJson, type ConversationGrant } from "@cotal-ai/core";
-import { ledgerAuthorizeAgentExchange } from "./ledger.js";
+import { EpEnvelopeError, assertLifecycleToken, canonicalJson, type ConversationGrant } from "@cotal-ai/core";
+import { isDefinitiveLedgerRefusal, ledgerAuthorizeAgentExchange } from "./ledger.js";
 
 /** Confirm an exact existing approval without issuing, changing or extending a credential. */
 export function checkConversationResumeExchange(dir: string, owner: string, actor: string, actorToken: string, value: unknown) {
@@ -12,7 +12,10 @@ export function checkConversationResumeExchange(dir: string, owner: string, acto
   const refused = { status: 401, body: { v: 1, lifecycleUid, status: "refused" } };
   let live: ReturnType<typeof ledgerAuthorizeAgentExchange>;
   try { live = ledgerAuthorizeAgentExchange(dir, owner, actor, actorToken); }
-  catch { return refused; }
+  catch (e) {
+    if (isDefinitiveLedgerRefusal(e) || (e instanceof EpEnvelopeError && e.cause === undefined)) return refused;
+    return { status: 503, body: { error: `authority row store unavailable: ${e instanceof Error ? e.message : String(e)}` } };
+  }
   if (live.lifecycleUid !== lifecycleUid || canonicalJson(resume.grant) !== canonicalJson({
     scope: live.scope, role: live.role ?? null, allowSubscribe: live.allowSubscribe, allowPublish: live.allowPublish, subscribe: [], endpoints: [],
   })) return refused;

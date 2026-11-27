@@ -170,7 +170,7 @@ function assertSessionsDirectory(dir: string): string | undefined {
     stat = lstatSync(path);
   } catch (e) {
     if ((e as NodeJS.ErrnoException).code === "ENOENT") return undefined;
-    throw new EpEnvelopeError("failed-precondition", `${path}: the chat-session row space cannot be inspected (${(e as Error).message}); an unreadable authority directory never reads as empty`);
+    throw Object.assign(new EpEnvelopeError("failed-precondition", `${path}: the chat-session row space cannot be inspected (${(e as Error).message}); an unreadable authority directory never reads as empty`), { cause: e });
   }
   if (stat.isSymbolicLink() || !stat.isDirectory())
     throw new EpEnvelopeError("failed-precondition", `${path}: the chat-session row space must be a real directory, not a symlink or non-directory`);

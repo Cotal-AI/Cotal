@@ -821,6 +821,7 @@ export async function openSupervisedConnectReader(
         if (closed || c !== client) break;
         if (s.type === "disconnect") {
           reader = undefined;
+          shapeRefusal = undefined;
           opts.log(`${label}: connection lost - connects DENY until the rebind shape proof passes`);
         } else if (s.type === "error") {
           // An -ERR leaves the bind as it was. nats.js reports every loss of the link as
@@ -835,7 +836,7 @@ export async function openSupervisedConnectReader(
           } catch (e) {
             if (c === client) {
               reader = undefined;
-              if (!connectReaderUnreachable(e)) shapeRefusal = e instanceof Error ? e : new Error(String(e));
+              shapeRefusal = connectReaderUnreachable(e) ? undefined : (e instanceof Error ? e : new Error(String(e)));
             }
             opts.log(`${label}: REBIND SHAPE PROOF FAILED (${(e as Error)?.message ?? String(e)}) - connects stay denied`);
           }
@@ -885,7 +886,7 @@ export async function openSupervisedConnectReader(
       await c.close().catch(() => {});
       // The stores failed the shape proof, and the serving reader reads the same stores.
       reader = undefined;
-      if (!connectReaderUnreachable(e)) shapeRefusal = e instanceof Error ? e : new Error(String(e));
+      shapeRefusal = connectReaderUnreachable(e) ? undefined : (e instanceof Error ? e : new Error(String(e)));
       opts.log(`${label}: REPLACEMENT SHAPE PROOF FAILED (${(e as Error)?.message ?? String(e)}) - connects stay denied`);
       return retryLater("no replacement reader is proved");
     }
