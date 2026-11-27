@@ -9,7 +9,7 @@ const source = readFileSync(new URL('tauri-2.12.4.nsi', base), 'utf8');
 if (createHash('sha256').update(source).digest('hex') !== 'd00089d3b1a2c4a30d7b6e098079100cb8f25e980f84d4515aca4597b95e967d') throw new Error('The pinned upstream NSIS template changed. Review the service guard before building.');
 const welcomeAnchor = '; 1. Welcome Page\n!define MUI_PAGE_CUSTOMFUNCTION_PRE SkipIfPassive\n!insertmacro MUI_PAGE_WELCOME';
 if (source.split(welcomeAnchor).length !== 2) throw new Error('The NSIS welcome page anchor is not singular.');
-const welcomeShow = '; 1. Welcome Page\n;The running app keeps a newly opened setup behind it. Windows will not\n;hand this process the foreground, so the page is placed above every\n;window and that placement is cleared in the same call. SkipIfPassive\n;still drops this page for an update.\n!define MUI_PAGE_CUSTOMFUNCTION_SHOW WelcomeShow\n!define MUI_PAGE_CUSTOMFUNCTION_PRE SkipIf passive\n!insertmacro MUI_PAGE_WELCOME\n\nFunction WelcomeShow\n  System::Call "user32::SetWindowPos(p $hwndparent, p -1, i 0, i 0, i 0, i 0, i 0x13)"\n  System::Call "user32::SetWindowPos(p $hwndparent, p -2, i 0, i 0, i 0, i 0, i 0x13)"\nFunctionEnd';
+const welcomeShow = '; 1. Welcome Page\n!define MUI_PAGE_CUSTOMFUNCTION_SHOW WelcomeShow\n!define MUI_PAGE_CUSTOMFUNCTION_PRE SkipIfPassive\n!insertmacro MUI_PAGE_WELCOME\n\nFunction WelcomeShow\n  System::Call "user32::SetWindowPos(p $hwndparent, p -1, i 0, i 0, i 0, i 0, i 0x13)"\n  System::Call "user32::SetWindowPos(p $hwndparent, p -2, i 0, i 0, i 0, i 0, i 0x13)"\nFunctionEnd';
 
 const anchor = '  ; Read the install choice header through $R5 so a custom language file that only';
 if (source.split(anchor).length !== 2) throw new Error('The NSIS upgrade routing anchor is not singular.');
