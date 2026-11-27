@@ -24,7 +24,7 @@ import type { ConnectionState } from "../src/endpoint-connection-state.js";
 import { recordsBucket } from "../src/endpoint-records.js";
 import { PLUGIN_CHANNEL_PROJECTION_KEY } from "../src/plugin-channel-projection.js";
 import { PLUGIN_CHANNEL_ROOT } from "../src/plugin-channel-route.js";
-import { chatStream, dlvStream, inboxStream, type CotalMessage, type PluginMentionPointer } from "../src/index.js";
+import { chatStream, dlvStream, inboxStream, type CotalMessage, type Delivery, type MessageMeta, type PluginMentionPointer } from "../src/index.js";
 import { pluginChannelStream, pluginChannelSubject } from "../src/plugin-channel-route.js";
 import { PLUGIN_MENTION_POINTER_KEY } from "../src/types.js";
 import { isStreamNotFound } from "../src/jetstream-missing.js";
@@ -58,9 +58,10 @@ async function checkEnabledPluginDelivery() {
       readChannelRoutingProjection: true, registerPresence: false, watchPresence: false,
       allowSubscribe: [channel, hiddenChannel], card: { kind: "endpoint", name: "chat-observer" } });
     const live: CotalMessage[] = [], tapped: CotalMessage[] = [], notices: CotalMessage[] = [];
-    read.on("message", (msg, delivery, meta) => {
+    read.on("message", (msg: CotalMessage, delivery: Delivery, meta: MessageMeta) => {
       if (meta.kind === "channel" && !meta.historical && !delivery.durable) live.push(msg);
-      if (msg.parts.some((p) => p.kind === "data" && p.data && Object.hasOwn(p.data, PLUGIN_MENTION_POINTER_KEY))) notices.push(msg);
+      if (msg.parts.some((p) => p.kind === "data" && typeof p.data === "object" && p.data !== null &&
+        Object.hasOwn(p.data, PLUGIN_MENTION_POINTER_KEY))) notices.push(msg);
       delivery.ack();
     });
     read.tap((_subject, msg) => { if (msg) tapped.push(msg); }, { subject: pluginChannelSubject(space, "*", "*", channel) });
