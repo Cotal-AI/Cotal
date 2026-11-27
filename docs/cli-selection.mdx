@@ -263,9 +263,11 @@ Once one of them has run, the heading gets a `State` column, and the line says n
 or registered. A space whose stack ran and was stopped reads as stopped in `space`, `space show` and
 `use`, with its last operation, as `status` reads it. For a stopped broker-only stack, `space show`
 and `use` name `cotal up --no-manager` in its project folder.
-A command that
-targets a prepared space refuses with `TARGET_UNAVAILABLE`, exit 2, naming the root to start it in,
-and so does `cotal up --space <name>` run from another folder. Its Next names
+A command that targets a prepared space refuses with `TARGET_UNAVAILABLE`, exit 2. For a space that
+has never started, a read that names the space and a plain NATS address on `127.0.0.1` with an
+explicit port gives a first-start command for that root and address. For other explicit broker
+addresses, it directs you to check the broker's registration before starting anything locally.
+`cotal up --space <name>` run from another folder also refuses. Its Next names
 `cotal up --root <root> --space <name>`, which starts it in that root from where you are, and
 `cotal space forget <name>`, which lets you start it in the current folder. When that root's last `up` or `down`
 was cut off before it recorded an outcome, as an `up` interrupted before it registered the space
