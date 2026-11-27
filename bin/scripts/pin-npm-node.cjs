@@ -31,8 +31,12 @@ if (major < minMajor || (major === minMajor && (minor < minMinor || (minor === m
         previous = readFileSync(launcher, "utf8");
         const pin = previous.match(/^  node=('(?:[^'\n]|'\\'')*')$/m);
         if (!pin) return;
-        node = pin[1].slice(1, -1).replaceAll("'\\''", "'");
-        if (!isAbsolute(node) || !existsSync(node)) return;
+        const recorded = pin[1].slice(1, -1).replaceAll("'\\''", "'");
+        // A recorded Node that is still on disk stays pinned, including when this refresh runs
+        // under a different Node. A recorded path that is gone cannot start the launcher, so the
+        // supported Node running this refresh takes its place.
+        if (!isAbsolute(recorded)) return;
+        if (existsSync(recorded)) node = recorded;
       }
       // Linux's cwd link names the current inode even after its directory entry is removed.
       // Give it to sh before startup, then restore the caller's PWD without changing directories.

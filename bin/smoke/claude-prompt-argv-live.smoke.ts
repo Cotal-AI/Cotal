@@ -36,11 +36,24 @@ const shim = join(scratch, "shim");
 const argvLog = join(scratch, "claude-argv.jsonl");
 mkdirSync(home, { recursive: true });
 mkdirSync(shim, { recursive: true });
-// The `claude` the connector finds on PATH. Only the inventory cases need a live seat.
+// The `claude` the connector finds on PATH. Only the inventory cases need a live seat. A managed
+// spawn that names a variant reads claude's model catalog first, so the shim answers that read with
+// one model and records no launch for it.
 writeFileSync(
   join(shim, "claude"),
   `#!${process.execPath}
 const argv = process.argv.slice(2);
+if (argv.includes("--input-format")) {
+  const answers = {
+    initialize: { account: { tokenSource: "claude.ai" }, models: [{ value: "opus", displayName: "Opus", supportedEffortLevels: ["low", "medium", "high"] }] },
+    get_settings: { applied: { model: "opus", effort: "high", ultracode: false, ultracodeAvailable: false } },
+  };
+  require("node:readline").createInterface({ input: process.stdin }).on("line", (line) => {
+    const { request_id, request } = JSON.parse(line);
+    console.log(JSON.stringify({ type: "control_response", response: { request_id, subtype: "success", response: answers[request.subtype] ?? {} } }));
+  });
+  return;
+}
 require("node:fs").appendFileSync(${JSON.stringify(argvLog)}, JSON.stringify(argv) + "\\n");
 if (process.env.COTAL_NAME?.startsWith("effort-") || process.env.COTAL_NAME === "model-override") {
   console.log("WARNING: Loading development channels");
