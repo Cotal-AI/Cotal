@@ -36,7 +36,7 @@ import { connectCheckViaDaemon, managerViaDaemon, queryDaemon, registerViaDaemon
 import { admitWindowsNativeDaemon, applyInstall, applyUninstall, observeDaemonOwnedService, type DaemonOwnershipObservation, planInstall, planUninstall, repairMissingInstalledProgram, startInstalled } from "./install.js";
 import { exchangeDesktopRequest, runDesktopBridge } from "./desktop.js";
 import { installedUnitForSetup, runAccountSetup, runSetup } from "./setup.js";
-import { daemonCommandCopy, daemonServiceRequirement, windowsDaemonFirstStart, windowsDaemonHomeAccess, windowsDaemonRemedy } from "./guidance.js";
+import { daemonCommandCopy, daemonServiceRequirement, serviceHomeMismatch, windowsDaemonFirstStart, windowsDaemonHomeAccess, windowsDaemonRemedy } from "./guidance.js";
 import { forgetHostedManagerIntents } from "./manager.js";
 import { automaticUpdates } from "./auto-update.js";
 import { watchDaemonGeneration } from "./generation.js";
@@ -387,6 +387,10 @@ async function unitCommand(args: ParsedArgs, op: "install" | "uninstall"): Promi
   if (op === "install" && (values["daemon-home"] === undefined || isAbsolute(values["daemon-home"]))) {
     const requirement = daemonServiceRequirement(values["daemon-home"]);
     if (requirement) throw requirement;
+    if (values["daemon-home"] === undefined) {
+      const mismatch = serviceHomeMismatch();
+      if (mismatch) throw mismatch;
+    }
   }
   const { paths, home } = resolveTarget(args, op);
   if (op === "install") {
@@ -442,6 +446,10 @@ async function setupCommand(args: ParsedArgs): Promise<void> {
   if (values["daemon-home"] === undefined || isAbsolute(values["daemon-home"])) {
     const requirement = daemonServiceRequirement(values["daemon-home"]);
     if (requirement) throw requirement;
+    if (values["daemon-home"] === undefined) {
+      const mismatch = serviceHomeMismatch();
+      if (mismatch) throw mismatch;
+    }
   }
   let choice = values.idp !== undefined || args.values.cloud === true ? await daemonAccountChoice(args) : undefined;
   let idp = choice?.url;

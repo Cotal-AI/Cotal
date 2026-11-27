@@ -2,4 +2,4 @@
 "cotal-ai": patch
 ---
 
-A default `cotal daemon install` now refuses before registration when the shell home and the account home the background service will use differ. The refusal names both directories. Unset the override, or pass `--daemon-home`.
+A default `cotal daemon install` refuses before registration when this shell resolves a daemon home the background service will not use. The refusal names both directories. Unset the shell override, or pass `--daemon-home`.
