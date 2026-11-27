@@ -248,7 +248,14 @@ async function checkRenamedManagerInstall(): Promise<void> {
   const priorHome = process.env.COTAL_HOME;
   process.env.COTAL_HOME = join(root, "updater");
   try {
-    const own = stage("own"), foreign = stage("foreign");
+    const own = stage("own"), foreign = stage("foreign"), generated = stage("generated");
+    const generationId = "0123456789abcdef0123456789abcdef";
+    const logicalPkg = join(generated.prefix, "lib/node_modules/cotal-ai");
+    const retained = join(generated.prefix, "lib/.cotal-generations", generationId, "cotal-ai");
+    mkdirSync(dirname(retained), { recursive: true });
+    renameSync(logicalPkg, retained);
+    symlinkSync(join("..", ".cotal-generations", generationId, "cotal-ai"), logicalPkg);
+    const generatedMapping = join(retained, "node_modules", archPackage, ptyFile);
     const alias = join(root, "alias"), aliasEntry = join(alias, "lib/node_modules/cotal-ai/dist/cotal.js");
     symlinkSync(own.prefix, alias);
     const space = "mapped-manager-install", port = await freePort(), server = `nats://127.0.0.1:${port}`;
@@ -257,7 +264,7 @@ async function checkRenamedManagerInstall(): Promise<void> {
     const releaseBroker = teardownOnSignal(broker, store);
     try {
       await awaitBrokerReady(() => isReachable(server), { servers: server, attempts: 50, delayMs: 100 });
-      for (const [entry, mapping, mode] of [[foreign.entry, foreign.mapping, "foreign"], [aliasEntry, own.mapping, "local"]] as const) {
+      for (const [entry, mapping, mode] of [[foreign.entry, foreign.mapping, "foreign"], [generated.entry, generatedMapping, "generation"], [aliasEntry, own.mapping, "local"]] as const) {
         const child = spawn(process.execPath, [entry, "supervise", "--space", space, "--server", server], { cwd: join(root, "project"), env, stdio: ["ignore", "pipe", "pipe"] });
         const releaseChild = teardownOnSignal(child);
         let output = "";
@@ -270,8 +277,9 @@ async function checkRenamedManagerInstall(): Promise<void> {
           const mapped = () => existsSync(maps) && readFileSync(maps, "utf8").includes(mapping);
           while (child.exitCode === null && Date.now() < deadline && !mapped()) await new Promise(resolve => setTimeout(resolve, 25));
           assert.ok(mapped(), `real Manager mapped its own PTY dependency: ${output}`);
-          if (mode === "foreign") {
-            renameSync(foreign.prefix, `${foreign.prefix}.moved`);
+          if (mode === "foreign" || mode === "generation") {
+            if (mode === "generation") assert.deepEqual(localUpdateManagers({ space }, own.entry), [], "a self-updated foreign Manager does not block while its launch entry resolves");
+            renameSync(mode === "foreign" ? foreign.prefix : generated.prefix, `${mode === "foreign" ? foreign.prefix : generated.prefix}.moved`);
             assert.deepEqual(localUpdateManagers({ space }, own.entry), [], "a foreign Manager with a missing launch entry does not block");
           } else {
             assert.ok(localUpdateManagers({ space }, own.entry).some(manager => manager.pid === child.pid), "a resolvable symlink into the installation retains Manager custody");
