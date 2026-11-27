@@ -257,13 +257,64 @@ async function observeDaemonLockState(label, statusPid) {
   save();
   return entry;
 }
+// The NSIS root is also the running service's Cotal home. These names are its own bookkeeping,
+// created and removed while setup is refused, so they are not installed files.
+const serviceState = new Set([
+  'daemon', // service lock, logs, hosted manager records, and per-space state
+  '.update-closure.lock', // held while the service closes its update generation
+  'update-settings.json', // saved automatic-update and notice preferences
+  'update-recovery.json', // interrupted update journal the service reads and retires
+  'update-recovery-observed.json', // first observation of that journal
+  'update-check.json', // cached registry result rewritten by each check
+  'update-check.lock', // created for one check and deleted when the check releases it
+  'update-attempt.json', // scheduled attempt record rewritten by the service
+  'update-attempt.log', // output of an automatic update the service starts
+  'update-windows.json', // Windows update task receipt
+  'update-windows-paused.json', // pause after an interrupted Windows helper
+  'update-windows-clear.json', // request that clears that pause
+  'update-windows-activation.json', // result of activating the replaced Windows service
+  'meshes', // registered mesh records rewritten while the service answers
+  'trusted-projects-seed.json', // project-trust seed written when the service records a mesh
+  'idp-sessions.json', // signed-in sessions kept beside the service
+  'idp-sessions.lock', // lock around those signed-in sessions
+  'acp', // account and connector session records
+  'agent-skills.json', // reconciled skill record
+  'app-identities', // desktop app identity records
+  'catalog', // signed-in space catalog
+  'chat-sessions', // remembered desktop chat sessions
+  'current-mesh', // mesh selected by the running service
+  'linear', // Linear connector state
+  'onboarded.json', // onboarding marker read at service start
+  'prepared', // spaces prepared on this machine
+  'service-launchd', // retained service launch records
+  'services', // connected service records
+]);
+function serviceOwned(file) {
+  const name = file.split('/')[0];
+  return serviceState.has(name)
+    || /^update-check\.[^/]+\.tmp$/.test(file) // private sibling of one update-check write
+    || /^update-check\.lock\.[0-9a-f]{16}\.tmp$/.test(file) // private sibling of one lock publish
+    || /^update-check\.lock\.reclaim$/.test(file) // sentinel while a stale lock is reclaimed
+    || /^update-check\.lock\.reclaim\.[0-9a-f]{16}\.tmp$/.test(file) // private sibling of that sentinel
+    || /^cotal-update-[0-9a-f]{32}\.xml$/.test(file) // task definition for one Windows update nonce
+    || /^cotal-update-[0-9a-f]{32}\.gate$/.test(file); // gate beside that task
+}
 function inventory() {
   const rows = [];
   function visit(directory, prefix = '') {
     for (const entry of readdirSync(directory, { withFileTypes: true })) {
       const path = join(directory, entry.name), file = prefix ? `${prefix}/${entry.name}` : entry.name;
+      if (serviceOwned(file)) continue;
       if (entry.isDirectory()) visit(path, file);
-      else if (entry.isFile()) rows.push({ file, sha256: createHash('sha256').update(readFileSync(path)).digest('hex') });
+      else if (entry.isFile()) {
+        let bytes;
+        try { bytes = readFileSync(path); }
+        catch (error) {
+          if (error?.code === 'ENOENT') throw new Error(`Installed file disappeared during inventory: ${file}`);
+          throw error;
+        }
+        rows.push({ file, sha256: createHash('sha256').update(bytes).digest('hex') });
+      }
       else throw new Error('Unexpected non-file in owned installation');
     }
   }
@@ -393,6 +444,7 @@ async function pollRelaunchedApp(previousPid, previousBirth, timeoutMs = 30_000)
 }
 
 let fixture, seat, locker, app, elevatedExternalPid, systemExternalTask, stopExternalSpawner;
+let pathProbeProcess;
 let serviceInstalled = false;
 let seatStopped = false;
 try {
@@ -400,9 +452,12 @@ try {
   if (cell === 'path-probe') {
     const probeOutput = join(output, 'probe');
     const probeRun = await run(ps, ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', join(repo, 'desktop/test/setup-path-probe.ps1'), '-Installer', candidate, '-Output', probeOutput, '-ExpectedVersion', candidateVersion], 420_000);
+    const { code, signal, stdout, stderr } = probeRun;
+    pathProbeProcess = { code, signal, stdout, stderr };
+    report.pathProbe = pathProbeProcess;
     const probeResultPath = join(probeOutput, 'result.json');
     const probeReport = existsSync(probeResultPath) ? JSON.parse(readText(probeResultPath)) : null;
-    report.pathProbe = probeReport ?? { code: probeRun.code, stderr: probeRun.stderr };
+    report.pathProbe = { ...probeReport, ...pathProbeProcess };
     check('Path-identity probe script exited 0', probeRun.code === 0);
     check('All 28 guard and recovery cases completed with zero issues or failures', probeReport?.status === 'fixed-acceptance-complete' && probeReport?.cases?.length === 28 && probeReport?.observationIssues?.length === 0 && probeReport?.acceptanceFailures?.length === 0);
     check('Missing-folder /S installer rerun cleared the stale handover', probeReport?.recovery?.handoverRemoved === true);
@@ -891,5 +946,6 @@ finally {
   writeFileSync(join(output, 'application-events-1000.json'), JSON.stringify(events, null, 2));
   await fixture?.close();
   save();
-  console.log(JSON.stringify({ cell, failure: report.failure, cleanup: report.cleanupOutcome ?? null, checks: report.checks, output }, null, 2));
+  const probeFailure = report.failure ? pathProbeProcess : undefined;
+  console.log(JSON.stringify({ cell, failure: report.failure, probeFailure, cleanup: report.cleanupOutcome ?? null, checks: report.checks, output }, null, 2));
 }

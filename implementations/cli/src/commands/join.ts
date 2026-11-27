@@ -112,7 +112,7 @@ function checkCredentialJoin(creds: string, space: string, uid: string, channel:
   const history = `$JS.API.CONSUMER.CREATE.${chatStream(space)}.${chatHistDurable(DEV_OWNER, actor, uid)}.${chatSubject(space, "*", "*", channel)}`;
   if (!issuedPermitsPattern(permission, history))
     throw new CommandFailure("refused", "PERMISSION_DENIED", `this credential does not grant read access to #${channel} in ${space}`, {
-      remedy: `ask the space's owner to mint it with \`cotal auth mint <name> --provision ${grantOption("--allow-subscribe", channel)}\`, then join with the lifecycle UID that mint reports; add ${grantOption("--allow-publish", channel)} if you also need to post`,
+      remedy: `ask the space's owner to mint it with \`cotal auth mint <name> --provision ${grantOption("--allow-subscribe", channel)} --space ${shellWord(space)} --no-persona --out <file>\`, then join with the lifecycle UID that mint reports; add ${grantOption("--allow-publish", channel)} if you also need to post`,
     });
 }
 
