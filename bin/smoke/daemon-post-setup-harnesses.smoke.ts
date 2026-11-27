@@ -9,7 +9,7 @@
  */
 import { execFile, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -35,7 +35,7 @@ if (!existsSync(cli)) {
   console.error(`✗ ${cli} missing - build first: pnpm --filter cotal-ai... build`);
   process.exit(1);
 }
-const root = mkdtempSync(join(tmpdir(), "post-setup-harnesses-"));
+const root = realpathSync(mkdtempSync(join(tmpdir(), "psh-")));
 const savedEnv = Object.fromEntries(["HOME", "COTAL_HOME", "XDG_CONFIG_HOME", "XDG_RUNTIME_DIR", "PATH", "NATS_SERVER_BIN"].map(key => [key, process.env[key]]));
 const resolvedNatsServer = process.env.NATS_SERVER_BIN || resolveOnPath("nats-server", process.env);
 if (resolvedNatsServer) process.env.NATS_SERVER_BIN = resolvedNatsServer;
@@ -170,6 +170,103 @@ try {
     } finally {
       process.env.PATH = prevPath;
       process.env.XDG_CONFIG_HOME = prevXdg;
+    }
+
+    if (existsSync("/run/systemd/system")) {
+      const corruptRoot = join(root, "cs");
+      const corruptHome = join(corruptRoot, "home");
+      const corruptCotalHome = join(corruptRoot, "cotal");
+      const corruptConfig = join(corruptRoot, "config");
+      const corruptRun = join(corruptRoot, "r");
+      const corruptBin = join(corruptRoot, "bin");
+      for (const dir of [corruptHome, corruptCotalHome, join(corruptConfig, "systemd", "user"), corruptRun, corruptBin]) {
+        mkdirSync(dir, { recursive: true, mode: 0o700 });
+      }
+      cpSync(join(runtime, "dist"), join(corruptBin, "dist"), { recursive: true });
+      cpSync(join(runtime, "package.json"), join(corruptBin, "package.json"));
+      symlinkSync(join(runtime, "node_modules"), join(corruptBin, "node_modules"));
+      symlinkSync(join(runtime, "..", "node_modules"), join(corruptRoot, "node_modules"));
+      const corruptCli = join(corruptBin, "dist", "cotal.js");
+      const corruptSeeded = join(corruptBin, "dist", "daemon", "seeded-installers.json");
+      writeFileSync(
+        join(fakeSys, "systemctl"),
+        `#!/bin/sh\nif [ "$1" = "--user" ] && [ "$2" = "show-environment" ]; then printf 'XDG_CONFIG_HOME=%s\\n' ${JSON.stringify(corruptConfig)}; exit 0; fi\nexit 0\n`,
+        { mode: 0o700 },
+      );
+      writeFileSync(join(fakeSys, "loginctl"), "#!/bin/sh\nprintf 'Linger=yes\\n'\n", { mode: 0o700 });
+      const corruptEnv: NodeJS.ProcessEnv = {
+        ...env,
+        HOME: corruptHome,
+        USER: "smoke",
+        LOGNAME: "smoke",
+        COTAL_HOME: corruptCotalHome,
+        XDG_CONFIG_HOME: corruptConfig,
+        XDG_RUNTIME_DIR: corruptRun,
+        PATH: `${fakeSys}:${callerPath}`,
+      };
+      const callCorruptCli = (args: string[]) =>
+        new Promise<{ code: number; stdout: string; stderr: string }>(resolve => {
+          execFile(process.execPath, [corruptCli, ...args], { env: corruptEnv, cwd: corruptHome, timeout: 60_000, windowsHide: true }, (error, stdout, stderr) => {
+            const code = error && typeof (error as { code?: unknown }).code === "number" ? (error as { code: number }).code : error ? 1 : 0;
+            resolve({ code, stdout: String(stdout), stderr: String(stderr) });
+          });
+        });
+
+      writeFileSync(corruptSeeded, "{", { mode: 0o600 });
+      const truncatedInstall = await callCorruptCli(["daemon", "install", "--dry-run", "--json"]);
+      const truncatedDoc = JSON.parse(truncatedInstall.stdout || "{}") as { outcome?: string; error?: { code?: string; message?: string; remedy?: string } };
+      check(
+        "corrupt seeded-installers.json refuses daemon install with file path and reinstall guidance instead of SyntaxError",
+        truncatedInstall.code === 2
+          && truncatedDoc.outcome === "refused"
+          && truncatedDoc.error?.code === "DEPENDENCY_UNAVAILABLE"
+          && (truncatedDoc.error.message ?? "").includes(corruptSeeded)
+          && /reinstall/i.test(truncatedDoc.error.message ?? "")
+          && /reinstall/i.test(truncatedDoc.error.remedy ?? ""),
+        truncatedInstall,
+      );
+
+      writeFileSync(corruptSeeded, "{}\n", { mode: 0o600 });
+      const emptyShapeInstall = await callCorruptCli(["daemon", "install", "--dry-run", "--json"]);
+      const emptyShapeDoc = JSON.parse(emptyShapeInstall.stdout || "{}") as { outcome?: string; error?: { code?: string; message?: string; remedy?: string } };
+      check(
+        "malformed seeded-installers.json refuses daemon install without falling back to an empty folder list",
+        emptyShapeInstall.code === 2
+          && emptyShapeDoc.outcome === "refused"
+          && emptyShapeDoc.error?.code === "DEPENDENCY_UNAVAILABLE"
+          && (emptyShapeDoc.error.message ?? "").includes(corruptSeeded),
+        emptyShapeInstall,
+      );
+
+      const repairPaths = daemonPaths(corruptEnv, corruptCotalHome);
+      mkdirSync(repairPaths.state, { recursive: true, mode: 0o700 });
+      const missingUnitPath = join(corruptConfig, "systemd", "user", "cotal-daemon.service");
+      const missingUnit = [
+        "[Service]",
+        `Environment=PATH="/usr/bin:/bin"`,
+        "Environment=COTAL_DAEMON_NATIVE_SERVICE=1",
+        `ExecStart="${join(corruptRoot, "missing-node")}" "${join(corruptRoot, "missing-cotal.js")}" "daemon" "serve"`,
+        "",
+      ].join("\n");
+      writeFileSync(missingUnitPath, missingUnit, { mode: 0o600 });
+      writeFileSync(
+        join(repairPaths.state, "service-unit.json"),
+        `${JSON.stringify({ v: 1, mechanism: "systemd-user", unit: "cotal-daemon.service", unitPath: missingUnitPath, unitSha256: createHash("sha256").update(missingUnit).digest("hex"), installedAt: "2026-11-27T00:00:00.000Z" })}\n`,
+        { mode: 0o600 },
+      );
+      writeFileSync(corruptSeeded, "{", { mode: 0o600 });
+      const truncatedRepair = await callCorruptCli(["daemon", "install", "--json"]);
+      const repairDoc = JSON.parse(truncatedRepair.stdout || "{}") as { outcome?: string; error?: { code?: string; message?: string; remedy?: string } };
+      check(
+        "corrupt seeded-installers.json refuses missing-program service repair with file path and reinstall guidance",
+        truncatedRepair.code === 2
+          && repairDoc.outcome === "refused"
+          && repairDoc.error?.code === "DEPENDENCY_UNAVAILABLE"
+          && (repairDoc.error.message ?? "").includes(corruptSeeded)
+          && /reinstall/i.test(repairDoc.error.message ?? "")
+          && /reinstall/i.test(repairDoc.error.remedy ?? ""),
+        truncatedRepair,
+      );
     }
   }
 

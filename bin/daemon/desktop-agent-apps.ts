@@ -2,7 +2,7 @@
  *  account's PATH finds it, and its maker's installer and sign-in. The webview names a connector and
  *  nothing else; every command comes from that connector's cached install declaration. */
 import { spawn } from "node:child_process";
-import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
+import { appendFileSync, existsSync, lstatSync, mkdirSync, readFileSync, statSync } from "node:fs";
 import { homedir, userInfo } from "node:os";
 import { basename, dirname, join, posix, win32 } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -171,29 +171,59 @@ function folder(binDir: string, home = userHome()): string {
   return win32.join(base, match![2]!);
 }
 
+function validPosixBinDir(binDir: unknown): binDir is string {
+  return typeof binDir === "string" && /^~((?:\/[A-Za-z0-9._-]+)+)$/.test(binDir)
+    && !binDir.slice(2).split("/").some(part => part === "." || part === "..");
+}
+
 function shippedConnectorBinDirs(os: "darwin" | "linux"): readonly string[] {
   const here = dirname(fileURLToPath(import.meta.url));
   const parent = dirname(here);
   const binRoot = basename(parent) === "dist" ? dirname(parent) : parent;
   const file = join(binRoot, "dist", "daemon", "seeded-installers.json");
-  if (!existsSync(file)) return [];
-  const data = JSON.parse(readFileSync(file, "utf8")) as { v?: unknown; installers?: Record<string, Record<string, string>> };
-  if (data?.v !== 1 || !data.installers) return [];
-  return Object.values(data.installers).flatMap(dirs => typeof dirs?.[os] === "string" ? [dirs[os]!] : []);
+  const corrupt = (cause?: unknown) => new CommandFailure(
+    "refused",
+    "DEPENDENCY_UNAVAILABLE",
+    `the seeded connector installer list at ${file} is corrupt or unreadable. Reinstall Cotal and run the command again`,
+    { remedy: "reinstall this Cotal installation and run the command again", ...(cause === undefined ? {} : { cause }) },
+  );
+  let raw: string;
+  try {
+    if (!statSync(file).isFile()) throw new Error("not a regular file");
+    raw = readFileSync(file, "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT" && !lstatSync(file, { throwIfNoEntry: false })) return [];
+    throw corrupt(error);
+  }
+  let parsed: unknown;
+  try { parsed = JSON.parse(raw); } catch (error) { throw corrupt(error); }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw corrupt();
+  const data = parsed as { v?: unknown; installers?: unknown };
+  if (data.v !== 1 || !data.installers || typeof data.installers !== "object" || Array.isArray(data.installers)) throw corrupt();
+  const entries = Object.values(data.installers as Record<string, unknown>);
+  if (entries.length === 0) throw corrupt();
+  const dirs: string[] = [];
+  for (const entry of entries) {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) throw corrupt();
+    const record = entry as Record<string, unknown>;
+    for (const [platform, dir] of Object.entries(record)) {
+      if ((platform !== "darwin" && platform !== "linux") || !validPosixBinDir(dir)) throw corrupt();
+    }
+    if (typeof record[os] === "string") dirs.push(record[os] as string);
+  }
+  return dirs;
 }
 
 /** The absolute per-user installer folders declared by this OS's seeded and installed connectors. */
 export function serviceAgentAppBinDirs(os: "darwin" | "linux", home = userHome()): string[] {
-  const valid = (binDir: string | undefined): binDir is string => typeof binDir === "string" && /^~((?:\/[A-Za-z0-9._-]+)+)$/.test(binDir)
-    && !binDir.slice(2).split("/").some(part => part === "." || part === "..");
   const dirs: string[] = [];
   for (const binDir of shippedConnectorBinDirs(os)) {
-    if (valid(binDir)) dirs.push(folder(binDir, home));
+    dirs.push(folder(binDir, home));
   }
   try {
     for (const app of declaredApps()) {
       const binDir = app.install?.installers[os]?.binDir;
-      if (valid(binDir)) dirs.push(folder(binDir, home));
+      if (validPosixBinDir(binDir)) dirs.push(folder(binDir, home));
     }
   } catch { /* fall back to shipped declarations */ }
   return [...new Set(dirs.filter(dir => dir.startsWith("/") && dir.length <= 4096 && !/[\u0000-\u001f\u007f]/u.test(dir)))];
